@@ -13,7 +13,10 @@ out into `scsi_bus.c`, which is the file this chip actually talks to.)
 
 Ground truth: the NCR 53C94/95/96 Data Manual (register semantics,
 reset/interrupt behaviour) plus the boot ROM's and System 7.1 SCSI
-Manager's observed command flows.
+Manager's observed command flows. The chip's hardware reference page is
+[ncr-53c96.md](../../../reference/hardware/scsi/ncr-53c96.md) (section 2
+for the register file, section 3.8 for the TurboSCSI aperture); this
+document covers the emulator's model.
 
 ## Chip model
 

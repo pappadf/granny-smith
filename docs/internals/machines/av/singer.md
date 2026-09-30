@@ -2,7 +2,9 @@
 
 The AV family's sound datapath: the PSC's dedicated sound DMA engine and
 the Singer codec, modelled as a cadenced frame engine — the structural
-twin of the VDC field engine.
+twin of the VDC field engine. Hardware reference:
+[singer.md](../../../reference/machines/av/singer.md), cited by section below
+(the double-buffer geometry is its §2.6, the codec registers §2.2–§2.5).
 
 ## The frame engine
 
@@ -28,7 +30,8 @@ its window (`(frame+1) & 1`):
   `machine.audioin` source (never into ROM/NuBus space), scaled by
   `singerCtl`'s A/D gain fields (`pLeftGain`/`pRightGain`, the same
   1.5 dB ladder upwards, 0 to +22.5 dB — the shipped `singerCtlInit`
-  selects +7.5 dB and the speech front end's AGC drives the field), and
+  selects +7.5 dB and the speech front end's AGC drives the field
+  ([singer.md](../../../reference/machines/av/singer.md) §2.3), and
   with the converter's **noise floor** added: about an LSB, independently
   per channel, deterministic from the checkpointed sample counter.  The
   noise floor is not cosmetic — a run of mathematically exact zeros
@@ -39,11 +42,13 @@ its window (`(frame+1) & 1`):
   (`PSCSNDFRM`) **and** pulse DSP EXT1 — the same gated tick.
   If the previous EXT1 is still latched unserviced, that is a frame
   overrun: sticky `pdspFrameOvr` + L5 bit 1 (level until the host
-  clears the $21C bit — B3).
+  clears the $21C bit — B3). (Completion and interrupt signalling:
+  [singer.md](../../../reference/machines/av/singer.md) §3.5; the DSP side of the tick is
+  [dsp3210-board.md](../../../reference/machines/av/dsp3210-board.md) §3.4.)
 
 `singerStat` reads the board-strap presentation `AV_SINGER_STAT`
 (BI1/BI3 = input-source code 1 "microphone", BI4 output-port choice,
-`pValidData`).  `singerCtl` is a PSC latch; the engine reads the
+`pValidData` — [singer.md](../../../reference/machines/av/singer.md) §2.4).  `singerCtl` is a PSC latch; the engine reads the
 attenuation/mute fields live.
 
 ## `machine.sound`

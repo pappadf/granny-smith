@@ -5,7 +5,10 @@ arrive on the serial port's channel B in SDLC mode and leave the same way
 (`scc_set_frame_sink`). The Ethernet controllers the emulator models --
 SONIC ([`sonic.md`](../../internals/core/peripherals/sonic.md)) and the AV machines' MACE
 ([`av.md`](../machines/av/av.md)) -- carry no AppleTalk: they have no
-datapath into this stack, so EtherTalk is not available. It would be an
+datapath into this stack, so EtherTalk is not available. (The AV machines'
+built-in Ethernet driver does *self-test* with EtherType $809B loopback
+frames — [mace.md](../machines/av/mace.md) §4.7 — but no received EtherTalk
+frame reaches this stack.) It would be an
 ELAP shim under `ddp_in`, AARP included, beside the LLAP one.
 
 # Part I — Physical and Link Layers
@@ -1093,8 +1096,12 @@ exactly as it drops AFP sessions.
 ---
 
 This section provides abbreviated overviews of the application-layer protocols. For detailed specifications, see the dedicated documents:
-- **AFP (Apple Filing Protocol)**: See `appletalk_server.md` for complete AFP call reference.
-- **PAP (Printer Access Protocol)**: See `pap.md` for comprehensive PAP documentation.
+- **AFP (Apple Filing Protocol)**: See [`appletalk_server.md`](../../internals/core/network/appletalk_server.md) for complete AFP call reference.
+- **PAP (Printer Access Protocol)**: See [`pap.md`](pap.md) for comprehensive PAP
+  documentation, and [`laserwriter-session.md`](laserwriter-session.md) for the
+  PostScript-level session behaviour. The printer controller board on the far
+  end of those sessions is documented in
+  [`laserwriter-iint.md`](../hardware/laserwriter-iint.md).
 
 ---
 

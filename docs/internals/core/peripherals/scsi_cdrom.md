@@ -883,13 +883,13 @@ A raw HFS volume image. Identified by the Master Directory Block (MDB) signature
 
 ### 8.3 Image Validation
 
-The `cdrom validate` shell command checks for:
+The `machine.scsi.identify_cdrom(path)` method checks for:
 
 1. **ISO 9660 signature:** Bytes at offset 32769 (sector 16, byte 1) = `"CD001"` (5 bytes). This is the Primary Volume Descriptor identifier defined by ISO 9660.
 
 2. **HFS signature:** Big-endian uint16 at byte offset 1024 = `0x4244`. This is the drSigWord field of the HFS Master Directory Block.
 
-3. **Floppy rejection:** Images matching floppy sizes (400K, 800K, 1440K) are rejected — use `fd validate` instead.
+3. **Floppy rejection:** Images matching floppy sizes (400K, 800K, 1440K) are rejected — use `floppy.identify(path)` instead.
 
 4. **Size range:** Typical CD-ROM images are 100 MB to 700 MB. Images outside this range produce a warning but are not rejected.
 
@@ -954,34 +954,49 @@ Requirements for a bootable CD: HFS filesystem, Apple boot driver on disc, compa
 
 ---
 
-## 10. Shell Commands
+## 10. Object-model commands
 
-### 10.1 `cdrom validate <path>`
+The retired legacy `cdrom` shell command family (`cdrom validate/attach/
+eject/info`) was removed with the typed object model; the same operations
+now live on `machine.scsi`:
 
-Validate a CD-ROM image file. Returns `cmd_bool(true)` if the image is valid, `cmd_bool(false)` otherwise. Prints diagnostic information (size, detected filesystem) to the terminal.
+### 10.1 `machine.scsi.identify_cdrom(path)`
 
-### 10.2 `cdrom attach <path> [id]`
+Validate a CD-ROM image file. Returns `true` if the file looks like a
+CD-ROM image (ISO 9660, HFS, or Apple Partition Map), `false` otherwise.
+Prints diagnostic information (size, detected filesystem) to the terminal.
 
-Attach a CD-ROM image to the SCSI bus. Default SCSI ID is 3. The image is opened read-only and the device presents as a Sony CDU-8002 with all Apple-compatible INQUIRY and MODE page responses.
+### 10.2 `machine.scsi.attach_cdrom(path, id)`
 
-### 10.3 `cdrom eject [id]`
+Attach a CD-ROM image to the SCSI bus (default SCSI ID 3; the top-level
+`machine.attach_cdrom(path)` form attaches to the machine's CD bay on
+models that have one). The image is opened read-only and the device
+presents as a Sony CDU-8002 with all Apple-compatible INQUIRY and MODE
+page responses.
 
-Eject the medium at the specified SCSI ID (default 3). Fails if medium removal is prevented. Raises no UNIT ATTENTION — see §3.9. The method takes any SCSI ID, not only a CD-ROM's, so it doubles as "detach this disk"; the emptied device then answers NOT READY in its own vocabulary (`0xB0` for a CD-ROM, `0x3A` for anything else).
+### 10.3 `machine.scsi.device[id].eject()`
 
-### 10.4 `cdrom info [id]`
+Eject the medium at the given SCSI ID. Fails if medium removal is
+prevented. Raises no UNIT ATTENTION — see §3.9. The method takes any SCSI
+ID, not only a CD-ROM's, so it doubles as "detach this disk"; the emptied
+device then answers NOT READY in its own vocabulary (`0xB0` for a CD-ROM,
+`0x3A` for anything else).
 
-Display information about the attached CD-ROM: image path, filesystem type, image size, current block size, and SCSI ID.
+### 10.4 `machine.scsi.device[id].info`
 
-### 10.5 Comparison with `hd` Command
+Display information about the attached device: image path, filesystem
+type, image size, current block size, and SCSI ID.
 
-| Aspect | `hd` | `cdrom` |
-|--------|------|---------|
-| Attach | `hd attach <path> [id]` | `cdrom attach <path> [id]` |
+### 10.5 Comparison with the HD path
+
+| Aspect | HD | CD-ROM |
+|--------|----|--------|
+| Attach | `machine.scsi.attach_hd(path, id)` | `machine.scsi.attach_cdrom(path, id)` |
 | Default ID | 0 | 3 |
-| Validate | `hd validate <path>` | `cdrom validate <path>` |
+| Validate | `machine.scsi.identify_hd(path)` | `machine.scsi.identify_cdrom(path)` |
 | Read-only | No | Yes |
-| Eject | N/A | `cdrom eject [id]` |
-| Info | N/A | `cdrom info [id]` |
+| Eject | `machine.scsi.device[id].eject()` | `machine.scsi.device[id].eject()` |
+| Info | `machine.scsi.device[id].info` | `machine.scsi.device[id].info` |
 
 ---
 
@@ -991,7 +1006,8 @@ Display information about the attached CD-ROM: image path, filesystem type, imag
 |------|----------|
 | `src/core/peripherals/scsi.h` | Public SCSI API |
 | `src/core/peripherals/scsi_internal.h` | Shared types, constants, struct definitions |
-| `src/core/peripherals/scsi.c` | NCR 5380 controller, command dispatch, HD handling |
+| `src/core/peripherals/scsi.c` | NCR 5380 controller |
+| `src/core/peripherals/scsi_bus.c` | The shared bus: phase machine, target/device models, command dispatch, HD handling |
 | `src/core/peripherals/scsi_cdrom.c` | CD-ROM device: INQUIRY, MODE pages, READ TOC, sense, Apple quirks |
-| `src/core/system.c` | Shell commands (`cdrom validate/attach/eject/info`) |
+| `src/core/system.c` | Typed attach helper (`add_scsi_cdrom`) behind `machine.attach_cdrom` / `machine.scsi.attach_cdrom` |
 | `src/core/storage/image.h` | Image types including `image_cdrom` |

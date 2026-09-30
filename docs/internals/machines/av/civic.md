@@ -4,9 +4,13 @@ CIVIC (343S1096) is the frame-buffer and video-timing controller; Sebastian
 (343S0704) is the RAMDAC/CLUT downstream of it; an Endeavor (840AV) or
 Clifton/PUMA (660AV) synthesizer supplies the pixel clock. All three live in
 [src/machines/av/civic.c](../../../../src/machines/av/civic.c) /
-[civic.h](../../../../src/machines/av/civic.h).
+[civic.h](../../../../src/machines/av/civic.h). Hardware reference:
+[civic.md](../../../reference/machines/av/civic.md), cited by section below.
 
 ## The register interface is bit-serial
+
+(Reference: [civic.md](../../../reference/machines/av/civic.md) §2.2 for the
+protocol, §2.4 for the direct-access registers, §2.3 for the slot map.)
 
 The thing to get right before anything else: **CIVIC's registers are one bit
 per longword.** Only D[0] is meaningful, the LSB sits at the lowest address,
@@ -33,6 +37,8 @@ Computed slots, where a plain latch would be wrong:
 
 ## Monitor sense
 
+(Reference: [civic.md](../../../reference/machines/av/civic.md) §3.4.)
+
 A static Hi-Res 640×480 monitor (indexed code 6) is attached. A sense line
 reads low when the monitor ties it low or the host drives it (`SenseN` = 1),
 which reproduces the documented drive patterns — `CivicResetSenseLines`,
@@ -41,6 +47,8 @@ The same static answer serves the ROM's extended tie-matrix probe.
 
 ## VBL
 
+(Reference: [civic.md](../../../reference/machines/av/civic.md) §3.2.)
+
 A 60.15 Hz scheduler event. When the timing generator (Enable) and VBLEnb are
 on and the interrupt is armed, it latches VBLInt **and** asserts PSC-VIA2 SInt
 bit 6 (active low). The second half is not optional: without it the level-2
@@ -48,6 +56,9 @@ handler never runs, so no VBL tasks fire and the cursor never blinks. The ack
 is the driver's `VBLClr` 0-then-1 dance — 0 clears and disarms, 1 re-arms.
 
 ## Sebastian
+
+(Reference: [civic.md](../../../reference/machines/av/civic.md) §2.6 for the
+register file, §2.8 for the CLUT protocol.)
 
 Byte registers on a `$10` stride at `$50F30800`: index (`$000`), data
 (`$010`), PCBR (`$020`). CLUT access is an index write followed by **four**
@@ -64,6 +75,8 @@ and `$FF` for black), and the derived display CLUT gathers them from there.
 
 ## Clock synthesizer
 
+(Reference: [civic.md](../../../reference/machines/av/civic.md) §1.4.)
+
 Pure write latches at `$50F2E000`. The frequency formulas are undocumented —
 the per-mode M/N (Endeavor) and W (Clifton/PUMA) values are opaque signatures —
 and nothing functional depends on them. The
@@ -71,6 +84,9 @@ and nothing functional depends on them. The
 path.
 
 ## VRAM and the display
+
+(Reference: [civic.md](../../../reference/machines/av/civic.md) §2.5; family
+doc §2.10 for the VRAM.)
 
 2 MB at `$50100000`, installed both as direct page-table entries (so CPU
 accesses are fast) and as a bus-resolver host region (so the 040 table walker
@@ -92,6 +108,10 @@ the ROM's side: after the slot PrimaryInit runs, the screen is 640×480,
 blank.
 
 ## Video input
+
+(Reference: [civic.md](../../../reference/machines/av/civic.md) §3.3 for the
+video-in interrupt, §3.7 for the mixing/overlay; the chips themselves are
+[vdc.md](../../../reference/machines/av/vdc.md).)
 
 The video-in slots are live: `VDCClk`/`VDCEnb`/`VDCInt`/`VDCClr` are the
 field-interrupt quartet, `VidInSize` picks the capture row stride, and

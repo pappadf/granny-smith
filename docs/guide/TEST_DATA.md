@@ -60,7 +60,8 @@ dump is caught rather than silently booted.
 | `macxl-3a-094c82f0.rom` | Macintosh XL |
 
 NuBus **declaration ROMs** (`*.vrom`) live beside them — the 8•24 (JMFB),
-8•24 GC, 24AC and the SE/30 built-in video. Cards can also run on the
+8•24 GC, 24AC and the SE/30 built-in video — along with PCI **expansion
+ROMs** (`*.prom`, the mach64 GX). Cards can also run on the
 runtime-generated generic GS vROM instead; `iicx-gsvrom` covers that path.
 
 ### Prepared hard-disk images (`tests/data/systems/`)
@@ -151,7 +152,7 @@ prepared 7.1 HD images.
 
 | Path | Contents |
 |---|---|
-| `tests/data/apps/` | MacTest diagnostics, Marathon, MusicWorks, Norton System Info |
+| `tests/data/apps/` | MacTest diagnostics, Marathon, MusicWorks, Norton System Info, Quake (the Voodoo2 rows) |
 | `tests/data/Lisa/` | Lisa Office System 3.1, Xenix 3.0, MacWorks XL 3.0 (floppies + installed ProFile images) |
 | `tests/data/aux/aux_3.0.1/` | A/UX 3.0.1 retail ISO and an installed 160 MB HD image |
 | `tests/data/cdroms/` | CD-ROM images |

@@ -17,9 +17,14 @@ The I²C bus is **not** on the CPU bus. It hangs off Cuda and is driven with
 pseudo-command **`$22` (`RdWrIIC`)** — see [cuda.md](cuda.md).
 
 Register semantics are ROM-verified against the disassembled
-`'vdig'`/`'i2c '` components, plus both Philips datasheets.
+`'vdig'`/`'i2c '` components, plus both Philips datasheets. Hardware
+reference: [vdc.md](../../../reference/machines/av/vdc.md), cited by section
+below.
 
 ## The chips are register files plus two status bytes
+
+(Reference: [vdc.md](../../../reference/machines/av/vdc.md) §2.3 for the
+DMSD register map, §2.4 for the VDC register map, §2.1 for the bus.)
 
 The guest's `'i2c '` component keeps its own RAM shadow of both register
 files and serves subaddressed *reads* from it, so on real hardware only the
@@ -38,6 +43,10 @@ unconditional branch, so those reads do reach the wire on the software this
 family actually boots.
 
 ## The frame engine
+
+(Reference: [vdc.md](../../../reference/machines/av/vdc.md) §1.5 for the
+capture frame buffer, §3.1–§3.4 for the pipeline end to end, §3.5–§3.6 for
+the formats and field processing.)
 
 A scheduler event at NTSC field cadence (59.94 Hz). Each firing, when
 **`VDCClk` == 0** (clock on), **`BusSize` == 0** (32-bit mode — the master
@@ -71,6 +80,9 @@ Field storage follows `OF`: `00` writes both fields onto *alternate* VRAM rows
 (interlaced), `01`/`1x` writes consecutive rows.
 
 ## The field interrupt shares CIVIC's VBL line
+
+(Reference: [vdc.md](../../../reference/machines/av/vdc.md) §3.9 for the
+field interrupt, §2.5 for CIVIC's video-in control bits.)
 
 There is no separate PSC source. The VDC and VBL both raise **PSC-VIA2
 slot-interrupt bit 6** (active low, IPL 2); the guest disambiguates through

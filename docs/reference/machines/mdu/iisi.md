@@ -1,9 +1,13 @@
 # Macintosh IIsi
 
-The Macintosh IIsi is a 20 MHz Motorola MC68030 Macintosh II-family machine. Its architecture is based on two custom chips also used conceptually in the Macintosh IIci design:
+The Macintosh IIsi is a 20 MHz Motorola MC68030 Macintosh II-family machine.
+Its family page — the board architecture, address decode and interrupt
+architecture it shares with the Macintosh IIci — is
+[mdu.md](mdu.md); this page holds the IIsi's own wiring. Its architecture is
+based on two custom chips also used conceptually in the Macintosh IIci design:
 
-- **MDU - Memory Decode Unit**: address decoding, RAM control, ROM mapping behavior, RAM burst support, refresh, and some I/O acknowledge behavior.
-- **RBV - RAM-Based Video**: on-board video using system DRAM as the frame buffer, plus virtual VIA2 functions.
+- **MDU - Memory Decode Unit**: address decoding, RAM control, ROM mapping behavior, RAM burst support, refresh, and some I/O acknowledge behavior ([mdu.md](mdu.md) §2).
+- **RBV - RAM-Based Video**: on-board video using system DRAM as the frame buffer, plus virtual VIA2 functions ([rbv.md](rbv.md) §1).
 
 Other important custom or semi-custom devices:
 
@@ -11,7 +15,7 @@ Other important custom or semi-custom devices:
 - **SWIM floppy controller**: controls the internal SuperDrive and external floppy port.
 - **ASC - Apple Sound Chip**: Macintosh II-family compatible sound output and four-voice synthesis.
 - **Sound input hardware**: mono 8-bit digitizing path with FIFO and interrupt-driven control logic.
-- **Custom 68HC05 ADB microcontroller**: ADB controller, real-time clock, parameter RAM, soft power, reset, NMI, wakeup, and network boot flag support.
+- **Custom 68HC05 ADB microcontroller**: ADB controller, real-time clock, parameter RAM, soft power, reset, NMI, wakeup, and network boot flag support ([egret.md](egret.md) §1).
 - **Optional 68882 FPU**: not on the base logic board. Present only when the user installs either the PDS adaptor or NuBus adaptor; both adaptor kits include a 20 MHz MC68882.
 
 The system was introduced with System 6.0.6 support and was intended to be supported by System 7.0. The ROM is described as a universal Macintosh II-family ROM with IIsi-specific startup hardware probing and support code.
@@ -218,7 +222,10 @@ A functional emulator can usually ignore DRAM refresh as long as RAM contents pe
 
 ## 8. On-board video
 
-The IIsi includes on-board RAM-based video. It can also use NuBus or PDS video cards.
+The IIsi includes on-board RAM-based video. It can also use NuBus or PDS
+video cards. The RBV's register file, interrupt-bank behaviour and video fetch
+engine are [rbv.md](rbv.md) §2–§3; this section gives the IIsi-side wiring and
+timings.
 
 ### 8.1 Supported monitor modes
 

@@ -43,7 +43,8 @@ Apple Network Server ROM carries the same version and release (`$077D`,
 `$28F2`) as the Power Macintosh 9500 v2 ROM. A ROM is never identified by
 its version.
 
-The Lisa boot ROM does not follow this layout (§5).
+The Lisa boot ROM does not follow this layout (§5; the machine's own page is
+[lisa.md](../machines/lisa/lisa.md) §16).
 
 ## 3. The 68k checksum
 
@@ -161,7 +162,8 @@ the Memory Manager in 32-bit mode. The `$067C` ROMs, from the IIci on, are
 
 ## 7. The Macintosh Plus revisions
 
-All three Plus ROMs are 128 KB, two 64 KB chips, with version `$0075`, so
+All three Plus ROMs are 128 KB, two 64 KB chips, with version `$0075`
+([compact.md](../machines/compact/compact.md) §2.5), so
 only the checksum tells them apart:
 
 | Revision | Checksum | Name |

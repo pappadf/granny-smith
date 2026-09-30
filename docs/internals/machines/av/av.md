@@ -12,6 +12,10 @@ controller and every DMA channel.
 
 Machine pages: [q840av.md](q840av.md), [q660av.md](q660av.md).
 Device pages: [psc.md](psc.md), [civic.md](civic.md), [cuda.md](cuda.md).
+Hardware reference: [av.md](../../../reference/machines/av/av.md) (family),
+[q840av.md](../../../reference/machines/av/q840av.md),
+[q660av.md](../../../reference/machines/av/q660av.md) (machines) — cited by
+section below.
 
 These pages document the **implementation**. Every non-obvious decision below
 records the hardware behaviour that forced it, so the reasoning stands on its
@@ -20,11 +24,14 @@ source file that owns the contract.
 
 ## Family traits
 
+(Reference: [av.md](../../../reference/machines/av/av.md) §1–§5 for all of
+this, family level.)
+
 - **One ROM, two machines.** Both boards run the same 2 MB image (checksum
   `$5BF10FD1`) mapped at `$40800000` — the first `rom_size = 0x200000` profile
   in the tree. The only identity input is a 4-bit strap nibble the ROM reads
-  out of YMCA: `$F` = Quadra 840AV (Cyclone, 40 MHz), `$B` = Centris/Quadra
-  660AV (Tempest, 25 MHz).
+  out of YMCA (§2.4 of the family reference): `$F` = Quadra 840AV (Cyclone,
+  40 MHz), `$B` = Centris/Quadra 660AV (Tempest, 25 MHz).
 - **Access-triggered ROM overlay.** Out of reset the ROM is readable at
   `$00000000`; the first access to the ROM aperture drops the overlay, RAM
   appears at zero and the aperture becomes direct ROM pages. Unlike GLUE/MDU
@@ -32,7 +39,8 @@ source file that owns the contract.
   disable **at all** — `YMCA_EPROMmode` is never written and `vOverlay` does
   not exist on this platform (PA4 is reused as `vReqAEnable`). The reset PC
   (`$0000002A`, from ROM offset 4) is a `JMP $40800074`, so the drop happens
-  on the very first instruction fetch, before any RAM is touched.
+  on the very first instruction fetch, before any RAM is touched. (Overlay
+  hardware: [av.md](../../../reference/machines/av/av.md) §3.5.)
 - **No VIA2, no ASC, no SWIM, no SONIC, no IOPs.** The PSC replaces all of
   them. `config_t.via2` stays NULL and the IPL-2 path is the PSC's 3-register
   pseudo-VIA2 window. VIA1 itself is the generic 6522
@@ -48,14 +56,18 @@ source file that owns the contract.
   `$2A000`, clock synthesizer `$2E000`, MUNI `$30000`, YMCA `$30400`,
   Sebastian `$30800`, PSC `$31000`, CIVIC `$36000`. CIVIC also answers at
   `$50036000` (the decoder ignores A20–A23 within `$50xxxxxx`), registered as
-  a separate region.
+  a separate region. (Decode: [av.md](../../../reference/machines/av/av.md)
+  §3.2/§3.3.)
 - **Interrupts**: VIA1→IPL 1, the PSC-VIA2
   window→IPL 2 (**SCSI and floppy arrive here**, not at the PSC level
   registers), MACE→3, SCC/Singer/DMA-complete→4, DSP→5, 60.15 Hz→6, NMI→7.
   The family instantiates the shared `mac030_irq_resolve_ipl` engine with its
-  own routing table.
+  own routing table ([av.md](../../../reference/machines/av/av.md) §5.1).
 
 ## YMCA (memory controller, `$50F30400`)
+
+(Hardware reference: family doc §2.3–§2.6 — register model, identification,
+speed programming, bank decode.)
 
 Every YMCA register is **one bit wide, accessed as a longword with the value
 in bit 31** — which is why the ROM writes `0` or `-1` everywhere. `av.c` stores
@@ -76,6 +88,8 @@ passes consistently. Verified for 8/16/32 MB against the real two-pass sizer
 plus `Mod3Test`.
 
 ## MUNI (NuBus bridge, `$50F30000`)
+
+(Hardware reference: family doc §5.4 — NuBus and the MUNI.)
 
 Two latches the boot ROM touches: `IntCntrl` (+`$00`) and `Control` (+`$08`).
 The load-bearing behavior is the **absence** case: a 660AV without the NuBus
@@ -116,9 +130,13 @@ hangs forever inside `SCSIComplete`'s phase wait (whose deadline is
   register sequences the shipping drivers issue.
 - `tests/unit/suites/civic/` — the bit-serial codec, sense protocol, CLUT and
   VBL ack dance.
-- `tests/integration/suite-av/` — identity, RAM sizing, video bring-up (ROM
-  only) plus the two CD-boot desktop rows. Every row gates on `have_media()`;
-  the AV ROM and the small boot disk are pending the gs-test-data push.
+- `tests/integration/suite-av/` — identity, RAM sizing, video bring-up
+  (ROM only), the chime, DSP boot and determinism, the audio-in plug
+  contract, checkpoint round-trip, plus the System 7.1 hard-disk desktop
+  boot, video-in, beep, TTS, sound-record and speech-recognition rows for
+  both machines. Every row gates on `have_media()`; the 2 MB ROM and the
+  7.1 AV hard-disk image are in gs-test-data (revision 2937e56), so the
+  gating is a stale-checkout guard rather than a pending-data placeholder.
 
 ## What is deliberately not modelled
 

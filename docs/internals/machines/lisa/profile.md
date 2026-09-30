@@ -1,13 +1,19 @@
 # Lisa parallel hard disk (ProFile / Widget) — implementation notes
 
 Status: **device implemented + verified** (Step 7). The read/write/device-info
-handshake is done (`src/core/peripherals/lisa_profile.{c,h}`), wired on VIA2 in
-`src/machines/lisa.c`, and verified end-to-end through Apple's own boot-ROM driver
-(see "Implemented & verified" below). COPS input and the Lisa-2 machine-type
-detection are now done too; what remains for the *OS install* test is getting
-LisaOS past **filesystem init** (error 10707) — see "Remaining" below. This doc
+handshake is done (`src/machines/lisa/lisa_profile.{c,h}`), wired on VIA2 in
+`src/machines/lisa/lisa.c`, and verified end-to-end through Apple's own boot-ROM driver
+(see "Implemented & verified" below). COPS input, the Lisa-2 machine-type
+detection and the whole LOS 3.1 Office-System install onto the ProFile are
+done too (see "Remaining" below — kept as the session log). This doc
 captures the protocol (from the rev-H boot ROM `RM248.B.TEXT` and the OS driver
-`SOURCE-PROFILEASM`) and the implementation.
+`SOURCE-PROFILEASM`) and the implementation. The hardware reference is the
+dedicated device page
+[docs/reference/machines/lisa/profile.md](../../../reference/machines/lisa/profile.md)
+(§2 for the connector and 6522 wiring, §3 for the handshake and block I/O, §3.3
+for the device-info block), with
+[docs/reference/machines/lisa/lisa.md](../../../reference/machines/lisa/lisa.md)
+§10/§14 for the VIA2 and the parallel-connector context.
 
 ## Implemented & verified
 
@@ -29,7 +35,7 @@ captures the protocol (from the rev-H boot ROM `RM248.B.TEXT` and the OS driver
   user's image (the boot-time `mountinfo`/MDDF write goes to the delta) — every
   cold boot starts from the pristine base, fixing the spurious "startup disk was
   in use" scavenge prompt. A blank attach (no path) is an all-zero ephemeral
-  image (`image_create_blank`); `profile.save` consolidates base+delta into a new
+  image (`image_create_blank`); `machine.hd.save` consolidates base+delta into a new
   single-file image via `image_export_to`. See `docs/internals/core/storage/image.md`.
 - **`via.c` port-A hooks** — `via_set_porta_hooks()` adds a read/write callback on
   the ORA/IRA (handshaked, CA2/PSTRB-strobed) and ORA-no-handshake registers, the
@@ -37,8 +43,10 @@ captures the protocol (from the rev-H boot ROM `RM248.B.TEXT` and the OS driver
 - **`lisa.c` wiring** — VIA2 port-B output → CMD//DRW (computed from the true line
   levels, so an undriven open-collector CMD/ reads high, not a spurious assert);
   port-A hooks → the device; BSY → PB1 + CA1; OCD/ (PB0) driven low when a disk is
-  attached; VIA1 PB7 (CRES/) falling edge → controller reset. A `profile` object
-  (`profile.attach [path] [writable]` / `profile.detach` / `profile.present`)
+  attached; VIA1 PB7 (CRES/) falling edge → controller reset. A `machine.hd`
+  node (class `profile`: `hd.attach [path] [writable]` / `hd.detach` /
+  `hd.present` / `hd.save`, plus the `pram_init`/`pram_save`/`pram_load`
+  PRAM snapshot methods)
   attaches an image (blank in-memory if no path).
 - **Verification.** `tests/unit/suites/lisa_profile` drives the device API
   directly (detection, device-info read, write→read round-trip, decline/abort).
@@ -93,12 +101,13 @@ captures the protocol (from the rev-H boot ROM `RM248.B.TEXT` and the OS driver
   flag stuck and corrupted the supervisor stack) and **saving the RTS instruction's
   PC** on an RTS-into-absent-segment fault (the OS recovers RTS by re-executing it).
   See `docs/reference/machines/lisa/lisa.md` §2 / §4.5 / §4.8 for the contract. Covered by the
-  `tests/integration/lisa-los-boot` integration test (boots LOS 3.1 → pixel-matches
-  the menu).
+  `tests/integration/lisa-los-profile` integration test (boots LOS 3.1 and
+  pixel-matches
+  the menu on the way to the full install).
 - **MOUSE-DRIVEN BUTTON CLICKS WORK (session 15).** `mouse.move x y "global"` now
   warps the cursor to an exact screen pixel and `mouse.click` activates the button
   under it: clicking **Install** drives the installer to its disk-selection step
-  (covered by the new `tests/integration/lisa-los-install` test). The fix was the
+  (covered by the `tests/integration/lisa-los-profile` install test). The fix was the
   cursor-globals address + the OS's mouse scaling: the live on-screen cursor is at
   OS globals **`$CC00F0` = X, `$CC00F2` = Y** (supervisor context, re-asserted every
   VBL — *not* the `$486`/`$488` globals some references cite, which are a stale copy
@@ -106,11 +115,11 @@ captures the protocol (from the rev-H boot ROM `RM248.B.TEXT` and the OS driver
   (the 720×364 pixel aspect), **Y ×1**. The COPS "warp" is a closed loop: each mouse
   report it reads `$CC00F0/$CC00F2` and injects a scale-corrected delta (`dx = errX×2/3`,
   `dy = errY`) toward the target, converging to the exact pixel in a few reports. See
-  `docs/reference/machines/lisa/lisa.md` §11.4 and `src/core/peripherals/cops.c` (`cops_set_warp` /
+  `docs/reference/machines/lisa/lisa.md` §11.4 and `src/machines/lisa/cops.c` (`cops_set_warp` /
   `cops_mouse_tick`). NB: the OS does **not** draw the cursor sprite on the idle menu,
   so a menu screenshot looks cursor-less; the click still hit-tests against the tracked
   position, and the cursor becomes visible once a dialog appears.
-- **🎉 INSTALLER NOW DETECTS THE ProFile (session 16) — root-caused from the LisaOS
+- **INSTALLER NOW DETECTS THE ProFile (session 16) — root-caused from the LisaOS
   source + floppy-I/O analysis.** Clicking Install with a ProFile attached now
   reaches *"Do you want to use the disk attached to the parallel connector?"*
   (Cancel / OK / More) instead of *"no usable
@@ -132,11 +141,12 @@ captures the protocol (from the rev-H boot ROM `RM248.B.TEXT` and the OS driver
   11-block re-read of `SYSTEM.CD_PROFILE` (blocks 218-228; PROF_INIT's `0011 00A0` is
   at block 224) — proving the OS loaded the driver, so the failure had to be in the
   driver's hardware init silently missing the VIA2.)
-- **Remaining for a full install (the /goal):** detection is done; next is to click
-  **OK** to select the ProFile, drive the initialize/format step, copy the OS
-  (feed install disks 2–5 via the disk-swap path), write the OS to the ProFile, and
-  reboot from it. The device write path is implemented and unit-tested but not yet
-  fully OS-exercised through the install.
+- **The full install is done.** `tests/integration/lisa-los-profile` drives the
+  whole Office-System install: click **OK** to select the ProFile, run the
+  initialize/format step, copy the OS (install disks 2–5 via the disk-swap path),
+  write the OS to the ProFile, and reboot from it — the write path is now
+  OS-exercised end to end, and `tests/integration/suite-lisa`'s `lisa-los31-profile`
+  row cold-boots LOS 3.1 from the installed ProFile.
 
 ## Media reality (important)
 
@@ -199,7 +209,7 @@ two-line stub; the real work is the read/write **handshake + block I/O**.
 PB7 (CRES/) low (`DOCRES`). **Block size**: 512 data + tag (532–536 on the wire);
 back the image with 512+tag per block (BLU-style) since the Lisa FS is tag-bearing.
 
-## The one infrastructure gap
+## The one infrastructure gap (since resolved: `via_set_porta_hooks`)
 
 `via.c`'s `ORA_IRA` (reg 1) read has **no device callback** — so the ProFile can't
 advance to the next byte on each data-read. Add a read hook (e.g. a
@@ -207,7 +217,7 @@ advance to the next byte on each data-read. Add a read hook (e.g. a
 device supplies bytes during the read data-phase. The command/response/write phases
 already work through the existing `output_cb` (fires on port-A/B writes).
 
-## Implementation steps
+## Implementation steps (all landed)
 
 1. `via.c`: add a port-A-read (IRA) hook; wire it on the Lisa VIA2.
 2. `lisa_profile.{c,h}`: behavioural device — state machine (IDLE → CMD → status →
@@ -222,7 +232,7 @@ already work through the existing `output_cb` (fires on port-A/B writes).
 5. **COPS keyboard injection** (separate, also needed): the Workshop install is
    keyboard-driven; today the COPS only does autonomous polling. Add host→COPS key
    events (present scancodes on VIA1 port A + pulse CA1, like the mouse path).
-6. `tests/integration/xl-install` (or `lisa-install`): boot the Workshop floppy,
+6. The install test (this landed as `tests/integration/lisa-los-profile`): boot the install floppy,
    attach a blank 5 MB ProFile, drive the install (keyboard + disk swaps), then
    verify the HD is bootable / `screen.match` the installed desktop.
 
@@ -230,4 +240,5 @@ already work through the existing `output_cb` (fires on port-A/B writes).
 
 - Protocol routines in the AppleLisa Boot ROM source (`Lisa Boot ROM RM248.B.TEXT`):
   `PROINIT`, `FINDD2`, `WFBSY`/`WFNBSY`, `SENDRSP`, `READIT`, `STRTRD`/`STAT01`, `DOCRES`.
+- docs/reference/machines/lisa/profile.md (the ProFile/Widget device page: §2 wiring, §3 protocol, §4 programming).
 - docs/reference/machines/lisa/lisa.md §14 (parallel HD), §10 (VIA2).

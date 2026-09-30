@@ -17,7 +17,10 @@ Server work and the whole critical path to booting AIX.
 
 Reference: Symbios Logic, *PCI-SCSI I/O Processors Programming Guide*, v2.1;
 LSI Logic, *LSI53C825A/825AE PCI to SCSI I/O Processor Technical Manual*,
-v3.1 (2001), chapters 4–6.
+v3.1 (2001), chapters 4–6. The part's hardware reference page is
+[`sym53c8xx.md`](../../../../../reference/hardware/scsi/sym53c8xx.md)
+(section 3.1 for the SCRIPTS processor, section 5 for the quirks this
+document pins); this page covers the emulator's engine.
 
 ## Why two translation units
 

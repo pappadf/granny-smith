@@ -105,7 +105,8 @@ transports, installed at module construction:
   machine boot, again on every video-mode switch (e.g. the JMFB driver
   flipping a IIcx from 512×342 to 640×480). ASYNC because the worker
   doesn't block on JS layout. `parW:parH` is the monitor's pixel aspect
-  ratio (the Lisa's 720×364 raster is 2:3), so the renderer can show
+  ratio (the Lisa's 720×364 raster is 2:3, see
+  [video.md](../reference/machines/lisa/video.md) §1), so the renderer can show
   non-square pixels.
 - **`Module.print` / `Module.printErr`** — Emscripten's stdout/stderr
   pipes. `logSink` routes these to the Terminal console.

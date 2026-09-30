@@ -15,7 +15,9 @@ Register sub-blocks: **DAFB core** `+$000`, **Swatch** CRTC `+$100`,
 Apple's own equates (`HardwarePrivateEqu.a`) pin the core offsets:
 `VidBaseHi $0`, `VidBaseLo $4`, `RowWords $8`, `Config $10`, `Sense $1C`,
 `Reset $20`, `Swatch_Mode $100`. Unknown registers stay accept-and-log
-with readback.
+with readback. (Hardware reference:
+[dafb.md](../../../reference/machines/mcu/dafb.md) — apertures §2.1,
+register sub-blocks §2.2–§2.5, reset state §2.6.)
 
 ## Geometry (Swatch)
 
@@ -31,6 +33,8 @@ reference [R]:
 
 ## Monitor sense (`$1C`)
 
+(Reference: [dafb.md](../../../reference/machines/mcu/dafb.md) §3.5.)
+
 Three rules, all cross-checked against Apple's `DAFBDriver.a` [A]:
 
 1. drive bits are **active-low** (bit clear = drive that line low);
@@ -45,6 +49,8 @@ A plain 13-inch monitor is code 6; the cross-drive tuples produce the
 `extendedHR $2B` extended sense naturally.
 
 ## RAMDAC: AC842 vs AC842a (Q950)
+
+(Reference: [dafb.md](../../../reference/machines/mcu/dafb.md) §2.4.)
 
 The ACDC address register (`$200`) selects which PCBR the config register
 (`$220`) reaches: 0 → **PCBR0**, 1 → **PCBR1**. On the plain AC842 there
@@ -73,6 +79,8 @@ acknowledge timing immediately — see
 [scsi_53c96.md](../../core/peripherals/scsi_53c96.md).
 
 ## Interrupts and scanout
+
+(Reference: [dafb.md](../../../reference/machines/mcu/dafb.md) §3.3–§3.4.)
 
 The Swatch's programmed timing drives the video interrupt (level output →
 VIA2 PA6 through the family /SLOTIRQ aggregate); a 60.15 Hz fallback

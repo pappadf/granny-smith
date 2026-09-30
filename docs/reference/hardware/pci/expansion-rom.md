@@ -166,6 +166,9 @@ that every file there is recognised.
 ## See also
 
 - `docs/internals/core/peripherals/pci.md` — the bus, the config header, region backing
+- [pci.md](pci.md) — the PCI bus's hardware reference page; the cards'
+  reference pages live in [cards/](cards/) (e.g. [cards/mach64.md](cards/mach64.md),
+  whose Apple Accelerated PCI Graphics Card ROM is the catalog's `mach64_gx`)
 - `docs/reference/hardware/nubus/declaration-rom.md` — the declaration-ROM sibling
 - `scripts/fcode/detok.py` — detokenizes an FCode image, so what a card's ROM
   *does* can be read before its device model is written

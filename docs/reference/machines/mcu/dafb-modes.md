@@ -9,6 +9,9 @@ timing and VRAM fit, transcribed from period documentation (sources at the
 foot). Lower supported depths can also be selected. They describe **the
 hardware**, not this emulator — see [What we actually
 implement](#what-we-actually-implement) before treating a row as a test target.
+The DAFB itself — its register file, pixel formats, scan timing and
+monitor-sense protocol — is [dafb.md](dafb.md); the machine pages are
+[q700.md](q700.md), [q900.md](q900.md) and [q950.md](q950.md).
 
 ## Quadra 700 and 900
 
@@ -68,18 +71,19 @@ consumption as much as about colour.
 
 ## What we actually implement
 
-These ceilings are the hardware's, and most of the table is **not reachable in
-this emulator today**. The binding constraint is monitor sense, not VRAM:
+These ceilings are the hardware's, and the emulator does not assert every row
+of them. The monitor-sense range is implemented, however — both the passive
+codes and the extended (tie-matrix) probe ([dafb.md](dafb.md) §3.5) —
+and `suite-quadra` exercises it end to end: `q700-dafb-senses` drives the
+whole sense range ROM-only, and `q700-75-monitors` pixel-matches the two
+desktop geometries worth a Finder, 832 × 624 and 1152 × 870. The
+depth axis follows the PCBR0/PCBR1 fields: 1, 2, 4 and 8 bpp, plus 16 bpp on
+the AC842a's x555 mode and 24-bit as 32-bpp XRGB
+([dafb.md](dafb.md) §3.2).
 
-- DAFB currently honours **only monitor sense 6** (13-inch RGB, 640 × 480).
-  Senses 0/1/2 program nonsense rasters — tracked as an open defect, guarded by
-  `suite-quadra`'s `q700-dafb-senses` milestone row, which reports red nightly.
-- `suite-quadra`'s 832 × 624 cell is blocked for the same reason.
-
-So this file is best read as the target the DAFB work is aiming at, and as the
-measure of how much of the mode space is still missing. When sense handling is
-fixed, the rows to add come straight off these tables — with the VRAM column
-picking which depth each Quadra config can actually claim.
+So this file is best read alongside the hardware tables: the rows a guest
+configuration can actually reach are the ones the sense code and the VRAM
+sizing pick, and the tables above say what the ceiling of each combination is.
 
 ## Sources
 

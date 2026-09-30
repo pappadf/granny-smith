@@ -4,8 +4,10 @@ The **RBV** ("RAM-Based Video", Apple part 344S1019) is the combined
 video-control + interrupt-aggregation ASIC used by the Macintosh IIci
 (and, in its *V8* variant, the IIsi / LC family). In Granny Smith it is
 implemented as a flat peripheral module:
-[src/core/peripherals/rbv.c](../../../../src/machines/mdu/rbv.c) /
-[rbv.h](../../../../src/machines/mdu/rbv.h).
+[src/machines/mdu/rbv.c](../../../../src/machines/mdu/rbv.c) /
+[rbv.h](../../../../src/machines/mdu/rbv.h). Hardware reference:
+[rbv.md](../../../reference/machines/mdu/rbv.md) (register file §2,
+the V8 variant §1.5).
 
 On the IIci the RBV **replaces the VIA2** of the IIcx-family machines: it
 lives at physical `$50F26000`, aggregates the slot / SCSI / sound
@@ -76,6 +78,7 @@ rbv_t *rbv_init(rbv_variant_t variant, checkpoint_t *cp); // RBV_VARIANT_IICI
 const memory_interface_t *rbv_get_memory_interface(rbv_t *rbv);
 void rbv_set_irq_callback(rbv_t *rbv, void (*cb)(void *, bool), void *ctx);   // -> IPL 2
 void rbv_set_power_off_callback(rbv_t *rbv, void (*cb)(void *), void *ctx);
+void rbv_set_blank_callback(rbv_t *rbv, void (*cb)(void *, bool video_off), void *ctx); // RvVIDOff, on change
 void rbv_set_mode_callback(rbv_t *rbv, void (*cb)(void *, int depth), void *ctx);
 void rbv_assert_slot_irq(rbv_t *rbv, int slot);  // slot 0 = built-in video
 void rbv_clear_slot_irq(rbv_t *rbv, int slot);
@@ -84,8 +87,10 @@ void rbv_set_scsi_drq(rbv_t *rbv, bool active);  // RvSCSIDRQ
 void rbv_set_monitor_sense(rbv_t *rbv, uint8_t sense3); // 6 = 13" RGB
 ```
 
-The `RBV_VARIANT_V8_IIsi` superset (Apple-II mode, VRAM-vs-DRAM refresh
-bit, Bt478 VDAC layout) is reserved for a future IIsi addition.
+The `RBV_VARIANT_V8_IISI` superset (register file identical in size and
+layout; a few bit names and the companion VDAC — Bt450 vs Bt478 — differ)
+is carried by the IIsi ([iisi.c](../../../../src/machines/mdu/iisi.c));
+the variant gates naming/inspection and any V8-only side effects.
 
 ## See also
 
