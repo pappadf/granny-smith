@@ -360,6 +360,9 @@ const char *object_logical_name(struct object *o); // named-child segment, or NU
 int object_logical_index(struct object *o); // entry index, or -1
 const char *object_logical_key(struct object *o); // entry key, or NULL
 
+// Room for any canonical path (object_compute_path truncates past it).
+#define OBJ_PATH_MAX 512
+
 // Keys of keyed collections are short identifiers: [A-Za-z0-9_.-]{1,63}.
 #define OBJ_KEY_MAX 63
 bool object_valid_key(const char *key);
@@ -511,6 +514,46 @@ void object_each_attached_ordered(struct object *o, void (*fn)(struct object *pa
 // Linear lookup of a member by name. Returns NULL if not found.
 const member_t *class_find_member(const class_desc_t *cls, const char *name);
 
+// === Member predicates =======================================================
+//
+// The one reading of each question every surface asks of a member (meta,
+// usage, lint, completion).
+
+// Read-only: an attribute with no setter.
+static inline bool member_is_readonly(const member_t *m) {
+    return m->kind == M_ATTR && !m->attr.set;
+}
+
+// Shown in the basic tier: category basic, and not a hidden method.
+static inline bool member_is_basic(const member_t *m) {
+    return (m->flags & M_CAT_MASK) == M_CAT_BASIC && !(m->kind == M_METHOD && (m->method.ui_flags & MM_HIDDEN));
+}
+
+// Listed on its node (help's member lists): not internal, and not a hidden
+// method.
+static inline bool member_is_listed(const member_t *m) {
+    return (m->flags & M_CAT_MASK) != M_CAT_INTERNAL && !(m->kind == M_METHOD && (m->method.ui_flags & MM_HIDDEN));
+}
+
+// === Tree walk ===============================================================
+//
+// One walk of the live tree for every tool that visits all of it (the doc
+// lint): from `start`, each object once -- then its declared members, its
+// named children, its collection entries and its attached children, depth
+// first -- with its canonical path (as meta.path gives it; "" for the root).
+typedef struct object_visitor {
+    // An object reached.  `via` is the child member it was reached through
+    // (NULL for the start and attached children); `basic` whether it shows
+    // in the basic tier (an entry or a named child's subtree does not);
+    // `first` whether it is the first object of its class the walk met.
+    // Return false to skip its members and subtree.
+    bool (*object)(struct object *o, const member_t *via, const char *path, bool basic, bool first, void *ud);
+    // A declared member of an object reached; `path` is the member's path.
+    void (*member)(struct object *o, const member_t *m, const char *path, bool first, void *ud);
+} object_visitor_t;
+
+void object_walk(struct object *start, const object_visitor_t *v, void *ud);
+
 // === Node and resolution =====================================================
 
 // Resolution returns a node = (object, member, index). The node is the
@@ -633,6 +676,13 @@ void object_fire_invalidators(struct object *o);
 // must be unique within the class. Returns true on success; on failure
 // writes a one-line message into err_buf (may be NULL).
 bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_size);
+
+// Documentation gaps a member declares, beside the hard errors above: a
+// basic-tier method argument with no doc, an untyped (V_ANY / V_NONE)
+// argument without OBJ_ARG_POLY, a V_ANY result without result_doc.  Calls
+// report once per gap; `a` is the argument, or NULL for a member rule.
+typedef void (*object_doc_gap_fn)(const member_t *m, const arg_decl_t *a, const char *rule, void *ud);
+void object_member_doc_gaps(const member_t *m, object_doc_gap_fn report, void *ud);
 
 // === Meta-attribute slot ====================================================
 //

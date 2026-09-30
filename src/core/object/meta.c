@@ -299,7 +299,7 @@ static value_t meta_method_member(struct object *self, const member_t *m, int ar
     const char *kind_str = "?";
     switch (mb->kind) {
     case M_ATTR:
-        kind_str = !mb->attr.set ? "attribute (read-only)" : "attribute";
+        kind_str = member_is_readonly(mb) ? "attribute (read-only)" : "attribute";
         break;
     case M_METHOD:
         kind_str = "method";
@@ -484,7 +484,7 @@ static value_t describe_member(struct object *insp, const member_t *mb, bool val
     val_map_put(b, "doc", val_str(doc));
     switch (mb->kind) {
     case M_ATTR:
-        val_map_put(b, "readonly", val_bool(!mb->attr.set));
+        val_map_put(b, "readonly", val_bool(member_is_readonly(mb)));
         val_map_put(
             b, "type",
             meta_type_descriptor(mb->attr.type, mb->attr.width, mb->attr.presentation_flags, mb->attr.enum_values));

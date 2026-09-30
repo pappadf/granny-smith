@@ -871,6 +871,153 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
     return true;
 }
 
+void object_member_doc_gaps(const member_t *m, object_doc_gap_fn report, void *ud) {
+    if (!m || !report || m->kind != M_METHOD)
+        return;
+    bool basic = member_is_basic(m);
+    for (int k = 0; k < m->method.nargs && m->method.args; k++) {
+        const arg_decl_t *a = &m->method.args[k];
+        if (basic && (!a->doc || !*a->doc))
+            report(m, a, "argument has no doc", ud);
+        if ((a->kind == V_ANY || a->kind == V_NONE) && !(a->validation_flags & OBJ_ARG_POLY))
+            report(m, a, "untyped argument (V_ANY/V_NONE) without OBJ_ARG_POLY", ud);
+    }
+    if (m->method.result == V_ANY && !m->method.result_doc)
+        report(m, NULL, "V_ANY result without result_doc", ud);
+}
+
+// === Tree walk ===============================================================
+
+// An open-addressed set of pointers, for the walk's visited objects and
+// classes.
+typedef struct {
+    const void **slots;
+    size_t cap, n;
+} ptr_set_t;
+
+// Hash a pointer onto a power-of-two table.
+static size_t ptr_hash(const void *p, size_t cap) {
+    uintptr_t x = (uintptr_t)p;
+    x ^= x >> 17;
+    x *= (uintptr_t)0x9E3779B97F4A7C15ull;
+    return (size_t)(x >> 7) & (cap - 1);
+}
+
+// Add `p`; false when it was already there (or the set cannot grow).
+static bool ptr_set_add(ptr_set_t *s, const void *p) {
+    if ((s->n + 1) * 2 > s->cap) {
+        size_t cap = s->cap ? s->cap * 2 : 256;
+        const void **t = (const void **)calloc(cap, sizeof(*t));
+        if (!t)
+            return false;
+        for (size_t i = 0; i < s->cap; i++) {
+            if (!s->slots[i])
+                continue;
+            size_t h = ptr_hash(s->slots[i], cap);
+            while (t[h])
+                h = (h + 1) & (cap - 1);
+            t[h] = s->slots[i];
+        }
+        free(s->slots);
+        s->slots = t;
+        s->cap = cap;
+    }
+    size_t h = ptr_hash(p, s->cap);
+    while (s->slots[h]) {
+        if (s->slots[h] == p)
+            return false;
+        h = (h + 1) & (s->cap - 1);
+    }
+    s->slots[h] = p;
+    s->n++;
+    return true;
+}
+
+typedef struct {
+    const object_visitor_t *v;
+    void *ud;
+    ptr_set_t objects, classes;
+} walk_t;
+
+static void walk_object(walk_t *w, struct object *o, const member_t *via, const char *fallback, bool basic);
+
+// "<path>.<name>", or the name at the root; false when it does not fit.
+static bool join_path(char *out, size_t size, const char *path, const char *name) {
+    return snprintf(out, size, "%s%s%s", path, *path ? "." : "", name) < (int)size;
+}
+
+typedef struct {
+    walk_t *w;
+    const char *path;
+    bool basic;
+} walk_attached_t;
+
+static void walk_attached(struct object *parent, struct object *child, void *ud) {
+    (void)parent;
+    walk_attached_t *a = (walk_attached_t *)ud;
+    if (!object_name(child))
+        return;
+    char p[OBJ_PATH_MAX];
+    if (!join_path(p, sizeof(p), a->path, object_name(child)))
+        return;
+    walk_object(a->w, child, NULL, p, a->basic && (object_category(child) & M_CAT_MASK) == M_CAT_BASIC);
+}
+
+// Visit `o` once, under its canonical path (else `fallback`, the path it was
+// reached by), then its members, named children, entries and attached
+// children.
+static void walk_object(walk_t *w, struct object *o, const member_t *via, const char *fallback, bool basic) {
+    if (!o || !ptr_set_add(&w->objects, o))
+        return;
+    const class_desc_t *cls = object_class(o);
+    bool first = cls && ptr_set_add(&w->classes, cls);
+    char path[OBJ_PATH_MAX];
+    object_compute_path(o, path, sizeof(path));
+    if (!path[0] && o != object_root() && snprintf(path, sizeof(path), "%s", fallback) >= (int)sizeof(path))
+        return;
+    if (w->v->object && !w->v->object(o, via, path, basic, first, w->ud))
+        return;
+    // Below an entry or a named child nothing counts as the basic tier.
+    bool sub_basic = via ? false : basic;
+    for (size_t i = 0; cls && i < cls->n_members; i++) {
+        const member_t *m = &cls->members[i];
+        if (!m->name)
+            continue;
+        char mpath[OBJ_PATH_MAX];
+        if (!join_path(mpath, sizeof(mpath), path, m->name))
+            continue;
+        if (w->v->member)
+            w->v->member(o, m, mpath, first, w->ud);
+        if (m->kind != M_CHILD || m->child.reference)
+            continue;
+        if (!m->child.collection) {
+            if (m->child.lookup)
+                walk_object(w, object_named_child(o, m), m, mpath, sub_basic && (m->flags & M_CAT_MASK) == M_CAT_BASIC);
+            continue;
+        }
+        char ep[OBJ_PATH_MAX];
+        for (int k = object_child_next(o, m, -1); k >= 0; k = object_child_next(o, m, k)) {
+            if (snprintf(ep, sizeof(ep), "%s[%d]", path, k) < (int)sizeof(ep))
+                walk_object(w, object_entry_at(o, m, k), m, ep, false);
+        }
+        for (const char *k = object_child_next_key(o, m, NULL); k; k = object_child_next_key(o, m, k)) {
+            if (snprintf(ep, sizeof(ep), "%s[\"%s\"]", path, k) < (int)sizeof(ep))
+                walk_object(w, object_entry_by_key(o, m, k), m, ep, false);
+        }
+    }
+    walk_attached_t a = {.w = w, .path = path, .basic = sub_basic};
+    object_each_attached_ordered(o, walk_attached, &a);
+}
+
+void object_walk(struct object *start, const object_visitor_t *v, void *ud) {
+    if (!start || !v)
+        return;
+    walk_t w = {.v = v, .ud = ud};
+    walk_object(&w, start, NULL, "", true);
+    free(w.objects.slots);
+    free(w.classes.slots);
+}
+
 // === Path resolution =========================================================
 //
 // A path is a sequence of segments separated by '.'. A segment is one of:

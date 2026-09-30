@@ -251,7 +251,7 @@ static void attr_text(vbuf_t *t, struct object *obj, const member_t *m) {
         put(t, "enum");
     else
         type_text(t, m->attr.type, m->attr.presentation_flags);
-    if (!m->attr.set)
+    if (member_is_readonly(m))
         put(t, " (read-only)");
     newline(t);
     if (!(m->attr.presentation_flags & VAL_SENSITIVE)) {
@@ -321,11 +321,11 @@ static void node_text(vbuf_t *t, struct object *obj) {
     const class_desc_t *cls = object_class(obj);
     for (size_t i = 0; cls && i < cls->n_members; i++) {
         const member_t *m = &cls->members[i];
-        if ((m->flags & M_CAT_MASK) == M_CAT_INTERNAL)
+        if (!member_is_listed(m))
             continue;
         if (m->kind == M_ATTR)
             acc_add(&attrs, m->name);
-        else if (m->kind == M_METHOD && !(m->method.ui_flags & MM_HIDDEN))
+        else if (m->kind == M_METHOD)
             acc_add(&methods, m->name);
         else if (m->kind == M_CHILD)
             acc_add(&children, m->name);

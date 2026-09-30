@@ -401,7 +401,7 @@ static const member_t tk_members[] = {
 };
 static const class_desc_t tk_class = {.name = "Tk", .members = tk_members, .n_members = 3, .doc = "A toy node"};
 
-// Lint rule 7: each example must pass the caller's check.
+// Lint: each example must pass the caller's check.
 static const member_t lx_members[] = {
     {.kind = M_METHOD,
      .name = "bare",
@@ -447,6 +447,92 @@ TEST(test_lint_examples) {
     object_detach(lx);
     object_delete(lx);
     object_root_reset();
+}
+
+// Lint: a class's gaps are reported once, under its first object's path, and
+// a basic-tier node needs a doc.
+static const arg_decl_t lg_args[] = {
+    {.name = "x", .kind = V_ANY, .doc = "Anything"},
+};
+static const member_t lg_members[] = {
+    {.kind = M_METHOD,
+     .name = "m",
+     .doc = "Untyped argument",
+     .method = {.args = lg_args, .nargs = 1, .result = V_NONE, .fn = toy_step}},
+};
+static const class_desc_t lg_class = {.name = "Lg", .members = lg_members, .n_members = 1, .doc = "A lint node"};
+static const class_desc_t undocumented_class = {.name = "Undoc", .members = NULL, .n_members = 0};
+
+TEST(test_lint_once_per_class) {
+    object_root_reset();
+    struct object *a = object_new(&lg_class, NULL, "lg1");
+    struct object *b = object_new(&lg_class, NULL, "lg2");
+    struct object *kid = object_new(&undocumented_class, NULL, "kid");
+    object_attach(object_root(), a);
+    object_attach(object_root(), b);
+    object_attach(b, kid);
+    value_t out = object_lint_members(NULL);
+    ASSERT_EQ_INT(2, (int)out.list.len);
+    ASSERT_TRUE(has_line(&out, "lg1.m arg 'x': untyped argument (V_ANY/V_NONE) without OBJ_ARG_POLY"));
+    ASSERT_TRUE(has_line(&out, "lg2.kid: node shown in the basic tier has no doc"));
+    value_free(&out);
+    object_root_reset();
+    object_delete(kid);
+    object_delete(a);
+    object_delete(b);
+}
+
+// object_walk: every object once, with its canonical path -- entries under
+// their container, named children under their member.
+typedef struct {
+    char seen[16][64];
+    int n;
+} walk_seen_t;
+
+static bool walk_note(struct object *o, const member_t *via, const char *path, bool basic, bool first, void *ud) {
+    (void)o;
+    (void)via;
+    (void)basic;
+    (void)first;
+    walk_seen_t *w = (walk_seen_t *)ud;
+    if (w->n < 16)
+        snprintf(w->seen[w->n++], 64, "%s", path);
+    return true;
+}
+
+static bool walk_saw(const walk_seen_t *w, const char *path) {
+    for (int i = 0; i < w->n; i++)
+        if (strcmp(w->seen[i], path) == 0)
+            return true;
+    return false;
+}
+
+TEST(test_walk_canonical_paths) {
+    object_root_reset();
+    struct object *devs = object_new(&devs_class, NULL, "devs");
+    object_attach(object_root(), devs);
+    memset(g_dev_objs, 0, sizeof(g_dev_objs));
+    memset(g_img_objs, 0, sizeof(g_img_objs));
+    g_dev_objs[2] = object_new(&dev_class, NULL, NULL);
+    for (int i = 0; i < 2; i++)
+        g_cat_objs[i] = object_new(&empty_class, NULL, NULL);
+    struct object *cats = object_new(&cats_class, NULL, "cats");
+    object_attach(object_root(), cats);
+    walk_seen_t w = {0};
+    const object_visitor_t v = {.object = walk_note};
+    object_walk(object_root(), &v, &w);
+    ASSERT_TRUE(walk_saw(&w, ""));
+    ASSERT_TRUE(walk_saw(&w, "devs"));
+    ASSERT_TRUE(walk_saw(&w, "devs[2]"));
+    ASSERT_TRUE(walk_saw(&w, "cats[\"cpu\"]"));
+    ASSERT_TRUE(walk_saw(&w, "cats[\"scsi\"]"));
+    object_root_reset();
+    object_delete(g_dev_objs[2]);
+    g_dev_objs[2] = NULL;
+    for (int i = 0; i < 2; i++)
+        object_delete(g_cat_objs[i]);
+    object_delete(devs);
+    object_delete(cats);
 }
 
 // A value's map entry by key, or NULL.
@@ -514,5 +600,7 @@ int main(void) {
     RUN(test_valid_keys);
     RUN(test_meta_members_keys);
     RUN(test_lint_examples);
+    RUN(test_lint_once_per_class);
+    RUN(test_walk_canonical_paths);
     return 0;
 }
