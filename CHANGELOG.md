@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - multi-line input, with Enter continuing an open block;
   - a completion popup with each candidate's kind and doc;
   - a pasted block runs as one job;
+  - the output follows new entries while it is at the bottom, and running a command always returns it there;
   - Ctrl+C copies a selection, else interrupts;
   - an output context menu (Copy as commands, Copy output, Copy value as JSON) and find (Ctrl/Cmd+F).
   - History moves to `localStorage` (`gs.console.history`).

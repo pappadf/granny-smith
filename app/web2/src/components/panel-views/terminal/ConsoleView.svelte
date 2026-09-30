@@ -106,19 +106,60 @@
 
   // --- auto-scroll ----------------------------------------------------------
   // Only while the view is at the bottom; appending never re-renders what is
-  // already there (entries are keyed by id), so selections survive.
+  // already there (entries are keyed by id), so selections survive.  Entries
+  // skip layout off screen (content-visibility), so the output can grow after
+  // a jump to the bottom without any scroll event: the jump is repeated until
+  // the height settles, and a resize of the output (the hint, a growing
+  // input, the panel) keeps it pinned too.  Only a scroll the view did not
+  // make itself can unpin it.
   let stick = true;
+  let pinnedTop = -1; // scrollTop after the view's own last jump
+  let pinFrame = 0;
+  function atBottom(el: HTMLElement): boolean {
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 8;
+  }
   function onScroll(): void {
     if (!outputEl) return;
-    stick = outputEl.scrollHeight - outputEl.scrollTop - outputEl.clientHeight < 8;
+    if (atBottom(outputEl)) stick = true;
+    else if (Math.abs(outputEl.scrollTop - pinnedTop) > 1) stick = false;
+  }
+  function pinToBottom(): void {
+    if (pinFrame) cancelAnimationFrame(pinFrame);
+    let frames = 6;
+    let lastHeight = -1;
+    const jump = () => {
+      pinFrame = 0;
+      const el = outputEl;
+      if (!el || !stick) return;
+      el.scrollTop = el.scrollHeight;
+      pinnedTop = el.scrollTop;
+      // Again next frame, until the height stops changing.
+      if (el.scrollHeight !== lastHeight && frames-- > 0) {
+        lastHeight = el.scrollHeight;
+        pinFrame = requestAnimationFrame(jump);
+      }
+    };
+    jump();
+  }
+  // Submitting a command always brings the view back to the bottom.
+  function followSubmit(): void {
+    stick = true;
+    pinToBottom();
   }
   $effect(() => {
     void consoleState.entries;
     void progressText;
     if (!stick || !outputEl) return;
-    void tick().then(() => {
-      if (outputEl) outputEl.scrollTop = outputEl.scrollHeight;
+    void tick().then(pinToBottom);
+  });
+  $effect(() => {
+    const el = outputEl;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      if (stick) pinToBottom();
     });
+    ro.observe(el);
+    return () => ro.disconnect();
   });
 
   // --- progress ---------------------------------------------------------------
@@ -434,7 +475,10 @@
       const { createConsoleInput } = await import('./ConsoleInput');
       if (destroyed || !inputHost) return;
       input = createConsoleInput(inputHost, {
-        submit: (text) => consoleSubmit(text, lastHl.text === text ? lastHl.spans : undefined),
+        submit: (text) => {
+          followSubmit();
+          consoleSubmit(text, lastHl.text === text ? lastHl.spans : undefined);
+        },
         needsContinuation: (text) => needsContinuation(text),
         complete: (line, cursor) => tabComplete(line, cursor),
         interrupt: () => {
@@ -468,6 +512,7 @@
   onDestroy(() => {
     destroyed = true;
     if (timer) clearInterval(timer);
+    if (pinFrame) cancelAnimationFrame(pinFrame);
     registerConsoleInput(null);
     if (syncTimer) clearTimeout(syncTimer);
     if (hlTimer) clearTimeout(hlTimer);

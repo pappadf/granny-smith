@@ -290,6 +290,32 @@ describe('ConsoleView signature hint', () => {
   });
 });
 
+describe('ConsoleView scrolling', () => {
+  it('stays where the user scrolled, but a submitted command returns it to the bottom', async () => {
+    const { container } = render(ConsoleView);
+    const out = container.querySelector('.console-output') as HTMLElement;
+    // jsdom has no layout: give the output a fixed geometry.
+    Object.defineProperty(out, 'scrollHeight', { value: 1000, configurable: true });
+    Object.defineProperty(out, 'clientHeight', { value: 100, configurable: true });
+    Object.defineProperty(out, 'scrollTop', { value: 100, writable: true, configurable: true });
+    await fireEvent.scroll(out);
+    consoleModel().command('echo more', 'gs>');
+    await waitFor(() => expect(entries(container).length).toBe(1));
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    expect(out.scrollTop).toBe(100);
+
+    const cm = await waitFor(() => {
+      const el = container.querySelector('.cm-content');
+      expect(el).toBeTruthy();
+      return el as HTMLElement;
+    });
+    await waitFor(() => expect(writeToConsole('')).toBe(true));
+    writeToConsole('echo hi');
+    await fireEvent.keyDown(cm, { key: 'Enter' });
+    await waitFor(() => expect(out.scrollTop).toBe(1000));
+  });
+});
+
 describe('ConsoleView highlighting', () => {
   it('colours the input and keeps the colours on the command entry', async () => {
     const { container } = render(ConsoleView);
