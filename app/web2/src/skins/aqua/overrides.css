@@ -8,8 +8,20 @@
    and in the gs.skin layer. */
 @layer gs.skin {
   /* ---- Page, toolbar, display ------------------------------------------- */
+  /* The brushed toolbar runs the full width of the window, as a Mac OS X
+     unified toolbar does: the page draws its band behind the panel's top,
+     and a panel docked left or right starts below it. */
   :root[data-skin='aqua'] body {
-    background: var(--gs-ref-pinstripe);
+    background:
+      linear-gradient(#8a8a8a, #8a8a8a) 0 calc(var(--gs-toolbar-height) - 1px) / 100% 1px no-repeat,
+      linear-gradient(rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0.7)) 0 0 / 100% 1px no-repeat,
+      var(--gs-ref-brushed) 0 0 / 100% var(--gs-toolbar-height) no-repeat,
+      var(--gs-ref-pinstripe);
+  }
+  :root[data-skin='aqua'] .gs-workbench.panel-left > .gs-panel,
+  :root[data-skin='aqua'] .gs-workbench.panel-right > .gs-panel {
+    height: auto;
+    margin-top: var(--gs-toolbar-height);
   }
   :root[data-skin='aqua'] .gs-display {
     background: transparent;
@@ -96,12 +108,94 @@
     width: 34px;
     height: 34px;
   }
-  /* The small appearance chevron: a slim capsule as tall as its
-     neighbours. */
-  :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] .gs-icon-button[data-size='sm'] {
-    width: 18px;
-    height: 30px;
-    border-radius: 999px;
+  /* The toolbar, as the storyboard draws it: round gels for run / shut down
+     (the first group) and the zoom steppers (the group after its groove),
+     the panel-layout buttons as one gel capsule, and every other tool a
+     bare glyph, Mac OS X toolbar style. */
+  :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] .gs-icon-button {
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+    color: #303030;
+  }
+  :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] .gs-icon-button:hover:not(:disabled) {
+    color: #000000;
+    background: rgba(0, 0, 0, 0.06);
+  }
+  :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] .gs-icon-button[aria-pressed='true'] {
+    color: var(--gs-accent);
+  }
+  :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] > :first-child > .gs-icon-button,
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :first-child
+    + .gs-separator
+    + *
+    > .gs-icon-button,
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button {
+    border: 1px solid var(--gs-ref-white-border);
+    color: #2e2e2e;
+    background: var(--gs-ref-gel-white);
+    box-shadow:
+      inset 0 1px 1px #ffffff,
+      0 1px 2px rgba(0, 0, 0, 0.22);
+  }
+  /* Zoom steppers: small round gels. */
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :first-child
+    + .gs-separator
+    + *
+    > .gs-icon-button {
+    width: 22px;
+    height: 22px;
+    padding: 3px;
+  }
+  /* Panel layout: three segments of one capsule, the current one blue. */
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button {
+    width: 32px;
+    height: 24px;
+    border-radius: 0;
+  }
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button
+    + .gs-icon-button {
+    margin-left: calc(-1px - var(--gs-toolbar-gap));
+  }
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    + .gs-icon-button {
+    border-radius: 999px 0 0 999px;
+  }
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button:last-child {
+    border-radius: 0 999px 999px 0;
+  }
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button[aria-pressed='true'] {
+    position: relative;
+    border-color: var(--gs-ref-gel-border);
+    color: #ffffff;
+    background: var(--gs-ref-gel-blue);
   }
   :root[data-skin='aqua'] .gs-icon-button:disabled,
   :root[data-skin='aqua'] .gs-button:disabled {
