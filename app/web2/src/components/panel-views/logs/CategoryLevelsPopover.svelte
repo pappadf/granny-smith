@@ -91,7 +91,7 @@
     display: flex;
     align-items: flex-start;
     justify-content: flex-end;
-    padding: 80px var(--gs-space-4) var(--gs-space-4);
+    padding: var(--gs-popover-offset-top) var(--gs-space-4) var(--gs-space-4);
   }
   .cat-card {
     background: var(--gs-surface-raised);

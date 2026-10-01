@@ -64,6 +64,9 @@
   --gs-menu-hover-bg: var(--gs-accent);
   --gs-menu-hover-fg: var(--gs-text-on-accent);
 
+  /* Popovers: how far below the top edge the card sits. */
+  --gs-popover-offset-top: 80px;
+
   /* Toasts: the stack sits just above the status bar. */
   --gs-toast-bg: var(--gs-surface-overlay);
   --gs-toast-fg: var(--gs-text);

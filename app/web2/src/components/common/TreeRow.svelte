@@ -107,7 +107,7 @@
     background: var(--gs-row-selected);
   }
   .tree-row.drag-source {
-    opacity: 0.45;
+    opacity: var(--gs-opacity-drag-source);
   }
   .tree-row.drop-target {
     outline: var(--gs-focus-width) solid var(--gs-drop-border);

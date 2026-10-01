@@ -75,7 +75,7 @@
     box-shadow: var(--gs-shadow-modal);
     min-width: 320px;
     max-width: 520px;
-    padding: var(--gs-space-5) 22px;
+    padding: var(--gs-space-5) var(--gs-space-6);
     display: flex;
     flex-direction: column;
     gap: var(--gs-space-3-5);

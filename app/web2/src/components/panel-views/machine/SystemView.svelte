@@ -572,7 +572,7 @@
   .group-divider {
     font-size: var(--gs-font-size-2xs);
     text-transform: var(--gs-caps-transform);
-    letter-spacing: 0.08em;
+    letter-spacing: var(--gs-caps-tracking);
     color: var(--gs-text-muted);
     padding: var(--gs-space-2) var(--gs-space-3) var(--gs-space-0-5);
     border-top: var(--gs-border-width) solid var(--gs-border);

@@ -958,7 +958,7 @@
   .config-content {
     max-width: 560px;
     width: 100%;
-    padding: 48px var(--gs-space-8) var(--gs-space-8);
+    padding: var(--gs-space-12) var(--gs-space-8) var(--gs-space-8);
   }
   .back-link {
     display: inline-block;
@@ -1000,15 +1000,11 @@
   }
   .slot-name {
     min-width: 3em;
-    opacity: 0.7;
-  }
-  .slot-card {
-    opacity: 0.9;
+    color: var(--gs-text-muted);
   }
 
   .form-row .form-label {
     color: var(--gs-text);
-    opacity: 0.9;
     font-size: var(--gs-font-size-base);
   }
   .form-row select {
@@ -1057,6 +1053,6 @@
   }
   .primary-button:disabled {
     cursor: default;
-    opacity: 0.5;
+    opacity: var(--gs-opacity-disabled);
   }
 </style>

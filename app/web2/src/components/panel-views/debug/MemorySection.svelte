@@ -240,7 +240,7 @@
        right edge of a stretched 1fr column. */
     display: grid;
     grid-template-columns: auto auto auto;
-    column-gap: 18px;
+    column-gap: var(--gs-space-4);
     justify-content: start;
     font-family: var(--gs-font-mono);
     font-size: var(--gs-font-size-xs);

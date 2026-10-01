@@ -230,7 +230,7 @@
     cursor: pointer;
   }
   .dlg-btn:disabled {
-    opacity: 0.5;
+    opacity: var(--gs-opacity-disabled);
     cursor: default;
   }
   .dlg-btn-primary {

@@ -84,7 +84,7 @@ const SCALE: TokenSpec[] = [
   ...sizes(
     'space',
     'length',
-    ['0', 'px', '0-5', '1', '1-5', '2', '2-5', '3', '3-5', '4', '5', '6', '7', '8'],
+    ['0', 'px', '0-5', '1', '1-5', '2', '2-5', '3', '3-5', '4', '5', '6', '7', '8', '12'],
     'space step',
   ),
   ...sizes('radius', 'length', ['none', 'xs', 'sm', 'md', 'lg', 'pill', 'round'], 'corner radius'),
@@ -285,6 +285,7 @@ export const TOKENS: readonly TokenSpec[] = [
   cmp('--gs-menu-hover-fg', 'color', 'the highlighted menu item text'),
   cmp('--gs-toast-bg', 'color', 'toasts'),
   cmp('--gs-toast-fg', 'color', 'toast text'),
+  cmp('--gs-popover-offset-top', 'length', 'a popover card below the top edge'),
   cmp('--gs-toast-offset-bottom', 'length', 'the toast stack above the status bar'),
   cmp('--gs-toast-offset-right', 'length', 'the toast stack from the right edge'),
   cmp('--gs-tree-indent', 'length', 'tree indent per level'),

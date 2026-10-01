@@ -134,7 +134,7 @@
     display: flex;
     align-items: center;
     gap: var(--gs-space-1);
-    padding: 3px var(--gs-space-1);
+    padding: var(--gs-space-1);
     background: var(--gs-menu-bg);
     color: var(--gs-menu-fg);
     border: var(--gs-border-width) solid var(--gs-border);

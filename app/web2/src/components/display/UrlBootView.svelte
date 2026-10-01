@@ -154,7 +154,7 @@
   .content {
     max-width: 560px;
     width: 100%;
-    padding: 48px var(--gs-space-8) var(--gs-space-8);
+    padding: var(--gs-space-12) var(--gs-space-8) var(--gs-space-8);
   }
   .title {
     font-size: var(--gs-font-size-4xl);
@@ -163,8 +163,7 @@
     margin: 0 0 var(--gs-space-2) 0;
   }
   .subtitle {
-    color: var(--gs-text);
-    opacity: 0.7;
+    color: var(--gs-text-muted);
     margin: 0 0 var(--gs-space-7) 0;
     font-size: var(--gs-font-size-md);
   }
@@ -191,8 +190,7 @@
   }
   .detail {
     margin: 0;
-    color: var(--gs-text);
-    opacity: 0.75;
+    color: var(--gs-text-muted);
   }
   .card.failed .detail {
     color: var(--gs-danger-fg);
@@ -238,8 +236,8 @@
     font-size: var(--gs-font-size-xs);
     font-weight: var(--gs-font-weight-semibold);
     text-transform: var(--gs-caps-transform);
-    letter-spacing: 0.5px;
-    opacity: 0.7;
+    letter-spacing: var(--gs-caps-tracking);
+    color: var(--gs-text-muted);
   }
   .name {
     color: var(--gs-text-strong);
@@ -252,7 +250,7 @@
     font-family: var(--gs-font-mono);
     font-size: var(--gs-font-size-sm);
     font-variant-numeric: var(--gs-numeric);
-    opacity: 0.85;
+    color: var(--gs-text-muted);
     white-space: nowrap;
   }
   .check {
@@ -287,7 +285,7 @@
     animation: slide var(--gs-duration-indeterminate) var(--gs-ease-in-out) infinite;
   }
   .file.skipped {
-    opacity: 0.55;
+    opacity: var(--gs-opacity-skipped);
   }
   .file-error {
     margin: var(--gs-space-1-5) 0 0 calc(var(--gs-size-icon) + var(--gs-space-2-5));

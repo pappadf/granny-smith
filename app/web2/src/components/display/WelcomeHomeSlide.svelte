@@ -54,7 +54,7 @@
   .home-content {
     max-width: 560px;
     width: 100%;
-    padding: 48px var(--gs-space-8) var(--gs-space-8);
+    padding: var(--gs-space-12) var(--gs-space-8) var(--gs-space-8);
   }
   .welcome-title {
     font-size: var(--gs-font-size-4xl);
@@ -63,8 +63,7 @@
     margin: 0 0 var(--gs-space-2) 0;
   }
   .welcome-subtitle {
-    color: var(--gs-text);
-    opacity: 0.7;
+    color: var(--gs-text-muted);
     margin: 0 0 var(--gs-space-7) 0;
     font-size: var(--gs-font-size-md);
   }
@@ -79,9 +78,8 @@
     font-size: var(--gs-font-size-xs);
     font-weight: var(--gs-font-weight-semibold);
     text-transform: var(--gs-caps-transform);
-    letter-spacing: 0.5px;
-    color: var(--gs-text);
-    opacity: 0.8;
+    letter-spacing: var(--gs-caps-tracking);
+    color: var(--gs-text-muted);
     margin: 0 0 var(--gs-space-2) 0;
   }
   .card-rows {

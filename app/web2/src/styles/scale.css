@@ -47,6 +47,7 @@
   --gs-space-6: 24px;
   --gs-space-7: 28px;
   --gs-space-8: 32px;
+  --gs-space-12: 48px; /* the hero's top margin */
 
   /* --- Radius ------------------------------------------------------------- */
   --gs-radius-none: 0;
