@@ -55,9 +55,9 @@ describe('DisplayToolbar', () => {
     await fireEvent.click(container.querySelector('.appearance-menu') as HTMLElement);
     const items = Array.from(document.querySelectorAll('.context-menu .item'));
     const labels = items.map((i) => i.textContent?.trim());
-    expect(labels).toEqual(['Dark', 'Light', 'System', 'Workbench', 'Platinum']);
+    expect(labels).toEqual(['Dark', 'Light', 'System', 'Workbench', 'Glass', 'Platinum', 'Aqua']);
     expect(items[0].getAttribute('aria-checked')).toBe('true');
-    await fireEvent.click(items[4] as HTMLElement);
+    await fireEvent.click(items[5] as HTMLElement);
     expect(appearance.skin).toBe('platinum');
     appearance.skin = 'workbench';
     closeContextMenu();

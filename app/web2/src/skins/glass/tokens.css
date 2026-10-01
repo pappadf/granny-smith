@@ -1,0 +1,401 @@
+/* ====== Glass skin: tokens ======
+   Two schemes of one design.  Dark is "Midnight": a deep blue-black page lit
+   by an indigo and a teal glow, translucent cards with hairline borders, a
+   periwinkle accent and a teal "live" colour.  Light is "Daylight": the same
+   cards in white on a cool grey page, soft shadows and a blue accent.  The
+   floating cards, pills and glows are in overrides.css; this file holds the
+   values.  Sora is the UI face and JetBrains Mono the code face in both. */
+@layer gs.tokens {
+  :root[data-skin='glass'][data-theme='dark'] {
+    /* Reference palette */
+    --gs-ref-ink: #090b11;
+    --gs-ref-glass: rgba(255, 255, 255, 0.045);
+    --gs-ref-glass-strong: rgba(255, 255, 255, 0.07);
+    --gs-ref-hairline: rgba(255, 255, 255, 0.08);
+    --gs-ref-periwinkle: #7c8cff;
+    --gs-ref-periwinkle-soft: #c7ceff;
+    --gs-ref-teal: #5eead4;
+    --gs-ref-amber: #fbbf24;
+    --gs-ref-pink: #f472b6;
+    --gs-ref-glow-indigo: rgba(99, 102, 241, 0.26);
+    --gs-ref-glow-teal: rgba(20, 184, 166, 0.16);
+
+    /* Surfaces */
+    --gs-surface-app: var(--gs-ref-ink);
+    --gs-surface-raised: #11141c;
+    --gs-surface-overlay: #151925;
+    --gs-surface-sunken: #06070b;
+    --gs-surface-screen: #000000;
+    --gs-surface-document: #ffffff;
+    --gs-backdrop: rgba(4, 5, 10, 0.6);
+
+    /* Text */
+    --gs-text: #e6e8f2;
+    --gs-text-strong: #ffffff;
+    --gs-text-muted: #9095ad;
+    --gs-text-subtle: #6e7390;
+    --gs-text-link: #a3adff;
+    --gs-text-on-accent: #0a0c12;
+
+    /* Borders and focus */
+    --gs-border: var(--gs-ref-hairline);
+    --gs-border-subtle: rgba(255, 255, 255, 0.06);
+    --gs-border-card: var(--gs-ref-hairline);
+    --gs-focus-ring: var(--gs-ref-periwinkle);
+
+    /* Interaction */
+    --gs-control-hover: rgba(255, 255, 255, 0.06);
+    --gs-control-active: rgba(255, 255, 255, 0.1);
+    --gs-accent: var(--gs-ref-periwinkle);
+    --gs-accent-hover: #919fff;
+    --gs-accent-active: #6878f2;
+    --gs-accent-subtle: rgba(124, 140, 255, 0.2);
+
+    /* Rows */
+    --gs-row-hover: rgba(255, 255, 255, 0.045);
+    --gs-row-selected: rgba(124, 140, 255, 0.2);
+    --gs-row-selected-inactive: rgba(255, 255, 255, 0.07);
+    --gs-row-alt: rgba(255, 255, 255, 0.02);
+
+    /* Inputs */
+    --gs-input-bg: rgba(0, 0, 0, 0.3);
+    --gs-input-fg: #e6e8f2;
+    --gs-input-border: rgba(255, 255, 255, 0.1);
+
+    /* Intents */
+    --gs-info-fg: #a3adff;
+    --gs-info-bg: rgba(124, 140, 255, 0.14);
+    --gs-info-border: rgba(124, 140, 255, 0.4);
+    --gs-info-solid: var(--gs-ref-periwinkle);
+    --gs-info-on-solid: #0a0c12;
+    --gs-success-fg: var(--gs-ref-teal);
+    --gs-success-bg: rgba(94, 234, 212, 0.12);
+    --gs-success-border: rgba(94, 234, 212, 0.4);
+    --gs-success-solid: #2dd4bf;
+    --gs-success-on-solid: #04201c;
+    --gs-warning-fg: #fcd34d;
+    --gs-warning-bg: rgba(251, 191, 36, 0.12);
+    --gs-warning-border: rgba(251, 191, 36, 0.4);
+    --gs-warning-solid: var(--gs-ref-amber);
+    --gs-warning-on-solid: #1a1300;
+    --gs-danger-fg: #fb8fa6;
+    --gs-danger-bg: rgba(251, 113, 133, 0.13);
+    --gs-danger-border: rgba(251, 113, 133, 0.4);
+    --gs-danger-solid: #e11d48;
+    --gs-danger-on-solid: #ffffff;
+
+    /* Machine state.  The status bar itself stays glass (overrides.css); these
+       solid colours are the state when a surface must be filled. */
+    --gs-state-idle-bg: #11141c;
+    --gs-state-idle-fg: #9095ad;
+    --gs-state-running-bg: #13665c;
+    --gs-state-paused-bg: #8a5a0b;
+    --gs-state-stopped-bg: #9f1239;
+    --gs-state-crashed-bg: #6b0f2a;
+    --gs-state-active-fg: #ffffff;
+    --gs-state-hover: rgba(255, 255, 255, 0.06);
+
+    /* Syntax palette: warm methods, cool attributes, periwinkle keywords. */
+    --gs-syntax-method: #ffd88a;
+    --gs-syntax-attribute: #9ad8ff;
+    --gs-syntax-variable: #9ad8ff;
+    --gs-syntax-alias: #9ad8ff;
+    --gs-syntax-object: inherit;
+    --gs-syntax-operator: inherit;
+    --gs-syntax-decl: #aeb8ff;
+    --gs-syntax-interp: #aeb8ff;
+    --gs-syntax-keyword: #e0a8ff;
+    --gs-syntax-string: #ffb59a;
+    --gs-syntax-number: #b8f2c5;
+    --gs-syntax-enum: var(--gs-ref-teal);
+    --gs-syntax-type: #7de3d1;
+    --gs-syntax-comment: #6f8f7f;
+    --gs-syntax-unknown: var(--gs-danger-fg);
+    --gs-syntax-error: var(--gs-danger-fg);
+    --gs-syntax-dim: #6e7390;
+
+    /* Code and data views */
+    --gs-code-pc-row-bg: rgba(124, 140, 255, 0.2);
+    --gs-code-changed-bg: rgba(94, 234, 212, 0.13);
+
+    /* Console */
+    --gs-console-bg: var(--gs-surface-sunken);
+    --gs-console-fg: #d5d8e6;
+    --gs-console-cursor: var(--gs-ref-periwinkle);
+    --gs-console-selection: rgba(124, 140, 255, 0.3);
+    --gs-console-progress-bg: rgba(255, 255, 255, 0.05);
+    --gs-console-find-hit-bg: rgba(251, 191, 36, 0.28);
+    --gs-console-find-current-bg: rgba(251, 191, 36, 0.62);
+
+    /* Drag and drop */
+    --gs-drop-border: var(--gs-ref-periwinkle);
+    --gs-drop-bg: rgba(124, 140, 255, 0.08);
+    --gs-drop-label-bg: rgba(104, 120, 242, 0.92);
+
+    /* Scrollbars, selection, elevation */
+    --gs-scrollbar-thumb: rgba(255, 255, 255, 0.12);
+    --gs-scrollbar-thumb-hover: rgba(255, 255, 255, 0.22);
+    --gs-scrollbar-track: transparent;
+    --gs-selection-bg: rgba(124, 140, 255, 0.38);
+    --gs-shadow-popup: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 14px 36px rgba(0, 0, 0, 0.6);
+    --gs-shadow-modal: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 30px 80px rgba(0, 0, 0, 0.65);
+    --gs-shadow-toast: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 16px 36px rgba(0, 0, 0, 0.55);
+    --gs-shadow-screen:
+      0 0 0 1px rgba(255, 255, 255, 0.07), 0 40px 110px -18px rgba(124, 140, 255, 0.38),
+      0 18px 40px rgba(0, 0, 0, 0.55);
+
+    /* Components */
+    --gs-menu-bg: rgba(21, 25, 37, 0.96);
+    --gs-menu-hover-bg: rgba(124, 140, 255, 0.24);
+    --gs-menu-hover-fg: #ffffff;
+    --gs-icon-button-fg-on: var(--gs-ref-teal);
+    --gs-statusbar-dot-running: var(--gs-ref-teal);
+    --gs-statusbar-dot-paused: var(--gs-ref-amber);
+    --gs-statusbar-dot-stopped: #fb7185;
+    --gs-statusbar-dot-crashed: #ff4d6d;
+    --gs-code-breakpoint: var(--gs-ref-pink);
+    --gs-switch-track-on: var(--gs-ref-periwinkle);
+    --gs-switch-knob-on: #0a0c12;
+  }
+
+  :root[data-skin='glass'][data-theme='light'] {
+    /* Reference palette */
+    --gs-ref-ink: #eceef2;
+    --gs-ref-glass: #ffffff;
+    --gs-ref-glass-strong: #ffffff;
+    --gs-ref-hairline: rgba(16, 24, 40, 0.07);
+    --gs-ref-periwinkle: #2f6bff;
+    --gs-ref-periwinkle-soft: #1e4fd1;
+    --gs-ref-teal: #0f9f8a;
+    --gs-ref-amber: #c98a00;
+    --gs-ref-pink: #e0457b;
+    --gs-ref-glow-indigo: rgba(47, 107, 255, 0.07);
+    --gs-ref-glow-teal: rgba(15, 159, 138, 0.05);
+
+    /* Surfaces */
+    --gs-surface-app: var(--gs-ref-ink);
+    --gs-surface-raised: #ffffff;
+    --gs-surface-overlay: #ffffff;
+    --gs-surface-sunken: #fafafb;
+    --gs-surface-screen: #000000;
+    --gs-surface-document: #ffffff;
+    --gs-backdrop: rgba(22, 24, 29, 0.32);
+
+    /* Text */
+    --gs-text: #16181d;
+    --gs-text-strong: #0b0c10;
+    --gs-text-muted: #545a6a;
+    --gs-text-subtle: #747a8a;
+    --gs-text-link: #1e4fd1;
+    --gs-text-on-accent: #ffffff;
+
+    /* Borders and focus */
+    --gs-border: rgba(16, 24, 40, 0.1);
+    --gs-border-subtle: rgba(16, 24, 40, 0.06);
+    --gs-border-card: var(--gs-ref-hairline);
+    --gs-focus-ring: #2f6bff;
+
+    /* Interaction */
+    --gs-control-hover: rgba(16, 24, 40, 0.05);
+    --gs-control-active: rgba(16, 24, 40, 0.09);
+    --gs-accent: #2f6bff;
+    --gs-accent-hover: #4a7dff;
+    --gs-accent-active: #1e56e6;
+    --gs-accent-subtle: #eef3ff;
+
+    /* Rows */
+    --gs-row-hover: rgba(16, 24, 40, 0.04);
+    --gs-row-selected: #e6eeff;
+    --gs-row-selected-inactive: rgba(16, 24, 40, 0.06);
+    --gs-row-alt: rgba(16, 24, 40, 0.02);
+
+    /* Inputs */
+    --gs-input-bg: #f3f4f6;
+    --gs-input-fg: #16181d;
+    --gs-input-border: #e1e4ea;
+
+    /* Intents */
+    --gs-info-fg: #1e4fd1;
+    --gs-info-bg: #eef3ff;
+    --gs-info-border: #c9d8ff;
+    --gs-info-solid: #2f6bff;
+    --gs-info-on-solid: #ffffff;
+    --gs-success-fg: #11744f;
+    --gs-success-bg: #e8f7ef;
+    --gs-success-border: #b6e4cb;
+    --gs-success-solid: #16a34a;
+    --gs-success-on-solid: #052e16;
+    --gs-warning-fg: #8a5a00;
+    --gs-warning-bg: #fff6e0;
+    --gs-warning-border: #f4d58a;
+    --gs-warning-solid: #f5b300;
+    --gs-warning-on-solid: #2a1c00;
+    --gs-danger-fg: #b4233b;
+    --gs-danger-bg: #fdecef;
+    --gs-danger-border: #f5bcc6;
+    --gs-danger-solid: #d92d48;
+    --gs-danger-on-solid: #ffffff;
+
+    /* Machine state */
+    --gs-state-idle-bg: #eceef2;
+    --gs-state-idle-fg: #545a6a;
+    --gs-state-running-bg: #0f7a52;
+    --gs-state-paused-bg: #8f5c00;
+    --gs-state-stopped-bg: #b4233b;
+    --gs-state-crashed-bg: #7a1426;
+    --gs-state-active-fg: #ffffff;
+    --gs-state-hover: rgba(16, 24, 40, 0.05);
+
+    /* Syntax palette: Light+ hues, tuned to the blue accent. */
+    --gs-syntax-method: #8a5300;
+    --gs-syntax-attribute: #0b4fae;
+    --gs-syntax-variable: #0b4fae;
+    --gs-syntax-alias: #0b4fae;
+    --gs-syntax-object: inherit;
+    --gs-syntax-operator: inherit;
+    --gs-syntax-decl: #2f3fd6;
+    --gs-syntax-interp: #2f3fd6;
+    --gs-syntax-keyword: #9b2fc2;
+    --gs-syntax-string: #b23a1a;
+    --gs-syntax-number: #0b7a4b;
+    --gs-syntax-enum: #0b7285;
+    --gs-syntax-type: #0f766e;
+    --gs-syntax-comment: #3f7a3f;
+    --gs-syntax-unknown: var(--gs-danger-fg);
+    --gs-syntax-error: var(--gs-danger-fg);
+    --gs-syntax-dim: #747a8a;
+
+    /* Code and data views */
+    --gs-code-pc-row-bg: #e6eeff;
+    --gs-code-changed-bg: rgba(15, 159, 138, 0.14);
+
+    /* Console */
+    --gs-console-bg: var(--gs-surface-sunken);
+    --gs-console-fg: #16181d;
+    --gs-console-cursor: #2f6bff;
+    --gs-console-selection: #cddcff;
+    --gs-console-progress-bg: rgba(16, 24, 40, 0.04);
+    --gs-console-find-hit-bg: rgba(245, 179, 0, 0.35);
+    --gs-console-find-current-bg: rgba(245, 160, 0, 0.7);
+
+    /* Drag and drop */
+    --gs-drop-border: #2f6bff;
+    --gs-drop-bg: rgba(47, 107, 255, 0.06);
+    --gs-drop-label-bg: rgba(30, 86, 230, 0.94);
+
+    /* Scrollbars, selection, elevation */
+    --gs-scrollbar-thumb: rgba(16, 24, 40, 0.16);
+    --gs-scrollbar-thumb-hover: rgba(16, 24, 40, 0.28);
+    --gs-scrollbar-track: transparent;
+    --gs-selection-bg: #cddcff;
+    --gs-shadow-popup: 0 0 0 1px rgba(16, 24, 40, 0.06), 0 12px 28px rgba(16, 24, 40, 0.14);
+    --gs-shadow-modal: 0 0 0 1px rgba(16, 24, 40, 0.06), 0 30px 70px rgba(16, 24, 40, 0.22);
+    --gs-shadow-toast: 0 0 0 1px rgba(16, 24, 40, 0.06), 0 14px 30px rgba(16, 24, 40, 0.16);
+    --gs-shadow-screen:
+      0 30px 60px -20px rgba(16, 24, 40, 0.45), 0 12px 24px -8px rgba(16, 24, 40, 0.2);
+
+    /* Components */
+    --gs-menu-bg: #ffffff;
+    --gs-menu-hover-bg: #eef3ff;
+    --gs-menu-hover-fg: #1e4fd1;
+    --gs-icon-button-fg-on: #2f6bff;
+    --gs-statusbar-dot-running: #22c55e;
+    --gs-statusbar-dot-paused: #f5b300;
+    --gs-statusbar-dot-stopped: #e5484d;
+    --gs-statusbar-dot-crashed: #b4233b;
+    --gs-code-breakpoint: var(--gs-ref-pink);
+    --gs-switch-track-on: #2f6bff;
+    --gs-switch-knob-on: #ffffff;
+  }
+
+  /* Both schemes: type, shape and the floating layout's metrics. */
+  :root[data-skin='glass'] {
+    --gs-font-ui: 'Sora', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    --gs-font-mono:
+      'JetBrains Mono', 'SF Mono', Monaco, Menlo, Consolas, 'Liberation Mono', monospace;
+    --gs-radius-xs: 6px;
+    --gs-radius-sm: 8px;
+    --gs-radius-md: 10px;
+    --gs-radius-lg: 14px;
+    --gs-caps-tracking: 0.08em;
+
+    --gs-size-toolbar: 52px;
+    --gs-size-tab: 42px;
+    --gs-size-statusbar: 34px;
+    --gs-size-control: 30px;
+    --gs-size-control-md: 30px;
+    --gs-size-control-lg: 36px;
+    --gs-size-row: 24px;
+
+    --gs-button-radius: 9px;
+    --gs-icon-button-size: 34px;
+    --gs-icon-button-padding: 8px;
+    --gs-icon-button-radius: 11px;
+    --gs-icon-button-radius-panel: 9px;
+    --gs-input-radius: 9px;
+    --gs-input-height: 30px;
+    --gs-input-height-lg: 34px;
+    --gs-segmented-radius: 9px;
+    --gs-segmented-font-size: var(--gs-font-size-sm);
+    --gs-segmented-fg-selected: var(--gs-text-strong);
+    --gs-segmented-bg-selected: var(--gs-accent-subtle);
+    --gs-menu-radius: 12px;
+    --gs-menu-item-height: 28px;
+    --gs-modal-radius: 20px;
+    --gs-toast-radius: 14px;
+    --gs-card-radius: 18px;
+    --gs-pill-radius: var(--gs-radius-pill);
+    --gs-progress-radius: var(--gs-radius-pill);
+    --gs-chip-radius: 7px;
+
+    --gs-tab-height: 30px;
+    --gs-tab-padding-x: 10px;
+    --gs-tab-font-size: 11.5px;
+    --gs-tab-transform: none;
+    --gs-tab-indicator-width: 0px;
+    --gs-tab-sub-transform: none;
+    --gs-tab-sub-tracking: 0;
+    --gs-tab-sub-height: 28px;
+    --gs-tab-sub-indicator-width: 0px;
+    --gs-tab-sub-strip-bg: transparent;
+    --gs-heading-tracking: 0.08em;
+    --gs-section-header-bg: transparent;
+    --gs-table-header-bg: transparent;
+    --gs-toolbar-gap: 6px;
+    --gs-toolbar-bg: transparent;
+    --gs-separator-length: 26px;
+    --gs-statusbar-font-size: var(--gs-font-size-sm);
+    --gs-sash-line: transparent;
+    --gs-screen-frame-padding: 14px;
+    --gs-screen-frame-radius: 18px;
+    --gs-toast-offset-bottom: calc(var(--gs-size-statusbar) + 26px);
+    --gs-toast-offset-right: 18px;
+  }
+  :root[data-skin='glass'][data-theme='dark'] {
+    --gs-display-bg:
+      radial-gradient(600px 380px at 50% 45%, rgba(124, 140, 255, 0.1), transparent 70%), #06070b;
+    --gs-welcome-bg: var(--gs-display-bg);
+    --gs-screen-frame-bg: linear-gradient(180deg, #1a1d27, #0e1016);
+    --gs-statusbar-bg-idle: var(--gs-ref-glass);
+    --gs-statusbar-bg-running: var(--gs-ref-glass);
+    --gs-statusbar-bg-paused: var(--gs-ref-glass);
+    --gs-statusbar-bg-stopped: var(--gs-ref-glass);
+    --gs-statusbar-bg-crashed: rgba(251, 113, 133, 0.12);
+    --gs-statusbar-fg-idle: #a9aec4;
+    --gs-statusbar-fg-active: #a9aec4;
+    --gs-statusbar-item-hover: rgba(255, 255, 255, 0.06);
+  }
+  :root[data-skin='glass'][data-theme='light'] {
+    --gs-display-bg: #f8f9fb;
+    --gs-welcome-bg: #f8f9fb;
+    --gs-screen-frame-bg: #1b1d22;
+    --gs-statusbar-bg-idle: transparent;
+    --gs-statusbar-bg-running: transparent;
+    --gs-statusbar-bg-paused: transparent;
+    --gs-statusbar-bg-stopped: transparent;
+    --gs-statusbar-bg-crashed: #fdecef;
+    --gs-statusbar-fg-idle: #545a6a;
+    --gs-statusbar-fg-active: #545a6a;
+    --gs-statusbar-item-hover: rgba(16, 24, 40, 0.05);
+  }
+}

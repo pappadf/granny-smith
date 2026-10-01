@@ -152,6 +152,13 @@ Two sets pin the look of the UI itself:
   print dialog, a URL boot, the Debug view of a paused Plus) with the text that changes on its own masked. It runs with
   the functional suite (`make ui2-e2e`, needs test data).
 
+Both compare the default skin exactly (`threshold: 0`). The other skins allow
+a per-pixel colour difference of `threshold: 0.03`, still with no pixel
+beyond it: their large anti-aliased curves, gradients and translucency come
+out a level or few apart depending on Chromium's compositing history (the
+same page, shot twice, can differ), which an exact comparison turns into
+flakes.
+
 `web2-specs/appearance.spec.ts` checks the skin and scheme plumbing without
 screenshots: a persisted light preference is on the page before any of the
 app's JavaScript runs, and a scheme switch restyles the console input at

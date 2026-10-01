@@ -3,12 +3,25 @@
 A skin is a named visual design for the web UI: one folder of token values,
 plus, optionally, an icon sprite, webfonts and an override stylesheet. A
 skin changes how the UI looks, never what it does or where things are. The
-default skin is `workbench`. `platinum` is a second, light-only skin in the
-spirit of Mac OS 8. It proves the mechanism: it is built only from
-`skins/platinum/` and `public/skins/platinum/`, with its own tokens, sprite,
-webfont and part-hook overrides. Users pick a skin and a scheme in the
-display toolbar's appearance menu (the chevron beside the theme toggle);
-`?skin=<id>` selects one for a single page load.
+default skin is `workbench`. The others are each built only from
+`skins/<id>/` and `public/skins/<id>/`:
+
+- `glass`: floating translucent cards over a softly lit page, in two
+  schemes: dark ("Midnight", periwinkle and teal glass) and light
+  ("Daylight", white cards on cool grey). Sora and JetBrains Mono, the
+  default sprite, the floating layout in its overrides.
+- `platinum`: Mac OS 8, light only. Bevelled push buttons and grooves,
+  folder tabs, white Finder lists with the lavender highlight, Platinum
+  scrollbars, LED status fields, Chivo, and two-tone Finder icons in its
+  own sprite.
+- `aqua`: Mac OS X 10.0, light only. Pinstripes, a brushed toolbar, blue and
+  white gel capsules, capsule tabs over a recessed box, the blue gradient
+  selection, gel scrollbars and a white bezel. Hanken Grotesk and Fira
+  Mono.
+
+Users pick a skin and a scheme in the display toolbar's appearance menu
+(the chevron beside the theme toggle); `?skin=<id>` selects one for a single
+page load.
 
 ## What a skin can change
 
@@ -120,7 +133,11 @@ specificity, and are scoped to the skin:
 ```
 
 Target only the `gs-*` part classes and their `data-*` states. Other class
-names in the DOM are test hooks and can change. The parts are:
+names in the DOM are test hooks and can change. A structural selector over
+parts is allowed where no part names the element (glass and aqua light up
+the display toolbar's first button, the run control, as
+`.gs-toolbar[data-variant='bar'] > :first-child > .gs-icon-button:first-child`),
+but it breaks if the order changes, so keep such rules rare. The parts are:
 
 - **Primitives (`components/ui/`):**
   - `gs-button`, `gs-icon-button`, `gs-segmented`, `gs-chip`, `gs-link`
@@ -132,6 +149,11 @@ names in the DOM are test hooks and can change. The parts are:
     `gs-switch`;
   - `gs-badge`, `gs-progress`, `gs-spinner`, `gs-activity-dot`,
     `gs-status-dot`, `gs-drive`, `gs-card`, `gs-hero__*` and `gs-callout`.
+- **Layout regions:** `gs-workbench` (with its `panel-left|right|bottom`
+  and `panel-collapsed` modifiers), `gs-display`, `gs-display-content`,
+  `gs-panel`, `gs-panel-header` and `gs-panel-content`. Spacing, borders,
+  radii and backgrounds may change here (glass turns them into floating
+  cards); order and sizing may not. The page itself is `body`.
 - **Composites:** `gs-section`, `gs-table`, `gs-modal` /
   `gs-modal-backdrop`, `gs-menu`, `gs-toast` and `gs-statusbar` (with
   `gs-statusbar__item`).

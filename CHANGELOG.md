@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Glass and Aqua skins** — Glass floats the toolbar, display, panel and status bar as rounded cards over a softly lit page, in two schemes: Midnight (dark: periwinkle and teal glass) and Daylight (light: white cards on cool grey). Aqua is Mac OS X 10.0: pinstripes, a brushed toolbar, blue and white gel capsules, capsule tabs, the blue gradient selection and gel scrollbars. Both are in the appearance menu.
 - **Commands** — bare words that run a method: `ls`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `cd`, `pwd` (the `files` methods, with the new `files.cd` / `files.pwd`), `run`, `stop`, `reset`, `step`, `disasm`.  `command NAME = PATH` declares your own; `$` aliases stay for values and places.  Highlighting, completion and `help` follow the method a command runs, and the command browser lists them under Commands.
 - **3dfx Voodoo2 PCI card** — full register model behind the TNT PCI bus: the shipped Mac Glide driver completes its detection and Quake renders in CI (`tnt-pci-voodoo2`), with the CMDFIFO engine, TMU send-config, calibratable dither, pass-through switch, and a working display face.
 - **Voodoo2 WebGPU takeover** — a second card kind, `voodoo2_webgpu`, that hands rasterisation to the browser's GPU via a WebGPU worker with row-band readback, a readback-storm detector, and a 4 KB-page texture cache; falls back to the thread rasteriser when no adapter is present.
@@ -41,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Round trip about 17 ms at p95 with the machine in turbo.
 
 ### Changed
+- **Platinum skin redrawn after Mac OS 8** — bevelled push buttons and grooves, an inset well around the screen, folder tabs over white Finder lists with filled disclosure triangles and the lavender highlight, Platinum scrollbars, LED status fields, two-tone Finder icons, and Chivo in place of IBM Plex Sans.
 - **Command browser keys** — Home, End, PageUp and PageDown move the selection, as in the other lists.
 - **A job's error is written once** — as the job's `error` record; stderr carries it only when no record can hold it whole (outside a job, or the full text behind a shortened `truncated` record).  Headless without `--framed` prints error records to stderr, so its output reads as before; `--framed` clients get `@error` without a stderr copy.  The web console no longer matches stderr lines to errors, which also fixes long errors showing twice.
 - **The first word of a line means one thing everywhere** — `help`, completion and highlighting follow the interpreter's order (path, then `def` function, then command), so a `def ls` shadows the `ls` command for all of them.  `include` is now a reserved word; `shell.keywords` lists every keyword, the contextual `command` included.

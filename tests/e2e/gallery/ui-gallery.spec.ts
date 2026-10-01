@@ -14,6 +14,12 @@ import { STORIES } from '../../../app/web2/src/gallery/registry';
 import { MANIFESTS } from '../../../app/web2/src/skins/manifests';
 
 const DEFAULT_SKIN = 'workbench';
+// The default skin is compared exactly.  The others draw large anti-aliased
+// curves, gradients and translucency, which Chromium re-rasters a level or
+// few apart depending on the page's compositing history (the same DOM, shot
+// twice, differs): they allow that much colour noise per pixel, and still not
+// a single pixel beyond it.
+const RASTER_NOISE = { threshold: 0.03 };
 // Every (skin, scheme) the build has.
 const LOOKS = MANIFESTS.flatMap((m) => m.schemes.map((scheme) => ({ skin: m.id, scheme })));
 
@@ -49,7 +55,10 @@ for (const story of STORIES) {
           else await page.mouse.move(story.width - 1, story.height - 1);
           // A story that failed to render is a failure, not a baseline.
           await expect(page.locator('.gallery-error')).toHaveCount(0);
-          await expect(page).toHaveScreenshot(`${story.name}-${variant}-${look}.png`);
+          await expect(page).toHaveScreenshot(
+            `${story.name}-${variant}-${look}.png`,
+            skin === DEFAULT_SKIN ? {} : RASTER_NOISE,
+          );
         });
       }
     }

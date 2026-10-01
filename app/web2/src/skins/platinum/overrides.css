@@ -1,92 +1,389 @@
 /* ====== Platinum skin: part-hook overrides ======
-   What tokens cannot say: Platinum's bevels.  Raised controls get a light
-   top-left and a dark bottom-right edge, pressed ones the reverse; fields
-   and lists are inset.  Only gs-* part classes and their ARIA / data-*
-   states are targeted (src/skins/README.md), all scoped to this skin and in
-   the gs.skin layer, so they win over the components' own styles. */
+   What tokens cannot say: Mac OS 8's bevels, grooves, wells and folder tabs.
+   Raised controls have a light top-left and a shaded bottom-right edge inside
+   a dark outline, pressed ones the reverse; fields, lists and the screen well
+   are inset.  Only gs-* part classes, their ARIA / data-* states and the page
+   itself are targeted (src/skins/README.md), scoped to this skin and in the
+   gs.skin layer. */
 @layer gs.skin {
-  /* Push buttons: a grey face with a bevel and a dark outline. */
+  /* ---- Page, toolbar, display well -------------------------------------- */
+  :root[data-skin='platinum'] body {
+    background: var(--gs-ref-chrome);
+  }
+
+  :root[data-skin='platinum'] .gs-toolbar[data-variant='bar'] {
+    padding: 0 10px;
+    border-bottom: 1px solid #888888;
+    box-shadow: inset 0 1px 0 var(--gs-ref-bevel-light);
+  }
+
+  /* Grooves between toolbar groups: a dark line beside a light one. */
+  :root[data-skin='platinum'] .gs-separator {
+    width: 2px;
+    background: transparent;
+    border-left: 1px solid var(--gs-ref-groove);
+    border-right: 1px solid var(--gs-ref-bevel-light);
+  }
+
+  /* The display: an inset grey well inside the window chrome. */
+  :root[data-skin='platinum'] .gs-display-content {
+    margin: 10px 0 10px 10px;
+    background: var(--gs-ref-well);
+    border-top: 1px solid #666666;
+    border-left: 1px solid #666666;
+    border-bottom: 1px solid var(--gs-ref-bevel-light);
+    border-right: 1px solid var(--gs-ref-bevel-light);
+    box-shadow: inset 1px 1px 0 #777777;
+  }
+  :root[data-skin='platinum'] .gs-workbench.panel-left .gs-display-content {
+    margin: 10px 10px 10px 0;
+  }
+  :root[data-skin='platinum'] .gs-workbench.panel-bottom .gs-display-content {
+    margin: 10px 10px 0;
+  }
+
+  /* ---- Push buttons ------------------------------------------------------ */
+  /* Toolbar and panel icon buttons, text buttons and segmented controls are
+     all Platinum bevel buttons: a grey gradient face in a black outline. */
+  :root[data-skin='platinum'] .gs-icon-button,
   :root[data-skin='platinum'] .gs-button[data-variant='secondary'],
-  :root[data-skin='platinum'] .gs-button[data-variant='ghost'] {
-    background: var(--gs-ref-face);
-    border-color: var(--gs-ref-bevel-dark);
-    box-shadow:
-      inset 1px 1px 0 var(--gs-ref-bevel-light),
-      inset -1px -1px 0 var(--gs-ref-bevel-shade);
-  }
+  :root[data-skin='platinum'] .gs-button[data-variant='ghost'],
   :root[data-skin='platinum'] .gs-button[data-variant='primary'] {
-    border-color: var(--gs-ref-bevel-dark);
-    box-shadow:
-      inset 1px 1px 0 rgb(255 255 255 / 0.35),
-      inset -1px -1px 0 rgb(0 0 0 / 0.3);
-  }
-  :root[data-skin='platinum'] .gs-button:active:not(:disabled) {
-    background: var(--gs-ref-face-pressed);
-    box-shadow:
-      inset 1px 1px 0 var(--gs-ref-bevel-shade),
-      inset -1px -1px 0 var(--gs-ref-bevel-light);
-  }
-
-  /* Toolbar and panel icon buttons stay flat until pressed. */
-  :root[data-skin='platinum'] .gs-icon-button[aria-pressed='true'] {
-    background: var(--gs-ref-face-pressed);
-    box-shadow:
-      inset 1px 1px 0 var(--gs-ref-bevel-shade),
-      inset -1px -1px 0 var(--gs-ref-bevel-light);
-  }
-
-  /* Segmented controls: one bevelled bar; the selected segment pressed in. */
-  :root[data-skin='platinum'] .gs-segmented {
-    background: var(--gs-ref-face);
+    border: 1px solid #000000;
+    color: #000000;
+    background: linear-gradient(var(--gs-ref-face-top), var(--gs-ref-face-bottom));
     box-shadow:
       inset 1px 1px 0 var(--gs-ref-bevel-light),
       inset -1px -1px 0 var(--gs-ref-bevel-shade);
+  }
+  :root[data-skin='platinum'] .gs-icon-button[data-tone='panel'] {
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+  }
+  :root[data-skin='platinum'] .gs-icon-button[data-tone='panel']:hover:not(:disabled) {
+    border-color: #000000;
+    background: linear-gradient(var(--gs-ref-face-top), var(--gs-ref-face-bottom));
+    box-shadow:
+      inset 1px 1px 0 var(--gs-ref-bevel-light),
+      inset -1px -1px 0 var(--gs-ref-bevel-shade);
+  }
+  :root[data-skin='platinum'] .gs-icon-button:active:not(:disabled),
+  :root[data-skin='platinum'] .gs-icon-button[aria-pressed='true'],
+  :root[data-skin='platinum'] .gs-icon-button[data-force-state='active'],
+  :root[data-skin='platinum'] .gs-button:active:not(:disabled),
+  :root[data-skin='platinum'] .gs-button[data-force-state='active'] {
+    border-color: #000000;
+    background: linear-gradient(var(--gs-ref-pressed-top), var(--gs-ref-pressed-bottom));
+    box-shadow:
+      inset 1px 1px 0 #7a7a7a,
+      inset -1px -1px 0 #d6d6d6;
+  }
+  :root[data-skin='platinum'] .gs-icon-button:disabled,
+  :root[data-skin='platinum'] .gs-button:disabled {
+    color: #8a8a8a;
+    border-color: #8a8a8a;
+  }
+  /* The default (primary) button: Mac OS 8's thick outer ring. */
+  :root[data-skin='platinum'] .gs-button[data-variant='primary']:not(:disabled) {
+    font-weight: var(--gs-font-weight-bold);
+    box-shadow:
+      inset 1px 1px 0 var(--gs-ref-bevel-light),
+      inset -1px -1px 0 var(--gs-ref-bevel-shade),
+      0 0 0 2px var(--gs-ref-chrome),
+      0 0 0 4px #000000;
+  }
+  :root[data-skin='platinum'] .gs-button[data-variant='danger'] {
+    border: 1px solid #000000;
+    box-shadow:
+      inset 1px 1px 0 rgba(255, 255, 255, 0.4),
+      inset -1px -1px 0 rgba(0, 0, 0, 0.3);
+  }
+
+  /* Segmented controls: adjoining bevel buttons; the selected one pressed. */
+  :root[data-skin='platinum'] .gs-segmented {
+    gap: 0;
+    padding: 0;
+    background: transparent;
+  }
+  :root[data-skin='platinum'] .gs-segmented__option {
+    height: 26px;
+    padding: 0 12px;
+    border: 1px solid #000000;
+    border-radius: 0;
+    margin-left: -1px;
+    color: #000000;
+    background: linear-gradient(var(--gs-ref-face-top), var(--gs-ref-face-bottom));
+    box-shadow:
+      inset 1px 1px 0 var(--gs-ref-bevel-light),
+      inset -1px -1px 0 var(--gs-ref-bevel-shade);
+  }
+  :root[data-skin='platinum'] .gs-segmented__option:first-child {
+    margin-left: 0;
+    border-radius: 4px 0 0 4px;
+  }
+  :root[data-skin='platinum'] .gs-segmented__option:last-child {
+    border-radius: 0 4px 4px 0;
   }
   :root[data-skin='platinum'] .gs-segmented__option[aria-pressed='true'] {
+    font-weight: var(--gs-font-weight-bold);
+    background: linear-gradient(var(--gs-ref-pressed-top), var(--gs-ref-pressed-bottom));
     box-shadow:
-      inset 1px 1px 0 var(--gs-ref-bevel-shade),
-      inset -1px -1px 0 var(--gs-ref-bevel-light);
+      inset 1px 1px 0 #7a7a7a,
+      inset -1px -1px 0 #d6d6d6;
+  }
+  :root[data-skin='platinum'] .gs-segmented__option:disabled {
+    color: #6a6a6a;
   }
 
-  /* Fields and pop-up menus: inset wells. */
+  /* Fields and pop-up menus: inset white wells. */
   :root[data-skin='platinum'] .gs-input,
   :root[data-skin='platinum'] .gs-select__control {
+    border-top-color: #555555;
+    border-left-color: #555555;
     box-shadow: inset 1px 1px 0 var(--gs-ref-bevel-shade);
   }
-
-  /* Tabs: the selected one is a raised face. */
-  :root[data-skin='platinum'] .gs-tabs__tab[aria-selected='true'] {
-    background: var(--gs-ref-face);
+  :root[data-skin='platinum'] .gs-select__control {
+    border-radius: 4px;
+    background: linear-gradient(var(--gs-ref-face-top), var(--gs-ref-face-bottom));
     box-shadow:
       inset 1px 1px 0 var(--gs-ref-bevel-light),
-      inset -1px 0 0 var(--gs-ref-bevel-shade);
+      inset -1px -1px 0 var(--gs-ref-bevel-shade),
+      1px 1px 0 #888888;
   }
 
-  /* Section headers and the table head: raised strips. */
+  /* ---- The panel: folder tabs over a raised body ------------------------- */
+  :root[data-skin='platinum'] .gs-panel {
+    background: var(--gs-ref-chrome);
+    padding: 8px 10px 10px;
+  }
+  :root[data-skin='platinum'] .gs-workbench > .gs-panel {
+    border: 0;
+  }
+  :root[data-skin='platinum'] .gs-panel-header {
+    align-items: flex-end;
+    border-bottom: 0;
+    padding-left: 8px;
+    background: transparent;
+  }
+  :root[data-skin='platinum'] .gs-tabs--panel {
+    align-items: flex-end;
+    gap: 2px;
+  }
+  :root[data-skin='platinum'] .gs-tabs--panel .gs-tabs__tab {
+    height: 22px;
+    margin-top: auto;
+    border: 1px solid #555555;
+    border-bottom: 0;
+    border-radius: 6px 6px 0 0;
+    background: var(--gs-ref-tab-off);
+    box-shadow: inset 1px 1px 0 rgba(255, 255, 255, 0.7);
+  }
+  :root[data-skin='platinum'] .gs-tabs--panel .gs-tabs__tab[aria-selected='true'] {
+    position: relative;
+    z-index: 2;
+    height: 26px;
+    margin-bottom: -1px;
+    font-weight: var(--gs-font-weight-bold);
+    background: var(--gs-ref-chrome);
+    box-shadow: inset 1px 1px 0 var(--gs-ref-bevel-light);
+  }
+  /* The tab body, and inside it a white list area in a black frame. */
+  :root[data-skin='platinum'] .gs-panel-content {
+    padding: 8px;
+    border: 1px solid #555555;
+    background: var(--gs-ref-chrome);
+    box-shadow:
+      inset 1px 1px 0 var(--gs-ref-bevel-light),
+      inset -1px -1px 0 #aaaaaa;
+  }
+  :root[data-skin='platinum'] .gs-panel-content > * {
+    border: 1px solid #000000;
+    background: #ffffff;
+  }
+
+  /* Section headers and the table head: raised strips with bold titles. */
   :root[data-skin='platinum'] .gs-section__header,
   :root[data-skin='platinum'] .gs-table__head {
-    background: var(--gs-ref-face);
+    background: linear-gradient(#efefef, #d8d8d8);
     box-shadow:
       inset 0 1px 0 var(--gs-ref-bevel-light),
-      inset 0 -1px 0 var(--gs-ref-bevel-shade);
+      inset 0 -1px 0 #888888;
+  }
+  :root[data-skin='platinum'] .gs-table__th {
+    border-right: 1px solid #888888;
+    box-shadow: inset 1px 0 0 var(--gs-ref-bevel-light);
+  }
+  :root[data-skin='platinum'] .gs-table__th[aria-sort='ascending'],
+  :root[data-skin='platinum'] .gs-table__th[aria-sort='descending'] {
+    background: linear-gradient(#bebebe, #a9a9a9);
+    box-shadow: inset 1px 1px 0 #d9d9d9;
+    font-weight: var(--gs-font-weight-bold);
   }
 
-  /* Cards, dialogs and menus: a raised panel with Platinum's hard shadow. */
-  :root[data-skin='platinum'] .gs-modal,
-  :root[data-skin='platinum'] .gs-menu {
-    border-color: var(--gs-ref-bevel-dark);
+  /* Finder's list: filled black disclosure triangles. */
+  :root[data-skin='platinum'] .gs-disclosure {
+    --gs-disclosure-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 5h9L8 11z'/%3E%3C/svg%3E");
   }
-  /* A card's bevel is its border (light top-left, shaded bottom-right)
-     inside a dark outline: an inset shadow beside the animated spinner
-     rasterises differently from one frame to the next. */
+  :root[data-skin='platinum'] .gs-tree-item[aria-level='1'] .gs-tree-item__label {
+    font-weight: var(--gs-font-weight-bold);
+  }
+
+  /* ---- Overlays: raised Platinum panels with hard shadows ---------------- */
+  :root[data-skin='platinum'] .gs-modal {
+    border: 1px solid #000000;
+    box-shadow:
+      inset 1px 1px 0 var(--gs-ref-bevel-light),
+      inset -1px -1px 0 var(--gs-ref-bevel-shade),
+      3px 3px 0 rgba(0, 0, 0, 0.4);
+  }
+  :root[data-skin='platinum'] .gs-menu {
+    border: 1px solid #000000;
+    box-shadow:
+      inset 1px 1px 0 var(--gs-ref-bevel-light),
+      2px 2px 0 rgba(0, 0, 0, 0.4);
+  }
+  :root[data-skin='platinum'] .gs-toast {
+    border: 1px solid #000000;
+  }
+  /* A card's bevel is its border (light top-left, shaded bottom-right) inside
+     a dark outline: an inset shadow beside the animated spinner rasterises
+     differently from one frame to the next. */
   :root[data-skin='platinum'] .gs-card {
     border-color: var(--gs-ref-bevel-light) var(--gs-ref-bevel-shade) var(--gs-ref-bevel-shade)
       var(--gs-ref-bevel-light);
     box-shadow: 0 0 0 1px var(--gs-ref-bevel-dark);
   }
-
-  /* Progress bars: an inset track. */
   :root[data-skin='platinum'] .gs-progress {
+    border: 1px solid #000000;
     box-shadow: inset 1px 1px 0 var(--gs-ref-bevel-shade);
+  }
+
+  /* ---- The status bar: inset fields with LED lamps ----------------------- */
+  :root[data-skin='platinum'] .gs-statusbar {
+    border-top: 1px solid var(--gs-ref-bevel-light);
+    box-shadow: 0 -1px 0 #888888;
+    padding: 0 6px;
+    gap: 6px;
+    --gs-statusbar-drive-read: #000000;
+    --gs-statusbar-drive-write: #000000;
+    --gs-statusbar-chip-on-bg: var(--gs-ref-pressed-bottom);
+    --gs-statusbar-chip-on-ring: #000000;
+    --gs-statusbar-printer-error: var(--gs-danger-fg);
+  }
+  :root[data-skin='platinum'] .gs-statusbar__item {
+    height: 18px;
+    margin: 0 2px;
+    padding: 0 8px;
+    border-top: 1px solid #888888;
+    border-left: 1px solid #888888;
+    border-bottom: 1px solid var(--gs-ref-bevel-light);
+    border-right: 1px solid var(--gs-ref-bevel-light);
+  }
+  :root[data-skin='platinum'] .gs-status-dot {
+    width: 9px;
+    height: 9px;
+    border: 1px solid #333333;
+    box-sizing: border-box;
+  }
+  :root[data-skin='platinum'] .gs-status-dot[data-state='running'] {
+    background: var(--gs-ref-led-green);
+  }
+  :root[data-skin='platinum'] .gs-status-dot[data-state='paused'] {
+    background: var(--gs-ref-led-amber);
+  }
+  :root[data-skin='platinum'] .gs-status-dot[data-state='stopped'],
+  :root[data-skin='platinum'] .gs-status-dot[data-state='crashed'] {
+    background: var(--gs-ref-led-red);
+  }
+  /* Drive lamps: a gem beside the drive's name, red while it works. */
+  :root[data-skin='platinum'] .gs-drive {
+    gap: 5px;
+    opacity: 1;
+  }
+  :root[data-skin='platinum'] .gs-drive::before {
+    content: '';
+    width: 9px;
+    height: 9px;
+    box-sizing: border-box;
+    border: 1px solid #333333;
+    border-radius: 50%;
+    background: var(--gs-ref-led-off);
+  }
+  :root[data-skin='platinum'] .gs-drive[data-activity='read']::before,
+  :root[data-skin='platinum'] .gs-drive[data-activity='write']::before {
+    background: var(--gs-ref-led-red);
+  }
+  :root[data-skin='platinum'] .gs-drive__icon {
+    font-family: var(--gs-font-ui);
+    font-weight: var(--gs-font-weight-regular);
+  }
+
+  /* ---- Platinum scrollbars ----------------------------------------------- */
+  /* The thin themed scrollbar of base.css gives way to Platinum's: a grey
+     channel, a lavender thumb with a grip, square arrow boxes. */
+  :root[data-skin='platinum'] * {
+    scrollbar-color: auto;
+    scrollbar-width: auto;
+  }
+  /* …except where a part hides its scrollbar (the panel tab strip). */
+  :root[data-skin='platinum'] .gs-tabs--panel {
+    scrollbar-width: none;
+  }
+  :root[data-skin='platinum'] ::-webkit-scrollbar {
+    width: 16px;
+    height: 16px;
+  }
+  :root[data-skin='platinum'] ::-webkit-scrollbar-track {
+    background: #cccccc;
+    box-shadow:
+      inset 1px 1px 0 #a8a8a8,
+      inset 0 0 0 1px #000000;
+  }
+  :root[data-skin='platinum'] ::-webkit-scrollbar-thumb {
+    border: 1px solid #000000;
+    border-radius: 0;
+    background:
+      repeating-linear-gradient(to bottom, #5a5aa0 0 1px, #e6e6ff 1px 3px) center / 7px 11px
+        no-repeat,
+      linear-gradient(90deg, var(--gs-ref-thumb-light), var(--gs-ref-thumb-dark));
+    box-shadow: inset 1px 1px 0 #e6e6ff;
+  }
+  :root[data-skin='platinum'] ::-webkit-scrollbar-thumb:horizontal {
+    background:
+      repeating-linear-gradient(to right, #5a5aa0 0 1px, #e6e6ff 1px 3px) center / 11px 7px
+        no-repeat,
+      linear-gradient(180deg, var(--gs-ref-thumb-light), var(--gs-ref-thumb-dark));
+  }
+  :root[data-skin='platinum'] ::-webkit-scrollbar-button:single-button {
+    display: block;
+    width: 16px;
+    height: 16px;
+    border: 1px solid #000000;
+    background-color: #e0e0e0;
+    background-repeat: no-repeat;
+    background-position: center;
+    box-shadow:
+      inset 1px 1px 0 #ffffff,
+      inset -1px -1px 0 #a5a5a5;
+  }
+  :root[data-skin='platinum'] ::-webkit-scrollbar-button:single-button:vertical:decrement {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 6'%3E%3Cpath d='M4 0l4 5H0z'/%3E%3C/svg%3E");
+    background-size: 8px 6px;
+  }
+  :root[data-skin='platinum'] ::-webkit-scrollbar-button:single-button:vertical:increment {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 6'%3E%3Cpath d='M4 6l4-5H0z'/%3E%3C/svg%3E");
+    background-size: 8px 6px;
+  }
+  :root[data-skin='platinum'] ::-webkit-scrollbar-button:single-button:horizontal:decrement {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 6 8'%3E%3Cpath d='M0 4l5-4v8z'/%3E%3C/svg%3E");
+    background-size: 6px 8px;
+  }
+  :root[data-skin='platinum'] ::-webkit-scrollbar-button:single-button:horizontal:increment {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 6 8'%3E%3Cpath d='M6 4L1 0v8z'/%3E%3C/svg%3E");
+    background-size: 6px 8px;
+  }
+  :root[data-skin='platinum'] ::-webkit-scrollbar-corner {
+    background: #dddddd;
   }
 }

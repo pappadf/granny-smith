@@ -1,0 +1,293 @@
+/* ====== Aqua skin: part-hook overrides ======
+   What tokens cannot say: Aqua's materials.  Pinstripes behind everything, a
+   brushed toolbar, gel capsules for every button and segment (blue when on,
+   white when off), tabs as one centred capsule straddling the panel's box,
+   gradient section strips, the blue gradient selection, gel scrollbars and a
+   white plastic bezel around the screen (tokens).  Only gs-* part classes, their
+   ARIA / data-* states and the page itself are targeted, scoped to this skin
+   and in the gs.skin layer. */
+@layer gs.skin {
+  /* ---- Page, toolbar, display ------------------------------------------- */
+  :root[data-skin='aqua'] body {
+    background: var(--gs-ref-pinstripe);
+  }
+  :root[data-skin='aqua'] .gs-display {
+    background: transparent;
+  }
+  :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] {
+    padding: 0 12px;
+    background: var(--gs-ref-brushed);
+    border-bottom: 1px solid #8a8a8a;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  }
+  :root[data-skin='aqua'] .gs-separator {
+    width: 1px;
+    background: #a6a6a6;
+    box-shadow: 1px 0 0 #eaeaea;
+  }
+  /* ---- Gel buttons ------------------------------------------------------- */
+  :root[data-skin='aqua'] .gs-icon-button,
+  :root[data-skin='aqua'] .gs-button[data-variant='secondary'],
+  :root[data-skin='aqua'] .gs-button[data-variant='ghost'] {
+    border: 1px solid var(--gs-ref-white-border);
+    color: #2e2e2e;
+    background: var(--gs-ref-gel-white);
+    box-shadow:
+      inset 0 1px 1px #ffffff,
+      0 1px 2px rgba(0, 0, 0, 0.22);
+  }
+  :root[data-skin='aqua'] .gs-icon-button[data-tone='panel'] {
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+  }
+  :root[data-skin='aqua'] .gs-icon-button[data-tone='panel']:hover:not(:disabled) {
+    border-color: var(--gs-ref-white-border);
+    background: var(--gs-ref-gel-white);
+  }
+  :root[data-skin='aqua'] .gs-icon-button:active:not(:disabled),
+  :root[data-skin='aqua'] .gs-icon-button[data-force-state='active'],
+  :root[data-skin='aqua'] .gs-button[data-variant='secondary']:active:not(:disabled),
+  :root[data-skin='aqua'] .gs-button[data-variant='ghost']:active:not(:disabled) {
+    background: var(--gs-ref-gel-white-pressed);
+  }
+  /* On: a pressed toggle, the run button, the default button: blue gel. */
+  :root[data-skin='aqua'] .gs-icon-button[aria-pressed='true'],
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :first-child
+    > .gs-icon-button:first-child:not(:disabled),
+  :root[data-skin='aqua'] .gs-button[data-variant='primary'] {
+    border: 1px solid var(--gs-ref-gel-border);
+    color: #ffffff;
+    background: var(--gs-ref-gel-blue);
+    box-shadow:
+      inset 0 1px 1px rgba(255, 255, 255, 0.9),
+      0 1px 2px rgba(0, 0, 0, 0.3);
+    text-shadow: 0 1px 0 rgba(0, 40, 120, 0.4);
+  }
+  :root[data-skin='aqua'] .gs-button[data-variant='primary']:not(:disabled) {
+    font-weight: var(--gs-font-weight-semibold);
+    box-shadow:
+      inset 0 1px 1px rgba(255, 255, 255, 0.9),
+      0 1px 2px rgba(0, 0, 0, 0.3),
+      0 0 8px rgba(61, 143, 234, 0.55);
+  }
+  :root[data-skin='aqua'] .gs-button[data-variant='primary']:active:not(:disabled),
+  :root[data-skin='aqua'] .gs-icon-button[aria-pressed='true']:active:not(:disabled) {
+    background: var(--gs-ref-gel-blue-pressed);
+  }
+  :root[data-skin='aqua'] .gs-button[data-variant='danger'] {
+    border: 1px solid #8c1a12;
+    background: linear-gradient(to bottom, #ffc9c4 0%, #f2665a 48%, #d63a2e 52%, #f59088 100%);
+    box-shadow:
+      inset 0 1px 1px rgba(255, 255, 255, 0.8),
+      0 1px 2px rgba(0, 0, 0, 0.3);
+  }
+  /* The run button is a round gel, a size up. */
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :first-child
+    > .gs-icon-button:first-child {
+    width: 34px;
+    height: 34px;
+  }
+  :root[data-skin='aqua'] .gs-icon-button:disabled,
+  :root[data-skin='aqua'] .gs-button:disabled {
+    opacity: 0.55;
+  }
+
+  /* Segmented controls and both tab strips: one capsule of gel segments. */
+  :root[data-skin='aqua'] .gs-segmented {
+    gap: 0;
+    padding: 0;
+    border-radius: 999px;
+    background: transparent;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
+  }
+  :root[data-skin='aqua'] .gs-segmented__option,
+  :root[data-skin='aqua'] .gs-tabs__tab {
+    margin-left: -1px;
+    padding: 0 12px;
+    border: 1px solid var(--gs-ref-white-border);
+    border-radius: 0;
+    color: #1a1a1a;
+    background: var(--gs-ref-gel-white);
+    box-shadow: inset 0 1px 1px #ffffff;
+  }
+  :root[data-skin='aqua'] .gs-segmented__option:first-child,
+  :root[data-skin='aqua'] .gs-tabs__tab:first-child {
+    margin-left: 0;
+    border-radius: 999px 0 0 999px;
+  }
+  :root[data-skin='aqua'] .gs-segmented__option:last-child,
+  :root[data-skin='aqua'] .gs-tabs__tab:last-child {
+    border-radius: 0 999px 999px 0;
+  }
+  :root[data-skin='aqua'] .gs-segmented__option[aria-pressed='true'],
+  :root[data-skin='aqua'] .gs-tabs__tab[aria-selected='true'] {
+    position: relative;
+    border-color: var(--gs-ref-gel-border);
+    color: #ffffff;
+    font-weight: var(--gs-font-weight-semibold);
+    background: var(--gs-ref-gel-blue);
+    text-shadow: 0 1px 0 rgba(0, 40, 120, 0.4);
+  }
+  :root[data-skin='aqua'] .gs-segmented__option:disabled {
+    opacity: 0.55;
+  }
+
+  /* ---- The panel: a capsule of tabs over a recessed box ------------------ */
+  :root[data-skin='aqua'] .gs-workbench > .gs-panel {
+    border: 0;
+    padding: 0 12px 12px;
+    background: transparent;
+  }
+  :root[data-skin='aqua'] .gs-panel-header {
+    position: relative;
+    z-index: 2;
+    margin-bottom: -12px;
+    border-bottom: 0;
+    background: transparent;
+    padding-top: 10px;
+  }
+  :root[data-skin='aqua'] .gs-tabs--panel {
+    margin: 0 auto;
+    padding: 0;
+    border-radius: 999px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  }
+  :root[data-skin='aqua'] .gs-tabs--panel .gs-tabs__tab {
+    height: 23px;
+  }
+  :root[data-skin='aqua'] .gs-panel-content {
+    padding: 22px 10px 10px;
+    border: 1px solid #b8b8b8;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.035);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
+  }
+  :root[data-skin='aqua'] .gs-panel-content > * {
+    border: 1px solid #9e9e9e;
+    background: #ffffff;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.15);
+  }
+
+  /* Section strips and the table head: a light gradient with bold titles. */
+  :root[data-skin='aqua'] .gs-section__header,
+  :root[data-skin='aqua'] .gs-table__head {
+    background: var(--gs-ref-strip);
+    border-top: 1px solid #ffffff;
+    border-bottom: 1px solid #a8a8a8;
+  }
+  :root[data-skin='aqua'] .gs-table__th {
+    border-right: 1px solid #c4c4c4;
+  }
+
+  /* The selection: Aqua's blue gradient with white text. */
+  :root[data-skin='aqua'] .gs-tree-item[aria-selected='true'],
+  :root[data-skin='aqua'] .gs-list-row[aria-selected='true'],
+  :root[data-skin='aqua'] .gs-table__row[aria-selected='true'] {
+    background: var(--gs-ref-selection);
+    color: #ffffff;
+  }
+  :root[data-skin='aqua'] .gs-tree-item[aria-selected='true'] *,
+  :root[data-skin='aqua'] .gs-list-row[aria-selected='true'] *,
+  :root[data-skin='aqua'] .gs-table__row[aria-selected='true'] * {
+    color: #ffffff;
+  }
+
+  /* Fields: white with an inset edge; focus is a soft blue glow. */
+  :root[data-skin='aqua'] .gs-input {
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+  }
+  :root[data-skin='aqua'] .gs-input:focus-visible {
+    box-shadow:
+      inset 0 1px 2px rgba(0, 0, 0, 0.25),
+      0 0 0 3px rgba(80, 150, 240, 0.45);
+  }
+  :root[data-skin='aqua'] .gs-select__control {
+    border-radius: 6px;
+    background: var(--gs-ref-gel-white);
+    box-shadow:
+      inset 0 1px 1px #ffffff,
+      0 1px 2px rgba(0, 0, 0, 0.22);
+  }
+
+  /* ---- Overlays: Aqua sheets and menus ----------------------------------- */
+  :root[data-skin='aqua'] .gs-modal {
+    border: 1px solid #8e8e8e;
+    backdrop-filter: blur(10px);
+  }
+  :root[data-skin='aqua'] .gs-menu {
+    border: 1px solid rgba(0, 0, 0, 0.18);
+    backdrop-filter: blur(10px);
+  }
+  :root[data-skin='aqua'] .gs-card {
+    border: 1px solid #adadad;
+    box-shadow: 0 10px 28px -10px rgba(0, 0, 0, 0.35);
+  }
+  :root[data-skin='aqua'] .gs-progress {
+    border: 1px solid #8e8e8e;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
+  }
+
+  /* ---- The status bar: a grey strip, its state a gel bead --------------- */
+  :root[data-skin='aqua'] .gs-statusbar {
+    background: linear-gradient(#e4e4e4, #cacaca);
+    border-top: 1px solid #9a9a9a;
+    --gs-statusbar-drive-read: #1f6fd6;
+    --gs-statusbar-drive-write: #b0221a;
+    --gs-statusbar-chip-on-bg: var(--gs-accent-subtle);
+    --gs-statusbar-chip-on-ring: var(--gs-ref-gel-border);
+    --gs-statusbar-printer-error: var(--gs-danger-fg);
+  }
+  :root[data-skin='aqua'] .gs-status-dot {
+    width: 10px;
+    height: 10px;
+    background: var(--gs-ref-gel-grey);
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+  }
+  :root[data-skin='aqua'] .gs-status-dot[data-state='running'] {
+    background: var(--gs-ref-gel-green);
+  }
+  :root[data-skin='aqua'] .gs-status-dot[data-state='paused'] {
+    background: var(--gs-ref-gel-amber);
+  }
+  :root[data-skin='aqua'] .gs-status-dot[data-state='stopped'],
+  :root[data-skin='aqua'] .gs-status-dot[data-state='crashed'] {
+    background: var(--gs-ref-gel-red);
+  }
+
+  /* ---- Gel scrollbars ---------------------------------------------------- */
+  :root[data-skin='aqua'] * {
+    scrollbar-color: auto;
+    scrollbar-width: auto;
+  }
+  /* …except where a part hides its scrollbar (the panel tab strip). */
+  :root[data-skin='aqua'] .gs-tabs--panel {
+    scrollbar-width: none;
+  }
+  :root[data-skin='aqua'] ::-webkit-scrollbar {
+    width: 15px;
+    height: 15px;
+  }
+  :root[data-skin='aqua'] ::-webkit-scrollbar-track {
+    background: repeating-linear-gradient(90deg, #f4f4f4 0 2px, #e9e9e9 2px 4px);
+    box-shadow:
+      inset 1px 0 0 #c4c4c4,
+      inset 0 0 3px rgba(0, 0, 0, 0.2);
+  }
+  :root[data-skin='aqua'] ::-webkit-scrollbar-thumb {
+    border: 1px solid #2d6fc8;
+    border-radius: 8px;
+    background: linear-gradient(to right, #9ad0ff 0%, #4d9cef 45%, #2d7fe0 55%, #8ccaff 100%);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+  }
+  :root[data-skin='aqua'] ::-webkit-scrollbar-thumb:horizontal {
+    background: linear-gradient(to bottom, #9ad0ff 0%, #4d9cef 45%, #2d7fe0 55%, #8ccaff 100%);
+  }
+  :root[data-skin='aqua'] ::-webkit-scrollbar-corner {
+    background: #eeeeee;
+  }
+}

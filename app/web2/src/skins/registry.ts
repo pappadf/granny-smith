@@ -4,6 +4,8 @@
 // manifests.ts.
 import './workbench/tokens.css';
 import './platinum/tokens.css';
+import './glass/tokens.css';
+import './aqua/tokens.css';
 import { workbench } from './workbench/manifest';
 import { MANIFESTS } from './manifests';
 import type { SkinManifest } from './types';

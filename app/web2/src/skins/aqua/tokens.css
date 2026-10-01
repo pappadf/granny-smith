@@ -1,0 +1,273 @@
+/* ====== Aqua skin: tokens ======
+   Mac OS X 10.0's "Aqua", light only: pinstriped window chrome, a brushed
+   toolbar, lickable blue and white gel buttons, capsule segmented controls
+   and tabs, white list views with the blue gradient selection, gel
+   scrollbars and a white plastic bezel around the screen.  Hanken Grotesk
+   stands in for Lucida Grande and Fira Mono for Monaco.  The gels, stripes
+   and bezel are in overrides.css; this file holds the values. */
+@layer gs.tokens {
+  :root[data-skin='aqua'][data-theme='light'] {
+    /* Reference palette: the gels are four-stop gradients. */
+    --gs-ref-pinstripe: repeating-linear-gradient(to bottom, #f3f3f3 0 2px, #e7e7e7 2px 4px);
+    --gs-ref-gel-blue: linear-gradient(
+      to bottom,
+      #cfe6ff 0%,
+      #6db2f7 48%,
+      #3d8fea 52%,
+      #9ad0ff 100%
+    );
+    --gs-ref-gel-blue-pressed: linear-gradient(
+      to bottom,
+      #9cc8f5 0%,
+      #3f8be4 48%,
+      #1f6fd3 52%,
+      #6fb3f2 100%
+    );
+    --gs-ref-gel-white: linear-gradient(
+      to bottom,
+      #ffffff 0%,
+      #f1f1f1 48%,
+      #dadada 52%,
+      #f6f6f6 100%
+    );
+    --gs-ref-gel-white-pressed: linear-gradient(
+      to bottom,
+      #e9e9e9 0%,
+      #d4d4d4 48%,
+      #bdbdbd 52%,
+      #dedede 100%
+    );
+    --gs-ref-gel-green: radial-gradient(circle at 50% 30%, #e0ffd1 0%, #5fd34a 45%, #238a12 100%);
+    --gs-ref-gel-amber: radial-gradient(circle at 50% 30%, #fff3c4 0%, #ffc33a 45%, #c98a00 100%);
+    --gs-ref-gel-red: radial-gradient(circle at 50% 30%, #ffd1cc 0%, #ff6b5e 45%, #c4261b 100%);
+    --gs-ref-gel-grey: radial-gradient(circle at 50% 30%, #ffffff 0%, #c8c8c8 55%, #8e8e8e 100%);
+    --gs-ref-gel-border: #1f5bb5;
+    --gs-ref-white-border: #8e8e8e;
+    --gs-ref-brushed: linear-gradient(#dcdcdc, #c4c4c4);
+    --gs-ref-strip: linear-gradient(#f2f2f2, #d6d6d6);
+    --gs-ref-selection: linear-gradient(#5b9bef, #2f6fd6);
+
+    /* Surfaces */
+    --gs-surface-app: #ededed;
+    --gs-surface-raised: #f4f4f4;
+    --gs-surface-overlay: #f6f6f6;
+    --gs-surface-sunken: #ffffff;
+    --gs-surface-screen: #000000;
+    --gs-surface-document: #ffffff;
+    --gs-backdrop: rgba(0, 0, 0, 0.2);
+
+    /* Text */
+    --gs-text: #000000;
+    --gs-text-strong: #000000;
+    --gs-text-muted: #555555;
+    --gs-text-subtle: #737373;
+    --gs-text-link: #1758c0;
+    --gs-text-on-accent: #ffffff;
+
+    /* Borders and focus */
+    --gs-border: #a6a6a6;
+    --gs-border-subtle: #cfcfcf;
+    --gs-border-card: #adadad;
+    --gs-focus-ring: #2a78dc;
+
+    /* Interaction */
+    --gs-control-hover: rgba(0, 0, 0, 0.06);
+    --gs-control-active: rgba(0, 0, 0, 0.12);
+    --gs-accent: #1f6fd6;
+    --gs-accent-hover: #3482e6;
+    --gs-accent-active: #155ab6;
+    --gs-accent-subtle: #d6e6fb;
+
+    /* Rows: the blue selection with white text. */
+    --gs-row-hover: rgba(61, 143, 234, 0.08);
+    --gs-row-selected: #3a74d6;
+    --gs-row-selected-inactive: #d4d4d4;
+    --gs-row-alt: #f2f5fa;
+
+    /* Inputs */
+    --gs-input-bg: #ffffff;
+    --gs-input-fg: #1a1a1a;
+    --gs-input-border: #8e8e8e;
+
+    /* Intents */
+    --gs-info-fg: #1758c0;
+    --gs-info-bg: #e1edfc;
+    --gs-info-border: #9cc2f0;
+    --gs-info-solid: #2468cf;
+    --gs-info-on-solid: #ffffff;
+    --gs-success-fg: #1d6a12;
+    --gs-success-bg: #e2f5dc;
+    --gs-success-border: #8fd27f;
+    --gs-success-solid: #27801a;
+    --gs-success-on-solid: #ffffff;
+    --gs-warning-fg: #6b4a00;
+    --gs-warning-bg: #fff3cf;
+    --gs-warning-border: #e8c460;
+    --gs-warning-solid: #ffc33a;
+    --gs-warning-on-solid: #2a1c00;
+    --gs-danger-fg: #b0221a;
+    --gs-danger-bg: #fde3e0;
+    --gs-danger-border: #f0a29b;
+    --gs-danger-solid: #c4261b;
+    --gs-danger-on-solid: #ffffff;
+
+    /* Machine state.  The status bar stays a grey strip; its state is a gel
+       bead. */
+    --gs-state-idle-bg: #dadada;
+    --gs-state-idle-fg: #333333;
+    --gs-state-running-bg: #1f6fd6;
+    --gs-state-paused-bg: #8a5a00;
+    --gs-state-stopped-bg: #b0221a;
+    --gs-state-crashed-bg: #7a1410;
+    --gs-state-active-fg: #ffffff;
+    --gs-state-hover: rgba(0, 0, 0, 0.06);
+
+    /* Syntax palette: Project Builder's colours. */
+    --gs-syntax-method: #6b3fa0;
+    --gs-syntax-attribute: #0b4fae;
+    --gs-syntax-variable: #0b4fae;
+    --gs-syntax-alias: #0b4fae;
+    --gs-syntax-object: inherit;
+    --gs-syntax-operator: inherit;
+    --gs-syntax-decl: #a3226b;
+    --gs-syntax-interp: #a3226b;
+    --gs-syntax-keyword: #a3226b;
+    --gs-syntax-string: #b0221a;
+    --gs-syntax-number: #2a3cc7;
+    --gs-syntax-enum: #0b6e7a;
+    --gs-syntax-type: #2f6b2a;
+    --gs-syntax-comment: #237a1f;
+    --gs-syntax-unknown: var(--gs-danger-fg);
+    --gs-syntax-error: var(--gs-danger-fg);
+    --gs-syntax-dim: #6a6a6a;
+
+    --gs-code-pc-row-bg: #d6e6fb;
+    --gs-code-changed-bg: #fff0b3;
+
+    /* Console */
+    --gs-console-bg: #ffffff;
+    --gs-console-fg: #1a1a1a;
+    --gs-console-cursor: #1f6fd6;
+    --gs-console-selection: #b5d5ff;
+    --gs-console-progress-bg: #f2f5fa;
+    --gs-console-find-hit-bg: rgba(255, 210, 60, 0.45);
+    --gs-console-find-current-bg: rgba(255, 170, 0, 0.75);
+
+    /* Drag and drop */
+    --gs-drop-border: #3d8fea;
+    --gs-drop-bg: rgba(61, 143, 234, 0.1);
+    --gs-drop-label-bg: rgba(31, 111, 214, 0.92);
+
+    /* Scrollbars (Aqua's gels are drawn in overrides.css), selection,
+       elevation: soft OS X shadows. */
+    --gs-scrollbar-thumb: #6db2f7;
+    --gs-scrollbar-thumb-hover: #3d8fea;
+    --gs-scrollbar-track: #eeeeee;
+    --gs-selection-bg: #b5d5ff;
+    --gs-shadow-popup: 0 6px 18px rgba(0, 0, 0, 0.3);
+    --gs-shadow-modal: 0 16px 38px rgba(0, 0, 0, 0.42);
+    --gs-shadow-toast: 0 6px 18px rgba(0, 0, 0, 0.25);
+    --gs-shadow-screen: 0 0 0 1px #5a5a5a;
+
+    /* Scale: Lucida Grande's place is Hanken Grotesk's; capsules and soft
+       corners. */
+    --gs-font-ui:
+      'Hanken Grotesk', 'Lucida Grande', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --gs-font-mono: 'Fira Mono', Monaco, Menlo, Consolas, 'Liberation Mono', monospace;
+    --gs-font-size-xs: 11px;
+    --gs-font-size-sm: 11.5px;
+    --gs-font-size-base: 13px;
+    --gs-radius-xs: 4px;
+    --gs-radius-sm: 6px;
+    --gs-radius-md: 8px;
+    --gs-radius-lg: 12px;
+    --gs-caps-transform: none;
+    --gs-caps-tracking: 0;
+    --gs-size-toolbar: 50px;
+    --gs-size-tab: 36px;
+    --gs-size-statusbar: 24px;
+    --gs-size-control: 24px;
+    --gs-size-control-md: 24px;
+    --gs-size-control-lg: 26px;
+    --gs-size-row: 22px;
+
+    /* Components */
+    --gs-menu-bg: rgba(248, 248, 248, 0.97);
+    --gs-menu-fg: #1a1a1a;
+    --gs-menu-hover-bg: #3a74d6;
+    --gs-menu-hover-fg: #ffffff;
+    --gs-menu-radius: 6px;
+    --gs-modal-bg: rgba(244, 244, 244, 0.98);
+    --gs-modal-radius: 10px;
+    --gs-modal-title-weight: var(--gs-font-weight-bold);
+    --gs-toast-bg: rgba(248, 248, 248, 0.97);
+    --gs-toast-radius: 10px;
+    --gs-card-bg: #ffffff;
+    --gs-card-radius: 10px;
+    --gs-button-radius: 999px;
+    --gs-button-font-size: 12px;
+    --gs-button-font-size-lg: 13px;
+    --gs-button-padding-x: 14px;
+    --gs-button-padding-x-lg: 20px;
+    --gs-icon-button-size: 30px;
+    --gs-icon-button-padding: 6px;
+    --gs-icon-button-radius: 999px;
+    --gs-icon-button-radius-panel: 999px;
+    --gs-input-radius: 0;
+    --gs-select-height: 22px;
+    --gs-segmented-radius: 0;
+    --gs-segmented-font-size: 12px;
+    --gs-segmented-fg: #1a1a1a;
+    --gs-segmented-fg-selected: #ffffff;
+    --gs-toolbar-bg: transparent;
+    --gs-toolbar-gap: 8px;
+    --gs-separator: #a6a6a6;
+    --gs-separator-length: 30px;
+    --gs-tab-height: 23px;
+    --gs-tab-padding-x: 9px;
+    --gs-tab-font-size: 11.5px;
+    --gs-tab-fg: #1a1a1a;
+    --gs-tab-fg-hover: #000000;
+    --gs-tab-fg-selected: #ffffff;
+    --gs-tab-indicator-width: 0px;
+    --gs-tab-sub-indicator-width: 0px;
+    --gs-tab-sub-fg: #1a1a1a;
+    --gs-tab-sub-fg-selected: #ffffff;
+    --gs-tab-sub-strip-bg: transparent;
+    --gs-heading-fg: #333333;
+    --gs-heading-weight: var(--gs-font-weight-bold);
+    --gs-section-title-fg: #333333;
+    --gs-section-header-bg: transparent;
+    --gs-table-header-bg: transparent;
+    --gs-tree-category-fg: #333333;
+    --gs-row-selected-fg: #ffffff;
+    --gs-disclosure-fg: #6b6b6b;
+    --gs-pill-radius: 999px;
+    --gs-pill-transform: none;
+    --gs-progress-height: 12px;
+    --gs-progress-radius: 999px;
+    --gs-progress-track: #e6e6e6;
+    --gs-progress-fill: var(--gs-ref-gel-blue);
+    --gs-switch-track-on: #3d8fea;
+    --gs-display-bg: transparent;
+    --gs-welcome-bg: var(--gs-ref-pinstripe);
+    --gs-screen-frame-padding: 18px;
+    --gs-screen-frame-radius: 16px;
+    --gs-screen-frame-bg: linear-gradient(#fefefe, #e2e2e2);
+
+    /* The status bar: a grey strip in every state. */
+    --gs-statusbar-bg-idle: transparent;
+    --gs-statusbar-bg-running: transparent;
+    --gs-statusbar-bg-paused: transparent;
+    --gs-statusbar-bg-stopped: transparent;
+    --gs-statusbar-bg-crashed: #fde3e0;
+    --gs-statusbar-fg-idle: #333333;
+    --gs-statusbar-fg-active: #333333;
+    --gs-statusbar-item-hover: rgba(0, 0, 0, 0.06);
+    --gs-statusbar-font-size: 11.5px;
+    --gs-statusbar-dot-running: #2f9a1f;
+    --gs-statusbar-dot-paused: #e0a800;
+    --gs-statusbar-dot-stopped: #d63a2e;
+    --gs-statusbar-dot-crashed: #a01d14;
+  }
+}

@@ -1,0 +1,218 @@
+/* ====== Glass skin: part-hook overrides ======
+   What tokens cannot say: the floating layout.  The page carries the glows;
+   the display toolbar, the display, the panel and the status bar become
+   separate rounded cards with gutters between them (the workbench sash is
+   widened into the gutter, so it still resizes).  Dark cards are translucent
+   glass over the glow, light ones are white with a soft shadow.  Only gs-*
+   part classes, their ARIA / data-* states and the page itself are targeted,
+   all scoped to this skin and in the gs.skin layer. */
+@layer gs.skin {
+  /* ---- The page and the four cards -------------------------------------- */
+  :root[data-skin='glass'] body {
+    background:
+      radial-gradient(1100px 620px at 18% -12%, var(--gs-ref-glow-indigo), transparent 62%),
+      radial-gradient(900px 520px at 108% 112%, var(--gs-ref-glow-teal), transparent 60%),
+      var(--gs-surface-app);
+  }
+
+  :root[data-skin='glass'] .gs-workbench {
+    padding: 12px;
+    gap: 6px;
+  }
+  /* The resize handle fills the gutter between the display and the panel. */
+  :root[data-skin='glass'] .gs-workbench > .gs-sash {
+    --gs-sash-size: 12px;
+    --gs-sash-hover: color-mix(in srgb, var(--gs-accent) 14%, transparent);
+    border-radius: 6px;
+  }
+  :root[data-skin='glass'] .gs-workbench > .gs-display {
+    background: transparent;
+    gap: 12px;
+  }
+  :root[data-skin='glass'] .gs-workbench > .gs-panel {
+    border: 1px solid var(--gs-ref-hairline);
+    border-radius: 20px;
+    background: var(--gs-ref-glass);
+    overflow: hidden;
+  }
+  :root[data-skin='glass'] .gs-workbench.panel-collapsed > .gs-panel {
+    border-width: 0;
+  }
+
+  /* The display toolbar: a pill. */
+  :root[data-skin='glass'] .gs-toolbar[data-variant='bar'] {
+    padding: 0 10px;
+    border: 1px solid var(--gs-ref-hairline);
+    border-radius: 18px;
+    background: var(--gs-ref-glass);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  }
+
+  /* The display: a darker well with a soft glow behind the screen. */
+  :root[data-skin='glass'] .gs-display-content {
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 20px;
+    overflow: hidden;
+  }
+
+  /* The status bar: a pill under the cards; the state is its dot. */
+  :root[data-skin='glass'] .gs-statusbar {
+    margin: 0 12px 12px;
+    padding: 0 10px;
+    border: 1px solid var(--gs-ref-hairline);
+    border-radius: 14px;
+    --gs-statusbar-drive-read: var(--gs-ref-teal);
+    --gs-statusbar-drive-write: var(--gs-ref-amber);
+    --gs-statusbar-chip-on-bg: var(--gs-accent-subtle);
+    --gs-statusbar-chip-on-ring: var(--gs-accent);
+    --gs-statusbar-printer-error: var(--gs-danger-fg);
+  }
+  :root[data-skin='glass'] .gs-status-dot[data-state='running'] {
+    box-shadow: 0 0 10px var(--gs-statusbar-dot-running);
+  }
+  :root[data-skin='glass'] .gs-status-dot[data-state='paused'] {
+    box-shadow: 0 0 10px var(--gs-statusbar-dot-paused);
+  }
+  :root[data-skin='glass'] .gs-status-dot[data-state='stopped'],
+  :root[data-skin='glass'] .gs-status-dot[data-state='crashed'] {
+    box-shadow: 0 0 10px var(--gs-statusbar-dot-stopped);
+  }
+  /* Drive lights are little chips that light up while the drive works. */
+  :root[data-skin='glass'] .gs-drive {
+    margin: 0 2px;
+    padding: 1px 7px;
+    border-radius: 6px;
+    background: var(--gs-control-hover);
+  }
+  :root[data-skin='glass'] .gs-drive[data-activity='read'],
+  :root[data-skin='glass'] .gs-drive[data-activity='write'] {
+    background: color-mix(in srgb, currentColor 16%, transparent);
+    box-shadow: 0 0 12px color-mix(in srgb, currentColor 30%, transparent);
+  }
+
+  /* ---- Controls ---------------------------------------------------------- */
+  /* Run / pause: the toolbar's first button is a lit periwinkle disc. */
+  :root[data-skin='glass']
+    .gs-toolbar[data-variant='bar']
+    > :first-child
+    > .gs-icon-button:first-child:not(:disabled) {
+    border-radius: 50%;
+    background: var(--gs-accent);
+    color: var(--gs-text-on-accent);
+    box-shadow:
+      0 0 0 4px var(--gs-accent-subtle),
+      0 6px 18px color-mix(in srgb, var(--gs-accent) 45%, transparent);
+  }
+
+  /* Segmented controls: a recessed track, the selected option a lit chip. */
+  :root[data-skin='glass'] .gs-segmented {
+    padding: 3px;
+    gap: 2px;
+    border: 1px solid var(--gs-border-subtle);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.05);
+  }
+  :root[data-skin='glass'] .gs-segmented__option {
+    border: 1px solid transparent;
+    padding: 0 12px;
+  }
+  :root[data-skin='glass'] .gs-segmented__option[aria-pressed='true'] {
+    border-color: color-mix(in srgb, var(--gs-accent) 40%, transparent);
+    color: var(--gs-ref-periwinkle-soft);
+    font-weight: var(--gs-font-weight-medium);
+  }
+
+  /* Panel tabs: pills. */
+  :root[data-skin='glass'] .gs-panel-header {
+    padding: 0 8px;
+    border-bottom: 1px solid var(--gs-border-subtle);
+  }
+  :root[data-skin='glass'] .gs-tabs__tab {
+    border-radius: 10px;
+    margin: 0 1px;
+  }
+  :root[data-skin='glass'] .gs-tabs__tab[aria-selected='true'] {
+    background: var(--gs-ref-glass-strong);
+    font-weight: var(--gs-font-weight-semibold);
+  }
+
+  /* Buttons: soft corners; the primary one glows. */
+  :root[data-skin='glass'] .gs-button[data-variant='primary']:not(:disabled) {
+    box-shadow: 0 6px 18px -6px color-mix(in srgb, var(--gs-accent) 70%, transparent);
+    font-weight: var(--gs-font-weight-semibold);
+  }
+
+  /* Code and lists: rows get rounded selection pills. */
+  :root[data-skin='glass'] .gs-tree-item[aria-selected='true'],
+  :root[data-skin='glass'] .gs-list-row[aria-selected='true'],
+  :root[data-skin='glass'] .gs-table__row[aria-selected='true'] {
+    border-radius: 8px;
+  }
+
+  /* Overlays: frosted. */
+  :root[data-skin='glass'] .gs-menu,
+  :root[data-skin='glass'] .gs-modal,
+  :root[data-skin='glass'] .gs-toast {
+    backdrop-filter: blur(18px) saturate(140%);
+    border-color: var(--gs-ref-hairline);
+  }
+  :root[data-skin='glass'] .gs-modal-backdrop {
+    backdrop-filter: blur(3px);
+  }
+  :root[data-skin='glass'] .gs-card {
+    border-color: var(--gs-ref-hairline);
+    background: var(--gs-ref-glass);
+  }
+
+  /* ---- Daylight: white cards with soft shadows instead of glass ---------- */
+  :root[data-skin='glass'][data-theme='light'] .gs-workbench > .gs-panel,
+  :root[data-skin='glass'][data-theme='light'] .gs-toolbar[data-variant='bar'] {
+    border-color: transparent;
+    box-shadow:
+      0 0 0 1px rgba(16, 24, 40, 0.05),
+      0 1px 2px rgba(16, 24, 40, 0.06);
+  }
+  :root[data-skin='glass'][data-theme='light'] .gs-display-content {
+    border-color: transparent;
+    box-shadow:
+      0 0 0 1px rgba(16, 24, 40, 0.05),
+      0 1px 2px rgba(16, 24, 40, 0.05);
+  }
+  :root[data-skin='glass'][data-theme='light'] .gs-statusbar {
+    margin-top: -6px;
+    border-color: transparent;
+  }
+  :root[data-skin='glass'][data-theme='light'] .gs-status-dot[data-state] {
+    box-shadow: 0 0 0 3px rgba(16, 24, 40, 0.06);
+  }
+  :root[data-skin='glass'][data-theme='light']
+    .gs-toolbar[data-variant='bar']
+    > :first-child
+    > .gs-icon-button:first-child:not(:disabled) {
+    border-radius: 9px;
+    background: #16181d;
+    color: #ffffff;
+    box-shadow: none;
+  }
+  :root[data-skin='glass'][data-theme='light'] .gs-segmented {
+    border-color: transparent;
+    background: #e1e4ea;
+  }
+  :root[data-skin='glass'][data-theme='light'] .gs-segmented__option[aria-pressed='true'] {
+    border-color: transparent;
+    background: #ffffff;
+    color: var(--gs-text-strong);
+    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.12);
+  }
+  :root[data-skin='glass'][data-theme='light'] .gs-tabs__tab {
+    border-radius: 0;
+  }
+  :root[data-skin='glass'][data-theme='light'] .gs-tabs__tab[aria-selected='true'] {
+    background: transparent;
+    box-shadow: inset 0 -2px 0 var(--gs-accent);
+  }
+  :root[data-skin='glass'][data-theme='light'] .gs-card {
+    background: #ffffff;
+    box-shadow: 0 20px 50px -20px rgba(16, 24, 40, 0.25);
+  }
+}

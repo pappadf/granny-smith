@@ -359,6 +359,12 @@
     --gs-activity-dot-opacity-max: 0.6;
     --gs-activity-dot-opacity-min: 0.3;
 
+    /* The display area behind the screen, and the welcome / URL-boot layer
+       over it.  A skin may show its page material through the display; the
+       welcome layer must stay opaque (it covers the empty screen frame). */
+    --gs-display-bg: var(--gs-surface-app);
+    --gs-welcome-bg: var(--gs-surface-app);
+
     /* The emulated screen's frame (ScreenView): a bezel hook, off by
        default. */
     --gs-screen-frame-bg: var(--gs-surface-screen);

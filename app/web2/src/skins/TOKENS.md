@@ -515,6 +515,8 @@ One component's knobs, defaulting to semantic or scale tokens; a skin may overri
 | `--gs-statusbar-drive-style` | keyword |  | `text` | statusbar: the drive lights as text, icon or led |
 | `--gs-statusbar-printer-error` | color |  | `` | statusbar: a failed print job (per bar state) |
 | `--gs-segmented-fg-disabled` | color |  | `color-mix(in srgb, var(--gs-segmented-fg) 50%, transparent)` | segmented: fg disabled |
+| `--gs-display-bg` | color |  | `var(--gs-surface-app)` | display: the area behind the screen |
+| `--gs-welcome-bg` | color |  | `var(--gs-surface-app)` | display: the opaque welcome / URL-boot layer over it |
 | `--gs-screen-frame-bg` | color |  | `var(--gs-surface-screen)` | screen frame: bg |
 | `--gs-screen-frame-shadow` | shadow |  | `var(--gs-shadow-screen)` | screen frame: shadow |
 | `--gs-screen-frame-padding` | length |  | `0px` | screen frame: padding |

@@ -48,13 +48,20 @@ const MINIMAL_PDF = Array.from(
 
 // Every (skin, scheme) the build has; the default skin's shots are named by
 // scheme alone, another skin's carry its id (welcome-platinum-light).
+const DEFAULT_SKIN = "workbench";
 const LOOKS = MANIFESTS.flatMap((m) =>
   m.schemes.map((scheme) => ({
     skin: m.id,
     scheme,
-    look: m.id === "workbench" ? scheme : `${m.id}-${scheme}`,
+    look: m.id === DEFAULT_SKIN ? scheme : `${m.id}-${scheme}`,
   })),
 );
+// The default skin is compared exactly.  The others draw large anti-aliased
+// curves, gradients and translucency, which Chromium re-rasters a level or
+// few apart depending on the page's compositing history (the same DOM, shot
+// twice, differs): they allow that much colour noise per pixel, and still not
+// a single pixel beyond it.
+const RASTER_NOISE = 0.03;
 const TABS = [
   "terminal",
   "machine",
@@ -118,9 +125,10 @@ async function shot(
   // The pointer rests over the empty display background, hovering nothing.
   await page.mouse.move(1279, 60);
   await page.waitForTimeout(400);
+  const skin = await page.evaluate(() => document.documentElement.dataset.skin);
   await expect(page).toHaveScreenshot(name, {
     maxDiffPixels: 0,
-    threshold: 0,
+    threshold: skin === DEFAULT_SKIN ? 0 : RASTER_NOISE,
     animations: "disabled",
     caret: "hide",
     mask: [...masks(page), ...extra],

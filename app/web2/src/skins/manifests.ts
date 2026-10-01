@@ -3,6 +3,8 @@
 // and their schemes.  registry.ts adds the token stylesheets.
 import { workbench } from './workbench/manifest';
 import { platinum } from './platinum/manifest';
+import { glass } from './glass/manifest';
+import { aqua } from './aqua/manifest';
 import type { SkinManifest } from './types';
 
-export const MANIFESTS: readonly SkinManifest[] = [workbench, platinum];
+export const MANIFESTS: readonly SkinManifest[] = [workbench, glass, platinum, aqua];

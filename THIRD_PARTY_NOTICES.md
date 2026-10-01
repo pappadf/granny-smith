@@ -108,7 +108,8 @@ Granny Smith uses the following third-party libraries at runtime. The UI at
 - **Repository:** <https://github.com/microsoft/vscode-codicons>
 - **License:** Creative Commons Attribution 4.0 International (CC BY 4.0)
 - **Used in:** [app/web2/public/icons/sprite.svg](app/web2/public/icons/sprite.svg) (and its copy,
-  the Platinum skin's [sprite.svg](app/web2/public/skins/platinum/sprite.svg)) — SVG path
+  the Platinum skin's [sprite.svg](app/web2/public/skins/platinum/sprite.svg), where six
+  symbols are replaced by original Finder-style drawings) — SVG path
   data for the codicon glyphs is reproduced verbatim from the upstream project
   (`src/icons/<name>.svg`). Full icon list, trademark, modification, and
   disclaimer text is in [app/web2/public/NOTICE](app/web2/public/NOTICE).
@@ -127,17 +128,83 @@ at render time without altering the path data.
 
 ---
 
-## IBM Plex Sans
+## Chivo
 
-- **Repository:** <https://github.com/IBM/plex> (packaged by Fontsource,
-  `@fontsource-variable/ibm-plex-sans`)
+- **Repository:** <https://github.com/Omnibus-Type/Chivo> (packaged by Fontsource,
+  `@fontsource-variable/chivo`)
 - **License:** SIL Open Font License 1.1 (OFL-1.1)
 - **Used in:** the Platinum skin's UI font,
   [app/web2/public/skins/platinum/fonts/](app/web2/public/skins/platinum/fonts/)
   (the variable Latin subset, unmodified; see
   [app/web2/public/skins/platinum/NOTICE](app/web2/public/skins/platinum/NOTICE)).
 
-Copyright 2019 IBM Corp. All rights reserved.
+Copyright 2019 The Chivo Project Authors.
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+License text: <https://openfontlicense.org/open-font-license-official-text/>.
+
+---
+
+## Sora
+
+- **Repository:** <https://github.com/sora-xor/sora-font> (packaged by Fontsource,
+  `@fontsource-variable/sora`)
+- **License:** SIL Open Font License 1.1 (OFL-1.1)
+- **Used in:** the Glass skin's UI font,
+  [app/web2/public/skins/glass/fonts/](app/web2/public/skins/glass/fonts/)
+  (the variable Latin subset, unmodified; see
+  [app/web2/public/skins/glass/NOTICE](app/web2/public/skins/glass/NOTICE)).
+
+Copyright 2019 The Sora Project Authors.
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+License text: <https://openfontlicense.org/open-font-license-official-text/>.
+
+---
+
+## JetBrains Mono
+
+- **Repository:** <https://github.com/JetBrains/JetBrainsMono> (packaged by Fontsource,
+  `@fontsource-variable/jetbrains-mono`)
+- **License:** SIL Open Font License 1.1 (OFL-1.1)
+- **Used in:** the Glass skin's code font,
+  [app/web2/public/skins/glass/fonts/](app/web2/public/skins/glass/fonts/)
+  (the variable Latin subset, unmodified).
+
+Copyright 2020 The JetBrains Mono Project Authors.
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+License text: <https://openfontlicense.org/open-font-license-official-text/>.
+
+---
+
+## Hanken Grotesk
+
+- **Repository:** <https://github.com/marcologous/hanken-grotesk> (packaged by Fontsource,
+  `@fontsource-variable/hanken-grotesk`)
+- **License:** SIL Open Font License 1.1 (OFL-1.1)
+- **Used in:** the Aqua skin's UI font,
+  [app/web2/public/skins/aqua/fonts/](app/web2/public/skins/aqua/fonts/)
+  (the variable Latin subset, unmodified; see
+  [app/web2/public/skins/aqua/NOTICE](app/web2/public/skins/aqua/NOTICE)).
+
+Copyright 2021 The Hanken Grotesk Project Authors.
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+License text: <https://openfontlicense.org/open-font-license-official-text/>.
+
+---
+
+## Fira Mono
+
+- **Repository:** <https://github.com/mozilla/Fira> (packaged by Fontsource,
+  `@fontsource/fira-mono`)
+- **License:** SIL Open Font License 1.1 (OFL-1.1)
+- **Used in:** the Aqua skin's code font,
+  [app/web2/public/skins/aqua/fonts/](app/web2/public/skins/aqua/fonts/)
+  (the Regular Latin subset, unmodified).
+
+Copyright 2012-2015 The Mozilla Foundation and Telefonica S.A.
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 License text: <https://openfontlicense.org/open-font-license-official-text/>.
