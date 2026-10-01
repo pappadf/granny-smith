@@ -207,6 +207,63 @@ void peel_fork_key(peel_archive_t *a, int i, int fork, char *out, size_t cap) {
 }
 
 // ============================================================================
+// Draining a producer into a buffer
+// ============================================================================
+
+peel_buf_t peel_producer_drain(peel_producer_t *p, uint64_t len, const char *what, peel_err_t **err) {
+    *err = NULL;
+    if (len > PEEL_MAX_FORK) {
+        p->free(p);
+        *err = make_err("%s%sfork declares %llu bytes, over the %u MiB limit", what ? what : "", what ? ": " : "",
+                        (unsigned long long)len, (unsigned)(PEEL_MAX_FORK >> 20));
+        return (peel_buf_t){0};
+    }
+    uint8_t *out = malloc(len ? (size_t)len : 1);
+    if (!out) {
+        p->free(p);
+        *err = make_err("out of memory allocating %llu bytes", (unsigned long long)len);
+        return (peel_buf_t){0};
+    }
+    size_t got = 0;
+    int rc = 0, idle = 0;
+    while (rc == 0) {
+        uint8_t spill[1];
+        size_t n = 0;
+        // Past the declared length, a producer that has not ended gets a
+        // one-byte buffer: any byte it puts there means the fork is long.
+        bool over = got == (size_t)len;
+        rc = p->run(p, over ? spill : out + got, over ? 1 : (size_t)len - got, &n);
+        if (rc < 0 || (over && n)) {
+            if (rc >= 0)
+                snprintf(p->err, sizeof(p->err), "fork decodes to more than its %llu bytes", (unsigned long long)len);
+            break;
+        }
+        got += n;
+        idle = n ? 0 : idle + 1;
+        if (rc == 0 && idle == PEEL_PRODUCER_MAX_IDLE) {
+            snprintf(p->err, sizeof(p->err), "decoder made no progress");
+            rc = -5;
+        }
+    }
+    if (rc == 1 && got != (size_t)len) {
+        snprintf(p->err, sizeof(p->err), "fork decoded to %zu of %llu bytes", got, (unsigned long long)len);
+        rc = -5;
+    }
+    if (rc != 1) {
+        *err = what ? make_err("%s: %s", what, p->err) : make_err("%s", p->err);
+        p->free(p);
+        free(out);
+        return (peel_buf_t){0};
+    }
+    p->free(p);
+    if (len == 0) {
+        free(out);
+        return (peel_buf_t){0};
+    }
+    return (peel_buf_t){.data = out, .size = (size_t)len, .owned = true};
+}
+
+// ============================================================================
 // Whole-fork producer: decode() once, then emit
 // ============================================================================
 
@@ -281,9 +338,13 @@ static int decode_fill(decode_src_t *d, uint64_t want) {
         }
     }
     uint8_t chunk[65536];
+    int idle = 0;
     while (!d->committed && d->produced < want) {
         size_t n = 0;
         int rc = d->prod->run(d->prod, chunk, sizeof(chunk), &n);
+        idle = n ? 0 : idle + 1;
+        if (rc == 0 && idle == PEEL_PRODUCER_MAX_IDLE)
+            rc = -5; // a decoder that makes no progress
         if (rc < 0 || (d->exact && d->produced + n > d->len)) {
             d->failed = true; // a corrupt fork, or one longer than it declared
             return -5;

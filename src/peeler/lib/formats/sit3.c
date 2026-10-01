@@ -99,32 +99,99 @@ static int m3_read_node(m3_bits_t *b, m3_tree_t *t) {
 }
 
 // ============================================================================
-// Decode Loop
+// Decode Loop -- resumable
 // ============================================================================
 
-// Walk the tree one bit per branch.  At a leaf, emit the symbol.
+// A method-3 stream: the tree is read once, then each run() walks it for
+// as many symbols as the caller's buffer holds.  The decode context lives
+// here, not on a stack, and is re-armed by every run(): an abort ends the
+// stream, and its message is the producer's.
+typedef struct {
+    peel_producer_t base;
+    decode_ctx_t ctx;
+    m3_bits_t bits;
+    m3_tree_t tree;
+    int root;
+    size_t produced, total;
+    bool failed;
+} m3_stream_t;
+
+// Walk the tree one bit per branch; at a leaf, emit the symbol.
 // sit3.md § 2.3 — repeat until uncomp_len bytes have been produced;
-// trailing bits in the final compressed byte are discarded.
-static void m3_decode(m3_bits_t *b, const m3_tree_t *t, int root, uint8_t *out, size_t uncomp_len) {
-    // Degenerate single-leaf tree: the code for the only symbol is the
-    // empty bit string.  Emit `uncomp_len` copies without reading bits.
+// trailing bits in the final compressed byte are discarded.  A tree that
+// is a single leaf codes its one symbol as the empty bit string.
+static size_t m3_decode(m3_stream_t *m, uint8_t *out, size_t cap) {
+    const m3_tree_t *t = &m->tree;
+    int root = m->root;
     if (t->nodes[root].zero == -1 && t->nodes[root].one == -1) {
-        memset(out, t->nodes[root].symbol, uncomp_len);
-        return;
+        memset(out, t->nodes[root].symbol, cap);
+        return cap;
     }
-    for (size_t i = 0; i < uncomp_len; i++) {
+    for (size_t i = 0; i < cap; i++) {
         int n = root;
         while (t->nodes[n].zero != -1 || t->nodes[n].one != -1) {
-            int bit = m3_read_bit(b);
+            int bit = m3_read_bit(&m->bits);
             n = (bit == 1) ? t->nodes[n].one : t->nodes[n].zero;
             if (n < 0) {
                 // Defensive: malformed tree pointer.  read_node() should
                 // never leave -1 on an internal node, but guard anyway.
-                decode_abort(b->ctx, "SIT3: corrupt Huffman tree (NULL child)");
+                decode_abort(&m->ctx, "SIT3: corrupt Huffman tree (NULL child)");
             }
         }
         out[i] = t->nodes[n].symbol;
     }
+    return cap;
+}
+
+static int m3_run(peel_producer_t *p, uint8_t *out, size_t cap, size_t *n) {
+    m3_stream_t *m = (m3_stream_t *)p;
+    *n = 0;
+    if (m->failed)
+        return -5;
+    if (setjmp(m->ctx.jmp) != 0) {
+        m->failed = true;
+        snprintf(p->err, sizeof(p->err), "%s", m->ctx.errmsg);
+        return -5;
+    }
+    size_t want = m->total - m->produced < cap ? m->total - m->produced : cap;
+    *n = m3_decode(m, out, want);
+    m->produced += *n;
+    return m->produced == m->total ? 1 : 0;
+}
+
+static void m3_free(peel_producer_t *p) {
+    m3_stream_t *m = (m3_stream_t *)p;
+    dctx_cleanup(&m->ctx);
+    free(m);
+}
+
+// A producer of a method-3 fork's `uncomp_len` bytes from `src` (borrowed:
+// it must outlive the producer).  NULL + *err when the header is bad.
+peel_producer_t *sit3_producer(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err) {
+    *err = NULL;
+    m3_stream_t *m = calloc(1, sizeof(*m));
+    if (!m) {
+        *err = make_err("SIT3: out of memory");
+        return NULL;
+    }
+    m->base.run = m3_run;
+    m->base.free = m3_free;
+    m->total = uncomp_len;
+    dctx_init(&m->ctx);
+    if (uncomp_len == 0)
+        return &m->base; // nothing to decode: no bits are consumed
+    if (setjmp(m->ctx.jmp) != 0) {
+        *err = make_err("%s", m->ctx.errmsg);
+        m3_free(&m->base);
+        return NULL;
+    }
+    if (len == 0)
+        decode_abort(&m->ctx, "SIT3: zero-length compressed stream but uncomp_len=%zu", uncomp_len);
+    m->bits.ctx = &m->ctx;
+    peel_msb_init(&m->bits.r, src, len);
+    m->tree.next_node = 0;
+    m->root = m3_read_node(&m->bits, &m->tree);
+    return &m->base;
 }
 
 // ============================================================================
@@ -136,41 +203,6 @@ static void m3_decode(m3_bits_t *b, const m3_tree_t *t, int root, uint8_t *out, 
 // set on failure.  CRC verification against the stored fork CRC is the
 // caller's responsibility (sit.c does this for all classic methods).
 peel_buf_t peel_sit3(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err) {
-    *err = NULL;
-
-    // The output is owned by ctx until released, so an abort frees it -- it
-    // used to leak on every decode error.
-    decode_ctx_t ctx;
-    dctx_init(&ctx);
-    if (setjmp(ctx.jmp) != 0) {
-        dctx_cleanup(&ctx);
-        *err = make_err("%s", ctx.errmsg);
-        return (peel_buf_t){0};
-    }
-
-    // Empty fork — nothing to decode, but the spec still requires us to
-    // not consume any bits.  Return an empty owned buffer.
-    if (uncomp_len == 0) {
-        return (peel_buf_t){.data = NULL, .size = 0, .owned = false};
-    }
-
-    if (len == 0) {
-        decode_abort(&ctx,
-                     "SIT3: zero-length compressed stream but "
-                     "uncomp_len=%zu",
-                     uncomp_len);
-    }
-
-    uint8_t *out = dctx_malloc(&ctx, uncomp_len);
-
-    m3_bits_t bits = {.ctx = &ctx};
-    peel_msb_init(&bits.r, src, len);
-    m3_tree_t tree = {.next_node = 0};
-
-    int root = m3_read_node(&bits, &tree);
-    m3_decode(&bits, &tree, root, out, uncomp_len);
-
-    dctx_release(&ctx, out);
-    dctx_cleanup(&ctx);
-    return (peel_buf_t){.data = out, .size = uncomp_len, .owned = true};
+    peel_producer_t *p = sit3_producer(src, len, uncomp_len, err);
+    return p ? peel_producer_drain(p, uncomp_len, NULL, err) : (peel_buf_t){0};
 }

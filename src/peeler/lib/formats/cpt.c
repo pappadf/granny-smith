@@ -212,7 +212,7 @@ static void cp_lzh_flush_block(cp_lzh_t *lz) {
 // anything malformed -- a table that does not parse, a code that walks off
 // its tree, a stream that stops inside a token, a zero length or offset --
 // is an error.  Every one of those used to return 0 too, so a corrupt fork
-// came back truncated instead of refused (see cp_decompress_fork).
+// came back truncated instead of refused (see cpt_prod_run).
 static int cp_lzh_next(cp_lzh_t *lz, int *out) {
     // Continue emitting bytes from an in-progress match.
     if (lz->match_rem > 0) {
@@ -716,53 +716,6 @@ static int cp_parse_directory(cp_archive_t *ar, const uint8_t *data, size_t size
 // Static Helpers — Fork Decompression
 // ============================================================================
 
-// Decompress a single fork into an owned buffer.
-// cpt.md § 2.2 "Compression Pipeline" — RLE-only forks go straight
-// through the RLE decoder; LZH forks pass through LZH then RLE.
-static peel_buf_t cp_decompress_fork(const uint8_t *archive, size_t archive_len, size_t comp_offset, size_t comp_len,
-                                     size_t uncomp_len, bool use_lzh, decode_ctx_t *ctx) {
-    // Set up the fork stream
-    if (uncomp_len > PEEL_MAX_FORK)
-        decode_abort(ctx, "fork declares %zu bytes, over the %u MiB limit", uncomp_len,
-                     (unsigned)(PEEL_MAX_FORK >> 20));
-
-    // The caller has already checked this range, so a failure here is a bug;
-    // it used to be ignored, leaving the source empty, and a fork decoded
-    // from nothing was returned as if it were the file's.
-    cp_fork_t fork;
-    int rc = use_lzh ? cp_fork_init_lzh(&fork, archive, archive_len, comp_offset, comp_len, uncomp_len)
-                     : cp_fork_init_rle(&fork, archive, archive_len, comp_offset, comp_len, uncomp_len);
-    if (rc < 0)
-        decode_abort(ctx, "fork range %zu+%zu leaves the archive", comp_offset, comp_len);
-
-    // Allocate output buffer to exact uncompressed size
-    grow_buf_t out;
-    grow_init(&out, uncomp_len, ctx);
-
-    // Read decompressed bytes in chunks
-    uint8_t chunk[8192];
-    for (;;) {
-        int n = cp_fork_read(&fork, chunk, sizeof(chunk));
-        if (n < 0) {
-            grow_free(&out);
-            decode_abort(ctx, "corrupt compressed fork data");
-        }
-        if (n == 0)
-            break;
-        grow_append(&out, chunk, (size_t)n, ctx);
-    }
-
-    // The fork must decode to exactly its declared length.  Nothing checked
-    // this, and the per-file CRC is never verified either, so a fork that
-    // ran dry early was returned short, as if it were the file.
-    if (out.len != uncomp_len) {
-        size_t got = out.len;
-        grow_free(&out);
-        decode_abort(ctx, "fork decoded to %zu of %zu bytes", got, uncomp_len);
-    }
-    return grow_finish(&out);
-}
-
 // ============================================================================
 // Operations (Public API) — Detection
 // ============================================================================
@@ -791,7 +744,7 @@ bool cpt_detect(const uint8_t *src, size_t len) {
 //
 // Two reads: the 8-byte header gives the directory's absolute offset, and
 // the directory (at the end of the archive) lists everything.  Every fork is
-// at least RLE-coded, so each decodes whole on first read.
+// at least RLE-coded, so each decodes through, as far as reads reach.
 
 typedef struct {
     cp_archive_t ar; // one cp_entry_t per peel entry, same order
@@ -856,57 +809,127 @@ static int cpt_open(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err) 
         e->data_off = (uint64_t)ce->file_offset + ce->rsrc_comp;
         e->rsrc_method = (ce->flags & CP_FLAG_RSRC_LZH) ? 1 : 0;
         e->data_method = (ce->flags & CP_FLAG_DATA_LZH) ? 1 : 0;
-        e->rsrc_tier = e->data_tier = PEEL_TIER_WHOLE;
+        // Every fork is at least RLE-coded: it decodes through, the sink
+        // keeping what has been decoded.
+        e->rsrc_tier = e->data_tier = PEEL_TIER_EARNED;
     }
     return 0;
 }
 
-// Decode one fork: the checks peel_cpt always made, in its words, then
-// RLE (and LZH) over the packed range.
-static peel_buf_t cpt_decode_fork(peel_archive_t *a, int i, int fork, peel_err_t **err) {
+// One fork as a stream: RLE (and LZH under it) over the packed range, a
+// buffer at a time -- cp_fork_read already resumes where it stopped.  The
+// packed bytes are read on the first run(), not when the fork is opened.
+typedef struct {
+    peel_producer_t base;
+    peel_source_t *src; // the archive, retained
+    uint64_t off;
+    uint32_t comp, uncomp;
+    bool lzh, started, failed;
+    uint8_t *packed; // owned, once read
+    uint32_t produced;
+    cp_fork_t fork;
+} cpt_prod_t;
+
+static int cpt_prod_fail(cpt_prod_t *p, const char *msg) {
+    snprintf(p->base.err, sizeof(p->base.err), "%s", msg);
+    p->failed = true;
+    return -5;
+}
+
+static int cpt_prod_run(peel_producer_t *pp, uint8_t *out, size_t cap, size_t *n) {
+    cpt_prod_t *p = (cpt_prod_t *)pp;
+    *n = 0;
+    if (p->failed)
+        return -5;
+    if (!p->started) {
+        p->started = true;
+        p->packed = malloc(p->comp ? p->comp : 1);
+        if (!p->packed)
+            return cpt_prod_fail(p, "out of memory reading fork data");
+        if (p->comp && peel_source_read_exact(p->src, p->off, p->packed, p->comp) != 0)
+            return cpt_prod_fail(p, "cannot read CPT fork data");
+        int rc = p->lzh ? cp_fork_init_lzh(&p->fork, p->packed, p->comp, 0, p->comp, p->uncomp)
+                        : cp_fork_init_rle(&p->fork, p->packed, p->comp, 0, p->comp, p->uncomp);
+        if (rc < 0)
+            return cpt_prod_fail(p, "fork range leaves the archive");
+    }
+    size_t want = p->uncomp - p->produced < cap ? p->uncomp - p->produced : cap;
+    if (want > INT32_MAX)
+        want = INT32_MAX; // cp_fork_read counts in an int
+    int got = want ? cp_fork_read(&p->fork, out, want) : 0;
+    if (got < 0)
+        return cpt_prod_fail(p, "corrupt compressed fork data");
+    if (want && got == 0) {
+        // The fork must decode to exactly its declared length (the per-file
+        // CRC is never verified): one that runs dry early is refused.
+        char msg[96];
+        snprintf(msg, sizeof(msg), "fork decoded to %u of %u bytes", p->produced, p->uncomp);
+        return cpt_prod_fail(p, msg);
+    }
+    p->produced += (uint32_t)got;
+    *n = (size_t)got;
+    return p->produced == p->uncomp ? 1 : 0;
+}
+
+static void cpt_prod_free(peel_producer_t *pp) {
+    cpt_prod_t *p = (cpt_prod_t *)pp;
+    free(p->packed);
+    peel_source_release(p->src);
+    free(p);
+}
+
+// The checks peel_cpt always made, in its words, then a producer for the
+// fork.  NULL + *err.
+static peel_producer_t *cpt_producer(peel_archive_t *a, int i, int fork, peel_err_t **err) {
     cpt_priv_t *priv = a->priv;
     const cp_entry_t *e = &priv->ar.entries[i];
     uint64_t len = peel_source_size(a->src);
-    uint8_t *volatile packed = NULL; // assigned after setjmp, freed by the handler
-    decode_ctx_t ctx;
-    dctx_init(&ctx);
-    if (setjmp(ctx.jmp) != 0) {
-        dctx_cleanup(&ctx);
-        free(packed);
-        *err = make_err("CPT: %s", ctx.errmsg);
-        return (peel_buf_t){0};
-    }
     // Check for encrypted files (cpt.md § 3.2.3 — flag bit 0)
-    if (e->flags & CP_FLAG_ENCRYPT)
-        decode_abort(&ctx, "file '%s' is encrypted (unsupported)", e->name);
+    if (e->flags & CP_FLAG_ENCRYPT) {
+        *err = make_err("CPT: file '%s' is encrypted (unsupported)", e->name);
+        return NULL;
+    }
     // cpt.md § 3.4 "Fork Data Layout" — resource fork at file_offset,
     // data fork at file_offset + rsrc_comp, each checked wrap-safe.
     uint64_t rsrc_offset = e->file_offset;
-    if (rsrc_offset > len || e->rsrc_comp > len - rsrc_offset)
-        decode_abort(&ctx, "resource fork of '%s' extends past archive", e->name);
-    uint64_t data_offset = rsrc_offset + e->rsrc_comp;
-    if (e->data_comp > len - data_offset)
-        decode_abort(&ctx, "data fork of '%s' extends past archive", e->name);
-    bool rsrc = fork == PEEL_FORK_RSRC;
-    uint64_t off = rsrc ? rsrc_offset : data_offset;
-    uint32_t comp = rsrc ? e->rsrc_comp : e->data_comp;
-    uint32_t uncomp = rsrc ? e->rsrc_uncomp : e->data_uncomp;
-    bool lzh = (e->flags & (rsrc ? CP_FLAG_RSRC_LZH : CP_FLAG_DATA_LZH)) != 0;
-    if (uncomp > PEEL_MAX_FORK)
-        decode_abort(&ctx, "fork declares %u bytes, over the %u MiB limit", uncomp, (unsigned)(PEEL_MAX_FORK >> 20));
-    peel_err_t *rerr = NULL;
-    packed = peel_archive_read(a, off, comp, "CPT fork data", &rerr);
-    if (!packed) {
-        char msg[200];
-        snprintf(msg, sizeof(msg), "%s", peel_err_msg(rerr));
-        peel_err_free(rerr);
-        decode_abort(&ctx, "%s", msg);
+    if (rsrc_offset > len || e->rsrc_comp > len - rsrc_offset) {
+        *err = make_err("CPT: resource fork of '%s' extends past archive", e->name);
+        return NULL;
     }
-    peel_buf_t out = cp_decompress_fork(packed, comp, 0, comp, uncomp, lzh, &ctx);
-    dctx_release(&ctx, out.data);
-    dctx_cleanup(&ctx);
-    free(packed);
-    return out;
+    uint64_t data_offset = rsrc_offset + e->rsrc_comp;
+    if (e->data_comp > len - data_offset) {
+        *err = make_err("CPT: data fork of '%s' extends past archive", e->name);
+        return NULL;
+    }
+    bool rsrc = fork == PEEL_FORK_RSRC;
+    uint32_t uncomp = rsrc ? e->rsrc_uncomp : e->data_uncomp;
+    if (uncomp > PEEL_MAX_FORK) {
+        *err = make_err("CPT: fork declares %u bytes, over the %u MiB limit", uncomp, (unsigned)(PEEL_MAX_FORK >> 20));
+        return NULL;
+    }
+    cpt_prod_t *p = calloc(1, sizeof(*p));
+    if (!p) {
+        *err = make_err("CPT: out of memory");
+        return NULL;
+    }
+    p->base.run = cpt_prod_run;
+    p->base.free = cpt_prod_free;
+    p->src = peel_source_retain(a->src);
+    p->off = rsrc ? rsrc_offset : data_offset;
+    p->comp = rsrc ? e->rsrc_comp : e->data_comp;
+    p->uncomp = uncomp;
+    p->lzh = (e->flags & (rsrc ? CP_FLAG_RSRC_LZH : CP_FLAG_DATA_LZH)) != 0;
+    return &p->base;
+}
+
+// Decode one fork whole: the same producer, drained.
+static peel_buf_t cpt_decode_fork(peel_archive_t *a, int i, int fork, peel_err_t **err) {
+    cpt_priv_t *priv = a->priv;
+    const cp_entry_t *e = &priv->ar.entries[i];
+    peel_producer_t *p = cpt_producer(a, i, fork, err);
+    if (!p)
+        return (peel_buf_t){0};
+    return peel_producer_drain(p, fork == PEEL_FORK_RSRC ? e->rsrc_uncomp : e->data_uncomp, "CPT", err);
 }
 
 static void cpt_close(peel_archive_t *a) {
@@ -921,5 +944,6 @@ const peel_fmt_t peel_fmt_cpt = {
     .desc = {"cpt", false, cpt_detect_probe},
     .open = cpt_open,
     .decode = cpt_decode_fork,
+    .producer = cpt_producer,
     .close = cpt_close,
 };

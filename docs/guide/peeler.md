@@ -62,8 +62,13 @@ peel_source_release(src);
   compressed fork is a decode-through source that fills a *sink*
   (heap by default; the emulator passes a scratch-backed one) only as
   far as reads require (tier `EARNED`: what has been decoded stays in the
-  sink, so backward reads are free). Deflate decoding is resumable, so a
-  streaming reader never re-decodes from the start. A plain gzip stream
+  sink, so backward reads are free). Every decoder is resumable -- deflate,
+  StuffIt's RLE90, LZW, Huffman (3), LZSS+Huffman (13) and Arsenic (15),
+  Compact Pro's LZH and RLE -- stopping wherever the caller's buffer fills,
+  so a reader never re-decodes from the start and never waits for more of
+  a fork than it asked for. The fork CRC is checked once the fork is
+  complete. BinHex alone decodes a fork whole (tier `WHOLE`): its files are
+  small. The buffer API drains the same producers, so both decode one way. A plain gzip stream
   states no reliable size -- its tail ISIZE names only the last member,
   modulo 4 GiB -- so the listing shows that as a hint (as `gzip -l` does)
   and the fork's source earns its true size with one decoding pass; the

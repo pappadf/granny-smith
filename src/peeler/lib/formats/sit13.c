@@ -504,59 +504,79 @@ static int m13_output(m13_state_t *st, uint8_t *dst, size_t cap) {
 }
 
 // ============================================================================
-// Entry Point (Internal)
+// Entry Points (Internal)
 // ============================================================================
 
+// A method-13 stream: m13_output already resumes mid-match; this holds its
+// state between calls and counts the fork down.
+typedef struct {
+    peel_producer_t base;
+    m13_state_t *st;
+    size_t produced, total;
+} m13_stream_t;
+
+static int m13_run(peel_producer_t *p, uint8_t *out, size_t cap, size_t *n) {
+    m13_stream_t *m = (m13_stream_t *)p;
+    *n = 0;
+    size_t want = m->total - m->produced;
+    if (want > cap)
+        want = cap;
+    if (want > INT32_MAX)
+        want = INT32_MAX; // m13_output counts in an int
+    int got = want ? m13_output(m->st, out, want) : 0;
+    if (got < 0) {
+        snprintf(p->err, sizeof(p->err), "sit13: decompression failed (produced %zu of %zu bytes)", m->produced,
+                 m->total);
+        return -5;
+    }
+    *n = (size_t)got;
+    m->produced += *n;
+    return m->produced == m->total ? 1 : 0;
+}
+
+static void m13_free(peel_producer_t *p) {
+    m13_stream_t *m = (m13_stream_t *)p;
+    free(m->st);
+    free(m);
+}
+
+peel_producer_t *sit13_producer(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err) {
+    *err = NULL;
+    m13_stream_t *m = calloc(1, sizeof(*m));
+    if (!m) {
+        *err = make_err("sit13: out of memory allocating decoder state");
+        return NULL;
+    }
+    m->base.run = m13_run;
+    m->base.free = m13_free;
+    m->total = uncomp_len;
+    if (uncomp_len == 0)
+        return &m->base;
+    // The decoder state is large (~70 KiB), so it lives on the heap.
+    m->st = calloc(1, sizeof(*m->st));
+    if (!m->st) {
+        m13_free(&m->base);
+        *err = make_err("sit13: out of memory allocating decoder state");
+        return NULL;
+    }
+    peel_lsb_init(&m->st->br, src, len);
+    // Parse the header and build the Huffman trees.
+    if (m13_setup(m->st) < 0) {
+        m13_free(&m->base);
+        *err = make_err("sit13: invalid header or tree construction failed");
+        return NULL;
+    }
+    return &m->base;
+}
+
 // Decompress method-13 (LZSS + Huffman) compressed data into a freshly
-// allocated buffer.  Called by sit.c for entries using compression method 13.
+// allocated buffer.
 //
 // sit13.md § "Appendix A: Complete Decompression Walkthrough"
 //   1. Read header, build (or select) Huffman trees.
 //   2. Main decode loop: literals + matches into sliding window.
 //   3. Return the output buffer.
 peel_buf_t peel_sit13(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err) {
-    *err = NULL;
-
-    // Handle degenerate case: zero-length output
-    if (uncomp_len == 0) {
-        return (peel_buf_t){.data = NULL, .size = 0, .owned = false};
-    }
-
-    // Allocate the output buffer up front (known size from container metadata)
-    uint8_t *out = malloc(uncomp_len);
-    if (!out) {
-        *err = make_err("sit13: out of memory allocating %zu-byte output buffer", uncomp_len);
-        return (peel_buf_t){0};
-    }
-
-    // The decoder state is large (~70 KiB), so heap-allocate to avoid stack overflow
-    m13_state_t *st = calloc(1, sizeof(*st));
-    if (!st) {
-        free(out);
-        *err = make_err("sit13: out of memory allocating decoder state");
-        return (peel_buf_t){0};
-    }
-
-    // Initialise bit reader over the compressed input
-    peel_lsb_init(&st->br, src, len);
-
-    // Parse header and build Huffman trees
-    if (m13_setup(st) < 0) {
-        free(out);
-        free(st);
-        *err = make_err("sit13: invalid header or tree construction failed");
-        return (peel_buf_t){0};
-    }
-
-    // Decode uncomp_len bytes through the main loop
-    int produced = m13_output(st, out, uncomp_len);
-    free(st);
-
-    if (produced < 0 || (size_t)produced != uncomp_len) {
-        free(out);
-        *err = make_err("sit13: decompression failed (produced %d of %zu bytes)", produced, uncomp_len);
-        return (peel_buf_t){0};
-    }
-
-    return (peel_buf_t){.data = out, .size = uncomp_len, .owned = true};
+    peel_producer_t *p = sit13_producer(src, len, uncomp_len, err);
+    return p ? peel_producer_drain(p, uncomp_len, NULL, err) : (peel_buf_t){0};
 }

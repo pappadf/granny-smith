@@ -551,8 +551,76 @@ static bool parse_header(arsenic_state *s) {
 }
 
 // ============================================================================
-// Entry Point (Internal)
+// Entry Points (Internal)
 // ============================================================================
+
+// A method-15 stream: produce_byte already carries all of its state from
+// byte to byte; this keeps the decode context -- which owns the state and
+// its block buffers -- off the stack, so the stream can stop after any
+// byte and continue on the next run().  Every run() re-arms the context:
+// an abort frees everything and ends the stream with its message.
+typedef struct {
+    peel_producer_t base;
+    decode_ctx_t dctx;
+    arsenic_state *s;
+    size_t produced, total;
+    bool failed;
+} s15_stream_t;
+
+static int s15_run(peel_producer_t *p, uint8_t *out, size_t cap, size_t *n) {
+    s15_stream_t *m = (s15_stream_t *)p;
+    *n = 0;
+    if (m->failed)
+        return -5;
+    // The handler reads only the stream, never a local assigned below.
+    if (setjmp(m->dctx.jmp) != 0) {
+        dctx_cleanup(&m->dctx); // the state and its block buffers
+        m->s = NULL;
+        m->failed = true;
+        snprintf(p->err, sizeof(p->err), "%s", m->dctx.errmsg);
+        return -5;
+    }
+    size_t want = m->total - m->produced < cap ? m->total - m->produced : cap;
+    for (size_t i = 0; i < want; i++) {
+        out[i] = produce_byte(m->s);
+        m->produced++;
+    }
+    *n = want;
+    return m->produced == m->total ? 1 : 0;
+}
+
+static void s15_free(peel_producer_t *p) {
+    s15_stream_t *m = (s15_stream_t *)p;
+    dctx_cleanup(&m->dctx);
+    free(m);
+}
+
+peel_producer_t *sit15_producer(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err) {
+    *err = NULL;
+    s15_stream_t *m = calloc(1, sizeof(*m));
+    if (!m) {
+        *err = make_err("sit15: out of memory");
+        return NULL;
+    }
+    m->base.run = s15_run;
+    m->base.free = s15_free;
+    m->total = uncomp_len;
+    dctx_init(&m->dctx);
+    if (uncomp_len == 0)
+        return &m->base;
+    if (setjmp(m->dctx.jmp) != 0) {
+        *err = make_err("%s", m->dctx.errmsg);
+        s15_free(&m->base);
+        return NULL;
+    }
+    // The decoder state is large: on the heap, owned by the context.
+    m->s = dctx_calloc(&m->dctx, 1, sizeof *m->s);
+    m->s->ctx = &m->dctx;
+    peel_msb_init(&m->s->bits, src, len);
+    // The Arsenic stream header: signature, block size, initial EOS.
+    parse_header(m->s);
+    return &m->base;
+}
 
 // Decompress method-15 (Arsenic) compressed data into a freshly allocated buffer.
 // Called by sit.c for entries using compression method 15.
@@ -563,47 +631,6 @@ static bool parse_header(arsenic_state *s) {
 //   3. Expand via randomization + final RLE.
 //   4. Return the output buffer.
 peel_buf_t peel_sit15(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err) {
-    *err = NULL;
-
-    // Handle degenerate case: zero-length output
-    if (uncomp_len == 0) {
-        return (peel_buf_t){.data = NULL, .size = 0, .owned = false};
-    }
-
-    // Use setjmp/longjmp for deep-error abort during decompression.  Every
-    // allocation below is owned by dctx until released, so the handler frees
-    // them all -- the output, the decoder state and its ~80 MiB of block
-    // buffers used to leak on every abort -- and reads no
-    // local assigned after setjmp.
-    decode_ctx_t dctx;
-    dctx_init(&dctx);
-    if (setjmp(dctx.jmp) != 0) {
-        dctx_cleanup(&dctx);
-        *err = make_err("%s", dctx.errmsg);
-        return (peel_buf_t){0};
-    }
-
-    // Output up front (known size from container metadata); the decoder
-    // state is large, so it goes on the heap too.
-    uint8_t *out = dctx_malloc(&dctx, uncomp_len);
-    arsenic_state *s = dctx_calloc(&dctx, 1, sizeof *s);
-
-    // Wire up the decode context for longjmp error handling
-    s->ctx = &dctx;
-
-    // Initialise the bit reader over the compressed input
-    peel_msb_init(&s->bits, src, len);
-
-    // Parse the Arsenic stream header (signature, block size, initial EOS)
-    parse_header(s);
-
-    // Decompress uncomp_len bytes through the full pipeline
-    for (size_t i = 0; i < uncomp_len; i++)
-        out[i] = produce_byte(s);
-
-    // Clean up decoder state; the output is the caller's now.
-    dctx_release(&dctx, out);
-    dctx_cleanup(&dctx); // the decoder state and block buffers
-
-    return (peel_buf_t){.data = out, .size = uncomp_len, .owned = true};
+    peel_producer_t *p = sit15_producer(src, len, uncomp_len, err);
+    return p ? peel_producer_drain(p, uncomp_len, NULL, err) : (peel_buf_t){0};
 }

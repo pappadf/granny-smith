@@ -26,19 +26,6 @@
 #include "internal.h"
 
 // ============================================================================
-// Forward Declarations — sit13 / sit15 helpers
-// ============================================================================
-
-// Decompress a method-3 fork into a freshly allocated buffer.
-peel_buf_t peel_sit3(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
-
-// Decompress a method-13 fork into a freshly allocated buffer.
-peel_buf_t peel_sit13(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
-
-// Decompress a method-15 fork into a freshly allocated buffer.
-peel_buf_t peel_sit15(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
-
-// ============================================================================
 // Constants and Macros
 // ============================================================================
 
@@ -88,7 +75,7 @@ typedef struct {
     uint16_t crc; // CRC-16 from header
     uint8_t method; // Compression method ID (low nibble)
     uint64_t off; // Offset of the compressed bytes in the source
-    const uint8_t *data; // Those bytes, once read (decompress_fork)
+    const uint8_t *data; // Those bytes in memory, or NULL: read from the source
 } sit_fork_info_t;
 
 // A single parsed file entry (metadata + fork info + path).
@@ -412,145 +399,198 @@ static void lzw_destroy(lzw_state_t *z) {
 }
 
 // ============================================================================
-// Static Helpers — Fork Decompression
+// Static Helpers — Fork Decompression (a producer per fork)
 // ============================================================================
 
-// Decompress a single fork using the specified compression method.
-// Returns an owned buffer on success, or a zero buffer with *err set.
-// sit.md § 6 "Compression Methods" — dispatch by method ID.
-static peel_buf_t decompress_fork(const sit_fork_info_t *fi, peel_err_t **err) {
-    uint32_t raw_len = fi->raw_len;
-    uint32_t packed_len = fi->packed_len;
-    uint16_t expect_crc = fi->crc;
-    uint8_t method = fi->method;
-    const uint8_t *src = fi->data;
+// A fork's decode as a stream: the caller pulls its bytes a buffer at a
+// time and the method's decoder stops wherever the buffer fills, so a
+// decode-through source fills its sink only as far as reads reach.  The
+// packed bytes are read on the first run(), not when the fork is opened.
+// The fork CRC is checked over what was produced, once all of it has been
+// (method 15 checks its own stream, and has no fork CRC).
+typedef struct {
+    peel_producer_t base;
+    sit_fork_info_t fi;
+    peel_source_t *src; // the archive, retained; NULL when fi.data is given
+    uint8_t *packed; // owned, once read
+    const uint8_t *data; // the packed bytes
+    peel_producer_t *inner; // methods 3, 13, 15
+    lzw_state_t *lzw; // method 2
+    size_t rle_pos; // method 1: next packed byte
+    uint8_t rle_last; // method 1: the byte a run repeats
+    uint32_t rle_pending; // method 1: repeats still to emit
+    uint32_t produced;
+    uint16_t crc;
+    bool started, failed;
+} sit_prod_t;
 
-    // Every method below allocates raw_len up front; bound it first.
-    if (raw_len > PEEL_MAX_FORK) {
-        *err = make_err("SIT: fork declares %u bytes, over the %u MiB limit", raw_len, (unsigned)(PEEL_MAX_FORK >> 20));
-        return (peel_buf_t){0};
+// Fail the stream with a message.
+static int sit_prod_fail(sit_prod_t *p, const char *msg) {
+    snprintf(p->base.err, sizeof(p->base.err), "%s", msg);
+    p->failed = true;
+    return -5;
+}
+
+// First run: read the packed bytes and set the method's decoder up.
+static int sit_prod_start(sit_prod_t *p) {
+    p->started = true;
+    if (p->src) {
+        if (p->fi.packed_len > PEEL_MAX_INPUT)
+            return sit_prod_fail(p, "SIT: fork data over the input limit");
+        p->packed = malloc(p->fi.packed_len ? p->fi.packed_len : 1);
+        if (!p->packed)
+            return sit_prod_fail(p, "SIT: out of memory reading fork data");
+        if (p->fi.packed_len && peel_source_read_exact(p->src, p->fi.off, p->packed, p->fi.packed_len) != 0)
+            return sit_prod_fail(p, "SIT: cannot read fork data");
+        p->data = p->packed;
     }
-
-    // sit.md § 10.A "Method 3" — delegated to sit3.c (static Huffman)
-    if (method == 3) {
-        peel_buf_t result = peel_sit3(src, packed_len, raw_len, err);
-        if (*err)
-            return (peel_buf_t){0};
-        // sit.md § 6.3 "CRC Verification Rule" — verify CRC over decompressed
-        uint16_t actual = sit_crc(result.data, result.size);
-        if (actual != expect_crc) {
-            *err = make_err("SIT: fork CRC mismatch (expected 0x%04X, got 0x%04X)", expect_crc, actual);
-            peel_free(&result);
-            return (peel_buf_t){0};
+    peel_err_t *err = NULL;
+    switch (p->fi.method) {
+    case 0:
+        // sit.md § 7 "Method 0: None" — a copy (a view, when it is whole).
+        if (p->fi.packed_len < p->fi.raw_len) {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "SIT: method 0 packed (%u) < raw (%u)", p->fi.packed_len, p->fi.raw_len);
+            return sit_prod_fail(p, msg);
         }
-        return result;
-    }
-
-    // sit.md § 10 "Method 13" — delegated to sit13.c
-    if (method == 13) {
-        peel_buf_t result = peel_sit13(src, packed_len, raw_len, err);
-        if (*err)
-            return (peel_buf_t){0};
-        // sit.md § 6.3 "CRC Verification Rule" — verify CRC over decompressed
-        uint16_t actual = sit_crc(result.data, result.size);
-        if (actual != expect_crc) {
-            *err = make_err("SIT: fork CRC mismatch (expected 0x%04X, got 0x%04X)", expect_crc, actual);
-            peel_free(&result);
-            return (peel_buf_t){0};
-        }
-        return result;
-    }
-
-    // sit.md § 11 "Method 15" — delegated to sit15.c
-    // sit.md § 6.3 — method 15 handles integrity internally; skip CRC check.
-    if (method == 15) {
-        return peel_sit15(src, packed_len, raw_len, err);
-    }
-
-    // Allocate output buffer for methods 0, 1, 2
-    uint8_t *out = malloc(raw_len);
-    if (!out) {
-        *err = make_err("SIT: out of memory allocating %u bytes for fork", raw_len);
-        return (peel_buf_t){0};
-    }
-
-    size_t produced = 0;
-
-    switch (method) {
-    case 0: {
-        // sit.md § 7 "Method 0: None" — raw copy
-        if (packed_len < raw_len) {
-            *err = make_err("SIT: method 0 packed (%u) < raw (%u)", packed_len, raw_len);
-            free(out);
-            return (peel_buf_t){0};
-        }
-        memcpy(out, src, raw_len);
-        produced = raw_len;
-        break;
-    }
-
-    case 1: {
-        // sit.md § 8 "Method 1: RLE90" — escape-based run-length encoding
-        // sit.md § 8.2 "State" — last_byte initialized to 0
-        uint8_t last_byte = 0;
-        size_t src_off = 0;
-        while (produced < raw_len && src_off < packed_len) {
-            uint8_t b = src[src_off++];
-            if (b != 0x90) {
-                // Literal byte
-                out[produced++] = b;
-                last_byte = b;
-            } else {
-                // sit.md § 8.3 "Algorithm" — escape marker 0x90
-                if (src_off >= packed_len)
-                    break;
-                uint8_t n = src[src_off++];
-                if (n == 0) {
-                    // Literal 0x90 (do not update last_byte)
-                    out[produced++] = 0x90;
-                } else if (n > 1) {
-                    // Repeat last_byte (n-1) additional times
-                    size_t repeats = (size_t)(n - 1);
-                    if (produced + repeats > raw_len)
-                        repeats = raw_len - produced;
-                    memset(out + produced, last_byte, repeats);
-                    produced += repeats;
-                }
-                // n == 1 means zero additional copies
-            }
-        }
-        break;
-    }
-
-    case 2: {
+        return 0;
+    case 1:
+        return 0; // sit.md § 8.2 "State" — last_byte starts at 0
+    case 2:
         // sit.md § 9 "Method 2: LZW" — 14-bit max, LE bit packing
-        lzw_state_t *lzw = lzw_create(src, packed_len);
-        if (!lzw) {
-            *err = make_err("SIT: out of memory creating LZW decoder");
-            free(out);
-            return (peel_buf_t){0};
+        p->lzw = lzw_create(p->data, p->fi.packed_len);
+        return p->lzw ? 0 : sit_prod_fail(p, "SIT: out of memory creating LZW decoder");
+    case 3: // sit.md § 10.A "Method 3" — sit3.c (static Huffman)
+        p->inner = sit3_producer(p->data, p->fi.packed_len, p->fi.raw_len, &err);
+        break;
+    case 13: // sit.md § 10 "Method 13" — sit13.c
+        p->inner = sit13_producer(p->data, p->fi.packed_len, p->fi.raw_len, &err);
+        break;
+    case 15: // sit.md § 11 "Method 15" — sit15.c
+        p->inner = sit15_producer(p->data, p->fi.packed_len, p->fi.raw_len, &err);
+        break;
+    default: {
+        // sit.md § 12 "Unsupported Methods" — fatal error
+        char msg[64];
+        snprintf(msg, sizeof(msg), "SIT: unsupported compression method %d", p->fi.method);
+        return sit_prod_fail(p, msg);
+    }
+    }
+    if (!p->inner) {
+        int rc = sit_prod_fail(p, peel_err_msg(err));
+        peel_err_free(err);
+        return rc;
+    }
+    return 0;
+}
+
+// sit.md § 8 "Method 1: RLE90" — escape-based run-length encoding, up to
+// `cap` bytes.  Returns the count; the packed bytes running out first is
+// the caller's to notice.
+static size_t sit_rle90(sit_prod_t *p, uint8_t *out, size_t cap) {
+    size_t n = 0;
+    while (n < cap) {
+        if (p->rle_pending) {
+            size_t k = p->rle_pending < cap - n ? p->rle_pending : cap - n;
+            memset(out + n, p->rle_last, k);
+            n += k;
+            p->rle_pending -= (uint32_t)k;
+            continue;
         }
-        produced = lzw_decode(lzw, out, raw_len);
-        lzw_destroy(lzw);
+        if (p->rle_pos >= p->fi.packed_len)
+            break;
+        uint8_t b = p->data[p->rle_pos++];
+        if (b != 0x90) {
+            out[n++] = b; // a literal byte
+            p->rle_last = b;
+            continue;
+        }
+        // sit.md § 8.3 "Algorithm" — escape marker 0x90
+        if (p->rle_pos >= p->fi.packed_len)
+            break;
+        uint8_t count = p->data[p->rle_pos++];
+        if (count == 0)
+            out[n++] = 0x90; // a literal 0x90 (last_byte unchanged)
+        else
+            p->rle_pending = (uint32_t)count - 1; // count 1: no more copies
+    }
+    return n;
+}
+
+static int sit_prod_run(peel_producer_t *pp, uint8_t *out, size_t cap, size_t *n) {
+    sit_prod_t *p = (sit_prod_t *)pp;
+    *n = 0;
+    if (p->failed)
+        return -5;
+    if (!p->started && sit_prod_start(p) != 0)
+        return -5;
+    size_t want = p->fi.raw_len - p->produced < cap ? p->fi.raw_len - p->produced : cap;
+    size_t got = 0;
+    int rc = 0;
+    switch (p->fi.method) {
+    case 0:
+        memcpy(out, p->data + p->produced, want);
+        got = want;
+        break;
+    case 1:
+        got = sit_rle90(p, out, want);
+        break;
+    case 2:
+        got = lzw_decode(p->lzw, out, want);
+        break;
+    default:
+        rc = p->inner->run(p->inner, out, want, &got);
+        if (rc < 0)
+            return sit_prod_fail(p, p->inner->err);
         break;
     }
-
-    default:
-        // sit.md § 12 "Unsupported Methods" — fatal error
-        *err = make_err("SIT: unsupported compression method %d", method);
-        free(out);
-        return (peel_buf_t){0};
+    if (want && !got && rc == 0)
+        return sit_prod_fail(p, "SIT: fork data ends before its declared length");
+    p->crc = sit_crc_update(p->crc, out, got);
+    p->produced += (uint32_t)got;
+    *n = got;
+    if (p->produced < p->fi.raw_len)
+        return 0;
+    // sit.md § 6.3 "CRC Verification Rule" — over the decompressed fork;
+    // method 15 checks its own stream instead.
+    if (p->fi.method != 15 && p->crc != p->fi.crc) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "SIT: fork CRC mismatch (expected 0x%04X, got 0x%04X)", p->fi.crc, p->crc);
+        return sit_prod_fail(p, msg);
     }
+    return 1;
+}
 
-    // sit.md § 6.3 "CRC Verification Rule" — verify CRC over decompressed data
-    uint16_t actual_crc = sit_crc(out, produced);
-    if (actual_crc != expect_crc) {
-        *err = make_err("SIT: fork CRC mismatch (expected 0x%04X, got 0x%04X)", expect_crc, actual_crc);
-        free(out);
-        return (peel_buf_t){0};
+static void sit_prod_free(peel_producer_t *pp) {
+    sit_prod_t *p = (sit_prod_t *)pp;
+    if (p->inner)
+        p->inner->free(p->inner);
+    lzw_destroy(p->lzw);
+    free(p->packed);
+    peel_source_release(p->src);
+    free(p);
+}
+
+// A producer for a fork: of `src` at fi->off (retained), or of fi->data in
+// memory when `src` is NULL.  NULL + *err when the fork's size is refused.
+static peel_producer_t *sit_fork_producer(const sit_fork_info_t *fi, peel_source_t *src, peel_err_t **err) {
+    // Bound what the header declares before anything is read or allocated.
+    if (fi->raw_len > PEEL_MAX_FORK) {
+        *err = make_err("SIT: fork declares %u bytes, over the %u MiB limit", fi->raw_len,
+                        (unsigned)(PEEL_MAX_FORK >> 20));
+        return NULL;
     }
-
-    return (peel_buf_t){.data = out, .size = produced, .owned = true};
+    sit_prod_t *p = calloc(1, sizeof(*p));
+    if (!p) {
+        *err = make_err("SIT: out of memory");
+        return NULL;
+    }
+    p->base.run = sit_prod_run;
+    p->base.free = sit_prod_free;
+    p->fi = *fi;
+    p->src = peel_source_retain(src);
+    p->data = fi->data;
+    return &p->base;
 }
 
 // ============================================================================
@@ -1009,7 +1049,7 @@ bool sit_detect(const uint8_t *src, size_t len) {
 // The archive is found in the probe's head (an embedded archive further in
 // than the detection budget is not found: partial access cannot scan a
 // whole file for it), then walked header by header.  Method-0 forks are
-// views of the source; everything else decodes whole on first read.
+// views of the source; everything else decodes through, a buffer at a time.
 
 typedef struct {
     sit_entry_list_t entries; // one per peel entry, same order
@@ -1027,7 +1067,8 @@ static void sit_fill_fork(const sit_fork_info_t *fi, uint64_t *len, uint64_t *pa
     *off = fi->off;
     *method = fi->method;
     // Method 0 is a copy: a view, as long as the packed range holds it.
-    *tier = (fi->method == 0 && fi->packed_len >= fi->raw_len) ? PEEL_TIER_RANDOM : PEEL_TIER_WHOLE;
+    // Everything else decodes through: the sink keeps what has been decoded.
+    *tier = (fi->method == 0 && fi->packed_len >= fi->raw_len) ? PEEL_TIER_RANDOM : PEEL_TIER_EARNED;
 }
 
 static int sit_open(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err) {
@@ -1086,20 +1127,15 @@ static int sit_open(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err) 
 static peel_buf_t sit_decode_fork(peel_archive_t *a, int i, int fork, peel_err_t **err) {
     sit_priv_t *priv = a->priv;
     const sit_entry_t *se = &priv->entries.items[i];
-    sit_fork_info_t fi = fork == PEEL_FORK_RSRC ? se->rsrc_fork : se->data_fork;
-    // Bound what the header declares before reading or allocating anything.
-    if (fi.raw_len > PEEL_MAX_FORK) {
-        *err =
-            make_err("SIT: fork declares %u bytes, over the %u MiB limit", fi.raw_len, (unsigned)(PEEL_MAX_FORK >> 20));
-        return (peel_buf_t){0};
-    }
-    uint8_t *packed = peel_archive_read(a, fi.off, fi.packed_len, "SIT fork data", err);
-    if (!packed)
-        return (peel_buf_t){0};
-    fi.data = packed;
-    peel_buf_t out = decompress_fork(&fi, err);
-    free(packed);
-    return out;
+    const sit_fork_info_t *fi = fork == PEEL_FORK_RSRC ? &se->rsrc_fork : &se->data_fork;
+    peel_producer_t *p = sit_fork_producer(fi, a->src, err);
+    return p ? peel_producer_drain(p, fi->raw_len, NULL, err) : (peel_buf_t){0};
+}
+
+static peel_producer_t *sit_producer(peel_archive_t *a, int i, int fork, peel_err_t **err) {
+    sit_priv_t *priv = a->priv;
+    const sit_entry_t *se = &priv->entries.items[i];
+    return sit_fork_producer(fork == PEEL_FORK_RSRC ? &se->rsrc_fork : &se->data_fork, a->src, err);
 }
 
 static void sit_close(peel_archive_t *a) {
@@ -1114,5 +1150,6 @@ const peel_fmt_t peel_fmt_sit = {
     .desc = {"sit", false, sit_detect_probe},
     .open = sit_open,
     .decode = sit_decode_fork,
+    .producer = sit_producer,
     .close = sit_close,
 };

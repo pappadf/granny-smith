@@ -476,11 +476,22 @@ void peel_inflater_align(peel_inflater_t *z);
 // bytes and returns 1 when the fork is complete, 0 when more remains, or a
 // negative code (with a message in `err`).  The decode-through source drives
 // it as reads reach past what the sink already holds.
+// A run() that ends neither the fork nor any bytes this many times in a
+// row is taken to be stuck: a corrupt stream, never an endless loop.
+#define PEEL_PRODUCER_MAX_IDLE 4096
+
 typedef struct peel_producer {
     int (*run)(struct peel_producer *p, uint8_t *out, size_t cap, size_t *n);
     void (*free)(struct peel_producer *p);
     char err[256];
 } peel_producer_t;
+
+// Run a producer to the end into an owned buffer of exactly `len` bytes,
+// then free it (always).  A producer that fails, or ends short or long,
+// is an error: its own message, prefixed by `what` when that is given.
+// The buffer APIs (peel_sit3, peel_cpt, ...) are this over the same
+// producers the decode-through sources drive, so both decode one way.
+peel_buf_t peel_producer_drain(peel_producer_t *p, uint64_t len, const char *what, peel_err_t **err);
 
 typedef struct peel_fmt peel_fmt_t;
 
@@ -519,6 +530,18 @@ struct peel_fmt {
     int (*prepare)(peel_archive_t *a, int i, int fork, peel_err_t **err);
     void (*close)(peel_archive_t *a); // free priv
 };
+
+// StuffIt's method decoders as producers of a fork's `uncomp_len` bytes
+// from `src` (borrowed: it must outlive the producer).  NULL + *err when
+// the stream's header is bad.  sit.c checks the fork CRC over their output.
+peel_producer_t *sit3_producer(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
+peel_producer_t *sit13_producer(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
+peel_producer_t *sit15_producer(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
+
+// The same, drained into an owned buffer (the buffer API's shape).
+peel_buf_t peel_sit3(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
+peel_buf_t peel_sit13(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
+peel_buf_t peel_sit15(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
 
 // Every format's vtable.
 extern const peel_fmt_t peel_fmt_hqx, peel_fmt_bin, peel_fmt_gz, peel_fmt_sit, peel_fmt_cpt, peel_fmt_zip;
