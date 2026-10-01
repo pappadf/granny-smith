@@ -140,6 +140,9 @@ bool ata_attach_hd(ata_channel_t *ch, int unit, struct image *img);
 bool ata_attach_atapi(ata_channel_t *ch, int unit, int scsi_id);
 void ata_detach(ata_channel_t *ch, int unit);
 ata_dev_kind_t ata_device_kind(const ata_channel_t *ch, int unit);
+// Pick up (or drop) the ATAPI devices on the back end now; register
+// accesses do this on their own.
+void ata_refresh_devices(ata_channel_t *ch);
 
 // The cell's enable and RESET- line (driven by the I/O controller's feature
 // bits).  A reset returns both devices to their power-on signatures.

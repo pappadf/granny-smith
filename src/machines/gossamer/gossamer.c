@@ -447,6 +447,12 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
         gos_recompute_irq(cfg);
     }
 
+    // The two ATA cells and their ATAPI back end (restored last, as saved).
+    gos_ata_init(cfg, cp);
+    gos_ata_attach_objects(cfg);
+    if (cp)
+        gos_recompute_irq(cfg);
+
     cfg->debugger = debug_init();
     scheduler_start(cfg->scheduler);
     return 0;
@@ -461,6 +467,7 @@ static void gossamer_bus_reset(config_t *cfg) {
     davbus_reset(&st->screamer_host);
     swim3_reset(&st->swim3);
     mesh_reset(st->mesh);
+    gos_ata_reset(cfg);
     scc_reset(cfg->scc);
     system_reset_common_devices(cfg);
     gos_recompute_irq(cfg);
@@ -477,6 +484,7 @@ static void gossamer_teardown(config_t *cfg) {
         } else {
             gos_nvram_carry_valid = false;
         }
+        gos_ata_detach_objects(cfg);
         gos_heathrow_detach_objects(cfg);
         gos_grackle_detach_objects(cfg);
         davbus_teardown(&st->screamer_host);
@@ -484,6 +492,7 @@ static void gossamer_teardown(config_t *cfg) {
             mesh_delete(st->mesh);
             st->mesh = NULL;
         }
+        gos_ata_teardown(cfg);
     }
     if (cfg->floppy) {
         floppy_delete(cfg->floppy);
@@ -527,6 +536,7 @@ static void gossamer_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     mesh_checkpoint(st->mesh, cp);
     system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
     system_write_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
+    gos_ata_checkpoint_save(cfg, cp);
 }
 
 // Frame tick: the 60.15 Hz reference into VIA1 CA1 (the Cuda driver waits
@@ -623,8 +633,8 @@ const machine_substrate_t gossamer_substrate = {
     .input_mouse_move = mac_input_mouse_move,
     .input_mouse_button = mac_input_mouse_button,
     .display = gossamer_display,
-    .media_detach = system_media_detach_std,
-    .media_attach = system_media_attach_std,
-    .media_present = system_media_present_std,
-    .media_eject = system_media_eject_std,
+    .media_detach = gos_media_detach,
+    .media_attach = gos_media_attach,
+    .media_present = gos_media_present,
+    .media_eject = gos_media_eject,
 };

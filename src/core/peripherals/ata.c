@@ -691,7 +691,7 @@ static void exec_command(ata_channel_t *ch, uint8_t cmd) {
 // cell * 2 + device: a disc attached there (machine.atapi.attach_cdrom)
 // appears on the channel, and one taken away leaves it.  Checked on every
 // register access, which costs two lookups and needs no attach hook.
-static void sync_atapi(ata_channel_t *ch) {
+void ata_refresh_devices(ata_channel_t *ch) {
     if (!ch->atapi_bus)
         return;
     for (int u = 0; u < 2; u++) {
@@ -711,7 +711,7 @@ static void sync_atapi(ata_channel_t *ch) {
 uint8_t ata_read(ata_channel_t *ch, int reg) {
     if (!ch->enabled)
         return 0xFF;
-    sync_atapi(ch);
+    ata_refresh_devices(ch);
     if (!any_device(ch))
         return 0x7F; // nothing drives the bus; DD7 is pulled down
     ata_dev_t *d = sel_dev(ch);
@@ -742,7 +742,7 @@ uint8_t ata_read(ata_channel_t *ch, int reg) {
 uint8_t ata_read_altstatus(ata_channel_t *ch) {
     if (!ch->enabled)
         return 0xFF;
-    sync_atapi(ch);
+    ata_refresh_devices(ch);
     if (!any_device(ch))
         return 0x7F;
     ata_dev_t *d = sel_dev(ch);
@@ -752,7 +752,7 @@ uint8_t ata_read_altstatus(ata_channel_t *ch) {
 void ata_write(ata_channel_t *ch, int reg, uint8_t value) {
     if (!ch->enabled)
         return;
-    sync_atapi(ch);
+    ata_refresh_devices(ch);
     switch (reg) {
     case ATA_REG_DATA:
         ata_write_data16(ch, (uint16_t)(value << 8 | value));

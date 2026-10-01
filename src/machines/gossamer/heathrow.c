@@ -29,7 +29,7 @@
 //   +$14000       DAVbus / Screamer (core/peripherals/davbus.c)
 //   +$15000       SWIM3 (sixteen byte registers on $10 centres)
 //   +$16000       VIA (16 byte registers on $200 centres, 8 KB)
-//   +$20000/+$21000  ATA channels 0/1 (not modelled yet)
+//   +$20000/+$21000  ATA cells 0/1 (gossamer_ata.c)
 //   +$60000       NVRAM: byte n at +16n, 8 KB (128 KB window)
 //
 // The interrupt controller is Grand Central's per bank.  The Gossamer
@@ -76,8 +76,6 @@ LOG_USE_CATEGORY_NAME("heathrow");
 #define HR_DAVBUS    0x14000u
 #define HR_SWIM3     0x15000u
 #define HR_VIA       0x16000u // 8 KB
-#define HR_ATA0      0x20000u
-#define HR_ATA1      0x21000u
 #define HR_NVRAM     0x60000u // 128 KB window
 #define HR_NVRAM_END 0x80000u
 
@@ -258,6 +256,7 @@ static void fcr_changed(config_t *cfg, uint32_t old, uint32_t fcr) {
     // falling edge releases it (Apple and Linux pulse it for 15 ms).
     if ((fcr & FCR_RESET_SCC) && !(old & FCR_RESET_SCC) && cfg->scc)
         scc_reset(cfg->scc);
+    gos_ata_fcr_changed(cfg, old, fcr); // the ATA cells' enables and RESET- lines
     if (old != fcr)
         LOG(2, "FCR $%08X -> $%08X (pc=$%08X)", old, fcr, ppc_get_pc(cfg->ppc));
 }
@@ -399,6 +398,8 @@ static uint8_t hr_read8(void *ctx, uint32_t off) {
         return ctrl_read8(cfg, off);
     if (off >= HR_NVRAM && off < HR_NVRAM_END)
         return nvram_read(cfg, off - HR_NVRAM);
+    if (off >= GOS_HR_ATA0 && off < GOS_HR_ATA_END)
+        return gos_ata_read8(cfg, off);
     uint32_t block = off & 0xFF000u;
     switch (block) {
     case HR_VIA:
@@ -449,6 +450,10 @@ static void hr_write8(void *ctx, uint32_t off, uint8_t value) {
         nvram_write(cfg, off - HR_NVRAM, value);
         return;
     }
+    if (off >= GOS_HR_ATA0 && off < GOS_HR_ATA_END) {
+        gos_ata_write8(cfg, off, value);
+        return;
+    }
     uint32_t block = off & 0xFF000u;
     switch (block) {
     case HR_VIA:
@@ -492,6 +497,8 @@ static uint32_t hr_read32(void *ctx, uint32_t off) {
     }
     if ((off & 0xFF000u) == HR_DAVBUS)
         return GOS_LE32(davbus_read32(&st->screamer_host, off - HR_DAVBUS));
+    if (off >= GOS_HR_ATA0 && off < GOS_HR_ATA_END)
+        return gos_ata_read32(cfg, off);
     // A longword cycle to a byte-wide cell: the cell drives lane 0, the
     // most significant byte on this big-endian bus.
     return ((uint32_t)hr_read8(ctx, off) << 24);
@@ -518,16 +525,27 @@ static void hr_write32(void *ctx, uint32_t off, uint32_t value) {
         davbus_write32(&st->screamer_host, off - HR_DAVBUS, GOS_LE32(value));
         return;
     }
+    if (off >= GOS_HR_ATA0 && off < GOS_HR_ATA_END) {
+        gos_ata_write32(cfg, off, value);
+        return;
+    }
     hr_write8(ctx, off, (uint8_t)(value >> 24));
 }
 
 // 16-bit access decomposes into bytes, big-endian — the bus's view of a
 // halfword (the factory nvramrc's `90b7 f3000032 w!`).
+// The ATA data register is the exception: a 16-bit port (gossamer_ata.c).
 static uint16_t hr_read16(void *ctx, uint32_t off) {
+    if (off >= GOS_HR_ATA0 && off < GOS_HR_ATA_END)
+        return gos_ata_read16((config_t *)ctx, off);
     return (uint16_t)((hr_read8(ctx, off) << 8) | hr_read8(ctx, off + 1));
 }
 
 static void hr_write16(void *ctx, uint32_t off, uint16_t value) {
+    if (off >= GOS_HR_ATA0 && off < GOS_HR_ATA_END) {
+        gos_ata_write16((config_t *)ctx, off, value);
+        return;
+    }
     hr_write8(ctx, off, (uint8_t)(value >> 8));
     hr_write8(ctx, off + 1, (uint8_t)value);
 }

@@ -179,6 +179,10 @@ typedef enum media_bus {
     // ride along with the medium.
     MEDIA_BUS_SCSI2,
     MEDIA_BUS_PROFILE, // Lisa/XL parallel-port ProFile (unit unused)
+    // An ATA bus pair (the beige G3's two Heathrow cells): unit = cell * 2 +
+    // device.  A hard disk is the ATA device itself; a CD-ROM is an ATAPI
+    // drive, carried by the machine's ATAPI back end at SCSI id = unit.
+    MEDIA_BUS_ATA,
 } media_bus_t;
 
 // One mounted medium in transit across a machine.restart power-cycle: the
@@ -201,8 +205,8 @@ typedef struct media_slot {
 } media_slot_t;
 
 // Transfer capacity: 2 floppy drives + 8 SCSI ids on each of two buses +
-// 1 ProFile.
-#define MEDIA_SLOTS_MAX 20
+// 1 ProFile + 4 ATA units.
+#define MEDIA_SLOTS_MAX 24
 
 // A ProFile block: 512 data bytes plus a 20-byte tag.  A property of the
 // ProFile protocol (MEDIA_BUS_PROFILE), whatever machine the drive is on.

@@ -39,6 +39,7 @@
 #ifndef GS_MACHINES_GOSSAMER_H
 #define GS_MACHINES_GOSSAMER_H
 
+#include "ata.h" // the two ATA cells
 #include "davbus.h" // the DAVbus sound cell (Screamer face)
 #include "machine.h"
 #include "machine_profile.h"
@@ -250,6 +251,12 @@ typedef struct gossamer_state {
     swim3_t swim3;
     gos_fdring_t fdring;
     gos_scc_dma_ctx_t scc_dma_ctx[2];
+    // The two ATA cells (+$20000, +$21000) and the SCSI bus that carries
+    // their ATAPI CD-ROMs (machine.atapi): gossamer_ata.c.
+    ata_channel_t ata[2];
+    struct scsi *atapi;
+    bool ata_ready;
+    struct object *ata_object; // machine.ata
     struct object *grackle_object; // machine.grackle
     struct object *hr_object; // machine.heathrow (the interrupt controller)
     struct object *nvram_object; // machine.nvram
@@ -319,6 +326,30 @@ void gos_i2c_init(config_t *cfg);
 // The Cuda I2C transaction hooks (av_cuda_attach_i2c).
 int gos_i2c_read(void *ctx, uint8_t addr8, bool has_sub, uint8_t sub, uint8_t *out, int max);
 bool gos_i2c_write(void *ctx, uint8_t addr8, const uint8_t *data, int len);
+
+// === gossamer_ata.c =========================================================
+
+#define GOS_HR_ATA0    0x20000u // cell 0; cell 1 follows at +$1000
+#define GOS_HR_ATA_END 0x22000u
+
+void gos_ata_init(config_t *cfg, checkpoint_t *cp); // channels, ATAPI bus, DBDMA ports
+void gos_ata_reset(config_t *cfg);
+void gos_ata_teardown(config_t *cfg);
+void gos_ata_checkpoint_save(config_t *cfg, checkpoint_t *cp);
+void gos_ata_fcr_changed(config_t *cfg, uint32_t old, uint32_t fcr);
+void gos_ata_attach_objects(config_t *cfg);
+void gos_ata_detach_objects(config_t *cfg);
+uint8_t gos_ata_read8(config_t *cfg, uint32_t off);
+void gos_ata_write8(config_t *cfg, uint32_t off, uint8_t value);
+uint16_t gos_ata_read16(config_t *cfg, uint32_t off);
+void gos_ata_write16(config_t *cfg, uint32_t off, uint16_t value);
+uint32_t gos_ata_read32(config_t *cfg, uint32_t off);
+void gos_ata_write32(config_t *cfg, uint32_t off, uint32_t value);
+// The substrate's media hooks: the standard floppy/SCSI set plus the ATA units.
+int gos_media_detach(config_t *cfg, media_slot_t *out, int max);
+int gos_media_attach(config_t *cfg, const media_slot_t *slot);
+bool gos_media_present(config_t *cfg, media_bus_t bus, int unit);
+int gos_media_eject(config_t *cfg, media_bus_t bus, int unit);
 
 // === swim3 glue (gossamer.c) ================================================
 void gos_swim3_bind(config_t *cfg);

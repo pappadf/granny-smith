@@ -112,12 +112,15 @@ const char *media_bus_name(media_bus_t bus) {
         return "scsi2";
     case MEDIA_BUS_PROFILE:
         return "profile";
+    case MEDIA_BUS_ATA:
+        return "ata";
     }
     return "scsi";
 }
 
 bool media_bus_parse(const char *name, media_bus_t *out) {
-    static const media_bus_t all[] = {MEDIA_BUS_FLOPPY, MEDIA_BUS_SCSI, MEDIA_BUS_SCSI2, MEDIA_BUS_PROFILE};
+    static const media_bus_t all[] = {MEDIA_BUS_FLOPPY, MEDIA_BUS_SCSI, MEDIA_BUS_SCSI2, MEDIA_BUS_PROFILE,
+                                      MEDIA_BUS_ATA};
     for (size_t i = 0; name && i < sizeof(all) / sizeof(all[0]); i++) {
         if (strcmp(name, media_bus_name(all[i])) == 0) {
             *out = all[i];
