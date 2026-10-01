@@ -298,6 +298,47 @@
     box-shadow: 0 0 0 3px rgba(80, 150, 240, 0.45);
   }
 
+  /* ---- The split: a Mac OS X divider with a round grip -------------------- */
+  /* The resize handle between the display and the panel takes real room
+     (no overlap) and is drawn, so it can be found and grabbed; beside a
+     docked panel it starts below the toolbar band. */
+  :root[data-skin='aqua'] .gs-workbench > .gs-sash {
+    --gs-sash-size: 9px;
+    margin: 0;
+    border: 1px solid #a4a4a4;
+    background: linear-gradient(90deg, #d9d9d9, #f4f4f4 45%, #e4e4e4 55%, #cfcfcf);
+  }
+  :root[data-skin='aqua'] .gs-workbench > .gs-sash[aria-orientation='vertical'] {
+    border-width: 0 1px;
+  }
+  :root[data-skin='aqua'] .gs-workbench > .gs-sash[aria-orientation='horizontal'] {
+    border-width: 1px 0;
+    background: linear-gradient(180deg, #d9d9d9, #f4f4f4 45%, #e4e4e4 55%, #cfcfcf);
+  }
+  :root[data-skin='aqua'] .gs-workbench.panel-left > .gs-sash,
+  :root[data-skin='aqua'] .gs-workbench.panel-right > .gs-sash {
+    height: auto;
+    margin-top: var(--gs-toolbar-height);
+  }
+  :root[data-skin='aqua'] .gs-workbench > .gs-sash::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    background: radial-gradient(circle at 40% 35%, #ffffff, #a9a9a9);
+    box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.35);
+    pointer-events: none;
+  }
+  :root[data-skin='aqua'] .gs-workbench > .gs-sash:hover,
+  :root[data-skin='aqua'] .gs-workbench > .gs-sash[data-state='dragging'] {
+    border-color: var(--gs-ref-gel-border);
+    background: linear-gradient(90deg, #c9dcf5, #eef5ff 45%, #dbe8fa 55%, #bfd3f0);
+  }
+
   /* ---- The panel: a capsule of tabs over a recessed box ------------------ */
   :root[data-skin='aqua'] .gs-workbench > .gs-panel {
     border: 0;
