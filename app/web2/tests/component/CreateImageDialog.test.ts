@@ -76,7 +76,7 @@ describe('CreateImageDialog', () => {
     await fireEvent.click(getByText('Create'));
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
     const cp = callTo('files.hd_create')!;
-    expect(cp[1][0]).toMatch(/^\/opfs\/images\/hd\/blank_38MB_\d+\.img$/); // 40061952 ≈ 38 MiB
+    expect(cp[1][0]).toMatch(/^\/opfs\/images\/hd\/blank_38MB_\d+\.dmg$/); // 40061952 ≈ 38 MiB
     expect(cp[1][1]).toBe('40061952');
   });
 

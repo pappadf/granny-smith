@@ -9,6 +9,7 @@ import { opfs } from './opfs';
 import { sanitizeName } from '@/lib/archive';
 import { isInImageSpace } from '@/lib/diskImage';
 import { UPLOAD_DIR } from '@/lib/opfsPaths';
+import { xferReadDisk } from './xfer';
 
 // Per-item progress hook (e.g. to drive the status-bar indicator).
 export type ProgressFn = (name: string, index: number, total: number) => void;
@@ -188,6 +189,82 @@ async function downloadOne(target: string): Promise<boolean> {
   } catch (err) {
     console.error('download failed', err);
     return false;
+  }
+}
+
+// Without a save picker, a raw download is assembled in memory first; past
+// this it is refused rather than risk the tab.
+const RAW_DOWNLOAD_IN_MEMORY_MAX = 512 * 1024 * 1024;
+
+// Download the disk a stored image holds (a .dmg) as a flat raw image.  The
+// decoded bytes are read from the core a transfer window at a time
+// (files.xfer_read_disk) and written to a file the user picks (the File
+// System Access save picker), so neither OPFS nor memory ever holds the raw
+// image; a browser without the picker gets an in-memory Blob up to
+// RAW_DOWNLOAD_IN_MEMORY_MAX.  `onProgress` hears bytes written of the total.
+export async function downloadRawImage(
+  path: string,
+  onProgress?: (done: number, total: number) => void,
+): Promise<{ ok: boolean; error?: string }> {
+  const info = (await gsEval('files.udif_info', [path])) as { bytes?: number } | null;
+  const total =
+    info && typeof info === 'object' && typeof info.bytes === 'number' ? info.bytes : null;
+  if (total === null) return { ok: false, error: 'not a UDIF image' };
+  const name = (basename(path) || 'disk').replace(/\.dmg$/i, '') + '.img';
+  const window = 2 * 1024 * 1024;
+  const picker = (
+    globalThis as {
+      showSaveFilePicker?: (o: unknown) => Promise<{
+        createWritable(): Promise<{
+          write(d: Uint8Array): Promise<void>;
+          close(): Promise<void>;
+          abort(): Promise<void>;
+        }>;
+      }>;
+    }
+  ).showSaveFilePicker;
+  try {
+    if (picker) {
+      let handle;
+      try {
+        handle = await picker({ suggestedName: name });
+      } catch {
+        return { ok: false, error: 'cancelled' };
+      }
+      const out = await handle.createWritable();
+      try {
+        for (let at = 0; at < total; ) {
+          const part = await xferReadDisk(path, at, window);
+          if (!part.length) break;
+          await out.write(part);
+          at += part.length;
+          onProgress?.(at, total);
+        }
+        await out.close();
+      } catch (e) {
+        await out.abort().catch(() => undefined);
+        throw e;
+      }
+      return { ok: true };
+    }
+    if (total > RAW_DOWNLOAD_IN_MEMORY_MAX)
+      return {
+        ok: false,
+        error: `this browser cannot save a ${Math.round(total / (1024 * 1024))} MB raw image (no save picker); download the .dmg instead`,
+      };
+    const parts: Uint8Array[] = [];
+    for (let at = 0; at < total; ) {
+      const part = await xferReadDisk(path, at, window);
+      if (!part.length) break;
+      parts.push(part);
+      at += part.length;
+      onProgress?.(at, total);
+    }
+    saveBlob(new Blob(parts as BlobPart[]), name);
+    return { ok: true };
+  } catch (err) {
+    console.error('raw download failed', err);
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 

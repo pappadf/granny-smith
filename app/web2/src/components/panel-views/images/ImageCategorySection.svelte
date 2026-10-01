@@ -11,7 +11,11 @@
   import { attachHardDisk, attachCdrom, insertFloppy, ejectMedia } from '@/bus/media';
   import { showNotification } from '@/state/toasts.svelte';
   import type { OpfsEntry, ImageCategory } from '@/bus/types';
-  import type { MediaTypeId } from '@/lib/media';
+  import { LARGE_IMPORT_BYTES, type MediaTypeId } from '@/lib/media';
+  import { downloadFiles, downloadRawImage } from '@/bus/fsOps';
+  import { storedDmgName } from '@/bus/importImage';
+  import { gsEval, gsErrorText } from '@/bus/emulator';
+  import { startActivity, endActivity, setActivityDetail } from '@/state/activity.svelte';
   import IconButton from '@/components/ui/IconButton.svelte';
   import {
     images,
@@ -127,7 +131,11 @@
       });
       items.push({ sep: true });
     }
-    items.push({ label: 'Download', action: () => showDownloadToast(entry) });
+    items.push({ label: 'Download', action: () => doDownload(entry) });
+    if ((cat === 'hd' || cat === 'cd') && /\.dmg$/i.test(entry.name))
+      items.push({ label: 'Download as raw image', action: () => doDownloadRaw(entry) });
+    if ((cat === 'hd' || cat === 'cd') && !/\.dmg$/i.test(entry.name) && !mounted)
+      items.push({ label: 'Compact (store as .dmg)', action: () => doCompact(entry) });
     items.push({ label: 'Rename', action: () => doRename(entry) });
     items.push({ label: 'Delete', action: () => doDelete(entry), danger: true });
     openContextMenu(items, ev.clientX, ev.clientY);
@@ -175,8 +183,67 @@
     onMountedChange?.();
   }
 
-  function showDownloadToast(entry: OpfsEntry) {
-    showNotification(`Download of '${entry.name}' will land in a later phase`, 'warning');
+  async function doDownload(entry: OpfsEntry) {
+    startActivity(entry.name, 'Downloading');
+    try {
+      const r = await downloadFiles([entry.path]);
+      if (r.failures.length) showNotification(`Could not download '${entry.name}'`, 'error');
+    } finally {
+      endActivity();
+    }
+  }
+
+  async function doDownloadRaw(entry: OpfsEntry) {
+    startActivity(entry.name, 'Downloading');
+    try {
+      const r = await downloadRawImage(entry.path, (done, total) =>
+        setActivityDetail(`${Math.round((100 * done) / total)} %`),
+      );
+      if (!r.ok && r.error !== 'cancelled')
+        showNotification(`Could not download '${entry.name}' as raw: ${r.error}`, 'error');
+    } finally {
+      endActivity();
+    }
+  }
+
+  // Store a raw image the compact way: convert it to a UDIF beside it (the
+  // core checks the result decodes to the same bytes), then remove the raw
+  // file.  A saved state that used the raw file by name no longer finds it,
+  // so the user is asked first.
+  async function doCompact(entry: OpfsEntry) {
+    const size = (await gsEval('files.path_size', [entry.path])) as number;
+    if (typeof size === 'number' && size <= LARGE_IMPORT_BYTES) {
+      showNotification(`'${entry.name}' is small already`, 'info');
+      return;
+    }
+    const ok = await askConfirm({
+      title: 'Compact image',
+      message: `Store '${entry.name}' compressed as a .dmg and remove the raw file? Saved states that use this disk will no longer find it.`,
+      confirmText: 'Compact',
+    });
+    if (!ok) return;
+    const dir = entry.path.replace(/\/[^/]+$/, '');
+    let dest = `${dir}/${storedDmgName(entry.name)}`;
+    for (let i = 2; (await gsEval('files.path_exists', [dest])) === true; i++)
+      dest = `${dir}/${storedDmgName(entry.name).replace(/\.dmg$/, `_${i}.dmg`)}`;
+    startActivity(entry.name, 'Compacting');
+    try {
+      const r = await gsEval('files.convert', [entry.path, dest]);
+      if (!r || typeof r !== 'object' || 'error' in (r as object)) {
+        showNotification(`Could not compact '${entry.name}': ${gsErrorText(r)}`, 'error');
+        return;
+      }
+      const st = r as { bytes_in?: number; stored_bytes?: number };
+      await gsEval('files.rm', [entry.path]);
+      showNotification(
+        `'${entry.name}' compacted: ${Math.round((st.bytes_in ?? size) / 1048576)} MB disk in ${Math.max(1, Math.round((st.stored_bytes ?? 0) / 1048576))} MB`,
+        'info',
+      );
+      bumpImagesRevision();
+      await refresh();
+    } finally {
+      endActivity();
+    }
   }
 
   async function doRename(entry: OpfsEntry) {

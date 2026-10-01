@@ -5,7 +5,7 @@ This document describes the **delta-file** storage engine that backs each emulat
 ## 1. Overview
 
 * Every disk image is backed by three files: a **base** (the original image, read-only), a **delta** (all modifications), and a **journal** (preimage crash recovery).
-* The delta file contains a fixed header, two bitmaps (current and committed), and a block data area. Modified blocks are written in-place at their LBA offset.
+* The delta file contains a fixed header, two bitmaps (current and committed), two cluster tables (current and committed), and a data area of slots. The first write to any block of a 32 KB cluster gives that cluster the next slot at the end of the file, so the delta grows with what the guest wrote, not with the highest block it wrote.
 * Reads check a bitmap: bit set → read from delta, bit clear → read from base.
 * There is no consolidation, no directory scanning, and no per-block files.
 
@@ -26,28 +26,36 @@ In the browser, the web app copies uploaded and URL-fetched images into `/opfs/i
 
 ## 3. Delta File Format
 
+The browser charges a file's logical length against the origin's quota, holes included, so a delta that placed block N at `N × block_size` cost the size of the disk the first time the guest wrote its last sector (HFS writes its alternate MDB there when a volume is initialised). Version 2, what every new delta is, places blocks by cluster:
+
 ```
-[0 .. 23]                    Fixed header (24 bytes)
+[0 .. 63]                    Header (64 bytes, little-endian)
   [0..3]   magic: "GSDL"
-  [4..7]   version: uint32_t = 1
+  [4..7]   version: uint32_t = 2
   [8..15]  block_count: uint64_t
   [16..19] block_size: uint32_t (512 default; 532 for a Lisa ProFile)
-  [20..23] reserved: uint32_t
+  [20..23] cluster_blocks: uint32_t (blocks per cluster; 64 = 32 KB at 512 B)
+  [24..31] cluster_count: uint64_t (= ceil(block_count / cluster_blocks))
+  [32..39] slots_committed: uint64_t (slots in use at the last commit)
+  [40..63] reserved
 
-[24 .. 24+bm-1]             Current bitmap (1 bit per block)
-[24+bm .. 24+2*bm-1]        Committed bitmap
-[24+2*bm .. EOF]             Block data area (block_count × block_size bytes, sparse)
+[64 .. +bm]                  Current bitmap (1 bit per block)
+[.. +bm]                     Committed bitmap
+[.. +4·C]                    Current cluster table (uint32_t per cluster: 0 = no slot, k = slot k−1)
+[.. +4·C]                    Committed cluster table
+[data_offset ..]             Slots (cluster_blocks × block_size bytes each), in allocation order
 ```
 
-The header records `block_size`, so a delta is self-describing: reopen validates
-the size it was written with and a future device with a different block geometry
-needs no format change. `block_size` is a multiple of 4 in `[512,
-STORAGE_MAX_BLOCK_SIZE]` (1024). 512 covers flat disks (Mac SCSI HD, floppy
-data); 532 is the Lisa ProFile's block (512 data + 20 inline tag).
+`data_offset` is the metadata's size rounded up to a sector. Where `bm = ceil(block_count / 8)` and `C = cluster_count`: for an 800K floppy the metadata is under 1 KB; for a 2 GB disk it is about 1.5 MB, fixed, and the data area grows by one 32 KB slot per cluster first written.
 
-Where `bm = ceil(block_count / 8)`. For an 800K floppy: bm = 200 bytes. For a 40MB HD: bm ≈ 10 KB.
+- **Read** block N: bitmap bit clear → base. Else its data is at `data_offset + ((table[N / cb] − 1) × cb + N % cb) × block_size`.
+- **Write** block N: a cluster with no slot gets `slots_used + 1`; a block that is set in the committed bitmap has its preimage journaled first, read from the slot it will be replayed into (a committed cluster's slot never moves). The blocks of a slot that were never written keep their bitmap bit clear and still read from the base.
 
-The current bitmap tracks which blocks have been modified. The committed bitmap is a snapshot at the last successful checkpoint. Both are kept in memory and flushed to the delta header at checkpoint time.
+The header records `block_size`, so a delta is self-describing: reopen validates the size it was written with. `block_size` is a multiple of 4 in `[512, STORAGE_MAX_BLOCK_SIZE]` (1024). 512 covers flat disks (Mac SCSI HD, floppy data); 532 is the Lisa ProFile's block (512 data + 20 inline tag).
+
+The current bitmap and table track what has been written; the committed copies are a snapshot at the last successful checkpoint. Both are kept in memory and flushed to the delta at checkpoint time, after the data they point at.
+
+**Version 1** (still opened, never created) is a 24-byte header (magic, version 1, `block_count`, `block_size`, reserved), the two bitmaps, and a block area with block N at `24 + 2·bm + N × block_size`.
 
 ## 4. Journal Format
 
@@ -103,11 +111,11 @@ Common case (no preimage needed): one seek + one write.
 
 ## 7. Checkpoint Integration
 
-**Quick checkpoints:** `storage_checkpoint()` writes the current bitmap to the checkpoint stream (in-memory, fast). Then `storage_clear_rollback()` copies the current bitmap to committed, flushes both bitmaps to the delta header, and truncates the journal. If no blocks were modified since the last checkpoint, the flush is skipped entirely (zero OPFS I/O).
+**Quick checkpoints:** `storage_checkpoint()` writes the current bitmap to the checkpoint stream (in-memory, fast), then the delta's layout: `cluster_blocks` (0 for a v1 delta), the slots in use, and the cluster table. Then `storage_clear_rollback()` copies the current bitmap and table to committed, records the slot high-water mark, flushes the metadata to the delta, and truncates the journal. If no blocks were modified since the last checkpoint, the flush is skipped entirely (zero OPFS I/O).
 
 **Consolidated checkpoints:** `storage_save_state()` streams every block (from delta where bitmap is set, from base otherwise) into the checkpoint.
 
-**Restore from quick checkpoint:** Read the bitmap from the checkpoint stream, set it as current and committed, truncate the journal. The delta's block data is already correct (OPFS auto-persisted every write).
+**Restore from quick checkpoint:** Roll back first (journal replay, post-commit slots truncated away), then read the bitmap and layout from the checkpoint stream, check the layout matches the delta's, set them as current and committed, truncate the journal. The delta's block data is already correct (OPFS auto-persisted every write).
 
 **Restore from consolidated checkpoint:** `storage_load_state()` reads all blocks into the delta, sets all bitmap bits, and commits.
 
@@ -117,10 +125,10 @@ If the browser closes between checkpoints, the delta may contain uncommitted mod
 
 `storage_apply_rollback()`:
 1. Read each journal entry (LBA + `block_size`-byte preimage).
-2. Write the preimage back to the delta at the corresponding offset.
-3. Set current bitmap = committed bitmap.
-4. Flush bitmaps to delta header.
-5. Truncate journal.
+2. Write the preimage back to the delta where the block lives (its cluster's slot, which a committed cluster never changes).
+3. Set current bitmap and table = committed; slots in use = `slots_committed`.
+4. Truncate the delta to the end of the committed slots: the slots allocated since hold only blocks the committed bitmap does not name, so they go wholesale, with no journal needed for them.
+5. Flush the metadata; truncate the journal.
 
 This restores the delta to its last committed state. The operation is idempotent.
 
@@ -128,7 +136,7 @@ This restores the delta to its last committed state. The operation is idempotent
 
 ## 9. Recovery
 
-On startup, `storage_new()` opens the existing delta file (if present), reads the header and bitmaps, and scans the journal to build the in-memory index. No directory scanning or file enumeration is needed. If the delta doesn't exist, it is created with empty bitmaps.
+On startup, `storage_new()` opens the existing delta file (if present), reads the header, bitmaps and tables, and scans the journal to build the in-memory index. A v2 delta reopens at its last commit: anything past `slots_committed` is truncated away, as a rollback would, and a current table that names an uncommitted slot falls back to the committed one. No directory scanning or file enumeration is needed. If the delta doesn't exist, it is created with empty bitmaps.
 
 ## 10. Unit Tests
 
@@ -138,6 +146,7 @@ Unit tests live in `tests/unit/suites/storage/test.c` and exercise:
 - State save/load round-trip
 - Delta persistence across close/reopen
 - Rollback (preimage journal replay)
+- Delta v2: the last block of a 2 GiB disk costs the metadata and one slot; rollback truncates the slots allocated since the commit; a reopen without one lands at the commit; a v1 delta still opens, reads, and rolls back
 
 ## 11. Resource forks as VFS paths
 

@@ -840,9 +840,10 @@ static void install_background_checkpoint_handlers(void) {
 }
 
 // A streamed image import writes /opfs/upload/<name>.dmg.part and moves it
-// into /opfs/images only when it is complete and valid; one a closed tab or
-// a crash left behind is never finished, and costs its size in the
-// origin's quota until removed.
+// into /opfs/images only when it is complete and valid, and Save State
+// stages its file there while the download is made; one a closed tab or a
+// crash left behind is never finished, and costs its size in the origin's
+// quota until removed.
 static void sweep_partial_imports(const char *dir) {
     DIR *d = opendir(dir);
     if (!d)
@@ -851,7 +852,8 @@ static void sweep_partial_imports(const char *dir) {
     while ((e = readdir(d)) != NULL) {
         size_t n = strlen(e->d_name);
         bool part = (n > 9 && strcmp(e->d_name + n - 9, ".dmg.part") == 0) ||
-                    (n > 12 && strcmp(e->d_name + n - 12, ".dmg.part.re") == 0);
+                    (n > 12 && strcmp(e->d_name + n - 12, ".dmg.part.re") == 0) ||
+                    strncmp(e->d_name, "saved-state-", 12) == 0; // a Save State being downloaded
         if (!part)
             continue;
         char path[PATH_MAX];
