@@ -189,6 +189,19 @@ static int ensure_parents(peel_archive_t *a, zip_priv_t *z, const char *path) {
 // Open
 // ============================================================================
 
+// Read `len` bytes at `off`: from the probe's tail when they lie inside it
+// (the end records and, for most archives, the whole central directory do),
+// else from the source.  So opening a typical zip costs the probe's two
+// reads and nothing more.  0 or -1.
+static int zip_read_at(peel_archive_t *a, const peel_probe_t *p, uint64_t off, void *buf, size_t len) {
+    uint64_t tail_start = p->size - p->tail_len;
+    if (off >= tail_start && len <= p->size - off) {
+        memcpy(buf, p->tail + (size_t)(off - tail_start), len);
+        return 0;
+    }
+    return peel_source_read_exact(a->src, off, buf, len) == 0 ? 0 : -1;
+}
+
 // Locate the central directory: its offset in the source, size and entry
 // count, Zip64 and a prepended stub included.  0 or -1 with *err.
 static int zip_locate_cd(peel_archive_t *a, const peel_probe_t *p, uint64_t *cd_off, uint64_t *cd_size, uint64_t *count,
@@ -209,8 +222,7 @@ static int zip_locate_cd(peel_archive_t *a, const peel_probe_t *p, uint64_t *cd_
         // Zip64: a locator just before the EOCD points at the Zip64 record.
         uint8_t loc[ZIP64_LOC_LEN], rec[ZIP64_EOCD_LEN];
         if ((uint64_t)eocd < ZIP64_LOC_LEN ||
-            peel_source_read_exact(a->src, (uint64_t)eocd - ZIP64_LOC_LEN, loc, sizeof(loc)) != 0 ||
-            le32(loc) != ZIP64_LOC_SIG) {
+            zip_read_at(a, p, (uint64_t)eocd - ZIP64_LOC_LEN, loc, sizeof(loc)) != 0 || le32(loc) != ZIP64_LOC_SIG) {
             *err = make_err("ZIP: Zip64 locator missing");
             return -1;
         }
@@ -218,9 +230,10 @@ static int zip_locate_cd(peel_archive_t *a, const peel_probe_t *p, uint64_t *cd_
         // The record sits right before the locator; trust its position over
         // the stated offset when a stub was prepended.
         uint64_t rec_at = (uint64_t)eocd - ZIP64_LOC_LEN - ZIP64_EOCD_LEN;
-        if (peel_source_read_exact(a->src, rec_at, rec, sizeof(rec)) != 0 || le32(rec) != ZIP64_EOCD_SIG) {
+        if ((uint64_t)eocd < ZIP64_LOC_LEN + ZIP64_EOCD_LEN || zip_read_at(a, p, rec_at, rec, sizeof(rec)) != 0 ||
+            le32(rec) != ZIP64_EOCD_SIG) {
             rec_at = rec_off;
-            if (peel_source_read_exact(a->src, rec_at, rec, sizeof(rec)) != 0 || le32(rec) != ZIP64_EOCD_SIG) {
+            if (zip_read_at(a, p, rec_at, rec, sizeof(rec)) != 0 || le32(rec) != ZIP64_EOCD_SIG) {
                 *err = make_err("ZIP: Zip64 end of central directory record missing");
                 return -1;
             }
@@ -316,9 +329,20 @@ static int zip_open(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err) 
         *err = make_err("ZIP: central directory too small for %llu entries", (unsigned long long)count);
         return -1;
     }
-    uint8_t *cd = peel_archive_read(a, cd_off, cd_size, "ZIP central directory", err);
-    if (!cd)
-        return -1;
+    uint8_t *cd;
+    if (cd_off >= p->size - p->tail_len && cd_size <= p->size - cd_off) {
+        // Already in hand: the probe's tail holds it.
+        cd = malloc(cd_size ? (size_t)cd_size : 1);
+        if (!cd) {
+            *err = make_err("ZIP: out of memory");
+            return -1;
+        }
+        memcpy(cd, p->tail + (size_t)(cd_off - (p->size - p->tail_len)), (size_t)cd_size);
+    } else {
+        cd = peel_archive_read(a, cd_off, cd_size, "ZIP central directory", err);
+        if (!cd)
+            return -1;
+    }
     z->members = calloc(count ? (size_t)count : 1, sizeof(zip_member_t));
     if (!z->members) {
         free(cd);
@@ -399,7 +423,7 @@ static int zip_open(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err) 
         // lengths, which can differ from the central ones: it is found when
         // the member is opened, not here.
         e->data_off = UINT64_MAX;
-        e->data_tier = m->method == ZIP_METHOD_STORED ? PEEL_TIER_RANDOM : PEEL_TIER_STREAM;
+        e->data_tier = m->method == ZIP_METHOD_STORED ? PEEL_TIER_RANDOM : PEEL_TIER_EARNED;
     }
     free(cd);
     zip_fold_appledouble(a, z);

@@ -1,0 +1,1 @@
+b95f359b808d4d4735f73b2b23cccf6d  testfile.gz_bgzf

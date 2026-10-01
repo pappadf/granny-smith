@@ -5,10 +5,12 @@
 //
 // A gzip file is one or more members, each a small header, a DEFLATE stream
 // and an 8-byte trailer (CRC-32, size mod 2^32).  Opening reads the header
-// for the name and the tail for the size; the payload decodes through the
-// resumable inflater as reads reach it, member after member.  Only the
-// last member's trailer is at the tail, so the stated size is that of a
-// single-member file under 4 GiB -- which is what .img.gz files are.
+// for the name and the tail for a size hint; the payload decodes through
+// the resumable inflater as reads reach it, member after member.  Only the
+// last member's trailer is at the tail (and it holds the size mod 2^32), so
+// that hint is exact for a single-member file under 4 GiB and wrong for any
+// other.  The entry lists it, as `gzip -l` does; the fork's source earns its
+// true size with one pass instead (the EARNED tier).
 //
 // A BGZF file (every member a block of at most 64 KiB, each header carrying
 // its compressed size in a "BC" extra subfield -- samtools/htslib, and
@@ -288,7 +290,7 @@ static int gz_open(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err) {
         g->blocks = NULL;
         g->n_blocks = 0;
         e->data_len = p->tail_len >= 4 ? le32(p->tail + p->tail_len - 4) : 0;
-        e->data_tier = PEEL_TIER_STREAM;
+        e->data_tier = PEEL_TIER_EARNED;
     }
     return 0;
 }
@@ -523,6 +525,13 @@ static peel_source_t *gz_open_fork(peel_archive_t *a, int i, int fork, peel_err_
     return out;
 }
 
+// Only a BGZF index states the payload's size; the tail ISIZE is a hint.
+static bool gz_len_exact(peel_archive_t *a, int i, int fork) {
+    (void)i;
+    (void)fork;
+    return ((gz_priv_t *)a->priv)->blocks != NULL;
+}
+
 static void gz_close(peel_archive_t *a) {
     gz_priv_t *g = a->priv;
     if (!g)
@@ -537,5 +546,6 @@ const peel_fmt_t peel_fmt_gz = {
     .decode = gz_decode,
     .producer = gz_producer,
     .open_fork = gz_open_fork,
+    .len_exact = gz_len_exact,
     .close = gz_close,
 };

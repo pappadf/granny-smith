@@ -209,7 +209,10 @@ peel_buf_t peel_source_slurp(peel_source_t *s, peel_err_t **err);
 // supplies a sink factory: create() returns a readable source keyed by `key`
 // that write() fills as the decoder produces bytes (always in order, from 0);
 // commit() marks it complete.  The emulator's chunk cache and a plain temp
-// file both fit.  NULL sink ops mean "the heap".
+// file both fit.  NULL sink ops mean "the heap".  `expected_len` is
+// PEEL_SIZE_UNKNOWN when the fork's length is learned only by decoding it
+// (a gzip stream); a sink then reports as its size what has been written.
+#define PEEL_SIZE_UNKNOWN UINT64_MAX
 typedef struct {
     peel_source_t *(*create)(void *ctx, const char *key, uint64_t expected_len);
     int64_t (*write)(peel_source_t *sink, uint64_t off, const void *buf, size_t len);

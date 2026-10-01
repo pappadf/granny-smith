@@ -17,7 +17,7 @@
 #   make run CC=emcc EXEC_WRAPPER=node TARGET_EXT=.js
 
 TEST_NAME     := peeler
-TEST_SRCS     := test.c
+TEST_SRCS     := test.c zipgz.c
 TEST_HARNESS  := none
 EXTRA_SRCS    := $(filter-out %/sit13.c %/sit15.c,$(sort $(wildcard ../../../../src/peeler/lib/*.c ../../../../src/peeler/lib/formats/*.c)))
 INCLUDE_FLAGS  = -I$(UNIT_ROOT)/support $(PEELER_INCLUDES)

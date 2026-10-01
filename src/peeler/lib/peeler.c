@@ -91,9 +91,10 @@ static peel_file_list_t wrap_single_file(const uint8_t *src, size_t len, uint8_t
 // Extract every file of an archive through the structure-first API: open,
 // then decode both forks of each entry that has a non-empty one.  Folders
 // and empty files are not files of the result, as they never were.
-static peel_file_list_t extract_archive(const char *format, const uint8_t *src, size_t len, peel_err_t **err) {
+static peel_file_list_t extract_archive_keyed(const char *format, const uint8_t *src, size_t len, const char *key,
+                                              peel_err_t **err) {
     *err = NULL;
-    peel_source_t *s = peel_source_memory(src, len, false);
+    peel_source_t *s = key ? peel_source_memory_keyed(src, len, false, key) : peel_source_memory(src, len, false);
     if (!s) {
         *err = make_err("out of memory");
         return (peel_file_list_t){0};
@@ -146,6 +147,11 @@ static peel_file_list_t extract_archive(const char *format, const uint8_t *src, 
     return list;
 }
 
+// The same, for a buffer with no name of its own.
+static peel_file_list_t extract_archive(const char *format, const uint8_t *src, size_t len, peel_err_t **err) {
+    return extract_archive_keyed(format, src, len, NULL, err);
+}
+
 // ============================================================================
 // Operations (Public API) — Format Detection
 // ============================================================================
@@ -177,7 +183,7 @@ peel_file_list_t peel_zip(const uint8_t *src, size_t len, peel_err_t **err) {
 // ============================================================================
 
 // Forward declaration for recursive peeling.
-static peel_file_list_t peel_depth(const uint8_t *src, size_t len, int depth, peel_err_t **err);
+static peel_file_list_t peel_depth(const uint8_t *src, size_t len, const char *key, int depth, peel_err_t **err);
 
 // Recursively peel extracted files whose data forks contain recognized
 // formats.  This handles archives-inside-archives (e.g. .sit containing
@@ -233,7 +239,7 @@ static peel_file_list_t recursive_peel_files(peel_file_list_t list, int depth, p
 
         // Recursively peel this file's data fork
         peel_err_t *sub_err = NULL;
-        peel_file_list_t sub = peel_depth(f->data_fork.data, f->data_fork.size, depth + 1, &sub_err);
+        peel_file_list_t sub = peel_depth(f->data_fork.data, f->data_fork.size, NULL, depth + 1, &sub_err);
         if (sub_err) {
             // Recursive peel failed — keep the original file as-is
             peel_err_free(sub_err);
@@ -293,11 +299,13 @@ fail:
 // Detect all layers, peel wrappers, then extract the archive.
 // architecture.md § "peel Implementation Sketch"
 peel_file_list_t peel(const uint8_t *src, size_t len, peel_err_t **err) {
-    return peel_depth(src, len, 0, err);
+    return peel_depth(src, len, NULL, 0, err);
 }
 
 // Internal implementation with depth tracking for recursion limiting.
-static peel_file_list_t peel_depth(const uint8_t *src, size_t len, int depth, peel_err_t **err) {
+// `key` names the input (a file path) when it has one: a wrapper with no
+// stored name names its payload after it.
+static peel_file_list_t peel_depth(const uint8_t *src, size_t len, const char *key, int depth, peel_err_t **err) {
     *err = NULL;
 
     if (depth >= MAX_PEEL_DEPTH) {
@@ -311,6 +319,14 @@ static peel_file_list_t peel_depth(const uint8_t *src, size_t len, int depth, pe
     uint8_t *owned = NULL;
     const uint8_t *cur = src;
     size_t cur_len = len;
+    // The last wrapper layer peeled, and its input (owned when `prev_owned`):
+    // a payload that is no archive is that wrapper's one file, named and
+    // with both forks.
+    const peel_format_desc_t *last_wrapper = NULL;
+    const uint8_t *prev = NULL;
+    size_t prev_len = 0;
+    uint8_t *prev_owned = NULL;
+    const char *prev_key = NULL;
 
     // Repeatedly strip wrapper layers until an archive or unknown data is found.
     for (int wrap_depth = 0; wrap_depth < MAX_PEEL_DEPTH; wrap_depth++) {
@@ -325,9 +341,15 @@ static peel_file_list_t peel_depth(const uint8_t *src, size_t len, int depth, pe
             peel_buf_t decoded = w->peel_wrapper(cur, cur_len, err);
             if (*err) {
                 free(owned);
+                free(prev_owned);
                 return (peel_file_list_t){0};
             }
-            free(owned); // Release previous intermediate (NULL-safe)
+            free(prev_owned); // the layer before this one is no longer needed
+            prev_owned = owned;
+            prev = cur;
+            prev_len = cur_len;
+            prev_key = wrap_depth == 0 ? key : NULL; // only the input itself has a name
+            last_wrapper = fmt;
             owned = decoded.data;
             cur = owned;
             cur_len = decoded.size;
@@ -337,6 +359,7 @@ static peel_file_list_t peel_depth(const uint8_t *src, size_t len, int depth, pe
         // Terminal format — extract files and return
         peel_file_list_t result = extract_archive(fmt->name, cur, cur_len, err);
         free(owned);
+        free(prev_owned);
         if (*err) {
             return (peel_file_list_t){0};
         }
@@ -344,8 +367,22 @@ static peel_file_list_t peel_depth(const uint8_t *src, size_t len, int depth, pe
         return recursive_peel_files(result, depth, err);
     }
 
-    // No archive found.  Wrap whatever we have as a single unnamed file.
-    // Transfer ownership of `owned` if we peeled any wrappers.
+    // No archive found.  A peeled wrapper's payload is that wrapper's one
+    // file: its name, Finder info and both forks.
+    if (last_wrapper) {
+        peel_file_list_t one = extract_archive_keyed(last_wrapper->name, prev, prev_len, prev_key, err);
+        if (!*err && one.count == 1) {
+            free(owned);
+            free(prev_owned);
+            return one;
+        }
+        peel_file_list_free(&one);
+        peel_err_free(*err); // fall back to the bare payload
+        *err = NULL;
+    }
+    free(prev_owned);
+    // Otherwise wrap whatever we have as a single unnamed file.  Transfer
+    // ownership of `owned` if we peeled any wrappers.
     peel_file_list_t result = wrap_single_file(cur, cur_len, owned, err);
     if (*err) {
         // wrap_single_file failed; it did NOT take ownership on failure
@@ -367,7 +404,7 @@ peel_file_list_t peel_path(const char *path, peel_err_t **err) {
     }
 
     // Run the main peeling loop
-    peel_file_list_t result = peel(file_buf.data, file_buf.size, err);
+    peel_file_list_t result = peel_depth(file_buf.data, file_buf.size, path, 0, err);
 
     // Release the input buffer regardless of success
     peel_free(&file_buf);

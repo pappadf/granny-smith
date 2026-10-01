@@ -369,6 +369,8 @@ static int64_t heap_read(peel_source_t *s, uint64_t off, void *buf, size_t len) 
 
 static uint64_t heap_size(peel_source_t *s) {
     heap_sink_t *h = s->ctx;
+    if (h->expected == PEEL_SIZE_UNKNOWN)
+        return h->len;
     return h->expected > h->len ? h->expected : h->len;
 }
 
@@ -412,7 +414,7 @@ static int64_t heap_write(peel_source_t *sink, uint64_t off, const void *buf, si
         size_t ncap = h->cap ? h->cap : 4096;
         while (ncap < need)
             ncap *= 2;
-        if (h->expected && ncap > h->expected && need <= h->expected)
+        if (h->expected && h->expected != PEEL_SIZE_UNKNOWN && ncap > h->expected && need <= h->expected)
             ncap = (size_t)h->expected; // exact when the size is known
         uint8_t *nb = realloc(h->buf, ncap);
         if (!nb)

@@ -261,8 +261,9 @@ typedef struct {
     peel_producer_t *prod; // NULL once finished
     peel_source_t *sink; // created on first read
     char *key;
-    uint64_t len; // declared unpacked length
+    uint64_t len; // declared unpacked length (a hint until committed when !exact)
     uint64_t produced; // bytes written to the sink so far
+    bool exact; // len is the fork's true length
     peel_tier_t tier; // until committed
     bool committed;
     bool failed;
@@ -273,7 +274,7 @@ static int decode_fill(decode_src_t *d, uint64_t want) {
     if (d->failed)
         return -5;
     if (!d->sink) {
-        d->sink = d->a->sink->create(d->a->sink_ctx, d->key, d->len);
+        d->sink = d->a->sink->create(d->a->sink_ctx, d->key, d->exact ? d->len : PEEL_SIZE_UNKNOWN);
         if (!d->sink) {
             d->failed = true;
             return -12;
@@ -283,7 +284,7 @@ static int decode_fill(decode_src_t *d, uint64_t want) {
     while (!d->committed && d->produced < want) {
         size_t n = 0;
         int rc = d->prod->run(d->prod, chunk, sizeof(chunk), &n);
-        if (rc < 0 || d->produced + n > d->len) {
+        if (rc < 0 || (d->exact && d->produced + n > d->len)) {
             d->failed = true; // a corrupt fork, or one longer than it declared
             return -5;
         }
@@ -293,7 +294,9 @@ static int decode_fill(decode_src_t *d, uint64_t want) {
         }
         d->produced += n;
         if (rc == 1) {
-            if (d->produced != d->len) {
+            if (!d->exact)
+                d->len = d->produced; // the size, earned
+            else if (d->produced != d->len) {
                 d->failed = true; // the fork ran dry before its declared length
                 return -5;
             }
@@ -308,6 +311,20 @@ static int decode_fill(decode_src_t *d, uint64_t want) {
 
 static int64_t decode_read(peel_source_t *s, uint64_t off, void *buf, size_t len) {
     decode_src_t *d = s->ctx;
+    if (!d->exact && !d->committed) {
+        // The length is not known yet: decode as far as the read reaches.
+        uint64_t want = len > UINT64_MAX - off ? UINT64_MAX : off + len;
+        int rc = decode_fill(d, want);
+        if (rc != 0)
+            return rc;
+        if (!d->committed) {
+            if (off >= d->produced)
+                return 0;
+            if (len > d->produced - off)
+                len = (size_t)(d->produced - off);
+            return peel_source_read(d->sink, off, buf, len);
+        }
+    }
     if (off >= d->len)
         return 0;
     if (len > d->len - off)
@@ -319,7 +336,12 @@ static int64_t decode_read(peel_source_t *s, uint64_t off, void *buf, size_t len
 }
 
 static uint64_t decode_size(peel_source_t *s) {
-    return ((decode_src_t *)s->ctx)->len;
+    decode_src_t *d = s->ctx;
+    // An unsized fork earns its length with one full pass; a failed one
+    // reports what it produced, and its reads fail.
+    if (!d->exact && !d->committed && decode_fill(d, UINT64_MAX) != 0)
+        return d->produced;
+    return d->len;
 }
 
 static const char *decode_key(peel_source_t *s) {
@@ -345,8 +367,9 @@ static void decode_close(peel_source_t *s) {
 
 static const peel_source_ops_t decode_ops = {decode_read, decode_size, decode_key, decode_tier, decode_close};
 
-peel_source_t *peel_decode_source(peel_archive_t *a, const char *key, uint64_t len, peel_tier_t tier,
-                                  peel_producer_t *p) {
+// Both constructors.
+static peel_source_t *decode_source_new(peel_archive_t *a, const char *key, uint64_t len, bool exact, peel_tier_t tier,
+                                        peel_producer_t *p) {
     decode_src_t *d = calloc(1, sizeof(*d));
     size_t kl = strlen(key);
     char *k = malloc(kl + 1);
@@ -362,8 +385,19 @@ peel_source_t *peel_decode_source(peel_archive_t *a, const char *key, uint64_t l
     d->prod = p;
     d->key = k;
     d->len = len;
+    d->exact = exact;
     d->tier = tier;
     return peel_source_new(&decode_ops, d, NULL);
+}
+
+peel_source_t *peel_decode_source(peel_archive_t *a, const char *key, uint64_t len, peel_tier_t tier,
+                                  peel_producer_t *p) {
+    return decode_source_new(a, key, len, true, tier, p);
+}
+
+peel_source_t *peel_decode_source_unsized(peel_archive_t *a, const char *key, uint64_t hint, peel_tier_t tier,
+                                          peel_producer_t *p) {
+    return decode_source_new(a, key, hint, false, tier, p);
 }
 
 // ============================================================================
@@ -384,7 +418,8 @@ peel_source_t *peel_open_fork(peel_archive_t *a, int i, int fork, peel_err_t **e
     uint64_t len = fork == PEEL_FORK_RSRC ? e->rsrc_len : e->data_len;
     uint64_t off = fork == PEEL_FORK_RSRC ? e->rsrc_off : e->data_off;
     peel_tier_t tier = fork == PEEL_FORK_RSRC ? e->rsrc_tier : e->data_tier;
-    if (len == 0)
+    bool exact = !a->fmt->len_exact || a->fmt->len_exact(a, i, fork);
+    if (len == 0 && exact)
         return peel_source_memory_keyed(NULL, 0, false, key);
     if (a->fmt->open_fork) {
         peel_source_t *own = a->fmt->open_fork(a, i, fork, err);
@@ -414,7 +449,7 @@ peel_source_t *peel_open_fork(peel_archive_t *a, int i, int fork, peel_err_t **e
         w->fork = fork;
         p = &w->base;
     }
-    peel_source_t *s = peel_decode_source(a, key, len, tier, p);
+    peel_source_t *s = decode_source_new(a, key, len, exact, tier, p);
     if (!s)
         *err = make_err("out of memory opening a fork");
     return s;

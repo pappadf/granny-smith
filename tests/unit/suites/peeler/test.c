@@ -1441,6 +1441,9 @@ TEST(test_huff_pool_is_bounded) {
     ASSERT_TRUE(pool.used <= PEEL_HUFF_POOL_CAP);
 }
 
+// Zip, gzip and inflate: zipgz.c.
+void zipgz_tests(void);
+
 int main(void) {
     RUN(test_sit15_encoder_round_trip);
     RUN(test_sit15_zero_run_cannot_overflow);
@@ -1479,6 +1482,7 @@ int main(void) {
     RUN(test_sit5_lzw_widening_and_clear);
     RUN(test_huff_canonical_codes);
     RUN(test_huff_pool_is_bounded);
+    zipgz_tests();
     fprintf(stderr, "All peeler tests passed\n");
     return 0;
 }

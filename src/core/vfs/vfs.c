@@ -516,10 +516,11 @@ bool vfs_is_expandable(const char *path) {
     gs_source_t *data = vfs_open_source(path, GS_FORK_DATA, &err);
     if (!data)
         return false;
-    // Only a file whose head and tail are cheap to read is probed: deciding
-    // for a compressed archive member would mean decoding all of it.
+    // Only a file whose head and tail are cheap to read now is probed:
+    // deciding for a compressed archive member not yet decoded would mean
+    // decoding all of it.
     bool yes = false;
-    if (gs_source_tier(data) <= GS_TIER_EARNED) {
+    if (gs_source_tier(data) <= GS_TIER_INDEXED) {
         gs_source_t *rsrc = vfs_open_source(path, GS_FORK_RSRC, NULL);
         yes = gs_format_is_namespace(data, rsrc);
         gs_source_release(rsrc);

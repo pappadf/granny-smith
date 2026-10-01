@@ -510,6 +510,10 @@ struct peel_fmt {
     // Optional: open a fork as a source of the format's own (BGZF's block
     // index).  NULL with no error: the generic view / decode-through paths.
     peel_source_t *(*open_fork)(peel_archive_t *a, int i, int fork, peel_err_t **err);
+    // Optional: false when a fork's declared length is only a hint (a
+    // gzip stream's tail ISIZE, which names the last member alone).  Such a
+    // fork's decode-through source earns its true size with one full pass.
+    bool (*len_exact)(peel_archive_t *a, int i, int fork);
     // Optional: finish an entry's layout before a fork opens (zip learns a
     // stored member's data offset from its local header).  0, or -1 + *err.
     int (*prepare)(peel_archive_t *a, int i, int fork, peel_err_t **err);
@@ -531,6 +535,11 @@ uint8_t *peel_archive_read(peel_archive_t *a, uint64_t off, uint64_t len, const 
 // ownership of `p`; retains `a`.
 peel_source_t *peel_decode_source(peel_archive_t *a, const char *key, uint64_t len, peel_tier_t tier,
                                   peel_producer_t *p);
+
+// The same, for a fork whose length `hint` is not known to be exact: its
+// size() decodes the whole fork (into the sink) to learn the true length.
+peel_source_t *peel_decode_source_unsized(peel_archive_t *a, const char *key, uint64_t hint, peel_tier_t tier,
+                                          peel_producer_t *p);
 
 // Build the key of fork `fork` of entry `i`: "<archive key>/<path>[/rsrc]".
 void peel_fork_key(peel_archive_t *a, int i, int fork, char *out, size_t cap);

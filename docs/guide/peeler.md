@@ -15,7 +15,7 @@ formats:
 |------|------|--------|
 | `hqx` | wrapper | BinHex 4.0 (CRC-checked, both forks) |
 | `bin` | wrapper | MacBinary I/II/III (both forks) |
-| `gz`  | wrapper | gzip (multi-member; BGZF members are indexed) |
+| `gz`  | wrapper | gzip (multi-member; BGZF is indexed for random access) |
 | `sit` | archive | StuffIt 1.x–5.x (methods 0, 1, 2, 3, 5, 13, 15) |
 | `cpt` | archive | Compact Pro |
 | `zip` | archive | Zip (stored and deflate; Zip64; self-extracting prefixes; `__MACOSX/` AppleDouble folded back into resource forks and Finder info) |
@@ -61,8 +61,13 @@ peel_source_release(src);
 - **Forks** — a stored fork is a view onto the archive's source; a
   compressed fork is a decode-through source that fills a *sink*
   (heap by default; the emulator passes a scratch-backed one) only as
-  far as reads require. Deflate decoding is resumable, so a streaming
-  reader never re-decodes from the start.
+  far as reads require (tier `EARNED`: what has been decoded stays in the
+  sink, so backward reads are free). Deflate decoding is resumable, so a
+  streaming reader never re-decodes from the start. A plain gzip stream
+  states no reliable size -- its tail ISIZE names only the last member,
+  modulo 4 GiB -- so the listing shows that as a hint (as `gzip -l` does)
+  and the fork's source earns its true size with one decoding pass; the
+  sink is then created with `PEEL_SIZE_UNKNOWN`.
 - **Buffer API** — `peel()`, `peel_path()` and the per-format
   `peel_hqx`/`peel_bin`/`peel_sit`/`peel_cpt`/`peel_zip`/`peel_gz`
   remain, as sugar over the structure-first API, for callers that want
@@ -199,9 +204,21 @@ git add -A && git commit -m "Sync from granny-smith"
 ## Testing
 
 - `make -C src/peeler test` runs the corpus in `src/peeler/test/`
-  against its recorded checksums.
-- `tests/unit/suites/peeler` covers the source, reader, inflate, zip,
-  gzip and structure-first API under AddressSanitizer.
+  against its recorded checksums. The zip and gzip cases (`zip_*`,
+  `gz_*`: Info-ZIP mixed, all-stored and Zip64 archives, a Python Zip64
+  one, self-extractors with and without adjusted offsets, a Finder zip
+  with `__MACOSX` companions, single- and multi-member gzip, BGZF) are
+  built by `src/peeler/test/make_zip_gz_fixtures.py` with independent
+  writers, and their checksums come from the source files, not from
+  peeler.
+- `tests/unit/suites/peeler` runs under AddressSanitizer, UBSan and
+  LeakSanitizer, and again on wasm32. `zipgz.c` holds the zip, gzip and
+  inflate tests: an in-test DEFLATE encoder (stored, fixed and dynamic
+  blocks) drives round trips, resumption at every output boundary, and
+  refusal of truncated, over-subscribed and out-of-window streams; a
+  counting source checks the partial-access contract (a 50 MB zip opens
+  in at most three reads, none of its members' data; a stored member's
+  bytes are read only when asked for; a BGZF read inflates one block).
 - `tests/unit/suites/source` and `tests/unit/suites/image_vfs` cover the
   core's side: decode-through sources, the chunk cache and nested
   archive/image descent.

@@ -219,6 +219,8 @@ static int64_t fsink_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
 
 static uint64_t fsink_size(gs_source_t *s) {
     file_sink_t *f = s->ctx;
+    if (f->expected == PEEL_SIZE_UNKNOWN)
+        return f->written;
     return f->expected > f->written ? f->expected : f->written;
 }
 
