@@ -702,6 +702,166 @@ TEST(storage_journal_partial_tail_is_dropped) {
     teardown_sandbox();
 }
 
+// ---- Delta v2: cluster-indexed, compact ------------------------------------
+
+// The browser charges a file's logical length, so the delta must grow with
+// what was written, not with the highest block written: the last sector of
+// a 2 GiB disk costs the metadata plus one 32 KB slot.
+TEST(storage_v2_last_block_is_one_slot) {
+    setup_sandbox();
+    const uint64_t blocks = 4u * 1024u * 1024u; // 2 GiB of 512 B
+    storage_config_t config = make_config(NULL, DELTA_FILE, JOURNAL_FILE, blocks);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    long meta = file_size(DELTA_FILE);
+    // Header + two 512 KiB bitmaps + two 256 KiB tables, sector-rounded.
+    ASSERT_TRUE(meta < 2 * 1024 * 1024);
+
+    uint8_t block[STORAGE_BLOCK_SIZE], verify[STORAGE_BLOCK_SIZE];
+    fill_block(blocks - 2, 0x71, block);
+    ASSERT_OK(storage_write_block(storage, (size_t)(blocks - 2) * STORAGE_BLOCK_SIZE, block));
+    ASSERT_OK(storage_clear_rollback(storage));
+    ASSERT_TRUE(file_size(DELTA_FILE) <= meta + 32 * 1024);
+    ASSERT_OK(storage_read_block(storage, (size_t)(blocks - 2) * STORAGE_BLOCK_SIZE, verify));
+    expect_block(blocks - 2, 0x71, verify);
+    // A neighbour in the same cluster was never written: it still reads as
+    // the (absent) base, not as whatever the slot holds.
+    ASSERT_OK(storage_read_block(storage, (size_t)(blocks - 3) * STORAGE_BLOCK_SIZE, verify));
+    for (size_t i = 0; i < STORAGE_BLOCK_SIZE; i++)
+        ASSERT_TRUE(verify[i] == 0);
+    ASSERT_OK(storage_delete(storage));
+
+    // Reopened, it is still there.
+    storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    ASSERT_OK(storage_read_block(storage, (size_t)(blocks - 2) * STORAGE_BLOCK_SIZE, verify));
+    expect_block(blocks - 2, 0x71, verify);
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
+// Slots allocated after the last commit are discarded wholesale by a
+// rollback: the file is truncated back, and those blocks read the base again.
+TEST(storage_v2_rollback_truncates_new_slots) {
+    setup_sandbox();
+    const uint64_t blocks = 64 * 1024;
+    create_base_image(BASE_FILE, blocks, 0x21);
+    storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, blocks);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    uint8_t block[STORAGE_BLOCK_SIZE], verify[STORAGE_BLOCK_SIZE];
+    fill_block(10, 0x10, block);
+    ASSERT_OK(storage_write_block(storage, 10 * STORAGE_BLOCK_SIZE, block));
+    ASSERT_OK(storage_clear_rollback(storage));
+    long committed = file_size(DELTA_FILE);
+
+    // Post-commit: a new cluster far away, and an overwrite of block 10.
+    for (uint64_t lba = 50000; lba < 50200; lba++) {
+        fill_block(lba, 0x55, block);
+        ASSERT_OK(storage_write_block(storage, lba * STORAGE_BLOCK_SIZE, block));
+    }
+    fill_block(10, 0x66, block);
+    ASSERT_OK(storage_write_block(storage, 10 * STORAGE_BLOCK_SIZE, block));
+    long grown = file_size(DELTA_FILE);
+    ASSERT_TRUE(grown > committed + 32 * 1024);
+
+    // Cut back to the end of the committed slot (the committed file may end
+    // inside it, where its last written block ends).
+    ASSERT_OK(storage_apply_rollback(storage));
+    ASSERT_TRUE(file_size(DELTA_FILE) <= committed + 32 * 1024);
+    ASSERT_TRUE(file_size(DELTA_FILE) < grown);
+    ASSERT_OK(storage_read_block(storage, 10 * STORAGE_BLOCK_SIZE, verify));
+    expect_block(10, 0x10, verify); // journal replayed into the committed slot
+    ASSERT_OK(storage_read_block(storage, 50100 * STORAGE_BLOCK_SIZE, verify));
+    expect_block(50100, 0x21, verify); // the base again
+
+    // Writing after the rollback reuses the freed slot space.
+    fill_block(50100, 0x77, block);
+    ASSERT_OK(storage_write_block(storage, 50100 * STORAGE_BLOCK_SIZE, block));
+    ASSERT_OK(storage_read_block(storage, 50100 * STORAGE_BLOCK_SIZE, verify));
+    expect_block(50100, 0x77, verify);
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
+// A crash (no rollback, no commit) reopens at the last commit: the slots
+// allocated after it are cut away, as a rollback would cut them.
+TEST(storage_v2_reopen_after_crash_is_committed_state) {
+    setup_sandbox();
+    const uint64_t blocks = 64 * 1024;
+    create_base_image(BASE_FILE, blocks, 0x31);
+    storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, blocks);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    uint8_t block[STORAGE_BLOCK_SIZE], verify[STORAGE_BLOCK_SIZE];
+    fill_block(3, 0x10, block);
+    ASSERT_OK(storage_write_block(storage, 3 * STORAGE_BLOCK_SIZE, block));
+    ASSERT_OK(storage_clear_rollback(storage));
+    long committed = file_size(DELTA_FILE);
+    fill_block(40000, 0x44, block);
+    ASSERT_OK(storage_write_block(storage, 40000 * STORAGE_BLOCK_SIZE, block));
+    ASSERT_OK(storage_delete(storage)); // no commit: the crash
+
+    storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    ASSERT_TRUE(file_size(DELTA_FILE) <= committed + 32 * 1024);
+    ASSERT_OK(storage_read_block(storage, 3 * STORAGE_BLOCK_SIZE, verify));
+    expect_block(3, 0x10, verify);
+    ASSERT_OK(storage_read_block(storage, 40000 * STORAGE_BLOCK_SIZE, verify));
+    expect_block(40000, 0x31, verify);
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
+// A version-1 delta (LBA-positioned, written by earlier builds) still opens,
+// reads and takes writes in place.
+TEST(storage_v1_delta_still_opens) {
+    setup_sandbox();
+    const uint64_t blocks = TEST_BLOCKS;
+    create_base_image(BASE_FILE, blocks, 0x41);
+    // Hand-build a v1 delta: 24-byte header, two bitmaps, block area.
+    size_t bm = (size_t)((blocks + 7) / 8);
+    FILE *f = fopen(DELTA_FILE, "wb");
+    ASSERT_TRUE(f != NULL);
+    uint8_t hdr[24] = {'G', 'S', 'D', 'L', 1, 0, 0, 0};
+    uint64_t bc = blocks;
+    uint32_t bs = STORAGE_BLOCK_SIZE;
+    memcpy(hdr + 8, &bc, 8);
+    memcpy(hdr + 16, &bs, 4);
+    ASSERT_TRUE(fwrite(hdr, sizeof(hdr), 1, f) == 1);
+    uint8_t *bits = calloc(1, bm);
+    bits[9 / 8] |= 1u << (9 % 8);
+    ASSERT_TRUE(fwrite(bits, bm, 1, f) == 1);
+    ASSERT_TRUE(fwrite(bits, bm, 1, f) == 1);
+    free(bits);
+    uint8_t block[STORAGE_BLOCK_SIZE], verify[STORAGE_BLOCK_SIZE];
+    fill_block(9, 0x99, block);
+    ASSERT_TRUE(fseek(f, (long)(24 + 2 * bm + 9 * STORAGE_BLOCK_SIZE), SEEK_SET) == 0);
+    ASSERT_TRUE(fwrite(block, sizeof(block), 1, f) == 1);
+    fclose(f);
+
+    storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, blocks);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    ASSERT_OK(storage_read_block(storage, 9 * STORAGE_BLOCK_SIZE, verify));
+    expect_block(9, 0x99, verify);
+    ASSERT_OK(storage_read_block(storage, 8 * STORAGE_BLOCK_SIZE, verify));
+    expect_block(8, 0x41, verify);
+    fill_block(9, 0x12, block); // committed: journaled, then rolled back
+    ASSERT_OK(storage_write_block(storage, 9 * STORAGE_BLOCK_SIZE, block));
+    fill_block(100, 0x13, block);
+    ASSERT_OK(storage_write_block(storage, 100 * STORAGE_BLOCK_SIZE, block));
+    ASSERT_OK(storage_read_block(storage, 100 * STORAGE_BLOCK_SIZE, verify));
+    expect_block(100, 0x13, verify);
+    ASSERT_OK(storage_apply_rollback(storage));
+    ASSERT_OK(storage_read_block(storage, 9 * STORAGE_BLOCK_SIZE, verify));
+    expect_block(9, 0x99, verify);
+    ASSERT_OK(storage_read_block(storage, 100 * STORAGE_BLOCK_SIZE, verify));
+    expect_block(100, 0x41, verify);
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
 int main(void) {
     RUN(storage_invalid_arguments);
     RUN(storage_basic_read_write);
@@ -718,5 +878,9 @@ int main(void) {
     RUN(storage_block_past_2gib);
     RUN(storage_journal_entry_out_of_range_is_dropped);
     RUN(storage_journal_partial_tail_is_dropped);
+    RUN(storage_v2_last_block_is_one_slot);
+    RUN(storage_v2_rollback_truncates_new_slots);
+    RUN(storage_v2_reopen_after_crash_is_committed_state);
+    RUN(storage_v1_delta_still_opens);
     return 0;
 }
