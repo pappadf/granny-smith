@@ -294,6 +294,27 @@ assert_contains ans700 '"freq":150000000' "ans700 runs a 150 MHz 604 card"
 assert_contains ans500 '"ram_default":32768' "ans500 ships with 32 MB of parity DRAM"
 assert_contains ans700 '"ram_default":49152' "ans700 ships with 48 MB of parity DRAM"
 
+# The beige Power Macintosh G3 (Gossamer): a 750 behind Grackle, Heathrow's
+# MESH bus with two HD slots and the CD at id 3, the SWIM3 SuperDrive, three
+# PCI slots and the on-board Rage Pro fixed in slot F1.  The SPD-sized RAM
+# decode reaches 768 MB (three 256 MB DIMMs).
+for m in pmg3dt pmg3mt; do
+    assert_contains "$m" '"model":750' "$m is a PowerPC 750"
+    assert_contains "$m" '"kind":"ppc_604"' "$m has the 604-style BAT MMU"
+    assert_contains "$m" '"fpu":true' "$m has the FPU datapath"
+    assert_contains "$m" '"address_bits":32' "$m is 32-bit"
+    assert_contains "$m" '"nubus":false' "$m has no NuBus"
+    assert_contains "$m" '"pci":true' "$m advertises PCI"
+    assert_contains "$m" '"floppy_slots":[{"label":"Internal FD0","kind":"hd"}]' "$m offers the one internal SuperDrive"
+    assert_contains "$m" '"scsi_buses":[{"object":"scsi","label":"SCSI","slots":[{"label":"SCSI HD0","id":0,"boot":false},{"label":"SCSI HD1","id":1,"boot":false}]}]' "$m offers two MESH HD slots"
+    assert_contains "$m" '"has_cdrom":true,"cdrom_id":3' "$m puts the CD-ROM at SCSI id 3"
+    assert_contains "$m" '"ram_max":786432' "$m decodes up to 768 MB"
+    assert_contains "$m" '"label":"F1","bus":0,"device":18,"irq":22,"fixed":true' "$m has the fixed on-board video slot F1"
+    assert_contains "$m" '"default_card":"ati_rage_pro"' "$m seats the on-board Rage Pro"
+done
+assert_contains pmg3dt '"freq":267280000' "pmg3dt runs a 267 MHz 750"
+assert_contains pmg3mt '"freq":300690000' "pmg3mt runs a 300 MHz 750"
+
 assert_contains q840av '"freq":40000000' "q840av runs at 40 MHz"
 assert_contains q660av '"freq":25000000' "q660av runs at 25 MHz"
 # The on-board DMSD/VDC video digitizer is what makes these machines "AV":
