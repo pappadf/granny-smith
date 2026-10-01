@@ -1,4 +1,6 @@
 <script lang="ts">
+  import SectionHeading from '@/components/ui/SectionHeading.svelte';
+  import Hint from '@/components/ui/Hint.svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
   import { machine } from '@/state/machine.svelte';
   import { debug, toggleSection } from '@/state/debug.svelte';
@@ -37,10 +39,10 @@
 {#if machine.fpu}
   <CollapsibleSection title="FPU" open={debug.sections.fpu} onToggle={() => toggleSection('fpu')}>
     {#if machine.status === 'running'}
-      <p class="fpu-hint">Pause the machine to inspect FPU state.</p>
+      <Hint class="fpu-hint" inset="block">Pause the machine to inspect FPU state.</Hint>
     {:else if fpu}
       <div class="fpu-group">
-        <h4 class="fpu-group-title">Data</h4>
+        <SectionHeading level="h4" class="fpu-group-title">Data</SectionHeading>
         <div class="fpu-rows">
           {#each fpu.data as r, i (i)}
             <span class="fpu-name" class:changed={dataChanged[i]}>{fpu.prefix}{i}</span>
@@ -50,7 +52,7 @@
         </div>
       </div>
       <div class="fpu-group">
-        <h4 class="fpu-group-title">Control</h4>
+        <SectionHeading level="h4" class="fpu-group-title">Control</SectionHeading>
         <div class="fpu-ctl">
           {#each fpu.control as c (c.name)}
             <div class="fpu-ctl-row" class:changed={ctlChanged[c.name]}>
@@ -61,27 +63,14 @@
         </div>
       </div>
     {:else}
-      <p class="fpu-hint">No machine running.</p>
+      <Hint class="fpu-hint" inset="block">No machine running.</Hint>
     {/if}
   </CollapsibleSection>
 {/if}
 
 <style>
-  .fpu-hint {
-    color: var(--gs-fg-muted);
-    font-size: 11px;
-    padding: 8px 16px;
-  }
   .fpu-group {
-    padding: 6px 12px;
-  }
-  .fpu-group-title {
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--gs-fg-muted);
-    margin: 6px 0 4px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    padding: var(--gs-space-1-5) var(--gs-space-3);
   }
   /* Data register grid: name | raw hex | decimal value. Hex is fixed-
      width (20 chars + underscore = 21 ch), value gets the remaining
@@ -89,11 +78,11 @@
   .fpu-rows {
     display: grid;
     grid-template-columns: auto auto 1fr;
-    column-gap: 16px;
+    column-gap: var(--gs-space-4);
     row-gap: 0;
     align-items: center;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
+    font-family: var(--gs-font-mono);
+    font-size: var(--gs-font-size-xs);
     line-height: 18px;
   }
   /* Control registers stack as plain flex rows — each label sits
@@ -101,27 +90,27 @@
   .fpu-ctl {
     display: flex;
     flex-direction: column;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
+    font-family: var(--gs-font-mono);
+    font-size: var(--gs-font-size-xs);
     line-height: 18px;
   }
   .fpu-ctl-row {
     display: flex;
     align-items: baseline;
-    gap: 8px;
+    gap: var(--gs-space-2);
   }
   .fpu-name {
-    color: var(--gs-fg-muted);
+    color: var(--gs-code-reg-name);
     text-align: right;
     min-width: 4ch;
   }
   .fpu-hex {
-    color: var(--gs-fg);
-    text-transform: uppercase;
+    color: var(--gs-code-reg-value);
+    text-transform: uppercase; /* hex digits */
     white-space: nowrap;
   }
   .fpu-val {
-    color: var(--gs-fg);
+    color: var(--gs-code-reg-value);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -134,7 +123,7 @@
   .fpu-hex.changed,
   .fpu-val.changed,
   .fpu-ctl-row.changed {
-    background: var(--gs-changed-bg);
-    border-radius: 2px;
+    background: var(--gs-code-changed-bg);
+    border-radius: var(--gs-radius-xs);
   }
 </style>

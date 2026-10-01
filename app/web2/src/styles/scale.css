@@ -1,0 +1,115 @@
+/* ====== Scale tokens ======
+   Scheme-independent values: type, space, radius, metrics, borders, opacity,
+   z-order and motion.  A skin may override any of them for its whole
+   [data-skin] scope.  The defaults reproduce the workbench look. */
+@layer gs.tokens {
+  :root {
+    /* --- Typography --------------------------------------------------------- */
+    --gs-font-ui:
+      -apple-system, BlinkMacSystemFont, 'Segoe WPC', 'Segoe UI', system-ui, Ubuntu, 'Droid Sans',
+      sans-serif;
+    --gs-font-mono: 'SF Mono', Monaco, Menlo, Consolas, 'Liberation Mono', 'Courier New', monospace;
+    --gs-font-size-3xs: 9px; /* sort markers */
+    --gs-font-size-2xs: 10px; /* pills, register group titles */
+    --gs-font-size-xs: 11px; /* labels, headings, small buttons */
+    --gs-font-size-sm: 12px; /* status bar, logs, help text */
+    --gs-font-size-base: 13px; /* body, rows, dialogs */
+    --gs-font-size-md: 14px; /* subtitles, the drop label */
+    --gs-font-size-lg: 15px; /* the URL-boot headline */
+    --gs-font-size-xl: 16px; /* modal titles */
+    --gs-font-size-2xl: 18px; /* large glyphs */
+    --gs-font-size-3xl: 22px; /* the configuration title */
+    --gs-font-size-4xl: 28px; /* the hero title */
+    --gs-font-weight-light: 200;
+    --gs-font-weight-regular: 400;
+    --gs-font-weight-medium: 500;
+    --gs-font-weight-semibold: 600;
+    --gs-font-weight-bold: 700;
+    --gs-line-height-base: 1.4;
+    --gs-line-height-relaxed: 1.5;
+    --gs-line-height-code: 1.6;
+    --gs-caps-transform: uppercase; /* micro-headings; a skin may set none */
+    --gs-caps-tracking: 0.04em;
+    --gs-numeric: tabular-nums;
+
+    /* --- Space (a 2px base) ------------------------------------------------- */
+    --gs-space-0: 0;
+    --gs-space-px: 1px;
+    --gs-space-0-5: 2px;
+    --gs-space-1: 4px;
+    --gs-space-1-5: 6px;
+    --gs-space-2: 8px;
+    --gs-space-2-5: 10px;
+    --gs-space-3: 12px;
+    --gs-space-3-5: 14px;
+    --gs-space-4: 16px;
+    --gs-space-5: 20px;
+    --gs-space-6: 24px;
+    --gs-space-7: 28px;
+    --gs-space-8: 32px;
+    --gs-space-12: 48px; /* the hero's top margin */
+
+    /* --- Radius ------------------------------------------------------------- */
+    --gs-radius-none: 0;
+    --gs-radius-xs: 2px;
+    --gs-radius-sm: 3px;
+    --gs-radius-md: 4px;
+    --gs-radius-lg: 6px;
+    --gs-radius-pill: 9999px;
+    --gs-radius-round: 50%;
+
+    /* --- Metrics (JavaScript reads some: lib/tokens.ts) --------------------- */
+    --gs-size-row: 22px; /* tree, table, list, menu and disassembly rows */
+    --gs-size-control-sm: 18px; /* inline register input, caps chip */
+    --gs-size-control: 22px; /* small buttons, inputs, icon buttons */
+    --gs-size-control-md: 26px; /* selects, sub-tabs, table header */
+    --gs-size-control-lg: 30px; /* dialog buttons */
+    --gs-size-toolbar: 35px; /* display toolbar, panel header, collapsed panel */
+    --gs-size-tab: 31px; /* panel tabs */
+    --gs-size-statusbar: 22px;
+    --gs-size-icon-xs: 12px;
+    --gs-size-icon-sm: 13px;
+    --gs-size-icon-md: 14px;
+    --gs-size-icon: 16px;
+    --gs-size-indent: 14px; /* tree indent step per level */
+    --gs-size-indent-base: 8px; /* tree first-level padding */
+    --gs-size-sash: 4px;
+    --gs-size-dot: 8px;
+    --gs-size-progress: 6px;
+    --gs-size-spinner: 18px;
+    --gs-size-form-label: 140px;
+
+    /* --- Border, focus, opacity --------------------------------------------- */
+    --gs-border-width: 1px;
+    --gs-border-width-strong: 2px;
+    --gs-focus-width: 1px;
+    --gs-focus-offset: -1px;
+    --gs-opacity-disabled: 0.5;
+    --gs-opacity-drag-source: 0.45;
+    --gs-opacity-skipped: 0.55;
+
+    /* --- Z-order ------------------------------------------------------------ */
+    --gs-z-raised: 1;
+    --gs-z-sash: 5;
+    --gs-z-layer: 10;
+    --gs-z-drop: 100;
+    --gs-z-toast: 2545;
+    --gs-z-modal: 2600;
+    --gs-z-popover: 2700;
+    --gs-z-menu: 2800;
+
+    /* --- Motion ------------------------------------------------------------- */
+    --gs-duration-instant: 80ms;
+    --gs-duration-fast: 100ms;
+    --gs-duration-quick: 150ms;
+    --gs-duration-base: 200ms;
+    --gs-duration-slow: 250ms;
+    --gs-duration-slower: 300ms;
+    --gs-duration-spin: 0.9s;
+    --gs-duration-pulse: 1s;
+    --gs-duration-indeterminate: 1.3s;
+    --gs-ease-out: ease-out;
+    --gs-ease-in-out: ease-in-out;
+    --gs-ease-linear: linear;
+  }
+}

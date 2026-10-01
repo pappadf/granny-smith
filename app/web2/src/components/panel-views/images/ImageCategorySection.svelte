@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { askText, askConfirm } from '@/state/dialogs.svelte';
+  import { validateName } from '@/components/panel-views/filesystem/RenameDialog.svelte';
+  import Hint from '@/components/ui/Hint.svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
-  import Icon from '@/components/common/Icon.svelte';
   import ImageRow from './ImageRow.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { CATEGORY_LABELS, CATEGORY_ACCEPT, iconForCategory } from '@/lib/iconForFsEntry';
@@ -10,6 +12,7 @@
   import { showNotification } from '@/state/toasts.svelte';
   import type { OpfsEntry, ImageCategory } from '@/bus/types';
   import type { MediaTypeId } from '@/lib/media';
+  import IconButton from '@/components/ui/IconButton.svelte';
   import {
     images,
     setMounted,
@@ -177,8 +180,13 @@
   }
 
   async function doRename(entry: OpfsEntry) {
-    if (typeof window === 'undefined' || typeof window.prompt !== 'function') return;
-    const next = window.prompt('Rename', entry.name);
+    const next = await askText({
+      title: 'Rename',
+      label: 'New name',
+      initial: entry.name,
+      submitText: 'Rename',
+      validate: validateName,
+    });
     if (!next || next === entry.name) return;
     try {
       await opfs.rename(entry.path, next);
@@ -191,9 +199,13 @@
   }
 
   async function doDelete(entry: OpfsEntry) {
-    if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
-      if (!window.confirm(`Delete '${entry.name}'?`)) return;
-    }
+    const ok = await askConfirm({
+      title: 'Delete',
+      message: `Delete '${entry.name}'?`,
+      confirmText: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await opfs.delete(entry.path);
       await refresh();
@@ -216,22 +228,22 @@
 >
   <CollapsibleSection title={CATEGORY_LABELS[cat]} {open} {onToggle} count={entries.length}>
     {#snippet actions()}
-      <button
-        type="button"
+      <IconButton
         class="upload-btn"
-        title="Upload {CATEGORY_LABELS[cat]} image"
-        aria-label="Upload {CATEGORY_LABELS[cat]} image"
+        icon="upload"
+        iconSize="md"
+        tone="panel"
+        rest="faded"
+        label="Upload {CATEGORY_LABELS[cat]} image"
         onclick={onUploadClick}
-      >
-        <Icon name="upload" size={14} />
-      </button>
+      />
     {/snippet}
     {#if loading && entries.length === 0}
-      <p class="empty">Loading…</p>
+      <Hint class="empty" inset="list">Loading…</Hint>
     {:else if entries.length === 0}
-      <p class="empty">
+      <Hint class="empty" inset="list">
         No {CATEGORY_LABELS[cat]} images. Drop a file here or click the upload button.
-      </p>
+      </Hint>
     {:else}
       {#each entries as entry (entry.path)}
         <ImageRow
@@ -250,37 +262,11 @@
      path but click-to-upload still matters for touch / accessibility,
      so the button shouldn't be hover-gated. Muted by default so it
      doesn't compete with the section title; brightens on hover. */
-  .upload-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 22px;
-    padding: 0;
-    border: none;
-    background: transparent;
-    color: var(--gs-fg-muted);
-    opacity: 0.6;
-    transition:
-      opacity 100ms,
-      color 100ms;
-    cursor: pointer;
-  }
-  .upload-btn:hover,
-  .upload-btn:focus-visible {
-    opacity: 1;
-    color: var(--gs-fg-bright);
-  }
-  .empty {
-    color: var(--gs-fg-muted);
-    font-size: 12px;
-    padding: 6px 28px;
-  }
   /* Drop-target affordance — subtle inset border while a file is
      being dragged over the section so the user sees which category
      will accept the drop. */
   .drop-host {
-    transition: background 80ms ease-out;
+    transition: background var(--gs-duration-instant) var(--gs-ease-out);
   }
   .drop-host.drop-active {
     background: var(--gs-drop-bg);

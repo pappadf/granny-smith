@@ -195,6 +195,7 @@ import SystemView from '@/components/panel-views/machine/SystemView.svelte';
 import { machine } from '@/state/machine.svelte';
 import { systemView, revealInSystem } from '@/state/system.svelte';
 import { layout } from '@/state/layout.svelte';
+import { dialogs, answerText } from '@/state/dialogs.svelte';
 import { closeContextMenu } from '@/components/common/ContextMenu.svelte';
 
 let clip: string[];
@@ -420,7 +421,7 @@ describe('SystemView menus', () => {
     expect(calls.find(([p]) => p === 'machine.reset')).toBeUndefined();
     const confirm = Array.from(
       document.querySelectorAll<HTMLElement>('.modal-actions button'),
-    ).find((b) => b.textContent === 'Reset')!;
+    ).find((b) => b.textContent?.trim() === 'Reset')!;
     await fireEvent.click(confirm);
     await waitFor(() => expect(calls).toContainEqual(['machine.reset', []]));
     expect(echo).toHaveBeenCalledWith('machine.reset');
@@ -453,7 +454,7 @@ describe('SystemView menus', () => {
     ) as HTMLInputElement;
     await fireEvent.input(size, { target: { value: '0x100' } });
     const go = Array.from(document.querySelectorAll<HTMLElement>('.modal-actions button')).find(
-      (b) => b.textContent === 'Create',
+      (b) => b.textContent?.trim() === 'Create',
     )!;
     await fireEvent.click(go);
     await waitFor(() => expect(calls).toContainEqual(['files.create', ['/opfs/a.img', 256]]));
@@ -461,17 +462,19 @@ describe('SystemView menus', () => {
   });
 
   it('export saves the image its own way instead of opening a form', async () => {
-    const prompt = vi.spyOn(window, 'prompt').mockReturnValue(null);
     const { container } = render(SystemView);
     await waitFor(() => expect(rowEl(container, 'files')).not.toBeNull());
     await fireEvent.contextMenu(
       rowEl(container, 'files')!.querySelector('.sys-line') as HTMLElement,
     );
     await fireEvent.click(await waitFor(() => menuItem('Export…')));
-    await waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
+    // It asks for the file name in the in-app prompt (DialogHost renders
+    // it in the app); cancelling ends it.
+    await waitFor(() => expect(dialogs.current?.kind).toBe('text'));
+    expect(dialogs.current?.title).toBe('Save image as');
     expect(calls).toContainEqual(['files.filename', []]);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
-    prompt.mockRestore();
+    answerText(null);
   });
 
   it('Copy value and Copy path', async () => {

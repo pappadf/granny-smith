@@ -1,7 +1,16 @@
 <script lang="ts">
   import { machine, setZoom } from '@/state/machine.svelte';
   import { layout, setPanelPos, setPanelCollapsed, type PanelPos } from '@/state/layout.svelte';
-  import { theme, cycleTheme, resolveTheme } from '@/state/theme.svelte';
+  import {
+    appearance,
+    resolved,
+    toggleScheme,
+    canToggleScheme,
+    setSchemeMode,
+    setSkin,
+    activeSkin,
+  } from '@/state/appearance.svelte';
+  import { skins } from '@/skins/registry';
   import { camera, setCameraEnabled } from '@/state/camera.svelte';
   import {
     microphone,
@@ -19,7 +28,11 @@
     saveCheckpoint,
     applySchedulerMode,
   } from '@/bus';
-  import Icon from '../common/Icon.svelte';
+  import IconButton from '../ui/IconButton.svelte';
+  import SegmentedControl from '../ui/SegmentedControl.svelte';
+  import Separator from '../ui/Separator.svelte';
+  import Toolbar from '../ui/Toolbar.svelte';
+  import TextInput from '../ui/TextInput.svelte';
   import type { IconName } from '@/lib/icons';
   import type { SchedulerMode } from '@/state/machine.svelte';
 
@@ -71,10 +84,34 @@
   );
 
   const themeTitle = $derived(
-    resolveTheme(theme.mode) === 'dark'
-      ? 'Theme: dark. Click for light.'
-      : 'Theme: light. Click for dark.',
+    !canToggleScheme()
+      ? `Theme: ${resolved.scheme} (this skin has one)`
+      : resolved.scheme === 'dark'
+        ? 'Theme: dark. Click for light.'
+        : 'Theme: light. Click for dark.',
   );
+
+  // The appearance menu beside the theme toggle: the scheme mode (a scheme
+  // the skin lacks is disabled) and the skin.
+  function onAppearanceMenu(ev: MouseEvent) {
+    const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+    const has = activeSkin().schemes;
+    const items: ContextMenuItem[] = [
+      ...(['dark', 'light', 'system'] as const).map((m) => ({
+        label: m === 'system' ? 'System' : m === 'dark' ? 'Dark' : 'Light',
+        checked: appearance.schemeMode === m,
+        disabled: m !== 'system' && !has.includes(m),
+        action: () => setSchemeMode(m),
+      })),
+      { sep: true },
+      ...skins.map((s) => ({
+        label: s.name,
+        checked: resolved.skin === s.id,
+        action: () => setSkin(s.id),
+      })),
+    ];
+    openContextMenu(items, r.left, r.bottom);
+  }
 
   // Run/Pause icon flip.
   const runIcon: IconName = $derived(machine.status === 'running' ? 'pause' : 'play');
@@ -181,13 +218,15 @@
       { label: 'Disconnect microphone', action: () => void setMicrophoneEnabled(false) },
       { sep: true },
       {
-        label: `${microphone.deviceId === '' ? '\u2713' : '\u2007'} System default`,
+        label: 'System default',
+        checked: microphone.deviceId === '',
         action: () => void setMicrophoneDevice(''),
       },
       ...microphone.devices
         .filter((d) => d.id && d.id !== 'default')
         .map((d) => ({
-          label: `${microphone.deviceId === d.id ? '\u2713' : '\u2007'} ${d.label}`,
+          label: d.label,
+          checked: microphone.deviceId === d.id,
           action: () => void setMicrophoneDevice(d.id),
         })),
     ];
@@ -204,269 +243,172 @@
   }
 </script>
 
-<div class="gs-toolbar" role="toolbar" aria-label="Display toolbar">
+<Toolbar label="Display toolbar">
   <div class="tg execution">
-    <button
+    <IconButton
       class="tbtn"
-      title={runTitle}
-      aria-label={runTitle}
+      icon={runIcon}
+      label={runTitle}
       disabled={!isLive}
       onclick={onRunPause}
-    >
-      <Icon name={runIcon} />
-    </button>
-    <button
+    />
+    <IconButton
       class="tbtn"
+      icon="sign-out"
+      label="Shut down"
       title="Shut down — return to Welcome view"
-      aria-label="Shut down"
       disabled={!everStarted}
       onclick={onShutdown}
-    >
-      <Icon name="sign-out" />
-    </button>
-    <div class="sep"></div>
-    <div class="scheduler" role="group" aria-label="Scheduler mode">
-      <button
-        class="sch-btn"
-        class:active={machine.scheduler === 'live'}
-        disabled={!isLive}
-        title="Real-Time — runs at the original Mac's speed"
-        onclick={() => onSchedulerClick('live')}>real-time</button
-      >
-      <button
-        class="sch-btn"
-        class:active={machine.scheduler === 'accel'}
-        disabled={!isLive}
-        title="Accelerated — runs faster while keeping games, sound, and animations at the correct speed, like adding a CPU accelerator card"
-        onclick={() => onSchedulerClick('accel')}>accelerated</button
-      >
-      <button
-        class="sch-btn"
-        class:active={machine.scheduler === 'turbo'}
-        disabled={!isLive}
-        title="Fast-Forward — runs everything as fast as possible to skip ahead; games and sound run fast too"
-        onclick={() => onSchedulerClick('turbo')}>fast-forward</button
-      >
-    </div>
+    />
+    <Separator class="sep" />
+    <SegmentedControl
+      class="scheduler"
+      optionClass="sch-btn"
+      label="Scheduler mode"
+      disabled={!isLive}
+      value={machine.scheduler}
+      onChange={onSchedulerClick}
+      options={[
+        {
+          value: 'live',
+          label: 'real-time',
+          title: "Real-Time — runs at the original Mac's speed",
+        },
+        {
+          value: 'accel',
+          label: 'accelerated',
+          title:
+            'Accelerated — runs faster while keeping games, sound, and animations at the correct speed, like adding a CPU accelerator card',
+        },
+        {
+          value: 'turbo',
+          label: 'fast-forward',
+          title:
+            'Fast-Forward — runs everything as fast as possible to skip ahead; games and sound run fast too',
+        },
+      ]}
+    />
   </div>
-  <div class="sep"></div>
+  <Separator class="sep" />
   <div class="tg view">
-    <button
+    <IconButton
       class="tbtn"
-      title="Zoom out"
-      aria-label="Zoom out"
+      icon="minus"
+      label="Zoom out"
       disabled={!isLive}
       onclick={() => setZoom(machine.zoom - 10)}
-    >
-      <Icon name="minus" />
-    </button>
-    <input
+    />
+    <TextInput
       class="zoom-input"
+      bare
+      style="width: 48px"
       value={zoomInput}
       disabled={!isLive}
       aria-label="Zoom level"
       onchange={onZoomInput}
     />
-    <button
+    <IconButton
       class="tbtn"
-      title="Zoom in"
-      aria-label="Zoom in"
+      icon="plus"
+      label="Zoom in"
       disabled={!isLive}
       onclick={() => setZoom(machine.zoom + 10)}
-    >
-      <Icon name="plus" />
-    </button>
+    />
   </div>
-  <div class="sep"></div>
+  <Separator class="sep" />
   <div class="tg actions">
-    <button
+    <IconButton
       class="tbtn"
-      title="Save State"
-      aria-label="Save State"
+      icon="download"
+      label="Save State"
       disabled={!isLive || saving}
       onclick={onSave}
-    >
-      <Icon name="download" />
-    </button>
+    />
     {#if machine.videoIn}
-      <button
+      <IconButton
         class="tbtn"
-        class:cam-live={camera.live}
-        title={cameraTitle}
-        aria-label={cameraTitle}
-        aria-pressed={camera.enabled}
+        live={camera.live}
+        icon={cameraIcon}
+        label={cameraTitle}
+        pressed={camera.enabled}
         disabled={!isLive}
         onclick={onCameraClick}
-      >
-        <Icon name={cameraIcon} />
-      </button>
+      />
     {/if}
     {#if machine.audioIn}
-      <button
+      <IconButton
         class="tbtn"
-        class:cam-live={microphone.guestActive}
-        title={micTitle}
-        aria-label={micTitle}
-        aria-pressed={microphone.enabled}
+        live={microphone.guestActive}
+        icon={micIcon}
+        label={micTitle}
+        pressed={microphone.enabled}
         aria-haspopup="menu"
         disabled={!isLive}
         onclick={onMicClick}
-      >
-        <Icon name={micIcon} />
-      </button>
+      />
     {/if}
   </div>
   <div class="layout-controls">
-    <button class="tbtn" title={themeTitle} aria-label={themeTitle} onclick={cycleTheme}>
-      <Icon name="color-mode" />
-    </button>
-    <button
+    <IconButton
       class="tbtn"
-      title={fullscreenTitle}
-      aria-label={fullscreenTitle}
+      icon="color-mode"
+      label={themeTitle}
+      disabled={!canToggleScheme()}
+      onclick={toggleScheme}
+    />
+    <IconButton
+      class="tbtn appearance-menu"
+      icon="chevron"
+      iconSize="xs"
+      size="sm"
+      label="Appearance: scheme and skin"
+      aria-haspopup="menu"
+      onclick={onAppearanceMenu}
+    />
+    <IconButton
+      class="tbtn"
+      icon={fullscreenIcon}
+      label={fullscreenTitle}
       onclick={onFullscreenClick}
-    >
-      <Icon name={fullscreenIcon} />
-    </button>
-    <div class="sep"></div>
-    <button
+    />
+    <Separator class="sep" />
+    <IconButton
       class="tbtn layout-btn"
-      class:active={layout.panelPos === 'left' && !layout.panelCollapsed}
-      title="Panel Left"
-      aria-label="Panel Left"
+      icon={layoutIcon('left')}
+      label="Panel Left"
+      pressed={layout.panelPos === 'left' && !layout.panelCollapsed}
       onclick={() => onLayoutClick('left')}
-    >
-      <Icon name={layoutIcon('left')} />
-    </button>
-    <button
+    />
+    <IconButton
       class="tbtn layout-btn"
-      class:active={layout.panelPos === 'bottom' && !layout.panelCollapsed}
-      title="Panel Bottom"
-      aria-label="Panel Bottom"
+      icon={layoutIcon('bottom')}
+      label="Panel Bottom"
+      pressed={layout.panelPos === 'bottom' && !layout.panelCollapsed}
       onclick={() => onLayoutClick('bottom')}
-    >
-      <Icon name={layoutIcon('bottom')} />
-    </button>
-    <button
+    />
+    <IconButton
       class="tbtn layout-btn"
-      class:active={layout.panelPos === 'right' && !layout.panelCollapsed}
-      title="Panel Right"
-      aria-label="Panel Right"
+      icon={layoutIcon('right')}
+      label="Panel Right"
+      pressed={layout.panelPos === 'right' && !layout.panelCollapsed}
       onclick={() => onLayoutClick('right')}
-    >
-      <Icon name={layoutIcon('right')} />
-    </button>
+    />
   </div>
-</div>
+</Toolbar>
 
 <style>
-  .gs-toolbar {
-    height: 35px;
-    flex: 0 0 35px;
-    display: flex;
-    align-items: center;
-    padding: 0 8px;
-    gap: 0;
-    background: var(--gs-bg);
-    border-bottom: 1px solid var(--gs-border);
-    color: var(--gs-fg-bright);
-    user-select: none;
-  }
   .tg {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: var(--gs-toolbar-gap);
   }
   .tg.actions {
-    margin-left: 4px;
-  }
-  .sep {
-    width: 1px;
-    height: 16px;
-    background: var(--gs-border);
-    margin: 0 8px;
-  }
-  .tbtn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 22px;
-    padding: 3px;
-    border: none;
-    border-radius: 6px;
-    background: transparent;
-    color: inherit;
-    cursor: pointer;
-  }
-  .tbtn:hover:not(:disabled) {
-    background: var(--gs-btn-hover);
-  }
-  .tbtn:active:not(:disabled) {
-    background: var(--gs-btn-active);
-  }
-  .tbtn:focus-visible {
-    outline: 1px solid var(--gs-focus);
-    outline-offset: -1px;
-  }
-  .tbtn:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-  /* The camera and microphone buttons glow while data is actually flowing
-     to the guest. */
-  .tbtn.cam-live {
-    color: var(--gs-accent, #4ea1ff);
-  }
-  .scheduler {
-    display: flex;
-    align-items: center;
-    gap: 0;
-    border-radius: 3px;
-    overflow: hidden;
-  }
-  .sch-btn {
-    padding: 2px 6px;
-    font-size: 11px;
-    background: transparent;
-    color: var(--gs-fg-muted);
-    border: none;
-    border-radius: 3px;
-    cursor: pointer;
-  }
-  .sch-btn:hover:not(:disabled) {
-    color: var(--gs-fg-bright);
-    background: var(--gs-btn-hover);
-  }
-  .sch-btn.active {
-    color: var(--gs-fg-bright);
-    background: var(--gs-btn-hover);
-  }
-  .sch-btn:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-  .zoom-input {
-    width: 48px;
-    height: 22px;
-    font-size: 11px;
-    text-align: center;
-    background: transparent;
-    color: var(--gs-fg-bright);
-    border: 1px solid transparent;
-    border-radius: 2px;
-    outline: none;
-  }
-  .zoom-input:focus {
-    border-color: var(--gs-focus);
-  }
-  .zoom-input:disabled {
-    opacity: 0.4;
+    margin-left: var(--gs-space-1);
   }
   .layout-controls {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: var(--gs-toolbar-gap);
     margin-left: auto;
     height: 100%;
   }

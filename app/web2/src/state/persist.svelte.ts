@@ -9,7 +9,8 @@
 // envelope so future migrations are tractable. Reads tolerate
 // missing/malformed values silently.
 
-import { theme } from './theme.svelte';
+import { appearance } from './appearance.svelte';
+import { getSkin } from '@/skins/registry';
 import { layout, type PanelPos } from './layout.svelte';
 import { debug, type MmuSubtab, type MemoryMode } from './debug.svelte';
 import { logs } from './logs.svelte';
@@ -22,6 +23,7 @@ import type { ImageCategory } from '@/bus/types';
 const KEYS = {
   // The original keys: plain values.
   theme: 'gs-theme',
+  skin: 'gs-skin',
   panelPos: 'gs-panel-pos',
   panelSize: 'gs-panel-size',
   // View-state keys, each in a `{v, data}` envelope.
@@ -82,10 +84,14 @@ function writeEnvelope<T>(key: string, data: T): void {
 export function loadPersistedState(): void {
   const savedTheme = readLS(KEYS.theme);
   if (savedTheme === 'dark' || savedTheme === 'light') {
-    theme.mode = savedTheme;
+    appearance.schemeMode = savedTheme;
   } else {
-    theme.mode = 'system';
+    appearance.schemeMode = 'system';
   }
+
+  // A skin id this build does not know (one removed since) is dropped.
+  const savedSkin = readLS(KEYS.skin);
+  appearance.skin = getSkin(savedSkin).id;
 
   const savedPos = readLS(KEYS.panelPos);
   if (savedPos === 'bottom' || savedPos === 'left' || savedPos === 'right') {
@@ -173,8 +179,11 @@ export function loadPersistedState(): void {
 // called from a root-effect context (or from a component's $effect).
 export function startPersistEffects(): void {
   $effect(() => {
-    if (theme.mode === 'system') writeLS(KEYS.theme, null);
-    else writeLS(KEYS.theme, theme.mode);
+    if (appearance.schemeMode === 'system') writeLS(KEYS.theme, null);
+    else writeLS(KEYS.theme, appearance.schemeMode);
+  });
+  $effect(() => {
+    writeLS(KEYS.skin, appearance.skin === getSkin(null).id ? null : appearance.skin);
   });
   $effect(() => {
     writeLS(KEYS.panelPos, layout.panelPos);

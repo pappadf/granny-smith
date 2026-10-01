@@ -402,6 +402,14 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium
 
+      # The UI gallery: every component story, both colour schemes, compared
+      # pixel for pixel with the committed baselines (Vite dev server, no
+      # WASM or test data needed). Styling refactors claim zero diff here.
+      - name: UI gallery screenshots (Playwright)
+        env:
+          CI: true
+        run: make ui2-gallery
+
       # End-to-end smoke: serves dist/ from a subpath WITHOUT
       # COOP/COEP headers, asserts the page reaches __gsReady and
       # crossOriginIsolated === true. This is the production env

@@ -320,21 +320,21 @@
     height: 100%;
     min-width: 0;
     min-height: 0;
-    background: var(--gs-terminal-bg);
-    color: var(--gs-terminal-fg);
-    font-family: var(--gs-font-mono);
-    font-size: 13px;
-    line-height: 1.4;
+    background: var(--gs-console-bg);
+    color: var(--gs-console-fg);
+    font-family: var(--gs-console-font);
+    font-size: var(--gs-console-font-size);
+    line-height: var(--gs-console-line-height);
     box-sizing: border-box;
   }
   .console-output {
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
-    padding: 4px 6px 0;
+    padding: var(--gs-space-1) var(--gs-space-1-5) 0;
   }
   .console-output ::selection {
-    background: var(--gs-terminal-selection);
+    background: var(--gs-console-selection);
   }
   .entry {
     white-space: pre-wrap;
@@ -347,15 +347,11 @@
     content: '› ';
     color: var(--gs-syntax-dim);
   }
-  /* Syntax colours are global (styles/syntax.css); an unresolved segment
-     in a command entry is also underlined. */
-  .entry :global(.hl-unknown) {
-    text-decoration: underline wavy var(--gs-syntax-unknown);
-    text-underline-offset: 3px;
-  }
+  /* Syntax colours (and the underline of an unresolved segment) are global:
+     styles/syntax.css. */
   .entry.stderr {
     color: var(--gs-syntax-error);
-    opacity: 0.75;
+    opacity: var(--gs-console-stderr-opacity);
   }
   .entry.error {
     color: var(--gs-syntax-error);
@@ -365,24 +361,24 @@
     color: var(--gs-syntax-dim);
   }
   .entry.find-hit {
-    background: rgba(128, 128, 128, 0.12);
+    background: var(--gs-console-progress-bg);
   }
   .entry mark {
-    background: rgba(234, 92, 0, 0.33);
+    background: var(--gs-console-find-hit-bg);
     color: inherit;
   }
   .entry.find-current mark {
-    background: rgba(234, 92, 0, 0.7);
+    background: var(--gs-console-find-current-bg);
   }
   .sig-hint {
     flex: none;
-    margin: 0 6px;
-    padding: 2px 8px;
+    margin: 0 var(--gs-space-1-5);
+    padding: var(--gs-space-0-5) var(--gs-space-2);
     white-space: pre-wrap;
     background: var(--gs-menu-bg);
     color: var(--gs-menu-fg);
-    border: 1px solid var(--gs-border, #454545);
-    font-size: 12px;
+    border: var(--gs-border-width) solid var(--gs-border);
+    font-size: var(--gs-console-popup-font-size);
   }
   .sig-arg {
     text-decoration-thickness: 2px;
@@ -392,7 +388,7 @@
     display: flex;
     align-items: flex-start;
     gap: 0.5em;
-    padding: 2px 6px 4px;
+    padding: var(--gs-space-0-5) var(--gs-space-1-5) var(--gs-space-1);
     flex: none;
     max-height: 40%;
     overflow-y: auto;

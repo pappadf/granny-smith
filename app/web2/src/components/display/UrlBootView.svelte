@@ -4,6 +4,13 @@
   // progress bar per file.  It replaces Welcome for that load; nothing asks
   // the user anything (bus/urlMedia.ts drives the state, state/urlBoot).
   import Icon from '../common/Icon.svelte';
+  import Button from '../ui/Button.svelte';
+  import Card from '../ui/Card.svelte';
+  import Hero from '../ui/Hero.svelte';
+  import Hint from '../ui/Hint.svelte';
+  import ProgressBar, { type ProgressState } from '../ui/ProgressBar.svelte';
+  import SectionHeading from '../ui/SectionHeading.svelte';
+  import Spinner from '../ui/Spinner.svelte';
   import type { IconName } from '@/lib/icons';
   import { urlBoot, dismissUrlBoot, type UrlFile } from '@/state/urlBoot.svelte';
 
@@ -30,6 +37,11 @@
     return null;
   }
 
+  // The bar's look for a file's status.
+  function barState(f: UrlFile): ProgressState {
+    return f.status === 'downloading' ? 'active' : f.status;
+  }
+
   function amount(f: UrlFile): string {
     switch (f.status) {
       case 'queued':
@@ -54,7 +66,6 @@
   const doneCount = $derived(
     urlBoot.files.filter((f) => f.status === 'done' || f.status === 'failed').length,
   );
-  const current = $derived(urlBoot.files.find((f) => f.status === 'downloading') ?? null);
 
   const headline = $derived(
     urlBoot.stage === 'failed'
@@ -76,65 +87,63 @@
 
 <div class="url-boot" data-testid="url-boot-view">
   <div class="content">
-    <h1 class="title">Granny Smith</h1>
-    <p class="subtitle">A classic Macintosh emulator in the browser.</p>
+    <Hero
+      title="Granny Smith"
+      subtitle="A classic Macintosh emulator in the browser."
+      titleClass="title"
+      subtitleClass="subtitle"
+    />
 
-    <section class="card" class:failed={urlBoot.stage === 'failed'} aria-live="polite">
+    <Card class="card {urlBoot.stage === 'failed' ? 'failed' : ''}" aria-live="polite">
       <div class="head">
         {#if urlBoot.stage !== 'failed'}
-          <span class="spinner" aria-hidden="true"></span>
+          <Spinner class="spinner" />
         {/if}
         <div class="head-text">
           <h2 class="headline">{headline}</h2>
-          <p class="detail">{detail}</p>
+          <p class="detail" class:failed={urlBoot.stage === 'failed'}>{detail}</p>
         </div>
       </div>
 
       {#if urlBoot.files.length}
         <ul class="files">
           {#each urlBoot.files as f (f.slot)}
-            {@const fr = fraction(f)}
             <li
               class="file"
               class:done={f.status === 'done'}
               class:failed={f.status === 'failed'}
               class:skipped={f.status === 'skipped'}
-              class:active={f === current}
+              data-state={f.status}
               data-slot={f.slot}
             >
               <div class="row">
                 <Icon name={iconFor(f.slot)} />
                 <div class="names">
-                  <span class="label">{f.label}</span>
+                  <SectionHeading as="span" class="label">{f.label}</SectionHeading>
                   <span class="name" title={f.name}>{f.name}</span>
                 </div>
                 <span class="amount">
-                  {#if f.status === 'done'}<span class="check" aria-hidden="true">✓</span>{/if}
+                  {#if f.status === 'done'}<Icon name="check" size="xs" class="check" />{/if}
                   {amount(f)}
                 </span>
               </div>
-              <div
+              <ProgressBar
                 class="bar"
-                class:indeterminate={fr === null && f.status !== 'failed'}
-                role="progressbar"
-                aria-label={`${f.label}: ${f.name}`}
-                aria-valuemin="0"
-                aria-valuemax="100"
-                aria-valuenow={fr === null ? undefined : Math.floor(fr * 100)}
-              >
-                <div class="fill" style:width={fr === null ? undefined : `${fr * 100}%`}></div>
-              </div>
-              {#if f.error}<p class="file-error">{f.error}</p>{/if}
+                value={fraction(f)}
+                state={barState(f)}
+                label={`${f.label}: ${f.name}`}
+              />
+              {#if f.error}<Hint as="p" tone="error" class="file-error">{f.error}</Hint>{/if}
             </li>
           {/each}
         </ul>
       {/if}
-    </section>
+    </Card>
 
     {#if urlBoot.stage === 'failed'}
-      <button type="button" class="btn-primary" onclick={dismissUrlBoot}>
+      <Button size="lg" variant="primary" class="btn-primary" onclick={dismissUrlBoot}>
         Go to the start screen
-      </button>
+      </Button>
     {/if}
   </div>
 </div>
@@ -147,86 +156,58 @@
     justify-content: center;
     align-items: flex-start;
     overflow: auto;
-    color: var(--gs-fg);
-    font-size: 13px;
+    color: var(--gs-text);
+    font-size: var(--gs-font-size-base);
     line-height: 16px;
   }
   .content {
     max-width: 560px;
     width: 100%;
-    padding: 48px 32px 32px;
-  }
-  .title {
-    font-size: 28px;
-    font-weight: 200;
-    color: var(--gs-fg-bright);
-    margin: 0 0 8px 0;
-  }
-  .subtitle {
-    color: var(--gs-fg);
-    opacity: 0.7;
-    margin: 0 0 28px 0;
-    font-size: 14px;
-  }
-  .card {
-    background: var(--gs-card-bg);
-    border: 1px solid var(--gs-card-border);
-    border-radius: 6px;
-    padding: 16px;
-    margin-bottom: 16px;
+    padding: var(--gs-space-12) var(--gs-space-8) var(--gs-space-8);
   }
   .head {
     display: flex;
-    gap: 12px;
+    gap: var(--gs-space-3);
     align-items: flex-start;
+  }
+  .head :global(.spinner) {
+    margin-top: var(--gs-space-px);
   }
   .head-text {
     min-width: 0;
   }
   .headline {
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--gs-fg-bright);
-    margin: 0 0 4px 0;
+    font-size: var(--gs-font-size-lg);
+    font-weight: var(--gs-font-weight-semibold);
+    color: var(--gs-text-strong);
+    margin: 0 0 var(--gs-space-1) 0;
   }
   .detail {
     margin: 0;
-    color: var(--gs-fg);
-    opacity: 0.75;
+    color: var(--gs-text-muted);
   }
-  .card.failed .detail {
-    color: var(--gs-toast-error);
-    opacity: 1;
-  }
-  .spinner {
-    flex: none;
-    width: 18px;
-    height: 18px;
-    margin-top: 1px;
-    border-radius: 50%;
-    border: 2px solid var(--gs-border-soft);
-    border-top-color: var(--gs-primary-bg);
-    animation: spin 0.9s linear infinite;
+  .detail.failed {
+    color: var(--gs-danger-fg);
   }
   .files {
     list-style: none;
-    margin: 16px 0 0 0;
+    margin: var(--gs-space-4) 0 0 0;
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: var(--gs-space-3-5);
   }
   .row {
     display: flex;
     align-items: center;
-    gap: 10px;
-    margin-bottom: 6px;
+    gap: var(--gs-space-2-5);
+    margin-bottom: var(--gs-space-1-5);
   }
-  .row :global(.icon) {
+  .row > :global(.icon) {
     flex: none;
-    width: 16px;
-    height: 16px;
-    color: var(--gs-fg);
+    width: var(--gs-size-icon);
+    height: var(--gs-size-icon);
+    color: var(--gs-text);
   }
   .names {
     display: flex;
@@ -234,105 +215,33 @@
     min-width: 0;
     flex: 1 1 auto;
   }
-  .label {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    opacity: 0.7;
-  }
   .name {
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .amount {
     flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--gs-space-1);
     font-family: var(--gs-font-mono);
-    font-size: 12px;
-    font-variant-numeric: tabular-nums;
-    opacity: 0.85;
+    font-size: var(--gs-font-size-sm);
+    font-variant-numeric: var(--gs-numeric);
+    color: var(--gs-text-muted);
     white-space: nowrap;
   }
-  .check {
-    color: var(--gs-apple-green);
-    font-weight: 700;
-    margin-right: 4px;
-  }
-  .bar {
-    position: relative;
-    height: 6px;
-    border-radius: 3px;
-    background: var(--gs-border-soft);
-    overflow: hidden;
-  }
-  .fill {
-    height: 100%;
-    width: 0;
-    border-radius: 3px;
-    background: var(--gs-primary-bg);
-    transition: width 200ms ease-out;
-  }
-  .file.done .fill {
-    background: var(--gs-apple-green);
-  }
-  .file.failed .fill {
-    width: 100%;
-    background: var(--gs-toast-error);
-  }
-  .bar.indeterminate .fill {
-    position: absolute;
-    width: 35%;
-    animation: slide 1.3s ease-in-out infinite;
+  .amount :global(.check) {
+    color: var(--gs-success-fg);
   }
   .file.skipped {
-    opacity: 0.55;
+    opacity: var(--gs-opacity-skipped);
   }
-  .file-error {
-    margin: 6px 0 0 26px;
-    color: var(--gs-toast-error);
+  /* The error lines up under the file's name, past the slot icon. */
+  .file :global(.file-error) {
+    margin: var(--gs-space-1-5) 0 0 calc(var(--gs-size-icon) + var(--gs-space-2-5));
+    font-size: inherit;
     word-break: break-word;
-  }
-  .btn-primary {
-    font-family: inherit;
-    font-size: 13px;
-    padding: 6px 14px;
-    height: 30px;
-    border-radius: 2px;
-    border: none;
-    cursor: pointer;
-    background: var(--gs-primary-bg);
-    color: var(--gs-primary-fg);
-  }
-  .btn-primary:hover {
-    background: var(--gs-primary-hover);
-  }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  @keyframes slide {
-    from {
-      left: -35%;
-    }
-    to {
-      left: 100%;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .spinner {
-      animation: none;
-    }
-    .bar.indeterminate .fill {
-      animation: none;
-      left: 0;
-      width: 100%;
-      opacity: 0.45;
-    }
-    .fill {
-      transition: none;
-    }
   }
 </style>

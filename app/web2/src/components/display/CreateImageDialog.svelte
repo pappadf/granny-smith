@@ -1,5 +1,7 @@
 <script lang="ts">
   import Modal from '@/components/common/Modal.svelte';
+  import Button from '@/components/ui/Button.svelte';
+  import RadioGroup from '@/components/ui/RadioGroup.svelte';
   import { gsEval } from '@/bus';
   import { FD_DIR, HD_DIR } from '@/lib/opfsPaths';
 
@@ -141,104 +143,70 @@
 >
   {#if isProfile}
     <p class="dlg-help">Choose a capacity for the new (unformatted) ProFile image.</p>
-    <div class="dlg-options" role="radiogroup">
-      {#each PROFILE_MODELS as m (m.blocks)}
-        <label class="dlg-option">
-          <input type="radio" name="pf-size" value={m.blocks} bind:group={profileBlocks} />
-          <span>{m.label} ({m.blocks.toLocaleString()} blocks)</span>
-        </label>
-      {/each}
-    </div>
+    <RadioGroup
+      name="pf-size"
+      label="ProFile capacity"
+      bind:value={profileBlocks}
+      options={PROFILE_MODELS.map((m) => ({
+        value: m.blocks,
+        label: `${m.label} (${m.blocks.toLocaleString()} blocks)`,
+      }))}
+    />
   {:else if kind === 'hd'}
     <p class="dlg-help">Choose a size for the new hard disk image.</p>
     {#if modelsState === 'error'}
       <div class="dlg-error">
         Could not load drive sizes.
-        <button type="button" class="dlg-btn" onclick={() => (modelsState = 'idle')}>Retry</button>
+        <Button class="dlg-btn" onclick={() => (modelsState = 'idle')}>Retry</Button>
       </div>
     {:else if hdModels.length === 0}
       <div class="dlg-help">Loading drive sizes…</div>
     {:else}
-      <div class="dlg-options" role="radiogroup">
-        {#each hdModels as m (m.label)}
-          <label class="dlg-option">
-            <input type="radio" name="hd-size" value={m.sizeBytes} bind:group={hdSize} />
-            <span>{m.mb} MB ({m.label})</span>
-          </label>
-        {/each}
-      </div>
+      <RadioGroup
+        name="hd-size"
+        label="Hard disk size"
+        bind:value={hdSize}
+        options={hdModels.map((m) => ({ value: m.sizeBytes, label: `${m.mb} MB (${m.label})` }))}
+      />
     {/if}
   {:else}
     <p class="dlg-help">Choose a capacity for the new (unformatted) floppy image.</p>
-    <div class="dlg-options" role="radiogroup">
-      <label class="dlg-option">
-        <input type="radio" name="fd-density" value="800K" bind:group={fdDensity} />
-        <span>800 KB (double density)</span>
-      </label>
-      <label class="dlg-option">
-        <input type="radio" name="fd-density" value="1440K" bind:group={fdDensity} />
-        <span>1.4 MB (high density)</span>
-      </label>
-    </div>
+    <RadioGroup
+      name="fd-density"
+      label="Floppy capacity"
+      bind:value={fdDensity}
+      options={[
+        { value: '800K', label: '800 KB (double density)' },
+        { value: '1440K', label: '1.4 MB (high density)' },
+      ]}
+    />
   {/if}
   {#if error}<div class="dlg-error">{error}</div>{/if}
 
   {#snippet actions()}
-    <button type="button" class="dlg-btn" onclick={onClose} disabled={creating}>Cancel</button>
-    <button
-      type="button"
+    <Button size="lg" class="dlg-btn" onclick={onClose} disabled={creating}>Cancel</Button>
+    <Button
+      size="lg"
+      variant="primary"
       class="dlg-btn dlg-btn-primary"
       onclick={create}
+      busy={creating}
       disabled={creating || (kind === 'hd' && !isProfile && hdModels.length === 0)}
     >
       {creating ? 'Creating…' : 'Create'}
-    </button>
+    </Button>
   {/snippet}
 </Modal>
 
 <style>
   .dlg-help {
-    color: var(--gs-fg-muted);
-    font-size: 13px;
-    margin: 0 0 12px 0;
-  }
-  .dlg-options {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .dlg-option {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-    color: var(--gs-fg);
-    cursor: pointer;
+    color: var(--gs-text-muted);
+    font-size: var(--gs-font-size-base);
+    margin: 0 0 var(--gs-space-3) 0;
   }
   .dlg-error {
-    margin-top: 12px;
-    color: var(--gs-toast-error);
-    font-size: 12px;
-  }
-  .dlg-btn {
-    background: var(--gs-input-bg);
-    color: var(--gs-input-fg);
-    border: 1px solid var(--gs-input-border);
-    border-radius: 2px;
-    padding: 5px 12px;
-    font-size: 13px;
-    cursor: pointer;
-  }
-  .dlg-btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .dlg-btn-primary {
-    background: var(--gs-primary-bg);
-    color: var(--gs-primary-fg);
-    border: none;
-  }
-  .dlg-btn-primary:hover:not(:disabled) {
-    background: var(--gs-primary-hover);
+    margin-top: var(--gs-space-3);
+    color: var(--gs-danger-fg);
+    font-size: var(--gs-font-size-sm);
   }
 </style>

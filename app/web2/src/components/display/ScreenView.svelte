@@ -107,23 +107,36 @@
     justify-content: center;
     overflow: auto;
   }
+  /* The frame around the picture: a skin may give it a bezel (padding),
+     rounded corners and its own shadow.  The canvases themselves are never
+     styled (lint L-9). */
   .screen-wrap {
     position: relative;
-    background: var(--gs-screen-bg);
-    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.8);
+    background: var(--gs-screen-frame-bg);
+    box-shadow: var(--gs-screen-frame-shadow);
+    padding: var(--gs-screen-frame-padding);
+    border-radius: var(--gs-screen-frame-radius);
   }
   canvas {
     display: block;
     image-rendering: pixelated;
     image-rendering: crisp-edges;
-    outline: none;
     /* Prevent OS touch-pan + page bounce on touch devices. */
     touch-action: none;
   }
+  /* Keyboard focus on the emulated screen shows on its frame, not as a
+     ring drawn over the picture. */
+  canvas:focus-visible {
+    outline: none;
+  }
+  .screen-wrap:has(canvas:focus-visible) {
+    outline: var(--gs-focus-width) solid var(--gs-focus-ring);
+    outline-offset: var(--gs-focus-width);
+  }
   canvas.overlay {
     position: absolute;
-    left: 0;
-    top: 0;
+    left: var(--gs-screen-frame-padding);
+    top: var(--gs-screen-frame-padding);
     pointer-events: none;
   }
   canvas.overlay[hidden] {

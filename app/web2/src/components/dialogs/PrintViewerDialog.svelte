@@ -6,6 +6,7 @@
   // document itself arrives long after the user's last click
   // (printer/platen.ts).  Mounted once, in App.svelte.
   import Modal from '@/components/common/Modal.svelte';
+  import Button from '@/components/ui/Button.svelte';
   import { printer, closePrintedDocument } from '@/state/printer.svelte';
 
   const doc = $derived(printer.document);
@@ -16,16 +17,25 @@
   );
 </script>
 
-<Modal open={printer.viewerOpen && doc !== null} {title} onClose={closePrintedDocument} wide>
+<Modal
+  open={printer.viewerOpen && doc !== null}
+  {title}
+  onClose={closePrintedDocument}
+  variant="wide"
+>
   {#if doc}
     <iframe class="pdf-frame" src={doc.url} title={doc.name}></iframe>
   {/if}
   {#snippet actions()}
     {#if doc}
-      <a class="btn" href={doc.url} target="_blank" rel="noopener">Open in new tab</a>
-      <a class="btn" href={doc.url} download={doc.name}>Download</a>
+      <Button size="lg" class="btn" href={doc.url} target="_blank" rel="noopener"
+        >Open in new tab</Button
+      >
+      <Button size="lg" class="btn" href={doc.url} download={doc.name}>Download</Button>
     {/if}
-    <button type="button" class="btn primary" onclick={closePrintedDocument}>Close</button>
+    <Button size="lg" variant="primary" class="btn primary" onclick={closePrintedDocument}
+      >Close</Button
+    >
   {/snippet}
 </Modal>
 
@@ -34,28 +44,7 @@
     flex: 1 1 auto;
     width: 100%;
     min-height: 0;
-    border: 1px solid var(--gs-border);
-    background: #fff;
-  }
-  .btn {
-    background: transparent;
-    color: var(--gs-fg);
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    padding: 4px 12px;
-    font-size: 13px;
-    cursor: pointer;
-    text-decoration: none;
-  }
-  .btn:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.06));
-  }
-  .btn.primary {
-    background: var(--gs-primary-bg);
-    color: var(--gs-primary-fg);
-    border-color: transparent;
-  }
-  .btn.primary:hover {
-    background: var(--gs-primary-hover);
+    border: var(--gs-border-width) solid var(--gs-border);
+    background: var(--gs-surface-document);
   }
 </style>

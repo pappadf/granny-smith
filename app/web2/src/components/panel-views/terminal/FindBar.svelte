@@ -55,6 +55,9 @@
 </script>
 
 <script lang="ts">
+  import TextInput from '@/components/ui/TextInput.svelte';
+  import IconButton from '@/components/ui/IconButton.svelte';
+
   // The find bar over the console's output: the query, match case,
   // previous / next (Enter, Shift+Enter) and close (Esc).
   let {
@@ -93,10 +96,11 @@
 </script>
 
 <div class="find" role="search">
-  <input
-    bind:this={inputEl}
+  <TextInput
+    bind:ref={inputEl}
     bind:value={find.query}
     class="find-input"
+    style="width: 14em"
     placeholder="Find"
     aria-label="Find in console output"
     onkeydown={onKey}
@@ -106,23 +110,44 @@
       ? `${(find.index % find.hits.length) + 1} of ${find.hits.length}`
       : 'No results'}</span
   >
-  <button
+  <IconButton
     class="find-btn"
-    class:on={find.caseSensitive}
-    title="Match case"
-    aria-pressed={find.caseSensitive}
-    onclick={() => (find.caseSensitive = !find.caseSensitive)}>Aa</button
-  >
-  <button
+    tone="panel"
+    size="sm"
+    iconSize="md"
+    icon="case-sensitive"
+    label="Match case"
+    pressed={find.caseSensitive}
+    onclick={() => (find.caseSensitive = !find.caseSensitive)}
+  />
+  <IconButton
     class="find-btn"
-    title="Previous match"
-    aria-label="Previous match"
-    onclick={() => step(-1)}>↑</button
-  >
-  <button class="find-btn" title="Next match" aria-label="Next match" onclick={() => step(1)}
-    >↓</button
-  >
-  <button class="find-btn" title="Close" aria-label="Close find" onclick={onclose}>×</button>
+    tone="panel"
+    size="sm"
+    iconSize="md"
+    icon="arrow-up"
+    label="Previous match"
+    onclick={() => step(-1)}
+  />
+  <IconButton
+    class="find-btn"
+    tone="panel"
+    size="sm"
+    iconSize="md"
+    icon="arrow-down"
+    label="Next match"
+    onclick={() => step(1)}
+  />
+  <IconButton
+    class="find-btn"
+    tone="panel"
+    size="sm"
+    iconSize="md"
+    icon="close"
+    label="Close find"
+    title="Close"
+    onclick={onclose}
+  />
 </div>
 
 <style>
@@ -130,38 +155,19 @@
     position: absolute;
     top: 4px;
     right: 12px;
-    z-index: 2;
+    z-index: var(--gs-z-raised);
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 3px 4px;
+    gap: var(--gs-space-1);
+    padding: var(--gs-space-1);
     background: var(--gs-menu-bg);
     color: var(--gs-menu-fg);
-    border: 1px solid var(--gs-border, #454545);
+    border: var(--gs-border-width) solid var(--gs-border);
     font-family: var(--gs-font-ui);
-    font-size: 12px;
-  }
-  .find-input {
-    width: 14em;
-    font: inherit;
-    background: var(--gs-bg);
-    color: var(--gs-fg);
-    border: 1px solid var(--gs-border, #454545);
-    padding: 1px 4px;
+    font-size: var(--gs-font-size-sm);
   }
   .find-count {
     min-width: 5.5em;
     color: var(--gs-syntax-dim);
-  }
-  .find-btn {
-    background: none;
-    border: 1px solid transparent;
-    color: inherit;
-    cursor: pointer;
-    padding: 0 4px;
-    font: inherit;
-  }
-  .find-btn.on {
-    border-color: var(--gs-focus-border, #007fd4);
   }
 </style>

@@ -85,6 +85,10 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
+// Every value is a token, so the page follows the active colour scheme (the
+// token stylesheet is loaded by the time main.ts shows it); the fallbacks are
+// the dark scheme's values, for a page shown before any stylesheet applies.
+// This is the one place token fallbacks are allowed (tests/lint/tokens.test.ts).
 const CSS = `
 .gs-webgl-error {
   position: fixed;
@@ -92,17 +96,17 @@ const CSS = `
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #1e1e1e;
-  color: #cccccc;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--gs-surface-app, #1e1e1e);
+  color: var(--gs-text, #cccccc);
+  font-family: var(--gs-font-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
   padding: 24px;
   box-sizing: border-box;
   z-index: 9999;
 }
 .gs-webgl-error__card {
   max-width: 560px;
-  background: #252526;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--gs-card-bg, #252526);
+  border: 1px solid var(--gs-border-card, rgba(255, 255, 255, 0.1));
   border-radius: 6px;
   padding: 28px 32px;
   line-height: 1.5;
@@ -111,7 +115,7 @@ const CSS = `
   margin: 0 0 12px;
   font-size: 20px;
   font-weight: 600;
-  color: #e7e7e7;
+  color: var(--gs-text-strong, #e7e7e7);
 }
 .gs-webgl-error__card p {
   margin: 8px 0;
@@ -124,8 +128,8 @@ const CSS = `
   margin: 4px 0;
 }
 .gs-webgl-error__card code {
-  background: #3c3c3c;
-  color: #e7e7e7;
+  background: var(--gs-input-bg, #3c3c3c);
+  color: var(--gs-input-fg, #e7e7e7);
   padding: 1px 5px;
   border-radius: 3px;
   font-size: 12px;
@@ -133,12 +137,12 @@ const CSS = `
 .gs-webgl-error__detail {
   margin-top: 16px;
   font-size: 12px;
-  color: rgba(231, 231, 231, 0.6);
+  color: var(--gs-text-muted, rgba(231, 231, 231, 0.6));
 }
 .gs-webgl-error__retry {
   margin-top: 16px;
-  background: #0e639c;
-  color: #ffffff;
+  background: var(--gs-accent, #0e639c);
+  color: var(--gs-text-on-accent, #ffffff);
   border: none;
   padding: 8px 18px;
   border-radius: 4px;
@@ -146,10 +150,10 @@ const CSS = `
   cursor: pointer;
 }
 .gs-webgl-error__retry:hover {
-  background: #1177bb;
+  background: var(--gs-accent-hover, #1177bb);
 }
 .gs-webgl-error__retry:focus-visible {
-  outline: 2px solid #007fd4;
+  outline: 2px solid var(--gs-focus-ring, #007fd4);
   outline-offset: 2px;
 }
 `;

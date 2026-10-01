@@ -606,7 +606,7 @@
     width: 100%;
     height: 100%;
     overflow: auto;
-    background: var(--gs-bg);
-    padding: 4px 0;
+    background: var(--gs-surface-app);
+    padding: var(--gs-space-1) 0;
   }
 </style>

@@ -44,12 +44,12 @@
     min-height: 0;
     position: relative;
     overflow: hidden;
-    background: var(--gs-bg);
+    background: var(--gs-surface-app);
   }
   .welcome-layer {
     position: absolute;
     inset: 0;
-    background: var(--gs-bg);
-    z-index: 10;
+    background: var(--gs-surface-app);
+    z-index: var(--gs-z-layer);
   }
 </style>

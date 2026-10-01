@@ -1,7 +1,9 @@
 <script lang="ts">
   import { setWelcomeSlide } from '@/state/layout.svelte';
   import { pickAndUpload, pickAndLoadCheckpoint } from '@/bus/upload';
-  import Icon from '../common/Icon.svelte';
+  import ActionRow from '../ui/ActionRow.svelte';
+  import Card from '../ui/Card.svelte';
+  import Hero from '../ui/Hero.svelte';
 
   // (A "Recent" card used to list /opfs/config/recent.json, which nothing in
   // production ever wrote — only test fixtures, which held display names
@@ -29,85 +31,35 @@
 </script>
 
 <div class="home-content">
-  <h1 class="welcome-title">Granny Smith</h1>
-  <p class="welcome-subtitle">A classic Macintosh emulator in the browser.</p>
-  <section class="card">
-    <h3 class="card-heading">Start</h3>
+  <Hero
+    title="Granny Smith"
+    subtitle="A classic Macintosh emulator in the browser."
+    titleClass="welcome-title"
+    subtitleClass="welcome-subtitle"
+  />
+  <Card class="card" heading="Start">
     <div class="card-rows">
-      <button class="card-row" onclick={openConfigSlide}>
-        <Icon name="mac" />
-        <span>New Machine...</span>
-      </button>
-      <button class="card-row" onclick={openCheckpoint}>
-        <Icon name="clock" />
-        <span>Open Checkpoint...</span>
-      </button>
-      <button class="card-row" onclick={openUploadRom}>
-        <Icon name="upload" />
-        <span>Upload ROM...</span>
-      </button>
+      <ActionRow class="card-row" icon="mac" label="New Machine..." onclick={openConfigSlide} />
+      <ActionRow
+        class="card-row"
+        icon="clock"
+        label="Open Checkpoint..."
+        onclick={openCheckpoint}
+      />
+      <ActionRow class="card-row" icon="upload" label="Upload ROM..." onclick={openUploadRom} />
     </div>
-  </section>
+  </Card>
 </div>
 
 <style>
   .home-content {
     max-width: 560px;
     width: 100%;
-    padding: 48px 32px 32px;
-  }
-  .welcome-title {
-    font-size: 28px;
-    font-weight: 200;
-    color: var(--gs-fg-bright);
-    margin: 0 0 8px 0;
-  }
-  .welcome-subtitle {
-    color: var(--gs-fg);
-    opacity: 0.7;
-    margin: 0 0 28px 0;
-    font-size: 14px;
-  }
-  .card {
-    background: var(--gs-card-bg);
-    border: 1px solid var(--gs-card-border);
-    border-radius: 6px;
-    padding: 14px 16px;
-    margin-bottom: 16px;
-  }
-  .card-heading {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: var(--gs-fg);
-    opacity: 0.8;
-    margin: 0 0 8px 0;
+    padding: var(--gs-space-12) var(--gs-space-8) var(--gs-space-8);
   }
   .card-rows {
     display: flex;
     flex-direction: column;
-    gap: 2px;
-  }
-  .card-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 6px 8px;
-    background: transparent;
-    border: none;
-    border-radius: 3px;
-    color: var(--gs-link);
-    cursor: pointer;
-    text-align: left;
-    font-size: 13px;
-  }
-  .card-row:hover {
-    background: var(--gs-list-hover);
-  }
-  .card-row :global(.icon) {
-    width: 16px;
-    height: 16px;
-    color: var(--gs-fg);
+    gap: var(--gs-space-0-5);
   }
 </style>

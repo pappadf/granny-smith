@@ -166,7 +166,6 @@ describe('FilesystemView — live refresh after mutation', () => {
     filesystem.expanded = { '/opfs': true };
     filesystem.dragSourcePath = null;
     clearFsSelection();
-    window.confirm = () => true;
   });
 
   it('removes a deleted row from the tree without a tab switch', async () => {

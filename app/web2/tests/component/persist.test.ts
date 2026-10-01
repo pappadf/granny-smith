@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { loadPersistedState } from '@/state/persist.svelte';
-import { theme } from '@/state/theme.svelte';
+import { appearance } from '@/state/appearance.svelte';
 import { layout } from '@/state/layout.svelte';
 import { debug } from '@/state/debug.svelte';
 import { logs } from '@/state/logs.svelte';
@@ -89,8 +89,17 @@ describe('loadPersistedState — view-state keys', () => {
     localStorage.setItem('gs-panel-pos', 'left');
     localStorage.setItem('gs-panel-size', JSON.stringify({ left: 320 }));
     loadPersistedState();
-    expect(theme.mode).toBe('light');
+    expect(appearance.schemeMode).toBe('light');
     expect(layout.panelPos).toBe('left');
     expect(layout.panelSize.left).toBe(320);
+  });
+
+  it('restores a known skin and drops an unknown one', () => {
+    localStorage.setItem('gs-skin', 'workbench');
+    loadPersistedState();
+    expect(appearance.skin).toBe('workbench');
+    localStorage.setItem('gs-skin', 'no-such-skin');
+    loadPersistedState();
+    expect(appearance.skin).toBe('workbench');
   });
 });

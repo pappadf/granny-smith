@@ -3,6 +3,7 @@
   import { machine } from '@/state/machine.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { checkpointsView } from './checkpointsView.svelte';
+  import Button from '@/components/ui/Button.svelte';
 
   async function onClick() {
     if (machine.status !== 'running' && machine.status !== 'paused') {
@@ -32,27 +33,6 @@
   }
 </script>
 
-<button
-  type="button"
-  class="action-btn"
-  onclick={onClick}
-  title="Save a checkpoint of the current machine"
->
+<Button class="action-btn" onclick={onClick} title="Save a checkpoint of the current machine">
   Create Checkpoint
-</button>
-
-<style>
-  .action-btn {
-    background: transparent;
-    color: var(--gs-fg);
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 8px;
-    font-size: 11px;
-    cursor: pointer;
-  }
-  .action-btn:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.06));
-  }
-</style>
+</Button>

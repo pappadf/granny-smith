@@ -37,7 +37,7 @@
     height: 100%;
     min-width: 0;
     min-height: 0;
-    background: var(--gs-bg);
+    background: var(--gs-surface-app);
     overflow: hidden;
     display: flex;
     flex-direction: column;

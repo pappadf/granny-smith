@@ -72,7 +72,7 @@ describe('UrlBootView', () => {
     const hd = container.querySelector('[data-slot="hd0"]');
     expect(hd?.textContent).toContain('System7_5_3.img');
     expect(hd?.textContent).toContain('12.5 MB of 25.0 MB · 50%');
-    expect(container.querySelector('[data-slot="rom"]')?.classList.contains('done')).toBe(true);
+    expect(container.querySelector('[data-slot="rom"]')?.getAttribute('data-state')).toBe('done');
   });
 
   it('uses an indeterminate bar when the server sends no length', () => {
@@ -81,7 +81,7 @@ describe('UrlBootView', () => {
     updateUrlFile('hd0', { status: 'downloading', received: 3 * 1024 * 1024, total: null });
     const { container } = render(UrlBootView);
     const bar = container.querySelector('[role="progressbar"]');
-    expect(bar?.classList.contains('indeterminate')).toBe(true);
+    expect(bar?.hasAttribute('data-indeterminate')).toBe(true);
     expect(bar?.hasAttribute('aria-valuenow')).toBe(false);
     expect(container.querySelector('.amount')?.textContent).toContain('3.0 MB');
   });
@@ -107,7 +107,7 @@ describe('UrlBootView', () => {
     setUrlBootStage('failed', 'There is no ROM to boot.');
     const { container } = render(UrlBootView);
     const hd = container.querySelector('[data-slot="hd0"]');
-    expect(hd?.classList.contains('skipped')).toBe(true);
+    expect(hd?.getAttribute('data-state')).toBe('skipped');
     expect(hd?.textContent).toContain('Not needed');
   });
 });
@@ -147,5 +147,14 @@ describe('PreviewNoticeDialog with a URL boot', () => {
   it('opens on an ordinary first visit', () => {
     const { queryByText } = render(PreviewNoticeDialog);
     expect(queryByText(/preview build/)).not.toBeNull();
+  });
+
+  it('marks an unpacking file with its own bar state', () => {
+    beginUrlBoot(null);
+    queueUrlFile('hd0', HD_URL);
+    updateUrlFile('hd0', { status: 'unpacking', received: 1024, total: 1024 });
+    const { container } = render(UrlBootView);
+    const bar = container.querySelector('[data-slot="hd0"] [role="progressbar"]');
+    expect(bar?.getAttribute('data-state')).toBe('unpacking');
   });
 });

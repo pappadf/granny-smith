@@ -1,4 +1,8 @@
 <script lang="ts">
+  import IconButton from '@/components/ui/IconButton.svelte';
+  import Button from '@/components/ui/Button.svelte';
+  import Callout from '@/components/ui/Callout.svelte';
+  import SectionHeading from '@/components/ui/SectionHeading.svelte';
   // The command browser's details pane: a method's or attribute's usage
   // text (shell.usage), its signature and example lines coloured by
   // shell.highlight, the argument the console's cursor is in underlined.
@@ -55,12 +59,18 @@
 </script>
 
 {#if lines}
-  <section class="details" aria-label="Usage">
+  <Callout class="details" edge="top" aria-label="Usage">
     <header class="details-head">
-      <span class="details-name">{row.name}</span>
-      <button class="details-close" aria-label="Close" title="Close (Esc)" onclick={onClose}
-        >×</button
-      >
+      <SectionHeading as="span" class="details-name">{row.name}</SectionHeading>
+      <IconButton
+        class="details-close"
+        tone="panel"
+        size="sm"
+        icon="close"
+        label="Close"
+        title="Close (Esc)"
+        onclick={onClose}
+      />
     </header>
     <pre
       class="usage">{#each lines as runs, li (li)}{#if li > 0}{NEWLINE}{/if}{#each runs as r, ri (ri)}{#if r.mark}<mark
@@ -69,79 +79,52 @@
             >{:else}{r.text}{/if}{/each}{/each}</pre>
     {#if row.insert}
       <footer class="details-foot">
-        <button
+        <Button
           class="details-insert"
+          icon="newline"
           title="Insert into the console (double-click, or Enter)"
-          onclick={() => onInsert(row)}>Insert</button
+          onclick={() => onInsert(row)}>Insert</Button
         >
       </footer>
     {/if}
-  </section>
+  </Callout>
 {/if}
 
 <style>
   /* The selection's usage, under the tree.  It sizes to its content up to
      60% of the browser; a longer usage text scrolls inside it, with the
      header and Insert button kept in view. */
-  .details {
+  :global(.gs-callout.details) {
     flex: 0 0 auto;
     max-height: 60%;
     display: flex;
     flex-direction: column;
     min-height: 0;
-    border-top: 1px solid var(--gs-border, rgba(128, 128, 128, 0.3));
-    background: var(--gs-info-bg, rgba(80, 140, 220, 0.08));
   }
   .details-head {
     flex: 0 0 auto;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 2px 4px 0 10px;
-  }
-  .details-name {
-    font-family: var(--gs-font-mono, monospace);
-    font-size: 12px;
-    color: var(--gs-fg-muted);
-  }
-  .details-close {
-    border: none;
-    background: transparent;
-    color: var(--gs-fg-muted);
-    font-size: 16px;
-    line-height: 1;
-    padding: 2px 6px;
-    cursor: pointer;
-  }
-  .details-close:hover {
-    color: var(--gs-fg);
+    padding: var(--gs-space-0-5) var(--gs-space-1) 0 var(--gs-space-2-5);
   }
   .details-foot {
     flex: 0 0 auto;
     display: flex;
     justify-content: flex-end;
-    padding: 0 8px 6px;
-  }
-  .details-insert {
-    font-size: 12px;
-    padding: 2px 12px;
-    border-radius: 3px;
-    border: 1px solid var(--gs-accent, rgba(80, 140, 220, 0.8));
-    background: var(--gs-accent-bg, rgba(80, 140, 220, 0.25));
-    color: var(--gs-fg-bright, var(--gs-fg));
-    cursor: pointer;
+    padding: 0 var(--gs-space-2) var(--gs-space-1-5);
   }
   .usage {
     flex: 0 1 auto;
     min-height: 0;
     margin: 0;
-    padding: 4px 10px 6px;
+    padding: var(--gs-space-1) var(--gs-space-2-5) var(--gs-space-1-5);
     overflow: auto;
-    font-size: 12px;
-    line-height: 1.4;
+    font-size: var(--gs-font-size-sm);
+    line-height: var(--gs-line-height-base);
     white-space: pre-wrap;
-    color: var(--gs-fg);
-    font-family: var(--gs-font-mono, monospace);
+    color: var(--gs-text);
+    font-family: var(--gs-font-mono);
   }
   .usage-arg {
     background: none;

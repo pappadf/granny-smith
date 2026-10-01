@@ -1,8 +1,11 @@
 <script lang="ts">
+  import Badge from '@/components/ui/Badge.svelte';
   import { translateAddr, type Translation } from '@/bus/mmu';
   import { debug } from '@/state/debug.svelte';
   import { debugFrame } from '@/state/debugFrame.svelte';
   import { fmtHex32, parseHex } from '@/lib/hex';
+  import Button from '@/components/ui/Button.svelte';
+  import TextInput from '@/components/ui/TextInput.svelte';
 
   // inputValue mirrors debug.mmuTransAddr but is mutable so the user can
   // type into it before committing with Enter / Translate.
@@ -40,20 +43,20 @@
 <div class="trans-body">
   <div class="trans-header">
     <span class="lbl">Address:</span>
-    <input
-      type="text"
+    <TextInput
       class="addr"
+      hex
+      widthCh={10}
       bind:value={inputValue}
       onkeydown={onKey}
       aria-label="Logical address to translate"
     />
-    <button type="button" class="btn" onclick={translate}>Translate</button>
+    <Button class="btn" onclick={translate}>Translate</Button>
     {#if debugFrame.current}
       <span class="presets">
-        <button
-          type="button"
+        <Button
           class="preset-btn"
-          onclick={() => (debug.mmuTransAddr = debugFrame.current?.pc ?? 0)}>PC</button
+          onclick={() => (debug.mmuTransAddr = debugFrame.current?.pc ?? 0)}>PC</Button
         >
       </span>
     {/if}
@@ -68,8 +71,8 @@
         L:$<span class="hex">{fmtHex32(debug.mmuTransAddr)}</span> P:$<span class="hex"
           >{fmtHex32(result.phys ?? 0)}</span
         >
-        <span class="tag tag-pt">{result.via.toUpperCase()}</span>
-        {#if result.space}<span class="tag tag-tt">{result.space}</span>{/if}
+        <Badge class="tag tag-pt" intent="info">{result.via.toUpperCase()}</Badge>
+        {#if result.space}<Badge class="tag tag-tt" intent="success">{result.space}</Badge>{/if}
       </p>
     {/if}
   {/if}
@@ -77,87 +80,42 @@
 
 <style>
   .trans-body {
-    padding: 8px 12px;
+    padding: var(--gs-space-2) var(--gs-space-3);
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: var(--gs-space-1-5);
   }
   .trans-header {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--gs-space-1-5);
     flex-wrap: wrap;
   }
   .lbl {
-    color: var(--gs-fg-muted);
-    font-size: 11px;
-  }
-  .addr {
-    background: var(--gs-input-bg);
-    color: var(--gs-input-fg);
-    border: 1px solid var(--gs-input-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 6px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
-    width: 10ch;
-    outline: none;
-    text-transform: uppercase;
-  }
-  .addr:focus {
-    border-color: var(--gs-focus);
-  }
-  .btn,
-  .preset-btn {
-    background: transparent;
-    color: var(--gs-fg);
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 8px;
-    font-size: 11px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    cursor: pointer;
-  }
-  .btn:hover,
-  .preset-btn:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.06));
+    color: var(--gs-text-muted);
+    font-size: var(--gs-font-size-xs);
   }
   .presets {
     display: inline-flex;
-    gap: 4px;
-    margin-left: 12px;
+    gap: var(--gs-space-1);
+    margin-left: var(--gs-space-3);
   }
   .invalid {
-    color: var(--gs-error-fg, #f48771);
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
-    margin: 6px 0 0;
+    color: var(--gs-danger-fg);
+    font-family: var(--gs-font-mono);
+    font-size: var(--gs-font-size-xs);
+    margin: var(--gs-space-1-5) 0 0;
   }
   .ok {
-    color: var(--gs-fg);
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
-    margin: 6px 0 0;
+    color: var(--gs-text);
+    font-family: var(--gs-font-mono);
+    font-size: var(--gs-font-size-xs);
+    margin: var(--gs-space-1-5) 0 0;
   }
   .hex {
-    text-transform: uppercase;
+    text-transform: uppercase; /* hex digits */
   }
-  .tag {
-    border-radius: 9999px;
-    padding: 0 6px;
-    font-size: 10px;
-    font-weight: 600;
-    margin-left: 6px;
-    text-transform: uppercase;
-  }
-  .tag-tt {
-    background: rgba(35, 134, 54, 0.25);
-    color: #4ac26b;
-  }
-  .tag-pt {
-    background: rgba(80, 140, 220, 0.25);
-    color: #6aa6ff;
+  .ok :global(.tag) {
+    margin-left: var(--gs-space-1-5);
   }
 </style>

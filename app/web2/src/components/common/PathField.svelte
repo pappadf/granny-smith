@@ -3,6 +3,8 @@
   // system (files.list), one directory at a time.  Picking a directory opens
   // it; picking a file (or "Use this folder") fills the field.
   import { gsEval } from '@/bus/emulator';
+  import Button from '@/components/ui/Button.svelte';
+  import TextInput from '@/components/ui/TextInput.svelte';
 
   interface Props {
     value: string;
@@ -71,15 +73,17 @@
 
 <span class="path-field">
   <span class="row">
-    <input
-      type="text"
+    <TextInput
+      size="inline"
+      mono
+      style="flex: 1; min-width: 12ch"
       aria-label={label}
       spellcheck="false"
       autocomplete="off"
       value={text}
       oninput={(ev) => set((ev.currentTarget as HTMLInputElement).value)}
     />
-    <button type="button" class="browse" aria-expanded={open} onclick={browse}>Browse…</button>
+    <Button class="browse" aria-expanded={open} onclick={browse}>Browse…</Button>
   </span>
   {#if open}
     <div class="listing" role="listbox" aria-label="Files in {dir}">
@@ -98,13 +102,12 @@
           onclick={() => pick(e)}>{e.name}{e.kind === 'directory' ? '/' : ''}</button
         >
       {/each}
-      <button
-        type="button"
+      <Button
         class="use-dir"
         onclick={() => {
           set(dir);
           open = false;
-        }}>Use this folder</button
+        }}>Use this folder</Button
       >
       {#if error}<div class="error">{error}</div>{/if}
     </div>
@@ -115,61 +118,50 @@
   .path-field {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--gs-space-0-5);
     min-width: 0;
   }
   .row {
     display: flex;
-    gap: 4px;
-  }
-  input {
-    flex: 1;
-    min-width: 12ch;
-    font-family: var(--gs-font-mono);
-    font-size: 12px;
-    color: var(--gs-fg);
-    background: var(--gs-input-bg, var(--gs-bg));
-    border: 1px solid var(--gs-border, #555);
-    padding: 1px 4px;
-  }
-  .browse,
-  .use-dir {
-    font: inherit;
-    font-size: 11px;
-    cursor: pointer;
+    gap: var(--gs-space-1);
   }
   .listing {
     display: flex;
     flex-direction: column;
     max-height: 160px;
     overflow-y: auto;
-    border: 1px solid var(--gs-border, #555);
-    background: var(--gs-bg);
+    border: var(--gs-border-width) solid var(--gs-border);
+    background: var(--gs-menu-bg);
+    color: var(--gs-menu-fg);
     font-family: var(--gs-font-mono);
-    font-size: 12px;
+    font-size: var(--gs-font-size-sm);
   }
   .dir {
-    color: var(--gs-fg-muted);
-    padding: 2px 4px;
+    color: var(--gs-text-muted);
+    padding: var(--gs-space-0-5) var(--gs-space-1);
   }
   .entry {
     text-align: left;
     background: none;
     border: none;
-    color: var(--gs-fg);
-    padding: 1px 8px;
+    color: inherit;
+    padding: var(--gs-space-px) var(--gs-space-2);
     cursor: pointer;
     font: inherit;
   }
-  .entry:hover {
+  .entry:hover,
+  .entry:focus-visible {
     background: var(--gs-menu-hover-bg);
     color: var(--gs-menu-hover-fg);
   }
   .entry.directory {
     color: var(--gs-syntax-type);
   }
+  .entry:focus-visible {
+    outline: none;
+  }
   .error {
     color: var(--gs-syntax-error);
-    padding: 2px 4px;
+    padding: var(--gs-space-0-5) var(--gs-space-1);
   }
 </style>
