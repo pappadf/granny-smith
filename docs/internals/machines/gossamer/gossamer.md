@@ -25,6 +25,7 @@ the inherited cells — and are cited from there, not restated.
 | `heathrow.c` | The I/O controller: its PCI header (`$106B:0010`, BAR0 512 KB), the two-bank interrupt controller, the feature-control and control-block registers, the NVRAM window, the cell decode, `machine.heathrow` and `machine.nvram`. |
 | `gossamer_i2c.c` | The Cuda's I2C bus: the DIMMs' SPD EEPROMs (built from the RAM size) and the personality card's ID EEPROM. |
 | `gossamer_ata.c` | Heathrow's two ATA cells on the core channel model ([ata.md](../../core/peripherals/ata.md)), the ATAPI back end, `machine.ata`. |
+| `gossamer_bmac.c` | The Ethernet cell on the core BMAC model ([bmac.md](../../core/peripherals/bmac.md)): the 16-bit bus edge, the FCR enable and reset, `machine.bmac`. |
 | `pmg3dt.c`, `pmg3mt.c` | The profiles: CPU clock, PVR and HID1 straps, the board-register value, RAM options, the ATI identity, the personality card. |
 
 The shared core models carry the rest: `core/cpu/ppc` with the 750 deltas
@@ -62,7 +63,10 @@ BMAC's on bank-2 sources 32/33 (`gos_dbdma_source`).
   the NanoKernel re-posts an expired DEC that way.
 - **The Rage Pro's set-up shortcut** `DP_SET_GUI_ENGINE2`, the
   `GUI_STAT` FIFO count and colour host data, all of which ATI's Mac
-  accelerator relies on.
+  accelerator relies on — and the upper half of BAR2, the register
+  aperture: the accelerator streams its host data through the second copy
+  of the register blocks there, and without it every alert, button and
+  menu title drew blank.
 - **DBDMA CommandPtr on a parked channel.**  The ATA driver rewrites it
   with RUN set to continue a long transfer.
 
@@ -72,7 +76,8 @@ BMAC's on bank-2 sources 32/33 (`gos_dbdma_source`).
 interrupt controller, FCR, MBCR), `machine.nvram` (peek/poke/dump/
 snapshot/restore/clear on the 8 KB store), `machine.board`,
 `machine.scsi` (MESH), `machine.ata` and `machine.atapi`
-([ata.md](../../core/peripherals/ata.md) §4), plus the shared `machine.pci`,
+([ata.md](../../core/peripherals/ata.md) §4), `machine.bmac`
+([bmac.md](../../core/peripherals/bmac.md)), plus the shared `machine.pci`,
 `machine.cpu`, `machine.adb`, `machine.screen`.
 
 ## 3. Checkpointing
@@ -80,7 +85,7 @@ snapshot/restore/clear on the 8 KB store), `machine.board`,
 The core stream, ADB, Cuda, DBDMA and the floppy, then the substrate tail:
 Grackle's configuration and address latch, the Heathrow block, the I2C
 state, the Screamer registers, the PCI bus, the image table, the MESH bus
-and chip, SWIM3, and last the ATAPI bus and the two ATA channels.  The NVRAM
+and chip, SWIM3, the ATAPI bus and the two ATA channels, and last BMAC.  The NVRAM
 is part of the Heathrow block; across `machine.restart` it is carried in
 memory (the board battery), and `machine.nvram.clear` is the battery pull.
 
@@ -92,17 +97,35 @@ memory (the board battery), and `machine.nvram.clear` is the battery pull.
   Rage Pro gray desktop.
 - `gossamer-device-tree` — the Open Firmware prompt reached from the
   keyboard, and the device tree checked property by property.
-- The unit suites `ppc_750`, `scsi_mesh`, `dbdma`, `ata`.
+- `gossamer-pci-slots` — the three slots and the on-board ATI: empty
+  sockets read all-ones, a card in each slot reaches the device tree with
+  its interrupt, and Open Firmware assigns its BARs.
+- `suite-gossamer` — both models boot Mac OS 9.2.1 from a SCSI disk to the
+  desktop (boot drive, no startup system error, the chime and the
+  Screamer output frame count, a golden frame), and a 1.44 MB floppy
+  mounts on the desktop.
+- `gossamer-bmac` — Open Firmware's own BMAC package: the EEPROM's
+  station address as `local-mac-address`, receive and transmit through
+  DBDMA, loopback set from Forth, the BOOTP request of `boot enet`.
+- `gossamer-checkpoint` — a mid-boot save, a restore in a fresh process
+  and the same desktop frame.
+- Media-gated on the retail Mac OS 9.2.1 CD under `GS_EXTRA_MEDIA_DIR`
+  (they skip without it): `g3-cd-boot` (the CD to the Finder as a SCSI
+  CD-ROM and as an ATAPI one), `g3-install-scsi` (Drive Setup and the
+  installer onto a blank SCSI disk, then that disk booted to the Setup
+  Assistant) and `g3-install-ata` (the same install onto an ATA disk,
+  checked on the exported image).
+- The unit suites `ppc_750`, `scsi_mesh`, `dbdma`, `ata`, `bmac`.
 
 ## 5. Known debts
 
-- **BMAC is not modelled**: the Ethernet cell reads zero.
+- **BMAC has no wire**: frames go nowhere unless looped back, and only
+  `machine.bmac.receive` delivers one.  Mac OS 9 networking over it is
+  unexercised.
 - **Booting Mac OS 9.2.1 from an ATA disk** stops with a bus error at
   the first virtual-memory page beyond physical RAM; the same system on a
   SCSI disk boots, and the ATA data path checks out against the SCSI one.
   Unresolved.
-- **Rage Pro alerts draw without their text**: some host-data operations
-  are set up and never fed through any path the model decodes.
 - **LocalTalk on the SCC through DBDMA** is exercised only as far as the
   boot needs.
 - Shut Down from the Finder ends in a system error.

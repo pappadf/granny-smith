@@ -102,3 +102,50 @@ def gos_boot_prompt(model, ram_kb) {
     let drained = machine.scc.a.sent()
     return gos_go()
 }
+
+# --- Mac OS 9.2.1 install from its CD -------------------------------------------
+#
+# From the CD's Finder desktop (the disc's window open, the blank disk the
+# first entry in Drive Setup's list): Utilities -> Drive Setup, initialize
+# the blank disk as one Mac OS partition, quit, then Mac OS Install through
+# its Continue screens and the license to Start, and the ~40 G-instruction
+# copy.  Leaves the installer's "installation process has finished" dialog
+# up and checks it against `golden` (menu-bar clock excluded).  Every
+# coordinate is the 640x480 desktop the Rage Pro comes up in.
+def gos_install_921(golden) {
+    double_click(318, 212) # Utilities
+    run_ticks(240)
+    double_click(187, 180) # Drive Setup
+    run_ticks(1500)
+    click(220, 143) # the first drive: the blank disk
+    run_ticks(120)
+    click(414, 287) # Initialize...
+    run_ticks(600)
+    click(427, 278) # Initialize (confirm)
+    run_ticks(3000)
+    machine.adb.keyboard.down "command"
+    run_ticks(6)
+    machine.adb.keyboard.press "q" # quit Drive Setup
+    run_ticks(6)
+    machine.adb.keyboard.up "command"
+    run_ticks(240)
+    click(23, 58) # close Utilities
+    run_ticks(120)
+    double_click(193, 152) # Mac OS Install
+    run_ticks(1500)
+    # The screens up to Install Software: Continue (bottom right) four times,
+    # then the license dialog's Agree.
+    click(514, 383)
+    run_ticks(600)
+    click(514, 383)
+    run_ticks(900)
+    click(514, 383)
+    run_ticks(900)
+    click(514, 383)
+    run_ticks(600)
+    click(449, 306)
+    run_ticks(900)
+    click(514, 383) # Start
+    scheduler.run 40000000000
+    check_ex($golden, 0, 440, 20, 640)
+}
