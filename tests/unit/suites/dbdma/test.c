@@ -320,6 +320,85 @@ TEST(test_stall_and_kick) {
     ASSERT_EQ_INT((int)(status(0) & DBDMA_ACTIVE), 0); // parked on STOP
 }
 
+// Frame devices (BMAC): `in_end` ends an INPUT command short at a frame's
+// last byte, its residual the unused remainder; a frame ending exactly on
+// a descriptor's last byte ends that descriptor only.  `out_last` fires
+// once per OUTPUT_LAST, before the result write-back.
+static bool s_frame_end;
+static int s_in_end_calls, s_out_last_calls;
+static uint32_t s_out_last_result;
+
+static bool dev_in_end(void *ctx) {
+    (void)ctx;
+    s_in_end_calls++;
+    bool e = s_frame_end;
+    s_frame_end = false;
+    return e;
+}
+
+static int dev_in_frame(void *ctx, uint8_t *buf, int len) {
+    if (s_frame_end)
+        return 0; // a boundary is pending
+    int n = dev_in(ctx, buf, len);
+    if (s_dev_pos == s_dev_len && n > 0)
+        s_frame_end = true;
+    return n;
+}
+
+static void dev_out_last(void *ctx) {
+    (void)ctx;
+    s_out_last_calls++;
+    s_out_last_result = peek32(0x1010 + 12);
+}
+
+TEST(test_frame_boundaries) {
+    fixture();
+    dbdma_port_t p = {.out = dev_out,
+                      .in = dev_in_frame,
+                      .s_bits = dev_s_bits,
+                      .ctx = NULL,
+                      .out_last = dev_out_last,
+                      .in_end = dev_in_end};
+    dbdma_set_port(s_d, 0, &p);
+    s_frame_end = false;
+    s_in_end_calls = 0;
+    // A 5-byte frame into a 16-byte INPUT_LAST: completes at 5, residual 11.
+    memcpy(s_dev_data, "\x01\x02\x03\x04\x05", 5);
+    s_dev_len = 5;
+    desc(0x1000, op(INPUT_LAST, ALWAYS, NEVER, NEVER, 16), 0x2000, 0);
+    desc(0x1010, op(INPUT_LAST, ALWAYS, NEVER, NEVER, 5), 0x2100, 0);
+    desc(0x1020, op(INPUT_LAST, ALWAYS, NEVER, NEVER, 16), 0x2200, 0);
+    desc(0x1030, op(STOP_CMD, NEVER, NEVER, NEVER, 0), 0, 0);
+    start(0, 0x1000);
+    ASSERT_EQ_INT(s_irq_count, 1);
+    ASSERT_EQ_INT((int)(peek32(0x1000 + 12) & 0xFFFF), 11);
+    // The next frame is exactly the second descriptor's size: it ends there
+    // and the third waits rather than completing empty.
+    memcpy(s_dev_data, "\x11\x12\x13\x14\x15", 5);
+    s_dev_pos = 0;
+    dbdma_kick(s_d, 0);
+    ASSERT_EQ_INT(s_irq_count, 2);
+    ASSERT_EQ_INT((int)(peek32(0x1010 + 12) & 0xFFFF), 0);
+    ASSERT_EQ_INT((int)peek32(0x1020 + 12), 0);
+    ASSERT_TRUE(dbdma_active(s_d, 0));
+    ASSERT_EQ_INT(memcmp(s_mem + 0x2100, "\x11\x12\x13\x14\x15", 5), 0);
+
+    // OUTPUT_MORE then OUTPUT_LAST: one out_last, after the last byte and
+    // before the last descriptor's result is written.
+    fixture();
+    dbdma_set_port(s_d, 0, &p);
+    s_out_last_calls = 0;
+    s_out_last_result = 0xFFFFFFFFu;
+    desc(0x1000, op(OUTPUT_MORE, NEVER, NEVER, NEVER, 3), 0x2000, 0);
+    desc(0x1010, op(OUTPUT_LAST, NEVER, NEVER, NEVER, 3), 0x2003, 0);
+    desc(0x1020, op(STOP_CMD, NEVER, NEVER, NEVER, 0), 0, 0);
+    start(0, 0x1000);
+    ASSERT_EQ_INT(s_out_last_calls, 1);
+    ASSERT_EQ_INT(s_dev_len, 6);
+    ASSERT_EQ_INT((int)s_out_last_result, 0); // not yet written back
+    ASSERT_TRUE(peek32(0x1010 + 12) != 0);
+}
+
 // A rate-limited port yields mid-command and resumes on a kick.
 //
 // Without this, a port that never returns short -- MESH pops straight off
@@ -542,6 +621,7 @@ int main(void) {
     RUN(test_output_program);
     RUN(test_stop_reset_sequences);
     RUN(test_stall_and_kick);
+    RUN(test_frame_boundaries);
     RUN(test_port_burst_yields_mid_command_and_resumes);
     RUN(test_zero_burst_still_runs_a_command_to_completion);
     RUN(test_no_port_stalls);

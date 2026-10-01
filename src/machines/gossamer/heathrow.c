@@ -23,7 +23,7 @@
 //                 FCR (+$38), aux (+$3C) — byte/half/word accessible
 //   +$08000       DBDMA channel n at +$8000 + n*$100, n = 0..12 (LE)
 //   +$10000       MESH (sixteen byte registers on $10 centres)
-//   +$11000       BMAC (not modelled yet: reads 0)
+//   +$11000       BMAC (gossamer_bmac.c; 16-bit LE registers)
 //   +$12000       ESCC, legacy (68k) addressing
 //   +$13000       ESCC, MacRISC addressing (ch-b +$00, ch-a +$20)
 //   +$14000       DAVbus / Screamer (core/peripherals/davbus.c)
@@ -257,6 +257,7 @@ static void fcr_changed(config_t *cfg, uint32_t old, uint32_t fcr) {
     if ((fcr & FCR_RESET_SCC) && !(old & FCR_RESET_SCC) && cfg->scc)
         scc_reset(cfg->scc);
     gos_ata_fcr_changed(cfg, old, fcr); // the ATA cells' enables and RESET- lines
+    gos_bmac_fcr_changed(cfg, old, fcr); // the Ethernet cell's enable and reset pulse
     if (old != fcr)
         LOG(2, "FCR $%08X -> $%08X (pc=$%08X)", old, fcr, ppc_get_pc(cfg->ppc));
 }
@@ -411,6 +412,8 @@ static uint8_t hr_read8(void *ctx, uint32_t off) {
         return scc_get_memory_interface(cfg->scc)->read_uint8(cfg->scc, escc_pins(off - HR_ESCC));
     case HR_MESH:
         return mesh_read(st->mesh, off - HR_MESH);
+    case HR_BMAC:
+        return gos_bmac_read8(cfg, off - HR_BMAC);
     case HR_SWIM3:
         return swim3_read(&st->swim3, ((off - HR_SWIM3) >> 4) & 15u);
     default:
@@ -470,6 +473,9 @@ static void hr_write8(void *ctx, uint32_t off, uint8_t value) {
     case HR_MESH:
         mesh_write(st->mesh, off - HR_MESH, value);
         return;
+    case HR_BMAC:
+        gos_bmac_write8(cfg, off - HR_BMAC, value);
+        return;
     case HR_SWIM3:
         swim3_write(&st->swim3, ((off - HR_SWIM3) >> 4) & 15u, value);
         return;
@@ -499,6 +505,8 @@ static uint32_t hr_read32(void *ctx, uint32_t off) {
         return GOS_LE32(davbus_read32(&st->screamer_host, off - HR_DAVBUS));
     if (off >= GOS_HR_ATA0 && off < GOS_HR_ATA_END)
         return gos_ata_read32(cfg, off);
+    if ((off & 0xFF000u) == HR_BMAC)
+        return gos_bmac_read32(cfg, off - HR_BMAC);
     // A longword cycle to a byte-wide cell: the cell drives lane 0, the
     // most significant byte on this big-endian bus.
     return ((uint32_t)hr_read8(ctx, off) << 24);
@@ -529,21 +537,32 @@ static void hr_write32(void *ctx, uint32_t off, uint32_t value) {
         gos_ata_write32(cfg, off, value);
         return;
     }
+    if ((off & 0xFF000u) == HR_BMAC) {
+        gos_bmac_write32(cfg, off - HR_BMAC, value);
+        return;
+    }
     hr_write8(ctx, off, (uint8_t)(value >> 24));
 }
 
 // 16-bit access decomposes into bytes, big-endian — the bus's view of a
 // halfword (the factory nvramrc's `90b7 f3000032 w!`).
-// The ATA data register is the exception: a 16-bit port (gossamer_ata.c).
+// The ATA data register and BMAC's registers are the exceptions: 16-bit
+// ports (gossamer_ata.c, gossamer_bmac.c).
 static uint16_t hr_read16(void *ctx, uint32_t off) {
     if (off >= GOS_HR_ATA0 && off < GOS_HR_ATA_END)
         return gos_ata_read16((config_t *)ctx, off);
+    if ((off & 0xFF000u) == HR_BMAC)
+        return gos_bmac_read16((config_t *)ctx, off - HR_BMAC);
     return (uint16_t)((hr_read8(ctx, off) << 8) | hr_read8(ctx, off + 1));
 }
 
 static void hr_write16(void *ctx, uint32_t off, uint16_t value) {
     if (off >= GOS_HR_ATA0 && off < GOS_HR_ATA_END) {
         gos_ata_write16((config_t *)ctx, off, value);
+        return;
+    }
+    if ((off & 0xFF000u) == HR_BMAC) {
+        gos_bmac_write16((config_t *)ctx, off - HR_BMAC, value);
         return;
     }
     hr_write8(ctx, off, (uint8_t)(value >> 8));

@@ -450,6 +450,9 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     // The two ATA cells and their ATAPI back end (restored last, as saved).
     gos_ata_init(cfg, cp);
     gos_ata_attach_objects(cfg);
+    // BMAC, after the ATA cells in the stream too.
+    gos_bmac_init(cfg, cp);
+    gos_bmac_attach_objects(cfg);
     if (cp)
         gos_recompute_irq(cfg);
 
@@ -468,6 +471,7 @@ static void gossamer_bus_reset(config_t *cfg) {
     swim3_reset(&st->swim3);
     mesh_reset(st->mesh);
     gos_ata_reset(cfg);
+    gos_bmac_reset(cfg);
     scc_reset(cfg->scc);
     system_reset_common_devices(cfg);
     gos_recompute_irq(cfg);
@@ -484,6 +488,7 @@ static void gossamer_teardown(config_t *cfg) {
         } else {
             gos_nvram_carry_valid = false;
         }
+        gos_bmac_detach_objects(cfg);
         gos_ata_detach_objects(cfg);
         gos_heathrow_detach_objects(cfg);
         gos_grackle_detach_objects(cfg);
@@ -493,6 +498,7 @@ static void gossamer_teardown(config_t *cfg) {
             st->mesh = NULL;
         }
         gos_ata_teardown(cfg);
+        gos_bmac_teardown(cfg);
     }
     if (cfg->floppy) {
         floppy_delete(cfg->floppy);
@@ -537,6 +543,7 @@ static void gossamer_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
     system_write_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
     gos_ata_checkpoint_save(cfg, cp);
+    gos_bmac_checkpoint_save(cfg, cp);
 }
 
 // Frame tick: the 60.15 Hz reference into VIA1 CA1 (the Cuda driver waits

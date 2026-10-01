@@ -75,6 +75,7 @@
     X("ppctoolbox", 0, "AppleTalk PPC Toolbox program linking")                                                        \
     X("aevt", 0, "Apple events over PPC")                                                                              \
     X("sonic", 0, "SONIC Ethernet controller")                                                                         \
+    X("bmac", 0, "BMAC Ethernet cell (Heathrow)")                                                                      \
     X("mace", 0, "MACE Ethernet controller")                                                                           \
     X("sound", 0, "Sound output path")                                                                                 \
     X("asc", 0, "Apple Sound Chip")                                                                                    \

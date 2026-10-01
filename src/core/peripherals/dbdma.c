@@ -290,6 +290,12 @@ static void run_channel(dbdma_t *d, int n) {
                     moved = 0;
                 c->cursor += (uint32_t)moved;
                 if (moved < want) {
+                    // A frame device that ended its input here completes
+                    // the command short (the residual says how short).
+                    if (!out && p->in_end && p->in_end(p->ctx)) {
+                        LOG(3, "ch%d input ended by the device at %u/%u bytes", n, c->cursor, req);
+                        break;
+                    }
                     // Device stalled mid-command: cursor survives, the
                     // descriptor is refetched on the device's kick.
                     LOG(3, "ch%d stalled at %u/%u bytes", n, c->cursor, req);
@@ -307,6 +313,14 @@ static void run_channel(dbdma_t *d, int n) {
                     }
                 }
             }
+            if (req > 0 && c->cursor >= req) {
+                // Filled exactly: a frame boundary that landed on the last
+                // byte belongs to this command, not the next.
+                if (!out && p->in_end)
+                    (void)p->in_end(p->ctx);
+            }
+            if (cmd == CMD_OUTPUT_LAST && p->out_last)
+                p->out_last(p->ctx);
             // Command complete: branch decision, then result write-back,
             // then (below) the interrupt.
             taken = cond_eval(b_mod, c->br_sel, devstat(d, n));

@@ -257,6 +257,9 @@ typedef struct gossamer_state {
     struct scsi *atapi;
     bool ata_ready;
     struct object *ata_object; // machine.ata
+    // The Ethernet cell at +$11000 (gossamer_bmac.c).
+    struct bmac *bmac;
+    struct object *bmac_object; // machine.bmac
     struct object *grackle_object; // machine.grackle
     struct object *hr_object; // machine.heathrow (the interrupt controller)
     struct object *nvram_object; // machine.nvram
@@ -331,6 +334,21 @@ bool gos_i2c_write(void *ctx, uint8_t addr8, const uint8_t *data, int len);
 
 #define GOS_HR_ATA0    0x20000u // cell 0; cell 1 follows at +$1000
 #define GOS_HR_ATA_END 0x22000u
+
+// gossamer_bmac.c — the Ethernet cell
+void gos_bmac_init(config_t *cfg, checkpoint_t *cp); // the cell, its IRQ and DBDMA ports 2/3
+void gos_bmac_reset(config_t *cfg);
+void gos_bmac_teardown(config_t *cfg);
+void gos_bmac_checkpoint_save(config_t *cfg, checkpoint_t *cp);
+void gos_bmac_fcr_changed(config_t *cfg, uint32_t old, uint32_t fcr);
+void gos_bmac_attach_objects(config_t *cfg);
+void gos_bmac_detach_objects(config_t *cfg);
+uint8_t gos_bmac_read8(config_t *cfg, uint32_t off);
+void gos_bmac_write8(config_t *cfg, uint32_t off, uint8_t value);
+uint16_t gos_bmac_read16(config_t *cfg, uint32_t off);
+void gos_bmac_write16(config_t *cfg, uint32_t off, uint16_t value);
+uint32_t gos_bmac_read32(config_t *cfg, uint32_t off);
+void gos_bmac_write32(config_t *cfg, uint32_t off, uint32_t value);
 
 void gos_ata_init(config_t *cfg, checkpoint_t *cp); // channels, ATAPI bus, DBDMA ports
 void gos_ata_reset(config_t *cfg);

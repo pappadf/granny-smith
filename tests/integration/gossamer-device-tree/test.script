@@ -16,8 +16,8 @@
 #   * /chosen, /options: firmware instance handles and that machine's own
 #     NVRAM settings (it ran with nvramrc, a boot-device and a
 #     pci-probe-list).
-#   * bmac local-mac-address / cell-id: the Ethernet cell is not modelled
-#     yet; the address is per-machine in any case.
+#   * bmac local-mac-address: the address is per-machine (the firmware
+#     reads it from the cell's EEPROM); the row asserts the model's own.
 #   * the PCI slot cards (a USB card and an nVidia card) and the /packages
 #     firmware packages, which no hardware feeds.
 #
@@ -277,6 +277,8 @@ assert contains($p, "00008300  00000100") "G6: /pci@80000000/mac-io@10/bmac@1100
 assert contains($p, "AAPL,interrupts         0000002A 00000020 00000021") "G6: /pci@80000000/mac-io@10/bmac@11000: AAPL,interrupts 0000002A 00000020 00000021"
 assert contains($p, "address-bits            00000030") "G6: /pci@80000000/mac-io@10/bmac@11000: address-bits 00000030"
 assert contains($p, "max-frame-size          000005EE") "G6: /pci@80000000/mac-io@10/bmac@11000: max-frame-size 000005EE"
+assert contains($p, "cell-id                 000000B1") "G6: /pci@80000000/mac-io@10/bmac@11000: cell-id 000000B1"
+assert contains($p, "local-mac-address       00050247 5301") "G6: bmac local-mac-address: the model's EEPROM address"
 
 # /pci@80000000/mac-io@10/escc@13000
 gos_send("dev /pc")

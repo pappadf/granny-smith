@@ -107,6 +107,23 @@ typedef struct dbdma_port {
     // parks for good.  Last in the struct so positional initialisers stay
     // valid, like mac030_io_range_t.esync.
     int burst;
+    // Packet boundaries, for a device that moves frames rather than a byte
+    // stream (BMAC).  Both optional.
+    //
+    // `out_last` is called when an OUTPUT_LAST command has delivered its
+    // last byte, before the branch decision and the result write-back: the
+    // frame the device assembled from OUTPUT_MORE/OUTPUT_LAST pieces is
+    // complete, and whatever s-bits sending it changes are the ones the
+    // command's status sees.
+    //
+    // `in_end` answers whether the device's input stopped at the end of a
+    // frame, and consumes that boundary.  The engine asks when `in` comes
+    // back short — true completes the command early, its residual the
+    // unused remainder of reqCount — and again when a command fills
+    // exactly, so a frame that ends on a descriptor's last byte does not
+    // also end the next one.  `in` returns 0 while a boundary is pending.
+    void (*out_last)(void *ctx);
+    bool (*in_end)(void *ctx);
 } dbdma_port_t;
 
 // === Lifecycle ==============================================================
