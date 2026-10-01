@@ -1099,13 +1099,14 @@ console's cursor, then hands focus to the console:
 Typing in the console never moves focus. A finished console job drops the
 cached levels that list collections, so their entries are re-read.
 
-Colours come from the `--gs-syntax-*` palette in
-[`styles/tokens.css`](../../app/web2/src/styles/tokens.css) (VS Code
-Dark+ / Light+), and from `--gs-terminal-*`. The `hl-*` syntax classes
-are one global set,
+Colours come from the `--gs-syntax-*` palette, defined per skin and scheme
+in [`skins/workbench/tokens.css`](../../app/web2/src/skins/workbench/tokens.css)
+(VS Code Dark+ / Light+), and from the `--gs-console-*` tokens. The `hl-*`
+syntax classes are one global set,
 [`styles/syntax.css`](../../app/web2/src/styles/syntax.css), used by the
-console's entries and the command browser's usage blocks. They are CSS variables, so a theme switch restyles
-everything already shown.
+console's entries and input, the completion popup and the command browser's
+usage blocks. They are CSS variables, so a theme switch restyles everything
+already shown.
 
 ## Audio
 
