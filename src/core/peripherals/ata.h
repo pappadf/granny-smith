@@ -36,7 +36,7 @@ enum {
     ATA_REG_STATUS = 7, // read: status; write: command
 };
 
-// Status register bits (ATA-4 §7.2.13).
+// Status register bits (ATA-4).
 #define ATA_ST_BSY  0x80u
 #define ATA_ST_DRDY 0x40u
 #define ATA_ST_DF   0x20u

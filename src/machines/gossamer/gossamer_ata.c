@@ -338,6 +338,24 @@ static value_t ata_method_attach_cdrom(struct object *self, const member_t *m, i
     return ata_attach(self, argv, true);
 }
 
+// `ata.export(unit, path)`: write a hard disk's current contents (base
+// image plus every write since) to a flat file.
+static value_t ata_method_export(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    config_t *cfg = (config_t *)object_data(self);
+    gossamer_state_t *st = gos_st(cfg);
+    int64_t unit = argv[0].i;
+    if (!unit_ok((int)unit))
+        return val_err("ata.export: unit must be 0..3 (cell * 2 + device)");
+    image_t *img = (st && st->ata_ready) ? st->ata[unit >> 1].img[unit & 1] : NULL;
+    if (!img)
+        return val_err("ata.export: no hard disk at unit %d", (int)unit);
+    if (image_export_to(img, argv[1].s) != 0)
+        return val_err("ata.export: cannot write '%s'", argv[1].s);
+    return val_bool(true);
+}
+
 static value_t ata_attr_devices(struct object *self, const member_t *m) {
     (void)m;
     config_t *cfg = (config_t *)object_data(self);
@@ -361,6 +379,11 @@ static const arg_decl_t ata_attach_args[] = {
     {.name = "unit", .kind = V_INT,    .doc = "cell * 2 + device (0..3)"},
 };
 
+static const arg_decl_t ata_export_args[] = {
+    {.name = "unit", .kind = V_INT,    .doc = "cell * 2 + device (0..3)"},
+    {.name = "path", .kind = V_STRING, .doc = "destination file"        },
+};
+
 static const member_t ata_members[] = {
     {.kind = M_ATTR,
      .name = "devices",
@@ -375,6 +398,10 @@ static const member_t ata_members[] = {
      .name = "attach_cdrom",
      .doc = "Attach a CD-ROM image as an ATAPI drive at a unit",
      .method = {.args = ata_attach_args, .nargs = 2, .result = V_BOOL, .fn = ata_method_attach_cdrom}},
+    {.kind = M_METHOD,
+     .name = "export",
+     .doc = "Write a unit's hard-disk contents to a flat image file",
+     .method = {.args = ata_export_args, .nargs = 2, .result = V_BOOL, .fn = ata_method_export}},
 };
 
 static const class_desc_t ata_class = {

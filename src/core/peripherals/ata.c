@@ -6,10 +6,10 @@
 // layer, or an ATAPI CD-ROM whose PACKET commands run on the SCSI CD-ROM
 // model.  See ata.h for the boundary.
 //
-// Sources: ATA/ATAPI-4 (T13 1153D rev 18) for the task file, the protocols
-// (PIO data-in §9.7, PIO data-out §9.8, DMA §9.10, PACKET §9.11, the
-// signatures §9.1) and the commands; SFF-8020i for the ATAPI interrupt
-// reason and byte-count registers.
+// Sources: ATA/ATAPI-4 (T13 1153D) for the task file, the protocols (PIO
+// data-in and data-out, DMA, PACKET), the reset signatures and the
+// commands; SFF-8020i for the ATAPI interrupt reason and byte-count
+// registers.
 //
 // Every command completes at once: the device never shows BSY to the host,
 // and a data block is ready (DRQ, INTRQ) by the time the command register
@@ -36,7 +36,7 @@ LOG_USE_CATEGORY_NAME("ata");
 // scsi_device_type() of a CD-ROM (the media_slot_t numbering: 1 hd, 2 cdrom).
 #define SCSI_TYPE_CDROM 2
 
-// The ATAPI interrupt reason, read through Sector Count (SFF-8020i §5.12):
+// The ATAPI interrupt reason, read through Sector Count (SFF-8020i):
 // CoD (bit 0) and IO (bit 1).
 #define IR_COD 0x01u
 #define IR_IO  0x02u
@@ -75,7 +75,7 @@ static void post_intrq(ata_channel_t *ch, ata_dev_t *d) {
     update_line(ch);
 }
 
-// The signature a device leaves in its task file after any reset (§9.1).
+// The signature a device leaves in its task file after any reset (ATA-4).
 static void set_signature(ata_dev_t *d) {
     d->error = 0x01; // diagnostic passed
     d->nsect = 0x01;
@@ -225,7 +225,7 @@ static void put_word(uint8_t *b, int w, uint16_t v) {
 }
 
 // An ATA string: two characters per word, the first in the high byte,
-// padded with spaces (§7.16).
+// padded with spaces (ATA-4, IDENTIFY DEVICE).
 static void put_string(uint8_t *b, int w, int words, const char *s) {
     size_t n = strlen(s);
     for (int i = 0; i < 2 * words; i++) {
@@ -274,7 +274,7 @@ static void identify_hd(uint8_t *b, const ata_dev_t *d) {
     put_word(b, 59, d->mult ? (uint16_t)(0x0100u | d->mult) : 0);
     put_word(b, 60, (uint16_t)d->sectors);
     put_word(b, 61, (uint16_t)(d->sectors >> 16));
-    // Integrity word (§8.12.255): signature $A5 and a checksum making the
+    // Integrity word (IDENTIFY word 255): signature $A5 and a checksum making the
     // 512 bytes sum to zero.
     b[510] = 0xA5;
     uint8_t sum = 0;
@@ -307,7 +307,7 @@ static bool tf_lba(const ata_channel_t *ch, const ata_dev_t *d, uint64_t *out) {
     return true;
 }
 
-// Leave the task file pointing at the last sector moved (§8: an LBA
+// Leave the task file pointing at the last sector moved (ATA-4: an LBA
 // command's registers hold the address on completion).
 static void tf_store_lba(ata_channel_t *ch, ata_dev_t *d, uint64_t lba) {
     if (!(ch->select & 0x40u))
@@ -591,7 +591,7 @@ static void exec_command(ata_channel_t *ch, uint8_t cmd) {
         case 0x08: // DEVICE RESET: the signature, no interrupt
             set_signature(d);
             return;
-        case 0xEC: // IDENTIFY DEVICE: aborted, with the signature (§8.12)
+        case 0xEC: // IDENTIFY DEVICE: aborted, with the signature (ATA-4)
             set_signature(d);
             d->status = ATA_ST_DRDY | ATA_ST_ERR;
             d->error = ATA_ER_ABRT;
@@ -801,7 +801,7 @@ void ata_write_devctl(ata_channel_t *ch, uint8_t value) {
         }
     } else if (was_reset) {
         // The end of a software reset: both devices post their signatures
-        // and device 0 is selected (§9.1).
+        // and device 0 is selected (ATA-4).
         for (int u = 0; u < 2; u++) {
             ch->dev[u].mult = 0;
             set_signature(&ch->dev[u]);

@@ -488,13 +488,15 @@ void dbdma_reg_write(dbdma_t *d, int chan, uint32_t offset, uint32_t value) {
     case DBDMA_REG_CMDPTRLO:
         // Loadable whenever the channel is not executing a program: before
         // RUN, or with RUN set and the channel parked on a STOP (ACTIVE
-        // clear) — hardware ignores it only mid-program.  The parked case
-        // is a real idiom: the Mac OS ATA driver on Heathrow leaves RUN set
-        // between commands, writes the next program's address while the
-        // channel sits on the previous one's STOP, and sets RUN|WAKE, which
-        // re-fetches at CommandPtr.  Refusing that write sent the wake back
-        // to the old STOP: the second ATAPI DMA transfer never moved a byte
-        // and the CD boot hung in the Finder's first synchronous read.
+        // clear) — only a write mid-program is refused.  The architecture
+        // asks for RUN clear too (CHRP I/O Device Reference §15.4.4), but
+        // shipping software depends on the parked case: Mac OS 9.2.1's ATA
+        // driver on Heathrow streams a long ATAPI read through a short
+        // program, and to continue it — mid-transfer, so it cannot clear
+        // RUN without aborting — rewrites CommandPtr on the parked channel
+        // and sets RUN|WAKE, the old STOP still in place.  Refusing the
+        // write woke the channel back onto that STOP and the CD boot hung
+        // in the Finder's first long read.
         if (c->status & DBDMA_ACTIVE) {
             LOG(1, "ch%d cmdptr write $%08X ignored while running", chan, value);
             break;

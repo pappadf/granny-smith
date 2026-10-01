@@ -298,7 +298,7 @@ static void clear_unit_attention(void) {
 // Tests
 // ============================================================
 
-// After a reset each device leaves its own signature (ATA-4 §9.1): the
+// After a reset each device leaves its own signature (ATA-4): the
 // disk 1/1/00/00 with DRDY, the ATAPI device 1/1/14/EB with status 0.
 TEST(each_device_reads_back_its_own_signature) {
     setup();
