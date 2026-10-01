@@ -368,19 +368,13 @@ value_t audio_out_match_value(const char *golden_wav) {
 // Object-model surface: the `capture` node
 // ============================================================================
 
-static value_t capture_method_start(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(capture_method_start) {
     if (!audio_out_capture_start())
         return val_err("sound.capture.start: capture already active");
     return val_none();
 }
 
-static value_t capture_method_stop(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(capture_method_stop) {
     const char *path = (argc >= 1 && argv[0].s && *argv[0].s) ? argv[0].s : NULL;
     if (path) {
         size_t n = strlen(path);
@@ -395,15 +389,11 @@ static value_t capture_method_stop(struct object *self, const member_t *m, int a
     return val_uint(4, (uint64_t)frames);
 }
 
-static value_t capture_attr_active(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(capture_attr_active) {
     return val_bool(audio_out_capture_active());
 }
 
-static value_t capture_attr_frames(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(capture_attr_frames) {
     return val_uint(4, audio_out_capture_frames());
 }
 
@@ -411,9 +401,7 @@ static value_t capture_attr_frames(struct object *self, const member_t *m) {
 // stream's first sample (the ASC's offset-binary silence sits at a constant
 // non-zero level; peak-vs-first isolates actual signal).  Diagnostic: lets a
 // live session answer "is there audio IN the stream?" without exporting a WAV.
-static value_t capture_attr_peak(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(capture_attr_peak) {
     if (!s.samples || s.nsamples == 0)
         return val_uint(4, 0);
     int16_t base = s.samples[0];
@@ -431,6 +419,7 @@ static value_t capture_attr_peak(struct object *self, const member_t *m) {
 static const arg_decl_t capture_stop_args[] = {
     {.name = "path",
      .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Optional WAV path to write the capture to (golden regeneration)"},
 };
@@ -438,23 +427,20 @@ static const arg_decl_t capture_stop_args[] = {
 static const member_t capture_members[] = {
     {.kind = M_ATTR,
      .name = "active",
-     .flags = VAL_RO,
      .doc = "True while a capture is recording",
-     .attr = {.type = V_BOOL, .get = capture_attr_active, .set = NULL}},
+     .attr = {.type = V_BOOL, .get = capture_attr_active, .set = NULL}                             },
     {.kind = M_ATTR,
      .name = "frames",
-     .flags = VAL_RO,
      .doc = "Frames accumulated in the current or last capture",
-     .attr = {.type = V_UINT, .get = capture_attr_frames, .set = NULL}},
+     .attr = {.type = V_UINT, .get = capture_attr_frames, .set = NULL}                             },
     {.kind = M_ATTR,
      .name = "peak",
-     .flags = VAL_RO,
      .doc = "Peak |sample - first sample| of the capture (signal presence check)",
-     .attr = {.type = V_UINT, .get = capture_attr_peak, .set = NULL}},
+     .attr = {.type = V_UINT, .get = capture_attr_peak, .set = NULL}                               },
     {.kind = M_METHOD,
      .name = "start",
      .doc = "Start recording producer audio at guest rate (deterministic)",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = capture_method_start}},
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = capture_method_start}            },
     {.kind = M_METHOD,
      .name = "stop",
      .doc = "Stop recording; optionally write the capture as a PCM int16 WAV",
@@ -463,6 +449,7 @@ static const member_t capture_members[] = {
 
 static const class_desc_t audio_capture_class = {
     .name = "capture",
+    .doc = "Record the sound output stream; peak tells whether it carries a signal",
     .members = capture_members,
     .n_members = sizeof(capture_members) / sizeof(capture_members[0]),
 };

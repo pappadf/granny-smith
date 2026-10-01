@@ -12,9 +12,11 @@
 
 #include "shell_funcs.h"
 
+#include "commands.h"
 #include "expr.h"
 #include "script.h"
 #include "shell_var.h"
+#include "usage.h"
 #include "value.h"
 #include "job/job.h"
 
@@ -48,15 +50,13 @@ static script_func_t *func_from(struct object *self) {
     return (script_func_t *)object_data(self);
 }
 
-static value_t func_get_name(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(func_get_name) {
     script_func_t *f = func_from(self);
     return val_str(f ? f->name : "");
 }
 
 // `params` — the declared parameter list, comma-joined.
-static value_t func_get_params(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(func_get_params) {
     script_func_t *f = func_from(self);
     char buf[256] = "";
     size_t off = 0;
@@ -69,10 +69,7 @@ static value_t func_get_params(struct object *self, const member_t *m) {
     return val_str(buf);
 }
 
-static value_t func_method_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(func_method_remove) {
     script_func_t *f = func_from(self);
     if (!f)
         return val_err("function entry has no registry backing");
@@ -85,13 +82,11 @@ static const member_t func_entry_members[] = {
     {.kind = M_ATTR,
      .name = "name",
      .doc = "Function name",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = func_get_name, .set = NULL}},
+     .attr = {.type = V_STRING, .get = func_get_name, .set = NULL}                   },
     {.kind = M_ATTR,
      .name = "params",
      .doc = "Declared parameter list",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = func_get_params, .set = NULL}},
+     .attr = {.type = V_STRING, .get = func_get_params, .set = NULL}                 },
     {.kind = M_METHOD,
      .name = "remove",
      .doc = "Remove this function",
@@ -108,6 +103,7 @@ static const class_desc_t func_entry_class = {
 // attached children so path resolution finds them by name.
 static const class_desc_t functions_class = {
     .name = "functions",
+    .doc = "Functions defined with def, by name",
     .members = NULL,
     .n_members = 0,
 };
@@ -319,7 +315,21 @@ static value_t func_expr_hook(void *ud, const char *name, int argc, const value_
 
 // === Install / uninstall ====================================================
 
+// For help / shell.usage (object layer): a word that is no path, read the
+// way the interpreter reads it (commands.h).
+static usage_word_t usage_word(const char *word, char *target, size_t target_size) {
+    switch (shell_word_resolve(word, strlen(word), NULL, NULL, target, target_size)) {
+    case SHELL_HEAD_FUNCTION:
+        return USAGE_WORD_FUNCTION;
+    case SHELL_HEAD_COMMAND:
+        return USAGE_WORD_COMMAND;
+    default:
+        return USAGE_WORD_NONE;
+    }
+}
+
 void shell_funcs_install(struct object *shell_obj) {
+    object_usage_set_word_resolver(usage_word);
     if (!shell_obj || g_functions_obj)
         return;
     g_functions_obj = object_new(&functions_class, NULL, "functions");

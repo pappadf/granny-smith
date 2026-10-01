@@ -1,48 +1,40 @@
-// Router between the WASM Module's stdout/log callbacks and the new-UI
-// consumers (Terminal pane + Logs view).
+// Router between the WASM Module's output and the new-UI consumers (the
+// Terminal's console + the Logs view).
 //
-// Two inputs:
-//   - Module.print / Module.printErr — every line the emulator writes
-//     to stdout / stderr. Routes to the terminal sink unconditionally;
-//     if the line happens to look like a structured log emission we
-//     also append to logs as a defensive double-source (covers the
-//     window before the mailbox's event reader is live).
-//   - log events — emitted by src/platform/wasm/em_main.c's log sink via
-//     log_set_sink. Every formatted log line lands here regardless of
-//     per-category stdout=on/off. Preferred path.
+// Inputs:
+//   - Module.print / Module.printErr -- lines the emulator writes to stdout /
+//     stderr outside a job's capture.
+//   - job records from the event ring -- a job's output pieces and its
+//     annotation records (value_begin / value / error), plus the start and
+//     end of the console's own job.
+//   - log events -- emitted by src/platform/wasm/em_main.c's log sink via
+//     log_set_sink.  Every formatted log line lands here regardless of
+//     per-category stdout=on/off; they feed the Logs view only.
+//
+// The console consumes the first two as ConsoleRecords (lib/consoleModel):
+// the app's console model exists from the start (state/console), so they
+// go straight into it, whether or not the Terminal has been opened.
 
 import { appendLog } from '@/state/logs.svelte';
+import { appConsole } from '@/state/console.svelte';
 import { parseLogLine } from '@/lib/logParse';
+import type { ConsoleRecord } from '@/lib/consoleModel';
 
-let terminalWrite: ((line: string) => void) | null = null;
-
-// Lines printed while no terminal exists (before the Terminal tab is first
-// opened), replayed when one registers -- boot output and a script's
-// results used to be dropped.  Bounded: the oldest go first.
-const BACKLOG_MAX = 2000;
-let backlog: string[] = [];
-
-// TerminalPane registers itself on mount; null on unmount.
-export function setTerminalSink(fn: ((line: string) => void) | null): void {
-  terminalWrite = fn;
-  if (fn && backlog.length) {
-    const lines = backlog;
-    backlog = [];
-    for (const line of lines) fn(line);
-  }
+export function routeConsole(r: ConsoleRecord): void {
+  appConsole.model.push(r);
 }
 
+// Module.print: a stdout line outside any job.
 export function routePrintLine(line: string): void {
-  if (terminalWrite) terminalWrite(line);
-  else {
-    backlog.push(line);
-    if (backlog.length > BACKLOG_MAX) backlog.splice(0, backlog.length - BACKLOG_MAX);
-  }
   // Logs are populated exclusively from routeLogEmit (the C-side global
-  // sink, installed at boot). We deliberately do NOT also parse from
-  // print here — log.c writes the same formatted line to both
-  // (`to_stdout` sink and the global sink), so parsing both would
-  // double-count every entry.
+  // sink).  log.c writes the same formatted line to both, so parsing it
+  // here too would double-count every entry.
+  routeConsole({ kind: 'print', line });
+}
+
+// Module.printErr: a stderr line.
+export function routeErrorLine(line: string): void {
+  routeConsole({ kind: 'stderr', line });
 }
 
 export function routeLogEmit(line: string): void {

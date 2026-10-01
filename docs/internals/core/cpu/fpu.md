@@ -2,7 +2,7 @@
 
 ## Overview
 
-The emulator includes a software model of the **Motorola 68882 Floating-Point Coprocessor** used in the Macintosh SE/30 (68030 CPU). The 68882 is accessed through the 68020/68030 coprocessor interface: F-line instructions (opcode bits 15:12 = `1111`) with CpID=1 (bits 11:9 = `001`) are decoded by the CPU, which then dispatches to the FPU module. The emulator bypasses the hardware coprocessor bus protocol and executes FPU operations inline, the same approach used for the MMU (CpID=0).
+The emulator includes a software model of the **Motorola 68882 Floating-Point Coprocessor** used in the Macintosh SE/30 (68030 CPU; see [se30.md](../../../reference/machines/glue/se30.md)). The 68882 is accessed through the 68020/68030 coprocessor interface: F-line instructions (opcode bits 15:12 = `1111`) with CpID=1 (bits 11:9 = `001`) are decoded by the CPU, which then dispatches to the FPU module. The emulator bypasses the hardware coprocessor bus protocol and executes FPU operations inline, the same approach used for the MMU (CpID=0).
 
 System 7 probes for the FPU at boot via `FBcc`/`FSAVE` instructions and crashes if the coprocessor interface does not respond correctly, making a functional 68882 model essential for SE/30 emulation.
 

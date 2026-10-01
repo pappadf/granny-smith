@@ -22,7 +22,7 @@ import { showNotification } from '@/state/toasts.svelte';
 import { resetDebugSections } from '@/state/debug.svelte';
 import { formatRamKb } from '@/lib/machine';
 
-// Read a model's capability probe from `machine.profile().capabilities` and
+// Read a model's capability probe from `catalog.profile().capabilities` and
 // apply it to the shared machine state. Replaces the old display-name regex
 // that silently misclassified any MMU machine whose name didn't match the
 // hardcoded pattern. `mmuKind` is the full typed kind the core exports (all
@@ -226,8 +226,13 @@ export async function reconcileUiWithMachine(origin: MachineOrigin): Promise<voi
   reconciledModel = model;
   if (origin === 'restore') {
     // The checkpoint restored the core's pacing: show it, do not override it.
+    // An enum crosses the bridge as {enum: <name>, index: <n>}.
     const mode = await gsEval('scheduler.mode');
-    const ui = typeof mode === 'string' ? UI_MODE[mode] : undefined;
+    const name =
+      mode && typeof mode === 'object' && typeof (mode as { enum?: unknown }).enum === 'string'
+        ? (mode as { enum: string }).enum
+        : undefined;
+    const ui = name ? UI_MODE[name] : undefined;
     if (ui) setSchedulerMode(ui);
   } else {
     // A fresh core boots paced; re-assert the user's toolbar selection so a

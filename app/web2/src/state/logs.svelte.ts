@@ -111,10 +111,10 @@ function compactStamp(): string {
 export async function refreshCatLevels(): Promise<void> {
   const { gsEval, isModuleReady } = await import('@/bus/emulator');
   if (!isModuleReady()) return;
-  // debug.log_levels returns a native object {<category>: <level>, ...} of every
+  // log.levels returns a native object {<category>: <level>, ...} of every
   // registered category. (Categories register lazily as subsystems first log, so
   // the set grows over a session.)
-  const map = await gsEval('debug.log_levels');
+  const map = await gsEval('log.levels');
   if (!map || typeof map !== 'object' || 'error' in map) return;
   const next: Record<string, number> = {};
   for (const [name, lvl] of Object.entries(map)) {
@@ -127,14 +127,14 @@ export async function refreshCatLevels(): Promise<void> {
 export async function setCatLevel(cat: string, level: number): Promise<boolean> {
   const { gsEval, gsOk, isModuleReady } = await import('@/bus/emulator');
   if (!isModuleReady()) return false;
-  // debug.log(category, level) adjusts the per-subsystem level.  `category`
+  // log.set(category, level) adjusts the per-subsystem level.  `category`
   // is a typed enum over the log manifest, so an unknown name is REJECTED
   // rather than silently created -- the names here come from
-  // debug.log_levels(), which lists that manifest, so they are always valid.
-  // Further options are named arguments: debug.log(cat, stdout=, file=, ts=,
+  // log.levels, which lists that manifest, so they are always valid.
+  // Further options are named arguments: log.set(cat, stdout=, file=, ts=,
   // pc=).
   // Mirror the level only if the core took it.
-  if (!gsOk(await gsEval('debug.log', [cat, level]))) return false;
+  if (!gsOk(await gsEval('log.set', [cat, level]))) return false;
   logs.catLevels[cat] = level;
   return true;
 }

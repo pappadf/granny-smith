@@ -56,13 +56,13 @@ interface RomIdentifyResult {
   reason?: string;
 }
 
-// Shape returned by C-side `machine.vrom.identify`. Identity is keyed off the
+// Shape returned by C-side `catalog.vroms.identify`. Identity is keyed off the
 // declaration ROM's NuBus Format-Block CRC (the analog of rom.identify's
 // checksum); `card_id` is the nubus card-kind the blob provides and
 // `compatible` mirrors rom.identify's `compatible:[model_ids]` shape (the card
 // ids this vROM can drive, usually length 1). Unrecognised files come back as
 // { recognised: false, size?, crc? } — see src/core/memory/vrom.c. The
-// human-readable card name is owned by the card kind (machine.profile), not here.
+// human-readable card name is owned by the card kind (catalog.profile), not here.
 interface VromIdentifyResult {
   recognised: boolean;
   card_id?: string;
@@ -71,7 +71,7 @@ interface VromIdentifyResult {
   crc?: string;
 }
 
-// Shape returned by C-side `machine.prom.identify` — a PCI expansion ROM.
+// Shape returned by C-side `catalog.proms.identify` — a PCI expansion ROM.
 // Deliberately the same shape as VromIdentifyResult, because to the UI the
 // two are the same question ("which card does this blob provide?"); the
 // identity rules behind them are not (see src/core/memory/prom.c: $55AA, a
@@ -100,8 +100,8 @@ async function parseCardRomIdentify(
   what: 'vrom' | 'prom',
   path: string,
 ): Promise<PromIdentifyResult | null> {
-  // vrom.identify / prom.identify return a native object (V_MAP).
-  const r = await gsEval(`machine.${what}.identify`, [path]);
+  // catalog.vroms.identify / catalog.proms.identify return a native object (V_MAP).
+  const r = await gsEval(`catalog.${what}s.identify`, [path]); // catalog.vroms / catalog.proms
   if (!r || typeof r !== 'object' || 'error' in (r as object)) return null;
   return r as PromIdentifyResult;
 }
@@ -257,7 +257,7 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
       // floppies into a separate /opfs/images/fdhd/ that no category ever
       // scanned, so they became invisible; see BrowserOpfs.scanImages, which
       // still folds any stragglers from that directory back in.)
-      const size = (await gsEval('storage.path_size', [path])) as number | null;
+      const size = (await gsEval('files.path_size', [path])) as number | null;
       if (typeof size !== 'number') return { valid: false };
       const recognised =
         size === FD_400 ||

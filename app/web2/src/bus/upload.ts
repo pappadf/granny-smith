@@ -7,12 +7,12 @@
 //   2. Stage each file into /opfs/upload/ (see stageUpload).
 //   3. Probe the staged file (ROM? floppy? archive? something else?).
 //   4. If a ROM was uploaded, also boot a default machine from it.
-//   5. Persist to the right /opfs/images/<category>/ via gsEval('storage.cp').
+//   5. Persist to the right /opfs/images/<category>/ via gsEval('files.cp').
 //   6. Cleanup the staging copy.
 //
 // STAGING (see stageUpload): the write goes through the emulator's own
 // filesystem, on the emulator thread: the page copies each chunk into the
-// core's transfer window and storage.xfer_write puts it in the file
+// core's transfer window and files.xfer_write puts it in the file
 // (bus/xfer.ts).  The page never touches the filesystem itself.  It used to
 // call Module.FS, which under WasmFS runs on the page's thread and busy-waits
 // for WasmFS's OPFS thread -- jank on Chrome, and a deadlock on Safari, where
@@ -20,10 +20,10 @@
 // Writing staging with the page's own navigator.storage failed too: Safari's
 // OPFS rejects main-thread createWritable() with "UnknownError", and on
 // Chromium the emulator's WasmFS can't see an out-of-band OPFS write, so the
-// follow-up storage.cp strands the file in /opfs/upload.  The file is sliced
+// follow-up files.cp strands the file in /opfs/upload.  The file is sliced
 // and written chunk by chunk, so uploads of any size (including hundreds-of-MB
 // CD-ROMs) never buffer the whole file.  This mirrors how move/delete route
-// through the worker (storage.mv/storage.rm).
+// through the worker (files.mv/files.rm).
 
 import { gsEval, gsErrorText, isModuleReady } from './emulator';
 import { xferChunkBytes, xferWrite, xferRead, xferReadAll } from './xfer';
@@ -118,10 +118,10 @@ async function stageUpload(file: File): Promise<string | null> {
 }
 
 // Best-effort removal of a staged file / unpacked-archive dir. Everything staging
-// touches is written by the worker (FS streaming above, archive.extract), so the
+// touches is written by the worker (FS streaming above, files.archive.extract), so the
 // recursive rm runs worker-side too — keeping its WasmFS view coherent.
 export async function discardStaging(path: string): Promise<void> {
-  await gsEval('storage.rm', [path]);
+  await gsEval('files.rm', [path]);
 }
 
 // Top-level entry. Caller supplies a flat list of File objects.
@@ -297,7 +297,7 @@ export async function processDataTransfer(dt: DataTransfer): Promise<void> {
 // so it would happily classify a 32 KB VROM — or a .zip — as a tiny "hard
 // disk"), so it runs last, after archives have had their turn.
 //   rom    — machine.rom.identify: content id against the core's ROM table
-//   vrom   — machine.vrom.identify: Format-Block CRC against the catalog
+//   vrom   — catalog.vroms.identify: Format-Block CRC against the catalog
 //   prom   — $55AA + a reachable PCIR + Open Firmware code type
 //   fd     — exact floppy sizes (400/800/1440 KB ± DC42 header)
 //   cdrom  — ISO 9660 / HFS / APM signature inside the file
@@ -361,7 +361,7 @@ async function probeAndPersist(
 
   // Then archives, before the permissive hd probe can claim them: a .zip is
   // unpacked here (the C-side archive module has no zip format), a Mac
-  // archive by archive.extract; the first image inside that validates is
+  // archive by files.archive.extract; the first image inside that validates is
   // stored under the archive's name.
   if (isZipFile(file.name) || (await stagedIsZip(stagingPath)) || isMacArchive(file.name)) {
     showNotification(`Extracting ${file.name}...`, 'info');
@@ -380,7 +380,7 @@ async function probeAndPersist(
 
 // Unpack the archive staged at `stagingPath` into `extractDir` and probe
 // what is inside.  Zip members are tried in archive order; a Mac archive's
-// contents are narrowed to one image by storage.find_media.
+// contents are narrowed to one image by files.find_media.
 async function probeArchive(
   stagingPath: string,
   file: File,
@@ -407,13 +407,13 @@ async function probeArchive(
     }
     return 'none';
   }
-  const ok = (await gsEval('archive.extract', [stagingPath, extractDir])) === true;
+  const ok = (await gsEval('files.archive.extract', [stagingPath, extractDir])) === true;
   if (!ok) {
     showNotification(`Failed to extract ${file.name}`, 'error');
     return 'rejected';
   }
   const innerPath = `${extractDir}/_found_media.img`;
-  if ((await gsEval('storage.find_media', [extractDir, innerPath])) !== true) return 'none';
+  if ((await gsEval('files.find_media', [extractDir, innerPath])) !== true) return 'none';
   return probeAs(innerPath, file.name, ALL_ORDER, opts);
 }
 
@@ -438,19 +438,19 @@ async function persist(
   const finalName = descriptor.nameFn ? descriptor.nameFn(originalName, info) : originalName;
   const targetDir = info?.persistDir ?? descriptor.persistDir;
   const finalPath = `${targetDir}/${finalName}`;
-  // storage.cp does not create parent directories, and the category dirs are
+  // files.cp does not create parent directories, and the category dirs are
   // made once at startup — so a store added after a user's OPFS was first
   // laid down has nowhere to copy to, and every upload of that kind fails
   // with a bare "Failed to save". Create it here; it is a no-op when the
   // directory already exists.
   //
-  // Through vfs.mkdir, NOT the main-thread opfs.mkdirP: the copy below runs
+  // Through files.mkdir, NOT the main-thread opfs.mkdirP: the copy below runs
   // on the worker, and a main-thread OPFS mutation is not reliably visible
   // to the worker's WasmFS (the same asymmetry that forces staging onto the
   // worker — see stageUpload). Creating it on one side and copying on the
   // other is exactly the bug this is fixing.
-  await gsEval('vfs.mkdir', [targetDir]);
-  const ok = (await gsEval('storage.cp', [sourcePath, finalPath])) === true;
+  await gsEval('files.mkdir', [targetDir]);
+  const ok = (await gsEval('files.cp', [sourcePath, finalPath])) === true;
   if (!ok) {
     showNotification(`Failed to save ${originalName}`, 'error');
     return null;
@@ -461,11 +461,11 @@ async function persist(
   // "(auto)" boot after a mid-session upload would not see the file until
   // the next reload.
   if (descriptor.id === 'vrom') {
-    await gsEval('machine.vrom.offer', [finalPath]);
+    await gsEval('catalog.vroms.offer', [finalPath]);
   }
   // Same for a PCI expansion ROM, through its own registry.
   if (descriptor.id === 'prom') {
-    await gsEval('machine.prom.offer', [finalPath]);
+    await gsEval('catalog.proms.offer', [finalPath]);
   }
   // Notify inventory watchers (e.g. WelcomeConfigSlide's dropdown
   // refresh effect) that the OPFS image catalog has changed.
@@ -473,7 +473,7 @@ async function persist(
   // When the file was recognised as a vROM, surface the card it provides in
   // the toast — it tells the user we actually identified the file, not just
   // "it landed in OPFS". The card's human display name is shown later in the
-  // config dialog (sourced from machine.profile), so we don't duplicate that
+  // config dialog (sourced from catalog.profile), so we don't duplicate that
   // knowledge here; the id is the identification signal.
   const cardId = info?.cardId as string | undefined;
   const cardFor = descriptor.id === 'prom' ? 'PCI expansion ROM' : 'Video ROM';

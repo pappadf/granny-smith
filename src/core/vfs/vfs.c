@@ -37,7 +37,7 @@ static void prime_cwd(void) {
 // components. Produces an absolute path starting with '/'. Returns 0 on
 // success, -ENAMETOOLONG when the joined cwd+input or the assembled output
 // would overflow the destination buffer or the component-count cap.
-static int normalise_path(const char *input, char *out, size_t outlen) {
+int vfs_normalise_path(const char *input, char *out, size_t outlen) {
     char buf[VFS_PATH_MAX * 2 + 2];
     int n;
     if (input[0] == '/') {
@@ -219,7 +219,7 @@ static int resolve_impl(const char *input, char *resolved, size_t resolved_len, 
                         const char **tail, bool descend_bare) {
     if (!input || !resolved || resolved_len == 0)
         return -EINVAL;
-    int nrc = normalise_path(input, resolved, resolved_len);
+    int nrc = vfs_normalise_path(input, resolved, resolved_len);
     if (nrc < 0)
         return nrc;
 

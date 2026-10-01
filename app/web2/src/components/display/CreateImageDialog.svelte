@@ -104,7 +104,7 @@
         const model = PROFILE_MODELS.find((p) => p.blocks === profileBlocks) ?? PROFILE_MODELS[0];
         name = `blank_profile_${model.mb}MB_${stamp()}.image`;
         ok =
-          (await gsEval('storage.profile_create', [`${HD_DIR}/${name}`, String(model.blocks)])) ===
+          (await gsEval('files.profile_create', [`${HD_DIR}/${name}`, String(model.blocks)])) ===
           true;
       } else if (kind === 'hd') {
         if (!hdSize) {
@@ -113,11 +113,11 @@
         }
         const mb = Math.round(hdSize / (1024 * 1024));
         name = `blank_${mb}MB_${stamp()}.img`;
-        ok = (await gsEval('storage.hd_create', [`${HD_DIR}/${name}`, String(hdSize)])) === true;
+        ok = (await gsEval('files.hd_create', [`${HD_DIR}/${name}`, String(hdSize)])) === true;
       } else {
         const highDensity = fdDensity === '1440K';
         name = `blank_${fdDensity}_${stamp()}.dsk`;
-        ok = (await gsEval('storage.fd_create', [`${FD_DIR}/${name}`, highDensity])) === true;
+        ok = (await gsEval('files.fd_create', [`${FD_DIR}/${name}`, highDensity])) === true;
       }
       if (!ok) {
         error = 'Failed to create the disk image.';

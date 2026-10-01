@@ -427,12 +427,11 @@ static const member_t ata_members[] = {
     {.kind = M_ATTR,
      .name = "devices",
      .doc = "What each unit holds (cell 0 device 0/1, cell 1 device 0/1): hd, atapi or -",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = ata_attr_devices, .set = NULL}},
+     .attr = {.type = V_STRING, .get = ata_attr_devices, .set = NULL}                                },
     {.kind = M_METHOD,
      .name = "attach_hd",
      .doc = "Attach a hard-disk image as an ATA disk at a unit",
-     .method = {.args = ata_attach_args, .nargs = 2, .result = V_BOOL, .fn = ata_method_attach_hd}},
+     .method = {.args = ata_attach_args, .nargs = 2, .result = V_BOOL, .fn = ata_method_attach_hd}   },
     {.kind = M_METHOD,
      .name = "attach_cdrom",
      .doc = "Attach a CD-ROM image as an ATAPI drive at a unit",
@@ -440,7 +439,7 @@ static const member_t ata_members[] = {
     {.kind = M_METHOD,
      .name = "export",
      .doc = "Write a unit's hard-disk contents to a flat image file",
-     .method = {.args = ata_export_args, .nargs = 2, .result = V_BOOL, .fn = ata_method_export}},
+     .method = {.args = ata_export_args, .nargs = 2, .result = V_BOOL, .fn = ata_method_export}      },
 };
 
 static const class_desc_t ata_class = {

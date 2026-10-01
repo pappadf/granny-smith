@@ -54,7 +54,7 @@ test.use({
 // --- terminal plumbing (see av-camera.spec.ts for why answers are bracketed) --
 
 async function readKey(page: Page, key: string): Promise<string | null> {
-  const text = await page.locator(".xterm-rows").innerText();
+  const text = await page.locator(".console-output").innerText();
   const re = new RegExp(`${key}=([^=${"${}"}\\s]+)=${key}`);
   for (const line of text.split("\n")) {
     const m = line.trim().match(re);
@@ -174,7 +174,7 @@ test("record from the browser microphone in the Sound control panel", async ({
   ).toBeVisible({ timeout: 60_000 });
 
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator(".xterm")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator(".console")).toBeVisible({ timeout: 15_000 });
   await expect
     .poll(async () => probe(page, "machine.id"), { timeout: 30_000 })
     .toBe("q840av");

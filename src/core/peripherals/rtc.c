@@ -505,8 +505,10 @@ rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, 
         object_set_order(rtc->object, 60);
         object_attach(machine_object(), rtc->object);
         rtc->pram_object = object_new(&rtc_pram_class, rtc, "pram");
-        if (rtc->pram_object)
+        if (rtc->pram_object) {
+            object_set_category(rtc->pram_object, M_CAT_ADVANCED);
             object_attach(rtc->object, rtc->pram_object);
+        }
     }
 
     return rtc;
@@ -562,14 +564,12 @@ static rtc_t *rtc_from(struct object *self) {
     return (rtc_t *)object_data(self);
 }
 
-static value_t rtc_attr_time_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(rtc_attr_time_get) {
     rtc_t *rtc = rtc_from(self);
     return val_uint(4, rtc ? rtc_get_seconds(rtc) : 0);
 }
 
-static value_t rtc_attr_time_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(rtc_attr_time_set) {
     rtc_t *rtc = rtc_from(self);
     if (!rtc) {
         value_free(&in);
@@ -624,8 +624,7 @@ static value_t rtc_attr_time_set(struct object *self, const member_t *m, value_t
     return val_none();
 }
 
-static value_t rtc_attr_read_only(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(rtc_attr_read_only) {
     rtc_t *rtc = rtc_from(self);
     return val_bool(rtc ? rtc_get_read_only(rtc) : false);
 }
@@ -642,12 +641,12 @@ static const member_t rtc_members[] = {
     {.kind = M_ATTR,
      .name = "read_only",
      .doc = "Write-protect bit",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = rtc_attr_read_only, .set = NULL}            },
+     .attr = {.type = V_BOOL, .get = rtc_attr_read_only, .set = NULL}},
 };
 
 static const class_desc_t rtc_class = {
     .name = "rtc",
+    .doc = "The real-time clock: its time and write-protect bit",
     .members = rtc_members,
     .n_members = sizeof(rtc_members) / sizeof(rtc_members[0]),
 };
@@ -666,9 +665,7 @@ static const class_desc_t rtc_class = {
 // instance_data is the same rtc_t* the parent uses, set in rtc_init
 // when the child is attached.
 
-static value_t rtc_pram_method_peek(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(rtc_pram_method_peek) {
     rtc_t *rtc = rtc_from(self);
     if (!rtc)
         return val_err("rtc not available");
@@ -680,9 +677,7 @@ static value_t rtc_pram_method_peek(struct object *self, const member_t *m, int 
     return v;
 }
 
-static value_t rtc_pram_method_poke(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(rtc_pram_method_poke) {
     rtc_t *rtc = rtc_from(self);
     if (!rtc)
         return val_err("rtc not available");
@@ -703,9 +698,7 @@ static value_t rtc_pram_method_poke(struct object *self, const member_t *m, int 
     return val_none();
 }
 
-static value_t rtc_pram_method_dump(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(rtc_pram_method_dump) {
     rtc_t *rtc = rtc_from(self);
     if (!rtc)
         return val_err("rtc not available");
@@ -720,10 +713,7 @@ static value_t rtc_pram_method_dump(struct object *self, const member_t *m, int 
     return val_bytes(buf, (size_t)n);
 }
 
-static value_t rtc_pram_method_snapshot(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(rtc_pram_method_snapshot) {
     rtc_t *rtc = rtc_from(self);
     if (!rtc)
         return val_err("rtc not available");
@@ -739,9 +729,7 @@ static value_t rtc_pram_method_snapshot(struct object *self, const member_t *m, 
 // preserve the boot ROM's validity tokens and slot-PRAM init data —
 // individually replaying 256 `poke` calls is slow).  Honours the
 // write-protect bit the same way per-byte writes do.
-static value_t rtc_pram_method_restore(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(rtc_pram_method_restore) {
     rtc_t *rtc = rtc_from(self);
     if (!rtc)
         return val_err("rtc not available");
@@ -760,10 +748,7 @@ static value_t rtc_pram_method_restore(struct object *self, const member_t *m, i
 // at cold-boot (see docs/reference/formats/mac-pram.md §3).  Without these, `_InitUtil` will
 // rewrite low-PRAM and/or zero out the XPRAM region — destroying any
 // seeded slot-PRAM bytes the test wanted to preserve.
-static value_t rtc_pram_method_validate(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(rtc_pram_method_validate) {
     rtc_t *rtc = rtc_from(self);
     if (!rtc)
         return val_err("rtc not available");
@@ -785,8 +770,7 @@ static value_t rtc_pram_method_validate(struct object *self, const member_t *m, 
 #define PRAM_BOOT_REFNUM  0x78
 #define PRAM_OS_MACINTOSH 0x01
 
-static value_t rtc_pram_attr_boot_device_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(rtc_pram_attr_boot_device_get) {
     rtc_t *rtc = rtc_from(self);
     if (!rtc)
         return val_err("rtc not available");
@@ -797,8 +781,7 @@ static value_t rtc_pram_attr_boot_device_get(struct object *self, const member_t
     return val_int(id >= 0 && id <= 7 ? id : -1);
 }
 
-static value_t rtc_pram_attr_boot_device_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(rtc_pram_attr_boot_device_set) {
     rtc_t *rtc = rtc_from(self);
     int64_t id = in.kind == V_INT ? in.i : (int64_t)in.u;
     value_free(&in);

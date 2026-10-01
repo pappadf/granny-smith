@@ -210,7 +210,7 @@ typedef struct pci_card_kind {
 
     // Is the kind OFFERED on this host right now?  NULL means always.  A
     // kind that needs a host facility (the Voodoo2's WebGPU variant needs
-    // a WebGPU device) answers false without it: machine.profile then
+    // a WebGPU device) answers false without it: catalog.profile then
     // leaves it out of the socket's card list, so a frontend never offers
     // a choice it cannot honour.  The kind stays REGISTERED regardless —
     // a boot document or a checkpoint may still name it, and the factory

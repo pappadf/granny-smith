@@ -2,14 +2,14 @@
 # Drives the dump tool twice over the same input so we can hash both
 # outputs and compare — `dump` is required to be byte-stable across runs.
 # The Mac forked file is first extracted out of the HFS image via the
-# emulator's storage.cp (data fork + resource fork + Finder info sidecar),
+# emulator's files.cp (data fork + resource fork + Finder info sidecar),
 # then passed to the standalone tool.
 set -euo pipefail
 
 IMG="$TEST_DATA/aux/aux_3.0.1/hd160-with-aux-301.img"
 # partition1 of this APM image is the MacOS Apple_HFS partition (the AUX
 # UFS root is partition4 — distinctly NOT what we target here).  See
-# storage.partmap on the same image for confirmation.
+# files.partmap on the same image for confirmation.
 FINDER="$IMG/partition1/System Folder/Finder"
 
 EXTRACT="$WORK_DIR/extract"
@@ -21,16 +21,17 @@ mkdir -p "$EXTRACT"
 # Pull the three artefacts out of the HFS image once.
 GS_STORAGE_CACHE="$STORAGE_CACHE" "$HEADLESS_BIN" \
     rom="$ROM_PATH" \
-    --no-prompt --script-stdin --speed=max <<EOF
-storage.probe $IMG
-storage.cp "$FINDER" "$EXTRACT/data"
-storage.cp "$FINDER/rsrc/_raw" "$EXTRACT/rsrc"
-storage.cp "$FINDER/finf" "$EXTRACT/finf"
-storage.unmount $IMG
+    --no-prompt --script-stdin --speed=turbo <<EOF
+files.probe $IMG
+files.cp "$FINDER" "$EXTRACT/data"
+files.cp "$FINDER/rsrc/_raw" "$EXTRACT/rsrc"
+files.cp "$FINDER/finf" "$EXTRACT/finf"
+let n = files.mounts.find("$IMG")
+files.mounts[\$n].unmount
 quit
 EOF
 
-[ -f "$EXTRACT/rsrc" ] || { echo "FAIL: storage.cp did not produce $EXTRACT/rsrc"; exit 1; }
+[ -f "$EXTRACT/rsrc" ] || { echo "FAIL: files.cp did not produce $EXTRACT/rsrc"; exit 1; }
 
 # Identify (smoke check the parser sees the same file shape).
 "$DUMP_BIN" --identify --data "$EXTRACT/data" --rsrc "$EXTRACT/rsrc"

@@ -129,8 +129,10 @@ them. The `wombatSound` equate names one Sonora-based derivative.
 #### EASC "Batman" (343S1036)
 
 The Enhanced Apple Sound Chip was introduced with the Quadra 700/900/950
-(68040). It is pin-compatible with the ASC and maintains base register
-compatibility, but makes significant architectural changes:
+(68040) — its wiring on the Quadra 700 is described in
+[q700.md](../machines/mcu/q700.md) §3.10. It is pin-compatible with the ASC and
+maintains base register compatibility, but makes significant architectural
+changes:
 
 - **Wavetable mode completely removed** — writing to wavetable registers
   produces no audible output. NetBSD developers confirmed that Quadra 700s
@@ -243,7 +245,8 @@ the I/O space is at offset `0x14000` from `0x50F00000`.
 | SWIM | `0x16000` | `0x50F16000` |
 
 Note: the IIfx maps the ASC at `0x50F10000` instead — but the IIfx is a
-different hardware platform and not covered in detail here.
+different hardware platform and not covered in detail here
+([iifx.md](../machines/iifx/iifx.md) §2.6).
 
 ### 3.4 The 8-Bit Data Bus and Dynamic Bus Sizing
 
@@ -555,6 +558,11 @@ jASCInt  equ  Via2DT + 4*ifCB1
 ```
 
 `ifCB1 = 4`, so the sound interrupt dispatch entry lives at `Via2DT + 16`.
+
+The same interrupt arrives as IFR bit 4 on the IIci's RBV — the RBV is the
+machine's VIA2-compatible interrupt register bank
+([iici.md](../machines/mdu/iici.md) §3.5) — and on the IIfx it arrives on the
+OSS instead of a VIA2 ([iifx.md](../machines/iifx/iifx.md) §2.6).
 
 ### 6.2 Enable / Disable / Clear at VIA2
 

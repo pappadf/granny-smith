@@ -277,7 +277,7 @@ TEST(test_value_auto_cleanup) {
 //
 // There were two coercion tables that disagreed on case: validate_slot's was
 // case-sensitive, log.c's parse_onoff case-INsensitive and narrower.  So
-// `debug.log cpu stdout=ON` worked while the same spelling failed on every
+// `log.set cpu stdout=ON` worked while the same spelling failed on every
 // typed bool argument.  Case-sensitive wins, matching the identifier rules.
 //
 // This deliberately does NOT cover parse.c's and script.c's true/false/none:

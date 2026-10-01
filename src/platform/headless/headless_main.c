@@ -253,8 +253,7 @@ static void print_usage(const char *program) {
     printf("\n");
     printf("Options:\n");
     printf("  --help, -h      Display this help message\n");
-    printf("  --speed=MODE    Pacing mode: paced, accelerated, turbo (default: paced; legacy\n");
-    printf("                  aliases realtime/hardware map to paced, max to turbo). Headless\n");
+    printf("  --speed=MODE    Pacing mode: paced, accelerated, turbo (default: paced). Headless\n");
     printf("                  runs are budget-driven; only 'accelerated' changes execution\n");
     printf("                  (more instructions per frame-unit, scheduler.speed multiplier).\n");
     printf("  --cycles=N      Run for N CPU cycles then exit (for testing)\n");
@@ -422,6 +421,55 @@ static bool hl_pump_once(void) {
 // A job's printed output arrives as EVT_LOG output records (mailbox.h);
 // this prints the text -- or, framed, hands the record to the client as an
 // `@out` line.
+// A job's annotation records (value_begin / value / error, mailbox.h): to a
+// framed client as `@value_begin <json>`, `@value <json>`, `@error <json>`
+// lines among its `@out` lines.  Unframed output prints an error's lines to
+// stderr (hl_print_error_lines) and ignores the rest.
+static void hl_print_annotation(const char *json) {
+    static const char *const kinds[] = {"value_begin", "value", "error"};
+    for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
+        char key[40];
+        snprintf(key, sizeof key, "{\"event\":\"%s\",", kinds[i]);
+        if (strncmp(json, key, strlen(key)) == 0) {
+            printf("@%s %s\n", kinds[i], json);
+            fflush(stdout);
+            return;
+        }
+    }
+}
+
+// Writes the JSON string whose body starts at `t` (just past its opening
+// quote) to `f`, unescaped.  Returns the position after the closing quote.
+static const char *hl_put_json_string(FILE *f, const char *t) {
+    while (*t && *t != '"') {
+        if (*t == '\\' && t[1]) {
+            t++;
+            switch (*t) {
+            case 'n':
+                fputc('\n', f);
+                break;
+            case 't':
+                fputc('\t', f);
+                break;
+            case 'u': {
+                unsigned c = 0;
+                if (sscanf(t + 1, "%4x", &c) == 1) {
+                    fputc((int)c, f);
+                    t += 4;
+                }
+                break;
+            }
+            default:
+                fputc(*t, f);
+            }
+            t++;
+        } else {
+            fputc(*t++, f);
+        }
+    }
+    return *t == '"' ? t + 1 : t;
+}
+
 static void hl_print_output_record(const char *json) {
     if (g_framed) {
         printf("@out %s\n", json);
@@ -431,35 +479,28 @@ static void hl_print_output_record(const char *json) {
     const char *t = strstr(json, "\"text\":\"");
     if (!t)
         return;
-    t += 8;
-    // Unescape the JSON string up to its closing quote.
-    while (*t && *t != '"') {
-        if (*t == '\\' && t[1]) {
-            t++;
-            switch (*t) {
-            case 'n':
-                putchar('\n');
-                break;
-            case 't':
-                putchar('\t');
-                break;
-            case 'u': {
-                unsigned c = 0;
-                if (sscanf(t + 1, "%4x", &c) == 1) {
-                    putchar((int)c);
-                    t += 4;
-                }
-                break;
-            }
-            default:
-                putchar(*t);
-            }
-            t++;
-        } else {
-            putchar(*t++);
-        }
-    }
+    hl_put_json_string(stdout, t + 8);
     fflush(stdout);
+}
+
+// Unframed: an `error` record's lines, to stderr -- the core writes a job's
+// error only as this record.  A `truncated` record's full text is already on
+// stderr.
+static void hl_print_error_lines(const char *json) {
+    if (strstr(json, "\"truncated\":true"))
+        return;
+    const char *t = strstr(json, "\"lines\":[");
+    if (!t)
+        return;
+    t += 9;
+    fflush(stdout); // keep the job's text before its error
+    while (*t == '"') {
+        t = hl_put_json_string(stderr, t + 1);
+        fputc('\n', stderr);
+        if (*t == ',')
+            t++;
+    }
+    fflush(stderr);
 }
 
 // Takes every event off the ring: a job's output is printed, the result
@@ -490,6 +531,10 @@ static bool hl_take_events(uint32_t id, int *rc) {
                 json[n] = '\0';
                 if (strstr(json, "\"event\":\"output\"") == json + 1)
                     hl_print_output_record(json);
+                else if (g_framed)
+                    hl_print_annotation(json);
+                else if (strstr(json, "\"event\":\"error\"") == json + 1)
+                    hl_print_error_lines(json);
             }
         }
     }

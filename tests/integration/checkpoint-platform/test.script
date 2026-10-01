@@ -6,7 +6,7 @@ machine.register "0123456789abcdef" "20260926T000000Z"
 let cpdir = "${$WORK_DIR}/cp/0123456789abcdef-20260926T000000Z"
 def count(needle) {
     let n = 0
-    for e in vfs.list($cpdir) {
+    for e in files.list($cpdir) {
         if contains($e.name, $needle) {
             $n = $n + 1
         }
@@ -27,11 +27,11 @@ assert count("stale") == 0 "clear removed the stale delta and journal"
 assert count(".delta") == 1 "clear kept the live image's delta"
 
 # find_media picks the floppy image out of a directory, and copies it.
-assert storage.find_media("${$WORK_DIR}/media", "${$WORK_DIR}/found.dsk") "a floppy image was found"
-assert try(storage.find_media("${$WORK_DIR}/cp"), "none") == "none" "no media in the checkpoint dir"
+assert files.find_media("${$WORK_DIR}/media", "${$WORK_DIR}/found.dsk") "a floppy image was found"
+assert try(files.find_media("${$WORK_DIR}/cp"), "none") == "none" "no media in the checkpoint dir"
 
 # Browser-only: a download.
-assert try(download("${$WORK_DIR}/found.dsk"), "unsupported") == "unsupported" "download says it is not supported"
+assert try(files.download("${$WORK_DIR}/found.dsk"), "unsupported") == "unsupported" "download says it is not supported"
 
 echo "checkpoint-platform-ok"
 quit

@@ -99,7 +99,7 @@ extern const nubus_card_kind_t jmfb_generic_kind;
 
 // Pending high-level video-mode selection consumed by the next JMFB
 // factory call.  The id matches one of the entries enumerated by
-// `machine.profile(id).video_modes[].id` (e.g. "13in_rgb_8bpp").
+// `catalog.profile(id).video_modes[].id` (e.g. "13in_rgb_8bpp").
 // When set, the factory:
 //   1. resolves id → (monitor, depth) via mdc_8_24_monitors[],
 //   2. overrides the pending sense to the monitor's sense_code,

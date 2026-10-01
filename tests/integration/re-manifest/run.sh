@@ -21,16 +21,17 @@ mkdir -p "$EXTRACT"
 # Extract data + resource fork + Finder info once.
 GS_STORAGE_CACHE="$STORAGE_CACHE" "$HEADLESS_BIN" \
     rom="$ROM_PATH" \
-    --no-prompt --script-stdin --speed=max <<EOF
-storage.probe $IMG
-storage.cp "$FINDER" "$EXTRACT/data"
-storage.cp "$FINDER/rsrc/_raw" "$EXTRACT/rsrc"
-storage.cp "$FINDER/finf" "$EXTRACT/finf"
-storage.unmount $IMG
+    --no-prompt --script-stdin --speed=turbo <<EOF
+files.probe $IMG
+files.cp "$FINDER" "$EXTRACT/data"
+files.cp "$FINDER/rsrc/_raw" "$EXTRACT/rsrc"
+files.cp "$FINDER/finf" "$EXTRACT/finf"
+let n = files.mounts.find("$IMG")
+files.mounts[\$n].unmount
 quit
 EOF
 
-[ -f "$EXTRACT/rsrc" ] || { echo "FAIL: storage.cp did not produce $EXTRACT/rsrc"; exit 1; }
+[ -f "$EXTRACT/rsrc" ] || { echo "FAIL: files.cp did not produce $EXTRACT/rsrc"; exit 1; }
 
 # Three dumps: full, --no-disasm, --no-decode.
 "$DUMP_BIN" --data "$EXTRACT/data" --rsrc "$EXTRACT/rsrc" --finf "$EXTRACT/finf" "$FULL"

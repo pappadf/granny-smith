@@ -57,8 +57,8 @@ typedef enum {
 #define VAL_DEC       0x0002u // prefer decimal output
 #define VAL_VOLATILE  0x0004u // re-read every time (no caching)
 #define VAL_SENSITIVE 0x0008u // do not print payload (passwords, etc.)
-#define VAL_RO        0x0010u // attribute is read-only
 #define VAL_BIN       0x0020u // prefer binary output
+#define VAL_PATH      0x0040u // a string naming a VFS path (argument forms offer a file picker)
 
 // Forward declaration; defined in object.h.
 struct object;
@@ -224,7 +224,7 @@ const char *val_as_str(const value_t *v);
 //
 // One vocabulary, because there were two that disagreed: validate_slot's was
 // case-sensitive and log.c's parse_onoff was case-INsensitive and accepted a
-// narrower set, so `debug.log cpu stdout=ON` worked while
+// narrower set, so `log.set cpu stdout=ON` worked while
 // `machine.floppy.drive[0].insert path ON` did not, for no reason a user
 // could infer.  Note this does NOT subsume the
 // true/false/none LITERAL grammars in parse.c and script.c: those are
@@ -238,6 +238,10 @@ static inline bool val_is_error(const value_t *v) {
 
 // True if *v is one of the heap-owning kinds.
 bool val_is_heap(const value_t *v);
+
+// Lower-case name of a kind ("uint", "enum", "any" for V_ANY): the one
+// spelling used by type descriptors, usage text and validation errors.
+const char *value_kind_name(value_kind_t k);
 
 // (value_copy was a second deep-copier and is gone -- see value_dup.  It
 // reported OOM by silently returning a broken value, and for V_BYTES left

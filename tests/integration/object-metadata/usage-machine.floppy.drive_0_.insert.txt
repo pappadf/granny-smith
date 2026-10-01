@@ -1,0 +1,5 @@
+machine.floppy.drive[0].insert <path> [writable]
+  path      string, path  Host path or storage URI of the image to mount
+  writable  bool          Mount writable (default false)
+
+Mount a disk image into this drive

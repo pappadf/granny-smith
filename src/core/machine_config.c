@@ -78,92 +78,58 @@ static value_t cfg_str(const char *s) {
     return val_str(s ? s : "");
 }
 
-static value_t cfg_attr_model(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_model) {
     return cfg_str(s_record.model);
 }
-static value_t cfg_attr_ram(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_ram) {
     return val_uint(4, s_record.ram_kb);
 }
-static value_t cfg_attr_rom(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_rom) {
     return cfg_str(s_record.rom);
 }
-static value_t cfg_attr_rom_id(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_rom_id) {
     return cfg_str(s_record.rom_id);
 }
-static value_t cfg_attr_rom2(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_rom2) {
     return cfg_str(s_record.rom2);
 }
-static value_t cfg_attr_vrom(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_vrom) {
     return cfg_str(s_record.vrom);
 }
-static value_t cfg_attr_video_card(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_video_card) {
     return cfg_str(s_record.video_card);
 }
-static value_t cfg_attr_video_sense(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_video_sense) {
     return val_int(s_record.video_sense);
 }
-static value_t cfg_attr_video_mode(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_video_mode) {
     return cfg_str(s_record.video_mode);
 }
-static value_t cfg_attr_custom_mode(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_custom_mode) {
     return cfg_str(s_record.custom_mode);
 }
-static value_t cfg_attr_monitor(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_monitor) {
     return cfg_str(s_record.monitor);
 }
-static value_t cfg_attr_pci_card(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_pci_card) {
     return cfg_str(s_record.pci_card);
 }
-static value_t cfg_attr_prom(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_prom) {
     return cfg_str(s_record.prom);
 }
-static value_t cfg_attr_pci_option(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_pci_option) {
     return cfg_str(s_record.pci_option);
 }
-static value_t cfg_attr_created(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_created) {
     return cfg_str(s_record.created);
 }
-static value_t cfg_attr_valid(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_valid) {
     return val_bool(s_record.valid);
 }
 
 // `machine.config.vroms` — list of the resolved declaration-ROM picks:
 // [{card_id, path, crc, explicit}, ...] maps in load order.
-static value_t cfg_attr_vroms(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_vroms) {
     value_t *items = NULL;
     if (s_record.n_vroms > 0) {
         items = (value_t *)calloc((size_t)s_record.n_vroms, sizeof(value_t));
@@ -188,9 +154,7 @@ static value_t cfg_attr_vroms(struct object *self, const member_t *m) {
 // [{bus, slot, card_id, explicit}, ...] in the order the slot walks
 // populated them.  `explicit` separates what the user chose from what the
 // slot's own default supplied (see machine_config_slot_card_t).
-static value_t cfg_attr_slot_cards(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(cfg_attr_slot_cards) {
     value_t *items = NULL;
     if (s_record.n_slot_cards > 0) {
         items = (value_t *)calloc((size_t)s_record.n_slot_cards, sizeof(value_t));
@@ -213,92 +177,74 @@ static const member_t config_members[] = {
     {.kind = M_ATTR,
      .name = "valid",
      .doc = "True once a machine was built through the boot document",
-     .flags = VAL_RO,
      .attr = {.type = V_BOOL, .get = cfg_attr_valid, .set = NULL}        },
     {.kind = M_ATTR,
      .name = "model",
      .doc = "Model id the machine was built from",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = cfg_attr_model, .set = NULL}      },
     {.kind = M_ATTR,
      .name = "ram",
      .doc = "RAM in KB the machine was built with",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = cfg_attr_ram, .set = NULL}          },
     {.kind = M_ATTR,
      .name = "rom",
      .doc = "ROM file path staged at boot (updated by rom.load)",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = cfg_attr_rom, .set = NULL}        },
     {.kind = M_ATTR,
      .name = "rom_id",
      .doc = "Content id of the installed ROM (rom.id)",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = cfg_attr_rom_id, .set = NULL}     },
     {.kind = M_ATTR,
      .name = "rom2",
      .doc = "Lisa second ROM chip path (empty = single-file ROM)",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = cfg_attr_rom2, .set = NULL}       },
     {.kind = M_ATTR,
      .name = "vrom",
      .doc = "Explicit vrom= pick (empty = auto-resolved from offers)",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = cfg_attr_vrom, .set = NULL}       },
     {.kind = M_ATTR,
      .name = "vroms",
      .doc = "Resolved declaration-ROM picks per card: [{card_id, path, crc, explicit}]",
-     .flags = VAL_RO,
      .attr = {.type = V_LIST, .get = cfg_attr_vroms, .set = NULL}        },
     {.kind = M_ATTR,
      .name = "slot_cards",
      .doc = "Resolved per-slot card picks: [{bus, slot, card_id, explicit}]",
-     .flags = VAL_RO,
      .attr = {.type = V_LIST, .get = cfg_attr_slot_cards, .set = NULL}   },
     {.kind = M_ATTR,
      .name = "video_card",
      .doc = "Wildcard-socket card id from the boot document",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = cfg_attr_video_card, .set = NULL} },
     {.kind = M_ATTR,
      .name = "video_sense",
      .doc = "Monitor sense from the boot document (-1 = unset)",
-     .flags = VAL_RO,
      .attr = {.type = V_INT, .get = cfg_attr_video_sense, .set = NULL}   },
     {.kind = M_ATTR,
      .name = "video_mode",
      .doc = "Video-mode id from the boot document (empty = card default)",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = cfg_attr_video_mode, .set = NULL} },
     {.kind = M_ATTR,
      .name = "custom_mode",
      .doc = "Custom resolution WxHxD from the boot document (empty = none)",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = cfg_attr_custom_mode, .set = NULL}},
     {.kind = M_ATTR,
      .name = "monitor",
      .doc = "Built-in video monitor strap from the boot document (empty = machine default)",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = cfg_attr_monitor, .set = NULL}    },
     {.kind = M_ATTR,
      .name = "pci_card",
      .doc = "First-PCI-socket card id from the boot document (empty = slot default)",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = cfg_attr_pci_card, .set = NULL}   },
     {.kind = M_ATTR,
      .name = "prom",
      .doc = "Explicit prom= pick (empty = auto-resolved from offers)",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = cfg_attr_prom, .set = NULL}       },
     {.kind = M_ATTR,
      .name = "pci_option",
      .doc = "key=value options for the pci_card socket (empty = none)",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = cfg_attr_pci_option, .set = NULL} },
     {.kind = M_ATTR,
      .name = "created",
      .doc = "Boot timestamp (ISO8601 UTC), stamped by the emulator",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = cfg_attr_created, .set = NULL}    },
 };
 
@@ -315,6 +261,7 @@ void machine_config_object_init(struct object *machine_obj) {
         return;
     s_config_object = object_new(&config_class, NULL, "config");
     if (s_config_object) {
+        object_set_category(s_config_object, M_CAT_ADVANCED);
         object_set_label(s_config_object, "Built-from configuration");
         object_set_order(s_config_object, 96);
         object_attach(machine_obj, s_config_object);

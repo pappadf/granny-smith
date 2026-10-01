@@ -1,7 +1,7 @@
 // Disk-image path helpers for the Filesystem tree's "descend into an image"
 // feature. A guest disk image (HFS / UFS / APM) can be browsed read-only as
 // an extended path — /opfs/images/hd/disk.img/partition3/etc/motd — handled
-// by the C-side `vfs.list` (see docs/target-filesystems.md). These pure
+// by the C-side `files.list` (see docs/target-filesystems.md). These pure
 // helpers classify a path segment so the tree knows when to expand an image
 // node and route its children through the VFS instead of OPFS.
 
@@ -26,7 +26,7 @@ function imageSegmentIndex(fullPath: string): number {
   return -1;
 }
 
-// True when listing this path's children must go through `vfs.list` rather
+// True when listing this path's children must go through `files.list` rather
 // than OPFS: either the path IS a disk image (list its partitions) or it
 // lives inside one (list the volume contents).
 export function listViaVfs(fullPath: string): boolean {

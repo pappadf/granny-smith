@@ -1,29 +1,25 @@
-// Output printed before any terminal exists is kept and replayed when one
-// registers, within a bound.
-import { describe, it, expect } from 'vitest';
-import { routePrintLine, setTerminalSink } from '@/bus/logSink';
+// What the core prints goes straight into the app's console, which exists
+// before any view mounts.
+import { describe, it, expect, vi } from 'vitest';
+import { routePrintLine, routeErrorLine } from '@/bus/logSink';
+import { appConsole } from '@/state/console.svelte';
 
 describe('logSink', () => {
-  it('replays the backlog to the first sink, then writes through', () => {
-    setTerminalSink(null);
+  it('feeds the app console model directly', () => {
+    const push = vi.spyOn(appConsole.model, 'push');
     routePrintLine('booting');
-    routePrintLine('ready');
-    const got: string[] = [];
-    setTerminalSink((l) => got.push(l));
-    expect(got).toEqual(['booting', 'ready']);
-    routePrintLine('live');
-    expect(got).toEqual(['booting', 'ready', 'live']);
-    setTerminalSink(null);
+    routeErrorLine('warning');
+    expect(push.mock.calls.map((c) => c[0])).toEqual([
+      { kind: 'print', line: 'booting' },
+      { kind: 'stderr', line: 'warning' },
+    ]);
+    push.mockRestore();
   });
 
-  it('keeps only the newest lines when nobody listens for long', () => {
-    setTerminalSink(null);
-    for (let i = 0; i < 2500; i++) routePrintLine(`l${i}`);
-    const got: string[] = [];
-    setTerminalSink((l) => got.push(l));
-    expect(got.length).toBe(2000);
-    expect(got[0]).toBe('l500');
-    expect(got[got.length - 1]).toBe('l2499');
-    setTerminalSink(null);
+  it('what arrives before any view is shown once a frame passes', async () => {
+    appConsole.model.clear();
+    routePrintLine('early');
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    expect(appConsole.state.entries.map((e) => e.text)).toEqual(['early']);
   });
 });

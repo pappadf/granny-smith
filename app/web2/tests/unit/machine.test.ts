@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { shortModel, formatRamKb } from '@/lib/machine';
 
 // MMU presence (and every other per-model decision) must come from the C
-// capability probe — `machine.profile(id).capabilities` — never from a
+// capability probe — `catalog.profile(id).capabilities` — never from a
 // regex on the model's display name. This lint guards against the old
 // `/SE\/30|II/i` pattern (and its variants) creeping back into frontend
 // logic.

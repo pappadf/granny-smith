@@ -125,8 +125,9 @@ static void format_object_table(struct object *o) {
         const member_t *mb = &cls->members[i];
         if (!mb->name || mb->kind != M_CHILD)
             continue;
-        const char *child_cls = (mb->child.cls && mb->child.cls->name) ? mb->child.cls->name : "object";
-        gs_outf("%-*s : <%s%s>\n", width, mb->name, child_cls, mb->child.indexed ? "[]" : "");
+        const class_desc_t *ccls = mb->child.collection ? mb->child.collection->entry : mb->child.cls;
+        const char *child_cls = (ccls && ccls->name) ? ccls->name : "object";
+        gs_outf("%-*s : <%s%s>\n", width, mb->name, child_cls, mb->child.collection ? "[]" : "");
     }
 }
 
@@ -282,8 +283,29 @@ static void format_value_print(const value_t *v) {
 // printing).
 // Printing reads attributes (an object renders as its attribute table),
 // so it runs on the emulator thread: a job hands it over (job/job.h).
+//
+// Inside a job the printed text is bracketed by annotation records: a
+// `value_begin` before it and a `value` after it carrying the value as
+// tagged JSON, so a console can render the text between them as one
+// structured entry.  The text itself does not change.
 static void print_value_here(void *p) {
-    format_value_print((const value_t *)p);
+    const value_t *v = (const value_t *)p;
+    bool annotate = v && v->kind != V_NONE && v->kind != V_ERROR;
+    if (annotate)
+        annotate = job_annotate("value_begin", NULL, NULL, NULL);
+    format_value_print(v);
+    if (!annotate)
+        return;
+    // {json: V}, or {truncated: true} when that does not fit a record.
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "json", value_dup(v));
+    value_t full = val_map_finish(b);
+    b = val_map_new();
+    val_map_put(b, "truncated", val_bool(true));
+    value_t reduced = val_map_finish(b);
+    job_annotate("value", &full, &reduced, NULL);
+    value_free(&full);
+    value_free(&reduced);
 }
 
 void shell_print_value(const value_t *v) {
@@ -373,9 +395,9 @@ int shell_init(void) {
     root_install_class();
 
     // Register process-singleton namespace objects that exist
-    // independently of any machine instance: rom, vrom, and machine
-    // all carry pre-boot surfaces (rom.identify, vrom.identify,
-    // machine.boot, machine.profile) that callers reach for *before*
+    // independently of any machine instance: rom, machine and catalog
+    // all carry pre-boot surfaces (rom.identify, catalog.vroms.identify,
+    // machine.boot, catalog.profile) that callers reach for *before*
     // a machine has been created. The WASM URL-media boot path is the
     // canonical case — drag-drop a Plus ROM, ask rom.identify for the
     // compatible models, then call machine.boot with the answer.
@@ -384,23 +406,21 @@ int shell_init(void) {
     // fail to resolve until the legacy `rom load` had already booted
     // a machine.
     rom_init();
-    vrom_init();
-    prom_init();
     machine_init();
     checkpoint_init();
-    archive_init();
+    files_init();
+    log_class_init();
+    catalog_init();
     mouse_class_register();
     // `keyboard` is NOT registered here: it is per machine now, built by
     // system_create (host_input.h).  It needs a scheduler source that lives
     // and dies with the machine, which a process-lifetime facade cannot have.
     screen_class_register();
-    vfs_class_register();
-    find_class_register();
     scsi_class_register();
 
     // Install the cfg-scoped namespace stubs (storage, shell, mouse,
     // keyboard, screen, vfs, find) with a NULL cfg so their pre-boot
-    // surfaces resolve — particularly storage.cp and storage.find_media,
+    // surfaces resolve — particularly files.cp and files.find_media,
     // which the URL-media auto-boot path uses *before* machine.boot to
     // copy the downloaded ROM into OPFS and to scan extracted archives
     // for floppy images. system_create will later re-install with the

@@ -16,7 +16,7 @@
 //
 // Root cause: bus/opfs.ts::writeToOPFS staged the upload with
 // FileSystemFileHandle.createWritable() ON THE MAIN THREAD, then persisted with a
-// worker-side storage.cp. Safari's OPFS rejects main-thread createWritable()
+// worker-side files.cp. Safari's OPFS rejects main-thread createWritable()
 // ("UnknownError"); on Chromium the worker couldn't see the main-thread write
 // and stranded the file in /opfs/upload.
 //
@@ -27,7 +27,7 @@
 // busy-waits for WasmFS's OPFS thread -- and WebKit serves a worker's OPFS
 // request through the page's thread, so they deadlocked.  The page now only
 // copies each chunk into the core's transfer window and the emulator thread
-// writes it (storage.xfer_write, bus/xfer.ts).
+// writes it (files.xfer_write, bus/xfer.ts).
 //
 // These tests assert uploads succeed, so they FAIL if the bug returns. On
 // Chromium they PASS with the fix (before it, they failed — stranded in
@@ -91,7 +91,7 @@ async function opfsFiles(page: Page): Promise<string[]> {
   });
 }
 
-// Wait for the async upload pipeline (stage → probe → storage.cp → cleanup) to
+// Wait for the async upload pipeline (stage → probe → files.cp → cleanup) to
 // land the file under `dir` AND clear the staging area, then assert no
 // upload-failure toast fired. Polling both conditions tolerates the ordering of
 // the copy vs. the cleanup rm while still catching a real leak (never clears).

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# machine.profile() capability-probe assertions.
+# catalog.profile() capability-probe assertions.
 #
-# Runs the headless shell once, dumps machine.profile for the models listed in
+# Runs the headless shell once, dumps catalog.profile for the models listed in
 # MODELS= below, then greps each model's JSON line for the expected capability
 # fields.  Each model's profile is a single JSON line containing
 # "id":"<model>", so we isolate a model's line by that key.
 #
 # Every assertion here is hand-written and names its model, so listing a model
 # buys no coverage by itself.  What the test does enforce is a floor: it dumps
-# every registered model (machine.models) and fails if any has no assertion at
+# every registered model (catalog.models) and fails if any has no assertion at
 # all -- which is how the three MCU Quadras went uncovered here while the
 # sibling machine-profile-schema test already carried them.
 set -euo pipefail
@@ -17,17 +17,17 @@ OUT="$WORK_DIR/profiles.txt"
 SCRIPT="$WORK_DIR/profiles.script"
 mkdir -p "$WORK_DIR"
 
-# Every registered model, read from the emulator itself (machine.models),
+# Every registered model, read from the emulator itself (catalog.models),
 # so a newly registered machine cannot be silently left out.
 cat > "$SCRIPT" <<'SCRIPT'
-let ms = machine.models
+let ms = catalog.models
 for m in $ms {
-    echo "${machine.profile($m)}"
+    echo "${catalog.profile($m)}"
 }
 quit
 SCRIPT
 
-"$HEADLESS_BIN" rom="$ROM_PATH" script="$SCRIPT" --speed=max > "$OUT" 2>&1
+"$HEADLESS_BIN" rom="$ROM_PATH" script="$SCRIPT" --speed=turbo > "$OUT" 2>&1
 
 fail=0
 declare -A count=()
@@ -346,7 +346,7 @@ done
 
 # The floor: every registered model carries at least one assertion above.
 models=$(grep -o '^{"id":"[a-z0-9]*"' "$OUT" | sed 's/^{"id":"\(.*\)"/\1/')
-[ -n "$models" ] || { echo "FAIL: machine.models dumped no profiles"; fail=1; }
+[ -n "$models" ] || { echo "FAIL: catalog.models dumped no profiles"; fail=1; }
 for m in $models; do
     if [ "${count[$m]:-0}" -eq 0 ]; then
         echo "FAIL: $m: registered, but no capability assertion names it"

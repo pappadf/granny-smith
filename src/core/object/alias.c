@@ -242,20 +242,14 @@ static void alias_clear_user_impl(void) {
 //
 // `shell.alias` exposes alias add / remove / list as object methods.
 
-static value_t method_alias_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(method_alias_add) {
     char err[160];
     if (alias_add_user(argv[0].s, argv[1].s, err, sizeof(err)) < 0)
         return val_err("%s", err);
     return val_none();
 }
 
-static value_t method_alias_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(method_alias_remove) {
     char err[160];
     if (alias_remove_user(argv[0].s, err, sizeof(err)) < 0)
         return val_err("%s", err);
@@ -279,11 +273,7 @@ static bool list_acc_collect(const char *name, const char *path, alias_kind_t ki
     return true;
 }
 
-static value_t method_alias_list(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(method_alias_list) {
     list_acc_t acc = {0};
     alias_each(list_acc_collect, &acc);
     return val_list(acc.items, acc.len);
@@ -317,6 +307,7 @@ static const member_t shell_alias_members[] = {
 
 const class_desc_t shell_alias_class = {
     .name = "alias",
+    .doc = "User and built-in aliases: add, remove, list",
     .members = shell_alias_members,
     .n_members = sizeof(shell_alias_members) / sizeof(shell_alias_members[0]),
 };
@@ -351,6 +342,16 @@ const char *alias_lookup(const char *name, alias_kind_t *kind_out) {
     const char *r = alias_lookup_impl(name, kind_out);
     job_tables_unlock();
     return r;
+}
+
+bool alias_lookup_copy(const char *name, char *buf, size_t size, alias_kind_t *kind_out) {
+    job_tables_lock();
+    const char *r = alias_lookup_impl(name, kind_out);
+    bool ok = r && buf && strlen(r) < size;
+    if (ok)
+        memcpy(buf, r, strlen(r) + 1);
+    job_tables_unlock();
+    return ok;
 }
 
 void alias_each(alias_iter_fn fn, void *ud) {

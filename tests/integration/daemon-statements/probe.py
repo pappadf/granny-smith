@@ -22,7 +22,7 @@ def start_daemon():
     for _ in range(20):
         port = random.randint(20000, 60000)
         log = open(os.path.join(RESULTS, "daemon.log"), "w")
-        proc = subprocess.Popen([HEADLESS, "--daemon", f"--port={port}", f"rom={ROM}", "--speed=max"],
+        proc = subprocess.Popen([HEADLESS, "--daemon", f"--port={port}", f"rom={ROM}", "--speed=turbo"],
                                 stdout=subprocess.PIPE, stderr=log, text=True)
         line = proc.stdout.readline()
         while line and "READY" not in line:

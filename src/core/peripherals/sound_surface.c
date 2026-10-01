@@ -19,14 +19,12 @@ static sound_surface_t *surf(struct object *self) {
     return (sound_surface_t *)object_data(self);
 }
 
-static value_t snd_sample_rate(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(snd_sample_rate) {
     sound_surface_t *s = surf(self);
     return val_uint(4, s->sample_rate(s->ctx));
 }
 
-static value_t snd_volume(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(snd_volume) {
     sound_surface_t *s = surf(self);
     return val_uint(1, s->volume(s->ctx));
 }
@@ -34,8 +32,7 @@ static value_t snd_volume(struct object *self, const member_t *m) {
 // `enabled` is the output GATE, and is the inverse of muted.  It is not
 // out_enabled: a machine can have its DMA running into a muted output, which
 // is exactly what the Sound control panel's mute checkbox does.
-static value_t snd_enabled_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(snd_enabled_get) {
     sound_surface_t *s = surf(self);
     return val_bool(!s->muted(s->ctx));
 }
@@ -49,8 +46,7 @@ static value_t snd_enabled_set(struct object *self, const member_t *m, value_t v
     return val_none();
 }
 
-static value_t snd_volume_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(snd_volume_set) {
     sound_surface_t *s = surf(self);
     if (!s->set_volume)
         return val_err("volume: this engine's level is a codec register the guest driver owns");
@@ -60,39 +56,32 @@ static value_t snd_volume_set(struct object *self, const member_t *m, value_t in
     return val_none();
 }
 
-static value_t snd_out_enabled(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(snd_out_enabled) {
     sound_surface_t *s = surf(self);
     return val_bool(s->out_enabled(s->ctx));
 }
 
-static value_t snd_in_enabled(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(snd_in_enabled) {
     sound_surface_t *s = surf(self);
     return val_bool(s->in_enabled(s->ctx));
 }
 
-static value_t snd_frames(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(snd_frames) {
     sound_surface_t *s = surf(self);
     return val_uint(8, s->frames(s->ctx));
 }
 
-static value_t snd_peak(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(snd_peak) {
     sound_surface_t *s = surf(self);
     return val_int(s->peak(s->ctx));
 }
 
-static value_t snd_overruns(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(snd_overruns) {
     sound_surface_t *s = surf(self);
     return val_uint(8, s->overruns(s->ctx));
 }
 
-static value_t snd_method_mute(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(snd_method_mute) {
     sound_surface_t *s = surf(self);
     if (!s->set_muted)
         return val_err("mute: this engine's gate is guest-controlled and cannot be set from here");
@@ -100,10 +89,7 @@ static value_t snd_method_mute(struct object *self, const member_t *m, int argc,
     return val_none();
 }
 
-static value_t snd_method_match(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(snd_method_match) {
     return audio_out_match_value(argv[0].s);
 }
 
@@ -119,7 +105,7 @@ static const member_t sound_members[] = {
     {.kind = M_ATTR,
      .name = "sample_rate",
      .doc = "Output sample rate in Hz",
-     .flags = VAL_RO,
+     .flags = M_CAT_ADVANCED,
      .attr = {.type = V_UINT, .get = snd_sample_rate, .set = NULL}},
     {.kind = M_ATTR,
      .name = "volume",
@@ -132,27 +118,25 @@ static const member_t sound_members[] = {
     {.kind = M_ATTR,
      .name = "out_enabled",
      .doc = "Output engine running (DMA armed / PWM feeding the host)",
-     .flags = VAL_RO,
      .attr = {.type = V_BOOL, .get = snd_out_enabled, .set = NULL}},
     {.kind = M_ATTR,
      .name = "in_enabled",
      .doc = "Sound-input engine running (false where input is not modelled yet)",
-     .flags = VAL_RO,
      .attr = {.type = V_BOOL, .get = snd_in_enabled, .set = NULL}},
     {.kind = M_ATTR,
      .name = "frames",
      .doc = "Output frames rendered to the host since power-on",
-     .flags = VAL_RO,
+     .flags = M_CAT_ADVANCED,
      .attr = {.type = V_UINT, .get = snd_frames, .set = NULL}},
     {.kind = M_ATTR,
      .name = "peak",
      .doc = "Loudest |sample| pushed to the host since power-on (0 = silence)",
-     .flags = VAL_RO,
+     .flags = M_CAT_ADVANCED,
      .attr = {.type = V_INT, .get = snd_peak, .set = NULL}},
     {.kind = M_ATTR,
      .name = "overruns",
      .doc = "Engine over/underruns since power-on",
-     .flags = VAL_RO,
+     .flags = M_CAT_ADVANCED,
      .attr = {.type = V_UINT, .get = snd_overruns, .set = NULL}},
     {.kind = M_METHOD,
      .name = "mute",
@@ -160,6 +144,7 @@ static const member_t sound_members[] = {
      .method = {.args = snd_mute_args, .nargs = 1, .result = V_NONE, .fn = snd_method_mute}},
     {.kind = M_METHOD,
      .name = "match",
+     .flags = M_CAT_ADVANCED,
      .doc = "Compare the last capture against a reference WAV (true if identical)",
      .method = {.args = snd_match_args, .nargs = 1, .result = V_BOOL, .fn = snd_method_match}},
 };
@@ -168,6 +153,7 @@ static const class_desc_t sound_surface_class = {
     .name = "sound",
     .members = sound_members,
     .n_members = sizeof sound_members / sizeof sound_members[0],
+    .doc = "Sound output and capture",
 };
 
 struct object *sound_object_new(const sound_surface_t *s) {

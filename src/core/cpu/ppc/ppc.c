@@ -1276,7 +1276,7 @@ static uint32_t *ppc_attr_slot(ppc_t *p, int id) {
     return NULL;
 }
 
-static value_t attr_ppc_get(struct object *self, const member_t *m) {
+static DEF_GETTER(attr_ppc_get) {
     ppc_t *p = ppc_from(self);
     if (!p)
         return val_err("cpu not initialised");
@@ -1305,7 +1305,7 @@ static value_t attr_ppc_get(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_ppc_set(struct object *self, const member_t *m, value_t in) {
+static DEF_SETTER(attr_ppc_set) {
     ppc_t *p = ppc_from(self);
     if (!p)
         return val_err("cpu not initialised");
@@ -1358,17 +1358,14 @@ static value_t attr_ppc_set(struct object *self, const member_t *m, value_t in) 
 
 // Read `instr_count`: the scheduler's retired-instruction count, which is
 // architecture-neutral (68K exposes the same attribute).
-static value_t ppc_attr_instr_count(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(ppc_attr_instr_count) {
     return val_uint(8, cpu_instr_count());
 }
 
 // `machine.cpu.frame([addr], [count], [before])` -- this CPU's debug frame,
 // the contract every CPU-like object shares (debug_frame_build; debug.frame
 // is the same call).
-static value_t ppc_method_frame(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(ppc_method_frame) {
     ppc_t *p = ppc_from(self);
     if (!p)
         return val_err("cpu not initialised");
@@ -1411,12 +1408,12 @@ static const member_t ppc_members[] = {
     PPC_DBAT(0), PPC_DBAT(1), PPC_DBAT(2), PPC_DBAT(3),
     PPC_ATTR("tbu", PA_RTCU, "Timebase upper half (604); the same storage as rtcu"),
     PPC_ATTR("tbl", PA_RTCL, "Timebase lower half (604); the same storage as rtcl"),
-    {.kind = M_ATTR, .name = "instr_count", .flags = VAL_RO,
+    {.kind = M_ATTR, .name = "instr_count", 
      .doc = "Instructions retired since the machine was created (the same count machine.cpu.instr_count gives on 68K)",
      .attr = {.type = V_UINT, .get = ppc_attr_instr_count}},
-    {.kind = M_METHOD, .name = "frame",
-     .doc = "Debug frame: {arch, pc, regs, rows, fpu?} -- registers, a disassembly window and per-row translation",
-     .method = {.args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = ppc_method_frame}},
+    {.kind = M_METHOD, .name = "frame", .examples = EXAMPLES("machine.cpu.frame", "machine.cpu.frame 0xfff00100 16"),
+     .doc = "The CPU's debug frame: registers, a disassembly window and per-row translation",
+     .method = {.result_doc = "{arch, pc, regs, rows, fpu?}", .args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = ppc_method_frame}},
 };
 // clang-format on
 
@@ -1424,6 +1421,7 @@ static const class_desc_t ppc_cpu_class = {
     .name = "ppc",
     .members = ppc_members,
     .n_members = sizeof(ppc_members) / sizeof(ppc_members[0]),
+    .doc = "The main CPU (PowerPC): registers and execution state",
 };
 
 // === machine.cpu.mmu ========================================================
@@ -1435,8 +1433,7 @@ static const class_desc_t ppc_cpu_class = {
 // shape as every other MMU kind's (debug.h).  Omitted `supervisor` means the
 // current MSR[PR]; `fetch` translates with the instruction-side rules (the
 // IBATs, MSR[IT]) instead of the data side.
-static value_t mmu_method_translate(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(mmu_method_translate) {
     ppc_t *p = (ppc_t *)object_data(self);
     if (!p)
         return val_err("cpu not initialised");
@@ -1452,8 +1449,7 @@ static value_t mmu_method_translate(struct object *self, const member_t *m, int 
 // reads through the data-side translation; "physical" reads the address as
 // is.  (machine.memory.peek on a PowerPC machine is physical; this is the
 // logical read a debugger wants.)
-static value_t mmu_method_peek(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(mmu_method_peek) {
     ppc_t *p = (ppc_t *)object_data(self);
     if (!p)
         return val_err("cpu not initialised");
@@ -1479,7 +1475,7 @@ static value_t mmu_method_peek(struct object *self, const member_t *m, int argc,
     return v;
 }
 
-// peek's default size: a named `space` must be reachable past it.
+// peek's default size.
 static const value_t k_peek_size4 = {.kind = V_UINT, .u = 4};
 
 static const arg_decl_t mmu_translate_args[] = {
@@ -1487,12 +1483,11 @@ static const arg_decl_t mmu_translate_args[] = {
     {.name = "supervisor",
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &obj_arg_unset,
-     .doc = "translate for supervisor (true) or user (false); default: MSR[PR]"},
+     .doc = "translate for supervisor (true) or user (false)",
+     .default_doc = "from MSR[PR]"},
     {.name = "fetch",
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &obj_arg_unset,
      .doc = "instruction-side translation (IBATs, MSR[IT]) rather than data-side"},
 };
 static const arg_decl_t mmu_peek_args[] = {
@@ -1501,27 +1496,35 @@ static const arg_decl_t mmu_peek_args[] = {
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_peek_size4,
-     .doc = "1, 2 or 4 bytes (default 4)"},
+     .doc = "1, 2 or 4 bytes"},
     {.name = "space",
-     .kind = V_STRING,
+     .kind = V_ENUM,
+     .enum_values = debug_space_values,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &obj_arg_unset,
-     .doc = "\"logical\" (default) or \"physical\""},
+     .doc = "\"logical\" or \"physical\"",
+     .default_doc = "logical"},
 };
 
 static const member_t ppc_mmu_members[] = {
     {.kind = M_METHOD,
      .name = "translate",
-     .doc = "Translate an address: {phys, valid, via}, side-effect-free (same shape on every MMU kind)",
-     .method = {.args = mmu_translate_args, .nargs = 3, .result = V_MAP, .fn = mmu_method_translate}},
+     .examples = EXAMPLES("machine.cpu.mmu.translate 0x5fff8000"),
+     .doc = "Translate an address, side-effect-free (same shape on every MMU kind)",
+     .method = {.result_doc = "{phys, valid, via}",
+                .args = mmu_translate_args,
+                .nargs = 3,
+                .result = V_MAP,
+                .fn = mmu_method_translate}},
     {.kind = M_METHOD,
      .name = "peek",
+     .examples = EXAMPLES("machine.cpu.mmu.peek 0x5fff8000", "machine.cpu.mmu.peek 0x3000 2 physical"),
      .doc = "Read memory, logical (through the translation) or physical; side-effect-free",
-     .method = {.args = mmu_peek_args, .nargs = 3, .result = V_UINT, .fn = mmu_method_peek}         },
+     .method = {.args = mmu_peek_args, .nargs = 3, .result = V_UINT, .fn = mmu_method_peek}},
 };
 
 static const class_desc_t ppc_mmu_class = {
     .name = "ppc_mmu",
+    .doc = "The PowerPC MMU: BATs, segment registers, peek and translate",
     .members = ppc_mmu_members,
     .n_members = sizeof(ppc_mmu_members) / sizeof(ppc_mmu_members[0]),
 };
@@ -1530,7 +1533,7 @@ static const class_desc_t ppc_mmu_class = {
 // Registered alongside the arithmetic datapath; its existence is
 // also what flips the capability probe's `fpu` bit for the PDM machines.
 
-static value_t attr_fpr_get(struct object *self, const member_t *m) {
+static DEF_GETTER(attr_fpr_get) {
     ppc_t *p = ppc_from(self);
     if (!p)
         return val_err("cpu not initialised");
@@ -1540,7 +1543,7 @@ static value_t attr_fpr_get(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_fpr_set(struct object *self, const member_t *m, value_t in) {
+static DEF_SETTER(attr_fpr_set) {
     ppc_t *p = ppc_from(self);
     if (!p)
         return val_err("cpu not initialised");
@@ -1576,6 +1579,7 @@ static const member_t ppc_fpu_members[] = {
 
 static const class_desc_t ppc_fpu_class = {
     .name = "ppc_fpu",
+    .doc = "The PowerPC floating-point registers and FPSCR",
     .members = ppc_fpu_members,
     .n_members = sizeof(ppc_fpu_members) / sizeof(ppc_fpu_members[0]),
 };

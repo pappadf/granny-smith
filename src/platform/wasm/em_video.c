@@ -33,7 +33,7 @@
 #include "system.h"
 
 // The renderer is part of the display path, so it shares its category:
-// `debug.log("video", N)` turns on the producers AND the consumer.
+// `log.set("video", N)` turns on the producers AND the consumer.
 // These five messages used to be bare printfs, so they
 // could not be levelled, filed or redirected at all.
 LOG_USE_CATEGORY_NAME("video");

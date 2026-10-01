@@ -3,7 +3,10 @@
 `src/machines/lisa/cops.{c,h}` models the Apple Lisa **COPS** (National
 COP421-class) microcontroller, which services the keyboard, mouse, real-time
 clock, and soft-power through the A-port of VIA1. [docs/reference/machines/lisa/lisa.md](../../../reference/machines/lisa/lisa.md) §11 is
-the hardware reference; this note records the implementation and the host-side
+the hardware reference (family level); the device-level page is
+[docs/reference/machines/lisa/cops.md](../../../reference/machines/lisa/cops.md)
+(§2.2 the command byte, §2.3–§2.7 the response streams, §3.5 the clock,
+§3.6 soft power). This note records the implementation and the host-side
 protocol verified against the rev-H boot ROM (`Lisa Boot ROM RM248.{K,S,M}`).
 
 ## How it attaches

@@ -289,8 +289,7 @@ uint16_t tnt_gbus_misc_read(config_t *cfg) {
 // ((reg >> 13) & 3): Locked = 1, Service = 2, Normal = 3.
 static const char *const keyswitch_names[] = {"locked", "service", "normal", NULL};
 
-static value_t board_attr_keyswitch(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(board_attr_keyswitch) {
     tnt_gbus_t *g = gb((config_t *)object_data(self));
     int k = g ? g->keyswitch : ANS_KEY_LOCKED;
     return val_enum(k, keyswitch_names, 3);
@@ -321,8 +320,7 @@ static value_t board_attr_keyswitch_set(struct object *self, const member_t *m, 
     return val_err("keyswitch: want one of locked, service, normal");
 }
 
-static value_t board_attr_rear_key(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(board_attr_rear_key) {
     tnt_gbus_t *g = gb((config_t *)object_data(self));
     return val_bool(g ? g->rear_locked != 0 : true);
 }
@@ -374,43 +372,36 @@ BOARD_ENV_ATTR(env_psu_right, ANS_ENV_PSU_RIGHT, "psu_right_fail")
 BOARD_ENV_ATTR(env_hot_left, ANS_ENV_HOT_LEFT, "psu_left_hot")
 BOARD_ENV_ATTR(env_hot_right, ANS_ENV_HOT_RIGHT, "psu_right_hot")
 
-static value_t board_attr_breg1(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(board_attr_breg1) {
     config_t *cfg = (config_t *)object_data(self);
     return val_uint(4, cfg ? tnt_gc_boxid(cfg) : 0u);
 }
 
-static value_t board_attr_breg2(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(board_attr_breg2) {
     return val_uint(2, breg2_value((config_t *)object_data(self)));
 }
 
-static value_t board_attr_two_supplies(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(board_attr_two_supplies) {
     config_t *cfg = (config_t *)object_data(self);
     return val_bool(cfg && tnt_board(cfg)->two_supplies);
 }
 
-static value_t board_attr_parity(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(board_attr_parity) {
     config_t *cfg = (config_t *)object_data(self);
     return val_bool(cfg && tnt_board(cfg)->has_parity);
 }
 
-static value_t board_attr_l2_kb(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(board_attr_l2_kb) {
     config_t *cfg = (config_t *)object_data(self);
     return val_uint(4, cfg ? tnt_board(cfg)->l2_kb : 0);
 }
 
-static value_t board_attr_bus_hz(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(board_attr_bus_hz) {
     config_t *cfg = (config_t *)object_data(self);
     return val_uint(4, cfg ? tnt_board(cfg)->bus_hz : 0);
 }
 
-static value_t board_attr_doorbell(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(board_attr_doorbell) {
     tnt_gbus_t *g = gb((config_t *)object_data(self));
     return val_uint(4, g ? g->doorbell : 0);
 }
@@ -425,10 +416,7 @@ static value_t board_attr_doorbell(struct object *self, const member_t *m) {
     }
 
 // `machine.board.clear_nvram()` — pull the battery.
-static value_t board_method_clear_nvram(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(board_method_clear_nvram) {
     config_t *cfg = (config_t *)object_data(self);
     if (!cfg)
         return val_err("clear_nvram: no machine");
@@ -443,21 +431,19 @@ static const member_t tnt_board_members[] = {
      .attr = {.type = V_ENUM,
               .enum_values = keyswitch_names,
               .get = board_attr_keyswitch,
-              .set = board_attr_keyswitch_set}},
+              .set = board_attr_keyswitch_set}                                             },
     {.kind = M_ATTR,
      .name = "rear_key_locked",
      .doc = "Rear keyswitch locked — a power-on precondition, not software-visible",
-     .attr = {.type = V_BOOL, .get = board_attr_rear_key, .set = board_attr_rear_key_set}},
+     .attr = {.type = V_BOOL, .get = board_attr_rear_key, .set = board_attr_rear_key_set}  },
     {.kind = M_ATTR,
      .name = "register1",
      .doc = "Board Register 1 ($F301A000) as software reads it",
-     .flags = VAL_RO | VAL_HEX,
-     .attr = {.type = V_UINT, .get = board_attr_breg1, .set = NULL}},
+     .attr = {.type = V_UINT, .get = board_attr_breg1, .set = NULL}                        },
     {.kind = M_ATTR,
      .name = "register2",
      .doc = "Board Register 2 ($F301E000) — the environmental halfword, active low",
-     .flags = VAL_RO | VAL_HEX,
-     .attr = {.type = V_UINT, .get = board_attr_breg2, .set = NULL}},
+     .attr = {.type = V_UINT, .get = board_attr_breg2, .set = NULL}                        },
     BOARD_ENV_MEMBER("fan_fail_drive", env_fan_drive, "Inject FanFailDrive (POST: 'Drive Fan Failed!')"),
     BOARD_ENV_MEMBER("fan_fail_processor", env_fan_proc, "Inject FanFailProcessor (POST: 'Processor Fan Failed')"),
     BOARD_ENV_MEMBER("temp_fail", env_temp_fail, "Inject TempFailProcessor (POST: 'Temperature Too Hot!')"),
@@ -469,23 +455,19 @@ static const member_t tnt_board_members[] = {
     {.kind = M_ATTR,
      .name = "two_supplies",
      .doc = "TwoSuppliesH — redundant power supplies fitted (the 700)",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = board_attr_two_supplies, .set = NULL}},
+     .attr = {.type = V_BOOL, .get = board_attr_two_supplies, .set = NULL}                 },
     {.kind = M_ATTR,
      .name = "parity",
      .doc = "Parity DRAM fitted (selects 60 ns rather than 70 ns timing)",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = board_attr_parity, .set = NULL}},
+     .attr = {.type = V_BOOL, .get = board_attr_parity, .set = NULL}                       },
     {.kind = M_ATTR,
      .name = "l2_kb",
      .doc = "L2 cache DIMM size in KB (0 = no cache DIMM)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = board_attr_l2_kb, .set = NULL}},
+     .attr = {.type = V_UINT, .get = board_attr_l2_kb, .set = NULL}                        },
     {.kind = M_ATTR,
      .name = "bus_hz",
      .doc = "Processor bus clock, sourced from the CPU card",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = board_attr_bus_hz, .set = NULL}},
+     .attr = {.type = V_UINT, .get = board_attr_bus_hz, .set = NULL}                       },
     {.kind = M_METHOD,
      .name = "clear_nvram",
      .doc = "Reset the non-volatile store to defaults — what removing the board battery does",
@@ -493,12 +475,12 @@ static const member_t tnt_board_members[] = {
     {.kind = M_ATTR,
      .name = "doorbell",
      .doc = "Accesses to the Ethernet PROM space — the SecToPri_Int doorbell",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = board_attr_doorbell, .set = NULL}},
+     .attr = {.type = V_UINT, .get = board_attr_doorbell, .set = NULL}                     },
 };
 
 static const class_desc_t tnt_board_class = {
     .name = "board",
+    .doc = "The logic board's system registers: keyswitch, bus clock, NVRAM clear",
     .members = tnt_board_members,
     .n_members = sizeof(tnt_board_members) / sizeof(tnt_board_members[0]),
 };

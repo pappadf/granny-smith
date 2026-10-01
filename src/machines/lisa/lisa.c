@@ -569,17 +569,12 @@ static int lisa_media_eject(config_t *cfg, media_bus_t bus, int unit) {
 // machine uses; `eject` and `present` go straight to the FDC. Each
 // object's instance_data is the config_t.
 
-static value_t lisa_fd_drive_insert(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(lisa_fd_drive_insert) {
     bool writable = (argc >= 2) ? argv[1].b : false;
     return val_bool(system_fd_insert(argv[0].s, 0, writable) == 0);
 }
 
-static value_t lisa_fd_drive_eject(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(lisa_fd_drive_eject) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     if (!ls || !ls->fdc)
         return val_err("floppy.drives.0: no controller");
@@ -592,38 +587,42 @@ static value_t lisa_fd_drive_eject(struct object *self, const member_t *m, int a
     return val_none();
 }
 
-static value_t lisa_fd_drive_present(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(lisa_fd_drive_present) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     return val_bool(ls && ls->fdc && lisa_fdc_disk_present(ls->fdc));
 }
 
-static value_t lisa_fd_drive_index(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(lisa_fd_drive_index) {
     return val_int(0);
 }
 
+static const value_t lisa_false = {.kind = V_BOOL, .b = false};
+static const value_t lisa_true = {.kind = V_BOOL, .b = true};
 static const arg_decl_t lisa_fd_insert_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Host path or storage URI of the image to mount"},
-    {.name = "writable", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Mount writable (default false)"},
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .doc = "Host path or storage URI of the image to mount"},
+    {.name = "writable",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &lisa_false,
+     .doc = "Mount writable"},
 };
 
 static const member_t lisa_fd_drive_members[] = {
     {.kind = M_ATTR,
      .name = "index",
-     .flags = VAL_RO,
      .doc = "Drive number on the Sony floppy controller (0 = upper, 1 = lower on a Lisa 2/10)",
-     .attr = {.type = V_INT, .get = lisa_fd_drive_index}},
+     .attr = {.type = V_INT, .get = lisa_fd_drive_index}                                              },
     {.kind = M_ATTR,
      .name = "present",
-     .flags = VAL_RO,
      .doc = "True when a disk is clamped in this drive",
-     .attr = {.type = V_BOOL, .get = lisa_fd_drive_present}},
+     .attr = {.type = V_BOOL, .get = lisa_fd_drive_present}                                           },
     {.kind = M_METHOD,
      .name = "eject",
      .doc = "Eject the disk (unclamp)",
-     .method = {.result = V_NONE, .fn = lisa_fd_drive_eject}},
+     .method = {.result = V_NONE, .fn = lisa_fd_drive_eject}                                          },
     {.kind = M_METHOD,
      .name = "insert",
      .doc = "Mount a disk image into the Sony drive",
@@ -636,16 +635,19 @@ static struct object *lisa_fd_drives_get(struct object *self, int index) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     return (ls && index == 0) ? ls->fd_drive_obj : NULL;
 }
+static const collection_desc_t lisa_fd_drives_entries = {
+    .entry = &lisa_fd_drive_class, .by_index = {.get = lisa_fd_drives_get, .slots = 1}
+};
+
 static const member_t lisa_fd_drives_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child = {.cls = &lisa_fd_drive_class, .indexed = true, .get = lisa_fd_drives_get, .slots = 1}},
+    OBJ_ENTRIES(&lisa_fd_drives_entries, NULL),
 };
 static const class_desc_t lisa_fd_drives_class = {
-    .name = "floppy_drives", .members = lisa_fd_drives_members, .n_members = 1};
+    .name = "floppy_drives", .doc = "Floppy drives, by index", .members = lisa_fd_drives_members, .n_members = 1};
 
 static const member_t lisa_fd_members[] = {0}; // container only; the drives collection is the child
-static const class_desc_t lisa_fd_class = {.name = "floppy", .members = NULL, .n_members = 0};
+static const class_desc_t lisa_fd_class = {
+    .name = "floppy", .members = NULL, .n_members = 0, .doc = "Floppy controller and drive"};
 
 // Attach the `floppy` → `drives` → `drives[0]` object tree for this machine.
 static void lisa_register_floppy_object(config_t *cfg) {
@@ -673,8 +675,7 @@ static void lisa_register_floppy_object(config_t *cfg) {
 // small object.  `attach` opens (or creates blank) a 532-bytes/block image and
 // drives the OCD/ line; `detach` flushes and disconnects.  instance_data = cfg.
 
-static value_t lisa_hd_attach(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(lisa_hd_attach) {
     config_t *cfg = (config_t *)object_data(self);
     lisa_state_t *ls = lisa_state(cfg);
     // Read by kind: `path` now has a V_NONE default so that
@@ -690,10 +691,7 @@ static value_t lisa_hd_attach(struct object *self, const member_t *m, int argc, 
     return val_bool(true);
 }
 
-static value_t lisa_hd_detach(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(lisa_hd_detach) {
     config_t *cfg = (config_t *)object_data(self);
     lisa_state_t *ls = lisa_state(cfg);
     if (!ls || !ls->profile || !lisa_profile_attached(ls->profile))
@@ -703,14 +701,12 @@ static value_t lisa_hd_detach(struct object *self, const member_t *m, int argc, 
     return val_none();
 }
 
-static value_t lisa_hd_present(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(lisa_hd_present) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     return val_bool(ls && lisa_profile_attached(ls->profile));
 }
 
-static value_t lisa_hd_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(lisa_hd_save) {
     config_t *cfg = (config_t *)object_data(self);
     lisa_state_t *ls = lisa_state(cfg);
     if (!ls || !ls->profile || !lisa_profile_attached(ls->profile))
@@ -725,7 +721,10 @@ static value_t lisa_hd_save(struct object *self, const member_t *m, int argc, co
 }
 
 static const arg_decl_t lisa_hd_save_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Destination path for the consolidated single-file ProFile image"},
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .doc = "Destination path for the consolidated single-file ProFile image"},
 };
 
 // The Lisa's battery-backed parameter memory ($FCC181 in the FDC shared RAM)
@@ -745,8 +744,7 @@ static const arg_decl_t lisa_hd_save_args[] = {
 // and which makes the boot depend on the disk image actually carrying a good
 // clean-shutdown snapshot rather than on a pre-seeded hardware entry masking
 // a broken one.
-static value_t lisa_hd_pram_init(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(lisa_hd_pram_init) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     if (!ls || !ls->fdc)
         return val_err("pram: no controller");
@@ -759,8 +757,7 @@ static value_t lisa_hd_pram_init(struct object *self, const member_t *m, int arg
     return val_bool(true);
 }
 
-static value_t lisa_hd_pram_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(lisa_hd_pram_save) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     const char *path = (argc >= 1) ? argv[0].s : NULL;
     if (!ls || !ls->fdc)
@@ -772,8 +769,7 @@ static value_t lisa_hd_pram_save(struct object *self, const member_t *m, int arg
     return val_bool(true);
 }
 
-static value_t lisa_hd_pram_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(lisa_hd_pram_load) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     const char *path = (argc >= 1) ? argv[0].s : NULL;
     if (!ls || !ls->fdc)
@@ -801,7 +797,7 @@ static const arg_decl_t lisa_hd_pram_init_args[] = {
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &pram_def_valid,
-     .doc = "true (default) = a verifying checksum; false = a fresh battery, so the OS rebuilds the device table "
+     .doc = "true = a verifying checksum; false = a fresh battery, so the OS rebuilds the device table "
             "from the boot volume's MDDF snapshot"},
     {.name = "installed",
      .kind = V_BOOL,
@@ -811,50 +807,56 @@ static const arg_decl_t lisa_hd_pram_init_args[] = {
 };
 
 static const arg_decl_t lisa_hd_pram_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Parameter-memory (PRAM) file path"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Parameter-memory (PRAM) file path"},
 };
 
 static const arg_decl_t lisa_hd_attach_args[] = {
     {.name = "path",
      .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .default_value = &obj_arg_unset,
      .doc = "Host path of the ProFile image, created blank if missing (omit for a blank in-memory disk)"},
-    {.name = "writable", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Mount writable (default true)"},
+    {.name = "writable",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &lisa_true,
+     .doc = "Mount writable"                                                                            },
 };
 
 static const member_t lisa_hd_members[] = {
     {.kind = M_ATTR,
      .name = "present",
-     .flags = VAL_RO,
      .doc = "True when a ProFile image is attached to the parallel port",
-     .attr = {.type = V_BOOL, .get = lisa_hd_present}},
+     .attr = {.type = V_BOOL, .get = lisa_hd_present}                                                                                                                                                            },
     {.kind = M_METHOD,
      .name = "detach",
      .doc = "Flush and disconnect the ProFile",
-     .method = {.result = V_NONE, .fn = lisa_hd_detach}},
+     .method = {.result = V_NONE, .fn = lisa_hd_detach}                                                                                                                                                          },
     {.kind = M_METHOD,
      .name = "attach",
      .doc = "Attach a ProFile image (created blank if missing; omit path for a blank in-memory disk)",
-     .method = {.args = lisa_hd_attach_args, .nargs = 2, .result = V_BOOL, .fn = lisa_hd_attach}},
+     .method = {.args = lisa_hd_attach_args, .nargs = 2, .result = V_BOOL, .fn = lisa_hd_attach}                                                                                                                 },
     {.kind = M_METHOD,
      .name = "save",
      .doc = "Write the current ProFile contents to a new self-contained single-file image (consolidated; not a "
-            "base+delta pair)", .method = {.ui_flags = MM_IO, .args = lisa_hd_save_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_save}},
+            "base+delta pair)",                                                                        .method = {.ui_flags = MM_IO, .args = lisa_hd_save_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_save}},
     {.kind = M_METHOD,
      .name = "pram_init",
      .doc = "Seed the parameter memory in the model: BootVol nibble, checksum validity, and optionally the LOS "
-            "installer's device table", .method = {.args = lisa_hd_pram_init_args, .nargs = 3, .result = V_BOOL, .fn = lisa_hd_pram_init}},
+            "installer's device table",                                                                .method = {.args = lisa_hd_pram_init_args, .nargs = 3, .result = V_BOOL, .fn = lisa_hd_pram_init}         },
     {.kind = M_METHOD,
      .name = "pram_save",
      .doc = "Save the machine parameter memory (battery-backed NVRAM at $FCC181) to a file",
-     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_pram_save}},
+     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_pram_save}                                                                                                                },
     {.kind = M_METHOD,
      .name = "pram_load",
      .doc = "Load the machine parameter memory from a file (call before booting)",
-     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_pram_load}},
+     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_pram_load}                                                                                                                },
 };
-static const class_desc_t lisa_hd_class = {.name = "profile", .members = lisa_hd_members, .n_members = 6};
+static const class_desc_t lisa_hd_class = {.name = "profile",
+                                           .doc = "The ProFile hard disk on the parallel port, and its PRAM",
+                                           .members = lisa_hd_members,
+                                           .n_members = 6};
 
 static void lisa_register_profile_object(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);
@@ -879,10 +881,7 @@ static void lisa_register_profile_object(config_t *cfg) {
 // unmounted) — so a `profile.save` afterwards yields an image that cold-boots
 // without the "startup disk was in use" scavenge prompt.  No-op pre-boot / on a
 // machine whose OS isn't listening; harmless either way (the code just queues).
-static value_t lisa_power_off(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(lisa_power_off) {
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
     if (!ls || !ls->cops)
         return val_err("power: no COPS");
@@ -896,7 +895,8 @@ static const member_t lisa_power_members[] = {
      .doc = "Press the soft power-off switch (COPS $FB); LOS does an orderly shutdown",
      .method = {.result = V_NONE, .fn = lisa_power_off}},
 };
-static const class_desc_t lisa_power_class = {.name = "power", .members = lisa_power_members, .n_members = 1};
+static const class_desc_t lisa_power_class = {
+    .name = "power", .doc = "The Lisa's soft power switch", .members = lisa_power_members, .n_members = 1};
 
 static void lisa_register_power_object(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);

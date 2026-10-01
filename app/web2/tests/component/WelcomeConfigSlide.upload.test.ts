@@ -42,7 +42,7 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
           };
         return null;
       }
-      if (path === 'machine.profile')
+      if (path === 'catalog.profile')
         return {
           name: 'Macintosh Plus',
           ram_options: [4096],

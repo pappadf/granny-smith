@@ -1,0 +1,6 @@
+# Tests compare-output.sh lets differ between the two binaries: tests that
+# exercise the change under comparison itself, and so fail (or print
+# something else) on a binary without it.
+object-metadata
+job-annotations
+member-docs

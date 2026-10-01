@@ -271,7 +271,7 @@ int system_probe_floppy(const char *path);
 bool system_fd_present(int drive);
 
 // Typed object-model entry points for disk operations. The typed
-// methods (floppy.drives[N].insert, scsi.attach_hd, storage.hd_create)
+// methods (floppy.drives[N].insert, scsi.attach_hd, files.hd_create)
 // call these directly. Each returns 0 on success, negative on error.
 int system_fd_insert(const char *path, int drive, bool writable);
 int system_hd_attach(const char *path, int scsi_id);

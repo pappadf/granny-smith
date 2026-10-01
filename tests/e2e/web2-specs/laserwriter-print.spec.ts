@@ -139,15 +139,15 @@ test('a print job from the guest ends as a PDF in the viewer', async ({ page }) 
   page.on('pageerror', (e) => logs.push(`[pageerror] ${e.message}`));
 
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
 
   // The viewer is the page's side of the finished job; the script's own
   // assertions cover the bridge's side.
   await terminalRun(page, 'include "/opfs/upload/print.script"');
-  await expect(page.locator('.xterm-rows')).toContainText(/printer: documents=|failed/, {
+  await expect(page.locator('.console-output')).toContainText(/printer: documents=|failed/, {
     timeout: 10 * 60 * 1000,
   });
-  const text = await page.locator('.xterm-rows').innerText();
+  const text = await page.locator('.console-output').innerText();
   const line = text.split('\n').find((l) => l.includes('printer: documents='));
   const platen = await page.evaluate(() => {
     const p = (window as unknown as { __platen?: { memory: WebAssembly.Memory; ctrl: number } })

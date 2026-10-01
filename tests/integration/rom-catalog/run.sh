@@ -28,8 +28,8 @@ while IFS= read -r -d '' f; do
     base="$(basename "$f")"
     case "$base" in
         *.rom)  obj="machine.rom.identify"  ;;
-        *.vrom) obj="machine.vrom.identify" ;;
-        *.prom) obj="machine.prom.identify" ;;
+        *.vrom) obj="catalog.vroms.identify" ;;
+        *.prom) obj="catalog.proms.identify" ;;
         # The generated manifest (roms/README.md) and any other
         # docs legitimately live here — they are not ROM blobs, so skip them.
         README.md|*.md) continue ;;
@@ -46,7 +46,7 @@ echo "rom-catalog: identifying $count file(s) in $ROMS_DIR"
 
 OUT="$WORK_DIR/identify.out"
 GS_STORAGE_CACHE="$STORAGE_CACHE" "$HEADLESS_BIN" \
-    rom="$ROM_PATH" --no-prompt --speed=max "script=$SCRIPT" > "$OUT" 2>/dev/null
+    rom="$ROM_PATH" --no-prompt --speed=turbo "script=$SCRIPT" > "$OUT" 2>/dev/null
 
 python3 - "$OUT" "$count" <<'PY'
 import re, sys

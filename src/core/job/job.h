@@ -30,6 +30,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+struct value;
+
 struct gs_mailbox;
 typedef struct gs_job gs_job_t;
 
@@ -108,6 +110,18 @@ uint32_t job_call_request_id(uint32_t token);
 // {"event":"output","id":req,"client":c,"text":...} records, in order,
 // before the job's result.
 bool job_output_append(const char *text, size_t len);
+
+// Places an annotation record in the calling job's record stream at the
+// current output position (same context test as job_output_append): after
+// the text printed so far, before whatever is printed next.  Written as
+// {"event":<kind>,"id":req,"client":c,<fields>}, the entries of the V_MAP
+// `fields` (plain data; tagged JSON) following the header; NULL for none.
+// When the full record would exceed the ring's record bound the `reduced`
+// map (optional; callers keep it small) is used instead, and
+// `used_reduced` (optional) says it was.  The job is resolved once, so the
+// ids and the stream are one job's.  False outside a job, past the 1 MiB
+// output cut, or when neither form fits.
+bool job_annotate(const char *kind, const struct value *fields, const struct value *reduced, bool *used_reduced);
 
 // --- Inline mode --------------------------------------------------------------
 // Without a job thread a script runs on the emulator thread inside the

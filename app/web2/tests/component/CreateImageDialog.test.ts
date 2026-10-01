@@ -18,8 +18,8 @@ function callTo(name: string) {
 }
 
 describe('CreateImageDialog', () => {
-  it('creates a blank floppy (800 KB default) via storage.fd_create', async () => {
-    gsEvalMock.mockImplementation(async (p: string) => (p === 'storage.fd_create' ? true : null));
+  it('creates a blank floppy (800 KB default) via files.fd_create', async () => {
+    gsEvalMock.mockImplementation(async (p: string) => (p === 'files.fd_create' ? true : null));
     const onCreated = vi.fn();
     const { getByText } = render(CreateImageDialog, {
       open: true,
@@ -29,14 +29,14 @@ describe('CreateImageDialog', () => {
     });
     await fireEvent.click(getByText('Create'));
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
-    const cp = callTo('storage.fd_create')!;
+    const cp = callTo('files.fd_create')!;
     expect(cp[1][0]).toMatch(/^\/opfs\/images\/fd\/blank_800K_\d+\.dsk$/);
     expect(cp[1][1]).toBe(false); // 800K → not high-density
     expect(onCreated).toHaveBeenCalledWith(expect.stringMatching(/^blank_800K_\d+\.dsk$/));
   });
 
   it('creates a 1.4 MB floppy when high density is selected', async () => {
-    gsEvalMock.mockImplementation(async (p: string) => (p === 'storage.fd_create' ? true : null));
+    gsEvalMock.mockImplementation(async (p: string) => (p === 'files.fd_create' ? true : null));
     const onCreated = vi.fn();
     const { getByText, container } = render(CreateImageDialog, {
       open: true,
@@ -47,12 +47,12 @@ describe('CreateImageDialog', () => {
     await fireEvent.click(container.querySelector('input[value="1440K"]') as HTMLElement);
     await fireEvent.click(getByText('Create'));
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
-    const cp = callTo('storage.fd_create')!;
+    const cp = callTo('files.fd_create')!;
     expect(cp[1][0]).toMatch(/^\/opfs\/images\/fd\/blank_1440K_\d+\.dsk$/);
     expect(cp[1][1]).toBe(true);
   });
 
-  it('lists HD sizes from scsi.hd_models and creates via storage.hd_create', async () => {
+  it('lists HD sizes from scsi.hd_models and creates via files.hd_create', async () => {
     gsEvalMock.mockImplementation(async (p: string) => {
       if (p === 'machine.scsi.hd_models') {
         return [
@@ -60,7 +60,7 @@ describe('CreateImageDialog', () => {
           { label: 'HD40SC', vendor: 'X', product: 'Y', size: 40061952 },
         ];
       }
-      if (p === 'storage.hd_create') return true;
+      if (p === 'files.hd_create') return true;
       return null;
     });
     const onCreated = vi.fn();
@@ -75,7 +75,7 @@ describe('CreateImageDialog', () => {
     await fireEvent.click(container.querySelector('input[value="40061952"]') as HTMLElement);
     await fireEvent.click(getByText('Create'));
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
-    const cp = callTo('storage.hd_create')!;
+    const cp = callTo('files.hd_create')!;
     expect(cp[1][0]).toMatch(/^\/opfs\/images\/hd\/blank_38MB_\d+\.img$/); // 40061952 ≈ 38 MiB
     expect(cp[1][1]).toBe('40061952');
   });
@@ -102,7 +102,7 @@ describe('CreateImageDialog', () => {
   });
 
   it('shows an error and does not fire onCreated when creation fails', async () => {
-    gsEvalMock.mockImplementation(async (p: string) => (p === 'storage.fd_create' ? false : null));
+    gsEvalMock.mockImplementation(async (p: string) => (p === 'files.fd_create' ? false : null));
     const onCreated = vi.fn();
     const { getByText, container } = render(CreateImageDialog, {
       open: true,

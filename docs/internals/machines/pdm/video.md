@@ -8,9 +8,14 @@ timing generator and the Ariel II CLUT/DAC.  The software model is
 register model and the shipping ROM drives it with the same
 `.Display_Video_Apple_Sonora` driver.  Sources: the Developer Note
 (Table 3-10 timing, Table 3-8 depths), the 8100 schematics, and the
-shipping ROM's Sonora driver/PrimaryInit access idioms.
+shipping ROM's Sonora driver/PrimaryInit access idioms.  Hardware
+reference: [ariel.md](../../../reference/machines/pdm/ariel.md), cited by
+section below (§1.4 for the "Sonora with no VRAM" model).
 
 ## Monitor sense
+
+(Reference: [ariel.md](../../../reference/machines/pdm/ariel.md) §3.5 for
+the HDI-45 sense lines and the wired-AND readback.)
 
 The three HDI-45 sense lines are open-collector with pull-ups; a monitor
 grounds a subset, so the strap IS the monitor (Apple, *Designing Cards and
@@ -31,6 +36,9 @@ allocated.
 
 ## Registers
 
+(Reference: [ariel.md](../../../reference/machines/pdm/ariel.md) §2.2 for
+the Ariel II cell, §2.4 for the AMIC video-control registers.)
+
 - **Video control** (`$50F28000`, decoded in amic.c → here):
   `+0` mode — bit 7 = blank, low bits = monitor code (6 = Hi-Res 640×480
   66.67 Hz, the wired monitor; codes 1/2/9/11/13 decode their raster
@@ -42,6 +50,10 @@ allocated.
   V8/Ariel DAC.
 
 ## Scanout model
+
+(Reference: [ariel.md](../../../reference/machines/pdm/ariel.md) §3.1–§3.2
+for the fetch pipeline and the framebuffer's three addresses, §3.4 for the
+depth-windowed palette.)
 
 The substrate `.display` hook publishes a `display_t` over host RAM at
 physical 0 — always inside the soldered bank, which the HMC never

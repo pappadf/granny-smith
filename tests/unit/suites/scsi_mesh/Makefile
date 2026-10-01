@@ -19,6 +19,7 @@ STUBS        := assert
 EXTRA_SRCS   := ../../../../src/core/job/seam.c \
               ../../../../src/core/peripherals/scsi.c \
                 ../../../../src/core/peripherals/scsi_bus.c \
+                ../../../../src/core/event/gs_event.c \
                 ../../../../src/core/peripherals/scsi_cdrom.c \
                 ../../../../src/core/peripherals/scsi_mesh.c \
                 ../../../../src/core/peripherals/scsi_msgsession.c \

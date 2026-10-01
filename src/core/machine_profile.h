@@ -103,7 +103,7 @@ const char *hd_bus_to_string(hd_bus_t bus);
 // the first entry whose `label` is NULL.
 // A substrate-published built-in display, owned by the family that models it.
 //
-// The registry (machines/machine.c) publishes this in machine.profile and
+// The registry (machines/machine.c) publishes this in catalog.profile and
 // validates/stages `monitor=` through it, so a second family with built-in
 // video -- the TNT's Control, the AV's CIVIC -- gets its OWN monitor list
 // rather than the PDM's.  Before this was a descriptor it was a bare label
@@ -461,7 +461,7 @@ typedef struct hw_profile {
     // nubus_slot_decl_t (slot id, kind, builtin card / default card).
     // Topology only: which cards FIT a configurable slot is computed from
     // the card registry (nubus_card_fits_socket), not listed here.
-    // Used by machine.profile to enumerate cards per slot and build
+    // Used by catalog.profile to enumerate cards per slot and build
     // the per-card video-mode catalog the configuration dialog needs.
     // NULL for non-NuBus machines (Plus, …).  Every machine's `init` passes
     // THIS pointer to nubus_init(), so the runtime view and the profile view
@@ -484,7 +484,7 @@ typedef struct hw_profile {
     // default card).  Topology only: which cards FIT a socket is computed
     // from the card registry (pci_card_fits_socket), not listed here.  The
     // machine's `init` hands this same pointer to pci_init(), so the
-    // machine.profile view and the runtime view are identical by
+    // catalog.profile view and the runtime view are identical by
     // construction.  NULL for non-PCI machines.
     const struct pci_slot_decl *pci_slots;
 

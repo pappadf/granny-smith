@@ -1,4 +1,4 @@
-// Normalize machine.profile() JSON into a stable per-model SHAPE string, so a
+// Normalize catalog.profile() JSON into a stable per-model SHAPE string, so a
 // snapshot diff fails loudly when a field's *shape* changes (added, removed, or
 // retyped) without breaking on value churn (RAM sizes, monitor counts, etc.) —
 // one schema snapshot per model.

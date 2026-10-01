@@ -62,7 +62,7 @@ test.use({
 
 // See av-camera.spec.ts for why the answer is bracketed on both sides.
 async function readKey(page: Page, key: string): Promise<string | null> {
-  const text = await page.locator(".xterm-rows").innerText();
+  const text = await page.locator(".console-output").innerText();
   const re = new RegExp(`${key}=([^=${"${}"}\\s]+)=${key}`);
   for (const line of text.split("\n")) {
     const m = line.trim().match(re);
@@ -140,7 +140,7 @@ test("AV microphone control delivers browser audio into guest RAM", async ({
   await expect(micBtn).toHaveAttribute("aria-pressed", "false");
 
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator(".xterm")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator(".console")).toBeVisible({ timeout: 15_000 });
   await expect
     .poll(async () => probe(page, "machine.id"), { timeout: 30_000 })
     .toBe("q840av");

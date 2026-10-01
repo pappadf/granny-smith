@@ -63,7 +63,7 @@ static value_t dev_get_id(struct object *self, const member_t *m) {
 }
 
 static const member_t dev_members[] = {
-    {.kind = M_ATTR, .name = "id", .flags = VAL_RO, .doc = "id", .attr = {.type = V_INT, .get = dev_get_id}},
+    {.kind = M_ATTR, .name = "id", .doc = "id", .attr = {.type = V_INT, .get = dev_get_id}},
 };
 static const class_desc_t dev_class = {.name = "device", .members = dev_members, .n_members = 1};
 
@@ -82,10 +82,12 @@ static int bucket_next(struct object *self, int prev) {
     return -1;
 }
 
+static const collection_desc_t bucket_entries = {
+    .entry = &dev_class, .by_index = {.get = bucket_get, .next = bucket_next}
+};
+
 static const member_t bucket_members[] = {
-    {.kind = M_CHILD,
-     .name = "devices",
-     .child = {.cls = &dev_class, .indexed = true, .get = bucket_get, .next = bucket_next}},
+    {.kind = M_CHILD, .name = "devices", .child = {.collection = &bucket_entries}},
 };
 static const class_desc_t bucket_class = {.name = "bucket", .members = bucket_members, .n_members = 1};
 

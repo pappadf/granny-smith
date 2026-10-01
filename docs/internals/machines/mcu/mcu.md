@@ -11,6 +11,11 @@ the family also carries the JDB/Relayer datapath, the YANCC NuBus bridge,
 and the stand-alone DAFB video controller ([dafb.md](dafb.md)).
 
 Machine pages: [q700.md](q700.md), [q900.md](q900.md), [q950.md](q950.md).
+Hardware reference: [mcu.md](../../../reference/machines/mcu/mcu.md) (family),
+[q700.md](../../../reference/machines/mcu/q700.md),
+[q900.md](../../../reference/machines/mcu/q900.md),
+[q950.md](../../../reference/machines/mcu/q950.md) (machines),
+[dafb.md](../../../reference/machines/mcu/dafb.md) — cited by section below.
 Evidence labels below follow the DAFB-family implementation reference:
 **[A]** Apple-documented, **[R]** reverse-engineered, **[U]** unresolved,
 **[I]** inferred, **[D]** datasheet.
@@ -21,16 +26,24 @@ Evidence labels below follow the DAFB-family implementation reference:
   mapped at `$00000000`. The **first access to the normal ROM aperture**
   (`$40000000–$4FFFFFFF`) drops the overlay — RAM appears at zero and the
   aperture becomes direct ROM mirrors. Unlike GLUE/MDU there is no VIA
-  overlay bit; `mcu.c` registers a trigger device over the aperture whose
-  handler calls `mcu_overlay_drop`.
-- **MCU register file at `$5000E000` [U].** Register semantics are not
-  publicly documented, so the file is **accept-and-log with readback**: 64
-  longword slots latch writes and read back verbatim, and every first touch
-  is logged (`debug.log board`) so the ROM's access sequence itself becomes a
-  reverse-engineering artifact. The YANCC bridge file at `$50028000` gets
-  the same policy.
+  overlay bit; `mcu.c` registers the shared `mac030_rom_overlay` trigger
+  device over the aperture and arms it (`mac030_rom_overlay_arm`), and the
+  first access drops the overlay.
+- **MCU/Orwell register file at `$5000E000`.** Orwell has a single config
+  data bit, written and read one bit at a time through a run of longword
+  addresses (bit N at byte offset N*4, only bit 0 of the datum wired). The
+  model implements the semantics recovered from the ROM sources
+  (`HardwarePrivateEqu.a` "Orwell Memory Controller Equates": bank start
+  addresses, DRAM/ROM speed, refresh, page mode — the `orwell_cfg` word,
+  with the bank starts latched when the matching latch address is poked).
+  (Reference: [mcu.md](../../../reference/machines/mcu/mcu.md) §2.4–§2.7.)
+  The YANCC bridge file at `$50028000` is **accept-and-log with readback**:
+  64 longword slots latch writes and read back verbatim, and every first touch
+  is logged (`log.set board`).
+>>>>>>> 2c5abf01 (docs/internals: audit against the code, cite the reference pages)
 - **256 KiB I/O island at `$50000000`**, mirror mask `$3FFFF`, run on the
-  shared mac030 I/O engine. Q700 decode: VIA1 `$0000`, VIA2 `$2000`, MAC
+  shared mac030 I/O engine (reference: [mcu.md](../../../reference/machines/mcu/mcu.md)
+  §3.2). Q700 decode: VIA1 `$0000`, VIA2 `$2000`, MAC
   PROM `$8000`, SONIC `$A000`, SCC `$C000`, MCU `$E000`, 53C96 `$F000`,
   SCSI pseudo-DMA `$F100`, EASC `$14000`, SWIM `$1E000`, YANCC `$28000`.
   The towers swap direct SCC/SWIM for IOP apertures and add the external
@@ -38,6 +51,7 @@ Evidence labels below follow the DAFB-family implementation reference:
 - **Interrupts:** VIA1→IPL1, VIA2→IPL2, SCC→IPL4, NMI→IPL7 — the same
   routing table as the GLUE family, so `mac030_glue_update_ipl` is reused
   verbatim. Slot-level sources aggregate on **/SLOTIRQ** (below).
+  (Reference: [mcu.md](../../../reference/machines/mcu/mcu.md) §5.1–§5.2.)
 - **Bus-side physical resolver.** The 68040's MMU is on-chip
   ([mmu040.md](../../core/memory/mmu040.md)); each machine builds a bus
   `mmu_state_t` (flat RAM at 0 + ROM-aperture mirrors) and attaches the
@@ -79,9 +93,9 @@ in a fresh process, must finish booting to the pixel-exact desktop.
 
 ## Debug surfaces
 
-- `debug.log board` — the machine/board glue (model-independent, so the same
-  spec works on every model); `debug.log dafb` / `debug.log 53c96` / `debug.log
-  sonic` — per-chip categories; level 3 logs every register access.
+- `log.set board` — the machine/board glue (model-independent, so the same
+  spec works on every model); `log.set video` (the DAFB) / `log.set 53c96` /
+  `log.set sonic` — per-chip categories; level 3 logs every register access.
 - `machine.cpu.mmu` — the 040 MMU inspector
   ([mmu040.md](../../core/memory/mmu040.md)).
 - RE artifacts from bring-up (boot-time MCU and DAFB access logs) are
@@ -90,7 +104,7 @@ in a fresh process, must finish booting to the pixel-exact desktop.
 
 ## Known debts
 
-- MCU/YANCC register semantics remain accept-and-log [U]; annotating the
+- YANCC register semantics remain accept-and-log [U]; annotating the
   captured access logs against the ROM listing would harden them.
 - EASC is still the plain ASC-compatible core (boot chime works; the
   recording path and EASC FIFO extensions are deferred).

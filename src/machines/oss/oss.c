@@ -282,8 +282,7 @@ static const irq_controller_ops_t oss_irq_ops = {
 // and the inverse of `levels`.  Reading both together is how you tell a
 // source that is shouting from a source that was programmed to the wrong
 // priority.
-static value_t oss_attr_source_levels(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(oss_attr_source_levels) {
     const oss_t *oss = (const oss_t *)object_data(self);
     value_t *items = (value_t *)calloc(OSS_NUM_SOURCES, sizeof(value_t));
     if (!items)
@@ -293,22 +292,19 @@ static value_t oss_attr_source_levels(struct object *self, const member_t *m) {
     return val_list(items, OSS_NUM_SOURCES);
 }
 
-static value_t oss_attr_rom_ctrl(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(oss_attr_rom_ctrl) {
     value_t v = val_uint(1, ((const oss_t *)object_data(self))->rom_ctrl);
     v.flags |= VAL_HEX;
     return v;
 }
 
-static value_t oss_attr_counter_ctl(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(oss_attr_counter_ctl) {
     value_t v = val_uint(1, ((const oss_t *)object_data(self))->counter_ctl);
     v.flags |= VAL_HEX;
     return v;
 }
 
-static value_t oss_attr_counter(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(oss_attr_counter) {
     return val_uint(4, oss_counter_value((const oss_t *)object_data(self)));
 }
 
@@ -317,27 +313,24 @@ static const member_t oss_members[] = {
                                          .kind = M_ATTR,
                                          .name = "source_levels",
                                          .doc = "Programmed CPU level per OSS source, source order (0 = disabled)",
-                                         .flags = VAL_RO,
                                          .attr = {.type = V_LIST, .presentation_flags = VAL_VOLATILE, .get = oss_attr_source_levels, .set = NULL}},
     {.kind = M_ATTR,
                                          .name = "rom_ctrl",
                                          .doc = "ROM control register ($204)",
-                                         .flags = VAL_RO,
                                          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = oss_attr_rom_ctrl, .set = NULL}          },
     {.kind = M_ATTR,
                                          .name = "counter_ctl",
                                          .doc = "Free-running counter control ($20C)",
-                                         .flags = VAL_RO,
                                          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = oss_attr_counter_ctl, .set = NULL}       },
     {.kind = M_ATTR,
                                          .name = "counter",
                                          .doc = "Free-running counter, derived from emulated time",
-                                         .flags = VAL_RO,
                                          .attr = {.type = V_UINT, .presentation_flags = VAL_VOLATILE, .get = oss_attr_counter, .set = NULL}      },
 };
 
 static const class_desc_t oss_class = {
     .name = "irq_controller",
+    .doc = "OSS, the Mac IIfx interrupt controller: sources and levels",
     .members = oss_members,
     .n_members = sizeof(oss_members) / sizeof(oss_members[0]),
 };

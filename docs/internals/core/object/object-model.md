@@ -45,7 +45,9 @@ the same errors. There is no shadow API.
 | [alias.h](../../../../src/core/object/alias.h) | Two-tier `$name` alias table (built-in + user) |
 | [api.h](../../../../src/core/object/api.h) | Public C entry point (`gs_eval` — single dispatch for reads, writes, calls, schema, completion, and shell-line input) |
 | [meta.h](../../../../src/core/object/meta.h) | The synthetic `Meta` class (`<path>.meta.*` introspection + `meta.complete`) |
-| [shell_class.c](../../../../src/core/shell/shell_class.c) | The `Shell` class (`shell.run`, `shell.complete`, `shell.expand`, `shell.script_run`, `shell.alias_set`/`alias_unset`, `shell.interrupt`, `shell.prompt`/`running`/`aliases`/`vars`) |
+| [usage.h](../../../../src/core/object/usage.h) | Usage text for any path (`help`, `shell.usage`) |
+| [lint.h](../../../../src/core/object/lint.h) | The member-doc lint behind `shell.lint_members` |
+| [shell_class.c](../../../../src/core/shell/shell_class.c) | The `Shell` class (`shell.run`, `shell.complete`, `shell.expand`, `shell.script_run`, `shell.interrupt`, `shell.prompt`/`running`/`vars`; aliases live on its `shell.alias` child: `add`/`remove`/`list`) |
 | [root.c](../../../../src/core/object/root.c) | The `emu` root class plus install/uninstall lifecycle |
 
 ## Core concepts
@@ -56,7 +58,7 @@ Every value crossing an object-model boundary is a `value_t` — a tagged
 union with a discriminator (`V_NONE` / `V_BOOL` / `V_INT` / `V_UINT` /
 `V_FLOAT` / `V_STRING` / `V_BYTES` / `V_ENUM` / `V_LIST` / `V_MAP` /
 `V_OBJECT` / `V_ERROR`), a width hint for fixed-size integers, and display
-flags (`VAL_HEX`, `VAL_RO`, `VAL_VOLATILE`, `VAL_SENSITIVE`, …). Errors are
+flags (`VAL_HEX`, `VAL_VOLATILE`, `VAL_SENSITIVE`, `VAL_PATH`, …). Errors are
 in-band: a `value_t` of kind `V_ERROR` carries a string message rather
 than relying on a separate return channel or out-pointer.
 
@@ -68,20 +70,20 @@ time, so there is no borrowed-string path to confuse callers.
 
 `V_MAP` is the keyed sibling of `V_LIST`: an insertion-ordered sequence
 of unique `{key → value}` entries with heap-owned keys and recursively
-owned values. Map-shaped method results (`machine.profile`,
+owned values. Map-shaped method results (`catalog.profile`,
 `machine.rom.identify`, `debug.frame`, `meta.method_info`, …) return it
 directly; the gsEval bridge serialises it as a JSON object exactly once
 (the browser receives a native object, never a JSON string to re-parse).
 Methods build maps with the `val_map_new` / `val_map_put` /
 `val_map_finish` builder and read them with `value_map_get`. In `${…}`
 interpolation a map renders as compact canonical JSON, so
-`echo "${machine.profile("se30")}"` emits machine-parseable text.
+`echo "${catalog.profile("se30")}"` emits machine-parseable text.
 
 A method's UI metadata (`meta.method_info(name)`, and each method entry of
 `meta.members()`) carries four flags from `ui_flags`: `destructive`,
 `mutate`, `hidden` and `io`. `io` (`MM_IO`) marks an I/O job — a method
-whose cost is the size of a file rather than of the machine (`storage.cp`,
-`archive.extract`, `image.export`, `download`, …): it answers when the work
+whose cost is the size of a file rather than of the machine (`files.cp`,
+`files.archive.extract`, `image.export`, `files.download`, …): it answers when the work
 ends, reports progress (`EVT_PROGRESS`), and a cancel of its request stops
 it between chunks (see [`../../guide/web.md`](../../../guide/web.md), "I/O
 jobs").
@@ -103,9 +105,10 @@ table. Each `member_t` is one of three kinds:
   `width` (1/2/4/8 for sized integers), optional `enum_values` table,
   and slot flags (`OBJ_ARG_NONEMPTY`, `OBJ_ARG_STRICT_KIND`). Setters
   whose input fails those constraints are short-circuited by the
-  framework with a uniform error before the body runs. Attributes
-  that lack a setter or carry the `VAL_RO` flag reject `node_set`
-  cleanly. Each member has a per-member `user_data` pointer so
+  framework with a uniform error before the body runs. An attribute
+  is read-only exactly when it has no setter (`member_is_readonly`);
+  `node_set` rejects it cleanly. A member's `flags` hold only its
+  visibility category (`M_CAT_*`). Each member has a per-member `user_data` pointer so
   dispatchers shared across many attributes (the 471-entry
   `mac.globals` is one such case) recover their context from the
   member descriptor instead of via lookup tables.
@@ -129,26 +132,131 @@ table. Each `member_t` is one of three kinds:
   state of its own — `machine.adb` — can stay a singleton.
 - **`M_METHOD`** — a callable taking declared `arg_decl_t` parameters
   and returning a `value_t`. Each parameter declares its kind,
-  optional `width`, optional `enum_values`, optional `default_value`,
-  a doc string, and per-slot flags (`OBJ_ARG_OPTIONAL`, `OBJ_ARG_REST`,
+  optional `width`, optional `enum_values`, optional `default_value`
+  (or, for a default that is computed, a `default_doc`), a doc string,
+  and per-slot flags (`OBJ_ARG_OPTIONAL`, `OBJ_ARG_REST`,
   `OBJ_ARG_NONEMPTY`, `OBJ_ARG_STRICT_KIND`). The framework validates
   argv against this declaration before invoking the body (see
   *Typed dispatch validation* below) and the completer reads the
   same metadata for argument-position suggestions.
 - **`M_CHILD`** — a child object. Children are either *named* (a fixed
-  name with its own class) or *indexed* (a sparse, stable-id
-  collection: `child.get(i)` answers each index in `[0, child.slots)`,
-  NULL for a hole, and the framework walks them; a collection whose ids
-  are sparse past any fixed bound gives a `child.next` iterator instead,
-  as the debugger's breakpoints do). Indexed children are how
-  `debug.breakpoints[7]` and `machine.floppy.drive[0]` work without the
-  framework needing to know a collection's storage shape. A class whose
-  one indexed child is its collection answers `count` with the live
-  entries, unless it declares a `count` of its own.
+  name with its own class, attached or handed out by `lookup`) or a
+  *collection's entries* (`child.collection`, see below). Collections are
+  how `debug.breakpoints[7]` and `machine.floppy.drive[0]` work without
+  the framework needing to know a collection's storage shape.
+
+Callback bodies are written with `DEF_GETTER(name)`, `DEF_SETTER(name)`
+and `DEF_METHOD(name)`, which spell the three signatures with the
+parameters a body may leave unused marked so.
 
 Member tables are static `const`. The framework walks them linearly
 for resolution, completion, and help; no string lookup tables are
 maintained at runtime.
+
+### Collections and entries
+
+Every collection has one shape: a **container node** (`machine.floppy.drive`,
+`debug.breakpoints`, `files.mounts`, `log.category`) whose class has one
+member naming a **collection descriptor**, `collection_desc_t`
+(`OBJ_ENTRIES(&desc, doc)`, the member called `entries`). The descriptor
+says how entries are handed out: its `entry` class, and `by_index`
+(`get(i)` for each index in `[0, slots)`, NULL for a hole, or `next(prev)`
+for ids with no fixed bound) and/or `by_key` (`lookup(key)` and a
+`next_key(prev)` iterator over the live keys). Indices are sparse and
+stable: a new entry takes max-index-ever + 1 and removed ids are never
+reused. A collection may be both (`appletalk.afp.volumes`). A class has at
+most one collection member, and that member is what makes a node a
+container (`class_collection`): meta, lint, completion and `count` read the
+descriptor, never member names. A container answers `count` with its live
+entries unless it declares a `count` of its own. Collection verbs (`add`,
+`clear`, `find`) live on the container; a container with nothing but its
+entries (and perhaps a verb or two) is built from the descriptor alone by
+`object_collection_new`, which reads its `name`, `doc`, `entries_doc` and
+`verbs`. Paths address entries as `drive[0]`, `slot[9]` or
+`category["scsi"]`; keys are short identifiers, `[A-Za-z0-9_.-]{1,63}`
+(`object_valid_key`).
+
+Entries, and lookup-backed named children such as `drive[n].disk` and
+`device[n].image`, are handed out by callbacks and never attached, so they
+have no parent of their own. They get a **logical parent**
+(`object_set_logical_parent(obj, parent, name, index, key)`): a
+non-owning back-link (never cascade-deleted, cleared if the parent is freed
+first) that gives the entry its path — `<parent>.<name>`, `<parent>[<index>]`
+or `<parent>["<key>"]` — as `meta.path` and the bridge report it. The
+resolver adopts any callback-backed child that was not registered the first
+time it hands one out (`object_entry_at`, `object_entry_by_key`,
+`object_named_child`), so a missed registration costs nothing but the path
+before first use. Reference children (`child.reference`, e.g.
+`screen.source`) get no logical parent.
+
+A module whose entries are objects of their own keeps them in an **entry
+cache**, `object_cache_t`: entries made on first use by index
+(`object_cache_at`) or key (`object_cache_key`), each linked to the
+container whenever it is set (`object_cache_set_parent`, before or after),
+each knowing its index (`object_entry_index`); `object_cache_sweep` frees
+the entries whose record is gone and `object_cache_clear` frees the rest
+with any attached subtree.
+
+### The root
+
+The root's children, in their fixed order (`object_set_order`), fall in three
+domains:
+
+| Order | Node | Domain | Holds |
+|---|---|---|---|
+| 0 | `machine` | machine | the emulated computer that exists now |
+| 10 | `scheduler` | emulator | running, pacing (`mode` is the enum `paced` / `accelerated` / `turbo`) |
+| 20 | `checkpoint` | emulator | save / load / snapshot |
+| 30 | `files` | emulator | host files and disk images (`ls`, `cp`, `hd_create`, …, `download`), `files.images[n]` (the machine's configured images), `files.mounts[n]` (the image-VFS auto-mount cache, indexed by a never-reused mount serial; `find(path)`, `[n].unmount()`), `files.archive` |
+| 40 | `debug` | emulator | breakpoints, logpoints, watchpoints, `debug.find` (memory search), `debug.mac` |
+| 50 | `log` | emulator | `log.set(cat, level=, …)`, `log.levels`, `log.category["<cat>"]` with `level` / `stdout` / `file` / `ts` / `pc` |
+| 60 | `shell` | emulator | bindings, functions, `shell.alias` |
+| 70 | `catalog` | emulator | what the emulator can build or fit: `models`, `profile(model)`, `nubus_cards`, `pci_cards`, `vroms`, `proms` |
+| 100 | `appletalk` | network | the simulated network |
+
+Each root child carries its **domain** (`object_set_domain`: machine,
+emulator or network), which draws the dividers at the tree's top.
+
+### Metadata: docs and types
+
+A class declares a one-sentence `doc`; an object can override it
+(`object_set_doc`), and `object_doc` answers the object's doc, else its
+class's.  A method may declare a `result_doc` and `examples`.
+
+`meta.members(values?)` describes each member with, besides name, kind,
+category, label and doc: for an attribute
+its `type` descriptor `{kind, width, presentation, enum}` (presentation is
+the first of sensitive / path / hex / bin / dec, `VAL_PATH` marking a string
+that names a VFS path); for a method its `args` (name, doc, type, optional,
+rest, default), `result` type and, when declared, `result_doc` and
+`examples`; for a child `collection` (and a container's live `indices` /
+`keys`) and, at the root, `domain`.
+
+`shell.lint_members()` (internal) walks the live tree (`object_walk`, the
+one walk that hands out every object once with its canonical path) and
+reports every documentation gap: per class, once, the members' own gaps
+(`object_member_doc_gaps`, beside `object_validate_class`: an undocumented
+basic-tier argument, an untyped argument without `OBJ_ARG_POLY`, a `V_ANY`
+result without `result_doc`) and an example with a path that does not
+resolve (checked with `shell.highlight`); per node, a node shown in the
+basic tier with no doc. What a declaration gets outright wrong (an enum
+without its values) the class validator refuses. `tests/integration/member-docs`
+fails on any gap not in its allow-list, which may only shrink (it is empty).
+
+A doc says what a member is; the usage text says how to call it.  So an
+argument's default is declared (`default_value`, which usage prints as
+`(default …)`) rather than written into its doc; a default that is computed
+is declared as `default_doc` (shown after the doc as `; omitted: …`); and
+invocation forms go in `examples` (`EXAMPLES("…", "…")`). A string argument
+that names a VFS path is `ARG_PATH(name, doc)`. `arg_has_default` (a value
+other than none or the empty string), `member_is_readonly`,
+`member_is_basic` and `member_is_listed` are the one reading of those
+questions for meta, usage and lint.
+
+`machine` is the instance; `catalog` is the catalogue. `machine.nubus` and
+`machine.pci` are attached only on a machine with that bus. The root's own
+methods are `objects`, `attributes`, `methods`, `help`, `time`, `quit` and
+`echo`.
 
 ### Objects are instances; nodes are addresses
 
@@ -207,10 +315,10 @@ remaining segments index into that value — dotted `map.key`, bracket
 segments work after a call form and through bindings:
 
     machine.config.vroms[0].card_id            # list → map → value
-    machine.profile("se30").capabilities.mmu.kind
+    catalog.profile("se30").capabilities.mmu.kind
     let info = machine.rom.identify("boot.rom")
     echo "${$info.checksum} ${$info["name"]}"
-    for k in machine.profile("se30").capabilities { echo "$k" }   # keys
+    for k in catalog.profile("se30").capabilities { echo "$k" }   # keys
 
 `for … in` over a map iterates its keys (fetch values with `map[$k]`);
 `len(map)` counts entries. Maps are read-only through this surface —
@@ -232,23 +340,26 @@ access, so they survive `machine.boot`:
 ### Reserved words
 
 Statement keywords: `let`, `alias`, `if`, `elif`, `else`, `while`,
-`for`, `in`, `break`, `continue`, `return`, `def`, `assert`. Literals:
-`true`, `false`, `none`. Held: `do`. These may not be used as member,
-alias, or binding names (`object_validate_name`). `on`/`off`/`yes`/`no`
+`for`, `in`, `break`, `continue`, `return`, `def`, `assert`, `include`.
+Literals: `true`, `false`, `none`. Held: `do`. These may not be used as
+member, alias, or binding names (`object_validate_name`). `command` is a
+keyword too, but contextual: only `command NAME = PATH` is the statement,
+so a member may be named `command`. One table in `object.c` holds them all,
+with each word's syntax; `shell.keywords` and completion read it. `on`/`off`/`yes`/`no`
 are **not** reserved — they remain accepted as input coercions for
 bool-typed argument slots only.
 
 ### Library conventions
 
 - **Methods return data; surfaces do the printing.** Search results
-  come back as lists (`find.str(...)` → list of addresses; empty =
+  come back as lists (`debug.find.str(...)` → list of addresses; empty =
   not found; `[0]` is the first hit). `*.list` printers are retired:
   an indexed collection read without an index (`debug.breakpoints.entries`)
   returns the entry objects as a list, and the REPL renders a list of
   same-class objects as a table.
 - **Success/failure flows as value-or-`V_ERROR`**, never a printed
   message plus a bool. `V_BOOL` returns are reserved for methods whose
-  *answer* is a boolean (`storage.path_exists`).
+  *answer* is a boolean (`files.path_exists`).
 - **Absence is never `none`.** "Not found" is an empty collection;
   failure is `V_ERROR`; `none` is the script-side no-value.
 - **Named arguments replace spec strings.** `debug.logpoints.add
@@ -259,8 +370,8 @@ bool-typed argument slots only.
   time with per-fire bindings (`$value`/`$addr`/`$size` for logpoint
   messages).
 - **Tree layout:** emulated hardware lives under `machine.*`; tooling
-  and session surfaces (`debug`, `find`, `scheduler`, `shell`,
-  `storage`) live at the root.
+  and session surfaces (`scheduler`, `checkpoint`, `files`, `debug`,
+  `log`, `shell`, `catalog`) live at the root.
 
 ## Typed dispatch validation
 
@@ -303,7 +414,13 @@ arrived from.
 - **`V_OBJECT` non-NULL.** `V_OBJECT` slots reject `argv[i].obj == NULL`.
 - **Default fill.** Optional parameters that declare a `default_value`
   are synthesised into the rewritten argv when the caller omits them,
-  so the body reads `argv[N]` without an `argc` check.
+  so the body reads `argv[N]` without an `argc` check. An optional
+  parameter with no default that the caller skips — at the tail, or as a
+  hole before a later named argument — reaches the body as `none`
+  (`V_NONE`); every declared slot is readable, and `argc` counts through
+  the last slot that was given or defaulted. A slot flagged
+  `OBJ_ARG_GROUPED` belongs to an all-or-nothing group the body checks by
+  count, and may not be skipped alone.
 
 ### Coercion policy
 
@@ -371,10 +488,14 @@ call. Hard errors abort startup in every build configuration:
 - More than one `OBJ_ARG_REST` slot, or `OBJ_ARG_REST` not on the
   last slot, or `OBJ_ARG_REST` combined with `OBJ_ARG_OPTIONAL`.
 - `default_value` set on a non-optional parameter, or whose kind
-  doesn't match the slot.
+  doesn't match the slot; `default_value` and `default_doc` together.
 - `V_ENUM` slot with no `enum_values` table.
 - Arg-only flags (`OBJ_ARG_OPTIONAL`, `OBJ_ARG_REST`,
   `default_value`) set on an attribute slot.
+- Member `flags` outside the visibility category bits.
+- More than one collection member in a class, or a collection that hands
+  out no entries (`by_index.get` or `by_key.lookup`), or a `next` /
+  `next_key` without its `get` / `lookup`.
 
 This turns class-author mistakes into first-boot failures rather
 than first-call surprises.
@@ -485,7 +606,13 @@ Objects in the tree fall into two camps:
   where the object node is allocated and attached to the root, and
   where any built-in aliases the subsystem owns get registered.
 
-The cfg-scoped install path (`root_install`) is idempotent for the
+The cfg-scoped install path (`root_install`) attaches the shell namespace,
+then runs every subsystem's **install hook**: a subsystem registers
+`root_register_install(install, uninstall)` once (storage from
+`files_init`, NuBus and PCI from their object build) and its install
+attaches its own nodes with `root_attach_stub` — `files.images`,
+`machine.nubus`, `machine.pci` — so the object layer includes no
+subsystem header. It is idempotent for the
 same `cfg` and atomic across cfg changes: a checkpoint reload that
 calls `system_create(new)` followed by `system_destroy(old)` does the
 right thing because the install path detaches stubs from the previous
@@ -525,7 +652,7 @@ record untouched (`tests/integration/boot-config`).
 | RAM contents | Zeroed (fresh `calloc`, `memory.c:1584`) | Zeroed | **Kept** | Restored (`memory.c:1628`) |
 | PRAM (RTC parameter RAM) | Family construction defaults (`rtc_init` → `pram_defaults_apply`, `src/core/peripherals/rtc.c:463`; tables in `src/machines/runtime/pram_defaults.h`) | Construction defaults again (not carried) | **Kept** | Restored (`rtc.c:485`) |
 | TNT NVRAM (Grand Central's Open Firmware store; `pm7500`/`pm8500`/`pm9500`/`ans500`/`ans700`) | Blank: the previous machine's store goes with it | **Carried** (`tnt_teardown`, `src/machines/tnt/tnt.c:768`) | **Kept** | From the checkpoint, which overrides any carried store (`tnt.c:474`) |
-| RTC time | Host wall clock at construction (`rtc.c:465`); the Lisa's COPS clock starts at 1 January 1984 (`src/machines/lisa/cops.c:189`) | The same as `machine.boot` | Keeps counting | The saved value (`rtc.c:485`) |
+| RTC time | Host wall clock at construction (`rtc.c:465`); the Lisa's COPS clock starts at 1 January 1984 (`src/machines/lisa/cops.c:189`; hardware reference: [cops.md](../../../reference/machines/lisa/cops.md)) | The same as `machine.boot` | Keeps counting | The saved value (`rtc.c:485`) |
 | Mounted media | None. The old machine's images are closed (`system.c:1235`); a CD bay is registered empty (`system.c:1157`) | **Carried**: the same open handles pass through the substrate's `media_detach`/`media_attach`, so the write delta survives | **Kept** (`floppy_reset` keeps media, `system.c:274`) | From the checkpoint |
 | Caps Lock latch | Released | **Carried** (`machine.c:1019`, `1101`) | Kept (`adb_reset` preserves it, `src/core/peripherals/adb.c:511`) | From the checkpoint's ADB state (`adb.c:1051`) |
 | Scheduler pacing (`scheduler.mode`) | **Carried**: the host harness owns it, not the machine (`machine.c:1000-1008`, `1085`) | **Carried** | Unchanged | The checkpoint's own value (`src/core/scheduler/scheduler.c:145`, `786`) |
@@ -614,7 +741,7 @@ old machine keeps running.
 
 | Argument | Kind | Default | Meaning and validation |
 |---|---|---|---|
-| `model` | string | **required** | Machine model id (`machine.profile(id)` describes one). Rejected if missing or not registered (`machine.c:857-862`). |
+| `model` | string | **required** | Machine model id (`catalog.profile(id)` describes one). Rejected if missing or not registered (`machine.c:857-862`). |
 | `rom` | string | **required** | Path to the ROM file. It must be readable and identify, by content id, as a known ROM whose compatible list contains `model` ([mac-rom.md §10](../../../reference/formats/mac-rom.md#10-rom-provisioning); `machine.c:873-899`). |
 | `ram` | uint (KB) | the model's `ram_default` | Must be one of the model's `ram_options` (`ram_option_allowed`, `machine.c:700`, checked at `863-871`). |
 | `rom2` | string | none | The second chip of a two-chip Lisa/XL ROM. It only has to be readable: the chips identify after interleaving, so per-file identification and the compatibility check are skipped (`machine.c:878-884`). |
@@ -623,7 +750,7 @@ old machine keeps running.
 | `video_sense` | uint | the card's own default | Monitor sense: 0–7 is the passive code; 8–14 is Apple's indexed numbering for monitors that answer the extended probe (only the DAFB models it). Values up to 14 are accepted (`machine.c:933-935`). |
 | `video_mode` | string | the card's default | Video-mode id for the first socket. It must be a known mode id (`nubus_video_mode_known`, `machine.c:936`). |
 | `custom_mode` | string | none | Custom resolution `WxHxD` for the generic `8_24` kind. Parsed and rejected with the reason (`machine.c:957-961`). |
-| `monitor` | string | the model's default | Monitor strapped to the **built-in** video port. The value must be one of the family's monitor ids (see `machine.profile`), and the model must have configurable built-in video. `none` leaves the port unconnected, which hands the screen to a NuBus card. It resolves to a sense code at construction (`machine.c:938-955`, `1047-1051`). |
+| `monitor` | string | the model's default | Monitor strapped to the **built-in** video port. The value must be one of the family's monitor ids (see `catalog.profile`), and the model must have configurable built-in video. `none` leaves the port unconnected, which hands the screen to a NuBus card. It resolves to a sense code at construction (`machine.c:938-955`, `1047-1051`). |
 | `pci_card` | string | the slot default | Card id for the machine's **first** PCI socket. Rejected on a model with no PCI slots, and for an unknown id (`machine.c:913-924`). |
 | `prom` | string | resolved from the offers | An explicit PCI expansion-ROM pick. The file must identify as a known Open Firmware expansion ROM (`prom_identify_card`, `machine.c:970-977`). |
 | `pci_option` | string | none | `key=value[,key=value]` options for the `pci_card` socket (for example `vram=4m`). A malformed pair is logged and dropped. Whether a key means anything is up to the card's `stage_option` hook (`stage_pci_options`, `machine.c:806`). |
@@ -682,9 +809,11 @@ singleton or cfg-scoped:
    discrimination on `V_ANY` / `V_NONE`-kind slots.
 3. **Attach the object** at the right lifecycle point — for cfg-scoped
    classes, do it inside the existing `*_init` (next to the
-   `cfg->foo = foo_init(...)` call); for process-singletons, add a
-   small `foo_class_register` / `foo_class_unregister` pair and call
-   `foo_class_register` from `shell_init`.
+   `cfg->foo = foo_init(...)` call), or register a root install hook
+   (`root_register_install`) when the node belongs under a root stub;
+   for process-singletons, add a small `foo_class_register` and call it
+   from `shell_init`. A collection is a `collection_desc_t` plus, when
+   its entries are objects of their own, an `object_cache_t`.
 4. **Register any built-in aliases** the class wants to expose
    (`alias_register_builtin`); idempotent, so safe under repeated
    inits.

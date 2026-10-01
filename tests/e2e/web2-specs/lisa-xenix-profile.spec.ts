@@ -109,7 +109,7 @@ test('create a blank ProFile from the config dialog', async ({ page }) => {
   await expect(dlg.getByText('10 MB Widget')).toBeVisible();
 
   // Create the 10 MB Widget; the dialog closes and the new image is selected in
-  // the ProFile row (storage.profile_create wrote a raw 19448×532 image, which
+  // the ProFile row (files.profile_create wrote a raw 19448×532 image, which
   // the OPFS rescan now lists).
   await dlg.getByText('10 MB Widget').click();
   await dlg.getByRole('button', { name: 'Create' }).click();

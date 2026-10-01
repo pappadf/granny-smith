@@ -137,7 +137,7 @@ typedef enum card_attach {
 } card_attach_t;
 
 // Per-card driver descriptor — one static instance per registered driver.
-// The dialog reads this via nubus.cards(); the bus controller reads it
+// The dialog reads this via catalog.nubus_cards; the bus controller reads it
 // via nubus_card_find() to resolve a card id to a factory.
 typedef struct nubus_card_kind {
     const char *id; // "mdc_8_24"

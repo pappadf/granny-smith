@@ -10,6 +10,7 @@
 
 #include "card.h"
 #include "common.h"
+#include "value.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -51,7 +52,7 @@ typedef struct nubus_slot_decl {
 // COMPUTED — the machine declares topology, the card declares its physical
 // attachment (card_attach_t); nobody enumerates (machine, card) pairs.
 // Today's rule is the bus standard's: any NuBus-attach card fits any
-// user-configurable slot.  Shared by the machine.profile encoder and
+// user-configurable slot.  Shared by the catalog.profile encoder and
 // nubus_init's pick validation so the two can never diverge.
 bool nubus_card_fits_socket(const nubus_slot_decl_t *s, const nubus_card_kind_t *kind);
 
@@ -188,8 +189,12 @@ nubus_card_t *nubus_primary_display_card(nubus_bus_t *bus);
 // object trees for every populated slot.  nubus_init calls _build after the
 // cards exist; nubus_delete calls _teardown before freeing them.  The node
 // objects are owned here (object_delete_tree on teardown), not by the bus.
+// `machine.nubus` and its slot collection are installed from nubus_class.c
+// with every NuBus machine (root_register_install).
 void nubus_objects_build(nubus_bus_t *bus);
 void nubus_objects_teardown(void);
+// Every registered card-driver id (catalog.nubus_cards).
+value_t nubus_cards_list(void);
 // Teardown only if the trees describe `bus` (checkpoint-restore ordering:
 // the new machine's tree is built before the old machine is destroyed).
 void nubus_objects_teardown_owned(nubus_bus_t *bus);

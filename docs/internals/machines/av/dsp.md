@@ -3,7 +3,9 @@
 The AT&T DSP3210 — the AV family's floating-point DSP — as a live
 auxiliary core.  The generic core lives in `src/core/cpu/dsp3210/`
 (adapted from a validated reference core, see the header of
-`dsp3210.h`); this file binds it to the board.
+`dsp3210.h`); this file binds it to the board. Hardware reference:
+[dsp3210-board.md](../../../reference/machines/av/dsp3210-board.md), cited by
+section below.
 
 ## Execution
 
@@ -15,6 +17,10 @@ on-chip timer stopped) has no event; wake paths (`reset release, EXT1
 tick, timer`) re-arm at +1 cycle and `cpu_reschedule()`.
 
 ## Board wiring
+
+(Reference: [dsp3210-board.md](../../../reference/machines/av/dsp3210-board.md)
+§3.1 for the bus mastering, §2.5 for the DSP-side addresses, §3.2–§3.5 for
+reset and the interrupt wiring.)
 
 - **Bus hooks** — guest-physical through the bus resolver (`g_mmu`), the
   PSC-DMA pattern; the CPU MMU is deliberately not in the path.  The
@@ -58,6 +64,9 @@ tick, timer`) re-arm at +1 cycle and `cpu_reschedule()`.
   latch: it re-latches until the host clears the $21C bit itself.
 
 ## What boot looks like (verified on the 7.1 AV image)
+
+(Reference: [dsp3210-board.md](../../../reference/machines/av/dsp3210-board.md)
+§4.2 for the boot bring-up stages, §4.3 for the steady state.)
 
 During the Enabler's RTM init (~65–90 M instructions into boot):
 release → Apple's kernel boots out of the ROM's `'3210'` segments —

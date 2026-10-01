@@ -95,7 +95,10 @@ The original SWIM chip (part numbers 344S0061-A and 344S0062) appears in:
 
 All three machines use identical core memory mapping and asynchronous protocols.
 The 68030 CPU communicates with the SWIM asynchronously via the GLUE chip (part
-344S0602 or 344S0602-A).
+344S0602 or 344S0602-A). The IIci carries the same discrete SWIM in its RBV
+generation ([iici.md](../machines/mdu/iici.md) §3.5), and the IIfx reaches its
+SWIM through a dedicated I/O coprocessor rather than the CPU bus
+([iifx.md](../machines/iifx/iifx.md) §2.2, [iop.md](../machines/iifx/iop.md)).
 
 **HD20 limitation:** Although the IIcx and SE/30 expose a DB-19 external floppy
 port that can physically accept an HD20 hard drive, the SE/30 and IIx system ROMs
@@ -208,7 +211,7 @@ This means each register occupies 1 byte followed by 511 bytes of padding. With
 | Machine | Base Address | End Address | Notes |
 |---------|-------------|-------------|-------|
 | Mac Plus | 0x00D80000 | 0x00DFFFFF | 512K window, IWM only |
-| SE/30 | 0x50016000 | 0x50017FFF | 8K mapped region |
+| SE/30 | 0x50F16000 | 0x50F17FFF | 8K mapped region |
 | IIx/IIcx | Same decode | Same stride | I/O block mirrors every 0x20000 |
 
 The SE/30 I/O block mirrors every 0x20000, so the effective mask is
@@ -216,15 +219,15 @@ The SE/30 I/O block mirrors every 0x20000, so the effective mask is
 
 ### Register Addresses (Physical)
 
-For the SE/30 at base 0x50016000:
+For the SE/30 at base 0x50F16000:
 
 | Register | Offset | Physical Address |
 |----------|--------|-----------------|
-| 0 | 0x0000 | 0x50016000 |
-| 1 | 0x0200 | 0x50016200 |
-| 2 | 0x0400 | 0x50016400 |
+| 0 | 0x0000 | 0x50F16000 |
+| 1 | 0x0200 | 0x50F16200 |
+| 2 | 0x0400 | 0x50F16400 |
 | ... | ... | ... |
-| 15 | 0x1E00 | 0x50017E00 |
+| 15 | 0x1E00 | 0x50F17E00 |
 
 Note: References to "IOBase+$40 through IOBase+$4F" in System 7.1 documentation
 use logical/software notation, not physical stride. The physical stride is always
@@ -2016,7 +2019,8 @@ functions of V8 and SWIM for the Macintosh LC II.
   channel — see `docs/internals/machines/pdm/swim3.md`.  It is NOT a variant of the
   SWIM model in this file: SWIM3 has no IWM mode, no ISM entry sequence and
   a different register map, so it is a separate device rather than a mode
-  of this one.
+  of this one. Its hardware reference page is
+  [swim3.md](../machines/pdm/swim3.md) §2.
 
 ### Compatibility Implications
 

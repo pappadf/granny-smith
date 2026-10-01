@@ -163,10 +163,11 @@ consistent pattern to maximize encapsulation, maintainability, and testability:
 ### Object model and shell
 
 Every emulator subsystem is exposed through a single typed tree rooted
-at `emu`. Top-level paths are the subsystem names (`cpu`, `memory`,
-`scc`, `via1`/`via2`, `rtc`, `scsi`, `floppy`, `sound`, `storage`,
-`appletalk`, `mouse`, `keyboard`, `screen`, `debug`, `archive`,
-`rom`, `vrom`, `machine`, `checkpoint`, `scheduler`, …). Each
+at `emu`. Emulated hardware nests under `machine` (`machine.cpu`,
+`machine.memory`, `machine.scsi`, `machine.floppy`, `machine.screen`, …);
+the root's other children are, in a fixed order, `scheduler`,
+`checkpoint`, `files`, `debug`, `log`, `shell`, `catalog` and
+`appletalk` (docs/internals/core/object/object-model.md, "The root"). Each
 subsystem's class lives next to its other code and self-registers via
 `<module>_init`.
 
@@ -232,10 +233,12 @@ interactions are handled cleanly.
 - **Lifecycle management:**
   - `setup_init()`: Performs one-time, machine-independent setup — log
     category and process-singleton class registration — run once at startup.
-  - `system_create(const hw_profile_t *profile, checkpoint_t *)`: Allocates the
-    `config_t`, wires the selected machine descriptor, and dispatches to
-    `profile->substrate->init(cfg, cp)`; the machine's substrate constructs all
-    modules in dependency order and optionally restores from a checkpoint.
+  - `system_create(const hw_profile_t *profile, const machine_build_opts_t
+    *opts, checkpoint_t *)`: Allocates the `config_t`, wires the selected
+    machine descriptor, and dispatches to
+    `profile->substrate->init(cfg, cp)`; the machine's substrate constructs
+    all modules in dependency order and optionally restores from a
+    checkpoint.
   - `system_destroy(config_t *)`: Deletes the NuBus cards, calls
     `profile->substrate->teardown(cfg)` (the family delete-chain, reverse
     order), closes images, and frees the configuration.
@@ -369,7 +372,7 @@ strictly read-only base content; nothing writable lands there any more.
 
 `<machine_id>` is a 16-hex-char opaque token in `localStorage`; it rotates only
 on explicit "new machine" actions and is pushed to the C side once per process
-via `checkpoint --machine <id> <created>`. A startup sweep deletes any sibling
+via `machine.register(<id>, <created>)`. A startup sweep deletes any sibling
 machine directories whose name does not match. See [`docs/internals/core/checkpointing.md`](../internals/core/checkpointing.md)
 for the full design and [`docs/internals/core/storage/image.md`](../internals/core/storage/image.md) for the image-layer API
 that backs it.
@@ -389,6 +392,7 @@ The repository is organized as follows:
       - _cpu.c_ — Lifecycle, public API, runtime dispatch
       - _cpu_68000.c_ — 68000 instruction decoder instantiation
       - _cpu_68030.c_ — 68030 decoder instantiation (integrated PMMU/FPU)
+      - _cpu_68040.c_ — 68040 decoder instantiation (integrated MMU/FPU)
       - _cpu_internal.h_ — Shared struct and static inline helpers
       - _cpu_ops.h_ / _cpu_decode.h_ — Template-based decoder generation
       - _cpu_disasm.c_ — Disassembler
@@ -400,6 +404,10 @@ The repository is organized as follows:
       `checkpoint_machine` module that owns the per-machine state directory
       (`/opfs/checkpoints/<machine_id>-<created>/`)
     - **network/** — AppleTalk and networking modules
+    - **object/** — Object model (classes, members, nodes, the tagged value
+      type, path resolver, alias table)
+    - **vfs/** — Read-only browsing inside disk images (partition maps,
+      HFS/HFS+ and A/UX UFS volumes)
     - **shell/** — Command framework (types, parser, symbol resolver, I/O
       capture, completion, JSON bridge, dispatcher)
   - **machines/** — Machine profiles, substrates, and chipset families
@@ -412,17 +420,24 @@ The repository is organized as follows:
     - _glue/_ — GLUE chipset family (se30, iicx, iix) + built-in SE/30 video
     - _mdu/_ — MDU+RBV chipset family (iici, iisi) + rbv, egret, built-in RBV video
     - _oss/_ — OSS+FMC chipset family (iifx) + oss, iop\*
+    - _mcu/_ — MCU+DAFB chipset family (q700, q900, q950) + dafb
+    - _av/_ — YMCA+PSC "AV" chipset family (q840av, q660av) + psc, civic,
+      cuda, dsp, mace, new_age, vdc, singer
     - _compact/_ — Compact-68000 substrate (plus; Mac SE assumed next)
     - _lisa/_ — Lisa segment-MMU substrate (lisa, macxl) + cops, lisa_fdc, lisa_profile
+    - _pdm/_ — Power Macintosh PDM substrate (pm6100, pm7100, pm8100) +
+      hmc, amic, bart, awacs
+    - _tnt/_ — Power Macintosh TNT substrate (pm7500, pm8500, pm9500,
+      ans500, ans700) + bandit, awacs
   - **platform/** — Platform abstraction layer (PAL)
     - **wasm/** — Emscripten/WebAssembly-specific implementation (browser
       target)
     - **headless/** — Native headless implementation (CLI/testing)
-    - **stub/** — Minimal stubs for unit tests
 
 - **app/** — Application frontends
   - **electron/** — Placeholder for future Electron desktop app
-  - **web/** — Browser frontend (HTML, JS, CSS, xterm.js, etc.)
+  - **web2/** — Browser frontend (Svelte 5 + Vite + TypeScript, xterm.js
+    terminal; the only UI)
 
 - **build/** — All build outputs (never edit)
   - **wasm/** — WebAssembly build artifacts (browser)
@@ -434,11 +449,16 @@ The repository is organized as follows:
   - **integration/** — Headless integration tests (native CLI)
   - **data/** — Shared test data (ROMs, disk images, etc.)
 
-- **third-party/** — External dependencies (e.g., peeler archive library)
+- **third-party/** — External dependencies (git submodules: the
+  single-step-tests (68k) and powerpc-test (601) CPU instruction-test
+  corpora)
 
-- **docs/** — Reference documentation, mirroring the code tree: `guide/`
-  (dev/process), `core/<subsystem>/` (mirrors `src/core/`), `machines/<family>/`
-  (mirrors `src/machines/`), and `notes/` (dated investigation logs)
+- **docs/** — Documentation, split by content class
+  ([README.md](../README.md)): `guide/` (dev/process), `internals/`
+  (mirrors `src/`: `core/<subsystem>/` and `machines/<family>/`),
+  `reference/` (granny-smith-agnostic hardware/protocol/format/machine
+  facts), `user/` (end-user), `articles/` (long-form) and `notes/`
+  (dated investigation logs)
 
 - **scripts/** — Build helpers, dev tools, and automation scripts
 
@@ -476,7 +496,8 @@ registry.)
   families reuse the spine for its lifecycle, I/O engine and IRQ resolver,
   and bring their own MMU (`mmu040`) and interrupt map — the AV family
   notably has **no VIA2 chip at all**, so `config_t.via2` stays NULL and the
-  IPL-2 path belongs to the PSC's pseudo-VIA2 window.
+  IPL-2 path belongs to the PSC's pseudo-VIA2 window (see
+  [av.md](../reference/machines/av/av.md) §1).
 
 **Heterogeneous CPUs.** A machine may carry auxiliary cores beside the one
 main CPU that owns time: peripheral processors that execute real guest code
@@ -496,7 +517,7 @@ first consumer of the non-68K arm: its PowerPC 601 core
 `config_t.cpu` stays NULL — the classic 68k world exists on those machines
 only as ROM bytes the 601 executes.  The PDM board model is HMC (memory
 controller) + AMIC (I/O controller) around Tier-1 silicon and the shared
-Cuda model.
+Cuda model (see [pdm.md](../reference/machines/pdm/pdm.md) §1).
 
 **A machine is mostly data.** Each model is a `hw_profile_t` (defined in
 `core/machine_profile.h`) holding identity, the CPU/MMU facts the init reads as
@@ -527,13 +548,13 @@ include the public `core/machine_profile.h` but **not** any machine
 *implementation* header — a CI layering check enforces this
 (`tests/integration/core-layering/`).
 
-**Capability probe (no machine knowledge in the UI).** `machine.profile(id)`
+**Capability probe (no machine knowledge in the UI).** `catalog.profile(id)`
 returns a JSON map that includes a *derived* `capabilities` block
 (`cpu.{model,address_bits,fpu}`, a **typed** `mmu.{present,kind}` —
-`none`/`68030_pmmu`/`lisa_segment` — plus `nubus` and `pci`) with a
-per-slot/per-card `video_slots` block carrying each card's `requires_vrom`
-and a `pci_slots` block carrying each PCI socket's topology and computed
-card list. The frontend probes
+`none`/`68030_pmmu`/`68040`/`ppc_601`/`ppc_604`/`lisa_segment` — plus `nubus`
+and `pci`) with a per-slot/per-card `video_slots` block carrying each card's
+`requires_vrom` and a `pci_slots` block carrying each PCI socket's topology
+and computed card list. The frontend probes
 these instead of regex-matching the model's display name, so the debug panels,
 the VROM prompt, and the slot labels all follow from data. Because capabilities
 are *derived* from the facts, they can never drift from behavior.
@@ -544,7 +565,7 @@ table declares *topology* only (which slots exist, which are user-populatable
 default); each card kind declares its *attachment* (`card_attach_t` — a
 genuine NuBus card vs. builtin motherboard circuitry). Which cards a socket
 offers is **computed** by matching the two (`nubus_card_fits_socket`), used
-identically by the `machine.profile` encoder and `nubus_init`'s boot-time
+identically by the `catalog.profile` encoder and `nubus_init`'s boot-time
 pick validation. Adding a NuBus card is one registry line plus one
 `VROM_CATALOG` row — it is then offered on every machine with a socket, with
 no per-machine edits (`nubus_card_fits_socket` in

@@ -49,7 +49,7 @@ describe('the deadline', () => {
   it('never applies to a legitimately long request', () => {
     vi.useFakeTimers();
     Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
-    const stop = watchRequest('storage.cp');
+    const stop = watchRequest('files.cp');
     vi.advanceTimersByTime(600_000);
     expect(machine.status).not.toBe('crashed');
     stop();

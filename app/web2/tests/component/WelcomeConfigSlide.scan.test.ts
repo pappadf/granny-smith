@@ -10,7 +10,7 @@ import type { OpfsBackend } from '@/bus/opfs';
 import type { OpfsEntry, ImageCategory, RomInfo } from '@/bus/types';
 
 // Mock the emulator bus: the new Config slide drives its dropdowns by
-// calling rom.identify + machine.profile via gsEval. Stub both so tests
+// calling rom.identify + catalog.profile via gsEval. Stub both so tests
 // don't need a live Module.
 vi.mock('@/bus/emulator', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/bus/emulator')>();
@@ -48,7 +48,7 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         }
         return null;
       }
-      if (path === 'machine.profile') {
+      if (path === 'catalog.profile') {
         const id = (args?.[0] as string) ?? '';
         const byId: Record<string, object> = {
           plus: {

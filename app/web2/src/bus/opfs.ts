@@ -74,7 +74,7 @@ export function setOpfsBackend(b: OpfsBackend): void {
 // Real OPFS-backed implementation. Reads (list / scanRoms / scanImages /
 // readJson) use navigator.storage.getDirectory() directly — safe from any
 // thread, browser-internal. Writes (writeJson) also use OPFS direct;
-// cross-thread *image* writes still go through gsEval('storage.cp', …) in
+// cross-thread *image* writes still go through gsEval('files.cp', …) in
 // bus/upload.ts because those are bigger and have to coexist with the
 // emulator's own OPFS handles. JSON config files are small and short-lived
 // — direct OPFS works fine.
@@ -201,13 +201,13 @@ export class BrowserOpfs implements OpfsBackend {
   }
 
   async move(src: string, dst: string): Promise<void> {
-    // Route through the worker (storage.mv) so its WasmFS inode cache stays
+    // Route through the worker (files.mv) so its WasmFS inode cache stays
     // coherent with OPFS — same rationale as delete(). Once the module is up
     // a worker-reported failure must NOT fall back to a main-thread mutation:
     // that would change OPFS behind the worker's cache and recreate the exact
     // stale-inode bug this routing exists to prevent — propagate it instead.
     if (isModuleReady()) {
-      const res = await gsEval('storage.mv', [src, dst]);
+      const res = await gsEval('files.mv', [src, dst]);
       if (res !== true) throw new Error(gsErrorText(res));
       return;
     }
@@ -271,7 +271,7 @@ export class BrowserOpfs implements OpfsBackend {
     // propagated, never retried main-thread — and propagating is also what
     // makes the UI's per-item failure accounting real instead of dead code.
     if (isModuleReady()) {
-      const res = await gsEval('storage.rm', [path]);
+      const res = await gsEval('files.rm', [path]);
       if (res !== true) throw new Error(gsErrorText(res));
       return;
     }

@@ -4,7 +4,9 @@ Apple's 1990 NuBus display card built on the **Jackson / JMFB / Elmer** ASIC.
 Implemented in
 [`src/core/peripherals/nubus/cards/jmfb.c`](../../../../../../src/core/peripherals/nubus/cards/jmfb.c)
 (the source and its whole register set keep the ASIC codename `JMFB`, per Apple's
-own engineering naming). Catalogued in [`video.md`](../../../../../reference/hardware/video-overview.md) §2.2; vROM
+own engineering naming). Catalogued in [`video.md`](../../../../../reference/hardware/video-overview.md) §2.2; the card's
+hardware reference page is [`display-card-8-24.md`](../../../../../reference/hardware/nubus/cards/display-card-8-24.md)
+(section 1.4 for the family and variants); vROM
 byte-layout reference in [`declaration-rom.md`](../../../../../reference/hardware/nubus/declaration-rom.md).
 
 > **Naming:** this file is named by the *product* (8•24) to sit parallel with
@@ -80,13 +82,17 @@ on every VBL; setting it masks the VBL IRQ.
 
 The 8•24 has no QuickDraw fill/copy accelerator — QuickDraw draws straight into
 the linear framebuffer and the OS uses its software `CopyBits`/`ScrollRect`. (The
-**8•24 GC** added an AMD Am29000 RISC for accelerated QuickDraw; that is a
-separate driver lineage and is not modelled.) The card with a hardware engine in
+**8•24 GC** added an AMD Am29000 RISC for accelerated QuickDraw; it is a separate
+driver lineage, and is modelled as its own card in
+[`display_card_824gc.c`](../../../../../../src/core/peripherals/nubus/cards/display_card_824gc.c) — an
+HLE card shell plus the "GC QuickDraw" engine in
+`display_card_824gc_qd.c`, with anything outside the engine's accept envelope
+declining to QuickDraw's ROM path.) The card with a hardware engine in
 this tree is the [24AC](display_card_24ac.md).
 
 ## 4. vROM identity
 
-`machine.vrom.identify` keys off the declaration ROM's NuBus Format-Block CRC and
+`catalog.vroms.identify` keys off the declaration ROM's NuBus Format-Block CRC and
 returns `card_id = "mdc_8_24"` with `compatible = [...]`. See
 [`declaration-rom.md`](../../../../../reference/hardware/nubus/declaration-rom.md) and
 [`src/core/memory/vrom.c`](../../../../../../src/core/memory/vrom.c).

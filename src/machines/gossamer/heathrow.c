@@ -695,7 +695,7 @@ static value_t hr_attr_clear_mode(struct object *self, const member_t *m) {
 
 #define HR_RO_ATTR(NAME, DOC, FLAGS)                                                                                   \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = #NAME, .doc = DOC, .flags = VAL_RO, .attr = {                                          \
+        .kind = M_ATTR, .name = #NAME, .doc = DOC, .attr = {                                                           \
             .type = V_UINT,                                                                                            \
             .presentation_flags = (FLAGS),                                                                             \
             .get = hr_attr_##NAME,                                                                                     \
@@ -709,7 +709,6 @@ static const member_t hr_members[] = {
     {.kind = M_ATTR,
                                                                                    .name = "source_levels",
                                                                                    .doc = "Bank 1 live source picture, never latched",
-                                                                                   .flags = VAL_RO,
                                                                                    .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = hr_attr_levels, .set = NULL}},
     HR_RO_ATTR(mask, "Bank 1 per-source enables", VAL_HEX),
     HR_RO_ATTR(latch, "Bank 1 mode-1 output latch", VAL_HEX | VAL_VOLATILE),
@@ -722,7 +721,6 @@ static const member_t hr_members[] = {
     {.kind = M_ATTR,
                                                                                    .name = "clear_mode",
                                                                                    .doc = "Bank 1: 0 = power-on ((events|levels) & mask); 1 = NanoKernel acknowledge (latch & mask)",
-                                                                                   .flags = VAL_RO,
                                                                                    .attr = {.type = V_UINT, .get = hr_attr_clear_mode, .set = NULL}                                          },
 };
 
@@ -842,24 +840,23 @@ static const member_t nvram_members[] = {
     {.kind = M_ATTR,
      .name = "size",
      .doc = "Store size in bytes",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = nvram_attr_size, .set = NULL}},
+     .attr = {.type = V_UINT, .get = nvram_attr_size, .set = NULL}                                   },
     {.kind = M_METHOD,
      .name = "peek",
      .doc = "Read one byte (XPRAM at $1300, Name Registry at $1400, Open Firmware at $1800)",
-     .method = {.args = nvram_peek_args, .nargs = 1, .result = V_UINT, .fn = nvram_method_peek}},
+     .method = {.args = nvram_peek_args, .nargs = 1, .result = V_UINT, .fn = nvram_method_peek}      },
     {.kind = M_METHOD,
      .name = "poke",
      .doc = "Write 1..N bytes at an offset",
-     .method = {.args = nvram_poke_args, .nargs = 2, .result = V_NONE, .fn = nvram_method_poke}},
+     .method = {.args = nvram_poke_args, .nargs = 2, .result = V_NONE, .fn = nvram_method_poke}      },
     {.kind = M_METHOD,
      .name = "dump",
      .doc = "Read N bytes starting at an offset",
-     .method = {.args = nvram_dump_args, .nargs = 2, .result = V_BYTES, .fn = nvram_method_dump}},
+     .method = {.args = nvram_dump_args, .nargs = 2, .result = V_BYTES, .fn = nvram_method_dump}     },
     {.kind = M_METHOD,
      .name = "snapshot",
      .doc = "Read the whole 8 KB store",
-     .method = {.args = NULL, .nargs = 0, .result = V_BYTES, .fn = nvram_method_snapshot}},
+     .method = {.args = NULL, .nargs = 0, .result = V_BYTES, .fn = nvram_method_snapshot}            },
     {.kind = M_METHOD,
      .name = "restore",
      .doc = "Write the whole store from a snapshot",
@@ -867,7 +864,7 @@ static const member_t nvram_members[] = {
     {.kind = M_METHOD,
      .name = "clear",
      .doc = "Blank the store — what removing the board battery does",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = nvram_method_clear}},
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = nvram_method_clear}                },
 };
 
 static const class_desc_t nvram_class = {

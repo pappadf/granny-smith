@@ -1206,94 +1206,76 @@ static struct object *g_adsp_object;
 static struct object *g_adsp_conns_object;
 static struct object *g_adsp_stats_object;
 
-OBJECT_POOL(g_adsp_conn_pool, ADSP_MAX_CONNECTIONS);
-
 static const class_desc_t adsp_class;
 static const class_desc_t adsp_conns_class;
 static const class_desc_t adsp_conn_class;
 static const class_desc_t adsp_stats_class;
 
+// The collection entry objects, made on first use.
+static object_cache_t g_adsp_conn_entries = OBJECT_CACHE(&adsp_conn_class, NULL);
+
 static adsp_conn_t *adsp_obj_conn(struct object *self) {
-    int slot = object_pool_slot(self);
+    int slot = object_entry_index(self);
     return slot >= 0 ? adsp_conn_at(g_adsp, slot) : NULL;
 }
 
 // --- appletalk.adsp.connections[i] ------------------------------------------
 
-static value_t adsp_conn_attr_id(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(adsp_conn_attr_id) {
     return val_uint(4, (uint64_t)adsp_conn_id(adsp_obj_conn(self)));
 }
-static value_t adsp_conn_attr_state(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(adsp_conn_attr_state) {
     int st = (int)adsp_conn_state(adsp_obj_conn(self));
     if (st < 0 || st >= ADSP_STATE_COUNT)
         st = 0;
     return val_enum(st, ADSP_STATE_NAMES, ADSP_STATE_COUNT);
 }
-static value_t adsp_conn_attr_role(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(adsp_conn_attr_role) {
     return val_str(adsp_conn_initiator(adsp_obj_conn(self)) ? "initiator" : "responder");
 }
-static value_t adsp_conn_attr_local_socket(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(adsp_conn_attr_local_socket) {
     return val_uint(1, adsp_conn_local_socket(adsp_obj_conn(self)));
 }
-static value_t adsp_conn_attr_remote_node(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(adsp_conn_attr_remote_node) {
     const atalk_socket_addr_t *a = adsp_conn_remote(adsp_obj_conn(self));
     return val_uint(1, a ? a->node : 0);
 }
-static value_t adsp_conn_attr_remote_socket(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(adsp_conn_attr_remote_socket) {
     const atalk_socket_addr_t *a = adsp_conn_remote(adsp_obj_conn(self));
     return val_uint(1, a ? a->socket : 0);
 }
-static value_t adsp_conn_attr_local_cid(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(adsp_conn_attr_local_cid) {
     return val_uint(2, adsp_conn_local_cid(adsp_obj_conn(self)));
 }
-static value_t adsp_conn_attr_remote_cid(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(adsp_conn_attr_remote_cid) {
     return val_uint(2, adsp_conn_remote_cid(adsp_obj_conn(self)));
 }
-static value_t adsp_conn_attr_send_seq(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(adsp_conn_attr_send_seq) {
     return val_uint(4, adsp_conn_send_seq(adsp_obj_conn(self)));
 }
-static value_t adsp_conn_attr_recv_seq(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(adsp_conn_attr_recv_seq) {
     return val_uint(4, adsp_conn_recv_seq(adsp_obj_conn(self)));
 }
-static value_t adsp_conn_attr_send_wdw_seq(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(adsp_conn_attr_send_wdw_seq) {
     return val_uint(4, adsp_conn_send_wdw_seq(adsp_obj_conn(self)));
 }
-static value_t adsp_conn_attr_recv_wdw(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(adsp_conn_attr_recv_wdw) {
     return val_uint(2, adsp_conn_recv_wdw(adsp_obj_conn(self)));
 }
-static value_t adsp_conn_attr_unacked(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(adsp_conn_attr_unacked) {
     return val_uint(4, (uint64_t)adsp_conn_unacked(adsp_obj_conn(self)));
 }
-static value_t adsp_conn_attr_bytes_in(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(adsp_conn_attr_bytes_in) {
     return val_uint(8, adsp_conn_bytes_in(adsp_obj_conn(self)));
 }
-static value_t adsp_conn_attr_bytes_out(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(adsp_conn_attr_bytes_out) {
     return val_uint(8, adsp_conn_bytes_out(adsp_obj_conn(self)));
 }
-static value_t adsp_conn_attr_retransmits(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(adsp_conn_attr_retransmits) {
     return val_uint(8, adsp_conn_retransmits(adsp_obj_conn(self)));
 }
 
-static value_t adsp_conn_method_close(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(adsp_conn_method_close) {
     adsp_conn_t *c = adsp_obj_conn(self);
     if (!c)
         return val_err("that connection is already closed");
@@ -1303,11 +1285,7 @@ static value_t adsp_conn_method_close(struct object *self, const member_t *m, in
 
 #define ADSP_CONN_ATTR(nm, w, getter, doc_text)                                                                        \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = nm, .doc = doc_text, .flags = VAL_RO, .attr = {                                        \
-            .type = V_UINT,                                                                                            \
-            .width = w,                                                                                                \
-            .get = getter                                                                                              \
-        }                                                                                                              \
+        .kind = M_ATTR, .name = nm, .doc = doc_text, .attr = {.type = V_UINT, .width = w, .get = getter }              \
     }
 
 static const member_t adsp_conn_members[] = {
@@ -1315,13 +1293,11 @@ static const member_t adsp_conn_members[] = {
     {.kind = M_ATTR,
                                                                             .name = "state",
                                                                             .doc = "Connection-end state (Inside AppleTalk 12-5)",
-                                                                            .flags = VAL_RO,
                                                                             .attr = {.type = V_ENUM, .enum_values = ADSP_STATE_NAMES, .get = adsp_conn_attr_state}},
     {.kind = M_ATTR,
                                                                             .name = "role",
                                                                             .doc = "initiator if we sent the first open request, else responder",
-                                                                            .flags = VAL_RO,
-                                                                            .attr = {.type = V_STRING, .get = adsp_conn_attr_role}},
+                                                                            .attr = {.type = V_STRING, .get = adsp_conn_attr_role}                                },
     ADSP_CONN_ATTR("local_socket", 1, adsp_conn_attr_local_socket, "Socket this end owns"),
     ADSP_CONN_ATTR("remote_node", 1, adsp_conn_attr_remote_node, "LLAP node of the remote end"),
     ADSP_CONN_ATTR("remote_socket", 1, adsp_conn_attr_remote_socket, "Socket of the remote end"),
@@ -1342,7 +1318,7 @@ static const member_t adsp_conn_members[] = {
                 .nargs = 0,
                 .result = V_NONE,
                 .fn = adsp_conn_method_close,
-                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}},
+                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}                                                                                                           },
 };
 
 static const class_desc_t adsp_conn_class = {
@@ -1357,14 +1333,15 @@ static struct object *adsp_conns_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= ADSP_MAX_CONNECTIONS || !adsp_conn_at(g_adsp, index))
         return NULL;
-    return object_pool_at(&g_adsp_conn_pool, index);
+    return object_cache_at(&g_adsp_conn_entries, index, NULL);
 }
 
+static const collection_desc_t adsp_conns_entries = {
+    .entry = &adsp_conn_class, .by_index = {.get = adsp_conns_get, .slots = ADSP_MAX_CONNECTIONS}
+};
+
 static const member_t adsp_conns_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .doc = "Live ADSP connection ends",
-     .child = {.cls = &adsp_conn_class, .indexed = true, .get = adsp_conns_get, .slots = ADSP_MAX_CONNECTIONS}},
+    OBJ_ENTRIES(&adsp_conns_entries, "Live ADSP connection ends"),
 };
 
 static const class_desc_t adsp_conns_class = {
@@ -1377,8 +1354,7 @@ static const class_desc_t adsp_conns_class = {
 
 // The host stack comes and goes with the machine, so its block is fetched
 // per read rather than fixed as the object's data.
-static value_t adsp_stats_attr(struct object *self, const member_t *m) {
-    (void)self;
+static DEF_GETTER(adsp_stats_attr) {
     return obj_u64_at(adsp_get_stats(g_adsp), m);
 }
 
@@ -1408,9 +1384,7 @@ static const class_desc_t adsp_stats_class = {
 
 // `max_data` is a constant of the protocol; a getter keeps it in the tree
 // without a backing variable.
-static value_t adsp_attr_max_data(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(adsp_attr_max_data) {
     return val_uint(2, ADSP_MAX_DATA);
 }
 
@@ -1418,7 +1392,6 @@ static const member_t adsp_members[] = {
     {.kind = M_ATTR,
      .name = "max_data",
      .doc = "ADSP data bytes per packet (Inside AppleTalk 12-12)",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .width = 2, .get = adsp_attr_max_data}},
 };
 
@@ -1446,11 +1419,11 @@ void atalk_adsp_install_objects(struct object *parent) {
 
     // Entry objects are handed out by the collection callbacks and never
     // attached, so the cascade delete does not free them (we do, below).
-    object_pool_create(&g_adsp_conn_pool, &adsp_conn_class);
+    object_cache_set_parent(&g_adsp_conn_entries, g_adsp_conns_object);
 }
 
 void atalk_adsp_remove_objects(void) {
-    object_pool_delete(&g_adsp_conn_pool);
+    object_cache_clear(&g_adsp_conn_entries);
     struct object **nodes[] = {&g_adsp_conns_object, &g_adsp_stats_object, &g_adsp_object};
     for (int i = 0; i < ARRAY_LEN(nodes); i++) {
         if (!*nodes[i])

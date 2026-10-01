@@ -506,6 +506,42 @@ const char *val_as_str(const value_t *v) {
     return NULL;
 }
 
+const char *value_kind_name(value_kind_t k) {
+    if (k == V_ANY) // a declaration-only sentinel outside the enum
+        return "any";
+    switch (k) {
+    case V_NONE:
+        return "none";
+    case V_BOOL:
+        return "bool";
+    case V_INT:
+        return "int";
+    case V_UINT:
+        return "uint";
+    case V_FLOAT:
+        return "float";
+    case V_STRING:
+        return "string";
+    case V_BYTES:
+        return "bytes";
+    case V_ENUM:
+        return "enum";
+    case V_LIST:
+        return "list";
+    case V_MAP:
+        return "map";
+    case V_OBJECT:
+        return "object";
+    case V_ERROR:
+        return "error";
+    case V_REF:
+        return "ref";
+    case V_RANGE:
+        return "range";
+    }
+    return "?";
+}
+
 bool val_parse_bool(const char *s, bool *out) {
     if (!s || !out)
         return false;

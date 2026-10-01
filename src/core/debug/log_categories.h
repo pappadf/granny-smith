@@ -10,10 +10,10 @@
 // was handed -- and there was no manifest.  Three consequences, all of which
 // were hit in practice:
 //
-//   * `debug.log cpuu 10` succeeded, reported a configured `cpuu`, and
+//   * configuring a category `cpuu` at level 10 succeeded, reported a configured `cpuu`, and
 //     produced no output and no error: a silent dead end for anyone
 //     debugging.
-//   * `debug.log` with no arguments listed only categories that had already
+//   * listing the categories showed only categories that had already
 //     been HIT or configured, so it could not be used to discover the right
 //     name either.
 //   * The checkpoint path logged under three different names -- `ckpt`,

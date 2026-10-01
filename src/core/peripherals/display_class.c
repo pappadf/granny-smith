@@ -17,44 +17,36 @@ static display_t *node_disp(struct object *self) {
     return (n && n->resolve) ? n->resolve(n->owner) : NULL;
 }
 
-static value_t fb_attr_base(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_base) {
     display_fb_node_t *n = fb_node(self);
     return val_uint(4, (n && n->base) ? n->base(n->owner) : 0);
 }
-static value_t fb_attr_width(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_width) {
     display_t *d = node_disp(self);
     return val_uint(4, d ? d->width : 0);
 }
-static value_t fb_attr_height(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_height) {
     display_t *d = node_disp(self);
     return val_uint(4, d ? d->height : 0);
 }
-static value_t fb_attr_stride(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_stride) {
     display_t *d = node_disp(self);
     return val_uint(4, d ? d->stride : 0);
 }
-static value_t fb_attr_depth(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_depth) {
     display_t *d = node_disp(self);
     return val_uint(4, d ? display_bpp(d->format) : 0);
 }
-static value_t fb_attr_format(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_format) {
     display_t *d = node_disp(self);
     return val_str(d ? display_format_name(d->format) : "");
 }
-static value_t fb_attr_raw_size(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_raw_size) {
     display_t *d = node_disp(self);
     return val_uint(4, d ? (uint64_t)d->stride * d->height : 0);
 }
 
-static value_t fb_attr_clut_len(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(fb_attr_clut_len) {
     display_t *d = node_disp(self);
     return val_uint(4, d ? d->clut_len : 0);
 }
@@ -63,54 +55,41 @@ static const member_t fb_members[] = {
     {.kind = M_ATTR,
      .name = "base",
      .doc = "Framebuffer base, in the address space the guest reaches it through",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = fb_attr_base}},
-    {.kind = M_ATTR,
-     .name = "width",
-     .doc = "Active width in pixels",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_width}                              },
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = fb_attr_base}                                                   },
+    {.kind = M_ATTR, .name = "width",  .doc = "Active width in pixels",            .attr = {.type = V_UINT, .get = fb_attr_width}   },
     {.kind = M_ATTR,
      .name = "height",
      .doc = "Active height in pixels",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_height}                             },
+     .attr = {.type = V_UINT, .get = fb_attr_height}                                                                                },
     {.kind = M_ATTR,
      .name = "stride",
      .doc = "Row stride in bytes (rowBytes)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_stride}                             },
-    {.kind = M_ATTR,
-     .name = "depth",
-     .doc = "Bits per pixel",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_depth}                              },
-    {.kind = M_ATTR,
-     .name = "format",
-     .doc = "Pixel encoding",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = fb_attr_format}                           },
+     .attr = {.type = V_UINT, .get = fb_attr_stride}                                                                                },
+    {.kind = M_ATTR, .name = "depth",  .doc = "Bits per pixel",                    .attr = {.type = V_UINT, .get = fb_attr_depth}   },
+    {.kind = M_ATTR, .name = "format", .doc = "Pixel encoding",                    .attr = {.type = V_STRING, .get = fb_attr_format}},
     {.kind = M_ATTR,
      .name = "clut_len",
      .doc = "Palette entries the current format uses (0 for a direct format)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_clut_len}                           },
+     .attr = {.type = V_UINT, .get = fb_attr_clut_len}                                                                              },
     {.kind = M_ATTR,
      .name = "raw_size",
      .doc = "Active framebuffer size in bytes (stride x height)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_raw_size}                           },
+     .attr = {.type = V_UINT, .get = fb_attr_raw_size}                                                                              },
 };
 
-const class_desc_t display_fb_class = {
-    .name = "framebuffer", .members = fb_members, .n_members = sizeof(fb_members) / sizeof(fb_members[0])};
+const class_desc_t display_fb_class = {.name = "framebuffer",
+                                       .doc = "The framebuffer: base, geometry, depth and pixel format",
+                                       .members = fb_members,
+                                       .n_members = sizeof(fb_members) / sizeof(fb_members[0])};
 
 // The `video` wrapper reads the same descriptor, so `machine.video.width` and
 // `machine.video.framebuffer.width` both work -- a card's geometry is
 // reachable at `slot[N].card.mode.width` and the built-in chips should not
 // need a deeper path for the same fact.
-static const class_desc_t display_video_class = {
-    .name = "video", .members = fb_members, .n_members = sizeof(fb_members) / sizeof(fb_members[0])};
+static const class_desc_t display_video_class = {.name = "video",
+                                                 .doc = "The built-in video output: geometry and framebuffer",
+                                                 .members = fb_members,
+                                                 .n_members = sizeof(fb_members) / sizeof(fb_members[0])};
 
 // --- machine.video, for the soldered-down producers -------------------------
 

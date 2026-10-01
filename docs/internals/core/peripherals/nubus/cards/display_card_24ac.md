@@ -3,7 +3,9 @@
 Third-party OEM NuBus display card (Apple-branded, 1992) with a hardware
 QuickDraw fill/raster **acceleration engine**. Modelled in
 [`src/core/peripherals/nubus/cards/display_card_24ac.c`](../../../../../../src/core/peripherals/nubus/cards/display_card_24ac.c).
-Catalogued in [`video.md`](../../../../../reference/hardware/video-overview.md) §2.3; vROM byte-layout reference in
+Catalogued in [`video.md`](../../../../../reference/hardware/video-overview.md) §2.3; the card's
+hardware reference page is [`display-card-24ac.md`](../../../../../reference/hardware/nubus/cards/display-card-24ac.md);
+vROM byte-layout reference in
 [`declaration-rom.md`](../../../../../reference/hardware/nubus/declaration-rom.md).
 
 | | |
@@ -145,11 +147,11 @@ outnumber LATCH writes by exactly the number of boundary crossings.
 
 ## 4. vROM identity
 
-`machine.vrom.identify` keys the card off the declaration ROM's **NuBus
+`catalog.vroms.identify` keys the card off the declaration ROM's **NuBus
 Format-Block CRC** (`chip[size-12..size-9]`, big-endian; TestPattern
 `$5A932BC7` at `chip[size-6..size-3]`), the analog of `rom.identify`'s checksum.
 It returns `card_id = "display_card_24ac"` and `compatible = [...]`. The
-human-readable card name is owned by the card kind (`machine.profile`), not the
+human-readable card name is owned by the card kind (`catalog.profile`), not the
 identify result. See [`declaration-rom.md`](../../../../../reference/hardware/nubus/declaration-rom.md) and
 [`src/core/memory/vrom.c`](../../../../../../src/core/memory/vrom.c).
 
@@ -157,15 +159,17 @@ identify result. See [`declaration-rom.md`](../../../../../reference/hardware/nu
 
 | Test | Coverage |
 |---|---|
-| `tests/integration/iicx-24ac` | end-to-end 32-bit SCSI boot → 8-bpp colour Finder; Apple-menu fill (E8); Control-Panels list scroll (E9/E10) — all pixel-exact |
+| `tests/integration/suite-iicx` (rows `iicx-24ac` / `iicx-24ac-restart`) | end-to-end 32-bit SCSI boot → 8-bpp colour Finder; Apple-menu fill (E8); Control-Panels list scroll (E9/E10) — all pixel-exact |
+| `tests/integration/iicx-24ac-sysinfo` | the same boot, launching the Symantec "System Info" application (its benchmark window reads back "Apple Macintosh 24AC (8 bit)") |
 | `tests/integration/iicx-display-card-24ac` | engine decode + engine-vs-CPU-fallback oracle; copy-handshake Part A; object-model nodes |
 | `tests/integration/vrom-identify` | CRC identity + `card_id` / `compatible` |
 
 ## 6. Provenance
 
-This page is the canonical reference for the card. It distils the
-reverse-engineering behind the model — register map, engine semantics, errata
-E7–E10 — so the load-bearing facts live here rather than in working notes; the
-model in
+This page distils the reverse-engineering behind the model — register map,
+engine semantics, errata E7–E10 — so the load-bearing facts live in a tracked
+doc rather than in working notes; the model in
 [display_card_24ac.c](../../../../../../src/core/peripherals/nubus/cards/display_card_24ac.c)
-is the implementation those facts describe.
+is the implementation those facts describe. The card's hardware reference
+([`display-card-24ac.md`](../../../../../reference/hardware/nubus/cards/display-card-24ac.md),
+section 5 for the errata) is the canonical statement of the same facts.

@@ -61,6 +61,20 @@ int script_run_file(const char *path);
 // more lines before submitting.
 bool script_needs_continuation(const char *buf);
 
+// Every statement-error report goes through here.  `text` is the report
+// as printed (newline-terminated, possibly several lines).  Inside a job it
+// becomes an `error` annotation at this point of the job's record stream:
+// file (the include path of the reporting site, or ""), line (0 when
+// none), message and the text's lines.  It goes to stderr only when no
+// record can carry it whole (outside a job, past the output cut, or as a
+// `truncated` record's full text).
+void script_report_error(const char *file, int line, const char *msg, const char *text);
+
+// The same with the message built from `fmt` and the text the usual
+// `FILE: line N: MESSAGE` (the file part only when `file` is non-empty,
+// the line part only when `line` > 0).
+void script_report_errorf(const char *file, int line, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+
 // Ctrl-C for loops: the interpreter checks this once per iteration and
 // unwinds with an error. Wired to `shell.interrupt`.  It cancels the script
 // in flight only: script_exec clears it when the top-level script ends.

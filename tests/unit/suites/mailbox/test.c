@@ -14,6 +14,8 @@
 #include "io/io_worker.h"
 #include "job/job.h"
 #include "mailbox/mailbox.h"
+#include "object/meta.h"
+#include "object/object.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -34,6 +36,22 @@ static char g_last_args[256];
 void gs_mailbox_notify(volatile uint32_t *word) {
     (void)word;
     g_notified++;
+}
+
+// Annotation bodies are formatted with value_format; the objects it can
+// name do not occur here.
+const class_desc_t *object_class(const struct object *o) {
+    (void)o;
+    return NULL;
+}
+const char *object_name(const struct object *o) {
+    (void)o;
+    return NULL;
+}
+void object_compute_path(struct object *o, char *buf, size_t size) {
+    (void)o;
+    if (size)
+        buf[0] = '\0';
 }
 
 // The stub leaf: answers {"path": <path>, "args": <args or null>}; a path
@@ -319,7 +337,7 @@ TEST(a_request_is_served_and_its_id_comes_back) {
 
 TEST(arguments_travel_and_failure_is_ok_zero) {
     fresh();
-    ASSERT_TRUE(post(1, "storage.list_dir", "[\"/opfs\"]"));
+    ASSERT_TRUE(post(1, "files.list_dir", "[\"/opfs\"]"));
     ASSERT_TRUE(post(2, "fail.this", "{\"k\":1}"));
     ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 2);
     uint32_t id, ok;
@@ -327,7 +345,7 @@ TEST(arguments_travel_and_failure_is_ok_zero) {
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
     ASSERT_EQ_INT(id, 1);
     ASSERT_EQ_INT(ok, 1);
-    ASSERT_TRUE(strcmp(json, "{\"path\":\"storage.list_dir\",\"args\":[\"/opfs\"]}") == 0);
+    ASSERT_TRUE(strcmp(json, "{\"path\":\"files.list_dir\",\"args\":[\"/opfs\"]}") == 0);
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
     ASSERT_EQ_INT(id, 2);
     ASSERT_EQ_INT(ok, 0);

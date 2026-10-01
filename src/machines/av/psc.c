@@ -695,8 +695,7 @@ static const irq_controller_ops_t psc_irq_ops = {
 
 // The raw L3-L6 file, unmasked, so `level_ier` and `levels` together say
 // whether a source is quiet or merely masked.
-static value_t psc_attr_level_pending(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(psc_attr_level_pending) {
     const av_psc_t *psc = (const av_psc_t *)object_data(self);
     value_t *items = (value_t *)calloc(4, sizeof(value_t));
     if (!items)
@@ -709,8 +708,7 @@ static value_t psc_attr_level_pending(struct object *self, const member_t *m) {
     return val_list(items, 4);
 }
 
-static value_t psc_attr_level_ier(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(psc_attr_level_ier) {
     const av_psc_t *psc = (const av_psc_t *)object_data(self);
     value_t *items = (value_t *)calloc(4, sizeof(value_t));
     if (!items)
@@ -723,8 +721,7 @@ static value_t psc_attr_level_ier(struct object *self, const member_t *m) {
     return val_list(items, 4);
 }
 
-static value_t psc_attr_sint_active(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(psc_attr_sint_active) {
     value_t v = val_uint(1, ((const av_psc_t *)object_data(self))->sint_active);
     v.flags |= VAL_HEX;
     return v;
@@ -735,22 +732,20 @@ static const member_t psc_members[] = {
                                          .kind = M_ATTR,
                                          .name = "level_pending",
                                          .doc = "L3-L6 source registers, unmasked, index 0 = L3",
-                                         .flags = VAL_RO,
                                          .attr = {.type = V_LIST, .presentation_flags = VAL_VOLATILE, .get = psc_attr_level_pending, .set = NULL}        },
     {.kind = M_ATTR,
                                          .name = "level_ier",
                                          .doc = "L3-L6 enable registers, index 0 = L3",
-                                         .flags = VAL_RO,
                                          .attr = {.type = V_LIST, .get = psc_attr_level_ier, .set = NULL}                                                },
     {.kind = M_ATTR,
                                          .name = "sint_active",
                                          .doc = "SInt slot sources currently asserting (aggregated onto VIA2 CA1)",
-                                         .flags = VAL_RO,
                                          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = psc_attr_sint_active, .set = NULL}},
 };
 
 static const class_desc_t psc_class = {
     .name = "irq_controller",
+    .doc = "PSC, the Quadra AV DMA and interrupt controller: interrupt state",
     .members = psc_members,
     .n_members = sizeof(psc_members) / sizeof(psc_members[0]),
 };

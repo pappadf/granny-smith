@@ -19,14 +19,15 @@ mkdir -p "$EXTRACT" "$OUT" "$SNAP"
 # Pull the resource fork out of the HFS image once.
 GS_STORAGE_CACHE="$STORAGE_CACHE" "$HEADLESS_BIN" \
     rom="$ROM_PATH" \
-    --no-prompt --script-stdin --speed=max <<EOF
-storage.probe $IMG
-storage.cp "$FINDER/rsrc/_raw" "$EXTRACT/rsrc"
-storage.unmount $IMG
+    --no-prompt --script-stdin --speed=turbo <<EOF
+files.probe $IMG
+files.cp "$FINDER/rsrc/_raw" "$EXTRACT/rsrc"
+let n = files.mounts.find("$IMG")
+files.mounts[\$n].unmount
 quit
 EOF
 
-[ -f "$EXTRACT/rsrc" ] || { echo "FAIL: storage.cp did not produce $EXTRACT/rsrc"; exit 1; }
+[ -f "$EXTRACT/rsrc" ] || { echo "FAIL: files.cp did not produce $EXTRACT/rsrc"; exit 1; }
 
 # Disassemble CODE 0 (jump table) and CODE 1 (first segment) using the
 # standalone dump tool.

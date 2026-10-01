@@ -165,7 +165,7 @@ else
         --var TEST_DATA="$TEST_DATA" \
         --var EXTRA_MEDIA="$EXTRA_MEDIA" \
         $VAR_ARGS \
-        --speed=max || rc=$?
+        --speed=turbo || rc=$?
     check_rc "${rc:-0}"
 fi
 

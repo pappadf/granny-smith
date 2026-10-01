@@ -19,6 +19,7 @@
 
 #include "vfs.h"
 
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -63,5 +64,29 @@ char *image_vfs_materialize_nested(image_mount_t *m, const char *in_image_file_p
 typedef void (*image_vfs_list_cb)(const char *host_path, const char *format_name, uint32_t n_partitions,
                                   uint32_t refcount, bool busy, void *user);
 void image_vfs_list(image_vfs_list_cb cb, void *user);
+
+// Every mount gets a serial number when it is created: a counter that never
+// repeats, even though mount slots are reused.  files.mounts[n] is indexed
+// by it.
+//
+// Snapshot of one mount, copied out under the table lock.
+typedef struct {
+    int serial;
+    char path[PATH_MAX]; // canonical absolute host path
+    const char *format; // "APM", "HFS", "UFS" or "raw" (static string)
+    uint32_t partitions;
+    uint32_t refcount; // open handles
+    bool unmounting; // unmount requested while handles were live
+    bool busy; // refusing service: unmounting, or the file is attached writable
+} image_vfs_mount_info_t;
+
+// The smallest live serial greater than `prev` (-1 to start), or -1.
+int image_vfs_next_serial(int prev);
+
+// Fill *out for the mount with `serial`; false when there is none.
+bool image_vfs_mount_info(int serial, image_vfs_mount_info_t *out);
+
+// Serial of the mount caching `host_path` (relative or canonical), or -1.
+int image_vfs_serial_for_path(const char *host_path);
 
 #endif // IMAGE_VFS_H

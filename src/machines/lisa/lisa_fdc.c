@@ -289,7 +289,7 @@ static void fdc_command(lisa_fdc_t *fdc, uint8_t cmd) {
         fdc->ram[FDC_CMDREG] = 0; // accept unknown command issues
         break;
     }
-    // Floppy command trace (enable: `debug.log "floppy" 1`).  One line per
+    // Floppy command trace (enable: `log.set "floppy" 1`).  One line per
     // command issued, with the resulting status, whether media is present, and
     // the guest PC — so a ROM-vs-OS floppy access can be told apart on a real
     // boot.  $81=EXEC(RWTS) $83=SEEK $84=JSR $85=CLRSTAT $86=ENBLDRV $87=COLDWAIT.
@@ -313,7 +313,7 @@ static uint8_t fdc_read_byte(lisa_fdc_t *fdc, uint32_t off) {
     if (off & 1) {
         uint32_t idx = off >> 1;
         uint8_t v = idx < FDC_RAM_BYTES ? fdc->ram[idx] : 0xFF;
-        // Trace the disk-presence reads (enable: `debug.log "floppy" 1`): the OS
+        // Trace the disk-presence reads (enable: `log.set "floppy" 1`): the OS
         // Sony driver polls DISKIN ($41) for "media present" and reads DRVSTAT
         // ($5F) as the interrupt source.  Seeing whether/when these are read,
         // and their value, tells us how the OS decides a disk is in the drive.

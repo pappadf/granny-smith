@@ -23,6 +23,13 @@ The ADB transceiver IC (Apple part 342S0440-B) is a mask-programmed **PIC16CR54*
 microcontroller. Its firmware has been extracted via die imaging by the
 reverse-engineering community.
 
+This two-chip arrangement is the design of the SE/30/IIx/IIcx generation — the
+SE/30's wiring is given in [se30.md](../machines/glue/se30.md) §"ADB Subsystem
+Wiring". Later machines folded the transceiver into a single system-management
+microcontroller with its own CPU-visible interface: Egret on the MDU-family
+machines ([egret.md](../machines/mdu/egret.md) §1) and Cuda on the AV machines
+and later ([cuda.md](../machines/av/cuda.md) §1).
+
 ### Architecture Diagram
 
 ```
@@ -329,6 +336,9 @@ Talk R0 polling every ~11 ms while idle.
 
 ## Keyboard
 
+The keyboard's key matrix, key codes and Register 2 semantics are covered in
+[keyboard.md](keyboard.md).
+
 ### Register 0 (Talk R0) — 2 Bytes
 
 | Byte | Bit 7 | Bits 6-0 |
@@ -445,6 +455,9 @@ tests: Copland's boot blocks pick between the NuKernel loader and an ordinary bo
 - Extended Keyboard: `$02` default, `$03` enables separate right-hand modifier codes
 
 ## Mouse
+
+The mouse device model and its handler IDs are covered in
+[mouse.md](mouse.md).
 
 ### Register 0 (Talk R0) — 2 Bytes
 
@@ -827,17 +840,20 @@ The ADB controller is driven primarily by the port B output callback:
 
 ### Port B Change Filtering
 
-The machine layer (`se30.c`) must only call `adb_port_b_output` when the ST
-bits (bits 5:4) actually change. The ROM frequently writes port B to update
-other bits (sound volume, overlay control) without changing ST. Calling the ADB
-handler for these writes would cause spurious command decodes.
+The machine layer (`se30.c`) forwards **every** VIA1 port B write to
+`adb_port_b_output`; the ST-transition filter lives in `adb.c`, which compares
+each write against its `last_port_b` shadow and ignores writes whose PB5:PB4 do
+not change. The ROM frequently writes port B to update other bits (sound
+volume, overlay control, the RTC's bit-banged serial lines) without changing
+ST, and treating those writes as ADB events would cause spurious command
+decodes.
 
 ### Deferred Events
 
 | Event | Delay | Purpose |
 |-------|-------|---------|
-| `adb_shift_complete_deferred` | `ADB_SHIFT_DELAY` (~3 ms) | Fires IFR_SR after command byte shift-out completes. Simulates the real ADB bus timing. |
-| `adb_deliver_next_byte_deferred` | `ADB_BYTE_DELAY` (~1.6 ms) | Delivers the next reply byte to VIA SR. Ensures the ROM ISR has time to finish before the next IFR_SR fires. |
+| `adb_shift_complete_deferred` | `ADB_SHIFT_DELAY` (~800 us) | Fires IFR_SR after command byte shift-out completes. Simulates the real ADB bus timing. |
+| `adb_deliver_next_byte_deferred` | `ADB_BYTE_DELAY` (~2.64 ms) | Delivers the next reply byte to VIA SR. Ensures the ROM ISR has time to finish before the next IFR_SR fires. |
 | `adb_autopoll_deferred` | `ADB_AUTOPOLL_INTERVAL` (~11 ms) | Emulates the transceiver's idle-state auto-poll. Prepares a Talk R0 reply and fires IFR_SR to wake the ROM when a device has pending data. Reschedules silently when no data is pending. |
 
 ### dummy_sent Guard

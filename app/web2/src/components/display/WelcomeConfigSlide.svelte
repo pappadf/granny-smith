@@ -63,7 +63,7 @@
   let allVroms = $state<VromEntry[]>([]);
   // PCI expansion ROMs in OPFS, likewise.
   let allProms = $state<PromEntry[]>([]);
-  // model id -> profile, populated lazily via gsEval('machine.profile').
+  // model id -> profile, populated lazily via gsEval('catalog.profile').
   let profiles = $state<Record<string, MachineProfile>>({});
   // model id -> the distinct ROMs (by content id) that boot this model.  Two
   // files of one ROM are one choice: the first file found stands for it.
@@ -109,7 +109,7 @@
   // --- Video card selection (card-driven; the vROM is auto-resolved). ------
   // The dialog speaks in *cards* (Apple Macintosh Display Card 24AC), not vROM
   // filenames. The available cards + their requires_vrom / monitors come from
-  // machine.profile (the core owns this); each uploaded vROM is probed to the
+  // catalog.profile (the core owns this); each uploaded vROM is probed to the
   // card it provides (vrom.identify → card_id), so we only offer cards whose
   // vROM is actually present, and set machine.nubus.video_card at boot.
 
@@ -422,7 +422,7 @@
       allRoms = identified;
 
       // Identify every VROM to the card it provides (drop unrecognised). The
-      // card picker is then built from machine.profile filtered to these.
+      // card picker is then built from catalog.profile filtered to these.
       allVroms = (
         await Promise.all(vroms.map((v) => identifyCardRom(gsEval, 'vrom', v.path)))
       ).filter((e): e is VromEntry => e !== null);

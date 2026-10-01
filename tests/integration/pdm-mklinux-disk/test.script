@@ -137,8 +137,8 @@ def pdisk_line(text, steady) {
 def phase1_boot() {
     # HD160SC = Quantum ELS170S, 177,269,760 bytes: the smallest catalog
     # mechanism that fits 40 MB of Mac OS, 96 MB of root and 16 MB of swap.
-    assert storage.hd_create($target, "HD160SC") "hd_create HD160SC failed"
-    assert storage.path_size($target) == 177269760 "HD160SC wrong image size"
+    assert files.hd_create($target, "HD160SC") "hd_create HD160SC failed"
+    assert files.path_size($target) == 177269760 "HD160SC wrong image size"
 
     # Clock set AFTER boot (machine.boot reseeds the RTC from the host wall
     # clock, discarding a pre-boot value).  The three MkLinux phases use
@@ -159,7 +159,7 @@ def phase1_boot() {
     # system.c reads a DDM only when the 'ER' signature is there.
     assert machine.scsi.device[3].block_size == 2048 "SCSI 3 block_size ${machine.scsi.device[3].block_size}, want 2048 (the DDM-less CD default)"
     # The target is RAW.  Phase 2 starts from a blank disk.
-    assert try(storage.partmap($target), none) == none "the target drive already carries a partition map"
+    assert try(files.partmap($target), none) == none "the target drive already carries a partition map"
 
     # suite-pdm's boot_pdm_75() recipe: chip init and bus scan (no spin-up
     # wait: the machine's PRAM disables it), then boot blocks, CFM init, the
@@ -394,8 +394,8 @@ def phase6_publish() {
     machine.scsi.device[1].image.export "${$WORK_DIR}/mklinux-single-macos.img"
 
     # The map both tools built between them.
-    storage.partmap "${$WORK_DIR}/mklinux-single-macos.img"
-    let parts = vfs.list("${$WORK_DIR}/mklinux-single-macos.img")
+    files.partmap "${$WORK_DIR}/mklinux-single-macos.img"
+    let parts = files.list("${$WORK_DIR}/mklinux-single-macos.img")
     assert len($parts) == 8 "the drive has ${len($parts)} partitions, want 8 (map + 2 drivers + patches + HFS + root + swap + free)"
 
     # Partition 5 is the Mac OS volume, and it carries a blessed System Folder
@@ -403,9 +403,9 @@ def phase6_publish() {
     # and size rather than by a count, so an unrelated System Folder change
     # does not fail the row and a truncated copy does.
     let sysf = "${$WORK_DIR}/mklinux-single-macos.img/partition5/System Folder"
-    let ext = vfs.list("${$sysf}/Extensions")
-    let cps = vfs.list("${$sysf}/Control Panels")
-    let prefs = vfs.list("${$sysf}/Preferences")
+    let ext = files.list("${$sysf}/Extensions")
+    let cps = files.list("${$sysf}/Control Panels")
+    let prefs = files.list("${$sysf}/Preferences")
     assert file_sized($ext, "MkLinux Booter", 23152) "Extensions is missing MkLinux Booter (23,152 bytes)"
     assert file_sized($ext, "Mach Kernel", 1286036) "Extensions is missing Mach Kernel (1,286,036 bytes)"
     assert file_sized($cps, "MkLinux", 13595) "Control Panels is missing the MkLinux control panel (13,595 bytes)"
@@ -415,12 +415,12 @@ def phase6_publish() {
     # Hand-off: the install test cannot read another test's WORK_DIR — the
     # harness wipes it — so the drive is published next to the rest of the
     # MkLinux media.
-    storage.cp "${$WORK_DIR}/mklinux-single-macos.img" "${$mkl_root}/media/mklinux_single_macos_169mb.img"
-    assert storage.path_exists("${$mkl_root}/media/mklinux_single_macos_169mb.img") "the drive was not published to media/"
+    files.cp "${$WORK_DIR}/mklinux-single-macos.img" "${$mkl_root}/media/mklinux_single_macos_169mb.img"
+    assert files.path_exists("${$mkl_root}/media/mklinux_single_macos_169mb.img") "the drive was not published to media/"
 }
 
 # True when `listing` holds a file named `name` of exactly `size` bytes.
-# vfs.list returns a list of maps; a plain membership test would pass on a
+# files.list returns a list of maps; a plain membership test would pass on a
 # half-copied file, and a half-copied `Mach Kernel` is exactly the failure the
 # phase-4 settles exist to prevent.
 def file_sized(listing, name, size) {

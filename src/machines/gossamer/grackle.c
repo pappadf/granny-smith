@@ -596,7 +596,7 @@ static value_t grk_method_config(struct object *self, const member_t *m, int arg
 
 #define GRK_RO_ATTR(NAME, DOC)                                                                                         \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = #NAME, .doc = DOC, .flags = VAL_RO, .attr = {                                          \
+        .kind = M_ATTR, .name = #NAME, .doc = DOC, .attr = {                                                           \
             .type = V_UINT,                                                                                            \
             .presentation_flags = VAL_HEX,                                                                             \
             .get = grk_attr_##NAME,                                                                                    \

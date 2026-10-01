@@ -23,7 +23,7 @@
 // Hardware", 2nd ed., and Apple, "Power Macintosh Computers" Developer
 // Note (1994), Table 3-7.  What the ROM's .Sony driver expects of the chip
 // was established by tracing the shipping driver's own register accesses
-// on this emulator (`debug.log swim3 5`), not from its source.
+// on this emulator (`log.set swim3 5`), not from its source.
 
 #include "swim3.h"
 
@@ -32,10 +32,10 @@
 #include "scheduler.h"
 
 // One log category for the whole subsystem -- drive mechanics AND every
-// controller.  `debug.log swim 10` on an SE/30 used to turn on the ISM register
+// controller.  `log.set swim 10` on an SE/30 used to turn on the ISM register
 // trace but NOT stepping, motor, /TKO, /TACH, GCR encode/flush or eject,
 // because those live in floppy.c under a different name; the same split hid the
-// DBDMA ring from `debug.log swim3 10` on a 7500.  Level convention: 1-2 state
+// DBDMA ring from `log.set swim3 10` on a 7500.  Level convention: 1-2 state
 // changes, 3-5 per-operation, 6+ per-register/per-byte.
 LOG_USE_CATEGORY_NAME("floppy");
 

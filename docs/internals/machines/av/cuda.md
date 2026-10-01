@@ -4,7 +4,8 @@ Cuda (Apple 341S0788, firmware 2.37) is Egret's successor: a 68HC05 owning
 ADB, PRAM, the real-time clock, the one-second tick, power control and the
 I²C bus to the video-in chips. The AV Quadras are the first Macs to carry it.
 Implementation: [src/machines/av/cuda.c](../../../../src/machines/av/cuda.c) /
-[cuda.h](../../../../src/machines/av/cuda.h).
+[cuda.h](../../../../src/machines/av/cuda.h). Hardware reference:
+[cuda.md](../../../reference/machines/av/cuda.md), cited by section below.
 
 ## Behavioral, not a core — and why that is a stronger position here
 
@@ -22,6 +23,9 @@ Egret stays where it is, since it already crosses family lines.
 
 ## Transport
 
+(Reference: [cuda.md](../../../reference/machines/av/cuda.md) §2.3 for the
+port-B bit map, §3.2 for the line states.)
+
 VIA1's shift register (Cuda is the external shift clock) plus three port-B
 pins:
 
@@ -36,6 +40,9 @@ pulse, TIP is active-low where `sysSes` was active-high, and Cuda runs a
 **sync cycle** at init that Egret has no analogue for.
 
 ## The three flows
+
+(Reference: [cuda.md](../../../reference/machines/av/cuda.md) §3.3–§3.5 for
+the three flows, §3.6 for the packet formats.)
 
 **Host → Cuda (command packet).** The host puts the SR in output mode, writes
 the first byte, then asserts TIP. Each further byte is written to the SR and
@@ -57,6 +64,9 @@ model disables them here.
 
 ### The delay is load-bearing
 
+(Reference: [cuda.md](../../../reference/machines/av/cuda.md) §3.5 and §5 —
+the idle acknowledge is a real byte that must arrive late.)
+
 Cuda's idle acknowledge arrives ~25 µs after TREQ negates, and the host
 *clears the SR interrupt first*. Pushing the byte synchronously means the host
 consumes it before it is looking, `CudaInit` never sees its acknowledge, and
@@ -71,6 +81,9 @@ idle acknowledge and moves straight on. Any new bus activity — a shift-out, or
 starting a fresh response — therefore cancels whatever push is pending.
 
 ## Command surface
+
+(Reference: [cuda.md](../../../reference/machines/av/cuda.md) §3.6 for the
+packet formats, §3.7 for the pseudo-command set, §2.5 for the PRAM.)
 
 Response packets are `[attn][pktType][flags][cmd]` then data; error packets
 are the 5-byte `[attn][errorPkt][code][pktType][cmd]` (the host reads the
@@ -100,6 +113,8 @@ and range-checks the page.
 
 ## Interrupt masking
 
+(Reference: [cuda.md](../../../reference/machines/av/cuda.md) §4.6.)
+
 Cuda transactions mask only to **IPL 3**, not 7 (`CudaMgr.a <LW5>`, Radar
 #1059613). A model that assumes atomicity at IPL 7 starves the DMA, DSP and
 MIDI interrupts that live above it. Nothing in the emulator masks on Cuda's
@@ -107,6 +122,8 @@ behalf, so this is satisfied by construction — recorded here because it is the
 kind of thing a future "optimization" would break.
 
 ## The I²C bus — pseudo-command `$22`
+
+(Reference: [cuda.md](../../../reference/machines/av/cuda.md) §3.10.)
 
 `$22` (`RdWrIIC`) is the only route to the video-in chips. The wire format is
 `OS/CudaMgr.a`'s: the first parameter byte is the I²C slave address and its

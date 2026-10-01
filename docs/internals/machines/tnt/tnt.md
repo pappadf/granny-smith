@@ -22,6 +22,11 @@ Motorola, MPC604UM/AD; the shipping ROM itself (its Open Firmware device
 tree, 68k DecoderInfo tables and ConfigInfo page are the primary
 behavioral oracle), cross-checked against the OS driver corpus for these
 exact machines (Linux powermac, NetBSD macppc, OSF/Apple MkLinux DR3).
+Hardware reference: [tnt.md](../../../reference/machines/tnt/tnt.md)
+(family), [pm7500.md](../../../reference/machines/tnt/pm7500.md) /
+[pm8500.md](../../../reference/machines/tnt/pm8500.md) /
+[pm9500.md](../../../reference/machines/tnt/pm9500.md) (machines) and the
+device pages they link, cited by section below.
 
 ## Board model
 
@@ -33,8 +38,12 @@ The board model is the chipset skeleton plus the DMA architecture:
   one non-LE block).  Attested specials: the `$3001xxxx` part identifier
   POST gates on, the uniprocessor ArbConfig/WhoAmI/IntReg values, and the
   no-L2 presentation that makes POST skip its cache test.  The DRAM bank
-  registers are unattested; every access is logged so
-  the model can be fitted to what Open Firmware actually does.
+  base registers (`+$1C0..+$4F0`, 26 banks) are modelled — fitted to
+  POST's probe and pair-merging pass (the ANS diagnostic rows held the
+  fit); everything else is store-and-readback, with every access logged.
+  (Reference: [hammerhead.md](../../../reference/machines/tnt/hammerhead.md)
+  §2.1 for the register window, §2.2–§2.8 for the specials, §2.10 for the
+  bank base file.)
 - **Bandit x2 + Chaos** (`bandit.c`) — the AR-to-PCI host bridges
   (`$F2000000`, `$F4000000` on two-bridge boards) and the display-bus
   variant (`$F0000000`).  This file is the family's **PCI bridge
@@ -106,7 +115,10 @@ The board model is the chipset skeleton plus the DMA architecture:
   it claimed it — because an OS derives the bridge's ranges from `$48` and
   the register must describe what the model actually decodes.  When Chaos
   leaves `pm9500` for good the condition collapses to "Bandit 2 always
-  claims it" with no other change.
+  claims it" with no other change.  (Reference:
+  [bandit.md](../../../reference/machines/tnt/bandit.md) §2.2–§2.3 for
+  the config ports, §2.5–§2.6 for the address/mode-select registers, §3.4
+  for the windows, §3.10 for Chaos.)
 - **Grand Central** (`grand_central.c`) — the I/O controller: a 128 KB
   little-endian island at `$F3000000` (Bandit 1's pass-through MEMORY
   window — *not* its I/O window, which is at the bridge base).  The model populates the interrupt block (`+$20..$2C`), the
@@ -117,8 +129,13 @@ The board model is the chipset skeleton plus the DMA architecture:
   DBDMA channel windows (`+$8000+n*$100`).  It also carries AWACS
   (`+$14000`) and the RaDACal RAMDAC (`+$1B000`, control.c); the SWIM3
   aperture (`+$15000`, swim3.c) is the shared floppy controller on DBDMA
-  channel 1; SCSI and MACE apertures log and read open bus until they are
-  modelled.
+  channel 1; the internal MESH SCSI (`+$18000`, `scsi_mesh.c`, absent on
+  the Network Servers) and the external 53C94 chain (`+$10000`) are
+  modelled, and the MACE aperture (`+$11000`) logs and reads open bus
+  until it is.  (Reference:
+  [grand-central.md](../../../reference/machines/tnt/grand-central.md)
+  §2.1 for the window and its decode law, §2.2 for the interrupt block,
+  §2.5 for the device apertures.)
 - **DBDMA** (`dbdma.c`) — the descriptor-based DMA engine: one
   implementation, eleven channels (channel *n* raises Grand Central
   interrupt *n*), each a little-endian register file (`channelControl`
@@ -144,7 +161,9 @@ The board model is the chipset skeleton plus the DMA architecture:
   polls for completion, so a stalling channel would hang the boot in
   firmware.  A channel's interrupt command asserts a LEVEL on Grand
   Central source n that the host's Clear write acknowledges (see "The
-  interrupt fabric").
+  interrupt fabric").  (Reference:
+  [dbdma.md](../../../reference/machines/tnt/dbdma.md) §2 for the channel
+  register file, §3 for the command set and status transitions.)
 - **Cuda / VIA1** — the third instantiation of the shared behavioral Cuda
   (machines/av/cuda.c, firmware 2.37) on one real 6522 behind the island
   decode.  TNT-driven additions to the shared model: the polled no-TIP
@@ -207,6 +226,10 @@ The board model is the chipset skeleton plus the DMA architecture:
 
 ### The interrupt fabric
 
+(Reference: [grand-central.md](../../../reference/machines/tnt/grand-central.md)
+§2.2 for the interrupt block; [tnt.md](../../../reference/machines/tnt/tnt.md)
+§5.1 for the collector and its external numbering.)
+
 Four little-endian registers at `+$20` Events (edge-latched) / `+$24`
 Mask / `+$28` Clear / `+$2C` Levels (live), with **two clear modes**
 selected by Clear-write bit 31 (`ifMode1Clear`):
@@ -256,8 +279,16 @@ level too.
 
 ### PCI slot topology
 
+(Reference: [tnt.md](../../../reference/machines/tnt/tnt.md) §5.1 for the
+interrupt numbering; [bandit.md](../../../reference/machines/tnt/bandit.md)
+§3.2 for the IDSEL map, §3.9 for the slot lines; the per-machine socket
+lists in
+[pm7500.md](../../../reference/machines/tnt/pm7500.md) §4,
+[pm8500.md](../../../reference/machines/tnt/pm8500.md) §4 and
+[pm9500.md](../../../reference/machines/tnt/pm9500.md) §4.)
+
 Each model declares a `pci_slot_decl_t` table (`pm7500.c` and friends)
-that the profile encoder and `pci_init` share, so `machine.profile`'s
+that the profile encoder and `pci_init` share, so `catalog.profile`'s
 `pci_slots` block and the runtime cannot drift.  Sockets are PCI devices
 **13/14/15** on their bridge's bus — the ROM's own `slot-names` bitmask
 (`$0000E000`) on the bandit node, corroborated by Apple's Network Server
@@ -288,7 +319,9 @@ Which cards fit a socket is not declared here: it is computed from the
 card registry (`pci_card_fits_socket`).  Control is a registered kind
 with BUILTIN attachment, so it can never be offered on a socket, and the
 9500's `VCI` builtin entry carries forward the documented no-onboard-video
-deviation until a real PCI display card retires it.
+deviation — it materialises only when no socket supplied a display card,
+and a seated real PCI display card (the Mach64 GX of `suite-tnt`'s
+`pm9500-76-mach64` row) boots the machine instead.
 
 ### Endianness
 
@@ -299,6 +332,9 @@ Byte-wide cells on `$10`/`$200` centres need no swapping and are
 byte-access only.
 
 ## Memory model
+
+(Reference: [tnt.md](../../../reference/machines/tnt/tnt.md) §3.1 for the
+physical map, §3.3 for the PCI memory spaces, §3.4 for the ROM decode.)
 
 ```
 $00000000-RAM top   DRAM -- wherever the Hammerhead bank base registers
@@ -336,14 +372,19 @@ live in ROM at `$FFE00090` — through the AWACS datapath against a
 sample-exact golden WAV, the interrupt fabric's mode-1 discipline
 visible in the registers, and the ROM's native control driver painting
 the 640x480 gray desktop into the Control VRAM aperture against a
-screen golden).  The run parks hunting for boot media (no SCSI data
-path yet — the floppy path came later, see "The floppy" below).  The interrupt-fabric and engine semantics
+screen golden).  The run parks hunting for boot media (the MESH disk
+path and the floppy both came later — see "The floppy" below and
+`suite-tnt`'s disk-boot rows).  The interrupt-fabric and engine semantics
 are additionally unit-pinned in `tests/unit/suites/tnt_gc` (the MkLinux
 initialisation sequence and events-driven acknowledge, the NanoKernel's
 `$80000000` mode-1 latch semantics, NVRAM banking, BoxID, island DBDMA
 routing) and `tests/unit/suites/dbdma` (the engine in isolation).
 
 ### Machine identity (solved — both halves)
+
+(Reference: [hammerhead.md](../../../reference/machines/tnt/hammerhead.md)
+§4.3 for the dispatch, [tnt.md](../../../reference/machines/tnt/tnt.md)
+§2.6 for the identity values and the `compatible` strings.)
 
 The shipping ROM identifies the machine TWICE, and neither half is the
 community's "BoxID bits 11-12" reading:
@@ -542,7 +583,7 @@ The machine has **three** SCSI buses: two fast/wide 53C825A channels and the
 narrow 53C94 external chain the Macintosh boards already had. The 53C8xx is
 a genuinely new device class for this repository — it executes an
 instruction set out of host memory rather than being register-driven — and
-it has its own document: **docs/internals/core/peripherals/scripts53c8xx.md**, which
+it has its own document: **docs/internals/core/peripherals/pci/cards/scripts53c8xx.md**, which
 also records the two board facts the ROM gave up (`GPIO0` is a presence
 strap; the chip is strapped **little**-endian, not big).
 
@@ -763,7 +804,7 @@ boots twice.
 
 | Row | Tier | What it holds |
 |---|---|---|
-| `ans-rom-ladder` | unit | POST reaching the LCD, sizing memory, the CPU/bus and L2 banners, both keyswitch defaults, the active-low environmental register, and the absence of every published failure string whose device we model — on both profiles |
+| `ans-rom-ladder` | matrix | POST reaching the LCD, sizing memory, the CPU/bus and L2 banners, both keyswitch defaults, the active-low environmental register, and the absence of every published failure string whose device we model — on both profiles |
 | `ans-pci-slots` | unit | six sockets and three builtins, IDSELs, the rewired interrupt map, the raw config-cycle identities including the `$14` Revision ID that gates machine identity |
 | `ans-device-tree` | matrix | `dev / ls`, node properties and device aliases against Apple's published Listing 6-1, driven over the serial console |
 | `ans-scsi` | matrix | the SCRIPTS engine, through Open Firmware's own `probe-scsi1` and `probe-scsi2`, on both fast/wide channels |
@@ -771,6 +812,7 @@ boots twice.
 | `suite-ans` `ans500-proto20-macos` | matrix | the 2.0 prototype ROM booting Mac OS to the desktop on the same hardware model — two unrelated software stacks, one model |
 | `suite-ans` `ans500-diag-floppy` | matrix, fixture-gated | the Diagnostic Utility booted from the internal floppy in Service position, driven from the ADB keyboard through its complete system test |
 | `ans-aix-boot` | extended, fixture-gated | the documented Service-keyswitch install path, up to `bootapple` launching off the AIX 4.1.5 Install CD |
+| `ans-aix-installed-boot` | extended, gs-test-data | an installed AIX 4.1.5 disk (gs-test-data `systems/aix_4_1_5_lp240s_234mb.img`) cold-booted through Open Firmware's default `disk2:aix` to the login prompt on the graphics console, then a root logon from the ADB keyboard |
 | `ans-nt-install` | extended, fixture-gated | Windows NT 4.0 PowerPC installed end to end on the 2.26NT ROM from the [powermac-nt-hal](https://github.com/pappadf/powermac-nt-hal) boot floppy — `setup.of`, `boot.of`, text-mode Setup, NT's restart through Cuda, `bootdisk.of`, GUI Setup — to the installed system's logon screen (rungs N1-N12; without a `product-id.txt` fixture it stops at GUI Setup's Registration page, N10). `NT_EXPORT=<path>` keeps the installed disk |
 | `ans-nt-installed-boot` | extended, gs-test-data | the disk `ans-nt-install` produces (gs-test-data `systems/winnt_4_0_ppc_ans_512mb.img`), cold-booted on the 2.26NT ROM through the boot floppy's `setup.of` and `bootdisk.of` to the logon screen, then Ctrl+Alt+Del and a logon as Administrator from the ADB keyboard to the desktop (rungs B1-B5). Needs gs-test-data 9b20396 or later and skips before it |
 

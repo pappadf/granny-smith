@@ -59,11 +59,10 @@ with the 20-byte command set.
 3. Inside Macintosh - Operating System Utilities (1994) chapter 7
 4. A/UX Toolbox: Macintosh ROM Interface
 5. RTC/PRAM mechanism in Linux m68k kernel (arch/m68k/mac/misc.c)
-6. MAME, Mini vMac, and PCE emulator source code
-7. ATtiny85 replacement projects: MacRTC.c (Andrew Makousky),
+6. ATtiny85 replacement projects: MacRTC.c (Andrew Makousky),
    attinyrtc / attinyrtcmodule (Phil Greenland)
-8. Open-source KiCad SE/30 motherboard schematic reproduction
-9. Logic analyzer captures at quantulum.co.uk
+7. Open-source KiCad SE/30 motherboard schematic reproduction
+8. Logic analyzer captures at quantulum.co.uk
 
 ## Hardware Interface
 
@@ -173,11 +172,11 @@ The command byte format is:
 
 ```
 Bit:  7      6    5    4    3    2    1    0
-    [R/W]  [A4] [A3] [A2] [A1] [A0] [ 1] [ 0]
+    [R/W]  [A4] [A3] [A2] [A1] [A0] [ 0] [ 1]
 ```
 
 **Bit 7** selects read (1) or write (0). **Bits 6–2** form a 5-bit register
-address (0x00–0x1F). **Bits 1–0** are always fixed as binary `10`.
+address (0x00–0x1F). **Bits 1–0** are always fixed as binary `01`.
 
 **Command pattern matching:**
 
@@ -201,11 +200,11 @@ command followed by an 8-bit data byte:
 The two command bytes encode the full 8-bit XPRAM address:
 
 ```
-First byte:   [R/W] [0] [0] [1] [1] [A7] [A6] [A5]
+First byte:   [R/W] [0] [1] [1] [1] [A7] [A6] [A5]
 Second byte:  [ x ] [A4][A3][A2][A1][A0] [ x ] [ x ]
 ```
 
-Bits 6–3 of the first byte are fixed as `0011`, which the chip recognizes as
+Bits 6–3 of the first byte are fixed as `0111`, which the chip recognizes as
 the extended command prefix (this corresponds to address 0x0E or 0x0F in the
 regular 5-bit address space). The **upper 3 bits** (A7–A5) of the XPRAM address
 occupy bits 2–0 of the first byte. The **lower 5 bits** (A4–A0) occupy bits 6–2
@@ -230,13 +229,13 @@ the extended ones reach the same array through the same latch.
 **Disable Write Protection (required before writing):**
 
 ```
-Command: 0x35 0x55  (two-byte extended command)
+Command: 0x35 0x55  (standard write to register 0x0D; data byte bit 7 = 0)
 ```
 
 **Enable Write Protection (after writing):**
 
 ```
-Command: 0x35 0xD5  (two-byte extended command)
+Command: 0x35 0xD5  (standard write to register 0x0D; data byte bit 7 = 1)
 ```
 
 **Clear Test Mode (initialization):**
@@ -256,11 +255,15 @@ address, contains four functional regions:
 | --------- | --------------------------------- | ------------------------------------- |
 | 0x00–0x03 | **Seconds counter** (32-bit)      | Byte 0 = LSB, seconds since Jan 1 1904|
 | 0x04–0x07 | Seconds counter (mirror)          | Same 32-bit counter, may be read-only |
-| 0x08–0x0B | PRAM group 1 (4 bytes)            | "Low" traditional PRAM                |
+| 0x08–0x0B | PRAM group 1 (4 bytes)            | Holds logical SysParam $10–$13 (`z010aa01` commands) |
 | 0x0C      | Test register                     | Factory use only (write-only)         |
 | 0x0D      | **Write-protect register**        | Bit 7: 1 = protected, 0 = writes OK  |
 | 0x0E–0x0F | Extended command prefix           | Triggers XPRAM addressing             |
-| 0x10–0x1F | PRAM group 2 (16 bytes)           | "High" traditional PRAM               |
+| 0x10–0x1F | PRAM group 2 (16 bytes)           | Holds logical SysParam $00–$0F (`z1aaaa01` commands) |
+
+The group-to-physical mapping above is the extended chip's; the two legacy
+command groups' addresses per chip variant are tabulated in
+[mac-pram.md](../formats/mac-pram.md) §2.
 
 ### Time Registers
 
@@ -316,20 +319,24 @@ boot as the `SysParmType` record.
 
 | Address | Size | Use         | Description                                             |
 | ------- | ---- | ----------- | ------------------------------------------------------- |
-| 0x00    | 1    | SPValid     | Validity status/checksum                                |
+| 0x00    | 1    | SPValid     | Validity byte (must read $A8)                          |
 | 0x01    | 1    | SPATalkA    | AppleTalk node ID hint for modem port (SCC Port A)      |
 | 0x02    | 1    | SPATalkB    | AppleTalk node ID hint for printer port (SCC Port B)    |
 | 0x03    | 1    | SPConfig    | Serial port configuration bits                          |
 | 0x04    | 2    | SPPortA     | SCC modem port configuration (word)                     |
 | 0x06    | 2    | SPPortB     | SCC printer port configuration (word)                   |
-| 0x08    | 1    | SPVolCtl    | Speaker volume & click sound state                      |
-| 0x09    | 1    |             | Reserved                                                |
-| 0x0A    | 2    | SPClikCaret | Caret blink time, double-click time (2 four-bit values) |
-| 0x0C    | 1    |             | Menu blink count, boot drive hint                       |
-| 0x0D    | 1    | SPMisc2     | Mouse scaling, startup disk, menu blink values          |
-| 0x0E    | 1    |             | Various system settings                                 |
-| 0x0F    | 1    |             | Printer connection port                                 |
-| 0x10    | 4    |             | Finder information                                      |
+| 0x08    | 4    | SPAlarm     | Alarm time (Mac-epoch seconds)                          |
+| 0x0C    | 2    | SPFont      | Default application font number minus 1 (word)         |
+| 0x0E    | 1    | SPKbd       | Auto-key threshold and repeat rate (2 four-bit values)  |
+| 0x0F    | 1    | SPPrint     | Printer connection port                                 |
+| 0x10    | 1    | SPVolCtl    | Alarm enable, mouse tracking, speaker volume             |
+| 0x11    | 1    | SPClikCaret | Caret blink time, double-click time (2 four-bit values) |
+| 0x12    | 1    |             | Disk-cache size in 32 KB blocks                          |
+| 0x13    | 1    | SPMisc2     | Mouse scaling, startup disk, menu blink values          |
+
+The logical layout above is [mac-pram.md](../formats/mac-pram.md) §4.1's; note
+that on the extended chip the physical bytes differ (see the note on the
+register map below).
 
 **Note:** Time is stored in separate dedicated registers (not in PRAM). Due to
 the "don't care" bit 4 in the command pattern, each register can be accessed
@@ -388,9 +395,10 @@ system-reserved._
 ```
 1. Disable interrupts (SR = 0x2700)
 2. Clear vRTCEnb (enable chip)
-3. Send command byte:
-   - Address 0x0C: shift and encode to 0xB9 (read, standard command)
+3. Send command bytes (extended read of XPRAM address 0x0C):
+   - First byte: 0xB9 (read, extended prefix; bits 2-0 = A7-A5 = 001)
    - Send 8 bits: 1-0-1-1-1-0-0-1
+   - Second byte: 0x30 (bits 6-2 = A4-A0 = 01100)
 4. Read data byte:
    - Set vRTCData to input
    - Read 8 bits (MSB first)
@@ -406,9 +414,10 @@ system-reserved._
 2. Clear vRTCEnb (enable chip)
 3. Send write-protect disable: 0x35, 0x55
 4. Set vRTCEnb, then clear again
-5. Send command byte:
-   - Address 0x08: encode to 0x39 (write, standard command)
+5. Send command bytes (extended write to XPRAM address 0x08):
+   - First byte: 0x39 (write, extended prefix; bits 2-0 = A7-A5 = 001)
    - Send 8 bits: 0-0-1-1-1-0-0-1
+   - Second byte: 0x20 (bits 6-2 = A4-A0 = 01000)
 6. Send data byte: 8 bits (MSB first)
 7. Set vRTCEnb, then clear again
 8. Send write-protect enable: 0x35, 0xD5
@@ -469,23 +478,25 @@ identical across all three machines.
 2. **Time Keeping:** RTC must accurately track real-world time when emulator is
    running
 3. **Write Protection:** Implement write protection to catch software bugs
-4. **Validation:** Implement checksum validation for PRAM (byte 0x13)
+4. **Validation:** Implement the validity byte check for PRAM (byte 0x00 must
+   read `$A8`; it is a literal pattern, not a checksum)
 
 ### Extended Command Detection
 
-Commands with bits [6:3] having values `0011` (write) or `1011` (read) and bit
-pattern not matching standard commands indicate extended addressing:
+Commands with bits [6:3] equal to `0111` indicate extended addressing, for
+both read and write alike (bit 7 carries the read/write flag):
 
-- Check if `(command & 0x78) == 0x38` for extended write
+- Check if `(command & 0x78) == 0x38` for the extended prefix
 - The command is sent as two bytes for extended operations
 
 ### Default PRAM Values
 
-On first boot or PRAM reset, initialize with these defaults (from `PRAMInitTbl`
-in source):
+On first boot or PRAM reset, initialize with these defaults (from the ROM's
+`PRAMInit` table; the full default set is tabulated in
+[mac-pram.md](../formats/mac-pram.md) §4):
 
-- Checksum byte (0x13): 0xA8
-- Volume (0x08): 0x03 (medium volume)
+- Validity byte (0x00): 0xA8
+- Volume (0x10): bits 2-0 = 3 (medium volume)
 - Double-click time: reasonable default
 - Other system parameters as per System 7 defaults
 
@@ -605,8 +616,8 @@ Writes a block of bytes from a memory buffer to PRAM.
 ### Command Construction
 
 ```
-Standard Read:  0xB8 | ((addr & 0x1F) << 2)
-Standard Write: 0x38 | ((addr & 0x1F) << 2)
+Standard Read:  0x81 | ((addr & 0x1F) << 2)
+Standard Write: 0x01 | ((addr & 0x1F) << 2)
 Extended: Use full encoding formula above
 ```
 

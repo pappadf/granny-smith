@@ -24,6 +24,7 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -200,9 +201,19 @@ struct image_mount {
     uint32_t n_partitions;
     uint32_t refcount;
     bool unmounting; // unmount requested while handles were live
+    int serial; // never-reused mount serial (files.mounts index); valid while in_use
 };
 
 static image_mount_t g_mounts[IMAGE_VFS_MAX_MOUNTS];
+
+// Next mount serial.  Slots in g_mounts are reused; serials are not, so the
+// object model's stable-index contract holds for files.mounts[n].
+static int g_next_serial = 0;
+
+// Guards a slot's identity -- in_use, host_path, serial -- while a mount is
+// created or destroyed (the I/O worker mounts too, through a copy out of an
+// image) against the snapshot readers below.
+static pthread_mutex_t g_mounts_mu = PTHREAD_MUTEX_INITIALIZER;
 
 // A mount refuses service (-EBUSY) once an unmount is pending, and while the
 // emulator holds its file open writable: guest writes land in that image's
@@ -432,8 +443,10 @@ static void mount_destroy(image_mount_t *m) {
         image_apm_free(m->apm);
     if (m->img)
         image_close(m->img);
+    pthread_mutex_lock(&g_mounts_mu);
     free(m->host_path);
     memset(m, 0, sizeof(*m));
+    pthread_mutex_unlock(&g_mounts_mu);
 }
 
 // ---- Mount open / probe ---------------------------------------------------
@@ -534,14 +547,17 @@ int image_vfs_acquire_mount(const char *host_path_in, image_mount_t **out_mount)
     if (!img)
         return -(errno ? errno : ENOENT);
 
-    memset(m, 0, sizeof(*m));
-    m->in_use = true;
-    m->host_path = strdup(host_path);
-    if (!m->host_path) {
+    char *path_copy = strdup(host_path);
+    if (!path_copy) {
         image_close(img);
-        memset(m, 0, sizeof(*m));
         return -ENOMEM;
     }
+    pthread_mutex_lock(&g_mounts_mu);
+    memset(m, 0, sizeof(*m));
+    m->in_use = true;
+    m->host_path = path_copy;
+    m->serial = g_next_serial++;
+    pthread_mutex_unlock(&g_mounts_mu);
     m->img = img;
     capture_identity(m, host_path);
 
@@ -600,6 +616,63 @@ int image_vfs_unmount(const char *host_path) {
     return 0;
 }
 
+// The mount holding `serial`, or NULL.  Caller holds g_mounts_mu.
+static image_mount_t *mount_by_serial_locked(int serial) {
+    for (int i = 0; i < IMAGE_VFS_MAX_MOUNTS; i++)
+        if (g_mounts[i].in_use && g_mounts[i].serial == serial)
+            return &g_mounts[i];
+    return NULL;
+}
+
+// Display name of a mount's format ("APM", "HFS", "UFS", "raw").
+static const char *mount_format_name(const image_mount_t *m) {
+    const char *fmt = m->apm ? "APM" : (m->synthetic_apm ? "HFS" : "raw");
+    // For synthetic single-partition mounts of a bare UFS volume we
+    // report UFS instead of HFS so the listing stays informative.
+    if (m->synthetic_apm && m->synthetic_part.fs_kind == APM_FS_UFS)
+        fmt = "UFS";
+    return fmt;
+}
+
+int image_vfs_next_serial(int prev) {
+    int best = -1;
+    pthread_mutex_lock(&g_mounts_mu);
+    for (int i = 0; i < IMAGE_VFS_MAX_MOUNTS; i++) {
+        const image_mount_t *m = &g_mounts[i];
+        if (m->in_use && m->serial > prev && (best < 0 || m->serial < best))
+            best = m->serial;
+    }
+    pthread_mutex_unlock(&g_mounts_mu);
+    return best;
+}
+
+bool image_vfs_mount_info(int serial, image_vfs_mount_info_t *out) {
+    pthread_mutex_lock(&g_mounts_mu);
+    image_mount_t *m = mount_by_serial_locked(serial);
+    if (m && out) {
+        out->serial = m->serial;
+        snprintf(out->path, sizeof(out->path), "%s", m->host_path ? m->host_path : "");
+        out->format = mount_format_name(m);
+        out->partitions = m->n_partitions;
+        out->refcount = m->refcount;
+        out->unmounting = m->unmounting;
+    }
+    pthread_mutex_unlock(&g_mounts_mu);
+    if (!m)
+        return false;
+    // Asked outside the lock: it consults the image layer's open-file table.
+    if (out)
+        out->busy = out->unmounting || image_path_is_open_writable(out->path);
+    return true;
+}
+
+int image_vfs_serial_for_path(const char *host_path) {
+    if (!host_path)
+        return -1;
+    image_mount_t *m = find_mount_by_path(host_path);
+    return m ? m->serial : -1;
+}
+
 void image_vfs_list(image_vfs_list_cb cb, void *user) {
     if (!cb)
         return;
@@ -607,12 +680,7 @@ void image_vfs_list(image_vfs_list_cb cb, void *user) {
         image_mount_t *m = &g_mounts[i];
         if (!m->in_use)
             continue;
-        const char *fmt = m->apm ? "APM" : (m->synthetic_apm ? "HFS" : "raw");
-        // For synthetic single-partition mounts of a bare UFS volume we
-        // report UFS instead of HFS so `image list` stays informative.
-        if (m->synthetic_apm && m->synthetic_part.fs_kind == APM_FS_UFS)
-            fmt = "UFS";
-        cb(m->host_path, fmt, m->n_partitions, m->refcount, mount_busy(m), user);
+        cb(m->host_path, mount_format_name(m), m->n_partitions, m->refcount, mount_busy(m), user);
     }
 }
 

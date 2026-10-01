@@ -4,7 +4,7 @@
 
 The Zilog Z8530 Serial Communication Controller (SCC) is a dual-channel, multiprotocol data communication peripheral used in the Macintosh Plus for serial communications. Each channel provides full-duplex serial communication with sophisticated on-chip support for various protocols including asynchronous, byte-oriented synchronous (Bisync), and bit-oriented synchronous (SDLC/HDLC).
 
-The SCC contains two independent channels (A and B), each with its own set of registers, transmit and receive logic, and modem control signals. The Macintosh Plus uses Channel A for the printer port and Channel B for the modem port.
+The SCC contains two independent channels (A and B), each with its own set of registers, transmit and receive logic, and modem control signals. The Macintosh Plus uses Channel A for the modem port and Channel B for the printer port. The compact family's wiring — the $9FFFF8/$BFFFF9 read/write windows, the 3.672 MHz clock, the mouse quadrature share of the DCD lines — is given in [compact.md](../machines/compact/compact.md) §3.2 and §5.3; the SE/30's SCC sits at `$50F04000` ([se30.md](../machines/glue/se30.md) §"SCC Wiring").
 
 ### Key Features
 
@@ -527,6 +527,9 @@ Opening Flag | Address | Control | Information | FCS | Closing Flag
 - Address search: Reject frames with non-matching address
 - Shared zero-bit flag: Closing flag of one frame serves as opening flag of next
 
+SDLC mode is what LocalTalk carries AppleTalk in — the protocol built on top
+of it is covered in [appletalk.md](../protocols/appletalk.md) §2.
+
 ## Programming Sequences
 
 ### Initialization Sequence
@@ -814,6 +817,6 @@ late and an assertion against the text is missing bytes rather than merely
 failing. Assert it is zero alongside whatever you assert about the text.
 
 Before this pair, serial output could only be read by turning on the `scc` log
-category (`debug.log scc 5`) and reassembling `wr8 ch=0 value=0x..` lines by
+category (`log.set scc 5`) and reassembling `wr8 ch=0 value=0x..` lines by
 eye.  That still works and remains useful for watching a boot live; `sent()` is
 what turns the same text into a script assertion.

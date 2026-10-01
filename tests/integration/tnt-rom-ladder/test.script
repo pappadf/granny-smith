@@ -70,9 +70,9 @@ assert machine.memory.peek.b(0xCB3) == 0x3E "T4: BoxFlag != $3E (not identified 
 # and the ROM's video driver can never load (the old video wall).
 # The compatible string and the control node's model property are read
 # back from OF's live workspace in low RAM.
-assert len(find.str("AAPL,7500", 0x8000, 0x20000)) > 0 "T6: OF compatible != AAPL,7500 (model decode fell back)"
-assert len(find.str("AAPL,343S1154", 0x8000, 0x20000)) > 0 "T6: control display node missing from the OF tree"
-assert len(find.str("AAPL,343S1155", 0x8000, 0x20000)) > 0 "T6: chaos bridge node missing from the OF tree"
+assert len(debug.find.str("AAPL,7500", 0x8000, 0x20000)) > 0 "T6: OF compatible != AAPL,7500 (model decode fell back)"
+assert len(debug.find.str("AAPL,343S1154", 0x8000, 0x20000)) > 0 "T6: control display node missing from the OF tree"
+assert len(debug.find.str("AAPL,343S1155", 0x8000, 0x20000)) > 0 "T6: chaos bridge node missing from the OF tree"
 
 # --- T3: Open Firmware initialised its NVRAM environment ---------------------
 # The banked store's top bank carries the packed OF config-variable

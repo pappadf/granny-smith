@@ -165,7 +165,7 @@ Selection and identification:
   refused with a clear log and the card falls back to its default geometry.
   Modes larger than the 1 MB minor window need the QD32 re-open path (see
   gaps) and are rejected.
-- `machine.profile` lists both variants for a slot; a built-in slot that has
+- `catalog.profile` lists both variants for a slot; a built-in slot that has
   a generic variant is reported as not `fixed`, so the configuration UI
   offers the choice with the generic option always available (it needs no
   uploaded file).
@@ -176,15 +176,16 @@ Selection and identification:
 
 ### Tests
 
-- `iicx-gsvrom-video-modes` — the JMFB personality across 4 monitors × the
-  indexed depths, staged via `video_mode=` (a re-run of `iicx-video-modes`
-  against the generic ROM).
-- `iicx-gsvrom-24ac` — the Boogie personality at two geometries.
-- `iicx-gsvrom-824gc` — the MDCGC personality's accelerator bring-up ladder
-  (attach → boot → arm → gc-on).
-- `se30-gsvrom` — the SE30 personality booting to the Finder with no ROM file.
-- `iicx-gsvrom-custom-mode` — the JMFB personality booting at a `custom_mode=`
-  resolution (800×600×8) that fits the minor window.
+- `iicx-gsvrom` — a row suite covering the personalities on the generated
+  vROM: `gsvrom-sweep` (the 10-cell JMFB sweep — 13" RGB at 1/2/4/8 bpp, 12"
+  RGB, 15" portrait, 21" two-page — staged via `video_mode=`, a re-run of
+  `iicx-video-modes` against the generic ROM), `gsvrom-24ac` (the Boogie
+  personality at 640×480×8 and 832×624×8), `gsvrom-824gc` (the MDCGC
+  personality's accelerator bring-up ladder: attach → boot → arm → gc-on),
+  and `gsvrom-custom-mode` (the JMFB personality booting at a `custom_mode=`
+  resolution (800×600×8) that fits the minor window).
+- `suite-se30` row `se30-701-gsvrom` — the SE30 personality booting to the
+  Finder with no ROM file.
 
 A host-side unit suite (`tests/unit/suites/declrom`) generates every
 personality's image without booting a guest and checks its structure

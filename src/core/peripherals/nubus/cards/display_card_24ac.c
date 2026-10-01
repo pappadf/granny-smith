@@ -1237,12 +1237,10 @@ static nubus_card_t *node_card(struct object *self) {
 // This card's own object children, attached through the KIND's attach_objects
 // hook.  They used to live in nubus_class.c behind an is_card() test, which
 // meant a core file knew this card existed.
-static value_t eng_attr_enabled_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(eng_attr_enabled_get) {
     return val_bool(display_card_24ac_engine_enabled(node_card(self)));
 }
-static value_t eng_attr_enabled_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(eng_attr_enabled_set) {
     if (in.kind != V_BOOL) {
         value_free(&in);
         return val_err("engine.enabled: expected a boolean");
@@ -1251,28 +1249,22 @@ static value_t eng_attr_enabled_set(struct object *self, const member_t *m, valu
     value_free(&in);
     return val_none();
 }
-static value_t eng_attr_mode(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(eng_attr_mode) {
     return val_uint(1, display_card_24ac_engine_mode(node_card(self)));
 }
-static value_t eng_attr_operand(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(eng_attr_operand) {
     return val_uint(4, display_card_24ac_engine_operand(node_card(self)));
 }
-static value_t eng_attr_fill_ops(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(eng_attr_fill_ops) {
     return val_uint(8, display_card_24ac_engine_fill_ops(node_card(self)));
 }
-static value_t eng_attr_fill_bytes(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(eng_attr_fill_bytes) {
     return val_uint(8, display_card_24ac_engine_fill_bytes(node_card(self)));
 }
-static value_t eng_attr_copy_ops(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(eng_attr_copy_ops) {
     return val_uint(8, display_card_24ac_engine_copy_ops(node_card(self)));
 }
-static value_t eng_attr_copy_bytes(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(eng_attr_copy_bytes) {
     return val_uint(8, display_card_24ac_engine_copy_bytes(node_card(self)));
 }
 static const member_t engine_members[] = {
@@ -1283,33 +1275,27 @@ static const member_t engine_members[] = {
     {.kind = M_ATTR,
      .name = "mode",
      .doc = "Latched CONTROL op byte ($01 fill / $03 stretch / $7F copy / ROP)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = eng_attr_mode}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = eng_attr_mode}     },
     {.kind = M_ATTR,
      .name = "operand",
      .doc = "Latched 32-bit fill/pattern operand",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = eng_attr_operand}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = eng_attr_operand}  },
     {.kind = M_ATTR,
      .name = "fill_ops",
      .doc = "Diagnostic: hardware run-length fills executed by the engine",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = eng_attr_fill_ops}},
+     .attr = {.type = V_UINT, .get = eng_attr_fill_ops}                                },
     {.kind = M_ATTR,
      .name = "fill_bytes",
      .doc = "Diagnostic: total bytes filled by the engine",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = eng_attr_fill_bytes}},
+     .attr = {.type = V_UINT, .get = eng_attr_fill_bytes}                              },
     {.kind = M_ATTR,
      .name = "copy_ops",
      .doc = "Diagnostic: hardware block-copy/ROP executes by the engine",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = eng_attr_copy_ops}},
+     .attr = {.type = V_UINT, .get = eng_attr_copy_ops}                                },
     {.kind = M_ATTR,
      .name = "copy_bytes",
      .doc = "Diagnostic: total bytes copied by the engine",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = eng_attr_copy_bytes}},
+     .attr = {.type = V_UINT, .get = eng_attr_copy_bytes}                              },
 };
 static const class_desc_t display_card_24ac_engine_class = {
     .name = "engine", .members = engine_members, .n_members = sizeof(engine_members) / sizeof(engine_members[0])};

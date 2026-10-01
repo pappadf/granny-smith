@@ -91,15 +91,15 @@ const resumeModal = (page: Page) =>
   page.locator('.modal, [role="dialog"]').filter({ hasText: 'Continue from saved checkpoint?' });
 
 // Drive the Terminal panel: type a shell line and return once the given
-// pattern shows up in the xterm buffer (DOM renderer — rows are readable).
+// pattern shows up in the console output.
 async function terminalExpect(page: Page, line: string, pattern: RegExp): Promise<void> {
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  const term = page.locator('.xterm');
+  const term = page.locator('.console');
   await expect(term).toBeVisible({ timeout: 15_000 });
   await term.click();
   await page.keyboard.type(line);
   await page.keyboard.press('Enter');
-  await expect(page.locator('.xterm-rows')).toContainText(pattern, { timeout: 15_000 });
+  await expect(page.locator('.console-output')).toContainText(pattern, { timeout: 15_000 });
 }
 
 test('tick-auto checkpoint: status-bar CP glyph updates, terminal stays silent', async ({
@@ -115,7 +115,7 @@ test('tick-auto checkpoint: status-bar CP glyph updates, terminal stays silent',
   // Terminal open from the start so any stray "Checkpoint saved" print
   // would be captured.
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
 
   // The CP glyph is present with its idle tooltip before the first save.
   const cp = page.locator('.gs-statusbar .sb-drive', { hasText: 'CP' });
@@ -128,7 +128,7 @@ test('tick-auto checkpoint: status-bar CP glyph updates, terminal stays silent',
   });
 
   // ...and the old terminal spam is gone.
-  const text = await page.locator('.xterm-rows').innerText();
+  const text = await page.locator('.console-output').innerText();
   expect(text).not.toContain('Checkpoint saved');
 });
 
@@ -158,6 +158,31 @@ test.describe('checkpoint save → reload → resume', () => {
     ).toBeVisible({ timeout: 60_000 });
     await expect(page.locator('.welcome-layer')).toHaveCount(0);
     await expect(statusLabel(page)).toHaveText('Running', { timeout: 15_000 });
+  });
+
+  test('the resumed machine shows the pacing mode its checkpoint saved', async ({ page }) => {
+    // scheduler.mode crosses the bridge as an enum ({enum, index}); the
+    // restore path reads it back to set the toolbar rather than overriding it.
+    test.setTimeout(180_000);
+    await gotoWeb2(page);
+    await uploadRom(page, PLUS_ROM);
+    await startMachine(page, 'plus');
+
+    // Switch the core (not the toolbar) to turbo, then save.
+    await terminalExpect(page, 'scheduler.mode = "turbo"', /scheduler\.mode = "turbo"/);
+    await terminalExpect(page, 'echo "mode=${scheduler.mode}"', /mode=turbo/);
+    await createCheckpoint(page);
+
+    await reloadWeb2(page);
+    await expect(resumeModal(page)).toBeVisible({ timeout: 30_000 });
+    await page.getByRole('button', { name: 'Resume' }).click();
+    await expect(
+      page.locator('.toast .msg').filter({ hasText: 'Resumed from saved checkpoint' }),
+    ).toBeVisible({ timeout: 60_000 });
+
+    await expect(page.locator('.sch-btn', { hasText: 'fast-forward' })).toHaveClass(/active/, {
+      timeout: 15_000,
+    });
   });
 
   test('Start fresh discards the checkpoint and a second reload does not re-prompt', async ({

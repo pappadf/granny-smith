@@ -21,7 +21,7 @@ details (SCC quadrature encoding, VIA signals, connector pinout), see
 8. [Framebuffer Compositing](#8-framebuffer-compositing)
 9. [The Phantom ADB Data Problem](#9-the-phantom-adb-data-problem)
 10. [The MTemp Guard](#10-the-mtemp-guard)
-11. [Emulator Debugger Commands](#11-emulator-debugger-commands)
+11. [The mouse object surface](#11-the-mouse-object-surface)
 12. [Click Mechanism: PostEvent and Applications](#12-click-mechanism-postevent-and-applications)
 13. [Mac Plus: MBTicks Hack and Quadrature Mouse](#13-mac-plus-mbticks-hack-and-quadrature-mouse)
 14. [How Other Emulators Inject Mouse Input](#14-how-other-emulators-inject-mouse-input)
@@ -701,7 +701,7 @@ mouse.move X Y [mode]
 | `mode` | Behaviour |
 |--------|-----------|
 | `"global"` | Writes MTemp, RawMouse, Mouse to (X, Y).  Sets CrsrNew = CrsrCouple.  **Activates MTemp guard.**  Recommended for test scripts. |
-| `"hw"` | Injects relative deltas (X, Y) through the hardware path — ADB on ADB machines, the quadrature encoder on a Plus.  Deactivates guard. |
+| `"hw"` / `"relative"` | Injects relative deltas (X, Y) through the hardware path — ADB on ADB machines, the quadrature encoder on a Plus.  Deactivates guard. |
 | `"aux"` | A/UX MAE routing. |
 | `"default"` (or omitted) | Computes the delta from the current MTemp to (X, Y) and injects it.  Subject to the ~6 px phantom-data error described in §9.  Deactivates guard. |
 
@@ -724,15 +724,19 @@ mouse.click down [mode]
 | `mode` | Behaviour |
 |--------|-----------|
 | `"global"` | Writes MBState directly.  No event posted.  Only works for code that polls MBState (ModalDialog).  On Mac Plus, also sets MBTicks to a future value (the MBTicks hack). |
-| `"hw"` / `"default"` | Routes through the hardware path: `adb_mouse_event(button, 0, 0)`.  The ROM handler writes MBState and calls `_PostEvent`, so this works for both ModalDialog and WaitNextEvent code. |
-| `"aux"` | A/UX MAE routing. |
+| `"hw"` / `"default"` / `"aux"` | Routes through the hardware path: `adb_mouse_event(button, 0, 0)`.  The ROM handler writes MBState and calls `_PostEvent`, so this works for both ModalDialog and WaitNextEvent code.  (`"aux"` has no MAE-specific button path — it falls through to the same hardware route.) |
 
 On the Lisa, `mouse.click` reaches the COPS and the mode is not consulted —
 the Lisa button is a single COPS key code with no Toolbox-versus-hardware
 distinction to make. `mouse.move` *does* honour `"global"` there, through the
 closed-loop cursor warp described in `lisa.md` §11.4.
 
-### post-event
+### post-event (retired)
+
+> **Retired with the object-model rewrite.** `post-event` was a legacy shell
+> command, removed in the same sweep as `set-mouse`/`mouse-button`; it is not
+> registered anywhere in `src/core/shell/` or the object tree. What follows is
+> the behaviour it had.
 
 ```
 post-event <what> <message>
@@ -747,7 +751,11 @@ Usage example: `post-event 7 1` posts a `diskEvt` (event code 7) with
 message 1 (drive number), used when the .Sony VBL task has stopped polling
 CSTIN.
 
-### mac-state
+### mac-state (retired)
+
+> **Retired with the object-model rewrite.** `mac-state` was a legacy shell
+> command, removed in the same sweep; read the globals instead with
+> `debug.mac.globals.read` (e.g. `debug.mac.globals.read("Mouse")`).
 
 ```
 mac-state
@@ -764,12 +772,12 @@ Ticks:   17077
 
 Note: `mac-state` prints `pos=(v, h)` = `pos=(Y, X)`.
 
-### parse_mode_flag
+### parse_mode_flag (retired)
 
-A helper in `debug_mac.c` that scans all argv positions for `--global`/`--hw`,
-removing the flag and shifting remaining args.  This fixes a bug where the
-original implementation only checked `argv[1]`, causing flags at the end
-(`set-mouse 95 295 --global`) to be silently ignored.
+A helper that scanned all argv positions for `--global`/`--hw`, removing the
+flag and shifting remaining args.  It existed for the retired shell commands
+and was removed with them; the object-model `mouse.move` / `mouse.click`
+methods take the mode as a typed argument instead.
 
 ---
 
@@ -876,8 +884,8 @@ On ADB-era Macs, this hack is technically unnecessary but harmless.
 ### Mac Plus Mouse Positioning
 
 On the Mac Plus (non-ADB), the mouse uses SCC DCD interrupts with quadrature
-encoding through VIA port B.  The `set-mouse` default mode on the Plus writes
-low-memory globals directly (identical to `--global`), since there is no ADB
+encoding through VIA port B.  `mouse.move` in default mode on the Plus writes
+low-memory globals directly (identical to `"global"`), since there is no ADB
 subsystem to inject deltas through.  See [mouse.md](../../../reference/hardware/mouse.md) for full
 hardware details.
 
@@ -964,7 +972,7 @@ never fires, yet the OS tracks cursor position correctly.
 
 - `system_mouse_update(button, dx, dy)` -> `adb_mouse_event()`
 - `system_mouse_move(dx, dy)` -> `adb_mouse_move()`
-- `system_mouse_move_adb(dx, dy)` -> ADB-only path for default `set-mouse`
+- `system_mouse_move_adb(dx, dy)` -> ADB-only path for default `mouse.move`
 
 **Debug commands** (`src/core/debug/debug_mac.c`):
 
@@ -1050,45 +1058,40 @@ latency.
 ### Place cursor at exact coordinates
 
 ```
-set-mouse X Y --global
-run 5000000        # allow VBL to update cursor image on screen
+mouse.move X Y "global"
+machine.cpu.step 5000000   # allow VBL to update cursor image on screen
 ```
 
 MTemp, RawMouse, and Mouse are set immediately.  The MTemp guard activates and
-keeps all three pinned until the next `set-mouse` call.
+keeps all three pinned until the next `mouse.move` call.
 
 ### Click a button
 
 ```
-set-mouse X Y --global
-run 20000000       # settle + cursor redraw
-mouse-button down  # posts mouseDown event via ADB
-run 2000000        # app processes click
-mouse-button up    # posts mouseUp event via ADB
-run 20000000       # app responds
+mouse.move X Y "global"
+machine.cpu.step 20000000   # settle + cursor redraw
+mouse.click true           # posts mouseDown event via ADB
+machine.cpu.step 2000000   # app processes click
+mouse.click false          # posts mouseUp event via ADB
+machine.cpu.step 20000000  # app responds
 ```
 
 ### Verify cursor position
 
 ```
-mac-state
+debug.mac.globals.read("Mouse")
 ```
 
-Example:
-```
-Mouse:   pos=(185,370)  button=UP  MBState=$80
-Cursor:  MTemp=(185,370)  CrsrNew=$00  CrsrCouple=$FF
-Ticks:   17077
-```
-
-Note: `mac-state` prints `pos=(v, h)` = `pos=(Y, X)`.
+The globals read back one at a time: `Mouse`, `MTemp`, `MBState`, `CrsrNew`,
+`CrsrCouple`, `Ticks`.  A `Point` global such as `Mouse` reads as
+`pos=(v, h)` = `pos=(Y, X)`.
 
 ### Coordinate system
 
 - Origin `(0, 0)` is the top-left pixel of the screen
 - X increases rightward, Y increases downward
 - SE/30 screen: 512 x 342 pixels.  Valid range: X in [0, 511], Y in [0, 341]
-- `set-mouse` takes `(X, Y)` order; `mac-state` prints `(Y, X)` order
+- `mouse.move` takes `(X, Y)` order; the Mac `Point` globals store `(Y, X)` order
 
 ### Post a synthetic Mac OS event
 

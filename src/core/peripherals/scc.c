@@ -1726,14 +1726,12 @@ static ch_t *ch_from(struct object *self) {
 }
 
 // `loopback` is the writable head attribute — get/set wrap the C API.
-static value_t scc_attr_loopback_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scc_attr_loopback_get) {
     scc_t *scc = scc_from(self);
     return val_bool(scc ? scc_get_external_loopback(scc) : false);
 }
 
-static value_t scc_attr_loopback_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(scc_attr_loopback_set) {
     scc_t *scc = scc_from(self);
     if (!scc)
         return val_err("scc not available");
@@ -1741,22 +1739,17 @@ static value_t scc_attr_loopback_set(struct object *self, const member_t *m, val
     return val_none();
 }
 
-static value_t scc_attr_pclk_hz(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scc_attr_pclk_hz) {
     scc_t *scc = scc_from(self);
     return val_uint(4, scc ? scc_get_pclk_hz(scc) : 0);
 }
 
-static value_t scc_attr_rtxc_hz(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scc_attr_rtxc_hz) {
     scc_t *scc = scc_from(self);
     return val_uint(4, scc ? scc_get_rtxc_hz(scc) : 0);
 }
 
-static value_t scc_method_reset(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(scc_method_reset) {
     scc_t *scc = scc_from(self);
     if (!scc)
         return val_err("scc not available");
@@ -1772,22 +1765,19 @@ static value_t scc_method_reset(struct object *self, const member_t *m, int argc
 // (`scc_channel_*`). Heavier per-channel views (BRG, baud, sync mode) can land
 // later once a real consumer needs them.
 
-static value_t scc_ch_attr_index(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scc_ch_attr_index) {
     ch_t *c = ch_from(self);
     return val_int(c ? c->index : 0);
 }
 
-static value_t scc_ch_attr_dcd(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scc_ch_attr_dcd) {
     ch_t *c = ch_from(self);
     if (!c)
         return val_err("scc not available");
     return val_bool(scc_channel_dcd(c->scc, (unsigned)c->index));
 }
 
-static value_t scc_ch_attr_tx_empty(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scc_ch_attr_tx_empty) {
     ch_t *c = ch_from(self);
     if (!c)
         return val_err("scc not available");
@@ -1797,24 +1787,21 @@ static value_t scc_ch_attr_tx_empty(struct object *self, const member_t *m) {
 // Bytes waiting in this channel's host-side transmit capture, and the count
 // lost to overflow — a nonzero `sent_dropped` says the script drained too
 // late, so an assertion on the text is missing bytes rather than merely failing.
-static value_t scc_ch_attr_sent_pending(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scc_ch_attr_sent_pending) {
     ch_t *c = ch_from(self);
     if (!c)
         return val_err("scc not available");
     return val_uint(8, scc_channel_sent_pending(c->scc, (unsigned)c->index));
 }
 
-static value_t scc_ch_attr_sent_dropped(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scc_ch_attr_sent_dropped) {
     ch_t *c = ch_from(self);
     if (!c)
         return val_err("scc not available");
     return val_uint(8, scc_channel_sent_dropped(c->scc, (unsigned)c->index));
 }
 
-static value_t scc_ch_attr_rx_pending(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scc_ch_attr_rx_pending) {
     ch_t *c = ch_from(self);
     if (!c)
         return val_err("scc not available");
@@ -1822,8 +1809,7 @@ static value_t scc_ch_attr_rx_pending(struct object *self, const member_t *m) {
 }
 
 // `output`: the host file this channel's transmitted bytes go to, or none.
-static value_t scc_ch_attr_output(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scc_ch_attr_output) {
     ch_t *c = ch_from(self);
     if (!c)
         return val_err("scc not available");
@@ -1834,8 +1820,7 @@ static value_t scc_ch_attr_output(struct object *self, const member_t *m) {
 // `output = "path"` opens (creating or truncating) the file and streams
 // every asynchronous byte the guest transmits into it; `output = none`
 // closes it.  Either way the port's wired ready line follows.
-static value_t scc_ch_attr_output_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(scc_ch_attr_output_set) {
     ch_t *c = ch_from(self);
     if (!c)
         return val_err("scc not available");
@@ -1860,8 +1845,7 @@ static value_t scc_ch_attr_output_set(struct object *self, const member_t *m, va
 // "(Debug)" build is the case that prompted it: its loader prints over the
 // modem port and then polls RR0 bit 0 for a reply from the Power Macintosh
 // Debugger, forever, because nothing on this side can ever set that bit.
-static value_t scc_ch_method_receive(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(scc_ch_method_receive) {
     ch_t *c = ch_from(self);
     if (!c)
         return val_err("scc not available");
@@ -1917,10 +1901,7 @@ static value_t scc_ch_method_receive(struct object *self, const member_t *m, int
 // Printable ASCII, tab, CR and LF pass through; a literal backslash is doubled
 // and every other byte is escaped `\xNN`, so the result is greppable text that
 // still says exactly which bytes came off the wire.
-static value_t scc_ch_method_sent(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(scc_ch_method_sent) {
     ch_t *c = ch_from(self);
     if (!c)
         return val_err("scc not available");
@@ -1961,38 +1942,37 @@ static value_t scc_ch_method_sent(struct object *self, const member_t *m, int ar
 }
 
 static const arg_decl_t scc_ch_receive_args[] = {
-    {.name = "data", .kind = V_NONE, .doc = "String to deliver, or a single byte value"},
+    {.name = "data",
+     .kind = V_NONE,
+     .validation_flags = OBJ_ARG_POLY,
+     .doc = "String to deliver, or a single byte value"},
 };
 
 static const member_t scc_ch_members[] = {
     {.kind = M_ATTR,
      .name = "index",
-     .flags = VAL_RO,
      .doc = "Channel number: 0 = channel A (modem port), 1 = channel B (printer port)",
      .attr = {.type = V_INT, .get = scc_ch_attr_index}},
     {.kind = M_ATTR,
      .name = "dcd",
-     .flags = VAL_RO,
      .doc = "State of this channel's DCD input — on a Mac it is wired to the mouse/disk interrupt, not a modem",
      .attr = {.type = V_BOOL, .get = scc_ch_attr_dcd}},
     {.kind = M_ATTR,
      .name = "tx_empty",
-     .flags = VAL_RO,
      .doc = "True when the transmit buffer has drained and the guest may write the next byte",
      .attr = {.type = V_BOOL, .get = scc_ch_attr_tx_empty}},
     {.kind = M_ATTR,
      .name = "rx_pending",
-     .flags = VAL_RO,
      .doc = "Bytes queued for the guest to read, delivered by `receive` and not yet consumed",
      .attr = {.type = V_UINT, .get = scc_ch_attr_rx_pending}},
     {.kind = M_ATTR,
      .name = "sent_pending",
-     .flags = VAL_RO,
+     .flags = M_CAT_ADVANCED,
      .doc = "Bytes the guest has transmitted that are waiting in the host-side capture buffer",
      .attr = {.type = V_UINT, .get = scc_ch_attr_sent_pending}},
     {.kind = M_ATTR,
      .name = "sent_dropped",
-     .flags = VAL_RO,
+     .flags = M_CAT_ADVANCED,
      .doc = "Transmitted bytes lost because the capture buffer overflowed; nonzero means a script drained too "
             "late, so an assertion on the text is reading an incomplete stream", .attr = {.type = V_UINT, .get = scc_ch_attr_sent_dropped}},
     {.kind = M_ATTR,
@@ -2014,6 +1994,7 @@ static const member_t scc_ch_members[] = {
 
 static const class_desc_t scc_channel_class = {
     .name = "scc_channel",
+    .doc = "One SCC serial channel: queued output, injected input",
     .members = scc_ch_members,
     .n_members = sizeof(scc_ch_members) / sizeof(scc_ch_members[0]),
 };
@@ -2027,22 +2008,21 @@ static const member_t scc_members[] = {
     {.kind = M_ATTR,
      .name = "pclk_hz",
      .doc = "PCLK source frequency (Hz)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = scc_attr_pclk_hz, .set = NULL}                      },
+     .attr = {.type = V_UINT, .get = scc_attr_pclk_hz, .set = NULL}},
     {.kind = M_ATTR,
      .name = "rtxc_hz",
      .doc = "RTxC source frequency (Hz)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = scc_attr_rtxc_hz, .set = NULL}                      },
+     .attr = {.type = V_UINT, .get = scc_attr_rtxc_hz, .set = NULL}},
     {.kind = M_METHOD,
      .name = "reset",
      .doc = "Reset the SCC (both channels)",
-     .flags = 0,
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = scc_method_reset}      },
+     .flags = M_CAT_ADVANCED,
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = scc_method_reset}},
 };
 
 static const class_desc_t scc_class = {
     .name = "scc",
+    .doc = "The Z8530 SCC serial controller: channels a and b",
     .members = scc_members,
     .n_members = sizeof(scc_members) / sizeof(scc_members[0]),
 };

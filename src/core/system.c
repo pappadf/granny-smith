@@ -720,8 +720,8 @@ void setup_init() {
     // Built-in machine profiles are a static const array in machine.c
     // (machine_find / machine_list walk it) — no runtime registration needed.
 
-    // Create every category the manifest declares, so `debug.log` with no
-    // arguments lists the complete set rather than only what has already been
+    // Create every category the manifest declares, so `log.levels` lists the
+    // complete set rather than only what has already been
     // hit or configured.  This replaces a one-off registration of
     // "appletalk" that existed for exactly this reason -- and whose presence
     // was the tell that a manifest was missing.
@@ -1216,6 +1216,11 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     if (!checkpoint && checkpoint_machine_dir())
         checkpoint_machine_write_manifest();
 
+    // A new machine exists: machine.boot, machine.restart and checkpoint.load
+    // all end here.  The page reloads its object trees on this.
+    gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"machine_booted\",\"model\":\"%s\",\"restored\":%s}",
+                   profile->id ? profile->id : "", checkpoint ? "true" : "false");
+
     return cfg;
 }
 
@@ -1640,7 +1645,7 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
 
     double elapsed_ms = host_time_ms() - start_time;
     // Ambient by default — the browser's background auto-saves land here
-    // every ~15 s and used to spam the terminal. `debug.log ckpt 1`
+    // every ~15 s and used to spam the terminal. `log.set ckpt 1`
     // restores the line; the status bar gets its own push (em_main.c).
     LOG_WITH(log_register_category("ckpt"), 1, "Checkpoint saved to %s (%.2f ms)", filename, elapsed_ms);
     return GS_SUCCESS;
@@ -1753,7 +1758,7 @@ config_t *system_restore(const char *filename) {
         // then ran root_uninstall_if(config), which matched and uninstalled
         // again.  Nothing reinstalled `prev`.  So a truncated or mismatched
         // checkpoint left the still-running machine executing with `shell`,
-        // `shell.functions`, `shell.alias`, `storage`, `storage.images`,
+        // `shell.functions`, `shell.alias`, `storage`, `files.images`,
         // `machine.nubus` and `machine.pci` all detached and the root methods
         // gone -- the entire tooling surface evaporated, with no diagnostic
         // beyond "Failed to read checkpoint".
@@ -1847,7 +1852,7 @@ bool system_checkpoint_probe(void) {
 
 // ===== Typed object-model entry points =====================================
 // Thin wrappers the typed methods (floppy.drives[N].insert,
-// scsi.attach_hd, storage.hd_create) call directly — no line
+// scsi.attach_hd, files.hd_create) call directly — no line
 // re-tokenisation, no legacy command framework.
 
 // Insert a floppy image into a drive (or the first free drive when

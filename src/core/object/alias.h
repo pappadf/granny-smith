@@ -52,7 +52,14 @@ int alias_remove_user(const char *name, char *err_buf, size_t err_size);
 // Look up the path for `name`. Returns a pointer into the table's
 // own storage (valid until the alias is removed) or NULL if no such
 // alias exists. Optionally writes the alias kind into `kind_out`.
+// Only for the job thread, which is the one that changes aliases; any other
+// thread uses alias_lookup_copy.
 const char *alias_lookup(const char *name, alias_kind_t *kind_out);
+
+// The same, copying the path into `buf` (`size` bytes) under the table
+// lock: safe from any thread.  False when no such alias exists or the path
+// does not fit.
+bool alias_lookup_copy(const char *name, char *buf, size_t size, alias_kind_t *kind_out);
 
 // Iterate every alias in registration order. The callback returns
 // `true` to continue, `false` to stop early.

@@ -143,7 +143,7 @@ describe('core events on the mailbox', () => {
     const l = layout();
     const mb = new Mailbox(l.heap, l.ctrlPtr, 1);
     const progress: Array<[number, number]> = [];
-    const p = mb.request('storage.cp', '["a","b"]', 0, {
+    const p = mb.request('files.cp', '["a","b"]', 0, {
       onProgress: (done, total) => progress.push([done, total]),
     });
     let wr = 0;

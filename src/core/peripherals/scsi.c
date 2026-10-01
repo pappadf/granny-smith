@@ -30,8 +30,10 @@ extern config_t *global_emulator;
 // end of the file. scsi_init calls this to detach the pre-machine
 // singleton before mounting the per-machine `scsi` object at root.
 static void scsi_static_detach(void);
-// The bus currently mounted as `machine.scsi` (NULL when none is).
-static scsi_t *s_primary_scsi;
+
+// Live per-machine primary (`machine.scsi`) instances; the static singleton
+// comes back only when the last one goes.
+static int s_primary_live = 0;
 
 // Forward declarations — class descriptors are at the bottom of the file but
 // scsi_init / scsi_delete reference them.
@@ -1225,7 +1227,7 @@ scsi_t *scsi_init_named(checkpoint_t *checkpoint, const char *name) {
     bool primary = (name == NULL) || strcmp(name, "scsi") == 0;
     if (primary) {
         scsi_static_detach();
-        s_primary_scsi = scsi;
+        s_primary_live++;
     }
     scsi->object = object_new(&scsi_class, scsi, primary ? "scsi" : name);
     if (scsi->object) {
@@ -1233,8 +1235,10 @@ scsi_t *scsi_init_named(checkpoint_t *checkpoint, const char *name) {
         object_set_order(scsi->object, primary ? 90 : 91);
         object_attach(machine_object(), scsi->object);
         scsi->bus_object = object_new(&scsi_bus_class, scsi, "bus");
-        if (scsi->bus_object)
+        if (scsi->bus_object) {
+            object_set_category(scsi->bus_object, M_CAT_ADVANCED);
             object_attach(scsi->object, scsi->bus_object);
+        }
         scsi->devices_object = object_new(&scsi_devices_collection_class, scsi, "device");
         if (scsi->devices_object) {
             object_set_label(scsi->devices_object, "Devices");
@@ -1248,6 +1252,10 @@ scsi_t *scsi_init_named(checkpoint_t *checkpoint, const char *name) {
             // fetch the live image_t lazily. Returned by the
             // device's `image` child lookup only when a medium is present.
             scsi->image_objects[i] = object_new(&scsi_image_class, &scsi->device_links[i], "image");
+            // Callback-backed children: device[i] under the collection,
+            // device[i].image under its device (for its path).
+            object_set_logical_parent(scsi->device_objects[i], scsi->devices_object, NULL, i, NULL);
+            object_set_logical_parent(scsi->image_objects[i], scsi->device_objects[i], "image", -1, NULL);
         }
     }
 
@@ -1504,15 +1512,7 @@ void scsi_delete(scsi_t *scsi) {
     // re-attach a singleton named "scsi" while the other bus is still
     // attached, and since object_attach head-pushes, the singleton would then
     // shadow a live bus for whatever teardown order happens to run next.
-    //
-    // ...and only while it is still THE mounted bus.  checkpoint.load builds
-    // the restored machine before it destroys the old one, so by the time the
-    // old primary bus is deleted the new machine's `machine.scsi` is already
-    // attached — restoring the singleton then shadowed it, and every
-    // `machine.scsi.*` path stopped resolving on a restored machine.
-    bool primary = scsi->object && strcmp(object_name(scsi->object), "scsi") == 0 && s_primary_scsi == scsi;
-    if (s_primary_scsi == scsi)
-        s_primary_scsi = NULL;
+    bool primary = scsi->object && strcmp(object_name(scsi->object), "scsi") == 0;
 
     if (scsi->object) {
         object_detach(scsi->object);
@@ -1532,7 +1532,10 @@ void scsi_delete(scsi_t *scsi) {
     // Restore the pre-machine static singleton so the next round of
     // upload validation (e.g. the Welcome view after stopping a
     // machine) keeps resolving `scsi.identify_hd` / `identify_cdrom`.
-    if (primary)
+    // Only when no other primary bus is live: checkpoint.load builds the new
+    // machine before destroying the old one, and a singleton re-attached then
+    // would shadow the new machine's `machine.scsi` (head-push attach).
+    if (primary && --s_primary_live == 0)
         scsi_class_register();
 }
 
@@ -1625,8 +1628,7 @@ static scsi_t *scsi_dev_scsi(struct object *self, unsigned *slot_out) {
     return link->scsi;
 }
 
-static value_t scsi_dev_attr_id(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scsi_dev_attr_id) {
     unsigned slot = 0;
     (void)scsi_dev_scsi(self, &slot);
     return val_int((int)slot);
@@ -1634,8 +1636,7 @@ static value_t scsi_dev_attr_id(struct object *self, const member_t *m) {
 
 static const char *const SCSI_DEV_TYPE_NAMES[] = {"none", "hd", "cdrom"};
 
-static value_t scsi_dev_attr_type(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scsi_dev_attr_type) {
     unsigned slot = 0;
     scsi_t *scsi = scsi_dev_scsi(self, &slot);
     int t = scsi_device_type(scsi, slot);
@@ -1644,51 +1645,42 @@ static value_t scsi_dev_attr_type(struct object *self, const member_t *m) {
     return val_enum(t, SCSI_DEV_TYPE_NAMES, 3);
 }
 
-static value_t scsi_dev_attr_vendor(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scsi_dev_attr_vendor) {
     unsigned slot = 0;
     scsi_t *scsi = scsi_dev_scsi(self, &slot);
     const char *s = scsi_device_vendor(scsi, slot);
     return val_str(s ? s : "");
 }
-static value_t scsi_dev_attr_product(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scsi_dev_attr_product) {
     unsigned slot = 0;
     scsi_t *scsi = scsi_dev_scsi(self, &slot);
     const char *s = scsi_device_product(scsi, slot);
     return val_str(s ? s : "");
 }
-static value_t scsi_dev_attr_revision(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scsi_dev_attr_revision) {
     unsigned slot = 0;
     scsi_t *scsi = scsi_dev_scsi(self, &slot);
     const char *s = scsi_device_revision(scsi, slot);
     return val_str(s ? s : "");
 }
-static value_t scsi_dev_attr_block_size(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scsi_dev_attr_block_size) {
     unsigned slot = 0;
     scsi_t *scsi = scsi_dev_scsi(self, &slot);
     return val_uint(2, scsi_device_block_size(scsi, slot));
 }
-static value_t scsi_dev_attr_read_only(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scsi_dev_attr_read_only) {
     unsigned slot = 0;
     scsi_t *scsi = scsi_dev_scsi(self, &slot);
     return val_bool(scsi_device_read_only(scsi, slot));
 }
-static value_t scsi_dev_attr_medium_present(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scsi_dev_attr_medium_present) {
     unsigned slot = 0;
     scsi_t *scsi = scsi_dev_scsi(self, &slot);
     return val_bool(scsi_device_medium_present(scsi, slot));
 }
 
 // `eject()` — eject the medium from this device.
-static value_t scsi_dev_method_eject(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(scsi_dev_method_eject) {
     unsigned slot = 0;
     scsi_t *scsi = scsi_dev_scsi(self, &slot);
     if (!scsi)
@@ -1720,9 +1712,7 @@ static value_t scsi_dev_method_eject(struct object *self, const member_t *m, int
 // insert the same file back, and it returned as a CD-ROM.  The slot's type
 // survives an eject -- scsi_eject_device clears medium_present and the image
 // pointer and never the type -- so it is still here to be asked.
-static value_t scsi_dev_method_insert(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(scsi_dev_method_insert) {
     unsigned slot = 0;
     scsi_t *scsi = scsi_dev_scsi(self, &slot);
     if (!scsi)
@@ -1743,10 +1733,7 @@ static value_t scsi_dev_method_insert(struct object *self, const member_t *m, in
 }
 
 // `info()` — human-readable summary of the device contents.
-static value_t scsi_dev_method_info(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(scsi_dev_method_info) {
     unsigned slot = 0;
     scsi_t *scsi = scsi_dev_scsi(self, &slot);
     if (!scsi)
@@ -1768,7 +1755,10 @@ static value_t scsi_dev_method_info(struct object *self, const member_t *m, int 
 }
 
 static const arg_decl_t scsi_dev_insert_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Host path or storage URI of the image to mount"},
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .doc = "Host path or storage URI of the image to mount"},
 };
 
 // --- Medium (image) node: machine.scsi.device[N].image ---------------------
@@ -1781,37 +1771,32 @@ static const arg_decl_t scsi_dev_insert_args[] = {
 // child lookup only when a medium is present; the device owns the node
 // (freed in scsi_delete).
 
-static value_t scsi_image_attr_path(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scsi_image_attr_path) {
     unsigned slot = 0;
     scsi_t *scsi = scsi_dev_scsi(self, &slot);
     image_t *img = scsi ? scsi_device_image(scsi, slot) : NULL;
     const char *s = img ? image_path(img) : NULL;
     return val_str(s ? s : "");
 }
-static value_t scsi_image_attr_filename(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scsi_image_attr_filename) {
     unsigned slot = 0;
     scsi_t *scsi = scsi_dev_scsi(self, &slot);
     image_t *img = scsi ? scsi_device_image(scsi, slot) : NULL;
     const char *s = img ? image_get_filename(img) : NULL;
     return val_str(s ? s : "");
 }
-static value_t scsi_image_attr_raw_size(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scsi_image_attr_raw_size) {
     unsigned slot = 0;
     scsi_t *scsi = scsi_dev_scsi(self, &slot);
     image_t *img = scsi ? scsi_device_image(scsi, slot) : NULL;
     return val_uint(8, img ? (uint64_t)disk_size(img) : 0);
 }
-static value_t scsi_image_attr_writable(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scsi_image_attr_writable) {
     unsigned slot = 0;
     scsi_t *scsi = scsi_dev_scsi(self, &slot);
     return val_bool(scsi ? !scsi_device_read_only(scsi, slot) : false);
 }
-static value_t scsi_image_attr_present(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scsi_image_attr_present) {
     unsigned slot = 0;
     scsi_t *scsi = scsi_dev_scsi(self, &slot);
     return val_bool(scsi ? scsi_device_medium_present(scsi, slot) : false);
@@ -1820,9 +1805,7 @@ static value_t scsi_image_attr_present(struct object *self, const member_t *m) {
 // `export(path)` — flatten this device's live image (base + delta) into a
 // NEW file. image_export_to refuses to overwrite, so this is always a
 // "Save As…" and never mutates the source image.
-static value_t scsi_image_method_export(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(scsi_image_method_export) {
     unsigned slot = 0;
     scsi_t *scsi = scsi_dev_scsi(self, &slot);
     image_t *img = scsi ? scsi_device_image(scsi, slot) : NULL;
@@ -1840,13 +1823,14 @@ static value_t scsi_image_method_export(struct object *self, const member_t *m, 
 }
 
 // `eject()` — proxy to the owning device's eject.
-static value_t scsi_image_method_eject(struct object *self, const member_t *m, int argc, const value_t *argv) {
+static DEF_METHOD(scsi_image_method_eject) {
     return scsi_dev_method_eject(self, m, argc, argv);
 }
 
 static const arg_decl_t scsi_image_export_args[] = {
     {.name = "path",
      .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
      .validation_flags = OBJ_ARG_NONEMPTY,
      .doc = "Destination host path for the flattened image (must not exist)"},
 };
@@ -1855,28 +1839,23 @@ static const member_t scsi_image_members[] = {
     {.kind = M_ATTR,
      .name = "present",
      .doc = "True if a medium is loaded",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = scsi_image_attr_present, .set = NULL}},
+     .attr = {.type = V_BOOL, .get = scsi_image_attr_present, .set = NULL}   },
     {.kind = M_ATTR,
      .name = "path",
      .doc = "Storage-instance stem of the live image (the delta), not the source file — see filename",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = scsi_image_attr_path, .set = NULL}},
+     .attr = {.type = V_STRING, .get = scsi_image_attr_path, .set = NULL}    },
     {.kind = M_ATTR,
      .name = "filename",
      .doc = "Display filename of the medium",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = scsi_image_attr_filename, .set = NULL}},
     {.kind = M_ATTR,
      .name = "raw_size",
      .doc = "Medium size in bytes",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = scsi_image_attr_raw_size, .set = NULL}},
+     .attr = {.type = V_UINT, .get = scsi_image_attr_raw_size, .set = NULL}  },
     {.kind = M_ATTR,
      .name = "writable",
      .doc = "True if the medium accepts writes",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = scsi_image_attr_writable, .set = NULL}},
+     .attr = {.type = V_BOOL, .get = scsi_image_attr_writable, .set = NULL}  },
     {.kind = M_METHOD,
      .name = "export",
      .doc = "Save a flattened copy (base + delta) of this disk to a new file",
@@ -1885,8 +1864,7 @@ static const member_t scsi_image_members[] = {
                 .result = V_BOOL,
                 .fn = scsi_image_method_export,
                 .ui_flags = MM_MUTATE | MM_IO,
-                .verb_label = "Save image…",
-                .task_category = "storage"}},
+                .verb_label = "Save image…"}                               },
     {.kind = M_METHOD,
      .name = "eject",
      .doc = "Eject the medium from the owning device",
@@ -1894,8 +1872,7 @@ static const member_t scsi_image_members[] = {
                 .nargs = 0,
                 .result = V_BOOL,
                 .fn = scsi_image_method_eject,
-                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE,
-                .task_category = "storage"}},
+                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}                      },
 };
 
 static const class_desc_t scsi_image_class = {
@@ -1921,42 +1898,34 @@ static struct object *scsi_dev_image_lookup(struct object *self, const char *nam
 static const member_t scsi_device_members[] = {
     {.kind = M_ATTR,
      .name = "id",
-     .flags = VAL_RO,
      .doc = "SCSI ID 0-6 this device answers on (7 is the initiator, the Mac itself)",
      .attr = {.type = V_INT, .get = scsi_dev_attr_id, .set = NULL}},
     {.kind = M_ATTR,
      .name = "type",
-     .flags = VAL_RO,
      .doc = "What is attached at this ID: \"hd\", \"cdrom\", or \"none\" for an empty slot",
      .attr = {.type = V_ENUM, .get = scsi_dev_attr_type, .set = NULL}},
     {.kind = M_ATTR,
      .name = "vendor",
-     .flags = VAL_RO,
      .doc = "Vendor field of the INQUIRY response, as the guest's driver sees it",
      .attr = {.type = V_STRING, .get = scsi_dev_attr_vendor, .set = NULL}},
     {.kind = M_ATTR,
      .name = "product",
-     .flags = VAL_RO,
      .doc = "Product field of the INQUIRY response; Apple's drivers match on this to decide what they will mount",
      .attr = {.type = V_STRING, .get = scsi_dev_attr_product, .set = NULL}},
     {.kind = M_ATTR,
      .name = "revision",
-     .flags = VAL_RO,
      .doc = "Revision field of the INQUIRY response",
      .attr = {.type = V_STRING, .get = scsi_dev_attr_revision, .set = NULL}},
     {.kind = M_ATTR,
      .name = "block_size",
-     .flags = VAL_RO,
      .doc = "Bytes per logical block — 512 for a hard disk, 2048 for a CD-ROM",
      .attr = {.type = V_UINT, .get = scsi_dev_attr_block_size, .set = NULL}},
     {.kind = M_ATTR,
      .name = "read_only",
-     .flags = VAL_RO,
      .doc = "True when the device rejects writes (always so for a CD-ROM)",
      .attr = {.type = V_BOOL, .get = scsi_dev_attr_read_only, .set = NULL}},
     {.kind = M_ATTR,
      .name = "medium_present",
-     .flags = VAL_RO,
      .doc = "True when media is loaded; a CD-ROM slot stays attached with this false after `eject`",
      .attr = {.type = V_BOOL, .get = scsi_dev_attr_medium_present, .set = NULL}},
     {.kind = M_METHOD,
@@ -1986,36 +1955,33 @@ static const class_desc_t scsi_device_class = {
 
 // --- bus child class -------------------------------------------------------
 
-static value_t scsi_bus_attr_phase(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scsi_bus_attr_phase) {
     int p = scsi_get_bus_phase((scsi_t *)object_data(self));
     if (p < 0 || p > 9)
         p = 0;
     return val_enum(p, SCSI_PHASE_NAMES, 10);
 }
-static value_t scsi_bus_attr_target(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scsi_bus_attr_target) {
     return val_int(scsi_get_bus_target((scsi_t *)object_data(self)));
 }
-static value_t scsi_bus_attr_initiator(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scsi_bus_attr_initiator) {
     return val_int(scsi_get_bus_initiator((scsi_t *)object_data(self)));
 }
 
 static const member_t scsi_bus_members[] = {
     {.kind = M_ATTR,
      .name = "phase",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Current bus phase: bus_free, arbitration, selection, reselection, command, data_in, data_out, "
             "status, message_in, or message_out",                                             .attr = {.type = V_ENUM, .get = scsi_bus_attr_phase, .set = NULL}},
     {.kind = M_ATTR,
      .name = "target",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "SCSI ID the current transaction is addressing, or -1 when the bus is free",
      .attr = {.type = V_INT, .get = scsi_bus_attr_target, .set = NULL}                                                                                         },
     {.kind = M_ATTR,
      .name = "initiator",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "SCSI ID that won arbitration, normally 7 (the Mac), or -1 when the bus is free",
      .attr = {.type = V_INT, .get = scsi_bus_attr_initiator, .set = NULL}                                                                                      },
 };
@@ -2041,25 +2007,26 @@ static struct object *scsi_devices_get(struct object *self, int index) {
     return scsi->device_objects[index];
 }
 
+static const collection_desc_t scsi_devices_collection_entries = {
+    .entry = &scsi_device_class, .by_index = {.get = scsi_devices_get, .slots = 8}
+};
+
 static const member_t scsi_devices_collection_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child = {.cls = &scsi_device_class, .indexed = true, .get = scsi_devices_get, .slots = 8, .lookup = NULL}},
+    OBJ_ENTRIES(&scsi_devices_collection_entries, NULL),
 };
 static const class_desc_t scsi_devices_collection_class = {
     .name = "scsi_devices",
+    .doc = "SCSI devices, by bus ID",
     .members = scsi_devices_collection_members,
     .n_members = 1,
 };
 
 // --- top-level scsi class ---------------------------------------------------
 
-static value_t scsi_attr_loopback_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(scsi_attr_loopback_get) {
     return val_bool(scsi_get_loopback(scsi_self_from(self)));
 }
-static value_t scsi_attr_loopback_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(scsi_attr_loopback_set) {
     scsi_t *scsi = scsi_self_from(self);
     if (!scsi)
         return val_err("scsi not available");
@@ -2070,10 +2037,7 @@ static value_t scsi_attr_loopback_set(struct object *self, const member_t *m, va
 // `scsi.identify_hd(path)` — true if the file looks like a SCSI HD image:
 // it opens, isn't a floppy-sized image, and has a non-zero size. Prints a
 // closest-match drive model line for diagnostic context.
-static value_t scsi_method_identify_hd(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(scsi_method_identify_hd) {
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img) {
@@ -2098,10 +2062,7 @@ static value_t scsi_method_identify_hd(struct object *self, const member_t *m, i
 // `scsi.identify_cdrom(path)` — true if the file is a recognised CD-ROM
 // image (ISO 9660, HFS, or Apple Partition Map). Prints a one-line
 // diagnostic describing what was matched.
-static value_t scsi_method_identify_cdrom(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(scsi_method_identify_cdrom) {
     const char *path = argv[0].s;
     image_t *img = image_open_readonly(path);
     if (!img) {
@@ -2154,9 +2115,7 @@ static value_t scsi_method_identify_cdrom(struct object *self, const member_t *m
 
 // `scsi.attach_hd(path, id)` — attach a hard-disk image at the given SCSI id.
 // Calls system_hd_attach directly.
-static value_t scsi_method_attach_hd(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(scsi_method_attach_hd) {
     int64_t id = argv[1].i;
     if (id < 0 || id > 6)
         return val_err("scsi.attach_hd: id must be 0..6");
@@ -2166,9 +2125,7 @@ static value_t scsi_method_attach_hd(struct object *self, const member_t *m, int
 }
 
 // `scsi.attach_cdrom(path, id)` — attach a CD-ROM image at the given SCSI id.
-static value_t scsi_method_attach_cdrom(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(scsi_method_attach_cdrom) {
     int64_t id = argv[1].i;
     if (id < 0 || id > 6)
         return val_err("scsi.attach_cdrom: id must be 0..6");
@@ -2180,9 +2137,7 @@ static value_t scsi_method_attach_cdrom(struct object *self, const member_t *m, 
 
 // `scsi.hd_models` — V_LIST of {label, vendor, product, revision, size} maps
 // for the known SCSI HD model catalog.
-static value_t scsi_attr_hd_models(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(scsi_attr_hd_models) {
     int count = drive_catalog_count();
     if (count <= 0)
         return val_list(NULL, 0);
@@ -2203,12 +2158,12 @@ static value_t scsi_attr_hd_models(struct object *self, const member_t *m) {
 }
 
 static const arg_decl_t scsi_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Image file path"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Image file path"},
 };
 
 static const arg_decl_t scsi_attach_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Image file path"    },
-    {.name = "id",   .kind = V_INT,    .doc = "SCSI bus index 0..6"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "Image file path"},
+    {.name = "id", .kind = V_INT, .doc = "SCSI bus index 0..6"},
 };
 
 // Subset of `scsi_members` that doesn't depend on a live bus instance:
@@ -2221,14 +2176,16 @@ static const member_t scsi_static_members[] = {
     {.kind = M_ATTR,
      .name = "hd_models",
      .doc = "Known SCSI HD model catalog: [{label, vendor, product, size}] maps",
-     .flags = VAL_RO,
-     .attr = {.type = V_LIST, .get = scsi_attr_hd_models, .set = NULL}},
+     .flags = M_CAT_ADVANCED,
+     .attr = {.type = V_LIST, .get = scsi_attr_hd_models, .set = NULL}                                },
     {.kind = M_METHOD,
      .name = "identify_hd",
+     .flags = M_CAT_ADVANCED,
      .doc = "True if the file looks like a SCSI HD image",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_hd}},
+     .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_hd}   },
     {.kind = M_METHOD,
      .name = "identify_cdrom",
+     .flags = M_CAT_ADVANCED,
      .doc = "True if the file looks like a CD-ROM image",
      .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_cdrom}},
 };
@@ -2237,6 +2194,7 @@ static const class_desc_t scsi_static_class = {
     .name = "scsi",
     .members = scsi_static_members,
     .n_members = sizeof(scsi_static_members) / sizeof(scsi_static_members[0]),
+    .doc = "SCSI image identification (before a machine exists)",
 };
 
 // Pre-machine singleton holding the static subset. Replaced by the
@@ -2267,26 +2225,30 @@ static const member_t scsi_members[] = {
      .name = "loopback",
      .doc = "Loopback test card / passive terminator",
      .flags = 0,
-     .attr = {.type = V_BOOL, .get = scsi_attr_loopback_get, .set = scsi_attr_loopback_set}},
+     .attr = {.type = V_BOOL, .get = scsi_attr_loopback_get, .set = scsi_attr_loopback_set}            },
     {.kind = M_ATTR,
      .name = "hd_models",
      .doc = "Known SCSI HD model catalog: [{label, vendor, product, size}] maps",
-     .flags = VAL_RO,
-     .attr = {.type = V_LIST, .get = scsi_attr_hd_models, .set = NULL}},
+     .flags = M_CAT_ADVANCED,
+     .attr = {.type = V_LIST, .get = scsi_attr_hd_models, .set = NULL}                                 },
     {.kind = M_METHOD,
      .name = "identify_hd",
+     .flags = M_CAT_ADVANCED,
      .doc = "True if the file looks like a SCSI HD image",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_hd}},
+     .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_hd}    },
     {.kind = M_METHOD,
      .name = "identify_cdrom",
+     .flags = M_CAT_ADVANCED,
      .doc = "True if the file looks like a CD-ROM image",
-     .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_cdrom}},
+     .method = {.args = scsi_path_arg, .nargs = 1, .result = V_BOOL, .fn = scsi_method_identify_cdrom} },
     {.kind = M_METHOD,
      .name = "attach_hd",
+     .examples = EXAMPLES("machine.scsi.attach_hd \"/opfs/images/hd/data.img\" 1"),
      .doc = "Attach a hard-disk image at the given SCSI id",
-     .method = {.args = scsi_attach_args, .nargs = 2, .result = V_BOOL, .fn = scsi_method_attach_hd}},
+     .method = {.args = scsi_attach_args, .nargs = 2, .result = V_BOOL, .fn = scsi_method_attach_hd}   },
     {.kind = M_METHOD,
      .name = "attach_cdrom",
+     .examples = EXAMPLES("machine.scsi.attach_cdrom \"/opfs/images/cd/install.iso\" 3"),
      .doc = "Attach a CD-ROM image at the given SCSI id",
      .method = {.args = scsi_attach_args, .nargs = 2, .result = V_BOOL, .fn = scsi_method_attach_cdrom}},
 };
@@ -2295,4 +2257,5 @@ static const class_desc_t scsi_class = {
     .name = "scsi",
     .members = scsi_members,
     .n_members = sizeof(scsi_members) / sizeof(scsi_members[0]),
+    .doc = "SCSI bus controller and its devices",
 };

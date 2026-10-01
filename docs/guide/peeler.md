@@ -2,7 +2,7 @@
 
 This document describes how the emulator unpacks classic Macintosh
 archive formats. The underlying library is **peeler**; the
-emulator-facing surface is the `archive` namespace on the object tree.
+emulator-facing surface is the `files.archive` node on the object tree.
 
 ## Overview
 
@@ -14,7 +14,7 @@ detects nested formats so a `.sit.hqx` file unpacks in a single call.
 The library originated as a standalone project at
 <https://github.com/pappadf/peeler> and now lives in-tree under
 [`src/peeler/`](../../src/peeler/) (it was previously a git submodule).
-The emulator wraps it as `archive` on the object tree so users and
+The emulator wraps it as `files.archive` on the object tree so users and
 scripts never see the library name; from their point of view, the
 emulator just knows how to identify and extract Mac archives.
 
@@ -22,16 +22,16 @@ emulator just knows how to identify and extract Mac archives.
 
 | Path | Result | Description |
 |------|--------|-------------|
-| `archive.identify(path)` | `V_STRING` — `"sit"` / `"hqx"` / `"cpt"` / `"bin"` / `"sea"`, or empty string when the file isn't a recognised archive | Format probe; doesn't extract |
-| `archive.extract(path, [out_dir])` | `V_BOOL` — `true` on success | Extract every file in the archive to `out_dir` (defaults to the current working directory) |
+| `files.archive.identify(path)` | `V_STRING` — `"sit"` / `"hqx"` / `"cpt"` / `"bin"` / `"sea"`, or empty string when the file isn't a recognised archive | Format probe; doesn't extract |
+| `files.archive.extract(path, [out_dir])` | `V_BOOL` — `true` on success | Extract every file in the archive to `out_dir` (defaults to the current working directory) |
 
 Empty / missing return values follow the predicate-truthy rule: an
 unrecognised file produces an empty string, which scripts can test as
 a falsy `${...}`.
 
-`archive.identify` and `archive.extract` are reachable everywhere the
+`files.archive.identify` and `files.archive.extract` are reachable everywhere the
 object model is reachable: the interactive shell, headless scripts,
-the JavaScript bridge (`gsEval('archive.identify', [path])`), and the
+the JavaScript bridge (`gsEval('files.archive.identify', [path])`), and the
 inspector UI.
 
 ## Architecture
@@ -44,8 +44,9 @@ The peeler library is vendored in-tree:
   `test/`), a self-contained copy of the upstream project. It keeps its
   own standalone `Makefile` so it can still be built/tested on its own.
 - **Build** — sources are compiled directly alongside the emulator via
-  the explicit `PEELER_SRC` list in the top-level `Makefile` /
-  `Makefile.headless`, with `-Isrc/peeler/include -Isrc/peeler/lib`.
+  the explicit `PEELER_SRC` list in `src/sources.mk`, shared by the
+  top-level `Makefile` and `Makefile.headless`, with
+  `-Isrc/peeler/include -Isrc/peeler/lib`.
 - **Linkage** — peeler objects link into both the WASM module and the
   headless binary.
 
@@ -69,14 +70,21 @@ list of files, each with:
 The emulator-side wrapper lives at
 [`src/core/storage/archive.c`](../../src/core/storage/archive.c). It:
 
-- Owns the `archive` class descriptor and registers the object as a
-  process-singleton from `archive_init` (called by `shell_init`).
+- Owns the `archive` class descriptor and attaches the object under
+  `files` as a process singleton from `archive_init` (called by
+  `files_init` at `shell_init`).
 - Implements `archive_identify_file(path)` and
   `archive_extract_file(path, out_dir)` — small C wrappers over the
   peeler API that the typed methods bind to.
-- Discards resource forks on extraction. The emulator filesystems
-  don't model resource forks, and the only callers want the data
-  fork (disk images, system files unpacked from `.sit` / `.hqx`).
+- Dispatches `archive.extract` as an I/O-job leaf (`MM_IO`), so decoding
+  and writing a large archive never blocks the emulator thread.
+- Writes each file's data fork under its name and, when the file carries
+  a resource fork and/or Finder Info, an AppleDouble `._<name>` sidecar
+  beside it (via peeler's `peel_build_sidecar`). A Mac file stays
+  lossless on the flat host filesystem — e.g. a StuffIt/MacBinary-wrapped
+  NDIF disk image unpacks to a mountable pair — and the sidecar
+  interoperates with macOS/Netatalk. A file with neither gets no
+  sidecar.
 
 ## Supported formats
 
@@ -88,12 +96,14 @@ The emulator-side wrapper lives at
 
 ## Build process
 
-The top-level `Makefile` adds the peeler sources directly:
+The shared source list `src/sources.mk` (included by both the top-level
+`Makefile` and `Makefile.headless`) adds the peeler sources directly:
 
 ```makefile
 PEELER_DIR := src/peeler
 
 PEELER_SRC := $(PEELER_DIR)/lib/peeler.c \
+              $(PEELER_DIR)/lib/appledouble.c \
               $(PEELER_DIR)/lib/err.c \
               $(PEELER_DIR)/lib/util.c \
               $(PEELER_DIR)/lib/formats/bin.c \
@@ -113,23 +123,23 @@ Include paths are added via `PEELER_INCLUDES = -I$(PEELER_DIR)/include
 ### Interactive shell
 
 ```
-> archive.identify /tmp/myarchive.sit.hqx
+> files.archive.identify /tmp/myarchive.sit.hqx
 hqx
-> archive.extract /tmp/myarchive.sit.hqx /tmp/out
+> files.archive.extract /tmp/myarchive.sit.hqx /tmp/out
 true
 ```
 
 ### Script form
 
 ```
-${archive.identify("/tmp/myarchive.sit")}
-assert ${archive.extract("/tmp/myarchive.sit", "/tmp/out")}
+${files.archive.identify("/tmp/myarchive.sit")}
+assert ${files.archive.extract("/tmp/myarchive.sit", "/tmp/out")}
 ```
 
 ### Web drag-and-drop
 
 The browser frontend probes dropped files in this order: ZIP via
-JSZip, Mac archive via `archive.identify`, then media-format probes.
+JSZip, Mac archive via `files.archive.identify`, then media-format probes.
 Recognised archives are extracted to a staging directory and their
 contents are re-probed for media. See [`web.md`](web.md) for the full
 upload pipeline.
@@ -138,7 +148,7 @@ upload pipeline.
 
 In the web2 Filesystem panel, right-clicking a file whose extension
 peeler recognises (`.sit` / `.hqx` / `.cpt` / `.bin` / `.sea`) adds an
-**Unpack** entry to the context menu. It calls `archive.extract` with
+**Unpack** entry to the context menu. It calls `files.archive.extract` with
 the file and a sibling `<name>_unpacked/` output directory, then
 refreshes the tree to reveal the extracted contents. The gate is the
 `isMacArchive` extension check in
@@ -154,7 +164,9 @@ menu wiring lives in
    automatically.
 2. **Iterate files** — walk `peel_file_list_t.files[]`.
 3. **Write output** — write each file's data fork to the destination
-   directory, creating parent directories as needed.
+   directory, creating parent directories as needed, and write an
+   AppleDouble `._<name>` sidecar when the file has a resource fork
+   and/or Finder Info (a data-only file gets no sidecar).
 4. **Cleanup** — `peel_file_list_free()`.
 
 ### Mac metadata handling
@@ -168,9 +180,10 @@ Classic Mac files contain:
 In the emulator's filesystems:
 
 - Data forks are written as regular files.
-- Resource forks are discarded (no filesystem support; not needed for
-  the disk-image / boot-floppy use cases that drive most extractions).
-- Finder metadata is available in `peel_file_meta_t` but not stored.
+- Resource forks and Finder Info are preserved in an AppleDouble
+  `._<name>` sidecar beside the data file (`peel_build_sidecar`), so a
+  StuffIt/MacBinary-wrapped NDIF disk image unpacks to a mountable pair.
+- Finder metadata is also available directly in `peel_file_meta_t`.
 
 ## Error handling
 
@@ -181,7 +194,7 @@ peeler uses explicit error objects:
 - `peel_err_free(err)` — free the error object.
 
 The wrapper translates these into method-call failures (`V_BOOL false`
-for `archive.extract`, empty string for `archive.identify`). Detailed
+for `files.archive.extract`, empty string for `files.archive.identify`). Detailed
 messages still print to stderr via `fprintf` so scripts get a useful
 trace when a recognised archive fails to unpack.
 

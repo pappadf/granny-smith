@@ -5,9 +5,9 @@
 // shell_build_prompt): "gs> " with no machine, "gs <model>> " while the
 // machine free-runs (a sampled PC would be stale), and
 // "gs <model> @<pc>> " when the scheduler is stopped. The prompt travels
-// the real path — `shell.prompt` seeds the terminal on mount and every
-// `shell.run` returns the next prompt, which xterm renders — so the
-// assertions read the rendered terminal, not the attribute.
+// the real path — `shell.prompt` seeds the console on mount and every
+// `shell.run` returns the next prompt, which the console shows beside its
+// input — so the assertions read the rendered console, not the attribute.
 //
 // The machine is an SE/30 with no media, free-running at the ROM's
 // insert-disk prompt (same fixture as scheduler-accelerated.spec.ts).
@@ -15,7 +15,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
-import { terminalRun as typeLine } from '../helpers/terminal';
+import { terminalRun as typeLine, consoleLine, CONSOLE_INPUT } from '../helpers/terminal';
 
 // Output is read right after each line: type, submit, then settle.
 const terminalRun = (page: Page, line: string) =>
@@ -24,16 +24,7 @@ const terminalRun = (page: Page, line: string) =>
 const DATA = path.resolve(__dirname, '../../data');
 const SE30_ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
 
-// Last non-empty rendered terminal line — the input line, i.e. the
-// current prompt (xterm innerText drops trailing blanks/spaces).
-async function lastTermLine(page: Page): Promise<string> {
-  const text = await page.locator('.xterm-rows').innerText();
-  const lines = text
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-  return lines.length ? lines[lines.length - 1] : '';
-}
+const lastTermLine = consoleLine;
 
 test('terminal Tab completion replaces the right span', async ({ page }) => {
   test.setTimeout(3 * 60 * 1000);
@@ -42,11 +33,11 @@ test('terminal Tab completion replaces the right span', async ({ page }) => {
   // Terminal is live pre-machine (object-model shell needs no emulated
   // machine), which keeps this test cheap.
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
   await expect
     .poll(() => lastTermLine(page), { timeout: 15_000 })
     .toMatch(/^gs>$/);
-  const term = page.locator('.xterm');
+  const term = page.locator('.console');
   await term.click();
 
   // Object completion: a lone object candidate completes to "shell."
@@ -58,11 +49,12 @@ test('terminal Tab completion replaces the right span', async ({ page }) => {
     .poll(() => lastTermLine(page), { timeout: 10_000 })
     .toMatch(/^gs> shell\.$/);
 
-  // Second Tab proposes the object's members.
+  // Second Tab proposes the object's members in a popup, each with its
+  // doc.
   await page.keyboard.press('Tab');
-  await expect
-    .poll(() => page.locator('.xterm-rows').innerText(), { timeout: 10_000 })
-    .toContain('shell.complete');
+  const popup = page.locator('.cm-tooltip-autocomplete');
+  await expect(popup).toContainText('complete', { timeout: 10_000 });
+  await expect(popup.locator('.cm-completionDetail').first()).not.toBeEmpty();
 
   // A leaf attribute completes with the trailing space.
   await page.keyboard.type('pro');
@@ -79,30 +71,28 @@ test('terminal Tab completion replaces the right span', async ({ page }) => {
   // entry names (span narrows to the basename after the last '/'), and
   // a directory completes to "name/" — the browser VFS root always
   // contains /opfs.
-  await page.keyboard.type('vfs.ls /op');
+  await page.keyboard.type('files.ls /op');
   await page.keyboard.press('Tab');
   await expect
     .poll(() => lastTermLine(page), { timeout: 10_000 })
-    .toMatch(/^gs> vfs\.ls \/opfs\/$/);
+    .toMatch(/^gs> files\.ls \/opfs\/$/);
 });
 
-test('shell history persists across reloads via OPFS', async ({ page }) => {
+test('shell history persists across reloads', async ({ page }) => {
   test.setTimeout(3 * 60 * 1000);
   await gotoWeb2(page);
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
-  await page.locator('.xterm').click();
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
+  await page.locator('.console').click();
   await page.keyboard.type('echo history-survives-reload');
   await page.keyboard.press('Enter');
   await expect.poll(() => lastTermLine(page), { timeout: 10_000 }).toMatch(/^gs>$/);
-  // Let the coalesced OPFS history write land before navigating away.
-  await page.waitForTimeout(500);
 
   // Fresh page load, same origin storage: ArrowUp must recall the line.
   await gotoWeb2(page);
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
-  await page.locator('.xterm').click();
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
+  await page.locator('.console').click();
   await page.keyboard.press('ArrowUp');
   await expect
     .poll(() => lastTermLine(page), { timeout: 10_000 })
@@ -115,7 +105,7 @@ test('shell prompt reflects machine and run state', async ({ page }) => {
 
   // --- No machine: bare "gs> " ------------------------------------------
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
   await expect
     .poll(() => lastTermLine(page), { timeout: 15_000 })
     .toMatch(/^gs>$/);
@@ -140,7 +130,7 @@ test('shell prompt reflects machine and run state', async ({ page }) => {
   ).toBeVisible({ timeout: 60_000 });
 
   // --- Running: "gs se30> ", no PC --------------------------------------
-  // No command is typed first: TerminalPane reseeds the rendered prompt on
+  // No command is typed first: the console reseeds the rendered prompt on
   // the machine.status edge, so the idle input line must update by itself.
   await page.locator('button.ptab[data-tab="terminal"]').click();
   await expect
@@ -204,9 +194,10 @@ test('shell prompt reflects machine and run state', async ({ page }) => {
   expect(typeof last.data.pc).toBe('number');
 });
 
-// The terminal stays mounted while another tab shows: its scrollback
+// The console stays mounted while another tab shows: its scrollback
 // survives a tab switch, and output printed meanwhile is there on return.
-// Typed input goes through xterm's onData, so a pasted line runs too.
+// A pasted line is inserted for review and runs on Enter; a pasted block
+// runs as one job.
 test('terminal keeps its scrollback across tab switches, and paste runs', async ({ page }) => {
   test.setTimeout(3 * 60 * 1000);
   await gotoWeb2(page);
@@ -216,25 +207,39 @@ test('terminal keeps its scrollback across tab switches, and paste runs', async 
     .toMatch(/^gs>$/);
 
   await terminalRun(page, 'echo "before-switch-marker"');
-  await expect(page.locator('.xterm-rows')).toContainText('before-switch-marker', {
+  await expect(page.locator('.console-output')).toContainText('before-switch-marker', {
     timeout: 10_000,
   });
 
   await page.locator('button.ptab[data-tab="machine"]').click();
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm-rows')).toContainText('before-switch-marker', {
+  await expect(page.locator('.console-output')).toContainText('before-switch-marker', {
     timeout: 10_000,
   });
 
-  // A paste: xterm delivers it to onData as one multi-character chunk.
-  const ta = page.locator('.xterm textarea.xterm-helper-textarea');
-  await ta.focus();
-  await ta.evaluate((el) => {
-    const dt = new DataTransfer();
-    dt.setData('text/plain', 'echo "pasted-marker"\n');
-    el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true }));
-  });
+  const paste = async (text: string) => {
+    const input = page.locator(CONSOLE_INPUT);
+    await input.focus();
+    await input.evaluate((el, t) => {
+      const dt = new DataTransfer();
+      dt.setData('text/plain', t);
+      el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true }));
+    }, text);
+  };
+
+  // One line, pasted with its newline and a copied prompt glyph: inserted,
+  // not run, until Enter.
+  await paste('› echo "pasted-marker"\r\n');
+  await expect.poll(() => lastTermLine(page)).toBe('gs> echo "pasted-marker"');
+  await page.keyboard.press('Enter');
   await expect
-    .poll(() => page.locator('.xterm-rows').innerText(), { timeout: 10_000 })
+    .poll(() => page.locator('.console-output').innerText(), { timeout: 10_000 })
     .toMatch(/^\s*pasted-marker\s*$/m);
+
+  // A block: shown whole, one Enter runs it as one command.
+  await paste('echo "block-one"\necho "block-two"');
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.console-output')).toContainText('block-two', { timeout: 10_000 });
+  const commands = page.locator('.console-output .entry.command');
+  await expect(commands.last()).toHaveText('echo "block-one"\necho "block-two"');
 });

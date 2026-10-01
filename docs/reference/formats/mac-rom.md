@@ -43,7 +43,8 @@ Apple Network Server ROM carries the same version and release (`$077D`,
 `$28F2`) as the Power Macintosh 9500 v2 ROM. A ROM is never identified by
 its version.
 
-The Lisa boot ROM does not follow this layout (§5).
+The Lisa boot ROM does not follow this layout (§5; the machine's own page is
+[lisa.md](../machines/lisa/lisa.md) §16).
 
 ## 3. The 68k checksum
 
@@ -161,7 +162,8 @@ the Memory Manager in 32-bit mode. The `$067C` ROMs, from the IIci on, are
 
 ## 7. The Macintosh Plus revisions
 
-All three Plus ROMs are 128 KB, two 64 KB chips, with version `$0075`, so
+All three Plus ROMs are 128 KB, two 64 KB chips, with version `$0075`
+([compact.md](../machines/compact/compact.md) §2.5), so
 only the checksum tells them apart:
 
 | Revision | Checksum | Name |
@@ -305,8 +307,8 @@ identify:
 | Method | Answer |
 |---|---|
 | `machine.rom.identify(path)` | `{recognised, supported, compatible, name, variant, size, kind, id, intact, reason}` (`rom_method_identify`, `rom.c`). `variant` is the table's short label that tells this ROM apart from other known ROMs booting the same model ("Win NT"), empty when no other known ROM shares a model with it. An unrecognised file still reports `kind`, `id`, `intact` and `reason`; `reason` is empty when intact and otherwise names what does not verify ("PowerPC section does not verify (byte lanes 2)") |
-| `machine.vrom.identify(path)` | `{recognised, card_id?, compatible?, size, crc}`, with `crc` as `0x` plus 8 lowercase hex digits (`vrom.c:320`) |
-| `machine.prom.identify(path)` | `{recognised, card_id?, compatible?, vendor_id?, device_id?, size, crc, reason?}` (`prom.c`, `prom_method_identify`) |
+| `catalog.vroms.identify(path)` | `{recognised, card_id?, compatible?, size, crc}`, with `crc` as `0x` plus 8 lowercase hex digits (`vrom.c:320`) |
+| `catalog.proms.identify(path)` | `{recognised, card_id?, compatible?, vendor_id?, device_id?, size, crc, reason?}` (`prom.c`, `prom_method_identify`) |
 
 ### 10.2 What `rom=` resolves
 
@@ -377,7 +379,7 @@ has two instances, `vrom.c` and `prom.c`, with the same behaviour:
   checkpointed; on restore they are resolved again from the registry, with
   the record's `vrom` and `prom` made the explicit picks again
   (`system_restore`).
-- **Hooks.** `machine.vrom.offer(path)` and `machine.prom.offer(path)`
+- **Hooks.** `catalog.vroms.offer(path)` and `catalog.proms.offer(path)`
   register one file and return `true` only if it was recognised.
 
 ### 10.4 Where the files come from
@@ -385,7 +387,7 @@ has two instances, `vrom.c` and `prom.c`, with the same behaviour:
 | | Headless (`src/platform/headless/headless_main.c`) | Browser (`app/web2`, `src/platform/wasm/em_main.c`) |
 |---|---|---|
 | CPU ROM | The `rom=` argument on the command line, which must identify. `model=` picks among the compatible models and otherwise defaults to the first (`headless_main.c:1297-1326`). A script names further ROMs by path in its own `machine.boot rom=`. The integration runner exports the startup path as `$ROM` (`scripts/run-integration-test.sh:154-164`). | Stored in OPFS as `/opfs/images/rom/<id>`, named by the content id `rom.identify` reports, and only when the ROM is `intact` and `supported`: a damaged dump or a ROM of an unemulated machine is refused with a message saying which (`app/web2/src/lib/media.ts`, the `rom` descriptor). The configuration dialog lists that directory and identifies each file, offering one Machine Model entry per model/ROM pair, labelled "<model> (<variant>)" whenever the ROM has a `variant` (that is, whenever other known ROMs boot the same model, stored or not). A dropped ROM boots its first compatible model if no machine is running (`maybeBootFromRom`, `app/web2/src/bus/upload.ts:440`). A URL `?rom=` is fetched, stored, and booted, using the URL's `model=` when it is compatible (`app/web2/src/bus/urlMedia.ts:119-134`). |
-| vROM | Before the startup boot, every `*.vrom` in the directory of the command-line ROM is offered (`offer_sibling_card_roms`, `headless_main.c`), and `machine_boot_apply` repeats the walk for the directory of every ROM a script boots, through `platform_offer_sibling_card_roms` (platform.h; the browser's implementation is a no-op) — a `machine.boot rom=<elsewhere>` used to find none of the card ROMs beside it (#187). | Every file in `/opfs/images/vrom/` is offered at startup, whatever its name (`em_main.c:724`). An upload is stored as `<crc>`, 8 lowercase hex digits (`media.ts:180`), and offered at once through `machine.vrom.offer` (`upload.ts:397`). |
+| vROM | Before the startup boot, every `*.vrom` in the directory of the command-line ROM is offered (`offer_sibling_card_roms`, `headless_main.c`), and `machine_boot_apply` repeats the walk for the directory of every ROM a script boots, through `platform_offer_sibling_card_roms` (platform.h; the browser's implementation is a no-op) — a `machine.boot rom=<elsewhere>` used to find none of the card ROMs beside it (#187). | Every file in `/opfs/images/vrom/` is offered at startup, whatever its name (`em_main.c:724`). An upload is stored as `<crc>`, 8 lowercase hex digits (`media.ts:180`), and offered at once through `catalog.vroms.offer` (`upload.ts:397`). |
 | PROM | The same offer pass for `*.prom` (`headless_main.c:946`). | The same, from `/opfs/images/prom/` (`em_main.c:729`; `upload.ts:401`). |
 
 In the browser, a dropped file is classified by trying the
@@ -399,7 +401,7 @@ Headless offers card ROMs once, from the directory of the **command-line**
 ROM. `machine_boot_apply` never offers anything, so a script that calls
 `machine.boot rom=` with a ROM in another directory does not make that
 directory's `*.vrom`/`*.prom` visible. It has to offer them
-(`machine.vrom.offer`/`machine.prom.offer`) or name one with
+(`catalog.vroms.offer`/`catalog.proms.offer`) or name one with
 `vrom=`/`prom=`.
 
 ### 10.5 Test-data filenames

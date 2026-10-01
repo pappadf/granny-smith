@@ -1,7 +1,7 @@
 // The dialog's half of "this machine's display comes only from a PCI slot".
 //
 // The Power Macintosh 9500 has no built-in video and no NuBus video slots:
-// machine.profile reports builtin_video {} and video_slots [], and the only
+// catalog.profile reports builtin_video {} and video_slots [], and the only
 // display source is a display-class card in pci_slots. What this pins is the
 // translation between the one control the user sees and the two boot-document
 // fields it produces — `pci_card` (which card is seated) and `prom` (the
@@ -58,14 +58,14 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         return null;
       }
       // The core owns the blob -> card mapping; the UI carries none.
-      if (path === 'machine.prom.identify') {
+      if (path === 'catalog.proms.identify') {
         const p = (args?.[0] as string) ?? '';
         if (p === MACH64_PROM) {
           return { recognised: true, card_id: 'mach64_gx', compatible: ['mach64_gx'] };
         }
         return { recognised: false };
       }
-      if (path === 'machine.profile') {
+      if (path === 'catalog.profile') {
         const id = (args?.[0] as string) ?? '';
         const byId: Record<string, object> = {
           // The authentic 9500: no built-in video, no NuBus video slots, and

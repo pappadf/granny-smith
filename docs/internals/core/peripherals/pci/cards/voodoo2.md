@@ -5,6 +5,10 @@ product; the Mac boards — TechWorks Power3D II, Micro Conversions Game
 Wizard — were the PC reference design with Mac drivers and a monitor
 pass-through cable). Modelled in
 [`src/core/peripherals/pci/cards/voodoo2.c`](../../../../../../src/core/peripherals/pci/cards/voodoo2.c).
+The card's hardware reference page is
+[`voodoo2.md`](../../../../../reference/hardware/pci/cards/voodoo2.md)
+(section 2 for the register file, section 3 for behaviour); this page
+covers the emulator's model and its deliberate divergences from silicon.
 
 This file adopts, for PCI, the per-card documentation convention NuBus
 uses under [`nubus/cards/`](../../nubus/cards/); retro-fitting a
@@ -574,7 +578,7 @@ the start block, and spot rows are pinned straight off the spec pages.
 
 ## The trace instrument
 
-`debug.log voodoo2 "level=N [pc=on] [file=...]"` — level 4: writes to
+`log.set voodoo2 level=N [pc=true] [file=...]` — level 4: writes to
 the non-FIFO'd init/video/CMDFIFO-control block; level 5: **all**
 writes — direct register-face writes, LFB writes, one line per CMDFIFO
 packet (`fifo pkt @off type hdr len`), every register write the fifo
@@ -589,7 +593,7 @@ exactly that.
 Two further tools trace a single wrong pixel to its texels:
 
 - **`GS_V2_WATCH="x,y"`** (environment variable, needs
-  `debug.log voodoo2 1`): logs every colour-buffer store to that pixel
+  `log.set voodoo2 1`): logs every colour-buffer store to that pixel
   with the full shading state, every texel fetch that fed it
   (`watch texel tmuN lodN (s,t) addr lodbase raw argb`), and one
   pipe-internals line per pixel (`watch pipe tex= iter= cc= fogmode=

@@ -1211,8 +1211,7 @@ VIA_BYTE_GETTER(acr, via_get_acr)
 VIA_BYTE_GETTER(pcr, via_get_pcr)
 VIA_BYTE_GETTER(sr, via_get_sr)
 
-static value_t via_attr_freq_factor(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(via_attr_freq_factor) {
     via_t *via = via_instance_from(self);
     return val_uint(1, via_get_freq_factor(via));
 }
@@ -1224,19 +1223,19 @@ static unsigned port_index_from_member(const member_t *m) {
     return (unsigned)(uintptr_t)m->attr.user_data;
 }
 
-static value_t via_port_attr_output(struct object *self, const member_t *m) {
+static DEF_GETTER(via_port_attr_output) {
     via_t *via = via_instance_from(self);
     value_t v = val_uint(1, via_port_output(via, port_index_from_member(m)));
     v.flags |= VAL_HEX;
     return v;
 }
-static value_t via_port_attr_input(struct object *self, const member_t *m) {
+static DEF_GETTER(via_port_attr_input) {
     via_t *via = via_instance_from(self);
     value_t v = val_uint(1, via_port_input(via, port_index_from_member(m)));
     v.flags |= VAL_HEX;
     return v;
 }
-static value_t via_port_attr_direction(struct object *self, const member_t *m) {
+static DEF_GETTER(via_port_attr_direction) {
     via_t *via = via_instance_from(self);
     value_t v = val_uint(1, via_port_direction(via, port_index_from_member(m)));
     v.flags |= VAL_HEX;
@@ -1249,7 +1248,7 @@ static value_t via_port_attr_direction(struct object *self, const member_t *m) {
     static const member_t VAR[] = {                                                                                    \
         {.kind = M_ATTR,                                                                                               \
          .name = "output",                                                                                             \
-         .flags = VAL_RO | M_CAT_ADVANCED,                                                                             \
+         .flags = M_CAT_ADVANCED,                                                                                      \
          .doc = "ORA/ORB — the byte the VIA drives onto the pins that `direction` marks as outputs",                   \
          .attr = {.type = V_UINT,                                                                                      \
                   .presentation_flags = VAL_HEX,                                                                       \
@@ -1258,7 +1257,7 @@ static value_t via_port_attr_direction(struct object *self, const member_t *m) {
                   .user_data = (void *)(uintptr_t)(PORT)}},                                                            \
         {.kind = M_ATTR,                                                                                               \
          .name = "input",                                                                                              \
-         .flags = VAL_RO | M_CAT_ADVANCED,                                                                             \
+         .flags = M_CAT_ADVANCED,                                                                                      \
          .doc = "IRA/IRB — the level attached hardware presents on the pins that `direction` marks as inputs",         \
          .attr = {.type = V_UINT,                                                                                      \
                   .presentation_flags = VAL_HEX,                                                                       \
@@ -1267,7 +1266,7 @@ static value_t via_port_attr_direction(struct object *self, const member_t *m) {
                   .user_data = (void *)(uintptr_t)(PORT)}},                                                            \
         {.kind = M_ATTR,                                                                                               \
          .name = "direction",                                                                                          \
-         .flags = VAL_RO | M_CAT_ADVANCED,                                                                             \
+         .flags = M_CAT_ADVANCED,                                                                                      \
          .doc = "DDRA/DDRB — per-pin data direction; a 1 bit is an output, a 0 bit an input",                          \
          .attr = {.type = V_UINT,                                                                                      \
                   .presentation_flags = VAL_HEX,                                                                       \
@@ -1282,9 +1281,11 @@ VIA_PORT_MEMBERS(via_port_b_members, 1);
 // clang-format on
 
 static const class_desc_t via_port_a_class = {.name = "via_port",
+                                              .doc = "VIA port A: output, input and direction registers",
                                               .members = via_port_a_members,
                                               .n_members = sizeof(via_port_a_members) / sizeof(via_port_a_members[0])};
 static const class_desc_t via_port_b_class = {.name = "via_port",
+                                              .doc = "VIA port B: output, input and direction registers",
                                               .members = via_port_b_members,
                                               .n_members = sizeof(via_port_b_members) / sizeof(via_port_b_members[0])};
 
@@ -1294,38 +1295,39 @@ static const class_desc_t via_port_b_class = {.name = "via_port",
 static const member_t via_members[] = {
     {.kind = M_ATTR,
      .name = "ifr",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Interrupt flag register; bit 7 is the OR of the enabled sources below it",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = via_attr_ifr, .set = NULL}},
     {.kind = M_ATTR,
      .name = "ier",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Interrupt enable register; a 1 bit lets the matching IFR bit raise the VIA's IRQ line",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = via_attr_ier, .set = NULL}},
     {.kind = M_ATTR,
      .name = "acr",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Auxiliary control register: timer 1/2 modes, shift-register mode, and port input latching",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = via_attr_acr, .set = NULL}},
     {.kind = M_ATTR,
      .name = "pcr",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Peripheral control register: the edge and handshake behaviour of CA1/CA2 and CB1/CB2",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = via_attr_pcr, .set = NULL}},
     {.kind = M_ATTR,
      .name = "sr",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "Shift register — the byte in flight on CB2, which is how the Mac talks to the keyboard and RTC",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = via_attr_sr, .set = NULL} },
     {.kind = M_ATTR,
      .name = "freq_factor",
-     .flags = VAL_RO | M_CAT_ADVANCED,
+     .flags = M_CAT_ADVANCED,
      .doc = "CPU cycles per VIA cycle on this machine; the timers count in VIA cycles",
      .attr = {.type = V_UINT, .get = via_attr_freq_factor, .set = NULL}                       },
 };
 
 static const class_desc_t via_class = {
     .name = "via",
+    .doc = "A 6522 VIA: timers, shift register, interrupt flags, ports a and b",
     .members = via_members,
     .n_members = sizeof(via_members) / sizeof(via_members[0]),
 };

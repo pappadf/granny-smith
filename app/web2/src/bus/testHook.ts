@@ -3,7 +3,7 @@
 // web2 deliberately exposes no `window.gsEval`: real users drive the emulator
 // through the UI and the terminal.  e2e specs, though, need to read what the
 // core holds after a UI action — which bay a disk landed in, whether a
-// breakpoint exists — and typing probes into xterm races heavy output.  So
+// breakpoint exists — and typing probes into the console races heavy output.  So
 // under automation only (`navigator.webdriver`, which drivers set and ordinary
 // browsing does not) the page carries `window.__gsEvalForTests`, a thin
 // wrapper over the bus `gsEval`.  No build flag, no query parameter, and the

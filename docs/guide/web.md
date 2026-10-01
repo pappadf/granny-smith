@@ -15,7 +15,7 @@ runs on a dedicated worker thread; the browser main thread handles DOM,
 input, and compositing.
 
 **Threading model**
-- **Main (browser) thread:** DOM events, xterm.js terminal, UI chrome,
+- **Main (browser) thread:** DOM events, the Terminal console, UI chrome,
   OPFS reads via the browser API, file uploads staged to `/opfs/upload/`.
 - **Emulator worker thread:** CPU emulation, OPFS file I/O via WasmFS
   (delta/journal/checkpoint), shell command execution, all object-model
@@ -45,7 +45,7 @@ it lazily *sees* a newly created file on first access, but a file the worker
 created and then has cached goes stale if the main thread deletes it — so a
 later worker-side create at that path fails (`I/O error`). To stay coherent,
 the Filesystem tab routes its **mutations through the worker**
-(`storage.rm` / `storage.mv` / `storage.cp`), reserving `navigator.storage`
+(`files.rm` / `files.mv` / `files.cp`), reserving `navigator.storage`
 for reads. (This is why `BrowserOpfs.delete` / `.move` in
 [`bus/opfs.ts`](../../app/web2/src/bus/opfs.ts) call `gsEval` rather than
 `removeEntry` directly.)
@@ -105,10 +105,11 @@ transports, installed at module construction:
   machine boot, again on every video-mode switch (e.g. the JMFB driver
   flipping a IIcx from 512×342 to 640×480). ASYNC because the worker
   doesn't block on JS layout. `parW:parH` is the monitor's pixel aspect
-  ratio (the Lisa's 720×364 raster is 2:3), so the renderer can show
+  ratio (the Lisa's 720×364 raster is 2:3, see
+  [video.md](../reference/machines/lisa/video.md) §1), so the renderer can show
   non-square pixels.
 - **`Module.print` / `Module.printErr`** — Emscripten's stdout/stderr
-  pipes. `logSink` writes these to the xterm pane.
+  pipes. `logSink` routes these to the Terminal console.
 - **`Module.onAbort(what)`** — the glue's `abort()`: the worker trapped.
   The bridge is marked dead and every request fails at once.
 - **`Module.onVideoInReady(ptr)`** / **`Module.onAudioInReady(ptr)`** —
@@ -242,7 +243,7 @@ memory as it is at that moment (`Module.wasmMemory.buffer`, never a cached
 view: the heap grows) and releases it with `REQ_ACK_BUF {handle}`. The
 same mechanism carries a download to the page, chunk by chunk (below),
 and could carry an upload's chunks; today the transfer window
-(`storage.xfer_buffer`, 2 MB, static) already is a shared buffer the page
+(`files.xfer_buffer`, 2 MB, static) already is a shared buffer the page
 fills, and its `xfer_write` / `xfer_read` run as I/O jobs.
 
 ### Events from the core
@@ -280,7 +281,9 @@ callbacks is emitted at its source too; the page routes each in
 | `state:breakpoint_hit` | the debugger, at the hit | `{pc, addr}` |
 | `state:assert_failed`, `state:assert_expr` | the failure hook | `{where}`, `{expr}` |
 | `state:perf` | the tick, ~1 Hz | `{mips, tps, tick_max_ms, tick_p50_ms, poll_max_ms}` |
+| `state:machine_booted` | the end of `system_create`: `machine.boot`, `machine.restart`, `checkpoint.load` | `{model, restored}` |
 | `notify:floppy` | the floppy controller, on insert, eject (guest or host) and restore | `{drive, present}` |
+| `notify:media` | the SCSI bus, when a device's medium is inserted or ejected (guest or host) | `{bus, id, present}` |
 | `notify:drive_activity` | the tick, on a light's edge | `{kind, state}` |
 | `notify:checkpoint_saved` | `system_quick_checkpoint` | `{elapsed_ms}` |
 | `notify:printer_status` | the PAP layer, when the LaserWriter's status string changes | `{status}` |
@@ -328,10 +331,10 @@ one is running, is stopped. `REQ_MODE_STOP {id, client, owner}` stops a
 running mode by owner (0: any); both answer `true` / `false`.
 
 **I/O jobs.** A leaf whose cost is the size of a file rather than of the
-machine — `storage.cp`, `storage.import`, `storage.export_raw`,
-`storage.hd_create` / `fd_create` / `profile_create`, `storage.xfer_write`
-/ `xfer_read`, `archive.extract`, a SCSI `image.export` and the Lisa
-`profile.save`, `download`, and the quick checkpoint's publish — runs on
+machine — `files.cp`, `files.import`, `files.export_raw`,
+`files.hd_create` / `fd_create` / `profile_create`, `files.xfer_write`
+/ `xfer_read`, `files.archive.extract`, a SCSI `image.export` and the Lisa
+`profile.save`, `files.download`, and the quick checkpoint's publish — runs on
 the **I/O worker** (`src/core/io/io_worker.h`), a second thread created
 at boot. `meta.method_info` reports such a method with `io: true`
 (`MM_IO`). The leaf takes its request off the drain's answer path
@@ -351,7 +354,7 @@ emulator thread and write-locks the device until the file is written: a
 guest write to it fails meanwhile, as a drive being copied does. Without
 a worker (`--io=sync`) the same work runs inline, with the same hooks.
 
-**Downloads.** `download path` is an I/O job that reads the file 4 MB at
+**Downloads.** `files.download path` is an I/O job that reads the file 4 MB at
 a time into a staged buffer and announces each chunk as
 `notify:download_chunk`; the page copies the bytes into a Blob part,
 acknowledges the buffer (the worker refills it), and on the last chunk
@@ -384,7 +387,7 @@ it every second while visible: three seconds without a change while requests
 are pending marks the emulator dead (every pending request fails with a
 transport error, the crash banner shows). A wasm trap or `abort()` does the
 same through `Module.onAbort`. An ordinary request past 120 s fails for its
-own caller only; known-long requests (`checkpoint.*`, `storage.cp`, …) have
+own caller only; known-long requests (`checkpoint.*`, `files.cp`, …) have
 no deadline.
 
 ## Module Bootstrapping
@@ -460,19 +463,20 @@ The Svelte app is organised under
   — flex container with the Display + a resizable Panel docked
   bottom / left / right.
 - **Panel views** ([`panel-views/`](../../app/web2/src/components/panel-views/)):
-  Terminal, Logs, Machine tree, Filesystem tree, Images, Checkpoints,
-  Debug (Disassembly + Registers + FPU + Memory + MMU + Breakpoints +
-  Watchpoints + Call Stack).
+  Terminal (console + command browser), SYSTEM (see below), Logs,
+  Filesystem tree, Images, Checkpoints, Debug (Disassembly + Registers +
+  FPU + Memory + MMU + Breakpoints + Watchpoints + Call Stack).
 - **Status bar** ([`status-bar/`](../../app/web2/src/components/status-bar/))
   — machine state, drive activity, in-flight upload progress. The HD /
   FD / CD lights are real: the core counts every drive read and write on
-  the image (`storage.images[i].reads` / `.writes`), the worker tick sums
+  the image (`files.images[i].reads` / `.writes`), the worker tick sums
   them per kind and emits a `drive_activity` event only when
   a light changes, holding each on at least 100 ms
   ([`drive_activity.c`](../../src/core/storage/drive_activity.c)). A model
   shows only the lights its profile has drives for.
 - **Common** ([`common/`](../../app/web2/src/components/common/)) —
-  CollapsibleSection, Tree, TabStrip, Modal, Toast, ContextMenu, Icon
+  CollapsibleSection, Tree, TabStrip, Modal, Toast, ContextMenu,
+  ValueEditor (a value's editor by its type descriptor), PathField, Icon
   (codicon sprite at [`public/icons/sprite.svg`](../../app/web2/public/icons/sprite.svg)).
 
 State lives under [`app/web2/src/state/`](../../app/web2/src/state/) —
@@ -481,14 +485,101 @@ each `*.svelte.ts` file owns a `$state` slice (`machine`, `layout`,
 layer at [`app/web2/src/bus/`](../../app/web2/src/bus/) wraps every
 `gsEval` call site.
 
+## SYSTEM tab
+
+[`SystemView.svelte`](../../app/web2/src/components/panel-views/machine/SystemView.svelte)
+shows the model's state and edits it. Its rows come from
+[`lib/systemRows.ts`](../../app/web2/src/lib/systemRows.ts), which builds
+them from `meta.members` with values.
+
+**Shared member data.** The SYSTEM tab and the command browser read the
+model through [`bus/memberStore.ts`](../../app/web2/src/bus/memberStore.ts):
+- one cache of each node's structure (`meta.members` without values),
+  keyed by path; values are never cached;
+- one table of the core events that change what the views show, and the
+  structure each drops (`changeFor`); a finished console job drops the
+  cached levels that list a collection;
+- `onMembersChanged` tells the views, after the cache has dropped what
+  changed.
+
+Both views keep their tree in a
+[`TreeState`](../../app/web2/src/lib/treeState.svelte.ts): the open rows
+(by key, which is the path for a model row), the loaded levels, the rows
+on screen, and a refresh that re-reads the root and every open level
+(sibling subtrees in parallel, one refresh at a time). A level opened while
+a refresh runs is kept when the refresh lands.
+
+**Rows.**
+- The root's children sit under their domain dividers.
+- A node's attributes and children follow in model order.
+- A collection expands to its live entries (`path[i]` / `path["k"]`).
+- Internal members are never shown; advanced ones only with the Advanced
+  toggle.
+- A node that has only methods (no attributes, no children) is not a
+  folder: its methods are a submenu of its parent's context menu.
+
+**Values** are shown as the REPL prints them
+([`lib/typeDescriptor.ts`](../../app/web2/src/lib/typeDescriptor.ts)).
+What is an enum, object, error or container is decided in one place,
+[`lib/taggedValue.ts`](../../app/web2/src/lib/taggedValue.ts): a tag is a
+plain object with exactly the tag's keys (`{enum, index}`,
+`{object, name, path}`, `{error}`); the console's value tree uses the same
+rule and text.
+
+| Value | Shown as |
+|---|---|
+| hex integer | `0x408986` |
+| other integer | decimal |
+| enum | its name |
+| bool | a toggle |
+| float | `%g` |
+| sensitive value | `••••` |
+| list, map | compact JSON, expandable |
+
+Read-only values are dimmed and show a lock on hover.
+
+**Editing.** Double-click a value, or press Enter / F2 on the selected row.
+A bool toggles with one click; an enum with values edits in a dropdown.
+Enter commits and Esc cancels. A commit takes one of two paths:
+- **Literal** (an integer in hex, decimal or binary, `true` / `false`, an
+  enum name, or any text for a string): written with `gsEval(path,
+  [value])`, then echoed to the console as the statement it equals (e.g.
+  `machine.cpu.d0 = 0x1234`). An error shows under the field and the value
+  reverts.
+- **Anything else**, and integers above 2^53: runs as the console statement
+  `<path> = <text>`.
+
+**Context menu.**
+- Runs the node's methods. A destructive one asks for confirmation first.
+- A few methods the tab runs its own way, listed in its handler map by the
+  method's path or name: `export` writes the image to `/opfs/exports` and
+  downloads it.
+- A method with arguments opens a form generated from the arguments' type
+  descriptors: `path` arguments get a file browser over `files.list`.
+- A call is echoed as its statement in argument mode.
+- Every row also has **Copy value** and **Copy path**.
+
+**Refresh.** Open levels re-read:
+- on the core's state events (`mode_started` / `mode_ended`,
+  `breakpoint_hit`, `speed`, `checkpoint_saved`, `floppy`,
+  `drive_activity`, `media`);
+- after every console job and SYSTEM action;
+- every 2 s while the machine runs and the page is in the foreground.
+
+On `state:machine_booted` the whole tree reloads, keeping the open levels
+by path.
+
+**Revealing a node.** Ctrl/Cmd-click on a console object link opens SYSTEM
+at that node (`revealInSystem`).
+
 ## Upload Pipeline
 
 Four deliberate ways to get a media image into OPFS, all routing
 through [`app/web2/src/bus/upload.ts`](../../app/web2/src/bus/upload.ts).
 Every byte goes through the core's **transfer window**
 ([`bus/xfer.ts`](../../app/web2/src/bus/xfer.ts)): the page copies a chunk
-into a fixed buffer in wasm memory and `storage.xfer_write` writes it on
-the emulator thread (`storage.xfer_read` is the reverse).  The page never
+into a fixed buffer in wasm memory and `files.xfer_write` writes it on
+the emulator thread (`files.xfer_read` is the reverse).  The page never
 calls `Module.FS`: under WasmFS that runs on the page's thread and
 busy-waits for the OPFS thread, and in Safari — where WebKit serves a
 worker's OPFS request through the page's thread — it deadlocked the page.
@@ -502,15 +593,15 @@ worker's OPFS request through the page's thread — it deadlocked the page.
    previous pick. The floppy / HD
    slots also offer "Create blank image…", which opens
    [`CreateImageDialog.svelte`](../../app/web2/src/components/display/CreateImageDialog.svelte)
-   and creates a blank image directly in OPFS via `storage.fd_create`
-   (800 KB / 1.4 MB) or `storage.hd_create` (size from
+   and creates a blank image directly in OPFS via `files.fd_create`
+   (800 KB / 1.4 MB) or `files.hd_create` (size from
    `machine.scsi.hd_models`).
 2. **Drag-and-drop onto the Display** —
    [`DropOverlay.svelte`](../../app/web2/src/components/display/DropOverlay.svelte)
    captures drops, calls `processDataTransfer` →
    `acceptFiles(files)`. Auto-detects type by probing each
    `MediaTypeDescriptor` in order; archives (`.zip`, `.sit`, `.hqx`,
-   `.cpt`, `.bin`, `.sea`) are extracted via `archive.extract` and the
+   `.cpt`, `.bin`, `.sea`) are extracted via `files.archive.extract` and the
    inner image re-probed. A floppy goes into the first empty drive the
    model has, a CD into the model's CD bay (`bus/media.ts`; an occupied
    bay is refused, not overwritten); ROMs trigger a full cold boot via
@@ -545,27 +636,27 @@ typed-dispatch and introspection surface.
 - **`machine.rom.identify(path)`** → `{recognised, checksum, name,
   compatible[], size}`. Drives the Model dropdown in the New Machine
   dialog.
-- **`machine.vrom.identify(path)`** / **`machine.prom.identify(path)`** →
+- **`catalog.vroms.identify(path)`** / **`catalog.proms.identify(path)`** →
   the card a video ROM / PCI expansion ROM belongs to, or `null`.
 - **`machine.floppy.identify(path)`** → density string (`400K` / `800K` /
   `1.4MB`); empty if not a floppy.
 - **`machine.scsi.identify_hd(path)` / `machine.scsi.identify_cdrom(path)`**
   → bool.
-- **`archive.identify(path)`** → JSON for `.sit` / `.hqx` / `.cpt` /
-  `.bin` / `.sea`. **`archive.extract(path, out_dir)`** → bool; powers the
+- **`files.archive.identify(path)`** → JSON for `.sit` / `.hqx` / `.cpt` /
+  `.bin` / `.sea`. **`files.archive.extract(path, out_dir)`** → bool; powers the
   Filesystem-tab "Unpack" action.
-- **`vfs.list(path)`** → JSON `[{name, kind, size}]`, descending into a disk
+- **`files.list(path)`** → JSON `[{name, kind, size}]`, descending into a disk
   image (partitions, then HFS/UFS contents). The Filesystem tree calls this to
   browse inside images; see [`target-filesystems.md`](../internals/core/storage/target-filesystems.md).
-- **`storage.cp([-r], src, dst)`** — copy, including *out of* an image into
-  OPFS (backs copy-out and Download). **`storage.rm(path)`** /
-  **`storage.mv(src, dst)`** — recursive remove / move, run worker-side so
+- **`files.cp(src, dst, [recursive])`** — copy, including *out of* an image into
+  OPFS (backs copy-out and Download). **`files.rm(path)`** /
+  **`files.mv(src, dst)`** — recursive remove / move, run worker-side so
   WasmFS stays coherent (see Persistence above).
-- **`storage.hd_create(path, size)`** / **`storage.fd_create(path,
+- **`files.hd_create(path, size)`** / **`files.fd_create(path,
   high_density)`** — create a blank HD / floppy image; **`machine.scsi.hd_models`** →
   drive-size catalog. These drive the New Machine dialog's "Create blank
   image…" option.
-- **`machine.profile(id)`** → the model's profile: `name`,
+- **`catalog.profile(id)`** → the model's profile: `name`,
   `ram_options[]`, `ram_default`, `floppy_slots[]`, `hd_bays[]` (each
   `{bus, id, label}`, the firmware's boot bay first, on whatever bus it
   is), `cdrom` (the CD bay, or `null`), `video_slots[]`, `capabilities`
@@ -577,7 +668,7 @@ typed-dispatch and introspection surface.
 - **`machine.videoin.source`** (`none`/`pattern`/`file`/`host`) plus the
   read-only `connected` / `fields` — the AV video digitizer's host source.
   The camera toolbar button sets `host`; the button itself is gated on
-  `capabilities.video_in` from `machine.profile`. See
+  `capabilities.video_in` from `catalog.profile`. See
   [../machines/av/vdc.md](../internals/machines/av/vdc.md).
 - **`machine.boot(model=..., rom=..., ...)`** — destroys any current
   machine and creates a fresh one from a complete configuration document
@@ -611,12 +702,12 @@ typed-dispatch and introspection surface.
   call: `{name, kind, category, label, doc}` plus, per kind, `readonly`
   and `value`, `indexed` and `indices`, or the method's UI metadata. The
   Machine tree, its context menu and the command browser read it.
-- **`storage.images[i].reads` / `.writes`** — the drive I/O counters
+- **`files.images[i].reads` / `.writes`** — the drive I/O counters
   behind the activity lights.
 - **`machine.attach_hd(path, [bay])` / `machine.attach_cdrom(path)` /
   `machine.eject_media(bus, [id])`** — media by bay, on whatever bus the
   bay is (`machine.scsi`, `machine.scsi2`, the Lisa's ProFile).  `bay`
-  indexes `machine.profile(id).hd_bays` (0, the default, is the boot bay);
+  indexes `catalog.profile(id).hd_bays` (0, the default, is the boot bay);
   the CD goes to `profile.cdrom`.  Each attach answers the bay it used,
   `{bus, id, label}`, which is what `eject_media` takes; an occupied bay,
   a bay the model does not have, and a CD on a model with no CD bay are
@@ -657,7 +748,7 @@ download, is copied into `/opfs/images/<category>/` before it is attached
 recorded in checkpoints still resolves after a reload. A volatile path
 (`/tmp/…`) attached from the shell stays volatile: the image, its delta and
 any checkpoint's reference to it do not survive a reload. Copy it under
-`/opfs/` first (`storage.import <src> <dst>`) to keep it.
+`/opfs/` first (`files.import <src> <dst>`) to keep it.
 
 ## URL Parameters
 
@@ -735,9 +826,9 @@ FD1=https://host/disks/Games.sit/Dark%20Castle.img
 
 The container is fetched whole; a zip member is found by exact path, then
 ignoring case, then by a unique base name; a Mac archive is unpacked by
-`archive.extract` and searched the same way.  A container named with no
+`files.archive.extract` and searched the same way.  A container named with no
 member keeps the old behaviour (a zip's first file, a Mac archive's
-`storage.find_media` pick).  A missing member is reported with the first
+`files.find_media` pick).  A missing member is reported with the first
 few names the container does hold.
 
 **Encoding.**  Write a value `encodeURIComponent`-encoded.  Browsers let
@@ -833,37 +924,188 @@ The same sequence as Module Bootstrapping above, end to end:
    reconciliation, `scheduler.run`. The Welcome layer fades out; the
    canvas takes over.
 
-## Terminal Integration (xterm.js)
+## Terminal console
 
-[`TerminalPane.svelte`](../../app/web2/src/components/panel-views/terminal/TerminalPane.svelte)
-dynamically imports `@xterm/xterm` and `@xterm/addon-fit` on first
-mount so they're code-split out of the main bundle, and it stays mounted
-(hidden) once opened, so scrollback survives a tab switch. The terminal's
-input state machine (`{buffer, cursor, history}`) lives in the component.
-All input arrives through xterm's `onData` — keys, pastes, IME text —
-and [`lineDiscipline.ts`](../../app/web2/src/components/panel-views/terminal/lineDiscipline.ts)
-turns it into editing actions, which apply one at a time while the input
-line is live: whatever is typed while a command runs waits for the next
-prompt, and a multi-line paste runs line by line. On Enter the pane calls
-`gsEvalLine(line)`, which posts the line as a **script job** (`REQ_SCRIPT`,
-"Jobs" above) as the terminal's own client; the job's result is the
-shell's new prompt, cached for the next `showPrompt()`. What the line
-prints arrives as output records (`log:output` events) in order before
-that result and is written to the pane as it comes; text printed outside
-any request (boot messages, a breakpoint hit) still arrives through
-`Module.print`. Both land via [`bus/logSink.ts`](../../app/web2/src/bus/logSink.ts),
-which holds what is printed before the terminal first opens and replays it
-then.
+The Terminal tab's left pane is a console: DOM-rendered output entries and
+a CodeMirror 6 input, in
+[`ConsoleView.svelte`](../../app/web2/src/components/panel-views/terminal/ConsoleView.svelte)
+and [`ConsoleInput.ts`](../../app/web2/src/components/panel-views/terminal/ConsoleInput.ts).
+CodeMirror is code-split (dynamically imported when the console first
+mounts). The view is assembled from:
 
-Tab completion uses the typed `shell.complete(line, cursor)` method.
-Ctrl-C cancels the terminal's foreground job, else stops a run the
-terminal started, else prints a hint ("Ctrl-C, exactly" above), and drops
-the type-ahead; Cmd-C on macOS is the browser's copy.
+| Module | Does |
+|---|---|
+| [`lib/stickToBottom.svelte.ts`](../../app/web2/src/lib/stickToBottom.svelte.ts) | auto-scroll (an attachment on the output) |
+| [`FindBar.svelte`](../../app/web2/src/components/panel-views/terminal/FindBar.svelte) | the find bar and its state; matching is [`lib/find.ts`](../../app/web2/src/lib/find.ts) |
+| [`inputAssist.svelte.ts`](../../app/web2/src/components/panel-views/terminal/inputAssist.svelte.ts) | what the input asks the shell while typing: highlighting, completion, the signature hint |
+| [`lib/usage.ts`](../../app/web2/src/lib/usage.ts) | `shell.usage` answers, kept per path until the machine changes (shared with the command browser); an argument's span in UTF-16 |
+| [`ValueTree.svelte`](../../app/web2/src/components/panel-views/terminal/ValueTree.svelte) | a value entry's links and expandable lists / maps |
 
-xterm's theme is fed from the design tokens `--gs-terminal-bg` /
-`--gs-terminal-fg` / `--gs-terminal-cursor`; an `$effect` watching
-`theme.mode` pushes the resolved palette into `xterm.options.theme`
-on toggle so light/dark switches re-skin live.
+The entries, the input queue and the running job live in
+[`state/console.svelte.ts`](../../app/web2/src/state/console.svelte.ts), so
+scrollback survives the pane being remounted. `createConsole()` makes one
+(`{state, model, submit, interrupt, …, dispose}`); the app's is created
+when the module loads, and tests build their own and dispose of them.
+
+**Output.** [`bus/logSink.ts`](../../app/web2/src/bus/logSink.ts) turns what
+the core sends into console records: `Module.print` / `Module.printErr`
+lines, a job's output pieces (`log:output`), its annotation records
+(`log:value_begin`, `log:value`, `log:error`), and the start and end of
+the console's own job. It pushes them straight into the app's console
+model, which exists from page load, so boot output is there when the
+Terminal first opens.
+[`lib/consoleModel.ts`](../../app/web2/src/lib/consoleModel.ts) makes
+entries from those records:
+
+| Entry | From |
+|---|---|
+| `command` | the submitted input (shown after a `›` glyph) |
+| `text` | a job's printed lines, or a `Module.print` line outside a job |
+| `stderr` | a `printErr` line, or another client's `error` annotation |
+| `value` | the text between `value_begin` and `value`; with the value's tagged JSON, an object renders as a link to its node in the command browser and a list or map expands (nested items as SYSTEM prints them) |
+| `error` | an `error` annotation of the console's job, at its place in the output |
+| `echo` | a statement another surface ran for the user (dimmed) |
+
+The core writes a job's error once, as its `error` annotation, so the entry
+needs no matching against stderr. The one exception is an error too large
+for a record: its annotation is the shortened `truncated` form, which the
+console skips, and the full text arrives on stderr instead.
+
+New entries are appended once per animation frame. At most 5 000 are kept.
+Off-screen entries skip layout (`content-visibility: auto`). Auto-scroll
+follows only while the view is at the bottom. While a job runs longer than
+1 s, a "running… N s" line shows below the output.
+
+**Input.**
+
+| Key | Action |
+|---|---|
+| Enter | submit, unless `shell.needs_continuation(text)` says the block continues (then a newline) |
+| Shift+Enter | newline |
+| ↑ / ↓ | history, on the first / last line |
+| Tab | completion: a lone candidate or a longer common prefix at once, else a popup of `shell.complete(line, cursor, true)` candidates coloured by kind, with their doc (the answer the command browser's sync asked for is reused while the text and cursor are unchanged) |
+| Ctrl+C | copy a selection (input or output); otherwise interrupt |
+| Ctrl+L | clear the output |
+| Mod+F | find in the output |
+| Ctrl+Shift+Space | show the signature hint |
+| Esc | close the popup, else the signature hint |
+
+Completion offsets are converted between UTF-16 and the core's UTF-8 bytes
+([`lib/utf8.ts`](../../app/web2/src/lib/utf8.ts)).
+
+**Highlighting.** 30 ms after the input's text last changed, the console
+asks `shell.highlight(text)` and colours the input with the answer
+([`lib/highlight.ts`](../../app/web2/src/lib/highlight.ts)); an answer for
+an older text is dropped. A `command` entry keeps the colours its text had
+when it was submitted. The command browser colours the signature and
+example lines of a usage block the same way. Unresolved path segments get
+the `unknown` colour with a wavy underline. With the machine running in
+turbo, the round trip's 95th percentile over 200 requests is about 17 ms
+(one frame of the mailbox's polling), within the 30 ms budget, which
+`highlight.spec.ts` checks.
+
+**Running input.**
+- Submitted text is queued; the queue runs one script job at a time via
+  `gsEvalLine` (`REQ_SCRIPT`, "Jobs" above), so type-ahead runs in order.
+- A pasted block (CRLF → LF, trailing blanks and a leading `› ` / `> ` per
+  line removed) is reviewed in the input and runs as **one** job on Enter.
+- The job's result is the shell's new prompt, shown beside the input.
+- History is the last 500 submissions, in `localStorage`
+  (`gs.console.history`).
+
+**Interrupting.** Ctrl+C without a selection:
+- drops the queue;
+- cancels the console's job, else stops a run the console started ("Ctrl-C,
+  exactly" above);
+- if there is neither, says there is nothing to interrupt.
+
+Cmd+C on macOS is the browser's copy.
+
+**Menus and find.**
+- The output's context menu offers **Copy**, **Copy as commands** (the
+  statements of the command entries in the selection), **Copy output**
+  (the clicked entry's job), **Copy value as JSON**, **Paste**, **Select
+  all** and **Clear**.
+- Mod+F opens a find bar (next / previous, match case).
+
+**Signature hint.** While the cursor is in a method's arguments
+(`shell.complete`'s `context.method`), a hint above the input shows the
+method's signature (`shell.usage`) with the current argument underlined
+(`arg_spans[context.arg_index]`, also for a `name=value` argument).
+
+### Command browser ↔ console
+
+The command browser
+([`CommandBrowser.svelte`](../../app/web2/src/components/panel-views/terminal/CommandBrowser.svelte),
+rows from [`lib/commandsTree.ts`](../../app/web2/src/lib/commandsTree.ts),
+the tree, selection and marks in
+[`state/commandTree.svelte.ts`](../../app/web2/src/state/commandTree.svelte.ts),
+the details pane in
+[`UsagePane.svelte`](../../app/web2/src/components/panel-views/terminal/UsagePane.svelte))
+and the console follow each other through
+[`terminalBridge.ts`](../../app/web2/src/components/panel-views/terminal/terminalBridge.ts)
+and [`state/terminalSync.svelte.ts`](../../app/web2/src/state/terminalSync.svelte.ts).
+The browser's top level is a row of expandable section headlines:
+Commands (the root's own methods, then the commands whose target exists —
+`ls`, `cd`, `run`, … — each typed bare), one per domain the root's children
+declare (Machine, Emulator, Network), then Aliases and Language.  A
+section's rows sit at its own indent; the domain sections start open,
+Aliases and Language closed.  Each section is a provider in
+`commandsTree.ts` (key `section:*`, label, doc, whether it starts open, and
+where its rows come from).  The browser lists basic and advanced members
+alike (internal ones are left out as a level is read), so any path typed in
+the console has a row to follow; following it opens the section the path
+lives in.  Opening a path (`openPath`) walks the rows by key, so a command
+row, which carries its target's path, is never taken for the member.
+
+**Browsing previews.** Selecting a row (a click, ↑/↓, type-to-find) only
+previews it: a method's or attribute's usage text shows in the details pane
+under the tree, and the console is left alone.  The pane closes with its ×,
+with Esc, or with a second click on the same row.  It also closes when the
+console's input empties, e.g. after a command runs.  It grows to fit its
+text up to 60% of the browser; a longer text scrolls inside it.
+
+**Browser → console.** Inserting is explicit — a double-click, Enter on a
+leaf, or the pane's Insert button — and replaces the path token at the
+console's cursor, then hands focus to the console:
+
+| Row | Written |
+|---|---|
+| object | `path.` |
+| indexed (or hybrid) collection | `path[` |
+| keyed collection | `path["` |
+| collection entry | `path[i].` / `path["key"].` |
+| method | `path ` |
+| attribute | `path` |
+| alias / keyword | `$name` / `keyword ` |
+
+- Expanding or collapsing (twistie, ←/→) writes nothing; ↑/↓, Home, End,
+  PageUp and PageDown move the selection.
+- With the pane closed, Esc returns focus to the console, putting the input
+  back as it was if the browser inserted since it took focus.
+- Tab hands focus to the console with the cursor at the end.
+
+**Console → browser.** Each change of the input asks
+`shell.complete(line, cursor, true)` once typing pauses. The browser then
+([`lib/pathToken.ts`](../../app/web2/src/lib/pathToken.ts)):
+- opens the levels of the path token;
+- marks the children matching the partial segment and dims the rest of
+  that level, selecting the match (not when the change was the browser's
+  own write);
+- with the cursor in a method's arguments, selects that method and marks
+  the current argument in its usage;
+- for a `$…` token, selects the alias.
+
+Typing in the console never moves focus. A finished console job drops the
+cached levels that list collections, so their entries are re-read.
+
+Colours come from the `--gs-syntax-*` palette in
+[`styles/tokens.css`](../../app/web2/src/styles/tokens.css) (VS Code
+Dark+ / Light+), and from `--gs-terminal-*`. The `hl-*` syntax classes
+are one global set,
+[`styles/syntax.css`](../../app/web2/src/styles/syntax.css), used by the
+console's entries and the command browser's usage blocks. They are CSS variables, so a theme switch restyles
+everything already shown.
 
 ## Audio
 
@@ -950,5 +1192,5 @@ headers intact through Codespaces' port-forwarding proxy.
   [`lib/mediaUrl.ts`](../../app/web2/src/lib/mediaUrl.ts).
 - The diagnostic harness at
   [`scripts/ui2-diag.mjs`](../../scripts/ui2-diag.mjs) drives Chromium
-  via Playwright, captures console / pageerror / xterm contents, and
+  via Playwright, captures console / pageerror / Terminal console contents, and
   prints a JSON report. Run with `make ui2-diag`.

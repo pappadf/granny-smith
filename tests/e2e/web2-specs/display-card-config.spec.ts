@@ -5,7 +5,7 @@
 //
 // Regression guard for two coupled bugs:
 //   1. Video ROMs were listed by raw filename, so the dialog couldn't speak in
-//      cards. Now the dialog probes each vROM (machine.vrom.identify → card_id)
+//      cards. Now the dialog probes each vROM (catalog.vroms.identify → card_id)
 //      and offers the *card* by its name, never a ".vrom" filename.
 //   2. The dialog never set machine.nubus.video_card, so the slot's default
 //      card (the IIcx's 8•24) always booted — even when the user picked the

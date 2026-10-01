@@ -34,7 +34,7 @@
 # drive, and an occupied drive is now an error rather than a silent redirect to
 # the other one.
 #
-# RUNTIME: about 5 minutes at --speed=max — fourteen floppy reads plus two
+# RUNTIME: about 5 minutes at --speed=turbo — fourteen floppy reads plus two
 # boots, ~3.7 billion guest instructions.  Longer than most of the suite.
 #
 # WHY MINIMUM SYSTEM AND NOT EASY INSTALL: an Easy Install cannot complete from

@@ -9,7 +9,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
-import { focusTerminal, terminalRun as typeLine } from '../helpers/terminal';
+import { focusTerminal, consoleLine, terminalRun as typeLine } from '../helpers/terminal';
 
 const terminalRun = (page: Page, line: string) => typeLine(page, line, { settleMs: 250 });
 
@@ -20,14 +20,7 @@ type Ev = { kind: string; event: string; data: Record<string, unknown> };
 const coreEvents = (page: Page) =>
   page.evaluate(() => (window as unknown as { __gsCoreEvents?: Ev[] }).__gsCoreEvents ?? []);
 
-async function lastTermLine(page: Page): Promise<string> {
-  const text = await page.locator('.xterm-rows').innerText();
-  const lines = text
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-  return lines.length ? lines[lines.length - 1] : '';
-}
+const lastTermLine = consoleLine;
 
 async function bootSE30(page: Page): Promise<void> {
   const [romChooser] = await Promise.all([
@@ -54,7 +47,7 @@ test('a terminal line waits for the run it starts, and Ctrl-C cancels a runaway 
   test.setTimeout(5 * 60 * 1000);
   await gotoWeb2(page);
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
   await bootSE30(page);
 
   // --- scheduler.run N as a line means "run N": the line's own result
@@ -80,7 +73,7 @@ test('a terminal line waits for the run it starts, and Ctrl-C cancels a runaway 
   expect(Date.now() - t0).toBeGreaterThan(1000);
   await terminalRun(page, 'let r = scheduler.running');
   await terminalRun(page, 'echo "after-run $r"');
-  await expect(page.locator('.xterm-rows')).toContainText('after-run false', { timeout: 15_000 });
+  await expect(page.locator('.console-output')).toContainText('after-run false', { timeout: 15_000 });
   const ended = (await coreEvents(page)).filter((e) => e.event === 'mode_ended');
   expect(ended.length).toBe(before + 1);
   expect(ended[ended.length - 1].data.reason).toBe('budget');
@@ -100,7 +93,7 @@ test('a terminal line waits for the run it starts, and Ctrl-C cancels a runaway 
   // start stays.
   await terminalRun(page, 'let r = scheduler.running');
   await terminalRun(page, 'echo "running $r"');
-  await expect(page.locator('.xterm-rows')).toContainText('running true', { timeout: 15_000 });
+  await expect(page.locator('.console-output')).toContainText('running true', { timeout: 15_000 });
 
   // --- Ctrl-C with nothing to cancel stops the run the terminal started.
   await page.keyboard.press('Control+C');
@@ -114,8 +107,8 @@ test('a terminal line waits for the run it starts, and Ctrl-C cancels a runaway 
   await expect.poll(() => lastTermLine(page), { timeout: 15_000 }).toMatch(/^gs se30>$/);
   await focusTerminal(page);
   await page.keyboard.press('Control+C');
-  await expect(page.locator('.xterm-rows')).toContainText('nothing to interrupt', { timeout: 15_000 });
+  await expect(page.locator('.console-output')).toContainText('nothing to interrupt', { timeout: 15_000 });
   await terminalRun(page, 'let r = scheduler.running');
   await terminalRun(page, 'echo "still $r"');
-  await expect(page.locator('.xterm-rows')).toContainText('still true', { timeout: 15_000 });
+  await expect(page.locator('.console-output')).toContainText('still true', { timeout: 15_000 });
 });

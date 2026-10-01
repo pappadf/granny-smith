@@ -8,7 +8,7 @@
 // so in Safari every upload deadlocked the page.  Here the page only copies
 // bytes into (or out of) a fixed window in wasm memory, a plain memory access,
 // and asks the core to move them to or from a file through the request bridge
-// (storage.xfer_write / xfer_read), so every file access runs on the emulator
+// (files.xfer_write / xfer_read), so every file access runs on the emulator
 // thread like all the others.
 //
 // The window is one buffer, so its uses are serialised: a copy and the request
@@ -33,8 +33,8 @@ function withWindow<T>(fn: (w: XferWindow) => Promise<T>): Promise<T> {
 
 async function xferWindow(): Promise<XferWindow> {
   if (windowInfo) return windowInfo;
-  const ptr = await gsEval('storage.xfer_buffer');
-  const size = await gsEval('storage.xfer_size');
+  const ptr = await gsEval('files.xfer_buffer');
+  const size = await gsEval('files.xfer_size');
   if (typeof ptr !== 'number' || typeof size !== 'number' || !ptr || !size)
     throw new Error(`no file-transfer window: ${gsErrorText(isGsError(ptr) ? ptr : size)}`);
   windowInfo = { ptr, size };
@@ -55,7 +55,7 @@ export function xferWrite(path: string, offset: number, bytes: Uint8Array): Prom
     if (!heap) throw new Error('xferWrite: emulator not running');
     // Fetched per use: under memory growth the heap's buffer can be replaced.
     heap.u8.set(bytes, w.ptr);
-    const r = await gsEval('storage.xfer_write', [path, offset, bytes.length]);
+    const r = await gsEval('files.xfer_write', [path, offset, bytes.length]);
     if (r !== true) throw new Error(gsErrorText(r));
   });
 }
@@ -63,7 +63,7 @@ export function xferWrite(path: string, offset: number, bytes: Uint8Array): Prom
 // Read up to `len` bytes (at most one window) of `path` from `offset`.
 export function xferRead(path: string, offset: number, len: number): Promise<Uint8Array> {
   return withWindow(async (w) => {
-    const r = await gsEval('storage.xfer_read', [path, offset, Math.min(len, w.size)]);
+    const r = await gsEval('files.xfer_read', [path, offset, Math.min(len, w.size)]);
     if (typeof r !== 'number') throw new Error(gsErrorText(r));
     const heap = getModuleHeap();
     if (!heap) throw new Error('xferRead: emulator not running');

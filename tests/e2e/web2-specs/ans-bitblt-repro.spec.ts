@@ -240,9 +240,9 @@ async function settle(page: Page, budgetMs: number, stable = 3): Promise<number>
   return last;
 }
 
-// One shell line into the Terminal panel's xterm.
+// One shell line into the Terminal panel's console.
 async function sh(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
+  const term = page.locator('.console');
   await term.click();
   await page.keyboard.type(line);
   await page.keyboard.press('Enter');
@@ -291,7 +291,7 @@ test('ANS 500: GUI-mode Setup draws in the browser', async ({ page }) => {
     if (!fs.existsSync(f)) throw new Error(`fixture missing: ${f}`);
   }
 
-  // Anything the emulator prints, kept whole: the xterm pane shows only its
+  // Anything the emulator prints, kept whole: the console shows only its
   // viewport, so the terminal cannot be read back as a log.
   const printed: string[] = [];
   page.on('console', (m) => printed.push(m.text()));
@@ -344,7 +344,7 @@ test('ANS 500: GUI-mode Setup draws in the browser', async ({ page }) => {
   // Unthrottled, and the Terminal panel open for the ADB typing below.
   await page.getByRole('button', { name: 'fast-forward', exact: true }).click();
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
 
   // The card narrates itself at level 1: the SR17 line says whether the
   // memory-mapped BLT register block is decoded at $B8000, and every "BLT

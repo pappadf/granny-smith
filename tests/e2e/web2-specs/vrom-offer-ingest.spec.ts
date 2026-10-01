@@ -5,7 +5,7 @@
 //
 // Pins offer-on-ingest: the wasm platform enumerates /opfs/images/vrom once at startup, so a vROM uploaded
 // MID-SESSION must be offered to the core's registry by the ingest path
-// itself (upload.ts persist → machine.vrom.offer) or an "(auto)" boot —
+// itself (upload.ts persist → catalog.vroms.offer) or an "(auto)" boot —
 // one with no explicit vrom= pick in the boot document — would not see the
 // file until the next page reload.  Also pins content naming: the stored
 // name is the content hash (the declaration ROM's Format-Block CRC), the
@@ -78,7 +78,7 @@ async function terminalEval(page: Page, expr: string): Promise<string | null> {
   await terminalRun(page, `echo "${key}=\${${expr}}"`);
   for (let i = 0; i < 25; i++) {
     await page.waitForTimeout(400);
-    const text = await page.locator(".xterm-rows").innerText();
+    const text = await page.locator(".console-output").innerText();
     const values = [...text.matchAll(new RegExp(`${key}=(\\S+)`, "g"))]
       .map((m) => m[1])
       .filter((v) => !v.startsWith("$"));
@@ -117,9 +117,9 @@ test('mid-session vROM upload is offered: "(auto)" boot content-matches it witho
   // 3. Everything below runs in the shipped Terminal panel — web2 has no
   //    window.gsEval. Open it and verify the vROM landed content-hashed.
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator(".xterm")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator(".console")).toBeVisible({ timeout: 15_000 });
   expect(
-    await terminalEval(page, 'storage.path_size("/opfs/images/vrom/d1629664")'),
+    await terminalEval(page, 'files.path_size("/opfs/images/vrom/d1629664")'),
   ).toBe("32768");
 
   // 4. "(auto)" boot: one boot document with NO vrom= pick. The slot-$9
@@ -127,7 +127,7 @@ test('mid-session vROM upload is offered: "(auto)" boot content-matches it witho
   //    offered candidates — the file we just dropped, under its hash name.
   await terminalRun(page, 'machine.boot model="iicx" ram=8192 rom="/opfs/images/rom/97221136"');
   // Let the boot's terminal output settle before typing the next line —
-  // keystrokes race the xterm render of the ROM-load prints otherwise.
+  // keystrokes race the console render of the ROM-load prints otherwise.
   await page.waitForTimeout(3_000);
   expect(await terminalEval(page, "machine.id")).toBe("iicx");
   expect(

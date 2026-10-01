@@ -1,7 +1,7 @@
 // The dialog's half of the "which port is the monitor plugged into" contract,
 // for a machine that has BOTH built-in video and NuBus slots (the PDM family).
 //
-// The C side offers the choice through machine.profile's `builtin_video`, and
+// The C side offers the choice through catalog.profile's `builtin_video`, and
 // consumes it as two independent boot-document fields: `video_card` (which
 // card, if any, is seated) and `monitor` (what is strapped to the built-in
 // port). What this pins is the translation between the one control the user
@@ -47,7 +47,7 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         }
         return null;
       }
-      if (path === 'machine.profile') {
+      if (path === 'catalog.profile') {
         const id = (args?.[0] as string) ?? '';
         const byId: Record<string, object> = {
           // Three NuBus sockets AND substrate built-in video: the shape that

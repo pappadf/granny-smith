@@ -66,7 +66,7 @@ typedef enum prom_id_result {
 // expansion ROM (structurally valid AND a catalog CRC); fills *out.
 bool prom_identify_card(const char *path, prom_id_t *out);
 
-// The same, with the reason for a rejection — what prom.identify reports.
+// The same, with the reason for a rejection — what catalog.proms.identify reports.
 prom_id_result_t prom_identify_detail(const char *path, prom_id_t *out, size_t *out_size, uint32_t *out_crc);
 
 // === The offer registry =====================================================
@@ -112,7 +112,9 @@ bool prom_load_card(const char *card_id, uint8_t **out_buf, size_t *out_size, ch
 
 // === Lifecycle =============================================================
 
-void prom_init(void);
+// Create the catalog.proms registry node under `parent` (the catalog).
+struct object;
+void prom_init(struct object *parent);
 void prom_delete(void);
 
 #endif // PROM_H

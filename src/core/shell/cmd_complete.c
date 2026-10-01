@@ -2,14 +2,17 @@
 // Copyright (c) pappadf
 
 // cmd_complete.c
-// Tab completion engine that walks the object tree at the cursor's
-// path position. Line-start suggests root children and pragmas, mid-path
-// suggests members of the resolved-so-far object, method-arg position
-// dispatches by arg_decl[i], and any cursor inside `$(...)`, `${...}`, or
-// `"..."` returns nothing.
+// Tab completion engine.  The statement the cursor is in -- a line's own,
+// or an inline block's after its `{` -- is found and classified the way the
+// parser reads it (syntax.h).  At the head of a statement: keywords, root
+// members and command words, or the members of a mid-path partial; at an
+// argument of a command: candidates for the declared slot the word fills.
+// Inside a string or a parenthesised argument, nothing.
 
 #include "cmd_complete.h"
+#include "commands.h"
 #include "shell_var.h"
+#include "syntax.h"
 #include "worker_thread.h"
 
 #include <ctype.h>
@@ -19,12 +22,10 @@
 #include <strings.h>
 
 #include "../object/alias.h"
+#include "../object/meta.h"
 #include "../object/object.h"
 #include "../object/value.h"
 #include "../vfs/vfs.h"
-
-// The legacy command registry is gone; there is no `cmd_head`. The
-// completion code below has no legacy branch.
 
 // === Tiny per-call string pool ==============================================
 //
@@ -80,7 +81,34 @@ static void push_match(struct completion *out, const char *cand, const char *pre
         if (out->items[i] && strcmp(out->items[i], cand) == 0)
             return;
     }
+    out->kinds[out->count] = (uint8_t)out->cur_kind;
+    out->docs[out->count] = out->cur_doc;
     out->items[out->count++] = cand;
+}
+
+const char *comp_kind_name(comp_kind_t k) {
+    switch (k) {
+    case COMP_KIND_OBJECT:
+        return "object";
+    case COMP_KIND_COLLECTION:
+        return "collection";
+    case COMP_KIND_ATTR:
+        return "attr";
+    case COMP_KIND_METHOD:
+        return "method";
+    case COMP_KIND_ALIAS:
+        return "alias";
+    case COMP_KIND_KEYWORD:
+        return "keyword";
+    default:
+        return "value";
+    }
+}
+
+// Set the detail the next candidates get.
+static void set_detail(struct completion *out, comp_kind_t kind, const char *doc) {
+    out->cur_kind = kind;
+    out->cur_doc = doc;
 }
 
 // === Filesystem path completion =============================================
@@ -118,6 +146,7 @@ static void complete_paths(const char *prefix, struct completion *out) {
     if (vfs_opendir(dir, &vd, &be) < 0)
         return;
     vfs_dirent_t ent;
+    set_detail(out, COMP_KIND_VALUE, NULL);
     while (out->count < CMD_MAX_COMPLETIONS) {
         int rc = be->readdir(vd, &ent);
         if (rc <= 0)
@@ -156,122 +185,16 @@ static void complete_paths(const char *prefix, struct completion *out) {
 static void complete_enum(const char *const *enum_values, const char *partial, struct completion *out) {
     if (!enum_values)
         return;
+    set_detail(out, COMP_KIND_VALUE, NULL);
     for (const char *const *ev = enum_values; *ev; ev++)
         push_match(out, *ev, partial);
 }
 
 static void complete_bool(const char *partial, struct completion *out) {
     static const char *bool_values[] = {"on", "off", "true", "false", NULL};
+    set_detail(out, COMP_KIND_VALUE, NULL);
     for (const char **v = bool_values; *v; v++)
         push_match(out, *v, partial);
-}
-
-// === Depth-tracking state machine ===========================================
-//
-// Mirrors the "balanced tokens" rule. `paren` counts `$(`/`(`/`)`
-// inside expressions, `brace` counts `${...}` interpolation regions.
-// `bracket` counts `[...]` subscripts at top level — the contents are
-// numeric or another `$(...)`, neither of which is a tree path.
-
-typedef struct {
-    int paren;
-    int brace;
-    int bracket;
-    bool in_string;
-    bool escape_next;
-} parse_state_t;
-
-// Advance state machine by one character. Returns the number of input
-// bytes consumed (1 normally; 2 for `$(` / `${` openers so the caller
-// doesn't double-count).
-static int advance(parse_state_t *st, const char *line, int i, int len) {
-    unsigned char c = (unsigned char)line[i];
-    if (st->in_string) {
-        if (st->escape_next) {
-            st->escape_next = false;
-            return 1;
-        }
-        if (c == '\\') {
-            st->escape_next = true;
-            return 1;
-        }
-        if (c == '$' && i + 1 < len && line[i + 1] == '{') {
-            st->brace++;
-            return 2;
-        }
-        if (c == '"')
-            st->in_string = false;
-        return 1;
-    }
-    if (st->brace > 0) {
-        if (c == '"') {
-            st->in_string = true;
-            return 1;
-        }
-        if (c == '}') {
-            st->brace--;
-            return 1;
-        }
-        if (c == '$' && i + 1 < len && line[i + 1] == '(') {
-            st->paren++;
-            return 2;
-        }
-        if (c == '$' && i + 1 < len && line[i + 1] == '{') {
-            st->brace++;
-            return 2;
-        }
-        if (c == '(')
-            st->paren++;
-        else if (c == ')' && st->paren > 0)
-            st->paren--;
-        return 1;
-    }
-    if (st->paren > 0) {
-        if (c == '"') {
-            st->in_string = true;
-            return 1;
-        }
-        if (c == '$' && i + 1 < len && line[i + 1] == '{') {
-            st->brace++;
-            return 2;
-        }
-        if (c == '$' && i + 1 < len && line[i + 1] == '(') {
-            st->paren++;
-            return 2;
-        }
-        if (c == '(')
-            st->paren++;
-        else if (c == ')')
-            st->paren--;
-        return 1;
-    }
-    // Depth zero, not in a string.
-    if (c == '"') {
-        st->in_string = true;
-        return 1;
-    }
-    if (c == '$' && i + 1 < len && line[i + 1] == '(') {
-        st->paren++;
-        return 2;
-    }
-    if (c == '$' && i + 1 < len && line[i + 1] == '{') {
-        st->brace++;
-        return 2;
-    }
-    if (c == '[') {
-        st->bracket++;
-        return 1;
-    }
-    if (c == ']' && st->bracket > 0) {
-        st->bracket--;
-        return 1;
-    }
-    return 1;
-}
-
-// True if any non-shell context is currently open at this state.
-static bool in_special_context(const parse_state_t *st) {
-    return st->in_string || st->paren > 0 || st->brace > 0 || st->bracket > 0;
 }
 
 // === Path-segment completion (object tree) ==================================
@@ -296,13 +219,24 @@ static void push_name_match(struct completion *out, const char *name, bool is_ob
     push_match(out, pool_strdup(buf), tail);
 }
 
-static void complete_class_members(const class_desc_t *cls, const char *tail, struct completion *out) {
+// Detail kind of a child object: a collection container or a plain object.
+static comp_kind_t object_kind(struct object *o) {
+    return (o && class_collection(object_class(o))) ? COMP_KIND_COLLECTION : COMP_KIND_OBJECT;
+}
+
+static void complete_class_members(struct object *target, const char *tail, struct completion *out) {
+    const class_desc_t *cls = object_class(target);
     if (!cls)
         return;
     for (size_t i = 0; i < cls->n_members; i++) {
         const member_t *m = &cls->members[i];
         if (!m->name)
             continue;
+        comp_kind_t kind = m->kind == M_ATTR     ? COMP_KIND_ATTR
+                           : m->kind == M_METHOD ? COMP_KIND_METHOD
+                           : m->child.collection ? COMP_KIND_COLLECTION
+                                                 : COMP_KIND_OBJECT;
+        set_detail(out, kind, m->doc);
         push_name_match(out, m->name, m->kind == M_CHILD, tail);
     }
 }
@@ -319,6 +253,7 @@ static void each_attached_cb(struct object *parent, struct object *child, void *
     if (!name)
         return;
     // Attached children are objects: complete to "name.".
+    set_detail(acc->out, object_kind(child), object_doc(child));
     push_name_match(acc->out, name, true, acc->tail);
 }
 
@@ -332,8 +267,9 @@ static void complete_attached(struct object *o, const char *tail, struct complet
 // Indexed-child completion: `floppy.drives.<TAB>` should suggest live
 // indices as bare integers ("0", "1"). Pool-allocates the name strings.
 static void complete_indexed_children(struct object *o, const member_t *m, const char *tail, struct completion *out) {
-    if (!o || !m || m->kind != M_CHILD || !m->child.indexed)
+    if (!o || !member_is_collection(m))
         return;
+    set_detail(out, COMP_KIND_OBJECT, NULL);
     int idx = object_child_next(o, m, -1);
     while (idx >= 0 && out->count < CMD_MAX_COMPLETIONS) {
         // Indexed children resolve to objects: complete to "N.".
@@ -409,20 +345,17 @@ static void complete_path(const char *partial, struct completion *out) {
     // partial with the correctly-prefixed candidate.
     struct completion local = {0};
 
-    if (n.member && n.member->kind == M_CHILD && n.member->child.indexed && n.index < 0) {
+    if (member_is_collection(n.member) && n.index < 0) {
         complete_indexed_children(n.obj, n.member, tail, &local);
     } else {
         // For an object node, the class is on the object itself; for a
         // child-member with index resolved, descend into the live child.
         struct object *target = n.obj;
-        if (n.member && n.member->kind == M_CHILD) {
-            if (n.member->child.indexed && n.member->child.get)
-                target = n.member->child.get(n.obj, n.index);
-            else if (n.member->child.lookup)
-                target = n.member->child.lookup(n.obj, n.member->name);
-        }
+        if (n.member && n.member->kind == M_CHILD)
+            target = n.member->child.collection ? object_entry_at(n.obj, n.member, n.index)
+                                                : object_named_child(n.obj, n.member);
         if (target) {
-            complete_class_members(object_class(target), tail, &local);
+            complete_class_members(target, tail, &local);
             complete_attached(target, tail, &local);
         }
     }
@@ -432,7 +365,7 @@ static void complete_path(const char *partial, struct completion *out) {
         const char *cand = local.items[i];
         if (!cand)
             continue;
-        char composed[256];
+        char composed[512];
         if (head[0])
             snprintf(composed, sizeof(composed), "%s.%s", head, cand);
         else
@@ -442,69 +375,86 @@ static void complete_path(const char *partial, struct completion *out) {
             break;
         // Push as raw — push_match would re-filter against `partial` here,
         // but we already filtered against `tail`, so use a direct append.
-        if (out->count < CMD_MAX_COMPLETIONS)
+        if (out->count < CMD_MAX_COMPLETIONS) {
+            out->kinds[out->count] = local.kinds[i];
+            out->docs[out->count] = local.docs[i];
             out->items[out->count++] = copy;
+        }
     }
+}
+
+// === Commands =================================================================
+//
+// Command words (commands.h) at the head of a statement: those whose target
+// is a method now, and which no root member or `def` function shadows.
+
+struct command_acc {
+    const char *partial;
+    struct completion *out;
+};
+
+static bool command_cb(const char *name, const char *target, bool builtin, void *ud) {
+    (void)target;
+    (void)builtin;
+    struct command_acc *acc = (struct command_acc *)ud;
+    node_t n;
+    if (shell_head_resolve(name, strlen(name), &n, NULL, NULL, 0) != SHELL_HEAD_COMMAND)
+        return true;
+    // The name is the iteration's copy: keep it in the per-call pool.
+    const char *copy = pool_strdup(name);
+    if (!copy)
+        return false;
+    set_detail(acc->out, COMP_KIND_METHOD, n.member->doc);
+    push_match(acc->out, copy, acc->partial);
+    return acc->out->count < CMD_MAX_COMPLETIONS;
+}
+
+static void complete_commands(const char *partial, struct completion *out) {
+    struct command_acc acc = {.partial = partial, .out = out};
+    shell_command_each(command_cb, &acc);
 }
 
 // === Argument completion ====================================================
 //
-// At arg position we need (a) the resolved method-or-command at token 0
-// and (b) the zero-based arg index we're filling. For root methods we
-// dispatch via `arg_decl_t.kind`; for legacy commands we dispatch via
-// `arg_spec` (kept here as the only remaining use of the old metadata).
+// At an argument position: the resolved method at the head of the statement
+// and the declared slot the cursor's word fills (script_arg_slot).  The
+// slot's kind picks the candidates.
 
-static void complete_method_arg(const member_t *m, int arg_idx, const char *partial, struct completion *out) {
-    if (!m || m->kind != M_METHOD)
+static void complete_method_arg(const member_t *m, int slot, const char *partial, struct completion *out) {
+    if (!m || m->kind != M_METHOD || m->method.nargs <= 0)
         return;
-    if (arg_idx < 0)
-        return;
-    // OBJ_ARG_REST trailing arg: dispatch the last declared arg for any
-    // index past the declared list.
     int n = m->method.nargs;
-    if (n <= 0)
-        return;
-
     const arg_decl_t *args = m->method.args;
-    bool m_has_rest = (args[n - 1].validation_flags & OBJ_ARG_REST) != 0;
-    int fixed_n = m_has_rest ? n - 1 : n;
+    int fixed_n = (args[n - 1].validation_flags & OBJ_ARG_REST) ? n - 1 : n;
 
     // Named-argument value: `name=partial` → complete the value against the
     // named slot's kind (enum/bool — other kinds have no closed value set).
     const char *eq = strchr(partial, '=');
     if (eq && eq != partial) {
-        size_t name_len = (size_t)(eq - partial);
-        for (int i = 0; i < fixed_n; i++) {
-            const char *nm = args[i].name;
-            if (!nm || strlen(nm) != name_len || strncmp(nm, partial, name_len) != 0)
-                continue;
-            char buf[160];
-            if (args[i].kind == V_ENUM && args[i].enum_values) {
-                for (const char *const *ev = args[i].enum_values; *ev; ev++) {
-                    snprintf(buf, sizeof(buf), "%s=%s", nm, *ev);
-                    push_match(out, pool_strdup(buf), partial);
-                }
-            } else if (args[i].kind == V_BOOL) {
-                static const char *bool_vals[] = {"true", "false", NULL};
-                for (const char *const *bv = bool_vals; *bv; bv++) {
-                    snprintf(buf, sizeof(buf), "%s=%s", nm, *bv);
-                    push_match(out, pool_strdup(buf), partial);
-                }
-            }
+        int i = script_arg_slot(m, 0, partial, (size_t)(eq - partial));
+        if (i < 0 || i >= fixed_n)
             return;
+        const char *nm = args[i].name;
+        char buf[160];
+        set_detail(out, COMP_KIND_VALUE, args[i].doc);
+        if (args[i].kind == V_ENUM && args[i].enum_values) {
+            for (const char *const *ev = args[i].enum_values; *ev; ev++) {
+                snprintf(buf, sizeof(buf), "%s=%s", nm, *ev);
+                push_match(out, pool_strdup(buf), partial);
+            }
+        } else if (args[i].kind == V_BOOL) {
+            static const char *bool_vals[] = {"true", "false", NULL};
+            for (const char *const *bv = bool_vals; *bv; bv++) {
+                snprintf(buf, sizeof(buf), "%s=%s", nm, *bv);
+                push_match(out, pool_strdup(buf), partial);
+            }
         }
         return;
     }
 
-    int idx = arg_idx;
-    const arg_decl_t *last = &m->method.args[n - 1];
-    if (idx >= n) {
-        if (last->validation_flags & OBJ_ARG_REST)
-            idx = n - 1;
-        else
-            return;
-    }
-    const arg_decl_t *a = &m->method.args[idx];
+    if (slot < 0)
+        return;
+    const arg_decl_t *a = &args[slot];
     switch (a->kind) {
     case V_BOOL:
         complete_bool(partial, out);
@@ -515,26 +465,24 @@ static void complete_method_arg(const member_t *m, int arg_idx, const char *part
     case V_OBJECT:
         complete_path(partial, out);
         break;
-    case V_STRING: {
-        // Heuristic: arg names of "path" / "src" / "dst" / "out_dir" /
-        // "file" → filesystem paths. Other strings get nothing — guessing
-        // a tree path here would litter the menu with irrelevant names.
-        const char *nm = a->name ? a->name : "";
-        if (strstr(nm, "path") || strstr(nm, "src") || strstr(nm, "dst") || strstr(nm, "file") || strstr(nm, "dir"))
+    case V_STRING:
+        // A string declared VAL_PATH names a filesystem path. Other strings
+        // get nothing — guessing here would litter the menu.
+        if (a->presentation_flags & VAL_PATH)
             complete_paths(partial, out);
         break;
-    }
     default:
         break;
     }
 
     // After the positional candidates, offer `name=` for the declared
-    // arguments this position (or a later one) could still fill by name.
-    for (int i = arg_idx; i < fixed_n; i++) {
+    // arguments this slot (or a later one) could still fill by name.
+    for (int i = slot; i < fixed_n; i++) {
         if (!args[i].name)
             continue;
         char nbuf[96];
         snprintf(nbuf, sizeof(nbuf), "%s=", args[i].name);
+        set_detail(out, COMP_KIND_ATTR, args[i].doc);
         push_match(out, pool_strdup(nbuf), partial);
     }
 }
@@ -545,68 +493,9 @@ static void complete_root_members(const char *tail, struct completion *out) {
     struct object *root = object_root();
     if (!root)
         return;
-    complete_class_members(object_class(root), tail, out);
+    complete_class_members(root, tail, out);
     complete_attached(root, tail, out);
 }
-
-// === Word-boundary scan ======================================================
-//
-// At depth zero we treat unquoted whitespace as the only word break.
-// Walks a fresh state machine from line[0] to cursor_pos, tracking the
-// most recent word start at depth zero.
-
-typedef struct {
-    int word_start; // index of first char of current word (or cursor_pos)
-    int word_count; // number of completed words preceding the current one
-    bool inside_special; // true if cursor falls inside string/expr/bracket
-    int first_word_start; // for extracting the first-word string
-    int first_word_end; // exclusive
-} cursor_info_t;
-
-static cursor_info_t scan_to_cursor(const char *line, int cursor_pos) {
-    cursor_info_t info = {.word_start = cursor_pos,
-                          .word_count = 0,
-                          .inside_special = false,
-                          .first_word_start = -1,
-                          .first_word_end = -1};
-    parse_state_t st = {0};
-    int len = cursor_pos;
-    bool in_word = false;
-    int cur_start = -1;
-    for (int i = 0; i < len;) {
-        unsigned char c = (unsigned char)line[i];
-        if (in_special_context(&st)) {
-            i += advance(&st, line, i, len);
-            continue;
-        }
-        if (isspace(c)) {
-            if (in_word) {
-                if (info.first_word_start < 0) {
-                    info.first_word_start = cur_start;
-                    info.first_word_end = i;
-                }
-                info.word_count++;
-                in_word = false;
-                cur_start = -1;
-            }
-            i += advance(&st, line, i, len);
-            continue;
-        }
-        if (!in_word) {
-            in_word = true;
-            cur_start = i;
-        }
-        i += advance(&st, line, i, len);
-    }
-    info.inside_special = in_special_context(&st);
-    if (in_word)
-        info.word_start = cur_start;
-    else
-        info.word_start = cursor_pos;
-    return info;
-}
-
-// === Public entry point =====================================================
 
 // === Binding-name completion (`$par` → `$pc`, `$pram_...`) =================
 
@@ -640,12 +529,122 @@ static bool binding_complete_alias_cb(const char *name, const char *path, alias_
 
 static void complete_bindings(const char *prefix, struct completion *out) {
     binding_complete_ctx_t cc = {.out = out, .prefix = prefix};
+    set_detail(out, COMP_KIND_ALIAS, NULL);
     // Scope bindings first (let / --var), then the alias table. The
     // alias walk is prefix-filtered in its callback so the ~500-entry
     // mac-global table doesn't flood a bare `$`.
     shell_var_each(binding_complete_var_cb, &cc);
     alias_each(binding_complete_alias_cb, &cc);
 }
+
+// === Statement position =====================================================
+
+// True when `word` (length n) is a `name=value` argument: an identifier
+// followed by '='.
+static bool is_named_word(const char *word, size_t n) {
+    if (n == 0 || !(isalpha((unsigned char)word[0]) || word[0] == '_'))
+        return false;
+    for (size_t i = 1; i < n; i++) {
+        if (word[i] == '=')
+            return true;
+        if (!(isalnum((unsigned char)word[i]) || word[i] == '_'))
+            return false;
+    }
+    return false;
+}
+
+// The partial word [s, e) as a NUL-terminated copy (truncated to fit).
+static void copy_word(char *buf, size_t size, const char *s, const char *e) {
+    size_t n = (size_t)(e - s);
+    if (n >= size)
+        n = size - 1;
+    memcpy(buf, s, n);
+    buf[n] = '\0';
+}
+
+// The head of a statement: `$` bindings, a mid-path partial's members, or
+// the statement keywords, root members and command words.
+static void complete_head(const char *partial, struct completion *out) {
+    if (partial[0] == '$') {
+        complete_bindings(partial + 1, out);
+        return;
+    }
+    if (strpbrk(partial, ".[")) {
+        complete_path(partial, out);
+        return;
+    }
+    for (size_t i = 0; i < object_keyword_count(); i++) {
+        if (!object_keyword_is_statement(i))
+            continue;
+        set_detail(out, COMP_KIND_KEYWORD, NULL);
+        push_match(out, object_keyword(i), partial);
+    }
+    complete_root_members(partial, out);
+    complete_commands(partial, out);
+}
+
+// The arguments of the command statement `st`, whose head ends at
+// `head_end`, with the cursor at `cur`.
+static void complete_arguments(const char *line, const script_stmt_t *st, const char *head_end, const char *cur,
+                               struct completion *out) {
+    // Walk the argument words before the cursor's, counting positionals
+    // (a `name=` word names its own slot).
+    int pos = 0;
+    const char *p = head_end;
+    while (p < cur && isspace((unsigned char)*p))
+        p++;
+    const char *word = cur;
+    while (p < cur) {
+        bool open = false;
+        const char *e = script_arg_end(p, cur, &open);
+        if (e >= cur) {
+            if (open)
+                return; // inside a string or a parenthesised expression
+            word = p;
+            break;
+        }
+        if (!is_named_word(p, (size_t)(e - p)))
+            pos++;
+        p = e;
+        while (p < cur && isspace((unsigned char)*p))
+            p++;
+    }
+    out->start = (int)(word - line);
+    char partial[512];
+    copy_word(partial, sizeof(partial), word, cur);
+    if (partial[0] == '$') {
+        complete_bindings(partial + 1, out);
+        return;
+    }
+
+    // The head: a tree path, or a bare word read the way the interpreter
+    // reads it -- a command stands for the method it names; a `def`
+    // function has no declared arguments.
+    if (*st->head == '$')
+        return;
+    char head[256];
+    copy_word(head, sizeof(head), st->head, head_end);
+    node_t cmd = object_resolve(object_root(), head);
+    if (!node_valid(cmd) && !strpbrk(head, ".[") &&
+        shell_word_resolve(head, strlen(head), &cmd, NULL, NULL, 0) != SHELL_HEAD_COMMAND)
+        cmd = (node_t){0};
+    if (!node_valid(cmd) || !cmd.member || cmd.member->kind != M_METHOD)
+        return;
+    const member_t *m = cmd.member;
+    const char *eq = is_named_word(partial, strlen(partial)) ? strchr(partial, '=') : NULL;
+    int slot = eq ? script_arg_slot(m, 0, partial, (size_t)(eq - partial)) : script_arg_slot(m, pos, NULL, 0);
+
+    // The argument context: the method's full path and the declared slot.
+    char path[200];
+    object_compute_path(cmd.obj, path, sizeof(path));
+    snprintf(out->ctx_method, sizeof(out->ctx_method), "%s%s%s", path, path[0] ? "." : "", m->name);
+    out->has_context = true;
+    out->ctx_arg_index = slot;
+    out->ctx_arg_name = slot >= 0 ? m->method.args[slot].name : NULL;
+    complete_method_arg(m, slot, partial, out);
+}
+
+// === Public entry point =====================================================
 
 void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     // Thread-affinity guard (compiled out in release). See worker_thread.h.
@@ -654,8 +653,12 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     if (!line || !out)
         return;
     out->count = 0;
-    out->start = 0;
-    out->end = 0;
+    out->has_context = false;
+    out->ctx_method[0] = '\0';
+    out->ctx_arg_index = -1;
+    out->ctx_arg_name = NULL;
+    out->truncated = false;
+    set_detail(out, COMP_KIND_VALUE, NULL);
     pool_reset();
 
     int len = (int)strlen(line);
@@ -663,61 +666,47 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
         cursor_pos = 0;
     if (cursor_pos > len)
         cursor_pos = len;
-
-    cursor_info_t info = scan_to_cursor(line, cursor_pos);
-    // Default span: the whole current word (complete_paths narrows it).
-    out->start = info.word_start;
+    const char *cur = line + cursor_pos;
+    out->start = cursor_pos;
     out->end = cursor_pos;
-    if (info.inside_special)
-        return; // empty inside $(...), ${...}, "..."
 
-    // Extract the partial being completed.
-    char partial[512];
-    int plen = cursor_pos - info.word_start;
-    if (plen < 0)
-        plen = 0;
-    if (plen >= (int)sizeof(partial))
-        plen = (int)sizeof(partial) - 1;
-    memcpy(partial, line + info.word_start, plen);
-    partial[plen] = '\0';
-
-    // Binding names after `$` (shell v2): scope bindings + aliases.
-    if (partial[0] == '$') {
-        complete_bindings(partial + 1, out);
+    // The source line holding the cursor, up to the cursor, split the way
+    // the parser reads it: the statement the cursor is in is the line's
+    // own, or an inline block's once past its `{`.
+    const char *ls = cur;
+    while (ls > line && ls[-1] != '\n')
+        ls--;
+    script_line_t ln;
+    script_line_split(ls, cur, &ln);
+    if (ln.comment || ln.close)
+        return; // in a comment, or past an inline block's `}`
+    const script_stmt_t *st = ln.open ? &ln.body : &ln.stmt;
+    if (st->kind == SCRIPT_STMT_EMPTY) {
+        // Nothing typed yet at a statement position.
+        if (cur > ls && !isspace((unsigned char)cur[-1]) && cur[-1] != '{')
+            return;
+        complete_head("", out);
         return;
     }
 
-    // Word 0: command position. Suggest statement keywords and root
-    // members + attached children, filtered by the typed prefix.
-    // Mid-path partials (containing '.' or '[') walk into the tree.
-    if (info.word_count == 0) {
-        bool dotted = (strchr(partial, '.') != NULL) || (strchr(partial, '[') != NULL);
-        if (dotted) {
-            complete_path(partial, out);
-        } else {
-            // Statement keywords.
-            static const char *const kws[] = {"let", "alias", "if",       "elif",   "else", "while",
-                                              "for", "break", "continue", "return", "def",  "assert"};
-            for (size_t i = 0; i < sizeof(kws) / sizeof(kws[0]); i++)
-                push_match(out, kws[i], partial);
-            complete_root_members(partial, out);
-        }
+    // The head word: where the cursor still is, it is completed as a head.
+    const char *s = st->start;
+    if (*s != '$' && !isalpha((unsigned char)*s) && *s != '_')
+        return; // an expression statement
+    const char *he = script_path_end(s, cur);
+    if (!he)
+        return; // inside an index
+    if (he + 1 == cur && *he == '.')
+        he = cur; // `machine.cpu.` lists the members
+    if (he == cur) {
+        out->start = (int)(s - line);
+        char partial[512];
+        copy_word(partial, sizeof(partial), s, cur);
+        complete_head(partial, out);
         return;
     }
-
-    // Argument position. Pull the first word out as the command path.
-    char first[256];
-    int fwlen = info.first_word_end - info.first_word_start;
-    if (fwlen < 0)
-        fwlen = 0;
-    if (fwlen >= (int)sizeof(first))
-        fwlen = (int)sizeof(first) - 1;
-    memcpy(first, line + info.first_word_start, fwlen);
-    first[fwlen] = '\0';
-
-    // Resolve as a tree path — root methods and dotted method paths
-    // (`floppy.drives[0].insert`) both land here.
-    node_t cmd_node = object_resolve(object_root(), first);
-    if (node_valid(cmd_node) && cmd_node.member && cmd_node.member->kind == M_METHOD)
-        complete_method_arg(cmd_node.member, info.word_count - 1, partial, out);
+    // Past the head only a command takes argument-mode words.
+    if (st->kind != SCRIPT_STMT_COMMAND || !isspace((unsigned char)*he))
+        return;
+    complete_arguments(line, st, he, cur, out);
 }

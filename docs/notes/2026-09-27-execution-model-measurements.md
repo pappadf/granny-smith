@@ -11,7 +11,7 @@ build that carries the change ("after") and on `main` just before it
   on (a background checkpoint every 900 ticks, about every 15 s), probed
   for 50 s.
 - `tests/e2e/web2-specs/copy-jitter.spec.ts` — a IIcx (8 MB) running live
-  while `storage.cp` copies a 192 MB image inside OPFS; probed for 8 s
+  while `files.cp` copies a 192 MB image inside OPFS; probed for 8 s
   before the copy and 20 s during it.
 
 Both specs need a measurement build (`VITE_GS_MEASURE=1 make ui2`), which
@@ -49,7 +49,7 @@ write. Splitting that copy across ticks is the next step if it matters.
 | before | 20.2 s | 6.8 / 24.8 | 8.6 / **7488** |
 | after | 20.2 s | 6.5 / 16.5 | 9.3 / **17.3** |
 
-Before, `storage.cp` ran inside the leaf on the emulator thread: the
+Before, `files.cp` ran inside the leaf on the emulator thread: the
 machine froze for the copy, and the probe's worst round trip is the copy
 (7.5 s here, the remainder having been absorbed by the request that was
 already in flight when the copy started). After, the copy is an I/O job:

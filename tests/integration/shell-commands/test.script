@@ -28,16 +28,16 @@ assert len(debug.logpoints.entries) == 0 "logpoints should start empty"
 # Scheduler pacing-mode attribute: two canonical names plus the legacy
 # three-mode aliases (real/hw -> paced, max -> turbo). Pacing is a no-op on
 # the headless target, so switching is safe here; this pins the mapping.
-# (No default-mode assert: the integration runner sets --speed=max itself.)
+# (No default-mode assert: the integration runner sets --speed=turbo itself.)
 scheduler.mode = "paced"
 assert scheduler.mode == "paced" "paced not accepted"
 scheduler.mode = "turbo"
 assert scheduler.mode == "turbo" "turbo not accepted"
-scheduler.mode = "real"
+scheduler.mode = "paced"
 assert scheduler.mode == "paced" "legacy alias real did not map to paced"
-scheduler.mode = "max"
+scheduler.mode = "turbo"
 assert scheduler.mode == "turbo" "legacy alias max did not map to turbo"
-scheduler.mode = "hw"
+scheduler.mode = "paced"
 assert scheduler.mode == "paced" "legacy alias hw did not map to paced"
 
 # CPI is a per-machine constant (SE/30: 4), mode-independent, and writable

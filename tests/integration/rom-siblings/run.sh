@@ -20,7 +20,7 @@ quit
 SCRIPT
 
 OUT="$TEST_RESULTS_DIR/out.log"
-"$HEADLESS_BIN" "rom=$WORK_DIR/cli/plus.rom" "script=$WORK_DIR/boot.script" --speed=max > "$OUT" 2>&1 || true
+"$HEADLESS_BIN" "rom=$WORK_DIR/cli/plus.rom" "script=$WORK_DIR/boot.script" --speed=turbo > "$OUT" 2>&1 || true
 if ! grep -q "rom-siblings-ok" "$OUT"; then
     cat "$OUT"
     echo "FAIL: the card ROM beside the script-booted ROM was not offered"
