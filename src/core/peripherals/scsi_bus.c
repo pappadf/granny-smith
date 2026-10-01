@@ -370,6 +370,10 @@ void scsi_set_sense(scsi_t *scsi, int target, uint8_t key, uint8_t asc, uint8_t 
     scsi->devices[target & 7].sense.ascq = ascq;
 }
 
+uint8_t scsi_device_sense_key(const scsi_t *scsi, int target) {
+    return scsi ? scsi->devices[target & 7].sense.key : 0;
+}
+
 // Does this opcode touch the medium, as opposed to the drive itself?  An
 // empty CD bay must answer the drive-level commands normally — that is how a
 // guest tells an empty drive from a broken one — and fail only the ones that
@@ -384,6 +388,7 @@ static bool scsi_cmd_needs_medium(uint8_t opcode) {
     case CMD_SEEK_6:
     case CMD_READ_CAPACITY:
     case CMD_READ_10:
+    case CMD_READ_12:
     case CMD_WRITE_10:
     case CMD_SEEK_10:
     case CMD_WRITE_VERIFY:
@@ -719,6 +724,7 @@ void run_cmd(scsi_t *scsi) {
     }
 
     case CMD_READ_10:
+    case CMD_READ_12:
     case CMD_WRITE_10: {
         // 10-byte CDB: LBA in bytes 2-5, transfer length in bytes 7-8.
         // Promote each byte to uint32_t before shifting, as the 6-byte decode
@@ -727,6 +733,19 @@ void run_cmd(scsi_t *scsi) {
         scsi->cmd.lba = ((uint32_t)scsi->buf.data[2] << 24) | ((uint32_t)scsi->buf.data[3] << 16) |
                         ((uint32_t)scsi->buf.data[4] << 8) | (uint32_t)scsi->buf.data[5];
         scsi->cmd.tl = ((uint32_t)scsi->buf.data[7] << 8) | (uint32_t)scsi->buf.data[8];
+        if (scsi->cmd.opcode == CMD_READ_12) {
+            // READ(12), the group-5 read (SCSI-2; the read the Mac OS ATAPI
+            // CD-ROM driver issues, SFF-8020i): the same LBA, a 32-bit
+            // transfer length in bytes 6-9.  Past 65,535 blocks it is more
+            // than one transfer of the staging path can describe.
+            uint32_t tl = ((uint32_t)scsi->buf.data[6] << 24) | ((uint32_t)scsi->buf.data[7] << 16) |
+                          ((uint32_t)scsi->buf.data[8] << 8) | (uint32_t)scsi->buf.data[9];
+            if (tl > 0xFFFFu) {
+                scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB, 0x00);
+                break;
+            }
+            scsi->cmd.tl = tl;
+        }
 
         uint16_t blk_sz = scsi->devices[target].block_size;
 
@@ -989,6 +1008,15 @@ void run_cmd(scsi_t *scsi) {
             phase_data_out(scsi, param_len);
         break;
     }
+
+    case CMD_MODE_SENSE_10:
+        // MODE SENSE(10): the form an ATAPI host uses.  Only the CD-ROM
+        // model answers it; a hard disk here is a SCSI-1-era drive.
+        if (scsi->devices[target].type == scsi_dev_cdrom)
+            scsi_cdrom_mode_sense_10(scsi);
+        else
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_OPCODE, 0x00);
+        break;
 
     case CMD_MODE_SENSE: {
         // MODE SENSE(6): dispatch based on device type

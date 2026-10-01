@@ -33,11 +33,16 @@
 #define CD_PAGE_30_BODY 30
 #define CD_PAGE_30_LEN  (2 + CD_PAGE_30_BODY)
 
-// The longest response this file can build: page code 3Fh, "all pages".
-// Measured at 104 bytes.
+// MODE SENSE(10), the form an ATAPI host uses: an 8-byte header, and the CD
+// capabilities page 2Ah (SFF-8020i), 2 + 18 bytes.
+#define CD_MODE_PARAM_HEADER10_LEN 8
+#define CD_PAGE_2A_LEN             20
+
+// The longest response this file can build: page code 3Fh, "all pages",
+// in the 10-byte form (no block descriptor there, but count it anyway).
 #define CD_MODE_SENSE_MAX                                                                                              \
-    (CD_MODE_PARAM_HEADER_LEN + CD_MODE_BLOCK_DESC_LEN + CD_PAGE_01_LEN + CD_PAGE_02_LEN + CD_PAGE_07_LEN +            \
-     CD_PAGE_08_LEN + CD_PAGE_09_LEN + CD_PAGE_30_LEN)
+    (CD_MODE_PARAM_HEADER10_LEN + CD_MODE_BLOCK_DESC_LEN + CD_PAGE_01_LEN + CD_PAGE_02_LEN + CD_PAGE_07_LEN +          \
+     CD_PAGE_08_LEN + CD_PAGE_09_LEN + CD_PAGE_30_LEN + CD_PAGE_2A_LEN)
 
 // Build Mode Page 0x01: Read Error Recovery Parameters (8 bytes)
 //
@@ -140,14 +145,41 @@ static int build_page_30(uint8_t *buf, int page_control) {
     return scsi_build_apple_page_30(buf, page_control, apple_cd_id, (int)sizeof(apple_cd_id) - 1, CD_PAGE_30_BODY);
 }
 
+// Mode page 2Ah, CD Capabilities and Mechanical Status (SFF-8020i; MMC):
+// a read-only CD-ROM in a tray that locks and ejects, with audio play, at
+// a 24x read rate.  An ATAPI driver reads it to learn what the drive is;
+// nothing in it is changeable.
+static int build_page_2a(uint8_t *buf, int page_control) {
+    memset(buf, 0, CD_PAGE_2A_LEN);
+    buf[0] = 0x2A; // page code
+    buf[1] = CD_PAGE_2A_LEN - 2; // page length
+    if (page_control == 1)
+        return CD_PAGE_2A_LEN; // changeable: nothing
+    buf[4] = 0x01; // audio play
+    buf[5] = 0x01; // CD-DA commands supported
+    buf[6] = 0x29; // tray loading (001b), eject, lock
+    buf[8] = 0x10; // maximum read speed 4234 KB/s (24x)
+    buf[9] = 0x8A;
+    buf[10] = 0x01; // 256 volume levels
+    buf[11] = 0x00;
+    buf[12] = 0x00; // 128 KB buffer
+    buf[13] = 0x80;
+    buf[14] = 0x10; // current read speed
+    buf[15] = 0x8A;
+    return CD_PAGE_2A_LEN;
+}
+
 // ============================================================================
-// MODE SENSE(6) Handler
+// MODE SENSE(6) / MODE SENSE(10) Handler
 // ============================================================================
 
-// Handle MODE SENSE(6) for CD-ROM device
-void scsi_cdrom_mode_sense(scsi_t *scsi) {
+// The two forms differ in the header: MODE SENSE(10) has an 8-byte one with
+// two-byte length fields, and answers without a block descriptor, so the
+// first page starts at offset 8 where an ATAPI driver looks for it; and it
+// knows page 2Ah, which a SCSI-1 CDU-8002 has no notion of.
+static void cd_mode_sense(scsi_t *scsi, bool ten) {
     int target = scsi->bus.target & 7;
-    uint8_t alloc_len = scsi->buf.data[4];
+    uint16_t alloc_len = ten ? (uint16_t)(scsi->buf.data[7] << 8 | scsi->buf.data[8]) : scsi->buf.data[4];
     uint8_t page_code = scsi->buf.data[2] & 0x3F;
     int page_control = (scsi->buf.data[2] >> 6) & 0x03;
 
@@ -171,7 +203,7 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
     uint8_t *buf = resp;
 
     // Mode parameter header
-    int pos = CD_MODE_PARAM_HEADER_LEN;
+    int pos = ten ? CD_MODE_PARAM_HEADER10_LEN : CD_MODE_PARAM_HEADER_LEN;
 
     // Block descriptor (8 bytes) — always present (A/UX requires it).
     //
@@ -197,16 +229,21 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
     if (scsi->device_images[target])
         blocks = (uint32_t)(disk_size(scsi->device_images[target]) / blk_sz);
 
-    buf[3] = CD_MODE_BLOCK_DESC_LEN; // block descriptor length
-    buf[pos + 0] = 0; // density code
-    buf[pos + 1] = (blocks >> 16) & 0xFF; // number of blocks
-    buf[pos + 2] = (blocks >> 8) & 0xFF;
-    buf[pos + 3] = blocks & 0xFF;
-    buf[pos + 4] = 0; // reserved
-    buf[pos + 5] = (reported_blk_sz >> 16) & 0xFF; // block length, per PC above
-    buf[pos + 6] = (reported_blk_sz >> 8) & 0xFF;
-    buf[pos + 7] = reported_blk_sz & 0xFF;
-    pos += CD_MODE_BLOCK_DESC_LEN;
+    if (ten) {
+        buf[2] = 0x01; // medium type: 120 mm CD-ROM data disc
+        // Block descriptor length (bytes 6-7) stays 0: none follows.
+    } else {
+        buf[3] = CD_MODE_BLOCK_DESC_LEN; // block descriptor length
+        buf[pos + 0] = 0; // density code
+        buf[pos + 1] = (blocks >> 16) & 0xFF; // number of blocks
+        buf[pos + 2] = (blocks >> 8) & 0xFF;
+        buf[pos + 3] = blocks & 0xFF;
+        buf[pos + 4] = 0; // reserved
+        buf[pos + 5] = (reported_blk_sz >> 16) & 0xFF; // block length, per PC above
+        buf[pos + 6] = (reported_blk_sz >> 8) & 0xFF;
+        buf[pos + 7] = reported_blk_sz & 0xFF;
+        pos += CD_MODE_BLOCK_DESC_LEN;
+    }
 
     // Append requested mode pages
     switch (page_code) {
@@ -228,6 +265,13 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
     case 0x30:
         pos += build_page_30(buf + pos, page_control);
         break;
+    case 0x2A:
+        if (!ten) {
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB, 0x00);
+            return;
+        }
+        pos += build_page_2a(buf + pos, page_control);
+        break;
     case 0x3F:
         // Return all pages
         pos += build_page_01(buf + pos, page_control);
@@ -236,6 +280,8 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
         pos += build_page_08(buf + pos);
         pos += build_page_09(buf + pos, page_control);
         pos += build_page_30(buf + pos, page_control);
+        if (ten)
+            pos += build_page_2a(buf + pos, page_control);
         break;
     case 0x00:
         // Vendor-specific page 0 — return just the header + block descriptor
@@ -266,7 +312,12 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
     // a single byte; the longest response this can build is
     // CD_MODE_SENSE_MAX, well inside that, so the old clamp to 255 guarded
     // against a size the constants now make impossible.
-    buf[0] = (uint8_t)(pos - 1);
+    if (ten) {
+        buf[0] = (uint8_t)((pos - 2) >> 8); // mode data length, excluding itself
+        buf[1] = (uint8_t)(pos - 2);
+    } else {
+        buf[0] = (uint8_t)(pos - 1);
+    }
 
     // Bound by the allocation length.  Zero means zero -- CDU-541 manual
     // S4.2.6 -- where this used to read `alloc_len > 0 &&`, i.e. send the whole
@@ -274,6 +325,16 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
     int n = scsi_data_in_alloc(scsi, pos, alloc_len);
     if (n > 0)
         memcpy(scsi->buf.data, resp, (size_t)n);
+}
+
+// Handle MODE SENSE(6) for CD-ROM device
+void scsi_cdrom_mode_sense(scsi_t *scsi) {
+    cd_mode_sense(scsi, false);
+}
+
+// Handle MODE SENSE(10) for CD-ROM device
+void scsi_cdrom_mode_sense_10(scsi_t *scsi) {
+    cd_mode_sense(scsi, true);
 }
 
 // ============================================================================
