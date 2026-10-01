@@ -192,7 +192,12 @@ its base is not compared.
   `udif`, `ndif`, `storage` (the base as a source).
 - Integration: `image-udif` (with `files.cache`), `image-export-raw`,
   `image-hfs-traverse`, `vfs-rsrc`, `archive-fork-unpack`,
-  `checkpoint-base-identity` (a replaced base is refused).
+  `checkpoint-base-identity` (a replaced base is refused), and three rows
+  whose consumers open nested sources: `image-nested-boot` (a Plus boots a
+  floppy image held as a file in an HFS image), `image-ndif-in-hfs` (an NDIF
+  inside an HFS image attached as a CD-ROM) and `rom-from-archive` (a ROM
+  read out of a zip member).  `tests/integration/lib/make-hfs-volume.py`
+  builds their HFS volumes, NDIF files included, from the specs.
 - e2e: `checkpoint-resume.spec.ts` resumes a machine with a floppy attached
   across a reload (the OPFS time stamp case).
 

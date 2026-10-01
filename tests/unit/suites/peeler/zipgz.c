@@ -1232,7 +1232,7 @@ TEST(test_tar_names_links_and_extensions) {
     }
     tt_member(&b, "truncated-gnu-name", '0', data, sizeof(data) - 1, NULL);
     size_t body = strlen(pax_name) + 6;
-    char lenstr[16];
+    char lenstr[24];
     snprintf(lenstr, sizeof(lenstr), "%zu", body + 1);
     if (strlen(lenstr) + body + 1 != (size_t)atoi(lenstr))
         snprintf(lenstr, sizeof(lenstr), "%zu", body + strlen(lenstr) + 1);

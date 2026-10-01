@@ -1,0 +1,27 @@
+# Integration test: boot from roms.zip/plus.rom (see config.mk).  The runner
+# cd's into this directory; WORK_DIR is absolute.
+
+let zip = "${$WORK_DIR}/roms.zip"
+let member = "${$zip}/plus.rom"
+
+# The archive lists its one member, and the member reads back as the ROM.
+let names = ""
+for e in files.list($zip) {
+    $names = "${$names}|${$e.name}"
+}
+assert $names == "|plus.rom" "the archive's members (got ${$names})"
+assert files.path_size($zip) < files.path_size($ROM) "the member is deflated"
+assert files.path_size($member) == 131072 "the member's size"
+assert files.path_compare($member, $ROM) == -1 "the member decodes to the ROM"
+
+# Booting names the member: the ROM is identified from what it decodes to.
+assert machine.boot(model="plus", rom="${$member}") "boot from the archive member"
+assert machine.config.rom_id == "4d1f8172" "the ROM read out of the archive"
+assert machine.config.rom == $member "the record names the member"
+
+# And the machine runs it: the ROM's boot code draws the screen.
+let before = machine.screen.checksum()
+scheduler.run 20000000
+assert machine.screen.checksum() != $before "the ROM from the archive runs"
+
+quit

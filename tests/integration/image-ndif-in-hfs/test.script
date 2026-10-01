@@ -1,0 +1,26 @@
+# Integration test: attach toast.img/partition1/Disk.ndif as a CD (see
+# config.mk).  The runner cd's into this directory; WORK_DIR is absolute.
+
+let toast = "${$WORK_DIR}/toast.img"
+let ndif = "${$toast}/partition1/Disk.ndif"
+let fd = "${$TEST_DATA}/systems/System_6_0_8.dsk"
+
+# The outer volume holds the NDIF file: its chunks in the data fork, the
+# chunk map in the resource fork.
+assert files.probe($toast) "the HFS image is recognised"
+assert files.path_size($ndif) > 0 "the NDIF's data fork"
+assert files.path_size("${$ndif}/rsrc/_raw") > 0 "the chunk map's resource fork"
+
+# Attached as a CD, the drive sees the decoded disk, read-only.
+machine.scsi.attach_cdrom "${$ndif}" 3
+assert files.images[0].type == "cdrom" "attached as a CD-ROM"
+assert files.images[0].format == "ndif" "the NDIF wrapper is decoded"
+assert files.images[0].raw_size == 819200 "the decoded disk is the floppy's size"
+assert !files.images[0].writable "a CD is read-only"
+
+# The decoded disk is the floppy, byte for byte, and its volume lists.
+assert files.export_raw($ndif, "${$WORK_DIR}/decoded.img") "export the decoded disk"
+assert files.path_compare("${$WORK_DIR}/decoded.img", $fd) == -1 "NDIF decodes to the original floppy"
+assert files.list("${$ndif}/partition1/System Folder") "the HFS volume inside the NDIF inside the HFS volume"
+
+quit
