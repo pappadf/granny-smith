@@ -100,6 +100,7 @@ LOG_USE_CATEGORY_NAME("video");
 #define RAGEPRO_CHIP_ID      ((uint32_t)RAGEPRO_REVISION << 24 | RAGEPRO_DEVICE_ID)
 #define RAGEPRO_CONFIG_STAT0 0x0080001Du
 #define RAGEPRO_CONFIG_CNTL  0x00002042u
+#define GUI_STAT_FIFO_FREE   32u // GUI_STAT FIFO_CNT with the command FIFO empty
 #define RAGEPRO_BAR_IO       1 // config $14 — 256 B of block-decoded I/O
 #define RAGEPRO_BAR_AUX      2 // config $18 — the 4 KB register aperture
 #define RAGEPRO_IO_SIZE      0x100u
@@ -1146,6 +1147,14 @@ static bool gp_reg_read(mach64_t *m, int dw, uint32_t *out) {
     case DW_GP_IO:
         *out = gp_gpio_read(m);
         return true;
+    case DW_GUI_STAT:
+        // Engine idle, and FIFO_CNT (bits 25:16) — the number of empty
+        // command-FIFO entries, "less than or equal to 32" on the 3D RAGE
+        // family (RRG 3D RAGE p. 4-106) — says the whole FIFO is free.
+        // ATI's Mac accelerator waits on this count, not on FIFO_STAT:
+        // `while (((GUI_STAT >> 16) & $3FF) < n);` hangs on a 0 here.
+        *out = GUI_STAT_FIFO_FREE << 16;
+        return true;
     case DW_CLOCK_CNTL:
         *out = (m->reg[DW_CLOCK_CNTL] & ~(0xFFu << CLOCK_PLL_DATA_SHIFT)) |
                ((uint32_t)m->pll[CLOCK_PLL_ADDR(m->reg[DW_CLOCK_CNTL])] << CLOCK_PLL_DATA_SHIFT);
@@ -2028,8 +2037,77 @@ static void mach64_engine_line(mach64_t *m) {
 
 // The engine's register writes.  Returns true when the write was the
 // engine's business, so the generic store below is skipped.
+// ---- The Rage Pro's set-up shortcuts --------------------------------------
+//
+// The 3D RAGE family adds write-only registers that load several draw-engine
+// fields from one dword.  ATI's Mac accelerator programs every fill and blit
+// through DP_SET_GUI_ENGINE2 ($BE) and never writes DP_SRC or DP_MIX, so
+// without it every operation inherits whatever DP_SRC last held — a host
+// source after a glyph — and waits for HOST_DATA that never comes.
+//
+// Field layout and side effects: 3D RAGE LT PRO Register Reference
+// (RRG-G03300, 1998), DP_SET_GUI_ENGINE2 p. 5-56/5-57, the SET_DST_PITCH
+// table under DP_SET_GUI_ENGINE p. 5-53, USR_DST_PITCH p. 5-52.
+#define DW_USR_DST_PITCH      0xBC
+#define DW_DP_SET_GUI_ENGINE2 0xBE
+#define GUI_TRAJ_PAT_MONO_EN  0x01000000u // GUI_TRAJ_CNTL bit 24
+#define SRC_CNTL_PATT_ROT_EN  0x02u
+
+// SET_DST_PITCH: 0 = USR_DST_PITCH, otherwise a pitch in pixels.
+static const uint16_t gp_set_dst_pitch[16] = {0,    320,  352,  384, 640, 800,  896, 512,
+                                              1024, 1152, 1280, 400, 832, 1600, 448, 2048};
+
+static void gp_set_gui_engine2(mach64_t *m, uint32_t v) {
+    uint32_t r = m->reg[DW_DP_MIX] & ~((0x1Fu << 16) | 0x1Fu);
+    m->reg[DW_DP_MIX] = r | (((v >> 4) & 0xFu) << 16) | (v & 0xFu);
+    r = m->reg[DW_DP_SRC] & ~((3u << 16) | (7u << 8) | 7u);
+    m->reg[DW_DP_SRC] = r | (((v >> 14) & 3u) << 16) | (((v >> 11) & 7u) << 8) | ((v >> 8) & 7u);
+
+    uint32_t dst_cntl = m->reg[DW_DST_CNTL] & ~(DST_X_DIR | DST_Y_DIR);
+    dst_cntl |= ((v >> 16) & 1u) ? DST_X_DIR : 0u;
+    dst_cntl |= ((v >> 17) & 1u) ? DST_Y_DIR : 0u;
+    uint32_t src_cntl = (m->reg[DW_SRC_CNTL] & ~SRC_CNTL_PATT_ROT_EN) | (((v >> 19) & 1u) ? SRC_CNTL_PATT_ROT_EN : 0u);
+    uint32_t traj = (m->reg[DW_GUI_TRAJ_CNTL] & ~GUI_TRAJ_PAT_MONO_EN) | (((v >> 18) & 1u) ? GUI_TRAJ_PAT_MONO_EN : 0u);
+    m->reg[DW_GUI_TRAJ_CNTL] = traj;
+    mach64_engine_write(m, DW_DST_CNTL, dst_cntl);
+    mach64_engine_write(m, DW_SRC_CNTL, src_cntl);
+
+    if ((v >> 22) & 1u)
+        m->reg[DW_DP_WRITE_MSK] = 0xFFFFFFFFu;
+
+    // DP_PIX_WIDTH: the destination depth, the source the same or mono, and
+    // the host width and byte order cleared (Table 5-13).
+    uint32_t dst_pw = (v >> 23) & 7u;
+    uint32_t src_pw = ((v >> 26) & 1u) ? dst_pw : 0u;
+    r = m->reg[DW_DP_PIX_WIDTH] & ~(0x80000000u | (7u << 16) | (7u << 8) | 7u);
+    m->reg[DW_DP_PIX_WIDTH] = r | (src_pw << 8) | dst_pw;
+
+    // DST_OFF_PITCH's pitch (bits 31:22, in 8-pixel units); the offset stays.
+    uint32_t sel = (v >> 27) & 0xFu;
+    uint32_t pitch_px = sel ? gp_set_dst_pitch[sel] : m->reg[DW_USR_DST_PITCH];
+    uint32_t pitch_field = sel ? (pitch_px / 8u) : (pitch_px & 0x3FFu);
+    m->reg[DW_DST_OFF_PITCH] = (m->reg[DW_DST_OFF_PITCH] & 0x003FFFFFu) | ((pitch_field & 0x3FFu) << 22);
+    m->reg[DW_SRC_OFF_PITCH] = ((v >> 31) & 1u) ? m->reg[DW_DST_OFF_PITCH] : 0u;
+
+    // The registers the write presets (Table 5-13).
+    mach64_engine_write(m, DW_DST_Y_X, 0);
+    m->reg[DW_DST_HEIGHT_WIDTH] = 0;
+    m->reg[DW_DST_WIDTH] = 0;
+    m->reg[DW_DST_HEIGHT] = 0;
+    mach64_engine_write(m, DW_SRC_Y_X, 0);
+    m->reg[DW_CLR_CMP_CNTL] = 0;
+    m->reg[DW_DP_SET_GUI_ENGINE2] = v;
+    LOG(4, "Rage Pro: DP_SET_GUI_ENGINE2 $%08X -> DP_MIX $%08X DP_SRC $%08X DP_PIX_WIDTH $%08X DST_OFF_PITCH $%08X", v,
+        m->reg[DW_DP_MIX], m->reg[DW_DP_SRC], m->reg[DW_DP_PIX_WIDTH], m->reg[DW_DST_OFF_PITCH]);
+}
+
 static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value) {
     switch (dw) {
+    case DW_DP_SET_GUI_ENGINE2:
+        if (!m->gp)
+            return false;
+        gp_set_gui_engine2(m, value);
+        return true;
     // FIELD ORDER.  In ATI's combined `A_B` register names the FIRST-named
     // field is the LOW halfword and the second is the HIGH halfword, so
     // DST_Y_X is (X << 16) | Y and DST_HEIGHT_WIDTH is (WIDTH << 16) |
