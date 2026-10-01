@@ -137,7 +137,9 @@ names in the DOM are test hooks and can change. A structural selector over
 parts is allowed where no part names the element (glass and aqua light up
 the display toolbar's first button, the run control, as
 `.gs-toolbar[data-variant='bar'] > :first-child > .gs-icon-button:first-child`),
-but it breaks if the order changes, so keep such rules rare. The parts are:
+but it breaks if the order changes, so keep such rules rare (the toolbar's
+first group is run / shut down; the buttons after the last group's
+`gs-separator` are the panel-layout buttons). The parts are:
 
 - **Primitives (`components/ui/`):**
   - `gs-button`, `gs-icon-button`, `gs-segmented`, `gs-chip`, `gs-link`
@@ -154,6 +156,17 @@ but it breaks if the order changes, so keep such rules rare. The parts are:
   `gs-panel`, `gs-panel-header` and `gs-panel-content`. Spacing, borders,
   radii and backgrounds may change here (glass turns them into floating
   cards); order and sizing may not. The page itself is `body`.
+- **Captions:** display-toolbar controls carry a short `data-caption`
+  (Run / Pause, Shut Down, Speed, Zoom, Save State, Appearance, Full
+  Screen, Panel). No skin needs to show it; aqua prints it under each
+  control (`content: attr(data-caption)`), Daylight inside its run pill and
+  platinum as the "Zoom:" label.
+- **Overflow:** a panel strip that runs short of room shows a
+  `gs-tabs__more` ("»", a `gs-tabs__tab` too, so it takes the tab look) and
+  measures its tabs in an invisible `gs-tabs--measure` copy; style that
+  copy exactly as the strip (target `.gs-tabs--panel`, not an ancestor-only
+  selector). A view's header actions fold into a `gs-icon-button` "⋯"
+  when narrow.
 - **Composites:** `gs-section`, `gs-table`, `gs-modal` /
   `gs-modal-backdrop`, `gs-menu`, `gs-toast` and `gs-statusbar` (with
   `gs-statusbar__item`).

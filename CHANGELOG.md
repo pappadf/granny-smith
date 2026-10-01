@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Panel tabs never scroll out of sight** — in a narrow panel the tabs that do not fit move into a "»" menu (the selected tab always stays visible), and a view's header buttons fold into a "⋯" menu when they would crowd it out. The display toolbar cuts off what does not fit instead of drawing over the panel, and Shut down is now a power symbol.
 - **Glass and Aqua skins** — Glass floats the toolbar, display, panel and status bar as rounded cards over a softly lit page, in two schemes: Midnight (dark: periwinkle and teal glass) and Daylight (light: white cards on cool grey). Aqua is Mac OS X 10.0: pinstripes, a brushed toolbar, blue and white gel capsules, capsule tabs, the blue gradient selection and gel scrollbars. Both are in the appearance menu.
 - **Commands** — bare words that run a method: `ls`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `cd`, `pwd` (the `files` methods, with the new `files.cd` / `files.pwd`), `run`, `stop`, `reset`, `step`, `disasm`.  `command NAME = PATH` declares your own; `$` aliases stay for values and places.  Highlighting, completion and `help` follow the method a command runs, and the command browser lists them under Commands.
 - **3dfx Voodoo2 PCI card** — full register model behind the TNT PCI bus: the shipped Mac Glide driver completes its detection and Quake renders in CI (`tnt-pci-voodoo2`), with the CMDFIFO engine, TMU send-config, calibratable dither, pass-through switch, and a working display face.
