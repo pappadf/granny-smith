@@ -229,9 +229,6 @@ static void finish_command(mesh_t *m) {
 // [Linux/NetBSD/MkLinux mesh.h; there is no Apple datasheet]
 static const scsi_msg_caps_t MESH_MSG_CAPS = {.min_period = 25, .max_offset = 15, .wide = false};
 
-// How long the target leaves REQ negated between STATUS and MESSAGE IN.
-#define MESH_REQ_GAP_NS 10000u
-
 // A virtual MESSAGE IN is pending while queued bytes remain unread.
 static bool msgin_pending(mesh_t *m) {
     return scsi_msg_pending(&m->msg);
@@ -242,6 +239,7 @@ static bool msgin_pending(mesh_t *m) {
 static void msg_session_reset(mesh_t *m) {
     scsi_msg_reset(&m->msg);
     m->msgin_taken = 0;
+    m->ack_held = 0;
 }
 
 // A message-out sequence completed: parse what the initiator said.
@@ -557,17 +555,18 @@ static void do_sequence(mesh_t *m, uint8_t value, uint32_t count) {
         }
         fifo_push(m, (uint8_t)st);
         m->active = 0;
-        // Acknowledging the status byte ends the REQ/ACK handshake: the
-        // target negates REQ, changes the phase lines to MESSAGE IN, and
-        // only then asserts REQ again.  Apple's MESH driver (the beige G3
-        // ROM's, at $FFECE4F0) waits for exactly that release —
-        // `while (bus_status0 & REQ)` — before it issues the MSGIN
-        // sequence, so a REQ that never drops hangs it forever.  The gap
-        // lasts MESH_REQ_GAP_NS of machine time — a target's phase change
-        // takes microseconds — so the driver, which reads a few other
-        // registers first, still finds REQ low, and a driver that instead
-        // waits for REQ to come back just waits that long.
-        m->req_gap_until_ns = m->sched ? (uint64_t)scheduler_time_ns(m->sched) + MESH_REQ_GAP_NS : 0;
+        // The sequencer takes the status byte and keeps ACK asserted on it
+        // until it is given its next command, so the target — which must
+        // see ACK negate before it can present the next byte — has REQ
+        // low, and stays there, between STATUS and MESSAGE IN.  Apple's
+        // MESH driver (the beige G3 ROM's at $FFECE4F0, and the copy Mac
+        // OS 9 loads from disk) waits for exactly that, `while
+        // (bus_status0 & REQ)`, before it issues MSGIN.  A REQ that never
+        // drops hung the boot at the first command; a REQ that dropped only
+        // for a fixed time stalled the driver whenever its interrupt wait
+        // ran longer than the window, until a SCSI Manager timeout reset the
+        // bus — the 9.2.1 install crawled and then failed to read its CD.
+        m->ack_held = 1;
         raise_int(m, INT_CMDDONE);
         return;
     }
@@ -777,13 +776,14 @@ static uint8_t mesh_read_inner(mesh_t *m, uint32_t offset) {
         // spin-waits on REQ between phases before dropping ATN.
         uint8_t v = phase_bits(m);
         // ...except while the target is between phases: after STATUS, until
-        // it presents MESSAGE IN (req_gap_until_ns), and after the MESSAGE
+        // it presents MESSAGE IN (ack_held), and after the MESSAGE
         // IN byte, when it has nothing more to send and only waits for the
         // initiator's BUSFREE (msgin_taken).  Apple's driver waits for REQ to
         // drop in both places ($FFECE4F0, $FFECE574).
-        bool gap = m->sched && (uint64_t)scheduler_time_ns(m->sched) < m->req_gap_until_ns;
-        if (m->connected && !gap && !m->msgin_taken)
+        if (m->connected && !m->ack_held && !m->msgin_taken)
             v |= BS0_REQ;
+        if (m->ack_held)
+            v |= BS0_ACK;
         if (m->bus0_atn || m->msgout_pending)
             v |= BS0_ATN;
         return v;
@@ -833,6 +833,8 @@ void mesh_write(mesh_t *m, uint32_t offset, uint8_t value) {
             pump_out(m);
         break;
     case MR_SEQUENCE: {
+        // A new command releases the ACK held on a taken status byte.
+        m->ack_held = 0;
         // A transfer command uses the current count; 0 arms the full
         // 65536 of the 16-bit down-counter.
         uint32_t count = m->remaining ? m->remaining : 65536u;

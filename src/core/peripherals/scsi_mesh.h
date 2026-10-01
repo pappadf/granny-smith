@@ -73,9 +73,9 @@ typedef struct mesh {
     uint8_t msgin_taken; // the bus message byte was delivered (MESSAGE IN
                          // lingers in the bus model until release, but the
                          // target no longer REQs — busfree must succeed)
-    uint64_t req_gap_until_ns; // the target released REQ after the status
-                               // byte and raises it for MESSAGE IN at this
-                               // machine time (scsi_mesh.c, CMD_STATUS)
+    uint8_t ack_held; // the sequencer still asserts ACK on the status byte
+                      // it took: the target cannot raise REQ for MESSAGE IN
+                      // until the next sequence command (scsi_mesh.c)
 
     // ---- runtime pointers: re-bound by the machine after a restore --------
     struct scsi *bus;

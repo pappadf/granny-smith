@@ -111,13 +111,7 @@ bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const c
     (void)config, (void)bus, (void)filename, (void)scsi_id;
     return false;
 }
-// No scheduler here: these tests never let time pass — except the REQ-gap
-// row, which hands the MESH a stand-in scheduler and moves this clock.
-static double s_now_ns;
-double scheduler_time_ns(struct scheduler *restrict s) {
-    (void)s;
-    return s_now_ns;
-}
+// No scheduler here: these tests never let time pass.
 struct scheduler *system_scheduler(void) {
     return NULL;
 }
@@ -302,16 +296,12 @@ TEST(datain_with_dma_never_pumps_the_fifo) {
     teardown();
 }
 
-// After the status byte the target releases REQ before it presents MESSAGE
-// IN.  Apple's MESH driver (the beige G3 ROM) spins `while (bus_status0 &
-// REQ)` before it issues MSGIN, so a REQ that never drops hangs the boot at
-// the first command.  The gap is time, not reads: the driver reads a few
-// other registers — bus_status0 among them — before its loop.
-TEST(status_releases_req_before_message_in) {
+// After taking the status byte the sequencer keeps ACK asserted until its
+// next command, so the target cannot raise REQ for MESSAGE IN.  Apple's MESH
+// driver (the beige G3 ROM's) spins `while (bus_status0 & REQ)` before it
+// issues MSGIN: REQ must read low however long the driver takes to look.
+TEST(status_holds_ack_until_the_next_sequence) {
     setup();
-    static int fake_sched;
-    s_m->sched = (struct scheduler *)&fake_sched;
-    s_now_ns = 1000000.0;
     wr(R_DEST_ID, TARGET);
     wr(R_SEQUENCE, SEQ_SELECT);
     ASSERT_TRUE(s_m->connected);
@@ -323,22 +313,20 @@ TEST(status_releases_req_before_message_in) {
     // (Each register read is taken once into a local: the assert macros
     // evaluate their arguments twice, and these reads have side effects.)
     int bs0 = rd(R_BUS_STATUS0);
-    ASSERT_EQ_INT(bs0 & 0x27, 0x23); // STATUS phase (C/D, I/O) with REQ
+    ASSERT_EQ_INT(bs0 & 0x37, 0x23); // STATUS phase (C/D, I/O), REQ, no ACK
     wr(R_COUNT_LO, 1);
     wr(R_SEQUENCE, 0x4); // SEQ_STATUS
     int status = rd(R_FIFO); // CHECK CONDITION: the stand-in disk has no medium
     ASSERT_TRUE(status == 0x00 || status == 0x02);
-    // Inside the gap: REQ low, however many times it is read.
+    // ACK held, REQ low — on every read until the next command.
+    for (int i = 0; i < 100; i++) {
+        bs0 = rd(R_BUS_STATUS0);
+        ASSERT_EQ_INT(bs0 & 0x30, 0x10);
+    }
+    // A quick command releases it: MESSAGE IN, REQ asserted.
+    wr(R_SEQUENCE, 0x0F); // FLUSHFIFO
     bs0 = rd(R_BUS_STATUS0);
-    ASSERT_EQ_INT(bs0 & 0x20, 0);
-    s_now_ns += 5000.0;
-    bs0 = rd(R_BUS_STATUS0);
-    ASSERT_EQ_INT(bs0 & 0x20, 0);
-    // Past it: MESSAGE IN, REQ asserted.
-    s_now_ns += 10000.0;
-    bs0 = rd(R_BUS_STATUS0);
-    ASSERT_EQ_INT(bs0 & 0x27, 0x27);
-    s_m->sched = NULL;
+    ASSERT_EQ_INT(bs0 & 0x37, 0x27);
     teardown();
 }
 
@@ -418,7 +406,7 @@ int main(void) {
     RUN(datain_without_dma_pumps_the_fifo);
     RUN(datain_with_dma_never_pumps_the_fifo);
     RUN(datain_with_dma_asks_the_channel);
-    RUN(status_releases_req_before_message_in);
+    RUN(status_holds_ack_until_the_next_sequence);
     RUN(select_absent_target_times_out);
     RUN(interrupt_line_follows_the_mask);
     RUN(reset_clears_state_but_keeps_the_wiring);
