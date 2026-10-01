@@ -62,11 +62,17 @@ if (!existsSync(swPath)) {
 
 // Build intermediates must never be deployed: dist/ is copied to the site
 // whole, and a copied object tree once shipped 15 MB of .o/.d files.
+// Neither may the UI gallery (src/gallery), a development-only page that
+// main.ts imports behind import.meta.env.DEV: a chunk named after it, or a
+// script carrying its marker, means the guard stopped tree-shaking it.
 function walk(dir, rel = '') {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const r = rel ? `${rel}/${e.name}` : e.name;
     if (e.isDirectory()) walk(join(dir, e.name), r);
     else if (/\.(o|d|stamp)$/.test(e.name)) failures.push(`build intermediate in dist/: ${r}`);
+    else if (/gallery/i.test(e.name)) failures.push(`UI gallery chunk in dist/: ${r}`);
+    else if (/\.js$/.test(e.name) && readFileSync(join(dir, e.name), 'utf8').includes('__gsGallery'))
+      failures.push(`UI gallery code in dist/: ${r}`);
   }
 }
 walk(distDir);

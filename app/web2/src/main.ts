@@ -36,7 +36,13 @@ try {
 const target = document.getElementById('app');
 if (!target) throw new Error('#app mount point missing from index.html');
 
-void bootApp(target);
+// The UI gallery (`?gallery`) exists only on the dev server: the constant
+// DEV check lets the production build drop the import entirely.
+if (import.meta.env.DEV && new URLSearchParams(window.location.search).has('gallery')) {
+  void import('./gallery/main').then((m) => m.startGallery(target));
+} else {
+  void bootApp(target);
+}
 
 // The browser's origin-private file system holds every ROM, disk image and
 // checkpoint, and the core mounts it as /opfs: without it nothing can boot.

@@ -230,7 +230,7 @@ LDFLAGS := $(MODE_CFLAGS) -Wno-pthreads-mem-growth \
 .PHONY: all release debug sanitize run \
         headless unit-test integration-test integration-test-valgrind \
         e2e-test test clean help FORCE \
-        ui2 ui2-dev ui2-test ui2-check ui2-check-dist ui2-prod-smoke ui2-e2e ui2-diag run2
+        ui2 ui2-dev ui2-test ui2-check ui2-check-dist ui2-prod-smoke ui2-e2e ui2-gallery ui2-diag run2
 
 # -- WASM build --
 
@@ -452,6 +452,13 @@ ui2-prod-smoke: ui2 ui2-check-dist
 ui2-e2e:
 	cd tests/e2e && npx playwright test --config=playwright.web2.config.ts
 
+# Screenshot every UI gallery story (app/web2/src/gallery) in both colour
+# schemes against the committed baselines. Serves the Vite dev server; needs
+# neither the WASM build nor test data. Baselines are recorded in the CI image
+# only (tests/e2e/README.md, "UI screenshots").
+ui2-gallery:
+	cd tests/e2e && npx playwright test --config=playwright.gallery.config.ts
+
 # Headless diagnostic — spawns the dev server + drives Chromium via
 # Playwright, captures console output / pageerror / xterm contents,
 # and prints a JSON report. Useful for triaging "doesn't boot" bugs
@@ -499,6 +506,7 @@ help:
 	@echo "  ui2-check                  Run svelte-check + ESLint + Prettier"
 	@echo "  ui2-test                   Run Vitest"
 	@echo "  ui2-e2e                    Run the web2 Playwright e2e suite"
+	@echo "  ui2-gallery                Screenshot the UI gallery against its baselines"
 	@echo "  run2                       Alias for run (kept for muscle-memory)"
 	@echo ""
 	@echo "Test targets:"
