@@ -26,6 +26,7 @@
   import { systemView } from '@/state/system.svelte';
   import { consoleEcho, consoleSubmit } from '@/state/console.svelte';
   import { formatValue, parseCommit, assignStatement, callStatement } from '@/lib/typeDescriptor';
+  import { askText } from '@/state/dialogs.svelte';
   import { isContainer } from '@/lib/taggedValue';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import ValueEditor from '@/components/common/ValueEditor.svelte';
@@ -259,7 +260,12 @@
   async function saveImage(target: string) {
     const suggested = (await gsEval(`${target}.filename`)) as string;
     const base = (typeof suggested === 'string' && suggested) || 'disk.img';
-    const name = window.prompt('Save image as (filename):', base.split('/').pop() || 'disk.img');
+    const name = await askText({
+      title: 'Save image as',
+      label: 'File name',
+      initial: base.split('/').pop() || 'disk.img',
+      submitText: 'Save',
+    });
     if (!name) return;
 
     const dest = `${EXPORT_DIR}/${sanitizeName(name)}`;

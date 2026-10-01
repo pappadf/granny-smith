@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { askText, askConfirm } from '@/state/dialogs.svelte';
+  import { validateName } from '@/components/panel-views/filesystem/RenameDialog.svelte';
   import Hint from '@/components/ui/Hint.svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
   import ImageRow from './ImageRow.svelte';
@@ -178,8 +180,13 @@
   }
 
   async function doRename(entry: OpfsEntry) {
-    if (typeof window === 'undefined' || typeof window.prompt !== 'function') return;
-    const next = window.prompt('Rename', entry.name);
+    const next = await askText({
+      title: 'Rename',
+      label: 'New name',
+      initial: entry.name,
+      submitText: 'Rename',
+      validate: validateName,
+    });
     if (!next || next === entry.name) return;
     try {
       await opfs.rename(entry.path, next);
@@ -192,9 +199,13 @@
   }
 
   async function doDelete(entry: OpfsEntry) {
-    if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
-      if (!window.confirm(`Delete '${entry.name}'?`)) return;
-    }
+    const ok = await askConfirm({
+      title: 'Delete',
+      message: `Delete '${entry.name}'?`,
+      confirmText: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await opfs.delete(entry.path);
       await refresh();

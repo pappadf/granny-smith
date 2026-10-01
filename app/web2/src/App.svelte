@@ -5,6 +5,7 @@
   import CheckpointResumePrompt from './components/dialogs/CheckpointResumePrompt.svelte';
   import PreviewNoticeDialog from './components/dialogs/PreviewNoticeDialog.svelte';
   import PrintViewerDialog from './components/dialogs/PrintViewerDialog.svelte';
+  import DialogHost from './components/dialogs/DialogHost.svelte';
   import { theme, applyThemeToHtml, installSystemThemeListener } from '@/state/theme.svelte';
   import { layout } from '@/state/layout.svelte';
   import { startPersistEffects } from '@/state/persist.svelte';
@@ -41,6 +42,7 @@
 <CheckpointResumePrompt />
 <PreviewNoticeDialog />
 <PrintViewerDialog />
+<DialogHost />
 
 <style>
   :global(html),

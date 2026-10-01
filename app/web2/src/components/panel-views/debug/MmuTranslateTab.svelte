@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Badge from '@/components/ui/Badge.svelte';
   import { translateAddr, type Translation } from '@/bus/mmu';
   import { debug } from '@/state/debug.svelte';
   import { debugFrame } from '@/state/debugFrame.svelte';
@@ -70,8 +71,8 @@
         L:$<span class="hex">{fmtHex32(debug.mmuTransAddr)}</span> P:$<span class="hex"
           >{fmtHex32(result.phys ?? 0)}</span
         >
-        <span class="tag tag-pt">{result.via.toUpperCase()}</span>
-        {#if result.space}<span class="tag tag-tt">{result.space}</span>{/if}
+        <Badge class="tag tag-pt" intent="info">{result.via.toUpperCase()}</Badge>
+        {#if result.space}<Badge class="tag tag-tt" intent="success">{result.space}</Badge>{/if}
       </p>
     {/if}
   {/if}
@@ -114,20 +115,7 @@
   .hex {
     text-transform: uppercase; /* hex digits */
   }
-  .tag {
-    border-radius: var(--gs-radius-pill);
-    padding: 0 var(--gs-space-1-5);
-    font-size: var(--gs-font-size-2xs);
-    font-weight: var(--gs-font-weight-semibold);
+  .ok :global(.tag) {
     margin-left: var(--gs-space-1-5);
-    text-transform: var(--gs-caps-transform);
-  }
-  .tag-tt {
-    background: var(--gs-success-bg);
-    color: var(--gs-success-fg);
-  }
-  .tag-pt {
-    background: var(--gs-info-bg);
-    color: var(--gs-info-fg);
   }
 </style>

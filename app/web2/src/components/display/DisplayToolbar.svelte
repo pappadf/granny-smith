@@ -185,13 +185,15 @@
       { label: 'Disconnect microphone', action: () => void setMicrophoneEnabled(false) },
       { sep: true },
       {
-        label: `${microphone.deviceId === '' ? '\u2713' : '\u2007'} System default`,
+        label: 'System default',
+        checked: microphone.deviceId === '',
         action: () => void setMicrophoneDevice(''),
       },
       ...microphone.devices
         .filter((d) => d.id && d.id !== 'default')
         .map((d) => ({
-          label: `${microphone.deviceId === d.id ? '\u2713' : '\u2007'} ${d.label}`,
+          label: d.label,
+          checked: microphone.deviceId === d.id,
           action: () => void setMicrophoneDevice(d.id),
         })),
     ];

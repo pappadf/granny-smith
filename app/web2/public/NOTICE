@@ -14,6 +14,7 @@ ids (e.g. `i-play`, `i-stop`, `i-hd`, `i-floppy`); the upstream codicon
 names of the icons reproduced here are:
 
     add                       (used as the "+" / new icon)
+    check                     (done marks; checked menu items)
     chevron-down              (tree/section twistie; CSS-rotated when collapsed)
     chip                      (CPU/ROM/chip rows in trees and Images)
     circle-large              ("empty slot" indicator in the Machine tree)
@@ -27,9 +28,11 @@ names of the icons reproduced here are:
     debug-step-over           (debug Step Over action)
     debug-stop                (debug Stop action, Display Toolbar Stop)
     device-camera-video       (Camera on/off toolbar button; MODIFIED for the off state)
+    error                     (toast error badge; printer error; crashed machine)
     file                      (file rows in the Filesystem tree)
     folder                    (folder rows in the Filesystem tree)
     history                   (RTC clock node in the Machine tree)
+    info                      (toast and callout info badge)
     layout-panel              (panel-bottom layout button, active state)
     layout-panel-off          (panel-bottom layout button, inactive state)
     layout-sidebar-left       (panel-left layout button, active state)
@@ -48,6 +51,7 @@ names of the icons reproduced here are:
     trash                     (Clear log button, Delete snapshot button)
     unmute                    (Sound/PWM node in the Machine tree)
     vm                        (Computer / Mac model icons)
+    warning                   (toast warning badge)
 
 Source:
     https://github.com/microsoft/vscode-codicons

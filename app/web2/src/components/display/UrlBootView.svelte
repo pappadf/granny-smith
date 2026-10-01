@@ -1,11 +1,16 @@
 <script lang="ts">
-  import SectionHeading from '@/components/ui/SectionHeading.svelte';
   // What a page opened to boot from its URL (?rom=…&hd0=…) shows until the
   // machine runs: the Granny Smith headline, what is being fetched, and a
   // progress bar per file.  It replaces Welcome for that load; nothing asks
   // the user anything (bus/urlMedia.ts drives the state, state/urlBoot).
   import Icon from '../common/Icon.svelte';
   import Button from '../ui/Button.svelte';
+  import Card from '../ui/Card.svelte';
+  import Hero from '../ui/Hero.svelte';
+  import Hint from '../ui/Hint.svelte';
+  import ProgressBar, { type ProgressState } from '../ui/ProgressBar.svelte';
+  import SectionHeading from '../ui/SectionHeading.svelte';
+  import Spinner from '../ui/Spinner.svelte';
   import type { IconName } from '@/lib/icons';
   import { urlBoot, dismissUrlBoot, type UrlFile } from '@/state/urlBoot.svelte';
 
@@ -32,6 +37,11 @@
     return null;
   }
 
+  // The bar's look for a file's status.
+  function barState(f: UrlFile): ProgressState {
+    return f.status === 'downloading' ? 'active' : f.status;
+  }
+
   function amount(f: UrlFile): string {
     switch (f.status) {
       case 'queued':
@@ -56,7 +66,6 @@
   const doneCount = $derived(
     urlBoot.files.filter((f) => f.status === 'done' || f.status === 'failed').length,
   );
-  const current = $derived(urlBoot.files.find((f) => f.status === 'downloading') ?? null);
 
   const headline = $derived(
     urlBoot.stage === 'failed'
@@ -78,30 +87,33 @@
 
 <div class="url-boot" data-testid="url-boot-view">
   <div class="content">
-    <h1 class="title">Granny Smith</h1>
-    <p class="subtitle">A classic Macintosh emulator in the browser.</p>
+    <Hero
+      title="Granny Smith"
+      subtitle="A classic Macintosh emulator in the browser."
+      titleClass="title"
+      subtitleClass="subtitle"
+    />
 
-    <section class="card" class:failed={urlBoot.stage === 'failed'} aria-live="polite">
+    <Card class="card {urlBoot.stage === 'failed' ? 'failed' : ''}" aria-live="polite">
       <div class="head">
         {#if urlBoot.stage !== 'failed'}
-          <span class="spinner" aria-hidden="true"></span>
+          <Spinner class="spinner" />
         {/if}
         <div class="head-text">
           <h2 class="headline">{headline}</h2>
-          <p class="detail">{detail}</p>
+          <p class="detail" class:failed={urlBoot.stage === 'failed'}>{detail}</p>
         </div>
       </div>
 
       {#if urlBoot.files.length}
         <ul class="files">
           {#each urlBoot.files as f (f.slot)}
-            {@const fr = fraction(f)}
             <li
               class="file"
               class:done={f.status === 'done'}
               class:failed={f.status === 'failed'}
               class:skipped={f.status === 'skipped'}
-              class:active={f === current}
+              data-state={f.status}
               data-slot={f.slot}
             >
               <div class="row">
@@ -111,27 +123,22 @@
                   <span class="name" title={f.name}>{f.name}</span>
                 </div>
                 <span class="amount">
-                  {#if f.status === 'done'}<span class="check" aria-hidden="true">✓</span>{/if}
+                  {#if f.status === 'done'}<Icon name="check" size={12} class="check" />{/if}
                   {amount(f)}
                 </span>
               </div>
-              <div
+              <ProgressBar
                 class="bar"
-                class:indeterminate={fr === null && f.status !== 'failed'}
-                role="progressbar"
-                aria-label={`${f.label}: ${f.name}`}
-                aria-valuemin="0"
-                aria-valuemax="100"
-                aria-valuenow={fr === null ? undefined : Math.floor(fr * 100)}
-              >
-                <div class="fill" style:width={fr === null ? undefined : `${fr * 100}%`}></div>
-              </div>
-              {#if f.error}<p class="file-error">{f.error}</p>{/if}
+                value={fraction(f)}
+                state={barState(f)}
+                label={`${f.label}: ${f.name}`}
+              />
+              {#if f.error}<Hint as="p" tone="error" class="file-error">{f.error}</Hint>{/if}
             </li>
           {/each}
         </ul>
       {/if}
-    </section>
+    </Card>
 
     {#if urlBoot.stage === 'failed'}
       <Button size="lg" variant="primary" class="btn-primary" onclick={dismissUrlBoot}>
@@ -158,28 +165,13 @@
     width: 100%;
     padding: var(--gs-space-12) var(--gs-space-8) var(--gs-space-8);
   }
-  .title {
-    font-size: var(--gs-font-size-4xl);
-    font-weight: var(--gs-font-weight-light);
-    color: var(--gs-text-strong);
-    margin: 0 0 var(--gs-space-2) 0;
-  }
-  .subtitle {
-    color: var(--gs-text-muted);
-    margin: 0 0 var(--gs-space-7) 0;
-    font-size: var(--gs-font-size-md);
-  }
-  .card {
-    background: var(--gs-card-bg);
-    border: var(--gs-border-width) solid var(--gs-border-card);
-    border-radius: var(--gs-radius-lg);
-    padding: var(--gs-space-4);
-    margin-bottom: var(--gs-space-4);
-  }
   .head {
     display: flex;
     gap: var(--gs-space-3);
     align-items: flex-start;
+  }
+  .head :global(.spinner) {
+    margin-top: var(--gs-space-px);
   }
   .head-text {
     min-width: 0;
@@ -194,19 +186,8 @@
     margin: 0;
     color: var(--gs-text-muted);
   }
-  .card.failed .detail {
+  .detail.failed {
     color: var(--gs-danger-fg);
-    opacity: 1;
-  }
-  .spinner {
-    flex: none;
-    width: var(--gs-size-spinner);
-    height: var(--gs-size-spinner);
-    margin-top: var(--gs-space-px);
-    border-radius: var(--gs-radius-round);
-    border: var(--gs-border-width-strong) solid var(--gs-border-subtle);
-    border-top-color: var(--gs-accent);
-    animation: spin var(--gs-duration-spin) var(--gs-ease-linear) infinite;
   }
   .files {
     list-style: none;
@@ -222,7 +203,7 @@
     gap: var(--gs-space-2-5);
     margin-bottom: var(--gs-space-1-5);
   }
-  .row :global(.icon) {
+  .row > :global(.icon) {
     flex: none;
     width: var(--gs-size-icon);
     height: var(--gs-size-icon);
@@ -242,76 +223,25 @@
   }
   .amount {
     flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--gs-space-1);
     font-family: var(--gs-font-mono);
     font-size: var(--gs-font-size-sm);
     font-variant-numeric: var(--gs-numeric);
     color: var(--gs-text-muted);
     white-space: nowrap;
   }
-  .check {
+  .amount :global(.check) {
     color: var(--gs-success-fg);
-    font-weight: var(--gs-font-weight-bold);
-    margin-right: var(--gs-space-1);
-  }
-  .bar {
-    position: relative;
-    height: var(--gs-size-progress);
-    border-radius: var(--gs-radius-sm);
-    background: var(--gs-border-subtle);
-    overflow: hidden;
-  }
-  .fill {
-    height: 100%;
-    width: 0;
-    border-radius: var(--gs-radius-sm);
-    background: var(--gs-accent);
-    transition: width var(--gs-duration-base) var(--gs-ease-out);
-  }
-  .file.done .fill {
-    background: var(--gs-success-solid);
-  }
-  .file.failed .fill {
-    width: 100%;
-    background: var(--gs-danger-solid);
-  }
-  .bar.indeterminate .fill {
-    position: absolute;
-    width: 35%;
-    animation: slide var(--gs-duration-indeterminate) var(--gs-ease-in-out) infinite;
   }
   .file.skipped {
     opacity: var(--gs-opacity-skipped);
   }
-  .file-error {
+  /* The error lines up under the file's name, past the slot icon. */
+  .file :global(.file-error) {
     margin: var(--gs-space-1-5) 0 0 calc(var(--gs-size-icon) + var(--gs-space-2-5));
-    color: var(--gs-danger-fg);
+    font-size: inherit;
     word-break: break-word;
-  }
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  @keyframes slide {
-    from {
-      left: -35%;
-    }
-    to {
-      left: 100%;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .spinner {
-      animation: none;
-    }
-    .bar.indeterminate .fill {
-      animation: none;
-      left: 0;
-      width: 100%;
-      opacity: 0.45;
-    }
-    .fill {
-      transition: none;
-    }
   }
 </style>

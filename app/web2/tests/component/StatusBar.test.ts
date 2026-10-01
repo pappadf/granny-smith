@@ -31,12 +31,13 @@ describe('StatusBar', () => {
     ['running', 'Running'],
     ['paused', 'Paused'],
     ['stopped', 'Stopped'],
+    ['crashed', 'Crashed'],
   ] as Array<[MachineStatus, string]>)('shows %s state with label %s', (status, label) => {
     machine.status = status;
     const { container } = render(StatusBar);
     const bar = container.querySelector('.gs-statusbar') as HTMLElement;
     expect(bar).not.toBeNull();
-    expect(bar.classList.contains(status)).toBe(true);
+    expect(bar.getAttribute('data-state')).toBe(status);
     expect(bar.querySelector('.sb-state .label')?.textContent).toBe(label);
   });
 

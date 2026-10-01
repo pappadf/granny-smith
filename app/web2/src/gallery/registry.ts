@@ -54,7 +54,16 @@ export const STORIES: readonly StoryDef[] = [
   },
   {
     name: 'StatusBar',
-    variants: ['idle', 'running', 'paused', 'stopped', 'crashed', 'activity', 'idle-activity'],
+    variants: [
+      'idle',
+      'running',
+      'paused',
+      'stopped',
+      'crashed',
+      'activity',
+      'idle-activity',
+      'idle-error',
+    ],
     width: 900,
     height: 60,
     load: () => import('./stories/StatusBar.story.svelte'),
@@ -107,7 +116,15 @@ export const STORIES: readonly StoryDef[] = [
   },
   {
     name: 'Dialogs',
-    variants: ['confirm', 'confirm-danger', 'rename', 'rename-error', 'create-hd', 'create-fd'],
+    variants: [
+      'confirm',
+      'confirm-danger',
+      'rename',
+      'rename-error',
+      'prompt',
+      'create-hd',
+      'create-fd',
+    ],
     width: 800,
     height: 520,
     load: () => import('./stories/Dialogs.story.svelte'),
@@ -121,7 +138,7 @@ export const STORIES: readonly StoryDef[] = [
   },
   {
     name: 'ContextMenu',
-    variants: ['default', 'highlight'],
+    variants: ['default', 'highlight', 'checked'],
     width: 400,
     height: 260,
     hover: { highlight: '.context-menu .item:nth-child(2)' },

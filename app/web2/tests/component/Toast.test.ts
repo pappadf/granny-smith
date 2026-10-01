@@ -6,22 +6,28 @@ import { _resetForTests, showNotification, toasts } from '@/state/toasts.svelte'
 beforeEach(() => _resetForTests());
 
 describe('Toast', () => {
-  it('renders severity glyph and message', () => {
+  it('renders severity icon and message', () => {
     showNotification('hello world', 'info');
     const { container } = render(Toast, { toast: toasts.active[0] });
-    expect(container.querySelector('.sev-icon')?.textContent).toBe('i');
+    expect(container.querySelector('.sev-icon use')?.getAttribute('href')).toContain('#i-info');
     expect(container.querySelector('.msg')?.textContent).toBe('hello world');
   });
 
   it.each([
-    ['info', 'i'],
-    ['warning', '!'],
-    ['error', 'x'],
-  ] as const)('uses %s severity glyph %s', (severity, glyph) => {
+    ['info', 'info', 'info'],
+    ['warning', 'warning', 'warning'],
+    ['error', 'danger', 'error'],
+  ] as const)('a %s toast has intent %s and the %s icon', (severity, intent, icon) => {
     showNotification('m', severity);
     const { container } = render(Toast, { toast: toasts.active[0] });
-    expect(container.querySelector('.sev-icon')?.classList.contains(severity)).toBe(true);
-    expect(container.querySelector('.sev-icon')?.textContent).toBe(glyph);
+    expect(container.querySelector('.toast')?.getAttribute('data-intent')).toBe(intent);
+    expect(container.querySelector('.sev-icon')?.getAttribute('data-icon')).toBe(icon);
+  });
+
+  it('the close button is always in the DOM', () => {
+    showNotification('m');
+    const { container } = render(Toast, { toast: toasts.active[0] });
+    expect(container.querySelector('button.close-btn')).not.toBeNull();
   });
 
   it('close button dismisses the toast', async () => {

@@ -482,8 +482,14 @@ The Svelte app is organised under
   styled building blocks every view composes: buttons, inputs and form
   fields; Tabs, Toolbar, Separator; Disclosure, TreeItem (the one row
   look of the Files, SYSTEM and command-browser trees), ListRow;
-  SectionHeading, Hint, Sash, Switch, Spinner. Each draws only from
-  component tokens, so a skin restyles it without touching its markup.
+  SectionHeading, Hint, Sash, Switch; Badge, ProgressBar, Spinner,
+  ActivityDot, StatusDot, DriveLight, Card, Hero, Callout. Each draws only
+  from component tokens, so a skin restyles it without touching its markup.
+- **Dialogs** ([`dialogs/`](../../app/web2/src/components/dialogs/)) —
+  ConfirmDialog and PromptDialog, plus the app-wide questions that
+  [`state/dialogs.svelte.ts`](../../app/web2/src/state/dialogs.svelte.ts)
+  asks (`askText`, `askConfirm`) in place of the browser's `prompt()` and
+  `confirm()`, which cannot be styled (a lint forbids them).
 
 State lives under [`app/web2/src/state/`](../../app/web2/src/state/) —
 each `*.svelte.ts` file owns a `$state` slice (`machine`, `layout`,

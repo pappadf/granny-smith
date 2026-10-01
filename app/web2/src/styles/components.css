@@ -157,6 +157,7 @@
   --gs-segmented-fg-selected: var(--gs-text-strong);
   --gs-segmented-bg-selected: var(--gs-control-active);
   --gs-segmented-border: transparent;
+  --gs-segmented-fg-disabled: color-mix(in srgb, var(--gs-segmented-fg) 50%, transparent);
 
   /* Toggle chips (ui/ToggleChip.svelte) */
   --gs-chip-height: var(--gs-size-control-sm);
@@ -201,13 +202,33 @@
   --gs-menu-fg: var(--gs-text);
   --gs-menu-hover-bg: var(--gs-accent);
   --gs-menu-hover-fg: var(--gs-text-on-accent);
+  --gs-menu-radius: var(--gs-radius-md);
+  --gs-menu-item-height: var(--gs-size-row);
+  --gs-menu-item-padding-x: var(--gs-space-3);
+  --gs-menu-separator: var(--gs-border);
 
-  /* Popovers: how far below the top edge the card sits. */
+  /* Modals and popovers (common/Modal.svelte) */
+  --gs-modal-bg: var(--gs-surface-raised);
+  --gs-modal-radius: var(--gs-radius-lg);
+  --gs-modal-padding: var(--gs-space-5) var(--gs-space-6);
+  --gs-modal-gap: var(--gs-space-3-5);
+  --gs-modal-min-width: 320px;
+  --gs-modal-max-width: 520px;
+  --gs-modal-title-size: var(--gs-font-size-xl);
+  --gs-modal-title-weight: var(--gs-font-weight-medium);
+  /* A popover: how far below the top edge the card sits, and its size. */
   --gs-popover-offset-top: 80px;
+  --gs-popover-min-width: 280px;
+  --gs-popover-max-width: 360px;
+  --gs-popover-padding: var(--gs-space-3) var(--gs-space-3-5);
+  --gs-popover-title-size: var(--gs-font-size-base);
 
   /* Toasts: the stack sits just above the status bar. */
   --gs-toast-bg: var(--gs-surface-overlay);
   --gs-toast-fg: var(--gs-text);
+  --gs-toast-radius: var(--gs-radius-md);
+  --gs-toast-padding: var(--gs-space-2-5) var(--gs-space-3);
+  --gs-toast-min-width: 260px;
   --gs-toast-offset-bottom: calc(var(--gs-size-statusbar) + 3px);
   --gs-toast-offset-right: 3px;
 
@@ -291,8 +312,51 @@
   /* A drop target row in a tree. */
   --gs-tree-drop-bg: color-mix(in srgb, var(--gs-drop-border) 15%, transparent);
 
-  /* A callout's fill: a lighter tint of its intent's. */
+  /* Callouts (ui/Callout.svelte): a lighter tint of the intent's fill. */
   --gs-callout-bg: color-mix(in srgb, var(--gs-info-bg) 32%, transparent);
+  --gs-callout-success-bg: color-mix(in srgb, var(--gs-success-bg) 32%, transparent);
+  --gs-callout-warning-bg: color-mix(in srgb, var(--gs-warning-bg) 32%, transparent);
+  --gs-callout-danger-bg: color-mix(in srgb, var(--gs-danger-bg) 32%, transparent);
+  --gs-callout-border: var(--gs-border);
+
+  /* Badges (ui/Badge.svelte): the pill and the count. */
+  --gs-pill-height: 16px;
+  --gs-pill-padding-x: var(--gs-space-1-5);
+  --gs-pill-radius: var(--gs-radius-pill);
+  --gs-pill-font-size: var(--gs-font-size-2xs);
+  --gs-pill-weight: var(--gs-font-weight-semibold);
+  --gs-pill-tracking: var(--gs-caps-tracking);
+  --gs-pill-transform: var(--gs-caps-transform);
+  --gs-count-fg: var(--gs-text-muted);
+  --gs-count-bg: transparent;
+  --gs-count-font-size: var(--gs-font-size-xs);
+  --gs-count-padding: 0;
+  --gs-count-radius: 0;
+
+  /* Progress bars (ui/ProgressBar.svelte) */
+  --gs-progress-height: var(--gs-size-progress);
+  --gs-progress-radius: var(--gs-radius-sm);
+  --gs-progress-track: var(--gs-border-subtle);
+  --gs-progress-fill: var(--gs-accent);
+  --gs-progress-fill-unpacking: var(--gs-accent);
+  --gs-progress-fill-done: var(--gs-success-solid);
+  --gs-progress-fill-failed: var(--gs-danger-solid);
+  --gs-progress-stripe: color-mix(in srgb, var(--gs-text-on-accent) 25%, transparent);
+  --gs-progress-stripe-size: 12px;
+
+  /* Activity dots (ui/ActivityDot.svelte): an upload or a print job. */
+  --gs-activity-dot-size: var(--gs-size-dot);
+  --gs-activity-dot-fg: currentColor;
+
+  /* Cards and the hero (ui/Card.svelte, ui/Hero.svelte) */
+  --gs-card-border: var(--gs-border-card);
+  --gs-card-radius: var(--gs-radius-lg);
+  --gs-card-padding: var(--gs-space-3-5) var(--gs-space-4);
+  --gs-hero-title-size: var(--gs-font-size-4xl);
+  --gs-hero-title-weight: var(--gs-font-weight-light);
+  --gs-hero-title-fg: var(--gs-text-strong);
+  --gs-hero-subtitle-fg: var(--gs-text-muted);
+  --gs-hero-subtitle-size: var(--gs-font-size-md);
 
   /* Switches (ui/Switch.svelte, a boolean value's editor) */
   --gs-switch-width: 26px;
@@ -311,6 +375,22 @@
   --gs-statusbar-dot-running: #89d185;
   --gs-statusbar-dot-paused: #cca700;
   --gs-statusbar-dot-stopped: #f14c4c;
+  --gs-statusbar-dot-crashed: #ff8a80;
+
+  /* The status bar (StatusBar.svelte): one fill per machine state, the
+     text on the idle and on an active bar, the hover of its buttons. */
+  --gs-statusbar-height: var(--gs-size-statusbar);
+  --gs-statusbar-font-size: var(--gs-font-size-sm);
+  --gs-statusbar-bg-idle: var(--gs-state-idle-bg);
+  --gs-statusbar-bg-running: var(--gs-state-running-bg);
+  --gs-statusbar-bg-paused: var(--gs-state-paused-bg);
+  --gs-statusbar-bg-stopped: var(--gs-state-stopped-bg);
+  --gs-statusbar-bg-crashed: var(--gs-state-crashed-bg);
+  --gs-statusbar-fg-idle: var(--gs-state-idle-fg);
+  --gs-statusbar-fg-active: var(--gs-state-active-fg);
+  --gs-statusbar-item-hover: var(--gs-state-hover);
+  --gs-statusbar-drive-idle-opacity: 0.55;
+  --gs-statusbar-drive-style: text;
 }
 
 /* The divider between consecutive collapsible sections (no rule above the
@@ -327,12 +407,14 @@
   --gs-chip-on-ring: var(--gs-statusbar-chip-on-ring);
 }
 .gs-statusbar[data-state='idle'] {
+  --gs-statusbar-printer-error: var(--gs-danger-fg);
   --gs-statusbar-drive-read: var(--gs-text-strong);
   --gs-statusbar-drive-write: var(--gs-warning-fg);
   --gs-statusbar-chip-on-bg: var(--gs-control-active);
   --gs-statusbar-chip-on-ring: var(--gs-border);
 }
 .gs-statusbar:not([data-state='idle']) {
+  --gs-statusbar-printer-error: #ffffff;
   --gs-statusbar-drive-read: #ffffff;
   --gs-statusbar-drive-write: #ffe770;
   --gs-statusbar-chip-on-bg: rgb(255 255 255 / 0.28);

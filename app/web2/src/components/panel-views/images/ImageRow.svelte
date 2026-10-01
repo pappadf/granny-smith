@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Badge from '@/components/ui/Badge.svelte';
   import Icon from '@/components/common/Icon.svelte';
   import ListRow from '@/components/ui/ListRow.svelte';
   import type { IconName } from '@/lib/icons';
@@ -40,7 +41,7 @@
   <span class="icon"><Icon name={icon} size={16} /></span>
   <span class="name" class:mounted={!!badge}>{name}</span>
   {#if badge}
-    <span class="badge">{badge}</span>
+    <Badge class="badge" intent="success">{badge}</Badge>
   {/if}
   {#if desc}
     <span class="desc">{desc}</span>
@@ -63,17 +64,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .badge {
-    background: var(--gs-success-bg);
-    color: var(--gs-success-fg);
-    border-radius: var(--gs-radius-pill);
-    padding: 0 var(--gs-space-2);
-    height: 16px;
-    line-height: 16px;
-    font-size: var(--gs-font-size-2xs);
-    text-transform: var(--gs-caps-transform);
-    letter-spacing: var(--gs-caps-tracking);
   }
   .desc {
     color: var(--gs-text-muted);

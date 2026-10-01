@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { askText, askConfirm } from '@/state/dialogs.svelte';
   import { onMount } from 'svelte';
   import Table, { type TableColumn } from '@/components/common/Table.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
@@ -102,8 +103,12 @@
   }
 
   async function doRename(row: CheckpointEntry) {
-    if (typeof window === 'undefined' || typeof window.prompt !== 'function') return;
-    const next = window.prompt('Checkpoint label', row.label);
+    const next = await askText({
+      title: 'Rename checkpoint',
+      label: 'Checkpoint label',
+      initial: row.label,
+      submitText: 'Rename',
+    });
     if (!next || next === row.label) return;
     try {
       await opfs.writeJson(`${row.path}/manifest.json`, { label: next, machine: row.machine });
@@ -119,9 +124,13 @@
   }
 
   async function doDelete(row: CheckpointEntry) {
-    if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
-      if (!window.confirm(`Delete checkpoint '${row.label}'?`)) return;
-    }
+    const ok = await askConfirm({
+      title: 'Delete',
+      message: `Delete checkpoint '${row.label}'?`,
+      confirmText: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await opfs.delete(row.path);
       await refresh();

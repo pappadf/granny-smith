@@ -90,4 +90,11 @@
     opacity: var(--gs-opacity-disabled);
     cursor: default;
   }
+  /* An unselected option has no fill, so it fades by its text colour: text
+     faded through opacity alone is antialiased differently from one paint
+     to the next. */
+  .gs-segmented__option:disabled:not([aria-pressed='true']) {
+    opacity: 1;
+    color: var(--gs-segmented-fg-disabled);
+  }
 </style>

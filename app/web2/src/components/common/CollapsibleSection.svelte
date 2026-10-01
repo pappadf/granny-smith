@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import Disclosure from '@/components/ui/Disclosure.svelte';
+  import Badge from '@/components/ui/Badge.svelte';
 
   interface Props {
     title: string;
@@ -25,7 +26,7 @@
       <Disclosure class="twistie" {open} />
       <span class="gs-section__title title">{title}</span>
       {#if typeof count === 'number'}
-        <span class="gs-section__count count">{count}</span>
+        <Badge variant="count" class="gs-section__count count">{count}</Badge>
       {/if}
     </button>
     {#if actions}
@@ -83,9 +84,7 @@
     color: var(--gs-section-title-fg);
     flex: 1 1 auto;
   }
-  .gs-section__count {
-    color: var(--gs-text-muted);
-    font-size: var(--gs-font-size-xs);
+  .gs-section__toggle > :global(.gs-section__count) {
     margin-right: var(--gs-space-1);
   }
   .gs-section__actions {

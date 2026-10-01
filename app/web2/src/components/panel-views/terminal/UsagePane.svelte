@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Callout from '@/components/ui/Callout.svelte';
   // The command browser's details pane: a method's or attribute's usage
   // text (shell.usage), its signature and example lines coloured by
   // shell.highlight, the argument the console's cursor is in underlined.
@@ -55,7 +56,7 @@
 </script>
 
 {#if lines}
-  <section class="details" aria-label="Usage">
+  <Callout class="details" edge="top" aria-label="Usage">
     <header class="details-head">
       <span class="details-name">{row.name}</span>
       <button class="details-close" aria-label="Close" title="Close (Esc)" onclick={onClose}
@@ -76,21 +77,19 @@
         >
       </footer>
     {/if}
-  </section>
+  </Callout>
 {/if}
 
 <style>
   /* The selection's usage, under the tree.  It sizes to its content up to
      60% of the browser; a longer usage text scrolls inside it, with the
      header and Insert button kept in view. */
-  .details {
+  :global(.gs-callout.details) {
     flex: 0 0 auto;
     max-height: 60%;
     display: flex;
     flex-direction: column;
     min-height: 0;
-    border-top: var(--gs-border-width) solid var(--gs-border);
-    background: var(--gs-callout-bg);
   }
   .details-head {
     flex: 0 0 auto;

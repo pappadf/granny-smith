@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Badge from '@/components/ui/Badge.svelte';
   import Hint from '@/components/ui/Hint.svelte';
   import { tick } from 'svelte';
   import { addBreakpoint, removeBreakpointAt, type DebugFrameRow } from '@/bus/debug';
@@ -151,6 +152,13 @@
     const rowEls = paneEl.querySelectorAll<HTMLElement>('.row');
     rowEls[i]?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
+
+  // The address tags' intents: transparent translation, page table, none.
+  const TAG_INTENT: Record<string, 'success' | 'info' | 'danger'> = {
+    tt: 'success',
+    pt: 'info',
+    invalid: 'danger',
+  };
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
@@ -189,7 +197,10 @@
         <span class="addr">
           <span class="addr-l">{addr.logical}</span>
           {#if addr.physical}<span class="addr-p">{addr.physical}</span>{/if}
-          {#if addr.tag}<span class="tag tag-{addr.tag.toLowerCase()}">{addr.tag}</span>{/if}
+          {#if addr.tag}<Badge
+              class="tag tag-{addr.tag.toLowerCase()}"
+              intent={TAG_INTENT[addr.tag.toLowerCase()] ?? 'neutral'}>{addr.tag}</Badge
+            >{/if}
         </span>
         <span class="mnem">{row.mnem}</span>
         <span class="ops">{row.ops}</span>
@@ -266,35 +277,10 @@
     color: var(--gs-text-muted);
     text-transform: uppercase; /* hex digits */
   }
-  .tag {
-    border-radius: var(--gs-radius-pill);
-    padding: 0 var(--gs-space-1-5);
-    font-size: var(--gs-font-size-2xs);
-    font-weight: var(--gs-font-weight-semibold);
-    line-height: 14px;
-    height: 14px;
-    text-transform: var(--gs-caps-transform);
-  }
-  .tag-tt {
-    background: var(--gs-success-bg);
-    color: var(--gs-success-fg);
-  }
-  .tag-pt {
-    background: var(--gs-info-bg);
-    color: var(--gs-info-fg);
-  }
-  .tag-invalid {
-    background: var(--gs-danger-bg);
-    color: var(--gs-danger-fg);
-  }
   .mnem {
     color: var(--gs-text-strong);
   }
   .ops {
     color: var(--gs-text);
-  }
-  .cmt {
-    color: var(--gs-text-muted);
-    font-style: italic;
   }
 </style>

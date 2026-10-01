@@ -2,8 +2,21 @@
   import { mount, unmount } from 'svelte';
   import Self from './ContextMenu.svelte';
 
+  import type { IconName } from '@/lib/icons';
+
+  // A menu entry.  `checked` (true or false) makes it a checkable item with
+  // a check mark column; `disabled` greys it out and skips it; `icon` and
+  // `shortcut` sit before and after the label.
   export type ContextMenuItem =
-    | { label: string; action: () => void; danger?: boolean }
+    | {
+        label: string;
+        action: () => void;
+        danger?: boolean;
+        checked?: boolean;
+        disabled?: boolean;
+        icon?: IconName;
+        shortcut?: string;
+      }
     | { sep: true };
 
   // One menu at a time. Subsequent openContextMenu calls dismiss the previous.
@@ -31,6 +44,7 @@
 
 <script lang="ts">
   import { onMount } from 'svelte';
+  import Icon from './Icon.svelte';
 
   interface Props {
     items: ContextMenuItem[];
@@ -52,7 +66,7 @@
   function activableIndices(): number[] {
     const out: number[] = [];
     items.forEach((it, i) => {
-      if (!('sep' in it)) out.push(i);
+      if (!('sep' in it) && !it.disabled) out.push(i);
     });
     return out;
   }
@@ -69,8 +83,12 @@
     highlight = next;
   }
 
+  // Whether any entry is checkable: then every entry keeps a check column.
+  const hasChecks = $derived(items.some((it) => !('sep' in it) && it.checked !== undefined));
+  const hasIcons = $derived(items.some((it) => !('sep' in it) && !!it.icon));
+
   function activate(item: ContextMenuItem): void {
-    if ('sep' in item) return;
+    if ('sep' in item || item.disabled) return;
     onClose();
     item.action();
   }
@@ -128,8 +146,9 @@
   });
 </script>
 
+<!-- Legacy hooks: context-menu, item, highlight, danger, sep. -->
 <div
-  class="context-menu"
+  class="gs-menu context-menu"
   role="menu"
   tabindex="-1"
   style="left: {pos.left}px; top: {pos.top}px;"
@@ -137,31 +156,43 @@
 >
   {#each items as item, i (i)}
     {#if 'sep' in item}
-      <div class="sep" role="separator"></div>
+      <div class="gs-menu__separator sep" role="separator"></div>
     {:else}
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
       <div
-        class="item"
+        class="gs-menu__item item"
         class:danger={item.danger}
         class:highlight={highlight === i}
-        role="menuitem"
+        role={item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
+        aria-checked={item.checked}
+        aria-disabled={item.disabled || undefined}
         tabindex="-1"
         onclick={() => activate(item)}
-        onmouseenter={() => (highlight = i)}
+        onmouseenter={() => (highlight = item.disabled ? -1 : i)}
       >
-        {item.label}
+        {#if hasChecks}
+          <span class="gs-menu__check"
+            >{#if item.checked}<Icon name="check" size={14} />{/if}</span
+          >
+        {/if}
+        {#if hasIcons}
+          <span class="gs-menu__icon"
+            >{#if item.icon}<Icon name={item.icon} size={14} />{/if}</span
+          >
+        {/if}
+        <span class="gs-menu__label">{item.label}</span>
+        {#if item.shortcut}<span class="gs-menu__shortcut">{item.shortcut}</span>{/if}
       </div>
     {/if}
   {/each}
 </div>
 
 <style>
-  .context-menu {
+  .gs-menu {
     position: fixed;
     background: var(--gs-menu-bg);
     color: var(--gs-menu-fg);
     border: var(--gs-border-width) solid var(--gs-border);
-    border-radius: var(--gs-radius-md);
+    border-radius: var(--gs-menu-radius);
     box-shadow: var(--gs-shadow-popup);
     min-width: 160px;
     padding: var(--gs-space-1) 0;
@@ -170,26 +201,55 @@
   }
   /* The menu takes focus to read keys; the highlighted item shows where
      the keyboard is. */
-  .context-menu:focus-visible {
+  .gs-menu:focus-visible {
     outline: none;
   }
-  .item {
-    height: var(--gs-size-row);
-    line-height: var(--gs-size-row);
-    padding: 0 var(--gs-space-3);
+  .gs-menu__item {
+    display: flex;
+    align-items: center;
+    gap: var(--gs-space-1-5);
+    height: var(--gs-menu-item-height);
+    padding: 0 var(--gs-menu-item-padding-x);
     font-size: var(--gs-font-size-base);
     cursor: pointer;
   }
-  .item.highlight {
+  .gs-menu__item.highlight {
     background: var(--gs-menu-hover-bg);
     color: var(--gs-menu-hover-fg);
   }
-  .item.danger {
+  .gs-menu__item.danger {
     color: var(--gs-danger-fg);
   }
-  .sep {
-    height: 1px;
-    background: var(--gs-border);
+  .gs-menu__item.danger.highlight {
+    color: var(--gs-menu-hover-fg);
+  }
+  .gs-menu__item[aria-disabled='true'] {
+    color: var(--gs-text-disabled);
+    cursor: default;
+  }
+  .gs-menu__check,
+  .gs-menu__icon {
+    flex: none;
+    width: var(--gs-size-icon-md);
+    display: inline-flex;
+    align-items: center;
+  }
+  .gs-menu__label {
+    flex: 1 1 auto;
+    white-space: nowrap;
+  }
+  .gs-menu__shortcut {
+    flex: none;
+    margin-left: var(--gs-space-6);
+    color: var(--gs-text-muted);
+    font-size: var(--gs-font-size-sm);
+  }
+  .gs-menu__item.highlight .gs-menu__shortcut {
+    color: inherit;
+  }
+  .gs-menu__separator {
+    height: var(--gs-border-width);
+    background: var(--gs-menu-separator);
     margin: var(--gs-space-1) 0;
   }
 </style>

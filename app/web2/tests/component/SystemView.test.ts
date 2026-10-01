@@ -195,6 +195,7 @@ import SystemView from '@/components/panel-views/machine/SystemView.svelte';
 import { machine } from '@/state/machine.svelte';
 import { systemView, revealInSystem } from '@/state/system.svelte';
 import { layout } from '@/state/layout.svelte';
+import { dialogs, answerText } from '@/state/dialogs.svelte';
 import { closeContextMenu } from '@/components/common/ContextMenu.svelte';
 
 let clip: string[];
@@ -461,17 +462,19 @@ describe('SystemView menus', () => {
   });
 
   it('export saves the image its own way instead of opening a form', async () => {
-    const prompt = vi.spyOn(window, 'prompt').mockReturnValue(null);
     const { container } = render(SystemView);
     await waitFor(() => expect(rowEl(container, 'files')).not.toBeNull());
     await fireEvent.contextMenu(
       rowEl(container, 'files')!.querySelector('.sys-line') as HTMLElement,
     );
     await fireEvent.click(await waitFor(() => menuItem('Export…')));
-    await waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
+    // It asks for the file name in the in-app prompt (DialogHost renders
+    // it in the app); cancelling ends it.
+    await waitFor(() => expect(dialogs.current?.kind).toBe('text'));
+    expect(dialogs.current?.title).toBe('Save image as');
     expect(calls).toContainEqual(['files.filename', []]);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
-    prompt.mockRestore();
+    answerText(null);
   });
 
   it('Copy value and Copy path', async () => {

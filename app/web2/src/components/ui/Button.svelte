@@ -7,6 +7,7 @@
   import type { Snippet } from 'svelte';
   import type { HTMLButtonAttributes } from 'svelte/elements';
   import Icon from '@/components/common/Icon.svelte';
+  import Spinner from './Spinner.svelte';
   import type { IconName } from '@/lib/icons';
 
   interface Props extends Omit<HTMLButtonAttributes, 'children'> {
@@ -43,7 +44,7 @@
 </script>
 
 {#snippet content()}
-  {#if busy}<span class="gs-button__spinner" aria-hidden="true"></span>{/if}
+  {#if busy}<Spinner size="sm" tone="current" class="gs-button__spinner" />{/if}
   {#if icon}<Icon name={icon} size={14} class="gs-button__icon" />{/if}
   {#if children}<span class="gs-button__label">{@render children()}</span>{/if}
 {/snippet}
@@ -140,18 +141,5 @@
   .gs-button__label {
     display: inline-flex;
     align-items: center;
-  }
-  .gs-button__spinner {
-    width: var(--gs-size-icon-xs);
-    height: var(--gs-size-icon-xs);
-    border: var(--gs-border-width-strong) solid currentColor;
-    border-right-color: transparent;
-    border-radius: var(--gs-radius-round);
-    animation: gs-button-spin var(--gs-duration-spin) var(--gs-ease-linear) infinite;
-  }
-  @keyframes gs-button-spin {
-    to {
-      transform: rotate(360deg);
-    }
   }
 </style>

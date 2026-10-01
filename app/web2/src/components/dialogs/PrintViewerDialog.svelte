@@ -17,7 +17,12 @@
   );
 </script>
 
-<Modal open={printer.viewerOpen && doc !== null} {title} onClose={closePrintedDocument} wide>
+<Modal
+  open={printer.viewerOpen && doc !== null}
+  {title}
+  onClose={closePrintedDocument}
+  variant="wide"
+>
   {#if doc}
     <iframe class="pdf-frame" src={doc.url} title={doc.name}></iframe>
   {/if}

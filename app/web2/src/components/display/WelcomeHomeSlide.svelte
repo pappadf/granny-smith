@@ -1,8 +1,9 @@
 <script lang="ts">
-  import SectionHeading from '@/components/ui/SectionHeading.svelte';
   import { setWelcomeSlide } from '@/state/layout.svelte';
   import { pickAndUpload, pickAndLoadCheckpoint } from '@/bus/upload';
   import ActionRow from '../ui/ActionRow.svelte';
+  import Card from '../ui/Card.svelte';
+  import Hero from '../ui/Hero.svelte';
 
   // (A "Recent" card used to list /opfs/config/recent.json, which nothing in
   // production ever wrote — only test fixtures, which held display names
@@ -30,10 +31,13 @@
 </script>
 
 <div class="home-content">
-  <h1 class="welcome-title">Granny Smith</h1>
-  <p class="welcome-subtitle">A classic Macintosh emulator in the browser.</p>
-  <section class="card">
-    <SectionHeading class="card-heading">Start</SectionHeading>
+  <Hero
+    title="Granny Smith"
+    subtitle="A classic Macintosh emulator in the browser."
+    titleClass="welcome-title"
+    subtitleClass="welcome-subtitle"
+  />
+  <Card class="card" heading="Start">
     <div class="card-rows">
       <ActionRow class="card-row" icon="mac" label="New Machine..." onclick={openConfigSlide} />
       <ActionRow
@@ -44,7 +48,7 @@
       />
       <ActionRow class="card-row" icon="upload" label="Upload ROM..." onclick={openUploadRom} />
     </div>
-  </section>
+  </Card>
 </div>
 
 <style>
@@ -52,24 +56,6 @@
     max-width: 560px;
     width: 100%;
     padding: var(--gs-space-12) var(--gs-space-8) var(--gs-space-8);
-  }
-  .welcome-title {
-    font-size: var(--gs-font-size-4xl);
-    font-weight: var(--gs-font-weight-light);
-    color: var(--gs-text-strong);
-    margin: 0 0 var(--gs-space-2) 0;
-  }
-  .welcome-subtitle {
-    color: var(--gs-text-muted);
-    margin: 0 0 var(--gs-space-7) 0;
-    font-size: var(--gs-font-size-md);
-  }
-  .card {
-    background: var(--gs-card-bg);
-    border: var(--gs-border-width) solid var(--gs-border-card);
-    border-radius: var(--gs-radius-lg);
-    padding: var(--gs-space-3-5) var(--gs-space-4);
-    margin-bottom: var(--gs-space-4);
   }
   .card-rows {
     display: flex;

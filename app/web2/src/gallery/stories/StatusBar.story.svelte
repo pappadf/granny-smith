@@ -12,7 +12,7 @@
   // svelte-ignore state_referenced_locally
   const v = variant;
   const status: MachineStatus =
-    v === 'idle' || v === 'idle-activity'
+    v === 'idle' || v === 'idle-activity' || v === 'idle-error'
       ? 'no-machine'
       : v === 'activity'
         ? 'running'
@@ -32,12 +32,13 @@
     printer.page = 2;
     activity.current = 'System 7.5.3.dsk';
     activity.verb = 'Uploading';
-  } else if (v === 'stopped') {
+  } else if (v === 'stopped' || v === 'idle-error') {
     printer.activity = 'error';
     printer.error = 'PostScript error';
   } else if (v === 'paused') {
     printer.document = { name: 'doc.pdf', title: 'Read Me', url: 'about:blank', pages: 1 };
-  } else if (v === 'idle') {
+  }
+  if (v === 'idle' || v === 'idle-error') {
     activity.current = 'ROM upload';
   }
 </script>

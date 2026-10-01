@@ -241,6 +241,22 @@ describe('design tokens', () => {
     expect(bad).toEqual([]);
   });
 
+  // L-11: the browser's prompt, confirm and alert boxes cannot be skinned
+  // (nor reached by the app's focus handling); state/dialogs asks instead.
+  it('L-11: no native prompt, confirm or alert', () => {
+    const bad: string[] = [];
+    for (const f of SOURCES) {
+      if (f.endsWith('.css')) continue;
+      stripComments(readFileSync(f, 'utf8'))
+        .split('\n')
+        .forEach((line, i) => {
+          if (/(?<![\w.$])(?:window\.)?(?:prompt|confirm|alert)\s*\(/.test(line))
+            bad.push(`${rel(f)}:${i + 1}: ${line.trim()}`);
+        });
+    }
+    expect(bad).toEqual([]);
+  });
+
   // Report (not fail) contract tokens nothing reads yet.
   it('reports unread tokens', () => {
     const read = new Set<string>();

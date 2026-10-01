@@ -1,6 +1,7 @@
 <script lang="ts">
   import ConfirmDialog from '@/components/dialogs/ConfirmDialog.svelte';
   import RenameDialog from '@/components/panel-views/filesystem/RenameDialog.svelte';
+  import PromptDialog from '@/components/dialogs/PromptDialog.svelte';
   import CreateImageDialog from '@/components/display/CreateImageDialog.svelte';
   import type { StoryProps } from '../registry';
 
@@ -42,6 +43,16 @@
   <RenameDialog open initial="System 7.5.3.dsk" onSubmit={noop} onClose={noop} />
 {:else if variant === 'rename-error'}
   <RenameDialog open initial="bad/name" onSubmit={noop} onClose={noop} />
+{:else if variant === 'prompt'}
+  <PromptDialog
+    open
+    title="Save image as"
+    label="File name"
+    initial="System7.hda"
+    submitText="Save"
+    onSubmit={noop}
+    onClose={noop}
+  />
 {:else if variant === 'create-hd'}
   <CreateImageDialog open kind="hd" onClose={noop} onCreated={noop} />
 {:else if variant === 'create-fd'}

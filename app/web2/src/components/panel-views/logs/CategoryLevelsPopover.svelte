@@ -2,6 +2,8 @@
   import { onMount } from 'svelte';
   import { logs, refreshCatLevels, setCatLevel } from '@/state/logs.svelte';
   import NumberInput from '@/components/ui/NumberInput.svelte';
+  import Modal from '@/components/common/Modal.svelte';
+  import Hint from '@/components/ui/Hint.svelte';
 
   interface Props {
     open: boolean;
@@ -15,22 +17,6 @@
   $effect(() => {
     if (open) void refreshCatLevels();
   });
-
-  $effect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onClose();
-      }
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  });
-
-  function onBackdrop(ev: MouseEvent) {
-    if (ev.target === ev.currentTarget) onClose();
-  }
 
   async function onLevelChange(cat: string, ev: Event) {
     const t = ev.target as HTMLInputElement;
@@ -50,91 +36,39 @@
   const sortedCats = $derived(Object.keys(logs.catLevels).sort());
 </script>
 
-{#if open}
-  <div class="cat-backdrop" role="presentation" onclick={onBackdrop}>
-    <div class="cat-card" role="dialog" aria-label="Log category levels">
-      <div class="cat-header">
-        <span class="cat-title">Log Levels</span>
-        <button type="button" class="close-btn" onclick={onClose} aria-label="Close">×</button>
-      </div>
-      {#if sortedCats.length === 0}
-        <p class="cat-empty">
-          No categories registered yet. Boot a machine, or type <code>log</code> in the terminal to populate
-          this list.
-        </p>
-      {:else}
-        <ul class="cat-list">
-          {#each sortedCats as cat (cat)}
-            <li class="cat-row">
-              <span class="cat-name">{cat}</span>
-              <NumberInput
-                min="0"
-                max="9"
-                style="width: 56px"
-                value={logs.catLevels[cat]}
-                onchange={(e) => onLevelChange(cat, e)}
-                aria-label={`Level for ${cat}`}
-              />
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </div>
-  </div>
-{/if}
+<Modal
+  {open}
+  variant="popover"
+  title="Log Levels"
+  label="Log category levels"
+  closeButton
+  {onClose}
+>
+  {#if sortedCats.length === 0}
+    <Hint as="p" class="cat-empty">
+      No categories registered yet. Boot a machine, or type <code>log</code> in the terminal to populate
+      this list.
+    </Hint>
+  {:else}
+    <ul class="cat-list">
+      {#each sortedCats as cat (cat)}
+        <li class="cat-row">
+          <span class="cat-name">{cat}</span>
+          <NumberInput
+            min="0"
+            max="9"
+            style="width: 56px"
+            value={logs.catLevels[cat]}
+            onchange={(e) => onLevelChange(cat, e)}
+            aria-label={`Level for ${cat}`}
+          />
+        </li>
+      {/each}
+    </ul>
+  {/if}
+</Modal>
 
 <style>
-  .cat-backdrop {
-    position: fixed;
-    inset: 0;
-    background: var(--gs-backdrop);
-    z-index: var(--gs-z-popover);
-    display: flex;
-    align-items: flex-start;
-    justify-content: flex-end;
-    padding: var(--gs-popover-offset-top) var(--gs-space-4) var(--gs-space-4);
-  }
-  .cat-card {
-    background: var(--gs-surface-raised);
-    color: var(--gs-text);
-    border: var(--gs-border-width) solid var(--gs-border);
-    border-radius: var(--gs-radius-lg);
-    box-shadow: var(--gs-shadow-modal);
-    min-width: 280px;
-    max-width: 360px;
-    max-height: 60vh;
-    overflow: auto;
-    padding: var(--gs-space-3) var(--gs-space-3-5);
-  }
-  .cat-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: var(--gs-space-2);
-  }
-  .cat-title {
-    font-size: var(--gs-font-size-base);
-    font-weight: var(--gs-font-weight-medium);
-    color: var(--gs-text-strong);
-  }
-  .close-btn {
-    background: none;
-    border: none;
-    color: var(--gs-text-muted);
-    font-size: var(--gs-font-size-2xl);
-    line-height: 1;
-    cursor: pointer;
-    padding: 0 var(--gs-space-1);
-  }
-  .close-btn:hover {
-    color: var(--gs-text-strong);
-  }
-  .cat-empty {
-    font-size: var(--gs-font-size-sm);
-    color: var(--gs-text-muted);
-    margin: var(--gs-space-2) 0 0;
-    line-height: var(--gs-line-height-relaxed);
-  }
   .cat-list {
     list-style: none;
     margin: 0;
@@ -158,5 +92,10 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  :global(.cat-empty) {
+    font-size: var(--gs-font-size-sm);
+    margin: 0;
+    line-height: var(--gs-line-height-relaxed);
   }
 </style>
