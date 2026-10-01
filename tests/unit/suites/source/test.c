@@ -338,6 +338,134 @@ TEST(test_unwrap_diskcopy_inside_gzip) {
     gs_source_release(s);
 }
 
+// The budgets can change at run time (files.cache): a smaller memory budget
+// evicts at once, and a spill area over its new budget is emptied -- the
+// chunks are fetched again, correctly, when next read.
+TEST(test_chunk_cache_budgets_change_at_run_time) {
+    char dir[] = "/tmp/gs_chunk_budget_XXXXXX";
+    ASSERT_TRUE(mkdtemp(dir) != NULL);
+    gs_chunk_cache_t *c = gs_chunk_cache_new(16384, dir, 0);
+    int calls = 0;
+    uint8_t b[4];
+    for (uint64_t i = 0; i < 8; i++)
+        ASSERT_EQ_INT(4, (int)gs_chunk_cache_get(c, "bud", i, 2048, 0, b, 4, fill_fetch, &calls));
+    gs_chunk_cache_stats_t st;
+    gs_chunk_cache_stats(c, &st);
+    ASSERT_TRUE(st.mem_bytes == 8 * 2048 && st.spill_bytes == 0);
+    size_t mem;
+    uint64_t spill;
+    gs_chunk_cache_set_budgets(c, 4096, 0);
+    gs_chunk_cache_budgets(c, &mem, &spill);
+    ASSERT_TRUE(mem == 4096 && spill == 0);
+    gs_chunk_cache_stats(c, &st);
+    ASSERT_TRUE(st.mem_bytes <= 4096);
+    ASSERT_TRUE(st.spill_bytes >= 4 * 2048); // evicted to spill
+    gs_chunk_cache_set_budgets(c, 4096, 2048); // the spill area is over: emptied
+    gs_chunk_cache_stats(c, &st);
+    ASSERT_EQ_INT(0, (int)st.spill_bytes);
+    int before = calls;
+    ASSERT_EQ_INT(4, (int)gs_chunk_cache_get(c, "bud", 0, 2048, 8, b, 4, fill_fetch, &calls));
+    ASSERT_EQ_INT(before + 1, calls); // fetched again
+    ASSERT_EQ_INT(0, b[0]);
+    gs_chunk_cache_free(c);
+    rmdir(dir);
+}
+
+// Keys made at different times name the same bytes when they are equal --
+// or, ignoring host time stamps (the browser's OPFS gives files their load
+// time), when only those differ.  A path or a size that differs never
+// matches, nor does a member of another archive.
+TEST(test_key_same_ignores_only_host_times) {
+    const char *a = "/opfs/fd/sys.dsk@819200:1790881846";
+    const char *b = "/opfs/fd/sys.dsk@819200:1790881849";
+    ASSERT_TRUE(gs_key_same(a, a, false));
+    ASSERT_TRUE(!gs_key_same(a, b, false));
+    ASSERT_TRUE(gs_key_same(a, b, true));
+    ASSERT_TRUE(!gs_key_same(a, "/opfs/fd/sys.dsk@819201:1790881846", true)); // size
+    ASSERT_TRUE(!gs_key_same(a, "/opfs/fd/sys2.dsk@819200:1790881846", true)); // path
+    // Nested: the host segment inside a member key, and a wrapper layer.
+    ASSERT_TRUE(gs_key_same("/x/a.zip@100:5/disk.img#dc42", "/x/a.zip@100:9/disk.img#dc42", true));
+    ASSERT_TRUE(!gs_key_same("/x/a.zip@100:5/disk.img#dc42", "/x/a.zip@100:9/disk.img#dc42", false));
+    ASSERT_TRUE(!gs_key_same("/x/a.zip@100:5/disk.img", "/x/a.zip@100:5/other.img", true));
+    // A ':' that is no time stamp is compared as it stands.
+    ASSERT_TRUE(!gs_key_same("/x/a:1/b@1:2", "/x/a:9/b@1:2", true));
+    ASSERT_TRUE(!gs_key_same(NULL, a, true));
+}
+
+// ---- "Not yet" -------------------------------------------------------------
+
+// A source whose bytes arrive later, as a remote one's do: a read says
+// GS_EAGAIN while `not_yet` is positive, and each poll brings it one closer.
+typedef struct {
+    int not_yet; // reads still to refuse
+    int polls;
+    int reads;
+} late_t;
+
+static int64_t late_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+    late_t *l = s->ctx;
+    l->reads++;
+    if (l->not_yet > 0)
+        return GS_EAGAIN;
+    if (off >= 4096)
+        return 0;
+    if (len > 4096 - off)
+        len = (size_t)(4096 - off);
+    for (size_t i = 0; i < len; i++)
+        ((uint8_t *)buf)[i] = pattern(off + i);
+    return (int64_t)len;
+}
+static uint64_t late_size(gs_source_t *s) {
+    (void)s;
+    return 4096;
+}
+static const char *late_key(gs_source_t *s) {
+    (void)s;
+    return "late";
+}
+static gs_tier_t late_tier(gs_source_t *s) {
+    (void)s;
+    return GS_TIER_RANDOM;
+}
+static void late_close(gs_source_t *s) {
+    (void)s;
+}
+static int late_poll(gs_source_t *s, int timeout_ms) {
+    late_t *l = s->ctx;
+    (void)timeout_ms;
+    l->polls++;
+    l->not_yet--;
+    return 0;
+}
+static const gs_source_ops_t late_ops = {late_read, late_size, late_key, late_tier, late_close, late_poll};
+
+// GS_EAGAIN is waited out: a raw read reports it; read_exact polls and reads
+// again until the bytes are there; a view (and a locked wrapper) polls the
+// source it reads.
+TEST(test_not_yet_is_waited_out_with_poll) {
+    late_t l = {.not_yet = 3};
+    gs_source_t *s = peel_source_new(&late_ops, &l, NULL);
+    uint8_t b[16];
+    ASSERT_EQ_INT(GS_EAGAIN, (int)gs_source_read(s, 0, b, sizeof(b)));
+    ASSERT_EQ_INT(0, gs_source_poll(s, 0)); // one step: two refusals left
+    ASSERT_EQ_INT(1, l.polls);
+
+    gs_source_t *v = gs_source_view(s, 100, 1000, NULL);
+    gs_source_t *lk = gs_source_locked(v);
+    ASSERT_EQ_INT(0, gs_source_read_exact(lk, 10, b, sizeof(b)));
+    for (int i = 0; i < 16; i++)
+        ASSERT_EQ_INT(pattern(110 + (uint64_t)i), b[i]);
+    ASSERT_EQ_INT(3, l.polls); // two more polls, through the lock and the view
+    ASSERT_EQ_INT(0, l.not_yet);
+
+    // A source that never makes progress is given up on, not spun on forever.
+    l.not_yet = 1 << 30;
+    ASSERT_EQ_INT(GS_EAGAIN, gs_source_read_exact(lk, 0, b, sizeof(b)));
+    gs_source_release(lk);
+    gs_source_release(v);
+    gs_source_release(s);
+}
+
 int main(void) {
     RUN(test_view_arithmetic_at_boundaries);
     RUN(test_key_containment);
@@ -346,6 +474,9 @@ int main(void) {
     RUN(test_chunk_cache_spills_evicted_chunks);
     RUN(test_detection_reads_within_the_budget);
     RUN(test_unwrap_diskcopy_inside_gzip);
+    RUN(test_not_yet_is_waited_out_with_poll);
+    RUN(test_chunk_cache_budgets_change_at_run_time);
+    RUN(test_key_same_ignores_only_host_times);
     fprintf(stderr, "All source tests passed\n");
     return 0;
 }

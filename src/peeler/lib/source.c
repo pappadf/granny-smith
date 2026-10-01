@@ -73,10 +73,32 @@ peel_tier_t peel_source_tier(peel_source_t *s) {
     return (s && s->ops && s->ops->tier) ? s->ops->tier(s) : PEEL_TIER_RANDOM;
 }
 
+int peel_source_poll(peel_source_t *s, int timeout_ms) {
+    for (peel_source_t *p = s; p; p = p->parent)
+        if (p->ops && p->ops->poll)
+            return p->ops->poll(p, timeout_ms);
+    return 0;
+}
+
+// Consecutive "not yet"s, each after a poll that said a read may make
+// progress, before read_exact gives up: a source that keeps saying both is
+// broken, and must not spin forever.
+#define PEEL_EAGAIN_MAX_RETRIES 4096
+
 int peel_source_read_exact(peel_source_t *s, uint64_t off, void *buf, size_t len) {
     uint8_t *p = buf;
+    int again = 0;
     while (len > 0) {
         int64_t n = peel_source_read(s, off, p, len);
+        if (n == PEEL_EAGAIN) {
+            if (++again > PEEL_EAGAIN_MAX_RETRIES)
+                return PEEL_EAGAIN;
+            int rc = peel_source_poll(s, -1);
+            if (rc < 0 && rc != PEEL_EAGAIN)
+                return rc;
+            continue;
+        }
+        again = 0;
         if (n < 0)
             return (int)n;
         if (n == 0)

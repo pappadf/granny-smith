@@ -100,7 +100,7 @@ The zlib decompressor both this and the PNG reader use is first-party: `inflate.
 - **`image_create_blank_floppy()`** writes a zero-filled 819,200-byte (or 1,474,560-byte HD) raw file that can immediately be opened.
 
 **Checkpointing & metadata**
-- **`image_checkpoint()`** writes `{uint32 len, path bytes, writable flag, raw_size, uint32 instance_len, instance_path bytes}` and then calls `storage_checkpoint()`. The `instance_path` field (added in the storage-isolation rewrite) lets the restore path locate the delta+journal pair without relying on adjacent-to-base sidecars. The storage layer writes the current bitmap for quick checkpoints or streams all blocks for consolidated checkpoints.
+- **`image_checkpoint()`** writes `{uint32 len, path bytes, writable flag, raw_size, uint32 instance_len, instance_path bytes, uint32 key_len, source_key bytes}` and then calls `storage_checkpoint()`. The `instance_path` field (added in the storage-isolation rewrite) lets the restore path locate the delta+journal pair without relying on adjacent-to-base sidecars. The source key lets a quick restore refuse a base that is no longer the same bytes ([source.md](source.md) §5). The storage layer writes the current bitmap for quick checkpoints or streams all blocks for consolidated checkpoints.
 - During restore the machine init code reads back the same fields and chooses an opener based on `(writable, kind)`:
 	- writable + quick → `image_open(base, instance_path)` reopens the same delta files.
 	- writable + consolidated → `image_create(base, checkpoint_machine_dir())` mints a fresh instance; the embedded blocks then repopulate it via `storage_restore_from_checkpoint()`.

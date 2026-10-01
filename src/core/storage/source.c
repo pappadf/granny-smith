@@ -10,6 +10,7 @@
 #include "resource_fork.h"
 #include "storage_util.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -144,6 +145,48 @@ gs_source_t *gs_source_memory(const void *buf, size_t len, bool own, const char 
 // ============================================================================
 // Reads
 // ============================================================================
+
+// The next character of `k` at *i, skipping a host time stamp (":<digits>"
+// right after "@<digits>" and before the end, '/' or '#').  NUL at the end.
+static char key_next(const char *k, size_t *i, bool skip_times) {
+    if (skip_times && k[*i] == ':' && *i > 0 && isdigit((unsigned char)k[*i - 1])) {
+        // Back over "<digits>" to the '@' that must start the size.
+        size_t j = *i;
+        while (j > 0 && isdigit((unsigned char)k[j - 1]))
+            j--;
+        size_t e = *i + 1;
+        while (isdigit((unsigned char)k[e]))
+            e++;
+        if (j > 0 && k[j - 1] == '@' && e > *i + 1 && (k[e] == '\0' || k[e] == '/' || k[e] == '#'))
+            *i = e;
+    }
+    return k[*i];
+}
+
+bool gs_key_same(const char *a, const char *b, bool ignore_host_times) {
+    if (!a || !b)
+        return false;
+    if (!ignore_host_times)
+        return strcmp(a, b) == 0;
+    size_t i = 0, j = 0;
+    for (;;) {
+        char ca = key_next(a, &i, true), cb = key_next(b, &j, true);
+        if (ca != cb)
+            return false;
+        if (!ca)
+            return true;
+        i++;
+        j++;
+    }
+}
+
+bool gs_key_same_source(const char *saved, const char *now) {
+#ifdef __EMSCRIPTEN__
+    return gs_key_same(saved, now, true);
+#else
+    return gs_key_same(saved, now, false);
+#endif
+}
 
 int gs_source_read_exact(gs_source_t *s, uint64_t off, void *buf, size_t len) {
     int rc = peel_source_read_exact(s, off, buf, len);

@@ -275,6 +275,29 @@ void gs_chunk_cache_free(gs_chunk_cache_t *c) {
     free(c);
 }
 
+void gs_chunk_cache_set_budgets(gs_chunk_cache_t *c, size_t mem_budget, uint64_t spill_budget) {
+    if (!c)
+        return;
+    pthread_mutex_lock(&c->mu);
+    c->spill_budget = spill_budget;
+    if (spill_budget && c->st.spill_bytes > spill_budget)
+        drop_spill(c, NULL);
+    c->mem_budget = mem_budget;
+    evict(c, NULL);
+    pthread_mutex_unlock(&c->mu);
+}
+
+void gs_chunk_cache_budgets(gs_chunk_cache_t *c, size_t *mem_budget, uint64_t *spill_budget) {
+    if (!c)
+        return;
+    pthread_mutex_lock(&c->mu);
+    if (mem_budget)
+        *mem_budget = c->mem_budget;
+    if (spill_budget)
+        *spill_budget = c->spill_budget;
+    pthread_mutex_unlock(&c->mu);
+}
+
 // A size in MiB from the environment, or `dflt`.
 static uint64_t env_mib(const char *name, uint64_t dflt) {
     const char *v = getenv(name);

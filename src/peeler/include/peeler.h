@@ -149,7 +149,8 @@ typedef enum {
 } peel_tier_t;
 
 // read() returns bytes read, 0 at EOF, or a negative errno-style code.
-// PEEL_EAGAIN means "not yet": the caller retries later (remote sources).
+// PEEL_EAGAIN means "not yet" (a remote source whose bytes are still in
+// flight): the caller waits with peel_source_poll and reads again.
 #define PEEL_EAGAIN (-11)
 
 typedef struct {
@@ -160,6 +161,11 @@ typedef struct {
     const char *(*key)(peel_source_t *s);
     peel_tier_t (*tier)(peel_source_t *s);
     void (*close)(peel_source_t *s); // free ctx; parent is released after
+    // Optional, for a source whose read() can return PEEL_EAGAIN: wait up to
+    // `timeout_ms` (-1: without limit) until a read may make progress.  0
+    // when it may, PEEL_EAGAIN on timeout, or a negative error.  NULL for
+    // every source that never says "not yet".
+    int (*poll)(peel_source_t *s, int timeout_ms);
 } peel_source_ops_t;
 
 struct peel_source {
@@ -181,8 +187,14 @@ uint64_t peel_source_size(peel_source_t *s);
 const char *peel_source_key(peel_source_t *s);
 peel_tier_t peel_source_tier(peel_source_t *s);
 
-// Read exactly `len` bytes at `off` (looping over short reads).  0, or a
-// negative code (-5 for a short source).
+// Wait until a read of `s` that returned PEEL_EAGAIN may make progress:
+// the poll of the nearest source in its parent chain that has one (a view
+// of a remote file polls the file), else 0 at once.
+int peel_source_poll(peel_source_t *s, int timeout_ms);
+
+// Read exactly `len` bytes at `off` (looping over short reads, and waiting
+// out PEEL_EAGAIN with peel_source_poll).  0, or a negative code (-5 for a
+// short source; PEEL_EAGAIN if "not yet" persists without any progress).
 int peel_source_read_exact(peel_source_t *s, uint64_t off, void *buf, size_t len);
 
 // Bytes in memory as a source.  With `own`, the buffer is freed on close.

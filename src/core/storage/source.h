@@ -51,6 +51,17 @@ typedef enum { GS_FORK_DATA, GS_FORK_RSRC, GS_FORK_FINFO } gs_fork_t;
 // ("<parent>/partition1/...") or a wrapper layer ("<parent>#dc42").
 bool gs_key_within(const char *key, const char *parent);
 
+// True when keys `a` and `b`, made at different times (a checkpoint's and
+// now), name the same bytes.  With `ignore_host_times`, the time stamp in
+// each host file's "@<size>:<mtime>" is not compared -- only its canonical
+// path and size are.
+bool gs_key_same(const char *a, const char *b, bool ignore_host_times);
+
+// gs_key_same as this platform needs it.  WasmFS gives a file in OPFS the
+// time it was loaded as its mtime, so in the browser the time stamp is no
+// identity across a reload and is ignored; natively it is compared.
+bool gs_key_same_source(const char *saved, const char *now);
+
 // === Constructors ===========================================================
 
 // A host file, read with pread (so any thread may read it).  Its key is the
@@ -77,6 +88,12 @@ static inline void gs_source_release(gs_source_t *s) {
 static inline int64_t gs_source_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
     return peel_source_read(s, off, buf, len);
 }
+// Wait until a read that returned GS_EAGAIN may make progress (see
+// peel_source_poll): `timeout_ms` -1 waits without limit.  0, GS_EAGAIN on
+// timeout, or a negative errno.
+static inline int gs_source_poll(gs_source_t *s, int timeout_ms) {
+    return peel_source_poll(s, timeout_ms);
+}
 static inline uint64_t gs_source_size(gs_source_t *s) {
     return peel_source_size(s);
 }
@@ -87,7 +104,8 @@ static inline gs_tier_t gs_source_tier(gs_source_t *s) {
     return peel_source_tier(s);
 }
 
-// Exactly `len` bytes at `off`: 0, or a negative errno (-EIO when short).
+// Exactly `len` bytes at `off`, waiting out GS_EAGAIN with gs_source_poll:
+// 0, or a negative errno (-EIO when short).
 int gs_source_read_exact(gs_source_t *s, uint64_t off, void *buf, size_t len);
 
 // The whole source into a malloc'd buffer of at most `max` bytes.  0 or a

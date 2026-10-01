@@ -879,6 +879,14 @@ void image_checkpoint(const image_t *image, checkpoint_t *checkpoint) {
     system_write_checkpoint_data(checkpoint, &instance_len, sizeof(instance_len));
     system_write_checkpoint_data(checkpoint, instance, instance_len);
 
+    // The key of the source the path opened (source.h): a restore that
+    // reuses the base checks it is still the same bytes -- the same file,
+    // size and time stamp, or the same member of the same archive.
+    const char *key = image->source_key ? image->source_key : "";
+    uint32_t key_len = (uint32_t)(strlen(key) + 1);
+    system_write_checkpoint_data(checkpoint, &key_len, sizeof(key_len));
+    system_write_checkpoint_data(checkpoint, key, key_len);
+
     if (image->storage) {
         int rc = storage_checkpoint(image->storage, checkpoint);
         if (rc != GS_SUCCESS) {

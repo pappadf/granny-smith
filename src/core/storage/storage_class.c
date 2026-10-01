@@ -10,6 +10,7 @@
 // delta-storage API without pulling in image / vfs / shell dependencies.
 
 #include "checkpoint.h"
+#include "chunk_cache.h"
 #include "format_registry.h"
 #include "gs_out.h"
 #include "io_leaf.h"
@@ -1198,6 +1199,93 @@ static void files_images_install(struct config *cfg) {
 // `files` is a process singleton created at shell init: the file methods,
 // the mounts collection and the archive child live as long as the process.
 // `files.images` is the per-machine part, attached by root_install.
+// === files.cache: the chunk cache's budgets and counters ======================
+//
+// Decoded chunks of compressed images and archive members (the chunk cache)
+// live in memory up to one budget and spill to scratch files up to another
+// (0: unbounded).  Lowering a budget frees what is over it at once; a
+// spilled chunk is only ever a faster way to fetch it again.
+
+static uint64_t cache_mib(uint64_t bytes) {
+    return bytes >> 20;
+}
+
+static DEF_GETTER(cache_attr_memory_mb) {
+    size_t mem = 0;
+    gs_chunk_cache_budgets(gs_chunk_cache_default(), &mem, NULL);
+    return val_uint(8, cache_mib(mem));
+}
+
+static DEF_SETTER(cache_attr_memory_mb_set) {
+    if (in.u < 1 || in.u > 1u << 20)
+        return val_err("files.cache.memory_mb: %llu out of range (1..1048576)", (unsigned long long)in.u);
+    uint64_t spill = 0;
+    gs_chunk_cache_budgets(gs_chunk_cache_default(), NULL, &spill);
+    gs_chunk_cache_set_budgets(gs_chunk_cache_default(), (size_t)(in.u << 20), spill);
+    return val_none();
+}
+
+static DEF_GETTER(cache_attr_spill_mb) {
+    uint64_t spill = 0;
+    gs_chunk_cache_budgets(gs_chunk_cache_default(), NULL, &spill);
+    return val_uint(8, cache_mib(spill));
+}
+
+static DEF_SETTER(cache_attr_spill_mb_set) {
+    if (in.u > 1u << 24)
+        return val_err("files.cache.spill_mb: %llu out of range (0..16777216)", (unsigned long long)in.u);
+    size_t mem = 0;
+    gs_chunk_cache_budgets(gs_chunk_cache_default(), &mem, NULL);
+    gs_chunk_cache_set_budgets(gs_chunk_cache_default(), mem, in.u << 20);
+    return val_none();
+}
+
+// One counter of gs_chunk_cache_stats, picked by the member's name.
+static DEF_GETTER(cache_attr_stat) {
+    gs_chunk_cache_stats_t st;
+    gs_chunk_cache_stats(gs_chunk_cache_default(), &st);
+    const char *n = m->name;
+    uint64_t v = strcmp(n, "memory_bytes") == 0  ? st.mem_bytes
+                 : strcmp(n, "spill_bytes") == 0 ? st.spill_bytes
+                 : strcmp(n, "hits") == 0        ? st.hits + st.spill_hits
+                 : strcmp(n, "misses") == 0      ? st.misses
+                                                 : st.evictions;
+    return val_uint(8, v);
+}
+
+#define CACHE_STAT(nm, what)                                                                                           \
+    {                                                                                                                  \
+        .kind = M_ATTR, .name = nm, .doc = what, .attr = {                                                             \
+            .type = V_UINT,                                                                                            \
+            .get = cache_attr_stat,                                                                                    \
+            .set = NULL,                                                                                               \
+            .presentation_flags = VAL_VOLATILE                                                                         \
+        }                                                                                                              \
+    }
+
+static const member_t files_cache_members[] = {
+    {.kind = M_ATTR,
+     .name = "memory_mb",
+     .doc = "Memory the chunk cache may hold, in MiB (decoded chunks of compressed images and archive members)",
+     .attr = {.type = V_UINT, .get = cache_attr_memory_mb, .set = cache_attr_memory_mb_set}},
+    {.kind = M_ATTR,
+     .name = "spill_mb",
+     .doc = "Scratch space evicted chunks may spill to, in MiB; 0 is unbounded",
+     .attr = {.type = V_UINT, .get = cache_attr_spill_mb, .set = cache_attr_spill_mb_set}  },
+    CACHE_STAT("memory_bytes", "Bytes of chunks held in memory now"),
+    CACHE_STAT("spill_bytes", "Bytes of chunks in spill files now"),
+    CACHE_STAT("hits", "Reads served without decoding again (memory or spill)"),
+    CACHE_STAT("misses", "Reads that needed a chunk fetched"),
+    CACHE_STAT("evictions", "Chunks pushed out of memory"),
+};
+
+static const class_desc_t files_cache_class = {
+    .name = "cache",
+    .members = files_cache_members,
+    .n_members = sizeof(files_cache_members) / sizeof(files_cache_members[0]),
+    .doc = "The chunk cache that decoded image and archive data is served from: its budgets and counters",
+};
+
 void files_init(void) {
     if (g_files_object)
         return;
@@ -1215,6 +1303,12 @@ void files_init(void) {
         object_cache_set_parent(&g_mounts, mounts);
     }
     archive_init(g_files_object);
+    struct object *cache = object_new(&files_cache_class, NULL, "cache");
+    if (cache) {
+        object_set_label(cache, "Cache");
+        object_set_order(cache, 40);
+        object_attach(g_files_object, cache);
+    }
     root_register_install(files_images_install, files_images_teardown);
     vfs_init(); // namespace formats, and the VFS as the path opener
 }

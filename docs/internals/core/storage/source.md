@@ -60,6 +60,9 @@ check can compare sources that were reached by different routes.
 
 - A host file: its `realpath` plus size and mtime (`/m/disk.img@1474560:1727712000`).
   A changed file is a different key, so nothing cached from the old one is served.
+  In the browser, WasmFS gives a file in OPFS the time it was loaded as its
+  mtime, so across a reload only the path and size are identity:
+  `gs_key_same_source` compares keys that way there and exactly natively.
 - A view: its parent's key and the range, or a key the adapter chooses
   (a DiskCopy payload is `<key>#dc42`, a decoded NDIF `<key>#ndif`).
 - A member of a namespace: the parent's key and the member path
@@ -73,10 +76,13 @@ from serving a stale base while the guest writes to its delta.
 
 The tier is advisory but honest; callers make policy from it. A view has its
 parent's tier. A stored archive member is `RANDOM`; an NDIF/UDIF chunk map
-and a BGZF gzip are `INDEXED`; a deflated zip member or a plain gzip is
-`STREAM` until its sink holds all of it; a BinHex, StuffIt or Compact Pro
-fork is `WHOLE` (decoded once, in full, on first read). A decode-through
-wrapper is `EARNED`.
+and a BGZF gzip are `INDEXED`; a deflated zip member, a plain gzip and a
+compressed StuffIt or Compact Pro fork are `EARNED` -- decoded a buffer at a
+time as reads reach them, into a sink that keeps what was decoded -- and
+`RANDOM` once the sink holds all of it; a BinHex fork is `WHOLE` (decoded in
+full on first read: its files are small). A decode-through wrapper is
+`EARNED`. `vfs_is_expandable` probes only what is cheap to read now
+(`INDEXED` or better), so listing a directory never decodes a member.
 
 ### 3.3 Path opening
 
@@ -122,7 +128,10 @@ absent chunk — the guest reading a disk while the I/O worker exports it —
 one fetches and the other waits for it. With a spill directory
 (`image_scratch_dir()/chunks`), an evicted chunk is appended to a per-key
 spill file rather than dropped; the spill budget is `GS_CHUNK_SPILL_MB`
-(512 MiB on WASM, unbounded natively).
+(512 MiB on WASM, unbounded natively). Both budgets are settings at run time
+(`files.cache.memory_mb`, `files.cache.spill_mb`; §4): a smaller memory
+budget evicts at once, and a spill area over its new budget is emptied --
+spilled chunks are only ever a faster way to fetch them again.
 
 ### 3.7 Decode-through and sinks
 
@@ -135,7 +144,20 @@ the sink the caller supplies. The core's sink keeps a fork of up to 8 MiB in
 memory and a larger one in an unlinked-on-close file under
 `image_scratch_dir()`.
 
-### 3.8 Threads
+### 3.8 "Not yet"
+
+A source whose bytes are not all at hand -- a remote file still downloading
+-- answers a read with `GS_EAGAIN` and implements the optional `poll` op,
+which waits until a read may make progress. `gs_source_poll` asks the
+nearest source in the parent chain that has one (a view of a remote file
+polls the file; the locked wrapper forwards to what it wraps), and answers
+0 at once for sources that never say "not yet". `gs_source_read_exact`
+waits `GS_EAGAIN` out with it, so every reader built on it -- the storage
+engine, the chunk cache, peeler's decoders -- works over such a source
+unchanged; a source that keeps refusing without progress is given up on
+rather than spun on.
+
+### 3.9 Threads
 
 A host source may be read from any thread. Other sources are not
 thread-safe: the storage engine wraps its base in `gs_source_locked`, as the
@@ -144,30 +166,41 @@ the I/O worker while the guest reads it.
 
 ## 4. Object-model / shell surface
 
-None of its own. `files.images[n]` reports each image's format chain
-(`raw`, `dc42`, `bin+ndif`, …); the VFS listing's `expandable` flag comes
-from `gs_format_is_namespace`.
+- `files.cache` — the chunk cache: `memory_mb` and `spill_mb` (read-write;
+  `spill_mb` 0 is unbounded), and the counters `memory_bytes`,
+  `spill_bytes`, `hits`, `misses`, `evictions`.
+- `files.images[n].format` reports each image's wrapper chain (`raw`,
+  `dc42`, `bin+ndif`, …); the VFS listing's `expandable` flag comes from
+  `gs_format_is_namespace`.
 
 ## 5. Checkpointing
 
 An image persists the path its caller named (not a decoded copy's), and a
 restore opens that path again through the resolver, so an image inside an
-archive or another image restores the same way.
+archive or another image restores the same way. It persists its source's key
+too. A quick checkpoint holds only the image's delta, so its disk is the base
+plus that delta: the restore compares the reopened base's key with the saved
+one (`gs_key_same_source`) and refuses a base that is no longer the same
+bytes, naming both keys. A consolidated checkpoint carries every block, so
+its base is not compared.
 
 ## 6. Testing
 
-- Unit: `peeler` (the source type, archives), `chunk_cache`, `udif`, `ndif`,
-  `storage` (the base as a source).
-- Integration: `image-udif`, `image-export-raw`, `image-hfs-traverse`,
-  `vfs-rsrc`, `archive-fork-unpack`.
+- Unit: `peeler` (the source type, archives, resumable decoders), `source`
+  (views, decode-through, chunk-cache coalescing, spill and run-time
+  budgets, the detection budget, `GS_EAGAIN` and poll, key comparison),
+  `udif`, `ndif`, `storage` (the base as a source).
+- Integration: `image-udif` (with `files.cache`), `image-export-raw`,
+  `image-hfs-traverse`, `vfs-rsrc`, `archive-fork-unpack`,
+  `checkpoint-base-identity` (a replaced base is refused).
+- e2e: `checkpoint-resume.spec.ts` resumes a machine with a floppy attached
+  across a reload (the OPFS time stamp case).
 
 ## 7. Known debts
 
 - A source's key is not length-bounded (the proposal suggested 128 bytes);
   deep nesting makes long keys.
 - The UDIF per-table checksum is not verified (§3.5).
-- A plain gzip larger than 4 GiB, or one of several members, reports its
-  size from the last member's trailer and fails on read.
 
 ## 8. See also
 

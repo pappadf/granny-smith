@@ -171,6 +171,12 @@ static gs_tier_t lock_tier(gs_source_t *s) {
     return t;
 }
 
+// A "not yet" from the wrapped source passes through the read; so does the
+// wait for it (outside the lock: the wait must not hold other readers up).
+static int lock_poll(gs_source_t *s, int timeout_ms) {
+    return gs_source_poll(((lock_src_t *)s->ctx)->src, timeout_ms);
+}
+
 static void lock_close(gs_source_t *s) {
     lock_src_t *l = s->ctx;
     if (!l)
@@ -180,7 +186,7 @@ static void lock_close(gs_source_t *s) {
     free(l);
 }
 
-static const gs_source_ops_t lock_ops = {lock_read, lock_size, lock_key, lock_tier, lock_close};
+static const gs_source_ops_t lock_ops = {lock_read, lock_size, lock_key, lock_tier, lock_close, lock_poll};
 
 gs_source_t *gs_source_locked(gs_source_t *src) {
     if (!src)

@@ -44,6 +44,13 @@ void gs_chunk_cache_free(gs_chunk_cache_t *c);
 // natively).
 gs_chunk_cache_t *gs_chunk_cache_default(void);
 
+// Change the budgets (`spill_budget` 0: unbounded).  Memory over the new
+// budget is evicted at once (to the spill area, as eviction always goes);
+// a spill area over its new budget is emptied -- spilled chunks are only
+// ever a faster way to refetch.
+void gs_chunk_cache_set_budgets(gs_chunk_cache_t *c, size_t mem_budget, uint64_t spill_budget);
+void gs_chunk_cache_budgets(gs_chunk_cache_t *c, size_t *mem_budget, uint64_t *spill_budget);
+
 // Copy `n` bytes at `in_off` within chunk (key, idx) into `out`, fetching
 // the chunk (into a buffer of `chunk_cap` bytes) through `fetch` if it is in
 // neither memory nor spill.  Returns the bytes copied -- fewer than `n` only
