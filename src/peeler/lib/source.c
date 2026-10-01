@@ -155,7 +155,7 @@ static void mem_close(peel_source_t *s) {
     free(m);
 }
 
-static const peel_source_ops_t mem_ops = {mem_read, mem_size, mem_key, mem_tier, mem_close};
+static const peel_source_ops_t mem_ops = {mem_read, mem_size, mem_key, mem_tier, mem_close, NULL};
 
 peel_source_t *peel_source_memory_keyed(const void *buf, size_t len, bool own, const char *key) {
     mem_src_t *m = calloc(1, sizeof(*m));
@@ -218,7 +218,7 @@ static void view_close(peel_source_t *s) {
     free(v);
 }
 
-static const peel_source_ops_t view_ops = {view_read, view_size, view_key, view_tier, view_close};
+static const peel_source_ops_t view_ops = {view_read, view_size, view_key, view_tier, view_close, NULL};
 
 peel_source_t *peel_source_view_keyed(peel_source_t *parent, uint64_t off, uint64_t len, const char *key) {
     if (!parent)
@@ -304,7 +304,7 @@ static void file_close(peel_source_t *s) {
     free(f);
 }
 
-static const peel_source_ops_t file_ops = {file_read, file_size, file_key, file_tier, file_close};
+static const peel_source_ops_t file_ops = {file_read, file_size, file_key, file_tier, file_close, NULL};
 
 peel_source_t *peel_source_file(const char *path, peel_err_t **err) {
     *err = NULL;
@@ -409,7 +409,7 @@ static void heap_close(peel_source_t *s) {
     free(h);
 }
 
-static const peel_source_ops_t heap_ops = {heap_read, heap_size, heap_key, mem_tier, heap_close};
+static const peel_source_ops_t heap_ops = {heap_read, heap_size, heap_key, mem_tier, heap_close, NULL};
 
 static peel_source_t *heap_create(void *ctx, const char *key, uint64_t expected_len) {
     (void)ctx;

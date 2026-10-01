@@ -490,7 +490,7 @@ static void bgzf_close(peel_source_t *src) {
     free(s);
 }
 
-static const peel_source_ops_t bgzf_ops = {bgzf_read, bgzf_size, bgzf_key, bgzf_tier, bgzf_close};
+static const peel_source_ops_t bgzf_ops = {bgzf_read, bgzf_size, bgzf_key, bgzf_tier, bgzf_close, NULL};
 
 static peel_source_t *gz_open_fork(peel_archive_t *a, int i, int fork, peel_err_t **err) {
     gz_priv_t *gp = a->priv;

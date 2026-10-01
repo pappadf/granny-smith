@@ -50,7 +50,8 @@ FMT_SRCS  = lib/formats/hqx.c   \
             lib/formats/sit15.c  \
             lib/formats/cpt.c    \
             lib/formats/zip.c    \
-            lib/formats/gz.c
+            lib/formats/gz.c     \
+            lib/formats/tar.c
 
 CMD_SRCS  = cmd/main.c
 

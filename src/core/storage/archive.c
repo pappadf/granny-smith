@@ -139,7 +139,8 @@ static const member_t archive_members[] = {
      .name = "identify",
      .examples = EXAMPLES("files.archive.identify \"/opfs/downloads/app.sit\""),
      .doc = "Identify a Mac archive's format",
-     .method = {.result_doc = "\"sit\", \"cpt\", \"zip\", \"hqx\", \"bin\" or \"gz\"; empty when not an archive",
+     .method = {.result_doc =
+                    "\"sit\", \"cpt\", \"zip\", \"tar\", \"hqx\", \"bin\" or \"gz\"; empty when not an archive",
                 .args = archive_path_arg,
                 .nargs = 1,
                 .result = V_STRING,
@@ -157,7 +158,7 @@ static const class_desc_t archive_class = {
     .name = "archive",
     .members = archive_members,
     .n_members = sizeof(archive_members) / sizeof(archive_members[0]),
-    .doc = "Archive formats (StuffIt, Compact Pro, Zip, BinHex, MacBinary, gzip): identify and extract",
+    .doc = "Archive formats (StuffIt, Compact Pro, Zip, tar, BinHex, MacBinary, gzip): identify and extract",
 };
 
 // ============================================================================

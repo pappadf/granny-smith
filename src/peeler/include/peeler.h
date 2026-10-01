@@ -340,6 +340,9 @@ peel_file_list_t peel_cpt(const uint8_t *src, size_t len, peel_err_t **err);
 // Zip (.zip), stored and deflated members.
 peel_file_list_t peel_zip(const uint8_t *src, size_t len, peel_err_t **err);
 
+// tar (.tar): ustar, GNU and pax members, and macOS "._" companions folded.
+peel_file_list_t peel_tar(const uint8_t *src, size_t len, peel_err_t **err);
+
 // gzip (.gz) — peel wrapper, return the decompressed member(s).
 peel_buf_t peel_gz(const uint8_t *src, size_t len, peel_err_t **err);
 

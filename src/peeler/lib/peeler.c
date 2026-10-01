@@ -178,6 +178,10 @@ peel_file_list_t peel_zip(const uint8_t *src, size_t len, peel_err_t **err) {
     return extract_archive("zip", src, len, err);
 }
 
+peel_file_list_t peel_tar(const uint8_t *src, size_t len, peel_err_t **err) {
+    return extract_archive("tar", src, len, err);
+}
+
 // ============================================================================
 // Operations (Public API) — Main Entry Points
 // ============================================================================

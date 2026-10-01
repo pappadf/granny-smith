@@ -19,6 +19,7 @@ formats:
 | `sit` | archive | StuffIt 1.x–5.x (methods 0, 1, 2, 3, 5, 13, 15) |
 | `cpt` | archive | Compact Pro |
 | `zip` | archive | Zip (stored and deflate; Zip64; self-extracting prefixes; `__MACOSX/` AppleDouble folded back into resource forks and Finder info) |
+| `tar` | archive | tar (ustar, GNU long names, pax `path`/`size`, base-256 sizes, hard links; macOS `._` AppleDouble folded back; every member a view) |
 
 A *wrapper* holds exactly one file; an *archive* holds a tree. Nesting
 is handled by the caller opening an entry's fork as a new source, so a
@@ -99,7 +100,7 @@ The core has a single table of formats a byte source can be in
 ([`format_registry.h`](../../src/core/storage/format_registry.h)).
 peeler's wrappers (`hqx`, `bin`, `gz`) sit there beside the disk-image
 wrappers (UDIF, NDIF, DiskCopy 4.2) and are unwrapped in a loop; its
-archives (`sit`, `cpt`, `zip`) are namespace formats beside `disk`
+archives (`sit`, `cpt`, `zip`, `tar`) are namespace formats beside `disk`
 (partition map or bare volume). So the same detection decides what a
 file is whether it is opened as a disk, listed in the Filesystem tab,
 probed or attached to a SCSI slot.
@@ -122,7 +123,7 @@ volume.
 
 | Path | Result | Description |
 |------|--------|-------------|
-| `files.archive.identify(path)` | `V_STRING` — `"sit"` / `"cpt"` / `"zip"` / `"hqx"` / `"bin"` / `"gz"`, or empty string when the file isn't a recognised archive | Bounded format probe; doesn't extract |
+| `files.archive.identify(path)` | `V_STRING` — `"sit"` / `"cpt"` / `"zip"` / `"tar"` / `"hqx"` / `"bin"` / `"gz"`, or empty string when the file isn't a recognised archive | Bounded format probe; doesn't extract |
 | `files.archive.extract(path, [out_dir])` | `V_BOOL` — `true` on success | Copy every file in the archive to `out_dir` (defaults to the current working directory) |
 
 Both go through the VFS, so `path` may itself be inside an image or
@@ -209,16 +210,18 @@ git add -A && git commit -m "Sync from granny-smith"
 ## Testing
 
 - `make -C src/peeler test` runs the corpus in `src/peeler/test/`
-  against its recorded checksums. The zip and gzip cases (`zip_*`,
-  `gz_*`: Info-ZIP mixed, all-stored and Zip64 archives, a Python Zip64
-  one, self-extractors with and without adjusted offsets, a Finder zip
-  with `__MACOSX` companions, single- and multi-member gzip, BGZF) are
-  built by `src/peeler/test/make_zip_gz_fixtures.py` with independent
+  against its recorded checksums. The zip, gzip and tar cases
+  (`zip_*`, `gz_*`, `tar_*`: Info-ZIP mixed, all-stored and Zip64
+  archives, a Python Zip64 one, self-extractors with and without adjusted
+  offsets, a Finder zip with `__MACOSX` companions, single- and
+  multi-member gzip, BGZF; GNU, ustar and pax tars, a hard link, a tar in
+  gzip, a macOS tar with `._` companions) are
+  built by `src/peeler/test/make_archive_fixtures.py` with independent
   writers, and their checksums come from the source files, not from
   peeler.
 - `tests/unit/suites/peeler` runs under AddressSanitizer, UBSan and
-  LeakSanitizer, and again on wasm32. `zipgz.c` holds the zip, gzip and
-  inflate tests: an in-test DEFLATE encoder (stored, fixed and dynamic
+  LeakSanitizer, and again on wasm32. `zipgz.c` holds the zip, gzip, tar
+  and inflate tests: an in-test DEFLATE encoder (stored, fixed and dynamic
   blocks) drives round trips, resumption at every output boundary, and
   refusal of truncated, over-subscribed and out-of-window streams; a
   counting source checks the partial-access contract (a 50 MB zip opens

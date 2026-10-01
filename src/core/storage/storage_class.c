@@ -499,6 +499,10 @@ static const char *apm_fs_kind_label(enum apm_fs_kind k) {
         return "HFS";
     case APM_FS_UFS:
         return "UFS";
+    case APM_FS_MFS:
+        return "MFS";
+    case APM_FS_ISO9660:
+        return "ISO";
     case APM_FS_PARTITION_MAP:
         return "map";
     case APM_FS_DRIVER:

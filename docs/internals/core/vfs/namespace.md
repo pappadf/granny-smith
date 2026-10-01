@@ -41,7 +41,7 @@ The user-visible path grammar is unchanged:
 |---|---|---|
 | `gs_namespace_ops_t` | `namespace.h` | `list`, `stat`, `open(path, fork)`, `close` |
 | `gs_dirent_t` | `namespace.h` | name, kind, fork sizes, Mac type/creator/flags, tier |
-| `gs_ns_open_disk` | `ns_disk.c` | APM or bare volume → `partitionN` → HFS/HFS+/UFS |
+| `gs_ns_open_disk` | `ns_disk.c` | APM or bare volume → `partitionN` → HFS/HFS+/UFS/MFS/ISO 9660 |
 | `gs_ns_open_archive` | `ns_archive.c` | any peeler format → its member tree |
 | `image_mount_t` | `image_vfs.c` | a mounted namespace, keyed by its source's key |
 

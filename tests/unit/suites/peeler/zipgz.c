@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// Zip, gzip and inflate, structure first.
+// Zip, gzip, tar and inflate, structure first.
 //
 // As in test.c, every input is built here: a small DEFLATE encoder (stored,
-// fixed and dynamic blocks, with LZ77 matches), zip and gzip/BGZF writers,
-// and a counting source that records every read a test makes of an archive.
+// fixed and dynamic blocks, with LZ77 matches), zip, gzip/BGZF and tar
+// writers, and a counting source that records every read a test makes of
+// an archive.
 // The encoder is the spec (RFC 1951) written forwards, so decoder and
 // encoder meet only in the format.
 
@@ -1079,6 +1080,270 @@ TEST(test_bgzf_reads_one_block) {
     free(p);
 }
 
+// ============================================================================
+// Tar
+// ============================================================================
+
+// One 512-byte header: `name` (a ustar prefix split off when it is longer
+// than 100), `type`, `size`, `link`; magic "ustar\0" "00" unless `gnu`.
+static void tt_header(zt_buf_t *b, const char *name, char type, uint64_t size, const char *link, int gnu) {
+    uint8_t h[512];
+    memset(h, 0, sizeof(h));
+    size_t nl = strlen(name);
+    if (nl > 100) {
+        const char *cut = name + nl - 100;
+        cut = strchr(cut, '/');
+        ASSERT_TRUE(cut && (size_t)(cut - name) <= 155);
+        memcpy(h + 345, name, (size_t)(cut - name));
+        memcpy(h, cut + 1, strlen(cut + 1));
+    } else {
+        memcpy(h, name, nl);
+    }
+    snprintf((char *)h + 100, 8, "%07o", 0644);
+    snprintf((char *)h + 108, 8, "%07o", 0);
+    snprintf((char *)h + 116, 8, "%07o", 0);
+    snprintf((char *)h + 124, 12, "%011llo", (unsigned long long)size);
+    snprintf((char *)h + 136, 12, "%011o", 981173106u);
+    h[156] = (uint8_t)type;
+    if (link)
+        memcpy(h + 157, link, strlen(link));
+    if (gnu) {
+        memcpy(h + 257, "ustar  ", 8);
+    } else {
+        memcpy(h + 257, "ustar", 6);
+        memcpy(h + 263, "00", 2);
+    }
+    memset(h + 148, ' ', 8);
+    unsigned sum = 0;
+    for (int i = 0; i < 512; i++)
+        sum += h[i];
+    snprintf((char *)h + 148, 8, "%06o", sum);
+    h[154] = 0;
+    h[155] = ' ';
+    zt_bytes(b, h, sizeof(h));
+}
+
+// A member: its header, then its bytes padded to 512.
+static void tt_member(zt_buf_t *b, const char *name, char type, const uint8_t *data, size_t len, const char *link) {
+    tt_header(b, name, type, len, link, 0);
+    if (len)
+        zt_bytes(b, data, len);
+    static const uint8_t zero[512];
+    if (len % 512)
+        zt_bytes(b, zero, 512 - len % 512);
+}
+
+static void tt_end(zt_buf_t *b) {
+    static const uint8_t zero[1024];
+    zt_bytes(b, zero, sizeof(zero));
+}
+
+// Open a tar held in memory.
+static peel_archive_t *tt_open(const uint8_t *t, size_t n, peel_source_t **src) {
+    *src = peel_source_memory_keyed(t, n, false, "t.tar");
+    peel_err_t *err = NULL;
+    peel_archive_t *a = peel_open(*src, NULL, NULL, &err);
+    if (err)
+        fprintf(stderr, "peel_open: %s\n", peel_err_msg(err));
+    ASSERT_TRUE(a != NULL && err == NULL);
+    ASSERT_TRUE(strcmp(peel_format(a), "tar") == 0);
+    return a;
+}
+
+// The data fork of `path`, read whole.
+static void tt_check(peel_archive_t *a, const char *path, const uint8_t *want, size_t len) {
+    int i = peel_lookup(a, path);
+    if (i < 0)
+        fprintf(stderr, "no member %s\n", path);
+    ASSERT_TRUE(i >= 0);
+    const peel_entry_t *e = peel_entry(a, i);
+    ASSERT_EQ_INT((int)len, (int)e->data_len);
+    ASSERT_EQ_INT(PEEL_TIER_RANDOM, e->data_tier);
+    peel_err_t *err = NULL;
+    peel_source_t *s = peel_open_fork(a, i, PEEL_FORK_DATA, &err);
+    ASSERT_TRUE(s != NULL && err == NULL);
+    zt_read_backwards(s, want, len, 1000);
+    peel_source_release(s);
+}
+
+// Members are views: opening the archive reads its headers and none of
+// its members' bytes; a read of a member reads just that range.
+TEST(test_tar_open_reads_headers_only) {
+    size_t n = 300000;
+    uint8_t *p = dz_payload(n);
+    zt_buf_t b = {0};
+    tt_member(&b, "a.bin", '0', p, 100000, NULL);
+    tt_member(&b, "dir/b.bin", '0', p + 100000, 100000, NULL);
+    tt_member(&b, "dir/c.bin", '0', p + 200000, 100000, NULL);
+    tt_end(&b);
+    cnt_src_t c = {0};
+    c.regions[0] = (cnt_region_t){0, b.n, b.buf};
+    c.n_regions = 1;
+    c.size = b.n;
+    peel_source_t *src = peel_source_new(&cnt_ops, &c, NULL);
+    peel_err_t *err = NULL;
+    peel_archive_t *a = peel_open(src, NULL, NULL, &err);
+    ASSERT_TRUE(a != NULL && err == NULL);
+    // Beyond the probe's head and tail (reads 0 and 1), only the headers
+    // (at 0, 100864 and 201728) and the end block (302592) were read --
+    // 512 bytes each, never a member's bytes.
+    uint64_t hdrs[] = {0, 100864, 201728, 302592};
+    ASSERT_EQ_INT(2 + 4, c.reads);
+    for (int i = 2; i < c.reads; i++) {
+        bool header = false;
+        for (int k = 0; k < 4; k++)
+            header |= c.lo[i] == hdrs[k] && c.hi[i] == hdrs[k] + 512;
+        ASSERT_TRUE(header);
+    }
+    ASSERT_TRUE(peel_lookup(a, "dir") >= 0 && peel_entry(a, peel_lookup(a, "dir"))->is_dir); // synthesised
+    int i = peel_lookup(a, "dir/b.bin");
+    peel_source_t *s = peel_open_fork(a, i, PEEL_FORK_DATA, &err);
+    int before = c.reads;
+    uint8_t buf[64];
+    ASSERT_EQ_INT(0, peel_source_read_exact(s, 5000, buf, sizeof(buf)));
+    ASSERT_EQ_INT(before + 1, c.reads);
+    ASSERT_TRUE(c.lo[before] == 100864 + 512 + 5000 && c.hi[before] == 100864 + 512 + 5000 + sizeof(buf));
+    ASSERT_TRUE(memcmp(buf, p + 100000 + 5000, sizeof(buf)) == 0);
+    peel_source_release(s);
+    peel_close(a);
+    peel_source_release(src);
+    free(b.buf);
+    free(p);
+}
+
+// Long names three ways (the ustar prefix, a GNU 'L' record, a pax path),
+// a hard link to an earlier member, one to a member that is not there
+// (dropped), a symbolic link (skipped), and a pax size.
+TEST(test_tar_names_links_and_extensions) {
+    const uint8_t data[] = "hello, tar\n";
+    char longp[200], gnu_name[300], pax_name[300], rec[400];
+    snprintf(longp, sizeof(longp), "%s/file.txt", "prefixed-folder-name/second-level-folder/third-level-folder-xx");
+    memset(gnu_name, 'g', 150);
+    snprintf(gnu_name + 150, 150, "/gnu.txt");
+    memset(pax_name, 'p', 150);
+    snprintf(pax_name + 150, 150, "/pax.txt");
+    zt_buf_t b = {0};
+    tt_member(&b, longp, '0', data, sizeof(data) - 1, NULL);
+    tt_header(&b, "././@LongLink", 'L', strlen(gnu_name) + 1, NULL, 1);
+    {
+        uint8_t blk[512] = {0};
+        memcpy(blk, gnu_name, strlen(gnu_name));
+        zt_bytes(&b, blk, sizeof(blk));
+    }
+    tt_member(&b, "truncated-gnu-name", '0', data, sizeof(data) - 1, NULL);
+    size_t body = strlen(pax_name) + 6;
+    char lenstr[16];
+    snprintf(lenstr, sizeof(lenstr), "%zu", body + 1);
+    if (strlen(lenstr) + body + 1 != (size_t)atoi(lenstr))
+        snprintf(lenstr, sizeof(lenstr), "%zu", body + strlen(lenstr) + 1);
+    snprintf(rec, sizeof(rec), "%s path=%s\n", lenstr, pax_name);
+    tt_member(&b, "PaxHeader", 'x', (const uint8_t *)rec, strlen(rec), NULL);
+    tt_member(&b, "truncated-pax-name", '0', data, sizeof(data) - 1, NULL);
+    tt_member(&b, "link.txt", '1', NULL, 0, longp);
+    tt_member(&b, "orphan.txt", '1', NULL, 0, "not/here.txt");
+    tt_member(&b, "sym.txt", '2', NULL, 0, "link.txt");
+    tt_end(&b);
+    peel_source_t *src;
+    peel_archive_t *a = tt_open(b.buf, b.n, &src);
+    tt_check(a, longp, data, sizeof(data) - 1);
+    tt_check(a, gnu_name, data, sizeof(data) - 1);
+    tt_check(a, pax_name, data, sizeof(data) - 1);
+    tt_check(a, "link.txt", data, sizeof(data) - 1);
+    ASSERT_EQ_INT(-1, peel_lookup(a, "orphan.txt"));
+    ASSERT_EQ_INT(-1, peel_lookup(a, "sym.txt"));
+    ASSERT_EQ_INT(-1, peel_lookup(a, "truncated-gnu-name"));
+    peel_close(a);
+    peel_source_release(src);
+    free(b.buf);
+}
+
+// Names cannot climb out, and a bad first header or a member running past
+// the archive's end is refused.
+TEST(test_tar_refuses_what_it_cannot_trust) {
+    const uint8_t data[] = "x";
+    zt_buf_t b = {0};
+    tt_member(&b, "../../etc/passwd", '0', data, 1, NULL);
+    tt_member(&b, "/abs/path.txt", '0', data, 1, NULL);
+    tt_member(&b, "a/./b/../c.txt", '0', data, 1, NULL);
+    tt_end(&b);
+    peel_source_t *src;
+    peel_archive_t *a = tt_open(b.buf, b.n, &src);
+    int files = 0;
+    for (int i = 0; i < peel_count(a); i++) {
+        ASSERT_TRUE(peel_path_is_confined(peel_entry(a, i)->path));
+        files += !peel_entry(a, i)->is_dir;
+    }
+    ASSERT_EQ_INT(3, files);
+    peel_close(a);
+    peel_source_release(src);
+
+    b.buf[148] ^= 1; // the first header's checksum
+    src = peel_source_memory(b.buf, b.n, false);
+    peel_err_t *err = NULL;
+    ASSERT_TRUE(peel_open(src, NULL, NULL, &err) == NULL);
+    peel_err_free(err);
+    peel_source_release(src);
+    free(b.buf);
+
+    memset(&b, 0, sizeof(b));
+    tt_header(&b, "big.bin", '0', 1u << 20, NULL, 0); // claims 1 MiB, holds 512 bytes
+    static const uint8_t blk[512];
+    zt_bytes(&b, blk, sizeof(blk));
+    src = peel_source_memory(b.buf, b.n, false);
+    ASSERT_TRUE(peel_open(src, NULL, NULL, &err) == NULL);
+    peel_err_free(err);
+    peel_source_release(src);
+    free(b.buf);
+}
+
+// macOS's "._<name>" companion folds into its file: the resource fork a
+// view of the companion's bytes, the Finder info on the entry, and the
+// companion itself not listed.
+TEST(test_tar_folds_macos_companions) {
+    uint8_t rsrc[700];
+    for (size_t i = 0; i < sizeof(rsrc); i++)
+        rsrc[i] = (uint8_t)(i * 3);
+    uint8_t finfo[32] = {'T', 'E', 'X', 'T', 'R', '*', 'c', 'h', 0x01, 0x00};
+    // AppleDouble: header, two descriptors (Finder info, resource fork).
+    zt_buf_t ad = {0};
+    uint8_t hdr[26 + 24] = {0x00, 0x05, 0x16, 0x07, 0x00, 0x02, 0x00, 0x00};
+    hdr[25] = 2;
+    uint32_t off = 26 + 24;
+    uint8_t *d = hdr + 26;
+    d[3] = 9;
+    d[4] = (uint8_t)(off >> 24), d[5] = (uint8_t)(off >> 16), d[6] = (uint8_t)(off >> 8), d[7] = (uint8_t)off;
+    d[11] = 32;
+    d[15] = 2;
+    off += 32;
+    d[16] = (uint8_t)(off >> 24), d[17] = (uint8_t)(off >> 16), d[18] = (uint8_t)(off >> 8), d[19] = (uint8_t)off;
+    d[22] = (uint8_t)(sizeof(rsrc) >> 8), d[23] = (uint8_t)sizeof(rsrc);
+    zt_bytes(&ad, hdr, sizeof(hdr));
+    zt_bytes(&ad, finfo, sizeof(finfo));
+    zt_bytes(&ad, rsrc, sizeof(rsrc));
+    zt_buf_t b = {0};
+    tt_member(&b, "docs/._notes.txt", '0', ad.buf, ad.n, NULL);
+    tt_member(&b, "docs/notes.txt", '0', (const uint8_t *)"notes", 5, NULL);
+    tt_end(&b);
+    peel_source_t *src;
+    peel_archive_t *a = tt_open(b.buf, b.n, &src);
+    ASSERT_EQ_INT(-1, peel_lookup(a, "docs/._notes.txt"));
+    int i = peel_lookup(a, "docs/notes.txt");
+    ASSERT_TRUE(i >= 0);
+    const peel_entry_t *e = peel_entry(a, i);
+    ASSERT_TRUE(e->mac_type == 0x54455854u && e->mac_creator == 0x522A6368u); // 'TEXT' 'R*ch'
+    ASSERT_EQ_INT((int)sizeof(rsrc), (int)e->rsrc_len);
+    ASSERT_EQ_INT(PEEL_TIER_RANDOM, e->rsrc_tier);
+    peel_err_t *err = NULL;
+    peel_source_t *r = peel_open_fork(a, i, PEEL_FORK_RSRC, &err);
+    ASSERT_TRUE(r != NULL && err == NULL);
+    zt_read_backwards(r, rsrc, sizeof(rsrc), 99);
+    peel_source_release(r);
+    peel_close(a);
+    peel_source_release(src);
+    free(ad.buf);
+    free(b.buf);
+}
+
 void zipgz_tests(void) {
     RUN(test_inflate_every_block_type_round_trip);
     RUN(test_inflate_resumes_at_every_output_boundary);
@@ -1097,4 +1362,8 @@ void zipgz_tests(void) {
     RUN(test_gzip_name_cannot_escape);
     RUN(test_gzip_crc_mismatch_is_refused);
     RUN(test_bgzf_reads_one_block);
+    RUN(test_tar_open_reads_headers_only);
+    RUN(test_tar_names_links_and_extensions);
+    RUN(test_tar_refuses_what_it_cannot_trust);
+    RUN(test_tar_folds_macos_companions);
 }

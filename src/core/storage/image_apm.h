@@ -32,6 +32,8 @@ enum apm_fs_kind {
     APM_FS_DRIVER, // "Apple_Driver*" (disk driver code)
     APM_FS_FREE, // "Apple_Free"
     APM_FS_PATCHES, // "Apple_Patches"
+    APM_FS_MFS, // a bare MFS volume (never in a partition map)
+    APM_FS_ISO9660, // a bare ISO 9660 volume (never in a partition map)
 };
 
 // One parsed partition.  Offsets are in 512-byte blocks, matching Apple

@@ -13,6 +13,8 @@
 
 #include "image_apm.h"
 #include "image_hfs.h"
+#include "image_iso9660.h"
+#include "image_mfs.h"
 #include "image_ufs.h"
 #include "storage_util.h"
 
@@ -33,15 +35,21 @@ typedef struct fs_entry {
     char name[256];
     bool is_dir;
     uint64_t size; // data bytes (files; 0 for directories)
-    uint64_t id; // what opendir and read take: a CNID (HFS) or an inode (UFS)
+    uint64_t rsrc_size; // resource fork bytes (0: none)
+    // What opendir and read take: a CNID (HFS), an inode (UFS), an extent
+    // and size (ISO 9660, packed), a directory index (MFS).
+    uint64_t id;
     hfs_fork_t data_fork; // HFS only
     hfs_fork_t rsrc_fork; // HFS only
-    uint8_t finder_info[GS_FINDER_INFO_SIZE]; // HFS only
+    mfs_dirent_t mfs; // MFS only
+    iso_dirent_t iso; // ISO 9660 only
+    uint8_t finder_info[GS_FINDER_INFO_SIZE]; // HFS, MFS
     bool has_finder_info;
 } fs_entry_t;
 
 typedef struct fs_ops {
-    const char *name; // "HFS" / "UFS"
+    const char *name; // "HFS" / "UFS" / "MFS" / "ISO"
+    bool forks; // files can have a resource fork
     uint64_t root_id;
     void *(*open)(gs_source_t *src, uint64_t off, uint64_t size);
     void (*close)(void *vol);
@@ -57,6 +65,7 @@ static void hfs_entry(const hfs_dirent_t *d, fs_entry_t *out) {
     snprintf(out->name, sizeof(out->name), "%s", d->name);
     out->is_dir = d->is_dir;
     out->size = d->is_dir ? 0 : d->data_fork.logical_size;
+    out->rsrc_size = d->is_dir ? 0 : d->rsrc_fork.logical_size;
     out->id = d->cnid;
     out->data_fork = d->data_fork;
     out->rsrc_fork = d->rsrc_fork;
@@ -136,10 +145,151 @@ static int ufs_ops_read(void *vol, const fs_entry_t *file, gs_fork_t fork, uint6
     return ufs_read_file(vol, (uint32_t)file->id, off, buf, n, nread);
 }
 
-static const fs_ops_t HFS_OPS = {"HFS",           HFS_ROOT_CNID,   hfs_ops_open,     hfs_ops_close, hfs_ops_lookup,
-                                 hfs_ops_opendir, hfs_ops_readdir, hfs_ops_closedir, hfs_ops_read};
-static const fs_ops_t UFS_OPS = {"UFS",           UFS_ROOT_INO,    ufs_ops_open,     ufs_ops_close, ufs_ops_lookup,
-                                 ufs_ops_opendir, ufs_ops_readdir, ufs_ops_closedir, ufs_ops_read};
+// ---- MFS: one flat directory (image_mfs.h) ----
+
+static void mfs_fs_entry(const mfs_dirent_t *m, fs_entry_t *out) {
+    memset(out, 0, sizeof(*out));
+    snprintf(out->name, sizeof(out->name), "%s", m->name);
+    out->size = m->data_len;
+    out->rsrc_size = m->rsrc_len;
+    out->mfs = *m;
+    memcpy(out->finder_info, m->finder_info, sizeof(m->finder_info)); // FInfo; FXInfo stays zero
+    out->has_finder_info = true;
+}
+static void *mfs_ops_open(gs_source_t *src, uint64_t off, uint64_t size) {
+    return mfs_open_source(src, off, size);
+}
+static void mfs_ops_close(void *vol) {
+    mfs_close(vol);
+}
+static int mfs_ops_lookup(void *vol, const char *const *comp, size_t nc, fs_entry_t *out) {
+    if (nc == 0) {
+        memset(out, 0, sizeof(*out));
+        out->is_dir = true;
+        return 0;
+    }
+    if (nc > 1)
+        return -ENOTDIR; // MFS has no folders: everything is in the root
+    mfs_dirent_t m;
+    int rc = mfs_lookup(vol, comp[0], &m);
+    if (rc == 0)
+        mfs_fs_entry(&m, out);
+    return rc;
+}
+typedef struct {
+    mfs_volume_t *vol;
+    int next;
+} mfs_iter_t;
+static void *mfs_ops_opendir(void *vol, uint64_t dir_id) {
+    (void)dir_id; // the root: the only directory
+    mfs_iter_t *it = calloc(1, sizeof(*it));
+    if (it)
+        it->vol = vol;
+    return it;
+}
+static int mfs_ops_readdir(void *iter, fs_entry_t *out) {
+    mfs_iter_t *it = iter;
+    const mfs_dirent_t *m = mfs_entry(it->vol, it->next);
+    if (!m)
+        return 0;
+    it->next++;
+    mfs_fs_entry(m, out);
+    return 1;
+}
+static void mfs_ops_closedir(void *iter) {
+    free(iter);
+}
+static int mfs_ops_read(void *vol, const fs_entry_t *file, gs_fork_t fork, uint64_t off, void *buf, size_t n,
+                        size_t *nread) {
+    return mfs_read_fork(vol, &file->mfs, fork == GS_FORK_RSRC, off, buf, n, nread);
+}
+
+// ---- ISO 9660 (image_iso9660.h) ----
+
+// A directory's id packs its extent (high half) and size (low half).
+static uint64_t iso_dir_id(uint32_t extent, uint64_t size) {
+    return (uint64_t)extent << 32 | (size & 0xFFFFFFFFu);
+}
+static void iso_fs_entry(const iso_dirent_t *e, fs_entry_t *out) {
+    memset(out, 0, sizeof(*out));
+    snprintf(out->name, sizeof(out->name), "%s", e->name);
+    out->is_dir = e->is_dir;
+    out->size = e->is_dir ? 0 : e->size;
+    out->rsrc_size = e->is_dir ? 0 : e->rsrc_size;
+    out->id = iso_dir_id(e->extent, e->size);
+    out->iso = *e;
+}
+static void *iso_ops_open(gs_source_t *src, uint64_t off, uint64_t size) {
+    return iso_open_source(src, off, size);
+}
+static void iso_ops_close(void *vol) {
+    iso_close(vol);
+}
+static int iso_ops_lookup(void *vol, const char *const *comp, size_t nc, fs_entry_t *out) {
+    iso_dirent_t e;
+    int rc = iso_lookup(vol, comp, nc, &e);
+    if (rc == 0)
+        iso_fs_entry(&e, out);
+    return rc;
+}
+static void *iso_ops_opendir(void *vol, uint64_t dir_id) {
+    if (dir_id == 0) { // the root
+        iso_dirent_t root;
+        if (iso_lookup(vol, NULL, 0, &root) != 0)
+            return NULL;
+        dir_id = iso_dir_id(root.extent, root.size);
+    }
+    return iso_opendir(vol, (uint32_t)(dir_id >> 32), dir_id & 0xFFFFFFFFu);
+}
+static int iso_ops_readdir(void *iter, fs_entry_t *out) {
+    iso_dirent_t e;
+    int rc = iso_readdir_next(iter, &e);
+    if (rc > 0)
+        iso_fs_entry(&e, out);
+    return rc;
+}
+static void iso_ops_closedir(void *iter) {
+    iso_closedir(iter);
+}
+static int iso_ops_read(void *vol, const fs_entry_t *file, gs_fork_t fork, uint64_t off, void *buf, size_t n,
+                        size_t *nread) {
+    if (fork == GS_FORK_RSRC)
+        return iso_read(vol, file->iso.rsrc_extent, file->iso.rsrc_size, off, buf, n, nread);
+    return iso_read(vol, file->iso.extent, file->iso.size, off, buf, n, nread);
+}
+
+static const fs_ops_t HFS_OPS = {"HFS",
+                                 true,
+                                 HFS_ROOT_CNID,
+                                 hfs_ops_open,
+                                 hfs_ops_close,
+                                 hfs_ops_lookup,
+                                 hfs_ops_opendir,
+                                 hfs_ops_readdir,
+                                 hfs_ops_closedir,
+                                 hfs_ops_read};
+static const fs_ops_t UFS_OPS = {"UFS",          false,           UFS_ROOT_INO,    ufs_ops_open,     ufs_ops_close,
+                                 ufs_ops_lookup, ufs_ops_opendir, ufs_ops_readdir, ufs_ops_closedir, ufs_ops_read};
+static const fs_ops_t MFS_OPS = {"MFS",
+                                 true,
+                                 0,
+                                 mfs_ops_open,
+                                 mfs_ops_close,
+                                 mfs_ops_lookup,
+                                 mfs_ops_opendir,
+                                 mfs_ops_readdir,
+                                 mfs_ops_closedir,
+                                 mfs_ops_read};
+static const fs_ops_t ISO_OPS = {"ISO",
+                                 true,
+                                 0,
+                                 iso_ops_open,
+                                 iso_ops_close,
+                                 iso_ops_lookup,
+                                 iso_ops_opendir,
+                                 iso_ops_readdir,
+                                 iso_ops_closedir,
+                                 iso_ops_read};
 
 // The filesystem a partition of this kind holds, or NULL for one we do not
 // read (a driver, the map itself, free space, ...).
@@ -149,6 +299,10 @@ static const fs_ops_t *fs_ops_for(enum apm_fs_kind kind) {
         return &HFS_OPS;
     case APM_FS_UFS:
         return &UFS_OPS;
+    case APM_FS_MFS:
+        return &MFS_OPS;
+    case APM_FS_ISO9660:
+        return &ISO_OPS;
     default:
         return NULL;
     }
@@ -239,7 +393,7 @@ static void to_dirent(const fs_entry_t *e, gs_dirent_t *out) {
     snprintf(out->name, sizeof(out->name), "%s", e->name);
     out->is_dir = e->is_dir;
     out->data_size = e->size;
-    out->rsrc_size = e->is_dir ? 0 : e->rsrc_fork.logical_size;
+    out->rsrc_size = e->is_dir ? 0 : e->rsrc_size;
     out->has_finder_info = e->has_finder_info;
     if (e->has_finder_info) {
         out->type = RD_BE32(e->finder_info);
@@ -419,9 +573,9 @@ static gs_source_t *disk_open(gs_namespace_t *ns, const char *path, gs_fork_t fo
         *err = s ? 0 : -ENOMEM;
         return s;
     }
-    if (fork == GS_FORK_RSRC && pf->ops != &HFS_OPS) {
+    if (fork == GS_FORK_RSRC && !pf->ops->forks) {
         free(key);
-        *err = -ENOENT; // only HFS files have resource forks
+        *err = -ENOENT; // a filesystem without resource forks (UFS)
         return NULL;
     }
     file_src_t *f = calloc(1, sizeof(*f));
@@ -434,7 +588,7 @@ static gs_source_t *disk_open(gs_namespace_t *ns, const char *path, gs_fork_t fo
     f->pf = pf;
     f->entry = e;
     f->fork = fork;
-    f->size = fork == GS_FORK_RSRC ? e.rsrc_fork.logical_size : e.size;
+    f->size = fork == GS_FORK_RSRC ? e.rsrc_size : e.size;
     f->key = key;
     gs_source_t *s = peel_source_new(&file_ops, f, NULL);
     *err = s ? 0 : -ENOMEM;
@@ -475,7 +629,8 @@ gs_namespace_t *gs_ns_open_disk(gs_source_t *src) {
     if (!d)
         return NULL;
     uint64_t size = gs_source_size(src);
-    // The partition map first, then a bare HFS / HFS+ or UFS volume.
+    // The partition map first, then a bare HFS / HFS+, UFS, MFS or ISO 9660
+    // volume.
     d->apm = image_apm_parse_source(src, NULL);
     if (d->apm) {
         d->n_parts = d->apm->n_partitions;
@@ -491,6 +646,12 @@ gs_namespace_t *gs_ns_open_disk(gs_source_t *src) {
         } else if (ufs_probe_source(src, 0, size)) {
             set_synthetic(d, size, "UFS", "Apple_UNIX_SVR2", APM_FS_UFS);
             d->kind = "UFS";
+        } else if (sig == MFS_SIG) {
+            set_synthetic(d, size, "MFS", "Apple_MFS", APM_FS_MFS);
+            d->kind = "MFS";
+        } else if (iso_probe_source(src, 0, size)) {
+            set_synthetic(d, size, "ISO9660", "ISO9660", APM_FS_ISO9660);
+            d->kind = "ISO";
         } else {
             free(d);
             return NULL;

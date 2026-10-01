@@ -10,6 +10,8 @@
 #include "format_registry.h"
 #include "image_apm.h"
 #include "image_hfs.h"
+#include "image_iso9660.h"
+#include "image_mfs.h"
 #include "image_ufs.h"
 
 #include <errno.h>
@@ -130,8 +132,9 @@ void gs_ns_finder_info(uint32_t type, uint32_t creator, uint16_t flags, uint8_t 
 // Registration
 // ============================================================================
 
-// A disk: an Apple Partition Map at block 1, or a bare HFS/HFS+ or UFS
-// volume.  From the probe's head alone.
+// A disk: an Apple Partition Map at block 1, or a bare HFS/HFS+, MFS, UFS
+// or ISO 9660 volume.  From the probe's head alone (the ISO descriptor at
+// 32 KiB is inside it).
 static bool disk_detect(const gs_probe_t *p) {
     const uint8_t *h = p->p.head;
     size_t n = p->p.head_len;
@@ -139,7 +142,13 @@ static bool disk_detect(const gs_probe_t *p) {
         return true;
     if (n >= 1024 + 2) {
         uint16_t sig = (uint16_t)(h[1024] << 8 | h[1025]);
-        if (sig == HFS_SIG_BD || sig == HFS_SIG_HP || sig == HFS_SIG_HX)
+        if (sig == HFS_SIG_BD || sig == HFS_SIG_HP || sig == HFS_SIG_HX || sig == MFS_SIG)
+            return true;
+    }
+    // ISO 9660: a primary volume descriptor at sector 16 (of 2048 bytes).
+    if (n >= ISO9660_VD_OFF + 7) {
+        const uint8_t *vd = h + ISO9660_VD_OFF;
+        if (vd[0] == 1 && memcmp(vd + 1, ISO9660_ID, 5) == 0 && vd[6] == 1)
             return true;
     }
     if (n >= UFS_SBOFF + 1372 + 4) {
@@ -176,6 +185,7 @@ static struct gs_namespace *disk_open(gs_source_t *data, gs_source_t *rsrc) {
 ARCHIVE_ROW(sit, "StuffIt archive")
 ARCHIVE_ROW(cpt, "Compact Pro archive")
 ARCHIVE_ROW(zip, "Zip archive")
+ARCHIVE_ROW(tar, "tar archive")
 
 static const gs_format_t disk_format = {
     "disk", GS_FMT_NAMESPACE, "disk image (partition map or bare volume)", disk_detect, NULL, disk_open};
@@ -185,5 +195,6 @@ void gs_ns_register_formats(void) {
     gs_format_register(&sit_format);
     gs_format_register(&cpt_format);
     gs_format_register(&zip_format);
+    gs_format_register(&tar_format);
     gs_format_set_wrapper_namespace(gs_ns_open_archive);
 }

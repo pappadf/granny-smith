@@ -18,7 +18,7 @@
 // Detection order: wrappers first, so an outer encoding is stripped before
 // anything probes for archive signatures inside it.
 static const peel_fmt_t *const g_fmts[] = {
-    &peel_fmt_hqx, &peel_fmt_bin, &peel_fmt_gz, &peel_fmt_sit, &peel_fmt_cpt, &peel_fmt_zip,
+    &peel_fmt_hqx, &peel_fmt_bin, &peel_fmt_gz, &peel_fmt_sit, &peel_fmt_cpt, &peel_fmt_zip, &peel_fmt_tar,
 };
 #define N_FMTS ((int)(sizeof(g_fmts) / sizeof(g_fmts[0])))
 
@@ -426,7 +426,7 @@ static void decode_close(peel_source_t *s) {
     free(d);
 }
 
-static const peel_source_ops_t decode_ops = {decode_read, decode_size, decode_key, decode_tier, decode_close};
+static const peel_source_ops_t decode_ops = {decode_read, decode_size, decode_key, decode_tier, decode_close, NULL};
 
 // Both constructors.
 static peel_source_t *decode_source_new(peel_archive_t *a, const char *key, uint64_t len, bool exact, peel_tier_t tier,

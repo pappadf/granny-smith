@@ -408,6 +408,8 @@ bool zip_detect(const uint8_t *src, size_t len);
 
 bool gz_detect(const uint8_t *src, size_t len);
 
+bool tar_detect(const uint8_t *src, size_t len);
+
 // ============================================================================
 // Buffered reader over a source (reader.c)
 // ============================================================================
@@ -544,7 +546,7 @@ peel_buf_t peel_sit13(const uint8_t *src, size_t len, size_t uncomp_len, peel_er
 peel_buf_t peel_sit15(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
 
 // Every format's vtable.
-extern const peel_fmt_t peel_fmt_hqx, peel_fmt_bin, peel_fmt_gz, peel_fmt_sit, peel_fmt_cpt, peel_fmt_zip;
+extern const peel_fmt_t peel_fmt_hqx, peel_fmt_bin, peel_fmt_gz, peel_fmt_sit, peel_fmt_cpt, peel_fmt_zip, peel_fmt_tar;
 
 // Append an entry; returns it zeroed (data_off/rsrc_off = UINT64_MAX), or
 // NULL on allocation failure.

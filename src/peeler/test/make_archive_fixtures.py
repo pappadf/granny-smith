@@ -2,21 +2,23 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) pappadf
 #
-# make_zip_gz_fixtures.py -- build the zip and gzip test cases under
-# testfiles/ with independent writers (Info-ZIP `zip`, GNU `gzip`, Python's
-# zipfile), and their md5sums.txt from the source content, never from
-# peeler's own output.  The committed fixtures are what this produced; it is
+# make_archive_fixtures.py -- build the zip, gzip and tar test cases under
+# testfiles/ with independent writers (Info-ZIP `zip`, GNU `gzip` and `tar`,
+# Python's zipfile and tarfile), and their md5sums.txt from the source
+# content, never from peeler's own output.  The committed fixtures are what this produced; it is
 # kept so they can be rebuilt and so their provenance is plain.
 #
-#   ./make_zip_gz_fixtures.py [testfiles-dir]
+#   ./make_archive_fixtures.py [testfiles-dir]
 
 import gzip
 import hashlib
 import os
 import shutil
 import struct
+import io
 import subprocess
 import sys
+import tarfile
 import tempfile
 import zipfile
 import zlib
@@ -164,6 +166,7 @@ def main():
         p = os.path.join(tmp, "long.txt")
         with open(p, "wb") as f:
             f.write(long_txt)
+        subprocess.run(["touch", "-d", EPOCH, p], check=True)  # -N stores it
         g1 = subprocess.run(["gzip", "-N", "-9", "-c", p], check=True, capture_output=True).stdout
         case("gz_single.gz", g1, {"long.txt": long_txt})
 
@@ -184,8 +187,78 @@ def main():
         #    the standard empty EOF block.  Readable at random by block.
         payload = SOURCES["data/noise.bin"] + long_txt + SOURCES["data/zeros.bin"]
         case("gz_bgzf.gz", bgzf(payload), {"testfile.gz_bgzf": payload})
+
+        tar_cases(tmp, src, members)
     finally:
         shutil.rmtree(tmp)
+
+
+# The tar cases: GNU tar (its long-name records, a hard link), Python's
+# tarfile in ustar and pax form (a path over 100 bytes, a non-ASCII name),
+# a tar inside gzip, and a macOS-style tar whose "._" AppleDouble members
+# carry a resource fork and Finder info.
+def tar_cases(tmp, src, members):
+    deep = "a-folder-with-a-rather-long-name/" * 3 + "and-a-file-name-long-enough.txt"
+    long_files = dict(SOURCES)
+    long_files[deep] = b"over a hundred bytes of path\n"
+    lsrc = os.path.join(tmp, "long")
+    write_tree(lsrc, long_files)
+    out = os.path.join(tmp, "gnu.tar")
+    subprocess.run(["tar", "--format=gnu", "--sort=name", "--owner=0", "--group=0", "-cf", out] + sorted(long_files),
+                   cwd=lsrc, check=True)
+    with open(out, "rb") as f:
+        case("tar_gnu.tar", f.read(), nonempty(long_files))
+
+    # A hard link: a second name for the same bytes.
+    os.link(os.path.join(lsrc, "readme.txt"), os.path.join(lsrc, "readme-link.txt"))
+    out = os.path.join(tmp, "hard.tar")
+    subprocess.run(["tar", "--format=gnu", "--owner=0", "--group=0", "-cf", out, "readme.txt", "readme-link.txt"],
+                   cwd=lsrc, check=True)
+    with open(out, "rb") as f:
+        case("tar_hardlink.tar", f.read(), {"readme.txt": SOURCES["readme.txt"],
+                                            "readme-link.txt": SOURCES["readme.txt"]})
+
+    # Python's tarfile: ustar (prefix field) and pax (path records).
+    for fmt, name in ((tarfile.USTAR_FORMAT, "tar_ustar.tar"), (tarfile.PAX_FORMAT, "tar_pax.tar")):
+        files = dict(SOURCES)
+        files["prefixed/" * 12 + "file.txt"] = b"a name split across prefix and name\n"
+        if fmt == tarfile.PAX_FORMAT:
+            files["unicode-\u00e9t\u00e9.txt"] = b"a pax path record\n"
+            files["x/" * 80 + "deep.txt"] = b"a path only pax can hold\n"
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w", format=fmt) as t:
+            for p in sorted(files):
+                ti = tarfile.TarInfo(p)
+                ti.size = len(files[p])
+                ti.mtime = 981173106
+                t.addfile(ti, io.BytesIO(files[p]))
+        case(name, buf.getvalue(), nonempty(files))
+
+    # A tar inside gzip: x.tgz holds x.tar.
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as t:
+        for p in members:
+            ti = tarfile.TarInfo(p)
+            ti.size = len(SOURCES[p])
+            ti.mtime = 981173106
+            t.addfile(ti, io.BytesIO(SOURCES[p]))
+    case("tar_gz.tgz", gzip.compress(buf.getvalue(), mtime=0), nonempty(SOURCES))
+
+    # macOS tar: "._<name>" AppleDouble beside each file with Mac metadata.
+    rsrc = noise(2000, 4)
+    fi = finder_info(b"TEXT", b"R*ch", 0x0100)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as t:
+        entries = [("notes/._long.txt", appledouble([(9, fi), (2, rsrc)])), ("notes/long.txt", SOURCES["notes/long.txt"]),
+                   ("readme.txt", SOURCES["readme.txt"])]
+        for p, b in entries:
+            ti = tarfile.TarInfo(p)
+            ti.size = len(b)
+            ti.mtime = 981173106
+            t.addfile(ti, io.BytesIO(b))
+    case("tar_macos.tar", buf.getvalue(), {"notes/long.txt": SOURCES["notes/long.txt"],
+                                           "readme.txt": SOURCES["readme.txt"],
+                                           "notes/._long.txt": appledouble([(9, fi), (2, rsrc)])})
 
 
 # One BGZF block holding `data` (at most 64 KiB).
