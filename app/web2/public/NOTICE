@@ -25,7 +25,6 @@ names of the icons reproduced here are:
     circle-filled             (enabled breakpoint or watchpoint)
     circle-large              ("empty slot" indicator in the Machine tree)
     close                     (toast, popover, find and usage-pane close buttons)
-    cloud-download            (Save State button, Download log button)
     cloud-upload              (Upload ROM / Upload image actions)
     color-mode                (theme toggle button)
     debug-pause               (Run/Pause toolbar button when running, debug Pause)
@@ -62,9 +61,10 @@ names of the icons reproduced here are:
     vm                        (Computer / Mac model icons)
     warning                   (toast warning badge)
 
-Two symbols are drawn for Granny Smith, not taken from Codicons: `i-power`
-(the Display Toolbar Shut Down button) and `i-ellipsis` (the panel header's
-folded actions menu).
+Three symbols are drawn for Granny Smith, not taken from Codicons: `i-power`
+(the Display Toolbar Shut Down button), `i-ellipsis` (the panel header's
+folded actions menu) and `i-download` (a circled down arrow: the Save State
+button and the Download log button).
 
 Source:
     https://github.com/microsoft/vscode-codicons
