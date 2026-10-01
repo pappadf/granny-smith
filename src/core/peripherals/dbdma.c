@@ -486,14 +486,16 @@ void dbdma_reg_write(dbdma_t *d, int chan, uint32_t offset, uint32_t value) {
         break;
     }
     case DBDMA_REG_CMDPTRLO:
-        // Loadable only while the channel is disarmed (drivers write it
-        // before setting RUN; hardware ignores it mid-program).  The
-        // shipping ROM's native sound driver does write it once on a
-        // channel still parked on Open Firmware's beep STOP (RUN=1,
-        // ACTIVE=0) at its init; nothing ever starts that program — the
-        // Sound Manager's ring is loaded later with RUN cleared first —
-        // so the parked case stays ignored, as the T9 ladder rung pins.
-        if (c->status & (DBDMA_RUN | DBDMA_ACTIVE)) {
+        // Loadable whenever the channel is not executing a program: before
+        // RUN, or with RUN set and the channel parked on a STOP (ACTIVE
+        // clear) — hardware ignores it only mid-program.  The parked case
+        // is a real idiom: the Mac OS ATA driver on Heathrow leaves RUN set
+        // between commands, writes the next program's address while the
+        // channel sits on the previous one's STOP, and sets RUN|WAKE, which
+        // re-fetches at CommandPtr.  Refusing that write sent the wake back
+        // to the old STOP: the second ATAPI DMA transfer never moved a byte
+        // and the CD boot hung in the Finder's first synchronous read.
+        if (c->status & DBDMA_ACTIVE) {
             LOG(1, "ch%d cmdptr write $%08X ignored while running", chan, value);
             break;
         }
