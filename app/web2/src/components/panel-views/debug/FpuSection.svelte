@@ -100,17 +100,17 @@
     gap: var(--gs-space-2);
   }
   .fpu-name {
-    color: var(--gs-text-muted);
+    color: var(--gs-code-reg-name);
     text-align: right;
     min-width: 4ch;
   }
   .fpu-hex {
-    color: var(--gs-text);
+    color: var(--gs-code-reg-value);
     text-transform: uppercase; /* hex digits */
     white-space: nowrap;
   }
   .fpu-val {
-    color: var(--gs-text);
+    color: var(--gs-code-reg-value);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

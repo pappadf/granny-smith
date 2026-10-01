@@ -85,7 +85,7 @@
     />
   {/if}
   {#if icon}
-    <span class="gs-tree-item__icon icon"><Icon name={icon} size={16} /></span>
+    <span class="gs-tree-item__icon icon"><Icon name={icon} size="base" /></span>
   {/if}
   {#if content}
     {@render content()}

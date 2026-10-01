@@ -241,6 +241,38 @@ describe('design tokens', () => {
     expect(bad).toEqual([]);
   });
 
+  // L-9: the emulated screen is the machine's picture; only ScreenView may
+  // style its canvases, and only for pixel scaling, focus and stacking.  A
+  // skin decorates the frame around it (--gs-screen-frame-*), never it.
+  it('L-9: nothing styles the screen canvases but ScreenView, and only so', () => {
+    const SCREEN = /#screen3?d?\b|\bcanvas\b/;
+    const ALLOWED = new Set([
+      'display',
+      'image-rendering',
+      'touch-action',
+      'outline',
+      'position',
+      'left',
+      'top',
+      'pointer-events',
+    ]);
+    const bad: string[] = [];
+    for (const f of SOURCES) {
+      const css = cssOf(f, stripComments(readFileSync(f, 'utf8')));
+      for (const r of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        // The rule's subject, not a :has() condition on a container.
+        if (!SCREEN.test(r[1].replace(/:has\([^)]*\)/g, ''))) continue;
+        if (rel(f) !== 'components/display/ScreenView.svelte') {
+          bad.push(`${rel(f)}: ${r[1].trim()}`);
+          continue;
+        }
+        for (const d of r[2].matchAll(/([a-z-]+)\s*:/g))
+          if (!ALLOWED.has(d[1])) bad.push(`${rel(f)}: ${r[1].trim()} { ${d[1]} }`);
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+
   // L-11: the browser's prompt, confirm and alert boxes cannot be skinned
   // (nor reached by the app's focus handling); state/dialogs asks instead.
   it('L-11: no native prompt, confirm or alert', () => {

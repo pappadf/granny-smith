@@ -171,12 +171,12 @@
       >
         {#if hasChecks}
           <span class="gs-menu__check"
-            >{#if item.checked}<Icon name="check" size={14} />{/if}</span
+            >{#if item.checked}<Icon name="check" size="md" />{/if}</span
           >
         {/if}
         {#if hasIcons}
           <span class="gs-menu__icon"
-            >{#if item.icon}<Icon name={item.icon} size={14} />{/if}</span
+            >{#if item.icon}<Icon name={item.icon} size="md" />{/if}</span
           >
         {/if}
         <span class="gs-menu__label">{item.label}</span>

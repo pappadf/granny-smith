@@ -741,7 +741,7 @@
 
 <div class="config-content">
   <div class="back-row">
-    <Link href="#back" class="back-link" onclick={onBack}>← Back</Link>
+    <Link href="#back" class="back-link" icon="arrow-left" onclick={onBack}>Back</Link>
   </div>
   <h2 class="config-title">New Machine</h2>
   <FormGrid class="config-form" onsubmit={onSubmit}>

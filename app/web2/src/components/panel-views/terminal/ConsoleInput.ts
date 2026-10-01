@@ -27,6 +27,7 @@ import {
   type CompletionContext,
   type CompletionResult as CmCompletionResult,
 } from '@codemirror/autocomplete';
+import { onAppearanceChange } from '@/lib/tokens';
 import type { CompletionResult } from '@/bus/emulator';
 import { normalisePaste } from '@/lib/consoleModel';
 import { replaceTokenAt } from '@/lib/pathToken';
@@ -340,6 +341,8 @@ export function createConsoleInput(
       ],
     }),
   });
+  // A skin or scheme change can change the font metrics: measure again.
+  const stopMeasure = onAppearanceChange(() => view.requestMeasure());
 
   return {
     view,
@@ -358,7 +361,10 @@ export function createConsoleInput(
       view.dispatch({ effects: setSpans.of(spans) });
     },
     focus: () => view.focus(),
-    destroy: () => view.destroy(),
+    destroy: () => {
+      stopMeasure();
+      view.destroy();
+    },
   };
 }
 
@@ -385,10 +391,14 @@ const inputTheme = EditorView.theme({
     backgroundColor: 'var(--gs-console-selection)',
   },
   '.cm-placeholder': { color: 'var(--gs-syntax-dim)' },
+  // The completion popup is a menu: the menu's colours, radius and shadow.
   '.cm-tooltip': {
     backgroundColor: 'var(--gs-menu-bg)',
     color: 'var(--gs-menu-fg)',
-    border: '1px solid var(--gs-border)',
+    border: 'var(--gs-border-width) solid var(--gs-border)',
+    borderRadius: 'var(--gs-menu-radius)',
+    boxShadow: 'var(--gs-shadow-popup)',
+    overflow: 'hidden',
     fontFamily: 'var(--gs-console-font)',
     fontSize: 'var(--gs-console-popup-font-size)',
   },

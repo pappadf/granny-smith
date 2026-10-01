@@ -83,7 +83,7 @@
   <div class="gs-statusbar" data-state={barState} role="status">
     <div class="statusbar-left">
       <div class="gs-statusbar__item sb-item sb-state" title="Machine state">
-        {#if barState === 'crashed'}<Icon name="error" size={13} />{:else}<StatusDot
+        {#if barState === 'crashed'}<Icon name="error" size="sm" />{:else}<StatusDot
             class="dot"
             state={barState}
           />{/if}<span class="label">{stateLabel[machine.status]}</span>
@@ -93,7 +93,7 @@
           class="gs-statusbar__item sb-item sb-speed"
           title="CPU running at {speedLabel} the original Mac's speed (Accelerated mode); games, sound and animation stay real-time"
         >
-          <Icon name="chip" size={13} /><span class="label">{speedLabel}</span>
+          <Icon name="chip" size="sm" /><span class="label">{speedLabel}</span>
         </div>
       {/if}
       {#if machine.status === 'running' && machine.mips > 0}
@@ -125,9 +125,9 @@
         pressed={machine.capsLock}
         label="Caps Lock"
         title="Caps Lock latch — a mechanically locking key, kept down across restarts. Latch it and Restart to boot Mac OS 8 (Copland) from a volume that has it installed."
+        icon="arrow-up"
         onToggle={() => void setCapsLock(!machine.capsLock)}
-        ><span class="label">⇪</span></ToggleChip
-      >
+      />
     </div>
     <div class="statusbar-right">
       {#if bridgeBusy.path}
@@ -147,7 +147,7 @@
         >
           {#if printerBusy}<ActivityDot
               class="upload-spinner"
-            />{:else if printer.activity === 'error'}<Icon name="error" size={13} />{/if}
+            />{:else if printer.activity === 'error'}<Icon name="error" size="sm" />{/if}
           <span class="printer-label">{printerLabel}</span>
         </div>
       {:else if printer.document}
@@ -156,7 +156,7 @@
           title="Show the last printed document ({printer.document.name})"
           onclick={reopenPrintedDocument}
         >
-          <Icon name="file" size={13} /><span class="printer-label"
+          <Icon name="file" size="sm" /><span class="printer-label"
             >{printer.document.title || printer.document.name}</span
           >
         </button>

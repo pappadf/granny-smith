@@ -30,8 +30,8 @@
     <IconButton icon="pause" label="Pressed" pressed />
     <IconButton icon="camera" label="Live" live />
     <IconButton icon="stop" label="Disabled" disabled />
-    <IconButton icon="restart" label="Panel" tone="panel" iconSize={14} />
-    <IconButton icon="plus" label="Small faded" size="sm" rest="faded" iconSize={14} />
+    <IconButton icon="restart" label="Panel" tone="panel" iconSize="md" />
+    <IconButton icon="plus" label="Small faded" size="sm" rest="faded" iconSize="md" />
   </div>
   <div class="row">
     <SegmentedControl

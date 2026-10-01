@@ -26,7 +26,7 @@
   {title}
   onclick={onToggle}
 >
-  {#if icon}<Icon name={icon} size={13} class="gs-chip__icon" />{/if}
+  {#if icon}<Icon name={icon} size="sm" class="gs-chip__icon" />{/if}
   {#if children}<span class="gs-chip__label">{@render children()}</span>{/if}
 </button>
 

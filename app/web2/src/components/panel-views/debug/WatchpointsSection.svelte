@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from '@/components/common/Icon.svelte';
   import Hint from '@/components/ui/Hint.svelte';
   import ListRow from '@/components/ui/ListRow.svelte';
   // The Watchpoints section: debug.watchpoints, a memory logpoint that stops
@@ -110,7 +111,7 @@
       size="sm"
       tone="panel"
       rest="faded"
-      iconSize={14}
+      iconSize="md"
       label="Add watchpoint"
       onclick={() => (showAdd = true)}
     />
@@ -157,7 +158,9 @@
   {:else}
     {#each rows as r (r.id)}
       <ListRow class="wp-row" density="compact" mono oncontextmenu={(ev) => onRowContext(r, ev)}>
-        <span class="enable">{r.enabled ? '●' : '○'}</span>
+        <span class="enable" data-state={r.enabled ? 'on' : 'off'}
+          ><Icon name={r.enabled ? 'circle-filled' : 'circle-outline'} size="xs" /></span
+        >
         <span class="addr">{rangeLabel(r)}</span>
         <span class="mode">{r.mode}</span>
         {#if r.hits > 0}
@@ -175,8 +178,11 @@
     padding: var(--gs-space-1-5) var(--gs-space-3);
   }
   .enable {
-    color: var(--gs-text-muted);
-    width: 1ch;
+    display: inline-flex;
+    color: var(--gs-code-breakpoint-off);
+  }
+  .enable[data-state='on'] {
+    color: var(--gs-code-breakpoint);
   }
   .mode {
     color: var(--gs-text-muted);

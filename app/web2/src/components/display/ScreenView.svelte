@@ -107,10 +107,15 @@
     justify-content: center;
     overflow: auto;
   }
+  /* The frame around the picture: a skin may give it a bezel (padding),
+     rounded corners and its own shadow.  The canvases themselves are never
+     styled (lint L-9). */
   .screen-wrap {
     position: relative;
-    background: var(--gs-surface-screen);
-    box-shadow: var(--gs-shadow-screen);
+    background: var(--gs-screen-frame-bg);
+    box-shadow: var(--gs-screen-frame-shadow);
+    padding: var(--gs-screen-frame-padding);
+    border-radius: var(--gs-screen-frame-radius);
   }
   canvas {
     display: block;
@@ -130,8 +135,8 @@
   }
   canvas.overlay {
     position: absolute;
-    left: 0;
-    top: 0;
+    left: var(--gs-screen-frame-padding);
+    top: var(--gs-screen-frame-padding);
     pointer-events: none;
   }
   canvas.overlay[hidden] {

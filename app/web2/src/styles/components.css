@@ -25,6 +25,7 @@
   --gs-code-symbol: var(--gs-text);
   --gs-code-pc-marker: var(--gs-focus-ring);
   --gs-code-breakpoint: var(--gs-danger-solid);
+  --gs-code-breakpoint-off: var(--gs-text-subtle);
   --gs-code-reg-name: var(--gs-text-muted);
   --gs-code-reg-value: var(--gs-text);
   --gs-code-changed-fg: var(--gs-code-reg-value);
@@ -272,7 +273,7 @@
   --gs-section-title-fg: var(--gs-text-strong);
   --gs-table-header-height: var(--gs-size-control-md);
   --gs-table-header-bg: var(--gs-surface-app);
-  --gs-table-sort-size: var(--gs-font-size-3xs);
+  --gs-table-sort-size: var(--gs-size-icon-xs);
   --gs-hint-fg: var(--gs-text-muted);
   --gs-hint-error-fg: var(--gs-danger-fg);
   --gs-hint-font-size: var(--gs-font-size-xs);
@@ -282,6 +283,8 @@
   --gs-hint-padding-pane: var(--gs-space-3);
   --gs-hint-padding-list: var(--gs-space-1-5) var(--gs-list-row-indent);
   --gs-hint-padding-view: var(--gs-space-4);
+  --gs-statusline-bg: var(--gs-surface-raised);
+  --gs-statusline-padding: var(--gs-space-1) var(--gs-space-3);
 
   /* Disclosure arrows (ui/Disclosure.svelte) */
   --gs-disclosure-size: var(--gs-size-icon-md);
@@ -347,6 +350,13 @@
   /* Activity dots (ui/ActivityDot.svelte): an upload or a print job. */
   --gs-activity-dot-size: var(--gs-size-dot);
   --gs-activity-dot-fg: currentColor;
+
+  /* The emulated screen's frame (ScreenView): a bezel hook, off by
+     default. */
+  --gs-screen-frame-bg: var(--gs-surface-screen);
+  --gs-screen-frame-shadow: var(--gs-shadow-screen);
+  --gs-screen-frame-padding: 0px;
+  --gs-screen-frame-radius: 0px;
 
   /* Cards and the hero (ui/Card.svelte, ui/Hero.svelte) */
   --gs-card-border: var(--gs-border-card);

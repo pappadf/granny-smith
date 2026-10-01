@@ -39,7 +39,7 @@
   >
     {@render children?.()}
   </select>
-  <Icon name="chevron" size={12} class="gs-select__arrow" />
+  <Icon name="chevron" size="xs" class="gs-select__arrow" />
 </span>
 
 <style>

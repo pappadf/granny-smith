@@ -12,6 +12,7 @@
 </script>
 
 <script lang="ts" generics="Row">
+  import Icon from './Icon.svelte';
   import type { Snippet } from 'svelte';
 
   interface Props {
@@ -85,7 +86,11 @@
         >
           {col.label}
           {#if sortColumn === col.key}
-            <span class="gs-table__sort sort-marker">{sortDir === 'asc' ? '▲' : '▼'}</span>
+            <Icon
+              name={sortDir === 'asc' ? 'arrow-up' : 'arrow-down'}
+              size="xs"
+              class="gs-table__sort sort-marker"
+            />
           {/if}
         </div>
       {/if}
@@ -153,9 +158,11 @@
   .gs-table__th.sortable:hover {
     color: var(--gs-text-strong);
   }
-  .gs-table__sort {
-    font-size: var(--gs-table-sort-size);
+  .gs-table__th :global(.gs-table__sort) {
+    width: var(--gs-table-sort-size);
+    height: var(--gs-table-sort-size);
     margin-left: var(--gs-space-1);
+    vertical-align: -0.15em;
   }
   .gs-table__body {
     flex: 1 1 auto;

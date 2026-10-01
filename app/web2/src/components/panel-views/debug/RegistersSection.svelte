@@ -166,7 +166,7 @@
     font-size: var(--gs-font-size-xs);
   }
   .reg-name {
-    color: var(--gs-text-muted);
+    color: var(--gs-code-reg-name);
     width: 3.5ch;
     text-align: right;
     flex-shrink: 0;

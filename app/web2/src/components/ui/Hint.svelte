@@ -5,11 +5,12 @@
   // A hint, empty or loading note: muted (or error) small text.  `inset`
   // picks the padding: `section` inside a debugger section, `block` for a
   // section's only content, `pane` for a code pane, `list` in place of a
-  // list's rows and `view` for a whole empty view (the last two larger).
+  // list's rows and `view` for a whole empty view (the last two larger);
+  // `statusline` is a view's footer line (a rule above, its own fill).
   // `as` renders a `p` by default; `class` carries legacy hooks.
   interface Props extends HTMLAttributes<HTMLElement> {
     tone?: 'muted' | 'error';
-    inset?: 'none' | 'section' | 'block' | 'pane' | 'list' | 'view';
+    inset?: 'none' | 'section' | 'block' | 'pane' | 'list' | 'view' | 'statusline';
     as?: string;
     class?: string;
     children: Snippet;
@@ -55,6 +56,13 @@
   .gs-hint[data-inset='list'] {
     font-size: var(--gs-hint-font-size-view);
     padding: var(--gs-hint-padding-list);
+  }
+  .gs-hint[data-inset='statusline'] {
+    flex: 0 0 auto;
+    margin: 0;
+    padding: var(--gs-statusline-padding);
+    border-top: var(--gs-border-width) solid var(--gs-border);
+    background: var(--gs-statusline-bg);
   }
   .gs-hint[data-inset='view'] {
     font-size: var(--gs-hint-font-size-view);

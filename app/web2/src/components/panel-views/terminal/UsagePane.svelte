@@ -1,4 +1,6 @@
 <script lang="ts">
+  import IconButton from '@/components/ui/IconButton.svelte';
+  import Button from '@/components/ui/Button.svelte';
   import Callout from '@/components/ui/Callout.svelte';
   // The command browser's details pane: a method's or attribute's usage
   // text (shell.usage), its signature and example lines coloured by
@@ -59,9 +61,15 @@
   <Callout class="details" edge="top" aria-label="Usage">
     <header class="details-head">
       <span class="details-name">{row.name}</span>
-      <button class="details-close" aria-label="Close" title="Close (Esc)" onclick={onClose}
-        >×</button
-      >
+      <IconButton
+        class="details-close"
+        tone="panel"
+        size="sm"
+        icon="close"
+        label="Close"
+        title="Close (Esc)"
+        onclick={onClose}
+      />
     </header>
     <pre
       class="usage">{#each lines as runs, li (li)}{#if li > 0}{NEWLINE}{/if}{#each runs as r, ri (ri)}{#if r.mark}<mark
@@ -70,10 +78,11 @@
             >{:else}{r.text}{/if}{/each}{/each}</pre>
     {#if row.insert}
       <footer class="details-foot">
-        <button
+        <Button
           class="details-insert"
+          icon="newline"
           title="Insert into the console (double-click, or Enter)"
-          onclick={() => onInsert(row)}>Insert</button
+          onclick={() => onInsert(row)}>Insert</Button
         >
       </footer>
     {/if}
@@ -103,32 +112,11 @@
     font-size: var(--gs-font-size-sm);
     color: var(--gs-text-muted);
   }
-  .details-close {
-    border: none;
-    background: transparent;
-    color: var(--gs-text-muted);
-    font-size: var(--gs-font-size-xl);
-    line-height: 1;
-    padding: var(--gs-space-0-5) var(--gs-space-1-5);
-    cursor: pointer;
-  }
-  .details-close:hover {
-    color: var(--gs-text);
-  }
   .details-foot {
     flex: 0 0 auto;
     display: flex;
     justify-content: flex-end;
     padding: 0 var(--gs-space-2) var(--gs-space-1-5);
-  }
-  .details-insert {
-    font-size: var(--gs-font-size-sm);
-    padding: var(--gs-space-0-5) var(--gs-space-3);
-    border-radius: var(--gs-radius-sm);
-    border: var(--gs-border-width) solid var(--gs-accent);
-    background: var(--gs-accent-subtle);
-    color: var(--gs-text-strong);
-    cursor: pointer;
   }
   .usage {
     flex: 0 1 auto;

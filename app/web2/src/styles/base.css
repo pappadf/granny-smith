@@ -82,6 +82,19 @@ kbd {
   opacity: 1;
 }
 
+/* Text for assistive tech only (a drive light's name in the icon style). */
+.gs-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* A <details> summary drawn with the disclosure chevron (ui/Disclosure):
    SYSTEM's container values and the console's value trees. */
 summary.gs-summary {

@@ -33,7 +33,7 @@
   >
     {#if loading}<Spinner size="sm" tone="current" />{:else if hasChildren}<Icon
         name="chevron"
-        size={12}
+        size="xs"
       />{/if}
   </span>
 {:else}
@@ -46,7 +46,7 @@
   >
     {#if loading}<Spinner size="sm" tone="current" />{:else if hasChildren}<Icon
         name="chevron"
-        size={12}
+        size="xs"
       />{/if}
   </span>
 {/if}

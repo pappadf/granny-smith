@@ -21,7 +21,7 @@
   rel={external ? 'noopener noreferrer' : undefined}
   {...rest}
 >
-  {#if icon}<Icon name={icon} size={12} class="gs-link__icon" />{/if}{@render children()}
+  {#if icon}<Icon name={icon} size="xs" class="gs-link__icon" />{/if}{@render children()}
 </a>
 
 <style>

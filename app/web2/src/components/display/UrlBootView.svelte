@@ -123,7 +123,7 @@
                   <span class="name" title={f.name}>{f.name}</span>
                 </div>
                 <span class="amount">
-                  {#if f.status === 'done'}<Icon name="check" size={12} class="check" />{/if}
+                  {#if f.status === 'done'}<Icon name="check" size="xs" class="check" />{/if}
                   {amount(f)}
                 </span>
               </div>

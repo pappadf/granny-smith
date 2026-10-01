@@ -3,7 +3,7 @@
   // assistive tech and is its tooltip.  `pressed` makes it a toggle
   // (aria-pressed).  `tone` picks the toolbar (rounder) or panel shape.
   import type { HTMLButtonAttributes } from 'svelte/elements';
-  import Icon from '@/components/common/Icon.svelte';
+  import Icon, { type IconSize } from '@/components/common/Icon.svelte';
   import type { IconName } from '@/lib/icons';
 
   interface Props extends Omit<HTMLButtonAttributes, 'children'> {
@@ -16,8 +16,8 @@
     live?: boolean;
     // A resting state drawn faded until hovered or focused.
     rest?: 'normal' | 'faded';
-    // Icon size in px (the sprite's glyphs are drawn for 16).
-    iconSize?: number;
+    // The icon's named size (the sprite's glyphs are drawn for 16).
+    iconSize?: IconSize;
     // The tooltip, when it should differ from the label.
     title?: string;
     ref?: HTMLButtonElement | null;
@@ -30,7 +30,7 @@
     pressed,
     live = false,
     rest: restStyle = 'normal',
-    iconSize = 16,
+    iconSize = 'base',
     title,
     ref = $bindable(null),
     type = 'button',

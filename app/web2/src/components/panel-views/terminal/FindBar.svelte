@@ -56,6 +56,7 @@
 
 <script lang="ts">
   import TextInput from '@/components/ui/TextInput.svelte';
+  import IconButton from '@/components/ui/IconButton.svelte';
 
   // The find bar over the console's output: the query, match case,
   // previous / next (Enter, Shift+Enter) and close (Esc).
@@ -109,23 +110,44 @@
       ? `${(find.index % find.hits.length) + 1} of ${find.hits.length}`
       : 'No results'}</span
   >
-  <button
+  <IconButton
     class="find-btn"
-    class:on={find.caseSensitive}
-    title="Match case"
-    aria-pressed={find.caseSensitive}
-    onclick={() => (find.caseSensitive = !find.caseSensitive)}>Aa</button
-  >
-  <button
+    tone="panel"
+    size="sm"
+    iconSize="md"
+    icon="case-sensitive"
+    label="Match case"
+    pressed={find.caseSensitive}
+    onclick={() => (find.caseSensitive = !find.caseSensitive)}
+  />
+  <IconButton
     class="find-btn"
-    title="Previous match"
-    aria-label="Previous match"
-    onclick={() => step(-1)}>↑</button
-  >
-  <button class="find-btn" title="Next match" aria-label="Next match" onclick={() => step(1)}
-    >↓</button
-  >
-  <button class="find-btn" title="Close" aria-label="Close find" onclick={onclose}>×</button>
+    tone="panel"
+    size="sm"
+    iconSize="md"
+    icon="arrow-up"
+    label="Previous match"
+    onclick={() => step(-1)}
+  />
+  <IconButton
+    class="find-btn"
+    tone="panel"
+    size="sm"
+    iconSize="md"
+    icon="arrow-down"
+    label="Next match"
+    onclick={() => step(1)}
+  />
+  <IconButton
+    class="find-btn"
+    tone="panel"
+    size="sm"
+    iconSize="md"
+    icon="close"
+    label="Close find"
+    title="Close"
+    onclick={onclose}
+  />
 </div>
 
 <style>
@@ -147,16 +169,5 @@
   .find-count {
     min-width: 5.5em;
     color: var(--gs-syntax-dim);
-  }
-  .find-btn {
-    background: none;
-    border: var(--gs-border-width) solid transparent;
-    color: inherit;
-    cursor: pointer;
-    padding: 0 var(--gs-space-1);
-    font: inherit;
-  }
-  .find-btn.on {
-    border-color: var(--gs-focus-ring);
   }
 </style>

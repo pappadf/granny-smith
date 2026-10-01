@@ -231,7 +231,7 @@
       <IconButton
         class="upload-btn"
         icon="upload"
-        iconSize={14}
+        iconSize="md"
         tone="panel"
         rest="faded"
         label="Upload {CATEGORY_LABELS[cat]} image"

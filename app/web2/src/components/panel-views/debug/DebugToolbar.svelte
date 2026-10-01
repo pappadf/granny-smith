@@ -20,7 +20,7 @@
       class="tb-btn"
       tone="panel"
       icon="pause"
-      iconSize={14}
+      iconSize="md"
       label="Pause"
       onclick={onContinueOrPause}
     />
@@ -29,7 +29,7 @@
       class="tb-btn"
       tone="panel"
       icon="play"
-      iconSize={14}
+      iconSize="md"
       label="Continue"
       onclick={onContinueOrPause}
     />
@@ -38,7 +38,7 @@
     class="tb-btn"
     tone="panel"
     icon="step-into"
-    iconSize={14}
+    iconSize="md"
     label="Step Into"
     disabled={stepDisabled}
     onclick={() => stepInto(1)}
@@ -47,7 +47,7 @@
     class="tb-btn"
     tone="panel"
     icon="stop"
-    iconSize={14}
+    iconSize="md"
     label="Stop"
     onclick={() => stopMachine()}
   />
@@ -55,7 +55,7 @@
     class="tb-btn"
     tone="panel"
     icon="restart"
-    iconSize={14}
+    iconSize="md"
     label="Restart"
     onclick={() => restart()}
   />

@@ -5,6 +5,9 @@
   import LogLine from './LogLine.svelte';
   import CategoryLevelsPopover from './CategoryLevelsPopover.svelte';
 
+  // Zebra rows (--gs-row-alt): off by default.
+  let { striped = false }: { striped?: boolean } = $props();
+
   let listEl = $state<HTMLDivElement | null>(null);
   const showPopover = $derived(logsPanelHeader.popoverOpen);
 
@@ -22,7 +25,7 @@
 </script>
 
 <div class="logs-view">
-  <div class="logs-scroll" bind:this={listEl}>
+  <div class="logs-scroll" data-striped={striped || undefined} bind:this={listEl}>
     {#if logs.entries.length === 0}
       <Hint class="logs-empty" inset="view">
         No log lines yet. Boot a machine and bring a category up with <code
@@ -36,11 +39,11 @@
       {/each}
     {/if}
   </div>
-  <div class="logs-status">
+  <Hint as="div" inset="statusline" class="logs-status">
     {logs.entries.length} lines · {catCount} categories · autoscroll: {logs.autoscroll
       ? 'on'
       : 'off'}
-  </div>
+  </Hint>
 </div>
 
 <CategoryLevelsPopover open={showPopover} onClose={() => (logsPanelHeader.popoverOpen = false)} />
@@ -60,12 +63,7 @@
     padding: var(--gs-space-1) 0;
     background: var(--gs-surface-app);
   }
-  .logs-status {
-    flex: 0 0 auto;
-    padding: var(--gs-space-1) var(--gs-space-3);
-    border-top: var(--gs-border-width) solid var(--gs-border);
-    color: var(--gs-text-muted);
-    font-size: var(--gs-font-size-xs);
-    background: var(--gs-surface-raised);
+  .logs-scroll[data-striped] > :global(:nth-child(even)) {
+    background: var(--gs-row-alt);
   }
 </style>

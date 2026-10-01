@@ -187,17 +187,22 @@
     line-height: var(--gs-line-height-code);
   }
   .mem-row-addr {
-    color: var(--gs-text-muted);
+    color: var(--gs-code-address);
     white-space: nowrap;
   }
   .mem-row-bytes {
     display: inline-flex;
     gap: var(--gs-space-1);
     flex-wrap: nowrap;
-    color: var(--gs-text);
+    color: var(--gs-code-operand);
+  }
+  /* A byte changed since the last step (a hook; not set yet). */
+  .mem-byte:global([data-state='changed']) {
+    background: var(--gs-code-changed-bg);
+    color: var(--gs-code-changed-fg);
   }
   .mem-row-ascii {
-    color: var(--gs-text-muted);
+    color: var(--gs-code-address);
     white-space: pre;
   }
 </style>

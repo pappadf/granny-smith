@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from '@/components/common/Icon.svelte';
   import Hint from '@/components/ui/Hint.svelte';
   import ListRow from '@/components/ui/ListRow.svelte';
   import { onMount } from 'svelte';
@@ -118,7 +119,7 @@
       size="sm"
       tone="panel"
       rest="faded"
-      iconSize={14}
+      iconSize="md"
       label="Add breakpoint"
       onclick={() => (showAdd = true)}
     />
@@ -152,7 +153,9 @@
   {:else}
     {#each rows as r (r.id)}
       <ListRow class="bp-row" density="compact" mono oncontextmenu={(ev) => onRowContext(r, ev)}>
-        <span class="enable">{r.enabled ? '●' : '○'}</span>
+        <span class="enable" data-state={r.enabled ? 'on' : 'off'}
+          ><Icon name={r.enabled ? 'circle-filled' : 'circle-outline'} size="xs" /></span
+        >
         <span class="addr">{labelFor(r.addr)}</span>
         {#if r.condition}
           <span class="cond">if {r.condition}</span>
@@ -172,8 +175,11 @@
     padding: var(--gs-space-1-5) var(--gs-space-3);
   }
   .enable {
-    color: var(--gs-text-muted);
-    width: 1ch;
+    display: inline-flex;
+    color: var(--gs-code-breakpoint-off);
+  }
+  .enable[data-state='on'] {
+    color: var(--gs-code-breakpoint);
   }
   .cond {
     color: var(--gs-text-muted);

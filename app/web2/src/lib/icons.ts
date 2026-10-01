@@ -49,7 +49,15 @@ export type IconName =
   | 'info'
   | 'warning'
   | 'error'
-  | 'check';
+  | 'check'
+  | 'arrow-up'
+  | 'arrow-down'
+  | 'arrow-left'
+  | 'circle-filled'
+  | 'debug-stackframe'
+  | 'newline'
+  | 'circle-outline'
+  | 'case-sensitive';
 
 export function iconHref(name: IconName): string {
   // Page-relative path so `<use href>` resolves against document.baseURI.

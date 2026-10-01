@@ -1,7 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import type { DriveActivity } from '@/state/machine.svelte';
-  import { readToken } from '@/lib/tokens';
+  import { readToken, onAppearanceChange } from '@/lib/tokens';
+  import Icon from '@/components/common/Icon.svelte';
+  import type { IconName } from '@/lib/icons';
+
+  // The icon each drive shows in the icon style.
+  const ICONS: Record<string, IconName> = { HD: 'hd', FD: 'floppy', CD: 'cd', CP: 'clock' };
 
   // A status-bar drive light: the drive's short name (HD, FD, CD, CP), dim
   // when idle and lit in the read or write colour.  A skin may switch the
@@ -15,8 +20,11 @@
   let { label, title, activity }: Props = $props();
 
   let style = $state('text');
+  // The skin's chosen style, read again when the skin changes.
   onMount(() => {
-    style = readToken('--gs-statusbar-drive-style') || 'text';
+    const read = () => (style = readToken('--gs-statusbar-drive-style') || 'text');
+    read();
+    return onAppearanceChange(read);
   });
 </script>
 
@@ -28,7 +36,12 @@
   data-style={style}
   {title}
 >
-  <span class="gs-drive__icon drive-ico">{label}</span>
+  {#if style === 'icon' && ICONS[label]}
+    <Icon name={ICONS[label]} size="sm" class="gs-drive__glyph" />
+    <span class="gs-drive__icon drive-ico gs-visually-hidden">{label}</span>
+  {:else}
+    <span class="gs-drive__icon drive-ico">{label}</span>
+  {/if}
 </div>
 
 <style>

@@ -38,7 +38,7 @@
   ondblclick={onDoubleClick}
   oncontextmenu={onContextMenu}
 >
-  <span class="icon"><Icon name={icon} size={16} /></span>
+  <span class="icon"><Icon name={icon} size="base" /></span>
   <span class="name" class:mounted={!!badge}>{name}</span>
   {#if badge}
     <Badge class="badge" intent="success">{badge}</Badge>

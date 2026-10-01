@@ -45,7 +45,7 @@
 
 {#snippet content()}
   {#if busy}<Spinner size="sm" tone="current" class="gs-button__spinner" />{/if}
-  {#if icon}<Icon name={icon} size={14} class="gs-button__icon" />{/if}
+  {#if icon}<Icon name={icon} size="md" class="gs-button__icon" />{/if}
   {#if children}<span class="gs-button__label">{@render children()}</span>{/if}
 {/snippet}
 

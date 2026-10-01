@@ -80,11 +80,10 @@
   .reg-line {
     font-family: var(--gs-font-mono);
     font-size: var(--gs-font-size-xs);
-    color: var(--gs-text);
+    color: var(--gs-code-reg-value);
   }
   .reg-name {
-    color: var(--gs-text-strong);
-    font-weight: var(--gs-font-weight-semibold);
+    color: var(--gs-code-reg-name);
     margin-right: var(--gs-space-2);
   }
   .reg-hex {

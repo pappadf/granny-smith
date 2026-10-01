@@ -227,6 +227,7 @@ export const TOKENS: readonly TokenSpec[] = [
   der('--gs-code-pc-marker', '--gs-focus-ring', 'the PC marker'),
   sem('--gs-code-pc-row-bg', 'color', 'the current-PC row (disassembly, auxiliary cores)'),
   der('--gs-code-breakpoint', '--gs-danger-solid', 'an enabled breakpoint marker'),
+  der('--gs-code-breakpoint-off', '--gs-text-subtle', 'a disabled breakpoint or watchpoint marker'),
   der('--gs-code-reg-name', '--gs-text-muted', 'register names'),
   der('--gs-code-reg-value', '--gs-text', 'register values'),
   sem('--gs-code-changed-bg', 'color', 'a value changed since the last step'),
@@ -550,6 +551,12 @@ export const TOKENS: readonly TokenSpec[] = [
   cmp('--gs-statusbar-drive-style', 'keyword', 'statusbar: the drive lights as text, icon or led'),
   cmp('--gs-statusbar-printer-error', 'color', 'statusbar: a failed print job (per bar state)'),
   cmp('--gs-segmented-fg-disabled', 'color', 'segmented: fg disabled'),
+  cmp('--gs-screen-frame-bg', 'color', 'screen frame: bg'),
+  cmp('--gs-screen-frame-shadow', 'shadow', 'screen frame: shadow'),
+  cmp('--gs-screen-frame-padding', 'length', 'screen frame: padding'),
+  cmp('--gs-screen-frame-radius', 'length', 'screen frame: radius'),
+  cmp('--gs-statusline-bg', 'color', 'statusline: bg'),
+  cmp('--gs-statusline-padding', 'length', 'statusline: padding'),
 ];
 
 // Layout variables components set inline at run time: allowed reads, not

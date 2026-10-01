@@ -145,7 +145,7 @@
     gap: var(--gs-space-2);
   }
   .aux-reg-name {
-    color: var(--gs-text-muted);
+    color: var(--gs-code-reg-name);
     width: 4.5ch;
     text-align: right;
     flex-shrink: 0;
@@ -160,7 +160,7 @@
     min-width: 14ch;
   }
   .aux-fp-hex {
-    color: var(--gs-text-muted);
+    color: var(--gs-code-address);
   }
   .aux-rows {
     list-style: none;
@@ -174,9 +174,9 @@
     padding: 0 var(--gs-space-1);
   }
   .aux-row.pc {
-    background: var(--gs-code-changed-bg);
+    background: var(--gs-code-pc-row-bg);
   }
   .aux-row-addr {
-    color: var(--gs-text-muted);
+    color: var(--gs-code-address);
   }
 </style>

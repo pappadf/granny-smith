@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Icon from '@/components/common/Icon.svelte';
   import Badge from '@/components/ui/Badge.svelte';
   import Hint from '@/components/ui/Hint.svelte';
   import { tick } from 'svelte';
@@ -189,7 +190,9 @@
         class:selected={selectedIdx === i}
         oncontextmenu={(ev) => onRowContext(row, ev)}
       >
-        <span class="marker">{isPc ? '►' : ''}</span>
+        <span class="marker"
+          >{#if isPc}<Icon name="debug-stackframe" size="md" />{/if}</span
+        >
         <!-- Address group is one grid cell so the mnem/ops columns
              stay aligned across rows even when addr-p / tag are
              absent. Without the wrapper, missing optional spans
@@ -228,7 +231,7 @@
     /* Opaque so disasm rows scrolling underneath don't bleed
        through; tinted border-left preserves the blue indicator. */
     background: var(--gs-surface-raised);
-    border-left: var(--gs-border-width-strong) solid var(--gs-focus-ring);
+    border-left: var(--gs-border-width-strong) solid var(--gs-code-banner-rule);
     border-bottom: var(--gs-border-width) solid var(--gs-border);
     color: var(--gs-text);
     font-size: var(--gs-font-size-xs);
@@ -269,18 +272,23 @@
     outline-offset: var(--gs-focus-offset);
   }
   .marker {
-    color: var(--gs-focus-ring);
-    text-align: center;
+    display: inline-flex;
+    justify-content: center;
+    color: var(--gs-code-pc-marker);
   }
   .addr-l,
   .addr-p {
-    color: var(--gs-text-muted);
+    color: var(--gs-code-address);
     text-transform: uppercase; /* hex digits */
   }
   .mnem {
-    color: var(--gs-text-strong);
+    color: var(--gs-code-mnemonic);
   }
   .ops {
-    color: var(--gs-text);
+    color: var(--gs-code-operand);
+  }
+  /* A breakpoint row (a hook for the breakpoint gutter; not set yet). */
+  .row:global([data-state='breakpoint']) .marker {
+    color: var(--gs-code-breakpoint);
   }
 </style>
