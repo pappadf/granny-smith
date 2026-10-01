@@ -91,7 +91,7 @@
       {#if showSpeed}
         <div
           class="gs-statusbar__item sb-item sb-speed"
-          title="CPU running at {speedLabel} the original Mac's speed (Accelerated mode); games, sound and animation stay real-time"
+          title="CPU running at {speedLabel} the original Mac's speed (Faster mode); games, sound and animation stay real-time"
         >
           <Icon name="chip" size="sm" /><span class="label">{speedLabel}</span>
         </div>

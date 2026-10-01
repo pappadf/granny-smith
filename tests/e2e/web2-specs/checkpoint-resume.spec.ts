@@ -180,7 +180,7 @@ test.describe('checkpoint save → reload → resume', () => {
       page.locator('.toast .msg').filter({ hasText: 'Resumed from saved checkpoint' }),
     ).toBeVisible({ timeout: 60_000 });
 
-    await expect(page.locator('.sch-btn', { hasText: 'fast-forward' })).toHaveClass(/active/, {
+    await expect(page.locator('.sch-btn', { hasText: 'Max' })).toHaveClass(/active/, {
       timeout: 15_000,
     });
   });

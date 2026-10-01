@@ -190,10 +190,6 @@
       inset 1px 1px 0 var(--gs-ref-bevel-light),
       inset -1px -1px 0 var(--gs-ref-bevel-shade);
   }
-  /* Option labels start with a capital: Real-time, Accelerated… */
-  :root[data-skin='platinum'] .gs-segmented__option::first-letter {
-    text-transform: uppercase;
-  }
   :root[data-skin='platinum'] .gs-segmented__option:first-child {
     margin-left: 0;
     border-radius: 4px 0 0 4px;

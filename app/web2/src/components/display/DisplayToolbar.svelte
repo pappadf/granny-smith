@@ -245,20 +245,20 @@
       options={[
         {
           value: 'live',
-          label: 'real-time',
-          title: "Real-Time — runs at the original Mac's speed",
+          label: 'Real',
+          title: "Real — runs at the original Mac's speed",
         },
         {
           value: 'accel',
-          label: 'accelerated',
+          label: 'Faster',
           title:
-            'Accelerated — runs faster while keeping games, sound, and animations at the correct speed, like adding a CPU accelerator card',
+            'Faster — runs faster while keeping games, sound, and animations at the correct speed, like adding a CPU accelerator card',
         },
         {
           value: 'turbo',
-          label: 'fast-forward',
+          label: 'Max',
           title:
-            'Fast-Forward — runs everything as fast as possible to skip ahead; games and sound run fast too',
+            'Max — runs everything as fast as possible to skip ahead; games and sound run fast too',
         },
       ]}
     />

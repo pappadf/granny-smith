@@ -249,9 +249,9 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
   // The microphone is a real-time stream: a guest running faster than wall
   // clock drains the ring faster than the browser fills it, a guest running
   // slower overruns it. Only paced mode is meaningful for what follows.
-  await page.getByRole("button", { name: "accelerated", exact: true }).click();
+  await page.getByRole("button", { name: "Faster", exact: true }).click();
   await waitForStableScreen(page, 420_000);
-  await page.getByRole("button", { name: "real-time", exact: true }).click();
+  await page.getByRole("button", { name: "Real", exact: true }).click();
   await expect.poll(async () => probe(page, "scheduler.mode"), { timeout: 30_000 }).toBe("paced");
 
   // 50% zoom so the WHOLE 640x480 guest screen fits above the panel. The

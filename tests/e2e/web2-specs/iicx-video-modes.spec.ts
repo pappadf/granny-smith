@@ -209,7 +209,7 @@ test('IIcx video modes: post-shader canvas matches per-mode baselines', async ({
     await expect
       .poll(async () => (await currentState(page)).running, { timeout: 15_000, intervals: [500] })
       .toBe(false);
-    await page.getByRole('button', { name: 'fast-forward', exact: true }).click();
+    await page.getByRole('button', { name: 'Max', exact: true }).click();
     // Run to 49 M instructions: the splash is up from ~45 M to ~52 M
     // (measured, headless, every mode here).
     const WELCOME_AT = 49_000_000;

@@ -269,10 +269,6 @@
   :root[data-skin='aqua'] .gs-segmented__option:disabled {
     opacity: 0.55;
   }
-  /* Option labels start with a capital: Real-time, Accelerated… */
-  :root[data-skin='aqua'] .gs-segmented__option::first-letter {
-    text-transform: uppercase;
-  }
 
   /* Checkboxes: small white gel squares, blue gel with a tick when on. */
   :root[data-skin='aqua'] .gs-check__control {
