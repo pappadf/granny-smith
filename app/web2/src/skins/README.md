@@ -153,11 +153,9 @@ first group is run / shut down; the buttons after the last group's
   `gs-panel`, `gs-panel-header` and `gs-panel-content`. Spacing, borders,
   radii and backgrounds may change here (midnight and starlight turn them into floating
   cards); order and sizing may not. The page itself is `body`.
-- **Captions:** display-toolbar controls carry a short `data-caption`
-  (Run / Pause, Shut Down, Speed, Zoom, Save State, Appearance, Full
-  Screen, Panel; the Appearance button opens the menu of looks). No skin needs to show it; aqua prints it under each
-  control (`content: attr(data-caption)`), Starlight inside its run pill and
-  platinum as the "Zoom:" label.
+- **Captions:** the run button and the zoom group carry a short
+  `data-caption` (Run / Pause, Zoom); starlight prints it inside its run
+  pill and platinum as the "Zoom:" label.
 - **Overflow:** a panel strip that runs short of room shows a
   `gs-tabs__more` ("»", a `gs-tabs__tab` too, so it takes the tab look) and
   measures its tabs in an invisible `gs-tabs--measure` copy; style that

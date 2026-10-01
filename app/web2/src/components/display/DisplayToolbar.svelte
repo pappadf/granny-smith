@@ -230,7 +230,6 @@
       class="tbtn"
       icon="power"
       label="Shut down"
-      data-caption="Shut Down"
       title="Shut down — return to Welcome view"
       disabled={!everStarted}
       onclick={onShutdown}
@@ -240,7 +239,6 @@
       class="scheduler"
       optionClass="sch-btn"
       label="Scheduler mode"
-      caption="Speed"
       disabled={!isLive}
       value={machine.scheduler}
       onChange={onSchedulerClick}
@@ -297,7 +295,6 @@
       class="tbtn"
       icon="download"
       label="Save State"
-      data-caption="Save State"
       disabled={!isLive || saving}
       onclick={onSave}
     />
@@ -307,7 +304,6 @@
         live={camera.live}
         icon={cameraIcon}
         label={cameraTitle}
-        data-caption="Camera"
         pressed={camera.enabled}
         disabled={!isLive}
         onclick={onCameraClick}
@@ -319,7 +315,6 @@
         live={microphone.guestActive}
         icon={micIcon}
         label={micTitle}
-        data-caption="Mic"
         pressed={microphone.enabled}
         aria-haspopup="menu"
         disabled={!isLive}
@@ -332,7 +327,6 @@
       class="tbtn appearance-menu"
       icon="palette"
       label="Appearance"
-      data-caption="Appearance"
       aria-haspopup="menu"
       onclick={onAppearanceMenu}
     />
@@ -340,7 +334,6 @@
       class="tbtn"
       icon={fullscreenIcon}
       label={fullscreenTitle}
-      data-caption="Full Screen"
       onclick={onFullscreenClick}
     />
     <Separator class="sep" />
@@ -355,7 +348,6 @@
       class="tbtn layout-btn"
       icon={layoutIcon('bottom')}
       label="Panel Bottom"
-      data-caption="Panel"
       pressed={layout.panelPos === 'bottom' && !layout.panelCollapsed}
       onclick={() => onLayoutClick('bottom')}
     />

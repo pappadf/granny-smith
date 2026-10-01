@@ -98,12 +98,10 @@
       inset 0 1px 1px rgba(255, 255, 255, 0.8),
       0 1px 2px rgba(0, 0, 0, 0.3);
   }
-  /* Run and shut down are round gels, a size up, spaced for their
-     captions. */
+  /* Run and shut down are round gels, a size up. */
   :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] > :first-child > .gs-icon-button {
     width: 34px;
     height: 34px;
-    margin: 0 8px;
   }
   /* The toolbar, as the storyboard draws it: round gels for run / shut down
      (the first group) and the zoom steppers (the group after its groove),
@@ -216,40 +214,6 @@
     box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
     text-align: center;
     font-size: 12px;
-  }
-  /* Captions under the controls (their data-caption), Mac OS X style; the
-     toolbar grows to hold them. */
-  :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] {
-    padding-bottom: 14px;
-  }
-  :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] [data-caption] {
-    position: relative;
-    overflow: visible;
-  }
-  :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] [data-caption]::after {
-    content: attr(data-caption);
-    position: absolute;
-    top: calc(100% + 3px);
-    left: 50%;
-    transform: translateX(-50%);
-    color: #1a1a1a;
-    font-size: 11px;
-    font-weight: var(--gs-font-weight-regular);
-    line-height: 13px;
-    text-shadow: none;
-    white-space: nowrap;
-    pointer-events: none;
-  }
-  /* Bare tools leave room for their captions, which are wider than they
-     are. */
-  :root[data-skin='aqua']
-    .gs-toolbar[data-variant='bar']
-    > :not(:first-child)
-    .gs-icon-button[data-caption]:not(.gs-separator ~ .gs-icon-button) {
-    margin: 0 10px;
-  }
-  :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] .gs-icon-button:disabled::after {
-    color: #6a6a6a;
   }
   :root[data-skin='aqua']
     .gs-toolbar[data-variant='bar']
