@@ -68,18 +68,21 @@ const char *mmu_kind_to_string(mmu_kind_t kind);
 // hw_profile_t.cpu_model — never stored in the profile separately.
 typedef enum cpu_arch {
     CPU_ARCH_M68K = 0, // Motorola 68000/68030/68040 (src/core/cpu/)
-    CPU_ARCH_PPC, // PowerPC — MPC601 / MPC604 (src/core/cpu/ppc/)
+    CPU_ARCH_PPC, // PowerPC — MPC601 / MPC604 / MPC750 (src/core/cpu/ppc/)
 } cpu_arch_t;
 
 // PowerPC model ids for hw_profile_t.cpu_model (the 68K ids live in cpu.h).
-// Both are models of the one `ppc` module (src/core/cpu/ppc/), discriminated
+// All are models of the one `ppc` module (src/core/cpu/ppc/), discriminated
 // by ppc_t.cpu_model the way cpu.c discriminates 68000/030/040.
 #define CPU_MODEL_PPC601 601
 #define CPU_MODEL_PPC604 604
+#define CPU_MODEL_PPC750 750
 
 // Main-CPU architecture implied by a profile's cpu_model.
 static inline cpu_arch_t cpu_arch_for_model(int cpu_model) {
-    return (cpu_model == CPU_MODEL_PPC601 || cpu_model == CPU_MODEL_PPC604) ? CPU_ARCH_PPC : CPU_ARCH_M68K;
+    return (cpu_model == CPU_MODEL_PPC601 || cpu_model == CPU_MODEL_PPC604 || cpu_model == CPU_MODEL_PPC750)
+               ? CPU_ARCH_PPC
+               : CPU_ARCH_M68K;
 }
 
 // How a machine attaches a hard-disk image.  Every Mac hangs its HD off the
@@ -176,6 +179,10 @@ typedef enum media_bus {
     // ride along with the medium.
     MEDIA_BUS_SCSI2,
     MEDIA_BUS_PROFILE, // Lisa/XL parallel-port ProFile (unit unused)
+    // An ATA bus pair (the beige G3's two Heathrow cells): unit = cell * 2 +
+    // device.  A hard disk is the ATA device itself; a CD-ROM is an ATAPI
+    // drive, carried by the machine's ATAPI back end at SCSI id = unit.
+    MEDIA_BUS_ATA,
 } media_bus_t;
 
 // One mounted medium in transit across a machine.restart power-cycle: the
@@ -198,8 +205,8 @@ typedef struct media_slot {
 } media_slot_t;
 
 // Transfer capacity: 2 floppy drives + 8 SCSI ids on each of two buses +
-// 1 ProFile.
-#define MEDIA_SLOTS_MAX 20
+// 1 ProFile + 4 ATA units.
+#define MEDIA_SLOTS_MAX 24
 
 // A ProFile block: 512 data bytes plus a 20-byte tag.  A property of the
 // ProFile protocol (MEDIA_BUS_PROFILE), whatever machine the drive is on.

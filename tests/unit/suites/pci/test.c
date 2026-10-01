@@ -42,6 +42,11 @@ const pci_card_kind_t mach64_gx_kind = {.id = "mach64_gx",
                                         .attach = PCI_ATTACH_PCI,
                                         .requires_prom = true,
                                         .card_class = "display"};
+// ...and the beige G3's on-board Rage Pro, the same file's builtin variant.
+const pci_card_kind_t ati_rage_pro_kind = {.id = "ati_rage_pro",
+                                           .display_name = "ATI 3D Rage Pro (on-board)",
+                                           .attach = PCI_ATTACH_BUILTIN,
+                                           .card_class = "display"};
 // ...and the three soldered-down devices of the Apple Network Server, whose
 // real drivers live in cards/cirrus54m30.c and cards/sym53c825.c.  All
 // BUILTIN, so they never appear in a socket-fit row; they are here because

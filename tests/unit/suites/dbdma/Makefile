@@ -1,5 +1,5 @@
 # DBDMA engine unit test.
-# Links the real tnt/dbdma.c against array-backed memory hooks and a
+# Links the real core/peripherals/dbdma.c against array-backed memory hooks and a
 # scripted device port, and pins: the control register's mask/value
 # convention, the synchronous status transitions behind the canonical
 # stop/reset/start poll loops, the operation-word commit rule (refetch,
@@ -14,5 +14,5 @@ TEST_SRCS    := test.c
 # functions so the save/restore round-trip is exercised for real.
 TEST_HARNESS := none
 EXTRA_SRCS   := ../../../../src/core/peripherals/dma_mem.c \
-                ../../../../src/machines/tnt/dbdma.c
+                ../../../../src/core/peripherals/dbdma.c
 include ../../common.mk

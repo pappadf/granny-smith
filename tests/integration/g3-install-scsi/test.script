@@ -1,0 +1,50 @@
+# Mac OS 9.2.1 installed onto a blank SCSI disk on a beige G3, then booted.
+#
+# I1  the CD (SCSI id 3) boots to the Finder with a blank 540 MB disk at
+#     SCSI id 0
+# I2  Drive Setup initializes the disk, Mac OS Install copies 9.2.1 onto it
+#     and reports "The installation process has finished"
+# I3  the installed disk, alone on the bus, boots to its desktop and the
+#     Mac OS Setup Assistant
+#
+# Over MESH the install moves a few hundred megabytes through DBDMA channel
+# 0 under Apple's SCSI driver; the HD boot then runs the installed system's
+# own extensions — ATI's Rage Pro accelerator among them.
+#
+# MEDIA-GATED: $GS_EXTRA_MEDIA_DIR/macos-9.2.1/macos921.iso.
+
+include "../lib/mac.script"
+include "../lib/gossamer.script"
+
+let cd = "${$EXTRA_MEDIA}/macos-9.2.1/macos921.iso"
+let hd = "${$WORK_DIR}/g3-scsi-hd.img"
+let installed = "${$WORK_DIR}/g3-scsi-installed.img"
+
+if have_media($cd) {
+    # --- I1 ---------------------------------------------------------------------
+    assert files.hd_create($hd, "HD500SC") "I1: create the blank disk"
+    machine.boot model="pmg3dt" ram=65536 rom="${$ROM}"
+    machine.rtc.time = "2026-10-01T12:00:00"
+    machine.scsi.attach_hd $hd 0
+    assert machine.scsi.attach_cdrom($cd, 3) "I1: attach the CD"
+    scheduler.run 13000000000
+    check_ex("finder-cd.png", 0, 440, 20, 640)
+
+    # --- I2 ---------------------------------------------------------------------
+    gos_install_921("install-finished.png")
+    click(453, 288) # Quit
+    run_ticks(900)
+    machine.scsi.device[0].image.export $installed
+
+    # --- I3 ---------------------------------------------------------------------
+    machine.boot model="pmg3dt" ram=65536 rom="${$ROM}"
+    machine.rtc.time = "2026-10-01T12:00:00"
+    machine.scsi.attach_hd $installed 0
+    scheduler.run 12000000000
+    try(machine.screen.save("${$RESULTS_DIR}/hd-desktop.png"), none)
+    check_ex("hd-desktop.png", 0, 440, 20, 640)
+} else {
+    echo "skip: g3-install-scsi (the Mac OS 9.2.1 CD is not under GS_EXTRA_MEDIA_DIR/macos-9.2.1/ -- see this row's header)"
+}
+
+quit

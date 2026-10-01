@@ -464,10 +464,10 @@ The repository is organized as follows:
 
 ### Multi-machine support
 
-The emulator runs twenty-two models — `plus`, `se30`, `iicx`, `iix`, `iifx`,
+The emulator runs twenty-four models — `plus`, `se30`, `iicx`, `iix`, `iifx`,
 `iici`, `iisi`, `q700`, `q900`, `q950`, `q840av`, `q660av`, `pm6100`,
-`pm7100`, `pm8100`, `pm7500`, `pm8500`, `pm9500`, `ans500`, `ans700`, `lisa`,
-and `macxl` (the registry is `builtin_machines[]` in
+`pm7100`, `pm8100`, `pm7500`, `pm8500`, `pm9500`, `ans500`, `ans700`,
+`pmg3dt`, `pmg3mt`, `lisa`, and `macxl` (the registry is `builtin_machines[]` in
 `src/machines/machine.c`) — on one shared core. Hardware is
 shared **by subsystem**, not by cloning a file per machine, across three
 layers. (The precedent is the NuBus card subsystem: a static descriptor that
@@ -479,13 +479,13 @@ registry.)
   NCR-5380 SCSI, sound, the NuBus subtree. Single-machine chips do **not** live
   here.
 - **Tier 2 — substrates** (`src/machines/<substrate>/`): a substrate owns a
-  machine's lifecycle. Five exist: **`mac030`** (the Macintosh II-family 68030
+  machine's lifecycle. Six exist: **`mac030`** (the Macintosh II-family 68030
   core — lifecycle spine, a table-driven `$50Fxxxxx` I/O dispatch engine, the
   ROM overlay, and the 68030 MMU register block), **`compact`** (the compact
   68000 Macs — Plus today, Mac SE assumed next), **`lisa`** (the Lisa
-  segment-MMU machines), and the two PowerPC substrates, **`pdm`**
-  (pm6100/pm7100/pm8100) and **`tnt`** (pm7500/pm8500/pm9500 and the Network
-  Servers).
+  segment-MMU machines), and the three PowerPC substrates, **`pdm`**
+  (pm6100/pm7100/pm8100), **`tnt`** (pm7500/pm8500/pm9500 and the Network
+  Servers) and **`gossamer`** (the beige G3: pmg3dt/pmg3mt).
 - **Tier 3 — chipset families** compose `mac030` as *siblings* (not as
   descendants of any one chipset): **GLUE** (`glue/` — se30/iicx/iix), **MDU+RBV**
   (`mdu/` — iici/iisi), **OSS+FMC** (`oss/` — iifx), **MCU+DAFB** (`mcu/` —
