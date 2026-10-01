@@ -340,14 +340,27 @@
   }
 
   /* ---- The panel: a capsule of tabs over a recessed box ------------------ */
+  /* The box holds everything a tab shows, its header buttons too: it is
+     drawn behind the panel's header and content, its top edge at the middle
+     of the tab capsule (6px of padding + half the capsule's 28px). */
   :root[data-skin='aqua'] .gs-workbench > .gs-panel {
+    position: relative;
     border: 0;
-    padding: 0 12px 12px;
+    padding: 6px 12px 12px;
     background: transparent;
   }
-  /* The tab capsule gets a row of its own, centred, under the header's
-     actions (which keep theirs, at the right), and overlaps the box by half
-     a tab so it sits across the box's top edge. */
+  :root[data-skin='aqua'] .gs-workbench > .gs-panel::before {
+    content: '';
+    position: absolute;
+    inset: 20px 12px 12px;
+    border: 1px solid #b8b8b8;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.035);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
+    pointer-events: none;
+  }
+  /* The tab capsule, centred, across the box's top edge; under it, inside
+     the box, the view's buttons at the right. */
   :root[data-skin='aqua'] .gs-panel-header {
     position: relative;
     z-index: 2;
@@ -356,13 +369,11 @@
     justify-content: flex-end;
     height: auto;
     overflow: visible;
-    margin-bottom: -14px;
-    padding-top: 8px;
+    padding: 0 10px;
     border-bottom: 0;
     background: transparent;
   }
   :root[data-skin='aqua'] .gs-tabs--panel {
-    order: 1;
     flex: 1 0 100%;
     justify-content: safe center;
     padding: 2px 3px 3px;
@@ -374,11 +385,11 @@
       0 1px 2px rgba(0, 0, 0, 0.2);
   }
   :root[data-skin='aqua'] .gs-panel-content {
-    padding: 20px 10px 10px;
-    border: 1px solid #b8b8b8;
-    border-radius: 8px;
-    background: rgba(0, 0, 0, 0.035);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
+    position: relative;
+    z-index: 1;
+    padding: 6px 10px 10px;
+    border: 0;
+    background: transparent;
   }
   :root[data-skin='aqua'] .gs-panel-content > * {
     border: 1px solid #9e9e9e;
