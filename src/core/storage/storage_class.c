@@ -1104,6 +1104,73 @@ static bool chunk_kb_ok(int64_t kb) {
     return kb >= 4 && kb <= 1024 && (kb & (kb - 1)) == 0;
 }
 
+// `files.xfer_read_disk(path, offset, len)` -- read up to `len` bytes of the
+// *decoded* disk an image holds (any format the emulator reads) from
+// `offset` into the transfer window; answers how many (0 at the end).  How
+// the page downloads a stored .dmg as a raw image without the raw image
+// ever existing.  The decoded source stays open between calls for the same
+// path (on the I/O worker, which serialises these jobs).
+static gs_source_t *g_rd_src;
+static image_t *g_rd_img;
+static char *g_rd_path;
+
+static void read_disk_close(void) {
+    gs_source_release(g_rd_src);
+    image_close(g_rd_img);
+    free(g_rd_path);
+    g_rd_src = NULL;
+    g_rd_img = NULL;
+    g_rd_path = NULL;
+}
+
+static int work_xfer_read_disk(io_leaf_t *j) {
+    xfer_job_t *x = (xfer_job_t *)j->ud;
+    if (!g_rd_path || strcmp(g_rd_path, j->a) != 0 || x->offset == 0) {
+        read_disk_close();
+        g_rd_src = open_decoded(j->a, &g_rd_img, j->err, sizeof j->err);
+        if (!g_rd_src) {
+            read_disk_close();
+            return -EINVAL;
+        }
+        g_rd_path = gs_strdup(j->a);
+    }
+    uint64_t size = gs_source_size(g_rd_src);
+    x->got = 0;
+    if (x->offset >= size) {
+        read_disk_close(); // done with it
+        return 0;
+    }
+    size_t n = size - x->offset < x->len ? (size_t)(size - x->offset) : (size_t)x->len;
+    if (gs_source_read_exact(g_rd_src, x->offset, g_xfer, n) != 0) {
+        snprintf(j->err, sizeof j->err, "read of '%s' at %llu failed", j->a, (unsigned long long)x->offset);
+        read_disk_close();
+        return -EIO;
+    }
+    x->got = n;
+    return 0;
+}
+
+static DEF_METHOD(files_method_xfer_read_disk) {
+    uint64_t offset = argv[1].u, len = argv[2].u;
+    if (len > STORAGE_XFER_BYTES)
+        len = STORAGE_XFER_BYTES;
+    io_leaf_t *j = io_leaf_new(argv[0].s, NULL);
+    xfer_job_t *x = (xfer_job_t *)calloc(1, sizeof *x);
+    if (!j || !x) {
+        free(x);
+        if (j)
+            free(j->a), free(j);
+        return val_err("files.xfer_read_disk: out of memory");
+    }
+    x->offset = offset;
+    x->len = len;
+    j->ud = x;
+    j->cleanup = xfer_cleanup;
+    j->work = work_xfer_read_disk;
+    j->answer = answer_xfer_read;
+    return io_leaf_dispatch(j, "files.xfer_read_disk");
+}
+
 // `files.udif_open(path, [chunk_kb], [level], [source_name])` -- start
 // writing a UDIF at `path` (which must not exist); answers a handle.
 static DEF_METHOD(files_method_udif_open) {
@@ -1366,6 +1433,12 @@ static const member_t files_members[] = {
      .doc = "Read up to len bytes of path at offset into the transfer window; answers the count",
      .method =
          {.ui_flags = MM_IO, .args = files_xfer_args, .nargs = 3, .result = V_UINT, .fn = files_method_xfer_read}},
+    {.kind = M_METHOD,
+     .name = "xfer_read_disk",
+     .flags = M_CAT_INTERNAL,
+     .doc = "Read up to len bytes of an image's decoded disk at offset into the transfer window; answers the count",
+     .method =
+         {.ui_flags = MM_IO, .args = files_xfer_args, .nargs = 3, .result = V_UINT, .fn = files_method_xfer_read_disk}},
     {.kind = M_METHOD,
      .name = "udif_open",
      .flags = M_CAT_INTERNAL,

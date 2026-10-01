@@ -57,4 +57,17 @@ assert $bv.bytes == 2147483648 "the blank disk has the wrong size"
 # A raw blank (any other name) is still the full size, as before.
 assert files.hd_create("${$WORK_DIR}/blank.img", "20M") "hd_create of a raw image failed"
 
+# A disk image inside a Mac archive (here BinHex around StuffIt around a
+# DiskCopy 4.2 floppy) is decoded straight into a UDIF: nothing extracted.
+let mt = "${$WORK_DIR}/mactest.dmg"
+assert files.archive.import("../../data/apps/MacTest_Disk.image_.sit_.hqx", $mt) "archive import failed"
+assert files.verify($mt) "the imported image does not verify"
+let mi = files.udif_info($mt)
+assert $mi.source_name == "MacTest Disk.image" "the member was not recorded"
+# The UDIF holds the member as it was (a DiskCopy 4.2 file); the format
+# registry peels both layers, so it opens as the 800 KB floppy inside.
+files.probe $mt
+assert files.list("${$mt}") "the imported floppy does not mount"
+assert !files.archive.import("../../data/apps/MacTest_Disk.image_.sit_.hqx", "${$WORK_DIR}/no.dmg", "Nope") "a missing member was imported"
+
 quit

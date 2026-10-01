@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 
 // Save the image list into a checkpoint stream.  Layout:
@@ -76,7 +77,13 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
             // legitimately 84 bytes larger than its logical raw_size, and a
             // genuinely mismatched geometry is still caught loudly by
             // storage_restore_from_checkpoint's own check.
-            image_create_empty(name, (size_t)raw_size);
+            // A .dmg is recreated as UDIF (a few KB of zero run), not as a
+            // raw file of the full size under that name.
+            size_t nl = strlen(name);
+            if (nl >= 4 && strcasecmp(name + nl - 4, ".dmg") == 0)
+                image_create_empty_udif(name, raw_size);
+            else
+                image_create_empty(name, (size_t)raw_size);
         }
         if (writable && consolidated) {
             img = image_create_with_geometry(name, checkpoint_machine_dir(), geom);
