@@ -273,7 +273,6 @@
     font-size: var(--gs-font-size-xs);
     line-height: inherit;
   }
-  .printer-label,
   .upload-detail {
     opacity: 0.8;
     white-space: nowrap;
@@ -286,6 +285,7 @@
     cursor: pointer;
     padding: 0 var(--gs-space-1);
   }
+  .printer-label,
   .upload-label {
     max-width: 28ch;
     overflow: hidden;
