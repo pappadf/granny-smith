@@ -2,32 +2,36 @@
 
 A skin is a named visual design for the web UI: one folder of token values,
 plus, optionally, an icon sprite, webfonts and an override stylesheet. A
-skin changes how the UI looks, never what it does or where things are. The
-default skin is `workbench`. The others are each built only from
-`skins/<id>/` and `public/skins/<id>/`:
+skin changes how the UI looks, never what it does or where things are.
+Every skin is either a light or a dark one, its `--gs-color-scheme` token
+says which (native controls and scrollbars follow it); there are no light
+and dark versions of a skin. The skins:
 
-- `glass`: floating translucent cards over a softly lit page, in two
-  schemes: dark ("Midnight", periwinkle and teal glass) and light
-  ("Starlight", white cards on cool grey). Sora and JetBrains Mono, the
-  default sprite, the floating layout in its overrides.
-- `platinum`: Mac OS 8, light only. Bevelled push buttons and grooves,
-  folder tabs, white Finder lists with the lavender highlight, Platinum
+- `workbench` (dark, the default) and `workbench-light`: the VS Code-derived
+  look. A first visit gets the one the operating system prefers.
+- `midnight` (dark): floating translucent glass cards over a blue-black page
+  lit by indigo and teal glows.
+- `starlight` (light): the same floating cards in white on cool grey, the
+  toolbar as separate pills.
+- `platinum` (light): Mac OS 8. Bevelled push buttons and grooves, folder
+  tabs, white Finder lists with the lavender highlight, Platinum
   scrollbars, LED status fields, Chivo, and two-tone Finder icons in its
   own sprite.
-- `aqua`: Mac OS X 10.0, light only. Pinstripes, a brushed toolbar, blue and
+- `aqua` (light): Mac OS X 10.0. Pinstripes, a brushed toolbar, blue and
   white gel capsules, capsule tabs over a recessed box, the blue gradient
   selection, gel scrollbars and a white bezel. Hanken Grotesk and Fira
   Mono.
 
-Users pick a skin and a scheme in the display toolbar's appearance menu
-(the chevron beside the theme toggle); `?skin=<id>` selects one for a single
-page load.
+Midnight and Starlight share their floating layout (`skins/glass.css`) and
+fonts (`public/skins/glass/`); every other skin is built only from
+`skins/<id>/` and `public/skins/<id>/`. Users pick a skin in the display
+toolbar's Appearance menu; `?skin=<id>` selects one for a single page load.
 
 ## What a skin can change
 
 - **Tokens.** Every visual value is a `--gs-*` custom property. A skin sets
   the semantic tokens (surfaces, text, borders, intents, machine states, the
-  syntax and code palettes) for each scheme it has. It may also override any
+  syntax and code palettes) and `--gs-color-scheme`. It may also override any
   scale token (type, space, radius, metrics, motion) or component token
   (`--gs-button-*`, `--gs-tab-*`, …). [TOKENS.md](TOKENS.md) lists them all,
   with kinds and defaults.
@@ -48,7 +52,6 @@ page load.
 - **Browser-drawn chrome:**
   - the built-in PDF viewer of the print dialog (its toolbar, pages and
     zoom belong to the browser);
-  - the open list of a native `<select>` (it follows only `color-scheme`);
   - `title=` tooltips;
   - the browser's own fullscreen UI.
 - **Scrollbar shape.** Scrollbars take the skin's colours
@@ -60,21 +63,20 @@ page load.
 ## Quick start
 
 1. Copy `skins/workbench/` to `skins/<id>/` (`<id>` in kebab-case).
-2. In `tokens.css`, change the selectors to `:root[data-skin='<id>'][data-theme='dark']`
-   and `…[data-theme='light']`. Keep only the schemes the skin has, and
+2. In `tokens.css`, change the selector to `:root[data-skin='<id>']` and
    leave out the bare `:root` (only the default skin provides that
-   pre-paint fallback). Then set the values.
-3. In `manifest.ts`, set `id`, `name` and `schemes` (the first scheme is
-   the fallback).
+   pre-paint fallback). Then set the values, `--gs-color-scheme: light`
+   or `dark` among them.
+3. In `manifest.ts`, set `id` and `name`.
 4. Register the skin in `registry.ts`: import its `tokens.css` and add its
    manifest to `skins`.
 5. Look at it in the gallery: `npm run dev`, then open `?gallery&skin=<id>`
-   (add `&story=<name>&theme=light` for one story). The index's toolbar
-   switches skin, scheme and reduced motion; its **Tokens** view lists
+   (add `&story=<name>` for one story). The index's toolbar switches skin
+   and reduced motion; its **Tokens** view lists
    every token's computed value, and its **Coverage** view maps each UI
    element to the stories that show it. Hover and pressed states are
    pinned with `data-force-state="hover|active"` (the ForcedStates story).
-   In the app, use the appearance menu or `?skin=<id>`.
+   In the app, use the Appearance menu or `?skin=<id>`.
 
 Every skin's `tokens.css` is bundled, because a switch must never flash the
 default. Overrides, fonts and sprites load when the skin is first used.
@@ -85,7 +87,6 @@ default. Overrides, fonts and sprites load when the skin is first used.
 export const paper: SkinManifest = {
   id: 'paper',
   name: 'Paper',
-  schemes: ['light'], // one scheme: the toolbar's scheme toggle is disabled
   sprite: 'skins/paper/sprite.svg', // relative to public/; omit for the default
   fonts: [
     {
@@ -96,13 +97,9 @@ export const paper: SkinManifest = {
     },
   ],
   overrides: () => import('./overrides.css'),
-  metaThemeColor: { light: '#f4f1ea' }, // default: --gs-surface-raised
+  metaThemeColor: '#f4f1ea', // default: --gs-surface-raised
 };
 ```
-
-**Single-scheme skins.** If the user's preference (or the OS, under
-`system`) asks for a scheme the skin lacks, the skin's first scheme is
-used, and the scheme toggle is disabled.
 
 ## Token values
 
@@ -110,7 +107,7 @@ used, and the scheme toggle is disabled.
   L-4).
 - A skin may keep a private reference palette as `--gs-ref-*` tokens in
   its own `tokens.css`. Nothing outside the skin may read them (L-6).
-- Every semantic token must be defined in every scheme the skin has (L-2).
+- Every semantic token must be defined (L-2).
   Derived semantic tokens (those with a default in TOKENS.md) may be left
   out.
 - Text must meet the contrast pairs in `styles/contract.ts`
@@ -134,7 +131,7 @@ specificity, and are scoped to the skin:
 
 Target only the `gs-*` part classes and their `data-*` states. Other class
 names in the DOM are test hooks and can change. A structural selector over
-parts is allowed where no part names the element (glass and aqua light up
+parts is allowed where no part names the element (midnight, starlight and aqua light up
 the display toolbar's first button, the run control, as
 `.gs-toolbar[data-variant='bar'] > :first-child > .gs-icon-button:first-child`),
 but it breaks if the order changes, so keep such rules rare (the toolbar's
@@ -154,7 +151,7 @@ first group is run / shut down; the buttons after the last group's
 - **Layout regions:** `gs-workbench` (with its `panel-left|right|bottom`
   and `panel-collapsed` modifiers), `gs-display`, `gs-display-content`,
   `gs-panel`, `gs-panel-header` and `gs-panel-content`. Spacing, borders,
-  radii and backgrounds may change here (glass turns them into floating
+  radii and backgrounds may change here (midnight and starlight turn them into floating
   cards); order and sizing may not. The page itself is `body`.
 - **Captions:** display-toolbar controls carry a short `data-caption`
   (Run / Pause, Shut Down, Speed, Zoom, Save State, Appearance, Full
@@ -186,12 +183,12 @@ make ui2-gallery                                                 # the screensho
 The token lints (`tests/lint/tokens.test.ts`) cover:
 
 - L-1: every token read is in the contract.
-- L-2: every semantic token is in every scheme.
+- L-2: every semantic token is defined.
 - L-3: no fallbacks.
 - L-4: no literal colours.
 - L-5: no literal scale values.
 - L-6: no reference-token reads outside the skin.
-- L-7: one writer of the appearance attributes.
+- L-7: one writer of the skin attribute.
 - L-8: focus stays visible.
 - L-9: the screen canvases are left alone.
 - L-10: every stylesheet is in its cascade layer.
@@ -199,7 +196,7 @@ The token lints (`tests/lint/tokens.test.ts`) cover:
 
 `contrast.test.ts` checks the contrast pairs, and `sprite.test.ts` checks
 that each sprite covers the icon registry. The gallery screenshots run per
-skin and scheme; their baselines are recorded in the CI image
+skin; their baselines are recorded in the CI image
 (`tests/e2e/README.md`).
 
 ## Assets
@@ -217,10 +214,11 @@ skin and scheme; their baselines are recorded in the CI image
 ## How the mechanism works
 
 - **Selection.**
-  - `<html data-skin data-theme>` selects the token blocks.
-  - `state/appearance.svelte.ts` is their only writer. `index.html`'s
-    pre-paint script sets them once before any stylesheet, from `?skin=`,
-    `gs-skin` and `gs-theme`, so the first frame is already right.
+  - `<html data-skin>` selects the token block.
+  - `state/appearance.svelte.ts` is its only writer. `index.html`'s
+    pre-paint script sets it once before any stylesheet, from `?skin=` or
+    `gs-skin` (else the system's light or dark Workbench), so the first
+    frame is already right.
 - **Cascade layers.** `styles/layers.css` fixes the order `gs.reset`,
   `gs.base`, `gs.tokens`, `gs.components`, `gs.skin`, `gs.overrides`.
   - Component styles are put in `gs.components` by a preprocess step in

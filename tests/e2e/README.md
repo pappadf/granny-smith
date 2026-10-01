@@ -28,7 +28,7 @@ tests/e2e/
 │
 ├── web2-specs/                      # Main functional suite (playwright.web2.config.ts)
 │   ├── ans-bitblt-repro.spec.ts         # Reproduction (REPRO_E28=1): NT GUI Setup on the ANS 500 drawn in the browser
-│   ├── app-states.spec.ts               # The workbench in fixed states, screenshotted in both colour schemes
+│   ├── app-states.spec.ts               # The workbench in fixed states, screenshotted in every skin
 │   ├── av-boot-no-slots.spec.ts         # A slotless model (q660av) boots after a carded one in the same session
 │   ├── av-camera.spec.ts                # AV video-in against Chromium's fake camera
 │   ├── av-microphone.spec.ts            # Browser mic → shared-heap ring → guest RAM (no OS)
@@ -69,7 +69,7 @@ tests/e2e/
 │   └── vrom-offer-ingest.spec.ts        # Mid-session vROM upload is offered to "(auto)"
 │
 ├── gallery/                         # UI gallery screenshots (playwright.gallery.config.ts)
-│   └── ui-gallery.spec.ts           # Every story × variant × scheme, pixel-compared with baselines
+│   └── ui-gallery.spec.ts           # Every story × variant × skin, pixel-compared with baselines
 │
 ├── ui-prod-smoke/                   # Production-bundle smoke (playwright.prod-smoke.config.ts)
 │   └── prod-smoke.spec.ts           # dist/ on a subpath w/o COI headers reaches __gsReady
@@ -139,30 +139,28 @@ Two sets pin the look of the UI itself:
 
 - `gallery/ui-gallery.spec.ts` opens the development-only UI gallery
   (`?gallery` on the Vite dev server, `app/web2/src/gallery/`) once per story,
-  variant, skin and scheme (each skin in the schemes its manifest lists), and
-  compares the page with its baseline at `maxDiffPixels: 0`. The default
-  skin's baselines are `<story>-<variant>-<scheme>`, another skin's
-  `<story>-<variant>-<skin>-<scheme>`. The stories render components against fixture state, so
+  variant and skin, and compares the page with its baseline at
+  `maxDiffPixels: 0`. The baselines are `<story>-<variant>-<skin>`. The
+  stories render components against fixture state, so
   this needs neither the WASM build nor test data, and runs in every CI run
   (`make ui2-gallery`). Opened without `&story=`, the gallery is an index
-  with a skin / scheme / reduced-motion toolbar, a token table (`&view=tokens`)
+  with a skin / reduced-motion toolbar, a token table (`&view=tokens`)
   and a coverage list (`&view=coverage`) of which story shows each UI element.
 - `web2-specs/app-states.spec.ts` screenshots the real workbench (welcome,
   every panel tab, the configuration form, toasts of each severity, the
   print dialog, a URL boot, the Debug view of a paused Plus) with the text that changes on its own masked. It runs with
   the functional suite (`make ui2-e2e`, needs test data).
 
-Both compare the default skin exactly (`threshold: 0`). The other skins allow
+Both compare the Workbench skins exactly (`threshold: 0`). The others allow
 a per-pixel colour difference of `threshold: 0.03`, still with no pixel
 beyond it: their large anti-aliased curves, gradients and translucency come
 out a level or few apart depending on Chromium's compositing history (the
 same page, shot twice, can differ), which an exact comparison turns into
 flakes.
 
-`web2-specs/appearance.spec.ts` checks the skin and scheme plumbing without
-screenshots: a persisted light preference is on the page before any of the
-app's JavaScript runs, and a scheme switch restyles the console input at
-runtime.
+`web2-specs/appearance.spec.ts` checks the skin plumbing without
+screenshots: a persisted skin is on the page before any of the app's
+JavaScript runs, and a skin switch restyles the console input at runtime.
 
 A styling change that claims to change nothing must pass both unchanged. An
 intentional change regenerates the affected baselines and lists them in its PR.

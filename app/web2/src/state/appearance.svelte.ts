@@ -1,27 +1,22 @@
 import { untrack } from 'svelte';
-import { DEFAULT_SKIN, getSkin } from '@/skins/registry';
-import type { Scheme, SkinManifest } from '@/skins/types';
+import { DEFAULT_SKIN, LIGHT_DEFAULT_SKIN, getSkin } from '@/skins/registry';
+import type { SkinManifest } from '@/skins/types';
 
-// The appearance: which skin, and which colour scheme (dark or light).  The
-// user's preferences are `appearance`; what is on screen is `resolved`.
-// applyAppearance() is the one writer of <html data-skin data-theme> and of
-// the color-scheme / theme-color meta tags (index.html's pre-paint script
-// sets them once before the first frame; lint L-7).
-
-export type SchemeMode = Scheme | 'system';
+// The appearance: which skin.  Every skin is a light or a dark one (its
+// --gs-color-scheme token).  The user's choice is `appearance`; what is on
+// screen is `resolved`.  applyAppearance() is the one writer of <html
+// data-skin> and of the color-scheme / theme-color meta tags (index.html's
+// pre-paint script sets data-skin once before the first frame; lint L-7).
 
 interface AppearancePrefs {
   // The chosen skin (persisted as gs-skin).
   skin: string;
-  // dark, light or system (persisted as gs-theme).
-  schemeMode: SchemeMode;
   // A ?skin= override for this page load only (never persisted).
   sessionSkin: string | null;
 }
 
 interface AppearanceResolved {
   skin: string;
-  scheme: Scheme;
   // Bumped after every DOM write, so code that reads token values knows to
   // read them again.
   version: number;
@@ -29,33 +24,22 @@ interface AppearanceResolved {
 
 export const appearance: AppearancePrefs = $state({
   skin: DEFAULT_SKIN,
-  schemeMode: 'system',
   sessionSkin: null,
 });
 
 export const resolved: AppearanceResolved = $state({
   skin: DEFAULT_SKIN,
-  scheme: 'dark',
   version: 0,
 });
 
-// The OS colour preference, kept reactive so everything resolving `system`
-// (the applied scheme, the toolbar's tooltip) follows an OS change.
-const system = $state({ light: queryPrefersLight() });
-
-// The OS colour preference right now.
-function queryPrefersLight(): boolean {
-  if (typeof window === 'undefined' || !window.matchMedia) return false;
-  return window.matchMedia('(prefers-color-scheme: light)').matches;
-}
-
-// Whether the OS prefers light (tests set it through setSystemPrefersLight).
-export function systemPrefersLight(): boolean {
-  return system.light;
-}
-
-export function setSystemPrefersLight(light: boolean): void {
-  system.light = light;
+// The skin for a first visit, before any is chosen: Workbench, light or
+// dark as the operating system prefers.
+export function firstVisitSkin(): string {
+  const light =
+    typeof window !== 'undefined' &&
+    !!window.matchMedia &&
+    window.matchMedia('(prefers-color-scheme: light)').matches;
+  return light ? LIGHT_DEFAULT_SKIN : DEFAULT_SKIN;
 }
 
 // The skin in effect: the session override, else the preference.
@@ -63,52 +47,9 @@ export function activeSkin(): SkinManifest {
   return getSkin(appearance.sessionSkin ?? appearance.skin);
 }
 
-// The scheme a preference resolves to on a skin: `system` follows the OS,
-// and a scheme the skin lacks falls back to the skin's first.
-export function resolveScheme(
-  mode: SchemeMode,
-  systemLight: boolean,
-  skin: SkinManifest = activeSkin(),
-): Scheme {
-  const want: Scheme = mode === 'system' ? (systemLight ? 'light' : 'dark') : mode;
-  return skin.schemes.includes(want) ? want : skin.schemes[0];
-}
-
 export function setSkin(id: string): void {
   appearance.skin = getSkin(id).id;
   appearance.sessionSkin = null;
-}
-
-// The appearance menu's name for one scheme of a skin.
-export function lookName(skin: SkinManifest, scheme: Scheme): string {
-  const named = skin.schemeNames?.[scheme];
-  if (named) return named;
-  if (skin.schemes.length < 2) return skin.name;
-  return `${skin.name} ${scheme === 'dark' ? 'Dark' : 'Light'}`;
-}
-
-// Choose a look: a skin in one of its schemes.
-export function setLook(id: string, scheme: Scheme): void {
-  setSkin(id);
-  appearance.schemeMode = scheme;
-}
-
-export function setSchemeMode(mode: SchemeMode): void {
-  appearance.schemeMode = mode;
-}
-
-// Whether the active skin offers a choice of scheme.
-export function canToggleScheme(): boolean {
-  return activeSkin().schemes.length > 1;
-}
-
-// Flip to the opposite of the scheme on screen (the toolbar toggle), so a
-// click from `system` lands on the visible opposite.  A single-scheme skin
-// has nothing to flip to.
-export function toggleScheme(): void {
-  if (!canToggleScheme()) return;
-  const now = resolveScheme(appearance.schemeMode, system.light);
-  appearance.schemeMode = now === 'dark' ? 'light' : 'dark';
 }
 
 // Take a ?skin= parameter for this load (unknown ids are ignored).
@@ -176,18 +117,15 @@ function meta(name: string): HTMLMetaElement {
   return el;
 }
 
-// Resolve the preferences and write them to the document.
+// Write the skin in effect to the document.
 export function applyAppearance(): void {
   const skin = activeSkin();
-  const scheme = resolveScheme(appearance.schemeMode, system.light, skin);
   if (typeof document !== 'undefined') {
     const d = document.documentElement;
     if (d.dataset.skin !== skin.id) d.dataset.skin = skin.id;
-    if (d.dataset.theme !== scheme) d.dataset.theme = scheme;
-    meta('color-scheme').content = scheme;
-    const themeColor =
-      skin.metaThemeColor?.[scheme] ??
-      getComputedStyle(d).getPropertyValue('--gs-surface-raised').trim();
+    const css = getComputedStyle(d);
+    meta('color-scheme').content = css.getPropertyValue('--gs-color-scheme').trim() || 'dark';
+    const themeColor = skin.metaThemeColor ?? css.getPropertyValue('--gs-surface-raised').trim();
     if (themeColor) meta('theme-color').content = themeColor;
     loadFonts(skin);
     loadOverrides(skin);
@@ -202,19 +140,6 @@ export function applyAppearance(): void {
   // Untracked: an effect running this must not depend on what it writes.
   untrack(() => {
     resolved.skin = skin.id;
-    resolved.scheme = scheme;
     resolved.version++;
   });
-}
-
-// Follow OS preference changes (the one listener; App installs it).
-// Returns the uninstaller.
-export function installSystemSchemeListener(): () => void {
-  if (typeof window === 'undefined' || !window.matchMedia) return () => undefined;
-  const mq = window.matchMedia('(prefers-color-scheme: light)');
-  const handler = () => {
-    system.light = mq.matches;
-  };
-  mq.addEventListener('change', handler);
-  return () => mq.removeEventListener('change', handler);
 }

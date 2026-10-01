@@ -36,16 +36,15 @@ function render(): string {
         : `\`${dflt.get(t.name) ?? ''}\``;
   const section = (title: string, intro: string, layer: TokenSpec['layer']) => {
     const rows = TOKENS.filter((t) => t.layer === layer).map(
-      (t) =>
-        `| \`${t.name}\` | ${t.kind} | ${t.perScheme ? 'yes' : ''} | ${cell(value(t))} | ${cell(t.doc)} |`,
+      (t) => `| \`${t.name}\` | ${t.kind} | ${cell(value(t))} | ${cell(t.doc)} |`,
     );
     return [
       `## ${title}`,
       '',
       intro,
       '',
-      '| Token | Kind | Per scheme | Default | Purpose |',
-      '|---|---|---|---|---|',
+      '| Token | Kind | Default | Purpose |',
+      '|---|---|---|---|',
       ...rows,
       '',
     ].join('\n');
@@ -59,7 +58,7 @@ function render(): string {
     '',
     section(
       'Semantic tokens',
-      'Defined by every skin in every scheme it has (`skins/<id>/tokens.css`). A token with a default (derived) may be left out.',
+      'Defined by every skin (`skins/<id>/tokens.css`). A token with a default (derived) may be left out.',
       'semantic',
     ),
     section(

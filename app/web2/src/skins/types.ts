@@ -1,10 +1,8 @@
-// A skin: a named visual design, made of token values per colour scheme and
-// optionally an icon sprite, webfonts and an override stylesheet.  See
-// src/skins/README.md.
+// A skin: a named visual design, made of token values (a light or a dark
+// one: its --gs-color-scheme token says which) and optionally an icon
+// sprite, webfonts and an override stylesheet.  See src/skins/README.md.
 
-export type Scheme = 'dark' | 'light';
-
-// A webfont a skin ships under public/skins/<id>/fonts/.
+// A webfont a skin ships under public/skins/<folder>/fonts/.
 export interface SkinFont {
   family: string; // the CSS family name the skin's --gs-font-* tokens use
   src: string; // relative URL (the build's base is './'), woff2
@@ -16,13 +14,8 @@ export interface SkinFont {
 export interface SkinManifest {
   id: string; // kebab-case; the folder name and the data-skin value
   name: string; // human label
-  // What the appearance menu calls each scheme of this skin, when the skin
-  // names them itself (glass: Midnight / Starlight); otherwise a skin with
-  // two schemes is listed as "<name> Dark" / "<name> Light".
-  schemeNames?: Partial<Record<Scheme, string>>;
-  schemes: readonly Scheme[]; // at least one; the first is the fallback
   sprite?: string; // relative URL under public/, default 'icons/sprite.svg'
   fonts?: readonly SkinFont[];
   overrides?: () => Promise<unknown>; // lazy import of the skin's overrides.css
-  metaThemeColor?: Partial<Record<Scheme, string>>; // <meta name="theme-color">
+  metaThemeColor?: string; // <meta name="theme-color">, else --gs-surface-raised
 }

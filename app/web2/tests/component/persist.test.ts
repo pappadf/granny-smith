@@ -84,12 +84,10 @@ describe('loadPersistedState — view-state keys', () => {
     expect(debug.mmuSubtab).toBe('translate');
   });
 
-  it('still restores the original keys (theme + panelPos + panelSize)', () => {
-    localStorage.setItem('gs-theme', 'light');
+  it('still restores the original keys (panelPos + panelSize)', () => {
     localStorage.setItem('gs-panel-pos', 'left');
     localStorage.setItem('gs-panel-size', JSON.stringify({ left: 320 }));
     loadPersistedState();
-    expect(appearance.schemeMode).toBe('light');
     expect(layout.panelPos).toBe('left');
     expect(layout.panelSize.left).toBe(320);
   });

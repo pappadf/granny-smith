@@ -16,15 +16,32 @@
   import { checkpointsView } from './checkpointsView.svelte';
   import {
     checkpointCreatedToDate,
+    describeMachine,
     formatBytes,
     formatCheckpointLabel,
   } from '@/lib/checkpointMeta';
+  import { getProfile } from '@/bus/profile';
   import type { CheckpointEntry } from '@/bus/types';
 
   let rows = $state<CheckpointEntry[]>([]);
 
+  // Model id -> its name, looked up once the rows name a model.
+  let modelNames = $state<Record<string, string>>({});
+
   async function refresh() {
     rows = await opfs.scanCheckpoints();
+    for (const m of new Set(rows.map((r) => r.model))) {
+      if (!m || modelNames[m]) continue;
+      const p = await getProfile(m).catch(() => null);
+      if (p?.name) modelNames[m] = p.name;
+    }
+  }
+
+  // "Macintosh Plus · 4 MB", or "unknown" when the manifest names no model.
+  function machineOf(row: CheckpointEntry): string {
+    return row.model
+      ? describeMachine(modelNames[row.model] ?? row.model, row.ramBytes)
+      : 'unknown';
   }
 
   onMount(() => {
@@ -54,8 +71,8 @@
       key: 'machine',
       label: 'Machine',
       width: 'var(--gs-checkpoints-col-machine)',
-      cmp: (a, b) => a.machine.localeCompare(b.machine),
-      text: (row) => row.machine,
+      cmp: (a, b) => machineOf(a).localeCompare(machineOf(b)),
+      text: (row) => machineOf(row),
     },
     {
       key: 'date',

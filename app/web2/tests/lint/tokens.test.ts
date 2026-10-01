@@ -61,8 +61,9 @@ for (const f of DEFAULTS)
 // Literal colours belong where token values are defined, and as the
 // fallbacks of the startup error page (shown before any stylesheet applies).
 // A skin's overrides.css (its part-hook rules) is skin-owned like its tokens,
-// and its manifest may name a literal <meta name=theme-color>.
-const SKIN_OVERRIDES = (f: string) => /^skins\/[^/]+\/overrides\.css$/.test(rel(f));
+// as is a layout stylesheet skins share (skins/<name>.css), and a manifest
+// may name a literal <meta name=theme-color>.
+const SKIN_OVERRIDES = (f: string) => /^skins\/([^/]+\/overrides|[^/]+)\.css$/.test(rel(f));
 const SKIN_MANIFEST = (f: string) => /^skins\/[^/]+\/manifest\.ts$/.test(rel(f));
 const LITERAL_OK = (f: string) => VALUE_FILES.includes(f) || SKIN_OVERRIDES(f) || SKIN_MANIFEST(f);
 const FALLBACK_OK = (f: string) => rel(f) === 'lib/webglErrorPage.ts';
@@ -126,9 +127,8 @@ describe('design tokens', () => {
     expect(bad).toEqual([]);
   });
 
-  // L-2: a skin missing a semantic token in a scheme renders that role with
-  // nothing (or another scheme's value).
-  it('L-2: every skin defines every semantic token in every scheme', () => {
+  // L-2: a skin missing a semantic token renders that role with nothing.
+  it('L-2: every skin defines every semantic token', () => {
     const rules = skinRules(SRC);
     const bad: string[] = [];
     for (const skin of skins) {
@@ -137,12 +137,10 @@ describe('design tokens', () => {
         bad.push(`${skin.id}: no tokens.css`);
         continue;
       }
-      for (const scheme of skin.schemes) {
-        const decls = skinDecls(r, skin.id, scheme);
-        for (const t of TOKENS)
-          if (t.layer === 'semantic' && !t.derived && !decls.has(t.name))
-            bad.push(`${skin.id} ${scheme}: ${t.name}`);
-      }
+      const decls = skinDecls(r, skin.id);
+      for (const t of TOKENS)
+        if (t.layer === 'semantic' && !t.derived && !decls.has(t.name))
+          bad.push(`${skin.id}: ${t.name}`);
     }
     expect(bad).toEqual([]);
   });
@@ -278,11 +276,11 @@ describe('design tokens', () => {
     expect(bad).toEqual([]);
   });
 
-  // L-7: one writer of the appearance attributes, so the state, the
-  // tooltip and the document can never disagree (index.html's pre-paint
-  // script, outside src/, is the other).
-  it('L-7: only state/appearance writes data-skin and data-theme', () => {
-    const WRITE = /dataset\.(?:theme|skin)\s*=(?!=)|setAttribute\(\s*['"]data-(?:theme|skin)['"]/;
+  // L-7: one writer of the skin attribute, so the state and the document
+  // can never disagree (index.html's pre-paint script, outside src/, is the
+  // other).
+  it('L-7: only state/appearance writes data-skin', () => {
+    const WRITE = /dataset\.skin\s*=(?!=)|setAttribute\(\s*['"]data-skin['"]/;
     const bad: string[] = [];
     for (const f of SOURCES) {
       if (rel(f) === 'state/appearance.svelte.ts' || f.endsWith('.css')) continue;
@@ -307,7 +305,9 @@ describe('design tokens', () => {
         if (!/^@import '\.\/layers\.css';/.test(css)) bad.push(`${rel(f)}: layers.css not first`);
         continue;
       }
-      const m = css.match(/^@layer (gs\.[a-z]+) \{([\s\S]*)\}$/);
+      // A skin's overrides may first import the layout it shares.
+      const own = SKIN_OVERRIDES(f) ? css.replace(/^(@import '\.\.\/[a-z-]+\.css';\s*)+/, '') : css;
+      const m = own.match(/^@layer (gs\.[a-z]+) \{([\s\S]*)\}$/);
       if (!m || /^\s*@layer /m.test(m[2])) bad.push(`${rel(f)}: not one @layer gs.* block`);
     }
     const config = readFileSync(join(SRC, '..', 'svelte.config.js'), 'utf8');

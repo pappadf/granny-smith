@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// web2 e2e: the real workbench in fixed states, screenshotted in both colour
-// schemes.  The UI gallery (tests/e2e/gallery) covers every component against
+// web2 e2e: the real workbench in fixed states, screenshotted in every skin.  The UI gallery (tests/e2e/gallery) covers every component against
 // fixture state; this spec covers what only a live core shows — the machine
 // configuration form, the SYSTEM tree and command browser, the Debug view of a
 // paused machine — so a styling change that claims to change nothing can be
@@ -46,22 +45,15 @@ const MINIMAL_PDF = Array.from(
   ),
 );
 
-// Every (skin, scheme) the build has; the default skin's shots are named by
-// scheme alone, another skin's carry its id (welcome-platinum-light).
-const DEFAULT_SKIN = "workbench";
-const LOOKS = MANIFESTS.flatMap((m) =>
-  m.schemes.map((scheme) => ({
-    skin: m.id,
-    scheme,
-    look: m.id === DEFAULT_SKIN ? scheme : `${m.id}-${scheme}`,
-  })),
-);
-// The default skin is compared exactly.  The others draw large anti-aliased
+// Every skin the build has; each shot is named after it (welcome-platinum).
+const SKINS = MANIFESTS.map((m) => m.id);
+// The Workbench skins are compared exactly.  The others draw large anti-aliased
 // curves, gradients and translucency, which Chromium re-rasters a level or
 // few apart depending on the page's compositing history (the same DOM, shot
 // twice, differs): they allow that much colour noise per pixel, and still not
 // a single pixel beyond it.
 const RASTER_NOISE = 0.03;
+const EXACT = new Set(["workbench", "workbench-light"]);
 const TABS = [
   "terminal",
   "machine",
@@ -74,21 +66,16 @@ const TABS = [
 
 test.use({ viewport: { width: 1280, height: 800 } });
 
-// The skin and scheme come from the persisted preferences; the preview
+// The skin comes from the persisted preference; the preview
 // notice is already dismissed, so no first-visit modal covers the page.
-async function prepare(
-  page: Page,
-  skin: string,
-  scheme: string,
-): Promise<void> {
+async function prepare(page: Page, skin: string): Promise<void> {
   await page.addInitScript(
-    ([k, s]) => {
+    (k) => {
       localStorage.setItem("gs-skin", k);
-      localStorage.setItem("gs-theme", s);
       localStorage.setItem("gs-preview-notice-dismissed-v1", "1");
       localStorage.setItem("gs-panel-pos", "bottom");
     },
-    [skin, scheme],
+    skin,
   );
 }
 
@@ -128,7 +115,7 @@ async function shot(
   const skin = await page.evaluate(() => document.documentElement.dataset.skin);
   await expect(page).toHaveScreenshot(name, {
     maxDiffPixels: 0,
-    threshold: skin === DEFAULT_SKIN ? 0 : RASTER_NOISE,
+    threshold: EXACT.has(skin ?? "") ? 0 : RASTER_NOISE,
     animations: "disabled",
     caret: "hide",
     mask: [...masks(page), ...extra],
@@ -138,11 +125,11 @@ async function shot(
   });
 }
 
-for (const { skin, scheme, look } of LOOKS) {
-  test.describe(`app states (${look})`, () => {
-    test(`welcome and panel tabs, no machine (${look})`, async ({ page }) => {
+for (const skin of SKINS) {
+  test.describe(`app states (${skin})`, () => {
+    test(`welcome and panel tabs, no machine (${skin})`, async ({ page }) => {
       test.setTimeout(180_000);
-      await prepare(page, skin, scheme);
+      await prepare(page, skin);
       await open(page);
       // The storage the Filesystem and Images tabs list.
       await stageOpfsFile(
@@ -150,17 +137,17 @@ for (const { skin, scheme, look } of LOOKS) {
         "/opfs/images/rom/plus-v3-4d1f8172.rom",
         PLUS_ROM,
       );
-      await shot(page, `welcome-${look}.png`);
+      await shot(page, `welcome-${skin}.png`);
       for (const tab of TABS) {
         await page.locator(`button.ptab[data-tab="${tab}"]`).click();
         await page.waitForTimeout(300);
-        await shot(page, `tab-${tab}-${look}.png`);
+        await shot(page, `tab-${tab}-${skin}.png`);
       }
     });
 
-    test(`machine configuration (${look})`, async ({ page }) => {
+    test(`machine configuration (${skin})`, async ({ page }) => {
       test.setTimeout(120_000);
-      await prepare(page, skin, scheme);
+      await prepare(page, skin);
       await open(page);
       await stageOpfsFile(
         page,
@@ -173,12 +160,12 @@ for (const { skin, scheme, look } of LOOKS) {
       await expect(page.locator(".config-form select").first()).toBeVisible({
         timeout: 30_000,
       });
-      await shot(page, `config-${look}.png`);
+      await shot(page, `config-${skin}.png`);
     });
 
-    test(`toasts and the print dialog (${look})`, async ({ page }) => {
+    test(`toasts and the print dialog (${skin})`, async ({ page }) => {
       test.setTimeout(120_000);
-      await prepare(page, skin, scheme);
+      await prepare(page, skin);
       await open(page);
       // One toast of each severity (the automation-only UI hook).
       await page.evaluate(() => {
@@ -189,7 +176,7 @@ for (const { skin, scheme, look } of LOOKS) {
         ui.notify("Save State failed: disk full", "error");
       });
       await expect(page.locator(".toast.show")).toHaveCount(3);
-      await shot(page, `toasts-${look}.png`);
+      await shot(page, `toasts-${skin}.png`);
       // Dismiss them one by one (each close removes a toast from the list).
       while ((await page.locator(".toast").count()) > 0)
         await page.locator(".toast .close-btn").first().click();
@@ -205,22 +192,22 @@ for (const { skin, scheme, look } of LOOKS) {
         ui.showPdf({ name: "ReadMe.pdf", title: "Read Me", pages: 1, pdf });
       }, MINIMAL_PDF);
       await expect(page.locator(".pdf-frame")).toBeVisible();
-      await shot(page, `print-dialog-${look}.png`, [page.locator(".pdf-frame")]);
+      await shot(page, `print-dialog-${skin}.png`, [page.locator(".pdf-frame")]);
     });
 
-    test(`URL boot downloading (${look})`, async ({ page }) => {
+    test(`URL boot downloading (${skin})`, async ({ page }) => {
       test.setTimeout(120_000);
-      await prepare(page, skin, scheme);
+      await prepare(page, skin);
       // The ROM never arrives: the page stays on its download progress.
       await page.route("**/never.rom", () => undefined);
       await open(page, "/index.html?rom=never.rom&model=plus");
       await expect(page.locator(".url-boot-layer")).toBeVisible();
-      await shot(page, `url-boot-${look}.png`);
+      await shot(page, `url-boot-${skin}.png`);
     });
 
-    test(`debug view of a paused machine (${look})`, async ({ page }) => {
+    test(`debug view of a paused machine (${skin})`, async ({ page }) => {
       test.setTimeout(180_000);
-      await prepare(page, skin, scheme);
+      await prepare(page, skin);
       const body = fs.readFileSync(PLUS_ROM);
       await page.route("**/url-machine.rom", (route) =>
         route.fulfill({
@@ -255,7 +242,7 @@ for (const { skin, scheme, look } of LOOKS) {
         timeout: 15_000,
       });
       // Where the machine stopped varies: mask the values, keep the chrome.
-      await shot(page, `debug-paused-${look}.png`, [
+      await shot(page, `debug-paused-${skin}.png`, [
         page.locator(
           ".disasm-pane .banner, .disasm-pane .addr, .disasm-pane .mnem, .disasm-pane .ops",
         ),

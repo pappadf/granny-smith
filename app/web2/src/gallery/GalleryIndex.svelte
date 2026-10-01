@@ -2,11 +2,10 @@
   import { STORIES } from './registry';
   import { COVERAGE } from './coverage';
   import { TOKENS, type TokenSpec } from '@/styles/contract';
-  import { skins, getSkin } from '@/skins/registry';
+  import { skins } from '@/skins/registry';
   import { appearance, applyAppearance, resolved } from '@/state/appearance.svelte';
-  import type { Scheme } from '@/skins/types';
 
-  // The gallery's index: a toolbar that switches the skin, the scheme and
+  // The gallery's index: a toolbar that switches the skin and
   // reduced motion (for this page and every story it links to), and three
   // views: the stories, the token table (every contract token with its
   // resolved value here), and the coverage list (the UI inventory mapped to
@@ -17,22 +16,16 @@
     (['tokens', 'coverage'] as const).find((v) => v === params.get('view')) ?? 'stories',
   );
   let skin = $state(resolved.skin);
-  let scheme = $state<Scheme>(resolved.scheme);
   let reduced = $state(params.get('motion') === 'reduced');
   let filter = $state('');
 
-  const schemes = $derived(getSkin(skin).schemes);
-
   // Apply the toolbar to this page and keep the URL in step.
   $effect(() => {
-    if (!schemes.includes(scheme)) scheme = schemes[0];
     appearance.sessionSkin = skin;
-    appearance.schemeMode = scheme;
     applyAppearance();
     document.documentElement.classList.toggle('gs-gallery-reduced-motion', reduced);
     const q = query({
       skin,
-      theme: scheme,
       motion: reduced ? 'reduced' : null,
       view: view === 'stories' ? null : view,
     });
@@ -52,7 +45,6 @@
     const q = query({
       story: name,
       variant: v,
-      theme: scheme,
       skin,
       motion: reduced ? 'reduced' : null,
     });
@@ -91,11 +83,6 @@
         {#each skins as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
       </select></label
     >
-    <label
-      >Scheme <select bind:value={scheme}>
-        {#each schemes as s (s)}<option value={s}>{s}</option>{/each}
-      </select></label
-    >
     <label><input type="checkbox" bind:checked={reduced} /> Reduced motion</label>
     <nav>
       {#each ['stories', 'tokens', 'coverage'] as const as v (v)}
@@ -121,7 +108,7 @@
     </table>
   {:else if view === 'tokens'}
     <p>
-      {TOKENS.length} tokens of the contract, resolved in {skin} / {scheme}.
+      {TOKENS.length} tokens of the contract, resolved in {skin}.
       <input type="search" placeholder="Filter" bind:value={filter} aria-label="Filter tokens" />
     </p>
     <table class="tokens">

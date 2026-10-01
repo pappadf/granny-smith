@@ -1,56 +1,42 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   appearance,
   resolved,
   applyAppearance,
   applyUrlSkin,
-  resolveScheme,
-  setSchemeMode,
+  firstVisitSkin,
   setSkin,
-  setSystemPrefersLight,
-  toggleScheme,
-  canToggleScheme,
 } from '@/state/appearance.svelte';
-import { DEFAULT_SKIN } from '@/skins/registry';
-import type { SkinManifest } from '@/skins/types';
+import { DEFAULT_SKIN, LIGHT_DEFAULT_SKIN } from '@/skins/registry';
 
 beforeEach(() => {
   appearance.skin = DEFAULT_SKIN;
-  appearance.schemeMode = 'dark';
   appearance.sessionSkin = null;
-  setSystemPrefersLight(false);
-  document.documentElement.removeAttribute('data-theme');
   document.documentElement.removeAttribute('data-skin');
 });
 
-// A skin with only a light scheme.
-const lightOnly: SkinManifest = { id: 'paper', name: 'Paper', schemes: ['light'] };
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+// The operating system's colour preference, as matchMedia reports it.
+function prefersLight(light: boolean) {
+  vi.stubGlobal('matchMedia', (q: string) => ({
+    matches: light && q === '(prefers-color-scheme: light)',
+  }));
+}
 
 describe('appearance', () => {
-  it('toggles between dark and light', () => {
-    toggleScheme();
-    expect(appearance.schemeMode).toBe('light');
-    toggleScheme();
-    expect(appearance.schemeMode).toBe('dark');
-  });
-
-  it('a toggle from system lands on the opposite of what is shown', () => {
-    appearance.schemeMode = 'system';
-    setSystemPrefersLight(true);
-    toggleScheme();
-    expect(appearance.schemeMode).toBe('dark');
-  });
-
-  it('applyAppearance writes data-skin, data-theme and the meta tags', () => {
-    setSchemeMode('light');
+  it('applyAppearance writes data-skin and the meta tags', () => {
+    setSkin('platinum');
     applyAppearance();
     const d = document.documentElement;
-    expect(d.dataset.skin).toBe(DEFAULT_SKIN);
-    expect(d.dataset.theme).toBe('light');
-    expect(document.querySelector('meta[name="color-scheme"]')?.getAttribute('content')).toBe(
-      'light',
+    expect(d.dataset.skin).toBe('platinum');
+    expect(document.querySelector('meta[name="theme-color"]')?.getAttribute('content')).toBe(
+      '#dddddd',
     );
-    expect(resolved.scheme).toBe('light');
+    expect(document.querySelector('meta[name="color-scheme"]')).not.toBeNull();
+    expect(resolved.skin).toBe('platinum');
   });
 
   it('bumps resolved.version on every application', () => {
@@ -60,24 +46,11 @@ describe('appearance', () => {
     expect(resolved.version).toBe(before + 2);
   });
 
-  it('system follows the OS preference', () => {
-    appearance.schemeMode = 'system';
-    setSystemPrefersLight(true);
-    applyAppearance();
-    expect(document.documentElement.dataset.theme).toBe('light');
-    setSystemPrefersLight(false);
-    applyAppearance();
-    expect(document.documentElement.dataset.theme).toBe('dark');
-  });
-
-  it("a scheme the skin lacks falls back to the skin's first", () => {
-    expect(resolveScheme('dark', false, lightOnly)).toBe('light');
-    expect(resolveScheme('system', false, lightOnly)).toBe('light');
-    expect(resolveScheme('light', false, lightOnly)).toBe('light');
-  });
-
-  it('the default skin has both schemes, so the toggle is offered', () => {
-    expect(canToggleScheme()).toBe(true);
+  it('a first visit gets Workbench, light or dark as the system prefers', () => {
+    prefersLight(true);
+    expect(firstVisitSkin()).toBe(LIGHT_DEFAULT_SKIN);
+    prefersLight(false);
+    expect(firstVisitSkin()).toBe(DEFAULT_SKIN);
   });
 
   it('setSkin takes only known ids and clears a session override', () => {
@@ -90,7 +63,7 @@ describe('appearance', () => {
   it('?skin= sets a session skin only for known ids', () => {
     applyUrlSkin(new URLSearchParams('skin=no-such-skin'));
     expect(appearance.sessionSkin).toBeNull();
-    applyUrlSkin(new URLSearchParams(`skin=${DEFAULT_SKIN}`));
-    expect(appearance.sessionSkin).toBe(DEFAULT_SKIN);
+    applyUrlSkin(new URLSearchParams('skin=starlight'));
+    expect(appearance.sessionSkin).toBe('starlight');
   });
 });

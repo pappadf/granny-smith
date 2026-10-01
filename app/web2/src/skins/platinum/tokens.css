@@ -1,12 +1,14 @@
 /* ====== Platinum skin: tokens ======
-   Mac OS 8's "Platinum" appearance, light only: #dddddd chrome with bevelled
+   Mac OS 8's "Platinum" appearance, a light skin: #dddddd chrome with bevelled
    push buttons and grooves, white list views in a black frame, the lavender
    highlight, folder tabs, an inset grey well around the screen, and the
    status bar as a row of inset fields with LED lamps.  Chivo stands in for
    Charcoal.  The bevels, wells and tabs are in overrides.css; this file
    holds the values.  The --gs-ref-* palette is private to this skin. */
 @layer gs.tokens {
-  :root[data-skin='platinum'][data-theme='light'] {
+  :root[data-skin='platinum'] {
+    --gs-color-scheme: light;
+
     /* Reference palette */
     --gs-ref-chrome: #dddddd;
     --gs-ref-face-top: #f6f6f6;

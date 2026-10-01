@@ -432,7 +432,7 @@
 
   /* Drive lights and the caps chip sit on the bar's own colour: on an active
      bar (white text on a coloured fill) white-alpha reads, on the idle bar
-     (normal text on a surface) the scheme's own text and warning colours do. */
+     (normal text on a surface) the skin's own text and warning colours do. */
   .gs-statusbar {
     --gs-chip-on-bg: var(--gs-statusbar-chip-on-bg);
     --gs-chip-on-ring: var(--gs-statusbar-chip-on-ring);

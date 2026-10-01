@@ -150,7 +150,7 @@ License text: <https://openfontlicense.org/open-font-license-official-text/>.
 - **Repository:** <https://github.com/sora-xor/sora-font> (packaged by Fontsource,
   `@fontsource-variable/sora`)
 - **License:** SIL Open Font License 1.1 (OFL-1.1)
-- **Used in:** the Glass skin's UI font,
+- **Used in:** the Midnight and Starlight skins' UI font,
   [app/web2/public/skins/glass/fonts/](app/web2/public/skins/glass/fonts/)
   (the variable Latin subset, unmodified; see
   [app/web2/public/skins/glass/NOTICE](app/web2/public/skins/glass/NOTICE)).
@@ -167,7 +167,7 @@ License text: <https://openfontlicense.org/open-font-license-official-text/>.
 - **Repository:** <https://github.com/JetBrains/JetBrainsMono> (packaged by Fontsource,
   `@fontsource-variable/jetbrains-mono`)
 - **License:** SIL Open Font License 1.1 (OFL-1.1)
-- **Used in:** the Glass skin's code font,
+- **Used in:** the Midnight and Starlight skins' code font,
   [app/web2/public/skins/glass/fonts/](app/web2/public/skins/glass/fonts/)
   (the variable Latin subset, unmodified).
 

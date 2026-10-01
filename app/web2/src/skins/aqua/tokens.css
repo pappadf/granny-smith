@@ -1,12 +1,14 @@
 /* ====== Aqua skin: tokens ======
-   Mac OS X 10.0's "Aqua", light only: pinstriped window chrome, a brushed
+   Mac OS X 10.0's "Aqua", a light skin: pinstriped window chrome, a brushed
    toolbar, lickable blue and white gel buttons, capsule segmented controls
    and tabs, white list views with the blue gradient selection, gel
    scrollbars and a white plastic bezel around the screen.  Hanken Grotesk
    stands in for Lucida Grande and Fira Mono for Monaco.  The gels, stripes
    and bezel are in overrides.css; this file holds the values. */
 @layer gs.tokens {
-  :root[data-skin='aqua'][data-theme='light'] {
+  :root[data-skin='aqua'] {
+    --gs-color-scheme: light;
+
     /* Reference palette: the gels are four-stop gradients. */
     --gs-ref-pinstripe: repeating-linear-gradient(to bottom, #f3f3f3 0 2px, #e7e7e7 2px 4px);
     --gs-ref-gel-blue: linear-gradient(

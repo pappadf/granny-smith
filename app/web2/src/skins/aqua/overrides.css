@@ -98,10 +98,12 @@
       inset 0 1px 1px rgba(255, 255, 255, 0.8),
       0 1px 2px rgba(0, 0, 0, 0.3);
   }
-  /* Run and shut down are round gels, a size up. */
+  /* Run and shut down are round gels, a size up, spaced for their
+     captions. */
   :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] > :first-child > .gs-icon-button {
     width: 34px;
     height: 34px;
+    margin: 0 8px;
   }
   /* The toolbar, as the storyboard draws it: round gels for run / shut down
      (the first group) and the zoom steppers (the group after its groove),

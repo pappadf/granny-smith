@@ -341,7 +341,7 @@ export function createConsoleInput(
       ],
     }),
   });
-  // A skin or scheme change can change the font metrics: measure again.
+  // A skin change can change the font metrics: measure again.
   const stopMeasure = onAppearanceChange(() => view.requestMeasure());
 
   return {

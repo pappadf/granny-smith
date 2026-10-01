@@ -1,6 +1,6 @@
 import type { SkinManifest } from '../types';
 
-// Mac OS 8's "Platinum" appearance.  Light only: grey bevelled chrome,
+// Mac OS 8's "Platinum" appearance: grey bevelled chrome,
 // folder tabs, white Finder lists with the lavender highlight, Platinum
 // scrollbars, an inset well around the screen, LED status fields, Chivo
 // (standing in for Charcoal) and two-tone Finder icons in its own sprite.
@@ -8,7 +8,6 @@ import type { SkinManifest } from '../types';
 export const platinum: SkinManifest = {
   id: 'platinum',
   name: 'Platinum',
-  schemes: ['light'],
   sprite: 'skins/platinum/sprite.svg',
   fonts: [
     {
@@ -19,5 +18,5 @@ export const platinum: SkinManifest = {
     },
   ],
   overrides: () => import('./overrides.css'),
-  metaThemeColor: { light: '#dddddd' },
+  metaThemeColor: '#dddddd',
 };

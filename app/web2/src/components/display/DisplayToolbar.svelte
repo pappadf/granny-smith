@@ -1,7 +1,7 @@
 <script lang="ts">
   import { machine, setZoom } from '@/state/machine.svelte';
   import { layout, setPanelPos, setPanelCollapsed, type PanelPos } from '@/state/layout.svelte';
-  import { resolved, lookName, setLook } from '@/state/appearance.svelte';
+  import { resolved, setSkin } from '@/state/appearance.svelte';
   import { skins } from '@/skins/registry';
   import { camera, setCameraEnabled } from '@/state/camera.svelte';
   import {
@@ -75,17 +75,14 @@
     layout.fullscreen ? 'Exit full screen' : 'Enter full screen — hide panel and chrome',
   );
 
-  // The appearance menu: every look, one per skin and scheme (Workbench
-  // Dark, Midnight, Platinum…), the one on screen checked.
+  // The appearance menu: every skin, the one on screen checked.
   function onAppearanceMenu(ev: MouseEvent) {
     const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
-    const items: ContextMenuItem[] = skins.flatMap((s) =>
-      s.schemes.map((scheme) => ({
-        label: lookName(s, scheme),
-        checked: resolved.skin === s.id && resolved.scheme === scheme,
-        action: () => setLook(s.id, scheme),
-      })),
-    );
+    const items: ContextMenuItem[] = skins.map((s) => ({
+      label: s.name,
+      checked: resolved.skin === s.id,
+      action: () => setSkin(s.id),
+    }));
     openContextMenu(items, r.left, r.bottom);
   }
 

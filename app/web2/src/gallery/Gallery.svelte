@@ -2,21 +2,12 @@
   import type { Component } from 'svelte';
   import { STORIES, findStory, type StoryProps } from './registry';
   import GalleryIndex from './GalleryIndex.svelte';
-  import {
-    appearance,
-    applyAppearance,
-    applyUrlSkin,
-    skinReady,
-    type SchemeMode,
-  } from '@/state/appearance.svelte';
+  import { applyAppearance, applyUrlSkin, skinReady } from '@/state/appearance.svelte';
 
-  // ?gallery[&story=<name>&variant=<v>][&theme=dark|light][&skin=<id>]
+  // ?gallery[&story=<name>&variant=<v>][&skin=<id>]
   const params = new URLSearchParams(window.location.search);
   const story = findStory(params.get('story'));
   const variant = params.get('variant') ?? story?.variants[0] ?? 'default';
-  const themeParam = params.get('theme');
-  const scheme: SchemeMode = themeParam === 'light' || themeParam === 'dark' ? themeParam : 'dark';
-  appearance.schemeMode = scheme;
   applyUrlSkin(params);
   applyAppearance();
   if (params.get('motion') === 'reduced')

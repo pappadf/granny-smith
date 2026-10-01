@@ -85,9 +85,9 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
-// Every value is a token, so the page follows the active colour scheme (the
-// token stylesheet is loaded by the time main.ts shows it); the fallbacks are
-// the dark scheme's values, for a page shown before any stylesheet applies.
+// Every value is a token, so the page follows the active skin (the token
+// stylesheet is loaded by the time main.ts shows it); the fallbacks are the
+// default skin's values, for a page shown before any stylesheet applies.
 // This is the one place token fallbacks are allowed (tests/lint/tokens.test.ts).
 const CSS = `
 .gs-webgl-error {

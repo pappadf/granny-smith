@@ -48,15 +48,14 @@ describe('DisplayToolbar', () => {
     expect(layout.panelCollapsed).toBe(true);
   });
 
-  it('the appearance menu lists every look, and picks a skin with its scheme', async () => {
+  it('the appearance menu lists the skins, and picks one', async () => {
     appearance.skin = 'workbench';
-    appearance.schemeMode = 'dark';
     const { container } = render(DisplayToolbar);
     await fireEvent.click(container.querySelector('.appearance-menu') as HTMLElement);
     const items = Array.from(document.querySelectorAll('.context-menu .item'));
     const labels = items.map((i) => i.textContent?.trim());
     expect(labels).toEqual([
-      'Workbench Dark',
+      'Workbench',
       'Workbench Light',
       'Midnight',
       'Starlight',
@@ -64,10 +63,8 @@ describe('DisplayToolbar', () => {
       'Aqua',
     ]);
     await fireEvent.click(items[3] as HTMLElement);
-    expect(appearance.skin).toBe('glass');
-    expect(appearance.schemeMode).toBe('light');
+    expect(appearance.skin).toBe('starlight');
     appearance.skin = 'workbench';
-    appearance.schemeMode = 'dark';
     closeContextMenu();
   });
 });

@@ -4,10 +4,10 @@
 // and the skin-authoring guide (src/skins/README.md) check against.
 //
 // Layers (see src/skins/README.md):
-//   semantic   a role (surface, text, intent…).  Required in every scheme of
-//              every skin, unless `derived` names the token its default in
+//   semantic   a role (surface, text, intent…).  Required in every skin,
+//              unless `derived` names the token its default in
 //              styles/components.css points at.
-//   scale      a scheme-independent value (type, space, size…), defaulted in
+//   scale      a value of the shared scale (type, space, size…), defaulted in
 //              styles/scale.css; a skin may override it.
 //   component  a knob of one component, defaulted in styles/components.css to
 //              semantic or scale tokens; a skin may override it.
@@ -33,8 +33,6 @@ export interface TokenSpec {
   name: TokenName;
   layer: TokenLayer;
   kind: TokenKind;
-  // Has a value per colour scheme (every colour and shadow does).
-  perScheme: boolean;
   // A derived semantic token: its default points at this one.
   derived?: TokenName;
   doc: string;
@@ -42,21 +40,21 @@ export interface TokenSpec {
   jsRead?: boolean;
 }
 
-// A required semantic token: every skin defines it in every scheme.
+// A required semantic token: every skin defines it.
 function sem(name: TokenName, kind: TokenKind, doc: string): TokenSpec {
-  return { name, layer: 'semantic', kind, perScheme: true, doc };
+  return { name, layer: 'semantic', kind, doc };
 }
 // A derived semantic token: defaulted to `from`; a skin may set it.
 function der(name: TokenName, from: TokenName, doc: string, kind: TokenKind = 'color'): TokenSpec {
-  return { name, layer: 'semantic', kind, perScheme: true, derived: from, doc };
+  return { name, layer: 'semantic', kind, derived: from, doc };
 }
 // A scale token.
 function scl(name: TokenName, kind: TokenKind, doc: string, jsRead = false): TokenSpec {
-  return { name, layer: 'scale', kind, perScheme: false, doc, ...(jsRead ? { jsRead } : {}) };
+  return { name, layer: 'scale', kind, doc, ...(jsRead ? { jsRead } : {}) };
 }
 // A component token.
 function cmp(name: TokenName, kind: TokenKind, doc: string, jsRead = false): TokenSpec {
-  return { name, layer: 'component', kind, perScheme: false, doc, ...(jsRead ? { jsRead } : {}) };
+  return { name, layer: 'component', kind, doc, ...(jsRead ? { jsRead } : {}) };
 }
 
 // The scale (styles/scale.css).
@@ -159,6 +157,12 @@ const SYNTAX = [
 ] as const;
 
 export const TOKENS: readonly TokenSpec[] = [
+  // --- Light or dark ----------------------------------------------------------
+  sem(
+    '--gs-color-scheme',
+    'keyword',
+    'light or dark: the browser draws native controls and scrollbars to match',
+  ),
   // --- Surfaces ---------------------------------------------------------------
   sem('--gs-surface-app', 'color', 'page, display letterbox, panel body'),
   sem('--gs-surface-raised', 'color', 'cards, widgets, section headers, panel header'),
@@ -582,7 +586,7 @@ export const TOKENS: readonly TokenSpec[] = [
 // tokens.
 export const LAYOUT_VARS: readonly string[] = ['--gs-panel-size'];
 
-// Foreground/background pairs the contrast lint checks per skin and scheme,
+// Foreground/background pairs the contrast lint checks in every skin,
 // with the minimum WCAG contrast ratio.  A background with alpha is
 // composited over `over` (default: the app surface).
 export interface ContrastPair {
