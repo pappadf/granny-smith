@@ -30,6 +30,8 @@ extern config_t *global_emulator;
 // end of the file. scsi_init calls this to detach the pre-machine
 // singleton before mounting the per-machine `scsi` object at root.
 static void scsi_static_detach(void);
+// The bus currently mounted as `machine.scsi` (NULL when none is).
+static scsi_t *s_primary_scsi;
 
 // Forward declarations — class descriptors are at the bottom of the file but
 // scsi_init / scsi_delete reference them.
@@ -1221,8 +1223,10 @@ scsi_t *scsi_init_named(checkpoint_t *checkpoint, const char *name) {
     // the "scsi" name at root — detach it first so dispatch on the new
     // per-machine object isn't shadowed.
     bool primary = (name == NULL) || strcmp(name, "scsi") == 0;
-    if (primary)
+    if (primary) {
         scsi_static_detach();
+        s_primary_scsi = scsi;
+    }
     scsi->object = object_new(&scsi_class, scsi, primary ? "scsi" : name);
     if (scsi->object) {
         object_set_label(scsi->object, primary ? "SCSI" : name);
@@ -1500,7 +1504,15 @@ void scsi_delete(scsi_t *scsi) {
     // re-attach a singleton named "scsi" while the other bus is still
     // attached, and since object_attach head-pushes, the singleton would then
     // shadow a live bus for whatever teardown order happens to run next.
-    bool primary = scsi->object && strcmp(object_name(scsi->object), "scsi") == 0;
+    //
+    // ...and only while it is still THE mounted bus.  checkpoint.load builds
+    // the restored machine before it destroys the old one, so by the time the
+    // old primary bus is deleted the new machine's `machine.scsi` is already
+    // attached — restoring the singleton then shadowed it, and every
+    // `machine.scsi.*` path stopped resolving on a restored machine.
+    bool primary = scsi->object && strcmp(object_name(scsi->object), "scsi") == 0 && s_primary_scsi == scsi;
+    if (s_primary_scsi == scsi)
+        s_primary_scsi = NULL;
 
     if (scsi->object) {
         object_detach(scsi->object);
