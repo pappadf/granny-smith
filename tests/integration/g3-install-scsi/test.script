@@ -22,7 +22,7 @@ let installed = "${$WORK_DIR}/g3-scsi-installed.img"
 
 if have_media($cd) {
     # --- I1 ---------------------------------------------------------------------
-    assert storage.hd_create($hd, "HD500SC") "I1: create the blank disk"
+    assert files.hd_create($hd, "HD500SC") "I1: create the blank disk"
     machine.boot model="pmg3dt" ram=65536 rom="${$ROM}"
     machine.rtc.time = "2026-10-01T12:00:00"
     machine.scsi.attach_hd $hd 0

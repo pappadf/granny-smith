@@ -24,7 +24,7 @@ let installed = "${$WORK_DIR}/g3-ata-installed.img"
 
 if have_media($cd) {
     # --- A1 ---------------------------------------------------------------------
-    assert storage.hd_create($hd, "HD500SC") "A1: create the blank disk"
+    assert files.hd_create($hd, "HD500SC") "A1: create the blank disk"
     machine.boot model="pmg3dt" ram=65536 rom="${$ROM}"
     machine.rtc.time = "2026-10-01T12:00:00"
     assert machine.ata.attach_hd($hd, 0) "A1: attach the disk as ATA unit 0"
@@ -40,8 +40,8 @@ if have_media($cd) {
     assert machine.ata.export(0, $installed) "A2: export the installed disk"
 
     # --- A3 ---------------------------------------------------------------------
-    assert storage.path_exists("${$installed}/partition6/System Folder/System") "A3: no System on the installed disk"
-    assert storage.path_exists("${$installed}/partition6/System Folder/Finder") "A3: no Finder on the installed disk"
+    assert files.path_exists("${$installed}/partition6/System Folder/System") "A3: no System on the installed disk"
+    assert files.path_exists("${$installed}/partition6/System Folder/Finder") "A3: no Finder on the installed disk"
 
     # --- A4 ---------------------------------------------------------------------
     machine.boot model="pmg3dt" ram=65536 rom="${$ROM}"

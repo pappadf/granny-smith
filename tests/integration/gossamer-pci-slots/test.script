@@ -12,7 +12,7 @@
 # $80006800, poked as $00680080.
 
 # --- The slot table, as the object model and the profile see it. -------------
-assert machine.profile("pmg3dt").capabilities.pci "pmg3dt must advertise PCI"
+assert catalog.profile("pmg3dt").capabilities.pci "pmg3dt must advertise PCI"
 assert machine.pci.slot[1].label == "A1" "slot 1 label"
 assert machine.pci.slot[1].device == 13 "A1 IDSEL"
 assert machine.pci.slot[1].irq == 23 "A1 interrupt line"
@@ -43,7 +43,7 @@ assert machine.memory.peek.l(0xFEE00000) == 0x02105047 "Rage Pro: vendor $1002 d
 machine.memory.poke.l(0xFEC00000, 0x00000000)
 
 # --- A mach64 GX in socket A1. ------------------------------------------------
-assert machine.prom.offer("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom") "the GX's expansion ROM must register as an offer"
+assert catalog.proms.offer("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom") "the GX's expansion ROM must register as an offer"
 machine.boot model="pmg3dt" ram=65536 rom="${$ROM}" pci_card="mach64_gx"
 assert machine.pci.slot[1].card.name == "ATI Mach64 GX" "the card is seated in A1"
 assert machine.pci.slot[1].card.config.interrupt_line == 23 "the interrupt line follows the slot table"

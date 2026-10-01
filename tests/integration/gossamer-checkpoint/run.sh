@@ -23,7 +23,7 @@ GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     rom="$ROM_PATH" \
     model=pmg3dt ram=65536 \
     script="$TEST_TMPDIR/step1.script" \
-    --speed=max
+    --speed=turbo
 
 if [ ! -f "$CHECKPOINT_FILE" ]; then
     echo "ERROR: Checkpoint file not created: $CHECKPOINT_FILE"
@@ -46,7 +46,7 @@ GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     rom="$ROM_PATH" \
     model=pmg3dt ram=65536 \
     script="$TEST_TMPDIR/step2.script" \
-    --speed=max
+    --speed=turbo
 
 rm -f "$CHECKPOINT_FILE"
 echo "Gossamer checkpoint test passed!"

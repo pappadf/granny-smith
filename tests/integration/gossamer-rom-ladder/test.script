@@ -61,8 +61,8 @@ def ladder(label, compat, fcr) {
     # --- G6: the device tree identifies the machine ---------------------------
     # Read back from Open Firmware's live workspace in low RAM; the whole
     # tree is compared against a real machine's dump in gossamer-device-tree.
-    assert len(find.str("${$compat}", 0x0, 0x400000)) > 0 "G6 ${$label}: root compatible ${$compat} missing from the OF tree"
-    assert len(find.str("timebase-frequency", 0x0, 0x400000)) > 0 "G6 ${$label}: cpu node has no timebase-frequency"
+    assert len(debug.find.str("${$compat}", 0x0, 0x400000)) > 0 "G6 ${$label}: root compatible ${$compat} missing from the OF tree"
+    assert len(debug.find.str("timebase-frequency", 0x0, 0x400000)) > 0 "G6 ${$label}: cpu node has no timebase-frequency"
 
     # --- G7: the NanoKernel and the 68k emulator on a 750 ---------------------
     # The kernel's MMU layout for 64 MB (HTAB at $03FC0000, HTABMASK 3), and
