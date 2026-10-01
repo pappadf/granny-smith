@@ -291,6 +291,10 @@ LOG_USE_CATEGORY_NAME("video");
 #define DP_MONO_HOST     2u
 #define DP_MONO_BLIT     3u
 
+// HOST_CNTL (dword $90): bit 0 byte-aligns 1 bpp host data per row; bit 1
+// byte-swaps colour host data for a big-endian host.
+#define HOST_CNTL_BIG_ENDIAN_EN 0x2u
+
 // PAT_REG0/PAT_REG1 hold an 8 x 8 monochrome pattern, one bit per pixel.
 #define DW_PAT_REG0 0xA0
 #define DW_PAT_REG1 0xA1
@@ -622,6 +626,7 @@ typedef struct mach64 {
         bool active;
         uint32_t x0, y0, w, h;
         uint32_t col, row;
+        uint32_t pixel; // the colour host source's current pixel
     } host_op;
 } mach64_t;
 
@@ -1610,6 +1615,9 @@ static void mach64_emit(mach64_t *m, const mach64_op_t *op, uint32_t x, uint32_t
         source = mach64_get_pixel(m, from, op->bpp);
         break;
     }
+    case DP_SRC_HOST:
+        source = m->host_op.pixel; // colour host data (mach64_host_feed_colour)
+        break;
     case DP_SRC_FRGD_CLR:
     case DP_SRC_PATTERN:
     default:
@@ -1729,11 +1737,55 @@ static void mach64_engine_run(mach64_t *m) {
 // HOST_CNTL's HOST_BYTE_ALIGN makes consumption jump to the next byte
 // boundary whenever the trajectory steps in Y, so a glyph whose width is
 // not a multiple of 8 still starts each row on a fresh byte.
+// Colour host data: the stream carries pixels, packed at DP_HOST_PIX_WIDTH
+// (DP_PIX_WIDTH bits 18:16, the destination-width encoding), the first
+// pixel in the dword's low-order bytes.  HOST_BIG_ENDIAN_EN (HOST_CNTL bit
+// 1) byte-swaps each 16-bit pixel at 15/16 bpp and the whole dword at 32
+// bpp, so a big-endian host can store its own pixels unconverted (3D RAGE
+// LT PRO Register Reference pp. 5-33, 5-34).  The Mac accelerator draws
+// every alert, button and offscreen copy this way.
+static void mach64_host_feed_colour(mach64_t *m, const mach64_op_t *op, uint32_t host_w, uint32_t value) {
+    uint32_t bytes = host_w == 2u ? 1u : (host_w == 3u || host_w == 4u) ? 2u : host_w == 6u ? 4u : 0u;
+    if (!bytes) {
+        LOG(2, "Mach64: colour host data at DP_HOST_PIX_WIDTH %u is not modelled — dropped", host_w);
+        return;
+    }
+    if (m->reg[DW_HOST_CNTL] & HOST_CNTL_BIG_ENDIAN_EN) {
+        if (bytes == 2u)
+            value = ((value & 0x00FF00FFu) << 8) | ((value >> 8) & 0x00FF00FFu);
+        else if (bytes == 4u)
+            value = __builtin_bswap32(value);
+    }
+    uint32_t mask = bytes == 4u ? 0xFFFFFFFFu : (1u << (8u * bytes)) - 1u;
+    for (uint32_t i = 0; i < 4u / bytes && m->host_op.active; i++) {
+        m->host_op.pixel = (value >> (8u * bytes * i)) & mask;
+        uint32_t x = m->host_op.x0 + m->host_op.col;
+        uint32_t y = m->host_op.y0 + m->host_op.row;
+        bool mono = op->mono_sel == DP_MONO_ALWAYS_1 || mach64_mono_bit(m, op, x, y, m->host_op.col, m->host_op.row);
+        mach64_emit(m, op, x, y, m->host_op.col, m->host_op.row, mono);
+        if (++m->host_op.col >= m->host_op.w) {
+            m->host_op.col = 0;
+            if (++m->host_op.row >= m->host_op.h) {
+                m->host_op.active = false;
+                m->blits++;
+                m->display.fb_dirty = true;
+                LOG(3, "Mach64: op #%llu HOST colour %ux%u at (%u,%u) dst=$%X/%u", (unsigned long long)m->blits,
+                    m->host_op.w, m->host_op.h, m->host_op.x0, m->host_op.y0, op->dst.base, op->dst.pitch);
+            }
+        }
+    }
+}
+
 static void mach64_host_feed(mach64_t *m, uint32_t value) {
     if (!m->host_op.active)
         return;
     mach64_op_t op;
     mach64_op_gather(m, &op);
+    uint32_t host_w = (m->reg[DW_DP_PIX_WIDTH] >> 16) & 7u;
+    if (host_w && op.mono_sel != DP_MONO_HOST) {
+        mach64_host_feed_colour(m, &op, host_w, value);
+        return;
+    }
     bool lsb_first = (m->reg[DW_DP_PIX_WIDTH] & 0x80000000u) != 0;
     bool byte_align = (m->reg[DW_HOST_CNTL] & 0x1u) != 0;
 
@@ -2448,8 +2500,10 @@ static uint32_t aper_read32(void *ctx, uint32_t offset) {
         return 0xFFFFFFFFu;
     if (at == MACH64_APER_REGS)
         return MACH64_LE32(mach64_reg_read(m, (int)((offset & 0x3FFu) >> 2)));
-    if (at == MACH64_APER_REGS1)
+    if (at == MACH64_APER_REGS1) {
+        LOG(4, "Rage Pro: block-1 dword $%02X read", (unsigned)((offset & 0x3FFu) >> 2));
         return MACH64_LE32(m->reg1[(offset & 0x3FFu) >> 2]);
+    }
     if (m->gp && offset < MACH64_APER_8MB)
         return ((uint32_t)aper_read8(ctx, offset) << 24) | ((uint32_t)aper_read8(ctx, offset + 1) << 16) |
                ((uint32_t)aper_read8(ctx, offset + 2) << 8) | aper_read8(ctx, offset + 3);
@@ -2468,6 +2522,7 @@ static void aper_write32(void *ctx, uint32_t offset, uint32_t value) {
     }
     if (at == MACH64_APER_REGS1) {
         m->reg1[(offset & 0x3FFu) >> 2] = MACH64_LE32(value);
+        LOG(4, "Rage Pro: block-1 dword $%02X = $%08X", (unsigned)((offset & 0x3FFu) >> 2), MACH64_LE32(value));
         return;
     }
     if (m->gp && offset < MACH64_APER_8MB) {
@@ -2521,8 +2576,10 @@ static void aux_write16(void *ctx, uint32_t offset, uint16_t value) {
 
 static uint32_t aux_read32(void *ctx, uint32_t offset) {
     mach64_t *m = (mach64_t *)ctx;
-    if (offset < 0x400u)
+    if (offset < 0x400u) {
+        LOG(4, "Rage Pro: block-1 dword $%02X read (BAR2)", (unsigned)(offset >> 2));
         return MACH64_LE32(m->reg1[offset >> 2]);
+    }
     if (offset < 0x800u)
         return MACH64_LE32(mach64_reg_read(m, (int)((offset & 0x3FFu) >> 2)));
     return 0xFFFFFFFFu;
@@ -2530,9 +2587,10 @@ static uint32_t aux_read32(void *ctx, uint32_t offset) {
 
 static void aux_write32(void *ctx, uint32_t offset, uint32_t value) {
     mach64_t *m = (mach64_t *)ctx;
-    if (offset < 0x400u)
+    if (offset < 0x400u) {
         m->reg1[offset >> 2] = MACH64_LE32(value);
-    else if (offset < 0x800u)
+        LOG(4, "Rage Pro: block-1 dword $%02X = $%08X (BAR2)", (unsigned)(offset >> 2), MACH64_LE32(value));
+    } else if (offset < 0x800u)
         mach64_reg_write(m, (int)((offset & 0x3FFu) >> 2), MACH64_LE32(value));
 }
 
