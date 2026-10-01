@@ -6,8 +6,9 @@ skin changes how the UI looks, never what it does or where things are. The
 default skin is `workbench`. `platinum` is a second, light-only skin in the
 spirit of Mac OS 8. It proves the mechanism: it is built only from
 `skins/platinum/` and `public/skins/platinum/`, with its own tokens, sprite,
-webfont and part-hook overrides. The app has no skin picker yet, so it is
-reached with `?skin=platinum` (or a stored `gs-skin`).
+webfont and part-hook overrides. Users pick a skin and a scheme in the
+display toolbar's appearance menu (the chevron beside the theme toggle);
+`?skin=<id>` selects one for a single page load.
 
 ## What a skin can change
 
@@ -55,8 +56,12 @@ reached with `?skin=platinum` (or a stored `gs-skin`).
 4. Register the skin in `registry.ts`: import its `tokens.css` and add its
    manifest to `skins`.
 5. Look at it in the gallery: `npm run dev`, then open `?gallery&skin=<id>`
-   (add `&story=<name>&theme=light` for one story). In the app, use
-   `?skin=<id>`.
+   (add `&story=<name>&theme=light` for one story). The index's toolbar
+   switches skin, scheme and reduced motion; its **Tokens** view lists
+   every token's computed value, and its **Coverage** view maps each UI
+   element to the stories that show it. Hover and pressed states are
+   pinned with `data-force-state="hover|active"` (the ForcedStates story).
+   In the app, use the appearance menu or `?skin=<id>`.
 
 Every skin's `tokens.css` is bundled, because a switch must never flash the
 default. Overrides, fonts and sprites load when the skin is first used.

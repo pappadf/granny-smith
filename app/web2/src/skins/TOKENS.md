@@ -521,3 +521,11 @@ One component's knobs, defaulting to semantic or scale tokens; a skin may overri
 | `--gs-screen-frame-radius` | length |  | `0px` | screen frame: radius |
 | `--gs-statusline-bg` | color |  | `var(--gs-surface-raised)` | statusline: bg |
 | `--gs-statusline-padding` | length |  | `var(--gs-space-1) var(--gs-space-3)` | statusline: padding |
+| `--gs-tree-guide` | color |  | `transparent` | tree: the indent guide lines (transparent: none) |
+| `--gs-tree-guide-width` | length |  | `var(--gs-border-width)` | tree: the indent guide width |
+| `--gs-console-stderr-opacity` | number |  | `0.75` | console: stderr entries |
+| `--gs-progress-indeterminate-opacity` | number |  | `0.45` | progress: indeterminate bar under reduced motion |
+| `--gs-activity-dot-opacity-max` | number |  | `0.6` | activity dot: opacity at rest |
+| `--gs-activity-dot-opacity-min` | number |  | `0.3` | activity dot: low point of the pulse |
+| `--gs-statusbar-icon-opacity` | number |  | `0.85` | statusbar: the speed icon |
+| `--gs-statusbar-meta-opacity` | number |  | `0.75` | statusbar: the MIPS readout |

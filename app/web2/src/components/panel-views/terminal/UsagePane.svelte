@@ -2,6 +2,7 @@
   import IconButton from '@/components/ui/IconButton.svelte';
   import Button from '@/components/ui/Button.svelte';
   import Callout from '@/components/ui/Callout.svelte';
+  import SectionHeading from '@/components/ui/SectionHeading.svelte';
   // The command browser's details pane: a method's or attribute's usage
   // text (shell.usage), its signature and example lines coloured by
   // shell.highlight, the argument the console's cursor is in underlined.
@@ -60,7 +61,7 @@
 {#if lines}
   <Callout class="details" edge="top" aria-label="Usage">
     <header class="details-head">
-      <span class="details-name">{row.name}</span>
+      <SectionHeading as="span" class="details-name">{row.name}</SectionHeading>
       <IconButton
         class="details-close"
         tone="panel"
@@ -106,11 +107,6 @@
     align-items: center;
     justify-content: space-between;
     padding: var(--gs-space-0-5) var(--gs-space-1) 0 var(--gs-space-2-5);
-  }
-  .details-name {
-    font-family: var(--gs-font-mono);
-    font-size: var(--gs-font-size-sm);
-    color: var(--gs-text-muted);
   }
   .details-foot {
     flex: 0 0 auto;

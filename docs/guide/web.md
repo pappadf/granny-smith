@@ -1208,8 +1208,10 @@ Every visual value is a design token, a `--gs-*` CSS custom property, and
 Components are built from the primitives in `components/ui/`, which read
 only component tokens. A **skin** is a folder of token values, plus an
 optional icon sprite, webfonts and an override stylesheet; the default skin
-is `workbench`; `platinum`, a light-only Mac OS 8-style proof skin, is
-reached with `?skin=platinum`. [`src/skins/README.md`](../../app/web2/src/skins/README.md)
+is `workbench`; `platinum` is a light-only Mac OS 8-style proof skin. The
+display toolbar's appearance menu (the chevron beside the theme toggle)
+picks the scheme (Dark, Light, System) and the skin; `?skin=<id>` selects
+a skin for one page load. [`src/skins/README.md`](../../app/web2/src/skins/README.md)
 is the authoring guide.
 
 **Appearance.** [`state/appearance.svelte.ts`](../../app/web2/src/state/appearance.svelte.ts)

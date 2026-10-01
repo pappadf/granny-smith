@@ -78,10 +78,12 @@
     height: var(--gs-icon-button-size-sm);
     padding: 0;
   }
-  .gs-icon-button:hover:not(:disabled) {
+  .gs-icon-button:hover:not(:disabled),
+  .gs-icon-button[data-force-state='hover'] {
     background: var(--gs-icon-button-bg-hover);
   }
-  .gs-icon-button:active:not(:disabled) {
+  .gs-icon-button:active:not(:disabled),
+  .gs-icon-button[data-force-state='active'] {
     background: var(--gs-icon-button-bg-active);
   }
   .gs-icon-button[aria-pressed='true'] {

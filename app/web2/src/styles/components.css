@@ -48,6 +48,7 @@
     --gs-console-font-size: var(--gs-font-size-base);
     --gs-console-line-height: var(--gs-line-height-base);
     --gs-console-popup-font-size: var(--gs-font-size-sm);
+    --gs-console-stderr-opacity: 0.75;
 
     /* --- Component tokens ------------------------------------------------- */
     /* Tabs (ui/Tabs.svelte): the panel variant, then the sub variant. */
@@ -251,6 +252,8 @@
        a category row. */
     --gs-tree-indent: var(--gs-size-indent);
     --gs-tree-indent-base: var(--gs-size-indent-base);
+    --gs-tree-guide: transparent;
+    --gs-tree-guide-width: var(--gs-border-width);
     --gs-tree-dim-opacity: 0.45;
     --gs-tree-category-padding-top: var(--gs-space-1-5);
     --gs-tree-category-weight: var(--gs-font-weight-semibold);
@@ -346,10 +349,15 @@
     --gs-progress-fill-failed: var(--gs-danger-solid);
     --gs-progress-stripe: color-mix(in srgb, var(--gs-text-on-accent) 25%, transparent);
     --gs-progress-stripe-size: 12px;
+    /* A full, faded bar in place of the slide under reduced motion. */
+    --gs-progress-indeterminate-opacity: 0.45;
 
     /* Activity dots (ui/ActivityDot.svelte): an upload or a print job. */
     --gs-activity-dot-size: var(--gs-size-dot);
     --gs-activity-dot-fg: currentColor;
+    /* At rest (and under reduced motion), and the low point of its pulse. */
+    --gs-activity-dot-opacity-max: 0.6;
+    --gs-activity-dot-opacity-min: 0.3;
 
     /* The emulated screen's frame (ScreenView): a bezel hook, off by
        default. */
@@ -400,6 +408,8 @@
     --gs-statusbar-fg-active: var(--gs-state-active-fg);
     --gs-statusbar-item-hover: var(--gs-state-hover);
     --gs-statusbar-drive-idle-opacity: 0.55;
+    --gs-statusbar-icon-opacity: 0.85;
+    --gs-statusbar-meta-opacity: 0.75;
     --gs-statusbar-drive-style: text;
   }
 

@@ -557,6 +557,18 @@ export const TOKENS: readonly TokenSpec[] = [
   cmp('--gs-screen-frame-radius', 'length', 'screen frame: radius'),
   cmp('--gs-statusline-bg', 'color', 'statusline: bg'),
   cmp('--gs-statusline-padding', 'length', 'statusline: padding'),
+  cmp('--gs-tree-guide', 'color', 'tree: the indent guide lines (transparent: none)'),
+  cmp('--gs-tree-guide-width', 'length', 'tree: the indent guide width'),
+  cmp('--gs-console-stderr-opacity', 'number', 'console: stderr entries'),
+  cmp(
+    '--gs-progress-indeterminate-opacity',
+    'number',
+    'progress: indeterminate bar under reduced motion',
+  ),
+  cmp('--gs-activity-dot-opacity-max', 'number', 'activity dot: opacity at rest'),
+  cmp('--gs-activity-dot-opacity-min', 'number', 'activity dot: low point of the pulse'),
+  cmp('--gs-statusbar-icon-opacity', 'number', 'statusbar: the speed icon'),
+  cmp('--gs-statusbar-meta-opacity', 'number', 'statusbar: the MIPS readout'),
 ];
 
 // Layout variables components set inline at run time: allowed reads, not

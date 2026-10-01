@@ -124,10 +124,12 @@
     --_bg-hover: var(--gs-button-ghost-bg-hover);
     --_bg-active: var(--gs-button-ghost-bg-active);
   }
-  .gs-button:hover:not(:disabled) {
+  .gs-button:hover:not(:disabled),
+  .gs-button[data-force-state='hover'] {
     background: var(--_bg-hover);
   }
-  .gs-button:active:not(:disabled) {
+  .gs-button:active:not(:disabled),
+  .gs-button[data-force-state='active'] {
     background: var(--_bg-active);
   }
   .gs-button:disabled,

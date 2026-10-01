@@ -238,11 +238,11 @@
     font-variant-numeric: var(--gs-numeric);
   }
   .sb-speed :global(.icon) {
-    opacity: 0.85;
+    opacity: var(--gs-statusbar-icon-opacity);
   }
   .sb-mips {
     font-variant-numeric: var(--gs-numeric);
-    opacity: 0.75;
+    opacity: var(--gs-statusbar-meta-opacity);
   }
   .sb-upload {
     gap: var(--gs-space-1-5);

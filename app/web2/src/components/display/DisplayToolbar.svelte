@@ -1,7 +1,16 @@
 <script lang="ts">
   import { machine, setZoom } from '@/state/machine.svelte';
   import { layout, setPanelPos, setPanelCollapsed, type PanelPos } from '@/state/layout.svelte';
-  import { resolved, toggleScheme, canToggleScheme } from '@/state/appearance.svelte';
+  import {
+    appearance,
+    resolved,
+    toggleScheme,
+    canToggleScheme,
+    setSchemeMode,
+    setSkin,
+    activeSkin,
+  } from '@/state/appearance.svelte';
+  import { skins } from '@/skins/registry';
   import { camera, setCameraEnabled } from '@/state/camera.svelte';
   import {
     microphone,
@@ -81,6 +90,28 @@
         ? 'Theme: dark. Click for light.'
         : 'Theme: light. Click for dark.',
   );
+
+  // The appearance menu beside the theme toggle: the scheme mode (a scheme
+  // the skin lacks is disabled) and the skin.
+  function onAppearanceMenu(ev: MouseEvent) {
+    const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+    const has = activeSkin().schemes;
+    const items: ContextMenuItem[] = [
+      ...(['dark', 'light', 'system'] as const).map((m) => ({
+        label: m === 'system' ? 'System' : m === 'dark' ? 'Dark' : 'Light',
+        checked: appearance.schemeMode === m,
+        disabled: m !== 'system' && !has.includes(m),
+        action: () => setSchemeMode(m),
+      })),
+      { sep: true },
+      ...skins.map((s) => ({
+        label: s.name,
+        checked: resolved.skin === s.id,
+        action: () => setSkin(s.id),
+      })),
+    ];
+    openContextMenu(items, r.left, r.bottom);
+  }
 
   // Run/Pause icon flip.
   const runIcon: IconName = $derived(machine.status === 'running' ? 'pause' : 'play');
@@ -324,6 +355,15 @@
       label={themeTitle}
       disabled={!canToggleScheme()}
       onclick={toggleScheme}
+    />
+    <IconButton
+      class="tbtn appearance-menu"
+      icon="chevron"
+      iconSize="xs"
+      size="sm"
+      label="Appearance: scheme and skin"
+      aria-haspopup="menu"
+      onclick={onAppearanceMenu}
     />
     <IconButton
       class="tbtn"

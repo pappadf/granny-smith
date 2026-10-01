@@ -102,6 +102,7 @@
 
 <style>
   .gs-tree-item {
+    position: relative;
     display: flex;
     align-items: center;
     gap: var(--gs-row-gap);
@@ -109,6 +110,25 @@
       calc(var(--gs-tree-indent-base) + var(--gs-tree-indent) * var(--depth));
     cursor: pointer;
     color: var(--gs-text);
+  }
+  /* Indent guides: one vertical line per ancestor level, through the
+     middle of each ancestor's disclosure arrow.  Transparent unless a skin
+     sets --gs-tree-guide. */
+  .gs-tree-item::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: calc(
+      var(--gs-tree-indent-base) + var(--gs-disclosure-size) / 2 - var(--gs-tree-guide-width) / 2
+    );
+    width: calc(var(--gs-tree-indent) * var(--depth));
+    background: repeating-linear-gradient(
+      to right,
+      var(--gs-tree-guide) 0 var(--gs-tree-guide-width),
+      transparent var(--gs-tree-guide-width) var(--gs-tree-indent)
+    );
+    pointer-events: none;
   }
   .gs-tree-item[data-density='row'] {
     height: var(--gs-row-height);
@@ -119,7 +139,8 @@
     padding-top: var(--gs-row-padding-y-compact);
     padding-bottom: var(--gs-row-padding-y-compact);
   }
-  .gs-tree-item--hover:hover {
+  .gs-tree-item--hover:hover,
+  .gs-tree-item--hover[data-force-state='hover'] {
     background: var(--gs-row-hover);
   }
   .gs-tree-item[data-selected] {

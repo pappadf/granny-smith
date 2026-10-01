@@ -53,6 +53,35 @@ export const STORIES: readonly StoryDef[] = [
     load: () => import('./stories/UiForm.story.svelte'),
   },
   {
+    name: 'UiFeedback',
+    variants: ONE,
+    width: 640,
+    height: 560,
+    load: () => import('./stories/UiFeedback.story.svelte'),
+  },
+  {
+    name: 'ForcedStates',
+    variants: ONE,
+    width: 760,
+    height: 260,
+    load: () => import('./stories/ForcedStates.story.svelte'),
+  },
+  {
+    name: 'TreeKinds',
+    variants: ['default', 'focused'],
+    width: 720,
+    height: 200,
+    focus: { focused: '.cols' },
+    load: () => import('./stories/TreeKinds.story.svelte'),
+  },
+  {
+    name: 'DropOverlay',
+    variants: ONE,
+    width: 600,
+    height: 320,
+    load: () => import('./stories/DropOverlay.story.svelte'),
+  },
+  {
     name: 'StatusBar',
     variants: [
       'idle',

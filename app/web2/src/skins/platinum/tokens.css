@@ -152,5 +152,6 @@
     --gs-statusbar-dot-crashed: #ffc4c4;
     --gs-statusbar-drive-style: led;
     --gs-pill-radius: var(--gs-radius-sm);
+    --gs-tree-guide: #c4c4c4;
   }
 }

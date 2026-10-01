@@ -17,7 +17,7 @@ import {
 import { whenModuleReady, onEmulatorCrash, applySchedulerMode } from '@/bus/emulator';
 import { setSchedulerMode } from '@/state/machine.svelte';
 import { beginUrlBoot } from '@/state/urlBoot.svelte';
-import { installEvalHookForAutomation } from '@/bus/testHook';
+import { installEvalHookForAutomation, installUiHookForAutomation } from '@/bus/testHook';
 import { checkWebGL2Available } from '@/lib/webglCheck';
 import { renderWebGLErrorPage, renderStartupErrorPage } from '@/lib/webglErrorPage';
 
@@ -130,6 +130,7 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
     // Under automation only, let specs read core state without typing into
     // the terminal (bus/testHook.ts).
     installEvalHookForAutomation();
+    installUiHookForAutomation();
 
     // The machine the URL names wins over the one this browser saved: the
     // saved checkpoint is left as it is, unoffered.

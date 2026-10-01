@@ -17,13 +17,13 @@
     height: var(--gs-activity-dot-size);
     border-radius: var(--gs-radius-round);
     background: var(--gs-activity-dot-fg);
-    opacity: 0.6;
+    opacity: var(--gs-activity-dot-opacity-max);
     animation: gs-activity-pulse var(--gs-duration-pulse) var(--gs-ease-in-out) infinite;
   }
   @keyframes gs-activity-pulse {
     0%,
     100% {
-      opacity: 0.3;
+      opacity: var(--gs-activity-dot-opacity-min);
     }
     50% {
       opacity: 1;

@@ -351,7 +351,7 @@
      styles/syntax.css. */
   .entry.stderr {
     color: var(--gs-syntax-error);
-    opacity: 0.75;
+    opacity: var(--gs-console-stderr-opacity);
   }
   .entry.error {
     color: var(--gs-syntax-error);

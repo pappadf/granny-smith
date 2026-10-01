@@ -348,4 +348,22 @@ describe('design tokens', () => {
     if (unread.length) console.warn(`tokens nothing reads yet: ${unread.join(', ')}`);
     expect(Array.isArray(unread)).toBe(true);
   });
+
+  // Report (not fail) literal opacities in components: an opacity is a
+  // visual value a skin may want, so it belongs in an --gs-opacity-* or a
+  // component token.
+  it('reports literal opacity values', () => {
+    const found: string[] = [];
+    for (const f of SOURCES) {
+      if (!f.endsWith('.svelte')) continue;
+      const css = cssOf(f, stripComments(readFileSync(f, 'utf8')));
+      for (const m of css.matchAll(/(?<![-\w])opacity\s*:\s*([^;}]+)/g)) {
+        const v = m[1].trim();
+        if (!/^var\(--gs-/.test(v) && v !== '0' && v !== '1')
+          found.push(`${rel(f)}: opacity: ${v}`);
+      }
+    }
+    if (found.length) console.warn(`literal opacities:\n  ${found.join('\n  ')}`);
+    expect(Array.isArray(found)).toBe(true);
+  });
 });

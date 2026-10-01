@@ -97,7 +97,7 @@
       animation: none;
       left: 0;
       width: 100%;
-      opacity: 0.45;
+      opacity: var(--gs-progress-indeterminate-opacity);
     }
   }
 </style>

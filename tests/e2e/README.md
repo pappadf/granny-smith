@@ -144,10 +144,12 @@ Two sets pin the look of the UI itself:
   skin's baselines are `<story>-<variant>-<scheme>`, another skin's
   `<story>-<variant>-<skin>-<scheme>`. The stories render components against fixture state, so
   this needs neither the WASM build nor test data, and runs in every CI run
-  (`make ui2-gallery`).
+  (`make ui2-gallery`). Opened without `&story=`, the gallery is an index
+  with a skin / scheme / reduced-motion toolbar, a token table (`&view=tokens`)
+  and a coverage list (`&view=coverage`) of which story shows each UI element.
 - `web2-specs/app-states.spec.ts` screenshots the real workbench (welcome,
-  every panel tab, the configuration form, a URL boot, the Debug view of a
-  paused Plus) with the text that changes on its own masked. It runs with
+  every panel tab, the configuration form, toasts of each severity, the
+  print dialog, a URL boot, the Debug view of a paused Plus) with the text that changes on its own masked. It runs with
   the functional suite (`make ui2-e2e`, needs test data).
 
 `web2-specs/appearance.spec.ts` checks the skin and scheme plumbing without

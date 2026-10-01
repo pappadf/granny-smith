@@ -10,11 +10,20 @@
     description?: string;
     onclick: () => void;
     class?: string;
+    /** The gallery's forced state ('hover'). */
+    'data-force-state'?: string;
   }
-  let { icon, label, description, onclick, class: cls = '' }: Props = $props();
+  let {
+    icon,
+    label,
+    description,
+    onclick,
+    class: cls = '',
+    'data-force-state': forceState,
+  }: Props = $props();
 </script>
 
-<button type="button" class="gs-action-row {cls}" {onclick}>
+<button type="button" class="gs-action-row {cls}" data-force-state={forceState} {onclick}>
   <Icon name={icon} class="gs-action-row__icon" />
   <span class="gs-action-row__label">{label}</span>
   {#if description}<span class="gs-action-row__description">{description}</span>{/if}
@@ -34,7 +43,8 @@
     text-align: left;
     cursor: pointer;
   }
-  .gs-action-row:hover {
+  .gs-action-row:hover,
+  .gs-action-row[data-force-state='hover'] {
     background: var(--gs-action-row-bg-hover);
   }
   .gs-action-row :global(.gs-action-row__icon) {

@@ -67,7 +67,8 @@
   .gs-list-row--mono {
     font-family: var(--gs-font-mono);
   }
-  .gs-list-row--hover:hover {
+  .gs-list-row--hover:hover,
+  .gs-list-row--hover[data-force-state='hover'] {
     background: var(--gs-row-hover);
   }
   .gs-list-row[data-selected] {

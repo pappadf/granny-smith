@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Component } from 'svelte';
   import { STORIES, findStory, type StoryProps } from './registry';
+  import GalleryIndex from './GalleryIndex.svelte';
   import {
     appearance,
     applyAppearance,
@@ -18,6 +19,8 @@
   appearance.schemeMode = scheme;
   applyUrlSkin(params);
   applyAppearance();
+  if (params.get('motion') === 'reduced')
+    document.documentElement.classList.add('gs-gallery-reduced-motion');
 
   // The list the screenshot spec walks.
   (window as unknown as { __gsGallery?: unknown }).__gsGallery = {
@@ -52,12 +55,6 @@
         document.body.dataset.galleryReady = '1';
       });
   }
-
-  // A page URL for a story variant in a scheme (in the skin of this page).
-  function href(name: string, v: string, t: string): string {
-    const skin = params.get('skin');
-    return `?gallery&story=${encodeURIComponent(name)}&variant=${encodeURIComponent(v)}&theme=${t}${skin ? `&skin=${encodeURIComponent(skin)}` : ''}`;
-  }
 </script>
 
 {#if story}
@@ -80,27 +77,7 @@
     {/if}
   </div>
 {:else}
-  <main class="gallery-index">
-    <h1>Granny Smith UI gallery</h1>
-    <p>Every story and variant, in both schemes. Development builds only.</p>
-    <table>
-      <thead>
-        <tr><th>Story</th><th>Variant</th><th>Dark</th><th>Light</th></tr>
-      </thead>
-      <tbody>
-        {#each STORIES as s (s.name)}
-          {#each s.variants as v (v)}
-            <tr>
-              <td>{s.name}</td>
-              <td>{v}</td>
-              <td><a href={href(s.name, v, 'dark')}>dark</a></td>
-              <td><a href={href(s.name, v, 'light')}>light</a></td>
-            </tr>
-          {/each}
-        {/each}
-      </tbody>
-    </table>
-  </main>
+  <GalleryIndex />
 {/if}
 
 <style>
@@ -114,20 +91,17 @@
     color: var(--gs-danger-fg);
     white-space: pre-wrap;
   }
-  .gallery-index {
-    padding: var(--gs-space-4) var(--gs-space-6);
-    height: 100%;
-    overflow: auto;
-  }
-  .gallery-index table {
-    border-collapse: collapse;
-  }
-  .gallery-index td,
-  .gallery-index th {
-    padding: var(--gs-space-0-5) var(--gs-space-3) var(--gs-space-0-5) 0;
-    text-align: left;
-  }
-  .gallery-index a {
-    color: var(--gs-text-link);
+  /* Reduced motion for this page and the stories it links to: every
+     duration collapses, as the user preference does. */
+  :global(html.gs-gallery-reduced-motion) {
+    --gs-duration-instant: 0.01ms;
+    --gs-duration-fast: 0.01ms;
+    --gs-duration-quick: 0.01ms;
+    --gs-duration-base: 0.01ms;
+    --gs-duration-slow: 0.01ms;
+    --gs-duration-slower: 0.01ms;
+    --gs-duration-spin: 0.01ms;
+    --gs-duration-pulse: 0.01ms;
+    --gs-duration-indeterminate: 0.01ms;
   }
 </style>
