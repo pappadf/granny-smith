@@ -43,6 +43,8 @@
     'camera-off',
     'mic',
     'mic-off',
+    'ellipsis',
+    'power',
   ];
 </script>
 

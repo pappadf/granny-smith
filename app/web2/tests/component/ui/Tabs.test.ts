@@ -82,6 +82,9 @@ describe('Tabs', () => {
     });
     const tabs = container.querySelectorAll('.ptab');
     expect(tabs[1].getAttribute('data-tab')).toBe('b');
-    expect(container.querySelectorAll('[tabindex="-1"]').length).toBe(0);
+    // (The invisible measuring copy beside the strip is inert.)
+    const strip = container.querySelector('[role="tablist"]')!;
+    expect(strip.querySelectorAll('[tabindex="-1"]').length).toBe(0);
+    expect(container.querySelector('.gs-tabs--measure')?.hasAttribute('inert')).toBe(true);
   });
 });

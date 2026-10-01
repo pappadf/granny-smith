@@ -56,11 +56,15 @@ names of the icons reproduced here are:
     screen-full               (Display Toolbar Full Screen button — enter)
     screen-normal             (Display Toolbar Full Screen button — exit)
     server                    (Hard Disk rows in trees and Images)
-    sign-out                  (Display Toolbar Shut Down button)
+    sign-out                  (icon gallery only)
     trash                     (Clear log button, Delete snapshot button)
     unmute                    (Sound/PWM node in the Machine tree)
     vm                        (Computer / Mac model icons)
     warning                   (toast warning badge)
+
+Two symbols are drawn for Granny Smith, not taken from Codicons: `i-power`
+(the Display Toolbar Shut Down button) and `i-ellipsis` (the panel header's
+folded actions menu).
 
 Source:
     https://github.com/microsoft/vscode-codicons

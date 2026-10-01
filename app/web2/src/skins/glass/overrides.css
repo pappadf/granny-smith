@@ -39,12 +39,10 @@
     border-width: 0;
   }
 
-  /* The display toolbar: a pill.  Its groups keep a gap when it runs short
-     of room, and what still does not fit is cut at the pill's edge rather
-     than spilling into the panel. */
+  /* The display toolbar: a pill.  Its groups keep a gap even when it runs
+     short of room. */
   :root[data-skin='glass'] .gs-toolbar[data-variant='bar'] {
     gap: var(--gs-toolbar-gap);
-    overflow-x: clip;
     padding: 0 10px;
     border: 1px solid var(--gs-ref-hairline);
     border-radius: 18px;
@@ -106,6 +104,78 @@
     box-shadow:
       0 0 0 4px var(--gs-accent-subtle),
       0 6px 18px color-mix(in srgb, var(--gs-accent) 45%, transparent);
+  }
+
+  /* Toolbar tools are 36px; the panel's are 30px. */
+  :root[data-skin='glass'] .gs-toolbar[data-variant='bar'] .gs-icon-button[data-size='md'] {
+    width: 36px;
+    height: 36px;
+  }
+  :root[data-skin='glass'] .gs-icon-button[data-tone='panel'] {
+    width: 30px;
+    height: 30px;
+  }
+  /* The zoom level reads in the mono face. */
+  :root[data-skin='glass'] .gs-toolbar[data-variant='bar'] .gs-input {
+    font-family: var(--gs-font-mono);
+    font-size: 12px;
+  }
+  /* The panel-layout buttons sit in one recessed track (the buttons after
+     the last group's groove, joined), the current one lit. */
+  :root[data-skin='glass']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button {
+    width: 34px;
+    height: 34px;
+    border-radius: 0;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--gs-text-subtle);
+  }
+  :root[data-skin='glass']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button
+    + .gs-icon-button {
+    margin-left: calc(0px - var(--gs-toolbar-gap));
+  }
+  :root[data-skin='glass']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    + .gs-icon-button {
+    border-radius: 12px 0 0 12px;
+  }
+  :root[data-skin='glass']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button:last-child {
+    border-radius: 0 12px 12px 0;
+  }
+  :root[data-skin='glass']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button[aria-pressed='true'] {
+    background: rgba(255, 255, 255, 0.12);
+    color: var(--gs-text-strong);
+  }
+  :root[data-skin='glass'][data-theme='light']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button {
+    background-color: #eef0f4;
+  }
+  /* The debugger's continue / pause: the lit one of its tools. */
+  :root[data-skin='glass']
+    .gs-toolbar[data-variant='inline']
+    > .gs-icon-button:first-child:not(:disabled) {
+    background: color-mix(in srgb, var(--gs-accent) 16%, transparent);
+    color: var(--gs-accent);
   }
 
   /* Segmented controls: a recessed track, the selected option a lit chip. */
@@ -221,10 +291,22 @@
     .gs-toolbar[data-variant='bar']
     > :first-child
     > .gs-icon-button:first-child:not(:disabled) {
+    width: auto;
+    gap: 6px;
+    padding: 0 12px 0 10px;
     border-radius: 9px;
     background: #16181d;
     color: #ffffff;
     box-shadow: none;
+  }
+  /* …a black pill that names what it does (its caption: Run / Pause). */
+  :root[data-skin='glass'][data-theme='light']
+    .gs-toolbar[data-variant='bar']
+    > :first-child
+    > .gs-icon-button:first-child:not(:disabled)::after {
+    content: attr(data-caption);
+    font-size: 12px;
+    font-weight: var(--gs-font-weight-semibold);
   }
   :root[data-skin='glass'][data-theme='light'] .gs-segmented {
     border-color: transparent;

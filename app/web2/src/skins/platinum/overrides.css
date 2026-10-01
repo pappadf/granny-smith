@@ -11,11 +11,9 @@
     background: var(--gs-ref-chrome);
   }
 
-  /* Groups keep a gap when the toolbar runs short of room; what still does
-     not fit is cut at its edge rather than drawn over the panel. */
+  /* Groups keep a gap even when the toolbar runs short of room. */
   :root[data-skin='platinum'] .gs-toolbar[data-variant='bar'] {
     gap: var(--gs-toolbar-gap);
-    overflow-x: clip;
     padding: 0 10px;
     border-bottom: 1px solid #888888;
     box-shadow: inset 0 1px 0 var(--gs-ref-bevel-light);
@@ -88,6 +86,28 @@
     color: #8a8a8a;
     border-color: #8a8a8a;
   }
+  /* Toolbar buttons are wider than tall, as Mac OS 8 draws them. */
+  :root[data-skin='platinum'] .gs-toolbar[data-variant='bar'] .gs-icon-button[data-size='md'] {
+    width: 34px;
+  }
+  :root[data-skin='platinum'] .gs-toolbar[data-variant='bar'] > :first-child > .gs-icon-button {
+    width: 38px;
+  }
+  :root[data-skin='platinum']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button {
+    width: 32px;
+  }
+
+  /* The zoom stepper is labelled, as Mac OS 8 labels a pop-up: "Zoom:". */
+  :root[data-skin='platinum'] .gs-toolbar[data-variant='bar'] [data-caption='Zoom']::before {
+    content: attr(data-caption) ':';
+    margin-right: 2px;
+    font-weight: var(--gs-font-weight-semibold);
+  }
+
   /* Button pairs that belong together are joined into one bevelled strip,
      as Mac OS 8 groups them: run with shut down (the toolbar's first two
      buttons), and the three panel-layout buttons after the last group's

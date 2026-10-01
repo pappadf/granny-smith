@@ -19,6 +19,8 @@
     disabled?: boolean;
     class?: string;
     optionClass?: string;
+    /** A short caption a skin may show beside the control (data-caption). */
+    caption?: string;
   }
   let {
     options,
@@ -30,11 +32,13 @@
     disabled = false,
     class: cls = '',
     optionClass = '',
+    caption,
   }: Props = $props();
 </script>
 
 <div
   class="gs-segmented {cls}"
+  data-caption={caption}
   role="group"
   aria-label={label}
   data-size={size}

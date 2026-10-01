@@ -114,7 +114,7 @@
       color: var(--gs-menu-fg);
       box-shadow: var(--gs-shadow-popup);
     }
-    .gs-select__control option {
+    .gs-select__control :global(option) {
       display: flex;
       align-items: center;
       gap: var(--gs-space-1-5);
@@ -124,20 +124,20 @@
       white-space: nowrap;
       cursor: pointer;
     }
-    .gs-select__control option::checkmark {
+    .gs-select__control :global(option)::checkmark {
       width: 1em;
       text-align: center;
     }
-    .gs-select__control option:not(:checked)::checkmark {
+    .gs-select__control :global(option):not(:checked)::checkmark {
       visibility: hidden;
     }
-    .gs-select__control option:hover,
-    .gs-select__control option:focus-visible {
+    .gs-select__control :global(option):hover,
+    .gs-select__control :global(option):focus-visible {
       outline: none;
       background: var(--gs-menu-hover-bg);
       color: var(--gs-menu-hover-fg);
     }
-    .gs-select__control option:disabled {
+    .gs-select__control :global(option):disabled {
       opacity: var(--gs-opacity-disabled);
       background: transparent;
       color: inherit;

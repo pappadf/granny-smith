@@ -14,7 +14,7 @@
     <!-- debug-stop -->
     <symbol id="i-stop" viewBox="0 0 16 16"><path fill="currentColor" d="M12.5 3.5V12.5H3.5V3.5H12.5ZM12.5 2H3.5C2.672 2 2 2.672 2 3.5V12.5C2 13.328 2.672 14 3.5 14H12.5C13.328 14 14 13.328 14 12.5V3.5C14 2.672 13.328 2 12.5 2Z"/></symbol>
     <!-- remove -->
-    <symbol id="i-minus" viewBox="0 0 16 16"><path fill="currentColor" d="M1 7.5C1 7.22386 1.22386 7 1.5 7H13.5C13.7761 7 14 7.22386 14 7.5C14 7.77614 13.7761 8 13.5 8H1.5C1.22386 8 1 7.77614 1 7.5Z"/></symbol>
+    <symbol id="i-ellipsis" viewBox="0 0 16 16"><path fill="currentColor" d="M3.5 9.25a1.25 1.25 0 1 0 0-2.5 1.25 1.25 0 0 0 0 2.5ZM8 9.25a1.25 1.25 0 1 0 0-2.5 1.25 1.25 0 0 0 0 2.5ZM12.5 9.25a1.25 1.25 0 1 0 0-2.5 1.25 1.25 0 0 0 0 2.5Z"/></symbol><symbol id="i-power" viewBox="0 0 16 16"><path fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" d="M8 1.75v6M4.75 3.9a5.25 5.25 0 1 0 6.5 0"/></symbol><symbol id="i-minus" viewBox="0 0 16 16"><path fill="currentColor" d="M1 7.5C1 7.22386 1.22386 7 1.5 7H13.5C13.7761 7 14 7.22386 14 7.5C14 7.77614 13.7761 8 13.5 8H1.5C1.22386 8 1 7.77614 1 7.5Z"/></symbol>
     <!-- add -->
     <symbol id="i-plus" viewBox="0 0 16 16"><path fill="currentColor" d="M8 1.5C8 1.22386 7.77614 1 7.5 1C7.22386 1 7 1.22386 7 1.5V7H1.5C1.22386 7 1 7.22386 1 7.5C1 7.77614 1.22386 8 1.5 8H7V13.5C7 13.7761 7.22386 14 7.5 14C7.77614 14 8 13.7761 8 13.5V8H13.5C13.7761 8 14 7.77614 14 7.5C14 7.22386 13.7761 7 13.5 7H8V1.5Z"/></symbol>
     <!-- cloud-download -->
