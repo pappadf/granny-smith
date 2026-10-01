@@ -60,6 +60,8 @@ export interface OpfsEntry {
   name: string;
   path: string;
   kind: 'file' | 'directory';
+  // A file the core can descend into (an image or archive), from files.list.
+  expandable?: boolean;
 }
 
 export type ImageCategory = 'rom' | 'vrom' | 'prom' | 'fd' | 'hd' | 'cd';

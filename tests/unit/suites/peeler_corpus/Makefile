@@ -1,10 +1,11 @@
 # peeler's real-archive corpus, run as part of the unit tier.
 #
-# src/peeler/test/testfiles holds 22 genuine archives -- Compact Pro 1.33 and
-# 1.52; StuffIt 4.5, 6.5.1 and 7 as .sit and .sea, each raw, MacBinary and
-# BinHex; DropStuff 6 at both settings -- with the md5sums of what they
-# extract to, and src/peeler/test/run_tests.sh checks them through the peeler
-# CLI.  Until this suite, nothing ran it.  One round of fixes passed every
+# src/peeler/test/testfiles holds 22 genuine Mac archives -- Compact Pro 1.33
+# and 1.52; StuffIt 4.5, 6.5.1 and 7 as .sit and .sea, each raw, MacBinary
+# and BinHex; DropStuff 6 at both settings -- and zip, gzip and tar archives
+# made by independent writers (Info-ZIP, GNU gzip and tar, Python; see
+# make_archive_fixtures.py), each with the md5sums of what it extracts to,
+# and src/peeler/test/run_tests.sh checks them through the peeler CLI.  Until this suite, nothing ran it.  One round of fixes passed every
 # synthetic test in suites/peeler and broke three of these archives: synthetic
 # fixtures show a fix refuses bad input; only real archives show it still
 # accepts good input.

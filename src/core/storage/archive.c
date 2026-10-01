@@ -2,9 +2,10 @@
 // Copyright (c) pappadf
 
 // archive.c
-// Mac archive file handling. Wraps the third-party peeler library so the
-// emulator-side surface (files.archive.identify, files.archive.extract) doesn't
-// leak the library name to users.
+// Mac archive file handling: files.archive.identify and files.archive.extract.
+// Archives are namespaces of the VFS (namespace.h), so identify is a bounded
+// probe of the file and extract is a copy of its tree; the in-tree peeler
+// library does the format work, and its name does not leak to users.
 
 #include "archive.h"
 #include "gs_out.h"
@@ -15,8 +16,11 @@
 #include "log.h"
 #include "object.h"
 #include "peeler.h"
+#include "shell.h"
+#include "source.h"
 #include "storage_util.h"
 #include "value.h"
+#include "vfs.h"
 
 #include <errno.h>
 #include <stdbool.h>
@@ -27,190 +31,57 @@
 #include <unistd.h>
 
 // ============================================================================
-// Extraction helpers
-// ============================================================================
-
-typedef struct {
-    const char *output_dir;
-    int file_count;
-} archive_ctx_t;
-
-// Create the directories leading to entry `path` under ctx->output_dir.
-static int ensure_dir_exists(const archive_ctx_t *ctx, const char *path) {
-    char *full = gs_str_printf("%s/%s", ctx->output_dir, path);
-    if (!full)
-        return -1;
-    int rc = gs_mkdir_parents(full);
-    if (rc != 0)
-        fprintf(stderr, "archive: cannot create the directories for '%s': %s\n", full, strerror(-rc));
-    free(full);
-    return rc != 0 ? -1 : 0;
-}
-
-// Write an AppleDouble "._<name>" header sidecar next to the extracted data
-// file at `data_full_path`, carrying the resource fork (entry 2) and Finder
-// Info (entry 9).  This keeps a Mac file lossless on the flat host FS — e.g. a
-// StuffIt/MacBinary-wrapped NDIF disk image unpacks to a mountable pair — and
-// interoperates with macOS/Netatalk.
-// A file with neither a resource fork nor Finder Info gets no sidecar.
-// Returns 0 on success (including the no-sidecar case), -1 on write failure.
-static int write_ad_sidecar(const char *data_full_path, const peel_file_t *file) {
-    uint8_t *hdr = NULL;
-    size_t hdr_len = 0;
-    if (peel_build_sidecar(file, &hdr, &hdr_len) != 0 || !hdr)
-        return 0; // a data-only file, or out of memory: no sidecar
-
-    char sidecar[1024];
-    const char *slash = strrchr(data_full_path, '/');
-    int n = slash ? snprintf(sidecar, sizeof(sidecar), "%.*s._%s", (int)(slash - data_full_path + 1), data_full_path,
-                             slash + 1)
-                  : snprintf(sidecar, sizeof(sidecar), "._%s", data_full_path);
-    if (n < 0 || n >= (int)sizeof(sidecar)) {
-        free(hdr);
-        fprintf(stderr, "archive: sidecar path too long\n");
-        return -1;
-    }
-
-    FILE *fp = fopen(sidecar, "wb");
-    if (!fp) {
-        free(hdr);
-        fprintf(stderr, "archive: cannot create '%s': %s\n", sidecar, strerror(errno));
-        return -1;
-    }
-    size_t written = fwrite(hdr, 1, hdr_len, fp);
-    int close_rc = fclose(fp);
-    free(hdr);
-    if (written != hdr_len || close_rc != 0) {
-        remove(sidecar);
-        fprintf(stderr, "archive: write error on sidecar '%s'\n", sidecar);
-        return -1;
-    }
-    return 0;
-}
-
-// Write a single extracted file to disk under ctx->output_dir: the data fork
-// under its name, and — when the file carries a resource fork and/or Finder
-// Info — an AppleDouble "._<name>" sidecar beside it so the fork is preserved
-// (see write_ad_sidecar).
-static int write_extracted_file(const archive_ctx_t *ctx, const peel_file_t *file) {
-    const char *name = file->meta.name;
-    if (!name[0])
-        name = "untitled";
-
-    // The entry name comes from the archive.  Unchecked, "../x" -- or a Mac
-    // name containing '/', legal on HFS -- was written outside output_dir,
-    // with the directories created on the way.  peeler now
-    // builds names that cannot do this; this is the boundary, so check anyway.
-    if (!peel_path_is_confined(name)) {
-        fprintf(stderr, "archive: refusing entry '%s': it would land outside '%s'\n", name, ctx->output_dir);
-        return -1;
-    }
-
-    if (ensure_dir_exists(ctx, name) != 0)
-        return -1;
-
-    char full_path[1024];
-    if (snprintf(full_path, sizeof(full_path), "%s/%s", ctx->output_dir, name) >= (int)sizeof(full_path)) {
-        fprintf(stderr, "archive: path too long\n");
-        return -1;
-    }
-
-    FILE *fp = fopen(full_path, "wb");
-    if (!fp) {
-        fprintf(stderr, "archive: cannot create file '%s': %s\n", full_path, strerror(errno));
-        return -1;
-    }
-
-    if (file->data_fork.size > 0) {
-        size_t written = fwrite(file->data_fork.data, 1, file->data_fork.size, fp);
-        if (written != file->data_fork.size) {
-            fprintf(stderr, "archive: write error: %s\n", strerror(errno));
-            fclose(fp);
-            return -1;
-        }
-    }
-
-    fclose(fp);
-
-    // Preserve the resource fork + Finder Info as a sibling AppleDouble sidecar.
-    return write_ad_sidecar(full_path, file);
-}
-
-static int process_archive(archive_ctx_t *ctx, const char *filepath) {
-    peel_err_t *err = NULL;
-    peel_file_list_t list = peel_path(filepath, &err);
-
-    if (err) {
-        fprintf(stderr, "archive: failed to extract '%s': %s\n", filepath, peel_err_msg(err));
-        peel_err_free(err);
-        return -1;
-    }
-
-    if (list.count == 0) {
-        fprintf(stderr, "archive: no files extracted from '%s'\n", filepath);
-        peel_file_list_free(&list);
-        return -1;
-    }
-
-    int status = 0;
-    for (int i = 0; i < list.count; i++) {
-        // Between files: the client's progress, and its cancel (what was
-        // written so far stays, as a failed extraction's files do).
-        if (io_check_cancelled()) {
-            status = -ECANCELED;
-            break;
-        }
-        if (write_extracted_file(ctx, &list.files[i]) != 0) {
-            status = -1;
-            break;
-        }
-        io_report_progress((uint64_t)(i + 1), (uint64_t)list.count);
-    }
-
-    int count = list.count;
-    peel_file_list_free(&list);
-
-    if (status == 0)
-        ctx->file_count += count;
-
-    return status;
-}
-
-// ============================================================================
 // Public API
 // ============================================================================
 
 const char *archive_identify_file(const char *path) {
     if (!path || !*path)
         return NULL;
-    peel_err_t *err = NULL;
-    peel_buf_t buf = peel_read_file(path, &err);
-    if (err) {
-        peel_err_free(err);
+    // Through the VFS, so an archive inside an image or another archive is
+    // identified too; detection reads a bounded probe, never the whole file.
+    int err = 0;
+    gs_source_t *src = vfs_open_source(path, GS_FORK_DATA, &err);
+    if (!src)
         return NULL;
+    peel_probe_t p;
+    const char *format = NULL;
+    if (peel_probe_init(&p, src) == 0) {
+        const peel_format_desc_t *d = peel_identify(&p);
+        format = d ? d->name : NULL;
+        peel_probe_free(&p);
     }
-    const char *format = peel_detect(buf.data, buf.size);
-    peel_free(&buf);
+    gs_source_release(src);
     return format;
 }
 
 int archive_extract_file(const char *path, const char *out_dir) {
     if (!path)
         return -1;
-    archive_ctx_t ctx = {
-        .output_dir = (out_dir && *out_dir) ? out_dir : ".",
-        .file_count = 0,
-    };
-    if (gs_mkdir_p(ctx.output_dir) != 0) {
-        fprintf(stderr, "archive: cannot create output directory '%s': %s\n", ctx.output_dir, strerror(errno));
+    const char *dir = (out_dir && *out_dir) ? out_dir : ".";
+    if (gs_mkdir_p(dir) != 0) {
+        fprintf(stderr, "archive: cannot create output directory '%s': %s\n", dir, strerror(errno));
         return -1;
     }
-    int rc = process_archive(&ctx, path);
+    // The archive is a namespace (namespace.h): extracting it is copying its
+    // tree out, the same walk files.cp does out of a disk image -- each file's
+    // data fork under its name, its resource fork and Finder info in an
+    // AppleDouble "._" sidecar.  Wrappers peel on the way (a .sit.hqx
+    // extracts the .sit's files).
+    uint64_t files = 0, bytes = 0;
+    char err[400];
+    int rc = shell_cp_contents(path, dir, &files, &bytes, err, sizeof(err));
     if (rc == -ECANCELED)
         return rc;
-    if (rc == 0)
-        gs_outf("Successfully extracted '%s' (%d file%s)\n", path, ctx.file_count, ctx.file_count == 1 ? "" : "s");
-    return rc;
+    if (rc != 0) {
+        fprintf(stderr, "archive: failed to extract '%s': %s\n", path, err);
+        return -1;
+    }
+    if (files == 0) {
+        fprintf(stderr, "archive: no files extracted from '%s'\n", path);
+        return -1;
+    }
+    gs_outf("Successfully extracted '%s' (%llu file%s)\n", path, (unsigned long long)files, files == 1 ? "" : "s");
+    return 0;
 }
 
 // The extraction as an I/O job (io_leaf.h): the archive is decoded and its
@@ -229,7 +100,7 @@ static int work_extract(io_leaf_t *j) {
 // ============================================================================
 
 // `files.archive.identify(path)` — return the format short name for a recognised
-// Mac archive ("sit" / "cpt" / "hqx" / "bin" / "sea"), or empty string
+// archive ("sit" / "cpt" / "zip" / "hqx" / "bin" / "gz"), or empty string
 // when the file is unreadable or not an archive. Empty is falsy under
 // the predicate-truthy rule — same shape as floppy.identify.
 static DEF_METHOD(archive_method_identify) {
@@ -268,7 +139,8 @@ static const member_t archive_members[] = {
      .name = "identify",
      .examples = EXAMPLES("files.archive.identify \"/opfs/downloads/app.sit\""),
      .doc = "Identify a Mac archive's format",
-     .method = {.result_doc = "\"sit\", \"cpt\", \"hqx\", \"bin\" or \"sea\"; empty when not an archive",
+     .method = {.result_doc =
+                    "\"sit\", \"cpt\", \"zip\", \"tar\", \"hqx\", \"bin\" or \"gz\"; empty when not an archive",
                 .args = archive_path_arg,
                 .nargs = 1,
                 .result = V_STRING,
@@ -286,7 +158,7 @@ static const class_desc_t archive_class = {
     .name = "archive",
     .members = archive_members,
     .n_members = sizeof(archive_members) / sizeof(archive_members[0]),
-    .doc = "Mac archive formats (StuffIt, BinHex, Compact Pro, MacBinary): identify and extract",
+    .doc = "Archive formats (StuffIt, Compact Pro, Zip, tar, BinHex, MacBinary, gzip): identify and extract",
 };
 
 // ============================================================================

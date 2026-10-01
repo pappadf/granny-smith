@@ -10,6 +10,7 @@
 #include "checkpoint_machine.h"
 #include "image.h"
 #include "image_wrap.h"
+#include "source.h"
 #include "storage.h"
 #include "system.h" // MAX_IMAGES -- the real bound on the restored list
 
@@ -26,6 +27,7 @@
 //     int8_t   flags (IMAGE_CKPT_WRITABLE | IMAGE_CKPT_WRAPPED)
 //     uint64_t raw_size (the storage's, without any wrapper prefix)
 //     uint32_t instance_len, instance_bytes...
+//     uint32_t key_len, key_bytes... (the base's source key, source.h)
 //     <storage-specific blob via image_checkpoint>
 void mac_checkpoint_save_images(config_t *cfg, checkpoint_t *cp) {
     uint32_t count = (uint32_t)cfg->n_images;
@@ -50,6 +52,7 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
     uint64_t raw_size = 0;
     system_read_checkpoint_data(cp, &raw_size, sizeof(raw_size));
     char *instance_path = checkpoint_read_string(cp, CHECKPOINT_MAX_PATH, "image instance path");
+    char *saved_key = checkpoint_read_string(cp, CHECKPOINT_MAX_PATH, "image source key");
 
     image_t *img = NULL;
     if (name) {
@@ -87,6 +90,14 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
         if (!img) {
             gs_outf("Error: image_open failed for %s while restoring checkpoint\n", name);
             checkpoint_set_error(cp);
+        } else if (!consolidated && saved_key && saved_key[0] && img->source_key &&
+                   !gs_key_same_source(saved_key, img->source_key)) {
+            // A quick checkpoint's disk is the base plus the saved delta: on
+            // other base bytes the delta would apply to the wrong disk.  (A
+            // consolidated one carries every block, so its base is not read.)
+            gs_outf("Error: %s is not the image the checkpoint was saved with (it was %s, it is now %s)\n", name,
+                    saved_key, img->source_key);
+            checkpoint_set_error(cp);
         }
     }
     // A volume that was attached through the wrapper is re-wrapped, so the
@@ -101,6 +112,7 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
     }
     free(name);
     free(instance_path);
+    free(saved_key);
     return img;
 }
 

@@ -314,6 +314,13 @@ static int copy_recursive(const char *src, const char *dst, struct cp_stats *s) 
     while ((r = be->readdir(d, &e)) > 0) {
         if (strcmp(e.name, ".") == 0 || strcmp(e.name, "..") == 0)
             continue;
+        // A name is one component: an image or archive may hold anything,
+        // and a separator in one would write outside `dst`.
+        if (strchr(e.name, '/')) {
+            snprintf(s->detail, sizeof(s->detail), "refusing entry '%s' in '%s': not a single name", e.name, src);
+            rc = -EINVAL;
+            goto done;
+        }
         if (n == cap) {
             size_t ncap = cap ? cap * 2 : 32;
             char(*nb)[256] = realloc(names, ncap * 256);
@@ -347,6 +354,65 @@ done:
     if (d)
         be->closedir(d);
     free(names);
+    return rc;
+}
+
+int shell_cp_contents(const char *src, const char *dst, uint64_t *files, uint64_t *bytes, char *err_buf,
+                      size_t err_cap) {
+    if (err_buf && err_cap)
+        err_buf[0] = '\0';
+    struct cp_stats s = {0};
+    // Descend: `src` may be an image or archive file, whose root is listed.
+    vfs_dir_t *d = NULL;
+    const vfs_backend_t *be = NULL;
+    int rc = vfs_opendir(src, &d, &be);
+    if (rc < 0) {
+        if (err_buf && err_cap)
+            snprintf(err_buf, err_cap, "cannot open '%s': %s", src, strerror(-rc));
+        return rc;
+    }
+    char(*names)[256] = NULL;
+    size_t n = 0, cap = 0;
+    vfs_dirent_t e;
+    int r;
+    while ((r = be->readdir(d, &e)) > 0) {
+        if (strcmp(e.name, ".") == 0 || strcmp(e.name, "..") == 0)
+            continue;
+        if (n == cap) {
+            size_t ncap = cap ? cap * 2 : 32;
+            char(*nb)[256] = realloc(names, ncap * 256);
+            if (!nb) {
+                r = -ENOMEM;
+                break;
+            }
+            names = nb;
+            cap = ncap;
+        }
+        snprintf(names[n++], 256, "%s", e.name);
+    }
+    be->closedir(d);
+    rc = r < 0 ? r : 0;
+    rc = rc == 0 ? vfs_mkdir(dst) : rc;
+    if (rc == -EEXIST)
+        rc = 0;
+    for (size_t i = 0; i < n && rc == 0; i++) {
+        if (strchr(names[i], '/')) {
+            snprintf(s.detail, sizeof(s.detail), "refusing entry '%s': not a single name", names[i]);
+            rc = -EINVAL;
+            break;
+        }
+        char sub_src[VFS_PATH_MAX], sub_dst[VFS_PATH_MAX];
+        path_join(sub_src, sizeof(sub_src), src, names[i]);
+        path_join(sub_dst, sizeof(sub_dst), dst, names[i]);
+        rc = copy_recursive(sub_src, sub_dst, &s);
+    }
+    free(names);
+    if (files)
+        *files = s.files_copied;
+    if (bytes)
+        *bytes = s.bytes_copied;
+    if (rc < 0 && err_buf && err_cap)
+        snprintf(err_buf, err_cap, "%s", s.detail[0] ? s.detail : strerror(-rc));
     return rc;
 }
 

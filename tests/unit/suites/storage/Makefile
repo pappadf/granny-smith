@@ -10,4 +10,5 @@ ifneq ($(filter emcc%,$(notdir $(firstword $(CC)))),)
 override LDFLAGS += -sNODERAWFS=1
 endif
 
+USE_SOURCE_LAYER := 1
 include ../../common.mk

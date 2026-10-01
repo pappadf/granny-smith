@@ -5,10 +5,16 @@
 // CLI entry point for the `peeler` tool.
 //
 // Usage:  peeler <archive> [<output-dir>]
+//         peeler list <archive>
+//         peeler extract <archive> <member> [<output-dir>]
 //
-// Reads the archive, peels all layers, and writes each extracted file to
-// the output directory.  Resource forks are emitted as AppleDouble (._)
-// sidecar files.
+// The first form reads the archive, peels all layers, and writes each
+// extracted file to the output directory.  Resource forks are emitted as
+// AppleDouble (._) sidecar files.
+//
+// `list` and `extract` use the structure-first API: `list` reads only the
+// archive's headers and directory; `extract` decodes one member.  Both see
+// through wrappers (a .sit.hqx lists the .sit's contents).
 
 #include "peeler.h"
 
@@ -116,7 +122,151 @@ static bool write_appledouble(const char *dir, const peel_file_t *f) {
 
 // Print usage text and exit.
 static void usage(const char *progname) {
-    fprintf(stderr, "usage: %s <archive> [<output-dir>]\n", progname);
+    fprintf(stderr,
+            "usage: %s <archive> [<output-dir>]\n"
+            "       %s list <archive>\n"
+            "       %s extract <archive> <member> [<output-dir>]\n",
+            progname, progname, progname);
+}
+
+// ============================================================================
+// Structure-first subcommands
+// ============================================================================
+
+// Open `path` and see through wrapper layers: while the archive is a
+// wrapper whose payload is itself an archive, open the payload instead.
+// The payload of a two-fork wrapper is its data fork, or its resource fork
+// when only that holds a recognised format (a .sea.bin).
+static peel_archive_t *open_unwrapped(const char *path, peel_err_t **err) {
+    peel_source_t *src = peel_source_file(path, err);
+    if (!src)
+        return NULL;
+    peel_archive_t *a = peel_open(src, NULL, NULL, err);
+    peel_source_release(src);
+    for (int depth = 0; a && peel_is_wrapper(a) && depth < 32; depth++) {
+        peel_archive_t *inner = NULL;
+        for (int fork = PEEL_FORK_DATA; fork <= PEEL_FORK_RSRC && !inner; fork++) {
+            peel_err_t *e = NULL;
+            peel_source_t *payload = peel_open_fork(a, 0, fork, &e);
+            if (payload && peel_source_size(payload) > 0)
+                inner = peel_open(payload, NULL, NULL, &e);
+            peel_err_free(e);
+            peel_source_release(payload);
+        }
+        if (!inner)
+            break; // the wrapper's one file is what there is
+        peel_close(a);
+        a = inner;
+    }
+    return a;
+}
+
+// One letter per tier, for the listing.
+static char tier_char(peel_tier_t t) {
+    static const char c[] = "RIESW";
+    return (unsigned)t < sizeof(c) - 1 ? c[t] : '?';
+}
+
+// `peeler list <archive>`: one line per entry.
+static int cmd_list(const char *path) {
+    peel_err_t *err = NULL;
+    peel_archive_t *a = open_unwrapped(path, &err);
+    if (!a) {
+        fprintf(stderr, "peeler: %s\n", peel_err_msg(err));
+        peel_err_free(err);
+        return 1;
+    }
+    printf("# %s, %d entries (tiers: R random, I indexed, E earned, S stream, W whole)\n", peel_format(a),
+           peel_count(a));
+    for (int i = 0; i < peel_count(a); i++) {
+        const peel_entry_t *e = peel_entry(a, i);
+        if (e->is_dir) {
+            printf("%-4s %12s %12s     %s/\n", "dir", "-", "-", e->path);
+            continue;
+        }
+        // The Mac type as four characters, "----" when there is none.
+        char type[5] = "----";
+        if (e->mac_type)
+            for (int k = 0; k < 4; k++) {
+                char c = (char)(e->mac_type >> (24 - 8 * k));
+                type[k] = (c >= 32 && c < 127) ? c : '?';
+            }
+        printf("%c%c   %12llu %12llu %s %s\n", tier_char(e->data_tier), e->rsrc_len ? tier_char(e->rsrc_tier) : '-',
+               (unsigned long long)e->data_len, (unsigned long long)e->rsrc_len, type, e->path);
+    }
+    peel_close(a);
+    return 0;
+}
+
+// Copy a whole source into `fp` a chunk at a time.  True on success.
+static bool copy_source(peel_source_t *s, FILE *fp) {
+    uint8_t buf[65536];
+    uint64_t off = 0, size = peel_source_size(s);
+    while (off < size) {
+        size_t want = size - off < sizeof(buf) ? (size_t)(size - off) : sizeof(buf);
+        if (peel_source_read_exact(s, off, buf, want) != 0 || fwrite(buf, 1, want, fp) != want)
+            return false;
+        off += want;
+    }
+    return true;
+}
+
+// `peeler extract <archive> <member> [<output-dir>]`: one member, its data
+// fork under its own name and its resource fork and Finder info in the
+// AppleDouble sidecar.
+static int cmd_extract(const char *path, const char *member, const char *out_dir) {
+    peel_err_t *err = NULL;
+    peel_archive_t *a = open_unwrapped(path, &err);
+    if (!a) {
+        fprintf(stderr, "peeler: %s\n", peel_err_msg(err));
+        peel_err_free(err);
+        return 1;
+    }
+    int i = peel_lookup(a, member);
+    const peel_entry_t *e = peel_entry(a, i);
+    if (!e || e->is_dir) {
+        fprintf(stderr, "peeler: no file '%s' in '%s'\n", member, path);
+        peel_close(a);
+        return 1;
+    }
+    if (mkdir(out_dir, 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "peeler: cannot create '%s': %s\n", out_dir, strerror(errno));
+        peel_close(a);
+        return 1;
+    }
+    const char *base = strrchr(e->path, '/');
+    base = base ? base + 1 : e->path;
+    peel_file_t f;
+    memset(&f, 0, sizeof(f));
+    snprintf(f.meta.name, sizeof(f.meta.name), "%.255s", base);
+    f.meta.mac_type = e->mac_type;
+    f.meta.mac_creator = e->mac_creator;
+    f.meta.finder_flags = e->finder_flags;
+
+    int rc = 1;
+    char dst[1024];
+    peel_source_t *data = peel_open_fork(a, i, PEEL_FORK_DATA, &err);
+    FILE *fp = NULL;
+    if (!data) {
+        fprintf(stderr, "peeler: %s\n", peel_err_msg(err));
+    } else if (!build_path(dst, sizeof(dst), out_dir, f.meta.name) || !(fp = fopen(dst, "wb"))) {
+        fprintf(stderr, "peeler: cannot create '%s'\n", dst);
+    } else if (!copy_source(data, fp)) {
+        fprintf(stderr, "peeler: '%s' did not decode\n", member);
+    } else {
+        f.resource_fork = peel_read_fork(a, i, PEEL_FORK_RSRC, &err);
+        if (err)
+            fprintf(stderr, "peeler: %s\n", peel_err_msg(err));
+        else
+            rc = write_appledouble(out_dir, &f) ? 0 : 1;
+    }
+    if (fp && fclose(fp) != 0)
+        rc = 1;
+    peel_err_free(err);
+    peel_free(&f.resource_fork);
+    peel_source_release(data);
+    peel_close(a);
+    return rc;
 }
 
 // ============================================================================
@@ -124,6 +274,10 @@ static void usage(const char *progname) {
 // ============================================================================
 
 int main(int argc, char **argv) {
+    if (argc == 3 && strcmp(argv[1], "list") == 0)
+        return cmd_list(argv[2]);
+    if ((argc == 4 || argc == 5) && strcmp(argv[1], "extract") == 0)
+        return cmd_extract(argv[2], argv[3], argc == 5 ? argv[4] : ".");
     if (argc < 2 || argc > 3) {
         usage(argv[0]);
         return 1;

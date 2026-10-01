@@ -44,3 +44,46 @@ int image_read_partition(image_t *img, uint64_t part_off, uint64_t part_size, ui
         return -EIO;
     return image_read_bytes(img, part_off + off, buf, n);
 }
+
+// ---- The image as a source ------------------------------------------------
+
+static int64_t img_src_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+    image_t *img = s->ctx;
+    uint64_t size = disk_size(img);
+    if (off >= size)
+        return 0;
+    if (len > size - off)
+        len = (size_t)(size - off);
+    int rc = image_read_bytes(img, off, buf, len);
+    return rc < 0 ? rc : (int64_t)len;
+}
+
+static uint64_t img_src_size(gs_source_t *s) {
+    return disk_size(s->ctx);
+}
+
+static const char *img_src_key(gs_source_t *s) {
+    image_t *img = s->ctx;
+    return img->source_key ? img->source_key : (img->filename ? img->filename : "image");
+}
+
+static gs_tier_t img_src_tier(gs_source_t *s) {
+    (void)s;
+    return GS_TIER_RANDOM;
+}
+
+static void img_src_close(gs_source_t *s) {
+    (void)s; // the image is the caller's
+}
+
+static const gs_source_ops_t img_src_ops = {img_src_read, img_src_size, img_src_key, img_src_tier, img_src_close};
+
+gs_source_t *image_source(image_t *img) {
+    return img ? peel_source_new(&img_src_ops, img, NULL) : NULL;
+}
+
+int source_read_partition(gs_source_t *src, uint64_t part_off, uint64_t part_size, uint64_t off, void *buf, size_t n) {
+    if (!image_range_fits(off, n, part_size))
+        return -EIO;
+    return gs_source_read_exact(src, part_off + off, buf, n) == 0 ? 0 : -EIO;
+}

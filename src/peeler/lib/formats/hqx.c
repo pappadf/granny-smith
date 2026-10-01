@@ -45,8 +45,7 @@
 // ============================================================================
 
 // hqx.md § 4.1 — the 64-character BinHex alphabet, index 0–63.
-static const char hqx_alphabet[] =
-    "!\"#$%&'()*+,-012345689@ABCDEFGHIJKLMNPQRSTUVXYZ[`abcdefhijklmpqr";
+static const char hqx_alphabet[] = "!\"#$%&'()*+,-012345689@ABCDEFGHIJKLMNPQRSTUVXYZ[`abcdefhijklmpqr";
 
 // State for the three-layer pull-based decoder pipeline.
 // hqx.md § 10.1 describes the layered architecture.
@@ -116,8 +115,7 @@ static size_t hqx_find_preamble(const uint8_t *src, size_t len) {
 
 // hqx.md § 3.2 — find the starting colon that begins the encoded payload.
 // Returns the offset of the byte immediately after the colon, or (size_t)-1.
-static size_t hqx_find_start_colon(const uint8_t *src, size_t len,
-                                   size_t from) {
+static size_t hqx_find_start_colon(const uint8_t *src, size_t len, size_t from) {
     for (size_t i = from; i < len; i++) {
         if (src[i] == ':') {
             return i + 1;
@@ -132,9 +130,8 @@ static size_t hqx_find_start_colon(const uint8_t *src, size_t len,
 
 // Initialise a decoder from the source buffer positioned at the start of
 // the encoded payload (just past the opening colon).
-static void hqx_decoder_init(hqx_decoder_t *dec, const uint8_t *src,
-                              size_t len, size_t payload_start,
-                              decode_ctx_t *ctx) {
+static void hqx_decoder_init(hqx_decoder_t *dec, const uint8_t *src, size_t len, size_t payload_start,
+                             decode_ctx_t *ctx) {
     memset(dec, 0, sizeof(*dec));
     dec->src = src;
     dec->src_len = len;
@@ -179,8 +176,7 @@ static int hqx_raw_byte(hqx_decoder_t *dec) {
         uint8_t val = dec->rev[(unsigned char)ch];
         if (val > 63) {
             // hqx.md § 9 — invalid encoding character is a fatal error
-            decode_abort(dec->ctx, "BinHex: invalid character '%c' (0x%02X)",
-                         ch, ch);
+            decode_abort(dec->ctx, "BinHex: invalid character '%c' (0x%02X)", ch, ch);
         }
         dec->accum = (dec->accum << 6) | val;
         dec->accum_bits += 6;
@@ -242,8 +238,10 @@ static void hqx_read_bytes(hqx_decoder_t *dec, uint8_t *buf, size_t n) {
         int b = hqx_decoded_byte(dec);
         if (b < 0) {
             // hqx.md § 9 — premature end of stream
-            decode_abort(dec->ctx, "BinHex: premature end of stream "
-                         "(needed %zu more bytes)", n - i);
+            decode_abort(dec->ctx,
+                         "BinHex: premature end of stream "
+                         "(needed %zu more bytes)",
+                         n - i);
         }
         buf[i] = (uint8_t)b;
     }
@@ -265,8 +263,7 @@ static hqx_header_t hqx_parse_header(hqx_decoder_t *dec) {
 
     // hqx.md § 9 — filename length must be 1..63
     if (name_len_byte == 0 || name_len_byte > HQX_NAME_MAX) {
-        decode_abort(dec->ctx, "BinHex: invalid filename length %u",
-                     name_len_byte);
+        decode_abort(dec->ctx, "BinHex: invalid filename length %u", name_len_byte);
     }
     hdr.name_len = name_len_byte;
 
@@ -300,17 +297,17 @@ static hqx_header_t hqx_parse_header(hqx_decoder_t *dec) {
     // type at offset 2+n, creator at 6+n, flags at 10+n,
     // data_len at 12+n, rsrc_len at 16+n
     size_t n = hdr.name_len;
-    const uint8_t *tp = buf + 2 + n;   // type
-    const uint8_t *cp = buf + 6 + n;   // creator
-    const uint8_t *fp = buf + 10 + n;  // flags
-    const uint8_t *dl = buf + 12 + n;  // data fork length
-    const uint8_t *rl = buf + 16 + n;  // resource fork length
+    const uint8_t *tp = buf + 2 + n; // type
+    const uint8_t *cp = buf + 6 + n; // creator
+    const uint8_t *fp = buf + 10 + n; // flags
+    const uint8_t *dl = buf + 12 + n; // data fork length
+    const uint8_t *rl = buf + 16 + n; // resource fork length
 
-    hdr.mac_type    = rd32be(tp);
+    hdr.mac_type = rd32be(tp);
     hdr.mac_creator = rd32be(cp);
     hdr.finder_flags = rd16be(fp);
-    hdr.data_len    = rd32be(dl);
-    hdr.rsrc_len    = rd32be(rl);
+    hdr.data_len = rd32be(dl);
+    hdr.rsrc_len = rd32be(rl);
 
     return hdr;
 }
@@ -322,23 +319,24 @@ static hqx_header_t hqx_parse_header(hqx_decoder_t *dec) {
 // hqx.md § 6.4 / § 6.5 — read a fork of `fork_len` bytes from the decoded
 // stream, verify the trailing 2-byte CRC, and return the data.
 // hqx.md § 7.2 — uses the CRC placeholder rule for verification.
-static peel_buf_t hqx_read_fork(hqx_decoder_t *dec, uint32_t fork_len,
-                                const char *fork_name) {
+static peel_buf_t hqx_read_fork(hqx_decoder_t *dec, uint32_t fork_len, const char *fork_name) {
     if (fork_len == 0) {
         // hqx.md § 6.6 — zero-length fork: still must read and verify CRC
         uint8_t crc_bytes[2];
         hqx_read_bytes(dec, crc_bytes, 2);
         uint16_t stored_crc = rd16be(crc_bytes);
         if (stored_crc != 0x0000) {
-            decode_abort(dec->ctx, "BinHex: %s fork CRC mismatch "
-                         "(empty fork, expected 0x0000)", fork_name);
+            decode_abort(dec->ctx,
+                         "BinHex: %s fork CRC mismatch "
+                         "(empty fork, expected 0x0000)",
+                         fork_name);
         }
         return (peel_buf_t){0};
     }
 
     if (fork_len > PEEL_MAX_FORK) {
-        decode_abort(dec->ctx, "BinHex: %s fork declares %u bytes, over the %u MiB limit",
-                     fork_name, fork_len, (unsigned)(PEEL_MAX_FORK >> 20));
+        decode_abort(dec->ctx, "BinHex: %s fork declares %u bytes, over the %u MiB limit", fork_name, fork_len,
+                     (unsigned)(PEEL_MAX_FORK >> 20));
     }
 
     // Allocate and read fork content
@@ -376,8 +374,7 @@ static peel_buf_t hqx_read_fork(hqx_decoder_t *dec, uint32_t fork_len,
 
 // Decode a BinHex 4.0 file into a peel_file_t with both forks and metadata.
 // This is the shared implementation for both peel_hqx and peel_hqx_file.
-static peel_file_t hqx_decode(const uint8_t *src, size_t len,
-                               decode_ctx_t *ctx) {
+static peel_file_t hqx_decode(const uint8_t *src, size_t len, decode_ctx_t *ctx) {
     // hqx.md § 3.1 — locate the preamble identification string
     size_t after_preamble = hqx_find_preamble(src, len);
     if (after_preamble == (size_t)-1) {
@@ -414,7 +411,7 @@ static peel_file_t hqx_decode(const uint8_t *src, size_t len,
     }
     size_t np = 0; // one sanitised component (peel_append_segment)
     peel_append_segment(file.meta.name, sizeof(file.meta.name), &np, (const uint8_t *)hdr.name, nl);
-    file.meta.mac_type    = hdr.mac_type;
+    file.meta.mac_type = hdr.mac_type;
     file.meta.mac_creator = hdr.mac_creator;
 
     // hqx.md § 8.2 — clear Finder flag bits that should not persist on decode
@@ -483,3 +480,102 @@ peel_file_t peel_hqx_file(const uint8_t *src, size_t len, peel_err_t **err) {
     dctx_cleanup(&ctx);
     return file;
 }
+
+// ============================================================================
+// Structure-first access (peeler.h: peel_open)
+// ============================================================================
+//
+// Listing decodes only the header, from the probe's head.  A fork is not a
+// contiguous range of the file (it is 6-bit text, run-length coded), so a
+// fork opens as a decode-through source whose first read decodes the whole
+// file -- small files, not worth more.  Both forks come out of that one
+// decode; the second is kept until it is asked for.
+
+typedef struct {
+    peel_file_t file; // forks decoded but not yet handed out
+    bool have[2];
+} hqx_priv_t;
+
+static bool hqx_detect_probe(const peel_probe_t *p) {
+    return hqx_detect(p->head, p->head_len);
+}
+
+static int hqx_open(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err) {
+    decode_ctx_t ctx;
+    dctx_init(&ctx);
+    if (setjmp(ctx.jmp) != 0) {
+        dctx_cleanup(&ctx);
+        *err = make_err("%s", ctx.errmsg);
+        return -1;
+    }
+    size_t after = hqx_find_preamble(p->head, p->head_len);
+    if (after == (size_t)-1)
+        decode_abort(&ctx, "BinHex: preamble not found");
+    size_t start = hqx_find_start_colon(p->head, p->head_len, after);
+    if (start == (size_t)-1)
+        decode_abort(&ctx, "BinHex: no starting colon found");
+    hqx_decoder_t dec;
+    hqx_decoder_init(&dec, p->head, p->head_len, start, &ctx);
+    hqx_header_t hdr = hqx_parse_header(&dec);
+    dctx_cleanup(&ctx);
+
+    hqx_priv_t *priv = calloc(1, sizeof(*priv));
+    peel_entry_t *e = priv ? peel_archive_add(a) : NULL;
+    if (!e) {
+        free(priv);
+        *err = make_err("BinHex: out of memory");
+        return -1;
+    }
+    a->priv = priv;
+    size_t np = 0;
+    peel_append_segment(e->path, sizeof(e->path), &np, (const uint8_t *)hdr.name, hdr.name_len);
+    e->mac_type = hdr.mac_type;
+    e->mac_creator = hdr.mac_creator;
+    e->finder_flags = hdr.finder_flags & (uint16_t)~FINDER_CLEAR_MASK;
+    e->data_len = hdr.data_len;
+    e->rsrc_len = hdr.rsrc_len;
+    e->data_packed = e->rsrc_packed = UINT64_MAX; // interleaved in the text
+    e->data_tier = e->rsrc_tier = PEEL_TIER_WHOLE;
+    return 0;
+}
+
+static peel_buf_t hqx_decode_fork(peel_archive_t *a, int i, int fork, peel_err_t **err) {
+    (void)i;
+    hqx_priv_t *priv = a->priv;
+    int k = fork == PEEL_FORK_RSRC ? 1 : 0;
+    if (!priv->have[k]) {
+        // Decode the whole file once; keep the other fork for later.
+        peel_buf_t text = peel_source_slurp(a->src, err);
+        if (*err)
+            return (peel_buf_t){0};
+        peel_file_t f = peel_hqx_file(text.data, text.size, err);
+        peel_free(&text);
+        if (*err)
+            return (peel_buf_t){0};
+        peel_free(&priv->file.data_fork);
+        peel_free(&priv->file.resource_fork);
+        priv->file = f;
+        priv->have[0] = priv->have[1] = true;
+    }
+    peel_buf_t *b = k ? &priv->file.resource_fork : &priv->file.data_fork;
+    peel_buf_t out = *b;
+    memset(b, 0, sizeof(*b));
+    priv->have[k] = false;
+    return out;
+}
+
+static void hqx_close(peel_archive_t *a) {
+    hqx_priv_t *priv = a->priv;
+    if (!priv)
+        return;
+    peel_free(&priv->file.data_fork);
+    peel_free(&priv->file.resource_fork);
+    free(priv);
+}
+
+const peel_fmt_t peel_fmt_hqx = {
+    .desc = {"hqx", true, hqx_detect_probe},
+    .open = hqx_open,
+    .decode = hqx_decode_fork,
+    .close = hqx_close,
+};

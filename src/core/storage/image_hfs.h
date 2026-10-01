@@ -78,6 +78,11 @@ typedef struct hfs_volume hfs_volume_t;
 // Returns NULL on any error (not HFS, malformed catalog, OOM).
 hfs_volume_t *hfs_open(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size);
 
+// The same over a byte source holding the disk (retained by the volume):
+// a partition of an image, a file inside another volume, an archive member.
+struct peel_source;
+hfs_volume_t *hfs_open_source(struct peel_source *src, uint64_t partition_byte_offset, uint64_t partition_byte_size);
+
 // Release a volume and all cached state.  Safe on NULL.
 void hfs_close(hfs_volume_t *vol);
 

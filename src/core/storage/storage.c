@@ -17,6 +17,7 @@
 
 #include "storage.h"
 
+#include "source.h"
 #include "io/io_worker.h"
 
 #include "log.h"
@@ -77,7 +78,7 @@ typedef struct {
 
 // The storage instance
 struct storage_t {
-    FILE *base_fp; // Original image, read-only, kept open
+    gs_source_t *base; // Original image, read-only (a locked wrapper: any thread may read)
     FILE *delta_fp; // Delta file, read-write, kept open
     FILE *journal_fp; // Preimage journal, append+read, kept open
 
@@ -88,7 +89,6 @@ struct storage_t {
     uint32_t block_size; // Bytes per block (512 default, 532 ProFile); fixed for this instance
     size_t bitmap_bytes; // ceil(block_count / 8)
 
-    size_t base_data_offset; // Byte offset to data in base file
     size_t bitmap_offset; // Byte offset to bitmaps in delta (= DELTA_HEADER_SIZE)
     size_t data_offset; // Byte offset to block data in delta
 
@@ -98,8 +98,7 @@ struct storage_t {
 
     bool bitmap_dirty; // True if bitmap changed since last flush
 
-    // The files, for an export view's own handles.
-    char *base_path;
+    // The delta file, for an export view's own handle.
     char *delta_path;
     int export_locks; // exports in flight: guest writes are refused
     struct storage_t *live_next; // the registry of live storages (export_view_end)
@@ -376,12 +375,10 @@ int storage_new(const storage_config_t *config, storage_t **out_storage) {
 
     s->block_count = config->block_count;
     s->block_size = config->block_size;
-    s->base_path = config->base_path ? strdup(config->base_path) : NULL;
     s->delta_path = strdup(config->delta_path);
     s->bitmap_bytes = (size_t)((config->block_count + 7) / 8);
     s->bitmap_offset = DELTA_HEADER_SIZE;
     s->data_offset = DELTA_HEADER_SIZE + 2 * s->bitmap_bytes;
-    s->base_data_offset = config->base_data_offset;
 
     // Allocate bitmaps
     s->bitmap = calloc(1, s->bitmap_bytes);
@@ -389,10 +386,13 @@ int storage_new(const storage_config_t *config, storage_t **out_storage) {
     if (!s->bitmap || !s->committed_bitmap)
         goto fail;
 
-    // Open base file (read-only, optional — NULL for brand-new images)
-    if (config->base_path) {
-        s->base_fp = fopen(config->base_path, "rb");
-        // base_fp can be NULL if base doesn't exist yet (new image)
+    // The base (optional — NULL for a blank image).  Reads go through a
+    // lock of its own: an export streams the base on the I/O worker while
+    // the guest reads it here, and most sources are not thread-safe.
+    if (config->base) {
+        s->base = gs_source_locked(config->base);
+        if (!s->base)
+            goto fail;
     }
 
     // Open or create delta file. Try the "existing" path first so an
@@ -448,10 +448,8 @@ int storage_delete(storage_t *storage) {
     if (!storage)
         return GS_SUCCESS;
     live_remove(storage);
-    free(storage->base_path);
     free(storage->delta_path);
-    if (storage->base_fp)
-        fclose(storage->base_fp);
+    gs_source_release(storage->base);
     if (storage->delta_fp)
         fclose(storage->delta_fp);
     if (storage->journal_fp)
@@ -485,10 +483,11 @@ int storage_read_block(storage_t *storage, size_t offset, void *buffer) {
             memset(buffer, 0, storage->block_size);
             return GS_ERROR;
         }
-    } else if (storage->base_fp) {
-        // Unmodified block — read from base image
-        if (fseeko(storage->base_fp, block_pos(storage->base_data_offset, lba, storage->block_size), SEEK_SET) != 0 ||
-            fread(buffer, storage->block_size, 1, storage->base_fp) != 1) {
+    } else if (storage->base) {
+        // Unmodified block — read from the base.  A base shorter than the
+        // geometry (or one that fails) reads as zeros past what it has.
+        if (gs_source_read_exact(storage->base, block_pos(0, lba, storage->block_size), buffer, storage->block_size) !=
+            0) {
             memset(buffer, 0, storage->block_size);
         }
     } else {
@@ -768,19 +767,18 @@ typedef enum {
 // (the checkpoint, on the emulator thread) or a view's copies (an export on
 // the I/O worker).
 typedef struct {
-    FILE *base_fp;
+    gs_source_t *base;
     FILE *delta_fp;
     const uint8_t *bitmap;
     uint64_t block_count;
     uint32_t block_size;
-    size_t base_data_offset;
     size_t data_offset;
 } block_src_view_t;
 
 static block_src_t block_source(const block_src_view_t *s, uint64_t block) {
     if (bitmap_test(s->bitmap, (uint32_t)block))
         return BLOCK_SRC_DELTA;
-    return s->base_fp ? BLOCK_SRC_BASE : BLOCK_SRC_ZERO;
+    return s->base ? BLOCK_SRC_BASE : BLOCK_SRC_ZERO;
 }
 
 static int stream_blocks(const block_src_view_t *storage, void *context, storage_write_callback_t write_cb,
@@ -819,11 +817,21 @@ static int stream_blocks(const block_src_view_t *storage, void *context, storage
         if (src == BLOCK_SRC_ZERO) {
             memset(buffer, 0, run_bytes);
         } else {
-            FILE *fp = (src == BLOCK_SRC_DELTA) ? storage->delta_fp : storage->base_fp;
-            uint64_t origin = (src == BLOCK_SRC_DELTA) ? storage->data_offset : storage->base_data_offset;
             size_t got = 0;
-            if (fseeko(fp, block_pos(origin, block, storage->block_size), SEEK_SET) == 0)
-                got = fread(buffer, 1, run_bytes, fp);
+            if (src == BLOCK_SRC_DELTA) {
+                if (fseeko(storage->delta_fp, block_pos(storage->data_offset, block, storage->block_size), SEEK_SET) ==
+                    0)
+                    got = fread(buffer, 1, run_bytes, storage->delta_fp);
+            } else {
+                // The base: as much of the run as it holds.
+                uint64_t at = block_pos(0, block, storage->block_size);
+                while (got < run_bytes) {
+                    int64_t n = gs_source_read(storage->base, at + got, buffer + got, run_bytes - got);
+                    if (n <= 0)
+                        break;
+                    got += (size_t)n;
+                }
+            }
             if (got < run_bytes) {
                 // A short read on the base means the base file is shorter than
                 // the declared geometry; storage_read_block zero-fills and
@@ -866,12 +874,11 @@ int storage_save_state(storage_t *storage, void *context, storage_write_callback
     if (!storage || !context || !write_cb)
         return GS_ERROR;
     block_src_view_t v = {
-        .base_fp = storage->base_fp,
+        .base = storage->base,
         .delta_fp = storage->delta_fp,
         .bitmap = storage->bitmap,
         .block_count = storage->block_count,
         .block_size = storage->block_size,
-        .base_data_offset = storage->base_data_offset,
         .data_offset = storage->data_offset,
     };
     return stream_blocks(&v, context, write_cb, false);
@@ -908,18 +915,13 @@ storage_export_view_t *storage_export_view_begin(storage_t *storage) {
     v->src.bitmap = v->bitmap_copy;
     v->src.block_count = storage->block_count;
     v->src.block_size = storage->block_size;
-    v->src.base_data_offset = storage->base_data_offset;
     v->src.data_offset = storage->data_offset;
-    v->src.base_fp = (storage->base_fp && storage->base_path) ? fopen(storage->base_path, "rb") : NULL;
-    if (storage->base_fp && !v->src.base_fp) {
-        free(v->bitmap_copy);
-        free(v);
-        return NULL;
-    }
+    // The base source is shared (its reads are locked); the delta gets a
+    // handle of its own.
+    v->src.base = gs_source_retain(storage->base);
     v->src.delta_fp = storage->delta_path ? fopen(storage->delta_path, "rb") : NULL;
     if (!v->src.delta_fp) {
-        if (v->src.base_fp)
-            fclose(v->src.base_fp);
+        gs_source_release(v->src.base);
         free(v->bitmap_copy);
         free(v);
         return NULL;
@@ -938,8 +940,7 @@ int storage_export_view_write(storage_export_view_t *v, void *context, storage_w
 void storage_export_view_end(storage_export_view_t *v) {
     if (!v)
         return;
-    if (v->src.base_fp)
-        fclose(v->src.base_fp);
+    gs_source_release(v->src.base);
     if (v->src.delta_fp)
         fclose(v->src.delta_fp);
     free(v->bitmap_copy);

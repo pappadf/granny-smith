@@ -5,4 +5,5 @@ EXTRA_SRCS := ../../../../src/core/storage/adc.c \
               ../../../../src/core/crc32.c \
               ../../../../src/core/storage/image_udif.c \
               ../../../../src/core/storage/inflate.c
+USE_SOURCE_LAYER := 1
 include ../../common.mk
