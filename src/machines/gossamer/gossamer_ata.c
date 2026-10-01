@@ -30,6 +30,7 @@
 #include "log.h"
 #include "machine.h"
 #include "object.h"
+#include "scheduler.h"
 #include "scsi.h"
 #include "system.h"
 #include "value.h"
@@ -62,11 +63,48 @@ static void ata_irq(void *ctx, bool level) {
     gos_set_source(c->cfg, ata_irq_source[c->cell], level);
 }
 
+// DMA pacing.  The device side of a DMA command is ready the moment the
+// command is written, and with nothing to slow it the whole transfer — and
+// INTRQ, and the channel's completion interrupt — happened inside the
+// guest's command-register store, before the ATA Manager had returned from
+// issuing.  Under Mac OS 9.2.1 that ordering leaks the Manager's critical
+// section once a session of back-to-back paging reads begins, and the next
+// page fault is refused as a fault taken at interrupt time: the bus error
+// that stopped every boot from an ATA disk at "Welcome to Mac OS".  The
+// port therefore moves a burst per activation and a pump kicks the channel
+// on a 10 us cadence while a DMA command is pending (the MESH scheme,
+// scsi_mesh.c), so a transfer costs emulated time as it does on the wire.
+#define ATA_DMA_BURST   4096
+#define ATA_DMA_PUMP_NS 10000.0
+
+static void ata_pump(gos_ata_ctx_t *c, event_callback_t self) {
+    gossamer_state_t *st = gos_st(c->cfg);
+    if (!st || !st->ata_ready || !ata_dma_pending(&st->ata[c->cell]))
+        return; // the transfer is over: the pump stops with it
+    if (st->dbdma && dbdma_active(st->dbdma, ata_dma_chan[c->cell]))
+        dbdma_kick(st->dbdma, ata_dma_chan[c->cell]);
+    if (ata_dma_pending(&st->ata[c->cell]))
+        scheduler_new_cpu_event(c->cfg->scheduler, self, c, 0, 0, (uint64_t)ATA_DMA_PUMP_NS);
+}
+
+static void ata_pump0(void *source, uint64_t data) {
+    (void)data;
+    ata_pump((gos_ata_ctx_t *)source, &ata_pump0);
+}
+
+static void ata_pump1(void *source, uint64_t data) {
+    (void)data;
+    ata_pump((gos_ata_ctx_t *)source, &ata_pump1);
+}
+
+static const event_callback_t ata_pump_fn[2] = {ata_pump0, ata_pump1};
+
+// The device has data (or room) for a DMA command: arm the cell's pump.
 static void ata_kick(void *ctx) {
     gos_ata_ctx_t *c = (gos_ata_ctx_t *)ctx;
-    gossamer_state_t *st = gos_st(c->cfg);
-    if (st && st->dbdma && dbdma_active(st->dbdma, ata_dma_chan[c->cell]))
-        dbdma_kick(st->dbdma, ata_dma_chan[c->cell]);
+    event_callback_t fn = ata_pump_fn[c->cell];
+    if (c->cfg->scheduler && !has_event(c->cfg->scheduler, fn))
+        scheduler_new_cpu_event(c->cfg->scheduler, fn, c, 0, 0, (uint64_t)ATA_DMA_PUMP_NS);
 }
 
 // The cells follow the feature-control register.
@@ -201,10 +239,11 @@ void gos_ata_init(config_t *cfg, checkpoint_t *cp) {
         s_ctx[c] = (gos_ata_ctx_t){.cfg = cfg, .cell = c};
         ata_set_irq(ch, ata_irq, &s_ctx[c]);
         ata_set_dma_kick(ch, ata_kick, &s_ctx[c]);
+        scheduler_new_event_type(cfg->scheduler, c ? "ata1" : "ata0", &s_ctx[c], "dma_pump", ata_pump_fn[c]);
         ata_set_atapi_bus(ch, st->atapi);
         if (cp)
             ata_checkpoint_restore(ch, cp);
-        dbdma_port_t port = {.out = ata_dma_out, .in = ata_dma_in, .s_bits = NULL, .ctx = ch};
+        dbdma_port_t port = {.out = ata_dma_out, .in = ata_dma_in, .s_bits = NULL, .ctx = ch, .burst = ATA_DMA_BURST};
         dbdma_set_port(st->dbdma, ata_dma_chan[c], &port);
     }
     st->ata_ready = true;

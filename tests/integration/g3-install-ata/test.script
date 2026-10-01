@@ -9,10 +9,9 @@
 #     the disc, both devices on the one channel — and reports "The
 #     installation process has finished"
 # A3  the exported disk carries a System and a Finder
-#
-# Booting the installed disk from ATA is not a rung yet: Mac OS stops with a
-# bus error at its first virtual-memory page fault beyond physical RAM
-# (docs/internals/machines/gossamer/gossamer.md, Known debts).
+# A4  the installed disk, alone on ATA cell 0, boots to its desktop and the
+#     Mac OS Setup Assistant — the ROM's ATA Manager and the installed ATA
+#     driver carrying the boot, virtual memory paging included
 #
 # MEDIA-GATED: $GS_EXTRA_MEDIA_DIR/macos-9.2.1/macos921.iso.
 
@@ -43,6 +42,15 @@ if have_media($cd) {
     # --- A3 ---------------------------------------------------------------------
     assert storage.path_exists("${$installed}/partition6/System Folder/System") "A3: no System on the installed disk"
     assert storage.path_exists("${$installed}/partition6/System Folder/Finder") "A3: no Finder on the installed disk"
+
+    # --- A4 ---------------------------------------------------------------------
+    machine.boot model="pmg3dt" ram=65536 rom="${$ROM}"
+    machine.rtc.time = "2026-10-01T12:00:00"
+    assert machine.ata.attach_hd($installed, 0) "A4: attach the installed disk as ATA unit 0"
+    scheduler.run 12000000000
+    assert debug.mac.globals.read("DSErrCode") == 0 "A4: a system error during the ATA boot"
+    try(machine.screen.save("${$RESULTS_DIR}/ata-desktop.png"), none)
+    check_ex("ata-desktop.png", 0, 440, 20, 640)
 } else {
     echo "skip: g3-install-ata (the Mac OS 9.2.1 CD is not under GS_EXTRA_MEDIA_DIR/macos-9.2.1/ -- see this row's header)"
 }

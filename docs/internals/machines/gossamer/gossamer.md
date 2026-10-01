@@ -69,6 +69,15 @@ BMAC's on bank-2 sources 32/33 (`gos_dbdma_source`).
   menu title drew blank.
 - **DBDMA CommandPtr on a parked channel.**  The ATA driver rewrites it
   with RUN set to continue a long transfer.
+- **ATA DMA must take time.**  With the device ready at the command write,
+  a whole READ DMA — data, INTRQ and the channel's completion interrupt —
+  used to finish inside the guest's command-register store.  Mac OS 9.2.1's
+  ATA Manager then leaks a critical section (the nesting count of the
+  enter/exit pair whose first entry sets bit 14 of `$0160`) once paging
+  reads run back to back, and the next page fault is refused as one taken
+  at interrupt time: a bus error at "Welcome to Mac OS".  The cells' DBDMA
+  port now moves 4 KB per activation, kicked every 10 us while a DMA
+  command is pending, the scheme MESH already uses.
 
 ## 2. Object-model surface
 
@@ -113,8 +122,8 @@ memory (the board battery), and `machine.nvram.clear` is the battery pull.
   (they skip without it): `g3-cd-boot` (the CD to the Finder as a SCSI
   CD-ROM and as an ATAPI one), `g3-install-scsi` (Drive Setup and the
   installer onto a blank SCSI disk, then that disk booted to the Setup
-  Assistant) and `g3-install-ata` (the same install onto an ATA disk,
-  checked on the exported image).
+  Assistant) and `g3-install-ata` (the same install onto an ATA disk, then
+  that disk booted from ATA to the Setup Assistant).
 - The unit suites `ppc_750`, `scsi_mesh`, `dbdma`, `ata`, `bmac`.
 
 ## 5. Known debts
@@ -122,10 +131,6 @@ memory (the board battery), and `machine.nvram.clear` is the battery pull.
 - **BMAC has no wire**: frames go nowhere unless looped back, and only
   `machine.bmac.receive` delivers one.  Mac OS 9 networking over it is
   unexercised.
-- **Booting Mac OS 9.2.1 from an ATA disk** stops with a bus error at
-  the first virtual-memory page beyond physical RAM; the same system on a
-  SCSI disk boots, and the ATA data path checks out against the SCSI one.
-  Unresolved.
 - **LocalTalk on the SCC through DBDMA** is exercised only as far as the
   boot needs.
 - Shut Down from the Finder ends in a system error.
