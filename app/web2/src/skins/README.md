@@ -3,7 +3,11 @@
 A skin is a named visual design for the web UI: one folder of token values,
 plus, optionally, an icon sprite, webfonts and an override stylesheet. A
 skin changes how the UI looks, never what it does or where things are. The
-default skin is `workbench`.
+default skin is `workbench`. `platinum` is a second, light-only skin in the
+spirit of Mac OS 8. It proves the mechanism: it is built only from
+`skins/platinum/` and `public/skins/platinum/`, with its own tokens, sprite,
+webfont and part-hook overrides. The app has no skin picker yet, so it is
+reached with `?skin=platinum` (or a stored `gs-skin`).
 
 ## What a skin can change
 

@@ -5,6 +5,7 @@
     appearance,
     applyAppearance,
     applyUrlSkin,
+    skinReady,
     type SchemeMode,
   } from '@/state/appearance.svelte';
 
@@ -39,6 +40,7 @@
       .load()
       .then(async (m) => {
         StoryComponent = m.default as Component<StoryProps>;
+        await skinReady();
         await document.fonts.ready;
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
         // Let mount-time async work (failed bus calls, transitions) finish.
@@ -51,9 +53,10 @@
       });
   }
 
-  // A page URL for a story variant in a scheme.
+  // A page URL for a story variant in a scheme (in the skin of this page).
   function href(name: string, v: string, t: string): string {
-    return `?gallery&story=${encodeURIComponent(name)}&variant=${encodeURIComponent(v)}&theme=${t}`;
+    const skin = params.get('skin');
+    return `?gallery&story=${encodeURIComponent(name)}&variant=${encodeURIComponent(v)}&theme=${t}${skin ? `&skin=${encodeURIComponent(skin)}` : ''}`;
   }
 </script>
 

@@ -1,0 +1,92 @@
+/* ====== Platinum skin: part-hook overrides ======
+   What tokens cannot say: Platinum's bevels.  Raised controls get a light
+   top-left and a dark bottom-right edge, pressed ones the reverse; fields
+   and lists are inset.  Only gs-* part classes and their ARIA / data-*
+   states are targeted (src/skins/README.md), all scoped to this skin and in
+   the gs.skin layer, so they win over the components' own styles. */
+@layer gs.skin {
+  /* Push buttons: a grey face with a bevel and a dark outline. */
+  :root[data-skin='platinum'] .gs-button[data-variant='secondary'],
+  :root[data-skin='platinum'] .gs-button[data-variant='ghost'] {
+    background: var(--gs-ref-face);
+    border-color: var(--gs-ref-bevel-dark);
+    box-shadow:
+      inset 1px 1px 0 var(--gs-ref-bevel-light),
+      inset -1px -1px 0 var(--gs-ref-bevel-shade);
+  }
+  :root[data-skin='platinum'] .gs-button[data-variant='primary'] {
+    border-color: var(--gs-ref-bevel-dark);
+    box-shadow:
+      inset 1px 1px 0 rgb(255 255 255 / 0.35),
+      inset -1px -1px 0 rgb(0 0 0 / 0.3);
+  }
+  :root[data-skin='platinum'] .gs-button:active:not(:disabled) {
+    background: var(--gs-ref-face-pressed);
+    box-shadow:
+      inset 1px 1px 0 var(--gs-ref-bevel-shade),
+      inset -1px -1px 0 var(--gs-ref-bevel-light);
+  }
+
+  /* Toolbar and panel icon buttons stay flat until pressed. */
+  :root[data-skin='platinum'] .gs-icon-button[aria-pressed='true'] {
+    background: var(--gs-ref-face-pressed);
+    box-shadow:
+      inset 1px 1px 0 var(--gs-ref-bevel-shade),
+      inset -1px -1px 0 var(--gs-ref-bevel-light);
+  }
+
+  /* Segmented controls: one bevelled bar; the selected segment pressed in. */
+  :root[data-skin='platinum'] .gs-segmented {
+    background: var(--gs-ref-face);
+    box-shadow:
+      inset 1px 1px 0 var(--gs-ref-bevel-light),
+      inset -1px -1px 0 var(--gs-ref-bevel-shade);
+  }
+  :root[data-skin='platinum'] .gs-segmented__option[aria-pressed='true'] {
+    box-shadow:
+      inset 1px 1px 0 var(--gs-ref-bevel-shade),
+      inset -1px -1px 0 var(--gs-ref-bevel-light);
+  }
+
+  /* Fields and pop-up menus: inset wells. */
+  :root[data-skin='platinum'] .gs-input,
+  :root[data-skin='platinum'] .gs-select__control {
+    box-shadow: inset 1px 1px 0 var(--gs-ref-bevel-shade);
+  }
+
+  /* Tabs: the selected one is a raised face. */
+  :root[data-skin='platinum'] .gs-tabs__tab[aria-selected='true'] {
+    background: var(--gs-ref-face);
+    box-shadow:
+      inset 1px 1px 0 var(--gs-ref-bevel-light),
+      inset -1px 0 0 var(--gs-ref-bevel-shade);
+  }
+
+  /* Section headers and the table head: raised strips. */
+  :root[data-skin='platinum'] .gs-section__header,
+  :root[data-skin='platinum'] .gs-table__head {
+    background: var(--gs-ref-face);
+    box-shadow:
+      inset 0 1px 0 var(--gs-ref-bevel-light),
+      inset 0 -1px 0 var(--gs-ref-bevel-shade);
+  }
+
+  /* Cards, dialogs and menus: a raised panel with Platinum's hard shadow. */
+  :root[data-skin='platinum'] .gs-modal,
+  :root[data-skin='platinum'] .gs-menu {
+    border-color: var(--gs-ref-bevel-dark);
+  }
+  /* A card's bevel is its border (light top-left, shaded bottom-right)
+     inside a dark outline: an inset shadow beside the animated spinner
+     rasterises differently from one frame to the next. */
+  :root[data-skin='platinum'] .gs-card {
+    border-color: var(--gs-ref-bevel-light) var(--gs-ref-bevel-shade) var(--gs-ref-bevel-shade)
+      var(--gs-ref-bevel-light);
+    box-shadow: 0 0 0 1px var(--gs-ref-bevel-dark);
+  }
+
+  /* Progress bars: an inset track. */
+  :root[data-skin='platinum'] .gs-progress {
+    box-shadow: inset 1px 1px 0 var(--gs-ref-bevel-shade);
+  }
+}

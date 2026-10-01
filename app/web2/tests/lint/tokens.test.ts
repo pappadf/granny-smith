@@ -60,7 +60,11 @@ for (const f of DEFAULTS)
 
 // Literal colours belong where token values are defined, and as the
 // fallbacks of the startup error page (shown before any stylesheet applies).
-const LITERAL_OK = (f: string) => VALUE_FILES.includes(f);
+// A skin's overrides.css (its part-hook rules) is skin-owned like its tokens,
+// and its manifest may name a literal <meta name=theme-color>.
+const SKIN_OVERRIDES = (f: string) => /^skins\/[^/]+\/overrides\.css$/.test(rel(f));
+const SKIN_MANIFEST = (f: string) => /^skins\/[^/]+\/manifest\.ts$/.test(rel(f));
+const LITERAL_OK = (f: string) => VALUE_FILES.includes(f) || SKIN_OVERRIDES(f) || SKIN_MANIFEST(f);
 const FALLBACK_OK = (f: string) => rel(f) === 'lib/webglErrorPage.ts';
 
 const HEX = /#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b/;
@@ -230,11 +234,12 @@ describe('design tokens', () => {
     expect(bad).toEqual([]);
   });
 
-  // L-6: a skin's reference palette is private to its own token file.
+  // L-6: a skin's reference palette is private to its own files (tokens.css,
+  // overrides.css).
   it('L-6: nothing outside a skin reads a reference token', () => {
     const bad: string[] = [];
     for (const f of SOURCES) {
-      if (SKIN_TOKEN_FILES.includes(f)) continue;
+      if (SKIN_TOKEN_FILES.includes(f) || SKIN_OVERRIDES(f)) continue;
       const text = stripComments(readFileSync(f, 'utf8'));
       if (/--gs-ref-/.test(text)) bad.push(rel(f));
     }

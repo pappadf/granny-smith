@@ -3,6 +3,7 @@
 // A new skin adds its tokens.css import here and its manifest to
 // manifests.ts.
 import './workbench/tokens.css';
+import './platinum/tokens.css';
 import { workbench } from './workbench/manifest';
 import { MANIFESTS } from './manifests';
 import type { SkinManifest } from './types';

@@ -69,15 +69,16 @@
     font-weight: var(--gs-font-weight-semibold);
   }
   /* The led style: a lamp in place of the name (kept for screen readers). */
+  /* The name stays for screen readers; the text itself is not drawn. */
   .gs-drive[data-style='led'] .gs-drive__icon {
     width: var(--gs-size-dot);
     height: var(--gs-size-dot);
     border-radius: var(--gs-radius-round);
     background: currentColor;
     overflow: hidden;
-    color: transparent;
+    font-size: 0;
   }
-  .gs-drive[data-style='led'] {
+  .gs-drive[data-style='led'][data-activity='idle'] {
     color: var(--gs-text-subtle);
   }
 </style>

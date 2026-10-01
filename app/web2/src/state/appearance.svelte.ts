@@ -108,6 +108,20 @@ export function applyUrlSkin(params: URLSearchParams): void {
 const loadedFonts = new Set<string>();
 // eslint-disable-next-line svelte/prefer-svelte-reactivity
 const loadedOverrides = new Set<string>();
+// Each skin's asset loads (fonts, overrides), settled or not.
+// eslint-disable-next-line svelte/prefer-svelte-reactivity
+const pending = new Map<string, Promise<unknown>[]>();
+
+// Note a skin's asset load, so skinReady() can wait for it.
+function track(id: string, p: Promise<unknown>): void {
+  pending.set(id, [...(pending.get(id) ?? []), p.catch(() => undefined)]);
+}
+
+// Resolves once the active skin's fonts and overrides have loaded (or
+// failed): the gallery waits for it before a screenshot.
+export async function skinReady(): Promise<void> {
+  await Promise.all(pending.get(activeSkin().id) ?? []);
+}
 
 // Register a skin's webfonts once (they swap in when loaded; the skin's
 // --gs-font-* tokens list a system fallback after the family).
@@ -122,7 +136,7 @@ function loadFonts(skin: SkinManifest): void {
       style: f.style,
     });
     document.fonts.add(face);
-    void face.load().catch(() => undefined);
+    track(skin.id, face.load());
   }
 }
 
@@ -131,7 +145,10 @@ function loadFonts(skin: SkinManifest): void {
 function loadOverrides(skin: SkinManifest): void {
   if (!skin.overrides || loadedOverrides.has(skin.id)) return;
   loadedOverrides.add(skin.id);
-  void skin.overrides().catch(() => loadedOverrides.delete(skin.id));
+  track(
+    skin.id,
+    skin.overrides().catch(() => loadedOverrides.delete(skin.id)),
+  );
 }
 
 // A <meta name=...> in <head>, created when missing.
@@ -160,6 +177,13 @@ export function applyAppearance(): void {
     if (themeColor) meta('theme-color').content = themeColor;
     loadFonts(skin);
     loadOverrides(skin);
+    // data-skin-ready: the skin's fonts and overrides are in (automation
+    // waits for it before a screenshot).
+    delete d.dataset.skinReady;
+    const id = skin.id;
+    void skinReady().then(() => {
+      if (d.dataset.skin === id) d.dataset.skinReady = '1';
+    });
   }
   // Untracked: an effect running this must not depend on what it writes.
   untrack(() => {

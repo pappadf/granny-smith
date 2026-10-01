@@ -1,0 +1,156 @@
+/* ====== Platinum skin: tokens ======
+   A Mac OS 8 "Platinum"-style look, light only: grey chrome, white lists,
+   the lavender highlight, square corners and hard drop shadows.  Every
+   semantic token of src/styles/contract.ts, plus scale and component
+   overrides for this skin's scope.  The --gs-ref-* palette is private to
+   this skin (its tokens.css and overrides.css). */
+@layer gs.tokens {
+  :root[data-skin='platinum'][data-theme='light'] {
+    /* Reference palette */
+    --gs-ref-lavender: #ccccff;
+    --gs-ref-lavender-deep: #4e4eb0;
+    --gs-ref-bevel-light: #ffffff;
+    --gs-ref-bevel-shade: #a0a0a0;
+    --gs-ref-bevel-dark: #5c5c5c;
+    --gs-ref-face: #e2e2e2;
+    --gs-ref-face-pressed: #b8b8b8;
+
+    --gs-surface-app: #dddddd;
+    --gs-surface-raised: #eeeeee;
+    --gs-surface-overlay: #f4f4f4;
+    --gs-surface-sunken: #ffffff;
+    --gs-surface-screen: #000000;
+    --gs-surface-document: #ffffff;
+    --gs-backdrop: rgba(0, 0, 0, 0.3);
+
+    --gs-text: #000000;
+    --gs-text-strong: #000000;
+    --gs-text-muted: #444444;
+    --gs-text-subtle: #5c5c5c;
+    --gs-text-link: #2f2f9a;
+    --gs-text-on-accent: #ffffff;
+
+    --gs-border: #888888;
+    --gs-border-subtle: #bbbbbb;
+    --gs-border-card: #999999;
+    --gs-focus-ring: #4e4eb0;
+
+    --gs-control-hover: rgba(0, 0, 0, 0.08);
+    --gs-control-active: rgba(0, 0, 0, 0.16);
+    --gs-accent: var(--gs-ref-lavender-deep);
+    --gs-accent-hover: #5d5dbd;
+    --gs-accent-active: #3a3a8c;
+    --gs-accent-subtle: rgba(78, 78, 176, 0.18);
+
+    --gs-row-hover: rgba(0, 0, 0, 0.06);
+    --gs-row-selected: var(--gs-ref-lavender);
+    --gs-row-selected-inactive: #c8c8c8;
+    --gs-row-alt: rgba(0, 0, 0, 0.04);
+
+    --gs-input-bg: #ffffff;
+    --gs-input-fg: #000000;
+    --gs-input-border: #888888;
+
+    --gs-info-fg: #28449a;
+    --gs-info-bg: rgba(78, 78, 176, 0.15);
+    --gs-info-border: rgba(78, 78, 176, 0.45);
+    --gs-info-solid: #3d55a8;
+    --gs-info-on-solid: #ffffff;
+    --gs-success-fg: #175e24;
+    --gs-success-bg: rgba(29, 107, 42, 0.15);
+    --gs-success-border: rgba(29, 107, 42, 0.45);
+    --gs-success-solid: #2a6e30;
+    --gs-success-on-solid: #ffffff;
+    --gs-warning-fg: #5e4800;
+    --gs-warning-bg: rgba(204, 153, 0, 0.22);
+    --gs-warning-border: rgba(153, 115, 0, 0.5);
+    --gs-warning-solid: #e0a800;
+    --gs-warning-on-solid: #000000;
+    --gs-danger-fg: #9c1c16;
+    --gs-danger-bg: rgba(168, 32, 26, 0.13);
+    --gs-danger-border: rgba(168, 32, 26, 0.45);
+    --gs-danger-solid: #a8201a;
+    --gs-danger-on-solid: #ffffff;
+
+    --gs-state-idle-bg: #dddddd;
+    --gs-state-idle-fg: #3a3a3a;
+    --gs-state-running-bg: #3d4f9f;
+    --gs-state-paused-bg: #93541a;
+    --gs-state-stopped-bg: #a32626;
+    --gs-state-crashed-bg: #6e1414;
+    --gs-state-active-fg: #ffffff;
+    --gs-state-hover: rgba(0, 0, 0, 0.1);
+
+    /* Syntax palette: Light+-like hues, darkened for the grey chrome. */
+    --gs-syntax-method: #6b4c00;
+    --gs-syntax-attribute: #00207a;
+    --gs-syntax-variable: #00207a;
+    --gs-syntax-alias: #00207a;
+    --gs-syntax-object: inherit;
+    --gs-syntax-operator: inherit;
+    --gs-syntax-decl: #0000b0;
+    --gs-syntax-interp: #0000b0;
+    --gs-syntax-keyword: #7d0099;
+    --gs-syntax-string: #9a1010;
+    --gs-syntax-number: #0a6040;
+    --gs-syntax-enum: #00508c;
+    --gs-syntax-type: #1a5f72;
+    --gs-syntax-comment: #2a632a;
+    --gs-syntax-unknown: var(--gs-danger-fg);
+    --gs-syntax-error: var(--gs-danger-fg);
+    --gs-syntax-dim: #555555;
+
+    --gs-code-pc-row-bg: rgba(78, 78, 176, 0.2);
+    --gs-code-changed-bg: rgba(204, 153, 0, 0.3);
+
+    --gs-console-bg: var(--gs-surface-sunken);
+    --gs-console-fg: #000000;
+    --gs-console-cursor: #000000;
+    --gs-console-selection: var(--gs-ref-lavender);
+    --gs-console-progress-bg: rgba(0, 0, 0, 0.06);
+    --gs-console-find-hit-bg: rgba(255, 170, 0, 0.4);
+    --gs-console-find-current-bg: rgba(255, 140, 0, 0.75);
+
+    --gs-drop-border: var(--gs-ref-lavender-deep);
+    --gs-drop-bg: rgba(78, 78, 176, 0.1);
+    --gs-drop-label-bg: rgba(58, 58, 140, 0.92);
+
+    --gs-scrollbar-thumb: #a8a8a8;
+    --gs-scrollbar-thumb-hover: #888888;
+    --gs-scrollbar-track: #e4e4e4;
+    --gs-selection-bg: var(--gs-ref-lavender);
+    --gs-shadow-popup: 2px 2px 0 rgba(0, 0, 0, 0.35);
+    --gs-shadow-modal: 3px 3px 0 rgba(0, 0, 0, 0.35);
+    --gs-shadow-toast: 2px 2px 0 rgba(0, 0, 0, 0.3);
+    --gs-shadow-screen: 0 0 0 1px #000000;
+
+    --gs-menu-bg: #f4f4f4;
+    --gs-menu-hover-bg: var(--gs-ref-lavender-deep);
+
+    /* Scale: Charcoal's place is taken by IBM Plex Sans; corners are square
+       or nearly so. */
+    --gs-font-ui:
+      'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    --gs-radius-xs: 0;
+    --gs-radius-sm: 2px;
+    --gs-radius-md: 2px;
+    --gs-radius-lg: 4px;
+    --gs-caps-transform: none;
+    --gs-caps-tracking: 0;
+
+    /* Components: square tabs with a full-height selected face, the status
+       bar's dots in Platinum colours, the drive lights as lamps. */
+    --gs-tab-indicator-color: var(--gs-ref-lavender-deep);
+    --gs-tab-indicator-width: var(--gs-border-width-strong);
+    --gs-tab-indicator-inset: 0px;
+    --gs-tab-indicator-offset: 0px;
+    --gs-tab-sub-indicator-color: var(--gs-ref-lavender-deep);
+    --gs-segmented-bg-selected: var(--gs-ref-face-pressed);
+    --gs-statusbar-dot-running: #9be29b;
+    --gs-statusbar-dot-paused: #ffd36b;
+    --gs-statusbar-dot-stopped: #ff9a9a;
+    --gs-statusbar-dot-crashed: #ffc4c4;
+    --gs-statusbar-drive-style: led;
+    --gs-pill-radius: var(--gs-radius-sm);
+  }
+}
