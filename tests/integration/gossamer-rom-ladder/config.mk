@@ -7,7 +7,8 @@
 # rung fails this row with the name of the first missing marker.
 #
 # Current high-water: G8 (68k dispatching on the 750, the 60.15 Hz tick
-# chain at rate, the Cuda clock advancing Time).  G6's full property-by-
+# chain at rate, the Cuda clock advancing Time), plus G10 (the boot beep,
+# sample-exact against a golden WAV).  G6's full property-by-
 # property comparison against the real machine is gossamer-device-tree.
 
 TEST_NAME := Gossamer ROM ladder

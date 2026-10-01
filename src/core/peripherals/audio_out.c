@@ -68,7 +68,13 @@ void audio_out_set_rate(uint32_t src_rate_hz) {
     s.rate = src_rate_hz;
     // A mid-capture rate switch makes the capture ill-defined (a WAV has one
     // rate); latch the fact so match reports it instead of comparing garbage.
-    if (s.active)
+    // Before the first sample there is nothing to invalidate: the capture
+    // simply takes the rate the guest programs — a row that starts
+    // recording at power-on gets the rate of the boot beep, not the
+    // codec's reset default.
+    if (s.active && s.nsamples == 0)
+        s.cap_rate = src_rate_hz;
+    else if (s.active)
         s.rate_changed = true;
     platform_audio_set_rate(src_rate_hz);
     LOG(2, "set_rate: %u Hz", src_rate_hz);

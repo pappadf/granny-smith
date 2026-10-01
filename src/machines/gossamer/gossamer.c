@@ -595,6 +595,16 @@ const pci_slot_decl_t gossamer_pci_slots[] = {
      .bus = GOS_PCI_BUS,
      .device = GOS_DEV_SLOT_C1,
      .int_line = GOS_INT_SLOT_C1},
+    // The on-board ATI Rage Pro, "slot" F1 in the firmware's slot names.
+    // Declared LAST so a display card in a real slot, when one is seated,
+    // is the primary display (pci_primary_display takes the first).
+    {.slot = 4,
+     .kind = PCI_SLOT_BUILTIN,
+     .label = "F1",
+     .bus = GOS_PCI_BUS,
+     .device = GOS_DEV_ATI,
+     .int_line = GOS_INT_ATI,
+     .builtin_card_id = "ati_rage_pro"},
     {0},
 };
 

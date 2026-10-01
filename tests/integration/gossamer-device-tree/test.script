@@ -26,10 +26,14 @@
 # SCC channel A console; the row stops the boot by holding
 # Command-Option-O-F from power-on (see lib/gossamer.script).
 
+include "../lib/mac.script"
 include "../lib/gossamer.script"
 
 let banner = gos_boot_prompt("pmg3dt", 65536)
-assert contains($banner, "Open Firmware, 2.4") "G6: Open Firmware did not announce itself as 2.4"
+# The Open Firmware console on the Rage Pro's screen: the banner, the
+# prompt, and the `ttya io` the row typed — drawn by the ATI FCode 1.53 in
+# the Mac ROM through the chip's little-endian aperture at 640 x 480 x 8.
+check("of-console.png")
 
 let cd = ""
 let p = ""
@@ -589,6 +593,50 @@ assert contains($p, "version                 00000002") "G6: /perch@0: version 0
 assert contains($p, "AAPL,interrupts         0000001A 00000015") "G6: /perch@0: AAPL,interrupts 0000001A 00000015"
 assert contains($p, "ok") "G6: /perch@0: ok"
 assert contains($p, "0 >") "G6: /perch@0: 0 >"
+
+# --- The on-board ATI Rage Pro ------------------------------------------------
+# The reference dump ran with `pci-probe-list fffbffff`, which hides device
+# $12, so its node comes from the same thread's separate capture.  The
+# chip's identity and header are asserted against it; what legitimately
+# differs is left out: the revision (that board is $5C, this profile's
+# Rev C board $7C), the BAR placement (the reference had two slot cards),
+# and everything the monitor decides — ATY,Flags carries the sense code
+# ($62B, Apple's 13"/14" RGB, here; $717 VGA there) and the FCode picks the
+# raster from it (640 x 480 here, 1024 x 768 there).
+gos_send("dev scr")
+gos_send("een")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    ATY,mach64_3DUPro") "G6: the screen is not ATY,mach64_3DUPro"
+assert contains($p, "model                   ATY,GT-C") "G6: ATI model != ATY,GT-C"
+assert contains($p, "vendor-id               00001002") "G6: ATI vendor-id"
+assert contains($p, "device-id               00004750") "G6: ATI device-id != 4750 (Rage Pro)"
+assert contains($p, "class-code              00030000") "G6: ATI class-code"
+assert contains($p, "interrupts              00000001") "G6: ATI interrupts (INTA)"
+assert contains($p, "min-grant               00000008") "G6: ATI min-grant"
+assert contains($p, "max-latency             00000000") "G6: ATI max-latency"
+assert contains($p, "devsel-speed            00000001") "G6: ATI devsel-speed"
+assert contains($p, "fast-back-to-back") "G6: ATI fast-back-to-back"
+assert contains($p, "AAPL,interrupts         00000016") "G6: ATI AAPL,interrupts != $16"
+assert contains($p, "AAPL,slot-name          F1") "G6: ATI slot-name != F1"
+assert contains($p, "depth                   00000008") "G6: ATI console depth != 8"
+assert contains($p, "device_type             display") "G6: ATI device_type"
+assert contains($p, "character-set           49534F38 3835392D 3100") "G6: ATI character-set"
+assert contains($p, "iso6429-1983-colors") "G6: ATI iso6429-1983-colors"
+assert contains($p, "reg                     00009000 00000000 00000000  00000000 00000000") "G6: ATI reg (config)"
+assert contains($p, "02009010 00000000 00000000  00000000 01000000") "G6: ATI reg (BAR0 16 MB)"
+assert contains($p, "02009018 00000000 00000000  00000000 00001000") "G6: ATI reg (BAR2 4 KB)"
+assert contains($p, "ATY,Rom#                3131332D 58585858 582D312E 3100") "G6: ATI ATY,Rom#"
+assert contains($p, "ATY,Fcode               312E3533 00") "G6: ATI FCode != 1.53"
+assert contains($p, "ATY,Flags               062B0002") "G6: ATI ATY,Flags does not carry the 14in RGB sense $62B"
+assert contains($p, "width                   00000280") "G6: ATI console width != 640"
+assert contains($p, "height                  000001E0") "G6: ATI console height != 480"
+assert contains($p, "linebytes               00000280") "G6: ATI linebytes != 640"
+gos_send("pwd")
+$cd = gos_go()
+assert contains($cd, "/pci@80000000/ATY,mach64_3DUPro@12") "G6: the screen alias does not name device $12"
 
 # --- /memory: what the SPD EEPROMs said -------------------------------------
 # One 64 MB DIMM in slot 0, sized by the boot program over Cuda I2C and
