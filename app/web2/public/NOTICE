@@ -8,7 +8,8 @@ the upstream source, and whether it has been modified.
 1. VS Code Codicons
 ================================================================================
 
-The SVG icons embedded in `icons/sprite.svg` are copied verbatim from the
+The SVG icons embedded in the default sprite (src/icons/sprite.svg, bundled
+with the app) are copied verbatim from the
 Visual Studio Code Codicons project. The sprite uses prototype-style local
 ids (e.g. `i-play`, `i-stop`, `i-hd`, `i-floppy`); the upstream codicon
 names of the icons reproduced here are:
@@ -26,7 +27,6 @@ names of the icons reproduced here are:
     circle-large              ("empty slot" indicator in the Machine tree)
     close                     (toast, popover, find and usage-pane close buttons)
     cloud-upload              (Upload ROM / Upload image actions)
-    color-mode                (theme toggle button)
     debug-pause               (Run/Pause toolbar button when running, debug Pause)
     debug-restart             (debug Restart action)
     debug-stackframe          (current PC marker in the disassembly)
@@ -61,10 +61,11 @@ names of the icons reproduced here are:
     vm                        (Computer / Mac model icons)
     warning                   (toast warning badge)
 
-Three symbols are drawn for Granny Smith, not taken from Codicons: `i-power`
+Four symbols are drawn for Granny Smith, not taken from Codicons: `i-power`
 (the Display Toolbar Shut Down button), `i-ellipsis` (the panel header's
-folded actions menu) and `i-download` (a circled down arrow: the Save State
-button and the Download log button).
+folded actions menu), `i-download` (a circled down arrow: the Save State
+button and the Download log button) and `i-palette` (the Appearance menu
+button).
 
 Source:
     https://github.com/microsoft/vscode-codicons

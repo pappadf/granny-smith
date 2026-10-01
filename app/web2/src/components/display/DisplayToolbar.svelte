@@ -330,7 +330,7 @@
   <div class="layout-controls">
     <IconButton
       class="tbtn appearance-menu"
-      icon="color-mode"
+      icon="palette"
       label="Appearance"
       data-caption="Appearance"
       aria-haspopup="menu"

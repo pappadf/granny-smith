@@ -21,6 +21,23 @@ import { installEvalHookForAutomation, installUiHookForAutomation } from '@/bus/
 import { checkWebGL2Available } from '@/lib/webglCheck';
 import { renderWebGLErrorPage, renderStartupErrorPage } from '@/lib/webglErrorPage';
 
+// A deploy replaces every hashed file.  A page still running the previous
+// build (its script cached) then asks for files that are gone -- a skin's
+// stylesheet, say -- and would show the skin half drawn.  Load the new build
+// instead, once: a reload within a minute of the last is not repeated, so a
+// file that is really missing cannot loop.
+window.addEventListener('vite:preloadError', (ev) => {
+  try {
+    const last = Number(sessionStorage.getItem('gs-stale-reload') ?? 0);
+    if (Date.now() - last < 60_000) return;
+    sessionStorage.setItem('gs-stale-reload', String(Date.now()));
+  } catch {
+    return;
+  }
+  ev.preventDefault();
+  location.reload();
+});
+
 // Synchronous before-mount work: the appearance (index.html's pre-paint
 // script already set it; this corrects it against the registry) and the
 // auto-picked layout.

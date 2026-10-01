@@ -41,9 +41,8 @@ describe('skins', () => {
       expect(css).toMatch(/--gs-color-scheme:\s*(light|dark);/);
     });
 
-    it(`${s.id}: relative asset URLs, and font licences listed`, () => {
-      const urls = [s.sprite, ...(s.fonts ?? []).map((f) => f.src)].filter((u): u is string => !!u);
-      for (const u of urls) {
+    it(`${s.id}: relative font URLs, and font licences listed`, () => {
+      for (const u of (s.fonts ?? []).map((f) => f.src)) {
         expect(u, u).not.toMatch(/^(\/|[a-z]+:)/);
         expect(existsSync(join(WEB2, 'public', u)), u).toBe(true);
       }

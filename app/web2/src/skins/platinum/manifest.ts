@@ -8,7 +8,6 @@ import type { SkinManifest } from '../types';
 export const platinum: SkinManifest = {
   id: 'platinum',
   name: 'Platinum',
-  sprite: 'skins/platinum/sprite.svg',
   fonts: [
     {
       family: 'Chivo',

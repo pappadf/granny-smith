@@ -480,7 +480,7 @@ The Svelte app is organised under
 - **Common** ([`common/`](../../app/web2/src/components/common/)) —
   CollapsibleSection, Tree, Table, PaneSplit, Modal, Toast, ContextMenu,
   ValueEditor (a value's editor by its type descriptor), PathField, Icon
-  (codicon sprite at [`public/icons/sprite.svg`](../../app/web2/public/icons/sprite.svg)).
+  (codicon sprite at [`src/icons/sprite.svg`](../../app/web2/src/icons/sprite.svg)).
 - **Primitives** ([`ui/`](../../app/web2/src/components/ui/)) — the
   styled building blocks every view composes: buttons, inputs and form
   fields; Tabs, Toolbar, Separator; Disclosure, TreeItem (the one row

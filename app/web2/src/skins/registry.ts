@@ -1,5 +1,6 @@
 // The skins this build knows.  Every skin's token stylesheet is bundled, so a
-// switch never flashes the default; overrides, fonts and sprites load lazily.
+// switch never flashes the default; overrides, fonts and sprites load lazily
+// (sprites are bundled with hashed names).
 // A new skin adds its tokens.css import here and its manifest to
 // manifests.ts.
 import './workbench/tokens.css';
@@ -11,6 +12,21 @@ import './aqua/tokens.css';
 import { workbench } from './workbench/manifest';
 import { MANIFESTS } from './manifests';
 import type { SkinManifest } from './types';
+import defaultSprite from '../icons/sprite.svg?url';
+
+// Each skin's icon sprite: skins/<id>/sprite.svg when it has one, else the
+// default.  Bundled, so each build names them by content and a changed icon
+// is never served from a stale cache.
+const SPRITES = import.meta.glob<string>('./*/sprite.svg', {
+  query: '?url',
+  import: 'default',
+  eager: true,
+});
+
+// The URL of skin `id`'s sprite.
+export function spriteUrl(id: string): string {
+  return SPRITES[`./${id}/sprite.svg`] ?? defaultSprite;
+}
 
 export const DEFAULT_SKIN = 'workbench';
 // The default for a first visit when the operating system prefers light.

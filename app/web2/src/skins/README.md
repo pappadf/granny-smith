@@ -35,8 +35,9 @@ toolbar's Appearance menu; `?skin=<id>` selects one for a single page load.
   scale token (type, space, radius, metrics, motion) or component token
   (`--gs-button-*`, `--gs-tab-*`, …). [TOKENS.md](TOKENS.md) lists them all,
   with kinds and defaults.
-- **Icons.** Its own sprite under `public/skins/<id>/`, which must define
-  every id in `src/lib/icons.ts`.
+- **Icons.** Its own sprite, `skins/<id>/sprite.svg` (found by
+  `registry.ts` and bundled with a hashed name), which must define every
+  id in `src/lib/icons.ts`. Without one the skin uses `src/icons/sprite.svg`.
 - **Fonts.** Webfonts under `public/skins/<id>/fonts/`.
 - **Overrides.** `overrides.css`, for shapes tokens cannot express (a
   bevelled button with several shadows, say), written against the `gs-*`
@@ -87,7 +88,6 @@ default. Overrides, fonts and sprites load when the skin is first used.
 export const paper: SkinManifest = {
   id: 'paper',
   name: 'Paper',
-  sprite: 'skins/paper/sprite.svg', // relative to public/; omit for the default
   fonts: [
     {
       family: 'Paper Sans',

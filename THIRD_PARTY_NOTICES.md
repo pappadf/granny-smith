@@ -107,8 +107,8 @@ Granny Smith uses the following third-party libraries at runtime. The UI at
 - **Website:** <https://microsoft.github.io/vscode-codicons/>
 - **Repository:** <https://github.com/microsoft/vscode-codicons>
 - **License:** Creative Commons Attribution 4.0 International (CC BY 4.0)
-- **Used in:** [app/web2/public/icons/sprite.svg](app/web2/public/icons/sprite.svg) (and its copy,
-  the Platinum skin's [sprite.svg](app/web2/public/skins/platinum/sprite.svg), where six
+- **Used in:** [app/web2/src/icons/sprite.svg](app/web2/src/icons/sprite.svg) (and its copy,
+  the Platinum skin's [sprite.svg](app/web2/src/skins/platinum/sprite.svg), where six
   symbols are replaced by original Finder-style drawings) — SVG path
   data for the codicon glyphs is reproduced verbatim from the upstream project
   (`src/icons/<name>.svg`). Full icon list, trademark, modification, and

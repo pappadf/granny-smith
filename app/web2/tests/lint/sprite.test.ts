@@ -35,12 +35,14 @@ describe('icon sprites', () => {
     expect(new Set(names).size).toBe(names.length);
   });
 
-  for (const skin of skins) {
-    const rel = skin.sprite ?? 'icons/sprite.svg';
-    it(`${skin.id}: ${rel} defines exactly the registry's ids`, () => {
-      const file = join(WEB2, 'public', rel);
-      expect(existsSync(file)).toBe(true);
-      expect(symbols(file)).toEqual(names);
+  // The default sprite, and every skin's own (skins/<id>/sprite.svg).
+  const sprites = [
+    'src/icons/sprite.svg',
+    ...skins.map((s) => `src/skins/${s.id}/sprite.svg`).filter((f) => existsSync(join(WEB2, f))),
+  ];
+  for (const rel of sprites) {
+    it(`${rel} defines exactly the registry's ids`, () => {
+      expect(symbols(join(WEB2, rel))).toEqual(names);
     });
   }
 });
