@@ -1,10 +1,31 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#252526" />
     <title>Granny Smith</title>
+    <!-- Pre-paint: the skin and scheme on <html> before any stylesheet
+         applies, so a persisted light (or other skin) preference never
+         flashes the default first.  state/appearance.svelte.ts corrects
+         both against the registry when the app starts. -->
+    <script>
+      (function () {
+        var d = document.documentElement;
+        var ls = null;
+        try {
+          ls = window.localStorage;
+        } catch (e) {}
+        var q = new URLSearchParams(location.search);
+        var skin = q.get('skin') || (ls && ls.getItem('gs-skin')) || 'workbench';
+        var mode = (ls && ls.getItem('gs-theme')) || 'system';
+        var light = !!(window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches);
+        d.dataset.skin = skin;
+        d.dataset.theme = mode === 'light' || (mode === 'system' && light) ? 'light' : 'dark';
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

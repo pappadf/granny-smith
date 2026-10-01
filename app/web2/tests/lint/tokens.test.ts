@@ -273,6 +273,44 @@ describe('design tokens', () => {
     expect(bad).toEqual([]);
   });
 
+  // L-7: one writer of the appearance attributes, so the state, the
+  // tooltip and the document can never disagree (index.html's pre-paint
+  // script, outside src/, is the other).
+  it('L-7: only state/appearance writes data-skin and data-theme', () => {
+    const WRITE = /dataset\.(?:theme|skin)\s*=(?!=)|setAttribute\(\s*['"]data-(?:theme|skin)['"]/;
+    const bad: string[] = [];
+    for (const f of SOURCES) {
+      if (rel(f) === 'state/appearance.svelte.ts' || f.endsWith('.css')) continue;
+      stripComments(readFileSync(f, 'utf8'))
+        .split('\n')
+        .forEach((line, i) => {
+          if (WRITE.test(line)) bad.push(`${rel(f)}:${i + 1}: ${line.trim()}`);
+        });
+    }
+    expect(bad).toEqual([]);
+  });
+
+  // L-10: every stylesheet sits in its cascade layer (styles/layers.css), and
+  // component styles are put in gs.components by the preprocess step; an
+  // unlayered rule would beat every layer, a skin's overrides included.
+  it('L-10: every stylesheet is in a gs.* cascade layer', () => {
+    const bad: string[] = [];
+    for (const f of SOURCES) {
+      if (!f.endsWith('.css') || rel(f) === 'styles/layers.css') continue;
+      const css = stripComments(readFileSync(f, 'utf8')).trim();
+      if (rel(f) === 'styles/index.css') {
+        if (!/^@import '\.\/layers\.css';/.test(css)) bad.push(`${rel(f)}: layers.css not first`);
+        continue;
+      }
+      const m = css.match(/^@layer (gs\.[a-z]+) \{([\s\S]*)\}$/);
+      if (!m || /^\s*@layer /m.test(m[2])) bad.push(`${rel(f)}: not one @layer gs.* block`);
+    }
+    const config = readFileSync(join(SRC, '..', 'svelte.config.js'), 'utf8');
+    if (!/@layer gs\.components \{/.test(config) || !/layerComponents\]/.test(config))
+      bad.push('svelte.config.js: the gs.components preprocess step is missing');
+    expect(bad).toEqual([]);
+  });
+
   // L-11: the browser's prompt, confirm and alert boxes cannot be skinned
   // (nor reached by the app's focus handling); state/dialogs asks instead.
   it('L-11: no native prompt, confirm or alert', () => {

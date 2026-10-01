@@ -2,3 +2,5 @@ node_modules/
 dist/
 public/
 package-lock.json
+# Generated (tests/lint/token-reference.test.ts)
+src/skins/TOKENS.*

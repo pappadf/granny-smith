@@ -135,18 +135,25 @@ npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.web2.config
 
 ### UI screenshots
 
-Two sets pin the look of the UI itself, in both colour schemes:
+Two sets pin the look of the UI itself:
 
 - `gallery/ui-gallery.spec.ts` opens the development-only UI gallery
   (`?gallery` on the Vite dev server, `app/web2/src/gallery/`) once per story,
-  variant and scheme, and compares the page with its baseline at
-  `maxDiffPixels: 0`. The stories render components against fixture state, so
+  variant, skin and scheme (each skin in the schemes its manifest lists), and
+  compares the page with its baseline at `maxDiffPixels: 0`. The default
+  skin's baselines are `<story>-<variant>-<scheme>`, another skin's
+  `<story>-<variant>-<skin>-<scheme>`. The stories render components against fixture state, so
   this needs neither the WASM build nor test data, and runs in every CI run
   (`make ui2-gallery`).
 - `web2-specs/app-states.spec.ts` screenshots the real workbench (welcome,
   every panel tab, the configuration form, a URL boot, the Debug view of a
   paused Plus) with the text that changes on its own masked. It runs with
   the functional suite (`make ui2-e2e`, needs test data).
+
+`web2-specs/appearance.spec.ts` checks the skin and scheme plumbing without
+screenshots: a persisted light preference is on the page before any of the
+app's JavaScript runs, and a scheme switch restyles the console input at
+runtime.
 
 A styling change that claims to change nothing must pass both unchanged. An
 intentional change regenerates the affected baselines and lists them in its PR.

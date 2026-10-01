@@ -1,9 +1,10 @@
 import './styles/index.css';
 import './skins/registry';
+import './styles/preferences.css';
 import { mount, unmount } from 'svelte';
 import App from './App.svelte';
 import { loadPersistedState } from '@/state/persist.svelte';
-import { applyThemeToHtml, theme } from '@/state/theme.svelte';
+import { applyAppearance, applyUrlSkin } from '@/state/appearance.svelte';
 import { autoPickPanelPos, layout } from '@/state/layout.svelte';
 import { setOpfsBackend, BrowserOpfs } from '@/bus/opfs';
 import { maybeOfferBackgroundCheckpoint } from '@/bus/checkpoint';
@@ -20,9 +21,12 @@ import { installEvalHookForAutomation } from '@/bus/testHook';
 import { checkWebGL2Available } from '@/lib/webglCheck';
 import { renderWebGLErrorPage, renderStartupErrorPage } from '@/lib/webglErrorPage';
 
-// Synchronous before-mount work: avoid theme flash + auto-pick layout.
+// Synchronous before-mount work: the appearance (index.html's pre-paint
+// script already set it; this corrects it against the registry) and the
+// auto-picked layout.
 loadPersistedState();
-applyThemeToHtml(theme.mode);
+applyUrlSkin(new URLSearchParams(window.location.search));
+applyAppearance();
 
 try {
   if (!localStorage.getItem('gs-panel-pos')) {

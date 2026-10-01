@@ -1,7 +1,7 @@
 <script lang="ts">
   import { machine, setZoom } from '@/state/machine.svelte';
   import { layout, setPanelPos, setPanelCollapsed, type PanelPos } from '@/state/layout.svelte';
-  import { theme, cycleTheme, resolveTheme } from '@/state/theme.svelte';
+  import { resolved, toggleScheme, canToggleScheme } from '@/state/appearance.svelte';
   import { camera, setCameraEnabled } from '@/state/camera.svelte';
   import {
     microphone,
@@ -75,9 +75,11 @@
   );
 
   const themeTitle = $derived(
-    resolveTheme(theme.mode) === 'dark'
-      ? 'Theme: dark. Click for light.'
-      : 'Theme: light. Click for dark.',
+    !canToggleScheme()
+      ? `Theme: ${resolved.scheme} (this skin has one)`
+      : resolved.scheme === 'dark'
+        ? 'Theme: dark. Click for light.'
+        : 'Theme: light. Click for dark.',
   );
 
   // Run/Pause icon flip.
@@ -316,7 +318,13 @@
     {/if}
   </div>
   <div class="layout-controls">
-    <IconButton class="tbtn" icon="color-mode" label={themeTitle} onclick={cycleTheme} />
+    <IconButton
+      class="tbtn"
+      icon="color-mode"
+      label={themeTitle}
+      disabled={!canToggleScheme()}
+      onclick={toggleScheme}
+    />
     <IconButton
       class="tbtn"
       icon={fullscreenIcon}

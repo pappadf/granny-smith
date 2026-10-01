@@ -1,24 +1,25 @@
 /* Minimal global reset. Component styles are scoped via Svelte; the element
    defaults that carry tokens live in base.css. */
+@layer gs.reset {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
 
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-}
+  html,
+  body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
 
-html,
-body {
-  height: 100%;
-  margin: 0;
-  padding: 0;
-}
+  body {
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
 
-body {
-  -webkit-font-smoothing: antialiased;
-  overflow: hidden;
-}
-
-[hidden] {
-  display: none !important;
+  [hidden] {
+    display: none !important;
+  }
 }

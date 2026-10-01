@@ -24,15 +24,16 @@ export {
   type WelcomeSlide,
 } from './layout.svelte';
 export {
-  theme,
-  setThemeMode,
-  cycleTheme,
-  systemTheme,
-  resolveTheme,
-  applyThemeToHtml,
-  type ThemeMode,
-  type ResolvedTheme,
-} from './theme.svelte';
+  appearance,
+  resolved,
+  setSkin,
+  setSchemeMode,
+  toggleScheme,
+  canToggleScheme,
+  resolveScheme,
+  applyAppearance,
+  type SchemeMode,
+} from './appearance.svelte';
 export {
   toasts,
   showNotification,

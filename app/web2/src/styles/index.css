@@ -1,5 +1,8 @@
-/* The global stylesheets, in cascade order.  The skins' token stylesheets
-   come in through src/skins/registry.ts, after these. */
+/* The global stylesheets.  layers.css comes first and fixes the cascade
+   order; each file names its own layer.  The skins' token stylesheets come
+   in through src/skins/registry.ts, after these, and preferences.css last
+   (main.ts). */
+@import './layers.css';
 @import './scale.css';
 @import './components.css';
 @import './reset.css';

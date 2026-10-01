@@ -1,15 +1,22 @@
 <script lang="ts">
   import type { Component } from 'svelte';
   import { STORIES, findStory, type StoryProps } from './registry';
-  import { applyThemeToHtml, type ThemeMode } from '@/state/theme.svelte';
+  import {
+    appearance,
+    applyAppearance,
+    applyUrlSkin,
+    type SchemeMode,
+  } from '@/state/appearance.svelte';
 
-  // ?gallery[&story=<name>&variant=<v>][&theme=dark|light]
+  // ?gallery[&story=<name>&variant=<v>][&theme=dark|light][&skin=<id>]
   const params = new URLSearchParams(window.location.search);
   const story = findStory(params.get('story'));
   const variant = params.get('variant') ?? story?.variants[0] ?? 'default';
   const themeParam = params.get('theme');
-  const scheme: ThemeMode = themeParam === 'light' || themeParam === 'dark' ? themeParam : 'dark';
-  applyThemeToHtml(scheme);
+  const scheme: SchemeMode = themeParam === 'light' || themeParam === 'dark' ? themeParam : 'dark';
+  appearance.schemeMode = scheme;
+  applyUrlSkin(params);
+  applyAppearance();
 
   // The list the screenshot spec walks.
   (window as unknown as { __gsGallery?: unknown }).__gsGallery = {

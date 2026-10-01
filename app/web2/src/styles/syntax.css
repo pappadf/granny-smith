@@ -4,67 +4,69 @@
    (--gs-syntax-*), and this is the one place that maps them.  A completion
    candidate carries the class on its row; its label keeps the colour on the
    highlighted row too. */
-.hl-keyword {
-  color: var(--gs-syntax-keyword);
-}
-.hl-decl {
-  color: var(--gs-syntax-decl);
-}
-.hl-interp {
-  color: var(--gs-syntax-interp);
-}
-.hl-object {
-  color: var(--gs-syntax-object);
-}
-.hl-operator {
-  color: var(--gs-syntax-operator);
-}
-.hl-variable {
-  color: var(--gs-syntax-variable);
-}
-.hl-alias {
-  color: var(--gs-syntax-alias);
-}
-.hl-number {
-  color: var(--gs-syntax-number);
-}
-.hl-string {
-  color: var(--gs-syntax-string);
-}
-.hl-comment {
-  color: var(--gs-syntax-comment);
-}
-.hl-method {
-  color: var(--gs-syntax-method);
-}
-.hl-attribute {
-  color: var(--gs-syntax-attribute);
-}
-.hl-enum {
-  color: var(--gs-syntax-enum);
-}
-.hl-unknown {
-  color: var(--gs-syntax-unknown);
-}
-/* An unresolved segment is also underlined, in the console's input and
-   output. */
-.cm-content .hl-unknown,
-.entry .hl-unknown {
-  text-decoration: underline wavy var(--gs-syntax-unknown);
-  text-underline-offset: 3px;
-}
-.hl-method > .cm-completionLabel {
-  color: var(--gs-syntax-method);
-}
-.hl-attribute > .cm-completionLabel {
-  color: var(--gs-syntax-attribute);
-}
-.hl-alias > .cm-completionLabel {
-  color: var(--gs-syntax-alias);
-}
-.hl-keyword > .cm-completionLabel {
-  color: var(--gs-syntax-keyword);
-}
-.hl-enum > .cm-completionLabel {
-  color: var(--gs-syntax-enum);
+@layer gs.components {
+  .hl-keyword {
+    color: var(--gs-syntax-keyword);
+  }
+  .hl-decl {
+    color: var(--gs-syntax-decl);
+  }
+  .hl-interp {
+    color: var(--gs-syntax-interp);
+  }
+  .hl-object {
+    color: var(--gs-syntax-object);
+  }
+  .hl-operator {
+    color: var(--gs-syntax-operator);
+  }
+  .hl-variable {
+    color: var(--gs-syntax-variable);
+  }
+  .hl-alias {
+    color: var(--gs-syntax-alias);
+  }
+  .hl-number {
+    color: var(--gs-syntax-number);
+  }
+  .hl-string {
+    color: var(--gs-syntax-string);
+  }
+  .hl-comment {
+    color: var(--gs-syntax-comment);
+  }
+  .hl-method {
+    color: var(--gs-syntax-method);
+  }
+  .hl-attribute {
+    color: var(--gs-syntax-attribute);
+  }
+  .hl-enum {
+    color: var(--gs-syntax-enum);
+  }
+  .hl-unknown {
+    color: var(--gs-syntax-unknown);
+  }
+  /* An unresolved segment is also underlined, in the console's input and
+     output. */
+  .cm-content .hl-unknown,
+  .entry .hl-unknown {
+    text-decoration: underline wavy var(--gs-syntax-unknown);
+    text-underline-offset: 3px;
+  }
+  .hl-method > .cm-completionLabel {
+    color: var(--gs-syntax-method);
+  }
+  .hl-attribute > .cm-completionLabel {
+    color: var(--gs-syntax-attribute);
+  }
+  .hl-alias > .cm-completionLabel {
+    color: var(--gs-syntax-alias);
+  }
+  .hl-keyword > .cm-completionLabel {
+    color: var(--gs-syntax-keyword);
+  }
+  .hl-enum > .cm-completionLabel {
+    color: var(--gs-syntax-enum);
+  }
 }
