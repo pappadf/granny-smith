@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Hint from '@/components/ui/Hint.svelte';
+  import ListRow from '@/components/ui/ListRow.svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
   import { peekLogicalL } from '@/bus/debug';
   import { machine } from '@/state/machine.svelte';
@@ -85,42 +87,28 @@
   onToggle={() => toggleSection('callstack')}
 >
   {#if machine.status === 'running'}
-    <p class="hint">Pause the machine to inspect the call stack.</p>
+    <Hint class="hint" inset="section">Pause the machine to inspect the call stack.</Hint>
   {:else if loading && frames.length === 0}
-    <p class="hint">Reading frames…</p>
+    <Hint class="hint" inset="section">Reading frames…</Hint>
   {:else if frames.length === 0}
-    <p class="hint">No stack frames available.</p>
+    <Hint class="hint" inset="section">No stack frames available.</Hint>
   {:else}
     {#each frames as f, i (i)}
-      <div class="frame-row">
+      <ListRow class="frame-row" density="compact" mono hover={false}>
         <span class="idx">#{i}</span>
         <span class="ret">{labelFor(f.ret)}</span>
         <span class="frame">fp=${fmtHex32(f.frame)}</span>
-      </div>
+      </ListRow>
     {/each}
   {/if}
 </CollapsibleSection>
 
 <style>
-  .hint {
-    color: var(--gs-fg-muted);
-    font-size: 11px;
-    padding: 6px 12px;
-  }
-  .frame-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 2px 12px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
-    color: var(--gs-fg);
-  }
   .idx {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     width: 3ch;
   }
   .frame {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
   }
 </style>

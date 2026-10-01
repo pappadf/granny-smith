@@ -17,8 +17,7 @@
     type BulkResult,
     type ProgressFn,
   } from '@/bus/fsOps';
-  import { isMacArchive } from '@/lib/archive';
-  import { isDiskImage, isInImageSpace, listViaVfs } from '@/lib/diskImage';
+  import { isExpandable, isInImageSpace, listViaVfs } from '@/lib/diskImage';
   import { showNotification } from '@/state/toasts.svelte';
   import { images, bumpImagesRevision } from '@/state/images.svelte';
   import { startActivity, endActivity } from '@/state/activity.svelte';
@@ -65,7 +64,7 @@
   let treeKey = $state(0);
 
   function entriesToNodes(
-    entries: { name: string; path: string; kind: 'file' | 'directory' }[],
+    entries: { name: string; path: string; kind: 'file' | 'directory'; expandable?: boolean }[],
   ): TreeNode[] {
     // Hide AppleDouble sidecars ("._<name>") whose data file is present in the
     // same listing: the pair is one logical Mac file. An orphaned "._x" (no
@@ -79,9 +78,10 @@
         return a.name.localeCompare(b.name);
       })
       .map((e) => {
-        // A disk image that is a real OPFS file (not itself inside another
-        // image) is expandable: expanding it lists its partitions via VFS.
-        const expandableImage = e.kind === 'file' && isDiskImage(e.name) && !isInImageSpace(e.path);
+        // A file the core recognises as an image or archive is expandable --
+        // at any depth: expanding it lists its partitions or members via
+        // the VFS.
+        const expandableImage = e.kind === 'file' && e.expandable === true;
         return {
           id: e.path,
           label: e.name,
@@ -379,7 +379,6 @@
     if (!filesystem.selected.has(pathKey(path))) selectOnly(pathKey(path));
     const targets = effectiveTargets(path);
     const multi = targets.length > 1;
-    const name = path[path.length - 1].split('/').pop() ?? '';
 
     // Inside a disk image everything is read-only — only Download applies, and
     // only to file targets. (Targets share a parent, so they're uniformly
@@ -408,7 +407,7 @@
         label: multi ? 'Download files' : 'Download',
         action: () => doDownload(targets),
       });
-    if (!multi && isFile(path) && isMacArchive(name))
+    if (!multi && isFile(path) && isExpandable(path[path.length - 1]))
       items.push({ label: 'Unpack', action: () => doUnpack(path) });
     items.push({ sep: true });
     items.push({
@@ -606,7 +605,7 @@
     width: 100%;
     height: 100%;
     overflow: auto;
-    background: var(--gs-bg);
-    padding: 4px 0;
+    background: var(--gs-surface-app);
+    padding: var(--gs-space-1) 0;
   }
 </style>

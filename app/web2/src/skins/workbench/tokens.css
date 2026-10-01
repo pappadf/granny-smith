@@ -1,0 +1,250 @@
+/* ====== Workbench skin: semantic tokens ======
+   The default look, derived from VS Code's workbench colours
+   (src/vs/workbench/common/theme.ts, src/vs/platform/theme/common/colors/*).
+   A skin defines every semantic token of src/styles/contract.ts in every
+   scheme it supports; the bare :root block is the pre-JS default (the page is
+   coloured before the appearance script runs). */
+@layer gs.tokens {
+  :root,
+  :root[data-skin='workbench'][data-theme='dark'] {
+    /* Surfaces */
+    --gs-surface-app: #1e1e1e; /* editor.background */
+    --gs-surface-raised: #252526; /* editorWidget.background */
+    --gs-surface-overlay: #252526;
+    --gs-surface-sunken: #0d0f11; /* terminal.background */
+    --gs-surface-screen: #000000;
+    --gs-surface-document: #ffffff;
+    --gs-backdrop: rgba(0, 0, 0, 0.45);
+
+    /* Text */
+    --gs-text: #cccccc;
+    --gs-text-strong: #e7e7e7; /* panelTitle.activeForeground */
+    --gs-text-muted: rgba(231, 231, 231, 0.6);
+    --gs-text-subtle: #858585;
+    --gs-text-link: #3794ff; /* textLink.foreground */
+    --gs-text-on-accent: #ffffff;
+
+    /* Borders and focus */
+    --gs-border: rgba(128, 128, 128, 0.35); /* panel.border */
+    --gs-border-subtle: rgba(204, 204, 204, 0.13);
+    --gs-border-card: rgba(255, 255, 255, 0.1);
+    --gs-focus-ring: #007fd4; /* focusBorder */
+
+    /* Interaction */
+    --gs-control-hover: rgba(90, 93, 94, 0.31); /* toolbar.hoverBackground */
+    --gs-control-active: rgba(90, 93, 94, 0.41);
+    --gs-accent: #0e639c;
+    --gs-accent-hover: #1177bb;
+    --gs-accent-active: #0a4c7a;
+    --gs-accent-subtle: rgba(80, 140, 220, 0.25);
+
+    /* Rows */
+    --gs-row-hover: #2a2d2e; /* list.hoverBackground */
+    --gs-row-selected: rgba(80, 140, 220, 0.25);
+    --gs-row-selected-inactive: #37373d; /* list.inactiveSelectionBackground */
+    --gs-row-alt: rgba(204, 204, 204, 0.04);
+
+    /* Inputs */
+    --gs-input-bg: #3c3c3c; /* input.background */
+    --gs-input-fg: #e7e7e7;
+    --gs-input-border: rgba(255, 255, 255, 0.1);
+
+    /* Intents */
+    --gs-info-fg: #6aa6ff;
+    --gs-info-bg: rgba(80, 140, 220, 0.25);
+    --gs-info-border: rgba(80, 140, 220, 0.5);
+    --gs-info-solid: #59a4f9;
+    --gs-info-on-solid: #ffffff;
+    --gs-success-fg: #4ac26b;
+    --gs-success-bg: rgba(35, 134, 54, 0.25);
+    --gs-success-border: rgba(74, 194, 107, 0.5);
+    --gs-success-solid: #6a9955;
+    --gs-success-on-solid: #ffffff;
+    --gs-warning-fg: #f5c542;
+    --gs-warning-bg: rgba(204, 167, 0, 0.2);
+    --gs-warning-border: rgba(204, 167, 0, 0.5);
+    --gs-warning-solid: #cca700;
+    --gs-warning-on-solid: #000000;
+    --gs-danger-fg: #f48771; /* errorForeground */
+    --gs-danger-bg: rgba(248, 81, 73, 0.25);
+    --gs-danger-border: rgba(241, 76, 76, 0.5);
+    --gs-danger-solid: #f14c4c;
+    --gs-danger-on-solid: #ffffff;
+
+    /* Machine state (the status bar) */
+    --gs-state-idle-bg: #1e1e1e;
+    --gs-state-idle-fg: #858585;
+    --gs-state-running-bg: #007acc;
+    --gs-state-paused-bg: #cc6633;
+    --gs-state-stopped-bg: #cc3333;
+    --gs-state-crashed-bg: #8b1a1a;
+    --gs-state-active-fg: #ffffff;
+    --gs-state-hover: rgba(255, 255, 255, 0.12);
+
+    /* Syntax palette (VS Code Dark+): the command browser, SYSTEM, the
+       console's entries and input, the usage block. */
+    --gs-syntax-method: #dcdcaa;
+    --gs-syntax-attribute: #9cdcfe;
+    --gs-syntax-variable: #9cdcfe;
+    --gs-syntax-alias: #9cdcfe;
+    --gs-syntax-object: inherit;
+    --gs-syntax-operator: inherit;
+    --gs-syntax-decl: #569cd6;
+    --gs-syntax-interp: #569cd6;
+    --gs-syntax-keyword: #c586c0;
+    --gs-syntax-string: #ce9178;
+    --gs-syntax-number: #b5cea8;
+    --gs-syntax-enum: #4fc1ff;
+    --gs-syntax-type: #4ec9b0;
+    --gs-syntax-comment: #6a9955;
+    --gs-syntax-unknown: var(--gs-danger-fg);
+    --gs-syntax-error: var(--gs-danger-fg);
+    --gs-syntax-dim: #808080;
+
+    /* Code and data views */
+    --gs-code-pc-row-bg: rgba(80, 140, 220, 0.2);
+    /* Changed since the last step: registers, FPU, memory. */
+    --gs-code-changed-bg: rgba(255, 220, 64, 0.18);
+
+    /* Console */
+    --gs-console-bg: var(--gs-surface-sunken);
+    --gs-console-fg: #cccccc; /* terminal.foreground */
+    --gs-console-cursor: #cccccc;
+    --gs-console-selection: rgba(255, 255, 255, 0.25);
+    --gs-console-progress-bg: rgba(128, 128, 128, 0.12);
+    --gs-console-find-hit-bg: rgba(234, 92, 0, 0.33);
+    --gs-console-find-current-bg: rgba(234, 92, 0, 0.7);
+
+    /* Drag and drop */
+    --gs-drop-border: #0969da;
+    --gs-drop-bg: rgba(9, 105, 218, 0.08);
+    --gs-drop-label-bg: rgba(9, 105, 218, 0.85);
+
+    /* Scrollbars, selection, elevation */
+    --gs-scrollbar-thumb: rgba(255, 255, 255, 0.15);
+    --gs-scrollbar-thumb-hover: rgba(255, 255, 255, 0.25);
+    --gs-scrollbar-track: transparent;
+    --gs-selection-bg: #264f78; /* editor.selectionBackground */
+    --gs-shadow-popup: 0 4px 14px rgba(0, 0, 0, 0.5);
+    --gs-shadow-modal: 0 8px 32px rgba(0, 0, 0, 0.5);
+    --gs-shadow-toast: 0 0 8px 2px rgba(0, 0, 0, 0.36);
+    --gs-shadow-screen: 0 0 0 1px rgba(0, 0, 0, 0.8);
+
+    /* Component overrides: the menu's selection is VS Code's. */
+    --gs-menu-hover-bg: #04395e; /* menu.selectionBackground */
+  }
+
+  :root[data-skin='workbench'][data-theme='light'] {
+    --gs-surface-app: #ffffff;
+    --gs-surface-raised: #f3f3f3;
+    --gs-surface-overlay: #f3f3f3;
+    --gs-surface-sunken: #f6f6f6;
+    --gs-surface-screen: #000000;
+    --gs-surface-document: #ffffff;
+    --gs-backdrop: rgba(0, 0, 0, 0.45);
+
+    --gs-text: #333333;
+    --gs-text-strong: #424242;
+    --gs-text-muted: rgba(66, 66, 66, 0.75);
+    --gs-text-subtle: #6c6c6c;
+    --gs-text-link: #006ab1;
+    --gs-text-on-accent: #ffffff;
+
+    --gs-border: rgba(128, 128, 128, 0.35);
+    --gs-border-subtle: rgba(60, 60, 60, 0.12);
+    --gs-border-card: rgba(0, 0, 0, 0.08);
+    --gs-focus-ring: #0090f1;
+
+    --gs-control-hover: rgba(184, 184, 184, 0.31);
+    --gs-control-active: rgba(184, 184, 184, 0.41);
+    --gs-accent: #007acc;
+    --gs-accent-hover: #1a8bd9;
+    --gs-accent-active: #005a9e;
+    --gs-accent-subtle: rgba(0, 122, 204, 0.15);
+
+    --gs-row-hover: #f0f0f0;
+    --gs-row-selected: rgba(80, 140, 220, 0.25);
+    --gs-row-selected-inactive: #e4e6f1;
+    --gs-row-alt: rgba(60, 60, 60, 0.035);
+
+    --gs-input-bg: #ffffff;
+    --gs-input-fg: #333333;
+    --gs-input-border: #cecece;
+
+    --gs-info-fg: #005fb8;
+    --gs-info-bg: rgba(0, 120, 212, 0.12);
+    --gs-info-border: rgba(0, 120, 212, 0.4);
+    --gs-info-solid: #0078d4;
+    --gs-info-on-solid: #ffffff;
+    --gs-success-fg: #116329;
+    --gs-success-bg: rgba(26, 127, 55, 0.12);
+    --gs-success-border: rgba(26, 127, 55, 0.4);
+    --gs-success-solid: #4e7a3f;
+    --gs-success-on-solid: #ffffff;
+    --gs-warning-fg: #7a6100;
+    --gs-warning-bg: rgba(168, 143, 0, 0.15);
+    --gs-warning-border: rgba(168, 143, 0, 0.5);
+    --gs-warning-solid: #a88f00;
+    --gs-warning-on-solid: #000000;
+    --gs-danger-fg: #c72e0f;
+    --gs-danger-bg: rgba(199, 46, 15, 0.12);
+    --gs-danger-border: rgba(199, 46, 15, 0.4);
+    --gs-danger-solid: #c72e0f;
+    --gs-danger-on-solid: #ffffff;
+
+    --gs-state-idle-bg: #f3f3f3;
+    --gs-state-idle-fg: #6c6c6c;
+    --gs-state-running-bg: #007acc;
+    --gs-state-paused-bg: #cc6633;
+    --gs-state-stopped-bg: #cc3333;
+    --gs-state-crashed-bg: #8b1a1a;
+    --gs-state-active-fg: #ffffff;
+    --gs-state-hover: rgba(0, 0, 0, 0.12);
+
+    /* Syntax palette (VS Code Light+). */
+    --gs-syntax-method: #795e26;
+    --gs-syntax-attribute: #001080;
+    --gs-syntax-variable: #001080;
+    --gs-syntax-alias: #001080;
+    --gs-syntax-object: inherit;
+    --gs-syntax-operator: inherit;
+    --gs-syntax-decl: #0000ff;
+    --gs-syntax-interp: #0000ff;
+    --gs-syntax-keyword: #af00db;
+    --gs-syntax-string: #a31515;
+    --gs-syntax-number: #098658;
+    --gs-syntax-enum: #0070c1;
+    --gs-syntax-type: #267f99;
+    --gs-syntax-comment: #008000;
+    --gs-syntax-unknown: var(--gs-danger-fg);
+    --gs-syntax-error: var(--gs-danger-fg);
+    --gs-syntax-dim: #6e7781;
+
+    --gs-code-pc-row-bg: rgba(80, 140, 220, 0.2);
+    --gs-code-changed-bg: rgba(220, 170, 0, 0.22);
+
+    --gs-console-bg: var(--gs-surface-sunken);
+    --gs-console-fg: #333333;
+    --gs-console-cursor: #333333;
+    --gs-console-selection: #add6ff; /* editor-blue, visible on #f6f6f6 */
+    --gs-console-progress-bg: rgba(128, 128, 128, 0.12);
+    --gs-console-find-hit-bg: rgba(234, 92, 0, 0.33);
+    --gs-console-find-current-bg: rgba(234, 92, 0, 0.7);
+
+    --gs-drop-border: #0969da;
+    --gs-drop-bg: rgba(9, 105, 218, 0.08);
+    --gs-drop-label-bg: rgba(9, 105, 218, 0.9);
+
+    --gs-scrollbar-thumb: rgba(100, 100, 100, 0.3);
+    --gs-scrollbar-thumb-hover: rgba(100, 100, 100, 0.45);
+    --gs-scrollbar-track: transparent;
+    --gs-selection-bg: #add6ff;
+    --gs-shadow-popup: 0 4px 14px rgba(0, 0, 0, 0.5);
+    --gs-shadow-modal: 0 8px 32px rgba(0, 0, 0, 0.5);
+    --gs-shadow-toast: 0 0 8px 2px rgba(0, 0, 0, 0.18);
+    --gs-shadow-screen: 0 0 0 1px rgba(0, 0, 0, 0.8);
+
+    --gs-menu-bg: #f8f8f8; /* menu.background */
+    --gs-menu-hover-bg: #0060c0;
+  }
+}

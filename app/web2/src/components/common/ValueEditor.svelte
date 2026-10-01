@@ -6,6 +6,9 @@
   // and by the method-argument forms.
   import { onMount } from 'svelte';
   import type { TypeDescriptor } from '@/bus/systemTree';
+  import Select from '@/components/ui/Select.svelte';
+  import TextInput from '@/components/ui/TextInput.svelte';
+  import Switch from '@/components/ui/Switch.svelte';
 
   interface Props {
     type?: TypeDescriptor;
@@ -35,7 +38,9 @@
   let text = $state(value);
   let error = $state('');
   let busy = $state(false);
-  let inputEl = $state<HTMLInputElement | HTMLSelectElement | null>(null);
+  let textEl = $state<HTMLInputElement | null>(null);
+  let selectEl = $state<HTMLSelectElement | null>(null);
+  const inputEl = $derived(textEl ?? selectEl);
 
   const kind = $derived(type?.kind ?? 'any');
   const choices = $derived(kind === 'enum' && type?.enum?.length ? type.enum : null);
@@ -83,26 +88,24 @@
 
 <span class="value-editor" class:has-error={!!error}>
   {#if kind === 'bool'}
-    <button
-      type="button"
+    <Switch
       class="toggle"
-      class:on={text === 'true'}
-      role="switch"
-      aria-checked={text === 'true'}
-      aria-label={label}
+      checked={text === 'true'}
+      {label}
       disabled={readonly || busy}
-      onclick={() => {
-        const next = text === 'true' ? 'false' : 'true';
+      onchange={(on) => {
+        const next = on ? 'true' : 'false';
         set(next);
         if (!onInput) void commit(next);
       }}
       onkeydown={onKey}
-    >
-      <span class="knob"></span>
-    </button>
+    />
   {:else if choices}
-    <select
-      bind:this={inputEl}
+    <Select
+      bind:ref={selectEl}
+      size="inline"
+      mono
+      invalid={!!error}
       aria-label={label}
       disabled={readonly || busy}
       value={text}
@@ -119,11 +122,14 @@
       {#each choices as c (c)}
         <option value={c}>{c}</option>
       {/each}
-    </select>
+    </Select>
   {:else}
-    <input
-      bind:this={inputEl}
-      type="text"
+    <TextInput
+      bind:ref={textEl}
+      size="inline"
+      mono
+      invalid={!!error}
+      style="min-width: 8ch; max-width: 100%"
       aria-label={label}
       spellcheck="false"
       autocomplete="off"
@@ -149,56 +155,9 @@
     max-width: 100%;
     vertical-align: middle;
   }
-  input,
-  select {
-    font: inherit;
-    font-family: var(--gs-font-mono);
-    font-size: 12px;
-    color: var(--gs-fg);
-    background: var(--gs-input-bg, var(--gs-bg));
-    border: 1px solid var(--gs-focus-border, #007fd4);
-    padding: 0 4px;
-    min-width: 8ch;
-    max-width: 100%;
-  }
-  .has-error input,
-  .has-error select {
-    border-color: var(--gs-syntax-error);
-  }
   .error {
     color: var(--gs-syntax-error);
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
     white-space: normal;
-  }
-  .toggle {
-    position: relative;
-    width: 26px;
-    height: 14px;
-    border-radius: 7px;
-    border: 1px solid var(--gs-border, #555);
-    background: var(--gs-bg);
-    padding: 0;
-    cursor: pointer;
-  }
-  .toggle.on {
-    background: var(--gs-focus-border, #007fd4);
-  }
-  .toggle:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-  .knob {
-    position: absolute;
-    top: 1px;
-    left: 1px;
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: var(--gs-fg-muted, #999);
-    transition: left 0.1s;
-  }
-  .toggle.on .knob {
-    left: 13px;
-    background: #fff;
   }
 </style>

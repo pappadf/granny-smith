@@ -1,10 +1,10 @@
-import './styles/tokens.css';
-import './styles/reset.css';
-import './styles/syntax.css';
+import './styles/index.css';
+import './skins/registry';
+import './styles/preferences.css';
 import { mount, unmount } from 'svelte';
 import App from './App.svelte';
 import { loadPersistedState } from '@/state/persist.svelte';
-import { applyThemeToHtml, theme } from '@/state/theme.svelte';
+import { applyAppearance, applyUrlSkin } from '@/state/appearance.svelte';
 import { autoPickPanelPos, layout } from '@/state/layout.svelte';
 import { setOpfsBackend, BrowserOpfs } from '@/bus/opfs';
 import { maybeOfferBackgroundCheckpoint } from '@/bus/checkpoint';
@@ -17,13 +17,16 @@ import {
 import { whenModuleReady, onEmulatorCrash, applySchedulerMode } from '@/bus/emulator';
 import { setSchedulerMode } from '@/state/machine.svelte';
 import { beginUrlBoot } from '@/state/urlBoot.svelte';
-import { installEvalHookForAutomation } from '@/bus/testHook';
+import { installEvalHookForAutomation, installUiHookForAutomation } from '@/bus/testHook';
 import { checkWebGL2Available } from '@/lib/webglCheck';
 import { renderWebGLErrorPage, renderStartupErrorPage } from '@/lib/webglErrorPage';
 
-// Synchronous before-mount work: avoid theme flash + auto-pick layout.
+// Synchronous before-mount work: the appearance (index.html's pre-paint
+// script already set it; this corrects it against the registry) and the
+// auto-picked layout.
 loadPersistedState();
-applyThemeToHtml(theme.mode);
+applyUrlSkin(new URLSearchParams(window.location.search));
+applyAppearance();
 
 try {
   if (!localStorage.getItem('gs-panel-pos')) {
@@ -36,7 +39,13 @@ try {
 const target = document.getElementById('app');
 if (!target) throw new Error('#app mount point missing from index.html');
 
-void bootApp(target);
+// The UI gallery (`?gallery`) exists only on the dev server: the constant
+// DEV check lets the production build drop the import entirely.
+if (import.meta.env.DEV && new URLSearchParams(window.location.search).has('gallery')) {
+  void import('./gallery/main').then((m) => m.startGallery(target));
+} else {
+  void bootApp(target);
+}
 
 // The browser's origin-private file system holds every ROM, disk image and
 // checkpoint, and the core mounts it as /opfs: without it nothing can boot.
@@ -121,6 +130,7 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
     // Under automation only, let specs read core state without typing into
     // the terminal (bus/testHook.ts).
     installEvalHookForAutomation();
+    installUiHookForAutomation();
 
     // The machine the URL names wins over the one this browser saved: the
     // saved checkpoint is left as it is, unoffered.

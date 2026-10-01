@@ -1,4 +1,6 @@
 <script lang="ts">
+  import SectionHeading from '@/components/ui/SectionHeading.svelte';
+  import Hint from '@/components/ui/Hint.svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { writeRegister } from '@/bus/debug';
@@ -8,6 +10,7 @@
   import { debugFrame } from '@/state/debugFrame.svelte';
   import { fmtHex32, parseHex } from '@/lib/hex';
   import { registerGroups, registerBits, fmtRegister } from '@/lib/registerLayout';
+  import InlineValueInput from '@/components/ui/InlineValueInput.svelte';
 
   // Registers shown but not editable from here.
   const READ_ONLY = new Set(['sr']);
@@ -35,14 +38,19 @@
     debug.registersPrev = prev;
   });
 
-  async function commit(name: string, raw: string, ev: Event) {
-    const target = ev.target as HTMLInputElement;
+  // A refused entry flashes its field for 400 ms.
+  let invalid = $state<Record<string, boolean>>({});
+  function flashInvalid(name: string): void {
+    invalid = { ...invalid, [name]: true };
+    setTimeout(() => (invalid = { ...invalid, [name]: false }), 400);
+  }
+
+  async function commit(name: string, raw: string) {
     const value = parseHex(raw);
     // Only a register this frame reported can be written: the name becomes
     // a path segment of machine.cpu.
     if (value === null || !values || !(name in values)) {
-      target.classList.add('invalid');
-      setTimeout(() => target.classList.remove('invalid'), 400);
+      flashInvalid(name);
       showNotification(`Invalid hex value for ${name.toUpperCase()}`, 'error');
       return;
     }
@@ -55,7 +63,7 @@
     const target = ev.target as HTMLInputElement;
     if (ev.key === 'Enter') {
       ev.preventDefault();
-      void commit(name, target.value, ev);
+      void commit(name, target.value);
     } else if (ev.key === 'Escape') {
       ev.preventDefault();
       target.value = currentValueFor(name);
@@ -99,13 +107,15 @@
   onToggle={() => toggleSection('registers')}
 >
   {#if machine.status === 'running'}
-    <p class="reg-hint">Pause the machine to inspect register state.</p>
+    <Hint class="reg-hint" inset="block">Pause the machine to inspect register state.</Hint>
   {:else if !frame}
-    <p class="reg-hint">{debugFrame.loading ? 'Reading registers…' : 'No machine running.'}</p>
+    <Hint class="reg-hint" inset="block"
+      >{debugFrame.loading ? 'Reading registers…' : 'No machine running.'}</Hint
+    >
   {:else}
     {#each groups as group (group.title)}
       <div class="reg-group">
-        <h4 class="reg-group-title">{group.title}</h4>
+        <SectionHeading level="h4" class="reg-group-title">{group.title}</SectionHeading>
         <div
           class="reg-rows"
           style="grid-template-rows: repeat({Math.ceil(group.names.length / 2)}, auto);"
@@ -114,13 +124,13 @@
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="reg-row" oncontextmenu={(ev) => onRegContext(name, ev)}>
               <span class="reg-name">{name.toUpperCase()}</span>
-              <input
+              <InlineValueInput
                 class="reg-value"
-                class:changed={changed[name]}
-                type="text"
+                changed={changed[name]}
+                invalid={invalid[name]}
                 value={currentValueFor(name)}
                 size={widthChFor(name)}
-                style="width: {widthChFor(name)}ch;"
+                widthCh={widthChFor(name)}
                 readonly={READ_ONLY.has(name)}
                 aria-label={`${name.toUpperCase()} register value`}
                 onkeydown={(ev) => onKey(name, ev)}
@@ -134,21 +144,8 @@
 </CollapsibleSection>
 
 <style>
-  .reg-hint {
-    color: var(--gs-fg-muted);
-    font-size: 11px;
-    padding: 8px 16px;
-  }
   .reg-group {
-    padding: 6px 12px;
-  }
-  .reg-group-title {
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--gs-fg-muted);
-    margin: 6px 0 4px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    padding: var(--gs-space-1-5) var(--gs-space-3);
   }
   .reg-rows {
     /* `auto auto` keeps both columns content-width so the right-hand
@@ -157,54 +154,21 @@
     display: grid;
     grid-auto-flow: column;
     grid-template-columns: auto auto;
-    column-gap: 24px;
+    column-gap: var(--gs-space-6);
     row-gap: 0;
     justify-content: start;
   }
   .reg-row {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
+    gap: var(--gs-space-2);
+    font-family: var(--gs-font-mono);
+    font-size: var(--gs-font-size-xs);
   }
   .reg-name {
-    color: var(--gs-fg-muted);
+    color: var(--gs-code-reg-name);
     width: 3.5ch;
     text-align: right;
     flex-shrink: 0;
-  }
-  .reg-value {
-    /* Reset to content-box so `width: 8ch` (set inline) reflects the
-       hex digit content area, not the total box. The global reset
-       applies border-box to everything, which truncates the value to
-       ~6.5 chars after subtracting 8 px of padding + 2 px of border. */
-    box-sizing: content-box;
-    background: transparent;
-    color: var(--gs-fg);
-    border: 1px solid transparent;
-    border-radius: 2px;
-    padding: 0 4px;
-    height: 18px;
-    font-family: inherit;
-    font-size: inherit;
-    outline: none;
-    text-transform: uppercase;
-  }
-  .reg-value:hover {
-    border-color: var(--gs-input-border);
-  }
-  .reg-value:focus {
-    border-color: var(--gs-focus, #0969da);
-    background: var(--gs-input-bg, rgba(0, 0, 0, 0.2));
-  }
-  .reg-value.changed {
-    background: var(--gs-changed-bg);
-  }
-  .reg-value:global(.invalid) {
-    border-color: var(--gs-error-fg, #f48771) !important;
-  }
-  .reg-value[readonly] {
-    cursor: default;
   }
 </style>

@@ -395,9 +395,12 @@ no deadline.
 Entry point: [`app/web2/src/main.ts`](../../app/web2/src/main.ts).
 
 1. Synchronous pre-mount work:
-   - Load persisted state from `localStorage` (theme, panel pos+size,
-     debug pane state, …).
-   - Apply theme to `<html data-theme>` to avoid a flash.
+   - Load persisted state from `localStorage` (scheme, skin, panel
+     pos+size, debug pane state, …).
+   - Apply the appearance (`applyAppearance`, see "Styling and skins"):
+     `index.html`'s pre-paint script has already set `<html data-skin
+     data-theme>` before any stylesheet, so there is no flash; this
+     corrects both against the skin registry.
    - Auto-pick panel orientation from viewport size if no persisted
      value.
 2. **WebGL2 probe.** [`lib/webglCheck.ts`](../../app/web2/src/lib/webglCheck.ts)
@@ -475,13 +478,25 @@ The Svelte app is organised under
   ([`drive_activity.c`](../../src/core/storage/drive_activity.c)). A model
   shows only the lights its profile has drives for.
 - **Common** ([`common/`](../../app/web2/src/components/common/)) —
-  CollapsibleSection, Tree, TabStrip, Modal, Toast, ContextMenu,
+  CollapsibleSection, Tree, Table, PaneSplit, Modal, Toast, ContextMenu,
   ValueEditor (a value's editor by its type descriptor), PathField, Icon
   (codicon sprite at [`public/icons/sprite.svg`](../../app/web2/public/icons/sprite.svg)).
+- **Primitives** ([`ui/`](../../app/web2/src/components/ui/)) — the
+  styled building blocks every view composes: buttons, inputs and form
+  fields; Tabs, Toolbar, Separator; Disclosure, TreeItem (the one row
+  look of the Files, SYSTEM and command-browser trees), ListRow;
+  SectionHeading, Hint, Sash, Switch; Badge, ProgressBar, Spinner,
+  ActivityDot, StatusDot, DriveLight, Card, Hero, Callout. Each draws only
+  from component tokens, so a skin restyles it without touching its markup.
+- **Dialogs** ([`dialogs/`](../../app/web2/src/components/dialogs/)) —
+  ConfirmDialog and PromptDialog, plus the app-wide questions that
+  [`state/dialogs.svelte.ts`](../../app/web2/src/state/dialogs.svelte.ts)
+  asks (`askText`, `askConfirm`) in place of the browser's `prompt()` and
+  `confirm()`, which cannot be styled (a lint forbids them).
 
 State lives under [`app/web2/src/state/`](../../app/web2/src/state/) —
 each `*.svelte.ts` file owns a `$state` slice (`machine`, `layout`,
-`debug`, `theme`, `logs`, `images`, `uploads`, `toasts`, …). The bus
+`debug`, `appearance`, `logs`, `images`, `uploads`, `toasts`, …). The bus
 layer at [`app/web2/src/bus/`](../../app/web2/src/bus/) wraps every
 `gsEval` call site.
 
@@ -600,9 +615,10 @@ worker's OPFS request through the page's thread — it deadlocked the page.
    [`DropOverlay.svelte`](../../app/web2/src/components/display/DropOverlay.svelte)
    captures drops, calls `processDataTransfer` →
    `acceptFiles(files)`. Auto-detects type by probing each
-   `MediaTypeDescriptor` in order; archives (`.zip`, `.sit`, `.hqx`,
-   `.cpt`, `.bin`, `.sea`) are extracted via `files.archive.extract` and the
-   inner image re-probed. A floppy goes into the first empty drive the
+   `MediaTypeDescriptor` in order; a file the core identifies as an archive
+   (`files.archive.identify`: StuffIt, Compact Pro, Zip, BinHex, MacBinary,
+   gzip — by content, not name) is extracted via `files.archive.extract` and
+   the inner files re-probed. A floppy goes into the first empty drive the
    model has, a CD into the model's CD bay (`bus/media.ts`; an occupied
    bay is refused, not overwritten); ROMs trigger a full cold boot via
    `maybeBootFromRom`.
@@ -642,12 +658,14 @@ typed-dispatch and introspection surface.
   `1.4MB`); empty if not a floppy.
 - **`machine.scsi.identify_hd(path)` / `machine.scsi.identify_cdrom(path)`**
   → bool.
-- **`files.archive.identify(path)`** → JSON for `.sit` / `.hqx` / `.cpt` /
-  `.bin` / `.sea`. **`files.archive.extract(path, out_dir)`** → bool; powers the
-  Filesystem-tab "Unpack" action.
-- **`files.list(path)`** → JSON `[{name, kind, size}]`, descending into a disk
-  image (partitions, then HFS/UFS contents). The Filesystem tree calls this to
-  browse inside images; see [`target-filesystems.md`](../internals/core/storage/target-filesystems.md).
+- **`files.archive.identify(path)`** → the archive format (`sit`, `cpt`,
+  `zip`, `hqx`, `bin`, `gz`) or an empty string.
+  **`files.archive.extract(path, out_dir)`** → bool; powers upload unpacking
+  and the Filesystem-tab "Unpack" action. See [peeler.md](peeler.md).
+- **`files.list(path)`** → `[{name, kind, size, expandable}]`, descending into
+  disk images (partitions, then HFS/UFS contents) and archives, nested to any
+  depth. `expandable` marks a file the core can open as a tree; the Filesystem
+  tree expands exactly those; see [`target-filesystems.md`](../internals/core/storage/target-filesystems.md).
 - **`files.cp(src, dst, [recursive])`** — copy, including *out of* an image into
   OPFS (backs copy-out and Download). **`files.rm(path)`** /
   **`files.mv(src, dst)`** — recursive remove / move, run worker-side so
@@ -808,6 +826,10 @@ view; errors still toast.
   accepted as aliases).  The wasm module takes no command line.
 - `model=<id>` — preferred machine id (must be in the ROM's compatible
   list).
+- `skin=<id>` — show this load in another skin (an id from
+  [`skins/registry.ts`](../../app/web2/src/skins/registry.ts)); not saved,
+  and an unknown id is ignored.  Read by `state/appearance.svelte.ts` and
+  `index.html`'s pre-paint script, not by `urlMedia`, and matched exactly.
 
 **Names are case-insensitive**: `ROM=`, `Rom=` and `rom=` are one
 parameter, `HD0=` is `hd0=`, and a bare `HD=` / `FD=` means `hd0` / `fd0`.
@@ -1099,13 +1121,14 @@ console's cursor, then hands focus to the console:
 Typing in the console never moves focus. A finished console job drops the
 cached levels that list collections, so their entries are re-read.
 
-Colours come from the `--gs-syntax-*` palette in
-[`styles/tokens.css`](../../app/web2/src/styles/tokens.css) (VS Code
-Dark+ / Light+), and from `--gs-terminal-*`. The `hl-*` syntax classes
-are one global set,
+Colours come from the `--gs-syntax-*` palette, defined per skin and scheme
+in [`skins/workbench/tokens.css`](../../app/web2/src/skins/workbench/tokens.css)
+(VS Code Dark+ / Light+), and from the `--gs-console-*` tokens. The `hl-*`
+syntax classes are one global set,
 [`styles/syntax.css`](../../app/web2/src/styles/syntax.css), used by the
-console's entries and the command browser's usage blocks. They are CSS variables, so a theme switch restyles
-everything already shown.
+console's entries and input, the completion popup and the command browser's
+usage blocks. They are CSS variables, so a theme switch restyles everything
+already shown.
 
 ## Audio
 
@@ -1171,6 +1194,64 @@ server [`scripts/dev_server.py`](../../scripts/dev_server.py) sends both
 unconditionally; serving `index.html` directly (no redirect) keeps the
 headers intact through Codespaces' port-forwarding proxy.
 
+## Styling and skins
+
+Every visual value is a design token, a `--gs-*` CSS custom property, and
+[`styles/contract.ts`](../../app/web2/src/styles/contract.ts) lists them all
+(name, kind, layer, default, purpose). There are three layers:
+
+- **Semantic tokens** (surfaces, text, borders, intents, machine states,
+  the syntax and code palettes) are defined by a skin, per scheme, in
+  `skins/<id>/tokens.css`.
+- **Scale tokens** (type, space, radius, metrics, z-order, motion) are in
+  [`styles/scale.css`](../../app/web2/src/styles/scale.css).
+- **Component tokens** (`--gs-button-*`, `--gs-tab-*`, …) default to
+  semantic ones in [`styles/components.css`](../../app/web2/src/styles/components.css).
+
+Components are built from the primitives in `components/ui/`, which read
+only component tokens. A **skin** is a folder of token values, plus an
+optional icon sprite, webfonts and an override stylesheet; the default skin
+is `workbench`; `platinum` is a light-only Mac OS 8-style proof skin. The
+display toolbar's appearance menu (the chevron beside the theme toggle)
+picks the scheme (Dark, Light, System) and the skin; `?skin=<id>` selects
+a skin for one page load. [`src/skins/README.md`](../../app/web2/src/skins/README.md)
+is the authoring guide.
+
+**Appearance.** [`state/appearance.svelte.ts`](../../app/web2/src/state/appearance.svelte.ts)
+holds the preferences (skin, and scheme mode `dark`, `light` or `system`)
+and what they resolve to. `applyAppearance()` is the only writer of
+`<html data-skin data-theme>` and the `color-scheme` / `theme-color` meta
+tags. The one other writer is the pre-paint script in `index.html`, which
+runs before any stylesheet so a persisted preference never flashes the
+default. The toolbar toggle flips the scheme shown; a skin with one scheme
+disables it. The preferences persist as `gs-theme` (absent means `system`)
+and `gs-skin` (absent means the default); `?skin=` overrides the skin for one
+load. `lib/tokens.ts` reads token values from JavaScript (`readToken`,
+`readMetric`), and `onAppearanceChange` lets code re-read them after a
+switch, which is how the console's CodeMirror input re-measures.
+
+**Cascade layers.** [`styles/layers.css`](../../app/web2/src/styles/layers.css)
+fixes the order `gs.reset`, `gs.base`, `gs.tokens`, `gs.components`,
+`gs.skin`, `gs.overrides`. Each global stylesheet wraps itself in its layer.
+A preprocess step in `svelte.config.js` puts every component `<style>` in
+`gs.components`, so a skin's overrides win without specificity tricks.
+
+**Rules** (enforced by `tests/lint/tokens.test.ts`, `contrast.test.ts` and
+`sprite.test.ts`):
+- every `var(--gs-*)` names a contract token, with no fallback;
+- no literal colours or scale values in components;
+- focus is never hidden;
+- every stylesheet is in its layer;
+- only `state/appearance` writes the appearance attributes;
+- nothing styles the emulated screen's canvases;
+- no native `prompt()`, `confirm()` or `alert()`;
+- every skin's sprite defines exactly the registry's icon ids;
+- text meets the declared contrast pairs.
+
+The **UI gallery** (`?gallery` on the dev server) renders every primitive
+in every state, and `make ui2-gallery` screenshots it in both schemes
+([`tests/e2e/README.md`](../../tests/e2e/README.md), "UI screenshots").
+
 ## Extending the Frontend
 
 - Wire new features through the object model
@@ -1178,7 +1259,8 @@ headers intact through Codespaces' port-forwarding proxy.
   documented in [object-model.md](../internals/core/object/object-model.md).
 - New panel views drop into
   [`app/web2/src/components/panel-views/`](../../app/web2/src/components/panel-views/)
-  and get registered in `PanelTab` / `PanelContent`.
+  and get registered in `PANEL_TABS` ([`state/layout.svelte.ts`](../../app/web2/src/state/layout.svelte.ts))
+  and `PanelContent`.
 - New persistent UI state goes into a `state/<slice>.svelte.ts` file
   with `$state(...)`. Wire localStorage persistence in
   [`state/persist.svelte.ts`](../../app/web2/src/state/persist.svelte.ts).

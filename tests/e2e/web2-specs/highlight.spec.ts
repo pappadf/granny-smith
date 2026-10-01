@@ -51,18 +51,18 @@ test("the console highlights paths, and the round trip fits the budget", async (
   await focusTerminal(page);
   await page.keyboard.type("machine.flopy.drive");
   const input = page.locator(CONSOLE_INPUT);
-  await expect(input.locator(".gs-hl-unknown")).toHaveText(["flopy", "drive"], {
+  await expect(input.locator(".hl-unknown")).toHaveText(["flopy", "drive"], {
     timeout: 10_000,
   });
-  await expect(input.locator(".gs-hl-object")).toHaveText(["machine"]);
+  await expect(input.locator(".hl-object")).toHaveText(["machine"]);
 
   // A correct path, an enum and a command entry that keeps its colours.
   await page.keyboard.press("Control+a");
   await page.keyboard.type("scheduler.mode = turbo");
-  await expect(input.locator(".gs-hl-enum")).toHaveText("turbo", {
+  await expect(input.locator(".hl-enum")).toHaveText("turbo", {
     timeout: 10_000,
   });
-  await expect(input.locator(".gs-hl-attribute")).toHaveText("mode");
+  await expect(input.locator(".hl-attribute")).toHaveText("mode");
   await page.keyboard.press("Enter");
   const entry = page.locator(".console-output .entry.command").last();
   await expect(entry).toHaveText("scheduler.mode = turbo", { timeout: 10_000 });

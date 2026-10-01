@@ -14,17 +14,7 @@ CORE_SRC := $(sort $(shell find $(CORE_DIR) $(MACHINES_DIR) -name '*.c'))
 
 # The archive library, whose tree also holds its command-line tool and
 # tests (built by src/peeler/Makefile and the peeler_corpus unit suite).
-PEELER_SRC := $(PEELER_DIR)/lib/peeler.c \
-              $(PEELER_DIR)/lib/appledouble.c \
-              $(PEELER_DIR)/lib/err.c \
-              $(PEELER_DIR)/lib/util.c \
-              $(PEELER_DIR)/lib/formats/bin.c \
-              $(PEELER_DIR)/lib/formats/cpt.c \
-              $(PEELER_DIR)/lib/formats/hqx.c \
-              $(PEELER_DIR)/lib/formats/sit.c \
-              $(PEELER_DIR)/lib/formats/sit3.c \
-              $(PEELER_DIR)/lib/formats/sit13.c \
-              $(PEELER_DIR)/lib/formats/sit15.c
+PEELER_SRC := $(sort $(wildcard $(PEELER_DIR)/lib/*.c $(PEELER_DIR)/lib/formats/*.c))
 
 PEELER_INCLUDES := -I$(PEELER_DIR)/include -I$(PEELER_DIR)/lib
 

@@ -103,21 +103,21 @@
     pointer-events: none;
     background: var(--gs-drop-bg);
     border: 2px dashed var(--gs-drop-border);
-    z-index: 100;
+    z-index: var(--gs-z-drop);
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: opacity 150ms ease-out;
+    transition: opacity var(--gs-duration-quick) var(--gs-ease-out);
   }
   .drop-overlay.reduced {
     transition: none;
   }
   .drop-label {
     color: var(--gs-drop-label-fg);
-    font-weight: 600;
-    font-size: 14px;
+    font-weight: var(--gs-font-weight-semibold);
+    font-size: var(--gs-font-size-md);
     background: var(--gs-drop-label-bg);
-    padding: 8px 16px;
-    border-radius: 4px;
+    padding: var(--gs-space-2) var(--gs-space-4);
+    border-radius: var(--gs-radius-md);
   }
 </style>

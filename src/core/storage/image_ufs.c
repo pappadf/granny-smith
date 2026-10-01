@@ -82,7 +82,7 @@
 // ---- Volume state --------------------------------------------------------
 
 struct ufs_volume {
-    image_t *img;
+    gs_source_t *src; // the whole disk (retained)
     uint64_t partition_off;
     uint64_t partition_size;
 
@@ -112,7 +112,7 @@ struct ufs_dir_iter {
 
 // Read raw bytes from the partition (relative to partition start).
 static int read_partition(ufs_volume_t *vol, uint64_t off, void *buf, size_t n) {
-    return image_read_partition(vol->img, vol->partition_off, vol->partition_size, off, buf, n);
+    return source_read_partition(vol->src, vol->partition_off, vol->partition_size, off, buf, n);
 }
 
 // Compute the starting fragment number of cylinder group `c`.
@@ -267,10 +267,17 @@ static int read_file_by_dinode(ufs_volume_t *vol, const uint8_t *di, uint64_t of
 // ---- Superblock probe + open --------------------------------------------
 
 bool ufs_probe(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
-    if (!img || partition_byte_size < UFS_SBOFF + 2048)
+    gs_source_t *src = image_source(img);
+    bool yes = ufs_probe_source(src, partition_byte_offset, partition_byte_size);
+    gs_source_release(src);
+    return yes;
+}
+
+bool ufs_probe_source(gs_source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
+    if (!src || partition_byte_size < UFS_SBOFF + 2048)
         return false;
     uint8_t buf[2048];
-    if (image_read_bytes(img, partition_byte_offset + UFS_SBOFF, buf, sizeof(buf)) < 0)
+    if (gs_source_read_exact(src, partition_byte_offset + UFS_SBOFF, buf, sizeof(buf)) != 0)
         return false;
     // Magic at offset 1372; accept either endianness.
     uint32_t be = RD_BE32(buf + SB_OFF_MAGIC);
@@ -280,10 +287,17 @@ bool ufs_probe(image_t *img, uint64_t partition_byte_offset, uint64_t partition_
 }
 
 ufs_volume_t *ufs_open(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
-    if (!img || partition_byte_size < UFS_SBOFF + 2048)
+    gs_source_t *src = image_source(img);
+    ufs_volume_t *vol = ufs_open_source(src, partition_byte_offset, partition_byte_size);
+    gs_source_release(src); // the volume holds its own reference
+    return vol;
+}
+
+ufs_volume_t *ufs_open_source(gs_source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
+    if (!src || partition_byte_size < UFS_SBOFF + 2048)
         return NULL;
     uint8_t sb[2048];
-    if (image_read_bytes(img, partition_byte_offset + UFS_SBOFF, sb, sizeof(sb)) < 0)
+    if (gs_source_read_exact(src, partition_byte_offset + UFS_SBOFF, sb, sizeof(sb)) != 0)
         return NULL;
     if (RD_BE32(sb + SB_OFF_MAGIC) != UFS_FS_MAGIC) {
         // A/UX always writes BE, but we tolerate LE-rewritten images — not
@@ -295,7 +309,7 @@ ufs_volume_t *ufs_open(image_t *img, uint64_t partition_byte_offset, uint64_t pa
     ufs_volume_t *vol = calloc(1, sizeof(*vol));
     if (!vol)
         return NULL;
-    vol->img = img;
+    vol->src = gs_source_retain(src);
     vol->partition_off = partition_byte_offset;
     vol->partition_size = partition_byte_size;
 
@@ -321,13 +335,16 @@ ufs_volume_t *ufs_open(image_t *img, uint64_t partition_byte_offset, uint64_t pa
     if (vol->fsize < 512 || vol->fsize > UFS_MAX_BSIZE || vol->fsize % 512 != 0 || vol->bsize < vol->fsize ||
         vol->bsize > UFS_MAX_BSIZE || vol->bsize % 512 != 0 || vol->frag == 0 || vol->bsize / vol->fsize != vol->frag ||
         vol->nindir != vol->bsize / 4 || vol->ncg == 0 || vol->ipg == 0 || vol->fpg == 0) {
-        free(vol);
+        ufs_close(vol);
         return NULL;
     }
     return vol;
 }
 
 void ufs_close(ufs_volume_t *vol) {
+    if (!vol)
+        return;
+    gs_source_release(vol->src);
     free(vol);
 }
 

@@ -55,7 +55,9 @@ typedef struct image_geometry {
 // Image structure (exposed for performance-critical access in floppy controller)
 struct image {
     storage_t *storage; // Backing storage engine instance
-    char *filename; // Base image read: the caller's path, or its decoded NDIF/UDIF scratch copy
+    char *filename; // The path the caller named (a host path, or one through an image or archive)
+    char *source_key; // Key of the source the caller's path opened (source.h)
+    char *format; // Wrapper layers peeled to reach the disk: "raw", "dc42", "bin+ndif", ...
     char *source_canon; // Writable only: canonical form of the path the caller named
     struct image *next_writable; // Writable only: the open-writable list (image_path_is_open_writable)
     char *instance_path; // Stem for delta/journal: "<dir>/<id>" — NULL for read-only ghost mounts
@@ -66,7 +68,7 @@ struct image {
     bool writable; // True when the caller requested write access
     bool ghost_instance; // True when delta+journal are ephemeral scratch (read-only mounts)
     enum image_type type; // Detected image type (floppy, hd, ...)
-    bool from_diskcopy; // True if the source file was DiskCopy 4.2
+    bool from_diskcopy; // True if a DiskCopy 4.2 layer was peeled
 
     // disk_read_data / disk_write_data calls since open: the drive-activity
     // lights (drive_activity.h) and files.images[i].reads / .writes.
@@ -106,7 +108,18 @@ void image_delete(void);
 
 // Open a base image read-only.  Delta and journal are placed in a process-local
 // scratch directory and removed when the image is closed.
+//
+// Every opener takes a path the VFS resolves: a host file, or a file inside
+// an image or archive (outer.img/partition1/inner.img, disks.zip/a.dsk).
+// Wrapper formats are peeled through the format registry -- UDIF, NDIF,
+// DiskCopy 4.2, MacBinary, BinHex, gzip, in any nesting -- and the storage
+// engine reads the innermost source directly: nothing is decoded to a file.
 image_t *image_open_readonly(const char *base_path);
+
+// The same over forks already open (the VFS mounting a file it holds).
+// `name` is what image_get_filename reports.
+struct peel_source;
+image_t *image_open_readonly_source(const char *name, struct peel_source *data, struct peel_source *rsrc);
 
 // Create a new writable image instance.  The image subsystem mints an opaque
 // 16-hex-char id internally and creates two files at <delta_dir>/<id>.delta
@@ -150,7 +163,12 @@ void image_close(image_t *image);
 // before serving a file and refuses with -EBUSY rather than serve the stale
 // base.  The key is the path the caller named, canonicalised with realpath()
 // (or taken as given when that fails), not a decoded scratch copy.
-bool image_path_is_open_writable(const char *canonical_path);
+bool image_path_is_open_writable(const char *path);
+
+// True while a writable image's source key is `key` or contains it (a key
+// naming something inside that image: "<key>/partition1/...", "<key>#dc42").
+// The VFS asks this of every mount, whatever path reached it.
+bool image_key_is_open_writable(const char *key);
 
 // Bits of the per-image flags byte image_checkpoint writes.
 #define IMAGE_CKPT_WRITABLE 0x01

@@ -1,4 +1,7 @@
 <script lang="ts">
+  import Icon from '@/components/common/Icon.svelte';
+  import Hint from '@/components/ui/Hint.svelte';
+  import ListRow from '@/components/ui/ListRow.svelte';
   // The Watchpoints section: debug.watchpoints, a memory logpoint that stops
   // the machine after the accessing instruction (#180).  Same shape as the
   // Breakpoints section; a row is an address range, its access mode and hits.
@@ -10,6 +13,10 @@
   import { showNotification } from '@/state/toasts.svelte';
   import { debug, toggleSection } from '@/state/debug.svelte';
   import { fmtHex32, parseHex } from '@/lib/hex';
+  import Button from '@/components/ui/Button.svelte';
+  import IconButton from '@/components/ui/IconButton.svelte';
+  import TextInput from '@/components/ui/TextInput.svelte';
+  import Select from '@/components/ui/Select.svelte';
 
   let rows = $state<Watchpoint[]>([]);
   let showAdd = $state(false);
@@ -98,140 +105,90 @@
   onToggle={() => toggleSection('watchpoints')}
 >
   {#snippet actions()}
-    <button
-      type="button"
+    <IconButton
       class="add-btn"
-      title="Add watchpoint"
-      aria-label="Add watchpoint"
-      onclick={() => (showAdd = true)}>+</button
-    >
+      icon="plus"
+      size="sm"
+      tone="panel"
+      rest="faded"
+      iconSize="md"
+      label="Add watchpoint"
+      onclick={() => (showAdd = true)}
+    />
   {/snippet}
   {#if showAdd}
     <div class="add-row">
-      <input
-        type="text"
+      <TextInput
         class="add-addr"
+        mono
+        widthCh={12}
         placeholder="address ($hex)"
         bind:value={addAddr}
         onkeydown={onAddrKey}
         aria-label="Watchpoint address"
       />
-      <select class="add-mode" bind:value={addMode} aria-label="Watchpoint access">
+      <Select
+        class="add-mode"
+        size="sm"
+        style="flex: 1 1 auto"
+        bind:value={addMode}
+        aria-label="Watchpoint access"
+      >
         <option value="write">write</option>
         <option value="read">read</option>
         <option value="rw">read/write</option>
-      </select>
-      <select class="add-mode" bind:value={addWidth} aria-label="Watchpoint width">
+      </Select>
+      <Select
+        class="add-mode"
+        size="sm"
+        style="flex: 1 1 auto"
+        bind:value={addWidth}
+        aria-label="Watchpoint width"
+      >
         <option value="b">byte</option>
         <option value="w">word</option>
         <option value="l">long</option>
-      </select>
-      <button type="button" class="btn" onclick={commitAdd}>Add</button>
-      <button type="button" class="btn" onclick={cancelAdd}>Cancel</button>
+      </Select>
+      <Button variant="primary" class="btn" onclick={commitAdd}>Add</Button>
+      <Button class="btn" onclick={cancelAdd}>Cancel</Button>
     </div>
   {/if}
   {#if rows.length === 0 && !showAdd}
-    <p class="hint">No watchpoints. Click + to add one.</p>
+    <Hint class="hint" inset="section">No watchpoints. Click + to add one.</Hint>
   {:else}
     {#each rows as r (r.id)}
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="wp-row" oncontextmenu={(ev) => onRowContext(r, ev)}>
-        <span class="enable">{r.enabled ? '●' : '○'}</span>
+      <ListRow class="wp-row" density="compact" mono oncontextmenu={(ev) => onRowContext(r, ev)}>
+        <span class="enable" data-state={r.enabled ? 'on' : 'off'}
+          ><Icon name={r.enabled ? 'circle-filled' : 'circle-outline'} size="xs" /></span
+        >
         <span class="addr">{rangeLabel(r)}</span>
         <span class="mode">{r.mode}</span>
         {#if r.hits > 0}
           <span class="hits">{r.hits}×</span>
         {/if}
-      </div>
+      </ListRow>
     {/each}
   {/if}
 </CollapsibleSection>
 
 <style>
-  .add-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 18px;
-    height: 18px;
-    padding: 0;
-    border: none;
-    background: transparent;
-    color: var(--gs-fg-muted);
-    cursor: pointer;
-    font-size: 14px;
-    line-height: 1;
-  }
-  .add-btn:hover,
-  .add-btn:focus-visible {
-    color: var(--gs-fg-bright);
-  }
   .add-row {
     display: flex;
-    gap: 6px;
-    padding: 6px 12px;
-  }
-  .add-addr {
-    width: 12ch;
-  }
-  .add-mode {
-    flex: 1 1 auto;
-  }
-  .add-addr,
-  .add-mode {
-    background: var(--gs-input-bg);
-    color: var(--gs-input-fg);
-    border: 1px solid var(--gs-input-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 6px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
-    outline: none;
-  }
-  .add-addr:focus,
-  .add-mode:focus {
-    border-color: var(--gs-focus);
-  }
-  .btn {
-    background: transparent;
-    color: var(--gs-fg);
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 8px;
-    font-size: 11px;
-    cursor: pointer;
-  }
-  .btn:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.06));
-  }
-  .hint {
-    color: var(--gs-fg-muted);
-    font-size: 11px;
-    padding: 6px 12px;
-  }
-  .wp-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 2px 12px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
-    color: var(--gs-fg);
-  }
-  .wp-row:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.05));
+    gap: var(--gs-space-1-5);
+    padding: var(--gs-space-1-5) var(--gs-space-3);
   }
   .enable {
-    color: var(--gs-fg-muted);
-    width: 1ch;
+    display: inline-flex;
+    color: var(--gs-code-breakpoint-off);
+  }
+  .enable[data-state='on'] {
+    color: var(--gs-code-breakpoint);
   }
   .mode {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-style: italic;
   }
   .hits {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
   }
 </style>

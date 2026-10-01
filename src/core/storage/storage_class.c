@@ -10,6 +10,8 @@
 // delta-storage API without pulling in image / vfs / shell dependencies.
 
 #include "checkpoint.h"
+#include "chunk_cache.h"
+#include "format_registry.h"
 #include "gs_out.h"
 #include "io_leaf.h"
 #include "storage.h"
@@ -86,6 +88,12 @@ static DEF_GETTER(files_image_attr_writes) {
     return val_uint(8, img ? img->writes : 0);
 }
 
+static value_t files_image_attr_format(struct object *self, const member_t *m) {
+    (void)m;
+    image_t *img = files_image_at(self);
+    return val_str(img && img->format ? img->format : "");
+}
+
 // Designated-initialiser table keyed by `image_type` so a future enum
 // reorder (or a value inserted out of order) keeps the labels aligned.
 static const char *const STORAGE_IMAGE_TYPE_NAMES[] = {
@@ -127,6 +135,10 @@ static const member_t files_image_members[] = {
      .name = "type",
      .doc = "Media the image was identified as: fd_ss, fd_ds, fd_720k_mfm, fd_hd, hd, cdrom, or other",
      .attr = {.type = V_ENUM, .get = files_image_attr_type, .set = NULL}                                      },
+    {.kind = M_ATTR,
+     .name = "format",
+     .doc = "Wrapper layers peeled to reach the disk, outermost first: raw, dc42, udif, bin+ndif, gz+dc42, ...",
+     .attr = {.type = V_STRING, .get = files_image_attr_format, .set = NULL}                                  },
     {.kind = M_ATTR,
      .name = "reads",
      .doc = "Drive reads served from the image since it was opened (what lights the activity light)",
@@ -487,6 +499,10 @@ static const char *apm_fs_kind_label(enum apm_fs_kind k) {
         return "HFS";
     case APM_FS_UFS:
         return "UFS";
+    case APM_FS_MFS:
+        return "MFS";
+    case APM_FS_ISO9660:
+        return "ISO";
     case APM_FS_PARTITION_MAP:
         return "map";
     case APM_FS_DRIVER:
@@ -554,6 +570,15 @@ static DEF_METHOD(files_method_probe) {
         gs_outf("format: HFS (bare, %zu bytes)\n", size);
     else
         gs_outf("format: unrecognised / raw (%zu bytes)\n", size);
+    // What the format registry peeled to reach the disk, and what it finds
+    // the disk to be.
+    if (img->format && strcmp(img->format, "raw") != 0)
+        gs_outf("encoding: %s\n", img->format);
+    gs_source_t *src = image_source(img);
+    const gs_format_t *contents = gs_format_contents(src, NULL);
+    gs_source_release(src);
+    if (contents)
+        gs_outf("contents: %s\n", contents->doc);
     image_close(img);
     return val_bool(true);
 }
@@ -954,8 +979,8 @@ static const member_t files_members[] = {
     {.kind = M_METHOD,
      .name = "list",
      .examples = EXAMPLES("files.list", "files.list \"/opfs/images/hd/system.img/System Folder\""),
-     .doc = "List a directory, descending into disk images",
-     .method = {.result_doc = "a list of {name, kind, size} maps",
+     .doc = "List a directory, descending into disk images and archives",
+     .method = {.result_doc = "a list of {name, kind, size, expandable} maps",
                 .args = files_path_arg_optional,
                 .nargs = 1,
                 .result = V_LIST,
@@ -1178,6 +1203,93 @@ static void files_images_install(struct config *cfg) {
 // `files` is a process singleton created at shell init: the file methods,
 // the mounts collection and the archive child live as long as the process.
 // `files.images` is the per-machine part, attached by root_install.
+// === files.cache: the chunk cache's budgets and counters ======================
+//
+// Decoded chunks of compressed images and archive members (the chunk cache)
+// live in memory up to one budget and spill to scratch files up to another
+// (0: unbounded).  Lowering a budget frees what is over it at once; a
+// spilled chunk is only ever a faster way to fetch it again.
+
+static uint64_t cache_mib(uint64_t bytes) {
+    return bytes >> 20;
+}
+
+static DEF_GETTER(cache_attr_memory_mb) {
+    size_t mem = 0;
+    gs_chunk_cache_budgets(gs_chunk_cache_default(), &mem, NULL);
+    return val_uint(8, cache_mib(mem));
+}
+
+static DEF_SETTER(cache_attr_memory_mb_set) {
+    if (in.u < 1 || in.u > 1u << 20)
+        return val_err("files.cache.memory_mb: %llu out of range (1..1048576)", (unsigned long long)in.u);
+    uint64_t spill = 0;
+    gs_chunk_cache_budgets(gs_chunk_cache_default(), NULL, &spill);
+    gs_chunk_cache_set_budgets(gs_chunk_cache_default(), (size_t)(in.u << 20), spill);
+    return val_none();
+}
+
+static DEF_GETTER(cache_attr_spill_mb) {
+    uint64_t spill = 0;
+    gs_chunk_cache_budgets(gs_chunk_cache_default(), NULL, &spill);
+    return val_uint(8, cache_mib(spill));
+}
+
+static DEF_SETTER(cache_attr_spill_mb_set) {
+    if (in.u > 1u << 24)
+        return val_err("files.cache.spill_mb: %llu out of range (0..16777216)", (unsigned long long)in.u);
+    size_t mem = 0;
+    gs_chunk_cache_budgets(gs_chunk_cache_default(), &mem, NULL);
+    gs_chunk_cache_set_budgets(gs_chunk_cache_default(), mem, in.u << 20);
+    return val_none();
+}
+
+// One counter of gs_chunk_cache_stats, picked by the member's name.
+static DEF_GETTER(cache_attr_stat) {
+    gs_chunk_cache_stats_t st;
+    gs_chunk_cache_stats(gs_chunk_cache_default(), &st);
+    const char *n = m->name;
+    uint64_t v = strcmp(n, "memory_bytes") == 0  ? st.mem_bytes
+                 : strcmp(n, "spill_bytes") == 0 ? st.spill_bytes
+                 : strcmp(n, "hits") == 0        ? st.hits + st.spill_hits
+                 : strcmp(n, "misses") == 0      ? st.misses
+                                                 : st.evictions;
+    return val_uint(8, v);
+}
+
+#define CACHE_STAT(nm, what)                                                                                           \
+    {                                                                                                                  \
+        .kind = M_ATTR, .name = nm, .doc = what, .attr = {                                                             \
+            .type = V_UINT,                                                                                            \
+            .get = cache_attr_stat,                                                                                    \
+            .set = NULL,                                                                                               \
+            .presentation_flags = VAL_VOLATILE                                                                         \
+        }                                                                                                              \
+    }
+
+static const member_t files_cache_members[] = {
+    {.kind = M_ATTR,
+     .name = "memory_mb",
+     .doc = "Memory the chunk cache may hold, in MiB (decoded chunks of compressed images and archive members)",
+     .attr = {.type = V_UINT, .get = cache_attr_memory_mb, .set = cache_attr_memory_mb_set}},
+    {.kind = M_ATTR,
+     .name = "spill_mb",
+     .doc = "Scratch space evicted chunks may spill to, in MiB; 0 is unbounded",
+     .attr = {.type = V_UINT, .get = cache_attr_spill_mb, .set = cache_attr_spill_mb_set}  },
+    CACHE_STAT("memory_bytes", "Bytes of chunks held in memory now"),
+    CACHE_STAT("spill_bytes", "Bytes of chunks in spill files now"),
+    CACHE_STAT("hits", "Reads served without decoding again (memory or spill)"),
+    CACHE_STAT("misses", "Reads that needed a chunk fetched"),
+    CACHE_STAT("evictions", "Chunks pushed out of memory"),
+};
+
+static const class_desc_t files_cache_class = {
+    .name = "cache",
+    .members = files_cache_members,
+    .n_members = sizeof(files_cache_members) / sizeof(files_cache_members[0]),
+    .doc = "The chunk cache that decoded image and archive data is served from: its budgets and counters",
+};
+
 void files_init(void) {
     if (g_files_object)
         return;
@@ -1195,5 +1307,12 @@ void files_init(void) {
         object_cache_set_parent(&g_mounts, mounts);
     }
     archive_init(g_files_object);
+    struct object *cache = object_new(&files_cache_class, NULL, "cache");
+    if (cache) {
+        object_set_label(cache, "Cache");
+        object_set_order(cache, 40);
+        object_attach(g_files_object, cache);
+    }
     root_register_install(files_images_install, files_images_teardown);
+    vfs_init(); // namespace formats, and the VFS as the path opener
 }

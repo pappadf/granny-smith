@@ -118,7 +118,7 @@ static inline uint32_t rd32be(const uint8_t *p) {
 // arithmetic.
 #define PEEL_MAX_FORK      ((uint64_t)1 << 30) // largest fork an archive may declare
 #define PEEL_MAX_INPUT     ((uint64_t)1 << 30) // largest file peel_read_file loads
-#define PEEL_MAX_DIR_DEPTH 128                 // deepest folder nesting a walker follows
+#define PEEL_MAX_DIR_DEPTH 128 // deepest folder nesting a walker follows
 
 // ============================================================================
 // Entry Names
@@ -317,7 +317,7 @@ static inline bool peel_lsb_at_end(const peel_lsb_t *r) {
 // their own bit readers and walk a tree with peel_huff_child / peel_huff_sym.
 
 #define PEEL_HUFF_POOL_CAP 2048
-#define PEEL_HUFF_NOSYM    ((int16_t)-1)
+#define PEEL_HUFF_NOSYM    ((int16_t) - 1)
 
 typedef struct {
     int16_t ch[2]; // child node indices, or -1
@@ -391,25 +391,6 @@ peel_buf_t grow_finish(grow_buf_t *g);
 void grow_free(grow_buf_t *g);
 
 // ============================================================================
-// Format Handler Registration — architecture.md § "Format Handler Registration"
-// ============================================================================
-
-// Classification of a format handler.
-typedef enum {
-    PEEL_FMT_WRAPPER, // One buffer in, one buffer out (e.g. HQX, MacBinary)
-    PEEL_FMT_ARCHIVE, // One buffer in, file list out  (e.g. StuffIt, CPT)
-} peel_fmt_kind_t;
-
-// A registered format handler entry in the detection table.
-typedef struct {
-    const char *name;
-    peel_fmt_kind_t kind;
-    bool (*detect)(const uint8_t *src, size_t len);
-    peel_buf_t (*peel_wrapper)(const uint8_t *src, size_t len, peel_err_t **err);
-    peel_file_list_t (*peel_archive)(const uint8_t *src, size_t len, peel_err_t **err);
-} peel_format_t;
-
-// ============================================================================
 // Per-Format Detect Functions
 // ============================================================================
 
@@ -422,5 +403,170 @@ bool bin_detect(const uint8_t *src, size_t len);
 bool sit_detect(const uint8_t *src, size_t len);
 
 bool cpt_detect(const uint8_t *src, size_t len);
+
+bool zip_detect(const uint8_t *src, size_t len);
+
+bool gz_detect(const uint8_t *src, size_t len);
+
+bool tar_detect(const uint8_t *src, size_t len);
+
+// ============================================================================
+// Buffered reader over a source (reader.c)
+// ============================================================================
+//
+// Formats parse their headers through this: a pointer to `n` bytes at an
+// offset, served from a window of the source read ahead, so walking an
+// archive's small headers costs a few large reads rather than many small
+// ones -- and never a read of the whole archive.
+
+#define PEEL_READER_WINDOW (128u * 1024u)
+
+typedef struct {
+    peel_source_t *src;
+    uint64_t size; // the source's size
+    uint8_t *buf; // PEEL_READER_WINDOW bytes
+    uint64_t base; // source offset of buf[0]
+    size_t len; // valid bytes in buf
+} peel_reader_t;
+
+// 0 or -12.  Does not retain `src`: the reader lives inside a call.
+int peel_reader_init(peel_reader_t *r, peel_source_t *src);
+void peel_reader_free(peel_reader_t *r);
+
+// A pointer to the `n` bytes at `off` (n <= PEEL_READER_WINDOW), valid until
+// the next call; NULL when they are not all inside the source or cannot be
+// read.
+const uint8_t *peel_reader_at(peel_reader_t *r, uint64_t off, size_t n);
+
+// ============================================================================
+// CRC-32 (zip, gzip)
+// ============================================================================
+
+// CRC-32 (IEEE 802.3, reflected, as zip and gzip use it), running.
+uint32_t peel_crc32(uint32_t crc, const uint8_t *data, size_t len);
+
+// ============================================================================
+// Inflate (inflate.c) -- resumable on the output side
+// ============================================================================
+
+// Supplies compressed input: up to `cap` bytes into `buf`.  Returns the byte
+// count, 0 at the end of the input, or a negative code.
+typedef int64_t (*peel_pull_fn)(void *ctx, uint8_t *buf, size_t cap);
+
+typedef struct peel_inflater peel_inflater_t;
+
+peel_inflater_t *peel_inflater_new(peel_pull_fn pull, void *ctx);
+void peel_inflater_free(peel_inflater_t *z);
+
+// Produce up to `cap` bytes into `out` (*out_n set).  Returns 1 once the
+// final block has ended, 0 when more output remains, -1 on a truncated or
+// malformed stream.
+int peel_inflater_run(peel_inflater_t *z, uint8_t *out, size_t cap, size_t *out_n);
+
+// Bytes produced so far, and compressed bytes consumed so far.
+uint64_t peel_inflater_total_out(const peel_inflater_t *z);
+uint64_t peel_inflater_consumed(const peel_inflater_t *z);
+
+// After the final block: drop the bits up to the next byte boundary.
+void peel_inflater_align(peel_inflater_t *z);
+
+// ============================================================================
+// Structure-first archives (archive.c) -- the format vtable
+// ============================================================================
+
+// A producer emits a fork's decoded bytes in order: run() fills up to `cap`
+// bytes and returns 1 when the fork is complete, 0 when more remains, or a
+// negative code (with a message in `err`).  The decode-through source drives
+// it as reads reach past what the sink already holds.
+// A run() that ends neither the fork nor any bytes this many times in a
+// row is taken to be stuck: a corrupt stream, never an endless loop.
+#define PEEL_PRODUCER_MAX_IDLE 4096
+
+typedef struct peel_producer {
+    int (*run)(struct peel_producer *p, uint8_t *out, size_t cap, size_t *n);
+    void (*free)(struct peel_producer *p);
+    char err[256];
+} peel_producer_t;
+
+// Run a producer to the end into an owned buffer of exactly `len` bytes,
+// then free it (always).  A producer that fails, or ends short or long,
+// is an error: its own message, prefixed by `what` when that is given.
+// The buffer APIs (peel_sit3, peel_cpt, ...) are this over the same
+// producers the decode-through sources drive, so both decode one way.
+peel_buf_t peel_producer_drain(peel_producer_t *p, uint64_t len, const char *what, peel_err_t **err);
+
+typedef struct peel_fmt peel_fmt_t;
+
+struct peel_archive {
+    const peel_fmt_t *fmt;
+    peel_source_t *src; // retained
+    const peel_sink_ops_t *sink;
+    void *sink_ctx;
+    peel_entry_t *entries;
+    int count, cap;
+    void *priv; // format-private state
+    int refs; // the caller's handle plus every open decode-through fork
+};
+
+struct peel_fmt {
+    peel_format_desc_t desc;
+    // Parse structure only, appending entries (peel_archive_add).  0, or a
+    // negative code with *err set.
+    int (*open)(peel_archive_t *a, const peel_probe_t *p, peel_err_t **err);
+    // Decode a whole fork into an owned buffer.  Error messages are the
+    // format's own, the ones the buffer API has always reported.
+    peel_buf_t (*decode)(peel_archive_t *a, int i, int fork, peel_err_t **err);
+    // Optional: a streaming producer for a compressed fork (zip deflate,
+    // gzip).  Absent, or returning NULL with no error: the fork decodes
+    // whole through decode().
+    peel_producer_t *(*producer)(peel_archive_t *a, int i, int fork, peel_err_t **err);
+    // Optional: open a fork as a source of the format's own (BGZF's block
+    // index).  NULL with no error: the generic view / decode-through paths.
+    peel_source_t *(*open_fork)(peel_archive_t *a, int i, int fork, peel_err_t **err);
+    // Optional: false when a fork's declared length is only a hint (a
+    // gzip stream's tail ISIZE, which names the last member alone).  Such a
+    // fork's decode-through source earns its true size with one full pass.
+    bool (*len_exact)(peel_archive_t *a, int i, int fork);
+    // Optional: finish an entry's layout before a fork opens (zip learns a
+    // stored member's data offset from its local header).  0, or -1 + *err.
+    int (*prepare)(peel_archive_t *a, int i, int fork, peel_err_t **err);
+    void (*close)(peel_archive_t *a); // free priv
+};
+
+// StuffIt's method decoders as producers of a fork's `uncomp_len` bytes
+// from `src` (borrowed: it must outlive the producer).  NULL + *err when
+// the stream's header is bad.  sit.c checks the fork CRC over their output.
+peel_producer_t *sit3_producer(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
+peel_producer_t *sit13_producer(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
+peel_producer_t *sit15_producer(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
+
+// The same, drained into an owned buffer (the buffer API's shape).
+peel_buf_t peel_sit3(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
+peel_buf_t peel_sit13(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
+peel_buf_t peel_sit15(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err);
+
+// Every format's vtable.
+extern const peel_fmt_t peel_fmt_hqx, peel_fmt_bin, peel_fmt_gz, peel_fmt_sit, peel_fmt_cpt, peel_fmt_zip, peel_fmt_tar;
+
+// Append an entry; returns it zeroed (data_off/rsrc_off = UINT64_MAX), or
+// NULL on allocation failure.
+peel_entry_t *peel_archive_add(peel_archive_t *a);
+
+// Read exactly `len` bytes of the archive's source at `off` into a fresh
+// buffer (NULL + *err on failure, `what` naming it in the message).
+uint8_t *peel_archive_read(peel_archive_t *a, uint64_t off, uint64_t len, const char *what, peel_err_t **err);
+
+// A source serving a producer's output through the archive's sink.  Takes
+// ownership of `p`; retains `a`.
+peel_source_t *peel_decode_source(peel_archive_t *a, const char *key, uint64_t len, peel_tier_t tier,
+                                  peel_producer_t *p);
+
+// The same, for a fork whose length `hint` is not known to be exact: its
+// size() decodes the whole fork (into the sink) to learn the true length.
+peel_source_t *peel_decode_source_unsized(peel_archive_t *a, const char *key, uint64_t hint, peel_tier_t tier,
+                                          peel_producer_t *p);
+
+// Build the key of fork `fork` of entry `i`: "<archive key>/<path>[/rsrc]".
+void peel_fork_key(peel_archive_t *a, int i, int fork, char *out, size_t cap);
 
 #endif // PEELER_INTERNAL_H

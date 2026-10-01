@@ -28,12 +28,12 @@
 // Number of symbols in each literal/length tree.
 // sit13.md § 5.1 — symbols 0..255 are literals, 256..319 encode match
 // lengths, and 320 is a reserved/invalid sentinel.
-#define M13_SYM_COUNT   321
+#define M13_SYM_COUNT 321
 
 // Sliding window size and mask for circular indexing.
 // sit13.md § 8 "Sliding Window" — 64 KiB.
-#define M13_WIN_SIZE    65536
-#define M13_WIN_MASK    (M13_WIN_SIZE - 1)
+#define M13_WIN_SIZE 65536
+#define M13_WIN_MASK (M13_WIN_SIZE - 1)
 
 // Predefined code-length tables for the 5 built-in Huffman code sets.
 // sit13.md § 7 "Predefined Trees (Sets 1–5)" and § 7.3 "Code-Length Tables"
@@ -167,7 +167,8 @@ static const int8_t predefined_dist[5][14] = {
     {5, 6, 4, 4, 3, 3, 3, 3, 3, 4, 4, 4, 6},
     {6, 7, 4, 4, 3, 3, 3, 3, 3, 4, 4, 4, 5, 7},
     {3, 6, 5, 4, 2, 3, 3, 3, 4, 4, 6},
-    {6, 7, 7, 6, 4, 3, 2, 2, 3, 3, 6}};
+    {6, 7, 7, 6, 4, 3, 2, 2, 3, 3, 6}
+};
 
 // Number of distance symbols per predefined set.
 static const int predefined_dist_nsym[5] = {11, 13, 14, 11, 11};
@@ -230,16 +231,13 @@ static int m13_huff_decode(const peel_hpool_t *pool, int root, peel_lsb_t *br) {
 #define M13_META_SIZE 37
 
 static const uint16_t m13_meta_words[M13_META_SIZE] = {
-    0x00dd, 0x001a, 0x0002, 0x0003, 0x0000, 0x000f, 0x0035, 0x0005,
-    0x0006, 0x0007, 0x001b, 0x0034, 0x0001, 0x0001, 0x000e, 0x000c,
-    0x0036, 0x01bd, 0x0006, 0x000b, 0x000e, 0x001f, 0x001e, 0x0009,
-    0x0008, 0x000a, 0x01bc, 0x01bf, 0x01be, 0x01b9, 0x01b8, 0x0004,
-    0x0002, 0x0001, 0x0007, 0x000c, 0x0002};
+    0x00dd, 0x001a, 0x0002, 0x0003, 0x0000, 0x000f, 0x0035, 0x0005, 0x0006, 0x0007, 0x001b, 0x0034, 0x0001,
+    0x0001, 0x000e, 0x000c, 0x0036, 0x01bd, 0x0006, 0x000b, 0x000e, 0x001f, 0x001e, 0x0009, 0x0008, 0x000a,
+    0x01bc, 0x01bf, 0x01be, 0x01b9, 0x01b8, 0x0004, 0x0002, 0x0001, 0x0007, 0x000c, 0x0002};
 
-static const int m13_meta_lens[M13_META_SIZE] = {
-    0xB, 0x8, 0x8, 0x8, 0x8, 0x7, 0x6, 0x5, 0x5, 0x5, 0x5, 0x6, 0x5,
-    0x6, 0x7, 0x7, 0x9, 0xC, 0xA, 0xB, 0xB, 0xC, 0xC, 0xB, 0xB, 0xB,
-    0xC, 0xC, 0xC, 0xC, 0xC, 0x5, 0x2, 0x2, 0x3, 0x4, 0x5};
+static const int m13_meta_lens[M13_META_SIZE] = {0xB, 0x8, 0x8, 0x8, 0x8, 0x7, 0x6, 0x5, 0x5, 0x5, 0x5, 0x6, 0x5,
+                                                 0x6, 0x7, 0x7, 0x9, 0xC, 0xA, 0xB, 0xB, 0xC, 0xC, 0xB, 0xB, 0xB,
+                                                 0xC, 0xC, 0xC, 0xC, 0xC, 0x5, 0x2, 0x2, 0x3, 0x4, 0x5};
 
 // Build the meta-code tree from the fixed word/length pairs.
 // Returns the root index in the pool, or -1 if the pool is full.
@@ -287,8 +285,7 @@ static int m13_build_canonical(peel_hpool_t *pool, const int8_t *lengths, int ns
 //   * Every emitted length is M13_MIN_CODE_LEN..M13_MAX_CODE_LEN.
 //     Decrementing past -1 produced a length m13_build_canonical never
 //     matches, so its outer loop never finished.
-static int m13_decode_lengths(const peel_hpool_t *pool, int meta_root,
-                              peel_lsb_t *br, int8_t *out, int nsym) {
+static int m13_decode_lengths(const peel_hpool_t *pool, int meta_root, peel_lsb_t *br, int8_t *out, int nsym) {
     int len = 0;
     int i = 0;
     while (i < nsym) {
@@ -298,19 +295,19 @@ static int m13_decode_lengths(const peel_hpool_t *pool, int meta_root,
         int emit = 1; // entries this command produces, per the spec's table
 
         if (cmd <= 30) {
-            len = cmd + 1;            // set the length directly
+            len = cmd + 1; // set the length directly
         } else if (cmd == 31) {
-            len = 0;                  // symbol absent
+            len = 0; // symbol absent
         } else if (cmd == 32) {
             len++;
         } else if (cmd == 33) {
             len--;
         } else if (cmd == 34) {
-            emit = 1 + (int)peel_lsb_get(br, 1);   // optional extra copy
+            emit = 1 + (int)peel_lsb_get(br, 1); // optional extra copy
         } else if (cmd == 35) {
-            emit = (int)peel_lsb_get(br, 3) + 3;   // (n + 2) + the normal emit
+            emit = (int)peel_lsb_get(br, 3) + 3; // (n + 2) + the normal emit
         } else {
-            emit = (int)peel_lsb_get(br, 6) + 11;  // (n + 10) + the normal emit
+            emit = (int)peel_lsb_get(br, 6) + 11; // (n + 10) + the normal emit
         }
 
         if (len < M13_MIN_CODE_LEN || len > M13_MAX_CODE_LEN)
@@ -344,11 +341,11 @@ typedef struct {
     int root_first;
     int root_second;
     int root_dist;
-    int root_active;   // Currently selected lit/len tree root
+    int root_active; // Currently selected lit/len tree root
 
     // Sliding window
     uint8_t window[M13_WIN_SIZE];
-    int     wpos;
+    int wpos;
 
     // Pending match state for streaming
     int match_left;
@@ -368,7 +365,7 @@ typedef struct {
 static int m13_setup(m13_state_t *st) {
     // Zero-fill sliding window (sit13.md § 8.1 "Initialization")
     memset(st->window, 0, sizeof(st->window));
-    st->wpos       = 0;
+    st->wpos = 0;
     st->match_left = 0;
     st->match_from = 0;
     peel_hpool_reset(&st->pool);
@@ -376,9 +373,9 @@ static int m13_setup(m13_state_t *st) {
     // Read the single header byte.
     // sit13.md § 4.1: SET = bits 7..4, S = bit 3, K = bits 2..0.
     uint32_t hdr = peel_lsb_get(&st->br, 8);
-    int set      = (int)(hdr >> 4);       // code set selector (0 = dynamic)
-    bool shared  = (hdr >> 3) & 1;        // second tree == first tree?
-    int dist_n   = (int)(hdr & 7) + 10;   // distance tree symbol count
+    int set = (int)(hdr >> 4); // code set selector (0 = dynamic)
+    bool shared = (hdr >> 3) & 1; // second tree == first tree?
+    int dist_n = (int)(hdr & 7) + 10; // distance tree symbol count
 
     if (set == 0) {
         // Dynamic mode: build meta-code tree, then decode all three trees.
@@ -390,8 +387,7 @@ static int m13_setup(m13_state_t *st) {
         int8_t lengths[M13_SYM_COUNT];
 
         // First literal/length tree.
-        if (m13_decode_lengths(&st->pool, meta_root, &st->br,
-                               lengths, M13_SYM_COUNT) < 0)
+        if (m13_decode_lengths(&st->pool, meta_root, &st->br, lengths, M13_SYM_COUNT) < 0)
             return -1;
         st->root_first = m13_build_canonical(&st->pool, lengths, M13_SYM_COUNT);
 
@@ -400,27 +396,22 @@ static int m13_setup(m13_state_t *st) {
         if (shared) {
             st->root_second = st->root_first;
         } else {
-            if (m13_decode_lengths(&st->pool, meta_root, &st->br,
-                                   lengths, M13_SYM_COUNT) < 0)
+            if (m13_decode_lengths(&st->pool, meta_root, &st->br, lengths, M13_SYM_COUNT) < 0)
                 return -1;
             st->root_second = m13_build_canonical(&st->pool, lengths, M13_SYM_COUNT);
         }
 
         // Distance tree.
-        if (m13_decode_lengths(&st->pool, meta_root, &st->br,
-                               lengths, dist_n) < 0)
+        if (m13_decode_lengths(&st->pool, meta_root, &st->br, lengths, dist_n) < 0)
             return -1;
         st->root_dist = m13_build_canonical(&st->pool, lengths, dist_n);
     } else if (set >= 1 && set <= 5) {
         // Predefined mode: build trees from static tables.
         // sit13.md § 7 "Predefined Trees (Sets 1–5)".
         int idx = set - 1;
-        st->root_first  = m13_build_canonical(&st->pool, predefined_first[idx],
-                                              M13_SYM_COUNT);
-        st->root_second = m13_build_canonical(&st->pool, predefined_second[idx],
-                                              M13_SYM_COUNT);
-        st->root_dist   = m13_build_canonical(&st->pool, predefined_dist[idx],
-                                              predefined_dist_nsym[idx]);
+        st->root_first = m13_build_canonical(&st->pool, predefined_first[idx], M13_SYM_COUNT);
+        st->root_second = m13_build_canonical(&st->pool, predefined_second[idx], M13_SYM_COUNT);
+        st->root_dist = m13_build_canonical(&st->pool, predefined_dist[idx], predefined_dist_nsym[idx]);
     } else {
         // sit13.md § 11 "Error Conditions" — invalid SET value.
         return -1;
@@ -488,7 +479,7 @@ static int m13_output(m13_state_t *st, uint8_t *dst, size_t cap) {
         else if (sym == 319)
             mlen = (int)peel_lsb_get(&st->br, 15) + 65;
         else
-            return -1;   // symbol 320 or higher is invalid
+            return -1; // symbol 320 or higher is invalid
 
         // Distance decode via the distance tree.
         // sit13.md § 5.2 "Distance Symbol Alphabet" — distance symbol
@@ -513,60 +504,79 @@ static int m13_output(m13_state_t *st, uint8_t *dst, size_t cap) {
 }
 
 // ============================================================================
-// Entry Point (Internal)
+// Entry Points (Internal)
 // ============================================================================
 
+// A method-13 stream: m13_output already resumes mid-match; this holds its
+// state between calls and counts the fork down.
+typedef struct {
+    peel_producer_t base;
+    m13_state_t *st;
+    size_t produced, total;
+} m13_stream_t;
+
+static int m13_run(peel_producer_t *p, uint8_t *out, size_t cap, size_t *n) {
+    m13_stream_t *m = (m13_stream_t *)p;
+    *n = 0;
+    size_t want = m->total - m->produced;
+    if (want > cap)
+        want = cap;
+    if (want > INT32_MAX)
+        want = INT32_MAX; // m13_output counts in an int
+    int got = want ? m13_output(m->st, out, want) : 0;
+    if (got < 0) {
+        snprintf(p->err, sizeof(p->err), "sit13: decompression failed (produced %zu of %zu bytes)", m->produced,
+                 m->total);
+        return -5;
+    }
+    *n = (size_t)got;
+    m->produced += *n;
+    return m->produced == m->total ? 1 : 0;
+}
+
+static void m13_free(peel_producer_t *p) {
+    m13_stream_t *m = (m13_stream_t *)p;
+    free(m->st);
+    free(m);
+}
+
+peel_producer_t *sit13_producer(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err) {
+    *err = NULL;
+    m13_stream_t *m = calloc(1, sizeof(*m));
+    if (!m) {
+        *err = make_err("sit13: out of memory allocating decoder state");
+        return NULL;
+    }
+    m->base.run = m13_run;
+    m->base.free = m13_free;
+    m->total = uncomp_len;
+    if (uncomp_len == 0)
+        return &m->base;
+    // The decoder state is large (~70 KiB), so it lives on the heap.
+    m->st = calloc(1, sizeof(*m->st));
+    if (!m->st) {
+        m13_free(&m->base);
+        *err = make_err("sit13: out of memory allocating decoder state");
+        return NULL;
+    }
+    peel_lsb_init(&m->st->br, src, len);
+    // Parse the header and build the Huffman trees.
+    if (m13_setup(m->st) < 0) {
+        m13_free(&m->base);
+        *err = make_err("sit13: invalid header or tree construction failed");
+        return NULL;
+    }
+    return &m->base;
+}
+
 // Decompress method-13 (LZSS + Huffman) compressed data into a freshly
-// allocated buffer.  Called by sit.c for entries using compression method 13.
+// allocated buffer.
 //
 // sit13.md § "Appendix A: Complete Decompression Walkthrough"
 //   1. Read header, build (or select) Huffman trees.
 //   2. Main decode loop: literals + matches into sliding window.
 //   3. Return the output buffer.
 peel_buf_t peel_sit13(const uint8_t *src, size_t len, size_t uncomp_len, peel_err_t **err) {
-    *err = NULL;
-
-    // Handle degenerate case: zero-length output
-    if (uncomp_len == 0) {
-        return (peel_buf_t){.data = NULL, .size = 0, .owned = false};
-    }
-
-    // Allocate the output buffer up front (known size from container metadata)
-    uint8_t *out = malloc(uncomp_len);
-    if (!out) {
-        *err = make_err("sit13: out of memory allocating %zu-byte output buffer", uncomp_len);
-        return (peel_buf_t){0};
-    }
-
-    // The decoder state is large (~70 KiB), so heap-allocate to avoid stack overflow
-    m13_state_t *st = calloc(1, sizeof(*st));
-    if (!st) {
-        free(out);
-        *err = make_err("sit13: out of memory allocating decoder state");
-        return (peel_buf_t){0};
-    }
-
-    // Initialise bit reader over the compressed input
-    peel_lsb_init(&st->br, src, len);
-
-    // Parse header and build Huffman trees
-    if (m13_setup(st) < 0) {
-        free(out);
-        free(st);
-        *err = make_err("sit13: invalid header or tree construction failed");
-        return (peel_buf_t){0};
-    }
-
-    // Decode uncomp_len bytes through the main loop
-    int produced = m13_output(st, out, uncomp_len);
-    free(st);
-
-    if (produced < 0 || (size_t)produced != uncomp_len) {
-        free(out);
-        *err = make_err("sit13: decompression failed (produced %d of %zu bytes)",
-                        produced, uncomp_len);
-        return (peel_buf_t){0};
-    }
-
-    return (peel_buf_t){.data = out, .size = uncomp_len, .owned = true};
+    peel_producer_t *p = sit13_producer(src, len, uncomp_len, err);
+    return p ? peel_producer_drain(p, uncomp_len, NULL, err) : (peel_buf_t){0};
 }

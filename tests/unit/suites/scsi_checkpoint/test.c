@@ -145,6 +145,10 @@ size_t disk_size(image_t *img) {
     (void)img;
     return 0;
 }
+uint32_t disk_block_size(image_t *img) {
+    (void)img;
+    return 512;
+}
 const char *image_get_filename(const image_t *img) {
     (void)img;
     return NULL;

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
-  import Icon from '@/components/common/Icon.svelte';
+  import Disclosure from '@/components/ui/Disclosure.svelte';
+  import Badge from '@/components/ui/Badge.svelte';
 
   interface Props {
     title: string;
@@ -14,63 +15,56 @@
   let { title, open, onToggle, count, actions, children }: Props = $props();
 </script>
 
-<!-- The toggle is a real button, reachable by Tab and Enter/Space (the header
-     used to be role="button" with tabindex -1, so no keyboard could open a
-     section), and the header actions are its siblings, never nested inside
-     it. -->
-<section class="section gs-collapsible" class:open>
-  <header class="header">
-    <button type="button" class="toggle" onclick={onToggle} aria-expanded={open}>
-      <span class="twistie" class:open><Icon name="chevron" size={12} /></span>
-      <span class="title">{title}</span>
+<!-- The toggle is a real button, reachable by Tab and Enter/Space, and the
+     header actions are its siblings, never nested inside it.  The divider
+     between consecutive sections is in styles/components.css (.gs-section +
+     .gs-section).  Legacy hooks: section, gs-collapsible, header, toggle,
+     title, count. -->
+<section class="gs-section section gs-collapsible" class:open>
+  <header class="gs-section__header header">
+    <button type="button" class="gs-section__toggle toggle" onclick={onToggle} aria-expanded={open}>
+      <Disclosure class="twistie" {open} />
+      <span class="gs-section__title title">{title}</span>
       {#if typeof count === 'number'}
-        <span class="count">{count}</span>
+        <Badge variant="count" class="gs-section__count count">{count}</Badge>
       {/if}
     </button>
     {#if actions}
-      <span class="actions">{@render actions()}</span>
+      <span class="gs-section__actions actions">{@render actions()}</span>
     {/if}
   </header>
   {#if open}
-    <div class="body">
+    <div class="gs-section__body body">
       {@render children()}
     </div>
   {/if}
 </section>
 
 <style>
-  .section {
+  .gs-section {
     display: flex;
     flex-direction: column;
   }
-  /* Divider between consecutive sections — no leading border above the
-     first one, no trailing border below the last one. `:global` because
-     each <section> is the root of its own CollapsibleSection instance,
-     so Svelte's per-component scoping would otherwise treat the second
-     selector as unmatched. */
-  :global(.gs-collapsible + .gs-collapsible) {
-    border-top: 1px solid var(--gs-border);
-  }
-  .header {
-    height: 22px;
+  .gs-section__header {
+    height: var(--gs-section-header-height);
     display: flex;
     align-items: center;
-    padding: 0 8px 0 0;
+    padding: 0 var(--gs-space-2) 0 0;
     user-select: none;
-    background: var(--gs-bg);
+    background: var(--gs-section-header-bg);
   }
-  .header:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.05));
+  .gs-section__header:hover {
+    background: var(--gs-row-hover);
   }
   /* Fills the header, so a click anywhere but the actions toggles. */
-  .toggle {
+  .gs-section__toggle {
     flex: 1 1 auto;
     min-width: 0;
     height: 100%;
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 0 0 0 8px;
+    gap: var(--gs-space-1);
+    padding: 0 0 0 var(--gs-space-2);
     border: none;
     background: transparent;
     color: inherit;
@@ -78,43 +72,26 @@
     text-align: left;
     cursor: pointer;
   }
-  .toggle:focus-visible {
-    outline: 1px solid var(--gs-focus, #0969da);
-    outline-offset: -1px;
+  .gs-section__toggle:focus-visible {
+    outline: var(--gs-focus-width) solid var(--gs-focus-ring);
+    outline-offset: var(--gs-focus-offset);
   }
-  .twistie {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 14px;
-    color: var(--gs-fg-muted);
-    flex-shrink: 0;
-    /* Chevron points down when open, rotates to point right when
-       collapsed. Matches the codicon-driven VS Code tree pattern. */
-    transform: rotate(-90deg);
-    transition: transform 80ms ease-out;
-  }
-  .twistie.open {
-    transform: rotate(0deg);
-  }
-  .title {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--gs-fg-bright);
+  .gs-section__title {
+    font-size: var(--gs-heading-font-size);
+    font-weight: var(--gs-heading-weight);
+    text-transform: var(--gs-heading-transform);
+    letter-spacing: var(--gs-heading-tracking);
+    color: var(--gs-section-title-fg);
     flex: 1 1 auto;
   }
-  .count {
-    color: var(--gs-fg-muted);
-    font-size: 11px;
-    margin-right: 4px;
+  .gs-section__toggle > :global(.gs-section__count) {
+    margin-right: var(--gs-space-1);
   }
-  .actions {
+  .gs-section__actions {
     display: inline-flex;
     align-items: center;
   }
-  .body {
+  .gs-section__body {
     display: flex;
     flex-direction: column;
   }

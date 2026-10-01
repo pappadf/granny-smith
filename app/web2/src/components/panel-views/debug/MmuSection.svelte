@@ -1,10 +1,12 @@
 <script lang="ts">
+  import Hint from '@/components/ui/Hint.svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
-  import TabStrip from '@/components/common/TabStrip.svelte';
+  import Tabs from '@/components/ui/Tabs.svelte';
   import { debug, toggleSection, type MmuSubtab } from '@/state/debug.svelte';
   import { machine } from '@/state/machine.svelte';
   import MmuStateTab from './MmuStateTab.svelte';
   import MmuTranslateTab from './MmuTranslateTab.svelte';
+  import SegmentedControl from '@/components/ui/SegmentedControl.svelte';
 
   // State and Translate read the core's own MMU (bus/mmu.ts).  Map and
   // Descriptors are gone until the core can walk a table for them: they
@@ -23,38 +25,29 @@
 {#if visible}
   <CollapsibleSection title="MMU" open={debug.sections.mmu} onToggle={() => toggleSection('mmu')}>
     {#if machine.status === 'running'}
-      <p class="mmu-hint">Pause the machine to inspect MMU state.</p>
+      <Hint class="mmu-hint" inset="block">Pause the machine to inspect MMU state.</Hint>
     {:else}
-      <TabStrip
+      <Tabs
+        tabClass="tab"
         tabs={TABS}
         active={debug.mmuSubtab}
         onSelect={(k: MmuSubtab) => (debug.mmuSubtab = k)}
       >
         {#snippet accessory()}
-          <div class="su-toggle" role="group" aria-label="Supervisor / User root">
-            <button
-              type="button"
-              class="su-btn"
-              class:active={debug.mmuSupervisor}
-              aria-pressed={debug.mmuSupervisor}
-              onclick={() => (debug.mmuSupervisor = true)}
-              title="Supervisor root"
-            >
-              S
-            </button>
-            <button
-              type="button"
-              class="su-btn"
-              class:active={!debug.mmuSupervisor}
-              aria-pressed={!debug.mmuSupervisor}
-              onclick={() => (debug.mmuSupervisor = false)}
-              title="User root"
-            >
-              U
-            </button>
-          </div>
+          <SegmentedControl
+            class="su-toggle"
+            optionClass="su-btn"
+            framed
+            label="Supervisor / User root"
+            value={debug.mmuSupervisor}
+            onChange={(v) => (debug.mmuSupervisor = v)}
+            options={[
+              { value: true, label: 'S', title: 'Supervisor root' },
+              { value: false, label: 'U', title: 'User root' },
+            ]}
+          />
         {/snippet}
-      </TabStrip>
+      </Tabs>
       {#if debug.mmuSubtab === 'translate'}
         <MmuTranslateTab />
       {:else}
@@ -65,29 +58,4 @@
 {/if}
 
 <style>
-  .mmu-hint {
-    color: var(--gs-fg-muted);
-    font-size: 11px;
-    padding: 8px 16px;
-  }
-  .su-toggle {
-    display: inline-flex;
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    overflow: hidden;
-    height: 20px;
-  }
-  .su-btn {
-    background: transparent;
-    color: var(--gs-fg-muted);
-    border: none;
-    padding: 0 8px;
-    font-size: 11px;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .su-btn.active {
-    background: var(--gs-row-selected, rgba(80, 140, 220, 0.25));
-    color: var(--gs-fg-bright);
-  }
 </style>

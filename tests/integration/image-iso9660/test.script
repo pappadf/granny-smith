@@ -1,0 +1,23 @@
+# An ISO 9660 disc (built at setup: a primary tree and a Joliet tree) is a
+# bare volume: one synthetic partition holding the disc's files.
+let iso = "${$WORK_DIR}/disc.iso"
+assert files.probe($iso) "the disc is recognised as a disk"
+let names = ""
+for e in files.list("${$iso}/partition1") {
+    $names = "${$names}|${$e.name}"
+}
+assert $names == "|Disk Images|Read Me.txt" "Joliet names, not 8.3 ones (got ${$names})"
+
+# A file on the disc reads back byte for byte.
+let readme = "${$iso}/partition1/Read Me.txt"
+assert files.path_size($readme) == files.path_size("config.mk") "file size"
+assert files.path_compare($readme, "config.mk") == -1 "file contents"
+assert files.path_size("${$iso}/partition1/read me.txt") > 0 "names are matched without case"
+
+# A floppy image on the disc is a disk in turn: descend into its HFS volume.
+let fd = "${$iso}/partition1/Disk Images/System 6.0.8.dsk"
+assert files.path_size($fd) == 819200 "the floppy image on the disc"
+assert files.list("${$fd}/partition1/System Folder") "the HFS volume inside the floppy image on the disc"
+assert files.path_size("${$fd}/partition1/System Folder/System/rsrc/_raw") > 0 "a resource fork two levels down"
+
+quit

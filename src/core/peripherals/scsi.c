@@ -7,7 +7,9 @@
 #define _CRT_SECURE_NO_WARNINGS 1
 
 #include "scsi.h"
+#include "format_registry.h"
 #include "gs_out.h"
+#include "image_part.h"
 
 #include "io_leaf.h"
 
@@ -2074,41 +2076,28 @@ static DEF_METHOD(scsi_method_identify_cdrom) {
         image_close(img);
         return val_bool(false);
     }
-    bool is_iso = false, is_hfs = false, is_apm = false;
+    // ISO 9660 at sector 16; anything else the format registry recognises
+    // as a disk (a partition map, or a bare HFS / HFS+ / UFS volume).  The
+    // image was opened through the registry already, so a .dmg or a Toast
+    // image inside an archive is judged by the disk it holds.
+    bool is_iso = false;
     size_t sz = disk_size(img);
     uint8_t sector[512];
-    if (sz >= 33280) {
-        disk_read_data(img, 32768, sector, 512);
-        if (memcmp(sector + 1, "CD001", 5) == 0)
-            is_iso = true;
-    }
-    if (sz >= 1536) {
-        disk_read_data(img, 1024, sector, 512);
-        if (sector[0] == 0x42 && sector[1] == 0x44)
-            is_hfs = true;
-    }
-    if (sz >= 1024) {
-        disk_read_data(img, 0, sector, 512);
-        bool has_ddm = (sector[0] == 0x45 && sector[1] == 0x52);
-        disk_read_data(img, 512, sector, 512);
-        bool has_pm = (sector[0] == 0x50 && sector[1] == 0x4D);
-        if (has_ddm && has_pm)
-            is_apm = true;
-    }
+    if (sz >= 33280 && disk_read_data(img, 32768, sector, 512) == 512 && memcmp(sector + 1, "CD001", 5) == 0)
+        is_iso = true;
+    gs_source_t *src = image_source(img);
+    const gs_format_t *f = gs_format_contents(src, NULL);
+    gs_source_release(src);
+    bool is_disk = f && strcmp(f->name, "disk") == 0;
     double size_mb = (double)sz / (1024.0 * 1024.0);
-    if (is_iso && is_hfs)
-        gs_outf("valid CD-ROM image: %.1f MB, ISO 9660 + HFS hybrid\n", size_mb);
-    else if (is_iso)
-        gs_outf("valid CD-ROM image: %.1f MB, ISO 9660\n", size_mb);
-    else if (is_hfs)
-        gs_outf("valid CD-ROM image: %.1f MB, HFS\n", size_mb);
-    else if (is_apm)
-        gs_outf("valid CD-ROM image: %.1f MB, Apple Partition Map\n", size_mb);
-    else {
+    const char *enc = (img->format && strcmp(img->format, "raw") != 0) ? img->format : NULL;
+    if (!is_iso && !is_disk) {
         gs_outf("invalid CD-ROM image: no ISO 9660, HFS, or Apple Partition Map detected\n");
         image_close(img);
         return val_bool(false);
     }
+    gs_outf("valid CD-ROM image: %.1f MB, %s%s%s%s%s\n", size_mb, is_iso ? "ISO 9660" : "",
+            is_iso && is_disk ? " + " : "", is_disk ? f->doc : "", enc ? ", in " : "", enc ? enc : "");
     image_close(img);
     return val_bool(true);
 }

@@ -1,0 +1,15 @@
+Granny Smith UI — Platinum skin — Third-Party Notices
+
+sprite.svg
+    A copy of ../../icons/sprite.svg: VS Code Codicons (and the two
+    derivatives described there), Copyright (c) Microsoft Corporation,
+    licensed under CC BY 4.0. See ../../NOTICE for the full notice, the
+    upstream names and the modifications.
+
+fonts/ibm-plex-sans-latin-wght.woff2
+    IBM Plex Sans (variable, Latin subset, as packaged by Fontsource),
+    Copyright 2019 IBM Corp. All rights reserved.
+    Licensed under the SIL Open Font License, Version 1.1 (OFL-1.1):
+    https://openfontlicense.org/open-font-license-official-text/
+    Upstream: https://github.com/IBM/plex
+    Unmodified.

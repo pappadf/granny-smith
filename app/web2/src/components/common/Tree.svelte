@@ -1,5 +1,5 @@
 <script lang="ts">
-  import TreeRow from './TreeRow.svelte';
+  import TreeItem from '@/components/ui/TreeItem.svelte';
   import Tree from './Tree.svelte';
   import { pathKey } from '@/lib/treePath';
   import { cycleListSelection, listKeyFromEvent } from '@/lib/keyboardNav';
@@ -254,117 +254,82 @@
   }
 </script>
 
+{#snippet rows()}
+  {#each nodes as node (node.id)}
+    {@const p = pathOf(node)}
+    {@const k = pathKey(p)}
+    {@const open = isOpen(node)}
+    {@const kids = childrenOf(node)}
+    {@const branch = hasChildren(node)}
+    <li>
+      <TreeItem
+        class="tree-row"
+        role="treeitem"
+        aria-selected={isSelected(k)}
+        aria-expanded={branch ? open : undefined}
+        aria-level={depth + 1}
+        tabindex={-1}
+        label={node.label}
+        icon={node.icon}
+        description={node.desc}
+        {depth}
+        hasChildren={branch}
+        {open}
+        loading={!!loading[k]}
+        selected={isSelected(k)}
+        draggable={!!node.draggable}
+        dragSource={dragSourceKey === k}
+        dropTarget={dropTargetKey === k}
+        onclick={(ev) => handleRowClick(node, ev)}
+        onDisclosureClick={(ev) => handleTwistieClick(node, ev)}
+        oncontextmenu={onContextMenu ? (ev) => onContextMenu(p, ev) : undefined}
+        ondblclick={onActivate ? () => onActivate(p) : undefined}
+        ondragstart={onDragStart ? (ev) => onDragStart(p, ev) : undefined}
+        ondragover={onDragOver ? (ev) => onDragOver(p, ev) : undefined}
+        ondragleave={onDragLeave ? (ev) => onDragLeave(p, ev) : undefined}
+        ondragend={onDragEnd ? (ev) => onDragEnd(p, ev) : undefined}
+        ondrop={onDrop ? (ev) => onDrop(p, ev) : undefined}
+      />
+      {#if branch && open && kids?.length === 0}
+        <ul class="tree" role="group">
+          <li role="none">
+            <TreeItem depth={depth + 1} variant="placeholder" label="(empty)" />
+          </li>
+        </ul>
+      {:else if branch && open && kids}
+        <Tree
+          nodes={kids}
+          {expanded}
+          {selectedKey}
+          {selectedKeys}
+          {dragSourceKey}
+          {dropTargetKey}
+          parentPath={p}
+          depth={depth + 1}
+          lazyCache={cache}
+          {onToggle}
+          {onSelect}
+          {onActivate}
+          {onContextMenu}
+          {onDragStart}
+          {onDragOver}
+          {onDragLeave}
+          {onDragEnd}
+          {onDrop}
+          {loadChildren}
+        />
+      {/if}
+    </li>
+  {/each}
+{/snippet}
+
 {#if depth === 0}
   <ul class="tree" role="tree" tabindex="0" onkeydown={onRootKey}>
-    {#each nodes as node (node.id)}
-      {@const p = pathOf(node)}
-      {@const k = pathKey(p)}
-      {@const open = isOpen(node)}
-      {@const kids = childrenOf(node)}
-      {@const branch = hasChildren(node)}
-      <li>
-        <TreeRow
-          label={node.label}
-          icon={node.icon}
-          desc={node.desc}
-          {depth}
-          hasChildren={branch}
-          {open}
-          selected={isSelected(k)}
-          draggable={!!node.draggable}
-          dragSource={dragSourceKey === k}
-          dropTarget={dropTargetKey === k}
-          onClick={(ev) => handleRowClick(node, ev)}
-          onTwistieClick={(ev) => handleTwistieClick(node, ev)}
-          onContextMenu={onContextMenu ? (ev) => onContextMenu(p, ev) : undefined}
-          onDoubleClick={onActivate ? () => onActivate(p) : undefined}
-          onDragStart={onDragStart ? (ev) => onDragStart(p, ev) : undefined}
-          onDragOver={onDragOver ? (ev) => onDragOver(p, ev) : undefined}
-          onDragLeave={onDragLeave ? (ev) => onDragLeave(p, ev) : undefined}
-          onDragEnd={onDragEnd ? (ev) => onDragEnd(p, ev) : undefined}
-          onDrop={onDrop ? (ev) => onDrop(p, ev) : undefined}
-        />
-        {#if branch && open && kids}
-          <Tree
-            nodes={kids}
-            {expanded}
-            {selectedKey}
-            {selectedKeys}
-            {dragSourceKey}
-            {dropTargetKey}
-            parentPath={p}
-            depth={depth + 1}
-            lazyCache={cache}
-            {onToggle}
-            {onSelect}
-            {onActivate}
-            {onContextMenu}
-            {onDragStart}
-            {onDragOver}
-            {onDragLeave}
-            {onDragEnd}
-            {onDrop}
-            {loadChildren}
-          />
-        {/if}
-      </li>
-    {/each}
+    {@render rows()}
   </ul>
 {:else}
   <ul class="tree" role="group">
-    {#each nodes as node (node.id)}
-      {@const p = pathOf(node)}
-      {@const k = pathKey(p)}
-      {@const open = isOpen(node)}
-      {@const kids = childrenOf(node)}
-      {@const branch = hasChildren(node)}
-      <li>
-        <TreeRow
-          label={node.label}
-          icon={node.icon}
-          desc={node.desc}
-          {depth}
-          hasChildren={branch}
-          {open}
-          selected={isSelected(k)}
-          draggable={!!node.draggable}
-          dragSource={dragSourceKey === k}
-          dropTarget={dropTargetKey === k}
-          onClick={(ev) => handleRowClick(node, ev)}
-          onTwistieClick={(ev) => handleTwistieClick(node, ev)}
-          onContextMenu={onContextMenu ? (ev) => onContextMenu(p, ev) : undefined}
-          onDoubleClick={onActivate ? () => onActivate(p) : undefined}
-          onDragStart={onDragStart ? (ev) => onDragStart(p, ev) : undefined}
-          onDragOver={onDragOver ? (ev) => onDragOver(p, ev) : undefined}
-          onDragLeave={onDragLeave ? (ev) => onDragLeave(p, ev) : undefined}
-          onDragEnd={onDragEnd ? (ev) => onDragEnd(p, ev) : undefined}
-          onDrop={onDrop ? (ev) => onDrop(p, ev) : undefined}
-        />
-        {#if branch && open && kids}
-          <Tree
-            nodes={kids}
-            {expanded}
-            {selectedKey}
-            {selectedKeys}
-            {dragSourceKey}
-            {dropTargetKey}
-            parentPath={p}
-            depth={depth + 1}
-            lazyCache={cache}
-            {onToggle}
-            {onSelect}
-            {onActivate}
-            {onContextMenu}
-            {onDragStart}
-            {onDragOver}
-            {onDragLeave}
-            {onDragEnd}
-            {onDrop}
-            {loadChildren}
-          />
-        {/if}
-      </li>
-    {/each}
+    {@render rows()}
   </ul>
 {/if}
 
@@ -373,12 +338,10 @@
     list-style: none;
     margin: 0;
     padding: 0;
-  }
-  .tree:focus {
-    outline: none;
+    user-select: none;
   }
   .tree:focus-visible {
-    outline: 1px solid var(--gs-focus, #0969da);
-    outline-offset: -1px;
+    outline: var(--gs-focus-width) solid var(--gs-focus-ring);
+    outline-offset: var(--gs-focus-offset);
   }
 </style>

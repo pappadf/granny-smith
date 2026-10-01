@@ -5,27 +5,18 @@
   import CheckpointResumePrompt from './components/dialogs/CheckpointResumePrompt.svelte';
   import PreviewNoticeDialog from './components/dialogs/PreviewNoticeDialog.svelte';
   import PrintViewerDialog from './components/dialogs/PrintViewerDialog.svelte';
-  import { theme, applyThemeToHtml, systemTheme } from '@/state/theme.svelte';
+  import DialogHost from './components/dialogs/DialogHost.svelte';
+  import { applyAppearance, installSystemSchemeListener } from '@/state/appearance.svelte';
   import { layout } from '@/state/layout.svelte';
   import { startPersistEffects } from '@/state/persist.svelte';
   import { startCapsLockSync } from '@/lib/capslock';
 
-  // Keep <html data-theme> in sync with the theme state. Initial set is done
-  // synchronously in main.ts before mount; this effect tracks subsequent
-  // changes (toggle button, system-pref change).
-  $effect(() => applyThemeToHtml(theme.mode));
-
-  $effect(() => {
-    if (typeof window === 'undefined' || !window.matchMedia) return;
-    const mq = window.matchMedia('(prefers-color-scheme: light)');
-    const handler = () => {
-      if (theme.mode === 'system') {
-        document.documentElement.dataset.theme = systemTheme();
-      }
-    };
-    mq.addEventListener('change', handler);
-    return () => mq.removeEventListener('change', handler);
-  });
+  // Keep <html data-skin data-theme> in sync with the appearance state.  The
+  // first write happens in main.ts before mount; this effect follows every
+  // change (the toggle, a skin switch, the OS preference -- the listener
+  // updates the state, never the attribute, so the tooltip follows too).
+  $effect(() => applyAppearance());
+  $effect(() => installSystemSchemeListener());
 
   // Keep layout.fullscreen in sync with the browser's native fullscreen state.
   // This lives here (not in DisplayToolbar) so the listener survives the
@@ -51,6 +42,7 @@
 <CheckpointResumePrompt />
 <PreviewNoticeDialog />
 <PrintViewerDialog />
+<DialogHost />
 
 <style>
   :global(html),

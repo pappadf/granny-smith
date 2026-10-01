@@ -203,6 +203,9 @@ async function open(container: HTMLElement, name: string): Promise<void> {
   await fireEvent.click(r.querySelector('.twistie')!);
 }
 
+// A row's filter verdict (match, dim), from its line's data-state.
+const filterOf = (r: Element) => r.querySelector('.cmd-line')?.getAttribute('data-state');
+
 describe('CommandBrowser (structural, model-generated)', () => {
   it('the root is expandable sections; Aliases and Language start collapsed', async () => {
     const { container } = render(CommandBrowser);
@@ -400,8 +403,8 @@ describe('CommandBrowser ↔ console', () => {
     });
     const step = await row(container, 'step');
     await waitFor(() => expect(step.classList.contains('selected')).toBe(true));
-    expect(step.classList.contains('match')).toBe(true);
-    expect((await row(container, 'pc')).classList.contains('dim')).toBe(true);
+    expect(filterOf(step)).toBe('match');
+    expect(filterOf(await row(container, 'pc'))).toBe('dim');
     await waitFor(() => expect(usageText(container)).toBe('USAGE OF machine.cpu.step'));
   });
 
@@ -451,7 +454,7 @@ describe('CommandBrowser ↔ console', () => {
       span: { start: 12, end: 14 },
       context: { method: null, argIndex: null, argName: null },
     });
-    await waitFor(() => expect(pc.classList.contains('match')).toBe(true));
+    await waitFor(() => expect(filterOf(pc)).toBe('match'));
     expect(pc.classList.contains('selected')).toBe(true);
   });
 

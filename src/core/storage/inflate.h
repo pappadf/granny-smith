@@ -12,7 +12,9 @@
 // it, and it shares the RFC 1951 length/distance tables exported below.
 //
 // The emulator core links no third-party C libraries, so this is a
-// first-party implementation rather than a zlib dependency.
+// first-party implementation rather than a zlib dependency: the decoder is
+// peeler's (peel_zlib_inflate), the one inflate in the tree, which zip and
+// gzip archives decode through too.
 
 #ifndef GS_INFLATE_H
 #define GS_INFLATE_H

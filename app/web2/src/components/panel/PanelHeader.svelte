@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { layout, PANEL_TABS, type PanelTab } from '@/state/layout.svelte';
-  import PanelTabComp from './PanelTab.svelte';
+  import { layout, PANEL_TABS, setActiveTab, type PanelTab } from '@/state/layout.svelte';
+  import Tabs from '../ui/Tabs.svelte';
   import { logs, clearLogs, downloadLogs, setAutoscroll } from '@/state/logs.svelte';
   import { toggleLogsPopover } from '../panel-views/logs/logsHeader.svelte';
   import CreateCheckpointButton from '../panel-views/checkpoints/CreateCheckpointButton.svelte';
   import DebugToolbar from '../panel-views/debug/DebugToolbar.svelte';
+  import Button from '../ui/Button.svelte';
+  import Checkbox from '../ui/Checkbox.svelte';
 
   // Display labels, in this order and casing.
   const LABELS: Record<PanelTab, string> = {
@@ -19,45 +21,42 @@
 </script>
 
 <div class="gs-panel-header">
-  <div class="panel-tabs" role="tablist" aria-label="Panel views">
-    {#each PANEL_TABS as tab (tab)}
-      <PanelTabComp {tab} label={LABELS[tab]} active={layout.activeTab === tab} />
-    {/each}
-  </div>
+  <Tabs
+    variant="panel"
+    class="panel-tabs"
+    tabClass="ptab"
+    label="Panel views"
+    tabs={PANEL_TABS.map((key) => ({ key, label: LABELS[key] }))}
+    active={layout.activeTab}
+    onSelect={setActiveTab}
+  />
   <div class="panel-actions">
     {#if layout.activeTab === 'logs'}
-      <button
-        type="button"
+      <Button
         class="action-btn"
         onclick={() => toggleLogsPopover()}
         title="Set per-category log levels"
       >
         Levels
-      </button>
-      <label class="action-toggle" title="Scroll to newest line automatically">
-        <input
-          type="checkbox"
-          checked={logs.autoscroll}
-          onchange={(e) => setAutoscroll((e.target as HTMLInputElement).checked)}
-        />
-        autoscroll
-      </label>
-      <button
-        type="button"
-        class="action-btn"
-        onclick={() => clearLogs()}
-        title="Clear the log buffer"
-      >
+      </Button>
+      <Checkbox
+        size="sm"
+        class="action-toggle"
+        title="Scroll to newest line automatically"
+        checked={logs.autoscroll}
+        onchange={setAutoscroll}
+        label="autoscroll"
+      />
+      <Button class="action-btn" onclick={() => clearLogs()} title="Clear the log buffer">
         Clear
-      </button>
-      <button
-        type="button"
+      </Button>
+      <Button
         class="action-btn"
         onclick={() => downloadLogs()}
         title="Download the log buffer as text"
       >
         Download
-      </button>
+      </Button>
     {:else if layout.activeTab === 'checkpoints'}
       <CreateCheckpointButton />
     {:else if layout.activeTab === 'debug'}
@@ -68,60 +67,19 @@
 
 <style>
   .gs-panel-header {
-    height: 35px;
-    flex: 0 0 35px;
+    height: var(--gs-size-toolbar);
+    flex: 0 0 var(--gs-size-toolbar);
     display: flex;
     align-items: stretch;
-    background: var(--gs-bg);
+    background: var(--gs-surface-app);
     user-select: none;
     overflow: hidden;
-  }
-  .panel-tabs {
-    display: flex;
-    flex: 1 1 auto;
-    min-width: 0;
-    /* Scroll horizontally with a hidden scrollbar (VS Code style). overflow-y
-       must be hidden explicitly: auto on one axis forces visible->auto on the
-       other, and on systems with classic (space-taking) scrollbars the
-       horizontal bar shrinks the 35px header below the 31px tab height,
-       cascading into both scrollbars appearing. */
-    overflow-x: auto;
-    overflow-y: hidden;
-    scrollbar-width: none;
-  }
-  .panel-tabs::-webkit-scrollbar {
-    display: none;
   }
   .panel-actions {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 0 8px;
+    gap: var(--gs-space-1-5);
+    padding: 0 var(--gs-space-2);
     flex-shrink: 0;
-  }
-  .action-btn {
-    background: transparent;
-    color: var(--gs-fg);
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 8px;
-    font-size: 11px;
-    cursor: pointer;
-  }
-  .action-btn:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.06));
-  }
-  .action-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    color: var(--gs-fg-muted);
-    font-size: 11px;
-    cursor: pointer;
-    user-select: none;
-  }
-  .action-toggle input {
-    margin: 0;
   }
 </style>

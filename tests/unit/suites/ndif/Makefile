@@ -7,4 +7,5 @@ EXTRA_SRCS := ../../../../src/core/storage/adc.c \
               ../../../../src/core/storage/storage_util.c \
               ../../../../src/core/storage/macroman.c \
               ../../../../src/core/storage/rsrc_dcmp.c
+USE_SOURCE_LAYER := 1
 include ../../common.mk

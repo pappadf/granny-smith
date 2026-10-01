@@ -22,21 +22,21 @@
   .log-line {
     display: flex;
     align-items: baseline;
-    gap: 6px;
-    padding: 1px 8px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 12px;
-    line-height: 1.5;
-    color: var(--gs-fg);
+    gap: var(--gs-space-1-5);
+    padding: var(--gs-space-px) var(--gs-space-2);
+    font-family: var(--gs-font-mono);
+    font-size: var(--gs-font-size-sm);
+    line-height: var(--gs-line-height-relaxed);
+    color: var(--gs-text);
     white-space: pre-wrap;
     word-break: break-word;
   }
   .cat {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     flex: 0 0 auto;
   }
   .lvl {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     flex: 0 0 auto;
     min-width: 1.5ch;
     text-align: right;
@@ -46,9 +46,9 @@
     min-width: 0;
   }
   .log-line[data-sev='high'] .lvl {
-    color: var(--gs-error-fg, #ff7676);
+    color: var(--gs-danger-fg);
   }
   .log-line[data-sev='mid'] .lvl {
-    color: var(--gs-warning-fg, #f5c542);
+    color: var(--gs-warning-fg);
   }
 </style>

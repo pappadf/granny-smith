@@ -107,7 +107,8 @@ Granny Smith uses the following third-party libraries at runtime. The UI at
 - **Website:** <https://microsoft.github.io/vscode-codicons/>
 - **Repository:** <https://github.com/microsoft/vscode-codicons>
 - **License:** Creative Commons Attribution 4.0 International (CC BY 4.0)
-- **Used in:** [app/web2/public/icons/sprite.svg](app/web2/public/icons/sprite.svg) — SVG path
+- **Used in:** [app/web2/public/icons/sprite.svg](app/web2/public/icons/sprite.svg) (and its copy,
+  the Platinum skin's [sprite.svg](app/web2/public/skins/platinum/sprite.svg)) — SVG path
   data for the codicon glyphs is reproduced verbatim from the upstream project
   (`src/icons/<name>.svg`). Full icon list, trademark, modification, and
   disclaimer text is in [app/web2/public/NOTICE](app/web2/public/NOTICE).
@@ -123,3 +124,20 @@ under CC BY 4.0 (LICENSE), and code under MIT (LICENSE-CODE). Granny Smith uses
 only the icons, hence CC BY 4.0 applies here. No modifications: the path data
 is reproduced verbatim; sizing and theming (color, scale) are applied via CSS
 at render time without altering the path data.
+
+---
+
+## IBM Plex Sans
+
+- **Repository:** <https://github.com/IBM/plex> (packaged by Fontsource,
+  `@fontsource-variable/ibm-plex-sans`)
+- **License:** SIL Open Font License 1.1 (OFL-1.1)
+- **Used in:** the Platinum skin's UI font,
+  [app/web2/public/skins/platinum/fonts/](app/web2/public/skins/platinum/fonts/)
+  (the variable Latin subset, unmodified; see
+  [app/web2/public/skins/platinum/NOTICE](app/web2/public/skins/platinum/NOTICE)).
+
+Copyright 2019 IBM Corp. All rights reserved.
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+License text: <https://openfontlicense.org/open-font-license-official-text/>.

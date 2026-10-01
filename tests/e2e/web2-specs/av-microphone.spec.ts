@@ -302,7 +302,7 @@ test("AV microphone control delivers browser audio into guest RAM", async ({
   await expect(menu.getByText("System default")).toBeVisible();
   // The fake device enumerates like a real one, so a selectable input is
   // listed alongside the default.
-  const deviceItems = menu.locator('[role="menuitem"]');
+  const deviceItems = menu.locator("[role^='menuitem']");
   expect(await deviceItems.count()).toBeGreaterThan(2); // disconnect + default + ≥1
 
   // --- 7. Disconnect from that menu: the guest goes back to no microphone.

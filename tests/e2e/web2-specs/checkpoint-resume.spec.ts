@@ -34,6 +34,7 @@ import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
 const PLUS_ROM = path.resolve(__dirname, '../../data/roms/plus-v3-4d1f8172.rom');
 const SE30_ROM = path.resolve(__dirname, '../../data/roms/iix-iicx-se30-97221136.rom');
 const SE30_VROM = path.resolve(__dirname, '../../data/roms/builtin-se30-video-4f71ff1a.vrom');
+const SYSTEM_608 = path.resolve(__dirname, '../../data/systems/System_6_0_8.dsk');
 
 // Upload a ROM via the Welcome "Upload ROM..." button (the shipped path; the
 // persist bumps the image revision so the config slide re-scans).
@@ -158,6 +159,42 @@ test.describe('checkpoint save → reload → resume', () => {
     ).toBeVisible({ timeout: 60_000 });
     await expect(page.locator('.welcome-layer')).toHaveCount(0);
     await expect(statusLabel(page)).toHaveText('Running', { timeout: 15_000 });
+  });
+
+  test('a floppy attached at the checkpoint is the same image after a reload', async ({ page }) => {
+    // A checkpoint records each image's source key (its file, size and time
+    // stamp) and a restore refuses a base that is no longer the same bytes.
+    // OPFS files must keep their identity across a reload for that to hold.
+    test.setTimeout(180_000);
+    await gotoWeb2(page);
+    await stageOpfsFile(page, '/opfs/images/fd/System_6_0_8.dsk', SYSTEM_608);
+    await uploadRom(page, PLUS_ROM);
+    await startMachine(page, 'plus');
+    await terminalExpect(
+      page,
+      'machine.floppy.drive[0].insert "/opfs/images/fd/System_6_0_8.dsk" writable=true',
+      /insert/,
+    );
+    await terminalExpect(
+      page,
+      'echo "fd=${files.images[0].filename}"',
+      /fd=\/opfs\/images\/fd\/System_6_0_8\.dsk/,
+    );
+    await page.waitForTimeout(2_000);
+    await createCheckpoint(page);
+
+    await reloadWeb2(page);
+    await expect(resumeModal(page)).toBeVisible({ timeout: 30_000 });
+    await page.getByRole('button', { name: 'Resume' }).click();
+    await expect(
+      page.locator('.toast .msg').filter({ hasText: 'Resumed from saved checkpoint' }),
+    ).toBeVisible({ timeout: 60_000 });
+    await expect(statusLabel(page)).toHaveText('Running', { timeout: 15_000 });
+    await terminalExpect(
+      page,
+      'echo "fd=${files.images[0].filename}"',
+      /fd=\/opfs\/images\/fd\/System_6_0_8\.dsk/,
+    );
   });
 
   test('the resumed machine shows the pacing mode its checkpoint saved', async ({ page }) => {

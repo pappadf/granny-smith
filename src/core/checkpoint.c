@@ -370,7 +370,13 @@ char *checkpoint_read_string(checkpoint_t *checkpoint, uint32_t max, const char 
 // Read a data block with size validation, source metadata, and RLE decompression
 static void read_checkpoint_block(checkpoint_t *checkpoint, void *data, size_t size, const char *tag, const char *file,
                                   int line) {
-    if (!checkpoint || checkpoint->error || checkpoint->is_writing) {
+    if (checkpoint && checkpoint->error && !checkpoint->is_writing) {
+        // The stream has already failed and said why; the rest of the
+        // restore reads zeros, quietly, rather than one error per field.
+        memset(data, 0, size);
+        return;
+    }
+    if (!checkpoint || checkpoint->is_writing) {
         LOG(0, "Error: Invalid checkpoint handle for reading");
         if (checkpoint)
             checkpoint->error = true;
@@ -1237,7 +1243,9 @@ size_t checkpoint_read_file_loc(checkpoint_t *checkpoint, uint8_t *dest, size_t 
                                 const char *file, int line) {
     if (out_path)
         *out_path = NULL;
-    if (!checkpoint || checkpoint->error || checkpoint->is_writing) {
+    if (checkpoint && checkpoint->error && !checkpoint->is_writing)
+        return 0; // the stream has already failed and said why
+    if (!checkpoint || checkpoint->is_writing) {
         LOG(0, "Error: Invalid checkpoint handle for reading (file block)");
         if (checkpoint)
             checkpoint->error = true;

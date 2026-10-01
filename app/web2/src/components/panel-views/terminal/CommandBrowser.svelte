@@ -34,7 +34,7 @@
   import { terminalSync } from '@/state/terminalSync.svelte';
   import { CommandTree } from '@/state/commandTree.svelte';
   import { cycleListSelection, listKeyFromEvent } from '@/lib/keyboardNav';
-  import Icon from '@/components/common/Icon.svelte';
+  import TreeItem from '@/components/ui/TreeItem.svelte';
   import UsagePane from './UsagePane.svelte';
   import { machine } from '@/state/machine.svelte';
 
@@ -213,41 +213,41 @@
       <li
         class="cmd-row kind-{row.kind}"
         class:selected
-        class:dim={ct.otherKeys.has(row.key)}
-        class:match={ct.matchKeys.has(row.key)}
         role="treeitem"
         aria-selected={selected}
         aria-expanded={row.expandable ? open : undefined}
-        style="--depth: {depth}"
+        aria-level={depth + 1}
       >
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <div
+        <TreeItem
           class="cmd-line"
           role="button"
-          tabindex="-1"
+          tabindex={-1}
           title={tooltip(row)}
+          {depth}
+          kind={row.kind}
+          variant={row.kind === 'section' ? 'category' : 'default'}
+          filter={ct.matchKeys.has(row.key)
+            ? 'match'
+            : ct.otherKeys.has(row.key)
+              ? 'dim'
+              : undefined}
+          hasChildren={row.expandable}
+          {open}
+          {selected}
           onclick={() => onRowClick(row)}
           ondblclick={() => insert(row)}
+          onDisclosureClick={(e) => onTwistieClick(e, row)}
         >
-          <span
-            class="twistie"
-            class:has={row.expandable}
-            class:open
-            onclick={(e) => onTwistieClick(e, row)}
-            role="button"
-            tabindex="-1"
-            aria-label={row.expandable ? (open ? 'Collapse' : 'Expand') : ''}
-          >
-            {#if row.expandable}<Icon name="chevron" size={12} />{/if}
-          </span>
-          <span class="name">{row.name}</span>
-          {#if row.kind === 'attr'}
-            <span class="type">{typeText(row.type)}{row.readonly ? ' ro' : ''}</span>
-          {/if}
-          {#if row.kind !== 'section'}
-            <span class="doc">{row.expandable ? row.doc : firstSentence(row.doc)}</span>
-          {/if}
-        </div>
+          {#snippet content()}
+            <span class="gs-tree-item__label name">{row.name}</span>
+            {#if row.kind === 'attr'}
+              <span class="type">{typeText(row.type)}{row.readonly ? ' ro' : ''}</span>
+            {/if}
+            {#if row.kind !== 'section'}
+              <span class="doc">{row.expandable ? row.doc : firstSentence(row.doc)}</span>
+            {/if}
+          {/snippet}
+        </TreeItem>
       </li>
     {/each}
   </ul>
@@ -272,101 +272,53 @@
   }
   .cmd-tree {
     list-style: none;
+    user-select: none;
+    white-space: nowrap;
     margin: 0;
-    padding: 4px 0;
+    padding: var(--gs-space-1) 0;
     overflow-y: auto;
     /* Takes what the details pane leaves, but keeps a few rows. */
     flex: 1 1 0;
     min-height: 72px;
   }
-  .cmd-tree:focus {
-    outline: none;
-  }
   .cmd-tree:focus-visible {
-    outline: 1px solid var(--gs-focus, #0969da);
-    outline-offset: -1px;
-  }
-  /* A section headline: a bold row over its rows, which share its indent. */
-  .cmd-row.kind-section > .cmd-line {
-    padding-top: 6px;
+    outline: var(--gs-focus-width) solid var(--gs-focus-ring);
+    outline-offset: var(--gs-focus-offset);
   }
   /* Same size as the rows under it, set apart by weight only. */
-  .cmd-row.kind-section .name {
-    font-weight: 600;
+  .kind-section .name,
+  .kind-group .name {
     font-family: inherit;
-    color: var(--gs-fg-bright, var(--gs-fg));
   }
-  .cmd-row.selected > .cmd-line {
-    background: var(--gs-row-selected, rgba(80, 140, 220, 0.25));
-  }
-  .cmd-row.dim > .cmd-line {
-    opacity: 0.45;
-  }
-  .cmd-row.match > .cmd-line .name {
-    text-decoration: underline;
-    text-decoration-color: var(--gs-focus, #0969da);
-    text-underline-offset: 3px;
-  }
-  .cmd-line {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 2px 8px 2px calc(8px + var(--depth) * 14px);
-    cursor: pointer;
-    height: 22px;
-    color: var(--gs-fg);
-    user-select: none;
-    white-space: nowrap;
-  }
-  .cmd-line:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.05));
-  }
-  .twistie {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 14px;
-    color: var(--gs-fg-muted);
-    flex-shrink: 0;
-    transform: rotate(-90deg);
-    transition: transform 80ms ease-out;
-  }
-  .twistie.open {
-    transform: rotate(0deg);
-  }
-  .twistie:not(.has) {
-    visibility: hidden;
+  .kind-group .name {
+    font-weight: var(--gs-font-weight-semibold);
   }
   .name {
-    font-size: 13px;
+    font-size: var(--gs-font-size-base);
     flex: 0 0 auto;
     min-width: 14ch;
-    font-family: var(--gs-font-mono, monospace);
+    font-family: var(--gs-font-mono);
   }
   .kind-method .name {
-    color: var(--gs-syntax-method, #dcdcaa);
+    color: var(--gs-syntax-method);
   }
   .kind-attr .name {
-    color: var(--gs-syntax-attribute, #9cdcfe);
+    color: var(--gs-syntax-attribute);
   }
   .kind-alias .name {
-    color: var(--gs-syntax-alias, #9cdcfe);
+    color: var(--gs-syntax-alias);
   }
   .kind-keyword .name {
-    color: var(--gs-syntax-keyword, #c586c0);
-  }
-  .kind-group > .cmd-line > .name {
-    font-weight: 600;
-    font-family: inherit;
+    color: var(--gs-syntax-keyword);
   }
   .type {
-    font-size: 11px;
-    color: var(--gs-syntax-type, #4ec9b0);
+    font-size: var(--gs-font-size-xs);
+    color: var(--gs-syntax-type);
     flex: 0 0 auto;
   }
   .doc {
-    font-size: 12px;
-    color: var(--gs-syntax-dim, var(--gs-fg-muted));
+    font-size: var(--gs-font-size-sm);
+    color: var(--gs-syntax-dim);
     flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;

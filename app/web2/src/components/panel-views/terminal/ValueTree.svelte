@@ -30,7 +30,7 @@
   <a href="#{path}" class="obj-link" onclick={(ev) => onlink(ev, path)}>{@render text(path)}</a>
 {:else if shape.kind === 'list' || shape.kind === 'map'}
   <details class={label ? 'value-tree' : 'nested'}>
-    <summary>{@render text(nestedText(value))}</summary>
+    <summary class="gs-summary">{@render text(nestedText(value))}</summary>
     <div class="kv">
       {#each shape.items as [k, x], i (i)}
         <div class="kv-row"><span class="kv-key">{k}</span><ValueTree value={x} {onlink} /></div>
@@ -51,17 +51,6 @@
   }
   .obj-link:hover {
     text-decoration: underline;
-  }
-  details > summary {
-    cursor: pointer;
-    list-style: none;
-  }
-  details > summary::before {
-    content: '▸ ';
-    color: var(--gs-syntax-dim);
-  }
-  details[open] > summary::before {
-    content: '▾ ';
   }
   .kv {
     padding-left: 1.5em;

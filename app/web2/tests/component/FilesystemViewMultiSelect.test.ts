@@ -45,7 +45,6 @@ beforeEach(() => {
   filesystem.expanded = { '/opfs': true };
   filesystem.dragSourcePath = null;
   clearFsSelection();
-  window.confirm = () => true;
 });
 
 async function renderExpanded() {

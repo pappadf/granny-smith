@@ -1,6 +1,8 @@
 <script lang="ts">
   import { dismissToast, pauseTimer, resumeTimer, type Toast } from '@/state/toasts.svelte';
   import Icon from './Icon.svelte';
+  import IconButton from '@/components/ui/IconButton.svelte';
+  import type { IconName } from '@/lib/icons';
 
   interface Props {
     toast: Toast;
@@ -14,92 +16,77 @@
     return () => cancelAnimationFrame(id);
   });
 
-  const sevGlyph = $derived(
-    toast.severity === 'info' ? 'i' : toast.severity === 'warning' ? '!' : 'x',
-  );
+  const SEV_ICON: Record<Toast['severity'], IconName> = {
+    info: 'info',
+    warning: 'warning',
+    error: 'error',
+  };
 </script>
 
+<!-- Legacy hooks: toast, show, sev-icon, msg, close-btn. -->
 <div
-  class="toast {toast.severity}"
+  class="gs-toast toast {toast.severity}"
   class:show={visible}
+  data-intent={toast.severity === 'error' ? 'danger' : toast.severity}
   role={toast.severity === 'error' ? 'alert' : 'status'}
   onmouseenter={() => pauseTimer(toast.id)}
   onmouseleave={() => resumeTimer(toast.id)}
 >
-  <span class="sev-icon {toast.severity}" aria-hidden="true">{sevGlyph}</span>
-  <span class="msg">{toast.msg}</span>
-  <button
-    class="close-btn"
-    aria-label="Dismiss notification"
-    onclick={() => dismissToast(toast.id)}
+  <span class="gs-toast__icon sev-icon {toast.severity}" data-icon={SEV_ICON[toast.severity]}
+    ><Icon name={SEV_ICON[toast.severity]} /></span
   >
-    <Icon name="close" />
-  </button>
+  <span class="gs-toast__msg msg">{toast.msg}</span>
+  <IconButton
+    class="gs-toast__close close-btn"
+    icon="close"
+    label="Dismiss notification"
+    tone="panel"
+    rest="faded"
+    onclick={() => dismissToast(toast.id)}
+  />
 </div>
 
 <style>
-  .toast {
+  .gs-toast {
     background: var(--gs-toast-bg);
     color: var(--gs-toast-fg);
-    border-radius: 4px;
-    box-shadow: var(--gs-toast-shadow);
-    padding: 10px 12px;
+    border-radius: var(--gs-toast-radius);
+    box-shadow: var(--gs-shadow-toast);
+    padding: var(--gs-toast-padding);
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: var(--gs-space-2-5);
     opacity: 0;
     transform: translate3d(0, 100%, 0);
     transition:
-      transform 300ms ease-out,
-      opacity 300ms ease-out;
+      transform var(--gs-duration-slower) var(--gs-ease-out),
+      opacity var(--gs-duration-slower) var(--gs-ease-out);
     pointer-events: auto;
-    font-size: 13px;
-    line-height: 22px;
-    min-width: 260px;
+    font-size: var(--gs-font-size-base);
+    line-height: var(--gs-size-row);
+    min-width: var(--gs-toast-min-width);
   }
-  .toast.show {
+  .gs-toast.show {
     opacity: 1;
     transform: none;
   }
-  .msg {
+  .gs-toast__msg {
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .close-btn {
-    background: transparent;
-    border: none;
-    color: var(--gs-fg);
-    cursor: pointer;
-    padding: 2px;
-    display: none;
-  }
-  .toast:hover .close-btn {
-    display: block;
-  }
-  .sev-icon {
+  .gs-toast__icon {
     display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    font-size: 11px;
-    font-weight: 700;
     flex-shrink: 0;
-    color: #fff;
   }
-  .sev-icon.info {
-    background: var(--gs-toast-info);
-    color: #fff;
+  .gs-toast[data-intent='info'] .gs-toast__icon {
+    color: var(--gs-info-solid);
   }
-  .sev-icon.warning {
-    background: var(--gs-toast-warning);
-    color: #000;
+  .gs-toast[data-intent='warning'] .gs-toast__icon {
+    color: var(--gs-warning-solid);
   }
-  .sev-icon.error {
-    background: var(--gs-toast-error);
-    color: #fff;
+  .gs-toast[data-intent='danger'] .gs-toast__icon {
+    color: var(--gs-danger-solid);
   }
 </style>

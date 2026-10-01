@@ -1,4 +1,4 @@
-# Target Filesystem Access (APM, HFS, UFS)
+# Target Filesystem Access (APM, HFS, UFS, MFS, ISO 9660)
 
 Granny Smith can read the **contents of a guest disk image** — its partition
 map and the files inside its HFS or UFS volumes — without booting the guest or
@@ -267,10 +267,16 @@ int hfs_read_fork(hfs_volume_t *vol, const hfs_fork_t *fork,
 
 ### HFS scope & limitations
 
-- Covers 400K/800K/1.4M floppies with no partition map, and HFS partitions
-  inside an APM image.
+- Covers 400K/800K/1.4M floppies with no partition map, HFS and HFS+
+  partitions inside an APM image, bare HFS+/HFSX volumes, and HFS+ embedded
+  in a classic HFS wrapper (`drEmbedSigWord`).
 - Data fork, resource fork, and the 32-byte Finder info are all readable.
-- HFS classic only — **HFS+ is not supported**.
+- HFS and HFS+ share one handle: `hfs_open` sniffs the signature at volume
+  offset 1024 (`BD`, `H+`, `HX`) and routes to the classic or the Plus parser
+  (8 inline extents, UTF-16 names).
+- The walker reads through a byte source (`hfs_open_source`), so a volume
+  may be a partition of a host image, a file inside another volume, or an
+  archive member ([../vfs/namespace.md](../vfs/namespace.md)).
 - The catalog and EO files are themselves loaded via their *own* three inline
   extents. If one of those special files is fragmented past 3 extents, only the
   captured portion is parsed (a pragmatic compromise; realistic volumes keep
@@ -278,7 +284,9 @@ int hfs_read_fork(hfs_volume_t *vol, const hfs_fork_t *fork,
 
 ---
 
-## 4. UFS reader (A/UX)
+## 4. UFS, MFS and ISO 9660 readers
+
+### UFS (A/UX)
 
 **Source:** `src/core/storage/image_ufs.{c,h}`. Read-only UFS-1 walker targeting
 A/UX 3.0.x.
@@ -316,6 +324,32 @@ void            ufs_closedir_iter(ufs_dir_iter_t *it);
 int ufs_read_file(ufs_volume_t *vol, uint32_t ino,
                   uint64_t off, void *buf, size_t n, size_t *nread);
 ```
+
+### MFS (64K ROM floppies)
+
+**Source:** `src/core/storage/image_mfs.{c,h}`. The Macintosh File System of
+System 1 to 3 (400K floppies), per Inside Macintosh II: the master directory
+block at block 2 (`drSigWord` `0xD2D7`), the allocation block map packed
+12 bits an entry after it, and one flat file directory. MFS has no folders --
+the Finder kept those in its Desktop file -- so a bare MFS volume is a
+synthetic `partition1` whose root holds every file. Both forks and the 16
+bytes of Finder info (`flUsrWds`) are served; names are MacRoman shown as
+UTF-8 with `/` as `:`, as for HFS. The directory and the map are read at
+open; a fork read walks its allocation chain and refuses a block met twice,
+so a corrupt map with a cycle in it is an error, never the same bytes again.
+
+### ISO 9660
+
+**Source:** `src/core/storage/image_iso9660.{c,h}`. CD-ROM images that are
+not HFS: the primary volume descriptor at sector 16 (`CD001`), directory
+records in both byte orders that never cross a sector. Names come from the
+best description on the disc -- Joliet (UCS-2, preferred), Rock Ridge `NM`
+entries, else the ISO name less its `;1` -- and Apple's associated file (the
+directory-record flag Apple's ISO extensions use) is its file's resource
+fork. A bare ISO 9660 disc is a synthetic `partition1`; a hybrid disc whose
+partition map is APM is read as APM (its HFS side). Multi-extent and
+interleaved files are refused rather than misread, and a Rock Ridge name
+continued into a `CE` area falls back to the ISO name.
 
 ---
 
@@ -479,8 +513,10 @@ The web frontend runs these through the **Terminal console**
 | Area | Supported | Not supported |
 |------|-----------|---------------|
 | Partition map | APM (512-byte blocks, big-endian); synthetic single-partition for bare/raw HFS | GPT; DDM-declared non-512 block sizes |
-| HFS | MDB + catalog B-tree; 3 inline extents **plus Extents Overflow file** (fragmented forks read fully); data/resource forks; Finder info; MacRoman→UTF-8; `/`↔`:` name addressing | HFS+; EO/catalog file fragmented past their *own* 3 inline extents |
+| HFS | MDB + catalog B-tree; 3 inline extents **plus Extents Overflow file** (fragmented forks read fully); data/resource forks; Finder info; MacRoman→UTF-8; `/`↔`:` name addressing | EO/catalog file fragmented past their *own* inline extents |
 | UFS | UFS-1 / 4.3BSD-Tahoe, big-endian; direct + single + double indirect; root traversal; symlink reporting | triple-indirect; files > 4 GiB; symlink following |
+| MFS | bare 400K-era volumes; flat directory; both forks; Finder info; cycle-safe allocation chains | Finder folder structure (it lived in the Desktop file) |
+| ISO 9660 | primary descriptor; Joliet and Rock Ridge (`NM`) names; Apple associated files as resource forks; bare discs | multi-extent and interleaved files; Rock Ridge `CE` continuation; the ISO side of an APM hybrid |
 | Mutability | read-only everywhere (`-EROFS`) | any write path into an image |
 | Concurrency | refuses descent into a file the guest has SCSI-attached (`-EBUSY`) | — |
 | GUI | terminal commands (`vfs.*`, `image …`); **read-only image descent in the Filesystem tree** (expand image → partitions → HFS/UFS contents); **Download** or **drag out** a file/folder from an image (copied via `files.cp`) | writing into an image from the tree (read-only); resource-fork extraction from the tree (use `files.cat …/rsrc`) |
@@ -493,8 +529,12 @@ The web frontend runs these through the **Terminal console**
   (`image_apm_parse_buffer`, `image_apm_probe_magic`,
   `image_apm_classify_type`) with synthetic byte buffers, plus the path
   resolver. Run `make -C tests/unit run`.
-- **Integration** — `tests/integration/image-hfs-traverse` and
-  `image-ufs-traverse` drive real fixtures end-to-end. Run
+- **Unit** — `tests/unit/suites/mfs/` and `iso9660/` build volumes in the
+  test (out-of-order allocation chains, a cyclic map, Joliet, Rock Ridge,
+  associated files, corrupt records) and also run on wasm32.
+- **Integration** — `tests/integration/image-hfs-traverse`,
+  `image-ufs-traverse`, `image-mfs` (System 2.0.1's floppy) and
+  `image-iso9660` (a disc built at setup) drive fixtures end-to-end. Run
   `make integration-test-image-hfs-traverse` etc., or the full
   `make integration-test`.
 
@@ -512,6 +552,8 @@ The web frontend runs these through the **Terminal console**
 | `src/core/storage/image_apm_io.c` | Image-backed APM entry point |
 | `src/core/storage/image_hfs.{c,h}` | HFS catalog + Extents Overflow walker, fork reader |
 | `src/core/storage/image_ufs.{c,h}` | UFS-1 superblock + inode walker, file reader |
+| `src/core/storage/image_mfs.{c,h}` | MFS directory + allocation-map reader, fork reader |
+| `src/core/storage/image_iso9660.{c,h}` | ISO 9660 descriptor + directory reader (Joliet, Rock Ridge), file reader |
 | `src/core/storage/macroman.{c,h}` | MacRoman → UTF-8 transcoder (shared) |
 | `src/core/storage/storage_class.c` | `files.partmap/probe/mounts/unmount` |
 | `src/core/shell/cmd_cp.c` | `cp` (VFS-backed, supports image→host) |

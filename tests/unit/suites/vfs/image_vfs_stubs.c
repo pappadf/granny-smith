@@ -19,16 +19,33 @@ int image_vfs_acquire_mount(const char *host_path, image_mount_t **out_mount) {
     return -ENOTDIR;
 }
 
-char *image_vfs_materialize_nested(image_mount_t *m, const char *in_image_file_path) {
-    (void)m;
-    (void)in_image_file_path;
-    return NULL; // no nested descent in the stubbed VFS unit test
+int image_vfs_acquire_mount_source(const char *path, gs_source_t *data, gs_source_t *rsrc, image_mount_t **out_mount) {
+    (void)path;
+    (void)data;
+    (void)rsrc;
+    if (out_mount)
+        *out_mount = NULL;
+    return -ENOTDIR; // no nested descent in the stubbed VFS unit test
 }
+
+gs_source_t *image_vfs_open_source(image_mount_t *m, const char *tail, gs_fork_t fork, int *err) {
+    (void)m;
+    (void)tail;
+    (void)fork;
+    if (err)
+        *err = -ENOENT;
+    return NULL;
+}
+
+// The namespace formats are not linked: nothing is a namespace here.
+void gs_ns_register_formats(void) {}
 
 // Image-layer symbols referenced by vfs_export_raw_image().  The stubbed VFS
 // unit test never exercises the export path, so these just satisfy the linker.
-image_t *image_open_readonly(const char *base_path) {
-    (void)base_path;
+image_t *image_open_readonly_source(const char *name, struct peel_source *data, struct peel_source *rsrc) {
+    (void)name;
+    (void)data;
+    (void)rsrc;
     return NULL;
 }
 

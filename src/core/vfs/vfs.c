@@ -11,8 +11,11 @@
 
 #include "vfs.h"
 
+#include "format_registry.h"
 #include "image.h"
 #include "image_vfs.h"
+#include "namespace.h"
+#include "source.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -85,7 +88,7 @@ int vfs_normalise_path(const char *input, char *out, size_t outlen) {
 }
 
 // Walk `resolved` from left to right.  At the first intermediate segment
-// that resolves to a regular file, probe it as an image; on success set
+// that resolves to a regular file, probe it as an image or archive; on success set
 // *out_prefix_len to the byte length of the image-file prefix and return
 // the mount.  Return NULL and rc == 0 if no descent is needed (pure host
 // path).  On probe failure mid-path return NULL and rc != 0.
@@ -213,6 +216,24 @@ static bool find_nested_split(image_mount_t *m, const char *tail, size_t *split,
     return false;
 }
 
+// Mount the file at in-mount path `sub` of `outer`, a file whose VFS path is
+// the first `path_len` bytes of `resolved`.  0 and *out, or a negated errno
+// (-ENOTDIR when it is no image or archive).
+static int mount_member(image_mount_t *outer, const char *sub, const char *resolved, size_t path_len,
+                        image_mount_t **out) {
+    int err = 0;
+    gs_source_t *data = image_vfs_open_source(outer, sub, GS_FORK_DATA, &err);
+    if (!data)
+        return err ? err : -ENOENT;
+    gs_source_t *rsrc = image_vfs_open_source(outer, sub, GS_FORK_RSRC, NULL);
+    char path[VFS_PATH_MAX];
+    snprintf(path, sizeof(path), "%.*s", (int)path_len, resolved);
+    int rc = image_vfs_acquire_mount_source(path, data, rsrc, out);
+    gs_source_release(data);
+    gs_source_release(rsrc);
+    return rc;
+}
+
 // Shared body for vfs_resolve / vfs_resolve_descend.  `descend_bare`
 // controls the "ls/cd bare image path" rule.
 static int resolve_impl(const char *input, char *resolved, size_t resolved_len, const vfs_backend_t **be, void **ctx,
@@ -245,12 +266,13 @@ static int resolve_impl(const char *input, char *resolved, size_t resolved_len, 
         }
     }
 
-    // Nested-image descent: the in-image tail may itself point through a
-    // disk image FILE (e.g. an NDIF .img inside a Toast CD).  For each such
-    // level, materialise the inner image to a host scratch file, mount it,
-    // and continue with the remaining in-image tail (a substring of
-    // `resolved`, so no reallocation is needed).  Bounded to avoid loops.
-    for (int depth = 0; mount && depth < 8; depth++) {
+    // Nested descent: the in-mount tail may itself run through a file that
+    // is an image or an archive (an NDIF .img inside a Toast CD, a .sit
+    // inside a .zip).  Each such file is opened as a source -- a view of its
+    // parent, or a decode-through fork -- and mounted in turn, and the rest
+    // of the tail resolves inside it.  Nothing is copied out.  Bounded, so a
+    // file that contains itself cannot loop.
+    for (int depth = 0; mount && depth < 16; depth++) {
         const char *ntail = resolved + prefix_len;
         size_t split = 0;
         const char *rem = NULL;
@@ -261,33 +283,25 @@ static int resolve_impl(const char *input, char *resolved, size_t resolved_len, 
             break;
         memcpy(sub, ntail, split);
         sub[split] = '\0';
-        char *scratch = image_vfs_materialize_nested(mount, sub);
-        if (!scratch)
-            return -EIO; // inner image present but undecodable
         image_mount_t *nested = NULL;
-        int pr = image_vfs_acquire_mount(scratch, &nested);
-        free(scratch);
+        int pr = mount_member(mount, sub, resolved, prefix_len + split, &nested);
         if (pr != 0)
             return (pr == -ENOTDIR || pr == -ENOENT) ? -ENOTDIR : pr;
         mount = nested;
         prefix_len = (size_t)(rem - resolved);
     }
 
-    // Bare nested image (ls/cd on the inner .img itself): descend so the
-    // partition list is shown, mirroring the top-level bare-image rule.
+    // Bare nested image (ls/cd on the inner file itself): descend so its
+    // root is shown, mirroring the top-level bare-image rule.
     if (mount && descend_bare) {
         const char *ntail = resolved + prefix_len;
         if (ntail[0] == '/' && ntail[1] && !tail_has_fork_component(ntail)) {
             vfs_stat_t st;
             if (vfs_image_backend()->stat(mount, ntail, &st) == 0 && (st.mode & VFS_MODE_FILE)) {
-                char *scratch = image_vfs_materialize_nested(mount, ntail);
-                if (scratch) {
-                    image_mount_t *nested = NULL;
-                    if (image_vfs_acquire_mount(scratch, &nested) == 0) {
-                        mount = nested;
-                        prefix_len = strlen(resolved);
-                    }
-                    free(scratch);
+                image_mount_t *nested = NULL;
+                if (mount_member(mount, ntail, resolved, strlen(resolved), &nested) == 0) {
+                    mount = nested;
+                    prefix_len = strlen(resolved);
                 }
             }
         }
@@ -436,43 +450,83 @@ int vfs_export_raw_image(const char *src, const char *dst, char *err, size_t err
         return rc;
     }
 
-    // The host image path we ultimately open read-only and flatten to raw.
-    // For a nested image we first decode it to a scratch file.
-    const char *host_image_path = resolved;
-    char *scratch = NULL;
-
+    // Open the source -- a host file, or a file inside a mount -- through
+    // the same opener every image uses, so every format and every nesting
+    // flattens alike.
+    int oerr = 0;
+    gs_source_t *data = NULL, *rsrc = NULL;
     if (be == vfs_image_backend() && ctx) {
-        // Source lives inside a mounted image; `tail` is its in-image path.
-        vfs_stat_t st;
-        if (be->stat(ctx, tail, &st) != 0 || !(st.mode & VFS_MODE_FILE)) {
-            set_err(err, err_cap, "export_raw: source is not a file inside the image");
-            return -ENOENT;
-        }
-        scratch = image_vfs_materialize_nested((image_mount_t *)ctx, tail);
-        if (!scratch) {
-            set_err(err, err_cap, "export_raw: could not decode/extract the nested image");
-            return -EIO;
-        }
-        host_image_path = scratch;
+        data = image_vfs_open_source((image_mount_t *)ctx, tail, GS_FORK_DATA, &oerr);
+        rsrc = data ? image_vfs_open_source((image_mount_t *)ctx, tail, GS_FORK_RSRC, NULL) : NULL;
+    } else {
+        data = gs_source_open_host_path(resolved, GS_FORK_DATA, &oerr);
+        rsrc = data ? gs_source_open_host_path(resolved, GS_FORK_RSRC, NULL) : NULL;
     }
-
-    // Open the (decoded) image read-only and flatten its logical media to a
-    // new raw file.  image_export_to refuses to overwrite and creates parent
-    // directories.
-    image_t *img = image_open_readonly(host_image_path);
+    if (!data) {
+        set_err(err, err_cap, "export_raw: source is not a file");
+        return oerr ? oerr : -ENOENT;
+    }
+    image_t *img = image_open_readonly_source(resolved, data, rsrc);
+    gs_source_release(data);
+    gs_source_release(rsrc);
     if (!img) {
-        free(scratch);
         set_err(err, err_cap, "export_raw: source is not a recognised disk image");
         return -EIO;
     }
+    // Flatten its logical media to a new raw file.  image_export_to refuses
+    // to overwrite and creates parent directories.
     int erc = image_export_to(img, dst);
     image_close(img);
-    free(scratch);
     if (erc != 0) {
         set_err(err, err_cap, "export_raw: write failed (destination exists or not writable)");
         return -EIO;
     }
     return 0;
+}
+
+gs_source_t *vfs_open_source(const char *path, gs_fork_t fork, int *err) {
+    int e = 0;
+    if (!err)
+        err = &e;
+    char resolved[VFS_PATH_MAX];
+    const vfs_backend_t *be = NULL;
+    void *ctx = NULL;
+    const char *tail = NULL;
+    // Strict: a bare image path is the image file, not its contents.
+    *err = vfs_resolve(path, resolved, sizeof(resolved), &be, &ctx, &tail);
+    if (*err)
+        return NULL;
+    if (be == vfs_image_backend())
+        return image_vfs_open_source((image_mount_t *)ctx, tail, fork, err);
+    return gs_source_open_host_path(resolved, fork, err);
+}
+
+// The storage engine's path opener: whatever vfs_open_source resolves.
+static gs_source_t *vfs_path_opener(const char *path, gs_fork_t fork, int *err) {
+    return vfs_open_source(path, fork, err);
+}
+
+void vfs_init(void) {
+    gs_ns_register_formats();
+    gs_source_set_path_opener(vfs_path_opener);
+}
+
+bool vfs_is_expandable(const char *path) {
+    int err = 0;
+    gs_source_t *data = vfs_open_source(path, GS_FORK_DATA, &err);
+    if (!data)
+        return false;
+    // Only a file whose head and tail are cheap to read now is probed:
+    // deciding for a compressed archive member not yet decoded would mean
+    // decoding all of it.
+    bool yes = false;
+    if (gs_source_tier(data) <= GS_TIER_INDEXED) {
+        gs_source_t *rsrc = vfs_open_source(path, GS_FORK_RSRC, NULL);
+        yes = gs_format_is_namespace(data, rsrc);
+        gs_source_release(rsrc);
+    }
+    gs_source_release(data);
+    return yes;
 }
 
 const char *vfs_get_cwd(void) {

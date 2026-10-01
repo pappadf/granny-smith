@@ -240,12 +240,12 @@ describe('ConsoleInput highlighting', () => {
       { from: 0, to: 7, cls: 'object' },
       { from: 8, to: 13, cls: 'unknown' },
     ]);
-    const unknown = host.querySelector('.gs-hl-unknown');
+    const unknown = host.querySelector('.hl-unknown');
     expect(unknown?.textContent).toBe('flopy');
-    expect(host.querySelector('.gs-hl-object')?.textContent).toBe('machine');
+    expect(host.querySelector('.hl-object')?.textContent).toBe('machine');
     // An answer for text the input no longer holds changes nothing.
     input.setHighlight('something else', [{ from: 0, to: 4, cls: 'keyword' }]);
-    expect(host.querySelector('.gs-hl-keyword')).toBeNull();
+    expect(host.querySelector('.hl-keyword')).toBeNull();
   });
 });
 

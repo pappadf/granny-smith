@@ -321,7 +321,7 @@ describe('ConsoleView highlighting', () => {
     await waitFor(() => expect(writeToConsole('')).toBe(true));
     writeToConsole('util.echo 42');
     await waitFor(() =>
-      expect(container.querySelector('.console-input .gs-hl-method')?.textContent).toBe('echo'),
+      expect(container.querySelector('.console-input .hl-method')?.textContent).toBe('echo'),
     );
     await fireEvent.keyDown(cm, { key: 'Enter' });
     const entry = await waitFor(() => {

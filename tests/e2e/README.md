@@ -20,6 +20,7 @@ tests/e2e/
 ├── playwright.web2.config.ts        # Main functional config (testDir → web2-specs/)
 ├── playwright.prod-smoke.config.ts  # Production-bundle boot smoke (ui-prod-smoke/)
 ├── playwright.webkit-local.config.ts# web2-specs/upload.spec.ts on WebKit (macOS)
+├── playwright.gallery.config.ts     # UI gallery screenshots (gallery/), Vite dev server
 ├── package.json                     # Node dependencies (Playwright)
 ├── tsconfig.json
 ├── test_server.py                   # COOP/COEP-enabled static server (web2 + webkit configs)
@@ -27,6 +28,7 @@ tests/e2e/
 │
 ├── web2-specs/                      # Main functional suite (playwright.web2.config.ts)
 │   ├── ans-bitblt-repro.spec.ts         # Reproduction (REPRO_E28=1): NT GUI Setup on the ANS 500 drawn in the browser
+│   ├── app-states.spec.ts               # The workbench in fixed states, screenshotted in both colour schemes
 │   ├── av-boot-no-slots.spec.ts         # A slotless model (q660av) boots after a carded one in the same session
 │   ├── av-camera.spec.ts                # AV video-in against Chromium's fake camera
 │   ├── av-microphone.spec.ts            # Browser mic → shared-heap ring → guest RAM (no OS)
@@ -66,6 +68,9 @@ tests/e2e/
 │   ├── voodoo2-webgpu.spec.ts           # Voodoo2 WebGPU takeover: engagement, exact coverage, fallback
 │   └── vrom-offer-ingest.spec.ts        # Mid-session vROM upload is offered to "(auto)"
 │
+├── gallery/                         # UI gallery screenshots (playwright.gallery.config.ts)
+│   └── ui-gallery.spec.ts           # Every story × variant × scheme, pixel-compared with baselines
+│
 ├── ui-prod-smoke/                   # Production-bundle smoke (playwright.prod-smoke.config.ts)
 │   └── prod-smoke.spec.ts           # dist/ on a subpath w/o COI headers reaches __gsReady
 │
@@ -85,6 +90,9 @@ make ui2-e2e            # or: make e2e-test  (alias)
 
 # The production-bundle smoke test
 make ui2-prod-smoke
+
+# The UI gallery screenshots (no WASM, no test data)
+make ui2-gallery
 
 # Via npx directly
 npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.web2.config.ts
@@ -124,6 +132,45 @@ Regenerate with `--update-snapshots`:
 npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.web2.config.ts \
     iicx-video-modes --update-snapshots
 ```
+
+### UI screenshots
+
+Two sets pin the look of the UI itself:
+
+- `gallery/ui-gallery.spec.ts` opens the development-only UI gallery
+  (`?gallery` on the Vite dev server, `app/web2/src/gallery/`) once per story,
+  variant, skin and scheme (each skin in the schemes its manifest lists), and
+  compares the page with its baseline at `maxDiffPixels: 0`. The default
+  skin's baselines are `<story>-<variant>-<scheme>`, another skin's
+  `<story>-<variant>-<skin>-<scheme>`. The stories render components against fixture state, so
+  this needs neither the WASM build nor test data, and runs in every CI run
+  (`make ui2-gallery`). Opened without `&story=`, the gallery is an index
+  with a skin / scheme / reduced-motion toolbar, a token table (`&view=tokens`)
+  and a coverage list (`&view=coverage`) of which story shows each UI element.
+- `web2-specs/app-states.spec.ts` screenshots the real workbench (welcome,
+  every panel tab, the configuration form, toasts of each severity, the
+  print dialog, a URL boot, the Debug view of a paused Plus) with the text that changes on its own masked. It runs with
+  the functional suite (`make ui2-e2e`, needs test data).
+
+`web2-specs/appearance.spec.ts` checks the skin and scheme plumbing without
+screenshots: a persisted light preference is on the page before any of the
+app's JavaScript runs, and a scheme switch restyles the console input at
+runtime.
+
+A styling change that claims to change nothing must pass both unchanged. An
+intentional change regenerates the affected baselines and lists them in its PR.
+
+Both sets are font- and antialiasing-sensitive, so their baselines are
+recorded **in the CI image only** (`ghcr.io/pappadf/granny-smith-dev`, with
+Playwright's Chromium dependencies installed as CI installs them):
+
+```bash
+docker run --rm -v "$PWD":"$PWD" -w "$PWD/tests/e2e" <ci-image-with-chromium-deps> \
+    npx playwright test --config=playwright.gallery.config.ts --update-snapshots
+```
+
+`GS_GALLERY_SNAPSHOTS=<dir>` points the gallery's baselines at a scratch
+directory: record a set before a change and compare against it after.
 
 Framebuffer-level pixel oracles (raw `screen.save` PNGs, monitor × depth
 matrices, boot baselines) live in the headless integration tests

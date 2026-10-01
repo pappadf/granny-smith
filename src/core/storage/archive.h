@@ -2,11 +2,12 @@
 // Copyright (c) pappadf
 
 // archive.h
-// Mac archive file handling: identification (`.sit` / `.cpt` / `.hqx` /
-// `.bin` / `.sea`) and extraction. The implementation wraps the
-// third-party "peeler" library — that name is an implementation detail;
-// the user-facing concept is "Mac archive", so the typed object surface
-// is `archive.*`.
+// Archive file handling: identification (`.sit` / `.cpt` / `.zip` / `.tar` /
+// `.hqx` / `.bin` / `.gz`) and extraction.  An archive is a namespace of the VFS
+// (namespace.h) -- `ls app.sit` lists it, `cp app.sit/Readme .` copies one
+// file out -- and these are the typed object surface over that, `archive.*`.
+// The in-tree peeler library does the format work; its name is an
+// implementation detail.
 
 #ifndef ARCHIVE_H
 #define ARCHIVE_H
@@ -15,16 +16,19 @@
 
 struct class_desc;
 
-// Identify a Mac archive at `path`.
-// Returns the format short name ("sit" / "cpt" / "hqx" / "bin" / "sea")
-// for a recognised file, or NULL when the file is unreadable or not a
-// supported archive. Returned pointer is owned by the peeler library
-// and is valid for the lifetime of the program.
+// Identify an archive at `path` (any VFS path: it may be inside an image or
+// another archive).  Returns the format short name ("sit" / "cpt" / "zip" /
+// "tar" / "hqx" / "bin" / "gz") for a recognised file, or NULL when the file is
+// unreadable or not a supported archive.  Returned pointer is owned by the
+// peeler library and is valid for the lifetime of the program.  Reads at
+// most 64 KiB from each end of the file.
 const char *archive_identify_file(const char *path);
 
 // Extract the archive at `path` into `out_dir` (defaults to "." when
-// NULL/empty). Creates the output directory if it doesn't exist.
-// Returns 0 on success, non-zero on failure.
+// NULL/empty): its tree copied out, each file's resource fork and Finder
+// info in an AppleDouble "._" sidecar.  Creates the output directory if it
+// doesn't exist.  Returns 0 on success, -ECANCELED when cancelled, non-zero
+// on other failure.
 int archive_extract_file(const char *path, const char *out_dir);
 
 // === Object-model class descriptor =========================================
