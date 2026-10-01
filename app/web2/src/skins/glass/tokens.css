@@ -115,7 +115,11 @@
     --gs-syntax-dim: #6e7390;
 
     /* Code and data views */
-    --gs-code-pc-row-bg: rgba(124, 140, 255, 0.2);
+    --gs-code-pc-row-bg: linear-gradient(
+      90deg,
+      rgba(124, 140, 255, 0.26),
+      rgba(124, 140, 255, 0.03)
+    );
     --gs-code-changed-bg: rgba(94, 234, 212, 0.13);
 
     /* Console */
@@ -266,7 +270,7 @@
     --gs-syntax-dim: #747a8a;
 
     /* Code and data views */
-    --gs-code-pc-row-bg: #e6eeff;
+    --gs-code-pc-row-bg: linear-gradient(90deg, #dfe8ff, rgba(223, 232, 255, 0.15));
     --gs-code-changed-bg: rgba(15, 159, 138, 0.14);
 
     /* Console */
@@ -336,6 +340,7 @@
     --gs-input-height: 30px;
     --gs-input-height-lg: 34px;
     --gs-segmented-radius: 9px;
+    --gs-section-title-fg: var(--gs-text-muted);
     --gs-segmented-font-size: var(--gs-font-size-sm);
     --gs-segmented-fg-selected: var(--gs-text-strong);
     --gs-segmented-bg-selected: var(--gs-accent-subtle);

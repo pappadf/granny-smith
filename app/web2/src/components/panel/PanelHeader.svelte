@@ -8,15 +8,16 @@
   import Button from '../ui/Button.svelte';
   import Checkbox from '../ui/Checkbox.svelte';
 
-  // Display labels, in this order and casing.
+  // Display labels, in this order.  Written in title case; the skin's
+  // --gs-tab-transform decides whether they show in capitals.
   const LABELS: Record<PanelTab, string> = {
-    terminal: 'TERMINAL',
-    machine: 'SYSTEM',
-    filesystem: 'FILESYSTEM',
-    images: 'IMAGES',
-    checkpoints: 'CHECKPOINTS',
-    debug: 'DEBUG',
-    logs: 'LOGS',
+    terminal: 'Terminal',
+    machine: 'System',
+    filesystem: 'Filesystem',
+    images: 'Images',
+    checkpoints: 'Checkpoints',
+    debug: 'Debug',
+    logs: 'Logs',
   };
 </script>
 

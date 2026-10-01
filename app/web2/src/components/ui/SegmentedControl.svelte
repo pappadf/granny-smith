@@ -54,8 +54,11 @@
 </div>
 
 <style>
+  /* One line of labels, never squeezed into two: a toolbar short of room
+     shrinks its gaps, not this. */
   .gs-segmented {
     display: inline-flex;
+    flex: none;
     align-items: stretch;
     border-radius: var(--gs-segmented-radius);
     overflow: hidden;
@@ -72,6 +75,7 @@
     background: transparent;
     color: var(--gs-segmented-fg);
     font-size: var(--gs-segmented-font-size);
+    white-space: nowrap;
     cursor: pointer;
   }
   .gs-segmented[data-framed] .gs-segmented__option {

@@ -11,7 +11,11 @@
     background: var(--gs-ref-chrome);
   }
 
+  /* Groups keep a gap when the toolbar runs short of room; what still does
+     not fit is cut at its edge rather than drawn over the panel. */
   :root[data-skin='platinum'] .gs-toolbar[data-variant='bar'] {
+    gap: var(--gs-toolbar-gap);
+    overflow-x: clip;
     padding: 0 10px;
     border-bottom: 1px solid #888888;
     box-shadow: inset 0 1px 0 var(--gs-ref-bevel-light);
@@ -84,6 +88,54 @@
     color: #8a8a8a;
     border-color: #8a8a8a;
   }
+  /* Button pairs that belong together are joined into one bevelled strip,
+     as Mac OS 8 groups them: run with shut down (the toolbar's first two
+     buttons), and the three panel-layout buttons after the last group's
+     groove. */
+  :root[data-skin='platinum']
+    .gs-toolbar[data-variant='bar']
+    > :first-child
+    > .gs-icon-button:first-child {
+    border-radius: 4px 0 0 4px;
+  }
+  :root[data-skin='platinum']
+    .gs-toolbar[data-variant='bar']
+    > :first-child
+    > .gs-icon-button:first-child
+    + .gs-icon-button {
+    margin-left: calc(-1px - var(--gs-toolbar-gap));
+    border-radius: 0 4px 4px 0;
+  }
+  :root[data-skin='platinum']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button {
+    border-radius: 0;
+  }
+  :root[data-skin='platinum']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button
+    + .gs-icon-button {
+    margin-left: calc(-1px - var(--gs-toolbar-gap));
+  }
+  :root[data-skin='platinum']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    + .gs-icon-button {
+    border-radius: 4px 0 0 4px;
+  }
+  :root[data-skin='platinum']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button:last-child {
+    border-radius: 0 4px 4px 0;
+  }
+
   /* The default (primary) button: Mac OS 8's thick outer ring. */
   :root[data-skin='platinum'] .gs-button[data-variant='primary']:not(:disabled) {
     font-weight: var(--gs-font-weight-bold);
@@ -117,6 +169,10 @@
     box-shadow:
       inset 1px 1px 0 var(--gs-ref-bevel-light),
       inset -1px -1px 0 var(--gs-ref-bevel-shade);
+  }
+  /* Option labels start with a capital: Real-time, Accelerated… */
+  :root[data-skin='platinum'] .gs-segmented__option::first-letter {
+    text-transform: uppercase;
   }
   :root[data-skin='platinum'] .gs-segmented__option:first-child {
     margin-left: 0;

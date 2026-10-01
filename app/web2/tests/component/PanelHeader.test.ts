@@ -20,13 +20,13 @@ describe('PanelHeader', () => {
       t.textContent?.trim(),
     );
     expect(labels).toEqual([
-      'TERMINAL',
-      'SYSTEM',
-      'FILESYSTEM',
-      'IMAGES',
-      'CHECKPOINTS',
-      'DEBUG',
-      'LOGS',
+      'Terminal',
+      'System',
+      'Filesystem',
+      'Images',
+      'Checkpoints',
+      'Debug',
+      'Logs',
     ]);
   });
 

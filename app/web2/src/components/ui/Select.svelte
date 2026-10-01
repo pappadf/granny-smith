@@ -1,6 +1,8 @@
 <script lang="ts">
-  // A native <select> with a drawn closed box and chevron; the option popup
-  // stays native and follows the colour scheme.  Children are the <option>s.
+  // A native <select> with a drawn closed box and chevron.  Where the browser
+  // has customizable selects (appearance: base-select) the option popup is
+  // drawn like the app's menus, from the menu tokens; elsewhere it stays
+  // native and follows the colour scheme.  Children are the <option>s.
   // `class` and `style` (layout only) land on the wrapper; every other
   // attribute (id, onchange, aria-label…) reaches the <select>.
   import type { Snippet } from 'svelte';
@@ -85,6 +87,61 @@
   .gs-select__control:disabled {
     opacity: var(--gs-opacity-disabled);
     cursor: default;
+  }
+  /* The popup, drawn like a context menu (.gs-menu) where the browser lets
+     CSS draw it.  The closed box keeps the rules above; its own picker icon
+     is hidden in favour of the drawn chevron. */
+  @supports (appearance: base-select) {
+    .gs-select__control,
+    .gs-select__control::picker(select) {
+      appearance: base-select;
+    }
+    .gs-select__control {
+      display: flex;
+      align-items: center;
+    }
+    .gs-select__control::picker-icon {
+      display: none;
+    }
+    .gs-select__control::picker(select) {
+      min-width: anchor-size(width);
+      max-height: 60vh;
+      margin: var(--gs-space-0-5) 0;
+      padding: var(--gs-space-1) 0;
+      border: var(--gs-border-width) solid var(--gs-border);
+      border-radius: var(--gs-menu-radius);
+      background: var(--gs-menu-bg);
+      color: var(--gs-menu-fg);
+      box-shadow: var(--gs-shadow-popup);
+    }
+    .gs-select__control option {
+      display: flex;
+      align-items: center;
+      gap: var(--gs-space-1-5);
+      min-height: var(--gs-menu-item-height);
+      padding: 0 var(--gs-menu-item-padding-x) 0 var(--gs-space-1-5);
+      font-size: var(--gs-font-size-base);
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    .gs-select__control option::checkmark {
+      width: 1em;
+      text-align: center;
+    }
+    .gs-select__control option:not(:checked)::checkmark {
+      visibility: hidden;
+    }
+    .gs-select__control option:hover,
+    .gs-select__control option:focus-visible {
+      outline: none;
+      background: var(--gs-menu-hover-bg);
+      color: var(--gs-menu-hover-fg);
+    }
+    .gs-select__control option:disabled {
+      opacity: var(--gs-opacity-disabled);
+      background: transparent;
+      color: inherit;
+    }
   }
   .gs-select :global(.gs-select__arrow) {
     position: absolute;

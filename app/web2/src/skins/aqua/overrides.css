@@ -14,7 +14,11 @@
   :root[data-skin='aqua'] .gs-display {
     background: transparent;
   }
+  /* Groups keep a gap when the toolbar runs short of room; what still does
+     not fit is cut at its edge rather than drawn over the panel. */
   :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] {
+    gap: var(--gs-toolbar-gap);
+    overflow-x: clip;
     padding: 0 12px;
     background: var(--gs-ref-brushed);
     border-bottom: 1px solid #8a8a8a;
@@ -92,6 +96,13 @@
     width: 34px;
     height: 34px;
   }
+  /* The small appearance chevron: a slim capsule as tall as its
+     neighbours. */
+  :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] .gs-icon-button[data-size='sm'] {
+    width: 18px;
+    height: 30px;
+    border-radius: 999px;
+  }
   :root[data-skin='aqua'] .gs-icon-button:disabled,
   :root[data-skin='aqua'] .gs-button:disabled {
     opacity: 0.55;
@@ -108,7 +119,7 @@
   :root[data-skin='aqua'] .gs-segmented__option,
   :root[data-skin='aqua'] .gs-tabs__tab {
     margin-left: -1px;
-    padding: 0 12px;
+    padding: 0 9px;
     border: 1px solid var(--gs-ref-white-border);
     border-radius: 0;
     color: #1a1a1a;
@@ -136,6 +147,34 @@
   :root[data-skin='aqua'] .gs-segmented__option:disabled {
     opacity: 0.55;
   }
+  /* Option labels start with a capital: Real-time, Accelerated… */
+  :root[data-skin='aqua'] .gs-segmented__option::first-letter {
+    text-transform: uppercase;
+  }
+
+  /* Checkboxes: small white gel squares, blue gel with a tick when on. */
+  :root[data-skin='aqua'] .gs-check__control {
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border: 1px solid #8a8a8a;
+    border-radius: 3px;
+    background: var(--gs-ref-gel-white);
+    box-shadow:
+      inset 0 1px 1px #ffffff,
+      0 1px 1px rgba(0, 0, 0, 0.18);
+  }
+  :root[data-skin='aqua'] .gs-check__control:checked {
+    border-color: var(--gs-ref-gel-border);
+    background:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 7.3l2.6 2.7L11 4' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+        center / 12px 12px no-repeat,
+      var(--gs-ref-gel-blue);
+  }
+  :root[data-skin='aqua'] .gs-check__control:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(80, 150, 240, 0.45);
+  }
 
   /* ---- The panel: a capsule of tabs over a recessed box ------------------ */
   :root[data-skin='aqua'] .gs-workbench > .gs-panel {
@@ -143,25 +182,36 @@
     padding: 0 12px 12px;
     background: transparent;
   }
+  /* The tab capsule gets a row of its own, centred, under the header's
+     actions (which keep theirs, at the right), and overlaps the box by half
+     a tab so it sits across the box's top edge. */
   :root[data-skin='aqua'] .gs-panel-header {
     position: relative;
     z-index: 2;
-    margin-bottom: -12px;
+    flex: none;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    height: auto;
+    overflow: visible;
+    margin-bottom: -14px;
+    padding-top: 8px;
     border-bottom: 0;
     background: transparent;
-    padding-top: 10px;
   }
   :root[data-skin='aqua'] .gs-tabs--panel {
-    margin: 0 auto;
-    padding: 0;
-    border-radius: 999px;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+    order: 1;
+    flex: 1 0 100%;
+    justify-content: safe center;
+    padding: 2px 3px 3px;
   }
   :root[data-skin='aqua'] .gs-tabs--panel .gs-tabs__tab {
     height: 23px;
+    box-shadow:
+      inset 0 1px 1px #ffffff,
+      0 1px 2px rgba(0, 0, 0, 0.2);
   }
   :root[data-skin='aqua'] .gs-panel-content {
-    padding: 22px 10px 10px;
+    padding: 20px 10px 10px;
     border: 1px solid #b8b8b8;
     border-radius: 8px;
     background: rgba(0, 0, 0, 0.035);
