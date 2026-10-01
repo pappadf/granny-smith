@@ -5,6 +5,7 @@
   import { machine } from '@/state/machine.svelte';
   import MmuStateTab from './MmuStateTab.svelte';
   import MmuTranslateTab from './MmuTranslateTab.svelte';
+  import SegmentedControl from '@/components/ui/SegmentedControl.svelte';
 
   // State and Translate read the core's own MMU (bus/mmu.ts).  Map and
   // Descriptors are gone until the core can walk a table for them: they
@@ -31,28 +32,18 @@
         onSelect={(k: MmuSubtab) => (debug.mmuSubtab = k)}
       >
         {#snippet accessory()}
-          <div class="su-toggle" role="group" aria-label="Supervisor / User root">
-            <button
-              type="button"
-              class="su-btn"
-              class:active={debug.mmuSupervisor}
-              aria-pressed={debug.mmuSupervisor}
-              onclick={() => (debug.mmuSupervisor = true)}
-              title="Supervisor root"
-            >
-              S
-            </button>
-            <button
-              type="button"
-              class="su-btn"
-              class:active={!debug.mmuSupervisor}
-              aria-pressed={!debug.mmuSupervisor}
-              onclick={() => (debug.mmuSupervisor = false)}
-              title="User root"
-            >
-              U
-            </button>
-          </div>
+          <SegmentedControl
+            class="su-toggle"
+            optionClass="su-btn"
+            framed
+            label="Supervisor / User root"
+            value={debug.mmuSupervisor}
+            onChange={(v) => (debug.mmuSupervisor = v)}
+            options={[
+              { value: true, label: 'S', title: 'Supervisor root' },
+              { value: false, label: 'U', title: 'User root' },
+            ]}
+          />
         {/snippet}
       </TabStrip>
       {#if debug.mmuSubtab === 'translate'}
@@ -69,25 +60,5 @@
     color: var(--gs-text-muted);
     font-size: var(--gs-font-size-xs);
     padding: var(--gs-space-2) var(--gs-space-4);
-  }
-  .su-toggle {
-    display: inline-flex;
-    border: var(--gs-border-width) solid var(--gs-border);
-    border-radius: var(--gs-radius-xs);
-    overflow: hidden;
-    height: 20px;
-  }
-  .su-btn {
-    background: transparent;
-    color: var(--gs-text-muted);
-    border: none;
-    padding: 0 var(--gs-space-2);
-    font-size: var(--gs-font-size-xs);
-    font-weight: var(--gs-font-weight-semibold);
-    cursor: pointer;
-  }
-  .su-btn.active {
-    background: var(--gs-row-selected);
-    color: var(--gs-text-strong);
   }
 </style>

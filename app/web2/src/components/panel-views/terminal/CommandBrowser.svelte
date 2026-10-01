@@ -279,9 +279,6 @@
     flex: 1 1 0;
     min-height: 72px;
   }
-  .cmd-tree:focus {
-    outline: none;
-  }
   .cmd-tree:focus-visible {
     outline: var(--gs-focus-width) solid var(--gs-focus-ring);
     outline-offset: var(--gs-focus-offset);

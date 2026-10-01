@@ -5,6 +5,8 @@
   import { toggleLogsPopover } from '../panel-views/logs/logsHeader.svelte';
   import CreateCheckpointButton from '../panel-views/checkpoints/CreateCheckpointButton.svelte';
   import DebugToolbar from '../panel-views/debug/DebugToolbar.svelte';
+  import Button from '../ui/Button.svelte';
+  import Checkbox from '../ui/Checkbox.svelte';
 
   // Display labels, in this order and casing.
   const LABELS: Record<PanelTab, string> = {
@@ -26,38 +28,31 @@
   </div>
   <div class="panel-actions">
     {#if layout.activeTab === 'logs'}
-      <button
-        type="button"
+      <Button
         class="action-btn"
         onclick={() => toggleLogsPopover()}
         title="Set per-category log levels"
       >
         Levels
-      </button>
-      <label class="action-toggle" title="Scroll to newest line automatically">
-        <input
-          type="checkbox"
-          checked={logs.autoscroll}
-          onchange={(e) => setAutoscroll((e.target as HTMLInputElement).checked)}
-        />
-        autoscroll
-      </label>
-      <button
-        type="button"
-        class="action-btn"
-        onclick={() => clearLogs()}
-        title="Clear the log buffer"
-      >
+      </Button>
+      <Checkbox
+        size="sm"
+        class="action-toggle"
+        title="Scroll to newest line automatically"
+        checked={logs.autoscroll}
+        onchange={setAutoscroll}
+        label="autoscroll"
+      />
+      <Button class="action-btn" onclick={() => clearLogs()} title="Clear the log buffer">
         Clear
-      </button>
-      <button
-        type="button"
+      </Button>
+      <Button
         class="action-btn"
         onclick={() => downloadLogs()}
         title="Download the log buffer as text"
       >
         Download
-      </button>
+      </Button>
     {:else if layout.activeTab === 'checkpoints'}
       <CreateCheckpointButton />
     {:else if layout.activeTab === 'debug'}
@@ -98,30 +93,5 @@
     gap: var(--gs-space-1-5);
     padding: 0 var(--gs-space-2);
     flex-shrink: 0;
-  }
-  .action-btn {
-    background: transparent;
-    color: var(--gs-text);
-    border: var(--gs-border-width) solid var(--gs-border);
-    border-radius: var(--gs-radius-xs);
-    height: var(--gs-size-control);
-    padding: 0 var(--gs-space-2);
-    font-size: var(--gs-font-size-xs);
-    cursor: pointer;
-  }
-  .action-btn:hover {
-    background: var(--gs-row-hover);
-  }
-  .action-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--gs-space-1);
-    color: var(--gs-text-muted);
-    font-size: var(--gs-font-size-xs);
-    cursor: pointer;
-    user-select: none;
-  }
-  .action-toggle input {
-    margin: 0;
   }
 </style>

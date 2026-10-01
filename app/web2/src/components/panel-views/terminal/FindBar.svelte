@@ -55,6 +55,8 @@
 </script>
 
 <script lang="ts">
+  import TextInput from '@/components/ui/TextInput.svelte';
+
   // The find bar over the console's output: the query, match case,
   // previous / next (Enter, Shift+Enter) and close (Esc).
   let {
@@ -93,10 +95,11 @@
 </script>
 
 <div class="find" role="search">
-  <input
-    bind:this={inputEl}
+  <TextInput
+    bind:ref={inputEl}
     bind:value={find.query}
     class="find-input"
+    style="width: 14em"
     placeholder="Find"
     aria-label="Find in console output"
     onkeydown={onKey}
@@ -140,14 +143,6 @@
     border: var(--gs-border-width) solid var(--gs-border);
     font-family: var(--gs-font-ui);
     font-size: var(--gs-font-size-sm);
-  }
-  .find-input {
-    width: 14em;
-    font: inherit;
-    background: var(--gs-surface-app);
-    color: var(--gs-text);
-    border: var(--gs-border-width) solid var(--gs-border);
-    padding: var(--gs-space-px) var(--gs-space-1);
   }
   .find-count {
     min-width: 5.5em;

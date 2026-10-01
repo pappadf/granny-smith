@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Icon from '@/components/common/Icon.svelte';
+  import IconButton from '@/components/ui/IconButton.svelte';
   import { machine } from '@/state/machine.svelte';
   import { continueExec, pauseExec, stepInto, stopMachine, restart } from '@/bus/debug';
 
@@ -15,48 +15,49 @@
 
 <div class="debug-toolbar" role="toolbar" aria-label="Debug actions">
   {#if isRunning}
-    <button
-      type="button"
+    <IconButton
       class="tb-btn"
-      title="Pause"
-      aria-label="Pause"
+      tone="panel"
+      icon="pause"
+      iconSize={14}
+      label="Pause"
       onclick={onContinueOrPause}
-    >
-      <Icon name="pause" size={14} />
-    </button>
+    />
   {:else}
-    <button
-      type="button"
+    <IconButton
       class="tb-btn"
-      title="Continue"
-      aria-label="Continue"
+      tone="panel"
+      icon="play"
+      iconSize={14}
+      label="Continue"
       onclick={onContinueOrPause}
-    >
-      <Icon name="play" size={14} />
-    </button>
+    />
   {/if}
-  <button
-    type="button"
+  <IconButton
     class="tb-btn"
-    title="Step Into"
-    aria-label="Step Into"
+    tone="panel"
+    icon="step-into"
+    iconSize={14}
+    label="Step Into"
     disabled={stepDisabled}
     onclick={() => stepInto(1)}
-  >
-    <Icon name="step-into" size={14} />
-  </button>
-  <button type="button" class="tb-btn" title="Stop" aria-label="Stop" onclick={() => stopMachine()}>
-    <Icon name="stop" size={14} />
-  </button>
-  <button
-    type="button"
+  />
+  <IconButton
     class="tb-btn"
-    title="Restart"
-    aria-label="Restart"
+    tone="panel"
+    icon="stop"
+    iconSize={14}
+    label="Stop"
+    onclick={() => stopMachine()}
+  />
+  <IconButton
+    class="tb-btn"
+    tone="panel"
+    icon="restart"
+    iconSize={14}
+    label="Restart"
     onclick={() => restart()}
-  >
-    <Icon name="restart" size={14} />
-  </button>
+  />
 </div>
 
 <style>
@@ -64,26 +65,5 @@
     display: inline-flex;
     align-items: center;
     gap: var(--gs-space-0-5);
-  }
-  .tb-btn {
-    width: var(--gs-size-control);
-    height: var(--gs-size-control);
-    background: transparent;
-    color: var(--gs-text);
-    border: none;
-    border-radius: var(--gs-radius-xs);
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-  }
-  .tb-btn:hover:not(:disabled) {
-    background: var(--gs-row-hover);
-  }
-  .tb-btn:disabled {
-    color: var(--gs-text-muted);
-    cursor: default;
-    opacity: 0.5;
   }
 </style>

@@ -3,6 +3,8 @@
   // system (files.list), one directory at a time.  Picking a directory opens
   // it; picking a file (or "Use this folder") fills the field.
   import { gsEval } from '@/bus/emulator';
+  import Button from '@/components/ui/Button.svelte';
+  import TextInput from '@/components/ui/TextInput.svelte';
 
   interface Props {
     value: string;
@@ -71,15 +73,17 @@
 
 <span class="path-field">
   <span class="row">
-    <input
-      type="text"
+    <TextInput
+      size="inline"
+      mono
+      style="flex: 1; min-width: 12ch"
       aria-label={label}
       spellcheck="false"
       autocomplete="off"
       value={text}
       oninput={(ev) => set((ev.currentTarget as HTMLInputElement).value)}
     />
-    <button type="button" class="browse" aria-expanded={open} onclick={browse}>Browse…</button>
+    <Button class="browse" aria-expanded={open} onclick={browse}>Browse…</Button>
   </span>
   {#if open}
     <div class="listing" role="listbox" aria-label="Files in {dir}">
@@ -98,13 +102,12 @@
           onclick={() => pick(e)}>{e.name}{e.kind === 'directory' ? '/' : ''}</button
         >
       {/each}
-      <button
-        type="button"
+      <Button
         class="use-dir"
         onclick={() => {
           set(dir);
           open = false;
-        }}>Use this folder</button
+        }}>Use this folder</Button
       >
       {#if error}<div class="error">{error}</div>{/if}
     </div>
@@ -121,22 +124,6 @@
   .row {
     display: flex;
     gap: var(--gs-space-1);
-  }
-  input {
-    flex: 1;
-    min-width: 12ch;
-    font-family: var(--gs-font-mono);
-    font-size: var(--gs-font-size-sm);
-    color: var(--gs-text);
-    background: var(--gs-input-bg);
-    border: var(--gs-border-width) solid var(--gs-border);
-    padding: var(--gs-space-px) var(--gs-space-1);
-  }
-  .browse,
-  .use-dir {
-    font: inherit;
-    font-size: var(--gs-font-size-xs);
-    cursor: pointer;
   }
   .listing {
     display: flex;

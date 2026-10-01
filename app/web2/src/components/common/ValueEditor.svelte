@@ -6,6 +6,8 @@
   // and by the method-argument forms.
   import { onMount } from 'svelte';
   import type { TypeDescriptor } from '@/bus/systemTree';
+  import Select from '@/components/ui/Select.svelte';
+  import TextInput from '@/components/ui/TextInput.svelte';
 
   interface Props {
     type?: TypeDescriptor;
@@ -35,7 +37,9 @@
   let text = $state(value);
   let error = $state('');
   let busy = $state(false);
-  let inputEl = $state<HTMLInputElement | HTMLSelectElement | null>(null);
+  let textEl = $state<HTMLInputElement | null>(null);
+  let selectEl = $state<HTMLSelectElement | null>(null);
+  const inputEl = $derived(textEl ?? selectEl);
 
   const kind = $derived(type?.kind ?? 'any');
   const choices = $derived(kind === 'enum' && type?.enum?.length ? type.enum : null);
@@ -101,8 +105,11 @@
       <span class="knob"></span>
     </button>
   {:else if choices}
-    <select
-      bind:this={inputEl}
+    <Select
+      bind:ref={selectEl}
+      size="inline"
+      mono
+      invalid={!!error}
       aria-label={label}
       disabled={readonly || busy}
       value={text}
@@ -119,11 +126,14 @@
       {#each choices as c (c)}
         <option value={c}>{c}</option>
       {/each}
-    </select>
+    </Select>
   {:else}
-    <input
-      bind:this={inputEl}
-      type="text"
+    <TextInput
+      bind:ref={textEl}
+      size="inline"
+      mono
+      invalid={!!error}
+      style="min-width: 8ch; max-width: 100%"
       aria-label={label}
       spellcheck="false"
       autocomplete="off"
@@ -148,22 +158,6 @@
     min-width: 0;
     max-width: 100%;
     vertical-align: middle;
-  }
-  input,
-  select {
-    font: inherit;
-    font-family: var(--gs-font-mono);
-    font-size: var(--gs-font-size-sm);
-    color: var(--gs-text);
-    background: var(--gs-input-bg);
-    border: var(--gs-border-width) solid var(--gs-focus-ring);
-    padding: 0 var(--gs-space-1);
-    min-width: 8ch;
-    max-width: 100%;
-  }
-  .has-error input,
-  .has-error select {
-    border-color: var(--gs-syntax-error);
   }
   .error {
     color: var(--gs-syntax-error);

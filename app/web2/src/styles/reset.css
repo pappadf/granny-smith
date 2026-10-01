@@ -1,4 +1,5 @@
-/* Minimal global reset. Component styles are scoped via Svelte. */
+/* Minimal global reset. Component styles are scoped via Svelte; the element
+   defaults that carry tokens live in base.css. */
 
 *,
 *::before,
@@ -14,23 +15,8 @@ body {
 }
 
 body {
-  background: var(--gs-surface-app);
-  color: var(--gs-text);
-  font-family: var(--gs-font-ui);
-  font-size: 13px;
-  line-height: 1.4;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
-}
-
-button {
-  font-family: inherit;
-  color: inherit;
-}
-
-input,
-select {
-  font-family: inherit;
 }
 
 [hidden] {

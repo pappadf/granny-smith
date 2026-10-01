@@ -10,6 +10,10 @@
   import { showNotification } from '@/state/toasts.svelte';
   import { debug, toggleSection } from '@/state/debug.svelte';
   import { fmtHex32, parseHex } from '@/lib/hex';
+  import Button from '@/components/ui/Button.svelte';
+  import IconButton from '@/components/ui/IconButton.svelte';
+  import TextInput from '@/components/ui/TextInput.svelte';
+  import Select from '@/components/ui/Select.svelte';
 
   let rows = $state<Watchpoint[]>([]);
   let showAdd = $state(false);
@@ -98,36 +102,52 @@
   onToggle={() => toggleSection('watchpoints')}
 >
   {#snippet actions()}
-    <button
-      type="button"
+    <IconButton
       class="add-btn"
-      title="Add watchpoint"
-      aria-label="Add watchpoint"
-      onclick={() => (showAdd = true)}>+</button
-    >
+      icon="plus"
+      size="sm"
+      tone="panel"
+      rest="faded"
+      iconSize={14}
+      label="Add watchpoint"
+      onclick={() => (showAdd = true)}
+    />
   {/snippet}
   {#if showAdd}
     <div class="add-row">
-      <input
-        type="text"
+      <TextInput
         class="add-addr"
+        mono
+        widthCh={12}
         placeholder="address ($hex)"
         bind:value={addAddr}
         onkeydown={onAddrKey}
         aria-label="Watchpoint address"
       />
-      <select class="add-mode" bind:value={addMode} aria-label="Watchpoint access">
+      <Select
+        class="add-mode"
+        size="sm"
+        style="flex: 1 1 auto"
+        bind:value={addMode}
+        aria-label="Watchpoint access"
+      >
         <option value="write">write</option>
         <option value="read">read</option>
         <option value="rw">read/write</option>
-      </select>
-      <select class="add-mode" bind:value={addWidth} aria-label="Watchpoint width">
+      </Select>
+      <Select
+        class="add-mode"
+        size="sm"
+        style="flex: 1 1 auto"
+        bind:value={addWidth}
+        aria-label="Watchpoint width"
+      >
         <option value="b">byte</option>
         <option value="w">word</option>
         <option value="l">long</option>
-      </select>
-      <button type="button" class="btn" onclick={commitAdd}>Add</button>
-      <button type="button" class="btn" onclick={cancelAdd}>Cancel</button>
+      </Select>
+      <Button variant="primary" class="btn" onclick={commitAdd}>Add</Button>
+      <Button class="btn" onclick={cancelAdd}>Cancel</Button>
     </div>
   {/if}
   {#if rows.length === 0 && !showAdd}
@@ -148,63 +168,10 @@
 </CollapsibleSection>
 
 <style>
-  .add-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: var(--gs-size-control-sm);
-    height: var(--gs-size-control-sm);
-    padding: 0;
-    border: none;
-    background: transparent;
-    color: var(--gs-text-muted);
-    cursor: pointer;
-    font-size: var(--gs-font-size-md);
-    line-height: 1;
-  }
-  .add-btn:hover,
-  .add-btn:focus-visible {
-    color: var(--gs-text-strong);
-  }
   .add-row {
     display: flex;
     gap: var(--gs-space-1-5);
     padding: var(--gs-space-1-5) var(--gs-space-3);
-  }
-  .add-addr {
-    width: 12ch;
-  }
-  .add-mode {
-    flex: 1 1 auto;
-  }
-  .add-addr,
-  .add-mode {
-    background: var(--gs-input-bg);
-    color: var(--gs-input-fg);
-    border: var(--gs-border-width) solid var(--gs-input-border);
-    border-radius: var(--gs-radius-xs);
-    height: var(--gs-size-control);
-    padding: 0 var(--gs-space-1-5);
-    font-family: var(--gs-font-mono);
-    font-size: var(--gs-font-size-xs);
-    outline: none;
-  }
-  .add-addr:focus,
-  .add-mode:focus {
-    border-color: var(--gs-focus-ring);
-  }
-  .btn {
-    background: transparent;
-    color: var(--gs-text);
-    border: var(--gs-border-width) solid var(--gs-border);
-    border-radius: var(--gs-radius-xs);
-    height: var(--gs-size-row);
-    padding: 0 var(--gs-space-2);
-    font-size: var(--gs-font-size-xs);
-    cursor: pointer;
-  }
-  .btn:hover {
-    background: var(--gs-row-hover);
   }
   .hint {
     color: var(--gs-text-muted);

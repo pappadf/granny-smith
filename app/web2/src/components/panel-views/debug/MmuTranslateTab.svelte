@@ -3,6 +3,8 @@
   import { debug } from '@/state/debug.svelte';
   import { debugFrame } from '@/state/debugFrame.svelte';
   import { fmtHex32, parseHex } from '@/lib/hex';
+  import Button from '@/components/ui/Button.svelte';
+  import TextInput from '@/components/ui/TextInput.svelte';
 
   // inputValue mirrors debug.mmuTransAddr but is mutable so the user can
   // type into it before committing with Enter / Translate.
@@ -40,20 +42,20 @@
 <div class="trans-body">
   <div class="trans-header">
     <span class="lbl">Address:</span>
-    <input
-      type="text"
+    <TextInput
       class="addr"
+      hex
+      widthCh={10}
       bind:value={inputValue}
       onkeydown={onKey}
       aria-label="Logical address to translate"
     />
-    <button type="button" class="btn" onclick={translate}>Translate</button>
+    <Button class="btn" onclick={translate}>Translate</Button>
     {#if debugFrame.current}
       <span class="presets">
-        <button
-          type="button"
+        <Button
           class="preset-btn"
-          onclick={() => (debug.mmuTransAddr = debugFrame.current?.pc ?? 0)}>PC</button
+          onclick={() => (debug.mmuTransAddr = debugFrame.current?.pc ?? 0)}>PC</Button
         >
       </span>
     {/if}
@@ -91,38 +93,6 @@
   .lbl {
     color: var(--gs-text-muted);
     font-size: var(--gs-font-size-xs);
-  }
-  .addr {
-    background: var(--gs-input-bg);
-    color: var(--gs-input-fg);
-    border: var(--gs-border-width) solid var(--gs-input-border);
-    border-radius: var(--gs-radius-xs);
-    height: var(--gs-size-control);
-    padding: 0 var(--gs-space-1-5);
-    font-family: var(--gs-font-mono);
-    font-size: var(--gs-font-size-xs);
-    width: 10ch;
-    outline: none;
-    text-transform: uppercase; /* hex digits */
-  }
-  .addr:focus {
-    border-color: var(--gs-focus-ring);
-  }
-  .btn,
-  .preset-btn {
-    background: transparent;
-    color: var(--gs-text);
-    border: var(--gs-border-width) solid var(--gs-border);
-    border-radius: var(--gs-radius-xs);
-    height: var(--gs-size-control);
-    padding: 0 var(--gs-space-2);
-    font-size: var(--gs-font-size-xs);
-    font-family: var(--gs-font-mono);
-    cursor: pointer;
-  }
-  .btn:hover,
-  .preset-btn:hover {
-    background: var(--gs-row-hover);
   }
   .presets {
     display: inline-flex;

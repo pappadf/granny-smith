@@ -5,6 +5,10 @@
   import { debug, toggleSection } from '@/state/debug.svelte';
   import { translateMany, addrLabel, type Translation } from '@/bus/mmu';
   import { fmtHex32, parseHex } from '@/lib/hex';
+  import Button from '@/components/ui/Button.svelte';
+  import SegmentedControl from '@/components/ui/SegmentedControl.svelte';
+  import Separator from '@/components/ui/Separator.svelte';
+  import TextInput from '@/components/ui/TextInput.svelte';
 
   let bytes = $state<Uint8Array | null>(null);
   let loading = $state(false);
@@ -105,37 +109,30 @@
 >
   <div class="mem-header">
     <span class="mem-label">Address:</span>
-    <input
-      type="text"
+    <TextInput
       class="mem-addr"
+      hex
+      widthCh={10}
       bind:value={inputValue}
       onkeydown={onAddrKey}
       aria-label="Memory address"
     />
-    <button type="button" class="mem-btn" onclick={commitAddress}>Go</button>
+    <Button class="mem-btn" onclick={commitAddress}>Go</Button>
     {#if machine.mmuEnabled && physicalAvailable}
-      <span class="mem-sep"></span>
+      <Separator class="mem-sep" />
       <span class="mem-label">Mode:</span>
-      <div class="mem-mode" role="group" aria-label="Memory access mode">
-        <button
-          type="button"
-          class="mem-mode-btn"
-          class:active={debug.memoryMode === 'logical'}
-          aria-pressed={debug.memoryMode === 'logical'}
-          onclick={() => setMode('logical')}
-        >
-          Logical
-        </button>
-        <button
-          type="button"
-          class="mem-mode-btn"
-          class:active={debug.memoryMode === 'physical'}
-          aria-pressed={debug.memoryMode === 'physical'}
-          onclick={() => setMode('physical')}
-        >
-          Physical
-        </button>
-      </div>
+      <SegmentedControl
+        class="mem-mode"
+        optionClass="mem-mode-btn"
+        framed
+        label="Memory access mode"
+        value={debug.memoryMode}
+        onChange={setMode}
+        options={[
+          { value: 'logical', label: 'Logical' },
+          { value: 'physical', label: 'Physical' },
+        ]}
+      />
     {/if}
   </div>
   <div class="mem-body">
@@ -172,60 +169,6 @@
   .mem-label {
     color: var(--gs-text-muted);
     font-size: var(--gs-font-size-xs);
-  }
-  .mem-addr {
-    background: var(--gs-input-bg);
-    color: var(--gs-input-fg);
-    border: var(--gs-border-width) solid var(--gs-input-border);
-    border-radius: var(--gs-radius-xs);
-    height: var(--gs-size-control);
-    padding: 0 var(--gs-space-1-5);
-    font-family: var(--gs-font-mono);
-    font-size: var(--gs-font-size-xs);
-    width: 10ch;
-    outline: none;
-    text-transform: uppercase; /* hex digits */
-  }
-  .mem-addr:focus {
-    border-color: var(--gs-focus-ring);
-  }
-  .mem-btn {
-    background: transparent;
-    color: var(--gs-text);
-    border: var(--gs-border-width) solid var(--gs-border);
-    border-radius: var(--gs-radius-xs);
-    height: var(--gs-size-control);
-    padding: 0 var(--gs-space-2);
-    font-size: var(--gs-font-size-xs);
-    cursor: pointer;
-  }
-  .mem-btn:hover {
-    background: var(--gs-row-hover);
-  }
-  .mem-sep {
-    flex: 0 0 1px;
-    height: 14px;
-    background: var(--gs-border);
-    margin: 0 var(--gs-space-1);
-  }
-  .mem-mode {
-    display: inline-flex;
-    border: var(--gs-border-width) solid var(--gs-border);
-    border-radius: var(--gs-radius-xs);
-    overflow: hidden;
-    height: var(--gs-size-control);
-  }
-  .mem-mode-btn {
-    background: transparent;
-    color: var(--gs-text-muted);
-    border: none;
-    padding: 0 var(--gs-space-2);
-    font-size: var(--gs-font-size-xs);
-    cursor: pointer;
-  }
-  .mem-mode-btn.active {
-    background: var(--gs-row-selected);
-    color: var(--gs-text-strong);
   }
   .mem-body {
     padding: var(--gs-space-1) var(--gs-space-3) var(--gs-space-2);

@@ -58,6 +58,113 @@
   /* Cards (Welcome, URL boot) */
   --gs-card-bg: var(--gs-surface-raised);
 
+  /* Buttons (ui/Button.svelte): two sizes, four variants. */
+  --gs-button-height: var(--gs-size-control);
+  --gs-button-height-lg: var(--gs-size-control-lg);
+  --gs-button-padding-x: var(--gs-space-2);
+  --gs-button-padding-x-lg: var(--gs-space-3-5);
+  --gs-button-radius: var(--gs-radius-xs);
+  --gs-button-font-size: var(--gs-font-size-xs);
+  --gs-button-font-size-lg: var(--gs-font-size-base);
+  --gs-button-font-weight: var(--gs-font-weight-regular);
+  --gs-button-border-width: var(--gs-border-width);
+  --gs-button-primary-bg: var(--gs-accent);
+  --gs-button-primary-fg: var(--gs-text-on-accent);
+  --gs-button-primary-border: transparent;
+  --gs-button-primary-bg-hover: var(--gs-accent-hover);
+  --gs-button-primary-bg-active: var(--gs-accent-active);
+  --gs-button-secondary-bg: transparent;
+  --gs-button-secondary-fg: var(--gs-text);
+  --gs-button-secondary-border: var(--gs-border);
+  --gs-button-secondary-bg-hover: var(--gs-control-hover);
+  --gs-button-secondary-bg-active: var(--gs-control-active);
+  --gs-button-danger-bg: var(--gs-danger-solid);
+  --gs-button-danger-fg: var(--gs-danger-on-solid);
+  --gs-button-danger-border: transparent;
+  --gs-button-danger-bg-hover: color-mix(
+    in srgb,
+    var(--gs-danger-solid),
+    var(--gs-danger-on-solid) 10%
+  );
+  --gs-button-danger-bg-active: color-mix(
+    in srgb,
+    var(--gs-danger-solid),
+    var(--gs-surface-app) 15%
+  );
+  --gs-button-ghost-bg: transparent;
+  --gs-button-ghost-fg: var(--gs-text);
+  --gs-button-ghost-border: transparent;
+  --gs-button-ghost-bg-hover: var(--gs-control-hover);
+  --gs-button-ghost-bg-active: var(--gs-control-active);
+
+  /* Icon buttons (ui/IconButton.svelte): a toolbar and a panel tone. */
+  --gs-icon-button-size: var(--gs-size-control);
+  --gs-icon-button-size-sm: var(--gs-size-control-sm);
+  --gs-icon-button-padding: 3px;
+  --gs-icon-button-radius: var(--gs-radius-lg);
+  --gs-icon-button-radius-panel: var(--gs-radius-xs);
+  --gs-icon-button-fg: inherit;
+  --gs-icon-button-bg-hover: var(--gs-control-hover);
+  --gs-icon-button-bg-active: var(--gs-control-active);
+  --gs-icon-button-bg-pressed: var(--gs-control-active);
+  --gs-icon-button-rest-opacity: 0.6;
+
+  /* Toolbars (ui/Toolbar.svelte, ui/Separator.svelte) */
+  --gs-toolbar-height: var(--gs-size-toolbar);
+  --gs-toolbar-bg: var(--gs-surface-app);
+  --gs-toolbar-fg: var(--gs-text-strong);
+  --gs-toolbar-gap: var(--gs-space-1);
+  --gs-separator: var(--gs-border);
+  --gs-separator-length: var(--gs-size-icon);
+
+  /* Segmented controls (ui/SegmentedControl.svelte) */
+  --gs-segmented-radius: var(--gs-radius-sm);
+  --gs-segmented-font-size: var(--gs-font-size-xs);
+  --gs-segmented-fg: var(--gs-text-muted);
+  --gs-segmented-fg-hover: var(--gs-text-strong);
+  --gs-segmented-bg-hover: var(--gs-control-hover);
+  --gs-segmented-fg-selected: var(--gs-text-strong);
+  --gs-segmented-bg-selected: var(--gs-control-active);
+  --gs-segmented-border: transparent;
+
+  /* Toggle chips (ui/ToggleChip.svelte) */
+  --gs-chip-height: var(--gs-size-control-sm);
+  --gs-chip-radius: var(--gs-radius-sm);
+  --gs-chip-padding-x: var(--gs-space-2);
+  --gs-chip-off-opacity: 0.4;
+  --gs-chip-on-bg: var(--gs-control-active);
+  --gs-chip-on-ring: var(--gs-border);
+
+  /* Links and action rows (ui/Link.svelte, ui/ActionRow.svelte) */
+  --gs-link-fg: var(--gs-text-link);
+  --gs-action-row-fg: var(--gs-text-link);
+  --gs-action-row-bg-hover: var(--gs-row-hover);
+  --gs-action-row-radius: var(--gs-radius-sm);
+
+  /* Inputs (ui/TextInput.svelte, ui/NumberInput.svelte, ui/Select.svelte) */
+  --gs-input-height: var(--gs-size-control);
+  --gs-input-height-lg: 28px;
+  --gs-input-radius: var(--gs-radius-xs);
+  --gs-input-padding-x: var(--gs-space-1-5);
+  --gs-input-font-size: var(--gs-font-size-xs);
+  --gs-input-font-size-lg: var(--gs-font-size-base);
+  --gs-input-border-invalid: var(--gs-danger-fg);
+  --gs-select-height: var(--gs-size-control-md);
+  --gs-select-arrow-size: var(--gs-size-icon-xs);
+  --gs-inline-input-height: var(--gs-size-control-sm);
+
+  /* Checkboxes and radios (ui/Checkbox.svelte, ui/RadioGroup.svelte):
+     native controls with the accent; a skin may draw its own. */
+  --gs-check-size: 13px;
+  --gs-check-radius: var(--gs-radius-xs);
+
+  /* Forms (ui/Field.svelte, ui/FormGrid.svelte) */
+  --gs-field-label-fg: var(--gs-text);
+  --gs-field-help-fg: var(--gs-text-muted);
+  --gs-field-error-fg: var(--gs-danger-fg);
+  --gs-form-label-width: var(--gs-size-form-label);
+  --gs-form-gap: var(--gs-space-2-5);
+
   /* Menus (the context menu, the console's completion popup) */
   --gs-menu-bg: var(--gs-surface-overlay);
   --gs-menu-fg: var(--gs-text);
@@ -104,6 +211,10 @@
 /* Drive lights and the caps chip sit on the bar's own colour: on an active
    bar (white text on a coloured fill) white-alpha reads, on the idle bar
    (normal text on a surface) the scheme's own text and warning colours do. */
+.gs-statusbar {
+  --gs-chip-on-bg: var(--gs-statusbar-chip-on-bg);
+  --gs-chip-on-ring: var(--gs-statusbar-chip-on-ring);
+}
 .gs-statusbar[data-state='idle'] {
   --gs-statusbar-drive-read: var(--gs-text-strong);
   --gs-statusbar-drive-write: var(--gs-warning-fg);

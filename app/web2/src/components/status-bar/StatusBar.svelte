@@ -6,6 +6,7 @@
   import { shortModel } from '@/lib/machine';
   import DriveActivity from './DriveActivity.svelte';
   import Icon from '../common/Icon.svelte';
+  import ToggleChip from '../ui/ToggleChip.svelte';
 
   // Hidden before first machine start. Also surfaces during
   // pre-boot uploads so the user can see large-file progress in the
@@ -118,15 +119,14 @@
         <DriveActivity label="CD" title="CD-ROM" activity={machine.driveActivity.cd} />
       {/if}
       <DriveActivity label="CP" title={cpTitle} activity={cpFlash ? 'write' : 'idle'} />
-      <button
+      <ToggleChip
         class="sb-item sb-caps"
-        class:on={machine.capsLock}
+        pressed={machine.capsLock}
+        label="Caps Lock"
         title="Caps Lock latch — a mechanically locking key, kept down across restarts. Latch it and Restart to boot Mac OS 8 (Copland) from a volume that has it installed."
-        aria-pressed={machine.capsLock}
-        onclick={() => void setCapsLock(!machine.capsLock)}
+        onToggle={() => void setCapsLock(!machine.capsLock)}
+        ><span class="label">⇪</span></ToggleChip
       >
-        <span class="label">⇪</span>
-      </button>
     </div>
     <div class="statusbar-right">
       {#if bridgeBusy.path}
@@ -202,25 +202,6 @@
   .statusbar-left {
     flex: 1 1 auto;
     min-width: 0;
-  }
-  .sb-caps {
-    background: none;
-    border: none;
-    color: inherit;
-    font: inherit;
-    line-height: inherit;
-    padding: 0 7px;
-    cursor: pointer;
-    opacity: 0.4;
-    border-radius: var(--gs-radius-sm);
-    align-self: center;
-    height: var(--gs-size-control-sm);
-  }
-  .sb-caps.on {
-    opacity: 1;
-    font-weight: var(--gs-font-weight-bold);
-    background: var(--gs-statusbar-chip-on-bg);
-    box-shadow: inset 0 0 0 var(--gs-border-width) var(--gs-statusbar-chip-on-ring);
   }
   .statusbar-right {
     flex-direction: row-reverse;

@@ -52,9 +52,6 @@
     border-top: var(--gs-border-width) solid var(--gs-tab-fg-selected);
     pointer-events: none;
   }
-  .ptab:focus {
-    outline: none;
-  }
   .ptab:focus-visible {
     outline: var(--gs-focus-width) solid var(--gs-focus-ring);
     outline-offset: -2px;

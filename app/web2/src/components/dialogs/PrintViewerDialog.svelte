@@ -6,6 +6,7 @@
   // document itself arrives long after the user's last click
   // (printer/platen.ts).  Mounted once, in App.svelte.
   import Modal from '@/components/common/Modal.svelte';
+  import Button from '@/components/ui/Button.svelte';
   import { printer, closePrintedDocument } from '@/state/printer.svelte';
 
   const doc = $derived(printer.document);
@@ -22,10 +23,14 @@
   {/if}
   {#snippet actions()}
     {#if doc}
-      <a class="btn" href={doc.url} target="_blank" rel="noopener">Open in new tab</a>
-      <a class="btn" href={doc.url} download={doc.name}>Download</a>
+      <Button size="lg" class="btn" href={doc.url} target="_blank" rel="noopener"
+        >Open in new tab</Button
+      >
+      <Button size="lg" class="btn" href={doc.url} download={doc.name}>Download</Button>
     {/if}
-    <button type="button" class="btn primary" onclick={closePrintedDocument}>Close</button>
+    <Button size="lg" variant="primary" class="btn primary" onclick={closePrintedDocument}
+      >Close</Button
+    >
   {/snippet}
 </Modal>
 
@@ -36,26 +41,5 @@
     min-height: 0;
     border: var(--gs-border-width) solid var(--gs-border);
     background: var(--gs-surface-document);
-  }
-  .btn {
-    background: transparent;
-    color: var(--gs-text);
-    border: var(--gs-border-width) solid var(--gs-border);
-    border-radius: var(--gs-radius-xs);
-    padding: var(--gs-space-1) var(--gs-space-3);
-    font-size: var(--gs-font-size-base);
-    cursor: pointer;
-    text-decoration: none;
-  }
-  .btn:hover {
-    background: var(--gs-row-hover);
-  }
-  .btn.primary {
-    background: var(--gs-accent);
-    color: var(--gs-text-on-accent);
-    border-color: transparent;
-  }
-  .btn.primary:hover {
-    background: var(--gs-accent-hover);
   }
 </style>

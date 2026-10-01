@@ -1,5 +1,6 @@
 <script lang="ts">
   import Modal from '../common/Modal.svelte';
+  import Button from '../ui/Button.svelte';
   import { urlBoot } from '@/state/urlBoot.svelte';
 
   // Bump the version suffix to re-prompt users after a significant
@@ -41,7 +42,7 @@
     <a href={LEGACY_URL} target="_blank" rel="noopener noreferrer">{LEGACY_URL}</a>.
   </p>
   {#snippet actions()}
-    <button type="button" class="btn-primary" onclick={onContinue}>Continue</button>
+    <Button size="lg" variant="primary" class="btn-primary" onclick={onContinue}>Continue</Button>
   {/snippet}
 </Modal>
 
@@ -56,24 +57,5 @@
     color: var(--gs-text-link);
     text-decoration: underline;
     word-break: break-all;
-  }
-  button {
-    font-family: inherit;
-    font-size: var(--gs-font-size-base);
-    padding: var(--gs-space-1-5) var(--gs-space-3-5);
-    border-radius: var(--gs-radius-xs);
-    cursor: pointer;
-    height: var(--gs-size-control-lg);
-  }
-  .btn-primary {
-    background: var(--gs-accent);
-    color: var(--gs-text-on-accent);
-    border: none;
-  }
-  .btn-primary:hover {
-    background: var(--gs-accent-hover);
-  }
-  .btn-primary:active {
-    background: var(--gs-accent-active);
   }
 </style>

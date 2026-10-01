@@ -1,7 +1,7 @@
 <script lang="ts">
   import { setWelcomeSlide } from '@/state/layout.svelte';
   import { pickAndUpload, pickAndLoadCheckpoint } from '@/bus/upload';
-  import Icon from '../common/Icon.svelte';
+  import ActionRow from '../ui/ActionRow.svelte';
 
   // (A "Recent" card used to list /opfs/config/recent.json, which nothing in
   // production ever wrote — only test fixtures, which held display names
@@ -34,18 +34,14 @@
   <section class="card">
     <h3 class="card-heading">Start</h3>
     <div class="card-rows">
-      <button class="card-row" onclick={openConfigSlide}>
-        <Icon name="mac" />
-        <span>New Machine...</span>
-      </button>
-      <button class="card-row" onclick={openCheckpoint}>
-        <Icon name="clock" />
-        <span>Open Checkpoint...</span>
-      </button>
-      <button class="card-row" onclick={openUploadRom}>
-        <Icon name="upload" />
-        <span>Upload ROM...</span>
-      </button>
+      <ActionRow class="card-row" icon="mac" label="New Machine..." onclick={openConfigSlide} />
+      <ActionRow
+        class="card-row"
+        icon="clock"
+        label="Open Checkpoint..."
+        onclick={openCheckpoint}
+      />
+      <ActionRow class="card-row" icon="upload" label="Upload ROM..." onclick={openUploadRom} />
     </div>
   </section>
 </div>
@@ -86,26 +82,5 @@
     display: flex;
     flex-direction: column;
     gap: var(--gs-space-0-5);
-  }
-  .card-row {
-    display: flex;
-    align-items: center;
-    gap: var(--gs-space-2-5);
-    padding: var(--gs-space-1-5) var(--gs-space-2);
-    background: transparent;
-    border: none;
-    border-radius: var(--gs-radius-sm);
-    color: var(--gs-text-link);
-    cursor: pointer;
-    text-align: left;
-    font-size: var(--gs-font-size-base);
-  }
-  .card-row:hover {
-    background: var(--gs-row-hover);
-  }
-  .card-row :global(.icon) {
-    width: var(--gs-size-icon);
-    height: var(--gs-size-icon);
-    color: var(--gs-text);
   }
 </style>

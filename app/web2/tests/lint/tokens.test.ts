@@ -175,7 +175,7 @@ describe('design tokens', () => {
   });
 
   // L-5: a literal type size, weight, radius, z-order, shadow or duration
-  // cannot follow a skin.  (Spacing: padding, margin and gap.)
+  // cannot follow a skin, nor can literal spacing (padding, margin, gap).
   it('L-5: no literal scale values in component styles', () => {
     const bad: string[] = [];
     const spacing: string[] = [];
@@ -211,8 +211,23 @@ describe('design tokens', () => {
       }
     }
     expect(bad).toEqual([]);
-    if (spacing.length)
-      console.warn(`literal spacing (normalised next):\n  ${spacing.join('\n  ')}`);
+    expect(spacing).toEqual([]);
+  });
+
+  // L-8: focus must stay visible.  An outline removed outside a
+  // :focus-visible rule (where a component shows focus its own way) hides the
+  // keyboard focus base.css draws.
+  it('L-8: no outline removed outside a :focus-visible rule', () => {
+    const bad: string[] = [];
+    for (const f of SOURCES) {
+      if (!f.endsWith('.svelte')) continue;
+      const css = cssOf(f, stripComments(readFileSync(f, 'utf8')));
+      for (const r of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        if (/outline\s*:\s*(none|0)\s*;/.test(r[2]) && !r[1].includes(':focus-visible'))
+          bad.push(`${rel(f)}: ${r[1].trim()}`);
+      }
+    }
+    expect(bad).toEqual([]);
   });
 
   // L-6: a skin's reference palette is private to its own token file.

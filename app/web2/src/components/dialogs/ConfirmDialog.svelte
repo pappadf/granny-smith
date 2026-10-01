@@ -1,5 +1,6 @@
 <script lang="ts">
   import Modal from '@/components/common/Modal.svelte';
+  import Button from '@/components/ui/Button.svelte';
 
   interface Props {
     open: boolean;
@@ -23,7 +24,7 @@
     onClose,
   }: Props = $props();
 
-  let confirmEl = $state<HTMLButtonElement | null>(null);
+  let confirmEl = $state<HTMLElement | null>(null);
 
   $effect(() => {
     if (open) requestAnimationFrame(() => confirmEl?.focus());
@@ -41,17 +42,16 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="confirm-body" onkeydown={onKey}>{message}</div>
   {#snippet actions()}
-    <button type="button" class="btn" onclick={onClose}>{cancelText}</button>
-    <button
-      type="button"
-      class="btn"
-      class:primary={!danger}
-      class:danger
-      bind:this={confirmEl}
+    <Button size="lg" class="btn" onclick={onClose}>{cancelText}</Button>
+    <Button
+      size="lg"
+      variant={danger ? 'danger' : 'primary'}
+      class={danger ? 'btn danger' : 'btn primary'}
+      bind:ref={confirmEl}
       onclick={onConfirm}
     >
       {confirmText}
-    </button>
+    </Button>
   {/snippet}
 </Modal>
 
@@ -62,33 +62,5 @@
     font-size: var(--gs-font-size-base);
     color: var(--gs-text);
     line-height: 1.45;
-  }
-  .btn {
-    background: transparent;
-    color: var(--gs-text);
-    border: var(--gs-border-width) solid var(--gs-border);
-    border-radius: var(--gs-radius-xs);
-    padding: var(--gs-space-1) var(--gs-space-3);
-    font-size: var(--gs-font-size-base);
-    cursor: pointer;
-  }
-  .btn:hover {
-    background: var(--gs-row-hover);
-  }
-  .btn.primary {
-    background: var(--gs-accent);
-    color: var(--gs-text-on-accent);
-    border-color: transparent;
-  }
-  .btn.primary:hover {
-    background: var(--gs-accent-hover);
-  }
-  .btn.danger {
-    background: var(--gs-danger-solid);
-    color: var(--gs-danger-on-solid);
-    border-color: transparent;
-  }
-  .btn.danger:hover {
-    filter: brightness(1.08);
   }
 </style>

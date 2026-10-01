@@ -29,6 +29,30 @@ const ONE = ['default'] as const;
 
 export const STORIES: readonly StoryDef[] = [
   {
+    name: 'UiButtons',
+    variants: ['default', 'hover', 'focus'],
+    width: 820,
+    height: 300,
+    hover: { hover: '.b-primary-sm' },
+    focus: { focus: '.b-secondary-lg' },
+    load: () => import('./stories/UiButtons.story.svelte'),
+  },
+  {
+    name: 'UiInputs',
+    variants: ['default', 'focus'],
+    width: 820,
+    height: 330,
+    focus: { focus: 'input[aria-label="sm"]' },
+    load: () => import('./stories/UiInputs.story.svelte'),
+  },
+  {
+    name: 'UiForm',
+    variants: ONE,
+    width: 560,
+    height: 360,
+    load: () => import('./stories/UiForm.story.svelte'),
+  },
+  {
     name: 'StatusBar',
     variants: ['idle', 'running', 'paused', 'stopped', 'crashed', 'activity', 'idle-activity'],
     width: 900,

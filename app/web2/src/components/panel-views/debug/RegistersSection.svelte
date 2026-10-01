@@ -8,6 +8,7 @@
   import { debugFrame } from '@/state/debugFrame.svelte';
   import { fmtHex32, parseHex } from '@/lib/hex';
   import { registerGroups, registerBits, fmtRegister } from '@/lib/registerLayout';
+  import InlineValueInput from '@/components/ui/InlineValueInput.svelte';
 
   // Registers shown but not editable from here.
   const READ_ONLY = new Set(['sr']);
@@ -35,14 +36,19 @@
     debug.registersPrev = prev;
   });
 
-  async function commit(name: string, raw: string, ev: Event) {
-    const target = ev.target as HTMLInputElement;
+  // A refused entry flashes its field for 400 ms.
+  let invalid = $state<Record<string, boolean>>({});
+  function flashInvalid(name: string): void {
+    invalid = { ...invalid, [name]: true };
+    setTimeout(() => (invalid = { ...invalid, [name]: false }), 400);
+  }
+
+  async function commit(name: string, raw: string) {
     const value = parseHex(raw);
     // Only a register this frame reported can be written: the name becomes
     // a path segment of machine.cpu.
     if (value === null || !values || !(name in values)) {
-      target.classList.add('invalid');
-      setTimeout(() => target.classList.remove('invalid'), 400);
+      flashInvalid(name);
       showNotification(`Invalid hex value for ${name.toUpperCase()}`, 'error');
       return;
     }
@@ -55,7 +61,7 @@
     const target = ev.target as HTMLInputElement;
     if (ev.key === 'Enter') {
       ev.preventDefault();
-      void commit(name, target.value, ev);
+      void commit(name, target.value);
     } else if (ev.key === 'Escape') {
       ev.preventDefault();
       target.value = currentValueFor(name);
@@ -114,13 +120,13 @@
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="reg-row" oncontextmenu={(ev) => onRegContext(name, ev)}>
               <span class="reg-name">{name.toUpperCase()}</span>
-              <input
+              <InlineValueInput
                 class="reg-value"
-                class:changed={changed[name]}
-                type="text"
+                changed={changed[name]}
+                invalid={invalid[name]}
                 value={currentValueFor(name)}
                 size={widthChFor(name)}
-                style="width: {widthChFor(name)}ch;"
+                widthCh={widthChFor(name)}
                 readonly={READ_ONLY.has(name)}
                 aria-label={`${name.toUpperCase()} register value`}
                 onkeydown={(ev) => onKey(name, ev)}
@@ -173,38 +179,5 @@
     width: 3.5ch;
     text-align: right;
     flex-shrink: 0;
-  }
-  .reg-value {
-    /* Reset to content-box so `width: 8ch` (set inline) reflects the
-       hex digit content area, not the total box. The global reset
-       applies border-box to everything, which truncates the value to
-       ~6.5 chars after subtracting 8 px of padding + 2 px of border. */
-    box-sizing: content-box;
-    background: transparent;
-    color: var(--gs-text);
-    border: var(--gs-border-width) solid transparent;
-    border-radius: var(--gs-radius-xs);
-    padding: 0 var(--gs-space-1);
-    height: var(--gs-size-control-sm);
-    font-family: inherit;
-    font-size: inherit;
-    outline: none;
-    text-transform: uppercase; /* hex digits */
-  }
-  .reg-value:hover {
-    border-color: var(--gs-input-border);
-  }
-  .reg-value:focus {
-    border-color: var(--gs-focus-ring);
-    background: var(--gs-input-bg);
-  }
-  .reg-value.changed {
-    background: var(--gs-code-changed-bg);
-  }
-  .reg-value:global(.invalid) {
-    border-color: var(--gs-danger-fg) !important;
-  }
-  .reg-value[readonly] {
-    cursor: default;
   }
 </style>

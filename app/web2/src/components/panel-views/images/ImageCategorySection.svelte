@@ -1,6 +1,5 @@
 <script lang="ts">
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
-  import Icon from '@/components/common/Icon.svelte';
   import ImageRow from './ImageRow.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { CATEGORY_LABELS, CATEGORY_ACCEPT, iconForCategory } from '@/lib/iconForFsEntry';
@@ -10,6 +9,7 @@
   import { showNotification } from '@/state/toasts.svelte';
   import type { OpfsEntry, ImageCategory } from '@/bus/types';
   import type { MediaTypeId } from '@/lib/media';
+  import IconButton from '@/components/ui/IconButton.svelte';
   import {
     images,
     setMounted,
@@ -216,15 +216,15 @@
 >
   <CollapsibleSection title={CATEGORY_LABELS[cat]} {open} {onToggle} count={entries.length}>
     {#snippet actions()}
-      <button
-        type="button"
+      <IconButton
         class="upload-btn"
-        title="Upload {CATEGORY_LABELS[cat]} image"
-        aria-label="Upload {CATEGORY_LABELS[cat]} image"
+        icon="upload"
+        iconSize={14}
+        tone="panel"
+        rest="faded"
+        label="Upload {CATEGORY_LABELS[cat]} image"
         onclick={onUploadClick}
-      >
-        <Icon name="upload" size={14} />
-      </button>
+      />
     {/snippet}
     {#if loading && entries.length === 0}
       <p class="empty">Loading…</p>
@@ -250,27 +250,6 @@
      path but click-to-upload still matters for touch / accessibility,
      so the button shouldn't be hover-gated. Muted by default so it
      doesn't compete with the section title; brightens on hover. */
-  .upload-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: var(--gs-size-control);
-    height: var(--gs-size-control);
-    padding: 0;
-    border: none;
-    background: transparent;
-    color: var(--gs-text-muted);
-    opacity: 0.6;
-    transition:
-      opacity var(--gs-duration-fast),
-      color var(--gs-duration-fast);
-    cursor: pointer;
-  }
-  .upload-btn:hover,
-  .upload-btn:focus-visible {
-    opacity: 1;
-    color: var(--gs-text-strong);
-  }
   .empty {
     color: var(--gs-text-muted);
     font-size: var(--gs-font-size-sm);

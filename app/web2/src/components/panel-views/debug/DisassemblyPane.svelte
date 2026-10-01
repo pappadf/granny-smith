@@ -255,9 +255,6 @@
     outline: var(--gs-focus-width) solid var(--gs-focus-ring);
     outline-offset: var(--gs-focus-offset);
   }
-  .disasm-pane:focus {
-    outline: none;
-  }
   .disasm-pane:focus-visible {
     outline: var(--gs-focus-width) solid var(--gs-focus-ring);
     outline-offset: var(--gs-focus-offset);

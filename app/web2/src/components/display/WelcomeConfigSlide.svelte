@@ -16,6 +16,12 @@
   import type { ImageCategory, OpfsEntry } from '@/bus/types';
   import { images } from '@/state/images.svelte';
   import CreateImageDialog from './CreateImageDialog.svelte';
+  import Button from '../ui/Button.svelte';
+  import Field from '../ui/Field.svelte';
+  import FormGrid from '../ui/FormGrid.svelte';
+  import Link from '../ui/Link.svelte';
+  import Select from '../ui/Select.svelte';
+  import Separator from '../ui/Separator.svelte';
 
   const UPLOAD_SENTINEL = 'Upload image...';
   const CREATE_SENTINEL = 'Create blank image...';
@@ -734,32 +740,29 @@
 </script>
 
 <div class="config-content">
-  <a href="#back" class="back-link" onclick={onBack}>← Back</a>
+  <div class="back-row">
+    <Link href="#back" class="back-link" onclick={onBack}>← Back</Link>
+  </div>
   <h2 class="config-title">New Machine</h2>
-  <form class="config-form" onsubmit={onSubmit}>
+  <FormGrid class="config-form" onsubmit={onSubmit}>
     {#if startError}
-      <div class="form-row">
-        <span class="form-label">Machine Model</span>
-        <div class="form-help">The emulator did not start: {startError}</div>
-      </div>
+      <Field
+        class="form-row"
+        label="Machine Model"
+        help={`The emulator did not start: ${startError}`}
+      />
     {:else if scanning}
-      <div class="form-row">
-        <span class="form-label">Machine Model</span>
-        <div class="form-help">Scanning ROMs…</div>
-      </div>
+      <Field class="form-row" label="Machine Model" help="Scanning ROMs…" />
     {:else if modelOptions.length === 0}
-      <div class="form-row">
-        <span class="form-label">Machine Model</span>
-        <div class="form-help">
-          No ROMs in storage. Drag-and-drop a ROM file or use the Upload ROM button on the Home
-          slide.
-        </div>
-      </div>
+      <Field
+        class="form-row"
+        label="Machine Model"
+        help="No ROMs in storage. Drag-and-drop a ROM file or use the Upload ROM button on the Home slide."
+      />
     {:else}
-      <div class="form-row">
-        <label for="cfg-model">Machine Model</label>
+      <Field class="form-row" label="Machine Model" for="cfg-model">
         <!-- A choice is a model AND the ROM it boots: selecting one sets both. -->
-        <select
+        <Select
           id="cfg-model"
           bind:value={
             () =>
@@ -776,48 +779,39 @@
           {#each modelOptions as opt (opt.key)}
             <option value={opt.key} data-model={opt.model}>{opt.label}</option>
           {/each}
-        </select>
-      </div>
+        </Select>
+      </Field>
       {#if needsCardPicker}
-        <div class="form-row">
-          <label for="cfg-card">{hasBuiltinVideo ? 'Display' : 'Display Card'}</label>
-          <select id="cfg-card" bind:value={cardId}>
+        <Field class="form-row" label={hasBuiltinVideo ? 'Display' : 'Display Card'} for="cfg-card">
+          <Select id="cfg-card" bind:value={cardId}>
             {#each displayOptions as c (c.id)}
               <option value={c.id}>{c.label}</option>
             {/each}
-          </select>
-        </div>
+          </Select>
+        </Field>
         {#if hasBuiltinVideo && !builtinSelected}
-          <div class="form-row">
-            <span class="form-label"></span>
-            <div class="form-help">
-              The monitor is plugged into the card, so the built-in video port is left unconnected
-              and the card becomes the only screen.
-            </div>
-          </div>
+          <Field
+            class="form-row"
+            help="The monitor is plugged into the card, so the built-in video port is left unconnected and the card becomes the only screen."
+          />
         {/if}
         {#if pciSelected && !hasSolderedDisplay}
-          <div class="form-row">
-            <span class="form-label"></span>
-            <div class="form-help">
-              This model has no built-in video, so the card in the expansion slot is the screen.
-            </div>
-          </div>
+          <Field
+            class="form-row"
+            help="This model has no built-in video, so the card in the expansion slot is the screen."
+          />
         {/if}
       {/if}
       {#if videoUnavailable}
-        <div class="form-row">
-          <span class="form-label">Display Card</span>
-          <div class="form-help">
-            This model's display card needs a {missingRomKind}. Drag-and-drop one (or add it via the
-            Images panel) to enable video.
-          </div>
-        </div>
+        <Field
+          class="form-row"
+          label="Display Card"
+          help={`This model's display card needs a ${missingRomKind}. Drag-and-drop one (or add it via the Images panel) to enable video.`}
+        />
       {/if}
       {#if pciSockets.length > 0}
-        <div class="form-divider"></div>
-        <div class="form-row">
-          <span class="form-label">Expansion Slots</span>
+        <Separator orientation="horizontal" class="form-divider" />
+        <Field class="form-row" label="Expansion Slots">
           <div class="slot-list">
             {#each pciSockets as sl (sl.slot)}
               <div class="slot-row">
@@ -828,7 +822,7 @@
                        non-display cards appear here; a display-class card is
                        picked in the Display row and would occupy this same
                        socket, which is why the two are mutually exclusive. -->
-                  <select
+                  <Select
                     id="cfg-expansion-card"
                     value={expansionCardId}
                     onchange={(e) => (expansionCardId = (e.target as HTMLSelectElement).value)}
@@ -837,7 +831,7 @@
                     {#each pciExpansionCards as c (c.id)}
                       <option value={c.id}>{c.display_name ?? c.id}</option>
                     {/each}
-                  </select>
+                  </Select>
                 {:else}
                   <span class="slot-card">
                     {sl.label === firstSocketLabel && pciSelected
@@ -848,20 +842,16 @@
               </div>
             {/each}
           </div>
-        </div>
+        </Field>
         {#if pciSockets.length > 1 && pciSelected}
-          <div class="form-row">
-            <span class="form-label"></span>
-            <div class="form-help">
-              A card is installed in the first socket. Filling the others needs a per-socket pick,
-              which the boot document does not carry yet.
-            </div>
-          </div>
+          <Field
+            class="form-row"
+            help="A card is installed in the first socket. Filling the others needs a per-socket pick, which the boot document does not carry yet."
+          />
         {/if}
         {#each pciCardOptions_ as opt (opt.key)}
-          <div class="form-row">
-            <label for="cfg-pciopt-{opt.key}">{opt.label ?? opt.key}</label>
-            <select
+          <Field class="form-row" label={opt.label ?? opt.key} for="cfg-pciopt-{opt.key}">
+            <Select
               id="cfg-pciopt-{opt.key}"
               value={pciOptions[opt.key] ?? opt.default_value ?? ''}
               onchange={(e) =>
@@ -870,35 +860,32 @@
               {#each opt.values ?? [] as v (v.id)}
                 <option value={v.id}>{v.label ?? v.id}</option>
               {/each}
-            </select>
-          </div>
+            </Select>
+          </Field>
         {/each}
       {/if}
       {#if videoModes.length > 1}
-        <div class="form-row">
-          <label for="cfg-video-mode">Video Mode</label>
-          <select id="cfg-video-mode" bind:value={videoMode}>
+        <Field class="form-row" label="Video Mode" for="cfg-video-mode">
+          <Select id="cfg-video-mode" bind:value={videoMode}>
             {#each videoModes as m (m.id)}
               <option value={m.id}>{m.label ?? m.id}</option>
             {/each}
-          </select>
-        </div>
+          </Select>
+        </Field>
       {/if}
-      <div class="form-row">
-        <label for="cfg-ram">RAM</label>
-        <select id="cfg-ram" bind:value={ramKb}>
+      <Field class="form-row" label="RAM" for="cfg-ram">
+        <Select id="cfg-ram" bind:value={ramKb}>
           {#each ramOptions as kb (kb)}
             <option value={kb}>{formatRamKb(kb)}</option>
           {:else}
             <option value={0}>Model default</option>
           {/each}
-        </select>
-      </div>
-      <div class="form-divider"></div>
+        </Select>
+      </Field>
+      <Separator orientation="horizontal" class="form-divider" />
       {#each floppySlots as slot, i (i)}
-        <div class="form-row">
-          <label for={`cfg-fd${i}`}>{slot.label ?? `Floppy ${i}`}</label>
-          <select
+        <Field class="form-row" label={slot.label ?? `Floppy ${i}`} for={`cfg-fd${i}`}>
+          <Select
             id={`cfg-fd${i}`}
             value={floppies[i] ?? NONE_SENTINEL}
             onchange={(e) => onFdChange(e, i)}
@@ -906,44 +893,43 @@
             {#each fdOptions as opt, oi (oi)}
               <option>{opt}</option>
             {/each}
-          </select>
-        </div>
+          </Select>
+        </Field>
       {/each}
-      <div class="form-row">
-        <label for="cfg-hd">{hdSlots.length > 1 ? 'Hard disk' : hdSlotLabel}</label>
-        <select id="cfg-hd" value={hd} onchange={onHdChange}>
+      <Field class="form-row" label={hdSlots.length > 1 ? 'Hard disk' : hdSlotLabel} for="cfg-hd">
+        <Select id="cfg-hd" value={hd} onchange={onHdChange}>
           {#each hdOptions as opt, i (i)}
             <option>{opt}</option>
           {/each}
-        </select>
-      </div>
+        </Select>
+      </Field>
       {#if hdSlots.length > 1}
         <!-- Which bay it sits in: the firmware's default boot bay is preselected. -->
-        <div class="form-row">
-          <label for="cfg-hd-bay">Bay</label>
-          <select id="cfg-hd-bay" bind:value={hdBay}>
+        <Field class="form-row" label="Bay" for="cfg-hd-bay">
+          <Select id="cfg-hd-bay" bind:value={hdBay}>
             {#each hdSlots as slot, i (i)}
               <option value={i}>{slot.label}</option>
             {/each}
-          </select>
-        </div>
+          </Select>
+        </Field>
       {/if}
       {#if hasCdrom}
-        <div class="form-row">
-          <label for="cfg-cd">SCSI CD-ROM</label>
-          <select id="cfg-cd" value={cd} onchange={onCdChange}>
+        <Field class="form-row" label="SCSI CD-ROM" for="cfg-cd">
+          <Select id="cfg-cd" value={cd} onchange={onCdChange}>
             {#each cdOptions as opt, i (i)}
               <option>{opt}</option>
             {/each}
-          </select>
-        </div>
+          </Select>
+        </Field>
       {/if}
     {/if}
-    <div class="form-divider"></div>
+    <Separator orientation="horizontal" class="form-divider" />
     <div class="form-actions">
-      <button type="submit" class="primary-button" disabled={!canStart}>Start Machine</button>
+      <Button type="submit" size="lg" variant="primary" class="primary-button" disabled={!canStart}
+        >Start Machine</Button
+      >
     </div>
-  </form>
+  </FormGrid>
 </div>
 
 <CreateImageDialog
@@ -960,34 +946,15 @@
     width: 100%;
     padding: var(--gs-space-12) var(--gs-space-8) var(--gs-space-8);
   }
-  .back-link {
-    display: inline-block;
-    color: var(--gs-text-link);
-    text-decoration: none;
-    margin-bottom: var(--gs-space-4);
-    font-size: var(--gs-font-size-base);
-  }
-  .back-link:hover {
-    text-decoration: underline;
-  }
   .config-title {
     font-size: var(--gs-font-size-3xl);
     font-weight: var(--gs-font-weight-light);
     color: var(--gs-text-strong);
     margin: 0 0 var(--gs-space-5) 0;
   }
-  .config-form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--gs-space-2-5);
+  .back-row {
+    margin-bottom: var(--gs-space-4);
   }
-  .form-row {
-    display: grid;
-    grid-template-columns: 140px 1fr;
-    align-items: center;
-    gap: var(--gs-space-3);
-  }
-  .form-row label,
   .slot-list {
     display: flex;
     flex-direction: column;
@@ -1002,57 +969,9 @@
     min-width: 3em;
     color: var(--gs-text-muted);
   }
-
-  .form-row .form-label {
-    color: var(--gs-text);
-    font-size: var(--gs-font-size-base);
-  }
-  .form-row select {
-    background: var(--gs-input-bg);
-    color: var(--gs-input-fg);
-    border: var(--gs-border-width) solid var(--gs-input-border);
-    border-radius: var(--gs-radius-xs);
-    height: var(--gs-size-control-md);
-    padding: 0 var(--gs-space-1-5);
-    font-size: var(--gs-font-size-base);
-    outline: none;
-  }
-  .form-row select:focus {
-    border-color: var(--gs-focus-ring);
-  }
-  .form-help {
-    color: var(--gs-text-muted);
-    font-size: var(--gs-font-size-sm);
-    line-height: var(--gs-line-height-base);
-  }
-  .form-divider {
-    height: 1px;
-    background: var(--gs-border);
-    margin: var(--gs-space-1-5) 0;
-  }
   .form-actions {
     display: flex;
     justify-content: flex-end;
     margin-top: var(--gs-space-4);
-  }
-  .primary-button {
-    background: var(--gs-accent);
-    color: var(--gs-text-on-accent);
-    border: none;
-    border-radius: 0;
-    padding: var(--gs-space-1-5) var(--gs-space-3-5);
-    font-size: var(--gs-font-size-base);
-    cursor: pointer;
-    height: var(--gs-size-control-lg);
-  }
-  .primary-button:hover:not(:disabled) {
-    background: var(--gs-accent-hover);
-  }
-  .primary-button:active:not(:disabled) {
-    background: var(--gs-accent-active);
-  }
-  .primary-button:disabled {
-    cursor: default;
-    opacity: var(--gs-opacity-disabled);
   }
 </style>

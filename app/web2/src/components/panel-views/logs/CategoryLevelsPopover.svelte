@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { logs, refreshCatLevels, setCatLevel } from '@/state/logs.svelte';
+  import NumberInput from '@/components/ui/NumberInput.svelte';
 
   interface Props {
     open: boolean;
@@ -66,10 +67,10 @@
           {#each sortedCats as cat (cat)}
             <li class="cat-row">
               <span class="cat-name">{cat}</span>
-              <input
-                type="number"
+              <NumberInput
                 min="0"
                 max="9"
+                style="width: 56px"
                 value={logs.catLevels[cat]}
                 onchange={(e) => onLevelChange(cat, e)}
                 aria-label={`Level for ${cat}`}
@@ -157,19 +158,5 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .cat-row input[type='number'] {
-    width: 56px;
-    background: var(--gs-input-bg);
-    color: var(--gs-input-fg);
-    border: var(--gs-border-width) solid var(--gs-input-border);
-    border-radius: var(--gs-radius-xs);
-    height: 24px;
-    padding: 0 var(--gs-space-1-5);
-    font-size: var(--gs-font-size-sm);
-    outline: none;
-  }
-  .cat-row input[type='number']:focus {
-    border-color: var(--gs-focus-ring);
   }
 </style>

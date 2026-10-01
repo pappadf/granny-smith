@@ -4,6 +4,7 @@
   // progress bar per file.  It replaces Welcome for that load; nothing asks
   // the user anything (bus/urlMedia.ts drives the state, state/urlBoot).
   import Icon from '../common/Icon.svelte';
+  import Button from '../ui/Button.svelte';
   import type { IconName } from '@/lib/icons';
   import { urlBoot, dismissUrlBoot, type UrlFile } from '@/state/urlBoot.svelte';
 
@@ -132,9 +133,9 @@
     </section>
 
     {#if urlBoot.stage === 'failed'}
-      <button type="button" class="btn-primary" onclick={dismissUrlBoot}>
+      <Button size="lg" variant="primary" class="btn-primary" onclick={dismissUrlBoot}>
         Go to the start screen
-      </button>
+      </Button>
     {/if}
   </div>
 </div>
@@ -291,20 +292,6 @@
     margin: var(--gs-space-1-5) 0 0 calc(var(--gs-size-icon) + var(--gs-space-2-5));
     color: var(--gs-danger-fg);
     word-break: break-word;
-  }
-  .btn-primary {
-    font-family: inherit;
-    font-size: var(--gs-font-size-base);
-    padding: var(--gs-space-1-5) var(--gs-space-3-5);
-    height: var(--gs-size-control-lg);
-    border-radius: var(--gs-radius-xs);
-    border: none;
-    cursor: pointer;
-    background: var(--gs-accent);
-    color: var(--gs-text-on-accent);
-  }
-  .btn-primary:hover {
-    background: var(--gs-accent-hover);
   }
   @keyframes spin {
     to {

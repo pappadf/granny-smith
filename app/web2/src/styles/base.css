@@ -1,0 +1,112 @@
+/* ====== Global foundation ======
+   Element defaults, native controls, scrollbars, focus, selection and
+   motion, all from tokens.  Everything a component does not style itself
+   looks like the skin because of this file. */
+
+/* Native controls (select pickers, checkboxes, radios, number spinners,
+   scrollbars) follow the scheme; checkboxes, radios and ranges take the
+   accent. */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+:root {
+  accent-color: var(--gs-control-accent);
+}
+
+body {
+  background: var(--gs-surface-app);
+  color: var(--gs-text);
+  font-family: var(--gs-font-ui);
+  font-size: var(--gs-font-size-base);
+  line-height: var(--gs-line-height-base);
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+  color: inherit;
+}
+
+/* Text inside empty states and hints. */
+code,
+kbd {
+  font-family: var(--gs-font-mono);
+}
+
+/* Thin themed scrollbars.  Chromium 121+ and Firefox use scrollbar-color
+   (and ignore the ::-webkit rules when it is set); Safari uses the
+   ::-webkit rules. */
+* {
+  scrollbar-color: var(--gs-scrollbar-thumb) var(--gs-scrollbar-track);
+  scrollbar-width: thin;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--gs-scrollbar-thumb);
+  border-radius: var(--gs-radius-pill);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--gs-scrollbar-thumb-hover);
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: var(--gs-scrollbar-track);
+}
+
+/* Focus: a ring for keyboard focus only.  A component that shows focus
+   another way (an input's border) overrides :focus-visible itself. */
+:focus {
+  outline: none;
+}
+:focus-visible {
+  outline: var(--gs-focus-width) solid var(--gs-focus-ring);
+  outline-offset: var(--gs-focus-offset);
+}
+
+::selection {
+  background: var(--gs-selection-bg);
+  color: var(--gs-selection-fg);
+}
+::placeholder {
+  color: var(--gs-text-placeholder);
+  opacity: 1;
+}
+
+/* Reduced motion: every duration token collapses, so no component needs a
+   media query of its own for its transitions. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --gs-duration-instant: 0.01ms;
+    --gs-duration-fast: 0.01ms;
+    --gs-duration-quick: 0.01ms;
+    --gs-duration-base: 0.01ms;
+    --gs-duration-slow: 0.01ms;
+    --gs-duration-slower: 0.01ms;
+    --gs-duration-spin: 0.01ms;
+    --gs-duration-pulse: 0.01ms;
+    --gs-duration-indeterminate: 0.01ms;
+  }
+}
+
+/* Forced colours (Windows high contrast): the system's own focus and
+   selection; the status bar keeps its machine-state colours. */
+@media (forced-colors: active) {
+  :root {
+    --gs-focus-ring: Highlight;
+    --gs-row-selected: Highlight;
+    --gs-row-selected-fg: HighlightText;
+  }
+  .gs-statusbar {
+    forced-color-adjust: none;
+  }
+}

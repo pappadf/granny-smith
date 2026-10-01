@@ -166,8 +166,12 @@
     min-width: 160px;
     padding: var(--gs-space-1) 0;
     z-index: var(--gs-z-menu);
-    outline: none;
     user-select: none;
+  }
+  /* The menu takes focus to read keys; the highlighted item shows where
+     the keyboard is. */
+  .context-menu:focus-visible {
+    outline: none;
   }
   .item {
     height: var(--gs-size-row);

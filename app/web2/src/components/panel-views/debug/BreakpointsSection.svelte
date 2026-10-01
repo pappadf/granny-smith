@@ -8,6 +8,9 @@
   import { debug, toggleSection } from '@/state/debug.svelte';
   import { translateMany, addrLabel, type Translation } from '@/bus/mmu';
   import { fmtHex32, parseHex } from '@/lib/hex';
+  import Button from '@/components/ui/Button.svelte';
+  import IconButton from '@/components/ui/IconButton.svelte';
+  import TextInput from '@/components/ui/TextInput.svelte';
 
   let rows = $state<Breakpoint[]>([]);
   let showAdd = $state(false);
@@ -107,34 +110,39 @@
   onToggle={() => toggleSection('breakpoints')}
 >
   {#snippet actions()}
-    <button
-      type="button"
+    <IconButton
       class="add-btn"
-      title="Add breakpoint"
-      aria-label="Add breakpoint"
-      onclick={() => (showAdd = true)}>+</button
-    >
+      icon="plus"
+      size="sm"
+      tone="panel"
+      rest="faded"
+      iconSize={14}
+      label="Add breakpoint"
+      onclick={() => (showAdd = true)}
+    />
   {/snippet}
   {#if showAdd}
     <div class="add-row">
-      <input
-        type="text"
+      <TextInput
         class="add-addr"
+        mono
+        widthCh={12}
         placeholder="address ($hex)"
         bind:value={addAddr}
         onkeydown={onAddrKey}
         aria-label="Breakpoint address"
       />
-      <input
-        type="text"
+      <TextInput
         class="add-cond"
+        mono
+        style="flex: 1 1 auto"
         placeholder="condition (optional)"
         bind:value={addCond}
         onkeydown={onAddrKey}
         aria-label="Breakpoint condition"
       />
-      <button type="button" class="btn" onclick={commitAdd}>Add</button>
-      <button type="button" class="btn" onclick={cancelAdd}>Cancel</button>
+      <Button variant="primary" class="btn" onclick={commitAdd}>Add</Button>
+      <Button class="btn" onclick={cancelAdd}>Cancel</Button>
     </div>
   {/if}
   {#if rows.length === 0 && !showAdd}
@@ -157,63 +165,10 @@
 </CollapsibleSection>
 
 <style>
-  .add-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: var(--gs-size-control-sm);
-    height: var(--gs-size-control-sm);
-    padding: 0;
-    border: none;
-    background: transparent;
-    color: var(--gs-text-muted);
-    cursor: pointer;
-    font-size: var(--gs-font-size-md);
-    line-height: 1;
-  }
-  .add-btn:hover,
-  .add-btn:focus-visible {
-    color: var(--gs-text-strong);
-  }
   .add-row {
     display: flex;
     gap: var(--gs-space-1-5);
     padding: var(--gs-space-1-5) var(--gs-space-3);
-  }
-  .add-addr {
-    width: 12ch;
-  }
-  .add-cond {
-    flex: 1 1 auto;
-  }
-  .add-addr,
-  .add-cond {
-    background: var(--gs-input-bg);
-    color: var(--gs-input-fg);
-    border: var(--gs-border-width) solid var(--gs-input-border);
-    border-radius: var(--gs-radius-xs);
-    height: var(--gs-size-control);
-    padding: 0 var(--gs-space-1-5);
-    font-family: var(--gs-font-mono);
-    font-size: var(--gs-font-size-xs);
-    outline: none;
-  }
-  .add-addr:focus,
-  .add-cond:focus {
-    border-color: var(--gs-focus-ring);
-  }
-  .btn {
-    background: transparent;
-    color: var(--gs-text);
-    border: var(--gs-border-width) solid var(--gs-border);
-    border-radius: var(--gs-radius-xs);
-    height: var(--gs-size-row);
-    padding: 0 var(--gs-space-2);
-    font-size: var(--gs-font-size-xs);
-    cursor: pointer;
-  }
-  .btn:hover {
-    background: var(--gs-row-hover);
   }
   .hint {
     color: var(--gs-text-muted);

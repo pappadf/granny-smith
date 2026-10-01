@@ -1,5 +1,7 @@
 <script lang="ts">
   import Modal from '@/components/common/Modal.svelte';
+  import Button from '@/components/ui/Button.svelte';
+  import TextInput from '@/components/ui/TextInput.svelte';
 
   interface Props {
     open: boolean;
@@ -66,12 +68,13 @@
 <Modal {open} {title} {onClose}>
   <div class="rename-body">
     <label for="rename-input" class="rename-label">New name</label>
-    <input
+    <TextInput
       id="rename-input"
       class="rename-input"
-      type="text"
+      size="lg"
       bind:value
-      bind:this={inputEl}
+      bind:ref={inputEl}
+      invalid={!!error}
       onkeydown={onKey}
       oninput={() => (error = '')}
     />
@@ -80,8 +83,8 @@
     {/if}
   </div>
   {#snippet actions()}
-    <button type="button" class="btn" onclick={onClose}>Cancel</button>
-    <button type="button" class="btn primary" onclick={commit}>Rename</button>
+    <Button size="lg" class="btn" onclick={onClose}>Cancel</Button>
+    <Button size="lg" variant="primary" class="btn primary" onclick={commit}>Rename</Button>
   {/snippet}
 </Modal>
 
@@ -99,38 +102,5 @@
   .rename-error {
     font-size: var(--gs-font-size-sm);
     color: var(--gs-danger-fg);
-  }
-  .rename-input {
-    background: var(--gs-input-bg);
-    color: var(--gs-input-fg);
-    border: var(--gs-border-width) solid var(--gs-input-border);
-    border-radius: var(--gs-radius-xs);
-    height: 28px;
-    padding: 0 var(--gs-space-2);
-    font-size: var(--gs-font-size-base);
-    outline: none;
-  }
-  .rename-input:focus {
-    border-color: var(--gs-focus-ring);
-  }
-  .btn {
-    background: transparent;
-    color: var(--gs-text);
-    border: var(--gs-border-width) solid var(--gs-border);
-    border-radius: var(--gs-radius-xs);
-    padding: var(--gs-space-1) var(--gs-space-3);
-    font-size: var(--gs-font-size-base);
-    cursor: pointer;
-  }
-  .btn:hover {
-    background: var(--gs-row-hover);
-  }
-  .btn.primary {
-    background: var(--gs-accent);
-    color: var(--gs-text-on-accent);
-    border-color: transparent;
-  }
-  .btn.primary:hover {
-    background: var(--gs-accent-hover);
   }
 </style>

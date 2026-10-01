@@ -116,9 +116,17 @@
     display: block;
     image-rendering: pixelated;
     image-rendering: crisp-edges;
-    outline: none;
     /* Prevent OS touch-pan + page bounce on touch devices. */
     touch-action: none;
+  }
+  /* Keyboard focus on the emulated screen shows on its frame, not as a
+     ring drawn over the picture. */
+  canvas:focus-visible {
+    outline: none;
+  }
+  .screen-wrap:has(canvas:focus-visible) {
+    outline: var(--gs-focus-width) solid var(--gs-focus-ring);
+    outline-offset: var(--gs-focus-width);
   }
   canvas.overlay {
     position: absolute;

@@ -36,6 +36,7 @@
   import { downloadFiles } from '@/bus/fsOps';
   import { sanitizeName } from '@/lib/archive';
   import { copyText } from '@/lib/clipboard';
+  import Checkbox from '@/components/ui/Checkbox.svelte';
 
   // Exported images land here: /opfs is file-backed, so writing one costs no
   // wasm heap (see saveImage).  A directory of its own keeps a 512 MB export
@@ -365,14 +366,13 @@
 
 <div class="system-view">
   <div class="system-toolbar">
-    <label class="adv-toggle">
-      <input
-        type="checkbox"
-        checked={systemView.showAdvanced}
-        onchange={() => (systemView.showAdvanced = !systemView.showAdvanced)}
-      />
-      Advanced
-    </label>
+    <Checkbox
+      class="adv-toggle"
+      size="sm"
+      label="Advanced"
+      checked={systemView.showAdvanced}
+      onchange={(v) => (systemView.showAdvanced = v)}
+    />
   </div>
   {#if !tree.loaded}
     <p class="hint">Loading system tree…</p>
@@ -555,19 +555,10 @@
     justify-content: flex-end;
     padding: var(--gs-space-0-5) var(--gs-space-2);
   }
-  .adv-toggle {
-    font-size: var(--gs-font-size-xs);
-    color: var(--gs-text-muted);
-    display: inline-flex;
-    align-items: center;
-    gap: var(--gs-space-1);
-    cursor: pointer;
-  }
   .sys-tree {
     list-style: none;
     margin: 0;
     padding: 0;
-    outline: none;
   }
   .group-divider {
     font-size: var(--gs-font-size-2xs);
