@@ -56,8 +56,8 @@
   .grid {
     display: grid;
     grid-template-columns: repeat(13, 32px);
-    gap: 8px;
-    padding: 12px;
+    gap: var(--gs-space-2);
+    padding: var(--gs-space-3);
   }
   .cell {
     display: inline-flex;

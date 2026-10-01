@@ -59,17 +59,17 @@
   .confirm-body {
     min-width: 280px;
     max-width: 420px;
-    font-size: 13px;
+    font-size: var(--gs-font-size-base);
     color: var(--gs-text);
     line-height: 1.45;
   }
   .btn {
     background: transparent;
     color: var(--gs-text);
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    padding: 4px 12px;
-    font-size: 13px;
+    border: var(--gs-border-width) solid var(--gs-border);
+    border-radius: var(--gs-radius-xs);
+    padding: var(--gs-space-1) var(--gs-space-3);
+    font-size: var(--gs-font-size-base);
     cursor: pointer;
   }
   .btn:hover {

@@ -152,14 +152,14 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 18px;
-    height: 18px;
+    width: var(--gs-size-control-sm);
+    height: var(--gs-size-control-sm);
     padding: 0;
     border: none;
     background: transparent;
     color: var(--gs-text-muted);
     cursor: pointer;
-    font-size: 14px;
+    font-size: var(--gs-font-size-md);
     line-height: 1;
   }
   .add-btn:hover,
@@ -168,8 +168,8 @@
   }
   .add-row {
     display: flex;
-    gap: 6px;
-    padding: 6px 12px;
+    gap: var(--gs-space-1-5);
+    padding: var(--gs-space-1-5) var(--gs-space-3);
   }
   .add-addr {
     width: 12ch;
@@ -181,12 +181,12 @@
   .add-mode {
     background: var(--gs-input-bg);
     color: var(--gs-input-fg);
-    border: 1px solid var(--gs-input-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 6px;
+    border: var(--gs-border-width) solid var(--gs-input-border);
+    border-radius: var(--gs-radius-xs);
+    height: var(--gs-size-control);
+    padding: 0 var(--gs-space-1-5);
     font-family: var(--gs-font-mono);
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
     outline: none;
   }
   .add-addr:focus,
@@ -196,11 +196,11 @@
   .btn {
     background: transparent;
     color: var(--gs-text);
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 8px;
-    font-size: 11px;
+    border: var(--gs-border-width) solid var(--gs-border);
+    border-radius: var(--gs-radius-xs);
+    height: var(--gs-size-row);
+    padding: 0 var(--gs-space-2);
+    font-size: var(--gs-font-size-xs);
     cursor: pointer;
   }
   .btn:hover {
@@ -208,16 +208,16 @@
   }
   .hint {
     color: var(--gs-text-muted);
-    font-size: 11px;
-    padding: 6px 12px;
+    font-size: var(--gs-font-size-xs);
+    padding: var(--gs-space-1-5) var(--gs-space-3);
   }
   .wp-row {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 2px 12px;
+    gap: var(--gs-space-3);
+    padding: var(--gs-space-0-5) var(--gs-space-3);
     font-family: var(--gs-font-mono);
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
     color: var(--gs-text);
   }
   .wp-row:hover {

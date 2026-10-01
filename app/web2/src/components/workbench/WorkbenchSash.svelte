@@ -64,24 +64,24 @@
 
 <style>
   .workbench-sash {
-    flex: 0 0 4px;
+    flex: 0 0 var(--gs-size-sash);
     background: transparent;
     position: relative;
-    z-index: 5;
+    z-index: var(--gs-z-sash);
     user-select: none;
   }
   :global(.gs-workbench.panel-bottom) > .workbench-sash {
     cursor: row-resize;
     width: 100%;
-    height: 4px;
-    margin: -2px 0;
+    height: var(--gs-size-sash);
+    margin: calc(var(--gs-size-sash) / -2) 0;
   }
   :global(.gs-workbench.panel-left) > .workbench-sash,
   :global(.gs-workbench.panel-right) > .workbench-sash {
     cursor: col-resize;
-    width: 4px;
+    width: var(--gs-size-sash);
     height: 100%;
-    margin: 0 -2px;
+    margin: 0 calc(var(--gs-size-sash) / -2);
   }
   .workbench-sash:hover,
   .workbench-sash.active {

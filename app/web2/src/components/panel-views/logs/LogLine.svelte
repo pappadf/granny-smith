@@ -22,11 +22,11 @@
   .log-line {
     display: flex;
     align-items: baseline;
-    gap: 6px;
-    padding: 1px 8px;
+    gap: var(--gs-space-1-5);
+    padding: var(--gs-space-px) var(--gs-space-2);
     font-family: var(--gs-font-mono);
-    font-size: 12px;
-    line-height: 1.5;
+    font-size: var(--gs-font-size-sm);
+    line-height: var(--gs-line-height-relaxed);
     color: var(--gs-text);
     white-space: pre-wrap;
     word-break: break-word;

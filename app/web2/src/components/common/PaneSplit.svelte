@@ -117,10 +117,10 @@
     flex-direction: column;
   }
   .pane-sash {
-    flex: 0 0 4px;
+    flex: 0 0 var(--gs-size-sash);
     background: transparent;
     position: relative;
-    z-index: 5;
+    z-index: var(--gs-z-sash);
     user-select: none;
   }
   /* 1px visible line centered inside the 4px hit area. Same colour as
@@ -134,8 +134,8 @@
   }
   .pane-split:not(.vertical) > .pane-sash {
     cursor: col-resize;
-    width: 4px;
-    margin: 0 -2px;
+    width: var(--gs-size-sash);
+    margin: 0 calc(var(--gs-size-sash) / -2);
   }
   .pane-split:not(.vertical) > .pane-sash::before {
     top: 0;
@@ -146,8 +146,8 @@
   }
   .pane-split.vertical > .pane-sash {
     cursor: row-resize;
-    height: 4px;
-    margin: -2px 0;
+    height: var(--gs-size-sash);
+    margin: calc(var(--gs-size-sash) / -2) 0;
   }
   .pane-split.vertical > .pane-sash::before {
     left: 0;

@@ -174,6 +174,47 @@ describe('design tokens', () => {
     expect(bad).toEqual([]);
   });
 
+  // L-5: a literal type size, weight, radius, z-order, shadow or duration
+  // cannot follow a skin.  (Spacing: padding, margin and gap.)
+  it('L-5: no literal scale values in component styles', () => {
+    const bad: string[] = [];
+    const spacing: string[] = [];
+    const ok = (v: string) => /^(0|inherit|none|initial|unset)$/.test(v.trim());
+    // A value made of tokens, keywords and zero lengths only.
+    const tokenised = (v: string) =>
+      !/(^|[\s(,])-?\d*\.?\d+(px|em|rem|ms|s|%)(?=$|[\s),])/.test(
+        v.replace(/var\([^()]*\)/g, '').replace(/(^|[\s(,])0(?=$|[\s),])/g, ''),
+      );
+    for (const f of SOURCES) {
+      if (!f.endsWith('.svelte') || rel(f).startsWith('gallery/')) continue;
+      const css = cssOf(f, stripComments(readFileSync(f, 'utf8')));
+      for (const d of css.matchAll(/([a-z-]+)\s*:\s*([^;{}]+);/g)) {
+        const [prop, value] = [d[1], d[2].trim()];
+        if (ok(value)) continue;
+        const scaled =
+          /^(font-size|font-weight|border(-[a-z]+)*-radius|z-index|box-shadow)$/.test(prop) ||
+          /^(transition|animation)(-duration)?$/.test(prop);
+        if (scaled) {
+          // A duration inside a transition or animation shorthand.
+          const v = /^(transition|animation)$/.test(prop)
+            ? value.replace(/var\([^()]*\)/g, '').match(/\b\d*\.?\d+m?s\b/)
+              ? 'x1'
+              : ''
+            : value;
+          if (/^(transition|animation)$/.test(prop) ? v : !tokenised(value))
+            bad.push(`${rel(f)}: ${prop}: ${value}`);
+        } else if (/^(padding|margin|gap|row-gap|column-gap)(-[a-z-]+)?$/.test(prop)) {
+          // Lengths relative to the text (em, ch) are typographic, allowed.
+          if (!tokenised(value.replace(/-?[\d.]+(em|ch)\b/g, '')))
+            spacing.push(`${rel(f)}: ${prop}: ${value}`);
+        }
+      }
+    }
+    expect(bad).toEqual([]);
+    if (spacing.length)
+      console.warn(`literal spacing (normalised next):\n  ${spacing.join('\n  ')}`);
+  });
+
   // L-6: a skin's reference palette is private to its own token file.
   it('L-6: nothing outside a skin reads a reference token', () => {
     const bad: string[] = [];

@@ -361,40 +361,40 @@
 
 <style>
   .gs-toolbar {
-    height: 35px;
-    flex: 0 0 35px;
+    height: var(--gs-size-toolbar);
+    flex: 0 0 var(--gs-size-toolbar);
     display: flex;
     align-items: center;
-    padding: 0 8px;
+    padding: 0 var(--gs-space-2);
     gap: 0;
     background: var(--gs-surface-app);
-    border-bottom: 1px solid var(--gs-border);
+    border-bottom: var(--gs-border-width) solid var(--gs-border);
     color: var(--gs-text-strong);
     user-select: none;
   }
   .tg {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: var(--gs-space-1);
   }
   .tg.actions {
-    margin-left: 4px;
+    margin-left: var(--gs-space-1);
   }
   .sep {
     width: 1px;
     height: 16px;
     background: var(--gs-border);
-    margin: 0 8px;
+    margin: 0 var(--gs-space-2);
   }
   .tbtn {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 22px;
-    height: 22px;
+    width: var(--gs-size-control);
+    height: var(--gs-size-control);
     padding: 3px;
     border: none;
-    border-radius: 6px;
+    border-radius: var(--gs-radius-lg);
     background: transparent;
     color: inherit;
     cursor: pointer;
@@ -406,8 +406,8 @@
     background: var(--gs-control-active);
   }
   .tbtn:focus-visible {
-    outline: 1px solid var(--gs-focus-ring);
-    outline-offset: -1px;
+    outline: var(--gs-focus-width) solid var(--gs-focus-ring);
+    outline-offset: var(--gs-focus-offset);
   }
   .tbtn:disabled {
     opacity: 0.4;
@@ -422,16 +422,16 @@
     display: flex;
     align-items: center;
     gap: 0;
-    border-radius: 3px;
+    border-radius: var(--gs-radius-sm);
     overflow: hidden;
   }
   .sch-btn {
-    padding: 2px 6px;
-    font-size: 11px;
+    padding: var(--gs-space-0-5) var(--gs-space-1-5);
+    font-size: var(--gs-font-size-xs);
     background: transparent;
     color: var(--gs-text-muted);
     border: none;
-    border-radius: 3px;
+    border-radius: var(--gs-radius-sm);
     cursor: pointer;
   }
   .sch-btn:hover:not(:disabled) {
@@ -448,13 +448,13 @@
   }
   .zoom-input {
     width: 48px;
-    height: 22px;
-    font-size: 11px;
+    height: var(--gs-size-control);
+    font-size: var(--gs-font-size-xs);
     text-align: center;
     background: transparent;
     color: var(--gs-text-strong);
-    border: 1px solid transparent;
-    border-radius: 2px;
+    border: var(--gs-border-width) solid transparent;
+    border-radius: var(--gs-radius-xs);
     outline: none;
   }
   .zoom-input:focus {
@@ -466,7 +466,7 @@
   .layout-controls {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: var(--gs-space-1);
     margin-left: auto;
     height: 100%;
   }

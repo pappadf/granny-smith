@@ -254,16 +254,16 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 22px;
-    height: 22px;
+    width: var(--gs-size-control);
+    height: var(--gs-size-control);
     padding: 0;
     border: none;
     background: transparent;
     color: var(--gs-text-muted);
     opacity: 0.6;
     transition:
-      opacity 100ms,
-      color 100ms;
+      opacity var(--gs-duration-fast),
+      color var(--gs-duration-fast);
     cursor: pointer;
   }
   .upload-btn:hover,
@@ -273,14 +273,14 @@
   }
   .empty {
     color: var(--gs-text-muted);
-    font-size: 12px;
-    padding: 6px 28px;
+    font-size: var(--gs-font-size-sm);
+    padding: var(--gs-space-1-5) var(--gs-space-7);
   }
   /* Drop-target affordance — subtle inset border while a file is
      being dragged over the section so the user sees which category
      will accept the drop. */
   .drop-host {
-    transition: background 80ms ease-out;
+    transition: background var(--gs-duration-instant) var(--gs-ease-out);
   }
   .drop-host.drop-active {
     background: var(--gs-drop-bg);

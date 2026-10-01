@@ -89,7 +89,7 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    border-top: 1px solid var(--gs-border);
+    border-top: var(--gs-border-width) solid var(--gs-border);
     background: var(--gs-callout-bg);
   }
   .details-head {
@@ -97,20 +97,20 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 2px 4px 0 10px;
+    padding: var(--gs-space-0-5) var(--gs-space-1) 0 var(--gs-space-2-5);
   }
   .details-name {
     font-family: var(--gs-font-mono);
-    font-size: 12px;
+    font-size: var(--gs-font-size-sm);
     color: var(--gs-text-muted);
   }
   .details-close {
     border: none;
     background: transparent;
     color: var(--gs-text-muted);
-    font-size: 16px;
+    font-size: var(--gs-font-size-xl);
     line-height: 1;
-    padding: 2px 6px;
+    padding: var(--gs-space-0-5) var(--gs-space-1-5);
     cursor: pointer;
   }
   .details-close:hover {
@@ -120,13 +120,13 @@
     flex: 0 0 auto;
     display: flex;
     justify-content: flex-end;
-    padding: 0 8px 6px;
+    padding: 0 var(--gs-space-2) var(--gs-space-1-5);
   }
   .details-insert {
-    font-size: 12px;
-    padding: 2px 12px;
-    border-radius: 3px;
-    border: 1px solid var(--gs-accent);
+    font-size: var(--gs-font-size-sm);
+    padding: var(--gs-space-0-5) var(--gs-space-3);
+    border-radius: var(--gs-radius-sm);
+    border: var(--gs-border-width) solid var(--gs-accent);
     background: var(--gs-accent-subtle);
     color: var(--gs-text-strong);
     cursor: pointer;
@@ -135,10 +135,10 @@
     flex: 0 1 auto;
     min-height: 0;
     margin: 0;
-    padding: 4px 10px 6px;
+    padding: var(--gs-space-1) var(--gs-space-2-5) var(--gs-space-1-5);
     overflow: auto;
-    font-size: 12px;
-    line-height: 1.4;
+    font-size: var(--gs-font-size-sm);
+    line-height: var(--gs-line-height-base);
     white-space: pre-wrap;
     color: var(--gs-text);
     font-family: var(--gs-font-mono);

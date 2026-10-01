@@ -79,6 +79,6 @@
   .tree {
     display: flex;
     flex-direction: column;
-    padding: 4px 0;
+    padding: var(--gs-space-1) 0;
   }
 </style>

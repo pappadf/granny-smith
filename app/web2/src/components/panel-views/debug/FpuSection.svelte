@@ -69,19 +69,19 @@
 <style>
   .fpu-hint {
     color: var(--gs-text-muted);
-    font-size: 11px;
-    padding: 8px 16px;
+    font-size: var(--gs-font-size-xs);
+    padding: var(--gs-space-2) var(--gs-space-4);
   }
   .fpu-group {
-    padding: 6px 12px;
+    padding: var(--gs-space-1-5) var(--gs-space-3);
   }
   .fpu-group-title {
-    font-size: 10px;
-    font-weight: 600;
+    font-size: var(--gs-font-size-2xs);
+    font-weight: var(--gs-font-weight-semibold);
     color: var(--gs-text-muted);
-    margin: 6px 0 4px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    margin: var(--gs-space-1-5) 0 var(--gs-space-1);
+    text-transform: var(--gs-caps-transform);
+    letter-spacing: var(--gs-caps-tracking);
   }
   /* Data register grid: name | raw hex | decimal value. Hex is fixed-
      width (20 chars + underscore = 21 ch), value gets the remaining
@@ -89,11 +89,11 @@
   .fpu-rows {
     display: grid;
     grid-template-columns: auto auto 1fr;
-    column-gap: 16px;
+    column-gap: var(--gs-space-4);
     row-gap: 0;
     align-items: center;
     font-family: var(--gs-font-mono);
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
     line-height: 18px;
   }
   /* Control registers stack as plain flex rows — each label sits
@@ -102,13 +102,13 @@
     display: flex;
     flex-direction: column;
     font-family: var(--gs-font-mono);
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
     line-height: 18px;
   }
   .fpu-ctl-row {
     display: flex;
     align-items: baseline;
-    gap: 8px;
+    gap: var(--gs-space-2);
   }
   .fpu-name {
     color: var(--gs-text-muted);
@@ -117,7 +117,7 @@
   }
   .fpu-hex {
     color: var(--gs-text);
-    text-transform: uppercase;
+    text-transform: uppercase; /* hex digits */
     white-space: nowrap;
   }
   .fpu-val {
@@ -135,6 +135,6 @@
   .fpu-val.changed,
   .fpu-ctl-row.changed {
     background: var(--gs-code-changed-bg);
-    border-radius: 2px;
+    border-radius: var(--gs-radius-xs);
   }
 </style>

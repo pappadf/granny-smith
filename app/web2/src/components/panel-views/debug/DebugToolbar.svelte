@@ -63,15 +63,15 @@
   .debug-toolbar {
     display: inline-flex;
     align-items: center;
-    gap: 2px;
+    gap: var(--gs-space-0-5);
   }
   .tb-btn {
-    width: 22px;
-    height: 22px;
+    width: var(--gs-size-control);
+    height: var(--gs-size-control);
     background: transparent;
     color: var(--gs-text);
     border: none;
-    border-radius: 2px;
+    border-radius: var(--gs-radius-xs);
     cursor: pointer;
     display: inline-flex;
     align-items: center;

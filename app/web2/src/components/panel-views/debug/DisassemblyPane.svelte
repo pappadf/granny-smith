@@ -8,6 +8,7 @@
   import { debug, inspectMmuWalk, inspectMemoryAt } from '@/state/debug.svelte';
   import { fmtHex32 } from '@/lib/hex';
   import { cycleListSelection, listKeyFromEvent } from '@/lib/keyboardNav';
+  import { readMetric } from '@/lib/tokens';
 
   // The PC sits on this (1-indexed) line after a refresh: the shared frame
   // is fetched with ROWS_BEFORE_PC rows ahead of the PC, re-synchronised by
@@ -16,8 +17,6 @@
   // PC, so after a breakpoint hit or a far jump it showed the old code with
   // no PC marker, and decoding from pc-16 could step over the PC.
   const PC_ANCHOR_LINE = ROWS_BEFORE_PC + 1;
-  // Single source of truth for row height — must match `.row { height: ... }`.
-  const ROW_HEIGHT_PX = 22;
 
   const rows = $derived<DebugFrameRow[]>(debugFrame.current?.rows ?? []);
   const pc = $derived(debugFrame.current?.pc ?? 0);
@@ -36,7 +35,9 @@
     if (!paneEl) return;
     const pcIdx = rows.findIndex((r) => r.addr === pc);
     if (pcIdx < 0) return;
-    const target = (pcIdx - (PC_ANCHOR_LINE - 1)) * ROW_HEIGHT_PX;
+    // Rows are --gs-size-row tall (`.row` below); read at use, so a skin's
+    // row height is honoured.
+    const target = (pcIdx - (PC_ANCHOR_LINE - 1)) * readMetric('--gs-size-row', 22);
     paneEl.scrollTop = Math.max(0, target);
   }
 
@@ -204,25 +205,25 @@
     /* 11 px matches the body-text baseline used by section headers
        and the MMU descriptor lines; disasm rows shouldn't read larger
        than the surrounding chrome. */
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
   }
   .banner {
     position: sticky;
     top: 0;
-    z-index: 1;
+    z-index: var(--gs-z-raised);
     /* Opaque so disasm rows scrolling underneath don't bleed
        through; tinted border-left preserves the blue indicator. */
     background: var(--gs-surface-raised);
-    border-left: 2px solid var(--gs-focus-ring);
-    border-bottom: 1px solid var(--gs-border);
+    border-left: var(--gs-border-width-strong) solid var(--gs-focus-ring);
+    border-bottom: var(--gs-border-width) solid var(--gs-border);
     color: var(--gs-text);
-    font-size: 11px;
-    padding: 4px 12px;
+    font-size: var(--gs-font-size-xs);
+    padding: var(--gs-space-1) var(--gs-space-3);
   }
   .hint {
     color: var(--gs-text-muted);
-    padding: 12px;
-    font-size: 11px;
+    padding: var(--gs-space-3);
+    font-size: var(--gs-font-size-xs);
   }
   .row {
     /* Four stable columns: PC marker, address group (logical / phys /
@@ -231,18 +232,18 @@
        x. ops gets `1fr` to take the rest. */
     display: grid;
     grid-template-columns: 14px auto auto 1fr;
-    column-gap: 8px;
+    column-gap: var(--gs-space-2);
     align-items: center;
-    height: 22px;
-    padding: 0 8px 0 4px;
-    line-height: 22px;
+    height: var(--gs-size-row);
+    padding: 0 var(--gs-space-2) 0 var(--gs-space-1);
+    line-height: var(--gs-size-row);
     cursor: default;
     white-space: nowrap;
   }
   .addr {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--gs-space-1-5);
   }
   .row:hover {
     background: var(--gs-row-hover);
@@ -251,15 +252,15 @@
     background: var(--gs-code-pc-row-bg);
   }
   .row.selected {
-    outline: 1px solid var(--gs-focus-ring);
-    outline-offset: -1px;
+    outline: var(--gs-focus-width) solid var(--gs-focus-ring);
+    outline-offset: var(--gs-focus-offset);
   }
   .disasm-pane:focus {
     outline: none;
   }
   .disasm-pane:focus-visible {
-    outline: 1px solid var(--gs-focus-ring);
-    outline-offset: -1px;
+    outline: var(--gs-focus-width) solid var(--gs-focus-ring);
+    outline-offset: var(--gs-focus-offset);
   }
   .marker {
     color: var(--gs-focus-ring);
@@ -268,16 +269,16 @@
   .addr-l,
   .addr-p {
     color: var(--gs-text-muted);
-    text-transform: uppercase;
+    text-transform: uppercase; /* hex digits */
   }
   .tag {
-    border-radius: 9999px;
-    padding: 0 6px;
-    font-size: 10px;
-    font-weight: 600;
+    border-radius: var(--gs-radius-pill);
+    padding: 0 var(--gs-space-1-5);
+    font-size: var(--gs-font-size-2xs);
+    font-weight: var(--gs-font-weight-semibold);
     line-height: 14px;
     height: 14px;
-    text-transform: uppercase;
+    text-transform: var(--gs-caps-transform);
   }
   .tag-tt {
     background: var(--gs-success-bg);

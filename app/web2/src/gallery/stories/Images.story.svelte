@@ -16,8 +16,8 @@
   .rows {
     display: flex;
     flex-direction: column;
-    padding: 4px 0;
-    border-bottom: 1px solid var(--gs-border);
+    padding: var(--gs-space-1) 0;
+    border-bottom: var(--gs-border-width) solid var(--gs-border);
   }
   .view {
     flex: 1 1 auto;

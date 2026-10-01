@@ -112,46 +112,46 @@
 <style>
   .aux-hint {
     color: var(--gs-text-muted);
-    font-size: 11px;
-    padding: 8px 16px;
+    font-size: var(--gs-font-size-xs);
+    padding: var(--gs-space-2) var(--gs-space-4);
   }
   .mono {
     font-family: var(--gs-font-mono);
   }
   .aux-state {
     display: flex;
-    gap: 8px;
+    gap: var(--gs-space-2);
     align-items: baseline;
-    font-size: 11px;
-    padding: 6px 12px 0;
+    font-size: var(--gs-font-size-xs);
+    padding: var(--gs-space-1-5) var(--gs-space-3) 0;
     margin: 0;
   }
   .aux-label {
     color: var(--gs-text-muted);
   }
   .aux-value {
-    margin-right: 12px;
+    margin-right: var(--gs-space-3);
   }
   .aux-group {
-    padding: 6px 12px;
+    padding: var(--gs-space-1-5) var(--gs-space-3);
   }
   .aux-group-title {
-    font-size: 10px;
-    font-weight: 600;
+    font-size: var(--gs-font-size-2xs);
+    font-weight: var(--gs-font-weight-semibold);
     color: var(--gs-text-muted);
-    margin: 6px 0 4px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    margin: var(--gs-space-1-5) 0 var(--gs-space-1);
+    text-transform: var(--gs-caps-transform);
+    letter-spacing: var(--gs-caps-tracking);
   }
   .aux-regs {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(16ch, 1fr));
-    column-gap: 16px;
-    font-size: 11px;
+    column-gap: var(--gs-space-4);
+    font-size: var(--gs-font-size-xs);
   }
   .aux-reg {
     display: inline-flex;
-    gap: 8px;
+    gap: var(--gs-space-2);
   }
   .aux-reg-name {
     color: var(--gs-text-muted);
@@ -162,8 +162,8 @@
   }
   .aux-fp {
     display: flex;
-    gap: 8px;
-    font-size: 11px;
+    gap: var(--gs-space-2);
+    font-size: var(--gs-font-size-xs);
   }
   .aux-fp-val {
     min-width: 14ch;
@@ -175,12 +175,12 @@
     list-style: none;
     margin: 0;
     padding: 0;
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
   }
   .aux-row {
     display: flex;
-    gap: 12px;
-    padding: 0 4px;
+    gap: var(--gs-space-3);
+    padding: 0 var(--gs-space-1);
   }
   .aux-row.pc {
     background: var(--gs-code-changed-bg);

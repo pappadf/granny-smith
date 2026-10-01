@@ -56,21 +56,21 @@
     flex: 1 1 auto;
     overflow-y: auto;
     min-height: 0;
-    padding: 4px 0;
+    padding: var(--gs-space-1) 0;
     background: var(--gs-surface-app);
   }
   .logs-empty {
     color: var(--gs-text-muted);
-    font-size: 12px;
-    padding: 16px;
-    line-height: 1.5;
+    font-size: var(--gs-font-size-sm);
+    padding: var(--gs-space-4);
+    line-height: var(--gs-line-height-relaxed);
   }
   .logs-status {
     flex: 0 0 auto;
-    padding: 4px 12px;
-    border-top: 1px solid var(--gs-border);
+    padding: var(--gs-space-1) var(--gs-space-3);
+    border-top: var(--gs-border-width) solid var(--gs-border);
     color: var(--gs-text-muted);
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
     background: var(--gs-surface-raised);
   }
 </style>

@@ -51,23 +51,23 @@
   .tab-strip {
     display: flex;
     align-items: center;
-    border-bottom: 1px solid var(--gs-border);
+    border-bottom: var(--gs-border-width) solid var(--gs-border);
     background: var(--gs-surface-app);
-    height: 26px;
+    height: var(--gs-size-control-md);
     flex-shrink: 0;
   }
   .tab {
     background: transparent;
     border: none;
     color: var(--gs-text-muted);
-    height: 26px;
-    padding: 0 12px;
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    height: var(--gs-size-control-md);
+    padding: 0 var(--gs-space-3);
+    font-size: var(--gs-font-size-xs);
+    font-weight: var(--gs-font-weight-semibold);
+    text-transform: var(--gs-caps-transform);
+    letter-spacing: var(--gs-caps-tracking);
     cursor: pointer;
-    border-bottom: 2px solid transparent;
+    border-bottom: var(--gs-border-width-strong) solid transparent;
   }
   .tab:hover {
     color: var(--gs-text);
@@ -78,7 +78,7 @@
   }
   .accessory {
     margin-left: auto;
-    padding: 0 8px;
+    padding: 0 var(--gs-space-2);
     display: inline-flex;
     align-items: center;
   }

@@ -167,19 +167,19 @@
 
 <style>
   .gs-statusbar {
-    flex: 0 0 22px;
-    height: 22px;
+    flex: 0 0 var(--gs-size-statusbar);
+    height: var(--gs-size-statusbar);
     display: flex;
     align-items: stretch;
     background: var(--gs-state-idle-bg);
     color: var(--gs-state-idle-fg);
-    font-size: 12px;
-    line-height: 22px;
-    border-top: 1px solid var(--gs-border);
+    font-size: var(--gs-font-size-sm);
+    line-height: var(--gs-size-statusbar);
+    border-top: var(--gs-border-width) solid var(--gs-border);
     transition:
-      background-color 0.15s ease-out,
-      color 0.15s ease-out;
-    padding: 0 4px;
+      background-color var(--gs-duration-quick) var(--gs-ease-out),
+      color var(--gs-duration-quick) var(--gs-ease-out);
+    padding: 0 var(--gs-space-1);
     user-select: none;
   }
   .gs-statusbar.running {
@@ -212,15 +212,15 @@
     padding: 0 7px;
     cursor: pointer;
     opacity: 0.4;
-    border-radius: 3px;
+    border-radius: var(--gs-radius-sm);
     align-self: center;
-    height: 18px;
+    height: var(--gs-size-control-sm);
   }
   .sb-caps.on {
     opacity: 1;
-    font-weight: 700;
+    font-weight: var(--gs-font-weight-bold);
     background: var(--gs-statusbar-chip-on-bg);
-    box-shadow: inset 0 0 0 1px var(--gs-statusbar-chip-on-ring);
+    box-shadow: inset 0 0 0 var(--gs-border-width) var(--gs-statusbar-chip-on-ring);
   }
   .statusbar-right {
     flex-direction: row-reverse;
@@ -228,17 +228,17 @@
   .sb-item {
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 0 8px;
+    gap: var(--gs-space-1);
+    padding: 0 var(--gs-space-2);
     cursor: pointer;
   }
   .sb-item:hover {
     background: var(--gs-state-hover);
   }
   .sb-state .dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
+    width: var(--gs-size-dot);
+    height: var(--gs-size-dot);
+    border-radius: var(--gs-radius-round);
     background: var(--gs-statusbar-dot-idle);
     display: inline-block;
   }
@@ -252,31 +252,31 @@
     background: var(--gs-statusbar-dot-stopped);
   }
   .sb-speed {
-    gap: 4px;
-    font-variant-numeric: tabular-nums;
+    gap: var(--gs-space-1);
+    font-variant-numeric: var(--gs-numeric);
   }
   .sb-speed :global(.icon) {
     opacity: 0.85;
   }
   .sb-mips {
-    font-variant-numeric: tabular-nums;
+    font-variant-numeric: var(--gs-numeric);
     opacity: 0.75;
   }
   .sb-upload {
-    gap: 6px;
-    font-size: 11px;
+    gap: var(--gs-space-1-5);
+    font-size: var(--gs-font-size-xs);
   }
   .upload-spinner {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
+    width: var(--gs-size-dot);
+    height: var(--gs-size-dot);
+    border-radius: var(--gs-radius-round);
     background: currentColor;
     opacity: 0.6;
-    animation: gs-upload-pulse 1s ease-in-out infinite;
+    animation: gs-upload-pulse var(--gs-duration-pulse) var(--gs-ease-in-out) infinite;
   }
   .sb-printer {
-    gap: 6px;
-    font-size: 11px;
+    gap: var(--gs-space-1-5);
+    font-size: var(--gs-font-size-xs);
   }
   .sb-printer.error {
     opacity: 0.8;
@@ -286,7 +286,7 @@
     border: none;
     color: inherit;
     font: inherit;
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
     line-height: inherit;
   }
   .printer-label,

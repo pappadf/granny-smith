@@ -368,15 +368,18 @@ const inputTheme = EditorView.theme({
   '&': {
     color: 'var(--gs-console-fg)',
     backgroundColor: 'transparent',
-    fontFamily: 'var(--gs-font-mono)',
-    fontSize: '13px',
+    fontFamily: 'var(--gs-console-font)',
+    fontSize: 'var(--gs-console-font-size)',
     flex: '1',
     minWidth: '0',
   },
   '&.cm-focused': { outline: 'none' },
   '.cm-content': { padding: '0', caretColor: 'var(--gs-console-cursor)' },
   '.cm-line': { padding: '0' },
-  '.cm-scroller': { fontFamily: 'var(--gs-font-mono)', lineHeight: '1.4' },
+  '.cm-scroller': {
+    fontFamily: 'var(--gs-console-font)',
+    lineHeight: 'var(--gs-console-line-height)',
+  },
   '.cm-cursor': { borderLeftColor: 'var(--gs-console-cursor)' },
   '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': {
     backgroundColor: 'var(--gs-console-selection)',
@@ -386,8 +389,8 @@ const inputTheme = EditorView.theme({
     backgroundColor: 'var(--gs-menu-bg)',
     color: 'var(--gs-menu-fg)',
     border: '1px solid var(--gs-border)',
-    fontFamily: 'var(--gs-font-mono)',
-    fontSize: '12px',
+    fontFamily: 'var(--gs-console-font)',
+    fontSize: 'var(--gs-console-popup-font-size)',
   },
   '.cm-tooltip-autocomplete > ul > li[aria-selected]': {
     backgroundColor: 'var(--gs-menu-hover-bg)',

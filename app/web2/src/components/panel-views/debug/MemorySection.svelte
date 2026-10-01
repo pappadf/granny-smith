@@ -165,26 +165,26 @@
   .mem-header {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 6px 12px;
+    gap: var(--gs-space-1-5);
+    padding: var(--gs-space-1-5) var(--gs-space-3);
     flex-wrap: wrap;
   }
   .mem-label {
     color: var(--gs-text-muted);
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
   }
   .mem-addr {
     background: var(--gs-input-bg);
     color: var(--gs-input-fg);
-    border: 1px solid var(--gs-input-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 6px;
+    border: var(--gs-border-width) solid var(--gs-input-border);
+    border-radius: var(--gs-radius-xs);
+    height: var(--gs-size-control);
+    padding: 0 var(--gs-space-1-5);
     font-family: var(--gs-font-mono);
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
     width: 10ch;
     outline: none;
-    text-transform: uppercase;
+    text-transform: uppercase; /* hex digits */
   }
   .mem-addr:focus {
     border-color: var(--gs-focus-ring);
@@ -192,11 +192,11 @@
   .mem-btn {
     background: transparent;
     color: var(--gs-text);
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 8px;
-    font-size: 11px;
+    border: var(--gs-border-width) solid var(--gs-border);
+    border-radius: var(--gs-radius-xs);
+    height: var(--gs-size-control);
+    padding: 0 var(--gs-space-2);
+    font-size: var(--gs-font-size-xs);
     cursor: pointer;
   }
   .mem-btn:hover {
@@ -206,21 +206,21 @@
     flex: 0 0 1px;
     height: 14px;
     background: var(--gs-border);
-    margin: 0 4px;
+    margin: 0 var(--gs-space-1);
   }
   .mem-mode {
     display: inline-flex;
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
+    border: var(--gs-border-width) solid var(--gs-border);
+    border-radius: var(--gs-radius-xs);
     overflow: hidden;
-    height: 22px;
+    height: var(--gs-size-control);
   }
   .mem-mode-btn {
     background: transparent;
     color: var(--gs-text-muted);
     border: none;
-    padding: 0 8px;
-    font-size: 11px;
+    padding: 0 var(--gs-space-2);
+    font-size: var(--gs-font-size-xs);
     cursor: pointer;
   }
   .mem-mode-btn.active {
@@ -228,11 +228,11 @@
     color: var(--gs-text-strong);
   }
   .mem-body {
-    padding: 4px 12px 8px;
+    padding: var(--gs-space-1) var(--gs-space-3) var(--gs-space-2);
   }
   .mem-hint {
     color: var(--gs-text-muted);
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
   }
   .mem-row {
     /* All three columns are content-width so the ASCII gutter sits
@@ -243,8 +243,8 @@
     column-gap: 18px;
     justify-content: start;
     font-family: var(--gs-font-mono);
-    font-size: 11px;
-    line-height: 1.6;
+    font-size: var(--gs-font-size-xs);
+    line-height: var(--gs-line-height-code);
   }
   .mem-row-addr {
     color: var(--gs-text-muted);
@@ -252,7 +252,7 @@
   }
   .mem-row-bytes {
     display: inline-flex;
-    gap: 4px;
+    gap: var(--gs-space-1);
     flex-wrap: nowrap;
     color: var(--gs-text);
   }

@@ -12,12 +12,12 @@
 <style>
   .toast-container {
     position: fixed;
-    right: 3px;
-    bottom: 25px;
+    right: var(--gs-toast-offset-right);
+    bottom: var(--gs-toast-offset-bottom);
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    z-index: 2545;
+    gap: var(--gs-space-1);
+    z-index: var(--gs-z-toast);
     pointer-events: none;
     max-width: 450px;
   }

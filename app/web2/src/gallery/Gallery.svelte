@@ -105,7 +105,7 @@
     white-space: pre-wrap;
   }
   .gallery-index {
-    padding: 16px 24px;
+    padding: var(--gs-space-4) var(--gs-space-6);
     height: 100%;
     overflow: auto;
   }
@@ -114,7 +114,7 @@
   }
   .gallery-index td,
   .gallery-index th {
-    padding: 2px 12px 2px 0;
+    padding: var(--gs-space-0-5) var(--gs-space-3) var(--gs-space-0-5) 0;
     text-align: left;
   }
   .gallery-index a {

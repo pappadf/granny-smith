@@ -51,13 +51,13 @@
   .image-row {
     display: flex;
     align-items: center;
-    gap: 6px;
-    height: 22px;
-    padding: 0 8px 0 28px; /* 22 px indent for the icon line-up */
+    gap: var(--gs-space-1-5);
+    height: var(--gs-size-row);
+    padding: 0 var(--gs-space-2) 0 var(--gs-space-7); /* 22 px indent for the icon line-up */
     cursor: pointer;
     user-select: none;
     color: var(--gs-text);
-    font-size: 13px;
+    font-size: var(--gs-font-size-base);
   }
   .image-row:hover {
     background: var(--gs-row-hover);
@@ -66,7 +66,7 @@
     background: var(--gs-row-selected);
   }
   .image-row.mounted .name {
-    font-weight: 600;
+    font-weight: var(--gs-font-weight-semibold);
   }
   .icon {
     flex-shrink: 0;
@@ -84,17 +84,17 @@
   .badge {
     background: var(--gs-success-bg);
     color: var(--gs-success-fg);
-    border-radius: 9999px;
-    padding: 0 8px;
+    border-radius: var(--gs-radius-pill);
+    padding: 0 var(--gs-space-2);
     height: 16px;
     line-height: 16px;
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    font-size: var(--gs-font-size-2xs);
+    text-transform: var(--gs-caps-transform);
+    letter-spacing: var(--gs-caps-tracking);
   }
   .desc {
     color: var(--gs-text-muted);
-    font-size: 12px;
+    font-size: var(--gs-font-size-sm);
     flex-shrink: 0;
   }
 </style>

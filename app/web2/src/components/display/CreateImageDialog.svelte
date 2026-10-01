@@ -199,34 +199,34 @@
 <style>
   .dlg-help {
     color: var(--gs-text-muted);
-    font-size: 13px;
-    margin: 0 0 12px 0;
+    font-size: var(--gs-font-size-base);
+    margin: 0 0 var(--gs-space-3) 0;
   }
   .dlg-options {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: var(--gs-space-2);
   }
   .dlg-option {
     display: flex;
     align-items: center;
-    gap: 8px;
-    font-size: 13px;
+    gap: var(--gs-space-2);
+    font-size: var(--gs-font-size-base);
     color: var(--gs-text);
     cursor: pointer;
   }
   .dlg-error {
-    margin-top: 12px;
+    margin-top: var(--gs-space-3);
     color: var(--gs-danger-fg);
-    font-size: 12px;
+    font-size: var(--gs-font-size-sm);
   }
   .dlg-btn {
     background: var(--gs-input-bg);
     color: var(--gs-input-fg);
-    border: 1px solid var(--gs-input-border);
-    border-radius: 2px;
-    padding: 5px 12px;
-    font-size: 13px;
+    border: var(--gs-border-width) solid var(--gs-input-border);
+    border-radius: var(--gs-radius-xs);
+    padding: 5px var(--gs-space-3);
+    font-size: var(--gs-font-size-base);
     cursor: pointer;
   }
   .dlg-btn:disabled {

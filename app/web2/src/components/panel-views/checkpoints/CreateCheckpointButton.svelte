@@ -45,11 +45,11 @@
   .action-btn {
     background: transparent;
     color: var(--gs-text);
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 8px;
-    font-size: 11px;
+    border: var(--gs-border-width) solid var(--gs-border);
+    border-radius: var(--gs-radius-xs);
+    height: var(--gs-size-control);
+    padding: 0 var(--gs-space-2);
+    font-size: var(--gs-font-size-xs);
     cursor: pointer;
   }
   .action-btn:hover {

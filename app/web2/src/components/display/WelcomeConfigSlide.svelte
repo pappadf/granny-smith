@@ -958,44 +958,44 @@
   .config-content {
     max-width: 560px;
     width: 100%;
-    padding: 48px 32px 32px;
+    padding: 48px var(--gs-space-8) var(--gs-space-8);
   }
   .back-link {
     display: inline-block;
     color: var(--gs-text-link);
     text-decoration: none;
-    margin-bottom: 16px;
-    font-size: 13px;
+    margin-bottom: var(--gs-space-4);
+    font-size: var(--gs-font-size-base);
   }
   .back-link:hover {
     text-decoration: underline;
   }
   .config-title {
-    font-size: 22px;
-    font-weight: 200;
+    font-size: var(--gs-font-size-3xl);
+    font-weight: var(--gs-font-weight-light);
     color: var(--gs-text-strong);
-    margin: 0 0 20px 0;
+    margin: 0 0 var(--gs-space-5) 0;
   }
   .config-form {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: var(--gs-space-2-5);
   }
   .form-row {
     display: grid;
     grid-template-columns: 140px 1fr;
     align-items: center;
-    gap: 12px;
+    gap: var(--gs-space-3);
   }
   .form-row label,
   .slot-list {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--gs-space-0-5);
   }
   .slot-row {
     display: flex;
-    gap: 8px;
+    gap: var(--gs-space-2);
     align-items: baseline;
   }
   .slot-name {
@@ -1009,16 +1009,16 @@
   .form-row .form-label {
     color: var(--gs-text);
     opacity: 0.9;
-    font-size: 13px;
+    font-size: var(--gs-font-size-base);
   }
   .form-row select {
     background: var(--gs-input-bg);
     color: var(--gs-input-fg);
-    border: 1px solid var(--gs-input-border);
-    border-radius: 2px;
-    height: 26px;
-    padding: 0 6px;
-    font-size: 13px;
+    border: var(--gs-border-width) solid var(--gs-input-border);
+    border-radius: var(--gs-radius-xs);
+    height: var(--gs-size-control-md);
+    padding: 0 var(--gs-space-1-5);
+    font-size: var(--gs-font-size-base);
     outline: none;
   }
   .form-row select:focus {
@@ -1026,28 +1026,28 @@
   }
   .form-help {
     color: var(--gs-text-muted);
-    font-size: 12px;
-    line-height: 1.4;
+    font-size: var(--gs-font-size-sm);
+    line-height: var(--gs-line-height-base);
   }
   .form-divider {
     height: 1px;
     background: var(--gs-border);
-    margin: 6px 0;
+    margin: var(--gs-space-1-5) 0;
   }
   .form-actions {
     display: flex;
     justify-content: flex-end;
-    margin-top: 16px;
+    margin-top: var(--gs-space-4);
   }
   .primary-button {
     background: var(--gs-accent);
     color: var(--gs-text-on-accent);
     border: none;
     border-radius: 0;
-    padding: 6px 14px;
-    font-size: 13px;
+    padding: var(--gs-space-1-5) var(--gs-space-3-5);
+    font-size: var(--gs-font-size-base);
     cursor: pointer;
-    height: 30px;
+    height: var(--gs-size-control-lg);
   }
   .primary-button:hover:not(:disabled) {
     background: var(--gs-accent-hover);

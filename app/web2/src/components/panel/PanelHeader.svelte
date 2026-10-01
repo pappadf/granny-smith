@@ -68,8 +68,8 @@
 
 <style>
   .gs-panel-header {
-    height: 35px;
-    flex: 0 0 35px;
+    height: var(--gs-size-toolbar);
+    flex: 0 0 var(--gs-size-toolbar);
     display: flex;
     align-items: stretch;
     background: var(--gs-surface-app);
@@ -95,18 +95,18 @@
   .panel-actions {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 0 8px;
+    gap: var(--gs-space-1-5);
+    padding: 0 var(--gs-space-2);
     flex-shrink: 0;
   }
   .action-btn {
     background: transparent;
     color: var(--gs-text);
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 8px;
-    font-size: 11px;
+    border: var(--gs-border-width) solid var(--gs-border);
+    border-radius: var(--gs-radius-xs);
+    height: var(--gs-size-control);
+    padding: 0 var(--gs-space-2);
+    font-size: var(--gs-font-size-xs);
     cursor: pointer;
   }
   .action-btn:hover {
@@ -115,9 +115,9 @@
   .action-toggle {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: var(--gs-space-1);
     color: var(--gs-text-muted);
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
     cursor: pointer;
     user-select: none;
   }

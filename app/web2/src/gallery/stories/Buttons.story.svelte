@@ -17,9 +17,9 @@
   .row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--gs-space-2);
     height: 35px;
-    padding: 0 8px;
+    padding: 0 var(--gs-space-2);
   }
   .hidden {
     display: none;

@@ -115,27 +115,27 @@
   .path-field {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--gs-space-0-5);
     min-width: 0;
   }
   .row {
     display: flex;
-    gap: 4px;
+    gap: var(--gs-space-1);
   }
   input {
     flex: 1;
     min-width: 12ch;
     font-family: var(--gs-font-mono);
-    font-size: 12px;
+    font-size: var(--gs-font-size-sm);
     color: var(--gs-text);
     background: var(--gs-input-bg);
-    border: 1px solid var(--gs-border);
-    padding: 1px 4px;
+    border: var(--gs-border-width) solid var(--gs-border);
+    padding: var(--gs-space-px) var(--gs-space-1);
   }
   .browse,
   .use-dir {
     font: inherit;
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
     cursor: pointer;
   }
   .listing {
@@ -143,21 +143,21 @@
     flex-direction: column;
     max-height: 160px;
     overflow-y: auto;
-    border: 1px solid var(--gs-border);
+    border: var(--gs-border-width) solid var(--gs-border);
     background: var(--gs-surface-app);
     font-family: var(--gs-font-mono);
-    font-size: 12px;
+    font-size: var(--gs-font-size-sm);
   }
   .dir {
     color: var(--gs-text-muted);
-    padding: 2px 4px;
+    padding: var(--gs-space-0-5) var(--gs-space-1);
   }
   .entry {
     text-align: left;
     background: none;
     border: none;
     color: var(--gs-text);
-    padding: 1px 8px;
+    padding: var(--gs-space-px) var(--gs-space-2);
     cursor: pointer;
     font: inherit;
   }
@@ -170,6 +170,6 @@
   }
   .error {
     color: var(--gs-syntax-error);
-    padding: 2px 4px;
+    padding: var(--gs-space-0-5) var(--gs-space-1);
   }
 </style>

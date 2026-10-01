@@ -77,33 +77,33 @@
 
 <style>
   .trans-body {
-    padding: 8px 12px;
+    padding: var(--gs-space-2) var(--gs-space-3);
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: var(--gs-space-1-5);
   }
   .trans-header {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--gs-space-1-5);
     flex-wrap: wrap;
   }
   .lbl {
     color: var(--gs-text-muted);
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
   }
   .addr {
     background: var(--gs-input-bg);
     color: var(--gs-input-fg);
-    border: 1px solid var(--gs-input-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 6px;
+    border: var(--gs-border-width) solid var(--gs-input-border);
+    border-radius: var(--gs-radius-xs);
+    height: var(--gs-size-control);
+    padding: 0 var(--gs-space-1-5);
     font-family: var(--gs-font-mono);
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
     width: 10ch;
     outline: none;
-    text-transform: uppercase;
+    text-transform: uppercase; /* hex digits */
   }
   .addr:focus {
     border-color: var(--gs-focus-ring);
@@ -112,11 +112,11 @@
   .preset-btn {
     background: transparent;
     color: var(--gs-text);
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 8px;
-    font-size: 11px;
+    border: var(--gs-border-width) solid var(--gs-border);
+    border-radius: var(--gs-radius-xs);
+    height: var(--gs-size-control);
+    padding: 0 var(--gs-space-2);
+    font-size: var(--gs-font-size-xs);
     font-family: var(--gs-font-mono);
     cursor: pointer;
   }
@@ -126,31 +126,31 @@
   }
   .presets {
     display: inline-flex;
-    gap: 4px;
-    margin-left: 12px;
+    gap: var(--gs-space-1);
+    margin-left: var(--gs-space-3);
   }
   .invalid {
     color: var(--gs-danger-fg);
     font-family: var(--gs-font-mono);
-    font-size: 11px;
-    margin: 6px 0 0;
+    font-size: var(--gs-font-size-xs);
+    margin: var(--gs-space-1-5) 0 0;
   }
   .ok {
     color: var(--gs-text);
     font-family: var(--gs-font-mono);
-    font-size: 11px;
-    margin: 6px 0 0;
+    font-size: var(--gs-font-size-xs);
+    margin: var(--gs-space-1-5) 0 0;
   }
   .hex {
-    text-transform: uppercase;
+    text-transform: uppercase; /* hex digits */
   }
   .tag {
-    border-radius: 9999px;
-    padding: 0 6px;
-    font-size: 10px;
-    font-weight: 600;
-    margin-left: 6px;
-    text-transform: uppercase;
+    border-radius: var(--gs-radius-pill);
+    padding: 0 var(--gs-space-1-5);
+    font-size: var(--gs-font-size-2xs);
+    font-weight: var(--gs-font-weight-semibold);
+    margin-left: var(--gs-space-1-5);
+    text-transform: var(--gs-caps-transform);
   }
   .tag-tt {
     background: var(--gs-success-bg);

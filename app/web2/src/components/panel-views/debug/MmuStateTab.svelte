@@ -62,38 +62,38 @@
 
 <style>
   .state-body {
-    padding: 8px 12px;
+    padding: var(--gs-space-2) var(--gs-space-3);
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: var(--gs-space-2);
   }
   .summary {
     color: var(--gs-text-muted);
-    font-size: 11px;
-    margin: 0 0 4px 0;
+    font-size: var(--gs-font-size-xs);
+    margin: 0 0 var(--gs-space-1) 0;
   }
   .reg-block {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--gs-space-0-5);
   }
   .reg-line {
     font-family: var(--gs-font-mono);
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
     color: var(--gs-text);
   }
   .reg-name {
     color: var(--gs-text-strong);
-    font-weight: 600;
-    margin-right: 8px;
+    font-weight: var(--gs-font-weight-semibold);
+    margin-right: var(--gs-space-2);
   }
   .reg-hex {
-    text-transform: uppercase;
+    text-transform: uppercase; /* hex digits */
   }
   .reg-decoded {
     color: var(--gs-text-muted);
     font-family: var(--gs-font-mono);
-    font-size: 11px;
-    margin-left: 16px;
+    font-size: var(--gs-font-size-xs);
+    margin-left: var(--gs-space-4);
   }
 </style>

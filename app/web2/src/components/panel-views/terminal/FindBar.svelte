@@ -130,24 +130,24 @@
     position: absolute;
     top: 4px;
     right: 12px;
-    z-index: 2;
+    z-index: var(--gs-z-raised);
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 3px 4px;
+    gap: var(--gs-space-1);
+    padding: 3px var(--gs-space-1);
     background: var(--gs-menu-bg);
     color: var(--gs-menu-fg);
-    border: 1px solid var(--gs-border);
+    border: var(--gs-border-width) solid var(--gs-border);
     font-family: var(--gs-font-ui);
-    font-size: 12px;
+    font-size: var(--gs-font-size-sm);
   }
   .find-input {
     width: 14em;
     font: inherit;
     background: var(--gs-surface-app);
     color: var(--gs-text);
-    border: 1px solid var(--gs-border);
-    padding: 1px 4px;
+    border: var(--gs-border-width) solid var(--gs-border);
+    padding: var(--gs-space-px) var(--gs-space-1);
   }
   .find-count {
     min-width: 5.5em;
@@ -155,10 +155,10 @@
   }
   .find-btn {
     background: none;
-    border: 1px solid transparent;
+    border: var(--gs-border-width) solid transparent;
     color: inherit;
     cursor: pointer;
-    padding: 0 4px;
+    padding: 0 var(--gs-space-1);
     font: inherit;
   }
   .find-btn.on {

@@ -54,60 +54,60 @@
   .home-content {
     max-width: 560px;
     width: 100%;
-    padding: 48px 32px 32px;
+    padding: 48px var(--gs-space-8) var(--gs-space-8);
   }
   .welcome-title {
-    font-size: 28px;
-    font-weight: 200;
+    font-size: var(--gs-font-size-4xl);
+    font-weight: var(--gs-font-weight-light);
     color: var(--gs-text-strong);
-    margin: 0 0 8px 0;
+    margin: 0 0 var(--gs-space-2) 0;
   }
   .welcome-subtitle {
     color: var(--gs-text);
     opacity: 0.7;
-    margin: 0 0 28px 0;
-    font-size: 14px;
+    margin: 0 0 var(--gs-space-7) 0;
+    font-size: var(--gs-font-size-md);
   }
   .card {
     background: var(--gs-card-bg);
-    border: 1px solid var(--gs-border-card);
-    border-radius: 6px;
-    padding: 14px 16px;
-    margin-bottom: 16px;
+    border: var(--gs-border-width) solid var(--gs-border-card);
+    border-radius: var(--gs-radius-lg);
+    padding: var(--gs-space-3-5) var(--gs-space-4);
+    margin-bottom: var(--gs-space-4);
   }
   .card-heading {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
+    font-size: var(--gs-font-size-xs);
+    font-weight: var(--gs-font-weight-semibold);
+    text-transform: var(--gs-caps-transform);
     letter-spacing: 0.5px;
     color: var(--gs-text);
     opacity: 0.8;
-    margin: 0 0 8px 0;
+    margin: 0 0 var(--gs-space-2) 0;
   }
   .card-rows {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--gs-space-0-5);
   }
   .card-row {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 6px 8px;
+    gap: var(--gs-space-2-5);
+    padding: var(--gs-space-1-5) var(--gs-space-2);
     background: transparent;
     border: none;
-    border-radius: 3px;
+    border-radius: var(--gs-radius-sm);
     color: var(--gs-text-link);
     cursor: pointer;
     text-align: left;
-    font-size: 13px;
+    font-size: var(--gs-font-size-base);
   }
   .card-row:hover {
     background: var(--gs-row-hover);
   }
   .card-row :global(.icon) {
-    width: 16px;
-    height: 16px;
+    width: var(--gs-size-icon);
+    height: var(--gs-size-icon);
     color: var(--gs-text);
   }
 </style>

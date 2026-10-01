@@ -136,19 +136,19 @@
 <style>
   .reg-hint {
     color: var(--gs-text-muted);
-    font-size: 11px;
-    padding: 8px 16px;
+    font-size: var(--gs-font-size-xs);
+    padding: var(--gs-space-2) var(--gs-space-4);
   }
   .reg-group {
-    padding: 6px 12px;
+    padding: var(--gs-space-1-5) var(--gs-space-3);
   }
   .reg-group-title {
-    font-size: 10px;
-    font-weight: 600;
+    font-size: var(--gs-font-size-2xs);
+    font-weight: var(--gs-font-weight-semibold);
     color: var(--gs-text-muted);
-    margin: 6px 0 4px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    margin: var(--gs-space-1-5) 0 var(--gs-space-1);
+    text-transform: var(--gs-caps-transform);
+    letter-spacing: var(--gs-caps-tracking);
   }
   .reg-rows {
     /* `auto auto` keeps both columns content-width so the right-hand
@@ -157,16 +157,16 @@
     display: grid;
     grid-auto-flow: column;
     grid-template-columns: auto auto;
-    column-gap: 24px;
+    column-gap: var(--gs-space-6);
     row-gap: 0;
     justify-content: start;
   }
   .reg-row {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--gs-space-2);
     font-family: var(--gs-font-mono);
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
   }
   .reg-name {
     color: var(--gs-text-muted);
@@ -182,14 +182,14 @@
     box-sizing: content-box;
     background: transparent;
     color: var(--gs-text);
-    border: 1px solid transparent;
-    border-radius: 2px;
-    padding: 0 4px;
-    height: 18px;
+    border: var(--gs-border-width) solid transparent;
+    border-radius: var(--gs-radius-xs);
+    padding: 0 var(--gs-space-1);
+    height: var(--gs-size-control-sm);
     font-family: inherit;
     font-size: inherit;
     outline: none;
-    text-transform: uppercase;
+    text-transform: uppercase; /* hex digits */
   }
   .reg-value:hover {
     border-color: var(--gs-input-border);

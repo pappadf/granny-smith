@@ -67,13 +67,13 @@
 <style>
   .mmu-hint {
     color: var(--gs-text-muted);
-    font-size: 11px;
-    padding: 8px 16px;
+    font-size: var(--gs-font-size-xs);
+    padding: var(--gs-space-2) var(--gs-space-4);
   }
   .su-toggle {
     display: inline-flex;
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
+    border: var(--gs-border-width) solid var(--gs-border);
+    border-radius: var(--gs-radius-xs);
     overflow: hidden;
     height: 20px;
   }
@@ -81,9 +81,9 @@
     background: transparent;
     color: var(--gs-text-muted);
     border: none;
-    padding: 0 8px;
-    font-size: 11px;
-    font-weight: 600;
+    padding: 0 var(--gs-space-2);
+    font-size: var(--gs-font-size-xs);
+    font-weight: var(--gs-font-weight-semibold);
     cursor: pointer;
   }
   .su-btn.active {

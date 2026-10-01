@@ -24,7 +24,7 @@
     bottom: 8px;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: var(--gs-space-1);
     max-width: 450px;
   }
 </style>

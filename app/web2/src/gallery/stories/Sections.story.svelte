@@ -18,7 +18,7 @@
 <style>
   .body {
     margin: 0;
-    padding: 4px 22px;
+    padding: var(--gs-space-1) 22px;
   }
   .act {
     background: transparent;

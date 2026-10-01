@@ -24,7 +24,7 @@
     justify-content: center;
     overflow: hidden;
     color: var(--gs-text);
-    font-size: 13px;
+    font-size: var(--gs-font-size-base);
     line-height: 16px;
   }
   .welcome-slides {
@@ -44,8 +44,8 @@
     transform: translateX(10px);
     pointer-events: none;
     transition:
-      opacity 250ms ease-out,
-      transform 250ms ease-out;
+      opacity var(--gs-duration-slow) var(--gs-ease-out),
+      transform var(--gs-duration-slow) var(--gs-ease-out);
   }
   .welcome-slide.active {
     opacity: 1;

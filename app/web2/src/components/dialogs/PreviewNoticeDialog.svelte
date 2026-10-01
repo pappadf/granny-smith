@@ -47,7 +47,7 @@
 
 <style>
   p {
-    margin: 0 0 10px;
+    margin: 0 0 var(--gs-space-2-5);
   }
   p:last-of-type {
     margin-bottom: 0;
@@ -59,11 +59,11 @@
   }
   button {
     font-family: inherit;
-    font-size: 13px;
-    padding: 6px 14px;
-    border-radius: 2px;
+    font-size: var(--gs-font-size-base);
+    padding: var(--gs-space-1-5) var(--gs-space-3-5);
+    border-radius: var(--gs-radius-xs);
     cursor: pointer;
-    height: 30px;
+    height: var(--gs-size-control-lg);
   }
   .btn-primary {
     background: var(--gs-accent);

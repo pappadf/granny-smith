@@ -27,11 +27,11 @@
   }
   button {
     font-family: inherit;
-    font-size: 13px;
-    padding: 6px 14px;
-    border-radius: 2px;
+    font-size: var(--gs-font-size-base);
+    padding: var(--gs-space-1-5) var(--gs-space-3-5);
+    border-radius: var(--gs-radius-xs);
     cursor: pointer;
-    height: 30px;
+    height: var(--gs-size-control-lg);
   }
   .btn-primary {
     background: var(--gs-accent);
@@ -47,7 +47,7 @@
   .btn-secondary {
     background: transparent;
     color: var(--gs-text);
-    border: 1px solid var(--gs-border);
+    border: var(--gs-border-width) solid var(--gs-border);
   }
   .btn-secondary:hover {
     background: var(--gs-control-hover);

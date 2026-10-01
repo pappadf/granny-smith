@@ -14,7 +14,7 @@
 <style>
   .split {
     height: 200px;
-    border-bottom: 1px solid var(--gs-border);
+    border-bottom: var(--gs-border-width) solid var(--gs-border);
   }
   .sash {
     position: relative;
@@ -23,6 +23,6 @@
     flex-direction: column;
   }
   .pane {
-    margin: 8px;
+    margin: var(--gs-space-2);
   }
 </style>

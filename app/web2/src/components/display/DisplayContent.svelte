@@ -50,6 +50,6 @@
     position: absolute;
     inset: 0;
     background: var(--gs-surface-app);
-    z-index: 10;
+    z-index: var(--gs-z-layer);
   }
 </style>

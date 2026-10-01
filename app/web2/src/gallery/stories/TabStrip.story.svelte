@@ -14,6 +14,6 @@
 
 <style>
   .acc {
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
   }
 </style>

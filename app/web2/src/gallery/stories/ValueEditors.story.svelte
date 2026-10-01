@@ -28,8 +28,8 @@
   .grid {
     display: grid;
     grid-template-columns: 80px 1fr;
-    gap: 6px 12px;
+    gap: var(--gs-space-1-5) var(--gs-space-3);
     align-items: center;
-    padding: 12px;
+    padding: var(--gs-space-3);
   }
 </style>

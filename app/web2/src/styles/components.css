@@ -42,6 +42,10 @@
   --gs-console-muted-fg: var(--gs-syntax-dim);
   --gs-console-error-fg: var(--gs-syntax-error);
   --gs-console-sig-arg-fg: var(--gs-syntax-attribute);
+  --gs-console-font: var(--gs-font-mono);
+  --gs-console-font-size: var(--gs-font-size-base);
+  --gs-console-line-height: var(--gs-line-height-base);
+  --gs-console-popup-font-size: var(--gs-font-size-sm);
 
   /* --- Component tokens ------------------------------------------------- */
   /* Panel tabs */
@@ -60,9 +64,20 @@
   --gs-menu-hover-bg: var(--gs-accent);
   --gs-menu-hover-fg: var(--gs-text-on-accent);
 
-  /* Toasts */
+  /* Toasts: the stack sits just above the status bar. */
   --gs-toast-bg: var(--gs-surface-overlay);
   --gs-toast-fg: var(--gs-text);
+  --gs-toast-offset-bottom: calc(var(--gs-size-statusbar) + 3px);
+  --gs-toast-offset-right: 3px;
+
+  /* Trees: the indent per level and before the first. */
+  --gs-tree-indent: var(--gs-size-indent);
+  --gs-tree-indent-base: var(--gs-size-indent-base);
+
+  /* The checkpoints table's fixed columns. */
+  --gs-checkpoints-col-machine: 110px;
+  --gs-checkpoints-col-date: 160px;
+  --gs-checkpoints-col-size: 80px;
 
   /* Sashes: the hover/drag fill. */
   --gs-sash-hover: color-mix(in srgb, var(--gs-focus-ring) 30%, transparent);

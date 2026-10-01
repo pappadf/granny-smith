@@ -124,17 +124,17 @@
   .thead {
     display: grid;
     align-items: center;
-    height: 26px;
-    border-bottom: 1px solid var(--gs-border);
+    height: var(--gs-size-control-md);
+    border-bottom: var(--gs-border-width) solid var(--gs-border);
     background: var(--gs-surface-app);
     flex-shrink: 0;
   }
   .th {
-    padding: 0 8px;
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    padding: 0 var(--gs-space-2);
+    font-size: var(--gs-font-size-xs);
+    font-weight: var(--gs-font-weight-semibold);
+    text-transform: var(--gs-caps-transform);
+    letter-spacing: var(--gs-caps-tracking);
     color: var(--gs-text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -148,8 +148,8 @@
     color: var(--gs-text-strong);
   }
   .sort-marker {
-    font-size: 9px;
-    margin-left: 4px;
+    font-size: var(--gs-font-size-3xs);
+    margin-left: var(--gs-space-1);
   }
   .tbody {
     flex: 1 1 auto;
@@ -159,7 +159,7 @@
   .tr {
     display: grid;
     align-items: center;
-    height: 22px;
+    height: var(--gs-size-row);
     cursor: pointer;
     user-select: none;
   }
@@ -170,15 +170,15 @@
     background: var(--gs-row-selected);
   }
   .td {
-    padding: 0 8px;
-    font-size: 13px;
+    padding: 0 var(--gs-space-2);
+    font-size: var(--gs-font-size-base);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .empty {
-    padding: 16px;
+    padding: var(--gs-space-4);
     color: var(--gs-text-muted);
-    font-size: 13px;
+    font-size: var(--gs-font-size-base);
   }
 </style>

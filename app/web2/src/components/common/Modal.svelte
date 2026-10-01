@@ -65,27 +65,27 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 2600;
+    z-index: var(--gs-z-modal);
   }
   .modal-card {
     background: var(--gs-surface-raised);
     color: var(--gs-text);
-    border: 1px solid var(--gs-border);
-    border-radius: 6px;
+    border: var(--gs-border-width) solid var(--gs-border);
+    border-radius: var(--gs-radius-lg);
     box-shadow: var(--gs-shadow-modal);
     min-width: 320px;
     max-width: 520px;
-    padding: 20px 22px;
+    padding: var(--gs-space-5) 22px;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: var(--gs-space-3-5);
   }
   .modal-card.wide {
     width: min(92vw, 1000px);
     max-width: none;
     height: min(90vh, 1100px);
-    padding: 14px 16px;
-    gap: 10px;
+    padding: var(--gs-space-3-5) var(--gs-space-4);
+    gap: var(--gs-space-2-5);
   }
   .modal-card.wide .modal-body {
     flex: 1 1 auto;
@@ -94,18 +94,18 @@
   }
   .modal-title {
     margin: 0;
-    font-size: 16px;
-    font-weight: 500;
+    font-size: var(--gs-font-size-xl);
+    font-weight: var(--gs-font-weight-medium);
     color: var(--gs-text-strong);
   }
   .modal-body {
-    font-size: 13px;
-    line-height: 1.5;
+    font-size: var(--gs-font-size-base);
+    line-height: var(--gs-line-height-relaxed);
   }
   .modal-actions {
     display: flex;
-    gap: 8px;
+    gap: var(--gs-space-2);
     justify-content: flex-end;
-    margin-top: 4px;
+    margin-top: var(--gs-space-1);
   }
 </style>

@@ -160,20 +160,20 @@
     position: fixed;
     background: var(--gs-menu-bg);
     color: var(--gs-menu-fg);
-    border: 1px solid var(--gs-border);
-    border-radius: 4px;
+    border: var(--gs-border-width) solid var(--gs-border);
+    border-radius: var(--gs-radius-md);
     box-shadow: var(--gs-shadow-popup);
     min-width: 160px;
-    padding: 4px 0;
-    z-index: 2800;
+    padding: var(--gs-space-1) 0;
+    z-index: var(--gs-z-menu);
     outline: none;
     user-select: none;
   }
   .item {
-    height: 22px;
-    line-height: 22px;
-    padding: 0 12px;
-    font-size: 13px;
+    height: var(--gs-size-row);
+    line-height: var(--gs-size-row);
+    padding: 0 var(--gs-space-3);
+    font-size: var(--gs-font-size-base);
     cursor: pointer;
   }
   .item.highlight {
@@ -186,6 +186,6 @@
   .sep {
     height: 1px;
     background: var(--gs-border);
-    margin: 4px 0;
+    margin: var(--gs-space-1) 0;
   }
 </style>

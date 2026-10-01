@@ -44,8 +44,6 @@
     onDragEnd,
     onDrop,
   }: Props = $props();
-
-  const paddingLeft = $derived(8 + depth * 8);
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -54,7 +52,7 @@
   class:selected
   class:drag-source={dragSource}
   class:drop-target={dropTarget}
-  style="padding-left: {paddingLeft}px;"
+  style="--depth: {depth}"
   role="treeitem"
   aria-selected={selected}
   aria-expanded={hasChildren ? open : undefined}
@@ -91,15 +89,16 @@
 
 <style>
   .tree-row {
+    padding-left: calc(var(--gs-tree-indent-base) + var(--gs-tree-indent) * var(--depth));
     display: flex;
     align-items: center;
-    gap: 4px;
-    height: 22px;
-    padding-right: 8px;
+    gap: var(--gs-space-1);
+    height: var(--gs-size-row);
+    padding-right: var(--gs-space-2);
     cursor: pointer;
     user-select: none;
     color: var(--gs-text);
-    font-size: 13px;
+    font-size: var(--gs-font-size-base);
   }
   .tree-row:hover {
     background: var(--gs-row-hover);
@@ -111,21 +110,21 @@
     opacity: 0.45;
   }
   .tree-row.drop-target {
-    outline: 1px solid var(--gs-drop-border);
-    outline-offset: -1px;
+    outline: var(--gs-focus-width) solid var(--gs-drop-border);
+    outline-offset: var(--gs-focus-offset);
     background: var(--gs-tree-drop-bg);
   }
   .twistie {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 14px;
+    width: var(--gs-size-icon-md);
     color: var(--gs-text-muted);
     flex-shrink: 0;
     /* Chevron points down when open, rotates to point right when
        closed. Same pattern as the section twistie. */
     transform: rotate(-90deg);
-    transition: transform 80ms ease-out;
+    transition: transform var(--gs-duration-instant) var(--gs-ease-out);
   }
   .twistie.open {
     transform: rotate(0deg);
@@ -148,8 +147,8 @@
   }
   .desc {
     color: var(--gs-text-muted);
-    font-size: 12px;
+    font-size: var(--gs-font-size-sm);
     flex-shrink: 0;
-    margin-left: 8px;
+    margin-left: var(--gs-space-2);
   }
 </style>

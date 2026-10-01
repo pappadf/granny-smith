@@ -273,7 +273,7 @@
   .cmd-tree {
     list-style: none;
     margin: 0;
-    padding: 4px 0;
+    padding: var(--gs-space-1) 0;
     overflow-y: auto;
     /* Takes what the details pane leaves, but keeps a few rows. */
     flex: 1 1 0;
@@ -283,16 +283,16 @@
     outline: none;
   }
   .cmd-tree:focus-visible {
-    outline: 1px solid var(--gs-focus-ring);
-    outline-offset: -1px;
+    outline: var(--gs-focus-width) solid var(--gs-focus-ring);
+    outline-offset: var(--gs-focus-offset);
   }
   /* A section headline: a bold row over its rows, which share its indent. */
   .cmd-row.kind-section > .cmd-line {
-    padding-top: 6px;
+    padding-top: var(--gs-space-1-5);
   }
   /* Same size as the rows under it, set apart by weight only. */
   .cmd-row.kind-section .name {
-    font-weight: 600;
+    font-weight: var(--gs-font-weight-semibold);
     font-family: inherit;
     color: var(--gs-text-strong);
   }
@@ -310,10 +310,11 @@
   .cmd-line {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 2px 8px 2px calc(8px + var(--depth) * 14px);
+    gap: var(--gs-space-1-5);
+    padding: var(--gs-space-0-5) var(--gs-space-2) var(--gs-space-0-5)
+      calc(var(--gs-tree-indent-base) + var(--depth) * var(--gs-space-3-5));
     cursor: pointer;
-    height: 22px;
+    height: var(--gs-size-row);
     color: var(--gs-text);
     user-select: none;
     white-space: nowrap;
@@ -325,11 +326,11 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 14px;
+    width: var(--gs-size-icon-md);
     color: var(--gs-text-muted);
     flex-shrink: 0;
     transform: rotate(-90deg);
-    transition: transform 80ms ease-out;
+    transition: transform var(--gs-duration-instant) var(--gs-ease-out);
   }
   .twistie.open {
     transform: rotate(0deg);
@@ -338,7 +339,7 @@
     visibility: hidden;
   }
   .name {
-    font-size: 13px;
+    font-size: var(--gs-font-size-base);
     flex: 0 0 auto;
     min-width: 14ch;
     font-family: var(--gs-font-mono);
@@ -356,16 +357,16 @@
     color: var(--gs-syntax-keyword);
   }
   .kind-group > .cmd-line > .name {
-    font-weight: 600;
+    font-weight: var(--gs-font-weight-semibold);
     font-family: inherit;
   }
   .type {
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
     color: var(--gs-syntax-type);
     flex: 0 0 auto;
   }
   .doc {
-    font-size: 12px;
+    font-size: var(--gs-font-size-sm);
     color: var(--gs-syntax-dim);
     flex: 1 1 auto;
     min-width: 0;

@@ -22,8 +22,8 @@
   .sb-item {
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 0 8px;
+    gap: var(--gs-space-1);
+    padding: 0 var(--gs-space-2);
     cursor: pointer;
   }
   .sb-item:hover {
@@ -32,8 +32,8 @@
   .sb-drive {
     opacity: 0.55;
     transition:
-      opacity 0.1s,
-      color 0.1s;
+      opacity var(--gs-duration-fast),
+      color var(--gs-duration-fast);
   }
   .sb-drive.active-read {
     opacity: 1;
@@ -46,7 +46,7 @@
   .drive-ico {
     display: inline-block;
     font-family: var(--gs-font-mono);
-    font-size: 11px;
-    font-weight: 600;
+    font-size: var(--gs-font-size-xs);
+    font-weight: var(--gs-font-weight-semibold);
   }
 </style>

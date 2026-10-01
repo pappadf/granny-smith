@@ -48,6 +48,6 @@
   .frame {
     display: flex;
     flex-direction: column;
-    margin-top: 16px;
+    margin-top: var(--gs-space-4);
   }
 </style>

@@ -49,13 +49,13 @@
      so Svelte's per-component scoping would otherwise treat the second
      selector as unmatched. */
   :global(.gs-collapsible + .gs-collapsible) {
-    border-top: 1px solid var(--gs-border);
+    border-top: var(--gs-border-width) solid var(--gs-border);
   }
   .header {
-    height: 22px;
+    height: var(--gs-size-row);
     display: flex;
     align-items: center;
-    padding: 0 8px 0 0;
+    padding: 0 var(--gs-space-2) 0 0;
     user-select: none;
     background: var(--gs-surface-app);
   }
@@ -69,8 +69,8 @@
     height: 100%;
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 0 0 0 8px;
+    gap: var(--gs-space-1);
+    padding: 0 0 0 var(--gs-space-2);
     border: none;
     background: transparent;
     color: inherit;
@@ -79,36 +79,36 @@
     cursor: pointer;
   }
   .toggle:focus-visible {
-    outline: 1px solid var(--gs-focus-ring);
-    outline-offset: -1px;
+    outline: var(--gs-focus-width) solid var(--gs-focus-ring);
+    outline-offset: var(--gs-focus-offset);
   }
   .twistie {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 14px;
+    width: var(--gs-size-icon-md);
     color: var(--gs-text-muted);
     flex-shrink: 0;
     /* Chevron points down when open, rotates to point right when
        collapsed. Matches the codicon-driven VS Code tree pattern. */
     transform: rotate(-90deg);
-    transition: transform 80ms ease-out;
+    transition: transform var(--gs-duration-instant) var(--gs-ease-out);
   }
   .twistie.open {
     transform: rotate(0deg);
   }
   .title {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    font-size: var(--gs-font-size-xs);
+    font-weight: var(--gs-font-weight-semibold);
+    text-transform: var(--gs-caps-transform);
+    letter-spacing: var(--gs-caps-tracking);
     color: var(--gs-text-strong);
     flex: 1 1 auto;
   }
   .count {
     color: var(--gs-text-muted);
-    font-size: 11px;
-    margin-right: 4px;
+    font-size: var(--gs-font-size-xs);
+    margin-right: var(--gs-space-1);
   }
   .actions {
     display: inline-flex;

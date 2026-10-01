@@ -59,6 +59,74 @@ function cmp(name: TokenName, kind: TokenKind, doc: string, jsRead = false): Tok
   return { name, layer: 'component', kind, perScheme: false, doc, ...(jsRead ? { jsRead } : {}) };
 }
 
+// The scale (styles/scale.css).
+const sizes = (prefix: string, kind: TokenKind, steps: string[], doc: string) =>
+  steps.map((s) => scl(`--gs-${prefix}-${s}`, kind, `${doc} ${s}`));
+const SCALE: TokenSpec[] = [
+  scl('--gs-font-ui', 'font', 'the UI font stack'),
+  scl('--gs-font-mono', 'font', 'the monospace font stack'),
+  ...sizes(
+    'font-size',
+    'length',
+    ['3xs', '2xs', 'xs', 'sm', 'base', 'md', 'lg', 'xl', '2xl', '3xl', '4xl'],
+    'type size',
+  ),
+  ...sizes(
+    'font-weight',
+    'number',
+    ['light', 'regular', 'medium', 'semibold', 'bold'],
+    'font weight',
+  ),
+  ...sizes('line-height', 'number', ['base', 'relaxed', 'code'], 'line height'),
+  scl('--gs-caps-transform', 'keyword', 'the transform of micro-headings (uppercase or none)'),
+  scl('--gs-caps-tracking', 'length', 'the letter-spacing of micro-headings'),
+  scl('--gs-numeric', 'keyword', 'numeral style of counters and amounts'),
+  ...sizes(
+    'space',
+    'length',
+    ['0', 'px', '0-5', '1', '1-5', '2', '2-5', '3', '3-5', '4', '5', '6', '7', '8'],
+    'space step',
+  ),
+  ...sizes('radius', 'length', ['none', 'xs', 'sm', 'md', 'lg', 'pill', 'round'], 'corner radius'),
+  scl('--gs-size-row', 'length', 'tree, table, list, menu and disassembly rows', true),
+  scl('--gs-size-control-sm', 'length', 'small controls (inline inputs, chips)'),
+  scl('--gs-size-control', 'length', 'buttons, inputs, icon buttons'),
+  scl('--gs-size-control-md', 'length', 'selects, sub-tabs, table header'),
+  scl('--gs-size-control-lg', 'length', 'dialog buttons'),
+  scl('--gs-size-toolbar', 'length', 'toolbars and the panel header'),
+  scl('--gs-size-tab', 'length', 'panel tabs'),
+  scl('--gs-size-statusbar', 'length', 'the status bar'),
+  ...sizes('size-icon', 'length', ['xs', 'sm', 'md'], 'icon size'),
+  scl('--gs-size-icon', 'length', 'icon size (base)'),
+  scl('--gs-size-indent', 'length', 'tree indent step'),
+  scl('--gs-size-indent-base', 'length', 'tree first-level indent'),
+  scl('--gs-size-sash', 'length', 'sash hit area'),
+  scl('--gs-size-dot', 'length', 'status and activity dots'),
+  scl('--gs-size-progress', 'length', 'progress bar height'),
+  scl('--gs-size-spinner', 'length', 'spinner diameter'),
+  scl('--gs-size-form-label', 'length', 'form label column'),
+  scl('--gs-border-width', 'length', 'borders'),
+  scl('--gs-border-width-strong', 'length', 'indicator rules'),
+  scl('--gs-focus-width', 'length', 'the focus outline width'),
+  scl('--gs-focus-offset', 'length', 'the focus outline offset'),
+  scl('--gs-opacity-disabled', 'number', 'a disabled control'),
+  scl('--gs-opacity-drag-source', 'number', 'a row being dragged'),
+  scl('--gs-opacity-skipped', 'number', 'a skipped item'),
+  ...sizes(
+    'z',
+    'number',
+    ['raised', 'sash', 'layer', 'drop', 'toast', 'modal', 'popover', 'menu'],
+    'z-order',
+  ),
+  ...sizes(
+    'duration',
+    'duration',
+    ['instant', 'fast', 'quick', 'base', 'slow', 'slower', 'spin', 'pulse', 'indeterminate'],
+    'duration',
+  ),
+  ...sizes('ease', 'easing', ['out', 'in-out', 'linear'], 'easing'),
+];
+
 // The four intents, each with five roles.
 const INTENTS = ['info', 'success', 'warning', 'danger'] as const;
 const intentTokens: TokenSpec[] = INTENTS.flatMap((i) => [
@@ -178,6 +246,15 @@ export const TOKENS: readonly TokenSpec[] = [
   der('--gs-console-muted-fg', '--gs-syntax-dim', 'echo, progress, completion detail'),
   der('--gs-console-error-fg', '--gs-syntax-error', 'stderr and error entries'),
   der('--gs-console-sig-arg-fg', '--gs-syntax-attribute', 'the active argument of a hint'),
+  der('--gs-console-font', '--gs-font-mono', 'console text', 'font'),
+  der('--gs-console-font-size', '--gs-font-size-base', 'console text (CodeMirror too)', 'length'),
+  der('--gs-console-line-height', '--gs-line-height-base', 'console lines', 'number'),
+  der(
+    '--gs-console-popup-font-size',
+    '--gs-font-size-sm',
+    'completion popup, signature hint',
+    'length',
+  ),
   // --- Drag and drop ----------------------------------------------------------
   sem('--gs-drop-border', 'color', 'a drop target outline'),
   sem('--gs-drop-bg', 'color', 'a drop target fill'),
@@ -194,8 +271,7 @@ export const TOKENS: readonly TokenSpec[] = [
   sem('--gs-shadow-screen', 'shadow', "the emulated screen's frame"),
 
   // --- Scale ------------------------------------------------------------------
-  scl('--gs-font-ui', 'font', 'the UI font stack'),
-  scl('--gs-font-mono', 'font', 'the monospace font stack'),
+  ...SCALE,
 
   // --- Components -------------------------------------------------------------
   cmp('--gs-selection-fg', 'keyword', 'selected text colour (inherit: unchanged)'),
@@ -209,6 +285,13 @@ export const TOKENS: readonly TokenSpec[] = [
   cmp('--gs-menu-hover-fg', 'color', 'the highlighted menu item text'),
   cmp('--gs-toast-bg', 'color', 'toasts'),
   cmp('--gs-toast-fg', 'color', 'toast text'),
+  cmp('--gs-toast-offset-bottom', 'length', 'the toast stack above the status bar'),
+  cmp('--gs-toast-offset-right', 'length', 'the toast stack from the right edge'),
+  cmp('--gs-tree-indent', 'length', 'tree indent per level'),
+  cmp('--gs-tree-indent-base', 'length', 'tree indent before the first level'),
+  cmp('--gs-checkpoints-col-machine', 'length', "the checkpoints table's machine column"),
+  cmp('--gs-checkpoints-col-date', 'length', "the checkpoints table's date column"),
+  cmp('--gs-checkpoints-col-size', 'length', "the checkpoints table's size column"),
   cmp('--gs-sash-hover', 'color', 'a sash hovered or dragged'),
   cmp('--gs-tree-drop-bg', 'color', 'a tree row under a drag'),
   cmp('--gs-callout-bg', 'color', "a callout's fill"),

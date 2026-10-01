@@ -89,25 +89,25 @@
   .rename-body {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: var(--gs-space-1-5);
     min-width: 280px;
   }
   .rename-label {
-    font-size: 12px;
+    font-size: var(--gs-font-size-sm);
     color: var(--gs-text-muted);
   }
   .rename-error {
-    font-size: 12px;
+    font-size: var(--gs-font-size-sm);
     color: var(--gs-danger-fg);
   }
   .rename-input {
     background: var(--gs-input-bg);
     color: var(--gs-input-fg);
-    border: 1px solid var(--gs-input-border);
-    border-radius: 2px;
+    border: var(--gs-border-width) solid var(--gs-input-border);
+    border-radius: var(--gs-radius-xs);
     height: 28px;
-    padding: 0 8px;
-    font-size: 13px;
+    padding: 0 var(--gs-space-2);
+    font-size: var(--gs-font-size-base);
     outline: none;
   }
   .rename-input:focus {
@@ -116,10 +116,10 @@
   .btn {
     background: transparent;
     color: var(--gs-text);
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    padding: 4px 12px;
-    font-size: 13px;
+    border: var(--gs-border-width) solid var(--gs-border);
+    border-radius: var(--gs-radius-xs);
+    padding: var(--gs-space-1) var(--gs-space-3);
+    font-size: var(--gs-font-size-base);
     cursor: pointer;
   }
   .btn:hover {

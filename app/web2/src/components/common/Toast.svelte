@@ -41,20 +41,20 @@
   .toast {
     background: var(--gs-toast-bg);
     color: var(--gs-toast-fg);
-    border-radius: 4px;
+    border-radius: var(--gs-radius-md);
     box-shadow: var(--gs-shadow-toast);
-    padding: 10px 12px;
+    padding: var(--gs-space-2-5) var(--gs-space-3);
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: var(--gs-space-2-5);
     opacity: 0;
     transform: translate3d(0, 100%, 0);
     transition:
-      transform 300ms ease-out,
-      opacity 300ms ease-out;
+      transform var(--gs-duration-slower) var(--gs-ease-out),
+      opacity var(--gs-duration-slower) var(--gs-ease-out);
     pointer-events: auto;
-    font-size: 13px;
-    line-height: 22px;
+    font-size: var(--gs-font-size-base);
+    line-height: var(--gs-size-row);
     min-width: 260px;
   }
   .toast.show {
@@ -72,7 +72,7 @@
     border: none;
     color: var(--gs-text);
     cursor: pointer;
-    padding: 2px;
+    padding: var(--gs-space-0-5);
     display: none;
   }
   .toast:hover .close-btn {
@@ -82,11 +82,11 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    font-size: 11px;
-    font-weight: 700;
+    width: var(--gs-size-icon);
+    height: var(--gs-size-icon);
+    border-radius: var(--gs-radius-round);
+    font-size: var(--gs-font-size-xs);
+    font-weight: var(--gs-font-weight-bold);
     flex-shrink: 0;
   }
   .sev-icon.info {

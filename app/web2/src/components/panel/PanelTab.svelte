@@ -27,11 +27,11 @@
     background: transparent;
     border: none;
     color: var(--gs-tab-fg);
-    font-size: 11px;
-    text-transform: uppercase;
-    padding: 0 10px;
+    font-size: var(--gs-font-size-xs);
+    text-transform: var(--gs-caps-transform);
+    padding: 0 var(--gs-space-2-5);
     line-height: 18px;
-    height: 31px;
+    height: var(--gs-size-tab);
     display: inline-flex;
     align-items: center;
     align-self: center;
@@ -49,14 +49,14 @@
     right: 10px;
     bottom: 4px;
     height: 0;
-    border-top: 1px solid var(--gs-tab-fg-selected);
+    border-top: var(--gs-border-width) solid var(--gs-tab-fg-selected);
     pointer-events: none;
   }
   .ptab:focus {
     outline: none;
   }
   .ptab:focus-visible {
-    outline: 1px solid var(--gs-focus-ring);
+    outline: var(--gs-focus-width) solid var(--gs-focus-ring);
     outline-offset: -2px;
   }
 </style>

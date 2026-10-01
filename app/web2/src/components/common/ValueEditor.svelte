@@ -153,11 +153,11 @@
   select {
     font: inherit;
     font-family: var(--gs-font-mono);
-    font-size: 12px;
+    font-size: var(--gs-font-size-sm);
     color: var(--gs-text);
     background: var(--gs-input-bg);
-    border: 1px solid var(--gs-focus-ring);
-    padding: 0 4px;
+    border: var(--gs-border-width) solid var(--gs-focus-ring);
+    padding: 0 var(--gs-space-1);
     min-width: 8ch;
     max-width: 100%;
   }
@@ -167,15 +167,15 @@
   }
   .error {
     color: var(--gs-syntax-error);
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
     white-space: normal;
   }
   .toggle {
     position: relative;
     width: 26px;
     height: 14px;
-    border-radius: 7px;
-    border: 1px solid var(--gs-border);
+    border-radius: var(--gs-radius-pill);
+    border: var(--gs-border-width) solid var(--gs-border);
     background: var(--gs-surface-app);
     padding: 0;
     cursor: pointer;
@@ -193,9 +193,9 @@
     left: 1px;
     width: 10px;
     height: 10px;
-    border-radius: 50%;
+    border-radius: var(--gs-radius-round);
     background: var(--gs-text-muted);
-    transition: left 0.1s;
+    transition: left var(--gs-duration-fast);
   }
   .toggle.on .knob {
     left: 13px;

@@ -87,52 +87,52 @@
     position: fixed;
     inset: 0;
     background: var(--gs-backdrop);
-    z-index: 2700;
+    z-index: var(--gs-z-popover);
     display: flex;
     align-items: flex-start;
     justify-content: flex-end;
-    padding: 80px 16px 16px;
+    padding: 80px var(--gs-space-4) var(--gs-space-4);
   }
   .cat-card {
     background: var(--gs-surface-raised);
     color: var(--gs-text);
-    border: 1px solid var(--gs-border);
-    border-radius: 6px;
+    border: var(--gs-border-width) solid var(--gs-border);
+    border-radius: var(--gs-radius-lg);
     box-shadow: var(--gs-shadow-modal);
     min-width: 280px;
     max-width: 360px;
     max-height: 60vh;
     overflow: auto;
-    padding: 12px 14px;
+    padding: var(--gs-space-3) var(--gs-space-3-5);
   }
   .cat-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 8px;
+    margin-bottom: var(--gs-space-2);
   }
   .cat-title {
-    font-size: 13px;
-    font-weight: 500;
+    font-size: var(--gs-font-size-base);
+    font-weight: var(--gs-font-weight-medium);
     color: var(--gs-text-strong);
   }
   .close-btn {
     background: none;
     border: none;
     color: var(--gs-text-muted);
-    font-size: 18px;
+    font-size: var(--gs-font-size-2xl);
     line-height: 1;
     cursor: pointer;
-    padding: 0 4px;
+    padding: 0 var(--gs-space-1);
   }
   .close-btn:hover {
     color: var(--gs-text-strong);
   }
   .cat-empty {
-    font-size: 12px;
+    font-size: var(--gs-font-size-sm);
     color: var(--gs-text-muted);
-    margin: 8px 0 0;
-    line-height: 1.5;
+    margin: var(--gs-space-2) 0 0;
+    line-height: var(--gs-line-height-relaxed);
   }
   .cat-list {
     list-style: none;
@@ -140,15 +140,15 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--gs-space-0-5);
   }
   .cat-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
-    padding: 4px 0;
-    font-size: 12px;
+    gap: var(--gs-space-2);
+    padding: var(--gs-space-1) 0;
+    font-size: var(--gs-font-size-sm);
   }
   .cat-name {
     font-family: var(--gs-font-mono);
@@ -162,11 +162,11 @@
     width: 56px;
     background: var(--gs-input-bg);
     color: var(--gs-input-fg);
-    border: 1px solid var(--gs-input-border);
-    border-radius: 2px;
+    border: var(--gs-border-width) solid var(--gs-input-border);
+    border-radius: var(--gs-radius-xs);
     height: 24px;
-    padding: 0 6px;
-    font-size: 12px;
+    padding: 0 var(--gs-space-1-5);
+    font-size: var(--gs-font-size-sm);
     outline: none;
   }
   .cat-row input[type='number']:focus {

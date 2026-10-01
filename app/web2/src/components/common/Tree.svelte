@@ -378,7 +378,7 @@
     outline: none;
   }
   .tree:focus-visible {
-    outline: 1px solid var(--gs-focus-ring);
-    outline-offset: -1px;
+    outline: var(--gs-focus-width) solid var(--gs-focus-ring);
+    outline-offset: var(--gs-focus-offset);
   }
 </style>

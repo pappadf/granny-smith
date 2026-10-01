@@ -104,16 +104,16 @@
 <style>
   .hint {
     color: var(--gs-text-muted);
-    font-size: 11px;
-    padding: 6px 12px;
+    font-size: var(--gs-font-size-xs);
+    padding: var(--gs-space-1-5) var(--gs-space-3);
   }
   .frame-row {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 2px 12px;
+    gap: var(--gs-space-3);
+    padding: var(--gs-space-0-5) var(--gs-space-3);
     font-family: var(--gs-font-mono);
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
     color: var(--gs-text);
   }
   .idx {
