@@ -594,14 +594,24 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
         p->rtcl = v & 0x3FFFFF80u; // RTCL: bits 25-31 and 0-1 read as zero
         p->rtc_base_ticks = ppc_ticks_now(p);
         break;
-    case 22:
+    case 22: {
         if (spr_priv_fault(p, iw))
             return false;
+        uint32_t old = ppc_dec_now(p);
         p->dec = v;
         p->dec_base_ticks = ppc_ticks_now(p);
-        p->dec_pending = 0; // re-arming clears the latched expiry
+        // Re-arming clears the latched expiry, but a write that itself turns
+        // bit 0 from 0 to 1 signals the request, as the counter's own
+        // transition does (the Programming Environments manual, Decrementer
+        // Register).  The Mac OS 9 NanoKernel's idle path counts on
+        // it: it reads an expired (negative) DEC, writes $7FFF0000, and writes
+        // the old value back to re-post the expiry; without the signal its
+        // timer queue never fires again and the boot hangs at the first
+        // timed wait.
+        p->dec_pending = (!(old & 0x80000000u) && (v & 0x80000000u)) ? 1u : 0u;
         ppc_dec_arm(p);
         break;
+    }
     case 25:
         if (spr_priv_fault(p, iw))
             return false;

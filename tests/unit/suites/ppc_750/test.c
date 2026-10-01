@@ -17,6 +17,7 @@
 //     TIN per TID against the synthetic temperature (Table 2-15);
 //   - ICTC (1019), MMCR0/1, PMC1-4, SIA store-and-readback; user mirrors
 //     936-942 readable from user mode and not writable;
+//   - mtdec signals the decrementer request on a 0 -> 1 change of bit 0;
 //   - PIR (1023) and SDA (959) do not exist on the 750; tlbia and fsqrt
 //     take the illegal-instruction program exception (§2.3.1.2, §2.3.6.3.3).
 
@@ -251,6 +252,26 @@ static void test_isa(void) {
 }
 
 // The 601/604 models are untouched by the 750 registers.
+// mtdec: a write that turns DEC bit 0 from 0 to 1 signals the decrementer
+// request; any other write clears a latched one.  The NanoKernel re-posts an
+// expired DEC with exactly this pair (mtdec $7FFF0000, mtdec <old value>).
+static void test_dec_write_signal(void) {
+    fresh750();
+    P->gpr[4] = 0x7FFF0000u;
+    step1(e_spr(4, 22, 1)); // mtdec r4 (positive)
+    CHECK_EQ(P->dec_pending, 0);
+    P->gpr[4] = 0xF5C35490u;
+    step1(e_spr(4, 22, 1)); // mtdec r4: bit 0 goes 0 -> 1
+    CHECK_EQ(P->dec_pending, 1);
+    P->gpr[4] = 0xE0000000u;
+    step1(e_spr(4, 22, 1)); // negative -> negative: no transition, cleared
+    CHECK_EQ(P->dec_pending, 0);
+    P->dec_pending = 1;
+    P->gpr[4] = 0x00001000u;
+    step1(e_spr(4, 22, 1)); // a positive write cancels the latched request
+    CHECK_EQ(P->dec_pending, 0);
+}
+
 static void test_other_models_reject(void) {
     P->cpu_model = CPU_MODEL_PPC604;
     ppc_reset(P);
@@ -290,6 +311,7 @@ int main(void) {
     test_thrm();
     test_perfmon();
     test_isa();
+    test_dec_write_signal();
     test_other_models_reject();
 
     ppc_delete(P);
