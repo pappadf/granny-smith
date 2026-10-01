@@ -56,6 +56,8 @@ dump is caught rather than silently booted.
 | `ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom` | Apple Network Server (Open Firmware 2.26NT) |
 | `ans500-ans700-2.26b6-9630c68b-a71fb907dd180b8a.rom` | Apple Network Server (Open Firmware 2.26B6) |
 | `ans500-ans700-proto20-49b2be8f.rom` | Apple Network Server (2.0 prototype, Mac OS) |
+| `pmg3dt-pmg3mt-78f57389.rom` | Power Macintosh G3 desktop / mini tower, Rev C ROM (`$77D.45F2`, Open Firmware 2.4) |
+| `pmg3dt-pmg3mt-reva-79d68d63.rom` | Power Macintosh G3, Rev A ROM (`$77D.40F2`, Open Firmware 2.0f1) |
 | `lisa2-revh-098917b2.rom` | Lisa 2 (rev H) |
 | `macxl-3a-094c82f0.rom` | Macintosh XL |
 

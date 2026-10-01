@@ -1,4 +1,4 @@
-# PPC core — MPC601/MPC604 main CPU
+# PPC core — MPC601/MPC604/MPC750 main CPU
 
 `src/core/cpu/ppc/` implements the PowerPC 601 and 604 as a **main CPU** —
 the first non-68K architecture to own emulated time.  The module is named `ppc`, not `ppc601`:
@@ -298,6 +298,34 @@ deltas, each keyed on `cpu_model`:
   validity view (`.long` for the other model's exclusives — matching the
   runtime trap and `objdump -m powerpc:<model>`).  `tools/disasm` grows
   `--arch ppc604` (`ppc`/`ppc601` keep the 601 view).
+
+## The 750 model
+
+`CPU_MODEL_PPC750` (the beige G3, `src/machines/gossamer/`) is the 604
+model plus the 750's implementation registers; `ppc_is_604` is true for it
+and `ppc_is_750` keys the deltas (MPC750UM Tables 2-48/2-49):
+
+- **Reset state**: MSR = `$40`, PVR from the board profile (`$00080202`,
+  rev 2.2, by default), HID0 = L2CR = 0, DEC all-ones.
+- **HID1** (SPR 1009) is the read-only PLL_CFG image the profile supplies
+  (`ppc_set_identity`); `mtspr` to it and to PVR are no-ops.
+- **HID0**: ICFI/DCFI self-clear.
+- **L2CR** (1017): stored bits with L2IP read-only.  Any 0→1 transition of
+  L2I starts a global invalidate whose L2IP stays set for a fixed cycle
+  count — the handshake the boot program spins on (MPC750UM §9.1.5).
+- **Thermal assist** (THRM1-3): TIV goes valid after a V=1 threshold with
+  THRM3[E]; TIN compares the threshold against a fixed 40 °C.
+- **ICTC, MMCR0/1, PMC1-4, SIA** store and read back; the user-mode
+  mirrors 936-942 read from user mode and are not writable.
+- **Absent on the 750**: PIR (1023), SDA (959), `tlbia` and `fsqrt` take
+  the illegal-instruction program exception.
+
+One rule is not 750-specific but was found on it: an `mtdec` that turns
+DEC bit 0 from 0 to 1 latches the decrementer request, as the counter's
+own transition does; any other `mtdec` clears a latched one.  The Mac OS 9
+NanoKernel re-posts an expired DEC with exactly that pair of writes.
+
+`tests/unit/suites/ppc_750/` pins every item above.
 
 ## Verification
 

@@ -343,7 +343,13 @@ The stride and the individual absolute addresses are literals in the firmware's 
 table's VIA1 entry is `$F3016000` [5], [9]. Interrupt **18** (§3.5).
 
 **Device 8 — MESH (`+$18000`).** The internal SCSI cell, TNT only: interrupt **13** plus DBDMA channel **10** at
-`+$8A00` [5]. The Catalyst decoder table has no entry here at all [5].
+`+$8A00` [5]. The Catalyst decoder table has no entry here at all [5]. One bus-phase behaviour Apple's MESH driver
+depends on: after the sequencer takes the status byte it keeps ACK asserted on it until the next sequence command, so
+the target cannot raise REQ for MESSAGE IN and bus-status-0 reads REQ clear (ACK set) in between; the driver spins
+`while (bus_status0 & REQ)` at that point, and again after the message byte, before it issues the next phase. The
+spins are *observed* in the beige G3 ROM's and Mac OS 9.2.1's copies of the driver (the same MESH cell, in Heathrow);
+the held ACK is *inferred* as the behaviour they are written against — a REQ that only drops for a fixed interval
+stalls them whenever their wait runs past it [10].
 
 **Device 9 — Ethernet address PROM (`+$19000`).** A 16-byte GBus-attached PROM on `$10` centres. Apple publishes its
 layout [3] §4.6.1 pp. 14–15: bytes `+$00`–`+$20` carry the three "Group ID" bytes, `+$30`–`+$50` the three
@@ -897,3 +903,6 @@ the state the Mac OS sound driver later finds and (apparently) writes over (§4.
 9. NetBSD source, `sys/arch/macppc` — `dev/nvram.c` (the two-aperture banked NVRAM law: bank select at `+$1D000`, byte *j*
    at `+$1F000 + j×$10`, 8 KB total); `dev/cuda.c` (Cuda transport over the VIA); `dev/esp.c` (53C94 driver for this
    platform's aperture layout).
+10. Power Macintosh G3 (beige) ROM, Rev C (`$78F57389`), and Mac OS 9.2.1 — the MESH driver's REQ waits after the status
+    byte (ROM `$FFECE4F0`) and after the message-in byte (`$FFECE574`), observed while booting and installing from a SCSI
+    CD-ROM and disk.
