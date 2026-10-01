@@ -13,11 +13,13 @@
 
 #include "format_registry.h"
 #include "image_scratch.h"
+#include "image_udif.h"
 #include "log.h"
 #include "platform.h"
 #include "source.h"
 #include "storage_util.h"
 #include "system.h"
+#include "udif_writer.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -26,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -299,6 +302,21 @@ static image_t *image_open_source(const char *name, gs_source_t *data, gs_source
     uint32_t block_size = geometry_block_size(geom);
     gs_unwrapped_t u;
     gs_format_unwrap(data, rsrc, &u);
+    // A UDIF or NDIF image that would not open is no disk: read raw it is
+    // its compressed payload, which no guest should see.  (DiskCopy 4.2 and
+    // peeler's wrappers detect from content that a raw disk can also carry,
+    // so their failure leaves the bytes as they are.)
+    if (u.failed_format && (strcmp(u.failed_format, "udif") == 0 || strcmp(u.failed_format, "ndif") == 0)) {
+        gs_outf("image: '%s' is a %s image that cannot be read in place (%s)\n", name,
+                strcmp(u.failed_format, "udif") == 0 ? "UDIF" : "NDIF",
+                u.failed_rc == -EFBIG     ? "a chunk is too large to decode on demand; import it to re-chunk it"
+                : u.failed_rc == -ENOTSUP ? "it uses a compression this emulator does not decode"
+                                          : strerror(-u.failed_rc));
+        int frc = u.failed_rc;
+        gs_unwrapped_free(&u);
+        errno = frc == -ENOTSUP ? ENOTSUP : EINVAL;
+        return NULL;
+    }
     uint64_t raw = gs_source_size(u.data);
     if (raw == 0 || (raw % block_size) != 0 || raw > SIZE_MAX) {
         gs_unwrapped_free(&u);
@@ -656,6 +674,8 @@ static char *stream_set_large_buffer(FILE *f) {
 struct image_export {
     storage_export_view_t *view;
     char *dest;
+    char *name; // the image's own name, recorded in a UDIF export
+    uint32_t block_size;
 };
 
 image_export_t *image_export_begin(image_t *image, const char *dest_path, char *err, size_t err_cap) {
@@ -678,6 +698,11 @@ image_export_t *image_export_begin(image_t *image, const char *dest_path, char *
     if (!e)
         return NULL;
     e->dest = strdup(dest_path);
+    e->block_size = image->block_size;
+    if (image->filename) {
+        const char *slash = strrchr(image->filename, '/');
+        e->name = strdup(slash ? slash + 1 : image->filename);
+    }
     e->view = storage_export_view_begin(image->storage);
     if (!e->dest || !e->view) {
         if (err)
@@ -688,10 +713,47 @@ image_export_t *image_export_begin(image_t *image, const char *dest_path, char *
     return e;
 }
 
+// A destination named .dmg gets a UDIF (udif_writer.h): zero runs cost
+// nothing and the rest is deflated, so a modified 2 GB disk exports at its
+// content's size.  Any other name gets the flat raw image.
+static bool export_is_udif(const image_export_t *e) {
+    size_t n = strlen(e->dest);
+    return e->block_size == UDIF_SECTOR_SIZE && n >= 4 && strcasecmp(e->dest + n - 4, ".dmg") == 0;
+}
+
+static int udif_write_cb(void *ctx, const void *data, size_t size) {
+    return udif_writer_append((udif_writer_t *)ctx, data, size) == 0 ? 0 : -1;
+}
+
+static int image_export_run_udif(image_export_t *e, char *err, size_t err_cap) {
+    udif_writer_opts_t o = {.level = 1, .source_name = e->name};
+    udif_writer_t *w = udif_writer_open(e->dest, &o, err, err_cap);
+    if (!w)
+        return -EIO;
+    int rc = storage_export_view_write(e->view, w, udif_write_cb);
+    if (rc != GS_SUCCESS) {
+        udif_writer_abort(w);
+        if (rc == -ECANCELED) {
+            if (err)
+                snprintf(err, err_cap, "cancelled");
+            return -ECANCELED;
+        }
+        if (err)
+            snprintf(err, err_cap, "write to '%s' failed", e->dest);
+        return -EIO;
+    }
+    rc = udif_writer_finish(w, NULL);
+    if (rc != 0 && err)
+        snprintf(err, err_cap, "write to '%s' failed: %s", e->dest, strerror(-rc));
+    return rc;
+}
+
 int image_export_run(image_export_t *e, char *err, size_t err_cap) {
     if (!e || !e->view)
         return -EINVAL;
     gs_mkdir_parents(e->dest);
+    if (export_is_udif(e))
+        return image_export_run_udif(e, err, err_cap);
     FILE *f = fopen(e->dest, "wb");
     if (!f) {
         int rc = errno ? errno : EIO;
@@ -722,6 +784,7 @@ void image_export_end(image_export_t *e) {
         return;
     storage_export_view_end(e->view);
     free(e->dest);
+    free(e->name);
     free(e);
 }
 
@@ -758,6 +821,13 @@ int image_create_empty(const char *filename, size_t size) {
     }
     fclose(f);
     return 0;
+}
+
+int image_create_empty_udif(const char *filename, uint64_t size) {
+    if (!filename || !*filename || size == 0)
+        return -1;
+    gs_mkdir_parents(filename);
+    return udif_create_empty(filename, size) == 0 ? 0 : -1;
 }
 
 int image_create_blank_floppy(const char *filename, bool overwrite, bool high_density) {

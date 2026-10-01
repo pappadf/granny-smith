@@ -7,6 +7,8 @@
 
 #include "crc32.h"
 
+#include <string.h>
+
 static const uint32_t k_crc32_table[256] = {
     0x00000000u, 0x77073096u, 0xEE0E612Cu, 0x990951BAu, 0x076DC419u, 0x706AF48Fu, 0xE963A535u, 0x9E6495A3u, 0x0EDB8832u,
     0x79DCB8A4u, 0xE0D5E91Eu, 0x97D2D988u, 0x09B64C2Bu, 0x7EB17CBDu, 0xE7B82D07u, 0x90BF1D91u, 0x1DB71064u, 0x6AB020F2u,
@@ -45,4 +47,44 @@ uint32_t gs_crc32(uint32_t crc, const void *data, size_t len) {
     for (size_t i = 0; i < len; i++)
         crc = k_crc32_table[(crc ^ p[i]) & 0xFFu] ^ (crc >> 8);
     return ~crc;
+}
+
+// Appending zeros is linear over GF(2) on the CRC register, so it is a 32x32
+// bit-matrix applied to it; len zero bytes is that matrix to the len-th
+// power, built by repeated squaring (zlib's crc32_combine technique).
+static uint32_t gf2_times(const uint32_t *mat, uint32_t vec) {
+    uint32_t sum = 0;
+    for (int i = 0; vec; i++, vec >>= 1)
+        if (vec & 1)
+            sum ^= mat[i];
+    return sum;
+}
+
+static void gf2_square(uint32_t *square, const uint32_t *mat) {
+    for (int n = 0; n < 32; n++)
+        square[n] = gf2_times(mat, mat[n]);
+}
+
+uint32_t gs_crc32_zeros(uint32_t crc, uint64_t len) {
+    if (len == 0)
+        return crc;
+    uint32_t op[32], tmp[32];
+    // One zero bit: shift right, folding in the polynomial on a carry.
+    op[0] = 0xEDB88320u;
+    for (int n = 1; n < 32; n++)
+        op[n] = 1u << (n - 1);
+    gf2_square(tmp, op); // 2 bits
+    gf2_square(op, tmp); // 4 bits
+    gf2_square(tmp, op); // 8 bits: one zero byte
+    uint32_t reg = ~crc;
+    for (;;) {
+        if (len & 1)
+            reg = gf2_times(tmp, reg);
+        len >>= 1;
+        if (!len)
+            break;
+        gf2_square(op, tmp);
+        memcpy(tmp, op, sizeof(op));
+    }
+    return ~reg;
 }

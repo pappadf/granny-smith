@@ -44,6 +44,14 @@ void gs_chunk_cache_free(gs_chunk_cache_t *c);
 // natively).
 gs_chunk_cache_t *gs_chunk_cache_default(void);
 
+// The cache chunk-mapped disk images (UDIF, NDIF) decode into: memory only,
+// never spilled.  The compressed image is the persistent form, and spilling
+// its decoded chunks would rebuild the expanded image on disk -- in the
+// browser, in the origin's quota -- which is what storing it compressed
+// avoids.  Re-inflating a 64 KB chunk costs well under a millisecond.
+// Budget GS_IMAGE_CACHE_MB (default 16 MiB).
+gs_chunk_cache_t *gs_chunk_cache_images(void);
+
 // Change the budgets (`spill_budget` 0: unbounded).  Memory over the new
 // budget is evicted at once (to the spill area, as eviction always goes);
 // a spill area over its new budget is emptied -- spilled chunks are only

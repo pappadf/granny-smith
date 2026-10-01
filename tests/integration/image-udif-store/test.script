@@ -1,0 +1,60 @@
+# Integration test: disk images stored as UDIF (.dmg).
+# The runner cd's into tests/integration/, so the source path is relative and
+# WORK_DIR is absolute.
+
+let raw = "../../data/systems/system_6_0_8_20mb_8_24gc.img"
+let dmg = "${$WORK_DIR}/system.dmg"
+assert files.path_size($raw) == 21411840 "raw source image changed size"
+
+# Raw to UDIF: every byte read goes in, zero runs cost nothing.  (An I/O
+# job answers a script when it is done, but with its provisional value;
+# udif_info reads what was written.)
+assert files.convert($raw, $dmg) "convert failed"
+let made = files.udif_info($dmg)
+assert $made.bytes == 21411840 "convert did not write the whole disk"
+assert $made.sectors == 41820 "convert wrote the wrong geometry"
+assert $made.gs_profile "the image is not marked as ours"
+assert $made.source_name == "system_6_0_8_20mb_8_24gc.img" "the source name was not recorded"
+assert $made.zero_bytes > 0 "no zero runs found in a 20 MB system disk"
+assert $made.stored_bytes == files.path_size($dmg) "stored size is not the file's size"
+assert files.path_size($dmg) < 10000000 "the UDIF is not compact"
+
+# Its checksums verify (a failure is the call's error).
+assert files.verify($dmg) "verify failed"
+
+# A second convert to the same name is refused, not overwritten.
+assert !files.convert($raw, $dmg) "convert overwrote an existing file"
+
+# The volume inside is read in place, and it is the raw disk's volume.
+files.probe $dmg
+let from_dmg = files.list("${$dmg}/partition1")
+let from_raw = files.list("${$raw}/partition1")
+assert len($from_dmg) == len($from_raw) "the UDIF's volume has a different entry count"
+for i in 0..len($from_raw) {
+    assert $from_dmg[$i].name == $from_raw[$i].name "entry ${$i} differs between UDIF and raw"
+}
+
+# UDIF back to raw: byte-for-byte the source.
+let back = "${$WORK_DIR}/back.img"
+assert files.convert($dmg, $back, 64, 1, "raw") "convert to raw failed"
+assert files.path_compare($back, $raw) == -1 "the round trip changed the disk"
+
+# A UDIF of a UDIF re-chunks it (here: 256 KB chunks, no deflate).
+assert files.convert($dmg, "${$WORK_DIR}/rechunked.dmg", 256, 0) "re-chunking failed"
+let rechunked = files.udif_info("${$WORK_DIR}/rechunked.dmg")
+assert $rechunked.crc == $made.crc "re-chunking changed the disk"
+assert $rechunked.max_chunk_bytes <= 262144 "re-chunking kept the old chunks"
+
+# A blank 2 GB disk as .dmg is one zero run: a few KB, not 2 GB.
+let blank = "${$WORK_DIR}/blank.dmg"
+assert files.hd_create($blank, "2147483648") "hd_create of a .dmg failed"
+assert files.path_size($blank) < 4096 "a blank 2 GB .dmg is not a few KB"
+assert files.verify($blank) "a blank .dmg does not verify"
+let bv = files.udif_info($blank)
+assert $bv.extents == 1 "a blank disk is more than one zero run"
+assert $bv.bytes == 2147483648 "the blank disk has the wrong size"
+
+# A raw blank (any other name) is still the full size, as before.
+assert files.hd_create("${$WORK_DIR}/blank.img", "20M") "hd_create of a raw image failed"
+
+quit

@@ -19,9 +19,13 @@
 #include "mailbox/mailbox.h"
 
 #include "archive.h"
+#include "crc32.h"
 #include "image.h"
 #include "image_apm.h"
+#include "image_chunkmap.h"
+#include "image_ndif.h"
 #include "image_part.h"
+#include "image_udif.h"
 #include "image_vfs.h"
 #include "object.h"
 #include "root.h"
@@ -29,6 +33,7 @@
 #include "storage_util.h"
 #include "system.h"
 #include "system_config.h"
+#include "udif_writer.h"
 #include "value.h"
 #include "vfs.h"
 #include "vfs_class.h"
@@ -783,6 +788,490 @@ static const arg_decl_t files_xfer_args[] = {
     {.name = "len",    .kind = V_UINT, .doc = "Byte count (at most files.xfer_size)"},
 };
 
+// === UDIF: the writer, conversion and verification ==========================
+//
+// Disk images enter /opfs/images compressed: the page streams the decoded
+// bytes of an upload or a URL body through the transfer window into a
+// writer (udif_open / udif_append / udif_finish), so neither the expanded
+// image nor any full-size copy of it ever exists.  `convert` does the same
+// from a file the core can open; `verify` reads a UDIF through once.
+
+#define FILES_UDIF_HANDLES 4
+static udif_writer_t *g_udif[FILES_UDIF_HANDLES];
+static char *g_udif_path[FILES_UDIF_HANDLES];
+
+typedef struct {
+    int handle;
+    uint32_t chunk_kb;
+    int level;
+    char *source_name;
+    uint64_t len;
+    udif_writer_stats_t st;
+    bool raw; // convert: to a flat raw image instead
+} udif_job_t;
+
+static void udif_job_cleanup(io_leaf_t *j) {
+    udif_job_t *u = (udif_job_t *)j->ud;
+    if (u)
+        free(u->source_name);
+    free(u);
+}
+
+static value_t udif_stats_map(const udif_writer_stats_t *st) {
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "sectors", val_uint(8, st->sectors));
+    val_map_put(b, "bytes_in", val_uint(8, st->bytes_in));
+    val_map_put(b, "stored_bytes", val_uint(8, st->stored_bytes));
+    val_map_put(b, "zero_bytes", val_uint(8, st->zero_bytes));
+    val_map_put(b, "extents", val_uint(8, st->extents));
+    val_map_put(b, "crc", val_uint(4, st->crc));
+    return val_map_finish(b);
+}
+
+static value_t answer_udif_stats(io_leaf_t *j) {
+    return udif_stats_map(&((udif_job_t *)j->ud)->st);
+}
+
+static value_t answer_udif_stored(io_leaf_t *j) {
+    return val_uint(8, ((udif_job_t *)j->ud)->st.stored_bytes);
+}
+
+static value_t answer_udif_handle(io_leaf_t *j) {
+    return val_int(((udif_job_t *)j->ud)->handle);
+}
+
+// A message for an errno a writer returned, quota first: in the browser a
+// full origin is what ENOSPC means.
+static void udif_errmsg(io_leaf_t *j, const char *what, int rc) {
+    if (rc == -ENOSPC || rc == -EDQUOT)
+        snprintf(j->err, sizeof j->err, "not enough storage to %s '%s'", what, j->a);
+    else
+        snprintf(j->err, sizeof j->err, "%s '%s' failed: %s", what, j->a, strerror(rc < 0 ? -rc : EIO));
+}
+
+static int work_udif_open(io_leaf_t *j) {
+    udif_job_t *u = (udif_job_t *)j->ud;
+    int h = -1;
+    for (int i = 0; i < FILES_UDIF_HANDLES; i++)
+        if (!g_udif[i]) {
+            h = i;
+            break;
+        }
+    if (h < 0) {
+        snprintf(j->err, sizeof j->err, "too many images being written (at most %d)", FILES_UDIF_HANDLES);
+        return -EBUSY;
+    }
+    gs_mkdir_parents(j->a);
+    udif_writer_opts_t o = {.chunk_sectors = u->chunk_kb * 2, .level = u->level, .source_name = u->source_name};
+    g_udif[h] = udif_writer_open(j->a, &o, j->err, sizeof j->err);
+    if (!g_udif[h])
+        return -EIO;
+    g_udif_path[h] = gs_strdup(j->a);
+    u->handle = h;
+    return 0;
+}
+
+static udif_writer_t *udif_handle(io_leaf_t *j, int h) {
+    if (h < 0 || h >= FILES_UDIF_HANDLES || !g_udif[h]) {
+        snprintf(j->err, sizeof j->err, "no image is being written under handle %d", h);
+        return NULL;
+    }
+    return g_udif[h];
+}
+
+static void udif_release(int h) {
+    g_udif[h] = NULL;
+    free(g_udif_path[h]);
+    g_udif_path[h] = NULL;
+}
+
+static int work_udif_append(io_leaf_t *j) {
+    udif_job_t *u = (udif_job_t *)j->ud;
+    udif_writer_t *w = udif_handle(j, u->handle);
+    if (!w)
+        return -EBADF;
+    int rc = udif_writer_append(w, g_xfer, (size_t)u->len);
+    if (rc) {
+        free(j->a);
+        j->a = gs_strdup(g_udif_path[u->handle]);
+        udif_errmsg(j, "write", rc);
+    }
+    udif_writer_progress(w, &u->st);
+    return rc;
+}
+
+static int work_udif_finish(io_leaf_t *j) {
+    udif_job_t *u = (udif_job_t *)j->ud;
+    udif_writer_t *w = udif_handle(j, u->handle);
+    if (!w)
+        return -EBADF;
+    free(j->a);
+    j->a = gs_strdup(g_udif_path[u->handle]);
+    udif_release(u->handle);
+    int rc = udif_writer_finish(w, &u->st); // frees the writer either way
+    if (rc)
+        udif_errmsg(j, "finish", rc);
+    return rc;
+}
+
+static int work_udif_abort(io_leaf_t *j) {
+    udif_job_t *u = (udif_job_t *)j->ud;
+    udif_writer_t *w = udif_handle(j, u->handle);
+    if (!w)
+        return -EBADF;
+    udif_release(u->handle);
+    udif_writer_abort(w);
+    return 0;
+}
+
+// The decoded bytes of an image the core can open, for a conversion.  A
+// UDIF is opened with no in-place chunk bound -- a conversion passes every
+// chunk once, which is how an image with chunks too large to read in place
+// gets re-chunked; anything else through the image layer.
+static gs_source_t *open_decoded(const char *path, image_t **img, char *err, size_t cap) {
+    *img = NULL;
+    int e = 0;
+    gs_source_t *data = gs_source_open_path(path, GS_FORK_DATA, &e);
+    if (!data) {
+        snprintf(err, cap, "cannot open '%s': %s", path, strerror(e ? -e : ENOENT));
+        return NULL;
+    }
+    uint64_t size = gs_source_size(data);
+    uint8_t tail[UDIF_TRAILER_SIZE];
+    if (size >= sizeof(tail) && gs_source_read_exact(data, size - sizeof(tail), tail, sizeof(tail)) == 0 &&
+        udif_source_detect(tail, sizeof(tail))) {
+        gs_source_t *s = udif_source_open_bounded(data, NDIF_MAX_CHUNK_BYTES, &e);
+        gs_source_release(data);
+        if (!s)
+            snprintf(err, cap, "'%s' is a UDIF image this emulator cannot decode (%s)", path,
+                     e == -ENOTSUP ? "unsupported compression" : strerror(e ? -e : EINVAL));
+        return s;
+    }
+    gs_source_release(data);
+    *img = image_open_readonly(path);
+    if (!*img) {
+        snprintf(err, cap, "cannot open '%s' as a disk image", path);
+        return NULL;
+    }
+    return image_source(*img);
+}
+
+#define CONVERT_STEP (1u << 20)
+
+static int work_convert(io_leaf_t *j) {
+    udif_job_t *u = (udif_job_t *)j->ud;
+    vfs_stat_t vst;
+    if (vfs_stat(j->b, &vst) == 0) {
+        snprintf(j->err, sizeof j->err, "'%s' exists (refuses to overwrite)", j->b);
+        return -EEXIST;
+    }
+    image_t *img = NULL;
+    gs_source_t *src = open_decoded(j->a, &img, j->err, sizeof j->err);
+    if (!src) {
+        image_close(img);
+        return -EINVAL;
+    }
+    uint64_t total = gs_source_size(src);
+    uint8_t *buf = malloc(CONVERT_STEP);
+    udif_writer_t *w = NULL;
+    FILE *raw = NULL;
+    int rc = buf ? 0 : -ENOMEM;
+    gs_mkdir_parents(j->b);
+    if (!rc && u->raw) {
+        raw = fopen(j->b, "wb");
+        if (!raw) {
+            rc = errno ? -errno : -EIO;
+            snprintf(j->err, sizeof j->err, "cannot create '%s': %s", j->b, strerror(-rc));
+        }
+    } else if (!rc) {
+        const char *base = strrchr(j->a, '/');
+        udif_writer_opts_t o = {
+            .chunk_sectors = u->chunk_kb * 2, .level = u->level, .source_name = base ? base + 1 : j->a};
+        w = udif_writer_open(j->b, &o, j->err, sizeof j->err);
+        if (!w)
+            rc = -EIO;
+    }
+    uint32_t crc = 0;
+    for (uint64_t at = 0; !rc && at < total;) {
+        if (io_check_cancelled()) {
+            rc = -ECANCELED;
+            snprintf(j->err, sizeof j->err, "cancelled");
+            break;
+        }
+        size_t n = total - at < CONVERT_STEP ? (size_t)(total - at) : CONVERT_STEP;
+        rc = gs_source_read_exact(src, at, buf, n);
+        if (rc) {
+            snprintf(j->err, sizeof j->err, "read of '%s' at %llu failed", j->a, (unsigned long long)at);
+            break;
+        }
+        crc = gs_crc32(crc, buf, n);
+        if (raw) {
+            if (fwrite(buf, 1, n, raw) != n) {
+                rc = -EIO;
+                udif_errmsg(j, "write", -ENOSPC);
+            }
+        } else if ((rc = udif_writer_append(w, buf, n)) != 0) {
+            udif_errmsg(j, "write", rc);
+        }
+        at += n;
+        io_report_progress(at, total);
+    }
+    free(buf);
+    gs_source_release(src);
+    image_close(img);
+    if (raw) {
+        if (fclose(raw) != 0 && !rc)
+            rc = -EIO;
+        if (rc)
+            remove(j->b);
+        u->st.bytes_in = u->st.stored_bytes = total;
+        u->st.sectors = total / UDIF_SECTOR_SIZE;
+        u->st.crc = crc;
+        return rc;
+    }
+    if (rc) {
+        udif_writer_abort(w);
+        return rc;
+    }
+    rc = udif_writer_finish(w, &u->st);
+    if (rc) {
+        udif_errmsg(j, "finish", rc);
+        return rc;
+    }
+    // Read what was written back through the verifier: the decoded bytes
+    // must be the ones read (whole sectors: a tail is zero-padded).
+    gs_source_t *out = gs_source_host(j->b, NULL);
+    udif_writer_stats_t vs;
+    char msg[200] = {0};
+    rc = out ? udif_verify(out, &vs, msg, sizeof msg) : -EIO;
+    gs_source_release(out);
+    uint32_t want = gs_crc32_zeros(crc, u->st.sectors * UDIF_SECTOR_SIZE - total);
+    if (rc == 0 && (vs.crc != u->st.crc || vs.crc != want))
+        rc = -EILSEQ, snprintf(msg, sizeof msg, "decoded checksum %08x, the source's is %08x", vs.crc, want);
+    if (rc) {
+        snprintf(j->err, sizeof j->err, "'%s' did not verify: %s", j->b, msg);
+        remove(j->b);
+    }
+    return rc;
+}
+
+static int work_verify(io_leaf_t *j) {
+    udif_job_t *u = (udif_job_t *)j->ud;
+    int e = 0;
+    gs_source_t *s = gs_source_open_path(j->a, GS_FORK_DATA, &e);
+    if (!s) {
+        snprintf(j->err, sizeof j->err, "cannot open '%s': %s", j->a, strerror(e ? -e : ENOENT));
+        return -ENOENT;
+    }
+    char msg[200] = {0};
+    int rc = udif_verify(s, &u->st, msg, sizeof msg);
+    gs_source_release(s);
+    if (rc)
+        snprintf(j->err, sizeof j->err, "%s: %s", j->a, msg);
+    return rc;
+}
+
+static value_t udif_dispatch(const char *a, const char *b, udif_job_t *u, int (*work)(io_leaf_t *),
+                             value_t (*answer)(io_leaf_t *), const char *what) {
+    io_leaf_t *j = io_leaf_new(a, b);
+    if (!j || !u) {
+        if (u)
+            free(u->source_name);
+        free(u);
+        if (j)
+            free(j->a), free(j->b), free(j);
+        return val_err("%s: out of memory", what);
+    }
+    j->ud = u;
+    j->cleanup = udif_job_cleanup;
+    j->work = work;
+    j->answer = answer;
+    return io_leaf_dispatch(j, what);
+}
+
+// An integer argument that may be absent (V_NONE) or given as a string.
+static int64_t opt_int(const value_t *v, int64_t dflt) {
+    if (v->kind == V_INT)
+        return v->i;
+    if (v->kind == V_UINT)
+        return (int64_t)v->u;
+    if (v->kind == V_STRING && v->s && *v->s)
+        return strtoll(v->s, NULL, 10);
+    return dflt;
+}
+
+static bool chunk_kb_ok(int64_t kb) {
+    return kb >= 4 && kb <= 1024 && (kb & (kb - 1)) == 0;
+}
+
+// `files.udif_open(path, [chunk_kb], [level], [source_name])` -- start
+// writing a UDIF at `path` (which must not exist); answers a handle.
+static DEF_METHOD(files_method_udif_open) {
+    int64_t kb = argc > 1 ? opt_int(&argv[1], 64) : 64;
+    int64_t level = argc > 2 ? opt_int(&argv[2], 1) : 1;
+    if (!chunk_kb_ok(kb))
+        return val_err("files.udif_open: chunk_kb %lld must be a power of two in 4..1024", (long long)kb);
+    if (level < 0 || level > 9)
+        return val_err("files.udif_open: level %lld out of range (0..9)", (long long)level);
+    udif_job_t *u = calloc(1, sizeof *u);
+    if (u) {
+        u->handle = -1;
+        u->chunk_kb = (uint32_t)kb;
+        u->level = (int)level;
+        if (argc > 3 && argv[3].kind == V_STRING && argv[3].s && *argv[3].s)
+            u->source_name = gs_strdup(argv[3].s);
+    }
+    return udif_dispatch(argv[0].s, NULL, u, work_udif_open, answer_udif_handle, "files.udif_open");
+}
+
+// `files.udif_append(handle, len)` -- append the transfer window's first
+// `len` bytes of the decoded image; answers the bytes stored so far.
+static DEF_METHOD(files_method_udif_append) {
+    uint64_t len = argv[1].u;
+    if (len > STORAGE_XFER_BYTES)
+        return val_err("files.udif_append: %llu bytes is more than the %u-byte window", (unsigned long long)len,
+                       STORAGE_XFER_BYTES);
+    udif_job_t *u = calloc(1, sizeof *u);
+    if (u) {
+        u->handle = (int)argv[0].i;
+        u->len = len;
+    }
+    return udif_dispatch("", NULL, u, work_udif_append, answer_udif_stored, "files.udif_append");
+}
+
+// `files.udif_finish(handle)` -- complete the image; answers its stats.
+static DEF_METHOD(files_method_udif_finish) {
+    udif_job_t *u = calloc(1, sizeof *u);
+    if (u)
+        u->handle = (int)argv[0].i;
+    return udif_dispatch("", NULL, u, work_udif_finish, answer_udif_stats, "files.udif_finish");
+}
+
+// `files.udif_abort(handle)` -- abandon the image and remove the partial file.
+static DEF_METHOD(files_method_udif_abort) {
+    udif_job_t *u = calloc(1, sizeof *u);
+    if (u)
+        u->handle = (int)argv[0].i;
+    return udif_dispatch("", NULL, u, work_udif_abort, NULL, "files.udif_abort");
+}
+
+// `files.convert(src, dst, [chunk_kb], [level], [format])` -- write the
+// decoded disk of any image the core reads as a UDIF (format "udif", the
+// default) or a flat raw image ("raw"), checking the result decodes to the
+// same bytes.
+static DEF_METHOD(files_method_convert) {
+    int64_t kb = argc > 2 ? opt_int(&argv[2], 64) : 64;
+    int64_t level = argc > 3 ? opt_int(&argv[3], 1) : 1;
+    const char *fmt = argc > 4 && argv[4].kind == V_STRING && argv[4].s && *argv[4].s ? argv[4].s : "udif";
+    if (!chunk_kb_ok(kb))
+        return val_err("files.convert: chunk_kb %lld must be a power of two in 4..1024", (long long)kb);
+    if (level < 0 || level > 9)
+        return val_err("files.convert: level %lld out of range (0..9)", (long long)level);
+    if (strcmp(fmt, "udif") != 0 && strcmp(fmt, "raw") != 0)
+        return val_err("files.convert: format '%s' is neither udif nor raw", fmt);
+    if (destination_attached(argv[1].s))
+        return val_err("files.convert: '%s' is attached to a device (E_BUSY)", argv[1].s);
+    udif_job_t *u = calloc(1, sizeof *u);
+    if (u) {
+        u->chunk_kb = (uint32_t)kb;
+        u->level = (int)level;
+        u->raw = strcmp(fmt, "raw") == 0;
+    }
+    return udif_dispatch(argv[0].s, argv[1].s, u, work_convert, answer_udif_stats, "files.convert");
+}
+
+// `files.verify(path)` -- decode every chunk of a UDIF and check its
+// checksums; answers what it saw.
+static DEF_METHOD(files_method_verify) {
+    udif_job_t *u = calloc(1, sizeof *u);
+    return udif_dispatch(argv[0].s, NULL, u, work_verify, answer_udif_stats, "files.verify");
+}
+
+// `files.udif_info(path)` -- what a UDIF's trailer and block map say, read
+// without decoding: cheap enough to answer at once.
+static DEF_METHOD(files_method_udif_info) {
+    int e = 0;
+    gs_source_t *s = gs_source_open_path(argv[0].s, GS_FORK_DATA, &e);
+    if (!s)
+        return val_err("files.udif_info: cannot open '%s': %s", argv[0].s, strerror(e ? -e : ENOENT));
+    udif_info_t in;
+    int rc = udif_info(s, &in);
+    uint64_t file_bytes = gs_source_size(s);
+    gs_source_release(s);
+    if (rc)
+        return val_err("files.udif_info: '%s' is not a UDIF image this emulator reads", argv[0].s);
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "sectors", val_uint(8, in.sectors));
+    val_map_put(b, "bytes", val_uint(8, in.byte_length));
+    val_map_put(b, "stored_bytes", val_uint(8, file_bytes));
+    val_map_put(b, "zero_bytes", val_uint(8, in.zero_bytes));
+    val_map_put(b, "extents", val_uint(8, in.extents));
+    val_map_put(b, "tables", val_uint(4, in.tables));
+    val_map_put(b, "crc", val_uint(4, in.crc));
+    val_map_put(b, "max_chunk_bytes", val_uint(8, in.max_chunk_bytes));
+    val_map_put(b, "gs_profile", val_bool(in.gs_profile));
+    val_map_put(b, "in_place", val_bool(in.gs_profile || in.max_chunk_bytes <= udif_inplace_max_chunk()));
+    val_map_put(b, "source_name", val_str(in.source_name));
+    return val_map_finish(b);
+}
+
+static DEF_GETTER(files_attr_udif_max_chunk_kb) {
+    return val_uint(8, udif_inplace_max_chunk() >> 10);
+}
+
+static DEF_SETTER(files_attr_udif_max_chunk_kb_set) {
+    if (in.u < 64 || in.u > (NDIF_MAX_CHUNK_BYTES >> 10))
+        return val_err("files.udif_max_chunk_kb: %llu out of range (64..%u)", (unsigned long long)in.u,
+                       NDIF_MAX_CHUNK_BYTES >> 10);
+    udif_set_inplace_max_chunk((size_t)in.u << 10);
+    return val_none();
+}
+
+static const arg_decl_t files_udif_open_args[] = {
+    ARG_PATH("path", "The image to create (must not exist)"),
+    {.name = "chunk_kb",
+                                                      .kind = V_NONE,
+                                                      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
+                                                      .doc = "Chunk size in KB, a power of two in 4..1024",
+                                                      .default_doc = "64"  },
+    {.name = "level",
+                                                      .kind = V_NONE,
+                                                      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
+                                                      .doc = "Deflate effort 1..9; 0 stores zero runs and raw chunks only",
+                                                      .default_doc = "1"   },
+    {.name = "source_name",
+                                                      .kind = V_STRING,
+                                                      .validation_flags = OBJ_ARG_OPTIONAL,
+                                                      .doc = "The original file name, recorded in the image",
+                                                      .default_doc = "none"},
+};
+static const arg_decl_t files_udif_append_args[] = {
+    {.name = "handle", .kind = V_INT,  .doc = "What udif_open answered"                                         },
+    {.name = "len",    .kind = V_UINT, .doc = "Bytes of the transfer window to append (at most files.xfer_size)"},
+};
+static const arg_decl_t files_udif_handle_args[] = {
+    {.name = "handle", .kind = V_INT, .doc = "What udif_open answered"},
+};
+static const arg_decl_t files_convert_args[] = {
+    ARG_PATH("src", "Any disk image the emulator reads (raw, DiskCopy, NDIF, UDIF, ...)"),
+    ARG_PATH("dst", "The image to write (must not exist)"),
+    {.name = "chunk_kb",
+                                                    .kind = V_NONE,
+                                                    .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
+                                                    .doc = "Chunk size in KB, a power of two in 4..1024",
+                                                    .default_doc = "64"  },
+    {.name = "level",
+                                                    .kind = V_NONE,
+                                                    .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
+                                                    .doc = "Deflate effort 1..9; 0 stores zero runs and raw chunks only",
+                                                    .default_doc = "1"   },
+    {.name = "format",
+                                                    .kind = V_STRING,
+                                                    .validation_flags = OBJ_ARG_OPTIONAL,
+                                                    .doc = "udif, or raw for a flat image",
+                                                    .default_doc = "udif"},
+};
+
 static const arg_decl_t files_export_raw_args[] = {
     ARG_PATH("src", "Source image path (host, or nested inside a mounted image)"),
     ARG_PATH("dst", "Destination host path for the decoded raw image"),
@@ -877,6 +1366,77 @@ static const member_t files_members[] = {
      .doc = "Read up to len bytes of path at offset into the transfer window; answers the count",
      .method =
          {.ui_flags = MM_IO, .args = files_xfer_args, .nargs = 3, .result = V_UINT, .fn = files_method_xfer_read}},
+    {.kind = M_METHOD,
+     .name = "udif_open",
+     .flags = M_CAT_INTERNAL,
+     .doc = "Start writing a UDIF (.dmg) image from decoded bytes; answers a handle for udif_append",
+     .method =
+         {.ui_flags = MM_IO, .args = files_udif_open_args, .nargs = 4, .result = V_INT, .fn = files_method_udif_open}},
+    {.kind = M_METHOD,
+     .name = "udif_append",
+     .flags = M_CAT_INTERNAL,
+     .doc = "Append the transfer window's first len bytes to the image being written",
+     .method = {.result_doc = "the image's stored (compressed) bytes so far",
+                .ui_flags = MM_IO,
+                .args = files_udif_append_args,
+                .nargs = 2,
+                .result = V_UINT,
+                .fn = files_method_udif_append}},
+    {.kind = M_METHOD,
+     .name = "udif_finish",
+     .flags = M_CAT_INTERNAL,
+     .doc = "Complete the image being written (block map and trailer)",
+     .method = {.result_doc = "{sectors, bytes_in, stored_bytes, zero_bytes, extents, crc}",
+                .ui_flags = MM_IO,
+                .args = files_udif_handle_args,
+                .nargs = 1,
+                .result = V_MAP,
+                .fn = files_method_udif_finish}},
+    {.kind = M_METHOD,
+     .name = "udif_abort",
+     .flags = M_CAT_INTERNAL,
+     .doc = "Abandon the image being written and remove the partial file",
+     .method = {.ui_flags = MM_IO,
+                .args = files_udif_handle_args,
+                .nargs = 1,
+                .result = V_BOOL,
+                .fn = files_method_udif_abort}},
+    {.kind = M_METHOD,
+     .name = "convert",
+     .examples = EXAMPLES("files.convert \"/opfs/images/hd/system.img\" \"/opfs/images/hd/system.dmg\"",
+     "files.convert \"/opfs/images/hd/system.dmg\" \"/opfs/raw/system.img\" format=raw"),
+     .doc = "Write a disk image as a compact UDIF (.dmg), or as a flat raw image, and check it decodes the same",
+     .method = {.result_doc = "{sectors, bytes_in, stored_bytes, zero_bytes, extents, crc}",
+                .ui_flags = MM_IO,
+                .args = files_convert_args,
+                .nargs = 5,
+                .result = V_MAP,
+                .fn = files_method_convert}},
+    {.kind = M_METHOD,
+     .name = "verify",
+     .examples = EXAMPLES("files.verify \"/opfs/images/hd/system.dmg\""),
+     .doc = "Decode every chunk of a UDIF (.dmg) image and check its checksums",
+     .method = {.result_doc = "{sectors, bytes_in, stored_bytes, zero_bytes, extents, crc}",
+                .ui_flags = MM_IO,
+                .args = files_path_arg,
+                .nargs = 1,
+                .result = V_MAP,
+                .fn = files_method_verify}},
+    {.kind = M_METHOD,
+     .name = "udif_info",
+     .examples = EXAMPLES("files.udif_info \"/opfs/images/hd/system.dmg\""),
+     .doc = "What a UDIF (.dmg) image's block map says, without decoding it",
+     .method = {.result_doc = "{sectors, bytes, stored_bytes, zero_bytes, extents, tables, crc, max_chunk_bytes, "
+                              "gs_profile, in_place, source_name}",
+                .args = files_path_arg,
+                .nargs = 1,
+                .result = V_MAP,
+                .fn = files_method_udif_info}},
+    {.kind = M_ATTR,
+     .name = "udif_max_chunk_kb",
+     .flags = M_CAT_ADVANCED,
+     .doc = "Largest decoded chunk, in KB, a UDIF from another tool is read in place with (larger: convert it)",
+     .attr = {.type = V_UINT, .get = files_attr_udif_max_chunk_kb, .set = files_attr_udif_max_chunk_kb_set}},
     {.kind = M_METHOD,
      .name = "import",
      .examples = EXAMPLES("files.import \"/tmp/upload.img\" \"/opfs/images/hd/upload.img\""),
@@ -1244,11 +1804,27 @@ static DEF_SETTER(cache_attr_spill_mb_set) {
     return val_none();
 }
 
+static DEF_GETTER(cache_attr_image_mb) {
+    size_t mem = 0;
+    gs_chunk_cache_budgets(gs_chunk_cache_images(), &mem, NULL);
+    return val_uint(8, cache_mib(mem));
+}
+
+static DEF_SETTER(cache_attr_image_mb_set) {
+    if (in.u < 1 || in.u > 1u << 16)
+        return val_err("files.cache.image_mb: %llu out of range (1..65536)", (unsigned long long)in.u);
+    gs_chunk_cache_set_budgets(gs_chunk_cache_images(), (size_t)(in.u << 20), 0);
+    return val_none();
+}
+
 // One counter of gs_chunk_cache_stats, picked by the member's name.
 static DEF_GETTER(cache_attr_stat) {
     gs_chunk_cache_stats_t st;
-    gs_chunk_cache_stats(gs_chunk_cache_default(), &st);
     const char *n = m->name;
+    bool image = strncmp(n, "image_", 6) == 0;
+    gs_chunk_cache_stats(image ? gs_chunk_cache_images() : gs_chunk_cache_default(), &st);
+    if (image)
+        n += 6;
     uint64_t v = strcmp(n, "memory_bytes") == 0  ? st.mem_bytes
                  : strcmp(n, "spill_bytes") == 0 ? st.spill_bytes
                  : strcmp(n, "hits") == 0        ? st.hits + st.spill_hits
@@ -1276,11 +1852,19 @@ static const member_t files_cache_members[] = {
      .name = "spill_mb",
      .doc = "Scratch space evicted chunks may spill to, in MiB; 0 is unbounded",
      .attr = {.type = V_UINT, .get = cache_attr_spill_mb, .set = cache_attr_spill_mb_set}  },
+    {.kind = M_ATTR,
+     .name = "image_mb",
+     .doc = "Memory, in MiB, for decoded chunks of compressed disk images (UDIF, NDIF); never spilled",
+     .attr = {.type = V_UINT, .get = cache_attr_image_mb, .set = cache_attr_image_mb_set}  },
     CACHE_STAT("memory_bytes", "Bytes of chunks held in memory now"),
     CACHE_STAT("spill_bytes", "Bytes of chunks in spill files now"),
     CACHE_STAT("hits", "Reads served without decoding again (memory or spill)"),
     CACHE_STAT("misses", "Reads that needed a chunk fetched"),
     CACHE_STAT("evictions", "Chunks pushed out of memory"),
+    CACHE_STAT("image_memory_bytes", "Bytes of decoded disk-image chunks held now"),
+    CACHE_STAT("image_hits", "Disk-image reads served without decoding again"),
+    CACHE_STAT("image_misses", "Disk-image reads that needed a chunk decoded"),
+    CACHE_STAT("image_evictions", "Decoded disk-image chunks dropped for room"),
 };
 
 static const class_desc_t files_cache_class = {

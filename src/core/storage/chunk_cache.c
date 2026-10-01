@@ -328,6 +328,18 @@ gs_chunk_cache_t *gs_chunk_cache_default(void) {
     return g_default;
 }
 
+static gs_chunk_cache_t *g_images;
+static pthread_once_t g_images_once = PTHREAD_ONCE_INIT;
+
+static void images_init(void) {
+    g_images = gs_chunk_cache_new((size_t)env_mib("GS_IMAGE_CACHE_MB", 16ull << 20), NULL, 0);
+}
+
+gs_chunk_cache_t *gs_chunk_cache_images(void) {
+    pthread_once(&g_images_once, images_init);
+    return g_images;
+}
+
 // ============================================================================
 // Access
 // ============================================================================
