@@ -55,6 +55,7 @@ async function shot(page: Page, name: string, extra: Locator[] = []): Promise<vo
   await page.waitForTimeout(400);
   await expect(page).toHaveScreenshot(name, {
     maxDiffPixels: 0,
+    threshold: 0,
     animations: 'disabled',
     caret: 'hide',
     mask: [...masks(page), ...extra],

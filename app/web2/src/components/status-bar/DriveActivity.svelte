@@ -37,11 +37,11 @@
   }
   .sb-drive.active-read {
     opacity: 1;
-    color: #ffffff;
+    color: var(--gs-statusbar-drive-read);
   }
   .sb-drive.active-write {
     opacity: 1;
-    color: #ffe770;
+    color: var(--gs-statusbar-drive-write);
   }
   .drive-ico {
     display: inline-block;

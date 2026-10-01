@@ -61,7 +61,7 @@
   .modal-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.45);
+    background: var(--gs-backdrop);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -72,7 +72,7 @@
     color: var(--gs-fg);
     border: 1px solid var(--gs-border);
     border-radius: 6px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    box-shadow: var(--gs-shadow-modal);
     min-width: 320px;
     max-width: 520px;
     padding: 20px 22px;

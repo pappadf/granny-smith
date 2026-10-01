@@ -7,9 +7,30 @@ export type ResolvedTheme = 'dark' | 'light';
 
 interface ThemeState {
   mode: ThemeMode;
+  // The OS preference, kept reactive so everything that resolves 'system'
+  // (the applied theme, the toolbar's tooltip) follows an OS change.
+  systemLight: boolean;
 }
 
-export const theme: ThemeState = $state({ mode: 'system' });
+export const theme: ThemeState = $state({ mode: 'system', systemLight: queryPrefersLight() });
+
+// The OS colour preference right now.
+function queryPrefersLight(): boolean {
+  if (typeof window === 'undefined' || !window.matchMedia) return false;
+  return window.matchMedia('(prefers-color-scheme: light)').matches;
+}
+
+// Follow OS preference changes (the one listener; App.svelte installs it).
+// Returns the uninstaller.
+export function installSystemThemeListener(): () => void {
+  if (typeof window === 'undefined' || !window.matchMedia) return () => undefined;
+  const mq = window.matchMedia('(prefers-color-scheme: light)');
+  const handler = () => {
+    theme.systemLight = mq.matches;
+  };
+  mq.addEventListener('change', handler);
+  return () => mq.removeEventListener('change', handler);
+}
 
 export function setThemeMode(mode: ThemeMode): void {
   theme.mode = mode;
@@ -26,8 +47,7 @@ export function cycleTheme(): void {
 }
 
 export function systemTheme(): ResolvedTheme {
-  if (typeof window === 'undefined' || !window.matchMedia) return 'dark';
-  return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  return theme.systemLight ? 'light' : 'dark';
 }
 
 export function resolveTheme(mode: ThemeMode): ResolvedTheme {

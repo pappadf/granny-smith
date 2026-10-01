@@ -73,7 +73,7 @@
     cursor: pointer;
   }
   .btn:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.06));
+    background: var(--gs-row-hover);
   }
   .btn.primary {
     background: var(--gs-primary-bg);
@@ -84,8 +84,8 @@
     background: var(--gs-primary-hover);
   }
   .btn.danger {
-    background: var(--gs-toast-error);
-    color: #fff;
+    background: var(--gs-danger-solid);
+    color: var(--gs-danger-on-solid);
     border-color: transparent;
   }
   .btn.danger:hover {

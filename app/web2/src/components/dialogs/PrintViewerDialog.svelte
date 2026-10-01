@@ -35,7 +35,7 @@
     width: 100%;
     min-height: 0;
     border: 1px solid var(--gs-border);
-    background: #fff;
+    background: var(--gs-surface-document);
   }
   .btn {
     background: transparent;
@@ -48,7 +48,7 @@
     text-decoration: none;
   }
   .btn:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.06));
+    background: var(--gs-row-hover);
   }
   .btn.primary {
     background: var(--gs-primary-bg);

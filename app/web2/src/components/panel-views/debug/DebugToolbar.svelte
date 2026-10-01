@@ -79,7 +79,7 @@
     padding: 0;
   }
   .tb-btn:hover:not(:disabled) {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.06));
+    background: var(--gs-row-hover);
   }
   .tb-btn:disabled {
     color: var(--gs-fg-muted);

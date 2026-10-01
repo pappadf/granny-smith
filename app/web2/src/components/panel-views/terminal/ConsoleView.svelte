@@ -365,14 +365,14 @@
     color: var(--gs-syntax-dim);
   }
   .entry.find-hit {
-    background: rgba(128, 128, 128, 0.12);
+    background: var(--gs-console-progress-bg);
   }
   .entry mark {
-    background: rgba(234, 92, 0, 0.33);
+    background: var(--gs-console-find-hit-bg);
     color: inherit;
   }
   .entry.find-current mark {
-    background: rgba(234, 92, 0, 0.7);
+    background: var(--gs-console-find-current-bg);
   }
   .sig-hint {
     flex: none;
@@ -381,7 +381,7 @@
     white-space: pre-wrap;
     background: var(--gs-menu-bg);
     color: var(--gs-menu-fg);
-    border: 1px solid var(--gs-border, #454545);
+    border: 1px solid var(--gs-border);
     font-size: 12px;
   }
   .sig-arg {

@@ -1,0 +1,41 @@
+/* ====== Component tokens ======
+   Knobs of one component each, defaulting to the semantic tokens (or, for
+   the documented contrast pairs below, to literals that are part of the
+   component contract).  A skin may override any of them. */
+
+:root {
+  /* The pressed or live state of an icon button (the camera and
+     microphone while data flows). */
+  --gs-icon-button-fg-on: var(--gs-link);
+
+  /* A drop target row in a tree. */
+  --gs-tree-drop-bg: color-mix(in srgb, var(--gs-drop-border) 15%, transparent);
+
+  /* A callout's fill: a lighter tint of its intent's. */
+  --gs-callout-bg: color-mix(in srgb, var(--gs-info-bg) 32%, transparent);
+
+  /* The switch (a boolean value's editor): the knob on the "on" track. */
+  --gs-switch-knob-on: var(--gs-primary-fg);
+
+  /* Status-bar dots: one per machine state; the idle dot is the dim text. */
+  --gs-statusbar-dot-idle: var(--gs-fg-dim);
+  --gs-statusbar-dot-running: #89d185;
+  --gs-statusbar-dot-paused: #cca700;
+  --gs-statusbar-dot-stopped: #f14c4c;
+}
+
+/* Drive lights and the caps chip sit on the bar's own colour: on an active
+   bar (white text on a coloured fill) white-alpha reads, on the idle bar
+   (normal text on a surface) the scheme's own text and warning colours do. */
+.gs-statusbar[data-state='idle'] {
+  --gs-statusbar-drive-read: var(--gs-fg-bright);
+  --gs-statusbar-drive-write: var(--gs-warning-fg);
+  --gs-statusbar-chip-on-bg: var(--gs-btn-active);
+  --gs-statusbar-chip-on-ring: var(--gs-border);
+}
+.gs-statusbar:not([data-state='idle']) {
+  --gs-statusbar-drive-read: #ffffff;
+  --gs-statusbar-drive-write: #ffe770;
+  --gs-statusbar-chip-on-bg: rgb(255 255 255 / 0.28);
+  --gs-statusbar-chip-on-ring: rgb(255 255 255 / 0.45);
+}

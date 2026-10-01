@@ -162,7 +162,7 @@
     color: var(--gs-menu-fg);
     border: 1px solid var(--gs-border);
     border-radius: 4px;
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+    box-shadow: var(--gs-shadow-popup);
     min-width: 160px;
     padding: 4px 0;
     z-index: 2800;
@@ -181,7 +181,7 @@
     color: var(--gs-menu-hover-fg);
   }
   .item.danger {
-    color: var(--gs-toast-error);
+    color: var(--gs-danger-fg);
   }
   .sep {
     height: 1px;

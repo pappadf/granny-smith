@@ -53,7 +53,7 @@
     margin-bottom: 0;
   }
   a {
-    color: var(--gs-link, var(--gs-primary-bg));
+    color: var(--gs-link);
     text-decoration: underline;
     word-break: break-all;
   }

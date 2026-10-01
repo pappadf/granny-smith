@@ -71,6 +71,6 @@
     border-top: 1px solid var(--gs-border);
     color: var(--gs-fg-muted);
     font-size: 11px;
-    background: var(--gs-bg-alt, var(--gs-bg));
+    background: var(--gs-bg-alt);
   }
 </style>

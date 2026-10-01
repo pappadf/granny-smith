@@ -575,7 +575,7 @@
     letter-spacing: 0.08em;
     color: var(--gs-fg-muted);
     padding: 8px 12px 2px;
-    border-top: 1px solid var(--gs-border, rgba(127, 127, 127, 0.2));
+    border-top: 1px solid var(--gs-border);
     margin-top: 4px;
   }
   .group-divider:first-child {
@@ -591,10 +591,10 @@
     min-height: 20px;
   }
   .sys-row.selected > .sys-line {
-    background: var(--gs-list-active-bg, rgba(0, 120, 212, 0.25));
+    background: var(--gs-row-selected);
   }
   .sys-tree:focus .sys-row.selected > .sys-line {
-    outline: 1px solid var(--gs-focus-border, #007fd4);
+    outline: 1px solid var(--gs-focus);
     outline-offset: -1px;
   }
   .twistie {

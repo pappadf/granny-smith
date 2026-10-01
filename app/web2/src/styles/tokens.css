@@ -109,8 +109,8 @@
   --gs-syntax-enum: #4fc1ff;
   --gs-syntax-type: #4ec9b0;
   --gs-syntax-comment: #6a9955;
-  --gs-syntax-unknown: #f14c4c;
-  --gs-syntax-error: #f14c4c;
+  --gs-syntax-unknown: var(--gs-danger-fg);
+  --gs-syntax-error: var(--gs-danger-fg);
   --gs-syntax-dim: #808080;
 
   /* Diff highlight — applied to debug panes (registers / FPU / memory)
@@ -125,6 +125,54 @@
   --gs-menu-hover-fg: #ffffff;
 
   --gs-apple-green: #6a9955;
+
+  /* Rows: hover and selection of every tree, table and list row. */
+  --gs-row-hover: #2a2d2e; /* list.hoverBackground dark */
+  --gs-row-selected: rgba(80, 140, 220, 0.25);
+
+  /* The accent: primary actions; a tinted fill of it. */
+  --gs-accent: #0e639c;
+  --gs-accent-subtle: rgba(80, 140, 220, 0.25);
+
+  /* Intents: text on a surface (-fg), a tinted fill (-bg) and rule
+     (-border), a strong fill (-solid) and the text on it (-on-solid). */
+  --gs-info-fg: #59a4f9;
+  --gs-info-bg: rgba(80, 140, 220, 0.25);
+  --gs-info-border: rgba(80, 140, 220, 0.5);
+  --gs-info-solid: #59a4f9;
+  --gs-info-on-solid: #ffffff;
+  --gs-success-fg: #4ac26b;
+  --gs-success-bg: rgba(35, 134, 54, 0.25);
+  --gs-success-border: rgba(74, 194, 107, 0.5);
+  --gs-success-solid: #6a9955;
+  --gs-success-on-solid: #ffffff;
+  --gs-warning-fg: #f5c542;
+  --gs-warning-bg: rgba(204, 167, 0, 0.2);
+  --gs-warning-border: rgba(204, 167, 0, 0.5);
+  --gs-warning-solid: #cca700;
+  --gs-warning-on-solid: #000000;
+  --gs-danger-fg: #f14c4c;
+  --gs-danger-bg: rgba(248, 81, 73, 0.25);
+  --gs-danger-border: rgba(241, 76, 76, 0.5);
+  --gs-danger-solid: #f14c4c;
+  --gs-danger-on-solid: #ffffff;
+
+  /* Overlays: the scrim behind a modal, and elevation. */
+  --gs-backdrop: rgba(0, 0, 0, 0.45);
+  --gs-shadow-popup: 0 4px 14px rgba(0, 0, 0, 0.5);
+  --gs-shadow-modal: 0 8px 32px rgba(0, 0, 0, 0.5);
+  --gs-shadow-screen: 0 0 0 1px rgba(0, 0, 0, 0.8);
+
+  /* The backing of a document shown in a frame (the PDF viewer). */
+  --gs-surface-document: #ffffff;
+
+  /* The current-PC row of a code view. */
+  --gs-code-pc-row-bg: rgba(80, 140, 220, 0.2);
+
+  /* The console: a running entry, find matches, the current match. */
+  --gs-console-progress-bg: rgba(128, 128, 128, 0.12);
+  --gs-console-find-hit-bg: rgba(234, 92, 0, 0.33);
+  --gs-console-find-current-bg: rgba(234, 92, 0, 0.7);
 
   /* Fonts */
   --gs-font-ui:
@@ -232,8 +280,8 @@
   --gs-syntax-enum: #0070c1;
   --gs-syntax-type: #267f99;
   --gs-syntax-comment: #008000;
-  --gs-syntax-unknown: #e51400;
-  --gs-syntax-error: #e51400;
+  --gs-syntax-unknown: var(--gs-danger-fg);
+  --gs-syntax-error: var(--gs-danger-fg);
   --gs-syntax-dim: #6e7781;
 
   /* Diff highlight (see dark theme note). */
@@ -245,4 +293,43 @@
   --gs-menu-hover-fg: #ffffff;
 
   --gs-apple-green: #4e7a3f;
+  --gs-row-hover: #f0f0f0; /* list.hoverBackground light */
+  --gs-row-selected: rgba(80, 140, 220, 0.25);
+
+  --gs-accent: #007acc;
+  --gs-accent-subtle: rgba(0, 122, 204, 0.15);
+
+  --gs-info-fg: #0078d4;
+  --gs-info-bg: rgba(0, 120, 212, 0.12);
+  --gs-info-border: rgba(0, 120, 212, 0.4);
+  --gs-info-solid: #0078d4;
+  --gs-info-on-solid: #ffffff;
+  --gs-success-fg: #1a7f37;
+  --gs-success-bg: rgba(26, 127, 55, 0.12);
+  --gs-success-border: rgba(26, 127, 55, 0.4);
+  --gs-success-solid: #4e7a3f;
+  --gs-success-on-solid: #ffffff;
+  --gs-warning-fg: #8a6d00;
+  --gs-warning-bg: rgba(168, 143, 0, 0.15);
+  --gs-warning-border: rgba(168, 143, 0, 0.5);
+  --gs-warning-solid: #a88f00;
+  --gs-warning-on-solid: #000000;
+  --gs-danger-fg: #c72e0f;
+  --gs-danger-bg: rgba(199, 46, 15, 0.12);
+  --gs-danger-border: rgba(199, 46, 15, 0.4);
+  --gs-danger-solid: #c72e0f;
+  --gs-danger-on-solid: #ffffff;
+
+  --gs-backdrop: rgba(0, 0, 0, 0.45);
+  --gs-shadow-popup: 0 4px 14px rgba(0, 0, 0, 0.5);
+  --gs-shadow-modal: 0 8px 32px rgba(0, 0, 0, 0.5);
+  --gs-shadow-screen: 0 0 0 1px rgba(0, 0, 0, 0.8);
+
+  --gs-surface-document: #ffffff;
+
+  --gs-code-pc-row-bg: rgba(80, 140, 220, 0.2);
+
+  --gs-console-progress-bg: rgba(128, 128, 128, 0.12);
+  --gs-console-find-hit-bg: rgba(234, 92, 0, 0.33);
+  --gs-console-find-current-bg: rgba(234, 92, 0, 0.7);
 }

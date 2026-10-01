@@ -99,7 +99,7 @@
     border-radius: 2px;
     height: 22px;
     padding: 0 6px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
+    font-family: var(--gs-font-mono);
     font-size: 11px;
     width: 10ch;
     outline: none;
@@ -117,12 +117,12 @@
     height: 22px;
     padding: 0 8px;
     font-size: 11px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
+    font-family: var(--gs-font-mono);
     cursor: pointer;
   }
   .btn:hover,
   .preset-btn:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.06));
+    background: var(--gs-row-hover);
   }
   .presets {
     display: inline-flex;
@@ -130,14 +130,14 @@
     margin-left: 12px;
   }
   .invalid {
-    color: var(--gs-error-fg, #f48771);
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
+    color: var(--gs-danger-fg);
+    font-family: var(--gs-font-mono);
     font-size: 11px;
     margin: 6px 0 0;
   }
   .ok {
     color: var(--gs-fg);
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
+    font-family: var(--gs-font-mono);
     font-size: 11px;
     margin: 6px 0 0;
   }
@@ -153,11 +153,11 @@
     text-transform: uppercase;
   }
   .tag-tt {
-    background: rgba(35, 134, 54, 0.25);
-    color: #4ac26b;
+    background: var(--gs-success-bg);
+    color: var(--gs-success-fg);
   }
   .tag-pt {
-    background: rgba(80, 140, 220, 0.25);
-    color: #6aa6ff;
+    background: var(--gs-info-bg);
+    color: var(--gs-info-fg);
   }
 </style>

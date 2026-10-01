@@ -5,27 +5,17 @@
   import CheckpointResumePrompt from './components/dialogs/CheckpointResumePrompt.svelte';
   import PreviewNoticeDialog from './components/dialogs/PreviewNoticeDialog.svelte';
   import PrintViewerDialog from './components/dialogs/PrintViewerDialog.svelte';
-  import { theme, applyThemeToHtml, systemTheme } from '@/state/theme.svelte';
+  import { theme, applyThemeToHtml, installSystemThemeListener } from '@/state/theme.svelte';
   import { layout } from '@/state/layout.svelte';
   import { startPersistEffects } from '@/state/persist.svelte';
   import { startCapsLockSync } from '@/lib/capslock';
 
   // Keep <html data-theme> in sync with the theme state. Initial set is done
   // synchronously in main.ts before mount; this effect tracks subsequent
-  // changes (toggle button, system-pref change).
+  // changes (toggle button, OS preference change -- the listener updates the
+  // state, never the attribute, so the toolbar's tooltip follows too).
   $effect(() => applyThemeToHtml(theme.mode));
-
-  $effect(() => {
-    if (typeof window === 'undefined' || !window.matchMedia) return;
-    const mq = window.matchMedia('(prefers-color-scheme: light)');
-    const handler = () => {
-      if (theme.mode === 'system') {
-        document.documentElement.dataset.theme = systemTheme();
-      }
-    };
-    mq.addEventListener('change', handler);
-    return () => mq.removeEventListener('change', handler);
-  });
+  $effect(() => installSystemThemeListener());
 
   // Keep layout.fullscreen in sync with the browser's native fullscreen state.
   // This lives here (not in DisplayToolbar) so the listener survives the

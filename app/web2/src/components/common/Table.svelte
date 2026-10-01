@@ -164,10 +164,10 @@
     user-select: none;
   }
   .tr:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.05));
+    background: var(--gs-row-hover);
   }
   .tr.selected {
-    background: var(--gs-row-selected, rgba(80, 140, 220, 0.25));
+    background: var(--gs-row-selected);
   }
   .td {
     padding: 0 8px;

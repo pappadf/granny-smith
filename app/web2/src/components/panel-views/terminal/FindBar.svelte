@@ -137,7 +137,7 @@
     padding: 3px 4px;
     background: var(--gs-menu-bg);
     color: var(--gs-menu-fg);
-    border: 1px solid var(--gs-border, #454545);
+    border: 1px solid var(--gs-border);
     font-family: var(--gs-font-ui);
     font-size: 12px;
   }
@@ -146,7 +146,7 @@
     font: inherit;
     background: var(--gs-bg);
     color: var(--gs-fg);
-    border: 1px solid var(--gs-border, #454545);
+    border: 1px solid var(--gs-border);
     padding: 1px 4px;
   }
   .find-count {
@@ -162,6 +162,6 @@
     font: inherit;
   }
   .find-btn.on {
-    border-color: var(--gs-focus-border, #007fd4);
+    border-color: var(--gs-focus);
   }
 </style>

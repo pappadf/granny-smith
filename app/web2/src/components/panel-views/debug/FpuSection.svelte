@@ -92,7 +92,7 @@
     column-gap: 16px;
     row-gap: 0;
     align-items: center;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
+    font-family: var(--gs-font-mono);
     font-size: 11px;
     line-height: 18px;
   }
@@ -101,7 +101,7 @@
   .fpu-ctl {
     display: flex;
     flex-direction: column;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
+    font-family: var(--gs-font-mono);
     font-size: 11px;
     line-height: 18px;
   }

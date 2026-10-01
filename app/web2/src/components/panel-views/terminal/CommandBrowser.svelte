@@ -283,7 +283,7 @@
     outline: none;
   }
   .cmd-tree:focus-visible {
-    outline: 1px solid var(--gs-focus, #0969da);
+    outline: 1px solid var(--gs-focus);
     outline-offset: -1px;
   }
   /* A section headline: a bold row over its rows, which share its indent. */
@@ -294,17 +294,17 @@
   .cmd-row.kind-section .name {
     font-weight: 600;
     font-family: inherit;
-    color: var(--gs-fg-bright, var(--gs-fg));
+    color: var(--gs-fg-bright);
   }
   .cmd-row.selected > .cmd-line {
-    background: var(--gs-row-selected, rgba(80, 140, 220, 0.25));
+    background: var(--gs-row-selected);
   }
   .cmd-row.dim > .cmd-line {
     opacity: 0.45;
   }
   .cmd-row.match > .cmd-line .name {
     text-decoration: underline;
-    text-decoration-color: var(--gs-focus, #0969da);
+    text-decoration-color: var(--gs-focus);
     text-underline-offset: 3px;
   }
   .cmd-line {
@@ -319,7 +319,7 @@
     white-space: nowrap;
   }
   .cmd-line:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.05));
+    background: var(--gs-row-hover);
   }
   .twistie {
     display: inline-flex;
@@ -341,19 +341,19 @@
     font-size: 13px;
     flex: 0 0 auto;
     min-width: 14ch;
-    font-family: var(--gs-font-mono, monospace);
+    font-family: var(--gs-font-mono);
   }
   .kind-method .name {
-    color: var(--gs-syntax-method, #dcdcaa);
+    color: var(--gs-syntax-method);
   }
   .kind-attr .name {
-    color: var(--gs-syntax-attribute, #9cdcfe);
+    color: var(--gs-syntax-attribute);
   }
   .kind-alias .name {
-    color: var(--gs-syntax-alias, #9cdcfe);
+    color: var(--gs-syntax-alias);
   }
   .kind-keyword .name {
-    color: var(--gs-syntax-keyword, #c586c0);
+    color: var(--gs-syntax-keyword);
   }
   .kind-group > .cmd-line > .name {
     font-weight: 600;
@@ -361,12 +361,12 @@
   }
   .type {
     font-size: 11px;
-    color: var(--gs-syntax-type, #4ec9b0);
+    color: var(--gs-syntax-type);
     flex: 0 0 auto;
   }
   .doc {
     font-size: 12px;
-    color: var(--gs-syntax-dim, var(--gs-fg-muted));
+    color: var(--gs-syntax-dim);
     flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;

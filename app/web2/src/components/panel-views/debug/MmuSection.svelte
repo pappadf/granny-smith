@@ -87,7 +87,7 @@
     cursor: pointer;
   }
   .su-btn.active {
-    background: var(--gs-row-selected, rgba(80, 140, 220, 0.25));
+    background: var(--gs-row-selected);
     color: var(--gs-fg-bright);
   }
 </style>

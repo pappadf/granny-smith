@@ -110,7 +110,7 @@
     cursor: pointer;
   }
   .action-btn:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.06));
+    background: var(--gs-row-hover);
   }
   .action-toggle {
     display: inline-flex;

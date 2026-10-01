@@ -217,7 +217,7 @@
   }
   .dlg-error {
     margin-top: 12px;
-    color: var(--gs-toast-error);
+    color: var(--gs-danger-fg);
     font-size: 12px;
   }
   .dlg-btn {

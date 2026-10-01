@@ -180,7 +180,7 @@
     border-radius: 2px;
     height: 22px;
     padding: 0 6px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
+    font-family: var(--gs-font-mono);
     font-size: 11px;
     width: 10ch;
     outline: none;
@@ -200,7 +200,7 @@
     cursor: pointer;
   }
   .mem-btn:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.06));
+    background: var(--gs-row-hover);
   }
   .mem-sep {
     flex: 0 0 1px;
@@ -224,7 +224,7 @@
     cursor: pointer;
   }
   .mem-mode-btn.active {
-    background: var(--gs-row-selected, rgba(80, 140, 220, 0.25));
+    background: var(--gs-row-selected);
     color: var(--gs-fg-bright);
   }
   .mem-body {
@@ -242,7 +242,7 @@
     grid-template-columns: auto auto auto;
     column-gap: 18px;
     justify-content: start;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
+    font-family: var(--gs-font-mono);
     font-size: 11px;
     line-height: 1.6;
   }

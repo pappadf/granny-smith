@@ -416,7 +416,7 @@
   /* The camera and microphone buttons glow while data is actually flowing
      to the guest. */
   .tbtn.cam-live {
-    color: var(--gs-accent, #4ea1ff);
+    color: var(--gs-icon-button-fg-on);
   }
   .scheduler {
     display: flex;

@@ -86,7 +86,7 @@
   .cat-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.35);
+    background: var(--gs-backdrop);
     z-index: 2700;
     display: flex;
     align-items: flex-start;
@@ -98,7 +98,7 @@
     color: var(--gs-fg);
     border: 1px solid var(--gs-border);
     border-radius: 6px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    box-shadow: var(--gs-shadow-modal);
     min-width: 280px;
     max-width: 360px;
     max-height: 60vh;
@@ -151,7 +151,7 @@
     font-size: 12px;
   }
   .cat-name {
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
+    font-family: var(--gs-font-mono);
     flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;

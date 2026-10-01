@@ -78,7 +78,7 @@
     gap: 2px;
   }
   .reg-line {
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
+    font-family: var(--gs-font-mono);
     font-size: 11px;
     color: var(--gs-fg);
   }
@@ -92,7 +92,7 @@
   }
   .reg-decoded {
     color: var(--gs-fg-muted);
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
+    font-family: var(--gs-font-mono);
     font-size: 11px;
     margin-left: 16px;
   }

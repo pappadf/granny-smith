@@ -1056,7 +1056,6 @@
     background: var(--gs-primary-active);
   }
   .primary-button:disabled {
-    background: #777;
     cursor: default;
     opacity: 0.5;
   }

@@ -165,7 +165,7 @@
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
+    font-family: var(--gs-font-mono);
     font-size: 11px;
   }
   .reg-name {
@@ -195,14 +195,14 @@
     border-color: var(--gs-input-border);
   }
   .reg-value:focus {
-    border-color: var(--gs-focus, #0969da);
-    background: var(--gs-input-bg, rgba(0, 0, 0, 0.2));
+    border-color: var(--gs-focus);
+    background: var(--gs-input-bg);
   }
   .reg-value.changed {
     background: var(--gs-changed-bg);
   }
   .reg-value:global(.invalid) {
-    border-color: var(--gs-error-fg, #f48771) !important;
+    border-color: var(--gs-danger-fg) !important;
   }
   .reg-value[readonly] {
     cursor: default;

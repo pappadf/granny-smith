@@ -74,7 +74,7 @@
   }
   .tab.active {
     color: var(--gs-fg-bright);
-    border-bottom-color: var(--gs-focus, #0969da);
+    border-bottom-color: var(--gs-focus);
   }
   .accessory {
     margin-left: auto;

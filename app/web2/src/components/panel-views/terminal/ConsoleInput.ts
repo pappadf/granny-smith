@@ -385,7 +385,7 @@ const inputTheme = EditorView.theme({
   '.cm-tooltip': {
     backgroundColor: 'var(--gs-menu-bg)',
     color: 'var(--gs-menu-fg)',
-    border: '1px solid var(--gs-border, #454545)',
+    border: '1px solid var(--gs-border)',
     fontFamily: 'var(--gs-font-mono)',
     fontSize: '12px',
   },

@@ -24,7 +24,7 @@
     align-items: baseline;
     gap: 6px;
     padding: 1px 8px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
+    font-family: var(--gs-font-mono);
     font-size: 12px;
     line-height: 1.5;
     color: var(--gs-fg);
@@ -46,9 +46,9 @@
     min-width: 0;
   }
   .log-line[data-sev='high'] .lvl {
-    color: var(--gs-error-fg, #ff7676);
+    color: var(--gs-danger-fg);
   }
   .log-line[data-sev='mid'] .lvl {
-    color: var(--gs-warning-fg, #f5c542);
+    color: var(--gs-warning-fg);
   }
 </style>

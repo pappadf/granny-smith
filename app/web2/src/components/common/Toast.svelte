@@ -88,18 +88,17 @@
     font-size: 11px;
     font-weight: 700;
     flex-shrink: 0;
-    color: #fff;
   }
   .sev-icon.info {
-    background: var(--gs-toast-info);
-    color: #fff;
+    background: var(--gs-info-solid);
+    color: var(--gs-info-on-solid);
   }
   .sev-icon.warning {
-    background: var(--gs-toast-warning);
-    color: #000;
+    background: var(--gs-warning-solid);
+    color: var(--gs-warning-on-solid);
   }
   .sev-icon.error {
-    background: var(--gs-toast-error);
-    color: #fff;
+    background: var(--gs-danger-solid);
+    color: var(--gs-danger-on-solid);
   }
 </style>

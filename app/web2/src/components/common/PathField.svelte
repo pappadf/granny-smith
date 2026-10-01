@@ -128,8 +128,8 @@
     font-family: var(--gs-font-mono);
     font-size: 12px;
     color: var(--gs-fg);
-    background: var(--gs-input-bg, var(--gs-bg));
-    border: 1px solid var(--gs-border, #555);
+    background: var(--gs-input-bg);
+    border: 1px solid var(--gs-border);
     padding: 1px 4px;
   }
   .browse,
@@ -143,7 +143,7 @@
     flex-direction: column;
     max-height: 160px;
     overflow-y: auto;
-    border: 1px solid var(--gs-border, #555);
+    border: 1px solid var(--gs-border);
     background: var(--gs-bg);
     font-family: var(--gs-font-mono);
     font-size: 12px;

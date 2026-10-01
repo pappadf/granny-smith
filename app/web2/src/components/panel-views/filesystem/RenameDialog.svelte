@@ -98,7 +98,7 @@
   }
   .rename-error {
     font-size: 12px;
-    color: var(--gs-error, #e5534b);
+    color: var(--gs-danger-fg);
   }
   .rename-input {
     background: var(--gs-input-bg);
@@ -123,7 +123,7 @@
     cursor: pointer;
   }
   .btn:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.06));
+    background: var(--gs-row-hover);
   }
   .btn.primary {
     background: var(--gs-primary-bg);

@@ -116,7 +116,7 @@
     padding: 8px 16px;
   }
   .mono {
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
+    font-family: var(--gs-font-mono);
   }
   .aux-state {
     display: flex;
@@ -158,7 +158,7 @@
     width: 4.5ch;
     text-align: right;
     flex-shrink: 0;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
+    font-family: var(--gs-font-mono);
   }
   .aux-fp {
     display: flex;

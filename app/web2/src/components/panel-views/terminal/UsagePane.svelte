@@ -89,8 +89,8 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    border-top: 1px solid var(--gs-border, rgba(128, 128, 128, 0.3));
-    background: var(--gs-info-bg, rgba(80, 140, 220, 0.08));
+    border-top: 1px solid var(--gs-border);
+    background: var(--gs-callout-bg);
   }
   .details-head {
     flex: 0 0 auto;
@@ -100,7 +100,7 @@
     padding: 2px 4px 0 10px;
   }
   .details-name {
-    font-family: var(--gs-font-mono, monospace);
+    font-family: var(--gs-font-mono);
     font-size: 12px;
     color: var(--gs-fg-muted);
   }
@@ -126,9 +126,9 @@
     font-size: 12px;
     padding: 2px 12px;
     border-radius: 3px;
-    border: 1px solid var(--gs-accent, rgba(80, 140, 220, 0.8));
-    background: var(--gs-accent-bg, rgba(80, 140, 220, 0.25));
-    color: var(--gs-fg-bright, var(--gs-fg));
+    border: 1px solid var(--gs-accent);
+    background: var(--gs-accent-subtle);
+    color: var(--gs-fg-bright);
     cursor: pointer;
   }
   .usage {
@@ -141,7 +141,7 @@
     line-height: 1.4;
     white-space: pre-wrap;
     color: var(--gs-fg);
-    font-family: var(--gs-font-mono, monospace);
+    font-family: var(--gs-font-mono);
   }
   .usage-arg {
     background: none;

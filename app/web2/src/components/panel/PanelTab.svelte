@@ -56,7 +56,7 @@
     outline: none;
   }
   .ptab:focus-visible {
-    outline: 1px solid var(--gs-focus, #0969da);
+    outline: 1px solid var(--gs-focus);
     outline-offset: -2px;
   }
 </style>

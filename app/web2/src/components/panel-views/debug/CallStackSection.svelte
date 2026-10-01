@@ -112,7 +112,7 @@
     align-items: center;
     gap: 12px;
     padding: 2px 12px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
+    font-family: var(--gs-font-mono);
     font-size: 11px;
     color: var(--gs-fg);
   }

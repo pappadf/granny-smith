@@ -155,8 +155,8 @@
     font-family: var(--gs-font-mono);
     font-size: 12px;
     color: var(--gs-fg);
-    background: var(--gs-input-bg, var(--gs-bg));
-    border: 1px solid var(--gs-focus-border, #007fd4);
+    background: var(--gs-input-bg);
+    border: 1px solid var(--gs-focus);
     padding: 0 4px;
     min-width: 8ch;
     max-width: 100%;
@@ -175,13 +175,13 @@
     width: 26px;
     height: 14px;
     border-radius: 7px;
-    border: 1px solid var(--gs-border, #555);
+    border: 1px solid var(--gs-border);
     background: var(--gs-bg);
     padding: 0;
     cursor: pointer;
   }
   .toggle.on {
-    background: var(--gs-focus-border, #007fd4);
+    background: var(--gs-focus);
   }
   .toggle:disabled {
     cursor: default;
@@ -194,11 +194,11 @@
     width: 10px;
     height: 10px;
     border-radius: 50%;
-    background: var(--gs-fg-muted, #999);
+    background: var(--gs-fg-muted);
     transition: left 0.1s;
   }
   .toggle.on .knob {
     left: 13px;
-    background: #fff;
+    background: var(--gs-switch-knob-on);
   }
 </style>

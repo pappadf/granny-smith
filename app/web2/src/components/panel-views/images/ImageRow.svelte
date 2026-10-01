@@ -60,10 +60,10 @@
     font-size: 13px;
   }
   .image-row:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.05));
+    background: var(--gs-row-hover);
   }
   .image-row.selected {
-    background: var(--gs-row-selected, rgba(80, 140, 220, 0.25));
+    background: var(--gs-row-selected);
   }
   .image-row.mounted .name {
     font-weight: 600;
@@ -82,8 +82,8 @@
     white-space: nowrap;
   }
   .badge {
-    background: var(--gs-badge-bg, rgba(35, 134, 54, 0.25));
-    color: var(--gs-badge-fg, #4ac26b);
+    background: var(--gs-success-bg);
+    color: var(--gs-success-fg);
     border-radius: 9999px;
     padding: 0 8px;
     height: 16px;

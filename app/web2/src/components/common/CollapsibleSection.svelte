@@ -60,7 +60,7 @@
     background: var(--gs-bg);
   }
   .header:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.05));
+    background: var(--gs-row-hover);
   }
   /* Fills the header, so a click anywhere but the actions toggles. */
   .toggle {
@@ -79,7 +79,7 @@
     cursor: pointer;
   }
   .toggle:focus-visible {
-    outline: 1px solid var(--gs-focus, #0969da);
+    outline: 1px solid var(--gs-focus);
     outline-offset: -1px;
   }
   .twistie {

@@ -79,6 +79,7 @@
     class:running={machine.status === 'running'}
     class:paused={machine.status === 'paused'}
     class:stopped={machine.status === 'stopped'}
+    data-state={machine.status === 'no-machine' ? 'idle' : machine.status}
     role="status"
   >
     <div class="statusbar-left">
@@ -218,8 +219,8 @@
   .sb-caps.on {
     opacity: 1;
     font-weight: 700;
-    background: rgba(255, 255, 255, 0.28);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+    background: var(--gs-statusbar-chip-on-bg);
+    box-shadow: inset 0 0 0 1px var(--gs-statusbar-chip-on-ring);
   }
   .statusbar-right {
     flex-direction: row-reverse;
@@ -238,17 +239,17 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: var(--gs-fg-dim);
+    background: var(--gs-statusbar-dot-idle);
     display: inline-block;
   }
   .gs-statusbar.running .sb-state .dot {
-    background: #89d185;
+    background: var(--gs-statusbar-dot-running);
   }
   .gs-statusbar.paused .sb-state .dot {
-    background: #cca700;
+    background: var(--gs-statusbar-dot-paused);
   }
   .gs-statusbar.stopped .sb-state .dot {
-    background: #f14c4c;
+    background: var(--gs-statusbar-dot-stopped);
   }
   .sb-speed {
     gap: 4px;

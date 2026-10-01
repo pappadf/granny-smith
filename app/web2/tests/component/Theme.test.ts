@@ -3,6 +3,7 @@ import { theme, cycleTheme, applyThemeToHtml, resolveTheme } from '@/state/theme
 
 beforeEach(() => {
   theme.mode = 'dark';
+  theme.systemLight = false;
   document.documentElement.removeAttribute('data-theme');
 });
 
@@ -36,5 +37,17 @@ describe('theme state', () => {
     expect(resolveTheme('system')).toMatch(/dark|light/);
     expect(resolveTheme('dark')).toBe('dark');
     expect(resolveTheme('light')).toBe('light');
+  });
+
+  // An OS scheme change updates the state, so everything resolving 'system'
+  // follows it (the toolbar's tooltip used to keep the old scheme).
+  it('system mode follows the reactive OS preference', () => {
+    theme.mode = 'system';
+    theme.systemLight = true;
+    expect(resolveTheme('system')).toBe('light');
+    applyThemeToHtml(theme.mode);
+    expect(document.documentElement.dataset.theme).toBe('light');
+    theme.systemLight = false;
+    expect(resolveTheme('system')).toBe('dark');
   });
 });

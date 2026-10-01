@@ -195,7 +195,7 @@
     opacity: 0.75;
   }
   .card.failed .detail {
-    color: var(--gs-toast-error);
+    color: var(--gs-danger-fg);
     opacity: 1;
   }
   .spinner {
@@ -256,7 +256,7 @@
     white-space: nowrap;
   }
   .check {
-    color: var(--gs-apple-green);
+    color: var(--gs-success-fg);
     font-weight: 700;
     margin-right: 4px;
   }
@@ -275,11 +275,11 @@
     transition: width 200ms ease-out;
   }
   .file.done .fill {
-    background: var(--gs-apple-green);
+    background: var(--gs-success-solid);
   }
   .file.failed .fill {
     width: 100%;
-    background: var(--gs-toast-error);
+    background: var(--gs-danger-solid);
   }
   .bar.indeterminate .fill {
     position: absolute;
@@ -291,7 +291,7 @@
   }
   .file-error {
     margin: 6px 0 0 26px;
-    color: var(--gs-toast-error);
+    color: var(--gs-danger-fg);
     word-break: break-word;
   }
   .btn-primary {

@@ -194,7 +194,7 @@
     border-radius: 2px;
     height: 22px;
     padding: 0 6px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
+    font-family: var(--gs-font-mono);
     font-size: 11px;
     outline: none;
   }
@@ -213,7 +213,7 @@
     cursor: pointer;
   }
   .btn:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.06));
+    background: var(--gs-row-hover);
   }
   .hint {
     color: var(--gs-fg-muted);
@@ -225,12 +225,12 @@
     align-items: center;
     gap: 12px;
     padding: 2px 12px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
+    font-family: var(--gs-font-mono);
     font-size: 11px;
     color: var(--gs-fg);
   }
   .bp-row:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.05));
+    background: var(--gs-row-hover);
   }
   .enable {
     color: var(--gs-fg-muted);

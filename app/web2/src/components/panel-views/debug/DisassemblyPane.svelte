@@ -200,7 +200,7 @@
     height: 100%;
     overflow: auto;
     background: var(--gs-bg);
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
+    font-family: var(--gs-font-mono);
     /* 11 px matches the body-text baseline used by section headers
        and the MMU descriptor lines; disasm rows shouldn't read larger
        than the surrounding chrome. */
@@ -213,7 +213,7 @@
     /* Opaque so disasm rows scrolling underneath don't bleed
        through; tinted border-left preserves the blue indicator. */
     background: var(--gs-bg-alt);
-    border-left: 2px solid var(--gs-focus, #0969da);
+    border-left: 2px solid var(--gs-focus);
     border-bottom: 1px solid var(--gs-border);
     color: var(--gs-fg);
     font-size: 11px;
@@ -245,24 +245,24 @@
     gap: 6px;
   }
   .row:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.05));
+    background: var(--gs-row-hover);
   }
   .row.pc {
-    background: rgba(80, 140, 220, 0.2);
+    background: var(--gs-code-pc-row-bg);
   }
   .row.selected {
-    outline: 1px solid var(--gs-focus, #0969da);
+    outline: 1px solid var(--gs-focus);
     outline-offset: -1px;
   }
   .disasm-pane:focus {
     outline: none;
   }
   .disasm-pane:focus-visible {
-    outline: 1px solid var(--gs-focus, #0969da);
+    outline: 1px solid var(--gs-focus);
     outline-offset: -1px;
   }
   .marker {
-    color: var(--gs-focus, #0969da);
+    color: var(--gs-focus);
     text-align: center;
   }
   .addr-l,
@@ -280,16 +280,16 @@
     text-transform: uppercase;
   }
   .tag-tt {
-    background: rgba(35, 134, 54, 0.25);
-    color: #4ac26b;
+    background: var(--gs-success-bg);
+    color: var(--gs-success-fg);
   }
   .tag-pt {
-    background: rgba(80, 140, 220, 0.25);
-    color: #6aa6ff;
+    background: var(--gs-info-bg);
+    color: var(--gs-info-fg);
   }
   .tag-invalid {
-    background: rgba(248, 81, 73, 0.25);
-    color: #f48771;
+    background: var(--gs-danger-bg);
+    color: var(--gs-danger-fg);
   }
   .mnem {
     color: var(--gs-fg-bright);

@@ -102,18 +102,18 @@
     font-size: 13px;
   }
   .tree-row:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.05));
+    background: var(--gs-row-hover);
   }
   .tree-row.selected {
-    background: var(--gs-row-selected, rgba(80, 140, 220, 0.25));
+    background: var(--gs-row-selected);
   }
   .tree-row.drag-source {
     opacity: 0.45;
   }
   .tree-row.drop-target {
-    outline: 1px solid var(--gs-drop-border, #0969da);
+    outline: 1px solid var(--gs-drop-border);
     outline-offset: -1px;
-    background: rgba(9, 105, 218, 0.15);
+    background: var(--gs-tree-drop-bg);
   }
   .twistie {
     display: inline-flex;
