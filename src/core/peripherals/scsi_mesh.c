@@ -776,8 +776,13 @@ static uint8_t mesh_read_inner(mesh_t *m, uint32_t offset) {
         // REQ presents whenever a target is connected: the driver class
         // spin-waits on REQ between phases before dropping ATN.
         uint8_t v = phase_bits(m);
+        // ...except while the target is between phases: after STATUS, until
+        // it presents MESSAGE IN (req_gap_until_ns), and after the MESSAGE
+        // IN byte, when it has nothing more to send and only waits for the
+        // initiator's BUSFREE (msgin_taken).  Apple's driver waits for REQ to
+        // drop in both places ($FFECE4F0, $FFECE574).
         bool gap = m->sched && (uint64_t)scheduler_time_ns(m->sched) < m->req_gap_until_ns;
-        if (m->connected && !gap)
+        if (m->connected && !gap && !m->msgin_taken)
             v |= BS0_REQ;
         if (m->bus0_atn || m->msgout_pending)
             v |= BS0_ATN;
