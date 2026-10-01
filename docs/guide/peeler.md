@@ -125,6 +125,12 @@ Empty / missing return values follow the predicate-truthy rule: an
 unrecognised file produces an empty string, which scripts can test as
 a falsy `${...}`.
 
+Both are reachable everywhere the object model is: the interactive
+shell, headless scripts, the JavaScript bridge
+(`gsEval('files.archive.identify', [path])`) and the inspector UI.
+`extract` is dispatched as an I/O-job leaf (`MM_IO`), so decoding and
+writing a large archive never blocks the emulator thread.
+
 The wrapper lives at
 [`src/core/storage/archive.c`](../../src/core/storage/archive.c) and
 attaches under `files` from `archive_init`.

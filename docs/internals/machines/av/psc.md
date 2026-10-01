@@ -5,12 +5,17 @@ Quadra substrate: the PSC absorbs VIA2, the whole system interrupt controller,
 seven DMA channels, the Singer sound engine's register block and the DSP
 reset latch. Implementation:
 [src/machines/av/psc.c](../../../../src/machines/av/psc.c) /
-[psc.h](../../../../src/machines/av/psc.h).
+[psc.h](../../../../src/machines/av/psc.h). Hardware reference:
+[psc.md](../../../reference/machines/av/psc.md), cited by section below.
 
 The VIA1 function the PSC *also* implements is not here — it is the generic
 6522 model mapped at island offset 0.
 
 ## Interrupt controller
+
+(Reference: [psc.md](../../../reference/machines/av/psc.md) §2.2 for the
+device interrupt registers, §2.8 for the VIA windows, §3.1 for the interrupt
+architecture.)
 
 Three surfaces, all repeat-read stable (every ROM dispatcher reads twice and
 loops until two reads agree — a deterministic model satisfies this trivially,
@@ -35,6 +40,10 @@ writes the IFR to acknowledge. A latched model re-enters the level-2 handler
 forever.
 
 ## DMA engine
+
+(Reference: [psc.md](../../../reference/machines/av/psc.md) §2.5–§2.6 for the
+channel registers, §3.2 for the DMA engine, §5 for the quirks behind the table
+below.)
 
 Seven channels (0 SCSI, 1/2 MACE rx/tx, 3 FDC, 4/6 SCC A rx/tx, 5 SCC B);
 sound is a separate engine, not a channel. Per channel: a word control
@@ -70,6 +79,9 @@ buffers rather than bytes), and FIFO depth/latency — nothing in scope needs
 either.
 
 ## Sound and DSP
+
+(Reference: [psc.md](../../../reference/machines/av/psc.md) §2.7 for the
+sound/DSP block, §3.5 for the sound DMA engine, §2.3 for the UTSC.)
 
 The sound block is no longer a stub: the Singer frame engine
 ([singer.md](singer.md)) services the `$200`–`$21B` latches, and a live

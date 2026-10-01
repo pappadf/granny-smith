@@ -7,6 +7,13 @@ data and checksums for integrity verification.
 
 All multi-byte integers are stored in big-endian (Motorola) byte order.
 
+This format's successor is Apple's second-generation NDIF container, introduced
+with Disk Copy 6.0 ([ndif.md](ndif.md) §1.1); the single-file wrappers used to
+move a DiskCopy image between machines are
+[applesingle-appledouble.md](applesingle-appledouble.md), and the floppy media
+the image copies are described in [iwm-floppy.md](../hardware/iwm-floppy.md)
+§4 (GCR) and [swim.md](../hardware/swim.md) §§14–15 (GCR and MFM).
+
 ## Supported Disk Sizes
 
 | Format  | Blocks | Data Bytes | Tag Bytes | Encoding     |

@@ -7,6 +7,10 @@ NIC, implemented machine-independently in
 DP83932B datasheet (§3/§4) plus **Apple's own ROM self-tests**
 (`OS/StartMgr/UnivTestEnv/SONIC_*.c`) — the unit suite in
 `tests/unit/suites/sonic/` mirrors those tests over mock guest memory.
+The chip's hardware reference page is
+[sonic.md](../../../reference/hardware/sonic.md) (section 2 for the
+register file, section 3 for behaviour); this document covers the
+emulator's model.
 
 ## v1 scope
 

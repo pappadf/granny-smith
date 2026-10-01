@@ -174,10 +174,12 @@ static int ring_next(struct object *self, int prev) {
 
 static const class_desc_t entry_cls = {.name = "entry", .members = NULL, .n_members = 0};
 
+static const collection_desc_t ring_entries = {
+    .entry = &entry_cls, .by_index = {.get = ring_get, .next = ring_next}
+};
+
 static const member_t ring_members[] = {
-    {.kind = M_CHILD,
-     .name = "items",
-     .child = {.cls = &entry_cls, .indexed = true, .get = ring_get, .next = ring_next, .lookup = NULL}},
+    {.kind = M_CHILD, .name = "items", .child = {.collection = &ring_entries}},
 };
 static const class_desc_t ring_cls = {
     .name = "ring",

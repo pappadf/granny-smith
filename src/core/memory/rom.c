@@ -457,16 +457,12 @@ int rom_load_lisa_into_machine(const char *path_a, const char *path_b) {
 // Object-model class descriptor
 // ============================================================================
 
-static value_t rom_attr_path(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(rom_attr_path) {
     const char *s = memory_rom_filename(system_memory());
     return val_str(s ? s : "");
 }
 
-static value_t rom_attr_loaded(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(rom_attr_loaded) {
     return val_bool(memory_rom_filename(system_memory()) != NULL);
 }
 
@@ -482,32 +478,24 @@ static bool loaded_rom_identity(rom_identity_t *id) {
 // rom.id → the loaded ROM's content id (rom.h), or "" when none is loaded.
 // Answered from the same identification pass as rom.identify, so it always
 // equals the id the ROM file identified as.
-static value_t rom_attr_id(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(rom_attr_id) {
     rom_identity_t id;
     return val_str(loaded_rom_identity(&id) ? id.id : "");
 }
 
 // rom.intact → the loaded ROM's own checksum verifies.
-static value_t rom_attr_intact(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(rom_attr_intact) {
     rom_identity_t id;
     return val_bool(loaded_rom_identity(&id) && id.intact);
 }
 
-static value_t rom_attr_size(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(rom_attr_size) {
     return val_uint(4, memory_rom_size(system_memory()));
 }
 
 // rom.name → family name of the loaded ROM (e.g. "Universal IIx/IIcx/SE/30 ROM"),
 // or empty string when no ROM is loaded or the ROM is not known.
-static value_t rom_attr_name(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(rom_attr_name) {
     memory_map_t *mem = system_memory();
     if (!mem || !memory_rom_filename(mem))
         return val_str("");
@@ -516,10 +504,7 @@ static value_t rom_attr_name(struct object *self, const member_t *m) {
     return val_str(info ? info->family_name : "");
 }
 
-static value_t rom_method_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(rom_method_load) {
     if (rom_load_into_machine(argv[0].s) != 0)
         return val_err("rom.load: failed");
     return val_bool(true);
@@ -529,10 +514,7 @@ static value_t rom_method_load(struct object *self, const member_t *m, int argc,
 // files into the 16 KB boot ROM and load it into the active machine. The two
 // chips may be given in either order (the loader detects the high/low byte
 // orientation by checking for a valid Lisa signature).
-static value_t rom_method_load_lisa(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(rom_method_load_lisa) {
     if (rom_load_lisa_into_machine(argv[0].s, argv[1].s) != 0)
         return val_err("rom.load_lisa: failed");
     return val_bool(true);
@@ -546,10 +528,7 @@ static value_t rom_method_load_lisa(struct object *self, const member_t *m, int 
 // kind, id, intact and reason.  id is the only field anything names a file by,
 // and only when intact.  Returns V_ERROR if the path can not be opened (caller
 // treats that as "no info, skip this entry").
-static value_t rom_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(rom_method_identify) {
     rom_file_info_t fi = {0};
     if (rom_probe_file(argv[0].s, &fi) != 0)
         return val_err("rom.identify: cannot read '%s'", argv[0].s);
@@ -589,32 +568,26 @@ static const member_t rom_members[] = {
     {.kind = M_ATTR,
      .name = "path",
      .doc = "Path of the currently loaded ROM (empty if none)",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = rom_attr_path, .set = NULL}},
     {.kind = M_ATTR,
      .name = "loaded",
      .doc = "True if a ROM has been loaded into the active machine",
-     .flags = VAL_RO,
      .attr = {.type = V_BOOL, .get = rom_attr_loaded, .set = NULL}},
     {.kind = M_ATTR,
      .name = "id",
      .doc = "Content id of the loaded ROM (its own stored checksum fields, lowercase hex)",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = rom_attr_id, .set = NULL}},
     {.kind = M_ATTR,
      .name = "intact",
      .doc = "True if the loaded ROM's own checksum verifies",
-     .flags = VAL_RO,
      .attr = {.type = V_BOOL, .get = rom_attr_intact, .set = NULL}},
     {.kind = M_ATTR,
      .name = "size",
      .doc = "ROM region size in bytes",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = rom_attr_size, .set = NULL}},
     {.kind = M_ATTR,
      .name = "name",
      .doc = "Family name of the loaded ROM (e.g. \"Universal IIx/IIcx/SE/30 ROM\")",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = rom_attr_name, .set = NULL}},
     {.kind = M_METHOD,
      .name = "load",

@@ -43,6 +43,6 @@ treatment (`platform/`, `peeler/` here) — their docs currently live in
 | `core/storage/target-filesystems.md` | the APM/HFS/UFS readers `src/core/storage/image_apm.c`, `image_hfs.c`, `image_ufs.c` |
 | `core/storage/bare-volume-wrapper.md` | the bare-volume wrapper `src/core/storage/image_wrap.c` plus its `gsdisk/` driver (added by #204, placed here by the mirror rule) |
 | `machines/lisa/fdc.md` | `src/machines/lisa/lisa_fdc.c` — the doc drops the `lisa_` prefix |
-| `machines/lisa/mmu.md` | `src/machines/lisa/lisa_mmu.c` — the doc drops the `lisa_` prefix |
+| `machines/lisa/mmu.md` | `src/core/memory/lisa_mmu.c` — the doc drops the `lisa_` prefix and stays with the Lisa family |
 | `machines/lisa/profile.md` | `src/machines/lisa/lisa_profile.c` — the doc drops the `lisa_` prefix |
 | `machines/pdm/video.md` | the PDM video path built on `src/machines/pdm/ariel.c` |

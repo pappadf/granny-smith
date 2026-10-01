@@ -114,7 +114,7 @@ vDIRA  = $0600        ; Data Direction Register A
 **Absolute Addresses:**
 ```
 AVBufB = $EFE1FE      ; VIA Buffer B (mouse state)
-AVBufA = $F00000 - $1E02 ; VIA Buffer A
+AVBufA = $F001FE      ; VIA Buffer A (VBase + $1E00)
 ```
 
 **Data Direction for Buffer B (vBOut):**
@@ -141,9 +141,12 @@ On the Macintosh Plus, interrupts are organized by autovector levels:
 |-------|--------|---------|
 | 1 | VIA | VBL, timers, keyboard |
 | 2 | SCC | Serial communications, **mouse interrupts** |
-| 4 | SCC (alternate mapping) | Used on some machines |
+| 4 | Programmer's interrupt switch | User-installed debugging switch |
 
-The mouse generates **Level 2 interrupts** via the SCC.
+The mouse generates **Level 2 interrupts** via the SCC. (The interrupt levels
+of the compact family are tabulated in
+[compact.md](../machines/compact/compact.md) §5.1; on the II-generation
+machines the SCC moves to level 4 instead.)
 
 ### SCC Interrupt Vector Selection
 
@@ -574,6 +577,8 @@ ships in this repo):
 - **ADB manager**
   - `MouseDrvr` - ADB mouse driver (SE and later)
   - Shows how MTemp/CrsrNew are used in ADB context
+
+The ADB mouse protocol itself is covered in [adb.md](adb.md) §"Mouse".
 
 ---
 

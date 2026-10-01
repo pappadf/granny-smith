@@ -4,7 +4,7 @@
 
 The Zilog Z8530 Serial Communication Controller (SCC) is a dual-channel, multiprotocol data communication peripheral used in the Macintosh Plus for serial communications. Each channel provides full-duplex serial communication with sophisticated on-chip support for various protocols including asynchronous, byte-oriented synchronous (Bisync), and bit-oriented synchronous (SDLC/HDLC).
 
-The SCC contains two independent channels (A and B), each with its own set of registers, transmit and receive logic, and modem control signals. The Macintosh Plus uses Channel A for the printer port and Channel B for the modem port.
+The SCC contains two independent channels (A and B), each with its own set of registers, transmit and receive logic, and modem control signals. The Macintosh Plus uses Channel A for the modem port and Channel B for the printer port. The compact family's wiring — the $9FFFF8/$BFFFF9 read/write windows, the 3.672 MHz clock, the mouse quadrature share of the DCD lines — is given in [compact.md](../machines/compact/compact.md) §3.2 and §5.3; the SE/30's SCC sits at `$50F04000` ([se30.md](../machines/glue/se30.md) §"SCC Wiring").
 
 ### Key Features
 
@@ -526,6 +526,9 @@ Opening Flag | Address | Control | Information | FCS | Closing Flag
 - Abort detection: Receiver recognizes 7+ consecutive 1s
 - Address search: Reject frames with non-matching address
 - Shared zero-bit flag: Closing flag of one frame serves as opening flag of next
+
+SDLC mode is what LocalTalk carries AppleTalk in — the protocol built on top
+of it is covered in [appletalk.md](../protocols/appletalk.md) §2.
 
 ## Programming Sequences
 

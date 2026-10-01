@@ -12,7 +12,16 @@ The Macintosh Plus incorporates a single **Synertek SY6522 Versatile Interface A
 - Input data latching capability on both ports
 - Comprehensive interrupt control system
 
-For emulator development, it's important to note that while direct hardware access is possible, Macintosh software was strongly encouraged to use **Macintosh Toolbox calls** for hardware control to ensure forward compatibility.
+For emulator development, it's important to note that while direct hardware access was possible, Macintosh software was strongly encouraged to use **Macintosh Toolbox calls** for hardware control to ensure forward compatibility.
+
+This page describes the discrete 6522 as the compact Macs wire it. The same
+part (or its ASIC equivalents) appears across the whole Macintosh line: the
+compact family's wiring is [compact.md](../machines/compact/compact.md) §5.2,
+the II-generation machines share a different VIA1/VIA2 wiring
+([glue.md](../machines/glue/glue.md) §4.2, §3.4), the IIsi-generation RBV
+consolidates VIA2's slot interrupts into a custom register bank
+([rbv.md](../machines/mdu/rbv.md) §2), and the IIfx routes everything through
+its OSS instead ([iifx.md](../machines/iifx/iifx.md) §2.2).
 
 ## Accessing the VIA
 

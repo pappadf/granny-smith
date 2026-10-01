@@ -3,7 +3,9 @@
 ## 1.1 Overview
 
 AFP is the high-level file service protocol used by AppleShare servers and Macintosh-family clients.  
-It runs on **ASP** (AppleTalk Session Protocol), which itself runs on **ATP/DDP/LLAP**.
+It runs on **ASP** (AppleTalk Session Protocol), which itself runs on **ATP/DDP/LLAP** —
+the transport stack specified in [appletalk.md](../../../reference/protocols/appletalk.md)
+(Part III §2 for ASP, Part II §1–§2 for DDP and NBP).
 
 This document is the wire reference for the server in
 `src/core/network/appletalk_server.c`. §1–§2 describe AFP 2.0 and the six

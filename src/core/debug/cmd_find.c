@@ -127,9 +127,7 @@ static bool find_range_args(int argc, const value_t *argv, int i0, uint32_t *sta
     return *end_out >= *start_out;
 }
 
-static value_t find_method_str(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(find_method_str) {
     const char *text = argv[0].s ? argv[0].s : "";
     size_t n = strlen(text);
     if (n == 0)
@@ -142,9 +140,7 @@ static value_t find_method_str(struct object *self, const member_t *m, int argc,
     return scan_memory_list(start, end, (const uint8_t *)text, n);
 }
 
-static value_t find_method_bytes(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(find_method_bytes) {
     // Pattern arrives as a space-separated hex string ("4E 71").
     uint8_t pattern[FIND_MAX_PATTERN_LEN];
     size_t plen = 0;
@@ -195,15 +191,11 @@ static value_t find_int_common(const char *label, size_t width, int argc, const 
     return scan_memory_list(start, end, pattern, width);
 }
 
-static value_t find_method_word(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(find_method_word) {
     return find_int_common("debug.find.word", 2, argc, argv);
 }
 
-static value_t find_method_long(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(find_method_long) {
     return find_int_common("debug.find.long", 4, argc, argv);
 }
 
@@ -223,7 +215,8 @@ static const arg_decl_t find_str_args[] = {
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .presentation_flags = VAL_HEX,
-     .doc = "Scan end address, inclusive; omitted: the address mask"},
+     .doc = "Scan end address, inclusive",
+     .default_doc = "the address mask"},
 };
 static const arg_decl_t find_bytes_args[] = {
     {.name = "hex", .kind = V_STRING, .doc = "Space-separated hex bytes (\"4E 71\")"},
@@ -237,7 +230,8 @@ static const arg_decl_t find_bytes_args[] = {
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .presentation_flags = VAL_HEX,
-     .doc = "Scan end address, inclusive; omitted: the address mask"},
+     .doc = "Scan end address, inclusive",
+     .default_doc = "the address mask"},
 };
 static const arg_decl_t find_int_args[] = {
     {.name = "value", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "Integer value to search for"},
@@ -251,23 +245,23 @@ static const arg_decl_t find_int_args[] = {
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .presentation_flags = VAL_HEX,
-     .doc = "Scan end address, inclusive; omitted: the address mask"},
+     .doc = "Scan end address, inclusive",
+     .default_doc = "the address mask"},
 };
 
 static const member_t find_members[] = {
     {.kind = M_METHOD,
      .name = "str",
-     .examples = (const char *const[]){"debug.find.str \"Finder\"", "debug.find.str \"Welcome\" 0 0x3fffff", NULL},
+     .examples = EXAMPLES("debug.find.str \"Finder\"", "debug.find.str \"Welcome\" 0 0x3fffff"),
      .doc = "Search memory for a UTF-8 string",
      .method = {.result_doc = "the list of match addresses",
                 .args = find_str_args,
                 .nargs = 3,
                 .result = V_LIST,
-                .fn = find_method_str}  },
+                .fn = find_method_str}},
     {.kind = M_METHOD,
      .name = "bytes",
-     .examples =
-         (const char *const[]){"debug.find.bytes \"4E 75\"", "debug.find.bytes \"A9 F4\" 0x40800000 0x4083ffff", NULL},
+     .examples = EXAMPLES("debug.find.bytes \"4E 75\"", "debug.find.bytes \"A9 F4\" 0x40800000 0x4083ffff"),
      .doc = "Search memory for a byte sequence",
      .method = {.result_doc = "the list of match addresses",
                 .args = find_bytes_args,
@@ -276,22 +270,22 @@ static const member_t find_members[] = {
                 .fn = find_method_bytes}},
     {.kind = M_METHOD,
      .name = "long",
-     .examples = (const char *const[]){"debug.find.long 0x4e754e75", NULL},
+     .examples = EXAMPLES("debug.find.long 0x4e754e75"),
      .doc = "Search memory for a 32-bit big-endian value",
      .method = {.result_doc = "the list of match addresses",
                 .args = find_int_args,
                 .nargs = 3,
                 .result = V_LIST,
-                .fn = find_method_long} },
+                .fn = find_method_long}},
     {.kind = M_METHOD,
      .name = "word",
-     .examples = (const char *const[]){"debug.find.word 0xa9f4", NULL},
+     .examples = EXAMPLES("debug.find.word 0xa9f4"),
      .doc = "Search memory for a 16-bit big-endian value",
      .method = {.result_doc = "the list of match addresses",
                 .args = find_int_args,
                 .nargs = 3,
                 .result = V_LIST,
-                .fn = find_method_word} },
+                .fn = find_method_word}},
 };
 
 // `debug.find` -- stateless: its methods scan whichever memory map is

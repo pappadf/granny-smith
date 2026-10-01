@@ -993,9 +993,6 @@ static struct object *g_ppc_ports_object;
 static struct object *g_ppc_sessions_object;
 static struct object *g_ppc_stats_object;
 
-OBJECT_POOL(g_ppc_port_pool, PPC_MAX_PORTS);
-OBJECT_POOL(g_ppc_session_pool, PPC_MAX_SESSIONS);
-
 static const class_desc_t ppc_class;
 static const class_desc_t ppc_ports_class;
 static const class_desc_t ppc_port_class;
@@ -1003,39 +1000,37 @@ static const class_desc_t ppc_sessions_class;
 static const class_desc_t ppc_session_class;
 static const class_desc_t ppc_stats_class;
 
+// The collection entry objects, made on first use.
+static object_cache_t g_ppc_port_entries = OBJECT_CACHE(&ppc_port_class, NULL);
+static object_cache_t g_ppc_session_entries = OBJECT_CACHE(&ppc_session_class, NULL);
+
 static int ppc_obj_slot(struct object *self) {
-    return object_pool_slot(self);
+    return object_entry_index(self);
 }
 
 // --- appletalk.ppc.ports[i] --------------------------------------------------
 
-static value_t ppc_port_attr_name(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_port_attr_name) {
     ppc_port_info_t info;
     return val_str(atalk_ppc_port_info(ppc_obj_slot(self), &info) ? info.name : "");
 }
-static value_t ppc_port_attr_type(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_port_attr_type) {
     ppc_port_info_t info;
     return val_str(atalk_ppc_port_info(ppc_obj_slot(self), &info) ? info.type : "");
 }
-static value_t ppc_port_attr_machine(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_port_attr_machine) {
     ppc_port_info_t info;
     return val_str(atalk_ppc_port_info(ppc_obj_slot(self), &info) ? info.machine : "");
 }
-static value_t ppc_port_attr_node(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_port_attr_node) {
     ppc_port_info_t info;
     return val_uint(1, atalk_ppc_port_info(ppc_obj_slot(self), &info) ? info.node : 0);
 }
-static value_t ppc_port_attr_socket(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_port_attr_socket) {
     ppc_port_info_t info;
     return val_uint(1, atalk_ppc_port_info(ppc_obj_slot(self), &info) ? info.socket : 0);
 }
-static value_t ppc_port_attr_auth(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_port_attr_auth) {
     ppc_port_info_t info;
     return val_bool(atalk_ppc_port_info(ppc_obj_slot(self), &info) ? info.auth_required : false);
 }
@@ -1044,32 +1039,26 @@ static const member_t ppc_port_members[] = {
     {.kind = M_ATTR,
      .name = "name",
      .doc = "Port name as the guest's PPC browser shows it",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = ppc_port_attr_name}            },
     {.kind = M_ATTR,
      .name = "type",
      .doc = "Port type string; applications use <signature>ep01",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = ppc_port_attr_type}            },
     {.kind = M_ATTR,
      .name = "machine",
      .doc = "NBP name of the machine holding the port",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = ppc_port_attr_machine}         },
     {.kind = M_ATTR,
      .name = "node",
      .doc = "LLAP node of that machine",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .width = 1, .get = ppc_port_attr_node}  },
     {.kind = M_ATTR,
      .name = "socket",
      .doc = "Its PPC connection-listening socket",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .width = 1, .get = ppc_port_attr_socket}},
     {.kind = M_ATTR,
      .name = "auth_required",
      .doc = "True if the port refuses guest links",
-     .flags = VAL_RO,
      .attr = {.type = V_BOOL, .get = ppc_port_attr_auth}              },
 };
 
@@ -1085,22 +1074,22 @@ static struct object *ppc_ports_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= atalk_ppc_port_count())
         return NULL;
-    return object_pool_at(&g_ppc_port_pool, index);
+    return object_cache_at(&g_ppc_port_entries, index, NULL);
 }
 static struct object *ppc_ports_lookup(struct object *self, const char *name) {
     (void)self;
     int idx = atalk_ppc_port_find(name);
-    return (idx >= 0) ? object_pool_at(&g_ppc_port_pool, idx) : NULL;
+    return (idx >= 0) ? object_cache_at(&g_ppc_port_entries, idx, NULL) : NULL;
 }
 
+static const collection_desc_t ppc_ports_entries = {
+    .entry = &ppc_port_class,
+    .by_index = {.get = ppc_ports_get, .slots = PPC_MAX_PORTS},
+    .by_key = {.lookup = ppc_ports_lookup}
+};
+
 static const member_t ppc_ports_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child = {.cls = &ppc_port_class,
-               .indexed = true,
-               .get = ppc_ports_get,
-               .slots = PPC_MAX_PORTS,
-               .lookup = ppc_ports_lookup}},
+    OBJ_ENTRIES(&ppc_ports_entries, NULL),
 };
 
 static const class_desc_t ppc_ports_class = {
@@ -1116,35 +1105,28 @@ static ppc_session_t *ppc_obj_session(struct object *self) {
     return atalk_ppc_session_at(ppc_obj_slot(self));
 }
 
-static value_t ppc_session_attr_id(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_session_attr_id) {
     return val_uint(4, atalk_ppc_session_id(ppc_obj_session(self)));
 }
-static value_t ppc_session_attr_state(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_session_attr_state) {
     int st = (int)atalk_ppc_session_state(ppc_obj_session(self));
     if (st < 0 || st >= PPC_SESSION_STATE_COUNT)
         st = 0;
     return val_enum(st, PPC_SESSION_STATE_NAMES, PPC_SESSION_STATE_COUNT);
 }
-static value_t ppc_session_attr_role(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_session_attr_role) {
     return val_str(atalk_ppc_session_initiator(ppc_obj_session(self)) ? "initiator" : "responder");
 }
-static value_t ppc_session_attr_port(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_session_attr_port) {
     return val_str(atalk_ppc_session_port(ppc_obj_session(self)));
 }
-static value_t ppc_session_attr_peer_node(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_session_attr_peer_node) {
     return val_uint(1, atalk_ppc_session_peer_node(ppc_obj_session(self)));
 }
-static value_t ppc_session_attr_bytes_in(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_session_attr_bytes_in) {
     return val_uint(8, atalk_ppc_session_bytes_in(ppc_obj_session(self)));
 }
-static value_t ppc_session_attr_bytes_out(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(ppc_session_attr_bytes_out) {
     return val_uint(8, atalk_ppc_session_bytes_out(ppc_obj_session(self)));
 }
 
@@ -1152,37 +1134,30 @@ static const member_t ppc_session_members[] = {
     {.kind = M_ATTR,
      .name = "id",
      .doc = "Stable identity of this session",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .width = 4, .get = ppc_session_attr_id}                               },
     {.kind = M_ATTR,
      .name = "state",
      .doc = "Session state",
-     .flags = VAL_RO,
      .attr = {.type = V_ENUM, .enum_values = PPC_SESSION_STATE_NAMES, .get = ppc_session_attr_state}},
     {.kind = M_ATTR,
      .name = "role",
      .doc = "initiator if we asked for the session, else responder",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = ppc_session_attr_role}                                       },
     {.kind = M_ATTR,
      .name = "port",
      .doc = "The port at the far end",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = ppc_session_attr_port}                                       },
     {.kind = M_ATTR,
      .name = "peer_node",
      .doc = "LLAP node of the far end",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .width = 1, .get = ppc_session_attr_peer_node}                        },
     {.kind = M_ATTR,
      .name = "bytes_in",
      .doc = "Session bytes received",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .width = 8, .get = ppc_session_attr_bytes_in}                         },
     {.kind = M_ATTR,
      .name = "bytes_out",
      .doc = "Session bytes sent",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .width = 8, .get = ppc_session_attr_bytes_out}                        },
 };
 
@@ -1196,7 +1171,7 @@ static struct object *ppc_sessions_get(struct object *self, int index) {
     (void)self;
     if (!atalk_ppc_session_at(index))
         return NULL;
-    return object_pool_at(&g_ppc_session_pool, index);
+    return object_cache_at(&g_ppc_session_entries, index, NULL);
 }
 // Name lookup by the port at the far end, so `sessions["Finder"].state` reads
 // naturally in a script.
@@ -1205,19 +1180,19 @@ static struct object *ppc_sessions_lookup(struct object *self, const char *name)
     for (int i = 0; i < PPC_MAX_SESSIONS; i++) {
         const ppc_session_t *s = atalk_ppc_session_at(i);
         if (s && !strcmp(s->port_name, name))
-            return object_pool_at(&g_ppc_session_pool, i);
+            return object_cache_at(&g_ppc_session_entries, i, NULL);
     }
     return NULL;
 }
 
+static const collection_desc_t ppc_sessions_entries = {
+    .entry = &ppc_session_class,
+    .by_index = {.get = ppc_sessions_get, .slots = PPC_MAX_SESSIONS},
+    .by_key = {.lookup = ppc_sessions_lookup}
+};
+
 static const member_t ppc_sessions_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child = {.cls = &ppc_session_class,
-               .indexed = true,
-               .get = ppc_sessions_get,
-               .slots = PPC_MAX_SESSIONS,
-               .lookup = ppc_sessions_lookup}},
+    OBJ_ENTRIES(&ppc_sessions_entries, NULL),
 };
 
 static const class_desc_t ppc_sessions_class = {
@@ -1246,20 +1221,14 @@ static const class_desc_t ppc_stats_class = {
 
 // --- appletalk.ppc -----------------------------------------------------------
 
-static value_t ppc_method_browse(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(ppc_method_browse) {
     char err[192] = "";
     if (atalk_ppc_browse(err, sizeof(err)) != 0)
         return val_err("cannot browse for program-linking ports: %s", err);
     return val_none();
 }
 
-static value_t ppc_attr_browsing(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(ppc_attr_browsing) {
     return val_bool(atalk_ppc_browse_in_flight());
 }
 
@@ -1267,8 +1236,7 @@ static const member_t ppc_members[] = {
     {.kind = M_ATTR,
      .name = "browsing",
      .doc = "True while a port browse is still waiting on the network",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = ppc_attr_browsing}},
+     .attr = {.type = V_BOOL, .get = ppc_attr_browsing}                                                    },
     {.kind = M_METHOD,
      .name = "browse",
      .doc = "Look for program-linking ports on the network; run the scheduler, then read `ports`",
@@ -1304,16 +1272,13 @@ void atalk_ppc_install_objects(struct object *parent) {
         object_attach(g_ppc_object, g_ppc_stats_object);
     }
 
-    object_pool_create(&g_ppc_port_pool, &ppc_port_class);
-
-    object_pool_set_parent(&g_ppc_port_pool, g_ppc_ports_object);
-    object_pool_create(&g_ppc_session_pool, &ppc_session_class);
-    object_pool_set_parent(&g_ppc_session_pool, g_ppc_sessions_object);
+    object_cache_set_parent(&g_ppc_port_entries, g_ppc_ports_object);
+    object_cache_set_parent(&g_ppc_session_entries, g_ppc_sessions_object);
 }
 
 void atalk_ppc_remove_objects(void) {
-    object_pool_delete(&g_ppc_port_pool);
-    object_pool_delete(&g_ppc_session_pool);
+    object_cache_clear(&g_ppc_port_entries);
+    object_cache_clear(&g_ppc_session_entries);
     struct object **nodes[] = {&g_ppc_ports_object, &g_ppc_sessions_object, &g_ppc_stats_object, &g_ppc_object};
     for (int i = 0; i < ARRAY_LEN(nodes); i++) {
         if (!*nodes[i])

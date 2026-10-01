@@ -4,13 +4,14 @@
 // commands from shell.command.list, the keywords from shell.keywords, the
 // aliases from shell.alias.list, and a row's one-line description, type and
 // usage text from the model (docs/internals/core/object/object-model.md).
-// Only the sections that group them are fixed.
+// Only the sections that group them are fixed (SECTIONS).
 //
-// Levels load lazily and are cached per node path; the cache is invalidated
-// by the core events that change what a level holds (invalidationFor).
+// Member levels read through the shared structure cache (bus/memberStore);
+// internal members are left out as a level is read.
 
 import { gsEval, isModuleReady } from '@/bus/emulator';
-import { loadMembers, type MemberInfo, type TypeDescriptor } from '@/bus/systemTree';
+import type { MemberInfo, TypeDescriptor } from '@/bus/systemTree';
+import { DOMAIN_LABEL, collectionEntries, join, members } from '@/bus/memberStore';
 
 export type RowKind =
   | 'section' // a top-level headline: Commands, a domain, Aliases, Language
@@ -19,22 +20,26 @@ export type RowKind =
   | 'entry' // one entry of a collection
   | 'method'
   | 'attr'
-  | 'group' // a synthetic grouping (Aliases, Language, their subgroups)
+  | 'group' // a synthetic grouping under a section (the alias groups)
   | 'alias'
   | 'keyword';
 
 export interface BrowserRow {
-  key: string; // unique across the tree (the path, or a synthetic id)
+  key: string; // unique across the tree (a model row's path, or a synthetic id)
   kind: RowKind;
-  name: string; // the path segment shown (`drive`, `[0]`, `["scsi"]`, `$pc`)
+  name: string; // what the row shows (`drive`, `[0]`, `["scsi"]`, `$pc`, `Commands`)
+  word: string; // the name as a completion candidate spells it (`0`, `scsi`, `pc`); '' for a section
   path: string; // the full path ('' for synthetic rows)
   doc: string;
-  category: string; // basic | advanced | internal
   insert: string; // what inserting the row writes over the path token at the cursor
   expandable: boolean;
   type?: TypeDescriptor; // attr
   readonly?: boolean; // attr
   keyed?: boolean; // collection: its entries are keyed by name
+  // A synthetic row (section, group): where its rows come from.
+  source?: () => Promise<BrowserRow[]>;
+  defaultOpen?: boolean; // section: open until the user closes it
+  rootMembers?: boolean; // section: its rows are root members (a path's first segment)
 }
 
 // The first sentence of a doc (up to the first ". " or the end).
@@ -43,80 +48,16 @@ export function firstSentence(doc: string): string {
   return i >= 0 ? doc.slice(0, i + 1) : doc;
 }
 
-function join(path: string, name: string): string {
-  return path ? `${path}.${name}` : name;
+// --- model rows -----------------------------------------------------------------
+
+function shownMember(m: MemberInfo): boolean {
+  return m.category !== 'internal' && !(m.kind === 'method' && m.hidden);
 }
-
-// --- cache --------------------------------------------------------------------
-
-const memberCache = new Map<string, MemberInfo[]>();
-
-// `path`'s members, from the cache or one meta.members call.  `fresh` skips
-// the cache (a collection container is always re-read on expansion).
-async function members(path: string, fresh = false): Promise<MemberInfo[]> {
-  if (!fresh) {
-    const hit = memberCache.get(path);
-    if (hit) return hit;
-  }
-  const ms = await loadMembers(path);
-  memberCache.set(path, ms);
-  return ms;
-}
-
-// Drop cached levels at or under `prefix` ('' drops everything).
-export function invalidate(prefix = ''): void {
-  if (!prefix) {
-    memberCache.clear();
-    return;
-  }
-  for (const k of [...memberCache.keys()])
-    if (k === prefix || k.startsWith(`${prefix}.`) || k.startsWith(`${prefix}[`))
-      memberCache.delete(k);
-}
-
-// A console job may add or remove entries anywhere: drop every cached
-// level that lists a collection (the containers, and the parents of bare
-// indexed members).  Answers the dropped paths.
-export function invalidateCollections(): string[] {
-  const dropped: string[] = [];
-  for (const [path, ms] of [...memberCache.entries()]) {
-    if (ms.some((m) => m.kind === 'child' && (m.indexed || m.collection))) {
-      memberCache.delete(path);
-      dropped.push(path);
-    }
-  }
-  return dropped;
-}
-
-// The cache invalidation a core event implies (`kind:event`), or null when
-// it changes nothing the browser shows.
-export function invalidationFor(event: string): string | null {
-  switch (event) {
-    case 'state:machine_booted':
-      return '';
-    case 'notify:floppy':
-      return 'machine.floppy';
-    case 'notify:media':
-      return 'machine.scsi';
-    case 'notify:checkpoint_saved':
-      return 'checkpoint';
-    default:
-      return null;
-  }
-}
-
-// --- rows ---------------------------------------------------------------------
 
 // The row a member of `path` becomes.
 function memberRow(path: string, m: MemberInfo): BrowserRow {
   const full = join(path, m.name);
-  const base = {
-    key: full,
-    name: m.name,
-    path: full,
-    doc: m.doc ?? '',
-    category: m.category ?? 'basic',
-  };
+  const base = { key: full, name: m.name, word: m.name, path: full, doc: m.doc ?? '' };
   if (m.kind === 'method')
     return { ...base, kind: 'method', insert: `${full} `, expandable: false };
   if (m.kind === 'attr')
@@ -143,17 +84,10 @@ function memberRow(path: string, m: MemberInfo): BrowserRow {
   };
 }
 
-// Whether a member is shown at all: every basic and advanced member, never
-// internal ones (hidden methods are left out when the level is read).
-export function visible(row: BrowserRow): boolean {
-  return row.category !== 'internal';
-}
-
 // The rows directly under an object path: its attributes, methods and
 // children in model order.
 async function objectRows(path: string): Promise<BrowserRow[]> {
-  const ms = await members(path);
-  return ms.filter((m) => !(m.kind === 'method' && m.hidden)).map((m) => memberRow(path, m));
+  return (await members(path)).filter(shownMember).map((m) => memberRow(path, m));
 }
 
 // The rows under a collection container: its live entries (by index, or by
@@ -162,51 +96,28 @@ async function objectRows(path: string): Promise<BrowserRow[]> {
 async function collectionRows(path: string): Promise<BrowserRow[]> {
   // Re-read on every expansion: entries come and go.
   const ms = await members(path, true);
-  const entriesMember = ms.find((m) => m.kind === 'child' && m.name === 'entries' && m.indexed);
-  const out: BrowserRow[] = [];
-  // Entries of the container (its `entries` member), or -- for a bare indexed
-  // member reached directly -- of the member itself, whose parent answers.
-  let indices: number[] = [];
-  let keys: string[] = [];
-  if (entriesMember) {
-    indices = Array.isArray(entriesMember.indices) ? entriesMember.indices : [];
-    keys = Array.isArray(entriesMember.keys) ? entriesMember.keys : [];
-  } else {
-    const dot = path.lastIndexOf('.');
-    const parent = dot >= 0 ? path.slice(0, dot) : '';
-    const name = dot >= 0 ? path.slice(dot + 1) : path;
-    const pm = (await members(parent, true)).find((m) => m.name === name);
-    indices = Array.isArray(pm?.indices) ? pm.indices : [];
-    keys = Array.isArray(pm?.keys) ? pm.keys : [];
-  }
-  // A hybrid collection (indexed and keyed) is written in the indexed form.
-  if (indices.length) {
-    for (const i of indices) out.push(entryRow(`[${i}]`, `${path}[${i}]`));
-  } else {
-    for (const k of keys) out.push(entryRow(`["${k}"]`, `${path}["${k}"]`));
-  }
-  for (const m of ms) {
-    if (m === entriesMember || (m.kind === 'method' && m.hidden)) continue;
-    out.push(memberRow(path, m));
-  }
+  const { entries, items } = await collectionEntries(path, ms);
+  const out = items.map((e) => entryRow(e.name, e.word, e.path));
+  for (const m of ms) if (m !== entries && shownMember(m)) out.push(memberRow(path, m));
   return out;
 }
 
-function entryRow(name: string, path: string): BrowserRow {
+function entryRow(name: string, word: string, path: string): BrowserRow {
   return {
     key: path,
     kind: 'entry',
     name,
+    word,
     path,
     doc: '',
-    category: 'basic',
     insert: `${path}.`,
     expandable: true,
   };
 }
 
-// The rows under `row`.
-async function childRows(row: BrowserRow): Promise<BrowserRow[]> {
+// The rows under any expandable row.
+export async function expand(row: BrowserRow): Promise<BrowserRow[]> {
+  if (row.source) return row.source();
   switch (row.kind) {
     case 'collection':
       return collectionRows(row.path);
@@ -218,41 +129,21 @@ async function childRows(row: BrowserRow): Promise<BrowserRow[]> {
   }
 }
 
-const DOMAIN_LABEL: Record<string, string> = {
-  machine: 'Machine',
-  emulator: 'Emulator',
-  network: 'Network',
-};
+// --- sections -------------------------------------------------------------------
 
-// The browser's root: one expandable headline per section -- the root's
-// own verbs (Commands), each domain its children live in (in model order),
-// then Aliases and Language.  A section's rows are its members; they are
-// listed at the headline's own indent.
-export async function rootRows(): Promise<BrowserRow[]> {
-  if (!isModuleReady()) return [];
-  const ms = await members('');
-  const out: BrowserRow[] = [];
-  out.push(
-    section(
-      'section:commands',
-      'Commands',
-      "Words typed bare: the root's own methods and the commands",
-    ),
-  );
-  const seen = new Set<string>();
-  for (const m of ms) {
-    if (m.kind !== 'child') continue;
-    const d = m.domain ?? 'emulator';
-    if (seen.has(d)) continue;
-    seen.add(d);
-    out.push(section(`section:${d}`, DOMAIN_LABEL[d] ?? d, DOMAIN_DOC[d] ?? ''));
-  }
-  out.push(
-    section('group:aliases', 'Aliases', 'Built-in and user $name shortcuts that expand to a path'),
-  );
-  out.push(section('group:language', 'Language', 'Shell keywords and their syntax'));
-  return out;
+// A top-level section: its headline, whether it starts open, and its rows.
+export interface SectionProvider {
+  key: string; // section:*
+  label: string;
+  doc: string;
+  defaultOpen: boolean;
+  rootMembers: boolean; // its rows are root members
+  load(): Promise<BrowserRow[]>;
 }
+
+export const COMMANDS_KEY = 'section:commands';
+export const ALIASES_KEY = 'section:aliases';
+export const LANGUAGE_KEY = 'section:language';
 
 const DOMAIN_DOC: Record<string, string> = {
   machine: 'The emulated computer',
@@ -260,19 +151,86 @@ const DOMAIN_DOC: Record<string, string> = {
   network: 'The simulated AppleTalk network',
 };
 
-// The rows of a Commands or domain section.
-async function sectionRows(row: BrowserRow): Promise<BrowserRow[]> {
-  const ms = await members('');
-  if (row.key === 'section:commands') {
-    const own = ms.filter((m) => m.kind === 'method' && !m.hidden).map((m) => memberRow('', m));
-    const aliases = (await loadCommands()).map(commandRow);
-    return [...own, ...aliases];
+// The sections, in order: the root's own verbs (Commands), each domain the
+// root's children live in (in model order), then Aliases and Language.
+function sections(root: MemberInfo[]): SectionProvider[] {
+  // Root members as a section lists them (read again: the cache answers).
+  const rootMembers = async () => (await members('')).filter(shownMember);
+  const out: SectionProvider[] = [
+    {
+      key: COMMANDS_KEY,
+      label: 'Commands',
+      doc: "Words typed bare: the root's own methods and the commands",
+      defaultOpen: true,
+      rootMembers: true,
+      load: async () => [
+        ...(await rootMembers()).filter((m) => m.kind === 'method').map((m) => memberRow('', m)),
+        ...(await loadCommands()).map(commandRow),
+      ],
+    },
+  ];
+  const domains: string[] = [];
+  for (const m of root.filter(shownMember)) {
+    const d = m.domain ?? 'emulator';
+    if (m.kind === 'child' && !domains.includes(d)) domains.push(d);
   }
-  const d = row.key.slice('section:'.length);
-  return ms
-    .filter((m) => m.kind === 'child' && (m.domain ?? 'emulator') === d)
-    .map((m) => memberRow('', m));
+  for (const d of domains)
+    out.push({
+      key: `section:${d}`,
+      label: DOMAIN_LABEL[d] ?? d,
+      doc: DOMAIN_DOC[d] ?? '',
+      defaultOpen: true,
+      rootMembers: true,
+      load: async () =>
+        (await rootMembers())
+          .filter((m) => m.kind === 'child' && (m.domain ?? 'emulator') === d)
+          .map((m) => memberRow('', m)),
+    });
+  out.push(
+    {
+      key: ALIASES_KEY,
+      label: 'Aliases',
+      doc: 'Built-in and user $name shortcuts that expand to a path',
+      defaultOpen: false,
+      rootMembers: false,
+      load: async () => ALIAS_GROUPS.map(groupRow),
+    },
+    {
+      key: LANGUAGE_KEY,
+      label: 'Language',
+      doc: 'Shell keywords and their syntax',
+      defaultOpen: false,
+      rootMembers: false,
+      load: keywordRows,
+    },
+  );
+  return out;
 }
+
+function sectionRow(s: SectionProvider): BrowserRow {
+  return {
+    key: s.key,
+    kind: 'section',
+    name: s.label,
+    word: '',
+    path: '',
+    doc: s.doc,
+    insert: '',
+    expandable: true,
+    source: s.load,
+    defaultOpen: s.defaultOpen,
+    rootMembers: s.rootMembers,
+  };
+}
+
+// The browser's root: one expandable headline per section.  A section's
+// rows are listed at the headline's own indent.
+export async function rootRows(): Promise<BrowserRow[]> {
+  if (!isModuleReady()) return [];
+  return sections(await members('')).map(sectionRow);
+}
+
+// --- commands -------------------------------------------------------------------
 
 // A command: a bare word that runs a method (shell.command.list).
 export interface ShellCommand {
@@ -306,28 +264,35 @@ function commandRow(c: ShellCommand): BrowserRow {
     key: `cmd:${c.name}`,
     kind: 'method',
     name: c.name,
+    word: c.name,
     path: c.target,
     doc: `${c.target}${c.doc ? ` — ${c.doc}` : ''}`,
-    category: 'basic',
     insert: `${c.name} `,
     expandable: false,
   };
 }
 
-function section(key: string, name: string, doc: string): BrowserRow {
-  return {
-    key,
-    kind: 'section',
-    name,
-    path: '',
-    doc,
-    category: 'basic',
-    insert: '',
-    expandable: true,
-  };
+// --- aliases and keywords -------------------------------------------------------
+
+export interface AliasInfo {
+  name: string;
+  path: string;
+  builtin: boolean;
 }
 
-// The Aliases sub-group an alias is listed under.
+// The Aliases groups: User, Built-in, and a Mac globals group for the
+// built-ins over debug.mac.globals.
+const ALIAS_GROUPS = [
+  { key: 'group:aliases:user', label: 'User', doc: 'Aliases defined in this session' },
+  { key: 'group:aliases:builtin', label: 'Built-in', doc: 'Aliases the shell defines' },
+  {
+    key: 'group:aliases:globals',
+    label: 'Mac globals',
+    doc: 'Built-in aliases for the Mac low-memory globals',
+  },
+];
+
+// The Aliases group an alias is listed under.
 export function aliasGroupKey(a: AliasInfo): string {
   if (!a.builtin) return 'group:aliases:user';
   return a.path.startsWith('debug.mac.globals.')
@@ -335,66 +300,30 @@ export function aliasGroupKey(a: AliasInfo): string {
     : 'group:aliases:builtin';
 }
 
-function group(key: string, name: string, doc: string): BrowserRow {
+function groupRow(g: (typeof ALIAS_GROUPS)[number]): BrowserRow {
   return {
-    key,
+    key: g.key,
     kind: 'group',
-    name,
+    name: g.label,
+    word: g.label,
     path: '',
-    doc,
-    category: 'basic',
+    doc: g.doc,
     insert: '',
     expandable: true,
+    source: async () =>
+      (await loadAliases())
+        .filter((a) => aliasGroupKey(a) === g.key)
+        .map((a) => ({
+          key: `alias:${a.name}`,
+          kind: 'alias' as const,
+          name: `$${a.name}`,
+          word: a.name,
+          path: a.path,
+          doc: a.path,
+          insert: `$${a.name}`,
+          expandable: false,
+        })),
   };
-}
-
-// The rows of a synthetic group: Aliases (User, Built-in, and a collapsed Mac
-// globals subgroup for built-ins over debug.mac.globals) and Language
-// (shell.keywords).
-async function groupRows(row: BrowserRow): Promise<BrowserRow[]> {
-  if (row.key === 'group:language') {
-    const kws = await gsEval('shell.keywords');
-    if (!Array.isArray(kws)) return [];
-    return kws
-      .filter((k): k is { word: string; syntax: string } => !!k && typeof k.word === 'string')
-      .map((k) => ({
-        key: `kw:${k.word}`,
-        kind: 'keyword' as const,
-        name: k.word,
-        path: '',
-        doc: k.syntax,
-        category: 'basic',
-        insert: `${k.word} `,
-        expandable: false,
-      }));
-  }
-  if (row.key === 'group:aliases')
-    return [
-      group('group:aliases:user', 'User', 'Aliases defined in this session'),
-      group('group:aliases:builtin', 'Built-in', 'Aliases the shell defines'),
-      group(
-        'group:aliases:globals',
-        'Mac globals',
-        'Built-in aliases for the Mac low-memory globals',
-      ),
-    ];
-  const pick = (await loadAliases()).filter((a) => aliasGroupKey(a) === row.key);
-  return pick.map((a) => ({
-    key: `alias:${a.name}`,
-    kind: 'alias' as const,
-    name: `$${a.name}`,
-    path: a.path,
-    doc: a.path,
-    category: 'basic',
-    insert: `$${a.name}`,
-    expandable: false,
-  }));
-}
-
-export interface AliasInfo {
-  name: string;
-  path: string;
-  builtin: boolean;
 }
 
 // shell.alias.list entries are `name=path` or `name=path (built-in)`.
@@ -417,45 +346,20 @@ export async function loadAliases(): Promise<AliasInfo[]> {
   return out;
 }
 
-// The rows under any expandable row.
-export async function expand(row: BrowserRow): Promise<BrowserRow[]> {
-  if (row.kind === 'section' && row.key.startsWith('section:')) return sectionRows(row);
-  return row.kind === 'group' || row.kind === 'section' ? groupRows(row) : childRows(row);
-}
-
-// shell.usage: the usage text, and for a method its signature (the text's
-// first line) with each declared argument's [start, end) in it (UTF-8
-// bytes, as the core counts).
-export interface UsageInfo {
-  text: string;
-  signature: string;
-  argSpans: Array<[number, number] | null>;
-}
-
-export async function loadUsageInfo(path: string): Promise<UsageInfo | null> {
-  if (!path) return null;
-  const u = await gsEval('shell.usage', [path]);
-  if (!u || typeof u !== 'object' || typeof (u as { text?: unknown }).text !== 'string')
-    return null;
-  const o = u as { text: string; signature?: unknown; arg_spans?: unknown };
-  const spans = Array.isArray(o.arg_spans)
-    ? o.arg_spans.map((p) =>
-        Array.isArray(p) && typeof p[0] === 'number' && typeof p[1] === 'number'
-          ? ([p[0], p[1]] as [number, number])
-          : null,
-      )
-    : [];
-  return {
-    text: o.text,
-    signature: typeof o.signature === 'string' ? o.signature : '',
-    argSpans: spans,
-  };
-}
-
-// Type text of an attribute row: kind plus hex / bin / path, as usage shows it.
-export function typeText(t?: TypeDescriptor): string {
-  if (!t) return '';
-  if (t.kind === 'enum') return 'enum';
-  const p = t.presentation;
-  return p === 'hex' || p === 'bin' || p === 'path' ? `${t.kind}, ${p}` : t.kind;
+// Language: shell.keywords.
+async function keywordRows(): Promise<BrowserRow[]> {
+  const kws = await gsEval('shell.keywords');
+  if (!Array.isArray(kws)) return [];
+  return kws
+    .filter((k): k is { word: string; syntax: string } => !!k && typeof k.word === 'string')
+    .map((k) => ({
+      key: `kw:${k.word}`,
+      kind: 'keyword' as const,
+      name: k.word,
+      word: k.word,
+      path: '',
+      doc: k.syntax,
+      insert: `${k.word} `,
+      expandable: false,
+    }));
 }

@@ -1,5 +1,6 @@
 import './styles/tokens.css';
 import './styles/reset.css';
+import './styles/syntax.css';
 import { mount, unmount } from 'svelte';
 import App from './App.svelte';
 import { loadPersistedState } from '@/state/persist.svelte';

@@ -38,10 +38,7 @@
 //
 // `log.set(cat)` with nothing else prints the category's current settings,
 // which is what the bare form always did.
-static value_t log_method_set(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(log_method_set) {
     if (argv[0].kind != V_ENUM || !argv[0].enm.table)
         return val_err("log.set: category is required");
     const char *category = argv[0].enm.table[argv[0].enm.idx];
@@ -90,9 +87,7 @@ static void log_level_map_cb(const log_category_t *cat, void *ud) {
 // map {<category>: <level>, ...}.  The Logs view's level editor reads
 // this to populate its list (the categories register lazily, so the set grows
 // as subsystems first log; a freshly booted machine has registered its own).
-static value_t log_attr_levels(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(log_attr_levels) {
     value_map_builder_t *b = val_map_new();
     log_foreach_category(log_level_map_cb, b);
     return val_map_finish(b);
@@ -118,31 +113,17 @@ static const char *const log_category_values[] = {
 static const arg_decl_t log_set_args[] = {
     {.name = "category", .kind = V_ENUM, .enum_values = log_category_values, .doc = "Subsystem to configure"},
     {.name = "level",
-     .default_value = &obj_arg_unset,
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Verbosity; 0 silences level-1-and-up sites"},
-    {.name = "stdout",
-     .default_value = &obj_arg_unset,
-     .kind = V_BOOL,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Emit to stdout"},
+    {.name = "stdout", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Emit to stdout"},
     {.name = "file",
-     .default_value = &obj_arg_unset,
      .kind = V_STRING,
      .presentation_flags = VAL_PATH,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Append to this path; \"off\" closes it"},
-    {.name = "ts",
-     .default_value = &obj_arg_unset,
-     .kind = V_BOOL,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Stamp each line with a timestamp"},
-    {.name = "pc",
-     .default_value = &obj_arg_unset,
-     .kind = V_BOOL,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Stamp each line with the guest PC"},
+    {.name = "ts", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Stamp each line with a timestamp"},
+    {.name = "pc", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Stamp each line with the guest PC"},
 };
 
 // === log.category["<name>"] =================================================
@@ -151,25 +132,17 @@ static const arg_decl_t log_set_args[] = {
 // up and kept for the process (categories are never unregistered).  Its data
 // is the log_category_t.
 
-#define LOG_MAX_CATEGORIES 128
-
 static struct object *g_log_object = NULL;
-static struct object *g_log_categories_object = NULL;
-static struct object *g_cat_objs[LOG_MAX_CATEGORIES];
-static const log_category_t *g_cat_ptrs[LOG_MAX_CATEGORIES];
-static int g_cat_n = 0;
 
 static const log_category_t *entry_cat(struct object *self) {
     return (const log_category_t *)object_data(self);
 }
 
-static value_t cat_attr_level_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cat_attr_level_get) {
     return val_uint(4, (uint64_t)log_get_level(entry_cat(self)));
 }
 
-static value_t cat_attr_level_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(cat_attr_level_set) {
     bool ok = false;
     int64_t level = val_as_i64(&in, &ok);
     value_free(&in);
@@ -179,25 +152,21 @@ static value_t cat_attr_level_set(struct object *self, const member_t *m, value_
     return val_none();
 }
 
-static value_t cat_attr_stdout_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cat_attr_stdout_get) {
     return val_bool(log_get_category_stdout(entry_cat(self)));
 }
 
-static value_t cat_attr_stdout_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(cat_attr_stdout_set) {
     log_set_category_stdout(log_category_name(entry_cat(self)), in.b);
     return val_none();
 }
 
-static value_t cat_attr_file_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cat_attr_file_get) {
     const char *path = log_get_category_file(entry_cat(self));
     return val_str(path ? path : "off");
 }
 
-static value_t cat_attr_file_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(cat_attr_file_set) {
     const char *path = in.s ? in.s : "off";
     int rc = log_set_category_file(log_category_name(entry_cat(self)), path);
     value_t out = rc == 0 ? val_none() : val_err("cannot open log file '%s'", path);
@@ -205,24 +174,20 @@ static value_t cat_attr_file_set(struct object *self, const member_t *m, value_t
     return out;
 }
 
-static value_t cat_attr_ts_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cat_attr_ts_get) {
     return val_bool(log_get_category_timestamp(entry_cat(self)));
 }
 
-static value_t cat_attr_ts_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(cat_attr_ts_set) {
     log_set_category_timestamp(log_category_name(entry_cat(self)), in.b);
     return val_none();
 }
 
-static value_t cat_attr_pc_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(cat_attr_pc_get) {
     return val_bool(log_get_category_show_pc(entry_cat(self)));
 }
 
-static value_t cat_attr_pc_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(cat_attr_pc_set) {
     log_set_category_show_pc(log_category_name(entry_cat(self)), in.b);
     return val_none();
 }
@@ -256,77 +221,57 @@ static const class_desc_t log_category_class = {
     .n_members = sizeof(log_category_members) / sizeof(log_category_members[0]),
 };
 
+// The category entry objects, by name, made on first use.
+static object_cache_t g_categories = OBJECT_CACHE(&log_category_class, NULL);
+
 // The entry object for a registered category, made on first use.
-static struct object *category_entry(const char *name) {
+static struct object *categories_lookup(struct object *self, const char *name) {
+    (void)self;
     const log_category_t *cat = log_get_category(name);
     if (!cat)
         return NULL;
-    for (int i = 0; i < g_cat_n; i++)
-        if (g_cat_ptrs[i] == cat)
-            return g_cat_objs[i];
-    if (g_cat_n >= LOG_MAX_CATEGORIES)
-        return NULL;
-    struct object *o = object_new(&log_category_class, (void *)cat, NULL);
-    if (!o)
-        return NULL;
-    object_set_logical_parent(o, g_log_categories_object, NULL, -1, log_category_name(cat));
-    object_set_doc(o, log_category_description(log_category_name(cat)));
-    g_cat_ptrs[g_cat_n] = cat;
-    g_cat_objs[g_cat_n] = o;
-    g_cat_n++;
+    struct object *o = object_cache_key(&g_categories, log_category_name(cat), (void *)cat);
+    if (o)
+        object_set_doc(o, log_category_description(log_category_name(cat)));
     return o;
 }
 
-static struct object *categories_lookup(struct object *self, const char *name) {
+// The least category name after `prev` (NULL = before all), so listings are
+// in name order whatever order categories registered in.
+typedef struct {
+    const char *prev;
+    const char *best;
+} next_name_t;
+
+static void next_name_cb(const log_category_t *cat, void *ud) {
+    next_name_t *n = (next_name_t *)ud;
+    const char *name = log_category_name(cat);
+    if (n->prev && strcmp(name, n->prev) <= 0)
+        return;
+    if (!n->best || strcmp(name, n->best) < 0)
+        n->best = name;
+}
+
+static const char *categories_next_key(struct object *self, const char *prev) {
     (void)self;
-    return category_entry(name);
+    next_name_t n = {.prev = prev, .best = NULL};
+    log_foreach_category(next_name_cb, &n);
+    return n.best;
 }
 
-// Key scratch for categories_keys: borrowed by the caller until the next call.
-static const char *g_key_scratch[LOG_MAX_CATEGORIES];
-static int g_key_n;
-
-static void collect_key(const log_category_t *cat, void *ud) {
-    (void)ud;
-    if (g_key_n < LOG_MAX_CATEGORIES)
-        g_key_scratch[g_key_n++] = log_category_name(cat);
-}
-
-// Keys in name order, so listings are stable whatever order categories
-// registered in.
-static int key_cmp(const void *a, const void *b) {
-    return strcmp(*(const char *const *)a, *(const char *const *)b);
-}
-
-static int categories_keys(struct object *self, const char ***out_names) {
-    (void)self;
-    g_key_n = 0;
-    log_foreach_category(collect_key, NULL);
-    qsort(g_key_scratch, (size_t)g_key_n, sizeof(g_key_scratch[0]), key_cmp);
-    *out_names = g_key_scratch;
-    return g_key_n;
-}
-
-static const member_t log_categories_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .doc = "Log categories, by name",
-     .child = {.cls = &log_category_class, .indexed = true, .lookup = categories_lookup, .keys = categories_keys}},
-};
-
-static const class_desc_t log_categories_class = {
+static const collection_desc_t log_categories = {
+    .entry = &log_category_class,
+    .by_key = {.lookup = categories_lookup, .next_key = categories_next_key},
     .name = "log_categories",
-    .members = log_categories_members,
-    .n_members = sizeof(log_categories_members) / sizeof(log_categories_members[0]),
     .doc = "Log categories, by name",
+    .entries_doc = "Log categories, by name",
 };
 
 static const member_t log_members[] = {
     {.kind = M_ATTR,
      .name = "levels",
      .doc = "Every registered log category and its level, as a map {<category>: <level>}",
-     .flags = VAL_RO,
-     .attr = {.type = V_MAP, .get = log_attr_levels}},
+     .attr = {.type = V_MAP, .get = log_attr_levels}                                                            },
     {.kind = M_METHOD,
      .name = "set",
      .doc = "Configure a log category: log.set(cat, level=, stdout=, file=, ts=, pc=)",
@@ -349,9 +294,10 @@ void log_class_init(void) {
     object_set_label(g_log_object, "Logs");
     object_set_order(g_log_object, 50);
     object_attach(object_root(), g_log_object);
-    g_log_categories_object = object_new(&log_categories_class, NULL, "category");
-    if (g_log_categories_object) {
-        object_set_label(g_log_categories_object, "Categories");
-        object_attach(g_log_object, g_log_categories_object);
+    struct object *categories = object_collection_new(&log_categories, NULL, "category");
+    if (categories) {
+        object_set_label(categories, "Categories");
+        object_attach(g_log_object, categories);
+        object_cache_set_parent(&g_categories, categories);
     }
 }

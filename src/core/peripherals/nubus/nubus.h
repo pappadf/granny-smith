@@ -189,15 +189,11 @@ nubus_card_t *nubus_primary_display_card(nubus_bus_t *bus);
 // object trees for every populated slot.  nubus_init calls _build after the
 // cards exist; nubus_delete calls _teardown before freeing them.  The node
 // objects are owned here (object_delete_tree on teardown), not by the bus.
+// `machine.nubus` and its slot collection are installed from nubus_class.c
+// with every NuBus machine (root_register_install).
 void nubus_objects_build(nubus_bus_t *bus);
 void nubus_objects_teardown(void);
-// Register `slots` (the machine.nubus.slot container) as the logical parent
-// of every slot node, now and for nodes built later.
-struct object;
-void nubus_objects_adopt(struct object *slots);
-// The slot container's class, and every registered card-driver id
-// (catalog.nubus_cards).
-extern const struct class_desc nubus_slots_class;
+// Every registered card-driver id (catalog.nubus_cards).
 value_t nubus_cards_list(void);
 // Teardown only if the trees describe `bus` (checkpoint-restore ordering:
 // the new machine's tree is built before the old machine is destroyed).

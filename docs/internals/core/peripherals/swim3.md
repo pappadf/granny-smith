@@ -20,7 +20,10 @@ Sources: Apple SWIM3 ERS v1.2 (3/24/93); the ISM ASIC specification rev
 Developer Note (1994), pp. 15–23 and Table 3-7; Apple, *Guide to the
 Macintosh Family Hardware*, 2nd ed., for the GCR sector format and speed
 zones; Linux `drivers/block/swim3.c` and Open Firmware's own `swim3`
-package for how the Grand Central boards drive it.
+package for how the Grand Central boards drive it. The chip's hardware
+reference page is [swim3.md](../../../reference/machines/pdm/swim3.md)
+(section 2 for the register file, section 3 for behaviour); this document
+covers the emulator model.
 
 ## The backend contract (`swim3_backend_t`)
 

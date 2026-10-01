@@ -9,8 +9,11 @@
 #include "card.h"
 #include "display.h"
 #include "display_class.h"
+#include "machine_profile.h"
 #include "nubus.h"
 #include "object.h"
+#include "root.h"
+#include "system_config.h"
 #include "value.h"
 
 #include <stddef.h>
@@ -83,6 +86,9 @@ typedef struct {
 
 static nubus_bus_t *g_obj_bus = NULL;
 static nubus_slot_nodes_t g_slot_nodes[NUBUS_OBJ_SLOTS];
+// The slot wrapper objects, by slot number.
+static const class_desc_t nubus_slot_class;
+static object_cache_t g_slot_objects = OBJECT_CACHE(&nubus_slot_class, "slot");
 
 static nubus_card_t *node_card(struct object *self) {
     return (nubus_card_t *)object_data(self);
@@ -107,13 +113,11 @@ static uint64_t nubus_fb_base(void *owner) {
 }
 
 // --- declrom node -----------------------------------------------------------
-static value_t declrom_attr_size(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(declrom_attr_size) {
     nubus_card_t *c = node_card(self);
     return val_uint(4, c ? (uint64_t)c->declrom_size : 0);
 }
-static value_t declrom_attr_present(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(declrom_attr_present) {
     nubus_card_t *c = node_card(self);
     return val_bool(c && c->declrom && c->declrom_size > 0);
 }
@@ -121,29 +125,22 @@ static const member_t declrom_members[] = {
     {.kind = M_ATTR,
      .name = "size",
      .doc = "Declaration ROM size in bytes (bus-space, byte-lane expanded)",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = declrom_attr_size}   },
     {.kind = M_ATTR,
      .name = "present",
      .doc = "True if a declaration ROM is loaded",
-     .flags = VAL_RO,
      .attr = {.type = V_BOOL, .get = declrom_attr_present}},
 };
 static const class_desc_t nubus_declrom_class = {
     .name = "declrom", .members = declrom_members, .n_members = sizeof(declrom_members) / sizeof(declrom_members[0])};
 
 // --- clut node --------------------------------------------------------------
-static value_t clut_attr_len(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(clut_attr_len) {
     display_t *d = node_disp(self);
     return val_int(d ? (int)d->clut_len : 0);
 }
 static const member_t clut_members[] = {
-    {.kind = M_ATTR,
-     .name = "len",
-     .doc = "Number of palette entries",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = clut_attr_len}},
+    {.kind = M_ATTR, .name = "len", .doc = "Number of palette entries", .attr = {.type = V_INT, .get = clut_attr_len}},
 };
 static const class_desc_t nubus_clut_class = {
     .name = "clut", .members = clut_members, .n_members = sizeof(clut_members) / sizeof(clut_members[0])};
@@ -152,23 +149,19 @@ static const class_desc_t nubus_clut_class = {
 // Same numbers as the framebuffer node, under the card's own `mode` child --
 // this one carries the CARD as instance data, so it reads the descriptor
 // through node_disp rather than through a display_fb_node_t.
-static value_t mode_attr_width(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mode_attr_width) {
     display_t *d = node_disp(self);
     return val_int(d ? (int)d->width : 0);
 }
-static value_t mode_attr_height(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mode_attr_height) {
     display_t *d = node_disp(self);
     return val_int(d ? (int)d->height : 0);
 }
-static value_t mode_attr_depth(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mode_attr_depth) {
     display_t *d = node_disp(self);
     return val_int(d ? (int)display_bpp(d->format) : 0);
 }
-static value_t mode_attr_format(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mode_attr_format) {
     display_t *d = node_disp(self);
     return val_str(d ? display_format_name(d->format) : "");
 }
@@ -176,49 +169,38 @@ static const member_t mode_members[] = {
     {.kind = M_ATTR,
      .name = "width",
      .doc = "Current monitor width in pixels",
-     .flags = VAL_RO,
      .attr = {.type = V_INT, .get = mode_attr_width}    },
     {.kind = M_ATTR,
      .name = "height",
      .doc = "Current monitor height in pixels",
-     .flags = VAL_RO,
      .attr = {.type = V_INT, .get = mode_attr_height}   },
     {.kind = M_ATTR,
      .name = "depth",
      .doc = "Current pixel depth (bpp)",
-     .flags = VAL_RO,
      .attr = {.type = V_INT, .get = mode_attr_depth}    },
     {.kind = M_ATTR,
      .name = "format",
      .doc = "Current pixel encoding",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = mode_attr_format}},
 };
 static const class_desc_t nubus_mode_class = {
     .name = "mode", .members = mode_members, .n_members = sizeof(mode_members) / sizeof(mode_members[0])};
 
 // --- card node --------------------------------------------------------------
-static value_t card_attr_name(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(card_attr_name) {
     nubus_card_t *c = node_card(self);
     return val_str((c && c->ops && c->ops->name) ? c->ops->name(c) : "");
 }
-static value_t card_attr_slot(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(card_attr_slot) {
     nubus_card_t *c = node_card(self);
     return val_int(c ? c->slot : -1);
 }
 static const member_t card_members[] = {
-    {.kind = M_ATTR,
-     .name = "name",
-     .doc = "Card display name",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = card_attr_name}                            },
+    {.kind = M_ATTR, .name = "name", .doc = "Card display name", .attr = {.type = V_STRING, .get = card_attr_name}},
     {.kind = M_ATTR,
      .name = "slot",
      .doc = "NuBus slot number ($9..$E)",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .presentation_flags = VAL_HEX, .get = card_attr_slot}},
+     .attr = {.type = V_INT, .presentation_flags = VAL_HEX, .get = card_attr_slot}                                },
 };
 static const class_desc_t nubus_card_class = {
     .name = "card", .members = card_members, .n_members = sizeof(card_members) / sizeof(card_members[0])};
@@ -237,8 +219,7 @@ static int node_slot_number(struct object *self) {
     return n ? *n : -1;
 }
 
-static value_t slot_attr_number(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(slot_attr_number) {
     return val_int(node_slot_number(self));
 }
 
@@ -247,14 +228,12 @@ static value_t slot_attr_number(struct object *self, const member_t *m) {
 // wildcard alias; a concrete entry beats the wildcard).  Only SOCKET slots
 // accept a pick; reads return the staged id ("" when none, and always ""
 // on builtin slots).  Cleared when nubus_init consumes it.
-static value_t slot_attr_card_id_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(slot_attr_card_id_get) {
     const char *id = nubus_staged_card_get(node_slot_number(self));
     return val_str(id ? id : "");
 }
 
-static value_t slot_attr_card_id_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(slot_attr_card_id_set) {
     int slot = node_slot_number(self);
     if (in.kind != V_STRING) {
         value_free(&in);
@@ -285,14 +264,12 @@ static value_t slot_attr_card_id_set(struct object *self, const member_t *m, val
 // machine.boot (concrete-slot sibling of the `nubus.video_mode` alias).
 // At boot the id is routed into the slot's resolved card kind; a mode that
 // doesn't belong to that card logs and is ignored.
-static value_t slot_attr_video_mode_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(slot_attr_video_mode_get) {
     const char *id = nubus_staged_mode_get(node_slot_number(self));
     return val_str(id ? id : "");
 }
 
-static value_t slot_attr_video_mode_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(slot_attr_video_mode_set) {
     int slot = node_slot_number(self);
     if (in.kind != V_STRING) {
         value_free(&in);
@@ -318,13 +295,12 @@ static const member_t slot_members[] = {
     {.kind = M_ATTR,
      .name = "number",
      .doc = "NuBus slot number ($9..$E)",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .presentation_flags = VAL_HEX, .get = slot_attr_number}             },
+     .attr = {.type = V_INT, .presentation_flags = VAL_HEX, .get = slot_attr_number}},
     {.kind = M_ATTR,
      .name = "card_id",
      .doc = "Staged card pick for this socket for the next machine.boot (\"\" = none)",
      .flags = 0,
-     .attr = {.type = V_STRING, .get = slot_attr_card_id_get, .set = slot_attr_card_id_set}      },
+     .attr = {.type = V_STRING, .get = slot_attr_card_id_get, .set = slot_attr_card_id_set}},
     {.kind = M_ATTR,
      .name = "video_mode",
      .doc = "Staged video-mode id for this socket for the next machine.boot (\"\" = none)",
@@ -346,45 +322,40 @@ static struct object *nubus_slot_get(struct object *self, int index) {
 }
 
 // `machine.nubus.slot` -- the slot collection: a container (attached under
-// `machine.nubus` by root_install) whose entries are the declared slots.
-static const member_t nubus_slots_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .doc = "Populated NuBus slots ($9..$E); index by slot number, e.g. slot[9].card.framebuffer",
-     .child = {.cls = &nubus_slot_class, .indexed = true, .get = nubus_slot_get, .slots = NUBUS_OBJ_LAST + 1}},
-};
-
-const class_desc_t nubus_slots_class = {
+// `machine.nubus` by the install hook below) whose entries are the declared
+// slots.
+static const collection_desc_t nubus_slots = {
+    .entry = &nubus_slot_class,
+    .by_index = {.get = nubus_slot_get, .slots = NUBUS_OBJ_LAST + 1},
     .name = "nubus_slots",
     .doc = "NuBus slots, by slot number",
-    .members = nubus_slots_members,
-    .n_members = sizeof(nubus_slots_members) / sizeof(nubus_slots_members[0]),
+    .entries_doc = "Populated NuBus slots ($9..$E); index by slot number, e.g. slot[9].card.framebuffer",
 };
 
 // `machine.nubus` itself carries no members of its own: its `slot` child is
 // the container above.
-const class_desc_t nubus_class = {
+static const class_desc_t nubus_class = {
     .name = "nubus",
     .doc = "The NuBus expansion bus: slots and their cards",
     .members = NULL,
     .n_members = 0,
 };
 
-static struct object *g_slots_container = NULL;
-
-// The container is freed by root_uninstall; forget it then.
-static void slots_container_dtor(struct object *o) {
-    if (g_slots_container == o)
-        g_slots_container = NULL;
-}
-
-void nubus_objects_adopt(struct object *slots) {
-    g_slots_container = slots;
-    if (slots)
-        object_set_destructor(slots, slots_container_dtor);
-    for (int i = 0; i < NUBUS_OBJ_SLOTS; i++)
-        if (g_slot_nodes[i].slot)
-            object_set_logical_parent(g_slot_nodes[i].slot, slots, NULL, i, NULL);
+// `machine.nubus` and its slot collection, under the machine node (they are
+// emulated hardware, not meta objects), on a machine with that bus.
+static void nubus_root_install(struct config *cfg) {
+    if (!cfg || !cfg->nubus)
+        return;
+    struct object *bus = root_attach_stub(machine_object(), object_new(&nubus_class, cfg, "nubus"));
+    if (!bus)
+        return;
+    object_set_label(bus, "NuBus");
+    object_set_order(bus, 100);
+    struct object *slots = root_attach_stub(bus, object_collection_new(&nubus_slots, cfg, "slot"));
+    if (slots) {
+        object_set_label(slots, "Slots");
+        object_cache_set_parent(&g_slot_objects, slots);
+    }
 }
 
 // === Object-tree build / teardown ===========================================
@@ -409,6 +380,7 @@ void nubus_objects_build(nubus_bus_t *bus) {
     nubus_objects_teardown(); // idempotent — drop any prior trees first
     if (!bus)
         return;
+    root_register_install(nubus_root_install, NULL); // idempotent
     g_obj_bus = bus;
     for (int i = NUBUS_OBJ_FIRST; i <= NUBUS_OBJ_LAST; i++) {
         nubus_card_t *card = nubus_card(bus, i);
@@ -421,13 +393,11 @@ void nubus_objects_build(nubus_bus_t *bus) {
         nubus_slot_nodes_t *n = &g_slot_nodes[i];
 
         s_slot_numbers[i] = i;
-        n->slot = object_new(&nubus_slot_class, &s_slot_numbers[i], "slot");
+        n->slot = object_cache_at(&g_slot_objects, i, &s_slot_numbers[i]);
         if (!n->slot)
             continue;
         object_set_label(n->slot, "Slot");
         object_set_order(n->slot, i);
-        if (g_slots_container)
-            object_set_logical_parent(n->slot, g_slots_container, NULL, i, NULL);
 
         if (!card)
             continue; // empty socket: just the wrapper + staged attrs
@@ -455,11 +425,8 @@ void nubus_objects_build(nubus_bus_t *bus) {
 }
 
 void nubus_objects_teardown(void) {
-    for (int i = 0; i < NUBUS_OBJ_SLOTS; i++) {
-        if (g_slot_nodes[i].slot)
-            object_delete_tree(g_slot_nodes[i].slot); // frees the slot + attached subtree
-        memset(&g_slot_nodes[i], 0, sizeof(g_slot_nodes[i]));
-    }
+    object_cache_clear(&g_slot_objects); // frees each slot + attached subtree
+    memset(g_slot_nodes, 0, sizeof(g_slot_nodes));
     g_obj_bus = NULL;
 }
 

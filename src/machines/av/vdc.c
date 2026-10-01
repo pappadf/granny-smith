@@ -403,14 +403,12 @@ static inline av_vdc_t *vdc_self(struct object *self) {
     return (av_vdc_t *)object_data(self);
 }
 
-static value_t videoin_attr_source_get(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(videoin_attr_source_get) {
     av_vdc_t *vdc = vdc_self(self);
     return val_str(vdc ? vdc_src_name(vdc->src_mode) : "none");
 }
 
-static value_t videoin_attr_source_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
+static DEF_SETTER(videoin_attr_source_set) {
     av_vdc_t *vdc = vdc_self(self);
     if (!vdc) {
         value_free(&in);
@@ -425,22 +423,17 @@ static value_t videoin_attr_source_set(struct object *self, const member_t *m, v
     return val_none();
 }
 
-static value_t videoin_attr_connected(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(videoin_attr_connected) {
     av_vdc_t *vdc = vdc_self(self);
     return val_bool(vdc ? av_vdc_connected(vdc) : false);
 }
 
-static value_t videoin_attr_fields(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(videoin_attr_fields) {
     av_vdc_t *vdc = vdc_self(self);
     return val_uint(8, vdc ? vdc->fields : 0);
 }
 
-static value_t videoin_method_pattern(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(videoin_method_pattern) {
     av_vdc_t *vdc = vdc_self(self);
     if (!vdc)
         return val_err("videoin not available");
@@ -448,8 +441,7 @@ static value_t videoin_method_pattern(struct object *self, const member_t *m, in
     return val_none();
 }
 
-static value_t videoin_method_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(videoin_method_load) {
     av_vdc_t *vdc = vdc_self(self);
     if (!vdc || argc < 1)
         return val_err("videoin not available");
@@ -478,21 +470,19 @@ static const member_t videoin_members[] = {
     {.kind = M_ATTR,
      .name = "source",
      .doc = "Host video source: none | pattern | file | host (webcam)",
-     .attr = {.type = V_STRING, .get = videoin_attr_source_get, .set = videoin_attr_source_set}},
+     .attr = {.type = V_STRING, .get = videoin_attr_source_get, .set = videoin_attr_source_set}    },
     {.kind = M_ATTR,
      .name = "connected",
      .doc = "True when the source reports a signal (drives the DMSD lock status)",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = videoin_attr_connected, .set = NULL}},
+     .attr = {.type = V_BOOL, .get = videoin_attr_connected, .set = NULL}                          },
     {.kind = M_ATTR,
      .name = "fields",
      .doc = "Fields the capture engine has written since power-on",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = videoin_attr_fields, .set = NULL}},
+     .attr = {.type = V_UINT, .get = videoin_attr_fields, .set = NULL}                             },
     {.kind = M_METHOD,
      .name = "pattern",
      .doc = "Select the built-in deterministic test pattern as the source",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = videoin_method_pattern}},
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = videoin_method_pattern}          },
     {.kind = M_METHOD,
      .name = "load",
      .doc = "Load a 640x480 PNG and select it as the source frame",

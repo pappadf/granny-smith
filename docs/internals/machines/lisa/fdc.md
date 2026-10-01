@@ -1,11 +1,15 @@
 # Lisa floppy controller — implementation notes
 
-`src/core/peripherals/lisa_fdc.{c,h}` models the Apple Lisa intelligent floppy
+`src/machines/lisa/lisa_fdc.{c,h}` models the Apple Lisa intelligent floppy
 controller (a 6504A coprocessor + 1 KB shared RAM), reached at physical
 `$00C001`. It is **not** an Apple IWM: the 68000 writes a high-level command
 block into the shared RAM and the coprocessor returns logical 512-byte sectors,
 so the model is behavioural (the iop_swim.c pattern) and never touches GCR
-cells. See [docs/reference/machines/lisa/lisa.md](../../../reference/machines/lisa/lisa.md) §13 for the hardware reference.
+cells. See [docs/reference/machines/lisa/lisa.md](../../../reference/machines/lisa/lisa.md) §13 for the family-level
+hardware reference; the device-level page is
+[docs/reference/machines/lisa/fdc.md](../../../reference/machines/lisa/fdc.md)
+(§2 for the register file, §3 for the behaviour, §4.5 for the loader's block
+geometry).
 
 ## Shared-RAM layout (verified against the rev-H boot ROM, `RM248.B.TEXT`)
 
@@ -153,9 +157,9 @@ drive (`lisa_fdc_insert`). This is exactly the MacWorks XL boot flow: the loader
 disk is read, then unclamped/ejected; the Mac ROM sits on its "?" disk; and when
 a system disk is inserted the insertion interrupt prompts it to read the new
 disk and boot. There is **no swap queue or auto-feed** — a disk is inserted the
-normal way (`floppy.drives[0].insert`, routing through `sys_fd_insert`), which
+normal way (`machine.floppy.drive[0].insert`, routing through `sys_fd_insert`), which
 the Lisa machine exposes as a small object tree over its one Sony drive. The
-`tests/integration/xl-boot` test drives this: run to the eject point, insert the
+`xl-boot` row of `tests/integration/suite-lisa/` drives this: run to the eject point, insert the
 system disk, and verify the Finder desktop renders (608×431, §8).
 
 Two FDC behaviours this relies on: the `$C05F` status byte holds **latched

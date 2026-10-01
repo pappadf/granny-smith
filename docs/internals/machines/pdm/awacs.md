@@ -2,16 +2,23 @@
 
 `src/machines/pdm/awacs.c`.  The sound block AMIC decodes at `$50F14000`
 ($20 byte registers) plus the AWACS codec behind its command port.  The
-codec is a dumb ITT ASCO 2300-family stereo converter; everything
-software-visible — the register file, the double-buffered DMA engine, the
-completion flags and interrupts — is AMIC's.  Sources: the shipping ROM's
-boot beep, AWACS `sdev` component and `.AppleSoundInput` driver
-(disassembly), the ITT ASCO 2300 datasheet, and the Developer Note
-pp. 46–48.  The AV family's Singer (`av/singer.c`, `singer.md`) is the
-non-expanded face of the same codec spec and the structural template for
-the engine.
+codec is the ITT ASCO 2300 data sheet's promised **expanded-command-set
+part** — the 16-bit `reg<<12 | data12` addressed register file the plain
+24-bit cell spec reserves its Expand bit for — not a plain ASCO part;
+everything software-visible — the register file, the double-buffered DMA
+engine, the completion flags and interrupts — is AMIC's.  Sources: the
+shipping ROM's boot beep, AWACS `sdev` component and `.AppleSoundInput`
+driver (disassembly), the ITT ASCO 2300 datasheet, and the Developer Note
+pp. 46–48.  Hardware reference:
+[awacs.md](../../../reference/machines/pdm/awacs.md), cited by section
+below (§1.5 for the codec-family lineage).  The AV family's Singer
+(`av/singer.c`, `singer.md`) is the non-expanded face of the same codec
+spec and the structural template for the engine.
 
 ## Register file (byte registers, offsets from `$50F14000`)
+
+(Reference: [awacs.md](../../../reference/machines/pdm/awacs.md) §2.1–§2.9,
+register by register.)
 
 | Off | Function |
 |---|---|
@@ -27,12 +34,18 @@ the engine.
 
 ## Codec registers (behind the command port)
 
+(Reference: [awacs.md](../../../reference/machines/pdm/awacs.md) §2.10.)
+
 Only 0/1/2/4 are ever addressed: input mux/gain (0), mutes/loopthru (1 —
 bit 7 speaker mute honored), headphone attenuation (2), speaker
 attenuation (4 — bits 9:6 left, 3:0 right, 0 = loudest, −1.5 dB/step, the
 same ladder as Singer's; the chime volume law `(7−vol)×2` rides on it).
 
 ## The output datapath
+
+(Reference: [awacs.md](../../../reference/machines/pdm/awacs.md) §2.9 for
+the DMA window and buffer map, §3.3 for the engine, §4.2 for the boot
+beep.)
 
 One 256 KB-aligned physical DMA window (base bytes at `$50F31000/1`) with
 fixed half-buffer regions at `+$10000`/`+$12000`.  While RUN is set, a

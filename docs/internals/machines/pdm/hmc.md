@@ -3,8 +3,13 @@
 `src/machines/pdm/hmc.c`.  Sources: Apple, *Power Macintosh Computers*
 Developer Note (1994), the 8100 schematic set, and the shipping ROM's
 hardware-init sequence (the behavioral oracle for every claim below).
+Hardware reference: [hmc.md](../../../reference/machines/pdm/hmc.md),
+cited by section below.
 
 ## The serial configuration register
+
+(Reference: [hmc.md](../../../reference/machines/pdm/hmc.md) §2.1 for the
+port, §2.2 for the access protocol, §2.3 for the bit map.)
 
 One software-visible register, 35 bits, accessed bit-serially through the
 AMIC-decoded window at `$50F40000`:
@@ -28,6 +33,9 @@ self-consistent with every ROM path (POST then skips the L2 test with the
 
 ## RAM banks
 
+(Reference: [hmc.md](../../../reference/machines/pdm/hmc.md) §3.2 for the
+bank architecture, §4.2 for the sizing probe the decode rules serve.)
+
 8 MB soldered ("motherboard") plus SIMM banks carved from the configured
 RAM size (banks of 32/8/2 MB, largest first).  Decode rules the ROM's
 sizing probe depends on:
@@ -45,6 +53,8 @@ sizing probe depends on:
   `$01000000 + n × $04000000` (32 MB usable per window), never moving.
 
 ## Machine ID (`$5FFFFFFC`)
+
+(Reference: [hmc.md](../../../reference/machines/pdm/hmc.md) §2.5.)
 
 Byte reads deliver `$A55A30xx` (`$3010` 6100 — the `$3011` "PDM"
 ProductInfo value is a 68k software promotion, never in hardware;

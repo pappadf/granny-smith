@@ -34,9 +34,10 @@ every pacing mode. Because CPI never varies at runtime (short of the
 execution timeline is a pure function of the frame-unit count — identical in
 the paced and unthrottled pacing modes and on both targets.
 
-Current values: the Plus uses 12 (the authentic average for its 7.8336 MHz
-68000); the 030 machines use 4 (4-clock bus cycle at 15.6672 MHz with
-1-wait-state RAM); the Lisa/Mac XL uses 4 (its long-standing effective value).
+Current values: the Plus uses 10 (calibrated against its 7.8336 MHz 68000 —
+real hardware sustains ~0.7 MIPS); the 030 machines use 4 (4-clock bus cycle at
+15.6672 MHz with 1-wait-state RAM); the Lisa/Mac XL uses 4 (its long-standing
+effective value).
 
 ### Effective CPI (accelerated mode)
 
@@ -295,14 +296,16 @@ cpu_cycles += executed_cycles;
 ## Scheduler Modes
 
 The scheduler has two **pacing** modes that decide how host wall-clock time
-maps to frame-units. The modes are only relevant to the WASM target — the
-headless target ignores host time entirely (see "Target-Specific Pacing"
-below).
+maps to frame-units, plus the `schedule_accelerated` mode, which shares the
+paced accumulator and instead tunes the effective CPI (see "Effective CPI
+(accelerated mode)" above). The pacing modes are only relevant to the WASM
+target — the headless target ignores host time entirely (see
+"Target-Specific Pacing" below).
 
 | Mode | Behaviour (WASM target) |
 |------|-------------------------|
-| `schedule_paced` (default; "Live") | Wall-clock accumulator: one frame-unit per accumulated VBL period, capped at `PACED_MAX_CATCHUP` (4) per host tick. Long-term rate converges to 60.147 Hz on any display refresh rate. |
-| `schedule_unthrottled` ("Turbo") | As many frame-units as fit in `TURBO_HOST_HEADROOM` (50%) of the host loop period — as fast as the host allows. |
+| `schedule_paced` (default; "Real-Time") | Wall-clock accumulator: one frame-unit per accumulated VBL period, capped at `PACED_MAX_CATCHUP` (4) per host tick. Long-term rate converges to 60.147 Hz on any display refresh rate. |
+| `schedule_unthrottled` ("Fast-Forward") | As many frame-units as fit in `TURBO_HOST_HEADROOM` (50%) of the host loop period — as fast as the host allows. |
 
 Both modes use the same sprint and event machinery, the same per-machine CPI,
 and the same I/O penalties. The mode affects **only** how many frame-units a
@@ -347,11 +350,11 @@ See `docs/internals/core/scheduler/scheduler.md` §10 for the full design.
 
 Each machine sets its CPU clock frequency via `scheduler_set_frequency()`:
 
-| Machine | CPU | Frequency | Default CPI (hw/fast) |
-|---------|-----|-----------|----------------------|
-| Plus | 68000 @ 7.8336 MHz | 7,833,600 Hz | 12 / 4 |
-| SE/30 | 68030 @ 15.6672 MHz | 15,667,200 Hz | 4 / 4 |
-| IIcx | 68030 @ 15.6672 MHz | 15,667,200 Hz | 4 / 4 |
+| Machine | CPU | Frequency | CPI |
+|---------|-----|-----------|-----|
+| Plus | 68000 @ 7.8336 MHz | 7,833,600 Hz | 10 |
+| SE/30 | 68030 @ 15.6672 MHz | 15,667,200 Hz | 4 |
+| IIcx | 68030 @ 15.6672 MHz | 15,667,200 Hz | 4 |
 
 The frequency is used to convert between cycles and wall-clock time (for
 nanosecond-based event scheduling and the `scheduler_time_ns()` query).
@@ -402,7 +405,7 @@ magnitude is bounded by CPI-1 and the impact of losing it is negligible.
 | `src/core/scheduler/scheduler.c` | Sprint loop, event queue, cycle accounting, VBL timing |
 | `src/core/memory/memory.h` | `memory_io_penalty()` inline, penalty globals |
 | `src/core/memory/memory.c` | Penalty global definitions, slow-path device dispatch |
-| `src/machines/se30.c` | SE/30 I/O dispatcher with per-device penalty constants |
+| `src/machines/mac030/mac030_glue_io.c` | The 030-family I/O dispatcher with per-device penalty constants |
 | `docs/internals/core/scheduler/scheduler.md` | Detailed scheduler internals (sprint model, event lifecycle) |
 
 ## See Also

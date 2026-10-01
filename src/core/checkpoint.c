@@ -1451,19 +1451,11 @@ bool checkpoint_validate_build_id(const char *filename) {
 // uses to detect and resume from a quick-saved state. None of the methods
 // read object_data; they all go through the platform-level helpers.
 
-static value_t checkpoint_method_probe(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(checkpoint_method_probe) {
     return val_bool(system_checkpoint_probe());
 }
 
-static value_t checkpoint_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(checkpoint_method_clear) {
     checkpoint_quick_wait(); // a publish in flight lands first, or the clear would race its rename
     return val_bool(gs_checkpoint_clear() == 0);
 }
@@ -1479,9 +1471,7 @@ static value_t checkpoint_method_clear(struct object *self, const member_t *m, i
 // `checkpoint.load("probe")` ran a probe instead of loading a file called
 // probe.  `checkpoint.probe()` above has been the real entry point all along,
 // so that string-match was vestigial -- reachable, but only by accident.
-static value_t checkpoint_method_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(checkpoint_method_load) {
     const char *path = (argc >= 1 && argv[0].s && *argv[0].s) ? argv[0].s : NULL;
     checkpoint_quick_wait(); // load the file the publish in flight is about to complete
     return val_bool(system_checkpoint_load(path) == 0);
@@ -1496,9 +1486,7 @@ static value_t checkpoint_method_load(struct object *self, const member_t *m, in
 // handler strcmp'd against FIVE spellings — refs / reference / names /
 // content / inline — of which only two ever appeared in its usage line or its
 // error message.  The three undocumented aliases are dropped.
-static value_t checkpoint_method_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(checkpoint_method_save) {
     if (argc < 1 || !argv[0].s || !*argv[0].s)
         return val_err("checkpoint.save: path is required");
     // enum index 0 = "content", 1 = "refs"; absent means content.
@@ -1510,25 +1498,18 @@ static value_t checkpoint_method_save(struct object *self, const member_t *m, in
 // under the given label. Routes to the platform-specific
 // gs_background_checkpoint (WASM implements via save_quick_checkpoint;
 // headless prints a "not supported" stub).
-static value_t checkpoint_method_snapshot(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(checkpoint_method_snapshot) {
     return val_bool(gs_background_checkpoint(argv[0].s) == 0);
 }
 
 // `checkpoint.auto` (V_BOOL, RW) — exposes the WASM background-checkpoint
 // loop's enabled flag.  A platform with no such loop (headless) reads false
 // and refuses the set.
-static value_t checkpoint_attr_auto_get(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(checkpoint_attr_auto_get) {
     return val_bool(gs_checkpoint_auto_get());
 }
 
-static value_t checkpoint_attr_auto_set(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
+static DEF_SETTER(checkpoint_attr_auto_set) {
     if (gs_checkpoint_auto_set(in.b) != 0)
         return val_err("checkpoint.auto: not supported on this platform");
     return val_none();
@@ -1567,44 +1548,43 @@ static const member_t checkpoint_members[] = {
      .name = "auto",
      .doc = "Automatic background checkpoints enabled: the periodic save and the tab-hidden save (WASM only)",
      .flags = 0,
-     .attr = {.type = V_BOOL, .get = checkpoint_attr_auto_get, .set = checkpoint_attr_auto_set}                  },
+     .attr = {.type = V_BOOL, .get = checkpoint_attr_auto_get, .set = checkpoint_attr_auto_set}},
     {.kind = M_METHOD,
      .name = "probe",
-     .examples = (const char *const[]){"checkpoint.probe", NULL},
+     .examples = EXAMPLES("checkpoint.probe"),
      .doc = "True if a valid checkpoint exists for the active machine",
      .method = {.result_doc = "true when one exists",
                 .args = NULL,
                 .nargs = 0,
                 .result = V_BOOL,
-                .fn = checkpoint_method_probe}                                                                   },
+                .fn = checkpoint_method_probe}},
     {.kind = M_METHOD,
      .name = "clear",
-     .examples = (const char *const[]){"checkpoint.clear", NULL},
+     .examples = EXAMPLES("checkpoint.clear"),
      .doc = "Remove all checkpoint files for the active machine, and the image deltas no open image holds",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = checkpoint_method_clear}                       },
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = checkpoint_method_clear}},
     {.kind = M_METHOD,
      .name = "load",
-     .examples =
-         (const char *const[]){"checkpoint.load", "checkpoint.load \"/opfs/checkpoints/before-install.gscp\"", NULL},
+     .examples = EXAMPLES("checkpoint.load", "checkpoint.load \"/opfs/checkpoints/before-install.gscp\""),
      .doc = "Load a checkpoint",
      .method = {.result_doc = "true when it loaded",
                 .args = checkpoint_load_args,
                 .nargs = 1,
                 .result = V_BOOL,
-                .fn = checkpoint_method_load}                                                                    },
+                .fn = checkpoint_method_load}},
     {.kind = M_METHOD,
      .name = "save",
-     .examples = (const char *const[]){"checkpoint.save \"/opfs/checkpoints/before-install.gscp\"",
-                                       "checkpoint.save \"/tmp/state.gscp\" refs", NULL},
+     .examples = EXAMPLES("checkpoint.save \"/opfs/checkpoints/before-install.gscp\"",
+     "checkpoint.save \"/tmp/state.gscp\" refs"),
      .doc = "Save the current machine state to a checkpoint file",
      .method = {.result_doc = "true when it was written",
                 .args = checkpoint_save_args,
                 .nargs = 2,
                 .result = V_BOOL,
-                .fn = checkpoint_method_save}                                                                    },
+                .fn = checkpoint_method_save}},
     {.kind = M_METHOD,
      .name = "snapshot",
-     .examples = (const char *const[]){"checkpoint.snapshot \"before-install\"", NULL},
+     .examples = EXAMPLES("checkpoint.snapshot \"before-install\""),
      .doc = "Capture a quick (background) checkpoint under the given label",
      .method = {.args = checkpoint_snapshot_args, .nargs = 1, .result = V_BOOL, .fn = checkpoint_method_snapshot}},
 };

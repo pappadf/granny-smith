@@ -5,6 +5,10 @@ product; the Mac boards — TechWorks Power3D II, Micro Conversions Game
 Wizard — were the PC reference design with Mac drivers and a monitor
 pass-through cable). Modelled in
 [`src/core/peripherals/pci/cards/voodoo2.c`](../../../../../../src/core/peripherals/pci/cards/voodoo2.c).
+The card's hardware reference page is
+[`voodoo2.md`](../../../../../reference/hardware/pci/cards/voodoo2.md)
+(section 2 for the register file, section 3 for behaviour); this page
+covers the emulator's model and its deliberate divergences from silicon.
 
 This file adopts, for PCI, the per-card documentation convention NuBus
 uses under [`nubus/cards/`](../../nubus/cards/); retro-fitting a

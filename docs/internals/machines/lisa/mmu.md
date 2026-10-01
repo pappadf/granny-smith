@@ -4,7 +4,10 @@
 the first non-Motorola memory translator in the emulator. This document records
 the *implementation* decisions and the hardware facts verified against the
 rev-H boot ROM source; [docs/reference/machines/lisa/lisa.md](../../../reference/machines/lisa/lisa.md) §4–7 is the hardware reference of
-record.
+record at family level, and the dedicated device page
+[docs/reference/machines/lisa/mmu.md](../../../reference/machines/lisa/mmu.md)
+(§2 for the register file, §3 for translation/START, §4 for the software's
+use of it) carries the MMU end to end.
 
 ## Where it plugs in
 
@@ -92,7 +95,9 @@ Decoded by `phys & 0x1E`:
 > on") and `SETUP .EQU $00FCE012` ("turn SETUP bit off"), and `WRTMMU` does
 > `TST.B SETUPON` (enable MMU-reg access) … `CLR.B SETUP` (back to map land).
 > This module implements the ROM's polarity. docs/reference/machines/lisa/lisa.md §6.1 should be
-> corrected.
+> corrected; the dedicated device page
+> [docs/reference/machines/lisa/mmu.md](../../../reference/machines/lisa/mmu.md)
+> records the ROM contract correctly (§3.5, §5).
 
 ## Status / video / I/O
 
@@ -151,5 +156,7 @@ model would otherwise re-fire). This surfaced a genuine CPU bug:
 **level 7 is non-maskable** on the 68000. Fixed to `ipl > mask || ipl == 7`
 (regression-clean across the Mac machines).
 
-**Remaining gate to running an OS:** the boot block's sector tag — see
-[fdc.md](fdc.md) (needs DC42 tag-load infrastructure).
+**The last gate — the boot block's sector tag — has since been cleared:** the
+image layer loads the DiskCopy 4.2 tag section and the controller fills the
+header buffer with the real sector tag, so the ROM auto-boots the inserted
+floppy; see [fdc.md](fdc.md).

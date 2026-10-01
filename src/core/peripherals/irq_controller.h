@@ -84,7 +84,6 @@ value_t irq_ctrl_attr_levels(struct object *self, const member_t *m);
         .kind = M_ATTR,                                                                                                \
         .name = (NAME),                                                                                                \
         .doc = (DOC),                                                                                                  \
-        .flags = VAL_RO,                                                                                               \
         .attr = {.type = (TYPE), .presentation_flags = (PFLAGS), .get = (GETTER), .set = NULL, .user_data = (OPS)} \
 },
 

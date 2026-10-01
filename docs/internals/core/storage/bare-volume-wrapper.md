@@ -31,7 +31,7 @@ bare volume.
 Sources: [`image_wrap.c`](../../../../src/core/storage/image_wrap.c) /
 [`image_wrap.h`](../../../../src/core/storage/image_wrap.h) (layout, sniff,
 checksum), [`gsdisk/gsdisk_drvr.s`](../../../../src/core/storage/gsdisk/gsdisk_drvr.s)
-(the driver), [`gsdisk/gsdisk.mk`](../../../../src/core/storage/gsdisk/gsdisk.mk):docs/core/storage/bare-volume-wrapper.md
+(the driver), [`gsdisk/gsdisk.mk`](../../../../src/core/storage/gsdisk/gsdisk.mk)
 (its build).
 
 ### What is wrapped, and what is not
@@ -104,7 +104,8 @@ starts `wrap_base` bytes into the image's storage (0 for a bare volume, the
 **Checkpoints.** The per-image flags byte `image_checkpoint` writes
 (`IMAGE_CKPT_WRITABLE`, formerly the bare `writable` flag) gains
 `IMAGE_CKPT_WRAPPED`; the saved `raw_size` is the storage's
-(`wrap_storage_size`). The restore (`mac_checkpoint_restore_one_image`)
+(`wrap_storage_size`). The restore (`mac_checkpoint_restore_images` in
+`src/machines/runtime/checkpoint_images.c`)
 re-wraps an image carrying the bit (re-running the same sniff, which finds the
 same partition) before its storage is restored, so the SCSI device that re-binds to it by name
 sees the same disk. Checkpoints written before this change never have the bit

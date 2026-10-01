@@ -134,7 +134,9 @@ and are registered after the host regions so a device page wins its page.
 A device region can answer an access with a bus error instead of data by
 calling `memory_signal_bus_error()`: the PDM's BART windows use it so an
 empty NuBus slot faults a Slot Manager probe the way the bridge's bus
-timeout does (docs/internals/machines/pdm/bart.md).  The fault is latched and
+timeout does (docs/internals/machines/pdm/bart.md; the hardware fault and
+timeout behavior is carried by [bart.md](../../../reference/machines/pdm/bart.md)
+section 3.5).  The fault is latched and
 delivered by the CPU seam at the sprint boundary, exactly like the unmapped
 faults the slow paths raise.  Inspection reads (`memory.peek`, `find.*`)
 dispatch into device handlers with `g_mem_debug_access` raised, and the call
@@ -185,7 +187,8 @@ to physical addresses. The page table serves as the translation layer:
 
 The 68030 PMMU is `src/core/memory/mmu.c` (with `mmu.h`, a full interface, not
 a stub); the 68040's on-chip MMU is `mmu040.c`; the Lisa's segment MMU is
-`lisa_mmu.c`; and the PowerPC BAT/HTAB translation is `ppc_mmu.c`. The 68030
+`lisa_mmu.c` (the Lisa's segment MMU hardware is carried by
+[mmu.md](../../../reference/machines/lisa/mmu.md)); and the PowerPC BAT/HTAB translation is `ppc_mmu.c`. The 68030
 walker also caches early-termination descriptors in a small block cache that
 models the real ATC's residency — see the comments around `atc_record`. An
 early-termination page frame is aligned only to the page size, not to the
@@ -196,12 +199,12 @@ the RBV's in-RAM screen buffer.
 
 ## Memory Logpoints (Fast-Path-Preserving Watchpoints)
 
-The shell command `logpoint --write|--read <addr>` installs a memory watchpoint
+The shell command `debug.logpoints.add addr=<addr> mode=read|write` installs a memory logpoint
 that streams a log line on every access without halting execution. The
 implementation must not slow down unrelated accesses, so the design is:
 
-- A per-page reference-count array `g_mem_logpoint_page_count[]` (one byte per
-  4 KB page) tracks how many memory logpoints currently cover each page.
+- A per-page reference-count array `g_mem_logpoint_page_count[]` (one 16-bit
+  counter per 4 KB page) tracks how many memory logpoints currently cover each page.
   Allocated alongside the SoA arrays; zeroed when no memory logpoints are set.
 - When a logpoint is installed, every page it covers has its reference count
   incremented and **its SoA fast-path entries (`g_supervisor_read`,
@@ -242,11 +245,16 @@ Hooks and helpers:
 |------|---------|
 | `src/core/memory/memory.h` | Page table types, inline accessors, public API |
 | `src/core/memory/memory.c` | Page table allocation, population, slow-path handlers |
-| `src/core/memory/mmu.h` | 68030 MMU state struct and planned API (stub) |
+| `src/core/memory/mmu.h` | 68030 PMMU state struct and API (`mmu.c`) |
 
 ---
 
 ## Hardware Details (Macintosh Plus)
+
+The ROM construction and the overlay decode below are carried authoritatively
+by the compact Macintosh reference pages — [compact.md](../../../reference/machines/compact/compact.md)
+section 2.5 (ROM) and section 2.8 (reset and the ROM overlay); see also
+[plus.md](../../../reference/machines/compact/plus.md).
 
 ### ROM
 

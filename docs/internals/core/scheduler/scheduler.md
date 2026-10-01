@@ -116,7 +116,7 @@ independent of the pacing mode:
 
 | Machine family | CPI | Notes                                                        |
 |----------------|-----|--------------------------------------------------------------|
-| Plus (68000)   | 12  | Authentic average for the 7.8336 MHz 68000                   |
+| Plus (68000)   | 10  | Calibrated average for the 7.8336 MHz 68000 (real hardware ~0.7 MIPS; measured against MusicWorks 0.42, whose VBL-locked synthesis keeps up at CPI ≤ 11) |
 | 030 machines (IIcx/SE30/IIx/IIci/IIsi/IIfx) | 4 | 4-clock bus cycle, 1-wait-state RAM |
 | Lisa / Mac XL  | 4   | Historical effective value (every Lisa budget derives from it) |
 
@@ -132,8 +132,8 @@ the **one guest timeline** property (§9, §10.4).
 > **History.** Before the two-mode change, CPI depended on the
 > scheduler mode (`cpi_hw` = 12 in `hw_accuracy`, `cpi_fast` = 4 elsewhere), which made
 > the cycles↔instructions relationship piecewise and mode switches guest-visible. On
-> the Plus this also meant the default mode emulated a ~3× overclocked 68000; the
-> authentic CPI 12 is now the Plus constant.
+> the Plus this also meant the default mode emulated a ~3× overclocked 68000; the Plus
+> constant is now the calibrated CPI 10.
 
 ### 2.2 Effective CPI and the accelerated mode
 
@@ -581,7 +581,7 @@ Consider an event scheduled at timestamp `T` while `cpu_cycles = T - N`:
   so `cycles_to_instructions` rounds up to 1 ([scheduler.c:199](../../../../src/core/scheduler/scheduler.c#L199)).
   The sprint consumes `CPI` cycles, overshooting the event by `CPI - N` cycles.
 
-Worked example with `CPI = 12` (hw-accuracy mode):
+Worked example with `CPI = 12` (the scheduler default):
 - Event at `T + 11`, `cpu_cycles = T`.
 - `cycles_to_instructions(11)` = 1 (the "at least 1" clause).
 - Sprint runs 1 instruction = 12 cycles. `cpu_cycles` becomes `T + 12`.

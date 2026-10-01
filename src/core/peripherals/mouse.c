@@ -235,9 +235,7 @@ static char mouse_mode_char(const value_t *v) {
     return input_mouse_mode_parse(v->s);
 }
 
-static value_t mouse_method_move(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(mouse_method_move) {
     int64_t x = argv[0].i;
     int64_t y = argv[1].i;
     const char *modestr = (argc >= 3 && argv[2].kind == V_STRING && argv[2].s) ? argv[2].s : "default";
@@ -251,9 +249,7 @@ static value_t mouse_method_move(struct object *self, const member_t *m, int arg
     return val_bool(true);
 }
 
-static value_t mouse_method_click(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(mouse_method_click) {
     bool down = (argc >= 1 && argv[0].kind == V_BOOL) ? argv[0].b : true;
     const char *modestr = (argc >= 2 && argv[1].kind == V_STRING && argv[1].s) ? argv[1].s : "default";
     // Validate the cursor mode up front so a bad mode gives a clear error.
@@ -265,10 +261,7 @@ static value_t mouse_method_click(struct object *self, const member_t *m, int ar
     return val_bool(true);
 }
 
-static value_t mouse_method_trace(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(mouse_method_trace) {
     debug_mac_set_trace_mouse(argv[0].b);
     return val_none();
 }
@@ -286,9 +279,8 @@ static const arg_decl_t mouse_move_args[] = {
      .doc = "\"default\" (a Mac: absolute Toolbox cursor; a Lisa: deltas), \"relative\" (deltas, every machine), "
             "\"global\" (Toolbox MTemp), \"hw\" (= relative), or \"aux\" (A/UX MAE)"},
 };
-// `mouse.click()` with no arguments is a press, so the slot has a real default
-// rather than obj_arg_unset -- and having one is what makes `mouse.click(mode=
-// "hw")` callable at all (it used to fail with "missing argument 'down'").
+// `mouse.click()` with no arguments is a press, so the slot has a real
+// default rather than none.
 static const value_t mouse_click_def_down = {.kind = V_BOOL, .width = 1, .b = true};
 
 static const arg_decl_t mouse_click_args[] = {

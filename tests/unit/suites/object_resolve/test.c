@@ -25,11 +25,7 @@ static value_t a_get_pc(struct object *self, const member_t *m) {
 }
 
 static const member_t a_members[] = {
-    {.kind = M_ATTR,
-     .name = "pc",
-     .flags = VAL_RO,
-     .doc = "program counter",
-     .attr = {.type = V_UINT, .get = a_get_pc, .set = NULL}},
+    {.kind = M_ATTR, .name = "pc", .doc = "program counter", .attr = {.type = V_UINT, .get = a_get_pc, .set = NULL}},
 };
 static const class_desc_t a_class = {
     .name = "a",
@@ -87,11 +83,7 @@ static value_t dev_get_id(struct object *self, const member_t *m) {
     return val_int(d ? d->id : -1);
 }
 static const member_t dev_members[] = {
-    {.kind = M_ATTR,
-     .name = "id",
-     .flags = VAL_RO,
-     .doc = "device id",
-     .attr = {.type = V_INT, .get = dev_get_id, .set = NULL}},
+    {.kind = M_ATTR, .name = "id", .doc = "device id", .attr = {.type = V_INT, .get = dev_get_id, .set = NULL}},
 };
 static const class_desc_t dev_class = {
     .name = "device",
@@ -99,12 +91,13 @@ static const class_desc_t dev_class = {
     .n_members = 1,
 };
 
+static const collection_desc_t bucket_entries = {
+    .entry = &dev_class, .by_index = {.get = bucket_get, .next = bucket_next}
+};
+
 // Bucket exposes one indexed child member named "devices".
 static const member_t bucket_members[] = {
-    {.kind = M_CHILD,
-     .name = "devices",
-     .flags = 0,
-     .child = {.cls = &dev_class, .indexed = true, .get = bucket_get, .next = bucket_next, .lookup = NULL}},
+    {.kind = M_CHILD, .name = "devices", .flags = 0, .child = {.collection = &bucket_entries}},
 };
 static const class_desc_t bucket_class = {
     .name = "bucket",
@@ -249,11 +242,7 @@ TEST(test_indexed_next_skips_holes) {
 // must reject it. Note: registration entry points should always
 // validate before attaching (root.c does this).
 static const member_t bad_members[] = {
-    {.kind = M_ATTR,
-     .name = "while",
-     .flags = VAL_RO,
-     .doc = "reserved word",
-     .attr = {.type = V_UINT, .get = a_get_pc, .set = NULL}},
+    {.kind = M_ATTR, .name = "while", .doc = "reserved word", .attr = {.type = V_UINT, .get = a_get_pc, .set = NULL}},
 };
 static const class_desc_t bad_class = {
     .name = "bad",
@@ -262,16 +251,8 @@ static const class_desc_t bad_class = {
 };
 
 static const member_t dup_members[] = {
-    {.kind = M_ATTR,
-     .name = "x",
-     .flags = VAL_RO,
-     .doc = "first x",
-     .attr = {.type = V_UINT, .get = a_get_pc, .set = NULL}},
-    {.kind = M_ATTR,
-     .name = "x",
-     .flags = VAL_RO,
-     .doc = "duplicate x",
-     .attr = {.type = V_UINT, .get = a_get_pc, .set = NULL}},
+    {.kind = M_ATTR, .name = "x", .doc = "first x",     .attr = {.type = V_UINT, .get = a_get_pc, .set = NULL}},
+    {.kind = M_ATTR, .name = "x", .doc = "duplicate x", .attr = {.type = V_UINT, .get = a_get_pc, .set = NULL}},
 };
 static const class_desc_t dup_class = {
     .name = "dup",

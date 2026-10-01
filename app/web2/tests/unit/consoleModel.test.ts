@@ -247,6 +247,25 @@ describe('ConsoleModel batching and cap', () => {
   });
 });
 
+describe('ConsoleModel dispose', () => {
+  it('cancels the scheduled frame and takes nothing more', () => {
+    const cancelled: number[] = [];
+    const m = new ConsoleModel({
+      schedule: (fn) => frames.push(fn),
+      cancel: (h) => cancelled.push(h),
+      onFlush: (e) => (shown = e),
+    });
+    m.push({ kind: 'print', line: 'a' });
+    m.dispose();
+    expect(cancelled).toEqual([1]);
+    m.push({ kind: 'print', line: 'b' });
+    m.echo('c');
+    frame();
+    expect(frames).toEqual([]);
+    expect(shown).toEqual([]);
+  });
+});
+
 describe('copy and paste helpers', () => {
   const e = (id: number, kind: ConsoleEntry['kind'], text: string, job: number | null = null) =>
     ({ id, kind, text, job }) as ConsoleEntry;

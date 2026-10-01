@@ -37,6 +37,7 @@ plus `shell.complete`, `shell.expand`, the alias leaves and
 | [shell_var.c](../../../../src/core/shell/shell_var.c) | Scoped binding store (`let` bindings, `--var`, alias fallback) |
 | [shell_funcs.c](../../../../src/core/shell/shell_funcs.c) | User-defined functions (`def`), the `shell.functions` surface |
 | [commands.c](../../../../src/core/shell/commands.c) | Commands: the built-ins, `command NAME = PATH`, the `shell.command` surface |
+| [syntax.c](../../../../src/core/shell/syntax.c) | Statement classifier (`script_classify`), path and argument-word lexers, line split, argument slots — shared by the parser, highlighting and completion |
 | [cmd_complete.c](../../../../src/core/shell/cmd_complete.c) | Metadata-driven tab completion (keywords, `$bindings`, tree paths) |
 | [highlight.c](../../../../src/core/shell/highlight.c) | `shell.highlight`: syntax classes of a line or block, paths resolved against the live tree |
 | [cmd_cp.c](../../../../src/core/shell/cmd_cp.c) | Recursive-copy implementation behind `files.cp` / `files.import` |
@@ -68,7 +69,29 @@ per line, except that brace blocks span lines (see below).
 Blocks come in two layouts: **multi-line** (`{` last on its line, `}`
 first on its line, `} elif COND {` / `} else {` joining the closer) and
 **inline** (`if COND { stmt }` — exactly one statement, no nesting).
-Empty blocks are a parse error.
+Empty blocks are a parse error.  `;` is not a separator: in argument mode
+it is part of a bare word.
+
+**How a statement is classified.** One function decides what a statement
+is: `script_classify` (`syntax.h`) reads the first word(s) and returns the
+kind with its head span, declared name, `=` position and rest.  The parser
+builds its tree from it, and `shell.highlight` and `shell.complete` read
+every line through it (with `script_line_split` for a line's `}`, block
+`{`, inline body and comment), so the views cannot disagree with what runs.
+The rules, in order:
+
+- a keyword heads its form; `let` and `alias` are reserved, so any other
+  shape after them is a parse error (never a path); `in` and `do` head
+  nothing and are a parse error;
+- `command NAME = PATH` with a path declares a command; any other shape
+  starting with `command` is a path statement;
+- `true`, `false`, `none`, numbers, strings, `(` and `[` start an
+  expression;
+- a path or `$binding` head followed by `=` is an assignment; a lone
+  `$name` is a binding read and `PATH(` (no blank) a call form, both
+  expressions; anything else is a command whose rest is argument mode —
+  so `$x + 1` is `$x` with the arguments `+` and `1`, not an addition
+  (write `($x + 1)`, or `echo "${$x + 1}"`).
 
 ## Two parsing modes
 
@@ -238,8 +261,12 @@ prints is bracketed by two annotation records in the job's record stream —
 `value_begin` before its text and `value` after it, carrying the value as
 tagged JSON (`"json"`, or `"truncated":true` when that would not fit a
 record) — and every statement error (`script_report_error`, the single
-reporter) is an `error` record with `file`, `line`, `message` and the
-report's `lines`.  A job's error is written only as that record; it goes
+reporter; `script_report_errorf` formats the message and the
+`FILE: line N: MESSAGE` text for it) is an `error` record with `file`,
+`line`, `message` and the report's `lines`.  A record's fields are a value
+map handed to `job_annotate` (with a reduced map for when the full record
+does not fit); the job layer escapes and formats it and attaches it to the
+job it resolved, once, for the record's ids.  A job's error is written only as that record; it goes
 to stderr when no record can carry it whole: outside a job, past the
 output cut, or as the full text of a record shortened to fit (which says
 `"truncated":true`).  Headless without `--framed` prints an error record's
@@ -312,8 +339,14 @@ layered over the shell store.
 
 ## Tab completion
 
-- **Line start** — statement keywords (`let`, `if`, `while`, `def`, …)
-  plus root-level child names and methods.
+Completion works on the statement the cursor is in: the line's own, or an
+inline block's body once the cursor is past its `{` (so later lines of a
+block and `if c { ls /o` complete as a fresh statement).  A block header's
+condition, a comment and the inside of a string or a parenthesised
+argument get nothing.
+
+- **Statement start** — statement keywords (`let`, `if`, `while`, `def`, …)
+  plus root-level child names and methods and command words.
 - **`$` prefix** — binding names: scope bindings first, then aliases.
 - **Mid-path partials** (`machine.cpu.`, `machine.floppy.drive[0].`) —
   members of the resolved-so-far node.
@@ -328,7 +361,10 @@ With `shell.complete(line, cursor, true)` each candidate comes back as
 `method`, `alias`, `keyword`, `value`), and a `context` says where the
 cursor is: `{method, arg_index, arg_name}`, where `arg_index` is the
 *declared* slot (a `name=` word names its own slot; earlier `name=` words do
-not count as positionals), all `none` outside an argument position.
+not count as positionals; a rest argument absorbs every slot past it — the
+same `script_arg_slot` the interpreter and the highlighter use), all `none`
+outside an argument position.  `truncated` is true when candidates were
+dropped (the item table or the per-call string pool filled).
 `cursor` and the returned span are UTF-8 byte offsets.
 
 ## Highlighting
@@ -336,7 +372,8 @@ not count as positionals), all `none` outside an argument position.
 `shell.highlight(text)` returns the syntax classes of a line or block as a
 list of `{start, end, class}` spans. Offsets are UTF-8 bytes; spans are
 half-open, ordered and non-overlapping. The text is read the way the
-parser reads it: keyword forms, assignments, call forms, and commands whose
+parser reads it — through the parser's own classifier (see "How a statement
+is classified"): keyword forms, assignments, call forms, and commands whose
 arguments are in argument mode. Path segments resolve against the live tree
 as they are read.
 
