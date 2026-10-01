@@ -68,8 +68,8 @@
     z-index: 2600;
   }
   .modal-card {
-    background: var(--gs-bg-alt);
-    color: var(--gs-fg);
+    background: var(--gs-surface-raised);
+    color: var(--gs-text);
     border: 1px solid var(--gs-border);
     border-radius: 6px;
     box-shadow: var(--gs-shadow-modal);
@@ -96,7 +96,7 @@
     margin: 0;
     font-size: 16px;
     font-weight: 500;
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
   }
   .modal-body {
     font-size: 13px;

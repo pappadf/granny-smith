@@ -147,7 +147,7 @@
     justify-content: center;
     align-items: flex-start;
     overflow: auto;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     font-size: 13px;
     line-height: 16px;
   }
@@ -159,18 +159,18 @@
   .title {
     font-size: 28px;
     font-weight: 200;
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
     margin: 0 0 8px 0;
   }
   .subtitle {
-    color: var(--gs-fg);
+    color: var(--gs-text);
     opacity: 0.7;
     margin: 0 0 28px 0;
     font-size: 14px;
   }
   .card {
     background: var(--gs-card-bg);
-    border: 1px solid var(--gs-card-border);
+    border: 1px solid var(--gs-border-card);
     border-radius: 6px;
     padding: 16px;
     margin-bottom: 16px;
@@ -186,12 +186,12 @@
   .headline {
     font-size: 15px;
     font-weight: 600;
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
     margin: 0 0 4px 0;
   }
   .detail {
     margin: 0;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     opacity: 0.75;
   }
   .card.failed .detail {
@@ -204,8 +204,8 @@
     height: 18px;
     margin-top: 1px;
     border-radius: 50%;
-    border: 2px solid var(--gs-border-soft);
-    border-top-color: var(--gs-primary-bg);
+    border: 2px solid var(--gs-border-subtle);
+    border-top-color: var(--gs-accent);
     animation: spin 0.9s linear infinite;
   }
   .files {
@@ -226,7 +226,7 @@
     flex: none;
     width: 16px;
     height: 16px;
-    color: var(--gs-fg);
+    color: var(--gs-text);
   }
   .names {
     display: flex;
@@ -242,7 +242,7 @@
     opacity: 0.7;
   }
   .name {
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -264,14 +264,14 @@
     position: relative;
     height: 6px;
     border-radius: 3px;
-    background: var(--gs-border-soft);
+    background: var(--gs-border-subtle);
     overflow: hidden;
   }
   .fill {
     height: 100%;
     width: 0;
     border-radius: 3px;
-    background: var(--gs-primary-bg);
+    background: var(--gs-accent);
     transition: width 200ms ease-out;
   }
   .file.done .fill {
@@ -302,11 +302,11 @@
     border-radius: 2px;
     border: none;
     cursor: pointer;
-    background: var(--gs-primary-bg);
-    color: var(--gs-primary-fg);
+    background: var(--gs-accent);
+    color: var(--gs-text-on-accent);
   }
   .btn-primary:hover {
-    background: var(--gs-primary-hover);
+    background: var(--gs-accent-hover);
   }
   @keyframes spin {
     to {

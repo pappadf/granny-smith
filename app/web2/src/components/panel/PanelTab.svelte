@@ -26,7 +26,7 @@
     position: relative;
     background: transparent;
     border: none;
-    color: var(--gs-tab-inactive-fg);
+    color: var(--gs-tab-fg);
     font-size: 11px;
     text-transform: uppercase;
     padding: 0 10px;
@@ -40,7 +40,7 @@
   }
   .ptab:hover,
   .ptab.active {
-    color: var(--gs-tab-active-fg);
+    color: var(--gs-tab-fg-selected);
   }
   .ptab.active::after {
     content: '';
@@ -49,14 +49,14 @@
     right: 10px;
     bottom: 4px;
     height: 0;
-    border-top: 1px solid var(--gs-tab-active-fg);
+    border-top: 1px solid var(--gs-tab-fg-selected);
     pointer-events: none;
   }
   .ptab:focus {
     outline: none;
   }
   .ptab:focus-visible {
-    outline: 1px solid var(--gs-focus);
+    outline: 1px solid var(--gs-focus-ring);
     outline-offset: -2px;
   }
 </style>

@@ -129,7 +129,7 @@ const highlightField = StateField.define<DecorationSet>({
       const marks: Range<Decoration>[] = [];
       for (const sp of e.value)
         if (sp.to <= len && sp.from < sp.to)
-          marks.push(Decoration.mark({ class: `gs-hl-${sp.cls}` }).range(sp.from, sp.to));
+          marks.push(Decoration.mark({ class: `hl-${sp.cls}` }).range(sp.from, sp.to));
       next = Decoration.set(marks, true);
     }
     return next;
@@ -321,7 +321,7 @@ export function createConsoleInput(
           override: [source],
           activateOnTyping: false,
           icons: false,
-          optionClass: (c) => `gs-cand-${c.type ?? 'object'}`,
+          optionClass: (c) => `hl-${c.type ?? 'object'}`,
         }),
         keymap.of([...defaultKeymap, ...historyKeymap]),
         paste,
@@ -366,7 +366,7 @@ export function createConsoleInput(
 // the input without reconfiguring the editor.
 const inputTheme = EditorView.theme({
   '&': {
-    color: 'var(--gs-terminal-fg)',
+    color: 'var(--gs-console-fg)',
     backgroundColor: 'transparent',
     fontFamily: 'var(--gs-font-mono)',
     fontSize: '13px',
@@ -374,12 +374,12 @@ const inputTheme = EditorView.theme({
     minWidth: '0',
   },
   '&.cm-focused': { outline: 'none' },
-  '.cm-content': { padding: '0', caretColor: 'var(--gs-terminal-cursor)' },
+  '.cm-content': { padding: '0', caretColor: 'var(--gs-console-cursor)' },
   '.cm-line': { padding: '0' },
   '.cm-scroller': { fontFamily: 'var(--gs-font-mono)', lineHeight: '1.4' },
-  '.cm-cursor': { borderLeftColor: 'var(--gs-terminal-cursor)' },
+  '.cm-cursor': { borderLeftColor: 'var(--gs-console-cursor)' },
   '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': {
-    backgroundColor: 'var(--gs-terminal-selection)',
+    backgroundColor: 'var(--gs-console-selection)',
   },
   '.cm-placeholder': { color: 'var(--gs-syntax-dim)' },
   '.cm-tooltip': {
@@ -399,25 +399,6 @@ const inputTheme = EditorView.theme({
     marginLeft: '1.5em',
     fontFamily: 'var(--gs-font-ui)',
   },
-  // Syntax classes (shell.highlight) -- the palette, as in the output.
-  '.gs-hl-keyword': { color: 'var(--gs-syntax-keyword)' },
-  '.gs-hl-decl, .gs-hl-interp': { color: 'var(--gs-syntax-decl)' },
-  '.gs-hl-variable': { color: 'var(--gs-syntax-variable)' },
-  '.gs-hl-alias': { color: 'var(--gs-syntax-alias)' },
-  '.gs-hl-number': { color: 'var(--gs-syntax-number)' },
-  '.gs-hl-string': { color: 'var(--gs-syntax-string)' },
-  '.gs-hl-comment': { color: 'var(--gs-syntax-comment)' },
-  '.gs-hl-method': { color: 'var(--gs-syntax-method)' },
-  '.gs-hl-attribute': { color: 'var(--gs-syntax-attribute)' },
-  '.gs-hl-enum': { color: 'var(--gs-syntax-enum)' },
-  '.gs-hl-unknown': {
-    color: 'var(--gs-syntax-unknown)',
-    textDecoration: 'underline wavy var(--gs-syntax-unknown)',
-    textUnderlineOffset: '3px',
-  },
-  '.gs-cand-method .cm-completionLabel': { color: 'var(--gs-syntax-method)' },
-  '.gs-cand-attribute .cm-completionLabel': { color: 'var(--gs-syntax-attribute)' },
-  '.gs-cand-alias .cm-completionLabel': { color: 'var(--gs-syntax-alias)' },
-  '.gs-cand-keyword .cm-completionLabel': { color: 'var(--gs-syntax-keyword)' },
-  '.gs-cand-enum .cm-completionLabel': { color: 'var(--gs-syntax-enum)' },
+  // Syntax colours: the global hl-* classes (styles/syntax.css) apply here
+  // too, to the input's marks and the candidates' labels.
 });

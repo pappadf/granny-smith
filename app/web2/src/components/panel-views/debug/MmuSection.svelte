@@ -66,7 +66,7 @@
 
 <style>
   .mmu-hint {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 11px;
     padding: 8px 16px;
   }
@@ -79,7 +79,7 @@
   }
   .su-btn {
     background: transparent;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     border: none;
     padding: 0 8px;
     font-size: 11px;
@@ -88,6 +88,6 @@
   }
   .su-btn.active {
     background: var(--gs-row-selected);
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
   }
 </style>

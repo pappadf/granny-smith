@@ -42,7 +42,7 @@
     background: var(--gs-toast-bg);
     color: var(--gs-toast-fg);
     border-radius: 4px;
-    box-shadow: var(--gs-toast-shadow);
+    box-shadow: var(--gs-shadow-toast);
     padding: 10px 12px;
     display: flex;
     align-items: center;
@@ -70,7 +70,7 @@
   .close-btn {
     background: transparent;
     border: none;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     cursor: pointer;
     padding: 2px;
     display: none;

@@ -69,7 +69,7 @@
     width: 22px;
     height: 22px;
     background: transparent;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     border: none;
     border-radius: 2px;
     cursor: pointer;
@@ -82,7 +82,7 @@
     background: var(--gs-row-hover);
   }
   .tb-btn:disabled {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     cursor: default;
     opacity: 0.5;
   }

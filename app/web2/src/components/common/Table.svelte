@@ -119,14 +119,14 @@
     height: 100%;
     min-height: 0;
     overflow: hidden;
-    color: var(--gs-fg);
+    color: var(--gs-text);
   }
   .thead {
     display: grid;
     align-items: center;
     height: 26px;
     border-bottom: 1px solid var(--gs-border);
-    background: var(--gs-bg);
+    background: var(--gs-surface-app);
     flex-shrink: 0;
   }
   .th {
@@ -135,7 +135,7 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -145,7 +145,7 @@
     user-select: none;
   }
   .th.sortable:hover {
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
   }
   .sort-marker {
     font-size: 9px;
@@ -178,7 +178,7 @@
   }
   .empty {
     padding: 16px;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 13px;
   }
 </style>

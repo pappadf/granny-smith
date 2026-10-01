@@ -27,7 +27,7 @@
     cursor: pointer;
   }
   .sb-item:hover {
-    background: var(--gs-sb-hover);
+    background: var(--gs-state-hover);
   }
   .sb-drive {
     opacity: 0.55;

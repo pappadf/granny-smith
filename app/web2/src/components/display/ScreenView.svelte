@@ -109,7 +109,7 @@
   }
   .screen-wrap {
     position: relative;
-    background: var(--gs-screen-bg);
+    background: var(--gs-surface-screen);
     box-shadow: var(--gs-shadow-screen);
   }
   canvas {

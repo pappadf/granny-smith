@@ -320,8 +320,8 @@
     height: 100%;
     min-width: 0;
     min-height: 0;
-    background: var(--gs-terminal-bg);
-    color: var(--gs-terminal-fg);
+    background: var(--gs-console-bg);
+    color: var(--gs-console-fg);
     font-family: var(--gs-font-mono);
     font-size: 13px;
     line-height: 1.4;
@@ -334,7 +334,7 @@
     padding: 4px 6px 0;
   }
   .console-output ::selection {
-    background: var(--gs-terminal-selection);
+    background: var(--gs-console-selection);
   }
   .entry {
     white-space: pre-wrap;
@@ -347,12 +347,8 @@
     content: '› ';
     color: var(--gs-syntax-dim);
   }
-  /* Syntax colours are global (styles/syntax.css); an unresolved segment
-     in a command entry is also underlined. */
-  .entry :global(.hl-unknown) {
-    text-decoration: underline wavy var(--gs-syntax-unknown);
-    text-underline-offset: 3px;
-  }
+  /* Syntax colours (and the underline of an unresolved segment) are global:
+     styles/syntax.css. */
   .entry.stderr {
     color: var(--gs-syntax-error);
     opacity: 0.75;

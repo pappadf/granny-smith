@@ -11,6 +11,6 @@
   .layer {
     position: absolute;
     inset: 0;
-    background: var(--gs-bg);
+    background: var(--gs-surface-app);
   }
 </style>

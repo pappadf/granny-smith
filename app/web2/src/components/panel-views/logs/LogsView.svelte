@@ -57,10 +57,10 @@
     overflow-y: auto;
     min-height: 0;
     padding: 4px 0;
-    background: var(--gs-bg);
+    background: var(--gs-surface-app);
   }
   .logs-empty {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 12px;
     padding: 16px;
     line-height: 1.5;
@@ -69,8 +69,8 @@
     flex: 0 0 auto;
     padding: 4px 12px;
     border-top: 1px solid var(--gs-border);
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 11px;
-    background: var(--gs-bg-alt);
+    background: var(--gs-surface-raised);
   }
 </style>

@@ -170,7 +170,7 @@
     flex-wrap: wrap;
   }
   .mem-label {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 11px;
   }
   .mem-addr {
@@ -187,11 +187,11 @@
     text-transform: uppercase;
   }
   .mem-addr:focus {
-    border-color: var(--gs-focus);
+    border-color: var(--gs-focus-ring);
   }
   .mem-btn {
     background: transparent;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     border: 1px solid var(--gs-border);
     border-radius: 2px;
     height: 22px;
@@ -217,7 +217,7 @@
   }
   .mem-mode-btn {
     background: transparent;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     border: none;
     padding: 0 8px;
     font-size: 11px;
@@ -225,13 +225,13 @@
   }
   .mem-mode-btn.active {
     background: var(--gs-row-selected);
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
   }
   .mem-body {
     padding: 4px 12px 8px;
   }
   .mem-hint {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 11px;
   }
   .mem-row {
@@ -247,17 +247,17 @@
     line-height: 1.6;
   }
   .mem-row-addr {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     white-space: nowrap;
   }
   .mem-row-bytes {
     display: inline-flex;
     gap: 4px;
     flex-wrap: nowrap;
-    color: var(--gs-fg);
+    color: var(--gs-text);
   }
   .mem-row-ascii {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     white-space: pre;
   }
 </style>

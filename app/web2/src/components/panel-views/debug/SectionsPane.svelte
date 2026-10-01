@@ -29,7 +29,7 @@
     width: 100%;
     height: 100%;
     overflow-y: auto;
-    background: var(--gs-bg);
+    background: var(--gs-surface-app);
     display: flex;
     flex-direction: column;
   }

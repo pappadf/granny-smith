@@ -962,7 +962,7 @@
   }
   .back-link {
     display: inline-block;
-    color: var(--gs-link);
+    color: var(--gs-text-link);
     text-decoration: none;
     margin-bottom: 16px;
     font-size: 13px;
@@ -973,7 +973,7 @@
   .config-title {
     font-size: 22px;
     font-weight: 200;
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
     margin: 0 0 20px 0;
   }
   .config-form {
@@ -1007,7 +1007,7 @@
   }
 
   .form-row .form-label {
-    color: var(--gs-fg);
+    color: var(--gs-text);
     opacity: 0.9;
     font-size: 13px;
   }
@@ -1022,10 +1022,10 @@
     outline: none;
   }
   .form-row select:focus {
-    border-color: var(--gs-focus);
+    border-color: var(--gs-focus-ring);
   }
   .form-help {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 12px;
     line-height: 1.4;
   }
@@ -1040,8 +1040,8 @@
     margin-top: 16px;
   }
   .primary-button {
-    background: var(--gs-primary-bg);
-    color: var(--gs-primary-fg);
+    background: var(--gs-accent);
+    color: var(--gs-text-on-accent);
     border: none;
     border-radius: 0;
     padding: 6px 14px;
@@ -1050,10 +1050,10 @@
     height: 30px;
   }
   .primary-button:hover:not(:disabled) {
-    background: var(--gs-primary-hover);
+    background: var(--gs-accent-hover);
   }
   .primary-button:active:not(:disabled) {
-    background: var(--gs-primary-active);
+    background: var(--gs-accent-active);
   }
   .primary-button:disabled {
     cursor: default;

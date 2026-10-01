@@ -367,9 +367,9 @@
     align-items: center;
     padding: 0 8px;
     gap: 0;
-    background: var(--gs-bg);
+    background: var(--gs-surface-app);
     border-bottom: 1px solid var(--gs-border);
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
     user-select: none;
   }
   .tg {
@@ -400,13 +400,13 @@
     cursor: pointer;
   }
   .tbtn:hover:not(:disabled) {
-    background: var(--gs-btn-hover);
+    background: var(--gs-control-hover);
   }
   .tbtn:active:not(:disabled) {
-    background: var(--gs-btn-active);
+    background: var(--gs-control-active);
   }
   .tbtn:focus-visible {
-    outline: 1px solid var(--gs-focus);
+    outline: 1px solid var(--gs-focus-ring);
     outline-offset: -1px;
   }
   .tbtn:disabled {
@@ -429,18 +429,18 @@
     padding: 2px 6px;
     font-size: 11px;
     background: transparent;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     border: none;
     border-radius: 3px;
     cursor: pointer;
   }
   .sch-btn:hover:not(:disabled) {
-    color: var(--gs-fg-bright);
-    background: var(--gs-btn-hover);
+    color: var(--gs-text-strong);
+    background: var(--gs-control-hover);
   }
   .sch-btn.active {
-    color: var(--gs-fg-bright);
-    background: var(--gs-btn-hover);
+    color: var(--gs-text-strong);
+    background: var(--gs-control-hover);
   }
   .sch-btn:disabled {
     opacity: 0.4;
@@ -452,13 +452,13 @@
     font-size: 11px;
     text-align: center;
     background: transparent;
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
     border: 1px solid transparent;
     border-radius: 2px;
     outline: none;
   }
   .zoom-input:focus {
-    border-color: var(--gs-focus);
+    border-color: var(--gs-focus-ring);
   }
   .zoom-input:disabled {
     opacity: 0.4;

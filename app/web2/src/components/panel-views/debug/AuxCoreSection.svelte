@@ -111,7 +111,7 @@
 
 <style>
   .aux-hint {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 11px;
     padding: 8px 16px;
   }
@@ -127,7 +127,7 @@
     margin: 0;
   }
   .aux-label {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
   }
   .aux-value {
     margin-right: 12px;
@@ -138,7 +138,7 @@
   .aux-group-title {
     font-size: 10px;
     font-weight: 600;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     margin: 6px 0 4px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -154,7 +154,7 @@
     gap: 8px;
   }
   .aux-reg-name {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     width: 4.5ch;
     text-align: right;
     flex-shrink: 0;
@@ -169,7 +169,7 @@
     min-width: 14ch;
   }
   .aux-fp-hex {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
   }
   .aux-rows {
     list-style: none;
@@ -183,9 +183,9 @@
     padding: 0 4px;
   }
   .aux-row.pc {
-    background: var(--gs-changed-bg);
+    background: var(--gs-code-changed-bg);
   }
   .aux-row-addr {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
   }
 </style>

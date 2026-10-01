@@ -89,7 +89,7 @@
     flex-wrap: wrap;
   }
   .lbl {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 11px;
   }
   .addr {
@@ -106,12 +106,12 @@
     text-transform: uppercase;
   }
   .addr:focus {
-    border-color: var(--gs-focus);
+    border-color: var(--gs-focus-ring);
   }
   .btn,
   .preset-btn {
     background: transparent;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     border: 1px solid var(--gs-border);
     border-radius: 2px;
     height: 22px;
@@ -136,7 +136,7 @@
     margin: 6px 0 0;
   }
   .ok {
-    color: var(--gs-fg);
+    color: var(--gs-text);
     font-family: var(--gs-font-mono);
     font-size: 11px;
     margin: 6px 0 0;

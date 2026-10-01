@@ -96,8 +96,8 @@ const CSS = `
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--gs-bg, #1e1e1e);
-  color: var(--gs-fg, #cccccc);
+  background: var(--gs-surface-app, #1e1e1e);
+  color: var(--gs-text, #cccccc);
   font-family: var(--gs-font-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
   padding: 24px;
   box-sizing: border-box;
@@ -106,7 +106,7 @@ const CSS = `
 .gs-webgl-error__card {
   max-width: 560px;
   background: var(--gs-card-bg, #252526);
-  border: 1px solid var(--gs-card-border, rgba(255, 255, 255, 0.1));
+  border: 1px solid var(--gs-border-card, rgba(255, 255, 255, 0.1));
   border-radius: 6px;
   padding: 28px 32px;
   line-height: 1.5;
@@ -115,7 +115,7 @@ const CSS = `
   margin: 0 0 12px;
   font-size: 20px;
   font-weight: 600;
-  color: var(--gs-fg-bright, #e7e7e7);
+  color: var(--gs-text-strong, #e7e7e7);
 }
 .gs-webgl-error__card p {
   margin: 8px 0;
@@ -137,12 +137,12 @@ const CSS = `
 .gs-webgl-error__detail {
   margin-top: 16px;
   font-size: 12px;
-  color: var(--gs-fg-muted, rgba(231, 231, 231, 0.6));
+  color: var(--gs-text-muted, rgba(231, 231, 231, 0.6));
 }
 .gs-webgl-error__retry {
   margin-top: 16px;
-  background: var(--gs-primary-bg, #0e639c);
-  color: var(--gs-primary-fg, #ffffff);
+  background: var(--gs-accent, #0e639c);
+  color: var(--gs-text-on-accent, #ffffff);
   border: none;
   padding: 8px 18px;
   border-radius: 4px;
@@ -150,10 +150,10 @@ const CSS = `
   cursor: pointer;
 }
 .gs-webgl-error__retry:hover {
-  background: var(--gs-primary-hover, #1177bb);
+  background: var(--gs-accent-hover, #1177bb);
 }
 .gs-webgl-error__retry:focus-visible {
-  outline: 2px solid var(--gs-focus, #007fd4);
+  outline: 2px solid var(--gs-focus-ring, #007fd4);
   outline-offset: 2px;
 }
 `;

@@ -1,3 +1,5 @@
+import { DEFAULT_SKIN } from '@/skins/registry';
+
 // Theme state — 'dark' | 'light' | 'system'. The applied theme on
 // <html data-theme="..."> is always concrete ('dark' or 'light'); 'system'
 // resolves via prefers-color-scheme.
@@ -58,5 +60,7 @@ export function resolveTheme(mode: ThemeMode): ResolvedTheme {
 // mount to avoid flash, and from a Svelte $effect to keep in sync afterward.
 export function applyThemeToHtml(mode: ThemeMode): void {
   if (typeof document === 'undefined') return;
+  // The skin's token blocks select on both attributes (src/skins).
+  document.documentElement.dataset.skin = DEFAULT_SKIN;
   document.documentElement.dataset.theme = resolveTheme(mode);
 }

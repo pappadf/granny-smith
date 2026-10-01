@@ -52,14 +52,14 @@
     display: flex;
     align-items: center;
     border-bottom: 1px solid var(--gs-border);
-    background: var(--gs-bg);
+    background: var(--gs-surface-app);
     height: 26px;
     flex-shrink: 0;
   }
   .tab {
     background: transparent;
     border: none;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     height: 26px;
     padding: 0 12px;
     font-size: 11px;
@@ -70,11 +70,11 @@
     border-bottom: 2px solid transparent;
   }
   .tab:hover {
-    color: var(--gs-fg);
+    color: var(--gs-text);
   }
   .tab.active {
-    color: var(--gs-fg-bright);
-    border-bottom-color: var(--gs-focus);
+    color: var(--gs-text-strong);
+    border-bottom-color: var(--gs-focus-ring);
   }
   .accessory {
     margin-left: auto;

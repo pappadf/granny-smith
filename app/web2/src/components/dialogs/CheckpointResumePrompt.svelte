@@ -34,23 +34,23 @@
     height: 30px;
   }
   .btn-primary {
-    background: var(--gs-primary-bg);
-    color: var(--gs-primary-fg);
+    background: var(--gs-accent);
+    color: var(--gs-text-on-accent);
     border: none;
   }
   .btn-primary:hover {
-    background: var(--gs-primary-hover);
+    background: var(--gs-accent-hover);
   }
   .btn-primary:active {
-    background: var(--gs-primary-active);
+    background: var(--gs-accent-active);
   }
   .btn-secondary {
     background: transparent;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     border: 1px solid var(--gs-border);
   }
   .btn-secondary:hover {
-    background: var(--gs-btn-hover);
-    color: var(--gs-fg-bright);
+    background: var(--gs-control-hover);
+    color: var(--gs-text-strong);
   }
 </style>

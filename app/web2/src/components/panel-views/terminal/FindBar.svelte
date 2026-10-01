@@ -144,8 +144,8 @@
   .find-input {
     width: 14em;
     font: inherit;
-    background: var(--gs-bg);
-    color: var(--gs-fg);
+    background: var(--gs-surface-app);
+    color: var(--gs-text);
     border: 1px solid var(--gs-border);
     padding: 1px 4px;
   }
@@ -162,6 +162,6 @@
     font: inherit;
   }
   .find-btn.on {
-    border-color: var(--gs-focus);
+    border-color: var(--gs-focus-ring);
   }
 </style>

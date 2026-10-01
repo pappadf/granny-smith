@@ -101,7 +101,7 @@
     flex-direction: column;
   }
   .gallery-error {
-    color: var(--gs-toast-error);
+    color: var(--gs-danger-fg);
     white-space: pre-wrap;
   }
   .gallery-index {
@@ -118,6 +118,6 @@
     text-align: left;
   }
   .gallery-index a {
-    color: var(--gs-link);
+    color: var(--gs-text-link);
   }
 </style>

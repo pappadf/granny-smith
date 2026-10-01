@@ -98,7 +98,7 @@
     padding-right: 8px;
     cursor: pointer;
     user-select: none;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     font-size: 13px;
   }
   .tree-row:hover {
@@ -120,7 +120,7 @@
     align-items: center;
     justify-content: center;
     width: 14px;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     flex-shrink: 0;
     /* Chevron points down when open, rotates to point right when
        closed. Same pattern as the section twistie. */
@@ -137,7 +137,7 @@
     flex-shrink: 0;
     display: inline-flex;
     align-items: center;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
   }
   .label {
     flex: 1 1 auto;
@@ -147,7 +147,7 @@
     white-space: nowrap;
   }
   .desc {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 12px;
     flex-shrink: 0;
     margin-left: 8px;

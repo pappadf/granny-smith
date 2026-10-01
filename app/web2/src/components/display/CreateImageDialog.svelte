@@ -198,7 +198,7 @@
 
 <style>
   .dlg-help {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 13px;
     margin: 0 0 12px 0;
   }
@@ -212,7 +212,7 @@
     align-items: center;
     gap: 8px;
     font-size: 13px;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     cursor: pointer;
   }
   .dlg-error {
@@ -234,11 +234,11 @@
     cursor: default;
   }
   .dlg-btn-primary {
-    background: var(--gs-primary-bg);
-    color: var(--gs-primary-fg);
+    background: var(--gs-accent);
+    color: var(--gs-text-on-accent);
     border: none;
   }
   .dlg-btn-primary:hover:not(:disabled) {
-    background: var(--gs-primary-hover);
+    background: var(--gs-accent-hover);
   }
 </style>

@@ -68,7 +68,7 @@
     gap: 8px;
   }
   .summary {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 11px;
     margin: 0 0 4px 0;
   }
@@ -80,10 +80,10 @@
   .reg-line {
     font-family: var(--gs-font-mono);
     font-size: 11px;
-    color: var(--gs-fg);
+    color: var(--gs-text);
   }
   .reg-name {
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
     font-weight: 600;
     margin-right: 8px;
   }
@@ -91,7 +91,7 @@
     text-transform: uppercase;
   }
   .reg-decoded {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-family: var(--gs-font-mono);
     font-size: 11px;
     margin-left: 16px;

@@ -1,0 +1,11 @@
+/* ====== Scale tokens ======
+   Scheme-independent values: fonts (and, from the scale phase on, type
+   sizes, spacing, radii, metrics, z-order and motion).  A skin may override
+   any of them for its whole [data-skin] scope. */
+
+:root {
+  --gs-font-ui:
+    -apple-system, BlinkMacSystemFont, 'Segoe WPC', 'Segoe UI', system-ui, Ubuntu, 'Droid Sans',
+    sans-serif;
+  --gs-font-mono: 'SF Mono', Monaco, Menlo, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}

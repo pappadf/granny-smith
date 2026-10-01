@@ -135,7 +135,7 @@
 
 <style>
   .reg-hint {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 11px;
     padding: 8px 16px;
   }
@@ -145,7 +145,7 @@
   .reg-group-title {
     font-size: 10px;
     font-weight: 600;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     margin: 6px 0 4px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -169,7 +169,7 @@
     font-size: 11px;
   }
   .reg-name {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     width: 3.5ch;
     text-align: right;
     flex-shrink: 0;
@@ -181,7 +181,7 @@
        ~6.5 chars after subtracting 8 px of padding + 2 px of border. */
     box-sizing: content-box;
     background: transparent;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     border: 1px solid transparent;
     border-radius: 2px;
     padding: 0 4px;
@@ -195,11 +195,11 @@
     border-color: var(--gs-input-border);
   }
   .reg-value:focus {
-    border-color: var(--gs-focus);
+    border-color: var(--gs-focus-ring);
     background: var(--gs-input-bg);
   }
   .reg-value.changed {
-    background: var(--gs-changed-bg);
+    background: var(--gs-code-changed-bg);
   }
   .reg-value:global(.invalid) {
     border-color: var(--gs-danger-fg) !important;

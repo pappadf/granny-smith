@@ -283,7 +283,7 @@
     outline: none;
   }
   .cmd-tree:focus-visible {
-    outline: 1px solid var(--gs-focus);
+    outline: 1px solid var(--gs-focus-ring);
     outline-offset: -1px;
   }
   /* A section headline: a bold row over its rows, which share its indent. */
@@ -294,7 +294,7 @@
   .cmd-row.kind-section .name {
     font-weight: 600;
     font-family: inherit;
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
   }
   .cmd-row.selected > .cmd-line {
     background: var(--gs-row-selected);
@@ -304,7 +304,7 @@
   }
   .cmd-row.match > .cmd-line .name {
     text-decoration: underline;
-    text-decoration-color: var(--gs-focus);
+    text-decoration-color: var(--gs-focus-ring);
     text-underline-offset: 3px;
   }
   .cmd-line {
@@ -314,7 +314,7 @@
     padding: 2px 8px 2px calc(8px + var(--depth) * 14px);
     cursor: pointer;
     height: 22px;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     user-select: none;
     white-space: nowrap;
   }
@@ -326,7 +326,7 @@
     align-items: center;
     justify-content: center;
     width: 14px;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     flex-shrink: 0;
     transform: rotate(-90deg);
     transition: transform 80ms ease-out;

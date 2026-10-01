@@ -27,16 +27,16 @@
     font-family: var(--gs-font-mono);
     font-size: 12px;
     line-height: 1.5;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     white-space: pre-wrap;
     word-break: break-word;
   }
   .cat {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     flex: 0 0 auto;
   }
   .lvl {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     flex: 0 0 auto;
     min-width: 1.5ch;
     text-align: right;

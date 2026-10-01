@@ -1,12 +1,71 @@
-/* ====== Component tokens ======
-   Knobs of one component each, defaulting to the semantic tokens (or, for
-   the documented contrast pairs below, to literals that are part of the
-   component contract).  A skin may override any of them. */
+/* ====== Derived semantic tokens and component tokens ======
+   Derived tokens are semantic roles with a default here, pointing at another
+   semantic token; a skin may set them.  Component tokens are knobs of one
+   component each, defaulting to semantic tokens (or, for the documented
+   contrast pairs below, to literals that are part of the component
+   contract); a skin may override any of them.  src/styles/contract.ts lists
+   them all. */
 
 :root {
-  /* The pressed or live state of an icon button (the camera and
-     microphone while data flows). */
-  --gs-icon-button-fg-on: var(--gs-link);
+  /* --- Derived semantic tokens ------------------------------------------ */
+  --gs-text-placeholder: var(--gs-text-subtle);
+  --gs-text-disabled: var(--gs-text-subtle);
+  --gs-input-border-focus: var(--gs-focus-ring);
+  --gs-control-accent: var(--gs-accent);
+  --gs-row-selected-fg: var(--gs-text);
+  --gs-selection-fg: inherit;
+  --gs-drop-label-fg: var(--gs-text-on-accent);
+
+  /* Code and data views (D-10: today's generic colours). */
+  --gs-code-address: var(--gs-text-muted);
+  --gs-code-mnemonic: var(--gs-text-strong);
+  --gs-code-operand: var(--gs-text);
+  --gs-code-comment: var(--gs-syntax-comment);
+  --gs-code-symbol: var(--gs-text);
+  --gs-code-pc-marker: var(--gs-focus-ring);
+  --gs-code-breakpoint: var(--gs-danger-solid);
+  --gs-code-reg-name: var(--gs-text-muted);
+  --gs-code-reg-value: var(--gs-text);
+  --gs-code-changed-fg: var(--gs-code-reg-value);
+  --gs-code-invalid: var(--gs-danger-fg);
+  --gs-code-banner-rule: var(--gs-focus-ring);
+
+  /* Logs */
+  --gs-log-fg: var(--gs-text);
+  --gs-log-high-fg: var(--gs-danger-fg);
+  --gs-log-mid-fg: var(--gs-warning-fg);
+  --gs-log-low-fg: var(--gs-log-fg);
+  --gs-log-meta-fg: var(--gs-text-muted);
+
+  /* Console */
+  --gs-console-prompt-fg: var(--gs-syntax-dim);
+  --gs-console-muted-fg: var(--gs-syntax-dim);
+  --gs-console-error-fg: var(--gs-syntax-error);
+  --gs-console-sig-arg-fg: var(--gs-syntax-attribute);
+
+  /* --- Component tokens ------------------------------------------------- */
+  /* Panel tabs */
+  --gs-tab-fg: var(--gs-text-muted);
+  --gs-tab-fg-selected: var(--gs-text-strong);
+
+  /* Icon buttons: the pressed or live state (camera, microphone). */
+  --gs-icon-button-fg-on: var(--gs-text-link);
+
+  /* Cards (Welcome, URL boot) */
+  --gs-card-bg: var(--gs-surface-raised);
+
+  /* Menus (the context menu, the console's completion popup) */
+  --gs-menu-bg: var(--gs-surface-overlay);
+  --gs-menu-fg: var(--gs-text);
+  --gs-menu-hover-bg: var(--gs-accent);
+  --gs-menu-hover-fg: var(--gs-text-on-accent);
+
+  /* Toasts */
+  --gs-toast-bg: var(--gs-surface-overlay);
+  --gs-toast-fg: var(--gs-text);
+
+  /* Sashes: the hover/drag fill. */
+  --gs-sash-hover: color-mix(in srgb, var(--gs-focus-ring) 30%, transparent);
 
   /* A drop target row in a tree. */
   --gs-tree-drop-bg: color-mix(in srgb, var(--gs-drop-border) 15%, transparent);
@@ -15,10 +74,10 @@
   --gs-callout-bg: color-mix(in srgb, var(--gs-info-bg) 32%, transparent);
 
   /* The switch (a boolean value's editor): the knob on the "on" track. */
-  --gs-switch-knob-on: var(--gs-primary-fg);
+  --gs-switch-knob-on: var(--gs-text-on-accent);
 
-  /* Status-bar dots: one per machine state; the idle dot is the dim text. */
-  --gs-statusbar-dot-idle: var(--gs-fg-dim);
+  /* Status-bar dots: one per machine state; the idle dot is the subtle text. */
+  --gs-statusbar-dot-idle: var(--gs-text-subtle);
   --gs-statusbar-dot-running: #89d185;
   --gs-statusbar-dot-paused: #cca700;
   --gs-statusbar-dot-stopped: #f14c4c;
@@ -28,9 +87,9 @@
    bar (white text on a coloured fill) white-alpha reads, on the idle bar
    (normal text on a surface) the scheme's own text and warning colours do. */
 .gs-statusbar[data-state='idle'] {
-  --gs-statusbar-drive-read: var(--gs-fg-bright);
+  --gs-statusbar-drive-read: var(--gs-text-strong);
   --gs-statusbar-drive-write: var(--gs-warning-fg);
-  --gs-statusbar-chip-on-bg: var(--gs-btn-active);
+  --gs-statusbar-chip-on-bg: var(--gs-control-active);
   --gs-statusbar-chip-on-ring: var(--gs-border);
 }
 .gs-statusbar:not([data-state='idle']) {

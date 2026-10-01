@@ -44,7 +44,7 @@
 <style>
   .action-btn {
     background: transparent;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     border: 1px solid var(--gs-border);
     border-radius: 2px;
     height: 22px;

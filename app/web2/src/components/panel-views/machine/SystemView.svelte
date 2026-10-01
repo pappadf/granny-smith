@@ -546,7 +546,7 @@
     width: 100%;
     height: 100%;
     overflow: auto;
-    background: var(--gs-bg);
+    background: var(--gs-surface-app);
     padding: 4px 0;
     font-size: 12px;
   }
@@ -557,7 +557,7 @@
   }
   .adv-toggle {
     font-size: 11px;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     display: inline-flex;
     align-items: center;
     gap: 4px;
@@ -573,7 +573,7 @@
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     padding: 8px 12px 2px;
     border-top: 1px solid var(--gs-border);
     margin-top: 4px;
@@ -594,7 +594,7 @@
     background: var(--gs-row-selected);
   }
   .sys-tree:focus .sys-row.selected > .sys-line {
-    outline: 1px solid var(--gs-focus);
+    outline: 1px solid var(--gs-focus-ring);
     outline-offset: -1px;
   }
   .twistie {
@@ -603,7 +603,7 @@
     justify-content: center;
     width: 14px;
     flex: none;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     transform: rotate(-90deg);
     transition: transform 80ms ease-out;
   }
@@ -612,7 +612,7 @@
   }
   .name {
     flex: none;
-    color: var(--gs-fg);
+    color: var(--gs-text);
   }
   .kind-attr .name {
     color: var(--gs-syntax-attribute);
@@ -636,7 +636,7 @@
     white-space: nowrap;
   }
   .readonly .value {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
   }
   .lock {
     visibility: hidden;
@@ -657,13 +657,13 @@
     font-size: 11px;
   }
   .hint {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 12px;
     padding: 16px;
     line-height: 1.5;
   }
   .confirm-doc {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     margin: 0 0 8px;
   }
   .arg-form {
@@ -686,7 +686,7 @@
     font-size: 11px;
   }
   .arg-doc {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 11px;
   }
   .form-error {

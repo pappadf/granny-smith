@@ -68,7 +68,7 @@
 
 <style>
   .fpu-hint {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 11px;
     padding: 8px 16px;
   }
@@ -78,7 +78,7 @@
   .fpu-group-title {
     font-size: 10px;
     font-weight: 600;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     margin: 6px 0 4px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -111,17 +111,17 @@
     gap: 8px;
   }
   .fpu-name {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     text-align: right;
     min-width: 4ch;
   }
   .fpu-hex {
-    color: var(--gs-fg);
+    color: var(--gs-text);
     text-transform: uppercase;
     white-space: nowrap;
   }
   .fpu-val {
-    color: var(--gs-fg);
+    color: var(--gs-text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -134,7 +134,7 @@
   .fpu-hex.changed,
   .fpu-val.changed,
   .fpu-ctl-row.changed {
-    background: var(--gs-changed-bg);
+    background: var(--gs-code-changed-bg);
     border-radius: 2px;
   }
 </style>

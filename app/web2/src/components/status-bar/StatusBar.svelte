@@ -171,8 +171,8 @@
     height: 22px;
     display: flex;
     align-items: stretch;
-    background: var(--gs-sb-idle-bg);
-    color: var(--gs-sb-idle-fg);
+    background: var(--gs-state-idle-bg);
+    color: var(--gs-state-idle-fg);
     font-size: 12px;
     line-height: 22px;
     border-top: 1px solid var(--gs-border);
@@ -183,16 +183,16 @@
     user-select: none;
   }
   .gs-statusbar.running {
-    background: var(--gs-sb-running);
-    color: var(--gs-sb-fg-running);
+    background: var(--gs-state-running-bg);
+    color: var(--gs-state-active-fg);
   }
   .gs-statusbar.paused {
-    background: var(--gs-sb-paused);
-    color: var(--gs-sb-fg-running);
+    background: var(--gs-state-paused-bg);
+    color: var(--gs-state-active-fg);
   }
   .gs-statusbar.stopped {
-    background: var(--gs-sb-stopped);
-    color: var(--gs-sb-fg-running);
+    background: var(--gs-state-stopped-bg);
+    color: var(--gs-state-active-fg);
   }
   .statusbar-left,
   .statusbar-right {
@@ -233,7 +233,7 @@
     cursor: pointer;
   }
   .sb-item:hover {
-    background: var(--gs-sb-hover);
+    background: var(--gs-state-hover);
   }
   .sb-state .dot {
     width: 8px;

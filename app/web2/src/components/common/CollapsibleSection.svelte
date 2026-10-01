@@ -57,7 +57,7 @@
     align-items: center;
     padding: 0 8px 0 0;
     user-select: none;
-    background: var(--gs-bg);
+    background: var(--gs-surface-app);
   }
   .header:hover {
     background: var(--gs-row-hover);
@@ -79,7 +79,7 @@
     cursor: pointer;
   }
   .toggle:focus-visible {
-    outline: 1px solid var(--gs-focus);
+    outline: 1px solid var(--gs-focus-ring);
     outline-offset: -1px;
   }
   .twistie {
@@ -87,7 +87,7 @@
     align-items: center;
     justify-content: center;
     width: 14px;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     flex-shrink: 0;
     /* Chevron points down when open, rotates to point right when
        collapsed. Matches the codicon-driven VS Code tree pattern. */
@@ -102,11 +102,11 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
     flex: 1 1 auto;
   }
   .count {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 11px;
     margin-right: 4px;
   }

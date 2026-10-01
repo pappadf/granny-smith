@@ -39,7 +39,7 @@
   }
   .btn {
     background: transparent;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     border: 1px solid var(--gs-border);
     border-radius: 2px;
     padding: 4px 12px;
@@ -51,11 +51,11 @@
     background: var(--gs-row-hover);
   }
   .btn.primary {
-    background: var(--gs-primary-bg);
-    color: var(--gs-primary-fg);
+    background: var(--gs-accent);
+    color: var(--gs-text-on-accent);
     border-color: transparent;
   }
   .btn.primary:hover {
-    background: var(--gs-primary-hover);
+    background: var(--gs-accent-hover);
   }
 </style>

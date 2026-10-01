@@ -259,7 +259,7 @@
     padding: 0;
     border: none;
     background: transparent;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     opacity: 0.6;
     transition:
       opacity 100ms,
@@ -269,10 +269,10 @@
   .upload-btn:hover,
   .upload-btn:focus-visible {
     opacity: 1;
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
   }
   .empty {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 12px;
     padding: 6px 28px;
   }

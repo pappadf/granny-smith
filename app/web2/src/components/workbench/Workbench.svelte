@@ -73,7 +73,7 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    background: var(--gs-bg);
+    background: var(--gs-surface-app);
     position: relative;
   }
   /* Panel sizing rules apply to a child component with the .gs-panel class. */

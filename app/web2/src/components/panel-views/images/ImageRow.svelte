@@ -56,7 +56,7 @@
     padding: 0 8px 0 28px; /* 22 px indent for the icon line-up */
     cursor: pointer;
     user-select: none;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     font-size: 13px;
   }
   .image-row:hover {
@@ -70,7 +70,7 @@
   }
   .icon {
     flex-shrink: 0;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     display: inline-flex;
     align-items: center;
   }
@@ -93,7 +93,7 @@
     letter-spacing: 0.04em;
   }
   .desc {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 12px;
     flex-shrink: 0;
   }

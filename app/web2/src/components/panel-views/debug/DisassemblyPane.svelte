@@ -199,7 +199,7 @@
     width: 100%;
     height: 100%;
     overflow: auto;
-    background: var(--gs-bg);
+    background: var(--gs-surface-app);
     font-family: var(--gs-font-mono);
     /* 11 px matches the body-text baseline used by section headers
        and the MMU descriptor lines; disasm rows shouldn't read larger
@@ -212,15 +212,15 @@
     z-index: 1;
     /* Opaque so disasm rows scrolling underneath don't bleed
        through; tinted border-left preserves the blue indicator. */
-    background: var(--gs-bg-alt);
-    border-left: 2px solid var(--gs-focus);
+    background: var(--gs-surface-raised);
+    border-left: 2px solid var(--gs-focus-ring);
     border-bottom: 1px solid var(--gs-border);
-    color: var(--gs-fg);
+    color: var(--gs-text);
     font-size: 11px;
     padding: 4px 12px;
   }
   .hint {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     padding: 12px;
     font-size: 11px;
   }
@@ -251,23 +251,23 @@
     background: var(--gs-code-pc-row-bg);
   }
   .row.selected {
-    outline: 1px solid var(--gs-focus);
+    outline: 1px solid var(--gs-focus-ring);
     outline-offset: -1px;
   }
   .disasm-pane:focus {
     outline: none;
   }
   .disasm-pane:focus-visible {
-    outline: 1px solid var(--gs-focus);
+    outline: 1px solid var(--gs-focus-ring);
     outline-offset: -1px;
   }
   .marker {
-    color: var(--gs-focus);
+    color: var(--gs-focus-ring);
     text-align: center;
   }
   .addr-l,
   .addr-p {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     text-transform: uppercase;
   }
   .tag {
@@ -292,13 +292,13 @@
     color: var(--gs-danger-fg);
   }
   .mnem {
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
   }
   .ops {
-    color: var(--gs-fg);
+    color: var(--gs-text);
   }
   .cmt {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-style: italic;
   }
 </style>

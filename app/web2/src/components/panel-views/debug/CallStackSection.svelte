@@ -103,7 +103,7 @@
 
 <style>
   .hint {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 11px;
     padding: 6px 12px;
   }
@@ -114,13 +114,13 @@
     padding: 2px 12px;
     font-family: var(--gs-font-mono);
     font-size: 11px;
-    color: var(--gs-fg);
+    color: var(--gs-text);
   }
   .idx {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     width: 3ch;
   }
   .frame {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
   }
 </style>

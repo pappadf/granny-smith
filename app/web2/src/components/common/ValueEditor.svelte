@@ -154,9 +154,9 @@
     font: inherit;
     font-family: var(--gs-font-mono);
     font-size: 12px;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     background: var(--gs-input-bg);
-    border: 1px solid var(--gs-focus);
+    border: 1px solid var(--gs-focus-ring);
     padding: 0 4px;
     min-width: 8ch;
     max-width: 100%;
@@ -176,12 +176,12 @@
     height: 14px;
     border-radius: 7px;
     border: 1px solid var(--gs-border);
-    background: var(--gs-bg);
+    background: var(--gs-surface-app);
     padding: 0;
     cursor: pointer;
   }
   .toggle.on {
-    background: var(--gs-focus);
+    background: var(--gs-focus-ring);
   }
   .toggle:disabled {
     cursor: default;
@@ -194,7 +194,7 @@
     width: 10px;
     height: 10px;
     border-radius: 50%;
-    background: var(--gs-fg-muted);
+    background: var(--gs-text-muted);
     transition: left 0.1s;
   }
   .toggle.on .knob {

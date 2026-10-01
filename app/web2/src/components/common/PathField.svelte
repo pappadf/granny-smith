@@ -127,7 +127,7 @@
     min-width: 12ch;
     font-family: var(--gs-font-mono);
     font-size: 12px;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     background: var(--gs-input-bg);
     border: 1px solid var(--gs-border);
     padding: 1px 4px;
@@ -144,19 +144,19 @@
     max-height: 160px;
     overflow-y: auto;
     border: 1px solid var(--gs-border);
-    background: var(--gs-bg);
+    background: var(--gs-surface-app);
     font-family: var(--gs-font-mono);
     font-size: 12px;
   }
   .dir {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     padding: 2px 4px;
   }
   .entry {
     text-align: left;
     background: none;
     border: none;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     padding: 1px 8px;
     cursor: pointer;
     font: inherit;

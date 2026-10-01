@@ -102,19 +102,19 @@
   .details-name {
     font-family: var(--gs-font-mono);
     font-size: 12px;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
   }
   .details-close {
     border: none;
     background: transparent;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 16px;
     line-height: 1;
     padding: 2px 6px;
     cursor: pointer;
   }
   .details-close:hover {
-    color: var(--gs-fg);
+    color: var(--gs-text);
   }
   .details-foot {
     flex: 0 0 auto;
@@ -128,7 +128,7 @@
     border-radius: 3px;
     border: 1px solid var(--gs-accent);
     background: var(--gs-accent-subtle);
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
     cursor: pointer;
   }
   .usage {
@@ -140,7 +140,7 @@
     font-size: 12px;
     line-height: 1.4;
     white-space: pre-wrap;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     font-family: var(--gs-font-mono);
   }
   .usage-arg {

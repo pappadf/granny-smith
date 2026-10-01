@@ -17,6 +17,6 @@
   .panel {
     display: flex;
     flex-direction: column;
-    background: var(--gs-bg);
+    background: var(--gs-surface-app);
   }
 </style>

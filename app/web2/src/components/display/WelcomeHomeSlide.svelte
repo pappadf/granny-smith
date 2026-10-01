@@ -59,18 +59,18 @@
   .welcome-title {
     font-size: 28px;
     font-weight: 200;
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
     margin: 0 0 8px 0;
   }
   .welcome-subtitle {
-    color: var(--gs-fg);
+    color: var(--gs-text);
     opacity: 0.7;
     margin: 0 0 28px 0;
     font-size: 14px;
   }
   .card {
     background: var(--gs-card-bg);
-    border: 1px solid var(--gs-card-border);
+    border: 1px solid var(--gs-border-card);
     border-radius: 6px;
     padding: 14px 16px;
     margin-bottom: 16px;
@@ -80,7 +80,7 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     opacity: 0.8;
     margin: 0 0 8px 0;
   }
@@ -97,17 +97,17 @@
     background: transparent;
     border: none;
     border-radius: 3px;
-    color: var(--gs-link);
+    color: var(--gs-text-link);
     cursor: pointer;
     text-align: left;
     font-size: 13px;
   }
   .card-row:hover {
-    background: var(--gs-list-hover);
+    background: var(--gs-row-hover);
   }
   .card-row :global(.icon) {
     width: 16px;
     height: 16px;
-    color: var(--gs-fg);
+    color: var(--gs-text);
   }
 </style>

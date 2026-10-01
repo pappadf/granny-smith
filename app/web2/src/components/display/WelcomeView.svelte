@@ -23,7 +23,7 @@
     align-items: stretch;
     justify-content: center;
     overflow: hidden;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     font-size: 13px;
     line-height: 16px;
   }

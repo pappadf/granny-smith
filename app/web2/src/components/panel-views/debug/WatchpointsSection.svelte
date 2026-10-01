@@ -157,14 +157,14 @@
     padding: 0;
     border: none;
     background: transparent;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     cursor: pointer;
     font-size: 14px;
     line-height: 1;
   }
   .add-btn:hover,
   .add-btn:focus-visible {
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
   }
   .add-row {
     display: flex;
@@ -191,11 +191,11 @@
   }
   .add-addr:focus,
   .add-mode:focus {
-    border-color: var(--gs-focus);
+    border-color: var(--gs-focus-ring);
   }
   .btn {
     background: transparent;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     border: 1px solid var(--gs-border);
     border-radius: 2px;
     height: 22px;
@@ -207,7 +207,7 @@
     background: var(--gs-row-hover);
   }
   .hint {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 11px;
     padding: 6px 12px;
   }
@@ -218,20 +218,20 @@
     padding: 2px 12px;
     font-family: var(--gs-font-mono);
     font-size: 11px;
-    color: var(--gs-fg);
+    color: var(--gs-text);
   }
   .wp-row:hover {
     background: var(--gs-row-hover);
   }
   .enable {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     width: 1ch;
   }
   .mode {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-style: italic;
   }
   .hits {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
   }
 </style>

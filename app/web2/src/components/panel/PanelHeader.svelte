@@ -72,7 +72,7 @@
     flex: 0 0 35px;
     display: flex;
     align-items: stretch;
-    background: var(--gs-bg);
+    background: var(--gs-surface-app);
     user-select: none;
     overflow: hidden;
   }
@@ -101,7 +101,7 @@
   }
   .action-btn {
     background: transparent;
-    color: var(--gs-fg);
+    color: var(--gs-text);
     border: 1px solid var(--gs-border);
     border-radius: 2px;
     height: 22px;
@@ -116,7 +116,7 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 11px;
     cursor: pointer;
     user-select: none;

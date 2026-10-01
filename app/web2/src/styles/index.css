@@ -1,0 +1,6 @@
+/* The global stylesheets, in cascade order.  The skins' token stylesheets
+   come in through src/skins/registry.ts, after these. */
+@import './scale.css';
+@import './components.css';
+@import './reset.css';
+@import './syntax.css';

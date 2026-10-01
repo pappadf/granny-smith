@@ -94,8 +94,8 @@
     padding: 80px 16px 16px;
   }
   .cat-card {
-    background: var(--gs-bg-alt);
-    color: var(--gs-fg);
+    background: var(--gs-surface-raised);
+    color: var(--gs-text);
     border: 1px solid var(--gs-border);
     border-radius: 6px;
     box-shadow: var(--gs-shadow-modal);
@@ -114,23 +114,23 @@
   .cat-title {
     font-size: 13px;
     font-weight: 500;
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
   }
   .close-btn {
     background: none;
     border: none;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-size: 18px;
     line-height: 1;
     cursor: pointer;
     padding: 0 4px;
   }
   .close-btn:hover {
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-strong);
   }
   .cat-empty {
     font-size: 12px;
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     margin: 8px 0 0;
     line-height: 1.5;
   }
@@ -170,6 +170,6 @@
     outline: none;
   }
   .cat-row input[type='number']:focus {
-    border-color: var(--gs-focus);
+    border-color: var(--gs-focus-ring);
   }
 </style>

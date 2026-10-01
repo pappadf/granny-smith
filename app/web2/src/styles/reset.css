@@ -14,8 +14,8 @@ body {
 }
 
 body {
-  background: var(--gs-bg);
-  color: var(--gs-fg);
+  background: var(--gs-surface-app);
+  color: var(--gs-text);
   font-family: var(--gs-font-ui);
   font-size: 13px;
   line-height: 1.4;
