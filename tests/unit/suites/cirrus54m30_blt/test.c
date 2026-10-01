@@ -51,6 +51,8 @@ const pci_card_kind_t tnt_control_kind = {
     .id = "tnt_control", .display_name = "Control / Chaos on-board video", .attach = PCI_ATTACH_BUILTIN};
 const pci_card_kind_t mach64_gx_kind = {
     .id = "mach64_gx", .display_name = "ATI Mach64 GX", .attach = PCI_ATTACH_PCI, .requires_prom = true};
+const pci_card_kind_t ati_rage_pro_kind = {
+    .id = "ati_rage_pro", .display_name = "ATI 3D Rage Pro (on-board)", .attach = PCI_ATTACH_BUILTIN};
 const pci_card_kind_t sym53c825_ch0_kind = {
     .id = "sym53c825_0", .display_name = "Symbios 53C825A (channel 0)", .attach = PCI_ATTACH_BUILTIN};
 const pci_card_kind_t sym53c825_ch1_kind = {

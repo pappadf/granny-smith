@@ -102,4 +102,18 @@ void av_cuda_attach_vdc(av_cuda_t *cuda, struct av_vdc *vdc);
 typedef bool (*av_cuda_i2c_write_fn)(void *ctx, uint8_t slave, const uint8_t *data, int len);
 void av_cuda_attach_i2c_write(av_cuda_t *cuda, av_cuda_i2c_write_fn fn, void *ctx);
 
+// A machine-level I2C BUS behind pseudo-commands $22 and $25: every
+// transaction goes to it, and a slave neither hook claims is a NAK (an
+// error packet, which is how firmware learns a device is absent).  `rd`
+// fills `out` with up to `max` bytes read from `addr8` (bit 0 set; with
+// `has_sub`, from subaddress `sub`) and returns the count, or -1 for a
+// NAK.  Takes precedence over the digitizer bus and the write hook.
+typedef int (*av_cuda_i2c_read_fn)(void *ctx, uint8_t addr8, bool has_sub, uint8_t sub, uint8_t *out, int max);
+void av_cuda_attach_i2c_bus(av_cuda_t *cuda, av_cuda_i2c_read_fn rd, av_cuda_i2c_write_fn wr, void *ctx);
+
+// Model the 341S0060 part with firmware 2.40 (the beige G3's): the
+// dispatch table extends to $26, adding $25 COMBINED_FORMAT_IIC and the
+// undocumented $26.  Wiring, not guest state.
+void av_cuda_set_firmware_240(av_cuda_t *cuda);
+
 #endif // GS_MACHINES_AV_CUDA_H

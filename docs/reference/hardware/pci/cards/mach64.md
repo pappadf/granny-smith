@@ -459,7 +459,7 @@ it. A PowerPC dword read of a register therefore returns the byte-reversed value
 bit 23 reads as `$00008000` through a big-endian load (*observed* [9]). Two in-chip
 endianness controls exist and are not to be confused with the bus seam:
 
-- `HOST_BIG_ENDIAN_EN` (`HOST_CNTL` bit 0, mirrored in GUI_TRAJ_CNTL): "In 15 bpp and 16 bpp
+- `HOST_BIG_ENDIAN_EN` (`HOST_CNTL` bit 1 — bit 0 is `HOST_BYTE_ALIGN` — mirrored in GUI_TRAJ_CNTL): "In 15 bpp and 16 bpp
   modes the bytes within each word are swapped. In 32 bpp mode the order of the four bytes
   within each dword is reversed" — it governs only the HOST_DATA path [1] p. 3-64.
 - `MEM_PIX_WIDTH` (MEM_CNTL, GX-2): the "big endian memory aperture pixel width", active only

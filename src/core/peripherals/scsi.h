@@ -272,6 +272,10 @@ int scsi_external_message_byte(scsi_t *scsi);
 
 // Message accepted / target disconnect: bus returns to FREE.
 void scsi_external_release(scsi_t *scsi);
+// The sense key `target` is holding (what REQUEST SENSE would report next).
+// An ATAPI front-end copies it into the ATA error register after a CHECK
+// CONDITION, where the host's driver reads it before asking for the rest.
+uint8_t scsi_device_sense_key(const scsi_t *scsi, int target);
 
 // Query whether MR_DMA is currently set in the chip's mode register.
 // Used by bus-master pumps to gate transfers.

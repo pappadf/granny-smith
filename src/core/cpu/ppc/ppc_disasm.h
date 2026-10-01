@@ -44,10 +44,10 @@ typedef struct {
 // completely; returns out->status.
 int ppc_disassemble(uint32_t word, uint32_t addr, ppc_insn *out);
 
-// Model-filtered disassembly: `model` is 601 or 604 (numerically equal to
+// Model-filtered disassembly: `model` is 601, 604 or 750 (numerically equal to
 // the machine_profile.h CPU_MODEL_PPC* ids; plain ints keep this TU
 // dependency-free).  Encodings the model rejects at runtime — the POWER
-// holdovers on the 604, the 604-only group on the 601 — come back
+// holdovers on the 604/750, the 604-only group on the 601 — come back
 // PPC_DIS_INVALID with `.long` text, matching the model's program
 // exception and the objdump -m powerpc:<model> oracle.
 int ppc_disassemble_model(uint32_t word, uint32_t addr, int model, ppc_insn *out);

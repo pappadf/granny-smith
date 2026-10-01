@@ -61,7 +61,7 @@ static bool ring_pop(tnt_fdring_t *r, uint8_t *v) {
 
 static bool fd_dma_running(void *ctx) {
     config_t *cfg = (config_t *)ctx;
-    return tnt_dbdma_active(tnt_st(cfg)->dbdma, FD_CHAN);
+    return dbdma_active(tnt_st(cfg)->dbdma, FD_CHAN);
 }
 
 // A read byte toward memory: into the ring, and the channel is told there
@@ -70,11 +70,11 @@ static bool fd_dma_running(void *ctx) {
 static bool fd_dma_put(void *ctx, uint8_t value) {
     config_t *cfg = (config_t *)ctx;
     tnt_state_t *st = tnt_st(cfg);
-    if (!tnt_dbdma_active(st->dbdma, FD_CHAN))
+    if (!dbdma_active(st->dbdma, FD_CHAN))
         return false;
     if (!ring_push(&st->fdring, value))
         return false;
-    tnt_dbdma_kick(st->dbdma, FD_CHAN);
+    dbdma_kick(st->dbdma, FD_CHAN);
     return true;
 }
 
@@ -86,9 +86,9 @@ static bool fd_dma_get(void *ctx, uint8_t *out) {
     tnt_state_t *st = tnt_st(cfg);
     if (ring_pop(&st->fdring, out))
         return true;
-    if (!tnt_dbdma_active(st->dbdma, FD_CHAN))
+    if (!dbdma_active(st->dbdma, FD_CHAN))
         return false;
-    tnt_dbdma_kick(st->dbdma, FD_CHAN);
+    dbdma_kick(st->dbdma, FD_CHAN);
     return ring_pop(&st->fdring, out);
 }
 
@@ -133,13 +133,13 @@ void tnt_swim3_bind(config_t *cfg) {
 void tnt_swim3_init(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     memset(&st->fdring, 0, sizeof(st->fdring));
-    tnt_dbdma_port_t port = {
+    dbdma_port_t port = {
         .out = fd_port_out,
         .in = fd_port_in,
         .s_bits = NULL,
         .ctx = cfg,
     };
-    tnt_dbdma_set_port(st->dbdma, FD_CHAN, &port);
+    dbdma_set_port(st->dbdma, FD_CHAN, &port);
 }
 
 void tnt_swim3_register_events(config_t *cfg) {

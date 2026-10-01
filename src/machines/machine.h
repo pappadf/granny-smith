@@ -39,5 +39,7 @@ extern const hw_profile_t machine_pm8500;
 extern const hw_profile_t machine_pm9500;
 extern const hw_profile_t machine_ans500;
 extern const hw_profile_t machine_ans700;
+extern const hw_profile_t machine_pmg3dt;
+extern const hw_profile_t machine_pmg3mt;
 
 #endif // MACHINE_H

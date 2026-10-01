@@ -55,8 +55,9 @@
 int ppc_runner_main(int argc, char **argv);
 
 // Which model the custom backend builds: the corpus is generated from the sail
-// 601 model, and main() below replays it twice — once as the 601 (every file),
-// once as the 604 with the 601-divergent mnemonics filtered out.
+// 601 model, and main() below replays it three times — once as the 601 (every
+// file), then as the 604 and the 750 with the 601-divergent mnemonics
+// filtered out.
 static int g_backend_model = CPU_MODEL_PPC601;
 
 // 8 MB of RAM at 0: the vectors' 64 KiB test window ($00100000, recorded in
@@ -412,6 +413,15 @@ int main(int argc, char **argv) {
     printf("[ppc_vectors] 604 pass (%d files; %d model-divergent mnemonics skipped)\n", nfiles,
            (int)(sizeof skip_604 / sizeof skip_604[0]));
     rc = run_pass(argv[0], argc, argv, files, nfiles);
+
+    // Pass 3 — the 750 over the same subset: its user and OEA instruction
+    // set is the 604's (MPC750UM §2.3), so the 601-divergent list is the
+    // whole divergence.
+    if (rc == 0) {
+        g_backend_model = CPU_MODEL_PPC750;
+        printf("[ppc_vectors] 750 pass (%d files)\n", nfiles);
+        rc = run_pass(argv[0], argc, argv, files, nfiles);
+    }
     for (int i = 0; i < nfiles; i++)
         free(files[i]);
     free(files);

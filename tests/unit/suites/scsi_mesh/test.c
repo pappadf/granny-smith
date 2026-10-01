@@ -11,7 +11,7 @@
 // That cost was paid during the move itself.  A mechanical rewrite turned
 //
 //     if (dma)
-//         tnt_dbdma_kick(tnt_st(cfg)->dbdma, 10);
+//         dbdma_kick(tnt_st(cfg)->dbdma, 10);
 //     else
 //         pump_in(m);
 //
@@ -300,6 +300,40 @@ TEST(datain_with_dma_never_pumps_the_fifo) {
     teardown();
 }
 
+// After taking the status byte the sequencer keeps ACK asserted until its
+// next command, so the target cannot raise REQ for MESSAGE IN.  Apple's MESH
+// driver (the beige G3 ROM's) spins `while (bus_status0 & REQ)` before it
+// issues MSGIN: REQ must read low however long the driver takes to look.
+TEST(status_holds_ack_until_the_next_sequence) {
+    setup();
+    wr(R_DEST_ID, TARGET);
+    wr(R_SEQUENCE, SEQ_SELECT);
+    ASSERT_TRUE(s_m->connected);
+    wr(R_COUNT_HI, 0x00);
+    wr(R_COUNT_LO, 6);
+    wr(R_SEQUENCE, SEQ_COMMAND);
+    for (int i = 0; i < 6; i++)
+        wr(R_FIFO, 0x00); // TEST UNIT READY
+    // (Each register read is taken once into a local: the assert macros
+    // evaluate their arguments twice, and these reads have side effects.)
+    int bs0 = rd(R_BUS_STATUS0);
+    ASSERT_EQ_INT(bs0 & 0x37, 0x23); // STATUS phase (C/D, I/O), REQ, no ACK
+    wr(R_COUNT_LO, 1);
+    wr(R_SEQUENCE, 0x4); // SEQ_STATUS
+    int status = rd(R_FIFO); // CHECK CONDITION: the stand-in disk has no medium
+    ASSERT_TRUE(status == 0x00 || status == 0x02);
+    // ACK held, REQ low — on every read until the next command.
+    for (int i = 0; i < 100; i++) {
+        bs0 = rd(R_BUS_STATUS0);
+        ASSERT_EQ_INT(bs0 & 0x30, 0x10);
+    }
+    // A quick command releases it: MESSAGE IN, REQ asserted.
+    wr(R_SEQUENCE, 0x0F); // FLUSHFIFO
+    bs0 = rd(R_BUS_STATUS0);
+    ASSERT_EQ_INT(bs0 & 0x37, 0x27);
+    teardown();
+}
+
 // ...and with a channel wired, the DMA form asks it to run.
 TEST(datain_with_dma_asks_the_channel) {
     setup();
@@ -376,6 +410,7 @@ int main(void) {
     RUN(datain_without_dma_pumps_the_fifo);
     RUN(datain_with_dma_never_pumps_the_fifo);
     RUN(datain_with_dma_asks_the_channel);
+    RUN(status_holds_ack_until_the_next_sequence);
     RUN(select_absent_target_times_out);
     RUN(interrupt_line_follows_the_mask);
     RUN(reset_clears_state_but_keeps_the_wiring);

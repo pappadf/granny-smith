@@ -1,0 +1,655 @@
+# The beige Power Macintosh G3's Open Firmware device tree (rung G6).
+#
+# The reference is a full `dump-device-tree` from a real Rev C beige G3
+# (Open Firmware 2.4) posted to a public forum.  Open Firmware builds the
+# tree by probing the hardware — Grackle's configuration space, Heathrow's
+# BAR and cells, the Cuda I2C bus (SPD EEPROMs, the personality card's ID
+# EEPROM) — so every property that matches is a register or a bus answer
+# the model got right.  The assertions were generated property by
+# property from the nodes the two machines share, keeping each property
+# whose value matches; what is left out, and why:
+#
+#   * /cpus/PowerPC,*: the reference machine carries a 400 MHz G4 ZIF
+#     upgrade (cpu-version 000C0206); ours is the stock 750.  Its node is
+#     asserted separately below against the profile's own clocks.
+#   * /memory reg/available: the reference has 768 MB; ours is 64 MB.
+#   * /chosen, /options: firmware instance handles and that machine's own
+#     NVRAM settings (it ran with nvramrc, a boot-device and a
+#     pci-probe-list).
+#   * bmac local-mac-address: the address is per-machine (the firmware
+#     reads it from the cell's EEPROM); the row asserts the model's own.
+#   * the PCI slot cards (a USB card and an nVidia card) and the /packages
+#     firmware packages, which no hardware feeds.
+#
+# The reference prints hex in lower case and our console in upper case;
+# the assertions use what this firmware prints.  Everything runs over the
+# SCC channel A console; the row stops the boot by holding
+# Command-Option-O-F from power-on (see lib/gossamer.script).
+
+include "../lib/mac.script"
+include "../lib/gossamer.script"
+
+let banner = gos_boot_prompt("pmg3dt", 65536)
+# The Open Firmware console on the Rage Pro's screen: the banner, the
+# prompt, and the `ttya io` the row typed — drawn by the ATI FCode 1.53 in
+# the Mac ROM through the chip's little-endian aperture at 640 x 480 x 8.
+check("of-console.png")
+
+let cd = ""
+let p = ""
+
+# mac-io's children are addressed by unit (mesh@10000, ide@20000/@21000),
+# and the stock firmware cannot resolve one: Heathrow's node has no
+# decode-unit method, so `dev /pci/mac-io/mesh@10000` answers "can't find
+# device".  The reference machine could, because it ran with the Mac OS X
+# installer's nvramrc, whose script does exactly this — `dev mac-io` and
+# `: decode-unit parse-1hex ;` — which is also why its mac-io METHODS list
+# begins with decode-unit.  The row defines the same one-liner so the two
+# machines' paths mean the same thing.
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o")
+$cd = gos_go()
+gos_send(": decod")
+gos_send("e-unit ")
+gos_send("parse-1")
+gos_send("hex ;")
+$cd = gos_go()
+assert !contains($cd, "unknown") "the mac-io decode-unit definition was refused"
+
+# --- The CPU node: the profile's 750 at 267 MHz on the 66.82 MHz bus -------
+gos_send("dev /cp")
+gos_send("us/Powe")
+gos_send("rPC,750")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    PowerPC,750") "G6: cpu node is not PowerPC,750"
+assert contains($p, "cpu-version             00080202") "G6: cpu-version != the 750's PVR 00080202"
+# The ROM decodes HID1's PLL field against its bus-code table: code 10
+# (4x) on bus code 6 is 267.28 MHz.
+assert contains($p, "clock-frequency         0FEE5E80") "G6: cpu clock-frequency != 267,280,000"
+assert contains($p, "bus-frequency           03FB97A0") "G6: bus-frequency != 66,820,000"
+assert contains($p, "timebase-frequency      00FEE5E8") "G6: timebase-frequency != bus/4 (16,705,000)"
+
+
+# /
+gos_send("dev /")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    device-tree") "G6: /: name device-tree"
+assert contains($p, "copyright               28632920 4170706C 6520436F 6D707574 65722C20 496E632E 20313939 3800") "G6: /: copyright 28632920 4170706C 6520436F 6D707574 65722C20 496E6"
+assert contains($p, "system-id               30303030 30303030 30303030 3000") "G6: /: system-id 30303030 30303030 30303030 3000"
+assert contains($p, "#address-cells          00000001") "G6: /: #address-cells 00000001"
+assert contains($p, "#size-cells             00000001") "G6: /: #size-cells 00000001"
+assert contains($p, "clock-frequency         03FB97A0") "G6: /: clock-frequency 03FB97A0"
+assert contains($p, "AAPL,cpu-id             00000000") "G6: /: AAPL,cpu-id 00000000"
+assert contains($p, "model                   Power Macintosh") "G6: /: model Power Macintosh"
+assert contains($p, "compatible              AAPL,PowerMac G3") "G6: /: compatible AAPL,PowerMac G3"
+assert contains($p, "MacRISC") "G6: /: MacRISC"
+
+# /cpus@0
+gos_send("dev /cp")
+gos_send("us")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    cpus") "G6: /cpus@0: name cpus"
+assert contains($p, "device_type             cpus") "G6: /cpus@0: device_type cpus"
+assert contains($p, "#address-cells          00000001") "G6: /cpus@0: #address-cells 00000001"
+assert contains($p, "#size-cells             00000000") "G6: /cpus@0: #size-cells 00000000"
+
+# /memory@0
+gos_send("dev /me")
+gos_send("mory")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    memory") "G6: /memory@0: name memory"
+assert contains($p, "device_type             memory") "G6: /memory@0: device_type memory"
+
+# /openprom@0
+gos_send("dev /op")
+gos_send("enprom")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    openprom") "G6: /openprom@0: name openprom"
+assert contains($p, "model                   Open Firmware, 2.4") "G6: /openprom@0: model Open Firmware, 2.4"
+assert contains($p, "relative-addressing") "G6: /openprom@0: relative-addressing"
+
+# /AAPL,ROM@FFC00000
+gos_send("dev /AA")
+gos_send("PL,ROM")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    AAPL,ROM") "G6: /AAPL,ROM@FFC00000: name AAPL,ROM"
+assert contains($p, "device_type             rom") "G6: /AAPL,ROM@FFC00000: device_type rom"
+assert contains($p, "compatible              AAPL,ROM") "G6: /AAPL,ROM@FFC00000: compatible AAPL,ROM"
+assert contains($p, "reg                     FFC00000  00400000") "G6: /AAPL,ROM@FFC00000: reg FFC00000 00400000"
+
+# /aliases@0
+gos_send("dev /al")
+gos_send("iases")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    aliases") "G6: /aliases@0: name aliases"
+assert contains($p, "pci                     /pci@80000000") "G6: /aliases@0: pci /pci@80000000"
+assert contains($p, "mac-io                  /pci/mac-io") "G6: /aliases@0: mac-io /pci/mac-io"
+assert contains($p, "kbd                     /pci/mac-io/via-cuda/adb/keyboard") "G6: /aliases@0: kbd /pci/mac-io/via-cuda/adb/keyboard"
+assert contains($p, "mouse                   /pci/mac-io/via-cuda/adb/mouse") "G6: /aliases@0: mouse /pci/mac-io/via-cuda/adb/mouse"
+assert contains($p, "ttya                    /pci/mac-io/escc/ch-a") "G6: /aliases@0: ttya /pci/mac-io/escc/ch-a"
+assert contains($p, "ttyb                    /pci/mac-io/escc/ch-b") "G6: /aliases@0: ttyb /pci/mac-io/escc/ch-b"
+assert contains($p, "scsi                    /pci/mac-io/mesh") "G6: /aliases@0: scsi /pci/mac-io/mesh"
+assert contains($p, "scsi-int                /pci/mac-io/mesh") "G6: /aliases@0: scsi-int /pci/mac-io/mesh"
+assert contains($p, "ide0                    /pci/mac-io/ide@20000") "G6: /aliases@0: ide0 /pci/mac-io/ide@20000"
+assert contains($p, "ide                     /pci/mac-io/ide@20000") "G6: /aliases@0: ide /pci/mac-io/ide@20000"
+assert contains($p, "ata-int                 /pci/mac-io/ide@20000") "G6: /aliases@0: ata-int /pci/mac-io/ide@20000"
+assert contains($p, "ide1                    /pci/mac-io/ide@21000") "G6: /aliases@0: ide1 /pci/mac-io/ide@21000"
+assert contains($p, "enet                    /pci/mac-io/bmac") "G6: /aliases@0: enet /pci/mac-io/bmac"
+assert contains($p, "swim                    /pci/mac-io/swim3") "G6: /aliases@0: swim /pci/mac-io/swim3"
+assert contains($p, "fd                      /pci/mac-io/swim3") "G6: /aliases@0: fd /pci/mac-io/swim3"
+
+# /pci@80000000
+gos_send("dev /pc")
+gos_send("i")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    pci") "G6: /pci@80000000: name pci"
+assert contains($p, "device_type             pci") "G6: /pci@80000000: device_type pci"
+assert contains($p, "model                   MOT,PPC106") "G6: /pci@80000000: model MOT,PPC106"
+assert contains($p, "8259-interrupt-acknowledge") "G6: /pci@80000000: 8259-interrupt-acknowledge"
+assert contains($p, "FEF00000") "G6: /pci@80000000: FEF00000"
+assert contains($p, "reg                     80000000  7F000000") "G6: /pci@80000000: reg 80000000 7F000000"
+assert contains($p, "#address-cells          00000003") "G6: /pci@80000000: #address-cells 00000003"
+assert contains($p, "#size-cells             00000002") "G6: /pci@80000000: #size-cells 00000002"
+assert contains($p, "#interrupt-cells        00000001") "G6: /pci@80000000: #interrupt-cells 00000001"
+assert contains($p, "clock-frequency         01FCA055") "G6: /pci@80000000: clock-frequency 01FCA055"
+assert contains($p, "slot-names              0000E000 41310042 31004331 00") "G6: /pci@80000000: slot-names 0000E000 41310042 31004331 00"
+assert contains($p, "ranges                  01000000 00000000 00000000  FE000000  00000000 00800000") "G6: /pci@80000000: ranges 01000000 00000000 00000000 FE000000 00000000 00800000"
+assert contains($p, "02000000 00000000 00000000  FD000000  00000000 01000000") "G6: /pci@80000000: 02000000 00000000 00000000 FD000000 00000000 01000000"
+assert contains($p, "02000000 00000000 80000000  80000000  00000000 7D000000") "G6: /pci@80000000: 02000000 00000000 80000000 80000000 00000000 7D000000"
+assert contains($p, "compatible              grackle") "G6: /pci@80000000: compatible grackle"
+assert contains($p, "bus-range               00000000 00000000") "G6: /pci@80000000: bus-range 00000000 00000000"
+
+# /pci@80000000/mac-io@10
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    mac-io") "G6: /pci@80000000/mac-io@10: name mac-io"
+assert contains($p, "device_type             dbdma") "G6: /pci@80000000/mac-io@10: device_type dbdma"
+assert contains($p, "model                   AAPL,343S1201") "G6: /pci@80000000/mac-io@10: model AAPL,343S1201"
+assert contains($p, "reg                     00008000 00000000 00000000  00000000 00000000") "G6: /pci@80000000/mac-io@10: reg 00008000 00000000 00000000 00000000 00000000"
+assert contains($p, "02008010 00000000 F3000000  00000000 00080000") "G6: /pci@80000000/mac-io@10: 02008010 00000000 F3000000 00000000 00080000"
+assert contains($p, "assigned-addresses      82008010 00000000 F3000000  00000000 00080000") "G6: /pci@80000000/mac-io@10: assigned-addresses 82008010 00000000 F3000000 00000000 00080"
+assert contains($p, "ranges                  00000000  82008010 00000000 F3000000  00080000") "G6: /pci@80000000/mac-io@10: ranges 00000000 82008010 00000000 F3000000 00080000"
+assert contains($p, "#address-cells          00000001") "G6: /pci@80000000/mac-io@10: #address-cells 00000001"
+assert contains($p, "#size-cells             00000001") "G6: /pci@80000000/mac-io@10: #size-cells 00000001"
+assert contains($p, "vendor-id               0000106B") "G6: /pci@80000000/mac-io@10: vendor-id 0000106B"
+assert contains($p, "device-id               00000010") "G6: /pci@80000000/mac-io@10: device-id 00000010"
+assert contains($p, "revision-id             00000001") "G6: /pci@80000000/mac-io@10: revision-id 00000001"
+assert contains($p, "class-code              00FF0000") "G6: /pci@80000000/mac-io@10: class-code 00FF0000"
+assert contains($p, "min-grant               00000000") "G6: /pci@80000000/mac-io@10: min-grant 00000000"
+assert contains($p, "max-latency             00000000") "G6: /pci@80000000/mac-io@10: max-latency 00000000"
+assert contains($p, "devsel-speed            00000001") "G6: /pci@80000000/mac-io@10: devsel-speed 00000001"
+assert contains($p, "AAPL,address            F3000000") "G6: /pci@80000000/mac-io@10: AAPL,address F3000000"
+assert contains($p, "compatible              heathrow") "G6: /pci@80000000/mac-io@10: compatible heathrow"
+
+# /pci@80000000/mac-io@10/mesh@10000
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/mesh@")
+gos_send("10000")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    mesh") "G6: /pci@80000000/mac-io@10/mesh@10000: name mesh"
+assert contains($p, "device_type             scsi") "G6: /pci@80000000/mac-io@10/mesh@10000: device_type scsi"
+assert contains($p, "model                   AAPL,343S1146") "G6: /pci@80000000/mac-io@10/mesh@10000: model AAPL,343S1146"
+assert contains($p, "reg                     00010000  00000100") "G6: /pci@80000000/mac-io@10/mesh@10000: reg 00010000 00000100"
+assert contains($p, "00008000  00000200") "G6: /pci@80000000/mac-io@10/mesh@10000: 00008000 00000200"
+assert contains($p, "clock-frequency         02FAF080") "G6: /pci@80000000/mac-io@10/mesh@10000: clock-frequency 02FAF080"
+assert contains($p, "AAPL,interrupts         0000000C 00000000") "G6: /pci@80000000/mac-io@10/mesh@10000: AAPL,interrupts 0000000C 00000000"
+assert contains($p, "AAPL,connector          scsi") "G6: /pci@80000000/mac-io@10/mesh@10000: AAPL,connector scsi"
+assert contains($p, "compatible              mesh") "G6: /pci@80000000/mac-io@10/mesh@10000: compatible mesh"
+
+# /pci@80000000/mac-io@10/mesh@10000/sd@0,0
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/mesh@")
+gos_send("10000/s")
+gos_send("d")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    sd") "G6: /pci@80000000/mac-io@10/mesh@10000/sd@0,0: name sd"
+assert contains($p, "device_type             block") "G6: /pci@80000000/mac-io@10/mesh@10000/sd@0,0: device_type block"
+assert contains($p, "compatible              sd") "G6: /pci@80000000/mac-io@10/mesh@10000/sd@0,0: compatible sd"
+
+# /pci@80000000/mac-io@10/mesh@10000/st@0,0
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/mesh@")
+gos_send("10000/s")
+gos_send("t")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    st") "G6: /pci@80000000/mac-io@10/mesh@10000/st@0,0: name st"
+assert contains($p, "device_type             byte") "G6: /pci@80000000/mac-io@10/mesh@10000/st@0,0: device_type byte"
+assert contains($p, "compatible              st") "G6: /pci@80000000/mac-io@10/mesh@10000/st@0,0: compatible st"
+
+# /pci@80000000/mac-io@10/bmac@11000
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/bmac@")
+gos_send("11000")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    bmac") "G6: /pci@80000000/mac-io@10/bmac@11000: name bmac"
+assert contains($p, "device_type             network") "G6: /pci@80000000/mac-io@10/bmac@11000: device_type network"
+assert contains($p, "AAPL,connector          ethernet") "G6: /pci@80000000/mac-io@10/bmac@11000: AAPL,connector ethernet"
+assert contains($p, "compatible              bmac") "G6: /pci@80000000/mac-io@10/bmac@11000: compatible bmac"
+assert contains($p, "reg                     00011000  00001000") "G6: /pci@80000000/mac-io@10/bmac@11000: reg 00011000 00001000"
+assert contains($p, "00008200  00000100") "G6: /pci@80000000/mac-io@10/bmac@11000: 00008200 00000100"
+assert contains($p, "00008300  00000100") "G6: /pci@80000000/mac-io@10/bmac@11000: 00008300 00000100"
+assert contains($p, "AAPL,interrupts         0000002A 00000020 00000021") "G6: /pci@80000000/mac-io@10/bmac@11000: AAPL,interrupts 0000002A 00000020 00000021"
+assert contains($p, "address-bits            00000030") "G6: /pci@80000000/mac-io@10/bmac@11000: address-bits 00000030"
+assert contains($p, "max-frame-size          000005EE") "G6: /pci@80000000/mac-io@10/bmac@11000: max-frame-size 000005EE"
+assert contains($p, "cell-id                 000000B1") "G6: /pci@80000000/mac-io@10/bmac@11000: cell-id 000000B1"
+assert contains($p, "local-mac-address       00050247 5301") "G6: bmac local-mac-address: the model's EEPROM address"
+
+# /pci@80000000/mac-io@10/escc@13000
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/escc@")
+gos_send("13000")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    escc") "G6: /pci@80000000/mac-io@10/escc@13000: name escc"
+assert contains($p, "device_type             escc") "G6: /pci@80000000/mac-io@10/escc@13000: device_type escc"
+assert contains($p, "compatible              escc") "G6: /pci@80000000/mac-io@10/escc@13000: compatible escc"
+assert contains($p, "CHRP,es0") "G6: /pci@80000000/mac-io@10/escc@13000: CHRP,es0"
+assert contains($p, "reg                     00013000  00001000") "G6: /pci@80000000/mac-io@10/escc@13000: reg 00013000 00001000"
+assert contains($p, "00008400  00000400") "G6: /pci@80000000/mac-io@10/escc@13000: 00008400 00000400"
+assert contains($p, "#address-cells          00000001") "G6: /pci@80000000/mac-io@10/escc@13000: #address-cells 00000001"
+assert contains($p, "ranges") "G6: /pci@80000000/mac-io@10/escc@13000: ranges"
+
+# /pci@80000000/mac-io@10/escc@13000/ch-a@13020
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/escc@")
+gos_send("13000/c")
+gos_send("h-a")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    ch-a") "G6: /pci@80000000/mac-io@10/escc@13000/ch-a@13020: name ch-a"
+assert contains($p, "device_type             serial") "G6: /pci@80000000/mac-io@10/escc@13000/ch-a@13020: device_type serial"
+assert contains($p, "compatible              ch-a") "G6: /pci@80000000/mac-io@10/escc@13000/ch-a@13020: compatible ch-a"
+assert contains($p, "CHRP,es2") "G6: /pci@80000000/mac-io@10/escc@13000/ch-a@13020: CHRP,es2"
+assert contains($p, "AAPL,connector          modem") "G6: /pci@80000000/mac-io@10/escc@13000/ch-a@13020: AAPL,connector modem"
+assert contains($p, "reg                     00013020  00000020") "G6: /pci@80000000/mac-io@10/escc@13000/ch-a@13020: reg 00013020 00000020"
+assert contains($p, "00008400  00000100") "G6: /pci@80000000/mac-io@10/escc@13000/ch-a@13020: 00008400 00000100"
+assert contains($p, "00008500  00000100") "G6: /pci@80000000/mac-io@10/escc@13000/ch-a@13020: 00008500 00000100"
+assert contains($p, "AAPL,interrupts         0000000F 00000004 00000005") "G6: /pci@80000000/mac-io@10/escc@13000/ch-a@13020: AAPL,interrupts 0000000F 00000004 00000005"
+
+# /pci@80000000/mac-io@10/escc@13000/ch-b@13000
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/escc@")
+gos_send("13000/c")
+gos_send("h-b")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    ch-b") "G6: /pci@80000000/mac-io@10/escc@13000/ch-b@13000: name ch-b"
+assert contains($p, "device_type             serial") "G6: /pci@80000000/mac-io@10/escc@13000/ch-b@13000: device_type serial"
+assert contains($p, "compatible              ch-b") "G6: /pci@80000000/mac-io@10/escc@13000/ch-b@13000: compatible ch-b"
+assert contains($p, "CHRP,es3") "G6: /pci@80000000/mac-io@10/escc@13000/ch-b@13000: CHRP,es3"
+assert contains($p, "AAPL,connector          printer") "G6: /pci@80000000/mac-io@10/escc@13000/ch-b@13000: AAPL,connector printer"
+assert contains($p, "reg                     00013000  00000020") "G6: /pci@80000000/mac-io@10/escc@13000/ch-b@13000: reg 00013000 00000020"
+assert contains($p, "00008600  00000100") "G6: /pci@80000000/mac-io@10/escc@13000/ch-b@13000: 00008600 00000100"
+assert contains($p, "00008700  00000100") "G6: /pci@80000000/mac-io@10/escc@13000/ch-b@13000: 00008700 00000100"
+assert contains($p, "AAPL,interrupts         00000010 00000006 00000007") "G6: /pci@80000000/mac-io@10/escc@13000/ch-b@13000: AAPL,interrupts 00000010 00000006 00000007"
+
+# /pci@80000000/mac-io@10/davbus@14000
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/davbu")
+gos_send("s@14000")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    davbus") "G6: /pci@80000000/mac-io@10/davbus@14000: name davbus"
+assert contains($p, "device_type             davbus") "G6: /pci@80000000/mac-io@10/davbus@14000: device_type davbus"
+assert contains($p, "reg                     00014000  00001000") "G6: /pci@80000000/mac-io@10/davbus@14000: reg 00014000 00001000"
+assert contains($p, "00008800  00000100") "G6: /pci@80000000/mac-io@10/davbus@14000: 00008800 00000100"
+assert contains($p, "00008900  00000100") "G6: /pci@80000000/mac-io@10/davbus@14000: 00008900 00000100"
+assert contains($p, "AAPL,interrupts         00000011 00000008 00000009") "G6: /pci@80000000/mac-io@10/davbus@14000: AAPL,interrupts 00000011 00000008 00000009"
+
+# /pci@80000000/mac-io@10/davbus@14000/sound@0,0
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/davbu")
+gos_send("s@14000")
+gos_send("/sound")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    sound") "G6: /pci@80000000/mac-io@10/davbus@14000/sound@0,0: name sound"
+assert contains($p, "device_type             sound") "G6: /pci@80000000/mac-io@10/davbus@14000/sound@0,0: device_type sound"
+assert contains($p, "compatible              awacs") "G6: /pci@80000000/mac-io@10/davbus@14000/sound@0,0: compatible awacs"
+assert contains($p, "screamer") "G6: /pci@80000000/mac-io@10/davbus@14000/sound@0,0: screamer"
+assert contains($p, "sub-frame               00000000") "G6: /pci@80000000/mac-io@10/davbus@14000/sound@0,0: sub-frame 00000000"
+
+# /pci@80000000/mac-io@10/swim3@15000
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/swim3")
+gos_send("@15000")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    swim3") "G6: /pci@80000000/mac-io@10/swim3@15000: name swim3"
+assert contains($p, "device_type             block") "G6: /pci@80000000/mac-io@10/swim3@15000: device_type block"
+assert contains($p, "compatible              swim3") "G6: /pci@80000000/mac-io@10/swim3@15000: compatible swim3"
+assert contains($p, "AAPL,connector          floppy") "G6: /pci@80000000/mac-io@10/swim3@15000: AAPL,connector floppy"
+assert contains($p, "reg                     00015000  00001000") "G6: /pci@80000000/mac-io@10/swim3@15000: reg 00015000 00001000"
+assert contains($p, "00008100  00000100") "G6: /pci@80000000/mac-io@10/swim3@15000: 00008100 00000100"
+assert contains($p, "AAPL,interrupts         00000013 00000001") "G6: /pci@80000000/mac-io@10/swim3@15000: AAPL,interrupts 00000013 00000001"
+
+# /pci@80000000/mac-io@10/nvram@60000
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/nvram")
+gos_send("@60000")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    nvram") "G6: /pci@80000000/mac-io@10/nvram@60000: name nvram"
+assert contains($p, "device_type             nvram") "G6: /pci@80000000/mac-io@10/nvram@60000: device_type nvram"
+assert contains($p, "compatible              nvram") "G6: /pci@80000000/mac-io@10/nvram@60000: compatible nvram"
+assert contains($p, "reg                     00060000  00020000") "G6: /pci@80000000/mac-io@10/nvram@60000: reg 00060000 00020000"
+assert contains($p, "existing                00000000 00002000") "G6: /pci@80000000/mac-io@10/nvram@60000: existing 00000000 00002000"
+
+# /pci@80000000/mac-io@10/ide@20000
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/ide@2")
+gos_send("0000")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    ide") "G6: /pci@80000000/mac-io@10/ide@20000: name ide"
+assert contains($p, "device_type             ide") "G6: /pci@80000000/mac-io@10/ide@20000: device_type ide"
+assert contains($p, "AAPL,connector          ata") "G6: /pci@80000000/mac-io@10/ide@20000: AAPL,connector ata"
+assert contains($p, "compatible              heathrow-ata") "G6: /pci@80000000/mac-io@10/ide@20000: compatible heathrow-ata"
+assert contains($p, "AAPL,bus-id             00000000") "G6: /pci@80000000/mac-io@10/ide@20000: AAPL,bus-id 00000000"
+assert contains($p, "reg                     00020000  00002000") "G6: /pci@80000000/mac-io@10/ide@20000: reg 00020000 00002000"
+assert contains($p, "00008B00  00000200") "G6: /pci@80000000/mac-io@10/ide@20000: 00008B00 00000200"
+assert contains($p, "AAPL,pio-timing         00000526 00000085 00000025 00000025 00000025 00000000 00000000 00000000") "G6: /pci@80000000/mac-io@10/ide@20000: AAPL,pio-timing 00000526 00000085 00000025 00000025 00000025"
+assert contains($p, "AAPL,interrupts         0000000D 00000002") "G6: /pci@80000000/mac-io@10/ide@20000: AAPL,interrupts 0000000D 00000002"
+assert contains($p, "#address-cells          00000001") "G6: /pci@80000000/mac-io@10/ide@20000: #address-cells 00000001"
+
+# /pci@80000000/mac-io@10/ide@20000/disk@0,0
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/ide@2")
+gos_send("0000/di")
+gos_send("sk")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    disk") "G6: /pci@80000000/mac-io@10/ide@20000/disk@0,0: name disk"
+assert contains($p, "device_type             block") "G6: /pci@80000000/mac-io@10/ide@20000/disk@0,0: device_type block"
+assert contains($p, "compatible              ata-disk") "G6: /pci@80000000/mac-io@10/ide@20000/disk@0,0: compatible ata-disk"
+assert contains($p, "atapi-disk") "G6: /pci@80000000/mac-io@10/ide@20000/disk@0,0: atapi-disk"
+
+# /pci@80000000/mac-io@10/ide@21000
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/ide@2")
+gos_send("1000")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    ide") "G6: /pci@80000000/mac-io@10/ide@21000: name ide"
+assert contains($p, "device_type             ide") "G6: /pci@80000000/mac-io@10/ide@21000: device_type ide"
+assert contains($p, "AAPL,connector          ata") "G6: /pci@80000000/mac-io@10/ide@21000: AAPL,connector ata"
+assert contains($p, "compatible              heathrow-ata") "G6: /pci@80000000/mac-io@10/ide@21000: compatible heathrow-ata"
+assert contains($p, "AAPL,bus-id             00000001") "G6: /pci@80000000/mac-io@10/ide@21000: AAPL,bus-id 00000001"
+assert contains($p, "reg                     00021000  00002000") "G6: /pci@80000000/mac-io@10/ide@21000: reg 00021000 00002000"
+assert contains($p, "00008C00  00000200") "G6: /pci@80000000/mac-io@10/ide@21000: 00008C00 00000200"
+assert contains($p, "AAPL,pio-timing         00000526 00000085 00000025 00000025 00000025 00000000 00000000 00000000") "G6: /pci@80000000/mac-io@10/ide@21000: AAPL,pio-timing 00000526 00000085 00000025 00000025 00000025"
+assert contains($p, "AAPL,interrupts         0000000E 00000003") "G6: /pci@80000000/mac-io@10/ide@21000: AAPL,interrupts 0000000E 00000003"
+assert contains($p, "#address-cells          00000001") "G6: /pci@80000000/mac-io@10/ide@21000: #address-cells 00000001"
+
+# /pci@80000000/mac-io@10/ide@21000/disk@0,0
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/ide@2")
+gos_send("1000/di")
+gos_send("sk")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    disk") "G6: /pci@80000000/mac-io@10/ide@21000/disk@0,0: name disk"
+assert contains($p, "device_type             block") "G6: /pci@80000000/mac-io@10/ide@21000/disk@0,0: device_type block"
+assert contains($p, "compatible              ata-disk") "G6: /pci@80000000/mac-io@10/ide@21000/disk@0,0: compatible ata-disk"
+assert contains($p, "atapi-disk") "G6: /pci@80000000/mac-io@10/ide@21000/disk@0,0: atapi-disk"
+
+# /pci@80000000/mac-io@10/via-cuda@16000
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/via-c")
+gos_send("uda@160")
+gos_send("00")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    via-cuda") "G6: /pci@80000000/mac-io@10/via-cuda@16000: name via-cuda"
+assert contains($p, "device_type             cuda") "G6: /pci@80000000/mac-io@10/via-cuda@16000: device_type cuda"
+assert contains($p, "compatible              via-cuda") "G6: /pci@80000000/mac-io@10/via-cuda@16000: compatible via-cuda"
+assert contains($p, "reg                     00016000  00002000") "G6: /pci@80000000/mac-io@10/via-cuda@16000: reg 00016000 00002000"
+assert contains($p, "AAPL,interrupts         00000012") "G6: /pci@80000000/mac-io@10/via-cuda@16000: AAPL,interrupts 00000012"
+
+# /pci@80000000/mac-io@10/via-cuda@16000/adb@0,0
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/via-c")
+gos_send("uda@160")
+gos_send("00/adb")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    adb") "G6: /pci@80000000/mac-io@10/via-cuda@16000/adb@0,0: name adb"
+assert contains($p, "device_type             adb") "G6: /pci@80000000/mac-io@10/via-cuda@16000/adb@0,0: device_type adb"
+assert contains($p, "AAPL,connector          adb") "G6: /pci@80000000/mac-io@10/via-cuda@16000/adb@0,0: AAPL,connector adb"
+assert contains($p, "compatible              adb") "G6: /pci@80000000/mac-io@10/via-cuda@16000/adb@0,0: compatible adb"
+
+# /pci@80000000/mac-io@10/via-cuda@16000/adb@0,0/keyboard@0,0
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/via-c")
+gos_send("uda@160")
+gos_send("00/adb/")
+gos_send("keyboar")
+gos_send("d")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    keyboard") "G6: /pci@80000000/mac-io@10/via-cuda@16000/adb@0,0/keyboard@0,0: name keyboard"
+assert contains($p, "device_type             keyboard") "G6: /pci@80000000/mac-io@10/via-cuda@16000/adb@0,0/keyboard@0,0: device_type keyboard"
+assert contains($p, "reg                     00000000 00000000  00000000") "G6: /pci@80000000/mac-io@10/via-cuda@16000/adb@0,0/keyboard@0,0: reg 00000000 00000000 00000000"
+
+# /pci@80000000/mac-io@10/via-cuda@16000/adb@0,0/mouse@1,0
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/via-c")
+gos_send("uda@160")
+gos_send("00/adb/")
+gos_send("mouse")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    mouse") "G6: /pci@80000000/mac-io@10/via-cuda@16000/adb@0,0/mouse@1,0: name mouse"
+assert contains($p, "device_type             mouse") "G6: /pci@80000000/mac-io@10/via-cuda@16000/adb@0,0/mouse@1,0: device_type mouse"
+assert contains($p, "reg                     00000001 00000000  00000000") "G6: /pci@80000000/mac-io@10/via-cuda@16000/adb@0,0/mouse@1,0: reg 00000001 00000000 00000000"
+assert contains($p, "#buttons                00000001") "G6: /pci@80000000/mac-io@10/via-cuda@16000/adb@0,0/mouse@1,0: #buttons 00000001"
+
+# /pci@80000000/mac-io@10/via-cuda@16000/pram@0,0
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/via-c")
+gos_send("uda@160")
+gos_send("00/pram")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    pram") "G6: /pci@80000000/mac-io@10/via-cuda@16000/pram@0,0: name pram"
+assert contains($p, "device_type             pram") "G6: /pci@80000000/mac-io@10/via-cuda@16000/pram@0,0: device_type pram"
+assert contains($p, "reg                     00000000 00000000  00000000") "G6: /pci@80000000/mac-io@10/via-cuda@16000/pram@0,0: reg 00000000 00000000 00000000"
+
+# /pci@80000000/mac-io@10/via-cuda@16000/rtc@0,0
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/via-c")
+gos_send("uda@160")
+gos_send("00/rtc")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    rtc") "G6: /pci@80000000/mac-io@10/via-cuda@16000/rtc@0,0: name rtc"
+assert contains($p, "device_type             rtc") "G6: /pci@80000000/mac-io@10/via-cuda@16000/rtc@0,0: device_type rtc"
+assert contains($p, "compatible              rtc") "G6: /pci@80000000/mac-io@10/via-cuda@16000/rtc@0,0: compatible rtc"
+assert contains($p, "reg                     00000000 00000000  00000000") "G6: /pci@80000000/mac-io@10/via-cuda@16000/rtc@0,0: reg 00000000 00000000 00000000"
+
+# /pci@80000000/mac-io@10/via-cuda@16000/power-mgt@0,0
+gos_send("dev /pc")
+gos_send("i/mac-i")
+gos_send("o/via-c")
+gos_send("uda@160")
+gos_send("00/powe")
+gos_send("r-mgt")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    power-mgt") "G6: /pci@80000000/mac-io@10/via-cuda@16000/power-mgt@0,0: name power-mgt"
+assert contains($p, "device_type             power-mgt") "G6: /pci@80000000/mac-io@10/via-cuda@16000/power-mgt@0,0: device_type power-mgt"
+assert contains($p, "compatible              power-mgt") "G6: /pci@80000000/mac-io@10/via-cuda@16000/power-mgt@0,0: compatible power-mgt"
+assert contains($p, "reg                     00000000 00000000  00000000") "G6: /pci@80000000/mac-io@10/via-cuda@16000/power-mgt@0,0: reg 00000000 00000000 00000000"
+
+# /perch@0
+gos_send("dev /pe")
+gos_send("rch")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    perch") "G6: /perch@0: name perch"
+assert contains($p, "device_type             perch") "G6: /perch@0: device_type perch"
+assert contains($p, "iic-address             000000A6") "G6: /perch@0: iic-address 000000A6"
+assert contains($p, "compatible              Whisper") "G6: /perch@0: compatible Whisper"
+assert contains($p, "version                 00000002") "G6: /perch@0: version 00000002"
+assert contains($p, "AAPL,interrupts         0000001A 00000015") "G6: /perch@0: AAPL,interrupts 0000001A 00000015"
+assert contains($p, "ok") "G6: /perch@0: ok"
+assert contains($p, "0 >") "G6: /perch@0: 0 >"
+
+# --- The on-board ATI Rage Pro ------------------------------------------------
+# The reference dump ran with `pci-probe-list fffbffff`, which hides device
+# $12, so its node comes from the same thread's separate capture.  The
+# chip's identity and header are asserted against it; what legitimately
+# differs is left out: the revision (that board is $5C, this profile's
+# Rev C board $7C), the BAR placement (the reference had two slot cards),
+# and everything the monitor decides — ATY,Flags carries the sense code
+# ($62B, Apple's 13"/14" RGB, here; $717 VGA there) and the FCode picks the
+# raster from it (640 x 480 here, 1024 x 768 there).
+gos_send("dev scr")
+gos_send("een")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "name                    ATY,mach64_3DUPro") "G6: the screen is not ATY,mach64_3DUPro"
+assert contains($p, "model                   ATY,GT-C") "G6: ATI model != ATY,GT-C"
+assert contains($p, "vendor-id               00001002") "G6: ATI vendor-id"
+assert contains($p, "device-id               00004750") "G6: ATI device-id != 4750 (Rage Pro)"
+assert contains($p, "class-code              00030000") "G6: ATI class-code"
+assert contains($p, "interrupts              00000001") "G6: ATI interrupts (INTA)"
+assert contains($p, "min-grant               00000008") "G6: ATI min-grant"
+assert contains($p, "max-latency             00000000") "G6: ATI max-latency"
+assert contains($p, "devsel-speed            00000001") "G6: ATI devsel-speed"
+assert contains($p, "fast-back-to-back") "G6: ATI fast-back-to-back"
+assert contains($p, "AAPL,interrupts         00000016") "G6: ATI AAPL,interrupts != $16"
+assert contains($p, "AAPL,slot-name          F1") "G6: ATI slot-name != F1"
+assert contains($p, "depth                   00000008") "G6: ATI console depth != 8"
+assert contains($p, "device_type             display") "G6: ATI device_type"
+assert contains($p, "character-set           49534F38 3835392D 3100") "G6: ATI character-set"
+assert contains($p, "iso6429-1983-colors") "G6: ATI iso6429-1983-colors"
+assert contains($p, "reg                     00009000 00000000 00000000  00000000 00000000") "G6: ATI reg (config)"
+assert contains($p, "02009010 00000000 00000000  00000000 01000000") "G6: ATI reg (BAR0 16 MB)"
+assert contains($p, "02009018 00000000 00000000  00000000 00001000") "G6: ATI reg (BAR2 4 KB)"
+assert contains($p, "ATY,Rom#                3131332D 58585858 582D312E 3100") "G6: ATI ATY,Rom#"
+assert contains($p, "ATY,Fcode               312E3533 00") "G6: ATI FCode != 1.53"
+assert contains($p, "ATY,Flags               062B0002") "G6: ATI ATY,Flags does not carry the 14in RGB sense $62B"
+assert contains($p, "width                   00000280") "G6: ATI console width != 640"
+assert contains($p, "height                  000001E0") "G6: ATI console height != 480"
+assert contains($p, "linebytes               00000280") "G6: ATI linebytes != 640"
+gos_send("pwd")
+$cd = gos_go()
+assert contains($cd, "/pci@80000000/ATY,mach64_3DUPro@12") "G6: the screen alias does not name device $12"
+
+# --- /memory: what the SPD EEPROMs said -------------------------------------
+# One 64 MB DIMM in slot 0, sized by the boot program over Cuda I2C and
+# described to Open Firmware by the Grackle bank registers.
+gos_send("dev /me")
+gos_send("mory")
+$cd = gos_go()
+gos_send(".proper")
+gos_send("ties")
+$p = gos_go()
+assert contains($p, "reg                     00000000  04000000") "G6: /memory reg != 64 MB at 0"
+
+echo "gossamer-device-tree: G6 — the tree matches the real machine's dump"
+quit
