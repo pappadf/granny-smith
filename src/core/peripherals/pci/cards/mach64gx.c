@@ -2541,26 +2541,33 @@ static void aper_write32(void *ctx, uint32_t offset, uint32_t value) {
 // ============================================================
 // BAR2 maps both 1 KB blocks with no framebuffer around them — block 1 at
 // +$000, block 0 at +$400 — which is how drivers reach the registers once
-// BUS_APER_REG_DIS has taken them out of BAR0.  BAR1 is the classic
-// block-decoded I/O file: dword = offset / 4, block 0 dwords $00-$3F.
-// Both are little-endian register faces, like the BAR0 alias.
+// BUS_APER_REG_DIS has taken them out of BAR0.  The BAR is 4 KB and the two
+// blocks repeat in its upper half: ATI's Mac OS accelerator streams colour
+// host data with stmw to +$E00 (block 0's HOST_DATA through the upper copy)
+// with HOST_BIG_ENDIAN_EN set — pixel order comes out right only if that
+// copy is the same little-endian face (a byte-swapping copy would swap
+// twice), and with the upper half unmapped every alert drew without its
+// text.  BAR1 is the classic block-decoded I/O file: dword = offset / 4,
+// block 0 dwords $00-$3F.  Both are little-endian register faces, like the
+// BAR0 alias.
+#define RAGEPRO_BAR2_DECODE 0x7FFu // the 2 KB of blocks, repeated through 4 KB
 
 static uint8_t aux_read8(void *ctx, uint32_t offset) {
     mach64_t *m = (mach64_t *)ctx;
+    offset &= RAGEPRO_BAR2_DECODE;
     if (offset < 0x400u)
         return (uint8_t)(m->reg1[offset >> 2] >> (8u * (offset & 3u)));
-    if (offset < 0x800u)
-        return mach64_reg_read_lane(m, (int)((offset & 0x3FFu) >> 2), offset & 3u);
-    return 0xFFu;
+    return mach64_reg_read_lane(m, (int)((offset & 0x3FFu) >> 2), offset & 3u);
 }
 
 static void aux_write8(void *ctx, uint32_t offset, uint8_t value) {
     mach64_t *m = (mach64_t *)ctx;
+    offset &= RAGEPRO_BAR2_DECODE;
     if (offset < 0x400u) {
         uint32_t *r = &m->reg1[offset >> 2];
         uint32_t sh = 8u * (offset & 3u);
         *r = (*r & ~(0xFFu << sh)) | ((uint32_t)value << sh);
-    } else if (offset < 0x800u) {
+    } else {
         mach64_reg_write_lane(m, (int)((offset & 0x3FFu) >> 2), offset & 3u, value);
     }
 }
@@ -2576,22 +2583,23 @@ static void aux_write16(void *ctx, uint32_t offset, uint16_t value) {
 
 static uint32_t aux_read32(void *ctx, uint32_t offset) {
     mach64_t *m = (mach64_t *)ctx;
+    offset &= RAGEPRO_BAR2_DECODE;
     if (offset < 0x400u) {
         LOG(4, "Rage Pro: block-1 dword $%02X read (BAR2)", (unsigned)(offset >> 2));
         return MACH64_LE32(m->reg1[offset >> 2]);
     }
-    if (offset < 0x800u)
-        return MACH64_LE32(mach64_reg_read(m, (int)((offset & 0x3FFu) >> 2)));
-    return 0xFFFFFFFFu;
+    return MACH64_LE32(mach64_reg_read(m, (int)((offset & 0x3FFu) >> 2)));
 }
 
 static void aux_write32(void *ctx, uint32_t offset, uint32_t value) {
     mach64_t *m = (mach64_t *)ctx;
+    offset &= RAGEPRO_BAR2_DECODE;
     if (offset < 0x400u) {
         m->reg1[offset >> 2] = MACH64_LE32(value);
         LOG(4, "Rage Pro: block-1 dword $%02X = $%08X (BAR2)", (unsigned)(offset >> 2), MACH64_LE32(value));
-    } else if (offset < 0x800u)
+    } else {
         mach64_reg_write(m, (int)((offset & 0x3FFu) >> 2), MACH64_LE32(value));
+    }
 }
 
 static uint8_t bio_read8(void *ctx, uint32_t offset) {

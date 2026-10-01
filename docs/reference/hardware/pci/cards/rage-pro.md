@@ -4,7 +4,7 @@
 
 1. [Overview](#1-overview)
 2. [Register file](#2-register-file) — what this page adds to the Rage II page's map: GUI_STAT's FIFO
-   count, the DP_SET_GUI_ENGINE2 shortcut, HOST_CNTL
+   count, the DP_SET_GUI_ENGINE2 shortcut, HOST_CNTL, the BAR2 register aperture
 3. [Behaviour](#3-behaviour) — colour host data
 4. [Programming model](#4-programming-model) — what ATI's Mac OS accelerator does with it
 5. [Quirks & errata](#5-quirks--errata)
@@ -85,6 +85,17 @@ surface.
 
 [1] p. 5-34; the same two bits in the GX's register [4] (and [mach64.md](mach64.md) §3.1).
 
+### 2.4 The register aperture (BAR2)
+
+BAR2 is a 4 KB memory BAR holding both register blocks: block 1 at `+$000` and block 0 at
+`+$400`. It is how drivers reach the registers when BUS_APER_REG_DIS has removed them from BAR0's
+aperture. On the beige G3 the firmware places it at `$80800000`, with BAR0 at `$81000000` [5].
+
+The two blocks repeat in the BAR's upper half, `+$800` to `+$FFF`, and that copy is the same
+little-endian register face. ATI's driver depends on it (§4). It writes block 0's HOST_DATA at
+`+$E00`, with HOST_BIG_ENDIAN_EN set and the pixels in big-endian order. Pixels come out in order
+only if no second byte swap happens in the aperture [5].
+
 ## 3. Behaviour
 
 ### 3.1 Colour host data
@@ -106,12 +117,18 @@ installs) is observed to [5]:
 - program every fill and blit through DP_SET_GUI_ENGINE2 and the colour registers, never writing
   DP_SRC or DP_MIX for them;
 - draw offscreen copies and dialog contents as colour host-data operations at 15 bpp with
-  HOST_BIG_ENDIAN_EN set.
+  HOST_BIG_ENDIAN_EN set;
+- stream that host data with `stmw` (eight words a store), each store followed by `dcbst`. The
+  stores go not to the BAR0 register alias but to the register aperture BAR2, at `+$E00`: block
+  0's HOST_DATA through the upper copy of the two register blocks (§2.4).
 
 ## 5. Quirks & errata
 
 - **FIFO_CNT is the wait the driver uses.** A model that reports an idle engine through FIFO_STAT
   alone hangs ATI's driver at its first operation.
+- **HOST_DATA through BAR2's upper half.** A model that decodes only BAR2's lower 2 KB drops
+  every pixel ATI's driver streams. The symptom is alerts, buttons and menu-bar text drawn as
+  blank boxes.
 - **The shortcut registers are write-only and stateful.** Their effects persist in the
   registers they load; DP_SRC read back after a DP_SET_GUI_ENGINE2 write shows the loaded
   sources.
@@ -121,11 +138,9 @@ installs) is observed to [5]:
 1. **DP_SET_GUI_ENGINE's bit positions.** Its fields are named and described [1] pp. 5-53, 5-54
    (destination and source widths, destination offset and pitch codes, the DRAWING_COMBO table,
    the bus-master controls), but their positions have not been read off the chart.
-2. **Where some host data comes from.** ATI's driver sets up colour host-data operations for
-   alert text whose pixels arrive through no HOST_DATA write, no block-1 register and no
-   big-endian-aperture register alias that was traced [5] — most likely the bus-master GUI path
-   (BM_GUI_TABLE and SET_BUS_MASTER_OP "system memory to host data register" [1] Ch. 6), not yet
-   established.
+2. **The upper half of BAR2.** It is observed only through the driver's use (§2.4): a plain
+   mirror of the lower 2 KB is the reading the driver's byte order requires. What the manuals say
+   about it has not been checked.
 3. **The PCI revision on the G3.** The beige G3 tree's published `revision-id` and the chip ID's
    revision byte have not been reconciled across board revisions.
 4. **Everything this page defers to the Rage II page** — the scaler, overlay, 3D and bus-master
@@ -146,5 +161,6 @@ installs) is observed to [5]:
    Rev. 1.0, March 2000.
 4. ATI Technologies Inc., *mach64 Register Reference Guide* (GX), 1994 — HOST_CNTL.
 5. Mac OS 9.2.1 on a beige Power Macintosh G3 (Rev C ROM, `$78F57389`) with its installed ATI
-   extensions — observed register traffic to the on-board RAGE PRO at the desktop and while an
-   alert is drawn.
+   extensions. Observed: register traffic to the on-board RAGE PRO at the desktop and while an
+   alert is drawn; the accelerator's code at the host-data path (its `stmw`/`dcbst` loop and the
+   BAR2 base it writes through); and the device's configuration space, read through Grackle.
