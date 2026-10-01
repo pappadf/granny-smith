@@ -52,6 +52,10 @@ static const char *const TNT[] = {"pm7500", "pm8500", "pm9500", NULL};
 // string as the 9500 v2 ROM.  Only the full id — header sum plus the
 // ConfigInfo 64-bit sum — tells them apart.  Never identify one by version.
 static const char *const ANS[] = {"ans500", "ans700", NULL};
+// Power Macintosh G3 (beige, "Gossamer") 4 MB ROMs.  One board program
+// serves the desktop, mini tower and Server G3 (and the All-in-One, not
+// emulated yet); the revision is an image property, not a model one.
+static const char *const G3[] = {"pmg3dt", "pmg3mt", NULL};
 // Apple Lisa 2 (rev H) and Macintosh XL ("3A") interleaved boot ROMs
 // (docs/reference/machines/lisa/lisa.md §16), each two 8 KB byte-slice chips.
 static const char *const LISA[] = {"lisa", NULL};
@@ -122,8 +126,10 @@ const rom_info_t rom_table[] = {
     {"Power Mac & Performa 5200,5300,6200,6300 ROM", NONE, "63abfd3f-c5421fbaff3c5a9d", 4096 * 1024, 0, 0},
     {"Power Mac 6500 ROM", NONE, "6e92fe08-c784f8035da2d93a", 4096 * 1024, 0, 0},
     {"Performa 6400 ROM", NONE, "6f5724c0-6703442013f443d8", 4096 * 1024, 0, 0},
-    {"Power Mac G3 (v3) ROM", NONE, "78f57389-7b8375af2e19914d", 4096 * 1024, 0, 0},
-    {"Power Mac G3 desktop ROM", NONE, "79d68d63-32d284c61fd4f342", 4096 * 1024, 0, 0},
+    {"Power Macintosh G3 ROM (Rev C, 077D.45F2, Open Firmware 2.4)", G3, "78f57389-7b8375af2e19914d", 4096 * 1024, 0, 0,
+     "Rev C"},
+    {"Power Macintosh G3 ROM (Rev A, 077D.40F2, Open Firmware 2.0f1)", G3, "79d68d63-32d284c61fd4f342", 4096 * 1024, 0,
+     0, "Rev A"},
     {"PowerBook 1400cs ROM", NONE, "83a21950-b470fc5d287e39c1", 4096 * 1024, 0, 0},
     {"Powerbook 2300 & PB5x0 PPC Upgrade ROM", NONE, "83c54f75-c8b9658674ebb5ba", 4096 * 1024, 0, 0},
     {"Power Mac 7300 & 7600 & 8600 & 9600 (v1) ROM", NONE, "960e4be9-949c2c56d07516b7", 4096 * 1024, 0, 0},

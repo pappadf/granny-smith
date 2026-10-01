@@ -118,6 +118,20 @@ static const char *spr_name(uint32_t n) {
         return "dbat3u";
     case 543:
         return "dbat3l";
+    case 936:
+        return "ummcr0"; // 750 user-level monitor mirrors (750UM Table 2-49)
+    case 937:
+        return "upmc1";
+    case 938:
+        return "upmc2";
+    case 939:
+        return "usia";
+    case 940:
+        return "ummcr1";
+    case 941:
+        return "upmc3";
+    case 942:
+        return "upmc4";
     case 952:
         return "mmcr0"; // 604 performance monitor group
     case 953:
@@ -126,6 +140,12 @@ static const char *spr_name(uint32_t n) {
         return "pmc2";
     case 955:
         return "sia";
+    case 956:
+        return "mmcr1"; // 750 additions to the monitor group
+    case 957:
+        return "pmc3";
+    case 958:
+        return "pmc4";
     case 959:
         return "sda";
     case 1008:
@@ -136,6 +156,16 @@ static const char *spr_name(uint32_t n) {
         return "iabr";
     case 1013:
         return "dabr";
+    case 1017:
+        return "l2cr"; // 750 implementation registers
+    case 1019:
+        return "ictc";
+    case 1020:
+        return "thrm1";
+    case 1021:
+        return "thrm2";
+    case 1022:
+        return "thrm3";
     case 1023:
         return "pir";
     default:
@@ -569,7 +599,8 @@ int ppc_disassemble_model(uint32_t word, uint32_t addr, int model, ppc_insn *out
     ppc_disassemble(word, addr, out);
     // The other model's exclusives trap as illegal there — render them
     // the way any invalid word renders.
-    if ((model == 604 && out->is_power) || (model == 601 && out->is_604))
+    // The 750 shares the 604's instruction-set view (750UM §2.3).
+    if ((model != 601 && out->is_power) || (model == 601 && out->is_604))
         invalid(out);
     return out->status;
 }

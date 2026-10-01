@@ -1,0 +1,151 @@
+# tests/integration/lib/gossamer.script — shared helpers for the beige
+# Power Macintosh G3 (Gossamer) rows.
+#
+# Pull in with `include "../lib/gossamer.script"`.
+#
+# REACHING OPEN FIRMWARE.  A beige G3 boots straight through Open Firmware
+# into Mac OS (`auto-boot?` defaults to true).  Apple's way in is to hold
+# Command-Option-O-F on the ADB keyboard from power-on, and that is what
+# the rows do: the keys go down before the first instruction and stay down
+# until the prompt appears.  Two pieces of the model carry it, both of them
+# real-hardware behaviour the firmware depends on:
+#
+#   * the keyboard re-reports every key still held after the ROM's ADB bus
+#     reset, in the order the keys went down (adb.c, kbd_rereport_held) —
+#     the firmware builds its key map only from key-downs it sees after its
+#     own reset, and tests the combination on F;
+#   * Cuda keeps an autopoll packet the host has not claimed yet at the head
+#     of its output queue (cuda.c, cuda_present_parked_autopoll) — the
+#     firmware turns autopoll on and then finishes its ADB probe before it
+#     reads, and the [Command Option] packet has to survive that.
+#
+# THE CONSOLE.  Open Firmware's console is the Rage Pro's screen and the
+# ADB keyboard.  The firmware's banner says how to move it ("For Open
+# Firmware serial I/O type: TTYA IO"), and the rows do exactly that, on
+# the keyboard.  From then on commands go in over the serial port,
+# a few characters at a time: Open Firmware's console loses characters
+# from a long burst (the ANS rows' experience, and true here too).
+
+# Feed a short chunk of command text to Open Firmware's console.
+def gos_send(s) {
+    machine.scc.a.receive("${$s}")
+    scheduler.run 5000000
+}
+
+# Run until the firmware prints its prompt; return everything it said.
+# Long listings page at the console's height with `More [<space>,<cr>,q] ?`,
+# which a space answers.
+def gos_wait_prompt(chunks) {
+    let out = ""
+    let n = 0
+    while !contains($out, "0 > ") && $n < $chunks {
+        scheduler.run 20000000
+        let ch = machine.scc.a.sent()
+        $out = "${$out}${$ch}"
+        if contains($ch, "More [") {
+            machine.scc.a.receive(" ")
+        }
+        $n = $n + 1
+    }
+    return $out
+}
+
+# Complete the line and return the firmware's reply up to its next prompt.
+def gos_go() {
+    machine.scc.a.receive("\r")
+    let out = gos_wait_prompt(100)
+    assert contains($out, "0 > ") "Open Firmware did not return to its prompt"
+    return $out
+}
+
+# True while the CPU is executing Open Firmware (its image in RAM at
+# $FF800000 as the boot program relocates it) rather than the boot
+# program ($FFF0xxxx) or the 68k emulator ($FFExxxxx).
+def gos_in_of() {
+    return machine.cpu.pc >= 0xFF800000 && machine.cpu.pc < 0xFFC00000
+}
+
+# Boot `model` holding Command-Option-O-F, and leave the machine at the
+# Open Firmware prompt with the console on ttya.  Returns the prompt reply.
+#
+# With the on-board Rage Pro, Open Firmware's console is the SCREEN, so
+# the prompt does not appear on the serial port: the row waits for the
+# boot to settle in Open Firmware (two consecutive samples inside it,
+# past the probe), then types `ttya io` — the command the banner offers
+# — on the keyboard, and checks the prompt over serial.
+def gos_boot_prompt(model, ram_kb) {
+    machine.boot model="${$model}" ram=$ram_kb rom="${$ROM}"
+    machine.adb.keyboard.down "Command"
+    machine.adb.keyboard.down "Option"
+    machine.adb.keyboard.down "o"
+    machine.adb.keyboard.down "f"
+    scheduler.run 400000000
+    let settled = 0
+    let n = 0
+    while $settled < 2 && $n < 20 {
+        scheduler.run 100000000
+        if gos_in_of() {
+            $settled = $settled + 1
+        } else {
+            $settled = 0
+        }
+        $n = $n + 1
+    }
+    machine.adb.keyboard.up "f"
+    machine.adb.keyboard.up "o"
+    machine.adb.keyboard.up "Option"
+    machine.adb.keyboard.up "Command"
+    assert gos_in_of() "${$model}: Command-Option-O-F did not stop the boot in Open Firmware (pc ${machine.cpu.pc:08x})"
+    scheduler.run 20000000
+    machine.adb.keyboard.type "ttya io\n"
+    scheduler.run 200000000
+    let drained = machine.scc.a.sent()
+    return gos_go()
+}
+
+# --- Mac OS 9.2.1 install from its CD -------------------------------------------
+#
+# From the CD's Finder desktop (the disc's window open, the blank disk the
+# first entry in Drive Setup's list): Utilities -> Drive Setup, initialize
+# the blank disk as one Mac OS partition, quit, then Mac OS Install through
+# its Continue screens and the license to Start, and the ~40 G-instruction
+# copy.  Leaves the installer's "installation process has finished" dialog
+# up and checks it against `golden` (menu-bar clock excluded).  Every
+# coordinate is the 640x480 desktop the Rage Pro comes up in.
+def gos_install_921(golden) {
+    double_click(318, 212) # Utilities
+    run_ticks(240)
+    double_click(187, 180) # Drive Setup
+    run_ticks(1500)
+    click(220, 143) # the first drive: the blank disk
+    run_ticks(120)
+    click(414, 287) # Initialize...
+    run_ticks(600)
+    click(427, 278) # Initialize (confirm)
+    run_ticks(3000)
+    machine.adb.keyboard.down "command"
+    run_ticks(6)
+    machine.adb.keyboard.press "q" # quit Drive Setup
+    run_ticks(6)
+    machine.adb.keyboard.up "command"
+    run_ticks(240)
+    click(23, 58) # close Utilities
+    run_ticks(120)
+    double_click(193, 152) # Mac OS Install
+    run_ticks(1500)
+    # The screens up to Install Software: Continue (bottom right) four times,
+    # then the license dialog's Agree.
+    click(514, 383)
+    run_ticks(600)
+    click(514, 383)
+    run_ticks(900)
+    click(514, 383)
+    run_ticks(900)
+    click(514, 383)
+    run_ticks(600)
+    click(449, 306)
+    run_ticks(900)
+    click(514, 383) # Start
+    scheduler.run 40000000000
+    check_ex($golden, 0, 440, 20, 640)
+}

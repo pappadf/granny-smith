@@ -44,7 +44,7 @@ static const hw_profile_t *const builtin_machines[] = {
     &machine_plus,   &machine_se30,   &machine_iicx,   &machine_iix,    &machine_iifx,   &machine_iici,
     &machine_iisi,   &machine_q700,   &machine_q900,   &machine_q950,   &machine_q840av, &machine_q660av,
     &machine_pm6100, &machine_pm7100, &machine_pm8100, &machine_pm7500, &machine_pm8500, &machine_pm9500,
-    &machine_ans500, &machine_ans700, &machine_lisa,   &machine_macxl,
+    &machine_ans500, &machine_ans700, &machine_pmg3dt, &machine_pmg3mt, &machine_lisa,   &machine_macxl,
 };
 static const size_t builtin_machine_count = sizeof(builtin_machines) / sizeof(builtin_machines[0]);
 
@@ -112,12 +112,15 @@ const char *media_bus_name(media_bus_t bus) {
         return "scsi2";
     case MEDIA_BUS_PROFILE:
         return "profile";
+    case MEDIA_BUS_ATA:
+        return "ata";
     }
     return "scsi";
 }
 
 bool media_bus_parse(const char *name, media_bus_t *out) {
-    static const media_bus_t all[] = {MEDIA_BUS_FLOPPY, MEDIA_BUS_SCSI, MEDIA_BUS_SCSI2, MEDIA_BUS_PROFILE};
+    static const media_bus_t all[] = {MEDIA_BUS_FLOPPY, MEDIA_BUS_SCSI, MEDIA_BUS_SCSI2, MEDIA_BUS_PROFILE,
+                                      MEDIA_BUS_ATA};
     for (size_t i = 0; name && i < sizeof(all) / sizeof(all[0]); i++) {
         if (strcmp(name, media_bus_name(all[i])) == 0) {
             *out = all[i];

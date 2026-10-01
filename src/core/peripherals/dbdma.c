@@ -67,7 +67,7 @@ LOG_USE_CATEGORY_NAME("dbdma");
 
 // Host-settable status bits (mask writes may CLEAR any bit, but can only
 // SET these — ACTIVE/DEAD/BT are engine-owned outputs).
-#define HOST_SET_BITS (TNT_DBDMA_RUN | TNT_DBDMA_PAUSE | TNT_DBDMA_FLUSH | TNT_DBDMA_WAKE | TNT_DBDMA_DEVSTAT)
+#define HOST_SET_BITS (DBDMA_RUN | DBDMA_PAUSE | DBDMA_FLUSH | DBDMA_WAKE | DBDMA_DEVSTAT)
 
 // Commands executed per activation before the runaway guard trips (a
 // descriptor ring with no data command and no WAIT would otherwise spin
@@ -88,11 +88,12 @@ typedef struct dbdma_chan {
     uint32_t cursor; // bytes already moved by the in-flight data command
 } dbdma_chan_t;
 
-struct tnt_dbdma {
-    dbdma_chan_t chan[TNT_DBDMA_CHANNELS];
-    tnt_dbdma_port_t port[TNT_DBDMA_CHANNELS]; // device ports (out==in==NULL when absent)
+struct dbdma {
+    int nchan; // live channel count (dbdma_init)
+    dbdma_chan_t chan[DBDMA_MAX_CHANNELS];
+    dbdma_port_t port[DBDMA_MAX_CHANNELS]; // device ports (out==in==NULL when absent)
     dma_mem_port_t mem; // guest-physical port (dma_mem.h)
-    tnt_dbdma_irq_fn irq;
+    dbdma_irq_fn irq;
     void *irq_ctx;
 };
 
@@ -100,44 +101,46 @@ struct tnt_dbdma {
 // Lifecycle
 // ============================================================
 
-tnt_dbdma_t *tnt_dbdma_init(checkpoint_t *cp) {
-    tnt_dbdma_t *d = calloc(1, sizeof(*d));
+dbdma_t *dbdma_init(checkpoint_t *cp, int nchan) {
+    assert(nchan >= 1 && nchan <= DBDMA_MAX_CHANNELS);
+    dbdma_t *d = calloc(1, sizeof(*d));
     if (!d) {
         LOG(0, "Error: out of memory allocating the DBDMA engine");
         return NULL;
     }
+    d->nchan = nchan;
     if (cp)
-        for (int n = 0; n < TNT_DBDMA_CHANNELS; n++)
+        for (int n = 0; n < nchan; n++)
             system_read_checkpoint_data(cp, &d->chan[n], sizeof(d->chan[n]));
     return d;
 }
 
-void tnt_dbdma_delete(tnt_dbdma_t *d) {
+void dbdma_delete(dbdma_t *d) {
     free(d);
 }
 
-void tnt_dbdma_checkpoint(tnt_dbdma_t *d, checkpoint_t *cp) {
-    for (int n = 0; n < TNT_DBDMA_CHANNELS; n++)
+void dbdma_checkpoint(dbdma_t *d, checkpoint_t *cp) {
+    for (int n = 0; n < d->nchan; n++)
         system_write_checkpoint_data(cp, &d->chan[n], sizeof(d->chan[n]));
 }
 
-void tnt_dbdma_reset(tnt_dbdma_t *d) {
+void dbdma_reset(dbdma_t *d) {
     // Power-on: every channel idle, all registers zero (ports and hooks
     // are wiring, not state — they survive).
     memset(d->chan, 0, sizeof(d->chan));
 }
 
-void tnt_dbdma_set_memory_port(tnt_dbdma_t *d, const dma_mem_port_t *port) {
+void dbdma_set_memory_port(dbdma_t *d, const dma_mem_port_t *port) {
     d->mem = port ? *port : (dma_mem_port_t){0};
 }
 
-void tnt_dbdma_set_irq_hook(tnt_dbdma_t *d, tnt_dbdma_irq_fn fn, void *ctx) {
+void dbdma_set_irq_hook(dbdma_t *d, dbdma_irq_fn fn, void *ctx) {
     d->irq = fn;
     d->irq_ctx = ctx;
 }
 
-void tnt_dbdma_set_port(tnt_dbdma_t *d, int chan, const tnt_dbdma_port_t *port) {
-    assert(chan >= 0 && chan < TNT_DBDMA_CHANNELS);
+void dbdma_set_port(dbdma_t *d, int chan, const dbdma_port_t *port) {
+    assert(chan >= 0 && chan < d->nchan);
     if (port)
         d->port[chan] = *port;
     else
@@ -150,7 +153,7 @@ void tnt_dbdma_set_port(tnt_dbdma_t *d, int chan, const tnt_dbdma_port_t *port) 
 
 // Compose a little-endian 32-bit field from raw guest bytes.
 // Read the descriptor at `addr` into its four little-endian words.
-static void desc_fetch(tnt_dbdma_t *d, uint32_t addr, uint32_t w[4]) {
+static void desc_fetch(dbdma_t *d, uint32_t addr, uint32_t w[4]) {
     uint8_t raw[16];
     dma_mem_read_block(&d->mem, addr, raw, 16);
     for (int i = 0; i < 4; i++)
@@ -158,15 +161,15 @@ static void desc_fetch(tnt_dbdma_t *d, uint32_t addr, uint32_t w[4]) {
 }
 
 // Write one little-endian 32-bit descriptor field back to guest memory.
-static void desc_store32(tnt_dbdma_t *d, uint32_t addr, uint32_t value) {
+static void desc_store32(dbdma_t *d, uint32_t addr, uint32_t value) {
     uint8_t raw[4] = {(uint8_t)value, (uint8_t)(value >> 8), (uint8_t)(value >> 16), (uint8_t)(value >> 24)};
     dma_mem_write_block(&d->mem, addr, raw, 4);
 }
 
 // The channel's live device-status byte: host-latched s-bits OR the
 // device's live view.
-static uint8_t devstat(tnt_dbdma_t *d, int n) {
-    uint8_t s = (uint8_t)(d->chan[n].status & TNT_DBDMA_DEVSTAT);
+static uint8_t devstat(dbdma_t *d, int n) {
+    uint8_t s = (uint8_t)(d->chan[n].status & DBDMA_DEVSTAT);
     if (d->port[n].s_bits)
         s |= d->port[n].s_bits(d->port[n].ctx);
     return s;
@@ -192,22 +195,22 @@ static bool cond_eval(uint32_t modifier, uint32_t sel, uint8_t stat) {
 
 // The 16-bit status image written into xferStatus: hardware bits plus
 // the live device byte (drivers test ACTIVE and BT here).
-static uint16_t status16(tnt_dbdma_t *d, int n) {
-    return (uint16_t)((d->chan[n].status & ~(uint32_t)TNT_DBDMA_DEVSTAT) | devstat(d, n));
+static uint16_t status16(dbdma_t *d, int n) {
+    return (uint16_t)((d->chan[n].status & ~(uint32_t)DBDMA_DEVSTAT) | devstat(d, n));
 }
 
 // Write the in-flight descriptor's result field (xferStatus + resCount).
 // ALWAYS called before any interrupt for the same command — drivers read
 // residuals from here (the resCount-before-interrupt gotcha).
-static void result_writeback(tnt_dbdma_t *d, int n, uint32_t desc_addr, uint32_t req) {
+static void result_writeback(dbdma_t *d, int n, uint32_t desc_addr, uint32_t req) {
     uint32_t res = req - d->chan[n].cursor;
     desc_store32(d, desc_addr + 12, ((uint32_t)status16(d, n) << 16) | (res & 0xFFFFu));
 }
 
 // A channel executes commands only in this state.
 static bool runnable(const dbdma_chan_t *c) {
-    uint32_t need = TNT_DBDMA_RUN | TNT_DBDMA_ACTIVE;
-    uint32_t veto = TNT_DBDMA_PAUSE | TNT_DBDMA_DEAD;
+    uint32_t need = DBDMA_RUN | DBDMA_ACTIVE;
+    uint32_t veto = DBDMA_PAUSE | DBDMA_DEAD;
     return (c->status & (need | veto)) == need;
 }
 
@@ -219,7 +222,7 @@ static bool runnable(const dbdma_chan_t *c) {
 // or exhausts the runaway budget.  Synchronous by design: control-write
 // status transitions and completion interrupts all happen before the
 // guest's next instruction.
-static void run_channel(tnt_dbdma_t *d, int n) {
+static void run_channel(dbdma_t *d, int n) {
     dbdma_chan_t *c = &d->chan[n];
     if (!dma_mem_port_bound(&d->mem)) {
         LOG(1, "ch%d activated with no memory hooks", n);
@@ -259,7 +262,7 @@ static void run_channel(tnt_dbdma_t *d, int n) {
         case CMD_INPUT_MORE:
         case CMD_INPUT_LAST: {
             bool out = cmd <= CMD_OUTPUT_LAST;
-            const tnt_dbdma_port_t *p = &d->port[n];
+            const dbdma_port_t *p = &d->port[n];
             if (!(out ? p->out != NULL : p->in != NULL)) {
                 // No device behind this channel yet: stall honestly (the
                 // program resumes once a device attaches the port).
@@ -287,6 +290,12 @@ static void run_channel(tnt_dbdma_t *d, int n) {
                     moved = 0;
                 c->cursor += (uint32_t)moved;
                 if (moved < want) {
+                    // A frame device that ended its input here completes
+                    // the command short (the residual says how short).
+                    if (!out && p->in_end && p->in_end(p->ctx)) {
+                        LOG(3, "ch%d input ended by the device at %u/%u bytes", n, c->cursor, req);
+                        break;
+                    }
                     // Device stalled mid-command: cursor survives, the
                     // descriptor is refetched on the device's kick.
                     LOG(3, "ch%d stalled at %u/%u bytes", n, c->cursor, req);
@@ -304,13 +313,21 @@ static void run_channel(tnt_dbdma_t *d, int n) {
                     }
                 }
             }
+            if (req > 0 && c->cursor >= req) {
+                // Filled exactly: a frame boundary that landed on the last
+                // byte belongs to this command, not the next.
+                if (!out && p->in_end)
+                    (void)p->in_end(p->ctx);
+            }
+            if (cmd == CMD_OUTPUT_LAST && p->out_last)
+                p->out_last(p->ctx);
             // Command complete: branch decision, then result write-back,
             // then (below) the interrupt.
             taken = cond_eval(b_mod, c->br_sel, devstat(d, n));
             if (taken)
-                c->status |= TNT_DBDMA_BT;
+                c->status |= DBDMA_BT;
             else
-                c->status &= ~(uint32_t)TNT_DBDMA_BT;
+                c->status &= ~(uint32_t)DBDMA_BT;
             result_writeback(d, n, c->cmdptr, req);
             wrote_result = true;
             break;
@@ -341,15 +358,15 @@ static void run_channel(tnt_dbdma_t *d, int n) {
             // interrupt.  BR_ALWAYS+NOP is the ring-buffer jump idiom.
             taken = cond_eval(b_mod, c->br_sel, stat);
             if (taken)
-                c->status |= TNT_DBDMA_BT;
+                c->status |= DBDMA_BT;
             else
-                c->status &= ~(uint32_t)TNT_DBDMA_BT;
+                c->status &= ~(uint32_t)DBDMA_BT;
             break;
         case CMD_STOP:
             // Park ON the STOP descriptor (cmdptr does not advance): the
             // driver overwrites it with a live command and sets WAKE to
             // continue — the audio-ring idiom the commit rule exists for.
-            c->status &= ~(uint32_t)TNT_DBDMA_ACTIVE;
+            c->status &= ~(uint32_t)DBDMA_ACTIVE;
             c->cursor = 0;
             advance = false;
             LOG(3, "ch%d STOP at $%08X", n, c->cmdptr);
@@ -358,8 +375,8 @@ static void run_channel(tnt_dbdma_t *d, int n) {
             // Reserved encodings 8-15: no attested semantics; a real
             // program never contains them, so treat as a dead program.
             LOG(1, "ch%d reserved command %u at $%08X — channel dead", n, cmd, c->cmdptr);
-            c->status |= TNT_DBDMA_DEAD;
-            c->status &= ~(uint32_t)TNT_DBDMA_ACTIVE;
+            c->status |= DBDMA_DEAD;
+            c->status &= ~(uint32_t)DBDMA_ACTIVE;
             advance = false;
             break;
         }
@@ -392,7 +409,7 @@ static void run_channel(tnt_dbdma_t *d, int n) {
 // Flush/stop rundown: a partial data command's residual becomes guest-
 // visible (MESH/53C94 short transfers read resCount after stopping the
 // channel).  Needs a refetch for reqCount — descriptors are never cached.
-static void partial_writeback(tnt_dbdma_t *d, int n) {
+static void partial_writeback(dbdma_t *d, int n) {
     dbdma_chan_t *c = &d->chan[n];
     if (c->cursor == 0 || !dma_mem_port_bound(&d->mem))
         return;
@@ -401,15 +418,15 @@ static void partial_writeback(tnt_dbdma_t *d, int n) {
     result_writeback(d, n, c->cmdptr, w[0] & 0xFFFFu);
 }
 
-uint32_t tnt_dbdma_reg_read(tnt_dbdma_t *d, int chan, uint32_t offset) {
-    assert(chan >= 0 && chan < TNT_DBDMA_CHANNELS);
+uint32_t dbdma_reg_read(dbdma_t *d, int chan, uint32_t offset) {
+    assert(chan >= 0 && chan < d->nchan);
     dbdma_chan_t *c = &d->chan[chan];
     // The register-level trace (level 4): every read, with the status it
     // answers from — the instrument for a driver that polls something the
     // model never changes.
     LOG(4, "ch%d rd +$%02X (status $%04X cmdptr $%08X)", chan, offset & 0xFCu, status16(d, chan), c->cmdptr);
     switch (offset & 0xFCu) {
-    case TNT_DBDMA_REG_CONTROL:
+    case DBDMA_REG_CONTROL:
         // Apple's DBDMA architecture defines ChannelControl and ChannelStatus
         // as the same 16-bit field; ChannelControl merely adds the mask/value
         // write semantics on top.  It used to return 0 with a comment calling
@@ -418,15 +435,15 @@ uint32_t tnt_dbdma_reg_read(tnt_dbdma_t *d, int chan, uint32_t offset) {
         // mask/value idiom) compute from zero.  No corpus driver does, which
         // is why this was Low.
         return (uint32_t)status16(d, chan);
-    case TNT_DBDMA_REG_STATUS:
+    case DBDMA_REG_STATUS:
         return (uint32_t)status16(d, chan);
-    case TNT_DBDMA_REG_CMDPTRLO:
+    case DBDMA_REG_CMDPTRLO:
         return c->cmdptr; // advances as the program runs
-    case TNT_DBDMA_REG_INTRSEL:
+    case DBDMA_REG_INTRSEL:
         return c->intr_sel;
-    case TNT_DBDMA_REG_BRSEL:
+    case DBDMA_REG_BRSEL:
         return c->br_sel;
-    case TNT_DBDMA_REG_WAITSEL:
+    case DBDMA_REG_WAITSEL:
         return c->wait_sel;
     default:
         // commandPtrHi and the rest of the optional set: implemented as
@@ -436,12 +453,12 @@ uint32_t tnt_dbdma_reg_read(tnt_dbdma_t *d, int chan, uint32_t offset) {
     }
 }
 
-void tnt_dbdma_reg_write(tnt_dbdma_t *d, int chan, uint32_t offset, uint32_t value) {
-    assert(chan >= 0 && chan < TNT_DBDMA_CHANNELS);
+void dbdma_reg_write(dbdma_t *d, int chan, uint32_t offset, uint32_t value) {
+    assert(chan >= 0 && chan < d->nchan);
     dbdma_chan_t *c = &d->chan[chan];
     LOG(4, "ch%d wr +$%02X = $%08X (status $%04X)", chan, offset & 0xFCu, value, status16(d, chan));
     switch (offset & 0xFCu) {
-    case TNT_DBDMA_REG_CONTROL: {
+    case DBDMA_REG_CONTROL: {
         // Mask/value convention: only bits set in the upper half change,
         // taking the value of the corresponding lower-half bit.  Any bit
         // may be CLEARED this way (the canonical reset clears ACTIVE and
@@ -456,54 +473,58 @@ void tnt_dbdma_reg_write(tnt_dbdma_t *d, int chan, uint32_t offset, uint32_t val
         // RUN transitions own ACTIVE: setting RUN arms the program at
         // cmdptr; clearing RUN halts it (residual made visible first) —
         // both synchronously, so the canonical poll loops terminate.
-        if ((c->status & TNT_DBDMA_RUN) && !(was & TNT_DBDMA_RUN)) {
-            c->status &= ~(uint32_t)TNT_DBDMA_DEAD;
-            c->status |= TNT_DBDMA_ACTIVE;
+        if ((c->status & DBDMA_RUN) && !(was & DBDMA_RUN)) {
+            c->status &= ~(uint32_t)DBDMA_DEAD;
+            c->status |= DBDMA_ACTIVE;
             c->cursor = 0;
-        } else if (!(c->status & TNT_DBDMA_RUN) && (was & TNT_DBDMA_RUN)) {
+        } else if (!(c->status & DBDMA_RUN) && (was & DBDMA_RUN)) {
             partial_writeback(d, chan);
-            c->status &= ~(TNT_DBDMA_ACTIVE | TNT_DBDMA_DEAD);
+            c->status &= ~(DBDMA_ACTIVE | DBDMA_DEAD);
             c->cursor = 0;
         }
         // WAKE restarts a channel parked by STOP (self-clearing): the
         // overwritten STOP descriptor is refetched from cmdptr.
-        if (c->status & TNT_DBDMA_WAKE) {
-            c->status &= ~(uint32_t)TNT_DBDMA_WAKE;
-            if (c->status & TNT_DBDMA_RUN)
-                c->status |= TNT_DBDMA_ACTIVE;
+        if (c->status & DBDMA_WAKE) {
+            c->status &= ~(uint32_t)DBDMA_WAKE;
+            if (c->status & DBDMA_RUN)
+                c->status |= DBDMA_ACTIVE;
         }
         // FLUSH publishes an in-flight command's residual and self-clears
         // — there is no buffered data in this model, so it is complete
         // synchronously.
-        if (c->status & TNT_DBDMA_FLUSH) {
+        if (c->status & DBDMA_FLUSH) {
             partial_writeback(d, chan);
-            c->status &= ~(uint32_t)TNT_DBDMA_FLUSH;
+            c->status &= ~(uint32_t)DBDMA_FLUSH;
         }
         run_channel(d, chan);
         break;
     }
-    case TNT_DBDMA_REG_CMDPTRLO:
-        // Loadable only while the channel is disarmed (drivers write it
-        // before setting RUN; hardware ignores it mid-program).  The
-        // shipping ROM's native sound driver does write it once on a
-        // channel still parked on Open Firmware's beep STOP (RUN=1,
-        // ACTIVE=0) at its init; nothing ever starts that program — the
-        // Sound Manager's ring is loaded later with RUN cleared first —
-        // so the parked case stays ignored, as the T9 ladder rung pins.
-        if (c->status & (TNT_DBDMA_RUN | TNT_DBDMA_ACTIVE)) {
+    case DBDMA_REG_CMDPTRLO:
+        // Loadable whenever the channel is not executing a program: before
+        // RUN, or with RUN set and the channel parked on a STOP (ACTIVE
+        // clear) — only a write mid-program is refused.  The architecture
+        // asks for RUN clear too (CHRP I/O Device Reference §15.4.4), but
+        // shipping software depends on the parked case: Mac OS 9.2.1's ATA
+        // driver on Heathrow streams a long ATAPI read through a short
+        // program, and to continue it — mid-transfer, so it cannot clear
+        // RUN without aborting — rewrites CommandPtr on the parked channel
+        // and sets RUN|WAKE, the old STOP still in place.  Refusing the
+        // write woke the channel back onto that STOP and the CD boot hung
+        // in the Finder's first long read.
+        if (c->status & DBDMA_ACTIVE) {
             LOG(1, "ch%d cmdptr write $%08X ignored while running", chan, value);
             break;
         }
         c->cmdptr = value;
         c->cursor = 0;
         break;
-    case TNT_DBDMA_REG_INTRSEL:
+    case DBDMA_REG_INTRSEL:
         c->intr_sel = value & 0x00FF00FFu;
         break;
-    case TNT_DBDMA_REG_BRSEL:
+    case DBDMA_REG_BRSEL:
         c->br_sel = value & 0x00FF00FFu;
         break;
-    case TNT_DBDMA_REG_WAITSEL:
+    case DBDMA_REG_WAITSEL:
         c->wait_sel = value & 0x00FF00FFu;
         break;
     default:
@@ -516,12 +537,12 @@ void tnt_dbdma_reg_write(tnt_dbdma_t *d, int chan, uint32_t offset, uint32_t val
 // Device-side pacing
 // ============================================================
 
-void tnt_dbdma_kick(tnt_dbdma_t *d, int chan) {
-    assert(chan >= 0 && chan < TNT_DBDMA_CHANNELS);
+void dbdma_kick(dbdma_t *d, int chan) {
+    assert(chan >= 0 && chan < d->nchan);
     run_channel(d, chan);
 }
 
-bool tnt_dbdma_active(tnt_dbdma_t *d, int chan) {
-    assert(chan >= 0 && chan < TNT_DBDMA_CHANNELS);
+bool dbdma_active(dbdma_t *d, int chan) {
+    assert(chan >= 0 && chan < d->nchan);
     return runnable(&d->chan[chan]);
 }

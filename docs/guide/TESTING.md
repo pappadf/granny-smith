@@ -129,7 +129,7 @@ the ANS through the unit tier's `ans-pci-slots` and
 Machine families are covered by *suite* directories (`suite-plus`,
 `suite-se30`, `suite-iix`, `suite-iicx`, `suite-iici`, `suite-iisi`,
 `suite-iifx`, `suite-quadra`, `suite-av`, `suite-lisa`, `suite-pdm`,
-`suite-tnt`, `suite-ans`): one daemon run, one row per (system, media, RAM,
+`suite-tnt`, `suite-ans`, `suite-gossamer`): one daemon run, one row per (system, media, RAM,
 video) cell, re-instantiating via `machine.boot` between rows. A boot
 assertion belongs as a row in its machine's suite.
 
@@ -169,6 +169,10 @@ pair on the machine's own ADB keyboard and cold-boots), and its console
 drops characters from a long input burst (`ans_send` feeds it in chunks).
 See the library's header; the reasoning is worth reading before writing a
 row against a machine that narrates instead of drawing.
+
+A third, `tests/integration/lib/gossamer.script`, holds the beige G3's
+Open Firmware entry (Command-Option-O-F on the keyboard, then `ttya io`)
+and the Mac OS 9.2.1 installer choreography the install rows share.
 
 Suite variables are passed via `TEST_VARS`:
 

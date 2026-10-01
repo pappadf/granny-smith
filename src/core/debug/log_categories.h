@@ -48,6 +48,7 @@
     X("53c96", 0, "NCR 53C96 controller")                                                                              \
     X("53c825", 0, "Symbios 53C825 PCI controller")                                                                    \
     X("mesh", 0, "MESH SCSI controller")                                                                               \
+    X("ata", 0, "ATA / ATAPI channel")                                                                                 \
     X("scripts", 0, "53C8xx SCRIPTS engine")                                                                           \
     X("image", 0, "Disk image open/close and geometry")                                                                \
     X("storage", 0, "Delta/journal storage engine")                                                                    \
@@ -74,6 +75,7 @@
     X("ppctoolbox", 0, "AppleTalk PPC Toolbox program linking")                                                        \
     X("aevt", 0, "Apple events over PPC")                                                                              \
     X("sonic", 0, "SONIC Ethernet controller")                                                                         \
+    X("bmac", 0, "BMAC Ethernet cell (Heathrow)")                                                                      \
     X("mace", 0, "MACE Ethernet controller")                                                                           \
     X("sound", 0, "Sound output path")                                                                                 \
     X("asc", 0, "Apple Sound Chip")                                                                                    \
@@ -91,6 +93,9 @@
     X("bandit", 0, "Bandit PCI bridge")                                                                                \
     X("gc", 0, "Grand Central I/O controller")                                                                         \
     X("hammerhead", 0, "Hammerhead memory controller")                                                                 \
+    X("grackle", 0, "Grackle (MPC106) PCI bridge and memory controller")                                               \
+    X("heathrow", 0, "Heathrow I/O controller")                                                                        \
+    X("i2c", 0, "Cuda I2C bus devices (SPD, PERCH)")                                                                   \
     X("hmc", 0, "HMC memory controller")                                                                               \
     X("bart", 0, "BART DMA/bus controller")                                                                            \
     X("amic", 0, "AMIC I/O controller")                                                                                \

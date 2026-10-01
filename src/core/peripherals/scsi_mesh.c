@@ -239,6 +239,7 @@ static bool msgin_pending(mesh_t *m) {
 static void msg_session_reset(mesh_t *m) {
     scsi_msg_reset(&m->msg);
     m->msgin_taken = 0;
+    m->ack_held = 0;
 }
 
 // A message-out sequence completed: parse what the initiator said.
@@ -349,7 +350,7 @@ static void pump_in(mesh_t *m) {
 // calls for 8.3 MB on that same run say so -- and MESH was simply the one port
 // that never returned short.  So the pacing goes where the other two families
 // put it -- a per-firing byte budget and a scheduler cadence on the SCSI side.
-// The budget is declared on the channel-10 port (tnt_dbdma_port_t.burst)
+// The budget is declared on the channel-10 port (dbdma_port_t.burst)
 // because only the engine can count bytes across the 512-byte chunks it
 // already splits a command into; the cadence is the pump below.
 #define MESH_DMA_PUMP_NS 10000.0 // 10 us cadence
@@ -554,6 +555,18 @@ static void do_sequence(mesh_t *m, uint8_t value, uint32_t count) {
         }
         fifo_push(m, (uint8_t)st);
         m->active = 0;
+        // The sequencer takes the status byte and keeps ACK asserted on it
+        // until it is given its next command, so the target — which must
+        // see ACK negate before it can present the next byte — has REQ
+        // low, and stays there, between STATUS and MESSAGE IN.  Apple's
+        // MESH driver (the beige G3 ROM's at $FFECE4F0, and the copy Mac
+        // OS 9 loads from disk) waits for exactly that, `while
+        // (bus_status0 & REQ)`, before it issues MSGIN.  A REQ that never
+        // drops hung the boot at the first command; a REQ that dropped only
+        // for a fixed time stalled the driver whenever its interrupt wait
+        // ran longer than the window, until a SCSI Manager timeout reset the
+        // bus — the 9.2.1 install crawled and then failed to read its CD.
+        m->ack_held = 1;
         raise_int(m, INT_CMDDONE);
         return;
     }
@@ -762,8 +775,15 @@ static uint8_t mesh_read_inner(mesh_t *m, uint32_t offset) {
         // REQ presents whenever a target is connected: the driver class
         // spin-waits on REQ between phases before dropping ATN.
         uint8_t v = phase_bits(m);
-        if (m->connected)
+        // ...except while the target is between phases: after STATUS, until
+        // it presents MESSAGE IN (ack_held), and after the MESSAGE
+        // IN byte, when it has nothing more to send and only waits for the
+        // initiator's BUSFREE (msgin_taken).  Apple's driver waits for REQ to
+        // drop in both places ($FFECE4F0, $FFECE574).
+        if (m->connected && !m->ack_held && !m->msgin_taken)
             v |= BS0_REQ;
+        if (m->ack_held)
+            v |= BS0_ACK;
         if (m->bus0_atn || m->msgout_pending)
             v |= BS0_ATN;
         return v;
@@ -813,6 +833,8 @@ void mesh_write(mesh_t *m, uint32_t offset, uint8_t value) {
             pump_out(m);
         break;
     case MR_SEQUENCE: {
+        // A new command releases the ACK held on a taken status byte.
+        m->ack_held = 0;
         // A transfer command uses the current count; 0 arms the full
         // 65536 of the 16-bit down-counter.
         uint32_t count = m->remaining ? m->remaining : 65536u;

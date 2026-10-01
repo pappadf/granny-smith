@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // ppc.h
-// Public interface for the PowerPC main-CPU core (MPC601 / MPC604).
+// Public interface for the PowerPC main-CPU core (MPC601 / MPC604 / MPC750).
 //
 // The module is named `ppc`, not `ppc601`: the decode tree and register file
 // are architectural 32-bit PowerPC, with model-specific behavior carried
@@ -12,7 +12,11 @@
 //     601 unified BAT format, the $00A00/$02000 vectors;
 //   CPU_MODEL_PPC604 — timebase/mftb, architected split I/D BATs, per-class
 //     tlbie + tlbsync, POW/BE/RI/PM MSR bits, the optional FP group
-//     (fsel/fres/frsqrte/stfiwx), holdover rejection, trace at $00D00.
+//     (fsel/fres/frsqrte/stfiwx), holdover rejection, trace at $00D00;
+//   CPU_MODEL_PPC750 — the 604's programming model plus the 750's
+//     implementation registers: L2CR with the global-invalidate handshake,
+//     read-only HID1 (PLL_CFG), THRM1-3/ICTC, its own performance-monitor
+//     map; no PIR, no SDA (MPC750UM Table 2-49).
 //
 // Unlike the auxiliary DSP3210 core, this is a MAIN CPU (cores.md): it reads
 // and writes guest memory through the global fast-path accessors
@@ -24,7 +28,8 @@
 // Manual", 1995 (MPC601UM/AD) for the 601 model, and "PowerPC 604 RISC
 // Microprocessor User's Manual", 1994 (MPC604UM/AD) plus "PowerPC
 // Microprocessor Family: The Programming Environments" (MPCFPE32B) for the
-// 604 — chapter/table references in comments cite those documents.
+// 604, and "MPC750 RISC Microprocessor User's Manual" (MPC750UM/D) for the
+// 750 — chapter/table references in comments cite those documents.
 
 #ifndef GS_CPU_PPC_H
 #define GS_CPU_PPC_H
@@ -41,10 +46,11 @@ typedef struct ppc ppc_t;
 
 // === Lifecycle ===
 
-// Create a core of `cpu_model` (CPU_MODEL_PPC601 / CPU_MODEL_PPC604) in the
+// Create a core of `cpu_model` (CPU_MODEL_PPC601 / 604 / 750) in the
 // hard-reset state: 601 per 601UM Table 5-8 (MSR = $00001040 (ME + EP),
 // PVR = $00010001, HID0 = $80010080); 604 per 604UM §8.8.4 (MSR = $00000040
-// — HRESET sets only IP — PVR = $00040103, HID0 = 0).
+// — HRESET sets only IP — PVR = $00040103, HID0 = 0); 750 per 750UM Table
+// 2-19 (MSR = $00000040, PVR = $00080202, HID0 = L2CR = 0).
 // If `checkpoint` is non-NULL, state (including the model) is restored from
 // the stream instead and `cpu_model` is ignored.
 // Registers the `machine.cpu` object node and `$` register aliases (the
@@ -54,6 +60,12 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model);
 void ppc_delete(ppc_t *p);
 
 void ppc_checkpoint(ppc_t *restrict p, checkpoint_t *checkpoint);
+
+// Profile-chosen identity: the PVR (0 = the model's default part) and, on
+// the 750, the HID1 image — PLL_CFG[0-3] in bits 31-28, from which the ROM
+// derives the published core clock.  Both survive hard resets (they are
+// pins and mask ROM, not processor state).  Call right after ppc_init.
+void ppc_set_identity(ppc_t *p, uint32_t pvr, uint32_t hid1);
 
 // Hard reset (power-on): per-model register state (see ppc_init); the
 // cpu_model itself survives.  Execution resumes at $FFF00100 (MSR[EP]=1

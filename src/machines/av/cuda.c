@@ -74,6 +74,8 @@ LOG_USE_CATEGORY_NAME("cuda");
 #define CMD_WRPRAM     0x0C // write PRAM
 #define CMD_WRDFAC     0x0E // audio gain (accept-and-log)
 #define CMD_RDWRIIC    0x22 // I2C master transaction (DMSD/VDC)
+#define CMD_COMBIIC    0x25 // I2C combined format: subaddress write, repeated-start read (2.40)
+#define CMD_26         0x26 // present in the 2.40 dispatch; the Gossamer boot program sends 1,1,1
 #define CMD_RESET      0x11 // cold reset
 #define CMD_SETAUTOP   0x14 // set autopoll rate
 #define CMD_RDDEVLIST  0x1A // read the ADB device list (16-bit address bitmap)
@@ -88,6 +90,9 @@ LOG_USE_CATEGORY_NAME("cuda");
 // reject them, not implement them.
 static const uint8_t cuda_rejected_cmds[] = {0x04, 0x05, 0x06, 0x0F, 0x15, 0x17, 0x18, 0x1C, 0x1D, 0x1E, 0x1F, 0x20};
 #define CUDA_MAX_PSEUDO 0x24 // MaxPseudoCmd; >= $25 rejected
+// Cuda 2.40 (341S0060, the Gossamer part) extends the table to $26
+// (AppleCudaCommands.h COMBINED_FORMAT_IIC $25; the boot program's own $26).
+#define CUDA_MAX_PSEUDO_240 0x26
 
 // === ADB response status flags ==============================================
 
@@ -190,6 +195,10 @@ struct av_cuda {
     bool tx_represented;
     // TREQ negation owed at the end of a sync cycle (see CUDA_SYNC_TREQ_NS).
     bool treq_release_pending;
+    // An autopoll packet the host left unclaimed, kept OUT of tx_buf so a
+    // command reply cannot overwrite it (see cuda_present_parked_autopoll).
+    uint8_t ap_park[16];
+    int ap_park_len;
 
     // --- pointers / callbacks (not checkpointed) ---
     struct via *via1;
@@ -199,6 +208,15 @@ struct av_cuda {
     struct av_vdc *vdc; // I2C targets behind pseudo-command $22 (may be NULL)
     av_cuda_i2c_write_fn i2c_write; // machine-level I2C write target (may be NULL)
     void *i2c_write_ctx;
+    // A machine-level I2C BUS (reads and writes, every slave on it): when
+    // set, it answers every $22/$25 transaction, and a slave it does not
+    // claim gets the error packet a real Cuda returns for a NAK.  The
+    // Gossamer board's SPD and PERCH EEPROMs live here.
+    av_cuda_i2c_read_fn bus_read;
+    av_cuda_i2c_write_fn bus_write;
+    void *bus_ctx;
+    // Firmware 2.40's wider pseudo-command table (av_cuda_set_firmware_240).
+    bool fw240;
 
     // Fixed machine property (config, not guest state): whether the one-second
     // tick may carry the RTC in the Mode3Clock RdTime form.  Enabled only for
@@ -310,11 +328,17 @@ static void cuda_send_progress(av_cuda_t *cuda) {
 // window would let the abandonment watchdog reap the reply again).
 #define CUDA_RESEND_DELAY_NS 2000000.0
 
+static bool cuda_bus_idle(av_cuda_t *cuda);
+static bool cuda_present_parked_autopoll(av_cuda_t *cuda);
+
 static void cuda_resend_event(void *source, uint64_t data) {
     (void)data;
     av_cuda_t *cuda = (av_cuda_t *)source;
-    if (!cuda->resend_pending)
+    if (!cuda->resend_pending) {
+        if (cuda->ap_park_len && cuda_bus_idle(cuda))
+            cuda_present_parked_autopoll(cuda);
         return;
+    }
     cuda->resend_pending = false;
     if (cuda->state != CUDA_IDLE || cuda->tx_len < 4)
         return; // the host moved on (or a later sync flushed the queue)
@@ -367,8 +391,15 @@ static void cuda_send_timeout_event(void *source, uint64_t data) {
         LOG(2, "tick unclaimed by host — transport reset to idle, tick dropped");
         return;
     }
-    LOG(2, "response unclaimed by host — transport reset to idle, parked for re-presentation");
-    cuda->resend_pending = true;
+    if (cuda->tx_buf[1] == PKT_ADB && (cuda->tx_buf[2] & CUDA_FLAG_AUTOPOLL) &&
+        cuda->tx_len <= (int)sizeof(cuda->ap_park)) {
+        LOG(2, "autopoll packet unclaimed by host — transport reset to idle, parked ahead of new data");
+        memcpy(cuda->ap_park, cuda->tx_buf, (size_t)cuda->tx_len);
+        cuda->ap_park_len = cuda->tx_len;
+    } else {
+        LOG(2, "response unclaimed by host — transport reset to idle, parked for re-presentation");
+        cuda->resend_pending = true;
+    }
     remove_event(cuda->sched, &cuda_resend_event, cuda);
     scheduler_new_cpu_event(cuda->sched, &cuda_resend_event, cuda, 0, 0, (uint64_t)CUDA_RESEND_DELAY_NS);
 }
@@ -419,9 +450,10 @@ static void cuda_process_adb(av_cuda_t *cuda) {
     cuda_begin_send(cuda);
 }
 
-// True if Cuda 2.37's dispatch rejects this pseudo-command.
-static bool cuda_cmd_rejected(uint8_t cmd) {
-    if (cmd > CUDA_MAX_PSEUDO)
+// True if the firmware's dispatch rejects this pseudo-command (2.37's
+// table, or 2.40's two extra slots when that part is fitted).
+static bool cuda_cmd_rejected(const av_cuda_t *cuda, uint8_t cmd) {
+    if (cmd > (cuda->fw240 ? CUDA_MAX_PSEUDO_240 : CUDA_MAX_PSEUDO))
         return true;
     for (size_t i = 0; i < sizeof(cuda_rejected_cmds); i++)
         if (cuda_rejected_cmds[i] == cmd)
@@ -438,7 +470,7 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
         data_len = 0;
     LOG(4, "pseudo cmd=$%02X data_len=%d", cmd, data_len);
 
-    if (cuda_cmd_rejected(cmd)) {
+    if (cuda_cmd_rejected(cuda, cmd)) {
         cuda_send_error(cuda, CUDA_ERR_INVPSEUDO, PKT_PSEUDO, cmd);
         return;
     }
@@ -575,6 +607,28 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
         uint8_t slave = data[0];
         LOG(3, "RdWrIIC slave=$%02X %s len=%d sub=$%02X val=$%02X", slave, (slave & 1) ? "read" : "write", data_len - 1,
             (data_len >= 2) ? data[1] : 0u, (data_len >= 3) ? data[2] : 0u);
+        // A whole machine-level bus answers every slave itself: reads carry
+        // an optional subaddress byte (the Gossamer boot program's
+        // [addr|1][sub] form), writes the bytes after the address.  A
+        // slave nobody claims is a NAK, which Cuda reports as an error
+        // packet — the only way the ROM learns a DIMM slot is empty.
+        if (cuda->bus_read || cuda->bus_write) {
+            int got = -1;
+            if (slave & 1) {
+                if (cuda->bus_read)
+                    got = cuda->bus_read(cuda->bus_ctx, slave, data_len >= 2, (data_len >= 2) ? data[1] : 0,
+                                         &cuda->tx_buf[n], CUDA_TX_MAX - n);
+            } else if (cuda->bus_write && cuda->bus_write(cuda->bus_ctx, slave, &data[1], data_len - 1)) {
+                got = 0;
+            }
+            if (got < 0) {
+                LOG(2, "RdWrIIC slave=$%02X NAK", slave);
+                cuda_send_error(cuda, CUDA_ERR_INVPSEUDO, PKT_PSEUDO, cmd);
+                return;
+            }
+            n += got;
+            break;
+        }
         // A machine-level write target (the TNT's pixel-clock synthesiser)
         // answers first; the acknowledgement is header-only either way.
         if (!(slave & 1) && cuda->i2c_write && cuda->i2c_write(cuda->i2c_write_ctx, slave, &data[1], data_len - 1))
@@ -596,6 +650,30 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
             av_vdc_i2c_write(cuda->vdc, slave, &data[1], data_len - 1);
         break;
     }
+    case CMD_COMBIIC: {
+        // Combined format (2.40): [write address][subaddress][read address]
+        // — a subaddress write then a repeated-start read, the Gossamer
+        // boot program's SPD access (ROM $FFF05554).  Open-ended like $22.
+        if (data_len < 3 || !cuda->bus_read) {
+            LOG(2, "CombIIC len=%d with no bus: NAK", data_len);
+            cuda_send_error(cuda, CUDA_ERR_INVPSEUDO, PKT_PSEUDO, cmd);
+            return;
+        }
+        int got = cuda->bus_read(cuda->bus_ctx, data[2], true, data[1], &cuda->tx_buf[n], CUDA_TX_MAX - n);
+        LOG(3, "CombIIC wr=$%02X sub=$%02X rd=$%02X -> %d", data[0], data[1], data[2], got);
+        if (got < 0) {
+            cuda_send_error(cuda, CUDA_ERR_INVPSEUDO, PKT_PSEUDO, cmd);
+            return;
+        }
+        n += got;
+        break;
+    }
+    case CMD_26:
+        // Undocumented; the boot program sends parameters 1,1,1 once
+        // (ROM $FFF0336C) and reads nothing back.  Accept and log.
+        LOG(2, "pseudo $26 (%d bytes: $%02X $%02X $%02X)", data_len, data_len > 0 ? data[0] : 0u,
+            data_len > 1 ? data[1] : 0u, data_len > 2 ? data[2] : 0u);
+        break;
     case CMD_WRDFAC:
     case CMD_NOP:
     default:
@@ -710,6 +788,7 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
             cuda->tx_idx = 0;
             cuda->resend_pending = false; // an idle-bus sync flushes the queue
         }
+        cuda->ap_park_len = 0; // parked autopoll data is asynchronous: the sync drops it
         cuda->rx_len = 0;
         cuda->state = CUDA_SYNC;
         // The sync silences EVERY asynchronous source, autopoll included.
@@ -765,6 +844,7 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
                 !cuda->tx_represented)
                 cuda->resend_pending = true;
             cuda->state = CUDA_SYNC;
+            cuda->ap_park_len = 0;
             cuda->onesec_enabled = false;
             cuda->autopoll_enabled = false; // the sync silences autopoll too (see the main sync branch)
             cuda_set_treq(cuda, false);
@@ -869,11 +949,39 @@ static void cuda_reset_event(void *source, uint64_t data) {
     system_machine_reset();
 }
 
+// A reaped autopoll packet holds ADB data already taken from the device
+// queue.  Left in tx_buf it would be overwritten by the next packet built
+// there — a command reply, a tick, the next autopoll — and the keystrokes
+// in it lost.  The firmware's output queue does not work that way: the
+// undelivered packet is still at its head, behind any command the host
+// runs meanwhile.  So it is parked in its own slot (cuda_send_timeout_event)
+// and, when the next unsolicited send comes round, goes out instead of the
+// new data (which waits a period).  This keeps the ADB stream whole without
+// the bus gate that stalls Copland (see cuda_bus_idle): traffic keeps
+// flowing, it is just the right packet.  A sync drops it, as it drops every
+// asynchronous source.
+//
+// It matters for the beige G3's Open Firmware, which enables autopoll and
+// then leaves the first packets unclaimed while it finishes its ADB probe:
+// Command-Option-O-F held from power-on arrives as [Command Option] then
+// [O F], and losing the first leaves O and F with no modifiers — the boot
+// carries on into Mac OS.
+static bool cuda_present_parked_autopoll(av_cuda_t *cuda) {
+    if (!cuda->ap_park_len)
+        return false;
+    memcpy(cuda->tx_buf, cuda->ap_park, (size_t)cuda->ap_park_len);
+    cuda->tx_len = cuda->ap_park_len;
+    cuda->ap_park_len = 0;
+    LOG(2, "presenting the parked autopoll packet ahead of new unsolicited data");
+    cuda_begin_send(cuda);
+    return true;
+}
+
 // 1-second tick: [attn, tickPkt] — drives the OS one-second timer.
 static void cuda_tick_event(void *source, uint64_t data) {
     (void)data;
     av_cuda_t *cuda = (av_cuda_t *)source;
-    if (cuda->onesec_enabled && cuda_bus_idle(cuda)) {
+    if (cuda->onesec_enabled && cuda_bus_idle(cuda) && !cuda_present_parked_autopoll(cuda)) {
         if (cuda->onesec_mode == 3 && cuda->mode3_clock) {
             // Mode3Clock: the tick is an RdTime response carrying the
             // 32-bit BE seconds, so the OS's CudaTickHandler seeds lowmem
@@ -906,7 +1014,7 @@ static void cuda_autopoll_event(void *source, uint64_t data) {
     av_cuda_t *cuda = (av_cuda_t *)source;
     LOG(4, "autopoll gate: enabled=%d adb=%d state=%d push=%d pb=$%02X", cuda->autopoll_enabled, cuda->adb != NULL,
         cuda->state, cuda->push_pending, cuda->last_pb);
-    if (cuda->autopoll_enabled && cuda->adb && cuda_bus_idle(cuda)) {
+    if (cuda->autopoll_enabled && cuda->adb && cuda_bus_idle(cuda) && !cuda_present_parked_autopoll(cuda)) {
         // The device-selection rules live in adb.c, shared with Egret and the
         // SWIM IOP.  Cuda has no WrDevList in this model -- the host
         // can read the device list but not set a polling mask -- so 0 here
@@ -1007,4 +1115,17 @@ void av_cuda_attach_i2c_write(av_cuda_t *cuda, av_cuda_i2c_write_fn fn, void *ct
         cuda->i2c_write = fn;
         cuda->i2c_write_ctx = ctx;
     }
+}
+
+void av_cuda_attach_i2c_bus(av_cuda_t *cuda, av_cuda_i2c_read_fn rd, av_cuda_i2c_write_fn wr, void *ctx) {
+    if (cuda) {
+        cuda->bus_read = rd;
+        cuda->bus_write = wr;
+        cuda->bus_ctx = ctx;
+    }
+}
+
+void av_cuda_set_firmware_240(av_cuda_t *cuda) {
+    if (cuda)
+        cuda->fw240 = true;
 }
