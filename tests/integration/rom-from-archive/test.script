@@ -4,12 +4,13 @@
 let zip = "${$WORK_DIR}/roms.zip"
 let member = "${$zip}/plus.rom"
 
-# The archive lists its one member, and the member reads back as the ROM.
+# The archive lists its members, and the ROM member reads back as the ROM.
 let names = ""
 for e in files.list($zip) {
     $names = "${$names}|${$e.name}"
 }
-assert $names == "|plus.rom" "the archive's members (got ${$names})"
+assert $names == "|plus.rom|README.txt" "the members, in archive order (got ${$names})"
+assert files.cat("${$zip}/README.txt") "a member opens through files.cat"
 assert files.path_size($zip) < files.path_size($ROM) "the member is deflated"
 assert files.path_size($member) == 131072 "the member's size"
 assert files.path_compare($member, $ROM) == -1 "the member decodes to the ROM"
