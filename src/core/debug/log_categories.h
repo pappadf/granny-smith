@@ -48,6 +48,7 @@
     X("53c96", 0, "NCR 53C96 controller")                                                                              \
     X("53c825", 0, "Symbios 53C825 PCI controller")                                                                    \
     X("mesh", 0, "MESH SCSI controller")                                                                               \
+    X("ata", 0, "ATA / ATAPI channel")                                                                                 \
     X("scripts", 0, "53C8xx SCRIPTS engine")                                                                           \
     X("image", 0, "Disk image open/close and geometry")                                                                \
     X("storage", 0, "Delta/journal storage engine")                                                                    \
