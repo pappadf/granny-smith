@@ -8,6 +8,7 @@
   import type { TypeDescriptor } from '@/bus/systemTree';
   import Select from '@/components/ui/Select.svelte';
   import TextInput from '@/components/ui/TextInput.svelte';
+  import Switch from '@/components/ui/Switch.svelte';
 
   interface Props {
     type?: TypeDescriptor;
@@ -87,23 +88,18 @@
 
 <span class="value-editor" class:has-error={!!error}>
   {#if kind === 'bool'}
-    <button
-      type="button"
+    <Switch
       class="toggle"
-      class:on={text === 'true'}
-      role="switch"
-      aria-checked={text === 'true'}
-      aria-label={label}
+      checked={text === 'true'}
+      {label}
       disabled={readonly || busy}
-      onclick={() => {
-        const next = text === 'true' ? 'false' : 'true';
+      onchange={(on) => {
+        const next = on ? 'true' : 'false';
         set(next);
         if (!onInput) void commit(next);
       }}
       onkeydown={onKey}
-    >
-      <span class="knob"></span>
-    </button>
+    />
   {:else if choices}
     <Select
       bind:ref={selectEl}
@@ -163,36 +159,5 @@
     color: var(--gs-syntax-error);
     font-size: var(--gs-font-size-xs);
     white-space: normal;
-  }
-  .toggle {
-    position: relative;
-    width: 26px;
-    height: 14px;
-    border-radius: var(--gs-radius-pill);
-    border: var(--gs-border-width) solid var(--gs-border);
-    background: var(--gs-surface-app);
-    padding: 0;
-    cursor: pointer;
-  }
-  .toggle.on {
-    background: var(--gs-focus-ring);
-  }
-  .toggle:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-  .knob {
-    position: absolute;
-    top: 1px;
-    left: 1px;
-    width: 10px;
-    height: 10px;
-    border-radius: var(--gs-radius-round);
-    background: var(--gs-text-muted);
-    transition: left var(--gs-duration-fast);
-  }
-  .toggle.on .knob {
-    left: 13px;
-    background: var(--gs-switch-knob-on);
   }
 </style>

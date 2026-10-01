@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Toolbar from '@/components/ui/Toolbar.svelte';
   import IconButton from '@/components/ui/IconButton.svelte';
   import { machine } from '@/state/machine.svelte';
   import { continueExec, pauseExec, stepInto, stopMachine, restart } from '@/bus/debug';
@@ -13,7 +14,7 @@
   }
 </script>
 
-<div class="debug-toolbar" role="toolbar" aria-label="Debug actions">
+<Toolbar class="debug-toolbar" variant="inline" label="Debug actions">
   {#if isRunning}
     <IconButton
       class="tb-btn"
@@ -58,12 +59,4 @@
     label="Restart"
     onclick={() => restart()}
   />
-</div>
-
-<style>
-  .debug-toolbar {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--gs-space-0-5);
-  }
-</style>
+</Toolbar>

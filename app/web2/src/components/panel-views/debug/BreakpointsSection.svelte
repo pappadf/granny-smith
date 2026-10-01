@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Hint from '@/components/ui/Hint.svelte';
+  import ListRow from '@/components/ui/ListRow.svelte';
   import { onMount } from 'svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
@@ -146,11 +148,10 @@
     </div>
   {/if}
   {#if rows.length === 0 && !showAdd}
-    <p class="hint">No breakpoints. Click + to add one.</p>
+    <Hint class="hint" inset="section">No breakpoints. Click + to add one.</Hint>
   {:else}
     {#each rows as r (r.id)}
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="bp-row" oncontextmenu={(ev) => onRowContext(r, ev)}>
+      <ListRow class="bp-row" density="compact" mono oncontextmenu={(ev) => onRowContext(r, ev)}>
         <span class="enable">{r.enabled ? '●' : '○'}</span>
         <span class="addr">{labelFor(r.addr)}</span>
         {#if r.condition}
@@ -159,7 +160,7 @@
         {#if r.hits > 0}
           <span class="hits">{r.hits}×</span>
         {/if}
-      </div>
+      </ListRow>
     {/each}
   {/if}
 </CollapsibleSection>
@@ -169,23 +170,6 @@
     display: flex;
     gap: var(--gs-space-1-5);
     padding: var(--gs-space-1-5) var(--gs-space-3);
-  }
-  .hint {
-    color: var(--gs-text-muted);
-    font-size: var(--gs-font-size-xs);
-    padding: var(--gs-space-1-5) var(--gs-space-3);
-  }
-  .bp-row {
-    display: flex;
-    align-items: center;
-    gap: var(--gs-space-3);
-    padding: var(--gs-space-0-5) var(--gs-space-3);
-    font-family: var(--gs-font-mono);
-    font-size: var(--gs-font-size-xs);
-    color: var(--gs-text);
-  }
-  .bp-row:hover {
-    background: var(--gs-row-hover);
   }
   .enable {
     color: var(--gs-text-muted);

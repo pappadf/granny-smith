@@ -1,4 +1,6 @@
 <script lang="ts">
+  import SectionHeading from '@/components/ui/SectionHeading.svelte';
+  import Hint from '@/components/ui/Hint.svelte';
   // One auxiliary core (capabilities.aux_cpus — the AV family's DSP3210) in
   // the Debug view.  It answers the same frame as the main CPU
   // (machine.<name>.frame), so this renders it with the shared register
@@ -58,9 +60,11 @@
 
 <CollapsibleSection {title} {open} onToggle={toggle}>
   {#if machine.status === 'running'}
-    <p class="aux-hint">Pause the machine to inspect the {cpu.name.toUpperCase()}.</p>
+    <Hint class="aux-hint" inset="block"
+      >Pause the machine to inspect the {cpu.name.toUpperCase()}.</Hint
+    >
   {:else if !frame}
-    <p class="aux-hint">{loading ? 'Reading…' : 'Not available.'}</p>
+    <Hint class="aux-hint" inset="block">{loading ? 'Reading…' : 'Not available.'}</Hint>
   {:else}
     <p class="aux-state">
       <span class="aux-label">State</span>
@@ -70,7 +74,7 @@
     </p>
     {#each groups as group (group.title)}
       <div class="aux-group">
-        <h4 class="aux-group-title">{group.title}</h4>
+        <SectionHeading level="h4" class="aux-group-title">{group.title}</SectionHeading>
         <div class="aux-regs">
           {#each group.names as name (name)}
             <span class="aux-reg">
@@ -85,7 +89,7 @@
     {/each}
     {#if frame.fpu && frame.fpu.data.length}
       <div class="aux-group">
-        <h4 class="aux-group-title">Floating point</h4>
+        <SectionHeading level="h4" class="aux-group-title">Floating point</SectionHeading>
         {#each frame.fpu.data as reg, i (i)}
           <div class="aux-fp mono">
             <span class="aux-reg-name">{frame.fpu.prefix}{i}</span>
@@ -96,7 +100,7 @@
       </div>
     {/if}
     <div class="aux-group">
-      <h4 class="aux-group-title">Disassembly</h4>
+      <SectionHeading level="h4" class="aux-group-title">Disassembly</SectionHeading>
       <ol class="aux-rows mono" aria-label={`${cpu.name} disassembly`}>
         {#each frame.rows as row (row.addr)}
           <li class="aux-row" class:pc={row.addr === frame.pc}>
@@ -110,11 +114,6 @@
 </CollapsibleSection>
 
 <style>
-  .aux-hint {
-    color: var(--gs-text-muted);
-    font-size: var(--gs-font-size-xs);
-    padding: var(--gs-space-2) var(--gs-space-4);
-  }
   .mono {
     font-family: var(--gs-font-mono);
   }
@@ -134,14 +133,6 @@
   }
   .aux-group {
     padding: var(--gs-space-1-5) var(--gs-space-3);
-  }
-  .aux-group-title {
-    font-size: var(--gs-font-size-2xs);
-    font-weight: var(--gs-font-weight-semibold);
-    color: var(--gs-text-muted);
-    margin: var(--gs-space-1-5) 0 var(--gs-space-1);
-    text-transform: var(--gs-caps-transform);
-    letter-spacing: var(--gs-caps-tracking);
   }
   .aux-regs {
     display: grid;

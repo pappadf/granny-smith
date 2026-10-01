@@ -13,6 +13,7 @@
   --gs-input-border-focus: var(--gs-focus-ring);
   --gs-control-accent: var(--gs-accent);
   --gs-row-selected-fg: var(--gs-text);
+  --gs-row-selected-inactive-fg: var(--gs-text);
   --gs-selection-fg: inherit;
   --gs-drop-label-fg: var(--gs-text-on-accent);
 
@@ -48,9 +49,37 @@
   --gs-console-popup-font-size: var(--gs-font-size-sm);
 
   /* --- Component tokens ------------------------------------------------- */
-  /* Panel tabs */
+  /* Tabs (ui/Tabs.svelte): the panel variant, then the sub variant. */
+  --gs-tab-height: var(--gs-size-tab);
+  --gs-tab-padding-x: var(--gs-space-2-5);
+  --gs-tab-line-height: 18px;
+  --gs-tab-font-size: var(--gs-font-size-xs);
+  --gs-tab-font-weight: var(--gs-font-weight-regular);
+  --gs-tab-transform: var(--gs-caps-transform);
+  --gs-tab-tracking: normal;
   --gs-tab-fg: var(--gs-text-muted);
+  --gs-tab-fg-hover: var(--gs-text-strong);
   --gs-tab-fg-selected: var(--gs-text-strong);
+  --gs-tab-indicator-color: var(--gs-text-strong);
+  --gs-tab-indicator-width: var(--gs-border-width);
+  --gs-tab-indicator-inset: var(--gs-space-2-5);
+  --gs-tab-indicator-offset: var(--gs-space-1);
+  --gs-tab-sub-height: var(--gs-size-control-md);
+  --gs-tab-sub-padding-x: var(--gs-space-3);
+  --gs-tab-sub-line-height: var(--gs-line-height-base);
+  --gs-tab-sub-font-size: var(--gs-font-size-xs);
+  --gs-tab-sub-font-weight: var(--gs-font-weight-semibold);
+  --gs-tab-sub-transform: var(--gs-caps-transform);
+  --gs-tab-sub-tracking: var(--gs-caps-tracking);
+  --gs-tab-sub-fg: var(--gs-text-muted);
+  --gs-tab-sub-fg-hover: var(--gs-text);
+  --gs-tab-sub-fg-selected: var(--gs-text-strong);
+  --gs-tab-sub-indicator-color: var(--gs-focus-ring);
+  --gs-tab-sub-indicator-width: var(--gs-border-width-strong);
+  --gs-tab-sub-indicator-inset: 0px;
+  --gs-tab-sub-indicator-offset: 0px;
+  --gs-tab-sub-strip-bg: var(--gs-surface-app);
+  --gs-tab-sub-strip-border: var(--gs-border);
 
   /* Icon buttons: the pressed or live state (camera, microphone). */
   --gs-icon-button-fg-on: var(--gs-text-link);
@@ -114,6 +143,8 @@
   --gs-toolbar-bg: var(--gs-surface-app);
   --gs-toolbar-fg: var(--gs-text-strong);
   --gs-toolbar-gap: var(--gs-space-1);
+  --gs-toolbar-gap-inline: var(--gs-space-0-5);
+  --gs-toolbar-border: var(--gs-border);
   --gs-separator: var(--gs-border);
   --gs-separator-length: var(--gs-size-icon);
 
@@ -180,16 +211,81 @@
   --gs-toast-offset-bottom: calc(var(--gs-size-statusbar) + 3px);
   --gs-toast-offset-right: 3px;
 
-  /* Trees: the indent per level and before the first. */
+  /* Rows (ui/TreeItem.svelte, ui/ListRow.svelte): the regular and the
+     compact density. */
+  --gs-row-height: var(--gs-size-row);
+  --gs-row-height-compact: 20px;
+  --gs-row-padding-x: var(--gs-space-2);
+  --gs-row-padding-y-compact: var(--gs-space-px);
+  --gs-row-font-size: var(--gs-font-size-base);
+  --gs-row-gap: var(--gs-space-1-5);
+
+  --gs-list-row-gap-compact: var(--gs-space-3);
+  --gs-list-row-padding-compact: var(--gs-space-0-5) var(--gs-space-3);
+  --gs-list-row-font-size-compact: var(--gs-font-size-xs);
+  --gs-list-row-indent: var(--gs-space-7);
+
+  /* Trees: the indent per level and before the first, a filtered-out row,
+     a category row. */
   --gs-tree-indent: var(--gs-size-indent);
   --gs-tree-indent-base: var(--gs-size-indent-base);
+  --gs-tree-dim-opacity: 0.45;
+  --gs-tree-category-padding-top: var(--gs-space-1-5);
+  --gs-tree-category-weight: var(--gs-font-weight-semibold);
+  --gs-tree-category-fg: var(--gs-text-strong);
+
+  /* Headings and hints (ui/SectionHeading.svelte, ui/Hint.svelte) */
+  --gs-heading-font-size: var(--gs-font-size-xs);
+  --gs-heading-font-size-sm: var(--gs-font-size-2xs);
+  --gs-heading-weight: var(--gs-font-weight-semibold);
+  --gs-heading-rule-weight: var(--gs-font-weight-regular);
+  --gs-heading-fg: var(--gs-text-muted);
+  --gs-heading-transform: var(--gs-caps-transform);
+  --gs-heading-tracking: var(--gs-caps-tracking);
+  --gs-heading-gap: var(--gs-space-2);
+  --gs-heading-sm-margin-top: var(--gs-space-1-5);
+  --gs-heading-sm-margin-bottom: var(--gs-space-1);
+  --gs-section-divider: var(--gs-border);
+  --gs-section-header-bg: var(--gs-surface-app);
+  --gs-section-header-height: var(--gs-size-row);
+  --gs-section-title-fg: var(--gs-text-strong);
+  --gs-table-header-height: var(--gs-size-control-md);
+  --gs-table-header-bg: var(--gs-surface-app);
+  --gs-table-sort-size: var(--gs-font-size-3xs);
+  --gs-hint-fg: var(--gs-text-muted);
+  --gs-hint-error-fg: var(--gs-danger-fg);
+  --gs-hint-font-size: var(--gs-font-size-xs);
+  --gs-hint-font-size-view: var(--gs-font-size-sm);
+  --gs-hint-padding-section: var(--gs-space-1-5) var(--gs-space-3);
+  --gs-hint-padding-block: var(--gs-space-2) var(--gs-space-4);
+  --gs-hint-padding-pane: var(--gs-space-3);
+  --gs-hint-padding-list: var(--gs-space-1-5) var(--gs-list-row-indent);
+  --gs-hint-padding-view: var(--gs-space-4);
+
+  /* Disclosure arrows (ui/Disclosure.svelte) */
+  --gs-disclosure-size: var(--gs-size-icon-md);
+  --gs-disclosure-rotation-closed: -90deg;
+  --gs-disclosure-duration: var(--gs-duration-instant);
+  --gs-disclosure-fg: var(--gs-text-muted);
+  /* The chevron as a mask, for the <summary> markers. */
+  --gs-disclosure-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.146 5.854l4.5 4.5a.5.5 0 0 0 .708 0l4.5-4.5a.5.5 0 0 0-.708-.708L8 9.293 3.854 5.146a.5.5 0 1 0-.708.708z'/%3E%3C/svg%3E");
+
+  /* Spinners (ui/Spinner.svelte) */
+  --gs-spinner-size: var(--gs-size-spinner);
+  --gs-spinner-size-sm: var(--gs-size-icon-xs);
+  --gs-spinner-width: var(--gs-border-width-strong);
+  --gs-spinner-track: var(--gs-border-subtle);
+  --gs-spinner-fg: var(--gs-accent);
 
   /* The checkpoints table's fixed columns. */
   --gs-checkpoints-col-machine: 110px;
   --gs-checkpoints-col-date: 160px;
   --gs-checkpoints-col-size: 80px;
 
-  /* Sashes: the hover/drag fill. */
+  /* Sashes (ui/Sash.svelte): the hit area, the hairline, the hover/drag
+     fill. */
+  --gs-sash-size: var(--gs-size-sash);
+  --gs-sash-line: var(--gs-border);
   --gs-sash-hover: color-mix(in srgb, var(--gs-focus-ring) 30%, transparent);
 
   /* A drop target row in a tree. */
@@ -198,14 +294,29 @@
   /* A callout's fill: a lighter tint of its intent's. */
   --gs-callout-bg: color-mix(in srgb, var(--gs-info-bg) 32%, transparent);
 
-  /* The switch (a boolean value's editor): the knob on the "on" track. */
+  /* Switches (ui/Switch.svelte, a boolean value's editor) */
+  --gs-switch-width: 26px;
+  --gs-switch-height: 14px;
+  --gs-switch-inset: var(--gs-space-px);
+  --gs-switch-knob-size: 10px;
+  --gs-switch-border: var(--gs-border);
+  --gs-switch-track: var(--gs-surface-app);
+  --gs-switch-track-on: var(--gs-focus-ring);
+  --gs-switch-knob: var(--gs-text-muted);
   --gs-switch-knob-on: var(--gs-text-on-accent);
+  --gs-switch-disabled-opacity: 0.6;
 
   /* Status-bar dots: one per machine state; the idle dot is the subtle text. */
   --gs-statusbar-dot-idle: var(--gs-text-subtle);
   --gs-statusbar-dot-running: #89d185;
   --gs-statusbar-dot-paused: #cca700;
   --gs-statusbar-dot-stopped: #f14c4c;
+}
+
+/* The divider between consecutive collapsible sections (no rule above the
+   first or below the last). */
+.gs-section + .gs-section {
+  border-top: var(--gs-border-width) solid var(--gs-section-divider);
 }
 
 /* Drive lights and the caps chip sit on the bar's own colour: on an active

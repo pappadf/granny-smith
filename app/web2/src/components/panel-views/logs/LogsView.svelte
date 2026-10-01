@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Hint from '@/components/ui/Hint.svelte';
   import { logs } from '@/state/logs.svelte';
   import { logsPanelHeader } from './logsHeader.svelte';
   import LogLine from './LogLine.svelte';
@@ -23,12 +24,12 @@
 <div class="logs-view">
   <div class="logs-scroll" bind:this={listEl}>
     {#if logs.entries.length === 0}
-      <p class="logs-empty">
+      <Hint class="logs-empty" inset="view">
         No log lines yet. Boot a machine and bring a category up with <code
           >log &lt;cat&gt; &lt;level&gt;</code
         >
         in the terminal, or use the <strong>Levels</strong> button above.
-      </p>
+      </Hint>
     {:else}
       {#each logs.entries as entry, i (i)}
         <LogLine {entry} />
@@ -58,12 +59,6 @@
     min-height: 0;
     padding: var(--gs-space-1) 0;
     background: var(--gs-surface-app);
-  }
-  .logs-empty {
-    color: var(--gs-text-muted);
-    font-size: var(--gs-font-size-sm);
-    padding: var(--gs-space-4);
-    line-height: var(--gs-line-height-relaxed);
   }
   .logs-status {
     flex: 0 0 auto;

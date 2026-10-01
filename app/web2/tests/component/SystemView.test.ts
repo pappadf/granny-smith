@@ -420,7 +420,7 @@ describe('SystemView menus', () => {
     expect(calls.find(([p]) => p === 'machine.reset')).toBeUndefined();
     const confirm = Array.from(
       document.querySelectorAll<HTMLElement>('.modal-actions button'),
-    ).find((b) => b.textContent === 'Reset')!;
+    ).find((b) => b.textContent?.trim() === 'Reset')!;
     await fireEvent.click(confirm);
     await waitFor(() => expect(calls).toContainEqual(['machine.reset', []]));
     expect(echo).toHaveBeenCalledWith('machine.reset');
@@ -453,7 +453,7 @@ describe('SystemView menus', () => {
     ) as HTMLInputElement;
     await fireEvent.input(size, { target: { value: '0x100' } });
     const go = Array.from(document.querySelectorAll<HTMLElement>('.modal-actions button')).find(
-      (b) => b.textContent === 'Create',
+      (b) => b.textContent?.trim() === 'Create',
     )!;
     await fireEvent.click(go);
     await waitFor(() => expect(calls).toContainEqual(['files.create', ['/opfs/a.img', 256]]));

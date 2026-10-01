@@ -1,4 +1,6 @@
 <script lang="ts">
+  import SectionHeading from '@/components/ui/SectionHeading.svelte';
+  import Hint from '@/components/ui/Hint.svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
   import { machine } from '@/state/machine.svelte';
   import { debug, toggleSection } from '@/state/debug.svelte';
@@ -37,10 +39,10 @@
 {#if machine.fpu}
   <CollapsibleSection title="FPU" open={debug.sections.fpu} onToggle={() => toggleSection('fpu')}>
     {#if machine.status === 'running'}
-      <p class="fpu-hint">Pause the machine to inspect FPU state.</p>
+      <Hint class="fpu-hint" inset="block">Pause the machine to inspect FPU state.</Hint>
     {:else if fpu}
       <div class="fpu-group">
-        <h4 class="fpu-group-title">Data</h4>
+        <SectionHeading level="h4" class="fpu-group-title">Data</SectionHeading>
         <div class="fpu-rows">
           {#each fpu.data as r, i (i)}
             <span class="fpu-name" class:changed={dataChanged[i]}>{fpu.prefix}{i}</span>
@@ -50,7 +52,7 @@
         </div>
       </div>
       <div class="fpu-group">
-        <h4 class="fpu-group-title">Control</h4>
+        <SectionHeading level="h4" class="fpu-group-title">Control</SectionHeading>
         <div class="fpu-ctl">
           {#each fpu.control as c (c.name)}
             <div class="fpu-ctl-row" class:changed={ctlChanged[c.name]}>
@@ -61,27 +63,14 @@
         </div>
       </div>
     {:else}
-      <p class="fpu-hint">No machine running.</p>
+      <Hint class="fpu-hint" inset="block">No machine running.</Hint>
     {/if}
   </CollapsibleSection>
 {/if}
 
 <style>
-  .fpu-hint {
-    color: var(--gs-text-muted);
-    font-size: var(--gs-font-size-xs);
-    padding: var(--gs-space-2) var(--gs-space-4);
-  }
   .fpu-group {
     padding: var(--gs-space-1-5) var(--gs-space-3);
-  }
-  .fpu-group-title {
-    font-size: var(--gs-font-size-2xs);
-    font-weight: var(--gs-font-weight-semibold);
-    color: var(--gs-text-muted);
-    margin: var(--gs-space-1-5) 0 var(--gs-space-1);
-    text-transform: var(--gs-caps-transform);
-    letter-spacing: var(--gs-caps-tracking);
   }
   /* Data register grid: name | raw hex | decimal value. Hex is fixed-
      width (20 chars + underscore = 21 ch), value gets the remaining

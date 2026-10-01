@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from '@/components/common/Icon.svelte';
+  import ListRow from '@/components/ui/ListRow.svelte';
   import type { IconName } from '@/lib/icons';
 
   interface Props {
@@ -26,46 +27,28 @@
   }: Props = $props();
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<div
-  class="image-row"
-  class:selected
-  class:mounted={!!badge}
+<ListRow
+  class="image-row {badge ? 'mounted' : ''}"
+  indent
+  {selected}
   role="row"
-  tabindex="-1"
+  tabindex={-1}
   onclick={onClick}
   ondblclick={onDoubleClick}
   oncontextmenu={onContextMenu}
 >
   <span class="icon"><Icon name={icon} size={16} /></span>
-  <span class="name">{name}</span>
+  <span class="name" class:mounted={!!badge}>{name}</span>
   {#if badge}
     <span class="badge">{badge}</span>
   {/if}
   {#if desc}
     <span class="desc">{desc}</span>
   {/if}
-</div>
+</ListRow>
 
 <style>
-  .image-row {
-    display: flex;
-    align-items: center;
-    gap: var(--gs-space-1-5);
-    height: var(--gs-size-row);
-    padding: 0 var(--gs-space-2) 0 var(--gs-space-7); /* 22 px indent for the icon line-up */
-    cursor: pointer;
-    user-select: none;
-    color: var(--gs-text);
-    font-size: var(--gs-font-size-base);
-  }
-  .image-row:hover {
-    background: var(--gs-row-hover);
-  }
-  .image-row.selected {
-    background: var(--gs-row-selected);
-  }
-  .image-row.mounted .name {
+  .name.mounted {
     font-weight: var(--gs-font-weight-semibold);
   }
   .icon {

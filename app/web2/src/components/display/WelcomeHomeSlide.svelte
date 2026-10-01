@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SectionHeading from '@/components/ui/SectionHeading.svelte';
   import { setWelcomeSlide } from '@/state/layout.svelte';
   import { pickAndUpload, pickAndLoadCheckpoint } from '@/bus/upload';
   import ActionRow from '../ui/ActionRow.svelte';
@@ -32,7 +33,7 @@
   <h1 class="welcome-title">Granny Smith</h1>
   <p class="welcome-subtitle">A classic Macintosh emulator in the browser.</p>
   <section class="card">
-    <h3 class="card-heading">Start</h3>
+    <SectionHeading class="card-heading">Start</SectionHeading>
     <div class="card-rows">
       <ActionRow class="card-row" icon="mac" label="New Machine..." onclick={openConfigSlide} />
       <ActionRow
@@ -69,14 +70,6 @@
     border-radius: var(--gs-radius-lg);
     padding: var(--gs-space-3-5) var(--gs-space-4);
     margin-bottom: var(--gs-space-4);
-  }
-  .card-heading {
-    font-size: var(--gs-font-size-xs);
-    font-weight: var(--gs-font-weight-semibold);
-    text-transform: var(--gs-caps-transform);
-    letter-spacing: var(--gs-caps-tracking);
-    color: var(--gs-text-muted);
-    margin: 0 0 var(--gs-space-2) 0;
   }
   .card-rows {
     display: flex;

@@ -31,7 +31,10 @@
   import ValueEditor from '@/components/common/ValueEditor.svelte';
   import PathField from '@/components/common/PathField.svelte';
   import Modal from '@/components/common/Modal.svelte';
-  import Icon from '@/components/common/Icon.svelte';
+  import TreeItem from '@/components/ui/TreeItem.svelte';
+  import Button from '@/components/ui/Button.svelte';
+  import SectionHeading from '@/components/ui/SectionHeading.svelte';
+  import Hint from '@/components/ui/Hint.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { downloadFiles } from '@/bus/fsOps';
   import { sanitizeName } from '@/lib/archive';
@@ -375,14 +378,18 @@
     />
   </div>
   {#if !tree.loaded}
-    <p class="hint">Loading system tree…</p>
+    <Hint class="hint" inset="view">Loading system tree…</Hint>
   {:else if root.length === 0}
-    <p class="hint">No machine is running yet. Start one from the Welcome view.</p>
+    <Hint class="hint" inset="view"
+      >No machine is running yet. Start one from the Welcome view.</Hint
+    >
   {:else}
     <ul class="sys-tree" role="tree" tabindex="0" bind:this={listEl} onkeydown={onKey}>
       {#each flat as { row, depth } (row.key)}
         {#if row.kind === 'divider'}
-          <li class="group-divider" role="presentation">{row.label}</li>
+          <SectionHeading as="li" level="h4" rule class="group-divider" role="presentation"
+            >{row.label}</SectionHeading
+          >
         {:else}
           {@const open = !!systemView.expanded[row.path]}
           {@const selected = selectedKey === row.key}
@@ -393,76 +400,81 @@
             role="treeitem"
             aria-selected={selected}
             aria-expanded={row.expandable ? open : undefined}
-            style="--depth: {depth}"
+            aria-level={depth + 1}
             data-path={row.path}
             oncontextmenu={(ev) => void onContextMenu(row, ev)}
           >
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <div
+            <TreeItem
               class="sys-line"
               role="button"
-              tabindex="-1"
+              tabindex={-1}
               title={row.doc ? `${row.doc}\n${row.path}` : row.path}
+              density="compact"
+              hover={false}
+              {depth}
+              kind={row.kind}
+              hasChildren={row.expandable}
+              {open}
+              {selected}
               onclick={() => {
                 selectedKey = row.key;
                 if (row.expandable) void tree.toggle(row);
               }}
             >
-              <span class="twistie" class:open aria-hidden="true">
-                {#if row.expandable}<Icon name="chevron" size={12} />{/if}
-              </span>
-              <span class="name">{row.label}</span>
-              {#if row.kind === 'attr'}
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <span
-                  class="value"
-                  ondblclick={(ev) => {
-                    ev.stopPropagation();
-                    startEdit(row);
-                  }}
-                  onclick={(ev) => ev.stopPropagation()}
-                >
-                  {#if editingKey === row.key}
-                    <ValueEditor
-                      type={row.type}
-                      value={formatValue(row.value, row.type)}
-                      autofocus
-                      label={row.path}
-                      onCommit={(t) => commit(row, t)}
-                      onCancel={endEdit}
-                    />
-                  {:else if row.type?.kind === 'bool' && row.value !== undefined}
-                    <ValueEditor
-                      type={row.type}
-                      value={formatValue(row.value, row.type)}
-                      readonly={!editable(row)}
-                      label={row.path}
-                      onCommit={(t) => commit(row, t)}
-                    />
-                  {:else if isContainer(row.value)}
-                    <details class="container">
-                      <summary>{formatValue(row.value, row.type)}</summary>
-                      <pre>{JSON.stringify(row.value, null, 2)}</pre>
-                    </details>
-                  {:else}
-                    <span class="text">{formatValue(row.value, row.type)}</span>
-                  {/if}
-                  {#if row.readonly}
-                    <svg
-                      class="lock"
-                      viewBox="0 0 16 16"
-                      width="10"
-                      height="10"
-                      aria-label="read-only"
-                      ><title>read-only</title><path
-                        fill="currentColor"
-                        d="M4 7V5a4 4 0 0 1 8 0v2h1v8H3V7h1zm2 0h4V5a2 2 0 0 0-4 0v2z"
-                      /></svg
-                    >
-                  {/if}
-                </span>
-              {/if}
-            </div>
+              {#snippet content()}
+                <span class="name">{row.label}</span>
+                {#if row.kind === 'attr'}
+                  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+                  <span
+                    class="value"
+                    ondblclick={(ev) => {
+                      ev.stopPropagation();
+                      startEdit(row);
+                    }}
+                    onclick={(ev) => ev.stopPropagation()}
+                  >
+                    {#if editingKey === row.key}
+                      <ValueEditor
+                        type={row.type}
+                        value={formatValue(row.value, row.type)}
+                        autofocus
+                        label={row.path}
+                        onCommit={(t) => commit(row, t)}
+                        onCancel={endEdit}
+                      />
+                    {:else if row.type?.kind === 'bool' && row.value !== undefined}
+                      <ValueEditor
+                        type={row.type}
+                        value={formatValue(row.value, row.type)}
+                        readonly={!editable(row)}
+                        label={row.path}
+                        onCommit={(t) => commit(row, t)}
+                      />
+                    {:else if isContainer(row.value)}
+                      <details class="container">
+                        <summary class="gs-summary">{formatValue(row.value, row.type)}</summary>
+                        <pre>{JSON.stringify(row.value, null, 2)}</pre>
+                      </details>
+                    {:else}
+                      <span class="text">{formatValue(row.value, row.type)}</span>
+                    {/if}
+                    {#if row.readonly}
+                      <svg
+                        class="lock"
+                        viewBox="0 0 16 16"
+                        width="10"
+                        height="10"
+                        aria-label="read-only"
+                        ><title>read-only</title><path
+                          fill="currentColor"
+                          d="M4 7V5a4 4 0 0 1 8 0v2h1v8H3V7h1zm2 0h4V5a2 2 0 0 0-4 0v2z"
+                        /></svg
+                      >
+                    {/if}
+                  </span>
+                {/if}
+              {/snippet}
+            </TreeItem>
           </li>
         {/if}
       {/each}
@@ -479,15 +491,16 @@
 >
   {#if confirming}<p class="confirm-doc">{confirming.method.doc}</p>{/if}
   {#snippet actions()}
-    <button type="button" onclick={() => (confirming = null)}>Cancel</button>
-    <button
-      type="button"
+    <Button size="lg" onclick={() => (confirming = null)}>Cancel</Button>
+    <Button
+      size="lg"
+      variant="danger"
       class="danger"
       onclick={() => {
         const p = confirming;
         confirming = null;
         if (p) proceed(p);
-      }}>{confirming?.method.verb ?? confirming?.method.name}</button
+      }}>{confirming?.method.verb ?? confirming?.method.name}</Button
     >
   {/snippet}
 </Modal>
@@ -529,14 +542,14 @@
           {#if a.doc}<span class="arg-doc">{a.doc}</span>{/if}
         </label>
       {/each}
-      {#if form.error}<p class="form-error" role="alert">{form.error}</p>{/if}
+      {#if form.error}<Hint as="div" class="form-error" tone="error">{form.error}</Hint>{/if}
       <button type="submit" hidden aria-hidden="true"></button>
     </form>
   {/if}
   {#snippet actions()}
-    <button type="button" onclick={() => (form = null)}>Cancel</button>
-    <button type="button" class="primary" onclick={() => void submitForm()}
-      >{form?.method.verb ?? form?.method.name}</button
+    <Button size="lg" onclick={() => (form = null)}>Cancel</Button>
+    <Button size="lg" variant="primary" class="primary" onclick={() => void submitForm()}
+      >{form?.method.verb ?? form?.method.name}</Button
     >
   {/snippet}
 </Modal>
@@ -560,47 +573,9 @@
     margin: 0;
     padding: 0;
   }
-  .group-divider {
-    font-size: var(--gs-font-size-2xs);
-    text-transform: var(--gs-caps-transform);
-    letter-spacing: var(--gs-caps-tracking);
-    color: var(--gs-text-muted);
-    padding: var(--gs-space-2) var(--gs-space-3) var(--gs-space-0-5);
-    border-top: var(--gs-border-width) solid var(--gs-border);
-    margin-top: var(--gs-space-1);
-  }
-  .group-divider:first-child {
-    border-top: none;
-    margin-top: 0;
-  }
-  .sys-line {
-    display: flex;
-    align-items: center;
-    gap: var(--gs-space-1-5);
-    padding: var(--gs-space-px) var(--gs-space-2) var(--gs-space-px)
-      calc(var(--gs-tree-indent-base) + var(--depth) * var(--gs-space-3-5));
-    cursor: default;
-    min-height: 20px;
-  }
-  .sys-row.selected > .sys-line {
-    background: var(--gs-row-selected);
-  }
-  .sys-tree:focus .sys-row.selected > .sys-line {
+  .sys-tree:focus .sys-row.selected > :global(.sys-line) {
     outline: var(--gs-focus-width) solid var(--gs-focus-ring);
     outline-offset: var(--gs-focus-offset);
-  }
-  .twistie {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: var(--gs-size-icon-md);
-    flex: none;
-    color: var(--gs-text-muted);
-    transform: rotate(-90deg);
-    transition: transform var(--gs-duration-instant) var(--gs-ease-out);
-  }
-  .twistie.open {
-    transform: rotate(0deg);
   }
   .name {
     flex: none;
@@ -638,7 +613,6 @@
     visibility: visible;
   }
   .container summary {
-    cursor: pointer;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -647,12 +621,6 @@
     margin: var(--gs-space-0-5) 0;
     white-space: pre-wrap;
     font-size: var(--gs-font-size-xs);
-  }
-  .hint {
-    color: var(--gs-text-muted);
-    font-size: var(--gs-font-size-sm);
-    padding: var(--gs-space-4);
-    line-height: var(--gs-line-height-relaxed);
   }
   .confirm-doc {
     color: var(--gs-text-muted);
@@ -680,9 +648,5 @@
   .arg-doc {
     color: var(--gs-text-muted);
     font-size: var(--gs-font-size-xs);
-  }
-  .form-error {
-    color: var(--gs-syntax-error);
-    margin: 0;
   }
 </style>

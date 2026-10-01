@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Hint from '@/components/ui/Hint.svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
   import { peekBytes } from '@/bus/debug';
   import { machine } from '@/state/machine.svelte';
@@ -137,11 +138,11 @@
   </div>
   <div class="mem-body">
     {#if machine.status === 'running'}
-      <p class="mem-hint">Pause the machine to inspect memory.</p>
+      <Hint class="mem-hint">Pause the machine to inspect memory.</Hint>
     {:else if loading && !bytes}
-      <p class="mem-hint">Reading…</p>
+      <Hint class="mem-hint">Reading…</Hint>
     {:else if !bytes}
-      <p class="mem-hint">No machine running.</p>
+      <Hint class="mem-hint">No machine running.</Hint>
     {:else}
       {#each [0, 1, 2, 3, 4, 5, 6, 7] as i (i)}
         <div class="mem-row">
@@ -172,10 +173,6 @@
   }
   .mem-body {
     padding: var(--gs-space-1) var(--gs-space-3) var(--gs-space-2);
-  }
-  .mem-hint {
-    color: var(--gs-text-muted);
-    font-size: var(--gs-font-size-xs);
   }
   .mem-row {
     /* All three columns are content-width so the ASCII gutter sits

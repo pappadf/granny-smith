@@ -475,9 +475,15 @@ The Svelte app is organised under
   ([`drive_activity.c`](../../src/core/storage/drive_activity.c)). A model
   shows only the lights its profile has drives for.
 - **Common** ([`common/`](../../app/web2/src/components/common/)) —
-  CollapsibleSection, Tree, TabStrip, Modal, Toast, ContextMenu,
+  CollapsibleSection, Tree, Table, PaneSplit, Modal, Toast, ContextMenu,
   ValueEditor (a value's editor by its type descriptor), PathField, Icon
   (codicon sprite at [`public/icons/sprite.svg`](../../app/web2/public/icons/sprite.svg)).
+- **Primitives** ([`ui/`](../../app/web2/src/components/ui/)) — the
+  styled building blocks every view composes: buttons, inputs and form
+  fields; Tabs, Toolbar, Separator; Disclosure, TreeItem (the one row
+  look of the Files, SYSTEM and command-browser trees), ListRow;
+  SectionHeading, Hint, Sash, Switch, Spinner. Each draws only from
+  component tokens, so a skin restyles it without touching its markup.
 
 State lives under [`app/web2/src/state/`](../../app/web2/src/state/) —
 each `*.svelte.ts` file owns a `$state` slice (`machine`, `layout`,

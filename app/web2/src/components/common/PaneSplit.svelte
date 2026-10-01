@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Sash from '@/components/ui/Sash.svelte';
   import type { Snippet } from 'svelte';
 
   // Generic two-pane split with a draggable sash. Used by the Terminal
@@ -81,15 +82,15 @@
   <div class="pane pane-a" style="flex-basis: {sizePctA}%;">
     {@render paneA()}
   </div>
-  <div
+  <Sash
     class="pane-sash"
-    class:active={dragging}
-    role="separator"
-    aria-orientation={ariaOrientation}
-    aria-label="Resize pane"
+    line
+    active={dragging}
+    orientation={ariaOrientation}
+    label="Resize pane"
     onpointerdown={onSashDown}
     ondblclick={onSashDouble}
-  ></div>
+  />
   <div class="pane pane-b" style="flex-basis: {100 - sizePctA}%;">
     {@render paneB()}
   </div>
@@ -115,49 +116,5 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
-  }
-  .pane-sash {
-    flex: 0 0 var(--gs-size-sash);
-    background: transparent;
-    position: relative;
-    z-index: var(--gs-z-sash);
-    user-select: none;
-  }
-  /* 1px visible line centered inside the 4px hit area. Same colour as
-     section dividers so the split reads as part of the same hairline
-     grid. The wider parent stays hover-able and draggable. */
-  .pane-sash::before {
-    content: '';
-    position: absolute;
-    background: var(--gs-border);
-    pointer-events: none;
-  }
-  .pane-split:not(.vertical) > .pane-sash {
-    cursor: col-resize;
-    width: var(--gs-size-sash);
-    margin: 0 calc(var(--gs-size-sash) / -2);
-  }
-  .pane-split:not(.vertical) > .pane-sash::before {
-    top: 0;
-    bottom: 0;
-    left: 50%;
-    width: 1px;
-    transform: translateX(-50%);
-  }
-  .pane-split.vertical > .pane-sash {
-    cursor: row-resize;
-    height: var(--gs-size-sash);
-    margin: calc(var(--gs-size-sash) / -2) 0;
-  }
-  .pane-split.vertical > .pane-sash::before {
-    left: 0;
-    right: 0;
-    top: 50%;
-    height: 1px;
-    transform: translateY(-50%);
-  }
-  .pane-sash:hover,
-  .pane-sash.active {
-    background: var(--gs-sash-hover);
   }
 </style>

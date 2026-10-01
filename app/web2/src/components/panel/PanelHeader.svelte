@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { layout, PANEL_TABS, type PanelTab } from '@/state/layout.svelte';
-  import PanelTabComp from './PanelTab.svelte';
+  import { layout, PANEL_TABS, setActiveTab, type PanelTab } from '@/state/layout.svelte';
+  import Tabs from '../ui/Tabs.svelte';
   import { logs, clearLogs, downloadLogs, setAutoscroll } from '@/state/logs.svelte';
   import { toggleLogsPopover } from '../panel-views/logs/logsHeader.svelte';
   import CreateCheckpointButton from '../panel-views/checkpoints/CreateCheckpointButton.svelte';
@@ -21,11 +21,15 @@
 </script>
 
 <div class="gs-panel-header">
-  <div class="panel-tabs" role="tablist" aria-label="Panel views">
-    {#each PANEL_TABS as tab (tab)}
-      <PanelTabComp {tab} label={LABELS[tab]} active={layout.activeTab === tab} />
-    {/each}
-  </div>
+  <Tabs
+    variant="panel"
+    class="panel-tabs"
+    tabClass="ptab"
+    label="Panel views"
+    tabs={PANEL_TABS.map((key) => ({ key, label: LABELS[key] }))}
+    active={layout.activeTab}
+    onSelect={setActiveTab}
+  />
   <div class="panel-actions">
     {#if layout.activeTab === 'logs'}
       <Button
@@ -70,22 +74,6 @@
     background: var(--gs-surface-app);
     user-select: none;
     overflow: hidden;
-  }
-  .panel-tabs {
-    display: flex;
-    flex: 1 1 auto;
-    min-width: 0;
-    /* Scroll horizontally with a hidden scrollbar (VS Code style). overflow-y
-       must be hidden explicitly: auto on one axis forces visible->auto on the
-       other, and on systems with classic (space-taking) scrollbars the
-       horizontal bar shrinks the 35px header below the 31px tab height,
-       cascading into both scrollbars appearing. */
-    overflow-x: auto;
-    overflow-y: hidden;
-    scrollbar-width: none;
-  }
-  .panel-tabs::-webkit-scrollbar {
-    display: none;
   }
   .panel-actions {
     display: flex;

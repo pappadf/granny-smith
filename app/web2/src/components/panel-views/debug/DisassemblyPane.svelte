@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Hint from '@/components/ui/Hint.svelte';
   import { tick } from 'svelte';
   import { addBreakpoint, removeBreakpointAt, type DebugFrameRow } from '@/bus/debug';
   import { debugFrame, ROWS_BEFORE_PC } from '@/state/debugFrame.svelte';
@@ -164,9 +165,11 @@
 >
   <div class="banner">{bannerLabel()}</div>
   {#if machine.status === 'running'}
-    <p class="hint">Pause the machine to see the disasm listing.</p>
+    <Hint class="hint" inset="pane">Pause the machine to see the disasm listing.</Hint>
   {:else if rows.length === 0}
-    <p class="hint">{debugFrame.loading ? 'Disassembling…' : 'No machine running.'}</p>
+    <Hint class="hint" inset="pane"
+      >{debugFrame.loading ? 'Disassembling…' : 'No machine running.'}</Hint
+    >
   {:else}
     {#each rows as row, i (row.addr * 100 + i)}
       {@const isPc = row.addr === pc}
@@ -219,11 +222,6 @@
     color: var(--gs-text);
     font-size: var(--gs-font-size-xs);
     padding: var(--gs-space-1) var(--gs-space-3);
-  }
-  .hint {
-    color: var(--gs-text-muted);
-    padding: var(--gs-space-3);
-    font-size: var(--gs-font-size-xs);
   }
   .row {
     /* Four stable columns: PC marker, address group (logical / phys /

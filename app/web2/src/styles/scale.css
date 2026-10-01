@@ -71,7 +71,7 @@
   --gs-size-icon-sm: 13px;
   --gs-size-icon-md: 14px;
   --gs-size-icon: 16px;
-  --gs-size-indent: 8px; /* tree indent step per level */
+  --gs-size-indent: 14px; /* tree indent step per level */
   --gs-size-indent-base: 8px; /* tree first-level padding */
   --gs-size-sash: 4px;
   --gs-size-dot: 8px;

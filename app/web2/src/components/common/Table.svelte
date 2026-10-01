@@ -27,6 +27,8 @@
     onContextMenu?: (key: string, ev: MouseEvent) => void;
     /** Empty-state body shown when rows.length === 0. */
     empty?: Snippet;
+    /** Zebra rows (--gs-row-alt). */
+    striped?: boolean;
   }
   let {
     columns,
@@ -40,6 +42,7 @@
     onActivate,
     onContextMenu,
     empty,
+    striped = false,
   }: Props = $props();
 
   const sortedRows = $derived.by(() => {
@@ -60,15 +63,17 @@
   }
 </script>
 
-<div class="table" role="table">
-  <div class="thead" role="row" style="grid-template-columns: {gridTemplate};">
+<!-- Legacy hooks: table, thead, th, sortable, sort-marker, tbody, tr, td,
+     empty, selected. -->
+<div class="gs-table table" class:gs-table--striped={striped} role="grid" aria-readonly="true">
+  <div class="gs-table__head thead" role="row" style="grid-template-columns: {gridTemplate};">
     {#each columns as col (col.key)}
       {#if col.sortable === false}
-        <div class="th" role="columnheader">{col.label}</div>
+        <div class="gs-table__th th" role="columnheader">{col.label}</div>
       {:else}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <div
-          class="th sortable"
+          class="gs-table__th th sortable"
           role="columnheader"
           tabindex="-1"
           onclick={() => headerClick(col)}
@@ -80,31 +85,32 @@
         >
           {col.label}
           {#if sortColumn === col.key}
-            <span class="sort-marker">{sortDir === 'asc' ? '▲' : '▼'}</span>
+            <span class="gs-table__sort sort-marker">{sortDir === 'asc' ? '▲' : '▼'}</span>
           {/if}
         </div>
       {/if}
     {/each}
   </div>
-  <div class="tbody">
+  <div class="gs-table__body tbody" role="rowgroup">
     {#if sortedRows.length === 0 && empty}
-      <div class="empty">{@render empty()}</div>
+      <div class="gs-table__empty empty">{@render empty()}</div>
     {/if}
     {#each sortedRows as row (rowKey(row))}
       {@const key = rowKey(row)}
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <div
-        class="tr"
+        class="gs-table__row tr"
         class:selected={selectedKey === key}
         role="row"
         tabindex="-1"
+        aria-selected={selectedKey === key}
         style="grid-template-columns: {gridTemplate};"
         onclick={() => onSelect?.(key)}
         ondblclick={() => onActivate?.(key)}
         oncontextmenu={onContextMenu ? (ev) => onContextMenu(key, ev) : undefined}
       >
         {#each columns as col (col.key)}
-          <div class="td" role="cell">{col.text(row)}</div>
+          <div class="gs-table__cell td" role="gridcell">{col.text(row)}</div>
         {/each}
       </div>
     {/each}
@@ -112,7 +118,7 @@
 </div>
 
 <style>
-  .table {
+  .gs-table {
     display: flex;
     flex-direction: column;
     width: 100%;
@@ -121,64 +127,73 @@
     overflow: hidden;
     color: var(--gs-text);
   }
-  .thead {
+  .gs-table__head {
     display: grid;
     align-items: center;
-    height: var(--gs-size-control-md);
+    height: var(--gs-table-header-height);
     border-bottom: var(--gs-border-width) solid var(--gs-border);
-    background: var(--gs-surface-app);
+    background: var(--gs-table-header-bg);
     flex-shrink: 0;
   }
-  .th {
-    padding: 0 var(--gs-space-2);
-    font-size: var(--gs-font-size-xs);
-    font-weight: var(--gs-font-weight-semibold);
-    text-transform: var(--gs-caps-transform);
-    letter-spacing: var(--gs-caps-tracking);
-    color: var(--gs-text-muted);
+  .gs-table__th {
+    padding: 0 var(--gs-row-padding-x);
+    font-size: var(--gs-heading-font-size);
+    font-weight: var(--gs-heading-weight);
+    text-transform: var(--gs-heading-transform);
+    letter-spacing: var(--gs-heading-tracking);
+    color: var(--gs-heading-fg);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .th.sortable {
+  .gs-table__th.sortable {
     cursor: pointer;
     user-select: none;
   }
-  .th.sortable:hover {
+  .gs-table__th.sortable:hover {
     color: var(--gs-text-strong);
   }
-  .sort-marker {
-    font-size: var(--gs-font-size-3xs);
+  .gs-table__sort {
+    font-size: var(--gs-table-sort-size);
     margin-left: var(--gs-space-1);
   }
-  .tbody {
+  .gs-table__body {
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
   }
-  .tr {
+  .gs-table__row {
     display: grid;
     align-items: center;
-    height: var(--gs-size-row);
+    height: var(--gs-row-height);
     cursor: pointer;
     user-select: none;
   }
-  .tr:hover {
+  .gs-table--striped .gs-table__row:nth-child(even) {
+    background: var(--gs-row-alt);
+  }
+  .gs-table__row:hover {
     background: var(--gs-row-hover);
   }
-  .tr.selected {
-    background: var(--gs-row-selected);
+  /* The selected row: the focused-list colour while focus is in the table. */
+  .gs-table__row[aria-selected='true'] {
+    background: var(--gs-row-selected-inactive);
+    color: var(--gs-row-selected-inactive-fg);
   }
-  .td {
-    padding: 0 var(--gs-space-2);
-    font-size: var(--gs-font-size-base);
+  .gs-table:focus-within .gs-table__row[aria-selected='true'] {
+    background: var(--gs-row-selected);
+    color: var(--gs-row-selected-fg);
+  }
+  .gs-table__cell {
+    padding: 0 var(--gs-row-padding-x);
+    font-size: var(--gs-row-font-size);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .empty {
-    padding: var(--gs-space-4);
-    color: var(--gs-text-muted);
-    font-size: var(--gs-font-size-base);
+  .gs-table__empty {
+    padding: var(--gs-hint-padding-view);
+    color: var(--gs-hint-fg);
+    font-size: var(--gs-row-font-size);
   }
 </style>

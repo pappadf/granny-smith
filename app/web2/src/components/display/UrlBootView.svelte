@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SectionHeading from '@/components/ui/SectionHeading.svelte';
   // What a page opened to boot from its URL (?rom=…&hd0=…) shows until the
   // machine runs: the Granny Smith headline, what is being fetched, and a
   // progress bar per file.  It replaces Welcome for that load; nothing asks
@@ -106,7 +107,7 @@
               <div class="row">
                 <Icon name={iconFor(f.slot)} />
                 <div class="names">
-                  <span class="label">{f.label}</span>
+                  <SectionHeading as="span" class="label">{f.label}</SectionHeading>
                   <span class="name" title={f.name}>{f.name}</span>
                 </div>
                 <span class="amount">
@@ -232,13 +233,6 @@
     flex-direction: column;
     min-width: 0;
     flex: 1 1 auto;
-  }
-  .label {
-    font-size: var(--gs-font-size-xs);
-    font-weight: var(--gs-font-weight-semibold);
-    text-transform: var(--gs-caps-transform);
-    letter-spacing: var(--gs-caps-tracking);
-    color: var(--gs-text-muted);
   }
   .name {
     color: var(--gs-text-strong);

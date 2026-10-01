@@ -1,6 +1,7 @@
 <script lang="ts">
+  import Hint from '@/components/ui/Hint.svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
-  import TabStrip from '@/components/common/TabStrip.svelte';
+  import Tabs from '@/components/ui/Tabs.svelte';
   import { debug, toggleSection, type MmuSubtab } from '@/state/debug.svelte';
   import { machine } from '@/state/machine.svelte';
   import MmuStateTab from './MmuStateTab.svelte';
@@ -24,9 +25,10 @@
 {#if visible}
   <CollapsibleSection title="MMU" open={debug.sections.mmu} onToggle={() => toggleSection('mmu')}>
     {#if machine.status === 'running'}
-      <p class="mmu-hint">Pause the machine to inspect MMU state.</p>
+      <Hint class="mmu-hint" inset="block">Pause the machine to inspect MMU state.</Hint>
     {:else}
-      <TabStrip
+      <Tabs
+        tabClass="tab"
         tabs={TABS}
         active={debug.mmuSubtab}
         onSelect={(k: MmuSubtab) => (debug.mmuSubtab = k)}
@@ -45,7 +47,7 @@
             ]}
           />
         {/snippet}
-      </TabStrip>
+      </Tabs>
       {#if debug.mmuSubtab === 'translate'}
         <MmuTranslateTab />
       {:else}
@@ -56,9 +58,4 @@
 {/if}
 
 <style>
-  .mmu-hint {
-    color: var(--gs-text-muted);
-    font-size: var(--gs-font-size-xs);
-    padding: var(--gs-space-2) var(--gs-space-4);
-  }
 </style>

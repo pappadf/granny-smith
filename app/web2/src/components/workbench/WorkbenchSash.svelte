@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Sash from '@/components/ui/Sash.svelte';
   import {
     layout,
     setPanelSize,
@@ -51,43 +52,17 @@
   const ariaOrientation = $derived(layout.panelPos === 'bottom' ? 'horizontal' : 'vertical');
 </script>
 
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div
+<Sash
   class="workbench-sash"
-  class:active
-  role="separator"
-  aria-orientation={ariaOrientation}
-  aria-label="Resize panel"
+  {active}
+  orientation={ariaOrientation}
+  label="Resize panel"
   onmousedown={onMouseDown}
   ondblclick={onDoubleClick}
-></div>
+/>
 
 <style>
-  .workbench-sash {
-    flex: 0 0 var(--gs-size-sash);
-    background: transparent;
-    position: relative;
-    z-index: var(--gs-z-sash);
-    user-select: none;
-  }
-  :global(.gs-workbench.panel-bottom) > .workbench-sash {
-    cursor: row-resize;
-    width: 100%;
-    height: var(--gs-size-sash);
-    margin: calc(var(--gs-size-sash) / -2) 0;
-  }
-  :global(.gs-workbench.panel-left) > .workbench-sash,
-  :global(.gs-workbench.panel-right) > .workbench-sash {
-    cursor: col-resize;
-    width: var(--gs-size-sash);
-    height: 100%;
-    margin: 0 calc(var(--gs-size-sash) / -2);
-  }
-  .workbench-sash:hover,
-  .workbench-sash.active {
-    background: var(--gs-sash-hover);
-  }
-  :global(.gs-workbench.panel-collapsed) > .workbench-sash {
+  :global(.gs-workbench.panel-collapsed) > :global(.workbench-sash) {
     display: none;
   }
 </style>

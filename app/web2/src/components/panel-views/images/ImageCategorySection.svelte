@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Hint from '@/components/ui/Hint.svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
   import ImageRow from './ImageRow.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
@@ -227,11 +228,11 @@
       />
     {/snippet}
     {#if loading && entries.length === 0}
-      <p class="empty">Loading…</p>
+      <Hint class="empty" inset="list">Loading…</Hint>
     {:else if entries.length === 0}
-      <p class="empty">
+      <Hint class="empty" inset="list">
         No {CATEGORY_LABELS[cat]} images. Drop a file here or click the upload button.
-      </p>
+      </Hint>
     {:else}
       {#each entries as entry (entry.path)}
         <ImageRow
@@ -250,11 +251,6 @@
      path but click-to-upload still matters for touch / accessibility,
      so the button shouldn't be hover-gated. Muted by default so it
      doesn't compete with the section title; brightens on hover. */
-  .empty {
-    color: var(--gs-text-muted);
-    font-size: var(--gs-font-size-sm);
-    padding: var(--gs-space-1-5) var(--gs-space-7);
-  }
   /* Drop-target affordance — subtle inset border while a file is
      being dragged over the section so the user sees which category
      will accept the drop. */

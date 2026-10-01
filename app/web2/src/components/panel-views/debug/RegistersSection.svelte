@@ -1,4 +1,6 @@
 <script lang="ts">
+  import SectionHeading from '@/components/ui/SectionHeading.svelte';
+  import Hint from '@/components/ui/Hint.svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { writeRegister } from '@/bus/debug';
@@ -105,13 +107,15 @@
   onToggle={() => toggleSection('registers')}
 >
   {#if machine.status === 'running'}
-    <p class="reg-hint">Pause the machine to inspect register state.</p>
+    <Hint class="reg-hint" inset="block">Pause the machine to inspect register state.</Hint>
   {:else if !frame}
-    <p class="reg-hint">{debugFrame.loading ? 'Reading registers…' : 'No machine running.'}</p>
+    <Hint class="reg-hint" inset="block"
+      >{debugFrame.loading ? 'Reading registers…' : 'No machine running.'}</Hint
+    >
   {:else}
     {#each groups as group (group.title)}
       <div class="reg-group">
-        <h4 class="reg-group-title">{group.title}</h4>
+        <SectionHeading level="h4" class="reg-group-title">{group.title}</SectionHeading>
         <div
           class="reg-rows"
           style="grid-template-rows: repeat({Math.ceil(group.names.length / 2)}, auto);"
@@ -140,21 +144,8 @@
 </CollapsibleSection>
 
 <style>
-  .reg-hint {
-    color: var(--gs-text-muted);
-    font-size: var(--gs-font-size-xs);
-    padding: var(--gs-space-2) var(--gs-space-4);
-  }
   .reg-group {
     padding: var(--gs-space-1-5) var(--gs-space-3);
-  }
-  .reg-group-title {
-    font-size: var(--gs-font-size-2xs);
-    font-weight: var(--gs-font-weight-semibold);
-    color: var(--gs-text-muted);
-    margin: var(--gs-space-1-5) 0 var(--gs-space-1);
-    text-transform: var(--gs-caps-transform);
-    letter-spacing: var(--gs-caps-tracking);
   }
   .reg-rows {
     /* `auto auto` keeps both columns content-width so the right-hand

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import TabStrip from '@/components/common/TabStrip.svelte';
+  import Tabs from '@/components/ui/Tabs.svelte';
 
   const tabs = [
     { key: 'state', label: 'State' },
@@ -8,9 +8,9 @@
   const noop = () => undefined;
 </script>
 
-<TabStrip {tabs} active="state" onSelect={noop}>
+<Tabs tabClass="tab" {tabs} active="state" onSelect={noop}>
   {#snippet accessory()}<span class="acc">S | U</span>{/snippet}
-</TabStrip>
+</Tabs>
 
 <style>
   .acc {

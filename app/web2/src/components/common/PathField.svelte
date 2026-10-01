@@ -131,7 +131,8 @@
     max-height: 160px;
     overflow-y: auto;
     border: var(--gs-border-width) solid var(--gs-border);
-    background: var(--gs-surface-app);
+    background: var(--gs-menu-bg);
+    color: var(--gs-menu-fg);
     font-family: var(--gs-font-mono);
     font-size: var(--gs-font-size-sm);
   }
@@ -143,17 +144,21 @@
     text-align: left;
     background: none;
     border: none;
-    color: var(--gs-text);
+    color: inherit;
     padding: var(--gs-space-px) var(--gs-space-2);
     cursor: pointer;
     font: inherit;
   }
-  .entry:hover {
+  .entry:hover,
+  .entry:focus-visible {
     background: var(--gs-menu-hover-bg);
     color: var(--gs-menu-hover-fg);
   }
   .entry.directory {
     color: var(--gs-syntax-type);
+  }
+  .entry:focus-visible {
+    outline: none;
   }
   .error {
     color: var(--gs-syntax-error);

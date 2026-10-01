@@ -40,7 +40,8 @@
       <option>accel</option>
     </Select>
     <Select aria-label="invalid select" invalid value="x"><option>x</option></Select>
-    <Select aria-label="disabled select" disabled value="disabled"><option>disabled</option></Select>
+    <Select aria-label="disabled select" disabled value="disabled"><option>disabled</option></Select
+    >
   </div>
   <div class="row">
     <Checkbox label="Advanced" checked />

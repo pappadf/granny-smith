@@ -22,6 +22,7 @@
   import IconButton from '../ui/IconButton.svelte';
   import SegmentedControl from '../ui/SegmentedControl.svelte';
   import Separator from '../ui/Separator.svelte';
+  import Toolbar from '../ui/Toolbar.svelte';
   import TextInput from '../ui/TextInput.svelte';
   import type { IconName } from '@/lib/icons';
   import type { SchedulerMode } from '@/state/machine.svelte';
@@ -207,7 +208,7 @@
   }
 </script>
 
-<div class="gs-toolbar" role="toolbar" aria-label="Display toolbar">
+<Toolbar label="Display toolbar">
   <div class="tg execution">
     <IconButton
       class="tbtn"
@@ -343,25 +344,13 @@
       onclick={() => onLayoutClick('right')}
     />
   </div>
-</div>
+</Toolbar>
 
 <style>
-  .gs-toolbar {
-    height: var(--gs-size-toolbar);
-    flex: 0 0 var(--gs-size-toolbar);
-    display: flex;
-    align-items: center;
-    padding: 0 var(--gs-space-2);
-    gap: 0;
-    background: var(--gs-surface-app);
-    border-bottom: var(--gs-border-width) solid var(--gs-border);
-    color: var(--gs-text-strong);
-    user-select: none;
-  }
   .tg {
     display: flex;
     align-items: center;
-    gap: var(--gs-space-1);
+    gap: var(--gs-toolbar-gap);
   }
   .tg.actions {
     margin-left: var(--gs-space-1);
@@ -369,7 +358,7 @@
   .layout-controls {
     display: flex;
     align-items: center;
-    gap: var(--gs-space-1);
+    gap: var(--gs-toolbar-gap);
     margin-left: auto;
     height: 100%;
   }

@@ -137,10 +137,11 @@ export const STORIES: readonly StoryDef[] = [
   },
   {
     name: 'TreeRows',
-    variants: ['default', 'hover'],
+    variants: ['default', 'hover', 'focused'],
     width: 420,
     height: 260,
     hover: { hover: '.tree-row:nth-child(2)' },
+    focus: { focused: '.tree' },
     load: () => import('./stories/TreeRows.story.svelte'),
   },
   {
@@ -161,10 +162,11 @@ export const STORIES: readonly StoryDef[] = [
   },
   {
     name: 'TabStrip',
-    variants: ['default', 'hover'],
+    variants: ['default', 'hover', 'focus'],
     width: 420,
     height: 60,
     hover: { hover: '.tab:nth-child(2)' },
+    focus: { focus: '.tab:nth-child(1)' },
     load: () => import('./stories/TabStrip.story.svelte'),
   },
   {

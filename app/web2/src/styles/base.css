@@ -82,6 +82,31 @@ kbd {
   opacity: 1;
 }
 
+/* A <details> summary drawn with the disclosure chevron (ui/Disclosure):
+   SYSTEM's container values and the console's value trees. */
+summary.gs-summary {
+  list-style: none;
+  cursor: pointer;
+}
+summary.gs-summary::-webkit-details-marker {
+  display: none;
+}
+summary.gs-summary::before {
+  content: '';
+  display: inline-block;
+  width: var(--gs-size-icon-xs);
+  height: var(--gs-size-icon-xs);
+  margin-right: var(--gs-space-1);
+  vertical-align: -0.1em;
+  background: var(--gs-disclosure-fg);
+  mask: var(--gs-disclosure-mask) center / contain no-repeat;
+  transform: rotate(var(--gs-disclosure-rotation-closed));
+  transition: transform var(--gs-disclosure-duration) var(--gs-ease-out);
+}
+details[open] > summary.gs-summary::before {
+  transform: none;
+}
+
 /* Reduced motion: every duration token collapses, so no component needs a
    media query of its own for its transitions. */
 @media (prefers-reduced-motion: reduce) {

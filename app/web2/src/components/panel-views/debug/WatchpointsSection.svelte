@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Hint from '@/components/ui/Hint.svelte';
+  import ListRow from '@/components/ui/ListRow.svelte';
   // The Watchpoints section: debug.watchpoints, a memory logpoint that stops
   // the machine after the accessing instruction (#180).  Same shape as the
   // Breakpoints section; a row is an address range, its access mode and hits.
@@ -151,18 +153,17 @@
     </div>
   {/if}
   {#if rows.length === 0 && !showAdd}
-    <p class="hint">No watchpoints. Click + to add one.</p>
+    <Hint class="hint" inset="section">No watchpoints. Click + to add one.</Hint>
   {:else}
     {#each rows as r (r.id)}
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="wp-row" oncontextmenu={(ev) => onRowContext(r, ev)}>
+      <ListRow class="wp-row" density="compact" mono oncontextmenu={(ev) => onRowContext(r, ev)}>
         <span class="enable">{r.enabled ? '●' : '○'}</span>
         <span class="addr">{rangeLabel(r)}</span>
         <span class="mode">{r.mode}</span>
         {#if r.hits > 0}
           <span class="hits">{r.hits}×</span>
         {/if}
-      </div>
+      </ListRow>
     {/each}
   {/if}
 </CollapsibleSection>
@@ -172,23 +173,6 @@
     display: flex;
     gap: var(--gs-space-1-5);
     padding: var(--gs-space-1-5) var(--gs-space-3);
-  }
-  .hint {
-    color: var(--gs-text-muted);
-    font-size: var(--gs-font-size-xs);
-    padding: var(--gs-space-1-5) var(--gs-space-3);
-  }
-  .wp-row {
-    display: flex;
-    align-items: center;
-    gap: var(--gs-space-3);
-    padding: var(--gs-space-0-5) var(--gs-space-3);
-    font-family: var(--gs-font-mono);
-    font-size: var(--gs-font-size-xs);
-    color: var(--gs-text);
-  }
-  .wp-row:hover {
-    background: var(--gs-row-hover);
   }
   .enable {
     color: var(--gs-text-muted);
