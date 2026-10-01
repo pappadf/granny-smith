@@ -79,6 +79,20 @@ export function setSkin(id: string): void {
   appearance.sessionSkin = null;
 }
 
+// The appearance menu's name for one scheme of a skin.
+export function lookName(skin: SkinManifest, scheme: Scheme): string {
+  const named = skin.schemeNames?.[scheme];
+  if (named) return named;
+  if (skin.schemes.length < 2) return skin.name;
+  return `${skin.name} ${scheme === 'dark' ? 'Dark' : 'Light'}`;
+}
+
+// Choose a look: a skin in one of its schemes.
+export function setLook(id: string, scheme: Scheme): void {
+  setSkin(id);
+  appearance.schemeMode = scheme;
+}
+
 export function setSchemeMode(mode: SchemeMode): void {
   appearance.schemeMode = mode;
 }

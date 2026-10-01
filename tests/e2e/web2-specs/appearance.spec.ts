@@ -51,7 +51,8 @@ test('switching the scheme restyles the page and the console input at runtime', 
   const before = await input.evaluate((el) => getComputedStyle(el).color);
   expect(before).toBe('rgb(204, 204, 204)');
 
-  await page.locator('.gs-toolbar button[aria-label^="Theme:"]').click();
+  await page.locator('.gs-toolbar button[aria-label="Appearance"]').click();
+  await page.locator('.gs-menu .gs-menu__item', { hasText: 'Workbench Light' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   await expect.poll(() => input.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(51, 51, 51)');
   const meta = await page.evaluate(

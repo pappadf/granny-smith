@@ -1,12 +1,13 @@
 import type { SkinManifest } from '../types';
 
 // Glass: floating translucent cards over a softly lit page.  Dark is
-// "Midnight" (blue-black glass, periwinkle and teal), light is "Daylight"
+// "Midnight" (blue-black glass, periwinkle and teal), light is "Starlight"
 // (white cards on cool grey, blue).  Sora and JetBrains Mono, the default
 // sprite, and the floating layout in overrides.css.
 export const glass: SkinManifest = {
   id: 'glass',
   name: 'Glass',
+  schemeNames: { dark: 'Midnight', light: 'Starlight' },
   schemes: ['dark', 'light'],
   fonts: [
     {

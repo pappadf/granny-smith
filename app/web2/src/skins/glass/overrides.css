@@ -245,7 +245,7 @@
     background: var(--gs-ref-glass);
   }
 
-  /* ---- Daylight: white cards with soft shadows instead of glass ---------- */
+  /* ---- Starlight: white cards with soft shadows instead of glass ---------- */
   :root[data-skin='glass'][data-theme='light'] .gs-workbench > .gs-panel {
     border-color: transparent;
     box-shadow:

@@ -8,7 +8,7 @@ default skin is `workbench`. The others are each built only from
 
 - `glass`: floating translucent cards over a softly lit page, in two
   schemes: dark ("Midnight", periwinkle and teal glass) and light
-  ("Daylight", white cards on cool grey). Sora and JetBrains Mono, the
+  ("Starlight", white cards on cool grey). Sora and JetBrains Mono, the
   default sprite, the floating layout in its overrides.
 - `platinum`: Mac OS 8, light only. Bevelled push buttons and grooves,
   folder tabs, white Finder lists with the lavender highlight, Platinum
@@ -158,8 +158,8 @@ first group is run / shut down; the buttons after the last group's
   cards); order and sizing may not. The page itself is `body`.
 - **Captions:** display-toolbar controls carry a short `data-caption`
   (Run / Pause, Shut Down, Speed, Zoom, Save State, Appearance, Full
-  Screen, Panel). No skin needs to show it; aqua prints it under each
-  control (`content: attr(data-caption)`), Daylight inside its run pill and
+  Screen, Panel; the Appearance button opens the menu of looks). No skin needs to show it; aqua prints it under each
+  control (`content: attr(data-caption)`), Starlight inside its run pill and
   platinum as the "Zoom:" label.
 - **Overflow:** a panel strip that runs short of room shows a
   `gs-tabs__more` ("»", a `gs-tabs__tab` too, so it takes the tab look) and

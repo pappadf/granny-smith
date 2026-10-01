@@ -16,6 +16,10 @@ export interface SkinFont {
 export interface SkinManifest {
   id: string; // kebab-case; the folder name and the data-skin value
   name: string; // human label
+  // What the appearance menu calls each scheme of this skin, when the skin
+  // names them itself (glass: Midnight / Starlight); otherwise a skin with
+  // two schemes is listed as "<name> Dark" / "<name> Light".
+  schemeNames?: Partial<Record<Scheme, string>>;
   schemes: readonly Scheme[]; // at least one; the first is the fallback
   sprite?: string; // relative URL under public/, default 'icons/sprite.svg'
   fonts?: readonly SkinFont[];
