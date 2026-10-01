@@ -391,6 +391,8 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     snd->sched = cfg->scheduler;
     snd->dbdma = st->dbdma;
     snd->out_chan = GOS_DMA_AUD_OUT;
+    snd->input = true; // the record channel runs (silence): see davbus.c
+    snd->in_chan = GOS_DMA_AUD_IN;
     snd->cpu_hz = cfg->machine->freq;
     snd->screamer = true;
     davbus_register_events(snd);

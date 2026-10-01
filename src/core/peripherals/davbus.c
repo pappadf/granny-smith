@@ -174,15 +174,53 @@ static void awacs_tick_event(void *source, uint64_t data) {
     w->tick_frac = num % freq;
     w->tick_cycles = now;
     uint32_t cap = AWACS_CREDIT_CAP(rate);
+    uint32_t granted = (uint32_t)(num / freq);
     if (w->credit > cap)
         w->credit = cap;
     dbdma_kick(h->dbdma, h->out_chan);
-    // Keep ticking while the program runs; an idle channel forfeits its
+    bool out_live = dbdma_active(h->dbdma, h->out_chan);
+    bool in_live = false;
+    if (h->input) {
+        w->in_credit += granted;
+        if (w->in_credit > cap)
+            w->in_credit = cap;
+        dbdma_kick(h->dbdma, h->in_chan);
+        in_live = dbdma_active(h->dbdma, h->in_chan);
+        if (!in_live)
+            w->in_credit = 0;
+    }
+    // Keep ticking while a program runs; an idle channel forfeits its
     // remaining credit (playback restarts from a clean gate).
-    if (dbdma_active(h->dbdma, h->out_chan))
-        awacs_arm(h);
-    else
+    if (!out_live)
         w->credit = 0;
+    if (out_live || in_live)
+        awacs_arm(h);
+}
+
+// The input channel's device port: the record path, delivering silence
+// (no host input source) at the frame rate under the same credit gate as
+// output.  The guest's input program completes its descriptors in emulated
+// time — which is what its stop protocol depends on: the beige G3 sound
+// driver halts recording by setting the channel's S0 bit and waiting for
+// the program's own conditional branch to reach STOP, which happens only
+// when a descriptor completes.
+static int awacs_port_in(void *ctx, uint8_t *buf, int len) {
+    davbus_host_t *h = (davbus_host_t *)ctx;
+    davbus_t *w = h->regs;
+    uint32_t frames = (uint32_t)len / 4u;
+    if (frames > w->in_credit)
+        frames = w->in_credit;
+    int n = (int)(frames * 4u);
+    if (n == 0 && len > 0 && len < 4 && w->in_credit) {
+        n = len; // a descriptor's sub-frame tail costs one frame
+        w->in_credit--;
+    } else {
+        w->in_credit -= frames;
+    }
+    memset(buf, 0, (size_t)n);
+    if (n < len)
+        awacs_arm(h); // stalled on credit: the tick resumes the channel
+    return n;
 }
 
 // ============================================================
@@ -350,6 +388,7 @@ void davbus_reset(davbus_host_t *h) {
     w->byte_swap = 0;
     memset(w->codec, 0, sizeof(w->codec));
     w->credit = 0;
+    w->in_credit = 0;
     w->partial_len = 0;
     w->tick_frac = 0;
     w->tick_cycles = scheduler_cpu_cycles(h->sched);
@@ -371,6 +410,10 @@ void davbus_init(davbus_host_t *h) {
     // The output channel's device port (replaces nothing: attached at build).
     dbdma_port_t port = {.out = awacs_port_out, .ctx = h};
     dbdma_set_port(h->dbdma, h->out_chan, &port);
+    if (h->input) {
+        dbdma_port_t in = {.in = awacs_port_in, .ctx = h};
+        dbdma_set_port(h->dbdma, h->in_chan, &in);
+    }
 
     const sound_surface_t surface = {
         .sample_rate = davbus_snd_sample_rate,

@@ -51,6 +51,9 @@ typedef struct davbus {
     // Diagnostics (machine.sound)
     uint64_t frames_pushed; // frames rendered into the host stream
     int32_t peak; // loudest |sample| pushed since power-on
+    // Input-channel pacing: frames the input port may deliver before the
+    // next grant (the same tick grants both directions).
+    uint32_t in_credit;
 } davbus_t;
 
 // The wiring the family supplies (not checkpointed; rebuilt at init).
@@ -59,6 +62,10 @@ typedef struct davbus_host {
     struct scheduler *sched;
     struct dbdma *dbdma;
     int out_chan; // the output DBDMA channel (8 on both controllers)
+    // The input channel (9), when the family attaches it: the codec's
+    // record path delivering silence at the frame rate (no host input).
+    bool input;
+    int in_chan;
     uint32_t cpu_hz; // scheduler cycle rate the pacing is exact against
     bool screamer; // Screamer codec (revision 3) instead of AWACS
     int16_t *stage; // gain-applied staging frames for audio_out_push

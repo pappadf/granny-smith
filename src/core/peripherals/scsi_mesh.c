@@ -229,6 +229,9 @@ static void finish_command(mesh_t *m) {
 // [Linux/NetBSD/MkLinux mesh.h; there is no Apple datasheet]
 static const scsi_msg_caps_t MESH_MSG_CAPS = {.min_period = 25, .max_offset = 15, .wide = false};
 
+// How long the target leaves REQ negated between STATUS and MESSAGE IN.
+#define MESH_REQ_GAP_NS 10000u
+
 // A virtual MESSAGE IN is pending while queued bytes remain unread.
 static bool msgin_pending(mesh_t *m) {
     return scsi_msg_pending(&m->msg);
@@ -554,6 +557,17 @@ static void do_sequence(mesh_t *m, uint8_t value, uint32_t count) {
         }
         fifo_push(m, (uint8_t)st);
         m->active = 0;
+        // Acknowledging the status byte ends the REQ/ACK handshake: the
+        // target negates REQ, changes the phase lines to MESSAGE IN, and
+        // only then asserts REQ again.  Apple's MESH driver (the beige G3
+        // ROM's, at $FFECE4F0) waits for exactly that release —
+        // `while (bus_status0 & REQ)` — before it issues the MSGIN
+        // sequence, so a REQ that never drops hangs it forever.  The gap
+        // lasts MESH_REQ_GAP_NS of machine time — a target's phase change
+        // takes microseconds — so the driver, which reads a few other
+        // registers first, still finds REQ low, and a driver that instead
+        // waits for REQ to come back just waits that long.
+        m->req_gap_until_ns = m->sched ? (uint64_t)scheduler_time_ns(m->sched) + MESH_REQ_GAP_NS : 0;
         raise_int(m, INT_CMDDONE);
         return;
     }
@@ -762,7 +776,8 @@ static uint8_t mesh_read_inner(mesh_t *m, uint32_t offset) {
         // REQ presents whenever a target is connected: the driver class
         // spin-waits on REQ between phases before dropping ATN.
         uint8_t v = phase_bits(m);
-        if (m->connected)
+        bool gap = m->sched && (uint64_t)scheduler_time_ns(m->sched) < m->req_gap_until_ns;
+        if (m->connected && !gap)
             v |= BS0_REQ;
         if (m->bus0_atn || m->msgout_pending)
             v |= BS0_ATN;
