@@ -38,7 +38,6 @@
 #include "audio_out.h"
 #include "dbdma.h"
 #include "log.h"
-#include "machine.h"
 #include "object.h"
 #include "scheduler.h"
 #include "sound_surface.h"
