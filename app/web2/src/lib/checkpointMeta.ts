@@ -2,8 +2,9 @@
 // checkpoint lives in a per-machine dir whose name is `<id>-<created>`:
 //   <id>      — 16 hex chars (8 random bytes)
 //   <created> — compact ISO 8601 (YYYYMMDDTHHMMSSZ)
-// The dir also contains state.checkpoint (the quick-save) and an optional
-// manifest.json with `{label, machine}` fields.
+// The dir also contains state.checkpoint (the quick-save) and a manifest.json
+// the core writes (`machine: {model, ram_bytes}`, the build, the images); the
+// UI adds a `label` to it.
 
 export interface ParsedCheckpointDir {
   id: string;
@@ -53,4 +54,24 @@ export function formatBytes(n: number): string {
     i++;
   }
   return `${v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+}
+
+// The manifest's `machine`: the core writes `{model, ram_bytes}`; manifests
+// written by older builds of this UI hold the model as a plain string.
+export function manifestMachine(m: unknown): { model: string; ramBytes: number } | null {
+  if (typeof m === 'string' && m) return { model: m, ramBytes: 0 };
+  if (m && typeof m === 'object') {
+    const o = m as { model?: unknown; ram_bytes?: unknown };
+    if (typeof o.model === 'string' && o.model) {
+      return { model: o.model, ramBytes: typeof o.ram_bytes === 'number' ? o.ram_bytes : 0 };
+    }
+  }
+  return null;
+}
+
+// "Macintosh Plus · 4 MB" (the RAM left out when unknown).
+export function describeMachine(name: string, ramBytes: number): string {
+  if (ramBytes <= 0) return name;
+  const mb = ramBytes / (1024 * 1024);
+  return `${name} · ${Number.isInteger(mb) ? `${mb} MB` : formatBytes(ramBytes)}`;
 }

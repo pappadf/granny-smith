@@ -78,7 +78,8 @@ export interface CheckpointEntry {
   created: string;
   /** Human label (manifest.json `label`, else the formatted timestamp) */
   label: string;
-  /** Machine model (manifest.json `machine`, else "unknown") */
+  /** The machine, for display: its model's name and RAM (from manifest.json
+   *  `machine`), else "unknown" */
   machine: string;
   /** Sum of file sizes inside the dir; 0 if unreadable */
   sizeBytes: number;

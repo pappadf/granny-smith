@@ -111,7 +111,10 @@
     });
     if (!next || next === row.label) return;
     try {
-      await opfs.writeJson(`${row.path}/manifest.json`, { label: next, machine: row.machine });
+      // Only the label changes: the rest of the manifest is the core's.
+      const path = `${row.path}/manifest.json`;
+      const manifest = (await opfs.readJson<Record<string, unknown>>(path)) ?? {};
+      await opfs.writeJson(path, { ...manifest, label: next });
       await refresh();
       showNotification(`Renamed checkpoint to '${next}'`, 'info');
     } catch {
