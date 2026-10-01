@@ -29,11 +29,32 @@
     current = null;
   }
 
-  export function openContextMenu(items: ContextMenuItem[], x: number, y: number): void {
+  // A menu standing in for a control's own list (a select's options): as
+  // wide as the control, keyboard on the current entry, focus handed back
+  // to the control when it closes.
+  export interface ContextMenuOptions {
+    minWidth?: number;
+    highlight?: number;
+    returnFocus?: HTMLElement;
+  }
+
+  export function openContextMenu(
+    items: ContextMenuItem[],
+    x: number,
+    y: number,
+    options: ContextMenuOptions = {},
+  ): void {
     closeCurrent();
     const target = document.createElement('div');
     document.body.appendChild(target);
-    const instance = mount(Self, { target, props: { items, x, y, onClose: closeCurrent } });
+    const onClose = () => {
+      closeCurrent();
+      options.returnFocus?.focus();
+    };
+    const instance = mount(Self, {
+      target,
+      props: { items, x, y, onClose, minWidth: options.minWidth, initial: options.highlight },
+    });
     current = { instance, target };
   }
 
@@ -51,12 +72,15 @@
     x: number;
     y: number;
     onClose: () => void;
+    minWidth?: number;
+    initial?: number;
   }
-  let { items, x, y, onClose }: Props = $props();
+  let { items, x, y, onClose, minWidth, initial }: Props = $props();
 
   let cardEl = $state<HTMLDivElement | null>(null);
   // Highlight index — set on hover or arrow-key. Skip separators.
-  let highlight = $state(-1);
+  // svelte-ignore state_referenced_locally
+  let highlight = $state(initial ?? -1);
 
   // Position clamped to viewport. Computed on mount once we know our size.
   // (x, y) captured once from props — subsequent prop changes don't reposition.
@@ -107,6 +131,7 @@
       if (top + r.height > vh - 4) top = Math.max(4, vh - r.height - 4);
       pos = { left, top };
       cardEl.focus();
+      cardEl.querySelector('.highlight')?.scrollIntoView({ block: 'nearest' });
     });
     const onDocDown = (ev: MouseEvent) => {
       if (!cardEl) return;
@@ -151,7 +176,7 @@
   class="gs-menu context-menu"
   role="menu"
   tabindex="-1"
-  style="left: {pos.left}px; top: {pos.top}px;"
+  style="left: {pos.left}px; top: {pos.top}px;{minWidth ? ` min-width: ${minWidth}px;` : ''}"
   bind:this={cardEl}
 >
   {#each items as item, i (i)}
@@ -195,6 +220,8 @@
     border-radius: var(--gs-menu-radius);
     box-shadow: var(--gs-shadow-popup);
     min-width: 160px;
+    max-height: calc(100vh - 8px);
+    overflow-y: auto;
     padding: var(--gs-space-1) 0;
     z-index: var(--gs-z-menu);
     user-select: none;

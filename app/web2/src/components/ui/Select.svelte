@@ -1,13 +1,16 @@
 <script lang="ts">
-  // A native <select> with a drawn closed box and chevron.  Where the browser
-  // has customizable selects (appearance: base-select) the option popup is
-  // drawn like the app's menus, from the menu tokens; elsewhere it stays
-  // native and follows the colour scheme.  Children are the <option>s.
+  // A native <select> with a drawn closed box and chevron.  Its list is the
+  // app's own menu (so every skin draws it), not the operating system's: a
+  // click, Enter, Space or an arrow key opens a menu of the options, and
+  // choosing one sets the select's value and fires its input and change
+  // events.  On touch the platform's picker stays.  Children are the
+  // <option>s.
   // `class` and `style` (layout only) land on the wrapper; every other
   // attribute (id, onchange, aria-label…) reaches the <select>.
   import type { Snippet } from 'svelte';
   import type { HTMLSelectAttributes } from 'svelte/elements';
   import Icon from '@/components/common/Icon.svelte';
+  import { openContextMenu } from '@/components/common/ContextMenu.svelte';
 
   interface Props extends Omit<HTMLSelectAttributes, 'size' | 'value' | 'children'> {
     value?: unknown;
@@ -29,6 +32,52 @@
     children,
     ...rest
   }: Props = $props();
+
+  let lastPointer = 'mouse';
+
+  function choose(el: HTMLSelectElement, i: number) {
+    if (el.selectedIndex === i) return;
+    el.selectedIndex = i;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function openList() {
+    const el = ref;
+    if (!el || el.disabled) return;
+    const r = el.getBoundingClientRect();
+    const opts = Array.from(el.options);
+    openContextMenu(
+      opts.map((o, i) => ({
+        label: o.text,
+        checked: i === el.selectedIndex,
+        disabled: o.disabled,
+        action: () => choose(el, i),
+      })),
+      r.left,
+      r.bottom + 2,
+      { minWidth: r.width, highlight: el.selectedIndex, returnFocus: el },
+    );
+  }
+
+  function onMouseDown(ev: MouseEvent) {
+    if (lastPointer === 'touch' || ev.button !== 0) return;
+    ev.preventDefault();
+    ref?.focus();
+    openList();
+  }
+
+  function onKeyDown(ev: KeyboardEvent) {
+    if (lastPointer === 'touch') return;
+    if (
+      ['Enter', ' ', 'ArrowDown', 'ArrowUp', 'F4'].includes(ev.key) &&
+      !ev.ctrlKey &&
+      !ev.metaKey
+    ) {
+      ev.preventDefault();
+      openList();
+    }
+  }
 </script>
 
 <span class="gs-select {cls}" data-size={size} data-mono={mono || undefined} {style}>
@@ -38,6 +87,9 @@
     class="gs-select__control"
     aria-invalid={invalid || undefined}
     {...rest}
+    onpointerdown={(ev) => (lastPointer = ev.pointerType)}
+    onmousedown={onMouseDown}
+    onkeydown={onKeyDown}
   >
     {@render children?.()}
   </select>
@@ -87,61 +139,6 @@
   .gs-select__control:disabled {
     opacity: var(--gs-opacity-disabled);
     cursor: default;
-  }
-  /* The popup, drawn like a context menu (.gs-menu) where the browser lets
-     CSS draw it.  The closed box keeps the rules above; its own picker icon
-     is hidden in favour of the drawn chevron. */
-  @supports (appearance: base-select) {
-    .gs-select__control,
-    .gs-select__control::picker(select) {
-      appearance: base-select;
-    }
-    .gs-select__control {
-      display: flex;
-      align-items: center;
-    }
-    .gs-select__control::picker-icon {
-      display: none;
-    }
-    .gs-select__control::picker(select) {
-      min-width: anchor-size(width);
-      max-height: 60vh;
-      margin: var(--gs-space-0-5) 0;
-      padding: var(--gs-space-1) 0;
-      border: var(--gs-border-width) solid var(--gs-border);
-      border-radius: var(--gs-menu-radius);
-      background: var(--gs-menu-bg);
-      color: var(--gs-menu-fg);
-      box-shadow: var(--gs-shadow-popup);
-    }
-    .gs-select__control :global(option) {
-      display: flex;
-      align-items: center;
-      gap: var(--gs-space-1-5);
-      min-height: var(--gs-menu-item-height);
-      padding: 0 var(--gs-menu-item-padding-x) 0 var(--gs-space-1-5);
-      font-size: var(--gs-font-size-base);
-      white-space: nowrap;
-      cursor: pointer;
-    }
-    .gs-select__control :global(option)::checkmark {
-      width: 1em;
-      text-align: center;
-    }
-    .gs-select__control :global(option):not(:checked)::checkmark {
-      visibility: hidden;
-    }
-    .gs-select__control :global(option):hover,
-    .gs-select__control :global(option):focus-visible {
-      outline: none;
-      background: var(--gs-menu-hover-bg);
-      color: var(--gs-menu-hover-fg);
-    }
-    .gs-select__control :global(option):disabled {
-      opacity: var(--gs-opacity-disabled);
-      background: transparent;
-      color: inherit;
-    }
   }
   .gs-select :global(.gs-select__arrow) {
     position: absolute;
