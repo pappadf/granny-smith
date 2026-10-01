@@ -99,9 +99,11 @@
 </div>
 
 <style>
+  /* Inset by the skin's --gs-display-inset, so a rounded display never cuts
+     into a screen too large to fit (it scrolls within straight edges). */
   .screen-view {
     position: absolute;
-    inset: 0;
+    inset: var(--gs-display-inset);
     display: flex;
     align-items: center;
     justify-content: center;

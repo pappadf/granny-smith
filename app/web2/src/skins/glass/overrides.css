@@ -52,6 +52,9 @@
 
   /* The display: a darker well with a soft glow behind the screen. */
   :root[data-skin='glass'] .gs-display-content {
+    /* 20px corners: keep the screen's scroll area inside their straight
+       part. */
+    --gs-display-inset: 7px;
     border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 20px;
     overflow: hidden;

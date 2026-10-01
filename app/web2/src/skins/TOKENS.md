@@ -517,6 +517,7 @@ One component's knobs, defaulting to semantic or scale tokens; a skin may overri
 | `--gs-segmented-fg-disabled` | color |  | `color-mix(in srgb, var(--gs-segmented-fg) 50%, transparent)` | segmented: fg disabled |
 | `--gs-display-bg` | color |  | `var(--gs-surface-app)` | display: the area behind the screen |
 | `--gs-welcome-bg` | color |  | `var(--gs-surface-app)` | display: the opaque welcome / URL-boot layer over it |
+| `--gs-display-inset` | length |  | `0px` | display: the screen's scroll area keeps this far from its edges |
 | `--gs-screen-frame-bg` | color |  | `var(--gs-surface-screen)` | screen frame: bg |
 | `--gs-screen-frame-shadow` | shadow |  | `var(--gs-shadow-screen)` | screen frame: shadow |
 | `--gs-screen-frame-padding` | length |  | `0px` | screen frame: padding |

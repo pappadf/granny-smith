@@ -553,6 +553,11 @@ export const TOKENS: readonly TokenSpec[] = [
   cmp('--gs-segmented-fg-disabled', 'color', 'segmented: fg disabled'),
   cmp('--gs-display-bg', 'color', 'display: the area behind the screen'),
   cmp('--gs-welcome-bg', 'color', 'display: the opaque welcome / URL-boot layer over it'),
+  cmp(
+    '--gs-display-inset',
+    'length',
+    "display: the screen's scroll area keeps this far from its edges",
+  ),
   cmp('--gs-screen-frame-bg', 'color', 'screen frame: bg'),
   cmp('--gs-screen-frame-shadow', 'shadow', 'screen frame: shadow'),
   cmp('--gs-screen-frame-padding', 'length', 'screen frame: padding'),

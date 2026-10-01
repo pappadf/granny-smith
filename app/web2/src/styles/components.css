@@ -364,6 +364,11 @@
        welcome layer must stay opaque (it covers the empty screen frame). */
     --gs-display-bg: var(--gs-surface-app);
     --gs-welcome-bg: var(--gs-surface-app);
+    /* How far the screen's scroll area keeps from the display's edges.  A
+       skin that rounds the display sets it, so a screen larger than the
+       display scrolls inside the straight part and is never cut by the
+       curve (about 0.3 x the corner radius, plus the border). */
+    --gs-display-inset: 0px;
 
     /* The emulated screen's frame (ScreenView): a bezel hook, off by
        default. */
