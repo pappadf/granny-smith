@@ -211,7 +211,7 @@ export async function* zipEntries(
         : Array.from(nameBytes, (c) => String.fromCharCode(c)).join('');
       // Zip64: the extra field carries the sizes the header marks 0xFFFFFFFF.
       let zip64 = false;
-      for (let at = 0; at + 4 <= extra.length; ) {
+      for (let at = 0; at + 4 <= extra.length;) {
         const id = u16(extra, at);
         const len = u16(extra, at + 2);
         if (id === 0x0001) {

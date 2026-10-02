@@ -3,14 +3,7 @@
 // selection index from the current one and a key. Pure — no DOM access.
 
 export type ListKey =
-  | 'ArrowUp'
-  | 'ArrowDown'
-  | 'Home'
-  | 'End'
-  | 'PageUp'
-  | 'PageDown'
-  | 'ArrowLeft'
-  | 'ArrowRight';
+  'ArrowUp' | 'ArrowDown' | 'Home' | 'End' | 'PageUp' | 'PageDown' | 'ArrowLeft' | 'ArrowRight';
 
 export interface CycleOptions {
   /** Treat the list as cyclic so ↓ from the last lands on the first. */
