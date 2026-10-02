@@ -89,6 +89,12 @@ void rtc_input(rtc_t *restrict rtc, bool disable, bool clock, bool data);
 
 void rtc_set_via(rtc_t *restrict rtc, via_t *via);
 
+// /CE went high without a clock edge: the VIA driving it was reset, so the
+// line floats to its pull-up.  The serial interface drops whatever transfer
+// was in flight and releases the data line.  The clock and PRAM are
+// battery-backed and untouched -- the chip itself is not on /RESET.
+void rtc_deselect(rtc_t *rtc);
+
 // The VIA1 port-B bit assignment for the RTC is the same on every machine
 // that wires it there -- PB0 rtcData, PB1 rtcClk, PB2 rtcEnb (active low, so
 // it is `disable` in rtc_input's terms).  Six machines were each unpacking it

@@ -27,6 +27,7 @@
 #include "log.h"
 #include "machine_checkpoint.h"
 #include "memory.h"
+#include "mmu.h" // tlb_track_page
 #include "mouse.h"
 #include "pram_defaults.h"
 #include "rtc.h"
@@ -147,6 +148,7 @@ static void plus_map_read_page(uint32_t p, uint8_t *host_ptr) {
         g_supervisor_read[p] = adjusted;
     if (g_user_read)
         g_user_read[p] = adjusted;
+    tlb_track_page(p); // on the tracker like every fast-path entry (mac030_fill_page)
 }
 
 // Drive the ROM overlay: on maps the ROM image over the bottom of the address

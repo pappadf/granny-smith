@@ -1089,6 +1089,33 @@ av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, stru
     return cuda;
 }
 
+// See cuda.h.  The periodic tick and autopoll events stay armed: they test
+// the enable flags cleared here, exactly as after av_cuda_init.
+void av_cuda_host_power_cycle(av_cuda_t *cuda) {
+    if (!cuda)
+        return;
+    remove_event(cuda->sched, &cuda_push_event, cuda);
+    remove_event(cuda->sched, &cuda_send_timeout_event, cuda);
+    remove_event(cuda->sched, &cuda_resend_event, cuda);
+    remove_event(cuda->sched, &cuda_reset_event, cuda);
+    remove_event(cuda->sched, &cuda_treq_release_event, cuda);
+    cuda->state = CUDA_IDLE;
+    cuda->rx_len = 0;
+    cuda->tx_len = 0;
+    cuda->tx_idx = 0;
+    cuda->push_pending = false;
+    cuda->send_timeout_pending = false;
+    cuda->resend_pending = false;
+    cuda->tx_represented = false;
+    cuda->treq_release_pending = false;
+    cuda->ap_park_len = 0;
+    cuda->autopoll_enabled = false;
+    cuda->onesec_enabled = false;
+    cuda->onesec_mode = 0;
+    cuda->last_pb = PB_TIP | PB_BYTEACK; // host idle state
+    cuda_set_treq(cuda, true); // TREQ idles high (no request)
+}
+
 void av_cuda_delete(av_cuda_t *cuda) {
     if (!cuda)
         return;

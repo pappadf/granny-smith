@@ -55,6 +55,13 @@ typedef struct av_cuda av_cuda_t;
 av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, struct scheduler *sched, checkpoint_t *cp,
                         bool mode3_clock);
 void av_cuda_delete(av_cuda_t *cuda);
+
+// The machine was power-cycled.  Cuda itself stays powered (it is what turns
+// the machine on, and it keeps the clock and PRAM), but the host side of the
+// VIA1 handshake lost power under it: the transport returns to idle with no
+// transaction, response or push in flight, and the asynchronous sources go
+// off until the next sync enables them -- the state av_cuda_init leaves.
+void av_cuda_host_power_cycle(av_cuda_t *cuda);
 void av_cuda_checkpoint(av_cuda_t *cuda, checkpoint_t *cp);
 
 // === VIA1 transport hooks ===================================================

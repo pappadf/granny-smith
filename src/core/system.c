@@ -9,6 +9,7 @@
 
 #include "system_config.h" // full config_t definition (includes system.h transitively)
 
+#include "adb.h"
 #include "appletalk.h"
 #include "build_id.h"
 #include "checkpoint_machine.h"
@@ -250,6 +251,8 @@ void system_machine_power_cycle(void) {
     uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
     if (ram && cfg->ram_size)
         memset(ram, 0, cfg->ram_size); // DRAM loses its contents
+    // The ADB bus is powered by the machine: its devices lose power too.
+    adb_power_on(cfg->adb);
     // State a power-up initialises and /RESET does not (machine_profile.h).
     if (cfg->machine && cfg->machine->substrate->power_on)
         cfg->machine->substrate->power_on(cfg);
@@ -292,6 +295,10 @@ void system_reset_common_devices(config_t *cfg) {
     // chip resets).  via2 is NULL on the single-VIA machines.
     if (cfg->via1)
         via_reset(cfg->via1);
+    // ...and with VIA1 no longer driving PB2, the RTC's /CE floats high: the
+    // clock chip (battery-backed, not on the net itself) abandons any transfer
+    // the guest left half-done and lets go of its data line.
+    rtc_deselect(cfg->rtc);
     if (cfg->via2)
         via_reset(cfg->via2);
     if (cfg->scc)

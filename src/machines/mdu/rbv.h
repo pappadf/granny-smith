@@ -44,6 +44,9 @@ typedef enum rbv_variant {
 // I/O dispatcher forwards the $50F26000 window to rbv_get_memory_interface().
 rbv_t *rbv_init(rbv_variant_t variant, checkpoint_t *cp);
 void rbv_delete(rbv_t *rbv);
+// /RESET: the registers back to their power-on values, keeping the wiring,
+// the monitor-sense strap and the live interrupt sources driven by other chips.
+void rbv_reset(rbv_t *rbv);
 void rbv_checkpoint(rbv_t *rbv, checkpoint_t *cp);
 
 // === Wiring =================================================================

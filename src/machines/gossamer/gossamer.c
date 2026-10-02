@@ -458,6 +458,12 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
 }
 
 // The board's reset net: every chip back to power-on (NVRAM survives).
+// A power cycle's power-on-only half (machine_profile.h): Cuda stays
+// powered, but the host side of its VIA1 handshake went down under it.
+static void gossamer_power_on(config_t *cfg) {
+    av_cuda_host_power_cycle(gos_st(cfg)->cuda);
+}
+
 static void gossamer_bus_reset(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     gos_grackle_reset(cfg);
@@ -620,6 +626,7 @@ const pci_slot_decl_t gossamer_pci_slots[] = {
 const machine_substrate_t gossamer_substrate = {
     .init = gossamer_init,
     .bus_reset = gossamer_bus_reset,
+    .power_on = gossamer_power_on,
     .teardown = gossamer_teardown,
     .checkpoint_save = gossamer_checkpoint_save,
     .pci_slot_irq = gossamer_pci_slot_irq,

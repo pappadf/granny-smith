@@ -692,6 +692,23 @@ static uint64_t asc_snd_overruns(void *ctx) {
     return 0; // no over/underrun detection on the ASC FIFO path yet
 }
 
+// POC*, "Power On Clear" -- see asc.h.  Everything before memory_interface
+// is the chip's own state; it goes back to what asc_init gives it.
+void asc_power_on(asc_t *asc) {
+    if (!asc)
+        return;
+    asc_cancel_fifo_drain(asc); // the producer stops with the chip
+    uint8_t version = asc->version; // a silicon property, not state
+    memset(asc, 0, offsetof(asc_t, memory_interface));
+    asc->version = version;
+    asc->fifo_last[0] = 0x80; // DAC hold-last-byte: offset-binary silence
+    asc->fifo_last[1] = 0x80;
+    // The interrupt output follows the cleared status.  irq_active was cleared
+    // with the rest, so drive the sink inactive explicitly.
+    if (asc->irq_fn)
+        asc->irq_fn(asc->irq_ctx, false);
+}
+
 asc_t *asc_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpoint) {
     asc_t *asc = (asc_t *)malloc(sizeof(asc_t));
     if (!asc)

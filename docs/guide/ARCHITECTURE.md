@@ -578,7 +578,7 @@ next `machine.boot` — while the boot document's `video_card=` /
 `video_sense=` / `video_mode=` arguments name "the first socket" (what the
 config dialog and the headless `video_card=` arg use). `machine.screen` shows the *primary*
 display: the first populated video slot in declared order. The **resolved**
-per-slot picks are captured in the built-from record, so `machine.restart`
+per-slot picks are captured in the built-from record, so `machine.rebuild`
 re-seats every populated socket rather than only the wildcard one.
 
 **PCI (`core/peripherals/pci/`)** is the same architecture ported to the

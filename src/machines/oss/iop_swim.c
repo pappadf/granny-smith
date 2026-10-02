@@ -1435,6 +1435,16 @@ static void iop_swim_register_event_types(iop_t *iop) {
     scheduler_new_event_type(iop->scheduler, "swim", iop, "adb_autopoll", &swim_adb_autopoll_tick);
 }
 
+// The four firmware-equivalent timers, all scheduled with the IOP as source.
+static void iop_swim_cancel_events(iop_t *iop) {
+    if (!iop->scheduler)
+        return;
+    remove_event(iop->scheduler, &swim_main_loop_tick, iop);
+    remove_event(iop->scheduler, &swim_drive_poll_tick, iop);
+    remove_event(iop->scheduler, &swim_adb_response, iop);
+    remove_event(iop->scheduler, &swim_adb_autopoll_tick, iop);
+}
+
 const iop_behavior_t iop_swim_behavior = {
     .name = "SWIM IOP",
     .kind = SwimIopNum,
@@ -1443,4 +1453,5 @@ const iop_behavior_t iop_swim_behavior = {
     .on_run_start = iop_swim_on_run_start,
     .on_host_kick = iop_swim_on_host_kick,
     .register_events = iop_swim_register_event_types,
+    .cancel_events = iop_swim_cancel_events,
 };

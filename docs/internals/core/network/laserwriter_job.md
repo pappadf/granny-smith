@@ -124,7 +124,8 @@ The printer lives as long as the emulated machine:
 | Event | Printer |
 |---|---|
 | `machine.boot` (a new machine) | new |
-| `machine.restart` (the same machine power-cycled) | kept, like its disks |
+| `machine.rebuild` (the recorded machine built again) | kept, like its disks (an explicit transfer) |
+| `machine.restart` (the same machine power-cycled; nothing rebuilt) | kept |
 | `machine.reset` (no rebuild) | kept |
 | `checkpoint.load` that succeeds | new (an interpreter is not saved in a checkpoint) |
 | `checkpoint.load` that fails | kept: the running machine goes on |

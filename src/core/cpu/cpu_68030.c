@@ -562,10 +562,20 @@ void cpu_reset_to_vector_68030(cpu_t *restrict cpu) {
     // CPU-internal state on the wrong side of the package boundary, the only
     // line the hardware actually draws.  The 68040 equivalent was already on
     // this side, in cpu_hardware_reset_040.
+    //
+    // MC68030 UM 3rd ed. §9.2.2: "When the MC68030 is reset by the assertion
+    // of the RESET signal, the E bits of the TC and TTx registers are
+    // cleared, disabling address translation."  TT0/TT1 used to survive: a
+    // guest that had set up transparent translation (System 7 in 32-bit mode
+    // on a IIci) kept it across a reset, so the ROM's next pass ran with I/O
+    // windows mapped that a cold machine does not have, jumped through a word
+    // of RAM-test fill ($AAAAAAAA) and double-faulted into a reset loop.
     mmu_state_t *mmu = (mmu_state_t *)cpu->mmu;
     if (mmu) {
         mmu->enabled = false;
         mmu->tc = 0;
+        mmu->tt0 &= ~0x8000u; // TTx.E, bit 15
+        mmu->tt1 &= ~0x8000u;
         mmu_invalidate_tlb(mmu);
     }
 }

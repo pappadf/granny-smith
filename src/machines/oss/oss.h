@@ -32,6 +32,9 @@ oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, str
 
 // Frees all resources associated with an OSS instance.
 void oss_delete(oss_t *oss);
+// Power-on state: what oss_init constructs (every source idle, the default
+// level table, the counter stopped), keeping the wiring.  A power cycle.
+void oss_power_on(oss_t *oss);
 
 // Saves OSS state to a checkpoint.
 void oss_checkpoint(oss_t *oss, checkpoint_t *checkpoint);

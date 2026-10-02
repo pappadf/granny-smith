@@ -281,7 +281,7 @@ callbacks is emitted at its source too; the page routes each in
 | `state:breakpoint_hit` | the debugger, at the hit | `{pc, addr}` |
 | `state:assert_failed`, `state:assert_expr` | the failure hook | `{where}`, `{expr}` |
 | `state:perf` | the tick, ~1 Hz | `{mips, tps, tick_max_ms, tick_p50_ms, poll_max_ms}` |
-| `state:machine_booted` | the end of `system_create`: `machine.boot`, `machine.restart`, `checkpoint.load` | `{model, restored}` |
+| `state:machine_booted` | the end of `system_create`: `machine.boot`, `machine.rebuild`, `checkpoint.load` (not `machine.restart`, which builds nothing) | `{model, restored}` |
 | `notify:floppy` | the floppy controller, on insert, eject (guest or host) and restore | `{drive, present}` |
 | `notify:media` | the SCSI bus, when a device's medium is inserted or ejected (guest or host) | `{bus, id, present}` |
 | `notify:drive_activity` | the tick, on a light's edge | `{kind, state}` |
@@ -721,8 +721,13 @@ typed-dispatch and introspection surface.
   machine and creates a fresh one from a complete configuration document
   (model and rom required; nothing is inherited from the previous
   machine).
-- **`machine.restart`** — power-cycles the running machine: rebuilds it
-  from its built-from record with the mounted media still attached.
+- **`machine.restart`** — power-cycles the running machine: a reset with
+  the RAM cold. Nothing is torn down, so PRAM/NVRAM, the clock, the
+  mounted media and the Caps Lock latch survive; the Restart button
+  re-asserts nothing afterwards.
+- **`machine.rebuild`** — constructs the recorded machine again
+  (`machine.config`), with the mounted media still attached: what makes a
+  staged hardware change take effect.
 - **`debug.frame([addr], [count], [before])`** — bundled snapshot for
   the Debug tab, the same call as **`machine.cpu.frame`**: `{arch, pc,
   regs, rows, fpu?}` — the core's own register names, disasm rows with

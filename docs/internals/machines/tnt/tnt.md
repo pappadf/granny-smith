@@ -196,7 +196,7 @@ The board model is the chipset skeleton plus the DMA architecture:
   document's `monitor=` (`hires`, the default: line C grounded — extended
   sense `$2B`, the head of the ROM's own mode table; `twopage` grounds all
   three and Open Firmware programs 1152x870; `portrait`, `rubik`, `none`;
-  the pick survives `machine.restart` and a checkpoint, #146),
+  the pick survives `machine.restart`, `machine.rebuild` and a checkpoint, #146),
   and VBL as Grand Central interrupt **26** while `intr_ena` is
   set (an earlier map guessed 30; the shipping video driver toggles
   mask bit 26 as it writes `INTR_ENA`, and Apple's own 9500
@@ -633,19 +633,27 @@ exactly that, once, on the machine's own keyboard, and cold-boot with
 setting sticks for the same reason it does on the real machine.
 `tests/integration/lib/ans.script` wraps it.
 
-**Which rebuild the store survives.** The carry follows the power switch:
-`machine.restart` rebuilds *this* machine, so the soldered part comes back
-with it, while `machine.boot` builds a *new* machine and hands it a virgin
-store (a machine inherits nothing it was not given). That is not bookkeeping. A run stopped part-way through Open
+**What the store survives.** The store follows the machine, not the
+process: `machine.reset` and `machine.restart` (the power switch) never
+destroy the machine, so the soldered part is simply never touched, while
+`machine.boot` and `machine.rebuild` build a *new* machine with a virgin
+store (a machine inherits nothing it was not given). Nothing carries a
+store across a teardown -- the process-lifetime holder that used to is
+gone, and that is the fix for #112. A run stopped part-way through Open
 Firmware's format of a virgin store — a bounded `scheduler.run`, a client
 that walked away mid-run — leaves the store torn, and a machine built on a
 torn store never reaches a boot: it sits in the ROM's serial-console read
 loop behind a black screen. Carrying such a store into the next
-`machine.boot` made that look like a broken model or an unbootable disk.
-A row that wants the same chip across two cold boots says so with
-`machine.restart` (the DIMM table in `suite-ans`'s `ans500-diag-floppy`,
-`ans_boot_serial`'s console setting); `machine.board.clear_nvram()` is
-still the battery pull.
+`machine.boot` made that look like a broken model or an unbootable disk;
+`tests/integration/tnt-nvram-lifetime` holds the rule. A row that wants
+the same chip across two cold boots says so with `machine.restart` (the
+DIMM table in `suite-ans`'s `ans500-diag-floppy`, `ans_boot_serial`'s
+console setting); `machine.nvram.clear()` is the battery pull
+(`machine.board.clear_nvram()` on the Network Servers is a deprecated
+alias). The Network Server's fail-safe red button is
+`machine.board.reset_button()`: the Power Monitor's parameter RAM back to
+its defaults and a machine reset, NVRAM kept (Network Server Hardware
+Developer Notes §2.7).
 
 **The store is a test lever: `machine.nvram`.** Every TNT board exposes
 the 8 KB store flat — `peek(addr)`, `poke(addr, bytes)`, `dump(addr, n)`,
@@ -658,8 +666,8 @@ persistent properties above it (the Control driver's `gprf` record at
 2 = millions), POST's log at `$1040`–`$125F` ("Machine identity" above),
 and Open Firmware's environment in the top bank. The store the object
 edits is the live chip, so a poke followed by `machine.restart` is what
-the machine boots on; a poke followed by `machine.boot` is lost with the
-rest of the old machine.
+the machine boots on; a poke followed by `machine.boot` or
+`machine.rebuild` is lost with the rest of the old machine.
 
 The 54M30 also answers the **legacy** VGA I/O block (`$3B0`-`$3DF`) rather
 than its relocatable BAR, because this board installs no pull-down on MD51

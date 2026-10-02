@@ -95,8 +95,10 @@ The core stream, ADB, Cuda, DBDMA and the floppy, then the substrate tail:
 Grackle's configuration and address latch, the Heathrow block, the I2C
 state, the Screamer registers, the PCI bus, the image table, the MESH bus
 and chip, SWIM3, the ATAPI bus and the two ATA channels, and last BMAC.  The NVRAM
-is part of the Heathrow block; across `machine.restart` it is carried in
-memory (the board battery), and `machine.nvram.clear` is the battery pull.
+is part of the Heathrow block; it survives `machine.reset` and
+`machine.restart` because neither destroys the machine (the board
+battery), a new machine (`machine.boot`, `machine.rebuild`) starts from a
+virgin store, and `machine.nvram.clear` is the battery pull.
 
 ## 4. Testing
 

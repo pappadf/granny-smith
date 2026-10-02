@@ -762,6 +762,12 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
+// A power cycle's power-on-only half (machine_profile.h): Cuda stays
+// powered, but the host side of its VIA1 handshake went down under it.
+static void tnt_power_on(config_t *cfg) {
+    av_cuda_host_power_cycle(tnt_st(cfg)->cuda);
+}
+
 static void tnt_bus_reset(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     // Chipset registers to their power-on state.  The CPU going back to
@@ -1180,6 +1186,7 @@ static bool tnt_fd_present(config_t *cfg, int drive) {
 const machine_substrate_t tnt_substrate = {
     .init = tnt_init,
     .bus_reset = tnt_bus_reset,
+    .power_on = tnt_power_on,
     .teardown = tnt_teardown,
     .checkpoint_save = tnt_checkpoint_save,
     .pci_slot_irq = tnt_pci_slot_irq,

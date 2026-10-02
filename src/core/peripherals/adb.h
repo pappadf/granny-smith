@@ -40,6 +40,12 @@ adb_t *adb_init(via_t *via, struct scheduler *scheduler, checkpoint_t *checkpoin
 // Frees all resources associated with an ADB controller instance
 void adb_delete(adb_t *adb);
 
+// Power cycle: the ADB bus is powered by the machine, so every device on it
+// comes back at its default address and handler with its buffers empty --
+// what an ADB SendReset does -- and the transceiver goes idle.  Keys still
+// physically held, a latched Caps Lock among them, stay held.
+void adb_power_on(adb_t *adb);
+
 // Saves ADB controller state to a checkpoint
 void adb_checkpoint(adb_t *restrict adb, checkpoint_t *checkpoint);
 
