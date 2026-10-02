@@ -695,8 +695,9 @@ calls this "a gap, not hardware" (`system.c:292`).
 
 **Differences between families, and known gaps.**
 
-- *Non-volatile state across `machine.restart`.* Only the TNT family
-  carries a chip across a power-cycle: its NVRAM store. On every other
+- *Non-volatile state across `machine.restart`.* Only the TNT and
+  Gossamer families carry a chip across a power-cycle: their NVRAM
+  stores. On every other
   Macintosh, PRAM comes back at the family's construction defaults.
   Hardware keeps battery-backed PRAM through a power-off, so this is a
   gap. The web frontend works around one piece of it by writing the
@@ -706,12 +707,16 @@ calls this "a gap, not hardware" (`system.c:292`).
   `dump`, `snapshot`, `restore`, `clear`) — the TNT twin of
   `machine.rtc.pram`, so a row pins a setting there and power-cycles
   (docs/internals/machines/tnt/tnt.md, "The store is a test lever").
+  The beige G3 has the same `machine.nvram` over Heathrow's flat 8 KB
+  window, with `gos_nvram_clear` as its battery pull.
 - *Media transfer by substrate.* Floppies and `machine.scsi` go through
   the standard pair (`system_media_detach_std` /
   `system_media_attach_std`, `system.c:1398`/`1440`). The TNT family also
   carries `machine.scsi2`, and the Network Servers' second channel keeps
   its bus (`tnt_media_detach`, `tnt.c:925`;
-  `tests/integration/ans-machine-restart`). The Lisa carries its Sony
+  `tests/integration/ans-machine-restart`).  The beige G3 adds its ATA
+  units on `MEDIA_BUS_ATA` — hard disks on the channels, CD-ROMs on the
+  ATAPI back end (`gos_media_detach`, `gossamer_ata.c`). The Lisa carries its Sony
   disk and its ProFile (`lisa_media_detach`,
   `src/machines/lisa/lisa.c:500`). A medium that cannot be re-attached
   is closed and logged (`machine.c:1091-1096`).

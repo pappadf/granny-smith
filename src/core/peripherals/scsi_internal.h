@@ -111,6 +111,8 @@
 #define CMD_PLAY_AUDIO_10    0x45
 #define CMD_PLAY_AUDIO_MSF   0x47
 #define CMD_PAUSE_RESUME     0x4B
+#define CMD_READ_12          0xA8
+#define CMD_MODE_SENSE_10    0x5A
 
 // Sony vendor commands (CDU-8002 proprietary)
 #define CMD_SONY_READ_TOC        0xC1
@@ -536,6 +538,7 @@ int scsi_build_apple_page_30(uint8_t *buf, int page_control, const char *id, int
 
 // Handle MODE SENSE(6) for CD-ROM device
 void scsi_cdrom_mode_sense(scsi_t *scsi);
+void scsi_cdrom_mode_sense_10(scsi_t *scsi);
 
 // Handle MODE SELECT(6) for CD-ROM device
 void scsi_cdrom_mode_select(scsi_t *scsi);

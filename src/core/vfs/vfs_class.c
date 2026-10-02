@@ -48,11 +48,14 @@ value_t files_method_ls(struct object *self, const member_t *m, int argc, const 
 
 // `files.list([path])` — like `files.ls`, but returns a structured listing the
 // GUI can render instead of printing names to stdout. Result is a list of
-//   {name: "...", kind: "file"|"directory", size: <bytes>} maps.
-// Descends into disk images through the same resolver as `files.ls`, so a bare
-// image path lists its partitions and a partition path lists the HFS/UFS
-// volume. Read-only throughout. Returns V_ERROR (falsy via the bridge) when
-// the path can't be opened as a directory.
+//   {name: "...", kind: "file"|"directory", size: <bytes>, expandable: <bool>}
+// maps.  `expandable` is true for a file the format registry recognises as an
+// image or archive the VFS can descend into -- the GUI routes on it rather
+// than guessing from the file's extension.  Descends into disk images and
+// archives through the same resolver as `files.ls`, so a bare image path
+// lists its partitions and a partition path lists the HFS/UFS volume.
+// Read-only throughout. Returns V_ERROR (falsy via the bridge) when the path
+// can't be opened as a directory.
 value_t files_method_list(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -87,10 +90,20 @@ value_t files_method_list(struct object *self, const member_t *m, int argc, cons
                 }
             }
         }
+        // Expandable: a non-empty file the registry recognises (read from a
+        // bounded probe of its head and tail; a compressed archive member is
+        // not decoded to find out).
+        bool expandable = false;
+        if (!(mode & VFS_MODE_DIR) && size > 0) {
+            char child[VFS_PATH_MAX];
+            if (snprintf(child, sizeof(child), "%s/%s", path, entry.name) < (int)sizeof(child))
+                expandable = vfs_is_expandable(child);
+        }
         value_map_builder_t *b = val_map_new();
         val_map_put(b, "name", val_str(entry.name));
         val_map_put(b, "kind", val_str((mode & VFS_MODE_DIR) ? "directory" : "file"));
         val_map_put(b, "size", val_int((int64_t)size));
+        val_map_put(b, "expandable", val_bool(expandable));
         val_list_push(&items, &len, &cap, val_map_finish(b));
     }
     be->closedir(dir);

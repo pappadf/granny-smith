@@ -177,7 +177,7 @@ typedef struct hfs_xt_rec {
 } hfs_xt_rec_t;
 
 struct hfs_volume {
-    image_t *img;
+    gs_source_t *src; // the whole disk (retained)
     uint64_t partition_off; // byte offset of the partition inside the image
     uint64_t partition_size; // partition length in bytes
     uint32_t alloc_block_size;
@@ -220,7 +220,7 @@ static void parse_fork(const uint8_t *rec_data, size_t logical_off, size_t ext_o
 
 // Read raw bytes from the image relative to the partition start.
 static int read_partition(hfs_volume_t *vol, uint64_t off, void *buf, size_t n) {
-    return image_read_partition(vol->img, vol->partition_off, vol->partition_size, off, buf, n);
+    return source_read_partition(vol->src, vol->partition_off, vol->partition_size, off, buf, n);
 }
 
 // ---- Catalog file assembly ------------------------------------------------
@@ -620,19 +620,19 @@ static bool node_size_ok(size_t node_size, size_t max, size_t file_size) {
     return node_size >= 512 && node_size <= max && (node_size & (node_size - 1)) == 0 && node_size <= file_size;
 }
 
-static hfs_volume_t *open_classic(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size,
+static hfs_volume_t *open_classic(gs_source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size,
                                   const uint8_t *mdb) {
     hfs_volume_t *vol = calloc(1, sizeof(*vol));
     if (!vol)
         return NULL;
-    vol->img = img;
+    vol->src = gs_source_retain(src);
     vol->partition_off = partition_byte_offset;
     vol->partition_size = partition_byte_size;
     vol->alloc_block_size = RD_BE32(mdb + MDB_OFF_AL_BLK_SIZ);
     uint32_t al_bl_st = RD_BE16(mdb + MDB_OFF_AL_BL_ST);
     vol->alloc_block0_byte_off = (uint64_t)al_bl_st * 512;
     if (vol->alloc_block_size == 0 || vol->alloc_block_size % 512 != 0) {
-        free(vol);
+        hfs_close(vol);
         return NULL;
     }
 
@@ -647,14 +647,14 @@ static hfs_volume_t *open_classic(image_t *img, uint64_t partition_byte_offset, 
     size_t cat_size = 0;
     int rc = load_catalog_file(vol, mdb, &cat, &cat_size);
     if (rc < 0) {
-        free(vol);
+        hfs_close(vol);
         return NULL;
     }
 
     // Parse B-tree header node (node 0).  Standard HFS node size is 512.
     if (cat_size < 14 + 106) {
         free(cat);
-        free(vol);
+        hfs_close(vol);
         return NULL;
     }
     // The header record starts right after the 14-byte node descriptor.
@@ -664,7 +664,7 @@ static hfs_volume_t *open_classic(image_t *img, uint64_t partition_byte_offset, 
     // A catalog shorter than one node would send the leaf walker past EOF.
     if (!node_size_ok(node_size, HFS_NODE_MAX, cat_size)) {
         free(cat);
-        free(vol);
+        hfs_close(vol);
         return NULL;
     }
     uint32_t first_leaf = RD_BE32(cat + 14 + HDR_OFF_FIRST_LEAF);
@@ -672,8 +672,7 @@ static hfs_volume_t *open_classic(image_t *img, uint64_t partition_byte_offset, 
     rc = collect_catalog_records(vol, cat, cat_size, node_size, first_leaf);
     free(cat);
     if (rc < 0) {
-        free(vol->records);
-        free(vol);
+        hfs_close(vol);
         return NULL;
     }
 
@@ -976,12 +975,12 @@ static int collect_hfsplus_catalog(hfs_volume_t *vol, const uint8_t *cat_buf, si
 
 // Open an HFS+ / HFSX volume whose Volume Header sits at offset 1024 from
 // `partition_byte_offset`.  Returns NULL on any error.
-static hfs_volume_t *open_plus(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
+static hfs_volume_t *open_plus(gs_source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
     if (partition_byte_size < HFSP_VH_OFF_IN_VOL + 512)
         return NULL;
 
     uint8_t vh[512];
-    if (image_read_bytes(img, partition_byte_offset + HFSP_VH_OFF_IN_VOL, vh, sizeof(vh)) != 0)
+    if (gs_source_read_exact(src, partition_byte_offset + HFSP_VH_OFF_IN_VOL, vh, sizeof(vh)) != 0)
         return NULL;
     uint16_t sig = RD_BE16(vh + VH_OFF_SIG);
     if (sig != HFS_SIG_HP && sig != HFS_SIG_HX)
@@ -993,7 +992,7 @@ static hfs_volume_t *open_plus(image_t *img, uint64_t partition_byte_offset, uin
     hfs_volume_t *vol = calloc(1, sizeof(*vol));
     if (!vol)
         return NULL;
-    vol->img = img;
+    vol->src = gs_source_retain(src);
     vol->partition_off = partition_byte_offset;
     vol->partition_size = partition_byte_size;
     vol->alloc_block_size = block_size;
@@ -1026,30 +1025,25 @@ static hfs_volume_t *open_plus(image_t *img, uint64_t partition_byte_offset, uin
     uint8_t *cat = NULL;
     size_t cat_size = 0;
     if (read_fork_to_buffer(vol, &cat_fork, 128u * 1024 * 1024, &cat, &cat_size) < 0) {
-        free(vol->xt_records);
-        free(vol);
+        hfs_close(vol);
         return NULL;
     }
     if (cat_size < 14 + HDR_OFF_NODE_SIZE + 2) {
         free(cat);
-        free(vol->xt_records);
-        free(vol);
+        hfs_close(vol);
         return NULL;
     }
     size_t node_size = RD_BE16(cat + 14 + HDR_OFF_NODE_SIZE);
     uint32_t first_leaf = RD_BE32(cat + 14 + HDR_OFF_FIRST_LEAF);
     if (!node_size_ok(node_size, HFSP_NODE_MAX, cat_size)) {
         free(cat);
-        free(vol->xt_records);
-        free(vol);
+        hfs_close(vol);
         return NULL;
     }
     int rc = collect_hfsplus_catalog(vol, cat, cat_size, node_size, first_leaf);
     free(cat);
     if (rc < 0) {
-        free(vol->records);
-        free(vol->xt_records);
-        free(vol);
+        hfs_close(vol);
         return NULL;
     }
 
@@ -1061,18 +1055,25 @@ static hfs_volume_t *open_plus(image_t *img, uint64_t partition_byte_offset, uin
 // ---- Public API -----------------------------------------------------------
 
 hfs_volume_t *hfs_open(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
-    if (!img || partition_byte_size < HFS_MDB_OFF_IN_VOL + 512)
+    gs_source_t *src = image_source(img);
+    hfs_volume_t *vol = hfs_open_source(src, partition_byte_offset, partition_byte_size);
+    gs_source_release(src); // the volume holds its own reference
+    return vol;
+}
+
+hfs_volume_t *hfs_open_source(gs_source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
+    if (!src || partition_byte_size < HFS_MDB_OFF_IN_VOL + 512)
         return NULL;
 
     // Read the 512-byte block at volume+1024: a classic HFS MDB or an HFS+
     // Volume Header.  The signature word decides which parser to run.
     uint8_t hdr[512];
-    if (image_read_bytes(img, partition_byte_offset + HFS_MDB_OFF_IN_VOL, hdr, sizeof(hdr)) != 0)
+    if (gs_source_read_exact(src, partition_byte_offset + HFS_MDB_OFF_IN_VOL, hdr, sizeof(hdr)) != 0)
         return NULL;
     uint16_t sig = RD_BE16(hdr + MDB_OFF_SIG);
 
     if (sig == HFS_SIG_HP || sig == HFS_SIG_HX)
-        return open_plus(img, partition_byte_offset, partition_byte_size);
+        return open_plus(src, partition_byte_offset, partition_byte_size);
 
     if (sig == HFS_SIG_BD) {
         // Classic HFS — unless it's a thin wrapper around an embedded HFS+
@@ -1091,9 +1092,9 @@ hfs_volume_t *hfs_open(image_t *img, uint64_t partition_byte_offset, uint64_t pa
                 return NULL;
             if (emb_size == 0 || emb_off + emb_size > partition_byte_size)
                 emb_size = partition_byte_size - emb_off; // tolerate a bad blockCount
-            return open_plus(img, partition_byte_offset + emb_off, emb_size);
+            return open_plus(src, partition_byte_offset + emb_off, emb_size);
         }
-        return open_classic(img, partition_byte_offset, partition_byte_size, hdr);
+        return open_classic(src, partition_byte_offset, partition_byte_size, hdr);
     }
 
     return NULL;
@@ -1104,6 +1105,7 @@ void hfs_close(hfs_volume_t *vol) {
         return;
     free(vol->records);
     free(vol->xt_records);
+    gs_source_release(vol->src);
     free(vol);
 }
 

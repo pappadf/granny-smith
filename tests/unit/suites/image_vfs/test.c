@@ -6,6 +6,8 @@
 #include "hfsplus_builder.h"
 #include "image.h"
 #include "image_vfs.h"
+#include "namespace.h"
+#include "source.h"
 #include "test_assert.h"
 #include "vfs.h"
 
@@ -17,66 +19,46 @@
 #include <string.h>
 #include <unistd.h>
 
-// ---- The in-memory image, and the image.c entry points image_vfs uses -----
+// ---- The volume on disk, and the image.c entry point image_vfs uses ------
 
 #define IMG_CAP (64u * HFSB_BLOCK)
 static uint8_t g_img[IMG_CAP];
 static size_t g_img_size;
-static int g_token; // the image_t* handed out: an address, never dereferenced
-static uint32_t g_block_size = 512; // the geometry the "image" was opened with
-static int g_misaligned_reads; // reads the real disk_read_data would assert on
 
-image_t *image_open_readonly(const char *path) {
-    (void)path;
-    return (image_t *)&g_token;
-}
-void image_close(image_t *img) {
-    (void)img;
-}
-size_t disk_size(image_t *img) {
-    (void)img;
-    return g_img_size;
-}
-uint32_t disk_block_size(image_t *img) {
-    (void)img;
-    return g_block_size;
-}
-size_t disk_read_data(image_t *img, size_t offset, uint8_t *buf, size_t size) {
-    (void)img;
-    // The real one works in whole blocks of the image's own size and asserts
-    // on anything else -- an assert that returns, then reads on.
-    if (offset % g_block_size || size % g_block_size) {
-        g_misaligned_reads++;
-        return 0;
-    }
-    if (offset > g_img_size || size > g_img_size - offset)
-        return 0;
-    memcpy(buf, g_img + offset, size);
-    return size;
+// The source key image.c reports open writable, or "" for none.
+static char g_writable[PATH_MAX + 64];
+
+// With image.c's own rule: the key itself, or anything inside it.
+bool image_key_is_open_writable(const char *key) {
+    return g_writable[0] && gs_key_within(key, g_writable);
 }
 
-// The canonical path image.c reports open writable, or "" for none.
-static char g_writable[PATH_MAX];
-
-bool image_path_is_open_writable(const char *canonical_path) {
-    return g_writable[0] && strcmp(canonical_path, g_writable) == 0;
-}
-
-// image_vfs keys mounts on the host path, which it canonicalises and stats,
-// so a real (empty) file stands in for the image; its bytes are never read.
+// The volume lives in a real host file, mounted like any other.
 static char g_host[64];
-static char g_host_canon[PATH_MAX]; // the key image_vfs holds it under
+static char g_host_canon[PATH_MAX]; // the path image_vfs mounts it under
+static char g_host_key[PATH_MAX + 64]; // its source's key: what "attached writable" names
 
-// Build the volume and its stand-in file, without mounting it.
-static void make_volume(const hfsb_file_t *files, int n) {
-    g_writable[0] = 0;
-    g_img_size = hfsb_build(g_img, sizeof(g_img), "Vol", files, n);
-    ASSERT_TRUE(g_img_size > 0);
+// Write `len` bytes of `img` to a fresh temp file named into g_host.
+static void write_volume_file(const uint8_t *img, size_t len) {
     strcpy(g_host, "/tmp/image_vfs_test_XXXXXX");
     int fd = mkstemp(g_host);
     ASSERT_TRUE(fd >= 0);
+    ASSERT_TRUE(write(fd, img, len) == (ssize_t)len);
     close(fd);
     ASSERT_TRUE(realpath(g_host, g_host_canon) != NULL);
+    gs_source_t *s = gs_source_host(g_host, NULL);
+    ASSERT_TRUE(s != NULL);
+    snprintf(g_host_key, sizeof(g_host_key), "%s", gs_source_key(s));
+    gs_source_release(s);
+}
+
+// Build the volume and its file, without mounting it.
+static void make_volume(const hfsb_file_t *files, int n) {
+    g_writable[0] = 0;
+    gs_ns_register_formats();
+    g_img_size = hfsb_build(g_img, sizeof(g_img), "Vol", files, n);
+    ASSERT_TRUE(g_img_size > 0);
+    write_volume_file(g_img, g_img_size);
 }
 
 static image_mount_t *mount_volume(const hfsb_file_t *files, int n) {
@@ -285,7 +267,7 @@ TEST(test_busy_exactly_while_open_writable) {
     vfs_file_t *f = NULL;
     ASSERT_EQ_INT(0, be->open(m, "/partition1/A", &f));
 
-    strcpy(g_writable, g_host_canon);
+    strcpy(g_writable, g_host_key);
     vfs_stat_t st;
     char buf[8];
     size_t got = 0;
@@ -311,7 +293,7 @@ TEST(test_busy_exactly_while_open_writable) {
 // the first mount after it was made -- and served -- as if nothing were open.
 TEST(test_open_writable_before_first_mount_refuses) {
     make_volume(one_file, 1);
-    strcpy(g_writable, g_host_canon);
+    strcpy(g_writable, g_host_key);
     image_mount_t *m = NULL;
     ASSERT_EQ_INT(-EBUSY, image_vfs_acquire_mount(g_host, &m));
     g_writable[0] = 0;
@@ -357,77 +339,81 @@ TEST(test_overlong_path_is_refused_not_truncated) {
     unmount_volume();
 }
 
-// ---- Geometry ---------------------------------------------------------------
+// ---- Not an image -----------------------------------------------------------
 
-// An image opened with 532-byte blocks (a Lisa ProFile) has no partition map
-// or HFS volume in 512-byte terms.  It is refused as not an image, without
-// a single read disk_read_data would reject as misaligned.
-TEST(test_non_512_geometry_is_refused_cleanly) {
-    make_volume(one_file, 1);
-    g_block_size = 532;
-    g_misaligned_reads = 0;
+// A file that is no disk and no archive is refused as not an image.
+TEST(test_non_image_is_refused_cleanly) {
+    gs_ns_register_formats();
+    static uint8_t junk[4096];
+    memset(junk, 0x5A, sizeof(junk));
+    write_volume_file(junk, sizeof(junk));
     image_mount_t *m = NULL;
     ASSERT_EQ_INT(-ENOTDIR, image_vfs_acquire_mount(g_host, &m));
-    ASSERT_EQ_INT(0, g_misaligned_reads);
-    g_block_size = 512;
     unlink(g_host);
 }
 
-// ---- Nested-image scratch copies --------------------------------------------
+// ---- Nesting ------------------------------------------------------------------
 
-static void read_file(const char *path, char *buf, size_t cap) {
-    FILE *f = fopen(path, "rb");
-    ASSERT_TRUE(f != NULL);
-    size_t n = fread(buf, 1, cap - 1, f);
-    buf[n] = '\0';
-    fclose(f);
+// A volume inside a file of another volume mounts straight from the outer
+// file's source: nothing is copied out, and the inner mount's key names the
+// file inside the outer one.  Attaching the outer volume writable makes the
+// inner mount busy too.
+TEST(test_nested_volume_mounts_from_its_source) {
+    static uint8_t inner[IMG_CAP / 2];
+    hfsb_file_t inner_files[] = {
+        {.name = "Deep", .data = (const uint8_t *)"inner!", .data_len = 6}
+    };
+    size_t inner_len = hfsb_build(inner, sizeof(inner), "Inner", inner_files, 1);
+    ASSERT_TRUE(inner_len > 0);
+    hfsb_file_t outer_files[] = {
+        {.name = "Inner.img", .data = inner, .data_len = inner_len}
+    };
+    image_mount_t *m = mount_volume(outer_files, 1);
+
+    int err = 0;
+    gs_source_t *data = image_vfs_open_source(m, "/partition1/Inner.img", GS_FORK_DATA, &err);
+    ASSERT_TRUE(data != NULL);
+    ASSERT_EQ_INT((int)inner_len, (int)gs_source_size(data));
+    char want_key[PATH_MAX + 128];
+    snprintf(want_key, sizeof(want_key), "%s/partition1/Inner.img", g_host_key);
+    ASSERT_TRUE(strcmp(gs_source_key(data), want_key) == 0);
+
+    image_mount_t *nm = NULL;
+    ASSERT_EQ_INT(0, image_vfs_acquire_mount_source("/x/Inner.img", data, NULL, &nm));
+    gs_source_release(data);
+    char buf[16] = {0};
+    size_t got = 0;
+    ASSERT_EQ_INT(0, read_all(vfs_image_backend(), nm, "/partition1/Deep", buf, sizeof(buf), &got));
+    ASSERT_EQ_INT(6, (int)got);
+    ASSERT_TRUE(memcmp(buf, "inner!", 6) == 0);
+
+    // The outer volume attached writable: the inner mount refuses too.
+    strcpy(g_writable, g_host_key);
+    vfs_stat_t st;
+    ASSERT_EQ_INT(-EBUSY, vfs_image_backend()->stat(nm, "/partition1/Deep", &st));
+    g_writable[0] = 0;
+
+    ASSERT_EQ_INT(0, image_vfs_unmount("/x/Inner.img"));
+    unmount_volume();
 }
 
-// A file inside a mounted volume is copied out under the scratch root --
-// GS_STORAGE_CACHE when set, which the nested cache used to ignore (a fixed
-// /tmp/gs-image-ro/nested) -- and reused on the next call.  A copy that was
-// never sealed complete is not reused: reuse used to need only a non-empty
-// file, so an interrupted copy was served as the image.
-TEST(test_nested_copy_honours_the_cache_root_and_its_seal) {
-    char root[64] = "/tmp/image_vfs_cache_XXXXXX";
-    ASSERT_TRUE(mkdtemp(root) != NULL);
-    setenv("GS_STORAGE_CACHE", root, 1);
-    image_mount_t *m = mount_volume(one_file, 1);
+// ---- The image.c entry points image_part.c links against -----------------
+// (its image-backed helpers are not used here: every mount reads a source)
 
-    char *p1 = image_vfs_materialize_nested(m, "/partition1/A");
-    ASSERT_TRUE(p1 != NULL);
-    ASSERT_TRUE(strncmp(p1, root, strlen(root)) == 0);
-    char buf[16];
-    read_file(p1, buf, sizeof(buf));
-    ASSERT_TRUE(strcmp(buf, "data") == 0);
-
-    char *p2 = image_vfs_materialize_nested(m, "/partition1/A");
-    ASSERT_TRUE(p2 != NULL && strcmp(p1, p2) == 0);
-
-    // What an interrupted copy leaves: the file, but no seal.
-    char side[PATH_MAX];
-    snprintf(side, sizeof(side), "%s.id", p1);
-    ASSERT_EQ_INT(0, remove(side));
-    FILE *f = fopen(p1, "wb");
-    ASSERT_TRUE(f != NULL);
-    fputs("junk", f);
-    fclose(f);
-    char *p3 = image_vfs_materialize_nested(m, "/partition1/A");
-    ASSERT_TRUE(p3 != NULL);
-    read_file(p3, buf, sizeof(buf));
-    ASSERT_TRUE(strcmp(buf, "data") == 0);
-
-    remove(side);
-    remove(p1);
-    free(p1);
-    free(p2);
-    free(p3);
-    char dir[PATH_MAX];
-    snprintf(dir, sizeof(dir), "%s/nested", root);
-    rmdir(dir);
-    rmdir(root);
-    unsetenv("GS_STORAGE_CACHE");
-    unmount_volume();
+size_t disk_size(image_t *img) {
+    (void)img;
+    return 0;
+}
+uint32_t disk_block_size(image_t *img) {
+    (void)img;
+    return 512;
+}
+size_t disk_read_data(image_t *img, size_t offset, uint8_t *buf, size_t size) {
+    (void)img;
+    (void)offset;
+    (void)buf;
+    (void)size;
+    return 0;
 }
 
 int main(void) {
@@ -440,8 +426,8 @@ int main(void) {
     RUN(test_open_writable_before_first_mount_refuses);
     RUN(test_pending_unmount_completes_on_last_close);
     RUN(test_overlong_path_is_refused_not_truncated);
-    RUN(test_non_512_geometry_is_refused_cleanly);
-    RUN(test_nested_copy_honours_the_cache_root_and_its_seal);
+    RUN(test_non_image_is_refused_cleanly);
+    RUN(test_nested_volume_mounts_from_its_source);
     fprintf(stderr, "All image_vfs tests passed\n");
     return 0;
 }

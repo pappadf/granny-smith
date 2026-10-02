@@ -32,6 +32,8 @@ enum apm_fs_kind {
     APM_FS_DRIVER, // "Apple_Driver*" (disk driver code)
     APM_FS_FREE, // "Apple_Free"
     APM_FS_PATCHES, // "Apple_Patches"
+    APM_FS_MFS, // a bare MFS volume (never in a partition map)
+    APM_FS_ISO9660, // a bare ISO 9660 volume (never in a partition map)
 };
 
 // One parsed partition.  Offsets are in 512-byte blocks, matching Apple
@@ -65,6 +67,10 @@ bool image_apm_probe_magic(const uint8_t *block1);
 // pointing at a static message on failure.  The caller owns the returned
 // table and must free it with image_apm_free.  `errmsg` may be NULL.
 apm_table_t *image_apm_parse(image_t *img, const char **errmsg);
+
+// The same over a byte source holding the disk.
+struct peel_source;
+apm_table_t *image_apm_parse_source(struct peel_source *src, const char **errmsg);
 
 // Parse APM directly from a contiguous byte buffer.  Exposed for unit
 // tests that want to exercise the parser without dragging in the full

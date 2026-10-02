@@ -2,19 +2,20 @@
 // Copyright (c) pappadf
 
 // ppc_internal.h
-// Internal state and shared helpers for the PPC (MPC601 / MPC604) core.
-// Unqualified chapter/table citations refer to Motorola/IBM, "PowerPC 601
-// RISC Microprocessor User's Manual", 1995 (MPC601UM/AD); citations marked
-// "604UM" refer to "PowerPC 604 RISC Microprocessor User's Manual", 1994
-// (MPC604UM/AD), and "PEM" to "PowerPC Microprocessor Family: The
-// Programming Environments", 32-bit (MPCFPE32B).
+// Internal state and shared helpers for the PPC (MPC601 / MPC604 / MPC750)
+// core.  Unqualified chapter/table citations refer to Motorola/IBM,
+// "PowerPC 601 RISC Microprocessor User's Manual", 1995 (MPC601UM/AD);
+// citations marked "604UM" refer to "PowerPC 604 RISC Microprocessor User's
+// Manual", 1994 (MPC604UM/AD), "750UM" to "MPC750 RISC Microprocessor
+// User's Manual" (MPC750UM/D), and "PEM" to "PowerPC Microprocessor Family:
+// The Programming Environments", 32-bit (MPCFPE32B).
 
 #ifndef GS_CPU_PPC_INTERNAL_H
 #define GS_CPU_PPC_INTERNAL_H
 
 #include "ppc.h"
 
-#include "machine_profile.h" // CPU_MODEL_PPC601 / CPU_MODEL_PPC604
+#include "machine_profile.h" // CPU_MODEL_PPC601 / CPU_MODEL_PPC604 / CPU_MODEL_PPC750
 #include "memory.h"
 #include "ppc_softfp.h" // FPSCR bit masks (leaf header: stdint only)
 
@@ -119,7 +120,19 @@ struct ppc {
     uint32_t sdr1;
     uint32_t ear;
     uint32_t pvr; // $00010001, read-only
-    uint32_t hid0, hid1, iabr, dabr, pir; // HID group: store-and-readback (hid1 is 601-only)
+    uint32_t hid0, hid1, iabr, dabr, pir; // HID group: store-and-readback (hid1: 601 R/W, 750 read-only PLL_CFG)
+    // 750-only implementation registers (750UM Tables 2-48/2-49).  L2CR is
+    // stored as written except L2IP (bit 31), which is derived from
+    // l2_inval_end below.  THRM1-3 and ICTC are stored; TIN/TIV are derived
+    // on read (ppc_thrm_read).  The performance monitor is store-and-readback
+    // (pmc[] never counts).
+    uint32_t l2cr, ictc;
+    uint32_t thrm[3];
+    uint32_t mmcr[2], pmc[4], sia;
+    // Identity the machine profile chose (ppc_set_identity): PVR and the
+    // 750's HID1 PLL_CFG image.  Survive a hard reset (they are pins and
+    // mask ROM, not processor state).  Zero = the model's default.
+    uint32_t reset_pvr, reset_hid1;
     // 601: RTC pair (read SPR 4/5, write SPR 20/21).  604: TBU/TBL — the
     // timebase halves at their rebase instant (read via mftb, write SPR
     // 285/284); same rebase discipline, different tick semantics.
@@ -146,9 +159,14 @@ struct ppc {
     uint32_t fold; // 601 branch-folding classification for the sprint loop
     uint32_t reserve; // lwarx reservation held
     uint32_t reserve_addr;
+    // 750 L2 global invalidate (750UM §9.1.5): scheduler cycle at which
+    // L2IP drops back to 0 after L2I was set with L2E clear.  With no time
+    // binding, l2_inval_reads counts the L2IP=1 reads still owed instead.
+    uint64_t l2_inval_end;
+    uint32_t l2_inval_reads;
     uint32_t ext_irq; // level of the external-interrupt line
     uint32_t dec_pending; // latched decrementer exception request
-    int cpu_model; // CPU_MODEL_PPC601 / CPU_MODEL_PPC604 (the model discriminator)
+    int cpu_model; // CPU_MODEL_PPC601 / CPU_MODEL_PPC604 / CPU_MODEL_PPC750 (the model discriminator)
 
     // --- time derivation (exact-rational RTC/TB/DEC) ---
     // ticks = cycles * tick_mul / tick_div, the reduced tick_hz/freq_hz
@@ -181,9 +199,19 @@ static inline uint32_t ppc_ra0(ppc_t *p, uint32_t iw) {
     return a ? p->gpr[a] : 0;
 }
 
-// Model discrimination (the cpu.c 68000/030/040 pattern).
+// Model discrimination (the cpu.c 68000/030/040 pattern).  ppc_is_604 is
+// the OEA-class test — "a 604 or anything built on its programming model":
+// true for the 604 and the 750, whose MMU, timebase/DEC, exception vectors,
+// split BATs, FP group and holdover rejection are the 604's (750UM §1.1,
+// §2.3).  The 750's own deltas key on ppc_is_750.
 static inline bool ppc_is_604(const ppc_t *p) {
-    return p->cpu_model == CPU_MODEL_PPC604;
+    return p->cpu_model != CPU_MODEL_PPC601;
+}
+
+// The MPC750: L2CR/ICTC/THRM, read-only HID1, its own performance-monitor
+// map (no SDA, user mirrors), no PIR (750UM Table 2-49).
+static inline bool ppc_is_750(const ppc_t *p) {
+    return p->cpu_model == CPU_MODEL_PPC750;
 }
 
 // MSR bits the active model implements (mtmsr/rfi/pokes mask to this).

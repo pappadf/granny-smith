@@ -2,6 +2,7 @@
 // Copyright (c) pappadf
 // Storage engine unit tests (delta-file model)
 
+#include "source.h"
 #include "storage.h"
 #include "test_assert.h"
 
@@ -66,7 +67,14 @@ static void setup_sandbox(void) {
     }
 }
 
+// Base sources opened by make_config: storage takes its own reference, so
+// the test's are dropped when the sandbox goes.
+static gs_source_t *g_bases[128];
+static int g_n_bases;
+
 static void teardown_sandbox(void) {
+    while (g_n_bases > 0)
+        gs_source_release(g_bases[--g_n_bases]);
     cleanup_dir(SANDBOX_DIR);
 }
 
@@ -86,12 +94,15 @@ static void create_base_image(const char *path, uint64_t blocks, uint8_t base_sa
 
 static storage_config_t make_config(const char *base, const char *delta, const char *journal, uint64_t blocks) {
     storage_config_t config = {0};
-    config.base_path = base;
+    // The base is a byte source; a path with no file (a brand-new image)
+    // is no base, as a missing base file always was.
+    config.base = base ? gs_source_host(base, NULL) : NULL;
+    if (config.base && g_n_bases < (int)(sizeof(g_bases) / sizeof(g_bases[0])))
+        g_bases[g_n_bases++] = config.base;
     config.delta_path = delta;
     config.journal_path = journal;
     config.block_count = blocks;
     config.block_size = STORAGE_BLOCK_SIZE;
-    config.base_data_offset = 0;
     return config;
 }
 
@@ -142,7 +153,7 @@ TEST(storage_invalid_arguments) {
 
     storage_t *dummy = NULL;
     storage_config_t bad = make_config(NULL, DELTA_FILE, JOURNAL_FILE, TEST_BLOCKS);
-    // NULL base_path is allowed (new image with no base), but NULL delta is not
+    // A NULL base is allowed (new image with no base), but NULL delta is not
     bad.delta_path = NULL;
     ASSERT_ERR(storage_new(&bad, &dummy), GS_ERROR);
     bad = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, 0);

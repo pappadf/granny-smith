@@ -1,0 +1,3 @@
+62b2ab892a1a374ad8791c8544fab9f9  notes/._long.txt
+33f7f3e2d9fdf3a63630b6eea110972d  notes/long.txt
+ca3026d73b3792a0c1809f972a6427c5  readme.txt

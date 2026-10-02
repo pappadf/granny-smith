@@ -1,5 +1,25 @@
 import { render, waitFor, fireEvent } from '@testing-library/svelte';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// The core's files.list answers which files are expandable (images and
+// archives it recognises by content): game.sit is, disk.img here is not.
+// Everything else goes to the real bridge.
+vi.mock('@/bus/emulator', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/bus/emulator')>();
+  return {
+    ...actual,
+    gsEval: async (path: string, args?: unknown[]) => {
+      if (path === 'files.list' && args?.[0] === '/opfs')
+        return [
+          { name: 'sub', kind: 'directory', size: 0, expandable: false },
+          { name: 'game.sit', kind: 'file', size: 1024, expandable: true },
+          { name: 'disk.img', kind: 'file', size: 1024, expandable: false },
+        ];
+      return actual.gsEval(path, args);
+    },
+  };
+});
+
 import FilesystemView from '@/components/panel-views/filesystem/FilesystemView.svelte';
 import { setOpfsBackend } from '@/bus/opfs';
 import { MockOpfs } from '../helpers/mockOpfs';
@@ -114,7 +134,7 @@ describe('FilesystemView — Unpack context action', () => {
     await waitFor(() => expect(document.querySelector('.context-menu')).not.toBeNull());
   }
 
-  it('offers Unpack for a peeler-recognised archive file', async () => {
+  it('offers Unpack for a file the core reports expandable', async () => {
     const { container } = render(FilesystemView);
     setFsExpanded('/opfs', true);
     await rightClick(container, 'game.sit');
@@ -122,7 +142,7 @@ describe('FilesystemView — Unpack context action', () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
   });
 
-  it('omits Unpack for a non-archive file', async () => {
+  it('omits Unpack for a file the core does not report expandable', async () => {
     const { container } = render(FilesystemView);
     setFsExpanded('/opfs', true);
     await rightClick(container, 'disk.img');

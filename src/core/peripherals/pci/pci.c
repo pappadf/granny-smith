@@ -63,6 +63,10 @@ struct pci_bus {
     pci_window_t window[PCI_MAX_WINDOWS];
     int window_count;
     bool lane_reverse; // the bridge is reversing byte lanes (pci.h)
+    // The bridge's master-abort policy (pci_bus_set_abort_policy): NULL =
+    // every unclaimed access faults, the Bandit contract.
+    bool (*abort_faults)(void *ctx, bool write);
+    void *abort_ctx;
 };
 
 struct pci_root {
@@ -81,6 +85,7 @@ struct pci_root {
 
 extern const pci_card_kind_t tnt_control_kind; // machines/tnt/control.c
 extern const pci_card_kind_t mach64_gx_kind; // peripherals/pci/cards/mach64gx.c
+extern const pci_card_kind_t ati_rage_pro_kind; // ...the beige G3's on-board Rage Pro
 extern const pci_card_kind_t cirrus_54m30_kind; // peripherals/pci/cards/cirrus54m30.c
 // The Network Server's two fast/wide SCSI controllers.  Two kinds rather
 // than one because a factory takes no channel argument and the board's two
@@ -92,8 +97,9 @@ extern const pci_card_kind_t voodoo2_kind; // peripherals/pci/cards/voodoo2.c
 extern const pci_card_kind_t voodoo2_webgpu_kind; // ...the same card, rasterised by the host GPU
 
 static const pci_card_kind_t *const g_card_registry[] = {
-    &tnt_control_kind,   &mach64_gx_kind, &cirrus_54m30_kind,   &sym53c825_ch0_kind,
-    &sym53c825_ch1_kind, &voodoo2_kind,   &voodoo2_webgpu_kind, NULL,
+    &tnt_control_kind,    &mach64_gx_kind,     &cirrus_54m30_kind,
+    &sym53c825_ch0_kind,  &sym53c825_ch1_kind, &voodoo2_kind,
+    &voodoo2_webgpu_kind, &ati_rage_pro_kind,  NULL,
 };
 
 const pci_card_kind_t *const *pci_card_registry(void) {
@@ -307,6 +313,11 @@ static uint32_t window_pci_addr(const pci_window_t *w, uint32_t offset) {
 
 static void window_fault(const pci_window_t *w, uint32_t offset, bool write) {
     LOG(4, "%s: unclaimed %s $%08X", w->what, write ? "write" : "read", w->map_base + offset);
+    // A bridge that terminates master aborts quietly (Grackle with TEA/MCP
+    // reporting off) still reads all-ones and drops the write; it just
+    // does not take the machine check.
+    if (w->bus->abort_faults && !w->bus->abort_faults(w->bus->abort_ctx, write))
+        return;
     memory_signal_bus_error(w->map_base + offset, write);
 }
 
@@ -423,6 +434,13 @@ void pci_bus_set_lane_reverse(pci_bus_t *bus, bool on) {
         return;
     bus->lane_reverse = on;
     LOG(1, "%s: byte lanes %s", bus->name, on ? "REVERSED (little-endian client)" : "straight (big-endian)");
+}
+
+void pci_bus_set_abort_policy(pci_bus_t *bus, bool (*faults)(void *ctx, bool write), void *ctx) {
+    if (!bus)
+        return;
+    bus->abort_faults = faults;
+    bus->abort_ctx = ctx;
 }
 
 bool pci_bus_lane_reverse(const pci_bus_t *bus) {

@@ -14,7 +14,7 @@ case there is nothing to do.
 ## Repository Directory Overview
 
 - `src/core/`: Platform-agnostic emulator (cpu/, memory/, peripherals/, scheduler/, debug/, storage/, network/, shell/, object/, vfs/, plus the system and machine-configuration files at its root)
-- `src/peeler/`: In-tree Mac-archive library (StuffIt/BinHex/Compact Pro/MacBinary); wrapped as the `files.archive` object. See `docs/guide/peeler.md`.
+- `src/peeler/`: In-tree archive library (StuffIt/Compact Pro/Zip archives; BinHex/MacBinary/gzip wrappers) over byte sources; its archives are VFS namespaces and it backs the `files.archive` object. See `docs/guide/peeler.md`.
 - `src/platform/`: Platform-specific code (wasm/, headless/)
   - `wasm/`: WebAssembly platform for browser (em_main.c, em_audio.c, em_video.c) — compiled with Emscripten
   - `headless/`: Native command-line platform for testing (headless_main.c)
@@ -280,15 +280,16 @@ simulated network are its siblings at the root:
 Hardware paths are model-independent: `machine.scsi.device[0]` means the
 same on a Plus, a IIcx, and a Lisa. The `$reg` aliases (`$pc`, `$d0`, …)
 still resolve (now to `machine.cpu.*`). On the PowerPC machines (pm6100/
-pm7100/pm8100 and the TNT pm7500/pm8500/pm9500) the aliases are the PPC
+pm7100/pm8100, the TNT pm7500/pm8500/pm9500 and the beige G3 pmg3dt/
+pmg3mt) the aliases are the PPC
 set instead — `$pc $lr $ctr $cr
 $msr $xer $r0..$r31` — and `machine.cpu` exposes the PPC register file
 (`pc`, `r0..r31`, `lr`, `ctr`, `cr`, `xer`, `msr`, `srr0/1`, `dec`,
 `rtcu/rtcl`, `mq`, `sdr1`, `sr0..15`, `bat0u..bat3l`, `dbat0u..dbat3l`,
 `tbu/tbl`, `fpscr`); the 68K-style `$d0`/`$a0` aliases don't exist there.
-The `dbat*`/`tbu`/`tbl` members are live on the 604 model (the TNT
-pm8500/pm9500 — on a 604, `rtcu/rtcl` read the timebase halves) and inert
-on the 601.
+The `dbat*`/`tbu`/`tbl` members are live on the 604 and 750 models (the
+TNT pm8500/pm9500, the G3 — there `rtcu/rtcl` read the timebase halves)
+and inert on the 601.
 
 The browser frontend calls into the tree via `gsEval(path, args?)` (see
 `app/web2/src/bus/emulator.ts`). It resolves to a value, to `null` only for a

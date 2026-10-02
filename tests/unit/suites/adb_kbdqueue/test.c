@@ -265,9 +265,52 @@ TEST(a_quiet_queue_keeps_everything) {
 }
 
 // ============================================================================
+TEST(held_keys_are_re_reported_after_a_reset_and_a_flush) {
+    // Command-Option-O-F held from power-on: the keys are down before the
+    // ROM's ADB init, whose SendReset and Flush clear the keyboard's buffer.
+    // The switches are still closed, so the keyboard re-reports them — in
+    // the order they went down, F last (Open Firmware tests the combination
+    // on F's key-down).
+    adb_t *adb = adb_init(NULL, NULL, NULL);
+    ASSERT_TRUE(adb != NULL);
+    const uint8_t held[4] = {0x37u, 0x3Au, 0x1Fu, 0x03u}; // Command, Option, O, F
+    for (int i = 0; i < 4; i++)
+        adb_keyboard_event(adb, key_down, (int)held[i]);
+
+    uint8_t bytes[16];
+    uint8_t reply[8];
+    int len = 0;
+    // SendReset (broadcast $00): nothing held comes up released.
+    adb_iop_transact(adb, 0x00u, NULL, 0, reply, &len);
+    int n = drain(adb, bytes, (int)sizeof(bytes));
+    ASSERT_EQ_HEX(n, 4);
+    for (int i = 0; i < 4; i++)
+        ASSERT_EQ_HEX(bytes[i], held[i]);
+
+    // Flush (addressed $X1) drops the buffer, and the held keys come back.
+    adb_iop_transact(adb, (uint8_t)((adb_keyboard_address(adb) << 4) | 0x01u), NULL, 0, reply, &len);
+    n = drain(adb, bytes, (int)sizeof(bytes));
+    ASSERT_EQ_HEX(n, 4);
+    for (int i = 0; i < 4; i++)
+        ASSERT_EQ_HEX(bytes[i], held[i]);
+
+    // A key let go before the reset is not re-reported.
+    adb_keyboard_event(adb, key_up, 0x1F);
+    n = drain(adb, bytes, (int)sizeof(bytes));
+    adb_iop_transact(adb, 0x00u, NULL, 0, reply, &len);
+    n = drain(adb, bytes, (int)sizeof(bytes));
+    ASSERT_EQ_HEX(n, 3);
+    ASSERT_EQ_HEX(bytes[0], 0x37u);
+    ASSERT_EQ_HEX(bytes[1], 0x3Au);
+    ASSERT_EQ_HEX(bytes[2], 0x03u);
+    adb_delete(adb);
+}
+
+// ============================================================================
 int main(void) {
     RUN(a_quiet_queue_keeps_everything);
     RUN(release_survives_overflow);
+    RUN(held_keys_are_re_reported_after_a_reset_and_a_flush);
     fprintf(stderr, "[ OK ] adb_kbdqueue\n");
     return 0;
 }

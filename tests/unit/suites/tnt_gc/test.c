@@ -245,11 +245,11 @@ static void fixture(void) {
     s_cfg.machine = &s_prof;
     s_cfg.machine_context = &s_st;
     if (s_st.dbdma)
-        tnt_dbdma_delete(s_st.dbdma);
-    s_st.dbdma = tnt_dbdma_init(NULL);
+        dbdma_delete(s_st.dbdma);
+    s_st.dbdma = dbdma_init(NULL, DBDMA_CHANNELS_GRAND_CENTRAL);
     static const dma_mem_port_t port = {.read_block = mem_read, .write_block = mem_write};
-    tnt_dbdma_set_memory_port(s_st.dbdma, &port);
-    tnt_dbdma_set_irq_hook(s_st.dbdma, dbdma_irq, &s_cfg);
+    dbdma_set_memory_port(s_st.dbdma, &port);
+    dbdma_set_irq_hook(s_st.dbdma, dbdma_irq, &s_cfg);
     memset(s_mem, 0, sizeof(s_mem));
     tnt_gc_init(&s_cfg);
     tnt_gc_recompute(&s_cfg);
@@ -487,20 +487,20 @@ TEST(test_dbdma_island_routing) {
     s_mem[0x102] = (uint8_t)(op_nop >> 16);
     s_mem[0x103] = (uint8_t)(op_nop >> 24);
     s_mem[0x113] = 0x70; // STOP: cmd nibble 7 in the top byte
-    reg_write(0x8800 + TNT_DBDMA_REG_CMDPTRLO, 0x100);
-    ASSERT_EQ_INT((int)reg_read(0x8800 + TNT_DBDMA_REG_CMDPTRLO), 0x100);
-    reg_write(0x8800 + TNT_DBDMA_REG_CONTROL, (TNT_DBDMA_RUN << 16) | TNT_DBDMA_RUN);
+    reg_write(0x8800 + DBDMA_REG_CMDPTRLO, 0x100);
+    ASSERT_EQ_INT((int)reg_read(0x8800 + DBDMA_REG_CMDPTRLO), 0x100);
+    reg_write(0x8800 + DBDMA_REG_CONTROL, (DBDMA_RUN << 16) | DBDMA_RUN);
     // The program ran: parked on the STOP, RUN up / ACTIVE down.
-    uint32_t stat = reg_read(0x8800 + TNT_DBDMA_REG_STATUS);
-    ASSERT_TRUE(stat & TNT_DBDMA_RUN);
-    ASSERT_EQ_INT((int)(stat & TNT_DBDMA_ACTIVE), 0);
-    ASSERT_EQ_INT((int)reg_read(0x8800 + TNT_DBDMA_REG_CMDPTRLO), 0x110);
+    uint32_t stat = reg_read(0x8800 + DBDMA_REG_STATUS);
+    ASSERT_TRUE(stat & DBDMA_RUN);
+    ASSERT_EQ_INT((int)(stat & DBDMA_ACTIVE), 0);
+    ASSERT_EQ_INT((int)reg_read(0x8800 + DBDMA_REG_CMDPTRLO), 0x110);
     // The NOP's interrupt pulsed Grand Central event bit 8 (channel ==
     // interrupt number).
     ASSERT_EQ_INT((int)(reg_read(R_EVENTS) >> 8) & 1, 1);
     // The canonical reset through the island: RUN drops synchronously.
-    reg_write(0x8800 + TNT_DBDMA_REG_CONTROL, 0xFC000000u);
-    ASSERT_EQ_INT((int)(reg_read(0x8800 + TNT_DBDMA_REG_STATUS) & TNT_DBDMA_RUN), 0);
+    reg_write(0x8800 + DBDMA_REG_CONTROL, 0xFC000000u);
+    ASSERT_EQ_INT((int)(reg_read(0x8800 + DBDMA_REG_STATUS) & DBDMA_RUN), 0);
 }
 
 int main(void) {

@@ -73,6 +73,9 @@ typedef struct mesh {
     uint8_t msgin_taken; // the bus message byte was delivered (MESSAGE IN
                          // lingers in the bus model until release, but the
                          // target no longer REQs — busfree must succeed)
+    uint8_t ack_held; // the sequencer still asserts ACK on the status byte
+                      // it took: the target cannot raise REQ for MESSAGE IN
+                      // until the next sequence command (scsi_mesh.c)
 
     // ---- runtime pointers: re-bound by the machine after a restore --------
     struct scsi *bus;
@@ -98,7 +101,7 @@ void mesh_reset(mesh_t *m);
 // The DBDMA channel-10 device port: the machine registers these with its own
 // DBDMA engine.
 // Bytes the channel-10 DBDMA port moves per activation before yielding
-// (tnt_dbdma_port_t.burst).  2 KB, the per-firing cap av.c and amic.c
+// (dbdma_port_t.burst).  2 KB, the per-firing cap av.c and amic.c
 // already use for the same job on the two other families -- see the DMA
 // pump comment in scsi_mesh.c.
 #define MESH_DMA_BURST 2048

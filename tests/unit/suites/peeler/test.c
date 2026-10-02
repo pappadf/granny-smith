@@ -1441,6 +1441,239 @@ TEST(test_huff_pool_is_bounded) {
     ASSERT_TRUE(pool.used <= PEEL_HUFF_POOL_CAP);
 }
 
+// ============================================================================
+// Forks decode through, a buffer at a time
+// ============================================================================
+
+// A heap sink that records how far it has been written.
+static uint64_t g_sink_hi;
+
+static peel_source_t *rec_create(void *ctx, const char *key, uint64_t n) {
+    g_sink_hi = 0;
+    return peel_heap_sink()->create(ctx, key, n);
+}
+
+static int64_t rec_write(peel_source_t *sink, uint64_t off, const void *buf, size_t n) {
+    if (off + n > g_sink_hi)
+        g_sink_hi = off + n;
+    return peel_heap_sink()->write(sink, off, buf, n);
+}
+
+static void rec_commit(peel_source_t *sink) {
+    peel_heap_sink()->commit(sink);
+}
+
+static const peel_sink_ops_t rec_sink = {rec_create, rec_write, rec_commit};
+
+// `n` bytes of 1000-byte runs of letters, and their RLE90 coding (sit.md
+// § 8): each run a literal, then escapes repeating it.
+static uint8_t *rle90_runs(size_t n, uint8_t **packed, size_t *packed_len) {
+    uint8_t *raw = malloc(n), *pk = malloc(n / 100 + 64);
+    ASSERT_TRUE(raw && pk);
+    size_t k = 0;
+    for (size_t i = 0; i < n; i += 1000) {
+        size_t run = n - i < 1000 ? n - i : 1000;
+        uint8_t b = (uint8_t)('a' + (i / 1000) % 26);
+        memset(raw + i, b, run);
+        pk[k++] = b;
+        for (size_t rem = run - 1; rem;) {
+            size_t c = rem < 254 ? rem : 254;
+            pk[k++] = 0x90;
+            pk[k++] = (uint8_t)(c + 1);
+            rem -= c;
+        }
+    }
+    *packed = pk;
+    *packed_len = k;
+    return raw;
+}
+
+// A compressed StuffIt fork is a decode-through source: a read near its
+// start fills the sink with one decode chunk, not the whole fork; reading
+// on fills it as far as the reads reach, and then it is random access.
+TEST(test_sit_fork_decodes_progressively) {
+    size_t n = 300000, plen;
+    uint8_t *packed;
+    uint8_t *raw = rle90_runs(n, &packed, &plen);
+    sit5_spec sp = {.name = "Runs",
+                    .data = packed,
+                    .dlen = (uint32_t)plen,
+                    .h1_len = -1,
+                    .d_algo = 1,
+                    .d_raw = raw,
+                    .d_raw_len = (uint32_t)n};
+    size_t len;
+    uint8_t *a = build_sit5(&sp, &len);
+    peel_source_t *src = peel_source_memory(a, len, false);
+    peel_err_t *err = NULL;
+    peel_archive_t *ar = peel_open(src, &rec_sink, NULL, &err);
+    ASSERT_TRUE(ar != NULL && err == NULL);
+    int i = peel_lookup(ar, "Runs");
+    ASSERT_TRUE(i >= 0);
+    ASSERT_EQ_INT(PEEL_TIER_EARNED, peel_entry(ar, i)->data_tier);
+    peel_source_t *f = peel_open_fork(ar, i, PEEL_FORK_DATA, &err);
+    ASSERT_TRUE(f != NULL && err == NULL);
+    uint8_t buf[16];
+    ASSERT_EQ_INT(0, peel_source_read_exact(f, 0, buf, sizeof(buf)));
+    ASSERT_TRUE(memcmp(buf, raw, sizeof(buf)) == 0);
+    ASSERT_TRUE(g_sink_hi > 0 && g_sink_hi <= 65536); // one chunk, of 300000
+    ASSERT_EQ_INT(PEEL_TIER_EARNED, peel_source_tier(f));
+    ASSERT_EQ_INT(0, peel_source_read_exact(f, 150000, buf, sizeof(buf)));
+    ASSERT_TRUE(memcmp(buf, raw + 150000, sizeof(buf)) == 0);
+    ASSERT_TRUE(g_sink_hi >= 150016 && g_sink_hi < n);
+    uint8_t *all = malloc(n);
+    ASSERT_EQ_INT(0, peel_source_read_exact(f, 0, all, n));
+    ASSERT_TRUE(memcmp(all, raw, n) == 0);
+    ASSERT_EQ_INT(PEEL_TIER_RANDOM, peel_source_tier(f)); // committed
+    free(all);
+    peel_source_release(f);
+    peel_close(ar);
+    peel_source_release(src);
+    free(a);
+    free(packed);
+    free(raw);
+}
+
+// The fork CRC still guards a fork decoded through: reads before its end
+// are served, and the read that completes it fails on a mismatch.
+TEST(test_sit_fork_crc_is_checked_when_complete) {
+    size_t n = 200000, plen;
+    uint8_t *packed;
+    uint8_t *raw = rle90_runs(n, &packed, &plen);
+    uint8_t *wrong = malloc(n);
+    memcpy(wrong, raw, n);
+    wrong[n - 1] ^= 1; // the stored CRC is of other bytes
+    sit5_spec sp = {.name = "Runs",
+                    .data = packed,
+                    .dlen = (uint32_t)plen,
+                    .h1_len = -1,
+                    .d_algo = 1,
+                    .d_raw = wrong,
+                    .d_raw_len = (uint32_t)n};
+    size_t len;
+    uint8_t *a = build_sit5(&sp, &len);
+    peel_source_t *src = peel_source_memory(a, len, false);
+    peel_err_t *err = NULL;
+    peel_archive_t *ar = peel_open(src, NULL, NULL, &err);
+    ASSERT_TRUE(ar != NULL);
+    peel_source_t *f = peel_open_fork(ar, peel_lookup(ar, "Runs"), PEEL_FORK_DATA, &err);
+    ASSERT_TRUE(f != NULL);
+    uint8_t buf[16];
+    ASSERT_EQ_INT(0, peel_source_read_exact(f, 0, buf, sizeof(buf)));
+    uint8_t *all = malloc(n);
+    ASSERT_TRUE(peel_source_read_exact(f, 0, all, n) != 0);
+    free(all);
+    peel_source_release(f);
+    peel_close(ar);
+    peel_source_release(src);
+    // The buffer API refuses the fork too.
+    peel_file_list_t list = peel(a, len, &err);
+    ASSERT_TRUE(err != NULL);
+    peel_err_free(err);
+    peel_file_list_free(&list);
+    free(a);
+    free(packed);
+    free(raw);
+    free(wrong);
+}
+
+// Drive a producer one byte at a time, then in odd sizes, and compare
+// with what a full decode gives.
+static void drive_by_bytes(peel_producer_t *p, const uint8_t *want, size_t n) {
+    uint8_t *got = malloc(n ? n : 1);
+    size_t at = 0;
+    int rc = 0;
+    static const size_t caps[] = {1, 1, 1, 2, 3, 5, 7, 13, 100, 1};
+    for (int k = 0; rc == 0; k++) {
+        size_t step = caps[k % 10], cap = n - at < step ? n - at : step, m = 0;
+        rc = p->run(p, got + at, cap ? cap : 1, &m);
+        ASSERT_TRUE(rc >= 0);
+        ASSERT_TRUE(m <= cap);
+        at += m;
+    }
+    ASSERT_EQ_INT((int)n, (int)at);
+    ASSERT_TRUE(memcmp(got, want, n) == 0);
+    p->free(p);
+    free(got);
+}
+
+// Method 13 stops wherever the buffer fills and resumes there.
+TEST(test_sit13_producer_resumes_byte_by_byte) {
+    m13_writer w = {0};
+    m13w_dynamic_header(&w); // the "ABBA" trees of test_sit13_dynamic_round_trip
+    m13w_meta(&w, 31);
+    m13w_meta(&w, 36);
+    m13w_bits(&w, 53, 6);
+    m13w_meta(&w, 0);
+    m13w_meta(&w, 34);
+    m13w_bits(&w, 0, 1);
+    m13w_meta(&w, 31);
+    for (int i = 0; i < 3; i++) {
+        m13w_meta(&w, 36);
+        m13w_bits(&w, 63, 6);
+    }
+    m13w_meta(&w, 36);
+    m13w_bits(&w, 20, 6);
+    m13w_meta(&w, 31);
+    m13w_meta(&w, 35);
+    m13w_bits(&w, 6, 3);
+    size_t n = 20000;
+    uint8_t *want = malloc(n);
+    for (size_t i = 0; i < n; i++) {
+        int bit = (int)((i * 2654435761u) >> 13) & 1;
+        want[i] = bit ? 'B' : 'A';
+        m13w_bits(&w, (uint32_t)bit, 1);
+    }
+    m13w_bits(&w, 0, 32);
+    peel_err_t *err = NULL;
+    peel_buf_t whole = peel_sit13(w.buf, (w.nbits + 7) / 8, n, &err);
+    ASSERT_TRUE(err == NULL && whole.size == n);
+    ASSERT_TRUE(memcmp(whole.data, want, n) == 0);
+    peel_free(&whole);
+    peel_producer_t *p = sit13_producer(w.buf, (w.nbits + 7) / 8, n, &err);
+    ASSERT_TRUE(p != NULL);
+    drive_by_bytes(p, want, n);
+    free(want);
+}
+
+// Compact Pro (LZH under RLE) stops wherever the buffer fills and resumes
+// there, mid-match included.
+TEST(test_cpt_producer_resumes_byte_by_byte) {
+    cpt_writer w = {0};
+    cptw_tables(&w);
+    size_t n = 0;
+    uint8_t want[8192];
+    for (int i = 0; i < 1500; i++) {
+        if (i % 5 == 4) {
+            cptw_match(&w, 3, 2); // "xyx" from two back
+            want[n] = want[n - 2];
+            want[n + 1] = want[n - 1];
+            want[n + 2] = want[n];
+            n += 3;
+        } else {
+            char c = (i * 7) % 3 ? 'A' : 'B';
+            cptw_literal(&w, c);
+            want[n++] = (uint8_t)c;
+        }
+    }
+    size_t len;
+    uint8_t *a = make_cpt_data_fork(w.buf, (uint32_t)((w.nbits + 7) / 8), (uint32_t)n, true, &len);
+    peel_source_t *src = peel_source_memory(a, len, false);
+    peel_err_t *err = NULL;
+    peel_archive_t *ar = peel_open(src, NULL, NULL, &err);
+    ASSERT_TRUE(ar != NULL && err == NULL);
+    ASSERT_EQ_INT(PEEL_TIER_EARNED, peel_entry(ar, 0)->data_tier);
+    peel_producer_t *p = ar->fmt->producer(ar, 0, PEEL_FORK_DATA, &err);
+    ASSERT_TRUE(p != NULL);
+    drive_by_bytes(p, want, n);
+    peel_close(ar);
+    peel_source_release(src);
+    free(a);
+}
+
+// Zip, gzip and inflate: zipgz.c.
+void zipgz_tests(void);
+
 int main(void) {
     RUN(test_sit15_encoder_round_trip);
     RUN(test_sit15_zero_run_cannot_overflow);
@@ -1479,6 +1712,11 @@ int main(void) {
     RUN(test_sit5_lzw_widening_and_clear);
     RUN(test_huff_canonical_codes);
     RUN(test_huff_pool_is_bounded);
+    RUN(test_sit_fork_decodes_progressively);
+    RUN(test_sit_fork_crc_is_checked_when_complete);
+    RUN(test_sit13_producer_resumes_byte_by_byte);
+    RUN(test_cpt_producer_resumes_byte_by_byte);
+    zipgz_tests();
     fprintf(stderr, "All peeler tests passed\n");
     return 0;
 }

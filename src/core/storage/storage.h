@@ -4,8 +4,9 @@
 // storage.h
 // Public API for the delta-file storage engine.
 //
-// Each disk image is backed by three files:
-//   base   — the original image, opened read-only, never modified
+// Each disk image is backed by a base and two files:
+//   base   — the original image, a read-only byte source (source.h), never
+//            modified: a host file, or anything an adapter makes one
 //   delta  — header (magic + bitmaps) + block data area for modified blocks
 //   journal — append-only preimage log for crash recovery
 //
@@ -40,14 +41,19 @@ extern "C" {
 // Opaque handle to a storage instance.
 typedef struct storage_t storage_t;
 
+// A byte source (source.h); storage reads its base through one.
+struct peel_source;
+
 // Configuration passed to storage_new().
 typedef struct {
-    const char *base_path; // Path to original image (read-only)
+    // The original image, read-only: any byte source -- a host file, a view
+    // past a DiskCopy header, an NDIF chunk map, a member of an archive.
+    // storage_new takes its own reference.  NULL for a blank disk.
+    struct peel_source *base;
     const char *delta_path; // Path to delta file (read-write, created if missing)
     const char *journal_path; // Path to preimage journal (created if missing)
     uint64_t block_count; // Number of logical blocks
     uint32_t block_size; // Bytes per block: a multiple of 4 in [512, STORAGE_MAX_BLOCK_SIZE] (512 default, 532 ProFile)
-    size_t base_data_offset; // Byte offset to data in base file (e.g. DiskCopy header)
 } storage_config_t;
 
 // Callback signatures for streaming block data.

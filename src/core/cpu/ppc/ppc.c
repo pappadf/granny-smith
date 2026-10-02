@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // ppc.c
-// PPC (MPC601/MPC604) core: lifecycle, exception machinery, SPR file,
+// PPC (MPC601/MPC604/MPC750) core: lifecycle, exception machinery, SPR file,
 // scheduler and debugger adapters, object class.  The interpreter lives in
 // ppc_run.c; model-specific behavior is discriminated on ppc_t.cpu_model.
 
@@ -261,6 +261,66 @@ static bool spr_undefined(ppc_t *p, uint32_t n, bool is_read) {
     return false;
 }
 
+// === 750 implementation registers (750UM §2.1.2, §9.1, §10.3) ============
+
+#define PPC750_L2CR_L2E  0x80000000u // L2 enable
+#define PPC750_L2CR_L2I  0x00200000u // global invalidate
+#define PPC750_L2CR_L2IP 0x00000001u // invalidate in progress (read-only)
+// "Approximately 32K core clock cycles" for a global invalidate (750UM
+// §9.1.5); the scheduler's cycle domain is the core clock.
+#define PPC750_L2_INVAL_CYCLES 32768u
+// Synthetic junction temperature the thermal assist unit compares against
+// (°C).  Any fixed value works: Linux's TAU driver only needs TIV to go
+// valid after it programs a threshold (750UM §10.3.2.1).
+#define PPC750_TAU_TEMP_C 40u
+
+// L2CR as software reads it: the stored bits with L2IP derived from the
+// invalidate timer.  Bound to a scheduler, L2IP stays 1 until the timer
+// runs out; unbound (unit tests), it reads 1 exactly once.
+static uint32_t ppc_l2cr_read(ppc_t *p) {
+    uint32_t v = p->l2cr & ~PPC750_L2CR_L2IP;
+    if (p->scheduler && p->tick_mul) {
+        if (scheduler_cpu_cycles(p->scheduler) < p->l2_inval_end)
+            v |= PPC750_L2CR_L2IP;
+    } else if (p->l2_inval_reads) {
+        p->l2_inval_reads--;
+        v |= PPC750_L2CR_L2IP;
+    }
+    return v;
+}
+
+// L2CR write: every bit but L2IP is stored.  A 0->1 transition of L2I
+// starts a global invalidate — the handshake the Gossamer boot program
+// polls on before any I/O (750UM §9.1.5).  The manual says software
+// should clear L2E first, but the Gossamer ROM sets L2I together with
+// L2E and still polls L2IP, so the invalidate runs either way.
+static void ppc_l2cr_write(ppc_t *p, uint32_t v) {
+    bool start = (v & PPC750_L2CR_L2I) && !(p->l2cr & PPC750_L2CR_L2I);
+    p->l2cr = v & ~PPC750_L2CR_L2IP;
+    if (start) {
+        if (p->scheduler && p->tick_mul)
+            p->l2_inval_end = scheduler_cpu_cycles(p->scheduler) + PPC750_L2_INVAL_CYCLES;
+        else
+            p->l2_inval_reads = 1;
+    }
+}
+
+// THRM1/THRM2 as read: TIV (bit 1) is valid whenever the register holds a
+// valid threshold (V, bit 31) and THRM3[E] enables comparison; TIN (bit 0)
+// then reports the compare against the synthetic temperature — above the
+// threshold with TID = 0, below it with TID = 1 (750UM Table 2-15).  The
+// thermal-management interrupt ($01700) is not delivered.
+static uint32_t ppc_thrm_read(ppc_t *p, int n) {
+    uint32_t v = p->thrm[n] & 0x3FFFFFFFu; // TIN/TIV are never stored
+    if (n < 2 && (v & 1u) && (p->thrm[2] & 1u)) {
+        uint32_t threshold = (v >> 23) & 0x7Fu;
+        bool below = (v & 0x4u) != 0; // TID
+        bool tin = below ? (PPC750_TAU_TEMP_C < threshold) : (PPC750_TAU_TEMP_C > threshold);
+        v |= 0x40000000u | (tin ? 0x80000000u : 0u);
+    }
+    return v;
+}
+
 bool ppc_mfspr(ppc_t *p, uint32_t iw) {
     uint32_t n = spr_number(iw);
     uint32_t d = PPC_RT(iw);
@@ -373,28 +433,79 @@ bool ppc_mfspr(ppc_t *p, uint32_t iw) {
         v = (n & 1) ? p->dbatl[pair] : p->dbatu[pair];
         break;
     }
-    case 952: // MMCR0 — 604 performance monitor group: read-zero stubs
-    case 953: // PMC1     (the $00F00 interrupt never fires)
-    case 954: // PMC2
-    case 955: // SIA
-    case 959: // SDA
-        if (!ppc_is_604(p))
+    case 936: // UMMCR0 — 750 user-level read-only mirrors of the monitor (750UM Table 2-49)
+    case 937: // UPMC1
+    case 938: // UPMC2
+    case 939: // USIA
+    case 940: // UMMCR1
+    case 941: // UPMC3
+    case 942: // UPMC4
+        if (!ppc_is_750(p))
+            goto undefined;
+        if (n == 936 || n == 940)
+            v = p->mmcr[n == 940]; // UMMCR0 / UMMCR1
+        else if (n == 939)
+            v = p->sia;
+        else
+            v = p->pmc[(n <= 938) ? n - 937 : n - 939]; // UPMC1/2 at 937/938, UPMC3/4 at 941/942
+        break;
+    case 956: // MMCR1 (750)
+    case 957: // PMC3
+    case 958: // PMC4
+        if (!ppc_is_750(p))
             goto undefined;
         if (spr_priv_fault(p, iw))
             return false;
-        v = 0;
+        v = (n == 956) ? p->mmcr[1] : p->pmc[n - 955];
+        break;
+    case 952: // MMCR0 — 604: read-zero stubs; 750: store-and-readback
+    case 953: // PMC1     (the $00F00 interrupt never fires)
+    case 954: // PMC2
+    case 955: // SIA
+    case 959: // SDA (604 only)
+        if (!ppc_is_604(p) || (n == 959 && ppc_is_750(p)))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        if (ppc_is_750(p))
+            v = (n == 952) ? p->mmcr[0] : (n == 955) ? p->sia : p->pmc[n - 953];
+        else
+            v = 0;
         break;
     case 1008:
         if (spr_priv_fault(p, iw))
             return false;
         v = p->hid0;
         break;
-    case 1009: // HID1: 601 only (the 604 defines no HID1)
-        if (ppc_is_604(p))
+    case 1009: // HID1: 601 store-and-readback; 750 read-only PLL_CFG image; the 604 defines none
+        if (ppc_is_604(p) && !ppc_is_750(p))
             goto undefined;
         if (spr_priv_fault(p, iw))
             return false;
         v = p->hid1;
+        break;
+    case 1017: // L2CR (750)
+        if (!ppc_is_750(p))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        v = ppc_l2cr_read(p);
+        break;
+    case 1019: // ICTC (750)
+        if (!ppc_is_750(p))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        v = p->ictc;
+        break;
+    case 1020: // THRM1-3 (750)
+    case 1021:
+    case 1022:
+        if (!ppc_is_750(p))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        v = ppc_thrm_read(p, (int)(n - 1020));
         break;
     case 1010:
         if (spr_priv_fault(p, iw))
@@ -406,7 +517,9 @@ bool ppc_mfspr(ppc_t *p, uint32_t iw) {
             return false;
         v = p->dabr;
         break;
-    case 1023:
+    case 1023: // PIR: 601/604 (the 750 has none — 750UM Table 2-49)
+        if (ppc_is_750(p))
+            goto undefined;
         if (spr_priv_fault(p, iw))
             return false;
         v = p->pir;
@@ -481,14 +594,24 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
         p->rtcl = v & 0x3FFFFF80u; // RTCL: bits 25-31 and 0-1 read as zero
         p->rtc_base_ticks = ppc_ticks_now(p);
         break;
-    case 22:
+    case 22: {
         if (spr_priv_fault(p, iw))
             return false;
+        uint32_t old = ppc_dec_now(p);
         p->dec = v;
         p->dec_base_ticks = ppc_ticks_now(p);
-        p->dec_pending = 0; // re-arming clears the latched expiry
+        // Re-arming clears the latched expiry, but a write that itself turns
+        // bit 0 from 0 to 1 signals the request, as the counter's own
+        // transition does (the Programming Environments manual, Decrementer
+        // Register).  The Mac OS 9 NanoKernel's idle path counts on
+        // it: it reads an expired (negative) DEC, writes $7FFF0000, and writes
+        // the old value back to re-post the expiry; without the signal its
+        // timer queue never fires again and the boot hangs at the first
+        // timed wait.
+        p->dec_pending = (!(old & 0x80000000u) && (v & 0x80000000u)) ? 1u : 0u;
         ppc_dec_arm(p);
         break;
+    }
     case 25:
         if (spr_priv_fault(p, iw))
             return false;
@@ -578,27 +701,73 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
         }
         break;
     }
-    case 952: // 604 performance monitor group: write-ignore stubs
+    case 952: // 604: write-ignore stubs; 750: store-and-readback
     case 953:
     case 954:
     case 955:
-    case 959:
-        if (!ppc_is_604(p))
+    case 959: // SDA (604 only)
+        if (!ppc_is_604(p) || (n == 959 && ppc_is_750(p)))
             goto undefined;
         if (spr_priv_fault(p, iw))
             return false;
+        if (ppc_is_750(p)) {
+            if (n == 952)
+                p->mmcr[0] = v;
+            else if (n == 955)
+                p->sia = v;
+            else
+                p->pmc[n - 953] = v;
+        }
+        break;
+    case 956: // MMCR1 / PMC3 / PMC4 (750)
+    case 957:
+    case 958:
+        if (!ppc_is_750(p))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        if (n == 956)
+            p->mmcr[1] = v;
+        else
+            p->pmc[n - 955] = v;
         break;
     case 1008:
         if (spr_priv_fault(p, iw))
             return false;
-        p->hid0 = v;
+        // 750: ICFI/DCFI (bits 20/21) flash-invalidate and self-clear
+        // (750UM Table 2-4) — they never read back set.
+        p->hid0 = ppc_is_750(p) ? (v & ~0x00000C00u) : v;
         break;
-    case 1009: // HID1: 601 only
-        if (ppc_is_604(p))
+    case 1009: // HID1: 601 store-and-readback; 750 read-only ("executes as a no-op", 750UM §2.3.2.4.3)
+        if (ppc_is_604(p) && !ppc_is_750(p))
             goto undefined;
         if (spr_priv_fault(p, iw))
             return false;
-        p->hid1 = v;
+        if (!ppc_is_750(p))
+            p->hid1 = v;
+        break;
+    case 1017: // L2CR (750)
+        if (!ppc_is_750(p))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        ppc_l2cr_write(p, v);
+        break;
+    case 1019: // ICTC (750): accepted, no throttling modelled
+        if (!ppc_is_750(p))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        p->ictc = v;
+        break;
+    case 1020: // THRM1-3 (750): stored; TIN/TIV are read-only and derived
+    case 1021:
+    case 1022:
+        if (!ppc_is_750(p))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        p->thrm[n - 1020] = v & 0x3FFFFFFFu;
         break;
     case 1010:
         if (spr_priv_fault(p, iw))
@@ -610,7 +779,9 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
             return false;
         p->dabr = v;
         break;
-    case 1023:
+    case 1023: // PIR: 601/604
+        if (ppc_is_750(p))
+            goto undefined;
         if (spr_priv_fault(p, iw))
             return false;
         p->pir = v;
@@ -623,6 +794,15 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
 }
 
 // === Public register accessors ==============================================
+
+void ppc_set_identity(ppc_t *p, uint32_t pvr, uint32_t hid1) {
+    p->reset_pvr = pvr;
+    p->reset_hid1 = hid1;
+    if (pvr)
+        p->pvr = pvr;
+    if (ppc_is_750(p))
+        p->hid1 = hid1;
+}
 
 uint32_t ppc_get_pc(ppc_t *restrict p) {
     return p->pc;
@@ -659,12 +839,14 @@ bool ppc_is_supervisor(ppc_t *restrict p) {
 
 // Hard-reset register state per model (601UM Table 5-8; 604UM §8.8.4 —
 // HRESET sets only MSR[IP], and the 604's HID0 comes up all-zero with the
-// caches and BHT disabled).  The cpu_model itself survives the reset.
+// caches and BHT disabled; 750UM Table 2-19 — MSR[IP], HID0 = L2CR = 0,
+// DEC all-ones).  The cpu_model and the profile's identity survive.
 void ppc_reset(ppc_t *p) {
     struct object *keep_cpu = p->cpu_object;
     struct object *keep_fpu = p->fpu_object;
     struct object *keep_mmu = p->mmu_object;
     int keep_model = p->cpu_model;
+    uint32_t keep_pvr = p->reset_pvr, keep_hid1 = p->reset_hid1;
     // The TIME BINDING survives a reset, for the same reason the object
     // handles and the model do: it is not processor state, it is how this
     // core is wired to the machine's clock.  A reset line does not unbind a
@@ -683,6 +865,8 @@ void ppc_reset(ppc_t *p) {
     p->fpu_object = keep_fpu;
     p->mmu_object = keep_mmu;
     p->cpu_model = keep_model;
+    p->reset_pvr = keep_pvr;
+    p->reset_hid1 = keep_hid1;
     p->scheduler = keep_sched;
     p->tick_mul = keep_tick_mul;
     p->tick_div = keep_tick_div;
@@ -691,7 +875,11 @@ void ppc_reset(ppc_t *p) {
     // timebase read out as however long the machine had been running.
     p->rtc_base_ticks = ppc_ticks_now(p);
     p->dec_base_ticks = p->rtc_base_ticks;
-    if (ppc_is_604(p)) {
+    if (ppc_is_750(p)) {
+        p->msr = PPC_MSR_EP; // $00000040 (IP only)
+        p->pvr = 0x00080202u; // 750, revision 2.2 — the stock beige-G3 part
+        p->dec = 0xFFFFFFFFu; // 750UM Table 2-19
+    } else if (ppc_is_604(p)) {
         p->msr = PPC_MSR_EP; // $00000040 (IP only)
         p->pvr = 0x00040103u; // 604, revision 1.3 (chosen constant; the kernel keys on the $0004 half)
     } else {
@@ -699,7 +887,11 @@ void ppc_reset(ppc_t *p) {
         p->pvr = 0x00010001u;
         p->hid0 = 0x80010080u;
     }
-    p->pc = 0xFFF00100u; // reset vector, MSR[EP]=1 on both models
+    if (p->reset_pvr)
+        p->pvr = p->reset_pvr; // the profile's part (upgrade cards, other revisions)
+    if (ppc_is_750(p))
+        p->hid1 = p->reset_hid1; // PLL_CFG pins, sampled at HRESET
+    p->pc = 0xFFF00100u; // reset vector, MSR[EP]=1 on every model
     p->instruction_pc = p->pc;
     ppc_mmu_invalidate_all(p); // translation state gone with the SRs/BATs
     ppc_context_sync(p); // the fetch-side BAT view starts out cleared too
@@ -755,7 +947,7 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
     ppc_t *p = (ppc_t *)malloc(sizeof(ppc_t));
     if (!p)
         return NULL;
-    assert(cpu_model == CPU_MODEL_PPC601 || cpu_model == CPU_MODEL_PPC604);
+    assert(cpu_model == CPU_MODEL_PPC601 || cpu_model == CPU_MODEL_PPC604 || cpu_model == CPU_MODEL_PPC750);
 
     // The user SoA arrays carry this MMU's logical fills — the generic
     // identity-restore paths must leave them alone (memory.h).
@@ -1016,6 +1208,10 @@ enum ppc_attr_id {
     PA_FPSCR,
     PA_DAR,
     PA_DSISR,
+    PA_PVR,
+    PA_HID0,
+    PA_HID1,
+    PA_L2CR,
     PA_GPR0 = 0x100, // ..0x11F
     PA_SR0 = 0x200, // ..0x20F
     PA_BAT0U = 0x300, // U/L interleaved ..0x307 (601 unified / 604 IBATs)
@@ -1068,6 +1264,14 @@ static uint32_t *ppc_attr_slot(ppc_t *p, int id) {
         return &p->dar;
     case PA_DSISR:
         return &p->dsisr;
+    case PA_PVR:
+        return &p->pvr;
+    case PA_HID0:
+        return &p->hid0;
+    case PA_HID1:
+        return &p->hid1;
+    case PA_L2CR:
+        return &p->l2cr;
     }
     return NULL;
 }
@@ -1086,6 +1290,10 @@ static DEF_GETTER(attr_ppc_get) {
         raw = ppc_is_604(p) ? (uint32_t)ppc_tb_now(p) : ppc_rtcl_now(p);
     else if (id == PA_DEC)
         raw = ppc_dec_now(p);
+    else if (id == PA_L2CR)
+        raw = p->l2cr | ((p->scheduler && p->tick_mul && scheduler_cpu_cycles(p->scheduler) < p->l2_inval_end)
+                             ? 1u
+                             : 0u); // L2IP without consuming a read
     else {
         uint32_t *slot = ppc_attr_slot(p, id);
         if (!slot)
@@ -1183,6 +1391,10 @@ static const member_t ppc_members[] = {
     PPC_ATTR("fpscr", PA_FPSCR, "Floating-point status and control: rounding mode, exception enables and sticky flags"),
     PPC_ATTR("dar",   PA_DAR,   "Data address register — the effective address that caused the last data storage exception"),
     PPC_ATTR("dsisr", PA_DSISR, "Data storage interrupt status — why that access faulted"),
+    PPC_ATTR("pvr",   PA_PVR,   "Processor version register — the model and revision the firmware keys on"),
+    PPC_ATTR("hid0",  PA_HID0,  "Hardware implementation register 0 — cache enables, power modes and branch-prediction controls"),
+    PPC_ATTR("hid1",  PA_HID1,  "Hardware implementation register 1 — 601 debug modes; on the 750 the read-only PLL configuration"),
+    PPC_ATTR("l2cr",  PA_L2CR,  "L2 cache control register (750) — backside L2 size, clock ratio, enable and invalidate"),
     PPC_GPR(0),  PPC_GPR(1),  PPC_GPR(2),  PPC_GPR(3),  PPC_GPR(4),  PPC_GPR(5),  PPC_GPR(6),  PPC_GPR(7),
     PPC_GPR(8),  PPC_GPR(9),  PPC_GPR(10), PPC_GPR(11), PPC_GPR(12), PPC_GPR(13), PPC_GPR(14), PPC_GPR(15),
     PPC_GPR(16), PPC_GPR(17), PPC_GPR(18), PPC_GPR(19), PPC_GPR(20), PPC_GPR(21), PPC_GPR(22), PPC_GPR(23),

@@ -22,33 +22,13 @@ async function loadJSZip(): Promise<JSZipLike> {
   return jszipPromise;
 }
 
-const ARCHIVE_EXT = /\.(sit|hqx|cpt|bin|sea)$/i;
-const ZIP_EXT = /\.zip$/i;
-
-export function isZipFile(name: string): boolean {
-  return ZIP_EXT.test(name || '');
-}
-
-// Mac-archive extensions handled by the C-side archive module (not JSZip).
-export function isMacArchive(name: string): boolean {
-  return ARCHIVE_EXT.test(name || '');
-}
-
-export function isArchiveFile(name: string): boolean {
-  return isZipFile(name) || isMacArchive(name);
-}
+// Whether a file is an archive is not decided here, from its name: the
+// core's format registry decides from its content (files.archive.identify,
+// and the `expandable` flag files.list reports).
 
 // Filename sanitiser — keep alphanumerics, ., _, -; collapse the rest to _.
 export function sanitizeName(n: string): string {
   return n.replace(/[^A-Za-z0-9._-]+/g, '_');
-}
-
-// First-4-byte check for the local file header magic of a ZIP file.
-export function isZipMagic(buf: Uint8Array): boolean {
-  // PK\x03\x04
-  return (
-    buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b && buf[2] === 0x03 && buf[3] === 0x04
-  );
 }
 
 export interface UnzippedFile {

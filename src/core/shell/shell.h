@@ -42,6 +42,14 @@ int shell_init(void);
 // and returns a negative errno. Returns 0 on success.
 int shell_cp(const char *src, const char *dst, bool recursive, char *err_buf, size_t err_cap);
 
+// Copy everything inside `src` -- a directory, or an image or archive file,
+// whose root is listed -- into host directory `dst` (created), with the
+// resource fork and Finder info of each file as an AppleDouble "._" sidecar.
+// The counts go to *files / *bytes (either may be NULL).  0 or a negated
+// errno, with a message in err_buf.
+int shell_cp_contents(const char *src, const char *dst, uint64_t *files, uint64_t *bytes, char *err_buf,
+                      size_t err_cap);
+
 // === Tab Completion ===
 
 void shell_tab_complete(const char *line, int cursor_pos, struct completion *out);

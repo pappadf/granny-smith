@@ -35,7 +35,7 @@ import {
   skipQueuedUrlFiles,
 } from '@/state/urlBoot.svelte';
 import { setMounted } from '@/state/images.svelte';
-import { sanitizeName, unzipAll, isMacArchive } from '@/lib/archive';
+import { sanitizeName, unzipAll } from '@/lib/archive';
 import {
   canonicalParamName,
   planMediaFetch,
@@ -45,7 +45,7 @@ import {
   type MediaFetchPlan,
 } from '@/lib/mediaUrl';
 import { identifyRom, type MediaTypeId } from '@/lib/media';
-import { persistAs, streamToOpfs, discardStaging, stagedIsZip } from './upload';
+import { persistAs, streamToOpfs, discardStaging, stagedArchiveFormat } from './upload';
 import { UPLOAD_DIR } from '@/lib/opfsPaths';
 import { getProfile } from './profile';
 import { attachHardDisk, attachCdrom, insertFloppy, type MediaResult } from './media';
@@ -395,22 +395,23 @@ async function fetchAndStage(
       updateUrlFile(slot, { status: 'failed', error: 'could not store the download' });
       return null;
     }
-    if (plan.member !== null || isMacArchive(plan.fileName))
-      updateUrlFile(slot, { status: 'unpacking' });
+    // Whether the download is an archive is the core's call, from its content.
+    const archive = await stagedArchiveFormat(staged);
+    if (plan.member !== null || archive) updateUrlFile(slot, { status: 'unpacking' });
 
     const ct = res.headers.get('Content-Type') ?? '';
     let name = plan.fileName;
     if (plan.member !== null) {
       // The value named a member: take exactly that one out.
       if (!(await extractMember(slot, staged, plan))) return null;
-    } else if (/\.zip$/i.test(plan.fileName) || /zip/i.test(ct) || (await stagedIsZip(staged))) {
+    } else if (archive === 'zip' || /zip/i.test(ct)) {
       // A bare zip: its first file, as before member paths existed.
       updateUrlFile(slot, { status: 'unpacking' });
       const first = (await unzipAll(await xferReadAll(staged)))[0];
       if (!first) throw new MediaUrlError(`${plan.fileName}: the zip is empty`);
       if (!(await streamToOpfs(staged, first.data))) return null;
       name = first.name.split('/').pop() || name;
-    } else if (isMacArchive(plan.fileName)) {
+    } else if (archive) {
       await unpackMacArchive(slot, staged, null);
     }
 

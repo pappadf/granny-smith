@@ -26,20 +26,13 @@
 // through the worker (files.mv/files.rm).
 
 import { gsEval, gsErrorText, isModuleReady } from './emulator';
-import { xferChunkBytes, xferWrite, xferRead, xferReadAll } from './xfer';
+import { xferChunkBytes, xferWrite } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
 import { setMounted, bumpImagesRevision } from '@/state/images.svelte';
 import { startActivity, endActivity } from '@/state/activity.svelte';
-import {
-  sanitizeName,
-  isZipFile,
-  isMacArchive,
-  isZipMagic,
-  unzipAll,
-  type UnzippedFile,
-} from '@/lib/archive';
+import { sanitizeName } from '@/lib/archive';
 import { fileHasCheckpointSignature, ROMS_DIR, UPLOAD_DIR } from '@/lib/opfsPaths';
 import { MEDIA_TYPES, identifyRom, type MediaTypeId, type MediaTypeDescriptor } from '@/lib/media';
 import { attachCdrom, insertFloppy } from './media';
@@ -359,11 +352,12 @@ async function probeAndPersist(
     return;
   }
 
-  // Then archives, before the permissive hd probe can claim them: a .zip is
-  // unpacked here (the C-side archive module has no zip format), a Mac
-  // archive by files.archive.extract; the first image inside that validates is
-  // stored under the archive's name.
-  if (isZipFile(file.name) || (await stagedIsZip(stagingPath)) || isMacArchive(file.name)) {
+  // Then archives, before the permissive hd probe can claim them.  Whether a
+  // file is one -- zip, StuffIt, Compact Pro, BinHex, MacBinary, gzip -- is
+  // the core's format registry's call, from its content, not its name; it is
+  // unpacked by files.archive.extract and the first medium inside that
+  // validates is stored.
+  if (await stagedArchiveFormat(stagingPath)) {
     showNotification(`Extracting ${file.name}...`, 'info');
     const extractDir = `${UPLOAD_DIR}/${sanitizeName(file.name)}_unpacked`;
     const outcome = await probeArchive(stagingPath, file, extractDir, opts);
@@ -379,51 +373,50 @@ async function probeAndPersist(
 }
 
 // Unpack the archive staged at `stagingPath` into `extractDir` and probe
-// what is inside.  Zip members are tried in archive order; a Mac archive's
-// contents are narrowed to one image by files.find_media.
+// what is inside: every file, in listing order, as any kind of medium, until
+// one validates.  AppleDouble "._" sidecars are the files' forks, never media.
 async function probeArchive(
   stagingPath: string,
   file: File,
   extractDir: string,
   opts: { autoBootOnRom: boolean },
 ): Promise<ProbeOutcome> {
-  if (isZipFile(file.name) || (await stagedIsZip(stagingPath))) {
-    let members: UnzippedFile[];
-    try {
-      members = await unzipAll(await xferReadAll(stagingPath));
-    } catch (e) {
-      console.error('[upload] unzip failed', e);
-      showNotification(`Failed to extract ${file.name}`, 'error');
-      return 'rejected';
-    }
-    for (const m of members) {
-      const base = m.name.split('/').pop() ?? '';
-      // Finder metadata a Mac-made zip carries, never media.
-      if (!base || base.startsWith('.') || m.name.startsWith('__MACOSX/')) continue;
-      const inner = `${extractDir}/${sanitizeName(base)}`;
-      if (!(await streamToOpfs(inner, m.data))) continue;
-      const outcome = await probeAs(inner, base, ALL_ORDER, opts);
-      if (outcome !== 'none') return outcome;
-    }
-    return 'none';
-  }
   const ok = (await gsEval('files.archive.extract', [stagingPath, extractDir])) === true;
   if (!ok) {
     showNotification(`Failed to extract ${file.name}`, 'error');
     return 'rejected';
   }
-  const innerPath = `${extractDir}/_found_media.img`;
-  if ((await gsEval('files.find_media', [extractDir, innerPath])) !== true) return 'none';
-  return probeAs(innerPath, file.name, ALL_ORDER, opts);
+  for (const inner of await listFiles(extractDir)) {
+    const base = inner.split('/').pop() ?? '';
+    if (!base || base.startsWith('.')) continue;
+    const outcome = await probeAs(inner, base, ALL_ORDER, opts);
+    if (outcome !== 'none') return outcome;
+  }
+  return 'none';
 }
 
-// Whether the file at `path` starts with the ZIP signature.  Read through
-// the core (bus/xfer.ts), never with Module.FS on this thread.
-export async function stagedIsZip(path: string): Promise<boolean> {
+// Every file under `dir` (depth first, in listing order), as full paths.
+async function listFiles(dir: string): Promise<string[]> {
+  const entries = await gsEval('files.list', [dir]);
+  if (!Array.isArray(entries)) return [];
+  const out: string[] = [];
+  for (const e of entries as { name: string; kind: string }[]) {
+    const path = `${dir}/${e.name}`;
+    if (e.kind === 'directory') out.push(...(await listFiles(path)));
+    else out.push(path);
+  }
+  return out;
+}
+
+// The archive format of the file at `path` ("zip", "sit", "cpt", "hqx",
+// "bin", "gz"), or '' when it is none -- decided by the core from the file's
+// content (a bounded read of its head and tail), whatever it is called.
+export async function stagedArchiveFormat(path: string): Promise<string> {
   try {
-    return isZipMagic(await xferRead(path, 0, 4));
+    const fmt = await gsEval('files.archive.identify', [path]);
+    return typeof fmt === 'string' ? fmt : '';
   } catch {
-    return false;
+    return '';
   }
 }
 
