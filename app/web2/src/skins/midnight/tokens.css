@@ -13,9 +13,9 @@
 
     /* Reference palette */
     --gs-ref-ink: #090b11;
-    --gs-ref-glass: rgba(255, 255, 255, 0.045);
-    --gs-ref-glass-strong: rgba(255, 255, 255, 0.07);
-    --gs-ref-hairline: rgba(255, 255, 255, 0.08);
+    --gs-ref-glass: rgba(255, 255, 255, 0.06);
+    --gs-ref-glass-strong: rgba(255, 255, 255, 0.09);
+    --gs-ref-hairline: rgba(255, 255, 255, 0.16);
     --gs-ref-periwinkle: #7c8cff;
     --gs-ref-periwinkle-soft: #c7ceff;
     --gs-ref-teal: #5eead4;
@@ -36,19 +36,19 @@
     /* Text */
     --gs-text: #e6e8f2;
     --gs-text-strong: #ffffff;
-    --gs-text-muted: #9095ad;
-    --gs-text-subtle: #6e7390;
+    --gs-text-muted: #aab0c8;
+    --gs-text-subtle: #8a90ab;
     --gs-text-link: #a3adff;
     --gs-text-on-accent: #0a0c12;
 
     /* Borders and focus */
     --gs-border: var(--gs-ref-hairline);
-    --gs-border-subtle: rgba(255, 255, 255, 0.06);
+    --gs-border-subtle: rgba(255, 255, 255, 0.12);
     --gs-border-card: var(--gs-ref-hairline);
     --gs-focus-ring: var(--gs-ref-periwinkle);
 
     /* Interaction */
-    --gs-control-hover: rgba(255, 255, 255, 0.06);
+    --gs-control-hover: rgba(255, 255, 255, 0.09);
     --gs-control-active: rgba(255, 255, 255, 0.1);
     --gs-accent: var(--gs-ref-periwinkle);
     --gs-accent-hover: #919fff;
@@ -59,12 +59,12 @@
     --gs-row-hover: rgba(255, 255, 255, 0.045);
     --gs-row-selected: rgba(124, 140, 255, 0.2);
     --gs-row-selected-inactive: rgba(255, 255, 255, 0.07);
-    --gs-row-alt: rgba(255, 255, 255, 0.02);
+    --gs-row-alt: rgba(255, 255, 255, 0.035);
 
     /* Inputs */
-    --gs-input-bg: rgba(0, 0, 0, 0.3);
+    --gs-input-bg: rgba(0, 0, 0, 0.38);
     --gs-input-fg: #e6e8f2;
-    --gs-input-border: rgba(255, 255, 255, 0.1);
+    --gs-input-border: rgba(255, 255, 255, 0.24);
 
     /* Intents */
     --gs-info-fg: #a3adff;
@@ -141,13 +141,13 @@
     --gs-drop-label-bg: rgba(104, 120, 242, 0.92);
 
     /* Scrollbars, selection, elevation */
-    --gs-scrollbar-thumb: rgba(255, 255, 255, 0.12);
-    --gs-scrollbar-thumb-hover: rgba(255, 255, 255, 0.22);
+    --gs-scrollbar-thumb: rgba(255, 255, 255, 0.22);
+    --gs-scrollbar-thumb-hover: rgba(255, 255, 255, 0.32);
     --gs-scrollbar-track: transparent;
     --gs-selection-bg: rgba(124, 140, 255, 0.38);
-    --gs-shadow-popup: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 14px 36px rgba(0, 0, 0, 0.6);
-    --gs-shadow-modal: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 30px 80px rgba(0, 0, 0, 0.65);
-    --gs-shadow-toast: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 16px 36px rgba(0, 0, 0, 0.55);
+    --gs-shadow-popup: 0 0 0 1px rgba(255, 255, 255, 0.16), 0 14px 36px rgba(0, 0, 0, 0.6);
+    --gs-shadow-modal: 0 0 0 1px rgba(255, 255, 255, 0.16), 0 30px 80px rgba(0, 0, 0, 0.65);
+    --gs-shadow-toast: 0 0 0 1px rgba(255, 255, 255, 0.16), 0 16px 36px rgba(0, 0, 0, 0.55);
     --gs-shadow-screen:
       0 0 0 1px rgba(255, 255, 255, 0.07), 0 40px 110px -18px rgba(124, 140, 255, 0.38),
       0 18px 40px rgba(0, 0, 0, 0.55);

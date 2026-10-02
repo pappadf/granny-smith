@@ -61,6 +61,14 @@
     border-radius: 20px;
     overflow: hidden;
   }
+  :root[data-skin='midnight'] .gs-display-content {
+    border-color: rgba(255, 255, 255, 0.14);
+  }
+
+  /* Midnight's drop-down chevrons read brighter than its muted text. */
+  :root[data-skin='midnight'] .gs-select__arrow {
+    color: #c9cde0;
+  }
 
   /* The status bar: a pill under the cards; the state is its dot. */
   :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-statusbar {
