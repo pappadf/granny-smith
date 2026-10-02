@@ -325,7 +325,7 @@
   <div class="layout-controls">
     <IconButton
       class="tbtn appearance-menu"
-      icon="palette"
+      icon="brush"
       label="Appearance"
       aria-haspopup="menu"
       onclick={onAppearanceMenu}

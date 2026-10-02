@@ -62,7 +62,7 @@ export type IconName =
   | 'case-sensitive'
   | 'ellipsis'
   | 'power'
-  | 'palette';
+  | 'brush';
 
 // The symbol's URL in the active skin's sprite (tests/lint/sprite.test.ts
 // checks every sprite has every id).  Reactive: it reads the resolved skin.

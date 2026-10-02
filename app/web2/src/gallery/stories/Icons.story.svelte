@@ -44,7 +44,7 @@
     'mic-off',
     'ellipsis',
     'power',
-    'palette',
+    'brush',
   ];
 </script>
 
