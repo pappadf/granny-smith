@@ -558,6 +558,16 @@ int udif_writer_finish(udif_writer_t *w, udif_writer_stats_t *stats) {
         if (!xml)
             rc = -ENOMEM;
     }
+    // An all-zero disk has an empty data fork, which would put the plist at
+    // offset 0: valid, but dmg2img takes an XML offset of 0 to mean "no
+    // plist" and calls the image corrupt.  One sector of padding, outside
+    // the data fork, moves it.
+    uint64_t xml_off = w->data_len;
+    if (!rc && xml_off == 0) {
+        static const uint8_t pad[UDIF_SECTOR_SIZE];
+        rc = write_out(w, pad, sizeof(pad));
+        xml_off = sizeof(pad);
+    }
     if (!rc)
         rc = write_out(w, xml, xlen);
     free(xml);
@@ -578,7 +588,7 @@ int udif_writer_finish(udif_writer_t *w, udif_writer_stats_t *stats) {
         put32(k + KOLY_DATA_CK_TYPE, UDIF_CHECKSUM_CRC32);
         put32(k + KOLY_DATA_CK_BITS, 32);
         put32(k + KOLY_DATA_CK, w->crc_data);
-        put64(k + KOLY_XML_OFFSET, w->data_len);
+        put64(k + KOLY_XML_OFFSET, xml_off);
         put64(k + KOLY_XML_LENGTH, xlen);
         // The master checksum: CRC-32 over the block tables' checksums,
         // each as its big-endian 4 bytes.
@@ -600,7 +610,7 @@ int udif_writer_finish(udif_writer_t *w, udif_writer_stats_t *stats) {
         fsync(fileno(w->f));
         if (stats) {
             udif_writer_progress(w, stats);
-            stats->stored_bytes = w->data_len + xlen + UDIF_TRAILER_SIZE;
+            stats->stored_bytes = xml_off + xlen + UDIF_TRAILER_SIZE;
         }
         if (fclose(w->f) != 0)
             rc = errno ? -errno : -EIO;

@@ -611,7 +611,7 @@ worker's OPFS request through the page's thread — it deadlocked the page.
    and creates a blank image directly in OPFS via `files.fd_create`
    (800 KB / 1.4 MB) or `files.hd_create` (size from
    `machine.scsi.hd_models`; named `.dmg`, so a blank 2 GB disk is a
-   1.5 KB UDIF).
+   4 KB UDIF).
 2. **Drag-and-drop onto the Display** —
    [`DropOverlay.svelte`](../../app/web2/src/components/display/DropOverlay.svelte)
    captures drops, calls `processDataTransfer` →

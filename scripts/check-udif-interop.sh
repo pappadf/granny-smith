@@ -15,8 +15,8 @@
 # With hdiutil (macOS), each image must pass `hdiutil imageinfo` and
 # `hdiutil verify`, `hdiutil convert -format UDTO` must yield the disk, and
 # `hdiutil attach -readonly -nomount` must present a device that reads as the
-# disk.  With 7z, `7z x` must yield the disk.  Fails when neither tool is
-# present, or on the first mismatch.
+# disk.  With 7z, `7z x` must yield the disk; with dmg2img, its output must
+# be the disk.  Fails when none of the tools is present, or on a mismatch.
 
 set -euo pipefail
 
@@ -56,6 +56,13 @@ check_7z() {
     [ -n "$out" ] && cmp "$out" "$img"
 }
 
+check_dmg2img() {
+    local n="$1" dmg="$DIR/$1.dmg" img="$DIR/$1.img"
+    dmg2img -s -i "$dmg" -o "$WORK/$n.raw" >"$WORK/$n.d2i" 2>&1 || { cat "$WORK/$n.d2i"; return 1; }
+    cmp "$WORK/$n.raw" "$img" || return 1
+    rm -f "$WORK/$n.raw"
+}
+
 run() {
     local tool="$1"
     tools=$((tools + 1))
@@ -72,5 +79,6 @@ run() {
 
 have hdiutil && run hdiutil
 have 7z && run 7z
-[ "$tools" -gt 0 ] || { echo "neither hdiutil nor 7z found" >&2; exit 1; }
+have dmg2img && run dmg2img
+[ "$tools" -gt 0 ] || { echo "none of hdiutil, 7z, dmg2img found" >&2; exit 1; }
 exit $fail

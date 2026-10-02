@@ -1,9 +1,9 @@
 name: UDIF interop
 
 # The images the UDIF writer makes must open in the tools users have: hdiutil
-# on macOS, and 7-Zip.  A Linux job writes a set of samples with the
+# on macOS, 7-Zip and dmg2img.  A Linux job writes a set of samples with the
 # udif_writer unit suite (each beside the disk it must decode to) and checks
-# them with 7z; a macOS job checks the same files with hdiutil
+# them with 7z and dmg2img; a macOS job checks the same files with hdiutil
 # (scripts/check-udif-interop.sh).
 
 on:
@@ -52,7 +52,10 @@ jobs:
       - name: Write the samples
         run: GS_UDIF_INTEROP_DIR="$PWD/udif-samples" make -C tests/unit/suites/udif_writer run WERROR=1
 
-      - name: Check them with 7z
+      - name: Install dmg2img
+        run: sudo apt-get update -q && sudo apt-get install -y -q dmg2img
+
+      - name: Check them with 7z and dmg2img
         run: scripts/check-udif-interop.sh udif-samples
 
       - uses: actions/upload-artifact@v7
