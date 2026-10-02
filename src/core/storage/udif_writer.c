@@ -589,7 +589,10 @@ int udif_writer_finish(udif_writer_t *w, udif_writer_stats_t *stats) {
         put32(k + KOLY_MASTER_TYPE, UDIF_CHECKSUM_CRC32);
         put32(k + KOLY_MASTER_BITS, 32);
         put32(k + KOLY_MASTER_CK, gs_crc32(0, ck, 4));
-        put32(k + KOLY_VARIANT, 1); // device image
+        // A partition image, as hdiutil marks its own one-table images
+        // (-layout NONE): a device image (1) must carry a partition map
+        // hdiutil can read block-table IDs from, and is refused without one.
+        put32(k + KOLY_VARIANT, 2);
         put64(k + KOLY_SECTORS, w->sectors);
         rc = write_out(w, k, sizeof(k));
     }
