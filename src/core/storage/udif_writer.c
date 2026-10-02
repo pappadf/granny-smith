@@ -431,7 +431,9 @@ static uint8_t *build_mish(const udif_writer_t *w, size_t *out_len) {
     put64(b + MISH_COUNT, w->sectors);
     put64(b + MISH_DATA_OFF, 0);
     put32(b + MISH_BUFFERS, w->chunk_sectors + 8);
-    put32(b + MISH_DESC, 0);
+    // hdiutil's own whole-disk table (-layout NONE) says -2 here; with 0 it
+    // cannot work out the image's block-table IDs and refuses the image.
+    put32(b + MISH_DESC, 0xFFFFFFFEu);
     put32(b + MISH_CK_TYPE, UDIF_CHECKSUM_CRC32);
     put32(b + MISH_CK_BITS, 32);
     put32(b + MISH_CK, w->crc_dec);
@@ -478,6 +480,20 @@ static char *build_plist(const udif_writer_t *w, size_t *out_len) {
                "\t\t\t\t<key>Name</key>\n\t\t\t\t<string>");
     sb_str(&s, w->table_name ? w->table_name : table_name_for(NULL, 0));
     sb_str(&s, "</string>\n"
+               "\t\t\t</dict>\n\t\t</array>\n");
+    // The 'plst' resource hdiutil writes beside 'blkx', byte for byte: 1032
+    // bytes, zero but for 1s at 0x205 and 0x207.  hdiutil does not open an
+    // image without it.
+    uint8_t plst[1032] = {0};
+    plst[0x205] = 1;
+    plst[0x207] = 1;
+    sb_str(&s, "\t\t<key>plst</key>\n\t\t<array>\n\t\t\t<dict>\n"
+               "\t\t\t\t<key>Attributes</key>\n\t\t\t\t<string>0x0050</string>\n"
+               "\t\t\t\t<key>Data</key>\n\t\t\t\t<data>\n");
+    sb_base64(&s, plst, sizeof(plst));
+    sb_str(&s, "\t\t\t\t</data>\n"
+               "\t\t\t\t<key>ID</key>\n\t\t\t\t<string>0</string>\n"
+               "\t\t\t\t<key>Name</key>\n\t\t\t\t<string></string>\n"
                "\t\t\t</dict>\n\t\t</array>\n\t</dict>\n"
                "\t<key>gs-profile</key>\n\t<integer>1</integer>\n");
     if (w->bytes_in != w->sectors * UDIF_SECTOR_SIZE) {

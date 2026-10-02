@@ -112,7 +112,7 @@ The zlib decompressor both this and the PNG reader use is first-party: `inflate.
 - **`image_export_to(image_t *image, const char *dest_path)`** streams the disk (base + delta) to a new file: a dense raw copy, or, when `dest_path` ends in `.dmg` (and the disk has 512-byte blocks), a UDIF written by the streaming writer — a modified 2 GB disk exports at its content's size. The base image is never written in place.
 
 **Creating blank hard disks**
-- **`image_create_empty_udif(path, size)`** writes a UDIF of `size` zero bytes: one zero run, about 1.5 KB whatever the size. `hd create` and `files.hd_create` use it when the path ends in `.dmg` (the web app's Create Image names blank disks so); any other name gets **`image_create_empty()`**, a raw file of the full size, which the browser charges in full.
+- **`image_create_empty_udif(path, size)`** writes a UDIF of `size` zero bytes: one zero run, about 3.3 KB whatever the size. `hd create` and `files.hd_create` use it when the path ends in `.dmg` (the web app's Create Image names blank disks so); any other name gets **`image_create_empty()`**, a raw file of the full size, which the browser charges in full.
 
 **Creating blank floppy images**
 - **`image_create_blank_floppy()`** writes a zero-filled 819,200-byte (or 1,474,560-byte HD) raw file that can immediately be opened.
