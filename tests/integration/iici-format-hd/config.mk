@@ -28,7 +28,7 @@
 # land intact and the format completes.
 
 TEST_NAME := IIci Format Blank HD (built-in RBV, System 6.0.8)
-TEST_DESC := Boot IIci from SSW 6.0.8 floppy, run Apple HD SC Setup, format a blank HD20SC over the MDU's 5380
+TEST_DESC := Boot IIci from SSW 6.0.8 floppy, run Apple HD SC Setup, format a blank HD20SC over the MDU's 5380; the blank disk is a .dmg and the delta stays small
 
 # IIci ROM (checksum 0x368CADFE). Video is the machine's built-in RBV, so no
 # NuBus declrom is discovered or needed.

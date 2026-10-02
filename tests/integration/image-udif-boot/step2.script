@@ -1,0 +1,29 @@
+# image-udif-boot step 2, a fresh process: restore both checkpoints over the
+# UDIF base, then boot the exported disk.
+
+include "../lib/mac.script"
+
+# A quick checkpoint reopens the UDIF base and its delta.
+assert checkpoint.load("${$WORK_DIR}/refs.checkpoint") "refs checkpoint load failed"
+check("${$TEST_DIR}/desktop.png")
+scheduler.run 20000000
+wait_stable(400000000)
+check("${$TEST_DIR}/desktop.png")
+
+# A consolidated one restores the disk from its embedded blocks.
+assert checkpoint.load("${$WORK_DIR}/content.checkpoint") "content checkpoint load failed"
+check("${$TEST_DIR}/desktop.png")
+scheduler.run 20000000
+wait_stable(400000000)
+check("${$TEST_DIR}/desktop.png")
+
+# The exported .dmg is a disk in its own right: it boots -- and it is the
+# disk as the first boot left it, still marked in use, so System 7.5 says
+# it was not shut down properly (desktop-exported.png).
+machine.boot model="iici" ram=8192 rom="${$ROM}"
+machine.rtc.time = 3000000000
+machine.scsi.attach_hd "${$WORK_DIR}/exported.dmg" 0
+scheduler.run 60000000
+wait_stable(900000000)
+check("${$TEST_DIR}/desktop-exported.png")
+quit

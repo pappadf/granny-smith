@@ -1,0 +1,46 @@
+# image-udif-boot step 1: convert, boot from the UDIF, checkpoint, export.
+# Variables from run.sh: TEST_DIR (goldens), WORK_DIR (work files),
+# TEST_DATA, ROM.
+
+include "../lib/mac.script"
+
+let raw = "${$TEST_DATA}/systems/system_7_5_0_77mb_mode32_24ac.img"
+let dmg = "${$WORK_DIR}/hd.dmg"
+
+# The disk stored as UDIF, as the web app stores every upload.
+assert files.convert($raw, $dmg) "convert failed"
+assert files.path_size($dmg) < files.path_size($raw) / 4 "the UDIF is not compact"
+
+# Boot from it: the desktop is the raw disk's, pixel for pixel (desktop.png
+# was captured booting the raw image this way).
+machine.boot model="iici" ram=8192 rom="${$ROM}"
+machine.rtc.time = 3000000000
+machine.scsi.attach_hd $dmg 0
+assert machine.scsi.device[0].image.filename != "" "the UDIF did not attach"
+scheduler.run 60000000
+wait_stable(900000000)
+check("${$TEST_DIR}/desktop.png")
+
+# The boot wrote to the disk (Finder, desktop database); the writes are in
+# the delta and the base is untouched.
+assert files.verify($dmg) "the base changed under the boot"
+
+# Both checkpoint kinds over a UDIF base: one that references the base and
+# its delta, one that embeds the disk's blocks.
+assert checkpoint.save("${$WORK_DIR}/refs.checkpoint", "refs") "refs checkpoint save failed"
+assert checkpoint.save("${$WORK_DIR}/content.checkpoint", "content") "content checkpoint save failed"
+
+# Export the modified disk (base + delta) as UDIF and as raw: the two decode
+# to the same bytes, and the UDIF verifies.
+let exported = "${$WORK_DIR}/exported.dmg"
+let flat = "${$WORK_DIR}/flat.img"
+assert machine.scsi.device[0].image.export($exported) "export as .dmg failed"
+assert machine.scsi.device[0].image.export($flat) "export as raw failed"
+assert files.verify($exported) "the exported .dmg does not verify"
+assert files.udif_info($exported).gs_profile "the export is not a GS-profile UDIF"
+let decoded = "${$WORK_DIR}/exported-decoded.img"
+assert files.convert($exported, $decoded, 64, 1, "raw") "decoding the export failed"
+assert files.path_compare($decoded, $flat) == -1 "the exported .dmg is not base + delta"
+# ...and it is the modified disk, not the base.
+assert files.path_compare($flat, $raw) != -1 "the export did not carry the boot's writes"
+quit
