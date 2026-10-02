@@ -520,40 +520,41 @@
 >
   {#if form}
     <p class="confirm-doc">{form.method.doc}</p>
-    <FormGrid
-      class="arg-form"
-      onsubmit={(ev) => {
-        ev.preventDefault();
-        void submitForm();
-      }}
-    >
-      {#each argsOf(form.method) as a, i (a.name)}
-        <Field stacked class="arg" help={a.doc || undefined}>
-          {#snippet labelContent()}
-            <span class="arg-name"
-              >{a.name}{a.optional ? '' : ' *'}<span class="arg-type">{a.type?.kind ?? ''}</span
-              ></span
-            >
-          {/snippet}
-          {#if a.type?.presentation === 'path'}
-            <PathField
-              value={form!.values[i]}
-              label={a.name}
-              onInput={(t) => form && (form.values[i] = t)}
-            />
-          {:else}
-            <ValueEditor
-              type={a.type}
-              value={form!.values[i]}
-              label={a.name}
-              onInput={(t) => form && (form.values[i] = t)}
-            />
-          {/if}
-        </Field>
-      {/each}
-      {#if form.error}<Hint as="div" class="form-error" tone="error">{form.error}</Hint>{/if}
-      <button type="submit" hidden aria-hidden="true"></button>
-    </FormGrid>
+    <div class="arg-form">
+      <FormGrid
+        onsubmit={(ev) => {
+          ev.preventDefault();
+          void submitForm();
+        }}
+      >
+        {#each argsOf(form.method) as a, i (a.name)}
+          <Field stacked help={a.doc || undefined}>
+            {#snippet labelContent()}
+              <span class="arg-name"
+                >{a.name}{a.optional ? '' : ' *'}<span class="arg-type">{a.type?.kind ?? ''}</span
+                ></span
+              >
+            {/snippet}
+            {#if a.type?.presentation === 'path'}
+              <PathField
+                value={form!.values[i]}
+                label={a.name}
+                onInput={(t) => form && (form.values[i] = t)}
+              />
+            {:else}
+              <ValueEditor
+                type={a.type}
+                value={form!.values[i]}
+                label={a.name}
+                onInput={(t) => form && (form.values[i] = t)}
+              />
+            {/if}
+          </Field>
+        {/each}
+        {#if form.error}<Hint as="div" tone="error">{form.error}</Hint>{/if}
+        <button type="submit" hidden aria-hidden="true"></button>
+      </FormGrid>
+    </div>
   {/if}
   {#snippet actions()}
     <Button size="lg" onclick={() => (form = null)}>Cancel</Button>
@@ -635,7 +636,7 @@
     color: var(--gs-text-muted);
     margin: 0 0 var(--gs-space-2);
   }
-  :global(.gs-form.arg-form) {
+  .arg-form {
     min-width: 320px;
   }
   .arg-name {

@@ -91,12 +91,7 @@
 
 <!-- Always mounted, so the fade in and out runs; the motion tokens make it
      instant under reduced motion. -->
-<div
-  class="drop-overlay"
-  data-state={dragState}
-  data-visible={visible || undefined}
-  aria-hidden={!visible}
->
+<div class="drop-overlay" data-visible={visible || undefined} aria-hidden={!visible}>
   <div class="drop-label">Drop to open</div>
 </div>
 

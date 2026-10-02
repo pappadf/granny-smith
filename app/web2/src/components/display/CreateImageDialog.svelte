@@ -142,54 +142,55 @@
     : 'Create Blank Floppy'}
   {onClose}
 >
-  {#if isProfile}
-    <Hint class="dlg-help">Choose a capacity for the new (unformatted) ProFile image.</Hint>
-    <RadioGroup
-      name="pf-size"
-      label="ProFile capacity"
-      bind:value={profileBlocks}
-      options={PROFILE_MODELS.map((m) => ({
-        value: m.blocks,
-        label: `${m.label} (${m.blocks.toLocaleString()} blocks)`,
-      }))}
-    />
-  {:else if kind === 'hd'}
-    <Hint class="dlg-help">Choose a size for the new hard disk image.</Hint>
-    {#if modelsState === 'error'}
-      <Hint as="div" tone="error" class="dlg-error">
-        Could not load drive sizes.
-        <Button class="dlg-btn" onclick={() => (modelsState = 'idle')}>Retry</Button>
-      </Hint>
-    {:else if hdModels.length === 0}
-      <Hint class="dlg-help">Loading drive sizes…</Hint>
-    {:else}
+  <div class="dlg-body">
+    {#if isProfile}
+      <Hint class="dlg-help">Choose a capacity for the new (unformatted) ProFile image.</Hint>
       <RadioGroup
-        name="hd-size"
-        label="Hard disk size"
-        bind:value={hdSize}
-        options={hdModels.map((m) => ({ value: m.sizeBytes, label: `${m.mb} MB (${m.label})` }))}
+        name="pf-size"
+        label="ProFile capacity"
+        bind:value={profileBlocks}
+        options={PROFILE_MODELS.map((m) => ({
+          value: m.blocks,
+          label: `${m.label} (${m.blocks.toLocaleString()} blocks)`,
+        }))}
+      />
+    {:else if kind === 'hd'}
+      <Hint class="dlg-help">Choose a size for the new hard disk image.</Hint>
+      {#if modelsState === 'error'}
+        <Hint as="div" tone="error" class="dlg-error">
+          Could not load drive sizes.
+          <Button onclick={() => (modelsState = 'idle')}>Retry</Button>
+        </Hint>
+      {:else if hdModels.length === 0}
+        <Hint class="dlg-help">Loading drive sizes…</Hint>
+      {:else}
+        <RadioGroup
+          name="hd-size"
+          label="Hard disk size"
+          bind:value={hdSize}
+          options={hdModels.map((m) => ({ value: m.sizeBytes, label: `${m.mb} MB (${m.label})` }))}
+        />
+      {/if}
+    {:else}
+      <Hint class="dlg-help">Choose a capacity for the new (unformatted) floppy image.</Hint>
+      <RadioGroup
+        name="fd-density"
+        label="Floppy capacity"
+        bind:value={fdDensity}
+        options={[
+          { value: '800K', label: '800 KB (double density)' },
+          { value: '1440K', label: '1.4 MB (high density)' },
+        ]}
       />
     {/if}
-  {:else}
-    <Hint class="dlg-help">Choose a capacity for the new (unformatted) floppy image.</Hint>
-    <RadioGroup
-      name="fd-density"
-      label="Floppy capacity"
-      bind:value={fdDensity}
-      options={[
-        { value: '800K', label: '800 KB (double density)' },
-        { value: '1440K', label: '1.4 MB (high density)' },
-      ]}
-    />
-  {/if}
-  {#if error}<Hint as="div" tone="error" class="dlg-error">{error}</Hint>{/if}
+    {#if error}<Hint as="div" tone="error" class="dlg-error">{error}</Hint>{/if}
+  </div>
 
   {#snippet actions()}
-    <Button size="lg" class="dlg-btn" onclick={onClose} disabled={creating}>Cancel</Button>
+    <Button size="lg" onclick={onClose} disabled={creating}>Cancel</Button>
     <Button
       size="lg"
       variant="primary"
-      class="dlg-btn dlg-btn-primary"
       onclick={create}
       busy={creating}
       disabled={creating || (kind === 'hd' && !isProfile && hdModels.length === 0)}
@@ -200,10 +201,10 @@
 </Modal>
 
 <style>
-  :global(.gs-hint.dlg-help) {
+  .dlg-body :global(.dlg-help) {
     margin: 0 0 var(--gs-space-3) 0;
   }
-  :global(.gs-hint.dlg-error) {
+  .dlg-body :global(.dlg-error) {
     margin-top: var(--gs-space-3);
   }
 </style>

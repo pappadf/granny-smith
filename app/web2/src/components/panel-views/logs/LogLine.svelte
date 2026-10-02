@@ -7,8 +7,8 @@
   let { entry }: Props = $props();
 
   // Color band per level — low numbers are louder (per docs/log.md
-  // "smaller means more important"). Bucket coarsely to map onto the
-  // existing toast severity tokens.
+  // "smaller means more important"), bucketed onto the --gs-log-high/
+  // mid/low-fg tokens.
   const severity = $derived(entry.level <= 1 ? 'high' : entry.level <= 3 ? 'mid' : 'low');
 </script>
 
