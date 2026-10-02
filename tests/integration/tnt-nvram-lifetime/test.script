@@ -1,0 +1,30 @@
+# TNT NVRAM lifetime -- see config.mk.
+
+machine.boot model="pm7500" ram=32768 rom="${$ROM}"
+let blank = machine.nvram.snapshot()
+
+# A short run: Open Firmware is part-way through formatting the virgin store.
+scheduler.run 100000
+let torn = machine.nvram.snapshot()
+assert $torn != $blank "the run did not reach the NVRAM format, so this row proves nothing"
+
+# The same machine keeps its store through both levels that keep the machine.
+machine.reset
+assert machine.nvram.snapshot() == $torn "I2: NVRAM lost on machine.reset"
+machine.restart
+assert machine.nvram.snapshot() == $torn "I2: NVRAM lost on machine.restart"
+
+# A new machine inherits nothing (R1): neither the document boot nor the
+# rebuild from the record.
+machine.rebuild
+assert machine.nvram.snapshot() == $blank "R1: machine.rebuild inherited the previous machine's NVRAM"
+scheduler.run 100000
+machine.boot model="pm7500" ram=32768 rom="${$ROM}"
+assert machine.nvram.snapshot() == $blank "R1: machine.boot inherited the previous machine's NVRAM (#112)"
+
+# ...and the machine built after the torn one boots: Mac OS's tick counter
+# runs, where #112 left the ROM in Open Firmware's console read loop.
+scheduler.run 400000000
+assert debug.mac.globals.read("Ticks") > 0x100 "a machine.boot after a torn store did not boot (#112)"
+echo "tnt-nvram-lifetime ok"
+quit

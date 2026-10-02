@@ -159,6 +159,28 @@ lisa_mmu_t *lisa_mmu_init(uint8_t *ram, uint32_t ram_size, uint8_t *rom, uint32_
     return m;
 }
 
+// Power the MMU up again without rebuilding it: the guest-visible fields
+// lisa_mmu_init sets (calloc plus the explicit START/bad-granule values),
+// leaving the wiring -- RAM/ROM pointers, I/O devices, callbacks -- alone.
+void lisa_mmu_power_on(lisa_mmu_t *m) {
+    if (!m)
+        return;
+    memset(m->sor, 0, sizeof(m->sor)); // descriptor RAM, as at construction
+    memset(m->slr, 0, sizeof(m->slr));
+    m->start = true; // "satisfied automatically at power-on time"
+    m->seg1 = m->seg2 = 0;
+    m->vidlatch = 0;
+    m->vtir_enabled = m->sfmsk = m->hdmsk = false;
+    m->vbl_active = false;
+    m->status_toggle = 0;
+    m->vertical = false;
+    m->last_retrace_frame = 0;
+    m->serial_ctr = 0;
+    m->wwp_on = m->parity_detect = false;
+    m->bad_par_gran = 0xFFFFFFFFu; // no bad-parity location
+    m->mealtch = 0;
+}
+
 void lisa_mmu_delete(lisa_mmu_t *m) {
     if (!m)
         return;

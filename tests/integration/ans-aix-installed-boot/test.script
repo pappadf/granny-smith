@@ -34,7 +34,6 @@ include "../lib/ans.script"
 let aix_disk = "../../data/systems/aix_4_1_5_lp240s_234mb.img"
 
 def installed_boot() {
-    machine.board.clear_nvram()
     machine.boot model="ans500" ram=524288 rom="${$ROM}"
     machine.board.keyswitch = "normal"
     assert machine.board.keyswitch == "normal" "the front keyswitch did not take the Normal position"

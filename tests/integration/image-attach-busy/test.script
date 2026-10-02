@@ -27,14 +27,17 @@ assert !files.list("${$fd}/partition1") "a writable floppy is still served by th
 machine.scsi.attach_hd "${$raw}" 3
 assert !files.list("${$raw}/partition1") "a disk attached before its first mount is served by the VFS"
 
-# machine.restart hands the media to the new machine and re-attaches them.
+# machine.rebuild hands the media to the new machine and re-attaches them.
 # The re-attach notified with the opened image's path -- for the .dmg, its
-# decoded scratch copy -- so a .dmg mount made after the restart was served.
+# decoded scratch copy -- so a .dmg mount made after the rebuild was served.
 # Unmount first so no mount carries state across.
 let n = files.mounts.find("${$dmg}")
 files.mounts[$n].unmount
+machine.rebuild
+assert !files.list("${$dmg}/partition1") "a re-attached .dmg is served by the VFS after machine.rebuild"
+# machine.restart tears nothing down, so the disk never stops being held.
 machine.restart
-assert !files.list("${$dmg}/partition1") "a re-attached .dmg is served by the VFS after machine.restart"
+assert !files.list("${$dmg}/partition1") "a .dmg is served by the VFS after machine.restart"
 
 # A read-only insert leaves nothing the VFS cannot see: still served.
 machine.floppy.drive[1].insert "${$ro}"

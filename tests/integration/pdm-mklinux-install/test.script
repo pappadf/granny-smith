@@ -317,9 +317,9 @@ def untick(steps) {
 # --- phase 3: point lilo.conf at the installed root --------------------------
 
 def phase3_lilo() {
-    # The power cycle DR3 asked for and could not have.  machine.restart keeps
-    # the media attached as the same open handles, so every write above
-    # survives it by construction.
+    # The power cycle DR3 asked for and could not have.  machine.restart tears
+    # nothing down, so the media stay attached as the same open handles and
+    # every write above survives it by construction.
     machine.restart
     scheduler.run 360000000
     scheduler.run 900000000

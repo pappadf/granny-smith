@@ -112,4 +112,10 @@ uint8_t rtc_pram_read(const rtc_t *rtc, uint8_t addr);
 // Returns true on success, false if the byte was rejected (read-only).
 bool rtc_pram_write(rtc_t *rtc, uint8_t addr, uint8_t value);
 
+// Put the 256 parameter-RAM bytes back to the content rtc_init gave them:
+// zeroed, then the family's pram_defaults_t.  A hardware reset of the store
+// (the Network Server's fail-safe button), so the write-protect bit does
+// not gate it; the clock counter is not touched.
+void rtc_pram_reset(rtc_t *rtc);
+
 #endif // RTC_H

@@ -145,8 +145,9 @@ check("expected_installed.png")
 # not the ProFile — pressing power-off here would be a no-op (the floppy-booted
 # installer ignores the COPS $FB switch).  To leave the ProFile cleanly unmounted
 # we must run the OS FROM it: eject the boot floppy and power-cycle with
-# machine.restart — the just-installed ProFile (delta and all) stays attached
-# across the teardown, no save-and-reattach choreography — then seed the
+# machine.restart — the just-installed ProFile (delta and all) stays attached,
+# since a power cycle tears nothing down, no save-and-reattach choreography —
+# then seed the
 # parameter memory so the ROM auto-boots the ProFile with no floppy — exactly
 # suite-lisa's lisa-los31-profile row.
 #

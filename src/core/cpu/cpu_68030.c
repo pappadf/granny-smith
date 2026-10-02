@@ -546,6 +546,9 @@ void cpu_reset_to_vector_68030(cpu_t *restrict cpu) {
     // reset operation can restart a halted processor" -- and it is what lets
     // the 68000 simply STAY halted rather than resuming on its own.
     cpu->halted = 0;
+    // A reset also ends a STOP: the core resumes only on an interrupt, and the
+    // mask is 7 from here on, so a CPU left stopped would sleep forever.
+    cpu->stopped = 0;
     cpu->ipl = 0;
     cpu->last_bus_error_pc = 0;
     g_bus_error_pending = false;

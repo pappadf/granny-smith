@@ -1,13 +1,18 @@
-# machine.restart — power-cycle the running machine.
+# machine.restart — power-cycle the running machine — and machine.rebuild —
+# construct the recorded machine again.
 #
 # The contract under test:
-#   * restart takes no arguments and rebuilds the machine the built-from
-#     record describes — model, RAM, card — without restamping `created`;
-#   * the mounted media stay attached across the teardown, as the SAME open
+#   * restart (level 3) tears nothing down: the media, the PRAM and the RTC are
+#     the same devices before and after, the record is untouched, and the
+#     guest cold-boots to the Finder again off the same disk;
+#   * rebuild (level 4) takes no arguments and constructs the machine the
+#     built-from record describes — model, RAM, card — without restamping
+#     `created`;
+#   * across a rebuild the mounted media stay attached as the SAME open
 #     storage instances (the handle is transferred, never reopened): the
 #     instance stem (image.path) is identical before and after, which is
 #     the write-durability guarantee — the delta with every guest write
-#     survives the power-cycle by construction;
+#     survives the teardown by construction;
 #   * the transferred handles actually serve I/O: the guest boots to the
 #     Finder again off the same disk.
 
@@ -33,8 +38,31 @@ let hd_stem0 = machine.scsi.device[0].image.path
 let hd_file0 = machine.scsi.device[0].image.filename
 let fd_file0 = machine.floppy.drive[0].disk.filename
 
-# --- Power-cycle. -----------------------------------------------------------
+# --- Power-cycle (level 3): nothing is torn down. ---------------------------
+# PRAM is the same chip, so a byte the guest wrote is still there; the RTC is
+# the same counter, so it carries on from where it was rather than restarting
+# at the wall clock; RAM is cold.  The probe address is above the ROM overlay,
+# which maps the ROM over low memory until the ROM drops it.
+let pram0 = machine.rtc.pram.peek(0x10)
+let rtc0 = machine.rtc.time
+machine.memory.poke.b(0x500000, 0xA5)
 machine.restart
+assert machine.config.created == $created0 "restart: created stamp untouched"
+assert machine.scsi.device[0].image.path == $hd_stem0 "restart: HD is the same open instance"
+assert machine.floppy.drive[0].disk.filename == $fd_file0 "restart: floppy still inserted"
+assert machine.rtc.pram.peek(0x10) == $pram0 "restart: PRAM survives a power cycle"
+assert machine.rtc.time >= $rtc0 "restart: the clock keeps ticking (no reseed)"
+assert machine.rtc.time < $rtc0 + 5 "restart: the clock keeps ticking (no reseed)"
+assert machine.memory.peek.b(0x500000) == 0 "restart: RAM is cold"
+machine.floppy.drive[0].disk.eject
+scheduler.run 200000000
+assert debug.mac.globals.read("BootDrive") != 0 "post-restart boot: nothing booted"
+assert debug.mac.globals.read("SysMap") != 0 "post-restart boot: no System file opened"
+machine.floppy.drive[0].insert "${$WORK_DIR}/scratch.fd" true
+assert machine.floppy.drive[0].disk.present "floppy re-inserted"
+
+# --- Rebuild (level 4). -----------------------------------------------------
+machine.rebuild
 
 # Same machine, per the record; the birth certificate is not restamped.
 assert machine.created "machine came back"
@@ -54,14 +82,15 @@ assert machine.floppy.drive[0].disk.present "floppy still inserted"
 assert machine.floppy.drive[0].disk.filename == $fd_file0 "floppy is the same medium"
 
 # The transferred HD handle serves I/O: boot to the Finder again.  (Eject
-# the unformatted scratch floppy first so the ROM's boot scan skips it.)
+# the unformatted scratch floppy first so the ROM's boot scan skips it.)  A
+# rebuild is a new RTC, so the clock is pinned again on the line after it.
 machine.floppy.drive[0].disk.eject
 machine.rtc.time = 3000000000
 scheduler.run 200000000
-assert debug.mac.globals.read("BootDrive") != 0 "post-restart boot: nothing booted"
-assert debug.mac.globals.read("SysMap") != 0 "post-restart boot: no System file opened"
+assert debug.mac.globals.read("BootDrive") != 0 "post-rebuild boot: nothing booted"
+assert debug.mac.globals.read("SysMap") != 0 "post-rebuild boot: no System file opened"
 
-# --- Checkpoint interaction: machine.restart after checkpoint.load
+# --- Checkpoint interaction: machine.rebuild after checkpoint.load
 # rebuilds the restored configuration cold, media included.  (A bare
 # machine.boot after a restore is an error under the non-inheriting boot —
 # boot-config pins that half.)
@@ -71,13 +100,13 @@ assert try(machine.scsi.device[0].type, none) == none "fresh boot must start wit
 assert checkpoint.load("${$WORK_DIR}/restart.checkpoint") "checkpoint load"
 # (The shell's machine.scsi binding goes stale across checkpoint.load — a
 # pre-existing object-model quirk, so the restored device is not probed
-# here.  machine.restart rebuilds the machine AND the binding; the asserts
-# below prove the restored medium rode through both the load and the
-# power-cycle.)
-machine.restart
-assert machine.id == "iicx" "restart after restore: same model"
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "restart after restore: recorded card"
-assert machine.scsi.device[0].image.present "restart after restore: HD still attached"
-assert machine.scsi.device[0].image.filename == $hd_file0 "restart after restore: same medium"
+# here.  machine.rebuild constructs the machine AND the binding again; the
+# asserts below prove the restored medium rode through both the load and the
+# rebuild.)
+machine.rebuild
+assert machine.id == "iicx" "rebuild after restore: same model"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "rebuild after restore: recorded card"
+assert machine.scsi.device[0].image.present "rebuild after restore: HD still attached"
+assert machine.scsi.device[0].image.filename == $hd_file0 "rebuild after restore: same medium"
 
 quit

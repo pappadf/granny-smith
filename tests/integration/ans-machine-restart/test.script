@@ -1,4 +1,4 @@
-# machine.restart on a machine with two SCSI buses.
+# machine.rebuild on a machine with two SCSI buses.
 #
 # What the row is for: the standard media transfer walks the floppies and
 # `cfg->scsi`.  A Network Server's rear bays are on `machine.scsi2`, and
@@ -20,21 +20,21 @@ def restarts(model, ram_kb) {
     assert machine.scsi.device[0].type == "hd" "${$model}: channel 0 bay 0 not mounted"
     assert machine.scsi2.device[4].type == "hd" "${$model}: channel 1 bay 4 not mounted"
 
-    # Everything that must survive the power-cycle.
+    # Everything that must survive the rebuild.
     let created0 = machine.config.created
     let ch0_stem = machine.scsi.device[0].image.path
     let ch0_file = machine.scsi.device[0].image.filename
     let ch1_stem = machine.scsi2.device[4].image.path
     let ch1_file = machine.scsi2.device[4].image.filename
 
-    machine.restart
+    machine.rebuild
 
     assert machine.created "${$model}: the machine came back"
     assert machine.id == "${$model}" "${$model}: same model"
     assert machine.ram == $ram_kb "${$model}: same RAM"
     assert machine.config.created == $created0 "${$model}: created stamp preserved"
     # Both builtins are back on Bandit 1 — the rebuild is a rebuild, not a
-    # bare reset.
+    # bare reset (that is machine.restart, which tears nothing down).
     assert machine.pci.slot[8].card.name == "53C825A #0" "${$model}: fast/wide channel 0 not rebuilt"
     assert machine.pci.slot[9].card.name == "53C825A #1" "${$model}: fast/wide channel 1 not rebuilt"
 
@@ -52,9 +52,26 @@ def restarts(model, ram_kb) {
     assert try(machine.scsi.device[4].type, none) == none "${$model}: channel 1's drive landed on channel 0"
     assert try(machine.scsi2.device[0].type, none) == none "${$model}: channel 0's drive landed on channel 1"
 
-    echo "ans-machine-restart ${$model}: both fast/wide channels kept their media across the power-cycle"
+    echo "ans-machine-restart ${$model}: both fast/wide channels kept their media across the rebuild"
+}
+
+# The fail-safe red button (Network Server Hardware Developer Notes §2.7):
+# "resets parameter RAM but not NVRAM".  A machine reset, so the machine is
+# not rebuilt either -- the media stay the same open instances.
+def red_button(model, ram_kb) {
+    machine.boot model="${$model}" ram=$ram_kb rom="${$ROM}"
+    let pram_default = machine.rtc.pram.peek(0x20)
+    machine.rtc.pram.poke 0x20 0x5A:1
+    machine.nvram.poke 0x1F00 0xA5:1
+    assert machine.rtc.pram.peek(0x20) == 0x5A "${$model}: PRAM poke did not land"
+    machine.board.reset_button()
+    assert machine.rtc.pram.peek(0x20) == $pram_default "${$model}: the red button did not reset parameter RAM"
+    assert machine.nvram.peek(0x1F00) == 0xA5 "${$model}: the red button cleared NVRAM"
+    assert machine.cpu.pc == 0xFFF00100 "${$model}: the red button did not reset the CPU"
+    echo "ans-machine-restart ${$model}: the red button reset PRAM and kept NVRAM"
 }
 
 restarts("ans500", 32768)
 restarts("ans700", 49152)
+red_button("ans500", 32768)
 quit

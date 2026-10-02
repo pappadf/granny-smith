@@ -172,7 +172,6 @@ def nt_screen(golden, ceiling) {
 # and 63 MB, so the 32 MB default cannot work.  Leaves the machine at `0 >`
 # on ttya and returns what the firmware printed.
 def nt_power_on(rom) {
-    let cleared = try(machine.board.clear_nvram(), none)
     machine.boot model="ans500" ram=65536 rom="${$rom}"
     let fw = ""
     let spins = 0

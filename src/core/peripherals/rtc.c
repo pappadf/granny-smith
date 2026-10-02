@@ -449,6 +449,15 @@ void pram_defaults_apply(uint8_t pram[256], const pram_defaults_t *d) {
     pram[PRAM_STARTMGR_WAIT] |= PRAM_STARTMGR_NO_WAIT;
 }
 
+// The parameter RAM as rtc_init left it -- see rtc.h.
+void rtc_pram_reset(rtc_t *rtc) {
+    if (!rtc)
+        return;
+    memset(rtc->pram, 0, sizeof(rtc->pram)); // the store's construction state...
+    pram_defaults_apply(rtc->pram, rtc->defaults); // ...plus the family's valid defaults
+    LOG(1, "PRAM reset to its defaults");
+}
+
 rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, bool extended,
                 const pram_defaults_t *defaults) {
     rtc_t *rtc = (rtc_t *)malloc(sizeof(rtc_t));

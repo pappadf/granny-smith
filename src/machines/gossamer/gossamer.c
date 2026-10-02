@@ -38,7 +38,6 @@
 #include "log.h"
 #include "mac_host_io.h"
 #include "machine_checkpoint.h"
-#include "machine_config.h" // machine_boot_is_restart (the NVRAM carry rule)
 #include "machine_teardown.h"
 #include "pci.h"
 #include "ppc.h"
@@ -287,17 +286,16 @@ static void gos_swim3_init(config_t *cfg) {
 // ============================================================
 
 // The NVRAM is non-volatile: its content survives machine.restart (the
-// power switch) through this process-lifetime carry, and stops at
-// machine.boot (a new machine) — the TNT rule and its reasons (tnt.c).
-static uint8_t gos_nvram_carry[GOS_NVRAM_SIZE];
-static bool gos_nvram_carry_valid;
+// power switch) because a restart never destroys the machine, and a new
+// machine (machine.boot, machine.rebuild) starts from a virgin store --
+// the TNT rule and its reasons (tnt.c).  Nothing carries it across a
+// teardown.
 
+// Blank the store: what pulling the battery does.
 void gos_nvram_clear(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (st)
         memset(st->hr.nvram, 0, GOS_NVRAM_SIZE);
-    memset(gos_nvram_carry, 0, GOS_NVRAM_SIZE);
-    gos_nvram_carry_valid = false;
     LOG(1, "NVRAM cleared (battery removed)");
 }
 
@@ -308,8 +306,6 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
         return -1;
     }
     cfg->machine_context = st;
-    if (!cp && gos_nvram_carry_valid)
-        memcpy(st->hr.nvram, gos_nvram_carry, GOS_NVRAM_SIZE);
     const gossamer_board_desc_t *board = gos_board(cfg);
 
     // Core: memory map, the 750 with the board's PVR and PLL straps, the
@@ -482,12 +478,6 @@ static void gossamer_teardown(config_t *cfg) {
         scheduler_stop(cfg->scheduler);
     gossamer_state_t *st = gos_st(cfg);
     if (st) {
-        if (machine_boot_is_restart()) {
-            memcpy(gos_nvram_carry, st->hr.nvram, GOS_NVRAM_SIZE);
-            gos_nvram_carry_valid = true;
-        } else {
-            gos_nvram_carry_valid = false;
-        }
         gos_bmac_detach_objects(cfg);
         gos_ata_detach_objects(cfg);
         gos_heathrow_detach_objects(cfg);

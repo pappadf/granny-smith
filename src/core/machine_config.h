@@ -160,17 +160,18 @@ void machine_config_note_rom(const char *path, const char *rom_id);
 void machine_config_object_init(struct object *machine_obj);
 
 // Apply one boot document: validate → tear down → construct → record
-// (defined in machines/machine.c; shared by machine.boot, machine.restart
+// (defined in machines/machine.c; shared by machine.boot, machine.rebuild
 // and headless startup).  Returns V_NONE on success; V_ERROR — with the
 // old machine still running — on rejection.
 value_t machine_boot_apply(const boot_config_t *doc);
 
 // True while machine_boot_apply is rebuilding the SAME machine for
-// machine.restart (a power-cycle), false while it is building a NEW machine
-// for machine.boot.  Non-volatile hardware that outlives the power switch —
-// the mounted media, the Caps Lock latch, the TNT's soldered NVRAM part —
-// is carried across a restart only; a machine.boot inherits nothing.
-bool machine_boot_is_restart(void);
+// machine.rebuild(), false while it is building a NEW machine for
+// machine.boot.  A rebuild carries exactly the explicit, named transfers
+// declared at its call site -- the mounted media, the Caps Lock latch and the
+// host-side LaserWriter -- and no device state: a non-volatile store does not
+// cross a teardown (machine.restart, which keeps it, tears nothing down).
+bool machine_boot_is_rebuild(void);
 
 #ifdef __cplusplus
 }

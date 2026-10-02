@@ -89,21 +89,15 @@ describe('one post-boot reconciliation, every path', () => {
     expect(bridge.paths().some((p) => p.includes('pram.poke') || p === 'shell.run')).toBe(false);
   });
 
-  it('a restart names the kept hard disk again', async () => {
+  // machine.restart power-cycles the SAME machine: its PRAM still names the
+  // startup disk and nothing about the machine changed, so the page writes
+  // nothing and reconciles nothing -- it only runs it.
+  it('a restart re-asserts nothing, then runs', async () => {
     se30();
     images.mounted['/opfs/images/hd/a.img'] = { kind: 'hd', bus: 'scsi', drive: 2 };
-    bridge.reply('machine.rtc.pram.boot_device', null);
     await restartEmulator();
-    const set = bridge.calls.find((c) => c.path === 'machine.rtc.pram.boot_device');
-    expect(set?.args).toEqual([2]);
+    expect(bridge.paths()).toEqual(['machine.restart', 'scheduler.run']);
     delete images.mounted['/opfs/images/hd/a.img'];
-  });
-
-  it('a restart reconciles, then runs', async () => {
-    se30();
-    await restartEmulator();
-    expect(bridge.paths()).toContain(RECONCILE_MARK);
-    expect(bridge.paths().at(-1)).toBe('scheduler.run');
   });
 
   it('a restore shows the pacing the checkpoint brought, and does not override it', async () => {
@@ -151,9 +145,9 @@ describe('every machine-making call site reconciles', () => {
     }
     return out;
   }
-  const makers = /gsEval\(\s*'(machine\.boot|machine\.restart|checkpoint\.load)'/;
+  const makers = /gsEval\(\s*'(machine\.boot|machine\.rebuild|checkpoint\.load)'/;
 
-  it('each file that boots, restarts or loads a checkpoint calls reconcileUiWithMachine', () => {
+  it('each file that boots, rebuilds or loads a checkpoint calls reconcileUiWithMachine', () => {
     const offenders = walk(srcDir)
       .filter((f) => makers.test(readFileSync(f, 'utf8')))
       .filter((f) => !/reconcileUiWithMachine\(/.test(readFileSync(f, 'utf8')));

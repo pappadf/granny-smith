@@ -32,6 +32,8 @@
 #include "log.h"
 #include "object.h"
 #include "ppc.h"
+#include "rtc.h"
+#include "system.h"
 #include "value.h"
 
 #include <stdio.h>
@@ -415,7 +417,24 @@ static DEF_GETTER(board_attr_doorbell) {
         }                                                                                                              \
     }
 
-// `machine.board.clear_nvram()` — pull the battery.
+// `machine.board.reset_button()` — the fail-safe red button on the logic
+// board.  Apple, Network Server Hardware Developer Notes, §2.7: "Parameter
+// RAM is a separate part of a Power Monitor IC, and this is where date, time,
+// and boot beep volume are stored.  The fail-safe red button on the logic
+// board resets parameter RAM but not NVRAM".  So: the Power Monitor's
+// parameter RAM back to its defaults, then a machine reset (level 2), with
+// the 8 KB NVRAM -- and everything else machine.reset keeps -- untouched.
+static DEF_METHOD(board_method_reset_button) {
+    config_t *cfg = (config_t *)object_data(self);
+    if (!cfg)
+        return val_err("reset_button: no machine");
+    rtc_pram_reset(cfg->rtc);
+    system_machine_reset();
+    return val_bool(true);
+}
+
+// `machine.board.clear_nvram()` — pull the battery.  Deprecated: the same
+// call as `machine.nvram.clear()`, which every TNT board has.
 static DEF_METHOD(board_method_clear_nvram) {
     config_t *cfg = (config_t *)object_data(self);
     if (!cfg)
@@ -431,19 +450,19 @@ static const member_t tnt_board_members[] = {
      .attr = {.type = V_ENUM,
               .enum_values = keyswitch_names,
               .get = board_attr_keyswitch,
-              .set = board_attr_keyswitch_set}                                             },
+              .set = board_attr_keyswitch_set}                                              },
     {.kind = M_ATTR,
      .name = "rear_key_locked",
      .doc = "Rear keyswitch locked — a power-on precondition, not software-visible",
-     .attr = {.type = V_BOOL, .get = board_attr_rear_key, .set = board_attr_rear_key_set}  },
+     .attr = {.type = V_BOOL, .get = board_attr_rear_key, .set = board_attr_rear_key_set}   },
     {.kind = M_ATTR,
      .name = "register1",
      .doc = "Board Register 1 ($F301A000) as software reads it",
-     .attr = {.type = V_UINT, .get = board_attr_breg1, .set = NULL}                        },
+     .attr = {.type = V_UINT, .get = board_attr_breg1, .set = NULL}                         },
     {.kind = M_ATTR,
      .name = "register2",
      .doc = "Board Register 2 ($F301E000) — the environmental halfword, active low",
-     .attr = {.type = V_UINT, .get = board_attr_breg2, .set = NULL}                        },
+     .attr = {.type = V_UINT, .get = board_attr_breg2, .set = NULL}                         },
     BOARD_ENV_MEMBER("fan_fail_drive", env_fan_drive, "Inject FanFailDrive (POST: 'Drive Fan Failed!')"),
     BOARD_ENV_MEMBER("fan_fail_processor", env_fan_proc, "Inject FanFailProcessor (POST: 'Processor Fan Failed')"),
     BOARD_ENV_MEMBER("temp_fail", env_temp_fail, "Inject TempFailProcessor (POST: 'Temperature Too Hot!')"),
@@ -455,27 +474,31 @@ static const member_t tnt_board_members[] = {
     {.kind = M_ATTR,
      .name = "two_supplies",
      .doc = "TwoSuppliesH — redundant power supplies fitted (the 700)",
-     .attr = {.type = V_BOOL, .get = board_attr_two_supplies, .set = NULL}                 },
+     .attr = {.type = V_BOOL, .get = board_attr_two_supplies, .set = NULL}                  },
     {.kind = M_ATTR,
      .name = "parity",
      .doc = "Parity DRAM fitted (selects 60 ns rather than 70 ns timing)",
-     .attr = {.type = V_BOOL, .get = board_attr_parity, .set = NULL}                       },
+     .attr = {.type = V_BOOL, .get = board_attr_parity, .set = NULL}                        },
     {.kind = M_ATTR,
      .name = "l2_kb",
      .doc = "L2 cache DIMM size in KB (0 = no cache DIMM)",
-     .attr = {.type = V_UINT, .get = board_attr_l2_kb, .set = NULL}                        },
+     .attr = {.type = V_UINT, .get = board_attr_l2_kb, .set = NULL}                         },
     {.kind = M_ATTR,
      .name = "bus_hz",
      .doc = "Processor bus clock, sourced from the CPU card",
-     .attr = {.type = V_UINT, .get = board_attr_bus_hz, .set = NULL}                       },
+     .attr = {.type = V_UINT, .get = board_attr_bus_hz, .set = NULL}                        },
     {.kind = M_METHOD,
      .name = "clear_nvram",
-     .doc = "Reset the non-volatile store to defaults — what removing the board battery does",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = board_method_clear_nvram}},
+     .doc = "Deprecated alias of machine.nvram.clear(): blank the store — what removing the board battery does",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = board_method_clear_nvram} },
+    {.kind = M_METHOD,
+     .name = "reset_button",
+     .doc = "Press the fail-safe red button: parameter RAM back to its defaults, then a machine reset; NVRAM is kept",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = board_method_reset_button}},
     {.kind = M_ATTR,
      .name = "doorbell",
      .doc = "Accesses to the Ethernet PROM space — the SecToPri_Int doorbell",
-     .attr = {.type = V_UINT, .get = board_attr_doorbell, .set = NULL}                     },
+     .attr = {.type = V_UINT, .get = board_attr_doorbell, .set = NULL}                      },
 };
 
 static const class_desc_t tnt_board_class = {

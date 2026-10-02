@@ -1288,9 +1288,21 @@ static const struct floppy_slot lisa_floppy_slots[] = {
 // device (lisa_profile.c), advertised via `.hd_bus = HD_BUS_PROFILE`, and its
 // bay is derived from that (profile_hd_bays -> "profile").
 
+// A power cycle's power-on-only half (machine_profile.h): the MMU's START
+// latch comes back set, which is how the 68000's vector fetch reaches the boot
+// ROM, and the descriptor RAM loses its contents -- without that the ROM's
+// warm-start check (segment 126 still reading $x901) would take the reset path
+// into the ROM monitor instead of a cold start.  A reset touches neither.
+static void lisa_power_on(config_t *cfg) {
+    lisa_state_t *ls = lisa_state(cfg);
+    if (ls)
+        lisa_mmu_power_on(ls->mmu);
+}
+
 // Apple Lisa 2 hardware profile.
 static const machine_substrate_t lisa_substrate = {
     .init = lisa_init,
+    .power_on = lisa_power_on,
     .teardown = lisa_teardown,
     .checkpoint_save = lisa_checkpoint_save,
     .trigger_vbl = lisa_trigger_vbl,

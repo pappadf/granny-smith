@@ -314,8 +314,8 @@ def row_tnt_voodoo2_display() {
 # Firmware formats the store and Mac OS writes the record, pins the depth
 # byte through `machine.nvram` — the lever the 68k rows have in
 # `machine.rtc.pram.poke` — and power-cycles.  The store follows the power
-# switch (machine.restart carries it; machine.boot would hand the new
-# machine a blank one), so the second boot is exactly the one a real owner
+# switch (machine.restart never tears the machine down, so the part is simply
+# untouched; machine.boot would hand a new machine a blank one), so the second boot is exactly the one a real owner
 # gets after choosing 256 Colours and restarting: POST takes the warm-log
 # path, Open Firmware assigns Control's BARs, the ndrv programs the 8 bpp
 # mode, and System 7.6 draws its desktop through the CLUT.

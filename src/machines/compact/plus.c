@@ -54,6 +54,10 @@ typedef struct plus_state {
     // each time VIA1 PA6 toggles; fb_dirty is set on every change so
     // the renderer re-uploads.
     display_t display;
+    // VIA1 PA4 (vOverlay) as the address decoder sees it: true while the ROM
+    // answers at $000000 (Guide 2e, ch. 3).  The line is pulled up, so it is
+    // high whenever PA4 is not driven -- at power-on and after /RESET.
+    bool rom_overlay;
 } plus_state_t;
 
 // Helper: return the Plus-specific state from a config handle
@@ -131,6 +135,36 @@ static display_t *plus_display(config_t *cfg) {
 // Memory layout
 // ============================================================
 
+// Point one page's READ side at `host_ptr`; the write side is left alone, so
+// with the overlay on a write to low memory still lands in RAM (the decoder
+// steers reads only, as on the II-family GLUE).
+static void plus_map_read_page(uint32_t p, uint8_t *host_ptr) {
+    if (p >= g_page_count)
+        return;
+    uintptr_t adjusted = (uintptr_t)host_ptr - ((uintptr_t)p << PAGE_SHIFT);
+    g_page_table[p].host_base = host_ptr;
+    if (g_supervisor_read)
+        g_supervisor_read[p] = adjusted;
+    if (g_user_read)
+        g_user_read[p] = adjusted;
+}
+
+// Drive the ROM overlay: on maps the ROM image over the bottom of the address
+// space for reads, off puts RAM back.  The ROM drops it a few instructions
+// after the reset vector (CLR of PA4 at $4000D2 in the v3 ROM), before it
+// touches RAM; until then its reset vectors at $0/$4 are the ROM's own.
+static void plus_set_rom_overlay(config_t *cfg, bool on) {
+    plus_state_t *ps = plus_state(cfg);
+    if (ps->rom_overlay == on)
+        return;
+    ps->rom_overlay = on;
+    uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+    uint32_t rom_pages = cfg->machine->rom_size >> PAGE_SHIFT;
+    for (uint32_t p = 0; p < rom_pages; p++)
+        plus_map_read_page(p, on ? ram + cfg->ram_size + (p << PAGE_SHIFT) : ram + (p << PAGE_SHIFT));
+    LOG(1, "ROM overlay %s", on ? "on: ROM at $000000" : "off: RAM at $000000");
+}
+
 // Memory read placeholder for the Plus Phase Read area
 static uint8_t plus_phase_read_uint8(void *dev, uint32_t addr) {
     (void)dev;
@@ -197,6 +231,10 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // Populate Plus-specific memory layout (RAM/ROM page table + Phase Read)
     plus_memory_layout_init(cfg);
+    // Power-on: nothing drives PA4 yet, so the pull-up holds the overlay on.
+    // A restore re-derives it from the VIA instead (via_redrive_outputs).
+    if (!checkpoint)
+        plus_set_rom_overlay(cfg, true);
 
     // The profile is the source of truth for the CPU model, as it is for the
     // clock below and as mac030_build_core states for the II families.  Both
@@ -471,6 +509,15 @@ static void plus_via_output(void *context, uint8_t port, uint8_t output) {
     sound_t *snd = ps ? ps->sound : NULL;
 
     if (port == 0) {
+        // PA4 is vOverlay.  `output` is `ORA & DDRA`, so an undriven pin reads
+        // 0 here -- but the line is pulled up, so undriven means overlay ON.
+        // sim->via1 is still NULL while via_init re-drives during a restore;
+        // via_redrive_outputs runs again once it is set.
+        if (ps && sim->via1) {
+            bool driven = (via_port_direction(sim->via1, 0) & 0x10) != 0;
+            plus_set_rom_overlay(sim, !driven || (output & 0x10) != 0);
+        }
+
         floppy_set_sel_signal(sim->floppy, (output & 0x20) != 0);
 
         plus_use_video_buffer(sim, (output >> 6) & 1);
@@ -485,6 +532,16 @@ static void plus_via_output(void *context, uint8_t port, uint8_t output) {
         if (snd)
             sound_enable(snd, (output & 0x80) == 0);
     }
+}
+
+// The Plus board's /RESET net: "MC68000, VIA, SWIM, SCC, SCSI, BBU" (Guide
+// 2e, Table 14-2; the Plus has the IWM where that list says SWIM).  The
+// common set covers the VIA, SCC, IWM and the 5380.  The VIA comes back with
+// every pin an input, so PA4 floats high and the ROM overlay is on again --
+// which is what lets machine.reset fetch the reset vectors from $0/$4.
+static void plus_bus_reset(config_t *cfg) {
+    system_reset_common_devices(cfg);
+    plus_set_rom_overlay(cfg, true);
 }
 
 // Plus-specific VIA shift-out callback: routes keyboard data to keyboard device
@@ -545,6 +602,7 @@ static const scsi_bus_decl_t plus_scsi_buses[] = {
 // Macintosh Plus hardware profile descriptor
 static const machine_substrate_t plus_substrate = {
     .init = plus_init,
+    .bus_reset = plus_bus_reset,
     .teardown = plus_teardown,
     .checkpoint_save = plus_checkpoint_save,
     .trigger_vbl = plus_trigger_vbl,

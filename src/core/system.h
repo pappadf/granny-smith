@@ -152,6 +152,12 @@ void system_keyboard_update(key_event_t event, int key);
 // unit suite that links a device without system.c must still resolve it.
 __attribute__((weak)) void system_machine_reset(void);
 
+// Level 3 -- a power cycle: the machine stays standing, RAM goes cold, and
+// everything else is a level-2 reset.  No device is freed or rebuilt, so the
+// non-volatile stores, the RTC counter, mounted media and latched switches
+// survive for the hardware's own reason: nothing destroyed them.
+void system_machine_power_cycle(void);
+
 // Retained under its old name for callers that mean level 2; an alias for
 // system_machine_reset above.
 __attribute__((weak)) void system_hardware_reset(void);
