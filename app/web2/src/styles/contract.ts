@@ -15,15 +15,7 @@
 // private `--gs-ref-*` palette.
 
 export type TokenKind =
-  | 'color'
-  | 'length'
-  | 'number'
-  | 'font'
-  | 'shadow'
-  | 'duration'
-  | 'easing'
-  | 'keyword'
-  | 'url';
+  'color' | 'length' | 'number' | 'font' | 'shadow' | 'duration' | 'easing' | 'keyword' | 'url';
 
 export type TokenLayer = 'semantic' | 'scale' | 'component';
 

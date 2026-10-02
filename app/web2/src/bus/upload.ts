@@ -89,7 +89,7 @@ export async function streamToOpfs(
         if (done) break;
         seen += value?.length ?? 0;
         onProgress?.(seen);
-        for (let at = 0; value && at < value.length; ) {
+        for (let at = 0; value && at < value.length;) {
           const n = Math.min(size - fill, value.length - at);
           pending.set(value.subarray(at, at + n), fill);
           fill += n;
@@ -483,8 +483,7 @@ async function persist(
   originalName: string,
   descriptor: MediaTypeDescriptor,
   info:
-    | { persistDir?: string; checksum?: string; cardId?: string; [k: string]: unknown }
-    | undefined,
+    { persistDir?: string; checksum?: string; cardId?: string; [k: string]: unknown } | undefined,
 ): Promise<string | null> {
   const finalName = descriptor.nameFn ? descriptor.nameFn(originalName, info) : originalName;
   const targetDir = info?.persistDir ?? descriptor.persistDir;

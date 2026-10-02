@@ -130,9 +130,7 @@ let mailbox: Mailbox | null = null;
 // media never ran, the New Machine dialog stayed on "Scanning ROMs…", and a
 // worker that never started produced no message at all.
 export type BootState =
-  | { phase: 'starting' }
-  | { phase: 'ready' }
-  | { phase: 'failed'; reason: string };
+  { phase: 'starting' } | { phase: 'ready' } | { phase: 'failed'; reason: string };
 let bootState: BootState = { phase: 'starting' };
 let resolveReady: (() => void) | null = null;
 let rejectReady: ((e: Error) => void) | null = null;
