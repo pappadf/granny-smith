@@ -129,6 +129,63 @@ TEST(crc32_zeros_matches_the_table) {
     }
 }
 
+// Round-trip `n` bytes at `level`; the first block's type (BTYPE).
+static int round_trip_btype(const uint8_t *in, size_t n, int level) {
+    size_t cap = deflate_bound(n);
+    uint8_t *z = malloc(cap), *out = malloc(n + 1);
+    ASSERT_TRUE(z != NULL && out != NULL);
+    long zn = deflate_zlib(NULL, in, n, z, cap, level);
+    ASSERT_TRUE(zn > 2);
+    ASSERT_EQ_INT((int)n, (int)inflate_zlib(z, (size_t)zn, out, n + 1));
+    ASSERT_TRUE(memcmp(in, out, n) == 0);
+    int btype = (z[2] >> 1) & 3;
+    free(z);
+    free(out);
+    return btype;
+}
+
+// Literal counts in Fibonacci proportion give an unlimited Huffman code
+// deeper than deflate's 15 bits: the lengths must be limited and the code
+// still complete.
+TEST(deflate_dynamic_codes_are_length_limited) {
+    static uint8_t buf[320000];
+    uint64_t cnt[26] = {1, 1}, total = 0;
+    for (int i = 2; i < 26; i++)
+        cnt[i] = cnt[i - 1] + cnt[i - 2];
+    for (int i = 0; i < 26; i++)
+        total += cnt[i];
+    size_t n = 0;
+    g_rng = 1;
+    while (n < sizeof(buf) && total) {
+        uint64_t r = rnd() % total;
+        int sym = 0;
+        while (r >= cnt[sym])
+            r -= cnt[sym++];
+        buf[n++] = (uint8_t)(sym * 9 + 1);
+        cnt[sym]--;
+        total--;
+    }
+    ASSERT_EQ_INT(2, round_trip_btype(buf, n, 1));
+    ASSERT_EQ_INT(2, round_trip_btype(buf, n, 9));
+}
+
+// Each block takes its smallest form: dynamic codes for skewed data, the
+// fixed codes for a tiny input, a stored block for noise.
+TEST(deflate_picks_the_smallest_block_form) {
+    static uint8_t buf[200000];
+    memset(buf, 'A', 100000);
+    ASSERT_EQ_INT(2, round_trip_btype(buf, 100000, 1)); // one symbol: still a complete code
+    ASSERT_EQ_INT(1, round_trip_btype((const uint8_t *)"Z", 1, 1));
+    g_rng = 7;
+    for (size_t i = 0; i < sizeof(buf); i++)
+        buf[i] = (uint8_t)rnd();
+    ASSERT_EQ_INT(0, round_trip_btype(buf, sizeof(buf), 1));
+    // Text over several blocks of tokens.
+    for (size_t i = 0; i < sizeof(buf); i++)
+        buf[i] = (uint8_t) "System Folder Finder "[i % 21] + (uint8_t)(i / 50000);
+    ASSERT_EQ_INT(2, round_trip_btype(buf, sizeof(buf), 6));
+}
+
 // ---- writer -> reader --------------------------------------------------------
 
 // Write `len` bytes of `content` to `path` in appends of `step` bytes
@@ -372,9 +429,95 @@ TEST(chunk_bound_applies_to_foreign_images) {
     free(in);
 }
 
+// ---- interop samples ------------------------------------------------------
+
+// With GS_UDIF_INTEROP_DIR set, write a set of images there for other tools
+// to open -- the macOS CI job runs hdiutil on them (.github/workflows/
+// udif-interop.yml) -- each <name>.dmg beside <name>.img, the disk it must
+// decode to (zero-padded to a sector), and a MANIFEST of the names.  Every
+// sample also passes check_image here.  Without the variable it does nothing.
+static void emit_sample(const char *dir, FILE *manifest, const char *name, const uint8_t *in, size_t len,
+                        uint32_t chunk_sectors, int level) {
+    char dmg[512], img[512];
+    snprintf(dmg, sizeof(dmg), "%s/%s.dmg", dir, name);
+    snprintf(img, sizeof(img), "%s/%s.img", dir, name);
+    udif_writer_stats_t st;
+    write_image(dmg, in, len, 1u << 20, chunk_sectors, level, &st);
+    check_image(dmg, in, len, &st);
+    size_t padded = (len + 511) / 512 * 512;
+    FILE *f = fopen(img, "wb");
+    ASSERT_TRUE(f != NULL);
+    ASSERT_TRUE(fwrite(in, 1, len, f) == len);
+    for (size_t i = len; i < padded; i++)
+        ASSERT_TRUE(fputc(0, f) == 0);
+    int rc = fclose(f);
+    ASSERT_EQ_INT(0, rc);
+    fprintf(manifest, "%s\n", name);
+}
+
+// Text-like content only: long runs of literals and matches, so every
+// chunk is dynamic-Huffman coded.
+static uint8_t *make_text(size_t len, uint64_t seed) {
+    static const char *words[] = {"System", "Folder",   "Finder", "the",  "of",   "Macintosh", "disk",
+                                  "file",   "resource", "fork",   "INIT", "cdev", "{",         "}\r"};
+    g_rng = seed | 1;
+    uint8_t *b = malloc(len ? len : 1);
+    ASSERT_TRUE(b != NULL);
+    for (size_t at = 0; at < len;) {
+        const char *w = words[rnd() % (sizeof(words) / sizeof(words[0]))];
+        for (size_t i = 0; w[i] && at < len; i++)
+            b[at++] = (uint8_t)w[i];
+        if (at < len)
+            b[at++] = ' ';
+    }
+    return b;
+}
+
+TEST(writer_emits_interop_samples) {
+    const char *dir = getenv("GS_UDIF_INTEROP_DIR");
+    if (!dir || !*dir)
+        return;
+    mkdir(dir, 0777);
+    char path[512];
+    snprintf(path, sizeof(path), "%s/MANIFEST", dir);
+    FILE *m = fopen(path, "w");
+    ASSERT_TRUE(m != NULL);
+
+    size_t mixed_len = 8u << 20;
+    uint8_t *mixed = make_content(mixed_len, 2024);
+    emit_sample(dir, m, "mixed-l1", mixed, mixed_len, 128, 1);
+    emit_sample(dir, m, "mixed-l9", mixed, mixed_len, 128, 9);
+    emit_sample(dir, m, "mixed-l0", mixed, mixed_len, 128, 0);
+    emit_sample(dir, m, "mixed-4k", mixed, mixed_len, 8, 1);
+    emit_sample(dir, m, "mixed-1m", mixed, mixed_len, 2048, 6);
+    emit_sample(dir, m, "odd-length", mixed, 1000123, 128, 1);
+    free(mixed);
+
+    size_t text_len = 4u << 20;
+    uint8_t *text = make_text(text_len, 7);
+    emit_sample(dir, m, "text-l6", text, text_len, 128, 6);
+    free(text);
+
+    // A blank disk, as files.hd_create makes one, and the zeros it is.
+    snprintf(path, sizeof(path), "%s/blank.dmg", dir);
+    unlink(path);
+    ASSERT_EQ_INT(0, udif_create_empty(path, 64u << 20));
+    snprintf(path, sizeof(path), "%s/blank.img", dir);
+    FILE *f = fopen(path, "wb");
+    ASSERT_TRUE(f != NULL);
+    ASSERT_EQ_INT(0, ftruncate(fileno(f), 64 << 20));
+    int rc = fclose(f);
+    ASSERT_EQ_INT(0, rc);
+    fprintf(m, "blank\n");
+    rc = fclose(m);
+    ASSERT_EQ_INT(0, rc);
+}
+
 int main(void) {
     RUN(deflate_round_trips_at_every_level);
     RUN(deflate_compresses_text_and_reuses_state);
+    RUN(deflate_dynamic_codes_are_length_limited);
+    RUN(deflate_picks_the_smallest_block_form);
     RUN(adler32_known_vector);
     RUN(crc32_zeros_matches_the_table);
     RUN(writer_round_trips_sizes_and_chunks);
@@ -383,6 +526,7 @@ int main(void) {
     RUN(empty_2gib_is_a_few_kb);
     RUN(corrupt_chunk_fails_only_its_range);
     RUN(chunk_bound_applies_to_foreign_images);
+    RUN(writer_emits_interop_samples);
     sandbox_remove();
     return 0;
 }

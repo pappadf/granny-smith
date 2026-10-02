@@ -431,7 +431,8 @@ static uint8_t *build_mish(const udif_writer_t *w, size_t *out_len) {
     put64(b + MISH_COUNT, w->sectors);
     put64(b + MISH_DATA_OFF, 0);
     put32(b + MISH_BUFFERS, w->chunk_sectors + 8);
-    put32(b + MISH_DESC, 0);
+    // -2, as in hdiutil's own whole-disk table (-layout NONE).
+    put32(b + MISH_DESC, 0xFFFFFFFEu);
     put32(b + MISH_CK_TYPE, UDIF_CHECKSUM_CRC32);
     put32(b + MISH_CK_BITS, 32);
     put32(b + MISH_CK, w->crc_dec);
@@ -478,6 +479,19 @@ static char *build_plist(const udif_writer_t *w, size_t *out_len) {
                "\t\t\t\t<key>Name</key>\n\t\t\t\t<string>");
     sb_str(&s, w->table_name ? w->table_name : table_name_for(NULL, 0));
     sb_str(&s, "</string>\n"
+               "\t\t\t</dict>\n\t\t</array>\n");
+    // The 'plst' resource hdiutil writes beside 'blkx', byte for byte: 1032
+    // bytes, zero but for 1s at 0x205 and 0x207.
+    uint8_t plst[1032] = {0};
+    plst[0x205] = 1;
+    plst[0x207] = 1;
+    sb_str(&s, "\t\t<key>plst</key>\n\t\t<array>\n\t\t\t<dict>\n"
+               "\t\t\t\t<key>Attributes</key>\n\t\t\t\t<string>0x0050</string>\n"
+               "\t\t\t\t<key>Data</key>\n\t\t\t\t<data>\n");
+    sb_base64(&s, plst, sizeof(plst));
+    sb_str(&s, "\t\t\t\t</data>\n"
+               "\t\t\t\t<key>ID</key>\n\t\t\t\t<string>0</string>\n"
+               "\t\t\t\t<key>Name</key>\n\t\t\t\t<string></string>\n"
                "\t\t\t</dict>\n\t\t</array>\n\t</dict>\n"
                "\t<key>gs-profile</key>\n\t<integer>1</integer>\n");
     if (w->bytes_in != w->sectors * UDIF_SECTOR_SIZE) {
@@ -544,6 +558,16 @@ int udif_writer_finish(udif_writer_t *w, udif_writer_stats_t *stats) {
         if (!xml)
             rc = -ENOMEM;
     }
+    // An all-zero disk has an empty data fork, which would put the plist at
+    // offset 0: valid, but dmg2img takes an XML offset of 0 to mean "no
+    // plist" and calls the image corrupt.  One sector of padding, outside
+    // the data fork, moves it.
+    uint64_t xml_off = w->data_len;
+    if (!rc && xml_off == 0) {
+        static const uint8_t pad[UDIF_SECTOR_SIZE];
+        rc = write_out(w, pad, sizeof(pad));
+        xml_off = sizeof(pad);
+    }
     if (!rc)
         rc = write_out(w, xml, xlen);
     free(xml);
@@ -564,7 +588,7 @@ int udif_writer_finish(udif_writer_t *w, udif_writer_stats_t *stats) {
         put32(k + KOLY_DATA_CK_TYPE, UDIF_CHECKSUM_CRC32);
         put32(k + KOLY_DATA_CK_BITS, 32);
         put32(k + KOLY_DATA_CK, w->crc_data);
-        put64(k + KOLY_XML_OFFSET, w->data_len);
+        put64(k + KOLY_XML_OFFSET, xml_off);
         put64(k + KOLY_XML_LENGTH, xlen);
         // The master checksum: CRC-32 over the block tables' checksums,
         // each as its big-endian 4 bytes.
@@ -573,7 +597,10 @@ int udif_writer_finish(udif_writer_t *w, udif_writer_stats_t *stats) {
         put32(k + KOLY_MASTER_TYPE, UDIF_CHECKSUM_CRC32);
         put32(k + KOLY_MASTER_BITS, 32);
         put32(k + KOLY_MASTER_CK, gs_crc32(0, ck, 4));
-        put32(k + KOLY_VARIANT, 1); // device image
+        // A partition image, as hdiutil marks its own one-table images
+        // (-layout NONE): a device image (1) must carry a partition map
+        // hdiutil can read block-table IDs from, and is refused without one.
+        put32(k + KOLY_VARIANT, 2);
         put64(k + KOLY_SECTORS, w->sectors);
         rc = write_out(w, k, sizeof(k));
     }
@@ -583,7 +610,7 @@ int udif_writer_finish(udif_writer_t *w, udif_writer_stats_t *stats) {
         fsync(fileno(w->f));
         if (stats) {
             udif_writer_progress(w, stats);
-            stats->stored_bytes = w->data_len + xlen + UDIF_TRAILER_SIZE;
+            stats->stored_bytes = xml_off + xlen + UDIF_TRAILER_SIZE;
         }
         if (fclose(w->f) != 0)
             rc = errno ? -errno : -EIO;

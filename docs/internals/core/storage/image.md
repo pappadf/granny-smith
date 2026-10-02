@@ -96,6 +96,20 @@ The disk images the web app stores, the blank disks `hd create` makes under a `.
 | Checksums | the table's CRC-32 over the decoded bytes (a zero run's in O(log n), `gs_crc32_zeros`), the trailer's over the data fork, the master checksum over the table checksums |
 | Plist keys | `gs-profile` (1), `gs-byte-length` (the true length when it is not a whole number of sectors; the tail is zero-padded), `gs-source` (the original file name) |
 
+Each ZLIB chunk is deflated in blocks of up to 32768 tokens, each coded with its own length-limited Huffman codes, or with the fixed codes or stored when either is smaller (`deflate.h`). Against fixed codes alone that is 8–11% smaller.
+
+The writer's images also open in the other tools users have, and CI checks that ([`udif-interop.yml`](../../../../.github/workflows/udif-interop.yml)): the `udif_writer` suite, given `GS_UDIF_INTEROP_DIR`, writes sample images beside the disks they decode to, and [`scripts/check-udif-interop.sh`](../../../../scripts/check-udif-interop.sh) opens each with hdiutil on macOS (`imageinfo`, `verify`, `convert -format UDTO`, `attach -readonly` with the raw device read back) and with 7-Zip and dmg2img, comparing bytes. hdiutil refuses (-192) a device image (`koly` variant 1) that has no partition map to read block-table IDs from, so the writer marks its one-table images as partition images (variant 2). Like hdiutil's own `-layout NONE` images, they also carry a `plst` resource beside `blkx` and -2 in the `mish` descriptor field. dmg2img takes a plist at offset 0 for none, so when the data fork is empty (an all-zero disk) one sector of padding precedes the plist.
+
+[`scripts/bench-image-boot.sh`](../../../../scripts/bench-image-boot.sh) boots a machine for a fixed number of instructions from a raw disk and from the same disk converted to UDIF. It reports the median wall-clock time of each and whether the two boots end on identical screens. The result on a Linux x86-64 host, 5 runs each, default cache:
+
+| Disk | Raw | Stored as UDIF | Boot raw → UDIF | Image cache misses / hits |
+|---|---|---|---|---|
+| System 7.6, Quadra 700 | 169 MiB | 18.6 MB (fixed codes: 20.8) | 11.5 → 11.9 s | 240 / 10771 |
+| System 7.5, IIci | 76 MiB | 9.0 MB (10.1) | 3.5 → 3.7 s | 143 / 6149 |
+| A/UX 3.0.1, IIx | 169 MiB | 38.2 MB (42.2) | 5.1 → 5.3 s | 294 / 16428 |
+
+The screens were identical every time. The overhead measured 0–7% across runs, about the run-to-run noise. With the image cache cut to 1 MB (`files.cache.image_mb = 1`), the misses roughly double and the overhead stays between 2% and 10%.
+
 7-Zip reads and checks the result (`7z t`). `udif_verify()` decodes every chunk and checks every checksum; `udif_info()` reads only the trailer and plist. The object-model surface: `files.udif_open` / `udif_append` / `udif_finish` / `udif_abort` (the page streams an import through the transfer window), `files.convert` (any image the emulator reads → UDIF, or → raw with `format="raw"`, checked by decoding the result), `files.verify`, `files.udif_info`.
 
 The zlib decompressor both this and the PNG reader use is first-party: `inflate.c`'s entry points wrap peeler's resumable inflate, the one in the tree; the core links no third-party C libraries.
@@ -112,7 +126,7 @@ The zlib decompressor both this and the PNG reader use is first-party: `inflate.
 - **`image_export_to(image_t *image, const char *dest_path)`** streams the disk (base + delta) to a new file: a dense raw copy, or, when `dest_path` ends in `.dmg` (and the disk has 512-byte blocks), a UDIF written by the streaming writer — a modified 2 GB disk exports at its content's size. The base image is never written in place.
 
 **Creating blank hard disks**
-- **`image_create_empty_udif(path, size)`** writes a UDIF of `size` zero bytes: one zero run, about 1.5 KB whatever the size. `hd create` and `files.hd_create` use it when the path ends in `.dmg` (the web app's Create Image names blank disks so); any other name gets **`image_create_empty()`**, a raw file of the full size, which the browser charges in full.
+- **`image_create_empty_udif(path, size)`** writes a UDIF of `size` zero bytes: one zero run, about 4 KB whatever the size. `hd create` and `files.hd_create` use it when the path ends in `.dmg` (the web app's Create Image names blank disks so); any other name gets **`image_create_empty()`**, a raw file of the full size, which the browser charges in full.
 
 **Creating blank floppy images**
 - **`image_create_blank_floppy()`** writes a zero-filled 819,200-byte (or 1,474,560-byte HD) raw file that can immediately be opened.

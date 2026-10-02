@@ -3,16 +3,17 @@
 
 // deflate.h
 // DEFLATE / zlib compressor (RFC 1950 + RFC 1951), encode-only: LZ77 over a
-// 32 KB window with hash chains, coded with the fixed Huffman tables.
+// 32 KB window with hash chains, each block coded with dynamic Huffman codes
+// built from its own symbol counts -- or the fixed codes, or stored, when
+// that is smaller.
 //
 // The counterpart of inflate.h.  Two writers use it: the PNG encoder in
 // debug.c (screenshots and reference images) and the UDIF writer
 // (udif_writer.h), which deflates every non-zero 64 KB chunk of a disk image
 // into a complete zlib stream -- what a UDZO reader expects.
 //
-// Fixed Huffman costs about 9 % against dynamic Huffman on disk images; a
-// dynamic-Huffman block is an isolated later improvement that would serve
-// both callers.
+// The dynamic codes are length-limited and complete, so strict decoders
+// (zlib, and the tools that read the images and screenshots) accept them.
 
 #ifndef GS_DEFLATE_H
 #define GS_DEFLATE_H
