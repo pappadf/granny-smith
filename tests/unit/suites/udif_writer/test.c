@@ -129,6 +129,63 @@ TEST(crc32_zeros_matches_the_table) {
     }
 }
 
+// Round-trip `n` bytes at `level`; the first block's type (BTYPE).
+static int round_trip_btype(const uint8_t *in, size_t n, int level) {
+    size_t cap = deflate_bound(n);
+    uint8_t *z = malloc(cap), *out = malloc(n + 1);
+    ASSERT_TRUE(z != NULL && out != NULL);
+    long zn = deflate_zlib(NULL, in, n, z, cap, level);
+    ASSERT_TRUE(zn > 2);
+    ASSERT_EQ_INT((int)n, (int)inflate_zlib(z, (size_t)zn, out, n + 1));
+    ASSERT_TRUE(memcmp(in, out, n) == 0);
+    int btype = (z[2] >> 1) & 3;
+    free(z);
+    free(out);
+    return btype;
+}
+
+// Literal counts in Fibonacci proportion give an unlimited Huffman code
+// deeper than deflate's 15 bits: the lengths must be limited and the code
+// still complete.
+TEST(deflate_dynamic_codes_are_length_limited) {
+    static uint8_t buf[320000];
+    uint64_t cnt[26] = {1, 1}, total = 0;
+    for (int i = 2; i < 26; i++)
+        cnt[i] = cnt[i - 1] + cnt[i - 2];
+    for (int i = 0; i < 26; i++)
+        total += cnt[i];
+    size_t n = 0;
+    g_rng = 1;
+    while (n < sizeof(buf) && total) {
+        uint64_t r = rnd() % total;
+        int sym = 0;
+        while (r >= cnt[sym])
+            r -= cnt[sym++];
+        buf[n++] = (uint8_t)(sym * 9 + 1);
+        cnt[sym]--;
+        total--;
+    }
+    ASSERT_EQ_INT(2, round_trip_btype(buf, n, 1));
+    ASSERT_EQ_INT(2, round_trip_btype(buf, n, 9));
+}
+
+// Each block takes its smallest form: dynamic codes for skewed data, the
+// fixed codes for a tiny input, a stored block for noise.
+TEST(deflate_picks_the_smallest_block_form) {
+    static uint8_t buf[200000];
+    memset(buf, 'A', 100000);
+    ASSERT_EQ_INT(2, round_trip_btype(buf, 100000, 1)); // one symbol: still a complete code
+    ASSERT_EQ_INT(1, round_trip_btype((const uint8_t *)"Z", 1, 1));
+    g_rng = 7;
+    for (size_t i = 0; i < sizeof(buf); i++)
+        buf[i] = (uint8_t)rnd();
+    ASSERT_EQ_INT(0, round_trip_btype(buf, sizeof(buf), 1));
+    // Text over several blocks of tokens.
+    for (size_t i = 0; i < sizeof(buf); i++)
+        buf[i] = (uint8_t) "System Folder Finder "[i % 21] + (uint8_t)(i / 50000);
+    ASSERT_EQ_INT(2, round_trip_btype(buf, sizeof(buf), 6));
+}
+
 // ---- writer -> reader --------------------------------------------------------
 
 // Write `len` bytes of `content` to `path` in appends of `step` bytes
@@ -375,6 +432,8 @@ TEST(chunk_bound_applies_to_foreign_images) {
 int main(void) {
     RUN(deflate_round_trips_at_every_level);
     RUN(deflate_compresses_text_and_reuses_state);
+    RUN(deflate_dynamic_codes_are_length_limited);
+    RUN(deflate_picks_the_smallest_block_form);
     RUN(adler32_known_vector);
     RUN(crc32_zeros_matches_the_table);
     RUN(writer_round_trips_sizes_and_chunks);
