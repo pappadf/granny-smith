@@ -35,7 +35,6 @@
     'empty',
     'upload',
     'mac',
-    'color-mode',
     'sign-out',
     'screen-full',
     'screen-normal',
@@ -43,6 +42,9 @@
     'camera-off',
     'mic',
     'mic-off',
+    'ellipsis',
+    'power',
+    'brush',
   ];
 </script>
 

@@ -1,15 +1,18 @@
 Granny Smith UI — Platinum skin — Third-Party Notices
 
-sprite.svg
-    A copy of ../../icons/sprite.svg: VS Code Codicons (and the two
-    derivatives described there), Copyright (c) Microsoft Corporation,
+sprite.svg (src/skins/platinum/sprite.svg, bundled with the app)
+    A copy of the default sprite (src/icons/sprite.svg): VS Code Codicons
+    (and the symbols drawn for Granny Smith described there), Copyright (c) Microsoft Corporation,
     licensed under CC BY 4.0. See ../../NOTICE for the full notice, the
-    upstream names and the modifications.
+    upstream names and the modifications. Six symbols are replaced by
+    original drawings in the style of the Mac OS 8 Finder (Granny Smith,
+    MIT): folder, file, hd, floppy and cd (two-tone icons) and chevron
+    (Finder's filled disclosure triangle).
 
-fonts/ibm-plex-sans-latin-wght.woff2
-    IBM Plex Sans (variable, Latin subset, as packaged by Fontsource),
-    Copyright 2019 IBM Corp. All rights reserved.
+fonts/chivo-latin-wght.woff2
+    Chivo (variable, Latin subset, as packaged by Fontsource),
+    Copyright 2019 The Chivo Project Authors.
     Licensed under the SIL Open Font License, Version 1.1 (OFL-1.1):
     https://openfontlicense.org/open-font-license-official-text/
-    Upstream: https://github.com/IBM/plex
+    Upstream: https://github.com/Omnibus-Type/Chivo
     Unmodified.

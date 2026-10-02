@@ -80,8 +80,10 @@ export interface CheckpointEntry {
   created: string;
   /** Human label (manifest.json `label`, else the formatted timestamp) */
   label: string;
-  /** Machine model (manifest.json `machine`, else "unknown") */
-  machine: string;
+  /** The machine's model id (manifest.json `machine.model`), null if unknown */
+  model: string | null;
+  /** Its RAM in bytes (manifest.json `machine.ram_bytes`), 0 if unknown */
+  ramBytes: number;
   /** Sum of file sizes inside the dir; 0 if unreadable */
   sizeBytes: number;
 }

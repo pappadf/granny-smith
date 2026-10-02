@@ -1,85 +1,109 @@
 /* ====== Platinum skin: tokens ======
-   A Mac OS 8 "Platinum"-style look, light only: grey chrome, white lists,
-   the lavender highlight, square corners and hard drop shadows.  Every
-   semantic token of src/styles/contract.ts, plus scale and component
-   overrides for this skin's scope.  The --gs-ref-* palette is private to
-   this skin (its tokens.css and overrides.css). */
+   Mac OS 8's "Platinum" appearance, a light skin: #dddddd chrome with bevelled
+   push buttons and grooves, white list views in a black frame, the lavender
+   highlight, folder tabs, an inset grey well around the screen, and the
+   status bar as a row of inset fields with LED lamps.  Chivo stands in for
+   Charcoal.  The bevels, wells and tabs are in overrides.css; this file
+   holds the values.  The --gs-ref-* palette is private to this skin. */
 @layer gs.tokens {
-  :root[data-skin='platinum'][data-theme='light'] {
-    /* Reference palette */
-    --gs-ref-lavender: #ccccff;
-    --gs-ref-lavender-deep: #4e4eb0;
-    --gs-ref-bevel-light: #ffffff;
-    --gs-ref-bevel-shade: #a0a0a0;
-    --gs-ref-bevel-dark: #5c5c5c;
-    --gs-ref-face: #e2e2e2;
-    --gs-ref-face-pressed: #b8b8b8;
+  :root[data-skin='platinum'] {
+    --gs-color-scheme: light;
 
-    --gs-surface-app: #dddddd;
-    --gs-surface-raised: #eeeeee;
-    --gs-surface-overlay: #f4f4f4;
+    /* Reference palette */
+    --gs-ref-chrome: #dddddd;
+    --gs-ref-face-top: #f6f6f6;
+    --gs-ref-face-bottom: #d0d0d0;
+    --gs-ref-pressed-top: #9c9c9c;
+    --gs-ref-pressed-bottom: #bdbdbd;
+    --gs-ref-bevel-light: #ffffff;
+    --gs-ref-bevel-shade: #a5a5a5;
+    --gs-ref-bevel-dark: #555555;
+    --gs-ref-groove: #999999;
+    --gs-ref-well: #8e8e8e;
+    --gs-ref-tab-off: #b9b9b9;
+    --gs-ref-lavender: #ccccff;
+    --gs-ref-lavender-col: #bfbff2;
+    --gs-ref-lavender-deep: #33337a;
+    --gs-ref-thumb-light: #c9c9f6;
+    --gs-ref-thumb-dark: #9d9de0;
+    --gs-ref-led-green: radial-gradient(circle at 35% 35%, #b9ffb0, #1d8f1d);
+    --gs-ref-led-red: radial-gradient(circle at 35% 35%, #ffd1c2, #e0461b);
+    --gs-ref-led-amber: radial-gradient(circle at 35% 35%, #fff2b8, #d99a00);
+    --gs-ref-led-off: #9a9a9a;
+
+    /* Surfaces */
+    --gs-surface-app: var(--gs-ref-chrome);
+    --gs-surface-raised: #e6e6e6;
+    --gs-surface-overlay: #eeeeee;
     --gs-surface-sunken: #ffffff;
     --gs-surface-screen: #000000;
     --gs-surface-document: #ffffff;
-    --gs-backdrop: rgba(0, 0, 0, 0.3);
+    --gs-backdrop: rgba(0, 0, 0, 0.25);
 
+    /* Text */
     --gs-text: #000000;
     --gs-text-strong: #000000;
     --gs-text-muted: #444444;
     --gs-text-subtle: #5c5c5c;
-    --gs-text-link: #2f2f9a;
+    --gs-text-link: #2a2a8f;
     --gs-text-on-accent: #ffffff;
 
+    /* Borders and focus */
     --gs-border: #888888;
     --gs-border-subtle: #bbbbbb;
-    --gs-border-card: #999999;
+    --gs-border-card: var(--gs-ref-bevel-dark);
     --gs-focus-ring: #4e4eb0;
 
-    --gs-control-hover: rgba(0, 0, 0, 0.08);
+    /* Interaction */
+    --gs-control-hover: rgba(0, 0, 0, 0.07);
     --gs-control-active: rgba(0, 0, 0, 0.16);
     --gs-accent: var(--gs-ref-lavender-deep);
-    --gs-accent-hover: #5d5dbd;
-    --gs-accent-active: #3a3a8c;
-    --gs-accent-subtle: rgba(78, 78, 176, 0.18);
+    --gs-accent-hover: #44448f;
+    --gs-accent-active: #262666;
+    --gs-accent-subtle: var(--gs-ref-lavender);
 
-    --gs-row-hover: rgba(0, 0, 0, 0.06);
+    /* Rows: Finder's lavender selection with black text. */
+    --gs-row-hover: rgba(204, 204, 255, 0.35);
     --gs-row-selected: var(--gs-ref-lavender);
-    --gs-row-selected-inactive: #c8c8c8;
-    --gs-row-alt: rgba(0, 0, 0, 0.04);
+    --gs-row-selected-inactive: #dcdcdc;
+    --gs-row-alt: #f3f3f3;
 
+    /* Inputs */
     --gs-input-bg: #ffffff;
     --gs-input-fg: #000000;
-    --gs-input-border: #888888;
+    --gs-input-border: #555555;
 
+    /* Intents */
     --gs-info-fg: #28449a;
-    --gs-info-bg: rgba(78, 78, 176, 0.15);
-    --gs-info-border: rgba(78, 78, 176, 0.45);
+    --gs-info-bg: #e3e3fb;
+    --gs-info-border: #9d9de0;
     --gs-info-solid: #3d55a8;
     --gs-info-on-solid: #ffffff;
     --gs-success-fg: #175e24;
-    --gs-success-bg: rgba(29, 107, 42, 0.15);
-    --gs-success-border: rgba(29, 107, 42, 0.45);
-    --gs-success-solid: #2a6e30;
+    --gs-success-bg: #dff0df;
+    --gs-success-border: #8fc48f;
+    --gs-success-solid: #1d7a2a;
     --gs-success-on-solid: #ffffff;
     --gs-warning-fg: #5e4800;
-    --gs-warning-bg: rgba(204, 153, 0, 0.22);
-    --gs-warning-border: rgba(153, 115, 0, 0.5);
+    --gs-warning-bg: #f7ecc8;
+    --gs-warning-border: #d9b84a;
     --gs-warning-solid: #e0a800;
     --gs-warning-on-solid: #000000;
     --gs-danger-fg: #9c1c16;
-    --gs-danger-bg: rgba(168, 32, 26, 0.13);
-    --gs-danger-border: rgba(168, 32, 26, 0.45);
+    --gs-danger-bg: #f5dcdb;
+    --gs-danger-border: #d98e8a;
     --gs-danger-solid: #a8201a;
     --gs-danger-on-solid: #ffffff;
 
-    --gs-state-idle-bg: #dddddd;
-    --gs-state-idle-fg: #3a3a3a;
-    --gs-state-running-bg: #3d4f9f;
-    --gs-state-paused-bg: #93541a;
+    /* Machine state.  The status bar stays grey (its state is the LED). */
+    --gs-state-idle-bg: var(--gs-ref-chrome);
+    --gs-state-idle-fg: #000000;
+    --gs-state-running-bg: #2f5d36;
+    --gs-state-paused-bg: #7a4d00;
     --gs-state-stopped-bg: #a32626;
     --gs-state-crashed-bg: #6e1414;
     --gs-state-active-fg: #ffffff;
-    --gs-state-hover: rgba(0, 0, 0, 0.1);
+    --gs-state-hover: rgba(0, 0, 0, 0.08);
 
     /* Syntax palette: Light+-like hues, darkened for the grey chrome. */
     --gs-syntax-method: #6b4c00;
@@ -100,58 +124,133 @@
     --gs-syntax-error: var(--gs-danger-fg);
     --gs-syntax-dim: #555555;
 
-    --gs-code-pc-row-bg: rgba(78, 78, 176, 0.2);
-    --gs-code-changed-bg: rgba(204, 153, 0, 0.3);
+    --gs-code-pc-row-bg: var(--gs-ref-lavender);
+    --gs-code-changed-bg: #f7e7a6;
 
-    --gs-console-bg: var(--gs-surface-sunken);
+    /* Console */
+    --gs-console-bg: #ffffff;
     --gs-console-fg: #000000;
     --gs-console-cursor: #000000;
     --gs-console-selection: var(--gs-ref-lavender);
-    --gs-console-progress-bg: rgba(0, 0, 0, 0.06);
-    --gs-console-find-hit-bg: rgba(255, 170, 0, 0.4);
-    --gs-console-find-current-bg: rgba(255, 140, 0, 0.75);
+    --gs-console-progress-bg: #f0f0f0;
+    --gs-console-find-hit-bg: rgba(255, 204, 0, 0.45);
+    --gs-console-find-current-bg: rgba(255, 153, 0, 0.75);
 
+    /* Drag and drop */
     --gs-drop-border: var(--gs-ref-lavender-deep);
-    --gs-drop-bg: rgba(78, 78, 176, 0.1);
-    --gs-drop-label-bg: rgba(58, 58, 140, 0.92);
+    --gs-drop-bg: rgba(204, 204, 255, 0.35);
+    --gs-drop-label-bg: rgba(51, 51, 122, 0.92);
 
-    --gs-scrollbar-thumb: #a8a8a8;
-    --gs-scrollbar-thumb-hover: #888888;
-    --gs-scrollbar-track: #e4e4e4;
+    /* Scrollbars (Platinum's own are drawn in overrides.css), selection,
+       elevation: hard drop shadows. */
+    --gs-scrollbar-thumb: var(--gs-ref-thumb-dark);
+    --gs-scrollbar-thumb-hover: #8a8ad6;
+    --gs-scrollbar-track: #cccccc;
     --gs-selection-bg: var(--gs-ref-lavender);
-    --gs-shadow-popup: 2px 2px 0 rgba(0, 0, 0, 0.35);
-    --gs-shadow-modal: 3px 3px 0 rgba(0, 0, 0, 0.35);
-    --gs-shadow-toast: 2px 2px 0 rgba(0, 0, 0, 0.3);
-    --gs-shadow-screen: 0 0 0 1px #000000;
+    --gs-shadow-popup: 2px 2px 0 rgba(0, 0, 0, 0.4);
+    --gs-shadow-modal: 3px 3px 0 rgba(0, 0, 0, 0.4);
+    --gs-shadow-toast: 2px 2px 0 rgba(0, 0, 0, 0.35);
+    --gs-shadow-screen: 2px 2px 0 #5e5e5e;
 
-    --gs-menu-bg: #f4f4f4;
-    --gs-menu-hover-bg: var(--gs-ref-lavender-deep);
-
-    /* Scale: Charcoal's place is taken by IBM Plex Sans; corners are square
-       or nearly so. */
-    --gs-font-ui:
-      'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    /* Scale: Chivo for Charcoal, 12px text, Mac OS 8's corners. */
+    --gs-font-ui: 'Chivo', 'Charcoal', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --gs-font-size-xs: 11px;
+    --gs-font-size-sm: 11px;
+    --gs-font-size-base: 12px;
     --gs-radius-xs: 0;
     --gs-radius-sm: 2px;
     --gs-radius-md: 2px;
     --gs-radius-lg: 4px;
     --gs-caps-transform: none;
     --gs-caps-tracking: 0;
+    --gs-size-toolbar: 48px;
+    --gs-size-tab: 30px;
+    --gs-size-statusbar: 28px;
+    --gs-size-control: 26px;
+    --gs-size-control-md: 22px;
+    --gs-size-control-lg: 24px;
+    --gs-size-row: 21px;
 
-    /* Components: square tabs with a full-height selected face, the status
-       bar's dots in Platinum colours, the drive lights as lamps. */
-    --gs-tab-indicator-color: var(--gs-ref-lavender-deep);
-    --gs-tab-indicator-width: var(--gs-border-width-strong);
-    --gs-tab-indicator-inset: 0px;
-    --gs-tab-indicator-offset: 0px;
+    /* Components */
+    --gs-menu-bg: #eeeeee;
+    --gs-menu-fg: #000000;
+    --gs-menu-hover-bg: var(--gs-ref-lavender-deep);
+    --gs-menu-hover-fg: #ffffff;
+    --gs-menu-radius: 0;
+    --gs-modal-bg: var(--gs-ref-chrome);
+    --gs-modal-radius: 0;
+    --gs-modal-title-weight: var(--gs-font-weight-bold);
+    --gs-toast-bg: #eeeeee;
+    --gs-toast-radius: 0;
+    --gs-card-bg: var(--gs-ref-chrome);
+    --gs-card-radius: 0;
+    --gs-button-radius: 4px;
+    --gs-button-font-size: 11px;
+    --gs-button-font-size-lg: 12px;
+    --gs-button-padding-x: 12px;
+    --gs-button-padding-x-lg: 16px;
+    --gs-icon-button-size: 30px;
+    --gs-icon-button-padding: 6px;
+    --gs-icon-button-radius: 4px;
+    --gs-icon-button-radius-panel: 4px;
+    --gs-icon-button-bg-pressed: var(--gs-ref-pressed-bottom);
+    --gs-input-radius: 0;
+    --gs-input-border-focus: #4e4eb0;
+    --gs-select-height: 22px;
+    --gs-segmented-radius: 4px;
+    --gs-segmented-font-size: 11px;
+    --gs-segmented-fg: #000000;
+    --gs-segmented-fg-selected: #000000;
+    --gs-segmented-bg-selected: var(--gs-ref-pressed-bottom);
+    --gs-toolbar-bg: var(--gs-ref-chrome);
+    --gs-toolbar-gap: 8px;
+    --gs-separator: var(--gs-ref-groove);
+    --gs-separator-length: 30px;
+    --gs-tab-height: 26px;
+    --gs-tab-padding-x: 9px;
+    --gs-tab-font-size: 11.5px;
+    --gs-tab-fg: #000000;
+    --gs-tab-fg-selected: #000000;
+    --gs-tab-font-weight: var(--gs-font-weight-regular);
+    --gs-tab-indicator-width: 0px;
     --gs-tab-sub-indicator-color: var(--gs-ref-lavender-deep);
-    --gs-segmented-bg-selected: var(--gs-ref-face-pressed);
-    --gs-statusbar-dot-running: #9be29b;
-    --gs-statusbar-dot-paused: #ffd36b;
-    --gs-statusbar-dot-stopped: #ff9a9a;
-    --gs-statusbar-dot-crashed: #ffc4c4;
-    --gs-statusbar-drive-style: led;
+    --gs-tab-sub-fg: #333333;
+    --gs-tab-sub-fg-selected: #000000;
+    --gs-heading-fg: #000000;
+    --gs-heading-weight: var(--gs-font-weight-bold);
+    --gs-section-title-fg: #000000;
+    --gs-section-header-bg: var(--gs-ref-chrome);
+    --gs-table-header-bg: var(--gs-ref-chrome);
+    --gs-tree-category-fg: #000000;
+    --gs-tree-guide: transparent;
+    --gs-disclosure-fg: #1a1a1a;
+    --gs-disclosure-rotation-closed: -90deg;
     --gs-pill-radius: var(--gs-radius-sm);
-    --gs-tree-guide: #c4c4c4;
+    --gs-pill-transform: none;
+    --gs-progress-height: 10px;
+    --gs-progress-radius: 0;
+    --gs-progress-track: #ffffff;
+    --gs-progress-fill: linear-gradient(180deg, #c9c9f6, #6b6bc8);
+    --gs-switch-track-on: var(--gs-ref-lavender-deep);
+    --gs-screen-frame-padding: 3px;
+    --gs-screen-frame-radius: 4px;
+    --gs-screen-frame-bg: #000000;
+
+    /* The status bar: grey in every state, its state an LED. */
+    --gs-statusbar-bg-idle: var(--gs-ref-chrome);
+    --gs-statusbar-bg-running: var(--gs-ref-chrome);
+    --gs-statusbar-bg-paused: var(--gs-ref-chrome);
+    --gs-statusbar-bg-stopped: var(--gs-ref-chrome);
+    --gs-statusbar-bg-crashed: #f0d6d6;
+    --gs-statusbar-fg-idle: #000000;
+    --gs-statusbar-fg-active: #000000;
+    --gs-statusbar-item-hover: rgba(0, 0, 0, 0.06);
+    --gs-statusbar-font-size: 11px;
+    --gs-statusbar-dot-idle: var(--gs-ref-led-off);
+    --gs-statusbar-dot-running: #1d8f1d;
+    --gs-statusbar-dot-paused: #d99a00;
+    --gs-statusbar-dot-stopped: #e0461b;
+    --gs-statusbar-dot-crashed: #a8201a;
+    --gs-statusbar-drive-style: text;
   }
 }

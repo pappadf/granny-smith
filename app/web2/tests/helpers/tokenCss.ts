@@ -1,5 +1,5 @@
 // Reading the token stylesheets for the token and contrast lints: the rules
-// of a stylesheet, the declarations a skin makes per scheme, and colour
+// of a stylesheet, the declarations a skin makes, and colour
 // arithmetic over resolved values.
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -36,33 +36,18 @@ export function skinRules(srcDir: string): Map<string, CssRule[]> {
   return out;
 }
 
-// Whether a selector applies to skin `id` in `scheme`: the skin's own block
-// for the scheme, or its scheme-less block.  The bare :root (the pre-paint
-// default) is counted for the default skin's first scheme only.
-export function selectorApplies(
-  sel: string,
-  id: string,
-  scheme: string,
-  isDefaultDark: boolean,
-): boolean {
+// Whether a selector applies to skin `id`: the skin's own block (not the
+// bare :root, the pre-paint fallback the default skin also gives).
+export function selectorApplies(sel: string, id: string): boolean {
   const s = sel.replace(/"/g, "'");
-  if (s === ':root') return isDefaultDark;
-  if (!s.startsWith(':root[')) return false;
-  if (!s.includes(`[data-skin='${id}']`)) return false;
-  const theme = s.match(/\[data-theme='([a-z]+)'\]/);
-  return !theme || theme[1] === scheme;
+  return s.startsWith(':root[') && s.includes(`[data-skin='${id}']`);
 }
 
-// The declarations a skin makes in one scheme.
-export function skinDecls(
-  rules: CssRule[],
-  id: string,
-  scheme: string,
-  isDefaultDark = false,
-): Map<string, string> {
+// The declarations a skin makes.
+export function skinDecls(rules: CssRule[], id: string): Map<string, string> {
   const out = new Map<string, string>();
   for (const r of rules) {
-    if (r.selectors.some((s) => selectorApplies(s, id, scheme, isDefaultDark)))
+    if (r.selectors.some((s) => selectorApplies(s, id)))
       for (const [k, v] of r.decls) out.set(k, v);
   }
   return out;

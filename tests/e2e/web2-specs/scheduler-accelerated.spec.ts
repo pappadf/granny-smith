@@ -136,7 +136,7 @@ test('Accelerated toolbar mode: faster CPU, real-time timebase', async ({
   expect(live.cyclesPerSec / live.instrPerSec).toBeLessThan(4.4);
 
   // --- Switch to Accelerated -------------------------------------------------
-  await page.getByRole('button', { name: 'accelerated', exact: true }).click();
+  await page.getByRole('button', { name: 'Faster', exact: true }).click();
   await expect
     .poll(async () => probeString(page, 'scheduler.mode'), { timeout: 30_000 })
     .toBe('accelerated');
@@ -169,7 +169,7 @@ test('Accelerated toolbar mode: faster CPU, real-time timebase', async ({
   expect(shown).toBeGreaterThan(1);
 
   // --- Back to Real-Time ------------------------------------------------------
-  await page.getByRole('button', { name: 'real-time', exact: true }).click();
+  await page.getByRole('button', { name: 'Real', exact: true }).click();
   await expect
     .poll(async () => probeString(page, 'scheduler.mode'), { timeout: 30_000 })
     .toBe('paced');

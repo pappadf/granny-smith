@@ -28,9 +28,6 @@ describe('skins', () => {
     it(`${s.id}: a well-formed manifest`, () => {
       expect(s.id).toMatch(/^[a-z][a-z0-9]*(-[a-z0-9]+)*$/);
       expect(s.name.trim()).not.toBe('');
-      expect(s.schemes.length).toBeGreaterThan(0);
-      expect(new Set(s.schemes).size).toBe(s.schemes.length);
-      for (const sc of s.schemes) expect(['dark', 'light']).toContain(sc);
     });
 
     it(`${s.id}: its token stylesheet selects only its own skin`, () => {
@@ -40,13 +37,12 @@ describe('skins', () => {
       );
       const others = [...css.matchAll(/data-skin='([^']+)'/g)].map((m) => m[1]);
       expect(others.filter((id) => id !== s.id)).toEqual([]);
-      for (const sc of s.schemes)
-        expect(css).toContain(`[data-skin='${s.id}'][data-theme='${sc}']`);
+      expect(css).toContain(`[data-skin='${s.id}']`);
+      expect(css).toMatch(/--gs-color-scheme:\s*(light|dark);/);
     });
 
-    it(`${s.id}: relative asset URLs, and font licences listed`, () => {
-      const urls = [s.sprite, ...(s.fonts ?? []).map((f) => f.src)].filter((u): u is string => !!u);
-      for (const u of urls) {
+    it(`${s.id}: relative font URLs, and font licences listed`, () => {
+      for (const u of (s.fonts ?? []).map((f) => f.src)) {
         expect(u, u).not.toMatch(/^(\/|[a-z]+:)/);
         expect(existsSync(join(WEB2, 'public', u)), u).toBe(true);
       }

@@ -39,9 +39,9 @@
       value={mode}
       onChange={(v) => (mode = v)}
       options={[
-        { value: 'live', label: 'real-time' },
-        { value: 'accel', label: 'accelerated' },
-        { value: 'turbo', label: 'fast-forward' },
+        { value: 'live', label: 'Real' },
+        { value: 'accel', label: 'Faster' },
+        { value: 'turbo', label: 'Max' },
       ]}
     />
     <SegmentedControl

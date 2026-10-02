@@ -15,7 +15,7 @@ export type DriveActivity = 'idle' | 'read' | 'write';
 // model; the adaptive governor picks the speed), 'turbo' = as fast as the host
 // allows. The guest timeline is identical in live/turbo; accel trades that
 // determinism for CPU throughput while VBL/sound stay real-time. The toolbar
-// labels these Real-Time / Accelerated / Fast-Forward; the internal ids below
+// labels these Real / Faster / Max; the internal ids below
 // predate the relabel and stay stable.
 export type SchedulerMode = 'live' | 'accel' | 'turbo';
 

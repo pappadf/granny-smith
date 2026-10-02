@@ -2,7 +2,7 @@
 // `gs-*` namespace. Same keys as the prototype so existing user
 // settings carry across.
 //
-// View-state keys extend the original (theme + panelPos + panelSize)
+// View-state keys extend the original (skin + panelPos + panelSize)
 // with Debug sections, MMU subtab, Memory address/mode, Logs
 // autoscroll, Filesystem expansion, Images collapsed map, Checkpoints
 // sort and the microphone device. Each of those uses a `{v, data}`
@@ -10,7 +10,7 @@
 // missing/malformed values silently.
 
 import { appearance } from './appearance.svelte';
-import { getSkin } from '@/skins/registry';
+import { DEFAULT_SKIN, getSkin } from '@/skins/registry';
 import { layout, type PanelPos } from './layout.svelte';
 import { debug, type MmuSubtab, type MemoryMode } from './debug.svelte';
 import { logs } from './logs.svelte';
@@ -22,7 +22,6 @@ import type { ImageCategory } from '@/bus/types';
 
 const KEYS = {
   // The original keys: plain values.
-  theme: 'gs-theme',
   skin: 'gs-skin',
   panelPos: 'gs-panel-pos',
   panelSize: 'gs-panel-size',
@@ -82,16 +81,10 @@ function writeEnvelope<T>(key: string, data: T): void {
 // Read persisted values once, before mount, and apply them to the state
 // modules. Called from main.ts.
 export function loadPersistedState(): void {
-  const savedTheme = readLS(KEYS.theme);
-  if (savedTheme === 'dark' || savedTheme === 'light') {
-    appearance.schemeMode = savedTheme;
-  } else {
-    appearance.schemeMode = 'system';
-  }
-
-  // A skin id this build does not know (one removed since) is dropped.
+  // A skin this build does not know (one removed since), or none, is the
+  // default.
   const savedSkin = readLS(KEYS.skin);
-  appearance.skin = getSkin(savedSkin).id;
+  appearance.skin = savedSkin && getSkin(savedSkin).id === savedSkin ? savedSkin : DEFAULT_SKIN;
 
   const savedPos = readLS(KEYS.panelPos);
   if (savedPos === 'bottom' || savedPos === 'left' || savedPos === 'right') {
@@ -178,12 +171,9 @@ export function loadPersistedState(): void {
 // Wire up effects that mirror state changes back to localStorage. Must be
 // called from a root-effect context (or from a component's $effect).
 export function startPersistEffects(): void {
+  // The default skin is not stored.
   $effect(() => {
-    if (appearance.schemeMode === 'system') writeLS(KEYS.theme, null);
-    else writeLS(KEYS.theme, appearance.schemeMode);
-  });
-  $effect(() => {
-    writeLS(KEYS.skin, appearance.skin === getSkin(null).id ? null : appearance.skin);
+    writeLS(KEYS.skin, appearance.skin === DEFAULT_SKIN ? null : appearance.skin);
   });
   $effect(() => {
     writeLS(KEYS.panelPos, layout.panelPos);

@@ -184,9 +184,9 @@ test("record from the browser microphone in the Sound control panel", async ({
   // Accelerated only for the boot: the microphone is a REAL-TIME stream, and a
   // guest running faster than wall-clock drains the ring quicker than the
   // browser fills it. Back to paced before anything touches audio.
-  await page.getByRole("button", { name: "accelerated", exact: true }).click();
+  await page.getByRole("button", { name: "Faster", exact: true }).click();
   await waitForStableScreen(page, 420_000);
-  await page.getByRole("button", { name: "real-time", exact: true }).click();
+  await page.getByRole("button", { name: "Real", exact: true }).click();
   await expect
     .poll(async () => probe(page, "scheduler.mode"), { timeout: 30_000 })
     .toBe("paced");

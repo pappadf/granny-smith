@@ -1,10 +1,18 @@
 <script lang="ts" generics="K extends string">
   import type { Snippet } from 'svelte';
   import { cycleListSelection, listKeyFromEvent } from '@/lib/keyboardNav';
+  import { openContextMenu } from '../common/ContextMenu.svelte';
 
   // One tab design in two variants: `panel` (the bottom panel's view tabs)
   // and `sub` (a strip inside a section, e.g. the MMU's State / Translate).
   // Selection is aria-selected; `tabClass` carries legacy hooks (ptab, tab).
+  //
+  // A panel strip never scrolls its tabs out of sight: the tabs that do not
+  // fit move into a "»" menu at the end of the strip, and the active tab
+  // always stays in the strip.  The widths come from an invisible copy of
+  // the strip (same classes, so the skin's fonts and padding apply), and
+  // `minWidth` reports the least the strip can show (the active tab and the
+  // "»"), so a header can make room for it.
   interface Props {
     tabs: ReadonlyArray<{ key: K; label: string; testid?: string }>;
     active: K;
@@ -15,6 +23,8 @@
     class?: string;
     /** Optional right-edge accessory (e.g. the MMU section's S|U toggle). */
     accessory?: Snippet;
+    /** Panel variant: the width the strip needs at least (bindable). */
+    minWidth?: number;
   }
   let {
     tabs,
@@ -25,7 +35,84 @@
     tabClass = '',
     class: cls = '',
     accessory,
+    minWidth = $bindable(0),
   }: Props = $props();
+
+  const overflows = $derived(variant === 'panel');
+  let stripEl = $state<HTMLDivElement | null>(null);
+  let measureEl = $state<HTMLDivElement | null>(null);
+  // What the strip has room for, and each tab's advance (its width plus the
+  // gap or overlap before it) in the invisible copy.
+  let avail = $state(Infinity);
+  let advances = $state<number[]>([]);
+  let moreAdvance = $state(0);
+  let padEnd = $state(0);
+
+  function measure() {
+    if (!measureEl) return;
+    const els = Array.from(measureEl.children) as HTMLElement[];
+    const style = getComputedStyle(measureEl);
+    const start = parseFloat(style.paddingLeft) || 0;
+    let prev = start;
+    const adv: number[] = [];
+    for (const el of els) {
+      const right = el.offsetLeft + el.offsetWidth;
+      adv.push(right - prev);
+      prev = right;
+    }
+    moreAdvance = adv.pop() ?? 0;
+    advances = adv.map((a, i) => (i === 0 ? a + start : a));
+    padEnd = parseFloat(style.paddingRight) || 0;
+  }
+
+  $effect(() => {
+    if (!overflows || !stripEl || !measureEl || typeof ResizeObserver === 'undefined') return;
+    const strip = stripEl;
+    const ro = new ResizeObserver(() => {
+      measure();
+      avail = strip.clientWidth;
+    });
+    ro.observe(strip);
+    ro.observe(measureEl);
+    return () => ro.disconnect();
+  });
+
+  // Which tabs show: as many as fit in order, the active one always.
+  const layout = $derived.by(() => {
+    const all = tabs.map((_, i) => i);
+    if (!overflows || advances.length !== tabs.length)
+      return { shown: all, hidden: [] as number[] };
+    const total = advances.reduce((a, b) => a + b, 0) + padEnd;
+    if (total <= avail + 0.5) return { shown: all, hidden: [] as number[] };
+    const budget = avail - moreAdvance - padEnd;
+    const shown: number[] = [];
+    let used = 0;
+    for (const i of all) {
+      if (used + advances[i] > budget) break;
+      shown.push(i);
+      used += advances[i];
+    }
+    const a = tabs.findIndex((t) => t.key === active);
+    if (a >= 0 && !shown.includes(a)) {
+      while (shown.length && used + advances[a] > budget) used -= advances[shown.pop()!];
+      shown.push(a);
+    }
+    return { shown, hidden: all.filter((i) => !shown.includes(i)) };
+  });
+
+  $effect(() => {
+    const a = tabs.findIndex((t) => t.key === active);
+    minWidth = overflows && a >= 0 && advances.length ? advances[a] + moreAdvance + padEnd : 0;
+  });
+
+  function openMore(ev: MouseEvent) {
+    const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+    openContextMenu(
+      layout.hidden.map((i) => ({ label: tabs[i].label, action: () => onSelect(tabs[i].key) })),
+      r.left,
+      r.bottom,
+    );
+  }
 
   // A sub strip is one tab stop (roving); the panel tabs stay all tabbable.
   const roving = $derived(variant === 'sub');
@@ -47,12 +134,13 @@
 
 <!-- svelte-ignore a11y_interactive_supports_focus -->
 <div
+  bind:this={stripEl}
   class="gs-tabs gs-tabs--{variant} {cls}"
   role="tablist"
   aria-label={label}
   onkeydown={roving ? onKey : undefined}
 >
-  {#each tabs as tab (tab.key)}
+  {#each layout.shown.map((i) => tabs[i]) as tab (tab.key)}
     <button
       type="button"
       class="gs-tabs__tab {tabClass}"
@@ -66,10 +154,37 @@
       {tab.label}
     </button>
   {/each}
+  {#if layout.hidden.length}
+    <button
+      type="button"
+      class="gs-tabs__tab gs-tabs__more"
+      aria-haspopup="menu"
+      aria-label="More views: {layout.hidden.map((i) => tabs[i].label).join(', ')}"
+      title="More views"
+      onclick={openMore}>»</button
+    >
+  {/if}
   {#if accessory}
     <span class="gs-tabs__accessory accessory">{@render accessory()}</span>
   {/if}
 </div>
+{#if overflows}
+  <!-- The invisible copy every tab is measured in (and the "»"). -->
+  <div
+    bind:this={measureEl}
+    class="gs-tabs gs-tabs--{variant} gs-tabs--measure {cls}"
+    aria-hidden="true"
+    inert
+  >
+    {#each tabs as tab (tab.key)}
+      <!-- svelte-ignore a11y_role_supports_aria_props_implicit -->
+      <button type="button" class="gs-tabs__tab" tabindex="-1" aria-selected={tab.key === active}
+        >{tab.label}</button
+      >
+    {/each}
+    <button type="button" class="gs-tabs__tab gs-tabs__more" tabindex="-1">»</button>
+  </div>
+{/if}
 
 <style>
   .gs-tabs {
@@ -173,6 +288,19 @@
   .gs-tabs__tab:disabled {
     opacity: var(--gs-opacity-disabled);
     cursor: default;
+  }
+  /* Off-screen and invisible, at its natural width. */
+  .gs-tabs.gs-tabs--measure {
+    position: fixed;
+    top: 0;
+    left: -10000px;
+    width: max-content;
+    overflow: visible;
+    visibility: hidden;
+    pointer-events: none;
+  }
+  .gs-tabs__more {
+    font-weight: var(--gs-font-weight-bold);
   }
   .gs-tabs__accessory {
     margin-left: auto;

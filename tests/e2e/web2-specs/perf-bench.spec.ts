@@ -133,7 +133,7 @@ test('perf-bench: accelerated + turbo throughput (tracked numbers)', async ({
   await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
 
   // --- PRIMARY: Accelerated via the web2 toolbar ----------------------------
-  await page.getByRole('button', { name: 'accelerated', exact: true }).click();
+  await page.getByRole('button', { name: 'Faster', exact: true }).click();
   await expect
     .poll(async () => probeString(page, 'scheduler.mode'), { timeout: 30_000 })
     .toBe('accelerated');

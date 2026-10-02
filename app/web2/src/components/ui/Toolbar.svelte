@@ -66,9 +66,13 @@
   .gs-toolbar[aria-orientation='vertical'] {
     flex-direction: column;
   }
+  /* A bar too narrow for its tools cuts them off at its own edge rather
+     than drawing them over its neighbours (the panel beside the display). */
   .gs-toolbar[data-variant='bar'] {
     height: var(--gs-toolbar-height);
     flex: 0 0 var(--gs-toolbar-height);
+    min-width: 0;
+    overflow-x: clip;
     padding: 0 var(--gs-space-2);
     background: var(--gs-toolbar-bg);
     border-bottom: var(--gs-border-width) solid var(--gs-toolbar-border);

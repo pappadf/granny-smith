@@ -1,11 +1,16 @@
 <script lang="ts">
-  // A native <select> with a drawn closed box and chevron; the option popup
-  // stays native and follows the colour scheme.  Children are the <option>s.
+  // A native <select> with a drawn closed box and chevron.  Its list is the
+  // app's own menu (so every skin draws it), not the operating system's: a
+  // click, Enter, Space or an arrow key opens a menu of the options, and
+  // choosing one sets the select's value and fires its input and change
+  // events.  On touch the platform's picker stays.  Children are the
+  // <option>s.
   // `class` and `style` (layout only) land on the wrapper; every other
   // attribute (id, onchange, aria-label…) reaches the <select>.
   import type { Snippet } from 'svelte';
   import type { HTMLSelectAttributes } from 'svelte/elements';
   import Icon from '@/components/common/Icon.svelte';
+  import { openContextMenu } from '@/components/common/ContextMenu.svelte';
 
   interface Props extends Omit<HTMLSelectAttributes, 'size' | 'value' | 'children'> {
     value?: unknown;
@@ -27,6 +32,52 @@
     children,
     ...rest
   }: Props = $props();
+
+  let lastPointer = 'mouse';
+
+  function choose(el: HTMLSelectElement, i: number) {
+    if (el.selectedIndex === i) return;
+    el.selectedIndex = i;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function openList() {
+    const el = ref;
+    if (!el || el.disabled) return;
+    const r = el.getBoundingClientRect();
+    const opts = Array.from(el.options);
+    openContextMenu(
+      opts.map((o, i) => ({
+        label: o.text,
+        checked: i === el.selectedIndex,
+        disabled: o.disabled,
+        action: () => choose(el, i),
+      })),
+      r.left,
+      r.bottom + 2,
+      { minWidth: r.width, highlight: el.selectedIndex, returnFocus: el },
+    );
+  }
+
+  function onMouseDown(ev: MouseEvent) {
+    if (lastPointer === 'touch' || ev.button !== 0) return;
+    ev.preventDefault();
+    ref?.focus();
+    openList();
+  }
+
+  function onKeyDown(ev: KeyboardEvent) {
+    if (lastPointer === 'touch') return;
+    if (
+      ['Enter', ' ', 'ArrowDown', 'ArrowUp', 'F4'].includes(ev.key) &&
+      !ev.ctrlKey &&
+      !ev.metaKey
+    ) {
+      ev.preventDefault();
+      openList();
+    }
+  }
 </script>
 
 <span class="gs-select {cls}" data-size={size} data-mono={mono || undefined} {style}>
@@ -36,6 +87,9 @@
     class="gs-select__control"
     aria-invalid={invalid || undefined}
     {...rest}
+    onpointerdown={(ev) => (lastPointer = ev.pointerType)}
+    onmousedown={onMouseDown}
+    onkeydown={onKeyDown}
   >
     {@render children?.()}
   </select>

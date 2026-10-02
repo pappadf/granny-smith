@@ -342,7 +342,7 @@ test('ANS 500: GUI-mode Setup draws in the browser', async ({ page }) => {
   });
 
   // Unthrottled, and the Terminal panel open for the ADB typing below.
-  await page.getByRole('button', { name: 'fast-forward', exact: true }).click();
+  await page.getByRole('button', { name: 'Max', exact: true }).click();
   await page.locator('button.ptab[data-tab="terminal"]').click();
   await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
 

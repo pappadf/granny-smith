@@ -1,0 +1,17 @@
+Granny Smith UI — Midnight and Starlight skins (their shared fonts) — Third-Party Notices
+
+fonts/sora-latin-wght.woff2
+    Sora (variable, Latin subset, as packaged by Fontsource),
+    Copyright 2019 The Sora Project Authors.
+    Licensed under the SIL Open Font License, Version 1.1 (OFL-1.1):
+    https://openfontlicense.org/open-font-license-official-text/
+    Upstream: https://github.com/sora-xor/sora-font
+    Unmodified.
+
+fonts/jetbrains-mono-latin-wght.woff2
+    JetBrains Mono (variable, Latin subset, as packaged by Fontsource),
+    Copyright 2020 The JetBrains Mono Project Authors.
+    Licensed under the SIL Open Font License, Version 1.1 (OFL-1.1):
+    https://openfontlicense.org/open-font-license-official-text/
+    Upstream: https://github.com/JetBrains/JetBrainsMono
+    Unmodified.

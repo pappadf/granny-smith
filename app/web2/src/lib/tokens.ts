@@ -17,15 +17,14 @@ export function readMetric(name: `--gs-${string}`, fallbackPx: number): number {
   return Number.isFinite(v) ? v : fallbackPx;
 }
 
-// Calls `cb` after the skin or the scheme changes (the data-skin and
-// data-theme attributes on <html>), so code holding a measured value can
-// read it again.  Returns the unsubscribe.
+// Calls `cb` after the skin changes (the data-skin attribute on <html>), so
+// code holding a measured value can read it again.  Returns the unsubscribe.
 export function onAppearanceChange(cb: () => void): () => void {
   if (typeof MutationObserver === 'undefined' || typeof document === 'undefined') return () => {};
   const mo = new MutationObserver(() => cb());
   mo.observe(document.documentElement, {
     attributes: true,
-    attributeFilter: ['data-skin', 'data-theme'],
+    attributeFilter: ['data-skin'],
   });
   return () => mo.disconnect();
 }

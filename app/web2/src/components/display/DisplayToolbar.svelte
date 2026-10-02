@@ -1,15 +1,7 @@
 <script lang="ts">
   import { machine, setZoom } from '@/state/machine.svelte';
   import { layout, setPanelPos, setPanelCollapsed, type PanelPos } from '@/state/layout.svelte';
-  import {
-    appearance,
-    resolved,
-    toggleScheme,
-    canToggleScheme,
-    setSchemeMode,
-    setSkin,
-    activeSkin,
-  } from '@/state/appearance.svelte';
+  import { resolved, setSkin } from '@/state/appearance.svelte';
   import { skins } from '@/skins/registry';
   import { camera, setCameraEnabled } from '@/state/camera.svelte';
   import {
@@ -83,33 +75,14 @@
     layout.fullscreen ? 'Exit full screen' : 'Enter full screen — hide panel and chrome',
   );
 
-  const themeTitle = $derived(
-    !canToggleScheme()
-      ? `Theme: ${resolved.scheme} (this skin has one)`
-      : resolved.scheme === 'dark'
-        ? 'Theme: dark. Click for light.'
-        : 'Theme: light. Click for dark.',
-  );
-
-  // The appearance menu beside the theme toggle: the scheme mode (a scheme
-  // the skin lacks is disabled) and the skin.
+  // The appearance menu: every skin, the one on screen checked.
   function onAppearanceMenu(ev: MouseEvent) {
     const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
-    const has = activeSkin().schemes;
-    const items: ContextMenuItem[] = [
-      ...(['dark', 'light', 'system'] as const).map((m) => ({
-        label: m === 'system' ? 'System' : m === 'dark' ? 'Dark' : 'Light',
-        checked: appearance.schemeMode === m,
-        disabled: m !== 'system' && !has.includes(m),
-        action: () => setSchemeMode(m),
-      })),
-      { sep: true },
-      ...skins.map((s) => ({
-        label: s.name,
-        checked: resolved.skin === s.id,
-        action: () => setSkin(s.id),
-      })),
-    ];
+    const items: ContextMenuItem[] = skins.map((s) => ({
+      label: s.name,
+      checked: resolved.skin === s.id,
+      action: () => setSkin(s.id),
+    }));
     openContextMenu(items, r.left, r.bottom);
   }
 
@@ -249,12 +222,13 @@
       class="tbtn"
       icon={runIcon}
       label={runTitle}
+      data-caption={runTitle}
       disabled={!isLive}
       onclick={onRunPause}
     />
     <IconButton
       class="tbtn"
-      icon="sign-out"
+      icon="power"
       label="Shut down"
       title="Shut down — return to Welcome view"
       disabled={!everStarted}
@@ -271,26 +245,26 @@
       options={[
         {
           value: 'live',
-          label: 'real-time',
-          title: "Real-Time — runs at the original Mac's speed",
+          label: 'Real',
+          title: "Real — runs at the original Mac's speed",
         },
         {
           value: 'accel',
-          label: 'accelerated',
+          label: 'Faster',
           title:
-            'Accelerated — runs faster while keeping games, sound, and animations at the correct speed, like adding a CPU accelerator card',
+            'Faster — runs faster while keeping games, sound, and animations at the correct speed, like adding a CPU accelerator card',
         },
         {
           value: 'turbo',
-          label: 'fast-forward',
+          label: 'Max',
           title:
-            'Fast-Forward — runs everything as fast as possible to skip ahead; games and sound run fast too',
+            'Max — runs everything as fast as possible to skip ahead; games and sound run fast too',
         },
       ]}
     />
   </div>
   <Separator class="sep" />
-  <div class="tg view">
+  <div class="tg view" data-caption="Zoom">
     <IconButton
       class="tbtn"
       icon="minus"
@@ -350,18 +324,9 @@
   </div>
   <div class="layout-controls">
     <IconButton
-      class="tbtn"
-      icon="color-mode"
-      label={themeTitle}
-      disabled={!canToggleScheme()}
-      onclick={toggleScheme}
-    />
-    <IconButton
       class="tbtn appearance-menu"
-      icon="chevron"
-      iconSize="xs"
-      size="sm"
-      label="Appearance: scheme and skin"
+      icon="brush"
+      label="Appearance"
       aria-haspopup="menu"
       onclick={onAppearanceMenu}
     />

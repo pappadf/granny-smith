@@ -8,7 +8,8 @@ the upstream source, and whether it has been modified.
 1. VS Code Codicons
 ================================================================================
 
-The SVG icons embedded in `icons/sprite.svg` are copied verbatim from the
+The SVG icons embedded in the default sprite (src/icons/sprite.svg, bundled
+with the app) are copied verbatim from the
 Visual Studio Code Codicons project. The sprite uses prototype-style local
 ids (e.g. `i-play`, `i-stop`, `i-hd`, `i-floppy`); the upstream codicon
 names of the icons reproduced here are:
@@ -25,9 +26,7 @@ names of the icons reproduced here are:
     circle-filled             (enabled breakpoint or watchpoint)
     circle-large              ("empty slot" indicator in the Machine tree)
     close                     (toast, popover, find and usage-pane close buttons)
-    cloud-download            (Save State button, Download log button)
     cloud-upload              (Upload ROM / Upload image actions)
-    color-mode                (theme toggle button)
     debug-pause               (Run/Pause toolbar button when running, debug Pause)
     debug-restart             (debug Restart action)
     debug-stackframe          (current PC marker in the disassembly)
@@ -56,11 +55,17 @@ names of the icons reproduced here are:
     screen-full               (Display Toolbar Full Screen button — enter)
     screen-normal             (Display Toolbar Full Screen button — exit)
     server                    (Hard Disk rows in trees and Images)
-    sign-out                  (Display Toolbar Shut Down button)
+    sign-out                  (icon gallery only)
     trash                     (Clear log button, Delete snapshot button)
     unmute                    (Sound/PWM node in the Machine tree)
     vm                        (Computer / Mac model icons)
     warning                   (toast warning badge)
+
+Four symbols are drawn for Granny Smith, not taken from Codicons: `i-power`
+(the Display Toolbar Shut Down button), `i-ellipsis` (the panel header's
+folded actions menu), `i-download` (a circled down arrow: the Save State
+button and the Download log button) and `i-brush` (the Appearance menu
+button).
 
 Source:
     https://github.com/microsoft/vscode-codicons

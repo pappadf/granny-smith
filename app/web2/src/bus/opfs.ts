@@ -4,7 +4,11 @@
 
 import type { CheckpointEntry, ImageCategory, OpfsEntry, RomInfo } from './types';
 import { CHECKPOINT_DIR, ROMS_DIR, FDHD_DIR } from '@/lib/opfsPaths';
-import { parseCheckpointDirName, formatCheckpointLabel } from '@/lib/checkpointMeta';
+import {
+  parseCheckpointDirName,
+  formatCheckpointLabel,
+  manifestMachine,
+} from '@/lib/checkpointMeta';
 import { gsEval, gsErrorText, isModuleReady } from './emulator';
 
 export interface OpfsBackend {
@@ -164,9 +168,10 @@ export class BrowserOpfs implements OpfsBackend {
       if (e.kind !== 'directory') continue;
       const parsed = parseCheckpointDirName(e.name);
       if (!parsed) continue;
-      const manifest = await this.readJson<{ label?: string; machine?: string }>(
+      const manifest = await this.readJson<{ label?: string; machine?: unknown }>(
         `${e.path}/manifest.json`,
       );
+      const m = manifestMachine(manifest?.machine);
       let sizeBytes = 0;
       try {
         const dirEntries = await this.list(e.path);
@@ -186,7 +191,8 @@ export class BrowserOpfs implements OpfsBackend {
         id: parsed.id,
         created: parsed.created,
         label: manifest?.label ?? formatCheckpointLabel(parsed.created),
-        machine: manifest?.machine ?? 'unknown',
+        model: m?.model ?? null,
+        ramBytes: m?.ramBytes ?? 0,
         sizeBytes,
       });
     }

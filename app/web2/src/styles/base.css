@@ -4,15 +4,10 @@
    looks like the skin because of this file. */
 @layer gs.base {
   /* Native controls (select pickers, checkboxes, radios, number spinners,
-     scrollbars) follow the scheme; checkboxes, radios and ranges take the
-     accent. */
-  :root[data-theme='dark'] {
-    color-scheme: dark;
-  }
-  :root[data-theme='light'] {
-    color-scheme: light;
-  }
+     scrollbars) are drawn light or dark as the skin is; checkboxes, radios
+     and ranges take the accent. */
   :root {
+    color-scheme: var(--gs-color-scheme);
     accent-color: var(--gs-control-accent);
   }
 

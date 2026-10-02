@@ -1,5 +1,5 @@
 /* ====== Scale tokens ======
-   Scheme-independent values: type, space, radius, metrics, borders, opacity,
+   Shared values: type, space, radius, metrics, borders, opacity,
    z-order and motion.  A skin may override any of them for its whole
    [data-skin] scope.  The defaults reproduce the workbench look. */
 @layer gs.tokens {

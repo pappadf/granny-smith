@@ -359,6 +359,17 @@
     --gs-activity-dot-opacity-max: 0.6;
     --gs-activity-dot-opacity-min: 0.3;
 
+    /* The display area behind the screen, and the welcome / URL-boot layer
+       over it.  A skin may show its page material through the display; the
+       welcome layer must stay opaque (it covers the empty screen frame). */
+    --gs-display-bg: var(--gs-surface-app);
+    --gs-welcome-bg: var(--gs-surface-app);
+    /* How far the screen's scroll area keeps from the display's edges.  A
+       skin that rounds the display sets it, so a screen larger than the
+       display scrolls inside the straight part and is never cut by the
+       curve (about 0.3 x the corner radius, plus the border). */
+    --gs-display-inset: 0px;
+
     /* The emulated screen's frame (ScreenView): a bezel hook, off by
        default. */
     --gs-screen-frame-bg: var(--gs-surface-screen);
@@ -421,7 +432,7 @@
 
   /* Drive lights and the caps chip sit on the bar's own colour: on an active
      bar (white text on a coloured fill) white-alpha reads, on the idle bar
-     (normal text on a surface) the scheme's own text and warning colours do. */
+     (normal text on a surface) the skin's own text and warning colours do. */
   .gs-statusbar {
     --gs-chip-on-bg: var(--gs-statusbar-chip-on-bg);
     --gs-chip-on-ring: var(--gs-statusbar-chip-on-ring);

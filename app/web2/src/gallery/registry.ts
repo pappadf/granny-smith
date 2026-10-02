@@ -3,7 +3,7 @@
 // separate page load, so global state set by one never leaks into another.
 //
 // tests/e2e/gallery/ui-gallery.spec.ts reads this list from the page
-// (window.__gsGallery) and screenshots every story × variant × scheme.
+// (window.__gsGallery) and screenshots every story × variant × skin.
 export interface StoryProps {
   variant: string;
 }

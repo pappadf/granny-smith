@@ -23,17 +23,7 @@ export {
   type PanelTab,
   type WelcomeSlide,
 } from './layout.svelte';
-export {
-  appearance,
-  resolved,
-  setSkin,
-  setSchemeMode,
-  toggleScheme,
-  canToggleScheme,
-  resolveScheme,
-  applyAppearance,
-  type SchemeMode,
-} from './appearance.svelte';
+export { appearance, resolved, setSkin, applyAppearance } from './appearance.svelte';
 export {
   toasts,
   showNotification,
