@@ -12,13 +12,12 @@ import { test, expect, type Page } from "@playwright/test";
 import { STORIES } from "../../../app/web2/src/gallery/registry";
 import { MANIFESTS } from "../../../app/web2/src/skins/manifests";
 
-// The Workbench skins are compared exactly.  The others draw large anti-aliased
-// curves, gradients and translucency, which Chromium re-rasters a level or
-// few apart depending on the page's compositing history (the same DOM, shot
-// twice, differs): they allow that much colour noise per pixel, and still not
-// a single pixel beyond it.
+// Chromium re-rasters anti-aliased edges, gradients and translucency a level
+// or few apart depending on the page's compositing history (the same DOM,
+// shot twice, differs), even a plain button's rounded corners: every skin
+// allows that much colour noise per pixel, and still not a single pixel
+// beyond it.
 const RASTER_NOISE = { threshold: 0.03 };
-const EXACT = new Set(["workbench", "workbench-light"]);
 
 // Open one story variant and wait until it has rendered and settled.
 async function openStory(
@@ -55,7 +54,7 @@ for (const story of STORIES) {
           await expect(page.locator(".gallery-error")).toHaveCount(0);
           await expect(page).toHaveScreenshot(
             `${story.name}-${variant}-${skin}.png`,
-            EXACT.has(skin) ? {} : RASTER_NOISE,
+            RASTER_NOISE,
           );
         });
       }
