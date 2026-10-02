@@ -40,7 +40,7 @@ tests/e2e/
 │   ├── console.spec.ts                  # Terminal console: value/error entries, Copy as commands → paste → one job
 │   ├── debug-panel.spec.ts              # Debug view on a live machine: register edit, breakpoints, repaint while paused
 │   ├── display-card-config.spec.ts      # New Machine dialog: card-by-name video config
-│   ├── compact-import.spec.ts           # 2 GiB disk via HD=/zip/local file stored as UDIF; origin usage never grows past it
+│   ├── compact-import.spec.ts           # 2 GiB disk via HD=/zip/local file stored as UDIF; origin usage never grows past it, zip heap bounded, cancel/out-of-quota leave nothing
 │   ├── copy-jitter.spec.ts              # Measurement: request round trip while a 192 MB files.cp runs (VITE_GS_MEASURE=1)
 │   ├── display-drop.spec.ts             # Drag-and-drop onto the Display (ROM/floppy/checkpoint)
 │   ├── fd-duplicate-name.spec.ts        # Duplicate floppy names in the image library
