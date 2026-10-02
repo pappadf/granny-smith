@@ -429,6 +429,90 @@ TEST(chunk_bound_applies_to_foreign_images) {
     free(in);
 }
 
+// ---- interop samples ------------------------------------------------------
+
+// With GS_UDIF_INTEROP_DIR set, write a set of images there for other tools
+// to open -- the macOS CI job runs hdiutil on them (.github/workflows/
+// udif-interop.yml) -- each <name>.dmg beside <name>.img, the disk it must
+// decode to (zero-padded to a sector), and a MANIFEST of the names.  Every
+// sample also passes check_image here.  Without the variable it does nothing.
+static void emit_sample(const char *dir, FILE *manifest, const char *name, const uint8_t *in, size_t len,
+                        uint32_t chunk_sectors, int level) {
+    char dmg[512], img[512];
+    snprintf(dmg, sizeof(dmg), "%s/%s.dmg", dir, name);
+    snprintf(img, sizeof(img), "%s/%s.img", dir, name);
+    udif_writer_stats_t st;
+    write_image(dmg, in, len, 1u << 20, chunk_sectors, level, &st);
+    check_image(dmg, in, len, &st);
+    size_t padded = (len + 511) / 512 * 512;
+    FILE *f = fopen(img, "wb");
+    ASSERT_TRUE(f != NULL);
+    ASSERT_TRUE(fwrite(in, 1, len, f) == len);
+    for (size_t i = len; i < padded; i++)
+        ASSERT_TRUE(fputc(0, f) == 0);
+    int rc = fclose(f);
+    ASSERT_EQ_INT(0, rc);
+    fprintf(manifest, "%s\n", name);
+}
+
+// Text-like content only: long runs of literals and matches, so every
+// chunk is dynamic-Huffman coded.
+static uint8_t *make_text(size_t len, uint64_t seed) {
+    static const char *words[] = {"System", "Folder",   "Finder", "the",  "of",   "Macintosh", "disk",
+                                  "file",   "resource", "fork",   "INIT", "cdev", "{",         "}\r"};
+    g_rng = seed | 1;
+    uint8_t *b = malloc(len ? len : 1);
+    ASSERT_TRUE(b != NULL);
+    for (size_t at = 0; at < len;) {
+        const char *w = words[rnd() % (sizeof(words) / sizeof(words[0]))];
+        for (size_t i = 0; w[i] && at < len; i++)
+            b[at++] = (uint8_t)w[i];
+        if (at < len)
+            b[at++] = ' ';
+    }
+    return b;
+}
+
+TEST(writer_emits_interop_samples) {
+    const char *dir = getenv("GS_UDIF_INTEROP_DIR");
+    if (!dir || !*dir)
+        return;
+    mkdir(dir, 0777);
+    char path[512];
+    snprintf(path, sizeof(path), "%s/MANIFEST", dir);
+    FILE *m = fopen(path, "w");
+    ASSERT_TRUE(m != NULL);
+
+    size_t mixed_len = 8u << 20;
+    uint8_t *mixed = make_content(mixed_len, 2024);
+    emit_sample(dir, m, "mixed-l1", mixed, mixed_len, 128, 1);
+    emit_sample(dir, m, "mixed-l9", mixed, mixed_len, 128, 9);
+    emit_sample(dir, m, "mixed-l0", mixed, mixed_len, 128, 0);
+    emit_sample(dir, m, "mixed-4k", mixed, mixed_len, 8, 1);
+    emit_sample(dir, m, "mixed-1m", mixed, mixed_len, 2048, 6);
+    emit_sample(dir, m, "odd-length", mixed, 1000123, 128, 1);
+    free(mixed);
+
+    size_t text_len = 4u << 20;
+    uint8_t *text = make_text(text_len, 7);
+    emit_sample(dir, m, "text-l6", text, text_len, 128, 6);
+    free(text);
+
+    // A blank disk, as files.hd_create makes one, and the zeros it is.
+    snprintf(path, sizeof(path), "%s/blank.dmg", dir);
+    unlink(path);
+    ASSERT_EQ_INT(0, udif_create_empty(path, 64u << 20));
+    snprintf(path, sizeof(path), "%s/blank.img", dir);
+    FILE *f = fopen(path, "wb");
+    ASSERT_TRUE(f != NULL);
+    ASSERT_EQ_INT(0, ftruncate(fileno(f), 64 << 20));
+    int rc = fclose(f);
+    ASSERT_EQ_INT(0, rc);
+    fprintf(m, "blank\n");
+    rc = fclose(m);
+    ASSERT_EQ_INT(0, rc);
+}
+
 int main(void) {
     RUN(deflate_round_trips_at_every_level);
     RUN(deflate_compresses_text_and_reuses_state);
@@ -442,6 +526,7 @@ int main(void) {
     RUN(empty_2gib_is_a_few_kb);
     RUN(corrupt_chunk_fails_only_its_range);
     RUN(chunk_bound_applies_to_foreign_images);
+    RUN(writer_emits_interop_samples);
     sandbox_remove();
     return 0;
 }

@@ -1,0 +1,79 @@
+name: UDIF interop
+
+# The images the UDIF writer makes must open in the tools users have: hdiutil
+# on macOS, and 7-Zip.  A Linux job writes a set of samples with the
+# udif_writer unit suite (each beside the disk it must decode to) and checks
+# them with 7z; a macOS job checks the same files with hdiutil
+# (scripts/check-udif-interop.sh).
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/core/storage/udif_writer.*'
+      - 'src/core/storage/deflate.*'
+      - 'src/core/crc32.*'
+      - 'tests/unit/suites/udif_writer/**'
+      - 'scripts/check-udif-interop.sh'
+      - '.github/workflows/udif-interop.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'src/core/storage/udif_writer.*'
+      - 'src/core/storage/deflate.*'
+      - 'src/core/crc32.*'
+      - 'tests/unit/suites/udif_writer/**'
+      - 'scripts/check-udif-interop.sh'
+      - '.github/workflows/udif-interop.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  samples:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Write the samples
+        run: GS_UDIF_INTEROP_DIR="$PWD/udif-samples" make -C tests/unit/suites/udif_writer run WERROR=1
+
+      - name: Check them with 7z
+        run: scripts/check-udif-interop.sh udif-samples
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: udif-samples
+          path: udif-samples
+          retention-days: 3
+
+  hdiutil:
+    needs: samples
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: udif-samples
+          path: udif-samples
+
+      - name: Check them with hdiutil
+        run: scripts/check-udif-interop.sh udif-samples
