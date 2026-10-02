@@ -1271,7 +1271,8 @@ A preprocess step in `svelte.config.js` puts every component `<style>` in
 **Rules** (enforced by `tests/lint/tokens.test.ts`, `contrast.test.ts` and
 `sprite.test.ts`):
 - every `var(--gs-*)` names a contract token, with no fallback;
-- no literal colours or scale values in components;
+- every contract token is read somewhere (CSS `var()` or `readToken`);
+- no literal colours, scale values or opacities in components;
 - focus is never hidden;
 - every stylesheet is in its layer;
 - only `state/appearance` writes the appearance attributes;

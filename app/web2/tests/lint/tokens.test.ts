@@ -332,27 +332,28 @@ describe('design tokens', () => {
     expect(bad).toEqual([]);
   });
 
-  // Report (not fail) contract tokens nothing reads yet.
-  it('reports unread tokens', () => {
+  // Every contract token is read somewhere: in CSS through var(), or from
+  // TypeScript through readToken / readMetric.  A token nothing reads is
+  // dead weight every skin has to carry.
+  it('every token is read', () => {
     const read = new Set<string>();
     for (const f of SOURCES) {
       if (VALUE_FILES.includes(f)) continue;
-      for (const m of readFileSync(f, 'utf8').matchAll(/var\(\s*(--gs-[a-z0-9-]+)/g))
+      const text = readFileSync(f, 'utf8');
+      for (const m of text.matchAll(/var\(\s*(--gs-[a-z0-9-]+)/g)) read.add(m[1]);
+      for (const m of text.matchAll(/read(?:Token|Metric)\(\s*'(--gs-[a-z0-9-]+)'/g))
         read.add(m[1]);
     }
     // Token defaults read each other too.
     for (const f of VALUE_FILES)
       for (const m of readFileSync(f, 'utf8').matchAll(/var\(\s*(--gs-[a-z0-9-]+)/g))
         read.add(m[1]);
-    const unread = TOKENS.filter((t) => !read.has(t.name)).map((t) => t.name);
-    if (unread.length) console.warn(`tokens nothing reads yet: ${unread.join(', ')}`);
-    expect(Array.isArray(unread)).toBe(true);
+    expect(TOKENS.filter((t) => !read.has(t.name)).map((t) => t.name)).toEqual([]);
   });
 
-  // Report (not fail) literal opacities in components: an opacity is a
-  // visual value a skin may want, so it belongs in an --gs-opacity-* or a
-  // component token.
-  it('reports literal opacity values', () => {
+  // No literal opacities in components: an opacity is a visual value a skin
+  // may want, so it belongs in a component token.
+  it('no literal opacity values', () => {
     const found: string[] = [];
     for (const f of SOURCES) {
       if (!f.endsWith('.svelte')) continue;
@@ -363,7 +364,6 @@ describe('design tokens', () => {
           found.push(`${rel(f)}: opacity: ${v}`);
       }
     }
-    if (found.length) console.warn(`literal opacities:\n  ${found.join('\n  ')}`);
-    expect(Array.isArray(found)).toBe(true);
+    expect(found).toEqual([]);
   });
 });

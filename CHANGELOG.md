@@ -97,7 +97,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shell and terminal UX: state-aware prompt, working tab completion, quieter checkpoints, persistent history.
 
 ### Fixed
-- **Web UI styling leftovers** — the drop-to-open overlay fades in and out (it appeared abruptly); log lines and the console take their colours from the `--gs-log-*` and `--gs-console-*` tokens, so a skin can set them; the rename, Create Image, SYSTEM argument and preview-notice dialogs use the shared form primitives (`Field`, `FormGrid`, `Hint`, `Link`); `code`, `kbd` and `strong` in empty states get base styles; the unused `port` and `empty` icons are gone.
+- **Web UI styling leftovers** — the drop-to-open overlay fades in and out (it appeared abruptly); log lines and the console take their colours from the `--gs-log-*` and `--gs-console-*` tokens, so a skin can set them; the rename, Create Image, SYSTEM argument and preview-notice dialogs use the shared form primitives (`Field`, `FormGrid`, `Hint`, `Link`); `code`, `kbd` and `strong` in empty states get base styles; the unused `port` and `empty` icons are gone. Sixteen design tokens nothing read are gone (the intent `-border` and most `-on-solid` tokens, two debugger colours, four unused scale steps, three unused component knobs), and the token lint now fails on an unread token or a literal opacity.
+- **Contrast** — the warning icon on a toast is readable in the light skins (Starlight, Platinum, Aqua, Workbench Light: a darker amber), and Workbench's danger red is a step darker so a danger button's white label meets 4.5:1.
 - The emulator defect ledger is closed: 11 of 11.
 - 68020+ bit-field conformance, inverted `FMOVEM.X` direction for control-mode EAs, `CHK` N-flag, `MOVES` same-register store, and aborted writes on extension-word fetch faults.
 - IIfx/SWIM IOP: 24-bit master-pointer flags no longer abort the Mac OS 7.6 Installer, which now installs end to end.

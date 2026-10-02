@@ -52,23 +52,16 @@
     /* Intents */
     --gs-info-fg: #6aa6ff;
     --gs-info-bg: rgba(80, 140, 220, 0.25);
-    --gs-info-border: rgba(80, 140, 220, 0.5);
     --gs-info-solid: #59a4f9;
-    --gs-info-on-solid: #ffffff;
     --gs-success-fg: #4ac26b;
     --gs-success-bg: rgba(35, 134, 54, 0.25);
-    --gs-success-border: rgba(74, 194, 107, 0.5);
     --gs-success-solid: #6a9955;
-    --gs-success-on-solid: #ffffff;
     --gs-warning-fg: #f5c542;
     --gs-warning-bg: rgba(204, 167, 0, 0.2);
-    --gs-warning-border: rgba(204, 167, 0, 0.5);
     --gs-warning-solid: #cca700;
-    --gs-warning-on-solid: #000000;
     --gs-danger-fg: #f48771; /* errorForeground */
     --gs-danger-bg: rgba(248, 81, 73, 0.25);
-    --gs-danger-border: rgba(241, 76, 76, 0.5);
-    --gs-danger-solid: #f14c4c;
+    --gs-danger-solid: #d13b3b;
     --gs-danger-on-solid: #ffffff;
 
     /* Machine state (the status bar) */

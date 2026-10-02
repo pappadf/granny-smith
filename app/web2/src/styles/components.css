@@ -21,8 +21,6 @@
     --gs-code-address: var(--gs-text-muted);
     --gs-code-mnemonic: var(--gs-text-strong);
     --gs-code-operand: var(--gs-text);
-    --gs-code-comment: var(--gs-syntax-comment);
-    --gs-code-symbol: var(--gs-text);
     --gs-code-pc-marker: var(--gs-focus-ring);
     --gs-code-breakpoint: var(--gs-danger-solid);
     --gs-code-breakpoint-off: var(--gs-text-subtle);
@@ -158,7 +156,6 @@
     --gs-segmented-bg-hover: var(--gs-control-hover);
     --gs-segmented-fg-selected: var(--gs-text-strong);
     --gs-segmented-bg-selected: var(--gs-control-active);
-    --gs-segmented-border: transparent;
     --gs-segmented-fg-disabled: color-mix(in srgb, var(--gs-segmented-fg) 50%, transparent);
 
     /* Toggle chips (ui/ToggleChip.svelte) */
@@ -189,8 +186,6 @@
 
     /* Checkboxes and radios (ui/Checkbox.svelte, ui/RadioGroup.svelte):
        native controls with the accent; a skin may draw its own. */
-    --gs-check-size: 13px;
-    --gs-check-radius: var(--gs-radius-xs);
 
     /* Forms (ui/Field.svelte, ui/FormGrid.svelte) */
     --gs-field-label-fg: var(--gs-text);
