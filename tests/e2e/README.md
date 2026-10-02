@@ -51,6 +51,7 @@ tests/e2e/
 │   ├── laserwriter-print.spec.ts        # LaserWriter print from System 6 ends as a PDF download (platen worker)
 │   ├── lisa-xenix-profile.spec.ts       # Lisa/XL ProFile-vs-SCSI config + boot
 │   ├── machine-restart.spec.ts          # Restart power-cycles the machine; the attached disk survives, same open instance
+│   ├── panel-tabs-overflow.spec.ts      # Narrow panel: tabs overflow into a » menu, header actions fold into ⋯ (every skin)
 │   ├── pci-prom-ingest.spec.ts          # A 9500 configured on an uploaded PCI display card; the .prom survives a reload
 │   ├── pdm-double-boot.spec.ts          # pm6100 + Mac OS 8.1 boots exactly once (PRAM seeding), also on a reused image
 │   ├── perf-bench.spec.ts               # Accelerated + turbo throughput (tracked numbers)
