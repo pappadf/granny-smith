@@ -1,6 +1,6 @@
 import type { SkinManifest } from '../types';
 
-// Midnight: floating translucent glass cards over a blue-black page lit by
+// The default skin.  Midnight: floating translucent glass cards over a blue-black page lit by
 // indigo and teal glows, a periwinkle accent.  Sora and JetBrains Mono
 // (public/skins/glass/, shared with Starlight), the default sprite, and the
 // glass layout (../glass.css) as its overrides, as drawn.

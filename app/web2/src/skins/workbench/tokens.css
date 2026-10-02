@@ -1,11 +1,9 @@
 /* ====== Workbench skin: semantic tokens ======
-   The default look, derived from VS Code's workbench colours
+   The VS Code look, derived from VS Code's workbench colours
    (src/vs/workbench/common/theme.ts, src/vs/platform/theme/common/colors/*),
    dark; Workbench Light is its light counterpart.  A skin defines every
-   semantic token of src/styles/contract.ts; the bare :root block is the
-   pre-JS default (the page is coloured before the appearance script runs). */
+   semantic token of src/styles/contract.ts. */
 @layer gs.tokens {
-  :root,
   :root[data-skin='workbench'] {
     --gs-color-scheme: dark;
 

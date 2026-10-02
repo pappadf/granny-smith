@@ -9,8 +9,8 @@
 // envelope so future migrations are tractable. Reads tolerate
 // missing/malformed values silently.
 
-import { appearance, firstVisitSkin } from './appearance.svelte';
-import { getSkin } from '@/skins/registry';
+import { appearance } from './appearance.svelte';
+import { DEFAULT_SKIN, getSkin } from '@/skins/registry';
 import { layout, type PanelPos } from './layout.svelte';
 import { debug, type MmuSubtab, type MemoryMode } from './debug.svelte';
 import { logs } from './logs.svelte';
@@ -82,9 +82,9 @@ function writeEnvelope<T>(key: string, data: T): void {
 // modules. Called from main.ts.
 export function loadPersistedState(): void {
   // A skin this build does not know (one removed since), or none, is the
-  // first-visit default.
+  // default.
   const savedSkin = readLS(KEYS.skin);
-  appearance.skin = savedSkin && getSkin(savedSkin).id === savedSkin ? savedSkin : firstVisitSkin();
+  appearance.skin = savedSkin && getSkin(savedSkin).id === savedSkin ? savedSkin : DEFAULT_SKIN;
 
   const savedPos = readLS(KEYS.panelPos);
   if (savedPos === 'bottom' || savedPos === 'left' || savedPos === 'right') {
@@ -171,10 +171,9 @@ export function loadPersistedState(): void {
 // Wire up effects that mirror state changes back to localStorage. Must be
 // called from a root-effect context (or from a component's $effect).
 export function startPersistEffects(): void {
-  // A skin left at the first-visit default is not stored, so it keeps
-  // following the operating system's light or dark.
+  // The default skin is not stored.
   $effect(() => {
-    writeLS(KEYS.skin, appearance.skin === firstVisitSkin() ? null : appearance.skin);
+    writeLS(KEYS.skin, appearance.skin === DEFAULT_SKIN ? null : appearance.skin);
   });
   $effect(() => {
     writeLS(KEYS.panelPos, layout.panelPos);

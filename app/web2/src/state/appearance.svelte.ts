@@ -1,5 +1,5 @@
 import { untrack } from 'svelte';
-import { DEFAULT_SKIN, LIGHT_DEFAULT_SKIN, getSkin } from '@/skins/registry';
+import { DEFAULT_SKIN, getSkin } from '@/skins/registry';
 import type { SkinManifest } from '@/skins/types';
 
 // The appearance: which skin.  Every skin is a light or a dark one (its
@@ -31,16 +31,6 @@ export const resolved: AppearanceResolved = $state({
   skin: DEFAULT_SKIN,
   version: 0,
 });
-
-// The skin for a first visit, before any is chosen: Workbench, light or
-// dark as the operating system prefers.
-export function firstVisitSkin(): string {
-  const light =
-    typeof window !== 'undefined' &&
-    !!window.matchMedia &&
-    window.matchMedia('(prefers-color-scheme: light)').matches;
-  return light ? LIGHT_DEFAULT_SKIN : DEFAULT_SKIN;
-}
 
 // The skin in effect: the session override, else the preference.
 export function activeSkin(): SkinManifest {

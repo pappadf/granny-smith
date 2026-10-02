@@ -7,12 +7,11 @@ Every skin is either a light or a dark one, its `--gs-color-scheme` token
 says which (native controls and scrollbars follow it); there are no light
 and dark versions of a skin. The skins:
 
-- `workbench` (dark, the default) and `workbench-light`: the VS Code-derived
-  look. A first visit gets the one the operating system prefers.
-- `midnight` (dark): floating translucent glass cards over a blue-black page
-  lit by indigo and teal glows.
+- `midnight` (dark, the default): floating translucent glass cards over a
+  blue-black page lit by indigo and teal glows.
 - `starlight` (light): the same floating cards in white on cool grey, the
   toolbar as separate pills.
+- `workbench` (dark) and `workbench-light`: the VS Code-derived look.
 - `platinum` (light): Mac OS 8. Bevelled push buttons and grooves, folder
   tabs, white Finder lists with the lavender highlight, Platinum
   scrollbars, LED status fields, Chivo, and two-tone Finder icons in its
@@ -215,8 +214,7 @@ skin; their baselines are recorded in the CI image
   - `<html data-skin>` selects the token block.
   - `state/appearance.svelte.ts` is its only writer. `index.html`'s
     pre-paint script sets it once before any stylesheet, from `?skin=` or
-    `gs-skin` (else the system's light or dark Workbench), so the first
-    frame is already right.
+    `gs-skin` (else Midnight), so the first frame is already right.
 - **Cascade layers.** `styles/layers.css` fixes the order `gs.reset`,
   `gs.base`, `gs.tokens`, `gs.components`, `gs.skin`, `gs.overrides`.
   - Component styles are put in `gs.components` by a preprocess step in

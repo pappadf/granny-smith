@@ -83,5 +83,5 @@ test("switching the skin restyles the page and the console input at runtime", as
 test("an unknown ?skin= falls back to the default skin", async ({ page }) => {
   await prefs(page, null);
   await open(page, "/index.html?skin=no-such-skin");
-  await expect(page.locator("html")).toHaveAttribute("data-skin", "workbench");
+  await expect(page.locator("html")).toHaveAttribute("data-skin", "midnight");
 });

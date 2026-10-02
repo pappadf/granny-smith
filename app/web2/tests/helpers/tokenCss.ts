@@ -36,19 +36,18 @@ export function skinRules(srcDir: string): Map<string, CssRule[]> {
   return out;
 }
 
-// Whether a selector applies to skin `id`: the skin's own block.  The bare
-// :root (the pre-paint default) is counted for the default skin only.
-export function selectorApplies(sel: string, id: string, isDefault: boolean): boolean {
+// Whether a selector applies to skin `id`: the skin's own block (not the
+// bare :root, the pre-paint fallback the default skin also gives).
+export function selectorApplies(sel: string, id: string): boolean {
   const s = sel.replace(/"/g, "'");
-  if (s === ':root') return isDefault;
   return s.startsWith(':root[') && s.includes(`[data-skin='${id}']`);
 }
 
 // The declarations a skin makes.
-export function skinDecls(rules: CssRule[], id: string, isDefault = false): Map<string, string> {
+export function skinDecls(rules: CssRule[], id: string): Map<string, string> {
   const out = new Map<string, string>();
   for (const r of rules) {
-    if (r.selectors.some((s) => selectorApplies(s, id, isDefault)))
+    if (r.selectors.some((s) => selectorApplies(s, id)))
       for (const [k, v] of r.decls) out.set(k, v);
   }
   return out;

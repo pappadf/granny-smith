@@ -11,10 +11,10 @@ import { aqua } from './aqua/manifest';
 import type { SkinManifest } from './types';
 
 export const MANIFESTS: readonly SkinManifest[] = [
-  workbench,
-  workbenchLight,
   midnight,
   starlight,
   platinum,
   aqua,
+  workbench,
+  workbenchLight,
 ];

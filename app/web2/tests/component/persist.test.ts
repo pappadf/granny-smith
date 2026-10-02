@@ -98,6 +98,6 @@ describe('loadPersistedState — view-state keys', () => {
     expect(appearance.skin).toBe('workbench');
     localStorage.setItem('gs-skin', 'no-such-skin');
     loadPersistedState();
-    expect(appearance.skin).toBe('workbench');
+    expect(appearance.skin).toBe('midnight');
   });
 });

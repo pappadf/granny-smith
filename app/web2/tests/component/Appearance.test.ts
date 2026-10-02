@@ -1,30 +1,18 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   appearance,
   resolved,
   applyAppearance,
   applyUrlSkin,
-  firstVisitSkin,
   setSkin,
 } from '@/state/appearance.svelte';
-import { DEFAULT_SKIN, LIGHT_DEFAULT_SKIN } from '@/skins/registry';
+import { DEFAULT_SKIN } from '@/skins/registry';
 
 beforeEach(() => {
   appearance.skin = DEFAULT_SKIN;
   appearance.sessionSkin = null;
   document.documentElement.removeAttribute('data-skin');
 });
-
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
-
-// The operating system's colour preference, as matchMedia reports it.
-function prefersLight(light: boolean) {
-  vi.stubGlobal('matchMedia', (q: string) => ({
-    matches: light && q === '(prefers-color-scheme: light)',
-  }));
-}
 
 describe('appearance', () => {
   it('applyAppearance writes data-skin and the meta tags', () => {
@@ -46,11 +34,8 @@ describe('appearance', () => {
     expect(resolved.version).toBe(before + 2);
   });
 
-  it('a first visit gets Workbench, light or dark as the system prefers', () => {
-    prefersLight(true);
-    expect(firstVisitSkin()).toBe(LIGHT_DEFAULT_SKIN);
-    prefersLight(false);
-    expect(firstVisitSkin()).toBe(DEFAULT_SKIN);
+  it('Midnight is the default skin', () => {
+    expect(DEFAULT_SKIN).toBe('midnight');
   });
 
   it('setSkin takes only known ids and clears a session override', () => {

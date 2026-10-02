@@ -55,14 +55,14 @@ describe('DisplayToolbar', () => {
     const items = Array.from(document.querySelectorAll('.context-menu .item'));
     const labels = items.map((i) => i.textContent?.trim());
     expect(labels).toEqual([
-      'Workbench',
-      'Workbench Light',
       'Midnight',
       'Starlight',
       'Platinum',
       'Aqua',
+      'Workbench',
+      'Workbench Light',
     ]);
-    await fireEvent.click(items[3] as HTMLElement);
+    await fireEvent.click(items[1] as HTMLElement);
     expect(appearance.skin).toBe('starlight');
     appearance.skin = 'workbench';
     closeContextMenu();

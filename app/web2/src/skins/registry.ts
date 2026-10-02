@@ -9,7 +9,7 @@ import './midnight/tokens.css';
 import './starlight/tokens.css';
 import './platinum/tokens.css';
 import './aqua/tokens.css';
-import { workbench } from './workbench/manifest';
+import { midnight } from './midnight/manifest';
 import { MANIFESTS } from './manifests';
 import type { SkinManifest } from './types';
 import defaultSprite from '../icons/sprite.svg?url';
@@ -28,13 +28,11 @@ export function spriteUrl(id: string): string {
   return SPRITES[`./${id}/sprite.svg`] ?? defaultSprite;
 }
 
-export const DEFAULT_SKIN = 'workbench';
-// The default for a first visit when the operating system prefers light.
-export const LIGHT_DEFAULT_SKIN = 'workbench-light';
+export const DEFAULT_SKIN = 'midnight';
 
 export const skins: readonly SkinManifest[] = MANIFESTS;
 
 // The skin with `id`, or the default when there is none.
 export function getSkin(id: string | null | undefined): SkinManifest {
-  return skins.find((s) => s.id === id) ?? workbench;
+  return skins.find((s) => s.id === id) ?? midnight;
 }

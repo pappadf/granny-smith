@@ -86,8 +86,8 @@ function escapeHtml(s: string): string {
 }
 
 // Every value is a token, so the page follows the active skin (the token
-// stylesheet is loaded by the time main.ts shows it); the fallbacks are the
-// default skin's values, for a page shown before any stylesheet applies.
+// stylesheet is loaded by the time main.ts shows it); the fallbacks are
+// Workbench's dark values, for a page shown before any stylesheet applies.
 // This is the one place token fallbacks are allowed (tests/lint/tokens.test.ts).
 const CSS = `
 .gs-webgl-error {
