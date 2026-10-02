@@ -660,7 +660,8 @@ emulator can read in place is stored as it is (`files.udif_info`), one with
 chunks too large is re-chunked (`files.convert`).  Mac archives (StuffIt,
 Compact Pro, BinHex, MacBinary) still go through staging and
 `files.archive.extract`.  The status bar shows bytes read and stored and a
-cancel button; a failure removes the `.part`, and any `.dmg.part` left by a
+cancel button, for an `HD=` / `CD=` download as for an upload; a failure
+or a cancel removes the `.part`, and any `.dmg.part` left by a
 closed tab is swept at boot (`em_main.c`).  Smaller files keep the staged
 flow, now moved (`files.mv`) into place rather than copied.
 

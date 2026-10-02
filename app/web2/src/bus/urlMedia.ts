@@ -26,6 +26,7 @@ import { gsEval, gsErrorText, isModuleReady } from './emulator';
 import { xferReadAll } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine, setStartupDisk } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
+import { startActivity, endActivity } from '@/state/activity.svelte';
 import type { SchedulerMode } from '@/state/machine.svelte';
 import {
   urlBoot,
@@ -343,6 +344,9 @@ async function fetchAndImport(
     : { kind: 'blob', blob: await res.blob() };
   const progress = progressReporter(slot);
   let smallPath: string | null = null;
+  // In the status bar like an upload, with its Cancel button (importImage
+  // sets it while the import can be cancelled).
+  startActivity(plan.member ?? plan.fileName, 'Downloading');
   const out = await importImage(
     source,
     plan.container === 'zip' ? plan.fileName : (plan.containerName ?? plan.fileName),
@@ -364,7 +368,7 @@ async function fetchAndImport(
         return path;
       },
     },
-  );
+  ).finally(endActivity);
   if (!out.handled) return false;
   if (!out.path) {
     updateUrlFile(slot, { status: 'failed', error: 'not stored' });
