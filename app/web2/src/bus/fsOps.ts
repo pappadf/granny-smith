@@ -233,7 +233,7 @@ export async function downloadRawImage(
       }
       const out = await handle.createWritable();
       try {
-        for (let at = 0; at < total; ) {
+        for (let at = 0; at < total;) {
           const part = await xferReadDisk(path, at, window);
           if (!part.length) break;
           await out.write(part);
@@ -253,7 +253,7 @@ export async function downloadRawImage(
         error: `this browser cannot save a ${Math.round(total / (1024 * 1024))} MB raw image (no save picker); download the .dmg instead`,
       };
     const parts: Uint8Array[] = [];
-    for (let at = 0; at < total; ) {
+    for (let at = 0; at < total;) {
       const part = await xferReadDisk(path, at, window);
       if (!part.length) break;
       parts.push(part);

@@ -61,8 +61,7 @@ export async function maybeOfferBackgroundCheckpoint(): Promise<boolean> {
 // The outcome of Save State: the name the browser downloads the file as, or
 // which step failed and why.
 export type SaveCheckpointResult =
-  | { ok: true; name: string }
-  | { ok: false; step: 'save' | 'download'; message: string };
+  { ok: true; name: string } | { ok: false; step: 'save' | 'download'; message: string };
 
 export async function saveCheckpoint(): Promise<SaveCheckpointResult> {
   const name = `saved-state-${compactTimestamp()}.bin`;
