@@ -77,27 +77,3 @@ jobs:
 
       - name: Check them with hdiutil
         run: scripts/check-udif-interop.sh udif-samples
-
-      # TEMP diagnostics: hdiutil's own view, and an hdiutil-made image to compare.
-      - name: Diagnose
-        if: failure()
-        run: |
-          hdiutil imageinfo -verbose -debug udif-samples/blank.dmg 2>&1 | tail -120 || true
-          hdiutil create -size 8m -layout NONE -fs HFS+ -volname Ref ref.dmg
-          hdiutil convert ref.dmg -format UDZO -o refz.dmg
-          for f in refz.dmg udif-samples/blank.dmg; do
-            python3 - "$f" <<'PY'
-          import struct, sys, plistlib
-          d = open(sys.argv[1], 'rb').read()
-          k = d[-512:]
-          print(sys.argv[1], len(d), k[:16].hex())
-          print('koly', k.hex())
-          xo, xl = struct.unpack('>QQ', k[0xD8:0xE8])
-          x = d[xo:xo + xl]
-          print(x.decode(errors='replace')[:6000])
-          p = plistlib.loads(x)
-          for key, arr in p.get('resource-fork', {}).items():
-              for e in arr:
-                  print(key, e.get('ID'), e.get('Name'), e.get('Attributes'), e['Data'][:240].hex())
-          PY
-          done

@@ -431,8 +431,7 @@ static uint8_t *build_mish(const udif_writer_t *w, size_t *out_len) {
     put64(b + MISH_COUNT, w->sectors);
     put64(b + MISH_DATA_OFF, 0);
     put32(b + MISH_BUFFERS, w->chunk_sectors + 8);
-    // hdiutil's own whole-disk table (-layout NONE) says -2 here; with 0 it
-    // cannot work out the image's block-table IDs and refuses the image.
+    // -2, as in hdiutil's own whole-disk table (-layout NONE).
     put32(b + MISH_DESC, 0xFFFFFFFEu);
     put32(b + MISH_CK_TYPE, UDIF_CHECKSUM_CRC32);
     put32(b + MISH_CK_BITS, 32);
@@ -482,8 +481,7 @@ static char *build_plist(const udif_writer_t *w, size_t *out_len) {
     sb_str(&s, "</string>\n"
                "\t\t\t</dict>\n\t\t</array>\n");
     // The 'plst' resource hdiutil writes beside 'blkx', byte for byte: 1032
-    // bytes, zero but for 1s at 0x205 and 0x207.  hdiutil does not open an
-    // image without it.
+    // bytes, zero but for 1s at 0x205 and 0x207.
     uint8_t plst[1032] = {0};
     plst[0x205] = 1;
     plst[0x207] = 1;
