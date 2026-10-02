@@ -49,6 +49,7 @@ import { persistAs, streamToOpfs, discardStaging, stagedArchiveFormat } from './
 import { UPLOAD_DIR } from '@/lib/opfsPaths';
 import { getProfile } from './profile';
 import { attachHardDisk, attachCdrom, insertFloppy, type MediaResult } from './media';
+import { importImage, type DiskCategory, type ImportSource } from './importImage';
 
 export interface UrlMediaParams {
   rom: string | null;
@@ -276,6 +277,10 @@ async function fetchAndPersist(
   url: string,
   category: MediaTypeId,
 ): Promise<string | undefined> {
+  if (category === 'hd' || category === 'cdrom') {
+    const imported = await fetchAndImport(slot, url, category);
+    if (imported !== false) return imported;
+  }
   const staged = await fetchAndStage(slot, url);
   if (!staged) return undefined;
   const persisted = await persistAs(staged.path, staged.name, category);
@@ -288,6 +293,92 @@ async function fetchAndPersist(
     'warning',
   );
   return staged.path;
+}
+
+// Fetch a hard-disk or CD value and stream it into a compact UDIF
+// (bus/importImage.ts): the body -- or the named member of a zip body, or a
+// gzip body's content -- goes into the core's writer as it arrives, so a
+// 45 MB download of a 2 GB disk never needs 2 GB.  A small file is staged
+// and persisted as before.  Returns the path to attach from, undefined when
+// nothing was stored, or false when the body is a Mac archive, which the
+// staged flow unpacks.
+async function fetchAndImport(
+  slot: string,
+  url: string,
+  category: DiskCategory,
+): Promise<string | undefined | false> {
+  const label = slot.toUpperCase();
+  let plan: MediaFetchPlan;
+  try {
+    plan = await planMediaFetch(url, window.location.href, fetchJson);
+  } catch (e) {
+    const msg = fetchFailureText(e, url);
+    showNotification(`${label}: ${msg}`, 'error');
+    updateUrlFile(slot, { status: 'failed', error: msg });
+    return undefined;
+  }
+  updateUrlFile(slot, { name: plan.member ?? plan.fileName, status: 'downloading' });
+  let res: Response;
+  try {
+    try {
+      res = await fetch(plan.fetchUrl);
+    } catch (e) {
+      throw new MediaUrlError(fetchFailureText(e, plan.fetchUrl));
+    }
+    if (!res.ok) {
+      const what = res.status === 404 ? 'not found' : `${res.status} ${res.statusText}`;
+      throw new MediaUrlError(`${plan.containerName ?? plan.fileName}: ${what}`);
+    }
+  } catch (e) {
+    const msg = fetchFailureText(e, plan.fetchUrl);
+    showNotification(`${label}: ${msg}`, 'error');
+    updateUrlFile(slot, { status: 'failed', error: msg });
+    return undefined;
+  }
+  const length = Number(res.headers.get('Content-Length'));
+  const total = Number.isFinite(length) && length > 0 ? length : null;
+  updateUrlFile(slot, { total });
+  const source: ImportSource = res.body
+    ? { kind: 'stream', stream: res.body, total }
+    : { kind: 'blob', blob: await res.blob() };
+  const progress = progressReporter(slot);
+  let smallPath: string | null = null;
+  const out = await importImage(
+    source,
+    plan.container === 'zip' ? plan.fileName : (plan.containerName ?? plan.fileName),
+    {
+      categories: [category],
+      member: plan.container ? plan.member : null,
+      onProgress: (read) => progress(read),
+      onSmall: async (path, name) => {
+        const persisted = await persistAs(path, sanitizeName(name) || slot, category);
+        if (persisted) {
+          await discardStaging(path);
+          return persisted;
+        }
+        showNotification(
+          `${slot}: not recognised as ${category}; attaching the downloaded copy`,
+          'warning',
+        );
+        smallPath = path;
+        return path;
+      },
+    },
+  );
+  if (!out.handled) return false;
+  if (!out.path) {
+    updateUrlFile(slot, { status: 'failed', error: 'not stored' });
+    return undefined;
+  }
+  const size = await gsEval('files.path_size', [out.path]);
+  const name = out.path.split('/').pop() ?? plan.fileName;
+  if (!urlBoot.requested && !smallPath)
+    showNotification(
+      `${label}: ${name}${typeof size === 'number' ? ` (${sizeText(size)} stored)` : ''}`,
+      'info',
+    );
+  updateUrlFile(slot, { name, status: 'done' });
+  return out.path;
 }
 
 // Fetch the two chips of a ROM dumped as byte-wide halves, interleave them

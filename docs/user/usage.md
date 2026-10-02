@@ -27,6 +27,9 @@ If you have previously used the emulator, images may already exist in the browse
 - If no URL parameters are provided, the New Machine dialog lists every stored ROM (identified by its own checksum), and the media dropdowns offer the stored floppy, hard-disk and CD images.
 - If URL parameters are provided, the downloaded images land in the same folders.
 
+#### Compact storage of hard-disk and CD images
+A browser charges a stored file's full size against the site's storage allowance, even the parts that are empty. So hard-disk and CD images larger than 16 MB — uploaded, dropped, or given in the URL — are stored compressed, as `.dmg` (UDIF) files: empty space costs nothing and the rest is compressed, so a 2 GB disk with a small system on it takes tens of MB. They are converted while they download or upload (a zip or gzip is unpacked on the way), so the full-size disk never has to fit in the browser's storage, even for a moment. A `System 7.5.3.img` you add is stored as `System_7.5.3.dmg`. A blank hard disk made with **Create blank image…** is a `.dmg` too, a couple of KB whatever its size. Downloading one from the Filesystem tab gives you that `.dmg`, which macOS (`hdiutil`), 7-Zip and `dmg2img` open; `files.convert <dmg> <img> format=raw` in the terminal writes a plain image. The progress shows how much was read and how much stored, with a button to cancel.
+
 #### 3. Drag-and-Drop
 If a required image (such as the ROM) is missing, you can drag and drop the file onto the emulator screen:
 - The emulator will recognize the file type (by size, signature, and checksum).

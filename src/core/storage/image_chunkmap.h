@@ -35,6 +35,23 @@ bool ndif_source_detect(gs_source_t *rsrc);
 // `data`).  NULL with *err when it is not UDIF or cannot be read.
 gs_source_t *udif_source_open(gs_source_t *data, int *err);
 
+// Like udif_source_open, with an explicit bound on a decoded chunk (0: the
+// in-place bound below for a foreign image, none for one this emulator
+// wrote).  A converter that streams every chunk once passes a large bound.
+gs_source_t *udif_source_open_bounded(gs_source_t *data, size_t max_chunk, int *err);
+
+// The bound on a decoded chunk a foreign UDIF is opened in place with:
+// every cache miss decodes a whole chunk, so a 64 MB chunk would cost 64 MB
+// per miss.  Larger-chunked images are refused (-EFBIG); importing one
+// re-chunks it.  Default UDIF_INPLACE_MAX_CHUNK_DEFAULT; files.udif_max_chunk_kb.
+#define UDIF_INPLACE_MAX_CHUNK_DEFAULT (4u * 1024u * 1024u)
+size_t udif_inplace_max_chunk(void);
+void udif_set_inplace_max_chunk(size_t bytes);
+
+// True when a UDIF property list carries the gs-profile key: an image this
+// emulator wrote (udif_writer.h).
+bool udif_xml_is_gs_profile(const uint8_t *xml, size_t len);
+
 // True when the last 512 bytes (`tail`, `len` of them) are a UDIF trailer.
 bool udif_source_detect(const uint8_t *tail, size_t len);
 

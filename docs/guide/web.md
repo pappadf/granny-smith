@@ -610,7 +610,8 @@ worker's OPFS request through the page's thread — it deadlocked the page.
    [`CreateImageDialog.svelte`](../../app/web2/src/components/display/CreateImageDialog.svelte)
    and creates a blank image directly in OPFS via `files.fd_create`
    (800 KB / 1.4 MB) or `files.hd_create` (size from
-   `machine.scsi.hd_models`).
+   `machine.scsi.hd_models`; named `.dmg`, so a blank 2 GB disk is a
+   1.5 KB UDIF).
 2. **Drag-and-drop onto the Display** —
    [`DropOverlay.svelte`](../../app/web2/src/components/display/DropOverlay.svelte)
    captures drops, calls `processDataTransfer` →
@@ -626,7 +627,9 @@ worker's OPFS request through the page's thread — it deadlocked the page.
    [`FilesystemView.svelte`](../../app/web2/src/components/panel-views/filesystem/FilesystemView.svelte)
    accepts external file drops on folder rows, calls
    `acceptFilesRaw(files, targetDir)`. **No validation** — the
-   Filesystem view is the low-level OPFS browser. The same tab also does
+   Filesystem view is the low-level OPFS browser — except into
+   `/opfs/images/hd` and `/opfs/images/cd`, the emulator's own stores, where
+   a large image is imported as one (below). The same tab also does
    *internal* drags — move within OPFS, and **copy a file/folder out of a
    disk image** to an OPFS folder — through the operations in
    [`bus/fsOps.ts`](../../app/web2/src/bus/fsOps.ts).
@@ -635,6 +638,31 @@ worker's OPFS request through the page's thread — it deadlocked the page.
    wraps each section in a drop host. Drop calls
    `acceptFilesAsCategory(files, mediaIdFor(cat))`. Same strict
    per-category validation as path 1.
+
+**Large disk images are imported streamed, never staged expanded.** The
+browser charges a file's logical length against the origin's quota, zeros
+included, so a hard-disk or CD image stored as a raw file costs its full
+size — and staging it before copying it cost that twice.  A file larger than
+`LARGE_IMPORT_BYTES` (16 MiB, [`lib/media.ts`](../../app/web2/src/lib/media.ts))
+dropped on the Display, picked or dropped as an HD/CD, or dropped into
+`/opfs/images/hd` or `/opfs/images/cd` in the Filesystem tab goes through
+[`bus/importImage.ts`](../../app/web2/src/bus/importImage.ts): its decoded
+bytes stream through the transfer window into the core's UDIF writer
+(`files.udif_open` / `udif_append` / `udif_finish`), which drops zero runs and
+deflates the rest in 64 KB chunks, into `/opfs/upload/<name>.dmg.part`; that
+is validated as a CD or hard disk (the image layer reads UDIF in place) and
+moved into `/opfs/images/<category>/<name>.dmg`.  A zip is unpacked
+forward-only on the way ([`lib/zipStream.ts`](../../app/web2/src/lib/zipStream.ts):
+local headers, `DecompressionStream('deflate-raw')`, CRC-32 checked, data
+descriptors found by signature), a gzip by `DecompressionStream('gzip')`; a
+bare zip's members are tried in order until one stores.  A `.dmg` the
+emulator can read in place is stored as it is (`files.udif_info`), one with
+chunks too large is re-chunked (`files.convert`).  Mac archives (StuffIt,
+Compact Pro, BinHex, MacBinary) still go through staging and
+`files.archive.extract`.  The status bar shows bytes read and stored and a
+cancel button; a failure removes the `.part`, and any `.dmg.part` left by a
+closed tab is swept at boot (`em_main.c`).  Smaller files keep the staged
+flow, now moved (`files.mv`) into place rather than copied.
 
 All four paths run through `startActivity` / `endActivity`
 ([`state/activity.svelte.ts`](../../app/web2/src/state/activity.svelte.ts)) so
@@ -743,13 +771,13 @@ typed-dispatch and introspection surface.
 │   │   ├── rom/                ROM images, named by content id
 │   │   ├── vrom/               Video ROM images
 │   │   ├── fd/                 Floppy images (400K / 800K / 1.44 MB)
-│   │   ├── hd/                 SCSI hard-disk images
-│   │   └── cd/                 CD-ROM images (.iso / .toast / .cdr)
+│   │   ├── hd/                 SCSI hard-disk images (imported as UDIF .dmg)
+│   │   └── cd/                 CD-ROM images (imported as UDIF .dmg)
 │   ├── checkpoints/
 │   │   └── <machine-id>-<ts>/  Per-machine checkpoint dirs
 │   │       ├── state.checkpoint
 │   │       └── <id>.delta / <id>.journal   Writable image state
-│   └── upload/                 Drag-and-drop staging
+│   └── upload/                 Staging; <name>.dmg.part while an import streams
 └── tmp/                        Memory mount (volatile)
 ```
 
@@ -761,8 +789,8 @@ cross-thread under WasmFS pthreads.
 
 The core opens media at whatever path it is given and never copies it
 elsewhere. Persistence is the web app's job: an upload, and a URL-parameter
-download, is copied into `/opfs/images/<category>/` before it is attached
-(`bus/upload.ts::persist`), so the base image lives on OPFS and the path
+download, is stored into `/opfs/images/<category>/` before it is attached
+(`bus/upload.ts::persist`, `bus/importImage.ts` for large disks), so the base image lives on OPFS and the path
 recorded in checkpoints still resolves after a reload. A volatile path
 (`/tmp/…`) attached from the shell stays volatile: the image, its delta and
 any checkpoint's reference to it do not survive a reload. Copy it under
@@ -802,7 +830,9 @@ view; errors still toast.
   (`machine.rom.identify`), so the order in the URL does not matter.
 - `fdN=<url>` (`fd0`, `fd1`) — downloaded into `/opfs/images/fd/`,
   inserted into floppy drive N, when the model has that drive.
-- `hdN=<url>` — downloaded into `/opfs/images/hd/`, attached to the
+- `hdN=<url>` — streamed into `/opfs/images/hd/` as a compact UDIF
+  (`<name>.dmg`; a zip member or a gzip body is unpacked on the way, so
+  neither the download nor the expanded disk is ever stored whole), attached to the
   model's N-th hard-disk bay (`machine.attach_hd(path, N)`; `hd0` is the
   boot bay, on whatever bus it is — SCSI, a Network Server's second
   channel, the Lisa's ProFile).  `hd0` is also named the startup device, as
@@ -816,7 +846,7 @@ view; errors still toast.
   disk with no driver (the Disk Copy 4.2 image shape), is attached
   through the volume wrapper and boots
   ([bare-volume-wrapper.md](../internals/core/storage/bare-volume-wrapper.md)).
-- `cd=<url>` — downloaded into `/opfs/images/cd/`, inserted into the
+- `cd=<url>` — streamed into `/opfs/images/cd/` as a UDIF, inserted into the
   model's CD bay (`machine.attach_cdrom`), on a model that has one.
 - `vrom=<url>` — downloaded into `/opfs/images/vrom/` (SE/30 / IIcx /
   IIfx).

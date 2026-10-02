@@ -149,7 +149,7 @@ static int64_t cm_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
                 return done ? (int64_t)done : rc;
         } else {
             cm_fetch_t f = {m, r};
-            int64_t got = gs_chunk_cache_get(gs_chunk_cache_default(), m->key, i, (size_t)r->out_len, in, out + done, n,
+            int64_t got = gs_chunk_cache_get(gs_chunk_cache_images(), m->key, i, (size_t)r->out_len, in, out + done, n,
                                              cm_fetch, &f);
             if (got < 0)
                 return done ? (int64_t)done : got;
@@ -305,7 +305,34 @@ bool udif_source_detect(const uint8_t *tail, size_t len) {
 // Largest XML block map read.  Real ones are a few hundred KB.
 #define UDIF_MAX_XML (64u * 1024u * 1024u)
 
+// Largest decoded chunk a foreign UDIF is read in place with (each miss
+// decodes a whole chunk into the image cache).
+static size_t g_inplace_max = UDIF_INPLACE_MAX_CHUNK_DEFAULT;
+
+size_t udif_inplace_max_chunk(void) {
+    return g_inplace_max;
+}
+
+void udif_set_inplace_max_chunk(size_t bytes) {
+    g_inplace_max = bytes < UDIF_SECTOR_SIZE       ? UDIF_SECTOR_SIZE
+                    : bytes > NDIF_MAX_CHUNK_BYTES ? NDIF_MAX_CHUNK_BYTES
+                                                   : bytes;
+}
+
+bool udif_xml_is_gs_profile(const uint8_t *xml, size_t len) {
+    static const char tag[] = "<key>gs-profile</key>";
+    size_t n = sizeof(tag) - 1;
+    for (size_t i = 0; i + n <= len; i++)
+        if (xml[i] == '<' && memcmp(xml + i, tag, n) == 0)
+            return true;
+    return false;
+}
+
 gs_source_t *udif_source_open(gs_source_t *data, int *err) {
+    return udif_source_open_bounded(data, 0, err);
+}
+
+gs_source_t *udif_source_open_bounded(gs_source_t *data, size_t max_chunk, int *err) {
     int e = 0;
     if (!err)
         err = &e;
@@ -336,6 +363,11 @@ gs_source_t *udif_source_open(gs_source_t *data, int *err) {
     rc = gs_source_read_exact(data, tr.xml_offset, xml, (size_t)tr.xml_length);
     if (rc == 0)
         rc = udif_parse_blkx(xml, (size_t)tr.xml_length, &map);
+    // An image this emulator wrote has chunks of its own bounded size; any
+    // other is held to the in-place bound.
+    bool ours = rc == 0 && udif_xml_is_gs_profile(xml, (size_t)tr.xml_length);
+    if (!max_chunk)
+        max_chunk = ours ? NDIF_MAX_CHUNK_BYTES : g_inplace_max;
     free(xml);
     if (rc != 0) {
         LOG(1, "UDIF '%s': block map unreadable (%d)", gs_source_key(data), rc);
@@ -376,8 +408,11 @@ gs_source_t *udif_source_open(gs_source_t *data, int *err) {
                     rc = -EINVAL;
             } else if (c->type == UDIF_CHUNK_ADC || c->type == UDIF_CHUNK_ZLIB) {
                 r.kind = RUN_UDIF;
-                if (r.out_len > NDIF_MAX_CHUNK_BYTES || c->length > NDIF_MAX_CHUNK_BYTES)
+                if (r.out_len > max_chunk || c->length > NDIF_MAX_CHUNK_BYTES) {
+                    LOG(0, "UDIF '%s': a chunk decodes to %llu KB, more than the %zu KB read in place",
+                        gs_source_key(data), (unsigned long long)(r.out_len >> 10), max_chunk >> 10);
                     rc = -EFBIG;
+                }
             } else {
                 LOG(1, "UDIF '%s': chunk codec %#x not supported", gs_source_key(data), c->type);
                 rc = -ENOTSUP; // bzip2 / LZFSE / LZMA

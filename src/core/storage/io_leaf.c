@@ -42,9 +42,25 @@ static int io_leaf_run(void *ud, char *err, size_t cap) {
     return rc;
 }
 
+// The object model's JSON formatter (object/api.h), weak so a build without
+// the object layer links.
+size_t gs_format_value_json_alloc(const struct value *v, char **out, size_t max) __attribute__((weak));
+
+// Largest structured answer an I/O leaf sends.
+#define IO_LEAF_JSON_MAX (1u << 20) // the formatter tries 1 MiB first
+
 // The success value as the JSON the answer carries: a string, a number, a
-// boolean; anything else is `true`.
+// boolean, a map or a list; anything else is `true`.
 static void complete_with(uint32_t token, value_t *v) {
+    if ((v->kind == V_MAP || v->kind == V_LIST) && gs_format_value_json_alloc) {
+        char *buf = NULL;
+        if (gs_format_value_json_alloc(v, &buf, IO_LEAF_JSON_MAX) && buf) {
+            gs_result_complete(token, true, buf);
+            free(buf);
+            return;
+        }
+        free(buf);
+    }
     char json[1100];
     if (v->kind == V_STRING && v->s) {
         size_t o = (size_t)snprintf(json, sizeof json, "\"");

@@ -46,9 +46,15 @@ assert $cached < 32000000 "image decoded once per path spelling (scratch cache h
 assert files.export_raw($dmg, "${$WORK_DIR}/exported.img") "export_raw failed"
 assert files.path_size("${$WORK_DIR}/exported.img") == files.path_size($raw) "exported image is not the source disk's size"
 
-# The decoded chunks came from the chunk cache, whose budgets are settings.
-assert files.cache.misses > 0 "the UDIF chunks were fetched through the chunk cache"
-assert files.cache.hits > 0 "re-reading decoded chunks was served from the cache"
+# The decoded chunks came from the disk-image cache -- memory only, so a
+# compressed image never re-expands into scratch files -- whose budget is a
+# setting.
+assert files.cache.image_misses > 0 "the UDIF chunks were decoded through the image cache"
+assert files.cache.image_hits > 0 "re-reading decoded chunks was served from the image cache"
+assert files.cache.image_memory_bytes <= files.cache.image_mb * 1048576 "the image cache holds no more than its budget"
+files.cache.image_mb = 1
+assert files.cache.image_mb == 1 "the image budget is settable"
+assert files.cache.image_memory_bytes <= 1048576 "a smaller image budget evicts at once"
 assert files.cache.memory_bytes <= files.cache.memory_mb * 1048576 "the cache holds no more than its budget"
 files.cache.memory_mb = 1
 assert files.cache.memory_mb == 1 "the memory budget is settable"

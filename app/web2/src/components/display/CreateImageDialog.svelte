@@ -114,7 +114,7 @@
           return;
         }
         const mb = Math.round(hdSize / (1024 * 1024));
-        name = `blank_${mb}MB_${stamp()}.img`;
+        name = `blank_${mb}MB_${stamp()}.dmg`; // UDIF: a few KB, whatever the size
         ok = (await gsEval('files.hd_create', [`${HD_DIR}/${name}`, String(hdSize)])) === true;
       } else {
         const highDensity = fdDensity === '1440K';

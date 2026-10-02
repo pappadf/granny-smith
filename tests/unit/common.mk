@@ -78,7 +78,8 @@ include $(WORKSPACE_ROOT)/src/sources.mk
 # linking storage.c or image.c sets USE_SOURCE_LAYER := 1 before including
 # this file.
 SOURCE_LAYER_SRCS := $(addprefix $(CORE_DIR)/storage/,source.c source_cache.c chunk_cache.c format_registry.c \
-                       image_chunkmap.c image_ndif.c image_udif.c image_scratch.c adc.c inflate.c resource_fork.c \
+                       image_chunkmap.c image_ndif.c image_udif.c image_scratch.c adc.c inflate.c deflate.c \
+                       udif_writer.c resource_fork.c \
                        rsrc_dcmp.c macroman.c storage_util.c) \
                      $(CORE_DIR)/crc32.c $(PEELER_SRC)
 

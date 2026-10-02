@@ -13,6 +13,7 @@
     moveItems,
     deleteItems,
     downloadFiles,
+    downloadRawImage,
     unpackArchive,
     type BulkResult,
     type ProgressFn,
@@ -20,7 +21,7 @@
   import { isExpandable, isInImageSpace, listViaVfs } from '@/lib/diskImage';
   import { showNotification } from '@/state/toasts.svelte';
   import { images, bumpImagesRevision } from '@/state/images.svelte';
-  import { startActivity, endActivity } from '@/state/activity.svelte';
+  import { startActivity, endActivity, setActivityDetail } from '@/state/activity.svelte';
   import {
     filesystem,
     toggleFsExpanded,
@@ -407,6 +408,11 @@
         label: multi ? 'Download files' : 'Download',
         action: () => doDownload(targets),
       });
+    if (!multi && isFile(path) && /\.dmg$/i.test(path[path.length - 1]))
+      items.push({
+        label: 'Download as raw image',
+        action: () => doDownloadRaw(path[path.length - 1]),
+      });
     if (!multi && isFile(path) && isExpandable(path[path.length - 1]))
       items.push({ label: 'Unpack', action: () => doUnpack(path) });
     items.push({ sep: true });
@@ -530,6 +536,21 @@
         ok ? 'warning' : 'error',
       );
     else showNotification(`Deleted ${label}`, 'info');
+  }
+
+  // Download a stored .dmg as the flat raw disk it holds (bus/fsOps.ts).
+  async function doDownloadRaw(target: string) {
+    const name = target.split('/').pop() ?? target;
+    startActivity(name, 'Downloading');
+    try {
+      const r = await downloadRawImage(target, (done, total) =>
+        setActivityDetail(`${Math.round((100 * done) / total)} %`),
+      );
+      if (!r.ok && r.error !== 'cancelled')
+        showNotification(`Could not download '${name}' as raw: ${r.error}`, 'error');
+    } finally {
+      endActivity();
+    }
   }
 
   // Download the file targets to the host (folders/partitions are skipped).

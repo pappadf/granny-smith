@@ -18,6 +18,7 @@
 #include "cpu_internal.h"
 #include "crc32.h"
 #include "debug_mac.h"
+#include "deflate.h"
 #include "display.h"
 #include "expr.h"
 #include "fpu.h"
@@ -1111,178 +1112,18 @@ static int write_png_chunk(FILE *fp, const char *type, const uint8_t *data, uint
     return 0;
 }
 
-// Adler-32 checksum for zlib
-static uint32_t adler32(const uint8_t *data, size_t len) {
-    uint32_t a = 1, b = 0;
-    for (size_t i = 0; i < len; i++) {
-        a = (a + data[i]) % 65521;
-        b = (b + a) % 65521;
-    }
-    return (b << 16) | a;
-}
-
-// ===== Minimal DEFLATE compressor (LZ77 + fixed Huffman) ====================
-// Screenshots are committed to the repo as reference images, so they are worth
-// compressing: a 640x480 framebuffer is 1.2 MB of stored blocks but ~12 KB
-// deflated.  Only the writer is new — the PNG reader already inflates, so
-// references written either way keep matching.
-
-#define DEFLATE_WINDOW    32768
-#define DEFLATE_MIN_MATCH 3
-#define DEFLATE_MAX_MATCH 258
-#define DEFLATE_HASH_BITS 15
-#define DEFLATE_HASH_SIZE (1 << DEFLATE_HASH_BITS)
-#define DEFLATE_MAX_CHAIN 64
-
-// The RFC 1951 §3.2.5 length/distance tables the writer needs are shared
-// with the decoder and now live in inflate.c (declared in inflate.h).
-
-// LSB-first bit writer over a caller-sized buffer.
-typedef struct {
-    uint8_t *buf;
-    size_t cap;
-    size_t pos;
-    uint32_t acc; // pending bits, lowest bit written first
-    int nbits;
-} deflate_bw_t;
-
-// Append the low `n` bits of `v`, least-significant bit first.
-static void deflate_put(deflate_bw_t *w, uint32_t v, int n) {
-    if (n <= 0)
-        return;
-    w->acc |= (v & ((1u << n) - 1)) << w->nbits;
-    w->nbits += n;
-    while (w->nbits >= 8) {
-        if (w->pos < w->cap)
-            w->buf[w->pos] = (uint8_t)(w->acc & 0xff);
-        w->pos++;
-        w->acc >>= 8;
-        w->nbits -= 8;
-    }
-}
-
-// Append a Huffman code: the code's most-significant bit goes out first.
-static void deflate_put_code(deflate_bw_t *w, uint32_t code, int n) {
-    uint32_t reversed = 0;
-    for (int i = 0; i < n; i++)
-        reversed |= ((code >> i) & 1u) << (n - 1 - i);
-    deflate_put(w, reversed, n);
-}
-
-// Emit one literal/length symbol in the fixed Huffman code (RFC 1951 §3.2.6).
-static void deflate_put_symbol(deflate_bw_t *w, unsigned sym) {
-    if (sym < 144)
-        deflate_put_code(w, 0x30 + sym, 8);
-    else if (sym < 256)
-        deflate_put_code(w, 0x190 + (sym - 144), 9);
-    else if (sym < 280)
-        deflate_put_code(w, sym - 256, 7);
-    else
-        deflate_put_code(w, 0xc0 + (sym - 280), 8);
-}
-
-// Hash three bytes into the match-chain head table.
-static uint32_t deflate_hash3(const uint8_t *p) {
-    return (((uint32_t)p[0] << 10) ^ ((uint32_t)p[1] << 5) ^ (uint32_t)p[2]) & (DEFLATE_HASH_SIZE - 1);
-}
-
-// Deflate `src` into a complete zlib stream (2-byte header, one fixed-Huffman
-// block, adler32 trailer).  Returns a malloc'd buffer, or NULL on OOM.
+// Deflate `src` into a complete zlib stream (deflate.h; level 6, the depth
+// screenshots have always been encoded at).  Returns a malloc'd buffer, or
+// NULL on OOM.
 static uint8_t *zlib_compress(const uint8_t *src, size_t len, size_t *out_len) {
-    // Fixed Huffman codes an incompressible byte in at most 9 bits, so 1.25x
-    // plus a small constant can never overflow.
-    size_t cap = len + len / 4 + 64;
+    size_t cap = deflate_bound(len);
     uint8_t *out = malloc(cap);
-    int32_t *head = malloc(DEFLATE_HASH_SIZE * sizeof(int32_t));
-    int32_t *prev = malloc((len ? len : 1) * sizeof(int32_t));
-    if (!out || !head || !prev) {
-        free(out);
-        free(head);
-        free(prev);
-        return NULL;
-    }
-    for (size_t i = 0; i < DEFLATE_HASH_SIZE; i++)
-        head[i] = -1;
-
-    deflate_bw_t w = {out, cap, 0, 0, 0};
-    // zlib header: CM=8 / CINFO=7 (32K window), FLEVEL=2, FCHECK making the
-    // 16-bit value a multiple of 31.
-    out[w.pos++] = 0x78;
-    out[w.pos++] = 0x9c;
-    deflate_put(&w, 1, 1); // BFINAL — one block covers the whole stream
-    deflate_put(&w, 1, 2); // BTYPE = 01, fixed Huffman
-
-    size_t pos = 0;
-    while (pos < len) {
-        size_t best_len = 0, best_dist = 0;
-        if (pos + DEFLATE_MIN_MATCH <= len) {
-            uint32_t h = deflate_hash3(src + pos);
-            // Walk the chain of earlier positions with the same hash, newest
-            // first, keeping the longest match inside the 32K window.
-            int32_t cand = head[h];
-            for (int chain = DEFLATE_MAX_CHAIN; cand >= 0 && chain > 0; chain--) {
-                size_t dist = pos - (size_t)cand;
-                if (dist == 0 || dist > DEFLATE_WINDOW)
-                    break;
-                size_t max_len = len - pos;
-                if (max_len > DEFLATE_MAX_MATCH)
-                    max_len = DEFLATE_MAX_MATCH;
-                size_t l = 0;
-                while (l < max_len && src[(size_t)cand + l] == src[pos + l])
-                    l++;
-                if (l > best_len) {
-                    best_len = l;
-                    best_dist = dist;
-                    if (l >= DEFLATE_MAX_MATCH)
-                        break;
-                }
-                cand = prev[cand];
-            }
-            prev[pos] = head[h];
-            head[h] = (int32_t)pos;
-        }
-
-        if (best_len >= DEFLATE_MIN_MATCH) {
-            int lc = 28;
-            while (lc > 0 && best_len < deflate_len_base[lc])
-                lc--;
-            deflate_put_symbol(&w, 257 + (unsigned)lc);
-            deflate_put(&w, (uint32_t)(best_len - deflate_len_base[lc]), deflate_len_extra[lc]);
-            int dc = 29;
-            while (dc > 0 && best_dist < deflate_dist_base[dc])
-                dc--;
-            deflate_put_code(&w, (uint32_t)dc, 5);
-            deflate_put(&w, (uint32_t)(best_dist - deflate_dist_base[dc]), deflate_dist_extra[dc]);
-            // Index the bytes the match covered so later matches can find them.
-            for (size_t k = 1; k < best_len; k++) {
-                if (pos + k + DEFLATE_MIN_MATCH > len)
-                    break;
-                uint32_t h2 = deflate_hash3(src + pos + k);
-                prev[pos + k] = head[h2];
-                head[h2] = (int32_t)(pos + k);
-            }
-            pos += best_len;
-        } else {
-            deflate_put_symbol(&w, src[pos]);
-            pos++;
-        }
-    }
-    deflate_put_symbol(&w, 256); // end of block
-    if (w.nbits > 0)
-        deflate_put(&w, 0, 8 - w.nbits); // pad the final byte
-
-    free(head);
-    free(prev);
-
-    uint32_t adler = adler32(src, len);
-    if (w.pos + 4 > cap) { // cannot happen with the 1.25x bound; fail loudly
+    long n = out ? deflate_zlib(NULL, src, len, out, cap, 6) : -1;
+    if (n < 0) {
         free(out);
         return NULL;
     }
-    WR_BE32(out + w.pos, adler);
-    w.pos += 4;
-
-    *out_len = w.pos;
+    *out_len = (size_t)n;
     return out;
 }
 

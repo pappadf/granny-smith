@@ -9,6 +9,7 @@
 //   4. On Resume, gsEval('checkpoint.load') runs and the bus updates
 //      machine.status from scheduler.running.
 
+import { UPLOAD_DIR } from '@/lib/opfsPaths';
 import { gsEval, gsErrorText } from './emulator';
 import { reconcileUiWithMachine } from './boot';
 import { machine } from '@/state/machine.svelte';
@@ -65,15 +66,17 @@ export type SaveCheckpointResult =
 
 export async function saveCheckpoint(): Promise<SaveCheckpointResult> {
   const name = `saved-state-${compactTimestamp()}.bin`;
-  const tmpPath = `/tmp/${name}`;
+  // Staged in OPFS, not the memory-backed /tmp: a machine with a large
+  // modified disk would otherwise hold its whole state in the wasm heap
+  // while the download is made.
+  const tmpPath = `${UPLOAD_DIR}/${name}`;
   // Both methods return V_BOOL false on failure (a full quota, no machine,
   // a download that could not read the file back) — check each.
   const saved = await gsEval('checkpoint.save', [tmpPath]);
   if (saved !== true) return { ok: false, step: 'save', message: gsErrorText(saved) };
   const downloaded = await gsEval('files.download', [tmpPath]);
-  // /tmp is memory-backed: a staged checkpoint left there holds the whole
-  // machine's state in the wasm heap for the rest of the session.
-  // The download has already copied it out, so remove it either way.
+  // The download has already copied it out, so remove it either way (a
+  // copy left by a closed tab is swept at the next boot).
   await gsEval('files.rm', [tmpPath]);
   if (downloaded !== true) return { ok: false, step: 'download', message: gsErrorText(downloaded) };
   return { ok: true, name };

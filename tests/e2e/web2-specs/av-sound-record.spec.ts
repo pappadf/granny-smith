@@ -36,7 +36,8 @@ import { terminalRun } from "../helpers/terminal";
 const DATA = path.resolve(__dirname, "../../data");
 const AV_ROM = path.join(DATA, "roms", "q840av-q660av-5bf10fd1.rom");
 const AV_HD = path.join(DATA, "systems", "system_7_1_77mb_av.img");
-const AV_HD_NAME = "system_7_1_77mb_av.img";
+// A disk this large is stored compressed, as UDIF, under a .dmg name.
+const AV_HD_NAME = "system_7_1_77mb_av.dmg";
 
 test.use({
   launchOptions: {
