@@ -27,16 +27,16 @@
     font-family: var(--gs-font-mono);
     font-size: var(--gs-font-size-sm);
     line-height: var(--gs-line-height-relaxed);
-    color: var(--gs-text);
+    color: var(--gs-log-fg);
     white-space: pre-wrap;
     word-break: break-word;
   }
   .cat {
-    color: var(--gs-text-muted);
+    color: var(--gs-log-meta-fg);
     flex: 0 0 auto;
   }
   .lvl {
-    color: var(--gs-text-muted);
+    color: var(--gs-log-meta-fg);
     flex: 0 0 auto;
     min-width: 1.5ch;
     text-align: right;
@@ -46,9 +46,12 @@
     min-width: 0;
   }
   .log-line[data-sev='high'] .lvl {
-    color: var(--gs-danger-fg);
+    color: var(--gs-log-high-fg);
   }
   .log-line[data-sev='mid'] .lvl {
-    color: var(--gs-warning-fg);
+    color: var(--gs-log-mid-fg);
+  }
+  .log-line[data-sev='low'] .msg {
+    color: var(--gs-log-low-fg);
   }
 </style>

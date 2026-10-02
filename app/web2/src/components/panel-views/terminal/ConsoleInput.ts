@@ -390,7 +390,7 @@ const inputTheme = EditorView.theme({
   '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': {
     backgroundColor: 'var(--gs-console-selection)',
   },
-  '.cm-placeholder': { color: 'var(--gs-syntax-dim)' },
+  '.cm-placeholder': { color: 'var(--gs-console-muted-fg)' },
   // The completion popup is a menu: the menu's colours, radius and shadow.
   '.cm-tooltip': {
     backgroundColor: 'var(--gs-menu-bg)',
@@ -407,7 +407,7 @@ const inputTheme = EditorView.theme({
     color: 'var(--gs-menu-hover-fg)',
   },
   '.cm-completionDetail': {
-    color: 'var(--gs-syntax-dim)',
+    color: 'var(--gs-console-muted-fg)',
     fontStyle: 'normal',
     marginLeft: '1.5em',
     fontFamily: 'var(--gs-font-ui)',

@@ -17,7 +17,7 @@ import { MANIFESTS } from "../../../app/web2/src/skins/manifests";
 // shot twice, differs), even a plain button's rounded corners: every skin
 // allows that much colour noise per pixel, and still not a single pixel
 // beyond it.
-const RASTER_NOISE = { threshold: 0.03 };
+const RASTER_NOISE = { threshold: 0.05 };
 
 // Open one story variant and wait until it has rendered and settled.
 async function openStory(

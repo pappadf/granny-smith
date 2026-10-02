@@ -1,6 +1,7 @@
 <script lang="ts">
   import Modal from '@/components/common/Modal.svelte';
   import Button from '@/components/ui/Button.svelte';
+  import Field from '@/components/ui/Field.svelte';
   import TextInput from '@/components/ui/TextInput.svelte';
 
   // Asks for one line of text: a name, a label, a file name.  `validate`
@@ -78,20 +79,18 @@
 
 <Modal {open} {title} {onClose}>
   <div class="rename-body">
-    <label for={inputId} class="rename-label">{label}</label>
-    <TextInput
-      id={inputId}
-      class="rename-input"
-      size="lg"
-      bind:value
-      bind:ref={inputEl}
-      invalid={!!error}
-      onkeydown={onKey}
-      oninput={() => (error = '')}
-    />
-    {#if error}
-      <div class="rename-error" role="alert">{error}</div>
-    {/if}
+    <Field stacked {label} for={inputId} {error}>
+      <TextInput
+        id={inputId}
+        class="rename-input"
+        size="lg"
+        bind:value
+        bind:ref={inputEl}
+        invalid={!!error}
+        onkeydown={onKey}
+        oninput={() => (error = '')}
+      />
+    </Field>
   </div>
   {#snippet actions()}
     <Button size="lg" class="btn" onclick={onClose}>Cancel</Button>
@@ -101,17 +100,6 @@
 
 <style>
   .rename-body {
-    display: flex;
-    flex-direction: column;
-    gap: var(--gs-space-1-5);
     min-width: 280px;
-  }
-  .rename-label {
-    font-size: var(--gs-font-size-sm);
-    color: var(--gs-text-muted);
-  }
-  .rename-error {
-    font-size: var(--gs-font-size-sm);
-    color: var(--gs-danger-fg);
   }
 </style>

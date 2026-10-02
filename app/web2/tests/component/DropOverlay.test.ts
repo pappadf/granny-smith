@@ -29,13 +29,14 @@ function nonFileDT(): DataTransfer {
 describe('DropOverlay', () => {
   it('is hidden by default (idle state)', () => {
     const { container } = render(DropOverlay);
-    expect(container.querySelector('.drop-overlay')).toBeNull();
+    expect(container.querySelector('.drop-overlay')).not.toBeNull();
+    expect(container.querySelector('.drop-overlay[data-visible]')).toBeNull();
   });
 
   it('ignores dragenter without Files in the transfer', async () => {
     const { container } = render(DropOverlay);
     await fireEvent.dragEnter(document, { dataTransfer: nonFileDT() });
-    expect(container.querySelector('.drop-overlay')).toBeNull();
+    expect(container.querySelector('.drop-overlay[data-visible]')).toBeNull();
   });
 
   it('hides on drop / dragend', async () => {
@@ -44,7 +45,7 @@ describe('DropOverlay', () => {
     await fireEvent.dragEnter(document, { dataTransfer: makeFilesDT() });
     // Simulate dragend
     await fireEvent.dragEnd(document);
-    expect(container.querySelector('.drop-overlay')).toBeNull();
+    expect(container.querySelector('.drop-overlay[data-visible]')).toBeNull();
   });
 
   it('hides on out-of-viewport dragover (viewport exit)', async () => {
@@ -56,6 +57,6 @@ describe('DropOverlay', () => {
       clientX: -1,
       clientY: -1,
     });
-    expect(container.querySelector('.drop-overlay')).toBeNull();
+    expect(container.querySelector('.drop-overlay[data-visible]')).toBeNull();
   });
 });

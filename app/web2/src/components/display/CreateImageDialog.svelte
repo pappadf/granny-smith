@@ -1,6 +1,7 @@
 <script lang="ts">
   import Modal from '@/components/common/Modal.svelte';
   import Button from '@/components/ui/Button.svelte';
+  import Hint from '@/components/ui/Hint.svelte';
   import RadioGroup from '@/components/ui/RadioGroup.svelte';
   import { gsEval } from '@/bus';
   import { FD_DIR, HD_DIR } from '@/lib/opfsPaths';
@@ -142,7 +143,7 @@
   {onClose}
 >
   {#if isProfile}
-    <p class="dlg-help">Choose a capacity for the new (unformatted) ProFile image.</p>
+    <Hint class="dlg-help">Choose a capacity for the new (unformatted) ProFile image.</Hint>
     <RadioGroup
       name="pf-size"
       label="ProFile capacity"
@@ -153,14 +154,14 @@
       }))}
     />
   {:else if kind === 'hd'}
-    <p class="dlg-help">Choose a size for the new hard disk image.</p>
+    <Hint class="dlg-help">Choose a size for the new hard disk image.</Hint>
     {#if modelsState === 'error'}
-      <div class="dlg-error">
+      <Hint as="div" tone="error" class="dlg-error">
         Could not load drive sizes.
         <Button class="dlg-btn" onclick={() => (modelsState = 'idle')}>Retry</Button>
-      </div>
+      </Hint>
     {:else if hdModels.length === 0}
-      <div class="dlg-help">Loading drive sizes…</div>
+      <Hint class="dlg-help">Loading drive sizes…</Hint>
     {:else}
       <RadioGroup
         name="hd-size"
@@ -170,7 +171,7 @@
       />
     {/if}
   {:else}
-    <p class="dlg-help">Choose a capacity for the new (unformatted) floppy image.</p>
+    <Hint class="dlg-help">Choose a capacity for the new (unformatted) floppy image.</Hint>
     <RadioGroup
       name="fd-density"
       label="Floppy capacity"
@@ -181,7 +182,7 @@
       ]}
     />
   {/if}
-  {#if error}<div class="dlg-error">{error}</div>{/if}
+  {#if error}<Hint as="div" tone="error" class="dlg-error">{error}</Hint>{/if}
 
   {#snippet actions()}
     <Button size="lg" class="dlg-btn" onclick={onClose} disabled={creating}>Cancel</Button>
@@ -199,14 +200,10 @@
 </Modal>
 
 <style>
-  .dlg-help {
-    color: var(--gs-text-muted);
-    font-size: var(--gs-font-size-base);
+  :global(.gs-hint.dlg-help) {
     margin: 0 0 var(--gs-space-3) 0;
   }
-  .dlg-error {
+  :global(.gs-hint.dlg-error) {
     margin-top: var(--gs-space-3);
-    color: var(--gs-danger-fg);
-    font-size: var(--gs-font-size-sm);
   }
 </style>
