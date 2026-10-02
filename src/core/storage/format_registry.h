@@ -75,6 +75,11 @@ typedef struct {
     // payload that is no namespace can be shown as that one-file wrapper.
     gs_source_t *peeler_outer;
     const char *peeler_format;
+    // A wrapper that detected but would not open (a codec we lack, a UDIF
+    // chunk too large to read in place), ending the loop: its name and
+    // error, or NULL / 0.  The payload is then not the disk.
+    const char *failed_format;
+    int failed_rc;
 } gs_unwrapped_t;
 
 // Peel wrapper layers off (`data`, `rsrc`) until none detects.  Always

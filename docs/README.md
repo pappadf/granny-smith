@@ -18,7 +18,7 @@ lives under [`user/`](user/).
 | `reference/hardware/` | reference (A) | cross-machine chips and buses |
 | `reference/machines/` | reference (A/B) | one subtree per machine family: family doc, machine docs, device docs |
 | `reference/protocols/` | reference (B) | wire protocols: AppleTalk, PAP, LaserWriter, AFP |
-| `reference/formats/` | reference (B) | file and image formats: DiskCopy 4.2, Mac ROM, Mac PRAM |
+| `reference/formats/` | reference (B) | file and image formats: DiskCopy 4.2, NDIF, UDIF, Mac ROM, Mac PRAM |
 | `reference/os/` | reference (B) | guest operating systems: A/UX, BeOS, Copland, MkLinux, Windows NT, Xenix |
 | `articles/` | long-form | curated publication-quality write-ups |
 | `notes/` | logs | dated investigation logs, frozen once written |

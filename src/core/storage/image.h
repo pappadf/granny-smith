@@ -210,6 +210,11 @@ const char *image_get_filename(const image_t *image);
 // Create an empty disk image file of the specified size (for checkpoint restore)
 int image_create_empty(const char *filename, size_t size);
 
+// Write a blank image of `size` zero bytes as UDIF (udif_writer.h): one zero
+// run, a couple of KB whatever the size.  0, or -1 on failure (including an
+// existing file).
+int image_create_empty_udif(const char *filename, uint64_t size);
+
 // Create a new blank floppy image file (800K or 1440K)
 int image_create_blank_floppy(const char *filename, bool overwrite, bool high_density);
 

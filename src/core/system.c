@@ -50,6 +50,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -681,12 +682,17 @@ static int do_create_hd(const char *path, const char *size_str) {
         gs_outf("hd create: file already exists: %s (won't overwrite)\n", path);
         return -1;
     }
-    int rc = image_create_empty(path, size);
+    // A .dmg is a UDIF of one zero run -- a couple of KB however large the
+    // disk; any other name is a raw file of the full size (which the browser
+    // charges in full).
+    size_t plen = strlen(path);
+    bool udif = plen >= 4 && strcasecmp(path + plen - 4, ".dmg") == 0;
+    int rc = udif ? image_create_empty_udif(path, size) : image_create_empty(path, size);
     if (rc != 0) {
         gs_outf("hd create: failed to create image: %s\n", path);
         return -1;
     }
-    gs_outf("hd create: created %s (%zu bytes)\n", path, size);
+    gs_outf("hd create: created %s (%zu bytes%s)\n", path, size, udif ? ", UDIF" : "");
     return 0;
 }
 

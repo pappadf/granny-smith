@@ -33,9 +33,16 @@ import { machine } from '@/state/machine.svelte';
 import { setMounted, bumpImagesRevision } from '@/state/images.svelte';
 import { startActivity, endActivity } from '@/state/activity.svelte';
 import { sanitizeName } from '@/lib/archive';
-import { fileHasCheckpointSignature, ROMS_DIR, UPLOAD_DIR } from '@/lib/opfsPaths';
-import { MEDIA_TYPES, identifyRom, type MediaTypeId, type MediaTypeDescriptor } from '@/lib/media';
+import { fileHasCheckpointSignature, ROMS_DIR, UPLOAD_DIR, HD_DIR, CD_DIR } from '@/lib/opfsPaths';
+import {
+  MEDIA_TYPES,
+  LARGE_IMPORT_BYTES,
+  identifyRom,
+  type MediaTypeId,
+  type MediaTypeDescriptor,
+} from '@/lib/media';
 import { attachCdrom, insertFloppy } from './media';
+import { importImage, type DiskCategory } from './importImage';
 
 // The one chunked writer: everything the page puts on the emulator's
 // filesystem — an upload's File, a URL download's response body, a dropped
@@ -144,6 +151,24 @@ export async function acceptFiles(files: File[], opts: AcceptFilesOptions = {}):
 
   startActivity(files[0].name);
   try {
+    // A large file is a disk image (or an archive holding one): streamed
+    // into a compact UDIF, never staged expanded.  A Mac archive is not
+    // unpacked there; it falls through to the staged flow below.
+    if (files.length === 1 && files[0].size > LARGE_IMPORT_BYTES) {
+      const file = files[0];
+      const out = await importImage({ kind: 'blob', blob: file }, file.name, {
+        categories: ['cdrom', 'hd'],
+        onSmall: async (path, name) => {
+          const outcome = await probeAs(path, name, ALL_ORDER, { autoBootOnRom });
+          await discardStaging(path);
+          return outcome === 'persisted' ? path : null;
+        },
+      });
+      if (out.handled) {
+        if (out.path && out.category) await autoMountIfEmpty(out.path, out.category);
+        return;
+      }
+    }
     let firstStagedPath: string | null = null;
     for (const file of files) {
       const staging = await stageUpload(file);
@@ -185,6 +210,10 @@ export async function acceptFilesAsCategory(
   const file = files[0];
   startActivity(file.name);
   try {
+    if ((category === 'hd' || category === 'cdrom') && file.size > LARGE_IMPORT_BYTES) {
+      const out = await importDiskFile(file, category);
+      if (out !== undefined) return out;
+    }
     const staging = await stageUpload(file);
     if (!staging) {
       showNotification(`Upload failed: ${file.name}`, 'error');
@@ -219,7 +248,21 @@ export async function acceptFilesRaw(files: File[], targetDir: string): Promise<
     showNotification('Emulator still starting; please retry', 'warning');
     return;
   }
+  // The hard-disk and CD stores are the emulator's: what lands there is an
+  // image it stores compactly, as an upload of that kind is.  Anywhere else
+  // the user gets exactly the file they dropped.
+  const dir = targetDir.replace(/\/+$/, '');
+  const category: DiskCategory | null = dir === HD_DIR ? 'hd' : dir === CD_DIR ? 'cdrom' : null;
   for (const file of files) {
+    if (category && file.size > LARGE_IMPORT_BYTES) {
+      startActivity(file.name, 'Importing');
+      try {
+        const out = await importDiskFile(file, category);
+        if (out !== undefined) continue;
+      } finally {
+        endActivity();
+      }
+    }
     const safe = sanitizeName(file.name) || 'file.bin';
     const finalPath = `${targetDir}/${safe}`;
     startActivity(file.name);
@@ -235,6 +278,21 @@ export async function acceptFilesRaw(files: File[], targetDir: string): Promise<
       endActivity();
     }
   }
+}
+
+// A large file dropped or picked as `category`: streamed into a compact
+// UDIF.  The persisted path, null when nothing was stored (the user has been
+// told), or undefined when the file is a Mac archive the staged flow unpacks.
+async function importDiskFile(
+  file: File,
+  category: DiskCategory,
+): Promise<string | null | undefined> {
+  const out = await importImage({ kind: 'blob', blob: file }, file.name, {
+    categories: [category],
+  });
+  if (!out.handled) return undefined;
+  if (out.path) await autoMountIfEmpty(out.path, category);
+  return out.path;
 }
 
 // After a floppy / CD image lands in /opfs/images/{fd,cd}/, try to
@@ -443,7 +501,11 @@ async function persist(
   // worker — see stageUpload). Creating it on one side and copying on the
   // other is exactly the bug this is fixing.
   await gsEval('files.mkdir', [targetDir]);
-  const ok = (await gsEval('files.cp', [sourcePath, finalPath])) === true;
+  // Moved, not copied, so storing never holds the file twice; an existing
+  // file of that name (a content-named ROM uploaded again) is replaced, as
+  // the copy always replaced it.
+  const exists = (await gsEval('files.path_exists', [finalPath])) === true;
+  const ok = (await gsEval(exists ? 'files.cp' : 'files.mv', [sourcePath, finalPath])) === true;
   if (!ok) {
     showNotification(`Failed to save ${originalName}`, 'error');
     return null;

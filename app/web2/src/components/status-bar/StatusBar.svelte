@@ -165,6 +165,16 @@
         <div class="gs-statusbar__item sb-item sb-upload" title="{activity.verb} in progress">
           <ActivityDot class="upload-spinner" />
           <span class="upload-label">{activity.verb}: {activity.current}</span>
+          {#if activity.detail}<span class="upload-detail">{activity.detail}</span>{/if}
+          {#if activity.cancel}
+            <button
+              type="button"
+              class="gs-statusbar__button upload-cancel"
+              title="Cancel"
+              aria-label="Cancel {activity.verb.toLowerCase()}"
+              onclick={() => activity.cancel?.()}>&times;</button
+            >
+          {/if}
         </div>
       {/if}
       <div class="gs-statusbar__item sb-item sb-desc">{desc}</div>
@@ -262,6 +272,18 @@
     font: inherit;
     font-size: var(--gs-font-size-xs);
     line-height: inherit;
+  }
+  .upload-detail {
+    opacity: 0.8;
+    white-space: nowrap;
+  }
+  .upload-cancel {
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    padding: 0 var(--gs-space-1);
   }
   .printer-label,
   .upload-label {

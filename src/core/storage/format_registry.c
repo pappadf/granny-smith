@@ -246,8 +246,13 @@ int gs_format_unwrap(gs_source_t *data, gs_source_t *rsrc, gs_unwrapped_t *out) 
         gs_source_t *nd = NULL, *nr = NULL;
         int rc = f ? f->unwrap(&p, &nd, &nr) : -ENOENT;
         gs_probe_free(&p);
-        if (rc != 0)
+        if (rc != 0) {
+            if (f) {
+                out->failed_format = f->name;
+                out->failed_rc = rc;
+            }
             break;
+        }
         chain_add(out->chain, sizeof(out->chain), f->name);
         if (strcmp(f->name, "dc42") == 0) {
             gs_source_release(out->dc42);

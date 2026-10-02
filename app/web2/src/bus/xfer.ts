@@ -60,6 +60,21 @@ export function xferWrite(path: string, offset: number, bytes: Uint8Array): Prom
   });
 }
 
+// Append `bytes` (at most one window) of a decoded disk image to the UDIF
+// the core is writing under `handle` (files.udif_open).  Resolves to the
+// image's stored (compressed) size so far.
+export function xferUdifAppend(handle: number, bytes: Uint8Array): Promise<number> {
+  return withWindow(async (w) => {
+    if (bytes.length > w.size) throw new Error('xferUdifAppend: chunk larger than the window');
+    const heap = getModuleHeap();
+    if (!heap) throw new Error('xferUdifAppend: emulator not running');
+    heap.u8.set(bytes, w.ptr);
+    const r = await gsEval('files.udif_append', [handle, bytes.length]);
+    if (typeof r !== 'number') throw new Error(gsErrorText(r));
+    return r;
+  });
+}
+
 // Read up to `len` bytes (at most one window) of `path` from `offset`.
 export function xferRead(path: string, offset: number, len: number): Promise<Uint8Array> {
   return withWindow(async (w) => {
@@ -67,6 +82,19 @@ export function xferRead(path: string, offset: number, len: number): Promise<Uin
     if (typeof r !== 'number') throw new Error(gsErrorText(r));
     const heap = getModuleHeap();
     if (!heap) throw new Error('xferRead: emulator not running');
+    return heap.u8.slice(w.ptr, w.ptr + r);
+  });
+}
+
+// Read up to `len` bytes (at most one window) of the decoded disk the image
+// at `path` holds, from `offset` (files.xfer_read_disk): a .dmg read as the
+// raw disk it stores.
+export function xferReadDisk(path: string, offset: number, len: number): Promise<Uint8Array> {
+  return withWindow(async (w) => {
+    const r = await gsEval('files.xfer_read_disk', [path, offset, Math.min(len, w.size)]);
+    if (typeof r !== 'number') throw new Error(gsErrorText(r));
+    const heap = getModuleHeap();
+    if (!heap) throw new Error('xferReadDisk: emulator not running');
     return heap.u8.slice(w.ptr, w.ptr + r);
   });
 }

@@ -64,7 +64,7 @@ static const char *pick_delta_dir(const char *path) {
 
 **Image formats** — the format registry
 
-Every opener names a path, and the path may run through an image or an archive (`outer.img/partition1/inner.img`, `disks.zip/System.dsk.gz`): `image_open_path()` opens the path's data fork and resource fork as byte sources through the installed path opener (the VFS — see [source.md](source.md) §3.3), and `image_open_source()` does the rest. The format registry's wrapper loop (`gs_format_unwrap()`, [source.md](source.md) §3.4) peels every encoding layer — UDIF, NDIF, DiskCopy 4.2, MacBinary, BinHex, gzip, in any nesting — and the innermost source is the storage engine's base. Nothing is decoded to a file: a DiskCopy 4.2 payload is a view past the 0x54-byte header, and an NDIF or UDIF image is a chunk-mapped source (`image_chunkmap.c`) whose compressed chunks decode on first touch into the chunk cache. `image->format` records the layers peeled (`"raw"`, `"dc42"`, `"bin+ndif"`, …); `image->filename` is the path the caller named, which is what a checkpoint persists and a restore opens again. A new wrapper format is a new registry row.
+Every opener names a path, and the path may run through an image or an archive (`outer.img/partition1/inner.img`, `disks.zip/System.dsk.gz`): `image_open_path()` opens the path's data fork and resource fork as byte sources through the installed path opener (the VFS — see [source.md](source.md) §3.3), and `image_open_source()` does the rest. The format registry's wrapper loop (`gs_format_unwrap()`, [source.md](source.md) §3.4) peels every encoding layer — UDIF, NDIF, DiskCopy 4.2, MacBinary, BinHex, gzip, in any nesting — and the innermost source is the storage engine's base. Nothing is decoded to a file: a DiskCopy 4.2 payload is a view past the 0x54-byte header, and an NDIF or UDIF image is a chunk-mapped source (`image_chunkmap.c`) whose compressed chunks decode on first touch into the image cache (`gs_chunk_cache_images()`, memory only — the default chunk cache spills to scratch files, which for a compressed disk would rebuild the expanded image on disk; `files.cache.image_mb`, default 16 MiB). `image->format` records the layers peeled (`"raw"`, `"dc42"`, `"bin+ndif"`, …); `image->filename` is the path the caller named, which is what a checkpoint persists and a restore opens again. A new wrapper format is a new registry row.
 
 | | NDIF (Disk Copy 6.x) | UDIF (`.dmg`) |
 |---|---|---|
@@ -81,7 +81,22 @@ UDIF specifics worth knowing before touching `image_udif.c`:
 - **`SectorCount` lives at trailer offset 0x1EC**, not where a naive walk of the published struct puts it — the 128-byte checksum blobs shift several fields. Static assertions in `image_udif.c` keep every offset inside the 512-byte trailer.
 - **The u32 at `mish` offset 0x24 is the blkx resource ID, not a descriptor count.** The count is at 0xC8.
 - **Each block table carries a CRC-32 over its decoded bytes**, and chunks of type `UDIF_CHUNK_IGNORE` are excluded from it. The chunk-mapped source decodes chunk by chunk as the guest reads, so the per-table checksum is not verified; every run is validated against the map when the source opens (inside the image, inside the data fork, a supported codec, under 64 MiB compressed) instead.
-- Encrypted (`encrcdsa`), multi-segment (`.dmgpart`), bzip2, LZFSE and LZMA images are **rejected explicitly** rather than partially decoded.
+- Encrypted (`encrcdsa`), multi-segment (`.dmgpart`), bzip2, LZFSE and LZMA images are **rejected explicitly** rather than partially decoded. A UDIF or NDIF that detects but will not open is refused by the image opener with the reason; it is never read as a raw disk.
+- **Chunk size bound.** A cache miss decodes a whole chunk, so a foreign UDIF whose compressed chunks decode past 4 MiB (`files.udif_max_chunk_kb`) is refused in place (`-EFBIG`, "import it to re-chunk it"). Images this emulator wrote carry a `gs-profile` key in the property list and are bounded by construction. `files.convert` passes every chunk once and opens with no bound, which is how a large-chunked image is re-chunked.
+
+**Writing UDIF** — `udif_writer.h`
+
+The disk images the web app stores, the blank disks `hd create` makes under a `.dmg` name, and exports to a `.dmg` name are written by a streaming UDIF writer: payload first, block map and trailer last, so it never seeks back and holds one partial chunk at most. It writes one profile (the "GS profile"):
+
+| | |
+|---|---|
+| Layout | one segment, flattened; data fork, then the XML plist, then the 512-byte `koly` |
+| Block map | one whole-disk `mish` table from sector 0, named for what the disk starts with (`Apple_partition_scheme`, `Apple_HFS`, `ISO9660`, or `Unknown Partition`) |
+| Chunks | 128 sectors (64 KB) by default; each ZERO (consecutive ones merge — a blank 2 GB disk is one entry), ZLIB (a complete zlib stream, `deflate.c`) or RAW (when deflate does not shrink it). Never IGNORE or ADC |
+| Checksums | the table's CRC-32 over the decoded bytes (a zero run's in O(log n), `gs_crc32_zeros`), the trailer's over the data fork, the master checksum over the table checksums |
+| Plist keys | `gs-profile` (1), `gs-byte-length` (the true length when it is not a whole number of sectors; the tail is zero-padded), `gs-source` (the original file name) |
+
+7-Zip reads and checks the result (`7z t`). `udif_verify()` decodes every chunk and checks every checksum; `udif_info()` reads only the trailer and plist. The object-model surface: `files.udif_open` / `udif_append` / `udif_finish` / `udif_abort` (the page streams an import through the transfer window), `files.convert` (any image the emulator reads → UDIF, or → raw with `format="raw"`, checked by decoding the result), `files.verify`, `files.udif_info`.
 
 The zlib decompressor both this and the PNG reader use is first-party: `inflate.c`'s entry points wrap peeler's resumable inflate, the one in the tree; the core links no third-party C libraries.
 
@@ -94,7 +109,10 @@ The zlib decompressor both this and the PNG reader use is first-party: `inflate.
 - **`image_tick_all(config_t *config)`** calls `storage_tick()` for each registered image. With the delta model, `storage_tick()` is a no-op (no consolidation needed).
 
 **Persisting changes / Exporting**
-- **`image_export_to(image_t *image, const char *dest_path)`** calls `storage_save_state()` to write a dense raw copy (base + delta) to a new file. The base image is never written in place.
+- **`image_export_to(image_t *image, const char *dest_path)`** streams the disk (base + delta) to a new file: a dense raw copy, or, when `dest_path` ends in `.dmg` (and the disk has 512-byte blocks), a UDIF written by the streaming writer — a modified 2 GB disk exports at its content's size. The base image is never written in place.
+
+**Creating blank hard disks**
+- **`image_create_empty_udif(path, size)`** writes a UDIF of `size` zero bytes: one zero run, about 1.5 KB whatever the size. `hd create` and `files.hd_create` use it when the path ends in `.dmg` (the web app's Create Image names blank disks so); any other name gets **`image_create_empty()`**, a raw file of the full size, which the browser charges in full.
 
 **Creating blank floppy images**
 - **`image_create_blank_floppy()`** writes a zero-filled 819,200-byte (or 1,474,560-byte HD) raw file that can immediately be opened.

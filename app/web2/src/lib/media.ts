@@ -6,6 +6,11 @@ import { ROMS_DIR, VROMS_DIR, PROMS_DIR, FD_DIR, HD_DIR, CD_DIR } from './opfsPa
 
 export type MediaTypeId = 'rom' | 'vrom' | 'prom' | 'fd' | 'hd' | 'cdrom';
 
+// Above this, a hard-disk or CD image is imported streamed into a compact
+// UDIF (bus/importImage.ts) instead of staged raw and copied.  It only has
+// to exceed the largest ROM and floppy, which keep the staged flow.
+export const LARGE_IMPORT_BYTES = 16 * 1024 * 1024;
+
 export interface ValidateResult {
   valid: boolean;
   // Set with valid:false when the file IS this media type but is refused
