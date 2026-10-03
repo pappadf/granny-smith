@@ -14,6 +14,9 @@ STUBS        := machine_object assert checkpoint
 EXTRA_SRCS   := ../../../../src/core/job/seam.c \
               ../../../../src/core/peripherals/dma_mem.c \
                 ../../../../src/machines/tnt/grand_central.c \
+                ../../../../src/machines/runtime/of_nvram.c \
+                ../../../../src/machines/runtime/pram_defaults.c \
+                ../../../../src/core/peripherals/pram_image.c \
                 ../../../../src/core/object/object.c \
                 ../../../../src/core/object/parse.c \
                 ../../../../src/core/object/value.c \
