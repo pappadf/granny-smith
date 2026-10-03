@@ -9,8 +9,9 @@ and dark versions of a skin. The skins:
 
 - `midnight` (dark, the default): floating translucent glass cards over a
   blue-black page lit by indigo and teal glows.
-- `starlight` (light): the same floating cards in white on cool grey, the
-  toolbar as separate pills.
+- `starlight` (light): Midnight's layout in daylight, after Apple's
+  champagne Starlight finish: pearl glass cards on an ivory page lit by gold
+  and blush glows, a champagne-gold accent.
 - `workbench` (dark) and `workbench-light`: the VS Code-derived look.
 - `platinum` (light): Mac OS 8. Bevelled push buttons and grooves, folder
   tabs, white Finder lists with the lavender highlight, Platinum
@@ -153,8 +154,8 @@ first group is run / shut down; the buttons after the last group's
   radii and backgrounds may change here (midnight and starlight turn them into floating
   cards); order and sizing may not. The page itself is `body`.
 - **Captions:** the run button and the zoom group carry a short
-  `data-caption` (Run / Pause, Zoom); starlight prints it inside its run
-  pill and platinum as the "Zoom:" label.
+  `data-caption` (Run / Pause, Zoom); platinum prints the zoom one as its
+  "Zoom:" label.
 - **Overflow:** a panel strip that runs short of room shows a
   `gs-tabs__more` ("»", a `gs-tabs__tab` too, so it takes the tab look) and
   measures its tabs in an invisible `gs-tabs--measure` copy; style that
