@@ -17,6 +17,7 @@
 
 #include "machine_profile.h" // CPU_MODEL_PPC601 / CPU_MODEL_PPC604 / CPU_MODEL_PPC750
 #include "memory.h"
+#include "mmu_trace.h"
 #include "ppc_softfp.h" // FPSCR bit masks (leaf header: stdint only)
 
 #include <assert.h>
@@ -369,6 +370,11 @@ uint32_t ppc_mmu_translate_debug(ppc_t *p, uint32_t ea, bool data, bool *ok);
 // The same with the privilege explicit (user = MSR[PR]) and, in *via (may be
 // NULL), how it resolved: "identity", "bat", "segment" or "page".
 uint32_t ppc_mmu_translate_debug_ex(ppc_t *p, uint32_t ea, bool data, bool user, bool *ok, const char **via);
+
+// The debugger's translation for machine.cpu.mmu.translate / walk / map
+// (mmu_trace.h): the answer, the protection the key sees, and, with a trace,
+// each segment register, BAT file and PTE group consulted.
+void ppc_mmu_debug_translate(ppc_t *p, uint32_t ea, bool data, bool user, mmu_xlate_t *x, mmu_trace_t *trace);
 
 // The 68k world's view (user data context, translation forced on) for
 // debug.mac — stable across supervisor/user stop contexts.

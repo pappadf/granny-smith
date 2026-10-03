@@ -50,3 +50,112 @@ export function decodeRootPointer(high: number, low: number): DecodedRootPointer
     pointer: low >>> 0,
   };
 }
+
+// === Walk steps, map runs and descriptors ===================================
+//
+// The core's walk / map / descriptor results carry the same field names on
+// every MMU kind (machine.cpu.mmu, debug_mmu.h), so one formatter serves the
+// 68030, the 68040, the PowerPC and the Lisa.  Numbers arrive as plain
+// numbers; which of them read as hex follows from the field's name.
+
+// Fields that hold an address, a descriptor word or a register image.
+const HEX_FIELDS = new Set([
+  'addr',
+  'desc',
+  'desc_lo',
+  'next',
+  'phys',
+  'size',
+  'value',
+  'vsid',
+  'buid',
+  'hash',
+  'sor',
+  'slr',
+  'base',
+  'ea',
+]);
+
+// Fields a step or descriptor line already shows in its main text.
+const MAIN_FIELDS = new Set([
+  'name',
+  'index',
+  'addr',
+  'desc',
+  'desc_lo',
+  'type',
+  'next',
+  'phys',
+  'reason',
+]);
+
+// One field's value as text: $-hex for addresses and words, else as is.
+export function fmtField(key: string, v: number | boolean | string): string {
+  if (typeof v === 'number' && HEX_FIELDS.has(key))
+    return `$${(v >>> 0)
+      .toString(16)
+      .toUpperCase()
+      .padStart(key === 'size' ? 1 : 8, '0')}`;
+  return String(v);
+}
+
+// The fields not in the main text, as "key=value" (flags as their name when
+// set, omitted when clear).
+export function extraFields(fields: Record<string, number | boolean | string>): string[] {
+  const out: string[] = [];
+  for (const [k, v] of Object.entries(fields)) {
+    if (MAIN_FIELDS.has(k)) continue;
+    if (typeof v === 'boolean') {
+      if (v) out.push(k.toUpperCase());
+      continue;
+    }
+    out.push(`${k}=${fmtField(k, v)}`);
+  }
+  return out;
+}
+
+// One walk step or descriptor as a line of text: what it is, where it was
+// read, what it held, and where it led.
+export interface FormattedEntry {
+  title: string; // "LEVEL A", "PTEG primary", "TT", ...
+  main: string; // "[3] @$00001008 = $00002003 table → $00002000"
+  extra: string[]; // remaining fields
+}
+
+export function formatEntry(
+  label: string,
+  fields: Record<string, number | boolean | string>,
+): FormattedEntry {
+  const f = fields;
+  const title = [label.toUpperCase(), f.name !== undefined ? String(f.name) : '']
+    .filter(Boolean)
+    .join(' ');
+  const parts: string[] = [];
+  if (f.index !== undefined) parts.push(`[${f.index}]`);
+  if (f.addr !== undefined) parts.push(`@${fmtField('addr', f.addr)}`);
+  if (f.desc !== undefined)
+    parts.push(
+      `= ${fmtField('desc', f.desc)}${f.desc_lo !== undefined ? ` ${fmtField('desc_lo', f.desc_lo)}` : ''}`,
+    );
+  if (f.type !== undefined) parts.push(String(f.type));
+  if (f.next !== undefined) parts.push(`→ ${fmtField('next', f.next)}`);
+  if (f.phys !== undefined) parts.push(`→ P:${fmtField('phys', f.phys)}`);
+  if (f.reason !== undefined) parts.push(`(${f.reason})`);
+  return { title, main: parts.join(' '), extra: extraFields(fields) };
+}
+
+// A map run's end address (exclusive), as a 33-bit number.
+export function runEnd(start: number, size: number): number {
+  return (start >>> 0) + size;
+}
+
+// A byte count as K/M/G when exact, else hex.
+export function fmtSize(size: number): string {
+  const units: [number, string][] = [
+    [2 ** 30, 'G'],
+    [2 ** 20, 'M'],
+    [2 ** 10, 'K'],
+  ];
+  for (const [n, u] of units) if (size >= n && size % n === 0) return `${size / n}${u}`;
+  return `$${size.toString(16).toUpperCase()}`;
+}

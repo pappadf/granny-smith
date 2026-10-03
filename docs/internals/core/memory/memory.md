@@ -197,6 +197,14 @@ unwalked logical bits (MC68030UM 9.5.3.1). The IIci ROM relies on this — its
 level-A descriptor `$00050019` places logical 0 at physical `$50000`, past
 the RBV's in-RAM screen buffer.
 
+Each of these MMUs also answers the debugger's `machine.cpu.mmu.translate` /
+`walk` / `map` / `descriptor` through one side-effect-free translation
+function (`mmu_debug_translate`, `mmu040_debug_translate`,
+`ppc_mmu_debug_translate`, `lisa_mmu_debug_translate`) that fills an
+`mmu_xlate_t` and, for `walk`, records its steps into an `mmu_trace_t`
+(`mmu_trace.h`) from inside the real walker — see
+[debug_mmu.md](../debug/debug_mmu.md).
+
 ## Memory Logpoints (Fast-Path-Preserving Watchpoints)
 
 The shell command `debug.logpoints.add addr=<addr> mode=read|write` installs a memory logpoint
@@ -246,6 +254,7 @@ Hooks and helpers:
 | `src/core/memory/memory.h` | Page table types, inline accessors, public API |
 | `src/core/memory/memory.c` | Page table allocation, population, slow-path handlers |
 | `src/core/memory/mmu.h` | 68030 PMMU state struct and API (`mmu.c`) |
+| `src/core/memory/mmu_trace.h` | The debugger's translation answer and walk trace, shared by every MMU kind |
 
 ---
 

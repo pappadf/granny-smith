@@ -254,8 +254,11 @@ simulated network are its siblings at the root:
 
 - **`machine`** (the emulated computer): `machine.cpu` (+ `.mmu`, `.fpu`;
   every MMU kind — 68030, 68040, PowerPC, the Lisa's segment MMU — answers
-  `mmu.translate(addr, [supervisor], [fetch])` → `{phys, valid, via}` and
-  `mmu.peek(addr, [size], [space])` the same way),
+  `mmu.translate(addr, [supervisor], [fetch])` → `{phys, valid, via, access}`,
+  `mmu.walk` (the same plus every step the MMU took), `mmu.map` (the mapped
+  runs), `mmu.descriptor` (raw table entries decoded) and
+  `mmu.peek(addr, [size], [space])` the same way —
+  `docs/internals/core/debug/debug_mmu.md`),
   `machine.memory`, `machine.rom`, `machine.via1`/`via2`,
   `machine.scc`, `machine.rtc`, `machine.adb.keyboard` / `machine.adb.mouse`,
   `machine.floppy.drive[N].disk`, `machine.scsi.device[N].image`,

@@ -219,6 +219,29 @@ machine.irq
 machine.ipl
 ```
 
+## MMU
+
+The same five methods on every MMU kind (68030, 68040, PowerPC 601/604, the
+Lisa's segment MMU); `supervisor` defaults to the CPU's current state.
+
+```
+machine.cpu.mmu.translate 0x40800000   # {phys, valid, via, access}
+machine.cpu.mmu.walk 0x11004000        # + steps: TT/BAT/segment, root, each table level / PTE group
+machine.cpu.mmu.walk(0x2000, false)    # the user root
+machine.cpu.mmu.map                    # mapped runs {start, size, phys, via, access}, 512 at most
+machine.cpu.mmu.map 0 0x10000000 supervisor=false
+machine.cpu.mmu.descriptor 0x40800050 4        # 68030 short descriptors (long: add "long")
+machine.cpu.mmu.descriptor 0x7fcc00 4 root     # 68040: root / pointer / page
+machine.cpu.mmu.descriptor 0x4e0000 8          # PowerPC: one PTE group, with each entry's `ea`
+machine.cpu.mmu.peek 0x2000 4 physical
+```
+
+- Each step is `{step, outcome, ...}`; `outcome` is miss / next / hit / fault
+  and a fault carries `reason`. The last step is where the walk ended:
+  `let w = machine.cpu.mmu.walk($a)` then `($w.steps[len($w.steps) - 1])`.
+- The walk never sets U/M (68K) or R/C (PowerPC) bits; it is safe mid-boot.
+- Field reference: `docs/internals/core/debug/debug_mmu.md`.
+
 ## Mac OS globals and traps
 
 ```

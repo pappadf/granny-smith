@@ -4,6 +4,7 @@
 // Verifies 68030 PMMU: SoA fast-path arrays, table walk, TLB invalidation,
 // transparent translation, PTEST, write protection, and supervisor-only pages.
 
+#include "debug_mmu.h"
 #include "memory.h"
 #include "mmu.h"
 #include "test_assert.h"
@@ -675,6 +676,154 @@ TEST(test_24bit_soa_compatibility) {
 }
 
 // ============================================================================
+// Test: the debugger's walk (machine.cpu.mmu.translate / walk / map)
+// ============================================================================
+//
+// mmu_debug_translate records the TT check, the root pointer and every table
+// level it reads into the trace, from inside the real walker, and leaves the
+// guest's tables alone: no U or M bit is set by looking.
+
+// The value of a traced step's field, or `dflt` when the step lacks it.
+static uint32_t step_u(const mmu_trace_step_t *st, const char *key, uint32_t dflt) {
+    for (int i = 0; i < st->n_fields; i++)
+        if (strcmp(st->fields[i].key, key) == 0)
+            return st->fields[i].u;
+    return dflt;
+}
+
+TEST(test_debug_walk_trace) {
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, NULL, 0, 0, 0);
+
+    // Two levels, 4 KB pages: IS=0, TIA=8, TIB=12, PS=12.
+    uint32_t tc = (1u << 31) | (12u << 20) | (8u << 12) | (12u << 8);
+    uint32_t level_a = 0x10000, level_b = 0x11000;
+    // A[0] -> the B table, write-protected at the pointer; A[1] invalid.
+    store_be32(ram + level_a + 0, level_b | (1u << 2) | DESC_DT_TABLE4);
+    store_be32(ram + level_a + 4, DESC_DT_INVALID);
+    // B[2] maps logical $00002000 to physical $00300000 (U, M clear).
+    store_be32(ram + level_b + 2 * 4, 0x00300000 | DESC_DT_PAGE);
+
+    mmu->tc = tc;
+    mmu->crp = ((uint64_t)((0u << 31) | (0x7FFFu << 16) | DESC_DT_TABLE4) << 32) | level_a;
+    mmu->enabled = true;
+    mmu_invalidate_tlb(mmu);
+
+    mmu_xlate_t x;
+    mmu_trace_t t = {0};
+    mmu_debug_translate(mmu, 0x00002010, true, false, &x, &t);
+    ASSERT_TRUE(x.valid);
+    ASSERT_EQ_INT(0x00300010, (int)x.phys);
+    ASSERT_TRUE(strcmp(x.via, "page") == 0);
+    ASSERT_TRUE(strcmp(x.access, "ro") == 0); // WP on the pointer protects the leaf
+    ASSERT_EQ_INT(12, (int)x.span_bits);
+    ASSERT_EQ_INT(4, t.n_steps); // tt, root, A, B
+    ASSERT_TRUE(strcmp(t.steps[0].step, "tt") == 0 && strcmp(t.steps[0].outcome, "miss") == 0);
+    ASSERT_TRUE(strcmp(t.steps[1].step, "root") == 0 && strcmp(t.steps[1].outcome, "next") == 0);
+    ASSERT_EQ_INT((int)level_a, (int)step_u(&t.steps[1], "next", 0));
+    ASSERT_TRUE(strcmp(t.steps[2].outcome, "next") == 0);
+    ASSERT_EQ_INT((int)level_a, (int)step_u(&t.steps[2], "addr", 0));
+    ASSERT_EQ_INT((int)level_b, (int)step_u(&t.steps[2], "next", 0));
+    ASSERT_EQ_INT(1, (int)step_u(&t.steps[2], "wp", 0));
+    ASSERT_TRUE(strcmp(t.steps[3].outcome, "hit") == 0);
+    ASSERT_EQ_INT(2, (int)step_u(&t.steps[3], "index", 99));
+    ASSERT_EQ_INT((int)(level_b + 8), (int)step_u(&t.steps[3], "addr", 0));
+    ASSERT_EQ_INT(0x00300010, (int)step_u(&t.steps[3], "phys", 0));
+    // Looking set no history bits.
+    ASSERT_EQ_INT((int)(level_b | (1u << 2) | DESC_DT_TABLE4), (int)load_be32(ram + level_a));
+    ASSERT_EQ_INT((int)(0x00300000 | DESC_DT_PAGE), (int)load_be32(ram + level_b + 8));
+    // The answer agrees with the translation every other debug path uses.
+    uint32_t pa = 0;
+    ASSERT_TRUE(mmu_translate_checked(mmu, 0x00002010, true, &pa));
+    ASSERT_EQ_INT((int)pa, (int)x.phys);
+
+    // An invalid level-A entry ends the walk there, and the whole 16 MB that
+    // entry covers is declared uniformly invalid (map skips it in one step).
+    t.n_steps = 0;
+    mmu_debug_translate(mmu, 0x01000000, true, false, &x, &t);
+    ASSERT_TRUE(!x.valid);
+    ASSERT_EQ_INT(3, t.n_steps);
+    ASSERT_TRUE(strcmp(t.steps[2].outcome, "fault") == 0);
+    ASSERT_EQ_INT(24, (int)x.span_bits);
+
+    // A supervisor-only page reads as no access for the user.
+    store_be32(ram + level_a + 0, level_b | DESC_DT_TABLE4);
+    mmu->crp = ((uint64_t)((0u << 31) | (0x7FFFu << 16) | DESC_DT_TABLE8) << 32) | 0x12000;
+    store_be32(ram + 0x12000, (0x7FFFu << 16) | (1u << 8) | DESC_DT_TABLE4); // long, S=1
+    store_be32(ram + 0x12004, level_b);
+    mmu_debug_translate(mmu, 0x00002010, false, false, &x, NULL);
+    ASSERT_TRUE(x.valid && strcmp(x.access, "none") == 0);
+    mmu_debug_translate(mmu, 0x00002010, true, false, &x, NULL);
+    ASSERT_TRUE(x.valid && strcmp(x.access, "rw") == 0);
+
+    // A TT match bypasses the tables and says which register matched.
+    mmu->tt0 = (0x00u << 24) | (0x00u << 16) | (1u << 15) | 0x7; // $00xxxxxx, any FC
+    t.n_steps = 0;
+    mmu_debug_translate(mmu, 0x00002010, true, false, &x, &t);
+    ASSERT_TRUE(x.valid && strcmp(x.via, "tt") == 0);
+    ASSERT_EQ_INT(0x00002010, (int)x.phys);
+    ASSERT_EQ_INT(1, t.n_steps);
+    ASSERT_TRUE(strcmp(t.steps[0].outcome, "hit") == 0);
+
+    cleanup(mem, mmu);
+}
+
+// A stand-in MMU for the map sweep: identity below 1 MB in 64 KB-uniform
+// blocks, a 2 MB block at $00400000 mapped to $00800000 read-only, and
+// nothing anywhere else (declared invalid 4 MB at a time).
+static void fake_xlate(void *ctx, uint32_t addr, bool supervisor, bool fetch, mmu_xlate_t *out, mmu_trace_t *trace) {
+    (void)ctx;
+    (void)supervisor;
+    (void)fetch;
+    (void)trace;
+    out->space = NULL;
+    out->via = "page";
+    out->access = "rw";
+    if (addr < 0x100000) {
+        out->valid = true;
+        out->phys = addr;
+        out->span_bits = 16;
+    } else if (addr >= 0x400000 && addr < 0x600000) {
+        out->valid = true;
+        out->phys = 0x800000 + (addr - 0x400000);
+        out->access = "ro";
+        out->span_bits = 12;
+    } else {
+        out->valid = false;
+        out->phys = addr;
+        out->span_bits = 22;
+    }
+}
+
+TEST(test_debug_map_sweep) {
+    value_t args[5] = {val_uint(4, 0), val_none(), val_none(), val_none(), val_none()};
+    value_t r = debug_mmu_map(fake_xlate, NULL, true, 1ull << 32, 12, 1, args);
+    ASSERT_TRUE(r.kind == V_LIST);
+    ASSERT_EQ_INT(2, (int)r.list.len);
+    // Run 0: identity, [0, 1 MB).
+    value_t *run0 = &r.list.items[0];
+    ASSERT_EQ_INT(0, (int)run0->map.entries[0].val.u); // start
+    ASSERT_EQ_INT(0x100000, (int)run0->map.entries[1].val.u); // size
+    // Run 1: the read-only 2 MB block, linear from $00800000.
+    value_t *run1 = &r.list.items[1];
+    ASSERT_EQ_INT(0x400000, (int)run1->map.entries[0].val.u);
+    ASSERT_EQ_INT(0x200000, (int)run1->map.entries[1].val.u);
+    ASSERT_EQ_INT(0x800000, (int)run1->map.entries[2].val.u); // phys
+    value_free(&r);
+
+    // A limit of one stops after the first run; an empty range is an error.
+    value_t args2[5] = {val_uint(4, 0), val_none(), val_none(), val_none(), val_uint(4, 1)};
+    r = debug_mmu_map(fake_xlate, NULL, true, 1ull << 32, 12, 5, args2);
+    ASSERT_EQ_INT(1, (int)r.list.len);
+    value_free(&r);
+    value_t args3[2] = {val_uint(4, 0x5000), val_uint(4, 0x5000)};
+    r = debug_mmu_map(fake_xlate, NULL, true, 1ull << 32, 12, 2, args3);
+    ASSERT_TRUE(r.kind == V_ERROR);
+    value_free(&r);
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 
@@ -692,6 +841,8 @@ int main(void) {
     RUN(test_write_protection);
     RUN(test_supervisor_only_pages);
     RUN(test_24bit_soa_compatibility);
+    RUN(test_debug_walk_trace);
+    RUN(test_debug_map_sweep);
     printf("[PASS] All MMU tests passed\n");
     return 0;
 }

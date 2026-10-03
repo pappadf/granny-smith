@@ -1,9 +1,7 @@
 // Reactive state for the Debug panel view. UI-only — not persisted.
 // Section expansion lives here.
 
-// Map and Descriptors return when the core can walk a table (they showed
-// fixtures before).
-export type MmuSubtab = 'state' | 'translate';
+export type MmuSubtab = 'state' | 'translate' | 'map' | 'descriptors';
 export type MemoryMode = 'logical' | 'physical';
 
 interface DebugState {

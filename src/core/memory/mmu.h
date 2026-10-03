@@ -9,6 +9,7 @@
 #define MMU_H
 
 #include "memory.h" // g_active_read/g_active_write/g_page_count for the shared fault epilogue
+#include "mmu_trace.h" // mmu_xlate_t / mmu_trace_t for the debugger's translation
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -80,7 +81,8 @@ typedef struct mmu_host_region {
 // Result of a table walk
 typedef struct mmu_walk_result {
     uint32_t physical_addr; // resolved physical page address
-    uint32_t page_size_bits; // log2 of effective page size (e.g. 12 = 4KB, 25 = 32MB)
+    uint32_t page_size_bits; // log2 of effective page size (e.g. 12 = 4KB, 25 = 32MB); on a failed
+                             // walk, log2 of the range the failing descriptor covers
     uint32_t descriptor_addr; // physical address of the last descriptor examined (for PTEST's A-reg output)
     bool valid; // true if walk succeeded
     bool supervisor_only; // S bit from descriptor
@@ -206,6 +208,15 @@ uint32_t mmu_translate_debug(mmu_state_t *mmu, uint32_t logical_addr, bool super
 // mmu_translate_debug also reports as phys==logical) — the latter must fault,
 // not be treated as identity.
 bool mmu_translate_checked(mmu_state_t *mmu, uint32_t logical_addr, bool supervisor, uint32_t *pa_out);
+
+// The debugger's translation, shared by machine.cpu.mmu.translate, .walk and
+// .map on both 68K MMU kinds (the 68040 dispatches to mmu040.c).
+// Side-effect-free (no SoA fill, no U/M updates).  Fills *out; with a
+// non-NULL `trace`, also records the TT check, the root pointer and each
+// table level the walk read.  `fetch` puts the 68040's instruction TT
+// registers ahead of its data ones; the 030 does not distinguish.
+void mmu_debug_translate(mmu_state_t *mmu, uint32_t logical_addr, bool supervisor, bool fetch, mmu_xlate_t *out,
+                         mmu_trace_t *trace);
 
 // Translate `logical_addr` against an arbitrary CRP root rather than the
 // current `mmu->crp`.  Used by the test harness to reach a known

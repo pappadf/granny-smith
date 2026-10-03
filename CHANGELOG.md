@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **MMU inspection on every MMU kind** — `machine.cpu.mmu` answers the same `translate`, `walk`, `map` and `descriptor` on the 68030 PMMU, the 68040, the PowerPC 601/604 and the Lisa's segment MMU:
+  - `walk` shows every step the MMU took: TT/BAT/segment registers, the root pointer, each table level or page-table group, and where a failing walk stopped.
+  - `map` lists the mapped address ranges.
+  - `descriptor` decodes raw table entries; a PowerPC page-table entry also shows the address it maps.
+  - `translate` now also reports `access` (`rw` / `ro` / `none`).
+  - The Debug view's MMU section has its Map and Descriptors tabs back, on live data, and Translate shows the walk.
 - **Skins are simply light or dark** — there is no separate light/dark setting any more: the toolbar's toggle and the Dark / Light / System options are gone, and the Appearance button lists the skins (Midnight, Starlight, Platinum, Aqua, Workbench, Workbench Light). Midnight is the default.
 - **Panel tabs never scroll out of sight** — in a narrow panel the tabs that do not fit move into a "»" menu (the selected tab always stays visible), and a view's header buttons fold into a "⋯" menu when they would crowd it out. The display toolbar cuts off what does not fit instead of drawing over the panel, and Shut down is now a power symbol.
 - **Midnight, Starlight and Aqua skins** — Midnight floats the toolbar, display, panel and status bar as translucent glass cards over a blue-black page lit by indigo and teal glows; Starlight is the same layout in white cards on cool grey. Midnight draws its card edges, field outlines, drop-down arrows and secondary text bright enough to see at a glance. Aqua is Mac OS X 10.0: pinstripes, a brushed toolbar, blue and white gel capsules, capsule tabs, the blue gradient selection and gel scrollbars.

@@ -113,11 +113,16 @@ in memory.c to keep their hands off the user arrays.
   in the checkpointed `ppc_t` blob (host pointers in the stream would
   break checkpoint byte-determinism) — and rebuilds lazily after restore.
 - **Debug surface**: `machine.cpu.mmu.translate(ea, [supervisor], [fetch])`
-  returns `{phys, valid, via}` (`via` is identity / bat / segment / page) and
+  returns `{phys, valid, via, access}` (`via` is identity / bat / segment /
+  page); `walk` adds the steps — the segment register, the BAT file and each
+  PTE group, in the model's order — recorded by `xlate` itself through its
+  `xl_debug_t` argument; `map` lists the mapped runs of the current context;
+  `descriptor` decodes PTEs, reversing the hash to each entry's `ea`; and
   `machine.cpu.mmu.peek(ea, [size], [space])` reads logical (the default,
-  through the data-side translation) or `space="physical"`; both are
-  side-effect-free, with the same signatures and shapes as the 68K and Lisa
-  `machine.cpu.mmu` nodes.  `machine.memory.peek` on these machines is
+  through the data-side translation) or `space="physical"`.  All are
+  side-effect-free (no R/C), with the same signatures and shapes as the 68K
+  and Lisa `machine.cpu.mmu` nodes
+  ([debug_mmu.md](../debug/debug_mmu.md)).  `machine.memory.peek` on these machines is
   PHYSICAL.  The debug-if `translate` hook feeds `debug.mac`, so
   the 68k world's logical memory reads normally on PDM.  Limitation:
   logical-address memory logpoints on translated pages degrade (the slow

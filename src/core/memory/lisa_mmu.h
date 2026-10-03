@@ -23,6 +23,7 @@
 #include <stdint.h>
 
 #include "common.h"
+#include "mmu_trace.h"
 
 struct memory_interface;
 typedef struct memory_interface memory_interface_t;
@@ -66,6 +67,12 @@ bool lisa_mmu_get_cursor(int ctx, int *x, int *y);
 // False for an invalid, unprogrammed or out-of-limit segment.  Supervisor
 // mode uses context 0, as the hardware does.
 bool lisa_mmu_translate(lisa_mmu_t *m, uint32_t addr, bool supervisor, uint32_t *phys, const char **space);
+
+// The debugger's translation for machine.cpu.mmu.translate / walk / map
+// (mmu_trace.h): the answer with its physical space and the access the
+// segment allows, and, given a trace, the segment descriptor consulted.
+// START-mode bypass resolves as "identity" with no steps.
+void lisa_mmu_debug_translate(lisa_mmu_t *m, uint32_t addr, bool supervisor, mmu_xlate_t *x, mmu_trace_t *trace);
 
 // Put this MMU in the object model as `machine.cpu.mmu`, the node every MMU
 // kind has (its translate/peek answer as the 68K and PowerPC ones do).

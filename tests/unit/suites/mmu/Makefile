@@ -12,6 +12,7 @@ EXTRA_SRCS   := ../../../../src/core/job/seam.c \
               ../../../../src/core/memory/memory.c \
                 ../../../../src/core/memory/mmu.c \
                 ../../../../src/core/memory/mmu040.c \
+                ../../../../src/core/debug/debug_mmu.c \
                 ../../../../src/core/object/meta.c \
                 ../../../../src/core/object/object.c \
                 ../../../../src/core/object/parse.c \
