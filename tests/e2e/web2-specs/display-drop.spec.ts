@@ -124,8 +124,10 @@ test('drop an archive: the floppy inside is stored and inserted, nothing unpacke
   expect(await gsEvalInPage(page, 'files.path_size', ['/opfs/images/fd/MacTest Disk.image'])).toBe(
     419284,
   );
-  const upload = (await gsEvalInPage(page, 'files.list', ['/opfs/upload'])) as { name: string }[];
-  expect(upload.map((e) => e.name).filter((n) => n !== '.' && n !== '..')).toEqual([]);
+  const scratch = (await gsEvalInPage(page, 'files.list', ['/opfs/upload/.scratch'])) as {
+    name: string;
+  }[];
+  expect(scratch.map((e) => e.name).filter((n) => n !== '.' && n !== '..')).toEqual([]);
 });
 
 // Boot a Plus from a dropped ROM, pause it, save a checkpoint through the

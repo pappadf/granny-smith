@@ -4,11 +4,12 @@
 //
 // Flow:
 //   1. Check first file for checkpoint signature — short-circuit to load.
-//   2. Stage each file into /opfs/upload/ (see stageUpload).
+//   2. Stage each file into the scratch area, /opfs/upload/.scratch/ (see
+//      stageUpload), under a name no other upload uses.
 //   3. Probe the staged file (ROM? floppy? archive? something else?).
 //   4. If a ROM was uploaded, also boot a default machine from it.
 //   5. Persist to the right /opfs/images/<category>/ via gsEval('files.cp').
-//   6. Cleanup the staging copy.
+//   6. Discard the staging copy, whatever came of it.
 //
 // STAGING (see stageUpload): the write goes through the emulator's own
 // filesystem, on the emulator thread: the page copies each chunk into the
@@ -33,7 +34,7 @@ import { machine } from '@/state/machine.svelte';
 import { setMounted, bumpImagesRevision } from '@/state/images.svelte';
 import { startActivity, endActivity } from '@/state/activity.svelte';
 import { sanitizeName } from '@/lib/archive';
-import { fileHasCheckpointSignature, ROMS_DIR, UPLOAD_DIR, HD_DIR, CD_DIR } from '@/lib/opfsPaths';
+import { fileHasCheckpointSignature, scratchPath, ROMS_DIR, HD_DIR, CD_DIR } from '@/lib/opfsPaths';
 import {
   MEDIA_TYPES,
   LARGE_IMPORT_BYTES,
@@ -111,11 +112,14 @@ export async function streamToOpfs(
   }
 }
 
-// Stage an uploaded file into /opfs/upload for probing/persisting and return the
-// staged path (or null on failure). Callers cleanup via discardStaging().
+// Stage an uploaded file in the scratch area for probing/persisting and return
+// the staged path (or null on failure, with nothing left behind).  Callers
+// discard it via discardStaging() on every exit.
 async function stageUpload(file: File): Promise<string | null> {
-  const path = `${UPLOAD_DIR}/${sanitizeName(file.name) || 'image.img'}`;
-  return (await streamToOpfs(path, file)) ? path : null;
+  const path = scratchPath(sanitizeName(file.name) || 'image.img');
+  if (await streamToOpfs(path, file)) return path;
+  await discardStaging(path); // a partial write
+  return null;
 }
 
 // Best-effort removal of a staged file or directory. Everything staging touches is written
@@ -159,11 +163,8 @@ export async function acceptFiles(files: File[], opts: AcceptFilesOptions = {}):
       const file = files[0];
       const out = await importImage({ kind: 'blob', blob: file }, file.name, {
         categories: ['cdrom', 'hd'],
-        onSmall: async (path, name) => {
-          const outcome = await probeAs(path, name, ALL_ORDER, { autoBootOnRom });
-          await discardStaging(path);
-          return outcome === 'persisted' ? path : null;
-        },
+        onSmall: async (path, name) =>
+          (await probeAs(path, name, ALL_ORDER, { autoBootOnRom })) === 'persisted' ? path : null,
       });
       if (out.handled) {
         if (out.path && out.category) await autoMountIfEmpty(out.path, out.category);
@@ -220,20 +221,19 @@ export async function acceptFilesAsCategory(
       showNotification(`Upload failed: ${file.name}`, 'error');
       return null;
     }
-    const descriptor = MEDIA_TYPES[category];
-    const result = await descriptor.validate(staging, gsEval);
-    if (!result.valid) {
-      // A refusal says why; anything else is simply not this kind of file.
-      const why = result.reject ?? `is not a valid ${descriptor.label}`;
-      showNotification(`'${file.name}' ${why}`, 'error');
+    let stored: PersistOutcome;
+    try {
+      stored = await persistAs(staging, file.name, category);
+    } finally {
       await discardStaging(staging);
+    }
+    if (!stored.ok) {
+      showNotification(`'${file.name}' ${stored.reason}`, 'error');
       return null;
     }
-    const persisted = await persist(staging, file.name, descriptor, result.info);
-    if (!persisted) return null;
-    if (category === 'rom') await maybeBootFromRom(persisted);
-    else await autoMountIfEmpty(persisted, category);
-    return persisted;
+    if (category === 'rom') await maybeBootFromRom(stored.path);
+    else await autoMountIfEmpty(stored.path, category);
+    return stored.path;
   } finally {
     endActivity();
   }
@@ -542,22 +542,30 @@ async function persist(
   return finalPath;
 }
 
-// Persist a file that is already on the worker's filesystem (staged
-// anywhere, e.g. /tmp) as `category`: validate it as that category, then
-// copy it into /opfs/images/<category>/ exactly as an upload of that kind
-// is stored.  Returns the persisted path, or null if the file is not valid
-// as `category` or could not be copied (the source is left in place).  The
-// URL-media path uses this so a fetched image is kept the way a dropped one
-// is, rather than attached from volatile /tmp.
+// What storing a file as one category came to: where it was stored, or why
+// it was not (completing "'<name>' …" in a message).
+export type PersistOutcome = { ok: true; path: string } | { ok: false; reason: string };
+
+// Persist a file that is already on the worker's filesystem (in the scratch
+// area) as `category`: validate it as that category, then move it into
+// /opfs/images/<category>/ exactly as an upload of that kind is stored.  A
+// file that is not valid as `category` is refused with the validator's
+// reason, and is the caller's to discard, as one that could not be moved is.
+// Category-strict uploads and URL media both store through here, so a
+// download is accepted or rejected exactly as the same file dropped on its
+// category is.
 export async function persistAs(
   sourcePath: string,
   originalName: string,
   category: MediaTypeId,
-): Promise<string | null> {
+): Promise<PersistOutcome> {
   const descriptor = MEDIA_TYPES[category];
   const result = await descriptor.validate(sourcePath, gsEval);
-  if (!result.valid) return null;
-  return persist(sourcePath, originalName, descriptor, result.info);
+  // A refusal says why; anything else is simply not this kind of file.
+  if (!result.valid)
+    return { ok: false, reason: result.reject ?? `is not a valid ${descriptor.label}` };
+  const path = await persist(sourcePath, originalName, descriptor, result.info);
+  return path ? { ok: true, path } : { ok: false, reason: 'could not be stored' };
 }
 
 // If the user dropped a ROM and no machine is running yet, boot a default
@@ -584,17 +592,21 @@ async function maybeBootFromRom(romPath: string): Promise<void> {
 }
 
 async function loadCheckpointFile(file: File): Promise<void> {
-  // Staged like any upload, a chunk at a time, under /opfs/upload, and
+  // Staged like any upload, a chunk at a time, in the scratch area, and
   // deleted once loaded.  It used to be read whole into memory and written
   // to the memory-backed /tmp, where it stayed for the session.
-  const staged = `${UPLOAD_DIR}/dropped-${Date.now()}-${sanitizeName(file.name)}`;
-  if (!(await streamToOpfs(staged, file))) {
-    showNotification('Emulator not ready for checkpoint load', 'warning');
-    return;
+  const staged = scratchPath(sanitizeName(file.name) || 'checkpoint');
+  let ok = false;
+  try {
+    if (!(await streamToOpfs(staged, file))) {
+      showNotification('Emulator not ready for checkpoint load', 'warning');
+      return;
+    }
+    showNotification(`Loading checkpoint ${file.name}…`, 'info');
+    ok = (await gsEval('checkpoint.load', [staged])) === true;
+  } finally {
+    await discardStaging(staged);
   }
-  showNotification(`Loading checkpoint ${file.name}…`, 'info');
-  const ok = (await gsEval('checkpoint.load', [staged])) === true;
-  await discardStaging(staged);
   if (ok) {
     await reconcileUiWithMachine('restore');
     showNotification(`Checkpoint loaded (${file.name})`, 'info');

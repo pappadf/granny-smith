@@ -7,8 +7,8 @@
 // that drives the real ?rom=… fetch → stage → boot pipeline end-to-end.
 //
 // urlMedia.ts fetches each media URL over HTTP from the page origin, stages
-// it into /tmp, identifies the ROM and boots the first compatible model
-// (honouring ?model= when compatible). The Playwright test server serves
+// it in the OPFS scratch area, identifies the ROM and boots the first
+// compatible model (honouring ?model= when compatible). The Playwright test server serves
 // app/web2/dist, so instead of planting fixtures there we intercept the
 // media fetch with page.route() and fulfil it from the real ROM on disk —
 // only the transport is stubbed; the identify/boot pipeline runs for real.
@@ -131,4 +131,45 @@ test('?fd0= media is persisted to /opfs/images/fd and inserted from there', asyn
 
   await terminalExpect(page, 'machine.floppy.drive[0].disk.filename', /\/opfs\/images\/fd\/url-system\.dsk/);
   await terminalExpect(page, 'files.path_exists "/opfs/images/fd/url-system.dsk"', /true/);
+});
+
+// Every file under /opfs, from the browser's own view of OPFS.
+async function opfsFiles(page: Page): Promise<string[]> {
+  return page.evaluate(async () => {
+    const out: string[] = [];
+    const walk = async (dir: unknown, prefix: string): Promise<void> => {
+      for await (const [n, h] of (dir as { entries(): AsyncIterable<[string, { kind: string }]> }).entries()) {
+        const p = `${prefix}/${n}`;
+        if (h.kind === 'directory') await walk(h, p);
+        else out.push(p);
+      }
+    };
+    await walk(await navigator.storage.getDirectory(), '/opfs');
+    return out.sort();
+  });
+}
+
+// A download that does not validate as its slot's kind is rejected exactly as
+// the same file dropped on that category is: an 800 KB floppy image is not a
+// hard disk.  The machine boots without it, the page says why, nothing of it
+// is stored, and nothing is left in the scratch area -- it used to be
+// attached from its scratch copy, /opfs/upload/url_hd0.
+test('?hd0= that is not a hard disk is rejected, and the machine boots without it', async ({ page }) => {
+  test.setTimeout(120_000);
+  await routeRom(page, 'url-plus.rom', PLUS_ROM);
+  await routeRom(page, 'url-floppy-as-hd.img', SYSTEM_FD);
+
+  await page.goto('/index.html?rom=url-plus.rom&model=plus&hd0=url-floppy-as-hd.img');
+  await expect(
+    page.locator('.toast .msg').filter({ hasText: "HD0: 'url-floppy-as-hd.img' is not a valid Hard Disk image" }),
+  ).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator('.toast .msg').filter({ hasText: 'Booted plus from URL parameters' }))
+    .toBeVisible({ timeout: 60_000 });
+  await expect(page.locator('.gs-statusbar .sb-state .label')).toHaveText('Running', {
+    timeout: 15_000,
+  });
+
+  const files = await opfsFiles(page);
+  expect(files.filter((p) => p.startsWith('/opfs/images/hd/'))).toEqual([]);
+  expect(files.filter((p) => p.startsWith('/opfs/upload/'))).toEqual([]);
 });

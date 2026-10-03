@@ -16,7 +16,7 @@ input, and compositing.
 
 **Threading model**
 - **Main (browser) thread:** DOM events, the Terminal console, UI chrome,
-  OPFS reads via the browser API, file uploads staged to `/opfs/upload/`.
+  OPFS reads via the browser API, file uploads staged to `/opfs/upload/.scratch/`.
 - **Emulator worker thread:** CPU emulation, OPFS file I/O via WasmFS
   (delta/journal/checkpoint), shell command execution, all object-model
   dispatch.
@@ -53,8 +53,9 @@ for reads. (This is why `BrowserOpfs.delete` / `.move` in
 **Core / frontend separation.** The emulator core is path-agnostic: it
 accepts paths as command arguments. The web app owns the directory
 layout under `/opfs/`. The C side creates `/opfs/images/{rom,vrom,fd,
-fdhd,hd,cd}` and `/opfs/{checkpoints,upload}` at boot via
-`mkdir`-on-worker; the web app reads them via the browser's OPFS API.
+fdhd,hd,cd}`, `/opfs/{checkpoints,upload}` and an emptied
+`/opfs/upload/.scratch` at boot via `mkdir`-on-worker; the web app reads
+them via the browser's OPFS API.
 
 **Cross-thread communication.** JS on the main thread cannot directly
 call WASM functions that touch OPFS (different thread). The boundary is
@@ -645,8 +646,8 @@ dropped on the Display, picked or dropped as an HD/CD, or dropped into
 [`bus/importImage.ts`](../../app/web2/src/bus/importImage.ts): its decoded
 bytes stream through the transfer window into the core's UDIF writer
 (`files.udif_open` / `udif_append` / `udif_finish`), which drops zero runs and
-deflates the rest in 64 KB chunks, into `/opfs/upload/<name>.dmg.part`; that
-is validated as a CD or hard disk (the image layer reads UDIF in place) and
+deflates the rest in 64 KB chunks, into a `<name>.dmg.part` of its own in the
+scratch area (below); that is validated as a CD or hard disk (the image layer reads UDIF in place) and
 moved into `/opfs/images/<category>/<name>.dmg`.  A zip is unpacked
 forward-only on the way ([`lib/zipStream.ts`](../../app/web2/src/lib/zipStream.ts):
 local headers, `DecompressionStream('deflate-raw')`, CRC-32 checked, data
@@ -656,10 +657,23 @@ emulator can read in place is stored as it is (`files.udif_info`), one with
 chunks too large is re-chunked (`files.convert`).  Mac archives (StuffIt,
 Compact Pro, BinHex, MacBinary) still go through staging and
 `files.archive.extract`.  The status bar shows bytes read and stored and a
-cancel button, for an `HD=` / `CD=` download as for an upload; a failure
-or a cancel removes the `.part`, and any `.dmg.part` left by a
-closed tab is swept at boot (`em_main.c`).  Smaller files keep the staged
-flow, now moved (`files.mv`) into place rather than copied.
+cancel button, for an `HD=` / `CD=` download as for an upload; every exit
+— stored, failed or cancelled — removes the `.part`.  Smaller files keep the
+staged flow, now moved (`files.mv`) into place rather than copied.
+
+**The scratch area.** Every file the page writes on its way somewhere else
+lives in `/opfs/upload/.scratch/` (`lib/opfsPaths.ts`: `SCRATCH_DIR`,
+`scratchPath`): an upload being probed, a dropped checkpoint being loaded, a
+URL download, a streamed import's `.dmg.part`, the Save State file while it
+is downloaded, a file copied out of an image to be downloaded.  Each
+operation writes under a name no other uses (`<nonce>-<name>`), so two
+uploads of one name, or two URL boots of one slot, never touch each other's
+file, and removes its file on every exit (`try`/`finally`).  Nothing is ever
+attached from the scratch area: what is kept is moved into
+`/opfs/images/<category>/` first.  The core empties the directory at startup
+(`em_main.c`), which covers an operation a closed tab or a crash cut short.
+The rest of `/opfs/upload` is the user's (the Filesystem tab may put files
+there) and is never touched.
 
 All four paths run through `startActivity` / `endActivity`
 ([`state/activity.svelte.ts`](../../app/web2/src/state/activity.svelte.ts)) so
@@ -779,7 +793,8 @@ typed-dispatch and introspection surface.
 │   │   └── <machine-id>-<ts>/  Per-machine checkpoint dirs
 │   │       ├── state.checkpoint
 │   │       └── <id>.delta / <id>.journal   Writable image state
-│   └── upload/                 Staging; <name>.dmg.part while an import streams
+│   └── upload/                 The user's; the page writes only in .scratch/
+│       └── .scratch/           Files on their way into a store; emptied at startup
 └── tmp/                        Memory mount (volatile)
 ```
 
@@ -819,9 +834,13 @@ response) it is indeterminate, with the bytes received so far.  Rows go
 Waiting → downloading → Unpacking… (a container member) → ✓ size, then
 "Starting the machine…" until the core reports it running, when the view
 goes (a later Shut Down shows the ordinary Welcome).  The ROM is fetched
-first; if it cannot be had, the disks are not fetched ("Not needed"), and the
-view says why and offers **Go to the start screen**.  A failed disk does not
-stop the boot.  Per-file "fetched" toasts are left to pages not showing the
+first; if it cannot be had, or is not a ROM, the disks are not fetched ("Not
+needed"), and the view says why and offers **Go to the start screen**.  A
+failed disk does not stop the boot: one that cannot be downloaded, or is not
+valid as its slot's kind (an 800 KB floppy image given as `hd0=`), is
+rejected exactly as the same file dropped on its category is — its row and a
+toast give the validator's reason — and the machine boots without it.
+Nothing is attached from the scratch copy.  Per-file "fetched" toasts are left to pages not showing the
 view; errors still toast.
 
 - `rom=<url>` — downloaded into `/opfs/images/rom/`, auto-identified,
@@ -945,7 +964,7 @@ Plus-only minimal install: pair it with
 `tests/e2e/web2-specs/url-archive-boot.spec.ts` replays this URL with
 archive.org's endpoints routed to the gs-test-data copies.
 
-Downloads run one at a time and stream to `/opfs/upload/` through the
+Downloads run one at a time and stream to the scratch area through the
 same chunked writer as uploads (`bus/upload.ts::streamToOpfs`), so an
 image is never held whole in memory — except a zip, which is read back
 whole to unzip.

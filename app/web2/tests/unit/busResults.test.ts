@@ -28,10 +28,24 @@ describe('Save State', () => {
     expect(await saveCheckpoint()).toMatchObject({ ok: false, step: 'download' });
   });
 
-  it('removes the heap-backed /tmp copy after the download', async () => {
+  it('saves in a scratch directory of its own, under the name it downloads as', async () => {
     bridge.reply('checkpoint.save', true).reply('files.download', true).reply('files.rm', true);
+    const res = await saveCheckpoint();
+    const saved = bridge.calls.find((c) => c.path === 'checkpoint.save')!.args![0] as string;
+    const dir = saved.slice(0, saved.lastIndexOf('/'));
+    expect(dir.startsWith('/opfs/upload/.scratch/')).toBe(true);
+    expect(res.ok && saved.endsWith(`/${res.name}`)).toBe(true);
+    expect(bridge.calls.find((c) => c.path === 'files.mkdir')?.args).toEqual([dir]);
+    expect(bridge.calls.at(-1)).toEqual({ path: 'files.rm', args: [dir] });
+  });
+
+  it('removes the scratch copy on every exit, a failed save included', async () => {
+    bridge.reply('checkpoint.save', false).reply('files.rm', true);
     await saveCheckpoint();
-    const saved = bridge.calls.find((c) => c.path === 'checkpoint.save')!.args![0];
-    expect(bridge.calls.at(-1)).toEqual({ path: 'files.rm', args: [saved] });
+    expect(bridge.calls.at(-1)?.path).toBe('files.rm');
+    bridge.reset();
+    bridge.reply('checkpoint.save', true).reply('files.download', false).reply('files.rm', true);
+    await saveCheckpoint();
+    expect(bridge.calls.at(-1)?.path).toBe('files.rm');
   });
 });

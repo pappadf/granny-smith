@@ -9,7 +9,7 @@
 //   4. On Resume, gsEval('checkpoint.load') runs and the bus updates
 //      machine.status from scheduler.running.
 
-import { UPLOAD_DIR } from '@/lib/opfsPaths';
+import { scratchPath } from '@/lib/opfsPaths';
 import { gsEval, gsErrorText } from './emulator';
 import { reconcileUiWithMachine } from './boot';
 import { machine } from '@/state/machine.svelte';
@@ -65,20 +65,28 @@ export type SaveCheckpointResult =
 
 export async function saveCheckpoint(): Promise<SaveCheckpointResult> {
   const name = `saved-state-${compactTimestamp()}.bin`;
-  // Staged in OPFS, not the memory-backed /tmp: a machine with a large
-  // modified disk would otherwise hold its whole state in the wasm heap
-  // while the download is made.
-  const tmpPath = `${UPLOAD_DIR}/${name}`;
-  // Both methods return V_BOOL false on failure (a full quota, no machine,
-  // a download that could not read the file back) — check each.
-  const saved = await gsEval('checkpoint.save', [tmpPath]);
-  if (saved !== true) return { ok: false, step: 'save', message: gsErrorText(saved) };
-  const downloaded = await gsEval('files.download', [tmpPath]);
-  // The download has already copied it out, so remove it either way (a
-  // copy left by a closed tab is swept at the next boot).
-  await gsEval('files.rm', [tmpPath]);
-  if (downloaded !== true) return { ok: false, step: 'download', message: gsErrorText(downloaded) };
-  return { ok: true, name };
+  // Written in the OPFS scratch area, not the memory-backed /tmp: a machine
+  // with a large modified disk would otherwise hold its whole state in the
+  // wasm heap while the download is made.  In a directory of its own, so no
+  // other Save State shares the path and the download keeps the file's name.
+  const dir = scratchPath('save');
+  const tmpPath = `${dir}/${name}`;
+  try {
+    await gsEval('files.mkdir', [dir]);
+    // Both methods return V_BOOL false on failure (a full quota, no machine,
+    // a download that could not read the file back) — check each.
+    const saved = await gsEval('checkpoint.save', [tmpPath]);
+    if (saved !== true) return { ok: false, step: 'save', message: gsErrorText(saved) };
+    const downloaded = await gsEval('files.download', [tmpPath]);
+    if (downloaded !== true)
+      return { ok: false, step: 'download', message: gsErrorText(downloaded) };
+    return { ok: true, name };
+  } finally {
+    // The download has already copied it out, so remove it on every exit
+    // (one left by a closed tab goes when the scratch area is emptied at
+    // the next startup).
+    await gsEval('files.rm', [dir]);
+  }
 }
 
 // Local-time YYYYMMDD-HHMMSS for a download name.

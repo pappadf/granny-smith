@@ -8,10 +8,11 @@
 // into the core's UDIF writer through the transfer window (files.udif_open /
 // udif_append / udif_finish, bus/xfer.ts): zero runs cost nothing, the rest
 // is deflated in 64 KB chunks, and the expanded image never exists -- not in
-// OPFS, not in JS memory, not in the wasm heap.  The result is written to
-// /opfs/upload/<name>.dmg.part, validated as a CD or hard disk through the
-// image layer (which reads UDIF in place), then moved into
-// /opfs/images/<category>/<name>.dmg.  A failure anywhere removes the .part.
+// OPFS, not in JS memory, not in the wasm heap.  The result is written to a
+// <name>.dmg.part of its own in the scratch area (/opfs/upload/.scratch),
+// validated as a CD or hard disk through the image layer (which reads UDIF
+// in place), then moved into /opfs/images/<category>/<name>.dmg.  Every exit
+// removes the .part.
 //
 // Small files (ROMs, floppies, tiny disks: at most LARGE_IMPORT_BYTES) keep
 // the staged-raw flow, through the caller's `onSmall`: a stream of unknown
@@ -26,7 +27,7 @@ import { showNotification } from '@/state/toasts.svelte';
 import { bumpImagesRevision } from '@/state/images.svelte';
 import { setActivityCancel, setActivityDetail } from '@/state/activity.svelte';
 import { sanitizeName } from '@/lib/archive';
-import { UPLOAD_DIR } from '@/lib/opfsPaths';
+import { scratchPath } from '@/lib/opfsPaths';
 import { MEDIA_TYPES, LARGE_IMPORT_BYTES, type MediaTypeId } from '@/lib/media';
 import { findMember } from '@/lib/mediaUrl';
 import { zipEntries, sniffContainer, decompressor, ZipStreamError } from '@/lib/zipStream';
@@ -43,10 +44,11 @@ export interface ImportOptions {
   // A zip member to take (forward-only, by name); null/absent: the first
   // member that is a medium.
   member?: string | null;
-  // The small-file flow: `path` is the raw file staged in /opfs/upload,
-  // `name` its own name.  Answers the path to use (stored or staged), or
-  // null when nothing was kept.  Absent: small files are imported as disks
-  // too.
+  // The small-file flow: `path` is the raw file staged in the scratch area,
+  // `name` its own name.  Answers the stored path, or null when nothing was
+  // kept.  The staged file is removed when it returns, whatever it answered:
+  // nothing is used from the scratch area.  Absent: small files are imported
+  // as disks too.
   onSmall?: (path: string, name: string) => Promise<string | null>;
   // Progress (bytes of the source read; its length when known; bytes stored).
   onProgress?: (read: number, total: number | null, stored: number) => void;
@@ -304,7 +306,6 @@ async function writeUdif(
   opts: ImportOptions,
   cancelled: () => boolean,
 ): Promise<{ bytes_in: number; stored_bytes: number }> {
-  await rmQuiet(part);
   const h = await gsEval('files.udif_open', [part, 64, 1, name]);
   if (typeof h !== 'number' || h < 0) throw new Error(gsErrorText(h));
   let stored = 0;
@@ -359,7 +360,6 @@ async function settleUdif(part: string, name: string): Promise<string> {
   const info = (await gsEval('files.udif_info', [part])) as { in_place?: boolean } | null;
   if (info && typeof info === 'object' && info.in_place) return part;
   const rechunked = `${part}.re`;
-  await rmQuiet(rechunked);
   showNotification(`Re-chunking ${name} so it can be read in place...`, 'info');
   const r = await gsEval('files.convert', [part, rechunked]);
   await rmQuiet(part);
@@ -396,15 +396,19 @@ async function importDecoded(
       gathered += win.length;
     }
     if (gathered <= LARGE_IMPORT_BYTES) {
-      const staged = `${UPLOAD_DIR}/${base}`;
+      const staged = scratchPath(base);
       const bytes = new Uint8Array(gathered);
       let at = 0;
       for (const p of pump.pending) {
         bytes.set(p, at);
         at += p.length;
       }
-      if (!(await streamToOpfs(staged, bytes))) throw new Error('could not stage the file');
-      return { handled: true, path: await opts.onSmall(staged, name) };
+      try {
+        if (!(await streamToOpfs(staged, bytes))) throw new Error('could not stage the file');
+        return { handled: true, path: await opts.onSmall(staged, name) };
+      } finally {
+        await rmQuiet(staged);
+      }
     }
   }
 
@@ -415,37 +419,42 @@ async function importDecoded(
     const tail = new Uint8Array(await src.blob.slice(src.blob.size - 512).arrayBuffer());
     isUdif = String.fromCharCode(...tail.subarray(0, 4)) === 'koly';
   }
-  const part = `${UPLOAD_DIR}/${base}.dmg.part`;
-  if (isUdif) {
-    await rmQuiet(part);
-    await writeExact(part, pump, opts, cancelled);
-    const tail = await xferRead(part, Math.max(0, reader.read - 512), 512);
-    if (String.fromCharCode(...tail.subarray(0, 4)) !== 'koly') {
-      // Not a UDIF after all: it is a raw image, now staged whole.  Store
-      // it compressed from the staged copy.
-      const dmg = `${part}.re`;
-      await rmQuiet(dmg);
-      const r = await gsEval('files.convert', [part, dmg]);
-      await rmQuiet(part);
-      if (!r || typeof r !== 'object' || 'error' in (r as object)) throw new Error(gsErrorText(r));
-      const placed = await placeUdif(dmg, name, opts.categories);
+  const part = scratchPath(`${base}.dmg.part`);
+  try {
+    if (isUdif) {
+      await writeExact(part, pump, opts, cancelled);
+      const tail = await xferRead(part, Math.max(0, reader.read - 512), 512);
+      if (String.fromCharCode(...tail.subarray(0, 4)) !== 'koly') {
+        // Not a UDIF after all: it is a raw image, now staged whole.  Store
+        // it compressed from the staged copy.
+        const dmg = `${part}.re`;
+        const r = await gsEval('files.convert', [part, dmg]);
+        await rmQuiet(part);
+        if (!r || typeof r !== 'object' || 'error' in (r as object))
+          throw new Error(gsErrorText(r));
+        const placed = await placeUdif(dmg, name, opts.categories);
+        if (placed) showNotification(`${name} stored`, 'info');
+        return { handled: true, path: placed?.path ?? null, category: placed?.category };
+      }
+      const settled = await settleUdif(part, name);
+      const placed = await placeUdif(settled, name, opts.categories);
       if (placed) showNotification(`${name} stored`, 'info');
       return { handled: true, path: placed?.path ?? null, category: placed?.category };
     }
-    const settled = await settleUdif(part, name);
-    const placed = await placeUdif(settled, name, opts.categories);
-    if (placed) showNotification(`${name} stored`, 'info');
-    return { handled: true, path: placed?.path ?? null, category: placed?.category };
-  }
 
-  const st = await writeUdif(part, name, pump, opts, cancelled);
-  const placed = await placeUdif(part, name, opts.categories);
-  if (placed)
-    showNotification(
-      `${name}: ${sizeText(st.bytes_in)} disk stored in ${sizeText(st.stored_bytes)}`,
-      'info',
-    );
-  return { handled: true, path: placed?.path ?? null, category: placed?.category };
+    const st = await writeUdif(part, name, pump, opts, cancelled);
+    const placed = await placeUdif(part, name, opts.categories);
+    if (placed)
+      showNotification(
+        `${name}: ${sizeText(st.bytes_in)} disk stored in ${sizeText(st.stored_bytes)}`,
+        'info',
+      );
+    return { handled: true, path: placed?.path ?? null, category: placed?.category };
+  } finally {
+    // Gone already when it was placed; left by a failure or a cancel otherwise.
+    await rmQuiet(part);
+    await rmQuiet(`${part}.re`);
+  }
 }
 
 // A Mac archive (StuffIt, Compact Pro, BinHex, MacBinary): staged as it is
@@ -458,27 +467,24 @@ async function importMacArchive(
   opts: ImportOptions,
 ): Promise<ImportOutcome> {
   const base = sanitizeName(name.split('/').pop() || 'archive') || 'archive';
-  const staged = `${UPLOAD_DIR}/${base}`;
+  const staged = scratchPath(base);
+  const part = scratchPath(`${base}.dmg.part`);
   const body = src.kind === 'blob' ? src.blob : src.stream;
-  if (
-    !(await streamToOpfs(staged, body, (n) =>
-      opts.onProgress?.(n, src.kind === 'blob' ? src.blob.size : src.total, 0),
-    ))
-  )
-    throw new Error('could not stage the archive');
-  const part = `${UPLOAD_DIR}/${base}.dmg.part`;
-  await rmQuiet(part);
   try {
+    if (
+      !(await streamToOpfs(staged, body, (n) =>
+        opts.onProgress?.(n, src.kind === 'blob' ? src.blob.size : src.total, 0),
+      ))
+    )
+      throw new Error('could not stage the archive');
     setActivityDetail('decoding the archive...');
     const r = (await gsEval('files.archive.import', [staged, part, opts.member ?? ''])) as {
       member?: string;
       bytes_in?: number;
       stored_bytes?: number;
     } | null;
-    if (!r || typeof r !== 'object' || typeof r.member !== 'string') {
-      await rmQuiet(part);
+    if (!r || typeof r !== 'object' || typeof r.member !== 'string')
       return { handled: false, path: null };
-    }
     const member = r.member.split('/').pop() || name;
     for (const cat of opts.categories) {
       if ((await MEDIA_TYPES[cat].validate(part, gsEval)).valid) {
@@ -492,10 +498,10 @@ async function importMacArchive(
       }
     }
     // Not a disk (a floppy, a ROM, an application): the staged flow.
-    await rmQuiet(part);
     return { handled: false, path: null };
   } finally {
     await rmQuiet(staged);
+    await rmQuiet(part);
   }
 }
 

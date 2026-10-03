@@ -8,7 +8,7 @@ import { gsEval, gsErrorText } from './emulator';
 import { opfs } from './opfs';
 import { sanitizeName } from '@/lib/archive';
 import { isInImageSpace } from '@/lib/diskImage';
-import { UPLOAD_DIR } from '@/lib/opfsPaths';
+import { scratchPath } from '@/lib/opfsPaths';
 import { xferReadDisk } from './xfer';
 
 // Per-item progress hook (e.g. to drive the status-bar indicator).
@@ -26,8 +26,6 @@ export interface CopySource {
   path: string;
   isDir: boolean;
 }
-
-let downloadSeq = 0;
 
 // Make a name safe for an OPFS / cross-platform destination: replace the
 // characters OPFS or Windows reject (notably ':' which the HFS reader produces
@@ -164,13 +162,13 @@ function saveBlob(blob: Blob, filename: string): void {
 }
 
 // Download one file. A plain OPFS file is read straight from OPFS; a file
-// inside a (read-only) image has its data fork copied out to a scratch OPFS
-// path first, then read and removed.
+// inside a (read-only) image has its data fork copied out to a file of its
+// own in the scratch area first, then read and removed.
 async function downloadOne(target: string): Promise<boolean> {
   const name = basename(target) || 'download';
   try {
     if (isInImageSpace(target)) {
-      const scratch = `${UPLOAD_DIR}/.dl-${downloadSeq++}-${sanitizeName(name)}`;
+      const scratch = scratchPath(sanitizeName(name) || 'download');
       if ((await gsEval('files.cp', [target, scratch])) !== true) return false;
       try {
         // readFile returns a lazy File backed by the OPFS entry; the browser

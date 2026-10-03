@@ -14,7 +14,6 @@
 
 #include <assert.h>
 #include <ctype.h>
-#include <dirent.h>
 #include <emscripten.h>
 #include <emscripten/atomic.h>
 #include <emscripten/emscripten.h>
@@ -55,6 +54,7 @@
 #include "prom.h"
 #include "scheduler.h"
 #include "shell.h"
+#include "storage_util.h"
 #include "system.h"
 #include "vrom.h"
 
@@ -866,29 +866,14 @@ static void install_background_checkpoint_handlers(void) {
     g_background_handlers_installed = true;
 }
 
-// A streamed image import writes /opfs/upload/<name>.dmg.part and moves it
-// into /opfs/images only when it is complete and valid, and Save State
-// stages its file there while the download is made; one a closed tab or a
-// crash left behind is never finished, and costs its size in the origin's
-// quota until removed.
-static void sweep_partial_imports(const char *dir) {
-    DIR *d = opendir(dir);
-    if (!d)
-        return;
-    struct dirent *e;
-    while ((e = readdir(d)) != NULL) {
-        size_t n = strlen(e->d_name);
-        bool part = (n > 9 && strcmp(e->d_name + n - 9, ".dmg.part") == 0) ||
-                    (n > 12 && strcmp(e->d_name + n - 12, ".dmg.part.re") == 0) ||
-                    strncmp(e->d_name, "saved-state-", 12) == 0; // a Save State being downloaded
-        if (!part)
-            continue;
-        char path[PATH_MAX];
-        snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
-        unlink(path);
-    }
-    closedir(d);
-}
+// The web app's scratch area (app/web2 lib/opfsPaths.ts SCRATCH_DIR): every
+// file the page writes on its way somewhere else -- an upload being probed, a
+// URL download, a streamed import's .dmg.part, a Save State being downloaded
+// -- lives there, and the operation that wrote it removes it on every exit.
+// One a closed tab or a crash left behind belongs to no operation and costs
+// its size in the origin's quota, so the directory is emptied at startup.
+// The rest of /opfs/upload is the user's, and is not touched.
+#define SCRATCH_DIR "/opfs/upload/.scratch"
 
 // ============================================================================
 // Exported Runtime Query Functions (for tests and diagnostics)
@@ -921,7 +906,8 @@ int main(void) {
     mkdir("/opfs/images/cd", 0777);
     mkdir("/opfs/checkpoints", 0777);
     mkdir("/opfs/upload", 0777);
-    sweep_partial_imports("/opfs/upload");
+    gs_rm_tree(SCRATCH_DIR); // whatever is there belongs to no operation
+    mkdir(SCRATCH_DIR, 0777);
 
     // Offer every file in the persistent vROM store to the core's content-
     // addressed registry (names are irrelevant — each offer is identified by

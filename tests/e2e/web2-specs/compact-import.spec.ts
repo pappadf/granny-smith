@@ -247,7 +247,7 @@ for (const variant of ["sized", "chunked", "zip"] as const) {
     expect(growth).toBeLessThan(disk.size + 8 * 1024 * 1024);
     // Nothing left in staging.
     const staging = (await gsEvalInPage(page, "files.list_dir", [
-      "/opfs/upload",
+      "/opfs/upload/.scratch",
     ])) as string[];
     expect((staging ?? []).filter((n) => n.includes(".part"))).toEqual([]);
     // The image is the disk: its decoded size, verified checksums.
@@ -338,7 +338,7 @@ async function expectNothingLeft(page: Page): Promise<void> {
   await expect
     .poll(async () => {
       const staging = ((await gsEvalInPage(page, "files.list_dir", [
-        "/opfs/upload",
+        "/opfs/upload/.scratch",
       ])) ?? []) as string[];
       return [
         ...staging.filter((n) => n.includes(".part")),
@@ -363,8 +363,9 @@ test("an HD= import cancelled midway leaves nothing behind", async ({
     .poll(
       async () =>
         (
-          ((await gsEvalInPage(page, "files.list_dir", ["/opfs/upload"])) ??
-            []) as string[]
+          ((await gsEvalInPage(page, "files.list_dir", [
+            "/opfs/upload/.scratch",
+          ])) ?? []) as string[]
         ).some((n) => n.endsWith(".dmg.part")),
       { timeout: 60_000 },
     )

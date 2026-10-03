@@ -7,6 +7,8 @@ import {
   CD_DIR,
   CHECKPOINT_DIR,
   UPLOAD_DIR,
+  SCRATCH_DIR,
+  scratchPath,
   bufferHasCheckpointSignature,
   fileHasCheckpointSignature,
 } from '@/lib/opfsPaths';
@@ -20,6 +22,19 @@ describe('OPFS path constants', () => {
     expect(CD_DIR).toBe('/opfs/images/cd');
     expect(CHECKPOINT_DIR).toBe('/opfs/checkpoints');
     expect(UPLOAD_DIR).toBe('/opfs/upload');
+    // em_main.c empties this directory at startup.
+    expect(SCRATCH_DIR).toBe('/opfs/upload/.scratch');
+  });
+});
+
+describe('scratchPath', () => {
+  it('names a file in the scratch area that keeps its own name at the end', () => {
+    expect(scratchPath('url_hd0')).toMatch(/^\/opfs\/upload\/\.scratch\/[0-9a-z]+-url_hd0$/);
+  });
+
+  it('never answers the same path twice for one name', () => {
+    const paths = new Set(Array.from({ length: 100 }, () => scratchPath('disk.img')));
+    expect(paths.size).toBe(100);
   });
 });
 
