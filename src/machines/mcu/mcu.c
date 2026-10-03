@@ -565,7 +565,7 @@ static int mcu_init(config_t *cfg, checkpoint_t *cp) {
 
     // Shared core (mem_map, 68040 CPU from the profile, scheduler) + RTC +
     // SCC + the two VIAs.
-    mac030_build_core(cfg, cp);
+    mac030_build_core(cfg, &board->desc->common, cp);
     if (cp)
         system_read_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
 

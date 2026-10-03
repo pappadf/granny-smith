@@ -1513,7 +1513,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->machine_context = st;
 
     // Build the shared II-family core (mem_map, cpu-from-profile, scheduler).
-    mac030_build_core(cfg, checkpoint);
+    mac030_build_core(cfg, &iifx_board_desc, checkpoint);
     if (checkpoint)
         system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
 
@@ -1591,7 +1591,6 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     st->mmu->tt1 = 0xF00F8043;
 
     cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, checkpoint);
-    memory_set_bus_error_range(cfg->mem_map, iifx_board_desc.bus_err_lo, iifx_board_desc.bus_err_hi);
 
     iifx_memory_layout_init(cfg);
 

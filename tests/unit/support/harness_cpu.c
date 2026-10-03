@@ -16,7 +16,7 @@ test_context_t *test_harness_init(void) {
         return NULL;
 
     // Initialize memory map: 24-bit address space, 4 MB RAM, 128 KB ROM, no checkpoint restore
-    ctx->memory = memory_map_init(24, 0x400000, 0x020000, NULL);
+    ctx->memory = memory_map_init(24, 0x400000, 0x020000, MEMORY_BUS_ERR_NONE, NULL);
     if (!ctx->memory) {
         free(ctx);
         return NULL;

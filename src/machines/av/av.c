@@ -647,10 +647,6 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // VRAM pages + the $50036000 CIVIC alias layer over the flat map.
     av_civic_install_memory(cfg, st->civic);
-
-    // NuBus super-slot and slot space bus-errors on probes (the ROM's slot
-    // scan expects it even with no cards).
-    memory_set_bus_error_range(cfg->mem_map, desc->common.bus_err_lo, desc->common.bus_err_hi);
     return 0;
 }
 
@@ -669,7 +665,7 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
 
     // Shared core (mem_map, 68040 CPU from the profile, scheduler) + RTC +
     // SCC + the single VIA (there is no VIA2 chip on this platform).
-    mac030_build_core(cfg, cp);
+    mac030_build_core(cfg, &board->desc->common, cp);
     if (cp)
         system_read_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
 

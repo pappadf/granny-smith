@@ -55,7 +55,7 @@ static void store_be32(uint8_t *p, uint32_t val) {
 // MMUSR_L was defined in mmu.h and set by nothing: the field was never checked,
 // so a guest could walk straight out of a table it had explicitly bounded.
 TEST(test_limit_field_bounds_index) {
-    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, MEMORY_BUS_ERR_NONE, NULL);
     uint8_t *ram = ram_native_pointer(mem, 0);
     mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, NULL, 0, 0, 0);
 
@@ -112,7 +112,7 @@ TEST(test_limit_field_bounds_index) {
 // which turned the IIci ROM's level-A descriptor $00050019 (logical 0 -> the
 // RAM past the 320 KB in-RAM screen buffer) into an identity map.
 TEST(test_early_termination_unaligned_frame) {
-    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, MEMORY_BUS_ERR_NONE, NULL);
     uint8_t *ram = ram_native_pointer(mem, 0);
     mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, NULL, 0, 0, 0);
 
@@ -166,7 +166,7 @@ TEST(test_early_termination_unaligned_frame) {
 // translation cache") -- the opposite of the 68040, whose PTEST does update
 // them, which is why the two walkers cannot share a default.
 TEST(test_um_history_bits) {
-    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, MEMORY_BUS_ERR_NONE, NULL);
     uint8_t *ram = ram_native_pointer(mem, 0);
     mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, NULL, 0, 0, 0);
 
@@ -218,7 +218,7 @@ TEST(test_um_history_bits) {
 
 TEST(test_soa_identity_mapping) {
     // Create 32-bit address space with 4MB RAM, 256KB ROM
-    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, MEMORY_BUS_ERR_NONE, NULL);
     ASSERT_TRUE(mem != NULL);
     ASSERT_TRUE(g_supervisor_read != NULL);
     ASSERT_TRUE(g_supervisor_write != NULL);
@@ -274,7 +274,7 @@ TEST(test_soa_identity_mapping) {
 // ============================================================================
 
 TEST(test_mmu_init_delete) {
-    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, MEMORY_BUS_ERR_NONE, NULL);
     uint8_t *ram = ram_native_pointer(mem, 0);
 
     mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, ram + 0x400000, 0x040000, 0x40000000, 0x50000000);
@@ -292,7 +292,7 @@ TEST(test_mmu_init_delete) {
 // ============================================================================
 
 TEST(test_tlb_invalidation) {
-    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, MEMORY_BUS_ERR_NONE, NULL);
     memory_populate_pages(mem, 0x40000000, 0x40080000);
 
     // Verify some entries are non-zero before invalidation
@@ -318,7 +318,7 @@ TEST(test_tlb_invalidation) {
 
 TEST(test_two_level_translation) {
     // Set up a 32-bit address space with 4MB RAM
-    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, MEMORY_BUS_ERR_NONE, NULL);
     memory_populate_pages(mem, 0x40000000, 0x40080000);
 
     uint8_t *ram = ram_native_pointer(mem, 0);
@@ -398,7 +398,7 @@ TEST(test_two_level_translation) {
 // WP=1, causing all level-C lookups to pick up entry N+1 instead of N.
 
 TEST(test_short_table_descriptor_with_wp_bit) {
-    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, MEMORY_BUS_ERR_NONE, NULL);
     uint8_t *ram = ram_native_pointer(mem, 0);
     mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, NULL, 0, 0, 0);
 
@@ -463,7 +463,7 @@ TEST(test_short_table_descriptor_with_wp_bit) {
 // ============================================================================
 
 TEST(test_invalid_descriptor_bus_error) {
-    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, MEMORY_BUS_ERR_NONE, NULL);
     uint8_t *ram = ram_native_pointer(mem, 0);
     mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, NULL, 0, 0, 0);
 
@@ -497,7 +497,7 @@ TEST(test_invalid_descriptor_bus_error) {
 // ============================================================================
 
 TEST(test_transparent_translation) {
-    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, MEMORY_BUS_ERR_NONE, NULL);
     memory_populate_pages(mem, 0x40000000, 0x40080000);
 
     uint8_t *ram = ram_native_pointer(mem, 0);
@@ -550,7 +550,7 @@ TEST(test_transparent_translation) {
 // ============================================================================
 
 TEST(test_write_protection) {
-    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, MEMORY_BUS_ERR_NONE, NULL);
     uint8_t *ram = ram_native_pointer(mem, 0);
     mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, NULL, 0, 0, 0);
 
@@ -597,7 +597,7 @@ TEST(test_write_protection) {
 // ============================================================================
 
 TEST(test_supervisor_only_pages) {
-    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, MEMORY_BUS_ERR_NONE, NULL);
     uint8_t *ram = ram_native_pointer(mem, 0);
     mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, NULL, 0, 0, 0);
 
@@ -649,7 +649,7 @@ TEST(test_supervisor_only_pages) {
 
 TEST(test_24bit_soa_compatibility) {
     // Create 24-bit address space with Plus layout
-    memory_map_t *mem = memory_map_init(24, 0x400000, 0x020000, NULL);
+    memory_map_t *mem = memory_map_init(24, 0x400000, 0x020000, MEMORY_BUS_ERR_NONE, NULL);
     ASSERT_TRUE(mem != NULL);
 
     memory_populate_pages(mem, 0x400000, 0x580000);
@@ -692,7 +692,7 @@ static uint32_t step_u(const mmu_trace_step_t *st, const char *key, uint32_t dfl
 }
 
 TEST(test_debug_walk_trace) {
-    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, MEMORY_BUS_ERR_NONE, NULL);
     uint8_t *ram = ram_native_pointer(mem, 0);
     mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, NULL, 0, 0, 0);
 

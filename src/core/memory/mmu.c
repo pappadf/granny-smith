@@ -951,9 +951,6 @@ void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uin
         alias_phys_base);
 }
 
-// memory_set_bus_error_range now lives in memory.c: the window is a bus
-// property, not an MMU one.
-
 // Invalidate the software TLB.  Uses the tracking list to zero only
 // populated entries — typically ~2000-3000 pages vs 1M+ for a full memset.
 // Falls back to full memset if the tracking list overflowed.

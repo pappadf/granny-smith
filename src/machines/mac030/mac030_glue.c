@@ -194,7 +194,7 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
     cfg->machine_context = st;
     st->last_via2_port_b = 0xFF; // PB2 starts high (IIcx soft-power; unused elsewhere)
 
-    mac030_build_core(cfg, cp);
+    mac030_build_core(cfg, board->desc, cp);
     if (board->pre_devices)
         board->pre_devices(cfg);
     if (cp)
@@ -229,7 +229,6 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
     if (board->post_nubus)
         board->post_nubus(cfg);
 
-    memory_set_bus_error_range(cfg->mem_map, board->desc->bus_err_lo, board->desc->bus_err_hi);
     mac030_glue_memory_layout(cfg, board->desc);
     if (board->memory_layout_tail)
         board->memory_layout_tail(cfg);
@@ -250,8 +249,10 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
 
 // Build the shared II-family construction prefix.  Reads the CPU model from
 // the profile (single source of truth), not a hardcoded constant.
-void mac030_build_core(config_t *cfg, checkpoint_t *cp) {
-    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, cp);
+void mac030_build_core(config_t *cfg, const struct mac030_board_desc *desc, checkpoint_t *cp) {
+    // The board's NuBus bus-error window is part of the bus it builds.
+    const memory_bus_err_window_t bus_err = {.lo = desc->bus_err_lo, .hi = desc->bus_err_hi};
+    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, bus_err, cp);
     cfg->cpu = cpu_init(cfg->machine->cpu_model, cp);
     sched_cpu_if_t cpu_if = cpu_sched_if(cfg->cpu); // the 68K main-CPU seam adapter
     cfg->scheduler = scheduler_init(&cpu_if, cp);

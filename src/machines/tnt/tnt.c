@@ -532,7 +532,8 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // seam.  CPI 1.0 — the same determinism-and-measurement rationale as
     // PDM; whether any TNT guest code times itself against the TB and
     // cares is a ladder observable.
-    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, cp);
+    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size,
+                                   MEMORY_BUS_ERR_NONE, cp); // no bus-error watchdog: unanswered floats to $FF
     // No 68k MMU owns this machine's page table; host-backed regions that
     // core code registers on the bus map are filled through our filler.
     g_mem_host_fill = tnt_fill_page;

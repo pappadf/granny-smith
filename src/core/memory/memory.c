@@ -27,24 +27,15 @@ LOG_USE_CATEGORY_NAME("memory");
 
 // === Bus-error window ======================================================
 //
-// The address range where "no chip answered" means the board's watchdog fires
-// and the cycle ends in a bus error, rather than the bus floating to the
-// pull-ups and reading $FF.  Per board; see each machine's bus_err_lo/hi.
-//
-// It lives HERE, not in mmu_state_t, because it is a property of the BUS.
-// Keeping it in the MMU had two consequences: the test
-// was written out twice, once in mmu.c and once in mmu040.c, and it could
-// only ever fire on the MMU's transparent-translation path -- so with the MMU
-// disabled, which is most of POST, the same address returned $FF and never
-// faulted.
-static uint32_t g_bus_err_lo = 1; // lo > hi: an empty window until a board sets one
+// The window is a field of the memory map (bus_err), passed to memory_map_init
+// by the board.  The slow path that consults it runs on the fast-path aliases
+// and holds no memory_map_t, so the installed map's window is aliased here:
+// set by memory_map_init, cleared by memory_map_delete with the other aliases.
+// The test lives in memory.c rather than in each MMU because it is a property
+// of the BUS: it applies with the MMU off (most of POST) as well as on the
+// MMUs' transparent-translation paths.
+static uint32_t g_bus_err_lo = 1; // lo > hi: an empty window while no map is installed
 static uint32_t g_bus_err_hi = 0;
-
-void memory_set_bus_error_range(memory_map_t *m, uint32_t start, uint32_t end) {
-    (void)m;
-    g_bus_err_lo = start;
-    g_bus_err_hi = end;
-}
 
 // True when an unanswered access at `addr` should fault rather than float.
 bool memory_addr_faults_when_unmapped(uint32_t addr) {
@@ -213,6 +204,9 @@ typedef struct memory {
     // Per-instance page table (points to g_page_table when active)
     page_entry_t *page_table;
     int page_count;
+
+    // The board's bus-error window (aliased by g_bus_err_lo/hi while installed)
+    memory_bus_err_window_t bus_err;
 
     // Machine-parameterised sizes (set by memory_map_init)
     uint32_t ram_size; // RAM region size in bytes
@@ -1500,7 +1494,8 @@ void memory_populate_ram_mirror(memory_map_t *mem, uint32_t mirror_start, uint32
 // The page table is allocated dynamically based on address_bits.
 // Machine-specific memory layout (page table population) is done by the machine's
 // memory_layout_init callback, not here.
-memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_size, checkpoint_t *checkpoint) {
+memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_size, memory_bus_err_window_t bus_err,
+                              checkpoint_t *checkpoint) {
     // Validate address_bits before deciding the page-table shape so a 28 or 0
     // doesn't silently default to the 24-bit layout.
     GS_ASSERTF(address_bits == 24 || address_bits == 32, "memory_map_init: address_bits must be 24 or 32 (got %d)",
@@ -1556,6 +1551,11 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     // Store parameterised sizes for later use by layout, checkpoint, and cmd_rom
     mem->ram_size = ram_size;
     mem->rom_size = rom_size;
+
+    // The board's bus-error window, installed as the slow path's alias.
+    mem->bus_err = bus_err;
+    g_bus_err_lo = bus_err.lo;
+    g_bus_err_hi = bus_err.hi;
 
     // Allocate the flat RAM+ROM image (ram_size + rom_size bytes)
     size_t image_size = (size_t)ram_size + (size_t)rom_size;
@@ -1672,6 +1672,10 @@ void memory_map_delete(memory_map_t *mem) {
         if (g_page_table == mem->page_table) {
             g_page_table = NULL;
             g_page_count = 0;
+
+            // The bus-error window alias goes with the map that owns it.
+            g_bus_err_lo = MEMORY_BUS_ERR_NONE.lo;
+            g_bus_err_hi = MEMORY_BUS_ERR_NONE.hi;
 
             // Free SoA fast-path arrays
             free(g_supervisor_read);

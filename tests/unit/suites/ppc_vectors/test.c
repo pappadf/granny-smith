@@ -81,7 +81,7 @@ static int custom_open(ppc_backend *self, char *err, size_t errlen) {
         snprintf(err, errlen, "out of memory");
         return -1;
     }
-    CTX->memory = memory_map_init(32, TEST_RAM_SIZE, TEST_ROM_SIZE, NULL);
+    CTX->memory = memory_map_init(32, TEST_RAM_SIZE, TEST_ROM_SIZE, MEMORY_BUS_ERR_NONE, NULL);
     if (!CTX->memory) {
         snprintf(err, errlen, "memory_map_init failed");
         return -1;

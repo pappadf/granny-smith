@@ -265,9 +265,6 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     st->io.iface[MAC030_DEV_SWIM_IOP] = iop_get_memory_interface(st->swim_iop);
     mcu_memory_layout(cfg);
 
-    // Slot probing bus-errors in the NuBus windows.
-    memory_set_bus_error_range(cfg->mem_map, desc->common.bus_err_lo, desc->common.bus_err_hi);
-
     if (cp)
         mcu_restore_private(cfg, cp);
     return 0;

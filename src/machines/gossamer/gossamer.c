@@ -315,7 +315,8 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
 
     // Core: memory map, the 750 with the board's PVR and PLL straps, the
     // scheduler on the PPC seam.
-    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, cp);
+    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size,
+                                   MEMORY_BUS_ERR_NONE, cp); // no bus-error watchdog: unanswered floats to $FF
     g_mem_host_fill = gos_fill_page;
     cfg->ppc = ppc_init(cp, cfg->machine->cpu_model);
     if (!cfg->ppc) {

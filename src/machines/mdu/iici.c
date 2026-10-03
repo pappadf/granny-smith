@@ -269,6 +269,9 @@ static const mac030_board_desc_t iici_board_desc = {
     .io_ranges = mdu_io_ranges_tbl,
     .io_mirror_mask = 0x0003FFFFUL,
     .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
+    // NuBus expansion slots $9..$E bus-error on unmapped reads.  The built-in
+    // video's $FBxxxxxx screen base is logical only: the guest's tables send
+    // it to Bank A before this physical range is consulted.
     .bus_err_lo = NUBUS_BERR_LO,
     .bus_err_hi = NUBUS_BERR_HI,
 };
@@ -356,11 +359,6 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
 
     // Bind device handles + the board's I/O window table for the shared engine.
     mdu_io_bind(&st->mdu_io, cfg, &iici_board_desc, st->asc, st->floppy, st->rbv, st->video_card);
-
-    // NuBus expansion slots $9..$E bus-error on unmapped reads.  The built-in
-    // video's $FBxxxxxx screen base is logical only: the guest's tables send
-    // it to Bank A before this physical range is consulted.
-    memory_set_bus_error_range(cfg->mem_map, iici_board_desc.bus_err_lo, iici_board_desc.bus_err_hi);
 
     iici_memory_layout_init(cfg);
 

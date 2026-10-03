@@ -925,7 +925,8 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->machine_context = ls;
 
     // 24-bit address space, configured RAM, 16 KB interleaved boot ROM.
-    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, checkpoint);
+    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size,
+                                   MEMORY_BUS_ERR_NONE, checkpoint); // no bus-error watchdog
 
     // The profile is the source of truth for the CPU model, as it is for the
     // clock below and as mac030_build_core states for the II families.  Both

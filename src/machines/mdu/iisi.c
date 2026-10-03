@@ -229,6 +229,8 @@ static const mac030_board_desc_t iisi_board_desc = {
     .io_ranges = mdu_io_ranges_tbl,
     .io_mirror_mask = 0x0003FFFFUL,
     .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
+    // No addressable card in slot $E (built-in video is main DRAM mapped by
+    // the OS), so the $FExxxxxx slot aperture legitimately bus-errors.
     .bus_err_lo = NUBUS_BERR_LO,
     .bus_err_hi = NUBUS_BERR_HI,
 };
@@ -335,11 +337,6 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     // know it does not own the buffer.
     if (checkpoint)
         nubus_checkpoint_restore(cfg->nubus, checkpoint);
-
-    // NuBus expansion / slot space bus-errors on unmapped reads.  There is no
-    // addressable card in slot $E (built-in video is main DRAM mapped by the OS),
-    // so the $FExxxxxx slot aperture legitimately bus-errors when probed.
-    memory_set_bus_error_range(cfg->mem_map, iisi_board_desc.bus_err_lo, iisi_board_desc.bus_err_hi);
 
     iisi_memory_layout_init(cfg);
 

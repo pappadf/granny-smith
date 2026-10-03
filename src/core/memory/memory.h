@@ -65,14 +65,28 @@ typedef struct memory_interface {
 struct memory;
 typedef struct memory memory_map_t;
 
+// The board's bus-error window: the inclusive address range where "no chip
+// answered" ends in a bus error (the board's watchdog) instead of the bus
+// floating to $FF.  A property of the board's bus, fixed at construction.
+// lo > hi is an empty window.
+typedef struct memory_bus_err_window {
+    uint32_t lo;
+    uint32_t hi;
+} memory_bus_err_window_t;
+
+// A board with no bus-error watchdog: every unanswered access floats to $FF.
+#define MEMORY_BUS_ERR_NONE ((memory_bus_err_window_t){.lo = 1u, .hi = 0u})
+
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 
 // Initialise a memory map with parameterised address space and RAM/ROM sizes.
 // address_bits: 24 for Plus (16 MB), 32 for SE/30 (4 GB)
 // ram_size: RAM size in bytes (e.g. 0x400000 for Plus)
 // rom_size: ROM size in bytes (e.g. 0x020000 for Plus)
+// bus_err: the board's bus-error window (MEMORY_BUS_ERR_NONE for none)
 // checkpoint: if non-NULL, restore RAM and ROM from checkpoint
-extern memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_size, checkpoint_t *checkpoint);
+extern memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_size,
+                                     memory_bus_err_window_t bus_err, checkpoint_t *checkpoint);
 
 void memory_map_delete(memory_map_t *mem);
 
@@ -140,14 +154,9 @@ extern void (*g_mem_host_fill)(uint32_t page_index, uint8_t *host_ptr, bool writ
 // handler — see memory_signal_bus_error.
 extern bool g_mem_debug_access;
 
-// Address range where unmapped accesses raise a bus error.  Outside this
-// range, unmapped reads return 0 silently (matches GLUE behaviour for
-// non-NuBus slots).
-void memory_set_bus_error_range(memory_map_t *m, uint32_t start, uint32_t end);
-
 // True when an unanswered access at `addr` should raise a bus error rather
-// than float to $FF.  The window is a BUS property, so it applies with the
-// MMU on or off -- see memory.c.
+// than float to $FF: inside the installed map's bus-error window.  The window
+// is a BUS property, so it applies with the MMU on or off -- see memory.c.
 bool memory_addr_faults_when_unmapped(uint32_t addr);
 
 extern void memory_map_remove(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name,

@@ -1740,7 +1740,7 @@ int main(void) {
     // canonical OS base) — the harness's own init is Plus-shaped (24-bit),
     // so the context is built by hand here.
     test_context_t *ctx = calloc(1, sizeof(test_context_t));
-    ctx->memory = memory_map_init(32, 0x800000, 0x20000, NULL);
+    ctx->memory = memory_map_init(32, 0x800000, 0x20000, MEMORY_BUS_ERR_NONE, NULL);
     if (!ctx->memory) {
         printf("FAIL: memory_map_init\n");
         return 1;

@@ -187,10 +187,6 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     mcu_io_bind(&st->io, cfg, desc, st->asc, st->floppy);
     mcu_memory_layout(cfg);
 
-    // Slot probing bus-errors in the NuBus windows (needed by the ROM's
-    // slot scan even with no cards; the mapped VRAM aperture wins first).
-    memory_set_bus_error_range(cfg->mem_map, desc->common.bus_err_lo, desc->common.bus_err_hi);
-
     if (cp)
         mcu_restore_private(cfg, cp);
     return 0;

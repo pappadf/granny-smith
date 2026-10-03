@@ -61,7 +61,7 @@ int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *b
     // Shared II-family core (mem_map, cpu-from-profile, scheduler) + RTC + SCC +
     // VIA1.  Note: no VIA2 (the RBV replaces it), and rtc_set_via is left to the
     // machine (IIci bit-bangs the RTC on VIA1; the IIsi drives it via Egret).
-    mac030_build_core(cfg, cp);
+    mac030_build_core(cfg, board->desc, cp);
     if (cp)
         system_read_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
 
