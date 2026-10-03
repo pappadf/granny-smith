@@ -390,7 +390,7 @@ has two instances, `vrom.c` and `prom.c`, with the same behaviour:
 | PROM | The same offer pass for `*.prom` (`headless_main.c:946`). | The same, from `/opfs/images/prom/` (`em_main.c:729`; `upload.ts:401`). |
 
 In the browser, a dropped file is classified by trying the
-identifiers in the order `rom`, `vrom`, `prom`, `fd`, `cdrom`, `hd` (`upload.ts`, `probeAndPersist`).
+identifiers in the order `rom`, `vrom`, `prom`, `fd`, `cdrom`, `hd` (`upload.ts`, `probeStaged`).
 A descriptor that recognises the file but refuses it (`reject`) ends the
 probe with that message, so a refused ROM is never stored as a disk image.
 vROM and PROM cannot claim each other's files, because they identify from

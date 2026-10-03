@@ -619,7 +619,16 @@ worker's OPFS request through the page's thread — it deadlocked the page.
    validates is copied out into its store. A floppy goes into the first empty drive the
    model has, a CD into the model's CD bay (`bus/media.ts`; an occupied
    bay is refused, not overwritten); ROMs trigger a full cold boot via
-   `maybeBootFromRom`.
+   `maybeBootFromRom`.  **Several files in one drop** each run that
+   single-file flow on their own (`acceptOne`: stage, probe, store or
+   reject, discard; a large one streamed as below), and the drop ends with
+   one summary instead of a message per file — "3 stored (2 floppies,
+   1 ROM), 1 rejected: 'notes.txt' doesn't look like …".  What follows is
+   what single drops would do, and no more: a ROM boots only when it is the
+   drop's only ROM, and per category only the first file goes into an empty
+   drive.  A checkpoint is loaded only when dropped on its own; in a drop
+   with other files it is rejected ("drop a checkpoint on its own"), since
+   loading it would replace the machine they were meant for.
 3. **Drag-and-drop onto the Filesystem tab** —
    [`FilesystemView.svelte`](../../app/web2/src/components/panel-views/filesystem/FilesystemView.svelte)
    accepts external file drops on folder rows, calls
