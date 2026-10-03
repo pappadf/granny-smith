@@ -717,7 +717,7 @@ power with the machine (`adb_power_on`), and with VIA1 reset the RTC's
 **Differences between families, and known gaps.**
 
 - *The Lisa's warm reset.* A Lisa reset does not set the MMU's START
-  latch -- only power-on does ([mmu.md §2.6](../../../reference/machines/lisa/mmu.md)) -- so
+  latch -- only power-on does ([mmu.md](../../../reference/machines/lisa/mmu.md) §2.6) -- so
   `machine.reset` fetches the vectors through whatever map the OS left.
   What the hardware then does is the ROM's warm-start path and is not
   verified; `machine.restart` (power-on) is.

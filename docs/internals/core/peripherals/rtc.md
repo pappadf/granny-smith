@@ -34,7 +34,7 @@ There is **no staged seed**. An earlier design held a pre-boot
 `rtc.time` in a module-scope static until the next `rtc_init` adopted it;
 only the PDM family ever consumed it, so a pre-boot pin was silently
 discarded everywhere else, and — because it was never cleared — a pin set
-by one test row would have leaked into every machine built after it in
+by one test row would have carried over to every machine built after it in
 the same process. Device state is written to the device, never kept in a
 special place across a construction. A pin written *before* a
 `machine.boot` therefore does nothing to the new machine, which reads the
