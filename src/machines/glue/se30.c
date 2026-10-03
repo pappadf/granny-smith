@@ -441,6 +441,7 @@ const hw_profile_t machine_se30 = {
     .scsi_buses = se30_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
 
     // Built-in slot-$E video card.  Exposed in the profile so the config
     // dialog reads the VROM requirement from the card (it needs the SE/30

@@ -95,6 +95,11 @@ image_t *setup_get_image_by_filename(const char *filename) {
     (void)filename;
     return NULL;
 }
+
+// scsi_init flags a checkpoint whose bus lacks the CD bay's drive.
+void checkpoint_set_error(checkpoint_t *checkpoint) {
+    (void)checkpoint;
+}
 int system_hd_attach(const char *path, int scsi_id) {
     (void)path, (void)scsi_id;
     return -1;
@@ -222,7 +227,7 @@ static void on_kick(void *ctx) {
 static void setup(void) {
     s_irq_level = 0;
     s_dbdma_kicks = 0;
-    s_bus = scsi_init(NULL);
+    s_bus = scsi_init(NULL, NULL, 0);
     ASSERT_TRUE(s_bus != NULL);
     scsi_add_device(s_bus, TARGET, "GS", "SCRATCH", "1.0", NULL, scsi_dev_hd, BLK, false);
     s_m = mesh_init(NULL, NULL);

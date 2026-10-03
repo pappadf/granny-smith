@@ -1135,8 +1135,23 @@ scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint) {
 }
 
 // Initialize the SCSI controller and optionally restore from checkpoint
-scsi_t *scsi_init(checkpoint_t *checkpoint) {
-    return scsi_init_named(checkpoint, "scsi");
+scsi_t *scsi_init(checkpoint_t *checkpoint, const scsi_cd_drive_t *cd_drive, int cd_id) {
+    scsi_t *scsi = scsi_init_named(checkpoint, "scsi");
+    if (!scsi || !cd_drive)
+        return scsi;
+    GS_ASSERTF(cd_id >= 0 && cd_id < 7, "scsi_init: CD bay id %d is not a target slot", cd_id);
+    if (checkpoint) {
+        // The bus came back from the stream; the bay's drive must be on it.
+        if (scsi->devices[cd_id].type != scsi_dev_cdrom) {
+            LOG(0, "Error: checkpoint's SCSI bus has no CD-ROM drive in the CD bay (id %d)", cd_id);
+            checkpoint_set_error(checkpoint);
+        }
+        return scsi;
+    }
+    // Power-on: the bay's drive, empty.
+    scsi_add_device(scsi, cd_id, cd_drive->vendor, cd_drive->product, cd_drive->revision, NULL, scsi_dev_cdrom,
+                    cd_drive->block_size, true);
+    return scsi;
 }
 
 scsi_t *scsi_init_named(checkpoint_t *checkpoint, const char *name) {

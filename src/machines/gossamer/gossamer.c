@@ -370,7 +370,7 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     st->dbdma = dbdma_init(cp, DBDMA_CHANNELS_HEATHROW);
     if (!st->dbdma)
         return -1;
-    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, cp);
+    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp);
     gos_swim3_bind(cfg);
     gos_swim3_init(cfg);
     gos_scc_dma_init(cfg);
@@ -428,7 +428,7 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     // SCSI: the one MESH bus (internal and external connectors share it).
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
-    cfg->scsi = scsi_init(cp);
+    cfg->scsi = profile_scsi_init(cfg->machine, cp);
     st->mesh = mesh_init(cfg->scheduler, cp);
     mesh_attach_bus(st->mesh, cfg->scsi);
     mesh_set_irq_callback(st->mesh, gos_mesh_irq, cfg);

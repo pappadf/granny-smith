@@ -164,6 +164,10 @@ bool profile_default_hd_bay(const hw_profile_t *p, media_bay_t *out) {
     return profile_hd_bays(p, out, 1) == 1;
 }
 
+struct scsi *profile_scsi_init(const hw_profile_t *p, checkpoint_t *cp) {
+    return scsi_init(cp, p->has_cdrom ? p->cdrom_drive : NULL, p->cdrom_id);
+}
+
 bool profile_cdrom_bay(const hw_profile_t *p, media_bay_t *out) {
     if (!p || !p->has_cdrom)
         return false;

@@ -102,9 +102,9 @@ const hw_profile_t machine_pm7500 = {
     // DB-25, not on the 10 MB/s MESH bus that carries the internal hard disk
     // ("a SCSI bus for external SCSI devices and for the internal CD-ROM
     // drive", ibid. S3).  We build the 53C94 with NO bus attached (tnt.c), so
-    // there is nowhere correct to put it -- and system.c:779 registers an empty
-    // bay on cfg->scsi the moment has_cdrom is true, which on these machines is
-    // MESH.  Measured: doing that seats a SONY CD-ROM at id 3 on the boot bus
+    // there is nowhere correct to put it -- and profile_scsi_init builds the
+    // bay's drive on cfg->scsi the moment has_cdrom is true, which on these
+    // machines is MESH.  Measured: doing that seats a SONY CD-ROM at id 3 on the boot bus
     // and breaks tnt-voodoo2-glide's Mac OS 8.1 startup.
     //
     // cdrom_id carries the factory answer so it is right the day the 53C94
@@ -112,6 +112,7 @@ const hw_profile_t machine_pm7500 = {
     // CD-ROM 3, controller 7).
     .has_cdrom = false,
     .cdrom_id = 3,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
     .floppy_slots = mac_floppy_slots_1hd,
 
     .pci_slots = pm7500_pci_slots,

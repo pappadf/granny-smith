@@ -45,7 +45,24 @@ typedef enum scsi_phase {
 // shell_init alongside rom_init. Idempotent.
 void scsi_class_register(void);
 
-scsi_t *scsi_init(checkpoint_t *checkpoint);
+// The drive a machine's CD bay holds: the identity it answers INQUIRY with
+// and its logical block size.  Declared by the profile with the bay
+// (hw_profile_t.cdrom_drive), never invented by the code that seats it.
+typedef struct scsi_cd_drive {
+    const char *vendor; // INQUIRY vendor, e.g. "SONY"
+    const char *product; // INQUIRY product
+    const char *revision; // INQUIRY revision
+    uint16_t block_size; // logical block size presented (2048)
+} scsi_cd_drive_t;
+
+// A machine's primary bus, built with its fixed devices: the CD bay's drive
+// `cd_drive` at `cd_id` (NULL: no bay).  A machine with a bay has the drive on
+// the bus from power-on, disc or no disc -- SCSI is not hot-plug: the guest's
+// CD driver claims its targets at the boot-time bus scan, so a later insert
+// must be a medium change on a drive that was always there.  A restore builds
+// the same bus and loads the drive's state into it; a checkpoint whose bus
+// lacks the bay's drive is an error.
+scsi_t *scsi_init(checkpoint_t *checkpoint, const scsi_cd_drive_t *cd_drive, int cd_id);
 
 // A SECOND (third, …) bus on the same machine, mounted under its own name.
 //
@@ -58,7 +75,7 @@ scsi_t *scsi_init(checkpoint_t *checkpoint);
 // its own probe word (`probe-scsi1` / `probe-scsi2`).
 //
 // So a second instance mounts at `machine.<name>` instead, and `scsi_init`
-// is `scsi_init_named(map, cp, "scsi")`.  Nothing about the first bus
+// is `scsi_init_named(cp, "scsi")` plus the fixed devices.  Nothing about the first bus
 // changes, which is the point: a name is the smallest thing that can carry
 // this, and inventing a `machine.scsi.bus[N]` collection would have to
 // rename the existing `machine.scsi.bus` node (the live phase/target view)

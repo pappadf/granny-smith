@@ -47,7 +47,7 @@ int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_s
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
 
-    cfg->scsi = scsi_init(cp);
+    cfg->scsi = profile_scsi_init(cfg->machine, cp);
     // SE/30, IIcx and IIx: an NCR 5380 behind the glue's own decode.
     scsi_5380_attach(cfg->scsi, cp);
     scsi_set_via(cfg->scsi, cfg->via2);
@@ -57,7 +57,7 @@ int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_s
     asc_set_via(st->asc, cfg->via2);
     asc_set_mix(st->asc, desc->asc_mix); // board speaker fold (not checkpointed)
 
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, cp);
+    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp);
     cfg->floppy = st->floppy;
 
     mac030_glue_io_bind(&st->glue_io, cfg, desc, st->asc, st->floppy);

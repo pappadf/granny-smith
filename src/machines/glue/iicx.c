@@ -244,6 +244,7 @@ const hw_profile_t machine_iicx = {
     .scsi_buses = iicx_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
     // The IIcx has no built-in video — its primary display comes from
     // a NuBus video card seated in slot $9 (Apple Display Card 8•24 by
     // default).  That card needs mdc-8-24-revb-d1629664.vrom to declare itself

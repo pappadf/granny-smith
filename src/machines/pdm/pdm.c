@@ -385,7 +385,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // discrete 53CF96 on its fast internal bus (40 MHz), instantiated with
     // no bus attached: every select times out, the empty-bus presentation.
     // hd=/cd= media land on cfg->scsi, i.e. the Curio bus, on all models.
-    cfg->scsi = scsi_init(cp);
+    cfg->scsi = profile_scsi_init(cfg->machine, cp);
     st->scsi96[0] = scsi_53c96_init(cfg->scheduler, 20000000, cp);
     scsi_53c96_set_irq_callback(st->scsi96[0], pdm_scsi96a_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96[0], cfg->scsi);
@@ -397,7 +397,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // The internal SuperDrive behind SWIM3.  No memory map: PDM decodes
     // the controller through the AMIC island, not through a floppy region
     // of its own, so the shared module only carries the drive and media.
-    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, cp);
+    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp);
 
     // Board state + memory map.
     pdm_hmc_init(cfg);

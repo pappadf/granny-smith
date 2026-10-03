@@ -164,7 +164,8 @@
 // reset raises on every target (ANSI X3.131-1986 S6.1.3).
 #define ASC_POWER_ON_OR_RESET  0x29
 #define ASC_MEDIUM_NOT_PRESENT 0x3A
-// The drive we advertise is a SONY CD-ROM CDU-8002 (system.c), so its sense
+// The drive we advertise is a SONY CD-ROM CDU-8002 (the profiles' CD bay
+// declaration, mac_cdrom_drive_applecd), so its sense
 // vocabulary is the CDU-541 manual's, not SCSI-2's.  That manual's NOT READY
 // (2h) table has no 0x3A at all -- an empty bay is vendor code 0xB0, "Caddy not
 // inserted in drive" (CDU-541 SCSI manual, sense code tables).  Apple's CD-ROM

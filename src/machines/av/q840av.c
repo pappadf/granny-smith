@@ -81,6 +81,7 @@ const hw_profile_t machine_q840av = {
     .scsi_buses = q840av_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
     .has_video_in = true, // on-board DMSD/VDC digitizer
     .has_audio_in = true, // Singer codec microphone input (singer.md)
     .aux_cpus = q840av_aux_cpus, // the DSP3210 (machine.dsp)

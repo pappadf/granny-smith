@@ -103,7 +103,7 @@ static void make_disk(void) {
 }
 
 static scsi_t *attach_disk(void) {
-    scsi_t *scsi = scsi_init(NULL);
+    scsi_t *scsi = scsi_init(NULL, NULL, 0);
     ASSERT_TRUE(scsi != NULL);
     // These tests drive the 5380's register file, so the bus needs one
     // attached -- a bus on its own has no registers to write.

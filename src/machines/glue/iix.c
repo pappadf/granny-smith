@@ -146,6 +146,7 @@ const hw_profile_t machine_iix = {
     .scsi_buses = iix_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
     // Same reasoning as IIcx: no built-in video, so the slot card's
     // VROM (mdc-8-24-revb-d1629664.vrom for the default JMFB card) must be
     // present.  See iicx.c for the full comment.

@@ -448,6 +448,10 @@ typedef struct hw_profile {
     // gates dialog display while individual models catch up driver-wise.
     bool has_cdrom;
     int cdrom_id; // SCSI bus id for the CD bay; conventionally 3.
+    // The CD-ROM drive this machine takes -- in its bay (has_cdrom), and on
+    // any CD attach: the identity it answers INQUIRY with and its block size.
+    // NULL on a machine that takes none (the Lisa).
+    const struct scsi_cd_drive *cdrom_drive;
 
     // On-board video digitizer (the AV family's DMSD/VDC capture path).
     // Drives the exported `video_in` capability, which gates the frontend's
@@ -588,6 +592,9 @@ bool profile_default_hd_bay(const hw_profile_t *p, media_bay_t *out);
 bool profile_cdrom_bay(const hw_profile_t *p, media_bay_t *out);
 // How many floppy drives the machine has (its floppy_slots).
 int profile_floppy_count(const hw_profile_t *p);
+// Build the machine's primary SCSI bus with the fixed devices the profile
+// declares on it: the CD bay's drive (has_cdrom, cdrom_id, cdrom_drive).
+struct scsi *profile_scsi_init(const hw_profile_t *p, checkpoint_t *cp);
 
 // === Machine-level attach and eject (system.c) =============================
 // Open `path` as the medium `bay` takes (a hard disk, or with `cdrom` a CD)

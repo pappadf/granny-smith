@@ -624,7 +624,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // the drive and media, the shared SWIM3 model (core/peripherals) the
     // chip, and swim3.c here binds the two to Grand Central and DBDMA
     // channel 1.  No memory map of its own: the island decodes it.
-    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, cp);
+    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp);
     tnt_swim3_bind(cfg);
     tnt_swim3_init(cfg);
     tnt_scc_dma_init(cfg);
@@ -707,7 +707,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // chain yet (see pm7500.c's has_cdrom).
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
-    cfg->scsi = scsi_init(cp);
+    cfg->scsi = profile_scsi_init(cfg->machine, cp);
     // The Network Servers carry TWO fast/wide buses.  `cfg->scsi` is
     // channel 0 (Open Firmware's `scsi-int`, bays 0-3, the `disk0`..`disk3`
     // aliases), so `hd=` / `cd=` and every existing consumer of

@@ -263,14 +263,14 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     if (checkpoint)
         mac_checkpoint_restore_images(cfg, checkpoint);
 
-    cfg->scsi = scsi_init(checkpoint);
+    cfg->scsi = profile_scsi_init(cfg->machine, checkpoint);
     scsi_5380_attach(cfg->scsi, checkpoint); // IIsi: NCR 5380
     scsi_set_irq_callback(cfg->scsi, iisi_scsi_irq, cfg);
     setup_images(cfg);
 
     st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, checkpoint);
+    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), checkpoint);
     cfg->floppy = st->floppy;
 
     // Egret companion: owns ADB / RTC / PRAM / 1-sec tick / soft power-off via
@@ -392,6 +392,7 @@ const hw_profile_t machine_iisi = {
     .scsi_buses = iisi_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
     // Built-in V8 video has no separate declaration ROM — the boot ROM drives
     // it from the hard-coded VideoInfoMacIIsi record.
 

@@ -139,6 +139,7 @@ const hw_profile_t machine_ans500 = {
     // find a diagnostic floppy or Install CD to boot from."
     .has_cdrom = true,
     .cdrom_id = 0,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
 
     .pci_slots = ans_pci_slots,
 

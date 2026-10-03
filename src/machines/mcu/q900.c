@@ -185,7 +185,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // Internal SCSI bus: carries the configured disks + CD through the
     // shared bus/target model; the internal 53C96 fronts it.
-    cfg->scsi = scsi_init(cp);
+    cfg->scsi = profile_scsi_init(cfg->machine, cp);
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
     scsi_53c96_set_irq_callback(st->scsi96, q900_scsi96_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
@@ -215,7 +215,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     st->asc = asc_init(NULL, cfg->scheduler, cp); // EASC: ASC-compatible core
     asc_set_mix(st->asc, ASC_MIX_CH_A);
     asc_set_irq_handler(st->asc, q900_asc_irq, cfg);
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, cp);
+    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp);
     cfg->floppy = st->floppy;
 
     // Caboose: the Egret-protocol system manager (RTC/PRAM/power/keyswitch;
@@ -347,6 +347,7 @@ const hw_profile_t machine_q900 = {
     .scsi_buses = q900_scsi_buses,
     .has_cdrom = true, // internal CD option shipped on the towers
     .cdrom_id = 3,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
 
     .nubus_slots = q900_nubus_slots,
 

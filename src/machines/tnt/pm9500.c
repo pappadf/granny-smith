@@ -101,6 +101,7 @@ const hw_profile_t machine_pm9500 = {
     .scsi_buses = pm9500_scsi_buses,
     .has_cdrom = false, // no 53C94 chain to hang it on -- see pm7500.c
     .cdrom_id = 3, // the factory answer, ready for when there is one
+    .cdrom_drive = &mac_cdrom_drive_applecd,
     .floppy_slots = mac_floppy_slots_1hd,
 
     .pci_slots = pm9500_pci_slots,

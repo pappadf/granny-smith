@@ -77,7 +77,7 @@ static scsi_t *attach_disk(void) {
     for (uint32_t lba = 0; lba < BLOCKS; lba++)
         ASSERT_TRUE(write(fd, blk, BLK) == (ssize_t)BLK);
     close(fd);
-    scsi_t *scsi = scsi_init(NULL);
+    scsi_t *scsi = scsi_init(NULL, NULL, 0);
     ASSERT_TRUE(scsi != NULL);
     image_t *img = image_create(g_path, NULL);
     ASSERT_TRUE(img != NULL);

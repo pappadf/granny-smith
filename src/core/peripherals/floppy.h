@@ -32,8 +32,12 @@ struct floppy;
 typedef struct floppy floppy_t;
 
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
-// Initializes a floppy controller of the given type and maps it to memory
-floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, checkpoint_t *checkpoint);
+// Initializes a floppy controller of the given type and maps it to memory.
+// `n_drives` is how many of the controller's FLOPPY_NUM_DRIVES the machine
+// cables (its profile's floppy_slots): the chip always has two drive
+// selects, but drives past n_drives are not in the object model and refuse an
+// insert.
+floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, int n_drives, checkpoint_t *checkpoint);
 // Frees all resources associated with the floppy controller
 // Bus /RESET: controller registers, mode latches and motor enable back to
 // power-on.  Media, decoded tracks and head position are NOT disturbed.
@@ -48,10 +52,6 @@ void floppy_checkpoint(floppy_t *restrict floppy, checkpoint_t *checkpoint);
 int floppy_insert(floppy_t *floppy, int drive, image_t *disk);
 // Returns whether a disk is currently inserted in the specified drive
 bool floppy_is_inserted(floppy_t *floppy, int drive);
-// How many drives the machine has (its profile's floppy_slots, at most
-// FLOPPY_NUM_DRIVES).  Drives past it are not in the object model and refuse
-// an insert.  Default: FLOPPY_NUM_DRIVES.
-void floppy_set_drive_count(floppy_t *floppy, int n);
 // Sets the VIA-driven SEL signal for head selection
 void floppy_set_sel_signal(floppy_t *floppy, bool sel);
 // The SWIM register file, addressed by INDEX (0-15).  Whoever owns the bus

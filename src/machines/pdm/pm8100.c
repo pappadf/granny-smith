@@ -60,6 +60,7 @@ const hw_profile_t machine_pm8100 = {
     // bus exists.
     .has_cdrom = true,
     .cdrom_id = 3,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
 
     .builtin_video = &pdm_builtin_video,
     .nubus_slots = pdm_nubus_slots_cde,

@@ -142,7 +142,7 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     // The bus/target model carries the disks and CD; the 53C96 chip model
     // is the protocol front-end driving it through the external-initiator
     // API (there is no NCR 5380 register file on this family).
-    cfg->scsi = scsi_init(cp);
+    cfg->scsi = profile_scsi_init(cfg->machine, cp);
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
     scsi_53c96_set_irq_callback(st->scsi96, q700_scsi96_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
@@ -156,7 +156,7 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     st->asc = asc_init(NULL, cfg->scheduler, cp); // EASC: ASC-compatible core
     asc_set_mix(st->asc, ASC_MIX_CH_A);
     asc_set_irq_handler(st->asc, q700_asc_irq, cfg);
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, cp);
+    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp);
     cfg->floppy = st->floppy;
 
     if (mcu_build_dafb(cfg, cp) != 0)
@@ -267,6 +267,7 @@ const hw_profile_t machine_q700 = {
     .scsi_buses = q700_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
 
     .nubus_slots = q700_nubus_slots,
 

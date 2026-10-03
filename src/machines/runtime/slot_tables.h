@@ -38,4 +38,8 @@ extern const struct scsi_slot mac_scsi_slots_hd01[];
 // with no bays of its own: the Quadra 900/950's external 53C96 chain.
 extern const struct scsi_slot mac_scsi_slots_ext01[];
 
+// The CD-ROM drive every Macintosh profile takes: Apple's AppleCD SC, a SONY
+// CD-ROM CDU-8002 presenting 2048-byte blocks (Mode 1 sectors).
+extern const struct scsi_cd_drive mac_cdrom_drive_applecd;
+
 #endif // GS_MACHINES_RUNTIME_SLOT_TABLES_H

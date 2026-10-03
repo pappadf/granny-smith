@@ -80,6 +80,11 @@ image_t *setup_get_image_by_filename(const char *filename) {
     return NULL;
 }
 
+// scsi_init flags a checkpoint whose bus lacks the CD bay's drive.
+void checkpoint_set_error(checkpoint_t *checkpoint) {
+    (void)checkpoint;
+}
+
 // ============================================================
 // A checkpoint stream in memory
 // ============================================================

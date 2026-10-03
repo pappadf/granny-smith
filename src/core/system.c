@@ -1155,10 +1155,6 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
         return NULL;
     }
 
-    // The floppy controller learns how many drives this machine cables.
-    if (cfg->floppy)
-        floppy_set_drive_count(cfg->floppy, sys_fd_count(cfg));
-
     // Bind the main-CPU debug seam to whichever core the substrate built.
     switch (cfg->cpu_arch) {
     case CPU_ARCH_M68K:
@@ -1170,20 +1166,6 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
             cfg->cpu_dbg = ppc_debug_if(cfg->ppc);
         break;
     }
-
-    // A machine with a CD bay has the DRIVE on the bus from power-on, disc or
-    // no disc.  SCSI is not hot-plug: the guest's CD driver claims its targets
-    // during the boot-time bus scan and polls only those, so a drive that
-    // materialises later — when the user picks Insert — is one nothing ever
-    // looks at, and the disc never mounts.  Registering it empty here makes a
-    // later insert an ordinary medium change (UNIT ATTENTION), which is what
-    // the driver notices and the Finder mounts on.
-    //
-    // Skip a slot that is already occupied: restoring a checkpoint rebuilds
-    // the bus from the saved state, and that device outranks a blank bay.
-    if (profile->has_cdrom && cfg->scsi && !scsi_device_present(cfg->scsi, (unsigned)profile->cdrom_id))
-        scsi_add_device(cfg->scsi, profile->cdrom_id, "SONY", "CD-ROM CDU-8002", "1.8g", NULL, scsi_dev_cdrom, 2048,
-                        true);
 
     // The `machine.adb.keyboard` object, per machine.  After the substrate
     // because it wants the scheduler, before scheduler_start because its
@@ -1316,6 +1298,12 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
         return slot->img != NULL;
     }
     if (cdrom) {
+        // The drive is the one the machine's profile declares for its CD bay.
+        const struct scsi_cd_drive *drive = global_emulator ? global_emulator->machine->cdrom_drive : NULL;
+        if (!drive) {
+            gs_outf("Cannot attach a CD-ROM: this machine takes no CD-ROM drive\n");
+            return false;
+        }
         // CD-ROM images are always opened read-only
         slot->img = image_open_readonly(path);
         if (!slot->img) {
@@ -1340,13 +1328,13 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
         // Finder offers to initialize the disc.  Mapping the map's 512-byte units
         // onto 2048-byte sectors is the driver's job, and it does it in software.
         slot->scsi_type = scsi_dev_cdrom;
-        slot->block_size = 2048;
+        slot->block_size = drive->block_size;
         slot->read_only = true;
-        snprintf(slot->vendor, sizeof(slot->vendor), "SONY");
-        snprintf(slot->product, sizeof(slot->product), "CD-ROM CDU-8002");
-        snprintf(slot->revision, sizeof(slot->revision), "1.8g");
-        gs_outf("Attaching SCSI CD-ROM: %s as SONY CD-ROM CDU-8002 (size: %zu bytes, %u-byte blocks)\n", path,
-                disk_size(slot->img), slot->block_size);
+        snprintf(slot->vendor, sizeof(slot->vendor), "%s", drive->vendor);
+        snprintf(slot->product, sizeof(slot->product), "%s", drive->product);
+        snprintf(slot->revision, sizeof(slot->revision), "%s", drive->revision);
+        gs_outf("Attaching SCSI CD-ROM: %s as %s %s (size: %zu bytes, %u-byte blocks)\n", path, drive->vendor,
+                drive->product, disk_size(slot->img), slot->block_size);
         return true;
     }
     slot->img = image_create(path, pick_delta_dir(path));

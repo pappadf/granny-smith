@@ -319,7 +319,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     if (checkpoint)
         mac_checkpoint_restore_images(cfg, checkpoint);
 
-    cfg->scsi = scsi_init(checkpoint);
+    cfg->scsi = profile_scsi_init(cfg->machine, checkpoint);
     scsi_5380_attach(cfg->scsi, checkpoint);
     // Where the 5380 answers is this machine's decode, not the chip model's.
     //
@@ -342,7 +342,8 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->keyboard = keyboard_init(cfg->scheduler, cfg->scc, cfg->via1, checkpoint);
 
     // Initialise floppy last to match checkpoint save order
-    cfg->floppy = floppy_init(FLOPPY_TYPE_IWM, cfg->mem_map, cfg->scheduler, checkpoint);
+    cfg->floppy =
+        floppy_init(FLOPPY_TYPE_IWM, cfg->mem_map, cfg->scheduler, profile_floppy_count(cfg->machine), checkpoint);
 
     // Initialise the display descriptor before anything that might call
     // plus_use_video_buffer().  Both the cold-boot default and the
@@ -642,6 +643,7 @@ const hw_profile_t machine_plus = {
     .scsi_buses = plus_scsi_buses,
     .has_cdrom = false, // Plus CD-ROM driver chain not yet integrated
     .cdrom_id = 3,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
 
     // Single VIA, no ADB, no NuBus
 

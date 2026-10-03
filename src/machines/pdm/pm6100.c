@@ -58,6 +58,7 @@ const hw_profile_t machine_pm6100 = {
     // bus exists.
     .has_cdrom = true,
     .cdrom_id = 3,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
 
     // No NuBus without the optional PDS adapter card, which carries the
     // bridge itself — so this model declares no slots AND no BART: the
