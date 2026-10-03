@@ -45,7 +45,7 @@
     --gs-border: rgba(138, 106, 54, 0.2);
     --gs-border-subtle: rgba(138, 106, 54, 0.13);
     --gs-border-card: var(--gs-ref-hairline);
-    --gs-focus-ring: #b88a3e;
+    --gs-focus-ring: #a47630;
 
     /* Interaction */
     --gs-control-hover: rgba(138, 106, 54, 0.08);
@@ -69,13 +69,13 @@
     /* Intents */
     --gs-info-fg: #7a5512;
     --gs-info-bg: rgba(201, 160, 90, 0.16);
-    --gs-info-solid: var(--gs-ref-periwinkle);
+    --gs-info-solid: #a47630;
     --gs-success-fg: #13705f;
     --gs-success-bg: rgba(28, 138, 118, 0.11);
     --gs-success-solid: #1c8a76;
     --gs-warning-fg: #8c5a06;
     --gs-warning-bg: rgba(208, 138, 26, 0.13);
-    --gs-warning-solid: var(--gs-ref-amber);
+    --gs-warning-solid: #a86e06;
     --gs-danger-fg: #b0283f;
     --gs-danger-bg: rgba(209, 64, 88, 0.1);
     --gs-danger-solid: #c8324c;
@@ -119,14 +119,14 @@
     /* Console */
     --gs-console-bg: var(--gs-surface-sunken);
     --gs-console-fg: #2b2419;
-    --gs-console-cursor: #b88a3e;
+    --gs-console-cursor: #a47630;
     --gs-console-selection: rgba(201, 160, 90, 0.34);
     --gs-console-progress-bg: rgba(138, 106, 54, 0.06);
     --gs-console-find-hit-bg: rgba(240, 186, 60, 0.36);
     --gs-console-find-current-bg: rgba(232, 160, 30, 0.66);
 
     /* Drag and drop */
-    --gs-drop-border: #b88a3e;
+    --gs-drop-border: #a47630;
     --gs-drop-bg: rgba(201, 160, 90, 0.1);
     --gs-drop-label-bg: rgba(122, 85, 18, 0.94);
 
