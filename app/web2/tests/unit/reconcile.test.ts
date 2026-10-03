@@ -89,6 +89,18 @@ describe('one post-boot reconciliation, every path', () => {
     expect(bridge.paths().some((p) => p.includes('pram.poke') || p === 'shell.run')).toBe(false);
   });
 
+  // An Open Firmware machine keeps Mac OS's PRAM in its NVRAM, not in Cuda:
+  // the id goes to machine.nvram.startup_disk and the RTC is left alone.
+  it('on an Open Firmware machine the startup device goes to the NVRAM', async () => {
+    se30();
+    bridge.reply('machine.attach_hd', { bus: 'scsi', id: 3, label: 'ID 3' });
+    bridge.reply('machine.nvram.startup_disk', null);
+    await initEmulator({ ...BOOT, hd: '/opfs/images/hd/a.img', hdBay: 1 });
+    const set = bridge.calls.find((c) => c.path === 'machine.nvram.startup_disk');
+    expect(set?.args).toEqual([3]);
+    expect(bridge.paths()).not.toContain('machine.rtc.pram.boot_device');
+  });
+
   // machine.restart power-cycles the SAME machine: its PRAM still names the
   // startup disk and nothing about the machine changed, so the page writes
   // nothing and reconciles nothing -- it only runs it.
