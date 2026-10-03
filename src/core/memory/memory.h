@@ -252,7 +252,7 @@ extern uint32_t *g_bus_error_instr_ptr; // points to decoder's instruction count
 // The CPI is the scheduler's *effective* CPI in x256 fixed point (cpi << 8
 // unless accelerated mode lowered it), so penalties convert at the same rate
 // the sprint accounts cycles. g_io_cpi_x256 == 0 disables the mechanism.
-extern uint32_t g_io_penalty_remainder; // sub-slot penalty fraction, x256 cycles, carried across sprints
+extern uint32_t g_io_penalty_remainder; // sprint-time alias of the scheduler's io_penalty_remainder (x256 cycles)
 extern uint32_t g_io_phantom_instructions; // phantom instructions consumed this sprint
 extern uint32_t g_io_cpi_x256; // effective CPI for conversion, x256 (0 = disabled)
 extern uint32_t *g_sprint_burndown_ptr; // points to sprint_burndown during sprint
@@ -292,14 +292,15 @@ static inline uint32_t memory_esync_penalty_cycles(uint64_t now_cycles, uint32_t
 static inline void memory_io_penalty(uint32_t extra_cycles) {
     if (__builtin_expect(g_io_cpi_x256 == 0, 0))
         return; // penalties disabled
+    if (__builtin_expect(g_sprint_burndown_ptr == NULL, 0))
+        return; // outside a sprint (an inspection access): never touches guest timing
     g_io_penalty_remainder += extra_cycles << 8; // whole cycles onto the x256 grid
     uint32_t burn = g_io_penalty_remainder / g_io_cpi_x256;
     if (__builtin_expect(burn > 0, 1)) {
         g_io_penalty_remainder -= burn * g_io_cpi_x256;
         g_io_phantom_instructions += burn;
         uint32_t *bp = g_sprint_burndown_ptr;
-        if (bp)
-            *bp = (*bp > burn) ? (*bp - burn) : 0;
+        *bp = (*bp > burn) ? (*bp - burn) : 0;
     }
 }
 

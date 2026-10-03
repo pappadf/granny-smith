@@ -236,7 +236,7 @@ The penalty mechanism uses these globals, all defined in `memory.c`:
 
 | Global | Type | Description |
 |--------|------|-------------|
-| `g_io_penalty_remainder` | `uint32_t` | Sub-slot penalty fraction, **x256 cycles**, carried across sprints |
+| `g_io_penalty_remainder` | `uint32_t` | Sprint-time alias of the scheduler's `io_penalty_remainder`: the sub-slot penalty fraction, **x256 cycles** |
 | `g_io_phantom_instructions` | `uint32_t` | Phantom instructions consumed this sprint |
 | `g_io_cpi_x256` | `uint32_t` | Effective CPI for conversion, x256 fixed point; 0 = disabled |
 | `g_sprint_burndown_ptr` | `uint32_t *` | Points to scheduler's `sprint_burndown` during sprint |
@@ -244,9 +244,11 @@ The penalty mechanism uses these globals, all defined in `memory.c`:
 
 The scheduler sets `g_io_cpi_x256` (to its `cpi_eff_x256`), `g_sprint_frac_x256`
 and `g_sprint_burndown_ptr` at sprint start and clears `g_sprint_burndown_ptr`
-at sprint end. `g_io_penalty_remainder` is not reset at sprint boundaries — it
-carries across sprints to preserve sub-slot fractions (penalty cycles enter the
-accumulator `<< 8`, so fractional effective CPIs convert without loss).
+at sprint end. The remainder lives in the scheduler and is copied into
+`g_io_penalty_remainder` at sprint start and back at sprint end, so sub-slot
+fractions carry from sprint to sprint (penalty cycles enter the accumulator
+`<< 8`, so fractional effective CPIs convert without loss) but never from one
+machine to the next. A penalty charged outside a sprint is ignored.
 `g_io_phantom_instructions` is reset at each sprint start and harvested at
 sprint end.
 
@@ -391,11 +393,11 @@ serialized using registered event type names rather than function pointers.
 crosses builds — pre-two-modes checkpoints with the old three-value mode enum
 and dual CPI fields are rejected by that gate, not migrated.)
 
-On restore, `total_instructions` is reconstructed as `cpu_cycles / cpi` — exact,
-since CPI is constant. Sprint counters are reset to zero. The I/O
-penalty remainder (`g_io_penalty_remainder`) is a global carried across sprints
-and should be included in checkpoint save/restore for full accuracy, though its
-magnitude is bounded by CPI-1 and the impact of losing it is negligible.
+The checkpointed prefix also carries `total_instructions`, the I/O penalty
+remainder and `frame_cycles_left` (where the machine stands in its VBL frame),
+so a restored machine continues instruction-for-instruction as the saved one
+would have, whatever the restoring process ran before. Sprint counters are
+reset to zero.
 
 ## Key Files
 

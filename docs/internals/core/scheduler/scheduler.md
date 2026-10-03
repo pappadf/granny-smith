@@ -494,8 +494,12 @@ the cycle count still advances correctly because `cpu_cycles` is increased by
 is subtracted from `total_instructions` in step 3 above so the *instruction* counter
 only reflects real work.
 
-The `g_io_penalty_remainder` fraction deliberately **persists across sprints** so
-sub-CPI penalties accumulate correctly over time ([scheduler.c:939](../../../../src/core/scheduler/scheduler.c#L939)).
+The sub-CPI remainder belongs to the scheduler (`io_penalty_remainder`, in its
+checkpointed prefix and zero on a new machine), so sub-CPI penalties accumulate
+correctly over time and a restore resumes them exactly. `g_io_penalty_remainder` is
+its sprint-time alias: copied in at sprint start, copied back at sprint end. Outside a
+sprint (an inspection access dispatching into a device handler) `memory_io_penalty`
+returns early and never touches timing.
 
 ### 6.3 IRQs cut the current sprint short
 

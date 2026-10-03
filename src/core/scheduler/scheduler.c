@@ -164,6 +164,24 @@ struct scheduler {
     // prefix; default 8x.
     uint32_t max_speed_x256;
 
+    // I/O wait-state time not yet burned as a phantom instruction, x256
+    // cycles (under one effective CPI).  Guest-visible timing state, so it is
+    // checkpointed; zero on a new machine.  g_io_penalty_remainder is its
+    // sprint-time alias: copied in at sprint start, out at sprint end.
+    uint32_t io_penalty_remainder;
+
+    // Cycles still owed to the VBL frame-unit in progress (0 = no frame open,
+    // so the next scheduler_run_frame starts one by pulsing the VBL line).
+    // The VBL is a 60 Hz tick of emulated time, so where the machine stands in
+    // its frame is guest-visible: checkpointed, and a restore resumes the
+    // frame it was saved in rather than pulsing the VBL early.
+    uint64_t frame_cycles_left;
+
+    // Instructions executed since power-on (scheduler.instr_count): the
+    // machine's own count, so a restore carries it rather than estimating
+    // it from cycles, which time spent accelerated would skew.
+    uint64_t total_instructions;
+
     // --- END OF THE CHECKPOINTED PREFIX -------------------------------------
     // The save writes up to `previous_time`.  Keep new guest-visible plain
     // data ABOVE this line; anything host-relative or re-derivable goes
@@ -204,19 +222,11 @@ struct scheduler {
     double gov_holdoff_secs; // remaining post-back-off climb holdoff
 
     // Sprint execution counters (previously file-scope globals)
-    uint64_t total_instructions; // accumulated instructions from completed sprints
     uint32_t sprint_total; // instructions planned for current sprint
     uint32_t sprint_burndown; // instructions remaining in current sprint
 
-    // Cycles still owed to the VBL frame-unit in progress (0 = no frame open,
-    // so the next scheduler_run_frame starts one by pulsing the VBL line).
-    // Deliberately after event_types: like the pacing estimators it is live
-    // run-loop state, so a restore starts a fresh frame rather than resuming
-    // one recorded in the checkpoint.
-    uint64_t frame_cycles_left;
-
     // The mode: who started the current run and why it stopped.  Live
-    // run-loop state like frame_cycles_left, so never checkpointed; a
+    // run-loop state, so never checkpointed; a
     // restored machine starts with no mode open.  `mode_open` is set by
     // scheduler_run_with_budget and cleared by scheduler_run_frame when it
     // sees `running` down, which is where the mode_ended event goes out --
@@ -797,6 +807,10 @@ static bool scheduler_restore_prefix_ok(const struct scheduler *s, checkpoint_t 
         bad = "unrecognised pacing mode";
     else if (s->cpu_cycles >= MAX_SANE_CPU_CYCLES)
         bad = "cycle counter out of range";
+    else if (s->io_penalty_remainder >= (s->cpi << 8))
+        bad = "I/O penalty remainder out of range"; // always under one CPI
+    else if (s->frame_cycles_left > s->frequency)
+        bad = "VBL frame remainder out of range"; // a frame is 1/60 s of cycles
 
     if (!bad)
         return true;
@@ -841,27 +855,21 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
         // The four wall-clock fields used to be restored here and then
         // immediately overwritten.  They are outside the prefix now, so the
         // values set above still stand and there is nothing to undo.
-        s->frame_cycles_left = 0; // restore begins a fresh VBL frame-unit
 
-        // Reconstruct instruction count from restored cycle counter. Cycles
-        // are the sole ground truth for time; total_instructions is
-        // display-only. The mapping is exact for a timeline that never ran
-        // accelerated; time spent at a lowered effective CPI makes it an
-        // underestimate — acceptable for a display counter, and the reason
-        // nothing derives timing from it.
         if (!scheduler_restore_prefix_ok(s, checkpoint)) {
             // Put the whole prefix back to the fresh-boot values set above, so
-            // the divide below and every later derivation run on known-good
-            // numbers.  The checkpoint is already flagged; system_restore
+            // every later derivation runs on known-good numbers.  The checkpoint is already flagged; system_restore
             // unwinds when it looks.
             s->mode = schedule_paced;
             s->cpu_cycles = 0;
             s->cpi = CYCLES_PER_INSTR_DEFAULT;
             s->speed_x256 = SPEED_X256_AUTO;
             s->max_speed_x256 = SPEED_X256_MAX;
+            s->io_penalty_remainder = 0;
+            s->frame_cycles_left = 0;
+            s->total_instructions = 0;
         }
 
-        s->total_instructions = s->cpu_cycles / s->cpi;
         s->sprint_total = 0;
         s->sprint_burndown = 0;
 
@@ -1646,8 +1654,10 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         g_sprint_base_cycles = s->cpu_cycles;
         g_sprint_frac_x256 = s->cycle_frac_x256;
         g_sprint_total_slots = instr_to_exec;
-        // Note: g_io_penalty_remainder is NOT reset — it carries across sprints
+        // The penalty remainder lives in the scheduler; the sprint runs on its alias.
+        g_io_penalty_remainder = s->io_penalty_remainder;
         cpu->run_sprint(cpu->ctx, &s->sprint_burndown);
+        s->io_penalty_remainder = g_io_penalty_remainder;
         g_sprint_burndown_ptr = NULL; // no longer valid outside sprint
 
         // Account for executed instructions and cycles.

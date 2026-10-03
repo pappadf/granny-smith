@@ -112,7 +112,7 @@ void (*g_mem_host_fill)(uint32_t page_index, uint8_t *host_ptr, bool writable) =
 // Penalty cycles are converted to "phantom instructions" that consume sprint
 // burndown slots, causing sprints with I/O to end sooner and keeping event
 // timing accurate.
-uint32_t g_io_penalty_remainder = 0; // sub-slot penalty fraction, x256 cycles, carried across sprints
+uint32_t g_io_penalty_remainder = 0; // sprint-time alias of the scheduler's io_penalty_remainder (x256 cycles)
 uint64_t g_sprint_base_cycles = 0; // scheduler cpu_cycles at sprint start
 uint32_t g_sprint_frac_x256 = 0; // sub-cycle remainder at sprint start (x256)
 uint32_t g_sprint_total_slots = 0; // sprint slot budget at sprint start
@@ -135,14 +135,14 @@ uint32_t *g_sprint_burndown_ptr = NULL; // points to scheduler's sprint_burndown
 // never touched the address.  One extra byte per 4 KB of address space.
 uint16_t *g_mem_logpoint_page_count = NULL;
 uint16_t *g_mem_logpoint_phys_page_count = NULL;
-// Armed-logpoint count (install calls minus uninstall calls).  Zero lets
-// every slow-path access skip logpoint_lookup with one load — the arrays
-// above are always allocated, so their NULL checks never short-circuit.
-// Teardown paths that free the arrays without uninstalling leave this high,
-// which only costs the (armed-era) full lookup; the unsafe direction —
-// zero while pages are armed — would need unbalanced extra uninstalls,
-// which the clamp below turns into a saturating no-op.
+// Alias of the installed map's armed-logpoint count (memory_map_t's
+// logpoints_active, install calls minus uninstall calls).  Zero lets every
+// slow-path access skip logpoint_lookup with one load — the arrays above are
+// always allocated, so their NULL checks never short-circuit.  Set from the
+// map at memory_map_init and cleared with it, like the arrays it summarises.
 static uint32_t g_mem_logpoints_active = 0;
+// The map whose state the aliases above currently mirror (NULL: none).
+static memory_map_t *g_installed_map = NULL;
 memory_logpoint_hook_t g_mem_logpoint_hook = NULL;
 bool g_user_soa_reserved = false;
 void (*g_mem_map_changed)(void) = NULL;
@@ -207,6 +207,9 @@ typedef struct memory {
 
     // The board's bus-error window (aliased by g_bus_err_lo/hi while installed)
     memory_bus_err_window_t bus_err;
+
+    // Armed memory logpoints on this map (aliased by g_mem_logpoints_active)
+    uint32_t logpoints_active;
 
     // Machine-parameterised sizes (set by memory_map_init)
     uint32_t ram_size; // RAM region size in bytes
@@ -1104,10 +1107,20 @@ static void rebuild_soa_page(uint32_t p) {
     }
 }
 
+// Count one logpoint armed (+1) or disarmed (-1) on the installed map and
+// refresh the slow path's alias.  A disarm with nothing armed is a no-op.
+static void logpoints_active_adjust(int delta) {
+    memory_map_t *m = g_installed_map;
+    if (!m || (delta < 0 && m->logpoints_active == 0))
+        return;
+    m->logpoints_active += (uint32_t)delta;
+    g_mem_logpoints_active = m->logpoints_active;
+}
+
 void memory_logpoint_install(uint32_t start_page, uint32_t end_page) {
     if (!g_mem_logpoint_page_count)
         return;
-    g_mem_logpoints_active++;
+    logpoints_active_adjust(+1);
     for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
         if (g_mem_logpoint_page_count[p] < 0xFFFF)
             g_mem_logpoint_page_count[p]++;
@@ -1130,8 +1143,7 @@ void memory_logpoint_install(uint32_t start_page, uint32_t end_page) {
 void memory_logpoint_uninstall(uint32_t start_page, uint32_t end_page) {
     if (!g_mem_logpoint_page_count)
         return;
-    if (g_mem_logpoints_active)
-        g_mem_logpoints_active--;
+    logpoints_active_adjust(-1);
     for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
         if (g_mem_logpoint_page_count[p])
             g_mem_logpoint_page_count[p]--;
@@ -1145,7 +1157,7 @@ void memory_logpoint_uninstall(uint32_t start_page, uint32_t end_page) {
 void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page) {
     if (!g_mem_logpoint_phys_page_count)
         return;
-    g_mem_logpoints_active++;
+    logpoints_active_adjust(+1);
     for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
         if (g_mem_logpoint_phys_page_count[p] < 0xFFFF)
             g_mem_logpoint_phys_page_count[p]++;
@@ -1172,8 +1184,7 @@ void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page) {
 void memory_logpoint_uninstall_phys(uint32_t start_page, uint32_t end_page) {
     if (!g_mem_logpoint_phys_page_count)
         return;
-    if (g_mem_logpoints_active)
-        g_mem_logpoints_active--;
+    logpoints_active_adjust(-1);
     for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
         if (g_mem_logpoint_phys_page_count[p])
             g_mem_logpoint_phys_page_count[p]--;
@@ -1557,6 +1568,10 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     g_bus_err_lo = bus_err.lo;
     g_bus_err_hi = bus_err.hi;
 
+    // A new map has no logpoints armed.
+    g_installed_map = mem;
+    g_mem_logpoints_active = mem->logpoints_active;
+
     // Allocate the flat RAM+ROM image (ram_size + rom_size bytes)
     size_t image_size = (size_t)ram_size + (size_t)rom_size;
     mem->image = calloc(1, image_size);
@@ -1673,9 +1688,11 @@ void memory_map_delete(memory_map_t *mem) {
             g_page_table = NULL;
             g_page_count = 0;
 
-            // The bus-error window alias goes with the map that owns it.
+            // The bus-error window and logpoint-count aliases go with the map.
             g_bus_err_lo = MEMORY_BUS_ERR_NONE.lo;
             g_bus_err_hi = MEMORY_BUS_ERR_NONE.hi;
+            g_mem_logpoints_active = 0;
+            g_installed_map = NULL;
 
             // Free SoA fast-path arrays
             free(g_supervisor_read);
