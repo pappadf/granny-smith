@@ -98,7 +98,6 @@ interface EmscriptenModuleConfig {
   printErr?(s: string): void;
   // Called by the glue's abort() (needs "onAbort" in INCOMING_MODULE_JS_API).
   onAbort?(what: unknown): void;
-  onScreenResize?(w: number, h: number, parW?: number, parH?: number): void;
   onVideoInReady?(ptr: number): void;
   onVideoInState?(active: boolean): void;
   onAudioInReady?(ptr: number): void;
@@ -181,10 +180,6 @@ async function waitForWorkerReady(): Promise<void> {
 
 // Run-state mirror so we can ignore redundant transitions.
 let isRunningUI = false;
-let lastScreenW = 0;
-let lastScreenH = 0;
-let lastScreenParW = 0;
-let lastScreenParH = 0;
 
 // --- Bootstrap ----------------------------------------------------------
 
@@ -232,7 +227,6 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
     print: routePrintLine,
     printErr: routeErrLine,
     onAbort: (what: unknown) => markBridgeDead(`Aborted(${String(what ?? '')})`),
-    onScreenResize: handleScreenResize,
     onVideoInReady,
     onVideoInState,
     onAudioInReady,
@@ -732,6 +726,9 @@ function routeCoreEvent(ev: CoreEvent): void {
     case 'state:speed':
       setAcceleratedSpeed(num(d.x256) / 256);
       break;
+    case 'state:screen':
+      handleScreenResize(num(d.width), num(d.height), num(d.par_w), num(d.par_h));
+      break;
     case 'state:perf':
       setPerfStats(num(d.mips), num(d.tps), {
         tickMaxMs: num(d.tick_max_ms),
@@ -801,29 +798,15 @@ function handleRunStateChange(running: boolean): void {
   else if (machine.status === 'running') machine.status = 'paused';
 }
 
-// Also called with the live geometry after a checkpoint restore, where no
-// resize is pushed (bus/boot.ts reconcileUiWithMachine).
-export function handleScreenResize(w: number, h: number, parW?: number, parH?: number): void {
-  const width = w | 0;
-  const height = h | 0;
-  // Pixel aspect ratio (display pixel width:height). 0/undefined => square 1:1.
-  const pw = (parW ?? 0) | 0 || 1;
-  const ph = (parH ?? 0) | 0 || 1;
-  if (
-    width === lastScreenW &&
-    height === lastScreenH &&
-    pw === lastScreenParW &&
-    ph === lastScreenParH
-  )
-    return;
-  lastScreenW = width;
-  lastScreenH = height;
-  lastScreenParW = pw;
-  lastScreenParH = ph;
-  machine.screen.width = width;
-  machine.screen.height = height;
-  machine.screen.parW = pw;
-  machine.screen.parH = ph;
+// The display's geometry, from the core's `screen` event: sent when the shape
+// changes and once when a machine is attached, so the page's copy is the only
+// one and is never seeded by a read.
+function handleScreenResize(w: number, h: number, parW: number, parH: number): void {
+  machine.screen.width = w | 0;
+  machine.screen.height = h | 0;
+  // Pixel aspect ratio (display pixel width:height). 0 => square 1:1.
+  machine.screen.parW = parW | 0 || 1;
+  machine.screen.parH = parH | 0 || 1;
 }
 
 // --- Module access for upload pipeline (FS writes to /tmp) -------------

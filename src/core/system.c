@@ -750,6 +750,11 @@ static void provision_default_share(void) {
 // headless build has no auto-checkpoint loop, so the weak defaults
 // just stub out; em_main.c overrides them to read/write the live
 // `checkpoint_auto_enabled` flag.
+// A new machine is the active one (machine.boot, checkpoint.load).  The host
+// re-bases whatever it samples from the machine: nothing it observed of the
+// previous machine is compared with this one.  Headless observes nothing.
+__attribute__((weak)) void platform_machine_attached(void) {}
+
 __attribute__((weak)) bool gs_checkpoint_auto_get(void) {
     return false;
 }
@@ -1203,6 +1208,7 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     // all end here.  The page reloads its object trees on this.
     gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"machine_booted\",\"model\":\"%s\",\"restored\":%s}",
                    profile->id ? profile->id : "", checkpoint ? "true" : "false");
+    platform_machine_attached();
 
     return cfg;
 }

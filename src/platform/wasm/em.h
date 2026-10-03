@@ -28,6 +28,9 @@ void em_video_update(void);
 // Force a redraw of the video display
 void em_video_force_redraw(void);
 
+// A new machine was attached: announce its display geometry
+void em_video_machine_attached(void);
+
 // === Audio Subsystem ===
 
 // Initialize audio subsystem (context + worklet module; the stream itself is

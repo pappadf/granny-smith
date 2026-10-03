@@ -12,9 +12,9 @@ const { machine } = await import('@/state/machine.svelte');
 const { debug } = await import('@/state/debug.svelte');
 const { images } = await import('@/state/images.svelte');
 
-// The reconcile's last step reads the live screen geometry: its request
-// marks that the reconcile ran.
-const RECONCILE_MARK = 'machine.screen.width';
+// The reconcile's first step reads the machine's id: its request marks that
+// the reconcile ran.
+const RECONCILE_MARK = 'machine.id';
 
 // A running SE/30, as the core would answer after a boot or a restore.
 function se30(mode = 'paced'): void {
@@ -24,10 +24,6 @@ function se30(mode = 'paced'): void {
   bridge.reply('machine.name', 'Macintosh SE/30');
   bridge.reply('machine.ram', 8192);
   bridge.reply('catalog.profile', { id: 'se30', capabilities: { mmu: { kind: '68030_pmmu' } } });
-  bridge.reply('machine.screen.width', 512);
-  bridge.reply('machine.screen.height', 342);
-  bridge.reply('machine.screen.par_w', 1);
-  bridge.reply('machine.screen.par_h', 1);
   // An enum reads as {enum, index} over the bridge.
   const index = ['paced', 'accelerated', 'turbo'].indexOf(mode);
   bridge.reply('scheduler.mode', (args: unknown) => (args ? null : { enum: mode, index }));

@@ -93,21 +93,11 @@ So `r !== null` is never a success test — `{ error }` passes it.  Use
 
 What the core says about the machine arrives as **events on the mailbox's
 event ring** (see "Events from the core" below): the run state, the
-effective speed, the floppy drives, the activity lights, the perf
+effective speed, the screen geometry, the floppy drives, the activity lights, the perf
 samples, checkpoint saves, log lines, breakpoint hits and assertion
 failures. The `Module.*` callbacks that remain are the platform
 transports, installed at module construction:
 
-- **`Module.onScreenResize(width, height, parW, parH)`** — fired via
-  `MAIN_THREAD_ASYNC_EM_ASM` from `em_video.c::resize_canvas` whenever
-  the framebuffer's intrinsic dimensions change. Transition-only
-  (guarded against repeated identical sizes). Fires at minimum once per
-  machine boot, again on every video-mode switch (e.g. the JMFB driver
-  flipping a IIcx from 512×342 to 640×480). ASYNC because the worker
-  doesn't block on JS layout. `parW:parH` is the monitor's pixel aspect
-  ratio (the Lisa's 720×364 raster is 2:3, see
-  [video.md](../reference/machines/lisa/video.md) §1), so the renderer can show
-  non-square pixels.
 - **`Module.print` / `Module.printErr`** — Emscripten's stdout/stderr
   pipes. `logSink` routes these to the Terminal console.
 - **`Module.onAbort(what)`** — the glue's `abort()`: the worker trapped.
@@ -284,11 +274,12 @@ callbacks is emitted at its source too; the page routes each in
 | `state:speed` | the scheduler, whenever the effective speed changes (governor step, pin, mode switch) | `{x256}` |
 | `state:breakpoint_hit` | the debugger, at the hit | `{pc, addr}` |
 | `state:assert_failed`, `state:assert_expr` | the failure hook | `{where}`, `{expr}` |
-| `state:perf` | the tick, ~1 Hz | `{mips, tps, tick_max_ms, tick_p50_ms, poll_max_ms}` |
+| `state:perf` | the tick, ~1 Hz; the sample that would straddle a machine change is skipped | `{mips, tps, tick_max_ms, tick_p50_ms, poll_max_ms}` |
+| `state:screen` | the renderer, where it consumes a shape change, and once when a machine is attached (boot or restore, before any frame) | `{width, height, par_w, par_h}` |
 | `state:machine_booted` | the end of `system_create`: `machine.boot`, `machine.rebuild`, `checkpoint.load` (not `machine.restart`, which builds nothing) | `{model, restored}` |
 | `notify:floppy` | the floppy controller, on insert, eject (guest or host) and restore | `{drive, present}` |
 | `notify:media` | the SCSI bus, when a device's medium is inserted or ejected (guest or host) | `{bus, id, present}` |
-| `notify:drive_activity` | the tick, on a light's edge | `{kind, state}` |
+| `notify:drive_activity` | the tick, on a light's edge; a machine change turns lit lights off and re-bases | `{kind, state}` |
 | `notify:checkpoint_saved` | `system_quick_checkpoint` | `{elapsed_ms}` |
 | `notify:printer_status` | the PAP layer, when the LaserWriter's status string changes | `{status}` |
 | `notify:download_chunk` | the download job, per 4 MB chunk | `{id, handle, ptr, len, last, name}` |
@@ -296,7 +287,7 @@ callbacks is emitted at its source too; the page routes each in
 | `log:output` | the job layer, a job's printed text | `{id, client, text}` |
 
 What still crosses as a `Module.on*` callback is a platform transport
-handing the page a handle or a buffer (screen geometry, the Voodoo2 and
+handing the page a handle or a buffer (the Voodoo2 and
 printer rings, camera and microphone rings): not an event about the
 machine.
 

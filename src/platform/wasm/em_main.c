@@ -251,6 +251,10 @@ static int tick_counter = 0;
 static int checkpoint_tick_counter = 0;
 static bool checkpoint_auto_enabled = true; // Can be disabled for tests
 static double last_time = 0;
+// The instruction count at the last perf sample (MIPS is the delta).
+static uint64_t last_instr = 0;
+// The activity lights' state and the counter baselines they compare against.
+static drive_activity_t lights;
 static double ticks_per_second = 0;
 
 // Per-tick wall-clock samples for the last PERF_UPDATE_INTERVAL ticks: the
@@ -426,7 +430,6 @@ void em_main_tick(void) {
     if (tick_counter % PERF_UPDATE_INTERVAL == 0) {
         double current_time = emscripten_get_now();
         uint64_t instr_now = cpu_instr_count();
-        static uint64_t last_instr = 0;
 
         if (last_time > 0) {
             double elapsed_ms = current_time - last_time;
@@ -499,7 +502,6 @@ void em_main_tick(void) {
     // state edge only: the counters are sampled here, once per tick, and
     // drive_activity_update holds a light on for its minimum visible time.
     {
-        static drive_activity_t lights;
         uint64_t reads[DRIVE_KIND_COUNT], writes[DRIVE_KIND_COUNT];
         system_drive_io_counts(reads, writes);
         unsigned changed = drive_activity_update(&lights, reads, writes, emscripten_get_now());
@@ -510,6 +512,22 @@ void em_main_tick(void) {
                            (int)lights.light[k]);
         }
     }
+}
+
+// A new machine is the active one (platform hook, system.h).  Nothing sampled
+// from the previous machine is compared with this one: the MIPS meter skips
+// the sample that would straddle the change, and the activity lights go dark
+// and take their baselines from the new machine's counters.
+void platform_machine_attached(void) {
+    last_time = 0; // the next perf sample only sets the baseline
+    last_instr = cpu_instr_count();
+    for (int k = 0; k < DRIVE_KIND_COUNT; k++) {
+        if (lights.light[k] != DRIVE_LIGHT_IDLE)
+            gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"drive_activity\",\"kind\":%d,\"state\":%d}", k,
+                           (int)DRIVE_LIGHT_IDLE);
+    }
+    memset(&lights, 0, sizeof(lights));
+    em_video_machine_attached();
 }
 
 // Exposed tick wrapper for Emscripten main loop.  Times the whole tick and

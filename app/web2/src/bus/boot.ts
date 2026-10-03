@@ -3,7 +3,7 @@
 // out of emulator.ts, the bridge, because it is built on bus/profile.ts and
 // bus/media.ts, which are built on the bridge.
 
-import { gsEval, gsErrorText, isGsError, applySchedulerMode, handleScreenResize } from './emulator';
+import { gsEval, gsErrorText, isGsError, applySchedulerMode } from './emulator';
 import { getProfile } from './profile';
 import { attachHardDisk, attachCdrom, insertFloppy, type MediaResult } from './media';
 import type { MachineConfig } from './types';
@@ -244,18 +244,6 @@ export async function reconcileUiWithMachine(origin: MachineOrigin): Promise<voi
     // pre-selected Turbo survives machine (re)creation.
     await applySchedulerMode(machine.scheduler);
   }
-  await seedScreenFromCore();
-}
-
-// The screen geometry is pushed when it changes, and a restore can land on
-// one that never changed in this page: read the live size once.
-async function seedScreenFromCore(): Promise<void> {
-  const w = await gsEval('machine.screen.width');
-  const h = await gsEval('machine.screen.height');
-  if (typeof w !== 'number' || typeof h !== 'number' || w <= 0 || h <= 0) return;
-  const pw = await gsEval('machine.screen.par_w');
-  const ph = await gsEval('machine.screen.par_h');
-  handleScreenResize(w, h, typeof pw === 'number' ? pw : 1, typeof ph === 'number' ? ph : 1);
 }
 
 // A fresh machine (a boot) is ready to run.  The Caps Lock latch is

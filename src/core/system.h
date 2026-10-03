@@ -278,6 +278,11 @@ int system_hd_attach(const char *path, int scsi_id);
 int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id);
 int system_hd_create(const char *path, const char *size_str);
 
+// Platform hook: a new machine has become the active one (boot or restore).
+// The host re-bases its samples of the machine and announces what it shows
+// of it; a weak no-op where the host observes nothing.
+void platform_machine_attached(void);
+
 // Reset Mac hardware to initial state
 extern void mac_reset(config_t *restrict sim);
 

@@ -58,7 +58,7 @@ interface MachineState {
   // width/height are the framebuffer pixel dimensions; parW/parH are the
   // monitor's pixel aspect ratio (display pixel width:height), so the renderer
   // can show non-square pixels correctly (the Lisa 2's 720x364 raster is 2:3,
-  // most everything else is square 1:1). Reported by the core via onScreenResize.
+  // most everything else is square 1:1). Reported by the core's `screen` event.
   screen: { width: number; height: number; parW: number; parH: number };
   driveActivity: { hd: DriveActivity; fd: DriveActivity; cd: DriveActivity };
   // Which lights this model has at all (from its profile: hard-disk bays,
