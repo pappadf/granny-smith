@@ -21,12 +21,11 @@ describe('MmuSection', () => {
     expect(container.querySelector('.section')).toBeNull();
   });
 
-  // Map and Descriptors showed fixtures; they return when the core can walk.
-  it('renders the State and Translate tabs + the S/U toggle', async () => {
+  it('renders the State, Translate, Map and Descriptors tabs + the S/U toggle', async () => {
     const { container } = render(MmuSection);
     await waitFor(() => {
       const tabs = Array.from(container.querySelectorAll('.tab')).map((e) => e.textContent?.trim());
-      expect(tabs).toEqual(['State', 'Translate']);
+      expect(tabs).toEqual(['State', 'Translate', 'Map', 'Descriptors']);
     });
     const suBtns = container.querySelectorAll('.su-btn');
     expect(suBtns.length).toBe(2);

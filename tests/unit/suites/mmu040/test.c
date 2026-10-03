@@ -277,6 +277,68 @@ TEST(indirect_page_descriptor_resolves) {
 }
 
 // ============================================================================
+// The debugger's walk (machine.cpu.mmu.walk)
+// ============================================================================
+
+// The value of a traced step's field, or `dflt` when the step lacks it.
+static uint32_t step_u(const mmu_trace_step_t *st, const char *key, uint32_t dflt) {
+    for (int i = 0; i < st->n_fields; i++)
+        if (strcmp(st->fields[i].key, key) == 0)
+            return st->fields[i].u;
+    return dflt;
+}
+
+// tt, root pointer, root / pointer / page levels and the indirect hop, each
+// with the descriptor read; nothing in the tables changes.
+TEST(debug_walk_traces_every_level) {
+    ctx_t c;
+    ctx_open(&c);
+    build_tables(&c, 0, 1u << 2, 0); // WP on the pointer-level descriptor
+    uint32_t real_desc_addr = 0x0000E000u;
+    phys32(&c, real_desc_addr, TEST_PA | 1u);
+    phys32(&c, PAGE_TABLE, real_desc_addr | 2u); // indirect
+    enable_mmu(&c);
+
+    mmu_xlate_t x;
+    mmu_trace_t t = {0};
+    mmu_debug_translate(c.bus, TEST_LA + 0x10, false, false, &x, &t);
+    ASSERT_TRUE(x.valid);
+    ASSERT_EQ_INT((int)(TEST_PA + 0x10), (int)x.phys);
+    ASSERT_TRUE(strcmp(x.access, "ro") == 0);
+    ASSERT_EQ_INT(6, t.n_steps); // tt, root, root level, pointer, page, indirect
+    ASSERT_TRUE(strcmp(t.steps[0].step, "tt") == 0);
+    ASSERT_TRUE(strcmp(t.steps[1].step, "root") == 0);
+    ASSERT_EQ_INT((int)ROOT_TABLE, (int)step_u(&t.steps[2], "addr", 0));
+    ASSERT_EQ_INT((int)(PTR_TABLE + 4), (int)step_u(&t.steps[3], "addr", 0));
+    ASSERT_EQ_INT(1, (int)step_u(&t.steps[3], "wp", 0));
+    ASSERT_TRUE(strcmp(t.steps[4].outcome, "next") == 0); // the indirect pointer
+    ASSERT_EQ_INT((int)real_desc_addr, (int)step_u(&t.steps[4], "next", 0));
+    ASSERT_TRUE(strcmp(t.steps[5].outcome, "hit") == 0);
+    ASSERT_EQ_INT((int)real_desc_addr, (int)step_u(&t.steps[5], "addr", 0));
+    // No U bits from looking.
+    ASSERT_TRUE(!(phys32_read(&c, ROOT_TABLE) & (1u << 3)));
+    ASSERT_TRUE(!(phys32_read(&c, real_desc_addr) & (1u << 3)));
+
+    // A fetch consults the ITT pair first, data the DTT pair; the other pair
+    // still applies, as it does to the emulator's merged software TLB.
+    mmu040_set_ttr(c.mmu, &c.mmu->itt0, 0x00000000u | (1u << 15) | (2u << 13));
+    mmu040_set_ttr(c.mmu, &c.mmu->dtt1, 0x00000000u | (1u << 15) | (2u << 13) | (1u << 2)); // write-protected
+    t.n_steps = 0;
+    mmu_debug_translate(c.bus, TEST_LA, false, true, &x, &t);
+    ASSERT_TRUE(strcmp(x.via, "tt") == 0);
+    ASSERT_EQ_INT(1, t.n_steps);
+    ASSERT_TRUE(strcmp(x.access, "rw") == 0); // itt0
+    mmu_debug_translate(c.bus, TEST_LA, false, false, &x, NULL);
+    ASSERT_TRUE(strcmp(x.via, "tt") == 0);
+    ASSERT_TRUE(strcmp(x.access, "ro") == 0); // dtt1, write-protected
+    // And it agrees with the translation the emulator's own paths use.
+    uint32_t pa = 0;
+    ASSERT_TRUE(mmu_translate_checked(c.bus, TEST_LA, false, &pa));
+    ASSERT_EQ_INT((int)TEST_LA, (int)pa);
+    ctx_close(&c);
+}
+
+// ============================================================================
 // 8K pages
 // ============================================================================
 
@@ -413,6 +475,7 @@ int main(void) {
     RUN(supervisor_only_page_rejects_user_access);
     RUN(split_roots_map_user_and_supervisor_differently);
     RUN(indirect_page_descriptor_resolves);
+    RUN(debug_walk_traces_every_level);
     RUN(walk_8k_pages);
     RUN(ttr_identity_mapping_and_write_protect);
     RUN(ttr_supervisor_only_field);

@@ -171,3 +171,42 @@ test('a PowerPC machine shows its own register file', async ({ page }) => {
   await expect(r1).toHaveValue(core.toString(16).toUpperCase().padStart(8, '0'));
   await expect(page.getByLabel('D0 register value')).toHaveCount(0);
 });
+
+// The MMU section reads the core's machine.cpu.mmu on a PowerPC machine: the
+// Translate tab shows the walk's steps, Map lists runs the core reports, a
+// run's row walks its start, and Descriptors decodes page-table entries.
+test('the MMU tabs read the live translation', async ({ page }) => {
+  test.setTimeout(150_000);
+  await bootPaused(page, PDM_ROM, 'pm7100');
+  await openSection(page, 'MMU');
+  const tab = (name: string) => page.locator('.tab', { hasText: name });
+
+  // Translate: one row per step, and the head agrees with the core.
+  await tab('Translate').click();
+  await page.getByRole('button', { name: 'PC' }).click();
+  const steps = page.locator('.steps .step');
+  await expect(steps.first()).toBeVisible({ timeout: 15_000 });
+  await expect(steps.first()).toContainText('SEGMENT'); // the 601 consults the segment register first
+  const pc = await readReg(page, 'pc');
+  const walk = (await gsEvalInPage(page, 'machine.cpu.mmu.walk', [pc])) as { phys: string; steps: unknown[] };
+  await expect(steps).toHaveCount(walk.steps.length);
+  // The head shows the physical address the core reports (a hex-flagged
+  // field, which arrives as a "0x..." string).
+  const phys = parseInt(walk.phys, 16).toString(16).toUpperCase().padStart(8, '0');
+  await expect(page.locator('.trans-body .ok')).toContainText(`P:$${phys}`);
+
+  // Map: as many rows as the core lists; a row click walks the run's start.
+  await tab('Map').click();
+  const runs = (await gsEvalInPage(page, 'machine.cpu.mmu.map', { limit: 512 })) as { start: string }[];
+  const rows = page.locator('.map-row');
+  await expect(rows).toHaveCount(runs.length, { timeout: 15_000 });
+  await rows.first().click();
+  await expect(tab('Translate')).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByLabel('Logical address to translate')).toHaveValue(
+    parseInt(runs[0].start, 16).toString(16).toUpperCase().padStart(8, '0'),
+  );
+
+  // Descriptors: decoded rows appear for the PC's walk.
+  await tab('Descriptors').click();
+  await expect(page.locator('.desc-row').first()).toBeVisible({ timeout: 15_000 });
+});

@@ -14,6 +14,7 @@
 
 #include "alias.h"
 #include "debug.h"
+#include "debug_mmu.h"
 #include "log.h"
 #include "machine_profile.h"
 #include "object.h"
@@ -1425,24 +1426,99 @@ static const class_desc_t ppc_cpu_class = {
 };
 
 // === machine.cpu.mmu ========================================================
-// Debug window into the 601 translation: side-effect-free logical→physical
-// and a translated peek — the way tests and debugging reach the 68k
-// world's logical memory without knowing the HTAB layout.
+// Debug window into the 601/604 translation: side-effect-free translate,
+// walk and map, the page-table entry decoder and a translated peek -- the
+// same methods and result shapes as every other MMU kind (debug_mmu.h), so
+// tests and debugging reach the 68k world's logical memory without knowing
+// the HTAB layout.
 
-// translate(addr, [supervisor], [fetch]) -> {phys, valid, via}: the same
-// shape as every other MMU kind's (debug.h).  Omitted `supervisor` means the
-// current MSR[PR]; `fetch` translates with the instruction-side rules (the
-// IBATs, MSR[IT]) instead of the data side.
+// The PowerPC's debugger translation (debug_mmu_xlate_fn): data side unless
+// `fetch`, which takes the instruction-side rules (the IBATs, MSR[IT]).
+static void ppc_mmu_xlate(void *ctx, uint32_t addr, bool supervisor, bool fetch, mmu_xlate_t *out, mmu_trace_t *trace) {
+    ppc_mmu_debug_translate((ppc_t *)ctx, addr, !fetch, !supervisor, out, trace);
+}
+
+// translate(addr, [supervisor], [fetch]) -> {phys, valid, via, access}.
+// Omitted `supervisor` means the current MSR[PR].
 static DEF_METHOD(mmu_method_translate) {
     ppc_t *p = (ppc_t *)object_data(self);
     if (!p)
         return val_err("cpu not initialised");
-    bool user = (argc >= 2 && argv[1].kind == V_BOOL) ? !argv[1].b : (p->msr & PPC_MSR_PR) != 0;
-    bool fetch = argc >= 3 && argv[2].kind == V_BOOL && argv[2].b;
-    bool ok;
-    const char *via = "page";
-    uint32_t pa = ppc_mmu_translate_debug_ex(p, (uint32_t)argv[0].u, !fetch, user, &ok, &via);
-    return debug_translation_result(pa, ok, via);
+    return debug_mmu_translate(ppc_mmu_xlate, p, (p->msr & PPC_MSR_PR) == 0, argc, argv);
+}
+
+// walk(addr, [supervisor], [fetch]) -> translate's map plus the steps: the
+// segment register, the BAT file and each PTE group searched, in the
+// model's order (601: segment, BATs, page table; 604: BATs, segment, page
+// table).
+static DEF_METHOD(mmu_method_walk) {
+    ppc_t *p = (ppc_t *)object_data(self);
+    if (!p)
+        return val_err("cpu not initialised");
+    return debug_mmu_walk(ppc_mmu_xlate, p, (p->msr & PPC_MSR_PR) == 0, argc, argv);
+}
+
+// map([start], [end], [supervisor], [fetch], [limit]) -> the mapped runs of
+// the current context (the segment registers' VSIDs).
+static DEF_METHOD(mmu_method_map) {
+    ppc_t *p = (ppc_t *)object_data(self);
+    if (!p)
+        return val_err("cpu not initialised");
+    return debug_mmu_map(ppc_mmu_xlate, p, (p->msr & PPC_MSR_PR) == 0, 1ull << 32, 12, argc, argv);
+}
+
+// descriptor(addr, [count], [format]) -> decoded 8-byte page-table entries
+// at a physical address (eight make a PTE group).  A valid entry whose VSID
+// a segment register currently holds also gets `ea`, the effective page
+// address it maps: the page index's low bits come back out of the hash
+// that placed the entry in its group.
+static DEF_METHOD(mmu_method_descriptor) {
+    ppc_t *p = (ppc_t *)object_data(self);
+    if (!p)
+        return val_err("cpu not initialised");
+    uint32_t addr = (uint32_t)argv[0].u & ~7u; // PTEs are 8-byte aligned
+    uint32_t count = debug_mmu_desc_count(argc, argv);
+    value_t *items = NULL;
+    size_t len = 0, cap = 0;
+    for (uint32_t i = 0; i < count; i++, addr += 8) {
+        uint32_t hi = memory_debug_read_uint32(addr);
+        uint32_t lo = memory_debug_read_uint32(addr + 4);
+        bool v = (hi >> 31) != 0;
+        value_map_builder_t *b = val_map_new();
+        debug_mmu_put_hex(b, "addr", addr);
+        debug_mmu_put_hex(b, "desc", hi);
+        debug_mmu_put_hex(b, "desc_lo", lo);
+        val_map_put(b, "type", val_str(v ? "page" : "invalid"));
+        if (v) {
+            uint32_t vsid = (hi >> 7) & 0x00FFFFFFu;
+            bool h = (hi >> 6) & 1u;
+            uint32_t api = hi & 0x3Fu;
+            debug_mmu_put_hex(b, "vsid", vsid);
+            debug_mmu_put_bool(b, "h", h);
+            val_map_put(b, "api", val_uint(4, api));
+            debug_mmu_put_hex(b, "phys", lo & 0xFFFFF000u);
+            debug_mmu_put_bool(b, "r", (lo >> 8) & 1u);
+            debug_mmu_put_bool(b, "c", (lo >> 7) & 1u);
+            val_map_put(b, "wimg", val_uint(4, (lo >> 3) & 0xFu));
+            val_map_put(b, "pp", val_uint(4, lo & 3u));
+            // Reverse the hash: the group's address holds the low ten hash
+            // bits (complemented for a secondary entry), and hash = VSID ^
+            // page index, so the page index is those bits ^ the VSID's low
+            // ten, under the API's top six.
+            uint32_t hs = (addr >> 6) & 0x3FFu;
+            if (h)
+                hs = ~hs & 0x3FFu;
+            uint32_t page_idx = (api << 10) | ((hs ^ vsid) & 0x3FFu);
+            for (int sr = 0; sr < 16; sr++) {
+                if (!(p->sr[sr] & 0x80000000u) && (p->sr[sr] & 0x00FFFFFFu) == vsid) {
+                    debug_mmu_put_hex(b, "ea", ((uint32_t)sr << 28) | (page_idx << 12));
+                    break;
+                }
+            }
+        }
+        val_list_push(&items, &len, &cap, val_map_finish(b));
+    }
+    return val_list(items, len);
 }
 
 // peek(addr, [size], [space]) -> the value, big-endian.  "logical" (default)
@@ -1478,17 +1554,22 @@ static DEF_METHOD(mmu_method_peek) {
 // peek's default size.
 static const value_t k_peek_size4 = {.kind = V_UINT, .u = 4};
 
-static const arg_decl_t mmu_translate_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "effective (logical) address"},
-    {.name = "supervisor",
-     .kind = V_BOOL,
+// descriptor formats: the one PowerPC page-table entry layout.
+static const char *const ppc_desc_formats[] = {"pte", NULL};
+
+static const arg_decl_t mmu_desc_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "physical address of the first entry"},
+    {.name = "count",
+     .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "translate for supervisor (true) or user (false)",
-     .default_doc = "from MSR[PR]"},
-    {.name = "fetch",
-     .kind = V_BOOL,
+     .default_value = &debug_mmu_desc_count_default,
+     .doc = "how many consecutive entries (8 = one PTE group; at most 256)"},
+    {.name = "format",
+     .kind = V_ENUM,
+     .enum_values = ppc_desc_formats,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "instruction-side translation (IBATs, MSR[IT]) rather than data-side"},
+     .doc = "\"pte\", the one PowerPC entry layout (accepted for the uniform signature)",
+     .default_doc = "pte"},
 };
 static const arg_decl_t mmu_peek_args[] = {
     {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "effective (logical) address"},
@@ -1510,11 +1591,38 @@ static const member_t ppc_mmu_members[] = {
      .name = "translate",
      .examples = EXAMPLES("machine.cpu.mmu.translate 0x5fff8000"),
      .doc = "Translate an address, side-effect-free (same shape on every MMU kind)",
-     .method = {.result_doc = "{phys, valid, via}",
-                .args = mmu_translate_args,
-                .nargs = 3,
+     .method = {.result_doc = "{phys, valid, via, access}",
+                .args = debug_mmu_xlate_args,
+                .nargs = DEBUG_MMU_XLATE_NARGS,
                 .result = V_MAP,
                 .fn = mmu_method_translate}},
+    {.kind = M_METHOD,
+     .name = "walk",
+     .examples = EXAMPLES("machine.cpu.mmu.walk 0x5fff8000", "machine.cpu.mmu.walk 0x2000 supervisor=false"),
+     .doc = "Translate an address and show every step: segment register, BATs, each PTE group searched",
+     .method = {.result_doc = "{phys, valid, via, access, steps: [{step, outcome, ...}]}",
+                .args = debug_mmu_xlate_args,
+                .nargs = DEBUG_MMU_XLATE_NARGS,
+                .result = V_MAP,
+                .fn = mmu_method_walk}},
+    {.kind = M_METHOD,
+     .name = "map",
+     .examples = EXAMPLES("machine.cpu.mmu.map", "machine.cpu.mmu.map 0 0x10000000 supervisor=false"),
+     .doc = "List the mapped address ranges: runs that translate linearly with the same via and access",
+     .method = {.result_doc = "[{start, size, phys, via, access}]",
+                .args = debug_mmu_map_args,
+                .nargs = DEBUG_MMU_MAP_NARGS,
+                .result = V_LIST,
+                .fn = mmu_method_map}},
+    {.kind = M_METHOD,
+     .name = "descriptor",
+     .examples = EXAMPLES("machine.cpu.mmu.descriptor 0x00F00000 8"),
+     .doc = "Decode raw page-table entries at a physical address",
+     .method = {.result_doc = "[{addr, desc, desc_lo, type, vsid, h, api, phys, r, c, wimg, pp, ea?}]",
+                .args = mmu_desc_args,
+                .nargs = 3,
+                .result = V_LIST,
+                .fn = mmu_method_descriptor}},
     {.kind = M_METHOD,
      .name = "peek",
      .examples = EXAMPLES("machine.cpu.mmu.peek 0x5fff8000", "machine.cpu.mmu.peek 0x3000 2 physical"),
@@ -1524,7 +1632,7 @@ static const member_t ppc_mmu_members[] = {
 
 static const class_desc_t ppc_mmu_class = {
     .name = "ppc_mmu",
-    .doc = "The PowerPC MMU: BATs, segment registers, peek and translate",
+    .doc = "The PowerPC MMU: translate, walk, map, descriptor and peek over the BATs, segments and page table",
     .members = ppc_mmu_members,
     .n_members = sizeof(ppc_mmu_members) / sizeof(ppc_mmu_members[0]),
 };
