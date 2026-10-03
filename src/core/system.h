@@ -123,11 +123,10 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind);
 config_t *system_restore(const char *filename);
 
 // Command handlers for checkpoint operations
-// Checkpoint save / load / probe.  These replace the retired
-// cmd_save_checkpoint(argc, argv) and cmd_load_checkpoint(argc, argv), which
-// the typed checkpoint.* methods reached by building a fake argv[] and then
-// string-matching their arguments back out of it.
-int system_checkpoint_save(const char *filename, bool files_as_refs);
+// Checkpoint load / probe.  These replace the retired
+// cmd_load_checkpoint(argc, argv), which the typed checkpoint.* methods
+// reached by building a fake argv[] and then string-matching their arguments
+// back out of it.
 int system_checkpoint_load(const char *filename); // NULL/empty = auto-load latest
 bool system_checkpoint_probe(void);
 

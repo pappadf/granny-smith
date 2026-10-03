@@ -71,9 +71,9 @@ int system_checkpoint_load(const char *filename) {
     (void)filename;
     return 1;
 }
-int system_checkpoint_save(const char *filename, bool files_as_refs) {
+int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
     (void)filename;
-    (void)files_as_refs;
+    (void)kind;
     return 1;
 }
 bool system_checkpoint_probe(void) {

@@ -1593,12 +1593,6 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
 
     double start_time = host_time_ms();
 
-    // Quick checkpoints store files as references (paths only), never content.
-    bool prev_files_mode = checkpoint_get_files_as_refs();
-    if (kind == CHECKPOINT_KIND_QUICK) {
-        checkpoint_set_files_as_refs(true);
-    }
-
     // Pass the machine model ID and RAM size so they're stored in the checkpoint header
     const char *model_id = global_emulator->machine->id;
     uint32_t ram_size_kb = global_emulator->ram_size / 1024;
@@ -1619,12 +1613,10 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
     if (checkpoint_has_error(checkpoint)) {
         LOG_WITH(log_register_category("ckpt"), 0, "Error: failed to write checkpoint");
         checkpoint_close(checkpoint);
-        checkpoint_set_files_as_refs(prev_files_mode);
         return GS_ERROR;
     }
 
     checkpoint_close(checkpoint);
-    checkpoint_set_files_as_refs(prev_files_mode);
 
     double elapsed_ms = host_time_ms() - start_time;
     // Ambient by default — the browser's background auto-saves land here
@@ -1778,23 +1770,6 @@ config_t *system_restore(const char *filename) {
 
     LOG_WITH(log_register_category("ckpt"), 1, "Checkpoint restored from %s", filename);
     return config;
-}
-
-// Save the current state to a checkpoint file.
-//
-// Was cmd_save_checkpoint(argc, argv) -- the retired command shape -- reached
-// by the typed checkpoint.save() building a fake argv[] and then string-
-// matching the mode back out of it.  The typed method calls this directly now
-// and the mode arrives as a validated V_ENUM, so the framework rejects a typo
-// instead of the body re-checking it.
-int system_checkpoint_save(const char *filename, bool files_as_refs) {
-    if (!filename || !*filename)
-        return -1;
-    bool prev_mode = checkpoint_get_files_as_refs();
-    checkpoint_set_files_as_refs(files_as_refs);
-    int result = system_checkpoint(filename, CHECKPOINT_KIND_CONSOLIDATED);
-    checkpoint_set_files_as_refs(prev_mode); // restore previous setting
-    return result;
 }
 
 // Load a saved checkpoint.  `filename` NULL or empty auto-loads the latest

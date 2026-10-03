@@ -14,6 +14,8 @@ assert files.path_size($dmg) < files.path_size($raw) / 4 "the UDIF is not compac
 # Boot from it: the desktop is the raw disk's, pixel for pixel (desktop.png
 # was captured booting the raw image this way).
 machine.boot model="iici" ram=8192 rom="${$ROM}"
+# The identity step 2 registers too: quick checkpoints are filed under it.
+machine.register "0123456789abcdef" "20261003T000000Z"
 machine.rtc.time = 3000000000
 machine.scsi.attach_hd $dmg 0
 assert machine.scsi.device[0].image.filename != "" "the UDIF did not attach"
@@ -25,10 +27,10 @@ check("${$TEST_DIR}/desktop.png")
 # the delta and the base is untouched.
 assert files.verify($dmg) "the base changed under the boot"
 
-# Both checkpoint kinds over a UDIF base: one that references the base and
-# its delta, one that embeds the disk's blocks.
-assert checkpoint.save("${$WORK_DIR}/refs.checkpoint", "refs") "refs checkpoint save failed"
-assert checkpoint.save("${$WORK_DIR}/content.checkpoint", "content") "content checkpoint save failed"
+# Both checkpoint kinds over a UDIF base: a quick one, which references the
+# base and its delta, and a consolidated one, which embeds the disk's blocks.
+assert checkpoint.snapshot("udif") "quick checkpoint save failed"
+assert checkpoint.save("${$WORK_DIR}/content.checkpoint") "consolidated checkpoint save failed"
 
 # Export the modified disk (base + delta) as UDIF and as raw: the two decode
 # to the same bytes, and the UDIF verifies.

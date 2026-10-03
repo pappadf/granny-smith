@@ -138,14 +138,6 @@ size_t checkpoint_read_file_loc(checkpoint_t *checkpoint, uint8_t *dest, size_t 
 #define checkpoint_read_file(cp, dest, cap, out_path)                                                                  \
     checkpoint_read_file_loc((cp), (dest), (cap), (out_path), __FILE__, __LINE__)
 
-// === File-as-reference mode control ===
-
-// Sets whether files should be stored as references (true) or embedded (false)
-void checkpoint_set_files_as_refs(bool refs);
-
-// Returns the current file-as-reference mode setting
-bool checkpoint_get_files_as_refs(void);
-
 // Validate that a checkpoint file's build ID matches the current build.
 // Opens the file, reads magic + build ID, compares with current build.
 // Returns true if the build IDs match, false on mismatch or error.
