@@ -1,6 +1,7 @@
 <script lang="ts">
   import Modal from '../common/Modal.svelte';
   import Button from '../ui/Button.svelte';
+  import Link from '../ui/Link.svelte';
   import { urlBoot } from '@/state/urlBoot.svelte';
 
   // Bump the version suffix to re-prompt users after a significant
@@ -39,7 +40,7 @@
   </p>
   <p>
     Looking for a stable version? Older releases are available at
-    <a href={LEGACY_URL} target="_blank" rel="noopener noreferrer">{LEGACY_URL}</a>.
+    <Link external href={LEGACY_URL} class="legacy-link">{LEGACY_URL}</Link>.
   </p>
   {#snippet actions()}
     <Button size="lg" variant="primary" class="btn-primary" onclick={onContinue}>Continue</Button>
@@ -53,8 +54,9 @@
   p:last-of-type {
     margin-bottom: 0;
   }
-  a {
-    color: var(--gs-text-link);
+  /* A link inside a sentence: inline, underlined, and free to break. */
+  p :global(.gs-link.legacy-link) {
+    display: inline;
     text-decoration: underline;
     word-break: break-all;
   }

@@ -31,7 +31,7 @@ describe('RenameDialog validation', () => {
     await fireEvent.click(getByRole('button', { name: 'Rename' }));
     expect(onSubmit).not.toHaveBeenCalled();
     await waitFor(() => {
-      expect(container.ownerDocument.querySelector('.rename-error')).not.toBeNull();
+      expect(container.ownerDocument.querySelector('.gs-field__error')).not.toBeNull();
     });
   });
 });

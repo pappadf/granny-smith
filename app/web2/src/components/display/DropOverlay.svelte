@@ -1,13 +1,12 @@
 <script lang="ts">
   import { processDataTransfer } from '@/bus/upload';
-  import { nextDragState, isReducedMotion, isOutsideViewport } from '@/lib/dragState';
+  import { nextDragState, isOutsideViewport } from '@/lib/dragState';
   import type { DragState } from '@/lib/dragState';
 
   // The four-state machine of lib/dragState.ts: Idle → Active →
   // Display | FsTree → back to Idle on drop / leave / viewport exit.
   let dragState = $state<DragState>('idle');
   let depth = 0;
-  const reduced = isReducedMotion();
 
   // The Display overlay only shows in the 'display' substate; the
   // FsTree branch lets the FilesystemView's own drop styling take over.
@@ -90,11 +89,11 @@
   });
 </script>
 
-{#if visible}
-  <div class="drop-overlay" class:reduced data-state={dragState}>
-    <div class="drop-label">Drop to open</div>
-  </div>
-{/if}
+<!-- Always mounted, so the fade in and out runs; the motion tokens make it
+     instant under reduced motion. -->
+<div class="drop-overlay" data-visible={visible || undefined} aria-hidden={!visible}>
+  <div class="drop-label">Drop to open</div>
+</div>
 
 <style>
   .drop-overlay {
@@ -107,10 +106,11 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    opacity: 0;
     transition: opacity var(--gs-duration-quick) var(--gs-ease-out);
   }
-  .drop-overlay.reduced {
-    transition: none;
+  .drop-overlay[data-visible] {
+    opacity: 1;
   }
   .drop-label {
     color: var(--gs-drop-label-fg);

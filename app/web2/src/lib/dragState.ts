@@ -44,13 +44,6 @@ export function nextDragState(s: DragState, e: DragEvt): DragState {
   }
 }
 
-// Respect the OS-level reduced-motion preference. Used by the overlay
-// component to set transition: 0ms.
-export function isReducedMotion(): boolean {
-  if (typeof window === 'undefined' || !window.matchMedia) return false;
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches === true;
-}
-
 // Helper: is the (x, y) point inside the viewport? Used to detect
 // drags leaving via the chrome edge.
 export function isOutsideViewport(x: number, y: number): boolean {

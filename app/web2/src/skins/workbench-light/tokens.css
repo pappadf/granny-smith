@@ -43,22 +43,15 @@
 
     --gs-info-fg: #005fb8;
     --gs-info-bg: rgba(0, 120, 212, 0.12);
-    --gs-info-border: rgba(0, 120, 212, 0.4);
     --gs-info-solid: #0078d4;
-    --gs-info-on-solid: #ffffff;
     --gs-success-fg: #116329;
     --gs-success-bg: rgba(26, 127, 55, 0.12);
-    --gs-success-border: rgba(26, 127, 55, 0.4);
     --gs-success-solid: #4e7a3f;
-    --gs-success-on-solid: #ffffff;
     --gs-warning-fg: #7a6100;
     --gs-warning-bg: rgba(168, 143, 0, 0.15);
-    --gs-warning-border: rgba(168, 143, 0, 0.5);
-    --gs-warning-solid: #a88f00;
-    --gs-warning-on-solid: #000000;
+    --gs-warning-solid: #957f00;
     --gs-danger-fg: #c72e0f;
     --gs-danger-bg: rgba(199, 46, 15, 0.12);
-    --gs-danger-border: rgba(199, 46, 15, 0.4);
     --gs-danger-solid: #c72e0f;
     --gs-danger-on-solid: #ffffff;
 

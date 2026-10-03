@@ -168,6 +168,6 @@
   }
   .find-count {
     min-width: 5.5em;
-    color: var(--gs-syntax-dim);
+    color: var(--gs-console-muted-fg);
   }
 </style>

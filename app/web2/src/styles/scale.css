@@ -9,7 +9,6 @@
       -apple-system, BlinkMacSystemFont, 'Segoe WPC', 'Segoe UI', system-ui, Ubuntu, 'Droid Sans',
       sans-serif;
     --gs-font-mono: 'SF Mono', Monaco, Menlo, Consolas, 'Liberation Mono', 'Courier New', monospace;
-    --gs-font-size-3xs: 9px; /* sort markers */
     --gs-font-size-2xs: 10px; /* pills, register group titles */
     --gs-font-size-xs: 11px; /* labels, headings, small buttons */
     --gs-font-size-sm: 12px; /* status bar, logs, help text */
@@ -17,7 +16,6 @@
     --gs-font-size-md: 14px; /* subtitles, the drop label */
     --gs-font-size-lg: 15px; /* the URL-boot headline */
     --gs-font-size-xl: 16px; /* modal titles */
-    --gs-font-size-2xl: 18px; /* large glyphs */
     --gs-font-size-3xl: 22px; /* the configuration title */
     --gs-font-size-4xl: 28px; /* the hero title */
     --gs-font-weight-light: 200;
@@ -33,7 +31,6 @@
     --gs-numeric: tabular-nums;
 
     /* --- Space (a 2px base) ------------------------------------------------- */
-    --gs-space-0: 0;
     --gs-space-px: 1px;
     --gs-space-0-5: 2px;
     --gs-space-1: 4px;
@@ -50,7 +47,6 @@
     --gs-space-12: 48px; /* the hero's top margin */
 
     /* --- Radius ------------------------------------------------------------- */
-    --gs-radius-none: 0;
     --gs-radius-xs: 2px;
     --gs-radius-sm: 3px;
     --gs-radius-md: 4px;

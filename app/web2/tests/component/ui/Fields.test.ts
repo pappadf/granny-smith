@@ -7,6 +7,9 @@ import Select from '@/components/ui/Select.svelte';
 import Checkbox from '@/components/ui/Checkbox.svelte';
 import RadioGroup from '@/components/ui/RadioGroup.svelte';
 import Field from '@/components/ui/Field.svelte';
+import FormGrid from '@/components/ui/FormGrid.svelte';
+import NumberInput from '@/components/ui/NumberInput.svelte';
+import Link from '@/components/ui/Link.svelte';
 
 // A raw snippet renders a single element: one option.
 const options = createRawSnippet(() => ({ render: () => '<option value="a">A</option>' }));
@@ -96,5 +99,62 @@ describe('Field', () => {
   it('a help-only row carries the legacy form-help class', () => {
     const { container } = render(Field, { help: 'Scanning ROMs…' });
     expect(container.querySelector('.form-help')!.textContent).toBe('Scanning ROMs…');
+  });
+
+  it('a stacked field without a label has no label row', () => {
+    const { container } = render(Field, { stacked: true, error: 'Nope' });
+    expect(container.querySelector('.gs-field__label')).toBeNull();
+    expect(container.querySelector('.gs-field__error')!.textContent).toBe('Nope');
+  });
+
+  it('labelContent replaces the plain label with markup', () => {
+    const labelContent = createRawSnippet(() => ({
+      render: () => '<span class="arg-name">addr <i>int</i></span>',
+    }));
+    const { container } = render(Field, { stacked: true, labelContent });
+    expect(container.querySelector('.gs-field__label .arg-name')!.textContent).toBe('addr int');
+  });
+});
+
+describe('FormGrid', () => {
+  it('is a form that keeps its legacy class and forwards submit', async () => {
+    const onsubmit = vi.fn((ev: Event) => ev.preventDefault());
+    const children = createRawSnippet(() => ({ render: () => '<input name="a" />' }));
+    const { container } = render(FormGrid, { class: 'config-form', onsubmit, children });
+    const form = container.querySelector('form.gs-form.config-form') as HTMLFormElement;
+    expect(form.querySelector('input[name=a]')).not.toBeNull();
+    await fireEvent.submit(form);
+    expect(onsubmit).toHaveBeenCalledOnce();
+  });
+});
+
+describe('NumberInput', () => {
+  it('is a number TextInput that marks itself invalid', () => {
+    const { container } = render(NumberInput, { value: 4, invalid: true, 'aria-label': 'RAM' });
+    const input = container.querySelector('input[aria-label=RAM]') as HTMLInputElement;
+    expect(input.type).toBe('number');
+    expect(input.value).toBe('4');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+  });
+});
+
+describe('Link', () => {
+  const children = createRawSnippet(() => ({ render: () => '<span>Releases</span>' }));
+
+  it('opens an external link in a new tab safely', () => {
+    const { container } = render(Link, { href: 'https://example.org', external: true, children });
+    const a = container.querySelector('a.gs-link') as HTMLAnchorElement;
+    expect(a.getAttribute('href')).toBe('https://example.org');
+    expect(a.target).toBe('_blank');
+    expect(a.rel).toBe('noopener noreferrer');
+  });
+
+  it('a link that acts in the page has no target', async () => {
+    const onclick = vi.fn((ev: Event) => ev.preventDefault());
+    const { container } = render(Link, { onclick, class: 'back-link', children });
+    const a = container.querySelector('a.gs-link.back-link') as HTMLAnchorElement;
+    expect(a.target).toBe('');
+    await fireEvent.click(a);
+    expect(onclick).toHaveBeenCalledOnce();
   });
 });

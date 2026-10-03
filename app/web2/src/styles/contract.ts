@@ -58,7 +58,7 @@ const SCALE: TokenSpec[] = [
   ...sizes(
     'font-size',
     'length',
-    ['3xs', '2xs', 'xs', 'sm', 'base', 'md', 'lg', 'xl', '2xl', '3xl', '4xl'],
+    ['2xs', 'xs', 'sm', 'base', 'md', 'lg', 'xl', '3xl', '4xl'],
     'type size',
   ),
   ...sizes(
@@ -74,10 +74,10 @@ const SCALE: TokenSpec[] = [
   ...sizes(
     'space',
     'length',
-    ['0', 'px', '0-5', '1', '1-5', '2', '2-5', '3', '3-5', '4', '5', '6', '7', '8', '12'],
+    ['px', '0-5', '1', '1-5', '2', '2-5', '3', '3-5', '4', '5', '6', '7', '8', '12'],
     'space step',
   ),
-  ...sizes('radius', 'length', ['none', 'xs', 'sm', 'md', 'lg', 'pill', 'round'], 'corner radius'),
+  ...sizes('radius', 'length', ['xs', 'sm', 'md', 'lg', 'pill', 'round'], 'corner radius'),
   scl('--gs-size-row', 'length', 'tree, table, list, menu and disassembly rows', true),
   scl('--gs-size-control-sm', 'length', 'small controls (inline inputs, chips)'),
   scl('--gs-size-control', 'length', 'buttons, inputs, icon buttons'),
@@ -117,15 +117,18 @@ const SCALE: TokenSpec[] = [
   ...sizes('ease', 'easing', ['out', 'in-out', 'linear'], 'easing'),
 ];
 
-// The four intents, each with five roles.
+// The four intents, each with three roles.
 const INTENTS = ['info', 'success', 'warning', 'danger'] as const;
 const intentTokens: TokenSpec[] = INTENTS.flatMap((i) => [
   sem(`--gs-${i}-fg`, 'color', `${i}: text or icon on a normal surface`),
   sem(`--gs-${i}-bg`, 'color', `${i}: tinted fill (pill, badge)`),
-  sem(`--gs-${i}-border`, 'color', `${i}: tinted border or rule`),
-  sem(`--gs-${i}-solid`, 'color', `${i}: strong fill (toast badge, button, bar)`),
-  sem(`--gs-${i}-on-solid`, 'color', `${i}: text or icon on the strong fill`),
+  sem(`--gs-${i}-solid`, 'color', `${i}: the strong colour (a toast's icon, a breakpoint)`),
 ]);
+const dangerOnSolid = sem(
+  '--gs-danger-on-solid',
+  'color',
+  'the label on the danger fill (a danger button)',
+);
 
 // The syntax palette: the shell's highlight classes (styles/syntax.css).
 const SYNTAX = [
@@ -203,6 +206,7 @@ export const TOKENS: readonly TokenSpec[] = [
   der('--gs-control-accent', '--gs-accent', 'accent-color of checkboxes, radios, ranges'),
   // --- Intents ----------------------------------------------------------------
   ...intentTokens,
+  dangerOnSolid,
   // --- Machine state ----------------------------------------------------------
   sem('--gs-state-idle-bg', 'color', 'status bar with no machine'),
   sem('--gs-state-idle-fg', 'color', 'status bar text with no machine'),
@@ -218,8 +222,6 @@ export const TOKENS: readonly TokenSpec[] = [
   der('--gs-code-address', '--gs-text-muted', 'address columns'),
   der('--gs-code-mnemonic', '--gs-text-strong', 'opcodes'),
   der('--gs-code-operand', '--gs-text', 'operands; hex bytes'),
-  der('--gs-code-comment', '--gs-syntax-comment', 'comments in a listing'),
-  der('--gs-code-symbol', '--gs-text', 'symbol names'),
   der('--gs-code-pc-marker', '--gs-focus-ring', 'the PC marker'),
   sem('--gs-code-pc-row-bg', 'color', 'the current-PC row (disassembly, auxiliary cores)'),
   der('--gs-code-breakpoint', '--gs-danger-solid', 'an enabled breakpoint marker'),
@@ -359,7 +361,6 @@ export const TOKENS: readonly TokenSpec[] = [
   cmp('--gs-segmented-bg-hover', 'color', 'segmented: bg hover'),
   cmp('--gs-segmented-fg-selected', 'color', 'segmented: fg selected'),
   cmp('--gs-segmented-bg-selected', 'color', 'segmented: bg selected'),
-  cmp('--gs-segmented-border', 'color', 'segmented: border'),
   cmp('--gs-chip-height', 'length', 'chip: height'),
   cmp('--gs-chip-radius', 'length', 'chip: radius'),
   cmp('--gs-chip-padding-x', 'length', 'chip: padding x'),
@@ -380,8 +381,6 @@ export const TOKENS: readonly TokenSpec[] = [
   cmp('--gs-select-height', 'length', 'select: height'),
   cmp('--gs-select-arrow-size', 'length', 'select: arrow size'),
   cmp('--gs-inline-input-height', 'length', 'inline input: height'),
-  cmp('--gs-check-size', 'length', 'check: size'),
-  cmp('--gs-check-radius', 'length', 'check: radius'),
   cmp('--gs-field-label-fg', 'color', 'field: label fg'),
   cmp('--gs-field-help-fg', 'color', 'field: help fg'),
   cmp('--gs-field-error-fg', 'color', 'field: error fg'),
@@ -571,7 +570,11 @@ export const TOKENS: readonly TokenSpec[] = [
   cmp('--gs-activity-dot-opacity-max', 'number', 'activity dot: opacity at rest'),
   cmp('--gs-activity-dot-opacity-min', 'number', 'activity dot: low point of the pulse'),
   cmp('--gs-statusbar-icon-opacity', 'number', 'statusbar: the speed icon'),
-  cmp('--gs-statusbar-meta-opacity', 'number', 'statusbar: the MIPS readout'),
+  cmp(
+    '--gs-statusbar-meta-opacity',
+    'number',
+    "statusbar: secondary text (the MIPS readout, an upload's detail)",
+  ),
 ];
 
 // Layout variables components set inline at run time: allowed reads, not
@@ -600,10 +603,13 @@ export const CONTRAST_PAIRS: readonly ContrastPair[] = [
     ...INTENTS.map((i) => ({ fg: `--gs-${i}-fg` as TokenName, bg, min: 4.5 })),
   ]),
   { fg: '--gs-text-on-accent', bg: '--gs-accent', min: 4.5 },
-  ...INTENTS.map((i) => ({
-    fg: `--gs-${i}-on-solid` as TokenName,
-    bg: `--gs-${i}-solid` as TokenName,
-    min: 4.5,
+  // A danger button's label on its fill.
+  { fg: '--gs-danger-on-solid', bg: '--gs-danger-solid', min: 4.5 },
+  // A toast's icon, in its intent's strong colour.
+  ...(['info', 'warning', 'danger'] as const).map((i) => ({
+    fg: `--gs-${i}-solid` as TokenName,
+    bg: '--gs-toast-bg' as TokenName,
+    min: 3,
   })),
   ...(['running', 'paused', 'stopped', 'crashed'] as const).map((s) => ({
     fg: '--gs-state-active-fg' as TokenName,
