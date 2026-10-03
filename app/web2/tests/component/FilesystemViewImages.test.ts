@@ -7,7 +7,14 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // {name,kind,size} objects (V_LIST of V_MAP through the gsEval bridge), so
 // the mock returns arrays directly rather than JSON strings. Declared via
 // vi.hoisted so the spy exists before the (hoisted) vi.mock factory runs.
-const { gsEvalMock } = vi.hoisted(() => ({ gsEvalMock: vi.fn() }));
+const { gsEvalMock, mediaMock } = vi.hoisted(() => ({
+  gsEvalMock: vi.fn(),
+  mediaMock: {
+    insertFloppy: vi.fn(),
+    attachHardDisk: vi.fn(),
+    attachCdrom: vi.fn(),
+  },
+}));
 
 vi.mock('@/bus/emulator', () => ({
   gsEval: (path: string, args?: unknown[]) => gsEvalMock(path, args),
@@ -16,12 +23,21 @@ vi.mock('@/bus/emulator', () => ({
   getModule: () => null,
 }));
 
+// The drive helpers, so "Insert into floppy drive" on an in-image file can be
+// checked for the path it hands over without a machine profile behind it.
+vi.mock('@/bus/media', () => ({
+  insertFloppy: (...a: unknown[]) => mediaMock.insertFloppy(...a),
+  attachHardDisk: (...a: unknown[]) => mediaMock.attachHardDisk(...a),
+  attachCdrom: (...a: unknown[]) => mediaMock.attachCdrom(...a),
+}));
+
 import FilesystemView from '@/components/panel-views/filesystem/FilesystemView.svelte';
 import { setOpfsBackend } from '@/bus/opfs';
 import { MockOpfs } from '../helpers/mockOpfs';
 import type { OpfsEntry } from '@/bus/types';
 import { filesystem, setFsExpanded, clearFsSelection } from '@/state/filesystem.svelte';
 import { makeDataTransfer, labels, rowFor } from '../helpers/fsTree';
+import { machine } from '@/state/machine.svelte';
 
 // Backend whose /opfs root holds a disk image, a plain file, and a target
 // folder. Tracks readFile / delete / move so the download and drag tests can
@@ -83,9 +99,19 @@ beforeEach(() => {
   (URL as unknown as { createObjectURL: unknown }).createObjectURL = createObjectURL;
   (URL as unknown as { revokeObjectURL: unknown }).revokeObjectURL = () => {};
   vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  machine.status = 'no-machine';
+  for (const m of Object.values(mediaMock)) {
+    m.mockReset();
+    m.mockResolvedValue({ ok: true, mount: { kind: 'fd', bus: 'floppy', drive: 0 } });
+  }
   gsEvalMock.mockReset();
   gsEvalMock.mockImplementation(async (path: string, args?: unknown[]) => {
     if (path === 'files.cp') return true;
+    const target = (args?.[0] as string) ?? '';
+    if (path === 'files.path_size')
+      return target.endsWith('.img') ? (target.endsWith('HD.img') ? 20971520 : 819200) : 4522;
+    if (path === 'machine.scsi.identify_hd') return target.endsWith('HD.img');
+    if (path === 'machine.scsi.identify_cdrom') return false;
     if (path !== 'files.list') return null;
     const dir = (args?.[0] as string) ?? '';
     if (dir === '/opfs') return OPFS_ROOT_LISTING;
@@ -101,6 +127,7 @@ beforeEach(() => {
         { name: 'Read Me', kind: 'file', size: 4522 },
         // A name the HFS reader surfaced from an in-name '/': OPFS rejects ':'.
         { name: 'Install 1:2.img', kind: 'file', size: 819200 },
+        { name: 'HD.img', kind: 'file', size: 20971520 },
       ];
     }
     return [];
@@ -353,5 +380,64 @@ describe('FilesystemView — disk-image descent', () => {
     await fireEvent.dragStart(rowFor(container, 'notes.txt'), { dataTransfer: dt });
     await fireEvent.dragOver(rowFor(container, 'extracted'), { dataTransfer: dt });
     expect(dt.dropEffect).toBe('move');
+  });
+});
+
+describe('FilesystemView — media inside an image or archive', () => {
+  async function menuFor(name: string): Promise<string[]> {
+    const { container } = render(FilesystemView);
+    setFsExpanded('/opfs', true);
+    await waitFor(() => expect(labels(container)).toContain('disk.img'));
+    await fireEvent.click(rowFor(container, 'disk.img'));
+    await waitFor(() => expect(labels(container)).toContain('partition1'));
+    await fireEvent.click(rowFor(container, 'partition1'));
+    await waitFor(() => expect(labels(container)).toContain(name));
+    await fireEvent.contextMenu(rowFor(container, name));
+    await waitFor(() => expect(document.querySelector('.context-menu')).not.toBeNull());
+    return Array.from(document.querySelectorAll('.context-menu .item')).map(
+      (e) => e.textContent?.trim() ?? '',
+    );
+  }
+
+  function clickItem(label: string) {
+    const el = Array.from(document.querySelectorAll('.context-menu .item')).find(
+      (e) => e.textContent?.trim() === label,
+    ) as HTMLElement;
+    expect(el).toBeTruthy();
+    return fireEvent.click(el);
+  }
+
+  it('offers no drive action without a machine', async () => {
+    expect(await menuFor('Install 1:2.img')).toEqual(['Download']);
+  });
+
+  it('inserts a floppy image into a drive by its in-image path', async () => {
+    machine.status = 'running';
+    const items = await menuFor('Install 1:2.img');
+    expect(items).toContain('Insert into floppy drive');
+    expect(items).not.toContain('Attach as hard disk');
+    await clickItem('Insert into floppy drive');
+    await waitFor(() =>
+      expect(mediaMock.insertFloppy).toHaveBeenCalledWith(
+        '/opfs/disk.img/partition1/Install 1:2.img',
+        false,
+      ),
+    );
+  });
+
+  it('attaches a hard-disk image, and offers nothing for a file that is no medium', async () => {
+    machine.status = 'running';
+    const items = await menuFor('HD.img');
+    expect(items).toContain('Attach as hard disk');
+    expect(items).not.toContain('Insert into CD-ROM drive');
+    await clickItem('Attach as hard disk');
+    await waitFor(() =>
+      expect(mediaMock.attachHardDisk).toHaveBeenCalledWith('/opfs/disk.img/partition1/HD.img'),
+    );
+  });
+
+  it('offers only Download for a file that is no medium', async () => {
+    machine.status = 'running';
+    expect(await menuFor('Read Me')).toEqual(['Download']);
   });
 });
