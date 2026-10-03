@@ -29,7 +29,7 @@ import os
 # address in the ScrnBase low-memory global at $0824) with a vertical-stripe
 # pattern, then loops forever so the frame stays put for the screenshot.
 CODE_1_BODY = bytes.fromhex(
-    "2070 0824"          # movea.l  ($0824).w,a0     ; ScrnBase
+    "2078 0824"          # movea.l  ($0824).w,a0     ; ScrnBase
     "303C 155F"          # move.w   #5471,d0         ; 21888/4 - 1 longs
     "20FC F0F0F0F0"      # move.l   #$F0F0F0F0,(a0)+ ; vertical stripes
     "51C8 FFF8"          # dbra     d0,-8            ; back to the move.l
