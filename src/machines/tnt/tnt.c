@@ -41,7 +41,6 @@
 #include "log.h"
 #include "mac_host_io.h"
 #include "machine_checkpoint.h"
-#include "machine_config.h" // machine_boot_is_restart (the NVRAM carry rule)
 #include "machine_teardown.h" // the shared config_t-owned delete chain
 #include "pci.h"
 #include "ppc.h"
@@ -475,30 +474,26 @@ static void tnt_fwscsi_attach(config_t *cfg) {
 // ============================================================
 
 // The NVRAM part is NON-VOLATILE: an 8 KB store whose content survives
-// power cycles.  machine.restart tears the whole substrate down and
-// rebuilds it, so the content is carried across teardown/init in this
-// process-lifetime holder — the soldered chip surviving the power
-// switch.  Load-bearing for booting from disk: Open Firmware reformats
-// a blank store (clearing the Mac OS PRAM partition AFTER the OS's
-// XPRAM shadow would need it), so the first-ever cold boot of a virgin
-// machine cannot match a boot driver (XPRAM $77 "Default OS" reads 0)
-// and only the SECOND boot — against the now-valid store — reaches the
-// startup volume.  Real hardware behaves the same way; its NVRAM just
-// never starts blank twice.  A checkpoint restore overrides the carry
-// (the gc blob holds the store).
+// power cycles, and it does so here for the hardware's own reason --
+// machine.restart (the power switch) and machine.reset never destroy the
+// machine, so the part is simply never touched.  Only a new machine
+// (machine.boot, machine.rebuild) starts from a virgin store, the same as a
+// different logic board would; nothing carries a store across a teardown.
 //
-// The carry follows the power switch, i.e. machine.restart, and stops
-// at machine.boot: that builds a NEW machine, which inherits nothing it
-// was not given.  The distinction is not
-// bookkeeping.  A run stopped part-way through Open Firmware's format of
-// a virgin store — a bounded `scheduler.run`, a client that walked away
-// mid-run — leaves the store torn, and a machine built on a torn store
-// stops in the ROM's serial-console read loop with a black screen and
-// no way back short of restarting the process.  Rows that DO want the
-// same chip across two cold boots (suite-ans's ans500-diag-floppy: its DIMM table) say so
-// with machine.restart.
-static uint8_t tnt_nvram_carry[TNT_NVRAM_SIZE];
-static bool tnt_nvram_carry_valid;
+// That last rule is the fix for #112.  The store used to ride a process-
+// lifetime holder across every teardown, and a run stopped part-way through
+// Open Firmware's format of a virgin store -- a bounded `scheduler.run`, a
+// client that walked away mid-run -- left it torn: a machine built on a torn
+// store stops in the ROM's serial-console read loop with a black screen and
+// no way back short of restarting the process.
+//
+// Load-bearing for booting from disk: Open Firmware reformats a blank store
+// (clearing the Mac OS PRAM partition AFTER the OS's XPRAM shadow would need
+// it), so the first-ever cold boot of a virgin machine cannot match a boot
+// driver (XPRAM $77 "Default OS" reads 0) and only the SECOND boot -- against
+// the now-valid store -- reaches the startup volume.  Rows that need that
+// second boot (suite-ans's ans500-diag-floppy: its DIMM table) take it with
+// machine.restart.  A checkpoint restore loads the store from the gc blob.
 
 // Clear the non-volatile store — what pulling the battery does.
 //
@@ -508,14 +503,10 @@ static bool tnt_nvram_carry_valid;
 // configuration, and it is a real need rather than a test convenience: the
 // ROM caches its DIMM sizing and its Open Firmware environment in there, so
 // a store written by one model is not necessarily meaningful to another.
-// The process-lifetime carry goes with it, or the next machine built in
-// this process would inherit what was just erased.
 void tnt_nvram_clear(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     if (st)
         memset(st->gc.nvram, 0, TNT_NVRAM_SIZE);
-    memset(tnt_nvram_carry, 0, TNT_NVRAM_SIZE);
-    tnt_nvram_carry_valid = false;
     LOG(1, "NVRAM cleared (battery removed)");
 }
 
@@ -526,8 +517,6 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
         return -1;
     }
     cfg->machine_context = st;
-    if (!cp && tnt_nvram_carry_valid)
-        memcpy(st->gc.nvram, tnt_nvram_carry, TNT_NVRAM_SIZE);
 
     // Core: memory map, the 601/604 per profile, the scheduler on the PPC
     // seam.  CPI 1.0 — the same determinism-and-measurement rationale as
@@ -773,6 +762,12 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
+// A power cycle's power-on-only half (machine_profile.h): Cuda stays
+// powered, but the host side of its VIA1 handshake went down under it.
+static void tnt_power_on(config_t *cfg) {
+    av_cuda_host_power_cycle(tnt_st(cfg)->cuda);
+}
+
 static void tnt_bus_reset(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     // Chipset registers to their power-on state.  The CPU going back to
@@ -817,24 +812,6 @@ static void tnt_teardown(config_t *cfg) {
     if (cfg->scheduler)
         scheduler_stop(cfg->scheduler);
     tnt_state_t *st = tnt_st(cfg);
-    if (st) {
-        // Power-cycle (machine.restart): the soldered part comes back with
-        // the machine.  New machine (machine.boot): it gets a virgin store,
-        // and the previous machine's goes with the previous machine.
-        //
-        // This must read st->gc.nvram before anything tears Grand Central
-        // down.  GC is itself a pci_device_t (tnt_gc_pci_attach), and
-        // system_destroy now deletes the PCI root before calling us --
-        // harmless today because gc_pci_ops declares no .teardown and the
-        // store lives in st, not in a PCI allocation, but the coupling is
-        // real the moment that op appears.
-        if (machine_boot_is_restart()) {
-            memcpy(tnt_nvram_carry, st->gc.nvram, TNT_NVRAM_SIZE);
-            tnt_nvram_carry_valid = true;
-        } else {
-            tnt_nvram_carry_valid = false;
-        }
-    }
     if (st) {
         tnt_gc_detach_object(cfg);
         tnt_awacs_teardown(cfg);
@@ -1209,6 +1186,7 @@ static bool tnt_fd_present(config_t *cfg, int drive) {
 const machine_substrate_t tnt_substrate = {
     .init = tnt_init,
     .bus_reset = tnt_bus_reset,
+    .power_on = tnt_power_on,
     .teardown = tnt_teardown,
     .checkpoint_save = tnt_checkpoint_save,
     .pci_slot_irq = tnt_pci_slot_irq,

@@ -68,7 +68,6 @@ def aix_boot() {
     # 512 MB it configures them, configures a CD-ROM drive and reaches the
     # attempt to mount the root file systems.  The checks below record
     # exactly that.
-    machine.board.clear_nvram()
     machine.boot model="ans500" ram=524288 rom="${$ROM}"
     machine.board.keyswitch = "service"
     assert machine.board.keyswitch == "service" "the front keyswitch did not take the Service position"

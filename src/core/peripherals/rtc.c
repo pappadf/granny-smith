@@ -383,6 +383,25 @@ void rtc_set_via(rtc_t *restrict rtc, via_t *via) {
     rtc->via = via;
 }
 
+// See rtc.h.  The same serial-state reset rtc_input performs on a clocked
+// edge while disabled, without needing the edge: a reset VIA drives no clock.
+void rtc_deselect(rtc_t *rtc) {
+    if (!rtc)
+        return;
+    rtc->command = 0;
+    rtc->tx_bits = 0;
+    rtc->rx_bits = 8; // waiting for a command byte, as rtc_init leaves it
+    rtc->shift = 0;
+    // The clock level the chip last saw, back to rtc_init's.  rtc_input acts
+    // only on a rising edge, so a chip still remembering the guest's last
+    // HIGH swallows the ROM's first clock pulse after the reset and frames
+    // every later bit one place off -- which is how a restarted IIci failed
+    // its own RTC test ($8A) and took the diagnostic path into a crash.
+    rtc->clock = false;
+    if (rtc->via)
+        via_input(rtc->via, 1, 0, 1); // the data line released: PB0 reads its pull-up
+}
+
 void rtc_via1_pb_output(rtc_t *restrict rtc, uint8_t port_b) {
     if (!rtc)
         return;
@@ -447,6 +466,15 @@ void pram_defaults_apply(uint8_t pram[256], const pram_defaults_t *d) {
         memcpy(pram + PRAM_STARTMGR_BASE, d->startmgr, PRAM_STARTMGR_LEN);
     pram[PRAM_MMFLAGS] = d->mmflags | d->mmflags_booted;
     pram[PRAM_STARTMGR_WAIT] |= PRAM_STARTMGR_NO_WAIT;
+}
+
+// The parameter RAM as rtc_init left it -- see rtc.h.
+void rtc_pram_reset(rtc_t *rtc) {
+    if (!rtc)
+        return;
+    memset(rtc->pram, 0, sizeof(rtc->pram)); // the store's construction state...
+    pram_defaults_apply(rtc->pram, rtc->defaults); // ...plus the family's valid defaults
+    LOG(1, "PRAM reset to its defaults");
 }
 
 rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, bool extended,

@@ -463,6 +463,12 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
+// A power cycle's power-on-only half (machine_profile.h): Cuda stays
+// powered, but the host side of its VIA1 handshake went down under it.
+static void pdm_power_on(config_t *cfg) {
+    av_cuda_host_power_cycle(pdm_st(cfg)->cuda);
+}
+
 static void pdm_bus_reset(config_t *cfg) {
     pdm_state_t *st = pdm_st(cfg);
     // The chipset half only.  The 601 going back to its reset vector is the
@@ -618,6 +624,7 @@ static bool pdm_fd_present(config_t *cfg, int drive) {
 const machine_substrate_t pdm_substrate = {
     .init = pdm_init,
     .bus_reset = pdm_bus_reset,
+    .power_on = pdm_power_on,
     .teardown = pdm_teardown,
     .checkpoint_save = pdm_checkpoint_save,
     .nubus_slot_irq = pdm_nubus_slot_irq,

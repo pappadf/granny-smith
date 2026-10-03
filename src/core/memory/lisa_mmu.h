@@ -49,6 +49,11 @@ lisa_mmu_t *lisa_mmu_init(uint8_t *ram, uint32_t ram_size, uint8_t *rom, uint32_
 // Tear down and clear g_lisa_mmu.
 void lisa_mmu_delete(lisa_mmu_t *m);
 
+// Power-on state: START set, descriptor RAM and every latch as a freshly
+// constructed MMU has them.  A power cycle, not a reset: reset clears neither
+// the latches nor the SRAM.
+void lisa_mmu_power_on(lisa_mmu_t *m);
+
 // Read the live LisaOS on-screen cursor X/Y (OS globals $CC00F0 / $CC00F2, read
 // in supervisor context) for the COPS absolute-positioning "warp" closed loop.
 // Returns false if the globals block is not currently mapped.  `ctx` is accepted

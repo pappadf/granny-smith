@@ -441,6 +441,34 @@ iop_t *iop_init(iop_kind_t kind, const memory_interface_t *bypass_iface, void *b
     return iop;
 }
 
+// See iop.h.
+void iop_reset(iop_t *iop) {
+    if (!iop)
+        return;
+    if (iop->behavior->cancel_events)
+        iop->behavior->cancel_events(iop);
+    bool was_irq = iop->host_irq;
+    iop->stat_ctl = 0; // 65C02 held in reset (iopRun = 0), as at power-on
+    iop->ram_addr = 0;
+    iop->host_irq = false;
+    if (was_irq && iop->irq_cb)
+        iop->irq_cb(iop->cb_context, false);
+}
+
+// See iop.h.  The prefix before `behavior` is the PIC's own state.
+void iop_power_on(iop_t *iop) {
+    if (!iop)
+        return;
+    if (iop->behavior->cancel_events)
+        iop->behavior->cancel_events(iop);
+    bool was_irq = iop->host_irq;
+    memset(iop, 0, offsetof(iop_t, behavior));
+    iop->stat_ctl = 0; // 65C02 held in reset (iopRun = 0), as iop_init
+    iop_init_mailbox(iop);
+    if (was_irq && iop->irq_cb)
+        iop->irq_cb(iop->cb_context, false); // the host interrupt line drops with it
+}
+
 void iop_delete(iop_t *iop) {
     if (!iop)
         return;

@@ -13,7 +13,7 @@
 #     and assigns Control's two BARs through the generic header.
 #   * The topology reaches the guest — BoxID's slot-presence pins follow
 #     live population, and the built-from record captures the resolved
-#     picks so machine.restart re-seats them.
+#     picks so machine.rebuild re-seats them.
 #
 # Config-port note: the address and data ports are LITTLE-ENDIAN (the guest
 # drives them with lwbrx/stwbrx), and machine.memory.peek/poke are raw
@@ -225,10 +225,10 @@ assert machine.id == "pm9500" "machine survives the rejected boot"
 
 # --- The built-from record captures the resolved per-slot picks. -------------
 # Control is the slot table's own builtin, not a user pick, so it is
-# recorded as NOT explicit — machine.restart re-resolves it from the table.
+# recorded as NOT explicit — machine.rebuild re-resolves it from the table.
 assert machine.config.slot_cards == "[{\"bus\":\"pci\",\"slot\":7,\"card_id\":\"tnt_control\",\"explicit\":false}]" "resolved slot picks recorded"
-machine.restart
-assert machine.pci.slot[7].card.name == "Control" "restart must re-seat the recorded slot card"
+machine.rebuild
+assert machine.pci.slot[7].card.name == "Control" "rebuild must re-seat the recorded slot card"
 
 # --- A "3d" card does NOT retire the 9500's builtin-fallback video. ----------
 # The Voodoo2 is a pass-through 3D accelerator: its PCI class code says

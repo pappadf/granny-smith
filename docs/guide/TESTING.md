@@ -142,7 +142,11 @@ Two rules suite rows must follow, both learned from real failures:
   default — never to what a previous row booted. A row that cares about
   the video card, vROM, or monitor sense still passes it explicitly so
   the row reads as its own specification. `machine.restart` power-cycles
-  the current machine, keeping its mounted media attached.
+  the current machine (nothing is rebuilt, so its PRAM/NVRAM and media
+  are simply still there); `machine.rebuild` constructs it again from its
+  record, transferring the mounted media. Device state a row pins --
+  the clock, a PRAM byte, an NVRAM setting -- is written on the line
+  after the boot (or rebuild), never before it.
 - **Interacting rows use `wait_stable` + `check`, not `wait_match`.**
   `wait_match` stops at the first quantum whose frame equals the golden,
   which can precede quiescence; `wait_stable` behaves identically when

@@ -15,9 +15,9 @@
 #                        complete system test.  Skips when the floppy image
 #                        has not been fetched.
 #
-# Every row starts from a virgin NVRAM store (machine.board.clear_nvram):
-# the rows share one process, and a store one row wrote must not decide how
-# the next one boots.
+# Every row starts from a virgin NVRAM store: the rows share one process, and
+# a store one row wrote must not decide how the next one boots.  Each row's
+# machine.boot builds a new machine, whose store is its own fresh one.
 
 include "../lib/mac.script"
 
@@ -61,7 +61,6 @@ def row_ans500_of_console() {
     # A shipping machine, with a blank store and nothing told to it: the
     # console is the monitor, which is what a Network Server does out of the
     # box.
-    machine.board.clear_nvram()
     machine.boot model="ans500" ram=32768 rom="${$ROM}"
 
     # POST, then Open Firmware's bring-up, then its own console install.
@@ -119,7 +118,6 @@ def row_ans500_of_console() {
 def row_ans500_proto20_macos() {
     # A virgin machine: the store the production ROM writes is not this
     # ROM's, and POST caches its memory configuration in there.
-    machine.board.clear_nvram()
     machine.boot model="ans500" ram=32768 rom="${$proto20_rom}"
 
     # The same reset vector, a different image.
@@ -178,14 +176,13 @@ def row_ans500_diag_floppy() {
     # after a battery change reports 0 MB in every slot to the utility (as
     # the real one would), and the second boot is the one whose hardware
     # configuration means something.
-    machine.board.clear_nvram()
     machine.boot model="ans500" ram=65536 rom="${$ROM}"
     machine.board.keyswitch = "service"
     scheduler.run 2000000000
     # The SECOND boot is the same machine coming up again, not a new one, so
-    # it is a power-cycle: machine.restart carries the soldered NVRAM part
-    # (and with it POST's DIMM table) across the rebuild, where machine.boot
-    # hands the new machine a virgin store.
+    # it is a power-cycle: machine.restart keeps the soldered NVRAM part (and
+    # with it POST's DIMM table) because nothing is torn down, where
+    # machine.boot hands a new machine a virgin store.
     machine.restart
 
     # Service: Open Firmware boots `diag-device` (`cd disk6 fd:diags`)

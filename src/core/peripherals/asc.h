@@ -42,6 +42,11 @@ asc_t *asc_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpo
 // Frees all resources associated with an ASC instance
 void asc_delete(asc_t *asc);
 
+// Power On Clear: the chip state asc_init constructs, keeping the wiring and
+// the board's speaker mix.  A power cycle's half (POC* is the chip's power-on
+// clear input; nothing we hold puts it on the /RESET net).
+void asc_power_on(asc_t *asc);
+
 // Saves ASC state to a checkpoint
 void asc_checkpoint(asc_t *restrict asc, checkpoint_t *checkpoint);
 

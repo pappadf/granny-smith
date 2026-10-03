@@ -489,6 +489,36 @@ rbv_t *rbv_init(rbv_variant_t variant, checkpoint_t *cp) {
     return rbv;
 }
 
+// The RBV stands where VIA2 stands, and VIA2 is on the board's /RESET net
+// (Guide to the Macintosh Family Hardware 2e, Table 14-2).  Designing Cards
+// and Drivers 3e p. 403 also has a cache card follow RBV register 0 "or
+// when the RESET signal is asserted".  So: the registers rbv_init sets, the
+// soft-power detector disarmed again (the ROM's early RvDataB write has the
+// power bit low, and an armed detector would take it for a power-off), and
+// the RvIRQ0 frame latch dropped.  The sense bits are an input strap and the
+// SCSI / sound / slot request lines belong to the chips driving them.
+void rbv_reset(rbv_t *rbv) {
+    if (!rbv)
+        return;
+    uint8_t old_depth = rbv->reg_monp & RVMONP_DEPTH_MASK;
+    bool old_vidoff = (rbv->reg_monp & RVMONP_VIDOFF) != 0;
+    rbv->reg_datab = RVDATAB_POWEROFF | RVDATAB_CFLUSH | RVDATAB_SNDEXT; // as rbv_init
+    rbv->reg_exp = 0;
+    rbv->reg_monp &= RVMONP_SENSE_MASK; // depth 0, video on, the strap kept
+    rbv->reg_chpt = 0;
+    rbv->reg_ier = 0;
+    rbv->reg_senb = 0;
+    rbv->power_armed = false; // re-arms on the first bit-high, as at power-on
+    rbv->slot_pending &= (uint8_t) ~(1u << 6); // RvIRQ0 is a latch inside the RBV
+    // The video follows the registers back, the same seams a write drives.
+    if (old_depth != 0 && rbv->mode_cb)
+        rbv->mode_cb(rbv->mode_ctx, 0);
+    if (old_vidoff && rbv->blank_cb)
+        rbv->blank_cb(rbv->blank_ctx, false);
+    rbv_update_irq(rbv);
+    LOG(1, "RBV reset");
+}
+
 void rbv_delete(rbv_t *rbv) {
     if (rbv && rbv->object) {
         object_detach(rbv->object);

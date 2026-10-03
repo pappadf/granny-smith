@@ -4,7 +4,7 @@
 # defaults (never the previous record's, including across a model change),
 # validate-before-teardown, the wildcard video_card= argument, the surviving
 # per-slot staged surface, the machine.config record (including resolved
-# vROM picks), the explicit vrom= revision pin, machine.restart, and the
+# vROM picks), the explicit vrom= revision pin, machine.rebuild, and the
 # checkpoint round-trip of the record.
 
 TEST_NAME := Configuration-document boot (IIcx)

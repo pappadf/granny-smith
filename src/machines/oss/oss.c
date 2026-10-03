@@ -176,7 +176,15 @@ static void oss_write_uint8(void *device, uint32_t addr, uint8_t value) {
                 // Write of 0 (disable): clear source 10 pending.
                 oss_set_source(oss, OSS_SRC_60HZ, false);
             }
-            // oss_set_source already calls oss_notify on a change.
+            // oss_set_source notifies only when the pending bit CHANGES, but
+            // the level changed regardless, and the IPL depends on it.  The
+            // VBL sets source 10 every frame, so when phase $92 wrote its
+            // level the bit was often already pending: no change, no
+            // notify, the CPU's IPL stayed at the old level 0 and the
+            // test's interrupt never came.  Whether it did was down to the
+            // VBL phase -- a fresh boot happened to pass, a power-cycled one
+            // failed POST.
+            oss_notify(oss);
             return;
         }
         oss_notify(oss);
@@ -343,16 +351,9 @@ static void oss_attach_object(oss_t *oss) {
     object_attach(machine_object(), oss->object);
 }
 
-oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, struct scheduler *scheduler,
-                checkpoint_t *checkpoint) {
-    oss_t *oss = calloc(1, sizeof(*oss));
-    if (!oss)
-        return NULL;
-
-    oss->irq_cb = irq_cb;
-    oss->control_cb = control_cb;
-    oss->cb_context = context;
-    oss->scheduler = scheduler;
+// The register state oss_init constructs -- shared with oss_power_on, so a
+// power cycle and a new machine start from the same OSS.
+static void oss_set_power_on_defaults(oss_t *oss) {
     oss->rom_ctrl = 0x0d;
 
     // Default level[] state.  These specific non-zero values are what
@@ -389,6 +390,19 @@ oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, str
     oss->level[12] = 3;
     oss->level[13] = 1;
     oss->level[14] = 7;
+}
+
+oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, struct scheduler *scheduler,
+                checkpoint_t *checkpoint) {
+    oss_t *oss = calloc(1, sizeof(*oss));
+    if (!oss)
+        return NULL;
+
+    oss->irq_cb = irq_cb;
+    oss->control_cb = control_cb;
+    oss->cb_context = context;
+    oss->scheduler = scheduler;
+    oss_set_power_on_defaults(oss);
 
     oss->memory_interface = (memory_interface_t){
         .read_uint8 = oss_read_uint8,
@@ -409,6 +423,20 @@ oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, str
 }
 
 // Frees an OSS instance.
+// See oss.h.  The prefix up to memory_interface is the chip's own state.
+void oss_power_on(oss_t *oss) {
+    if (!oss)
+        return;
+    memset(oss, 0, offsetof(oss_t, memory_interface));
+    oss_set_power_on_defaults(oss);
+    // The counter is running (counter_ctl 0) from zero NOW.  oss_init's
+    // base_ns of 0 is right only because a new machine's clock is at 0; left
+    // at 0 here, the counter would read as if it had run since construction,
+    // which is how POST's phase $92 failed on a power-cycled IIfx.
+    oss->counter_base_ns = (uint64_t)scheduler_time_ns(oss->scheduler);
+    oss_notify(oss); // nothing pending any more: let the board drop the IPL
+}
+
 void oss_delete(oss_t *oss) {
     if (oss && oss->object) {
         object_detach(oss->object);

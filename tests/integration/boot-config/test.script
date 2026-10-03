@@ -1,6 +1,6 @@
 # Integration test: configuration-document boot.  machine.boot inherits
-# NOTHING — the document is the whole specification — and machine.restart
-# is the verb for "power-cycle this machine".
+# NOTHING — the document is the whole specification — and machine.rebuild
+# is the verb for "construct this machine again from its record".
 #
 # Pins the boot-document contract end-to-end:
 #   * headless startup writes the built-from record (same path as scripts);
@@ -13,9 +13,9 @@
 #     surface (slot[N].card_id / video_mode) survives and beats it;
 #   * machine.config.vroms records the declaration-ROM picks the loader
 #     actually resolved; vrom= pins a specific revision;
-#   * machine.restart rebuilds the machine the record describes (without
+#   * machine.rebuild rebuilds the machine the record describes (without
 #     restamping `created`), and the record rides in checkpoints —
-#     machine.restart after checkpoint.load replays the restored record.
+#     machine.rebuild after checkpoint.load replays the restored record.
 
 # --- Startup boot wrote the built-from record (headless CLI = same path). ---
 assert machine.config.valid "record valid after startup boot"
@@ -82,29 +82,29 @@ machine.boot model="iicx" rom="${$ROM}" video_card="824gc"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "concrete staging must beat the wildcard"
 
 # --- The record captures the RESOLVED per-slot picks, not just the
-# wildcard: that is what lets machine.restart re-seat a multi-card machine
+# wildcard: that is what lets machine.rebuild re-seat a multi-card machine
 # (a wildcard-only record could not). ---
 machine.nubus.slot[9].card_id = "display_card_24ac"
 machine.nubus.slot[10].card_id = "824gc"
 machine.boot model="iicx" rom="${$ROM}"
 assert machine.config.slot_cards == "[{\"bus\":\"nubus\",\"slot\":9,\"card_id\":\"display_card_24ac\",\"explicit\":true}, {\"bus\":\"nubus\",\"slot\":10,\"card_id\":\"824gc\",\"explicit\":true}]" "both populated sockets must appear in the record"
-machine.restart
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "restart must re-seat socket $9"
-assert machine.nubus.slot[10].card.name == "Apple Macintosh Display Card 8•24 GC" "restart must re-seat socket $A, which no wildcard covers"
+machine.rebuild
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "rebuild must re-seat socket $9"
+assert machine.nubus.slot[10].card.name == "Apple Macintosh Display Card 8•24 GC" "rebuild must re-seat socket $A, which no wildcard covers"
 
 # ...but a slot that resolved its OWN DEFAULT is recorded as non-explicit,
-# and machine.restart must leave it to resolve the default again.  Promoting
+# and machine.rebuild must leave it to resolve the default again.  Promoting
 # a default into an explicit pick changes its semantics: an explicit pick
 # whose declaration ROM cannot be resolved FAILS the boot, where a default
 # degrades to an empty slot with a log.  Replaying defaults made
-# machine.restart reject itself on any machine with no vROM offered (which
+# machine.rebuild reject itself on any machine with no vROM offered (which
 # is every browser session until the user uploads one).  The flag surviving
-# a round trip is the guard: a restart that re-staged the default would come
+# a round trip is the guard: a rebuild that re-staged the default would come
 # back marked explicit.
 machine.boot model="iicx" rom="${$ROM}"
 assert machine.config.slot_cards == "[{\"bus\":\"nubus\",\"slot\":9,\"card_id\":\"mdc_8_24\",\"explicit\":false}]" "a default-populated socket must be recorded as NOT explicit"
-machine.restart
-assert machine.config.slot_cards == "[{\"bus\":\"nubus\",\"slot\":9,\"card_id\":\"mdc_8_24\",\"explicit\":false}]" "restart must re-resolve the default, not promote it to an explicit pick"
+machine.rebuild
+assert machine.config.slot_cards == "[{\"bus\":\"nubus\",\"slot\":9,\"card_id\":\"mdc_8_24\",\"explicit\":false}]" "rebuild must re-resolve the default, not promote it to an explicit pick"
 
 # --- Per-slot video_mode: the 8-bpp seed reaches the resolved card. ---
 machine.nubus.slot[9].card_id = "824gc"
@@ -114,14 +114,14 @@ assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 G
 assert machine.nubus.slot[9].card.mode.depth == 8 "per-slot video_mode seed did not set 8 bpp"
 assert machine.nubus.slot[9].video_mode == "" "slot[9].video_mode not consumed at boot"
 
-# --- machine.restart: rebuild exactly the machine the record describes. ---
+# --- machine.rebuild: rebuild exactly the machine the record describes. ---
 machine.boot model="iicx" ram=16384 rom="${$ROM}" video_card="824gc" video_mode="gc_640x480_8bpp"
 let created0 = machine.config.created
-machine.restart
-assert machine.id == "iicx" "restart rebuilds the same model"
-assert machine.config.ram == 16384 "restart keeps the recorded ram"
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "restart reseats the recorded card"
-assert machine.config.created == $created0 "restart must not restamp created"
+machine.rebuild
+assert machine.id == "iicx" "rebuild constructs the same model"
+assert machine.config.ram == 16384 "rebuild keeps the recorded ram"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "rebuild reseats the recorded card"
+assert machine.config.created == $created0 "rebuild must not restamp created"
 
 # --- Checkpoint round-trip of the built-from record. ---
 scheduler.run 100000
@@ -133,12 +133,12 @@ assert machine.config.video_card == "824gc" "restored record video_card"
 assert machine.config.model == "iicx" "restored record model"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "restored machine card"
 # Under a non-inheriting boot a bare machine.boot after restore is an error;
-# the idiom for "power-cycle the restored machine" is machine.restart, which
-# replays the restored record cold.
+# the idiom for "build the restored configuration again" is machine.rebuild,
+# which replays the restored record cold.
 assert !machine.boot() "bare machine.boot after restore must be rejected"
-machine.restart
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "machine.restart after checkpoint.load must rebuild the restored configuration"
-assert machine.config.ram == 16384 "restart after restore keeps the restored ram"
+machine.rebuild
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "machine.rebuild after checkpoint.load must rebuild the restored configuration"
+assert machine.config.ram == 16384 "rebuild after restore keeps the restored ram"
 
 # --- Explicit vrom= pins a revision: the record's resolved-pick list shows
 # the v1.0 ROM (crc $9E9857E8) winning over the catalog-preferred v1.1. ---
@@ -152,17 +152,17 @@ assert machine.config.vrom == "" "no vrom= in the document, none in the record"
 assert machine.config.vroms[0].crc == "0xd722b053" "the previous boot's explicit pick must not outlive it"
 assert !machine.config.vroms[0].explicit "an auto-resolved pick is not explicit"
 
-# --- The built-in monitor strap (PDM) is part of the record: restart and
+# --- The built-in monitor strap (PDM) is part of the record: rebuild and
 # checkpoint.load rebuild with it.  monitor=none leaves the port unconnected,
-# so the machine has no screen until a card provides one; restart used to
+# so the machine has no screen until a card provides one; a rebuild used to
 # drop the strap and bring the built-in 640x480 back. ---
 let pdm_rom = "../../data/roms/pm6100-pm7100-pm8100-9feb69b3.rom"
 machine.boot model="pm7100" rom=$pdm_rom monitor="none"
 assert machine.config.monitor == "none" "record carries the monitor strap"
 assert machine.screen.width == 0 "monitor=none: no built-in screen"
-machine.restart
-assert machine.config.monitor == "none" "restart keeps the strap in the record"
-assert machine.screen.width == 0 "restart must rebuild with the strap"
+machine.rebuild
+assert machine.config.monitor == "none" "rebuild keeps the strap in the record"
+assert machine.screen.width == 0 "rebuild must rebuild with the strap"
 assert checkpoint.save("${$WORK_DIR}/monitor.checkpoint") "checkpoint save (pm7100)"
 machine.boot model="pm7100" rom=$pdm_rom
 assert machine.screen.width == 640 "default strap: the built-in 640x480"

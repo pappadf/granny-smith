@@ -9,6 +9,7 @@
 
 #include "system_config.h" // full config_t definition (includes system.h transitively)
 
+#include "adb.h"
 #include "appletalk.h"
 #include "build_id.h"
 #include "checkpoint_machine.h"
@@ -234,6 +235,30 @@ void system_machine_reset(void) {
     }
 }
 
+// LEVEL 3 -- a power cycle (machine.restart).  Switching a machine off and on
+// does not replace its chips: the CPU goes to its vector, the chipset to
+// power-on and DRAM loses its contents, while the battery-backed store, the
+// disks in the drives and the latched switches stay exactly where they were.
+// So this is level 2 with the RAM image cleared to the state a freshly
+// constructed machine has (memory_map_init calloc's it) -- deterministic,
+// where real DRAM would come up indeterminate.  The clear is what makes the
+// ROM's warm-start check take the cold path.  It runs BEFORE the reset so
+// the vector fetch reads a cold machine.
+void system_machine_power_cycle(void) {
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->mem_map)
+        return;
+    uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+    if (ram && cfg->ram_size)
+        memset(ram, 0, cfg->ram_size); // DRAM loses its contents
+    // The ADB bus is powered by the machine: its devices lose power too.
+    adb_power_on(cfg->adb);
+    // State a power-up initialises and /RESET does not (machine_profile.h).
+    if (cfg->machine && cfg->machine->substrate->power_on)
+        cfg->machine->substrate->power_on(cfg);
+    system_machine_reset();
+}
+
 // Retained under its old name for the callers that mean "level 2".
 void system_hardware_reset(void) {
     system_machine_reset();
@@ -270,6 +295,10 @@ void system_reset_common_devices(config_t *cfg) {
     // chip resets).  via2 is NULL on the single-VIA machines.
     if (cfg->via1)
         via_reset(cfg->via1);
+    // ...and with VIA1 no longer driving PB2, the RTC's /CE floats high: the
+    // clock chip (battery-backed, not on the net itself) abandons any transfer
+    // the guest left half-done and lets go of its data line.
+    rtc_deselect(cfg->rtc);
     if (cfg->via2)
         via_reset(cfg->via2);
     if (cfg->scc)

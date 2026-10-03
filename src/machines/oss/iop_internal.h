@@ -76,6 +76,13 @@ typedef struct iop_behavior {
     // (e.g. SCC IOP, which is purely event-driven on host kicks).
     void (*register_events)(iop_t *iop);
 
+    // Called by iop_power_on: cancel every event this behaviour scheduled
+    // with the IOP as its source.  The callbacks are static to the
+    // behaviour's file, so only it can name them -- and scheduler_forget_
+    // source is for destructors only (it drops the event TYPES too).  NULL
+    // if the behaviour schedules nothing.
+    void (*cancel_events)(iop_t *iop);
+
 } iop_behavior_t;
 
 // Defined in iop_scc.c.

@@ -1192,6 +1192,39 @@ adb_t *adb_init(via_t *via, struct scheduler *scheduler, checkpoint_t *checkpoin
 // Lifecycle: Destructor
 // ============================================================================
 
+// The host-side transceiver back to its power-on transport state: idle, no
+// transfer in flight, no auto-poll armed.  Without it the auto-poll timer the
+// running OS left armed keeps firing through the ROM's next start-up,
+// shifting stale bytes into a VIA that was just powered up.  Only a power
+// cycle calls it (adb_power_on): nothing we hold puts the transceiver on the
+// /RESET net.
+static void adb_transceiver_reset(adb_t *adb) {
+    if (!adb)
+        return;
+    remove_event(adb->scheduler, &adb_deliver_next_byte_deferred, adb);
+    remove_event(adb->scheduler, &adb_shift_complete_deferred, adb);
+    remove_event(adb->scheduler, &adb_autopoll_deferred, adb);
+    adb->state = ADB_STATE_IDLE;
+    adb->listen_active = false;
+    adb->listen_index = 0;
+    adb->reply_len = 0;
+    adb->reply_index = 0;
+    adb->dummy_sent = false;
+    adb->last_port_b = 0x30; // ST1:ST0 idle, as adb_init leaves it
+    set_adb_int(adb, true); // vADBInt deasserted, as on a cold boot
+}
+
+// See adb.h.  The device half is adb_reset, which is also what an ADB
+// SendReset does; a machine reset leaves the devices alone because they are
+// not on the board's /RESET net, but a power cycle takes their power away.
+void adb_power_on(adb_t *adb) {
+    if (!adb)
+        return;
+    adb_transceiver_reset(adb);
+    adb_reset(adb);
+    adb->autopoll_mru = 0;
+}
+
 // Frees all resources associated with an ADB controller instance
 void adb_delete(adb_t *adb) {
     if (!adb)

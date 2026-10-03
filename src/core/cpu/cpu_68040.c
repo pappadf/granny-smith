@@ -418,6 +418,10 @@ void cpu_reset_to_vector_68040(cpu_t *restrict cpu) {
         mmu->enabled = false;
         mmu040_invalidate_tlb(mmu);
     }
+    // As on the 030: only an external reset restarts a halted processor, and a
+    // reset ends a STOP (the mask is 7, so a stopped CPU would never resume).
+    cpu->halted = 0;
+    cpu->stopped = 0;
     cpu->ipl = 0;
     cpu->last_bus_error_pc = 0;
     g_bus_error_pending = false;

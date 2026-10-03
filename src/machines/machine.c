@@ -822,15 +822,14 @@ static void stage_pci_options(const char *spec) {
     }
 }
 
-// Armed by machine.restart for the duration of its machine_boot_apply call:
+// Armed by machine.rebuild for the duration of its machine_boot_apply call:
 // carry the mounted media's open image handles across the teardown.  A plain
 // machine.boot never transfers — a new machine starts with empty drives.
 static bool s_transfer_media = false;
 
-// Is machine_boot_apply rebuilding the same machine (machine.restart) rather
-// than building a new one?  Machine-specific teardown asks this before
-// carrying non-volatile hardware state across the rebuild (machine_config.h).
-bool machine_boot_is_restart(void) {
+// Is machine_boot_apply rebuilding the same machine (machine.rebuild) rather
+// than building a new one?  Only the named transfers ask (machine_config.h).
+bool machine_boot_is_rebuild(void) {
     return s_transfer_media;
 }
 
@@ -1047,7 +1046,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
         return perr;
     }
 
-    // 3. Teardown + atomic construction.  On a machine.restart the mounted
+    // 3. Teardown + atomic construction.  On a machine.rebuild the mounted
     // media's open handles are detached first so they survive
     // system_destroy's close loop — the delta stays with its open
     // instance, so writes survive the power-cycle by construction.
@@ -1148,7 +1147,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     for (int i = 0; i < n_media; ++i) {
         if (cfg->machine->substrate->media_attach && cfg->machine->substrate->media_attach(cfg, &media[i]) == 0)
             continue;
-        LOG(1, "machine.restart: could not re-attach medium '%s'; closing it",
+        LOG(1, "machine.rebuild: could not re-attach medium '%s'; closing it",
             image_get_filename(media[i].img) ? image_get_filename(media[i].img) : "(unnamed)");
         image_close(media[i].img);
     }
@@ -1193,7 +1192,8 @@ static uint64_t boot_uint(const value_t *v, uint64_t unset) {
 // machine.boot — atomic, self-contained configuration document.  model and
 // rom are required; every other field falls back to the model's own
 // defaults.  An explicitly empty value is rejected by the named-argument
-// grammar.  Use machine.restart to power-cycle the running machine.
+// grammar.  Use machine.restart to power-cycle the running machine, and
+// machine.rebuild to construct it again from its record.
 static DEF_METHOD(machine_method_boot) {
     uint64_t sense = boot_uint(&argv[5], 0xFF);
     boot_config_t doc = {
@@ -1221,9 +1221,7 @@ static DEF_METHOD(machine_method_boot) {
 // machine.reset — level 2, a warm reset: the board's /RESET net plus the CPU
 // back to its reset vector, with the machine left standing.  Nothing is torn
 // down and nothing is rebuilt, so RAM, the PRAM/NVRAM, mounted media and the
-// object tree all survive; this is the reset button.  machine.boot and
-// machine.restart both construct a new machine, so this is the only verb that
-// reboots a machine and keeps its NVRAM.
+// object tree all survive; this is the reset button.
 static DEF_METHOD(machine_method_reset) {
     if (!global_emulator)
         return val_err("machine.reset: no machine is running; boot one first");
@@ -1231,22 +1229,40 @@ static DEF_METHOD(machine_method_reset) {
     return val_bool(true);
 }
 
-// machine.restart — power-cycle the running machine: rebuild the machine
-// described by the built-from record, taking no configuration arguments, and
-// keep the mounted media attached by transferring the open image handles across
-// the teardown.  Errors when no machine is running.  Host-side runtime state
-// that is not construction configuration (volume, host capture sources) is out
-// of scope — the frontend re-asserts it.  Scheduler pacing is the exception
-// every rebuild keeps: it is the harness's setting, not the machine's.
+// machine.restart — level 3, a power cycle: the same complete reset as
+// machine.reset, with the RAM cold.  The machine is NOT torn down: switching a
+// real machine off and on does not replace its chips, so the PRAM/NVRAM, the
+// RTC (still ticking), mounted media, the Caps Lock latch and the LaserWriter
+// all survive because nothing destroyed them.  The built-from record and
+// `created` are untouched for the same reason.  Use machine.rebuild to
+// construct the recorded machine again instead.
 static DEF_METHOD(machine_method_restart) {
+    if (!global_emulator)
+        return val_err("machine.restart: no machine is running; boot one first");
+    system_machine_power_cycle();
+    return val_bool(true);
+}
+
+// machine.rebuild — level 4 from the built-from record: tear the running
+// machine down and construct the machine the record describes, taking no
+// configuration arguments.  This is what makes a staged hardware change take
+// effect (`machine.nubus.slot[N].card_id = …` then machine.rebuild).  Like
+// machine.boot it inherits no device state -- the new machine's stores are
+// its own fresh ones -- but it keeps three explicit, named transfers: the
+// mounted media (the open image handles, so every write survives), the Caps
+// Lock latch and the host-side LaserWriter.  Errors when no machine is
+// running.  Scheduler pacing is kept by every rebuild: it is the harness's
+// setting, not the machine's.
+static DEF_METHOD(machine_method_rebuild) {
     const machine_config_record_t *rec = machine_config_record();
     if (!global_emulator || !rec->valid)
-        return val_err("machine.restart: no machine is running; boot one first");
+        return val_err("machine.rebuild: no machine is running; boot one first");
 
     // Work from a snapshot: boot_apply rewrites the record in place, so doc
     // pointers into the live record would alias their own destination — and
-    // the original `created` stamp must survive (a power-cycle is not a
-    // re-birth).
+    // the original `created` stamp must survive (the record describes the
+    // same configuration; it is the birth certificate of the configuration,
+    // not of the devices).
     machine_config_record_t snap = *rec;
     boot_config_t doc = {
         .model = snap.model,
@@ -1516,8 +1532,13 @@ static const member_t machine_members[] = {
     {.kind = M_METHOD,
      .name = "restart",
      .examples = EXAMPLES("machine.restart"),
-     .doc = "Power-cycle the running machine: rebuild it from machine.config, keeping mounted media attached",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = machine_method_restart}},
+     .doc = "Power-cycle the running machine: a reset with the RAM cold; nothing is rebuilt, so PRAM/NVRAM, "
+            "the clock and media survive", .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = machine_method_restart}},
+    {.kind = M_METHOD,
+     .name = "rebuild",
+     .examples = EXAMPLES("machine.rebuild"),
+     .doc = "Construct the recorded machine again (machine.config): a new machine with fresh stores, keeping "
+            "mounted media attached", .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = machine_method_rebuild}},
     {.kind = M_METHOD,
      .name = "register",
      .flags = M_CAT_ADVANCED,

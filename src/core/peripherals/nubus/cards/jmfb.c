@@ -139,6 +139,7 @@ typedef struct {
     char *vrom_path; // path the VROM was loaded from
     uint32_t vrom_size; // typically 32 KB; 0 if no VROM loaded
     uint32_t slot_base; // physical bus base (== nubus_slot_base(slot))
+    uint16_t poweron_row_words; // RowWords at power-on: the sensed monitor's 1 bpp width (card_reset)
 } jmfb_priv_t;
 
 // The layout above is load-bearing.  If this fires, a member moved across the
@@ -507,6 +508,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     p->regs.csr = 0;
     p->regs.video_base = 0xA00 / 32; // driver convention: $A00 byte offset
     p->regs.row_words = mon_w / 32u; // 1bpp longs/row for the chosen monitor
+    p->poweron_row_words = p->regs.row_words; // what a /RESET returns to
 
     p->regs.raster_h = mon_h;
     p->display.format = PIXEL_1BPP_MSB;
@@ -637,6 +639,33 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     card->priv = NULL;
 }
 
+// NuBus /RESET: the chip's registers back to the power-on state card_init
+// gives them -- 1 bpp, the driver's $A00 base, the VBL interrupt masked --
+// with the monitor still the one plugged in (the sense lines are a strap) and
+// VRAM left alone, as on the 24AC and the 8*24 GC.  The card had no reset op,
+// so nubus_reset skipped it: a machine reset left the OS's VBL interrupt
+// enabled, the card kept asserting its slot line, and the next start-up took
+// that interrupt before POST had a handler (a IIfx failed phase $92 on it).
+static void card_reset(nubus_card_t *card, config_t *cfg) {
+    (void)cfg;
+    jmfb_priv_t *p = card->priv;
+    if (!p)
+        return;
+    nubus_deassert_irq(card); // drop any pending slot VBL request
+    uint8_t sense = p->regs.sense_code;
+    uint32_t raster_h = p->regs.raster_h;
+    memset(&p->regs, 0, sizeof(p->regs));
+    p->regs.sense_code = sense;
+    p->regs.raster_h = raster_h;
+    p->regs.sw_ic = VINT_DISABLE;
+    p->regs.video_base = 0xA00 / 32;
+    p->regs.row_words = p->poweron_row_words;
+    p->display.format = PIXEL_1BPP_MSB;
+    jmfb_apply_scanout(&p->regs, &p->bind);
+    p->display.shape_dirty = true;
+    p->display.fb_dirty = true;
+}
+
 static void card_on_vbl(nubus_card_t *card, config_t *cfg) {
     (void)cfg;
     jmfb_priv_t *p = card->priv;
@@ -734,6 +763,7 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
 
 static const nubus_card_ops_t mdc_8_24_ops = {
     .init = card_init_real,
+    .reset = card_reset,
     .teardown = card_teardown,
     .on_vbl = card_on_vbl,
     .display = card_display,
@@ -744,6 +774,7 @@ static const nubus_card_ops_t mdc_8_24_ops = {
 
 static const nubus_card_ops_t jmfb_generic_ops = {
     .init = card_init_generic,
+    .reset = card_reset,
     .teardown = card_teardown,
     .on_vbl = card_on_vbl,
     .display = card_display,

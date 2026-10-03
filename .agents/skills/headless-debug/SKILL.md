@@ -127,8 +127,9 @@ debug.step                     # one instruction
 debug.step 100
 machine.cpu.instr_count
 scheduler.mode                 # turbo | paced | accelerated (writable)
-machine.reset                  # warm reset: keeps RAM, PRAM and media
-machine.restart                # power-cycle from machine.config, keeps media
+machine.reset                  # warm reset: keeps RAM, PRAM/NVRAM, the clock and media
+machine.restart                # power cycle: RAM cold, nothing rebuilt (PRAM/NVRAM, clock, media kept)
+machine.rebuild                # a new machine from machine.config: fresh stores, media transferred
 machine.boot model="iicx" rom="tests/data/roms/iix-iicx-se30-97221136.rom" ram=8192
 ```
 

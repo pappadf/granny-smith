@@ -286,6 +286,16 @@ typedef struct machine_substrate {
     // not read the same way here, or this header becomes the reason nobody
     // notices the second kind.
     void (*bus_reset)(struct config *cfg);
+    // Power-on-only state: what switching the machine off and on clears that
+    // the /RESET net does NOT reach -- latches and SRAM a chip initialises only
+    // when power is applied.  Called by a power cycle (machine.restart) before
+    // its level-2 reset, never by a reset.  NULL on a board whose every
+    // volatile device is on the net.  The Lisa is the case that needs it: its
+    // MMU's START latch is "satisfied automatically at power-on time" and
+    // reset does not set it, while the descriptor RAM survives a reset and
+    // does not survive a power loss (Lisa Hardware Reference Manual §2.3.3,
+    // §4.7.2).
+    void (*power_on)(struct config *cfg);
     void (*teardown)(struct config *cfg);
     void (*checkpoint_save)(struct config *cfg, checkpoint_t *cp);
 

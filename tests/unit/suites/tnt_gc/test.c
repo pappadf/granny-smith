@@ -135,8 +135,8 @@ void tnt_gbus_write32(config_t *cfg, uint32_t offset, uint32_t value) {
     (void)offset;
     (void)value;
 }
-// The battery pull lives in machines/tnt/tnt.c (it also drops the process
-// carry); machine.nvram.clear() references it, so stub the store half.
+// The battery pull lives in machines/tnt/tnt.c; machine.nvram.clear()
+// references it, so stub it here.
 void tnt_nvram_clear(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     if (st)

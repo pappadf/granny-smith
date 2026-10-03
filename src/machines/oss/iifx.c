@@ -328,6 +328,7 @@ static void iifx_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable
         if (g_user_write)
             g_user_write[page_index] = 0;
     }
+    tlb_track_page(page_index); // tracked like every fast-path entry (mac030_fill_page)
 }
 
 // Repoints the page-table entries for $40008000-$4000FFFF to either
@@ -691,6 +692,24 @@ static void iifx_scsidma_reset_chip_only(config_t *cfg) {
     st->scsi_dma_done_latch = false;
     st->scsi_dma_bus_error_latch = false;
     scsidma_fifo_clear(st);
+}
+
+// The SCSI DMA wrapper as construction leaves it: no transfer, no latches,
+// every register zero.  A power cycle's half (iifx_power_on).
+static void iifx_scsidma_power_on(config_t *cfg) {
+    iifx_state_t *st = iifx_state(cfg);
+    iifx_scsidma_reset_chip_only(cfg);
+    st->scsi_dma_ctrl = 0;
+    st->scsi_dma_count = 0;
+    st->scsi_dma_addr = 0;
+    st->scsi_dma_addr_latch = 0;
+    st->scsi_dma_prev_mr_dma = false;
+    st->scsi_dma_watchdog_reload = 0;
+    st->scsi_dma_watchdog_irq_latch = false;
+    st->scsi_dma_wonarb_latch = false;
+    st->scsi_dma_tri_state_test = false;
+    st->scsi_dma_fifo_loopback_test = false;
+    iifx_scsidma_update_int(cfg);
 }
 
 // Successful Apple DMA completion (spec §17).
@@ -1433,7 +1452,29 @@ static void iifx_bus_reset(config_t *cfg) {
     st->rom_overlay = false;
     iifx_set_rom_overlay(cfg, true);
     system_reset_common_devices(cfg);
+    // Both IOPs are on the net (iop_reset cites the F19 theory of operation).
+    iop_reset(st->scc_iop);
+    iop_reset(st->swim_iop);
     // The 68030 PMMU is inside the CPU and moved to cpu_hardware_reset.
+}
+
+// A power cycle's power-on-only half (machine_profile.h): the chips this
+// board has no /RESET source for are powered up again into the state their
+// constructors give them -- the OSS, both IOPs (65C02 in reset, RAM blank;
+// the ROM downloads their firmware again), the ASC's Power On Clear and the
+// FMC's ROM-invert flip-flop.
+static void iifx_power_on(config_t *cfg) {
+    iifx_state_t *st = iifx_state(cfg);
+    iop_power_on(st->scc_iop);
+    iop_power_on(st->swim_iop);
+    oss_power_on(st->oss);
+    asc_power_on(st->asc);
+    iifx_scsidma_power_on(cfg);
+    if (st->fmc_rom_invert) {
+        st->fmc_rom_invert = false; // "initially false at reset"
+        iifx_apply_fmc_rom_invert(cfg, false);
+    }
+    st->fmc_prev_bit3 = false;
 }
 
 // Slot table for the six-slot IIfx NuBus cage.
@@ -1668,6 +1709,7 @@ static const scsi_bus_decl_t iifx_scsi_buses[] = {
 static const machine_substrate_t iifx_substrate = {
     .init = iifx_init,
     .bus_reset = iifx_bus_reset,
+    .power_on = iifx_power_on,
     .teardown = iifx_teardown,
     .checkpoint_save = iifx_checkpoint_save,
     .trigger_vbl = iifx_trigger_vbl,

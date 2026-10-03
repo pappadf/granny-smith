@@ -626,54 +626,65 @@ the caller having to track machine-lifetime explicitly.
 
 ## Machine lifecycle
 
-Four operations put a machine in place or restart the one that is running.
-They differ in what they keep. Line numbers are as of this writing; the
-function names are the stable reference.
+Five operations put a machine in place or restart the one that is running.
+They are four reset **levels** plus a checkpoint load, and they differ in
+exactly one thing: whether the machine is torn down. Only building a
+different machine tears down; a reset or a power cycle keeps every device,
+so the non-volatile stores survive for the hardware's own reason --
+nothing destroyed them.
 
-| Operation | What it does | Entry point |
-|---|---|---|
-| `machine.boot(...)` | Builds a **new** machine from a complete boot document ([Boot arguments](#boot-arguments)): validates the whole document, tears the running machine down, constructs, installs the ROM, writes the built-from record `machine.config`. | `machine_method_boot` → `machine_boot_apply` (`src/machines/machine.c:850`) |
-| `machine.restart` | **Power-cycle**: rebuilds the machine that `machine.config` describes, takes no arguments, and carries the mounted media across the teardown. Errors if no machine is running. | `machine_method_restart` (`machine.c:1188`) |
-| `machine.reset` | **Warm reset** (the reset button): the board's /RESET net, then the CPU back to its reset vector. Nothing is torn down or rebuilt. Errors if no machine is running. | `machine_method_reset` (`machine.c:1177`) → `system_machine_reset` (`src/core/system.c:216`) |
-| `checkpoint.load(path)` | Builds a new machine from a checkpoint: it creates the new machine first and destroys the old one afterwards. | `system_checkpoint_load` → `system_restore` (`system.c:1594`) |
+| Level | Operation | What it does | Entry point |
+|---|---|---|---|
+| 2 | `machine.reset` | **Warm reset** (the reset button): the board's /RESET net, then the CPU back to its reset vector. RAM is kept. | `machine_method_reset` → `system_machine_reset` (`src/core/system.c`) |
+| 3 | `machine.restart` | **Power cycle**: the same reset with the RAM cleared to the state a new machine's has, and the board's power-on-only state (`substrate->power_on`) back to its constructed values. Nothing is torn down or rebuilt. | `machine_method_restart` → `system_machine_power_cycle` |
+| 4 | `machine.rebuild` | **New machine from the record**: tears down and constructs the machine `machine.config` describes, takes no arguments, and carries three explicit transfers -- the mounted media, the Caps Lock latch, the LaserWriter. | `machine_method_rebuild` → `machine_boot_apply` |
+| 4 | `machine.boot(...)` | **New machine from a document** ([Boot arguments](#boot-arguments)): validates the whole document, tears the running machine down, constructs, installs the ROM, writes the record. | `machine_method_boot` → `machine_boot_apply` (`src/machines/machine.c`) |
+| -- | `checkpoint.load(path)` | Builds a new machine from a checkpoint: it creates the new machine first and destroys the old one afterwards. | `system_checkpoint_load` → `system_restore` |
 
-`machine.boot`, `machine.restart` and headless startup all go through
+Level 1 is the 68k `RESET` instruction: the /RESET net alone, with the CPU
+untouched (`system_reset_devices`). It has no verb -- it is an instruction
+and a wire, not something a user does.
+
+`machine.boot`, `machine.rebuild` and headless startup all go through
 `machine_boot_apply`, so they share one sequence: validate, tear down,
-construct, record (`machine.c:846-1124`). Every check runs before
-`system_destroy`, so a rejected boot leaves the running machine and its
-record untouched (`tests/integration/boot-config`).
+construct, record. Every check runs before `system_destroy`, so a rejected
+boot leaves the running machine and its record untouched
+(`tests/integration/boot-config`). `tests/integration/reset-levels` runs
+the level contract over every model in the registry.
 
 ### What each operation keeps
 
-| State | `machine.boot` | `machine.restart` | `machine.reset` | `checkpoint.load` |
-|---|---|---|---|---|
-| Model, RAM size, cards | From the document; each omitted field takes the model's default | From the record; per-slot picks replayed only where the user chose them (`machine.c:1202-1235`) | Unchanged | From the checkpoint's model id, RAM size and stored record (`system.c:1612-1665`) |
-| ROM bytes | Read from the `rom=` file (`machine.c:1062-1066`) | Read again from the recorded path, so a changed file is picked up. A live `rom.load` rewrites the record first (`rom.c:383`) | Unchanged | From the checkpoint, by content or file reference (`src/core/memory/memory.c:1632`) |
-| RAM contents | Zeroed (fresh `calloc`, `memory.c:1584`) | Zeroed | **Kept** | Restored (`memory.c:1628`) |
-| PRAM (RTC parameter RAM) | Family construction defaults (`rtc_init` → `pram_defaults_apply`, `src/core/peripherals/rtc.c:463`; tables in `src/machines/runtime/pram_defaults.h`) | Construction defaults again (not carried) | **Kept** | Restored (`rtc.c:485`) |
-| TNT NVRAM (Grand Central's Open Firmware store; `pm7500`/`pm8500`/`pm9500`/`ans500`/`ans700`) | Blank: the previous machine's store goes with it | **Carried** (`tnt_teardown`, `src/machines/tnt/tnt.c:768`) | **Kept** | From the checkpoint, which overrides any carried store (`tnt.c:474`) |
-| RTC time | Host wall clock at construction (`rtc.c:465`); the Lisa's COPS clock starts at 1 January 1984 (`src/machines/lisa/cops.c:189`; hardware reference: [cops.md](../../../reference/machines/lisa/cops.md)) | The same as `machine.boot` | Keeps counting | The saved value (`rtc.c:485`) |
-| Mounted media | None. The old machine's images are closed (`system.c:1235`); a CD bay is registered empty (`system.c:1157`) | **Carried**: the same open handles pass through the substrate's `media_detach`/`media_attach`, so the write delta survives | **Kept** (`floppy_reset` keeps media, `system.c:274`) | From the checkpoint |
-| Caps Lock latch | Released | **Carried** (`machine.c:1019`, `1101`) | Kept (`adb_reset` preserves it, `src/core/peripherals/adb.c:511`) | From the checkpoint's ADB state (`adb.c:1051`) |
-| Scheduler pacing (`scheduler.mode`) | **Carried**: the host harness owns it, not the machine (`machine.c:1000-1008`, `1085`) | **Carried** | Unchanged | The checkpoint's own value (`src/core/scheduler/scheduler.c:145`, `786`) |
-| `machine.config.created` | Stamped now | **Preserved** (`machine.c:1244`) | Unchanged | From the checkpoint's record |
-| vROM/PROM offer registries | Process-global; survive | Survive | Survive | Survive |
-| The explicit `vrom=`/`prom=` pick | The document's, replacing the previous one (none if the document names none); a rejected boot puts the running machine's back (`machine_config_set_explicit_picks`) | The record's | Unchanged | The checkpoint record's |
-| Object tree | Machine-scoped nodes rebuilt (`root_install`, `system.c:1169`); process singletons (`machine`, `rom`, `vrom`, `prom`) stay | Rebuilt | Untouched | Rebuilt |
+| State | `machine.boot` | `machine.rebuild` | `machine.restart` | `machine.reset` | `checkpoint.load` |
+|---|---|---|---|---|---|
+| Devices | New | New | **Kept** | **Kept** | New |
+| Model, RAM size, cards | From the document; each omitted field takes the model's default | From the record; per-slot picks replayed only where the user chose them | Unchanged | Unchanged | From the checkpoint's model id, RAM size and stored record |
+| ROM bytes | Read from the `rom=` file | Read again from the recorded path, so a changed file is picked up. A live `rom.load` rewrites the record first (`rom.c`) | Unchanged | Unchanged | From the checkpoint, by content or file reference |
+| RAM contents | Zeroed (fresh `calloc`) | Zeroed | **Cleared** to zero | **Kept** | Restored |
+| CPU registers | Reset | Reset | Reset vector, reset-state SR/VBR/CACR, MMU and TTx enables off | The same | Restored |
+| PRAM (RTC parameter RAM) | Family construction defaults (`rtc_init` → `pram_defaults_apply`; tables in `src/machines/runtime/pram_defaults.h`) | Construction defaults | **Kept** | **Kept** | Restored |
+| NVRAM (`machine.nvram`: Grand Central on TNT/ANS, Heathrow on the beige G3) | Blank | Blank -- nothing crosses a teardown | **Kept** | **Kept** | From the checkpoint |
+| RTC time | Host wall clock at construction; the Lisa's COPS clock starts at 1 January 1984 (`src/machines/lisa/cops.c`; hardware reference: [cops.md](../../../reference/machines/lisa/cops.md)) | Host wall clock (a new RTC) | **Keeps counting** | **Keeps counting** | The saved value |
+| Mounted media | None. The old machine's images are closed; a CD bay is registered empty | **Carried**: the same open handles pass through the substrate's `media_detach`/`media_attach`, so the write delta survives | **Kept** | **Kept** (`floppy_reset` keeps media) | From the checkpoint |
+| Caps Lock latch | Released | **Carried** | **Kept** | Kept (`adb_reset` preserves held keys) | From the checkpoint's ADB state |
+| ADB devices | New | New | Back at their default addresses (the bus loses power: `adb_power_on`) | Kept; the ROM's ADB SendReset resets them | Restored |
+| Scheduler pacing (`scheduler.mode`) | **Carried**: the host harness owns it, not the machine | **Carried** | Unchanged | Unchanged | The checkpoint's own value |
+| `machine.config.created` | Stamped now | **Preserved** | Unchanged | Unchanged | From the checkpoint's record |
+| vROM/PROM offer registries | Process-global; survive | Survive | Survive | Survive | Survive |
+| The explicit `vrom=`/`prom=` pick | The document's, replacing the previous one (none if the document names none); a rejected boot puts the running machine's back (`machine_config_set_explicit_picks`) | The record's | Unchanged | Unchanged | The checkpoint record's |
+| Object tree | Machine-scoped nodes rebuilt (`root_install`); process singletons (`machine`, `rom`, `vrom`, `prom`) stay | Rebuilt | Untouched | Untouched | Rebuilt |
 
 **`machine.boot` inherits nothing from the running machine.** The
 document is the whole specification. `model` and `rom` are required, and
 every other field falls back to the **model's** defaults, never to the
 previous record. That holds across a model change too
-(`machine.c:727-734`, `853-856`; `tests/integration/boot-config`). For
-this reason the integration runner passes the ROM explicitly: it starts
-headless with `rom=` and also exports the same path as `$ROM`, so a
-script re-boots with `machine.boot model=... rom="${$ROM}"`
-(`scripts/run-integration-test.sh:154-164`). To bring back the machine
-you have (including one just restored from a checkpoint), call
-`machine.restart`; a bare `machine.boot()` is an error. A new boot does
-still see four kinds of process-level state that are not part of any
-machine:
+(`tests/integration/boot-config`). For this reason the integration runner
+passes the ROM explicitly: it starts headless with `rom=` and also exports
+the same path as `$ROM`, so a script re-boots with
+`machine.boot model=... rom="${$ROM}"`
+(`scripts/run-integration-test.sh`). To bring back the machine you have
+(including one just restored from a checkpoint), call `machine.rebuild`;
+a bare `machine.boot()` is an error. A new boot does still see four kinds
+of process-level state that are not part of any machine:
 
 - scheduler pacing (the table above);
 - the offer registries ([mac-rom.md §10](../../../reference/formats/mac-rom.md#10-rom-provisioning)),
@@ -682,51 +693,51 @@ machine:
   (`machine.nubus.slot[N].card_id` / `.video_mode`,
   `machine.pci.slot[N].card_id`), each consumed by that boot;
 - the host share, published again for every new machine
-  (`provision_default_share`, `system.c:1172`).
+  (`provision_default_share`).
 
-**`machine.reset` compared with a guest `RESET`.** The 68k `RESET`
-instruction resets the devices on /RESET (`system_reset_devices`,
-`system.c:289`) and leaves the CPU alone. `machine.reset` resets those
-devices and then resets the CPU to its vector (68040, 68000/68030, or
-`ppc_reset`; `system.c:216-231`). Each family binds its own
-`substrate->bus_reset`. The Plus and the Lisa have none yet, so they fall
-back to the common device set (`system_reset_common_devices`); the code
-calls this "a gap, not hardware" (`system.c:292`).
+**Device state is written to the device, never staged.** A caller who
+wants a different clock, PRAM byte or NVRAM setting writes it on the
+device, on the line after the boot: `machine.boot` leaves the guest at 0
+instructions executed, so the write lands before the ROM has looked at
+anything. There is no pre-boot form and no holder that survives into the
+next machine.
+
+**The /RESET net, and what a power cycle adds.** Each family binds one
+`substrate->bus_reset`: every device that board wires to /RESET. Levels 1
+and 2 both call it, and level 2 adds only the CPU half
+(`cpu_reset_to_vector_*`, `ppc_reset`). A power cycle runs one more,
+optional hook first, `substrate->power_on`, for state a power-up clears
+and /RESET does not reach: the Lisa MMU's START latch and descriptor RAM,
+the ASC's Power On Clear, the IIfx's OSS, IOPs and SCSI DMA, Cuda's host
+handshake. Two shared pieces belong to every board: the ADB bus loses
+power with the machine (`adb_power_on`), and with VIA1 reset the RTC's
+`/CE` floats high, so the clock chip drops any half-done transfer
+(`rtc_deselect`).
 
 **Differences between families, and known gaps.**
 
-- *Non-volatile state across `machine.restart`.* Only the TNT and
-  Gossamer families carry a chip across a power-cycle: their NVRAM
-  stores. On every other
-  Macintosh, PRAM comes back at the family's construction defaults.
-  Hardware keeps battery-backed PRAM through a power-off, so this is a
-  gap. The web frontend works around one piece of it by writing the
-  startup device again after a restart (`app/web2/src/bus/boot.ts:265`).
-  `tnt_nvram_clear` erases the store together with the carry
-  (`tnt.c:458`). The store is exposed as `machine.nvram` (`peek`, `poke`,
-  `dump`, `snapshot`, `restore`, `clear`) — the TNT twin of
-  `machine.rtc.pram`, so a row pins a setting there and power-cycles
-  (docs/internals/machines/tnt/tnt.md, "The store is a test lever").
-  The beige G3 has the same `machine.nvram` over Heathrow's flat 8 KB
-  window, with `gos_nvram_clear` as its battery pull.
-- *Media transfer by substrate.* Floppies and `machine.scsi` go through
-  the standard pair (`system_media_detach_std` /
-  `system_media_attach_std`, `system.c:1398`/`1440`). The TNT family also
-  carries `machine.scsi2`, and the Network Servers' second channel keeps
-  its bus (`tnt_media_detach`, `tnt.c:925`;
-  `tests/integration/ans-machine-restart`).  The beige G3 adds its ATA
-  units on `MEDIA_BUS_ATA` — hard disks on the channels, CD-ROMs on the
-  ATAPI back end (`gos_media_detach`, `gossamer_ata.c`). The Lisa carries its Sony
-  disk and its ProFile (`lisa_media_detach`,
-  `src/machines/lisa/lisa.c:500`). A medium that cannot be re-attached
-  is closed and logged (`machine.c:1091-1096`).
-- *Failure after teardown.* If `system_create` or ROM staging fails, the
-  previous machine is already gone and the process has no machine
-  (`machine.c:1055-1080`).
+- *The Lisa's warm reset.* A Lisa reset does not set the MMU's START
+  latch -- only power-on does ([mmu.md](../../../reference/machines/lisa/mmu.md) §2.6) -- so
+  `machine.reset` fetches the vectors through whatever map the OS left.
+  What the hardware then does is the ROM's warm-start path and is not
+  verified; `machine.restart` (power-on) is.
+- *Media transfer by substrate (rebuild only).* Floppies and
+  `machine.scsi` go through the standard pair (`system_media_detach_std` /
+  `system_media_attach_std`). The TNT family also carries `machine.scsi2`,
+  and the Network Servers' second channel keeps its bus
+  (`tnt_media_detach`; `tests/integration/ans-machine-restart`). The
+  beige G3 adds its ATA units on `MEDIA_BUS_ATA` (`gos_media_detach`,
+  `gossamer_ata.c`). The Lisa carries its Sony disk and its ProFile
+  (`lisa_media_detach`). A medium that cannot be re-attached is closed
+  and logged.
+- *Failure after teardown.* If `system_create` or ROM staging fails
+  during a boot or rebuild, the previous machine is already gone and the
+  process has no machine.
 - Host-side state outside the construction configuration (volume,
-  camera/microphone capture sources) is not carried by any of these
-  operations. The frontend asserts it again (`machine.c:1157-1163`;
-  `app/web2/src/bus/boot.ts`, `reconcileUiWithMachine`).
+  camera/microphone capture sources) is not carried by a boot or a
+  rebuild. The frontend asserts it again (`app/web2/src/bus/boot.ts`,
+  `reconcileUiWithMachine`). A restart keeps the machine, so the
+  frontend re-asserts nothing after one.
 
 ## Boot arguments
 
@@ -769,7 +780,7 @@ The resolved configuration is recorded in `machine.config` (`model`,
 `ram`, `rom`, `rom_id`, `rom2`, `vrom`, `vroms`, `slot_cards`,
 `video_card`, `video_sense`, `video_mode`, `custom_mode`, `monitor`,
 `pci_card`, `prom`, `pci_option`, `created`, `valid`;
-`src/core/machine_config.c`). `machine.restart` and `checkpoint.load`
+`src/core/machine_config.c`). `machine.rebuild` and `checkpoint.load`
 rebuild from it, the built-in `monitor` strap included.
 
 **Headless command line.** The CLI arguments fill the same document and

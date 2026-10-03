@@ -72,21 +72,19 @@ def ans_wait_prompt() {
 # on the ADB keyboard, and the second one — against the now-configured
 # non-volatile store — comes up on ttya.
 def ans_boot_serial(model, ram_kb) {
-    # Start from a virgin non-volatile store — what removing the logic
-    # board's battery does, and what "a Network Server that has never been
-    # booted before" means in Apple's own service documentation.
+    # A virgin non-volatile store — what "a Network Server that has never
+    # been booted before" means in Apple's own service documentation.
+    # machine.boot builds a new machine, and a new machine's store is its
+    # own fresh one: nothing crosses the teardown.
     #
     # This is not tidiness.  POST caches its memory configuration in NVRAM
     # (`init-mem-config`, `set-dimm-sizes`, `nv-dimm-size@`,
-    # `dimm-size-tbl!`), and the store is non-volatile across a machine
-    # rebuild, so a 700 booting against a table an ans500 wrote sizes its
-    # 48 MB correctly and then HANGS at `Jumping To RAM Prog.` — the point
-    # where POST relocates into RAM and starts trusting the cached
-    # configuration.  Every row here runs both profiles, so without this the
-    # second one wedges.  `try` because the first call has no machine yet.
-    # (machine.boot below now starts from a virgin store on its own; the
-    # explicit battery pull stays as the row's stated precondition.)
-    let cleared = try(machine.board.clear_nvram(), none)
+    # `dimm-size-tbl!`), so a 700 booting against a table an ans500 wrote
+    # sizes its 48 MB correctly and then HANGS at `Jumping To RAM Prog.` —
+    # the point where POST relocates into RAM and starts trusting the cached
+    # configuration.  Every row here runs both profiles; the store used to
+    # ride a process-wide carry across machines, and a battery pull here was
+    # what kept the second one from wedging.
     machine.boot model="${$model}" ram=$ram_kb rom="${$ROM}"
 
     # The firmware's own progress narration (`msg-write`) goes to ttya

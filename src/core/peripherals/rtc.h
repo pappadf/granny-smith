@@ -89,6 +89,12 @@ void rtc_input(rtc_t *restrict rtc, bool disable, bool clock, bool data);
 
 void rtc_set_via(rtc_t *restrict rtc, via_t *via);
 
+// /CE went high without a clock edge: the VIA driving it was reset, so the
+// line floats to its pull-up.  The serial interface drops whatever transfer
+// was in flight and releases the data line.  The clock and PRAM are
+// battery-backed and untouched -- the chip itself is not on /RESET.
+void rtc_deselect(rtc_t *rtc);
+
 // The VIA1 port-B bit assignment for the RTC is the same on every machine
 // that wires it there -- PB0 rtcData, PB1 rtcClk, PB2 rtcEnb (active low, so
 // it is `disable` in rtc_input's terms).  Six machines were each unpacking it
@@ -111,5 +117,11 @@ bool rtc_get_read_only(const rtc_t *rtc);
 uint8_t rtc_pram_read(const rtc_t *rtc, uint8_t addr);
 // Returns true on success, false if the byte was rejected (read-only).
 bool rtc_pram_write(rtc_t *rtc, uint8_t addr, uint8_t value);
+
+// Put the 256 parameter-RAM bytes back to the content rtc_init gave them:
+// zeroed, then the family's pram_defaults_t.  A hardware reset of the store
+// (the Network Server's fail-safe button), so the write-protect bit does
+// not gate it; the clock counter is not touched.
+void rtc_pram_reset(rtc_t *rtc);
 
 #endif // RTC_H

@@ -95,9 +95,18 @@ static int mdu_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
+// The MDU board's /RESET net: the overlay and the common devices (the
+// shared GLUE-family half), plus the RBV, which stands where VIA2 does.
 static void mdu_bus_reset(config_t *cfg) {
     mac030_mdu_state_t *st = mdu_st(cfg);
     mac030_glue_bus_reset(cfg, &st->rom_overlay, mdu_board(cfg)->desc->rom_base);
+    rbv_reset(st->rbv);
+}
+
+// A power cycle's power-on-only half (machine_profile.h): the ASC's Power On
+// Clear.
+static void mdu_power_on(config_t *cfg) {
+    asc_power_on(mdu_st(cfg)->asc);
 }
 
 // MDU delete-chain (no VIA2; RBV instead; Egret on the IIsi).  Order matches
@@ -200,6 +209,7 @@ static void mdu_trigger_vbl(config_t *cfg) {
 const machine_substrate_t mdu_substrate = {
     .init = mdu_init,
     .bus_reset = mdu_bus_reset,
+    .power_on = mdu_power_on,
     .teardown = mdu_teardown,
     .checkpoint_save = mdu_checkpoint_save,
     .trigger_vbl = mdu_trigger_vbl,

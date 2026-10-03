@@ -289,6 +289,16 @@ void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
         if (g_user_write)
             g_user_write[page_index] = adjusted;
     }
+    // A direct fast-path entry must be on the TLB tracker like every other
+    // one, or the next mmu_invalidate_tlb -- the guest enabling the PMMU --
+    // zeroes the tracked pages and leaves this identity mapping standing
+    // under translation.  That was a latent bug the ROM overlay exposed after
+    // a reset: the overlay's low pages stayed mapped to physical 0 with the
+    // MMU on, so a IIci's vectors went to Bank A (the frame buffer) instead
+    // of Bank B, the desktop fill wrote $AAAAAAAA over them, and the next
+    // A-trap double-faulted.  A fresh boot hid it only because its memory
+    // test overflows the tracker first, which forces a full clear.
+    tlb_track_page(page_index);
 }
 
 // Toggle the ROM overlay at $00000000.  overlay=true maps the ROM image

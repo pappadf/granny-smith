@@ -361,10 +361,9 @@ export async function stopMachine(): Promise<void> {
   await shutdownEmulator();
 }
 
-// Restart the current machine: machine.restart power-cycles it in the core,
-// rebuilding the recorded hardware from cold
-// ROM state with the mounted media still attached — no cached-config replay
-// or manual re-insertion needed.
+// Restart the current machine: machine.restart power-cycles it in the core
+// without tearing it down, so the mounted media and the PRAM/NVRAM stay
+// where they were — no cached-config replay or manual re-insertion needed.
 export async function restart(): Promise<void> {
   if (!isModuleReady()) return;
   await restartEmulator();

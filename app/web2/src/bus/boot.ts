@@ -182,17 +182,18 @@ export async function setStartupDisk(mount: { bus?: string; drive: number }): Pr
 
 // --- After a machine appears: one reconciliation, every path --------------
 //
-// Seven paths leave a machine running: the dialog, a URL, a dropped ROM,
-// Restart, and three checkpoint loads (the resume prompt, Checkpoints ▸
-// Load, a dropped .checkpoint).  Each did its own subset of the follow-up —
-// the checkpoint loads almost none of it, so a restored machine kept the
+// Six paths leave a NEW machine running: the dialog, a URL, a dropped ROM,
+// and three checkpoint loads (the resume prompt, Checkpoints ▸ Load, a
+// dropped .checkpoint).  Each did its own subset of the follow-up — the
+// checkpoint loads almost none of it, so a restored machine kept the
 // previous model's name, RAM, MMU panels, drive count and pacing.  Now every
-// path calls reconcileUiWithMachine, and the fresh ones
-// then prepareFreshMachine.  Neither touches PRAM.
+// path calls reconcileUiWithMachine, and the fresh ones then
+// prepareFreshMachine.  Neither touches PRAM.  Restart is not among them: it
+// power-cycles the SAME machine, so there is nothing new to reconcile with.
 
 // How the machine came to be running.  A restore brings its own scheduler
-// mode (the checkpoint carries it); a boot or restart gets the toolbar's.
-export type MachineOrigin = 'boot' | 'restart' | 'restore';
+// mode (the checkpoint carries it); a boot gets the toolbar's.
+export type MachineOrigin = 'boot' | 'restore';
 
 // The model the UI last reconciled with: a restore of another model resets
 // the Debug layout, a restore of the same one keeps it.
@@ -253,7 +254,7 @@ async function seedScreenFromCore(): Promise<void> {
   handleScreenResize(w, h, typeof pw === 'number' ? pw : 1, typeof ph === 'number' ? ph : 1);
 }
 
-// A fresh machine (boot or restart) is ready to run.  The Caps Lock latch is
+// A fresh machine (a boot) is ready to run.  The Caps Lock latch is
 // host-keyboard state: a mechanically locking key is already down when the
 // machine powers on, so latch it BEFORE the machine runs, so the ROM's ADB
 // init finds the key down and reports it into KeyMap — that is the gate
@@ -264,27 +265,17 @@ export async function prepareFreshMachine(): Promise<void> {
   await gsEval('scheduler.run');
 }
 
-// Power-cycle the running machine. machine.restart rebuilds the machine
-// from its built-from record — same model, RAM, card, ROM — and keeps the
-// mounted media attached by transferring the open image handles across the
-// teardown, so no manual re-attachment is
-// needed here. Only runtime state that is not construction configuration
-// (camera/microphone source, scheduler mode) is re-asserted.
+// Power-cycle the running machine.  machine.restart tears nothing down: the
+// core resets the same machine with its RAM cold, so the PRAM/NVRAM (the
+// startup disk with it), the mounted media, the Caps Lock latch, the camera
+// and microphone sources and the pacing all survive because nothing
+// destroyed them.  There is nothing to re-assert; only run it.
 export async function restartEmulator(): Promise<void> {
   const ok = await gsEval('machine.restart');
   if (ok !== true) {
     showNotification(`Restart failed: ${gsErrorText(ok)}`, 'error');
     return;
   }
-  // The rebuilt machine's PRAM is its construction default again: name the
-  // hard disk it kept as the startup device, as the boot did.
-  const hd = Object.values(images.mounted).find(
-    (m) => m.kind === 'hd' && (m.bus === 'scsi' || m.bus === 'profile'),
-  );
-  if (hd) await setStartupDisk(hd);
-  await reconcileUiWithMachine('restart');
-  // Re-asserts the Caps Lock latch too (the core also carries it across
-  // machine.restart; a re-latch of an already-down key is a no-op).
-  await prepareFreshMachine();
+  await gsEval('scheduler.run');
   showNotification('Machine restarted', 'info');
 }

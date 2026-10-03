@@ -708,6 +708,12 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
+// A power cycle's power-on-only half (machine_profile.h): Cuda stays
+// powered, but the host side of its VIA1 handshake went down under it.
+static void av_power_on(config_t *cfg) {
+    av_cuda_host_power_cycle(av_st(cfg)->cuda);
+}
+
 static void av_bus_reset(config_t *cfg) {
     av_state_t *st = av_st(cfg);
     // Overlay re-arms; the 040's own MMU is reset by cpu_hardware_reset_040.
@@ -832,6 +838,7 @@ static struct display *av_display(config_t *cfg) {
 const machine_substrate_t av_substrate = {
     .init = av_init,
     .bus_reset = av_bus_reset,
+    .power_on = av_power_on,
     .teardown = av_teardown,
     .checkpoint_save = av_checkpoint_save,
     .nubus_slot_irq = av_nubus_slot_irq, // slots C/D/E → PSC SInt bits 3-5
