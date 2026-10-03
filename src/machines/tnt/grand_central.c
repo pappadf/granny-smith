@@ -32,12 +32,14 @@
 #include "log.h"
 #include "machine.h"
 #include "object.h"
+#include "of_nvram.h"
 #include "pci.h"
 #include "ppc.h"
 #include "scc.h"
 #include "scsi_53c96.h"
 #include "via.h"
 
+#include <stdio.h>
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("gc");
@@ -482,6 +484,129 @@ static DEF_METHOD(nvram_method_clear) {
     return val_bool(true);
 }
 
+// The named fields: what a row or the frontend actually wants to pin,
+// written into the store the way the firmware or Mac OS itself writes it.
+
+static const arg_decl_t nvram_getenv_args[] = {
+    {.name = "name", .kind = V_STRING, .doc = "Open Firmware variable, e.g. \"boot-device\""},
+};
+static const arg_decl_t nvram_setenv_args[] = {
+    {.name = "name",  .kind = V_STRING, .doc = "Open Firmware variable"                 },
+    {.name = "value", .kind = V_STRING, .doc = "true/false, a hex number, or the string"},
+};
+
+// getenv(name): the variable as printenv shows it.
+static DEF_METHOD(nvram_method_getenv) {
+    uint8_t *nv = nvram_store(self);
+    if (!nv)
+        return val_err("nvram not available");
+    char buf[OF_NVRAM_OF_SIZE + 1];
+    if (of_nvram_getenv(nv, argv[0].s, buf, sizeof(buf)) == OF_VAR_NONE)
+        return val_err("nvram.getenv: no variable '%s' (or no valid Open Firmware partition)", argv[0].s);
+    return val_str(buf);
+}
+
+// setenv(name, value): what Open Firmware's setenv writes.
+static DEF_METHOD(nvram_method_setenv) {
+    uint8_t *nv = nvram_store(self);
+    if (!nv)
+        return val_err("nvram not available");
+    const char *err = of_nvram_setenv(nv, argv[0].s, argv[1].s);
+    if (err)
+        return val_err("nvram.setenv %s: %s", argv[0].s, err);
+    return val_none();
+}
+
+// startup_disk: Mac OS's default startup device as a SCSI ID; -1 = none.
+static DEF_GETTER(nvram_attr_startup_disk) {
+    uint8_t *nv = nvram_store(self);
+    return val_int(nv ? of_nvram_startup_scsi(nv) : -1);
+}
+
+static DEF_SETTER(nvram_attr_startup_disk_set) {
+    uint8_t *nv = nvram_store(self);
+    bool ok = true;
+    int64_t id = val_as_i64(&in, &ok);
+    value_free(&in);
+    if (!nv)
+        return val_err("nvram not available");
+    if (!ok || id < -1 || id > 6)
+        return val_err("nvram.startup_disk: a SCSI ID 0..6, or -1 for no default");
+    of_nvram_set_startup_scsi(nv, (int)id, &of_nvram_defaults_tnt);
+    return val_none();
+}
+
+// depth: the built-in Control video's saved depth, in bits per pixel.  The
+// driver keeps one Name Registry record, 'gprf', whose data is {0, display
+// mode, depth index 0/1/2 = 8/16/32 bpp, monitor code, 0...}; it reads it
+// at boot and rewrites it when the depth changes.  0 = no record yet.
+static uint8_t *gprf_data(uint8_t *nv) {
+    return of_nvram_nr_find(nv, "gprf");
+}
+
+static DEF_GETTER(nvram_attr_depth) {
+    uint8_t *nv = nvram_store(self);
+    uint8_t *d = nv ? gprf_data(nv) : NULL;
+    return val_uint(1, (d && d[2] <= 2) ? (8u << d[2]) : 0);
+}
+
+// The record a first save writes for each monitor sense (Control's own
+// mode number and monitor code, measured per strap).
+static void gprf_mode_for_sense(uint8_t sense, uint8_t *mode, uint8_t *code) {
+    switch (sense) {
+    case 0x0:
+        *mode = 0x12;
+        *code = 0x08;
+        break; // 21" two-page, 1152x870
+    case 0x1:
+        *mode = 0x07;
+        *code = 0x05;
+        break; // portrait, 640x870
+    case 0x2:
+        *mode = 0x02;
+        *code = 0x02;
+        break; // 12", 512x384
+    case 0x7:
+        *mode = 0x06;
+        *code = 0x00;
+        break; // no monitor
+    default:
+        *mode = 0x06;
+        *code = 0x03;
+        break; // 13"/14" hi-res, 640x480
+    }
+}
+
+static DEF_SETTER(nvram_attr_depth_set) {
+    config_t *cfg = (config_t *)object_data(self);
+    tnt_state_t *st = tnt_st(cfg);
+    bool ok = true;
+    uint64_t bpp = val_as_u64(&in, &ok);
+    value_free(&in);
+    if (!st)
+        return val_err("nvram not available");
+    if (tnt_board(cfg)->kind != TNT_BOARD_MAC)
+        return val_err("nvram.depth: this board has no built-in Control video");
+    uint8_t idx = bpp == 8 ? 0 : bpp == 16 ? 1 : bpp == 32 ? 2 : 0xFF;
+    if (!ok || idx == 0xFF)
+        return val_err("nvram.depth: 8, 16 or 32");
+    uint8_t *d = gprf_data(st->gc.nvram);
+    if (d) {
+        d[2] = idx;
+        return val_none();
+    }
+    // No record yet: write the one the driver's first save would, for the
+    // monitor on the port.  Location: PCI bus 0 through one bridge, Chaos
+    // device $0B -- the Control node's path.
+    static const uint8_t control_location[6] = {0x11, 0x40, 0x00, 0x00, 0x10, 0x0B};
+    uint8_t mode = 0, code = 0;
+    gprf_mode_for_sense((uint8_t)(~st->control.mon_grounded & 7u), &mode, &code);
+    const uint8_t data[OF_NVRAM_NR_DATA] = {0, mode, idx, code, 0, 0, 0, 0};
+    if (!of_nvram_nr_add(st->gc.nvram, control_location, "gprf", data))
+        return val_err("nvram.depth: the Name Registry area is full");
+    return val_none();
+}
+
 static DEF_GETTER(nvram_attr_size) {
     return val_uint(4, TNT_NVRAM_SIZE);
 }
@@ -528,8 +653,24 @@ static const member_t nvram_members[] = {
      .method = {.args = nvram_restore_args, .nargs = 1, .result = V_NONE, .fn = nvram_method_restore}},
     {.kind = M_METHOD,
      .name = "clear",
-     .doc = "Blank the store — what removing the board battery does (Open Firmware reformats it next boot)",
+     .doc = "Pull the battery: back to the store a new board carries (blank on the Network Server)",
      .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = nvram_method_clear}                },
+    {.kind = M_METHOD,
+     .name = "getenv",
+     .doc = "Read an Open Firmware variable, as printenv shows it",
+     .method = {.args = nvram_getenv_args, .nargs = 1, .result = V_STRING, .fn = nvram_method_getenv}},
+    {.kind = M_METHOD,
+     .name = "setenv",
+     .doc = "Set an Open Firmware variable, as setenv does (repacks, re-checksums)",
+     .method = {.args = nvram_setenv_args, .nargs = 2, .result = V_NONE, .fn = nvram_method_setenv}  },
+    {.kind = M_ATTR,
+     .name = "startup_disk",
+     .doc = "Mac OS's default startup device as a SCSI ID (XPRAM $78-$7B); -1 = none",
+     .attr = {.type = V_INT, .get = nvram_attr_startup_disk, .set = nvram_attr_startup_disk_set}     },
+    {.kind = M_ATTR,
+     .name = "depth",
+     .doc = "Built-in video's saved depth in bpp (8/16/32; 0 = not saved yet), read at boot",
+     .attr = {.type = V_UINT, .get = nvram_attr_depth, .set = nvram_attr_depth_set}                  },
 };
 
 static const class_desc_t nvram_class = {

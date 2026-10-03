@@ -65,8 +65,8 @@ static const of_nvram_of_defaults_t k_of_24 = {
     .strings = {"/AAPL,ROM", NULL, "fd:\\diags", NULL, "kbd", "screen", NULL, NULL, NULL, "boot"},
 };
 
-const of_nvram_defaults_t of_nvram_defaults_tnt = {.pram = &pram_defaults_tnt, .of = &k_of_105};
-const of_nvram_defaults_t of_nvram_defaults_g3 = {.pram = &pram_defaults_g3, .of = &k_of_24};
+const of_nvram_defaults_t of_nvram_defaults_tnt = {.pram = &pram_defaults_tnt, .of = &k_of_105, .startup_partition = 0};
+const of_nvram_defaults_t of_nvram_defaults_g3 = {.pram = &pram_defaults_g3, .of = &k_of_24, .startup_partition = 1};
 
 static uint16_t rd16(const uint8_t *p) {
     return (uint16_t)((p[0] << 8) | p[1]);
@@ -261,4 +261,62 @@ const char *of_nvram_setenv(uint8_t nv[OF_NVRAM_SIZE], const char *name, const c
     for (int i = 0; i < OF_N_STRINGS; i++)
         free(copies[i]);
     return err;
+}
+
+// === Mac OS settings in the store ============================================
+
+#define XP_STARTUP (OF_NVRAM_XPRAM + 0x78u)
+
+int of_nvram_startup_scsi(const uint8_t nv[OF_NVRAM_SIZE]) {
+    const uint8_t *p = nv + XP_STARTUP;
+    if (p[0] == 0xFF && p[1] == 0xFF && p[2] == 0xFF && p[3] >= 0xD9 && p[3] <= 0xDF)
+        return 0xDF - p[3]; // the 68k form: SCSI driver refnum ~(32 + id)
+    if (p[2] == 0 && p[3] == 0 && p[1] <= 1 && p[0] < 7 * 8)
+        return p[0] >> 3;
+    return -1;
+}
+
+void of_nvram_set_startup_scsi(uint8_t nv[OF_NVRAM_SIZE], int id, const of_nvram_defaults_t *d) {
+    uint8_t *p = nv + XP_STARTUP;
+    if (id < 0 || id > 6) {
+        p[0] = p[1] = 0;
+        p[2] = p[3] = 0x66; // NoDefaultVal: search for any startup device
+        return;
+    }
+    p[0] = (uint8_t)(id << 3);
+    p[1] = d ? d->startup_partition : 0;
+    p[2] = p[3] = 0;
+}
+
+// The end of the record list, as an offset from $1402; 0 for an empty area.
+static uint32_t nr_used(const uint8_t nv[OF_NVRAM_SIZE]) {
+    int32_t end = (int32_t)rd16(nv + OF_NVRAM_NR) - (int32_t)OF_NVRAM_NR;
+    if (end < 2 || end >= 0x400)
+        return 0;
+    return (uint32_t)end - 2;
+}
+
+uint8_t *of_nvram_nr_find(uint8_t nv[OF_NVRAM_SIZE], const char name[4]) {
+    uint32_t used = nr_used(nv);
+    for (uint32_t off = 0; off + OF_NVRAM_NR_RECORD <= used; off += OF_NVRAM_NR_RECORD) {
+        uint8_t *r = nv + OF_NVRAM_NR + 2 + off;
+        if (r[6] == 4 && memcmp(r + 7, name, 4) == 0)
+            return r + 12;
+    }
+    return NULL;
+}
+
+bool of_nvram_nr_add(uint8_t nv[OF_NVRAM_SIZE], const uint8_t location[6], const char name[4],
+                     const uint8_t data[OF_NVRAM_NR_DATA]) {
+    uint32_t used = nr_used(nv);
+    if (2 + used + OF_NVRAM_NR_RECORD > 0x400)
+        return false;
+    uint8_t *r = nv + OF_NVRAM_NR + 2 + used;
+    memcpy(r, location, 6);
+    r[6] = 4;
+    memcpy(r + 7, name, 4);
+    r[11] = OF_NVRAM_NR_DATA;
+    memcpy(r + 12, data, OF_NVRAM_NR_DATA);
+    wr16(nv + OF_NVRAM_NR, OF_NVRAM_NR + 2 + used + OF_NVRAM_NR_RECORD);
+    return true;
 }

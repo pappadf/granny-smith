@@ -44,6 +44,10 @@ typedef struct of_nvram_of_defaults {
 typedef struct of_nvram_defaults {
     const pram_defaults_t *pram; // the parameter RAM partition
     const of_nvram_of_defaults_t *of; // the Open Firmware partition
+    // XPRAM $79 in the default startup device this board's Mac OS writes
+    // for a SCSI disk: 0 from System 7.6's Startup Disk (TNT), 1 -- the
+    // partition byte -- from Mac OS 9's (G3).  Both ROMs boot either.
+    uint8_t startup_partition;
 } of_nvram_defaults_t;
 
 extern const of_nvram_defaults_t of_nvram_defaults_tnt; // OF 1.0.5 (both TNT ROMs)
@@ -72,5 +76,33 @@ const char *of_nvram_setenv(uint8_t nv[OF_NVRAM_SIZE], const char *name, const c
 
 // The variable names in slot order, for listing; `count` gets the length.
 const char *const *of_nvram_var_names(size_t *count);
+
+// === Mac OS settings in the store ============================================
+
+// The default startup device (XPRAM $78..$7B, the Start Manager's
+// GetDefaultStartup record) as a SCSI target, 0..6; -1 for "no default"
+// ($6666) or a form that is not a SCSI disk.  The two SCSI forms are
+// {target * 8 + LUN, partition, 0, 0} -- what Startup Disk writes on these
+// machines -- and the 68k driver-refnum form {$FF, $FF, $FF, $DF - target}.
+int of_nvram_startup_scsi(const uint8_t nv[OF_NVRAM_SIZE]);
+
+// Write the default startup device: SCSI target `id` (LUN 0), or "no
+// default" for id < 0.
+void of_nvram_set_startup_scsi(uint8_t nv[OF_NVRAM_SIZE], int id, const of_nvram_defaults_t *d);
+
+// The Name Registry area ($1400): an absolute end pointer, then 20-byte
+// records {6-byte device location, name length, 4-byte name, data length,
+// 8 data bytes} -- one property per device, saved by its driver
+// (Designing PCI Cards and Drivers, ch. 12).  A store whose end pointer is
+// out of range reads as empty, which is how Mac OS reads a zero area.
+#define OF_NVRAM_NR_RECORD 20u
+#define OF_NVRAM_NR_DATA   8u
+
+// The data bytes of the first record named `name` (4 characters), or NULL.
+uint8_t *of_nvram_nr_find(uint8_t nv[OF_NVRAM_SIZE], const char name[4]);
+
+// Append a record.  Returns false if the area is full.
+bool of_nvram_nr_add(uint8_t nv[OF_NVRAM_SIZE], const uint8_t location[6], const char name[4],
+                     const uint8_t data[OF_NVRAM_NR_DATA]);
 
 #endif // OF_NVRAM_H
