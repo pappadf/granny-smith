@@ -63,3 +63,42 @@ const pram_defaults_t pram_defaults_pdm = {
     .mmflags = 0x05,
     .mmflags_booted = 0x20,
 };
+
+// The Open Firmware machines keep this PRAM in their 8 KB NVRAM, not in
+// Cuda (of_nvram.h).  Measured the same way: each ROM booted from a blank
+// store, the XPRAM read back after its cold init.  Both TNT ROMs (v1, v2)
+// write the same bytes, as do the G3 Rev A and Rev C ROMs.  Neither writes
+// the 68k default startup device: the TNT ROM leaves $78..$7B zero (SCSI
+// target 0), the G3 ROM writes $6666, "no default".
+static const uint8_t k_startmgr_tnt[PRAM_STARTMGR_LEN] = {
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+
+static const uint8_t k_startmgr_g3[PRAM_STARTMGR_LEN] = {
+    0x00, 0x01, 0x00, 0x00, 0x66, 0x66, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+
+static const pram_byte_t k_extra_tnt[] = {
+    {0xB1, 0x30}
+};
+static const pram_byte_t k_extra_g3[] = {
+    {0xB1, 0x70}
+};
+
+const pram_defaults_t pram_defaults_tnt = {
+    .xpram_token = TOKEN_NUMC,
+    .startmgr = k_startmgr_tnt,
+    .mmflags = 0x25,
+    .extra = k_extra_tnt,
+    .n_extra = 1,
+};
+
+const pram_defaults_t pram_defaults_g3 = {
+    .xpram_token = TOKEN_NUMC,
+    .startmgr = k_startmgr_g3,
+    .mmflags = 0x25,
+    .extra = k_extra_g3,
+    .n_extra = 1,
+};

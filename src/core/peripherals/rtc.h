@@ -30,13 +30,22 @@ typedef struct rtc rtc_t;
 // block is left INVALID on purpose, so each ROM still writes its own
 // defaults there (they differ per family, pram.md §9.2).  One table per ROM
 // family, from measurement; the machine layer owns them (pram_defaults.c).
-// Written so an Open Firmware machine's NVRAM can later reuse the applier
-// for its PRAM partition.
+// An Open Firmware machine's NVRAM reuses the applier for its PRAM partition
+// (of_nvram.h).
+typedef struct pram_byte {
+    uint8_t addr;
+    uint8_t value;
+} pram_byte_t;
+
 typedef struct pram_defaults {
     uint32_t xpram_token; // $0C..$0F, big-endian: 'NuMc' ('Bugs' on the Plus)
     const uint8_t *startmgr; // PRAMInitTbl for $76..$89 (20 bytes), or NULL
     uint8_t mmflags; // $8A: the value the ROM's own cold init writes
     uint8_t mmflags_booted; // bits a booted System leaves set in $8A, ORed in
+    // Any other byte the ROM's cold init writes outside SysParam and the
+    // table above (the PCI ROMs' $B1), so a valid token loses nothing.
+    const pram_byte_t *extra;
+    uint8_t n_extra;
 } pram_defaults_t;
 
 #define PRAM_STARTMGR_BASE 0x76 // PRAMInitTbl's place in XPRAM
@@ -75,8 +84,9 @@ void pram_defaults_apply(uint8_t pram[256], const pram_defaults_t *d);
 // so a 20-byte machine would still have working extended commands it must not
 // have.  Fix that before wiring one up.
 //
-// `defaults` is the PRAM the machine powers up with (NULL: all zero, as the
-// Open Firmware machines still start); a checkpoint restores over it.
+// `defaults` is the PRAM the machine powers up with (NULL: all zero -- the
+// Open Firmware machines, whose Mac OS keeps its PRAM in their NVRAM
+// instead, of_nvram.h); a checkpoint restores over it.
 rtc_t *rtc_init(struct scheduler *scheduler, checkpoint_t *checkpoint, bool extended, const pram_defaults_t *defaults);
 
 void rtc_delete(rtc_t *rtc);

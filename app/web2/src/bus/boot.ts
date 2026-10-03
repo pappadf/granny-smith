@@ -164,9 +164,11 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
 
 // The machine's default startup device is the hard disk the page attached;
 // the core writes the parameter-memory bytes, the page only names the disk.
-//   - SCSI: the Start Manager's default device (machine.rtc.pram.boot_device,
-//     the SCSI id).  A fresh machine's PRAM is otherwise valid from
-//     construction -- the RTC's own defaults, not a page-side seed.
+//   - SCSI: the Start Manager's default device, as the SCSI id.  On the Open
+//     Firmware machines Mac OS keeps its PRAM in the 8 KB NVRAM, not in
+//     Cuda, so the id goes to machine.nvram.startup_disk there; elsewhere to
+//     machine.rtc.pram.boot_device.  A fresh machine's store is otherwise
+//     valid from construction -- the core's own defaults, not a page seed.
 //   - ProFile (Lisa / Macintosh XL): BootVol = 2, the parallel-port ProFile,
 //     with the checksum left NOT verifying (machine.hd.pram_init(2, false)) --
 //     a Lisa whose battery was just replaced.  The boot ROM then goes to the
@@ -175,8 +177,10 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
 // Other buses (a Network Server's second channel) are left as they are.
 export async function setStartupDisk(mount: { bus?: string; drive: number }): Promise<void> {
   let r: unknown = null;
-  if (mount.bus === 'scsi') r = await gsEval('machine.rtc.pram.boot_device', [mount.drive]);
-  else if (mount.bus === 'profile') r = await gsEval('machine.hd.pram_init', [2, false]);
+  if (mount.bus === 'scsi') {
+    r = await gsEval('machine.nvram.startup_disk', [mount.drive]);
+    if (isGsError(r)) r = await gsEval('machine.rtc.pram.boot_device', [mount.drive]);
+  } else if (mount.bus === 'profile') r = await gsEval('machine.hd.pram_init', [2, false]);
   if (isGsError(r)) console.warn(`[boot] startup device not recorded: ${gsErrorText(r)}`);
 }
 

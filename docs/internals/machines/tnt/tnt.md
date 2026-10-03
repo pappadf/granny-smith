@@ -636,10 +636,31 @@ setting sticks for the same reason it does on the real machine.
 **What the store survives.** The store follows the machine, not the
 process: `machine.reset` and `machine.restart` (the power switch) never
 destroy the machine, so the soldered part is simply never touched, while
-`machine.boot` and `machine.rebuild` build a *new* machine with a virgin
-store (a machine inherits nothing it was not given). Nothing carries a
+`machine.boot` and `machine.rebuild` build a *new* machine with a new
+part (a machine inherits nothing it was not given). Nothing carries a
 store across a teardown -- the process-lifetime holder that used to is
-gone, and that is the fix for #112. A run stopped part-way through Open
+gone, and that is the fix for #112.
+
+**What a new part holds.** A new Macintosh board's part is not blank: it
+holds the store its own firmware formats (`src/machines/runtime/of_nvram.c`).
+The map is fixed, with no partition headers (Apple, *Designing PCI Cards and
+Drivers for Power Macintosh Computers*, 1999, Table 12-1): POST's log at
+`$1000`, Mac OS's parameter RAM at `$1300`, Name Registry properties at
+`$1400`, Open Firmware's variables at `$1800`. Only the last carries a
+check: a header (magic `$1275`, version 5, 8 pages) and a 16-bit
+checksum stored as `~(sum mod $FFFF)` over the 2 KB -- the layout Apple's
+own kernel reads on these machines (xnu, `iokit/Kernel/IONVRAM.cpp`). The
+factory store has OF 1.0.5's defaults there, byte-identical to what the
+firmware's own format pass writes on both TNT ROMs, and the ROM's parameter
+RAM defaults at `$1300` (token `'NuMc'`, Default OS 1, startup device SCSI
+0, MMFlags `$25`, `$B1` = `$30`; SysParam is left to the ROM, as on the 68k
+machines). With it the firmware skips its format pass and the first boot
+behaves like any later one. That is also what the hardware does on every
+boot but the very first, and it moves a few early-boot observables
+relative to the old first boot: `MemTop` is `$40000` lower (the same as
+a blank machine's second boot), and a disk-less boot reaches the Start
+Manager's blinking disk icon sooner. The Network Server still starts
+blank: its firmware versions and defaults are not characterised. A run stopped part-way through Open
 Firmware's format of a virgin store — a bounded `scheduler.run`, a client
 that walked away mid-run — leaves the store torn, and a machine built on a
 torn store never reaches a boot: it sits in the ROM's serial-console read
@@ -648,9 +669,9 @@ loop behind a black screen. Carrying such a store into the next
 `tests/integration/tnt-nvram-lifetime` holds the rule. A row that wants
 the same chip across two cold boots says so with `machine.restart` (the
 DIMM table in `suite-ans`'s `ans500-diag-floppy`, `ans_boot_serial`'s
-console setting); `machine.nvram.clear()` is the battery pull
-(`machine.board.clear_nvram()` on the Network Servers is a deprecated
-alias). The Network Server's fail-safe red button is
+console setting); `machine.nvram.clear()` is the battery pull, back to
+the store a new board carries (`machine.board.clear_nvram()` on the
+Network Servers is a deprecated alias). The Network Server's fail-safe red button is
 `machine.board.reset_button()`: the Power Monitor's parameter RAM back to
 its defaults and a machine reset, NVRAM kept (Network Server Hardware
 Developer Notes §2.7).
@@ -664,8 +685,15 @@ driving a control panel: the Mac OS XPRAM image at `$1300` + PRAM address
 persistent properties above it (the Control driver's `gprf` record at
 `$1409`, whose byte at `$1410` is the Monitors depth: 0 = 256 colours,
 2 = millions), POST's log at `$1040`–`$125F` ("Machine identity" above),
-and Open Firmware's environment in the top bank. The store the object
-edits is the live chip, so a poke followed by `machine.restart` is what
+and Open Firmware's environment in the top bank. Named fields write
+the same bytes the firmware or Mac OS would: `getenv(name)` /
+`setenv(name, value)` for the Open Firmware variables (strings repacked,
+partition re-checksummed); `startup_disk`, Mac OS's default startup
+device as a SCSI ID (XPRAM `$78`–`$7B`, `-1` = none), which the web UI
+sets after `machine.boot`; and `depth` (8/16/32), Control's saved depth --
+with no `'gprf'` record yet it writes the one the driver's first save
+would for the monitor on the port, so a fresh 7500 comes up in 256
+colours on its first boot. The store the object edits is the live chip, so a poke followed by `machine.restart` is what
 the machine boots on; a poke followed by `machine.boot` or
 `machine.rebuild` is lost with the rest of the old machine.
 
