@@ -133,9 +133,12 @@ transports, installed at module construction:
   `Atomics.waitAsync` on the ring's head, `Atomics.notify` on its tail
   and the acknowledge word — while the C side waits with futexes.  The
   worker is started once at page load with the `#screen3d` overlay
-  canvas (transferred), and writes whether a WebGPU device exists into
-  the bridge's `gpu_available` word so the core's backend choice is
-  honest at machine creation.  The page shows the overlay exactly
+  canvas (transferred), and the page writes whether a WebGPU device
+  exists into the bridge's `gpu_available` word before it reports ready
+  (`bootstrap` awaits the answer; one not in within 2 s counts as no
+  adapter and is logged), so no boot and no `catalog.profile` read can
+  come first: the card catalog's `voodoo2_webgpu` offer and the core's
+  backend choice at machine creation are honest.  The page shows the overlay exactly
   while GPU mode is engaged (the worker relays the MODE records it
   consumes).  The protocol is
   [`voodoo2_gpu_protocol.h`](../../src/core/peripherals/pci/cards/voodoo2_gpu_protocol.h)
@@ -986,7 +989,9 @@ The same sequence as Module Bootstrapping above, end to end:
    never mounted).
 2. Mount Svelte; `ScreenView` calls `bootstrap(canvas)`: load the
    module (`createModule`, no command line), wire the callbacks, resolve
-   the mailbox's control block and verify its MAGIC and VERSION.
+   the mailbox's control block and verify its MAGIC and VERSION; wait
+   for the emulator worker and for the WebGPU adapter's answer, which is
+   written to the core (`gpu_available`; bounded, see above).
 3. Run `machine.register(<machine-id>, <created>)` to set the per-
    machine checkpoint dir.
 4. `whenModuleReady()` resolves; `__gsReady = true`.

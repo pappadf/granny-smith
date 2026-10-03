@@ -12,9 +12,11 @@
 //
 // Availability is decided by the page: app/web2 requests a WebGPU
 // adapter at startup and writes the answer into the mailbox's
-// GPU_AVAILABLE control word before any machine boots, so the card's
-// backend choice is honest at creation (regs.raster reports "thread" when
-// the browser has no adapter).
+// GPU_AVAILABLE control word before it reports ready -- page startup
+// awaits it (an answer not in within 2 s counts as no adapter) -- so no
+// boot and no catalog read can precede it, and the card's backend choice
+// is honest at creation (regs.raster reports "thread" when the browser has
+// no adapter).
 
 #include "em.h"
 

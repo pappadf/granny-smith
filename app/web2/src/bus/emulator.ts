@@ -183,6 +183,11 @@ let isRunningUI = false;
 
 // --- Bootstrap ----------------------------------------------------------
 
+// How long page startup waits for the WebGPU adapter's answer (typically
+// tens of milliseconds, overlapped with the worker's start-up); an answer
+// that takes longer counts as no adapter.
+const GPU_ANSWER_TIMEOUT_MS = 2000;
+
 // Initialise the WASM module. The canvas is handed to Emscripten; subsequent
 // resize callbacks update machine.screen so ScreenView can reflow.
 export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
@@ -254,14 +259,18 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
   );
   mailbox.setLostHandler((why) => markBridgeDead(why));
   mailbox.on(dispatchCoreEvent);
-  // Tell the core whether the Voodoo2 takeover has a WebGPU device
-  // (the worker was started by ScreenView before the module; its answer
-  // is normally in long before a machine boots).
-  void whenVoodooGpuReady().then((ok) => mailbox?.setGpuAvailable(ok));
+  // Whether the Voodoo2 takeover has a WebGPU device is host state the
+  // core reads when it offers the voodoo2_webgpu card kind and when a card
+  // picks its raster backend, so it is written before the page reports
+  // ready: nothing can boot, or read the card catalog, before it is known.
+  // The GPU worker was started by ScreenView before the module; its answer
+  // is awaited alongside the emulator worker's own start-up.
+  const gpuAnswer = whenVoodooGpuReady(GPU_ANSWER_TIMEOUT_MS);
   // Nothing is sent until the worker says it can dispatch; a worker that
   // never comes up fails the boot here instead of parking the first
   // request forever.
   await waitForWorkerReady();
+  mailbox.setGpuAvailable(await gpuAnswer);
   moduleReady = true;
   startHeartbeatWatch();
 

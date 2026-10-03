@@ -3482,8 +3482,9 @@ static pci_device_t *v2_webgpu_factory(int slot_index, config_t *cfg, checkpoint
     return v2_factory(slot_index, cfg, cp);
 }
 
-// Offered only where a WebGPU device exists (the page decides before any
-// machine boots); registered everywhere so the id resolves regardless.
+// Offered only where a WebGPU device exists (the page writes the answer
+// before it reports ready, so no boot or catalog read precedes it);
+// registered everywhere so the id resolves regardless.
 static bool v2_webgpu_offered(void) {
     return gs_v2gpu_available();
 }

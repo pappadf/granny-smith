@@ -520,7 +520,11 @@ backend as it refuses `thread`.
 
 **Availability.**  web2 starts the GPU worker at page load with the
 overlay canvas and writes whether a device exists into the bridge
-(`gpu_available`) before any machine boots; `raster=webgpu` without a
+(`gpu_available`) before the page reports ready: startup awaits the
+adapter's answer (`whenVoodooGpuReady`, `bus/emulator.ts`; one not in
+within 2 s counts as no adapter, and is logged), so no boot and no
+`catalog.profile` read can come before it and see a stale "no";
+`raster=webgpu` without a
 device — or on a native build, which has no transport at all — falls
 back to the thread backend at creation, and `regs.raster` reports
 `thread` (asserted by `tnt-pci-voodoo2` natively and by the
