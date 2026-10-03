@@ -465,6 +465,8 @@ void pram_defaults_apply(uint8_t pram[256], const pram_defaults_t *d) {
     if (d->startmgr)
         memcpy(pram + PRAM_STARTMGR_BASE, d->startmgr, PRAM_STARTMGR_LEN);
     pram[PRAM_MMFLAGS] = d->mmflags | d->mmflags_booted;
+    for (uint8_t i = 0; i < d->n_extra; i++)
+        pram[d->extra[i].addr] = d->extra[i].value;
     pram[PRAM_STARTMGR_WAIT] |= PRAM_STARTMGR_NO_WAIT;
 }
 

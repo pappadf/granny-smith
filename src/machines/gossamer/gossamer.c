@@ -39,6 +39,7 @@
 #include "mac_host_io.h"
 #include "machine_checkpoint.h"
 #include "machine_teardown.h"
+#include "of_nvram.h"
 #include "pci.h"
 #include "ppc.h"
 #include "rtc.h"
@@ -287,15 +288,18 @@ static void gos_swim3_init(config_t *cfg) {
 
 // The NVRAM is non-volatile: its content survives machine.restart (the
 // power switch) because a restart never destroys the machine, and a new
-// machine (machine.boot, machine.rebuild) starts from a virgin store --
-// the TNT rule and its reasons (tnt.c).  Nothing carries it across a
-// teardown.
+// machine (machine.boot, machine.rebuild) gets a new part -- the TNT rule
+// and its reasons (tnt.c).  Nothing carries it across a teardown.  The new
+// part holds what the board's own firmware formats (of_nvram.h): OF 2.4's
+// variables and the ROM's parameter RAM defaults.  The Rev A ROM's OF
+// 2.0f1 accepts it as it stands (its own format differs in one default,
+// diag-device).
 
-// Blank the store: what pulling the battery does.
+// Pulling the battery: the store goes back to what a new board carries.
 void gos_nvram_clear(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (st)
-        memset(st->hr.nvram, 0, GOS_NVRAM_SIZE);
+        of_nvram_factory(st->hr.nvram, &of_nvram_defaults_g3);
     LOG(1, "NVRAM cleared (battery removed)");
 }
 
@@ -306,6 +310,7 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
         return -1;
     }
     cfg->machine_context = st;
+    of_nvram_factory(st->hr.nvram, &of_nvram_defaults_g3); // a checkpoint below restores over it
     const gossamer_board_desc_t *board = gos_board(cfg);
 
     // Core: memory map, the 750 with the board's PVR and PLL straps, the
