@@ -60,17 +60,6 @@ LOG_USE_CATEGORY_NAME("setup");
 // Global emulator pointer (definition)
 config_t *global_emulator = NULL;
 
-// Pending RAM override (KB). Set by `setup --ram` or headless `ram=` arg.
-// Consumed by system_create(); 0 means use machine default.
-static uint32_t g_pending_ram_kb = 0;
-
-void system_set_pending_ram_kb(uint32_t kb) {
-    g_pending_ram_kb = kb;
-}
-uint32_t system_get_pending_ram_kb(void) {
-    return g_pending_ram_kb;
-}
-
 // Pick the delta directory for a fresh writable mount.  Default is the
 // active machine directory (so deltas live alongside state.checkpoint and
 // the manifest).  For volatile bases under /tmp/ — typically test
@@ -462,41 +451,6 @@ const char *system_machine_model_id(void) {
     if (!global_emulator || !global_emulator->machine)
         return NULL;
     return global_emulator->machine->id;
-}
-
-// Ensure the correct machine is active for the given model id.
-// Creates a new machine if none exists, or tears down and recreates if the
-// current machine's id doesn't match.  Returns 0 on success, -1 on error.
-int system_ensure_machine(const char *model_id) {
-    if (!model_id)
-        return -1;
-
-    const hw_profile_t *needed = machine_find(model_id);
-    if (!needed) {
-        LOG(1, "system_ensure_machine: unknown model '%s'", model_id);
-        return -1;
-    }
-
-    // Already have the right machine?
-    const char *current = system_machine_model_id();
-    if (current && strcmp(current, model_id) == 0)
-        return 0;
-
-    // Teardown existing machine if wrong type
-    if (global_emulator) {
-        LOG(1, "Switching machine from %s to %s", global_emulator->machine->id, model_id);
-        system_destroy(global_emulator); // clears global_emulator itself
-    }
-
-    // Create the new machine
-    config_t *cfg = system_create(needed, NULL, NULL);
-    if (!cfg) {
-        LOG(1, "system_ensure_machine: failed to create %s", model_id);
-        return -1;
-    }
-
-    LOG(1, "Machine created: %s (%s)", needed->name, needed->id);
-    return 0;
 }
 
 // Floppy insertion through the machine substrate: every
@@ -1160,12 +1114,13 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
 
     assert(profile != NULL);
     assert(profile->substrate != NULL && profile->substrate->init != NULL);
+    assert(opts != NULL && opts->ram_kb != 0);
 
     config_t *cfg = malloc(sizeof(config_t));
     if (!cfg)
         return NULL;
     memset(cfg, 0, sizeof(config_t));
-    cfg->build_opts = opts ? *opts : machine_build_opts_default();
+    cfg->build_opts = *opts;
 
     cfg->machine = profile;
     // Main-CPU architecture tag: derived from the
@@ -1178,15 +1133,8 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     // segment. Covers cold boot and checkpoint restore — both land here.
     machine_set_active_label(profile->name);
 
-    // Compute RAM size: use pending override if set, otherwise machine default
-    if (g_pending_ram_kb > 0) {
-        cfg->ram_size = g_pending_ram_kb * 1024;
-        if (cfg->ram_size > profile->ram_max)
-            cfg->ram_size = profile->ram_max;
-        g_pending_ram_kb = 0; // consume the override
-    } else {
-        cfg->ram_size = profile->ram_default;
-    }
+    // The RAM size is a build option: the caller validated and defaulted it.
+    cfg->ram_size = cfg->build_opts.ram_kb * 1024u;
 
     // Delegate all machine-specific initialisation to the profile.  A
     // non-zero return means the machine could not be built (the only cause
@@ -1713,11 +1661,22 @@ config_t *system_restore(const char *filename) {
     if (!profile)
         profile = (prev && prev->machine) ? prev->machine : machine_find("plus");
 
-    // Restore the RAM size from the checkpoint so system_create uses the
-    // correct size instead of the machine default.
-    uint32_t saved_ram_kb = checkpoint_get_ram_size_kb(checkpoint);
-    if (saved_ram_kb > 0)
-        system_set_pending_ram_kb(saved_ram_kb);
+    // Every file this build accepts carries the record (build-ID gating);
+    // one without it is not a checkpoint this build wrote.
+    if (!restored_record.valid) {
+        LOG_WITH(log_register_category("ckpt"), 0, "Error: checkpoint %s carries no machine record", filename);
+        checkpoint_close(checkpoint);
+        return NULL;
+    }
+
+    // The RAM size comes from the record and is validated like a boot's: a
+    // size the model does not offer rejects the restore rather than clamping.
+    if (!hw_profile_ram_option_allowed(profile, restored_record.ram_kb)) {
+        LOG_WITH(log_register_category("ckpt"), 0, "Error: checkpoint RAM %u KB is not a size %s offers",
+                 restored_record.ram_kb, profile->name);
+        checkpoint_close(checkpoint);
+        return NULL;
+    }
 
     // Seed the construction channels from the restored record so socket
     // resolution recreates the SAVED card configuration — the staged table
@@ -1725,53 +1684,52 @@ config_t *system_restore(const char *filename) {
     // non-default card must not restore against the slot default (the
     // strictly-ordered stream would misalign).
     machine_build_opts_t build_opts = machine_build_opts_default();
-    if (restored_record.valid) {
-        if (restored_record.video_card[0])
-            nubus_staged_card_set(NUBUS_STAGED_WILDCARD, restored_record.video_card);
-        if (restored_record.video_mode[0])
-            nubus_staged_mode_set(NUBUS_STAGED_WILDCARD, restored_record.video_mode);
-        if (restored_record.custom_mode[0])
-            nubus_staged_custom_mode_set(NUBUS_STAGED_WILDCARD, restored_record.custom_mode);
-        // The sense goes into the build options, which every video model
-        // reads -- the JMFB cards, the DAFB and PDM's Ariel alike.  This used
-        // to call jmfb_pending_sense_set() and note that "the DAFB's half is
-        // NOT staged here: dafb.h is a machine header and core may not
-        // include it", so the Quadras carried their sense through the
-        // checkpoint as device state instead.  machine_build_opts_t lives in
-        // core, so one channel now serves both and the layering test is
-        // satisfied by construction rather than by a second mechanism.
-        if (restored_record.video_sense >= 0)
-            build_opts.video_sense = restored_record.video_sense;
-        // The built-in monitor strap resolves to a sense code exactly as
-        // machine.boot resolves it (machine_boot_apply), and wins over
-        // video_sense there too.  The record's id was validated at boot.
-        if (restored_record.monitor[0] && profile->builtin_video && profile->builtin_video->monitor_sense) {
-            uint8_t mon_sense = 0;
-            if (profile->builtin_video->monitor_sense(restored_record.monitor, &mon_sense))
-                build_opts.video_sense = mon_sense;
-        }
-        // The record's explicit vrom=/prom= picks replace whatever the
-        // running machine registered.
-        machine_config_set_explicit_picks(restored_record.vrom, restored_record.prom);
-        // The PCI half of the same rule: a checkpoint written with a
-        // socketed PCI card (and its options) must re-seat that card, or
-        // the slot resolves its default (usually empty) and the
-        // strictly-ordered PCI device stream misaligns on the first
-        // record the missing card wrote.
-        if (restored_record.pci_card[0])
-            pci_staged_card_set(PCI_STAGED_WILDCARD, restored_record.pci_card);
-        pci_staged_option_set_spec(PCI_STAGED_WILDCARD, restored_record.pci_option);
-        // ...and the explicit per-slot picks beyond the wildcard, the
-        // multi-card surface machine.restart already replays.
-        for (int i = 0; i < restored_record.n_slot_cards; i++) {
-            const machine_config_slot_card_t *e = &restored_record.slot_cards[i];
-            if (!e->explicit_pick)
-                continue;
-            if (e->bus_kind == MC_BUS_PCI)
-                pci_staged_card_set(e->slot, e->card_id);
-            else
-                nubus_staged_card_set(e->slot, e->card_id);
-        }
+    build_opts.ram_kb = restored_record.ram_kb;
+    if (restored_record.video_card[0])
+        nubus_staged_card_set(NUBUS_STAGED_WILDCARD, restored_record.video_card);
+    if (restored_record.video_mode[0])
+        nubus_staged_mode_set(NUBUS_STAGED_WILDCARD, restored_record.video_mode);
+    if (restored_record.custom_mode[0])
+        nubus_staged_custom_mode_set(NUBUS_STAGED_WILDCARD, restored_record.custom_mode);
+    // The sense goes into the build options, which every video model
+    // reads -- the JMFB cards, the DAFB and PDM's Ariel alike.  This used
+    // to call jmfb_pending_sense_set() and note that "the DAFB's half is
+    // NOT staged here: dafb.h is a machine header and core may not
+    // include it", so the Quadras carried their sense through the
+    // checkpoint as device state instead.  machine_build_opts_t lives in
+    // core, so one channel now serves both and the layering test is
+    // satisfied by construction rather than by a second mechanism.
+    if (restored_record.video_sense >= 0)
+        build_opts.video_sense = restored_record.video_sense;
+    // The built-in monitor strap resolves to a sense code exactly as
+    // machine.boot resolves it (machine_boot_apply), and wins over
+    // video_sense there too.  The record's id was validated at boot.
+    if (restored_record.monitor[0] && profile->builtin_video && profile->builtin_video->monitor_sense) {
+        uint8_t mon_sense = 0;
+        if (profile->builtin_video->monitor_sense(restored_record.monitor, &mon_sense))
+            build_opts.video_sense = mon_sense;
+    }
+    // The record's explicit vrom=/prom= picks replace whatever the
+    // running machine registered.
+    machine_config_set_explicit_picks(restored_record.vrom, restored_record.prom);
+    // The PCI half of the same rule: a checkpoint written with a
+    // socketed PCI card (and its options) must re-seat that card, or
+    // the slot resolves its default (usually empty) and the
+    // strictly-ordered PCI device stream misaligns on the first
+    // record the missing card wrote.
+    if (restored_record.pci_card[0])
+        pci_staged_card_set(PCI_STAGED_WILDCARD, restored_record.pci_card);
+    pci_staged_option_set_spec(PCI_STAGED_WILDCARD, restored_record.pci_option);
+    // ...and the explicit per-slot picks beyond the wildcard, the
+    // multi-card surface machine.restart already replays.
+    for (int i = 0; i < restored_record.n_slot_cards; i++) {
+        const machine_config_slot_card_t *e = &restored_record.slot_cards[i];
+        if (!e->explicit_pick)
+            continue;
+        if (e->bus_kind == MC_BUS_PCI)
+            pci_staged_card_set(e->slot, e->card_id);
+        else
+            nubus_staged_card_set(e->slot, e->card_id);
     }
 
     // Fresh vROM-pick list for the restore construction (the card loaders

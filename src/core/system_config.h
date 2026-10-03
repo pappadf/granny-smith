@@ -45,7 +45,7 @@ struct config {
     // whoever needs it during construction.  Replaces three per-module
     // one-shot statics -- jmfb/dafb/pdm's pending sense (machine_build_opts.h).
     machine_build_opts_t build_opts;
-    uint32_t ram_size; // actual RAM size in bytes (from setup --ram or machine default)
+    uint32_t ram_size; // actual RAM size in bytes (build_opts.ram_kb)
     void *machine_context; // machine-specific state (e.g., plus_state_t)
 
     // Core CPU and memory subsystems.  The main CPU is a tagged handle:

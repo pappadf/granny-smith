@@ -243,11 +243,6 @@ bool system_is_initialized(void);
 // Return the model_id of the current machine, or NULL if none is active
 const char *system_machine_model_id(void);
 
-// Ensure the correct machine is active for the given model_id.
-// Creates a new machine if none exists, or tears down and recreates if the
-// current machine's model_id doesn't match.  Returns 0 on success, -1 on error.
-int system_ensure_machine(const char *model_id);
-
 // Create a blank floppy image at `path` and auto-mount it. high_density
 // chooses 1.44 MB vs 800 KB. preferred is the target drive (0 or 1; pass
 // -1 to let the system pick the first free drive). Returns 0 on success
@@ -283,10 +278,6 @@ int system_fd_insert(const char *path, int drive, bool writable);
 int system_hd_attach(const char *path, int scsi_id);
 int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id);
 int system_hd_create(const char *path, const char *size_str);
-
-// Pending RAM override for next system_create() call (KB, 0 = use default)
-void system_set_pending_ram_kb(uint32_t kb);
-uint32_t system_get_pending_ram_kb(void);
 
 // Reset Mac hardware to initial state
 extern void mac_reset(config_t *restrict sim);

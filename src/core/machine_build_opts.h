@@ -39,6 +39,9 @@ typedef struct machine_build_opts {
     // Monitor sense code for the machine's video, or MACHINE_SENSE_UNSET when
     // the caller did not choose one and the board default applies.
     int video_sense;
+    // RAM size in KB, already validated against the profile's ram_options and
+    // defaulted by the caller; never 0 by the time system_create sees it.
+    uint32_t ram_kb;
 } machine_build_opts_t;
 
 // "No sense chosen" -- distinct from every legal 3-bit code, including 0.
@@ -48,6 +51,7 @@ typedef struct machine_build_opts {
 static inline machine_build_opts_t machine_build_opts_default(void) {
     machine_build_opts_t o;
     o.video_sense = MACHINE_SENSE_UNSET;
+    o.ram_kb = 0;
     return o;
 }
 

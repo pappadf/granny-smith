@@ -562,6 +562,18 @@ typedef struct hw_profile {
 // Registry: find a machine profile by id (NULL if unknown).
 const hw_profile_t *machine_find(const char *id);
 
+// True if `kb` is one of the RAM sizes the profile offers (ram_options).  The
+// one check a boot document's ram= and a restored checkpoint's size both pass.
+static inline bool hw_profile_ram_option_allowed(const hw_profile_t *p, uint32_t kb) {
+    if (!p->ram_options)
+        return false;
+    for (const uint32_t *r = p->ram_options; *r; r++) {
+        if (*r == kb)
+            return true;
+    }
+    return false;
+}
+
 // Registry: enumerate the built-in profiles.  *out_count receives the count.
 const hw_profile_t *const *machine_list(size_t *out_count);
 

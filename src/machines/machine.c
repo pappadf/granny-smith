@@ -697,17 +697,6 @@ static DEF_METHOD(catalog_method_profile) {
     return build_profile(p);
 }
 
-// True if `kb` is one of the values in profile->ram_options.
-static bool ram_option_allowed(const hw_profile_t *p, uint32_t kb) {
-    if (!p->ram_options)
-        return false;
-    for (const uint32_t *r = p->ram_options; *r; r++) {
-        if (*r == kb)
-            return true;
-    }
-    return false;
-}
-
 // Build a comma-separated list of allowed RAM sizes for the error message.
 static void format_ram_options(char *buf, size_t bufsize, const hw_profile_t *p) {
     size_t pos = 0;
@@ -899,7 +888,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     uint32_t ram_kb = doc.ram_kb;
     if (ram_kb == 0)
         ram_kb = profile->ram_default / 1024u;
-    if (!ram_option_allowed(profile, ram_kb)) {
+    if (!hw_profile_ram_option_allowed(profile, ram_kb)) {
         char options[128];
         format_ram_options(options, sizeof(options), profile);
         return val_err("machine.boot: ram %u KB not in profile.ram_options for %s [%s]", ram_kb, profile->name,
@@ -1081,7 +1070,6 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     // Seed the construction channels from the document. Only fields the
     // document carries are written — a per-slot staged card entry
     // (slot[N].card_id, the surviving multi-card surface) is left alone.
-    system_set_pending_ram_kb(ram_kb);
     if (doc.video_card && *doc.video_card)
         nubus_staged_card_set(NUBUS_STAGED_WILDCARD, doc.video_card);
     if (doc.pci_card && *doc.pci_card)
@@ -1097,6 +1085,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     // include a machine header for each one and why a family added later
     // would have been missed silently.
     machine_build_opts_t build_opts = machine_build_opts_default();
+    build_opts.ram_kb = ram_kb; // validated and defaulted above
     if (doc.video_sense >= 0)
         build_opts.video_sense = doc.video_sense;
     // The built-in monitor strap resolves to a sense code and joins the other
