@@ -22,7 +22,6 @@
   import { MEDIA_TYPES } from '@/lib/media';
   import { gsEval } from '@/bus/emulator';
   import { attachCdrom, attachHardDisk, insertFloppy } from '@/bus/media';
-  import { machine } from '@/state/machine.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { images, bumpImagesRevision, setMounted } from '@/state/images.svelte';
   import { startActivity, endActivity, setActivityDetail } from '@/state/activity.svelte';
@@ -430,14 +429,19 @@
   // Drive actions for a file inside an image or archive that the core
   // identifies as a medium -- the core attaches it by that path, decoding
   // through the archive, so nothing is copied out first.  Only with a
-  // machine to attach to.  A floppy-sized image is offered as a floppy
-  // only; anything else as each of hard disk and CD the core accepts.
+  // machine to attach to -- asked of the core, since a machine booted from
+  // the terminal exists before it first runs.  A floppy is what the
+  // machine's floppy controller identifies (a Disk Copy 4.2 image with tag
+  // data included, which the size-only upload check does not know); it is
+  // offered as a floppy only.  Anything else, as each of hard disk and CD
+  // the core accepts.
   async function mediaItems(target: string): Promise<ContextMenuItem[]> {
-    if (machine.status === 'no-machine') return [];
-    const valid = async (id: 'fd' | 'hd' | 'cdrom') =>
+    if ((await gsEval('machine.created')) !== true) return [];
+    const density = await gsEval('machine.floppy.identify', [target]);
+    const valid = async (id: 'hd' | 'cdrom') =>
       (await MEDIA_TYPES[id].validate(target, gsEval)).valid;
     const items: ContextMenuItem[] = [];
-    if (await valid('fd')) {
+    if (typeof density === 'string' && density) {
       items.push({ label: 'Insert into floppy drive', action: () => attachMedium(target, 'fd') });
     } else {
       if (await valid('hd'))

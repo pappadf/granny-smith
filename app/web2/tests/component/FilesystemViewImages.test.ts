@@ -7,8 +7,9 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // {name,kind,size} objects (V_LIST of V_MAP through the gsEval bridge), so
 // the mock returns arrays directly rather than JSON strings. Declared via
 // vi.hoisted so the spy exists before the (hoisted) vi.mock factory runs.
-const { gsEvalMock, mediaMock } = vi.hoisted(() => ({
+const { gsEvalMock, mediaMock, core } = vi.hoisted(() => ({
   gsEvalMock: vi.fn(),
+  core: { machineCreated: false },
   mediaMock: {
     insertFloppy: vi.fn(),
     attachHardDisk: vi.fn(),
@@ -37,7 +38,6 @@ import { MockOpfs } from '../helpers/mockOpfs';
 import type { OpfsEntry } from '@/bus/types';
 import { filesystem, setFsExpanded, clearFsSelection } from '@/state/filesystem.svelte';
 import { makeDataTransfer, labels, rowFor } from '../helpers/fsTree';
-import { machine } from '@/state/machine.svelte';
 
 // Backend whose /opfs root holds a disk image, a plain file, and a target
 // folder. Tracks readFile / delete / move so the download and drag tests can
@@ -99,7 +99,7 @@ beforeEach(() => {
   (URL as unknown as { createObjectURL: unknown }).createObjectURL = createObjectURL;
   (URL as unknown as { revokeObjectURL: unknown }).revokeObjectURL = () => {};
   vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
-  machine.status = 'no-machine';
+  core.machineCreated = false;
   for (const m of Object.values(mediaMock)) {
     m.mockReset();
     m.mockResolvedValue({ ok: true, mount: { kind: 'fd', bus: 'floppy', drive: 0 } });
@@ -107,9 +107,12 @@ beforeEach(() => {
   gsEvalMock.mockReset();
   gsEvalMock.mockImplementation(async (path: string, args?: unknown[]) => {
     if (path === 'files.cp') return true;
+    if (path === 'machine.created') return core.machineCreated;
     const target = (args?.[0] as string) ?? '';
     if (path === 'files.path_size')
       return target.endsWith('.img') ? (target.endsWith('HD.img') ? 20971520 : 819200) : 4522;
+    if (path === 'machine.floppy.identify')
+      return target.endsWith('.img') && !target.endsWith('HD.img') ? '800K' : '';
     if (path === 'machine.scsi.identify_hd') return target.endsWith('HD.img');
     if (path === 'machine.scsi.identify_cdrom') return false;
     if (path !== 'files.list') return null;
@@ -412,7 +415,7 @@ describe('FilesystemView — media inside an image or archive', () => {
   });
 
   it('inserts a floppy image into a drive by its in-image path', async () => {
-    machine.status = 'running';
+    core.machineCreated = true;
     const items = await menuFor('Install 1:2.img');
     expect(items).toContain('Insert into floppy drive');
     expect(items).not.toContain('Attach as hard disk');
@@ -426,7 +429,7 @@ describe('FilesystemView — media inside an image or archive', () => {
   });
 
   it('attaches a hard-disk image, and offers nothing for a file that is no medium', async () => {
-    machine.status = 'running';
+    core.machineCreated = true;
     const items = await menuFor('HD.img');
     expect(items).toContain('Attach as hard disk');
     expect(items).not.toContain('Insert into CD-ROM drive');
@@ -437,7 +440,7 @@ describe('FilesystemView — media inside an image or archive', () => {
   });
 
   it('offers only Download for a file that is no medium', async () => {
-    machine.status = 'running';
+    core.machineCreated = true;
     expect(await menuFor('Read Me')).toEqual(['Download']);
   });
 });
