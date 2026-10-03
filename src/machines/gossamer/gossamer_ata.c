@@ -51,13 +51,6 @@ LOG_USE_CATEGORY_NAME("ata");
 static const int ata_irq_source[2] = {GOS_INT_ATA0, GOS_INT_ATA1};
 static const int ata_dma_chan[2] = {GOS_DMA_ATA0, GOS_DMA_ATA1};
 
-typedef struct {
-    config_t *cfg;
-    int cell;
-} gos_ata_ctx_t;
-
-static gos_ata_ctx_t s_ctx[2];
-
 static void ata_irq(void *ctx, bool level) {
     gos_ata_ctx_t *c = (gos_ata_ctx_t *)ctx;
     gos_set_source(c->cfg, ata_irq_source[c->cell], level);
@@ -236,10 +229,11 @@ void gos_ata_init(config_t *cfg, checkpoint_t *cp) {
     for (int c = 0; c < 2; c++) {
         ata_channel_t *ch = &st->ata[c];
         ata_channel_init(ch, c);
-        s_ctx[c] = (gos_ata_ctx_t){.cfg = cfg, .cell = c};
-        ata_set_irq(ch, ata_irq, &s_ctx[c]);
-        ata_set_dma_kick(ch, ata_kick, &s_ctx[c]);
-        scheduler_new_event_type(cfg->scheduler, c ? "ata1" : "ata0", &s_ctx[c], "dma_pump", ata_pump_fn[c]);
+        gos_ata_ctx_t *ctx = &st->ata_ctx[c];
+        *ctx = (gos_ata_ctx_t){.cfg = cfg, .cell = c};
+        ata_set_irq(ch, ata_irq, ctx);
+        ata_set_dma_kick(ch, ata_kick, ctx);
+        scheduler_new_event_type(cfg->scheduler, c ? "ata1" : "ata0", ctx, "dma_pump", ata_pump_fn[c]);
         ata_set_atapi_bus(ch, st->atapi);
         if (cp)
             ata_checkpoint_restore(ch, cp);

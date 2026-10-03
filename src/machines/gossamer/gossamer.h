@@ -233,6 +233,14 @@ typedef struct gos_scc_dma_ctx {
 } gos_scc_dma_ctx_t;
 
 // === Family state ===========================================================
+// Callback context of one ATA cell (IRQ, DMA kick, the dma_pump event's
+// source): names its machine and cell.  Owned by the machine's state, so two
+// Gossamer machines alive at once (a restore) each wire their own.
+typedef struct gos_ata_ctx {
+    struct config *cfg;
+    int cell;
+} gos_ata_ctx_t;
+
 typedef struct gossamer_state {
     gos_grackle_t grackle;
     gos_heathrow_t hr;
@@ -254,6 +262,7 @@ typedef struct gossamer_state {
     // The two ATA cells (+$20000, +$21000) and the SCSI bus that carries
     // their ATAPI CD-ROMs (machine.atapi): gossamer_ata.c.
     ata_channel_t ata[2];
+    gos_ata_ctx_t ata_ctx[2];
     struct scsi *atapi;
     bool ata_ready;
     struct object *ata_object; // machine.ata
