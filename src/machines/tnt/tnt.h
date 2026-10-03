@@ -511,8 +511,8 @@ void tnt_gc_detach_object(config_t *cfg);
 void tnt_gc_pulse_event(config_t *cfg, int n);
 // Recompute ((events | levels) & mask) and drive the CPU external line.
 void tnt_gc_recompute(config_t *cfg);
-// Clear the non-volatile store and its process-lifetime carry: the
-// documented effect of removing the logic board's battery (tnt.c).
+// Pull the battery: the store goes back to what a new board carries
+// (tnt.c; blank on the Network Server).
 void tnt_nvram_clear(config_t *cfg);
 
 // Board Register 1 / BoxID as software reads it: the board straps, the live

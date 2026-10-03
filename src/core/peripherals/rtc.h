@@ -84,8 +84,9 @@ void pram_defaults_apply(uint8_t pram[256], const pram_defaults_t *d);
 // so a 20-byte machine would still have working extended commands it must not
 // have.  Fix that before wiring one up.
 //
-// `defaults` is the PRAM the machine powers up with (NULL: all zero, as the
-// Open Firmware machines still start); a checkpoint restores over it.
+// `defaults` is the PRAM the machine powers up with (NULL: all zero -- the
+// Open Firmware machines, whose Mac OS keeps its PRAM in their NVRAM
+// instead, of_nvram.h); a checkpoint restores over it.
 rtc_t *rtc_init(struct scheduler *scheduler, checkpoint_t *checkpoint, bool extended, const pram_defaults_t *defaults);
 
 void rtc_delete(rtc_t *rtc);

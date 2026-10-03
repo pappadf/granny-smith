@@ -73,7 +73,10 @@ ROM's own RTC test fails.
 
 PRAM is initialised at construction from the family's `pram_defaults_t`
 (`src/machines/runtime/pram_defaults.c`): the XPRAM validity token, the
-Start Manager table, the measured cold MMFlags. `rtc_pram_reset` returns
+Start Manager table, the measured cold MMFlags. The Open Firmware machines
+(TNT, the beige G3) are the exception: Mac OS keeps its PRAM in their 8 KB
+NVRAM, not in Cuda, so the same defaults are applied to the NVRAM's PRAM
+partition instead (`of_nvram.c`) and the RTC's own PRAM starts zero. `rtc_pram_reset` returns
 the store to exactly that state, ignoring write-protect, for a hardware
 reset of the store: the Network Server's fail-safe red button
 (`machine.board.reset_button()`), which resets parameter RAM but not
