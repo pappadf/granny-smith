@@ -881,8 +881,12 @@ view; errors still toast.
   ([bare-volume-wrapper.md](../internals/core/storage/bare-volume-wrapper.md)).
 - `cd=<url>` — streamed into `/opfs/images/cd/` as a UDIF, inserted into the
   model's CD bay (`machine.attach_cdrom`), on a model that has one.
-- `vrom=<url>` — downloaded into `/opfs/images/vrom/` (SE/30 / IIcx /
-  IIfx).
+- `vrom=<url>` — downloaded into `/opfs/images/vrom/` and passed in the
+  boot document (`machine.boot … vrom=`), so it is this boot's pick for its
+  card's declaration ROM, ahead of any other revision of it already stored
+  (SE/30 / IIcx / IIfx).  One that is not a vROM is rejected like any other
+  medium (above) and the machine boots without it, saying so.  Storing it
+  also offers it to the core's ROM catalog, for later boots.
 - `speed=paced|accelerated|turbo` — the toolbar's pacing mode from the
   start, set once on the page's run loop (`scheduler.mode`); pacing is host
   state, so every machine the page boots or restores runs under it (legacy

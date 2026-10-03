@@ -16,9 +16,13 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { gsEvalInPage } from '../helpers/web2-eval';
 
 const PLUS_ROM = path.resolve(__dirname, '../../data/roms/plus-v3-4d1f8172.rom');
 const SYSTEM_FD = path.resolve(__dirname, '../../data/systems/System_6_0_8.dsk');
+const IICX_ROM = path.resolve(__dirname, '../../data/roms/iix-iicx-se30-97221136.rom');
+// The declaration ROM of the IIcx's slot-$9 default card (mdc_8_24).
+const JMFB_VROM = path.resolve(__dirname, '../../data/roms/mdc-8-24-revb-d1629664.vrom');
 
 // Serve the ROM bytes from disk for any request to the sentinel path the
 // URL params point at. Must be registered before goto so the in-page
@@ -172,4 +176,50 @@ test('?hd0= that is not a hard disk is rejected, and the machine boots without i
   const files = await opfsFiles(page);
   expect(files.filter((p) => p.startsWith('/opfs/images/hd/'))).toEqual([]);
   expect(files.filter((p) => p.startsWith('/opfs/upload/'))).toEqual([]);
+});
+
+// The URL's vROM is part of the boot document, so it is the boot's explicit
+// pick for its card -- not a file left in the ROM catalog for the card to
+// find if it happens to win the catalog's pick order.
+test('?vrom= goes in the boot document: the card runs the URL’s declaration ROM', async ({ page }) => {
+  test.setTimeout(120_000);
+  await routeRom(page, 'url-iicx.rom', IICX_ROM);
+  await routeRom(page, 'url-card.vrom', JMFB_VROM);
+
+  await page.goto('/index.html?rom=url-iicx.rom&model=iicx&vrom=url-card.vrom');
+  await expect(page.locator('.toast .msg').filter({ hasText: 'Booted iicx from URL parameters' }))
+    .toBeVisible({ timeout: 60_000 });
+  expect(await gsEvalInPage(page, 'machine.config.vrom')).toBe('/opfs/images/vrom/d1629664');
+  const picks = (await gsEvalInPage(page, 'machine.config.vroms')) as Array<{
+    card_id: string;
+    path: string;
+    explicit: boolean;
+  }>;
+  expect(picks.find((p) => p.card_id === 'mdc_8_24')).toMatchObject({
+    path: '/opfs/images/vrom/d1629664',
+    explicit: true,
+  });
+  expect(await gsEvalInPage(page, 'machine.nubus.slot[9].card.declrom.present')).toBe(true);
+});
+
+// A vROM that is not one is rejected like any other URL medium; the boot goes
+// ahead without it and says so.
+test('?vrom= that is not a declaration ROM is left out of the boot, which says so', async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await routeRom(page, 'url-plus.rom', PLUS_ROM);
+  await routeRom(page, 'url-not-a.vrom', SYSTEM_FD);
+
+  await page.goto('/index.html?rom=url-plus.rom&model=plus&vrom=url-not-a.vrom');
+  await expect(
+    page.locator('.toast .msg').filter({ hasText: "VROM: 'url-not-a.vrom' is not a valid Video ROM image" }),
+  ).toBeVisible({ timeout: 60_000 });
+  await expect(
+    page.locator('.toast .msg').filter({ hasText: "Booting plus without the URL's video ROM" }),
+  ).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator('.toast .msg').filter({ hasText: 'Booted plus from URL parameters' }))
+    .toBeVisible({ timeout: 60_000 });
+  expect(await gsEvalInPage(page, 'machine.config.vrom')).toBe('');
+  expect((await opfsFiles(page)).filter((p) => p.startsWith('/opfs/images/vrom/'))).toEqual([]);
 });

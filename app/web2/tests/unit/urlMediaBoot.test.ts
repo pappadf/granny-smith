@@ -1,8 +1,8 @@
-// URL media through the real pipeline (fetch -> scratch -> validate -> store),
-// over a fake core filesystem: a download that does not validate as its
-// slot's category is rejected with the validator's reason and never attached,
-// every exit leaves the scratch area empty, and each download writes a
-// scratch file of its own.
+// URL media through the real pipeline (fetch -> scratch -> validate -> store
+// -> boot), over a fake core filesystem: a download that does not validate as
+// its slot's category is rejected with the validator's reason and never
+// attached, every exit leaves the scratch area empty, each download writes a
+// scratch file of its own, and the URL's vROM goes in the boot document.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { bridge } from '../helpers/bridgeMock';
 import { fakeHeap, installFakeCoreFs } from '../helpers/fakeCoreFs';
@@ -41,6 +41,8 @@ const PLUS_ROM = new Uint8Array(64 * 1024).fill(0x52);
 const FLOPPY = new Uint8Array(819200).fill(0xa5);
 // Neither a ROM nor any floppy size.
 const JUNK = new Uint8Array(1000).fill(0x33);
+// A declaration ROM the fake core recognises: 32 KB whose first byte is 'V'.
+const VROM = new Uint8Array(32 * 1024).fill(0x56);
 
 let files: Map<string, Uint8Array>;
 let served: Record<string, Uint8Array<ArrayBuffer>>;
@@ -71,6 +73,12 @@ beforeEach(() => {
   });
   bridge.reply('machine.boot', true);
   bridge.reply('machine.id', 'plus');
+  bridge.reply('catalog.vroms.identify', (args: unknown) => {
+    const f = files.get((args as [string])[0]);
+    if (!f || f[0] !== 0x56) return { recognised: false };
+    return { recognised: true, card_id: 'mdc_8_24', compatible: ['mdc_8_24'], crc: '0xd1629664' };
+  });
+  bridge.reply('catalog.vroms.offer', true);
   served = {};
   vi.stubGlobal(
     'fetch',
@@ -158,6 +166,32 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     expect(new Set(second).has(first[0])).toBe(false);
     expect(written).not.toContain('/opfs/images/fd/one.dsk');
     expect(files.get('/opfs/images/fd/one.dsk')).toBe(mounted);
+    expect(scratchLeft()).toEqual([]);
+  });
+});
+
+describe("the URL's vROM is the boot's", () => {
+  it('goes in the machine.boot document', async () => {
+    served['plus.rom'] = PLUS_ROM;
+    served['card.vrom'] = VROM;
+    expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&vrom=card.vrom'))).toBe(true);
+    const boot = bridge.calls.find((c) => c.path === 'machine.boot');
+    expect(boot?.args).toEqual({
+      model: 'plus',
+      rom: '/opfs/images/rom/4D1F8172',
+      vrom: '/opfs/images/vrom/d1629664',
+    });
+    expect(scratchLeft()).toEqual([]);
+  });
+
+  it('one that is not a vROM is rejected, and the boot goes ahead without it, saying so', async () => {
+    served['plus.rom'] = PLUS_ROM;
+    served['junk.vrom'] = JUNK;
+    expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&vrom=junk.vrom'))).toBe(true);
+    const boot = bridge.calls.find((c) => c.path === 'machine.boot');
+    expect(boot?.args).toEqual({ model: 'plus', rom: '/opfs/images/rom/4D1F8172' });
+    expect(toastText()).toMatch(/VROM: 'junk\.vrom' is not a valid Video ROM image/);
+    expect(toastText()).toMatch(/Booting plus without the URL's video ROM/);
     expect(scratchLeft()).toEqual([]);
   });
 });
