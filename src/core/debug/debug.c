@@ -3262,7 +3262,7 @@ static DEF_METHOD(debug_method_step) {
     if (!scheduler_run_with_budget(s, (uint64_t)count))
         return val_err("debug.step: instruction count too large");
     while (scheduler_is_running(s))
-        scheduler_run_frame(s, global_emulator);
+        scheduler_run_frame(s, global_emulator, platform_pacing());
     return val_bool(true);
 }
 

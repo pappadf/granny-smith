@@ -853,9 +853,9 @@ view; errors still toast.
 - `vrom=<url>` — downloaded into `/opfs/images/vrom/` (SE/30 / IIcx /
   IIfx).
 - `speed=paced|accelerated|turbo` — the toolbar's pacing mode from the
-  start: a boot pushes it to the core (`scheduler.mode`), and a resumed
-  machine is switched to it (legacy `max`/`realtime`/`hardware` are
-  accepted as aliases).  The wasm module takes no command line.
+  start, set once on the page's run loop (`scheduler.mode`); pacing is host
+  state, so every machine the page boots or restores runs under it (legacy
+  `max`/`realtime`/`hardware` are accepted as aliases).  The wasm module takes no command line.
 - `model=<id>` — preferred machine id (must be in the ROM's compatible
   list).
 - `skin=<id>` — show this load in another skin (an id from

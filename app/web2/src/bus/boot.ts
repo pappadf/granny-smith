@@ -3,18 +3,11 @@
 // out of emulator.ts, the bridge, because it is built on bus/profile.ts and
 // bus/media.ts, which are built on the bridge.
 
-import { gsEval, gsErrorText, isGsError, applySchedulerMode } from './emulator';
+import { gsEval, gsErrorText, isGsError } from './emulator';
 import { getProfile } from './profile';
 import { attachHardDisk, attachCdrom, insertFloppy, type MediaResult } from './media';
 import type { MachineConfig } from './types';
-import {
-  machine,
-  resetDriveActivity,
-  setSchedulerMode,
-  type MmuKind,
-  type AuxCpu,
-  type SchedulerMode,
-} from '@/state/machine.svelte';
+import { machine, resetDriveActivity, type MmuKind, type AuxCpu } from '@/state/machine.svelte';
 import { images, setMounted } from '@/state/images.svelte';
 import { reapplyCameraSource } from '@/state/camera.svelte';
 import { reapplyMicrophoneSource } from '@/state/microphone.svelte';
@@ -195,20 +188,13 @@ export async function setStartupDisk(mount: { bus?: string; drive: number }): Pr
 // prepareFreshMachine.  Neither touches PRAM.  Restart is not among them: it
 // power-cycles the SAME machine, so there is nothing new to reconcile with.
 
-// How the machine came to be running.  A restore brings its own scheduler
-// mode (the checkpoint carries it); a boot gets the toolbar's.
+// How the machine came to be running.  Pacing is the page's, not the
+// machine's: neither origin touches it.
 export type MachineOrigin = 'boot' | 'restore';
 
 // The model the UI last reconciled with: a restore of another model resets
 // the Debug layout, a restore of the same one keeps it.
 let reconciledModel: string | null = null;
-
-// The core's scheduler.mode -> the toolbar's mode.
-const UI_MODE: Record<string, SchedulerMode> = {
-  paced: 'live',
-  accelerated: 'accel',
-  turbo: 'turbo',
-};
 
 export async function reconcileUiWithMachine(origin: MachineOrigin): Promise<void> {
   const id = await gsEval('machine.id');
@@ -229,21 +215,6 @@ export async function reconcileUiWithMachine(origin: MachineOrigin): Promise<voi
     resetDebugSections();
   }
   reconciledModel = model;
-  if (origin === 'restore') {
-    // The checkpoint restored the core's pacing: show it, do not override it.
-    // An enum crosses the bridge as {enum: <name>, index: <n>}.
-    const mode = await gsEval('scheduler.mode');
-    const name =
-      mode && typeof mode === 'object' && typeof (mode as { enum?: unknown }).enum === 'string'
-        ? (mode as { enum: string }).enum
-        : undefined;
-    const ui = name ? UI_MODE[name] : undefined;
-    if (ui) setSchedulerMode(ui);
-  } else {
-    // A fresh core boots paced; re-assert the user's toolbar selection so a
-    // pre-selected Turbo survives machine (re)creation.
-    await applySchedulerMode(machine.scheduler);
-  }
 }
 
 // A fresh machine (a boot) is ready to run.  The Caps Lock latch is

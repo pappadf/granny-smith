@@ -197,31 +197,6 @@ test.describe('checkpoint save → reload → resume', () => {
     );
   });
 
-  test('the resumed machine shows the pacing mode its checkpoint saved', async ({ page }) => {
-    // scheduler.mode crosses the bridge as an enum ({enum, index}); the
-    // restore path reads it back to set the toolbar rather than overriding it.
-    test.setTimeout(180_000);
-    await gotoWeb2(page);
-    await uploadRom(page, PLUS_ROM);
-    await startMachine(page, 'plus');
-
-    // Switch the core (not the toolbar) to turbo, then save.
-    await terminalExpect(page, 'scheduler.mode = "turbo"', /scheduler\.mode = "turbo"/);
-    await terminalExpect(page, 'echo "mode=${scheduler.mode}"', /mode=turbo/);
-    await createCheckpoint(page);
-
-    await reloadWeb2(page);
-    await expect(resumeModal(page)).toBeVisible({ timeout: 30_000 });
-    await page.getByRole('button', { name: 'Resume' }).click();
-    await expect(
-      page.locator('.toast .msg').filter({ hasText: 'Resumed from saved checkpoint' }),
-    ).toBeVisible({ timeout: 60_000 });
-
-    await expect(page.locator('.sch-btn', { hasText: 'Max' })).toHaveClass(/active/, {
-      timeout: 15_000,
-    });
-  });
-
   test('Start fresh discards the checkpoint and a second reload does not re-prompt', async ({
     page,
   }) => {

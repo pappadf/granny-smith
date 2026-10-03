@@ -132,7 +132,7 @@ export function setZoom(value: number): void {
 export function setSchedulerMode(mode: SchedulerMode): void {
   machine.scheduler = mode;
   // Any mode switch resets the core's governor to the authentic floor
-  // (scheduler_set_mode → scheduler_governor_reset), so the applied speed is
+  // (scheduler_apply_pacing → scheduler_governor_reset), so the applied speed is
   // 1x until the governor earns headroom again. Mirror that immediately; the
   // core's push then tracks the climb. (Not a guess — it matches the
   // documented governor-reset behaviour, like the optimistic mode mirror.)

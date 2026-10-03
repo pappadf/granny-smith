@@ -251,6 +251,15 @@ static int tick_counter = 0;
 static int checkpoint_tick_counter = 0;
 static bool checkpoint_auto_enabled = true; // Can be disabled for tests
 static double last_time = 0;
+// The page's pacing (the toolbar, ?speed=, scheduler.mode / speed /
+// max_speed): host state, so it outlives every machine, is never in a
+// checkpoint, and reaches the machine only as the run loop's argument.
+static host_pacing_t s_pacing = HOST_PACING_DEFAULT;
+
+host_pacing_t *platform_pacing(void) {
+    return &s_pacing;
+}
+
 // The instruction count at the last perf sample (MIPS is the delta).
 static uint64_t last_instr = 0;
 // The activity lights' state and the counter baselines they compare against.
@@ -462,7 +471,7 @@ void em_main_tick(void) {
             }
         }
 
-        scheduler_main_loop(global_emulator, now); // Pass milliseconds
+        scheduler_main_loop(global_emulator, now, &s_pacing); // Pass milliseconds
 
         // Update video if framebuffer changed
         em_video_update();

@@ -58,8 +58,8 @@ describe('one post-boot reconciliation, every path', () => {
     expect(machine.model).toBe('Macintosh SE/30');
     expect(machine.ram).toBe('8 MB');
     expect(machine.mmuKind).toBe('68030_pmmu');
-    // A boot keeps the toolbar's pacing (and pushes it to the fresh core)
-    // rather than reading back the core's default.
+    // A boot keeps the toolbar's pacing: pacing is the page's, not the
+    // machine's, so nothing reads it back from the core.
     se30('turbo');
     await initEmulator(BOOT);
     expect(machine.scheduler).toBe('live');
@@ -108,10 +108,12 @@ describe('one post-boot reconciliation, every path', () => {
     delete images.mounted['/opfs/images/hd/a.img'];
   });
 
-  it('a restore shows the pacing the checkpoint brought, and does not override it', async () => {
+  it("pacing is the page's: neither a boot nor a restore reads or re-asserts it", async () => {
     se30('turbo');
     await reconcileUiWithMachine('restore');
-    expect(machine.scheduler).toBe('turbo');
+    await reconcileUiWithMachine('boot');
+    expect(machine.scheduler).toBe('live');
+    expect(bridge.paths()).not.toContain('scheduler.mode');
     expect(images.fdDriveCount).toBe(-1);
   });
 

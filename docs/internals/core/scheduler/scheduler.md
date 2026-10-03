@@ -160,10 +160,14 @@ zero and every code path is bit-identical to the pre-fractional arithmetic — p
 budgets do not move.
 
 `scheduler.speed` picks the multiplier: **0 = auto** (the adaptive governor, the
-default) or 1.0 .. 8.0 to pin a fixed multiplier. The *setting* (and the
-`scheduler.max_speed` cap) persist in the checkpoint prefix while the derived
+default) or 1.0 .. 8.0 to pin a fixed multiplier. The mode, the *setting* and the
+`scheduler.max_speed` cap are **host** state (`host_pacing_t`, owned by the
+platform's run loop — `em_main.c`, the headless daemon — through
+`platform_pacing()`): they outlive every machine and are never checkpointed. They
+reach a machine only as the argument of its run step (`scheduler_run_frame`,
+`scheduler_main_loop`), which hands them to `scheduler_apply_pacing`; the derived
 `cpi_eff_x256`, the remainder, and all governor state are transient and
-re-derived/cleared on restore and on every mode/CPI/speed change.
+re-derived/cleared on restore and whenever the pacing or the CPI changes.
 
 ### 2.3 The adaptive governor (speed = auto)
 
@@ -215,10 +219,9 @@ for timing:
 
 ```c
 struct scheduler {
-    enum schedule_mode mode;         // paced | unthrottled | accelerated
     uint32_t cpi;                    // Per-machine authentic CPI constant
-    uint32_t speed_x256;             // Accelerated-mode multiplier setting (persisted)
     uint32_t frequency;              // CPU clock in Hz
+    host_pacing_t pacing;            // The host's pacing it runs under (mode, speed; not checkpointed)
 
     uint32_t cpi_eff_x256;           // Effective CPI, x256 (derived; not checkpointed)
     uint32_t cycle_frac_x256;        // Sub-cycle sprint remainder (transient)
@@ -622,7 +625,7 @@ patterns are:
 
 ## 9. Mode switching and the CPI invariant
 
-Between `paced` and `unthrottled`, `scheduler_set_mode` touches **only pacing state**
+Between `paced` and `unthrottled`, `scheduler_apply_pacing` touches **only pacing state**
 (it resets the wall-clock estimators, §10.3); CPI never changes with the mode. As long
 as the machine never enters `accelerated` and the `scheduler.cpi` debug override is
 untouched, the linear relationship
@@ -737,7 +740,7 @@ whole number of frame-units and runs that many via `scheduler_run_frame()`:
   conversion of NaN is undefined behaviour.
 
 A smoothed EWMA of host seconds per VBL/loop drives the turbo heuristic; a >1 s gap
-(tab backgrounded) resets rather than fast-forwarding. `scheduler_set_mode` resets
+(tab backgrounded) resets rather than fast-forwarding. `scheduler_apply_pacing` resets
 the estimators and the accumulator on every switch, so turbo-shaped estimates never
 leak into paced pacing.
 

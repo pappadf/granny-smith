@@ -71,15 +71,6 @@ LOG_USE_CATEGORY_NAME("scheduler");
 // returning ~40% more turbo speed.
 #define TURBO_HOST_HEADROOM 0.7
 
-// Accelerated mode: bounds for the fixed speed multiplier, x256 fixed point.
-// Floor 1x = authentic (the mode never runs the guest slower than real
-// hardware); the 8x cap keeps instruction-timed guest code (TimeDBRA-derived
-// busy-waits) from drifting absurdly far on fast hosts.
-#define SPEED_X256_ONE 256
-#define SPEED_X256_MAX (8 * 256)
-// scheduler.speed == 0 means "auto": the adaptive governor picks the speed.
-#define SPEED_X256_AUTO 0
-
 // Adaptive governor (accelerated mode with scheduler.speed = auto). AIMD on a
 // quantized speed ladder: additive rung-up only after dwelling at the current
 // speed (the slew limit — instruction-counted guest delays calibrated at
@@ -144,25 +135,12 @@ typedef struct {
 // Core scheduler state
 struct scheduler {
     // Plain-data first
-    enum schedule_mode mode;
     bool running;
     uint64_t cpu_cycles; // authoritative cycle counter, updated at sprint boundaries
 
     // Per-machine cycles-per-instruction constant — guest-visible, identical
     // in every pacing mode (one guest timeline)
     uint32_t cpi;
-
-    // Accelerated-mode pinned speed multiplier, x256 fixed point (256 = 1x),
-    // or SPEED_X256_AUTO (0) to let the adaptive governor pick. Lives in the
-    // plain-data checkpoint prefix on purpose: the user's speed *setting*
-    // persists; the governor's live speed below is transient. Inert unless
-    // mode == schedule_accelerated.
-    uint32_t speed_x256;
-
-    // User cap on the accelerated-mode multiplier (governor ceiling; a pinned
-    // speed is clamped to it too), x256 fixed point. Persisted with the
-    // prefix; default 8x.
-    uint32_t max_speed_x256;
 
     // I/O wait-state time not yet burned as a phantom instruction, x256
     // cycles (under one effective CPI).  Guest-visible timing state, so it is
@@ -203,10 +181,16 @@ struct scheduler {
     event_type_t event_types[MAX_EVENT_TYPES];
     int num_event_types;
 
+    // The host's pacing this machine currently runs under, as last handed to
+    // scheduler_apply_pacing by the run step.  Host policy, never machine
+    // state: not checkpointed, and a new or restored machine starts from the
+    // host's setting.
+    host_pacing_t pacing;
+
     // Effective CPI, x256 fixed point: cpi << 8 in paced/unthrottled, lowered
     // (never raised) in accelerated mode. Derived by scheduler_update_cpi_eff
-    // from (mode, cpi, speed setting, governor rung); deliberately after
-    // event_types so it is never checkpointed — restore re-derives it.
+    // from (pacing, cpi, governor rung); deliberately after event_types so it
+    // is never checkpointed — restore re-derives it.
     uint32_t cpi_eff_x256;
     // Sub-cycle remainder of sprint cycle accounting, 0..255 (x256 fractional
     // cycles). Carried across sprints so cycles advanced stay exact integers
@@ -297,9 +281,9 @@ static inline uint32_t avg_cycles_per_instr(struct scheduler *s) {
 static uint32_t scheduler_current_speed_x256(struct scheduler *s) {
     GS_ASSERT(s != NULL);
     GS_ASSERT(s->gov_rung >= 0 && s->gov_rung < GOV_NUM_RUNGS);
-    uint32_t sp = (s->speed_x256 != SPEED_X256_AUTO) ? s->speed_x256 : gov_ladder_x256[s->gov_rung];
-    if (sp > s->max_speed_x256)
-        sp = s->max_speed_x256;
+    uint32_t sp = (s->pacing.speed_x256 != SPEED_X256_AUTO) ? s->pacing.speed_x256 : gov_ladder_x256[s->gov_rung];
+    if (sp > s->pacing.max_speed_x256)
+        sp = s->pacing.max_speed_x256;
     if (sp < SPEED_X256_ONE)
         sp = SPEED_X256_ONE;
     return sp;
@@ -317,7 +301,7 @@ static void scheduler_update_cpi_eff(struct scheduler *s) {
     GS_ASSERT(s != NULL);
     GS_ASSERT(s->cpi > 0);
     uint32_t eff = s->cpi << 8;
-    if (s->mode == schedule_accelerated) {
+    if (s->pacing.mode == schedule_accelerated) {
         uint32_t sp = scheduler_current_speed_x256(s);
         if (sp > SPEED_X256_ONE) {
             eff = (uint32_t)(((uint64_t)s->cpi << 16) / sp);
@@ -329,7 +313,7 @@ static void scheduler_update_cpi_eff(struct scheduler *s) {
     s->cycle_frac_x256 = 0;
     // The effective speed changed (a governor step, a pin, a mode switch):
     // say so once, here, where every path that changes it passes.
-    uint32_t sp = s->mode == schedule_accelerated ? scheduler_current_speed_x256(s) : SPEED_X256_ONE;
+    uint32_t sp = s->pacing.mode == schedule_accelerated ? scheduler_current_speed_x256(s) : SPEED_X256_ONE;
     if (sp != s->speed_reported_x256) {
         s->speed_reported_x256 = sp;
         gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"speed\",\"x256\":%u}", (unsigned)sp);
@@ -362,7 +346,7 @@ static void scheduler_governor_reset(struct scheduler *s) {
 // to instructions per frame), so the estimator stays meaningful across steps.
 static void scheduler_governor_tick(struct scheduler *s, double host_secs_this_vbl, double elapsed_secs) {
     GS_ASSERT(s != NULL);
-    GS_ASSERT(s->mode == schedule_accelerated && s->speed_x256 == SPEED_X256_AUTO);
+    GS_ASSERT(s->pacing.mode == schedule_accelerated && s->pacing.speed_x256 == SPEED_X256_AUTO);
 
     // Utilization of the real-time frame budget, smoothed. Pressure registers
     // fast (protect the deadline); optimism accumulates slowly.
@@ -383,7 +367,7 @@ static void scheduler_governor_tick(struct scheduler *s, double host_secs_this_v
 
     // Highest rung the user cap allows
     int max_rung = 0;
-    while (max_rung + 1 < GOV_NUM_RUNGS && gov_ladder_x256[max_rung + 1] <= s->max_speed_x256)
+    while (max_rung + 1 < GOV_NUM_RUNGS && gov_ladder_x256[max_rung + 1] <= s->pacing.max_speed_x256)
         max_rung++;
 
     int new_rung = s->gov_rung;
@@ -431,8 +415,9 @@ static void scheduler_check_invariants(struct scheduler *s, const char *context)
                (unsigned long long)s->cpu_cycles);
 
     // Mode must be valid
-    GS_ASSERTF(s->mode == schedule_paced || s->mode == schedule_unthrottled || s->mode == schedule_accelerated,
-               "[%s] invalid mode (%d)", context, s->mode);
+    GS_ASSERTF(s->pacing.mode == schedule_paced || s->pacing.mode == schedule_unthrottled ||
+                   s->pacing.mode == schedule_accelerated,
+               "[%s] invalid mode (%d)", context, s->pacing.mode);
 
     // Effective CPI: derived, nonzero, and never above the authentic CPI
     GS_ASSERTF(s->cpi_eff_x256 > 0 && s->cpi_eff_x256 <= (s->cpi << 8), "[%s] cpi_eff_x256 out of range (%u)", context,
@@ -803,8 +788,6 @@ static bool scheduler_restore_prefix_ok(const struct scheduler *s, checkpoint_t 
     const char *bad = NULL;
     if (s->cpi == 0 || s->cpi > MAX_SANE_CPI)
         bad = "cycles-per-instruction out of range";
-    else if (s->mode != schedule_paced && s->mode != schedule_unthrottled && s->mode != schedule_accelerated)
-        bad = "unrecognised pacing mode";
     else if (s->cpu_cycles >= MAX_SANE_CPU_CYCLES)
         bad = "cycle counter out of range";
     else if (s->io_penalty_remainder >= (s->cpi << 8))
@@ -838,8 +821,7 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
     s->host_secs_per_loop = 1.0 / 60.0;
     s->frequency = (uint32_t)MAC_CPU_FREQUENCY;
     s->cpi = CYCLES_PER_INSTR_DEFAULT;
-    s->speed_x256 = SPEED_X256_AUTO;
-    s->max_speed_x256 = SPEED_X256_MAX;
+    s->pacing = *platform_pacing(); // a new or restored machine runs as the host says
     s->num_event_types = 0;
     memset(s->event_types, 0, sizeof(s->event_types));
 
@@ -860,11 +842,8 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
             // Put the whole prefix back to the fresh-boot values set above, so
             // every later derivation runs on known-good numbers.  The checkpoint is already flagged; system_restore
             // unwinds when it looks.
-            s->mode = schedule_paced;
             s->cpu_cycles = 0;
             s->cpi = CYCLES_PER_INSTR_DEFAULT;
-            s->speed_x256 = SPEED_X256_AUTO;
-            s->max_speed_x256 = SPEED_X256_MAX;
             s->io_penalty_remainder = 0;
             s->frame_cycles_left = 0;
             s->total_instructions = 0;
@@ -872,14 +851,6 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
 
         s->sprint_total = 0;
         s->sprint_burndown = 0;
-
-        // Checkpoints are build-ID-gated so the fields are always present,
-        // but corrupt values must not poison the effective-CPI derivation.
-        // speed: 0 (auto) or a pinned multiplier in [1x, 8x].
-        if (s->speed_x256 != SPEED_X256_AUTO && (s->speed_x256 < SPEED_X256_ONE || s->speed_x256 > SPEED_X256_MAX))
-            s->speed_x256 = SPEED_X256_AUTO;
-        if (s->max_speed_x256 < SPEED_X256_ONE || s->max_speed_x256 > SPEED_X256_MAX)
-            s->max_speed_x256 = SPEED_X256_MAX;
 
         // Save event data for deferred restoration (names must be resolved after device registration).
         system_read_checkpoint_data(checkpoint, &s->tmp_num_events, sizeof(s->tmp_num_events));
@@ -911,7 +882,6 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
         }
     } else {
         // Fresh boot
-        s->mode = schedule_paced;
         s->cpu_cycles = 0;
         s->total_instructions = 0;
         s->sprint_total = 0;
@@ -984,8 +954,8 @@ void scheduler_delete(struct scheduler *scheduler) {
 void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *checkpoint) {
     GS_ASSERT(scheduler != NULL && checkpoint != NULL);
     GS_ASSERT(scheduler->cpu.run_sprint != NULL);
-    GS_ASSERT(scheduler->mode == schedule_paced || scheduler->mode == schedule_unthrottled ||
-              scheduler->mode == schedule_accelerated);
+    GS_ASSERT(scheduler->pacing.mode == schedule_paced || scheduler->pacing.mode == schedule_unthrottled ||
+              scheduler->pacing.mode == schedule_accelerated);
     GS_ASSERT(scheduler->cpu_cycles < (1ULL << 60));
     GS_ASSERT(scheduler->num_event_types >= 0 && scheduler->num_event_types <= MAX_EVENT_TYPES);
 
@@ -1454,70 +1424,59 @@ bool scheduler_is_running(struct scheduler *restrict s) {
     return s->running;
 }
 
-// Read the scheduler's pacing mode; a machine without a scheduler paces.
-enum schedule_mode scheduler_get_mode(const struct scheduler *s) {
-    return s ? s->mode : schedule_paced;
+// The pacing a build with no run loop of its own runs under (the unit
+// suites); every platform defines platform_pacing over its run loop's setting.
+__attribute__((weak)) host_pacing_t *platform_pacing(void) {
+    static host_pacing_t pacing = HOST_PACING_DEFAULT;
+    return &pacing;
 }
 
-// Set the scheduler pacing mode (paced, unthrottled or accelerated)
-void scheduler_set_mode(struct scheduler *restrict s, enum schedule_mode mode) {
-    if (!s)
-        return;
-    if (s->mode == mode)
-        return;
-    s->mode = mode;
-    // Estimator hygiene: reset the pacing estimators on every mode switch so
-    // burst-shaped estimates from one mode don't leak into the first ticks of
-    // the other (e.g. turbo's host_secs_per_vbl into paced catch-up math).
-    s->vbl_acc_error = 0.0;
-    s->host_secs_per_vbl = NAN;
-    s->host_secs_per_loop = 1.0 / 60.0;
-    // Entering or leaving accelerated symmetrically re-derives the effective
-    // CPI and clears the sub-cycle remainder, so no accelerated-mode speed
-    // leaks into paced/unthrottled (or vice versa). The governor restarts
-    // from the authentic floor with fresh estimators.
-    scheduler_governor_reset(s);
-    scheduler_update_cpi_eff(s);
-}
-
-// Set the accelerated-mode speed multiplier: 0 = auto (the adaptive governor
-// picks, bounded by max_speed), any other value pins a fixed multiplier
-// (clamped to [1x, 8x] — the correctness-safe configuration, and the
-// only way to accelerate headless runs, which have no host-timing signal for
-// the governor). Retained across mode switches/checkpoints but inert outside
-// schedule_accelerated.
-void scheduler_set_speed(struct scheduler *restrict s, double multiplier) {
-    if (!s)
-        return;
-    if (isnan(multiplier))
-        return;
-    if (multiplier == 0.0) {
-        s->speed_x256 = SPEED_X256_AUTO;
-    } else {
-        double clamped = multiplier;
-        if (clamped < (double)SPEED_X256_ONE / 256.0)
-            clamped = (double)SPEED_X256_ONE / 256.0;
-        if (clamped > (double)SPEED_X256_MAX / 256.0)
-            clamped = (double)SPEED_X256_MAX / 256.0;
-        s->speed_x256 = (uint32_t)(clamped * 256.0 + 0.5);
-    }
-    scheduler_governor_reset(s);
-    scheduler_update_cpi_eff(s);
-}
-
-// Set the user cap on the accelerated-mode multiplier (governor ceiling; a
-// pinned speed is clamped to it at use). Clamped to [1x, 8x]; persisted.
-void scheduler_set_max_speed(struct scheduler *restrict s, double multiplier) {
-    if (!s)
-        return;
-    if (isnan(multiplier))
-        return;
+// A speed multiplier clamped to [1x, 8x], as x256 fixed point.
+static uint32_t speed_x256_clamped(double multiplier) {
     double clamped = multiplier;
     if (clamped < (double)SPEED_X256_ONE / 256.0)
         clamped = (double)SPEED_X256_ONE / 256.0;
     if (clamped > (double)SPEED_X256_MAX / 256.0)
         clamped = (double)SPEED_X256_MAX / 256.0;
-    s->max_speed_x256 = (uint32_t)(clamped * 256.0 + 0.5);
+    return (uint32_t)(clamped * 256.0 + 0.5);
+}
+
+// Pin the accelerated speed (0 = auto, the governor picks).
+void host_pacing_set_speed(host_pacing_t *p, double multiplier) {
+    if (!p || isnan(multiplier))
+        return;
+    p->speed_x256 = (multiplier == 0.0) ? SPEED_X256_AUTO : speed_x256_clamped(multiplier);
+}
+
+// Cap the accelerated speed (the governor's ceiling; a pin is clamped to it).
+void host_pacing_set_max_speed(host_pacing_t *p, double multiplier) {
+    if (!p || isnan(multiplier))
+        return;
+    p->max_speed_x256 = speed_x256_clamped(multiplier);
+}
+
+// Run under the host's pacing from now on.  Nothing to do when it is what
+// the scheduler already runs under; otherwise re-derive.
+void scheduler_apply_pacing(struct scheduler *restrict s, const host_pacing_t *pacing) {
+    if (!s || !pacing)
+        return;
+    if (s->pacing.mode == pacing->mode && s->pacing.speed_x256 == pacing->speed_x256 &&
+        s->pacing.max_speed_x256 == pacing->max_speed_x256)
+        return;
+    if (s->pacing.mode != pacing->mode) {
+        // Estimator hygiene: reset the pacing estimators on every mode switch
+        // so burst-shaped estimates from one mode don't leak into the first
+        // ticks of the other (e.g. turbo's host_secs_per_vbl into paced
+        // catch-up math).
+        s->vbl_acc_error = 0.0;
+        s->host_secs_per_vbl = NAN;
+        s->host_secs_per_loop = 1.0 / 60.0;
+    }
+    s->pacing = *pacing;
+    // Entering or leaving accelerated, or changing its speed, symmetrically
+    // re-derives the effective CPI and clears the sub-cycle remainder, so no
+    // accelerated-mode speed leaks into paced/unthrottled (or vice versa).
+    // The governor restarts from the authentic floor with fresh estimators.
     scheduler_governor_reset(s);
     scheduler_update_cpi_eff(s);
 }
@@ -1529,7 +1488,7 @@ void scheduler_set_max_speed(struct scheduler *restrict s, double multiplier) {
 // running" — a slowly-varying, core-driven signal (the governor steps it on a
 // ≥2 s dwell), suited to a push-on-change notification rather than polling.
 uint32_t scheduler_effective_speed_x256(struct scheduler *restrict s) {
-    if (!s || s->mode != schedule_accelerated)
+    if (!s || s->pacing.mode != schedule_accelerated)
         return SPEED_X256_ONE;
     return scheduler_current_speed_x256(s);
 }
@@ -1560,7 +1519,8 @@ void scheduler_set_cpi(struct scheduler *restrict s, uint32_t cpi) {
 void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
     GS_ASSERT(s != NULL);
     GS_ASSERT(s->cpu.run_sprint != NULL);
-    GS_ASSERT(s->mode == schedule_paced || s->mode == schedule_unthrottled || s->mode == schedule_accelerated);
+    GS_ASSERT(s->pacing.mode == schedule_paced || s->pacing.mode == schedule_unthrottled ||
+              s->pacing.mode == schedule_accelerated);
 
     CHECK_INVARIANTS(s);
 
@@ -1785,9 +1745,10 @@ void scheduler_run_usecs(struct scheduler *restrict s, uint64_t usecs) {
 // steps used to run guest time ~600x fast, which perturbs exactly the timing-
 // sensitive guest code an instruction-stepped debug session is trying to
 // observe.  frame_cycles_left carries the unfinished remainder.
-void scheduler_run_frame(struct scheduler *restrict s, config_t *config) {
+void scheduler_run_frame(struct scheduler *restrict s, config_t *config, const host_pacing_t *pacing) {
     GS_ASSERT(s != NULL);
     GS_ASSERT(config != NULL);
+    scheduler_apply_pacing(s, pacing);
 
     if (s->frame_cycles_left == 0) {
         trigger_vbl(config);
@@ -1816,11 +1777,12 @@ void scheduler_run_frame(struct scheduler *restrict s, config_t *config) {
 }
 
 // Main loop iteration for real-time emulation with VBL-based timing
-void scheduler_main_loop(config_t *restrict config, double now_msecs) {
+void scheduler_main_loop(config_t *restrict config, double now_msecs, const host_pacing_t *pacing) {
     GS_ASSERT(config != NULL);
     GS_ASSERT(system_scheduler() != NULL);
 
     struct scheduler *s = system_scheduler();
+    scheduler_apply_pacing(s, pacing);
 
     CHECK_INVARIANTS(s);
     GS_ASSERT(!isnan(s->vbl_acc_error));
@@ -1845,7 +1807,7 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs) {
     int vbls_to_execute = 0;
     s->previous_time = now;
 
-    switch (s->mode) {
+    switch (s->pacing.mode) {
     case schedule_unthrottled:
         // Execute as many VBLs as fit in TURBO_HOST_HEADROOM of the host loop
         // period. host_secs_per_vbl starts NAN (and is re-NAN'd on checkpoint
@@ -1897,7 +1859,7 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs) {
     // targets; only how many units a single host tick batches differs.
     int executed_vbls = 0;
     for (int i = 0; i < vbls_to_execute; i++) {
-        scheduler_run_frame(s, config);
+        scheduler_run_frame(s, config, pacing);
         executed_vbls++;
         if (!s->running)
             break;
@@ -1915,7 +1877,7 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs) {
     // headroom from the measured per-frame emulation cost. Evaluated only on
     // ticks that actually ran frame-units (no new cost sample otherwise) —
     // and never on the headless path, which doesn't come through this loop.
-    if (s->mode == schedule_accelerated && s->speed_x256 == SPEED_X256_AUTO && executed_vbls > 0)
+    if (s->pacing.mode == schedule_accelerated && s->pacing.speed_x256 == SPEED_X256_AUTO && executed_vbls > 0)
         scheduler_governor_tick(s, delta / denom, current_period);
 }
 
@@ -1975,7 +1937,8 @@ static const char *const sched_mode_names[] = {"paced", "accelerated", "turbo", 
 static const enum schedule_mode sched_mode_values[] = {schedule_paced, schedule_accelerated, schedule_unthrottled};
 
 static DEF_GETTER(sched_attr_mode_get) {
-    enum schedule_mode mode = sched_self_from(self)->mode;
+    (void)self;
+    enum schedule_mode mode = platform_pacing()->mode;
     for (size_t i = 0; i < 3; i++)
         if (sched_mode_values[i] == mode)
             return val_enum((int)i, sched_mode_names, 3);
@@ -1998,7 +1961,9 @@ static DEF_SETTER(sched_attr_mode_set) {
         value_free(&in);
         return val_err("scheduler.mode: expected paced, accelerated or turbo");
     }
-    scheduler_set_mode(sched_self_from(self), sched_mode_values[in.enm.idx]);
+    host_pacing_t *pacing = platform_pacing();
+    pacing->mode = sched_mode_values[in.enm.idx];
+    scheduler_apply_pacing(sched_self_from(self), pacing); // shows at once, not at the next frame
     value_free(&in);
     return val_none();
 }
@@ -2020,33 +1985,36 @@ static DEF_SETTER(sched_attr_cpi_set) {
 // Accelerated-mode speed multiplier. Reads back the multiplier currently in
 // force for accelerated mode — the pinned value, or the adaptive governor's
 // live speed when the setting is auto (so it moves on its own). Writing 0
-// selects auto; 1.0..8.0 pins. The setting is retained (and checkpointed) in
-// every mode but only applies in 'accelerated'; the governor's live speed is
-// transient.
+// selects auto; 1.0..8.0 pins. The setting is the host's: it outlives
+// machines, is never checkpointed, and only applies in 'accelerated'.
 static DEF_GETTER(sched_attr_speed) {
     return val_float((double)scheduler_current_speed_x256(sched_self_from(self)) / 256.0);
 }
 static DEF_SETTER(sched_attr_speed_set) {
     if (isnan(in.f) || (in.f != 0.0 && (in.f < 1.0 || in.f > 8.0)))
         return val_err("scheduler.speed: %g out of range (0 = auto, or 1.0 .. 8.0)", in.f);
-    scheduler_set_speed(sched_self_from(self), in.f);
+    host_pacing_set_speed(platform_pacing(), in.f);
+    scheduler_apply_pacing(sched_self_from(self), platform_pacing());
     return val_none();
 }
 
 // Whether the adaptive governor is choosing the speed (scheduler.speed = 0)
 static DEF_GETTER(sched_attr_speed_auto) {
-    return val_bool(sched_self_from(self)->speed_x256 == SPEED_X256_AUTO);
+    (void)self;
+    return val_bool(platform_pacing()->speed_x256 == SPEED_X256_AUTO);
 }
 
 // User cap on the accelerated-mode multiplier (governor ceiling; also clamps
-// a pinned speed). Persisted.
+// a pinned speed). The host's setting, like the speed.
 static DEF_GETTER(sched_attr_max_speed) {
-    return val_float((double)sched_self_from(self)->max_speed_x256 / 256.0);
+    (void)self;
+    return val_float((double)platform_pacing()->max_speed_x256 / 256.0);
 }
 static DEF_SETTER(sched_attr_max_speed_set) {
     if (isnan(in.f) || in.f < 1.0 || in.f > 8.0)
         return val_err("scheduler.max_speed: %g out of range (1.0 .. 8.0)", in.f);
-    scheduler_set_max_speed(sched_self_from(self), in.f);
+    host_pacing_set_max_speed(platform_pacing(), in.f);
+    scheduler_apply_pacing(sched_self_from(self), platform_pacing());
     return val_none();
 }
 

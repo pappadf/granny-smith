@@ -1042,17 +1042,6 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     media_slot_t media[MEDIA_SLOTS_MAX];
     int n_media = 0;
     bool caps_latched = false;
-    // Pacing is a property of the HOST harness, not of the emulated machine,
-    // so it survives the rebuild: without this the daemon's --speed= setting
-    // (and any scheduler.mode a script set) is silently discarded by the
-    // first machine.boot, and scheduler.mode then reads back 'paced' on a
-    // daemon launched --speed=turbo.
-    enum schedule_mode pacing = schedule_paced;
-    bool pacing_known = false;
-    if (global_emulator && global_emulator->scheduler) {
-        pacing = scheduler_get_mode(global_emulator->scheduler);
-        pacing_known = true;
-    }
     if (global_emulator) {
         if (s_transfer_media && global_emulator->machine->substrate->media_detach)
             n_media = global_emulator->machine->substrate->media_detach(global_emulator, media, MEDIA_SLOTS_MAX);
@@ -1124,11 +1113,6 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
         system_destroy(cfg); // clears global_emulator itself
         return val_err("machine.boot: machine created but ROM staging failed for '%s'", doc.rom);
     }
-
-    // The carried pacing (see above): re-assert it on the machine's own
-    // fresh scheduler, which was constructed in the default paced mode.
-    if (pacing_known && cfg->scheduler)
-        scheduler_set_mode(cfg->scheduler, pacing);
 
     // Hand the transferred media handles back through the device attach
     // paths.  The rebuilt machine is the same model by construction
@@ -1240,8 +1224,7 @@ static DEF_METHOD(machine_method_restart) {
 // its own fresh ones -- but it keeps three explicit, named transfers: the
 // mounted media (the open image handles, so every write survives), the Caps
 // Lock latch and the host-side LaserWriter.  Errors when no machine is
-// running.  Scheduler pacing is kept by every rebuild: it is the harness's
-// setting, not the machine's.
+// running.
 static DEF_METHOD(machine_method_rebuild) {
     const machine_config_record_t *rec = machine_config_record();
     if (!global_emulator || !rec->valid)

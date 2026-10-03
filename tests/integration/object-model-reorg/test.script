@@ -88,7 +88,6 @@ checkpoint.save "${$WORK_DIR}/reorg.gscp"
 checkpoint.load "${$WORK_DIR}/reorg.gscp"
 let hits2 = debug.find.long(0x4D1F8172, 0x400000, 0x400010)
 assert debug.find.meta.path == "debug.find" "debug.find after a load"
-assert scheduler.mode == "turbo" "checkpoint restore keeps the scheduler mode"
 
 # === Callback-backed children have paths ===================================
 assert machine.scsi.device.meta.path == "machine.scsi.device" "collection container path"

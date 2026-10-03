@@ -391,6 +391,17 @@ static void hl_mailbox_init(void) {
     gs_mailbox_set_ready(&g_mbx);
 }
 
+// The daemon's pacing (--speed=, scheduler.mode / speed / max_speed): host
+// state, so it outlives every machine and is never in a checkpoint.  Headless
+// execution is budget-driven and never consults the *pacing*; 'accelerated'
+// does change execution -- frame-units retire more instructions at the
+// lowered effective CPI, at the pinned scheduler.speed.
+static host_pacing_t s_pacing = HOST_PACING_DEFAULT;
+
+host_pacing_t *platform_pacing(void) {
+    return &s_pacing;
+}
+
 // One turn of the loop: a frame-unit if the machine runs, then the drain.
 // Returns whether anything happened (a frame ran or a request was served).
 // One frame, when the machine runs.  Also what inline mode (job.h) calls
@@ -398,7 +409,7 @@ static void hl_mailbox_init(void) {
 static bool hl_run_frame(void) {
     scheduler_t *sched = system_scheduler();
     if (sched && global_emulator && scheduler_is_running(sched)) {
-        scheduler_run_frame(sched, global_emulator);
+        scheduler_run_frame(sched, global_emulator, &s_pacing);
         return true;
     }
     return false;
@@ -1261,7 +1272,6 @@ int main(int argc, char *argv[]) {
     const char *fd_explicit[FLOPPY_NUM_DRIVES] = {NULL}; // fd0= and fd1= explicit drive assignments
     const char *script_file = NULL;
     const char *speed_mode = "paced";
-    enum schedule_mode speed = schedule_paced;
     uint64_t max_cycles = 0;
     uint32_t ram_kb = 0;
     const char *model_override = NULL;
@@ -1338,7 +1348,9 @@ int main(int argc, char *argv[]) {
         if (strncmp(arg, "--speed=", 8) == 0) {
             speed_mode = arg + 8;
             // An unknown mode is an error, not a silent paced run.
-            if (!scheduler_mode_from_string(speed_mode, &speed)) {
+            // The daemon's pacing is host state: every machine it builds or
+            // restores runs under it (platform_pacing).
+            if (!scheduler_mode_from_string(speed_mode, &s_pacing.mode)) {
                 fprintf(stderr, "Error: unknown --speed '%s' (paced, accelerated or turbo)\n", speed_mode);
                 return 1;
             }
@@ -1724,16 +1736,6 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Warning: Cannot open floppy image: %s\n", fd_files[i]);
         }
     }
-
-    // Set scheduler pacing mode (validated at parse time, the same names
-    // scheduler.mode takes).  Headless execution is budget-driven and never
-    // consults the *pacing*; this keeps the flag surface consistent with the
-    // WASM target.  'accelerated' does change execution — frame-units retire
-    // more instructions at the lowered effective CPI; scheduler.speed picks
-    // the multiplier.
-    scheduler_t *sched = system_scheduler();
-    if (sched)
-        scheduler_set_mode(sched, speed);
 
     // Run startup script if provided
     if (script_file) {

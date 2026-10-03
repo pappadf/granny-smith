@@ -669,7 +669,7 @@ the level contract over every model in the registry.
 | Mounted media | None. The old machine's images are closed; a CD bay is registered empty | **Carried**: the same open handles pass through the substrate's `media_detach`/`media_attach`, so the write delta survives | **Kept** | **Kept** (`floppy_reset` keeps media) | From the checkpoint |
 | Caps Lock latch | Released | **Carried** | **Kept** | Kept (`adb_reset` preserves held keys) | From the checkpoint's ADB state |
 | ADB devices | New | New | Back at their default addresses (the bus loses power: `adb_power_on`) | Kept; the ROM's ADB SendReset resets them | Restored |
-| Scheduler pacing (`scheduler.mode`) | **Carried**: the host harness owns it, not the machine | **Carried** | Unchanged | Unchanged | The checkpoint's own value |
+| Scheduler pacing (`scheduler.mode`, `.speed`, `.max_speed`) | Host state (the platform's run loop): untouched, and the new machine runs under it | Untouched | Unchanged | Unchanged | Untouched: never in a checkpoint |
 | `machine.config.created` | Stamped now | **Preserved** | Unchanged | Unchanged | From the checkpoint's record |
 | vROM/PROM offer registries | Process-global; survive | Survive | Survive | Survive | Survive |
 | The explicit `vrom=`/`prom=` pick | The document's, replacing the previous one (none if the document names none); a rejected boot puts the running machine's back (`machine_config_set_explicit_picks`) | The record's | Unchanged | Unchanged | The checkpoint record's |
