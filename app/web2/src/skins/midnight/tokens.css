@@ -69,22 +69,15 @@
     /* Intents */
     --gs-info-fg: #a3adff;
     --gs-info-bg: rgba(124, 140, 255, 0.14);
-    --gs-info-border: rgba(124, 140, 255, 0.4);
     --gs-info-solid: var(--gs-ref-periwinkle);
-    --gs-info-on-solid: #0a0c12;
     --gs-success-fg: var(--gs-ref-teal);
     --gs-success-bg: rgba(94, 234, 212, 0.12);
-    --gs-success-border: rgba(94, 234, 212, 0.4);
     --gs-success-solid: #2dd4bf;
-    --gs-success-on-solid: #04201c;
     --gs-warning-fg: #fcd34d;
     --gs-warning-bg: rgba(251, 191, 36, 0.12);
-    --gs-warning-border: rgba(251, 191, 36, 0.4);
     --gs-warning-solid: var(--gs-ref-amber);
-    --gs-warning-on-solid: #1a1300;
     --gs-danger-fg: #fb8fa6;
     --gs-danger-bg: rgba(251, 113, 133, 0.13);
-    --gs-danger-border: rgba(251, 113, 133, 0.4);
     --gs-danger-solid: #e11d48;
     --gs-danger-on-solid: #ffffff;
 

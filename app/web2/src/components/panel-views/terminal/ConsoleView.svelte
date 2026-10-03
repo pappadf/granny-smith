@@ -345,20 +345,20 @@
   }
   .entry.command::before {
     content: '› ';
-    color: var(--gs-syntax-dim);
+    color: var(--gs-console-prompt-fg);
   }
   /* Syntax colours (and the underline of an unresolved segment) are global:
      styles/syntax.css. */
   .entry.stderr {
-    color: var(--gs-syntax-error);
+    color: var(--gs-console-error-fg);
     opacity: var(--gs-console-stderr-opacity);
   }
   .entry.error {
-    color: var(--gs-syntax-error);
+    color: var(--gs-console-error-fg);
   }
   .entry.echo,
   .entry.progress {
-    color: var(--gs-syntax-dim);
+    color: var(--gs-console-muted-fg);
   }
   .entry.find-hit {
     background: var(--gs-console-progress-bg);
@@ -382,7 +382,7 @@
   }
   .sig-arg {
     text-decoration-thickness: 2px;
-    color: var(--gs-syntax-attribute);
+    color: var(--gs-console-sig-arg-fg);
   }
   .console-input-row {
     display: flex;
@@ -396,7 +396,7 @@
   .console-prompt {
     flex: none;
     white-space: pre;
-    color: var(--gs-syntax-dim);
+    color: var(--gs-console-prompt-fg);
   }
   .console-prompt:empty::before {
     content: '›';

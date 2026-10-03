@@ -49,24 +49,17 @@ Defined by every skin (`skins/<id>/tokens.css`). A token with a default (derived
 | `--gs-control-accent` | color | `--gs-accent` | accent-color of checkboxes, radios, ranges |
 | `--gs-info-fg` | color | (the skin) | info: text or icon on a normal surface |
 | `--gs-info-bg` | color | (the skin) | info: tinted fill (pill, badge) |
-| `--gs-info-border` | color | (the skin) | info: tinted border or rule |
-| `--gs-info-solid` | color | (the skin) | info: strong fill (toast badge, button, bar) |
-| `--gs-info-on-solid` | color | (the skin) | info: text or icon on the strong fill |
+| `--gs-info-solid` | color | (the skin) | info: the strong colour (a toast's icon, a breakpoint) |
 | `--gs-success-fg` | color | (the skin) | success: text or icon on a normal surface |
 | `--gs-success-bg` | color | (the skin) | success: tinted fill (pill, badge) |
-| `--gs-success-border` | color | (the skin) | success: tinted border or rule |
-| `--gs-success-solid` | color | (the skin) | success: strong fill (toast badge, button, bar) |
-| `--gs-success-on-solid` | color | (the skin) | success: text or icon on the strong fill |
+| `--gs-success-solid` | color | (the skin) | success: the strong colour (a toast's icon, a breakpoint) |
 | `--gs-warning-fg` | color | (the skin) | warning: text or icon on a normal surface |
 | `--gs-warning-bg` | color | (the skin) | warning: tinted fill (pill, badge) |
-| `--gs-warning-border` | color | (the skin) | warning: tinted border or rule |
-| `--gs-warning-solid` | color | (the skin) | warning: strong fill (toast badge, button, bar) |
-| `--gs-warning-on-solid` | color | (the skin) | warning: text or icon on the strong fill |
+| `--gs-warning-solid` | color | (the skin) | warning: the strong colour (a toast's icon, a breakpoint) |
 | `--gs-danger-fg` | color | (the skin) | danger: text or icon on a normal surface |
 | `--gs-danger-bg` | color | (the skin) | danger: tinted fill (pill, badge) |
-| `--gs-danger-border` | color | (the skin) | danger: tinted border or rule |
-| `--gs-danger-solid` | color | (the skin) | danger: strong fill (toast badge, button, bar) |
-| `--gs-danger-on-solid` | color | (the skin) | danger: text or icon on the strong fill |
+| `--gs-danger-solid` | color | (the skin) | danger: the strong colour (a toast's icon, a breakpoint) |
+| `--gs-danger-on-solid` | color | (the skin) | the label on the danger fill (a danger button) |
 | `--gs-state-idle-bg` | color | (the skin) | status bar with no machine |
 | `--gs-state-idle-fg` | color | (the skin) | status bar text with no machine |
 | `--gs-state-running-bg` | color | (the skin) | status bar, running |
@@ -95,8 +88,6 @@ Defined by every skin (`skins/<id>/tokens.css`). A token with a default (derived
 | `--gs-code-address` | color | `--gs-text-muted` | address columns |
 | `--gs-code-mnemonic` | color | `--gs-text-strong` | opcodes |
 | `--gs-code-operand` | color | `--gs-text` | operands; hex bytes |
-| `--gs-code-comment` | color | `--gs-syntax-comment` | comments in a listing |
-| `--gs-code-symbol` | color | `--gs-text` | symbol names |
 | `--gs-code-pc-marker` | color | `--gs-focus-ring` | the PC marker |
 | `--gs-code-pc-row-bg` | color | (the skin) | the current-PC row (disassembly, auxiliary cores) |
 | `--gs-code-breakpoint` | color | `--gs-danger-solid` | an enabled breakpoint marker |
@@ -148,7 +139,6 @@ Scheme-independent; a skin may override any of them for its `[data-skin]` scope.
 |---|---|---|---|
 | `--gs-font-ui` | font | `-apple-system, BlinkMacSystemFont, 'Segoe WPC', 'Segoe UI', system-ui, Ubuntu, 'Droid Sans', sans-serif` | the UI font stack |
 | `--gs-font-mono` | font | `'SF Mono', Monaco, Menlo, Consolas, 'Liberation Mono', 'Courier New', monospace` | the monospace font stack |
-| `--gs-font-size-3xs` | length | `9px` | type size 3xs |
 | `--gs-font-size-2xs` | length | `10px` | type size 2xs |
 | `--gs-font-size-xs` | length | `11px` | type size xs |
 | `--gs-font-size-sm` | length | `12px` | type size sm |
@@ -156,7 +146,6 @@ Scheme-independent; a skin may override any of them for its `[data-skin]` scope.
 | `--gs-font-size-md` | length | `14px` | type size md |
 | `--gs-font-size-lg` | length | `15px` | type size lg |
 | `--gs-font-size-xl` | length | `16px` | type size xl |
-| `--gs-font-size-2xl` | length | `18px` | type size 2xl |
 | `--gs-font-size-3xl` | length | `22px` | type size 3xl |
 | `--gs-font-size-4xl` | length | `28px` | type size 4xl |
 | `--gs-font-weight-light` | number | `200` | font weight light |
@@ -170,7 +159,6 @@ Scheme-independent; a skin may override any of them for its `[data-skin]` scope.
 | `--gs-caps-transform` | keyword | `uppercase` | the transform of micro-headings (uppercase or none) |
 | `--gs-caps-tracking` | length | `0.04em` | the letter-spacing of micro-headings |
 | `--gs-numeric` | keyword | `tabular-nums` | numeral style of counters and amounts |
-| `--gs-space-0` | length | `0` | space step 0 |
 | `--gs-space-px` | length | `1px` | space step px |
 | `--gs-space-0-5` | length | `2px` | space step 0-5 |
 | `--gs-space-1` | length | `4px` | space step 1 |
@@ -185,7 +173,6 @@ Scheme-independent; a skin may override any of them for its `[data-skin]` scope.
 | `--gs-space-7` | length | `28px` | space step 7 |
 | `--gs-space-8` | length | `32px` | space step 8 |
 | `--gs-space-12` | length | `48px` | space step 12 |
-| `--gs-radius-none` | length | `0` | corner radius none |
 | `--gs-radius-xs` | length | `2px` | corner radius xs |
 | `--gs-radius-sm` | length | `3px` | corner radius sm |
 | `--gs-radius-md` | length | `4px` | corner radius md |
@@ -328,7 +315,6 @@ One component's knobs, defaulting to semantic or scale tokens; a skin may overri
 | `--gs-segmented-bg-hover` | color | `var(--gs-control-hover)` | segmented: bg hover |
 | `--gs-segmented-fg-selected` | color | `var(--gs-text-strong)` | segmented: fg selected |
 | `--gs-segmented-bg-selected` | color | `var(--gs-control-active)` | segmented: bg selected |
-| `--gs-segmented-border` | color | `transparent` | segmented: border |
 | `--gs-chip-height` | length | `var(--gs-size-control-sm)` | chip: height |
 | `--gs-chip-radius` | length | `var(--gs-radius-sm)` | chip: radius |
 | `--gs-chip-padding-x` | length | `var(--gs-space-2)` | chip: padding x |
@@ -349,8 +335,6 @@ One component's knobs, defaulting to semantic or scale tokens; a skin may overri
 | `--gs-select-height` | length | `var(--gs-size-control-md)` | select: height |
 | `--gs-select-arrow-size` | length | `var(--gs-size-icon-xs)` | select: arrow size |
 | `--gs-inline-input-height` | length | `var(--gs-size-control-sm)` | inline input: height |
-| `--gs-check-size` | length | `13px` | check: size |
-| `--gs-check-radius` | length | `var(--gs-radius-xs)` | check: radius |
 | `--gs-field-label-fg` | color | `var(--gs-text)` | field: label fg |
 | `--gs-field-help-fg` | color | `var(--gs-text-muted)` | field: help fg |
 | `--gs-field-error-fg` | color | `var(--gs-danger-fg)` | field: error fg |
@@ -532,4 +516,4 @@ One component's knobs, defaulting to semantic or scale tokens; a skin may overri
 | `--gs-activity-dot-opacity-max` | number | `0.6` | activity dot: opacity at rest |
 | `--gs-activity-dot-opacity-min` | number | `0.3` | activity dot: low point of the pulse |
 | `--gs-statusbar-icon-opacity` | number | `0.85` | statusbar: the speed icon |
-| `--gs-statusbar-meta-opacity` | number | `0.75` | statusbar: the MIPS readout |
+| `--gs-statusbar-meta-opacity` | number | `0.75` | statusbar: secondary text (the MIPS readout, an upload's detail) |

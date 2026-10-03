@@ -153,11 +153,13 @@ Two sets pin the look of the UI itself:
   print dialog, a URL boot, the Debug view of a paused Plus) with the text that changes on its own masked. It runs with
   the functional suite (`make ui2-e2e`, needs test data).
 
-Both allow a per-pixel colour difference of `threshold: 0.03` in every
+Both allow a per-pixel colour difference of `threshold: 0.05` in every
 skin, still with no pixel beyond it: anti-aliased edges (even a button's
-rounded corners), gradients and translucency come out a level or few apart
-depending on Chromium's compositing history (the same page, shot twice, can
-differ), which an exact comparison turns into flakes.
+rounded corners, or a control's edge over Midnight's translucent glass),
+gradients and translucency come out up to about ten levels apart depending
+on Chromium's compositing history (the same page, shot twice, can differ),
+which an exact comparison turns into flakes. A real colour change, such as
+a text colour moving by a step, is well beyond it.
 
 `web2-specs/appearance.spec.ts` checks the skin plumbing without
 screenshots: a persisted skin is on the page before any of the app's

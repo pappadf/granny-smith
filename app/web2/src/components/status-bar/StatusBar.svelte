@@ -274,7 +274,7 @@
     line-height: inherit;
   }
   .upload-detail {
-    opacity: 0.8;
+    opacity: var(--gs-statusbar-meta-opacity);
     white-space: nowrap;
   }
   .upload-cancel {

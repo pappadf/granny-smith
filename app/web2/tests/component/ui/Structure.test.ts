@@ -10,6 +10,8 @@ import Sash from '@/components/ui/Sash.svelte';
 import Switch from '@/components/ui/Switch.svelte';
 import Toolbar from '@/components/ui/Toolbar.svelte';
 import Spinner from '@/components/ui/Spinner.svelte';
+import Separator from '@/components/ui/Separator.svelte';
+import ActivityDot from '@/components/ui/ActivityDot.svelte';
 
 // A child snippet of plain HTML.
 const html = (h: string) => createRawSnippet(() => ({ render: () => h }));
@@ -213,5 +215,27 @@ describe('Spinner', () => {
     const s = c2.querySelector('.gs-spinner')!;
     expect(s.getAttribute('role')).toBe('status');
     expect(s.getAttribute('data-size')).toBe('sm');
+  });
+});
+
+describe('Separator', () => {
+  it('is a separator in either orientation, keeping its legacy class', () => {
+    for (const orientation of ['vertical', 'horizontal'] as const) {
+      const { container, unmount } = render(Separator, { orientation, class: 'sep' });
+      const sep = container.querySelector('.gs-separator.sep')!;
+      expect(sep.getAttribute('role')).toBe('separator');
+      expect(sep.getAttribute('aria-orientation')).toBe(orientation);
+      expect(sep.getAttribute('data-orientation')).toBe(orientation);
+      unmount();
+    }
+  });
+});
+
+describe('ActivityDot', () => {
+  it('is decorative', () => {
+    const { container } = render(ActivityDot, { class: 'busy' });
+    expect(container.querySelector('.gs-activity-dot.busy')!.getAttribute('aria-hidden')).toBe(
+      'true',
+    );
   });
 });

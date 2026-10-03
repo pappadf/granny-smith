@@ -36,6 +36,8 @@
   import Button from '@/components/ui/Button.svelte';
   import SectionHeading from '@/components/ui/SectionHeading.svelte';
   import Hint from '@/components/ui/Hint.svelte';
+  import Field from '@/components/ui/Field.svelte';
+  import FormGrid from '@/components/ui/FormGrid.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { downloadFiles } from '@/bus/fsOps';
   import { sanitizeName } from '@/lib/archive';
@@ -518,39 +520,41 @@
 >
   {#if form}
     <p class="confirm-doc">{form.method.doc}</p>
-    <form
-      class="arg-form"
-      onsubmit={(ev) => {
-        ev.preventDefault();
-        void submitForm();
-      }}
-    >
-      {#each argsOf(form.method) as a, i (a.name)}
-        <label class="arg">
-          <span class="arg-name"
-            >{a.name}{a.optional ? '' : ' *'}<span class="arg-type">{a.type?.kind ?? ''}</span
-            ></span
-          >
-          {#if a.type?.presentation === 'path'}
-            <PathField
-              value={form.values[i]}
-              label={a.name}
-              onInput={(t) => form && (form.values[i] = t)}
-            />
-          {:else}
-            <ValueEditor
-              type={a.type}
-              value={form.values[i]}
-              label={a.name}
-              onInput={(t) => form && (form.values[i] = t)}
-            />
-          {/if}
-          {#if a.doc}<span class="arg-doc">{a.doc}</span>{/if}
-        </label>
-      {/each}
-      {#if form.error}<Hint as="div" class="form-error" tone="error">{form.error}</Hint>{/if}
-      <button type="submit" hidden aria-hidden="true"></button>
-    </form>
+    <div class="arg-form">
+      <FormGrid
+        onsubmit={(ev) => {
+          ev.preventDefault();
+          void submitForm();
+        }}
+      >
+        {#each argsOf(form.method) as a, i (a.name)}
+          <Field stacked help={a.doc || undefined}>
+            {#snippet labelContent()}
+              <span class="arg-name"
+                >{a.name}{a.optional ? '' : ' *'}<span class="arg-type">{a.type?.kind ?? ''}</span
+                ></span
+              >
+            {/snippet}
+            {#if a.type?.presentation === 'path'}
+              <PathField
+                value={form!.values[i]}
+                label={a.name}
+                onInput={(t) => form && (form.values[i] = t)}
+              />
+            {:else}
+              <ValueEditor
+                type={a.type}
+                value={form!.values[i]}
+                label={a.name}
+                onInput={(t) => form && (form.values[i] = t)}
+              />
+            {/if}
+          </Field>
+        {/each}
+        {#if form.error}<Hint as="div" tone="error">{form.error}</Hint>{/if}
+        <button type="submit" hidden aria-hidden="true"></button>
+      </FormGrid>
+    </div>
   {/if}
   {#snippet actions()}
     <Button size="lg" onclick={() => (form = null)}>Cancel</Button>
@@ -633,26 +637,16 @@
     margin: 0 0 var(--gs-space-2);
   }
   .arg-form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--gs-space-2);
     min-width: 320px;
-  }
-  .arg {
-    display: flex;
-    flex-direction: column;
-    gap: var(--gs-space-0-5);
   }
   .arg-name {
     font-family: var(--gs-font-mono);
+    font-size: var(--gs-font-size-base);
+    color: var(--gs-field-label-fg);
   }
   .arg-type {
     margin-left: var(--gs-space-2);
     color: var(--gs-syntax-type);
-    font-size: var(--gs-font-size-xs);
-  }
-  .arg-doc {
-    color: var(--gs-text-muted);
     font-size: var(--gs-font-size-xs);
   }
 </style>

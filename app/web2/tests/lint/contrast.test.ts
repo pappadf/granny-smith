@@ -25,11 +25,6 @@ const SRC = join(here, '..', '..', 'src');
 // Pairs below their minimum on purpose, with the ratio measured when they were
 // accepted ("skin fg on bg": ratio).  Every entry needs a reason.
 const KNOWN: Record<string, number> = {
-  // The toast badges carry VS Code's notification colours; the glyph on them
-  // is an icon, and the badge keeps its colour as the signal.
-  'workbench --gs-info-on-solid on --gs-info-solid': 2.59,
-  'workbench --gs-success-on-solid on --gs-success-solid': 3.33,
-  'workbench --gs-danger-on-solid on --gs-danger-solid': 3.57,
   // The paused bar is the status bar's orange in both Workbench skins.
   'workbench --gs-state-active-fg on --gs-state-paused-bg': 3.81,
   'workbench-light --gs-state-active-fg on --gs-state-paused-bg': 3.81,

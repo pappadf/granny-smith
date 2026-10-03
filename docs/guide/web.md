@@ -395,12 +395,12 @@ no deadline.
 Entry point: [`app/web2/src/main.ts`](../../app/web2/src/main.ts).
 
 1. Synchronous pre-mount work:
-   - Load persisted state from `localStorage` (scheme, skin, panel
-     pos+size, debug pane state, …).
+   - Load persisted state from `localStorage` (skin, panel pos+size,
+     debug pane state, …).
    - Apply the appearance (`applyAppearance`, see "Styling and skins"):
-     `index.html`'s pre-paint script has already set `<html data-skin
-     data-theme>` before any stylesheet, so there is no flash; this
-     corrects both against the skin registry.
+     `index.html`'s pre-paint script has already set `<html data-skin>`
+     before any stylesheet, so there is no flash; this corrects it
+     against the skin registry.
    - Auto-pick panel orientation from viewport size if no persisted
      value.
 2. **WebGL2 probe.** [`lib/webglCheck.ts`](../../app/web2/src/lib/webglCheck.ts)
@@ -1157,9 +1157,11 @@ console's cursor, then hands focus to the console:
 Typing in the console never moves focus. A finished console job drops the
 cached levels that list collections, so their entries are re-read.
 
-Colours come from the `--gs-syntax-*` palette, defined per skin and scheme
-in [`skins/workbench/tokens.css`](../../app/web2/src/skins/workbench/tokens.css)
-(VS Code Dark+ / Light+), and from the `--gs-console-*` tokens. The `hl-*`
+Colours come from the `--gs-syntax-*` palette, defined per skin (the
+Workbench skins carry VS Code's Dark+ and Light+, in
+[`skins/workbench/tokens.css`](../../app/web2/src/skins/workbench/tokens.css)
+and [`skins/workbench-light/tokens.css`](../../app/web2/src/skins/workbench-light/tokens.css)),
+and from the `--gs-console-*` tokens. The `hl-*`
 syntax classes are one global set,
 [`styles/syntax.css`](../../app/web2/src/styles/syntax.css), used by the
 console's entries and input, the completion popup and the command browser's
@@ -1237,7 +1239,7 @@ Every visual value is a design token, a `--gs-*` CSS custom property, and
 (name, kind, layer, default, purpose). There are three layers:
 
 - **Semantic tokens** (surfaces, text, borders, intents, machine states,
-  the syntax and code palettes) are defined by a skin, per scheme, in
+  the syntax and code palettes) are defined by a skin in
   `skins/<id>/tokens.css`.
 - **Scale tokens** (type, space, radius, metrics, z-order, motion) are in
   [`styles/scale.css`](../../app/web2/src/styles/scale.css).
@@ -1246,23 +1248,22 @@ Every visual value is a design token, a `--gs-*` CSS custom property, and
 
 Components are built from the primitives in `components/ui/`, which read
 only component tokens. A **skin** is a folder of token values, plus an
-optional icon sprite, webfonts and an override stylesheet; the default skin
-is `workbench`; `platinum` is a light-only Mac OS 8-style proof skin. The
-display toolbar's appearance menu (the chevron beside the theme toggle)
-picks the scheme (Dark, Light, System) and the skin; `?skin=<id>` selects
-a skin for one page load. [`src/skins/README.md`](../../app/web2/src/skins/README.md)
+optional icon sprite, webfonts and an override stylesheet. Each skin is one
+look, light or dark (its `--gs-color-scheme` token): Midnight (the default)
+and Starlight share a glass-card layout, Platinum is Mac OS 8, Aqua is
+Mac OS X 10.0, and Workbench and Workbench Light are the VS Code look. The
+display toolbar's Appearance button (a paintbrush) lists the skins;
+`?skin=<id>` selects one for one page load. [`src/skins/README.md`](../../app/web2/src/skins/README.md)
 is the authoring guide.
 
 **Appearance.** [`state/appearance.svelte.ts`](../../app/web2/src/state/appearance.svelte.ts)
-holds the preferences (skin, and scheme mode `dark`, `light` or `system`)
-and what they resolve to. `applyAppearance()` is the only writer of
-`<html data-skin data-theme>` and the `color-scheme` / `theme-color` meta
-tags. The one other writer is the pre-paint script in `index.html`, which
-runs before any stylesheet so a persisted preference never flashes the
-default. The toolbar toggle flips the scheme shown; a skin with one scheme
-disables it. The preferences persist as `gs-theme` (absent means `system`)
-and `gs-skin` (absent means the default); `?skin=` overrides the skin for one
-load. `lib/tokens.ts` reads token values from JavaScript (`readToken`,
+holds the chosen skin and what it resolves to. `applyAppearance()` is the
+only writer of `<html data-skin>` and the `color-scheme` / `theme-color`
+meta tags, which follow the skin's `--gs-color-scheme`. The one other
+writer is the pre-paint script in `index.html`, which runs before any
+stylesheet so a persisted choice never flashes the default. The choice
+persists as `gs-skin` (absent means Midnight); `?skin=` overrides it for
+one load. `lib/tokens.ts` reads token values from JavaScript (`readToken`,
 `readMetric`), and `onAppearanceChange` lets code re-read them after a
 switch, which is how the console's CodeMirror input re-measures.
 
@@ -1275,7 +1276,8 @@ A preprocess step in `svelte.config.js` puts every component `<style>` in
 **Rules** (enforced by `tests/lint/tokens.test.ts`, `contrast.test.ts` and
 `sprite.test.ts`):
 - every `var(--gs-*)` names a contract token, with no fallback;
-- no literal colours or scale values in components;
+- every contract token is read somewhere (CSS `var()` or `readToken`);
+- no literal colours, scale values or opacities in components;
 - focus is never hidden;
 - every stylesheet is in its layer;
 - only `state/appearance` writes the appearance attributes;
@@ -1285,7 +1287,7 @@ A preprocess step in `svelte.config.js` puts every component `<style>` in
 - text meets the declared contrast pairs.
 
 The **UI gallery** (`?gallery` on the dev server) renders every primitive
-in every state, and `make ui2-gallery` screenshots it in both schemes
+in every state, and `make ui2-gallery` screenshots it in every skin
 ([`tests/e2e/README.md`](../../tests/e2e/README.md), "UI screenshots").
 
 ## Extending the Frontend

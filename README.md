@@ -3,7 +3,7 @@
 [![CI](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml/badge.svg)](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Granny Smith** is a browser-first Macintosh and Apple Lisa emulator spanning 22 computer models, from the Lisa 2 to the Power Macintosh 9500 and the Apple Network Server.
+**Granny Smith** is a browser-first Macintosh and Apple Lisa emulator spanning 24 computer models, from the Lisa 2 to the beige Power Macintosh G3 and the Apple Network Server.
 
 > **See it:** [Demos of PlainTalk speech recognition, A/UX, Marathon, and more](GALLERY.md)
 
@@ -14,7 +14,7 @@
 
 ## Emulated Computer Models
 
-In all models, the original ROMs runs without patches, and all on-board devices the software touches are emulated in enough detail to allow original device drivers to work.
+All models run their original ROMs unpatched, with devices emulated closely enough that original drivers work.
 
 - **Apple Lisa 2 and Macintosh XL**
 - **Macintosh Plus**
@@ -25,19 +25,21 @@ In all models, the original ROMs runs without patches, and all on-board devices 
 - **Macintosh Quadra 840AV and Centris 660AV** (the "AV" family)
 - **Power Macintosh 6100, 7100, and 8100** (the "PDM" family)
 - **Power Macintosh 7500, 8500, and 9500** (the "TNT" family)
+- **Power Macintosh G3 (beige)** (the "Gossamer" family)
 - **Apple Network Server 500 and 700** ("Shiner" based on the "TNT" family)
 
 ## Emulated NuBus Cards
 
-NuBus display cards can be seated in any machine with free slots, including machines that already have built-in video. Each card runs either from a dump of the real declaration ROM or from a runtime-generated generic declaration ROM (no ROM dump is required); the generic ROM can also synthesize custom resolutions (e.g. 800×600)
+NuBus display cards fit any machine with free slots, even one with built-in video. Each card runs from a real declaration ROM dump or a runtime-generated generic ROM (no dump required), which can also synthesize custom resolutions (e.g. 800×600).
 
 - **Apple Display Card 8•24** (the standard "JMFB" card)
 - **Apple Display Card 24AC** (including hardware QuickDraw acceleration)
 - **Apple Display Card 8•24 GC** (including hardware QuickDraw acceleration)
 
-## Emulated PCI Cards
+## Emulated PCI Cards and Devices
 
 - **ATI Mach64 GX (Apple "Accelerated" PCI Card)** (including 2D hardware acceleration)
+- **ATI Rage Pro** (the beige G3's on-board video)
 - **3dfx Voodoo2** (full 3D with WebGPU acceleration)
 - **Cirrus Logic 54M30** (mainly used by ANS 700/500)
 - **Symbios Logic 53C825A** (fast/wide SCSI with the on-chip SCRIPTS DMA engine)
@@ -46,7 +48,7 @@ NuBus display cards can be seated in any machine with free slots, including mach
 
 The emulated computer models have been tested with various combinations of the following operating systems:
 
-- **Mac OS System 2 to 7.6**
+- **Mac OS System 2 to 9.2**
 - **A/UX 3.0.1**
 - **Lisa Office System 3.1**
 - **Lisa Xenix 3.0**
@@ -54,14 +56,13 @@ The emulated computer models have been tested with various combinations of the f
 - **Copland D11E4**
 - **MkLinux DR3**
 - **AIX 4.1.5**
+- **Windows NT 4.0 (PowerPC)** (on the Apple Network Server)
 
 ## Work In Progress
 
 - New pre-decoded interpreter/execution model
 - Power Macintosh 9500MP running BeOS
 - ATI Rage 128
-- PowerPC little-endian
-- ANS with Windows NT
 
 ## Project Principles
 
@@ -76,7 +77,7 @@ Keeping it simple means for users that the emulator runs in the browser with no 
 You will need a ROM image and a bootable system disk image for the machine you want to run.
 
 1. **[Open Granny Smith](https://pappadf.github.io/gs-pages/latest/)** in any modern browser
-2. On first launch, upload a ROM for your chosen model (any of the models above); it is persisted in the browser's OPFS storage, so you only need to do this once
+2. On first launch, upload a ROM for your chosen model (any of the models above); it is verified against a checksum table of every known ROM and persisted in the browser's OPFS storage, so you only need to do this once
 3. In the **Machine Configuration** dialog, pick a model, choose RAM, and attach disk images to the floppy / SCSI / CD slots (and display cards to NuBus slots)
 4. Click **Boot** - your session is checkpointed continuously in the background, so closing or reloading the tab won't lose state
 5. Once running, you can drag-and-drop additional disk images directly onto the screen to insert them at runtime
@@ -89,9 +90,8 @@ For build, test, and contribution instructions, see [CONTRIBUTING.md](CONTRIBUTI
 
 - **Safari** - known rendering and audio issues; not currently supported
 - **Firefox** - works partially; some compatibility problems remain
-- **Ethernet** - the Quadras' SONIC and the AV machines' MACE controllers are modeled at the register/self-test level but are not bridged to a network; networking is AppleTalk over LocalTalk (serial) only
+- **Ethernet** - the Quadras' SONIC, the AV machines' MACE and the beige G3's BMAC controllers are modeled at the register level (BMAC down to its transmit/receive filters) but are not bridged to a network; networking is AppleTalk over LocalTalk (serial) only
 - **Sound input** - modeled on the AV machines (Singer): the browser microphone reaches the guest's Sound control panel and PlainTalk speech recognition. The PDM and TNT machines' AWACS plays sound but its input is not modeled, and the Quadras' EASC runs as an ASC-compatible core
-- **LaserWriter** - a print job is interpreted into a PDF by the EfterScript session library: in the browser by default (the interpreter runs in its own worker), in the headless build when it is compiled with `PLATEN=1`; otherwise the job is only spooled (see `docs/reference/protocols/laserwriter-session.md`)
 
 ## A Note on AI
 

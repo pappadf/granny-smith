@@ -27,10 +27,21 @@
     color: inherit;
   }
 
-  /* Text inside empty states and hints. */
+  /* Text inside empty states and hints: a command in code colours, a key
+     as a small cap, emphasis at the scale's semibold. */
   code,
   kbd {
     font-family: var(--gs-font-mono);
+    color: var(--gs-code-operand);
+  }
+  kbd {
+    padding: 0 var(--gs-space-1);
+    border: var(--gs-border-width) solid var(--gs-border);
+    border-radius: var(--gs-radius-sm);
+    background: var(--gs-surface-sunken);
+  }
+  strong {
+    font-weight: var(--gs-font-weight-semibold);
   }
 
   /* Thin themed scrollbars.  Chromium 121+ and Firefox use scrollbar-color

@@ -2,10 +2,13 @@
   // One form row: a label, its control, and a help or error line under the
   // control.  `for` ties the label to the control's id; without a control
   // (help alone) the row is just its text in the control column.
+  // `labelContent` replaces the plain `label` text with markup (a name and
+  // its type, say).  A stacked field without a label has no label row.
   import type { Snippet } from 'svelte';
 
   interface Props {
     label?: string;
+    labelContent?: Snippet;
     for?: string;
     help?: string;
     error?: string;
@@ -16,6 +19,7 @@
   }
   let {
     label,
+    labelContent,
     for: forId,
     help,
     error,
@@ -26,10 +30,13 @@
 </script>
 
 <div class="gs-field {cls}" data-stacked={stacked || undefined}>
+  {#snippet labelText()}
+    {#if labelContent}{@render labelContent()}{:else}{label ?? ''}{/if}
+  {/snippet}
   {#if forId}
-    <label class="gs-field__label" for={forId}>{label ?? ''}</label>
-  {:else}
-    <span class="gs-field__label form-label">{label ?? ''}</span>
+    <label class="gs-field__label" for={forId}>{@render labelText()}</label>
+  {:else if !stacked || label || labelContent}
+    <span class="gs-field__label form-label">{@render labelText()}</span>
   {/if}
   <div class="gs-field__control">
     {@render children?.()}

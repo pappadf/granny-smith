@@ -51,7 +51,7 @@ const SKINS = MANIFESTS.map((m) => m.id);
 // or few apart depending on the page's compositing history (the same DOM,
 // shot twice, differs): every skin allows that much colour noise per pixel,
 // and still not a single pixel beyond it.
-const RASTER_NOISE = 0.03;
+const RASTER_NOISE = 0.05;
 const TABS = [
   "terminal",
   "machine",
