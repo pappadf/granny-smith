@@ -106,6 +106,9 @@ assert machine.scsi.device[0].image.present "after restore: HD attached"
 assert machine.scsi.device[0].image.filename == $hd_file0 "after restore: same medium"
 assert try(machine.scsi.loopback, none) != none "after restore: live controller surface"
 assert machine.scsi.hd_models != none "after restore: probe surface"
+assert files.hd_create("${$WORK_DIR}/after-load.img", "5M") "create a second disk"
+let bay = machine.attach_hd("${$WORK_DIR}/after-load.img", 1)
+assert machine.scsi.device[$bay.id].image.present "after restore: attach_hd reaches the live controller"
 # machine.rebuild then constructs the machine again; the medium rides
 # through both the load and the rebuild.
 machine.rebuild
