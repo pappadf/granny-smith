@@ -16,17 +16,18 @@
 // Layout (ECMA-119)
 // ============================================================================
 
-#define ISO_SECTOR     2048u
-#define ISO_VD_MAX     64 // descriptors scanned before giving up on a terminator
-#define ISO_VD_PRIMARY 1
-#define ISO_VD_SUPPLEM 2
-#define ISO_VD_END     255
-#define ISO_DR_MIN     33 // a directory record without its identifier
-#define ISO_FLAG_DIR   0x02
-#define ISO_FLAG_ASSOC 0x04 // Apple: the associated file is a resource fork
-#define ISO_FLAG_MULTI 0x80 // more extents follow: not supported
-#define ISO_MAX_DIR    (64u * 1024u * 1024u) // the largest directory read
-#define ISO_MAX_DEPTH  64
+#define ISO_SECTOR      2048u
+#define ISO_VD_MAX      64 // descriptors scanned before giving up on a terminator
+#define ISO_VD_PRIMARY  1
+#define ISO_VD_SUPPLEM  2
+#define ISO_VD_END      255
+#define ISO_DR_MIN      33 // a directory record without its identifier
+#define ISO_FLAG_HIDDEN 0x01 // "existence": not shown to the user
+#define ISO_FLAG_DIR    0x02
+#define ISO_FLAG_ASSOC  0x04 // Apple: the associated file is a resource fork
+#define ISO_FLAG_MULTI  0x80 // more extents follow: not supported
+#define ISO_MAX_DIR     (64u * 1024u * 1024u) // the largest directory read
+#define ISO_MAX_DEPTH   64
 
 struct iso_volume {
     gs_source_t *src; // retained
@@ -153,6 +154,50 @@ static bool record_name(const iso_volume_t *v, const uint8_t *r, size_t rlen, ch
     if (n > 1 && out[n - 1] == '.')
         out[n - 1] = '\0';
     slash_to_colon(out);
+    return true;
+}
+
+// Apple's ISO 9660 extensions: Finder info in a directory record's system
+// use area, after the identifier and its pad byte (and after the 14-byte
+// CD-XA record on an XA disc).  The current form (signature "AA") is a run
+// of length-prefixed entries, so it can sit among SUSP / Rock Ridge ones:
+//   'A' 'A' len(14) id(2 = HFS) type[4] creator[4] flags[2]
+// The original form ("BA", 1988) has no length byte and stands alone:
+//   'B' 'A' id(2..4) type[4] creator[4] flags[2]
+// Apple's own CD-ROM driver kept only four flag bits, in the pre-System 7
+// numbering (locked 0x8000, bundle 0x2000, system 0x1000, always-switch-
+// launch 0x0020).  Two of those mean something else since System 7 (0x8000
+// is isAlias), so only bundle and system/name-locked survive here; the
+// record's existence bit becomes the invisible bit.  False when the record
+// carries neither form.
+static bool record_finder_info(const uint8_t *r, size_t rlen, uint32_t *type, uint32_t *creator, uint16_t *flags) {
+    size_t idlen = r[32];
+    size_t su = 33 + idlen + (idlen % 2 == 0 ? 1 : 0);
+    if (su + 8 <= rlen && r[su + 6] == 'X' && r[su + 7] == 'A')
+        su += 14; // CD-XA system use record
+    const uint8_t *fi = NULL;
+    if (su + 13 <= rlen && r[su] == 'B' && r[su + 1] == 'A' && r[su + 2] >= 2 && r[su + 2] <= 4) {
+        fi = r + su + 3;
+    } else {
+        while (su + 4 <= rlen) {
+            const uint8_t *e = r + su;
+            size_t elen = e[2];
+            if (elen < 4 || su + elen > rlen)
+                break;
+            if (e[0] == 'A' && e[1] == 'A' && e[3] == 2 && elen >= 14) {
+                fi = e + 4;
+                break;
+            }
+            su += elen;
+        }
+    }
+    if (!fi)
+        return false;
+    *type = (uint32_t)fi[0] << 24 | (uint32_t)fi[1] << 16 | (uint32_t)fi[2] << 8 | fi[3];
+    *creator = (uint32_t)fi[4] << 24 | (uint32_t)fi[5] << 16 | (uint32_t)fi[6] << 8 | fi[7];
+    *flags = (uint16_t)((fi[8] << 8 | fi[9]) & (0x2000 | 0x1000));
+    if (r[25] & ISO_FLAG_HIDDEN)
+        *flags |= 0x4000;
     return true;
 }
 
@@ -295,10 +340,16 @@ int iso_readdir_next(iso_dir_iter_t *it, iso_dirent_t *out) {
         out->is_dir = (flags & ISO_FLAG_DIR) != 0;
         out->extent = le32(r + 2);
         out->size = le32(r + 10);
-        if (assoc && assoc[32] == r[32] && memcmp(assoc + 33, r + 33, r[32]) == 0) {
+        bool paired = assoc && assoc[32] == r[32] && memcmp(assoc + 33, r + 33, r[32]) == 0;
+        if (paired) {
             out->rsrc_extent = le32(assoc + 2);
             out->rsrc_size = le32(assoc + 10);
         }
+        // Finder info from the file's own record, else from its associated
+        // file's (some mastering tools put it only there).
+        out->has_finder_info = record_finder_info(r, rlen, &out->type, &out->creator, &out->finder_flags);
+        if (!out->has_finder_info && paired)
+            out->has_finder_info = record_finder_info(assoc, assoc[0], &out->type, &out->creator, &out->finder_flags);
         return 1;
     }
     return it->pos >= it->len ? 0 : -EIO;

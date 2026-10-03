@@ -4,7 +4,10 @@
 // ns_disk.c
 // A disk image as a namespace: "partitionN" at the root (from the Apple
 // Partition Map, or one synthetic partition for a bare volume), and inside a
-// partition its filesystem.  Every filesystem sits behind one fs_ops_t, so
+// partition its filesystem.  A disc that is both -- an APM or bare HFS disc
+// that also carries an ISO 9660 volume descriptor, a "hybrid" -- adds one more
+// root entry, "iso9660", the ISO side of the same bytes; a disc that is only
+// ISO 9660 is a bare volume like any other, so its tree is "partition1".  Every filesystem sits behind one fs_ops_t, so
 // the namespace methods do not branch on HFS vs UFS; what only HFS has --
 // resource forks and Finder info -- comes out as the entry's rsrc size and
 // Finder info and as GS_FORK_RSRC / GS_FORK_FINFO sources.  See namespace.h.
@@ -43,7 +46,7 @@ typedef struct fs_entry {
     hfs_fork_t rsrc_fork; // HFS only
     mfs_dirent_t mfs; // MFS only
     iso_dirent_t iso; // ISO 9660 only
-    uint8_t finder_info[GS_FINDER_INFO_SIZE]; // HFS, MFS
+    uint8_t finder_info[GS_FINDER_INFO_SIZE]; // HFS, MFS, ISO 9660 (Apple extensions)
     bool has_finder_info;
 } fs_entry_t;
 
@@ -218,6 +221,10 @@ static void iso_fs_entry(const iso_dirent_t *e, fs_entry_t *out) {
     out->rsrc_size = e->is_dir ? 0 : e->rsrc_size;
     out->id = iso_dir_id(e->extent, e->size);
     out->iso = *e;
+    if (!e->is_dir && e->has_finder_info) {
+        gs_ns_finder_info(e->type, e->creator, e->finder_flags, out->finder_info);
+        out->has_finder_info = true;
+    }
 }
 static void *iso_ops_open(gs_source_t *src, uint64_t off, uint64_t size) {
     return iso_open_source(src, off, size);
@@ -322,14 +329,25 @@ typedef struct {
 typedef struct {
     apm_table_t *apm; // NULL for a bare volume
     apm_partition_t synthetic; // the one partition of a bare volume
-    uint32_t n_parts;
-    part_fs_t *parts;
+    uint32_t n_parts; // partitions (map entries, or the one synthetic)
+    bool hybrid; // also ISO 9660: slot n_parts + 1, listed as "iso9660"
+    apm_partition_t iso_side; // that slot: the whole disc
+    part_fs_t *parts; // n_slots() of them
     const char *kind; // "APM", "HFS", "UFS"
 } disk_ns_t;
 
+#define DISK_ISO_SIDE "iso9660"
+
+static uint32_t n_slots(const disk_ns_t *d) {
+    return d->n_parts + (d->hybrid ? 1 : 0);
+}
+
+// Slot N (1-based): a partition, or past them the hybrid's ISO side.
 static const apm_partition_t *disk_part(const disk_ns_t *d, uint32_t idx1) {
-    if (idx1 == 0 || idx1 > d->n_parts)
+    if (idx1 == 0 || idx1 > n_slots(d))
         return NULL;
+    if (idx1 > d->n_parts)
+        return &d->iso_side;
     return d->apm ? &d->apm->partitions[idx1 - 1] : &d->synthetic;
 }
 
@@ -364,8 +382,9 @@ typedef struct {
     char buf[1024];
 } disk_path_t;
 
-// Parse `path`.  0, or -ENOENT for a first component that is no partitionN.
-static int disk_parse(const char *path, disk_path_t *dp) {
+// Parse `path`.  0, or -ENOENT for a first component that is no partitionN
+// of the disk (nor the hybrid's "iso9660").
+static int disk_parse(const disk_ns_t *d, const char *path, disk_path_t *dp) {
     const char *all[DISK_MAX_COMPONENTS + 1];
     int n = gs_ns_split(path, dp->buf, sizeof(dp->buf), all, DISK_MAX_COMPONENTS + 1);
     if (n < 0)
@@ -374,14 +393,18 @@ static int disk_parse(const char *path, disk_path_t *dp) {
     dp->n = 0;
     if (n == 0)
         return 0;
-    // First component: "partitionN" (case-insensitive, N a positive number).
-    if (strncasecmp(all[0], "partition", 9) != 0 || !all[0][9])
-        return -ENOENT;
-    char *end = NULL;
-    unsigned long idx = strtoul(all[0] + 9, &end, 10);
-    if (!end || *end || idx == 0 || idx > UINT32_MAX || all[0][9] == '-' || all[0][9] == '+')
-        return -ENOENT;
-    dp->part = (uint32_t)idx;
+    if (d->hybrid && strcasecmp(all[0], DISK_ISO_SIDE) == 0) {
+        dp->part = d->n_parts + 1;
+    } else {
+        // "partitionN" (case-insensitive, N a positive number).
+        if (strncasecmp(all[0], "partition", 9) != 0 || !all[0][9])
+            return -ENOENT;
+        char *end = NULL;
+        unsigned long idx = strtoul(all[0] + 9, &end, 10);
+        if (!end || *end || idx == 0 || idx > d->n_parts || all[0][9] == '-' || all[0][9] == '+')
+            return -ENOENT;
+        dp->part = (uint32_t)idx;
+    }
     for (int i = 1; i < n; i++)
         dp->comps[dp->n++] = all[i];
     return 0;
@@ -403,17 +426,20 @@ static void to_dirent(const fs_entry_t *e, gs_dirent_t *out) {
     out->tier = GS_TIER_RANDOM;
 }
 
-// A partition as a directory entry.
-static void part_dirent(uint32_t idx1, gs_dirent_t *out) {
+// A partition (or the hybrid's ISO side) as a directory entry.
+static void part_dirent(const disk_ns_t *d, uint32_t idx1, gs_dirent_t *out) {
     memset(out, 0, sizeof(*out));
-    snprintf(out->name, sizeof(out->name), "partition%u", idx1);
+    if (idx1 > d->n_parts)
+        snprintf(out->name, sizeof(out->name), "%s", DISK_ISO_SIDE);
+    else
+        snprintf(out->name, sizeof(out->name), "partition%u", idx1);
     out->is_dir = true;
 }
 
 static int disk_stat(gs_namespace_t *ns, const char *path, gs_dirent_t *out) {
     disk_ns_t *d = ns->ctx;
     disk_path_t dp;
-    int rc = disk_parse(path, &dp);
+    int rc = disk_parse(d, path, &dp);
     if (rc < 0)
         return rc;
     if (dp.part == 0) {
@@ -424,7 +450,7 @@ static int disk_stat(gs_namespace_t *ns, const char *path, gs_dirent_t *out) {
     if (!disk_part(d, dp.part))
         return -ENOENT;
     if (dp.n == 0) {
-        part_dirent(dp.part, out);
+        part_dirent(d, dp.part, out);
         return 0;
     }
     part_fs_t *pf = disk_fs(ns, dp.part, &rc);
@@ -441,16 +467,16 @@ static int disk_stat(gs_namespace_t *ns, const char *path, gs_dirent_t *out) {
 static int disk_list(gs_namespace_t *ns, const char *path, gs_dirent_t *out, int cap, int *count) {
     disk_ns_t *d = ns->ctx;
     disk_path_t dp;
-    int rc = disk_parse(path, &dp);
+    int rc = disk_parse(d, path, &dp);
     if (rc < 0)
         return rc;
     *count = 0;
     if (dp.part == 0) {
         // Every partition, including ones we cannot descend into (map,
         // driver, free space): they list as directories that do not open.
-        for (uint32_t i = 1; i <= d->n_parts; i++) {
+        for (uint32_t i = 1; i <= n_slots(d); i++) {
             if (*count < cap)
-                part_dirent(i, &out[*count]);
+                part_dirent(d, i, &out[*count]);
             (*count)++;
         }
         return 0;
@@ -529,8 +555,9 @@ static void file_close(gs_source_t *s) {
 static const gs_source_ops_t file_ops = {file_read, file_size, file_key, file_tier, file_close};
 
 static gs_source_t *disk_open(gs_namespace_t *ns, const char *path, gs_fork_t fork, int *err) {
+    disk_ns_t *d = ns->ctx;
     disk_path_t dp;
-    int rc = disk_parse(path, &dp);
+    int rc = disk_parse(d, path, &dp);
     if (rc < 0 || dp.part == 0 || dp.n == 0) {
         *err = rc < 0 ? rc : -EISDIR;
         return NULL;
@@ -599,7 +626,7 @@ static void disk_close(gs_namespace_t *ns) {
     disk_ns_t *d = ns->ctx;
     if (!d)
         return;
-    for (uint32_t i = 0; i < d->n_parts; i++)
+    for (uint32_t i = 0; i < n_slots(d); i++)
         if (d->parts[i].vol)
             d->parts[i].ops->close(d->parts[i].vol);
     free(d->parts);
@@ -657,14 +684,25 @@ gs_namespace_t *gs_ns_open_disk(gs_source_t *src) {
             return NULL;
         }
     }
-    if (d->n_parts) {
-        d->parts = calloc(d->n_parts, sizeof(*d->parts));
+    // A hybrid: an ISO 9660 volume descriptor beside the map or the HFS
+    // volume (a bare ISO disc already took the iso branch above).
+    if ((d->apm || strcmp(d->kind, "HFS") == 0) && iso_probe_source(src, 0, size)) {
+        d->hybrid = true;
+        memset(&d->iso_side, 0, sizeof(d->iso_side));
+        d->iso_side.index = d->n_parts + 1;
+        d->iso_side.size_blocks = size / 512;
+        snprintf(d->iso_side.name, sizeof(d->iso_side.name), "ISO9660");
+        snprintf(d->iso_side.type, sizeof(d->iso_side.type), "ISO9660");
+        d->iso_side.fs_kind = APM_FS_ISO9660;
+    }
+    if (n_slots(d)) {
+        d->parts = calloc(n_slots(d), sizeof(*d->parts));
         if (!d->parts) {
             image_apm_free(d->apm);
             free(d);
             return NULL;
         }
-        for (uint32_t i = 0; i < d->n_parts; i++)
+        for (uint32_t i = 0; i < n_slots(d); i++)
             d->parts[i].ops = fs_ops_for(disk_part(d, i + 1)->fs_kind);
     }
     gs_namespace_t *ns = gs_namespace_new(&disk_ops, d, src);

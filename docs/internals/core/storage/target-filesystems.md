@@ -344,12 +344,23 @@ so a corrupt map with a cycle in it is an error, never the same bytes again.
 not HFS: the primary volume descriptor at sector 16 (`CD001`), directory
 records in both byte orders that never cross a sector. Names come from the
 best description on the disc -- Joliet (UCS-2, preferred), Rock Ridge `NM`
-entries, else the ISO name less its `;1` -- and Apple's associated file (the
-directory-record flag Apple's ISO extensions use) is its file's resource
-fork. A bare ISO 9660 disc is a synthetic `partition1`; a hybrid disc whose
-partition map is APM is read as APM (its HFS side). Multi-extent and
-interleaved files are refused rather than misread, and a Rock Ridge name
-continued into a `CE` area falls back to the ISO name.
+entries, else the ISO name less its `;1`. Apple's extensions to ISO 9660
+are read too: the associated file (a directory-record flag) is its file's
+resource fork, and the `AA` system use entry -- or the original, length-less
+`BA` form, and after a CD-XA record on an XA disc -- is its type, creator and
+Finder flags, so `…/finf` reads and a copy out writes an AppleDouble sidecar.
+Only the bundle and system flag bits are kept (the others meant something
+else before System 7; Apple's own CD-ROM driver also filtered them), and the
+record's existence bit reads as invisible.
+
+A bare ISO 9660 disc is a synthetic `partition1`, like any bare volume. A
+*hybrid* -- an APM or bare HFS disc that also carries an ISO volume
+descriptor at sector 16 -- lists its partitions as usual plus one more root
+entry, `iso9660`, the ISO side of the same bytes (`disc.iso/partition2/…` for
+HFS, `disc.iso/iso9660/…` for ISO). The ISO side is not a `partitionN`
+because it is not a map entry. Multi-extent and interleaved files are
+refused rather than misread, and a Rock Ridge name continued into a `CE`
+area falls back to the ISO name.
 
 ---
 
@@ -516,7 +527,7 @@ The web frontend runs these through the **Terminal console**
 | HFS | MDB + catalog B-tree; 3 inline extents **plus Extents Overflow file** (fragmented forks read fully); data/resource forks; Finder info; MacRoman→UTF-8; `/`↔`:` name addressing | EO/catalog file fragmented past their *own* inline extents |
 | UFS | UFS-1 / 4.3BSD-Tahoe, big-endian; direct + single + double indirect; root traversal; symlink reporting | triple-indirect; files > 4 GiB; symlink following |
 | MFS | bare 400K-era volumes; flat directory; both forks; Finder info; cycle-safe allocation chains | Finder folder structure (it lived in the Desktop file) |
-| ISO 9660 | primary descriptor; Joliet and Rock Ridge (`NM`) names; Apple associated files as resource forks; bare discs | multi-extent and interleaved files; Rock Ridge `CE` continuation; the ISO side of an APM hybrid |
+| ISO 9660 | primary descriptor; Joliet and Rock Ridge (`NM`) names; Apple associated files as resource forks; Apple `AA` / `BA` Finder info; bare discs; both sides of an APM or HFS hybrid (`iso9660` beside `partitionN`) | multi-extent and interleaved files; Rock Ridge `CE` continuation; ProDOS (`AA` id 1) file types |
 | Mutability | read-only everywhere (`-EROFS`) | any write path into an image |
 | Concurrency | refuses descent into a file the guest has SCSI-attached (`-EBUSY`) | — |
 | GUI | terminal commands (`vfs.*`, `image …`); **read-only image descent in the Filesystem tree** (expand image → partitions → HFS/UFS contents); **Download** or **drag out** a file/folder from an image (copied via `files.cp`) | writing into an image from the tree (read-only); resource-fork extraction from the tree (use `files.cat …/rsrc`) |
