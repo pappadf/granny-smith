@@ -41,4 +41,5 @@ EXTRA_SRCS   := ../../../../src/core/job/seam.c \
                 ../../../../src/core/storage/drive_catalog.c
 EXTRA_SRCS += ../../../../src/core/storage/image_part.c
 USE_SOURCE_LAYER := 1
+EXTRA_SRCS += ../../../../src/core/storage/image_iso9660.c
 include ../../common.mk

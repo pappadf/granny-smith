@@ -17,5 +17,7 @@ extern const pram_defaults_t pram_defaults_mac_ii; // II / IIx / IIcx / SE/30 / 
 extern const pram_defaults_t pram_defaults_iici; // IIci / IIsi: default video device $81 = $80
 extern const pram_defaults_t pram_defaults_av; // Q840AV / Q660AV
 extern const pram_defaults_t pram_defaults_pdm; // 6100 / 7100 / 8100
+extern const pram_defaults_t pram_defaults_tnt; // 7500 / 8500 / 9500, in NVRAM (of_nvram.h)
+extern const pram_defaults_t pram_defaults_g3; // beige G3, in NVRAM (of_nvram.h)
 
 #endif // PRAM_DEFAULTS_H

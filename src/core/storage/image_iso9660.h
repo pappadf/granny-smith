@@ -10,8 +10,9 @@
 // ("NM" entries: POSIX names), else the ISO name less its ";1" version and
 // a trailing '.'.  A file's Apple "associated file" (the directory record
 // flag Apple's ISO extensions use for a resource fork) is that file's
-// resource fork, not an entry of its own.  Multi-extent and interleaved
-// files are refused rather than misread.
+// resource fork, not an entry of its own; the same extensions' "AA" (or
+// original "BA") system use entry is its type, creator and Finder flags.
+// Multi-extent and interleaved files are refused rather than misread.
 
 #pragma once
 #ifndef IMAGE_ISO9660_H
@@ -38,6 +39,10 @@ typedef struct {
     uint64_t size;
     uint32_t rsrc_extent;
     uint64_t rsrc_size; // 0: no resource fork
+    // Apple ISO 9660 extensions ("AA", or the original "BA"): Finder info.
+    bool has_finder_info;
+    uint32_t type, creator;
+    uint16_t finder_flags;
 } iso_dirent_t;
 
 // Does the volume at `off` carry an ISO 9660 primary volume descriptor?

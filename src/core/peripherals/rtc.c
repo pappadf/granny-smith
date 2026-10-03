@@ -455,19 +455,6 @@ bool rtc_pram_write(rtc_t *rtc, uint8_t addr, uint8_t value) {
     return true;
 }
 
-void pram_defaults_apply(uint8_t pram[256], const pram_defaults_t *d) {
-    if (!pram || !d)
-        return;
-    pram[0x0C] = (uint8_t)(d->xpram_token >> 24);
-    pram[0x0D] = (uint8_t)(d->xpram_token >> 16);
-    pram[0x0E] = (uint8_t)(d->xpram_token >> 8);
-    pram[0x0F] = (uint8_t)d->xpram_token;
-    if (d->startmgr)
-        memcpy(pram + PRAM_STARTMGR_BASE, d->startmgr, PRAM_STARTMGR_LEN);
-    pram[PRAM_MMFLAGS] = d->mmflags | d->mmflags_booted;
-    pram[PRAM_STARTMGR_WAIT] |= PRAM_STARTMGR_NO_WAIT;
-}
-
 // The parameter RAM as rtc_init left it -- see rtc.h.
 void rtc_pram_reset(rtc_t *rtc) {
     if (!rtc)

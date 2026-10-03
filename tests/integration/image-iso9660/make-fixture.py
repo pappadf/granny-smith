@@ -11,7 +11,19 @@ probably right.  The disc has a primary volume descriptor (8.3 names,
 ";1" versions, upper case), a Joliet supplementary descriptor (UCS-2 long
 names) and both trees' path tables, as mastering tools write them.
 
-Usage: make-fixture.py <out.iso> <iso-path>=<host-file> ...
+Two options, from Apple's practice rather than ECMA-119:
+  --finder <iso-path>=TYPE/CREA  give that file Apple's "AA" system use entry
+                                 (Apple Extensions to ISO 9660: type, creator
+                                 and Finder flags -- the bundle bit, here)
+  --hybrid-hfs <volume>          make the disc a hybrid: a driver descriptor
+                                 and Apple Partition Map in the ISO system
+                                 area, and the HFS volume given as an
+                                 Apple_HFS partition after the ISO data, as
+                                 Apple's hybrid mastering lays a disc out
+  --finder-out <iso-path>=<file> write the 32 Finder info bytes a reader
+                                 should report for that file
+
+Usage: make-fixture.py [options] <out.iso> <iso-path>=<host-file> ...
   An iso-path may contain one '/' (a file in a folder).
 """
 
@@ -29,7 +41,17 @@ def both32(v):
     return struct.pack("<I", v) + struct.pack(">I", v)
 
 
-def dir_record(ident, extent, size, is_dir):
+FINDER_FLAGS = 0x2000  # hasBundle: one of the bits Apple's extensions carry
+
+
+def apple_aa(finder):
+    """Apple's "AA" entry: signature, length 14, id 2 (HFS), type, creator,
+    Finder flags."""
+    ftype, creator = finder
+    return b"AA" + bytes([14, 2]) + ftype + creator + struct.pack(">H", FINDER_FLAGS)
+
+
+def dir_record(ident, extent, size, is_dir, su=b""):
     rec = bytearray(33)
     rec[1] = 0
     rec[2:10] = both32(extent)
@@ -41,6 +63,8 @@ def dir_record(ident, extent, size, is_dir):
     rec += ident
     if len(ident) % 2 == 0:
         rec += b"\0"
+    rec += su
+    rec += b"\0" * (len(rec) % 2)
     rec[0] = len(rec)
     return bytes(rec)
 
@@ -61,8 +85,9 @@ def directory(entries, self_extent, parent_extent, namefn):
     """Records of one directory: '.', '..', then entries, never crossing a
     sector; returns (bytes padded to whole sectors)."""
     recs = [dir_record(b"\0", self_extent, 0, True), dir_record(b"\1", parent_extent, 0, True)]
-    for name, is_dir, extent, size in entries:
-        recs.append(dir_record(namefn(name, is_dir), extent, size, is_dir))
+    for name, is_dir, extent, size, finder in entries:
+        su = apple_aa(finder) if finder else b""
+        recs.append(dir_record(namefn(name, is_dir), extent, size, is_dir, su))
     out = bytearray()
     for r in recs:
         if len(out) % SECTOR + len(r) > SECTOR:
@@ -72,8 +97,39 @@ def directory(entries, self_extent, parent_extent, namefn):
     return out
 
 
+def put_be(buf, off, fmt, *v):
+    struct.pack_into(">" + fmt, buf, off, *v)
+
+
+def apm_entry(map_blocks, start, count, name, ptype):
+    e = bytearray(512)
+    e[0:2] = b"PM"
+    put_be(e, 4, "III", map_blocks, start, count)
+    e[16:16 + len(name)] = name.encode()
+    e[48:48 + len(ptype)] = ptype.encode()
+    put_be(e, 0x54, "II", 0, count)  # logical data start and count
+    put_be(e, 0x58, "I", 0x33)  # valid, allocated, in use, readable
+    return e
+
+
 def main():
-    out_path, specs = sys.argv[1], sys.argv[2:]
+    args = sys.argv[1:]
+    finder, finder_out, hybrid_hfs = {}, {}, None
+    while args and args[0].startswith("--"):
+        opt, val = args[0], args[1]
+        args = args[2:]
+        if opt == "--finder":
+            path, tc = val.split("=", 1)
+            ftype, creator = tc.split("/", 1)
+            finder[path] = (ftype.encode("mac_roman"), creator.encode("mac_roman"))
+        elif opt == "--finder-out":
+            path, host = val.split("=", 1)
+            finder_out[path] = host
+        elif opt == "--hybrid-hfs":
+            hybrid_hfs = val
+        else:
+            sys.exit("unknown option " + opt)
+    out_path, specs = args[0], args[1:]
     files = []  # (folder or None, name, bytes)
     for spec in specs:
         iso_path, host = spec.split("=", 1)
@@ -104,11 +160,11 @@ def main():
 
     for tree, namefn in (("iso", iso_name), ("joliet", joliet_name)):
         t = trees[tree]
-        entries = [(fo, True, t[fo], SECTOR) for fo in folders]
-        entries += [(n, False, extents[(None, n)], len(d)) for f, n, d in files if f is None]
+        entries = [(fo, True, t[fo], SECTOR, None) for fo in folders]
+        entries += [(n, False, extents[(None, n)], len(d), finder.get(n)) for f, n, d in files if f is None]
         put(t["root"], directory(entries, t["root"], t["root"], namefn))
         for fo in folders:
-            sub = [(n, False, extents[(fo, n)], len(d)) for f, n, d in files if f == fo]
+            sub = [(n, False, extents[(fo, n)], len(d), finder.get(fo + "/" + n)) for f, n, d in files if f == fo]
             put(t[fo], directory(sub, t[fo], t["root"], namefn))
     for folder, name, data in files:
         put(extents[(folder, name)], data)
@@ -164,6 +220,28 @@ def main():
     term[1:6] = b"CD001"
     term[6] = 1
     put(18, term)
+
+    if hybrid_hfs:
+        # Blocks 0-2 (of 512 bytes) sit in the ISO system area, which ISO
+        # leaves to the platform: the driver descriptor ("ER") and a map of
+        # two entries, the map itself and the HFS volume after the ISO data.
+        with open(hybrid_hfs, "rb") as f:
+            hfs = f.read()
+        hfs_start = total * SECTOR // 512
+        disc += hfs
+        blocks = len(disc) // 512
+        ddm = bytearray(512)
+        ddm[0:2] = b"ER"
+        put_be(ddm, 2, "HI", 512, blocks)
+        disc[0:512] = ddm
+        disc[512:1024] = apm_entry(2, 1, 2, "Apple", "Apple_partition_map")
+        disc[1024:1536] = apm_entry(2, hfs_start, len(hfs) // 512, "Hybrid", "Apple_HFS")
+
+    for path, host in finder_out.items():
+        ftype, creator = finder[path]
+        with open(host, "wb") as f:
+            f.write(ftype + creator + struct.pack(">H", FINDER_FLAGS) + b"\0" * 22)
+
     with open(out_path, "wb") as f:
         f.write(disc)
 

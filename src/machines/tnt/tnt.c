@@ -42,6 +42,7 @@
 #include "mac_host_io.h"
 #include "machine_checkpoint.h"
 #include "machine_teardown.h" // the shared config_t-owned delete chain
+#include "of_nvram.h"
 #include "pci.h"
 #include "ppc.h"
 #include "rtc.h"
@@ -476,26 +477,36 @@ static void tnt_fwscsi_attach(config_t *cfg) {
 // The NVRAM part is NON-VOLATILE: an 8 KB store whose content survives
 // power cycles, and it does so here for the hardware's own reason --
 // machine.restart (the power switch) and machine.reset never destroy the
-// machine, so the part is simply never touched.  Only a new machine
-// (machine.boot, machine.rebuild) starts from a virgin store, the same as a
-// different logic board would; nothing carries a store across a teardown.
+// machine, so the part is simply never touched.  A new machine
+// (machine.boot, machine.rebuild) gets a new part; nothing carries a store
+// across a teardown.  That rule is the fix for #112: the store used to ride
+// a process-lifetime holder across every teardown, and a run stopped part-
+// way through Open Firmware's format of a blank store left it torn.
 //
-// That last rule is the fix for #112.  The store used to ride a process-
-// lifetime holder across every teardown, and a run stopped part-way through
-// Open Firmware's format of a virgin store -- a bounded `scheduler.run`, a
-// client that walked away mid-run -- left it torn: a machine built on a torn
-// store stops in the ROM's serial-console read loop with a black screen and
-// no way back short of restarting the process.
+// A new Macintosh board's part is not blank: it holds the store its own
+// firmware formats (of_nvram.h) -- a valid Open Firmware partition and the
+// ROM's parameter RAM defaults -- so the firmware skips its format pass and
+// the FIRST boot can match a boot driver (XPRAM $77 "Default OS" = 1) and
+// reach the startup volume.  On a blank store it could not: the format
+// clears the PRAM partition, and only the second boot found a disk.
 //
-// Load-bearing for booting from disk: Open Firmware reformats a blank store
-// (clearing the Mac OS PRAM partition AFTER the OS's XPRAM shadow would need
-// it), so the first-ever cold boot of a virgin machine cannot match a boot
-// driver (XPRAM $77 "Default OS" reads 0) and only the SECOND boot -- against
-// the now-valid store -- reaches the startup volume.  Rows that need that
-// second boot (suite-ans's ans500-diag-floppy: its DIMM table) take it with
-// machine.restart.  A checkpoint restore loads the store from the gc blob.
+// The Network Server still starts blank.  Its firmware versions and their
+// defaults are not characterised, and its POST caches the DIMM sizing in
+// the store; rows that need the second boot (suite-ans's ans500-diag-floppy)
+// take it with machine.restart.  A checkpoint restore loads the store from
+// the gc blob.
+static void tnt_nvram_factory(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    if (!st)
+        return;
+    if (tnt_board(cfg)->kind == TNT_BOARD_MAC)
+        of_nvram_factory(st->gc.nvram, &of_nvram_defaults_tnt);
+    else
+        memset(st->gc.nvram, 0, TNT_NVRAM_SIZE);
+}
 
-// Clear the non-volatile store — what pulling the battery does.
+// Clear the non-volatile store -- what pulling the battery does: the store
+// goes back to what a new board carries (above).
 //
 // Apple, Network Server Hardware Developer Notes, §2.7: "Removal of a
 // battery from the Main Logic Board will reset all parameter and NVRAM to
@@ -504,9 +515,7 @@ static void tnt_fwscsi_attach(config_t *cfg) {
 // ROM caches its DIMM sizing and its Open Firmware environment in there, so
 // a store written by one model is not necessarily meaningful to another.
 void tnt_nvram_clear(config_t *cfg) {
-    tnt_state_t *st = tnt_st(cfg);
-    if (st)
-        memset(st->gc.nvram, 0, TNT_NVRAM_SIZE);
+    tnt_nvram_factory(cfg);
     LOG(1, "NVRAM cleared (battery removed)");
 }
 
@@ -517,6 +526,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
         return -1;
     }
     cfg->machine_context = st;
+    tnt_nvram_factory(cfg); // a checkpoint below restores over it
 
     // Core: memory map, the 601/604 per profile, the scheduler on the PPC
     // seam.  CPI 1.0 — the same determinism-and-measurement rationale as

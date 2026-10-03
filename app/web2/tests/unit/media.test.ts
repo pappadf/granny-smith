@@ -107,3 +107,27 @@ describe('rom media descriptor', () => {
     expect(result.reject).toBeUndefined();
   });
 });
+
+describe('fd media descriptor', () => {
+  const sized = (size: number) =>
+    (async (path: string) => (path === 'files.path_size' ? size : null)) as unknown as GsEval;
+
+  it('accepts raw and Disk Copy 4.2 floppy sizes, with and without tag data', async () => {
+    for (const size of [
+      409600,
+      819200,
+      1474560, // raw
+      409684,
+      819284,
+      1474644, // Disk Copy 4.2, no tags
+      419284,
+      838484, // Disk Copy 4.2 with 12 tag bytes per sector (GCR disks)
+    ])
+      expect((await MEDIA_TYPES.fd.validate('/x', sized(size))).valid, String(size)).toBe(true);
+  });
+
+  it('rejects other sizes', async () => {
+    for (const size of [0, 409601, 20971520])
+      expect((await MEDIA_TYPES.fd.validate('/x', sized(size))).valid, String(size)).toBe(false);
+  });
+});

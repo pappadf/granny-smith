@@ -97,8 +97,17 @@ state, the Screamer registers, the PCI bus, the image table, the MESH bus
 and chip, SWIM3, the ATAPI bus and the two ATA channels, and last BMAC.  The NVRAM
 is part of the Heathrow block; it survives `machine.reset` and
 `machine.restart` because neither destroys the machine (the board
-battery), a new machine (`machine.boot`, `machine.rebuild`) starts from a
-virgin store, and `machine.nvram.clear` is the battery pull.
+battery), and a new machine (`machine.boot`, `machine.rebuild`) gets a new
+part. The new part holds what the board's own firmware formats
+(`src/machines/runtime/of_nvram.c`, the TNT rule in
+`docs/internals/machines/tnt/tnt.md`): OF 2.4's variables (Rev C; the Rev A
+ROM's OF 2.0f1 accepts the same store, its own format differing only in
+`diag-device`) and the ROM's parameter RAM defaults (startup device `$6666`,
+"no default"). `machine.nvram.clear` is the battery pull back to that
+store. `machine.nvram` also has `getenv` / `setenv` and `startup_disk`
+(the Mac OS 9 form, partition byte 1); the depth field is not offered here,
+because Mac OS 9 re-applies the depth from its Display Preferences file
+shortly after boot.
 
 ## 4. Testing
 

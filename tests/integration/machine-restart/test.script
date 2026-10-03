@@ -98,11 +98,19 @@ assert checkpoint.save("${$WORK_DIR}/restart.checkpoint") "checkpoint save"
 machine.boot model="iicx" rom="${$ROM}"
 assert try(machine.scsi.device[0].type, none) == none "fresh boot must start with empty drives"
 assert checkpoint.load("${$WORK_DIR}/restart.checkpoint") "checkpoint load"
-# (The shell's machine.scsi binding goes stale across checkpoint.load — a
-# pre-existing object-model quirk, so the restored device is not probed
-# here.  machine.rebuild constructs the machine AND the binding again; the
-# asserts below prove the restored medium rode through both the load and the
-# rebuild.)
+# The live controller answers directly after the load -- no restart or
+# rebuild in between.  (checkpoint.load builds the new machine before it
+# destroys the old one; the old controller's teardown once re-attached the
+# pre-machine probe node then, shadowing machine.scsi until the next boot.)
+assert machine.scsi.device[0].image.present "after restore: HD attached"
+assert machine.scsi.device[0].image.filename == $hd_file0 "after restore: same medium"
+assert try(machine.scsi.loopback, none) != none "after restore: live controller surface"
+assert machine.scsi.hd_models != none "after restore: probe surface"
+assert files.hd_create("${$WORK_DIR}/after-load.img", "5M") "create a second disk"
+let bay = machine.attach_hd("${$WORK_DIR}/after-load.img", 1)
+assert machine.scsi.device[$bay.id].image.present "after restore: attach_hd reaches the live controller"
+# machine.rebuild then constructs the machine again; the medium rides
+# through both the load and the rebuild.
 machine.rebuild
 assert machine.id == "iicx" "rebuild after restore: same model"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "rebuild after restore: recorded card"

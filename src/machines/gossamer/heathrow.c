@@ -52,6 +52,7 @@
 #include "log.h"
 #include "machine.h"
 #include "object.h"
+#include "of_nvram.h"
 #include "pci.h"
 #include "ppc.h"
 #include "scc.h"
@@ -815,6 +816,59 @@ static value_t nvram_method_clear(struct object *self, const member_t *m, int ar
     return val_bool(true);
 }
 
+// The named fields (tnt's grand_central.c has the same set, plus depth).
+static const arg_decl_t nvram_getenv_args[] = {
+    {.name = "name", .kind = V_STRING, .doc = "Open Firmware variable, e.g. \"boot-device\""},
+};
+static const arg_decl_t nvram_setenv_args[] = {
+    {.name = "name",  .kind = V_STRING, .doc = "Open Firmware variable"                 },
+    {.name = "value", .kind = V_STRING, .doc = "true/false, a hex number, or the string"},
+};
+
+static value_t nvram_method_getenv(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    uint8_t *nv = nvram_store(self);
+    if (!nv)
+        return val_err("nvram not available");
+    char buf[OF_NVRAM_OF_SIZE + 1];
+    if (of_nvram_getenv(nv, argv[0].s, buf, sizeof(buf)) == OF_VAR_NONE)
+        return val_err("nvram.getenv: no variable '%s' (or no valid Open Firmware partition)", argv[0].s);
+    return val_str(buf);
+}
+
+static value_t nvram_method_setenv(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    uint8_t *nv = nvram_store(self);
+    if (!nv)
+        return val_err("nvram not available");
+    const char *err = of_nvram_setenv(nv, argv[0].s, argv[1].s);
+    if (err)
+        return val_err("nvram.setenv %s: %s", argv[0].s, err);
+    return val_none();
+}
+
+static value_t nvram_attr_startup_disk(struct object *self, const member_t *m) {
+    (void)m;
+    uint8_t *nv = nvram_store(self);
+    return val_int(nv ? of_nvram_startup_scsi(nv) : -1);
+}
+
+static value_t nvram_attr_startup_disk_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    uint8_t *nv = nvram_store(self);
+    bool ok = true;
+    int64_t id = val_as_i64(&in, &ok);
+    value_free(&in);
+    if (!nv)
+        return val_err("nvram not available");
+    if (!ok || id < -1 || id > 6)
+        return val_err("nvram.startup_disk: a SCSI ID 0..6, or -1 for no default");
+    of_nvram_set_startup_scsi(nv, (int)id, &of_nvram_defaults_g3);
+    return val_none();
+}
+
 static value_t nvram_attr_size(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
@@ -863,8 +917,20 @@ static const member_t nvram_members[] = {
      .method = {.args = nvram_restore_args, .nargs = 1, .result = V_NONE, .fn = nvram_method_restore}},
     {.kind = M_METHOD,
      .name = "clear",
-     .doc = "Blank the store — what removing the board battery does",
+     .doc = "Pull the battery: back to the store a new board carries",
      .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = nvram_method_clear}                },
+    {.kind = M_METHOD,
+     .name = "getenv",
+     .doc = "Read an Open Firmware variable, as printenv shows it",
+     .method = {.args = nvram_getenv_args, .nargs = 1, .result = V_STRING, .fn = nvram_method_getenv}},
+    {.kind = M_METHOD,
+     .name = "setenv",
+     .doc = "Set an Open Firmware variable, as setenv does (repacks, re-checksums)",
+     .method = {.args = nvram_setenv_args, .nargs = 2, .result = V_NONE, .fn = nvram_method_setenv}  },
+    {.kind = M_ATTR,
+     .name = "startup_disk",
+     .doc = "Mac OS's default startup device as a SCSI ID (XPRAM $78-$7B); -1 = none",
+     .attr = {.type = V_INT, .get = nvram_attr_startup_disk, .set = nvram_attr_startup_disk_set}     },
 };
 
 static const class_desc_t nvram_class = {

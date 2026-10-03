@@ -20,4 +20,22 @@ assert files.path_size($fd) == 819200 "the floppy image on the disc"
 assert files.list("${$fd}/partition1/System Folder") "the HFS volume inside the floppy image on the disc"
 assert files.path_size("${$fd}/partition1/System Folder/System/rsrc/_raw") > 0 "a resource fork two levels down"
 
+# A hybrid disc: the partition map's HFS volume and, beside it, the ISO side.
+let hy = "${$WORK_DIR}/hybrid.iso"
+let roots = ""
+for e in files.list($hy) {
+    $roots = "${$roots}|${$e.name}"
+}
+assert $roots == "|partition1|partition2|iso9660" "the map's partitions, then the ISO side (got ${$roots})"
+assert files.path_compare("${$hy}/partition2/Hello.txt", "config.mk") == -1 "the HFS side reads"
+assert files.path_compare("${$hy}/ISO9660/Read Me.txt", "config.mk") == -1 "the ISO side reads (name matched without case)"
+assert !files.path_exists("${$iso}/iso9660") "a disc that is only ISO has no iso9660 entry"
+assert !files.path_exists("${$hy}/partition3") "the ISO side is not a partitionN"
+
+# Apple's "AA" entry is the file's Finder info, and a copy out keeps it.
+assert files.path_compare("${$hy}/iso9660/Read Me.txt/finf", "${$WORK_DIR}/readme.finf") == -1 "Finder info from AA"
+assert !files.path_exists("${$iso}/partition1/Read Me.txt/finf") "no AA, no Finder info"
+assert files.cp("${$hy}/iso9660/Read Me.txt", "${$WORK_DIR}/Read Me.txt") "copy the file out"
+assert files.path_size("${$WORK_DIR}/._Read Me.txt") > 0 "its AppleDouble sidecar carries the Finder info"
+
 quit

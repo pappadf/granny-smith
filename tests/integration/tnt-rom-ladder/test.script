@@ -88,9 +88,12 @@ machine.memory.poke.b(0xF301D000, 0)
 # The 68k Start Manager initialised low memory: ROMBase carries the TNT
 # ROM base (the 68k sees the ROM at its physical home, DecoderInfo[0]),
 # memory sizing ran (MemTop at the 32 MB kernel-carved top), and the
-# timer calibration wrote TimeDBRA.
+# timer calibration wrote TimeDBRA.  MemTop is the value of a machine whose
+# NVRAM was valid at power-on -- every boot of a real one, and here the
+# first, since a new board carries a formatted store.  The first boot after
+# Open Firmware formats a blank store ends $40000 higher ($1FD6000).
 assert debug.mac.globals.read("ROMBase") == 0xFFC00000 "T7: 68k low memory not initialized (ROMBase)"
-assert debug.mac.globals.read("MemTop") == 0x1FD6000 "T7: MemTop not at the 32 MB layout"
+assert debug.mac.globals.read("MemTop") == 0x1F96000 "T7: MemTop not at the 32 MB layout"
 assert machine.memory.peek.w(0xD00) != 0 "T7: TimeDBRA calibration missing"
 
 # --- T8: the 60.15 Hz tick chain runs at rate --------------------------------
@@ -177,8 +180,9 @@ assert machine.sound.out_enabled == false "T10: channel 8 still draining at the 
 # ScrnBase into the BAR-assigned VRAM aperture ($90000000 + $800000
 # usable window + $200 start_addr + $10 pixel-0 offset) and QuickDraw
 # paints the desktop.  The golden is the 640x480 gray desktop with the
-# boot arrow cursor — stable from here to at least 3B instructions
-# (the boot's media hunt draws nothing further without a disk).
+# boot arrow cursor and the Start Manager's blinking disk icon: with no
+# disk attached, the media hunt has found nothing to boot.  (A blank store
+# reached that point later -- Open Firmware's format pass came first.)
 assert debug.mac.globals.read("ScrnBase") == 0x90800210 "T11: ScrnBase not in the Control VRAM aperture"
 check("gray-desktop.png")
 

@@ -68,10 +68,12 @@ def ladder(label, compat, fcr) {
     # The kernel's MMU layout for 64 MB (HTAB at $03FC0000, HTABMASK 3), and
     # the 68k Start Manager's low memory: ROMBase, the kernel-carved MemTop,
     # the ProductInfo kind byte the ROM tests for this family ($7F), VIA1 at
-    # Heathrow +$16000, and the timer calibration.
+    # Heathrow +$16000, and the timer calibration.  MemTop is that of a store
+    # valid at power-on (a new board carries a formatted one); the first boot
+    # after Open Firmware formats a blank store ends $80000 higher.
     assert machine.cpu.sdr1 == 0x03FC0003 "G7 ${$label}: SDR1 not at the 64 MB layout"
     assert debug.mac.globals.read("ROMBase") == 0xFFC00000 "G7 ${$label}: 68k low memory not initialized (ROMBase)"
-    assert debug.mac.globals.read("MemTop") == 0x03FAE000 "G7 ${$label}: MemTop not at the 64 MB layout"
+    assert debug.mac.globals.read("MemTop") == 0x03F2E000 "G7 ${$label}: MemTop not at the 64 MB layout"
     assert machine.memory.peek.b(0xCB3) == 0x7F "G7 ${$label}: BoxFlag != $7F"
     assert machine.memory.peek.l(0x1D4) == 0xF3016000 "G7 ${$label}: VIA1 base in low memory != Heathrow +$16000"
     assert machine.memory.peek.w(0xD00) != 0 "G7 ${$label}: TimeDBRA calibration missing"

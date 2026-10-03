@@ -38,11 +38,14 @@ export interface MediaTypeDescriptor {
 export type GsEval = (path: string, args?: unknown[]) => Promise<unknown>;
 
 // Common floppy disk sizes (matches detect_diskcopy: 400/800/1440 KB, +84 if
-// the image is wrapped with a DiskCopy 4.2 header without sector tags).
+// the image is wrapped with a DiskCopy 4.2 header, plus 12 bytes of tag data
+// per 512-byte sector when the image carries tags -- GCR disks do; Disk
+// Copy writes none for a 1.44 MB MFM disk).
 const FD_400 = 400 * 1024;
 const FD_800 = 800 * 1024;
 const FD_HD = 1440 * 1024;
 const DC42_HEADER = 0x54;
+const DC42_TAGS = (data: number) => (data / 512) * 12;
 
 // Shape returned by C-side `machine.rom.identify` (src/core/memory/rom.c).
 // `id` is the ROM's own stored checksum, the only thing a ROM file is ever
@@ -269,6 +272,8 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
         size === FD_400 + DC42_HEADER ||
         size === FD_800 ||
         size === FD_800 + DC42_HEADER ||
+        size === FD_400 + DC42_TAGS(FD_400) + DC42_HEADER ||
+        size === FD_800 + DC42_TAGS(FD_800) + DC42_HEADER ||
         size === FD_HD ||
         size === FD_HD + DC42_HEADER;
       if (!recognised) return { valid: false };

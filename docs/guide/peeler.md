@@ -168,9 +168,9 @@ assert ${files.archive.extract("/tmp/myarchive.sit", "/tmp/out")}
 ### Web drag-and-drop
 
 The browser frontend asks the core (`files.archive.identify`) whether a
-dropped file is an archive. Recognised archives are extracted to a
-staging directory with `files.archive.extract` and their contents are
-re-probed for media. See [`web.md`](web.md) for the full upload
+dropped file is an archive. A recognised archive is not extracted: its
+members are probed for media through the archive's VFS path, and only the
+medium found is copied out. See [`web.md`](web.md) for the full upload
 pipeline.
 
 ### Web Filesystem tab
@@ -179,7 +179,10 @@ The Filesystem panel expands any file the core marks `expandable` in
 its `files.list` result — disk images and archives alike — so archive
 contents can be browsed in place. Right-clicking an expandable archive
 adds an **Unpack** entry, which calls `files.archive.extract` into a
-sibling `<name>_unpacked/` directory and refreshes the tree. No file
+sibling `<name>_unpacked/` directory and refreshes the tree. A file inside
+an image or archive that the core identifies as a medium offers **Insert
+into floppy drive**, **Attach as hard disk** or **Insert into CD-ROM drive**
+while a machine exists; the core attaches it by its in-archive path. No file
 extension is consulted anywhere; see
 [`diskImage.ts`](../../app/web2/src/lib/diskImage.ts) and
 [`FilesystemView.svelte`](../../app/web2/src/components/panel-views/filesystem/FilesystemView.svelte).
