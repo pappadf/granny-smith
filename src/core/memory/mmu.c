@@ -323,6 +323,12 @@ bool mmu_check_tt(mmu_state_t *mmu, uint32_t addr, bool write, bool supervisor) 
 // Table Walk
 // ============================================================================
 
+// Name of a 68030 descriptor type code, for the walk trace.
+static const char *mmu_dt_name(uint32_t dt) {
+    static const char *const names[4] = {"invalid", "page", "table", "table"};
+    return names[dt & 3];
+}
+
 // Walk the guest's PMMU translation descriptor table tree.
 // Resolves a logical address to a physical address + permission bits.
 // `update_um` selects whether the search maintains the architectural history
@@ -331,8 +337,10 @@ bool mmu_check_tt(mmu_state_t *mmu, uint32_t addr, bool write, bool supervisor) 
 // the translation tables nor the address translation cache", and for the
 // side-effect-free debug translators.  The 68040 walker takes the same flag
 // but defaults the other way, so the two cannot share a default.
+// `trace`, when non-NULL, records one step per root pointer and table level
+// for the debugger's `walk` (mmu_trace.h); the real translations pass NULL.
 static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor,
-                                        bool update_um) {
+                                        bool update_um, mmu_trace_t *trace) {
     mmu_walk_result_t result = {0};
     result.valid = false;
     result.mmusr = 0;
@@ -367,8 +375,19 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
 
     // DT from root pointer (bits 1:0 of upper word)
     uint32_t root_dt = root_upper & 3;
+    mmu_trace_step_t *ts = mmu_trace_step(trace, "root");
+    if (ts) {
+        mmu_trace_str(ts, "name", (TC_SRE(tc) && supervisor) ? "srp" : "crp");
+        mmu_trace_hex(ts, "desc", root_upper);
+        mmu_trace_hex(ts, "desc_lo", root_lower);
+        mmu_trace_uint(ts, "dt", root_dt);
+        mmu_trace_str(ts, "type", mmu_dt_name(root_dt));
+    }
     if (root_dt == DESC_DT_INVALID) {
         result.mmusr |= MMUSR_I;
+        result.page_size_bits = 32; // the whole space is invalid
+        mmu_trace_str(ts, "reason", "invalid");
+        mmu_trace_outcome(ts, "fault");
         return result;
     }
 
@@ -390,6 +409,12 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
     limit_active = true;
     limit_is_lower = (root_upper >> 31) & 1;
     limit_value = (root_upper >> 16) & 0x7FFF;
+    if (ts) {
+        mmu_trace_hex(ts, "next", table_addr);
+        mmu_trace_uint(ts, "limit", limit_value);
+        mmu_trace_bool(ts, "lower_limit", limit_is_lower);
+        mmu_trace_outcome(ts, "next");
+    }
 
     // Current bit position in logical address (start after IS bits)
     uint32_t bit_pos = 32 - is;
@@ -425,6 +450,13 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
         // Extract index from logical address
         bit_pos -= index_bits;
         uint32_t index = (logical_addr >> bit_pos) & ((1u << index_bits) - 1);
+        ts = mmu_trace_step(trace, "level");
+        if (ts) {
+            static const char *const level_names[4] = {"A", "B", "C", "D"};
+            mmu_trace_str(ts, "name", level_names[level]);
+            mmu_trace_uint(ts, "index", index);
+        }
+        result.page_size_bits = bit_pos; // what this level's descriptor covers, if the walk stops here
 
         // Limit check on the index into THIS table, from the long-format
         // descriptor that pointed here.  MC68030UM: "When the L/U bit is set,
@@ -443,6 +475,12 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
         if (limit_active && (limit_is_lower ? (index < limit_value) : (index > limit_value))) {
             result.mmusr |= MMUSR_I | MMUSR_L | MMUSR_B;
             result.mmusr |= (levels_walked & 7);
+            if (ts) {
+                mmu_trace_uint(ts, "limit", limit_value);
+                mmu_trace_bool(ts, "lower_limit", limit_is_lower);
+                mmu_trace_str(ts, "reason", "limit");
+                mmu_trace_outcome(ts, "fault");
+            }
             return result;
         }
 
@@ -458,12 +496,28 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
 
         // DT is always in bits 1:0 of the first (upper, for long) word
         uint32_t dt = desc_hi & 3;
+        if (ts) {
+            mmu_trace_hex(ts, "addr", desc_addr);
+            mmu_trace_hex(ts, "desc", desc_hi);
+            if (long_desc)
+                mmu_trace_hex(ts, "desc_lo", desc_lo);
+            mmu_trace_uint(ts, "dt", dt);
+            mmu_trace_str(ts, "type", mmu_dt_name(dt));
+        }
 
         if (dt == DESC_DT_INVALID) {
             // Invalid descriptor → bus error
             result.mmusr |= MMUSR_I;
             result.mmusr |= (levels_walked & 7);
+            mmu_trace_str(ts, "reason", "invalid");
+            mmu_trace_outcome(ts, "fault");
             return result;
+        }
+        if (ts) {
+            mmu_trace_bool(ts, "wp", ((desc_hi >> 2) & 1) != 0);
+            mmu_trace_bool(ts, "u", ((desc_hi >> 3) & 1) != 0);
+            if (long_desc)
+                mmu_trace_bool(ts, "s", ((desc_hi >> 8) & 1) != 0);
         }
 
         // OR in this descriptor's protection bits.  Must happen before long_desc
@@ -493,6 +547,8 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
             if (bit_pos >= 32) {
                 result.mmusr |= MMUSR_I;
                 result.mmusr |= (levels_walked & 7);
+                mmu_trace_str(ts, "reason", "invalid");
+                mmu_trace_outcome(ts, "fault");
                 return result;
             }
             uint32_t page_mask = (1u << bit_pos) - 1;
@@ -535,6 +591,14 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
                 result.modified = true;
             }
 
+            if (ts) {
+                mmu_trace_bool(ts, "m", result.modified);
+                mmu_trace_bool(ts, "ci", ((desc_hi >> 6) & 1) != 0);
+                mmu_trace_hex(ts, "phys", result.physical_addr);
+                mmu_trace_hex(ts, "size", 1u << bit_pos);
+                mmu_trace_outcome(ts, "hit");
+            }
+
             // Build MMUSR
             if (result.write_protected)
                 result.mmusr |= MMUSR_W;
@@ -551,6 +615,14 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
         // Long:  bits 31:4 of the lower word hold TA; bits 3:0 must be zero.
         // Either way mask with 0xFFFFFFF0 to strip the flag nibble.
         table_addr = desc_lo & 0xFFFFFFF0;
+        if (ts) {
+            mmu_trace_hex(ts, "next", table_addr);
+            if (long_desc) {
+                mmu_trace_uint(ts, "limit", (desc_hi >> 16) & 0x7FFF);
+                mmu_trace_bool(ts, "lower_limit", ((desc_hi >> 31) & 1) != 0);
+            }
+            mmu_trace_outcome(ts, "next");
+        }
         // A long-format table descriptor carries L/U in bit 31 of its upper
         // word and the 15-bit LIMIT in bits 30:16; both bound the next level's
         // index.  Short-format descriptors have no limit field, so following
@@ -567,6 +639,9 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
     // This shouldn't happen with a correctly configured TC, but treat as invalid.
     result.mmusr |= MMUSR_I;
     result.mmusr |= (levels_walked & 7);
+    ts = mmu_trace_step(trace, "level");
+    mmu_trace_str(ts, "reason", "no page descriptor");
+    mmu_trace_outcome(ts, "fault");
     return result;
 }
 
@@ -1014,7 +1089,7 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
 
     // Perform table walk.  This is the real translation path (and PLOAD), so
     // the architectural history bits are maintained.
-    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, write, supervisor, /*update_um=*/true);
+    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, write, supervisor, /*update_um=*/true, NULL);
 
     // Publish the walk's MMUSR to mmu->mmusr so that any PMOVE MMUSR,EA the
     // kernel issues from its bus-error handler reflects the actual fault
@@ -1131,7 +1206,7 @@ uint16_t mmu_test_address(mmu_state_t *mmu, uint32_t logical_addr, bool write, b
     // translation tables nor the address translation cache", so update_um is
     // false -- the opposite default from the 68040, whose PTEST does update
     // them (MC68040UM 3.7.3).
-    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, write, supervisor, /*update_um=*/false);
+    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, write, supervisor, /*update_um=*/false, NULL);
 
     mmu->mmusr = result.mmusr;
     if (desc_addr_out)
@@ -1165,7 +1240,7 @@ uint32_t mmu_translate_debug(mmu_state_t *mmu, uint32_t logical_addr, bool super
     if (mmu_check_tt(mmu, logical_addr, false, supervisor))
         return logical_addr;
 
-    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, false, supervisor, /*update_um=*/false);
+    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, false, supervisor, /*update_um=*/false, NULL);
 
     if (result.valid)
         return result.physical_addr;
@@ -1190,10 +1265,54 @@ bool mmu_translate_checked(mmu_state_t *mmu, uint32_t logical_addr, bool supervi
             *pa_out = logical_addr;
         return true; // transparent translation: identity, valid
     }
-    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, false, supervisor, /*update_um=*/false);
+    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, false, supervisor, /*update_um=*/false, NULL);
     if (pa_out)
         *pa_out = result.valid ? result.physical_addr : logical_addr;
     return result.valid;
+}
+
+// The debugger's translation (translate / walk / map): side-effect-free, with
+// the protection the queried privilege sees and, when `trace` is given, the
+// TT check and every table level the walk read.
+void mmu_debug_translate(mmu_state_t *mmu, uint32_t logical_addr, bool supervisor, bool fetch, mmu_xlate_t *out,
+                         mmu_trace_t *trace) {
+    if (!mmu || !mmu->enabled) {
+        mmu_xlate_identity(out, logical_addr); // MMU off: identity everywhere
+        return;
+    }
+    if (mmu->m040) {
+        mmu040_debug_translate(mmu->m040, mmu, logical_addr, supervisor, fetch, out, trace);
+        return;
+    }
+    out->space = NULL;
+
+    // Transparent translation first: a match bypasses the tables.  The 030's
+    // TT match does not distinguish instruction fetches from data.
+    mmu_trace_step_t *ts = mmu_trace_step(trace, "tt");
+    const char *tt_name = tt_matches(mmu->tt0, logical_addr, false, supervisor)   ? "tt0"
+                          : tt_matches(mmu->tt1, logical_addr, false, supervisor) ? "tt1"
+                                                                                  : NULL;
+    if (tt_name) {
+        uint32_t tt = tt_name[2] == '0' ? mmu->tt0 : mmu->tt1;
+        mmu_trace_str(ts, "name", tt_name);
+        mmu_trace_hex(ts, "value", tt);
+        mmu_trace_outcome(ts, "hit");
+        out->phys = logical_addr;
+        out->valid = true;
+        out->via = "tt";
+        // A TT register with RW=1 matches one direction only; a write it does
+        // not match goes through the tables instead.
+        out->access = mmu_access(true, tt_matches(tt, logical_addr, true, supervisor));
+        out->span_bits = 24; // TT registers match on A31-A24
+        return;
+    }
+
+    mmu_walk_result_t r = mmu_table_walk(mmu, logical_addr, false, supervisor, /*update_um=*/false, trace);
+    out->via = "page";
+    out->valid = r.valid;
+    out->phys = r.valid ? r.physical_addr : logical_addr;
+    out->access = mmu_access(!(r.supervisor_only && !supervisor), !r.write_protected);
+    out->span_bits = r.page_size_bits;
 }
 
 // Translate against an explicit CRP root (e.g. a snapshot of MAE's CRP).
@@ -1221,7 +1340,8 @@ bool mmu_translate_with_crp(mmu_state_t *mmu, uint32_t logical_addr, uint64_t cr
     // via phys_to_host but does not touch the SoA arrays.
     uint64_t saved_crp = mmu->crp;
     mmu->crp = crp_root;
-    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, false, /*supervisor=*/false, /*update_um=*/false);
+    mmu_walk_result_t result =
+        mmu_table_walk(mmu, logical_addr, false, /*supervisor=*/false, /*update_um=*/false, NULL);
     mmu->crp = saved_crp;
     if (!result.valid)
         return false;

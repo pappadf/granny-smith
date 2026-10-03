@@ -6,19 +6,23 @@
   import { machine } from '@/state/machine.svelte';
   import MmuStateTab from './MmuStateTab.svelte';
   import MmuTranslateTab from './MmuTranslateTab.svelte';
+  import MmuMapTab from './MmuMapTab.svelte';
+  import MmuDescriptorsTab from './MmuDescriptorsTab.svelte';
   import SegmentedControl from '@/components/ui/SegmentedControl.svelte';
 
-  // State and Translate read the core's own MMU (bus/mmu.ts).  Map and
-  // Descriptors are gone until the core can walk a table for them: they
-  // showed a hand-written SE/30 layout as if it were live.
+  // Every tab reads the core's own MMU (bus/mmu.ts): its registers, a
+  // walk of one address, the mapped ranges, and raw descriptors.
   const TABS = [
     { key: 'state', label: 'State' },
     { key: 'translate', label: 'Translate' },
+    { key: 'map', label: 'Map' },
+    { key: 'descriptors', label: 'Descriptors' },
   ] as const;
 
   // Every MMU kind: the 68030 PMMU, the 68040, the PowerPC 601/604 and the
-  // Lisa's segment MMU all answer the same translate/peek (the section used
-  // to show only on a 68030, with fixtures).
+  // Lisa's segment MMU all answer the same translate / walk / map /
+  // descriptor / peek (the section used to show only on a 68030, with
+  // fixtures).
   const visible = $derived(machine.mmuKind !== 'none');
 </script>
 
@@ -50,6 +54,10 @@
       </Tabs>
       {#if debug.mmuSubtab === 'translate'}
         <MmuTranslateTab />
+      {:else if debug.mmuSubtab === 'map'}
+        <MmuMapTab />
+      {:else if debug.mmuSubtab === 'descriptors'}
+        <MmuDescriptorsTab />
       {:else}
         <MmuStateTab />
       {/if}

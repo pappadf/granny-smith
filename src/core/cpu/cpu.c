@@ -8,6 +8,7 @@
 
 #include "alias.h"
 #include "debug.h"
+#include "debug_mmu.h"
 #include "fpu.h"
 #include "log.h"
 #include "memory.h"
@@ -1118,43 +1119,149 @@ static DEF_GETTER(attr_mmu_enabled) {
     return val_uint(1, mmu->enabled ? 1 : 0);
 }
 
-// === Typed translate / peek, shared by the 030 and 040 nodes ================
+// === Inspection methods, shared by the 030 and 040 nodes ===================
 //
-// The same two methods exist on every MMU kind (68030, 68040, PowerPC, the
-// Lisa's segment MMU), with the same result shapes, so a debugger needs no
-// per-kind code to label an address or read memory.
+// translate, walk, map, descriptor and peek exist on every MMU kind (68030,
+// 68040, PowerPC, the Lisa's segment MMU) with the same result shapes
+// (debug_mmu.h), so a debugger needs no per-kind code to label an address,
+// trace a translation, list the mappings or read memory.  The translation
+// itself is mmu_debug_translate, which dispatches to the 68040 walker.
 
-// Whether a 68040 transparent-translation register maps `addr` for this
-// privilege: enabled, base/mask match on A31-A24, and the S field allows it.
-static bool tt040_hit(uint32_t tt, uint32_t addr, bool supervisor) {
-    if (!TT040_E(tt))
-        return false;
-    uint32_t mask = ~TT040_MASK(tt) & 0xFFu;
-    if (((addr >> 24) & mask) != (TT040_BASE(tt) & mask))
-        return false;
-    uint32_t sf = TT040_SFIELD(tt);
-    return sf >= 2 || (sf == 1) == supervisor;
+// The 68K MMUs' debugger translation (debug_mmu_xlate_fn).
+static void mmu68k_xlate(void *ctx, uint32_t addr, bool supervisor, bool fetch, mmu_xlate_t *out, mmu_trace_t *trace) {
+    (void)ctx;
+    mmu_debug_translate(g_mmu, addr, supervisor, fetch, out, trace);
 }
 
-// translate(addr, [supervisor], [fetch]) -> {phys, valid, via}.  Omitted
-// `supervisor` means the CPU's current state.  `fetch` selects the 040's
-// instruction TT registers; the 030 PMMU's TT match does not distinguish.
+// translate(addr, [supervisor], [fetch]) -> {phys, valid, via, access}.
+// Omitted `supervisor` means the CPU's current state.  `fetch` selects the
+// 040's instruction TT registers; the 030 PMMU's TT match does not distinguish.
 static DEF_METHOD(mmu68k_method_translate) {
+    return debug_mmu_translate(mmu68k_xlate, NULL, debug_cpu_is_supervisor(), argc, argv);
+}
+
+// walk(addr, [supervisor], [fetch]) -> translate's map plus the steps: the
+// TT check, the root pointer, and every table level the walk read.
+static DEF_METHOD(mmu68k_method_walk) {
+    return debug_mmu_walk(mmu68k_xlate, NULL, debug_cpu_is_supervisor(), argc, argv);
+}
+
+// map([start], [end], [supervisor], [fetch], [limit]) -> the mapped runs.
+static DEF_METHOD(mmu68k_method_map) {
+    return debug_mmu_map(mmu68k_xlate, NULL, debug_cpu_is_supervisor(), 1ull << 32, 12, argc, argv);
+}
+
+// descriptor formats: the 030's two descriptor sizes; the 040's three table
+// levels (the level decides how a 4-byte descriptor reads).
+static const char *const mmu030_desc_formats[] = {"short", "long", NULL};
+static const char *const mmu040_desc_formats[] = {"root", "pointer", "page", NULL};
+
+// Index of the `format` argument (argv[2]) in its enum table; `dflt` when omitted.
+static int desc_format(int argc, const value_t *argv, const char *const *table, int dflt) {
+    if (argc <= 2)
+        return dflt;
+    if (argv[2].kind == V_ENUM)
+        return argv[2].enm.idx;
+    if (argv[2].kind == V_STRING && argv[2].s)
+        for (int i = 0; table[i]; i++)
+            if (strcmp(argv[2].s, table[i]) == 0)
+                return i;
+    return dflt;
+}
+
+// descriptor(addr, [count], [format]) on the 68030: decode short (4-byte) or
+// long (8-byte) descriptors at a physical address.  A descriptor's own type
+// field says page or table; at the last level a table type means indirect.
+static DEF_METHOD(mmu030_method_descriptor) {
+    if (!g_mmu)
+        return val_err("mmu not present");
     uint32_t addr = (uint32_t)argv[0].u;
-    bool sup = (argc >= 2 && argv[1].kind == V_BOOL) ? argv[1].b : debug_cpu_is_supervisor();
-    bool fetch = argc >= 3 && argv[2].kind == V_BOOL && argv[2].b;
-    if (!g_mmu || !g_mmu->enabled)
-        return debug_translation_result(addr, true, "identity");
-    if (g_mmu->m040) {
-        mmu040_state_t *m4 = g_mmu->m040;
-        if (tt040_hit(fetch ? m4->itt0 : m4->dtt0, addr, sup) || tt040_hit(fetch ? m4->itt1 : m4->dtt1, addr, sup))
-            return debug_translation_result(addr, true, "tt");
-    } else if (mmu_check_tt(g_mmu, addr, false, sup)) {
-        return debug_translation_result(addr, true, "tt");
+    uint32_t count = debug_mmu_desc_count(argc, argv);
+    bool is_long = desc_format(argc, argv, mmu030_desc_formats, 0) == 1;
+    uint32_t ps_mask = (1u << TC_PS(g_mmu->tc)) - 1; // page-address bits below the page size are unused
+    value_t *items = NULL;
+    size_t len = 0, cap = 0;
+    for (uint32_t i = 0; i < count; i++, addr += is_long ? 8 : 4) {
+        uint32_t hi = mmu_read_physical_uint32(g_mmu, addr);
+        uint32_t lo = is_long ? mmu_read_physical_uint32(g_mmu, addr + 4) : hi;
+        uint32_t dt = hi & 3;
+        value_map_builder_t *b = val_map_new();
+        debug_mmu_put_hex(b, "addr", addr);
+        debug_mmu_put_hex(b, "desc", hi);
+        if (is_long)
+            debug_mmu_put_hex(b, "desc_lo", lo);
+        val_map_put(b, "dt", val_uint(4, dt));
+        val_map_put(b, "type", val_str(dt == DESC_DT_INVALID ? "invalid" : dt == DESC_DT_PAGE ? "page" : "table"));
+        if (dt != DESC_DT_INVALID) {
+            debug_mmu_put_bool(b, "wp", (hi >> 2) & 1);
+            debug_mmu_put_bool(b, "u", (hi >> 3) & 1);
+            if (is_long)
+                debug_mmu_put_bool(b, "s", (hi >> 8) & 1);
+        }
+        if (dt == DESC_DT_PAGE) {
+            debug_mmu_put_bool(b, "m", (hi >> 4) & 1);
+            debug_mmu_put_bool(b, "ci", (hi >> 6) & 1);
+            debug_mmu_put_hex(b, "phys", lo & ~ps_mask & 0xFFFFFFFCu);
+        } else if (dt != DESC_DT_INVALID) {
+            debug_mmu_put_hex(b, "next", lo & 0xFFFFFFF0u);
+            val_map_put(b, "next_format", val_str(dt == DESC_DT_TABLE8 ? "long" : "short"));
+            if (is_long) {
+                val_map_put(b, "limit", val_uint(4, (hi >> 16) & 0x7FFF));
+                debug_mmu_put_bool(b, "lower_limit", (hi >> 31) & 1);
+            }
+        }
+        val_list_push(&items, &len, &cap, val_map_finish(b));
     }
-    uint32_t pa = addr;
-    bool ok = mmu_translate_checked(g_mmu, addr, sup, &pa);
-    return debug_translation_result(pa, ok, "page");
+    return val_list(items, len);
+}
+
+// descriptor(addr, [count], [format]) on the 68040: decode 4-byte root,
+// pointer or page descriptors at a physical address.
+static DEF_METHOD(mmu040_method_descriptor) {
+    if (!g_mmu || !g_mmu->m040)
+        return val_err("mmu not present");
+    uint32_t addr = (uint32_t)argv[0].u;
+    uint32_t count = debug_mmu_desc_count(argc, argv);
+    int fmt = desc_format(argc, argv, mmu040_desc_formats, 2);
+    bool page8k = (g_mmu->m040->tc & TC040_P) != 0;
+    value_t *items = NULL;
+    size_t len = 0, cap = 0;
+    for (uint32_t i = 0; i < count; i++, addr += 4) {
+        uint32_t d = mmu_read_physical_uint32(g_mmu, addr);
+        uint32_t dt = d & 3;
+        value_map_builder_t *b = val_map_new();
+        debug_mmu_put_hex(b, "addr", addr);
+        debug_mmu_put_hex(b, "desc", d);
+        val_map_put(b, "dt", val_uint(4, dt));
+        if (fmt != 2) {
+            // Root / pointer level: UDT 2 or 3 is resident, pointing at the next table.
+            bool resident = dt >= 2;
+            val_map_put(b, "type", val_str(resident ? "table" : "invalid"));
+            if (resident) {
+                debug_mmu_put_bool(b, "wp", (d >> 2) & 1);
+                debug_mmu_put_bool(b, "u", (d >> 3) & 1);
+                uint32_t mask = fmt == 0 ? 0xFFFFFE00u : page8k ? 0xFFFFFF80u : 0xFFFFFF00u;
+                debug_mmu_put_hex(b, "next", d & mask);
+            }
+        } else if (dt == 2) {
+            // Page level, PDT 2: an indirect pointer to the real page descriptor.
+            val_map_put(b, "type", val_str("indirect"));
+            debug_mmu_put_hex(b, "next", d & 0xFFFFFFFCu);
+        } else {
+            val_map_put(b, "type", val_str(dt == 0 ? "invalid" : "page"));
+            if (dt != 0) {
+                debug_mmu_put_bool(b, "wp", (d >> 2) & 1);
+                debug_mmu_put_bool(b, "u", (d >> 3) & 1);
+                debug_mmu_put_bool(b, "m", (d >> 4) & 1);
+                debug_mmu_put_bool(b, "s", (d >> 7) & 1);
+                debug_mmu_put_bool(b, "g", (d >> 10) & 1);
+                val_map_put(b, "cm", val_uint(4, (d >> 5) & 3));
+                debug_mmu_put_hex(b, "phys", d & (page8k ? 0xFFFFE000u : 0xFFFFF000u));
+            }
+        }
+        val_list_push(&items, &len, &cap, val_map_finish(b));
+    }
+    return val_list(items, len);
 }
 
 // peek(addr, [size], [space]) -> the value, big-endian.  "logical" (default)
@@ -1182,17 +1289,34 @@ static DEF_METHOD(mmu68k_method_peek) {
 // peek's default size.
 static const value_t k_peek_size4 = {.kind = V_UINT, .u = 4};
 
-static const arg_decl_t mmu68k_translate_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "logical address"},
-    {.name = "supervisor",
-     .kind = V_BOOL,
+// descriptor's arguments, one table per descriptor-format vocabulary.
+static const arg_decl_t mmu030_desc_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "physical address of the first descriptor"},
+    {.name = "count",
+     .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "translate for supervisor (true) or user (false)",
-     .default_doc = "the CPU's current state"},
-    {.name = "fetch",
-     .kind = V_BOOL,
+     .default_value = &debug_mmu_desc_count_default,
+     .doc = "how many consecutive descriptors (at most 256)"},
+    {.name = "format",
+     .kind = V_ENUM,
+     .enum_values = mmu030_desc_formats,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "instruction fetch (the 040's ITT registers) rather than a data access"},
+     .doc = "\"short\" (4-byte) or \"long\" (8-byte) descriptors",
+     .default_doc = "short"},
+};
+static const arg_decl_t mmu040_desc_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "physical address of the first descriptor"},
+    {.name = "count",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &debug_mmu_desc_count_default,
+     .doc = "how many consecutive descriptors (at most 256)"},
+    {.name = "format",
+     .kind = V_ENUM,
+     .enum_values = mmu040_desc_formats,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "the table level the descriptors sit at: \"root\", \"pointer\" or \"page\"",
+     .default_doc = "page"},
 };
 static const arg_decl_t mmu68k_peek_args[] = {
     {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "address"},
@@ -1209,15 +1333,31 @@ static const arg_decl_t mmu68k_peek_args[] = {
      .default_doc = "logical"},
 };
 
-// The two methods, appended to both 68K mmu member tables.
+// The methods both 68K mmu member tables share (descriptor differs: each
+// table adds its own after this).
 // clang-format off
 #define MMU68K_METHODS                                                                                                 \
     {.kind = M_METHOD,                                                                                                 \
      .name = "translate",                                                                                              \
      .examples = EXAMPLES("machine.cpu.mmu.translate 0x40800000", "machine.cpu.mmu.translate 0x2000 supervisor=false"),                     \
      .doc = "Translate an address, side-effect-free (same shape on every MMU kind)",                                   \
-     .method = {.result_doc = "{phys, valid, via}",                                                                    \
-                .args = mmu68k_translate_args, .nargs = 3, .result = V_MAP, .fn = mmu68k_method_translate}},           \
+     .method = {.result_doc = "{phys, valid, via, access}",                                                            \
+                .args = debug_mmu_xlate_args, .nargs = DEBUG_MMU_XLATE_NARGS, .result = V_MAP,                        \
+                .fn = mmu68k_method_translate}},                                                                       \
+    {.kind = M_METHOD,                                                                                                 \
+     .name = "walk",                                                                                                   \
+     .examples = EXAMPLES("machine.cpu.mmu.walk 0x40800000", "machine.cpu.mmu.walk 0x2000 supervisor=false"),             \
+     .doc = "Translate an address and show every step: TT registers, root pointer, each table level read",           \
+     .method = {.result_doc = "{phys, valid, via, access, steps: [{step, outcome, ...}]}",                              \
+                .args = debug_mmu_xlate_args, .nargs = DEBUG_MMU_XLATE_NARGS, .result = V_MAP,                        \
+                .fn = mmu68k_method_walk}},                                                                            \
+    {.kind = M_METHOD,                                                                                                 \
+     .name = "map",                                                                                                    \
+     .examples = EXAMPLES("machine.cpu.mmu.map", "machine.cpu.mmu.map 0 0x10000000 supervisor=false"),                 \
+     .doc = "List the mapped address ranges: runs that translate linearly with the same via and access",            \
+     .method = {.result_doc = "[{start, size, phys, via, access}]",                                             \
+                .args = debug_mmu_map_args, .nargs = DEBUG_MMU_MAP_NARGS, .result = V_LIST,                           \
+                .fn = mmu68k_method_map}},                                                                             \
     {.kind = M_METHOD,                                                                                                 \
      .name = "peek",                                                                                                   \
      .examples = EXAMPLES("machine.cpu.mmu.peek 0x40800000", "machine.cpu.mmu.peek 0x400 2 physical"),                                                                          \
@@ -1271,11 +1411,20 @@ static const member_t mmu_members[] = {
      .doc = "Nonzero when TC's enable bit is set and translation is actually in effect",
      .attr = {.type = V_UINT, .get = attr_mmu_enabled, .set = NULL}},
     MMU68K_METHODS,
+    {.kind = M_METHOD,
+     .name = "descriptor",
+     .examples = EXAMPLES("machine.cpu.mmu.descriptor 0x3000 4", "machine.cpu.mmu.descriptor 0x3000 2 long"),
+     .doc = "Decode raw PMMU descriptors at a physical address",
+     .method = {.result_doc = "[{addr, desc, desc_lo?, dt, type, ...}]",
+                .args = mmu030_desc_args,
+                .nargs = 3,
+                .result = V_LIST,
+                .fn = mmu030_method_descriptor}},
 };
 
 static const class_desc_t mmu_class = {
     .name = "mmu",
-    .doc = "The 68030 PMMU: translation registers, peek and translate",
+    .doc = "The 68030 PMMU: translation registers; translate, walk, map, descriptor and peek",
     .members = mmu_members,
     .n_members = sizeof(mmu_members) / sizeof(mmu_members[0]),
 };
@@ -1366,11 +1515,20 @@ static const member_t mmu040_members[] = {
      .doc = "Nonzero when TC's enable bit is set and translation is actually in effect",
      .attr = {.type = V_UINT, .get = attr_mmu040_enabled, .set = NULL}},
     MMU68K_METHODS,
+    {.kind = M_METHOD,
+     .name = "descriptor",
+     .examples = EXAMPLES("machine.cpu.mmu.descriptor 0x3000 4 root", "machine.cpu.mmu.descriptor 0x3400 8"),
+     .doc = "Decode raw 68040 table descriptors at a physical address",
+     .method = {.result_doc = "[{addr, desc, dt, type, ...}]",
+                .args = mmu040_desc_args,
+                .nargs = 3,
+                .result = V_LIST,
+                .fn = mmu040_method_descriptor}},
 };
 
 static const class_desc_t mmu040_class = {
     .name = "mmu040",
-    .doc = "The 68040 MMU: translation registers, peek and translate",
+    .doc = "The 68040 MMU: translation registers; translate, walk, map, descriptor and peek",
     .members = mmu040_members,
     .n_members = sizeof(mmu040_members) / sizeof(mmu040_members[0]),
 };
