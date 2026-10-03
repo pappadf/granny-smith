@@ -5,9 +5,9 @@
 #   lisa-los31-profile    lisa-profile-boot: cold-boot LOS 3.1 from the
 #                         installed ProFile, driven by the image's own
 #                         on-disk PRAM snapshot
-#   lisa-los31-dc42       the same boot from a ProFile image kept as a
-#                         DiskCopy 4.2 file (20-byte tags), attached as
-#                         it is
+#   lisa-los31-lisaem     the same boot from a LisaEm ProFile image (a
+#                         DiskCopy 4.2 file with 20-byte tags), attached
+#                         as it is
 #   lisa-xenix-hdinit     lisa-xenix-hdinit: Xenix 3.0 hard-disk init
 #                         from the boot floppy (the fast-tier gate for
 #                         the full install, which stays in extended)
@@ -27,11 +27,11 @@ include "../lib/mac.script"
 include "rows.script"
 
 if row_on("lisa-los31-profile") { row_end("lisa-los31-profile", try(row_lisa_los31_profile(), "FAILED")) }
-if row_on("lisa-los31-dc42") {
+if row_on("lisa-los31-lisaem") {
     if have_media("../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-apps.dc42") {
-        row_end("lisa-los31-dc42", try(row_lisa_los31_dc42(), "FAILED"))
+        row_end("lisa-los31-lisaem", try(row_lisa_los31_lisaem(), "FAILED"))
     } else {
-        echo "skip: lisa-los31-dc42 (no DiskCopy 4.2 ProFile image in the test data)"
+        echo "skip: lisa-los31-lisaem (no LisaEm ProFile image in the test data)"
     }
 }
 if row_on("lisa-xenix-hdinit") { row_end("lisa-xenix-hdinit", try(row_lisa_xenix_hdinit(), "FAILED")) }

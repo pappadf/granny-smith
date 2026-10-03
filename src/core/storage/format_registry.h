@@ -115,31 +115,37 @@ void gs_format_set_wrapper_namespace(struct gs_namespace *(*open)(gs_source_t *s
 // header is `hdr`, in a file of `file_size` bytes.  True when it is one.
 bool dc42_parse_header(const uint8_t *hdr, size_t len, uint64_t file_size, uint32_t *data_size, uint32_t *tag_size);
 
-// === ProFile disk as DiskCopy 4.2 ===========================================
+// === LisaEm ProFile images ===================================================
 //
-// A Lisa hard disk is also passed around as a DiskCopy 4.2 file whose tag
-// section holds 20 bytes per 512-byte block -- the ProFile's 532-byte block
-// split into data and tag -- with the blocks in the Lisa OS's logical order.
-// The emulated ProFile serves blocks in the drive's order, which the OS
-// driver's 5:1 software interleave defines within each group of 16; the
-// wrapper presents the file as that: 532-byte blocks, 20-byte tag first, in
-// ProFile block order.  See docs/internals/machines/lisa/profile.md.
+// Compatibility with LisaEm: this format exists only so that the Lisa hard
+// disk images LisaEm writes (and the many archived ones made with it or its
+// companion tools) attach as they are.  Nothing here follows LisaEm's
+// emulation; the format is named after it because that is where the images
+// come from and what users know them as.
+//
+// LisaEm keeps a ProFile as a DiskCopy 4.2 file whose tag section holds 20
+// bytes per 512-byte block -- the ProFile's 532-byte block split into data
+// and tag -- with the blocks in the Lisa OS's logical order.  The emulated
+// ProFile serves blocks in the drive's order, which the OS driver's 5:1
+// software interleave defines within each group of 16; the wrapper presents
+// the file as that: 532-byte blocks, 20-byte tag first, in ProFile block
+// order.  See docs/internals/machines/lisa/profile.md.
 
-#define DC42_PROFILE_TAG_BYTES  20u // per block
-#define DC42_PROFILE_INTERLEAVE 16u // blocks per interleave group
+#define LISAEM_TAG_BYTES  20u // per block
+#define LISAEM_INTERLEAVE 16u // blocks per interleave group
 
-// The block count of a tagged ProFile image whose DiskCopy 4.2 header is
+// The block count of a LisaEm ProFile image whose DiskCopy 4.2 header is
 // `hdr`, in a file of `file_size` bytes, or 0 when it is not one: a valid
-// DiskCopy 4.2 header with exactly DC42_PROFILE_TAG_BYTES of tag per data block
+// DiskCopy 4.2 header with exactly LISAEM_TAG_BYTES of tag per data block
 // and a whole number of interleave groups.  (Apple's DiskCopy writes 12-byte
 // tags or none, so no floppy image matches.)
-uint32_t dc42_profile_blocks(const uint8_t *hdr, size_t len, uint64_t file_size);
+uint32_t lisaem_profile_blocks(const uint8_t *hdr, size_t len, uint64_t file_size);
 
-// The logical (file) block that holds ProFile block `block`: the inverse
+// The LisaEm (logical) block that holds ProFile block `block`: the inverse
 // of the OS driver's interleave, 5 x 13 = 65 = 1 (mod 16).
-static inline uint32_t dc42_profile_logical_block(uint32_t block) {
-    uint32_t group = block - block % DC42_PROFILE_INTERLEAVE;
-    return group + (13u * (block % DC42_PROFILE_INTERLEAVE)) % DC42_PROFILE_INTERLEAVE;
+static inline uint32_t lisaem_logical_block(uint32_t block) {
+    uint32_t group = block - block % LISAEM_INTERLEAVE;
+    return group + (13u * (block % LISAEM_INTERLEAVE)) % LISAEM_INTERLEAVE;
 }
 
 #endif // GS_FORMAT_REGISTRY_H

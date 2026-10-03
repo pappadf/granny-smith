@@ -158,7 +158,8 @@ If `tagSize` is zero, `tagChecksum` is zero.
 ## ProFile Hard-Disk Images
 
 Lisa hard disks (ProFile, Widget) are also kept in this container, though
-DiskCopy itself never wrote them. A ProFile block is 532 bytes: a 20-byte
+DiskCopy itself never wrote them: it is the format LisaEm stores a ProFile <!-- lint-allow: LisaEm -->
+in, and Granny Smith reads it for compatibility with those images. A ProFile block is 532 bytes: a 20-byte
 tag and 512 bytes of data. The image splits each block the same way a
 floppy image does — the 512 data bytes into the user-data region, the tag
 into the tag region — with **20** tag bytes per block instead of 12:

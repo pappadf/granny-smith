@@ -377,33 +377,33 @@ static void unwrap_chain(uint32_t blocks, uint32_t tag_bytes, uint32_t tag_extra
 
 // ProFile block -> logical (file) block: the inverse of the Lisa OS
 // driver's 5:1 interleave, within each group of 16.
-TEST(test_dc42_profile_interleave) {
+TEST(test_lisaem_profile_interleave) {
     static const uint32_t want[16] = {0, 13, 10, 7, 4, 1, 14, 11, 8, 5, 2, 15, 12, 9, 6, 3};
     for (uint32_t k = 0; k < 16; k++) {
-        ASSERT_EQ_INT((int)want[k], (int)dc42_profile_logical_block(k));
-        ASSERT_EQ_INT((int)(16 * 3 + want[k]), (int)dc42_profile_logical_block(16 * 3 + k));
+        ASSERT_EQ_INT((int)want[k], (int)lisaem_logical_block(k));
+        ASSERT_EQ_INT((int)(16 * 3 + want[k]), (int)lisaem_logical_block(16 * 3 + k));
         // The OS puts logical block n at ProFile block 5n (mod 16).
-        ASSERT_EQ_INT((int)k, (int)dc42_profile_logical_block((5 * k) % 16));
+        ASSERT_EQ_INT((int)k, (int)lisaem_logical_block((5 * k) % 16));
     }
 }
 
-// A tagged ProFile image (DiskCopy 4.2 with 20-byte tags) unwraps to 532-byte
+// A LisaEm ProFile image (DiskCopy 4.2 with 20-byte tags) unwraps to 532-byte
 // blocks, tag first, in ProFile order -- read across block boundaries too.
-TEST(test_dc42_profile_unwraps_to_profile_blocks) {
+TEST(test_lisaem_profile_unwraps_to_profile_blocks) {
     const uint32_t blocks = 32;
     size_t len = 0;
     uint8_t *f = make_dc42(blocks, 20, 0, &len);
-    gs_source_t *s = gs_source_memory(f, len, true, "/x/profile.dc42");
+    gs_source_t *s = gs_source_memory(f, len, true, "/x/lisaem-profile.dc42");
     gs_unwrapped_t u;
     ASSERT_EQ_INT(0, gs_format_unwrap(s, NULL, &u));
-    ASSERT_TRUE(strcmp(u.chain, "dc42-profile") == 0);
+    ASSERT_TRUE(strcmp(u.chain, "lisaem") == 0);
     ASSERT_TRUE(u.dc42 == NULL); // the tags are in the blocks, not a side table
     ASSERT_EQ_INT((int)(blocks * 532), (int)gs_source_size(u.data));
-    ASSERT_TRUE(strstr(gs_source_key(u.data), "#profile") != NULL);
+    ASSERT_TRUE(strstr(gs_source_key(u.data), "#lisaem") != NULL);
     uint8_t blk[532];
     for (uint32_t k = 0; k < blocks; k++) {
         ASSERT_EQ_INT(0, gs_source_read_exact(u.data, (uint64_t)k * 532, blk, sizeof(blk)));
-        uint32_t logical = dc42_profile_logical_block(k);
+        uint32_t logical = lisaem_logical_block(k);
         for (int i = 0; i < 20; i++)
             ASSERT_EQ_INT((int)(0x80 | logical), blk[i]);
         for (int i = 20; i < 532; i++)
@@ -414,11 +414,11 @@ TEST(test_dc42_profile_unwraps_to_profile_blocks) {
     uint8_t x[40];
     ASSERT_EQ_INT(0, gs_source_read_exact(u.data, 2 * 532 - 10, x, sizeof(x)));
     for (int i = 0; i < 10; i++)
-        ASSERT_EQ_INT((int)dc42_profile_logical_block(1), x[i]);
+        ASSERT_EQ_INT((int)lisaem_logical_block(1), x[i]);
     for (int i = 10; i < 30; i++)
-        ASSERT_EQ_INT((int)(0x80 | dc42_profile_logical_block(2)), x[i]);
+        ASSERT_EQ_INT((int)(0x80 | lisaem_logical_block(2)), x[i]);
     for (int i = 30; i < 40; i++)
-        ASSERT_EQ_INT((int)dc42_profile_logical_block(2), x[i]);
+        ASSERT_EQ_INT((int)lisaem_logical_block(2), x[i]);
     uint8_t past[4];
     ASSERT_EQ_INT(0, (int)gs_source_read(u.data, (uint64_t)blocks * 532, past, sizeof(past)));
     gs_unwrapped_free(&u);
@@ -426,11 +426,11 @@ TEST(test_dc42_profile_unwraps_to_profile_blocks) {
 }
 
 // Only exactly 20 tag bytes per block, in whole interleave groups, is a
-// tagged ProFile image; every near miss stays a plain DiskCopy 4.2 image.
-TEST(test_dc42_profile_detection_is_exact) {
+// LisaEm ProFile image; every near miss stays a plain DiskCopy 4.2 image.
+TEST(test_lisaem_profile_detection_is_exact) {
     char chain[96];
     unwrap_chain(32, 20, 0, chain, sizeof(chain));
-    ASSERT_TRUE(strcmp(chain, "dc42-profile") == 0);
+    ASSERT_TRUE(strcmp(chain, "lisaem") == 0);
     unwrap_chain(16, 12, 0, chain, sizeof(chain)); // Lisa/Mac floppy tags
     ASSERT_TRUE(strcmp(chain, "dc42") == 0);
     unwrap_chain(32, 0, 0, chain, sizeof(chain)); // no tags
@@ -576,9 +576,9 @@ int main(void) {
     RUN(test_chunk_cache_spills_evicted_chunks);
     RUN(test_detection_reads_within_the_budget);
     RUN(test_unwrap_diskcopy_inside_gzip);
-    RUN(test_dc42_profile_interleave);
-    RUN(test_dc42_profile_unwraps_to_profile_blocks);
-    RUN(test_dc42_profile_detection_is_exact);
+    RUN(test_lisaem_profile_interleave);
+    RUN(test_lisaem_profile_unwraps_to_profile_blocks);
+    RUN(test_lisaem_profile_detection_is_exact);
     RUN(test_not_yet_is_waited_out_with_poll);
     RUN(test_chunk_cache_budgets_change_at_run_time);
     RUN(test_key_same_ignores_only_host_times);
