@@ -87,6 +87,11 @@ omitted when there is nothing to cite); R6 does not apply.
   comparative sections, no citing another emulator's source as evidence.
   Where behaviour was cross-checked against another implementation, state
   the verified fact and cite a primary source instead.
+  *Exception — file-format compatibility:* where Granny Smith reads a disk
+  image format that another emulator defined, so that existing images made
+  with it attach as they are, the format is named after that emulator (the
+  LisaEm ProFile image is the case today). Say that compatibility is the only <!-- lint-allow: LisaEm -->
+  reason it is named, and mark each line with a `lint-allow` annotation.
 - **R2 — Never name or reference leaked Apple source code.** It may inform <!-- lint-allow: leaked -->
   reverse engineering, but a doc must never point a reader at it, quote it,
   or use its internal identifiers as citations. Cite observable evidence:

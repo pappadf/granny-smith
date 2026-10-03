@@ -341,6 +341,108 @@ TEST(test_unwrap_diskcopy_inside_gzip) {
 // The budgets can change at run time (files.cache): a smaller memory budget
 // evicts at once, and a spill area over its new budget is emptied -- the
 // chunks are fetched again, correctly, when next read.
+// A DiskCopy 4.2 file of `blocks` 512-byte blocks and `tag_bytes` of tag
+// per block (`tag_extra` more in the tag section), each data block filled
+// with its index and each tag with 0x80 | its index.  Caller frees.
+static uint8_t *make_dc42(uint32_t blocks, uint32_t tag_bytes, uint32_t tag_extra, size_t *len) {
+    uint32_t ds = blocks * 512, ts = blocks * tag_bytes + tag_extra;
+    *len = 0x54 + (size_t)ds + ts;
+    uint8_t *f = calloc(1, *len);
+    f[0] = 4;
+    memcpy(f + 1, "Test", 4);
+    for (int i = 0; i < 4; i++) {
+        f[0x40 + i] = (uint8_t)(ds >> (24 - 8 * i));
+        f[0x44 + i] = (uint8_t)(ts >> (24 - 8 * i));
+    }
+    f[0x52] = 0x01; // magic 0x0100
+    for (uint32_t b = 0; b < blocks; b++) {
+        memset(f + 0x54 + (size_t)b * 512, (int)(b & 0x7F), 512);
+        if (tag_bytes)
+            memset(f + 0x54 + ds + (size_t)b * tag_bytes, (int)(0x80 | (b & 0x7F)), tag_bytes);
+    }
+    return f;
+}
+
+// The wrapper's chain name for a DiskCopy 4.2 file built by make_dc42.
+static void unwrap_chain(uint32_t blocks, uint32_t tag_bytes, uint32_t tag_extra, char *chain, size_t cap) {
+    size_t len = 0;
+    uint8_t *f = make_dc42(blocks, tag_bytes, tag_extra, &len);
+    gs_source_t *s = gs_source_memory(f, len, true, "/x/disk.dc42");
+    gs_unwrapped_t u;
+    ASSERT_EQ_INT(0, gs_format_unwrap(s, NULL, &u));
+    snprintf(chain, cap, "%s", u.chain);
+    gs_unwrapped_free(&u);
+    gs_source_release(s);
+}
+
+// ProFile block -> logical (file) block: the inverse of the Lisa OS
+// driver's 5:1 interleave, within each group of 16.
+TEST(test_lisaem_profile_interleave) {
+    static const uint32_t want[16] = {0, 13, 10, 7, 4, 1, 14, 11, 8, 5, 2, 15, 12, 9, 6, 3};
+    for (uint32_t k = 0; k < 16; k++) {
+        ASSERT_EQ_INT((int)want[k], (int)lisaem_logical_block(k));
+        ASSERT_EQ_INT((int)(16 * 3 + want[k]), (int)lisaem_logical_block(16 * 3 + k));
+        // The OS puts logical block n at ProFile block 5n (mod 16).
+        ASSERT_EQ_INT((int)k, (int)lisaem_logical_block((5 * k) % 16));
+    }
+}
+
+// A LisaEm ProFile image (DiskCopy 4.2 with 20-byte tags) unwraps to 532-byte
+// blocks, tag first, in ProFile order -- read across block boundaries too.
+TEST(test_lisaem_profile_unwraps_to_profile_blocks) {
+    const uint32_t blocks = 32;
+    size_t len = 0;
+    uint8_t *f = make_dc42(blocks, 20, 0, &len);
+    gs_source_t *s = gs_source_memory(f, len, true, "/x/lisaem-profile.dc42");
+    gs_unwrapped_t u;
+    ASSERT_EQ_INT(0, gs_format_unwrap(s, NULL, &u));
+    ASSERT_TRUE(strcmp(u.chain, "lisaem") == 0);
+    ASSERT_TRUE(u.dc42 == NULL); // the tags are in the blocks, not a side table
+    ASSERT_EQ_INT((int)(blocks * 532), (int)gs_source_size(u.data));
+    ASSERT_TRUE(strstr(gs_source_key(u.data), "#lisaem") != NULL);
+    uint8_t blk[532];
+    for (uint32_t k = 0; k < blocks; k++) {
+        ASSERT_EQ_INT(0, gs_source_read_exact(u.data, (uint64_t)k * 532, blk, sizeof(blk)));
+        uint32_t logical = lisaem_logical_block(k);
+        for (int i = 0; i < 20; i++)
+            ASSERT_EQ_INT((int)(0x80 | logical), blk[i]);
+        for (int i = 20; i < 532; i++)
+            ASSERT_EQ_INT((int)logical, blk[i]);
+    }
+    // A read straddling blocks 1 and 2: the end of block 1's data, then
+    // block 2's tag and the start of its data.
+    uint8_t x[40];
+    ASSERT_EQ_INT(0, gs_source_read_exact(u.data, 2 * 532 - 10, x, sizeof(x)));
+    for (int i = 0; i < 10; i++)
+        ASSERT_EQ_INT((int)lisaem_logical_block(1), x[i]);
+    for (int i = 10; i < 30; i++)
+        ASSERT_EQ_INT((int)(0x80 | lisaem_logical_block(2)), x[i]);
+    for (int i = 30; i < 40; i++)
+        ASSERT_EQ_INT((int)lisaem_logical_block(2), x[i]);
+    uint8_t past[4];
+    ASSERT_EQ_INT(0, (int)gs_source_read(u.data, (uint64_t)blocks * 532, past, sizeof(past)));
+    gs_unwrapped_free(&u);
+    gs_source_release(s);
+}
+
+// Only exactly 20 tag bytes per block, in whole interleave groups, is a
+// LisaEm ProFile image; every near miss stays a plain DiskCopy 4.2 image.
+TEST(test_lisaem_profile_detection_is_exact) {
+    char chain[96];
+    unwrap_chain(32, 20, 0, chain, sizeof(chain));
+    ASSERT_TRUE(strcmp(chain, "lisaem") == 0);
+    unwrap_chain(16, 12, 0, chain, sizeof(chain)); // Lisa/Mac floppy tags
+    ASSERT_TRUE(strcmp(chain, "dc42") == 0);
+    unwrap_chain(32, 0, 0, chain, sizeof(chain)); // no tags
+    ASSERT_TRUE(strcmp(chain, "dc42") == 0);
+    unwrap_chain(24, 20, 0, chain, sizeof(chain)); // not whole groups of 16
+    ASSERT_TRUE(strcmp(chain, "dc42") == 0);
+    unwrap_chain(32, 20, 1, chain, sizeof(chain)); // tag section not 20/block
+    ASSERT_TRUE(strcmp(chain, "dc42") == 0);
+    unwrap_chain(32, 24, 0, chain, sizeof(chain));
+    ASSERT_TRUE(strcmp(chain, "dc42") == 0);
+}
+
 TEST(test_chunk_cache_budgets_change_at_run_time) {
     char dir[] = "/tmp/gs_chunk_budget_XXXXXX";
     ASSERT_TRUE(mkdtemp(dir) != NULL);
@@ -474,6 +576,9 @@ int main(void) {
     RUN(test_chunk_cache_spills_evicted_chunks);
     RUN(test_detection_reads_within_the_budget);
     RUN(test_unwrap_diskcopy_inside_gzip);
+    RUN(test_lisaem_profile_interleave);
+    RUN(test_lisaem_profile_unwraps_to_profile_blocks);
+    RUN(test_lisaem_profile_detection_is_exact);
     RUN(test_not_yet_is_waited_out_with_poll);
     RUN(test_chunk_cache_budgets_change_at_run_time);
     RUN(test_key_same_ignores_only_host_times);

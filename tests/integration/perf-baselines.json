@@ -336,6 +336,10 @@
       "instr": 102000000,
       "tolerance": 0.2
     },
+    "suite-lisa/lisa-los31-lisaem": {
+      "instr": 107911708,
+      "tolerance": 0.2
+    },
     "suite-lisa/lisa-los31-profile": {
       "instr": 108119636,
       "tolerance": 0.2

@@ -155,13 +155,51 @@ images produced by DiskCopy itself.
 
 If `tagSize` is zero, `tagChecksum` is zero.
 
+## ProFile Hard-Disk Images
+
+Lisa hard disks (ProFile, Widget) are also kept in this container, though
+DiskCopy itself never wrote them: it is the format LisaEm stores a ProFile <!-- lint-allow: LisaEm -->
+in, and Granny Smith reads it for compatibility with those images. A ProFile block is 532 bytes: a 20-byte
+tag and 512 bytes of data. The image splits each block the same way a
+floppy image does — the 512 data bytes into the user-data region, the tag
+into the tag region — with **20** tag bytes per block instead of 12:
+
+```
+Offset             Size            Content
+0                  84              Header
+84                 blocks × 512    User data, logical block order
+84 + blocks × 512  blocks × 20     Tags, logical block order
+```
+
+The blocks are stored in the Lisa OS's **logical** order, not the drive's.
+The OS ProFile driver lays logical blocks onto the drive with a 5:1
+interleave inside each group of 16: logical block `16g + n` lives at drive
+block `16g + (5n mod 16)`. Reading the image as a drive therefore takes
+drive block `16g + k` from logical block `16g + (13k mod 16)` (13 is the
+inverse of 5 mod 16). The mapping was confirmed by comparing two pairs of
+images of the same installed disks, one pair in each order: 3,076 and
+5,160 distinct blocks matched with no contradiction.
+
+| Drive block (mod 16) | 0 | 1  | 2  | 3 | 4 | 5 | 6  | 7  | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 |
+|----------------------|---|----|----|---|---|---|----|----|---|---|----|----|----|----|----|----|
+| Logical block        | 0 | 13 | 10 | 7 | 4 | 1 | 14 | 11 | 8 | 5 | 2  | 15 | 12 | 9  | 6  | 3  |
+
+The header fields carry no reliable marker of this variant. `dataSize` is
+the disk's size (19,456 blocks for a 10 MB ProFile, 81,920 for a 40 MB
+one), outside the four floppy sizes; `diskName` and `formatByte` are
+whatever the writing tool chose. What identifies the variant is the
+geometry: `tagSize` is exactly `dataSize / 512 × 20` and the block count is
+a whole number of 16-block interleave groups. No floppy image matches, since
+floppy tags are 12 bytes or absent.
+
 ## Identifying a DiskCopy 4.2 File
 
 A file can be identified as DiskCopy 4.2 by checking:
 
 1. The 2-byte magic field at offset +82 equals `0x0100`.
 2. The `dataSize` field at offset +64 is one of the four expected values
-   (409600, 819200, 737280, or 1474560).
+   (409600, 819200, 737280, or 1474560) — or, for a ProFile image, a
+   multiple of 16 × 512 with `tagSize` equal to `dataSize / 512 × 20`.
 3. The `diskFormat` byte at offset +80 is in the range 0–3.
 4. Total file size equals `84 + dataSize + tagSize`.
 
