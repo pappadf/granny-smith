@@ -61,6 +61,115 @@ static int dc42_unwrap(const gs_probe_t *p, gs_source_t **data, gs_source_t **rs
 }
 
 // ============================================================================
+// ProFile disk as DiskCopy 4.2 (20-byte tags, logical block order)
+// ============================================================================
+
+uint32_t dc42_profile_blocks(const uint8_t *hdr, size_t len, uint64_t file_size) {
+    uint32_t ds = 0, ts = 0;
+    if (!dc42_parse_header(hdr, len, file_size, &ds, &ts))
+        return 0;
+    uint32_t blocks = ds / 512;
+    if (blocks == 0 || (blocks % DC42_PROFILE_INTERLEAVE) != 0)
+        return 0;
+    if ((uint64_t)ts != (uint64_t)blocks * DC42_PROFILE_TAG_BYTES)
+        return 0;
+    return blocks;
+}
+
+static bool profile_detect(const gs_probe_t *p) {
+    return dc42_profile_blocks(p->p.head, p->p.head_len, p->p.size) != 0;
+}
+
+#define DC42_PROFILE_BLOCK (512u + DC42_PROFILE_TAG_BYTES) // one ProFile block, tag first
+
+typedef struct {
+    gs_source_t *file; // the DiskCopy file (borrowed: the source's parent)
+    uint32_t blocks;
+    char *key;
+} profile_src_t;
+
+// Read `len` bytes at `off` of the ProFile-order view: each 532-byte block is
+// its 20 tag bytes, then its 512 data bytes, both taken from the logical
+// block the interleave puts there.
+static int64_t profile_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+    profile_src_t *m = s->ctx;
+    uint64_t size = (uint64_t)m->blocks * DC42_PROFILE_BLOCK;
+    if (off >= size)
+        return 0;
+    if (len > size - off)
+        len = (size_t)(size - off);
+    uint64_t tags_at = DISKCOPY_HEADER_SIZE + (uint64_t)m->blocks * 512;
+    size_t done = 0;
+    while (done < len) {
+        uint64_t pos = off + done;
+        uint32_t block = (uint32_t)(pos / DC42_PROFILE_BLOCK);
+        uint32_t within = (uint32_t)(pos % DC42_PROFILE_BLOCK);
+        uint64_t logical = dc42_profile_logical_block(block);
+        uint64_t from;
+        size_t n;
+        if (within < DC42_PROFILE_TAG_BYTES) {
+            from = tags_at + logical * DC42_PROFILE_TAG_BYTES + within;
+            n = DC42_PROFILE_TAG_BYTES - within;
+        } else {
+            from = DISKCOPY_HEADER_SIZE + logical * 512 + (within - DC42_PROFILE_TAG_BYTES);
+            n = DC42_PROFILE_BLOCK - within;
+        }
+        if (n > len - done)
+            n = len - done;
+        int64_t got = gs_source_read(m->file, from, (uint8_t *)buf + done, n);
+        if (got < 0)
+            return done ? (int64_t)done : got;
+        if ((size_t)got != n)
+            return done ? (int64_t)done : -EIO;
+        done += n;
+    }
+    return (int64_t)done;
+}
+
+static uint64_t profile_size(gs_source_t *s) {
+    return (uint64_t)((profile_src_t *)s->ctx)->blocks * DC42_PROFILE_BLOCK;
+}
+
+static const char *profile_key(gs_source_t *s) {
+    return ((profile_src_t *)s->ctx)->key;
+}
+
+static gs_tier_t profile_tier(gs_source_t *s) {
+    return gs_source_tier(((profile_src_t *)s->ctx)->file); // pure arithmetic over the file
+}
+
+static void profile_close(gs_source_t *s) {
+    profile_src_t *m = s->ctx;
+    if (m) {
+        free(m->key);
+        free(m);
+    }
+}
+
+static const gs_source_ops_t profile_ops = {profile_read, profile_size, profile_key, profile_tier, profile_close, NULL};
+
+static int profile_unwrap(const gs_probe_t *p, gs_source_t **data, gs_source_t **rsrc) {
+    *data = *rsrc = NULL;
+    uint32_t blocks = dc42_profile_blocks(p->p.head, p->p.head_len, p->p.size);
+    if (!blocks)
+        return -EINVAL;
+    profile_src_t *m = calloc(1, sizeof(*m));
+    if (!m)
+        return -ENOMEM;
+    m->file = p->data;
+    m->blocks = blocks;
+    m->key = gs_str_printf("%s#profile", gs_source_key(p->data));
+    if (!m->key) {
+        free(m);
+        return -ENOMEM;
+    }
+    // The file is the parent: retained for the view's life, and its poll
+    // serves a remote file's "not yet".
+    *data = peel_source_new(&profile_ops, m, p->data);
+    return *data ? 0 : -ENOMEM;
+}
+
+// ============================================================================
 // UDIF and NDIF
 // ============================================================================
 
@@ -154,14 +263,16 @@ static int gz_unwrap(const gs_probe_t *p, gs_source_t **d, gs_source_t **r) {
 // ============================================================================
 
 // Order: the trailer-identified container first (a UDIF's payload may
-// begin with anything), then the fork-identified one, then header formats.
+// begin with anything), then the fork-identified one, then header formats
+// -- the tagged ProFile image before the plain DiskCopy 4.2 it refines.
 static const gs_format_t g_wrappers[] = {
-    {"udif", GS_FMT_WRAPPER, "UDIF (.dmg) disk image",        udif_detect_probe, udif_unwrap, NULL},
-    {"ndif", GS_FMT_WRAPPER, "Disk Copy 6 (NDIF) disk image", ndif_detect_probe, ndif_unwrap, NULL},
-    {"dc42", GS_FMT_WRAPPER, "Disk Copy 4.2 disk image",      dc42_detect,       dc42_unwrap, NULL},
-    {"hqx",  GS_FMT_WRAPPER, "BinHex 4.0",                    hqx_detect_probe,  hqx_unwrap,  NULL},
-    {"bin",  GS_FMT_WRAPPER, "MacBinary",                     bin_detect_probe,  bin_unwrap,  NULL},
-    {"gz",   GS_FMT_WRAPPER, "gzip",                          gz_detect_probe,   gz_unwrap,   NULL},
+    {"udif",         GS_FMT_WRAPPER, "UDIF (.dmg) disk image",               udif_detect_probe, udif_unwrap,    NULL},
+    {"ndif",         GS_FMT_WRAPPER, "Disk Copy 6 (NDIF) disk image",        ndif_detect_probe, ndif_unwrap,    NULL},
+    {"dc42-profile", GS_FMT_WRAPPER, "Disk Copy 4.2 ProFile image (tagged)", profile_detect,    profile_unwrap, NULL},
+    {"dc42",         GS_FMT_WRAPPER, "Disk Copy 4.2 disk image",             dc42_detect,       dc42_unwrap,    NULL},
+    {"hqx",          GS_FMT_WRAPPER, "BinHex 4.0",                           hqx_detect_probe,  hqx_unwrap,     NULL},
+    {"bin",          GS_FMT_WRAPPER, "MacBinary",                            bin_detect_probe,  bin_unwrap,     NULL},
+    {"gz",           GS_FMT_WRAPPER, "gzip",                                 gz_detect_probe,   gz_unwrap,      NULL},
 };
 #define N_WRAPPERS (sizeof(g_wrappers) / sizeof(g_wrappers[0]))
 

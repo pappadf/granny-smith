@@ -64,7 +64,8 @@ check can compare sources that were reached by different routes.
   mtime, so across a reload only the path and size are identity:
   `gs_key_same_source` compares keys that way there and exactly natively.
 - A view: its parent's key and the range, or a key the adapter chooses
-  (a DiskCopy payload is `<key>#dc42`, a decoded NDIF `<key>#ndif`).
+  (a DiskCopy payload is `<key>#dc42`, a DiskCopy ProFile image's 532-byte
+  view `<key>#profile`, a decoded NDIF `<key>#ndif`).
 - A member of a namespace: the parent's key and the member path
   (`<key>/partition1/Disk.img`, `<key>/System 7.sit/rsrc`).
 
@@ -99,7 +100,9 @@ Finder info come from an AppleDouble companion (`._NAME`, or the legacy
 One table replaces the image opener's, the VFS mount probe's and SCSI media
 validation's probe orders. Wrappers (source → source) are built in and tried
 first, in a loop, so any nesting unwraps: UDIF (by its trailer), NDIF (by the
-resource fork's `bcem` map), DiskCopy 4.2 (by its header), and peeler's
+resource fork's `bcem` map), DiskCopy 4.2 (by its header; a ProFile image
+— 20 tag bytes per block — is its own row, `dc42-profile`, tried first: it
+re-orders the blocks and folds the tags back in), and peeler's
 BinHex, MacBinary and gzip. Namespace formats (a disk, an archive) register
 at start-up from the VFS. Detection reads a bounded probe: 64 KiB of head,
 64 KiB of tail and, for NDIF, the resource fork.

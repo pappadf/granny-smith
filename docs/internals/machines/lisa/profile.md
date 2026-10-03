@@ -164,6 +164,33 @@ for the device-info block), with
 - Build the rev-H ROM by interleaving `firmware/341-0175-H.BIN` (even) +
   `341-0176-H.BIN` (odd) → version `$0248` at offset `$3FFC`.
 
+## Image files
+
+`machine.hd.attach` takes a ProFile image in either shape, and the image
+layer decides which by content, never by name:
+
+- **Raw** — 532-byte blocks, 20-byte tag first, in drive order. This is the
+  model's own storage format (`image_open_*_with_geometry`, 532-byte blocks).
+- **DiskCopy 4.2 with 20-byte tags** — data and tags in separate regions,
+  blocks in the Lisa OS's logical order
+  ([diskcopy42.md](../../../reference/formats/diskcopy42.md), "ProFile
+  Hard-Disk Images"). The format registry's `dc42-profile` wrapper
+  (`src/core/storage/format_registry.c`) serves it as the raw shape: drive
+  block `k` is logical block `16(k/16) + (13k mod 16)`
+  (`dc42_profile_logical_block()`), the inverse of the OS driver's 5:1
+  interleave. It is a read-only view; writes go to the image's delta, as
+  for any attached image.
+
+Detection is a valid DiskCopy 4.2 header with `tagSize` exactly 20 bytes
+per block and a whole number of 16-block groups. Floppy images (12-byte
+tags or none) and every near miss stay plain `dc42`; the header's name and
+format byte are not consulted. Over a corpus of 1,700 local disk images (58
+DiskCopy 4.2 files), exactly the five tagged ProFile images matched. A
+ProFile image whose block count is not a multiple of 16 is not recognised.
+`tests/integration/suite-lisa` row `lisa-los31-dc42` boots Office System 3.1
+from such an image; `tests/unit/suites/source` covers the mapping and the
+detection edges.
+
 ## Detection is trivial — it's the OCD line
 
 `CHKPROFILE` → `PROINIT` → the entire "attached?" test is one bit:

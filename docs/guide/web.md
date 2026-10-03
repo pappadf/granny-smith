@@ -938,8 +938,12 @@ https://pappadf.github.io/gs-pages/staging/
 
 The IDLE images in that item are raw 532-byte-block ProFile disks; the
 Office System 3.1, Workshop 3.0 and Xenix ones boot (verified 2026-09-28);
-`IDLE_MacWorksXL30` stops with boot-ROM error 23, and the `LisaEM_*` ones <!-- lint-allow: LisaEm -->
-(DiskCopy 4.2 files with tags) have not been tried as ProFile disks.  The
+`IDLE_MacWorksXL30` stops with boot-ROM error 23.  The `LisaEM_*` ones <!-- lint-allow: LisaEm -->
+are DiskCopy 4.2 ProFile images (20 tag bytes per block, logical block
+order) and attach as they are: name the `.dc42` member as `HD0=`
+(`LisaEM_LOS3.1with7LisaApps.zip/lisaem-profile.dc42` boots the Office <!-- lint-allow: LisaEm -->
+System with LisaWrite, LisaDraw and the rest installed; verified headless
+2026-10-03, not yet from the URL).  The
 `apple-lisa-h-1983` item's chip dumps do not verify (scattered single-bit
 differences from the known Rev H ROM) and are refused.
 

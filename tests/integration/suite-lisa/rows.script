@@ -416,3 +416,21 @@ def row_lisa_checkpoint() {
     check("goldens/lisa-checkpoint-720x364x1-restored.png")
     report_perf("suite-lisa/lisa-checkpoint", scheduler.instr_count)
 }
+
+def row_lisa_los31_dc42() {
+    machine.boot model="lisa" ram=2048 rom="../../data/roms/lisa2-revh-098917b2.rom"
+    # The same cold boot as lisa-los31-profile, from a ProFile image kept
+    # as a DiskCopy 4.2 file -- 20 tag bytes per block, the blocks in the
+    # OS's logical order -- attached as it is.  This one is the Office System
+    # with LisaWrite, LisaDraw, LisaCalc and the rest installed.  The image
+    # layer's "dc42-profile" wrapper serves it as 532-byte ProFile blocks in
+    # drive order (format_registry.c, docs/internals/machines/lisa/profile.md).
+    # Writes land in the image's delta; the file itself is never written.
+    machine.hd.attach "../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-apps.dc42"
+    assert machine.hd.present == true "ProFile should be attached"
+    assert machine.hd.pram_init(2, false) "pram_init failed"
+    scheduler.run 112000000
+    # The clean Office System desktop, as lisa-los31-profile's.
+    check("goldens/lisa-los3.1-720x364x1-office.png")
+    report_perf("suite-lisa/lisa-los31-dc42", scheduler.instr_count)
+}
