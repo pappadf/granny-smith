@@ -23,6 +23,7 @@
 #include "image.h"
 #include "image_apm.h"
 #include "image_chunkmap.h"
+#include "image_iso9660.h"
 #include "image_ndif.h"
 #include "image_part.h"
 #include "image_udif.h"
@@ -559,9 +560,11 @@ static DEF_METHOD(files_method_probe) {
     bool apm = false;
     if (size >= 1024 && image_read_bytes(img, 512, block, sizeof(block)) == 0)
         apm = image_apm_probe_magic(block);
-    bool iso = false;
-    if (size >= 33280 && image_read_bytes(img, 32768, block, sizeof(block)) == 0)
-        iso = (memcmp(block + 1, "CD001", 5) == 0);
+    // ISO 9660 by the same probe the VFS mounts with, so a disc reported as
+    // a hybrid here is one the VFS shows both sides of.
+    gs_source_t *isrc = image_source(img);
+    bool iso = iso_probe_source(isrc, 0, size);
+    gs_source_release(isrc);
     bool hfs = false;
     if (!apm && size >= 1024 + 512 && image_read_bytes(img, 1024, block, sizeof(block)) == 0)
         hfs = (block[0] == 0x42 && block[1] == 0x44);
@@ -569,6 +572,8 @@ static DEF_METHOD(files_method_probe) {
         gs_outf("format: APM + ISO 9660 hybrid (%zu bytes)\n", size);
     else if (apm)
         gs_outf("format: APM (%zu bytes)\n", size);
+    else if (hfs && iso)
+        gs_outf("format: HFS + ISO 9660 hybrid (bare, %zu bytes)\n", size);
     else if (iso)
         gs_outf("format: ISO 9660 (%zu bytes)\n", size);
     else if (hfs)

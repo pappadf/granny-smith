@@ -445,7 +445,7 @@ Partition inspection (`src/core/storage/storage_class.c`):
 | Command | Effect |
 |---------|--------|
 | `files.partmap <path>` | Parse and print the partition map as a text table. |
-| `files.probe <path>` | Print the detected format without descending — APM, ISO 9660 (`CD001` @ 0x8000), APM+ISO hybrid, bare HFS, or raw. |
+| `files.probe <path>` | Print the detected format without descending — APM, ISO 9660 (a primary volume descriptor at sector 16, by the probe the VFS mounts with), APM+ISO or bare HFS+ISO hybrid, bare HFS, or raw. |
 | `files.mounts[n]` | The currently-cached auto-mounts, indexed by a never-reused mount serial: `path`, `format`, `partitions`, `refcount`, `busy`. |
 | `files.mounts.find <path>` | The serial `n` of the mount caching `path`, or -1. |
 | `files.mounts[n].unmount` | Force-close a cached auto-mount. |
