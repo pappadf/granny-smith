@@ -1,101 +1,68 @@
 /* ====== Starlight skin: part-hook overrides ======
-   The glass layout (../glass.css) in daylight: white cards with soft shadows
-   instead of glass, the display toolbar as separate floating pills, a black
-   run pill that names what it does, a white selected segment and underlined
-   tabs.  Scoped to this skin and in the gs.skin layer. */
+   The glass layout (../glass.css), as Midnight draws it, re-lit for a light
+   page: the few places glass.css assumes a dark page (white-alpha tracks
+   and highlights, the display's inner edge) get warm tints instead, and the
+   cards float on soft champagne shadows where Midnight's sink into the dark.
+   Scoped to this skin and in the gs.skin layer. */
 @import '../glass.css';
 
 @layer gs.skin {
-  :root[data-skin='starlight']
-    .gs-toolbar[data-variant='bar']
-    > :last-child
-    > .gs-separator
-    ~ .gs-icon-button {
-    background-color: #eef0f4;
-  }
-
-  :root[data-skin='starlight'] .gs-workbench > .gs-panel {
-    border-color: transparent;
+  /* The cards: pearl glass, a white top edge, a warm shadow under them. */
+  :root[data-skin='starlight'] .gs-toolbar[data-variant='bar'],
+  :root[data-skin='starlight'] .gs-workbench > .gs-panel,
+  :root[data-skin='starlight'] .gs-statusbar {
+    backdrop-filter: blur(20px) saturate(150%);
     box-shadow:
-      0 0 0 1px rgba(16, 24, 40, 0.05),
-      0 1px 2px rgba(16, 24, 40, 0.06);
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 1px 2px rgba(92, 66, 24, 0.06),
+      0 12px 32px -16px rgba(92, 66, 24, 0.2);
   }
   :root[data-skin='starlight'] .gs-display-content {
-    border-color: transparent;
-    box-shadow:
-      0 0 0 1px rgba(16, 24, 40, 0.05),
-      0 1px 2px rgba(16, 24, 40, 0.05);
+    border-color: rgba(138, 106, 54, 0.18);
+    box-shadow: inset 0 1px 3px rgba(92, 66, 24, 0.08);
   }
-  /* The display toolbar comes apart into floating white pills, one per
-     group, on the bare page. */
-  :root[data-skin='starlight'] .gs-toolbar[data-variant='bar'] {
-    padding: 0;
-    border: 0;
-    background: transparent;
-    box-shadow: none;
-  }
-  :root[data-skin='starlight'] .gs-toolbar[data-variant='bar'] > .gs-separator {
-    display: none;
-  }
-  :root[data-skin='starlight'] .gs-toolbar[data-variant='bar'] > :not(.gs-separator) {
-    height: 44px;
-    padding: 0 7px;
-    border-radius: 14px;
-    background: #ffffff;
-    box-shadow:
-      0 0 0 1px rgba(16, 24, 40, 0.05),
-      0 1px 2px rgba(16, 24, 40, 0.06);
-  }
-  :root[data-skin='starlight'] .gs-toolbar[data-variant='bar'] > :empty {
-    display: none;
-  }
-  :root[data-skin='starlight'] .gs-statusbar {
-    margin-top: -6px;
-    border-color: transparent;
-  }
-  :root[data-skin='starlight'] .gs-status-dot[data-state] {
-    box-shadow: 0 0 0 3px rgba(16, 24, 40, 0.06);
-  }
+
+  /* Run / pause: a champagne-gold disc with a soft halo. */
   :root[data-skin='starlight']
     .gs-toolbar[data-variant='bar']
     > :first-child
     > .gs-icon-button:first-child:not(:disabled) {
-    width: auto;
-    gap: 6px;
-    padding: 0 12px 0 10px;
-    border-radius: 9px;
-    background: #16181d;
-    color: #ffffff;
-    box-shadow: none;
+    background: linear-gradient(180deg, #e2c487, #c29548);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.55),
+      0 0 0 4px var(--gs-accent-subtle),
+      0 6px 18px rgba(184, 138, 62, 0.45);
   }
-  /* …a black pill that names what it does (its caption: Run / Pause). */
+
+  /* Recessed tracks: warm tints where Midnight lifts white out of the dark. */
   :root[data-skin='starlight']
     .gs-toolbar[data-variant='bar']
-    > :first-child
-    > .gs-icon-button:first-child:not(:disabled)::after {
-    content: attr(data-caption);
-    font-size: 12px;
-    font-weight: var(--gs-font-weight-semibold);
-  }
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button,
   :root[data-skin='starlight'] .gs-segmented {
-    border-color: transparent;
-    background: #e1e4ea;
+    background: rgba(138, 106, 54, 0.08);
+  }
+  :root[data-skin='starlight']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button[aria-pressed='true'],
+  :root[data-skin='starlight'] .gs-tabs__tab[aria-selected='true'] {
+    background: #ffffff;
+    box-shadow:
+      0 0 0 1px rgba(138, 106, 54, 0.12),
+      0 1px 3px rgba(92, 66, 24, 0.12);
   }
   :root[data-skin='starlight'] .gs-segmented__option[aria-pressed='true'] {
-    border-color: transparent;
-    background: #ffffff;
-    color: var(--gs-text-strong);
-    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.12);
+    background: linear-gradient(180deg, rgba(232, 204, 148, 0.55), rgba(212, 172, 102, 0.4));
+    border-color: rgba(184, 138, 62, 0.45);
   }
-  :root[data-skin='starlight'] .gs-tabs__tab {
-    border-radius: 0;
-  }
-  :root[data-skin='starlight'] .gs-tabs__tab[aria-selected='true'] {
-    background: transparent;
-    box-shadow: inset 0 -2px 0 var(--gs-accent);
+
+  :root[data-skin='starlight'] .gs-select__arrow {
+    color: #8a7f6c;
   }
   :root[data-skin='starlight'] .gs-card {
-    background: #ffffff;
-    box-shadow: 0 20px 50px -20px rgba(16, 24, 40, 0.25);
+    box-shadow: 0 20px 50px -24px rgba(92, 66, 24, 0.3);
   }
 }

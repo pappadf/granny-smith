@@ -1,151 +1,158 @@
 /* ====== Starlight skin: tokens ======
-   Midnight's floating cards in daylight: white cards with soft shadows on a
-   cool grey page and a blue accent.  The layout is ../glass.css (shared with
-   Midnight), Starlight's own touches are in overrides.css; this file holds
-   the values.  Sora is the UI face and JetBrains Mono the code face. */
+   Midnight in daylight: the same floating glass cards, now pearl-white over
+   a warm ivory page lit by a champagne-gold and a blush glow, warm hairlines,
+   a luminous champagne-gold accent (dark espresso text on it, as Midnight
+   puts dark text on its periwinkle) and a deep verdigris "live" colour.
+   Named for the warm silver-gold of Apple's Starlight finish.  The layout
+   is ../glass.css (shared with Midnight), the few places it assumes a dark
+   page are re-lit in overrides.css; this file holds the values.  Sora is
+   the UI face and JetBrains Mono the code face. */
 @layer gs.tokens {
   :root[data-skin='starlight'] {
     --gs-color-scheme: light;
 
     /* Reference palette */
-    --gs-ref-ink: #eceef2;
-    --gs-ref-glass: #ffffff;
-    --gs-ref-glass-strong: #ffffff;
-    --gs-ref-hairline: rgba(16, 24, 40, 0.07);
-    --gs-ref-periwinkle: #2f6bff;
-    --gs-ref-periwinkle-soft: #1e4fd1;
-    --gs-ref-teal: #0f9f8a;
-    --gs-ref-amber: #c98a00;
-    --gs-ref-pink: #e0457b;
-    --gs-ref-glow-indigo: rgba(47, 107, 255, 0.07);
-    --gs-ref-glow-teal: rgba(15, 159, 138, 0.05);
+    --gs-ref-ink: #f8f4ed;
+    --gs-ref-glass: rgba(255, 254, 251, 0.82);
+    --gs-ref-glass-strong: rgba(255, 255, 255, 0.92);
+    --gs-ref-hairline: rgba(138, 106, 54, 0.16);
+    --gs-ref-periwinkle: #c9a05a;
+    --gs-ref-periwinkle-soft: #7a5512;
+    --gs-ref-teal: #1c8a76;
+    --gs-ref-amber: #d08a1a;
+    --gs-ref-pink: #d14d72;
+    --gs-ref-glow-indigo: rgba(226, 190, 122, 0.36);
+    --gs-ref-glow-teal: rgba(238, 190, 172, 0.26);
 
     /* Surfaces */
     --gs-surface-app: var(--gs-ref-ink);
-    --gs-surface-raised: #ffffff;
-    --gs-surface-overlay: #ffffff;
-    --gs-surface-sunken: #fafafb;
+    --gs-surface-raised: #fffdf8;
+    --gs-surface-overlay: #fffefb;
+    --gs-surface-sunken: #fcfaf5;
     --gs-surface-screen: #000000;
     --gs-surface-document: #ffffff;
-    --gs-backdrop: rgba(22, 24, 29, 0.32);
+    --gs-backdrop: rgba(70, 52, 22, 0.26);
 
-    /* Text */
-    --gs-text: #16181d;
-    --gs-text-strong: #0b0c10;
-    --gs-text-muted: #545a6a;
-    --gs-text-subtle: #747a8a;
-    --gs-text-link: #1e4fd1;
-    --gs-text-on-accent: #ffffff;
+    /* Text: warm espresso inks. */
+    --gs-text: #2b2419;
+    --gs-text-strong: #1a140b;
+    --gs-text-muted: #6b6151;
+    --gs-text-subtle: #8a7f6c;
+    --gs-text-link: #8a6216;
+    --gs-text-on-accent: #2b1f0b;
 
     /* Borders and focus */
-    --gs-border: rgba(16, 24, 40, 0.1);
-    --gs-border-subtle: rgba(16, 24, 40, 0.06);
+    --gs-border: rgba(138, 106, 54, 0.2);
+    --gs-border-subtle: rgba(138, 106, 54, 0.13);
     --gs-border-card: var(--gs-ref-hairline);
-    --gs-focus-ring: #2f6bff;
+    --gs-focus-ring: #b88a3e;
 
     /* Interaction */
-    --gs-control-hover: rgba(16, 24, 40, 0.05);
-    --gs-control-active: rgba(16, 24, 40, 0.09);
-    --gs-accent: #2f6bff;
-    --gs-accent-hover: #4a7dff;
-    --gs-accent-active: #1e56e6;
-    --gs-accent-subtle: #eef3ff;
+    --gs-control-hover: rgba(138, 106, 54, 0.08);
+    --gs-control-active: rgba(138, 106, 54, 0.13);
+    --gs-accent: var(--gs-ref-periwinkle);
+    --gs-accent-hover: #d4ae6c;
+    --gs-accent-active: #b58a42;
+    --gs-accent-subtle: rgba(201, 160, 90, 0.22);
 
     /* Rows */
-    --gs-row-hover: rgba(16, 24, 40, 0.04);
-    --gs-row-selected: #e6eeff;
-    --gs-row-selected-inactive: rgba(16, 24, 40, 0.06);
-    --gs-row-alt: rgba(16, 24, 40, 0.02);
+    --gs-row-hover: rgba(138, 106, 54, 0.06);
+    --gs-row-selected: rgba(201, 160, 90, 0.26);
+    --gs-row-selected-inactive: rgba(138, 106, 54, 0.1);
+    --gs-row-alt: rgba(138, 106, 54, 0.035);
 
     /* Inputs */
-    --gs-input-bg: #f3f4f6;
-    --gs-input-fg: #16181d;
-    --gs-input-border: #e1e4ea;
+    --gs-input-bg: rgba(255, 255, 255, 0.72);
+    --gs-input-fg: #2b2419;
+    --gs-input-border: rgba(138, 106, 54, 0.24);
 
     /* Intents */
-    --gs-info-fg: #1e4fd1;
-    --gs-info-bg: #eef3ff;
-    --gs-info-solid: #2f6bff;
-    --gs-success-fg: #11744f;
-    --gs-success-bg: #e8f7ef;
-    --gs-success-solid: #16a34a;
-    --gs-warning-fg: #8a5a00;
-    --gs-warning-bg: #fff6e0;
-    --gs-warning-solid: #b97f00;
-    --gs-danger-fg: #b4233b;
-    --gs-danger-bg: #fdecef;
-    --gs-danger-solid: #d92d48;
+    --gs-info-fg: #7a5512;
+    --gs-info-bg: rgba(201, 160, 90, 0.16);
+    --gs-info-solid: var(--gs-ref-periwinkle);
+    --gs-success-fg: #13705f;
+    --gs-success-bg: rgba(28, 138, 118, 0.11);
+    --gs-success-solid: #1c8a76;
+    --gs-warning-fg: #8c5a06;
+    --gs-warning-bg: rgba(208, 138, 26, 0.13);
+    --gs-warning-solid: var(--gs-ref-amber);
+    --gs-danger-fg: #b0283f;
+    --gs-danger-bg: rgba(209, 64, 88, 0.1);
+    --gs-danger-solid: #c8324c;
     --gs-danger-on-solid: #ffffff;
 
-    /* Machine state */
-    --gs-state-idle-bg: #eceef2;
-    --gs-state-idle-fg: #545a6a;
-    --gs-state-running-bg: #0f7a52;
-    --gs-state-paused-bg: #8f5c00;
-    --gs-state-stopped-bg: #b4233b;
-    --gs-state-crashed-bg: #7a1426;
+    /* Machine state.  The status bar itself stays glass (../glass.css); these
+       solid colours are the state when a surface must be filled. */
+    --gs-state-idle-bg: #efe7d8;
+    --gs-state-idle-fg: #6b6151;
+    --gs-state-running-bg: #17705f;
+    --gs-state-paused-bg: #94600a;
+    --gs-state-stopped-bg: #b0283f;
+    --gs-state-crashed-bg: #7c1528;
     --gs-state-active-fg: #ffffff;
-    --gs-state-hover: rgba(16, 24, 40, 0.05);
+    --gs-state-hover: rgba(138, 106, 54, 0.08);
 
-    /* Syntax palette: Light+ hues, tuned to the blue accent. */
-    --gs-syntax-method: #8a5300;
-    --gs-syntax-attribute: #0b4fae;
-    --gs-syntax-variable: #0b4fae;
-    --gs-syntax-alias: #0b4fae;
+    /* Syntax palette: Midnight's families on paper: bronze methods, slate
+       attributes, plum keywords, terracotta strings, sage numbers. */
+    --gs-syntax-method: #8c5a06;
+    --gs-syntax-attribute: #2f5d86;
+    --gs-syntax-variable: #2f5d86;
+    --gs-syntax-alias: #2f5d86;
     --gs-syntax-object: inherit;
     --gs-syntax-operator: inherit;
-    --gs-syntax-decl: #2f3fd6;
-    --gs-syntax-interp: #2f3fd6;
-    --gs-syntax-keyword: #9b2fc2;
-    --gs-syntax-string: #b23a1a;
-    --gs-syntax-number: #0b7a4b;
-    --gs-syntax-enum: #0b7285;
-    --gs-syntax-type: #0f766e;
-    --gs-syntax-comment: #3f7a3f;
+    --gs-syntax-decl: #5848a8;
+    --gs-syntax-interp: #5848a8;
+    --gs-syntax-keyword: #8e3a86;
+    --gs-syntax-string: #a8452a;
+    --gs-syntax-number: #3c7a45;
+    --gs-syntax-enum: var(--gs-ref-teal);
+    --gs-syntax-type: #17705f;
+    --gs-syntax-comment: #8a8068;
     --gs-syntax-unknown: var(--gs-danger-fg);
     --gs-syntax-error: var(--gs-danger-fg);
-    --gs-syntax-dim: #747a8a;
+    --gs-syntax-dim: #a29780;
 
     /* Code and data views */
-    --gs-code-pc-row-bg: linear-gradient(90deg, #dfe8ff, rgba(223, 232, 255, 0.15));
-    --gs-code-changed-bg: rgba(15, 159, 138, 0.14);
+    --gs-code-pc-row-bg: linear-gradient(90deg, rgba(201, 160, 90, 0.34), rgba(201, 160, 90, 0.04));
+    --gs-code-changed-bg: rgba(28, 138, 118, 0.13);
 
     /* Console */
     --gs-console-bg: var(--gs-surface-sunken);
-    --gs-console-fg: #16181d;
-    --gs-console-cursor: #2f6bff;
-    --gs-console-selection: #cddcff;
-    --gs-console-progress-bg: rgba(16, 24, 40, 0.04);
-    --gs-console-find-hit-bg: rgba(245, 179, 0, 0.35);
-    --gs-console-find-current-bg: rgba(245, 160, 0, 0.7);
+    --gs-console-fg: #2b2419;
+    --gs-console-cursor: #b88a3e;
+    --gs-console-selection: rgba(201, 160, 90, 0.34);
+    --gs-console-progress-bg: rgba(138, 106, 54, 0.06);
+    --gs-console-find-hit-bg: rgba(240, 186, 60, 0.36);
+    --gs-console-find-current-bg: rgba(232, 160, 30, 0.66);
 
     /* Drag and drop */
-    --gs-drop-border: #2f6bff;
-    --gs-drop-bg: rgba(47, 107, 255, 0.06);
-    --gs-drop-label-bg: rgba(30, 86, 230, 0.94);
+    --gs-drop-border: #b88a3e;
+    --gs-drop-bg: rgba(201, 160, 90, 0.1);
+    --gs-drop-label-bg: rgba(122, 85, 18, 0.94);
 
-    /* Scrollbars, selection, elevation */
-    --gs-scrollbar-thumb: rgba(16, 24, 40, 0.16);
-    --gs-scrollbar-thumb-hover: rgba(16, 24, 40, 0.28);
+    /* Scrollbars, selection, elevation: warm, low shadows. */
+    --gs-scrollbar-thumb: rgba(110, 82, 38, 0.22);
+    --gs-scrollbar-thumb-hover: rgba(110, 82, 38, 0.34);
     --gs-scrollbar-track: transparent;
-    --gs-selection-bg: #cddcff;
-    --gs-shadow-popup: 0 0 0 1px rgba(16, 24, 40, 0.06), 0 12px 28px rgba(16, 24, 40, 0.14);
-    --gs-shadow-modal: 0 0 0 1px rgba(16, 24, 40, 0.06), 0 30px 70px rgba(16, 24, 40, 0.22);
-    --gs-shadow-toast: 0 0 0 1px rgba(16, 24, 40, 0.06), 0 14px 30px rgba(16, 24, 40, 0.16);
+    --gs-selection-bg: rgba(201, 160, 90, 0.38);
+    --gs-shadow-popup: 0 0 0 1px rgba(138, 106, 54, 0.14), 0 14px 32px rgba(92, 66, 24, 0.16);
+    --gs-shadow-modal: 0 0 0 1px rgba(138, 106, 54, 0.14), 0 30px 80px rgba(92, 66, 24, 0.24);
+    --gs-shadow-toast: 0 0 0 1px rgba(138, 106, 54, 0.14), 0 16px 36px rgba(92, 66, 24, 0.18);
     --gs-shadow-screen:
-      0 30px 60px -20px rgba(16, 24, 40, 0.45), 0 12px 24px -8px rgba(16, 24, 40, 0.2);
+      0 0 0 1px rgba(138, 106, 54, 0.18), 0 40px 110px -18px rgba(201, 152, 70, 0.55),
+      0 18px 40px rgba(92, 66, 24, 0.2);
 
     /* Components */
-    --gs-menu-bg: #ffffff;
-    --gs-menu-hover-bg: #eef3ff;
-    --gs-menu-hover-fg: #1e4fd1;
-    --gs-icon-button-fg-on: #2f6bff;
-    --gs-statusbar-dot-running: #22c55e;
-    --gs-statusbar-dot-paused: #f5b300;
-    --gs-statusbar-dot-stopped: #e5484d;
-    --gs-statusbar-dot-crashed: #b4233b;
+    --gs-menu-bg: rgba(255, 252, 246, 0.94);
+    --gs-menu-hover-bg: rgba(201, 160, 90, 0.3);
+    --gs-menu-hover-fg: #1a140b;
+    --gs-icon-button-fg-on: var(--gs-ref-teal);
+    --gs-statusbar-dot-running: #1fa384;
+    --gs-statusbar-dot-paused: #e09a22;
+    --gs-statusbar-dot-stopped: #e0566c;
+    --gs-statusbar-dot-crashed: #c8324c;
     --gs-code-breakpoint: var(--gs-ref-pink);
-    --gs-switch-track-on: #2f6bff;
+    --gs-switch-track-on: var(--gs-ref-periwinkle);
     --gs-switch-knob-on: #ffffff;
 
     /* Type, shape and the floating layout's metrics (shared with Midnight). */
@@ -212,17 +219,20 @@
     --gs-toast-offset-bottom: calc(var(--gs-size-statusbar) + 26px);
     --gs-toast-offset-right: 18px;
 
-    /* The display and the status bar. */
-    --gs-display-bg: #f8f9fb;
-    --gs-welcome-bg: #f8f9fb;
-    --gs-screen-frame-bg: #1b1d22;
-    --gs-statusbar-bg-idle: transparent;
-    --gs-statusbar-bg-running: transparent;
-    --gs-statusbar-bg-paused: transparent;
-    --gs-statusbar-bg-stopped: transparent;
-    --gs-statusbar-bg-crashed: #fdecef;
-    --gs-statusbar-fg-idle: #545a6a;
-    --gs-statusbar-fg-active: #545a6a;
-    --gs-statusbar-item-hover: rgba(16, 24, 40, 0.05);
+    /* The display and the status bar.  The display is a deeper champagne
+       well with a gold glow behind the screen; the screen sits in a brushed
+       champagne bezel. */
+    --gs-display-bg:
+      radial-gradient(600px 380px at 50% 45%, rgba(232, 200, 136, 0.28), transparent 70%), #f2ece1;
+    --gs-welcome-bg: var(--gs-display-bg);
+    --gs-screen-frame-bg: linear-gradient(180deg, #f6efe2, #ddcdb2);
+    --gs-statusbar-bg-idle: var(--gs-ref-glass);
+    --gs-statusbar-bg-running: var(--gs-ref-glass);
+    --gs-statusbar-bg-paused: var(--gs-ref-glass);
+    --gs-statusbar-bg-stopped: var(--gs-ref-glass);
+    --gs-statusbar-bg-crashed: rgba(209, 64, 88, 0.12);
+    --gs-statusbar-fg-idle: #6b6151;
+    --gs-statusbar-fg-active: #6b6151;
+    --gs-statusbar-item-hover: rgba(138, 106, 54, 0.08);
   }
 }
