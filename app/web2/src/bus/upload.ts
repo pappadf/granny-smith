@@ -42,6 +42,7 @@ import {
   type MediaTypeDescriptor,
 } from '@/lib/media';
 import { attachCdrom, insertFloppy } from './media';
+import { opfsSafeName } from './fsOps';
 import { importImage, type DiskCategory } from './importImage';
 
 // The one chunked writer: everything the page puts on the emulator's
@@ -117,9 +118,9 @@ async function stageUpload(file: File): Promise<string | null> {
   return (await streamToOpfs(path, file)) ? path : null;
 }
 
-// Best-effort removal of a staged file / unpacked-archive dir. Everything staging
-// touches is written by the worker (FS streaming above, files.archive.extract), so the
-// recursive rm runs worker-side too — keeping its WasmFS view coherent.
+// Best-effort removal of a staged file or directory. Everything staging touches is written
+// by the worker (FS streaming above), so the rm runs worker-side too —
+// keeping its WasmFS view coherent.
 export async function discardStaging(path: string): Promise<void> {
   await gsEval('files.rm', [path]);
 }
@@ -370,7 +371,7 @@ async function probeAs(
   path: string,
   name: string,
   order: MediaTypeId[],
-  opts: { autoBootOnRom: boolean },
+  opts: { autoBootOnRom: boolean; inArchive?: boolean },
 ): Promise<ProbeOutcome> {
   for (const id of order) {
     const descriptor = MEDIA_TYPES[id];
@@ -382,7 +383,7 @@ async function probeAs(
       return 'rejected';
     }
     if (!result.valid) continue;
-    const persisted = await persist(path, name, descriptor, result.info);
+    const persisted = await persist(path, name, descriptor, result.info, opts.inArchive);
     if (persisted) {
       if (id === 'rom') {
         if (opts.autoBootOnRom) await maybeBootFromRom(persisted);
@@ -412,15 +413,13 @@ async function probeAndPersist(
 
   // Then archives, before the permissive hd probe can claim them.  Whether a
   // file is one -- zip, StuffIt, Compact Pro, BinHex, MacBinary, gzip -- is
-  // the core's format registry's call, from its content, not its name; it is
-  // unpacked by files.archive.extract and the first medium inside that
-  // validates is stored.
+  // the core's format registry's call, from its content, not its name.  The
+  // archive is a VFS namespace, so its members are probed where they are
+  // and only the first medium that validates is copied out: nothing else is
+  // unpacked.
   if (await stagedArchiveFormat(stagingPath)) {
-    showNotification(`Extracting ${file.name}...`, 'info');
-    const extractDir = `${UPLOAD_DIR}/${sanitizeName(file.name)}_unpacked`;
-    const outcome = await probeArchive(stagingPath, file, extractDir, opts);
+    const outcome = await probeArchive(stagingPath, opts);
     await discardStaging(stagingPath);
-    await discardStaging(extractDir);
     if (outcome === 'none') showNotification(`No mountable media inside ${file.name}`, 'warning');
     return;
   }
@@ -430,24 +429,23 @@ async function probeAndPersist(
   await discardStaging(stagingPath);
 }
 
-// Unpack the archive staged at `stagingPath` into `extractDir` and probe
-// what is inside: every file, in listing order, as any kind of medium, until
-// one validates.  AppleDouble "._" sidecars are the files' forks, never media.
+// Probe the members of the archive staged at `stagingPath` through its VFS
+// path: every file, in listing order, as any kind of medium, until one
+// validates.  Dot files (AppleDouble "._" sidecars, which some zips carry)
+// are never media.
 async function probeArchive(
   stagingPath: string,
-  file: File,
-  extractDir: string,
   opts: { autoBootOnRom: boolean },
 ): Promise<ProbeOutcome> {
-  const ok = (await gsEval('files.archive.extract', [stagingPath, extractDir])) === true;
-  if (!ok) {
-    showNotification(`Failed to extract ${file.name}`, 'error');
-    return 'rejected';
-  }
-  for (const inner of await listFiles(extractDir)) {
+  for (const inner of await listFiles(stagingPath)) {
     const base = inner.split('/').pop() ?? '';
     if (!base || base.startsWith('.')) continue;
-    const outcome = await probeAs(inner, base, ALL_ORDER, opts);
+    // Stored under its member name, made safe for OPFS (an HFS-derived
+    // name can carry ':').
+    const outcome = await probeAs(inner, opfsSafeName(base), ALL_ORDER, {
+      ...opts,
+      inArchive: true,
+    });
     if (outcome !== 'none') return outcome;
   }
   return 'none';
@@ -484,6 +482,9 @@ async function persist(
   descriptor: MediaTypeDescriptor,
   info:
     { persistDir?: string; checksum?: string; cardId?: string; [k: string]: unknown } | undefined,
+  // The source is a member of a (read-only) archive: copy it out, and leave
+  // the archive for the caller to discard.
+  inArchive = false,
 ): Promise<string | null> {
   const finalName = descriptor.nameFn ? descriptor.nameFn(originalName, info) : originalName;
   const targetDir = info?.persistDir ?? descriptor.persistDir;
@@ -504,12 +505,13 @@ async function persist(
   // file of that name (a content-named ROM uploaded again) is replaced, as
   // the copy always replaced it.
   const exists = (await gsEval('files.path_exists', [finalPath])) === true;
-  const ok = (await gsEval(exists ? 'files.cp' : 'files.mv', [sourcePath, finalPath])) === true;
+  const verb = exists || inArchive ? 'files.cp' : 'files.mv';
+  const ok = (await gsEval(verb, [sourcePath, finalPath])) === true;
   if (!ok) {
     showNotification(`Failed to save ${originalName}`, 'error');
     return null;
   }
-  await discardStaging(sourcePath);
+  if (!inArchive) await discardStaging(sourcePath);
   // Offer a freshly stored vROM to the core's content-addressed registry.
   // The startup enumeration ran once at page load, so without this an
   // "(auto)" boot after a mid-session upload would not see the file until
