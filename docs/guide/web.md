@@ -215,7 +215,7 @@ records: {u32 kind, u32 len} + payload; len a multiple of 8; PAD to the end
   REQ_EVAL      {id, client, deadline_ms, path_len, args_len} + path + args
   REQ_SCRIPT    {id, client, deadline_ms, src_len} + src          (a job)
   REQ_CANCEL    {id, client, target_id}     REQ_MODE_STOP {id, client, owner}
-  REQ_ACK_BUF   {id, client, handle}        (a staged buffer was consumed)
+  REQ_ACK_BUF   {id, client, handle}        (a transfer buffer was consumed)
   EVT_RESULT    {id, ok, json_len, out_len} + json + output
   EVT_PROGRESS  {json_len} + {"id":request,"done":n,"total":n}
   EVT_STATE / EVT_NOTIFY / EVT_LOG {json_len} + json      (events from the core)
@@ -223,9 +223,12 @@ records: {u32 kind, u32 len} + payload; len a multiple of 8; PAD to the end
 
 Limits: a path of up to 1023 bytes and an arguments document of up to
 128 KB (the page refuses larger ones before writing); a result of up to
-256 KB in the answer slot. A result the event ring has no room for is held
-back and delivered once the page has read; the core never blocks on the
-page.
+256 KB (`GS_MBX_RESULT_MAX`), on every client. A larger result is an error
+that names its size and the limit — never truncated, never routed some
+other way; data that can be larger is a download (below) or is asked for
+in bounded pieces, as `memory.peek.bytes` is. A result the event ring has
+no room for is held back and delivered once the page has read; the core
+never blocks on the page.
 
 **Output.** What a leaf prints while it runs (every stdout site in the core
 goes through the sink `gs_out.h`) travels with its answer: `EVT_RESULT`'s
@@ -236,15 +239,16 @@ job's output (below) arrives as `EVT_LOG {"event":"output","id":request,
 the job's result. Outside any request — boot messages, a breakpoint hit —
 text still goes to stdout and `Module.print`.
 
-**Staged buffers.** A result larger than the answer slot is not refused:
-the core formats it into a buffer in its heap and answers
-`{"$buf":handle,"ptr":p,"len":n}`; the page reads the JSON through the
-memory as it is at that moment (`Module.wasmMemory.buffer`, never a cached
-view: the heap grows) and releases it with `REQ_ACK_BUF {handle}`. The
-same mechanism carries a download to the page, chunk by chunk (below),
-and could carry an upload's chunks; today the transfer window
-(`files.xfer_buffer`, 2 MB, static) already is a shared buffer the page
-fills, and its `xfer_write` / `xfer_read` run as I/O jobs.
+**Transfer buffers.** Bulk data reaches the page through a buffer in the
+core's heap that an I/O job owns: the job publishes it under a handle,
+an event names it as `{handle, ptr, len}`, the page reads the bytes
+through the memory as it is at that moment (`Module.wasmMemory.buffer`,
+never a cached view: the heap grows) and acknowledges it with
+`REQ_ACK_BUF {handle}`, and the core hands it back to the job to refill.
+Every buffer has an owner, the job, which releases its handle when it
+ends. Downloads (below) take this road; uploads go through the transfer
+window (`files.xfer_buffer`, 2 MB, static), a shared buffer the page
+fills, whose `xfer_write` / `xfer_read` run as I/O jobs.
 
 ### Events from the core
 
@@ -355,7 +359,7 @@ guest write to it fails meanwhile, as a drive being copied does. Without
 a worker (`--io=sync`) the same work runs inline, with the same hooks.
 
 **Downloads.** `files.download path` is an I/O job that reads the file 4 MB at
-a time into a staged buffer and announces each chunk as
+a time into a transfer buffer and announces each chunk as
 `notify:download_chunk`; the page copies the bytes into a Blob part,
 acknowledges the buffer (the worker refills it), and on the last chunk
 saves the Blob through a transient anchor (`bus/download.ts`). Neither

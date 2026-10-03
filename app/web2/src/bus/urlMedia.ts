@@ -598,8 +598,11 @@ async function unpackMacArchive(
 
 // Every file under `dir`, as paths relative to it.
 async function listTree(dir: string, prefix = ''): Promise<string[]> {
-  const entries = await gsEval('files.list_dir', [prefix ? `${dir}/${prefix}` : dir]);
-  if (!Array.isArray(entries)) return [];
+  const at = prefix ? `${dir}/${prefix}` : dir;
+  const entries = await gsEval('files.list_dir', [at]);
+  // An oversized listing is the core's error: said, not taken for an empty one.
+  if (!Array.isArray(entries))
+    throw new MediaUrlError(`cannot list ${at}: ${gsErrorText(entries)}`);
   const out: string[] = [];
   for (const e of entries) {
     if (typeof e !== 'string' || e === '.' || e === '..') continue;

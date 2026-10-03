@@ -572,8 +572,10 @@ configure, and what the JS frontend operates on:
   method that returns nothing (V_NONE); every failure is an
   `{error: "…"}` object — the core's V_ERROR message, or, for a failure of
   the bridge itself (module not ready, a thrown request), the same shape
-  with `transport: true`. So `r !== null` is never a success test (an
-  `{error}` satisfies it): use `gsOk(r)` for "did it work", `r === true`
+  with `transport: true`. A result larger than the mailbox's limit
+  (`GS_MBX_RESULT_MAX`, 256 KB) is such an error too, naming its size and
+  the limit; it is never truncated. So `r !== null` is never a success
+  test (an `{error}` satisfies it): use `gsOk(r)` for "did it work", `r === true`
   for a V_BOOL method, and a shape check for a read. `gsErrorText(r)`
   gives the reason. A shell statement such as `machine.cpu.d0 = 1` is
   **not** a `gs_eval` path — write an attribute by passing the value as

@@ -454,7 +454,11 @@ async function probeArchive(
 // Every file under `dir` (depth first, in listing order), as full paths.
 async function listFiles(dir: string): Promise<string[]> {
   const entries = await gsEval('files.list', [dir]);
-  if (!Array.isArray(entries)) return [];
+  if (!Array.isArray(entries)) {
+    // An unreadable or oversized listing is said, not taken for an empty one.
+    showNotification(`Cannot list ${dir}: ${gsErrorText(entries)}`, 'error');
+    return [];
+  }
   const out: string[] = [];
   for (const e of entries as { name: string; kind: string }[]) {
     const path = `${dir}/${e.name}`;

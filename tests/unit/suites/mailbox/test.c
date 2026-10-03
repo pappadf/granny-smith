@@ -4,9 +4,9 @@
 // Unit tests for the mailbox (mailbox.c): a client writes REQ_EVAL records
 // into the request ring and reads EVT_RESULT records from the event ring,
 // in the same process, while gs_mailbox_drain serves them through a stub
-// evaluator that echoes what it was asked.  The rings are 4 KB (the suite
-// Makefile overrides the sizes) so wraps and a held-back result are cheap
-// to force.
+// evaluator that echoes what it was asked (or, for the result limit,
+// through gs_eval itself).  The rings are 4 KB (the suite Makefile
+// overrides the sizes) so wraps and a held-back result are cheap to force.
 
 #include "common.h"
 #include "gs_out.h"
@@ -14,6 +14,7 @@
 #include "io/io_worker.h"
 #include "job/job.h"
 #include "mailbox/mailbox.h"
+#include "object/api.h"
 #include "object/meta.h"
 #include "object/object.h"
 
@@ -36,22 +37,6 @@ static char g_last_args[256];
 void gs_mailbox_notify(volatile uint32_t *word) {
     (void)word;
     g_notified++;
-}
-
-// Annotation bodies are formatted with value_format; the objects it can
-// name do not occur here.
-const class_desc_t *object_class(const struct object *o) {
-    (void)o;
-    return NULL;
-}
-const char *object_name(const struct object *o) {
-    (void)o;
-    return NULL;
-}
-void object_compute_path(struct object *o, char *buf, size_t size) {
-    (void)o;
-    if (size)
-        buf[0] = '\0';
 }
 
 // The stub leaf: answers {"path": <path>, "args": <args or null>}; a path
@@ -788,18 +773,13 @@ TEST(progress_of_a_deferred_leaf_reaches_the_client_as_evt_progress) {
     ASSERT_EQ_INT(take_any(buf, sizeof buf, &len), 0);
 }
 
-TEST(a_staged_buffer_is_named_looked_up_and_freed_by_the_ack) {
+TEST(a_transfer_buffer_ack_goes_to_its_job_until_the_job_releases_it) {
     fresh();
-    char *buf = (char *)malloc(64);
-    strcpy(buf, "spilled");
-    uint32_t h = gs_staged_publish(buf, 8, 0);
+    uint32_t h = gs_transfer_publish(42);
     ASSERT_TRUE(h != 0);
-    void *ptr = NULL;
-    size_t len = 0;
-    ASSERT_TRUE(gs_staged_lookup(h, &ptr, &len));
-    ASSERT_TRUE(ptr == buf && len == 8);
-    // The client's ack frees it and is answered true; a second ack of the
-    // same handle finds nothing.
+    // Every ack of a published buffer is the job's (answered true: the job
+    // refills and publishes again under the same handle); once the job
+    // releases it, the handle names nothing.
     post_ctl(GS_MBX_REQ_ACK_BUF, 81, 1, h);
     post_ctl(GS_MBX_REQ_ACK_BUF, 82, 1, h);
     ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 2);
@@ -810,17 +790,93 @@ TEST(a_staged_buffer_is_named_looked_up_and_freed_by_the_ack) {
     ASSERT_TRUE(strcmp(json, "true") == 0);
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
     ASSERT_EQ_INT(id, 82);
+    ASSERT_TRUE(strcmp(json, "true") == 0);
+    gs_transfer_release(h);
+    post_ctl(GS_MBX_REQ_ACK_BUF, 83, 1, h);
+    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 1);
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(id, 83);
     ASSERT_TRUE(strcmp(json, "false") == 0);
-    ASSERT_TRUE(!gs_staged_lookup(h, NULL, NULL));
     // The table is bounded; publishing past it fails, releasing makes room.
-    uint32_t hs[GS_MBX_STAGED_MAX + 1];
-    for (int i = 0; i < GS_MBX_STAGED_MAX; i++) {
-        hs[i] = gs_staged_publish(malloc(4), 4, 0);
+    uint32_t hs[GS_MBX_TRANSFER_MAX];
+    for (int i = 0; i < GS_MBX_TRANSFER_MAX; i++) {
+        hs[i] = gs_transfer_publish(42);
         ASSERT_TRUE(hs[i] != 0);
     }
-    ASSERT_EQ_INT(gs_staged_publish(buf, 1, 0), 0);
-    for (int i = 0; i < GS_MBX_STAGED_MAX; i++)
-        gs_staged_release(hs[i]);
+    ASSERT_EQ_INT(gs_transfer_publish(42), 0);
+    for (int i = 0; i < GS_MBX_TRANSFER_MAX; i++)
+        gs_transfer_release(hs[i]);
+}
+
+// A toy object for gs_eval: `blob.text` is a string of g_blob_len 'x's,
+// so a result can be made as large as a test wants.
+static size_t g_blob_len;
+
+// Read `blob.text`.
+static value_t blob_get_text(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    char *text = (char *)malloc(g_blob_len + 1);
+    memset(text, 'x', g_blob_len);
+    text[g_blob_len] = '\0';
+    value_t v = val_str(text);
+    free(text);
+    return v;
+}
+
+static const member_t blob_members[] = {
+    {.kind = M_ATTR, .name = "text", .doc = "text", .attr = {.type = V_STRING, .get = blob_get_text}},
+};
+static const class_desc_t blob_class = {.name = "blob", .members = blob_members, .n_members = 1};
+
+TEST(an_eval_over_the_result_limit_is_an_error_naming_its_size_and_the_limit) {
+    fresh();
+    g_m.eval = gs_eval;
+    object_root_reset();
+    struct object *blob = object_new(&blob_class, NULL, "blob");
+    object_attach(object_root(), blob);
+    uint32_t id, ok;
+    char json[256];
+    // Within the limit: the result itself.
+    g_blob_len = 8;
+    ASSERT_TRUE(post(91, "blob.text", NULL));
+    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 1);
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(id, 91);
+    ASSERT_EQ_INT(ok, 1);
+    ASSERT_TRUE(strcmp(json, "\"xxxxxxxx\"") == 0);
+    // One byte over (the JSON adds two quotes): an error, never a cut or
+    // rerouted document.
+    g_blob_len = GS_MBX_RESULT_MAX - 1;
+    ASSERT_TRUE(post(92, "blob.text", NULL));
+    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 1);
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(id, 92);
+    ASSERT_EQ_INT(ok, 0);
+    char want[160];
+    snprintf(want, sizeof want, "{\"error\":\"result of 'blob.text' is %u bytes, over the %u-byte result limit\"}",
+             (unsigned)(GS_MBX_RESULT_MAX + 1), (unsigned)GS_MBX_RESULT_MAX);
+    ASSERT_TRUE(strcmp(json, want) == 0);
+    // Any number of oversized results hold nothing: every transfer buffer
+    // a download needs is still there afterwards.
+    g_blob_len = 4u * GS_MBX_RESULT_MAX;
+    for (uint32_t i = 0; i < 4u * GS_MBX_TRANSFER_MAX; i++) {
+        ASSERT_TRUE(post(100 + i, "blob.text", NULL));
+        ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 1);
+        ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+        ASSERT_EQ_INT(id, 100 + i);
+        ASSERT_EQ_INT(ok, 0);
+    }
+    uint32_t hs[GS_MBX_TRANSFER_MAX];
+    for (int i = 0; i < GS_MBX_TRANSFER_MAX; i++) {
+        hs[i] = gs_transfer_publish(42);
+        ASSERT_TRUE(hs[i] != 0);
+    }
+    for (int i = 0; i < GS_MBX_TRANSFER_MAX; i++)
+        gs_transfer_release(hs[i]);
+    object_detach(blob);
+    object_delete(blob);
+    object_root_reset();
 }
 
 // An I/O job that runs until cancelled, on a real worker thread.
@@ -958,7 +1014,8 @@ int main(void) {
     RUN(a_job_thread_calls_the_emulator_through_the_drain_and_waits_for_its_mode);
     RUN(what_a_leaf_prints_travels_with_its_answer_when_captured);
     RUN(progress_of_a_deferred_leaf_reaches_the_client_as_evt_progress);
-    RUN(a_staged_buffer_is_named_looked_up_and_freed_by_the_ack);
+    RUN(a_transfer_buffer_ack_goes_to_its_job_until_the_job_releases_it);
+    RUN(an_eval_over_the_result_limit_is_an_error_naming_its_size_and_the_limit);
     RUN(cancelling_a_request_cancels_the_io_job_answering_it);
     RUN(a_jobs_output_arrives_as_output_records_before_its_result);
     return 0;

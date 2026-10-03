@@ -248,9 +248,9 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
   // Bind the mailbox (throws on a MAGIC / VERSION mismatch: page and core
   // out of step).  The control block is laid out by a constructor in the
   // core, so it is valid before main() runs.
-  // The rings are static and below the boot-time heap size; a staged buffer
-  // (a spilled result, a download chunk) is anywhere in the heap, so the
-  // mailbox reads those through the memory as it is at that moment.
+  // The rings are static and below the boot-time heap size; a transfer
+  // buffer (a download chunk) is anywhere in the heap, so the mailbox reads
+  // those through the memory as it is at that moment.
   const memMod = Module as unknown as { wasmMemory?: WebAssembly.Memory; HEAPU8: Uint8Array };
   mailbox = new Mailbox(
     Module.HEAP32.buffer,
@@ -338,12 +338,12 @@ export async function gsEvalWithProgress(
   return executeMailboxRequest(path || '', argsJson, onProgress);
 }
 
-// A view of `len` bytes of the core's heap at `ptr`, fresh (a staged
-// buffer named by an event), and the acknowledgement that releases it.
+// A view of `len` bytes of the core's heap at `ptr`, fresh (a transfer
+// buffer named by an event), and the acknowledgement that hands it back.
 export function heapBytes(ptr: number, len: number): Uint8Array | null {
   return mailbox ? mailbox.heapBytes(ptr, len) : null;
 }
-export async function ackStagedBuffer(handle: number): Promise<boolean> {
+export async function ackTransferBuffer(handle: number): Promise<boolean> {
   return mailbox ? mailbox.ackBuf(handle) : false;
 }
 

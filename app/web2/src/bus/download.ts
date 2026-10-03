@@ -4,7 +4,7 @@
 // Downloads from the core: a file the machine made (a checkpoint, an
 // exported image, a LaserWriter job's capture) reaches the user's disk
 // without either thread waiting on the other.  The core's I/O worker
-// reads the file a chunk at a time into a STAGED BUFFER (mailbox.h) and
+// reads the file a chunk at a time into a TRANSFER BUFFER (mailbox.h) and
 // the emulator thread announces each chunk as a `download_chunk` event:
 // {id, handle, ptr, len, last, name}.  The page copies the bytes out of
 // the shared heap into a Blob part, acknowledges the buffer (REQ_ACK_BUF;
@@ -12,7 +12,7 @@
 // transient anchor.  A page that never acks makes the core's job time
 // out, not the machine.
 
-import { ackStagedBuffer, heapBytes } from './emulator';
+import { ackTransferBuffer, heapBytes } from './emulator';
 import { showNotification } from '@/state/toasts.svelte';
 
 interface Pending {
@@ -40,7 +40,7 @@ export function onDownloadChunk(d: Record<string, unknown>): void {
   // Copy out before acknowledging: the worker refills the buffer as soon as
   // the ack is served.
   if (view && len) p.parts.push(view.slice());
-  void ackStagedBuffer(handle);
+  void ackTransferBuffer(handle);
   if (d.last === 1 || d.last === true) {
     pending.delete(id);
     saveBlob(new Blob(p.parts as BlobPart[], { type: 'application/octet-stream' }), p.name);

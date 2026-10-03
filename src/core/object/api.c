@@ -32,9 +32,9 @@
 //   object              → {"object": "<class>", "name": "<name>"}
 //   none                → null
 // Caller passes a buffer; the formatter truncates on overflow rather than
-// failing. gs_eval detects the full buffer afterwards and replaces the
-// payload with an explicit {"error": ...} so no consumer parses a
-// truncated document.
+// failing, and returns the document's full length.  gs_eval compares that
+// length with its buffer and replaces an oversized payload with an explicit
+// {"error": ...} so no consumer parses a truncated document.
 
 static void buf_append(char *buf, size_t size, size_t *pos, const char *src, size_t n) {
     if (!buf || !size || *pos >= size - 1)
@@ -107,11 +107,13 @@ static void buf_append_jstring(char *buf, size_t size, size_t *pos, const char *
 // path, and those kinds come only from expression evaluation and shell
 // bindings -- but it is the shape that makes an eighth kind break the bridge
 // in silence.
-static void format_value_json(const value_t *v, char *buf, size_t size, size_t *pos) {
+static size_t format_value_json(const value_t *v, char *buf, size_t size, size_t *pos) {
     vbuf_t b = {0};
     value_format(v, VFMT_JSON_TAGGED, &b);
-    buf_append(buf, size, pos, b.p ? b.p : "null", b.p ? b.len : 4);
+    size_t len = b.p ? b.len : 4; // the whole document, whatever fits
+    buf_append(buf, size, pos, b.p ? b.p : "null", len);
     vbuf_free(&b);
+    return len;
 }
 
 // === Minimal JSON-array parser for `args_json` ==============================
@@ -452,34 +454,6 @@ static int json_parse_args(const char *json, value_t **out_argv, int *out_argc, 
 
 // === Public entry points ====================================================
 
-static gs_eval_spill_fn g_spill;
-
-void gs_eval_set_spill_hook(gs_eval_spill_fn fn) {
-    g_spill = fn;
-}
-
-size_t gs_format_value_json_alloc(const value_t *v, char **out, size_t max) {
-    *out = NULL;
-    for (size_t cap = 1u << 20; cap <= max; cap *= 4) {
-        char *buf = (char *)malloc(cap);
-        if (!buf)
-            return 0;
-        size_t pos = 0;
-        buf[0] = '\0';
-        format_value_json(v, buf, cap, &pos);
-        if (pos < cap - 1) {
-            *out = buf;
-            return pos;
-        }
-        free(buf);
-        if (cap == max)
-            break;
-        if (cap * 4 > max && cap < max)
-            cap = max / 4; // one last try at exactly max
-    }
-    return 0;
-}
-
 int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_size) {
     // Thread-affinity guard (compiled out in release). See worker_thread.h.
     worker_thread_assert("gs_eval");
@@ -561,21 +535,19 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
         v = node_get(n);
     }
 
-    format_value_json(&v, out_buf, out_size, &pos);
+    size_t need = format_value_json(&v, out_buf, out_size, &pos);
     int rc = val_is_error(&v) ? -1 : 0;
-    if (pos >= out_size - 1 && rc == 0 && g_spill && g_spill(&v, out_buf, out_size)) {
-        // Spilled to a staged buffer: out_buf names it (mailbox.h).
-        pos = strlen(out_buf);
-    } else if (pos >= out_size - 1) {
-        // The formatted result hit the buffer cap. A silently truncated
-        // payload is worse than a failure — the consumer would parse garbage
-        // (or, for a string result, a shorter valid-looking document) —
-        // so replace it with an explicit error.
+    if (need > out_size - 1) {
+        // The result is larger than the limit. A silently truncated payload
+        // is worse than a failure — the consumer would parse garbage (or,
+        // for a string result, a shorter valid-looking document) — so
+        // replace it with an explicit error naming both sizes.
         size_t p = 0;
         out_buf[0] = '\0';
         buf_append(out_buf, out_size, &p, "{\"error\":", 9);
         char msg[192];
-        snprintf(msg, sizeof(msg), "result for '%s' exceeds the %zu-byte output buffer", path, out_size);
+        snprintf(msg, sizeof(msg), "result of '%.64s' is %zu bytes, over the %zu-byte result limit", path, need,
+                 out_size - 1);
         buf_append_jstring(out_buf, out_size, &p, msg);
         buf_append(out_buf, out_size, &p, "}", 1);
         rc = -1;

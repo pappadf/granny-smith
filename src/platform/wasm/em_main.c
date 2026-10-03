@@ -579,13 +579,13 @@ void laserwriter_ring_notify(volatile uint32_t *addr) {
 }
 
 // ============================================================================
-// Downloads: a file (or a buffer) to the page, in staged chunks
+// Downloads: a file (or a buffer) to the page, through a transfer buffer
 // ============================================================================
 // An I/O job (io/io_worker.h) reads the file GS_DL_CHUNK bytes at a time
 // into a buffer the page can see; each chunk is announced to the page as
 // EVT_NOTIFY {"event":"download_chunk","id":req,"handle":h,"ptr":p,
 // "len":n,"last":0|1,"name":...} (a note the emulator thread turns into the
-// event: mailbox.h, staged buffers), the page copies the bytes into a Blob
+// event: mailbox.h, transfer buffers), the page copies the bytes into a Blob
 // part and answers REQ_ACK_BUF {handle}, and the worker refills.  Neither
 // the emulator thread nor the page ever waits on the other; a page that
 // never acks times the JOB out (GS_DL_ACK_MS), not the machine.  This
@@ -601,7 +601,7 @@ typedef struct {
     char name[256]; // the download's file name
     uint32_t token; // the deferral (0: answering now)
     uint32_t io_id; // the worker job
-    uint32_t handle; // the staged buffer (published on the first chunk)
+    uint32_t handle; // the transfer buffer (published on the first chunk)
     uint8_t *buf; // GS_DL_CHUNK bytes
     uint32_t req_id; // the request, named in the events
     uint64_t total;
@@ -680,10 +680,10 @@ static void download_note(const char *json, void *ud) {
     int last = 0;
     sscanf(json, "{\"chunk\":%u,\"last\":%d}", &n, &last);
     if (!d->handle)
-        d->handle = gs_staged_publish(d->buf, GS_DL_CHUNK, d->io_id);
+        d->handle = gs_transfer_publish(d->io_id);
     if (!d->handle) {
-        // No room in the staged table: the job times out on its ack.
-        printf("download: no staged buffer for '%s'\n", d->name);
+        // No room in the transfer table: the job times out on its ack.
+        printf("download: no transfer buffer for '%s'\n", d->name);
         return;
     }
     gs_event_emitf(GS_EVENT_NOTIFY,
@@ -700,7 +700,7 @@ static void download_progress(uint64_t done, uint64_t total, void *ud) {
 
 static void download_free(download_job_t *d) {
     if (d->handle)
-        gs_staged_release(d->handle);
+        gs_transfer_release(d->handle);
     free(d->buf);
     free(d->bytes);
     free(d->path);

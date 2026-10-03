@@ -46,7 +46,7 @@ tests/e2e/
 │   ├── fd-duplicate-name.spec.ts        # Duplicate floppy names in the image library
 │   ├── filesystem-tab.spec.ts           # Filesystem tab: descend image, copy/move/rename/unpack
 │   ├── highlight.spec.ts                # Console highlighting: unknown path segments, enums, entry colours; shell.highlight p95 latency under turbo
-│   ├── download-staged.spec.ts          # A core download reaches the page in staged chunks, acked one by one
+│   ├── download-transfer.spec.ts        # A core download reaches the page in chunks through a transfer buffer, acked one by one
 │   ├── iicx-video-modes.spec.ts         # Post-shader WebGL canvas baselines (per monitor × depth)
 │   ├── iifx-aux3-realtime.spec.ts       # A/UX 3.0.1 boot to login under the real RAF scheduler
 │   ├── laserwriter-print.spec.ts        # LaserWriter print from System 6 ends as a PDF download (platen worker)
