@@ -19,10 +19,14 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 import { terminalRun } from '../helpers/terminal';
+import { gsEvalInPage } from '../helpers/web2-eval';
 
 const DATA = path.resolve(__dirname, '../../data');
 const PLUS_ROM = path.join(DATA, 'roms', 'plus-v3-4d1f8172.rom');
 const SYSTEM_FD = path.join(DATA, 'systems', 'System_6_0_8.dsk');
+// A StuffIt archive in BinHex holding one 400K Disk Copy 4.2 image (with
+// tag data), "MacTest Disk.image".
+const ARCHIVE = path.join(DATA, 'apps', 'MacTest_Disk.image_.sit_.hqx');
 
 // Dispatch dragenter/dragover/drop onto the Display area with a real File in
 // the DataTransfer. Coordinates target the display's centre so the state
@@ -101,6 +105,27 @@ test('drop workflow: ROM auto-boots, floppy auto-mounts, unknown file warns', as
   await expect(toast(page, /doesn't look like a ROM, floppy, HD, CD, or archive/)).toBeVisible({
     timeout: 30_000,
   });
+});
+
+// An archive dropped on the display: its members are probed in place, through
+// the archive's VFS path, and only the medium found is stored -- copied out
+// of the archive into the floppy store and inserted.  Nothing is unpacked.
+test('drop an archive: the floppy inside is stored and inserted, nothing unpacked', async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  await gotoWeb2(page);
+  await dropOnDisplay(page, 'plus-v3-4d1f8172.rom', PLUS_ROM);
+  await expect(toast(page, 'Booted plus from uploaded ROM')).toBeVisible({ timeout: 60_000 });
+
+  await dropOnDisplay(page, 'MacTest_Disk.image.sit.hqx', ARCHIVE);
+  await expect(toast(page, 'MacTest Disk.image uploaded')).toBeVisible({ timeout: 60_000 });
+  await expect(toast(page, 'Inserted into floppy drive 1')).toBeVisible({ timeout: 60_000 });
+  expect(await gsEvalInPage(page, 'files.path_size', ['/opfs/images/fd/MacTest Disk.image'])).toBe(
+    419284,
+  );
+  const upload = (await gsEvalInPage(page, 'files.list', ['/opfs/upload'])) as { name: string }[];
+  expect(upload.map((e) => e.name).filter((n) => n !== '.' && n !== '..')).toEqual([]);
 });
 
 // Boot a Plus from a dropped ROM, pause it, save a checkpoint through the

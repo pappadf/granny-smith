@@ -9,6 +9,7 @@
 #include "scsi.h"
 #include "format_registry.h"
 #include "gs_out.h"
+#include "image_iso9660.h"
 #include "image_part.h"
 
 #include "io_leaf.h"
@@ -2080,12 +2081,9 @@ static DEF_METHOD(scsi_method_identify_cdrom) {
     // as a disk (a partition map, or a bare HFS / HFS+ / UFS volume).  The
     // image was opened through the registry already, so a .dmg or a Toast
     // image inside an archive is judged by the disk it holds.
-    bool is_iso = false;
     size_t sz = disk_size(img);
-    uint8_t sector[512];
-    if (sz >= 33280 && disk_read_data(img, 32768, sector, 512) == 512 && memcmp(sector + 1, "CD001", 5) == 0)
-        is_iso = true;
     gs_source_t *src = image_source(img);
+    bool is_iso = iso_probe_source(src, 0, sz); // the probe the VFS mounts with
     const gs_format_t *f = gs_format_contents(src, NULL);
     gs_source_release(src);
     bool is_disk = f && strcmp(f->name, "disk") == 0;

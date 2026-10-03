@@ -25,4 +25,5 @@ EXTRA_SRCS   := ../../../../src/core/job/seam.c \
 # (image_source in image_part.c), as in the other SCSI suites.
 EXTRA_SRCS += ../../../../src/core/storage/image_part.c
 USE_SOURCE_LAYER := 1
+EXTRA_SRCS += ../../../../src/core/storage/image_iso9660.c
 include ../../common.mk

@@ -3,8 +3,8 @@
 
 // ISO 9660, read over discs the test lays out (ECMA-119): a primary volume
 // descriptor, optionally a Joliet supplementary one, directory records in
-// both byte orders, Rock Ridge NM names, and Apple's associated file (a
-// resource fork) -- then records made corrupt in the ways a reader must
+// both byte orders, Rock Ridge NM names, Apple's associated file (a
+// resource fork) and its "AA" / "BA" Finder info -- then records made corrupt in the ways a reader must
 // refuse rather than trust.
 
 #include "image_iso9660.h"
@@ -226,6 +226,70 @@ TEST(test_iso_rock_ridge_names) {
     gs_source_release(s);
 }
 
+// Apple's extensions: Finder info as "AA" (length-prefixed, may follow
+// other system use entries), as the original "BA" (no length byte), after
+// a CD-XA record, and on the associated file only.  Flags outside bundle
+// and system are dropped; the existence bit reads as invisible.
+TEST(test_iso_apple_finder_info) {
+    build(false, false);
+    uint8_t *root = disc + 20 * SEC;
+    size_t p = 0;
+    uint8_t dot = 0, dotdot = 1;
+    p += record(root + p, &dot, 1, 20, SEC, 0x02, NULL, 0);
+    p += record(root + p, &dotdot, 1, 20, SEC, 0x02, NULL, 0);
+    // AA after an unrelated 4-byte entry; flags 0xA120 keep only 0x2000.
+    static const uint8_t aa[] = {'Z', 'Z', 4, 1, 'A', 'A', 14, 2, 'T', 'E', 'X', 'T', 't', 't', 'x', 't', 0xA1, 0x20};
+    p += record(root + p, (const uint8_t *)"A.TXT;1", 7, 25, 10, 0, aa, sizeof(aa));
+    // BA, and a hidden record: 0x4000 from the existence bit.
+    static const uint8_t ba[] = {'B', 'A', 3, 'A', 'P', 'P', 'L', 'M', 'A', 'C', 'S', 0x10, 0x00};
+    p += record(root + p, (const uint8_t *)"B;1", 3, 25, 10, 0x01, ba, sizeof(ba));
+    // AA behind a 14-byte CD-XA record.
+    static const uint8_t xa[] = {0,   0,   0,  0, 0x0D, 0x55, 'X', 'A', 0,   0,   0,   0,   0, 0,
+                                 'A', 'A', 14, 2, 'P',  'I',  'C', 'T', 'o', 'g', 'l', 'e', 0, 0};
+    p += record(root + p, (const uint8_t *)"C;1", 3, 25, 10, 0, xa, sizeof(xa));
+    // AA on the associated file only; the file itself has none.
+    static const uint8_t aa2[] = {'A', 'A', 14, 2, 'r', 's', 'r', 'c', 'R', 'S', 'E', 'D', 0, 0};
+    p += record(root + p, (const uint8_t *)"D;1", 3, 24, 100, 0x04, aa2, sizeof(aa2));
+    p += rec_s(root + p, "D;1", 25, 10, 0);
+    // A ProDOS AA entry (id 1) is not Finder info.
+    static const uint8_t prodos[] = {'A', 'A', 7, 1, 0x04, 0, 0};
+    p += record(root + p, (const uint8_t *)"E;1", 3, 25, 10, 0, prodos, sizeof(prodos));
+
+    gs_source_t *s = src();
+    iso_volume_t *v = iso_open_source(s, 0, sizeof(disc));
+    ASSERT_TRUE(v != NULL);
+    iso_dir_iter_t *it = iso_opendir(v, 20, SEC);
+    ASSERT_TRUE(it != NULL);
+    iso_dirent_t e[5];
+    for (int i = 0; i < 5; i++)
+        ASSERT_EQ_INT(1, iso_readdir_next(it, &e[i]));
+    iso_dirent_t end;
+    ASSERT_EQ_INT(0, iso_readdir_next(it, &end));
+    iso_closedir(it);
+
+    ASSERT_TRUE(strcmp(e[0].name, "A.TXT") == 0 && e[0].has_finder_info);
+    ASSERT_TRUE(e[0].type == 0x54455854u && e[0].creator == 0x74747874u); // 'TEXT' 'ttxt'
+    ASSERT_EQ_INT(0x2000, e[0].finder_flags);
+    ASSERT_TRUE(e[1].has_finder_info && e[1].type == 0x4150504Cu && e[1].creator == 0x4D414353u);
+    ASSERT_EQ_INT(0x5000, e[1].finder_flags); // system + invisible
+    ASSERT_TRUE(e[2].has_finder_info && e[2].type == 0x50494354u); // 'PICT'
+    ASSERT_TRUE(strcmp(e[3].name, "D") == 0 && e[3].rsrc_size == 100);
+    ASSERT_TRUE(e[3].has_finder_info && e[3].creator == 0x52534544u); // 'RSED'
+    ASSERT_TRUE(!e[4].has_finder_info);
+    iso_close(v);
+    gs_source_release(s);
+
+    // The plain tree has no Apple entries at all.
+    build(false, false);
+    s = src();
+    v = iso_open_source(s, 0, sizeof(disc));
+    const char *path[] = {"readme.txt"};
+    ASSERT_EQ_INT(0, iso_lookup(v, path, 1, &e[0]));
+    ASSERT_TRUE(!e[0].has_finder_info);
+    iso_close(v);
+    gs_source_release(s);
+}
+
 // Corrupt records are refused: an identifier running past its record, a
 // file extent past the disc's end, a directory larger than the disc.
 TEST(test_iso_corrupt_records_are_refused) {
@@ -260,6 +324,7 @@ int main(void) {
     RUN(test_iso_plain_tree);
     RUN(test_iso_joliet_names_win);
     RUN(test_iso_rock_ridge_names);
+    RUN(test_iso_apple_finder_info);
     RUN(test_iso_corrupt_records_are_refused);
     fprintf(stderr, "All ISO 9660 tests passed\n");
     return 0;

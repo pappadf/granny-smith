@@ -25,9 +25,15 @@ import {
   treeDrag,
   dropFileOnRow,
 } from '../helpers/web2-fs';
+import { terminalRun } from '../helpers/terminal';
+import { gsEvalInPage } from '../helpers/web2-eval';
 
 const IMAGE_HOST = path.resolve(__dirname, '../../data/systems/System_6_0_8.dsk');
 const ARCHIVE_HOST = path.resolve(__dirname, '../../data/apps/MacTest_Disk.image_.sit_.hqx');
+const PLUS_ROM_HOST = path.resolve(__dirname, '../../data/roms/plus-v3-4d1f8172.rom');
+// The 400K Disk Copy 4.2 image inside ARCHIVE_HOST (a StuffIt archive in
+// BinHex), tag data included.
+const ARCHIVE_MEMBER = 'MacTest Disk.image';
 const IMAGE = 'System_6_0_8.dsk';
 const FD = `/opfs/images/fd/${IMAGE}`;
 const UPLOAD = '/opfs/upload';
@@ -221,4 +227,28 @@ test('inside a read-only image, the context menu offers only Download', async ({
   await expect(menu.locator('.item').filter({ hasText: 'Delete' })).toHaveCount(0);
   await expect(menu.locator('.item').filter({ hasText: 'Rename' })).toHaveCount(0);
   await expect(menu.locator('.item').filter({ hasText: 'Unpack' })).toHaveCount(0);
+});
+
+test('a floppy image inside an archive goes into a drive from its context menu', async ({
+  page,
+}) => {
+  test.setTimeout(3 * 60 * 1000);
+  await stageOpfsFile(page, '/opfs/images/rom/4d1f8172', PLUS_ROM_HOST);
+  await stageOpfsFile(page, `${UPLOAD}/archive.hqx`, ARCHIVE_HOST);
+  await page.locator('button.ptab[data-tab="terminal"]').click();
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
+  await terminalRun(page, 'machine.boot model="plus" rom="/opfs/images/rom/4d1f8172"');
+  await expect.poll(() => gsEvalInPage(page, 'machine.created'), { timeout: 30_000 }).toBe(true);
+
+  await openFilesystemTab(page);
+  await expand(page, 'upload', 'archive.hqx');
+  await expand(page, 'archive.hqx', ARCHIVE_MEMBER);
+  await row(page, ARCHIVE_MEMBER).click({ button: 'right' });
+  const menu = page.locator('.context-menu');
+  await expect(menu.locator('.item').filter({ hasText: 'Download' })).toBeVisible();
+  await menu.locator('.item').filter({ hasText: 'Insert into floppy drive' }).click();
+  await expect(page.locator('.toast .msg').filter({ hasText: 'Inserted' })).toBeVisible();
+  // The drive holds the member itself: nothing was unpacked next to it.
+  expect(await gsEvalInPage(page, 'machine.floppy.drive[0].present')).toBe(true);
+  await expect(row(page, 'archive_unpacked')).toHaveCount(0);
 });

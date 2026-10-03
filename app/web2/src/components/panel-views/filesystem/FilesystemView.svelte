@@ -19,8 +19,11 @@
     type ProgressFn,
   } from '@/bus/fsOps';
   import { isExpandable, isInImageSpace, listViaVfs } from '@/lib/diskImage';
+  import { MEDIA_TYPES } from '@/lib/media';
+  import { gsEval } from '@/bus/emulator';
+  import { attachCdrom, attachHardDisk, insertFloppy } from '@/bus/media';
   import { showNotification } from '@/state/toasts.svelte';
-  import { images, bumpImagesRevision } from '@/state/images.svelte';
+  import { images, bumpImagesRevision, setMounted } from '@/state/images.svelte';
   import { startActivity, endActivity, setActivityDetail } from '@/state/activity.svelte';
   import {
     filesystem,
@@ -370,7 +373,7 @@
     }
   }
 
-  function handleContextMenu(path: string[], ev: MouseEvent) {
+  async function handleContextMenu(path: string[], ev: MouseEvent) {
     ev.preventDefault();
     // The '/opfs' root is the storage mount itself — never offer Rename or
     // Delete on it (the C side refuses too, but don't even show the menu).
@@ -381,22 +384,21 @@
     const targets = effectiveTargets(path);
     const multi = targets.length > 1;
 
-    // Inside a disk image everything is read-only — only Download applies, and
-    // only to file targets. (Targets share a parent, so they're uniformly
-    // in-image or not.)
+    // Inside a disk image or archive everything is read-only — Download
+    // applies, to file targets, and a single medium can go into a drive.
+    // (Targets share a parent, so they're uniformly in-image or not.)
     if (isInImageSpace(path[path.length - 1])) {
       const files = targets.filter((t) => isFile(t));
       if (!files.length) return;
-      openContextMenu(
-        [
-          {
-            label: files.length > 1 ? `Download ${files.length} files` : 'Download',
-            action: () => doDownload(targets),
-          },
-        ],
-        ev.clientX,
-        ev.clientY,
-      );
+      const { clientX, clientY } = ev;
+      const items: ContextMenuItem[] = [
+        {
+          label: files.length > 1 ? `Download ${files.length} files` : 'Download',
+          action: () => doDownload(targets),
+        },
+      ];
+      if (!multi) items.push(...(await mediaItems(path[path.length - 1])));
+      openContextMenu(items, clientX, clientY);
       return;
     }
 
@@ -422,6 +424,49 @@
       danger: true,
     });
     openContextMenu(items, ev.clientX, ev.clientY);
+  }
+
+  // Drive actions for a file inside an image or archive that the core
+  // identifies as a medium -- the core attaches it by that path, decoding
+  // through the archive, so nothing is copied out first.  Only with a
+  // machine to attach to -- asked of the core, since a machine booted from
+  // the terminal exists before it first runs.  A floppy is what the
+  // machine's floppy controller identifies (a Disk Copy 4.2 image with tag
+  // data included, which the size-only upload check does not know); it is
+  // offered as a floppy only.  Anything else, as each of hard disk and CD
+  // the core accepts.
+  async function mediaItems(target: string): Promise<ContextMenuItem[]> {
+    if ((await gsEval('machine.created')) !== true) return [];
+    const density = await gsEval('machine.floppy.identify', [target]);
+    const valid = async (id: 'hd' | 'cdrom') =>
+      (await MEDIA_TYPES[id].validate(target, gsEval)).valid;
+    const items: ContextMenuItem[] = [];
+    if (typeof density === 'string' && density) {
+      items.push({ label: 'Insert into floppy drive', action: () => attachMedium(target, 'fd') });
+    } else {
+      if (await valid('hd'))
+        items.push({ label: 'Attach as hard disk', action: () => attachMedium(target, 'hd') });
+      if (await valid('cdrom'))
+        items.push({ label: 'Insert into CD-ROM drive', action: () => attachMedium(target, 'cd') });
+    }
+    return items.length ? [{ sep: true }, ...items] : [];
+  }
+
+  async function attachMedium(target: string, kind: 'fd' | 'hd' | 'cd') {
+    const name = target.split('/').pop() ?? target;
+    const r =
+      kind === 'fd'
+        ? await insertFloppy(target, false)
+        : kind === 'hd'
+          ? await attachHardDisk(target)
+          : await attachCdrom(target);
+    const verb = kind === 'hd' ? 'attach' : 'insert';
+    if (!r.ok) {
+      showNotification(`Couldn't ${verb} '${name}': ${r.reason}`, r.full ? 'warning' : 'error');
+      return;
+    }
+    setMounted(target, r.mount);
+    showNotification(`${kind === 'hd' ? 'Attached' : 'Inserted'} '${name}'`, 'info');
   }
 
   // Toast for a bulk move/copy, naming the items that failed (if any) and the
