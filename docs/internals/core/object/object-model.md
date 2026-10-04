@@ -661,7 +661,7 @@ the level contract over every model in the registry.
 | State | `machine.boot` | `machine.restart` | `machine.reset` | `checkpoint.load` |
 |---|---|---|---|---|
 | Devices | New | **Kept** | **Kept** | New |
-| Model, RAM size, cards | From the document; each omitted field takes the model's default | Unchanged | Unchanged | From the checkpoint's parts: the board's (model, RAM size) and each bus's (its slot entries) |
+| Model, RAM size, cards | From the document; each omitted field takes the model's default | Unchanged | Unchanged | From the checkpoint's parts: the board's (model, RAM size) and one part per seated card (`nubus.slot.<n>`, `pci.slot.<n>`: its slot entry, ROM bytes and state) |
 | ROM bytes | Read from the `rom=` file before the running machine is touched, and built into the new machine's ROM region at construction | Unchanged | Unchanged | From the checkpoint, by content or file reference |
 | RAM contents | Zeroed (fresh `calloc`) | **Cleared** to zero | **Kept** | Restored |
 | CPU registers | Reset | Reset vector, reset-state SR/VBR/CACR, MMU and TTx enables off | The same | Restored |
@@ -671,12 +671,12 @@ the level contract over every model in the registry.
 | Mounted media | None. The old machine's images are closed (`system_destroy`); a CD bay is registered empty | **Kept** | **Kept** (`floppy_reset` keeps media) | From the checkpoint |
 | Caps Lock latch | Released | **Kept** | Kept (`adb_reset` preserves held keys) | From the checkpoint's ADB state |
 | ADB devices | New | Back at their default addresses (the bus loses power: `adb_power_on`) | Kept; the ROM's ADB SendReset resets them | Restored |
-| Scheduler pacing (`scheduler.mode`, `.speed`, `.max_speed`) | Host state (the platform's run loop): untouched, and the new machine runs under it | Unchanged | Unchanged | Untouched: never in a checkpoint |
+| Host pacing (`pacing.mode`, `.speed`, `.max_speed`; also reached as `scheduler.*` while a machine runs) | Host state (the platform's run loop): untouched, and the new machine runs under it | Unchanged | Unchanged | Untouched: never in a checkpoint |
 | vROM/PROM offer registries | Process-global; survive | Survive | Survive | Survive |
-| A slot's ROM file (`vrom=`/`prom=`, a slot's `rom=`) | The document's, an argument of that slot's card; never written to the offer registries | Unchanged | Unchanged | From the bus's part of the checkpoint (its slot entries) |
+| A slot's ROM file (`vrom=`/`prom=`, a slot's `rom=`) | The document's, an argument of that slot's card; never written to the offer registries | Unchanged | Unchanged | From the card's part of the checkpoint, which carries the ROM's bytes (a checkpoint restores without the file) |
 | A built-in video's monitor strap (`monitor=`, `video_sense=`) | The document's, an argument of the video device | Unchanged | Unchanged | From the device's identity part of the checkpoint |
-| Object tree | Machine-scoped nodes rebuilt (`root_install`); process singletons (`machine`, `rom`, `vrom`, `prom`, `appletalk`) stay | Untouched | Untouched | Rebuilt |
-| AppleTalk network (`appletalk.*`: the AFP server and its shares, the LaserWriter, the program-linking peer, their NBP names) | Host state: untouched; the new machine plugs into it | Untouched | Untouched | Untouched: never in a checkpoint |
+| Object tree | Machine-scoped nodes rebuilt (`root_install`); process singletons (`machine`, `rom`, `vrom`, `prom`, `pacing`, `appletalk`) stay | Untouched | Untouched | Rebuilt |
+| AppleTalk network (`appletalk.*`: the AFP server and its shares, the LaserWriter, the program-linking peer, their NBP names) | Host state: untouched; the new machine plugs into it | Untouched | Untouched | Untouched: never in a checkpoint. Nor kept across a page reload: the web app saves none of it, and a reloaded page starts with only the default share |
 | The machine's AppleTalk connection (`cfg->atalk`: link state and counters, ATP transactions, its ASP / AFP / ADSP / PPC sessions, forks, Apple events) | New, with no sessions; the old machine's sessions closed | Kept | Kept | Its block restored (enabled flag, link counters, session numbering), with no sessions: the guest sees a restarted server |
 
 **`machine.boot` inherits nothing from the running machine.** The

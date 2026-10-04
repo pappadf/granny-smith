@@ -133,9 +133,12 @@ a desk outlives the Macs that print to it:
 | an interpreter wedged by an earlier job | replaced, logged |
 
 What a machine takes with it when it is unplugged from the network is its
-PAP session and a job still in progress -- including one finishing after
-its connection closed, since the guest-time timers that drive it run on
-that machine's scheduler (`atalk_printer_unplug`). The printer's
+PAP session and a job still arriving over it (`atalk_printer_unplug`). A
+job whose data is all in -- one finishing after its connection closed --
+is the printer's, not the machine's: it keeps running, its document still
+reaches the sink, and the next machine's scheduler drives its remaining
+polls (`atalk_printer_plug` → `laserwriter_job_resume`). So a print sent
+just before `machine.boot` or `checkpoint.load` is not lost. The printer's
 identity, its job counts and what earlier jobs made permanent stay.
 
 The bridge names printers with a process-unique id (`g_lw.printer_id`,

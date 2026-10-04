@@ -185,7 +185,7 @@ underruns and stutter. Per paced main-loop tick that executed frame-units, it:
    the utilization *projected at the next rung* stays under the 0.80 target.
 3. **Bounds**: floor = the authentic CPI (rung 0 — accelerated never runs slower
    than real hardware; an overloaded host degrades to exactly `paced` behavior);
-   ceiling = `scheduler.max_speed` (default 8×, persisted).
+   ceiling = `scheduler.max_speed` (default 8×, the host's setting).
 
 The dwell/holdoff slew limit and the coarse quantization are **correctness
 requirements**, not tuning niceties: the guest calibrates
@@ -909,14 +909,22 @@ The scheduler is an object-model citizen (`scheduler.*` paths in the typed shell
 |-----------------------------|------------------------------------------------------------|
 | `scheduler.run [N]`         | Start execution; optionally stop after N instructions.     |
 | `scheduler.stop`            | Stop execution immediately.                                |
-| `scheduler.mode`            | Pacing mode: `"paced"` \| `"accelerated"` \| `"turbo"` (writable; legacy aliases `real`/`hw` → paced, `max` → turbo, `accel` → accelerated). Survives `machine.boot` / `machine.restart`: pacing is the host harness's setting (`--speed=`), not part of the machine's boot document, so the rebuild re-asserts it on the new machine's scheduler. |
-| `scheduler.cpi`             | Per-machine CPI constant; writable as a debug override (1..255). |
-| `scheduler.speed`           | Accelerated-mode multiplier in force (live). Write `0` for auto (adaptive governor) or 1.0 .. 8.0 to pin; persisted, but only takes effect in mode `accelerated`. |
+| `scheduler.mode`            | Pacing mode: `"paced"` \| `"accelerated"` \| `"turbo"` (writable; strict: the legacy aliases are rejected). The host's setting, the same one as `pacing.mode`, reached through the running machine. |
+| `scheduler.cpi`             | Per-machine CPI constant; writable as a debug override (1..255). A checkpoint carries it, override included. |
+| `scheduler.speed`           | Accelerated-mode multiplier in force (live). Write `0` for auto (adaptive governor) or 1.0 .. 8.0 to pin; the host's setting (`pacing.speed`), and only takes effect in mode `accelerated`. |
 | `scheduler.speed_auto`      | RO: true while the adaptive governor is choosing the speed (`speed = 0`). |
-| `scheduler.max_speed`       | Cap on the accelerated multiplier (1.0 .. 8.0, default 8): the governor's ceiling, and pinned speeds clamp to it. Persisted. |
+| `scheduler.max_speed`       | Cap on the accelerated multiplier (1.0 .. 8.0, default 8): the governor's ceiling, and pinned speeds clamp to it. The host's setting (`pacing.max_speed`). |
 | `scheduler.running`         | True while executing (useful for scripts).                 |
 | `scheduler.cycles` / `.instr_count` | Cycle / instruction counters.                      |
 | `events`                    | Dump the pending event queue with Δcycles and Δµs.         |
+
+The pacing setting itself is the host's, not the machine's: `pacing.mode`,
+`pacing.speed` (0 = auto) and `pacing.max_speed` are there with or without a
+machine -- the page sets `?speed=` through them before it boots anything, and
+`--speed=` sets them in headless.  It outlives every machine and is never in a
+checkpoint: a machine is built at the default pacing and runs under the host's
+from the moment it becomes the active one (`system_swap_in`), a restored one
+included.
 
 The `events` command is the quickest way to diagnose a timing issue — it shows each
 event's absolute timestamp, delta from `cpu_cycles`, delta in microseconds, its

@@ -53,9 +53,8 @@ for reads. (This is why `BrowserOpfs.delete` / `.move` in
 **Core / frontend separation.** The emulator core is path-agnostic: it
 accepts paths as command arguments. The web app owns the directory
 layout under `/opfs/`. The C side creates `/opfs/images/{rom,vrom,fd,
-fdhd,hd,cd}`, `/opfs/{checkpoints,upload}` and an emptied
-`/opfs/upload/.scratch` at boot via `mkdir`-on-worker; the web app reads
-them via the browser's OPFS API.
+fdhd,hd,cd}`, `/opfs/{checkpoints,upload}` and `/opfs/upload/.scratch` at boot via
+`mkdir`-on-worker; the web app reads them via the browser's OPFS API.
 
 **Cross-thread communication.** JS on the main thread cannot directly
 call WASM functions that touch OPFS (different thread). The boundary is
@@ -674,16 +673,19 @@ cancel button, for an `HD=` / `CD=` download as for an upload; every exit
 staged flow, now moved (`files.mv`) into place rather than copied.
 
 **The scratch area.** Every file the page writes on its way somewhere else
-lives in `/opfs/upload/.scratch/` (`lib/opfsPaths.ts`: `SCRATCH_DIR`,
-`scratchPath`): an upload being probed, a dropped checkpoint being loaded, a
+lives in the tab's own directory under `/opfs/upload/.scratch/`
+(`lib/opfsPaths.ts`: `TAB_SCRATCH_DIR`, `scratchPath`): an upload being probed, a dropped checkpoint being loaded, a
 URL download, a streamed import's `.dmg.part`, the Save State file while it
 is downloaded, a file copied out of an image to be downloaded.  Each
 operation writes under a name no other uses (`<nonce>-<name>`), so two
 uploads of one name, or two URL boots of one slot, never touch each other's
 file, and removes its file on every exit (`try`/`finally`).  Nothing is ever
 attached from the scratch area: what is kept is moved into
-`/opfs/images/<category>/` first.  The core empties the directory at startup
-(`em_main.c`), which covers an operation a closed tab or a crash cut short.
+`/opfs/images/<category>/` first.  Each tab holds a Web Lock named after its
+directory for as long as it lives; at startup a tab removes every directory
+under `.scratch/` whose lock nobody holds (`bus/scratch.ts::claimScratch`),
+which covers an operation a closed tab or a crash cut short and never touches
+the files of another tab still open.
 The rest of `/opfs/upload` is the user's (the Filesystem tab may put files
 there) and is never touched.
 
@@ -804,7 +806,7 @@ typed-dispatch and introspection surface.
 │   │       ├── state.checkpoint
 │   │       └── <id>.delta / <id>.journal   Writable image state
 │   └── upload/                 The user's; the page writes only in .scratch/
-│       └── .scratch/           Files on their way into a store; emptied at startup
+│       └── .scratch/<tab>/     Files on their way into a store; one directory per tab
 └── tmp/                        Memory mount (volatile)
 ```
 
@@ -886,7 +888,7 @@ view; errors still toast.
   medium (above) and the machine boots without it, saying so.  Storing it
   also offers it to the core's ROM catalog, for later boots.
 - `speed=paced|accelerated|turbo` — the toolbar's pacing mode from the
-  start, set once on the page's run loop (`scheduler.mode`); pacing is host
+  start, set once on the page's run loop (`pacing.mode`); pacing is host
   state, so every machine the page boots or restores runs under it (legacy
   `max`/`realtime`/`hardware` are accepted as aliases).  The wasm module takes no command line.
 - `model=<id>` — preferred machine id (must be in the ROM's compatible
