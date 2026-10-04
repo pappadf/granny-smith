@@ -141,6 +141,14 @@ and pause the printer: its queue holds what arrived, the idle timer waits,
 and selecting again prints the rest — a host DC3 instead makes the
 interpreter ignore input until DC1, as the printer does.
 
+Deselected *before* the Macintosh driver opens the port (System 6.0.8,
+ImageWriter 2.7), the driver says "The Printer is not responding" without
+sending a byte, and a single select followed by its OK does not resume it:
+the driver takes the CTS interrupt but waits on. Deselecting and selecting
+again while the alert shows, then OK, prints the job. Deselected mid-job, the
+driver resumes on its own. Whether a real Macintosh behaves the same is not
+known.
+
 **LocalTalk.** `connection = "localtalk"` (ImageWriter II only) publishes
 the card: `appletalk_imagewriter.c` registers `localtalk_name:ImageWriter@*`
 on its own PAP socket (9), separate from the LaserWriter's server
