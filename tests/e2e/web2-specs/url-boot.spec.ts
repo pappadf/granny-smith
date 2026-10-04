@@ -23,6 +23,8 @@ const SYSTEM_FD = path.resolve(__dirname, '../../data/systems/System_6_0_8.dsk')
 const IICX_ROM = path.resolve(__dirname, '../../data/roms/iix-iicx-se30-97221136.rom');
 // The declaration ROM of the IIcx's slot-$9 default card (mdc_8_24).
 const JMFB_VROM = path.resolve(__dirname, '../../data/roms/mdc-8-24-revb-d1629664.vrom');
+// BinHex around StuffIt around a DiskCopy 4.2 floppy, "MacTest Disk.image".
+const MAC_ARCHIVE = path.resolve(__dirname, '../../data/apps/MacTest_Disk.image_.sit_.hqx');
 
 // Serve the ROM bytes from disk for any request to the sentinel path the
 // URL params point at. Must be registered before goto so the in-page
@@ -128,6 +130,28 @@ test('?fd0= media is persisted to /opfs/images/fd and inserted from there', asyn
   const stored = (await opfsFiles(page)).find((p) => STORED.test(p));
   expect(stored).toBeDefined();
   expect(await gsEvalInPage(page, 'files.path_exists', [stored])).toBe(true);
+});
+
+// A floppy named inside a Mac archive (…/x.sit.hqx/<member>) is unpacked and
+// stored like any floppy.  Unpacking mounts the archive in the image VFS, and
+// the member is put where the archive was staged: the move into
+// /opfs/images/fd used to fail ("Failed to save", "could not be stored")
+// because the cached mount still held that file open, which OPFS refuses to
+// remove or rename.
+test('?fd0= naming a floppy inside a Mac archive is stored and inserted', async ({ page }) => {
+  test.setTimeout(120_000);
+  await routeRom(page, 'url-plus.rom', PLUS_ROM);
+  await routeRom(page, 'url-mactest.sit.hqx', MAC_ARCHIVE);
+
+  await page.goto(
+    `/index.html?rom=url-plus.rom&model=plus&fd0=${encodeURIComponent('url-mactest.sit.hqx/MacTest Disk.image')}`,
+  );
+  await expect(page.locator('.toast .msg').filter({ hasText: 'Booted plus from URL parameters' }))
+    .toBeVisible({ timeout: 60_000 });
+  await expect(page.locator('.toast .msg').filter({ hasText: /Failed to save|could not be stored/ })).toHaveCount(0);
+  const STORED = /\/opfs\/images\/fd\/fd0_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}/;
+  expect(await gsEvalInPage(page, 'machine.floppy.drive[0].disk.filename')).toMatch(STORED);
+  expect((await opfsFiles(page)).filter((p) => p.startsWith('/opfs/upload/'))).toEqual([]);
 });
 
 // Every file under /opfs, from the browser's own view of OPFS.

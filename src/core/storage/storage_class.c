@@ -307,12 +307,35 @@ static const arg_decl_t files_list_dir_args[] = {
 // image-VFS mount table.
 
 // `files.cp(src, dst, [recursive])` — copy host/VFS file to a VFS path.
+// Drop the cached image-VFS mounts of `path` and of anything under it before
+// it is removed, moved or overwritten.  A mount holds its file open, and OPFS
+// refuses to remove or rename an open file (Linux allows it, so native runs
+// never see this): an archive files.archive.extract left mounted made the
+// page's move of the disk unpacked over it fail ("copied, but failed to
+// remove source").  A mount with live handles stays, and the operation fails
+// as it would have.
+static void release_cached_mounts(const char *path) {
+    if (!path || !*path)
+        return;
+    size_t n = strlen(path);
+    while (n > 1 && path[n - 1] == '/')
+        n--;
+    for (int s = image_vfs_next_serial(-1); s >= 0; s = image_vfs_next_serial(s)) {
+        image_vfs_mount_info_t info;
+        if (!image_vfs_mount_info(s, &info))
+            continue;
+        if (strncmp(info.path, path, n) == 0 && (info.path[n] == '\0' || info.path[n] == '/'))
+            image_vfs_unmount(info.path);
+    }
+}
+
 static DEF_METHOD(files_method_cp) {
     const char *src = argv[0].s;
     const char *dst = argv[1].s;
     bool recursive = argc > 2 && argv[2].kind == V_BOOL && argv[2].b;
     if (destination_attached(dst))
         return val_err("files.cp: '%s' is attached to a device (E_BUSY)", dst);
+    release_cached_mounts(dst);
     io_leaf_t *j = io_leaf_new(src, dst);
     if (!j)
         return val_err("files.cp: out of memory");
@@ -404,6 +427,7 @@ static DEF_METHOD(files_method_rm) {
     const char *path = argv[0].s;
     if (files_path_is_protected(path))
         return val_err("files.rm: refusing to remove '%s'", path ? path : "(null)");
+    release_cached_mounts(path);
     int rc = gs_rm_tree(path);
     if (rc < 0)
         return val_err("files.rm: cannot remove '%s': %s", path, strerror(-rc));
@@ -437,6 +461,7 @@ static DEF_METHOD(files_method_mv) {
     vfs_stat_t st;
     if (vfs_stat(dst, &st) == 0)
         return val_err("files.mv: destination '%s' already exists", dst);
+    release_cached_mounts(src);
     if (rename(src, dst) == 0)
         return val_bool(true);
     char err[256] = {0};
