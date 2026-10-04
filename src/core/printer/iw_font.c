@@ -142,8 +142,40 @@ bool iw_font_has_tables(const iw_font_sel_t *sel) {
     return iw_font_data_lookup(sel, ' ', NULL);
 }
 
+// A fixed-width shape made proportional: each column doubled onto the finer
+// proportional grid, the blank columns trimmed, two columns of space after.
+// (The printer's own proportional set is not decoded yet.)
+static void make_proportional(iw_glyph_t *g) {
+    uint16_t cols[IW_GLYPH_MAX_COLS] = {0};
+    int n = g->n > 8 ? 8 : g->n;
+    int first = -1, last = -1;
+    for (int i = 0; i < n; i++) {
+        if (g->cols[i]) {
+            if (first < 0)
+                first = i;
+            last = i;
+        }
+    }
+    if (first < 0) {
+        // A blank: a space about as wide as a pica character
+        memset(g->cols, 0, sizeof(g->cols));
+        g->n = 10;
+        return;
+    }
+    int w = 0;
+    for (int i = first; i <= last && w + 2 <= IW_GLYPH_MAX_COLS - 2; i++) {
+        cols[w++] = g->cols[i];
+        cols[w++] = g->cols[i];
+    }
+    memcpy(g->cols, cols, sizeof(cols));
+    g->n = (uint8_t)(w + 2);
+}
+
 bool iw_font_glyph(const iw_font_sel_t *sel, uint8_t code, iw_glyph_t *out) {
-    if (iw_font_data_lookup(sel, code, out))
+    if (iw_font_data_lookup(sel, code, out)) {
+        if (sel->proportional && !out->half)
+            make_proportional(out);
         return true;
+    }
     return placeholder_glyph(sel, code, out);
 }

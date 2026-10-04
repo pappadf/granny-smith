@@ -90,5 +90,13 @@ assert machine.imagewriter.jobs == 2 "the Best print did not become a document"
 assert machine.imagewriter.last_job_pages == 1 "the Best listing is one page"
 assert machine.imagewriter.last_pdf_crc == 0xae7bb4bd "the Best PDF differs from the golden"
 
+# Draft: the driver sends text, printed in the printer's own draft font
+print_directory(327)
+scheduler.run 200000000
+echo "draft: ${machine.imagewriter.bytes} bytes, jobs ${machine.imagewriter.jobs}, ${machine.imagewriter.last_job_pages} page(s), ${machine.imagewriter.last_outcome}, crc ${machine.imagewriter.last_pdf_crc}"
+assert machine.imagewriter.jobs == 3 "the Draft print did not become a document"
+assert machine.imagewriter.last_outcome == "ok" "the Draft job used the placeholder font or failed"
+assert machine.imagewriter.last_pdf_crc == 0x00c46754 "the Draft PDF differs from the golden"
+
 echo "PASS: mac-imagewriter"
 quit

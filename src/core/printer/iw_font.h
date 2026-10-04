@@ -32,6 +32,7 @@ typedef struct {
     uint16_t cols[IW_GLYPH_MAX_COLS];
     uint8_t n2;
     uint16_t pass2[IW_GLYPH_MAX_COLS];
+    bool half; // columns are half dot columns apart (draft); n counts half columns
     bool placeholder; // drawn from the built-in placeholder font
 } iw_glyph_t;
 

@@ -316,7 +316,10 @@ static void put_char(iw_interp_t *in, uint8_t code) {
         return;
     const iw_pitch_desc_t *p = &pitches[st->pitch];
     int rep = (st->attr & IW_ATTR_DOUBLE_WIDTH) ? 2 : 1;
-    int64_t advance = ((int64_t)g.n * rep + (p->proportional ? st->prop_dot_space : 0)) * p->dot;
+    // Draft glyphs are drawn in half dot columns (each column's position is
+    // computed from the start, so an odd dot pitch does not drift)
+    int div = g.half ? 2 : 1;
+    int64_t advance = (int64_t)g.n * rep * p->dot / div + (p->proportional ? st->prop_dot_space : 0) * p->dot;
     // Backspace: this character goes back over the previous one
     if (st->bs_pending) {
         st->bs_pending = false;
@@ -342,7 +345,7 @@ static void put_char(iw_interp_t *in, uint8_t code) {
     bool bold = (st->attr & IW_ATTR_BOLD) != 0;
     for (int i = 0; i < g.n; i++) {
         for (int r = 0; r < rep; r++) {
-            int64_t x = st->head_x + (int64_t)(i * rep + r) * p->dot;
+            int64_t x = st->head_x + (int64_t)(i * rep + r) * p->dot / div;
             stage(in, x, g.cols[i], step, yoff);
             if (bold)
                 stage(in, x + BOLD_OFFSET, g.cols[i], step, yoff);

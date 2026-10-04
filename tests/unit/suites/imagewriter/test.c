@@ -425,6 +425,30 @@ TEST(test_deterministic_page) {
     free(b);
 }
 
+// The generated tables: draft draws in half columns, a descender reaches
+// wire 9, and a language replaces its codes.
+TEST(test_rom_glyphs) {
+    iw_font_sel_t sel = {.quality = IW_QUALITY_DRAFT};
+    iw_glyph_t g;
+    ASSERT_TRUE(iw_font_glyph(&sel, 'L', &g));
+    ASSERT_TRUE(g.half && !g.placeholder);
+    ASSERT_EQ_INT(g.n, 16);
+    ASSERT_EQ_INT(g.cols[0], 0x7F); // the stem, wires 1-7
+    for (int i = 0; i + 1 < g.n; i++)
+        ASSERT_TRUE((g.cols[i] & g.cols[i + 1]) == 0); // never two neighbouring half columns
+    sel.quality = IW_QUALITY_CORRESPONDENCE;
+    ASSERT_TRUE(iw_font_glyph(&sel, 'p', &g));
+    ASSERT_TRUE(!g.half && g.n == 8);
+    ASSERT_TRUE(g.cols[1] & 0x100); // the stem reaches wire 9
+    iw_glyph_t us, de;
+    ASSERT_TRUE(iw_font_glyph(&sel, '[', &us));
+    sel.language = 4; // German: [ is A-umlaut
+    ASSERT_TRUE(iw_font_glyph(&sel, '[', &de));
+    ASSERT_TRUE(memcmp(us.cols, de.cols, sizeof(us.cols)) != 0);
+    // Nothing prints for a control code
+    ASSERT_TRUE(!iw_font_glyph(&sel, 0x07, &g));
+}
+
 int main(void) {
     RUN(test_pdf_structure);
     RUN(test_pdf_serialise);
@@ -446,6 +470,7 @@ int main(void) {
     RUN(test_eighth_bit);
     RUN(test_custom_characters);
     RUN(test_deterministic_page);
+    RUN(test_rom_glyphs);
     iw_interp_free(&g_in);
     fprintf(stderr, "All imagewriter tests passed\n");
     return 0;

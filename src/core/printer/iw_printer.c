@@ -307,6 +307,8 @@ static void job_end(iw_printer_t *p) {
     if (!pages) {
         // Nothing reached paper (a status query, settings only): no document
         LOG(2, "job %u ended with nothing printed", (unsigned)j->job_id);
+        // Its number goes to the next job: documents are numbered in order
+        j->job_id--;
         pdf_writer_free(p->pdf);
         p->pdf = NULL;
         update_status(p);
