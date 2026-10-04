@@ -113,6 +113,26 @@ a Macintosh the printer wires /CTS (not asserted when ready) on attach and
 unwires it on detach. With DIP 2-3 closed it sends DC3/DC1 instead. The
 `ESC ?` reply goes back byte by byte through `scc_port_rx_byte`.
 
+The SCC paces a character to the printer at the line's rate (scc.md,
+"Transmit pacing"), so the guest sees the ready line change between
+characters, as on the real cable.
+
+**The buffer.** By default the input buffer is unbounded and the ready line
+only follows select and paper. `buffer_model = "2k"` or `"32k"` simulates the
+real one: the queue holds at most that much (a byte sent into a full buffer is
+`dropped`), the printer goes busy with 30 bytes free and ready again at 100
+(266 and 337 with XON/XOFF; imagewriter.md §2), and it interprets the queue
+at a rough print speed instead of all at once: a line takes one pass of the
+head to its rightmost dot at 25, 18 or 4.5 in/s (draft, correspondence and
+graphics, NLQ), the paper 1/24 s per 1/6 in. The drain runs every 10 ms of
+guest time on what has elapsed. It is a test aid for drivers' flow control,
+not a model of print time: `buffer_peak` and `buffer_waits` say how close a
+job came and how often the host had to wait. Text from a fast host fills it;
+a Plus printing the Finder's directory never does, even in Draft (the driver
+spends longer per line than the printer), and bitmap bands, a byte per dot
+column, drain faster than 9600 baud brings them. The LocalTalk card's PAP
+pull is not affected.
+
 Front-panel deselect (`selected = false`) and `paper_out` drop the ready line
 and pause the printer: its queue holds what arrived, the idle timer waits,
 and selecting again prints the rest — a host DC3 instead makes the
@@ -161,8 +181,9 @@ At the end of a job the PDF goes to `printer_sink_deliver()`:
 (`imagewriter` / `imagewriter2`), `connection`, `localtalk_name`, `status`,
 `busy`, `dip1`/`dip2`, `color_ribbon`, `sheet_feeder`, `paper`
 (`fanfold-letter`, `letter`, `a4`, `legal`, `fanfold-15in`), `paper_mode`,
-`idle_timeout_ms`, `resolution`, `dot_shape`, `tof_offset`, `selected`,
-`paper_out`, `capture`; counters `jobs`, `pages`, `bytes`, `last_job_pages`,
+`idle_timeout_ms`, `buffer_model`, `resolution`, `dot_shape`, `tof_offset`,
+`selected`, `paper_out`, `capture`; counters `jobs`, `pages`, `bytes`,
+`buffered`, `buffer_peak`, `buffer_waits`, `dropped`, `last_job_pages`,
 `last_outcome`, `last_pdf_crc`, `last_pdf_bytes`; read-outs `pitch`,
 `line_spacing`, `soft_switches`; methods `eject()`, `reset()`, `feed(data)`,
 `feed_file(path)`. `machine.scc.<ch>.device` names a device plugged into a
@@ -185,8 +206,9 @@ printer back into its port or re-publishes the card.
 | unit `imagewriter` | parser, switches, tabs, pixel-exact columns for every pitch, interleave, opaque graphics, the CAN recovery, pages, perforation skip, colour planes, self ID, the eighth bit, custom characters, ROM glyphs (draft, NLQ passes, proportional widths), PDF structure, determinism and serialisation |
 | unit `scc_port` | the port-device seam: bytes to the device, ready line, RX injection |
 | `lisa-imagewriter` | LOS 3.1 prints the Calculator tape on Serial A; PDF golden |
-| `mac-imagewriter` | a Plus with System 6.0.8 prints Faster, Best (deselected mid-job) and Draft on the printer port; PDF goldens |
+| `mac-imagewriter` | a Plus with System 6.0.8 prints Faster, Best (deselected mid-job), Draft, and Faster through the 2 KB buffer on the printer port; PDF goldens |
 | `appletalk-imagewriter` | the same over the LocalTalk card, with paper-out alert and recovery |
+| `imagewriter-handshake` | a scripted host fills the simulated 2 KB buffer through the SCC and waits on CTS each time the printer goes busy; nothing is lost |
 | `imagewriter-checkpoint` | a checkpoint mid-job restores to the same PDF |
 | e2e `imagewriter-print` | a job opens in the browser's print viewer |
 
@@ -194,8 +216,7 @@ The goldens are CRCs (`last_pdf_crc`): every output is deterministic.
 
 ## 11. Not done yet
 
-The original ImageWriter's character generator and its vertical format unit; a simulated buffer (2 KB / 32 KB)
-that would make the handshake bite mid-job; a dedicated printer panel in the
-web UI (today the SYSTEM tab edits `machine.imagewriter`); the title from the
-guest's foreground application; persistence of the printer settings across
-sessions.
+The original ImageWriter's character generator and its vertical format unit;
+a dedicated printer panel in the web UI (today the SYSTEM tab edits
+`machine.imagewriter`); the title from the guest's foreground application;
+persistence of the printer settings across sessions.

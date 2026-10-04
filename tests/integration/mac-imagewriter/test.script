@@ -98,5 +98,21 @@ assert machine.imagewriter.jobs == 3 "the Draft print did not become a document"
 assert machine.imagewriter.last_outcome == "ok" "the Draft job used the placeholder font or failed"
 assert machine.imagewriter.last_pdf_crc == 0x00c46754 "the Draft PDF differs from the golden"
 
+# Faster again through the simulated 2 KB buffer, printing at about the
+# printer's speed: the driver keeps ahead of it without losing a byte (the
+# Plus does not outrun it; imagewriter-handshake fills the buffer)
+machine.imagewriter.buffer_model = "2k"
+print_directory(227)
+$n = 0
+while machine.imagewriter.jobs < 4 && $n < 120 {
+    scheduler.run 10000000
+    $n = $n + 1
+}
+echo "faster, 2k buffer: ${machine.imagewriter.bytes} bytes, peak ${machine.imagewriter.buffer_peak}, ${machine.imagewriter.buffer_waits} waits, ${machine.imagewriter.dropped} dropped, ${machine.imagewriter.last_job_pages} page(s), crc ${machine.imagewriter.last_pdf_crc}"
+assert machine.imagewriter.jobs == 4 "the buffered Faster print did not become a document"
+assert machine.imagewriter.buffer_peak > 0 "nothing waited in the buffer"
+assert machine.imagewriter.dropped == 0 "the driver sent into a full buffer"
+assert machine.imagewriter.last_pdf_crc == 0xd871ca40 "the buffered Faster PDF differs from the unbuffered one"
+
 echo "PASS: mac-imagewriter"
 quit

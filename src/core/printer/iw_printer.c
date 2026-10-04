@@ -48,8 +48,18 @@ LOG_USE_CATEGORY_NAME("imagewriter");
 // A run of this many CANs at the start of a line starts a new job (the Lisa
 // Office System opens every job with one)
 #define IW_CAN_JOB_RUN 16
+// Simulated input buffer (`buffer_model`): the printer goes busy when fewer
+// than FULL bytes are free and ready again once RESUME bytes are -- 30 and
+// 100 with the DTR protocol, 266 and 337 with XON/XOFF (ImageWriter User's
+// Manual, Part I, the data protocols) -- and prints what it holds at a rough
+// print speed, checked every DRAIN_TICK
+#define IW_DTR_FULL_FREE   30u
+#define IW_DTR_RESUME_FREE 100u
+#define IW_XON_FULL_FREE   266u
+#define IW_XON_RESUME_FREE 337u
+#define IW_DRAIN_TICK_NS   10000000ll
 // Checkpoint layout version of this part
-#define IW_CP_VERSION      1
+#define IW_CP_VERSION      2
 #define IW_DEFAULT_IDLE_MS 5000u
 
 // Paper choices
@@ -71,6 +81,17 @@ static const iw_paper_t papers[] = {
 
 static const char *const connection_names[IW_CONN_COUNT] = {"none", "serial-a", "serial-b", "localtalk"};
 
+// The buffer_model choices: the input buffer's size, 0 for unbounded
+static const struct {
+    const char *name;
+    uint32_t size;
+} buffer_models[] = {
+    {"unlimited", 0    },
+    {"2k",        2048 },
+    {"32k",       32768},
+};
+#define N_BUFFER_MODELS (sizeof(buffer_models) / sizeof(buffer_models[0]))
+
 // Settings a checkpoint carries as one block
 typedef struct {
     iw_config_t icfg;
@@ -81,6 +102,7 @@ typedef struct {
     bool panel_deselected; // the front panel's SELECT is off
     uint32_t idle_timeout_ms;
     uint8_t inks[4][3]; // Y, M, C, K ink colours
+    uint8_t buffer_model; // index into buffer_models[]
 } iw_settings_t;
 
 // Job and counter state a checkpoint carries as one block
@@ -99,6 +121,12 @@ typedef struct {
     uint8_t reply[16]; // bytes queued for the host (ESC ?, XON/XOFF)
     uint8_t reply_len, reply_pos;
     bool xoff_sent; // XON/XOFF: DC3 sent, DC1 owed
+    bool buffer_full; // the simulated buffer is (nearly) full: busy
+    uint32_t buffer_waits; // times the simulated buffer filled and the printer went busy
+    uint64_t dropped; // bytes lost to a full buffer
+    uint32_t buffer_peak; // the most bytes waiting at once, since the last job began
+    int64_t drain_credit_ns; // print time available (negative: still printing what was taken)
+    double drain_last_ns; // guest time the credit was last brought up to date
 } iw_job_state_t;
 
 struct iw_printer {
@@ -124,11 +152,20 @@ static void process_event(void *source, uint64_t data);
 static void idle_event(void *source, uint64_t data);
 static void reply_event(void *source, uint64_t data);
 static void update_ready(iw_printer_t *p);
+static void interpret(iw_printer_t *p, const uint8_t *data, size_t len);
+static void flush_input(iw_printer_t *p);
+static void drain(iw_printer_t *p);
+static void check_buffer(iw_printer_t *p);
 
 // Deselected at the front panel or out of paper: the printer stops printing.
 // What it has already received stays in its buffer, and the job waits.
 static bool paused(const iw_printer_t *p) {
     return p->set.panel_deselected || p->set.paper_out;
+}
+
+// The simulated input buffer's size, 0 when unbounded
+static uint32_t buffer_size(const iw_printer_t *p) {
+    return buffer_models[p->set.buffer_model].size;
 }
 
 // --- Names ---------------------------------------------------------------------
@@ -278,6 +315,7 @@ static void job_begin(iw_printer_t *p) {
     iw_job_state_t *j = &p->job;
     j->job_active = true;
     j->job_id++;
+    j->buffer_peak = (uint32_t)byteq_len(&p->input);
     byteq_clear(&p->capture);
     iw_interp_begin_job(&p->interp);
     LOG(2, "job %u started", (unsigned)j->job_id);
@@ -352,8 +390,7 @@ void iw_printer_end_job(iw_printer_t *p) {
     if (!p)
         return;
     // What is still queued belongs to this job
-    if (byteq_len(&p->input))
-        process_event(p, 0);
+    flush_input(p);
     job_end(p);
 }
 
@@ -391,12 +428,93 @@ void iw_printer_feed(iw_printer_t *p, const uint8_t *data, size_t len) {
     if (!p || !len)
         return;
     // Bytes already queued from a serial port go first
-    if (byteq_len(&p->input))
-        process_event(p, 0);
+    flush_input(p);
     interpret(p, data, len);
 }
 
 // --- Scheduler events ------------------------------------------------------------
+
+// Rough print speeds for the simulated buffer: the head prints a line in one
+// pass at 18 in/s (correspondence and graphics), 25 in/s (draft) or 4.5 in/s
+// (NLQ, two passes) -- the rated 250, 180 and 45 characters per second at 10
+// cpi -- and the paper moves 24 lines of 1/6 in a second.  Only meant to make
+// the buffer fill and drain plausibly.
+#define IW_PAPER_NS_PER_144 1736111ll
+
+// The rightmost staged dot, 0 when the line is empty.
+static int32_t line_extent(const iw_state_t *st) {
+    int32_t right = 0;
+    for (uint32_t i = 0; i < st->n_marks; i++)
+        if (st->marks[i].x > right)
+            right = st->marks[i].x;
+    return right;
+}
+
+// What the print time of a byte depends on, before it is interpreted
+typedef struct {
+    uint32_t n_marks;
+    uint8_t quality;
+    int64_t y;
+    int32_t extent;
+} iw_motion_t;
+
+static iw_motion_t motion_before(const iw_state_t *st) {
+    return (iw_motion_t){.n_marks = st->n_marks, .quality = st->quality, .y = st->y, .extent = line_extent(st)};
+}
+
+// Print time of the line printed and the paper moved since `before`.
+static int64_t print_cost_ns(const iw_motion_t *before, const iw_state_t *after) {
+    int64_t cost = 0;
+    if (before->n_marks && !after->n_marks && before->extent > 0) {
+        // tenths of an inch per second
+        int64_t speed = before->quality == IW_QUALITY_DRAFT ? 250 : before->quality == IW_QUALITY_NLQ ? 45 : 180;
+        cost += (int64_t)before->extent * 10 * 1000000000ll / (speed * IW_UNITS_PER_INCH);
+    }
+    int64_t dy = after->y - before->y;
+    cost += (dy < 0 ? -dy : dy) * IW_PAPER_NS_PER_144;
+    return cost;
+}
+
+// Whether the simulated buffer has gone (nearly) full, or has room again.
+static void check_buffer(iw_printer_t *p) {
+    uint32_t size = buffer_size(p);
+    size_t used = byteq_len(&p->input);
+    size_t free_bytes = size > used ? size - used : 0;
+    bool xon = (p->set.icfg.dip2 & IW_DIP2_XONXOFF) != 0;
+    size_t limit = p->job.buffer_full ? (xon ? IW_XON_RESUME_FREE : IW_DTR_RESUME_FREE)
+                                      : (xon ? IW_XON_FULL_FREE : IW_DTR_FULL_FREE);
+    bool full = size && free_bytes < limit;
+    if (full != p->job.buffer_full) {
+        p->job.buffer_full = full;
+        LOG(3, "buffer %s (%zu of %u bytes)", full ? "full" : "has room", used, (unsigned)size);
+        if (full)
+            p->job.buffer_waits++;
+        update_ready(p);
+    }
+}
+
+// One tick of printing from the simulated buffer: as many bytes as the
+// tick's print time covers, then the next tick while bytes remain.
+static void drain(iw_printer_t *p) {
+    iw_job_state_t *j = &p->job;
+    double now = scheduler_time_ns(p->scheduler);
+    double elapsed = now - j->drain_last_ns;
+    j->drain_last_ns = now;
+    // An idle printer saves no print time: at most one tick's worth
+    j->drain_credit_ns += elapsed > 0 ? (int64_t)elapsed : 0;
+    if (j->drain_credit_ns > IW_DRAIN_TICK_NS)
+        j->drain_credit_ns = IW_DRAIN_TICK_NS;
+    while (j->drain_credit_ns > 0 && byteq_len(&p->input) && !paused(p)) {
+        uint8_t b;
+        byteq_read(&p->input, &b, 1);
+        iw_motion_t before = motion_before(&p->interp.st);
+        interpret(p, &b, 1);
+        j->drain_credit_ns -= print_cost_ns(&before, &p->interp.st);
+    }
+    if (byteq_len(&p->input) && !paused(p) && !has_event(p->scheduler, process_event))
+        scheduler_new_cpu_event(p->scheduler, process_event, p, 0, 0, IW_DRAIN_TICK_NS);
+    check_buffer(p);
+}
 
 // Run the interpreter over the queued input.
 static void process_event(void *source, uint64_t data) {
@@ -405,6 +523,18 @@ static void process_event(void *source, uint64_t data) {
     size_t n = byteq_len(&p->input);
     if (!n || paused(p))
         return; // resumed (resume_input) when the printer is ready again
+    if (buffer_size(p)) {
+        drain(p);
+        return;
+    }
+    flush_input(p);
+}
+
+// Interpret everything queued, at once.
+static void flush_input(iw_printer_t *p) {
+    size_t n = byteq_len(&p->input);
+    if (!n)
+        return;
     // Copy out first: interpreting may end a job, which must not see the queue change
     uint8_t *buf = malloc(n);
     if (!buf)
@@ -412,6 +542,7 @@ static void process_event(void *source, uint64_t data) {
     byteq_read(&p->input, buf, n);
     interpret(p, buf, n);
     free(buf);
+    check_buffer(p);
 }
 
 // The input has been quiet: end the job, or look again when it was not quiet
@@ -460,10 +591,15 @@ static void reply_event(void *source, uint64_t data) {
 // A byte from the guest, inside its write to the SCC: queue it.
 static void port_tx_byte(void *ctx, uint8_t byte) {
     iw_printer_t *p = ctx;
-    if (!byteq_append(&p->input, &byte, 1, IW_INPUT_MAX)) {
-        LOG(1, "input queue full: byte dropped");
+    // A host that ignores the busy line overruns a simulated buffer
+    if (!byteq_append(&p->input, &byte, 1, buffer_size(p) ? buffer_size(p) : IW_INPUT_MAX)) {
+        if (!p->job.dropped++)
+            LOG(1, "input buffer full: byte dropped (the host ignored the busy line)");
         return;
     }
+    if (byteq_len(&p->input) > p->job.buffer_peak)
+        p->job.buffer_peak = (uint32_t)byteq_len(&p->input);
+    check_buffer(p);
     p->job.last_rx_ns = scheduler_time_ns(p->scheduler);
     if (!has_event(p->scheduler, process_event))
         scheduler_new_cpu_event(p->scheduler, process_event, p, 0, 0, IW_PROCESS_DELAY_NS);
@@ -476,7 +612,7 @@ static const scc_port_device_t iw_port_device_iw2 = {.name = "imagewriter2", .tx
 
 // Whether the printer takes data: selected, with paper
 static bool printer_ready(const iw_printer_t *p) {
-    return !p->set.panel_deselected && p->interp.st.selected && !p->set.paper_out;
+    return !p->set.panel_deselected && p->interp.st.selected && !p->set.paper_out && !p->job.buffer_full;
 }
 
 // Tell the host whether the printer takes data: the ready line (DTR), or
@@ -604,7 +740,8 @@ static void restore(iw_printer_t *p, checkpoint_t *cp) {
     }
     system_read_checkpoint_data(cp, &p->set, sizeof(p->set), "iwset");
     system_read_checkpoint_data(cp, &p->job, sizeof(p->job), "iwjob");
-    if (p->set.paper >= N_PAPERS || p->set.connection >= IW_CONN_COUNT || p->set.icfg.model >= IW_MODEL_COUNT) {
+    if (p->set.paper >= N_PAPERS || p->set.connection >= IW_CONN_COUNT || p->set.icfg.model >= IW_MODEL_COUNT ||
+        p->set.buffer_model >= N_BUFFER_MODELS) {
         checkpoint_set_error(cp);
         default_settings(&p->set, IW_MODEL_IW2);
     }
@@ -885,6 +1022,26 @@ static DEF_SETTER(attr_idle_timeout_set) {
     return val_none();
 }
 
+static DEF_GETTER(attr_buffer_model) {
+    return val_str(buffer_models[printer_from(self)->set.buffer_model].name);
+}
+
+static DEF_SETTER(attr_buffer_model_set) {
+    iw_printer_t *p = printer_from(self);
+    int idx = -1;
+    for (size_t i = 0; i < N_BUFFER_MODELS && in.s; i++)
+        if (strcmp(in.s, buffer_models[i].name) == 0)
+            idx = (int)i;
+    value_free(&in);
+    if (idx < 0)
+        return val_err("buffer_model: expected unlimited, 2k or 32k");
+    if (p->job.job_active)
+        return busy_error("buffer_model");
+    p->set.buffer_model = (uint8_t)idx;
+    check_buffer(p);
+    return val_none();
+}
+
 static DEF_GETTER(attr_resolution) {
     return val_uint(2, printer_from(self)->set.icfg.dpi);
 }
@@ -1005,6 +1162,22 @@ static DEF_GETTER(attr_jobs) {
 
 static DEF_GETTER(attr_pages) {
     return val_uint(4, printer_from(self)->job.pages);
+}
+
+static DEF_GETTER(attr_buffered) {
+    return val_uint(4, (uint32_t)byteq_len(&printer_from(self)->input));
+}
+
+static DEF_GETTER(attr_buffer_waits) {
+    return val_uint(4, printer_from(self)->job.buffer_waits);
+}
+
+static DEF_GETTER(attr_buffer_peak) {
+    return val_uint(4, printer_from(self)->job.buffer_peak);
+}
+
+static DEF_GETTER(attr_dropped) {
+    return val_uint(8, printer_from(self)->job.dropped);
 }
 
 static DEF_GETTER(attr_bytes) {
@@ -1167,6 +1340,11 @@ static const member_t iw_printer_members[] = {
      .doc = "Guest time with no input after which a serial job ends",
      .attr = {.type = V_UINT, .get = attr_idle_timeout, .set = attr_idle_timeout_set}},
     {.kind = M_ATTR,
+     .name = "buffer_model",
+     .flags = M_CAT_ADVANCED,
+     .doc = "Input buffer: unlimited (default), or a simulated 2k or 32k one that prints at about the printer's "
+            "speed and drops the ready line (or sends XOFF) when full, to test a driver's flow control", .attr = {.type = V_STRING, .get = attr_buffer_model, .set = attr_buffer_model_set}},
+    {.kind = M_ATTR,
      .name = "resolution",
      .flags = M_CAT_ADVANCED,
      .doc = "Raster resolution of the PDF's pages: 288 or 576 dpi",
@@ -1199,6 +1377,26 @@ static const member_t iw_printer_members[] = {
      .name = "pages",
      .doc = "Pages printed, all documents",
      .attr = {.type = V_UINT, .get = attr_pages}},
+    {.kind = M_ATTR,
+     .name = "buffered",
+     .flags = M_CAT_ADVANCED,
+     .doc = "Bytes received and not yet printed",
+     .attr = {.type = V_UINT, .get = attr_buffered}},
+    {.kind = M_ATTR,
+     .name = "buffer_waits",
+     .flags = M_CAT_ADVANCED,
+     .doc = "Times the simulated buffer (buffer_model) filled and the printer told the host to wait",
+     .attr = {.type = V_UINT, .get = attr_buffer_waits}},
+    {.kind = M_ATTR,
+     .name = "buffer_peak",
+     .flags = M_CAT_ADVANCED,
+     .doc = "The most bytes waiting to be printed at once since the current (or last) job began",
+     .attr = {.type = V_UINT, .get = attr_buffer_peak}},
+    {.kind = M_ATTR,
+     .name = "dropped",
+     .flags = M_CAT_ADVANCED,
+     .doc = "Bytes lost because the host sent them into a full simulated buffer",
+     .attr = {.type = V_UINT, .get = attr_dropped}},
     {.kind = M_ATTR,
      .name = "bytes",
      .flags = M_CAT_ADVANCED,

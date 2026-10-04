@@ -761,7 +761,7 @@ machine says how a ready device's **handshake line** is wired into the chip.
 |---|---|
 | `scc_set_output(scc, ch, path)` | Opens (creates or truncates) `path` and streams into it every byte the guest writes to WR8 while the channel is in asynchronous mode (WR4 stop bits non-zero), flushed as it is written. `NULL` closes it. An open output counts as a ready device on the cable. SDLC frames are not written; they go to the frame sink. |
 | `scc_set_port_ready_line(scc, ch, pin, ready_level)` | Machine glue: which input a ready device drives, and at which level. The pin is driven "not ready" at once, "ready" while an output is open, and "not ready" again when it closes. A port not wired this way has no handshake an output touches. |
-| `scc_attach_port_device(scc, ch, dev, ctx)` | Plugs a device into the channel (`NULL` unplugs). Its `tx_byte` hears every byte the guest writes to WR8 in asynchronous mode, beside an output file if both are attached; `machine.scc.<ch>.device` names it. |
+| `scc_attach_port_device(scc, ch, dev, ctx)` | Plugs a device into the channel (`NULL` unplugs). Its `tx_byte` hears every byte the guest writes to WR8 in asynchronous mode, beside an output file if both are attached; `machine.scc.<ch>.device` names it. Towards a device a character takes its time on the line (below). |
 | `scc_port_device_ready(scc, ch, ready)` | The device is (not) ready: the wired ready line follows, as it follows an open output. A device starts not ready. |
 | `scc_port_rx_byte(scc, ch, byte)` | Device to guest: the byte lands in the receive FIFO with Rx Character Available and the receive interrupt, as `receive()` delivers it (a full FIFO latches Rx Overrun). |
 | `scc_unwire_port_ready_line(scc, ch)` | Undoes `scc_set_port_ready_line`: the input is no longer driven and reads as not asserted. |
@@ -776,6 +776,16 @@ change raises the External/Status interrupt when WR15 enables it for that
 input (DCD `$08`, SYNC/HUNT `$10`, CTS `$20`) and WR1 enables
 External/Status interrupts. Lines nothing drives are left to the rest of the
 model (the loopback-cable mirroring, `scc_dcd`).
+
+**Transmit pacing.** Everywhere else a character written to WR8 leaves at
+once: Tx Buffer Empty stays set and the transmit interrupt follows the
+write. Towards a device the character takes one character time (ten bits at
+the rate WR4 and the BRG give, 9600 baud when the clocks are unknown):
+Tx Buffer Empty and All Sent clear, and set again — with the transmit
+interrupt — when it has gone (scheduler event `scc.tx`). Without that a
+driver that sends from its transmit interrupt never services the
+lower-priority External/Status interrupt mid-write, and so never sees a busy
+printer drop CTS until its whole buffer has gone.
 
 The output is not checkpointed and does not survive `machine.boot` or a
 checkpoint load, both of which build a new SCC: set it again afterwards.

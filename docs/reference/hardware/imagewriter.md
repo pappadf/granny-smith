@@ -46,6 +46,15 @@ input (asserted when ready) [4] §15.
 With DIP switch 2-3 closed the printer uses XON/XOFF instead: DC3 ($13) when
 it cannot take more, DC1 ($11) when it can again [1] Table A-3.
 
+The buffer goes busy before it is full. The original ImageWriter drops DTR
+when fewer than 30 bytes are free — the host must stop within 27 more — and
+raises it again with 100 free; with XON/XOFF it sends DC3 below 266 free and
+DC1 at 337 [5] (the data protocols). The rated speeds are 250 characters per
+second in draft, 180 in correspondence and 45 in NLQ, at 10 cpi, and the
+paper moves up to 24 lines (of 1/6 in) a second [2] (specifications). At
+9600 baud a host sends about 960 bytes a second, faster than the printer
+prints text.
+
 Taking the printer off line with the front panel's SELECT button drops DTR;
 data already in the buffer stays there and prints when SELECT is pressed
 again. With the software select response enabled (soft switch A-5 open), the

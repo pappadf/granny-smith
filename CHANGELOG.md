@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - over AppleTalk as an ImageWriter II with the LocalTalk Option card (`connection = "localtalk"`): the Chooser's AppleTalk ImageWriter lists "Virtual ImageWriter", beside the LaserWriter;
   - text in the ImageWriter II's own draft, correspondence and near-letter-quality fonts, fixed and proportional (MouseText, the eight languages), graphics placed exactly for every pitch, Best-mode interleave, colour ribbons, custom characters;
   - each job opens as a PDF in the print viewer (the browser) or lands in `--print-dir` (headless); deselecting the printer or running it out of paper pauses the job, as on the real printer.
+  - `buffer_model = "2k"` / `"32k"` simulates the printer's real input buffer for testing a driver's flow control: it prints at about the printer's speed and goes busy when nearly full, at the manual's thresholds; a serial character to the printer now takes its time on the line, so the guest sees the busy line between characters.
 - **MMU inspection on every MMU kind** — `machine.cpu.mmu` answers the same `translate`, `walk`, `map` and `descriptor` on the 68030 PMMU, the 68040, the PowerPC 601/604 and the Lisa's segment MMU:
   - `walk` shows every step the MMU took: TT/BAT/segment registers, the root pointer, each table level or page-table group, and where a failing walk stopped.
   - `map` lists the mapped address ranges.

@@ -280,6 +280,32 @@ static uint64_t brg_period_ns(scc_t *scc, ch_t *ch) {
     return (uint64_t)(ch->brg.time_constant + 1) * 1000000000ULL / src_hz;
 }
 
+// One asynchronous character's time on the line (start, 8 data, stop bits)
+// at the channel's programmed rate, for a channel with a device on the
+// cable; 9600 baud when the clocks are not known.
+static uint64_t async_char_ns(scc_t *scc, ch_t *ch) {
+    static const uint32_t clock_mode[4] = {1, 16, 32, 64}; // WR4 bits 7-6
+    uint64_t period = brg_period_ns(scc, ch);
+    uint64_t ns = period ? 2 * period * clock_mode[ch->wr[4] >> 6 & 3] * 10 : 0;
+    if (ns < 100000 || ns > 50000000)
+        ns = 1041667; // outside 200..100k baud: assume 9600
+    return ns;
+}
+
+// The character handed to a port device has left the transmitter: the
+// buffer is empty again (source=scc, data=channel index)
+static void tx_paced_callback(void *source, uint64_t data) {
+    scc_t *scc = (scc_t *)source;
+    ch_t *c = &scc->ch[data & 1];
+    c->rr[0] |= RR0_TX_BUFFER_EMPTY;
+    c->rr[1] |= 0x01; // All Sent
+    c->tx_ip_armed = true;
+    if (c->wr[1] & 0x02) {
+        scc->ch[0].rr[3] |= (c->index ? RR3_CHANNEL_B_TX : RR3_CHANNEL_A_TX);
+        update_irqs(scc);
+    }
+}
+
 // BRG zero-count callback (source=scc, data=channel index)
 static void brg_zero_count_callback(void *source, uint64_t data) {
     scc_t *scc = (scc_t *)source;
@@ -822,11 +848,21 @@ static void wr8(ch_t *c, uint8_t value) {
     c->scc->ch[0].rr[3] &= c->index ? ~RR3_CHANNEL_B_TX : ~RR3_CHANNEL_A_TX;
     update_irqs(c->scc);
 
-    // let's simplify - tx buffer immediately empty
-    c->rr[0] |= RR0_TX_BUFFER_EMPTY;
-
-    // simplified model: character transmitted instantly, shift register idle
-    c->rr[1] |= 0x01; // RR1 bit 0 = All Sent
+    // A character to a device on the cable takes its time on the line, so
+    // the host's handshake (CTS, an external/status interrupt) is seen
+    // between characters as on the real line; anywhere else the character
+    // is transmitted instantly and the buffer is empty at once
+    bool paced = c->scc->port[c->index].dev && ASYNC_MODE(c) && c->scc->scheduler && !(c->wr[14] & 0x10);
+    if (paced) {
+        c->rr[0] &= ~RR0_TX_BUFFER_EMPTY;
+        c->rr[1] &= ~0x01;
+        remove_event_by_data(c->scc->scheduler, tx_paced_callback, c->scc, (uint64_t)c->index);
+        scheduler_new_cpu_event(c->scc->scheduler, tx_paced_callback, c->scc, (uint64_t)c->index, 0,
+                                async_char_ns(c->scc, c));
+    } else {
+        c->rr[0] |= RR0_TX_BUFFER_EMPTY;
+        c->rr[1] |= 0x01; // RR1 bit 0 = All Sent
+    }
     LOG(4, "wr8 ch=%d value=0x%02X, wr1=0x%02X (TX int enable=%d), wr14=0x%02X (loopback=%d)", c->index, value,
         c->wr[1], !!(c->wr[1] & 0x02), c->wr[14], !!(c->wr[14] & 0x10));
 
@@ -884,9 +920,9 @@ static void wr8(ch_t *c, uint8_t value) {
     }
 
     // The character leaves the buffer at once: it has become empty again
-    c->tx_ip_armed = true;
+    c->tx_ip_armed = !paced;
     // if tx interrupts are enabled (wr1 bit 1) and buffer is empty, raise the interrupt
-    if (c->wr[1] & 0x02) {
+    if (!paced && (c->wr[1] & 0x02)) {
         c->scc->ch[0].rr[3] |= (c->index ? RR3_CHANNEL_B_TX : RR3_CHANNEL_A_TX);
         LOG(4, "wr8: TX interrupt enabled, setting rr3=0x%02X", c->scc->ch[0].rr[3]);
         update_irqs(c->scc);
@@ -1560,6 +1596,7 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
     // Register BRG event type for checkpoint save/restore
     if (scheduler) {
         scheduler_new_event_type(scheduler, "scc", scc, "brg", &brg_zero_count_callback);
+        scheduler_new_event_type(scheduler, "scc", scc, "tx", &tx_paced_callback);
     }
 
     // If a checkpoint is provided, restore channel plain-data (everything up to the
