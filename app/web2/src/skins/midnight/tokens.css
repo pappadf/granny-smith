@@ -3,11 +3,13 @@
    glass cards with hairline borders, a periwinkle accent and a teal "live"
    colour.  The floating cards, pills and glows are in ../glass.css (the
    layout Midnight and Starlight share); this file holds the values.  Sora
-   is the UI face and JetBrains Mono the code face.  The default skin: the
-   bare :root is the pre-paint fallback (a page whose skin is not known
-   yet is coloured as Midnight). */
+   is the UI face and JetBrains Mono the code face.  The default skin: a
+   :root with no data-skin yet is the pre-paint fallback (a page whose skin
+   is not known yet is coloured as Midnight).  Not the bare :root: that also
+   matches every other skin, whose tokens not defined there would then
+   keep Midnight's values instead of the neutral defaults (#241). */
 @layer gs.tokens {
-  :root,
+  :root:not([data-skin]),
   :root[data-skin='midnight'] {
     --gs-color-scheme: dark;
 

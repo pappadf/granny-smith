@@ -24,6 +24,23 @@ describe('skins', () => {
     expect(skins.map((s) => s.id).sort()).toEqual([...folders].sort());
   });
 
+  // A skin's token rules apply to that skin alone.  A bare :root would also
+  // match every other skin, and each token another skin leaves undefined
+  // would keep this skin's value instead of the neutral default (#241).
+  it('no skin declares its tokens on the bare :root', () => {
+    const bad: string[] = [];
+    for (const f of folders) {
+      const css = readFileSync(join(SKINS_DIR, f, 'tokens.css'), 'utf8').replace(
+        /\/\*[\s\S]*?\*\//g,
+        '',
+      );
+      for (const m of css.matchAll(/([^{}]+)\{/g))
+        for (const sel of m[1].split(','))
+          if (sel.trim() === ':root') bad.push(`${f}/tokens.css: ${m[1].trim()}`);
+    }
+    expect(bad).toEqual([]);
+  });
+
   for (const s of MANIFESTS) {
     it(`${s.id}: a well-formed manifest`, () => {
       expect(s.id).toMatch(/^[a-z][a-z0-9]*(-[a-z0-9]+)*$/);
