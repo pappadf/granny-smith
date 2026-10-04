@@ -112,7 +112,7 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     const boot = bridge.calls.find((c) => c.path === 'machine.boot');
     expect(boot?.args).toEqual({ model: 'plus', rom: '/opfs/images/rom/4D1F8172' });
     expect(media.insertFloppy).not.toHaveBeenCalled();
-    expect(toastText()).toMatch(/FD0: 'bad\.dsk' is not a valid Floppy Disk image/);
+    expect(toastText()).toMatch(/FD0: 'fd0_[\d_-]+' is not a valid Floppy Disk image/);
     expect(scratchLeft()).toEqual([]);
   });
 
@@ -121,7 +121,7 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     served['floppy.img'] = FLOPPY;
     expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&hd0=floppy.img'))).toBe(true);
     expect(media.attachHardDisk).not.toHaveBeenCalled();
-    expect(toastText()).toMatch(/HD0: 'floppy\.img' is not a valid Hard Disk image/);
+    expect(toastText()).toMatch(/HD0: 'hd0_[\d_-]+' is not a valid Hard Disk image/);
     expect(scratchLeft()).toEqual([]);
     expect([...files.keys()].some((p) => p.startsWith('/opfs/images/hd/'))).toBe(false);
   });
@@ -130,7 +130,10 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     served['plus.rom'] = PLUS_ROM;
     served['sys.dsk'] = FLOPPY;
     await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=sys.dsk'));
-    expect(media.insertFloppy).toHaveBeenCalledWith('/opfs/images/fd/sys.dsk', true, 0);
+    // Stored under the slot and the time, not the URL's name.
+    const stored = [...files.keys()].find((p) => p.startsWith('/opfs/images/fd/fd0_'));
+    expect(stored).toBeDefined();
+    expect(media.insertFloppy).toHaveBeenCalledWith(stored, true, 0);
     expect(scratchLeft()).toEqual([]);
   });
 
@@ -154,7 +157,8 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     served['one.dsk'] = FLOPPY;
     await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=one.dsk'));
     const first = written.filter((p) => p.includes('url_fd0'));
-    const mounted = files.get('/opfs/images/fd/one.dsk');
+    const firstPath = [...files.keys()].find((p) => p.startsWith('/opfs/images/fd/fd0_')) ?? '';
+    const mounted = files.get(firstPath);
     expect(mounted).toBeDefined();
     written.length = 0;
 
@@ -164,8 +168,8 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     expect(first.length).toBeGreaterThan(0);
     expect(second.length).toBeGreaterThan(0);
     expect(new Set(second).has(first[0])).toBe(false);
-    expect(written).not.toContain('/opfs/images/fd/one.dsk');
-    expect(files.get('/opfs/images/fd/one.dsk')).toBe(mounted);
+    expect(written).not.toContain(firstPath);
+    expect(files.get(firstPath)).toBe(mounted);
     expect(scratchLeft()).toEqual([]);
   });
 });
@@ -190,7 +194,7 @@ describe("the URL's vROM is the boot's", () => {
     expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&vrom=junk.vrom'))).toBe(true);
     const boot = bridge.calls.find((c) => c.path === 'machine.boot');
     expect(boot?.args).toEqual({ model: 'plus', rom: '/opfs/images/rom/4D1F8172' });
-    expect(toastText()).toMatch(/VROM: 'junk\.vrom' is not a valid Video ROM image/);
+    expect(toastText()).toMatch(/VROM: 'vrom_[\d_-]+' is not a valid Video ROM image/);
     expect(toastText()).toMatch(/Booting plus without the URL's video ROM/);
     expect(scratchLeft()).toEqual([]);
   });

@@ -222,17 +222,22 @@ for (const variant of ["sized", "chunked", "zip"] as const) {
         : `${origin}/${variant}/Big%20Disk.img`;
     await page.goto(`/index.html?HD0=${encodeURIComponent(value)}`);
     await waitReady(page);
+    // A URL download is stored under its slot and the time it was fetched
+    // (hd0_2026-10-04_17-42-05.dmg), not a name from the URL.
+    const STORED = /^hd0_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.dmg$/;
     await expect
-      .poll(async () => (await storedDisks(page)).map((d) => d.name), {
-        timeout: 540_000,
-        message: `never stored.\nConsole:\n${log.slice(-40).join("\n")}`,
-      })
-      .toContain("Big_Disk.dmg");
+      .poll(
+        async () => (await storedDisks(page)).some((d) => STORED.test(d.name)),
+        {
+          timeout: 540_000,
+          message: `never stored.\nConsole:\n${log.slice(-40).join("\n")}`,
+        },
+      )
+      .toBe(true);
     clearInterval(heapTimer);
     const growth = await usageGrowth(page);
-    const disk = (await storedDisks(page)).find(
-      (d) => d.name === "Big_Disk.dmg",
-    )!;
+    const disk = (await storedDisks(page)).find((d) => STORED.test(d.name))!;
+    const diskPath = `/opfs/images/hd/${disk.name}`;
 
     // The zip is unpacked as it streams: the heap never holds the disk, or
     // much of it.  (The raw variants have no page-side decoding to bound.)
@@ -249,16 +254,13 @@ for (const variant of ["sized", "chunked", "zip"] as const) {
     const staging = await scratchFiles(page);
     expect(staging.filter((n) => n.includes(".part"))).toEqual([]);
     // The image is the disk: its decoded size, verified checksums.
-    const info = (await gsEvalInPage(page, "files.udif_info", [
-      "/opfs/images/hd/Big_Disk.dmg",
-    ])) as { bytes: number; gs_profile: boolean };
+    const info = (await gsEvalInPage(page, "files.udif_info", [diskPath])) as {
+      bytes: number;
+      gs_profile: boolean;
+    };
     expect(info.bytes).toBe(DISK_BYTES);
     expect(info.gs_profile).toBe(true);
-    expect(
-      await gsEvalInPage(page, "files.verify", [
-        "/opfs/images/hd/Big_Disk.dmg",
-      ]),
-    ).toMatchObject({
+    expect(await gsEvalInPage(page, "files.verify", [diskPath])).toMatchObject({
       sectors: DISK_BYTES / 512,
     });
   });
