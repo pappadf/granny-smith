@@ -33,7 +33,8 @@ typedef struct nubus_card_ops {
     // may allocate VRAM, register host-backed regions on the bus map, and
     // populate any internal state.  `opts` is what the boot document says
     // about this slot (never NULL; empty fields mean the card's defaults):
-    // its video mode, custom geometry and declaration-ROM file.
+    // its video mode, custom geometry, declaration-ROM file, whether it runs
+    // the substitute ROM, and the monitor on its connector.
     int (*init)(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts);
 
     // Called during machine teardown, in inverse init order.
@@ -62,10 +63,6 @@ typedef struct nubus_card_ops {
     // slot in canonical slot order.
     void (*checkpoint_save)(nubus_card_t *card, checkpoint_t *cp);
     void (*checkpoint_restore)(nubus_card_t *card, checkpoint_t *cp);
-
-    // Card-name introspection — used by the config dialog and the
-    // `machine.slot.<n>.card` object-model surface.
-    const char *(*name)(const nubus_card_t *card);
 } nubus_card_ops_t;
 
 // Concrete card instance.  Per-card private state hangs off `.private`;
@@ -95,6 +92,9 @@ struct nubus_card {
     // than looking the card up again (the file may be gone, or another
     // revision offered).  Borrowed for init only.
     rom_image_t restored_rom;
+    // The card runs the emulator's substitute declaration ROM (its seat's
+    // `substitute`, set by the bus before ops->init).
+    bool substitute;
 };
 
 // (The per-card factory is gone.  The bus controller allocates the
@@ -107,14 +107,12 @@ struct nubus_card {
 // arrays end at the entry whose `id` is NULL.
 //
 // `sense_code` is the value the card's sense lines report when this
-// monitor is plugged in.  A slot entry's `video_sense=` (an argument of
-// that card's construction, from machine.boot) tells the JMFB which monitor
-// to model (see jmfb.c::monitor_for_sense).  `srsrc_sister` is the top-level
-// "Ax" sister sResource ID that the JMFB driver's Slot Manager picks
-// up from PRAM for this monitor; a video-mode-aware integration test
-// (or the configuration dialog) writes this byte into PRAM offset
-// $49/$4A so `_SlotManager $06 sReadFHeader` finds the right entry
-// at boot — see tests/integration/iicx-video-modes/test.script.
+// monitor is plugged in: the bus gives a seat the row of the monitor the
+// document plugs into the card (slot_opts_t.monitor) and its code, and the
+// card models that monitor.  `srsrc_sister` is the top-level "Ax" sister
+// sResource ID that the card's driver picks up from its slot PRAM record for
+// this monitor, which the seeding step writes from a chosen video mode
+// (nubus_card_kind_t.startup_record).
 typedef struct nubus_monitor {
     const char *id; // "13in_rgb" -- the card's own token, what a mode id names
     const char *monitor; // the shared catalogue id (monitor_catalog.h)
@@ -161,13 +159,16 @@ typedef struct nubus_card_kind {
     const char *display_name; // "Apple Macintosh Display Card 8•6 / 8•24"
     card_attach_t attach; // physical attachment; drives socket matching
     bool requires_vrom; // needs its real declaration ROM (a .vrom file)
-    // The kind that stands in for this one when its declaration ROM is not
-    // offered: the same card with the emulator's generated ROM (§ "card ROM
-    // substitution").  NULL when there is none.  The stand-in itself sets
-    // `substitute_for`, and is not offered as a card of its own.
-    const char *substitute;
-    const char *substitute_for;
+    // The emulator can generate a declaration ROM for this card (the GS
+    // vROM, docs/internals/core/peripherals/nubus_generic_vrom.md), which the
+    // card runs when Apple's is not offered, when the slot asks for it
+    // (`rom=substitute`), or for a custom geometry.  Same card, same model;
+    // only the ROM differs.
+    bool substitute;
     const nubus_monitor_t *monitors; // sentinel-terminated; NULL for non-display cards
+    // The monitors the substitute ROM drives, when fewer than the card's
+    // (the 8•24 GC's carries only its 640 × 480 configuration); NULL: all.
+    const nubus_monitor_t *substitute_monitors;
     // The card's vtable.  The bus controller allocates the nubus_card_t,
     // fills in ops / bus / slot, and calls ops->init once per populated slot.
     //
@@ -179,12 +180,19 @@ typedef struct nubus_card_kind {
     // Nine kinds also carried five byte-identical `factory_common` bodies to
     // do the allocation.
     const nubus_card_ops_t *ops;
-    // Can the kind build at a w x h x d custom geometry (custom_mode=)?  The
-    // generic kinds that generate their declaration ROM answer; NULL for a
-    // kind with no custom geometry.  The boot document is checked against it
+    // Can the kind build at a w x h x d custom geometry (custom_mode=)?  A
+    // kind whose substitute ROM can carry one answers; NULL for a kind with
+    // no custom geometry.  The boot document is checked against it
     // before the running machine is touched, so init never sees a geometry
     // the card cannot build.  On false *why is a static reason.
     bool (*custom_mode_fits)(uint32_t w, uint32_t h, uint32_t d, const char **why);
+
+    // The startup-mode record for the seeding step: the 8-byte slot
+    // PRAM record (sPRAMRec, at $46 + (slot - 9) * 8) a Monitors control
+    // panel would have saved for entry `e`'s video mode -- the card knows its
+    // format, the machine writes it.  False when the entry chose no mode.
+    // NULL for a kind with no startup mode.
+    bool (*startup_record)(const slot_opts_t *e, uint8_t rec[8]);
 
     // Attach this kind's OWN object children under the generic card node.
     // The same seam PCI has: a card's private nodes belong to the card, not

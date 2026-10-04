@@ -281,7 +281,7 @@ static void print_usage(const char *program) {
     printf("  video_card=<id> NuBus video card for the configurable slot (e.g. 824gc);\n");
     printf("                  default: the machine's default card\n");
     printf("  slots=<spec>    expansion-slot cards, 'SLOT=CARD[,key=value]*;...'\n");
-    printf("                  (e.g. slots='$A=824gc,mode=gc_640x480_8bpp;$B=8_24')\n");
+    printf("                  (e.g. slots='$A=824gc,mode=gc_640x480_8bpp;$B=mdc_8_24,rom=substitute')\n");
     printf("  monitor=<id>    monitor on the built-in video port ('none' = unconnected,\n");
     printf("                  which hands the screen to a NuBus card)\n");
     printf("  script=<file>   Shell script file to execute at startup (optional)\n");

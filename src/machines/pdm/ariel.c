@@ -41,7 +41,6 @@ LOG_USE_CATEGORY_NAME("video");
 // The strap is per-machine (pdm.h), so the built-in port can also be left
 // UNCONNECTED — code 7 grounds nothing, and the ROM's extended-sense walk
 // then reads all-ones and turns built-in video off entirely.
-#define PDM_MONITOR_SENSE_DEFAULT 0x6u // A=1, B=1, C=0: Hi-Res 13"/14"
 
 // The straps this model can present.  Restricted to the eight 3-bit codes
 // on purpose: the monitors Apple distinguished with the EXTENDED sense walk
@@ -247,10 +246,6 @@ static uint64_t ariel_fb_base(void *owner) {
         return 0;
     const uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
     return ram ? (uint64_t)(st->video.display.bits - ram) : 0;
-}
-
-uint8_t pdm_monitor_for_build(const config_t *cfg) {
-    return machine_sense_or(cfg->build_opts.video_sense, 8, PDM_MONITOR_SENSE_DEFAULT);
 }
 
 void pdm_video_init(config_t *cfg, uint8_t monitor) {

@@ -113,6 +113,10 @@ typedef struct builtin_video_desc {
     bool (*monitor_sense)(const char *id, uint8_t *out_sense);
     // The catalogue id of the monitor a stock machine has plugged in.
     const char *default_monitor;
+    // The port also takes Apple's indexed sense codes 8..14 (the monitors that
+    // answer the extended-sense probe), which the video_sense= debug override
+    // may name: a Quadra's DAFB.
+    bool indexed_sense;
     // The monitors come from the card kind in the machine's BUILTIN NuBus
     // slot (its nubus_monitor_t list); monitor_at / monitor_sense are NULL.
     bool slot_monitors;

@@ -687,13 +687,13 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
                 root->entry[e->slot] = *e;
         }
         // A built-in video's monitor is an argument of its construction, so
-        // its slot entry carries the build's sense (as the NuBus seats do),
-        // and the table's block gives it back on a restore.
+        // its slot entry carries the build's sense and connection (as the
+        // NuBus seats do), and the table's block gives them back on a restore.
         for (const pci_slot_decl_t *s = root->slots; s && s->slot != 0; s++) {
             if (s->kind != PCI_SLOT_BUILTIN || s->slot <= 0 || s->slot >= PCI_MAX_SLOTS)
                 continue;
             root->entry[s->slot].slot = s->slot;
-            root->entry[s->slot].video_sense = machine_slot_sense(&root->cfg->build_opts);
+            root->entry[s->slot].sense = root->cfg->build_opts.builtin_sense;
             root->entry[s->slot].connected = root->cfg->build_opts.builtin_connected;
         }
     }

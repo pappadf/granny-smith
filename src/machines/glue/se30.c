@@ -322,10 +322,9 @@ static const nubus_slot_decl_t se30_slots[] = {
     {.slot = 0x9, .kind = NUBUS_SLOT_EMPTY},
     {.slot = 0xA, .kind = NUBUS_SLOT_EMPTY},
     {.slot = 0xB, .kind = NUBUS_SLOT_EMPTY},
-    // Default: the generic sibling ("se30", built-in GS declaration ROM) so
-    // every SE/30 boots with working video and no vROM file; video_card=
-    // "builtin_se30_video" picks the real kind when a dump is offered.
-    {.slot = 0xE, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "se30"},
+    // The built-in video: Apple's onboard-video ROM when a dump is offered,
+    // else the emulator's substitute, so every SE/30 boots with working video.
+    {.slot = 0xE, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "builtin_se30_video"},
     {0},
 };
 
@@ -341,7 +340,7 @@ static void se30_post_nubus(config_t *cfg) {
     assert(se30->video_card != NULL);
     se30->vram = builtin_se30_video_vram(se30->video_card);
     se30->vrom = builtin_se30_video_vrom(se30->video_card);
-    // Unreachable by construction: card_init_common callocs both buffers and
+    // Unreachable by construction: card_init callocs both buffers and
     // returns -1 if either fails, so a card that exists has them, and the
     // assert above already covers a missing card.  An assert rather than the
     // process kill this used to be -- machine_boot_apply's whole contract is

@@ -322,10 +322,11 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->floppy = st->floppy;
     machine_part(cfg, checkpoint, "floppy", part_save_floppy, st->floppy);
 
-    // RBV chip (VIA2 replacement + video control).  Default monitor sense 6
-    // = 13" RGB.  IRQ → IPL 2; RvPowerOff → scheduler stop.
+    // RBV chip (VIA2 replacement + video control), the built-in port's
+    // monitor strapped on its sense lines (7, nothing connected, turns
+    // built-in video off).  IRQ → IPL 2; RvPowerOff → scheduler stop.
     machine_part_begin(cfg, checkpoint, "rbv");
-    st->rbv = rbv_init(RBV_VARIANT_IICI, checkpoint);
+    st->rbv = rbv_init(RBV_VARIANT_IICI, cfg->build_opts.builtin_sense, checkpoint);
     if (!st->rbv) {
         LOG(0, "Error: out of memory constructing the RBV");
         return -1;
@@ -335,7 +336,6 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     rbv_set_power_off_callback(st->rbv, iici_power_off, cfg);
     rbv_set_mode_callback(st->rbv, iici_rbv_mode, cfg);
     rbv_set_blank_callback(st->rbv, iici_rbv_blank, cfg);
-    rbv_set_monitor_sense(st->rbv, 6);
     asc_set_irq_handler(st->asc, iici_asc_irq, st->rbv); // sound IRQ → RvIFR bit 4
 
     st->mmu = mac030_build_mmu(cfg, iici_board_desc.rom_base, iici_board_desc.rom_end);

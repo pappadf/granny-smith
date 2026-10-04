@@ -70,10 +70,6 @@ void dafb_set_irq_callback(dafb_t *dafb, dafb_irq_cb cb, void *context);
 // The monitor strapped to the chip (dafb_init).
 uint8_t dafb_monitor(const dafb_t *dafb);
 
-// The monitor a boot straps, from the document's video_sense= (or the
-// default $6).
-uint8_t dafb_sense_for_build(const struct config *cfg);
-
 // Board revision facts.  `version` is served in DAFB_Test bits
 // 11:9 (Q700/Q900 = 0, Q950 "DAFB 3" = 3 — the driver's
 // 16bpp-always-allowed check reads it on 33 MHz machines).  `ac842a`

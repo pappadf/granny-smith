@@ -55,13 +55,10 @@ assert !machine.boot(model="iicx", rom="${$ROM}", video_card="nonesuch") "unknow
 # on a IIcx) is rejected too: seated nowhere, it used to boot the default
 # display and leave the row that named it testing something else.
 assert !machine.boot(model="iicx", rom="${$ROM}", video_card="builtin_rbv_video") "a card that fits no slot must be rejected"
-# A built-in slot takes its own card or a sibling -- on-board too, driving the
-# same monitors (the SE/30's generic and real video) -- never just any
-# on-board video: another machine's would drive registers laid out for a
-# different chip.
+# A built-in slot takes its own card, never just any on-board video: another
+# machine's would drive registers laid out for a different chip.
 assert !machine.boot(model="se30", rom="${$ROM}", video_card="builtin_rbv_video") "the IIci's on-board video must not fit the SE/30's built-in slot"
 assert !machine.boot(model="iici", rom="../../data/roms/iici-368cadfe.rom", video_card="builtin_se30_video") "the SE/30's on-board video must not fit the IIci's built-in slot"
-assert !machine.boot(model="iici", rom="../../data/roms/iici-368cadfe.rom", video_card="se30") "the SE/30's generic video must not fit the IIci's built-in slot"
 # 15 is one past the top of Apple's indexed sense numbering: 0..7 is the
 # passive 3-bit code, 8..14 names a monitor that answers the EXTENDED
 # tie-matrix probe (dafb.h's DAFB_SENSE_INDEXED_*).
@@ -77,7 +74,7 @@ assert !machine.boot(model="pm9500", rom="../../data/roms/pm7500-pm8500-pm9500-9
 assert !machine.boot(model="iicx", rom="${$ROM}", slots="8=824gc") "a slot the model does not have must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", slots="9") "an entry that is not SLOT=CARD must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=nonesuch") "an unknown card in slots= must be rejected"
-assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc;9=8_24") "a slot named twice must be rejected"
+assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc;9=mdc_8_24") "a slot named twice must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc,,mode=gc_640x480_8bpp") "an empty field must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc,") "a trailing comma must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc,mode=gc_640x480_8bpp,mode=gc_640x480_1bpp") "mode= given twice must be rejected"
@@ -92,11 +89,18 @@ assert machine.boot(model="iicx", rom="${$ROM}", slots=" 9 = 824gc , mode = gc_6
 assert machine.nubus.slot[9].card.mode.depth == 8 "the blank-padded entry's mode"
 assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc,mode=rgb_640x480_8bpp") "a mode of another card must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc,custom=640x480x8") "custom geometry on a card without it must be rejected"
-assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=8_24,custom=640x480x16") "custom geometry the card cannot hold must be rejected"
+assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=mdc_8_24,custom=640x480x16") "custom geometry the card cannot hold must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc,vram=4m") "a NuBus card takes no options"
 assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc,rom=../../data/roms/plus-v3-4d1f8172.rom") "a slot ROM that is no vROM must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc,rom=../../data/roms/mdc-8-24-revb-d1629664.vrom") "a slot ROM for another card must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", video_card="824gc", slots="9=display_card_24ac") "video_card= and slots= disagreeing about a slot must be rejected"
+# rom=substitute: the emulator's substitute declaration ROM, never with a file,
+# only for a card that has one, and only the monitors that ROM carries.
+assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc,rom=substitute,rom=../../data/roms/824gc-v1.0-reva-9e9857e8.vrom") "a ROM file and the substitute together must be rejected"
+assert !machine.boot(model="iici", rom="../../data/roms/iici-368cadfe.rom", slots="11=builtin_rbv_video,rom=substitute") "a card without a substitute ROM must refuse one"
+assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc,rom=substitute,mode=gc_832x624_8bpp") "a mode the substitute ROM does not carry must be rejected"
+# video_sense= overrides the connected device: a card's connector reads 0..7.
+assert !machine.boot(model="iicx", rom="${$ROM}", video_sense=10) "an extended code on a card's connector must be rejected"
 assert machine.id == "iicx" "machine survives every rejected boot"
 assert machine.ram == 8192 "machine intact after rejected boots"
 
@@ -202,8 +206,21 @@ assert machine.boot(model="iicx", rom="${$ROM}") "back to a carded model"
 assert machine.nubus.slot[9].card.id == "mdc_8_24" "video_card must not survive any model change"
 assert machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24" "slot default after the round trip"
 
-# --- A built-in slot takes its card's sibling (the SE/30's generic video). ---
-assert machine.boot(model="se30", rom="${$ROM}", video_card="builtin_se30_video") "the SE/30's real video is its built-in slot's sibling"
-assert machine.nubus.slot[14].card.id == "builtin_se30_video" "the sibling is what the slot seats"
+# --- One card, two ROMs: Apple's when offered, else the substitute. ---
+assert machine.nubus.slot[9].card.substitute == false "the offered 8•24 ROM must be the one the card runs"
+assert machine.nubus.slot[9].card.monitor == "13in_rgb" "a card with no display entry takes its first monitor"
+assert machine.nubus.slot[9].card.sense == 6 "the 13in RGB sense code"
+assert machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc,rom=substitute") "the substitute ROM on request"
+assert machine.nubus.slot[9].card.id == "824gc" "the card is still the 8•24 GC"
+assert machine.nubus.slot[9].card.substitute "it runs its substitute ROM"
+assert machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC (substitute ROM)" "the name says which ROM"
+assert machine.nubus.slot[9].card.declrom.path == "builtin:824gc" "the generated ROM"
+assert machine.boot(model="iicx", rom="${$ROM}", slots="9=mdc_8_24", video_sense=2) "a sense override on the connected card"
+assert machine.nubus.slot[9].card.sense == 2 "video_sense= reaches the connected card's connector"
+assert machine.boot(model="se30", rom="${$ROM}") "the SE/30's built-in video"
+assert machine.nubus.slot[14].card.id == "builtin_se30_video" "the built-in slot seats its own card"
+assert machine.nubus.slot[14].card.substitute == false "with the SE/30 video ROM offered, Apple's"
+assert machine.boot(model="se30", rom="${$ROM}", slots="14=builtin_se30_video,rom=substitute") "a built-in card's substitute ROM on request"
+assert machine.nubus.slot[14].card.substitute "the substitute ROM"
 
 quit

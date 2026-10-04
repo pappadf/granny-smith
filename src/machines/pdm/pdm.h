@@ -455,9 +455,6 @@ int pdm_swim3_index_pulse(config_t *cfg);
 // After the memory layout exists; `monitor` is the strap (a sense code, or
 // PDM_SENSE_NONE), a construction argument of the built-in video.
 void pdm_video_init(config_t *cfg, uint8_t monitor);
-// The strap a boot builds the built-in video with: the document's
-// video_sense= / monitor=, or the Hi-Res default.
-uint8_t pdm_monitor_for_build(const config_t *cfg);
 void pdm_video_teardown(config_t *cfg);
 void pdm_video_update(config_t *cfg); // re-derive the descriptor from the regs
 void pdm_video_vbl(config_t *cfg); // per-VBL framebuffer re-upload mark

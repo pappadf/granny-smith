@@ -74,7 +74,7 @@ accept-and-log in v1.
 ## Object / wiring surface
 
 ```c
-rbv_t *rbv_init(rbv_variant_t variant, checkpoint_t *cp); // RBV_VARIANT_IICI
+rbv_t *rbv_init(rbv_variant_t variant, uint8_t sense3, checkpoint_t *cp); // RBV_VARIANT_IICI; sense3: the monitor strap (6 = 13" RGB, 7 = none)
 const memory_interface_t *rbv_get_memory_interface(rbv_t *rbv);
 void rbv_set_irq_callback(rbv_t *rbv, void (*cb)(void *, bool), void *ctx);   // -> IPL 2
 void rbv_set_power_off_callback(rbv_t *rbv, void (*cb)(void *), void *ctx);
@@ -84,7 +84,6 @@ void rbv_assert_slot_irq(rbv_t *rbv, int slot);  // slot 0 = built-in video
 void rbv_clear_slot_irq(rbv_t *rbv, int slot);
 void rbv_set_scsi_irq(rbv_t *rbv, bool active);  // RvSCSIRQ
 void rbv_set_scsi_drq(rbv_t *rbv, bool active);  // RvSCSIDRQ
-void rbv_set_monitor_sense(rbv_t *rbv, uint8_t sense3); // 6 = 13" RGB
 ```
 
 The `RBV_VARIANT_V8_IISI` superset (register file identical in size and

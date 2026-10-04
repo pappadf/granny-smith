@@ -72,7 +72,7 @@ static bool copy_str(char *dst, size_t size, const char *src) {
     return snprintf(dst, size, "%s", src ? src : "") < (int)size;
 }
 
-// "8 MB", "1.5 MB", "512 KB" -- §8.6.
+// "8 MB", "1.5 MB", "512 KB".
 static void memory_label(uint32_t kb, char *buf, size_t len) {
     if (kb < 1024) {
         snprintf(buf, len, "%u KB", kb);
@@ -99,7 +99,7 @@ static const config_value_decl_t k_appletalk_values[] = {
     {.id = NULL},
 };
 
-// AppleTalk on/off (§6.9): every Macintosh, default Active (decision D22).
+// AppleTalk on/off: every Macintosh, default Active (decision D22).
 static const config_option_decl_t k_appletalk_option = {
     .id = "appletalk",
     .label = "AppleTalk",
@@ -240,7 +240,7 @@ static const char *storage_bay_name(const storage_bus_decl_t *b, int unit) {
     return NULL;
 }
 
-// A unit's position text (§8.2): "ID 0 · Internal hard disk bay",
+// A unit's position text: "ID 0 · Internal hard disk bay",
 // "ID 3 · External", "ID 4"; "Master · Hard disk bay" on ATA; the bay name
 // alone on the ProFile port.
 static void storage_position(const storage_bus_decl_t *b, int unit, char *buf, size_t len) {
@@ -479,7 +479,7 @@ static value_t pci_option_value(const pci_card_option_t *o) {
     return val_map_finish(b);
 }
 
-// A card's availability with the ROMs offered now (§7.6): ok, substitute
+// A card's availability with the ROMs offered now: ok, substitute
 // (the emulator's generated declaration ROM stands in), or unavailable.
 typedef enum { CARD_OK, CARD_SUBSTITUTE, CARD_UNAVAILABLE } card_status_t;
 
@@ -518,8 +518,6 @@ static value_t monitor_ids_value(const char *const *ids, int n) {
 static value_t cards_value(const hw_profile_t *p, const socket_t *socks, int ns) {
     vlist_t cards = {0};
     for (const nubus_card_kind_t *const *k = nubus_card_registry(); *k; k++) {
-        if ((*k)->substitute_for)
-            continue; // a stand-in ROM, not a card (§6.5)
         vlist_t fits = {0};
         for (int i = 0; i < ns; i++) {
             if (socks[i].pci)
@@ -544,7 +542,7 @@ static value_t cards_value(const hw_profile_t *p, const socket_t *socks, int ns)
         if ((*k)->requires_vrom) {
             value_map_builder_t *r = val_map_new();
             val_map_put(r, "kind", val_str("vrom"));
-            val_map_put(r, "substitute", val_bool((*k)->substitute != NULL));
+            val_map_put(r, "substitute", val_bool((*k)->substitute));
             val_map_put(b, "rom", val_map_finish(r));
         } else {
             val_map_put(b, "rom", val_none());
@@ -808,18 +806,13 @@ static void default_startup(const hw_profile_t *p, doc_t *d) {
     }
 }
 
-// The kind a document card id names on this bus.
-static const nubus_card_kind_t *doc_nubus_kind(const char *id) {
-    return nubus_card_find(id);
-}
-
 // Is the card in this document entry a display device?
 static bool doc_card_is_display(const doc_card_t *c) {
     if (c->pci) {
         const pci_card_kind_t *k = pci_card_find(c->card);
         return k && strcmp(pci_class(k), "display") == 0;
     }
-    const nubus_card_kind_t *k = doc_nubus_kind(c->card);
+    const nubus_card_kind_t *k = nubus_card_find(c->card);
     return k && k->monitors;
 }
 
@@ -830,7 +823,7 @@ static int card_monitors(const doc_card_t *c, const char **out, int max) {
         const pci_card_kind_t *k = pci_card_find(c->card);
         t = k ? k->monitors : NULL;
     } else {
-        const nubus_card_kind_t *k = doc_nubus_kind(c->card);
+        const nubus_card_kind_t *k = nubus_card_find(c->card);
         t = k ? k->monitors : NULL;
     }
     return table_monitors(t, out, max);
@@ -865,10 +858,6 @@ static void doc_defaults(const hw_profile_t *p, doc_t *d) {
         doc_card_t *c = &d->cards[d->n_cards++];
         *c = (doc_card_t){.pci = socks[i].pci, .slot = socks[i].slot};
         copy_str(c->card, sizeof c->card, socks[i].default_card);
-        // A stand-in ROM is not a card: the default names the real card.
-        const nubus_card_kind_t *k = socks[i].pci ? NULL : nubus_card_find(c->card);
-        if (k && k->substitute_for)
-            copy_str(c->card, sizeof c->card, k->substitute_for);
     }
     d->cards_given = true;
     // Displays: one monitor, on the built-in video if there is one, else on
@@ -1320,7 +1309,7 @@ static value_t read_cards(const hw_profile_t *p, const value_t *l, doc_t *d) {
                 fits = sd && pci_card_fits_socket(sd, pk);
             }
         } else {
-            const nubus_card_kind_t *nk = doc_nubus_kind(card);
+            const nubus_card_kind_t *nk = nubus_card_find(card);
             const nubus_slot_decl_t *sd = NULL;
             for (const nubus_slot_decl_t *x = p->nubus_slots; x && x->slot; x++)
                 if (x->slot == socks[at].slot)
@@ -1332,7 +1321,7 @@ static value_t read_cards(const hw_profile_t *p, const value_t *l, doc_t *d) {
         }
         if (!card_label) {
             // A card of the other bus, or none at all.
-            const nubus_card_kind_t *other_n = socks[at].pci ? doc_nubus_kind(card) : NULL;
+            const nubus_card_kind_t *other_n = socks[at].pci ? nubus_card_find(card) : NULL;
             const pci_card_kind_t *other_p = socks[at].pci ? NULL : pci_card_find(card);
             if (other_n || other_p)
                 return bad("cards[%zu]: \"%s\" does not fit \"%s\"", i,
@@ -1524,11 +1513,9 @@ static const nubus_monitor_t *nubus_row(const nubus_card_kind_t *k, const char *
 // Write `doc_card`'s slots= entry (for machine_slots_resolve, which checks
 // card fit, options, mode and ROM once for every way a card is named).
 static value_t card_slot_spec(const doc_card_t *c, const doc_display_t *disp, char *buf, size_t len) {
-    // A card whose declaration ROM is not offered boots its stand-in (§6.5).
+    // (A card whose declaration ROM is not offered boots its substitute ROM;
+    // the bus decides that as it seats the card.)
     const char *card = c->card;
-    const nubus_card_kind_t *nk = c->pci ? NULL : nubus_card_find(card);
-    if (nk && nk->requires_vrom && nk->substitute && !vrom_card_resolvable(nk->id, NULL))
-        card = nk->substitute;
     int n = snprintf(buf, len, "%d=%s", c->slot, card);
     for (int i = 0; i < c->n_options; i++)
         n += snprintf(buf + n, len - (size_t)n, ",%s=%s", c->options[i].key, c->options[i].value);
@@ -1556,51 +1543,45 @@ static const doc_display_t *find_display(const doc_t *d, const char *id) {
     return NULL;
 }
 
-// The built-in port's sense code for catalogue monitor `mon`.
-static bool builtin_sense(const hw_profile_t *p, const char *mon, int *out) {
+// The code the built-in port's sense lines read with catalogue monitor `mon`
+// plugged in: the family's resolver's, MACHINE_SENSE_NONE with none.  A port
+// without sense lines has no resolver, and nothing reads its code.
+static uint8_t builtin_sense(const hw_profile_t *p, const char *mon) {
     const builtin_video_desc_t *bv = p->builtin_video;
-    if (!bv)
-        return false;
+    if (!bv || strcmp(mon, MONITOR_NONE) == 0)
+        return MACHINE_SENSE_NONE;
     if (bv->slot_monitors) {
         const nubus_slot_decl_t *d = builtin_video_slot(p);
         const nubus_card_kind_t *k = d ? nubus_card_find(d->builtin_card_id) : NULL;
-        for (const nubus_monitor_t *m = k ? k->monitors : NULL; m && m->id; m++) {
-            if (m->monitor && strcmp(m->monitor, mon) == 0) {
-                *out = m->sense_code;
-                return true;
-            }
-        }
-        return false;
+        for (const nubus_monitor_t *m = k ? k->monitors : NULL; m && m->id; m++)
+            if (m->monitor && strcmp(m->monitor, mon) == 0)
+                return m->sense_code;
+        return MACHINE_SENSE_NONE;
     }
     const char *id = NULL, *cat = NULL;
     for (size_t i = 0; bv->monitor_at && bv->monitor_at(i, &id, &cat); i++) {
-        if (strcmp(cat, mon) != 0)
-            continue;
         uint8_t s = 0;
-        if (bv->monitor_sense && bv->monitor_sense(id, &s)) {
-            *out = s;
-            return true;
-        }
+        if (strcmp(cat, mon) == 0 && bv->monitor_sense && bv->monitor_sense(id, &s))
+            return s;
     }
-    return false;
+    return MACHINE_SENSE_NONE;
 }
 
-// Apply the displays to the resolved slot entries: each card's sense or
-// monitor option, and which device is connected.
+// Apply the displays to the resolved slot entries: each card's monitor and
+// sense (or its monitor option, on PCI), the built-in port's, and which
+// device is connected.  Every display device gets a definite monitor --
+// "none" where the document plugs none in.
 static value_t apply_displays(const hw_profile_t *p, const doc_t *d, machine_build_opts_t *out) {
     int connected = 0;
     out->builtin_connected = false;
+    out->builtin_sense = MACHINE_SENSE_NONE;
     for (int i = 0; i < d->n_displays; i++) {
         const doc_display_t *x = &d->displays[i];
         bool on = strcmp(x->monitor, MONITOR_NONE) != 0;
         connected += on;
         if (strcmp(x->device, "builtin") == 0) {
             out->builtin_connected = on;
-            int sense = -1;
-            if (builtin_sense(p, x->monitor, &sense))
-                out->video_sense = sense;
-            else if (!on)
-                out->video_sense = 7; // an unplugged port: nothing grounded
+            out->builtin_sense = builtin_sense(p, x->monitor);
             continue;
         }
         bool pci = false;
@@ -1629,12 +1610,12 @@ static value_t apply_displays(const hw_profile_t *p, const doc_t *d, machine_bui
                 copy_str(o->key, sizeof o->key, "monitor");
                 copy_str(o->value, sizeof o->value, row_id);
             }
-        } else if (on) {
+        } else {
             const nubus_card_kind_t *k = nubus_card_find(e->card);
             int depth = 0;
-            const nubus_monitor_t *row = nubus_row(k, x->monitor, NULL, &depth);
-            if (row)
-                e->video_sense = row->sense_code;
+            const nubus_monitor_t *row = on ? nubus_row(k, x->monitor, x->mode[0] ? x->mode : NULL, &depth) : NULL;
+            copy_str(e->monitor, sizeof e->monitor, row ? row->id : MONITOR_NONE);
+            e->sense = row ? row->sense_code : MACHINE_SENSE_NONE;
         }
     }
     if (connected > 1)
@@ -1652,8 +1633,37 @@ static slot_opts_t *entry_for(machine_build_opts_t *o, int slot) {
     slot_opts_t *e = &o->slots[o->n_slots++];
     memset(e, 0, sizeof *e);
     e->slot = slot;
-    e->video_sense = MACHINE_SENSE_UNSET;
     return e;
+}
+
+// video_sense= is a debug override of the connected device's sense code: a
+// card's connector (whose monitor row stays, so its geometry does), or the
+// built-in port, which on a Quadra's DAFB also takes Apple's indexed codes
+// 8..14.  A PCI card senses through its monitor option instead.
+static value_t override_sense(const hw_profile_t *p, int sense, machine_build_opts_t *out) {
+    for (int i = 0; i < out->n_slots; i++) {
+        slot_opts_t *e = &out->slots[i];
+        if (!e->connected)
+            continue;
+        if (p->pci_slots)
+            return bad("video_sense=: the connected display is a PCI card, which takes its monitor= option instead");
+        if (sense > MACHINE_SENSE_NONE)
+            return bad("video_sense=%d: a card's connector reads a code 0..7", sense);
+        const nubus_slot_decl_t *d = NULL;
+        for (const nubus_slot_decl_t *x = p->nubus_slots; x && x->slot; x++)
+            if (x->slot == e->slot)
+                d = x;
+        const char *card = e->card[0] ? e->card : d ? d->default_card : NULL;
+        nubus_entry_default_monitor(card ? nubus_card_find(card) : NULL, e);
+        e->sense = (uint8_t)sense;
+        return val_none();
+    }
+    if (!out->builtin_connected)
+        return bad("video_sense=: no display device is connected");
+    if (sense > MACHINE_SENSE_NONE && !p->builtin_video->indexed_sense)
+        return bad("video_sense=%d: model '%s''s built-in video reads a code 0..7", sense, p->id);
+    out->builtin_sense = (uint8_t)sense;
+    return val_none();
 }
 
 // The legacy arguments' connection rule: built-in video unless its monitor
@@ -1661,10 +1671,6 @@ static slot_opts_t *entry_for(machine_build_opts_t *o, int slot) {
 static void legacy_displays(const hw_profile_t *p, const boot_config_t *legacy, machine_build_opts_t *out) {
     bool builtin_on = p->builtin_video && !(legacy->monitor && strcmp(legacy->monitor, MONITOR_NONE) == 0);
     out->builtin_connected = builtin_on;
-    if (builtin_on || !p->builtin_video) {
-        // Nothing to mark beyond the built-in video; a machine without one
-        // shows its first display card, which needs its entry marked.
-    }
     if (builtin_on)
         return;
     // The first display card, in slot order, as the bus will seat it.
@@ -1825,33 +1831,24 @@ value_t machine_config_resolve(const hw_profile_t *p, const value_t *config, con
         if ((err = apply_displays(p, d, out), val_is_error(&err)))
             goto done;
     } else {
-        // The legacy arguments: monitor= straps the built-in port.
+        // The legacy arguments: monitor= straps the built-in port (a family
+        // token, "none" among them), else its default monitor; each card
+        // keeps the monitor the bus gives it.
+        out->builtin_sense = p->builtin_video ? builtin_sense(p, builtin_default_monitor(p)) : MACHINE_SENSE_NONE;
         if (legacy_monitor) {
             if (!p->builtin_video || p->builtin_video->slot_monitors || !p->builtin_video->monitor_sense) {
                 err = bad("model '%s' has no configurable built-in video port", p->id);
                 goto done;
             }
-            uint8_t s = 0;
-            if (!p->builtin_video->monitor_sense(legacy->monitor, &s)) {
+            if (!p->builtin_video->monitor_sense(legacy->monitor, &out->builtin_sense)) {
                 err = bad("unknown monitor id '%s' (see catalog.profile)", legacy->monitor);
                 goto done;
             }
-            out->video_sense = s;
         }
         legacy_displays(p, legacy, out);
     }
-    // video_sense= is a debug override of the connected device's sense.
-    if (legacy->video_sense >= 0) {
-        bool on_card = false;
-        for (int i = 0; i < out->n_slots; i++) {
-            if (out->slots[i].connected) {
-                out->slots[i].video_sense = legacy->video_sense <= 7 ? legacy->video_sense : MACHINE_SENSE_UNSET;
-                on_card = true;
-            }
-        }
-        if (!on_card)
-            out->video_sense = legacy->video_sense;
-    }
+    if (legacy->video_sense >= 0 && (err = override_sense(p, legacy->video_sense, out), val_is_error(&err)))
+        goto done;
 
     // Everything else straight across.
     out->ram_kb = d->ram_kb;

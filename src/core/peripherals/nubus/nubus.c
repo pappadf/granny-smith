@@ -56,26 +56,14 @@ _Static_assert(NUBUS_BERR_HI_EXCL_SLOT_E == ((0xF0000000u | (0xDu << 24)) + 0x00
 // is one extern + one entry.
 
 extern const nubus_card_kind_t builtin_se30_video_kind; // machines/glue/builtin_se30_video.c
-extern const nubus_card_kind_t builtin_se30_video_generic_kind; // machines/glue ("se30" generic sibling)
 extern const nubus_card_kind_t mdc_8_24_kind; // cards/jmfb.c
-extern const nubus_card_kind_t jmfb_generic_kind; // cards/jmfb.c ("8_24" generic sibling)
-extern const nubus_card_kind_t builtin_rbv_video_kind; // cards/builtin_rbv_video.c
+extern const nubus_card_kind_t builtin_rbv_video_kind; // machines/mdu/builtin_rbv_video.c
 extern const nubus_card_kind_t display_card_24ac_kind; // cards/display_card_24ac.c
-extern const nubus_card_kind_t display_card_24ac_generic_kind; // cards/display_card_24ac.c ("24ac")
 extern const nubus_card_kind_t display_card_824gc_kind; // cards/display_card_824gc.c
-extern const nubus_card_kind_t display_card_824gc_generic_kind; // cards/display_card_824gc.c ("8_24gc")
 
 static const nubus_card_kind_t *const g_card_registry[] = {
-    &builtin_se30_video_kind,
-    &builtin_se30_video_generic_kind,
-    &mdc_8_24_kind,
-    &jmfb_generic_kind,
-    &builtin_rbv_video_kind,
-    &display_card_24ac_kind,
-    &display_card_24ac_generic_kind,
-    &display_card_824gc_kind,
-    &display_card_824gc_generic_kind,
-    NULL,
+    &builtin_se30_video_kind, &mdc_8_24_kind,           &builtin_rbv_video_kind,
+    &display_card_24ac_kind,  &display_card_824gc_kind, NULL,
 };
 
 const nubus_card_kind_t *const *nubus_card_registry(void) {
@@ -92,9 +80,8 @@ const nubus_card_kind_t *nubus_card_find(const char *id) {
     return NULL;
 }
 
-// Compare two ids ignoring underscores — "8_24gc" and "824gc" are one
-// underscore apart by design (real vs generic sibling), so a typo between
-// them deserves a suggestion.
+// Compare two ids ignoring underscores — "8_24gc" for "824gc", "mdc_824"
+// for "mdc_8_24": a typo that close deserves a suggestion.
 static bool ids_match_sans_underscores(const char *a, const char *b) {
     while (*a == '_')
         a++;
@@ -169,7 +156,7 @@ const char *nubus_card_suggest(const char *id) {
 
 // Parse a "WxHxD" custom-mode spec into width/height/depth.  Returns true
 // on a well-formed spec with each field in range (the numeric limits the
-// generic cards can honour); false — with *err set to a static reason —
+// substitute ROMs can honour); false — with *err set to a static reason —
 // otherwise.  Shared by boot-time validation and card_init.
 bool nubus_custom_mode_parse(const char *spec, uint32_t *out_w, uint32_t *out_h, uint32_t *out_d, const char **err) {
     const char *reason = NULL;
@@ -257,15 +244,36 @@ bool nubus_card_fits_slot(const nubus_slot_decl_t *s, const nubus_card_kind_t *k
         return false;
     if (s->kind == NUBUS_SLOT_SOCKET)
         return nubus_card_fits_socket(s, kind);
-    if (s->kind != NUBUS_SLOT_BUILTIN || !s->builtin_card_id)
+    return s->kind == NUBUS_SLOT_BUILTIN && s->builtin_card_id && strcmp(s->builtin_card_id, kind->id) == 0;
+}
+
+bool nubus_entry_substitute(const nubus_card_kind_t *k, const slot_opts_t *e) {
+    if (!k || !k->substitute)
         return false;
-    if (strcmp(s->builtin_card_id, kind->id) == 0)
-        return true;
-    // A sibling of the declared card: on-board too, and driving the same
-    // monitors (the SE/30's generic and real video).
-    const nubus_card_kind_t *declared = nubus_card_find(s->builtin_card_id);
-    return declared && kind->attach == CARD_ATTACH_BUILTIN && declared->monitors &&
-           kind->monitors == declared->monitors;
+    return e->substitute || e->custom_mode[0] || !vrom_card_resolvable(k->id, e->rom[0] ? e->rom : NULL);
+}
+
+const nubus_monitor_t *nubus_kind_monitors(const nubus_card_kind_t *k, bool substitute) {
+    if (!k)
+        return NULL;
+    return (substitute && k->substitute_monitors) ? k->substitute_monitors : k->monitors;
+}
+
+const nubus_monitor_t *nubus_entry_monitor(const nubus_card_kind_t *k, const slot_opts_t *e) {
+    for (const nubus_monitor_t *m = nubus_kind_monitors(k, e->substitute); m && m->id; m++)
+        if (strcmp(m->id, e->monitor) == 0)
+            return m;
+    return NULL;
+}
+
+void nubus_entry_default_monitor(const nubus_card_kind_t *k, slot_opts_t *e) {
+    const nubus_monitor_t *rows = nubus_kind_monitors(k, e->substitute);
+    if (e->monitor[0] || !rows || !rows->id)
+        return;
+    const nubus_monitor_t *row = rows;
+    nubus_monitor_mode_lookup(rows, e->video_mode, &row, NULL);
+    snprintf(e->monitor, sizeof e->monitor, "%s", row->id);
+    e->sense = row->sense_code;
 }
 
 // Format a refusal into the caller's buffer and say no.
@@ -309,12 +317,20 @@ bool nubus_slot_entry_check(const nubus_slot_decl_t *slots, const char *model, c
     } else {
         k = nubus_card_find(d->kind == NUBUS_SLOT_SOCKET ? d->default_card : d->builtin_card_id);
     }
+    if (e->substitute && !(k && k->substitute))
+        return refuse(why, why_len, "slot $%X's card '%s' has no substitute ROM", e->slot, k ? k->id : "(none)");
+    if (e->substitute && e->rom[0])
+        return refuse(why, why_len, "slot $%X: a ROM file and the substitute ROM cannot both be given", e->slot);
+    // The rows the card drives with the ROM it will run.  A boot decides the
+    // ROM from the files offered now; a restore's entry already says.
+    bool substitute = roms_final ? nubus_entry_substitute(k, e) : e->substitute;
+    const nubus_monitor_t *rows = nubus_kind_monitors(k, substitute);
     if (e->video_mode[0]) {
         if (!nubus_video_mode_known(e->video_mode))
             return refuse(why, why_len, "unknown video-mode id '%s'", e->video_mode);
-        if (!k || !nubus_monitor_mode_lookup(k->monitors, e->video_mode, NULL, NULL))
-            return refuse(why, why_len, "video mode '%s' does not belong to slot $%X's card '%s'", e->video_mode,
-                          e->slot, k ? k->id : "(none)");
+        if (!k || !nubus_monitor_mode_lookup(rows, e->video_mode, NULL, NULL))
+            return refuse(why, why_len, "video mode '%s' does not belong to slot $%X's card '%s'%s", e->video_mode,
+                          e->slot, k ? k->id : "(none)", substitute ? " with its substitute ROM" : "");
     }
     if (e->custom_mode[0]) {
         const char *bad = NULL;
@@ -327,6 +343,14 @@ bool nubus_slot_entry_check(const nubus_slot_decl_t *slots, const char *model, c
             return refuse(why, why_len, "custom_mode '%s' on slot $%X's card '%s': %s", e->custom_mode, e->slot, k->id,
                           bad);
     }
+    if (e->monitor[0] && strcmp(e->monitor, "none") != 0) {
+        bool known = false;
+        for (const nubus_monitor_t *m = rows; m && m->id; m++)
+            known |= strcmp(m->id, e->monitor) == 0;
+        if (!known)
+            return refuse(why, why_len, "monitor '%s' is not one slot $%X's card '%s' drives", e->monitor, e->slot,
+                          k ? k->id : "(none)");
+    }
     if (e->n_options)
         return refuse(why, why_len, "slot $%X's card '%s' takes no option '%s'", e->slot, k ? k->id : "(none)",
                       e->options[0].key);
@@ -338,11 +362,10 @@ bool nubus_slot_entry_check(const nubus_slot_decl_t *slots, const char *model, c
             return refuse(why, why_len, "vrom '%s' is for card '%s', not slot $%X's '%s'", e->rom, vid.card_id, e->slot,
                           k ? k->id : "(none)");
     }
-    // A card the document named must resolve its declaration ROM before the
-    // running machine is touched; a slot's own default degrades to an empty
-    // slot with a log, and a built-in card owns its fallback (the SE/30
-    // synthesises its onboard vROM).
-    if (roms_final && named && k && vrom_card_catalogued(k->id) &&
+    // A card the document named must find a declaration ROM before the
+    // running machine is touched: Apple's, or its substitute.  A slot's own
+    // default without either fails to build, leaving the slot empty with a log.
+    if (roms_final && named && k && !substitute && vrom_card_catalogued(k->id) &&
         !vrom_card_resolvable(k->id, e->rom[0] ? e->rom : NULL))
         return refuse(why, why_len, "card '%s' (slot $%X) needs a declaration ROM but no offered vROM file provides it",
                       k->id, e->slot);
@@ -436,9 +459,11 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
     // What each slot seats.  A boot takes the document's entry (validated
     // before anything was built), else the slot's declared builtin / default
     // card, so a machine boots as many cards as its sockets carry
-    // configuration for (multi-display).  The monitor sense the document
-    // chose goes into every entry: the cards that have a sense line read it
-    // from there.  A restore takes the entries from the bus's own block.
+    // configuration for (multi-display).  Each seat is then made definite:
+    // which declaration ROM its card runs, and the monitor on its connector
+    // -- built-in video takes the build's monitor and connection, a socket's
+    // card the monitor its entry chose or its default.  A restore takes the
+    // entries from the bus's own block.
     machine_part_begin(cfg, cp, "nubus");
     if (cp) {
         system_read_checkpoint_data(cp, bus->seated, sizeof(bus->seated), "nubus");
@@ -452,21 +477,27 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
             const slot_opts_t *entry = machine_build_opts_slot(&cfg->build_opts, s->slot);
             if (entry)
                 *seat = *entry;
-            else
-                seat->video_sense = MACHINE_SENSE_UNSET;
             seat->slot = s->slot;
-            // Built-in video is the built-in display device: it takes the
-            // build's monitor and, when no card has the monitor, is the one
-            // connected.  A socket's card keeps the sense its entry chose.
-            if (s->kind == NUBUS_SLOT_BUILTIN) {
-                seat->video_sense = machine_slot_sense(&cfg->build_opts);
-                seat->connected = cfg->build_opts.builtin_connected;
-            }
             if (s->kind != NUBUS_SLOT_BUILTIN && s->kind != NUBUS_SLOT_SOCKET)
                 seat->empty = true;
             const char *declared = s->kind == NUBUS_SLOT_BUILTIN ? s->builtin_card_id : s->default_card;
             if (!seat->empty && !seat->card[0] && declared)
                 snprintf(seat->card, sizeof seat->card, "%s", declared);
+            if (seat->empty || !seat->card[0])
+                continue;
+            const nubus_card_kind_t *kind = nubus_card_find(seat->card);
+            seat->substitute = nubus_entry_substitute(kind, seat);
+            if (s->kind == NUBUS_SLOT_BUILTIN) {
+                // The port's own monitor row (it has the one), unless none is
+                // plugged in; the sense lines read what the build resolved.
+                seat->connected = cfg->build_opts.builtin_connected;
+                if (cfg->build_opts.builtin_sense == MACHINE_SENSE_NONE)
+                    snprintf(seat->monitor, sizeof seat->monitor, "none");
+                nubus_entry_default_monitor(kind, seat);
+                seat->sense = cfg->build_opts.builtin_sense;
+            } else {
+                nubus_entry_default_monitor(kind, seat);
+            }
         }
     }
     machine_part(cfg, cp, "nubus", nubus_slots_part_save, bus);
@@ -494,6 +525,7 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
         card->ops = kind->ops;
         card->bus = bus;
         card->slot = n;
+        card->substitute = seat->substitute;
 
         // Each card is a part of its own, after the slot table: on a restore
         // its block gives the declaration ROM it runs, which init takes, and
@@ -582,6 +614,19 @@ const nubus_card_kind_t *nubus_slot_kind(nubus_bus_t *bus, int slot) {
     if (!bus || slot < 0 || slot >= NUBUS_MAX_SLOTS)
         return NULL;
     return bus->slot_kind[slot];
+}
+
+const slot_opts_t *nubus_seat(nubus_bus_t *bus, int slot) {
+    if (!bus || slot < 0 || slot >= NUBUS_MAX_SLOTS)
+        return NULL;
+    return &bus->seated[slot];
+}
+
+bool nubus_startup_record(nubus_bus_t *bus, int slot, uint8_t rec[8]) {
+    const nubus_card_kind_t *k = nubus_slot_kind(bus, slot);
+    if (!k || !k->startup_record || !bus->cards[slot] || strcmp(bus->seated[slot].monitor, "none") == 0)
+        return false;
+    return k->startup_record(&bus->seated[slot], rec);
 }
 
 display_t *nubus_connected_display(nubus_bus_t *bus) {

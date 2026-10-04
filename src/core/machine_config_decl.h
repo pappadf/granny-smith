@@ -81,7 +81,7 @@ typedef struct storage_bus_decl {
     const storage_bay_decl_t *bays; // NULL: none
     unsigned accepts; // STORAGE_DEV_* mask
     // The bus can name its devices in the family's startup-device record
-    // (§6.8 V9).  False: `startup` cannot point at a device here.
+    // (validation V9).  False: `startup` cannot point at a device here.
     bool startup_ok;
 } storage_bus_decl_t;
 

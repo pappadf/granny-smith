@@ -675,7 +675,8 @@ the level contract over every model in the registry.
 | Host pacing (`pacing.mode`, `.speed`, `.max_speed`; also reached as `scheduler.*` while a machine runs) | Host state (the platform's run loop): untouched, and the new machine runs under it | Unchanged | Unchanged | Untouched: never in a checkpoint |
 | vROM/PROM offer registries | Process-global; survive | Survive | Survive | Survive |
 | A slot's ROM file (`vrom=`/`prom=`, a slot's `rom=`) | The document's, an argument of that slot's card; never written to the offer registries | Unchanged | Unchanged | From the card's part of the checkpoint, which carries the ROM's bytes (a checkpoint restores without the file) |
-| A built-in video's monitor strap (`monitor=`, `video_sense=`) | The document's, an argument of the video device | Unchanged | Unchanged | From the device's identity part of the checkpoint |
+| Each display device's monitor (the document's displays; `monitor=`, `video_sense=`) | The document's, an argument of the device: the built-in port's sense code, each card's monitor row and sense code in its slot entry | Unchanged | Unchanged | From the device's part of the checkpoint (a card's from the bus's slot table) |
+| Each NuBus card's declaration ROM: Apple's or its substitute | Decided as the bus seats the card | Unchanged | Unchanged | From the card's part of the checkpoint (Apple's bytes, or nothing for the substitute, which is regenerated) |
 | Object tree | Machine-scoped nodes rebuilt (`root_install`); process singletons (`machine`, `rom`, `vrom`, `prom`, `pacing`, `appletalk`) stay | Untouched | Untouched | Rebuilt |
 | AppleTalk network (`appletalk.*`: the AFP server and its shares, the LaserWriter, the program-linking peer, their NBP names) | Host state: untouched, but for the LaserWriter, which restarts (a job in flight and what jobs made permanent go); the new machine plugs into it | Untouched | Untouched | As `machine.boot`: never in a checkpoint. Nor kept across a page reload: the web app saves none of it, and a reloaded page starts with only the default share |
 | The machine's AppleTalk connection (`cfg->atalk`: link state and counters, ATP transactions, its ASP / AFP / ADSP / PPC sessions, forks, Apple events) | New, with no sessions; the old machine's sessions closed | Kept | Kept | Its block restored (enabled flag, link counters, session numbering), with no sessions: the guest sees a restarted server |
@@ -757,12 +758,12 @@ old machine keeps running.
 | `config` | string (JSON) | the model's default configuration | The configuration document ([below](#the-configuration-document)): options, floppy drives, storage devices, the startup device, expansion cards and the connected display. |
 | `ram` | uint (KB) | the model's default memory | Sugar for `options.memory`. Must be one of the model's memory sizes (`catalog.profile(id).options`, the `memory` entry); a restored checkpoint's size passes the same check. |
 | `rom2` | string | none | The second chip of a two-chip Lisa/XL ROM. It only has to be readable: the chips identify after interleaving, so per-file identification and the compatibility check are skipped (`machine.c:878-884`). |
-| `slots` | string | the slots' own cards | Per-slot configuration, `SLOT=CARD[,key=value]*;...` (`machine_slots.c`). `SLOT` is the slot number as `machine.nubus.slot[N]` / `machine.pci.slot[N]` index it (decimal, or `$A` / `0xA`); `CARD` is a card id, `none` for an empty socket, or empty for the slot's own card. `mode=`, `custom=` and `rom=` set the slot's video mode, custom geometry and ROM file; any other key is a card option. Every entry is checked against its slot before teardown: the slot exists and takes a card, the card fits it, the mode belongs to the card, the geometry fits it, the card accepts each option, and the ROM identifies as the card's. |
+| `slots` | string | the slots' own cards | Per-slot configuration, `SLOT=CARD[,key=value]*;...` (`machine_slots.c`). `SLOT` is the slot number as `machine.nubus.slot[N]` / `machine.pci.slot[N]` index it (decimal, or `$A` / `0xA`); `CARD` is a card id, `none` for an empty socket, or empty for the slot's own card. `mode=`, `custom=` and `rom=` set the slot's video mode, custom geometry and ROM file (`rom=substitute`: the card's substitute declaration ROM); any other key is a card option. Every entry is checked against its slot before teardown: the slot exists and takes a card, the card fits it, the mode belongs to the card (with the ROM it will run), the geometry fits it, the card accepts each option, and the ROM identifies as the card's. |
 | `vrom` | string | resolved from the offers | A NuBus declaration-ROM file: the ROM of every slot whose card its content provides (sugar for those slots' `rom=`). The file must identify as a known declaration ROM (`vrom_identify_card`). |
 | `video_card` | string | the slot default | Card id for the machine's **first** NuBus socket (on a machine with none, its built-in slot): sugar for that slot's `slots=` entry, which it may not contradict. Rejected on a model with no NuBus slots, and for an unknown id (with a "did you mean" hint). |
-| `video_sense` | uint | the connected monitor's | A debug override of the **connected** display device's sense: 0–7 is the passive code; 8–14 is Apple's indexed numbering for monitors that answer the extended probe (only the DAFB models it). |
+| `video_sense` | uint | the connected monitor's | A debug override of the **connected** display device's sense code; its monitor (and so its geometry) stays. 0–7 is the passive code; 8–14 is Apple's indexed numbering for monitors that answer the extended probe, which only a Quadra's DAFB built-in port takes. Rejected when the connected device is a PCI card (it takes its `monitor=` option). |
 | `video_mode` | string | the card's default | Video-mode id for the first socket (sugar for its `mode=`). It must belong to that slot's card. |
-| `custom_mode` | string | none | Custom resolution `WxHxD` for the first socket (sugar for its `custom=`); only the generic `8_24` kind takes one (its `custom_mode_fits` hook). Parsed and rejected with the reason. |
+| `custom_mode` | string | none | Custom resolution `WxHxD` for the first socket (sugar for its `custom=`), on the card's substitute ROM; only the 8•24 takes one (its kind's `custom_mode_fits` hook). Parsed and rejected with the reason. |
 | `monitor` | string | the model's default | Sugar for `displays.builtin.monitor`: the monitor on the **built-in** video port, a monitor-catalogue id the port takes (`catalog.profile(id).displays.builtin.monitors`; the family's own legacy ids are accepted too). `none` leaves the port unconnected, which connects the monitor to the first display card instead. It resolves to the port's sense code at construction. |
 | `pci_card` | string | the slot default | Card id for the machine's **first** PCI socket (sugar for its `slots=` entry). Rejected on a model with no PCI slots, and for an unknown id. |
 | `prom` | string | resolved from the offers | A PCI expansion-ROM file: the ROM of every slot whose card its content provides. The file must identify as a known Open Firmware expansion ROM (`prom_identify_card`). |
@@ -770,12 +771,13 @@ old machine keeps running.
 
 The sugar and `slots=` resolve, once, into one entry per configured slot
 (`machine_slots_resolve`); below `machine_boot_apply` nothing knows the
-sugar exists. A card the **document names** that needs a declaration ROM
-or FCode expansion ROM must have one -- its slot's `rom=` or an offered
-file -- or the boot is rejected before teardown. A socket that falls back
-to its *default* card degrades to an empty slot with a log instead, and a
-soldered-down card such as the SE/30's onboard video synthesises its own
-declaration ROM.
+sugar exists. A NuBus card runs Apple's declaration ROM when one is offered
+(or its slot's `rom=` names one), else its substitute ROM, the emulator's
+generated one ([nubus_generic_vrom.md](../peripherals/nubus_generic_vrom.md)).
+A card the **document names** with neither -- a PCI card whose FCode
+expansion ROM is not offered -- rejects the boot before teardown; a socket
+that falls back to its *default* card degrades to an empty slot with a log
+instead.
 
 ### The configuration document
 

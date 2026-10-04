@@ -853,9 +853,21 @@ static bool civic_monitor_at(size_t i, const char **id, const char **monitor) {
     return true;
 }
 
+// Its passive sense code, %110; an unplugged port grounds nothing.
+static bool civic_monitor_sense(const char *id, uint8_t *out) {
+    if (strcmp(id, "13in_rgb") == 0)
+        *out = 6;
+    else if (strcmp(id, "none") == 0)
+        *out = MACHINE_SENSE_NONE;
+    else
+        return false;
+    return true;
+}
+
 const builtin_video_desc_t av_builtin_video_civic = {
     .detail = "CIVIC",
     .monitor_at = civic_monitor_at,
+    .monitor_sense = civic_monitor_sense,
     .default_monitor = "13in_rgb",
 };
 

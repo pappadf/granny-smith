@@ -124,14 +124,14 @@ LOG_USE_CATEGORY_NAME("video");
 #define CONTROL_VBL_MIN_NS      4000000ull // 250 Hz: faster is a mode line half-written
 #define CONTROL_VBL_MAX_NS      40000000ull // 25 Hz: slower likewise
 
-// The default monitor on the sense lines: an AppleColor Hi-Res 13"/14"
+// The stock monitor on the sense lines (tnt_builtin_video's default): an
+// AppleColor Hi-Res 13"/14"
 // strap — line C tied to ground, A/B floating.  Raw sense 6, extended walk
 // $2B, which selects the 640x480 timing set in the ROM's own mode table (the
 // $2B literal sits at the head of the OpenFW timing-table list).  The pick
 // lives in tnt_control_t.mon_grounded (bit mask, lines {A,B,C} = bits
 // {2,1,0}); this was a compile-time constant, pinning every TNT machine to
 // 640x480 whatever the guest asked for (#146).
-#define CONTROL_MONITOR_SENSE_DEFAULT 0x6u
 
 // The monitors the built-in port can present, by the 3-bit passive sense
 // code (display_timing.h): the ROM's extended walk reads the grounded lines
@@ -752,7 +752,7 @@ static pci_device_t *control_factory(int slot_index, config_t *cfg, const rom_im
     pci_cfg_reset(dev);
     st->control_dev = dev;
     tnt_control_register_events(cfg);
-    if (tnt_control_init(cfg, opts->video_sense) != 0) {
+    if (tnt_control_init(cfg, opts->sense) != 0) {
         // The PCI layer logs and skips a NULL factory return, so the machine
         // comes up without built-in video rather than dereferencing NULL
         // framebuffers on the first scanout.
@@ -967,13 +967,11 @@ static uint64_t control_fb_base(void *owner) {
     return (uint64_t)(st->display.bits - st->vram);
 }
 
-int tnt_control_init(config_t *cfg, int video_sense) {
+int tnt_control_init(config_t *cfg, uint8_t sense) {
     tnt_state_t *st = tnt_st(cfg);
-    // The built-in port's monitor: its slot entry's sense (the boot
-    // document's `monitor=`, which the registry resolved to a sense code; on a
-    // restore, the PCI table's block).  The only place the strap is set: the
-    // chip's restore keeps it (tnt.c).
-    uint8_t sense = machine_sense_or(video_sense, 8, CONTROL_MONITOR_SENSE_DEFAULT);
+    // The built-in port's monitor: its slot entry's sense (the build's
+    // built-in monitor; on a restore, the PCI table's block).  The only place
+    // the strap is set: the chip's restore keeps it (tnt.c).
     st->control.mon_grounded = (uint8_t)(~sense & 7u);
     st->vram = calloc(1, TNT_VRAM_SIZE);
     st->blank = calloc(1, TNT_VRAM_SIZE);

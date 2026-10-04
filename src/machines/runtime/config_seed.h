@@ -23,8 +23,9 @@
 struct config;
 
 // The seed hook of every machine whose Mac OS PRAM is the RTC's: the default
-// startup device (Start Manager record, SCSI driver refnum) and AppleTalk's
-// on/off state (SysParam, port B use).
+// startup device (Start Manager record, SCSI driver refnum), AppleTalk's
+// on/off state (SysParam, port B use) and each NuBus card's startup video
+// mode (its slot record).
 void mac_seed_rtc_pram(struct config *cfg);
 
 // Write the same AppleTalk record into a 256-byte XPRAM image (an Open

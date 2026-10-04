@@ -18,8 +18,9 @@
 // index it (decimal -- a leading zero is still decimal -- or hex as $A /
 // 0xA).  CARD is a card-kind id, `none` for an empty socket (which takes no
 // settings), or empty for the slot's own card.  `mode=`, `custom=` and
-// `rom=` set the video mode, the custom geometry and the card's ROM file; any
-// other key is a card option.  Blanks around each part are ignored and an
+// `rom=` set the video mode, the custom geometry and the card's ROM file
+// (`rom=substitute`: the emulator's substitute declaration ROM); any other key
+// is a card option.  Blanks around each part are ignored and an
 // empty entry (`;;`, a trailing `;`) is nothing.  Everything else is an
 // error, never skipped: a slot named twice, a key given twice, an empty
 // field (`,,`, a trailing `,`), a key or value left empty.  A value cannot
@@ -104,7 +105,6 @@ static slot_opts_t *entry_for(machine_build_opts_t *o, int slot) {
     slot_opts_t *e = &o->slots[o->n_slots++];
     memset(e, 0, sizeof(*e));
     e->slot = slot;
-    e->video_sense = MACHINE_SENSE_UNSET; // the card's own monitor until the displays say
     return e;
 }
 
@@ -234,10 +234,12 @@ static value_t parse_slots(const hw_profile_t *p, slots_bus_t bus, const char *s
                 field = e->custom_mode, field_size = sizeof e->custom_mode;
             else if (strcmp(key, "rom") == 0)
                 field = e->rom, field_size = sizeof e->rom;
-            if (field && field[0]) {
+            if (field && (field[0] || (field == e->rom && e->substitute))) {
                 ok = false;
                 why = "given twice";
-            } else if (field)
+            } else if (field == e->rom && strcmp(value, "substitute") == 0)
+                e->substitute = true; // the emulator's substitute ROM, not a file
+            else if (field)
                 ok = copy_field(field, field_size, value);
             else
                 ok = add_option(e, key, value, &why);
@@ -412,7 +414,7 @@ static value_t apply_rom_sugar(const hw_profile_t *p, slots_bus_t bus, const boo
         slot_opts_t *e = entry_for(o, slot);
         if (!e)
             return val_err("machine.boot: slots= names too many slots");
-        if (e->rom[0])
+        if (e->rom[0] || e->substitute)
             continue; // slots= named this slot's ROM itself
         if (!copy_field(e->rom, sizeof e->rom, path))
             return val_err("machine.boot: ROM path '%s' is too long", path);

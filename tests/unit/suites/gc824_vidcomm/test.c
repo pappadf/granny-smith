@@ -57,11 +57,8 @@ bool nubus_monitor_mode_lookup(const nubus_monitor_t *list, const char *id, cons
     (void)list, (void)id, (void)out_monitor, (void)out_depth_bpp;
     return false;
 }
-bool rtc_pram_write(rtc_t *rtc, uint8_t addr, uint8_t value) {
-    (void)rtc, (void)addr, (void)value;
-    return false;
-}
-rtc_t *system_rtc(void) {
+const nubus_monitor_t *nubus_entry_monitor(const nubus_card_kind_t *k, const slot_opts_t *e) {
+    (void)k, (void)e;
     return NULL;
 }
 struct object *object_new(const class_desc_t *cls, void *instance_data, const char *name) {

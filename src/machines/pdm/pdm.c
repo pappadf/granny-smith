@@ -489,7 +489,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // The monitor strapped to Ariel's built-in port: the document's on a
     // boot, the one the board was built with on a restore.  PDM_SENSE_NONE
     // (nothing connected) is what lets a NuBus card be the only screen.
-    uint8_t monitor = pdm_monitor_for_build(cfg);
+    uint8_t monitor = cfg->build_opts.builtin_sense;
     machine_part_begin(cfg, cp, "ariel.monitor");
     if (cp)
         system_read_checkpoint_data(cp, &monitor, sizeof monitor, "ariel.monitor");

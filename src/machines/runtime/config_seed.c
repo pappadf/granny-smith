@@ -7,6 +7,7 @@
 #include "config_seed.h"
 
 #include "machine_profile.h"
+#include "nubus.h"
 #include "rtc.h"
 #include "system_config.h"
 
@@ -26,6 +27,9 @@
 #define SYSPARAM_PHYS_HI    0x10u
 #define SYSPARAM_PHYS_LO    0x08u
 #define SYSPARAM_SPCONFIG   0x03u
+
+// The slot records (sPRAMRec): 8 bytes per NuBus slot from $9, at $46.
+#define SLOT_PRAM_BASE 0x46u
 
 // The configuration's AppleTalk choice, or -1 when it has no such option.
 static int appletalk_choice(const struct config *cfg) {
@@ -79,6 +83,15 @@ void mac_seed_rtc_pram(struct config *cfg) {
             rtc_pram_write(rtc, (uint8_t)(SYSPARAM_PHYS_HI + i), img[SYSPARAM_PHYS_HI + i]);
         for (unsigned i = 0; i < 4; i++)
             rtc_pram_write(rtc, (uint8_t)(SYSPARAM_PHYS_LO + i), img[SYSPARAM_PHYS_LO + i]);
+    }
+    // Each NuBus card's startup video mode: the slot PRAM record its Monitors
+    // control panel would have saved (the card knows the format).
+    for (int slot = 0x9; cfg->nubus && slot <= 0xE; slot++) {
+        uint8_t rec[8];
+        if (!nubus_startup_record(cfg->nubus, slot, rec))
+            continue;
+        for (int i = 0; i < 8; i++)
+            rtc_pram_write(rtc, (uint8_t)(SLOT_PRAM_BASE + (slot - 0x9) * 8 + i), rec[i]);
     }
     // A ROM with no Start Manager table (the Plus's) has no record to seed.
     if (pd && !pd->startmgr)

@@ -474,7 +474,7 @@ int mcu_build_dafb(config_t *cfg, checkpoint_t *cp) {
 
     // The monitor on the built-in port: the document's on a boot, the one
     // the board was built with on a restore.
-    uint8_t monitor = dafb_sense_for_build(cfg);
+    uint8_t monitor = cfg->build_opts.builtin_sense;
     machine_part_begin(cfg, cp, "dafb.monitor");
     if (cp)
         system_read_checkpoint_data(cp, &monitor, sizeof monitor, "dafb.monitor");
@@ -852,6 +852,7 @@ const builtin_video_desc_t mcu_builtin_video_dafb = {
     .monitor_at = dafb_all_at,
     .monitor_sense = dafb_monitor_sense,
     .default_monitor = "13in_rgb",
+    .indexed_sense = true,
 };
 
 const builtin_video_desc_t mcu_builtin_video_dafb_passive = {
@@ -859,6 +860,7 @@ const builtin_video_desc_t mcu_builtin_video_dafb_passive = {
     .monitor_at = dafb_passive_at,
     .monitor_sense = dafb_monitor_sense,
     .default_monitor = "13in_rgb",
+    .indexed_sense = true,
 };
 
 const machine_substrate_t mcu_substrate = {

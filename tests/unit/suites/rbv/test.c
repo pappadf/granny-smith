@@ -185,7 +185,7 @@ static void fresh_rbv(void) {
     g_irq_rises = 0;
     g_irq_falls = 0;
     g_irq_state = false;
-    g_rbv = rbv_init(RBV_VARIANT_IICI, NULL);
+    g_rbv = rbv_init(RBV_VARIANT_IICI, 6, NULL);
     ASSERT_TRUE(g_rbv != NULL);
     g_rbv_if = rbv_get_memory_interface(g_rbv);
     rbv_set_irq_callback(g_rbv, machine_irq, NULL);

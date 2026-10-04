@@ -292,9 +292,10 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part(cfg, checkpoint, "egret", part_save_egret, st->egret);
     egret_set_power_off_callback(st->egret, iisi_power_off, cfg);
 
-    // RBV chip in the V8/VISA variant.  Default monitor sense 6 = 13" RGB.
+    // RBV chip in the V8/VISA variant, the built-in port's monitor strapped
+    // on its sense lines (7, nothing connected, turns built-in video off).
     machine_part_begin(cfg, checkpoint, "rbv");
-    st->rbv = rbv_init(RBV_VARIANT_V8_IISI, checkpoint);
+    st->rbv = rbv_init(RBV_VARIANT_V8_IISI, cfg->build_opts.builtin_sense, checkpoint);
     if (!st->rbv) {
         LOG(0, "Error: out of memory constructing the RBV");
         return -1;
@@ -304,7 +305,6 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     rbv_set_power_off_callback(st->rbv, iisi_power_off, cfg);
     rbv_set_mode_callback(st->rbv, iisi_rbv_mode, cfg);
     rbv_set_blank_callback(st->rbv, iisi_rbv_blank, cfg);
-    rbv_set_monitor_sense(st->rbv, 6);
     asc_set_irq_handler(st->asc, iisi_asc_irq, st->rbv); // sound IRQ → RvIFR bit 4
 
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
