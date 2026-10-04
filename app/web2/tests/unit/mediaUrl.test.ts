@@ -6,16 +6,12 @@ import {
   splitContainer,
   MediaUrlError,
   interleaveHalves,
+  urlMediaName,
 } from '@/lib/mediaUrl';
 
 const PAGE = 'https://pappadf.github.io/gs-pages/staging/';
 const ROMS =
   'https://archive.org/download/mac_rom_archive_-_as_of_8-19-2011/mac_rom_archive_-_as_of_8-19-2011.zip';
-
-// A metadata fetch that must not be reached.
-const noFetch = async (): Promise<unknown> => {
-  throw new Error('unexpected metadata fetch');
-};
 
 describe('canonicalParamName', () => {
   it('matches names case-insensitively', () => {
@@ -57,169 +53,78 @@ describe('splitContainer', () => {
   });
 });
 
-describe('planMediaFetch — generic hosts', () => {
-  it('a plain file is fetched as is, relative values resolving against the page', async () => {
-    const p = await planMediaFetch('roms/Plus.rom', PAGE, noFetch);
+describe('planMediaFetch', () => {
+  it('a plain file is fetched as is, relative values resolving against the page', () => {
+    const p = planMediaFetch('roms/Plus.rom', PAGE);
     expect(p.fetchUrl).toBe('https://pappadf.github.io/gs-pages/staging/roms/Plus.rom');
     expect(p.member).toBeNull();
     expect(p.fileName).toBe('Plus.rom');
   });
-  it('a zip member: the container is fetched, the member decoded', async () => {
-    const p = await planMediaFetch('https://h/roms.zip/Mac%20IIci/iici%26x.rom', PAGE, noFetch);
+  it('a zip member: the container is fetched, the member decoded', () => {
+    const p = planMediaFetch('https://h/roms.zip/Mac%20IIci/iici%26x.rom', PAGE);
     expect(p.fetchUrl).toBe('https://h/roms.zip');
     expect(p.member).toBe('Mac IIci/iici&x.rom');
     expect(p.container).toBe('zip');
     expect(p.fileName).toBe('iici&x.rom');
     expect(p.containerName).toBe('roms.zip');
   });
-  it('a Mac-archive member keeps the container query string', async () => {
-    const p = await planMediaFetch('https://h/Games.sit/Dark%20Castle.img?dl=1', PAGE, noFetch);
+  it('a Mac-archive member keeps the container query string', () => {
+    const p = planMediaFetch('https://h/Games.sit/Dark%20Castle.img?dl=1', PAGE);
     expect(p.fetchUrl).toBe('https://h/Games.sit?dl=1');
     expect(p.container).toBe('mac');
     expect(p.member).toBe('Dark Castle.img');
   });
-  it('an http value on an https page is refused as mixed content', async () => {
-    await expect(planMediaFetch('http://h/a.img', PAGE, noFetch)).rejects.toThrow(/mixed content/);
+  it('an http value on an https page is refused as mixed content', () => {
+    expect(() => planMediaFetch('http://h/a.img', PAGE)).toThrow(/mixed content/);
   });
-  it('http is fine on an http page', async () => {
-    const p = await planMediaFetch('http://h/a.img', 'http://localhost:8080/', noFetch);
+  it('http is fine on an http page', () => {
+    const p = planMediaFetch('http://h/a.img', 'http://localhost:8080/');
     expect(p.fetchUrl).toBe('http://h/a.img');
   });
-  it('refuses other schemes', async () => {
-    await expect(planMediaFetch('ftp://h/a.img', PAGE, noFetch)).rejects.toBeInstanceOf(
-      MediaUrlError,
+  it('refuses other schemes', () => {
+    expect(() => planMediaFetch('ftp://h/a.img', PAGE)).toThrow(MediaUrlError);
+  });
+});
+
+describe('planMediaFetch — no host gets routing of its own', () => {
+  it('an archive.org /cors/ file is fetched exactly as given', () => {
+    const u = 'https://archive.org/cors/AppleMacintoshSystem753/System7_5_3.img';
+    expect(planMediaFetch(u, PAGE).fetchUrl).toBe(u);
+  });
+  it('an archive.org /download/ file is not rewritten', () => {
+    const u = 'https://archive.org/download/AppleMacintoshSystem753/System7_5_3.img';
+    expect(planMediaFetch(u, PAGE).fetchUrl).toBe(u);
+  });
+  it("a file server's view_archive.php URL, query and all, is the request", () => {
+    const u =
+      'https://ia800908.us.archive.org/view_archive.php?archive=/12/items/R/R.zip' +
+      '&file=9FEB69B3%20-%20Power%20Mac%206100%20%26%207100%20%26%208100.ROM';
+    // As it arrives from ?ROM=…: percent-encoded as a whole, decoded once.
+    const q = new URLSearchParams(`ROM=${encodeURIComponent(u)}&model=pm6100`);
+    const p = planMediaFetch(q.get('ROM') as string, PAGE);
+    expect(p.fetchUrl).toBe(u);
+    expect(p.member).toBeNull();
+  });
+  it("an archive.org zip member is split like any other host's", () => {
+    const p = planMediaFetch(`${ROMS}/368CADFE%20-%20Mac%20IIci.ROM`, PAGE);
+    expect(p.fetchUrl).toBe(ROMS);
+    expect(p.member).toBe('368CADFE - Mac IIci.ROM');
+    expect(p.container).toBe('zip');
+  });
+  it('http archive.org is not upgraded (mixed content, like any host)', () => {
+    expect(() => planMediaFetch('http://archive.org/download/X/a.img', PAGE)).toThrow(
+      /mixed content/,
     );
   });
 });
 
-describe('planMediaFetch — archive.org', () => {
-  it('a plain download goes through /cors/ (the file servers send no CORS)', async () => {
-    const p = await planMediaFetch(
-      'https://archive.org/download/AppleMacintoshSystem753/System7_5_3.img',
-      PAGE,
-      noFetch,
-    );
-    expect(p.fetchUrl).toBe('https://archive.org/cors/AppleMacintoshSystem753/System7_5_3.img');
-    expect(p.member).toBeNull();
-    expect(p.fileName).toBe('System7_5_3.img');
+describe('urlMediaName', () => {
+  it('is the slot and the local date and time, nothing from the URL', () => {
+    expect(urlMediaName('hd0', new Date(2026, 9, 4, 7, 5, 9))).toBe('hd0_2026-10-04_07-05-09');
+    expect(urlMediaName('fd1', new Date(2026, 0, 31, 23, 59, 0))).toBe('fd1_2026-01-31_23-59-00');
   });
-  it('a zip member is left to archive.org to extract', async () => {
-    const p = await planMediaFetch(`${ROMS}/368CADFE%20-%20Mac%20IIci.ROM`, PAGE, noFetch);
-    expect(p.fetchUrl).toBe(`${ROMS}/368CADFE%20-%20Mac%20IIci.ROM`);
-    expect(p.member).toBeNull();
-    expect(p.fileName).toBe('368CADFE - Mac IIci.ROM');
-    expect(p.containerName).toBe('mac_rom_archive_-_as_of_8-19-2011.zip');
-  });
-  it('a member name typed with spaces (decoded by URLSearchParams) still works', async () => {
-    const q = new URLSearchParams(`ROM=${ROMS}/368CADFE - Mac IIci.ROM`);
-    const p = await planMediaFetch(q.get('ROM') as string, PAGE, noFetch);
-    expect(p.fetchUrl).toBe(`${ROMS}/368CADFE%20-%20Mac%20IIci.ROM`);
-  });
-  it('an encoded & in a member survives; an unencoded one splits the query', async () => {
-    const enc = new URLSearchParams(`ROM=${ROMS}/420DBFF3%20-%20Quadra%20700%26900.ROM&x=1`);
-    const meta = async (): Promise<unknown> => ({
-      server: 'ia1.us.archive.org',
-      dir: '/1/items/R',
-    });
-    const p = await planMediaFetch(enc.get('ROM') as string, PAGE, meta);
-    expect(p.fileName).toBe('420DBFF3 - Quadra 700&900.ROM');
-    const raw = new URLSearchParams(`ROM=${ROMS}/420DBFF3 - Quadra 700&900.ROM`);
-    expect(raw.get('ROM')).toBe(`${ROMS}/420DBFF3 - Quadra 700`);
-  });
-  it("a zip member named with & goes to the file server's view_archive.php directly", async () => {
-    let asked = '';
-    const meta = async (u: string): Promise<unknown> => {
-      asked = u;
-      return {
-        server: 'ia800908.us.archive.org',
-        dir: '/12/items/mac_rom_archive_-_as_of_8-19-2011',
-      };
-    };
-    const p = await planMediaFetch(
-      `${ROMS}/9FEB69B3%20-%20Power%20Mac%206100%20%26%207100%20%26%208100.ROM`,
-      PAGE,
-      meta,
-    );
-    expect(asked).toBe('https://archive.org/metadata/mac_rom_archive_-_as_of_8-19-2011');
-    expect(p.fetchUrl).toBe(
-      'https://ia800908.us.archive.org/view_archive.php?archive=' +
-        '/12/items/mac_rom_archive_-_as_of_8-19-2011/mac_rom_archive_-_as_of_8-19-2011.zip' +
-        '&file=9FEB69B3%20-%20Power%20Mac%206100%20%26%207100%20%26%208100.ROM',
-    );
-    expect(p.member).toBeNull();
-    expect(p.fileName).toBe('9FEB69B3 - Power Mac 6100 & 7100 & 8100.ROM');
-    expect(p.containerName).toBe('mac_rom_archive_-_as_of_8-19-2011.zip');
-  });
-  it('a nested member path with & keeps its folders in file=', async () => {
-    const meta = async (): Promise<unknown> => ({
-      server: 'ia1.us.archive.org',
-      dir: '/1/items/X',
-    });
-    const p = await planMediaFetch(
-      'https://archive.org/download/X/My%20Disks.zip/A%20%26%20B/c%2Bd.img',
-      PAGE,
-      meta,
-    );
-    expect(p.fetchUrl).toBe(
-      'https://ia1.us.archive.org/view_archive.php?archive=/1/items/X/My%20Disks.zip' +
-        '&file=A%20%26%20B%2Fc%2Bd.img',
-    );
-    expect(p.fileName).toBe('c+d.img');
-  });
-  it('a member with & in an item whose metadata has no server is refused', async () => {
-    const meta = async (): Promise<unknown> => ({});
-    await expect(planMediaFetch(`${ROMS}/A%20%26%20B.ROM`, PAGE, meta)).rejects.toThrow(
-      MediaUrlError,
-    );
-  });
-  it('an http archive.org URL is upgraded to https', async () => {
-    const p = await planMediaFetch('http://archive.org/download/X/a.img', PAGE, noFetch);
-    expect(p.fetchUrl).toBe('https://archive.org/cors/X/a.img');
-  });
-  it('/details/<item>/<file> is that file', async () => {
-    const p = await planMediaFetch(
-      'https://archive.org/details/AppleMacintoshSystem701/System7_0_1.img',
-      PAGE,
-      noFetch,
-    );
-    expect(p.fetchUrl).toBe('https://archive.org/cors/AppleMacintoshSystem701/System7_0_1.img');
-  });
-  it('/details/<item> resolves to the single media file in the item', async () => {
-    let asked = '';
-    const meta = async (u: string) => {
-      asked = u;
-      return {
-        files: [
-          { name: 'System7_5_3.img', source: 'original' },
-          { name: '00_screenshot.png', source: 'original' },
-          { name: 'AppleMacintoshSystem753_meta.xml', source: 'original' },
-          { name: 'System7_5_3.img.torrent', source: 'metadata' },
-        ],
-      };
-    };
-    const p = await planMediaFetch(
-      'https://archive.org/details/AppleMacintoshSystem753',
-      PAGE,
-      meta,
-    );
-    expect(asked).toBe('https://archive.org/metadata/AppleMacintoshSystem753');
-    expect(p.fetchUrl).toBe('https://archive.org/cors/AppleMacintoshSystem753/System7_5_3.img');
-  });
-  it('/details/<item> with several candidates names them', async () => {
-    const meta = async () => ({
-      files: [
-        { name: 'a.img', source: 'original' },
-        { name: 'b.dsk', source: 'original' },
-      ],
-    });
-    await expect(planMediaFetch('https://archive.org/details/X', PAGE, meta)).rejects.toThrow(
-      /2 candidate files.*a\.img, b\.dsk/,
-    );
-  });
-  it('/download/<item> without a file is refused', async () => {
-    await expect(
-      planMediaFetch('https://archive.org/download/X/', PAGE, noFetch),
-    ).rejects.toBeInstanceOf(MediaUrlError);
+  it('is a safe stored file name as it is', () => {
+    expect(urlMediaName('cd', new Date(2026, 9, 4, 17, 42, 5))).toMatch(/^[A-Za-z0-9._-]+$/);
   });
 });
 

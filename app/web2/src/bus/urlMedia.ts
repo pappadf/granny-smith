@@ -3,9 +3,11 @@
 // Usage: visit `?rom=/path/to/Plus.rom&fd0=/path/to/system.dsk&model=plus`
 // and the page boots into a running machine without going through Welcome.
 // Parameter names are case-insensitive (`ROM=`, `HD0=`); `hd` / `fd` mean the
-// first bay / drive.  A value may continue through a container
-// (`…/roms.zip/Mac%20IIci.ROM`) and archive.org URLs are routed to endpoints
-// a page may read — see lib/mediaUrl.ts for the addressing rules.
+// first bay / drive.  A value is fetched as given; it may continue through a
+// container (`…/roms.zip/Mac%20IIci.ROM`) — see lib/mediaUrl.ts for the
+// addressing rules.  What a file is stored and shown as comes from its slot
+// and the time it was fetched (state/urlBoot urlMediaName), never from the
+// URL; a ROM is stored under its own content id.
 //
 // Each parameter value is fetched, one at a time (relative paths resolve
 // against the page origin), streamed to a scratch file of its own
@@ -38,12 +40,13 @@ import type { SchedulerMode } from '@/state/machine.svelte';
 import {
   urlBoot,
   queueUrlFile,
+  urlMediaNameFor,
   updateUrlFile,
   setUrlBootStage,
   skipQueuedUrlFiles,
 } from '@/state/urlBoot.svelte';
 import { setMounted } from '@/state/images.svelte';
-import { sanitizeName, unzipAll } from '@/lib/archive';
+import { unzipAll } from '@/lib/archive';
 import {
   canonicalParamName,
   planMediaFetch,
@@ -149,13 +152,13 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   // in parallel, every large image was in flight at once.
   const paths = new Map<string, string | undefined>();
   if (params.rom) {
-    queueUrlFile('rom', params.rom);
-    if (params.romPair) queueUrlFile('rom2', params.romPair);
+    queueUrlFile('rom');
+    if (params.romPair) queueUrlFile('rom2');
   }
-  if (params.vrom) queueUrlFile('vrom', params.vrom);
-  for (const fd of params.floppies) queueUrlFile(fd.slot, fd.url);
-  for (const hd of params.hardDisks) queueUrlFile(hd.slot, hd.url);
-  if (params.cd) queueUrlFile('cd', params.cd);
+  if (params.vrom) queueUrlFile('vrom');
+  for (const fd of params.floppies) queueUrlFile(fd.slot);
+  for (const hd of params.hardDisks) queueUrlFile(hd.slot);
+  if (params.cd) queueUrlFile('cd');
 
   // The ROM first: without it nothing boots, so the disks (which can be
   // hundreds of megabytes) are not fetched for nothing.
@@ -333,14 +336,15 @@ async function fetchAndImport(
   const label = slot.toUpperCase();
   let plan: MediaFetchPlan;
   try {
-    plan = await planMediaFetch(url, window.location.href, fetchJson);
+    plan = planMediaFetch(url, window.location.href);
   } catch (e) {
     const msg = fetchFailureText(e, url);
     showNotification(`${label}: ${msg}`, 'error');
     updateUrlFile(slot, { status: 'failed', error: msg });
     return undefined;
   }
-  updateUrlFile(slot, { name: plan.member ?? plan.fileName, status: 'downloading' });
+  const storeAs = urlMediaNameFor(slot);
+  updateUrlFile(slot, { name: storeAs, status: 'downloading' });
   let res: Response;
   try {
     try {
@@ -368,19 +372,20 @@ async function fetchAndImport(
   let rejected = false;
   // In the status bar like an upload, with its Cancel button (importImage
   // sets it while the import can be cancelled).
-  startActivity(plan.member ?? plan.fileName, 'Downloading');
+  startActivity(storeAs, 'Downloading');
   const out = await importImage(
     source,
     plan.container === 'zip' ? plan.fileName : (plan.containerName ?? plan.fileName),
     {
       categories: [category],
       member: plan.container ? plan.member : null,
+      storeAs,
       onProgress: (read) => progress(read),
       // importImage discards the staged file when this returns.
-      onSmall: async (path, name) => {
-        const stored = await persistAs(path, sanitizeName(name) || slot, category);
+      onSmall: async (path) => {
+        const stored = await persistAs(path, storeAs, category);
         if (stored.ok) return stored.path;
-        rejectDownload(slot, name, stored.reason);
+        rejectDownload(slot, storeAs, stored.reason);
         rejected = true;
         return null;
       },
@@ -449,13 +454,6 @@ async function fetchRomPair(urlA: string, urlB: string): Promise<string | undefi
   }
 }
 
-// GET `url` for JSON (the archive.org metadata API).
-async function fetchJson(url: string): Promise<unknown> {
-  const res = await fetch(url);
-  if (!res.ok) throw new MediaUrlError(`${url}: ${res.status} ${res.statusText}`);
-  return res.json();
-}
-
 // Human size for messages ("512 KB", "25.0 MB").
 function sizeText(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
@@ -488,14 +486,15 @@ async function fetchAndStage(
   const label = slot.toUpperCase();
   let plan: MediaFetchPlan;
   try {
-    plan = await planMediaFetch(url, window.location.href, fetchJson);
+    plan = planMediaFetch(url, window.location.href);
   } catch (e) {
     const msg = fetchFailureText(e, url);
     showNotification(`${label}: ${msg}`, 'error');
     updateUrlFile(slot, { status: 'failed', error: msg });
     return null;
   }
-  updateUrlFile(slot, { name: plan.member ?? plan.fileName, status: 'downloading' });
+  const storeAs = urlMediaNameFor(slot);
+  updateUrlFile(slot, { name: storeAs, status: 'downloading' });
   const staged = scratchPath(`url_${slot}`);
   let handedOver = false;
   try {
@@ -522,7 +521,6 @@ async function fetchAndStage(
     if (plan.member !== null || archive) updateUrlFile(slot, { status: 'unpacking' });
 
     const ct = res.headers.get('Content-Type') ?? '';
-    let name = plan.fileName;
     if (plan.member !== null) {
       // The value named a member: take exactly that one out.
       if (!(await extractMember(slot, staged, plan))) return null;
@@ -532,24 +530,21 @@ async function fetchAndStage(
       const first = (await unzipAll(await xferReadAll(staged)))[0];
       if (!first) throw new MediaUrlError(`${plan.fileName}: the zip is empty`);
       if (!(await streamToOpfs(staged, first.data))) return null;
-      name = first.name.split('/').pop() || name;
     } else if (archive) {
       await unpackMacArchive(slot, staged, null);
     }
 
     const size = await gsEval('files.path_size', [staged]);
-    const from = plan.containerName ? ` from ${plan.containerName}` : '';
     const sz = typeof size === 'number' ? ` (${sizeText(size)})` : '';
     // The progress view lists each file as it lands; a toast per file is
     // for a page that is not showing it.
-    if (!urlBoot.requested) showNotification(`${label}: ${name}${from}${sz}`, 'info');
+    if (!urlBoot.requested) showNotification(`${label}: ${storeAs}${sz}`, 'info');
     updateUrlFile(slot, {
-      name,
       status: 'done',
       ...(typeof size === 'number' ? { received: size, total: size } : {}),
     });
     handedOver = true;
-    return { path: staged, name: sanitizeName(name) || slot };
+    return { path: staged, name: storeAs };
   } catch (e) {
     console.error(`[urlMedia] fetch ${slot} failed`, e);
     const msg = fetchFailureText(e, plan.fetchUrl);
