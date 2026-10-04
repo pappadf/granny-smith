@@ -214,7 +214,7 @@ static void iisi_via1_shift_out(void *context, uint8_t byte) {
 // slot index is an implementation detail (same arrangement as the IIci's
 // slot-$B seating); there are no user-visible expansion slots in v1.
 static const nubus_slot_decl_t iisi_slots[] = {
-    {.slot = 0xE, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "builtin_rbv_video"},
+    {.slot = 0xE, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "builtin_rbv_video", .fb_in_ram = true},
     {0},
 };
 
@@ -257,20 +257,24 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
 
     // ADB is driven by Egret via adb_iop_transact() (like the IIfx IOP path),
     // not by the VIA1 shift register — pass NULL for the VIA argument.
+    machine_part_begin(cfg, checkpoint, "adb");
     st->adb = adb_init(NULL, cfg->scheduler, checkpoint);
     cfg->adb = st->adb;
     machine_part(cfg, checkpoint, "adb", part_save_adb, st->adb);
 
     machine_part_images(cfg, checkpoint);
 
-    cfg->scsi = profile_scsi_init(cfg->machine, checkpoint, CONFIG_IMAGES(cfg));
+    machine_part_begin(cfg, checkpoint, "scsi");
+    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, checkpoint, CONFIG_IMAGES(cfg));
     scsi_5380_attach(cfg->scsi, checkpoint); // IIsi: NCR 5380
     machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
     scsi_set_irq_callback(cfg->scsi, iisi_scsi_irq, cfg);
     setup_images(cfg);
 
+    machine_part_begin(cfg, checkpoint, "asc");
     st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
     machine_part(cfg, checkpoint, "asc", part_save_asc, st->asc);
+    machine_part_begin(cfg, checkpoint, "floppy");
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
     st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), checkpoint,
                              CONFIG_IMAGES(cfg));
@@ -279,6 +283,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
 
     // Egret companion: owns ADB / RTC / PRAM / 1-sec tick / soft power-off via
     // the VIA1 shift register.  Created after via1/rtc/adb exist.
+    machine_part_begin(cfg, checkpoint, "egret");
     st->egret = egret_init(cfg->via1, cfg->rtc, st->adb, cfg->scheduler, checkpoint);
     if (!st->egret) {
         LOG(0, "Error: out of memory constructing the Egret");
@@ -288,6 +293,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     egret_set_power_off_callback(st->egret, iisi_power_off, cfg);
 
     // RBV chip in the V8/VISA variant.  Default monitor sense 6 = 13" RGB.
+    machine_part_begin(cfg, checkpoint, "rbv");
     st->rbv = rbv_init(RBV_VARIANT_V8_IISI, checkpoint);
     if (!st->rbv) {
         LOG(0, "Error: out of memory constructing the RBV");
@@ -327,25 +333,16 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     mdu_io_bind(&st->mdu_io, cfg, &iisi_board_desc, st->asc, st->floppy, st->rbv, st->video_card);
 
     // On-board video reads its frame buffer from the BOTTOM of Bank A — physical
-    // 0 (Developer Note §8.2; VideoInfoMacIIsi screen physical base = 0).  Point
-    // the card at Bank A's base; the active screen is at the frame-buffer start
-    // (offset 0), as on the IIci.  The OS reaches
-    // the screen through its PMMU tree (slot-$E base $FEE08000 / $00E08000 ->
-    // physical 0), so the guest's writes and the renderer share Bank A directly —
-    // no separate VRAM aperture and no $E00000 offset.
-    builtin_rbv_video_set_framebuffer(st->video_card, ram_base + IISI_FB_PHYS_OFFSET, IISI_FB_SCREEN_OFFSET,
-                                      /*blank*/ checkpoint == NULL);
-
-    // Card-side display state (palette, mode, VDAC).  Restored here rather
-    // than at nubus_init because the framebuffer pointer above must be
-    // attached first — this machine's framebuffer is main RAM, so the card
-    // must already know it does not own the buffer.
-    if (checkpoint)
-        nubus_checkpoint_restore(cfg->nubus, checkpoint);
-    machine_part(cfg, checkpoint, "nubus.cards", part_save_nubus_cards, cfg->nubus);
+    // 0 (Developer Note §8.2; VideoInfoMacIIsi screen physical base = 0), and
+    // the active screen is at the frame-buffer start (offset 0), as on the
+    // IIci.  The card points there when it is built (the slot's fb_in_ram).
+    // The OS reaches the screen through its PMMU tree (slot-$E base $FEE08000 /
+    // $00E08000 -> physical 0), so the guest's writes and the renderer share
+    // Bank A directly — no separate VRAM aperture and no $E00000 offset.
 
     iisi_memory_layout_init(cfg);
 
+    machine_part_begin(cfg, checkpoint, "mmu");
     if (checkpoint) {
         mmu_checkpoint_restore(st->mmu, checkpoint);
         mmu_invalidate_tlb(st->mmu);

@@ -433,7 +433,7 @@ void tnt_hh_remap(config_t *cfg); // rebuild the DRAM decode from the bank regis
 // Build all bridge instances (per the board's bandit_count): the config
 // ports, one generic PCI bus per bridge, each bridge's own device-11
 // header and the PCI memory windows the buses claim.  Requires cfg->pci.
-void tnt_bandit_init(config_t *cfg);
+void tnt_bandit_init(config_t *cfg, checkpoint_t *cp);
 void tnt_bandit_reset(config_t *cfg); // power-on: idle latches, straight lanes
 void tnt_bandit_modes_restored(config_t *cfg); // re-project restored mode registers onto the buses
 // The PCI memory windows, claimed AFTER pci_seat_slots(): which bridge
@@ -472,7 +472,7 @@ void tnt_swim3_write(config_t *cfg, uint32_t off, uint8_t value);
 // the machine's slot table names it, and pci_seat_slots runs its factory,
 // which is what calls the three functions below.
 void tnt_control_register_events(config_t *cfg); // event type (pre-start)
-int tnt_control_init(config_t *cfg); // VRAM, display, BAR backings; 0 on success
+int tnt_control_init(config_t *cfg, int video_sense); // VRAM, display, BAR backings; 0 on success
 void tnt_control_reset(config_t *cfg); // power-on registers (VRAM survives)
 void tnt_control_update(config_t *cfg); // re-derive the display descriptor
 void tnt_control_teardown(config_t *cfg);
@@ -490,7 +490,7 @@ void tnt_control_host_vbl(config_t *cfg);
 
 void tnt_gc_init(config_t *cfg); // power-on state (NVRAM contents survive)
 // Seat Grand Central's config presence at device 16 on Bandit 1's bus.
-void tnt_gc_pci_attach(config_t *cfg, pci_bus_t *bus);
+void tnt_gc_pci_attach(config_t *cfg, pci_bus_t *bus, checkpoint_t *cp);
 // Island dispatch ($F3000000, offsets 0..$1FFFF).  Byte-wide cells decode
 // bytes only; the 32-bit LE registers (interrupt block, BoxID) decode
 // longwords only.

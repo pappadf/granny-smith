@@ -177,6 +177,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // ADB device state: the tower's ADB bus is serviced by the SWIM/ADB IOP
     // (ADBIop in InfoQuadra900), not VIA1's shift register — pass NULL for
     // the VIA so slot-3 IOP traffic reaches adb_iop_transact() directly.
+    machine_part_begin(cfg, cp, "adb");
     st->adb = adb_init(NULL, cfg->scheduler, cp);
     cfg->adb = st->adb;
     machine_part(cfg, cp, "adb", part_save_adb, st->adb);
@@ -185,8 +186,10 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // Internal SCSI bus: carries the configured disks + CD through the
     // shared bus/target model; the internal 53C96 fronts it.
-    cfg->scsi = profile_scsi_init(cfg->machine, cp, CONFIG_IMAGES(cfg));
+    machine_part_begin(cfg, cp, "scsi");
+    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, cp, CONFIG_IMAGES(cfg));
     machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
+    machine_part_begin(cfg, cp, "scsi96");
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
     machine_part(cfg, cp, "scsi96", part_save_scsi96, st->scsi96);
     scsi_53c96_set_irq_callback(st->scsi96, q900_scsi96_irq, cfg);
@@ -203,24 +206,29 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // The boot disk on the internal bus was unreachable from the object tree.
     // TNT already does it this way (tnt.c: "scsi2"), and scsi.h documents the
     // second-bus case; the Q900 predates the helper and was never converted.
-    st->scsi_ext = scsi_init_named(cp, CONFIG_IMAGES(cfg), "scsi2");
+    machine_part_begin(cfg, cp, "scsi2");
+    st->scsi_ext = scsi_init_named(cfg->scheduler, cp, CONFIG_IMAGES(cfg), "scsi2");
     machine_part(cfg, cp, "scsi2", part_save_scsi, st->scsi_ext);
+    machine_part_begin(cfg, cp, "scsi96_ext");
     st->scsi96_ext = scsi_53c96_init(cfg->scheduler, 25000000, cp);
     machine_part(cfg, cp, "scsi96_ext", part_save_scsi96, st->scsi96_ext);
     scsi_53c96_set_irq_callback(st->scsi96_ext, q900_scsi96_ext_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96_ext, st->scsi_ext);
 
     // SONIC Ethernet (20 MHz-class part on the Q900; no wire in v1).
+    machine_part_begin(cfg, cp, "sonic");
     st->sonic = sonic_init(cp);
     machine_part(cfg, cp, "sonic", part_save_sonic, st->sonic);
     sonic_set_irq_callback(st->sonic, q900_sonic_irq, cfg);
     // SONIC bus-master DMA: the shared guest-physical port.
     sonic_set_memory_port(st->sonic, &dma_mem_port_physical);
 
+    machine_part_begin(cfg, cp, "asc");
     st->asc = asc_init(NULL, cfg->scheduler, cp); // EASC: ASC-compatible core
     machine_part(cfg, cp, "asc", part_save_asc, st->asc);
     asc_set_mix(st->asc, ASC_MIX_CH_A);
     asc_set_irq_handler(st->asc, q900_asc_irq, cfg);
+    machine_part_begin(cfg, cp, "floppy");
     st->floppy =
         floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp, CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
@@ -230,6 +238,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // the ROM drives it through the same EgretMgr dispatch it uses for
     // Egret8 — ChkFirmware branches on the box flag, not the chip).  ADB
     // stays NULL here: tower ADB belongs to the SWIM IOP.
+    machine_part_begin(cfg, cp, "caboose");
     st->caboose = egret_init(cfg->via1, cfg->rtc, NULL, cfg->scheduler, cp);
     if (!st->caboose) {
         LOG(0, "Error: out of memory constructing the Caboose");
@@ -241,9 +250,11 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // PIC exactly (shared HardwarePrivateEqu.a equates), so the IIfx bridge
     // + firmware-behaviour models are reused as-is; only the base addresses
     // and IRQ routing differ.  Front-side devices ride the bypass windows.
+    machine_part_begin(cfg, cp, "scc_iop");
     st->scc_iop =
         iop_init(SccIopNum, scc_get_memory_interface(cfg->scc), cfg->scc, q900_scc_iop_irq, cfg, cfg->scheduler, cp);
     machine_part(cfg, cp, "scc_iop", part_save_iop, st->scc_iop);
+    machine_part_begin(cfg, cp, "swim_iop");
     st->swim_iop = iop_init(SwimIopNum, floppy_get_memory_interface(st->floppy), st->floppy, q900_swim_iop_irq, cfg,
                             cfg->scheduler, cp);
     machine_part(cfg, cp, "swim_iop", part_save_iop, st->swim_iop);

@@ -164,8 +164,9 @@ bool profile_default_hd_bay(const hw_profile_t *p, media_bay_t *out) {
     return profile_hd_bays(p, out, 1) == 1;
 }
 
-struct scsi *profile_scsi_init(const hw_profile_t *p, checkpoint_t *cp, const image_list_t *images) {
-    return scsi_init(cp, images, p->has_cdrom ? p->cdrom_drive : NULL, p->cdrom_id);
+struct scsi *profile_scsi_init(const hw_profile_t *p, struct scheduler *sched, checkpoint_t *cp,
+                               const image_list_t *images) {
+    return scsi_init(sched, cp, images, p->has_cdrom ? p->cdrom_drive : NULL, p->cdrom_id);
 }
 
 bool profile_cdrom_bay(const hw_profile_t *p, media_bay_t *out) {
@@ -423,7 +424,7 @@ static value_t build_video_slots(const hw_profile_t *p) {
             (s->kind == NUBUS_SLOT_BUILTIN) ? nubus_card_find(s->builtin_card_id) : NULL;
         if (decl_kind) {
             for (const nubus_card_kind_t *const *k = nubus_card_registry(); *k; k++) {
-                if (*k != decl_kind && (*k)->attach == CARD_ATTACH_BUILTIN && (*k)->monitors == decl_kind->monitors)
+                if (*k != decl_kind && nubus_card_fits_slot(s, *k))
                     builtin_candidates++;
             }
         }
@@ -438,7 +439,7 @@ static value_t build_video_slots(const hw_profile_t *p) {
             // via video_card=, so offer them alongside the declared one.
             if (decl_kind) {
                 for (const nubus_card_kind_t *const *k = nubus_card_registry(); *k; k++) {
-                    if (*k != decl_kind && (*k)->attach == CARD_ATTACH_BUILTIN && (*k)->monitors == decl_kind->monitors)
+                    if (*k != decl_kind && nubus_card_fits_slot(s, *k))
                         val_list_push(&cards, &n_cards, &cap_cards, build_video_card((*k)->id));
                 }
             }
@@ -780,16 +781,16 @@ static value_t boot_rom_read(const boot_config_t *doc, const hw_profile_t *profi
     return val_none();
 }
 
-// Apply one boot document: validate → tear down → construct → record.
-// Shared by machine.boot, machine.restart and headless startup.  Returns
-// V_NONE on success, V_ERROR (with the old machine still running) on
-// rejection.
+// Apply one boot document: validate, build the new machine beside the
+// running one, swap it in, destroy the old one (system_swap_in).  Shared by
+// machine.boot and headless startup.  Returns V_NONE on success, V_ERROR (with
+// the old machine still running) on rejection.
 value_t machine_boot_apply(const boot_config_t *doc_in) {
     boot_config_t doc = *doc_in;
 
-    // 1. Validation — all of it before system_destroy.  The document is the
-    // whole specification: nothing is filled in from the previous machine's
-    // record (a field the caller did not write must not arrive from
+    // 1. Validation — all of it before anything is built.  The document is
+    // the whole specification: nothing is filled in from the previous
+    // machine (a field the caller did not write must not arrive from
     // somewhere the caller cannot see).
     if (!doc.model || !*doc.model)
         return val_err("machine.boot: model is required (machine.restart power-cycles the running machine)");
@@ -892,7 +893,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
 
     // 4. The swap: the new machine becomes the active one, and the one it
     // replaces is destroyed.
-    system_swap_in(cfg, false);
+    system_swap_in(cfg, false, platform_pacing());
     LOG(1, "Machine created: %s (%s), RAM: %u KB", profile->name, profile->id, cfg->ram_size / 1024u);
     return val_none();
 }

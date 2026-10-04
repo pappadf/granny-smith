@@ -10,6 +10,7 @@
 #include "log.h"
 #include "system_config.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -23,8 +24,34 @@ struct machine_part_entry {
     void *obj;
 };
 
+bool machine_part_expect(checkpoint_t *cp, const char *name, int index) {
+    if (checkpoint_has_error(cp))
+        return false;
+    char got[PART_NAME_MAX];
+    system_read_checkpoint_data(cp, got, sizeof got, "part");
+    got[sizeof got - 1] = '\0';
+    if (checkpoint_has_error(cp) || strncmp(got, name, sizeof got) != 0) {
+        LOG(0, "Error: checkpoint does not match the machine: part %d is '%s' here, '%s' in the file", index, name,
+            checkpoint_has_error(cp) ? "(unreadable)" : got);
+        checkpoint_set_error(cp);
+        return false;
+    }
+    return true;
+}
+
+void machine_part_begin(struct config *cfg, checkpoint_t *cp, const char *name) {
+    GS_ASSERT(cfg && name && strlen(name) < PART_NAME_MAX);
+    GS_ASSERTF(!cfg->part_open[0], "machine_part_begin('%s') while part '%s' is open", name, cfg->part_open);
+    snprintf(cfg->part_open, sizeof cfg->part_open, "%s", name);
+    if (cp)
+        machine_part_expect(cp, name, cfg->n_parts);
+}
+
 void machine_part(struct config *cfg, checkpoint_t *cp, const char *name, machine_part_save_fn save, void *obj) {
-    GS_ASSERT(cfg && name && save && strlen(name) < PART_NAME_MAX);
+    (void)cp; // the name was checked when the part was opened
+    GS_ASSERT(cfg && name && save);
+    GS_ASSERTF(strcmp(cfg->part_open, name) == 0, "machine_part('%s') closes part '%s'", name, cfg->part_open);
+    cfg->part_open[0] = '\0';
     if (cfg->n_parts == cfg->cap_parts) {
         int cap = cfg->cap_parts ? cfg->cap_parts * 2 : 32;
         struct machine_part_entry *p = realloc(cfg->parts, (size_t)cap * sizeof(*p));
@@ -39,27 +66,20 @@ void machine_part(struct config *cfg, checkpoint_t *cp, const char *name, machin
     }
     struct machine_part_entry *e = &cfg->parts[cfg->n_parts++];
     memset(e->name, 0, sizeof e->name);
-    strncpy(e->name, name, sizeof e->name - 1);
+    snprintf(e->name, sizeof e->name, "%s", name);
     e->save = save;
     e->obj = obj;
+}
 
-    if (cp && !checkpoint_has_error(cp)) {
-        char got[PART_NAME_MAX];
-        system_read_checkpoint_data(cp, got, sizeof got, "part");
-        got[sizeof got - 1] = '\0';
-        if (checkpoint_has_error(cp) || strcmp(got, e->name) != 0) {
-            LOG(0, "Error: checkpoint does not match the machine: part %d is '%s' here, '%s' in the file",
-                cfg->n_parts - 1, e->name, checkpoint_has_error(cp) ? "(unreadable)" : got);
-            checkpoint_set_error(cp);
-        }
-    }
+void machine_part_cancel(struct config *cfg) {
+    cfg->part_open[0] = '\0';
 }
 
 void machine_parts_save(struct config *cfg, checkpoint_t *cp) {
     for (int i = 0; i < cfg->n_parts && !checkpoint_has_error(cp); i++) {
         struct machine_part_entry *e = &cfg->parts[i];
-        e->save(e->obj, cp);
         system_write_checkpoint_data(cp, e->name, sizeof e->name, "part");
+        e->save(e->obj, cp);
     }
 }
 
@@ -67,4 +87,5 @@ void machine_parts_free(struct config *cfg) {
     free(cfg->parts);
     cfg->parts = NULL;
     cfg->n_parts = cfg->cap_parts = 0;
+    cfg->part_open[0] = '\0';
 }

@@ -901,7 +901,9 @@ static bool read_chip_exact(const char *path, uint8_t *buf, size_t chip_size) {
 // top regardless of chip size — a 32 KB chip in a card whose window was sized
 // for a 64 KB one (the 8•24 GC v1.0 in the v1.1-sized window) occupies the
 // top half; the leading bytes stay zero, below the ROM's declared length.
-static bool load_chip_into_bus(const char *path, size_t chip_size, uint8_t *bus_buf, size_t bus_size) {
+static bool load_chip_into_bus(const char *path, size_t chip_size, uint8_t *bus_buf, size_t bus_size,
+                               uint8_t **out_chip) {
+    *out_chip = NULL;
     if (chip_size == 0 || bus_size < chip_size)
         return false;
     uint8_t *chip = calloc(1, chip_size);
@@ -921,21 +923,31 @@ static bool load_chip_into_bus(const char *path, size_t chip_size, uint8_t *bus_
     size_t footprint = (byte_lanes == 0x0Fu) ? chip_size : chip_size * 4;
     bool ok = bus_size >= footprint &&
               declrom_layout_chip(chip, chip_size, bus_buf + (bus_size - footprint), footprint, byte_lanes);
-    if (!ok)
+    if (!ok) {
         LOG(0, "declrom_load_vrom_card: '%s' has unsupported byteLanes $%02x (or exceeds the bus window)", path,
             byte_lanes);
-    free(chip);
-    return ok;
+        free(chip);
+        return false;
+    }
+    *out_chip = chip;
+    return true;
 }
 
 // Record the declaration ROM a card was given: its file (or the builtin
 // locator) and its Format-Block CRC.
-static void note_card_rom(nubus_card_t *card, const char *path, uint32_t crc) {
-    if (!card)
+// `chip` (owned, NULL for a generated ROM) is the image itself, which the
+// card's checkpoint part carries.
+static void note_card_rom(nubus_card_t *card, const char *path, uint32_t crc, uint8_t *chip, size_t chip_size) {
+    if (!card) {
+        free(chip);
         return;
+    }
     free(card->rom_path);
     card->rom_path = strdup(path);
     card->rom_crc = crc;
+    free(card->rom_chip);
+    card->rom_chip = chip;
+    card->rom_chip_size = chip ? chip_size : 0;
 }
 
 bool declrom_install_builtin(nubus_card_t *card, const char *card_id, const uint8_t *chip, size_t chip_size,
@@ -957,7 +969,7 @@ bool declrom_install_builtin(nubus_card_t *card, const char *card_id, const uint
     uint32_t crc = ((uint32_t)t[0] << 24) | ((uint32_t)t[1] << 16) | ((uint32_t)t[2] << 8) | (uint32_t)t[3];
     char locator[64];
     snprintf(locator, sizeof locator, "builtin:%s", card_id);
-    note_card_rom(card, locator, crc);
+    note_card_rom(card, locator, crc, NULL, 0);
     return true;
 }
 
@@ -968,6 +980,33 @@ bool declrom_load_vrom_card(nubus_card_t *card, const char *card_id, const char 
     if (!card_id || !bus_buf || bus_size == 0)
         return false;
 
+    // A restore: the ROM the card ran, from its checkpoint.  It must still be
+    // this card's -- the checkpoint is a file the user supplied.
+    if (card && card->restored_rom.data) {
+        const rom_image_t *r = &card->restored_rom;
+        vrom_id_t id;
+        if (!vrom_identify_bytes(r->data, r->size, &id) || strcmp(id.card_id, card_id) != 0) {
+            LOG(0, "declrom_load_vrom_card: the checkpoint's declaration ROM is not card '%s''s", card_id);
+            return false;
+        }
+        uint8_t byte_lanes = r->data[r->size - 1];
+        size_t footprint = (byte_lanes == 0x0Fu) ? r->size : r->size * 4;
+        if (bus_size < footprint ||
+            !declrom_layout_chip(r->data, r->size, bus_buf + (bus_size - footprint), footprint, byte_lanes)) {
+            LOG(0, "declrom_load_vrom_card: the checkpoint's ROM for '%s' has unsupported byteLanes $%02x", card_id,
+                byte_lanes);
+            return false;
+        }
+        const char *path = r->path && *r->path ? r->path : "checkpoint";
+        uint8_t *chip = malloc(r->size);
+        if (chip)
+            memcpy(chip, r->data, r->size);
+        note_card_rom(card, path, id.crc, chip, r->size);
+        if (out_path)
+            *out_path = strdup(path);
+        return true;
+    }
+
     // The slot's own file, when the document names one: the only candidate
     // (machine_boot_apply checked that it provides this card).
     if (rom && *rom) {
@@ -976,9 +1015,10 @@ bool declrom_load_vrom_card(nubus_card_t *card, const char *card_id, const char 
             LOG(0, "declrom_load_vrom_card: '%s' is not a declaration ROM for card '%s'", rom, card_id);
             return false;
         }
-        if (!load_chip_into_bus(rom, id.chip_size, bus_buf, bus_size))
+        uint8_t *chip = NULL;
+        if (!load_chip_into_bus(rom, id.chip_size, bus_buf, bus_size, &chip))
             return false;
-        note_card_rom(card, rom, id.crc);
+        note_card_rom(card, rom, id.crc, chip, id.chip_size);
         if (out_path)
             *out_path = strdup(rom);
         return true;
@@ -995,9 +1035,10 @@ bool declrom_load_vrom_card(nubus_card_t *card, const char *card_id, const char 
         const char *path = vrom_offer_find(card_id, n, &chip_size, &crc);
         if (!path)
             break;
-        if (load_chip_into_bus(path, chip_size, bus_buf, bus_size)) {
+        uint8_t *chip = NULL;
+        if (load_chip_into_bus(path, chip_size, bus_buf, bus_size, &chip)) {
             // The winning pick: which revision this card actually runs.
-            note_card_rom(card, path, crc);
+            note_card_rom(card, path, crc, chip, chip_size);
             if (out_path)
                 *out_path = strdup(path);
             return true;

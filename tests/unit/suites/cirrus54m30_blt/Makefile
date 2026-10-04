@@ -18,6 +18,6 @@ TEST_HARNESS  := none
 EXTRA_SRCS    := ../../../../src/core/peripherals/pci/pci.c \
                  ../../../../src/core/peripherals/pci/config_space.c \
                  ../../../../src/core/peripherals/pci/cards/cirrus54m30.c
-STUBS         := checkpoint
+STUBS         := checkpoint prom
 EXTRA_CFLAGS  := -Wno-unused-parameter
 include ../../common.mk

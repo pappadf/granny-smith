@@ -47,6 +47,10 @@ typedef struct {
 // *out.  False for anything else (missing, wrong size, unknown CRC).
 bool vrom_identify_card(const char *path, vrom_id_t *out);
 
+// The same, for a chip image already in memory (a card's ROM as its
+// checkpoint carries it).
+bool vrom_identify_bytes(const uint8_t *img, size_t size, vrom_id_t *out);
+
 // === The offer registry =====================================================
 //
 // The platform hands core candidate vROM files before machine.boot.  Core

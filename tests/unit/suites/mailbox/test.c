@@ -17,6 +17,8 @@
 #include "object/api.h"
 #include "object/meta.h"
 #include "object/object.h"
+#include "storage/image.h"
+#include "storage/io_leaf.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -718,6 +720,50 @@ TEST(a_deferred_leaf_answers_when_completed_not_when_served) {
     ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 0);
 }
 
+// A deferred result's limit is a drain's: GS_MBX_RESULT_MAX - 1 bytes is the
+// largest, held whole when the ring has no room; one byte more is an error
+// naming its size.  It used to be cut to fit with the full length recorded.
+TEST(a_deferred_result_at_the_limit_is_kept_and_one_over_is_an_error) {
+    fresh();
+    g_m.eval = deferring_eval;
+    uint32_t id, ok;
+    char json[512];
+    char *big = malloc(GS_MBX_RESULT_MAX + 1);
+    ASSERT_TRUE(big != NULL);
+
+    // Exactly the limit: too large for this test's ring, so it is held -- all
+    // of it.
+    g_defer_token = 0;
+    ASSERT_TRUE(post(61, "defer", NULL));
+    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 0);
+    memset(big, 'x', GS_MBX_RESULT_MAX - 1);
+    big[GS_MBX_RESULT_MAX - 1] = '\0';
+    gs_result_complete(g_defer_token, true, big);
+    ASSERT_TRUE(g_m.held);
+    ASSERT_EQ_INT(g_m.out_len, GS_MBX_RESULT_MAX - 1);
+    ASSERT_EQ_INT(g_m.out_ok, 1);
+    ASSERT_TRUE(memcmp(g_m.out, big, GS_MBX_RESULT_MAX - 1) == 0 && g_m.out[GS_MBX_RESULT_MAX - 1] == '\0');
+
+    // One byte over: an error that names the size, delivered at once.
+    fresh();
+    g_m.eval = deferring_eval;
+    g_defer_token = 0;
+    ASSERT_TRUE(post(62, "defer", NULL));
+    ASSERT_EQ_INT(gs_mailbox_drain(&g_m, 0, NULL), 0);
+    memset(big, 'x', GS_MBX_RESULT_MAX);
+    big[GS_MBX_RESULT_MAX] = '\0';
+    gs_result_complete(g_defer_token, true, big);
+    ASSERT_TRUE(!g_m.held);
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(id, 62);
+    ASSERT_EQ_INT(ok, 0);
+    char want[160];
+    snprintf(want, sizeof want, "{\"error\":\"result is %u bytes, over the %u-byte result limit\"}",
+             (unsigned)GS_MBX_RESULT_MAX, (unsigned)GS_MBX_RESULT_MAX);
+    ASSERT_TRUE(strcmp(json, want) == 0);
+    free(big);
+}
+
 // A leaf that prints while it runs (gs_out.h): the text travels with its
 // answer when the platform captures output, else to stdout.
 static int printing_eval(const char *path, const char *args, char *out, size_t out_size) {
@@ -914,6 +960,66 @@ static int io_eval(const char *path, const char *args, char *out, size_t out_siz
     return stub_eval(path, args, out, out_size);
 }
 
+// An I/O leaf whose answer is a map (files.udif_finish's stats, an import's
+// outcome): the deferred result carries the map, formatted as gs_eval
+// formats one -- never `true` in its place.
+static int leaf_work(io_leaf_t *j) {
+    (void)j;
+    return 0;
+}
+static value_t leaf_answer(io_leaf_t *j) {
+    (void)j;
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "blocks", val_uint(4, 7));
+    val_map_put(b, "name", val_str("disk.img"));
+    return val_map_finish(b);
+}
+static int leaf_eval(const char *path, const char *args, char *out, size_t out_size) {
+    if (strcmp(path, "leaf") == 0) {
+        io_leaf_t *j = io_leaf_new(NULL, NULL);
+        j->work = leaf_work;
+        j->answer = leaf_answer;
+        value_t provisional = io_leaf_dispatch(j, "leaf");
+        value_free(&provisional);
+        snprintf(out, out_size, "true");
+        return 0;
+    }
+    return stub_eval(path, args, out, out_size);
+}
+
+TEST(an_io_leaf_answering_a_map_delivers_the_map) {
+    fresh();
+    g_m.eval = leaf_eval;
+    ASSERT_TRUE(post(81, "leaf", NULL));
+    gs_mailbox_drain(&g_m, 0, NULL);
+    uint32_t id = 0, ok = 0;
+    char json[512];
+    ASSERT_EQ_INT(take(&id, &ok, json, sizeof json), 1);
+    ASSERT_EQ_INT(id, 81);
+    ASSERT_EQ_INT(ok, 1);
+    ASSERT_TRUE(strcmp(json, "true") != 0);
+    ASSERT_TRUE(json[0] == '{');
+    ASSERT_TRUE(strstr(json, "\"blocks\"") != NULL);
+    ASSERT_TRUE(strstr(json, "disk.img") != NULL);
+}
+
+// The image layer io_leaf.c links against; the leaf above uses none of it.
+bool image_path_is_open_writable(const char *path) {
+    (void)path;
+    return false;
+}
+image_export_t *image_export_begin(image_t *image, const char *dest_path, char *err, size_t err_cap) {
+    (void)image, (void)dest_path, (void)err, (void)err_cap;
+    return NULL;
+}
+int image_export_run(image_export_t *e, char *err, size_t err_cap) {
+    (void)e, (void)err, (void)err_cap;
+    return -1;
+}
+void image_export_end(image_export_t *e) {
+    (void)e;
+}
+
 TEST(cancelling_a_request_cancels_the_io_job_answering_it) {
     fresh();
     ASSERT_TRUE(io_worker_start(0));
@@ -1011,11 +1117,13 @@ int main(void) {
     RUN(cancel_and_mode_stop_are_answered_and_stop_only_the_owner);
     RUN(the_in_process_client_posts_and_reads_like_the_page);
     RUN(a_deferred_leaf_answers_when_completed_not_when_served);
+    RUN(a_deferred_result_at_the_limit_is_kept_and_one_over_is_an_error);
     RUN(a_job_thread_calls_the_emulator_through_the_drain_and_waits_for_its_mode);
     RUN(what_a_leaf_prints_travels_with_its_answer_when_captured);
     RUN(progress_of_a_deferred_leaf_reaches_the_client_as_evt_progress);
     RUN(a_transfer_buffer_ack_goes_to_its_job_until_the_job_releases_it);
     RUN(an_eval_over_the_result_limit_is_an_error_naming_its_size_and_the_limit);
+    RUN(an_io_leaf_answering_a_map_delivers_the_map);
     RUN(cancelling_a_request_cancels_the_io_job_answering_it);
     RUN(a_jobs_output_arrives_as_output_records_before_its_result);
     return 0;

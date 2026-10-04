@@ -104,11 +104,11 @@ function reportMount(path: string, r: MediaResult, what: string): void {
 }
 
 // Boot a machine from a config. Construction-time settings travel as ONE
-// machine.boot configuration document (named JSON-object args) — the core
-// validates everything
-// before tearing the old machine down, stages the vROM pick, seeds the
-// video card/sense/mode, and installs the ROM itself. Only runtime media
-// (floppies/HD/CD) remain imperative calls after the boot.
+// machine.boot configuration document (named JSON-object args): the core
+// validates all of it, builds the new machine from it -- its ROM, its cards
+// and their ROMs, the video sense and mode -- and only then replaces the
+// running one. Only runtime media (floppies/HD/CD) remain imperative calls
+// after the boot.
 export async function initEmulator(config: MachineConfig): Promise<void> {
   const doc: Record<string, unknown> = {};
   if (config.model) doc.model = config.model;
@@ -116,11 +116,13 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   if (config.ramKb) doc.ram = config.ramKb;
   // rom is required by machine.boot (the document inherits nothing); a
   // missing one is rejected by the core with a clear error. For vrom,
-  // '(auto)' means "let the offer registry resolve" — omit the field.
+  // '(auto)' means "let the offer registry resolve" — omit the field. A vrom
+  // gives a seated card its ROM and never chooses one: a file for a card no
+  // slot holds is rejected.
   if (config.rom && config.rom !== '(auto)') doc.rom = config.rom;
   if (config.vrom && config.vrom !== '(auto)') doc.vrom = config.vrom;
   if (config.videoCard) doc.video_card = config.videoCard;
-  // A PCI card is staged by id; '(auto)' for its expansion ROM means the
+  // A PCI card is named by id; '(auto)' for its expansion ROM means the
   // same thing it does for a vROM — omit the field and let the core's
   // offer registry content-match among the files the platform published.
   if (config.pciCard) doc.pci_card = config.pciCard;

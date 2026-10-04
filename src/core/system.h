@@ -103,8 +103,10 @@ extern config_t *system_create(const hw_profile_t *profile, const machine_build_
 
 // Make a constructed machine the active one -- global_emulator, the object
 // root, the machine label, the machine_booted event -- and destroy the one it
-// replaces.  `restored`: the machine came from a checkpoint.
-void system_swap_in(config_t *cfg, bool restored);
+// replaces.  `restored`: the machine came from a checkpoint.  `pacing`: the
+// host's pacing setting, which the machine runs under from its first frame.
+struct host_pacing;
+void system_swap_in(config_t *cfg, bool restored, const struct host_pacing *pacing);
 
 // Destroy an emulator instance: call machine teardown and free all resources.
 extern void system_destroy(config_t *config);
@@ -193,6 +195,13 @@ const struct cpu_debug_if *system_cpu_debug_if(void);
 // The active machine configuration (NULL before setup).  Used by the keyboard /
 // mouse object methods to find a machine-specific host-input hook.
 config_t *system_config(void);
+// The running machine, for an observer that may run while another machine is
+// being built -- a log line's PC and instruction-count decoration describes
+// the machine that is running, which a build does not change.  Constructors
+// use their own cfg; everything else uses system_config().
+config_t *system_running(void);
+// The running machine's scheduler, or NULL with no machine.
+struct scheduler *system_running_scheduler(void);
 
 // Per-kind (DRIVE_KIND_*) sums of the attached images' read / write call
 // counters, for the drive-activity lights (storage/drive_activity.h).

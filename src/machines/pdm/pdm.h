@@ -179,10 +179,10 @@ typedef struct pdm_monitor_kind {
 // absent rather than half-supported.
 extern const pdm_monitor_kind_t pdm_monitors[];
 const pdm_monitor_kind_t *pdm_monitor_lookup(const char *id);
-// Stage the strap for the NEXT machine built (machine.boot `monitor=`).
 
 // hw_profile_t.builtin_video for the three PDM leaves: the registry walks the
-// table above and stages a pick through this, so it needs no pdm_ symbol and
+// table above through this, and the pick reaches the machine as an argument of
+// its construction (machine.boot `monitor=`), so it needs no pdm_ symbol and
 // no knowledge of the sense strap.
 extern const builtin_video_desc_t pdm_builtin_video;
 
@@ -459,11 +459,6 @@ void pdm_video_init(config_t *cfg, uint8_t monitor);
 // video_sense= / monitor=, or the Hi-Res default.
 uint8_t pdm_monitor_for_build(const config_t *cfg);
 void pdm_video_teardown(config_t *cfg);
-// The monitor strapped to the HDI-45.  Set before the machine runs; with
-// PDM_SENSE_NONE the substrate publishes no display and the ROM turns its
-// own built-in video off (see the strap notes above).
-void pdm_video_set_sense(config_t *cfg, uint8_t sense);
-uint8_t pdm_video_sense(config_t *cfg);
 void pdm_video_update(config_t *cfg); // re-derive the descriptor from the regs
 void pdm_video_vbl(config_t *cfg); // per-VBL framebuffer re-upload mark
 display_t *pdm_video_display(config_t *cfg);

@@ -135,11 +135,27 @@ bool image_key_is_open_writable(const char *key) {
     return false;
 }
 
+// True when another open image works on the same delta (a checkpoint
+// restore reopens an instance while the machine it replaces still has it).
+static bool instance_shared(const image_t *image) {
+    for (const image_t *o = g_open_writable; o; o = o->next_writable) {
+        if (o != image && o->delta_path && image->delta_path && strcmp(o->delta_path, image->delta_path) == 0)
+            return true;
+    }
+    return false;
+}
+
 void image_close(image_t *image) {
     if (!image)
         return;
     if (image->writable)
         writable_unregister(image);
+    // Closing a disk keeps what was written to it: the delta commits its
+    // current state, so the next mount of the base -- a later machine.boot --
+    // finds every write.  Not while another handle has the instance open: a
+    // checkpoint restore that reopened it owns its state now.
+    if (image->storage && image->writable && !image->ghost_instance && !instance_shared(image))
+        storage_clear_rollback(image->storage);
     if (image->storage)
         storage_delete(image->storage);
     free(image->tags);
@@ -159,6 +175,21 @@ void image_close(image_t *image) {
     free(image->delta_path);
     free(image->journal_path);
     free(image);
+}
+
+// The instance id of a writable mount of `path`: 16 hex chars of a 64-bit
+// FNV-1a hash of its canonical path.  One base, one delta per directory --
+// image_path_is_open_writable keeps a base from being mounted twice at once,
+// and a checkpoint that reopens the instance names it by path.
+static void instance_id_for(const char *path, char out[static 17]) {
+    char canon[PATH_MAX];
+    image_canonicalise(path, canon, sizeof(canon));
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (const unsigned char *p = (const unsigned char *)canon; *p; p++) {
+        h ^= *p;
+        h *= 0x100000001b3ull;
+    }
+    snprintf(out, 17, "%016llx", (unsigned long long)h);
 }
 
 // Mint a 16-hex-char opaque id (8 random bytes).  Used both for image
@@ -342,8 +373,10 @@ static image_t *image_open_source(const char *name, gs_source_t *data, gs_source
     if (mode == OPEN_REOPEN) {
         image->instance_path = gs_strdup(dir);
     } else if (mode == OPEN_CREATE) {
+        // The instance is named after the base, so mounting the same file
+        // again in this directory finds the delta that holds its writes.
         char id[17];
-        mint_random_hex_id(id);
+        instance_id_for(name, id);
         image->instance_path = gs_str_printf("%s/%s", dir, id);
     } else {
         // A read-only mount's delta+journal are ghosts in the scratch root,
@@ -378,6 +411,15 @@ static image_t *image_open_source(const char *name, gs_source_t *data, gs_source
     gs_unwrapped_free(&u);
     if (rc != GS_SUCCESS) {
         gs_outf("image: storage engine failed for %s (error %d)\n", name, rc);
+        image_close(image);
+        errno = EIO;
+        return NULL;
+    }
+    // A fresh mount starts from the delta's last commit: what a crash left
+    // uncommitted is rolled back, as a restore would.  (A reopen leaves that to
+    // its checkpoint.)
+    if (mode == OPEN_CREATE && storage_apply_rollback(image->storage) != GS_SUCCESS) {
+        gs_outf("image: cannot roll %s back to its last commit\n", name);
         image_close(image);
         errno = EIO;
         return NULL;

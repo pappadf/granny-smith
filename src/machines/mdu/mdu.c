@@ -70,6 +70,7 @@ int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *b
     // them.  It used to be 20 — correct for the 16 MHz IIcx this code was
     // adapted from, and 1.6x too fast on a IIci, which is what made MacTest's
     // VIA timer test overshoot its interrupt-count window.
+    machine_part_begin(cfg, cp, "via1");
     cfg->via1 = via_init(NULL, cfg->scheduler, via_freq_factor_for_clock(cfg->machine->freq), "via1",
                          board->via1_output, board->via1_shift_out, mac030_glue_via1_irq, cfg, cp);
     machine_part(cfg, cp, "via1", part_save_via, cfg->via1);

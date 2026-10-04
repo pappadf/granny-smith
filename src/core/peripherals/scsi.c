@@ -263,13 +263,9 @@ static void scsi_drq_service(void *source, uint64_t data) {
 }
 
 static void scsi_schedule_drq_service(scsi_t *scsi) {
-    scheduler_t *s = system_scheduler();
+    scheduler_t *s = scsi->sched;
     if (!s)
         return; // no scheduler (unit tests): fall back to poll-driven behaviour
-    if (!scsi->chip5380->drq_evt_registered) {
-        scheduler_new_event_type(s, "scsi", scsi, "drq_service", &scsi_drq_service);
-        scsi->chip5380->drq_evt_registered = true;
-    }
     scsi->chip5380->drq_pulse_last_size = scsi->buf.size;
     remove_event(s, &scsi_drq_service, scsi);
     scheduler_new_cpu_event(s, &scsi_drq_service, scsi, 0, SCSI_DRQ_PULSE_CYCLES, 0);
@@ -281,9 +277,8 @@ void scsi_cancel_drq_service(scsi_t *scsi) {
     if (!scsi || !scsi->chip5380)
         return;
 
-    scheduler_t *s = system_scheduler();
-    if (s)
-        remove_event(s, &scsi_drq_service, scsi);
+    if (scsi->sched)
+        remove_event(scsi->sched, &scsi_drq_service, scsi);
 }
 
 // Perform SCSI bus reset: release all bus signals and return to bus-free state.
@@ -1122,11 +1117,17 @@ scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint) {
     chip->memory_interface.write_uint16 = &write_uint16;
     chip->memory_interface.write_uint32 = &write_uint32;
 
+    // The DRQ service is this chip's event, so its type is registered as the
+    // chip is attached -- before the event queue is restored, which may hold
+    // one.
+    if (bus->sched)
+        scheduler_new_event_type(bus->sched, "scsi", bus, "drq_service", &scsi_drq_service);
+
     if (checkpoint) {
         // The chip's plain-data block, matching the single write in
-        // scsi_checkpoint.  Stops at drq_evt_registered, which belongs to this
-        // process's scheduler and must start false -- see scsi_internal.h.
-        system_read_checkpoint_data(checkpoint, chip, offsetof(scsi_5380_t, drq_evt_registered));
+        // scsi_checkpoint.  Stops at the runtime pointers -- see
+        // scsi_internal.h.
+        system_read_checkpoint_data(checkpoint, chip, offsetof(scsi_5380_t, bus));
         // Re-drive the restored pin levels into the machine's wiring.
         scsi_update_irq(bus);
         scsi_update_drq(bus);
@@ -1134,12 +1135,18 @@ scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint) {
     return chip;
 }
 
+int scsi_cd_bay_id(const scsi_t *scsi) {
+    return scsi ? scsi->cd_bay_id : -1;
+}
+
 // Initialize the SCSI controller and optionally restore from checkpoint
-scsi_t *scsi_init(checkpoint_t *checkpoint, const image_list_t *images, const scsi_cd_drive_t *cd_drive, int cd_id) {
-    scsi_t *scsi = scsi_init_named(checkpoint, images, "scsi");
+scsi_t *scsi_init(struct scheduler *sched, checkpoint_t *checkpoint, const image_list_t *images,
+                  const scsi_cd_drive_t *cd_drive, int cd_id) {
+    scsi_t *scsi = scsi_init_named(sched, checkpoint, images, "scsi");
     if (!scsi || !cd_drive)
         return scsi;
     GS_ASSERTF(cd_id >= 0 && cd_id < 7, "scsi_init: CD bay id %d is not a target slot", cd_id);
+    scsi->cd_bay_id = cd_id;
     if (checkpoint) {
         // The bus came back from the stream; the bay's drive must be on it.
         if (scsi->devices[cd_id].type != scsi_dev_cdrom) {
@@ -1154,12 +1161,19 @@ scsi_t *scsi_init(checkpoint_t *checkpoint, const image_list_t *images, const sc
     return scsi;
 }
 
-scsi_t *scsi_init_named(checkpoint_t *checkpoint, const image_list_t *images, const char *name) {
+scsi_t *scsi_init_named(struct scheduler *sched, checkpoint_t *checkpoint, const image_list_t *images,
+                        const char *name) {
     scsi_t *scsi = (scsi_t *)malloc(sizeof(scsi_t));
     if (scsi == NULL)
         return NULL;
 
     memset(scsi, 0, sizeof(scsi_t));
+
+    // The bus's own event -- a controller's selection time-out -- is
+    // registered as the bus is built: the event queue, restored after every
+    // part, may hold one.
+    scsi->sched = sched;
+    scsi_bus_register_events(scsi);
 
     // A bus, and nothing else.  Machines that have an NCR 5380 attach one with
     // scsi_5380_attach(); the Quadras, the AVs, the PowerMacs and the Network
@@ -1173,6 +1187,7 @@ scsi_t *scsi_init_named(checkpoint_t *checkpoint, const image_list_t *images, co
     scsi->buf.pos = 0;
     scsi->buf.max = MAX_CMD_SIZE;
     scsi->bus.initiator = INT_MAX;
+    scsi->cd_bay_id = -1;
 
     // If checkpoint provided, restore plain-data portion first
     if (checkpoint) {
@@ -1499,11 +1514,8 @@ void scsi_delete(scsi_t *scsi) {
     // drops the event-type registrations, and a live device that schedules
     // again afterwards trips scheduler_new_cpu_event's "event type not
     // registered" assert.  The primitive is for destructors only.
-    {
-        scheduler_t *sched = system_scheduler();
-        if (sched)
-            scheduler_forget_source(sched, scsi);
-    }
+    if (scsi->sched)
+        scheduler_forget_source(scsi->sched, scsi);
     // Tear down per-slot entry objects (never attached to the tree),
     // then the named children, then the top-level node.
     for (int i = 0; i < 8; i++) {
@@ -1614,7 +1626,7 @@ void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint) {
     // for the bus, then scsi_5380_attach for the chip).  A machine either has a
     // 5380 or does not, deterministically per model, so the two always agree.
     if (scsi->chip5380)
-        system_write_checkpoint_data(checkpoint, scsi->chip5380, offsetof(scsi_5380_t, drq_evt_registered));
+        system_write_checkpoint_data(checkpoint, scsi->chip5380, offsetof(scsi_5380_t, bus));
 }
 
 // === Object-model class descriptors =========================================

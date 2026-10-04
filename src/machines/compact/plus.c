@@ -227,6 +227,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->machine_context = ps;
 
     // Initialise parameterised memory: 24-bit address space, configured RAM, 128 KB ROM
+    machine_part_begin(cfg, checkpoint, "memory");
     cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size,
                                    MEMORY_BUS_ERR_NONE, &cfg->build_opts.rom, checkpoint); // no bus-error watchdog
     machine_part(cfg, checkpoint, "memory", part_save_memory, cfg->mem_map);
@@ -235,6 +236,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     plus_memory_layout_init(cfg);
     // Power-on: nothing drives PA4 yet, so the pull-up holds the overlay on.
     // A restore re-derives it from the VIA instead (via_redrive_outputs).
+    machine_part_begin(cfg, checkpoint, "cpu");
     if (!checkpoint)
         plus_set_rom_overlay(cfg, true);
 
@@ -247,6 +249,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->cpu = cpu_init(cfg->machine->cpu_model, checkpoint);
     machine_part(cfg, checkpoint, "cpu", part_save_cpu, cfg->cpu);
 
+    machine_part_begin(cfg, checkpoint, "scheduler");
     sched_cpu_if_t cpu_if = cpu_sched_if(cfg->cpu); // the 68K main-CPU seam adapter
     cfg->scheduler = scheduler_init(&cpu_if, checkpoint);
     machine_part(cfg, checkpoint, "scheduler", part_save_scheduler, cfg->scheduler);
@@ -272,9 +275,11 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     machine_part_irq(cfg, checkpoint);
 
+    machine_part_begin(cfg, checkpoint, "rtc");
     cfg->rtc = rtc_init(cfg->scheduler, checkpoint, true, cfg->machine->pram);
     machine_part(cfg, checkpoint, "rtc", part_save_rtc, cfg->rtc);
 
+    machine_part_begin(cfg, checkpoint, "scc");
     cfg->scc = scc_init(cfg->mem_map, cfg->scheduler, plus_scc_irq, cfg, checkpoint);
     machine_part(cfg, checkpoint, "scc", part_save_scc, cfg->scc);
 
@@ -282,14 +287,17 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     scc_set_clocks(cfg->scc, 7833600, 3686400);
 
     // The machine's connection to the AppleTalk network, through the SCC.
+    machine_part_begin(cfg, checkpoint, "appletalk");
     cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, checkpoint);
     machine_part(cfg, checkpoint, "appletalk", part_save_atalk, cfg->atalk);
 
     // 7.8336 MHz / 783.36 kHz = exactly 10, so this is the literal it replaces.
+    machine_part_begin(cfg, checkpoint, "via1");
     cfg->via1 = via_init(cfg->mem_map, cfg->scheduler, via_freq_factor_for_clock(cfg->machine->freq), "via1",
                          plus_via_output, plus_via_shift_out, plus_via_irq, cfg, checkpoint);
     machine_part(cfg, checkpoint, "via1", part_save_via, cfg->via1);
 
+    machine_part_begin(cfg, checkpoint, "sound");
     ps->sound = sound_init(cfg->mem_map, cfg->scheduler, checkpoint);
     machine_part(cfg, checkpoint, "sound", part_save_sound, ps->sound);
     cfg->sound = ps->sound; // mirror onto cfg so the object-model `sound`
@@ -304,13 +312,15 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     rtc_set_via(cfg->rtc, cfg->via1);
 
+    machine_part_begin(cfg, checkpoint, "mouse");
     cfg->mouse = mouse_init(cfg->scheduler, cfg->scc, cfg->via1, checkpoint);
     machine_part(cfg, checkpoint, "mouse", part_save_mouse, cfg->mouse);
 
     // The image list, before any device that may reference an image.
     machine_part_images(cfg, checkpoint);
 
-    cfg->scsi = profile_scsi_init(cfg->machine, checkpoint, CONFIG_IMAGES(cfg));
+    machine_part_begin(cfg, checkpoint, "scsi");
+    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, checkpoint, CONFIG_IMAGES(cfg));
     scsi_5380_attach(cfg->scsi, checkpoint);
     machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
     // Where the 5380 answers is this machine's decode, not the chip model's.
@@ -331,9 +341,11 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     setup_images(cfg);
 
+    machine_part_begin(cfg, checkpoint, "keyboard");
     cfg->keyboard = keyboard_init(cfg->scheduler, cfg->scc, cfg->via1, checkpoint);
     machine_part(cfg, checkpoint, "keyboard", part_save_keyboard, cfg->keyboard);
 
+    machine_part_begin(cfg, checkpoint, "floppy");
     cfg->floppy = floppy_init(FLOPPY_TYPE_IWM, cfg->mem_map, cfg->scheduler, profile_floppy_count(cfg->machine),
                               checkpoint, CONFIG_IMAGES(cfg));
     machine_part(cfg, checkpoint, "floppy", part_save_floppy, cfg->floppy);

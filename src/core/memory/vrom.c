@@ -68,7 +68,7 @@ bool vrom_probe_file(const char *path, size_t *out_size) {
 // Catalog of known VROM blobs.  Maps the declaration ROM's Format-Block CRC
 // to the nubus card-kind id the blob provides — content→hardware facts only,
 // no filenames (a file's name is never evidence of what it is).  The id is the machine-readable link a UI uses to
-// pick the card (machine.nubus.video_card); the human label is owned by the
+// pick the card (a `slots=` entry's card id); the human label is owned by the
 // card kind (nubus_card_find(id)->display_name) so it never drifts.  The
 // `preferred` bit marks the default revision when one card has several ROMs.
 // Adding a new VROM = one row here.  Keyed by content, like rom_table.c's
@@ -110,35 +110,21 @@ enum vrom_id_result {
     VROM_ID_UNKNOWN, // right size; *out_crc valid; not a catalog entry (or no TestPattern)
     VROM_ID_KNOWN, // recognised: *out filled from the catalog row
 };
-static enum vrom_id_result vrom_identify_core(const char *path, vrom_id_t *out, size_t *out_size, uint32_t *out_crc) {
-    size_t size = 0;
-    vrom_probe_file(path, &size); // fills *size regardless of the 32 KB gate
-    if (out_size)
-        *out_size = size;
-    // vrom_probe_file leaves size == 0 only when stat failed (missing /
-    // unreadable).
-    if (size == 0)
-        return VROM_ID_UNREADABLE;
+// Identify a whole chip image already in memory: gate on size and the
+// TestPattern, look the CRC up in the catalog, else recognise one of our own
+// generated images by its board sResource.
+static enum vrom_id_result vrom_identify_image(const uint8_t *img, size_t size, vrom_id_t *out, uint32_t *out_crc) {
     // Declaration-ROM chips come in two sizes: 32 KB (SE/30, JMFB, 24AC, the
     // 8•24 GC v1.0 / alpha) and 64 KB (the 8•24 GC v1.1).  The Format Block +
     // CRC live in the trailing bytes either way, so accept both.
     if (size != VROM_EXPECTED_SIZE && size != 2u * VROM_EXPECTED_SIZE)
         return VROM_ID_WRONG_SIZE;
-
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return VROM_ID_UNREADABLE;
     // Only the trailing Format Block matters for identity.
-    uint8_t tail[VROM_CRC_OFF];
-    if (fseek(f, (long)(size - sizeof(tail)), SEEK_SET) != 0 || fread(tail, 1, sizeof(tail), f) != sizeof(tail)) {
-        fclose(f);
-        return VROM_ID_UNREADABLE;
-    }
-    fclose(f);
+    const uint8_t *tail = img + size - VROM_CRC_OFF;
 
     // Gate on the TestPattern: a right-sized blob without `$5A932BC7` in the
     // Format Block is not a declaration ROM (don't trust a stray CRC match).
-    const uint8_t *tp = tail + sizeof(tail) - VROM_TESTPATTERN_OFF;
+    const uint8_t *tp = tail + VROM_CRC_OFF - VROM_TESTPATTERN_OFF;
     bool is_declrom = tp[0] == 0x5Au && tp[1] == 0x93u && tp[2] == 0x2Bu && tp[3] == 0xC7u;
     uint32_t crc = RD_BE32(tail);
     if (out_crc)
@@ -169,29 +155,48 @@ static enum vrom_id_result vrom_identify_core(const char *path, vrom_id_t *out, 
         {0x002C, "8_24gc"},
         {0x000C, "se30"  },
     };
-    uint8_t *whole = malloc(size);
-    if (whole) {
-        f = fopen(path, "rb");
-        bool read_ok = f && fread(whole, 1, size, f) == size;
-        if (f)
-            fclose(f);
-        uint16_t board_id = 0;
-        if (read_ok && declrom_identify_vendor(whole, size, "granny-smith", &board_id)) {
-            for (size_t i = 0; i < sizeof(gs_boards) / sizeof(gs_boards[0]); i++) {
-                if (gs_boards[i].board_id == board_id) {
-                    if (out) {
-                        out->crc = crc;
-                        out->chip_size = size;
-                        out->card_id = gs_boards[i].card_id;
-                    }
-                    free(whole);
-                    return VROM_ID_KNOWN;
+    uint16_t board_id = 0;
+    if (declrom_identify_vendor(img, size, "granny-smith", &board_id)) {
+        for (size_t i = 0; i < sizeof(gs_boards) / sizeof(gs_boards[0]); i++) {
+            if (gs_boards[i].board_id == board_id) {
+                if (out) {
+                    out->crc = crc;
+                    out->chip_size = size;
+                    out->card_id = gs_boards[i].card_id;
                 }
+                return VROM_ID_KNOWN;
             }
         }
-        free(whole);
     }
     return VROM_ID_UNKNOWN;
+}
+
+// The file form: read the chip and identify it.
+static enum vrom_id_result vrom_identify_core(const char *path, vrom_id_t *out, size_t *out_size, uint32_t *out_crc) {
+    size_t size = 0;
+    vrom_probe_file(path, &size); // fills *size regardless of the 32 KB gate
+    if (out_size)
+        *out_size = size;
+    // vrom_probe_file leaves size == 0 only when stat failed (missing /
+    // unreadable).
+    if (size == 0)
+        return VROM_ID_UNREADABLE;
+    if (size != VROM_EXPECTED_SIZE && size != 2u * VROM_EXPECTED_SIZE)
+        return VROM_ID_WRONG_SIZE;
+    uint8_t *img = malloc(size);
+    if (!img)
+        return VROM_ID_UNREADABLE;
+    FILE *f = fopen(path, "rb");
+    bool read_ok = f && fread(img, 1, size, f) == size;
+    if (f)
+        fclose(f);
+    enum vrom_id_result r = read_ok ? vrom_identify_image(img, size, out, out_crc) : VROM_ID_UNREADABLE;
+    free(img);
+    return r;
+}
+
+bool vrom_identify_bytes(const uint8_t *img, size_t size, vrom_id_t *out) {
+    return img && vrom_identify_image(img, size, out, NULL) == VROM_ID_KNOWN;
 }
 
 bool vrom_identify_card(const char *path, vrom_id_t *out) {

@@ -87,10 +87,6 @@ void prom_offer_clear(void);
 // path (borrowed) or NULL.
 const char *prom_offer_find(const char *card_id, int idx, size_t *out_size);
 
-// True iff the catalog lists an expansion ROM for this card id — i.e. the
-// card needs one and boot's strict-resolution validation applies.
-bool prom_card_catalogued(const char *card_id);
-
 // True iff card `card_id` has an expansion ROM: `rom` (the slot's own file,
 // NULL for none) when given -- it must identify as this card's -- else an
 // offered candidate.  No side effect.

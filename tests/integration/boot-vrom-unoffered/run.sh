@@ -18,8 +18,10 @@ assert !machine.boot(model="iicx", rom="$ROM", video_card="display_card_24ac") "
 # The document's vrom= supplies it.
 assert machine.boot(model="iicx", rom="$ROM", video_card="display_card_24ac", vrom="$VROM") "vrom= must satisfy the named card"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "the named card is seated"
-# Without video_card=, vrom= alone names its card (the IIcx's socket default is the 8.24).
-assert machine.boot(model="iicx", rom="$ROM", vrom="$VROM") "vrom= alone must boot"
+assert machine.nubus.slot[9].card.declrom.path == "$VROM" "the card runs the document's vrom="
+# vrom= never chooses a card: without video_card= the IIcx's socket holds its
+# default, the 8.24, which this file is not for, so the boot is refused.
+assert !machine.boot(model="iicx", rom="$ROM", vrom="$VROM") "a vrom= for a card no slot holds must be rejected"
 echo "OK"
 quit
 EOF

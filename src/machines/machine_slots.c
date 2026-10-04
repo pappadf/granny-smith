@@ -15,10 +15,15 @@
 //
 // Grammar of slots=: entries separated by ';', each `SLOT=CARD[,key=value]*`.
 // SLOT is the slot number as machine.nubus.slot[N] / machine.pci.slot[N]
-// index it (decimal, or hex as $A / 0xA).  CARD is a card-kind id, `none`
-// for an empty socket, or empty for the slot's own card.  `mode=`,
-// `custom=` and `rom=` set the video mode, the custom geometry and the card's
-// ROM file; any other key is a card option.
+// index it (decimal -- a leading zero is still decimal -- or hex as $A /
+// 0xA).  CARD is a card-kind id, `none` for an empty socket (which takes no
+// settings), or empty for the slot's own card.  `mode=`, `custom=` and
+// `rom=` set the video mode, the custom geometry and the card's ROM file; any
+// other key is a card option.  Blanks around each part are ignored and an
+// empty entry (`;;`, a trailing `;`) is nothing.  Everything else is an
+// error, never skipped: a slot named twice, a key given twice, an empty
+// field (`,,`, a trailing `,`), a key or value left empty.  A value cannot
+// hold ',' or ';'.
 
 #include "machine.h"
 
@@ -32,6 +37,7 @@
 #include "pci/pci.h"
 #include "pci/pci_card.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -129,10 +135,19 @@ static bool add_option(slot_opts_t *e, const char *key, const char *value, const
     return true;
 }
 
-// Parse one slot number: decimal, or hex as $A / 0xA.  -1 on garbage.
+// Parse one slot number: decimal, or hex as $A / 0xA.  -1 on garbage.  A
+// leading zero is decimal ("09" is 9), never octal.
 static int parse_slot_number(const char *s) {
     char *end = NULL;
-    long v = (*s == '$') ? strtol(s + 1, &end, 16) : strtol(s, &end, 0);
+    const char *digits = s;
+    int base = 10;
+    if (*s == '$')
+        digits = s + 1, base = 16;
+    else if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
+        digits = s + 2, base = 16;
+    if (!isxdigit((unsigned char)*digits))
+        return -1;
+    long v = strtol(digits, &end, base);
     if (!end || end == s || *end != '\0' || v <= 0 || v > 255)
         return -1;
     return (int)v;
@@ -161,8 +176,10 @@ static value_t parse_slots(const hw_profile_t *p, slots_bus_t bus, const char *s
         ent = trim(ent);
         if (!*ent)
             continue;
-        char *save_field = NULL;
-        char *head = strtok_r(ent, ",", &save_field);
+        // Fields split on every comma: an empty one ("9=824gc,,mode=...", a
+        // trailing comma) is an error, not skipped.
+        char *rest = ent;
+        char *head = strsep(&rest, ",");
         char *eq = head ? strchr(head, '=') : NULL;
         if (!eq) {
             err = val_err("machine.boot: slots entry '%s' is not SLOT=CARD", ent);
@@ -192,7 +209,11 @@ static value_t parse_slots(const hw_profile_t *p, slots_bus_t bus, const char *s
             err = val_err("machine.boot: slot %d: card id '%s' is too long", slot, card);
             break;
         }
-        for (char *f = strtok_r(NULL, ",", &save_field); f; f = strtok_r(NULL, ",", &save_field)) {
+        if (e->empty && rest) {
+            err = val_err("machine.boot: slot %d: an empty slot takes no settings", slot);
+            break;
+        }
+        for (char *f = strsep(&rest, ","); f; f = strsep(&rest, ",")) {
             f = trim(f);
             char *feq = strchr(f, '=');
             if (!feq || feq == f || !feq[1]) {
@@ -201,14 +222,25 @@ static value_t parse_slots(const hw_profile_t *p, slots_bus_t bus, const char *s
             }
             *feq = '\0';
             const char *key = trim(f), *value = trim(feq + 1);
+            if (!*key || !*value) {
+                err = val_err("machine.boot: slot %d: '%s' is not key=value", slot, f);
+                break;
+            }
             bool ok = true;
             const char *why = "value too long";
+            char *field = NULL;
+            size_t field_size = 0;
             if (strcmp(key, "mode") == 0)
-                ok = copy_field(e->video_mode, sizeof e->video_mode, value);
+                field = e->video_mode, field_size = sizeof e->video_mode;
             else if (strcmp(key, "custom") == 0)
-                ok = copy_field(e->custom_mode, sizeof e->custom_mode, value);
+                field = e->custom_mode, field_size = sizeof e->custom_mode;
             else if (strcmp(key, "rom") == 0)
-                ok = copy_field(e->rom, sizeof e->rom, value);
+                field = e->rom, field_size = sizeof e->rom;
+            if (field && field[0]) {
+                ok = false;
+                why = "given twice";
+            } else if (field)
+                ok = copy_field(field, field_size, value);
             else
                 ok = add_option(e, key, value, &why);
             if (!ok) {
@@ -319,138 +351,9 @@ static value_t apply_socket_sugar(const hw_profile_t *p, slots_bus_t bus, const 
 }
 
 // An unknown card id, with the nearest registered spelling when there is one.
-static value_t unknown_card(const char *id, const char *near, const char *catalog) {
-    if (near)
-        return val_err("machine.boot: unknown card id '%s' — did you mean '%s'? (see catalog.%s)", id, near, catalog);
-    return val_err("machine.boot: unknown card id '%s' (see catalog.%s)", id, catalog);
-}
-
-// Validate one NuBus entry against its slot and resolve the kind it seats
-// (*out_kind, NULL for an empty socket).  `named` reports whether the
-// document named the card (an explicit card must resolve its declaration ROM).
-static value_t check_nubus_entry(const hw_profile_t *p, const slot_opts_t *e, bool roms_final,
-                                 const nubus_card_kind_t **out_kind, bool *named) {
-    const nubus_slot_decl_t *d = nubus_decl(p, e->slot);
-    const nubus_card_kind_t *k = NULL;
-    *named = false;
-    if (d->kind != NUBUS_SLOT_SOCKET && d->kind != NUBUS_SLOT_BUILTIN)
-        return val_err("machine.boot: NuBus slot $%X on model '%s' takes no card", e->slot, p->id);
-    if (e->empty) {
-        if (d->kind != NUBUS_SLOT_SOCKET)
-            return val_err("machine.boot: NuBus slot $%X on model '%s' is built in and cannot be emptied", e->slot,
-                           p->id);
-    } else if (e->card[0]) {
-        k = nubus_card_find(e->card);
-        if (!k)
-            return unknown_card(e->card, nubus_card_suggest(e->card), "nubus_cards");
-        bool fits = d->kind == NUBUS_SLOT_SOCKET ? nubus_card_fits_socket(d, k)
-                                                 : (k->attach == CARD_ATTACH_BUILTIN ||
-                                                    (d->builtin_card_id && strcmp(d->builtin_card_id, k->id) == 0));
-        if (!fits)
-            return val_err(
-                "machine.boot: card '%s' fits no slot on model '%s' (see catalog.profile(\"%s\").video_slots)", e->card,
-                p->id, p->id);
-        *named = d->kind == NUBUS_SLOT_SOCKET;
-    } else {
-        k = nubus_card_find(d->kind == NUBUS_SLOT_SOCKET ? d->default_card : d->builtin_card_id);
-    }
-    *out_kind = k;
-    if (e->video_mode[0]) {
-        if (!nubus_video_mode_known(e->video_mode))
-            return val_err("machine.boot: unknown video-mode id '%s'", e->video_mode);
-        if (!k || !nubus_monitor_mode_lookup(k->monitors, e->video_mode, NULL, NULL))
-            return val_err("machine.boot: video mode '%s' does not belong to slot $%X's card '%s'", e->video_mode,
-                           e->slot, k ? k->id : "(none)");
-    }
-    if (e->custom_mode[0]) {
-        const char *why = NULL;
-        if (!nubus_custom_mode_parse(e->custom_mode, NULL, NULL, NULL, &why))
-            return val_err("machine.boot: custom_mode '%s' invalid: %s", e->custom_mode, why);
-        uint32_t w = 0, h = 0, d = 0;
-        nubus_custom_mode_parse(e->custom_mode, &w, &h, &d, NULL);
-        if (!k || !k->custom_mode_fits)
-            return val_err("machine.boot: slot $%X's card '%s' takes no custom geometry", e->slot,
-                           k ? k->id : "(none)");
-        if (!k->custom_mode_fits(w, h, d, &why))
-            return val_err("machine.boot: custom_mode '%s' on slot $%X's card '%s': %s", e->custom_mode, e->slot, k->id,
-                           why);
-    }
-    if (e->n_options)
-        return val_err("machine.boot: slot $%X's card '%s' takes no option '%s'", e->slot, k ? k->id : "(none)",
-                       e->options[0].key);
-    if (e->rom[0]) {
-        vrom_id_t vid;
-        if (!vrom_identify_card(e->rom, &vid))
-            return val_err("machine.boot: vrom '%s' is not a recognised declaration ROM", e->rom);
-        if (!k || strcmp(vid.card_id, k->id) != 0)
-            return val_err("machine.boot: vrom '%s' is for card '%s', not slot $%X's '%s'", e->rom, vid.card_id,
-                           e->slot, k ? k->id : "(none)");
-    }
-    // A card the document named must resolve its declaration ROM before the
-    // running machine is touched; a slot's own default degrades to an empty
-    // slot with a log, and a built-in card owns its fallback (the SE/30
-    // synthesises its onboard vROM).
-    if (roms_final && *named && k && vrom_card_catalogued(k->id) &&
-        !vrom_card_resolvable(k->id, e->rom[0] ? e->rom : NULL))
-        return val_err(
-            "machine.boot: card '%s' (slot $%X) needs a declaration ROM but no offered vROM file provides it", k->id,
-            e->slot);
-    return val_none();
-}
-
-// The PCI counterpart: card fit, options the kind accepts, PROM.
-static value_t check_pci_entry(const hw_profile_t *p, const slot_opts_t *e, bool roms_final,
-                               const pci_card_kind_t **out_kind) {
-    const pci_slot_decl_t *d = pci_decl(p, e->slot);
-    const pci_card_kind_t *k = NULL;
-    bool named = false;
-    if (d->kind == PCI_SLOT_ABSENT)
-        return val_err("machine.boot: PCI slot %d on model '%s' takes no card", e->slot, p->id);
-    if (e->empty) {
-        if (d->kind != PCI_SLOT_SOCKET)
-            return val_err("machine.boot: PCI slot %d on model '%s' is built in and cannot be emptied", e->slot, p->id);
-    } else if (e->card[0]) {
-        k = pci_card_find(e->card);
-        if (!k)
-            return unknown_card(e->card, pci_card_suggest(e->card), "pci_cards");
-        bool fits = d->kind == PCI_SLOT_SOCKET ? pci_card_fits_socket(d, k)
-                                               : (d->builtin_card_id && strcmp(d->builtin_card_id, k->id) == 0);
-        if (!fits)
-            return val_err("machine.boot: card '%s' fits no slot on model '%s' (see catalog.profile(\"%s\").pci_slots)",
-                           e->card, p->id, p->id);
-        named = d->kind == PCI_SLOT_SOCKET;
-    } else {
-        k = pci_card_find(d->kind == PCI_SLOT_SOCKET ? d->default_card : d->builtin_card_id);
-    }
-    *out_kind = k;
-    if (e->video_mode[0] || e->custom_mode[0])
-        return val_err("machine.boot: PCI slot %d takes no video mode (a PCI display card senses its monitor)",
-                       e->slot);
-    for (int i = 0; i < e->n_options; i++) {
-        if (!k || !k->accepts_option || !k->accepts_option(e->options[i].key, e->options[i].value))
-            return val_err("machine.boot: slot %d's card '%s' does not take option %s=%s", e->slot,
-                           k ? k->id : "(none)", e->options[i].key, e->options[i].value);
-    }
-    if (e->rom[0]) {
-        prom_id_t pid;
-        if (!prom_identify_card(e->rom, &pid))
-            return val_err("machine.boot: prom '%s' is not a recognised PCI expansion ROM "
-                           "(see catalog.proms.identify for what it is instead)",
-                           e->rom);
-        if (!k || strcmp(pid.card_id, k->id) != 0)
-            return val_err("machine.boot: prom '%s' is for card '%s', not slot %d's '%s'", e->rom, pid.card_id, e->slot,
-                           k ? k->id : "(none)");
-    }
-    if (roms_final && named && k && k->requires_prom && !prom_card_resolvable(k->id, e->rom[0] ? e->rom : NULL))
-        return val_err("machine.boot: card '%s' (PCI slot %d) needs a PCI expansion ROM but no offered "
-                       ".prom file provides it",
-                       k->id, e->slot);
-    return val_none();
-}
-
 // vrom= / prom=: the file is the ROM of every slot whose card it provides --
-// configured or declared.  A file whose card the machine does not seat is
-// noted and changes nothing.
+// configured or declared.  A file whose card the machine does not seat, or a
+// vrom= / prom= on a model without that bus, rejects the boot.
 static value_t apply_rom_sugar(const hw_profile_t *p, slots_bus_t bus, const boot_config_t *doc,
                                machine_build_opts_t *o) {
     const char *path = NULL, *card_id = NULL;
@@ -460,10 +363,9 @@ static value_t apply_rom_sugar(const hw_profile_t *p, slots_bus_t bus, const boo
             return val_err("machine.boot: vrom '%s' is not a recognised declaration ROM", doc->vrom);
         path = doc->vrom;
         card_id = vid.card_id;
-        if (bus != SLOTS_NUBUS) {
-            LOG(1, "machine.boot: vrom '%s' (card '%s') — model '%s' has no NuBus card; unused", path, card_id, p->id);
-            path = NULL;
-        }
+        if (bus != SLOTS_NUBUS)
+            return val_err("machine.boot: vrom '%s' is card '%s''s declaration ROM, and model '%s' has no NuBus slots",
+                           doc->vrom, card_id, p->id);
     }
     if (doc->prom && *doc->prom) {
         prom_id_t pid;
@@ -471,17 +373,15 @@ static value_t apply_rom_sugar(const hw_profile_t *p, slots_bus_t bus, const boo
             return val_err("machine.boot: prom '%s' is not a recognised PCI expansion ROM "
                            "(see catalog.proms.identify for what it is instead)",
                            doc->prom);
-        if (bus == SLOTS_PCI) {
-            path = doc->prom;
-            card_id = pid.card_id;
-        } else {
-            LOG(1, "machine.boot: prom '%s' (card '%s') — model '%s' has no PCI card; unused", doc->prom, pid.card_id,
-                p->id);
-        }
+        if (bus != SLOTS_PCI)
+            return val_err("machine.boot: prom '%s' is card '%s''s expansion ROM, and model '%s' has no PCI slots",
+                           doc->prom, pid.card_id, p->id);
+        path = doc->prom;
+        card_id = pid.card_id;
     }
     if (!path)
         return val_none();
-    int used = 0;
+    int matched = 0;
     // Every declared slot whose resolved card the file provides.
     for (int i = 0;; i++) {
         int slot = 0;
@@ -510,6 +410,7 @@ static value_t apply_rom_sugar(const hw_profile_t *p, slots_bus_t bus, const boo
         }
         if (!kind_id || strcmp(kind_id, card_id) != 0)
             continue;
+        matched++;
         slot_opts_t *e = entry_for(o, slot);
         if (!e)
             return val_err("machine.boot: slots= names too many slots");
@@ -517,29 +418,28 @@ static value_t apply_rom_sugar(const hw_profile_t *p, slots_bus_t bus, const boo
             continue; // slots= named this slot's ROM itself
         if (!copy_field(e->rom, sizeof e->rom, path))
             return val_err("machine.boot: ROM path '%s' is too long", path);
-        used++;
     }
-    if (!used)
-        LOG(1, "machine.boot: '%s' provides card '%s', which model '%s' does not seat; unused", path, card_id, p->id);
+    // A ROM is never a card choice: a file for a card no slot holds is a
+    // mistake in the document, not a request to seat that card.
+    if (!matched)
+        return val_err("machine.boot: '%s' is card '%s''s ROM, and no slot of model '%s' holds that card", path,
+                       card_id, p->id);
     return val_none();
 }
 
 // Check every entry; with roms_final, also that each card the document named
-// resolves its ROM (the ROM sugar has run).
+// resolves its ROM (the ROM sugar has run).  The checks are the buses' own,
+// which a restore applies to the entries its checkpoint carries.
 static value_t check_entries(const hw_profile_t *profile, slots_bus_t bus, const machine_build_opts_t *out,
                              bool roms_final) {
     for (int i = 0; i < out->n_slots; i++) {
-        value_t err;
-        if (bus == SLOTS_NUBUS) {
-            const nubus_card_kind_t *k = NULL;
-            bool named = false;
-            err = check_nubus_entry(profile, &out->slots[i], roms_final, &k, &named);
-        } else {
-            const pci_card_kind_t *k = NULL;
-            err = check_pci_entry(profile, &out->slots[i], roms_final, &k);
-        }
-        if (val_is_error(&err))
-            return err;
+        char why[256];
+        bool ok =
+            bus == SLOTS_NUBUS
+                ? nubus_slot_entry_check(profile->nubus_slots, profile->id, &out->slots[i], roms_final, why, sizeof why)
+                : pci_slot_entry_check(profile->pci_slots, profile->id, &out->slots[i], roms_final, why, sizeof why);
+        if (!ok)
+            return val_err("machine.boot: %s", why);
     }
     return val_none();
 }

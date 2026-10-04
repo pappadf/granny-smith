@@ -38,5 +38,12 @@ assert try(machine.attach_cdrom("${$WORK_DIR}/cd.iso"), "none") == "none" "no CD
 let h = machine.attach_hd("${$WORK_DIR}/hd.img")
 assert $h.id == 0 "a Plus's first disk at id 0"
 
+# Only a CD-ROM goes in a CD bay, even an empty one: a disk at the IIcx's
+# CD bay id would save a checkpoint no restore of the IIcx can rebuild.
+machine.boot model="iicx" rom="${$TEST_DATA}/roms/iix-iicx-se30-97221136.rom"
+assert machine.scsi.device[3].type == "cdrom" "the IIcx's CD bay is id 3"
+assert machine.scsi.attach_hd("${$WORK_DIR}/hd2.img", 3) == false "a disk in the CD bay refused"
+assert machine.scsi.device[3].type == "cdrom" "the CD bay keeps its drive"
+
 echo "media-bays-ok"
 quit

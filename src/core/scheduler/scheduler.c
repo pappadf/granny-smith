@@ -173,6 +173,12 @@ struct scheduler {
     // files differing in the mantissa of these doubles: host state leaking
     // into a save file.
     double previous_time; // previous time in seconds
+    // On a restore, the CPI the checkpoint carries -- a scheduler.cpi
+    // override included -- until scheduler_restore_events puts it back over
+    // the machine's own, which its build sets after the scheduler (0: none).
+    // Not checkpointed: past the prefix.
+    uint32_t restored_cpi;
+
     double vbl_acc_error; // accumulated VBL timing error (seconds)
     double host_secs_per_vbl; // smoothed host seconds per VBL
     double host_secs_per_loop; // smoothed host seconds per main loop iteration
@@ -785,15 +791,14 @@ bool scheduler_run_with_budget(scheduler_t *s, uint64_t instructions) {
 // fresh-boot values so nothing runs on half-validated state in the window
 // before system_restore observes the error.
 static bool scheduler_restore_prefix_ok(const struct scheduler *s, checkpoint_t *checkpoint) {
+    // What does not depend on the machine.  The remainders are checked
+    // against the machine's own clock once its build has set it
+    // (scheduler_restore_events).
     const char *bad = NULL;
     if (s->cpi == 0 || s->cpi > MAX_SANE_CPI)
         bad = "cycles-per-instruction out of range";
     else if (s->cpu_cycles >= MAX_SANE_CPU_CYCLES)
         bad = "cycle counter out of range";
-    else if (s->io_penalty_remainder >= (s->cpi << 8))
-        bad = "I/O penalty remainder out of range"; // always under one CPI
-    else if (s->frame_cycles_left > s->frequency)
-        bad = "VBL frame remainder out of range"; // a frame is 1/60 s of cycles
 
     if (!bad)
         return true;
@@ -821,7 +826,10 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
     s->host_secs_per_loop = 1.0 / 60.0;
     s->frequency = (uint32_t)MAC_CPU_FREQUENCY;
     s->cpi = CYCLES_PER_INSTR_DEFAULT;
-    s->pacing = *platform_pacing(); // a new or restored machine runs as the host says
+    // The host's pacing reaches the machine when it becomes the active one
+    // (system_swap_in) and with every frame after; until then it is built at
+    // the default.
+    s->pacing = HOST_PACING_DEFAULT;
     s->num_event_types = 0;
     memset(s->event_types, 0, sizeof(s->event_types));
 
@@ -847,6 +855,8 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
             s->io_penalty_remainder = 0;
             s->frame_cycles_left = 0;
             s->total_instructions = 0;
+        } else {
+            s->restored_cpi = s->cpi;
         }
 
         s->sprint_total = 0;
@@ -992,6 +1002,27 @@ void scheduler_checkpoint_events(struct scheduler *restrict scheduler, checkpoin
 // registered its types: each saved event binds as it is read.
 void scheduler_restore_events(struct scheduler *restrict s, checkpoint_t *checkpoint) {
     GS_ASSERT(s != NULL && checkpoint != NULL);
+
+    // The build is done: the machine has set its clock and CPI.  The CPI the
+    // checkpoint carries wins (an override is part of the guest's timeline),
+    // and the remainders are checked against the clock the machine runs.
+    if (s->restored_cpi) {
+        s->cpi = s->restored_cpi;
+        s->restored_cpi = 0;
+        scheduler_update_cpi_eff(s);
+    }
+    const char *bad = NULL;
+    if (s->io_penalty_remainder >= (s->cpi << 8))
+        bad = "I/O penalty remainder out of range"; // always under one CPI
+    else if (s->frame_cycles_left > (uint64_t)(MAC_VBL_PERIOD * (double)s->frequency) + 2)
+        bad = "VBL frame remainder out of range"; // at most one frame's cycles (scheduler_run_frame)
+    if (bad) {
+        LOG(0, "Error: corrupt scheduler state in checkpoint (%s); refusing the restore", bad);
+        checkpoint_set_error(checkpoint);
+        s->io_penalty_remainder = 0;
+        s->frame_cycles_left = 0;
+        return;
+    }
 
     unsigned int num_events = 0;
     system_read_checkpoint_data(checkpoint, &num_events, sizeof(num_events));
@@ -1312,13 +1343,16 @@ double scheduler_time_ns(struct scheduler *restrict scheduler) {
     return (double)cycles * (1e9 / (double)scheduler->frequency);
 }
 
-// Get the total number of CPU instructions executed so far
-uint64_t cpu_instr_count(void) {
-    struct scheduler *s = system_scheduler();
+uint64_t scheduler_instr_count(struct scheduler *s) {
     if (s == NULL)
         return 0;
     GS_ASSERT(s->sprint_burndown <= s->sprint_total);
     return s->total_instructions + s->sprint_total - s->sprint_burndown;
+}
+
+// Get the total number of CPU instructions executed so far
+uint64_t cpu_instr_count(void) {
+    return scheduler_instr_count(system_scheduler());
 }
 
 // Reconcile sprint counters (public API for external callers like IRQ handlers)
@@ -2080,7 +2114,7 @@ static const member_t scheduler_members[] = {
     {.kind = M_ATTR,
      .name = "max_speed",
      .doc = "Cap on the accelerated-mode multiplier (1.0..8.0): the adaptive governor's ceiling, and pinned "
-            "speeds are clamped to it. Persisted", .flags = 0,
+            "speeds are clamped to it. The host's setting (pacing.max_speed)", .flags = 0,
      .attr = {.type = V_FLOAT, .get = sched_attr_max_speed, .set = sched_attr_max_speed_set}},
     {.kind = M_ATTR,
      .name = "cycles",
@@ -2137,3 +2171,104 @@ static const class_desc_t scheduler_class = {
     .n_members = sizeof(scheduler_members) / sizeof(scheduler_members[0]),
     .doc = "Runs the machine: start, stop, pacing mode and speed",
 };
+
+// === pacing =================================================================
+//
+// The host's pacing setting -- what the toolbar, ?speed= and --speed= choose
+// -- as an object of its own, there with or without a machine: a page sets
+// it before it boots anything, and every machine it builds or restores runs
+// under it (system_swap_in).  scheduler.mode / speed / max_speed are the same
+// setting, reached through the running machine.
+
+// Apply the setting to the running machine, if there is one.
+static void pacing_reaches_machine(void) {
+    scheduler_t *running = system_running_scheduler();
+    if (running)
+        scheduler_apply_pacing(running, platform_pacing());
+}
+
+static DEF_GETTER(pacing_attr_mode_get) {
+    (void)self;
+    enum schedule_mode mode = platform_pacing()->mode;
+    for (size_t i = 0; i < 3; i++)
+        if (sched_mode_values[i] == mode)
+            return val_enum((int)i, sched_mode_names, 3);
+    return val_err("pacing.mode: unknown internal mode %d", (int)mode);
+}
+
+static DEF_SETTER(pacing_attr_mode_set) {
+    (void)self;
+    if (in.kind != V_ENUM || in.enm.idx < 0 || in.enm.idx >= 3) {
+        value_free(&in);
+        return val_err("pacing.mode: expected paced, accelerated or turbo");
+    }
+    platform_pacing()->mode = sched_mode_values[in.enm.idx];
+    value_free(&in);
+    pacing_reaches_machine();
+    return val_none();
+}
+
+// The setting, not the governor's live pick: 0 is auto.
+static DEF_GETTER(pacing_attr_speed_get) {
+    (void)self;
+    uint32_t x = platform_pacing()->speed_x256;
+    return val_float(x == SPEED_X256_AUTO ? 0.0 : (double)x / 256.0);
+}
+
+static DEF_SETTER(pacing_attr_speed_set) {
+    (void)self;
+    if (isnan(in.f) || (in.f != 0.0 && (in.f < 1.0 || in.f > 8.0)))
+        return val_err("pacing.speed: %g out of range (0 = auto, or 1.0 .. 8.0)", in.f);
+    host_pacing_set_speed(platform_pacing(), in.f);
+    pacing_reaches_machine();
+    return val_none();
+}
+
+static DEF_GETTER(pacing_attr_max_speed_get) {
+    (void)self;
+    return val_float((double)platform_pacing()->max_speed_x256 / 256.0);
+}
+
+static DEF_SETTER(pacing_attr_max_speed_set) {
+    (void)self;
+    if (isnan(in.f) || in.f < 1.0 || in.f > 8.0)
+        return val_err("pacing.max_speed: %g out of range (1.0 .. 8.0)", in.f);
+    host_pacing_set_max_speed(platform_pacing(), in.f);
+    pacing_reaches_machine();
+    return val_none();
+}
+
+static const member_t pacing_members[] = {
+    {.kind = M_ATTR,
+     .name = "mode",
+     .doc = "Pacing mode: paced (real-time), accelerated (faster, adaptive) or turbo (flat out)",
+     .attr =
+         {.type = V_ENUM, .enum_values = sched_mode_names, .get = pacing_attr_mode_get, .set = pacing_attr_mode_set}},
+    {.kind = M_ATTR,
+     .name = "speed",
+     .doc = "Accelerated-mode speed: 0 for auto (the adaptive governor, capped by max_speed) or 1.0..8.0 pinned",
+     .attr = {.type = V_FLOAT, .get = pacing_attr_speed_get, .set = pacing_attr_speed_set}                          },
+    {.kind = M_ATTR,
+     .name = "max_speed",
+     .doc = "Cap on the accelerated-mode multiplier (1.0..8.0)",
+     .attr = {.type = V_FLOAT, .get = pacing_attr_max_speed_get, .set = pacing_attr_max_speed_set}                  },
+};
+
+static const class_desc_t pacing_class = {
+    .name = "pacing",
+    .members = pacing_members,
+    .n_members = sizeof(pacing_members) / sizeof(pacing_members[0]),
+    .doc = "The host's pacing: how fast every machine runs, set with or without one",
+};
+
+static struct object *s_pacing_object = NULL;
+
+void pacing_init(void) {
+    if (s_pacing_object)
+        return;
+    s_pacing_object = object_new(&pacing_class, NULL, "pacing");
+    if (s_pacing_object) {
+        object_set_order(s_pacing_object, 21);
+        object_attach(object_root(), s_pacing_object);
+    }
+}

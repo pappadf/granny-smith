@@ -525,6 +525,20 @@ async function probeArchive(stagingPath: string, quiet: boolean): Promise<FileOu
   return null;
 }
 
+// Where to store `name` in `dir`: its own name when nothing is there or the
+// file there is byte-identical to `source`, else the first "name N.ext"
+// free.
+async function freeStorePath(dir: string, name: string, source: string): Promise<string> {
+  const dot = name.lastIndexOf('.');
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : '';
+  for (let n = 1; ; n++) {
+    const path = n === 1 ? `${dir}/${name}` : `${dir}/${stem} ${n}${ext}`;
+    if ((await gsEval('files.path_exists', [path])) !== true) return path;
+    if ((await gsEval('files.path_compare', [source, path])) === -1) return path;
+  }
+}
+
 // Every file under `dir` (depth first, in listing order), as full paths.
 async function listFiles(dir: string): Promise<string[]> {
   const entries = await gsEval('files.list', [dir]);
@@ -568,7 +582,6 @@ async function persist(
   const { inArchive = false, quiet = false } = opts;
   const finalName = descriptor.nameFn ? descriptor.nameFn(originalName, info) : originalName;
   const targetDir = info?.persistDir ?? descriptor.persistDir;
-  const finalPath = `${targetDir}/${finalName}`;
   // files.cp does not create parent directories, and the category dirs are
   // made once at startup — so a store added after a user's OPFS was first
   // laid down has nowhere to copy to, and every upload of that kind fails
@@ -581,9 +594,13 @@ async function persist(
   // worker — see stageUpload). Creating it on one side and copying on the
   // other is exactly the bug this is fixing.
   await gsEval('files.mkdir', [targetDir]);
-  // Moved, not copied, so storing never holds the file twice; an existing
-  // file of that name (a content-named ROM uploaded again) is replaced, as
-  // the copy always replaced it.
+  // A file of that name already stored is replaced only when it is the same
+  // file (a content-named ROM uploaded again): a different one keeps its
+  // place and this one is stored beside it ("name 2.ext"), so two media of
+  // one name -- two floppies of a URL, two uploads -- never overwrite each
+  // other.
+  const finalPath = await freeStorePath(targetDir, finalName, sourcePath);
+  // Moved, not copied, so storing never holds the file twice.
   const exists = (await gsEval('files.path_exists', [finalPath])) === true;
   const verb = exists || inArchive ? 'files.cp' : 'files.mv';
   const ok = (await gsEval(verb, [sourcePath, finalPath])) === true;

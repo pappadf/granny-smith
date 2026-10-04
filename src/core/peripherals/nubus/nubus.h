@@ -46,6 +46,10 @@ typedef struct nubus_slot_decl {
     const char *builtin_card_id; // BUILTIN: card-id resolved via nubus_card_find()
     const char *default_card; // SOCKET: factory-default population when the
                               // boot document names no card (NULL = ships empty)
+    // BUILTIN video that scans out of main RAM (the IIci's and IIsi's RBV):
+    // its frame buffer is the bottom of RAM, which the card takes when it is
+    // built, before its checkpoint part is read.
+    bool fb_in_ram;
 } nubus_slot_decl_t;
 
 // True iff card kind `kind` may be seated in slot `s`.  Compatibility is
@@ -55,6 +59,23 @@ typedef struct nubus_slot_decl {
 // user-configurable slot.  Shared by the catalog.profile encoder and
 // the boot document's slot validation so the two can never diverge.
 bool nubus_card_fits_socket(const nubus_slot_decl_t *s, const nubus_card_kind_t *kind);
+
+// True iff `kind` may be seated in slot `s`, socket or built in.  A built-in
+// slot takes its declared card or a sibling: a kind that is on-board too
+// (CARD_ATTACH_BUILTIN) and drives the same monitor table (the SE/30's generic
+// and real video).  The one rule catalog.profile lists choices by and the
+// slot entries are checked against.
+bool nubus_card_fits_slot(const nubus_slot_decl_t *s, const nubus_card_kind_t *kind);
+
+// Check one slot entry against the machine's slot table: the slot takes a
+// card, the card exists and fits, its video mode / custom geometry / ROM are
+// its own, it takes no options -- and with `roms_final`, that a card the entry
+// names finds its declaration ROM.  machine.boot checks the document's entries
+// with it, a restore the entries its checkpoint carries.  On false, `why`
+// says what is wrong (`model` names the machine in it).
+struct slot_opts;
+bool nubus_slot_entry_check(const nubus_slot_decl_t *slots, const char *model, const struct slot_opts *e,
+                            bool roms_final, char *why, size_t why_len);
 
 // Standard slot space base for slot s (s ∈ $9..$E):
 //   $9 → $F9000000, $A → $FA000000, …, $E → $FE000000
@@ -114,11 +135,6 @@ static inline uint32_t nubus_super_slot_base(int slot) {
 // card's init gets the slot's entry.  Returns NULL on failure.
 nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoint_t *cp);
 
-// Serialise per-card state (framebuffer, palette, mode) for every seated card
-// that implements the ops hooks.  Save and restore walk the slots in the same
-// order; call restore after nubus_init has built the cards.
-void nubus_checkpoint_save(nubus_bus_t *bus, checkpoint_t *cp);
-void nubus_checkpoint_restore(nubus_bus_t *bus, checkpoint_t *cp);
 void nubus_delete(nubus_bus_t *bus);
 
 // Parse/validate a "WxHxD" custom-mode spec (shared by boot validation

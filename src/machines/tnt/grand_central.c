@@ -769,13 +769,14 @@ static const pci_device_ops_t gc_pci_ops = {
     .name = gc_pci_name,
 };
 
-void tnt_gc_pci_attach(config_t *cfg, pci_bus_t *bus) {
+void tnt_gc_pci_attach(config_t *cfg, pci_bus_t *bus, checkpoint_t *cp) {
     tnt_state_t *st = tnt_st(cfg);
     st->gc_dev.ops = &gc_pci_ops;
     st->gc_dev.decl = &gc_decl;
     st->gc_dev.priv = cfg;
     pci_cfg_reset(&st->gc_dev);
     pci_bus_add_device(bus, &st->gc_dev, 16);
+    pci_device_part(cfg, cp, &st->gc_dev, "pci.gc");
 }
 
 // Map an ESCC-aperture offset (+$13000: B ctl +$00 / B data +$10 /

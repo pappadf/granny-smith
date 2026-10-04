@@ -1614,19 +1614,33 @@ void atalk_printer_register_timers(struct atalk_conn *conn) {
     laserwriter_job_register_timers(conn);
 }
 
-// The machine was unplugged: its session goes, and a job finishing after its
-// close goes too -- nothing would drive it once that machine's scheduler is
-// gone.  The printer stays, with what earlier jobs made permanent.
+// The machine was unplugged: its session goes -- a job still arriving with it
+// -- and so does the completion reply owed to it.  A job whose data was all in
+// (detached at its clean close) is the printer's, not the session's: it keeps
+// running and finishes under the next machine (atalk_printer_plug).  The
+// printer stays, with what earlier jobs made permanent.
 void atalk_printer_unplug(void) {
     if (!g_printer.initialized)
         return;
-#if GS_PLATEN
-    pap_platen_forget_detached();
-#endif
-    pap_session_reset(); // cancels its ATP request, drops the capture, aborts the job
+    pap_session_reset(); // cancels its ATP request, drops the capture, aborts a job still arriving
     memset(&g_completion, 0, sizeof(g_completion));
+#if GS_PLATEN
+    if (g_detached_job)
+        return; // still printing: the status says so until it finishes
+#endif
     if (g_printer.enabled)
         pap_printer_set_status_idle();
+}
+
+// A machine was plugged in: a job that outlived the one before it carries on,
+// driven by this machine's scheduler now.
+void atalk_printer_plug(void) {
+    if (!g_printer.initialized)
+        return;
+#if GS_PLATEN
+    if (g_detached_job)
+        laserwriter_job_resume();
+#endif
 }
 
 void atalk_printer_link_down(void) {
@@ -1738,6 +1752,14 @@ int atalk_printer_set_name(const char *name, char *err, size_t err_len) {
 const char *atalk_printer_get_status(void) {
     pap_printer_init();
     return g_printer.status_text;
+}
+
+bool atalk_printer_job_finishing(void) {
+#if GS_PLATEN
+    return g_detached_job;
+#else
+    return false;
+#endif
 }
 
 bool atalk_printer_has_interpreter(void) {

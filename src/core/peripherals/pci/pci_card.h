@@ -153,9 +153,12 @@ struct pci_device {
 // Per-card constructor.  The bus controller calls this once per populated
 // slot during pci_seat_slots(), with what the boot document says about the
 // slot (`opts`, never NULL; empty fields mean the card's defaults): its
-// options and its expansion-ROM file.  Returns the new device (the bus takes
-// ownership) or NULL on failure.
-typedef pci_device_t *(*pci_card_factory_fn)(int slot_index, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts);
+// options and its expansion-ROM file.  On a restore `rom` is the expansion
+// ROM the card's checkpoint part carries, which a card with one takes instead
+// of looking its file up again (NULL on a boot, or when it had none).  Returns
+// the new device (the bus takes ownership) or NULL on failure.
+typedef pci_device_t *(*pci_card_factory_fn)(int slot_index, config_t *cfg, const rom_image_t *rom,
+                                             const slot_opts_t *opts);
 
 // What a card kind physically attaches through.  BUILTIN is deliberately
 // 0 so a kind that forgets to declare its attachment is conservatively

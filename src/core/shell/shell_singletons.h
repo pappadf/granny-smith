@@ -33,6 +33,7 @@ void root_install(struct config *cfg);
 void rom_init(void);
 void machine_init(void);
 void checkpoint_init(void);
+void pacing_init(void);
 void files_init(void);
 void log_class_init(void);
 void catalog_init(void);

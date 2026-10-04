@@ -249,8 +249,7 @@ static uint64_t ariel_fb_base(void *owner) {
 }
 
 uint8_t pdm_monitor_for_build(const config_t *cfg) {
-    int want = cfg->build_opts.video_sense;
-    return (want >= 0 && want <= 7) ? (uint8_t)want : PDM_MONITOR_SENSE_DEFAULT;
+    return machine_sense_or(cfg->build_opts.video_sense, 8, PDM_MONITOR_SENSE_DEFAULT);
 }
 
 void pdm_video_init(config_t *cfg, uint8_t monitor) {
@@ -285,24 +284,6 @@ display_t *pdm_video_display(config_t *cfg) {
     if (st->video.sense == PDM_SENSE_NONE)
         return NULL;
     return &st->video.display;
-}
-
-// Strap a monitor (or nothing) onto the built-in port.  Called by the
-// machine builder before the first pdm_video_update; changing it while the
-// guest runs would not match hardware, where the ROM samples the lines once
-// at startup.
-void pdm_video_set_sense(config_t *cfg, uint8_t sense) {
-    pdm_state_t *st = pdm_st(cfg);
-    if (!st)
-        return;
-    st->video.sense = (uint8_t)(sense & 0x07u);
-    if (st->video.blank)
-        pdm_video_update(cfg);
-}
-
-uint8_t pdm_video_sense(config_t *cfg) {
-    pdm_state_t *st = pdm_st(cfg);
-    return st ? st->video.sense : 0u;
 }
 
 // Every VBL the framebuffer may have been drawn into by the guest (CPU

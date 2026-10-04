@@ -911,6 +911,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->machine_context = ls;
 
     // 24-bit address space, configured RAM, 16 KB interleaved boot ROM.
+    machine_part_begin(cfg, checkpoint, "memory");
     cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size,
                                    MEMORY_BUS_ERR_NONE, &cfg->build_opts.rom, checkpoint); // no bus-error watchdog
     machine_part(cfg, checkpoint, "memory", part_save_memory, cfg->mem_map);
@@ -921,8 +922,10 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // what the constant said -- but system_create derives cfg->cpu_arch from
     // the profile unconditionally, so a profile that ever disagreed with a
     // hardcoded core here would tag the machine with an arch it is not running.
+    machine_part_begin(cfg, checkpoint, "cpu");
     cfg->cpu = cpu_init(cfg->machine->cpu_model, checkpoint);
     machine_part(cfg, checkpoint, "cpu", part_save_cpu, cfg->cpu);
+    machine_part_begin(cfg, checkpoint, "scheduler");
     sched_cpu_if_t cpu_if = cpu_sched_if(cfg->cpu); // the 68K main-CPU seam adapter
     cfg->scheduler = scheduler_init(&cpu_if, checkpoint);
     machine_part(cfg, checkpoint, "scheduler", part_save_scheduler, cfg->scheduler);
@@ -944,6 +947,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // The segment MMU owns all translation; it reads/writes directly into the
     // flat RAM+ROM image the memory map allocated, ROM already in place.
     bool ram_high = lisa_board_of(cfg)->ram_high;
+    machine_part_begin(cfg, checkpoint, "lisa_mmu");
     ls->mmu =
         lisa_mmu_init(ram_native_pointer(cfg->mem_map, 0), cfg->ram_size, (uint8_t *)memory_rom_bytes(cfg->mem_map),
                       memory_rom_size(cfg->mem_map), ram_high, checkpoint);
@@ -962,9 +966,11 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // Lisa's VIAs are clocked from the CPU at /4, a different quantity, so this
     // is the one family where a literal is the correct answer rather than a
     // stale one.
+    machine_part_begin(cfg, checkpoint, "via1");
     cfg->via1 =
         via_init(NULL, cfg->scheduler, 4, "via1", lisa_via1_output, lisa_via_shift_out, lisa_via1_irq, cfg, checkpoint);
     machine_part(cfg, checkpoint, "via1", part_save_via, cfg->via1);
+    machine_part_begin(cfg, checkpoint, "via2");
     cfg->via2 =
         via_init(NULL, cfg->scheduler, 4, "via2", lisa_via2_output, lisa_via_shift_out, lisa_via2_irq, cfg, checkpoint);
     machine_part(cfg, checkpoint, "via2", part_save_via, cfg->via2);
@@ -988,6 +994,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
                     &ls->via2_map);
 
     // COPS keyboard/mouse/clock/power microcontroller on VIA1 port A.
+    machine_part_begin(cfg, checkpoint, "cops");
     ls->cops = cops_init(cfg->via1, cfg->scheduler, checkpoint);
     machine_part(cfg, checkpoint, "cops", cops_checkpoint_part, ls->cops);
 
@@ -1000,6 +1007,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // reference it.
     machine_part_images(cfg, checkpoint);
 
+    machine_part_begin(cfg, checkpoint, "lisa_fdc");
     ls->fdc = lisa_fdc_init(cfg->scheduler, lisa_fdc_fdir, cfg, checkpoint, CONFIG_IMAGES(cfg));
     machine_part(cfg, checkpoint, "lisa_fdc", lisa_fdc_checkpoint_part, ls->fdc);
     lisa_mmu_map_io(ls->mmu, 0xC000, 0x800, &lisa_fdc_iface, ls->fdc);
@@ -1033,6 +1041,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // ProFile parallel hard disk on VIA2: control lines via the port-B output
     // callback (lisa_via2_output), data via the port-A hooks, BSY back to PB1/CA1.
+    machine_part_begin(cfg, checkpoint, "profile");
     ls->profile = lisa_profile_init(cfg->scheduler, lisa_profile_bsy, cfg, checkpoint);
     machine_part(cfg, checkpoint, "profile", lisa_profile_checkpoint_part, ls->profile);
     via_set_porta_hooks(cfg->via2, lisa_profile_porta_read_cb, lisa_profile_porta_write_cb, cfg);
@@ -1047,6 +1056,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // $00D241/43/45/47, the OS's RS-232 driver $00D201/03/05/07
     // (docs/reference/machines/lisa/lisa.md §15).  PCLK 4 MHz (chan A) / 3.6864 MHz
     // (chan B).  Autovectored at IPL 6.
+    machine_part_begin(cfg, checkpoint, "scc");
     cfg->scc = scc_init(NULL, cfg->scheduler, lisa_scc_irq, cfg, checkpoint);
     machine_part(cfg, checkpoint, "scc", part_save_scc, cfg->scc);
     scc_set_clocks(cfg->scc, 4000000, 3686400);

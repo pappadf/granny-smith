@@ -86,6 +86,20 @@ typedef struct machine_build_opts {
 // "No sense chosen" -- distinct from every legal 3-bit code, including 0.
 #define MACHINE_SENSE_UNSET (-1)
 
+// The monitor strap a video device is constructed with: `sense` (the build's
+// video_sense, or a slot entry's) when it is a code the device can strap --
+// one below `codes` -- else the device's default `dflt`.  The one place the
+// rule lives; every video model's construction asks it.
+static inline uint8_t machine_sense_or(int sense, unsigned codes, uint8_t dflt) {
+    return (sense >= 0 && (unsigned)sense < codes) ? (uint8_t)sense : dflt;
+}
+
+// The build's sense as a slot entry carries it: a 3-bit code, or unset.  A
+// Quadra's DAFB takes indexed codes past 7, which no card's connector straps.
+static inline int machine_slot_sense(const machine_build_opts_t *o) {
+    return (o->video_sense >= 0 && o->video_sense <= 7) ? o->video_sense : MACHINE_SENSE_UNSET;
+}
+
 // A build with nothing chosen: every field at its "caller said nothing" value.
 static inline machine_build_opts_t machine_build_opts_default(void) {
     machine_build_opts_t o;
@@ -106,6 +120,26 @@ static inline const slot_opts_t *machine_build_opts_slot(const machine_build_opt
 }
 
 // The value of option `key` in a slot entry, or NULL.
+// Make an entry a checkpoint carried safe to read -- every string field
+// terminated, the option count in range -- and say whether its fixed facts
+// hold: the slot it names is `slot` (when it seats a card) and the monitor
+// sense is a sense code.  The bus then checks what it seats as a boot would.
+static inline bool slot_opts_sanitize(slot_opts_t *e, int slot) {
+    e->card[sizeof e->card - 1] = '\0';
+    e->video_mode[sizeof e->video_mode - 1] = '\0';
+    e->custom_mode[sizeof e->custom_mode - 1] = '\0';
+    e->rom[sizeof e->rom - 1] = '\0';
+    if (e->n_options < 0 || e->n_options > SLOT_OPTIONS_MAX)
+        return false;
+    for (int i = 0; i < e->n_options; i++) {
+        e->options[i].key[sizeof e->options[i].key - 1] = '\0';
+        e->options[i].value[sizeof e->options[i].value - 1] = '\0';
+    }
+    if (e->video_sense != MACHINE_SENSE_UNSET && (e->video_sense < 0 || e->video_sense > 7))
+        return false;
+    return !e->card[0] || e->slot == slot;
+}
+
 static inline const char *slot_opts_option(const slot_opts_t *e, const char *key) {
     for (int i = 0; e && i < e->n_options; i++) {
         if (strcmp(e->options[i].key, key) == 0)

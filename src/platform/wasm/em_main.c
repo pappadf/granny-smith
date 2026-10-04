@@ -870,10 +870,11 @@ static void install_background_checkpoint_handlers(void) {
 // The web app's scratch area (app/web2 lib/opfsPaths.ts SCRATCH_DIR): every
 // file the page writes on its way somewhere else -- an upload being probed, a
 // URL download, a streamed import's .dmg.part, a Save State being downloaded
-// -- lives there, and the operation that wrote it removes it on every exit.
-// One a closed tab or a crash left behind belongs to no operation and costs
-// its size in the origin's quota, so the directory is emptied at startup.
-// The rest of /opfs/upload is the user's, and is not touched.
+// -- lives there, in its tab's own part, and the operation that wrote it
+// removes it on every exit.  The page clears what no live tab holds
+// (bus/scratch.ts): the core cannot tell a closed tab's part from another
+// open tab's, so it only makes sure the directory exists.  The rest of
+// /opfs/upload is the user's, and is not touched.
 #define SCRATCH_DIR "/opfs/upload/.scratch"
 
 // ============================================================================
@@ -907,7 +908,6 @@ int main(void) {
     mkdir("/opfs/images/cd", 0777);
     mkdir("/opfs/checkpoints", 0777);
     mkdir("/opfs/upload", 0777);
-    gs_rm_tree(SCRATCH_DIR); // whatever is there belongs to no operation
     mkdir(SCRATCH_DIR, 0777);
 
     // Offer every file in the persistent vROM store to the core's content-

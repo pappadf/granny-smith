@@ -923,7 +923,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     // set_poweron_defaults.
     set_poweron_defaults(p, /*cold*/ true);
 
-    // Apply a pending video-mode pick's DEPTH over the power-on defaults
+    // Apply the slot entry's video_mode DEPTH over the power-on defaults
     // (the OS re-confirms it via the sResource + the PRAM seed below).
     if (seeded_monitor) {
         pixel_format_t f = format_for_bpp(seeded_depth_bpp);
@@ -1001,8 +1001,10 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     // lands on the chosen depth.  It survives the boot because the RTC's
     // power-up PRAM already carries the 'NuMc' token and a complete Start
     // Manager table -- which is also why the machine still finds and boots a
-    // SCSI volume (a bare token with a zeroed boot device cannot).
-    if (seeded_monitor && seeded_depth_bpp > 0) {
+    // SCSI volume (a bare token with a zeroed boot device cannot).  A cold
+    // boot only: a restore's PRAM is the RTC's own block, holding whatever the
+    // guest wrote there.
+    if (!cp && seeded_monitor && seeded_depth_bpp > 0) {
         rtc_t *rtc = cfg->rtc;
         if (rtc) {
             uint8_t saved_mode = savedmode_for_bpp(seeded_depth_bpp);

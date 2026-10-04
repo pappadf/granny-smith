@@ -1,0 +1,24 @@
+# A checkpoint saved with the SCSI selection timeout pending (see config.mk).
+
+machine.boot model="q700" ram=8192 rom="${$ROM}"
+
+let n = 0
+let hit = 0
+while $n < 3000 {
+scheduler.run 50000
+$n = $n + 1
+if contains("${scheduler.events}", "\"select_timeout\"") {
+$hit = 1
+break
+}
+}
+assert $hit == 1 "the selection timeout was never pending"
+
+assert checkpoint.save("${$WORK_DIR}/scsi-pending.checkpoint") "checkpoint save"
+assert checkpoint.load("${$WORK_DIR}/scsi-pending.checkpoint") "checkpoint load"
+assert contains("${scheduler.events}", "\"select_timeout\"") "the restored queue lost the selection timeout"
+
+# The restored machine runs on through the timeout and the rest of the probe.
+scheduler.run 20000000
+echo "scsi-pending-checkpoint ok"
+quit

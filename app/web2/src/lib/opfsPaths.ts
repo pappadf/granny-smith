@@ -18,21 +18,29 @@ export const UPLOAD_DIR = '/opfs/upload';
 // The scratch area: every file the page writes on its way somewhere else (an
 // upload being probed, a URL download, a streamed import's .dmg.part, a Save
 // State being downloaded) lives here, under a name no other operation uses,
-// and is removed by the operation that wrote it on every exit.  The core
-// empties it at startup (em_main.c), which covers a tab closed mid-operation.
-// Nothing is ever attached from it.  Files the user put in /opfs/upload
-// themselves are not touched.
+// and is removed by the operation that wrote it on every exit.  Nothing is
+// ever attached from it.  Files the user put in /opfs/upload themselves are
+// not touched.
 export const SCRATCH_DIR = `${UPLOAD_DIR}/.scratch`;
+
+// This tab's part of it: a directory of its own, which the tab holds a Web
+// Lock on (SCRATCH_LOCK_PREFIX + id) for as long as it lives.  A tab starting
+// up removes only the parts no live tab holds -- what a tab closed
+// mid-operation, or a crash, left behind (bus/scratch.ts) -- so a second tab
+// never wipes the first one's files.
+export const SCRATCH_ID = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+export const SCRATCH_LOCK_PREFIX = 'gs-scratch-';
+export const TAB_SCRATCH_DIR = `${SCRATCH_DIR}/${SCRATCH_ID}`;
 
 let scratchSeq = 0;
 
 // A scratch path for `name` that no other operation shares
-// ("<nonce>-<name>"): two uploads of one name, or two URL boots of one slot
-// (in this tab or another one of the origin), never write the same file.
+// ("<nonce>-<name>" in this tab's part): two uploads of one name, or two URL
+// boots of one slot, never write the same file.
 export function scratchPath(name: string): string {
   const rand = Math.random().toString(36).slice(2, 6);
   const nonce = `${Date.now().toString(36)}${(scratchSeq++).toString(36)}${rand}`;
-  return `${SCRATCH_DIR}/${nonce}-${name}`;
+  return `${TAB_SCRATCH_DIR}/${nonce}-${name}`;
 }
 
 // Checkpoint file signatures (v2 = per-block RLE, v3 = whole-file RLE).

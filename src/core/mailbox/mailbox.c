@@ -369,12 +369,25 @@ void gs_result_complete(uint32_t token, bool ok, const char *json) {
             continue;
         uint32_t req_id = m->defers[i].req_id;
         m->defers[i] = m->defers[--m->n_defers];
+        // A result is at most GS_MBX_RESULT_MAX - 1 bytes, like a drain's (the
+        // held buffer is GS_MBX_RESULT_MAX with its NUL): a larger one is an
+        // error naming its size, never cut short.
+        size_t len = strlen(json);
+        char too_big[128];
+        if (len >= GS_MBX_RESULT_MAX) {
+            snprintf(too_big, sizeof too_big, "{\"error\":\"result is %zu bytes, over the %u-byte result limit\"}", len,
+                     (unsigned)GS_MBX_RESULT_MAX);
+            json = too_big;
+            ok = false;
+            len = strlen(json);
+        }
         // No room on the event ring is the one thing that can go wrong
         // here; the answer is then held like a drain's result.
-        if (!gs_mailbox_write_result(m, req_id, ok, json, (uint32_t)strlen(json), NULL, 0)) {
+        if (!gs_mailbox_write_result(m, req_id, ok, json, (uint32_t)len, NULL, 0)) {
             m->out_id = req_id;
             m->out_ok = ok ? 1 : 0;
-            m->out_len = (uint32_t)snprintf(m->out, GS_MBX_RESULT_MAX, "%s", json);
+            memcpy(m->out, json, len + 1);
+            m->out_len = (uint32_t)len;
             m->held = true;
             m->held_out_len = 0;
             stat_add(m, GS_MBX_C_STAT_STALLS, 1);

@@ -335,6 +335,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // Core: memory map, the 601, the scheduler on the PPC seam.  CPI is
     // 1.0 — the 601 is near-1-CPI on HWInit's measurement loop, and 1.0
     // makes the measured clock land exactly on the snap-table value.
+    machine_part_begin(cfg, cp, "memory");
     cfg->mem_map =
         memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, MEMORY_BUS_ERR_NONE,
                         &cfg->build_opts.rom, cp); // no bus-error watchdog: unanswered floats to $FF
@@ -343,6 +344,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // core code registers on the bus map — a NuBus card's VRAM and
     // declaration ROM — are filled through our own page filler.
     memory_map_set_host_fill(cfg->mem_map, pdm_fill_page);
+    machine_part_begin(cfg, cp, "cpu");
     cfg->ppc = ppc_init(cp, cfg->machine->cpu_model);
     if (cfg->ppc) {
         memory_cpu_hooks_t hooks = ppc_memory_hooks(cfg->ppc);
@@ -354,6 +356,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     }
     machine_part(cfg, cp, "cpu", part_save_ppc, cfg->ppc);
     sched_cpu_if_t cpu_if = ppc_sched_if(cfg->ppc);
+    machine_part_begin(cfg, cp, "scheduler");
     cfg->scheduler = scheduler_init(&cpu_if, cp);
     machine_part(cfg, cp, "scheduler", part_save_scheduler, cfg->scheduler);
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
@@ -361,17 +364,20 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // The 601's RTC input: 7.8336 MHz on every PDM board.
     ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, 7833600u);
 
+    machine_part_begin(cfg, cp, "rtc");
     cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram);
     machine_part(cfg, cp, "rtc", part_save_rtc, cfg->rtc);
 
     // The ESCC cell in Curio behind the AMIC island decode (single base
     // $50F04000, +0 bCtl / +2 aCtl / +4 bData / +6 aData;
     // PCLK 15.6672 MHz, RTxC 3.672 MHz synthesized by AMIC).
+    machine_part_begin(cfg, cp, "scc");
     cfg->scc = scc_init(NULL, cfg->scheduler, pdm_scc_irq, cfg, cp);
     machine_part(cfg, cp, "scc", part_save_scc, cfg->scc);
     scc_set_clocks(cfg->scc, 15667200, 3672000);
 
     // The AppleTalk connection rides the SCC's LocalTalk channel.
+    machine_part_begin(cfg, cp, "appletalk");
     cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, cp);
     machine_part(cfg, cp, "appletalk", part_save_atalk, cfg->atalk);
 
@@ -382,6 +388,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // guest-measured timer rates are exactly φ2-equivalent (checked at
     // pdm-rom-ladder rung L17).
     uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
+    machine_part_begin(cfg, cp, "via1");
     cfg->via1 =
         via_init(NULL, cfg->scheduler, via_ff, "via1", pdm_via1_output, pdm_via1_shift_out, pdm_via1_irq, cfg, cp);
     machine_part(cfg, cp, "via1", part_save_via, cfg->via1);
@@ -395,11 +402,13 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     via_input_c(cfg->via1, 1, 1, 1);
 
     // ADB device state, serviced through Cuda packets (the AV pattern).
+    machine_part_begin(cfg, cp, "adb");
     cfg->adb = adb_init(NULL, cfg->scheduler, cp);
     machine_part(cfg, cp, "adb", part_save_adb, cfg->adb);
 
     // The behavioral Cuda (firmware 2.37 — the same 341S0788 part as the
     // AV machines) on the pseudo-VIA1 shift register + PB3/4/5.
+    machine_part_begin(cfg, cp, "cuda");
     st->cuda = av_cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/true);
     if (!st->cuda) {
         LOG(0, "Error: out of memory constructing the Cuda");
@@ -416,13 +425,16 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // discrete 53CF96 on its fast internal bus (40 MHz), instantiated with
     // no bus attached: every select times out, the empty-bus presentation.
     // hd=/cd= media land on cfg->scsi, i.e. the Curio bus, on all models.
-    cfg->scsi = profile_scsi_init(cfg->machine, cp, CONFIG_IMAGES(cfg));
+    machine_part_begin(cfg, cp, "scsi");
+    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, cp, CONFIG_IMAGES(cfg));
     machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
+    machine_part_begin(cfg, cp, "scsi96");
     st->scsi96[0] = scsi_53c96_init(cfg->scheduler, 20000000, cp);
     machine_part(cfg, cp, "scsi96", part_save_scsi96, st->scsi96[0]);
     scsi_53c96_set_irq_callback(st->scsi96[0], pdm_scsi96a_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96[0], cfg->scsi);
     if (pdm_board(cfg)->has_fast_scsi) {
+        machine_part_begin(cfg, cp, "scsi96_fast");
         st->scsi96[1] = scsi_53c96_init(cfg->scheduler, 40000000, cp);
         machine_part(cfg, cp, "scsi96_fast", part_save_scsi96, st->scsi96[1]);
         scsi_53c96_set_irq_callback(st->scsi96[1], pdm_scsi96b_irq, cfg);
@@ -431,6 +443,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // The internal SuperDrive behind SWIM3.  No memory map: PDM decodes
     // the controller through the AMIC island, not through a floppy region
     // of its own, so the shared module only carries the drive and media.
+    machine_part_begin(cfg, cp, "floppy");
     cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp,
                               CONFIG_IMAGES(cfg));
     machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
@@ -448,6 +461,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
 
     // The substrate's own part: the HMC config and AMIC register file are
     // plain data; derived mappings are rebuilt below.
+    machine_part_begin(cfg, cp, "pdm");
     if (cp) {
         system_read_checkpoint_data(cp, &st->hmc, sizeof(st->hmc));
         system_read_checkpoint_data(cp, &st->amic, sizeof(st->amic));
@@ -466,14 +480,12 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // each card registers its own regions over the empty windows BART
     // claimed above.
     cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, cp);
-    if (cp)
-        nubus_checkpoint_restore(cfg->nubus, cp);
-    machine_part(cfg, cp, "nubus.cards", part_save_nubus_cards, cfg->nubus);
 
     // The monitor strapped to Ariel's built-in port: the document's on a
     // boot, the one the board was built with on a restore.  PDM_SENSE_NONE
     // (nothing connected) is what lets a NuBus card be the only screen.
     uint8_t monitor = pdm_monitor_for_build(cfg);
+    machine_part_begin(cfg, cp, "ariel.monitor");
     if (cp)
         system_read_checkpoint_data(cp, &monitor, sizeof monitor, "ariel.monitor");
 

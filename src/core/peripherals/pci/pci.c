@@ -24,8 +24,10 @@
 #include "log.h"
 #include "machine_parts.h"
 #include "machine_profile.h" // machine_substrate_t (slot-IRQ routing)
+#include "prom.h"
 #include "system_config.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -561,6 +563,101 @@ static const char *socket_card_id(const pci_slot_decl_t *s, const slot_opts_t *e
     return s->default_card;
 }
 
+// Format a refusal into the caller's buffer and say no.
+__attribute__((format(printf, 3, 4))) static bool refuse(char *why, size_t len, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(why, len, fmt, ap);
+    va_end(ap);
+    return false;
+}
+
+bool pci_slot_entry_check(const pci_slot_decl_t *slots, const char *model, const slot_opts_t *e, bool roms_final,
+                          char *why, size_t why_len) {
+    const pci_slot_decl_t *d = NULL;
+    for (const pci_slot_decl_t *s = slots; s && s->slot; s++) {
+        if (s->slot == e->slot)
+            d = s;
+    }
+    if (!d || d->kind == PCI_SLOT_ABSENT)
+        return refuse(why, why_len, "PCI slot %d on model '%s' takes no card", e->slot, model);
+    const pci_card_kind_t *k = NULL;
+    bool named = false;
+    if (e->empty) {
+        if (d->kind != PCI_SLOT_SOCKET)
+            return refuse(why, why_len, "PCI slot %d on model '%s' is built in and cannot be emptied", e->slot, model);
+    } else if (e->card[0]) {
+        k = pci_card_find(e->card);
+        if (!k) {
+            const char *near = pci_card_suggest(e->card);
+            if (near)
+                return refuse(why, why_len, "unknown card id '%s' — did you mean '%s'? (see catalog.pci_cards)",
+                              e->card, near);
+            return refuse(why, why_len, "unknown card id '%s' (see catalog.pci_cards)", e->card);
+        }
+        bool fits = d->kind == PCI_SLOT_SOCKET ? pci_card_fits_socket(d, k)
+                                               : (d->builtin_card_id && strcmp(d->builtin_card_id, k->id) == 0);
+        if (!fits)
+            return refuse(why, why_len, "card '%s' fits no slot on model '%s' (see catalog.profile(\"%s\").pci_slots)",
+                          e->card, model, model);
+        named = d->kind == PCI_SLOT_SOCKET;
+    } else {
+        k = pci_card_find(d->kind == PCI_SLOT_SOCKET ? d->default_card : d->builtin_card_id);
+    }
+    if (e->video_mode[0] || e->custom_mode[0])
+        return refuse(why, why_len, "PCI slot %d takes no video mode (a PCI display card senses its monitor)", e->slot);
+    for (int i = 0; i < e->n_options; i++) {
+        if (!k || !k->accepts_option || !k->accepts_option(e->options[i].key, e->options[i].value))
+            return refuse(why, why_len, "slot %d's card '%s' does not take option %s=%s", e->slot, k ? k->id : "(none)",
+                          e->options[i].key, e->options[i].value);
+    }
+    if (e->rom[0]) {
+        prom_id_t pid;
+        if (!prom_identify_card(e->rom, &pid))
+            return refuse(why, why_len,
+                          "prom '%s' is not a recognised PCI expansion ROM (see catalog.proms.identify for what it is "
+                          "instead)",
+                          e->rom);
+        if (!k || strcmp(pid.card_id, k->id) != 0)
+            return refuse(why, why_len, "prom '%s' is for card '%s', not slot %d's '%s'", e->rom, pid.card_id, e->slot,
+                          k ? k->id : "(none)");
+    }
+    if (roms_final && named && k && k->requires_prom && !prom_card_resolvable(k->id, e->rom[0] ? e->rom : NULL))
+        return refuse(why, why_len,
+                      "card '%s' (PCI slot %d) needs a PCI expansion ROM but no offered .prom file provides it", k->id,
+                      e->slot);
+    return true;
+}
+
+// A device's checkpoint part, opened before it is built and closed after
+// (defined with the part's save, below).
+static void device_part_open(config_t *cfg, checkpoint_t *cp, const char *name, rom_image_t *rom);
+static void device_part_close(config_t *cfg, checkpoint_t *cp, pci_device_t *dev, const char *name);
+
+// A restore's slot table is a file the user supplied: every entry that seats
+// a card goes through the checks machine.boot applies to a document's, bar
+// the PROM file (the card's PROM comes from its own block).  A bad entry
+// fails the restore, naming the slot.
+static bool slot_table_valid(slot_opts_t *entry, const pci_slot_decl_t *slots, const char *model) {
+    for (int n = 0; n < PCI_MAX_SLOTS; n++) {
+        slot_opts_t *e = &entry[n];
+        if (!slot_opts_sanitize(e, n)) {
+            LOG(0, "Error: the checkpoint's PCI slot %d entry is malformed", n);
+            return false;
+        }
+        if (!e->card[0])
+            continue;
+        slot_opts_t check = *e;
+        check.rom[0] = '\0';
+        char why[256];
+        if (!pci_slot_entry_check(slots, model, &check, false, why, sizeof why)) {
+            LOG(0, "Error: the checkpoint's PCI slot %d: %s", n, why);
+            return false;
+        }
+    }
+    return true;
+}
+
 static void pci_slots_part_save(void *obj, checkpoint_t *cp) {
     pci_root_t *root = obj;
     system_write_checkpoint_data(cp, root->entry, sizeof(root->entry), "pci");
@@ -578,13 +675,25 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
         return;
     // A boot takes the slot entries from the document; a restore, from the
     // root's own block.
-    if (cp)
+    machine_part_begin(root->cfg, cp, "pci");
+    if (cp) {
         system_read_checkpoint_data(cp, root->entry, sizeof(root->entry), "pci");
-    else {
+        if (!slot_table_valid(root->entry, root->slots, root->cfg->machine->id))
+            checkpoint_set_error(cp);
+    } else {
         for (int i = 0; i < root->cfg->build_opts.n_slots; i++) {
             const slot_opts_t *e = &root->cfg->build_opts.slots[i];
             if (e->slot > 0 && e->slot < PCI_MAX_SLOTS)
                 root->entry[e->slot] = *e;
+        }
+        // A built-in video's monitor is an argument of its construction, so
+        // its slot entry carries the build's sense (as the NuBus seats do),
+        // and the table's block gives it back on a restore.
+        for (const pci_slot_decl_t *s = root->slots; s && s->slot != 0; s++) {
+            if (s->kind != PCI_SLOT_BUILTIN || s->slot <= 0 || s->slot >= PCI_MAX_SLOTS)
+                continue;
+            root->entry[s->slot].slot = s->slot;
+            root->entry[s->slot].video_sense = machine_slot_sense(&root->cfg->build_opts);
         }
     }
     machine_part(root->cfg, cp, "pci", pci_slots_part_save, root);
@@ -643,12 +752,25 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
                 LOG(0, "slot %d names bus %d, which this machine does not have", s->slot, s->bus);
                 continue;
             }
+            // Each seated card is a part of its own, after the slot table: on a
+            // restore its block gives the expansion ROM it runs, which the
+            // factory takes, then its config header and state.
+            char part[32];
+            snprintf(part, sizeof part, "pci.slot.%d", s->slot);
+            rom_image_t rom;
+            device_part_open(root->cfg, cp, part, &rom);
             // A slot the document says nothing about builds with the card's
             // defaults.
             slot_opts_t none = {.slot = s->slot};
-            pci_device_t *dev = kind->factory(s->slot, root->cfg, cp, entry ? entry : &none);
+            pci_device_t *dev = kind->factory(s->slot, root->cfg, rom.data ? &rom : NULL, entry ? entry : &none);
+            free((void *)rom.data);
             if (!dev) {
                 LOG(1, "slot %d card factory '%s' returned NULL", s->slot, kind->id);
+                if (cp) {
+                    LOG(0, "Error: the checkpoint's PCI slot %d card '%s' could not be built", s->slot, kind->id);
+                    checkpoint_set_error(cp);
+                }
+                machine_part_cancel(root->cfg);
                 continue;
             }
             dev->slot_index = s->slot;
@@ -659,6 +781,7 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
                 // leave a phantom nobody frees.
                 LOG(0, "slot %d: device %d on bus %d is already seated; '%s' dropped", s->slot, s->device, s->bus,
                     kind->id);
+                machine_part_cancel(root->cfg);
                 if (dev->ops && dev->ops->teardown)
                     dev->ops->teardown(dev, root->cfg);
                 free(dev->rom);
@@ -672,6 +795,7 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
             // AAPL,interrupts and the OSes copy the number into $3C, so
             // the slot table and the header cannot disagree.
             dev->cfg.interrupt_line = (uint8_t)s->int_line;
+            device_part_close(root->cfg, cp, dev, part);
         }
     }
     // machine.pci's tree is built by the swap step (system_swap_in), like
@@ -723,31 +847,79 @@ static int pci_collect(pci_root_t *root, pci_device_t **out, int max) {
 
 #define PCI_MAX_TOTAL_DEVICES (PCI_MAX_BUSES * PCI_MAX_DEVICES)
 
-void pci_checkpoint_save(pci_root_t *root, checkpoint_t *cp) {
-    if (!root || !cp)
-        return;
-    pci_device_t *devs[PCI_MAX_TOTAL_DEVICES];
-    int n = pci_collect(root, devs, PCI_MAX_TOTAL_DEVICES);
-    for (int i = 0; i < n; i++) {
-        system_write_checkpoint_data(cp, &devs[i]->cfg, sizeof(devs[i]->cfg));
-        if (devs[i]->ops && devs[i]->ops->checkpoint_save)
-            devs[i]->ops->checkpoint_save(devs[i], cp);
-    }
+// The largest expansion ROM a device's block may carry.
+#define DEVICE_ROM_MAX (256u * 1024u)
+
+// A device's block: its expansion ROM (none for most), its config header,
+// then its own state.  The ROM is always in the block, so a checkpoint
+// restores the card it was saved with whatever PROM files the host offers now.
+static void pci_device_part_save(void *obj, checkpoint_t *cp) {
+    pci_device_t *dev = obj;
+    uint32_t size = dev->rom ? (uint32_t)dev->rom_size : 0;
+    system_write_checkpoint_data(cp, &size, sizeof size, "pci.rom");
+    if (size)
+        system_write_checkpoint_data(cp, dev->rom, size, "pci.rom");
+    system_write_checkpoint_data(cp, &dev->cfg, sizeof(dev->cfg), "pci.cfg");
+    if (dev->ops && dev->ops->checkpoint_save)
+        dev->ops->checkpoint_save(dev, cp);
 }
 
-void pci_checkpoint_restore(pci_root_t *root, checkpoint_t *cp) {
-    if (!root || !cp)
+// Open the part `name` and, on a restore, read the expansion ROM its block
+// begins with into *rom (data owned by the caller; size 0 for none).
+static void device_part_open(config_t *cfg, checkpoint_t *cp, const char *name, rom_image_t *rom) {
+    *rom = (rom_image_t){0};
+    machine_part_begin(cfg, cp, name);
+    if (!cp)
+        return;
+    uint32_t size = 0;
+    system_read_checkpoint_data(cp, &size, sizeof size, "pci.rom");
+    if (checkpoint_has_error(cp) || !size)
+        return;
+    if (size > DEVICE_ROM_MAX) {
+        LOG(0, "Error: the checkpoint's '%s' expansion ROM is %u bytes (at most %u)", name, size, DEVICE_ROM_MAX);
+        checkpoint_set_error(cp);
+        return;
+    }
+    uint8_t *data = malloc(size);
+    if (!data) {
+        checkpoint_set_error(cp);
+        return;
+    }
+    system_read_checkpoint_data(cp, data, size, "pci.rom");
+    *rom = (rom_image_t){.data = data, .size = size};
+}
+
+// Read the rest of a built device's block -- its config header and state --
+// and register it as the open part.
+static void device_part_close(config_t *cfg, checkpoint_t *cp, pci_device_t *dev, const char *name) {
+    if (cp) {
+        system_read_checkpoint_data(cp, &dev->cfg, sizeof(dev->cfg), "pci.cfg");
+        if (dev->ops && dev->ops->checkpoint_restore)
+            dev->ops->checkpoint_restore(dev, cp);
+    }
+    machine_part(cfg, cp, name, pci_device_part_save, dev);
+}
+
+void pci_device_part(config_t *cfg, checkpoint_t *cp, pci_device_t *dev, const char *name) {
+    rom_image_t rom;
+    device_part_open(cfg, cp, name, &rom);
+    if (rom.data) {
+        // A board chip carries no expansion ROM; a block that says otherwise
+        // was not written by this machine.
+        LOG(0, "Error: the checkpoint gives board device '%s' an expansion ROM", name);
+        checkpoint_set_error(cp);
+        free((void *)rom.data);
+    }
+    device_part_close(cfg, cp, dev, name);
+}
+
+void pci_replay_decode(pci_root_t *root) {
+    if (!root)
         return;
     pci_device_t *devs[PCI_MAX_TOTAL_DEVICES];
     int n = pci_collect(root, devs, PCI_MAX_TOTAL_DEVICES);
-    for (int i = 0; i < n; i++) {
-        system_read_checkpoint_data(cp, &devs[i]->cfg, sizeof(devs[i]->cfg));
-        if (devs[i]->ops && devs[i]->ops->checkpoint_restore)
-            devs[i]->ops->checkpoint_restore(devs[i], cp);
-        // Replay the BAR transitions from the restored latches so the
-        // decode is rebuilt without any card code.
+    for (int i = 0; i < n; i++)
         pci_device_regions_changed(devs[i]);
-    }
 }
 
 void pci_reset(pci_root_t *root) {

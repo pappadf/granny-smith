@@ -23,6 +23,12 @@
 #include <string.h>
 
 // --- Stubs for declrom.c's loader-side dependencies (unused here) -----------
+bool vrom_identify_bytes(const uint8_t *data, size_t size, vrom_id_t *out) {
+    (void)data;
+    (void)size;
+    (void)out;
+    return false;
+}
 bool vrom_identify_card(const char *path, vrom_id_t *out) {
     (void)path;
     (void)out;

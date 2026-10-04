@@ -50,7 +50,7 @@ static void complete_with(uint32_t token, value_t *v) {
     if (v->kind == V_MAP || v->kind == V_LIST) {
         vbuf_t b = {0};
         value_format(v, VFMT_JSON_TAGGED, &b);
-        if (b.p && b.len <= GS_MBX_RESULT_MAX)
+        if (b.p && b.len < GS_MBX_RESULT_MAX) // the result's limit (mailbox.h), its NUL aside
             gs_result_complete(token, true, b.p);
         else {
             char err[128];

@@ -34,7 +34,6 @@ void part_save_keyboard(void *obj, checkpoint_t *cp); // keyboard_t
 void part_save_mouse(void *obj, checkpoint_t *cp); // mouse_t
 void part_save_sound(void *obj, checkpoint_t *cp); // sound_t
 void part_save_mmu(void *obj, checkpoint_t *cp); // mmu_state_t (the 68030 PMMU)
-void part_save_nubus_cards(void *obj, checkpoint_t *cp); // nubus_bus_t: each seated card's state
 void part_save_scsi96(void *obj, checkpoint_t *cp); // scsi_53c96_t
 void part_save_sonic(void *obj, checkpoint_t *cp); // sonic_t
 void part_save_egret(void *obj, checkpoint_t *cp); // egret_t (the IIsi's Egret, the towers' Caboose)

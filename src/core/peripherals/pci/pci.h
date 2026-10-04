@@ -199,20 +199,36 @@ void pci_init(pci_root_t *root, const pci_slot_decl_t *slots);
 
 // Walk the slot table, resolve each entry's card (the boot document's entry
 // for the slot in cfg->build_opts, else the declared default_card), run the
-// factories with the slot's entry, seat the results, then build the object
-// model.  Called by the
-// family AFTER its bridges and builtin devices exist.
+// factories with the slot's entry and seat the results, each card a
+// checkpoint part of its own (pci_device_part).  Called by the family AFTER
+// its bridges and builtin devices exist.
 void pci_seat_slots(pci_root_t *root, checkpoint_t *cp);
 
 // The slot declaration for `slot`, or NULL when the machine doesn't
 // declare it.
 const pci_slot_decl_t *pci_slot_decl_get(pci_root_t *root, int slot);
+
+// Check one slot entry against the machine's slot table: the slot takes a
+// card, the card exists and fits, it takes the options given and no video
+// mode, its PROM is its own -- and with `roms_final`, that a card the entry
+// names finds a PROM it requires.  machine.boot checks the document's entries
+// with it, a restore the entries its checkpoint carries.  On false, `why`
+// says what is wrong (`model` names the machine in it).
+bool pci_slot_entry_check(const pci_slot_decl_t *slots, const char *model, const slot_opts_t *e, bool roms_final,
+                          char *why, size_t why_len);
 // The device seated in `slot`, or NULL, and the card kind that made it.
 pci_device_t *pci_slot_device(pci_root_t *root, int slot);
 const pci_card_kind_t *pci_slot_kind(pci_root_t *root, int slot);
 
-void pci_checkpoint_save(pci_root_t *root, checkpoint_t *cp);
-void pci_checkpoint_restore(pci_root_t *root, checkpoint_t *cp);
+// Make `dev`, just attached, the checkpoint part `name`: its config header
+// and its own state (ops->checkpoint_save / _restore).  A restore reads them
+// into the device here; the decode its BARs open waits for pci_replay_decode,
+// since the board claims the bus windows after the walk.
+void pci_device_part(struct config *cfg, checkpoint_t *cp, pci_device_t *dev, const char *name);
+
+// Rebuild every device's decode from its config header -- after a restore,
+// once the board's bus windows exist.  Reads nothing from the checkpoint.
+void pci_replay_decode(pci_root_t *root);
 
 // PCI RST#: every seated device's header returns to power-on (command
 // clear ⇒ regions undecoded) and its ops->reset runs.

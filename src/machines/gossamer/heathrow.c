@@ -596,7 +596,7 @@ static const pci_device_ops_t hr_pci_ops = {
     .name = hr_pci_name,
 };
 
-void gos_heathrow_pci_attach(config_t *cfg) {
+void gos_heathrow_pci_attach(config_t *cfg, checkpoint_t *cp) {
     gossamer_state_t *st = gos_st(cfg);
     st->heathrow_if.read_uint8 = hr_read8;
     st->heathrow_if.read_uint16 = hr_read16;
@@ -610,6 +610,7 @@ void gos_heathrow_pci_attach(config_t *cfg) {
     pci_cfg_reset(&st->heathrow_dev);
     pci_bar_backing_iface(&st->heathrow_dev, 0, &st->heathrow_if, cfg);
     pci_bus_add_device(st->bus, &st->heathrow_dev, GOS_DEV_HEATHROW);
+    pci_device_part(cfg, cp, &st->heathrow_dev, "pci.heathrow");
 }
 
 // ============================================================

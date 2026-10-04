@@ -846,7 +846,7 @@
         {#if pciSockets.length > 1 && pciSelected}
           <Field
             class="form-row"
-            help="A card is installed in the first socket. Filling the others needs a per-socket pick, which the boot document does not carry yet."
+            help="A card is installed in the first socket. The others are configured socket by socket with machine.boot's slots=, which this dialog does not offer yet."
           />
         {/if}
         {#each pciCardOptions_ as opt (opt.key)}

@@ -25,6 +25,15 @@ assert machine.rom.id == "97221136" "rom from CLI"
 assert machine.nubus.slot[9].number == 9 "populated socket $9 missing from object model"
 assert try(machine.nubus.slot[10].number, none) == none "an empty socket has no slot node"
 
+# --- A log line written while a machine is built carries the running
+# machine's PC and instruction count; it used to reach for the machine
+# under construction and stop on the construction assert. ---
+log.set setup level=1 ts=true pc=true
+log.set nubus level=1 ts=true pc=true
+assert machine.boot(model="iicx", rom="${$ROM}") "a boot with decorated construction logs"
+log.set setup level=0 ts=false pc=false
+log.set nubus level=0 ts=false pc=false
+
 # --- The document is the whole specification: model and rom are required. ---
 assert !machine.boot() "bare machine.boot must be rejected (model required)"
 assert !machine.boot(model="iicx") "machine.boot without rom must be rejected"
@@ -34,23 +43,53 @@ assert !machine.boot(rom="${$ROM}") "machine.boot without model must be rejected
 assert !machine.boot(model="bogus", rom="${$ROM}") "unknown model must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", ram=999) "off-menu ram must be rejected"
 assert !machine.boot(model="iicx", rom="does/not/exist.rom") "unreadable rom must be rejected"
+# A real ROM the model does not run: another machine's, or a file that is no
+# ROM at all.
+assert !machine.boot(model="iicx", rom="../../data/roms/plus-v3-4d1f8172.rom") "a Plus ROM on a IIcx must be rejected"
+assert !machine.boot(model="plus", rom="${$ROM}") "a IIcx ROM on a Plus must be rejected"
+assert !machine.boot(model="iicx", rom="../../data/roms/display-card-24ac-d8daab87.vrom") "a vROM as the machine ROM must be rejected"
+assert machine.id == "iicx" "a rejected ROM left the running machine alone"
 assert !machine.boot(model="iicx", rom="${$ROM}", vrom="../../data/roms/plus-v3-4d1f8172.rom") "non-vROM vrom= must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", video_card="nonesuch") "unknown card id must be rejected"
 # A real card that fits no slot of this model (the IIci's built-in RBV video
 # on a IIcx) is rejected too: seated nowhere, it used to boot the default
 # display and leave the row that named it testing something else.
 assert !machine.boot(model="iicx", rom="${$ROM}", video_card="builtin_rbv_video") "a card that fits no slot must be rejected"
+# A built-in slot takes its own card or a sibling -- on-board too, driving the
+# same monitors (the SE/30's generic and real video) -- never just any
+# on-board video: another machine's would drive registers laid out for a
+# different chip.
+assert !machine.boot(model="se30", rom="${$ROM}", video_card="builtin_rbv_video") "the IIci's on-board video must not fit the SE/30's built-in slot"
+assert !machine.boot(model="iici", rom="../../data/roms/iici-368cadfe.rom", video_card="builtin_se30_video") "the SE/30's on-board video must not fit the IIci's built-in slot"
+assert !machine.boot(model="iici", rom="../../data/roms/iici-368cadfe.rom", video_card="se30") "the SE/30's generic video must not fit the IIci's built-in slot"
 # 15 is one past the top of Apple's indexed sense numbering: 0..7 is the
 # passive 3-bit code, 8..14 names a monitor that answers the EXTENDED
 # tie-matrix probe (dafb.h's DAFB_SENSE_INDEXED_*).
 assert !machine.boot(model="iicx", rom="${$ROM}", video_sense=15) "out-of-range sense must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", video_mode="nonesuch") "unknown video mode must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", pci_card="tnt_control") "pci_card= on a model with no PCI slots must be rejected"
+# vrom= / prom= give a slot's card its ROM; they never choose a card, so a file
+# that fits nothing the machine seats is a mistake, not a no-op.
+assert !machine.boot(model="iicx", rom="${$ROM}", vrom="../../data/roms/display-card-24ac-d8daab87.vrom") "a vrom= for a card no slot holds must be rejected"
+assert !machine.boot(model="iicx", rom="${$ROM}", prom="../../data/roms/mach64-gx-104-437584e0.prom") "prom= on a model with no PCI slots must be rejected"
+assert !machine.boot(model="pm9500", rom="../../data/roms/pm7500-pm8500-pm9500-96cd923d.rom", vrom="../../data/roms/824gc-v1.0-reva-9e9857e8.vrom") "vrom= on a model with no NuBus slots must be rejected"
 # slots= is checked slot by slot, before teardown too.
 assert !machine.boot(model="iicx", rom="${$ROM}", slots="8=824gc") "a slot the model does not have must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", slots="9") "an entry that is not SLOT=CARD must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=nonesuch") "an unknown card in slots= must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc;9=8_24") "a slot named twice must be rejected"
+assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc,,mode=gc_640x480_8bpp") "an empty field must be rejected"
+assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc,") "a trailing comma must be rejected"
+assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc,mode=gc_640x480_8bpp,mode=gc_640x480_1bpp") "mode= given twice must be rejected"
+assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=none,mode=gc_640x480_8bpp") "an empty slot with settings must be rejected"
+assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc,mode= ") "an empty value must be rejected"
+# A leading zero is decimal, not octal: 011 is slot 11 ($B), not 9.
+assert machine.boot(model="iicx", rom="${$ROM}", slots="011=824gc") "a zero-padded slot number"
+assert machine.nubus.slot[11].card.id == "824gc" "011 must be slot 11, not octal 9"
+assert machine.nubus.slot[9].card.id == "mdc_8_24" "011 must not touch slot 9"
+# Blanks around the parts and an empty entry are nothing.
+assert machine.boot(model="iicx", rom="${$ROM}", slots=" 9 = 824gc , mode = gc_640x480_8bpp ;; ") "blanks and an empty entry"
+assert machine.nubus.slot[9].card.mode.depth == 8 "the blank-padded entry's mode"
 assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc,mode=rgb_640x480_8bpp") "a mode of another card must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc,custom=640x480x8") "custom geometry on a card without it must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=8_24,custom=640x480x16") "custom geometry the card cannot hold must be rejected"
@@ -162,5 +201,9 @@ assert try(machine.nubus.slot[9].card.id, none) == none "the old card must not r
 assert machine.boot(model="iicx", rom="${$ROM}") "back to a carded model"
 assert machine.nubus.slot[9].card.id == "mdc_8_24" "video_card must not survive any model change"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24" "slot default after the round trip"
+
+# --- A built-in slot takes its card's sibling (the SE/30's generic video). ---
+assert machine.boot(model="se30", rom="${$ROM}", video_card="builtin_se30_video") "the SE/30's real video is its built-in slot's sibling"
+assert machine.nubus.slot[14].card.id == "builtin_se30_video" "the sibling is what the slot seats"
 
 quit

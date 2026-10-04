@@ -80,9 +80,6 @@ void part_save_sound(void *obj, checkpoint_t *cp) {
 void part_save_mmu(void *obj, checkpoint_t *cp) {
     mmu_checkpoint_save(obj, cp);
 }
-void part_save_nubus_cards(void *obj, checkpoint_t *cp) {
-    nubus_checkpoint_save(obj, cp);
-}
 
 void part_save_scsi96(void *obj, checkpoint_t *cp) {
     scsi_53c96_checkpoint(obj, cp);
@@ -106,6 +103,7 @@ static void part_save_irq(void *obj, checkpoint_t *cp) {
 }
 
 void machine_part_irq(config_t *cfg, checkpoint_t *cp) {
+    machine_part_begin(cfg, cp, "irq");
     if (cp)
         system_read_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
     machine_part(cfg, cp, "irq", part_save_irq, cfg);
@@ -116,6 +114,7 @@ static void part_save_images(void *obj, checkpoint_t *cp) {
 }
 
 void machine_part_images(config_t *cfg, checkpoint_t *cp) {
+    machine_part_begin(cfg, cp, "images");
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
     machine_part(cfg, cp, "images", part_save_images, cfg);

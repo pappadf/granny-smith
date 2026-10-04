@@ -124,6 +124,11 @@ bool laserwriter_job_finish(void);
 // Frees the job without finishing (the connection went away mid-job).
 void laserwriter_job_abort(void);
 
+// Picks a job still outstanding up again under the machine now on the cable:
+// a job whose data was all in when its machine went keeps running (its
+// transport poll re-armed on the new machine's scheduler).
+void laserwriter_job_resume(void);
+
 // Writes the PAP status text for the current state into `out`: idle,
 // starting up (open outstanding), busy with the job name, or printing with
 // the page count.

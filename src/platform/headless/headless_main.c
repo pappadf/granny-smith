@@ -403,6 +403,14 @@ host_pacing_t *platform_pacing(void) {
     return &s_pacing;
 }
 
+// A new machine is the active one: what the session counts of the previous
+// machine is not compared with it (the --max-cycles count, main()).
+static bool s_count_rebase;
+
+void platform_machine_attached(void) {
+    s_count_rebase = true;
+}
+
 // One turn of the loop: a frame-unit if the machine runs, then the drain.
 // Returns whether anything happened (a frame ran or a request was served).
 // One frame, when the machine runs.  Also what inline mode (job.h) calls
@@ -1801,14 +1809,26 @@ int main(int argc, char *argv[]) {
             printf("\nStarting emulation (Ctrl+C to stop)...\n\n");
     }
 
-    // Main loop
-    uint64_t start_cycles = cpu_instr_count();
+    // Main loop.  --max-cycles counts instructions run, across every machine
+    // the session runs: a machine.boot or checkpoint.load replaces the one
+    // being counted, and the count carries on from the new one's start
+    // (platform_machine_attached) rather than subtracting across them.
+    uint64_t spent_cycles = 0;
+    uint64_t last_cycles = cpu_instr_count();
+    s_count_rebase = false;
 
     while (g_running && !quit_requested) {
         // Check for max cycles limit
         if (max_cycles > 0) {
-            uint64_t elapsed_cycles = cpu_instr_count() - start_cycles;
-            if (elapsed_cycles >= max_cycles) {
+            uint64_t now = cpu_instr_count();
+            if (s_count_rebase) {
+                s_count_rebase = false;
+                last_cycles = now;
+            }
+            if (now > last_cycles)
+                spent_cycles += now - last_cycles;
+            last_cycles = now;
+            if (spent_cycles >= max_cycles) {
                 if (!quiet)
                     printf("\nReached cycle limit (%llu cycles)\n", (unsigned long long)max_cycles);
                 break;

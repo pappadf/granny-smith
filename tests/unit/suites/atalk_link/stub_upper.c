@@ -144,9 +144,13 @@ void atalk_printer_register_timers(struct atalk_conn *conn) {
 void atalk_printer_unplug(void) {
     g_printer_unplugs++;
 }
+void atalk_printer_plug(void) {}
 void atalk_printer_link_down(void) {}
 const char *atalk_printer_get_status(void) {
     return "";
+}
+bool atalk_printer_job_finishing(void) {
+    return false;
 }
 bool atalk_printer_has_interpreter(void) {
     return false;

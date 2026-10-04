@@ -225,7 +225,7 @@ void gos_ata_write32(config_t *cfg, uint32_t off, uint32_t value) {
 
 void gos_ata_init(config_t *cfg, checkpoint_t *cp) {
     gossamer_state_t *st = gos_st(cfg);
-    st->atapi = scsi_init_named(cp, CONFIG_IMAGES(cfg), "atapi");
+    st->atapi = scsi_init_named(cfg->scheduler, cp, CONFIG_IMAGES(cfg), "atapi");
     for (int c = 0; c < 2; c++) {
         ata_channel_t *ch = &st->ata[c];
         ata_channel_init(ch, c);

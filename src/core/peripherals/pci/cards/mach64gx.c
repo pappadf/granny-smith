@@ -3587,8 +3587,7 @@ static void mach64_attach_objects(pci_device_t *dev, struct object *card_node) {
 // The factory and the card kind
 // ============================================================
 
-static pci_device_t *mach64_factory(int slot_index, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
-    (void)cp;
+static pci_device_t *mach64_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
     mach64_t *m = (mach64_t *)calloc(1, sizeof(*m));
     if (!dev || !m) {
@@ -3610,10 +3609,18 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, checkpoint_t 
     // already failed machine.boot's validation; reaching here with nothing
     // means a slot DEFAULT could not resolve, which degrades to an empty
     // slot with a log rather than killing the boot.
-    uint8_t *rom = NULL;
-    size_t rom_size = 0;
-    char *rom_path = NULL;
-    if (!prom_load_card("mach64_gx", opts->rom[0] ? opts->rom : NULL, &rom, &rom_size, &rom_path)) {
+    // A restore hands back the ROM the card ran, from its checkpoint.
+    uint8_t *prom = NULL;
+    size_t prom_size = 0;
+    char *prom_path = NULL;
+    if (rom && rom->data && rom->size) {
+        prom = (uint8_t *)malloc(rom->size);
+        if (prom) {
+            memcpy(prom, rom->data, rom->size);
+            prom_size = rom->size;
+        }
+    }
+    if (!prom && !prom_load_card("mach64_gx", opts->rom[0] ? opts->rom : NULL, &prom, &prom_size, &prom_path)) {
         LOG(0,
             "slot %d: no expansion ROM available for the Mach64 GX — the card cannot enumerate "
             "without its own FCode, so the slot is left empty",
@@ -3622,9 +3629,9 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, checkpoint_t 
         free(dev);
         return NULL;
     }
-    dev->rom = rom;
-    dev->rom_size = rom_size;
-    free(rom_path);
+    dev->rom = prom;
+    dev->rom_size = prom_size;
+    free(prom_path);
 
     const char *vram = slot_opts_option(opts, "vram");
     m->vram_size = vram ? mach64_vram_by_id(vram) : MACH64_VRAM_2MB;
@@ -3676,7 +3683,7 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, checkpoint_t 
     pci_device_add_fixed_region(dev, PCI_SPACE_IO, 0, MACH64_IO_SPAN, MACH64_IO_MATCH_MASK, m->io_base, &m->io_if, m);
 
     LOG(1, "Mach64: seated in slot %d: %u MB VRAM, monitor '%s' (primary sense %u), %zu-byte expansion ROM", slot_index,
-        m->vram_size >> 20, m->mon->id, m->mon->primary, rom_size);
+        m->vram_size >> 20, m->mon->id, m->mon->primary, prom_size);
     return dev;
 }
 
@@ -3709,8 +3716,8 @@ const pci_card_kind_t mach64_gx_kind = {
 // The monitor is Apple's 14" RGB (sense 6, extended from its straps): a
 // 640 x 480 display whose code every Mac driver knows.
 
-static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
-    (void)cp;
+static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+    (void)rom;
     (void)opts;
     pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
     mach64_t *m = (mach64_t *)calloc(1, sizeof(*m));

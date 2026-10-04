@@ -12,6 +12,7 @@ EXTRA_SRCS   := ../../../../src/core/mailbox/mailbox.c \
                 ../../../../src/core/job/job.c \
                 ../../../../src/core/job/seam.c \
                 ../../../../src/core/io/io_worker.c \
+                ../../../../src/core/storage/io_leaf.c \
                 ../../../../src/core/mailbox/gs_out.c \
                 ../../../../src/core/object/api.c \
                 ../../../../src/core/object/meta.c \

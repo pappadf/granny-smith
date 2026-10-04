@@ -474,10 +474,12 @@ int mcu_build_dafb(config_t *cfg, checkpoint_t *cp) {
     // The monitor on the built-in port: the document's on a boot, the one
     // the board was built with on a restore.
     uint8_t monitor = dafb_sense_for_build(cfg);
+    machine_part_begin(cfg, cp, "dafb.monitor");
     if (cp)
         system_read_checkpoint_data(cp, &monitor, sizeof monitor, "dafb.monitor");
     machine_part(cfg, cp, "dafb.monitor", part_save_dafb_monitor, st);
 
+    machine_part_begin(cfg, cp, "dafb");
     st->dafb = dafb_init(desc->dafb_vram_size, monitor, cp);
     if (!st->dafb) {
         LOG(0, "Error: out of memory constructing the DAFB");
@@ -586,9 +588,11 @@ static int mcu_init(config_t *cfg, checkpoint_t *cp) {
     // 25 MHz (Q700/Q900) and 33 MHz (Q950), so the previous hardcoded 20/21 —
     // inherited from the 16 MHz IIcx — ran both machines' VIA timers fast.
     uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
+    machine_part_begin(cfg, cp, "via1");
     cfg->via1 = via_init(NULL, cfg->scheduler, via_ff, "via1", board->via1_output, board->via1_shift_out,
                          mac030_glue_via1_irq, cfg, cp);
     machine_part(cfg, cp, "via1", part_save_via, cfg->via1);
+    machine_part_begin(cfg, cp, "via2");
     cfg->via2 = via_init(NULL, cfg->scheduler, via_ff, "via2", board->via2_output, NULL, mac030_glue_via2_irq, cfg, cp);
     machine_part(cfg, cp, "via2", part_save_via, cfg->via2);
     // Exact-rational phi2: the integer divisor above rounds, and on this
@@ -607,9 +611,6 @@ static int mcu_init(config_t *cfg, checkpoint_t *cp) {
     // over the bus-error range, and slot IRQs route through the substrate's
     // nubus_slot_irq into the VIA2 PA aggregate.
     cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, cp);
-    if (cp)
-        nubus_checkpoint_restore(cfg->nubus, cp);
-    machine_part(cfg, cp, "nubus.cards", part_save_nubus_cards, cfg->nubus);
     // Project the cards' host regions (VRAM, declaration ROMs) into the
     // page table so CPU accesses resolve with the MMU off; the bus
     // resolver serves the 040 walker when it's on.  No Mode-24 aliases —
@@ -735,6 +736,7 @@ static void mcu_restore_private(config_t *cfg, checkpoint_t *cp);
 
 void mcu_private_part(config_t *cfg, checkpoint_t *cp) {
     mcu_state_t *st = mcu_st(cfg);
+    machine_part_begin(cfg, cp, "mcu");
     if (cp)
         mcu_restore_private(cfg, cp);
     machine_part(cfg, cp, "mcu", part_save_mcu_private, st);

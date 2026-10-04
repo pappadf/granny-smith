@@ -310,7 +310,7 @@ int gos_dbdma_source(int chan);
 // Build the bridge: config ports, the PCI bus, Grackle's own header at
 // device 0, the PCI memory/I/O windows, the board-register page.  Requires
 // cfg->pci.
-void gos_grackle_init(config_t *cfg);
+void gos_grackle_init(config_t *cfg, checkpoint_t *cp);
 void gos_grackle_reset(config_t *cfg); // power-on register file (DIMM inventory survives)
 void gos_grackle_remap(config_t *cfg); // rebuild the RAM decode from the bank registers
 uint16_t gos_board_id(config_t *cfg); // the $FF000004 halfword
@@ -318,7 +318,7 @@ uint16_t gos_board_id(config_t *cfg); // the $FF000004 halfword
 // === heathrow.c =============================================================
 
 void gos_heathrow_init(config_t *cfg); // power-on registers (NVRAM survives)
-void gos_heathrow_pci_attach(config_t *cfg); // header + BAR0 backing at device $10
+void gos_heathrow_pci_attach(config_t *cfg, checkpoint_t *cp); // header + BAR0 backing at device $10
 void gos_grackle_attach_objects(config_t *cfg);
 void gos_grackle_detach_objects(config_t *cfg);
 void gos_heathrow_attach_objects(config_t *cfg);

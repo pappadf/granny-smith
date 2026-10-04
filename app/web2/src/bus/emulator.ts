@@ -263,14 +263,15 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
   // core reads when it offers the voodoo2_webgpu card kind and when a card
   // picks its raster backend, so it is written before the page reports
   // ready: nothing can boot, or read the card catalog, before it is known.
-  // The GPU worker was started by ScreenView before the module; its answer
-  // is awaited alongside the emulator worker's own start-up.
-  const gpuAnswer = whenVoodooGpuReady(GPU_ANSWER_TIMEOUT_MS);
+  // The GPU worker was started by ScreenView before the module and answers
+  // while the emulator worker starts; its time-out runs from when the
+  // emulator worker is up, so a slow worker start-up is not counted against
+  // the GPU (an answer already in costs nothing).
   // Nothing is sent until the worker says it can dispatch; a worker that
   // never comes up fails the boot here instead of parking the first
   // request forever.
   await waitForWorkerReady();
-  mailbox.setGpuAvailable(await gpuAnswer);
+  mailbox.setGpuAvailable(await whenVoodooGpuReady(GPU_ANSWER_TIMEOUT_MS));
   moduleReady = true;
   startHeartbeatWatch();
 
@@ -862,7 +863,7 @@ export async function resumeEmulator(): Promise<void> {
   await gsEval('scheduler.run');
 }
 
-// UI mode name → core `scheduler.mode` value.
+// UI mode name → core `pacing.mode` value.
 const CORE_MODE: Record<SchedulerMode, string> = {
   live: 'paced',
   accel: 'accelerated',
@@ -871,9 +872,11 @@ const CORE_MODE: Record<SchedulerMode, string> = {
 
 // Push a pacing-mode change to the core and mirror it into UI state. The
 // toolbar buttons route through here so they actually reach the scheduler
-// (the pre-two-modes buttons only flipped local UI state).
+// (the pre-two-modes buttons only flipped local UI state). `pacing` is the
+// host's setting: it takes a mode with no machine running, and every machine
+// runs under it.
 export async function applySchedulerMode(mode: SchedulerMode): Promise<void> {
-  const res = await gsEval('scheduler.mode', [CORE_MODE[mode]]);
+  const res = await gsEval('pacing.mode', [CORE_MODE[mode]]);
   if (res && typeof res === 'object' && 'error' in res) {
     showNotification(`Scheduler mode failed: ${gsErrorText(res)}`, 'warning');
     return;

@@ -173,6 +173,10 @@ int atalk_printer_set_name(const char *name, char *err, size_t err_len);
 // The PAP status string as the workstation reads it.
 const char *atalk_printer_get_status(void);
 
+// True while a job whose data is all in is finishing after its connection
+// closed: the printer's, not the machine's, so it outlives a machine swap.
+bool atalk_printer_job_finishing(void);
+
 // True when the build links the PostScript interpreter (PLATEN=1); then a
 // job produces a PDF through the platform sink and the capture is optional.
 bool atalk_printer_has_interpreter(void);
@@ -256,6 +260,13 @@ void atalk_nbp_lookup_cancel(void);
 // LaserWriter, the "gs-host" program-linking peer -- with their NBP names and
 // the `appletalk` object tree.  appletalk_network_init creates it at startup;
 // no machine creates, tears down, carries or checkpoints it.
+//
+// Nor does anything persist it: the network's settings (shares added or
+// removed, the printer's name and enabled state, the peer) last as long as
+// the process.  On the web a page reload starts a new process, and the
+// network comes back with only the default share the platform publishes at
+// startup (system_set_default_share); a checkpoint restored there plugs its
+// machine into that network, not the one it was saved beside.
 //
 // A machine is plugged into it through its connection (config_t.atalk),
 // which its substrate constructs with the network as an argument when it

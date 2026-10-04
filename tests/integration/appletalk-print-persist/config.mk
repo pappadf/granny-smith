@@ -14,7 +14,7 @@
 # asks the printer whether its PatchPrep procset is resident and, when not,
 # uploads it inside `serverdict begin exitserver`.  So the first print on a
 # printer makes one job permanent, and a later print on the same printer
-# skips the upload and needs one PAP job fewer.  The row prints five times
+# skips the upload and needs one PAP job fewer.  The row prints six times
 # on the appletalk-print machine (Plus, System 6.0.8, LaserWriter 7.0) and
 # reads appletalk.printer.interpreter_jobs / interpreter_permanent_jobs:
 #
@@ -24,6 +24,7 @@
 #   4. appletalk.printer.restart(), print   a new printer: uploads again
 #   -  checkpoint.save, checkpoint.load     the restored machine: the same printer
 #   5. machine.boot, Chooser, print     a new machine, the same printer: no upload
+#   6. print, machine.boot while the job finishes   the document still arrives
 #
 # GATED ON THE INTERPRETER, like the other print rows: a PLATEN=0 binary has
 # no bridge, so the row logs a skip and passes.  To run it for real:
@@ -31,7 +32,7 @@
 #   make -C tests/integration test-appletalk-print-persist PLATEN=1
 
 TEST_NAME := LaserWriter printer lifetime (platen)
-TEST_DESC := Five prints across a machine.restart, a printer restart, a checkpoint load and a machine.boot: exitserver downloads live as long as the printer, which outlives machines.
+TEST_DESC := Six prints across a machine.restart, a printer restart, a checkpoint load and a machine.boot: exitserver downloads live as long as the printer, which outlives machines.
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 

@@ -408,6 +408,7 @@ int shell_init(void) {
     rom_init();
     machine_init();
     checkpoint_init();
+    pacing_init();
     files_init();
     log_class_init();
     catalog_init();

@@ -735,10 +735,9 @@ static const pci_device_ops_t control_pci_ops = {
 // The card kind.  Control is soldered down, so it attaches BUILTIN and is
 // instantiable only where a machine's slot table names it — it can never
 // be offered on a socket (pci_card_fits_socket).
-static pci_device_t *control_factory(int slot_index, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
+static pci_device_t *control_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)slot_index;
-    (void)cp;
-    (void)opts;
+    (void)rom;
     tnt_state_t *st = tnt_st(cfg);
     pci_device_t *dev = calloc(1, sizeof(*dev));
     if (!dev)
@@ -749,7 +748,7 @@ static pci_device_t *control_factory(int slot_index, config_t *cfg, checkpoint_t
     pci_cfg_reset(dev);
     st->control_dev = dev;
     tnt_control_register_events(cfg);
-    if (tnt_control_init(cfg) != 0) {
+    if (tnt_control_init(cfg, opts->video_sense) != 0) {
         // The PCI layer logs and skips a NULL factory return, so the machine
         // comes up without built-in video rather than dereferencing NULL
         // framebuffers on the first scanout.
@@ -964,13 +963,13 @@ static uint64_t control_fb_base(void *owner) {
     return (uint64_t)(st->display.bits - st->vram);
 }
 
-int tnt_control_init(config_t *cfg) {
+int tnt_control_init(config_t *cfg, int video_sense) {
     tnt_state_t *st = tnt_st(cfg);
-    // The built-in port's monitor, from the boot document's `monitor=` (the
-    // registry resolved it to a sense code); a restore overwrites the whole
-    // chip afterwards, so the saved strap wins there.
-    int want = cfg->build_opts.video_sense;
-    uint8_t sense = (want >= 0 && want <= 7) ? (uint8_t)want : CONTROL_MONITOR_SENSE_DEFAULT;
+    // The built-in port's monitor: its slot entry's sense (the boot
+    // document's `monitor=`, which the registry resolved to a sense code; on a
+    // restore, the PCI table's block).  The only place the strap is set: the
+    // chip's restore keeps it (tnt.c).
+    uint8_t sense = machine_sense_or(video_sense, 8, CONTROL_MONITOR_SENSE_DEFAULT);
     st->control.mon_grounded = (uint8_t)(~sense & 7u);
     st->vram = calloc(1, TNT_VRAM_SIZE);
     st->blank = calloc(1, TNT_VRAM_SIZE);

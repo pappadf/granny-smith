@@ -1,5 +1,5 @@
 # The printer's lifetime, read through the classic LaserWriter driver's
-# PatchPrep upload.  See config.mk for the five legs.
+# PatchPrep upload.  See config.mk for the legs.
 #
 # Each print is the appletalk-print row's: File -> Print Directory... of the
 # Macintosh HD window, from System 6.0.8 on a Plus.  A new machine starts
@@ -148,6 +148,41 @@ open_disk()
 print_directory()
 assert appletalk.printer.interpreter_permanent_jobs == 1 "the new machine's print downloaded PatchPrep again: the printer forgot it"
 assert appletalk.printer.interpreter_jobs - $jobs == $second "the new machine's print did not skip the upload"
+
+# --- 6. A print still finishing when the machine goes is not lost ----------------
+#
+# Once the driver has sent the whole document and closed its connection, the
+# job is the printer's: a machine.boot then takes the PAP session away, not the
+# job, and the document still reaches the sink under the next machine.
+
+let want = appletalk.printer.documents + 1
+machine.adb.mouse.move 53 10
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.move 100 203
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+click(452, 45, 100000)
+let n = 0
+while !appletalk.printer.finishing && appletalk.printer.documents < $want && $n < 20000 {
+    scheduler.run 100000
+    $n = $n + 1
+}
+assert appletalk.printer.finishing "the job never finished after its connection closed"
+assert appletalk.printer.documents < $want "the document arrived before the machine could go"
+
+machine.boot model="plus" rom="${$ROM}"
+let n = 0
+while appletalk.printer.documents < $want && $n < 300 {
+    scheduler.run 2000000
+    $n = $n + 1
+}
+assert appletalk.printer.documents == $want "a print finishing across machine.boot was lost"
+assert appletalk.printer.last_outcome == "ok" "the job finishing across machine.boot did not end cleanly"
+assert !appletalk.printer.finishing "the printer still holds the job"
+assert appletalk.printer.status == "status: idle" "the printer is not idle after the job"
 
 echo done
 quit

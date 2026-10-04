@@ -823,8 +823,7 @@ static void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code) {
 // The monitor strap a boot builds this Quadra's built-in video with: what the
 // document asked for, or the default $6 (13" RGB).
 uint8_t dafb_sense_for_build(const struct config *cfg) {
-    int s = cfg->build_opts.video_sense;
-    return (s >= 0 && (unsigned)s < DAFB_SENSE_INDEXED_MAX) ? (uint8_t)s : 0x6u;
+    return machine_sense_or(cfg->build_opts.video_sense, DAFB_SENSE_INDEXED_MAX, 0x6u);
 }
 
 void dafb_set_version(dafb_t *dafb, uint8_t version) {

@@ -38,6 +38,7 @@ LOG_USE_CATEGORY_NAME("setup");
 // Construct the GLUE peripheral set in canonical order — see header.
 int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_state_t *st,
                                   const mac030_board_desc_t *desc) {
+    machine_part_begin(cfg, cp, "adb");
     st->adb = adb_init(cfg->via1, cfg->scheduler, cp);
     cfg->adb = st->adb;
     machine_part(cfg, cp, "adb", part_save_adb, st->adb);
@@ -45,18 +46,21 @@ int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_s
     // The image list before the devices that reference it.
     machine_part_images(cfg, cp);
 
-    cfg->scsi = profile_scsi_init(cfg->machine, cp, CONFIG_IMAGES(cfg));
+    machine_part_begin(cfg, cp, "scsi");
+    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, cp, CONFIG_IMAGES(cfg));
     // SE/30, IIcx and IIx: an NCR 5380 behind the glue's own decode.
     scsi_5380_attach(cfg->scsi, cp);
     machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
     scsi_set_via(cfg->scsi, cfg->via2);
     setup_images(cfg);
 
+    machine_part_begin(cfg, cp, "asc");
     st->asc = asc_init(NULL, cfg->scheduler, cp);
     machine_part(cfg, cp, "asc", part_save_asc, st->asc);
     asc_set_via(st->asc, cfg->via2);
     asc_set_mix(st->asc, desc->asc_mix); // board speaker fold (not checkpointed)
 
+    machine_part_begin(cfg, cp, "floppy");
     st->floppy =
         floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp, CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
@@ -145,12 +149,15 @@ void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc) {
 // below it differ enough (one or two, different hooks, different IRQ sinks)
 // that they stay with each family.
 void mac030_build_lowspeed(config_t *cfg, checkpoint_t *cp, void (*scc_irq)(void *, bool)) {
+    machine_part_begin(cfg, cp, "rtc");
     cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram);
     machine_part(cfg, cp, "rtc", part_save_rtc, cfg->rtc);
+    machine_part_begin(cfg, cp, "scc");
     cfg->scc = scc_init(NULL, cfg->scheduler, scc_irq ? scc_irq : mac030_glue_scc_irq, cfg, cp);
     machine_part(cfg, cp, "scc", part_save_scc, cfg->scc);
     // 3.6864 MHz PCLK / 7.8336 MHz RTxC -- the same pair on every 68k Mac.
     scc_set_clocks(cfg->scc, 7833600, 3686400);
+    machine_part_begin(cfg, cp, "appletalk");
     cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, cp);
     machine_part(cfg, cp, "appletalk", part_save_atalk, cfg->atalk);
 }
@@ -196,9 +203,11 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
     // too fast on a IIci"), and a GLUE sibling on another clock would inherit
     // it the same way.
     uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
+    machine_part_begin(cfg, cp, "via1");
     cfg->via1 = via_init(NULL, cfg->scheduler, via_ff, "via1", board->via1_output, board->via1_shift_out,
                          mac030_glue_via1_irq, cfg, cp);
     machine_part(cfg, cp, "via1", part_save_via, cfg->via1);
+    machine_part_begin(cfg, cp, "via2");
     cfg->via2 = via_init(NULL, cfg->scheduler, via_ff, "via2", board->via2_output, board->via2_shift_out,
                          mac030_glue_via2_irq, cfg, cp);
     machine_part(cfg, cp, "via2", part_save_via, cfg->via2);
@@ -222,9 +231,7 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
     if (board->memory_layout_tail)
         board->memory_layout_tail(cfg);
 
-    if (cp)
-        nubus_checkpoint_restore(cfg->nubus, cp);
-    machine_part(cfg, cp, "nubus.cards", part_save_nubus_cards, cfg->nubus);
+    machine_part_begin(cfg, cp, "mmu");
     if (cp)
         mmu_checkpoint_restore(st->mmu, cp);
     machine_part(cfg, cp, "mmu", part_save_mmu, st->mmu);
@@ -245,11 +252,14 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
 void mac030_build_core(config_t *cfg, const struct mac030_board_desc *desc, checkpoint_t *cp) {
     // The board's NuBus bus-error window is part of the bus it builds.
     const memory_bus_err_window_t bus_err = {.lo = desc->bus_err_lo, .hi = desc->bus_err_hi};
+    machine_part_begin(cfg, cp, "memory");
     cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, bus_err,
                                    &cfg->build_opts.rom, cp);
     machine_part(cfg, cp, "memory", part_save_memory, cfg->mem_map);
+    machine_part_begin(cfg, cp, "cpu");
     cfg->cpu = cpu_init(cfg->machine->cpu_model, cp);
     machine_part(cfg, cp, "cpu", part_save_cpu, cfg->cpu);
+    machine_part_begin(cfg, cp, "scheduler");
     sched_cpu_if_t cpu_if = cpu_sched_if(cfg->cpu); // the 68K main-CPU seam adapter
     cfg->scheduler = scheduler_init(&cpu_if, cp);
     machine_part(cfg, cp, "scheduler", part_save_scheduler, cfg->scheduler);

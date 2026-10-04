@@ -231,7 +231,7 @@ static void setup(void) {
     s_cd_img.type = image_cdrom;
     s_cd_img.raw_size = sizeof s_cd; // what the bus model's range check reads
     s_hd_img.raw_size = sizeof s_hd;
-    s_bus = scsi_init_named(NULL, NULL, "atapi");
+    s_bus = scsi_init_named(NULL, NULL, NULL, "atapi");
     ASSERT_TRUE(s_bus != NULL);
     scsi_add_device(s_bus, CD_ID, "GS", "CD-ROM", "1.0", &s_cd_img, scsi_dev_cdrom, 2048, true);
     ata_channel_init(&s_ch, 0);

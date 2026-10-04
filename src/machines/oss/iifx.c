@@ -1534,6 +1534,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     // Divisor derived from the profile clock rather than the literal 51 this
     // used to carry -- via.h asks for exactly that, since a literal that suits
     // one member of a family is wrong for any sibling with a different clock.
+    machine_part_begin(cfg, checkpoint, "via1");
     cfg->via1 = via_init(NULL, cfg->scheduler, via_freq_factor_for_clock(cfg->machine->freq), "via1", iifx_via1_output,
                          iifx_via1_shift_out, iifx_via1_irq, cfg, checkpoint);
     machine_part(cfg, checkpoint, "via1", part_save_via, cfg->via1);
@@ -1558,13 +1559,16 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     machine_part_images(cfg, checkpoint);
 
-    cfg->scsi = profile_scsi_init(cfg->machine, checkpoint, CONFIG_IMAGES(cfg));
+    machine_part_begin(cfg, checkpoint, "scsi");
+    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, checkpoint, CONFIG_IMAGES(cfg));
     scsi_5380_attach(cfg->scsi, checkpoint); // IIfx: NCR 5380 behind the OSS
     machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
     setup_images(cfg);
 
+    machine_part_begin(cfg, checkpoint, "asc");
     st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
     machine_part(cfg, checkpoint, "asc", part_save_asc, st->asc);
+    machine_part_begin(cfg, checkpoint, "floppy");
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
     st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), checkpoint,
                              CONFIG_IMAGES(cfg));
@@ -1578,6 +1582,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     // via_input_sr() / via_input(pb3).  cfg->adb exposes this instance
     // to system_mouse_update / adb_keyboard_event so host-side mouse +
     // keyboard input routes here transparently.
+    machine_part_begin(cfg, checkpoint, "adb");
     st->adb = adb_init(NULL, cfg->scheduler, checkpoint);
     cfg->adb = st->adb;
     machine_part(cfg, checkpoint, "adb", part_save_adb, st->adb);
@@ -1588,13 +1593,16 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     st->asc_iface = asc_get_memory_interface(st->asc);
     st->floppy_iface = floppy_get_memory_interface(st->floppy);
 
+    machine_part_begin(cfg, checkpoint, "oss");
     st->oss = oss_init(iifx_oss_irq_changed, iifx_oss_control, cfg, cfg->scheduler, checkpoint);
     machine_part(cfg, checkpoint, "oss", part_save_oss, st->oss);
     st->oss_iface = oss_get_memory_interface(st->oss);
     asc_set_irq_handler(st->asc, iifx_asc_irq, cfg); // sound IRQ → OSS source 8
     scsi_set_irq_callback(cfg->scsi, iifx_scsi_irq, cfg);
+    machine_part_begin(cfg, checkpoint, "scc_iop");
     st->scc_iop = iop_init(SccIopNum, st->scc_iface, cfg->scc, iifx_scc_iop_irq, cfg, cfg->scheduler, checkpoint);
     machine_part(cfg, checkpoint, "scc_iop", part_save_iop, st->scc_iop);
+    machine_part_begin(cfg, checkpoint, "swim_iop");
     st->swim_iop =
         iop_init(SwimIopNum, st->floppy_iface, st->floppy, iifx_swim_iop_irq, cfg, cfg->scheduler, checkpoint);
     machine_part(cfg, checkpoint, "swim_iop", part_save_iop, st->swim_iop);
@@ -1614,6 +1622,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     iifx_memory_layout_init(cfg);
 
+    machine_part_begin(cfg, checkpoint, "scsi_dma");
     if (checkpoint) {
         system_read_checkpoint_data(checkpoint, &st->scsi_dma_ctrl, sizeof(st->scsi_dma_ctrl));
         system_read_checkpoint_data(checkpoint, &st->scsi_dma_count, sizeof(st->scsi_dma_count));
@@ -1622,9 +1631,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
         system_read_checkpoint_data(checkpoint, &st->scsi_dma_fifo_word, sizeof(st->scsi_dma_fifo_word));
     }
     machine_part(cfg, checkpoint, "scsi_dma", part_save_scsi_dma, st);
-    if (checkpoint)
-        nubus_checkpoint_restore(cfg->nubus, checkpoint);
-    machine_part(cfg, checkpoint, "nubus.cards", part_save_nubus_cards, cfg->nubus);
+    machine_part_begin(cfg, checkpoint, "mmu");
     if (checkpoint)
         mmu_checkpoint_restore(st->mmu, checkpoint);
     machine_part(cfg, checkpoint, "mmu", part_save_mmu, st->mmu);

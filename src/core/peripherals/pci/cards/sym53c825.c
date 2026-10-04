@@ -537,8 +537,7 @@ sym53c8xx_t *sym53c8xx_from_device(pci_device_t *dev) {
 // same card kind twice, at IDSEL 17 and 18, so the factory derives the
 // channel from the slot it was asked for rather than from a global counter
 // — restarts and checkpoint restores then reproduce the same assignment.
-static pci_device_t *sym825_factory_for(int slot_index, config_t *cfg, checkpoint_t *cp, int channel) {
-    (void)cp;
+static pci_device_t *sym825_factory_for(int slot_index, config_t *cfg, int channel) {
     pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
     sym53c8xx_t *s = sym53c8xx_new(cfg, channel);
     if (!dev || !s) {
@@ -574,14 +573,18 @@ static pci_device_t *sym825_factory_for(int slot_index, config_t *cfg, checkpoin
     return dev;
 }
 
-static pci_device_t *sym825_ch0_factory(int slot_index, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
+static pci_device_t *sym825_ch0_factory(int slot_index, config_t *cfg, const rom_image_t *rom,
+                                        const slot_opts_t *opts) {
     (void)opts;
-    return sym825_factory_for(slot_index, cfg, cp, 0);
+    (void)rom;
+    return sym825_factory_for(slot_index, cfg, 0);
 }
 
-static pci_device_t *sym825_ch1_factory(int slot_index, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
+static pci_device_t *sym825_ch1_factory(int slot_index, config_t *cfg, const rom_image_t *rom,
+                                        const slot_opts_t *opts) {
     (void)opts;
-    return sym825_factory_for(slot_index, cfg, cp, 1);
+    (void)rom;
+    return sym825_factory_for(slot_index, cfg, 1);
 }
 
 // Two kinds rather than one, because a card kind's factory takes no channel

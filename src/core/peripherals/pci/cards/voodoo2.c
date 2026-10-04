@@ -3456,8 +3456,8 @@ static pci_device_t *v2_build(int slot_index, config_t *cfg, const slot_opts_t *
     return dev;
 }
 
-static pci_device_t *v2_factory(int slot_index, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
-    (void)cp;
+static pci_device_t *v2_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+    (void)rom;
     return v2_build(slot_index, cfg, opts, V2_DEFAULT_RASTER);
 }
 
@@ -3465,8 +3465,8 @@ static pci_device_t *v2_factory(int slot_index, config_t *cfg, checkpoint_t *cp,
 // the boot document named a rasteriser itself.  Falls back to the exact
 // thread backend at creation where no GPU worker attaches (a checkpoint
 // restored without WebGPU, a native build), which regs.raster reports.
-static pci_device_t *v2_webgpu_factory(int slot_index, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
-    (void)cp;
+static pci_device_t *v2_webgpu_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+    (void)rom;
     return v2_build(slot_index, cfg, opts, "webgpu");
 }
 

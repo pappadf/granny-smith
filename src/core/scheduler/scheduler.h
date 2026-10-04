@@ -85,6 +85,10 @@ typedef struct host_pacing {
 // scheduler.speed and scheduler.max_speed read and write it.
 host_pacing_t *platform_pacing(void);
 
+// The root `pacing` object: the host's setting, there with or without a
+// machine (registered at shell start, like `checkpoint`).
+void pacing_init(void);
+
 // Set the pinned accelerated speed (0 = auto: the adaptive governor picks,
 // bounded by the cap; otherwise clamped to 1x..8x) or the cap (clamped to
 // 1x..8x) of a pacing setting.  Only accelerated mode uses either; paced and
@@ -318,6 +322,8 @@ void scheduler_set_cpi(struct scheduler *restrict s, uint32_t cpi);
 
 // Get the total number of CPU instructions executed so far
 uint64_t cpu_instr_count(void);
+// The same count for one scheduler (0 for NULL).
+uint64_t scheduler_instr_count(struct scheduler *s);
 
 // Reconcile sprint counters (called from IRQ handlers to stabilize accounting).
 // NULL (a machine without its scheduler yet) is a no-op.

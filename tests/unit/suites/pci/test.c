@@ -38,7 +38,7 @@ const pci_card_kind_t tnt_control_kind = {
 // stack).  requires_prom is kept true so the socket-fit rows below exercise a
 // card with a real ROM requirement; the factory is the counting one, so the
 // slot walk can be watched seating it.
-static pci_device_t *counting_factory(int slot_index, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts);
+static pci_device_t *counting_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts);
 const pci_card_kind_t mach64_gx_kind = {.id = "mach64_gx",
                                         .display_name = "Apple Accelerated PCI Graphics Card (ATI Mach64 GX)",
                                         .attach = PCI_ATTACH_PCI,
@@ -678,9 +678,9 @@ static int g_factory_calls;
 static int g_factory_slots[8];
 static const char *g_factory_vram[8]; // each call's vram= option, or NULL
 
-static pci_device_t *counting_factory(int slot_index, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
+static pci_device_t *counting_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)cfg;
-    (void)cp;
+    (void)rom;
     if (g_factory_calls < 8) {
         g_factory_slots[g_factory_calls] = slot_index;
         g_factory_vram[g_factory_calls] = slot_opts_option(opts, "vram");

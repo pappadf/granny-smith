@@ -216,14 +216,16 @@ int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8
 // up: the PAP socket and the advertisement.  register_timers runs when a machine's
 // connection is built (the PAP and LaserWriter timers on its scheduler).  link_down
 // drops the session when the connection is detached from the link, since its
-// client is unreachable; unplug, when the machine is unplugged, also drops a
-// job still finishing after its close, whose timers go with that machine's
-// scheduler.  The printer itself -- its name, its interpreter and what jobs
-// made permanent -- stays.
+// client is unreachable; unplug, when the machine is unplugged, drops its
+// session and a job still arriving with it.  A job whose data was all in is the
+// printer's: plug, when the next machine takes the cable, picks it up again on
+// that machine's scheduler.  The printer itself -- its name, its interpreter
+// and what jobs made permanent -- stays.
 void atalk_printer_register(void);
 void atalk_printer_register_timers(struct atalk_conn *conn);
 void atalk_printer_link_down(void);
 void atalk_printer_unplug(void);
+void atalk_printer_plug(void);
 
 // Publish (or rename) / withdraw the LaserWriter NBP entity.  The object model
 // drives these through atalk_printer_set_enabled / atalk_printer_set_name.

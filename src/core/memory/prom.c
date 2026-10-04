@@ -294,10 +294,6 @@ const char *prom_offer_find(const char *card_id, int idx, size_t *out_size) {
     return offer_registry_find(&s_offers, card_id, idx, out_size, NULL);
 }
 
-bool prom_card_catalogued(const char *card_id) {
-    return offer_registry_catalogued(&s_offers, card_id);
-}
-
 bool prom_card_resolvable(const char *card_id, const char *rom) {
     if (rom && *rom) {
         prom_id_t id;

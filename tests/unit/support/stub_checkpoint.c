@@ -80,6 +80,27 @@ size_t checkpoint_read_file_loc(checkpoint_t *checkpoint, uint8_t *dest, size_t 
 }
 
 // A unit test builds no machine checkpoint: parts register into nothing.
+bool checkpoint_read_count(checkpoint_t *checkpoint, uint32_t *out, uint32_t max, const char *what) {
+    (void)what;
+    system_read_checkpoint_data_loc(checkpoint, out, sizeof *out, NULL, __FILE__, __LINE__);
+    if (*out > max) {
+        checkpoint_set_error(checkpoint);
+        *out = 0;
+        return false;
+    }
+    return true;
+}
+
+void machine_part_begin(struct config *cfg, checkpoint_t *cp, const char *name) {
+    (void)cfg;
+    (void)cp;
+    (void)name;
+}
+
+void machine_part_cancel(struct config *cfg) {
+    (void)cfg;
+}
+
 void machine_part(struct config *cfg, checkpoint_t *cp, const char *name, machine_part_save_fn save, void *obj) {
     (void)cfg;
     (void)cp;

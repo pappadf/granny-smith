@@ -353,6 +353,14 @@ config_t *system_config(void) {
     return global_emulator;
 }
 
+config_t *system_running(void) {
+    return global_emulator;
+}
+
+struct scheduler *system_running_scheduler(void) {
+    return global_emulator ? global_emulator->scheduler : NULL;
+}
+
 // Per-kind sums of the tracked images' I/O counters -- the images the
 // machine's drives were given; host-side browsing opens its own handles and
 // never counts.  An ejected image does no I/O, so it never lights.
@@ -751,7 +759,8 @@ void system_set_default_share(const char *path) {
 // `checkpoint_auto_enabled` flag.
 // A new machine is the active one (machine.boot, checkpoint.load).  The host
 // re-bases whatever it samples from the machine: nothing it observed of the
-// previous machine is compared with this one.  Headless observes nothing.
+// previous machine is compared with this one (the page's MIPS sample, headless
+// --max-cycles' count).  The weak default serves a host that samples nothing.
 __attribute__((weak)) void platform_machine_attached(void) {}
 
 __attribute__((weak)) bool gs_checkpoint_auto_get(void) {
@@ -1174,8 +1183,9 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     cfg->ram_size = cfg->build_opts.ram_kb * 1024u;
 
     // The board is the checkpoint's first part: what the machine is.  On a
-    // restore, system_restore has read its block to choose the model and the
-    // RAM size it is built with.
+    // restore, system_restore has read it -- name and block -- to choose the
+    // model and the RAM size it is built with, so nothing is read here.
+    machine_part_begin(cfg, NULL, "machine");
     machine_part(cfg, checkpoint, "machine", board_part_save, cfg);
 
     // Delegate all machine-specific initialisation to the profile.  A
@@ -1198,9 +1208,11 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
         return NULL;
     }
 
-    // The ROM's bytes and path were borrowed for construction (the memory map
-    // copied them): drop them from the options the machine keeps.
-    cfg->build_opts.rom = (rom_image_t){.data = NULL, .size = 0, .path = NULL};
+    // The build options are construction's arguments, and construction is
+    // over: every device took what it needed (the memory map copied the ROM,
+    // the buses their slot entries, the video its monitor strap).  Nothing
+    // reads them again, so the machine keeps none of them.
+    cfg->build_opts = machine_build_opts_default();
 
     // A new machine powers on: the CPU starts from its reset vector, with the
     // ROM already in place, by the same path every reset takes.  Every device
@@ -1227,6 +1239,7 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
 
     // The event queue is the checkpoint's last part, restored once every
     // event source has been constructed and registered its types.
+    machine_part_begin(cfg, checkpoint, "events");
     if (checkpoint)
         scheduler_restore_events(cfg->scheduler, checkpoint);
     machine_part(cfg, checkpoint, "events", events_part_save, cfg->scheduler);
@@ -1245,7 +1258,7 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
 // active machine" changes here and nowhere else, so a build that fails --
 // system_create returning NULL, or a restore whose checkpoint flagged an
 // error -- has changed nothing and leaves nothing to put back.
-void system_swap_in(config_t *cfg, bool restored) {
+void system_swap_in(config_t *cfg, bool restored, const struct host_pacing *pacing) {
     config_t *old = global_emulator;
     global_emulator = cfg;
     memory_map_select(cfg->mem_map);
@@ -1291,6 +1304,9 @@ void system_swap_in(config_t *cfg, bool restored) {
 
     // A new machine is active: machine.boot and checkpoint.load both end here
     // (machine.restart builds nothing).  The page reloads its object trees on this.
+    // The machine runs as the host says from its first frame: a machine is
+    // built at the default pacing and given the host's here.
+    scheduler_apply_pacing(cfg->scheduler, pacing);
     scheduler_announce_speed(cfg->scheduler);
     gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"machine_booted\",\"model\":\"%s\",\"restored\":%s}",
                    cfg->machine->id ? cfg->machine->id : "", restored ? "true" : "false");
@@ -1505,7 +1521,11 @@ bool add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const c
     if (!media_open(MEDIA_BUS_SCSI, false, filename, &slot))
         return false;
     slot.unit = scsi_id;
-    return system_media_attach_scsi_bus(config, bus, &slot) == 0;
+    if (system_media_attach_scsi_bus(config, bus, &slot) != 0) {
+        image_close(slot.img);
+        return false;
+    }
+    return true;
 }
 
 // Add a SCSI CD-ROM to the configuration (AppleCD SC Plus / Sony CDU-8002)
@@ -1523,7 +1543,11 @@ bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const c
     if (!media_open(MEDIA_BUS_SCSI, true, filename, &slot))
         return false;
     slot.unit = scsi_id;
-    return system_media_attach_scsi_bus(config, bus, &slot) == 0;
+    if (system_media_attach_scsi_bus(config, bus, &slot) != 0) {
+        image_close(slot.img);
+        return false;
+    }
+    return true;
 }
 
 // === Media attach ===========================================================
@@ -1556,6 +1580,13 @@ int system_media_attach_std(config_t *cfg, const media_slot_t *slot) {
 int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const media_slot_t *slot) {
     if (!bus)
         return -1;
+    // The CD bay holds the machine's CD-ROM drive: anything else there would
+    // save a checkpoint whose bus no restore of this machine can rebuild.
+    if (slot->scsi_type != scsi_dev_cdrom && slot->unit == scsi_cd_bay_id(bus)) {
+        gs_outf("Cannot attach %s at SCSI id %d: that is the CD bay (insert a CD there instead)\n",
+                slot->img ? image_get_filename(slot->img) : "the image", slot->unit);
+        return -1;
+    }
     add_image(cfg, slot->img);
     scsi_add_device(bus, slot->unit, slot->vendor, slot->product, slot->revision, slot->img,
                     (enum scsi_device_type)slot->scsi_type, slot->block_size, slot->read_only);
@@ -1682,6 +1713,7 @@ config_t *system_restore(const char *filename) {
     // monitor straps -- is read by the part it belongs to as the machine is
     // built.
     board_block_t board;
+    machine_part_expect(checkpoint, "machine", 0);
     system_read_checkpoint_data(checkpoint, &board, sizeof board, "machine");
     board.model[sizeof board.model - 1] = '\0';
     const hw_profile_t *profile = checkpoint_has_error(checkpoint) ? NULL : machine_find(board.model);
@@ -1748,7 +1780,7 @@ int system_checkpoint_load(const char *filename) {
     // Swap the restored machine in; the old one is destroyed.  Safe because
     // commands are registered globally rather than per-config, and no part of
     // the call stack holds the old config.
-    system_swap_in(new_config, true);
+    system_swap_in(new_config, true, platform_pacing());
 
     // Force a one-shot screen redraw so the restored framebuffer appears
     extern void frontend_force_redraw(void);

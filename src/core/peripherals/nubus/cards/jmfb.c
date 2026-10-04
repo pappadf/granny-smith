@@ -324,9 +324,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
                             bool generic) {
     // The monitor on the card's connector: its slot entry's sense (from the
     // document on a boot, from the bus's block on a restore), or the default.
-    uint8_t sense = JMFB_SENSE_DEFAULT;
-    if (opts->video_sense >= 0 && opts->video_sense <= 7)
-        sense = (uint8_t)opts->video_sense;
+    uint8_t sense = machine_sense_or(opts->video_sense, 8, JMFB_SENSE_DEFAULT);
     (void)cp;
     jmfb_priv_t *p = calloc(1, sizeof(*p));
     if (!p)
@@ -534,8 +532,10 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     // The slot's video mode seeds PRAM so the Slot Manager's GET_SLOT_DEPTH
     // lands on it at boot.  Mirrors the dance `tests/integration/iicx-video-modes/
     // test.script` does shell-side.  PRAM is already alive at this
-    // point — RTC is initialised earlier in the machine init sequence.
-    if (seeded_monitor && seeded_depth_bpp > 0) {
+    // point — RTC is initialised earlier in the machine init sequence.  A cold
+    // boot only: a restore's PRAM is the RTC's own block, holding whatever the
+    // guest wrote there.
+    if (!cp && seeded_monitor && seeded_depth_bpp > 0) {
         rtc_t *rtc = cfg->rtc;
         if (rtc) {
             uint8_t spDepth = 0x80;

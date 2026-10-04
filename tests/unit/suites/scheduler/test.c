@@ -90,6 +90,9 @@ double platform_audio_ring_fill(void) {
 static scheduler_t *g_sched;
 static uint64_t g_vbls; // frame-units executed (trigger_vbl calls)
 
+scheduler_t *system_running_scheduler(void) {
+    return NULL;
+}
 scheduler_t *system_scheduler(void) {
     return g_sched;
 }

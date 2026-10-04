@@ -86,6 +86,15 @@ struct nubus_card {
     // declrom_load_vrom_card / declrom_install_builtin; freed by the bus.
     char *rom_path;
     uint32_t rom_crc;
+    // The chip image of a file-backed ROM (NULL for a generated one), kept so
+    // the card's checkpoint part carries the ROM it runs.  Freed by the bus.
+    uint8_t *rom_chip;
+    size_t rom_chip_size;
+    // On a restore, the declaration ROM the card's checkpoint part carries,
+    // set by the bus before ops->init: declrom_load_vrom_card takes it rather
+    // than looking the card up again (the file may be gone, or another
+    // revision offered).  Borrowed for init only.
+    rom_image_t restored_rom;
 };
 
 // (The per-card factory is gone.  The bus controller allocates the
@@ -98,9 +107,9 @@ struct nubus_card {
 // arrays end at the entry whose `id` is NULL.
 //
 // `sense_code` is the value the card's sense lines report when this
-// monitor is plugged in.  Setting `nubus.video_sense = sense_code`
-// before `machine.boot` tells the JMFB factory which monitor to model
-// (see jmfb.c::monitor_for_sense).  `srsrc_sister` is the top-level
+// monitor is plugged in.  A slot entry's `video_sense=` (an argument of
+// that card's construction, from machine.boot) tells the JMFB which monitor
+// to model (see jmfb.c::monitor_for_sense).  `srsrc_sister` is the top-level
 // "Ax" sister sResource ID that the JMFB driver's Slot Manager picks
 // up from PRAM for this monitor; a video-mode-aware integration test
 // (or the configuration dialog) writes this byte into PRAM offset

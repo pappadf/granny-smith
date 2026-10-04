@@ -500,7 +500,7 @@ static void iface_set(memory_interface_t *mi, uint8_t (*r8)(void *, uint32_t), u
     mi->write_uint32 = w32;
 }
 
-void gos_grackle_init(config_t *cfg) {
+void gos_grackle_init(config_t *cfg, checkpoint_t *cp) {
     gossamer_state_t *st = gos_st(cfg);
     bank_inventory(cfg);
 
@@ -522,6 +522,7 @@ void gos_grackle_init(config_t *cfg) {
     st->grackle_dev.decl = &grackle_decl;
     st->grackle_dev.priv = cfg;
     pci_bus_add_device(st->bus, &st->grackle_dev, GOS_DEV_GRACKLE);
+    pci_device_part(cfg, cp, &st->grackle_dev, "pci.grackle");
 
     // Map B's windows.  PCI memory passes through 1:1; the 16 MB ISA-memory
     // alias reaches PCI memory 0; PCI I/O is 8 MB from 0 (the ROM's own

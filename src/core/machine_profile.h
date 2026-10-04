@@ -105,7 +105,7 @@ const char *hd_bus_to_string(hd_bus_t bus);
 // A substrate-published built-in display, owned by the family that models it.
 //
 // The registry (machines/machine.c) publishes this in catalog.profile and
-// validates/stages `monitor=` through it, so a second family with built-in
+// validates `monitor=` through it, so a second family with built-in
 // video -- the TNT's Control, the AV's CIVIC -- gets its OWN monitor list
 // rather than the PDM's.  Before this was a descriptor it was a bare label
 // and the registry reached straight into pdm/pdm.h for the rest.
@@ -583,7 +583,9 @@ bool profile_cdrom_bay(const hw_profile_t *p, media_bay_t *out);
 int profile_floppy_count(const hw_profile_t *p);
 // Build the machine's primary SCSI bus with the fixed devices the profile
 // declares on it: the CD bay's drive (has_cdrom, cdrom_id, cdrom_drive).
-struct scsi *profile_scsi_init(const hw_profile_t *p, checkpoint_t *cp, const struct image_list *images);
+struct scheduler;
+struct scsi *profile_scsi_init(const hw_profile_t *p, struct scheduler *sched, checkpoint_t *cp,
+                               const struct image_list *images);
 
 // === Machine-level attach and eject (system.c) =============================
 // Open `path` as the medium `bay` takes (a hard disk, or with `cdrom` a CD)
