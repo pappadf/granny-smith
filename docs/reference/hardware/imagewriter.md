@@ -196,8 +196,8 @@ secondary colours are printed by striking each dot through two bands in turn:
 
 ### 6.1 Encoding of the resident glyphs (ImageWriter II)
 
-The ImageWriter II's firmware holds its draft and correspondence character
-sets as tables of dot columns, one byte per column, bit 0 the top wire [6]:
+The ImageWriter II's firmware holds its character sets as tables of dot
+columns, one byte per column, bit 0 the top wire [6]:
 
 - **Correspondence:** eight columns per character (seven of shape, one of
   space), codes $20–$7F, then the 32 MouseText characters, then 28
@@ -205,11 +205,21 @@ sets as tables of dot columns, one byte per column, bit 0 the top wire [6]:
 - **Draft:** twelve bytes per character, one per *half* dot column: draft
   never fires a wire in two neighbouring half columns, which is what lets the
   head print it fast. The same code ranges, in the same order.
+- **NLQ:** two passes of sixteen half columns per character, the second
+  printed 1/144 in below the first, so the vertical strokes are solid and
+  the curves smooth. The alternate-language characters come first, then
+  $20–$7F, then MouseText.
+- **Proportional (correspondence and NLQ):** a table of 124 entries, each a
+  width and the address of that many columns on the proportional grid (1/144
+  or 1/160 in): the 28 alternate-language characters, then $20–$7F. The
+  width includes the character's own spacing and matches the proportional
+  chart of [1] (space 7, `!` 7, `"` 10, `#` 14, digits 12, `A` 16, `g` 12);
+  the widest is 18. NLQ proportional has a second table of pass-two columns
+  laid out the same way. There is no proportional MouseText.
 
-In both, a byte with bit 7 set means its bits 0–6 print two wires lower
+In all of them, a byte with bit 7 set means its bits 0–6 print two wires lower
 (wires 3–9): that is how the descenders of g, j, p, q, y, the comma and
-semicolon, and the underscore reach wire 9 [6], [1] App. C. The NLQ and
-proportional sets are held separately and are not described here (§10).
+semicolon, and the underscore reach wire 9 [6], [1] App. C.
 
 ### 6.2 Languages
 
@@ -299,8 +309,9 @@ preceded by `ESC K0`.
 
 - The remaining statusBits (NW20's Figure 5 is an image not yet
   transcribed), and whether the card's flow quantum is 8.
-- The NLQ glyph tables (two passes 1/144 in apart) and the proportional
-  sets' widths in the ImageWriter II firmware.
+- What the ImageWriter II prints for MouseText in a proportional pitch (it
+  has no proportional MouseText shapes), and whether draft is ever used
+  with proportional spacing.
 - The original ImageWriter's character generator, and whether it answers
   `ESC ?`.
 - The undocumented ImageWriter II control GS ($1D, a vertical-format

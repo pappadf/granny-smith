@@ -17,8 +17,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// Widest glyph, in columns (custom characters may be 16 dots wide)
-#define IW_GLYPH_MAX_COLS 16
+// Widest glyph, in columns (proportional glyphs are up to 18 columns wide,
+// custom characters up to 16)
+#define IW_GLYPH_MAX_COLS 18
 
 // Print qualities (the ESC a values)
 #define IW_QUALITY_CORRESPONDENCE 0

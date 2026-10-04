@@ -449,6 +449,48 @@ TEST(test_rom_glyphs) {
     ASSERT_TRUE(!iw_font_glyph(&sel, 0x07, &g));
 }
 
+// NLQ prints a second pass; the proportional sets have their own widths
+// (the Technical Reference's chart: space 7, A 16, digits 12).
+TEST(test_rom_glyphs_nlq_proportional) {
+    iw_font_sel_t sel = {.quality = IW_QUALITY_NLQ};
+    iw_glyph_t g;
+    ASSERT_TRUE(iw_font_glyph(&sel, 'B', &g));
+    ASSERT_TRUE(g.half && !g.placeholder);
+    ASSERT_EQ_INT(g.n, 16);
+    ASSERT_EQ_INT(g.n2, 16);
+    int p1 = 0, p2 = 0;
+    for (int i = 0; i < 16; i++) {
+        p1 |= g.cols[i];
+        p2 |= g.pass2[i];
+    }
+    ASSERT_TRUE(p1 && p2);
+    sel.proportional = true;
+    static const struct {
+        uint8_t code, width;
+    } widths[] = {
+        {' ', 7 },
+        {'!', 7 },
+        {'"', 10},
+        {'#', 14},
+        {'0', 12},
+        {'A', 16},
+        {'g', 12}
+    };
+    for (int q = 0; q < 2; q++) {
+        sel.quality = q ? IW_QUALITY_NLQ : IW_QUALITY_CORRESPONDENCE;
+        for (size_t i = 0; i < sizeof(widths) / sizeof(widths[0]); i++) {
+            ASSERT_TRUE(iw_font_glyph(&sel, widths[i].code, &g));
+            ASSERT_TRUE(!g.half && !g.placeholder);
+            ASSERT_EQ_INT(g.n, widths[i].width);
+            ASSERT_EQ_INT(g.n2, q ? widths[i].width : 0);
+        }
+    }
+    // MouseText has no proportional shapes: the fixed ones, 16 columns
+    sel.mousetext = true;
+    ASSERT_TRUE(iw_font_glyph(&sel, '@', &g));
+    ASSERT_EQ_INT(g.n, 16);
+}
+
 int main(void) {
     RUN(test_pdf_structure);
     RUN(test_pdf_serialise);
@@ -471,6 +513,7 @@ int main(void) {
     RUN(test_custom_characters);
     RUN(test_deterministic_page);
     RUN(test_rom_glyphs);
+    RUN(test_rom_glyphs_nlq_proportional);
     iw_interp_free(&g_in);
     fprintf(stderr, "All imagewriter tests passed\n");
     return 0;

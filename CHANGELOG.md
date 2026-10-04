@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Virtual ImageWriter and ImageWriter II, printing to PDF** — every machine has a dot-matrix printer, `machine.imagewriter`, that the guest's own ImageWriter driver prints to:
   - on a serial port (`connection = "serial-a"` / `"serial-b"`): the Lisa Office System and the Mac ImageWriter driver print unmodified, with the printer's ready line, `ESC ?` reply and XON/XOFF;
   - over AppleTalk as an ImageWriter II with the LocalTalk Option card (`connection = "localtalk"`): the Chooser's AppleTalk ImageWriter lists "Virtual ImageWriter", beside the LaserWriter;
-  - text in the ImageWriter II's own draft and correspondence fonts (MouseText, the eight languages), graphics placed exactly for every pitch, Best-mode interleave, colour ribbons, custom characters;
+  - text in the ImageWriter II's own draft, correspondence and near-letter-quality fonts, fixed and proportional (MouseText, the eight languages), graphics placed exactly for every pitch, Best-mode interleave, colour ribbons, custom characters;
   - each job opens as a PDF in the print viewer (the browser) or lands in `--print-dir` (headless); deselecting the printer or running it out of paper pauses the job, as on the real printer.
 - **MMU inspection on every MMU kind** — `machine.cpu.mmu` answers the same `translate`, `walk`, `map` and `descriptor` on the 68030 PMMU, the 68040, the PowerPC 601/604 and the Lisa's segment MMU:
   - `walk` shows every step the MMU took: TT/BAT/segment registers, the root pointer, each table level or page-table group, and where a failing walk stopped.

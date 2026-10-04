@@ -350,8 +350,11 @@ static void put_char(iw_interp_t *in, uint8_t code) {
             if (bold)
                 stage(in, x + BOLD_OFFSET, g.cols[i], step, yoff);
             // NLQ's second pass, 1/144 in lower
-            if (i < g.n2)
+            if (i < g.n2) {
                 stage(in, x, g.pass2[i], step, (int8_t)(yoff + 1));
+                if (bold)
+                    stage(in, x + BOLD_OFFSET, g.pass2[i], step, (int8_t)(yoff + 1));
+            }
         }
     }
     // Underline: wire 9 under the whole advance
