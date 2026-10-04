@@ -11,35 +11,12 @@
 // which is the write-durability guarantee (a reopen would mint a fresh delta
 // and discard every write made since the attach).
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
-import { terminalRun } from '../helpers/terminal';
+import { gsCallInPage, gsEvalInPage } from '../helpers/web2-eval';
 
 const IICX_ROM = path.resolve(__dirname, '../../data/roms/iix-iicx-se30-97221136.rom');
-
-// Echo an expression through the terminal under a unique key and return the
-// printed value (fresh key per probe so stale echoes can't satisfy the
-// match); values still starting with `$` are the input echo, not the result.
-// A probe that never lands is retried with a fresh key.  (The misses this
-// was written for were not rendering: the terminal dropped whatever was
-// typed while the previous command still ran.  It queues it now.)
-let probeSeq = 0;
-async function terminalEval(page: Page, expr: string): Promise<string | null> {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const key = `mrs${++probeSeq}`;
-    await terminalRun(page, `echo "${key}=\${${expr}}"`);
-    for (let i = 0; i < 12; i++) {
-      await page.waitForTimeout(400);
-      const text = await page.locator('.console-output').innerText();
-      const values = [...text.matchAll(new RegExp(`${key}=(\\S+)`, 'g'))]
-        .map((m) => m[1])
-        .filter((v) => !v.startsWith('$'));
-      if (values.length) return values[values.length - 1];
-    }
-  }
-  return null;
-}
 
 test('Restart keeps the attached hard disk — same medium, same open instance', async ({
   page,
@@ -57,19 +34,14 @@ test('Restart keeps the attached hard disk — same medium, same open instance',
     page.locator('.toast .msg').filter({ hasText: 'iix-iicx-se30-97221136.rom uploaded' }),
   ).toBeVisible({ timeout: 60_000 });
 
-  // Boot from the Terminal panel and attach a scratch HD.
-  await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
-  await terminalRun(page, 'machine.boot model="iicx" ram=8192 rom="/opfs/images/rom/97221136"');
-  await page.waitForTimeout(3_000); // let the boot's terminal output settle
-  expect(await terminalEval(page, 'machine.id')).toBe('iicx');
-  await terminalRun(page, 'files.hd_create("/tmp/restart-scratch.img", "20mb")');
-  await page.waitForTimeout(1_000);
-  await terminalRun(page, 'machine.scsi.attach_hd "/tmp/restart-scratch.img" 0');
-  await page.waitForTimeout(3_000); // the persist copy prints; let the render settle
-  expect(await terminalEval(page, 'machine.scsi.device[0].image.present')).toBe('true');
-  const stem0 = await terminalEval(page, 'machine.scsi.device[0].image.path');
-  const file0 = await terminalEval(page, 'machine.scsi.device[0].image.filename');
+  // Boot and attach a scratch HD.
+  await gsCallInPage(page, 'machine.boot', { model: 'iicx', ram: 8192, rom: '/opfs/images/rom/97221136' });
+  await expect.poll(() => gsEvalInPage(page, 'machine.id'), { timeout: 30_000 }).toBe('iicx');
+  await gsCallInPage(page, 'files.hd_create', ['/tmp/restart-scratch.img', '20mb']);
+  await gsCallInPage(page, 'machine.scsi.attach_hd', ['/tmp/restart-scratch.img', 0]);
+  expect(await gsEvalInPage(page, 'machine.scsi.device[0].image.present')).toBe(true);
+  const stem0 = await gsEvalInPage(page, 'machine.scsi.device[0].image.path');
+  const file0 = await gsEvalInPage(page, 'machine.scsi.device[0].image.filename');
   expect(stem0).toBeTruthy();
   expect(file0).toBeTruthy();
 
@@ -82,10 +54,8 @@ test('Restart keeps the attached hard disk — same medium, same open instance',
   });
 
   // The HD survived the power-cycle as the SAME open instance.
-  await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
-  expect(await terminalEval(page, 'machine.created')).toBe('true');
-  expect(await terminalEval(page, 'machine.scsi.device[0].image.present')).toBe('true');
-  expect(await terminalEval(page, 'machine.scsi.device[0].image.filename')).toBe(file0);
-  expect(await terminalEval(page, 'machine.scsi.device[0].image.path')).toBe(stem0);
+  expect(await gsEvalInPage(page, 'machine.created')).toBe(true);
+  expect(await gsEvalInPage(page, 'machine.scsi.device[0].image.present')).toBe(true);
+  expect(await gsEvalInPage(page, 'machine.scsi.device[0].image.filename')).toBe(file0);
+  expect(await gsEvalInPage(page, 'machine.scsi.device[0].image.path')).toBe(stem0);
 });

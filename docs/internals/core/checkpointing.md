@@ -55,7 +55,7 @@ No marker files are needed: OPFS writes are durable the moment the file is close
 
 ### Headless Variant
 
-The headless target has no `localStorage` and no machine-id concept. Pass `--checkpoint-dir=<path>` to point the machine layer at an explicit directory; deltas land there alongside `state.checkpoint`. Tests typically use a per-test temp directory. With no flag, the machine directory stays unset and `image_create` falls back to placing deltas next to the base image (legacy headless behavior).
+The headless target has no `localStorage` and no machine-id concept. Pass `--checkpoint-dir=<path>` to point the machine layer at an explicit directory; deltas land there alongside `state.checkpoint`. Tests typically use a per-test temp directory. With no flag, the machine directory stays unset and `image_create` places deltas in its scratch root (`GS_STORAGE_CACHE`, else `/tmp/gs-image-ro/`) — never next to the base image, so shared media such as `tests/data` stay clean. A quick checkpoint taken that way records a `/tmp` instance path and restores only while `/tmp` survives; pass `--checkpoint-dir` for checkpoints meant to last.
 
 
 ## Checkpointing Design

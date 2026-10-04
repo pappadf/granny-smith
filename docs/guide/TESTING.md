@@ -361,8 +361,9 @@ live in the headless integration tests, not here.
    import { test, expect } from '@playwright/test';
    import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
    ```
-3. Drive through the shipped UI (dialog, Terminal panel, drag-and-drop); web2
-   has no `window.gsEval` — reach the object model via the Terminal.
+3. Drive through the shipped UI (dialog, drag-and-drop); read or call the
+   object model with `gsEvalInPage` / `gsCallInPage` (`helpers/web2-eval.ts`,
+   see `tests/e2e/README.md`), not by typing into the Terminal.
 4. Run: `npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.web2.config.ts foo`
 
 ### Debugging E2E Failures

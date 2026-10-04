@@ -110,7 +110,11 @@ npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.web2.config
 
 Each config's `webServer` block builds `app/web2/dist` (`make ui2`) and serves
 it with the COOP/COEP headers `SharedArrayBuffer` needs — no manual server step.
-`make ui2` expects the WASM (`make`) to have been built already.
+`make ui2` brings the WASM core up to date first (an incremental `make`), so a
+run never tests a stale core; when nothing changed it neither recompiles nor
+relinks, and the build ID — which checkpoints are matched against — stays the
+same across runs. Build with the flags of the core you want served
+(`make ui2 MODE=debug` after `make debug`): other flags rebuild the tree.
 
 ## Prerequisites
 
@@ -189,11 +193,17 @@ behaviour that only a browser exercises.
 
 ## Driving the emulator from a spec
 
-web2 has no `window.gsEval`. The typed object-model path from a test is the
-**Terminal panel**: click `.xterm`, type a shell line (`machine.cpu.pc`,
-`scheduler.run N`, `debug.breakpoints.add(…)`), and read results back from
-`.xterm-rows`. The machine auto-runs after boot, so `scheduler.stop` before any
-bounded `scheduler.run`. See `helpers/web2-fs.ts` and the existing specs for the
+Read and call the object model with `gsEvalInPage` / `gsCallInPage`
+(`helpers/web2-eval.ts`): under automation (`navigator.webdriver`) web2 installs
+`window.__gsEvalForTests`, the same `gsEval` the UI uses, so a probe is one
+request with a typed answer (`true`, `32768`, `{ enum, index }`) — no
+keystrokes, no scraping the console, no sleeps for the render to settle.
+`gsCallInPage` fails the spec on a refusal (`{ error }`). Named arguments go
+as an object (`gsCallInPage(page, 'machine.boot', { model: 'iicx', ram: 8192,
+rom })`), positional ones as an array. Type into the Terminal panel
+(`helpers/terminal.ts`) only when the console itself is what the spec tests.
+The machine auto-runs after boot, so `scheduler.stop` before any bounded
+`scheduler.run`. See `helpers/web2-fs.ts` and the existing specs for the
 OPFS-staging and drag-gesture patterns (only the HTML5 drag *gesture* is
 synthesised; the handlers, worker, and OPFS run for real).
 

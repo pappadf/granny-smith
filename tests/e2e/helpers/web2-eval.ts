@@ -6,7 +6,7 @@
 // thin wrapper over the same gsEval the UI uses; it is installed once the
 // bridge is ready, so call this after gotoWeb2().
 
-import { type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 
 // gsEval(path, args) inside the page; resolves to the core's JSON answer —
 // a value, null (a method that returns nothing), or { error }.
@@ -30,6 +30,20 @@ export async function gsEvalInPage(
     },
     { path, args },
   );
+}
+
+// gsEvalInPage for a call that must succeed: the spec fails on a refusal
+// ({ error }) with the path in the message, instead of on a later read.
+export async function gsCallInPage(
+  page: Page,
+  path: string,
+  args?: unknown[] | Record<string, unknown>,
+): Promise<unknown> {
+  const r = await gsEvalInPage(page, path, args);
+  expect(r, path).not.toEqual(
+    expect.objectContaining({ error: expect.anything() }),
+  );
+  return r;
 }
 
 // Every file under the scratch area, as paths relative to it: each tab writes

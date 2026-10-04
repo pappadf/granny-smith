@@ -380,11 +380,11 @@ bool lisa_profile_save_as(const lisa_profile_t *pf, const char *path) {
 }
 
 // Where a writable mount's delta+journal live.  Mirrors system.c's
-// pick_delta_dir: a volatile /tmp base keeps its delta adjacent (NULL ⇒
-// image_create derives the dir); everything else routes the delta under the
-// active per-machine checkpoint directory so it shares state.checkpoint's
-// lifetime (docs/internals/core/checkpointing.md).  checkpoint_machine_dir() is
-// NULL when no machine dir is active (headless tests) → adjacent-to-base.
+// pick_delta_dir: a volatile /tmp base keeps its delta in image_create's
+// scratch root (NULL); everything else routes the delta under the active
+// per-machine checkpoint directory so it shares state.checkpoint's lifetime
+// (docs/internals/core/checkpointing.md).  checkpoint_machine_dir() is NULL
+// when no machine dir is active (headless tests) → the scratch root.
 static const char *pro_delta_dir(const char *base) {
     if (base && strncmp(base, "/tmp/", 5) == 0)
         return NULL;

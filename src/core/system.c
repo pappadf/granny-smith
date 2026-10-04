@@ -63,7 +63,8 @@ config_t *global_emulator = NULL;
 // active machine directory (so deltas live alongside state.checkpoint and
 // the manifest).  For volatile bases under /tmp/ — typically test
 // artifacts uploaded to memfs — fall back to NULL so image_create places
-// deltas adjacent to the base, preserving memfs-only I/O performance.
+// deltas in its scratch root (also under /tmp), preserving memfs-only I/O
+// performance.
 static const char *pick_delta_dir(const char *path) {
     if (path && strncmp(path, "/tmp/", 5) == 0)
         return NULL;

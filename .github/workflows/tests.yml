@@ -306,6 +306,11 @@ jobs:
   ui:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    # Every make in this job -- the explicit steps and the ones the Playwright
+    # webServers run (`make ui2` builds the core) -- must see the same flags,
+    # or the flags stamp changes and the core is rebuilt from scratch.
+    env:
+      WERROR: "1"
     container:
       image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk6.0.7-node22
       credentials:
@@ -385,7 +390,7 @@ jobs:
       # Full WASM build, then copy artifacts into dist/ so the
       # prod-smoke test below can actually bootstrap the bridge.
       - name: WASM build (for prod-smoke)
-        run: make WERROR=1
+        run: make
 
       - name: ui2 (copy WASM into app/web2/dist/)
         run: make ui2
@@ -421,7 +426,8 @@ jobs:
       # dialog, checkpoint resume, display drop, URL boot, A/UX realtime boot,
       # video-mode shader baselines, Lisa/Xenix, filesystem tab. Needs the
       # proprietary ROMs/disks, so it's gated on the fetch above. `make
-      # ui2-e2e`'s webServer rebuilds + serves app/web2/dist with COOP/COEP.
+      # ui2-e2e`'s webServer rebuilds + serves app/web2/dist with COOP/COEP
+      # (the core is already fresh, so its WASM build is a no-op).
       - name: web2 e2e (Playwright)
         if: steps.fetch-data.outputs.has_test_data == 'true'
         env:
