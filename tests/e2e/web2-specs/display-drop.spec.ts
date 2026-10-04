@@ -288,5 +288,7 @@ test('Open Checkpoint on the Welcome page restores a saved state', async ({ page
   await expect
     .poll(async () => await readInstr(page), { timeout: 30_000, intervals: [1_000] })
     .toBe(savedInstr);
+  // The page shows the restored machine, not Welcome (#239).
+  await expect(page.locator('.welcome-layer')).toHaveCount(0);
 });
 

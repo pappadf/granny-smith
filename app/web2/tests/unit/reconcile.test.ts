@@ -128,6 +128,31 @@ describe('one post-boot reconciliation, every path', () => {
     expect(debug.sections.registers).toBe(false);
   });
 
+  it('a restore sets the run state from the core, from Welcome too (#239)', async () => {
+    se30();
+    machine.status = 'no-machine';
+    bridge.reply('scheduler.running', true);
+    await reconcileUiWithMachine('restore');
+    expect(machine.status).toBe('running');
+    bridge.reply('scheduler.running', false);
+    await reconcileUiWithMachine('restore');
+    expect(machine.status).toBe('paused');
+  });
+
+  it('after a running restore, the stop that follows shows as paused (#267)', async () => {
+    const { dispatchCoreEvent } = await import('@/bus/emulator');
+    const { EVT_STATE } = await import('@/bus/mailbox');
+    se30();
+    // A paused machine first, so the bridge's mirror says "not running".
+    dispatchCoreEvent(EVT_STATE, '{"event":"mode_ended","mode":1}');
+    machine.status = 'no-machine';
+    bridge.reply('scheduler.running', true);
+    await reconcileUiWithMachine('restore');
+    expect(machine.status).toBe('running');
+    dispatchCoreEvent(EVT_STATE, '{"event":"mode_ended","mode":1}');
+    expect(machine.status).toBe('paused');
+  });
+
   it('the resume prompt reconciles after checkpoint.load', async () => {
     se30();
     bridge.reply('checkpoint.probe', true);

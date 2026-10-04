@@ -47,8 +47,7 @@ export async function maybeOfferBackgroundCheckpoint(): Promise<boolean> {
   }
   await reconcileUiWithMachine('restore');
 
-  const running = (await gsEval('scheduler.running')) === true;
-  machine.status = running ? 'running' : 'paused';
+  const running = machine.status === 'running';
   showNotification(
     running ? 'Resumed from saved checkpoint' : 'Restored checkpoint (paused)',
     'info',

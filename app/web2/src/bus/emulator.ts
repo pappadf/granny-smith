@@ -812,6 +812,14 @@ function handleRunStateChange(running: boolean): void {
   else if (machine.status === 'running') machine.status = 'paused';
 }
 
+// After a restore: the restored machine is live, running or paused as it was
+// saved, and a restore sends no mode edge to mirror.  boot.ts reads the
+// core's run state and sets it here and in machine.status together
+// (handleRunStateChange alone would leave 'no-machine' in place).
+export function setRunStateMirror(running: boolean): void {
+  isRunningUI = running;
+}
+
 // The display's geometry, from the core's `screen` event: sent when the shape
 // changes and once when a machine is attached, so the page's copy is the only
 // one and is never seeded by a read.

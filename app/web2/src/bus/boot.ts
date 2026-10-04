@@ -3,7 +3,7 @@
 // out of emulator.ts, the bridge, because it is built on bus/profile.ts and
 // bus/media.ts, which are built on the bridge.
 
-import { gsEval, gsErrorText, isGsError } from './emulator';
+import { gsEval, gsErrorText, isGsError, setRunStateMirror } from './emulator';
 import { getProfile } from './profile';
 import { attachHardDisk, attachCdrom, insertFloppy, type MediaResult } from './media';
 import type { MachineConfig } from './types';
@@ -217,6 +217,13 @@ export async function reconcileUiWithMachine(origin: MachineOrigin): Promise<voi
     resetDebugSections();
   }
   reconciledModel = model;
+  // Every restore entry point (background resume, Open Checkpoint, a drop,
+  // the Checkpoints tab) brings the page's run state into line here.
+  if (origin === 'restore' && model) {
+    const running = (await gsEval('scheduler.running')) === true;
+    setRunStateMirror(running);
+    machine.status = running ? 'running' : 'paused';
+  }
 }
 
 // A fresh machine (a boot) is ready to run.  The Caps Lock latch is

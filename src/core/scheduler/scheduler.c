@@ -217,8 +217,9 @@ struct scheduler {
 
     // The mode: who started the current run and why it stopped.  Live
     // run-loop state, so never checkpointed; a
-    // restored machine starts with no mode open.  `mode_open` is set by
-    // scheduler_run_with_budget and cleared by scheduler_run_frame when it
+    // restored machine starts with no mode open -- unless it was saved
+    // running, when scheduler_init opens an unbounded one.  `mode_open` is
+    // set by scheduler_run_with_budget and cleared by scheduler_run_frame when it
     // sees `running` down, which is where the mode_ended event goes out --
     // once per mode, whichever path dropped `running`.
     uint32_t run_owner;
@@ -857,6 +858,19 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
             s->total_instructions = 0;
         } else {
             s->restored_cpi = s->cpi;
+        }
+
+        // A machine saved while running comes back running, yet the mode is
+        // not checkpointed: open one (unbounded, owned by nobody) so the
+        // stop that ends this run reports mode_ended like any other.  No
+        // mode_started goes out -- the restore may still be refused, and the
+        // page reads the run state after every restore.
+        if (s->running) {
+            s->run_owner = 0;
+            s->stop_reason = SCHED_STOP_NONE;
+            s->mode_seq++;
+            s->mode_open = true;
+            s->mode_bounded = false;
         }
 
         s->sprint_total = 0;
