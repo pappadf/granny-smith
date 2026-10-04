@@ -86,8 +86,9 @@ boot_case v7-device iici "$IICI" '{"displays":{"nubus_d":{"monitor":"13in_rgb"}}
 boot_case v7-mode iici "$IICI" \
     '{"cards":[{"slot":"nubus_c","card":"mdc_8_24"}],"displays":{"nubus_c":{"monitor":"13in_rgb","mode":"1152x870x8"}}}' \
     'displays.nubus_c: mode "1152x870x8" is not one of'
-boot_case v7-builtin-mode iici "$IICI" '{"displays":{"builtin":{"monitor":"13in_rgb","mode":"640x480x8"}}}' \
-    'displays.builtin: mode "640x480x8" is not one this device offers'
+boot_case v7-builtin-mode iici "$IICI" '{"displays":{"builtin":{"monitor":"13in_rgb","mode":"640x480x8"}}}' OK
+boot_case v7-builtin-depth iici "$IICI" '{"displays":{"builtin":{"monitor":"13in_rgb","mode":"640x480x16"}}}' \
+    'displays.builtin: mode "640x480x16" is not one of the built-in video'"'"'s modes on that monitor'
 
 # V9: the startup device is in storage, on a bus the startup record can name.
 boot_case v9-absent iici "$IICI" '{"startup":{"bus":"scsi","unit":5}}' 'startup: no device at scsi unit 5 in storage'

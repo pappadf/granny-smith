@@ -84,8 +84,14 @@ void mac_seed_rtc_pram(struct config *cfg) {
         for (unsigned i = 0; i < 4; i++)
             rtc_pram_write(rtc, (uint8_t)(SYSPARAM_PHYS_LO + i), img[SYSPARAM_PHYS_LO + i]);
     }
-    // Each NuBus card's startup video mode: the slot PRAM record its Monitors
-    // control panel would have saved (the card knows the format).
+    // The built-in video's startup video mode, and each NuBus card's: the
+    // slot PRAM record the Monitors control panel would have saved (the
+    // profile and the card know the format).
+    const machine_build_opts_t *o = &cfg->build_opts;
+    if (o->builtin_startup.slot >= 0x9 && o->builtin_startup.slot <= 0xE)
+        for (int i = 0; i < 8; i++)
+            rtc_pram_write(rtc, (uint8_t)(SLOT_PRAM_BASE + (o->builtin_startup.slot - 0x9) * 8 + i),
+                           o->builtin_startup.record[i]);
     for (int slot = 0x9; cfg->nubus && slot <= 0xE; slot++) {
         uint8_t rec[8];
         if (!nubus_startup_record(cfg->nubus, slot, rec))

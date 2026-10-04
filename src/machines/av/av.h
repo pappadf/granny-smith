@@ -143,7 +143,8 @@ typedef struct av_state {
 // The one AV-family substrate; q840av/q660av bind this.
 extern const machine_substrate_t av_substrate;
 // CIVIC built-in video as a display device (840AV, 660AV).
-extern const builtin_video_desc_t av_builtin_video_civic;
+extern const builtin_video_desc_t av_builtin_video_q840av;
+extern const builtin_video_desc_t av_builtin_video_q660av;
 
 // AV I/O window table (exposed for the address-map unit test).
 extern const mac030_io_range_t av_io_ranges[];

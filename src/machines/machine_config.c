@@ -678,6 +678,32 @@ static const char *builtin_default_monitor(const hw_profile_t *p) {
     return n ? mons[0] : NULL;
 }
 
+// The built-in port's startup modes on catalogue monitor `mon`, or NULL.
+static const builtin_startup_t *builtin_startup_row(const hw_profile_t *p, const char *mon) {
+    const builtin_video_desc_t *bv = p->builtin_video;
+    for (const builtin_startup_t *r = bv ? bv->startup : NULL; r && r->monitor; r++)
+        if (strcmp(r->monitor, mon) == 0)
+            return r;
+    return NULL;
+}
+
+// The built-in port's startup modes, by monitor, as the tree lists a card's.
+static value_t builtin_modes_value(const hw_profile_t *p) {
+    value_map_builder_t *b = val_map_new();
+    for (const builtin_startup_t *r = p->builtin_video->startup; r && r->monitor; r++) {
+        const monitor_catalog_entry_t *cat = monitor_catalog_find(r->monitor);
+        vlist_t modes = {0};
+        for (const builtin_startup_mode_t *m = r->modes; m->depth; m++) {
+            char id[32], label[64];
+            snprintf(id, sizeof id, "%ux%ux%d", r->width, r->height, m->depth);
+            monitor_mode_label(cat, r->width, r->height, m->depth, label, sizeof label);
+            vl_push(&modes, id_label(id, label, NULL));
+        }
+        val_map_put(b, r->monitor, vl_finish(&modes));
+    }
+    return val_map_finish(b);
+}
+
 static value_t displays_value(const hw_profile_t *p) {
     value_map_builder_t *b = val_map_new();
     if (p->builtin_video) {
@@ -690,7 +716,7 @@ static value_t displays_value(const hw_profile_t *p) {
         int n = builtin_monitors(p, mons, MONITORS_MAX);
         val_map_put(d, "monitors", monitor_ids_value(mons, n));
         val_map_put(d, "default_monitor", val_str(builtin_default_monitor(p) ? builtin_default_monitor(p) : ""));
-        val_map_put(d, "modes", val_map_finish(val_map_new()));
+        val_map_put(d, "modes", builtin_modes_value(p));
         val_map_put(d, "options", val_list(NULL, 0));
         val_map_put(b, "builtin", val_map_finish(d));
     } else {
@@ -1445,10 +1471,6 @@ static value_t read_displays(const hw_profile_t *p, const value_t *m, doc_t *d) 
                 return bad("displays.%s: monitor \"%s\" is not one this device takes", x->device, mon);
             copy_str(x->monitor, sizeof x->monitor, mon);
         }
-        // Built-in video offers no startup modes yet (its tree node lists
-        // none), so a mode there is not one it takes.
-        if (mode && *mode && strcmp(x->device, "builtin") == 0)
-            return bad("displays.builtin: mode \"%s\" is not one this device offers (it has no startup modes)", mode);
         if (mode && !copy_str(x->mode, sizeof x->mode, mode))
             return bad("displays.%s: mode \"%s\" is too long", x->device, mode);
     }
@@ -1582,6 +1604,22 @@ static value_t apply_displays(const hw_profile_t *p, const doc_t *d, machine_bui
         if (strcmp(x->device, "builtin") == 0) {
             out->builtin_connected = on;
             out->builtin_sense = builtin_sense(p, x->monitor);
+            if (x->mode[0]) {
+                // The startup mode: the record the port's ROM keeps for it.
+                const builtin_startup_t *r = on ? builtin_startup_row(p, x->monitor) : NULL;
+                unsigned w = 0, h = 0;
+                int dd = 0;
+                const builtin_startup_mode_t *m = NULL;
+                if (r && sscanf(x->mode, "%ux%ux%d", &w, &h, &dd) == 3 && w == r->width && h == r->height)
+                    for (m = r->modes; m->depth && m->depth != dd; m++)
+                        ;
+                if (!m || !m->depth)
+                    return bad("displays.builtin: mode \"%s\" is not one of the built-in video's modes on that monitor",
+                               x->mode);
+                out->builtin_startup.slot = p->builtin_video->startup_slot;
+                memcpy(out->builtin_startup.record, r->record, sizeof r->record);
+                out->builtin_startup.record[2] = m->saved_mode;
+            }
             continue;
         }
         bool pci = false;

@@ -44,7 +44,8 @@ int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *b
 // The one MDU+RBV-family substrate (IIci + IIsi).
 extern const machine_substrate_t mdu_substrate;
 // The RBV built-in video as a display device (IIci and IIsi).
-extern const builtin_video_desc_t mdu_builtin_video_rbv;
+extern const builtin_video_desc_t mdu_builtin_video_iici;
+extern const builtin_video_desc_t mdu_builtin_video_iisi;
 
 // The RBV's checkpoint part-save function (machine_parts.h).
 void part_save_rbv(void *obj, checkpoint_t *cp);

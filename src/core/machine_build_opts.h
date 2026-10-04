@@ -149,6 +149,12 @@ typedef struct machine_build_opts {
     // neither code.
     uint8_t builtin_sense;
     bool builtin_connected;
+    // The built-in port's startup video mode, when the document chose one:
+    // the slot PRAM record the seeding step writes, and its slot.
+    struct {
+        int slot; // 0: no mode chosen
+        uint8_t record[8];
+    } builtin_startup;
 } machine_build_opts_t;
 
 // A build with nothing chosen: every field at its "caller said nothing" value.
@@ -164,6 +170,7 @@ static inline machine_build_opts_t machine_build_opts_default(void) {
     o.startup = (machine_startup_t){.none = false, .bus = "", .unit = 0, .type = 0};
     o.builtin_sense = MACHINE_SENSE_NONE;
     o.builtin_connected = false;
+    o.builtin_startup.slot = 0;
     return o;
 }
 

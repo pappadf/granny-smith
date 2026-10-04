@@ -99,6 +99,25 @@ static inline cpu_arch_t cpu_arch_for_model(int cpu_model) {
 // On a machine whose built-in video is a BUILTIN NuBus pseudo-slot (SE/30,
 // IIci, IIsi) the card kind in that slot supplies the monitors; such a
 // profile sets only the label fields here and `slot_monitors` true.
+// One saved mode a built-in video port starts in (the startup video mode):
+// its depth, and the savedMode byte the port's slot PRAM record holds for it.
+typedef struct builtin_startup_mode {
+    uint8_t depth; // bits per pixel; 0 ends a list
+    uint8_t saved_mode; // the record's byte 2
+} builtin_startup_mode_t;
+
+// The startup modes a built-in port offers on one monitor, as its ROM keeps
+// them: the slot PRAM record (sPRAMRec) the ROM writes for that monitor,
+// with byte 2 (the depth) the mode's, and the depths the ROM honours from a
+// seeded record.  Measured per ROM: boot with the monitor, read the record,
+// seed each depth code and see what the ROM brings the screen up at.
+typedef struct builtin_startup {
+    const char *monitor; // catalogue id; NULL ends a list
+    uint16_t width, height;
+    uint8_t record[8];
+    builtin_startup_mode_t modes[7];
+} builtin_startup_t;
+
 typedef struct builtin_video_desc {
     const char *detail; // the chip, shown as secondary text: "Ariel II", "DAFB"
     // Enumerate the monitors the port takes: fill *id (the family's own
@@ -117,6 +136,10 @@ typedef struct builtin_video_desc {
     // answer the extended-sense probe), which the video_sense= debug override
     // may name: a Quadra's DAFB.
     bool indexed_sense;
+    // The port's startup modes: the (pseudo-)slot whose PRAM record keeps the
+    // saved mode, and the modes by monitor.  0 / NULL: it offers none.
+    int startup_slot;
+    const builtin_startup_t *startup;
     // The monitors come from the card kind in the machine's BUILTIN NuBus
     // slot (its nubus_monitor_t list); monitor_at / monitor_sense are NULL.
     bool slot_monitors;
