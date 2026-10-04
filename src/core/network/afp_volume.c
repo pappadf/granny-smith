@@ -76,6 +76,11 @@ bool session_set_has(const afp_session_set_t *set, uint16_t session) {
 }
 
 vol_t g_vols[AFP_MAX_VOLUMES];
+// The largest volume ID.  The unit suites build with a small one, so a later
+// volume reusing a withdrawn one's ID does not take 65,535 volumes.
+#ifndef AFP_VOL_ID_MAX
+#define AFP_VOL_ID_MAX 0xFFFFu
+#endif
 static uint32_t g_next_vol_id = 1; // atalk_id_alloc cursor
 
 // Server identity and enablement (object model: appletalk.afp.*).
@@ -232,7 +237,7 @@ int atalk_afp_volume_add(const char *name, const char *path, char *err, size_t e
     char resolved[PATH_MAX];
     snprintf(v->root, sizeof(v->root), "%s", realpath(path, resolved) ? resolved : path);
     uint32_t id = 0;
-    if (!atalk_id_alloc(&g_next_vol_id, 1, 0xFFFF, vol_id_in_use, NULL, &id)) {
+    if (!atalk_id_alloc(&g_next_vol_id, 1, AFP_VOL_ID_MAX, vol_id_in_use, NULL, &id)) {
         memset(v, 0, sizeof(*v)); // cannot happen: at most AFP_MAX_VOLUMES of 65,535 are held
         return vol_fail(err, err_len, "no volume id is free");
     }
