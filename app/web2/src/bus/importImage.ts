@@ -56,6 +56,11 @@ export interface ImportOptions {
   // own (URL media are named by slot and time: the source's own name then
   // only hints at a streamed UDIF).
   storeAs?: string;
+  // Where the image came from (the URL of URL media), recorded in a UDIF the
+  // import writes as gs-origin and reported back by files.udif_info: what a
+  // later URL boot looks for to use the stored image instead of downloading
+  // it again (bus/urlMedia.ts).
+  origin?: string;
 }
 
 export interface ImportOutcome {
@@ -310,7 +315,7 @@ async function writeUdif(
   opts: ImportOptions,
   cancelled: () => boolean,
 ): Promise<{ bytes_in: number; stored_bytes: number }> {
-  const h = await gsEval('files.udif_open', [part, 64, 1, name]);
+  const h = await gsEval('files.udif_open', [part, 64, 1, name, opts.origin ?? '']);
   if (typeof h !== 'number' || h < 0) throw new Error(gsErrorText(h));
   let stored = 0;
   try {
@@ -483,7 +488,12 @@ async function importMacArchive(
     )
       throw new Error('could not stage the archive');
     setActivityDetail('decoding the archive...');
-    const r = (await gsEval('files.archive.import', [staged, part, opts.member ?? ''])) as {
+    const r = (await gsEval('files.archive.import', [
+      staged,
+      part,
+      opts.member ?? '',
+      opts.origin ?? '',
+    ])) as {
       member?: string;
       bytes_in?: number;
       stored_bytes?: number;

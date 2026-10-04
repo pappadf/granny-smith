@@ -199,3 +199,47 @@ describe("the URL's vROM is the boot's", () => {
     expect(scratchLeft()).toEqual([]);
   });
 });
+
+describe('URL media: a disk an earlier download stored is used, not fetched again', () => {
+  const URL_HD = 'https://h/disks/big.img';
+  // One stored image in /opfs/images/hd whose UDIF records `origin`.
+  function storedImage(origin: string): string {
+    const path = '/opfs/images/hd/hd0_2026-10-01_10-00-00.dmg';
+    files.set(path, new Uint8Array(4096).fill(0x11));
+    bridge.reply('files.list', (args: unknown) =>
+      (args as [string])[0] === '/opfs/images/hd'
+        ? [
+            { name: 'hd0_2026-10-01_10-00-00.dmg', kind: 'file' },
+            { name: 'notes.txt', kind: 'file' },
+          ]
+        : [],
+    );
+    bridge.reply('files.udif_info', (args: unknown) =>
+      (args as [string])[0] === path ? { gs_profile: true, origin } : { error: 'not a UDIF' },
+    );
+    return path;
+  }
+
+  it('an image whose origin is the URL is attached, and the disk is not downloaded', async () => {
+    const path = storedImage(URL_HD);
+    served['plus.rom'] = PLUS_ROM;
+    expect(await processUrlMedia(new URLSearchParams(`rom=plus.rom&hd0=${URL_HD}`))).toBe(true);
+    const asked = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) =>
+      String(c[0]),
+    );
+    expect(asked.some((u) => u.endsWith('plus.rom'))).toBe(true);
+    expect(asked.some((u) => u.includes('big.img'))).toBe(false);
+    expect(media.attachHardDisk).toHaveBeenCalledWith(path, 0);
+    expect(scratchLeft()).toEqual([]);
+  });
+
+  it('an image with another origin is left alone: the URL is downloaded', async () => {
+    storedImage('https://h/disks/other.img');
+    served['plus.rom'] = PLUS_ROM;
+    await processUrlMedia(new URLSearchParams(`rom=plus.rom&hd0=${URL_HD}`));
+    const asked = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) =>
+      String(c[0]),
+    );
+    expect(asked.some((u) => u.includes('big.img'))).toBe(true);
+  });
+});

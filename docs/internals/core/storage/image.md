@@ -94,7 +94,7 @@ The disk images the web app stores, the blank disks `hd create` makes under a `.
 | Block map | one whole-disk `mish` table from sector 0, named for what the disk starts with (`Apple_partition_scheme`, `Apple_HFS`, `ISO9660`, or `Unknown Partition`) |
 | Chunks | 128 sectors (64 KB) by default; each ZERO (consecutive ones merge — a blank 2 GB disk is one entry), ZLIB (a complete zlib stream, `deflate.c`) or RAW (when deflate does not shrink it). Never IGNORE or ADC |
 | Checksums | the table's CRC-32 over the decoded bytes (a zero run's in O(log n), `gs_crc32_zeros`), the trailer's over the data fork, the master checksum over the table checksums |
-| Plist keys | `gs-profile` (1), `gs-byte-length` (the true length when it is not a whole number of sectors; the tail is zero-padded), `gs-source` (the original file name) |
+| Plist keys | `gs-profile` (1), `gs-byte-length` (the true length when it is not a whole number of sectors; the tail is zero-padded), `gs-source` (the original file name), `gs-origin` (where the bytes came from, as the caller gave it — the page records a URL download's URL; opaque to the core, read back by `files.udif_info` as `origin`) |
 
 Each ZLIB chunk is deflated in blocks of up to 32768 tokens, each coded with its own length-limited Huffman codes, or with the fixed codes or stored when either is smaller (`deflate.h`). Against fixed codes alone that is 8–11% smaller.
 
@@ -110,7 +110,7 @@ The writer's images also open in the other tools users have, and CI checks that 
 
 The screens were identical every time. The overhead measured 0–7% across runs, about the run-to-run noise. With the image cache cut to 1 MB (`files.cache.image_mb = 1`), the misses roughly double and the overhead stays between 2% and 10%.
 
-7-Zip reads and checks the result (`7z t`). `udif_verify()` decodes every chunk and checks every checksum; `udif_info()` reads only the trailer and plist. The object-model surface: `files.udif_open` / `udif_append` / `udif_finish` / `udif_abort` (the page streams an import through the transfer window), `files.convert` (any image the emulator reads → UDIF, or → raw with `format="raw"`, checked by decoding the result), `files.verify`, `files.udif_info`.
+7-Zip reads and checks the result (`7z t`). `udif_verify()` decodes every chunk and checks every checksum; `udif_info()` reads only the trailer and plist. The object-model surface: `files.udif_open` / `udif_append` / `udif_finish` / `udif_abort` (the page streams an import through the transfer window), `files.convert` (any image the emulator reads → UDIF, or → raw with `format="raw"`, checked by decoding the result), `files.verify`, `files.udif_info`. `files.udif_open` and `files.archive.import` take an optional `origin` string for `gs-origin`.
 
 The zlib decompressor both this and the PNG reader use is first-party: `inflate.c`'s entry points wrap peeler's resumable inflate, the one in the tree; the core links no third-party C libraries.
 

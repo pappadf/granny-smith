@@ -55,7 +55,7 @@ import {
   interleaveHalves,
   type MediaFetchPlan,
 } from '@/lib/mediaUrl';
-import { identifyRom, type MediaTypeId } from '@/lib/media';
+import { identifyRom, MEDIA_TYPES, type MediaTypeId } from '@/lib/media';
 import { persistAs, streamToOpfs, discardStaging, stagedArchiveFormat } from './upload';
 import { scratchPath } from '@/lib/opfsPaths';
 import { getProfile } from './profile';
@@ -288,6 +288,45 @@ function report(slot: string, path: string, r: MediaResult): void {
   else showNotification(`${slot}: not attached: ${r.reason}`, 'error');
 }
 
+// An image of `category` an earlier download of `url` stored: one whose
+// UDIF records that exact URL as its origin (gs-origin, written by the
+// import; files.udif_info reads it back).  The URL is compared as given --
+// two spellings of one file are two URLs.  A stored image is never written
+// to (a machine's writes go to a delta of its own), so it is still what was
+// downloaded.  Answers its path, the progress view and the run told, or
+// null: then it is downloaded.  Only UDIF images carry an origin, so this
+// finds disks that were big enough to be imported as one (bus/importImage);
+// a small file is simply fetched again.
+async function storedFromUrl(
+  slot: string,
+  url: string,
+  category: MediaTypeId,
+): Promise<string | null> {
+  const origin = url.trim();
+  const dir = MEDIA_TYPES[category].persistDir;
+  const entries = await gsEval('files.list', [dir]);
+  if (!Array.isArray(entries)) return null;
+  for (const e of entries as { name?: unknown; kind?: unknown }[]) {
+    if (typeof e?.name !== 'string' || e.kind === 'directory' || !/\.dmg$/i.test(e.name)) continue;
+    const path = `${dir}/${e.name}`;
+    const info = (await gsEval('files.udif_info', [path])) as { origin?: unknown } | null;
+    if (!info || typeof info !== 'object' || info.origin !== origin) continue;
+    const size = await gsEval('files.path_size', [path]);
+    const bytes = typeof size === 'number' ? size : 0;
+    updateUrlFile(slot, {
+      name: e.name,
+      status: 'done',
+      reused: true,
+      received: bytes,
+      total: bytes,
+    });
+    if (!urlBoot.requested)
+      showNotification(`${slot.toUpperCase()}: ${e.name} (already stored, not downloaded)`, 'info');
+    return path;
+  }
+  return null;
+}
+
 // Fetch a URL, stage it, and persist it as `category`.  Returns the
 // persisted /opfs/images/<category>/ path to attach from, or undefined when
 // the fetch failed or the file is not valid as that category (rejected,
@@ -298,6 +337,8 @@ async function fetchAndPersist(
   category: MediaTypeId,
 ): Promise<string | undefined> {
   if (category === 'hd' || category === 'cdrom') {
+    const stored = await storedFromUrl(slot, url, category);
+    if (stored) return stored;
     const imported = await fetchAndImport(slot, url, category);
     if (imported !== false) return imported;
   }
@@ -380,6 +421,7 @@ async function fetchAndImport(
       categories: [category],
       member: plan.container ? plan.member : null,
       storeAs,
+      origin: url.trim(),
       onProgress: (read) => progress(read),
       // importImage discards the staged file when this returns.
       onSmall: async (path) => {

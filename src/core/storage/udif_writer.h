@@ -37,11 +37,13 @@
 typedef struct udif_writer udif_writer_t;
 
 #define UDIF_WRITER_CHUNK_SECTORS 128u // 64 KB
+#define UDIF_ORIGIN_MAX           4096u // bytes of gs-origin udif_info reports, terminator included
 
 typedef struct {
     uint32_t chunk_sectors; // power of two in 8..2048; 0 = UDIF_WRITER_CHUNK_SECTORS
     int level; // 0 = ZERO + RAW only (no deflate); 1..9 deflate effort; < 0 = default (1)
     const char *source_name; // recorded as gs-source (may be NULL)
+    const char *origin; // recorded as gs-origin: where the bytes came from, as the caller says (may be NULL)
 } udif_writer_opts_t;
 
 // Create `path` (it must not exist) to receive a decoded image.  NULL with a
@@ -100,6 +102,7 @@ typedef struct {
     uint64_t max_chunk_bytes; // largest decoded compressed chunk
     bool gs_profile; // written by this emulator
     char source_name[256]; // gs-source, or ""
+    char origin[UDIF_ORIGIN_MAX]; // gs-origin, or "" (cut short when longer)
 } udif_info_t;
 
 // Read a UDIF's trailer and property list.  0, or a negative errno when it

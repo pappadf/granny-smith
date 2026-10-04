@@ -19,6 +19,9 @@ export interface UrlFile {
   total: number | null;
   status: UrlFileStatus;
   error: string | null;
+  // Not downloaded: an image stored by an earlier download of the same URL
+  // was used (bus/urlMedia.ts storedFromUrl).
+  reused?: boolean;
 }
 
 // downloading: files are coming in; booting: all fetched, the machine is

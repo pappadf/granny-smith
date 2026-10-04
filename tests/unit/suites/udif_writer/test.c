@@ -38,8 +38,8 @@ static void sandbox(void) {
 
 // Remove the sandbox and everything the tests left in it.
 static void sandbox_remove(void) {
-    const char *names[] = {"rt.dmg",    "l0.dmg",  "g0.dmg",   "g1.dmg",  "g2.dmg",     "g3.dmg",
-                           "empty.dmg", "bad.dmg", "bad2.dmg", "big.dmg", "foreign.dmg"};
+    const char *names[] = {"rt.dmg",  "l0.dmg",   "g0.dmg",  "g1.dmg",      "g2.dmg",     "g3.dmg",       "empty.dmg",
+                           "bad.dmg", "bad2.dmg", "big.dmg", "foreign.dmg", "origin.dmg", "no-origin.dmg"};
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
         unlink(sb_path(names[i]));
     rmdir(SANDBOX);
@@ -328,6 +328,36 @@ TEST(empty_2gib_is_a_few_kb) {
     gs_source_release(host);
 }
 
+// The caller's origin goes into the property list as is (gs-origin) and
+// udif_info reads it back verbatim -- XML-special characters and a query
+// string included; an image written without one reports "".
+TEST(origin_round_trips_through_udif_info) {
+    sandbox();
+    const char *url = "https://ia800908.us.archive.org/view_archive.php?archive=/12/items/R/R.zip"
+                      "&file=9FEB69B3%20-%20Power%20Mac%206100%20%26%207100.ROM#<x>";
+    uint8_t content[4096];
+    for (size_t i = 0; i < sizeof(content); i++)
+        content[i] = (uint8_t)(i * 7);
+    for (int with = 0; with <= 1; with++) {
+        const char *p = sb_path(with ? "origin.dmg" : "no-origin.dmg");
+        unlink(p);
+        char err[200] = {0};
+        udif_writer_opts_t o = {.level = 1, .source_name = "disk.img", .origin = with ? url : NULL};
+        udif_writer_t *w = udif_writer_open(p, &o, err, sizeof(err));
+        ASSERT_TRUE(w != NULL);
+        ASSERT_EQ_INT(0, udif_writer_append(w, content, sizeof(content)));
+        ASSERT_EQ_INT(0, udif_writer_finish(w, NULL));
+        gs_source_t *host = gs_source_host(p, NULL);
+        ASSERT_TRUE(host != NULL);
+        udif_info_t in;
+        ASSERT_EQ_INT(0, udif_info(host, &in));
+        ASSERT_TRUE(in.gs_profile);
+        ASSERT_TRUE(strcmp(in.source_name, "disk.img") == 0);
+        ASSERT_TRUE(strcmp(in.origin, with ? url : "") == 0);
+        gs_source_release(host);
+    }
+}
+
 // A flipped byte in a compressed chunk fails the read of that chunk (and the
 // verifier), not the reads of its neighbours.
 TEST(corrupt_chunk_fails_only_its_range) {
@@ -524,6 +554,7 @@ int main(void) {
     RUN(writer_level_zero_stores_raw_and_zero_only);
     RUN(writer_append_granularity_is_invisible);
     RUN(empty_2gib_is_a_few_kb);
+    RUN(origin_round_trips_through_udif_info);
     RUN(corrupt_chunk_fails_only_its_range);
     RUN(chunk_bound_applies_to_foreign_images);
     RUN(writer_emits_interop_samples);
