@@ -29,7 +29,7 @@ The image subsystem speaks **paths only**. It does not know about machine ids, s
 The single old `image_open(filename, writable)` is replaced by three explicit operations matching the three real use cases:
 
 - **`image_open_readonly(const char *base_path)`** — opens a base image with no on-disk delta. The image layer mints a scratch instance under `/tmp/gs-image-ro/`; the delta and journal there are deleted on `image_close`. Use this for probes (`files.partmap`, `files.probe`, `machine.scsi.identify_hd`, `floppy.identify`, …) and for read-only mounts (CD-ROM).
-- **`image_create(const char *base_path, const char *delta_dir)`** — opens a fresh writable instance. The image layer mints a 16-hex-char opaque id and creates `<delta_dir>/<id>.delta` and `<delta_dir>/<id>.journal`. If `delta_dir` is `NULL`, the `GS_STORAGE_CACHE` directory is used when set (the integration runner's per-test sidecar routing), else the directory of the base image (legacy adjacent-to-base layout — used by tests with no machine identity).
+- **`image_create(const char *base_path, const char *delta_dir)`** — opens a fresh writable instance. The image layer mints a 16-hex-char opaque id and creates `<delta_dir>/<id>.delta` and `<delta_dir>/<id>.journal`. If `delta_dir` is `NULL`, the scratch root is used: the `GS_STORAGE_CACHE` directory when set (the integration runner's per-test sidecar routing), else `/tmp/gs-image-ro/`. Never the base image's own directory — a delta is per-instance, so one left beside the base is an orphan once the process exits, and shared media (`tests/data`) would collect them.
 - **`image_open(const char *base_path, const char *instance_path)`** — reopens an existing writable instance. `instance_path` is the stem returned by `image_path()` when the instance was first created; the image layer appends `.delta` and `.journal` itself. Used by checkpoint restore.
 
 After construction the caller queries the instance stem with **`image_path(const image_t *image)`** and persists it (in a checkpoint or in the higher-layer slot table) so a future `image_open(base, instance_path)` can find the same delta files. Returns `NULL` for read-only mounts.
@@ -50,8 +50,8 @@ The higher layer in `system.c` chooses the delta directory before each fresh wri
 
 ```c
 static const char *pick_delta_dir(const char *path) {
-    // Volatile bases under /tmp/ (test-uploaded artifacts) keep deltas next
-    // to the base — passing NULL falls back to image_create's own derivation.
+    // Volatile bases under /tmp/ (test-uploaded artifacts) keep deltas in
+    // image_create's scratch root (also under /tmp) by passing NULL.
     if (path && strncmp(path, "/tmp/", 5) == 0)
         return NULL;
     // Otherwise route deltas under the active per-machine directory so they
