@@ -15,6 +15,7 @@
 #include "egret.h"
 #include "floppy.h"
 #include "iop.h"
+#include "iw_printer.h"
 #include "keyboard.h"
 #include "memory.h"
 #include "mmu_checkpoint.h"
@@ -95,6 +96,32 @@ void part_save_iop(void *obj, checkpoint_t *cp) {
 }
 void part_save_cuda(void *obj, checkpoint_t *cp) {
     av_cuda_checkpoint(obj, cp);
+}
+
+static void part_save_imagewriter(void *obj, checkpoint_t *cp) {
+    iw_printer_checkpoint(obj, cp);
+}
+
+void machine_part_imagewriter(config_t *cfg, checkpoint_t *cp, bool lisa) {
+    // HSKi reaches the SCC's /CTS uninverted (Guide to the Macintosh Family
+    // Hardware, 2nd ed., Table 10-1): a ready printer holds its DTR high, so
+    // /CTS reads high -- RR0's CTS bit clear.  The Lisa wires Serial A's DSR
+    // to /SYNC itself (lisa.c) and has no handshake on Serial B.
+    static const iw_port_wiring_t mac[2] = {
+        {true, SCC_PIN_CTS, false},
+        {true, SCC_PIN_CTS, false}
+    };
+    static const iw_port_wiring_t lisa_wiring[2] = {
+        {false, SCC_PIN_SYNC, true },
+        {false, SCC_PIN_CTS,  false}
+    };
+    machine_part_begin(cfg, cp, "imagewriter");
+    cfg->imagewriter = iw_printer_new(cfg->scheduler, cfg->scc, lisa ? lisa_wiring : mac, cp);
+    if (!cfg->imagewriter) {
+        machine_part_cancel(cfg);
+        return;
+    }
+    machine_part(cfg, cp, "imagewriter", part_save_imagewriter, cfg->imagewriter);
 }
 
 static void part_save_irq(void *obj, checkpoint_t *cp) {

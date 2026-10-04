@@ -71,6 +71,7 @@
     X("afp", 0, "AFP file server")                                                                                     \
     X("pap", 0, "AppleTalk PAP printer server")                                                                        \
     X("laserwriter", 0, "LaserWriter interpreter bridge")                                                              \
+    X("imagewriter", 0, "ImageWriter dot-matrix printer")                                                              \
     X("adsp", 0, "AppleTalk ADSP connections")                                                                         \
     X("ppctoolbox", 0, "AppleTalk PPC Toolbox program linking")                                                        \
     X("aevt", 0, "Apple events over PPC")                                                                              \
