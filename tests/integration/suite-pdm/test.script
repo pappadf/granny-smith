@@ -84,7 +84,6 @@ def boot_pdm_75(model, ram_kb, id) {
 # model and RAM boots it itself, then runs this).
 def run_pdm_75(model, id) {
     machine.rtc.time = 0xE0000000
-    files.revert "${$hd_75}"
     machine.scsi.attach_hd "${$hd_75}" $id
     # The Start Manager's default startup device is the disk's own id --
     # the core writes the PRAM bytes, as the web page asks it to.
@@ -328,7 +327,6 @@ def row_pdm_floppy_mount() {
     # The family has ONE bay, so there is no drive 1 to put a disk in.
     assert try(machine.floppy.drive[1].present, "none") == "none" "FD1 exists on a family with one bay"
 
-    files.revert "${$fd_144}"
     machine.floppy.drive[0].insert "${$fd_144}"
     assert machine.floppy.drive[0].present "FD0 empty after insert"
     assert machine.floppy.drive[0].disk.present "FD0 disk node absent after insert"
@@ -364,7 +362,6 @@ def row_pdm_floppy_mount() {
 # outcome: an 800K System Tools disk mounts.
 def row_pdm_floppy_800k() {
     boot_pdm_75("pm7100", 24576, 0)
-    files.revert "${$fd_800}"
     machine.floppy.drive[0].insert "${$fd_800}"
     assert machine.floppy.drive[0].present "FD0 empty after insert"
     # GCR: the driver's MFM attempts time out first, so the mount takes
@@ -397,7 +394,6 @@ def row_pdm_floppy_800k() {
 # flushed them.
 def row_pdm_floppy_write_eject() {
     boot_pdm_75("pm7100", 24576, 0)
-    files.revert "${$fd_144}"
     machine.floppy.drive[0].insert "${$fd_144}" true
     scheduler.run 600000000
     wait_stable(900000000)
@@ -450,7 +446,6 @@ def row_pdm_floppy_format() {
     boot_pdm_75("pm7100", 24576, 0)
     let blank = "${$WORK_DIR}/pdm-blank-1440.img"
     assert files.fd_create($blank, true) "could not create a blank 1.44 MB image"
-    files.revert "${$blank}"
     machine.floppy.drive[0].insert "${$blank}" true
     scheduler.run 600000000
     wait_stable(900000000)
@@ -483,7 +478,6 @@ def row_pdm_floppy_format() {
 def row_pdm_floppy_boot() {
     machine.boot model="pm7100" ram=24576 rom="${$ROM}"
     machine.rtc.time = 0xE0000000
-    files.revert "${$fd_boot}"
     machine.floppy.drive[0].insert "${$fd_boot}"
     assert machine.floppy.drive[0].present "boot floppy not in FD0"
     assert try(machine.scsi.device[0].type, none) == none "a SCSI disk is attached: this row must boot from the floppy"

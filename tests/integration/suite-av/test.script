@@ -191,7 +191,6 @@ def row_av_video() {
 # update the desktop database on it, as a real machine would.
 def row_av_hd_device() {
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
-    files.revert "${$av_hd}"
     machine.scsi.attach_hd "${$av_hd}" 0
     assert machine.scsi.device[0].type == "hd" "av-hd-device: SCSI 0 is not a hard disk"
     assert !machine.scsi.device[0].read_only "av-hd-device: disk came up read-only"
@@ -225,7 +224,6 @@ def row_av_hd_device() {
 def row_q840av_71_hd_desktop() {
     machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
-    files.revert "${$av_hd}"
     machine.scsi.attach_hd "${$av_hd}" 0
     scheduler.run 600000000
     wait_stable(1500000000)
@@ -263,7 +261,6 @@ def row_q840av_71_hd_desktop() {
 def row_av_checkpoint() {
     machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
-    files.revert "${$av_hd}"
     machine.scsi.attach_hd "${$av_hd}" 0
     scheduler.run 600000000
     wait_stable(1500000000)
@@ -284,7 +281,6 @@ def row_av_checkpoint() {
 def row_q660av_71_hd_desktop() {
     machine.rtc.time = 3000000000
     machine.boot model="q660av" ram=16384 rom="${$av_rom}"
-    files.revert "${$av_hd}"
     machine.scsi.attach_hd "${$av_hd}" 0
     scheduler.run 600000000
     wait_stable(1500000000)
@@ -326,7 +322,6 @@ def row_q660av_71_hd_desktop() {
 def row_video_in(model, golden) {
     machine.rtc.time = 3000000000
     machine.boot model="${$model}" ram=16384 rom="${$av_rom}"
-    files.revert "${$av_hd}"
     machine.scsi.attach_hd "${$av_hd}" 0
     scheduler.run 600000000
     wait_stable(1500000000)
@@ -380,7 +375,6 @@ def row_video_in(model, golden) {
 def row_av_beep() {
     machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
-    files.revert "${$av_hd}"
     machine.scsi.attach_hd "${$av_hd}" 0
     scheduler.run 600000000
     wait_stable(1500000000)
@@ -437,7 +431,6 @@ def row_av_beep() {
 def row_av_tts() {
     machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
-    files.revert "${$av_hd}"
     machine.scsi.attach_hd "${$av_hd}" 0
     scheduler.run 600000000
     wait_stable(1500000000)
@@ -514,7 +507,6 @@ def row_av_tts() {
 def row_av_sound_in() {
     machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
-    files.revert "${$av_hd}"
     machine.scsi.attach_hd "${$av_hd}" 0
     machine.audioin.source = "tone"
     assert machine.audioin.connected "av-sound-in: tone source not connected"
@@ -582,7 +574,6 @@ def row_av_sound_in() {
 def sr_bring_up() {
     machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
-    files.revert "${$av_hd}"
     machine.scsi.attach_hd "${$av_hd}" 0
     machine.audioin.source = "none"
     scheduler.run 600000000
@@ -694,7 +685,6 @@ def row_av_sr_macro() {
 def row_av_dsp_boot() {
     machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
-    files.revert "${$av_hd}"
     machine.scsi.attach_hd "${$av_hd}" 0
     # The RTM init runs ~65-90M instructions into boot; sample the window.
     scheduler.run 60000000
@@ -741,13 +731,11 @@ def dsp_fingerprint() {
 def row_av_dsp_determinism() {
     machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
-    files.revert "${$av_hd}"
     machine.scsi.attach_hd "${$av_hd}" 0
     scheduler.run 100000000
     let fp1 = dsp_fingerprint()
     machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
-    files.revert "${$av_hd}"
     machine.scsi.attach_hd "${$av_hd}" 0
     scheduler.run 100000000
     let fp2 = dsp_fingerprint()

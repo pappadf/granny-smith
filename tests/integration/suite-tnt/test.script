@@ -50,7 +50,6 @@ let hd_76 = "../../data/systems/system_7_6_170mb_24ac.img"
 def tnt_hd_boot(model, card, budget) {
     machine.boot model=$model ram=32768 rom="${$ROM}" pci_card="${$card}"
     machine.rtc.time = "2026-04-26T21:30:36"
-    files.revert "${$hd_76}"
     machine.scsi.attach_hd "${$hd_76}" 0
 
     # Through OF, POST, the 68k boot, the gray desktop, the SCSI scan

@@ -64,7 +64,7 @@ config_t *global_emulator = NULL;
 // the manifest).  For volatile bases under /tmp/ — typically test
 // artifacts uploaded to memfs — fall back to NULL so image_create places
 // deltas adjacent to the base, preserving memfs-only I/O performance.
-const char *system_media_delta_dir(const char *path) {
+static const char *pick_delta_dir(const char *path) {
     if (path && strncmp(path, "/tmp/", 5) == 0)
         return NULL;
     return checkpoint_machine_dir();
@@ -546,7 +546,7 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
     if (target < 0)
         return -1;
 
-    image_t *disk = writable ? image_attach(path, system_media_delta_dir(path)) : image_open_readonly(path);
+    image_t *disk = writable ? image_create(path, pick_delta_dir(path)) : image_open_readonly(path);
     if (!disk) {
         gs_outf("fd insert: failed to open disk image: %s\n", path);
         return -1;
@@ -620,7 +620,7 @@ int system_create_floppy(const char *path, bool high_density, int preferred) {
         return -1;
     }
 
-    image_t *disk = image_attach(path, system_media_delta_dir(path));
+    image_t *disk = image_create(path, pick_delta_dir(path));
     if (!disk) {
         gs_outf("fd create: failed to open newly created image: %s\n", path);
         return -1;
@@ -1412,7 +1412,7 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
     }
     if (bus == MEDIA_BUS_PROFILE) {
         const image_geometry_t geom = {.block_size = PROFILE_BLOCK_SIZE};
-        slot->img = image_attach_with_geometry(path, system_media_delta_dir(path), geom);
+        slot->img = image_create_with_geometry(path, pick_delta_dir(path), geom);
         if (!slot->img)
             gs_outf("Failed to open ProFile image: %s\n", path);
         return slot->img != NULL;
@@ -1457,7 +1457,7 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
                 drive->product, disk_size(slot->img), slot->block_size);
         return true;
     }
-    slot->img = image_attach(path, system_media_delta_dir(path));
+    slot->img = image_create(path, pick_delta_dir(path));
     if (!slot->img) {
         gs_outf("Failed to open image: %s\n", path);
         return false;

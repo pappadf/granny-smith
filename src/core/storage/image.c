@@ -135,67 +135,11 @@ bool image_key_is_open_writable(const char *key) {
     return false;
 }
 
-// True when another open image works on the same delta (a checkpoint
-// restore reopens an instance while the machine it replaces still has it).
-static bool instance_shared(const image_t *image) {
-    for (const image_t *o = g_open_writable; o; o = o->next_writable) {
-        if (o != image && o->delta_path && image->delta_path && strcmp(o->delta_path, image->delta_path) == 0)
-            return true;
-    }
-    return false;
-}
-
-// The storage of attached disks that were closed, kept open for the rest of
-// the process: a disk keeps what was written to it, as a real one does, so
-// the next attach of the same base -- a later machine.boot -- adopts the
-// instance exactly as it was left, uncommitted writes and rollback journal
-// included.  Nothing is committed at close: a quick checkpoint that names
-// the instance still rolls it back to its own moment.
-#define PARKED_MAX 32
-static struct {
-    char *instance_path;
-    storage_t *storage;
-} g_parked[PARKED_MAX];
-
-// Take the parked storage of `instance_path` out of the table (NULL: none).
-static storage_t *unpark(const char *instance_path) {
-    for (int i = 0; i < PARKED_MAX; i++) {
-        if (g_parked[i].instance_path && strcmp(g_parked[i].instance_path, instance_path) == 0) {
-            storage_t *s = g_parked[i].storage;
-            free(g_parked[i].instance_path);
-            g_parked[i].instance_path = NULL;
-            g_parked[i].storage = NULL;
-            return s;
-        }
-    }
-    return NULL;
-}
-
-// Keep `storage` open under `instance_path`; false when the table is full
-// (the caller closes it, and a later attach starts from the last commit).
-static bool park(const char *instance_path, storage_t *storage) {
-    for (int i = 0; i < PARKED_MAX; i++) {
-        if (!g_parked[i].instance_path) {
-            g_parked[i].instance_path = gs_strdup(instance_path);
-            if (!g_parked[i].instance_path)
-                return false;
-            g_parked[i].storage = storage;
-            return true;
-        }
-    }
-    return false;
-}
-
 void image_close(image_t *image) {
     if (!image)
         return;
     if (image->writable)
         writable_unregister(image);
-    // A disk's own instance outlives the machine that had it (above).  Not
-    // while another handle has the instance open: a checkpoint restore that
-    // reopened it owns its state now.
-    if (image->storage && image->keyed && !instance_shared(image) && park(image->instance_path, image->storage))
-        image->storage = NULL;
     if (image->storage)
         storage_delete(image->storage);
     free(image->tags);
@@ -215,34 +159,6 @@ void image_close(image_t *image) {
     free(image->delta_path);
     free(image->journal_path);
     free(image);
-}
-
-static void mint_random_hex_id(char out[static 17]);
-
-// The instance id of a writable mount of `path`: 16 hex chars of a 64-bit
-// FNV-1a hash of this process's salt and the canonical path.  Within the
-// process one base has one delta per directory, so a disk closed at a
-// machine's teardown and mounted again by a later machine.boot finds its
-// writes (image_path_is_open_writable keeps a base from being mounted twice
-// at once).  Another process -- a reload, a second emulator on the same files
-// -- gets its own delta, never one a different process wrote; what carries a
-// disk's state across processes is a checkpoint, which names its instance.
-static void instance_id_for(const char *path, char out[static 17]) {
-    static char salt[17];
-    if (!salt[0])
-        mint_random_hex_id(salt);
-    char canon[PATH_MAX];
-    image_canonicalise(path, canon, sizeof(canon));
-    uint64_t h = 0xcbf29ce484222325ull;
-    for (const unsigned char *p = (const unsigned char *)salt; *p; p++) {
-        h ^= *p;
-        h *= 0x100000001b3ull;
-    }
-    for (const unsigned char *p = (const unsigned char *)canon; *p; p++) {
-        h ^= *p;
-        h *= 0x100000001b3ull;
-    }
-    snprintf(out, 17, "%016llx", (unsigned long long)h);
 }
 
 // Mint a 16-hex-char opaque id (8 random bytes).  Used both for image
@@ -376,12 +292,11 @@ size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t s
 // archive (outer.img/partition1/inner.img, roms.zip/disk.img.gz).
 
 // How an image is opened.
-typedef enum { OPEN_READONLY, OPEN_CREATE, OPEN_ATTACH, OPEN_REOPEN } open_mode_t;
+typedef enum { OPEN_READONLY, OPEN_CREATE, OPEN_REOPEN } open_mode_t;
 
 // Build an image over (`data`, `rsrc`), named `name`.  For OPEN_CREATE the
-// delta goes in `dir` (a fresh instance); for OPEN_ATTACH in `dir` too, as
-// the base's own instance (instance_id_for), at its last commit; for
-// OPEN_REOPEN `dir` is the instance stem.  NULL (with errno set) on failure.
+// delta goes in `dir` (a fresh instance); for OPEN_REOPEN `dir` is the
+// instance stem.  NULL (with errno set) on failure.
 static image_t *image_open_source(const char *name, gs_source_t *data, gs_source_t *rsrc, image_geometry_t geom,
                                   open_mode_t mode, const char *dir) {
     uint32_t block_size = geometry_block_size(geom);
@@ -422,23 +337,10 @@ static image_t *image_open_source(const char *name, gs_source_t *data, gs_source
     image->block_size = block_size;
     image->type = classify_image((size_t)raw);
     image->writable = mode != OPEN_READONLY;
-    // A base another handle holds writable -- a machine being built beside
-    // the running one that has it -- gets an instance of its own: two live
-    // handles on one delta would each hold its own view of it, and the
-    // rollback below would undo the running machine's writes.
-    if (mode == OPEN_ATTACH && image_path_is_open_writable(name))
-        mode = OPEN_CREATE;
     image->from_diskcopy = u.dc42 != NULL;
 
     if (mode == OPEN_REOPEN) {
         image->instance_path = gs_strdup(dir);
-    } else if (mode == OPEN_ATTACH) {
-        // The instance is named after the base, so mounting the same file
-        // again in this directory finds the delta that holds its writes.
-        char id[17];
-        instance_id_for(name, id);
-        image->instance_path = gs_str_printf("%s/%s", dir, id);
-        image->keyed = true;
     } else if (mode == OPEN_CREATE) {
         char id[17];
         mint_random_hex_id(id);
@@ -464,29 +366,6 @@ static image_t *image_open_source(const char *name, gs_source_t *data, gs_source
         return NULL;
     }
 
-    // A reopen of the base's own instance (a quick checkpoint naming it) is
-    // keyed too; whatever was parked under it is superseded by this handle.
-    if (mode == OPEN_REOPEN && image->instance_path) {
-        char id[17];
-        instance_id_for(name, id);
-        const char *slash = strrchr(image->instance_path, '/');
-        image->keyed = strcmp(slash ? slash + 1 : image->instance_path, id) == 0;
-        storage_t *stale = unpark(image->instance_path);
-        if (stale)
-            storage_delete(stale);
-    }
-    // An attach adopts the instance a closed handle left, as it was.
-    storage_t *adopted = (mode == OPEN_ATTACH) ? unpark(image->instance_path) : NULL;
-    if (adopted) {
-        image->storage = adopted;
-        if (u.dc42)
-            image_load_diskcopy_tags(image, u.dc42);
-        gs_unwrapped_free(&u);
-        writable_register(image, name);
-        LOG(3, "reattached '%s' (%s, %zu bytes, writable)", name, image->format, image->raw_size);
-        return image;
-    }
-
     storage_config_t config = {0};
     config.base = u.data;
     config.delta_path = image->delta_path;
@@ -499,15 +378,6 @@ static image_t *image_open_source(const char *name, gs_source_t *data, gs_source
     gs_unwrapped_free(&u);
     if (rc != GS_SUCCESS) {
         gs_outf("image: storage engine failed for %s (error %d)\n", name, rc);
-        image_close(image);
-        errno = EIO;
-        return NULL;
-    }
-    // An attach starts from the delta's last commit: what a crash left
-    // uncommitted is rolled back, as a restore would.  (A reopen leaves that to
-    // its checkpoint; a fresh instance has nothing to roll back.)
-    if (mode == OPEN_ATTACH && storage_apply_rollback(image->storage) != GS_SUCCESS) {
-        gs_outf("image: cannot roll %s back to its last commit\n", name);
         image_close(image);
         errno = EIO;
         return NULL;
@@ -561,95 +431,41 @@ image_t *image_create(const char *base_path, const char *delta_dir) {
     return image_create_with_geometry(base_path, delta_dir, (image_geometry_t){.block_size = STORAGE_BLOCK_SIZE});
 }
 
-// The directory a writable instance of `base_path` keeps its delta in when
-// the caller names none: GS_STORAGE_CACHE when set (sidecars routed away
-// from the media -- see image_scratch_dir), else the directory containing
-// the base image, when that is a host directory, else the scratch root.
-// Headless callers may pass NULL when they have no machine-id concept.
-// *derived is what the caller frees.
-static const char *default_delta_dir(const char *base_path, const char *delta_dir, char **derived) {
-    *derived = NULL;
-    if (delta_dir && *delta_dir)
-        return delta_dir;
-    const char *cache = getenv("GS_STORAGE_CACHE");
-    if (cache && *cache)
-        return cache;
-    *derived = dirname_of(base_path);
-    struct stat st;
-    if (*derived && (stat(*derived, &st) != 0 || !S_ISDIR(st.st_mode))) {
-        free(*derived);
-        *derived = gs_strdup(image_scratch_dir()); // the base is inside an image
-    }
-    return *derived;
-}
-
-int image_revert(const char *base_path, const char *delta_dir, const char **why) {
-    if (!base_path || !*base_path) {
-        *why = "no image named";
-        return -1;
-    }
-    if (image_path_is_open_writable(base_path)) {
-        *why = "it is attached";
-        return -1;
-    }
-    char *derived = NULL;
-    const char *dir = default_delta_dir(base_path, delta_dir, &derived);
-    if (!dir) {
-        free(derived);
-        *why = "out of memory";
-        return -1;
-    }
-    char id[17];
-    instance_id_for(base_path, id);
-    char *stem = gs_str_printf("%s/%s", dir, id);
-    char *delta = gs_str_printf("%s/%s.delta", dir, id);
-    char *journal = gs_str_printf("%s/%s.journal", dir, id);
-    free(derived);
-    storage_t *parked = stem ? unpark(stem) : NULL;
-    if (parked)
-        storage_delete(parked);
-    free(stem);
-    int rc = 0;
-    if (!delta || !journal || (unlink(delta) != 0 && errno != ENOENT) || (unlink(journal) != 0 && errno != ENOENT)) {
-        *why = (!delta || !journal) ? "out of memory" : strerror(errno);
-        rc = -1;
-    }
-    free(delta);
-    free(journal);
-    return rc;
-}
-
-// A writable instance of `base_path` in `delta_dir` (or the default), opened
-// fresh (OPEN_CREATE) or as the base's own (OPEN_ATTACH).
-static image_t *image_open_writable(const char *base_path, const char *delta_dir, image_geometry_t geom,
-                                    open_mode_t mode) {
+image_t *image_create_with_geometry(const char *base_path, const char *delta_dir, image_geometry_t geom) {
     if (!base_path || !*base_path)
         return NULL;
     // No write-access probe: only the delta needs to be writable, and the
     // base can legitimately live on a read-only FS (some tests, distribution
     // mounts) -- or inside an image or an archive.
+    //
+    // Default delta_dir: GS_STORAGE_CACHE when set (sidecars routed away
+    // from the media — see image_scratch_dir), else the directory
+    // containing the base image, when that is a host directory, else the
+    // scratch root.  Headless callers may pass NULL when they have no
+    // machine-id concept.
     char *derived_dir = NULL;
-    delta_dir = default_delta_dir(base_path, delta_dir, &derived_dir);
+    if (!delta_dir || !*delta_dir) {
+        const char *cache = getenv("GS_STORAGE_CACHE");
+        if (cache && *cache) {
+            delta_dir = cache;
+        } else {
+            derived_dir = dirname_of(base_path);
+            struct stat st;
+            if (derived_dir && (stat(derived_dir, &st) != 0 || !S_ISDIR(st.st_mode))) {
+                free(derived_dir);
+                derived_dir = gs_strdup(image_scratch_dir()); // the base is inside an image
+            }
+            delta_dir = derived_dir;
+        }
+    }
     if (!delta_dir || gs_mkdir_p(delta_dir) != 0) {
         gs_outf("image_create: cannot create delta directory: %s\n", delta_dir ? delta_dir : "(null)");
         free(derived_dir);
         return NULL;
     }
-    image_t *img = image_open_path(base_path, geom, mode, delta_dir);
+    image_t *img = image_open_path(base_path, geom, OPEN_CREATE, delta_dir);
     free(derived_dir);
     return img;
-}
-
-image_t *image_create_with_geometry(const char *base_path, const char *delta_dir, image_geometry_t geom) {
-    return image_open_writable(base_path, delta_dir, geom, OPEN_CREATE);
-}
-
-image_t *image_attach(const char *base_path, const char *delta_dir) {
-    return image_attach_with_geometry(base_path, delta_dir, (image_geometry_t){.block_size = STORAGE_BLOCK_SIZE});
-}
-
-image_t *image_attach_with_geometry(const char *base_path, const char *delta_dir, image_geometry_t geom) {
-    return image_open_writable(base_path, delta_dir, geom, OPEN_ATTACH);
 }
 
 image_t *image_open(const char *base_path, const char *instance_path) {

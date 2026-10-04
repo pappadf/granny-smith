@@ -203,11 +203,6 @@ config_t *system_running(void);
 // The running machine's scheduler, or NULL with no machine.
 struct scheduler *system_running_scheduler(void);
 
-// The delta directory a writable mount of media at `path` uses (NULL: the
-// image layer's default): the active machine's directory, or beside a
-// volatile /tmp/ base.  files.revert discards the same instance.
-const char *system_media_delta_dir(const char *path);
-
 // Per-kind (DRIVE_KIND_*) sums of the attached images' read / write call
 // counters, for the drive-activity lights (storage/drive_activity.h).
 void system_drive_io_counts(uint64_t reads[DRIVE_KIND_COUNT], uint64_t writes[DRIVE_KIND_COUNT]);

@@ -81,7 +81,6 @@ def row_wrap_layout() {
     machine.boot model="iici" ram=8192 rom="${$ROM}"
     let file_size = files.path_size("${$vol753}")
     assert scsi_identify_ok() "wrap-layout: identify_hd refused the bare volume"
-    files.revert "${$vol753}"
     assert machine.scsi.attach_hd("${$vol753}", 0) "wrap-layout: attach_hd failed"
     assert machine.scsi.device[0].type == "hd" "wrap-layout: SCSI 0 is not a hard disk"
     let i = image_index($vol753)
@@ -114,7 +113,6 @@ def boot_desktop(label, model, rom, ram, vol, golden, warm) {
     # menu-bar clock turning over during the settle wait costs a random
     # extra 60M instructions (perf gate) on some runs and not others.
     machine.rtc.time = "2026-04-26T21:30:00"
-    files.revert "${$vol}"
     assert machine.scsi.attach_hd("${$vol}", 0) "${$label}: attach_hd failed"
     machine.rtc.pram.boot_device = 0
     scheduler.run $warm
@@ -170,9 +168,7 @@ def row_pm7500_753() {
 # shows both volume icons.
 def row_two_volumes() {
     machine.boot model="iici" ram=8192 rom="${$ROM}"
-    files.revert "${$vol753}"
     assert machine.scsi.attach_hd("${$vol753}", 0) "two-volumes: attach_hd 0 failed"
-    files.revert "${$vol701}"
     assert machine.scsi.attach_hd("${$vol701}", 1) "two-volumes: attach_hd 1 failed"
     scheduler.run 150000000
     wait_stable(1600000000)
@@ -187,7 +183,6 @@ def row_two_volumes() {
 # volume at the wrong offset and crash.
 def row_checkpoint() {
     machine.boot model="iici" ram=8192 rom="${$ROM}"
-    files.revert "${$vol753}"
     assert machine.scsi.attach_hd("${$vol753}", 0) "checkpoint: attach_hd failed"
     scheduler.run 150000000
     wait_stable(1600000000)
@@ -210,7 +205,6 @@ def row_driverless() {
     machine.boot model="iici" ram=8192 rom="${$ROM}"
     machine.rtc.time = "2026-04-26T21:30:00" # a fixed clock, as boot_desktop
     let file_size = files.path_size("${$voldl753}")
-    files.revert "${$voldl753}"
     assert machine.scsi.attach_hd("${$voldl753}", 0) "driverless: attach_hd failed"
     let i = image_index($voldl753)
     assert files.images[$i].raw_size == files.path_size("${$vol753}") + $PREFIX_BYTES "driverless: disk is ${files.images[$i].raw_size} bytes, want the HFS partition + ${$PREFIX_BYTES}"

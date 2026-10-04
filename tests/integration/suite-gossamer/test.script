@@ -27,7 +27,6 @@ let hd = "../../data/systems/mac_os_9_2_1_516mb_g3.img"
 def g3_hd_boot(row, model) {
     machine.boot model=$model ram=65536 rom="${$ROM}"
     machine.rtc.time = "2026-10-01T12:00:00"
-    files.revert "${$hd}"
     machine.scsi.attach_hd "${$hd}" 0
     scheduler.run 12000000000
 

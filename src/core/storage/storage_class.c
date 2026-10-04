@@ -410,21 +410,6 @@ static DEF_METHOD(files_method_rm) {
     return val_bool(true);
 }
 
-// `files.revert(path)` — discard what this emulator has written to the disk
-// image at `path` (it must not be attached): its next mount starts from the
-// file as it is.  A disk keeps its writes across machine.boot, as a real
-// one would; this is how a script, or a user, starts over from the original.
-static DEF_METHOD(files_method_revert) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    const char *path = argv[0].s;
-    const char *why = NULL;
-    if (image_revert(path, system_media_delta_dir(path), &why) != 0)
-        return val_err("files.revert: cannot revert '%s': %s", path ? path : "(null)", why ? why : "failed");
-    return val_bool(true);
-}
-
 // `files.mv(src, dst)` — move/rename within the host filesystem. Like
 // files.rm, routing the web UI's moves through the worker (rather than the
 // browser's main-thread OPFS API) keeps WasmFS coherent. Tries rename() first
@@ -1594,11 +1579,6 @@ static const member_t files_members[] = {
      .examples = EXAMPLES("files.rm \"/opfs/images/hd/old.img\""),
      .doc = "Recursively remove a file or directory (keeps the worker FS coherent)",
      .method = {.ui_flags = MM_IO, .args = files_rm_args, .nargs = 1, .result = V_BOOL, .fn = files_method_rm}},
-    {.kind = M_METHOD,
-     .name = "revert",
-     .examples = EXAMPLES("files.revert \"/opfs/images/hd/work.img\""),
-     .doc = "Discard this emulator's writes to a disk image that is not attached: its next mount starts from the file",
-     .method = {.args = files_path_arg, .nargs = 1, .result = V_BOOL, .fn = files_method_revert}},
     {.kind = M_METHOD,
      .name = "mv",
      .examples = EXAMPLES("files.mv \"/opfs/images/hd/new.img\" \"/opfs/images/hd/work.img\""),

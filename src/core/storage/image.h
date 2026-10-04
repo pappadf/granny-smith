@@ -67,7 +67,6 @@ struct image {
     uint32_t block_size; // Bytes per logical block (512 default, 532 for a ProFile)
     bool writable; // True when the caller requested write access
     bool ghost_instance; // True when delta+journal are ephemeral scratch (read-only mounts)
-    bool keyed; // The base's own instance in this process (image_attach): parked at close
     enum image_type type; // Detected image type (floppy, hd, ...)
     bool from_diskcopy; // True if a DiskCopy 4.2 layer was peeled
 
@@ -127,24 +126,8 @@ image_t *image_open_readonly_source(const char *name, struct peel_source *data, 
 // and <delta_dir>/<id>.journal.  If `delta_dir` is NULL, the GS_STORAGE_CACHE
 // environment directory is used when set (the integration runner's per-test
 // sidecar routing), else the directory of `base_path` (legacy
-// adjacent-to-base layout).  A checkpoint restore opens its disks this way:
-// every instance is new, never one another machine is using.
+// adjacent-to-base layout).
 image_t *image_create(const char *base_path, const char *delta_dir);
-
-// Attach `base_path` as a disk: open the base's own writable instance in
-// `delta_dir` (defaulted as image_create's), whose id this process derives
-// from the base's path.  A disk keeps what was written to it: closing it
-// keeps the instance open in the image layer, and the next attach of the
-// same base -- a later machine.boot -- carries on from it exactly as it was.
-// A base another handle has open writable (a machine being built beside the
-// running one) gets a fresh instance of its own instead.
-image_t *image_attach(const char *base_path, const char *delta_dir);
-image_t *image_attach_with_geometry(const char *base_path, const char *delta_dir, image_geometry_t geom);
-
-// Throw away what this process has written to `base_path` through
-// image_attach(base_path, delta_dir): the next attach starts from the base
-// file as it is.  Refused (-1, *why set) while the base is attached.
-int image_revert(const char *base_path, const char *delta_dir, const char **why);
 
 // Reopen an existing writable image instance.  `instance_path` is the stem
 // (no extension) returned by image_path() when the instance was created.
