@@ -307,6 +307,7 @@ void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     // A-trap double-faulted.  A fresh boot hid it only because its memory
     // test overflows the tracker first, which forces a full clear.
     tlb_track_page(page_index);
+    memory_logpoint_guard_page(page_index);
 }
 
 // Toggle the ROM overlay at $00000000.  overlay=true maps the ROM image

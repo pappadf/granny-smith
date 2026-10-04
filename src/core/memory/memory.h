@@ -406,6 +406,26 @@ extern uint16_t *g_mem_logpoint_page_count;
 // Indexed by physical page number.  mmu_fill_soa_entry consults both arrays.
 extern uint16_t *g_mem_logpoint_phys_page_count;
 
+// The rule above for every writer of a direct (identity) fast-path entry:
+// called after the writer fills page `p`, it puts the page's SoA entries
+// back to 0 when a memory logpoint watches it -- logically or, the fill
+// being an identity one, physically -- so the hook keeps firing after a
+// machine re-maps the page (ROM overlay, reset, a memory controller's bank
+// set-up).  Two loads when nothing is armed.
+static inline void memory_logpoint_guard_page(uint32_t p) {
+    if (!((g_mem_logpoint_page_count && g_mem_logpoint_page_count[p]) ||
+          (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[p])))
+        return;
+    if (g_supervisor_read)
+        g_supervisor_read[p] = 0;
+    if (g_supervisor_write)
+        g_supervisor_write[p] = 0;
+    if (g_user_read)
+        g_user_read[p] = 0;
+    if (g_user_write)
+        g_user_write[p] = 0;
+}
+
 // Hook invoked by the slow path on logpoint pages.  is_write=true on writes.
 // Installed by debug.c.  NULL means no hook (skip check).
 typedef void (*memory_logpoint_hook_t)(uint32_t addr, unsigned size, uint32_t value, bool is_write);

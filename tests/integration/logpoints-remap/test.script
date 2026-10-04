@@ -1,0 +1,17 @@
+# Armed before the guest runs: the ROM overlay is on, so page 0 reads the
+# ROM.  The ROM drops the overlay (plus_map_read_page re-maps page 0's reads
+# to RAM) long before its VBL handler starts reading Ticks ($16A) to bump it.
+debug.logpoints.add addr=0x16A width=l mode=read message="ticks"
+scheduler.run 20000000
+let boot_hits = debug.logpoints.entries[0].hit_count
+assert $boot_hits > 0 "a logpoint armed before boot fires after the ROM overlay drops (${$boot_hits} hits)"
+
+# A reset brings the overlay back and drops it again: the logpoint must still
+# fire afterwards.
+machine.reset
+scheduler.run 20000000
+let reset_hits = debug.logpoints.entries[0].hit_count
+assert $reset_hits > $boot_hits "the logpoint keeps firing after machine.reset (${$boot_hits} -> ${$reset_hits} hits)"
+
+echo "logpoints-remap-ok"
+quit

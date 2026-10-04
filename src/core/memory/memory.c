@@ -1410,6 +1410,7 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
             g_user_read[p] = adjusted;
         if (g_user_write)
             g_user_write[p] = adjusted;
+        memory_logpoint_guard_page(p);
     }
 
     // ROM pages: rom_start_addr – rom_region_end (read-only, mirrored)
@@ -1446,6 +1447,7 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
             g_supervisor_read[p] = adjusted;
         if (g_user_read)
             g_user_read[p] = adjusted;
+        memory_logpoint_guard_page(p);
     }
 }
 
@@ -1489,6 +1491,7 @@ void memory_populate_ram_mirror(memory_map_t *mem, uint32_t mirror_start, uint32
             g_user_read[p] = adjusted;
         if (g_user_write)
             g_user_write[p] = adjusted;
+        memory_logpoint_guard_page(p);
     }
 }
 
