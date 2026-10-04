@@ -254,7 +254,8 @@ void atalk_nbp_lookup_cancel(void);
 // The network is host state, one per process: the LocalTalk cable and the
 // nodes the emulator puts on it -- the AFP file server with its shares, the
 // LaserWriter, the "gs-host" program-linking peer -- with their NBP names and
-// the `appletalk` object tree.  appletalk_network_init creates it at startup;
+// the `appletalk` object tree.  appletalk_network_init creates it at startup,
+// and with it each node's part, which the network owns (atalk_network_t);
 // no machine creates, tears down, carries or checkpoints it.
 //
 // Nor does anything persist it: the network's settings (shares added or
@@ -307,8 +308,10 @@ void atalk_conn_plug(atalk_conn_t *conn);
 // it is plugged in; the network is untouched.
 void atalk_conn_delete(atalk_conn_t *conn);
 
-// The AFP server's network hook: register as ASP's client and publish the
-// NBP advertisement (appletalk_network_init).
-void atalk_server_init(void);
+// The AFP server's network hook (appletalk_network_init): make the server,
+// register it as ASP's client and publish its NBP advertisement.  The network
+// owns what it returns.
+typedef struct afp_server afp_server_t;
+afp_server_t *atalk_server_init(void);
 
 #endif // APPLETALK_H

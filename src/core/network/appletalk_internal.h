@@ -213,7 +213,8 @@ int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8
                       int len);
 
 // Printer AppleTalk entry points.  register runs once, when the network comes
-// up: the PAP socket and the advertisement.  A machine's connection carries a
+// up: it makes the printer -- the network owns what it returns -- and takes
+// the PAP socket and the advertisement.  A machine's connection carries a
 // PAP link, the printer's session with that Mac; register_timers runs when
 // the connection is built (the PAP timers on the link, the LaserWriter's, all
 // on its scheduler).  link_down drops the session when the connection is
@@ -222,8 +223,9 @@ int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8
 // (a machine.boot or a checkpoint load), restarts the printer: the session,
 // any job in flight and what jobs made permanent go.  Its name and
 // configuration stay.
+typedef struct pap_printer pap_printer_t;
 typedef struct pap_link pap_link_t;
-void atalk_printer_register(void);
+pap_printer_t *atalk_printer_register(void);
 pap_link_t *atalk_printer_link_new(void);
 void atalk_printer_link_free(pap_link_t *link);
 void atalk_printer_register_timers(struct atalk_conn *conn, pap_link_t *link);

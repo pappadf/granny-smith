@@ -86,6 +86,7 @@ typedef struct {
     // Output drained from the library for the result being delivered
     byteq_t reply;
     byteq_t errors;
+    atalk_timer_t timer; // delivers a result a guest-time gap after the request
 } direct_state_t;
 
 static direct_state_t g_direct;
@@ -190,8 +191,6 @@ static void direct_clear_pending(void) {
 }
 
 // Scheduler event: run the pending request now.
-static atalk_timer_t g_direct_timer; // delivers a result a guest-time gap after the request
-
 static void direct_event_cb(void *source, uint64_t data) {
     (void)source;
     (void)data;
@@ -203,13 +202,13 @@ static void direct_event_cb(void *source, uint64_t data) {
 static bool direct_arm(void) {
     if (!atalk_scheduler())
         return false;
-    atalk_timer_arm(&g_direct_timer, 0, LASERWRITER_DIRECT_DELAY_NS);
+    atalk_timer_arm(&g_direct.timer, 0, LASERWRITER_DIRECT_DELAY_NS);
     return true;
 }
 
 // Cancels a delivery event, if any.
 static void direct_disarm(void) {
-    atalk_timer_cancel_all(&g_direct_timer);
+    atalk_timer_cancel_all(&g_direct.timer);
 }
 
 // Executes OPEN: builds the platen_config from the copy and creates the job.
@@ -370,7 +369,7 @@ static bool direct_queue(direct_op_t op, uint32_t job_id) {
 // ============================================================================
 
 void laserwriter_transport_register_timers(struct atalk_conn *conn) {
-    atalk_timer_init(conn, &g_direct_timer, "laserwriter", "direct_reply", &direct_event_cb);
+    atalk_timer_init(conn, &g_direct.timer, "laserwriter", "direct_reply", &direct_event_cb);
 }
 
 void laserwriter_transport_set_callbacks(const laserwriter_transport_callbacks_t *callbacks, void *ctx) {

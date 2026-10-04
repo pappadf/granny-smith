@@ -69,9 +69,10 @@ enum { PAP_MARK_FLUSH = 1u << 0, PAP_MARK_PATCHPREP = 1u << 1, PAP_MARK_FONTLIST
 // interpreter; with PLATEN=1 a query is a job whose program prints its answer).
 typedef enum { PAP_QUERY_NONE = 0, PAP_QUERY_PATCH_STATUS, PAP_QUERY_FONT_LIST } pap_query_mode_t;
 
-// Structure capturing global printer service state.
-typedef struct {
-    bool initialized;
+// The printer's part of the network: its configuration and status, its
+// counters, and a job a closed connection left finishing.
+// atalk_printer_register makes it; the network owns it.
+struct pap_printer {
     bool enabled;
     char object_name[PRINTER_OBJECT_MAX + 1];
     char status_text[PRINTER_STATUS_MAX + 1];
@@ -80,7 +81,22 @@ typedef struct {
     uint32_t job_counter;
     bool patch_installed; // True once the PatchPrep procset has been uploaded
     bool capture; // Capture each job's PostScript for the platform
-} pap_printer_service_t;
+    atalk_printer_stats_t stats;
+#if GS_PLATEN
+    // A job that outlives its connection.  The LaserWriter 7.0 driver closes
+    // the connection the instant its last write (the one carrying EOF) is
+    // acknowledged, without waiting for the printer; a LaserWriter has the
+    // whole program by then and prints it.  With the interpreter in the
+    // page's worker (the ring transport) its FINISHED arrives in host time,
+    // long after that close at turbo speed, so the job must not go down with
+    // the session: it stays with the bridge, its events go to
+    // pap_platen_detached_event, and an OpenConn meanwhile is answered busy.
+    // `detached_eof` says the close overtook an unacknowledged feed: the
+    // EOF's FINISH goes out at its FED.
+    bool detached_job;
+    bool detached_eof;
+#endif
+};
 
 // Structure tracking a held PAP SendData request while we wait for data to emit.
 typedef struct {
@@ -150,16 +166,8 @@ typedef struct {
     uint8_t conn_id;
 } pap_close_request_ctx_t;
 
-static pap_printer_service_t g_printer = {.initialized = false,
-                                          .enabled = false,
-                                          .object_name = PRINTER_DEFAULT_OBJECT,
-                                          .status_text = PRINTER_STATUS_IDLE,
-                                          .status_len = (uint8_t)(sizeof(PRINTER_STATUS_IDLE) - 1),
-                                          .nbp_entry = NULL,
-                                          .job_counter = 0,
-                                          .patch_installed = false,
-                                          .capture = PRINTER_CAPTURE_DEFAULT};
-static atalk_printer_stats_t g_pap_stats;
+// The network's, set by atalk_printer_register.
+static pap_printer_t *g_printer;
 
 // PAP's part of a machine's connection (atalk_conn_t): the session with that
 // Mac, the completion its next status read is owed, and the timers that pace
@@ -177,23 +185,7 @@ struct pap_link {
 static pap_link_t g_no_link;
 static pap_link_t *g_pap = &g_no_link;
 
-#if GS_PLATEN
-// A job that outlives its connection.  The LaserWriter 7.0 driver closes
-// the connection the instant its last write (the one carrying EOF) is
-// acknowledged, without waiting for the printer; a LaserWriter has the
-// whole program by then and prints it.  With the interpreter in the page's
-// worker (the ring transport) its FINISHED arrives in host time, long after
-// that close at turbo speed, so the job must not go down with the session:
-// it stays with the bridge, its events go to pap_platen_detached_event,
-// and an OpenConn meanwhile is answered busy.  `g_detached_eof` says the
-// close overtook an unacknowledged feed: the EOF's FINISH goes out at its
-// FED.
-static bool g_detached_job;
-static bool g_detached_eof;
-#endif
-
 // Forward declarations for helper routines.
-static void pap_printer_init(void);
 static void pap_session_reset(void);
 static void pap_printer_set_status_fmt(const char *fmt, ...)
 #ifdef __GNUC__
@@ -211,8 +203,6 @@ static void pap_platen_forget_detached(void);
 static void pap_platen_detached_event(laserwriter_event_t event, const char *detail);
 #endif
 static void pap_capture_deliver(pap_session_t *sess, uint32_t job_id, bool complete);
-#if !GS_PLATEN
-#endif
 static void pap_update_progress_status(void);
 static void pap_session_record_activity(void);
 #if !GS_PLATEN
@@ -287,21 +277,6 @@ static void pap_cancel_senddata(void) {
     atalk_timer_cancel_all(&g_pap->gap_timer);
 }
 
-// Ensures the printer service is initialized exactly once.
-static void pap_printer_init(void) {
-    if (g_printer.initialized)
-        return;
-    strncpy(g_printer.object_name, PRINTER_DEFAULT_OBJECT, sizeof(g_printer.object_name) - 1);
-    strncpy(g_printer.status_text, PRINTER_STATUS_IDLE, sizeof(g_printer.status_text) - 1);
-    g_printer.status_text[sizeof(g_printer.status_text) - 1] = '\0';
-    g_printer.status_len = (uint8_t)strlen(g_printer.status_text);
-#if GS_PLATEN
-    // The interpreter answers later, through events
-    laserwriter_job_set_listener(pap_platen_event, NULL);
-#endif
-    g_printer.initialized = true;
-}
-
 // Forgets the query state machine -- all of it at a job's end; all but the
 // PatchPrep expectation when a query's EOF is consumed (the upload it asked
 // for comes next).  Four copies each reset their own subset of it.
@@ -329,7 +304,7 @@ static void pap_session_reset(void) {
     // A connection that goes away mid-job takes its interpreter with it --
     // unless the job was detached at a clean close (its data is complete)
 #if GS_PLATEN
-    if (!g_detached_job)
+    if (!g_printer->detached_job)
 #endif
         laserwriter_job_abort();
     byteq_free(&g_pap->session.reply);
@@ -374,13 +349,13 @@ static void pap_printer_set_status_fmt(const char *fmt, ...) {
     if (written > PRINTER_STATUS_MAX)
         written = PRINTER_STATUS_MAX;
     buffer[written] = '\0';
-    bool changed = strcmp(buffer, g_printer.status_text) != 0;
-    memcpy(g_printer.status_text, buffer, (size_t)written + 1);
-    g_printer.status_len = (uint8_t)written;
+    bool changed = strcmp(buffer, g_printer->status_text) != 0;
+    memcpy(g_printer->status_text, buffer, (size_t)written + 1);
+    g_printer->status_len = (uint8_t)written;
     // The page's status bar shows what the printer is doing: announced on
     // a change only (a job's status is re-set on every acknowledgement)
     if (changed)
-        gs_event_emit_text(GS_EVENT_NOTIFY, "printer_status", "status", g_printer.status_text);
+        gs_event_emit_text(GS_EVENT_NOTIFY, "printer_status", "status", g_printer->status_text);
 }
 
 // Sets the status string to the default idle message.
@@ -392,16 +367,16 @@ static void pap_printer_set_status_idle(void) {
 // Builds the OpenConn/Status reply payload per PAP spec.
 static int pap_build_status_payload(uint8_t socket_id, uint8_t flow_quantum, uint16_t result_code, uint8_t *out,
                                     size_t out_max) {
-    if (!out || out_max < (size_t)(5 + g_printer.status_len))
+    if (!out || out_max < (size_t)(5 + g_printer->status_len))
         return -1;
     out[0] = socket_id;
     out[1] = flow_quantum;
     out[2] = (uint8_t)(result_code >> 8);
     out[3] = (uint8_t)(result_code & 0xFF);
-    out[4] = g_printer.status_len;
-    if (g_printer.status_len > 0)
-        memcpy(&out[5], g_printer.status_text, g_printer.status_len);
-    return (int)(5 + g_printer.status_len);
+    out[4] = g_printer->status_len;
+    if (g_printer->status_len > 0)
+        memcpy(&out[5], g_printer->status_text, g_printer->status_len);
+    return (int)(5 + g_printer->status_len);
 }
 
 // Records recent activity to keep the connection timer alive.
@@ -427,7 +402,7 @@ static void pap_session_finish(bool success, const char *reason, bool notify_cli
 
     LOG(success ? 2 : 1, "pap: job %u %s (%s)", job_id, success ? "complete" : "aborted", reason ? reason : "done");
     if (!success)
-        g_pap_stats.aborts++;
+        g_printer->stats.aborts++;
     LOG(10, "pap: session finish: conn=%u bytes=%zu notify=%d", closing_conn, bytes, notify_client ? 1 : 0);
     pap_capture_deliver(&g_pap->session, job_id, success);
 
@@ -446,7 +421,7 @@ static void pap_session_finish(bool success, const char *reason, bool notify_cli
     bool detached = pap_platen_detach_job(success);
 #endif
     pap_session_reset();
-    if (!g_printer.enabled) {
+    if (!g_printer->enabled) {
         pap_printer_set_status_idle();
         return;
     }
@@ -472,8 +447,8 @@ static void pap_capture_deliver(pap_session_t *sess, uint32_t job_id, bool compl
                                      .ps_len = byteq_len(&sess->capture),
                                      .complete = complete};
         LOG(3, "pap: job %u captured (%zu bytes)", (unsigned)job_id, cap.ps_len);
-        g_pap_stats.captures++;
-        g_pap_stats.last_capture = cap.ps_len;
+        g_printer->stats.captures++;
+        g_printer->stats.last_capture = cap.ps_len;
         laserwriter_sink_capture(&cap);
     }
     byteq_clear(&sess->capture);
@@ -491,7 +466,7 @@ static bool pap_capture_fragment(pap_session_t *sess, const uint8_t *data, size_
 // Updates the status string with the current job progress.
 static void pap_update_progress_status(void) {
 #if GS_PLATEN
-    if (!g_pap->session.active && !g_detached_job)
+    if (!g_pap->session.active && !g_printer->detached_job)
         return;
 #else
     if (!g_pap->session.active)
@@ -632,7 +607,7 @@ static void pap_handle_patch_complete(pap_session_t *sess) {
     sess->eof_pending = false;
     sess->bytes_received = 0;
     pap_query_reset(sess, false);
-    g_printer.patch_installed = true;
+    g_printer->patch_installed = true;
     // LaserWriter returns "1" after PatchPrep installs so the Mac skips re-sending it
     pap_queue_postscript_reply("1");
     byteq_clear(&sess->capture); // the real job replaces the PatchPrep upload
@@ -648,7 +623,7 @@ static bool pap_finalize_job(const char *reason) {
 
     uint32_t completed_job = sess->job_id;
     LOG(2, "pap: job %u complete (%s)", completed_job, reason ? reason : "done");
-    g_pap_stats.jobs++;
+    g_printer->stats.jobs++;
     pap_capture_deliver(sess, completed_job, true);
 
     pap_printer_set_status_idle();
@@ -661,7 +636,7 @@ static bool pap_finalize_job(const char *reason) {
     sess->bytes_received = 0;
     pap_query_reset(sess, false);
 
-    sess->job_id = ++g_printer.job_counter;
+    sess->job_id = ++g_printer->job_counter;
     LOG(4, "pap: prepared for next job %u", sess->job_id);
     return true;
 }
@@ -1086,7 +1061,7 @@ static void pap_handle_data_fragment(const atp_response_fragment_t *fragment, vo
     bool patch_token = (marks & PAP_MARK_PATCHPREP) != 0;
     bool font_query_token = (marks & PAP_MARK_FONTLIST) != 0;
     if (patch_token && sess->query_detected && sess->query_waiting_job && !sess->expecting_patch &&
-        !g_printer.patch_installed) {
+        !g_printer->patch_installed) {
         sess->expecting_patch = true;
         LOG(2, "pap: PatchPrep query detected; expecting upload");
     }
@@ -1111,7 +1086,7 @@ static void pap_handle_data_fragment(const atp_response_fragment_t *fragment, vo
         if (!pap_capture_fragment(sess, fragment->data, (size_t)fragment->data_len))
             return;
         sess->bytes_received += (size_t)fragment->data_len;
-        g_pap_stats.bytes += (uint64_t)fragment->data_len;
+        g_printer->stats.bytes += (uint64_t)fragment->data_len;
         pap_update_progress_status();
         bool flush_sequence = (marks & PAP_MARK_FLUSH) != 0;
         if (!sess->query_detected && flush_sequence) {
@@ -1124,9 +1099,9 @@ static void pap_handle_data_fragment(const atp_response_fragment_t *fragment, vo
                 pap_queue_font_list_reply();
             } else {
                 sess->query_mode = PAP_QUERY_PATCH_STATUS;
-                const char *patch_reply = g_printer.patch_installed ? "1" : "0";
+                const char *patch_reply = g_printer->patch_installed ? "1" : "0";
                 LOG(2, "pap: detected query flush sequence; reply=%s (patch_installed=%d)", patch_reply,
-                    g_printer.patch_installed ? 1 : 0);
+                    g_printer->patch_installed ? 1 : 0);
                 pap_queue_postscript_reply(patch_reply);
             }
         } else if (sess->query_waiting_job && sess->query_mode != PAP_QUERY_FONT_LIST) {
@@ -1201,7 +1176,7 @@ static void pap_handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
     uint16_t result = PAP_RESULT_OK;
     bool accepted = false;
 
-    if (!g_printer.enabled) {
+    if (!g_printer->enabled) {
         result = PAP_RESULT_BUSY;
     } else if (g_pap->session.active) {
         result = PAP_RESULT_BUSY;
@@ -1221,7 +1196,7 @@ static void pap_handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
         g_pap->session.client_addr.net = ddp->src_net;
         g_pap->session.client_addr.node = ddp->llap.src;
         g_pap->session.client_addr.socket = g_pap->session.client_socket;
-        g_pap->session.job_id = ++g_printer.job_counter;
+        g_pap->session.job_id = ++g_printer->job_counter;
         g_pap->session.next_send_seq = 1;
         g_pap->session.bytes_received = 0;
         g_pap->session.last_activity_ns = atalk_now_ns();
@@ -1242,7 +1217,7 @@ static void pap_handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
         payload_len = 0;
     uint8_t user[4] = {conn_id, PAP_FUNC_OPEN_REPLY, 0, 0};
     LOG(2, "PAP -> Mac OpenReply conn=%u result=0x%04X statusLen=%u", conn_id, (unsigned)result,
-        (unsigned)g_printer.status_len);
+        (unsigned)g_printer->status_len);
     atp_responder_send_simple(ddp, atp, user, payload_len ? payload : NULL, payload_len, false);
 
     if (accepted) {
@@ -1264,7 +1239,7 @@ static void pap_handle_send_status(const ddp_header_t *ddp, atp_packet_t *atp) {
     if (payload_len < 0)
         payload_len = 0;
     uint8_t user[4] = {0, PAP_FUNC_STATUS, 0, 0};
-    LOG(2, "PAP -> Mac SendStatus reply statusLen=%u", (unsigned)g_printer.status_len);
+    LOG(2, "PAP -> Mac SendStatus reply statusLen=%u", (unsigned)g_printer->status_len);
     atp_responder_send_simple(ddp, atp, user, payload_len ? payload : NULL, payload_len, false);
 }
 
@@ -1350,7 +1325,6 @@ static void pap_handle_tickle(const ddp_header_t *ddp, const atp_packet_t *atp) 
 // Central ATP socket handler for PAP requests arriving on HOST_PAP_SOCKET.
 static void pap_socket_request_handler(const ddp_header_t *ddp, atp_packet_t *request, void *ctx) {
     (void)ctx;
-    pap_printer_init();
     if (!ddp || !request)
         return;
 
@@ -1407,8 +1381,8 @@ static void pap_socket_request_handler(const ddp_header_t *ddp, atp_packet_t *re
 // the transaction's data is fed as one piece when it completes.
 static void pap_platen_ingest_fragment(pap_session_t *sess, const atp_response_fragment_t *fragment) {
     if (fragment->data_len > 0 && fragment->data) {
-        g_pap_stats.bytes += (uint64_t)fragment->data_len;
-        if (g_printer.capture && !pap_capture_fragment(sess, fragment->data, (size_t)fragment->data_len))
+        g_printer->stats.bytes += (uint64_t)fragment->data_len;
+        if (g_printer->capture && !pap_capture_fragment(sess, fragment->data, (size_t)fragment->data_len))
             return;
         size_t room = sizeof(sess->rx) - sess->rx_len;
         size_t n = (size_t)fragment->data_len;
@@ -1481,7 +1455,7 @@ static void pap_platen_finalize_job(void) {
         return;
     uint32_t completed_job = sess->job_id;
     LOG(2, "pap: job %u complete (%s)", completed_job, laserwriter_job_last_outcome());
-    g_pap_stats.jobs++;
+    g_printer->stats.jobs++;
     pap_capture_deliver(sess, completed_job, true);
     pap_platen_pull_output();
     // A LaserWriter closes its side of the job with EOF once its output is out
@@ -1493,7 +1467,7 @@ static void pap_platen_finalize_job(void) {
     sess->bytes_received = 0;
     pap_printer_set_status_idle();
     pap_try_deliver_pending_reply();
-    sess->job_id = ++g_printer.job_counter;
+    sess->job_id = ++g_printer->job_counter;
     LOG(4, "pap: prepared for next job %u", sess->job_id);
     // The connection stays for the next job: read it
     pap_schedule_senddata();
@@ -1556,8 +1530,8 @@ static bool pap_platen_detach_job(bool clean_close) {
     bool finishing = laserwriter_job_finishing();
     if (!finishing && !g_pap->session.eof_pending)
         return false;
-    g_detached_job = true;
-    g_detached_eof = !finishing; // the FED that comes issues the FINISH
+    g_printer->detached_job = true;
+    g_printer->detached_eof = !finishing; // the FED that comes issues the FINISH
     LOG(2, "pap: job %u finishes after the close (%s)", g_pap->session.job_id,
         finishing ? "finish outstanding" : "EOF behind the last feed");
     return true;
@@ -1565,8 +1539,8 @@ static bool pap_platen_detach_job(bool clean_close) {
 
 // The detached job is over (or is to be dropped with the printer).
 static void pap_platen_forget_detached(void) {
-    g_detached_job = false;
-    g_detached_eof = false;
+    g_printer->detached_job = false;
+    g_printer->detached_eof = false;
 }
 
 // The interpreter's events for a job whose connection is gone: the FED
@@ -1574,15 +1548,15 @@ static void pap_platen_forget_detached(void) {
 // document went to the sink already) and drops its output, which has no
 // reader; the printer returns to idle.
 static void pap_platen_detached_event(laserwriter_event_t event, const char *detail) {
-    if (!g_detached_job)
+    if (!g_printer->detached_job)
         return;
     switch (event) {
     case LASERWRITER_EVENT_OPENED:
         break; // not reachable: a job detaches only once it is open
     case LASERWRITER_EVENT_FED:
         pap_update_progress_status();
-        if (g_detached_eof) {
-            g_detached_eof = false;
+        if (g_printer->detached_eof) {
+            g_printer->detached_eof = false;
             LOG(2, "pap: detached job EOF; finishing");
             // A refusal raises FAILED, handled below
             laserwriter_job_finish();
@@ -1590,7 +1564,7 @@ static void pap_platen_detached_event(laserwriter_event_t event, const char *det
         break;
     case LASERWRITER_EVENT_FINISHED:
         LOG(2, "pap: detached job complete (%s)", laserwriter_job_last_outcome());
-        g_pap_stats.jobs++;
+        g_printer->stats.jobs++;
         laserwriter_job_discard_output();
         pap_platen_forget_detached();
         pap_printer_set_status_idle();
@@ -1609,12 +1583,24 @@ static void pap_platen_detached_event(laserwriter_event_t event, const char *det
 // Registers the printer PAP socket handler and enables the LaserWriter
 // advertisement: once, when the network comes up.  A printer is enabled by
 // default; from then on its configuration is what a script sets.
-void atalk_printer_register(void) {
-    pap_printer_init();
+pap_printer_t *atalk_printer_register(void) {
+    pap_printer_t *printer = calloc(1, sizeof(*printer));
+    if (!printer)
+        return NULL;
+    snprintf(printer->object_name, sizeof(printer->object_name), "%s", PRINTER_DEFAULT_OBJECT);
+    printer->status_len =
+        (uint8_t)snprintf(printer->status_text, sizeof(printer->status_text), "%s", PRINTER_STATUS_IDLE);
+    printer->capture = PRINTER_CAPTURE_DEFAULT;
+    g_printer = printer;
+#if GS_PLATEN
+    // The interpreter answers later, through events
+    laserwriter_job_set_listener(pap_platen_event, NULL);
+#endif
     static const atp_socket_handler_t handler = {.handle_request = pap_socket_request_handler};
     atp_register_socket_handler(HOST_PAP_SOCKET, &handler, NULL);
     if (atalk_printer_enable(NULL) != 0)
         LOG(1, "pap: failed to auto-enable printer");
+    return printer;
 }
 
 // A link with no session: what a session reset leaves (pap_session_reset).
@@ -1667,24 +1653,24 @@ void atalk_printer_plug(pap_link_t *link) {
         g_pap = link;
         return;
     }
-    if (g_printer.initialized) {
+    if (g_printer) {
         pap_session_reset(); // cancels its ATP request, drops the capture, aborts the job
         memset(&g_pap->completion, 0, sizeof(g_pap->completion));
 #if GS_PLATEN
         pap_platen_new_printer();
 #endif
-        if (g_printer.enabled)
+        if (g_printer->enabled)
             pap_printer_set_status_idle();
     }
     g_pap = &g_no_link;
 }
 
 void atalk_printer_link_down(void) {
-    if (!g_printer.initialized || !g_pap->session.active)
+    if (!g_printer || !g_pap->session.active)
         return;
     pap_session_reset();
     memset(&g_pap->completion, 0, sizeof(g_pap->completion));
-    if (g_printer.enabled)
+    if (g_printer->enabled)
         pap_printer_set_status_idle();
 }
 
@@ -1693,8 +1679,7 @@ void atalk_printer_link_down(void) {
 // entity holds -- leaves the printer advertised, and named, as it was; and
 // one too long is refused, as set_name refuses it, not cut short.
 int atalk_printer_enable(const char *object_name) {
-    pap_printer_init();
-    const char *name = (object_name && *object_name) ? object_name : g_printer.object_name;
+    const char *name = (object_name && *object_name) ? object_name : g_printer->object_name;
     if (strlen(name) > PRINTER_OBJECT_MAX) {
         LOG(1, "atalk: printer name '%s' is longer than %d characters", name, PRINTER_OBJECT_MAX);
         return -1;
@@ -1705,24 +1690,23 @@ int atalk_printer_enable(const char *object_name) {
                                      .socket = HOST_PAP_SOCKET,
                                      .node = LLAP_HOST_NODE,
                                      .net = 0};
-    if (atalk_nbp_publish(&g_printer.nbp_entry, &desc) != 0) {
+    if (atalk_nbp_publish(&g_printer->nbp_entry, &desc) != 0) {
         LOG(1, "atalk: failed to publish printer '%s'", name);
         return -1;
     }
-    if (name != g_printer.object_name)
-        snprintf(g_printer.object_name, sizeof(g_printer.object_name), "%s", name);
+    if (name != g_printer->object_name)
+        snprintf(g_printer->object_name, sizeof(g_printer->object_name), "%s", name);
 
-    g_printer.enabled = true;
+    g_printer->enabled = true;
     pap_printer_set_status_idle();
-    LOG(1, "atalk: printer enabled as '%s'", g_printer.object_name);
+    LOG(1, "atalk: printer enabled as '%s'", g_printer->object_name);
     return 0;
 }
 
 // Disables the LaserWriter advertisement and aborts any active job.
 int atalk_printer_disable(void) {
-    pap_printer_init();
-    atalk_nbp_withdraw(&g_printer.nbp_entry);
-    g_printer.enabled = false;
+    atalk_nbp_withdraw(&g_printer->nbp_entry);
+    g_printer->enabled = false;
 #if GS_PLATEN
     pap_platen_forget_detached(); // a job finishing after its close goes too
 #endif
@@ -1738,15 +1722,14 @@ int atalk_printer_disable(void) {
 // state is an attribute, methods are verbs.
 
 bool atalk_printer_get_enabled(void) {
-    return g_printer.enabled;
+    return g_printer->enabled;
 }
 
 // The advertised NBP name.  Unlike the enablement flag, the name survives a
 // disable so the tree can show what will be published when it is turned back
 // on — and so setting `name` while disabled is not silently lost.
 const char *atalk_printer_get_name(void) {
-    pap_printer_init();
-    return g_printer.object_name;
+    return g_printer->object_name;
 }
 
 int atalk_printer_set_enabled(bool enabled, char *err, size_t err_len) {
@@ -1771,10 +1754,9 @@ int atalk_printer_set_name(const char *name, char *err, size_t err_len) {
             snprintf(err, err_len, "printer name max %d chars ('%s' is %zu)", PRINTER_OBJECT_MAX, name, strlen(name));
         return -1;
     }
-    pap_printer_init();
-    if (!g_printer.enabled) {
+    if (!g_printer->enabled) {
         // Not advertising: record the name for the next enable.
-        snprintf(g_printer.object_name, sizeof(g_printer.object_name), "%s", name);
+        snprintf(g_printer->object_name, sizeof(g_printer->object_name), "%s", name);
         return 0;
     }
     if (atalk_printer_enable(name) != 0) { // renames the NBP entry in place, or changes nothing
@@ -1786,8 +1768,7 @@ int atalk_printer_set_name(const char *name, char *err, size_t err_len) {
 }
 
 const char *atalk_printer_get_status(void) {
-    pap_printer_init();
-    return g_printer.status_text;
+    return g_printer->status_text;
 }
 
 bool atalk_printer_has_interpreter(void) {
@@ -1795,18 +1776,16 @@ bool atalk_printer_has_interpreter(void) {
 }
 
 const atalk_printer_stats_t *atalk_printer_get_stats(void) {
-    return &g_pap_stats;
+    return &g_printer->stats;
 }
 
 bool atalk_printer_get_capture(void) {
-    pap_printer_init();
-    return g_printer.capture;
+    return g_printer->capture;
 }
 
 // Takes effect at the next data: a job already captured in part keeps its part.
 void atalk_printer_set_capture(bool enabled) {
-    pap_printer_init();
-    g_printer.capture = enabled;
+    g_printer->capture = enabled;
 }
 
 uint32_t atalk_printer_documents(void) {
@@ -1836,7 +1815,6 @@ int atalk_printer_restart(char *err, size_t err_len) {
 #if GS_PLATEN
     (void)err;
     (void)err_len;
-    pap_printer_init();
     if (g_pap->session.active)
         pap_session_abort("the printer was restarted");
     pap_platen_new_printer();

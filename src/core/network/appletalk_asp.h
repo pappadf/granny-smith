@@ -42,8 +42,10 @@ typedef struct {
 // atalk_server_init.
 void asp_set_client(const asp_client_t *client, void *ctx);
 
-// Called once, when the network comes up: take the AFP sockets.
-void asp_init(void);
+// Called once, when the network comes up: take the AFP sockets.  Returns
+// ASP's part of the network (the client it serves), which the network owns.
+typedef struct asp_server asp_server_t;
+asp_server_t *asp_init(void);
 
 // ASP's part of a machine's connection (atalk_conn_t): the sessions with
 // that Mac and the session numbering.

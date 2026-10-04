@@ -105,13 +105,22 @@ struct ppc_session {
 // Module state
 // ============================================================================
 
-// The host port: the network's program-linking peer, published by NBP.
-static char g_host_port[33] = "gs-host";
-static bool g_host_enabled;
-static atalk_nbp_entry_t *g_host_nbp;
+// PPC's part of the network: the host port -- the network's program-linking
+// peer, published by NBP -- where its inbound sessions go, and the
+// `appletalk.ppc` collections' entries.  atalk_ppc_init makes it; the network
+// owns it.
+struct ppc_host {
+    char port[33];
+    bool enabled;
+    atalk_nbp_entry_t *nbp;
+    const ppc_client_t *inbound_client;
+    void *inbound_ctx;
+    object_cache_t port_entries;
+    object_cache_t session_entries;
+};
 
-static const ppc_client_t *g_inbound_client;
-static void *g_inbound_ctx;
+// The network's, set by atalk_ppc_init.
+static ppc_host_t *g_host;
 
 // Counters published as `appletalk.ppc.stats`.
 typedef struct {
@@ -317,9 +326,9 @@ static int ppc_write_session_request(ppc_session_t *s, const char *dest_port, co
     memset(blk, 0, sizeof(blk));
     WR_BE32(&blk[0], PPC_MSG_SREQ);
     WR_BE32(&blk[4], 0); // user data, handed to the far side's PPCInform client
-    put_port_rec(&blk[8], g_host_port, PPC_NBP_TYPE);
+    put_port_rec(&blk[8], g_host->port, PPC_NBP_TYPE);
     put_port_rec(&blk[80], dest_port, dest_type);
-    put_location(&blk[152], g_host_port);
+    put_location(&blk[152], g_host->port);
     put_pstring(&blk[256], 33, ""); // guest (§4.3)
     return ppc_write_message(s, blk, sizeof(blk));
 }
@@ -595,13 +604,13 @@ static void ppc_handle_session_request(ppc_session_t *s, const uint8_t *msg, int
     char user[33] = "";
     get_pstring(&msg[256], 33, user, sizeof(user));
 
-    if (!g_host_enabled) {
+    if (!g_host->enabled) {
         ppc_write_reject(s, PPC_REJECT_LINKING_OFF);
         ppc_session_release(s, "program linking is switched off here", false);
         return;
     }
-    if (strcmp(dest_name, g_host_port) != 0) {
-        LOG(3, "PPC: session request for unknown port '%s' (we are '%s')", dest_name, g_host_port);
+    if (strcmp(dest_name, g_host->port) != 0) {
+        LOG(3, "PPC: session request for unknown port '%s' (we are '%s')", dest_name, g_host->port);
         ppc_write_reject(s, PPC_REJECT_UNKNOWN_PORT);
         ppc_session_release(s, "no such port here", false);
         return;
@@ -632,13 +641,13 @@ static void ppc_handle_list_request(ppc_session_t *s) {
     memset(entry, 0, sizeof(entry));
     entry[0] = 0;
     entry[1] = 0; // guest links are welcome, so no authentication is required
-    put_port_rec(&entry[2], g_host_port, PPC_NBP_TYPE);
-    if (g_host_enabled)
+    put_port_rec(&entry[2], g_host->port, PPC_NBP_TYPE);
+    if (g_host->enabled)
         ppc_write_message(s, entry, sizeof(entry));
 
     uint8_t trailer[PPC_LIST_TRAILER_SIZE];
     WR_BE32(&trailer[0], PPC_MSG_LRSP);
-    WR_BE16(&trailer[4], g_host_enabled ? 1 : 0);
+    WR_BE16(&trailer[4], g_host->enabled ? 1 : 0);
     ppc_write_message(s, trailer, sizeof(trailer));
 }
 
@@ -754,7 +763,7 @@ static void ppc_adsp_close(void *ctx, adsp_conn_t *c, const char *reason) {
 // slot and wait for its first message.
 static bool ppc_adsp_accept(void *ctx, const atalk_socket_addr_t *from) {
     (void)ctx;
-    if (!g_host_enabled) {
+    if (!g_host->enabled) {
         LOG(3, "PPC: refusing a connection from node %u — the host port is off", (unsigned)from->node);
         return false;
     }
@@ -777,8 +786,8 @@ static void ppc_adsp_open_inbound(void *ctx, adsp_conn_t *c) {
     s->state = PPC_SESSION_CONNECTING;
     s->peer_node = peer ? peer->node : 0;
     s->peer_socket = peer ? peer->socket : 0;
-    s->client = g_inbound_client;
-    s->client_ctx = g_inbound_ctx;
+    s->client = g_host->inbound_client;
+    s->client_ctx = g_host->inbound_ctx;
     LOG(4, "PPC: connection from node %u accepted as session %u", (unsigned)s->peer_node, (unsigned)s->id);
 }
 
@@ -892,21 +901,34 @@ static int ppc_listen(void) {
     return adsp_listen(atalk_adsp_stack(), PPC_HOST_SOCKET, &g_listen_client, NULL);
 }
 
+ppc_host_t *atalk_ppc_init(void) {
+    ppc_host_t *host = calloc(1, sizeof(*host));
+    if (!host)
+        return NULL;
+    snprintf(host->port, sizeof(host->port), "%s", PPC_HOST_PORT_DEFAULT);
+    g_host = host;
+    return host;
+}
+
 const char *atalk_ppc_host_port_name(void) {
-    return g_host_port;
+    return g_host->port;
+}
+
+bool atalk_ppc_host_port_enabled(void) {
+    return g_host->enabled;
 }
 
 int atalk_ppc_set_host_port(const char *name, bool enabled, char *err, size_t err_len) {
-    const char *port = (name && *name) ? name : g_host_port;
+    const char *port = (name && *name) ? name : g_host->port;
     if (strlen(port) > 32) {
         snprintf(err, err_len, "a port name may be at most 32 characters");
         return -1;
     }
     if (!enabled) {
-        atalk_nbp_withdraw(&g_host_nbp);
-        if (port != g_host_port)
-            snprintf(g_host_port, sizeof(g_host_port), "%s", port);
-        g_host_enabled = false;
+        atalk_nbp_withdraw(&g_host->nbp);
+        if (port != g_host->port)
+            snprintf(g_host->port, sizeof(g_host->port), "%s", port);
+        g_host->enabled = false;
         // Sessions belong to the port; withdrawing it strands them.
         atalk_ppc_close_all("the host program-linking port was withdrawn");
         if (atalk_adsp_stack())
@@ -926,29 +948,29 @@ int atalk_ppc_set_host_port(const char *name, bool enabled, char *err, size_t er
         .node = LLAP_HOST_NODE,
         .net = 0,
     };
-    if (atalk_nbp_publish(&g_host_nbp, &desc) != 0) {
+    if (atalk_nbp_publish(&g_host->nbp, &desc) != 0) {
         snprintf(err, err_len, "the name '%s' is already taken on the network", port);
         return -1;
     }
-    if (port != g_host_port)
-        snprintf(g_host_port, sizeof(g_host_port), "%s", port);
-    if (!g_host_enabled) {
+    if (port != g_host->port)
+        snprintf(g_host->port, sizeof(g_host->port), "%s", port);
+    if (!g_host->enabled) {
         // Accepting sessions needs a machine on the cable; one plugged in
         // later listens when it is (atalk_ppc_plug).
         if (atalk_adsp_stack() && ppc_listen() != 0) {
-            atalk_nbp_withdraw(&g_host_nbp);
+            atalk_nbp_withdraw(&g_host->nbp);
             snprintf(err, err_len, "the PPC listening socket could not be opened");
             return -1;
         }
-        g_host_enabled = true;
+        g_host->enabled = true;
     }
-    LOG(3, "PPC: host port '%s' advertised as %s on socket %d", g_host_port, PPC_NBP_TYPE, PPC_HOST_SOCKET);
+    LOG(3, "PPC: host port '%s' advertised as %s on socket %d", g_host->port, PPC_NBP_TYPE, PPC_HOST_SOCKET);
     return 0;
 }
 
 void atalk_ppc_set_inbound_client(const ppc_client_t *client, void *ctx) {
-    g_inbound_client = client;
-    g_inbound_ctx = ctx;
+    g_host->inbound_client = client;
+    g_host->inbound_ctx = ctx;
 }
 
 // ============================================================================
@@ -1014,7 +1036,7 @@ void atalk_ppc_plug(ppc_link_t *link) {
     }
     g_ppc = link ? link : &g_no_link;
     // The published host port takes sessions on the new machine's stack.
-    if (link && g_host_enabled && atalk_adsp_stack() && ppc_listen() != 0)
+    if (link && g_host->enabled && atalk_adsp_stack() && ppc_listen() != 0)
         LOG(1, "PPC: the host port cannot accept sessions on this machine");
 }
 
@@ -1022,21 +1044,12 @@ void atalk_ppc_plug(ppc_link_t *link) {
 // Object model — `appletalk.ppc`
 // ============================================================================
 
-static struct object *g_ppc_object;
-static struct object *g_ppc_ports_object;
-static struct object *g_ppc_sessions_object;
-static struct object *g_ppc_stats_object;
-
 static const class_desc_t ppc_class;
 static const class_desc_t ppc_ports_class;
 static const class_desc_t ppc_port_class;
 static const class_desc_t ppc_sessions_class;
 static const class_desc_t ppc_session_class;
 static const class_desc_t ppc_stats_class;
-
-// The collection entry objects, made on first use.
-static object_cache_t g_ppc_port_entries = OBJECT_CACHE(&ppc_port_class, NULL);
-static object_cache_t g_ppc_session_entries = OBJECT_CACHE(&ppc_session_class, NULL);
 
 static int ppc_obj_slot(struct object *self) {
     return object_entry_index(self);
@@ -1108,12 +1121,12 @@ static struct object *ppc_ports_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= atalk_ppc_port_count())
         return NULL;
-    return object_cache_at(&g_ppc_port_entries, index, NULL);
+    return object_cache_at(&g_host->port_entries, index, NULL);
 }
 static struct object *ppc_ports_lookup(struct object *self, const char *name) {
     (void)self;
     int idx = atalk_ppc_port_find(name);
-    return (idx >= 0) ? object_cache_at(&g_ppc_port_entries, idx, NULL) : NULL;
+    return (idx >= 0) ? object_cache_at(&g_host->port_entries, idx, NULL) : NULL;
 }
 
 static const collection_desc_t ppc_ports_entries = {
@@ -1205,7 +1218,7 @@ static struct object *ppc_sessions_get(struct object *self, int index) {
     (void)self;
     if (!atalk_ppc_session_at(index))
         return NULL;
-    return object_cache_at(&g_ppc_session_entries, index, NULL);
+    return object_cache_at(&g_host->session_entries, index, NULL);
 }
 // Name lookup by the port at the far end, so `sessions["Finder"].state` reads
 // naturally in a script.
@@ -1214,7 +1227,7 @@ static struct object *ppc_sessions_lookup(struct object *self, const char *name)
     for (int i = 0; i < PPC_MAX_SESSIONS; i++) {
         const ppc_session_t *s = atalk_ppc_session_at(i);
         if (s && !strcmp(s->port_name, name))
-            return object_cache_at(&g_ppc_session_entries, i, NULL);
+            return object_cache_at(&g_host->session_entries, i, NULL);
     }
     return NULL;
 }
@@ -1290,27 +1303,28 @@ static const class_desc_t ppc_class = {
 };
 
 void atalk_ppc_install_objects(struct object *parent) {
-    if (!parent || g_ppc_object)
+    struct object *ppc = object_new(&ppc_class, NULL, "ppc");
+    if (!ppc)
         return;
-    g_ppc_object = object_new(&ppc_class, NULL, "ppc");
-    if (!g_ppc_object)
-        return;
-    object_attach(parent, g_ppc_object);
+    object_attach(parent, ppc);
 
-    g_ppc_ports_object = object_new(&ppc_ports_class, NULL, "ports");
-    if (g_ppc_ports_object)
-        object_attach(g_ppc_object, g_ppc_ports_object);
-    g_ppc_sessions_object = object_new(&ppc_sessions_class, NULL, "sessions");
-    if (g_ppc_sessions_object) {
-        object_set_category(g_ppc_sessions_object, M_CAT_ADVANCED);
-        object_attach(g_ppc_object, g_ppc_sessions_object);
+    struct object *ports = object_new(&ppc_ports_class, NULL, "ports");
+    if (ports)
+        object_attach(ppc, ports);
+    struct object *sessions = object_new(&ppc_sessions_class, NULL, "sessions");
+    if (sessions) {
+        object_set_category(sessions, M_CAT_ADVANCED);
+        object_attach(ppc, sessions);
     }
-    g_ppc_stats_object = object_new(&ppc_stats_class, NULL, "stats");
-    if (g_ppc_stats_object) {
-        object_set_category(g_ppc_stats_object, M_CAT_ADVANCED);
-        object_attach(g_ppc_object, g_ppc_stats_object);
+    struct object *stats = object_new(&ppc_stats_class, NULL, "stats");
+    if (stats) {
+        object_set_category(stats, M_CAT_ADVANCED);
+        object_attach(ppc, stats);
     }
 
-    object_cache_set_parent(&g_ppc_port_entries, g_ppc_ports_object);
-    object_cache_set_parent(&g_ppc_session_entries, g_ppc_sessions_object);
+    // The collection entry objects, made on first use.
+    g_host->port_entries = (object_cache_t)OBJECT_CACHE(&ppc_port_class, NULL);
+    g_host->session_entries = (object_cache_t)OBJECT_CACHE(&ppc_session_class, NULL);
+    object_cache_set_parent(&g_host->port_entries, ports);
+    object_cache_set_parent(&g_host->session_entries, sessions);
 }

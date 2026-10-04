@@ -224,7 +224,11 @@ static void setup(void) {
     g_link = atalk_printer_link_new();
     ASSERT_TRUE(g_link != NULL);
     g_n_armed = 0;
-    atalk_printer_register();
+    static bool registered; // the printer is the network's: made once
+    if (!registered) {
+        ASSERT_TRUE(atalk_printer_register() != NULL);
+        registered = true;
+    }
     atalk_printer_register_timers(NULL, g_link);
     atalk_printer_plug(g_link);
     ASSERT_TRUE(g_pap != NULL);
