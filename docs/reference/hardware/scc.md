@@ -752,14 +752,19 @@ chip rather than convenience:
 
 ## The far end of a port: `output` and the ready line
 
-What is plugged into a port is not modelled as a device. A port has an
-**output**, a host file that stands in for whatever is on the cable, and the
+A port can have an **output**, a host file that stands in for whatever is on
+the cable, and a **device** — today the virtual ImageWriter — that hears what
+the guest sends, answers on the receiver and says whether it is ready. The
 machine says how a ready device's **handshake line** is wired into the chip.
 
 | Call | What it does |
 |---|---|
 | `scc_set_output(scc, ch, path)` | Opens (creates or truncates) `path` and streams into it every byte the guest writes to WR8 while the channel is in asynchronous mode (WR4 stop bits non-zero), flushed as it is written. `NULL` closes it. An open output counts as a ready device on the cable. SDLC frames are not written; they go to the frame sink. |
 | `scc_set_port_ready_line(scc, ch, pin, ready_level)` | Machine glue: which input a ready device drives, and at which level. The pin is driven "not ready" at once, "ready" while an output is open, and "not ready" again when it closes. A port not wired this way has no handshake an output touches. |
+| `scc_attach_port_device(scc, ch, dev, ctx)` | Plugs a device into the channel (`NULL` unplugs). Its `tx_byte` hears every byte the guest writes to WR8 in asynchronous mode, beside an output file if both are attached; `machine.scc.<ch>.device` names it. Towards a device a character takes its time on the line (below). |
+| `scc_port_device_ready(scc, ch, ready)` | The device is (not) ready: the wired ready line follows, as it follows an open output. A device starts not ready. |
+| `scc_port_rx_byte(scc, ch, byte)` | Device to guest: the byte lands in the receive FIFO with Rx Character Available and the receive interrupt, as `receive()` delivers it (a full FIFO latches Rx Overrun). |
+| `scc_unwire_port_ready_line(scc, ch)` | Undoes `scc_set_port_ready_line`: the input is no longer driven and reads as not asserted. |
 | `scc_set_input_pin(scc, ch, pin, asserted)` | The primitive underneath: a level a device drives into `/DCD`, `/SYNC` or `/CTS`. RR0 reports it as the chip does, bit set when the active-low pin is asserted: DCD bit 3, SYNC bit 4, CTS bit 5. SYNC is reported only in asynchronous mode, where RR0 bit 4 is the pin; in the synchronous modes it is the receiver's hunt state. |
 
 Pin levels and the output are the cable's, not the chip's: they live
@@ -772,14 +777,28 @@ input (DCD `$08`, SYNC/HUNT `$10`, CTS `$20`) and WR1 enables
 External/Status interrupts. Lines nothing drives are left to the rest of the
 model (the loopback-cable mirroring, `scc_dcd`).
 
+**Transmit pacing.** Everywhere else a character written to WR8 leaves at
+once: Tx Buffer Empty stays set and the transmit interrupt follows the
+write. Towards a device the character takes one character time (ten bits at
+the rate WR4 and the BRG give, 9600 baud when the clocks are unknown):
+Tx Buffer Empty and All Sent clear, and set again — with the transmit
+interrupt — when it has gone (scheduler event `scc.tx`). Without that a
+driver that sends from its transmit interrupt never services the
+lower-priority External/Status interrupt mid-write, and so never sees a busy
+printer drop CTS until its whole buffer has gone.
+
 The output is not checkpointed and does not survive `machine.boot` or a
 checkpoint load, both of which build a new SCC: set it again afterwards.
 
 The Lisa wires port A's ready line to `/SYNC`, asserted
 ([lisa.md](../machines/lisa/lisa.md) §15), so the Office System prints
-through Serial A only while `machine.scc.a.output` is set; with none, its
-driver reports the printer not ready. The Macintosh drivers use no
-hardware handshake by default and send whether or not an output is set.
+through Serial A only while `machine.scc.a.output` is set or a ready device
+is plugged in; with neither, its driver reports the printer not ready. On a
+Macintosh nothing is wired until a printer is plugged in: the virtual
+ImageWriter then wires HSKi to `/CTS`, not asserted when ready
+([imagewriter.md](imagewriter.md) §2), and the ImageWriter driver holds its
+output while CTS is asserted. Bytes written with only an output file
+attached go out whatever the line says.
 
 ## Host-side test surfaces (`machine.scc.a` / `machine.scc.b`)
 

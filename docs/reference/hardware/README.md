@@ -20,6 +20,7 @@ family-specific hardware lives under
 | [sonic.md](sonic.md) | National DP83932 SONIC Ethernet | content |
 | [dsp3210.md](dsp3210.md) | AT&T DSP3210 DSP | content |
 | [laserwriter-iint.md](laserwriter-iint.md) | LaserWriter II NT board | content |
+| [imagewriter.md](imagewriter.md) | ImageWriter and ImageWriter II printers, LocalTalk Option card | content |
 
 ## scsi/
 

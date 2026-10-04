@@ -1,0 +1,118 @@
+# A Mac Plus prints the Finder's Print Directory to the virtual ImageWriter
+# on the printer port.  See config.mk.  Screen coordinates are the Plus's
+# 512x342 desktop.
+
+# Click at (x, y)
+def click(x, y) {
+    machine.adb.mouse.move($x, $y)
+    scheduler.run 2000000
+    machine.adb.mouse.click true
+    scheduler.run 2000000
+    machine.adb.mouse.click false
+}
+
+# File -> Print Directory..., then the quality radio button at x `q` and OK
+def print_directory(q) {
+    machine.adb.mouse.move 53 10
+    scheduler.run 2000000
+    machine.adb.mouse.click true
+    scheduler.run 4000000
+    machine.adb.mouse.move 100 203
+    scheduler.run 4000000
+    machine.adb.mouse.click false
+    scheduler.run 60000000
+    click($q, 81)
+    scheduler.run 4000000
+    click(448, 62)
+}
+
+machine.imagewriter.connection = "serial-b"
+assert machine.scc.b.device == "imagewriter2" "the printer is not on the printer port"
+
+machine.rtc.time = "2026-04-26T21:30:36"
+scheduler.run 30000000
+
+# Apple menu -> Chooser
+machine.adb.mouse.move 25 10
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.move 25 123
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+
+# The ImageWriter driver; the printer port is selected by default
+click(101, 145)
+scheduler.run 30000000
+
+# Close the Chooser, open the disk's window
+click(72, 47)
+scheduler.run 40000000
+machine.adb.mouse.move 470 52
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 80000
+machine.adb.mouse.click false
+scheduler.run 80000
+machine.adb.mouse.click true
+scheduler.run 80000
+machine.adb.mouse.click false
+scheduler.run 40000000
+
+# Faster
+print_directory(227)
+scheduler.run 200000000
+echo "faster: ${machine.imagewriter.bytes} bytes, jobs ${machine.imagewriter.jobs}, ${machine.imagewriter.last_job_pages} page(s), ${machine.imagewriter.last_outcome}, crc ${machine.imagewriter.last_pdf_crc}"
+assert machine.imagewriter.jobs == 1 "the Faster print did not become one document"
+assert machine.imagewriter.last_job_pages == 1 "the directory listing is one page"
+assert machine.imagewriter.last_outcome == "ok" "the Faster job did not finish cleanly"
+assert machine.imagewriter.last_pdf_crc == 0x0f4f3a4e "the Faster PDF differs from the golden"
+assert machine.imagewriter.status == "status: idle" "the printer is not idle"
+
+# Best, deselected at the front panel once the job is under way
+print_directory(127)
+let n = 0
+while machine.imagewriter.busy == false && $n < 400 {
+    scheduler.run 100000
+    $n = $n + 1
+}
+assert machine.imagewriter.busy "the Best job did not start"
+machine.imagewriter.selected = false
+scheduler.run 100000000
+assert machine.imagewriter.busy "a deselected printer finished its job"
+assert machine.imagewriter.status == "status: deselected" "the printer does not say it is deselected"
+assert machine.imagewriter.jobs == 1 "a deselected printer produced a document"
+machine.imagewriter.selected = true
+scheduler.run 200000000
+echo "best: ${machine.imagewriter.bytes} bytes, jobs ${machine.imagewriter.jobs}, ${machine.imagewriter.last_job_pages} page(s), ${machine.imagewriter.last_outcome}, crc ${machine.imagewriter.last_pdf_crc}"
+assert machine.imagewriter.jobs == 2 "the Best print did not become a document"
+assert machine.imagewriter.last_job_pages == 1 "the Best listing is one page"
+assert machine.imagewriter.last_pdf_crc == 0x8e785088 "the Best PDF differs from the golden"
+
+# Draft: the driver sends text, printed in the printer's own draft font
+print_directory(327)
+scheduler.run 200000000
+echo "draft: ${machine.imagewriter.bytes} bytes, jobs ${machine.imagewriter.jobs}, ${machine.imagewriter.last_job_pages} page(s), ${machine.imagewriter.last_outcome}, crc ${machine.imagewriter.last_pdf_crc}"
+assert machine.imagewriter.jobs == 3 "the Draft print did not become a document"
+assert machine.imagewriter.last_outcome == "ok" "the Draft job used the placeholder font or failed"
+assert machine.imagewriter.last_pdf_crc == 0xbe977215 "the Draft PDF differs from the golden"
+
+# Faster again through the simulated 2 KB buffer, printing at about the
+# printer's speed: the driver keeps ahead of it without losing a byte (the
+# Plus does not outrun it; imagewriter-handshake fills the buffer)
+machine.imagewriter.buffer_model = "2k"
+print_directory(227)
+$n = 0
+while machine.imagewriter.jobs < 4 && $n < 120 {
+    scheduler.run 10000000
+    $n = $n + 1
+}
+echo "faster, 2k buffer: ${machine.imagewriter.bytes} bytes, peak ${machine.imagewriter.buffer_peak}, ${machine.imagewriter.buffer_waits} waits, ${machine.imagewriter.dropped} dropped, ${machine.imagewriter.last_job_pages} page(s), crc ${machine.imagewriter.last_pdf_crc}"
+assert machine.imagewriter.jobs == 4 "the buffered Faster print did not become a document"
+assert machine.imagewriter.buffer_peak > 0 "nothing waited in the buffer"
+assert machine.imagewriter.dropped == 0 "the driver sent into a full buffer"
+assert machine.imagewriter.last_pdf_crc == 0x0f4f3a4e "the buffered Faster PDF differs from the unbuffered one"
+
+echo "PASS: mac-imagewriter"
+quit

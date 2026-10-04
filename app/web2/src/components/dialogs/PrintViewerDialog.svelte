@@ -1,10 +1,10 @@
 <script lang="ts">
-  // The emulated LaserWriter's output: each finished document opens here, in
+  // The emulated printers' output: each finished document opens here, in
   // the browser's own PDF viewer (a frame onto the PDF's object URL), with a
   // download under the document's name and a way to open it in a tab.  Both
   // are links the user clicks, so no popup blocker stands in the way -- the
   // document itself arrives long after the user's last click
-  // (printer/platen.ts).  Mounted once, in App.svelte.
+  // (printer/platen.ts, bus/download.ts).  Mounted once, in App.svelte.
   import Modal from '@/components/common/Modal.svelte';
   import Button from '@/components/ui/Button.svelte';
   import { printer, closePrintedDocument } from '@/state/printer.svelte';
@@ -12,7 +12,7 @@
   const doc = $derived(printer.document);
   const title = $derived(
     doc
-      ? `LaserWriter: ${doc.title || doc.name} (${doc.pages} page${doc.pages === 1 ? '' : 's'})`
+      ? `${doc.printer}: ${doc.title || doc.name} (${doc.pages} page${doc.pages === 1 ? '' : 's'})`
       : '',
   );
 </script>

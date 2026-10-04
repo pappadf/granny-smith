@@ -36,7 +36,13 @@
     printer.activity = 'error';
     printer.error = 'PostScript error';
   } else if (v === 'paused') {
-    printer.document = { name: 'doc.pdf', title: 'Read Me', url: 'about:blank', pages: 1 };
+    printer.document = {
+      printer: 'LaserWriter',
+      name: 'doc.pdf',
+      title: 'Read Me',
+      url: 'about:blank',
+      pages: 1,
+    };
   }
   if (v === 'idle' || v === 'idle-error') {
     activity.current = 'ROM upload';

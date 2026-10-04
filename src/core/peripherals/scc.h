@@ -85,11 +85,42 @@ const char *scc_get_output(const scc_t *scc, unsigned int ch);
 // no handshake the output touches.
 void scc_set_port_ready_line(scc_t *scc, unsigned int ch, scc_pin_t pin, bool ready_level);
 
+// Undo scc_set_port_ready_line: the input is no longer driven and reads as
+// not asserted, as before the port was wired.
+void scc_unwire_port_ready_line(scc_t *scc, unsigned int ch);
+
 // A device on channel `ch` drives input `pin` to `asserted`.  The level is
 // the device's, not the chip's, so a channel or chip reset keeps it; RR0
 // reflects it (SYNC only in asynchronous mode) and a change raises the
 // external/status interrupt when the guest enabled it for that input.
 void scc_set_input_pin(scc_t *scc, unsigned int ch, scc_pin_t pin, bool asserted);
+
+// A device on the far end of a serial port (a printer): it hears every byte
+// the guest transmits on the channel in asynchronous mode, answers through
+// scc_port_rx_byte, and says whether it is ready through
+// scc_port_device_ready, which drives the port's wired ready line
+// (scc_set_port_ready_line).  Like `output`, it is the cable's, not the
+// chip's: a channel reset keeps it and a checkpoint does not carry it.
+typedef struct scc_port_device {
+    const char *name; // what `machine.scc.<ch>.device` reports
+    void (*tx_byte)(void *ctx, uint8_t byte); // guest -> device
+} scc_port_device_t;
+
+// Plug `dev` into channel `ch` (replacing any device there); NULL unplugs.
+// A device starts not ready.
+void scc_attach_port_device(scc_t *scc, unsigned int ch, const scc_port_device_t *dev, void *ctx);
+
+// The device on channel `ch`, or NULL.
+const scc_port_device_t *scc_port_device(const scc_t *scc, unsigned int ch);
+
+// The device on channel `ch` is ready (or not): the wired ready line
+// follows, as it follows an open `output`.
+void scc_port_device_ready(scc_t *scc, unsigned int ch, bool ready);
+
+// Device -> guest: `byte` arrives on channel `ch`'s receiver as if from the
+// wire (receive FIFO, Rx Character Available, the receive interrupt).
+// False when the FIFO is full (Rx Overrun latched, the byte dropped).
+bool scc_port_rx_byte(scc_t *scc, unsigned int ch, uint8_t byte);
 
 // True once channel B is in SDLC mode — the guest's AppleTalk driver is up
 // and a frame we originate has somewhere to go.

@@ -1,0 +1,29 @@
+# A checkpoint in the middle of an ImageWriter job restores the job: see
+# config.mk.
+
+# Page one: text in two qualities, a graphics band, a form feed
+machine.imagewriter.feed "\x1bNPage one, draft\x0d\x0a\x1ba0Correspondence\x0d\x0a\x1bG0016\x01\x03\x07\x0f\x1f\x3f\x7f\x7f\x7f\x7f\x3f\x1f\x0f\x07\x03\x01\x0d\x0a\x0c"
+# Page two begins, in colour, and stops mid-line
+machine.imagewriter.feed "\x1bK2Page two\x0d\x0a\x1bK0Half a line"
+assert machine.imagewriter.busy "the job is not in progress"
+
+checkpoint.save "${$WORK_DIR}/iw.gscp"
+
+machine.imagewriter.feed " and the rest\x0d\x0a\x0c"
+machine.imagewriter.eject
+let crc = machine.imagewriter.last_pdf_crc
+echo "uninterrupted: ${machine.imagewriter.last_job_pages} pages, crc ${$crc}"
+assert machine.imagewriter.jobs == 1 "the job did not become a document"
+assert machine.imagewriter.last_job_pages == 2 "the job is two pages"
+
+checkpoint.load "${$WORK_DIR}/iw.gscp"
+assert machine.imagewriter.jobs == 0 "the counters did not come back"
+assert machine.imagewriter.busy "the restored job is not in progress"
+machine.imagewriter.feed " and the rest\x0d\x0a\x0c"
+machine.imagewriter.eject
+echo "restored: ${machine.imagewriter.last_job_pages} pages, crc ${machine.imagewriter.last_pdf_crc}"
+assert machine.imagewriter.last_job_pages == 2 "the restored job is not two pages"
+assert machine.imagewriter.last_pdf_crc == $crc "the restored job's PDF differs"
+
+echo "PASS: imagewriter-checkpoint"
+quit

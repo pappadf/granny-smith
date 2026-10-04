@@ -278,6 +278,66 @@ TEST(test_reset_tx_pending_holds_until_next_char) {
     scc_delete(scc);
 }
 
+// A device plugged into a port hears the channel's asynchronous bytes --
+// beside an output file, if both are attached -- and nothing in SDLC mode.
+static uint8_t g_dev_bytes[16];
+static int g_dev_n;
+static void dev_tx(void *ctx, uint8_t byte) {
+    (void)ctx;
+    if (g_dev_n < (int)sizeof(g_dev_bytes))
+        g_dev_bytes[g_dev_n++] = byte;
+}
+static const scc_port_device_t test_device = {.name = "testdev", .tx_byte = dev_tx};
+
+TEST(test_device_hears_async_bytes) {
+    scc_t *scc = make_async();
+    g_dev_n = 0;
+    scc_attach_port_device(scc, 0, &test_device, NULL);
+    ASSERT_TRUE(scc_port_device(scc, 0) == &test_device);
+    send_a(scc, 0x1B);
+    send_a(scc, 0x45);
+    ASSERT_EQ_INT(g_dev_n, 2);
+    ASSERT_EQ_INT(g_dev_bytes[1], 0x45);
+    wr(scc, CH_A_CTL, 4, 0x20); // SDLC: not for a device
+    send_a(scc, 0x7E);
+    ASSERT_EQ_INT(g_dev_n, 2);
+    scc_attach_port_device(scc, 0, NULL, NULL);
+    ASSERT_TRUE(scc_port_device(scc, 0) == NULL);
+    scc_delete(scc);
+}
+
+// The wired ready line follows the device's ready state; unwiring leaves the
+// input undriven and not asserted.
+TEST(test_ready_line_follows_device) {
+    scc_t *scc = make_async();
+    scc_set_port_ready_line(scc, 0, SCC_PIN_SYNC, true);
+    scc_attach_port_device(scc, 0, &test_device, NULL);
+    ASSERT_TRUE(!(rd(scc, CH_A_CTL, 0) & RR0_SYNC)); // a device starts not ready
+    scc_port_device_ready(scc, 0, true);
+    ASSERT_TRUE(rd(scc, CH_A_CTL, 0) & RR0_SYNC);
+    scc_port_device_ready(scc, 0, false);
+    ASSERT_TRUE(!(rd(scc, CH_A_CTL, 0) & RR0_SYNC));
+    // A Mac's wiring: CTS, not asserted when ready
+    scc_set_port_ready_line(scc, 0, SCC_PIN_CTS, false);
+    ASSERT_TRUE(rd(scc, CH_A_CTL, 0) & RR0_CTS);
+    scc_port_device_ready(scc, 0, true);
+    ASSERT_TRUE(!(rd(scc, CH_A_CTL, 0) & RR0_CTS));
+    scc_port_device_ready(scc, 0, false);
+    scc_unwire_port_ready_line(scc, 0);
+    ASSERT_TRUE(!(rd(scc, CH_A_CTL, 0) & RR0_CTS));
+    scc_delete(scc);
+}
+
+// A device's reply arrives in the receive FIFO with Rx Character Available.
+TEST(test_device_rx_byte) {
+    scc_t *scc = make_async();
+    ASSERT_TRUE(scc_port_rx_byte(scc, 0, 'I'));
+    ASSERT_TRUE(scc_port_rx_byte(scc, 0, 'W'));
+    ASSERT_TRUE(rd(scc, CH_A_CTL, 0) & 0x01);
+    ASSERT_EQ_INT(scc_channel_rx_pending(scc, 0), 2);
+    scc_delete(scc);
+}
+
 int main(void) {
     RUN(test_sync_pin_survives_channel_reset);
     RUN(test_sync_pin_not_reported_in_sdlc);
@@ -288,6 +348,9 @@ int main(void) {
     RUN(test_ready_line_follows_output);
     RUN(test_wr1_enables_gate_int);
     RUN(test_reset_tx_pending_holds_until_next_char);
+    RUN(test_device_hears_async_bytes);
+    RUN(test_ready_line_follows_device);
+    RUN(test_device_rx_byte);
     printf("[PASS] All scc_port tests passed\n");
     return 0;
 }

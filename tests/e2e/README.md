@@ -50,6 +50,7 @@ tests/e2e/
 │   ├── download-transfer.spec.ts        # A core download reaches the page in chunks through a transfer buffer, acked one by one
 │   ├── iicx-video-modes.spec.ts         # Post-shader WebGL canvas baselines (per monitor × depth)
 │   ├── iifx-aux3-realtime.spec.ts       # A/UX 3.0.1 boot to login under the real RAF scheduler
+│   ├── imagewriter-print.spec.ts        # An ImageWriter job, fed to the printer, opens in the print viewer
 │   ├── laserwriter-print.spec.ts        # LaserWriter print from System 6 ends as a PDF download (platen worker)
 │   ├── lisa-xenix-profile.spec.ts       # Lisa/XL ProFile-vs-SCSI config + boot
 │   ├── machine-restart.spec.ts          # Restart power-cycles the machine; the attached disk survives, same open instance

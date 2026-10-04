@@ -380,6 +380,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     machine_part_begin(cfg, cp, "appletalk");
     cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, cp);
     machine_part(cfg, cp, "appletalk", part_save_atalk, cfg->atalk);
+    machine_part_imagewriter(cfg, cp, false);
 
     // The AMIC pseudo-VIA1 is a real 6522 core instance behind the island
     // decode.  Its timers run at 783.36 kHz on every model, and no PDM CPU

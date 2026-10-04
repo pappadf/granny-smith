@@ -47,3 +47,32 @@ If a required image (such as the ROM) is missing, you can drag and drop the file
 - The emulator will always use the most recently supplied or available images for each device slot.
 
 For more information on coding style and contributing, see [`docs/guide/STYLE_GUIDE.md`](../guide/STYLE_GUIDE.md).
+
+## Printing
+
+Two printers are available to the emulated machine.
+
+**The ImageWriter** (dot matrix, the Mac's and the Lisa's everyday printer)
+is part of every machine. Plug it in from the terminal, then print from the
+guest as you would to a real one:
+
+```
+machine.imagewriter.connection = "serial-b"    # a Mac's printer port
+machine.imagewriter.connection = "serial-a"    # the Lisa's Serial A
+machine.imagewriter.connection = "localtalk"   # ImageWriter II with the LocalTalk Option card
+```
+
+On a Mac choose **ImageWriter** in the Chooser (or **AppleTalk ImageWriter**
+for the LocalTalk connection, which lists "Virtual ImageWriter"). Each job
+opens as a PDF in the print viewer when it is finished, a few seconds after
+the last data arrives; the viewer has a Download button. Text prints in the
+ImageWriter II's own draft and correspondence fonts; colour jobs print in
+colour. `machine.imagewriter.model = "imagewriter"` switches to the original
+ImageWriter, and `machine.imagewriter.paper = "a4"` changes the paper.
+
+**The LaserWriter** is on the AppleTalk network (`appletalk.printer`); choose
+**LaserWriter** in the Chooser. It needs the PostScript interpreter that
+ships with the browser build.
+
+From the headless build, documents are written to the directory given with
+`--print-dir` (`imagewriter2-00001-Print.pdf`).

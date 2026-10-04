@@ -34,6 +34,7 @@ CORE_INCLUDES := -I$(CORE_DIR) \
                  -I$(CORE_DIR)/debug \
                  -I$(CORE_DIR)/storage \
                  -I$(CORE_DIR)/network \
+                 -I$(CORE_DIR)/printer \
                  -I$(CORE_DIR)/shell \
                  -I$(CORE_DIR)/object \
                  -I$(CORE_DIR)/vfs \

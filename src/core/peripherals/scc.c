@@ -178,6 +178,10 @@ struct scc {
         bool ready_wired;
         scc_pin_t ready_pin;
         bool ready_level;
+        // A device on the cable (scc_attach_port_device) and its ready state
+        const scc_port_device_t *dev;
+        void *dev_ctx;
+        bool dev_ready;
     } port[2];
 
     // Host-side transmit capture, one per channel: every byte the guest hands
@@ -274,6 +278,32 @@ static uint64_t brg_period_ns(scc_t *scc, ch_t *ch) {
         return 0;
     // Period = (time_constant + 1) ticks of source clock, in nanoseconds
     return (uint64_t)(ch->brg.time_constant + 1) * 1000000000ULL / src_hz;
+}
+
+// One asynchronous character's time on the line (start, 8 data, stop bits)
+// at the channel's programmed rate, for a channel with a device on the
+// cable; 9600 baud when the clocks are not known.
+static uint64_t async_char_ns(scc_t *scc, ch_t *ch) {
+    static const uint32_t clock_mode[4] = {1, 16, 32, 64}; // WR4 bits 7-6
+    uint64_t period = brg_period_ns(scc, ch);
+    uint64_t ns = period ? 2 * period * clock_mode[ch->wr[4] >> 6 & 3] * 10 : 0;
+    if (ns < 100000 || ns > 50000000)
+        ns = 1041667; // outside 200..100k baud: assume 9600
+    return ns;
+}
+
+// The character handed to a port device has left the transmitter: the
+// buffer is empty again (source=scc, data=channel index)
+static void tx_paced_callback(void *source, uint64_t data) {
+    scc_t *scc = (scc_t *)source;
+    ch_t *c = &scc->ch[data & 1];
+    c->rr[0] |= RR0_TX_BUFFER_EMPTY;
+    c->rr[1] |= 0x01; // All Sent
+    c->tx_ip_armed = true;
+    if (c->wr[1] & 0x02) {
+        scc->ch[0].rr[3] |= (c->index ? RR3_CHANNEL_B_TX : RR3_CHANNEL_A_TX);
+        update_irqs(scc);
+    }
 }
 
 // BRG zero-count callback (source=scc, data=channel index)
@@ -818,11 +848,21 @@ static void wr8(ch_t *c, uint8_t value) {
     c->scc->ch[0].rr[3] &= c->index ? ~RR3_CHANNEL_B_TX : ~RR3_CHANNEL_A_TX;
     update_irqs(c->scc);
 
-    // let's simplify - tx buffer immediately empty
-    c->rr[0] |= RR0_TX_BUFFER_EMPTY;
-
-    // simplified model: character transmitted instantly, shift register idle
-    c->rr[1] |= 0x01; // RR1 bit 0 = All Sent
+    // A character to a device on the cable takes its time on the line, so
+    // the host's handshake (CTS, an external/status interrupt) is seen
+    // between characters as on the real line; anywhere else the character
+    // is transmitted instantly and the buffer is empty at once
+    bool paced = c->scc->port[c->index].dev && ASYNC_MODE(c) && c->scc->scheduler && !(c->wr[14] & 0x10);
+    if (paced) {
+        c->rr[0] &= ~RR0_TX_BUFFER_EMPTY;
+        c->rr[1] &= ~0x01;
+        remove_event_by_data(c->scc->scheduler, tx_paced_callback, c->scc, (uint64_t)c->index);
+        scheduler_new_cpu_event(c->scc->scheduler, tx_paced_callback, c->scc, (uint64_t)c->index, 0,
+                                async_char_ns(c->scc, c));
+    } else {
+        c->rr[0] |= RR0_TX_BUFFER_EMPTY;
+        c->rr[1] |= 0x01; // RR1 bit 0 = All Sent
+    }
     LOG(4, "wr8 ch=%d value=0x%02X, wr1=0x%02X (TX int enable=%d), wr14=0x%02X (loopback=%d)", c->index, value,
         c->wr[1], !!(c->wr[1] & 0x02), c->wr[14], !!(c->wr[14] & 0x10));
 
@@ -880,9 +920,9 @@ static void wr8(ch_t *c, uint8_t value) {
     }
 
     // The character leaves the buffer at once: it has become empty again
-    c->tx_ip_armed = true;
+    c->tx_ip_armed = !paced;
     // if tx interrupts are enabled (wr1 bit 1) and buffer is empty, raise the interrupt
-    if (c->wr[1] & 0x02) {
+    if (!paced && (c->wr[1] & 0x02)) {
         c->scc->ch[0].rr[3] |= (c->index ? RR3_CHANNEL_B_TX : RR3_CHANNEL_A_TX);
         LOG(4, "wr8: TX interrupt enabled, setting rr3=0x%02X", c->scc->ch[0].rr[3]);
         update_irqs(c->scc);
@@ -902,6 +942,9 @@ static void wr8(ch_t *c, uint8_t value) {
         fputc(value, scc->port[c->index].out);
         fflush(scc->port[c->index].out);
     }
+    // ... and to a device on the cable, which may also have a file beside it
+    if (scc->port[c->index].dev && ASYNC_MODE(c))
+        scc->port[c->index].dev->tx_byte(scc->port[c->index].dev_ctx, value);
 
     int prev_len = c->tx.len;
     // Drop on overflow rather than asserting — a guest that streams output
@@ -1195,6 +1238,60 @@ void scc_set_frame_sink(scc_t *scc, scc_frame_fn fn, void *context) {
     scc->frame_ctx = fn ? context : NULL;
 }
 
+// Drive channel `ch`'s wired ready line: ready while an output file is open
+// or an attached device says it is ready.
+static void update_ready_line(scc_t *scc, unsigned int ch) {
+    if (!scc->port[ch].ready_wired)
+        return;
+    bool ready = scc->port[ch].out != NULL || (scc->port[ch].dev && scc->port[ch].dev_ready);
+    scc_set_input_pin(scc, ch, scc->port[ch].ready_pin, ready ? scc->port[ch].ready_level : !scc->port[ch].ready_level);
+}
+
+void scc_attach_port_device(scc_t *scc, unsigned int ch, const scc_port_device_t *dev, void *ctx) {
+    if (!scc || ch > 1)
+        return;
+    scc->port[ch].dev = dev;
+    scc->port[ch].dev_ctx = dev ? ctx : NULL;
+    scc->port[ch].dev_ready = false;
+    LOG(2, "scc: channel %c device %s", ch ? 'B' : 'A', dev ? dev->name : "unplugged");
+    update_ready_line(scc, ch);
+}
+
+const scc_port_device_t *scc_port_device(const scc_t *scc, unsigned int ch) {
+    if (!scc || ch > 1)
+        return NULL;
+    return scc->port[ch].dev;
+}
+
+void scc_port_device_ready(scc_t *scc, unsigned int ch, bool ready) {
+    if (!scc || ch > 1 || !scc->port[ch].dev)
+        return;
+    if (scc->port[ch].dev_ready == ready)
+        return;
+    scc->port[ch].dev_ready = ready;
+    update_ready_line(scc, ch);
+}
+
+bool scc_port_rx_byte(scc_t *scc, unsigned int ch, uint8_t byte) {
+    if (!scc || ch > 1)
+        return false;
+    ch_t *c = &scc->ch[ch];
+    if (c->rx.head >= RX_BUF_SIZE) {
+        // Z8530 latches Rx Overrun and drops the byte, keeping what is
+        // already buffered -- same as the loopback path in wr8.
+        c->rr[1] |= RR1_RX_OVERRUN;
+        return false;
+    }
+    c->rx.buf[c->rx.head++] = byte;
+    c->rr[0] |= RR0_RX_CHAR_AVAILABLE;
+    uint8_t rx_int_mode = (c->wr[1] >> 3) & 0x03;
+    if (rx_int_mode != 0) {
+        scc->ch[0].rr[3] |= (c->index ? RR3_CHANNEL_B_RX : RR3_CHANNEL_A_RX);
+        update_irqs(scc);
+    }
+    return true;
+}
+
 bool scc_set_output(scc_t *scc, unsigned int ch, const char *path) {
     if (!scc || ch > 1)
         return false;
@@ -1219,11 +1316,7 @@ bool scc_set_output(scc_t *scc, unsigned int ch, const char *path) {
     scc->port[ch].out_path = copy;
     LOG(2, "scc: channel %c output %s", ch ? 'B' : 'A', path ? path : "closed");
     // An output is a device on the cable: the wired ready line follows it
-    if (scc->port[ch].ready_wired) {
-        bool ready = f != NULL;
-        scc_set_input_pin(scc, ch, scc->port[ch].ready_pin,
-                          ready ? scc->port[ch].ready_level : !scc->port[ch].ready_level);
-    }
+    update_ready_line(scc, ch);
     return true;
 }
 
@@ -1239,8 +1332,21 @@ void scc_set_port_ready_line(scc_t *scc, unsigned int ch, scc_pin_t pin, bool re
     scc->port[ch].ready_wired = true;
     scc->port[ch].ready_pin = pin;
     scc->port[ch].ready_level = ready_level;
-    bool ready = scc->port[ch].out != NULL;
-    scc_set_input_pin(scc, ch, pin, ready ? ready_level : !ready_level);
+    update_ready_line(scc, ch);
+}
+
+void scc_unwire_port_ready_line(scc_t *scc, unsigned int ch) {
+    static const uint8_t rr0_bit[3] = {
+        [SCC_PIN_DCD] = RR0_DCD, [SCC_PIN_SYNC] = RR0_SYNC_HUNT, [SCC_PIN_CTS] = RR0_CTS};
+    if (!scc || ch > 1 || !scc->port[ch].ready_wired)
+        return;
+    scc_pin_t pin = scc->port[ch].ready_pin;
+    scc->port[ch].ready_wired = false;
+    scc->port[ch].pins_driven &= (uint8_t) ~(1u << pin);
+    scc->port[ch].pins_level &= (uint8_t) ~(1u << pin);
+    // An undriven input reads as not asserted (SYNC only means that in async mode)
+    if (pin != SCC_PIN_SYNC || ASYNC_MODE(&scc->ch[ch]))
+        scc->ch[ch].rr[0] &= (uint8_t)~rr0_bit[pin];
 }
 
 void scc_set_input_pin(scc_t *scc, unsigned int ch, scc_pin_t pin, bool asserted) {
@@ -1490,6 +1596,7 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
     // Register BRG event type for checkpoint save/restore
     if (scheduler) {
         scheduler_new_event_type(scheduler, "scc", scc, "brg", &brg_zero_count_callback);
+        scheduler_new_event_type(scheduler, "scc", scc, "tx", &tx_paced_callback);
     }
 
     // If a checkpoint is provided, restore channel plain-data (everything up to the
@@ -1835,6 +1942,15 @@ static DEF_SETTER(scc_ch_attr_output_set) {
     return val_none();
 }
 
+// `device`: the name of the device plugged into this channel, or none.
+static DEF_GETTER(scc_ch_attr_device) {
+    ch_t *c = ch_from(self);
+    if (!c)
+        return val_err("scc not available");
+    const scc_port_device_t *dev = scc_port_device(c->scc, (unsigned)c->index);
+    return dev ? val_str(dev->name) : val_none();
+}
+
 // Feed bytes into a channel's receive FIFO as though they had arrived on the
 // wire.  Delivery mirrors the loopback path in wr8: buffer the byte, latch
 // RR0's Rx Character Available, and raise the receive interrupt when the
@@ -1868,26 +1984,16 @@ static DEF_METHOD(scc_ch_method_receive) {
         return val_err("receive: expected a string or a byte value");
     }
 
+    // Byte by byte through the same path a device on the cable uses; a full
+    // FIFO latches Rx Overrun and stops the delivery
     uint64_t accepted = 0;
     for (size_t i = 0; i < len; i++) {
-        if (c->rx.head >= RX_BUF_SIZE) {
-            // Z8530 latches Rx Overrun and drops the byte, keeping what is
-            // already buffered — same as the loopback path above.
-            c->rr[1] |= RR1_RX_OVERRUN;
+        if (!scc_port_rx_byte(scc, (unsigned)c->index, bytes[i]))
             break;
-        }
-        c->rx.buf[c->rx.head++] = bytes[i];
         accepted++;
     }
     if (!accepted)
         return val_uint(4, 0);
-
-    c->rr[0] |= RR0_RX_CHAR_AVAILABLE;
-    uint8_t rx_int_mode = (c->wr[1] >> 3) & 0x03;
-    if (rx_int_mode != 0) {
-        scc->ch[0].rr[3] |= (c->index ? RR3_CHANNEL_B_RX : RR3_CHANNEL_A_RX);
-        update_irqs(scc);
-    }
     LOG(3, "receive: ch=%d accepted %llu byte(s)", c->index, (unsigned long long)accepted);
     return val_uint(4, accepted);
 }
@@ -1982,6 +2088,10 @@ static const member_t scc_ch_members[] = {
               .validation_flags = OBJ_ARG_NONE_OK,
               .get = scc_ch_attr_output,
               .set = scc_ch_attr_output_set}},
+    {.kind = M_ATTR,
+     .name = "device",
+     .doc = "The device plugged into this port (a printer), or none",
+     .attr = {.type = V_STRING, .validation_flags = OBJ_ARG_NONE_OK, .get = scc_ch_attr_device}},
     {.kind = M_METHOD,
      .name = "receive",
      .doc = "Deliver bytes to this channel's receiver, as if they arrived on the wire",
