@@ -27,7 +27,6 @@
 
 #include "machine.h"
 
-#include "log.h"
 #include "machine_profile.h"
 #include "nubus.h"
 #include "prom.h"
@@ -41,8 +40,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-LOG_USE_CATEGORY_NAME("setup");
 
 // The expansion bus a model has.
 typedef enum { SLOTS_NONE, SLOTS_NUBUS, SLOTS_PCI } slots_bus_t;

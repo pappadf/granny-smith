@@ -2269,6 +2269,9 @@ void pacing_init(void) {
     s_pacing_object = object_new(&pacing_class, NULL, "pacing");
     if (s_pacing_object) {
         object_set_order(s_pacing_object, 21);
+        // The toolbar's mode buttons are its everyday interface; in a tree it
+        // is an advanced node, like the vrom and prom registries.
+        object_set_category(s_pacing_object, M_CAT_ADVANCED);
         object_attach(object_root(), s_pacing_object);
     }
 }
