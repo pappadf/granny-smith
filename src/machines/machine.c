@@ -237,6 +237,39 @@ static DEF_GETTER(attr_catalog_models) {
     return val_list(items, n);
 }
 
+// The storage devices the running machine was built with, the positions an
+// image can be attached to: {bus, bus_label, unit, position, type, present},
+// type hd or cd as machine.attach_media takes them, present when an image is
+// in it.
+static DEF_GETTER(attr_machine_storage) {
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine)
+        return val_err("machine.storage: no machine booted; check machine.created first");
+    size_t n = (size_t)cfg->n_storage;
+    value_t *items = n ? (value_t *)calloc(n, sizeof(value_t)) : NULL;
+    if (n && !items)
+        return val_err("machine.storage: out of memory");
+    for (size_t i = 0; i < n; i++) {
+        const machine_storage_dev_t *d = &cfg->storage[i];
+        const storage_bus_decl_t *b = machine_storage_bus(cfg->machine, d->bus);
+        char position[64] = "";
+        machine_storage_position(cfg->machine, d->bus, d->unit, position, sizeof position);
+        value_map_builder_t *m = val_map_new();
+        val_map_put(m, "bus", val_str(d->bus));
+        val_map_put(m, "bus_label", val_str(b && b->label ? b->label : d->bus));
+        val_map_put(m, "unit", val_int(d->unit));
+        val_map_put(m, "position", val_str(position));
+        val_map_put(m, "type", val_str(d->type == STORAGE_DEV_CD ? "cd" : "hd"));
+        media_bay_t bay;
+        const machine_substrate_t *sub = cfg->machine->substrate;
+        bool present = machine_storage_media_bay(cfg->machine, d->bus, d->unit, &bay) && sub->media_present &&
+                       sub->media_present(cfg, bay.bus, bay.unit);
+        val_map_put(m, "present", val_bool(present));
+        items[i] = val_map_finish(m);
+    }
+    return val_list(items, n);
+}
+
 static DEF_GETTER(attr_machine_name) {
     value_t err;
     const hw_profile_t *p = active_profile_or_error("name", &err);
@@ -874,6 +907,10 @@ static const member_t machine_members[] = {
      .name = "ram",
      .doc = "Active RAM size in KB",
      .attr = {.type = V_UINT, .get = attr_machine_ram, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "storage",
+     .doc = "The storage devices the machine was built with: {bus, bus_label, unit, position, type, present}",
+     .attr = {.type = V_LIST, .get = attr_machine_storage, .set = NULL}},
     {.kind = M_ATTR,
      .name = "irq",
      .doc = "Raw interrupt-source bitmap the family aggregates (bit meanings are per family)",

@@ -3,8 +3,16 @@ import { bridge } from '../helpers/bridgeMock';
 
 vi.mock('@/bus/emulator', async () => (await import('../helpers/bridgeMock')).emulatorModule());
 
-const { attachHardDisk, attachMedia, attachCdrom, insertFloppy, ejectMedia, detectFdDriveCount } =
-  await import('@/bus/media');
+const {
+  attachHardDisk,
+  attachMedia,
+  attachCdrom,
+  insertFloppy,
+  ejectMedia,
+  detectFdDriveCount,
+  mountImage,
+  deviceLabel,
+} = await import('@/bus/media');
 const { getProfile, clearProfileCache } = await import('@/bus/profile');
 
 // A running one-drive machine: machine.floppy.drive[] holds the drives it
@@ -42,6 +50,57 @@ describe('bus/media: one attach helper over the core verbs', () => {
       { path: 'machine.attach_hd', args: ['/opfs/images/hd/a.img', 3] },
     ]);
     expect(r).toEqual({ ok: true, mount: { kind: 'hd', bus: 'scsi2', drive: 4 } });
+  });
+
+  it("mounts into the running machine's first empty device that takes the image", async () => {
+    bridge.reply('machine.storage', [
+      {
+        bus: 'scsi',
+        bus_label: 'SCSI',
+        unit: 0,
+        position: 'ID 0 · Bay',
+        type: 'hd',
+        present: true,
+      },
+      { bus: 'scsi', bus_label: 'SCSI', unit: 3, position: 'ID 3', type: 'cd', present: false },
+      {
+        bus: 'scsi2',
+        bus_label: 'External SCSI',
+        unit: 5,
+        position: 'ID 5',
+        type: 'hd',
+        present: false,
+      },
+    ]);
+    bridge.reply('machine.attach_media', { bus: 'scsi2', id: 5, label: 'External SCSI' });
+    const r = await mountImage('hd', '/opfs/images/hd/b.img');
+    expect(bridge.calls.at(-1)).toEqual({
+      path: 'machine.attach_media',
+      args: ['scsi2', 5, 'hd', '/opfs/images/hd/b.img'],
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('says every device is in use rather than trying an occupied one', async () => {
+    bridge.reply('machine.storage', [
+      { bus: 'scsi', bus_label: 'SCSI', unit: 0, position: 'ID 0', type: 'hd', present: true },
+    ]);
+    const r = await mountImage('hd', '/opfs/images/hd/b.img');
+    expect(r).toEqual({ ok: false, full: true, reason: 'every hard disk is in use' });
+    expect(bridge.calls.some((c) => c.path === 'machine.attach_media')).toBe(false);
+  });
+
+  it('labels a device by its bus and position', () => {
+    expect(
+      deviceLabel({
+        bus: 'scsi',
+        busLabel: 'Internal SCSI',
+        unit: 0,
+        position: 'ID 0 · Internal hard disk bay',
+        type: 'hd',
+        present: false,
+      }),
+    ).toBe('Internal SCSI · ID 0 · Internal hard disk bay');
   });
 
   it("reports the core's refusal instead of a success", async () => {

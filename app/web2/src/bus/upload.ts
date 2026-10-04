@@ -46,7 +46,7 @@ import {
   type MediaTypeId,
   type MediaTypeDescriptor,
 } from '@/lib/media';
-import { attachCdrom, insertFloppy } from './media';
+import { mountImage, insertFloppy } from './media';
 import { opfsSafeName } from './fsOps';
 import { importImage, type DiskCategory } from './importImage';
 
@@ -404,10 +404,9 @@ async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): P
     return;
   }
   if (category === 'cdrom') {
-    // Into the model's CD bay; the core refuses an occupied bay and a model
-    // with none, where this used to attach at id 3 regardless and report
-    // success for any answer that was not null.
-    const r = await attachCdrom(persistedPath);
+    // Into the running machine's first empty CD-ROM drive; refused on a
+    // machine with none or with every drive full.
+    const r = await mountImage('cd', persistedPath);
     if (r.ok) {
       setMounted(persistedPath, r.mount);
       showNotification('Inserted into CD-ROM drive', 'info');

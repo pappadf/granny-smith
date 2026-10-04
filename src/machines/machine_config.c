@@ -243,6 +243,16 @@ static const char *storage_bay_name(const storage_bus_decl_t *b, int unit) {
 // A unit's position text: "ID 0 · Internal hard disk bay",
 // "ID 3 · External", "ID 4"; "Master · Hard disk bay" on ATA; the bay name
 // alone on the ProFile port.
+static void storage_position(const storage_bus_decl_t *b, int unit, char *buf, size_t len);
+
+bool machine_storage_position(const hw_profile_t *p, const char *bus_id, int unit, char *buf, size_t len) {
+    const storage_bus_decl_t *b = machine_storage_bus(p, bus_id);
+    if (!b)
+        return false;
+    storage_position(b, unit, buf, len);
+    return true;
+}
+
 static void storage_position(const storage_bus_decl_t *b, int unit, char *buf, size_t len) {
     const char *bay = storage_bay_name(b, unit);
     const char *where = bay ? bay : (b->external_connector ? "External" : NULL);

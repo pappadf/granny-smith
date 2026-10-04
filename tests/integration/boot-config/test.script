@@ -146,7 +146,9 @@ assert machine.nubus.slot[9].card.mode.depth == 8 "the slot's video mode did not
 
 # --- A checkpoint restores the machine it was built as: its RAM, and the card
 # and declaration ROM in each slot (the board's and the bus's own parts). ---
-machine.boot model="iicx" ram=16384 rom="${$ROM}" slots="9=824gc,mode=gc_640x480_8bpp,rom=../../data/roms/824gc-v1.0-reva-9e9857e8.vrom;10=display_card_24ac"
+machine.boot model="iicx" ram=16384 rom="${$ROM}" slots="9=824gc,mode=gc_640x480_8bpp,rom=../../data/roms/824gc-v1.0-reva-9e9857e8.vrom;10=display_card_24ac" config="{\"storage\":[{\"bus\":\"scsi\",\"unit\":2,\"type\":\"hd\"}]}"
+assert contains("${machine.storage}", "\"unit\":2") "machine.storage lists the document's hard disk"
+assert !contains("${machine.storage}", "\"type\":\"cd\"") "machine.storage lists a CD drive the document left out"
 scheduler.run 100000
 assert checkpoint.save("${$WORK_DIR}/bootcfg.checkpoint") "checkpoint save"
 machine.boot model="iicx" rom="${$ROM}" video_card="display_card_24ac"
@@ -157,6 +159,7 @@ assert machine.ram == 16384 "restored ram"
 assert machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC" "restored machine: slot $9's card"
 assert machine.nubus.slot[9].card.declrom.crc == 0x9e9857e8 "restored machine: slot $9's pinned declaration ROM"
 assert machine.nubus.slot[10].card.name == "Macintosh Display Card 24AC" "restored machine: slot $A's card"
+assert contains("${machine.storage}", "\"unit\":2") "restored machine: its storage devices"
 # Under a non-inheriting boot a bare machine.boot after restore is an error.
 assert !machine.boot() "bare machine.boot after restore must be rejected"
 

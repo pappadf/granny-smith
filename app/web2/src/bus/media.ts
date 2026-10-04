@@ -59,6 +59,63 @@ export async function attachMedia(
   return bayResult(kind, await gsEval('machine.attach_media', [bus, unit, type, path]));
 }
 
+// One storage device of the running machine (machine.storage): a position
+// an image attaches to, as its configuration built it.
+export interface MachineDevice {
+  bus: string;
+  busLabel: string;
+  unit: number;
+  position: string;
+  type: 'hd' | 'cd';
+  present: boolean;
+}
+
+// The running machine's devices that take `type`.
+export async function machineDevices(type: 'hd' | 'cd'): Promise<MachineDevice[]> {
+  const r = await gsEval('machine.storage');
+  if (!Array.isArray(r)) return [];
+  return (r as Record<string, unknown>[])
+    .filter((d) => d.type === type)
+    .map((d) => ({
+      bus: String(d.bus ?? ''),
+      busLabel: String(d.bus_label ?? d.bus ?? ''),
+      unit: Number(d.unit ?? 0),
+      position: String(d.position ?? ''),
+      type,
+      present: d.present === true,
+    }));
+}
+
+// "Internal SCSI · ID 0 · Internal hard disk bay".
+export function deviceLabel(d: MachineDevice): string {
+  return d.position ? `${d.busLabel} · ${d.position}` : d.busLabel;
+}
+
+// An image into one of the running machine's devices that take `type`:
+// `device`, or the first with nothing in it.  A hard disk only ever goes to a
+// hard-disk device the machine was built with (drives are construction).
+export async function mountImage(
+  type: 'hd' | 'cd',
+  path: string,
+  device?: MachineDevice,
+): Promise<MediaResult> {
+  if (device) return attachMedia(device.bus, device.unit, device.type, path);
+  const devices = await machineDevices(type);
+  if (!devices.length)
+    return {
+      ok: false,
+      reason: type === 'hd' ? 'this machine has no hard disk' : 'this machine has no CD-ROM drive',
+    };
+  const free = devices.find((d) => !d.present);
+  if (!free)
+    return {
+      ok: false,
+      full: true,
+      reason: type === 'hd' ? 'every hard disk is in use' : 'every CD-ROM drive is full',
+    };
+  return attachMedia(free.bus, free.unit, free.type, path);
+}
+
 // Insert a CD into the default configuration's CD-ROM drive (refused when the
 // running machine has none there).
 export async function attachCdrom(path: string): Promise<MediaResult> {

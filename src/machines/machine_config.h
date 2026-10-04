@@ -46,6 +46,10 @@ value_t machine_config_resolve(const hw_profile_t *p, const value_t *config, con
 // media bus and the unit there.  False for a bus the model does not have.
 bool machine_storage_media_bay(const hw_profile_t *p, const char *bus_id, int unit, media_bay_t *out);
 
+// The position text of `unit` on storage bus `bus_id` ("ID 0 · Internal hard
+// disk bay"), as the tree labels it.  False for a bus the model does not have.
+bool machine_storage_position(const hw_profile_t *p, const char *bus_id, int unit, char *buf, size_t len);
+
 // The storage bus `id` of the model, or NULL.
 const storage_bus_decl_t *machine_storage_bus(const hw_profile_t *p, const char *id);
 

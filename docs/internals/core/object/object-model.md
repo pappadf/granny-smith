@@ -817,7 +817,10 @@ machine with no drives; `"startup": null` is "no default startup device"
 are not configuration: they are attached after the boot to the device at a
 position (`machine.attach_media(bus, unit, type, path)`; `attach_hd(path,
 n)` and `attach_cdrom(path)` name the default configuration's Nth hard
-disk and its CD-ROM drive).
+disk and its CD-ROM drive).  `machine.storage` lists the devices the
+running machine was built with -- `{bus, bus_label, unit, position, type,
+present}` each, kept with the machine and in its checkpoint -- which is what
+the web app's Images panel offers an image to.
 
 The whole document is validated before anything is built, and a
 rejection names the node at fault: an option value the model does not

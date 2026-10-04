@@ -1147,6 +1147,45 @@ static void board_part_save(void *obj, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &b, sizeof b, "machine");
 }
 
+// The storage devices part: their count, then the devices.
+static void storage_part_save(void *obj, checkpoint_t *cp) {
+    const config_t *cfg = obj;
+    int32_t n = cfg->n_storage;
+    system_write_checkpoint_data(cp, &n, sizeof n, "storage");
+    system_write_checkpoint_data(cp, cfg->storage, (size_t)n * sizeof cfg->storage[0], "storage");
+}
+
+// The storage devices a machine is built with: a restore's from its
+// checkpoint, a boot's from the document, else the model's default
+// configuration.
+static void storage_part(config_t *cfg, checkpoint_t *cp) {
+    machine_part_begin(cfg, cp, "storage");
+    if (cp) {
+        int32_t n = 0;
+        system_read_checkpoint_data(cp, &n, sizeof n, "storage");
+        if (n < 0 || n > MACHINE_STORAGE_MAX) {
+            checkpoint_set_error(cp);
+            n = 0;
+        }
+        system_read_checkpoint_data(cp, cfg->storage, (size_t)n * sizeof cfg->storage[0], "storage");
+        cfg->n_storage = n;
+        for (int i = 0; i < n; i++)
+            cfg->storage[i].bus[sizeof cfg->storage[i].bus - 1] = '\0';
+    } else if (cfg->build_opts.storage_given) {
+        cfg->n_storage = cfg->build_opts.n_storage;
+        memcpy(cfg->storage, cfg->build_opts.storage, sizeof cfg->storage);
+    } else {
+        for (const storage_device_decl_t *s = cfg->machine->default_storage;
+             s && s->bus && cfg->n_storage < MACHINE_STORAGE_MAX; s++) {
+            machine_storage_dev_t *d = &cfg->storage[cfg->n_storage++];
+            snprintf(d->bus, sizeof d->bus, "%s", s->bus);
+            d->unit = s->unit;
+            d->type = s->type;
+        }
+    }
+    machine_part(cfg, cp, "storage", storage_part_save, cfg);
+}
+
 static void events_part_save(void *obj, checkpoint_t *cp) {
     scheduler_checkpoint_events(obj, cp);
 }
@@ -1194,6 +1233,7 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     // model and the RAM size it is built with, so nothing is read here.
     machine_part_begin(cfg, NULL, "machine");
     machine_part(cfg, checkpoint, "machine", board_part_save, cfg);
+    storage_part(cfg, checkpoint);
 
     // Delegate all machine-specific initialisation to the profile.  A
     // non-zero return means the machine could not be built (the only cause
