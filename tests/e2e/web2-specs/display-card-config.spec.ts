@@ -19,7 +19,7 @@
 // cards and the chosen card boots. That the selected id actually instantiates
 // the 24AC (vs. the slot-default 8•24) in slot $9 is proven at the core level
 // by the iicx-display-card-24ac integration test, which asserts
-// machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC".
+// machine.nubus.slot[9].card.name == "Macintosh Display Card 24AC".
 // (web2 has no window.gsEval — that is a legacy-app global; web2 reaches the
 // core only through typed UI paths, so we don't probe the object model here.)
 
@@ -57,20 +57,28 @@ test('New Machine dialog: pick the 24AC card by name and boot it', async ({ page
   await expect(model.locator('option[value="iicx"]')).toHaveCount(1, { timeout: 30_000 });
   await model.selectOption('iicx');
 
-  // The Display Card picker speaks in *cards*, not vROM filenames, and never
-  // a raw ".vrom" name.  Five options for the IIcx socket: the two real cards
-  // identified from the staged vROMs (8•24, 24AC) plus the three always-
-  // available generic siblings (8_24, 24ac, 8_24gc) that need no dump.
-  // "24AC" therefore matches two — the real card and its generic sibling.
-  const card = page.locator('#cfg-card');
-  await expect(card).toBeVisible({ timeout: 30_000 });
-  await expect(card.locator('option')).toHaveCount(5);
-  await expect(card.locator('option', { hasText: '24AC' })).toHaveCount(2);
+  // The IIcx's default configuration seats a display card; the dialog speaks
+  // in cards, never vROM filenames.  Replace it with the 24AC: remove the
+  // default card, then add the 24AC to the slot it left.
+  const seated = page.locator('.item-row[data-card]');
+  await expect(seated).toHaveCount(1, { timeout: 30_000 });
+  const slot = await seated.getAttribute('data-slot');
+  await seated.getByRole('button', { name: /^Remove/ }).click();
+  await expect(page.locator('.item-row[data-card]')).toHaveCount(0);
+  await page.getByTestId('cfg-add-card').click();
+  // One entry per real card: the 8•24, the 24AC and the 8•24 GC.  A card
+  // whose vROM was not uploaded boots its substitute ROM; none is a file.
+  const card = page.locator('#cfg-add-card');
+  await expect(card.locator('option')).toHaveCount(3);
+  await expect(card.locator('option', { hasText: '24AC' })).toHaveCount(1);
   await expect(card.locator('option', { hasText: '.vrom' })).toHaveCount(0);
-
-  // Pick the 24AC card and start.
   await card.selectOption('display_card_24ac');
-  const start = page.getByRole('button', { name: 'Start Machine' });
+  await page.locator('#cfg-add-card-slot').selectOption(slot ?? '');
+  await page.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(page.locator(`.item-row[data-slot="${slot}"]`)).toContainText('24AC');
+
+  // Start it.
+  const start = page.getByRole('button', { name: 'Start', exact: true });
   await expect(start).toBeEnabled();
   await start.click();
   await expect(page.locator('.toast .msg').filter({ hasText: 'Machine started' })).toBeVisible({

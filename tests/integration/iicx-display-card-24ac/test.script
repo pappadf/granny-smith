@@ -1,4 +1,4 @@
-# Integration test: IIcx + Apple Macintosh Display Card 24AC NuBus display card
+# Integration test: IIcx + Macintosh Display Card 24AC NuBus display card
 #
 # The card is a framebuffer + CLUT + VBL display card plus a hardware
 # QuickDraw fill/raster accelerator.  This test exercises both halves on the
@@ -113,7 +113,7 @@ assert machine.memory.peek.l(0xF9003000) == 0xA1B2C3D4 "oracle: engine fill patt
 # Object-model surface: the populated slot projects a card
 # node with framebuffer / declrom / clut / mode / engine children.
 assert machine.nubus.slot[9].number == 0x9 "object model: slot[9].number"
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "object model: card.name"
+assert machine.nubus.slot[9].card.name == "Macintosh Display Card 24AC" "object model: card.name"
 assert machine.nubus.slot[9].card.framebuffer.base == 0xF9000000 "object model: framebuffer.base"
 assert machine.nubus.slot[9].card.framebuffer.depth == 8 "object model: framebuffer.depth (8bpp power-on)"
 assert machine.nubus.slot[9].card.declrom.size == 0x20000 "object model: declrom.size (128 KB)"

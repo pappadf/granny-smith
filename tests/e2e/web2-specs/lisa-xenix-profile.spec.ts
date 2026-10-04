@@ -50,14 +50,14 @@ test('configure a Lisa 2 with the Xenix ProFile and boot', async ({ page }) => {
   await expect(model.locator('option[value="lisa"]')).toHaveCount(1, { timeout: 30_000 });
   await model.selectOption('lisa');
 
-  // Lisa's hard disk is the parallel-port ProFile, so the HD row is labelled
-  // "ProFile" (hd_bus='profile'), not "SCSI HD".
-  await expect(page.locator('label[for="cfg-hd"]')).toHaveText('ProFile');
+  // Lisa's hard disk is on the parallel-port ProFile bus, as the storage
+  // tree names it -- not SCSI.
+  await expect(page.locator('[data-bus="profile"]')).toContainText('ProFile port');
 
   // --- 3. Upload the installed Xenix ProFile image into the ProFile slot. ----
   // Selecting the "Upload image..." sentinel opens a file picker; after the
   // upload the slot resets to (none), so pick the now-listed image by name.
-  const hd = page.locator('#cfg-hd');
+  const hd = page.locator('#cfg-media-profile-0');
   const [hdChooser] = await Promise.all([
     page.waitForEvent('filechooser'),
     hd.selectOption('Upload image...'),
@@ -67,7 +67,7 @@ test('configure a Lisa 2 with the Xenix ProFile and boot', async ({ page }) => {
   await hd.selectOption(XENIX_HD_NAME);
 
   // --- 4. Start the machine. -------------------------------------------------
-  const start = page.getByRole('button', { name: 'Start Machine' });
+  const start = page.getByRole('button', { name: 'Start', exact: true });
   await expect(start).toBeEnabled();
   await start.click();
 
@@ -96,12 +96,12 @@ test('create a blank ProFile from the config dialog', async ({ page }) => {
   const model = page.locator('#cfg-model');
   await expect(model.locator('option[value="lisa"]')).toHaveCount(1, { timeout: 30_000 });
   await model.selectOption('lisa');
-  await expect(page.locator('label[for="cfg-hd"]')).toHaveText('ProFile');
+  await expect(page.locator('[data-bus="profile"]')).toContainText('ProFile port');
 
   // Selecting the "Create blank image..." sentinel on the ProFile row opens the
   // create dialog. It must be the ProFile creator, offering 5 MB / 10 MB — NOT
   // the SCSI drive catalog.
-  const hd = page.locator('#cfg-hd');
+  const hd = page.locator('#cfg-media-profile-0');
   await hd.selectOption('Create blank image...');
   const dlg = page.getByRole('dialog', { name: 'Create Blank ProFile' });
   await expect(dlg).toBeVisible();

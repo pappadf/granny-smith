@@ -155,13 +155,15 @@ assert $dsecs >= 1 "L17: Time global not advancing"
 # --- L19: the boot chime played through the AWACS output datapath ----------
 # The chime is the ROM's own PCM, drained through the real contract: codec
 # attenuation from the $40/hi/lo/$C0 command port ((7-vol)*2 at the PRAM
-# default volume 5), 86 half-buffers of 1024 frames at 44.1 kHz, refilled
+# volume, 3: the machine is built with its parameter RAM valid, holding the
+# ROM's own PRAMInit defaults -- a fresh, invalid store chimes at 5), 86
+# half-buffers of 1024 frames at 44.1 kHz, refilled
 # by polling.  The run is deterministic, so the capture matches a golden
 # WAV sample-exactly (REGEN=1 regenerates it).  Register truths after the
 # chime: the beep's stop sequence clears RUN and drops the shared rate
 # field back to the 22 050 Hz power-on default.
 check_sound("chime.wav", 88064)
-assert machine.sound.peak >= 8000 "L19: chime rendered silent (peak ${machine.sound.peak})"
+assert machine.sound.peak >= 4000 "L19: chime rendered silent (peak ${machine.sound.peak})"
 assert machine.sound.out_enabled == false "L19: sound-out RUN still set at the wall"
 assert machine.sound.sample_rate == 22050 "L19: post-chime rate != 22050"
 

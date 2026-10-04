@@ -42,6 +42,12 @@ typedef struct pram_defaults {
     const uint8_t *startmgr; // PRAMInitTbl for $76..$89 (20 bytes), or NULL
     uint8_t mmflags; // $8A: the value the ROM's own cold init writes
     uint8_t mmflags_booted; // bits a booted System leaves set in $8A, ORed in
+    // SysParam, logical $00..$13 (the original 20 bytes), as this ROM's own
+    // PRAMInit writes it into an invalid store.  Not applied at construction
+    // (a fresh store stays invalid, so the ROM runs its own init); the
+    // configuration's seeding step writes it whole, valid, around the
+    // records it chooses (config_seed.h).  NULL: no Mac OS SysParam.
+    const uint8_t *sysparam;
     // Any other byte the ROM's cold init writes outside SysParam and the
     // table above (the PCI ROMs' $B1), so a valid token loses nothing.
     const pram_byte_t *extra;

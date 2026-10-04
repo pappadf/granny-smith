@@ -114,7 +114,7 @@ static int issue_cdb6(scsi_t *scsi, const uint8_t cdb[6]) {
 }
 
 static scsi_t *attach_disc(void) {
-    scsi_t *scsi = scsi_init(NULL, NULL, NULL, NULL, 0);
+    scsi_t *scsi = scsi_init_named(NULL, NULL, NULL, "scsi");
     ASSERT_TRUE(scsi != NULL);
     image_t *img = image_open_readonly(g_path);
     ASSERT_TRUE(img != NULL);
@@ -160,12 +160,13 @@ static size_t read6(scsi_t *scsi, uint32_t lba, uint8_t tl, uint8_t first[4]) {
 
 // 64 blocks * 2048 = 131072 — exactly BUF_LIMIT, the largest read that
 // succeeded even before the fix.  Pins the boundary from below.
-// A machine's CD bay is built with its bus: the profile's drive, empty, at the
-// bay's id from power-on -- nothing seats it afterwards.
-TEST(cd_bay_is_built_with_the_bus) {
+// A configuration's CD-ROM drive is built with its bus: the machine's drive
+// model, empty, at its target from power-on -- nothing seats it afterwards.
+TEST(cd_drive_is_built_with_the_bus) {
     static const scsi_cd_drive_t drive = {
         .vendor = "SONY", .product = "CD-ROM CDU-8002", .revision = "1.8g", .block_size = CD_BLOCK};
-    scsi_t *scsi = scsi_init(NULL, NULL, NULL, &drive, 3);
+    scsi_t *scsi = scsi_init_named(NULL, NULL, NULL, "scsi");
+    scsi_add_cd_drive(scsi, 3, &drive);
     ASSERT_TRUE(scsi != NULL);
     ASSERT_TRUE(scsi_device_present(scsi, 3));
     ASSERT_TRUE(scsi->devices[3].type == scsi_dev_cdrom);
@@ -324,7 +325,7 @@ static int start_stop(scsi_t *scsi, uint8_t flags) {
 // A freshly inserted disc reports 0x28 "caddy inserted" -- not a hardcoded
 // constant, but the cause staged at the point of insertion.
 TEST(unit_attention_on_insert_reports_caddy_inserted) {
-    scsi_t *scsi = scsi_init(NULL, NULL, NULL, NULL, 0);
+    scsi_t *scsi = scsi_init_named(NULL, NULL, NULL, "scsi");
     ASSERT_TRUE(scsi != NULL);
     image_t *img = image_open_readonly(g_path);
     ASSERT_TRUE(img != NULL);
@@ -383,7 +384,7 @@ TEST(empty_bay_keeps_failing_not_just_once) {
 // ejecting a disc that was only just inserted fails, swallowed by the insert's
 // own still-pending attention.
 TEST(eject_is_exempt_from_pending_unit_attention) {
-    scsi_t *scsi = scsi_init(NULL, NULL, NULL, NULL, 0);
+    scsi_t *scsi = scsi_init_named(NULL, NULL, NULL, "scsi");
     ASSERT_TRUE(scsi != NULL);
     image_t *img = image_open_readonly(g_path);
     ASSERT_TRUE(img != NULL);
@@ -416,7 +417,7 @@ TEST(eject_is_exempt_from_pending_unit_attention) {
 // INQUIRY is exempt in both the ANSI text and Sony's, and must NOT clear the
 // condition -- the attention still has to be reported to the next real command.
 TEST(inquiry_does_not_clear_unit_attention) {
-    scsi_t *scsi = scsi_init(NULL, NULL, NULL, NULL, 0);
+    scsi_t *scsi = scsi_init_named(NULL, NULL, NULL, "scsi");
     ASSERT_TRUE(scsi != NULL);
     image_t *img = image_open_readonly(g_path);
     ASSERT_TRUE(img != NULL);
@@ -1133,7 +1134,7 @@ TEST(mode_select_with_no_block_length_leaves_the_size_alone) {
 
 int main(void) {
     make_disc();
-    RUN(cd_bay_is_built_with_the_bus);
+    RUN(cd_drive_is_built_with_the_bus);
     RUN(read6_at_buf_limit);
     RUN(read6_over_buf_limit_cdrom);
     RUN(read6_max_blocks_cdrom);

@@ -77,14 +77,16 @@ test('IIfx A/UX 3.0.1 free-runs under the real RAF scheduler to the login', asyn
   await expect(model.locator('option[value="iifx"]')).toHaveCount(1, { timeout: 30_000 });
   await model.selectOption('iifx');
 
-  await page.locator('#cfg-ram').selectOption('16 MB');
+  await page.locator('#cfg-opt-memory').selectOption('16 MB');
 
+  // The default card's 13" monitor at 640 x 480, 256 colors.
   const videoMode = page.locator('#cfg-video-mode');
   await expect(videoMode).toBeVisible({ timeout: 30_000 });
-  await videoMode.selectOption('13in_rgb_8bpp');
+  await page.locator('#cfg-monitor').selectOption('13in_rgb');
+  await videoMode.selectOption('640x480x8');
 
   // The pre-staged A/UX HD shows up in the dialog's OPFS scan.
-  const hd = page.locator('#cfg-hd');
+  const hd = page.locator('#cfg-media-scsi-0');
   await expect(hd.locator('option', { hasText: 'hd160-with-aux-301.img' })).toHaveCount(1, {
     timeout: 30_000,
   });
@@ -92,7 +94,7 @@ test('IIfx A/UX 3.0.1 free-runs under the real RAF scheduler to the login', asyn
 
   // Start. From here the machine free-runs under the real RAF loop — exactly
   // the path a user's browser takes. We touch nothing about scheduling.
-  await page.getByRole('button', { name: 'Start Machine' }).click();
+  await page.getByRole('button', { name: 'Start', exact: true }).click();
   await expect(page.locator('.toast .msg').filter({ hasText: 'Machine started' })).toBeVisible({
     timeout: 60_000,
   });

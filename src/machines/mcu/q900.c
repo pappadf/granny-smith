@@ -187,7 +187,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // Internal SCSI bus: carries the configured disks + CD through the
     // shared bus/target model; the internal 53C96 fronts it.
     machine_part_begin(cfg, cp, "scsi");
-    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, cp, CONFIG_IMAGES(cfg));
+    cfg->scsi = machine_scsi_bus_init(cfg, cp, "scsi");
     machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
     machine_part_begin(cfg, cp, "scsi96");
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
@@ -207,7 +207,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // TNT already does it this way (tnt.c: "scsi2"), and scsi.h documents the
     // second-bus case; the Q900 predates the helper and was never converted.
     machine_part_begin(cfg, cp, "scsi2");
-    st->scsi_ext = scsi_init_named(cfg->scheduler, cp, CONFIG_IMAGES(cfg), "scsi2");
+    st->scsi_ext = machine_scsi_bus_init(cfg, cp, "scsi2");
     machine_part(cfg, cp, "scsi2", part_save_scsi, st->scsi_ext);
     machine_part_begin(cfg, cp, "scsi96_ext");
     st->scsi96_ext = scsi_53c96_init(cfg->scheduler, 25000000, cp);
@@ -229,8 +229,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     asc_set_mix(st->asc, ASC_MIX_CH_A);
     asc_set_irq_handler(st->asc, q900_asc_irq, cfg);
     machine_part_begin(cfg, cp, "floppy");
-    st->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp, CONFIG_IMAGES(cfg));
+    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
     machine_part(cfg, cp, "floppy", part_save_floppy, st->floppy);
 
@@ -295,15 +294,41 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
 // Machine descriptor
 // ============================================================
 
-// Four banks of four equal SIMMs; geometrically valid shipping
-// totals with the 4 MB base configuration.
-static const uint32_t q900_ram_options_kb[] = {4096, 8192, 16384, 20480, 32768, 65536, 0};
+// Four banks of four equal SIMMs on the 4 MB base: every total Apple
+// documents for the Quadra 900, up to its 64 MB maximum.
+static const uint32_t q900_ram_options_kb[] = {4096,  8192,  12288, 16384, 20480, 24576, 28672,
+                                               32768, 36864, 40960, 49152, 53248, 65536, 0};
 
-static const scsi_bus_decl_t q900_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
-    // The external 53C96 chain (machine.scsi2): declared so a device can be
-    // placed on it (#185).  Nothing sits there by default.
-    {.object = "scsi2", .label = "External SCSI", .slots = mac_scsi_slots_ext01},
+// The towers' two 53C96 buses: the internal cable (the hard disk bay and the
+// lower front bay, where the CD-ROM drive goes) and the external chain
+// (machine.scsi2), one SCSI ID space between them.  The startup record names
+// a SCSI ID alone, so only the internal bus can hold the startup device.
+static const storage_bay_decl_t q900_internal_bays[] = {
+    {.unit = 0, .label = "Internal hard disk bay"},
+    {.unit = 3, .label = "Lower front bay"},
+    {0},
+};
+
+const storage_bus_decl_t q900_storage[] = {
+    {.id = "scsi",
+     .label = "Internal SCSI",
+     .kind = STORAGE_KIND_SCSI,
+     .media_bus = MEDIA_BUS_SCSI,
+     .units = MAC_SCSI_UNITS,
+     .reserved = MAC_SCSI_RESERVED,
+     .shares_units_with = "scsi2",
+     .bays = q900_internal_bays,
+     .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD,
+     .startup_ok = true},
+    {.id = "scsi2",
+     .label = "External SCSI",
+     .kind = STORAGE_KIND_SCSI,
+     .media_bus = MEDIA_BUS_SCSI2,
+     .units = MAC_SCSI_UNITS,
+     .reserved = MAC_SCSI_RESERVED,
+     .shares_units_with = "scsi",
+     .external_connector = true,
+     .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD},
     {0},
 };
 
@@ -316,11 +341,11 @@ static const scsi_bus_decl_t q900_scsi_buses[] = {
 // (Quadra 950 Developer Note).  The Q700 keeps its own two-socket table: its
 // note says "two NuBus slots and one processor-direct slot".
 const nubus_slot_decl_t q900_nubus_slots[] = {
-    {.slot = 0xA, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xB, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xA, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot A", .fill_order = 1},
+    {.slot = 0xB, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot B", .fill_order = 2},
+    {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot C", .fill_order = 3},
+    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot D", .fill_order = 4},
+    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot E", .fill_order = 5},
     {0},
 };
 
@@ -359,20 +384,21 @@ const hw_profile_t machine_q900 = {
     .mmu_kind = MMU_68040,
 
     .address_bits = 32,
-    .ram_default = 0x800000, // 8 MB
+    .ram_default = 0x1000000, // 16 MB (a typical well-equipped machine)
     .ram_max = 0x4000000, // 64 MB (16 SIMM slots, four 4-SIMM banks)
     .rom_size = 0x100000, // 1 MB (shared 420DBFF3 image)
 
     .ram_options = q900_ram_options_kb,
     .floppy_slots = mac_floppy_slots_1hd,
-    .scsi_buses = q900_scsi_buses,
-    .has_cdrom = true, // internal CD option shipped on the towers
-    .cdrom_id = 3,
+    .storage = q900_storage,
+    .default_storage = mac_default_storage_hd0_cd3,
+    .appletalk = true,
+    .builtin_video = &mcu_builtin_video_dafb,
     .cdrom_drive = &mac_cdrom_drive_applecd,
 
     .nubus_slots = q900_nubus_slots,
 
-    .pram = &pram_defaults_mac_ii,
+    .pram = &pram_defaults_iifx,
     .substrate = &mcu_substrate,
     .board = &q900_board,
 };

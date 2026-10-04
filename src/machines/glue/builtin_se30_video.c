@@ -261,7 +261,7 @@ static display_t *card_display(nubus_card_t *card) {
 
 static const char *card_name(const nubus_card_t *card) {
     (void)card;
-    return "Macintosh SE/30 Built-in Video";
+    return "Built-in video";
 }
 
 // Thin per-kind init wrappers — the sibling pair shares one HLE model.
@@ -275,7 +275,7 @@ static int card_init_generic(nubus_card_t *card, config_t *cfg, checkpoint_t *cp
 
 static const char *card_name_generic(const nubus_card_t *card) {
     (void)card;
-    return "Macintosh SE/30 Built-in Video (generic video ROM)";
+    return "Built-in video (substitute ROM)";
 }
 
 // === Checkpoint ==============================================================
@@ -355,7 +355,7 @@ static const nubus_card_ops_t builtin_se30_video_generic_ops = {
 static const int builtin_se30_depths[] = {1, 0};
 static const nubus_monitor_t builtin_se30_monitors[] = {
     {.id = "se30_internal",
-     .name = "Built-in 9\" CRT",
+     .monitor = "compact_9in",
      .width = 512,
      .height = 342,
      .depths = builtin_se30_depths,
@@ -367,11 +367,13 @@ static const nubus_monitor_t builtin_se30_monitors[] = {
 
 const nubus_card_kind_t builtin_se30_video_kind = {
     .id = "builtin_se30_video",
-    .display_name = "Macintosh SE/30 Built-in Video",
+    .display_name = "Built-in video",
     .attach = CARD_ATTACH_BUILTIN, // motherboard circuitry — never socketed
     // The SE/30 carries no video declaration ROM in main ROM; it needs a
-    // separate onboard-video vROM file (the dialog's VROM picker drives this).
+    // separate onboard-video vROM file, and boots the emulator's substitute
+    // without one.
     .requires_vrom = true,
+    .substitute = "se30",
     .monitors = builtin_se30_monitors,
     .ops = &builtin_se30_video_ops,
 };
@@ -382,9 +384,10 @@ const nubus_card_kind_t builtin_se30_video_kind = {
 // real kind stays selectable via video_card= when a dump is offered.
 const nubus_card_kind_t builtin_se30_video_generic_kind = {
     .id = "se30",
-    .display_name = "Macintosh SE/30 Built-in Video (generic video ROM)",
+    .display_name = "Built-in video",
     .attach = CARD_ATTACH_BUILTIN,
     .requires_vrom = false,
+    .substitute_for = "builtin_se30_video",
     .monitors = builtin_se30_monitors,
     .ops = &builtin_se30_video_generic_ops,
 };

@@ -1078,12 +1078,12 @@ static display_t *card_display(nubus_card_t *card) {
 
 static const char *card_name(const nubus_card_t *card) {
     (void)card;
-    return "Apple Macintosh Display Card 24AC";
+    return "Macintosh Display Card 24AC";
 }
 
 static const char *card_name_generic(const nubus_card_t *card) {
     (void)card;
-    return "Apple Macintosh Display Card 24AC (generic video ROM)";
+    return "Macintosh Display Card 24AC (substitute ROM)";
 }
 
 // Thin per-kind init wrappers — the sibling pair shares one HLE model
@@ -1194,21 +1194,21 @@ static const nubus_card_ops_t display_card_24ac_generic_ops = {
 static const int display_card_24ac_depths[] = {1, 4, 8, 16, 32, 0};
 static const nubus_monitor_t display_card_24ac_monitors[] = {
     {.id = "rgb_640x480",
-     .name = "640 × 480 (67 Hz)",
+     .monitor = "13in_rgb",
      .width = 640,
      .height = 480,
      .depths = display_card_24ac_depths,
      .sense_code = 6,
      .srsrc_sister = 0x6B},
     {.id = "rgb_832x624",
-     .name = "832 × 624 (75 Hz)",
+     .monitor = "16in_rgb",
      .width = 832,
      .height = 624,
      .depths = display_card_24ac_depths,
      .sense_code = 6,
      .srsrc_sister = 0x6C},
     {.id = "rgb_1152x870",
-     .name = "1152 × 870 (75 Hz)",
+     .monitor = "21in_rgb",
      .width = 1152,
      .height = 870,
      .depths = display_card_24ac_depths,
@@ -1302,9 +1302,10 @@ static void display_card_24ac_attach_objects(nubus_card_t *card, struct object *
 
 const nubus_card_kind_t display_card_24ac_kind = {
     .id = "display_card_24ac",
-    .display_name = "Apple Macintosh Display Card 24AC",
+    .display_name = "Macintosh Display Card 24AC",
     .attach = CARD_ATTACH_NUBUS,
     .requires_vrom = true,
+    .substitute = "24ac",
     .monitors = display_card_24ac_monitors,
     .ops = &display_card_24ac_ops,
     .attach_objects = display_card_24ac_attach_objects,
@@ -1315,9 +1316,10 @@ const nubus_card_kind_t display_card_24ac_kind = {
 // ROM ships identity gamma, so the tables genuinely coincide.
 const nubus_card_kind_t display_card_24ac_generic_kind = {
     .id = "24ac",
-    .display_name = "Apple Macintosh Display Card 24AC (generic video ROM)",
+    .display_name = "Macintosh Display Card 24AC",
     .attach = CARD_ATTACH_NUBUS,
     .requires_vrom = false,
+    .substitute_for = "display_card_24ac",
     .monitors = display_card_24ac_monitors,
     .ops = &display_card_24ac_generic_ops,
     .attach_objects = display_card_24ac_attach_objects,

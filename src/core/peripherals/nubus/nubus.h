@@ -50,6 +50,16 @@ typedef struct nubus_slot_decl {
     // its frame buffer is the bottom of RAM, which the card takes when it is
     // built, before its checkpoint part is read.
     bool fb_in_ram;
+    // SOCKET: Apple's name for it on this machine ("NuBus slot 4" on a IIci,
+    // "NuBus slot C" on a Quadra), what catalog.profile shows; the slot ID
+    // becomes the detail.
+    const char *label;
+    // SOCKET: Apple's recommended order for the slot an added card goes in
+    // (lowest first); 0 = after every slot that has one, in table order.
+    int fill_order;
+    // SOCKET: another slot ($9..$E) that cannot be used while this one is
+    // (a shared opening or connector); 0 = none.
+    int excludes;
 } nubus_slot_decl_t;
 
 // True iff card kind `kind` may be seated in slot `s`.  Compatibility is
@@ -166,6 +176,10 @@ const nubus_card_kind_t *nubus_slot_kind(nubus_bus_t *bus, int slot);
 // canvas.  v1: first slot in declared order whose ops->display() returns
 // non-NULL.
 display_t *nubus_primary_display(nubus_bus_t *bus);
+
+// The display of the card the configuration connected the monitor to (its
+// slot entry's `connected`), or NULL when no card has it.
+display_t *nubus_connected_display(nubus_bus_t *bus);
 
 // The card behind nubus_primary_display() (same selection rule), or NULL.
 // Used by the object model to wire `machine.screen.source` to the active

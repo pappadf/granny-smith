@@ -42,13 +42,10 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
           };
         return null;
       }
-      if (path === 'catalog.profile')
-        return {
-          name: 'Macintosh Plus',
-          ram_options: [4096],
-          ram_default: 4096,
-          floppy_slots: [{ label: 'Internal Floppy', kind: 'standard' }],
-        };
+      if (path === 'catalog.profile') {
+        const { tree } = await import('../helpers/configTree');
+        return tree('plus');
+      }
       return null;
     },
   };
@@ -66,16 +63,16 @@ beforeEach(() => {
 
 async function hdSelect(container: HTMLElement): Promise<HTMLSelectElement> {
   await waitFor(() => {
-    const sel = container.querySelector('#cfg-hd') as HTMLSelectElement | null;
+    const sel = container.querySelector('#cfg-media-scsi-0') as HTMLSelectElement | null;
     if (!sel || !Array.from(sel.options).some((o) => o.value === 'hd1.img'))
       throw new Error('not ready');
   });
-  return container.querySelector('#cfg-hd') as HTMLSelectElement;
+  return container.querySelector('#cfg-media-scsi-0') as HTMLSelectElement;
 }
 
-// The form re-renders around the rescan an upload triggers: query afresh.
+// The Plus's default hard disk, SCSI ID 0.  The form re-renders around the rescan an upload triggers: query afresh.
 const hdValue = (container: HTMLElement) =>
-  (container.querySelector('#cfg-hd') as HTMLSelectElement | null)?.value;
+  (container.querySelector('#cfg-media-scsi-0') as HTMLSelectElement | null)?.value;
 
 function choose(sel: HTMLSelectElement, value: string) {
   sel.value = value;

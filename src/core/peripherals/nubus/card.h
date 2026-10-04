@@ -116,8 +116,8 @@ struct nubus_card {
 // $49/$4A so `_SlotManager $06 sReadFHeader` finds the right entry
 // at boot — see tests/integration/iicx-video-modes/test.script.
 typedef struct nubus_monitor {
-    const char *id; // "13in_rgb"
-    const char *name; // "13\" AppleColor"
+    const char *id; // "13in_rgb" -- the card's own token, what a mode id names
+    const char *monitor; // the shared catalogue id (monitor_catalog.h)
     uint32_t width; // pixels
     uint32_t height; // pixels
     const int *depths; // 0-terminated array of supported bpp values
@@ -160,7 +160,13 @@ typedef struct nubus_card_kind {
     const char *id; // "mdc_8_24"
     const char *display_name; // "Apple Macintosh Display Card 8•6 / 8•24"
     card_attach_t attach; // physical attachment; drives socket matching
-    bool requires_vrom; // dialog shows VROM picker iff true
+    bool requires_vrom; // needs its real declaration ROM (a .vrom file)
+    // The kind that stands in for this one when its declaration ROM is not
+    // offered: the same card with the emulator's generated ROM (§ "card ROM
+    // substitution").  NULL when there is none.  The stand-in itself sets
+    // `substitute_for`, and is not offered as a card of its own.
+    const char *substitute;
+    const char *substitute_for;
     const nubus_monitor_t *monitors; // sentinel-terminated; NULL for non-display cards
     // The card's vtable.  The bus controller allocates the nubus_card_t,
     // fills in ops / bus / slot, and calls ops->init once per populated slot.

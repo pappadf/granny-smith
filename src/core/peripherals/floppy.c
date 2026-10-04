@@ -857,6 +857,10 @@ static void floppy_validate_restored_state(floppy_t *floppy) {
     // second masks with & 0x0F.  Neither can index out of range.
 }
 
+int floppy_drive_count(const floppy_t *floppy) {
+    return floppy ? floppy->n_drives : 0;
+}
+
 // Initializes a floppy controller of the given type and maps it to memory
 floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, int n_drives, checkpoint_t *checkpoint,
                       const image_list_t *images) {

@@ -34,7 +34,9 @@
 
 // Eight DIMM slots in four interleaved bank pairs; 512 MB is the ROM's
 // decode ceiling (see ans500.c).  48 MB is this model's shipping default.
-static const uint32_t ans700_ram_options_kb[] = {16384, 32768, 49152, 65536, 131072, 262144, 524288, 0};
+static const uint32_t ans700_ram_options_kb[] = {
+    16384,  32768,  49152,  65536,  81920,  98304,  114688, 131072, 147456, 163840, 180224, 196608, 212992, 229376,
+    245760, 262144, 278528, 294912, 311296, 327680, 344064, 360448, 393216, 409600, 425984, 458752, 524288, 0};
 
 // Bus 1 carries the same front bays 4-6 as the 500, PLUS the two rear bays
 // this model adds -- which is how Apple's count works out: "The buses
@@ -42,18 +44,27 @@ static const uint32_t ans700_ram_options_kb[] = {16384, 32768, 49152, 65536, 131
 // bus 0 (the CD bay plus bays 1-3), five on bus 1 (front 4-6 plus the two
 // rear).  Until this the table was byte-identical to the 500's while the
 // comment above described a topology it did not express.
-static const struct scsi_slot ans700_scsi_slots_fw1[] = {
-    {.label = "Bay 4 (fast/wide 1)", .id = 4},
-    {.label = "Bay 5 (fast/wide 1)", .id = 5},
-    {.label = "Bay 6 (fast/wide 1)", .id = 6},
-    {.label = "Rear bay 1 (fast/wide 1)", .id = 0},
-    {.label = "Rear bay 2 (fast/wide 1)", .id = 1},
+static const storage_bay_decl_t ans700_bays_bus1[] = {
+    {.unit = 4, .label = "Front bay 4"},
+    {.unit = 5, .label = "Front bay 5"},
+    {.unit = 6, .label = "Front bay 6"},
+    {.unit = 0, .label = "Rear bracket, top"},
+    {.unit = 1, .label = "Rear bracket, bottom"},
     {0},
 };
 
-static const scsi_bus_decl_t ans700_scsi_buses[] = {
-    {.object = "scsi", .label = "Front backplane (fast/wide 0)", .slots = ans_scsi_slots_fw0},
-    {.object = "scsi2", .label = "Front + rear bays (fast/wide 1)", .slots = ans700_scsi_slots_fw1},
+static const storage_bus_decl_t ans700_storage[] = {
+    ANS_STORAGE_BUS0,
+    {.id = "scsi2",
+      .label = "Internal SCSI bus 1",
+      .detail = ANS_SCSI_DETAIL,
+      .kind = STORAGE_KIND_SCSI,
+      .wide = true,
+      .media_bus = MEDIA_BUS_SCSI2,
+      .units = 0x73u, // front bays 4-6 and the two rear brackets
+     .reserved = 0x80u,
+      .bays = ans700_bays_bus1,
+      .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD},
     {0},
 };
 
@@ -68,7 +79,6 @@ static const tnt_board_desc_t ans700_board = {
     .has_gbus = true,
     .has_parity = true,
     .l2_kb = 1024u, // 1 MB cache DIMM
-    .two_supplies = true, // hot-swap redundant supplies: TwoSuppliesH reads high
 };
 
 const hw_profile_t machine_ans700 = {
@@ -80,15 +90,17 @@ const hw_profile_t machine_ans700 = {
     .mmu_kind = MMU_PPC_604,
 
     .address_bits = 32,
-    .ram_default = 0x3000000, // 48 MB parity (the shipping configuration)
+    .ram_default = 0x4000000, // 64 MB (a typical well-equipped machine)
     .ram_max = 0x20000000, // 512 MB — the ROM's decode ceiling
     .rom_size = 0x400000, // 4 MB ($962F6C13 production / $49B2BE8F prototype)
 
     .ram_options = ans700_ram_options_kb,
-    .scsi_buses = ans700_scsi_buses,
     .floppy_slots = mac_floppy_slots_1hd,
-    .has_cdrom = true,
-    .cdrom_id = 0,
+    .storage = ans700_storage,
+    .default_storage = ans_default_storage,
+    .appletalk = true,
+    .options = ans700_options,
+    .builtin_video = &ans_builtin_video,
     .cdrom_drive = &mac_cdrom_drive_applecd,
 
     .pci_slots = ans_pci_slots,

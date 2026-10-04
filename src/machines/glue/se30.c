@@ -416,9 +416,18 @@ static const mac030_glue_board_t se30_board = {
 // SE/30 configuration-dialog metadata.
 static const uint32_t se30_ram_options_kb[] = {1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 0};
 
-static const scsi_bus_decl_t se30_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
+// The SE/30 shipped with its external floppy port empty, but a second drive
+// on it is what a two-drive SE/30 has always been here; keep it, removable.
+static const struct floppy_slot se30_floppy_slots[] = {
+    {.label = "Internal floppy drive", .kind = FLOPPY_HD},
+    {.label = "External floppy drive", .kind = FLOPPY_HD, .optional = true},
     {0},
+};
+
+// Built-in video: the slot-$E pseudo-card's monitor, the built-in 9" screen.
+static const builtin_video_desc_t se30_builtin_video = {
+    .detail = "SE/30 video, slot $E",
+    .slot_monitors = true,
 };
 
 const hw_profile_t machine_se30 = {
@@ -438,11 +447,12 @@ const hw_profile_t machine_se30 = {
 
     // Configuration-dialog shape
     .ram_options = se30_ram_options_kb,
-    .floppy_slots = mac_floppy_slots_2hd,
-    .scsi_buses = se30_scsi_buses,
-    .has_cdrom = true,
-    .cdrom_id = 3,
+    .floppy_slots = se30_floppy_slots,
+    .storage = mac_storage_scsi_hd_bay,
+    .default_storage = mac_default_storage_hd0_cd3,
     .cdrom_drive = &mac_cdrom_drive_applecd,
+    .appletalk = true,
+    .builtin_video = &se30_builtin_video,
 
     // Built-in slot-$E video card.  Exposed in the profile so the config
     // dialog reads the VROM requirement from the card (it needs the SE/30

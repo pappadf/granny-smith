@@ -23,10 +23,10 @@ assert catalog.vroms.identify("../../data/roms/mdc-8-24-revb-d1629664.vrom") == 
 # SE/30 onboard video (byteLanes $0F, 4-lane) → builtin card, CRC $4F71FF1A.
 assert catalog.vroms.identify("../../data/roms/builtin-se30-video-4f71ff1a.vrom") == "{\"recognised\":true,\"card_id\":\"builtin_se30_video\",\"compatible\":[\"builtin_se30_video\"],\"size\":32768,\"crc\":\"0x4f71ff1a\"}" "SE/30 onboard-video vROM identity"
 
-# Apple Macintosh Display Card 24AC → "display_card_24ac", CRC $D8DAAB87.
+# Macintosh Display Card 24AC → "display_card_24ac", CRC $D8DAAB87.
 assert catalog.vroms.identify("../../data/roms/display-card-24ac-d8daab87.vrom") == "{\"recognised\":true,\"card_id\":\"display_card_24ac\",\"compatible\":[\"display_card_24ac\"],\"size\":32768,\"crc\":\"0xd8daab87\"}" "24AC vROM identity"
 
-# Apple Macintosh Display Card 8•24 GC ("Dolphin") → "824gc".  Three genuine
+# Macintosh Display Card 8•24 GC ("Dolphin") → "824gc".  Three genuine
 # declaration ROMs (byteLanes $E1); v1.1 is a 64 KB chip, v1.0 / alpha 32 KB.
 assert catalog.vroms.identify("../../data/roms/824gc-v1.1-revb-d722b053.vrom") == "{\"recognised\":true,\"card_id\":\"824gc\",\"compatible\":[\"824gc\"],\"size\":65536,\"crc\":\"0xd722b053\"}" "8•24 GC v1.1 vROM identity"
 assert catalog.vroms.identify("../../data/roms/824gc-v1.0-reva-9e9857e8.vrom") == "{\"recognised\":true,\"card_id\":\"824gc\",\"compatible\":[\"824gc\"],\"size\":32768,\"crc\":\"0x9e9857e8\"}" "8•24 GC v1.0 vROM identity"

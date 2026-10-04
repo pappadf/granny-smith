@@ -90,7 +90,7 @@ image_t *images_find(const image_list_t *images, const char *name) {
     return NULL;
 }
 
-// scsi_init flags a checkpoint whose bus lacks the CD bay's drive.
+// A checkpoint error, counted (none is expected).
 static int g_cp_errors;
 void checkpoint_set_error(checkpoint_t *checkpoint) {
     (void)checkpoint;
@@ -206,7 +206,7 @@ struct object *machine_object(void) {
 // eject is refused, default_block_size is what a bus reset restores to, and
 // loopback is whether the diagnostic card is fitted.
 TEST(test_device_state_survives_a_round_trip) {
-    scsi_t *a = scsi_init(NULL, NULL, NULL, NULL, 0);
+    scsi_t *a = scsi_init_named(NULL, NULL, NULL, "scsi");
     ASSERT_TRUE(a != NULL);
     scsi_add_device(a, 3, "SONY", "CD-ROM CDU-8002", "1.8g", NULL, scsi_dev_cdrom, 2048, true);
 
@@ -227,7 +227,7 @@ TEST(test_device_state_survives_a_round_trip) {
     scsi_checkpoint(a, (checkpoint_t *)1);
     cp_rewind();
 
-    scsi_t *b = scsi_init(NULL, (checkpoint_t *)1, NULL, NULL, 0);
+    scsi_t *b = scsi_init_named(NULL, (checkpoint_t *)1, NULL, "scsi");
     ASSERT_TRUE(b != NULL);
 
     ASSERT_EQ_INT(b->devices[3].sense.key, SENSE_UNIT_ATTENTION);
@@ -254,7 +254,7 @@ TEST(test_device_state_survives_a_round_trip) {
 // has to come back in it, or the restored machine starts accepting payload the
 // target never asked for.
 TEST(test_a_pending_data_out_settle_survives_a_round_trip) {
-    scsi_t *a = scsi_init(NULL, NULL, NULL, NULL, 0);
+    scsi_t *a = scsi_init_named(NULL, NULL, NULL, "scsi");
     ASSERT_TRUE(scsi_5380_attach(a, NULL) != NULL);
     a->bus.phase = scsi_data_out; // phase lines valid...
     a->bus.data_out_pending = true;
@@ -265,7 +265,7 @@ TEST(test_a_pending_data_out_settle_survives_a_round_trip) {
     scsi_checkpoint(a, (checkpoint_t *)1);
     cp_rewind();
 
-    scsi_t *b = scsi_init(NULL, (checkpoint_t *)1, NULL, NULL, 0);
+    scsi_t *b = scsi_init_named(NULL, (checkpoint_t *)1, NULL, "scsi");
     ASSERT_TRUE(scsi_5380_attach(b, (checkpoint_t *)1) != NULL);
 
     ASSERT_EQ_INT((int)b->bus.phase, (int)scsi_data_out);
@@ -281,7 +281,7 @@ TEST(test_a_pending_data_out_settle_survives_a_round_trip) {
 // restores a chip that says it is driving no interrupt and has no transfer in
 // flight, whatever it was actually doing.
 TEST(test_5380_state_survives_a_round_trip) {
-    scsi_t *a = scsi_init(NULL, NULL, NULL, NULL, 0);
+    scsi_t *a = scsi_init_named(NULL, NULL, NULL, "scsi");
     ASSERT_TRUE(scsi_5380_attach(a, NULL) != NULL);
     a->chip5380->reg.mr = MR_DMA;
     a->chip5380->reg.icr = ICR_ACK;
@@ -293,7 +293,7 @@ TEST(test_5380_state_survives_a_round_trip) {
     scsi_checkpoint(a, (checkpoint_t *)1);
     cp_rewind();
 
-    scsi_t *b = scsi_init(NULL, (checkpoint_t *)1, NULL, NULL, 0);
+    scsi_t *b = scsi_init_named(NULL, (checkpoint_t *)1, NULL, "scsi");
     ASSERT_TRUE(scsi_5380_attach(b, (checkpoint_t *)1) != NULL);
 
     ASSERT_EQ_INT(b->chip5380->reg.mr, MR_DMA);
@@ -315,7 +315,7 @@ TEST(test_5380_state_survives_a_round_trip) {
 // A bus with no 5380 -- a Quadra, a PowerMac -- writes no chip block, and the
 // restore must not go looking for one.
 TEST(test_busless_round_trip_is_symmetric) {
-    scsi_t *a = scsi_init(NULL, NULL, NULL, NULL, 0);
+    scsi_t *a = scsi_init_named(NULL, NULL, NULL, "scsi");
     scsi_add_device(a, 0, "GS", "SCRATCH", "1.0", NULL, scsi_dev_hd, 512, false);
     a->devices[0].sense.key = SENSE_NOT_READY;
     a->devices[0].sense.asc = ASC_SONY_CADDY_NOT_INSERTED;
@@ -325,7 +325,7 @@ TEST(test_busless_round_trip_is_symmetric) {
     size_t written = s_cp_w;
     cp_rewind();
 
-    scsi_t *b = scsi_init(NULL, (checkpoint_t *)1, NULL, NULL, 0);
+    scsi_t *b = scsi_init_named(NULL, (checkpoint_t *)1, NULL, "scsi");
     ASSERT_EQ_INT(b->devices[0].sense.key, SENSE_NOT_READY);
     ASSERT_EQ_INT(b->devices[0].sense.asc, ASC_SONY_CADDY_NOT_INSERTED);
     ASSERT_TRUE(b->chip5380 == NULL);
@@ -364,7 +364,7 @@ static void dummy_irq(void *ctx, bool level) {
 }
 
 TEST(test_53c96_writes_no_host_pointers) {
-    scsi_t *bus = scsi_init(NULL, NULL, NULL, NULL, 0);
+    scsi_t *bus = scsi_init_named(NULL, NULL, NULL, "scsi");
     scsi_53c96_t *c = scsi_53c96_init(NULL, 25000000, NULL);
     ASSERT_TRUE(c != NULL);
     scsi_53c96_attach_bus(c, bus);
@@ -421,7 +421,7 @@ static void dummy_seltmo(void *ctx) {
 }
 
 TEST(test_armed_select_timeout_does_not_cross_a_checkpoint) {
-    scsi_t *a = scsi_init(NULL, NULL, NULL, NULL, 0);
+    scsi_t *a = scsi_init_named(NULL, NULL, NULL, "scsi");
     ASSERT_TRUE(a != NULL);
     // Set the fields directly: with no scheduler under the suite the arming
     // helper reports immediately rather than leaving anything armed, which is
@@ -437,7 +437,7 @@ TEST(test_armed_select_timeout_does_not_cross_a_checkpoint) {
     ASSERT_TRUE(!stream_contains_pointer(a));
 
     cp_rewind();
-    scsi_t *b = scsi_init(NULL, (checkpoint_t *)1, NULL, NULL, 0);
+    scsi_t *b = scsi_init_named(NULL, (checkpoint_t *)1, NULL, "scsi");
     ASSERT_TRUE(b->seltmo_fn == NULL);
     ASSERT_TRUE(b->seltmo_ctx == NULL);
 
@@ -445,39 +445,41 @@ TEST(test_armed_select_timeout_does_not_cross_a_checkpoint) {
     scsi_delete(a);
 }
 
-// A machine with a CD bay restores a bus that has the bay's drive; a
-// checkpoint whose bus lacks it is an error, not a blank drive made up.
-TEST(test_a_restore_without_the_cd_bay_drive_is_an_error) {
+// A restore brings the bus's CD-ROM drives back from the bus's own block:
+// nothing re-seats them, and a bus saved without one restores without one.
+TEST(test_a_restore_brings_the_cd_drives_back) {
     static const scsi_cd_drive_t drive = {
         .vendor = "SONY", .product = "CD-ROM CDU-8002", .revision = "1.8g", .block_size = 2048};
-    scsi_t *a = scsi_init(NULL, NULL, NULL, &drive, 3);
+    scsi_t *a = scsi_init_named(NULL, NULL, NULL, "scsi");
     ASSERT_TRUE(a != NULL);
+    scsi_add_cd_drive(a, 3, &drive);
     cp_reset();
     scsi_checkpoint(a, (checkpoint_t *)1);
     cp_rewind();
     g_cp_errors = 0;
-    scsi_t *b = scsi_init(NULL, (checkpoint_t *)1, NULL, &drive, 3);
+    scsi_t *b = scsi_init_named(NULL, (checkpoint_t *)1, NULL, "scsi");
     ASSERT_TRUE(b != NULL);
     ASSERT_EQ_INT(g_cp_errors, 0);
     ASSERT_TRUE(b->devices[3].type == scsi_dev_cdrom);
     scsi_delete(b);
     scsi_delete(a);
 
-    scsi_t *c = scsi_init(NULL, NULL, NULL, NULL, 0); // a bus with no CD drive
+    scsi_t *c = scsi_init_named(NULL, NULL, NULL, "scsi"); // a bus with no CD drive
     ASSERT_TRUE(c != NULL);
     cp_reset();
     scsi_checkpoint(c, (checkpoint_t *)1);
     cp_rewind();
-    scsi_t *d = scsi_init(NULL, (checkpoint_t *)1, NULL, &drive, 3);
+    scsi_t *d = scsi_init_named(NULL, (checkpoint_t *)1, NULL, "scsi");
     ASSERT_TRUE(d != NULL);
-    ASSERT_EQ_INT(g_cp_errors, 1);
+    ASSERT_EQ_INT(g_cp_errors, 0);
+    ASSERT_TRUE(d->devices[3].type != scsi_dev_cdrom);
     scsi_delete(d);
     scsi_delete(c);
 }
 
 int main(void) {
     RUN(test_device_state_survives_a_round_trip);
-    RUN(test_a_restore_without_the_cd_bay_drive_is_an_error);
+    RUN(test_a_restore_brings_the_cd_drives_back);
     RUN(test_a_pending_data_out_settle_survives_a_round_trip);
     RUN(test_5380_state_survives_a_round_trip);
     RUN(test_busless_round_trip_is_symmetric);

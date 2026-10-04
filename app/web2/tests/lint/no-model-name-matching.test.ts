@@ -71,3 +71,31 @@ describe('frontend never matches on the model name', () => {
     });
   }
 });
+
+// The configuration dialog and the code that boots and attaches media are
+// renderers over the machine-description tree (catalog.profile): which buses,
+// slots and cards a machine has is the tree's to say, so none of them may
+// branch on a bus name.  (A bus *kind* the tree reports -- CreateImageDialog's
+// ProFile image format -- is data, and lives outside these files.)
+const RENDERERS = [
+  'components/display/WelcomeConfigSlide.svelte',
+  'lib/machineConfig.ts',
+  'bus/boot.ts',
+  'bus/media.ts',
+  'bus/urlMedia.ts',
+];
+const BUS_NAME =
+  /[!=]==?\s*'(nubus|pci|scsi\d*|ata\d*|profile|floppy)'|'(nubus|pci|scsi\d*|ata\d*|profile|floppy)'\s*[!=]==?/;
+
+describe('the configuration renderers never branch on a bus name', () => {
+  for (const rel of RENDERERS) {
+    it(rel, () => {
+      const offenders = readFileSync(join(SRC, rel), 'utf8')
+        .split('\n')
+        .map((line, i) => [line, i + 1] as const)
+        .filter(([line]) => BUS_NAME.test(line))
+        .map(([line, n]) => `${rel}:${n}: ${line.trim()}`);
+      expect(offenders, `bus-name branching found:\n${offenders.join('\n')}`).toEqual([]);
+    });
+  }
+});

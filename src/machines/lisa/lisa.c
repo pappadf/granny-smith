@@ -1235,15 +1235,71 @@ static const uint32_t lisa_ram_options_kb[] = {512, 1024, 2048, 0};
 // branch has never run under a test.  Declaring 400K was the stronger claim
 // to have wrong -- it understated a drive the model demonstrably serves.
 static const struct floppy_slot lisa_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_800K},
+    {.label = "Internal floppy drive", .kind = FLOPPY_800K},
     {0},
 };
 
-// The Lisa hard disk is parallel-port ProFile/Widget, NOT SCSI, so the
-// profile declares no SCSI bus at all (it used to declare an empty
-// "machine.scsi" that did not resolve): the parallel disk is its own
-// device (lisa_profile.c), advertised via `.hd_bus = HD_BUS_PROFILE`, and its
-// bay is derived from that (profile_hd_bays -> "profile").
+// The Lisa hard disk is parallel-port ProFile/Widget, NOT SCSI: one unit on
+// the parallel port, the device lisa_profile.c models.  On the Lisa 2 it is
+// the external ProFile; the Macintosh XL carries its disk inside.
+static const storage_bay_decl_t macxl_profile_bay[] = {
+    {.unit = 0, .label = "Internal hard disk bay"},
+    {0},
+};
+
+#define LISA_PROFILE_PORT(bays_, external_)                                                                            \
+    {.id = "profile",                                                                                                  \
+     .label = "ProFile port",                                                                                          \
+     .kind = STORAGE_KIND_PROFILE,                                                                                     \
+     .media_bus = MEDIA_BUS_PROFILE,                                                                                   \
+     .units = 0x1u,                                                                                                    \
+     .external_connector = (external_),                                                                                \
+     .bays = (bays_),                                                                                                  \
+     .accepts = STORAGE_DEV_HD,                                                                                        \
+     .startup_ok = true}
+
+static const storage_bus_decl_t lisa_storage[] = {
+    LISA_PROFILE_PORT(NULL, true),
+    {0},
+};
+
+static const storage_bus_decl_t macxl_storage[] = {
+    LISA_PROFILE_PORT(macxl_profile_bay, false),
+    {0},
+};
+
+static const storage_device_decl_t lisa_default_storage[] = {
+    {.bus = "profile", .unit = 0, .type = STORAGE_DEV_HD},
+    {0},
+};
+
+// The built-in 12" screen: one monitor, nothing to choose.
+static bool lisa_monitor_at(size_t i, const char **id, const char **monitor) {
+    if (i != 0)
+        return false;
+    *id = *monitor = "lisa_12in";
+    return true;
+}
+
+static const builtin_video_desc_t lisa_builtin_video = {
+    .detail = "frame buffer in main RAM",
+    .monitor_at = lisa_monitor_at,
+    .default_monitor = "lisa_12in",
+};
+
+// The seeding step: with the startup device on the ProFile, parameter memory
+// says BootVol = 2 (the parallel-port ProFile) with the checksum left NOT
+// verifying -- a Lisa whose battery was just replaced.  The boot ROM then
+// goes to the ProFile instead of stopping at its startup-device screen, and
+// the OS restores its device table from the boot volume's own snapshot.
+// "No default" leaves the factory content: BootVol = the floppy.
+static void lisa_seed(config_t *cfg) {
+    lisa_state_t *ls = lisa_state(cfg);
+    const machine_startup_t *st = &cfg->build_opts.startup;
+    if (!ls || !ls->fdc || !cfg->build_opts.storage_given || st->none || strcmp(st->bus, "profile") != 0)
+        return;
+    lisa_fdc_pram_init(ls->fdc, 2, false, false);
+}
 
 // A power cycle's power-on-only half (machine_profile.h): the MMU's START
 // latch comes back set, which is how the 68000's vector fetch reaches the boot
@@ -1261,6 +1317,7 @@ static const machine_substrate_t lisa_substrate = {
     .init = lisa_init,
     .power_on = lisa_power_on,
     .teardown = lisa_teardown,
+    .seed = lisa_seed,
     .trigger_vbl = lisa_trigger_vbl,
     .display = lisa_display,
     .fd_insert = lisa_fd_insert,
@@ -1279,7 +1336,7 @@ static const machine_substrate_t lisa_substrate = {
 };
 
 const hw_profile_t machine_lisa = {
-    .name = "Apple Lisa 2",
+    .name = "Lisa 2",
     .id = "lisa",
 
     // 68000 at 5.09375 MHz (20.375 MHz crystal / 4).
@@ -1294,10 +1351,9 @@ const hw_profile_t machine_lisa = {
 
     .ram_options = lisa_ram_options_kb,
     .floppy_slots = lisa_floppy_slots,
-    .scsi_buses = NULL, // no SCSI: the ProFile is on the parallel port
-    .hd_bus = HD_BUS_PROFILE, // parallel-port ProFile, not SCSI
-    .has_cdrom = false,
-    .cdrom_id = 0,
+    .storage = lisa_storage,
+    .default_storage = lisa_default_storage,
+    .builtin_video = &lisa_builtin_video,
 
     .board = &lisa_board,
     .substrate = &lisa_substrate,
@@ -1324,10 +1380,9 @@ const hw_profile_t machine_macxl = {
 
     .ram_options = lisa_ram_options_kb,
     .floppy_slots = lisa_floppy_slots,
-    .scsi_buses = NULL, // no SCSI: the ProFile is on the parallel port
-    .hd_bus = HD_BUS_PROFILE, // parallel-port ProFile, not SCSI
-    .has_cdrom = false,
-    .cdrom_id = 0,
+    .storage = macxl_storage,
+    .default_storage = lisa_default_storage,
+    .builtin_video = &lisa_builtin_video,
 
     .board = &macxl_board,
     .substrate = &lisa_substrate,

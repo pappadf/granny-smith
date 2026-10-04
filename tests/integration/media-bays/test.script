@@ -1,49 +1,61 @@
-# hd= went to the boot bay (Bay 2, id 2), cdrom= to the CD bay (id 0).
-assert machine.scsi.device[2].type == "hd" "hd= in the boot bay"
-assert machine.scsi.device[0].type == "cdrom" "cdrom= in the CD bay"
+# hd= went to the default configuration's hard disk (front bay 2, id 2),
+# cdrom= to its CD-ROM drive (front bay 0, id 0).
+assert machine.scsi.device[2].type == "hd" "hd= in the default hard disk's place"
+assert machine.scsi.device[0].type == "cdrom" "cdrom= in the default CD-ROM drive"
 
-# The profile exports the same answer.
-let p = catalog.profile("ans500")
-assert $p.hd_default.bus == "scsi" "hd_default bus"
-assert $p.hd_default.id == 2 "hd_default is the boot bay"
-assert $p.hd_bays[3].bus == "scsi2" "the second channel's bays follow"
-assert $p.cdrom.id == 0 "cdrom bay"
-assert catalog.profile("lisa").hd_default.bus == "profile" "the Lisa's disk is the ProFile"
-assert len(catalog.profile("lisa").scsi_buses) == 0 "no phantom SCSI bus on the Lisa"
-assert catalog.profile("plus").cdrom == none "no CD bay on the Plus"
+# The profile's default configuration says the same.
+let d = catalog.default_config("ans500")
+assert $d.storage[0].bus == "scsi" && $d.storage[0].unit == 0 && $d.storage[0].type == "cd" "default CD-ROM drive"
+assert $d.storage[1].bus == "scsi" && $d.storage[1].unit == 2 && $d.storage[1].type == "hd" "default hard disk"
+assert $d.startup.bus == "scsi" && $d.startup.unit == 2 "the startup device is the default hard disk"
+assert catalog.profile("lisa").storage[0].id == "profile" "the Lisa's disk is on the ProFile port"
+assert len(catalog.profile("lisa").storage) == 1 "no phantom SCSI bus on the Lisa"
+assert catalog.default_config("plus").storage[1].type == "cd" "the Plus has an external CD-ROM drive"
 
-# attach_hd by bay index, on whatever bus the bay is: index 3 is Bay 5, the
-# first bay on the second fast/wide channel.
-let b = machine.attach_hd("${$WORK_DIR}/hd2.img", 3)
-assert $b.bus == "scsi2" "attach_hd answers the bus"
-assert $b.id == 4 "attach_hd answers the id"
+# attach_media names a position as the configuration does: the second
+# fast/wide channel's front bay 4.
+let b = machine.attach_media("scsi2", 4, "hd", "${$WORK_DIR}/hd2.img")
+assert $b.bus == "scsi2" "attach_media answers the bus"
+assert $b.id == 4 "attach_media answers the id"
 assert machine.scsi2.device[4].type == "hd" "the disk is on machine.scsi2"
 
-# An occupied bay, a bay that does not exist, a second CD: refused, not overwritten.
-assert try(machine.attach_hd("${$WORK_DIR}/hd2.img"), "refused") == "refused" "occupied boot bay refused"
-# Index 6 on the ANS 500 is its seventh entry, the Windows NT boot-disk
-# position (fast/wide 1, id 0, declared after the six real bays: ans500.c);
-# 7 is the first index past the end.
-assert try(machine.attach_hd("${$WORK_DIR}/hd2.img", 7), "refused") == "refused" "bay 7 does not exist"
-assert try(machine.attach_cdrom("${$WORK_DIR}/cd.iso"), "refused") == "refused" "occupied CD bay refused"
+# An occupied position, a unit the bus does not have, a second CD: refused,
+# not overwritten.
+assert try(machine.attach_hd("${$WORK_DIR}/hd2.img"), "refused") == "refused" "occupied hard disk refused"
+assert try(machine.attach_hd("${$WORK_DIR}/hd2.img", 1), "refused") == "refused" "a second default hard disk does not exist"
+assert try(machine.attach_media("scsi2", 3, "hd", "${$WORK_DIR}/hd2.img"), "refused") == "refused" "unit 3 is not on bus 1"
+assert try(machine.attach_media("scsi", 7, "hd", "${$WORK_DIR}/hd2.img"), "refused") == "refused" "the initiator's ID"
+assert try(machine.attach_media("bogus", 1, "hd", "${$WORK_DIR}/hd2.img"), "refused") == "refused" "no such bus"
+assert try(machine.attach_cdrom("${$WORK_DIR}/cd.iso"), "refused") == "refused" "occupied CD-ROM drive refused"
 
 # eject_media takes back what attach answered.
 machine.eject_media "scsi2" 4
 assert try(machine.eject_media("scsi2", 4), "empty") == "empty" "nothing left to eject"
 assert try(machine.eject_media("bogus", 0), "bad") == "bad" "unknown bus refused"
 
-# A Mac with no CD bay refuses a CD.
+# The Plus's external CD-ROM drive is at ID 3, its hard disk at ID 0.
 machine.boot model="plus" rom="${$TEST_DATA}/roms/plus-v3-4d1f8172.rom"
-assert try(machine.attach_cdrom("${$WORK_DIR}/cd.iso"), "none") == "none" "no CD bay on the Plus"
+let c = machine.attach_cdrom("${$WORK_DIR}/cd.iso")
+assert $c.id == 3 "the Plus's CD-ROM drive at id 3"
 let h = machine.attach_hd("${$WORK_DIR}/hd.img")
 assert $h.id == 0 "a Plus's first disk at id 0"
 
-# Only a CD-ROM goes in a CD bay, even an empty one: a disk at the IIcx's
-# CD bay id would save a checkpoint no restore of the IIcx can rebuild.
+# A configuration without a CD-ROM drive has none to insert into.
+machine.boot model="plus" rom="${$TEST_DATA}/roms/plus-v3-4d1f8172.rom" config="{\"storage\":[{\"bus\":\"scsi\",\"unit\":0,\"type\":\"hd\"}]}"
+assert try(machine.scsi.device[3].type, "none") != "cdrom" "no CD-ROM drive when the configuration has none"
+
+# Only a CD-ROM goes in a CD-ROM drive, even an empty one: a disk at the
+# IIcx's CD-ROM drive would save a checkpoint no restore of it can rebuild.
 machine.boot model="iicx" rom="${$TEST_DATA}/roms/iix-iicx-se30-97221136.rom"
-assert machine.scsi.device[3].type == "cdrom" "the IIcx's CD bay is id 3"
-assert machine.scsi.attach_hd("${$WORK_DIR}/hd2.img", 3) == false "a disk in the CD bay refused"
-assert machine.scsi.device[3].type == "cdrom" "the CD bay keeps its drive"
+assert machine.scsi.device[3].type == "cdrom" "the IIcx's CD-ROM drive is id 3"
+assert machine.scsi.attach_hd("${$WORK_DIR}/hd2.img", 3) == false "a disk in the CD-ROM drive refused"
+assert machine.scsi.device[3].type == "cdrom" "the CD-ROM drive keeps its drive"
+
+# The configuration places CD-ROM drives anywhere a bus takes one: two here.
+machine.boot model="iicx" rom="${$TEST_DATA}/roms/iix-iicx-se30-97221136.rom" config="{\"storage\":[{\"bus\":\"scsi\",\"unit\":0,\"type\":\"hd\"},{\"bus\":\"scsi\",\"unit\":4,\"type\":\"cd\"},{\"bus\":\"scsi\",\"unit\":5,\"type\":\"cd\"}]}"
+assert machine.scsi.device[4].type == "cdrom" "a CD-ROM drive at id 4"
+assert machine.scsi.device[5].type == "cdrom" "and one at id 5"
+assert try(machine.scsi.device[3].type, "none") != "cdrom" "and none at the default id 3"
 
 echo "media-bays-ok"
 quit

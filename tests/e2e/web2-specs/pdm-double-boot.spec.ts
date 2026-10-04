@@ -87,10 +87,10 @@ async function configureAndStart(page: Page): Promise<number> {
   const modelSel = page.locator('#cfg-model');
   await expect(modelSel).toBeVisible({ timeout: 60_000 });
   await modelSel.selectOption('pm6100');
-  await page.locator('#cfg-ram').selectOption({ label: '24 MB' });
-  await page.locator('#cfg-hd').selectOption({ label: 'macos81.img' });
+  await page.locator('#cfg-opt-memory').selectOption({ label: '24 MB' });
+  await page.locator('#cfg-media-scsi-0').selectOption({ label: 'macos81.img' });
   const t0 = await page.evaluate(() => performance.now());
-  await page.getByRole('button', { name: 'Start Machine' }).click();
+  await page.getByRole('button', { name: 'Start', exact: true }).click();
   return t0;
 }
 

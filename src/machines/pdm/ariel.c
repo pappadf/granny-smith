@@ -47,22 +47,22 @@ LOG_USE_CATEGORY_NAME("video");
 // on purpose: the monitors Apple distinguished with the EXTENDED sense walk
 // (VGA, GoldFish) need per-line strapping this model does not carry.
 const pdm_monitor_kind_t pdm_monitors[] = {
-    {"hires",    "AppleColor Hi-Res RGB 13\"/14\" (640x480)", 0x6u          },
-    {"portrait", "Macintosh Portrait Display (640x870)",      0x1u          },
-    {"rubik",    "Macintosh 12\" RGB (512x384)",              0x2u          },
-    {"none",     "No monitor connected",                      PDM_SENSE_NONE},
-    {NULL,       NULL,                                        0             },
+    {"hires",    "13in_rgb",      0x6u          },
+    {"portrait", "15in_portrait", 0x1u          },
+    {"rubik",    "12in_rgb",      0x2u          },
+    {"none",     "none",          PDM_SENSE_NONE},
+    {NULL,       NULL,            0             },
 };
 
 // hw_profile_t.builtin_video (machine_profile.h).  Two thin adapters over
 // pdm_monitors so the machine registry can publish and validate this port
 // without reaching into this family: the sense strap stays here.
-static bool pdm_builtin_monitor_at(size_t i, const char **id, const char **name) {
+static bool pdm_builtin_monitor_at(size_t i, const char **id, const char **monitor) {
     size_t n = 0;
     for (const pdm_monitor_kind_t *m = pdm_monitors; m->id; m++, n++) {
         if (n == i) {
             *id = m->id;
-            *name = m->name;
+            *monitor = m->monitor;
             return true;
         }
     }
@@ -78,9 +78,10 @@ static bool pdm_builtin_monitor_sense(const char *id, uint8_t *out_sense) {
 }
 
 const builtin_video_desc_t pdm_builtin_video = {
-    .display_name = "Built-in video (Ariel II)",
+    .detail = "Ariel II",
     .monitor_at = pdm_builtin_monitor_at,
     .monitor_sense = pdm_builtin_monitor_sense,
+    .default_monitor = "13in_rgb",
 };
 
 // Look a strap up by config token; NULL when the name is not one of ours.

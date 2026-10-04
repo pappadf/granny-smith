@@ -3,19 +3,20 @@ import { bridge } from '../helpers/bridgeMock';
 
 vi.mock('@/bus/emulator', async () => (await import('../helpers/bridgeMock')).emulatorModule());
 
-const { attachHardDisk, attachCdrom, insertFloppy, ejectMedia, detectFdDriveCount } =
+const { attachHardDisk, attachMedia, attachCdrom, insertFloppy, ejectMedia, detectFdDriveCount } =
   await import('@/bus/media');
 const { getProfile, clearProfileCache } = await import('@/bus/profile');
 
-// A one-drive machine (the Quadra 700's shape) with its bays.
+// A running one-drive machine: machine.floppy.drive[] holds the drives it
+// was built with, so drive[1] does not resolve.
 function q700(): void {
   bridge.reply('machine.id', 'q700');
+  bridge.reply('machine.floppy.drive[1].present', { error: "path 'drive[1]' did not resolve" });
   bridge.reply('catalog.profile', {
     id: 'q700',
     name: 'Macintosh Quadra 700',
-    floppy_slots: [{ label: 'Internal FD0', kind: 'hd' }],
-    hd_bays: [{ bus: 'scsi', id: 0, label: 'SCSI HD0' }],
-    cdrom: { bus: 'scsi', id: 3, label: 'CD-ROM' },
+    floppies: [{ id: 'fd0', label: 'Internal floppy drive', types: [], default: 'hd' }],
+    storage: [{ id: 'scsi', label: 'SCSI', kind: 'scsi', units: [{ unit: 0, label: 'ID 0' }] }],
   });
 }
 
@@ -25,7 +26,16 @@ describe('bus/media: one attach helper over the core verbs', () => {
     clearProfileCache();
   });
 
-  it('attaches a hard disk to a bay by index and answers where it went', async () => {
+  it('attaches an image to a device by its position', async () => {
+    bridge.reply('machine.attach_media', { bus: 'ata0', id: 1, label: 'Slave' });
+    const r = await attachMedia('ata0', 1, 'hd', '/opfs/images/hd/a.img');
+    expect(bridge.calls).toEqual([
+      { path: 'machine.attach_media', args: ['ata0', 1, 'hd', '/opfs/images/hd/a.img'] },
+    ]);
+    expect(r).toEqual({ ok: true, mount: { kind: 'hd', bus: 'ata0', drive: 1 } });
+  });
+
+  it("attaches a hard disk to the default configuration's Nth disk and answers where it went", async () => {
     bridge.reply('machine.attach_hd', { bus: 'scsi2', id: 4, label: 'Bay 5' });
     const r = await attachHardDisk('/opfs/images/hd/a.img', 3);
     expect(bridge.calls).toEqual([
@@ -53,7 +63,7 @@ describe('bus/media: one attach helper over the core verbs', () => {
     bridge.reply('machine.floppy.drive[0].present', true);
     const r = await insertFloppy('/opfs/images/fd/a.dsk', true);
     expect(r).toEqual({ ok: false, full: true, reason: 'every floppy drive is full' });
-    expect(bridge.paths()).not.toContain('machine.floppy.drive[1].present');
+    expect(bridge.paths()).not.toContain('machine.floppy.drive[1].insert');
     expect(await detectFdDriveCount()).toBe(1);
   });
 
@@ -90,9 +100,14 @@ describe('bus/profile: one reader, memoised', () => {
     const b = await getProfile('q700');
     expect(a).toBe(b);
     expect(bridge.paths().filter((p) => p === 'catalog.profile')).toHaveLength(1);
-    expect(a?.scsi_buses).toEqual([]);
-    expect(a?.hd_default).toBeNull();
-    expect(a?.cdrom?.id).toBe(3);
+    // What the core left out, a consumer can still iterate.
+    expect(a?.slots).toEqual([]);
+    expect(a?.cards).toEqual([]);
+    expect(a?.storage[0].reserved).toEqual([]);
+    expect(a?.storage[0].accepts).toEqual([]);
+    expect(a?.displays).toEqual({ builtin: null, max_connected: 1 });
+    expect(a?.defaults.storage).toEqual([]);
+    expect(a?.defaults.startup).toBeNull();
   });
 
   it('does not cache a failed lookup', async () => {

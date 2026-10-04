@@ -139,7 +139,7 @@ def row_iifx_71_824gc() {
     scheduler.run 300000000
     let spent = wait_match("goldens/iifx-7.1-640x480x1-824gc-finder.png", 900000000, 20000000)
     assert machine.id == "iifx" "iifx-71-824gc: machine.id != iifx"
-    assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "iifx-71-824gc: slot $9 card != 8•24 GC"
+    assert machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC" "iifx-71-824gc: slot $9 card != 8•24 GC"
     assert machine.nubus.slot[9].card.declrom.present "iifx-71-824gc: declaration ROM not present"
     assert machine.nubus.slot[9].card.gc.state == "reset" "iifx-71-824gc: gc.state != reset (no GC software on Disk Tools)"
     assert machine.screen.width == 640 "iifx-71-824gc: screen.width != 640"
@@ -161,7 +161,7 @@ def row_iifx_24ac_seat() {
     let blank = machine.screen.checksum()
     scheduler.run 100000000
     assert machine.id == "iifx" "iifx-24ac-seat: machine.id != iifx"
-    assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "iifx-24ac-seat: slot $9 card != 24AC"
+    assert machine.nubus.slot[9].card.name == "Macintosh Display Card 24AC" "iifx-24ac-seat: slot $9 card != 24AC"
     assert machine.nubus.slot[9].card.declrom.present "iifx-24ac-seat: declaration ROM not present"
     assert machine.screen.width == 640 "iifx-24ac-seat: screen.width != 640"
     assert machine.screen.height == 480 "iifx-24ac-seat: screen.height != 480"
@@ -187,7 +187,7 @@ def row_iifx_75_24ac_832() {
     scheduler.run 400000000
     wait_stable(1800000000)
     assert machine.id == "iifx" "iifx-75-24ac-832: machine.id != iifx"
-    assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "iifx-75-24ac-832: slot $9 card != 24AC"
+    assert machine.nubus.slot[9].card.name == "Macintosh Display Card 24AC" "iifx-75-24ac-832: slot $9 card != 24AC"
     assert machine.screen.width == 832 "iifx-75-24ac-832: screen.width != 832 (mode not applied?)"
     assert machine.screen.height == 624 "iifx-75-24ac-832: screen.height != 624"
     assert machine.screen.depth == 8 "iifx-75-24ac-832: screen.depth != 8"

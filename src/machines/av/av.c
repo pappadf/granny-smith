@@ -14,6 +14,7 @@
 #include "appletalk.h"
 #include "regfile.h"
 
+#include "config_seed.h"
 #include "machine_teardown.h" // the shared config_t-owned delete chain
 
 #include "civic.h"
@@ -635,7 +636,7 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     // SCSI: the bus/target model carries the disks and CD; the 53C96 chip
     // model fronts it through the external-initiator API.
     machine_part_begin(cfg, cp, "scsi");
-    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, cp, CONFIG_IMAGES(cfg));
+    cfg->scsi = machine_scsi_bus_init(cfg, cp, "scsi");
     machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
     machine_part_begin(cfg, cp, "scsi96");
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
@@ -842,11 +843,28 @@ static struct display *av_display(config_t *cfg) {
     return (st && st->civic) ? av_civic_display(st->civic) : NULL;
 }
 
+// CIVIC's built-in video as a display device.  Its monitor strap is fixed at
+// the 13" RGB today; the extended-sense walk that would tell the others apart
+// is not modelled, so this is the one monitor offered.
+static bool civic_monitor_at(size_t i, const char **id, const char **monitor) {
+    if (i != 0)
+        return false;
+    *id = *monitor = "13in_rgb";
+    return true;
+}
+
+const builtin_video_desc_t av_builtin_video_civic = {
+    .detail = "CIVIC",
+    .monitor_at = civic_monitor_at,
+    .default_monitor = "13in_rgb",
+};
+
 const machine_substrate_t av_substrate = {
     .init = av_init,
     .bus_reset = av_bus_reset,
     .power_on = av_power_on,
     .teardown = av_teardown,
+    .seed = mac_seed_rtc_pram,
     .nubus_slot_irq = av_nubus_slot_irq, // slots C/D/E → PSC SInt bits 3-5
     .trigger_vbl = av_trigger_vbl,
     .fd_insert = mac_fd_insert,

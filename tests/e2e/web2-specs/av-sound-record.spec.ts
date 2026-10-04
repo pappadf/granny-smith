@@ -158,7 +158,7 @@ test("record from the browser microphone in the Sound control panel", async ({
   });
   await model.selectOption("q840av");
 
-  const hd = page.locator("#cfg-hd");
+  const hd = page.locator("#cfg-media-scsi-0");
   const [hdChooser] = await Promise.all([
     page.waitForEvent("filechooser"),
     hd.selectOption("Upload image..."),
@@ -169,7 +169,7 @@ test("record from the browser microphone in the Sound control panel", async ({
   });
   await hd.selectOption(AV_HD_NAME);
 
-  await page.getByRole("button", { name: "Start Machine" }).click();
+  await page.getByRole("button", { name: "Start", exact: true }).click();
   await expect(
     page.locator(".toast .msg").filter({ hasText: "Machine started" }),
   ).toBeVisible({ timeout: 60_000 });

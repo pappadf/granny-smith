@@ -104,6 +104,7 @@ static slot_opts_t *entry_for(machine_build_opts_t *o, int slot) {
     slot_opts_t *e = &o->slots[o->n_slots++];
     memset(e, 0, sizeof(*e));
     e->slot = slot;
+    e->video_sense = MACHINE_SENSE_UNSET; // the card's own monitor until the displays say
     return e;
 }
 

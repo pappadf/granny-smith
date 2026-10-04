@@ -452,8 +452,16 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
             const slot_opts_t *entry = machine_build_opts_slot(&cfg->build_opts, s->slot);
             if (entry)
                 *seat = *entry;
+            else
+                seat->video_sense = MACHINE_SENSE_UNSET;
             seat->slot = s->slot;
-            seat->video_sense = machine_slot_sense(&cfg->build_opts);
+            // Built-in video is the built-in display device: it takes the
+            // build's monitor and, when no card has the monitor, is the one
+            // connected.  A socket's card keeps the sense its entry chose.
+            if (s->kind == NUBUS_SLOT_BUILTIN) {
+                seat->video_sense = machine_slot_sense(&cfg->build_opts);
+                seat->connected = cfg->build_opts.builtin_connected;
+            }
             if (s->kind != NUBUS_SLOT_BUILTIN && s->kind != NUBUS_SLOT_SOCKET)
                 seat->empty = true;
             const char *declared = s->kind == NUBUS_SLOT_BUILTIN ? s->builtin_card_id : s->default_card;
@@ -574,6 +582,15 @@ const nubus_card_kind_t *nubus_slot_kind(nubus_bus_t *bus, int slot) {
     if (!bus || slot < 0 || slot >= NUBUS_MAX_SLOTS)
         return NULL;
     return bus->slot_kind[slot];
+}
+
+display_t *nubus_connected_display(nubus_bus_t *bus) {
+    for (int i = 0; bus && i < NUBUS_MAX_SLOTS; i++) {
+        nubus_card_t *card = bus->cards[i];
+        if (card && bus->seated[i].connected && card->ops && card->ops->display)
+            return card->ops->display(card);
+    }
+    return NULL;
 }
 
 display_t *nubus_primary_display(nubus_bus_t *bus) {

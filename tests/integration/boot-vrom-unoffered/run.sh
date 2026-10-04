@@ -17,7 +17,7 @@ cat > "$TEST_TMPDIR/test.script" << EOF
 assert !machine.boot(model="iicx", rom="$ROM", video_card="display_card_24ac") "a named card with no ROM must be rejected"
 # The document's vrom= supplies it.
 assert machine.boot(model="iicx", rom="$ROM", video_card="display_card_24ac", vrom="$VROM") "vrom= must satisfy the named card"
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "the named card is seated"
+assert machine.nubus.slot[9].card.name == "Macintosh Display Card 24AC" "the named card is seated"
 assert machine.nubus.slot[9].card.declrom.path == "$VROM" "the card runs the document's vrom="
 # vrom= never chooses a card: without video_card= the IIcx's socket holds its
 # default, the 8.24, which this file is not for, so the boot is refused.

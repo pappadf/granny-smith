@@ -2,7 +2,7 @@
 # HD160SC under Mac OS 7.6, run the 7.6 Installer to completion, and boot the
 # installed volume.
 #
-# Boots a Macintosh IIfx (16 MB) with the Apple Macintosh Display Card 8•24
+# Boots a Macintosh IIfx (16 MB) with the Macintosh Display Card 8•24
 # (JMFB, mdc_8_24 — loads mdc-8-24-revb-d1629664.vrom next to the ROM) at 13"
 # RGB 640x480 8 bpp from the Mac OS 7.6 "Disk Tools 1" floppy, runs Apple HD SC
 # Setup v7.3.5 against a freshly-created blank HD160SC (QUANTUM ELS170S,

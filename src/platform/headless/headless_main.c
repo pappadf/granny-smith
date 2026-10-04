@@ -16,6 +16,7 @@
 #include "laserwriter_job.h"
 #include "log.h"
 #include "machine.h"
+#include "machine_config.h"
 #include "memory.h"
 #include "nubus.h"
 #include "prom.h"
@@ -228,6 +229,35 @@ static int kill_existing_daemon(int port) {
     return 1;
 }
 
+// The whole of a small text file, NUL-terminated, for the caller to free; NULL
+// when it cannot be read.
+static char *read_text_file(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return NULL;
+    char *buf = NULL;
+    size_t len = 0, cap = 0;
+    for (;;) {
+        if (len + 4096 + 1 > cap) {
+            cap = cap ? cap * 2 : 8192;
+            char *nb = realloc(buf, cap);
+            if (!nb) {
+                free(buf);
+                fclose(f);
+                return NULL;
+            }
+            buf = nb;
+        }
+        size_t n = fread(buf + len, 1, 4096, f);
+        len += n;
+        if (n < 4096)
+            break;
+    }
+    fclose(f);
+    buf[len] = '\0';
+    return buf;
+}
+
 // Print usage information
 static void print_usage(const char *program) {
     printf("Usage: %s rom=<file> [hd=<file>] [cdrom=<file>] [fd=<file>] [script=<file>]\n", program);
@@ -243,7 +273,11 @@ static void print_usage(const char *program) {
     printf("                  SCSI ID 3 on a Macintosh, 0 on a Network Server\n");
     printf("  fd=<file>       Floppy disk image file (optional, can specify multiple)\n");
     printf("  fd0=<file>      Floppy disk image for drive 0 (internal)\n");
-    printf("  fd1=<file>      Floppy disk image for drive 1 (external)\n");
+    printf("  fd1=<file>      Floppy disk image for drive 1 (the second position; it gets a drive)\n");
+    printf("  config=<doc>    configuration document: a JSON file, or JSON inline\n");
+    printf("                  (see catalog.default_config); the arguments here are shorthand\n");
+    printf("  drive=<spec>    add a drive, bus:unit:type[:image] (type hd or cd; repeatable),\n");
+    printf("                  e.g. drive=scsi:4:hd:data.img drive=scsi2:2:cd\n");
     printf("  video_card=<id> NuBus video card for the configurable slot (e.g. 824gc);\n");
     printf("                  default: the machine's default card\n");
     printf("  slots=<spec>    expansion-slot cards, 'SLOT=CARD[,key=value]*;...'\n");
@@ -1287,6 +1321,9 @@ int main(int argc, char *argv[]) {
     const char *video_card_arg = NULL;
     const char *slots_arg = NULL;
     const char *monitor_arg = NULL;
+    const char *config_arg = NULL; // config=: a JSON document, or a file holding one
+    const char *drive_args[16] = {NULL}; // drive=bus:unit:type[:image]
+    int drive_count = 0;
     int quiet = 0;
     int script_stdin = 0;
     int kill_daemon = 0;
@@ -1467,6 +1504,15 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
+        if ((value = parse_arg(arg, "config")) != NULL) {
+            config_arg = value;
+            continue;
+        }
+        if ((value = parse_arg(arg, "drive")) != NULL) {
+            if (drive_count < 16)
+                drive_args[drive_count++] = value;
+            continue;
+        }
         if ((value = parse_arg(arg, "monitor")) != NULL) {
             monitor_arg = value;
             continue;
@@ -1648,6 +1694,28 @@ int main(int argc, char *argv[]) {
     // Startup is the same boot-document path scripts use (machine.boot):
     // CLI args fill the document, and machine_boot_apply validates and
     // constructs.
+    //
+    // config= is the whole document (a file, or JSON inline); drive= adds to
+    // its storage, and fd1= / two fd= ask for the second floppy position.
+    char *config_text = NULL;
+    if (config_arg && *config_arg && *config_arg != '{') {
+        config_text = read_text_file(config_arg);
+        if (!config_text) {
+            fprintf(stderr, "Error: cannot read config=%s\n", config_arg);
+            return 1;
+        }
+    }
+    char drives_spec[512] = "";
+    for (int i = 0; i < drive_count; i++) {
+        // bus:unit:type -- the image, a fourth field, is attached below.
+        char one[128];
+        snprintf(one, sizeof one, "%s", drive_args[i]);
+        char *c1 = strchr(one, ':'), *c2 = c1 ? strchr(c1 + 1, ':') : NULL, *c3 = c2 ? strchr(c2 + 1, ':') : NULL;
+        if (c3)
+            *c3 = '\0';
+        size_t at = strlen(drives_spec);
+        snprintf(drives_spec + at, sizeof drives_spec - at, "%s%s", at ? ";" : "", one);
+    }
     boot_config_t boot_doc = {
         .model = target_model,
         .ram_kb = ram_kb,
@@ -1656,8 +1724,12 @@ int main(int argc, char *argv[]) {
         .slots = slots_arg,
         .monitor = monitor_arg,
         .video_sense = -1,
+        .config = config_text ? config_text : config_arg,
+        .drives = drives_spec,
+        .floppies_wanted = (fd_explicit[1] || fd_count > 1) ? 2 : 0,
     };
     value_t boot_err = machine_boot_apply(&boot_doc);
+    free(config_text);
     if (val_is_error(&boot_err)) {
         fprintf(stderr, "Error: %s\n", boot_err.err ? boot_err.err : "boot failed");
         value_free(&boot_err);
@@ -1704,6 +1776,29 @@ int main(int argc, char *argv[]) {
         }
         if (!quiet)
             printf("Attached HD[%d]: %s (%s)\n", i, hd_files[i], bays[i].label);
+    }
+
+    // drive=bus:unit:type:image -- the image into the drive the document now
+    // has at that position.
+    for (int i = 0; i < drive_count; i++) {
+        char one[512];
+        snprintf(one, sizeof one, "%s", drive_args[i]);
+        char *bus = one, *unit = strchr(one, ':'), *type = unit ? strchr(unit + 1, ':') : NULL;
+        char *image = type ? strchr(type + 1, ':') : NULL;
+        if (!image)
+            continue;
+        *unit++ = '\0';
+        *type++ = '\0';
+        *image++ = '\0';
+        media_bay_t bay;
+        if (!machine_storage_media_bay(active, bus, (int)strtol(unit, NULL, 10), &bay) ||
+            system_media_attach_path(global_emulator, &bay, strcmp(type, "cd") == 0, image, attach_err,
+                                     sizeof(attach_err)) != 0) {
+            fprintf(stderr, "Error: drive=%s: %s\n", drive_args[i], attach_err);
+            return 1;
+        }
+        if (!quiet)
+            printf("Attached %s: %s (%s unit %s)\n", strcmp(type, "cd") == 0 ? "CD-ROM" : "HD", image, bus, unit);
     }
 
     // The CD, into the model's CD bay (profile_cdrom_bay: its cdrom_id -- 3 on

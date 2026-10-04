@@ -141,28 +141,31 @@ LOG_USE_CATEGORY_NAME("video");
 // program 1152x870.
 typedef struct control_monitor_kind {
     const char *id; // config token ("hires", "twopage", ...)
-    const char *name; // human-readable, for the object model
+    const char *monitor; // its shared catalogue id (monitor_catalog.h)
     uint8_t sense; // the 3-bit strap this monitor presents
 } control_monitor_kind_t;
 
+// "twopage" is sense 0, which the 21" Color and the 21" Two-Page displays
+// share; without the extended answers that tell them apart it is offered as
+// the one this port renders, the 21" Color.
 static const control_monitor_kind_t control_monitors[] = {
-    {"hires",    "AppleColor Hi-Res RGB 13\"/14\" (640x480)",  0x6u},
-    {"twopage",  "21\" RGB Workstation / Two-Page (1152x870)", 0x0u},
-    {"portrait", "Macintosh Portrait Display (640x870)",       0x1u},
-    {"rubik",    "Macintosh 12\" RGB (512x384)",               0x2u},
-    {"none",     "No monitor connected",                       0x7u},
-    {NULL,       NULL,                                         0   },
+    {"hires",    "13in_rgb",      0x6u},
+    {"twopage",  "21in_rgb",      0x0u},
+    {"portrait", "15in_portrait", 0x1u},
+    {"rubik",    "12in_rgb",      0x2u},
+    {"none",     "none",          0x7u},
+    {NULL,       NULL,            0   },
 };
 
 // hw_profile_t.builtin_video (machine_profile.h): two thin adapters over
 // control_monitors so the machine registry can publish and validate this
 // port without reaching into the family.
-static bool control_builtin_monitor_at(size_t i, const char **id, const char **name) {
+static bool control_builtin_monitor_at(size_t i, const char **id, const char **monitor) {
     size_t n = 0;
     for (const control_monitor_kind_t *m = control_monitors; m->id; m++, n++) {
         if (n == i) {
             *id = m->id;
-            *name = m->name;
+            *monitor = m->monitor;
             return true;
         }
     }
@@ -180,9 +183,10 @@ static bool control_builtin_monitor_sense(const char *id, uint8_t *out_sense) {
 }
 
 const builtin_video_desc_t tnt_builtin_video = {
-    .display_name = "Built-in video (Control)",
+    .detail = "Control",
     .monitor_at = control_builtin_monitor_at,
     .monitor_sense = control_builtin_monitor_sense,
+    .default_monitor = "13in_rgb",
 };
 
 static tnt_control_t *ctl(config_t *cfg) {
@@ -762,7 +766,7 @@ static pci_device_t *control_factory(int slot_index, config_t *cfg, const rom_im
 
 const pci_card_kind_t tnt_control_kind = {
     .id = "tnt_control",
-    .display_name = "Control / Chaos on-board video",
+    .display_name = "Built-in video",
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "display",
     .factory = control_factory,

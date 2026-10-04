@@ -23,17 +23,10 @@
 
 #include <stdint.h>
 
-// Four banks of four equal SIMMs; geometrically valid totals up to the
-// 256 MB later-system maximum.
-static const uint32_t q950_ram_options_kb[] = {8192, 16384, 20480, 32768, 65536, 131072, 262144, 0};
-
-static const scsi_bus_decl_t q950_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
-    // The external 53C96 chain (machine.scsi2): declared so a device can be
-    // placed on it (#185).  Nothing sits there by default.
-    {.object = "scsi2", .label = "External SCSI", .slots = mac_scsi_slots_ext01},
-    {0},
-};
+// Four banks of four equal SIMMs: every total Apple documents up to 64 MB,
+// and 128 / 256 MB, the later-system maximum.
+static const uint32_t q950_ram_options_kb[] = {4096,  8192,  12288, 16384, 20480, 24576,  28672,  32768,
+                                               36864, 40960, 49152, 53248, 65536, 131072, 262144, 0};
 
 static const mcu_board_desc_t q950_board_desc = {
     .common =
@@ -72,20 +65,21 @@ const hw_profile_t machine_q950 = {
     .mmu_kind = MMU_68040,
 
     .address_bits = 32,
-    .ram_default = 0x800000, // 8 MB
+    .ram_default = 0x1000000, // 16 MB (a typical well-equipped machine)
     .ram_max = 0x10000000, // 256 MB
     .rom_size = 0x100000, // 1 MB (3DC27823)
 
     .ram_options = q950_ram_options_kb,
     .floppy_slots = mac_floppy_slots_1hd,
-    .scsi_buses = q950_scsi_buses,
-    .has_cdrom = true,
-    .cdrom_id = 3,
+    .storage = q900_storage, // same Eclipse board (q900_internal.h)
+    .default_storage = mac_default_storage_hd0_cd3,
+    .appletalk = true,
+    .builtin_video = &mcu_builtin_video_dafb_passive,
     .cdrom_drive = &mac_cdrom_drive_applecd,
 
     .nubus_slots = q900_nubus_slots, // same Eclipse board (q900_internal.h)
 
-    .pram = &pram_defaults_mac_ii,
+    .pram = &pram_defaults_q950,
     .substrate = &mcu_substrate,
     .board = &q950_board,
 };

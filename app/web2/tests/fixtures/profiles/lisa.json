@@ -1,0 +1,128 @@
+{
+  "id": "lisa",
+  "name": "Lisa 2",
+  "freq": 5093750,
+  "capabilities": {
+    "cpu": {
+      "model": 68000,
+      "address_bits": 24,
+      "fpu": false
+    },
+    "mmu": {
+      "present": true,
+      "kind": "lisa_segment"
+    },
+    "nubus": false,
+    "pci": false,
+    "video_in": false,
+    "audio_in": false,
+    "aux_cpus": []
+  },
+  "options": [
+    {
+      "id": "memory",
+      "label": "Memory",
+      "kind": "choice",
+      "values": [
+        {
+          "id": "512",
+          "label": "512 KB"
+        },
+        {
+          "id": "1024",
+          "label": "1 MB"
+        },
+        {
+          "id": "2048",
+          "label": "2 MB"
+        }
+      ],
+      "default": "1024"
+    }
+  ],
+  "floppies": [
+    {
+      "id": "fd0",
+      "label": "Internal floppy drive",
+      "types": [
+        {
+          "id": "800k",
+          "label": "800K drive"
+        }
+      ],
+      "default": "800k"
+    }
+  ],
+  "storage": [
+    {
+      "id": "profile",
+      "label": "ProFile port",
+      "kind": "profile",
+      "units": [
+        {
+          "unit": 0,
+          "label": "External"
+        }
+      ],
+      "reserved": [],
+      "shares_units_with": [],
+      "external_connector": true,
+      "bays": [],
+      "accepts": [
+        {
+          "id": "hd",
+          "label": "Hard disk"
+        }
+      ],
+      "startup": true
+    }
+  ],
+  "slots": [],
+  "cards": [],
+  "displays": {
+    "builtin": {
+      "id": "builtin",
+      "label": "Built-in video",
+      "detail": "frame buffer in main RAM",
+      "monitors": ["lisa_12in"],
+      "default_monitor": "lisa_12in",
+      "modes": {},
+      "options": []
+    },
+    "max_connected": 1
+  },
+  "monitors": [
+    {
+      "id": "lisa_12in",
+      "label": "Built-in 12\u2033 screen",
+      "width": 720,
+      "height": 364
+    }
+  ],
+  "defaults": {
+    "model": "lisa",
+    "options": {
+      "memory": "1024"
+    },
+    "floppies": {
+      "fd0": "800k"
+    },
+    "storage": [
+      {
+        "bus": "profile",
+        "unit": 0,
+        "type": "hd"
+      }
+    ],
+    "startup": {
+      "bus": "profile",
+      "unit": 0
+    },
+    "cards": [],
+    "displays": {
+      "builtin": {
+        "monitor": "lisa_12in"
+      }
+    }
+  }
+}

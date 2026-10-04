@@ -28,7 +28,7 @@ assert !catalog.profile("plus").capabilities.pci "a non-PCI model must not"
 # Three sockets on Bandit 1 at IDSEL 13/14/15 (the ROM's own slot-names
 # bitmask $0000E000), their strapped INTA-D lines on Grand Central
 # externals 23/24/25 (Apple's 9500 external-interrupt table).
-assert machine.pci.slot[1].label == "A1" "slot 1 label"
+assert machine.pci.slot[1].firmware_name == "A1" "slot 1 label"
 assert machine.pci.slot[1].bus == 0 "slot 1 is on Bandit 1"
 assert machine.pci.slot[1].device == 13 "slot 1 IDSEL"
 assert machine.pci.slot[1].irq == 23 "slot 1 interrupt line"
@@ -38,7 +38,7 @@ assert machine.pci.slot[3].device == 15 "slot 3 IDSEL"
 assert machine.pci.slot[3].irq == 25 "slot 3 interrupt line"
 # Control is the soldered-down video device the machine names, on the
 # Chaos display bus.
-assert machine.pci.slot[4].label == "VCI" "builtin slot label"
+assert machine.pci.slot[4].firmware_name == "VCI" "builtin slot label"
 assert machine.pci.slot[4].bus == 2 "Control is on the Chaos bus"
 assert machine.pci.slot[4].device == 11 "Control IDSEL"
 assert machine.pci.slot[4].card.name == "Control" "Control not seated from the slot table"
@@ -175,14 +175,14 @@ machine.boot model="pm9500" ram=32768 rom="${$ROM}"
 # Slot labels come from each bridge's own `slot-names` property, dumped
 # live in TN1062: Bandit 1 publishes "A1" "B1" "C1", Bandit 2 publishes
 # "D2" "E2" "F2" (an earlier guess of D1/E1/F1 was wrong).
-assert machine.pci.slot[4].label == "D2" "9500 slot 4 label"
-assert machine.pci.slot[5].label == "E2" "9500 slot 5 label"
-assert machine.pci.slot[6].label == "F2" "9500 slot 6 label"
+assert machine.pci.slot[4].firmware_name == "D2" "9500 slot 4 label"
+assert machine.pci.slot[5].firmware_name == "E2" "9500 slot 5 label"
+assert machine.pci.slot[6].firmware_name == "F2" "9500 slot 6 label"
 assert machine.pci.slot[4].bus == 1 "9500 slot 4 is on Bandit 2"
 assert machine.pci.slot[4].device == 13 "9500 slot 4 IDSEL"
 assert machine.pci.slot[4].irq == 27 "9500 slot 4 interrupt line"
 assert machine.pci.slot[6].irq == 29 "9500 slot 6 interrupt line"
-assert machine.pci.slot[7].label == "VCI" "9500 builtin slot label"
+assert machine.pci.slot[7].firmware_name == "VCI" "9500 builtin slot label"
 assert machine.pci.slot[7].card.name == "Control" "9500 Control (the documented no-onboard-video deviation)"
 # Bandit 2's config ports answer, and its sockets probe as empty.
 machine.memory.poke.l(0xF4800000, 0x00080000)

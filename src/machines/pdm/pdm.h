@@ -169,7 +169,7 @@ typedef struct pdm_amic {
 
 typedef struct pdm_monitor_kind {
     const char *id; // config token ("hires", "none", ...)
-    const char *name; // human-readable, for the object model
+    const char *monitor; // its shared catalogue id (monitor_catalog.h)
     uint8_t sense; // the 3-bit strap this monitor presents
 } pdm_monitor_kind_t;
 

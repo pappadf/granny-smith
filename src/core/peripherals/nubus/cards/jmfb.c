@@ -378,7 +378,6 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
             if (custom_monitors[i].sense_code == 0x6) {
                 custom_monitors[i].width = custom_w;
                 custom_monitors[i].height = custom_h;
-                custom_monitors[i].name = "Custom";
             }
         }
         custom_monitors[n] = (nubus_monitor_t){0};
@@ -640,7 +639,7 @@ static display_t *card_display(nubus_card_t *card) {
 
 static const char *card_name(const nubus_card_t *card) {
     (void)card;
-    return "Apple Macintosh Display Card 8\xe2\x80\xa2"
+    return "Macintosh Display Card 8\xe2\x80\xa2"
            "24"; // "8•24"
 }
 
@@ -657,8 +656,8 @@ static int card_init_generic(nubus_card_t *card, config_t *cfg, checkpoint_t *cp
 
 static const char *card_name_generic(const nubus_card_t *card) {
     (void)card;
-    return "Apple Macintosh Display Card 8\xe2\x80\xa2"
-           "24 (generic video ROM)";
+    return "Macintosh Display Card 8\xe2\x80\xa2"
+           "24 (substitute ROM)";
 }
 
 // === Checkpoint =============================================================
@@ -837,28 +836,28 @@ static const uint8_t kong_crt_response[3][256] = {
 };
 static const nubus_monitor_t mdc_8_24_monitors[] = {
     {.id = "13in_rgb",
-     .name = "13\" AppleColor",
+     .monitor = "13in_rgb",
      .width = 640,
      .height = 480,
      .depths = mdc_8_24_4depths,
      .sense_code = 0x6,
      .srsrc_sister = 0xA6},
     {.id = "12in_rgb",
-     .name = "12\" RGB",
+     .monitor = "12in_rgb",
      .width = 512,
      .height = 384,
      .depths = mdc_8_24_4depths,
      .sense_code = 0x2,
      .srsrc_sister = 0xA2},
     {.id = "15in_bw",
-     .name = "15\" Portrait B&W",
+     .monitor = "15in_portrait",
      .width = 640,
      .height = 870,
      .depths = mdc_8_24_4depths,
      .sense_code = 0x1,
      .srsrc_sister = 0xA1},
     {.id = "21in_rgb",
-     .name = "21\" RGB",
+     .monitor = "21in_rgb",
      .width = 1152,
      .height = 870,
      .depths = mdc_8_24_4depths,
@@ -935,10 +934,11 @@ bool jmfb_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor,
 
 const nubus_card_kind_t mdc_8_24_kind = {
     .id = "mdc_8_24",
-    .display_name = "Apple Macintosh Display Card 8\xe2\x80\xa2"
+    .display_name = "Macintosh Display Card 8\xe2\x80\xa2"
                     "24",
     .attach = CARD_ATTACH_NUBUS,
     .requires_vrom = true,
+    .substitute = "8_24",
     .monitors = mdc_8_24_monitors,
     .ops = &mdc_8_24_ops,
 };
@@ -949,10 +949,11 @@ const nubus_card_kind_t mdc_8_24_kind = {
 // type in boot documents.
 const nubus_card_kind_t jmfb_generic_kind = {
     .id = "8_24",
-    .display_name = "Apple Macintosh Display Card 8\xe2\x80\xa2"
-                    "24 (generic video ROM)",
+    .display_name = "Macintosh Display Card 8\xe2\x80\xa2"
+                    "24",
     .attach = CARD_ATTACH_NUBUS,
     .requires_vrom = false,
+    .substitute_for = "mdc_8_24",
     // ONE table for both siblings.  The generic copy repeated all four rows to
     // drop a single field (21" Kong's crt_response), and the copy was already
     // redundant: card_init's `(!generic && monitor) ? monitor->crt_response :

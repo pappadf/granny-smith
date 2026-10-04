@@ -265,7 +265,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part_images(cfg, checkpoint);
 
     machine_part_begin(cfg, checkpoint, "scsi");
-    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, checkpoint, CONFIG_IMAGES(cfg));
+    cfg->scsi = machine_scsi_bus_init(cfg, checkpoint, "scsi");
     scsi_5380_attach(cfg->scsi, checkpoint); // IIsi: NCR 5380
     machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
     scsi_set_irq_callback(cfg->scsi, iisi_scsi_irq, cfg);
@@ -276,8 +276,8 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part(cfg, checkpoint, "asc", part_save_asc, st->asc);
     machine_part_begin(cfg, checkpoint, "floppy");
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), checkpoint,
-                             CONFIG_IMAGES(cfg));
+    st->floppy =
+        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), checkpoint, CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
     machine_part(cfg, checkpoint, "floppy", part_save_floppy, st->floppy);
 
@@ -361,13 +361,9 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
 // Real IIsi RAM configs (Developer Note §6.1): fixed 1 MB soldered Bank A plus
 // four equal SIMMs in Bank B (1/2/4/8/16/64 MB) → totals 2/3/5/9/17/65 MB.  The
 // frame buffer lives at the bottom of Bank A (physical 0), so there is no longer
-// a "must reach past the framebuffer" floor.  Offer the System-7-capable sizes.
-static const uint32_t iisi_ram_options_kb[] = {5120, 9216, 17408, 66560, 0}; // 5/9/17/65 MB
-
-static const scsi_bus_decl_t iisi_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
-    {0},
-};
+// a "must reach past the framebuffer" floor: every total is offered, the 1 MB
+// soldered alone included.
+static const uint32_t iisi_ram_options_kb[] = {1024, 2048, 3072, 5120, 9216, 17408, 66560, 0};
 
 // IIsi board: the shared mdu_substrate reads its data descriptor + VIA1 hooks
 // + the device-construction body (Egret + 2-bank RAM live inside build_devices).
@@ -387,15 +383,16 @@ const hw_profile_t machine_iisi = {
     .mmu_kind = MMU_68030_PMMU,
 
     .address_bits = 32,
-    .ram_default = 0x1100000, // 17 MB (1 MB Bank A + 16 MB Bank B)
+    .ram_default = 0x900000, // 9 MB (a typical well-equipped machine)
     .ram_max = 0x4100000, // 65 MB: 1 MB soldered Bank A + the 64 MB Bank B window
     .rom_size = 0x80000, // 512 KB
 
     .ram_options = iisi_ram_options_kb,
-    .floppy_slots = mac_floppy_slots_2hd,
-    .scsi_buses = iisi_scsi_buses,
-    .has_cdrom = true,
-    .cdrom_id = 3,
+    .floppy_slots = mac_floppy_slots_ext,
+    .storage = mac_storage_scsi_hd_bay,
+    .default_storage = mac_default_storage_hd0_cd3,
+    .appletalk = true,
+    .builtin_video = &mdu_builtin_video_rbv,
     .cdrom_drive = &mac_cdrom_drive_applecd,
     // Built-in V8 video has no separate declaration ROM — the boot ROM drives
     // it from the hard-coded VideoInfoMacIIsi record.

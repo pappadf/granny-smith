@@ -1451,7 +1451,7 @@ static void c54m30_attach_objects(pci_device_t *dev, struct object *card_node) {
 // only where a machine's slot table names it.
 const pci_card_kind_t cirrus_54m30_kind = {
     .id = "cirrus_54m30",
-    .display_name = "Cirrus Logic 54M30 on-board video",
+    .display_name = "Built-in video",
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "display",
     .factory = c54m30_factory,

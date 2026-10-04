@@ -11,6 +11,7 @@
 #include "appletalk.h"
 #include "log.h"
 
+#include "config_seed.h"
 #include "mac030_glue.h" // shared core/finish/reset/irq/build_mmu + board desc
 #include "mac_host_io.h" // mac_fd_*/mac_input_*
 #include "machine_teardown.h" // the shared config_t-owned delete chain
@@ -193,11 +194,19 @@ static void mdu_trigger_vbl(config_t *cfg) {
     image_tick_all(cfg);
 }
 
+// The RBV's built-in video as a display device: the BUILTIN pseudo-slot's
+// card supplies its monitors.
+const builtin_video_desc_t mdu_builtin_video_rbv = {
+    .detail = "RBV",
+    .slot_monitors = true,
+};
+
 const machine_substrate_t mdu_substrate = {
     .init = mdu_init,
     .bus_reset = mdu_bus_reset,
     .power_on = mdu_power_on,
     .teardown = mdu_teardown,
+    .seed = mac_seed_rtc_pram,
     .trigger_vbl = mdu_trigger_vbl,
     .nubus_slot_irq = mdu_nubus_slot_irq, // straight to the RBV's slot-interrupt register
     .fd_insert = mac_fd_insert,

@@ -63,7 +63,7 @@ async function bootModel(page: Page, model: string): Promise<void> {
   const sel = page.locator('#cfg-model');
   await expect(sel.locator(`option[value="${model}"]`)).toHaveCount(1, { timeout: 60_000 });
   await sel.selectOption(model);
-  await page.getByRole('button', { name: 'Start Machine' }).click();
+  await page.getByRole('button', { name: 'Start', exact: true }).click();
 }
 
 test('a slotless model boots after a carded model ran in the same session', async ({ page }) => {

@@ -65,8 +65,8 @@ assert machine.scsi.device[0].image.filename == $hd_file0 "after restore: same m
 assert try(machine.scsi.loopback, none) != none "after restore: live controller surface"
 assert machine.scsi.hd_models != none "after restore: probe surface"
 assert files.hd_create("${$WORK_DIR}/after-load.img", "5M") "create a second disk"
-let bay = machine.attach_hd("${$WORK_DIR}/after-load.img", 1)
-assert machine.scsi.device[$bay.id].image.present "after restore: attach_hd reaches the live controller"
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "after restore: the saved card"
+let bay = machine.attach_media("scsi", 1, "hd", "${$WORK_DIR}/after-load.img")
+assert machine.scsi.device[$bay.id].image.present "after restore: attach_media reaches the live controller"
+assert machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC" "after restore: the saved card"
 
 quit

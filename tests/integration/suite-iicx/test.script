@@ -197,7 +197,7 @@ def row_iicx_gc_beep() {
     # carried from one machine to the next in the same process -- so it had to
     # be regenerated from a whole-suite run.  That remainder is the machine's
     # own now, and the row captures the same beep alone or in the suite.
-    check_sound("goldens/iicx-gc-beep.wav", 5426)
+    check_sound("goldens/iicx-gc-beep.wav", 5423)
 
     # Sample-exact compare against the golden (fails the test on any divergence).
     # Loudness does NOT appear in the capture: the sink is pre-volume, and the
@@ -225,7 +225,7 @@ def row_iicx_gc_beep() {
     machine.adb.mouse.click false
     scheduler.run 40000000
 
-    check_sound("goldens/iicx-gc-beep2.wav", 5423)
+    check_sound("goldens/iicx-gc-beep2.wav", 5427)
     # The pre-volume waveform is the first beep's: the Sound Manager re-renders
     # the same table and no state leaks between beeps.  The second beep is
     # LOUDER only through the volume register, asserted below.
@@ -281,7 +281,7 @@ def row_iicx_24ac() {
 
     # The card that booted into the IIcx video slot ($9) is the 24AC, not the
     # slot-default 8•24 — i.e. machine.nubus.video_card took effect.
-    assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "slot $9 card != 24AC"
+    assert machine.nubus.slot[9].card.name == "Macintosh Display Card 24AC" "slot $9 card != 24AC"
     # 8-bpp colour at 640x480: MODE depth bits 7-5 == 0x40, framebuffer 8 bpp.
     assert machine.screen.width == 640 "boot: screen width != 640"
     assert machine.screen.height == 480 "boot: screen height != 480"
@@ -384,7 +384,7 @@ def row_iicx_24ac_restart() {
 
     # Sanity: the 24AC booted into the IIcx video slot ($9) at 8-bpp 640x480 and we
     # are sitting on the colour Finder desktop (pixel-exact, shared iicx-24ac baseline).
-    assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "boot: slot $9 card != 24AC"
+    assert machine.nubus.slot[9].card.name == "Macintosh Display Card 24AC" "boot: slot $9 card != 24AC"
     assert machine.screen.width == 640 "boot: screen width != 640"
     assert machine.screen.height == 480 "boot: screen height != 480"
     assert machine.nubus.slot[9].card.framebuffer.depth == 8 "boot: framebuffer not 8 bpp"

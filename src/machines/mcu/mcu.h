@@ -158,6 +158,11 @@ typedef struct mcu_state {
 // The one MCU-family substrate; q700/q900/q950 bind this.
 extern const machine_substrate_t mcu_substrate;
 
+// The DAFB as a display device: every monitor the Q700/Q900 ROM was measured
+// with, or (the Q950, measured on the passive codes only) the passive ones.
+extern const builtin_video_desc_t mcu_builtin_video_dafb;
+extern const builtin_video_desc_t mcu_builtin_video_dafb_passive;
+
 // Q700 I/O window table (exposed for the address-map unit test).
 extern const mac030_io_range_t mcu_q700_io_ranges[];
 

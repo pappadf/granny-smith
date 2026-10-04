@@ -287,6 +287,10 @@ static DEF_GETTER(slot_attr_label) {
     const pci_slot_decl_t *d = node_slot_decl(self);
     return val_str((d && d->label) ? d->label : "");
 }
+static DEF_GETTER(slot_attr_firmware_name) {
+    const pci_slot_decl_t *d = node_slot_decl(self);
+    return val_str((d && d->detail) ? d->detail : "");
+}
 static DEF_GETTER(slot_attr_bus) {
     const pci_slot_decl_t *d = node_slot_decl(self);
     return val_int(d ? d->bus : -1);
@@ -304,23 +308,27 @@ static const member_t slot_members[] = {
     {.kind = M_ATTR,
      .name = "number",
      .doc = "Logical slot number (1-based, in the machine's declared order)",
-     .attr = {.type = V_INT, .get = slot_attr_number}  },
+     .attr = {.type = V_INT, .get = slot_attr_number}          },
     {.kind = M_ATTR,
      .name = "label",
-     .doc = "Slot name silkscreened on the board (\"A1\", \"VCI\")",
-     .attr = {.type = V_STRING, .get = slot_attr_label}},
+     .doc = "The slot's name, as Apple's documentation gives it (\"PCI slot A1\")",
+     .attr = {.type = V_STRING, .get = slot_attr_label}        },
+    {.kind = M_ATTR,
+     .name = "firmware_name",
+     .doc = "The firmware's own name for the slot (\"A1\", \"SLOT1_PCI0\", \"VCI\")",
+     .attr = {.type = V_STRING, .get = slot_attr_firmware_name}},
     {.kind = M_ATTR,
      .name = "bus",
      .doc = "Host-bridge bus index this slot sits on",
-     .attr = {.type = V_INT, .get = slot_attr_bus}     },
+     .attr = {.type = V_INT, .get = slot_attr_bus}             },
     {.kind = M_ATTR,
      .name = "device",
      .doc = "PCI device number (IDSEL AD line) on that bus",
-     .attr = {.type = V_INT, .get = slot_attr_device}  },
+     .attr = {.type = V_INT, .get = slot_attr_device}          },
     {.kind = M_ATTR,
      .name = "irq",
      .doc = "Interrupt-controller line the slot's strapped INTA-D reaches",
-     .attr = {.type = V_INT, .get = slot_attr_irq}     },
+     .attr = {.type = V_INT, .get = slot_attr_irq}             },
 };
 static const class_desc_t pci_slot_class = {
     .name = "slot", .members = slot_members, .n_members = sizeof(slot_members) / sizeof(slot_members[0])};

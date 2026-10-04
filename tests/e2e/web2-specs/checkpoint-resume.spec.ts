@@ -52,7 +52,7 @@ async function startMachine(page: Page, modelId: string): Promise<void> {
   const model = page.locator('#cfg-model');
   await expect(model.locator(`option[value="${modelId}"]`)).toHaveCount(1, { timeout: 30_000 });
   await model.selectOption(modelId);
-  const start = page.getByRole('button', { name: 'Start Machine' });
+  const start = page.getByRole('button', { name: 'Start', exact: true });
   await expect(start).toBeEnabled();
   await start.click();
   await expect(page.locator('.toast .msg').filter({ hasText: 'Machine started' })).toBeVisible({

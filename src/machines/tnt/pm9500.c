@@ -24,15 +24,16 @@
 #include "tnt.h"
 
 // Twelve DIMM slots, interleaved in pairs; 1.5 GB architectural max.
-static const uint32_t pm9500_ram_options_kb[] = {16384, 32768, 65536, 131072, 262144, 524288, 1048576, 1572864, 0};
+// Offered: the totals Hammerhead's four-pair carve maps today (DIMMs of at
+// most 64 MB); the six-pair and larger totals wait on the carve.
+static const uint32_t pm9500_ram_options_kb[] = {
+    16384,  24576,  32768,  40960,  49152,  57344,  65536,  73728,  81920,  90112,  98304,  106496,
+    114688, 122880, 131072, 139264, 147456, 155648, 163840, 172032, 180224, 188416, 196608, 204800,
+    212992, 221184, 229376, 237568, 245760, 262144, 270336, 278528, 286720, 294912, 303104, 311296,
+    327680, 335872, 344064, 360448, 393216, 401408, 409600, 425984, 458752, 524288, 0};
 
 // The internal fast-SCSI (MESH) bus carries the boot disks; the
 // external 53C94 chain is present but empty until the CD-ROM phase.
-
-static const scsi_bus_decl_t pm9500_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = tnt_scsi_slots_internal},
-    {0},
-};
 
 // PCI topology.  Six sockets — three on
 // each Bandit, all at IDSEL 13/14/15 on their own bus (the bandit node's
@@ -48,15 +49,58 @@ static const scsi_bus_decl_t pm9500_scsi_buses[] = {
 // D1/E1/F1, having judged the strings "not decidable from the token
 // stream"; the ROM's own property decides them.
 static const pci_slot_decl_t pm9500_pci_slots[] = {
-    {.slot = 1, .kind = PCI_SLOT_SOCKET, .label = "A1", .bus = TNT_PCI_BUS_1, .device = 13, .int_line = 23},
-    {.slot = 2, .kind = PCI_SLOT_SOCKET, .label = "B1", .bus = TNT_PCI_BUS_1, .device = 14, .int_line = 24},
-    {.slot = 3, .kind = PCI_SLOT_SOCKET, .label = "C1", .bus = TNT_PCI_BUS_1, .device = 15, .int_line = 25},
-    {.slot = 4, .kind = PCI_SLOT_SOCKET, .label = "D2", .bus = TNT_PCI_BUS_2, .device = 13, .int_line = 27},
-    {.slot = 5, .kind = PCI_SLOT_SOCKET, .label = "E2", .bus = TNT_PCI_BUS_2, .device = 14, .int_line = 28},
-    {.slot = 6, .kind = PCI_SLOT_SOCKET, .label = "F2", .bus = TNT_PCI_BUS_2, .device = 15, .int_line = 29},
+    {.slot = 1,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot A1",
+     .detail = "A1",
+     .fill_order = 1,
+     .bus = TNT_PCI_BUS_1,
+     .device = 13,
+     .int_line = 23},
+    {.slot = 2,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot B1",
+     .detail = "B1",
+     .fill_order = 2,
+     .bus = TNT_PCI_BUS_1,
+     .device = 14,
+     .int_line = 24},
+    {.slot = 3,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot C1",
+     .detail = "C1",
+     .fill_order = 3,
+     .bus = TNT_PCI_BUS_1,
+     .device = 15,
+     .int_line = 25},
+    {.slot = 4,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot D2",
+     .detail = "D2",
+     .fill_order = 4,
+     .bus = TNT_PCI_BUS_2,
+     .device = 13,
+     .int_line = 27},
+    {.slot = 5,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot E2",
+     .detail = "E2",
+     .fill_order = 5,
+     .bus = TNT_PCI_BUS_2,
+     .device = 14,
+     .int_line = 28},
+    {.slot = 6,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot F2",
+     .detail = "F2",
+     .fill_order = 6,
+     .bus = TNT_PCI_BUS_2,
+     .device = 15,
+     .int_line = 29},
     {.slot = 7,
      .kind = PCI_SLOT_BUILTIN_FALLBACK,
-     .label = "VCI",
+     .label = "Built-in video",
+     .detail = "VCI",
      .bus = TNT_PCI_BUS_VCI,
      .device = 11,
      .int_line = TNT_INT_VBL,
@@ -93,14 +137,14 @@ const hw_profile_t machine_pm9500 = {
     .mmu_kind = MMU_PPC_604,
 
     .address_bits = 32,
-    .ram_default = 0x2000000, // 32 MB
+    .ram_default = 0x4000000, // 64 MB (a typical well-equipped machine)
     .ram_max = 0x60000000, // 1.5 GB
     .rom_size = 0x400000, // 4 MB ($96CD923D / $9630C68B)
 
     .ram_options = pm9500_ram_options_kb,
-    .scsi_buses = pm9500_scsi_buses,
-    .has_cdrom = false, // no 53C94 chain to hang it on -- see pm7500.c
-    .cdrom_id = 3, // the factory answer, ready for when there is one
+    .storage = tnt_storage_8500,
+    .default_storage = tnt_default_storage, // no CD-ROM drive yet: see pm7500.c
+    .appletalk = true,
     .cdrom_drive = &mac_cdrom_drive_applecd,
     .floppy_slots = mac_floppy_slots_1hd,
 

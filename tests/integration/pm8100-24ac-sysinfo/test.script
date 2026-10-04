@@ -55,7 +55,7 @@ wait_stable(300000000)
 
 # --- The card, as the emulator sees it --------------------------------------
 assert machine.id == "pm8100" "machine.id != pm8100"
-assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC" "slot $C card != 24AC (generic-vROM twin seated instead?)"
+assert machine.nubus.slot[12].card.name == "Macintosh Display Card 24AC" "slot $C card != 24AC (generic-vROM twin seated instead?)"
 assert machine.nubus.slot[12].card.declrom.present "slot $C declaration ROM not present"
 # The sockets either side stay empty — an unpopulated BART window must look
 # empty to us and to the Slot Manager alike.

@@ -3477,6 +3477,27 @@ static bool v2_webgpu_offered(void) {
     return gs_v2gpu_available();
 }
 
+// The rasteriser is the one option a user is offered: the emulator's own
+// (software) or the host GPU's, where the host has one.  WebGPU is a way of
+// drawing the same card, not a second card (it used to be listed as one).
+static const char *const v2_raster_values[] = {V2_DEFAULT_RASTER, "webgpu", NULL};
+static const char *const v2_raster_labels[] = {"Software", "WebGPU", NULL};
+
+// WebGPU is offered only where a WebGPU device exists.
+static bool v2_raster_offered(const char *value) {
+    return strcmp(value, "webgpu") != 0 || gs_v2gpu_available();
+}
+
+static const pci_card_option_t v2_options[] = {
+    {.key = "raster",
+     .label = "Rendering",
+     .values = v2_raster_values,
+     .labels = v2_raster_labels,
+     .default_value = V2_DEFAULT_RASTER,
+     .value_offered = v2_raster_offered},
+    {.key = NULL},
+};
+
 const pci_card_kind_t voodoo2_kind = {
     .id = "voodoo2",
     .display_name = "3dfx Voodoo2",
@@ -3487,7 +3508,7 @@ const pci_card_kind_t voodoo2_kind = {
     .monitors = NULL, // it drives a monitor, but it is not the machine's
                       // display device
     .factory = v2_factory,
-    .options = NULL,
+    .options = v2_options,
     .accepts_option = v2_accepts_option,
     .attach_objects = v2_attach_objects,
 };
@@ -3504,4 +3525,5 @@ const pci_card_kind_t voodoo2_webgpu_kind = {
     .accepts_option = v2_accepts_option,
     .attach_objects = v2_attach_objects,
     .offered = v2_webgpu_offered,
+    .variant_of = "voodoo2", // its "Rendering: WebGPU" option
 };

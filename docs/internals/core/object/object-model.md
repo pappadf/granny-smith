@@ -741,9 +741,10 @@ power with the machine (`adb_power_on`), and with VIA1 reset the RTC's
 ## Boot arguments
 
 `machine.boot` takes only named arguments (`machine_boot_args`,
-`src/machines/machine.c:1266`). The shell writes them as `name=value`; the
+`src/machines/machine.c`). The shell writes them as `name=value`; the
 JS bridge passes them as one JSON object (`initEmulator`,
-`app/web2/src/bus/boot.ts:120-138`). An empty string, `0`, or `0xFF` for
+`app/web2/src/bus/boot.ts`), whose `config` member is the configuration
+document as a JSON string. An empty string, `0`, or `0xFF` for
 `video_sense` means "not given". An explicitly empty value such as `rom=`
 is rejected by the grammar before binding (`machine.c:1256-1264`). On
 success the call returns `true`; otherwise it returns a `V_ERROR` and the
@@ -753,15 +754,16 @@ old machine keeps running.
 |---|---|---|---|
 | `model` | string | **required** | Machine model id (`catalog.profile(id)` describes one). Rejected if missing or not registered (`machine.c:857-862`). |
 | `rom` | string | **required** | Path to the ROM file. It must be readable and identify, by content id, as a known ROM whose compatible list contains `model` ([mac-rom.md §10](../../../reference/formats/mac-rom.md#10-rom-provisioning); `machine.c:873-899`). |
-| `ram` | uint (KB) | the model's `ram_default` | Must be one of the model's `ram_options` (`hw_profile_ram_option_allowed`, `machine_profile.h`); a restored checkpoint's size passes the same check. |
+| `config` | string (JSON) | the model's default configuration | The configuration document ([below](#the-configuration-document)): options, floppy drives, storage devices, the startup device, expansion cards and the connected display. |
+| `ram` | uint (KB) | the model's default memory | Sugar for `options.memory`. Must be one of the model's memory sizes (`catalog.profile(id).options`, the `memory` entry); a restored checkpoint's size passes the same check. |
 | `rom2` | string | none | The second chip of a two-chip Lisa/XL ROM. It only has to be readable: the chips identify after interleaving, so per-file identification and the compatibility check are skipped (`machine.c:878-884`). |
 | `slots` | string | the slots' own cards | Per-slot configuration, `SLOT=CARD[,key=value]*;...` (`machine_slots.c`). `SLOT` is the slot number as `machine.nubus.slot[N]` / `machine.pci.slot[N]` index it (decimal, or `$A` / `0xA`); `CARD` is a card id, `none` for an empty socket, or empty for the slot's own card. `mode=`, `custom=` and `rom=` set the slot's video mode, custom geometry and ROM file; any other key is a card option. Every entry is checked against its slot before teardown: the slot exists and takes a card, the card fits it, the mode belongs to the card, the geometry fits it, the card accepts each option, and the ROM identifies as the card's. |
 | `vrom` | string | resolved from the offers | A NuBus declaration-ROM file: the ROM of every slot whose card its content provides (sugar for those slots' `rom=`). The file must identify as a known declaration ROM (`vrom_identify_card`). |
 | `video_card` | string | the slot default | Card id for the machine's **first** NuBus socket (on a machine with none, its built-in slot): sugar for that slot's `slots=` entry, which it may not contradict. Rejected on a model with no NuBus slots, and for an unknown id (with a "did you mean" hint). |
-| `video_sense` | uint | the card's own default | Monitor sense: 0–7 is the passive code; 8–14 is Apple's indexed numbering for monitors that answer the extended probe (only the DAFB models it). Values up to 14 are accepted (`machine.c:933-935`). |
+| `video_sense` | uint | the connected monitor's | A debug override of the **connected** display device's sense: 0–7 is the passive code; 8–14 is Apple's indexed numbering for monitors that answer the extended probe (only the DAFB models it). |
 | `video_mode` | string | the card's default | Video-mode id for the first socket (sugar for its `mode=`). It must belong to that slot's card. |
 | `custom_mode` | string | none | Custom resolution `WxHxD` for the first socket (sugar for its `custom=`); only the generic `8_24` kind takes one (its `custom_mode_fits` hook). Parsed and rejected with the reason. |
-| `monitor` | string | the model's default | Monitor strapped to the **built-in** video port. The value must be one of the family's monitor ids (see `catalog.profile`), and the model must have configurable built-in video. `none` leaves the port unconnected, which hands the screen to a NuBus card. It resolves to a sense code at construction (`machine.c:938-955`, `1047-1051`). |
+| `monitor` | string | the model's default | Sugar for `displays.builtin.monitor`: the monitor on the **built-in** video port, a monitor-catalogue id the port takes (`catalog.profile(id).displays.builtin.monitors`; the family's own legacy ids are accepted too). `none` leaves the port unconnected, which connects the monitor to the first display card instead. It resolves to the port's sense code at construction. |
 | `pci_card` | string | the slot default | Card id for the machine's **first** PCI socket (sugar for its `slots=` entry). Rejected on a model with no PCI slots, and for an unknown id. |
 | `prom` | string | resolved from the offers | A PCI expansion-ROM file: the ROM of every slot whose card its content provides. The file must identify as a known Open Firmware expansion ROM (`prom_identify_card`). |
 | `pci_option` | string | none | `key=value[,key=value]` options for the `pci_card` socket (for example `vram=4m`; sugar for that slot's options). Each pair must be one the card's `accepts_option` hook accepts, or the boot is rejected. |
@@ -774,6 +776,70 @@ file -- or the boot is rejected before teardown. A socket that falls back
 to its *default* card degrades to an empty slot with a log instead, and a
 soldered-down card such as the SE/30's onboard video synthesises its own
 declaration ROM.
+
+### The configuration document
+
+`catalog.profile(id)` describes everything a model can be built with, as
+one tree with every label written by the core
+(`src/machines/machine_config.c`): `options` (memory, AppleTalk, the
+Network Server's keyswitch and power supplies), `floppies` (each drive
+position and the drive types it takes, `none` where it may be empty),
+`storage` (each bus: its units with their position labels, reserved IDs,
+the buses it shares an ID space with, its bays, the device types it takes
+and whether the startup record can name a device on it), `slots` and the
+`cards` that fit them (with each card's ROM status, monitors, startup
+modes and options), `displays` (built-in video and its monitors) and the
+`monitors` catalogue (`src/core/peripherals/monitor_catalog.c`).
+`catalog.default_config(id)` is the model's default configuration as a
+document, which is also `catalog.profile(id).defaults`.
+
+The document mirrors the tree:
+
+```json
+{ "options":  { "memory": "8192", "appletalk": "active" },
+  "floppies": { "fd0": "hd", "fd1": "none" },
+  "storage":  [ { "bus": "scsi", "unit": 0, "type": "hd" },
+                { "bus": "scsi", "unit": 3, "type": "cd" } ],
+  "startup":  { "bus": "scsi", "unit": 0 },
+  "cards":    [ { "slot": "nubus_c", "card": "mdc_8_24", "options": {} } ],
+  "displays": { "builtin": { "monitor": "none" },
+                "nubus_c": { "monitor": "13in_rgb", "mode": "640x480x8" } } }
+```
+
+Each top-level key, when present, is the complete set for its node; an
+absent key is the model's default, and within `options`, `floppies` and
+`displays` an absent member takes its default (an absent display device
+is unplugged when another one is connected).  `"storage": []` is a
+machine with no drives; `"startup": null` is "no default startup device"
+(the ROM searches).  A `model` member must agree with `model=`.  Images
+are not configuration: they are attached after the boot to the device at a
+position (`machine.attach_media(bus, unit, type, path)`; `attach_hd(path,
+n)` and `attach_cdrom(path)` name the default configuration's Nth hard
+disk and its CD-ROM drive).
+
+The whole document is validated before anything is built, and a
+rejection names the node at fault: an option value the model does not
+offer (V1); a floppy drive type the position does not take (V2); a bus the
+model does not have, a unit it does not have or reserves, a unit used
+twice across buses sharing an ID space, a device type the bus does not
+take (V3); a slot the model does not have, a card that does not fit it, a
+slot used twice or excluded by another occupied slot (V4); a card option
+value the card does not declare (V5); a card whose ROM is missing and that
+has no substitute (V6); a display key that is not a display device of
+this configuration, a monitor the device does not take, a mode the
+monitor does not have, more than one connected monitor (V7); the legacy
+card or display arguments beside the document's `cards` / `displays`
+(V8); a startup device not in `storage`, or on a bus the machine's startup
+record cannot name (V9).  `tests/integration/machine-config-validation`
+pins one case per rule.
+
+The document is a construction input only.  The **seeding step**
+(`machine_substrate_t.seed`, `src/machines/runtime/config_seed.h`) writes
+the parameter-memory records that follow from it -- AppleTalk's on/off
+state in SysParam (with the rest of SysParam as the machine's own ROM
+initialises it, `pram_defaults_t.sysparam`) and the default startup
+device -- once, when a new machine is built; never on a restore, a reset
+or a power cycle, after which the store is the guest's.
 
 A running machine keeps no record of the document it was built from: each
 fact is read from the object that holds it -- `machine.id`, `machine.ram`,
@@ -791,14 +857,19 @@ call `machine_boot_apply` directly (`src/platform/headless/headless_main.c:1343-
 | `rom=<file>` | `rom` | Required. The CLI identifies the file itself first and exits if it does not identify (`headless_main.c:1298`). The directory's `*.vrom` and `*.prom` files are offered before the boot (`offer_sibling_card_roms`, `headless_main.c:931`). |
 | `model=<id>` | `model` | Defaults to the first entry of the ROM's compatible list (for the Universal ROM, `se30`). An id outside that list is refused with the list printed (`headless_main.c:1303-1326`). |
 | `ram=<kb>` | `ram` | Parsed with `strtoul`. A non-number becomes `0`, which means the model default (`headless_main.c:1156`). |
+| `config=<file or JSON>` | `config` | A file holding the document, or the document itself. |
+| `drive=<bus>:<unit>:<type>[:<image>]` | `config.storage` | Repeatable: adds a drive to the default configuration's (or `config`'s), with its image attached after the boot. |
+| `fd1=<image>` (or a second `fd=`) | `config.floppies` | Puts a drive at the second position when the default configuration leaves it empty. |
 | `video_card=<id>` | `video_card` | |
 | `slots=<spec>` | `slots` | |
 | `monitor=<id>` | `monitor` | |
 | (none) | `video_sense` | Always `-1` (unset). |
 
-`vrom`, `prom`, `pci_card`, `pci_option`, `video_mode`, `video_sense`,
-`custom_mode` and `rom2` have no CLI form. A script that needs them calls
-`machine.boot` itself.
+`hd=` and `cdrom=` keep their meaning: the image for the default
+configuration's first hard disk and its CD-ROM drive.  `vrom`, `prom`,
+`pci_card`, `pci_option`, `video_mode`, `video_sense`, `custom_mode` and
+`rom2` have no CLI form. A script that needs them calls `machine.boot`
+itself.
 
 ## Adding a new class
 

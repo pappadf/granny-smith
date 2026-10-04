@@ -1,0 +1,516 @@
+{
+  "id": "iici",
+  "name": "Macintosh IIci",
+  "freq": 25000000,
+  "capabilities": {
+    "cpu": {
+      "model": 68030,
+      "address_bits": 32,
+      "fpu": true
+    },
+    "mmu": {
+      "present": true,
+      "kind": "68030_pmmu"
+    },
+    "nubus": true,
+    "pci": false,
+    "video_in": false,
+    "audio_in": false,
+    "aux_cpus": []
+  },
+  "options": [
+    {
+      "id": "memory",
+      "label": "Memory",
+      "kind": "choice",
+      "values": [
+        {
+          "id": "1024",
+          "label": "1 MB"
+        },
+        {
+          "id": "2048",
+          "label": "2 MB"
+        },
+        {
+          "id": "4096",
+          "label": "4 MB"
+        },
+        {
+          "id": "5120",
+          "label": "5 MB"
+        },
+        {
+          "id": "8192",
+          "label": "8 MB"
+        },
+        {
+          "id": "16384",
+          "label": "16 MB"
+        },
+        {
+          "id": "17408",
+          "label": "17 MB"
+        },
+        {
+          "id": "20480",
+          "label": "20 MB"
+        },
+        {
+          "id": "32768",
+          "label": "32 MB"
+        },
+        {
+          "id": "65536",
+          "label": "64 MB"
+        },
+        {
+          "id": "66560",
+          "label": "65 MB"
+        },
+        {
+          "id": "69632",
+          "label": "68 MB"
+        },
+        {
+          "id": "81920",
+          "label": "80 MB"
+        },
+        {
+          "id": "131072",
+          "label": "128 MB"
+        }
+      ],
+      "default": "8192"
+    },
+    {
+      "id": "appletalk",
+      "label": "AppleTalk",
+      "kind": "choice",
+      "values": [
+        {
+          "id": "active",
+          "label": "Active"
+        },
+        {
+          "id": "inactive",
+          "label": "Inactive"
+        }
+      ],
+      "default": "active"
+    }
+  ],
+  "floppies": [
+    {
+      "id": "fd0",
+      "label": "Internal floppy drive",
+      "types": [
+        {
+          "id": "hd",
+          "label": "SuperDrive (1.4 MB)"
+        }
+      ],
+      "default": "hd"
+    },
+    {
+      "id": "fd1",
+      "label": "External floppy drive",
+      "types": [
+        {
+          "id": "none",
+          "label": "None"
+        },
+        {
+          "id": "hd",
+          "label": "SuperDrive (1.4 MB)"
+        }
+      ],
+      "default": "none"
+    }
+  ],
+  "storage": [
+    {
+      "id": "scsi",
+      "label": "SCSI",
+      "kind": "scsi",
+      "width": "narrow",
+      "units": [
+        {
+          "unit": 0,
+          "label": "ID 0 \u00b7 Internal hard disk bay"
+        },
+        {
+          "unit": 1,
+          "label": "ID 1 \u00b7 External"
+        },
+        {
+          "unit": 2,
+          "label": "ID 2 \u00b7 External"
+        },
+        {
+          "unit": 3,
+          "label": "ID 3 \u00b7 External"
+        },
+        {
+          "unit": 4,
+          "label": "ID 4 \u00b7 External"
+        },
+        {
+          "unit": 5,
+          "label": "ID 5 \u00b7 External"
+        },
+        {
+          "unit": 6,
+          "label": "ID 6 \u00b7 External"
+        }
+      ],
+      "reserved": [7],
+      "shares_units_with": [],
+      "external_connector": true,
+      "bays": [
+        {
+          "unit": 0,
+          "label": "Internal hard disk bay"
+        }
+      ],
+      "accepts": [
+        {
+          "id": "hd",
+          "label": "Hard disk"
+        },
+        {
+          "id": "cd",
+          "label": "CD-ROM drive"
+        }
+      ],
+      "startup": true
+    }
+  ],
+  "slots": [
+    {
+      "id": "nubus_c",
+      "label": "NuBus slot 4",
+      "detail": "Slot ID $C",
+      "bus": "nubus",
+      "kind": "socket",
+      "excludes": [],
+      "fill_order": 4
+    },
+    {
+      "id": "nubus_d",
+      "label": "NuBus slot 5",
+      "detail": "Slot ID $D",
+      "bus": "nubus",
+      "kind": "socket",
+      "excludes": [],
+      "fill_order": 5
+    },
+    {
+      "id": "nubus_e",
+      "label": "NuBus slot 6",
+      "detail": "Slot ID $E",
+      "bus": "nubus",
+      "kind": "socket",
+      "excludes": [],
+      "fill_order": 6
+    }
+  ],
+  "cards": [
+    {
+      "id": "mdc_8_24",
+      "label": "Macintosh Display Card 8\u202224",
+      "class": "display",
+      "fits": ["nubus_c", "nubus_d", "nubus_e"],
+      "rom": {
+        "kind": "vrom",
+        "substitute": true
+      },
+      "status": "ok",
+      "monitors": ["13in_rgb", "12in_rgb", "15in_portrait", "21in_rgb"],
+      "modes": {
+        "13in_rgb": [
+          {
+            "id": "640x480x1",
+            "label": "640 \u00d7 480, Black & white"
+          },
+          {
+            "id": "640x480x2",
+            "label": "640 \u00d7 480, 4 colors"
+          },
+          {
+            "id": "640x480x4",
+            "label": "640 \u00d7 480, 16 colors"
+          },
+          {
+            "id": "640x480x8",
+            "label": "640 \u00d7 480, 256 colors"
+          }
+        ],
+        "12in_rgb": [
+          {
+            "id": "512x384x1",
+            "label": "512 \u00d7 384, Black & white"
+          },
+          {
+            "id": "512x384x2",
+            "label": "512 \u00d7 384, 4 colors"
+          },
+          {
+            "id": "512x384x4",
+            "label": "512 \u00d7 384, 16 colors"
+          },
+          {
+            "id": "512x384x8",
+            "label": "512 \u00d7 384, 256 colors"
+          }
+        ],
+        "15in_portrait": [
+          {
+            "id": "640x870x1",
+            "label": "640 \u00d7 870, Black & white"
+          },
+          {
+            "id": "640x870x2",
+            "label": "640 \u00d7 870, 4 grays"
+          },
+          {
+            "id": "640x870x4",
+            "label": "640 \u00d7 870, 16 grays"
+          },
+          {
+            "id": "640x870x8",
+            "label": "640 \u00d7 870, 256 grays"
+          }
+        ],
+        "21in_rgb": [
+          {
+            "id": "1152x870x1",
+            "label": "1152 \u00d7 870, Black & white"
+          },
+          {
+            "id": "1152x870x2",
+            "label": "1152 \u00d7 870, 4 colors"
+          },
+          {
+            "id": "1152x870x4",
+            "label": "1152 \u00d7 870, 16 colors"
+          },
+          {
+            "id": "1152x870x8",
+            "label": "1152 \u00d7 870, 256 colors"
+          }
+        ]
+      },
+      "options": []
+    },
+    {
+      "id": "display_card_24ac",
+      "label": "Macintosh Display Card 24AC",
+      "class": "display",
+      "fits": ["nubus_c", "nubus_d", "nubus_e"],
+      "rom": {
+        "kind": "vrom",
+        "substitute": true
+      },
+      "status": "ok",
+      "monitors": ["13in_rgb", "16in_rgb", "21in_rgb"],
+      "modes": {
+        "13in_rgb": [
+          {
+            "id": "640x480x1",
+            "label": "640 \u00d7 480, Black & white"
+          },
+          {
+            "id": "640x480x4",
+            "label": "640 \u00d7 480, 16 colors"
+          },
+          {
+            "id": "640x480x8",
+            "label": "640 \u00d7 480, 256 colors"
+          },
+          {
+            "id": "640x480x16",
+            "label": "640 \u00d7 480, Thousands of colors"
+          },
+          {
+            "id": "640x480x32",
+            "label": "640 \u00d7 480, Millions of colors"
+          }
+        ],
+        "16in_rgb": [
+          {
+            "id": "832x624x1",
+            "label": "832 \u00d7 624, Black & white"
+          },
+          {
+            "id": "832x624x4",
+            "label": "832 \u00d7 624, 16 colors"
+          },
+          {
+            "id": "832x624x8",
+            "label": "832 \u00d7 624, 256 colors"
+          },
+          {
+            "id": "832x624x16",
+            "label": "832 \u00d7 624, Thousands of colors"
+          },
+          {
+            "id": "832x624x32",
+            "label": "832 \u00d7 624, Millions of colors"
+          }
+        ],
+        "21in_rgb": [
+          {
+            "id": "1152x870x1",
+            "label": "1152 \u00d7 870, Black & white"
+          },
+          {
+            "id": "1152x870x4",
+            "label": "1152 \u00d7 870, 16 colors"
+          },
+          {
+            "id": "1152x870x8",
+            "label": "1152 \u00d7 870, 256 colors"
+          },
+          {
+            "id": "1152x870x16",
+            "label": "1152 \u00d7 870, Thousands of colors"
+          },
+          {
+            "id": "1152x870x32",
+            "label": "1152 \u00d7 870, Millions of colors"
+          }
+        ]
+      },
+      "options": []
+    },
+    {
+      "id": "824gc",
+      "label": "Macintosh Display Card 8\u202224 GC",
+      "class": "display",
+      "fits": ["nubus_c", "nubus_d", "nubus_e"],
+      "rom": {
+        "kind": "vrom",
+        "substitute": true
+      },
+      "status": "ok",
+      "monitors": ["13in_rgb", "16in_rgb"],
+      "modes": {
+        "13in_rgb": [
+          {
+            "id": "640x480x1",
+            "label": "640 \u00d7 480, Black & white"
+          },
+          {
+            "id": "640x480x2",
+            "label": "640 \u00d7 480, 4 colors"
+          },
+          {
+            "id": "640x480x4",
+            "label": "640 \u00d7 480, 16 colors"
+          },
+          {
+            "id": "640x480x8",
+            "label": "640 \u00d7 480, 256 colors"
+          }
+        ],
+        "16in_rgb": [
+          {
+            "id": "832x624x1",
+            "label": "832 \u00d7 624, Black & white"
+          },
+          {
+            "id": "832x624x2",
+            "label": "832 \u00d7 624, 4 colors"
+          },
+          {
+            "id": "832x624x4",
+            "label": "832 \u00d7 624, 16 colors"
+          },
+          {
+            "id": "832x624x8",
+            "label": "832 \u00d7 624, 256 colors"
+          }
+        ]
+      },
+      "options": []
+    }
+  ],
+  "displays": {
+    "builtin": {
+      "id": "builtin",
+      "label": "Built-in video",
+      "detail": "RBV",
+      "monitors": ["13in_rgb"],
+      "default_monitor": "13in_rgb",
+      "modes": {},
+      "options": []
+    },
+    "max_connected": 1
+  },
+  "monitors": [
+    {
+      "id": "12in_rgb",
+      "label": "12\u2033 Macintosh RGB Display",
+      "width": 512,
+      "height": 384
+    },
+    {
+      "id": "13in_rgb",
+      "label": "13\u2033 AppleColor High-Resolution RGB",
+      "width": 640,
+      "height": 480
+    },
+    {
+      "id": "15in_portrait",
+      "label": "15\u2033 Macintosh Portrait Display",
+      "width": 640,
+      "height": 870
+    },
+    {
+      "id": "16in_rgb",
+      "label": "16\u2033 Macintosh Color Display",
+      "width": 832,
+      "height": 624
+    },
+    {
+      "id": "21in_rgb",
+      "label": "21\u2033 Macintosh Color Display",
+      "width": 1152,
+      "height": 870
+    }
+  ],
+  "defaults": {
+    "model": "iici",
+    "options": {
+      "memory": "8192",
+      "appletalk": "active"
+    },
+    "floppies": {
+      "fd0": "hd",
+      "fd1": "none"
+    },
+    "storage": [
+      {
+        "bus": "scsi",
+        "unit": 0,
+        "type": "hd"
+      },
+      {
+        "bus": "scsi",
+        "unit": 3,
+        "type": "cd"
+      }
+    ],
+    "startup": {
+      "bus": "scsi",
+      "unit": 0
+    },
+    "cards": [],
+    "displays": {
+      "builtin": {
+        "monitor": "13in_rgb"
+      }
+    }
+  }
+}

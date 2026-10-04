@@ -11,18 +11,19 @@
     /** 'hd' creates a blank hard disk; 'fd' creates a blank floppy. */
     kind: 'hd' | 'fd';
     /**
-     * For kind==='hd': which hard-disk bus the target machine uses. 'scsi'
-     * builds a 512-byte/block SCSI image from the drive catalog; 'profile'
-     * builds a raw 532-byte/block Lisa/XL ParaPort ProFile image.
+     * For kind==='hd': the `kind` of the storage bus the disk is for, as the
+     * machine's storage tree names it (bus/profile.ts StorageBus.kind).  A
+     * ProFile port takes a raw 532-byte/block Lisa/XL ProFile image; every
+     * other bus a 512-byte/block image from the drive catalog.
      */
-    bus?: 'scsi' | 'profile';
+    busKind?: string;
     onClose: () => void;
     /** Called with the bare filename of the newly created image. */
     onCreated: (name: string) => void;
   }
-  let { open, kind, bus = 'scsi', onClose, onCreated }: Props = $props();
+  let { open, kind, busKind = 'scsi', onClose, onCreated }: Props = $props();
 
-  let isProfile = $derived(kind === 'hd' && bus === 'profile');
+  let isProfile = $derived(kind === 'hd' && busKind === 'profile');
 
   interface HdModel {
     label: string;
@@ -54,11 +55,11 @@
   // that loop spins on the microtask queue and freezes the tab.
   let modelsState = $state<'idle' | 'loading' | 'error' | 'ready'>('idle');
 
-  // Load the SCSI drive catalog when the HD dialog opens. The list comes
+  // Load the drive catalog when the HD dialog opens (any bus but a ProFile port). The list comes
   // back as JSON strings (V_LIST<V_STRING>); dedupe by label keeping the
   // largest size, matching the legacy dialog.
   $effect(() => {
-    if (open && kind === 'hd' && bus === 'scsi' && modelsState === 'idle') {
+    if (open && kind === 'hd' && !isProfile && modelsState === 'idle') {
       modelsState = 'loading';
       void loadHdModels();
     }

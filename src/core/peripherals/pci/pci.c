@@ -694,6 +694,7 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
                 continue;
             root->entry[s->slot].slot = s->slot;
             root->entry[s->slot].video_sense = machine_slot_sense(&root->cfg->build_opts);
+            root->entry[s->slot].connected = root->cfg->build_opts.builtin_connected;
         }
     }
     machine_part(root->cfg, cp, "pci", pci_slots_part_save, root);
@@ -944,6 +945,27 @@ void pci_tick_vbl(pci_root_t *root) {
         if (devs[i]->ops && devs[i]->ops->on_vbl)
             devs[i]->ops->on_vbl(devs[i], root->cfg);
     }
+}
+
+display_t *pci_connected_display(pci_root_t *root) {
+    // A pass-through 3D card (the Voodoo2) sits between the display card and
+    // the monitor and answers display() only while it holds the output:
+    // then the monitor shows it, whichever device it is connected to.
+    for (int i = 0; root && i < PCI_MAX_SLOTS; i++) {
+        pci_device_t *dev = root->slot_dev[i];
+        const pci_card_kind_t *k = pci_slot_kind(root, i);
+        if (dev && k && k->card_class && strcmp(k->card_class, "3d") == 0 && dev->ops && dev->ops->display) {
+            display_t *d = dev->ops->display(dev);
+            if (d)
+                return d;
+        }
+    }
+    for (int i = 0; root && i < PCI_MAX_SLOTS; i++) {
+        pci_device_t *dev = root->slot_dev[i];
+        if (dev && root->entry[i].connected && dev->ops && dev->ops->display)
+            return dev->ops->display(dev);
+    }
+    return NULL;
 }
 
 display_t *pci_primary_display(pci_root_t *root) {

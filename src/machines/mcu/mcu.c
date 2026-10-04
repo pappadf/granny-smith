@@ -9,6 +9,7 @@
 
 #include "mcu.h"
 #include "appletalk.h"
+#include "config_seed.h"
 #include "regfile.h"
 
 #include "mac_host_io.h" // mac_fd_*/mac_input_*
@@ -788,10 +789,83 @@ static struct display *mcu_display(config_t *cfg) {
     return (st && st->dafb) ? dafb_display(st->dafb) : NULL;
 }
 
+// === Built-in video as a display device ======================================
+//
+// The DAFB's monitor straps, in Apple's indexed numbering (dafb.h): the
+// passive 3-bit codes plus the GoldFish 16" on the extended probe, each
+// measured through a Q700/Q900 ROM boot ("dafb.c": only GoldFish produced a
+// new raster among the extended codes).  The Q950's ROM is not measured
+// beyond the passive codes, so it offers those.  Code 7 with no extended
+// answer is an unplugged port.
+typedef struct dafb_monitor {
+    const char *monitor; // catalogue id (doubles as the strap's token)
+    uint8_t sense;
+} dafb_monitor_t;
+
+static const dafb_monitor_t k_dafb_monitors[] = {
+    {"13in_rgb",            0x6u                 },
+    {"12in_rgb",            0x2u                 },
+    {"15in_portrait",       0x1u                 },
+    {"15in_portrait_color", 0x5u                 },
+    {"16in_rgb",            DAFB_SENSE_INDEXED_GF},
+    {"21in_rgb",            0x0u                 },
+    {"21in_mono",           0x3u                 },
+    {"none",                0x7u                 },
+    {NULL,                  0                    },
+};
+
+// The tables' rows a ROM can show: all of them, or the passive codes only.
+static bool dafb_monitor_at(const dafb_monitor_t *t, bool passive_only, size_t i, const char **id,
+                            const char **monitor) {
+    size_t n = 0;
+    for (const dafb_monitor_t *m = t; m->monitor; m++) {
+        if (passive_only && m->sense > 7)
+            continue;
+        if (n++ == i) {
+            *id = *monitor = m->monitor;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool dafb_monitor_sense(const char *id, uint8_t *out) {
+    for (const dafb_monitor_t *m = k_dafb_monitors; m->monitor; m++) {
+        if (strcmp(m->monitor, id) == 0) {
+            *out = m->sense;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool dafb_all_at(size_t i, const char **id, const char **monitor) {
+    return dafb_monitor_at(k_dafb_monitors, false, i, id, monitor);
+}
+
+static bool dafb_passive_at(size_t i, const char **id, const char **monitor) {
+    return dafb_monitor_at(k_dafb_monitors, true, i, id, monitor);
+}
+
+const builtin_video_desc_t mcu_builtin_video_dafb = {
+    .detail = "DAFB",
+    .monitor_at = dafb_all_at,
+    .monitor_sense = dafb_monitor_sense,
+    .default_monitor = "13in_rgb",
+};
+
+const builtin_video_desc_t mcu_builtin_video_dafb_passive = {
+    .detail = "DAFB",
+    .monitor_at = dafb_passive_at,
+    .monitor_sense = dafb_monitor_sense,
+    .default_monitor = "13in_rgb",
+};
+
 const machine_substrate_t mcu_substrate = {
     .init = mcu_init,
     .bus_reset = mcu_bus_reset,
     .teardown = mcu_teardown,
+    .seed = mac_seed_rtc_pram,
     .trigger_vbl = mcu_trigger_vbl,
     .nubus_slot_irq = mcu_nubus_slot_irq, // slots → VIA2 PA1-PA5 + /SLOTIRQ aggregate
     .fd_insert = mac_fd_insert,

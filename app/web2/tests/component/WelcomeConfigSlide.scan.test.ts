@@ -49,25 +49,12 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
         return null;
       }
       if (path === 'catalog.profile') {
+        // Real trees (tests/helpers/configTree.ts); the SE/30 borrows the
+        // IIx's under its own name.
+        const { tree } = await import('../helpers/configTree');
         const id = (args?.[0] as string) ?? '';
-        const byId: Record<string, object> = {
-          plus: {
-            name: 'Macintosh Plus',
-            ram_options: [1024, 2048, 4096],
-            ram_default: 4096,
-            floppy_slots: [
-              { label: 'Internal Floppy', kind: 'standard' },
-              { label: 'External Floppy', kind: 'standard' },
-            ],
-          },
-          se30: {
-            name: 'Macintosh SE/30',
-            ram_options: [2048, 4096, 8192, 16384],
-            ram_default: 8192,
-            floppy_slots: [{ label: 'Internal Floppy', kind: 'hd' }],
-          },
-        };
-        return byId[id] ?? { name: id };
+        if (id === 'se30') return { ...tree('iix'), id: 'se30', name: 'Macintosh SE/30' };
+        return tree(id) ?? null;
       }
       return null;
     },
@@ -215,7 +202,10 @@ describe('WelcomeConfigSlide OPFS scan', () => {
     // The scan finished (no "Scanning ROMs…" left) and the duplicate collapsed
     // to a single offer.
     expect(container.textContent).not.toContain('Scanning ROMs');
-    const fd = container.querySelector('select[id^="cfg-fd"]') as HTMLSelectElement;
+    await waitFor(() => {
+      if (!container.querySelector('#cfg-fd0')) throw new Error('no floppy row yet');
+    });
+    const fd = container.querySelector('#cfg-fd0') as HTMLSelectElement;
     const labels = Array.from(fd.options).map((o) => o.textContent);
     expect(labels.filter((l) => l === 'Install 1.img').length).toBe(1);
   });

@@ -178,10 +178,14 @@ typedef enum pci_attach {
 // alone" means rather than inventing a blank entry.
 typedef struct pci_card_option {
     const char *key; // "vram" — what pci_option= carries
-    const char *label; // "Video Memory"
+    const char *label; // "Video memory"
     const char *const *values; // {"2m", "4m", NULL}
     const char *const *labels; // {"2 MB", "4 MB (expansion module)", NULL}
     const char *default_value;
+    // Is `value` offered on this host right now?  NULL means every value is.
+    // A value that needs a host facility (the Voodoo2's WebGPU rendering)
+    // answers false without it, and catalog.profile leaves it out.
+    bool (*value_offered)(const char *value);
 } pci_card_option_t;
 
 typedef struct pci_card_kind {
@@ -224,6 +228,12 @@ typedef struct pci_card_kind {
     // a boot document or a checkpoint may still name it, and the factory
     // falls back on its own.
     bool (*offered)(void);
+
+    // This kind is another kind's variant, reached through one of that card's
+    // options, not a card of its own (the Voodoo2's WebGPU rasteriser is the
+    // Voodoo2's "Rendering" option).  catalog.profile lists only the card it
+    // names; the kind stays registered so a document or checkpoint may name it.
+    const char *variant_of;
 } pci_card_kind_t;
 
 // Registry accessors.  The registry is an explicit list in pci.c.

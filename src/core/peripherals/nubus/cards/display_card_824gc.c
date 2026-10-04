@@ -1130,7 +1130,7 @@ static display_t *card_display(nubus_card_t *card) {
 
 static const char *card_name(const nubus_card_t *card) {
     (void)card;
-    return "Apple Macintosh Display Card 8\xe2\x80\xa2"
+    return "Macintosh Display Card 8\xe2\x80\xa2"
            "24 GC";
 }
 
@@ -1146,8 +1146,8 @@ static int card_init_generic(nubus_card_t *card, config_t *cfg, checkpoint_t *cp
 
 static const char *card_name_generic(const nubus_card_t *card) {
     (void)card;
-    return "Apple Macintosh Display Card 8\xe2\x80\xa2"
-           "24 GC (generic video ROM)";
+    return "Macintosh Display Card 8\xe2\x80\xa2"
+           "24 GC (substitute ROM)";
 }
 
 // === Checkpoint ==============================================================
@@ -1347,7 +1347,7 @@ static const int display_card_824gc_depths[] = {1, 2, 4, 8, 0};
 // "rgb_*" ids when a slot entry's video_mode= names one.
 static const nubus_monitor_t display_card_824gc_monitors[] = {
     {.id = "gc_640x480",
-     .name = "13\" AppleColor (640×480)",
+     .monitor = "13in_rgb",
      .width = 640,
      .height = 480,
      .depths = display_card_824gc_depths,
@@ -1358,7 +1358,7 @@ static const nubus_monitor_t display_card_824gc_monitors[] = {
      // $80's low bits are 0 = config 0 ✓, so the seeded depth survives.
      .srsrc_sister = 0x80},
     {.id = "gc_832x624",
-     .name = "16\" (832×624)",
+     .monitor = "16in_rgb",
      .width = 832,
      .height = 624,
      .depths = display_card_824gc_depths,
@@ -1468,10 +1468,11 @@ static void display_card_824gc_attach_objects(nubus_card_t *card, struct object 
 
 const nubus_card_kind_t display_card_824gc_kind = {
     .id = "824gc",
-    .display_name = "Apple Macintosh Display Card 8\xe2\x80\xa2"
+    .display_name = "Macintosh Display Card 8\xe2\x80\xa2"
                     "24 GC",
     .attach = CARD_ATTACH_NUBUS,
     .requires_vrom = true,
+    .substitute = "8_24gc",
     .monitors = display_card_824gc_monitors,
     .ops = &display_card_824gc_ops,
     .attach_objects = display_card_824gc_attach_objects,
@@ -1482,7 +1483,7 @@ const nubus_card_kind_t display_card_824gc_kind = {
 // extended-mode work.
 static const nubus_monitor_t display_card_824gc_generic_monitors[] = {
     {.id = "gc_640x480",
-     .name = "13\" AppleColor (640×480)",
+     .monitor = "13in_rgb",
      .width = 640,
      .height = 480,
      .depths = display_card_824gc_depths,
@@ -1498,10 +1499,11 @@ static const nubus_monitor_t display_card_824gc_generic_monitors[] = {
 // deliberate short boot-document spelling.
 const nubus_card_kind_t display_card_824gc_generic_kind = {
     .id = "8_24gc",
-    .display_name = "Apple Macintosh Display Card 8\xe2\x80\xa2"
-                    "24 GC (generic video ROM)",
+    .display_name = "Macintosh Display Card 8\xe2\x80\xa2"
+                    "24 GC",
     .attach = CARD_ATTACH_NUBUS,
     .requires_vrom = false,
+    .substitute_for = "824gc",
     .monitors = display_card_824gc_generic_monitors,
     .ops = &display_card_824gc_generic_ops,
     .attach_objects = display_card_824gc_attach_objects,

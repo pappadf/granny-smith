@@ -165,7 +165,7 @@ def row_8100_75_24ac() {
     machine.boot model="pm8100" ram=16384 rom="${$ROM}" slots="12=24ac"
     run_pdm_75("pm8100", 0)
 
-    assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC (generic video ROM)" "slot C card != 24AC"
+    assert machine.nubus.slot[12].card.name == "Macintosh Display Card 24AC (substitute ROM)" "slot C card != 24AC"
     assert machine.nubus.slot[12].card.declrom.present "slot C declaration ROM not present"
     # The empty sockets either side of it are still empty — what an
     # unpopulated BART window must look like, to us and to the Slot
@@ -265,14 +265,14 @@ def row_pdm_nubus_empty() {
 def row_pdm_nubus_checkpoint() {
     machine.boot model="pm8100" ram=16384 rom="${$ROM}" video_card="24ac"
     machine.rtc.time = 0xE0000000
-    assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC (generic video ROM)" "wildcard pick did not seat in the first socket"
+    assert machine.nubus.slot[12].card.name == "Macintosh Display Card 24AC (substitute ROM)" "wildcard pick did not seat in the first socket"
     scheduler.run 360000000
     let before = machine.screen.checksum()
     assert checkpoint.save("${$RESULTS_DIR}/pdm-nubus.gs") "checkpoint save failed"
     assert checkpoint.load("${$RESULTS_DIR}/pdm-nubus.gs") "checkpoint load failed"
     assert machine.id == "pm8100" "restored machine is not a pm8100"
     assert machine.ram == 16384 "restored machine lost its RAM size"
-    assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC (generic video ROM)" "card gone after restore"
+    assert machine.nubus.slot[12].card.name == "Macintosh Display Card 24AC (substitute ROM)" "card gone after restore"
     assert machine.screen.checksum() == $before "picture changed across the restore"
     # ...and the restored machine is live, not frozen.
     scheduler.run 20000000

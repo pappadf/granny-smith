@@ -1,7 +1,7 @@
 # Integration test: IIcx Video Modes
 #
 # Cold-boot matrix covering 4 monitor types × 4 colour depths on the
-# Apple Macintosh Display Card 8•24 (JMFB).  Each combination is a
+# Macintosh Display Card 8•24 (JMFB).  Each combination is a
 # separate `machine.boot` of the IIcx with the System 7.0.1 floppy at
 # the chosen `nubus.video_sense`, with PRAM seeded so the Slot
 # Manager's GET_SLOT_DEPTH (boot ROM $40800820 → $408009F6) picks up

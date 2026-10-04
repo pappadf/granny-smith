@@ -6,7 +6,9 @@
 # check()/check_ex() so REGEN works, goldens renamed to the suite golden
 # grammar (docs/guide/TESTING.md), and a report_perf call. The COPS
 # keyboard choreographies — long exact scan-code sequences — were copied
-# by script, not retyped.
+# by script, not retyped.  The rows that start up from a floppy boot a
+# configuration with no startup device ("startup": null): the default one
+# names the ProFile, which would send the boot ROM to an empty disk.
 
 def row_lisa_los31_profile() {
     machine.boot model="lisa" ram=2048 rom="../../data/roms/lisa2-revh-098917b2.rom"
@@ -58,7 +60,7 @@ def row_lisa_los31_profile() {
 }
 
 def row_lisa_xenix_hdinit() {
-    machine.boot model="lisa" ram=2048 rom="../../data/roms/lisa2-revh-098917b2.rom"
+    machine.boot model="lisa" ram=2048 rom="../../data/roms/lisa2-revh-098917b2.rom" config="{\"startup\":null}"
     machine.floppy.drive[0].insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-Boot-XProFile.dc42"
     # SCO Xenix 3.0 — hard-disk initialization (hdinit) on the Apple Lisa 2.
     # See config.mk for the procedure (XENIX Installation Guide May-1984 §1.5.1-1.5.2).
@@ -143,7 +145,7 @@ def row_lisa_xenix_hdinit() {
 }
 
 def row_lisa_xenix_boot() {
-    machine.boot model="lisa" ram=2048 rom="../../data/roms/lisa2-revh-098917b2.rom"
+    machine.boot model="lisa" ram=2048 rom="../../data/roms/lisa2-revh-098917b2.rom" config="{\"startup\":null}"
     machine.floppy.drive[0].insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-Boot-XProFile.dc42"
     # Boot SCO Xenix 3.0 from the installed ProFile (Apple Lisa 2).
     # See config.mk for the procedure.  The installed ProFile (writable scratch copy
@@ -221,7 +223,7 @@ def row_lisa_xenix_boot() {
 }
 
 def row_lisa_xenix_nofloppy() {
-    machine.boot model="lisa" ram=2048 rom="../../data/roms/lisa2-revh-098917b2.rom"
+    machine.boot model="lisa" ram=2048 rom="../../data/roms/lisa2-revh-098917b2.rom" config="{\"startup\":null}"
     # Apple Lisa 2 — boot SCO Xenix 3.0 from the ProFile with NO floppy (see config.mk).
     #
     # Keyboard input is raw Lisa COPS scancodes via keyboard.press (down = 0x80|kc,
@@ -282,7 +284,7 @@ def row_lisa_xenix_nofloppy() {
 }
 
 def row_xl_macworks_boot() {
-    machine.boot model="macxl" ram=1024 rom="../../data/roms/macxl-3a-094c82f0.rom"
+    machine.boot model="macxl" ram=1024 rom="../../data/roms/macxl-3a-094c82f0.rom" config="{\"startup\":null}"
     machine.floppy.drive[0].insert "../../data/Lisa/MacWorksXL/MacWorksXL_3.0_May1985.dc42"
     # Integration test: Macintosh XL — MacWorks XL boot to the Finder desktop.
     #
@@ -321,7 +323,7 @@ def row_xl_macworks_boot() {
 }
 
 def row_xl_no_media() {
-    machine.boot model="macxl" ram=1024 rom="../../data/roms/macxl-3a-094c82f0.rom"
+    machine.boot model="macxl" ram=1024 rom="../../data/roms/macxl-3a-094c82f0.rom" config="{\"startup\":null}"
     # Integration test: Macintosh XL — no startup device ("insert a diskette" prompt).
     #
     # Start the Macintosh XL with nothing to boot from: no floppy in the drive and no

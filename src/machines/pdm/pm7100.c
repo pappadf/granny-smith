@@ -14,8 +14,11 @@
 #include "nubus.h"
 #include "pram_defaults.h"
 
-// 8 MB soldered + fixed-window banks of {2,8,32} MB: up to 136 MB.
-static const uint32_t pm7100_ram_options_kb[] = {8192, 16384, 24576, 40960, 73728, 139264, 0};
+// 8 MB soldered + two SIMM pairs, carved into fixed-window banks of
+// {2,8,32} MB: every total the pairs make, up to 136 MB.
+static const uint32_t pm7100_ram_options_kb[] = {8192,  10240, 12288, 14336, 16384, 18432,  20480,  24576,
+                                                 26624, 28672, 32768, 40960, 43008, 45056,  49152,  57344,
+                                                 73728, 75776, 77824, 81920, 90112, 106496, 139264, 0};
 
 // One internal manual-inject SuperDrive behind SWIM3, and no external
 // port — the PDM family has no second bay (Apple, "Power Macintosh
@@ -23,8 +26,16 @@ static const uint32_t pm7100_ram_options_kb[] = {8192, 16384, 24576, 40960, 7372
 
 // One standard 5 MB/s bus (the Curio 53C94 cell), internal + external.
 
-static const scsi_bus_decl_t pm7100_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
+// Curio's bus: the hard disk bay, a second hard disk bay, the CD-ROM bay.
+static const storage_bay_decl_t pm7100_bays[] = {
+    {.unit = 0, .label = "Internal hard disk bay"},
+    {.unit = 1, .label = "Second hard disk bay"},
+    {.unit = 3, .label = "CD-ROM bay"},
+    {0},
+};
+
+static const storage_bus_decl_t pm7100_storage[] = {
+    MAC_SCSI_BUS("scsi", "SCSI", MEDIA_BUS_SCSI, pm7100_bays, true),
     {0},
 };
 
@@ -45,18 +56,15 @@ const hw_profile_t machine_pm7100 = {
     .mmu_kind = MMU_PPC_601,
 
     .address_bits = 32,
-    .ram_default = 0x1800000, // 24 MB
+    .ram_default = 0x1800000, // 24 MB (a typical well-equipped machine)
     .ram_max = 0x8800000, // 136 MB
     .rom_size = 0x400000, // 4 MB ($9FEB69B3)
 
     .ram_options = pm7100_ram_options_kb,
     .floppy_slots = mac_floppy_slots_1hd,
-    .scsi_buses = pm7100_scsi_buses,
-    // The AppleCD 300i rides the same Curio 53C96 bus as the HD slots: no
-    // CD-specific hardware is involved, so the bay is offered as soon as that
-    // bus exists.
-    .has_cdrom = true,
-    .cdrom_id = 3,
+    .storage = pm7100_storage,
+    .default_storage = mac_default_storage_hd0_cd3,
+    .appletalk = true,
     .cdrom_drive = &mac_cdrom_drive_applecd,
 
     .builtin_video = &pdm_builtin_video,

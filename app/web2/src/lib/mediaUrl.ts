@@ -61,7 +61,7 @@ export function canonicalParamName(name: string): string | null {
   const n = name.toLowerCase();
   if (n === 'hd') return 'hd0';
   if (n === 'fd') return 'fd0';
-  if (/^(rom|vrom|model|speed|cd)$/.test(n) || /^(fd|hd)\d+$/.test(n)) return n;
+  if (/^(rom|vrom|model|speed|cd|config)$/.test(n) || /^(fd|hd)\d+$/.test(n)) return n;
   return null;
 }
 
@@ -222,4 +222,28 @@ export function interleaveHalves(even: Uint8Array, odd: Uint8Array): Uint8Array 
     out[2 * i + 1] = odd[i];
   }
   return out;
+}
+
+// Decode ?config=: the configuration document as base64url-encoded JSON
+// (RFC 4648 §5, padding optional).  Null when it is not that.
+export function decodeConfigParam(value: string): Record<string, unknown> | null {
+  try {
+    const b64 = value.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+    const bytes = Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
+    const doc: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    return doc && typeof doc === 'object' && !Array.isArray(doc)
+      ? (doc as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+// The inverse, for building a link to a configuration.
+export function encodeConfigParam(doc: unknown): string {
+  const bytes = new TextEncoder().encode(JSON.stringify(doc));
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }

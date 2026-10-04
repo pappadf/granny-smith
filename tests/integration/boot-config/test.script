@@ -107,22 +107,22 @@ assert machine.nubus.slot[9].card.id == "824gc" "explicit card"
 machine.boot model="iicx" rom="${$ROM}"
 assert machine.ram == 8192 "omitted ram must be the model default, not the previous machine's 16384"
 assert machine.nubus.slot[9].card.id == "mdc_8_24" "omitted card must resolve to the slot default"
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24" "omitted card must resolve to the slot default"
+assert machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24" "omitted card must resolve to the slot default"
 assert machine.rom.loaded == true "boot must stage the ROM"
 
 # --- slots=: the 24AC in socket $9. ---
 machine.boot model="iicx" rom="${$ROM}" slots="9=display_card_24ac"
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "per-slot entry not honoured"
+assert machine.nubus.slot[9].card.name == "Macintosh Display Card 24AC" "per-slot entry not honoured"
 # The next document says nothing about the slot: its default again.
 machine.boot model="iicx" rom="${$ROM}"
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24" "a slot entry must not outlive its document"
+assert machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24" "a slot entry must not outlive its document"
 # none empties a socket, even one with a declared default.
 machine.boot model="iicx" rom="${$ROM}" slots="9=none"
 assert try(machine.nubus.slot[9].card.name, none) == none "slots=9=none must leave socket $9 empty"
 
 # --- Sugar: video_card= applies to the machine's first socket. ---
 machine.boot model="iicx" rom="${$ROM}" video_card="824gc"
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "video_card= not applied to first socket"
+assert machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC" "video_card= not applied to first socket"
 assert machine.nubus.slot[9].card.declrom.crc != 0 "the card names the declaration ROM it resolved"
 
 # --- Each socket names the card it seats, including the socket video_card=
@@ -137,7 +137,7 @@ assert try(machine.nubus.slot[10].card.id, none) == none "an unconfigured socket
 
 # --- A slot's video mode: the 8-bpp seed reaches its card. ---
 machine.boot model="iicx" rom="${$ROM}" slots="9=824gc,mode=gc_640x480_8bpp"
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "mode test: card not seated"
+assert machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC" "mode test: card not seated"
 assert machine.nubus.slot[9].card.mode.depth == 8 "the slot's video mode did not set 8 bpp"
 
 # --- A checkpoint restores the machine it was built as: its RAM, and the card
@@ -150,9 +150,9 @@ assert machine.nubus.slot[9].card.id == "display_card_24ac" "pre-restore machine
 assert checkpoint.load("${$WORK_DIR}/bootcfg.checkpoint") "checkpoint load"
 assert machine.id == "iicx" "restored model"
 assert machine.ram == 16384 "restored ram"
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "restored machine: slot $9's card"
+assert machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC" "restored machine: slot $9's card"
 assert machine.nubus.slot[9].card.declrom.crc == 0x9e9857e8 "restored machine: slot $9's pinned declaration ROM"
-assert machine.nubus.slot[10].card.name == "Apple Macintosh Display Card 24AC" "restored machine: slot $A's card"
+assert machine.nubus.slot[10].card.name == "Macintosh Display Card 24AC" "restored machine: slot $A's card"
 # Under a non-inheriting boot a bare machine.boot after restore is an error.
 assert !machine.boot() "bare machine.boot after restore must be rejected"
 
@@ -200,7 +200,7 @@ assert try(machine.nubus.slot[9].card.id, none) == none "the old card must not r
 # Coming back does not resurrect it either — the IIcx boots on its slot default.
 assert machine.boot(model="iicx", rom="${$ROM}") "back to a carded model"
 assert machine.nubus.slot[9].card.id == "mdc_8_24" "video_card must not survive any model change"
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24" "slot default after the round trip"
+assert machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24" "slot default after the round trip"
 
 # --- A built-in slot takes its card's sibling (the SE/30's generic video). ---
 assert machine.boot(model="se30", rom="${$ROM}", video_card="builtin_se30_video") "the SE/30's real video is its built-in slot's sibling"

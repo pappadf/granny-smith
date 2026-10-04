@@ -239,6 +239,24 @@ The default values:
 | $12    | 1          | Disk-cache size in 32 KB blocks | `3` (= 96 KB)                        |
 | $13    | 1          | Misc bits (color desktop, mouse scaling, cache active, preferred boot, menu blink) | `(1<<7)|(1<<6)|(0<<5)|(0<<4)|(3<<2)` |
 
+The last four bytes are the ones the ROMs disagree on.  Measured by booting
+each ROM from a blank store and reading SysParam back after its `PRAMInit`
+(`$00..$0F` came back identical everywhere, the table above):
+
+| ROMs | `$10` | `$11` | `$12` | `$13` |
+| ---- | ----- | ----- | ----- | ----- |
+| Plus, SE/30, IIx, IIcx | `$03` | `$88` | `$00` | `$4C` |
+| IIci, IIsi, IIfx, Quadra 700 / 900 | `$13` | `$88` | `$00` | `$4C` |
+| Quadra 950, Quadra 840AV / Centris 660AV | `$13` | `$88` | `$00` | `$CC` |
+| Power Macintosh 6100/7100/8100, 7500/8500/9500 (NVRAM XPRAM) | `$1B` | `$88` | `$03` | `$CC` |
+| Power Macintosh G3 (NVRAM XPRAM) | `$1B` | `$88` | `$08` | `$CC` |
+
+The Network Server ROM runs no Mac OS and writes no SysParam.  The emulator
+keeps these per ROM (`pram_defaults_t.sysparam`) and writes them, valid,
+when the configuration seeds the serial-port use byte `$03` (AppleTalk):
+writing `$03` into an invalid block would be overwritten by the ROM's own
+`PRAMInit`.
+
 Note that `$0C..$0F` here are *logical* SysParam offsets (app-font /
 auto-key / printer). They are **not** overwritten by the 'NuMc' signature:
 on the extended RTC the legacy block maps to *physical* `$08..$0B` / `$10..$1F`,

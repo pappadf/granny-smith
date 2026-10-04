@@ -335,7 +335,10 @@ static value_t ata_attach(struct object *self, const value_t *argv, bool cdrom) 
     if (!unit_ok((int)unit))
         return val_err("ata.attach_%s: unit must be 0..3 (cell * 2 + device)", cdrom ? "cdrom" : "hd");
     char err[160];
-    media_bay_t bay = {.bus = MEDIA_BUS_ATA, .unit = (int)unit, .label = "the ATA unit"};
+    media_bay_t bay = {.bus = MEDIA_BUS_ATA,
+                       .unit = (int)unit,
+                       .label = unit < 2 ? (unit & 1 ? "Primary ATA bus, Slave" : "Primary ATA bus, Master")
+                                         : (unit & 1 ? "Secondary ATA bus, Slave" : "Secondary ATA bus, Master")};
     if (system_media_attach_path(cfg, &bay, cdrom, argv[0].s, err, sizeof err) != 0)
         return val_err("ata.attach_%s: %s", cdrom ? "cdrom" : "hd", err);
     return val_bool(true);
