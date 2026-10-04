@@ -64,7 +64,7 @@ tests/e2e/
 │   ├── system-edit.spec.ts              # SYSTEM tab: edit machine.cpu.d0 (literal / expression / error), echo, Copy path
 │   ├── terminal-jobs.spec.ts            # Terminal lines as jobs: a run waits, a runaway loop costs nothing, Ctrl-C semantics
 │   ├── upload.spec.ts                   # Upload picker: streamed staging through the core (Safari regression)
-│   ├── url-archive-boot.spec.ts         # ?ROM=…zip/member, archive.org routing, bare-volume HD boot
+│   ├── url-archive-boot.spec.ts         # ?ROM=…zip/member, archive.org links fetched as given, bare-volume HD boot
 │   ├── url-boot.spec.ts                 # ?rom=… URL-parameter boot
 │   ├── voodoo2-thread.spec.ts           # Voodoo2 raster on a second Web Worker; LFB/counter fences
 │   ├── voodoo2-webgpu-fallback.spec.ts  # voodoo2_webgpu without WebGPU falls back to the thread backend, and says so

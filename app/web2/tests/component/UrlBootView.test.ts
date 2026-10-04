@@ -13,15 +13,11 @@ import {
   setUrlBootStage,
   skipQueuedUrlFiles,
   slotLabel,
-  urlFileName,
+  urlMediaNameFor,
   _resetUrlBootForTests,
 } from '@/state/urlBoot.svelte';
 import { setOpfsBackend } from '@/bus/opfs';
 import { MockOpfs } from '../helpers/mockOpfs';
-
-const ROM_URL =
-  'https://archive.org/download/mac_rom_archive_-_as_of_8-19-2011/mac_rom_archive_-_as_of_8-19-2011.zip/368CADFE%20-%20Mac%20IIci.ROM';
-const HD_URL = 'https://archive.org/download/AppleMacintoshSystem753/System7_5_3.img';
 
 beforeEach(() => {
   _resetUrlBootForTests();
@@ -42,15 +38,22 @@ describe('urlBoot state', () => {
     expect(slotLabel('hd0')).toBe('Hard disk 1');
     expect(slotLabel('fd1')).toBe('Floppy disk 2');
     expect(slotLabel('cd')).toBe('CD-ROM');
-    expect(urlFileName(ROM_URL)).toBe('368CADFE - Mac IIci.ROM');
-    expect(urlFileName('media/disk.img?x=1')).toBe('disk.img');
+  });
+
+  it('names a listed file by its slot and time, and keeps that name', () => {
+    beginUrlBoot('iici');
+    queueUrlFile('hd0');
+    const name = urlBoot.files[0].name;
+    expect(name).toMatch(/^hd0_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$/);
+    expect(urlMediaNameFor('hd0')).toBe(name);
+    expect(urlMediaNameFor('fd0')).toMatch(/^fd0_/);
   });
 
   it('lists files only while the page is booting from its URL', () => {
-    queueUrlFile('rom', ROM_URL);
+    queueUrlFile('rom');
     expect(urlBoot.files).toHaveLength(0);
     beginUrlBoot('iici');
-    queueUrlFile('rom', ROM_URL);
+    queueUrlFile('rom');
     expect(urlBoot.files.map((f) => f.slot)).toEqual(['rom']);
   });
 });
@@ -58,8 +61,8 @@ describe('urlBoot state', () => {
 describe('UrlBootView', () => {
   it('shows the headline and one progress bar per file', () => {
     beginUrlBoot('iici');
-    queueUrlFile('rom', ROM_URL);
-    queueUrlFile('hd0', HD_URL);
+    queueUrlFile('rom');
+    queueUrlFile('hd0');
     updateUrlFile('rom', { status: 'done', received: 524288, total: 524288 });
     updateUrlFile('hd0', { status: 'downloading', received: 13107200, total: 26214400 });
     const { container } = render(UrlBootView);
@@ -70,14 +73,14 @@ describe('UrlBootView', () => {
     expect(bars[0].getAttribute('aria-valuenow')).toBe('100');
     expect(bars[1].getAttribute('aria-valuenow')).toBe('50');
     const hd = container.querySelector('[data-slot="hd0"]');
-    expect(hd?.textContent).toContain('System7_5_3.img');
+    expect(hd?.textContent).toContain(urlBoot.files[1].name);
     expect(hd?.textContent).toContain('12.5 MB of 25.0 MB · 50%');
     expect(container.querySelector('[data-slot="rom"]')?.getAttribute('data-state')).toBe('done');
   });
 
   it('uses an indeterminate bar when the server sends no length', () => {
     beginUrlBoot(null);
-    queueUrlFile('hd0', HD_URL);
+    queueUrlFile('hd0');
     updateUrlFile('hd0', { status: 'downloading', received: 3 * 1024 * 1024, total: null });
     const { container } = render(UrlBootView);
     const bar = container.querySelector('[role="progressbar"]');
@@ -88,7 +91,7 @@ describe('UrlBootView', () => {
 
   it('says why a failed boot stopped and offers the start screen', async () => {
     beginUrlBoot(null);
-    queueUrlFile('rom', ROM_URL);
+    queueUrlFile('rom');
     updateUrlFile('rom', { status: 'failed', error: 'mac_rom_archive.zip: not found' });
     setUrlBootStage('failed', 'There is no ROM to boot.');
     const { container, getByRole } = render(UrlBootView);
@@ -100,8 +103,8 @@ describe('UrlBootView', () => {
 
   it('marks the disks still waiting as not needed when the ROM fails', () => {
     beginUrlBoot(null);
-    queueUrlFile('rom', ROM_URL);
-    queueUrlFile('hd0', HD_URL);
+    queueUrlFile('rom');
+    queueUrlFile('hd0');
     updateUrlFile('rom', { status: 'failed', error: 'not found' });
     skipQueuedUrlFiles();
     setUrlBootStage('failed', 'There is no ROM to boot.');
@@ -151,7 +154,7 @@ describe('PreviewNoticeDialog with a URL boot', () => {
 
   it('marks an unpacking file with its own bar state', () => {
     beginUrlBoot(null);
-    queueUrlFile('hd0', HD_URL);
+    queueUrlFile('hd0');
     updateUrlFile('hd0', { status: 'unpacking', received: 1024, total: 1024 });
     const { container } = render(UrlBootView);
     const bar = container.querySelector('[data-slot="hd0"] [role="progressbar"]');
