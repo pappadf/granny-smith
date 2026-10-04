@@ -863,11 +863,15 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     // the driver will program at Open (the direct MFB/ACDC path isn't
     // decoded); RUNTIME depth switches arrive via VidComm (gc_vidcomm).
     p->display.format = format_for_bpp(p->seeded_bpp ? p->seeded_bpp : 1);
-    p->display.width = 640u;
+    // The raster is the sensed monitor's, both axes (VidComm narrows only
+    // the width, and only when rowBytes can't hold it).
+    p->display.width = p->mon_w ? p->mon_w : 640u;
     p->display.height = p->jmfb.raster_h ? p->jmfb.raster_h : 480u;
-    // Row pitch: 1024 bytes at every indexed depth (guest-probed at 1/8 bpp).
-    // The direct modes use packed pitches (32 bpp = 2560, VidComm-probed) but
-    // can never be the BOOT depth, so the power-on pitch is always 1024.
+    // Row pitch: 1024 bytes at every indexed depth (guest-probed at 1/8 bpp
+    // on the 640x480 monitor, and the driver's ScreenRow on the 832x624 one
+    // is $400 too).  The direct modes use packed pitches (32 bpp = 2560,
+    // VidComm-probed) but can never be the BOOT depth, so the power-on pitch
+    // is always 1024.
     p->display.stride = 1024u;
     p->display.bits = p->dram + GC824_FB_OFFSET;
     // NOT blanked, deliberately.  Unlike every other source here the 8*24 GC's
