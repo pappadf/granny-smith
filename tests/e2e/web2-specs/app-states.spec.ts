@@ -239,10 +239,11 @@ for (const skin of SKINS) {
         timeout: 15_000,
       });
       // Where the machine stopped varies: mask the values, keep the chrome.
+      // The listing's rows are masked whole: its mnemonic column is as wide
+      // as the longest mnemonic shown, so a mask per column would move with
+      // the listing.
       await shot(page, `debug-paused-${skin}.png`, [
-        page.locator(
-          ".disasm-pane .banner, .disasm-pane .addr, .disasm-pane .mnem, .disasm-pane .ops",
-        ),
+        page.locator(".disasm-pane .banner, .disasm-pane .row"),
         page.locator("input.reg-value"),
         page.locator(".sb-drive"),
       ]);
