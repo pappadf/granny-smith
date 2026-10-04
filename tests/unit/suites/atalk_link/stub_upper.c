@@ -23,6 +23,9 @@
 #include <stdio.h>
 #include <string.h>
 
+// Every part and link the network hands out here is this one dummy.
+static int g_link_dummy;
+
 // ---- AFP server (appletalk_server.c) --------------------------------------
 //
 // atalk_server_init registers an ASP client that records what reached it, so
@@ -47,8 +50,9 @@ static void rec_close(void *ctx, uint16_t session_ref) {
 }
 static const asp_client_t k_rec_client = {.on_close = rec_close, .on_command = rec_command};
 
-void atalk_server_init(void) {
+afp_server_t *atalk_server_init(void) {
     asp_set_client(&k_rec_client, NULL);
+    return (afp_server_t *)(void *)&g_link_dummy;
 }
 const char *const *atalk_afp_versions(int *c) {
     *c = 0;
@@ -87,7 +91,6 @@ unsigned atalk_afp_volume_cnid_count(int s) {
 //
 // Each layer's part of a connection is opaque to appletalk.c: any non-NULL
 // handle will do, and plugging one in or out is counted.
-static int g_link_dummy;
 int g_printer_registers;
 int g_printer_timer_registrations;
 int g_printer_unplugs;
@@ -134,23 +137,28 @@ void atalk_aevt_plug(aevt_link_t *link) {
 }
 
 // ---- printer (appletalk_printer.c) ----------------------------------------
-void atalk_printer_register(void) {
+pap_printer_t *atalk_printer_register(void) {
     g_printer_registers++;
+    return (pap_printer_t *)(void *)&g_link_dummy;
 }
-void atalk_printer_register_timers(struct atalk_conn *conn) {
+pap_link_t *atalk_printer_link_new(void) {
+    return (pap_link_t *)(void *)&g_link_dummy;
+}
+void atalk_printer_link_free(pap_link_t *link) {
+    (void)link;
+}
+void atalk_printer_register_timers(struct atalk_conn *conn, pap_link_t *link) {
     (void)conn;
+    (void)link;
     g_printer_timer_registrations++;
 }
-void atalk_printer_unplug(void) {
-    g_printer_unplugs++;
+void atalk_printer_plug(pap_link_t *link) {
+    if (!link)
+        g_printer_unplugs++;
 }
-void atalk_printer_plug(void) {}
 void atalk_printer_link_down(void) {}
 const char *atalk_printer_get_status(void) {
     return "";
-}
-bool atalk_printer_job_finishing(void) {
-    return false;
 }
 bool atalk_printer_has_interpreter(void) {
     return false;
@@ -194,16 +202,24 @@ void atalk_adsp_ddp_in(const ddp_header_t *ddp, const uint8_t *buf, int len) {
     g_adsp_in_calls++;
     g_adsp_in_last_len = len;
 }
+adsp_host_t *atalk_adsp_init(void) {
+    return (adsp_host_t *)(void *)&g_link_dummy;
+}
 void atalk_adsp_install_objects(struct object *p) {
     (void)p;
 }
 void atalk_ppc_close_all(const char *r) {
     (void)r;
 }
+ppc_host_t *atalk_ppc_init(void) {
+    return (ppc_host_t *)(void *)&g_link_dummy;
+}
 void atalk_ppc_install_objects(struct object *p) {
     (void)p;
 }
-void atalk_aevt_init(void) {}
+aevt_host_t *atalk_aevt_init(void) {
+    return (aevt_host_t *)(void *)&g_link_dummy;
+}
 void atalk_aevt_install_objects(struct object *p) {
     (void)p;
 }

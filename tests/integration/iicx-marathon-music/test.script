@@ -172,8 +172,11 @@ assert machine.sound.capture.peak > 4000 "no in-game background music (capture.p
 
 # --- Gameplay: instrument loading pushes the HUD to ~+215M after Begin --------
 # The world view has a blinking light with an ~8M-instruction period (about
-# 4M matching / 4M not); +179M total lands mid-window on the reference frame.
-scheduler.run 89000000
+# 4M matching / 4M not); +176.5M total lands mid-window on the reference frame
+# (matching +175M..+179M, measured 2026-10 once an aborted ADB register Talk
+# stopped making the mouse answer the next poll -- that extra report put the
+# window ~2.5M later; the frame itself is unchanged).
+scheduler.run 86500000
 check("marathon-game-8bpp-640x480.png")
 
 quit
