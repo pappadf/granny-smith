@@ -50,13 +50,6 @@ scheduler.run 250000000
 # The test now asks us to insert a 1.4MB floppy
 machine.screen.match insert-1.4mb-floppy.png
 
-# Reset MBState: the mouse guard from the 800K set-mouse --global kept the
-# cursor pinned at the OK button position during the 250M-cycle run above.
-# Intermediate dialogs (Phase 2 boot-disk-reinsert, error dialogs) were
-# auto-clicked by the guard + stale MBState, leaving MBState stuck at 0x00.
-# Force it back to 0x80 (button up) before our click.
-machine.adb.mouse.click false "global"
-
 # Insert 1.4MB HD floppy and click immediately (before .Sony VBL auto-mounts)
 machine.floppy.create "$WORK_DIR/blankHD.dsk" "hd"
 machine.adb.mouse.move 370 185 "global"
@@ -72,10 +65,6 @@ machine.screen.match floppy-test-success.png
 
 # Insert the original application disk
 machine.floppy.drive[0].insert ../../data/apps/MacTest-SE30.image true
-
-# Stop the mouse guard before the RAM test — it writes to RAM every 1ms,
-# corrupting test patterns and causing verify failures.
-machine.adb.mouse.move 0 0
 
 # The destructive RAM test fills + verifies all 4 MB with multiple patterns
 # (~4 min at 16 MHz). After all passes, the test code returns through the

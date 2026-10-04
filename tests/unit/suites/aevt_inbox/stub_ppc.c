@@ -37,6 +37,14 @@ int atalk_ppc_set_host_port(const char *name, bool enabled, char *err, size_t er
     return 0;
 }
 
+const char *atalk_ppc_host_port_name(void) {
+    return PPC_HOST_PORT_DEFAULT;
+}
+
+bool atalk_ppc_host_port_enabled(void) {
+    return true;
+}
+
 void atalk_ppc_set_inbound_client(const ppc_client_t *client, void *ctx) {
     (void)client;
     (void)ctx;

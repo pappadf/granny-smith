@@ -42,7 +42,7 @@ serverdict begin exitserver
 
 The printer ingests this payload, writes it into `userdict`, and responds with the value `1` when the upload is complete so the driver knows not to resend it in the future.
 
-The emulated LaserWriter behaves the same way: the upload runs on the machine's printer, `exitserver` makes it permanent, and the next print's query finds PatchPrep resident and skips the upload. The printer is on the network, not in the Mac, so it keeps PatchPrep across `machine.boot`, `machine.restart` and `checkpoint.load`, as a LaserWriter on a desk does when the Mac beside it is rebooted. Only `appletalk.printer.restart()` (the printer's power switch) or a new emulator process (on the web, a page reload) starts a fresh printer, and the driver uploads again, as it would after a LaserWriter was switched off (`appletalk-print-persist`).
+The emulated LaserWriter behaves the same way: the upload runs on the machine's printer, `exitserver` makes it permanent, and the next print's query finds PatchPrep resident and skips the upload. The printer keeps PatchPrep across `machine.restart`, as a LaserWriter on a desk does when the Mac beside it is restarted. `appletalk.printer.restart()` (the printer's power switch), a change of machine (`machine.boot`, `checkpoint.load`) or a new emulator process (on the web, a page reload) starts a fresh printer, and the driver uploads again, as it would after a LaserWriter was switched off (`appletalk-print-persist`).
 
 ## 3. Font Directory Query
 

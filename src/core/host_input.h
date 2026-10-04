@@ -19,9 +19,9 @@
 // many key-transition bytes the machine's queue can hold before it starts
 // dropping, which the substrate declares.
 //
-// The object is also the source of the mouse guard's and the mouse trace's
-// events (debug_mac.c), for the same reason: they belong to one machine, and
-// a checkpoint taken with either running must restore it.
+// The object is also the source of the mouse trace's event (debug_mac.c), for
+// the same reason: it belongs to one machine, and a checkpoint taken with it
+// running must restore it.
 
 #ifndef HOST_INPUT_H
 #define HOST_INPUT_H

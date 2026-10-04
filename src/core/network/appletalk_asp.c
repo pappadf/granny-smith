@@ -107,20 +107,27 @@ static void asp_sweep_cb(void *source, uint64_t data);
 
 // === The client ===============================================================
 
-static const asp_client_t *g_client;
-static void *g_client_ctx;
+// ASP's part of the network: the server whose sessions it carries.
+struct asp_server {
+    const asp_client_t *client;
+    void *client_ctx;
+};
+
+// The network's, set by asp_init.
+static asp_server_t *g_asp_server;
 
 void asp_set_client(const asp_client_t *client, void *ctx) {
-    g_client = client;
-    g_client_ctx = client ? ctx : NULL;
+    g_asp_server->client = client;
+    g_asp_server->client_ctx = client ? ctx : NULL;
 }
 
 static uint32_t asp_client_command(uint16_t session_ref, uint8_t opcode, const uint8_t *in, int in_len, uint8_t *out,
                                    int out_max, int *out_len) {
     *out_len = 0;
-    if (!g_client || !g_client->on_command)
+    if (!g_asp_server->client || !g_asp_server->client->on_command)
         return AFPERR_CallNotSupported; // nothing serves commands
-    return g_client->on_command(g_client_ctx, session_ref, opcode, in, in_len, out, out_max, out_len);
+    return g_asp_server->client->on_command(g_asp_server->client_ctx, session_ref, opcode, in, in_len, out, out_max,
+                                            out_len);
 }
 
 // === Sessions ===================================================================
@@ -180,8 +187,8 @@ static void asp_session_release(asp_session_t *s) {
         w->owner = NULL;
         atp_request_cancel(w->request); // completes it; asp_wc_on_complete frees it
     }
-    if (g_client && g_client->on_close)
-        g_client->on_close(g_client_ctx, ref);
+    if (g_asp_server->client && g_asp_server->client->on_close)
+        g_asp_server->client->on_close(g_asp_server->client_ctx, ref);
 }
 
 // Session numbering travels in the connection's checkpoint block.
@@ -215,10 +222,13 @@ bool atalk_asp_session_info(int index, atalk_session_info_t *out) {
     out->session_ref = s->sess_ref;
     out->client_node = s->client_node;
     out->socket = s->wss;
-    const char *ver =
-        (g_client && g_client->session_version) ? g_client->session_version(g_client_ctx, s->sess_ref) : NULL;
+    const char *ver = (g_asp_server->client && g_asp_server->client->session_version)
+                          ? g_asp_server->client->session_version(g_asp_server->client_ctx, s->sess_ref)
+                          : NULL;
     snprintf(out->afp_version, sizeof(out->afp_version), "%s", ver ? ver : "");
-    out->open_forks = (g_client && g_client->open_forks) ? g_client->open_forks(g_client_ctx, s->sess_ref) : 0;
+    out->open_forks = (g_asp_server->client && g_asp_server->client->open_forks)
+                          ? g_asp_server->client->open_forks(g_asp_server->client_ctx, s->sess_ref)
+                          : 0;
     uint64_t now = atalk_now_ns();
     out->idle_ns = (now > s->last_activity_ns) ? (now - s->last_activity_ns) : 0;
     return true;
@@ -471,7 +481,9 @@ static void asp_get_status(const ddp_header_t *ddp, const atp_packet_t *atp) {
     LOG(3, "ASP GetStatus: request from node=%u socket=%u", ddp->llap.src, ddp->src_socket);
     uint8_t *block = NULL;
     size_t block_len = 0;
-    int rc = (g_client && g_client->get_status) ? g_client->get_status(g_client_ctx, &block, &block_len) : -1;
+    int rc = (g_asp_server->client && g_asp_server->client->get_status)
+                 ? g_asp_server->client->get_status(g_asp_server->client_ctx, &block, &block_len)
+                 : -1;
     static const uint8_t zero[4] = {0, 0, 0, 0};
     int len = (rc == 0 && block) ? (int)(block_len > ATP_MAX_ATP_PAYLOAD ? ATP_MAX_ATP_PAYLOAD : block_len) : 0;
     atp_responder_send_simple(ddp, atp, zero, len > 0 ? block : NULL, len, false);
@@ -499,7 +511,8 @@ static void asp_open_session(const ddp_header_t *ddp, const atp_packet_t *atp) {
             !atalk_id_alloc(&g_asp->next_sess_id, 1, 255, sess_id_in_use, NULL, &id)) {
             err = ASP_ERR_SERVER_BUSY;
             s = NULL;
-        } else if (g_client && g_client->on_open && !g_client->on_open(g_client_ctx, (uint16_t)ref)) {
+        } else if (g_asp_server->client && g_asp_server->client->on_open &&
+                   !g_asp_server->client->on_open(g_asp_server->client_ctx, (uint16_t)ref)) {
             err = ASP_ERR_SERVER_BUSY;
             s = NULL;
         }
@@ -617,10 +630,15 @@ static void asp_reset(asp_link_t *link) {
     memset(link->sessions, 0, sizeof(link->sessions));
 }
 
-void asp_init(void) {
+asp_server_t *asp_init(void) {
+    asp_server_t *server = calloc(1, sizeof(*server));
+    if (!server)
+        return NULL;
+    g_asp_server = server;
     static const atp_socket_handler_t handler = {.handle_request = asp_in};
     atp_register_socket_handler(HOST_AFP_SOCKET, &handler, NULL);
     atp_register_socket_handler(HOST_AFP_COMPAT_SOCKET, &handler, NULL);
+    return server;
 }
 
 asp_link_t *asp_link_new(void) {

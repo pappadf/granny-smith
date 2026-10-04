@@ -72,9 +72,11 @@ bool aevt_set_attr(value_t *event, const char *key, value_t leaf);
 
 // === Object model / lifecycle ==============================================
 
-// Once, when the network comes up: publish the host port (its name,
-// enablement and auto-reply are the network's) and take inbound events.
-void atalk_aevt_init(void);
+// Once, when the network comes up: take inbound events and publish the host
+// port (PPC's).  Returns the layer's part of the network, its auto-reply,
+// which the network owns.
+typedef struct aevt_host aevt_host_t;
+aevt_host_t *atalk_aevt_init(void);
 void atalk_aevt_install_objects(struct object *parent);
 
 // The Apple-event layer's part of a machine's connection (atalk_conn_t): the

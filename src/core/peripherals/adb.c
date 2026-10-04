@@ -358,9 +358,8 @@ static int extract_state(uint8_t port_b_val) {
 }
 
 // Returns true if there is mouse or keyboard data worth reporting via auto-poll.
-// Mouse button held down counts as pending (the Mac needs to see it every poll).
 static bool has_pending_data(const adb_t *adb) {
-    return !kbd_queue_empty(adb) || adb->mouse_data_pending || adb->mouse_button;
+    return !kbd_queue_empty(adb) || adb->mouse_data_pending;
 }
 
 // Returns true if the device at `addr` both has data AND is allowed to say so
@@ -373,12 +372,14 @@ static bool device_can_service_request(const adb_t *adb, uint8_t addr);
 
 // Returns true if the device at the given ADB address has unreported data.
 // On real hardware, a device with no pending data simply doesn't respond to
-// Talk R0 — the transceiver sees a timeout and stays quiet.
+// Talk R0 — the transceiver sees a timeout and stays quiet.  For the mouse
+// that means motion or a button CHANGE: a button held still is reported once,
+// by the report of the press, and every report after it carries the level.
 static bool device_has_pending_data(const adb_t *adb, uint8_t addr) {
     if (addr == adb->kbd.address)
         return !kbd_queue_empty(adb);
     if (addr == adb->mouse.address)
-        return adb->mouse_data_pending || adb->mouse_button;
+        return adb->mouse_data_pending;
     return false;
 }
 
@@ -386,14 +387,8 @@ static bool device_can_service_request(const adb_t *adb, uint8_t addr) {
     if (addr == adb->kbd.address)
         return !kbd_queue_empty(adb) && adb->kbd.srq_enabled;
     if (addr == adb->mouse.address) {
-        // NEW data only.  A held button is a level the mouse re-reports at
-        // every poll (device_has_pending_data), but it is not an event: a
-        // real mouse asserts Service Request for motion or a button change,
-        // not for "still down".  Counting the level here made the ROM's SRQ
-        // scan restart after every poll for as long as a button was held
-        // (the keyboard's no-reply byte carried "SRQ", the mouse answered
-        // the scan, and round again) instead of letting the transceiver
-        // auto-poll the mouse.
+        // NEW data only: motion or a button change, the same data that
+        // makes the mouse answer Talk R0.
         return adb->mouse_data_pending && adb->mouse.srq_enabled;
     }
     return false;
@@ -633,13 +628,11 @@ static void flush_device(adb_t *adb, uint8_t addr) {
         // Clear the pending flag too, or device_has_pending_data() keeps
         // reporting data and the next Talk R0 delivers a zero-delta report
         // the host did not ask for.  Guide 2e: "Any user input data being
-        // stored by the device ... are lost."  Self-healing before this (one
-        // spurious report per Flush, until prepare_mouse_reply clears it),
-        // but mouse_control.md records spurious zero-delta reports as what
-        // corrupts MTemp on the SE/30 ROM path.
+        // stored by the device ... are lost."
         //
-        // mouse_button is deliberately NOT cleared: a held button is a level,
-        // not buffered input, so a Flush mid-drag should still report it.
+        // mouse_button is deliberately NOT cleared: a held button is the
+        // switch's state, not buffered input, so the next report (on motion)
+        // still carries it.
         adb->mouse_data_pending = false;
     } else {
         LOG(2, "flush_device: unknown device at addr %d, ignoring", addr);
@@ -688,8 +681,8 @@ static void prepare_mouse_reply(adb_t *adb) {
     // its SRQ scan but never fetches the reply) can put them back — a real
     // mouse keeps its accumulated motion until the host actually reads it.
     // Without this the re-poll rebuilds the report from the zeroed
-    // accumulators and the movement is lost (frozen cursor; buttons still
-    // work because button state is level, not consumed).
+    // accumulators and the movement is lost (frozen cursor), and a report
+    // that carried only a button change is not re-presented at all.
     adb->reply_from_mouse = true;
     adb->mouse_reply_dx = dx;
     adb->mouse_reply_dy = dy;
@@ -1364,8 +1357,9 @@ void adb_port_b_output(adb_t *adb, uint8_t value) {
                 adb->reply_from_mouse = false;
                 adb->mouse_data_pending = true;
             } else {
-                LOG(2, "IDLE: aborted Talk detected (reply_len=%d), re-marking pending", adb->reply_len);
-                adb->mouse_data_pending = true;
+                // A register read (Talk R2 / R3) consumes nothing, so there is
+                // nothing to put back -- and no device gains data from it.
+                LOG(2, "IDLE: aborted register Talk (reply_len=%d), nothing to restore", adb->reply_len);
             }
         }
         remove_event(adb->scheduler, &adb_autopoll_deferred, adb);

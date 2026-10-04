@@ -230,6 +230,7 @@ struct atalk_conn {
     adsp_link_t *adsp;
     ppc_link_t *ppc;
     aevt_link_t *aevt;
+    pap_link_t *pap;
 };
 
 // The network: one per process, created by appletalk_network_init.  The
@@ -246,6 +247,22 @@ struct atalk_network {
     atalk_nbp_entry_t nbp_entries[NBP_MAX_ENTRIES]; // names this host registers
     uint8_t nbp_next_enum[256]; // per-socket enumerator cursors
     atp_handler_slot_t atp_handlers[ATP_MAX_HANDLERS];
+    // The `appletalk` tree's collection entries, made on first use
+    // (atalk_install_objects).
+    object_cache_t nbp_objects;
+    object_cache_t volume_objects;
+    object_cache_t session_objects;
+    // The nodes' parts, each made by its module when the network comes up
+    // and reached by that module through its own pointer to it: the file
+    // server and the ASP sessions it serves, the LaserWriter, and the
+    // program-linking peer (ADSP carries PPC sessions, which carry Apple
+    // events).  They live as long as the network, which is the process.
+    asp_server_t *asp;
+    afp_server_t *afp;
+    pap_printer_t *printer;
+    adsp_host_t *adsp;
+    ppc_host_t *ppc;
+    aevt_host_t *aevt;
 };
 
 static atalk_network_t g_net;
@@ -329,22 +346,6 @@ static const class_desc_t atalk_sessions_collection_class;
 static const class_desc_t atalk_session_class;
 static const class_desc_t atalk_printer_class;
 static const class_desc_t atalk_printer_stats_class;
-
-static object_cache_t g_atalk_volume_entries = OBJECT_CACHE(&atalk_volume_class, NULL);
-static object_cache_t g_atalk_nbp_entries = OBJECT_CACHE(&atalk_nbp_entry_class, NULL);
-static object_cache_t g_atalk_session_entries = OBJECT_CACHE(&atalk_session_class, NULL);
-
-// The network's object tree, built once by appletalk_network_init and never
-// taken down: `appletalk` lives as long as the process.
-static struct object *g_atalk_object;
-static struct object *g_atalk_stats_object;
-static struct object *g_atalk_nbp_object;
-static struct object *g_atalk_afp_object;
-static struct object *g_atalk_afp_stats_object;
-static struct object *g_atalk_volumes_object;
-static struct object *g_atalk_sessions_object;
-static struct object *g_atalk_printer_object;
-static struct object *g_atalk_printer_stats_object;
 
 // The connection's checkpoint block -- all a machine checkpoint carries of
 // AppleTalk.  The network is not in it: the shares, the server's identity,
@@ -810,15 +811,19 @@ static void atalk_install_objects(void);
 atalk_network_t *appletalk_network_init(void) {
     if (g_net.up)
         return &g_net;
-    g_net.up = true;
     // The nodes on the cable, each publishing its NBP name and taking its
     // sockets: the file server over ASP (8 and 54), the LaserWriter (6), and
     // the program-linking peer -- ADSP carries PPC sessions, which carry Apple
     // events (docs/internals/core/network/ppc_appleevents.md §1).
-    asp_init();
-    atalk_server_init();
-    atalk_printer_register();
-    atalk_aevt_init();
+    // Each in turn: the file server is ASP's client, and the Apple-event
+    // layer publishes PPC's host port.
+    if (!(g_net.asp = asp_init()) || !(g_net.afp = atalk_server_init()) ||
+        !(g_net.printer = atalk_printer_register()) || !(g_net.adsp = atalk_adsp_init()) ||
+        !(g_net.ppc = atalk_ppc_init()) || !(g_net.aevt = atalk_aevt_init())) {
+        LOG(0, "Error: out of memory creating the AppleTalk network");
+        return NULL;
+    }
+    g_net.up = true;
     atalk_install_objects();
     return &g_net;
 }
@@ -827,67 +832,72 @@ atalk_network_t *appletalk_network(void) {
     return g_net.up ? &g_net : NULL;
 }
 
-// The object tree: `appletalk` at the root, attached once.  instance_data is
-// unused (NULL) for the singleton nodes -- their accessors call into the
-// modules, which answer for whatever connection is plugged in.  Collection
-// entries carry their slot index.
+// The object tree: `appletalk` at the root, attached once and never taken
+// down -- it lives as long as the process.  instance_data is unused (NULL)
+// for the singleton nodes: their accessors call into the modules, which
+// answer for whatever connection is plugged in.  Collection entries carry
+// their slot index.
 static void atalk_install_objects(void) {
-    g_atalk_object = object_new(&atalk_class, NULL, "appletalk");
-    if (!g_atalk_object)
+    struct object *atalk = object_new(&atalk_class, NULL, "appletalk");
+    if (!atalk)
         return;
-    object_set_order(g_atalk_object, 100);
-    object_set_domain(g_atalk_object, OBJ_DOMAIN_NETWORK);
-    object_attach(object_root(), g_atalk_object);
+    object_set_order(atalk, 100);
+    object_set_domain(atalk, OBJ_DOMAIN_NETWORK);
+    object_attach(object_root(), atalk);
 
-    g_atalk_stats_object = object_new(&atalk_stats_class, NULL, "stats");
-    if (g_atalk_stats_object) {
-        object_set_category(g_atalk_stats_object, M_CAT_ADVANCED);
-        object_attach(g_atalk_object, g_atalk_stats_object);
+    struct object *stats = object_new(&atalk_stats_class, NULL, "stats");
+    if (stats) {
+        object_set_category(stats, M_CAT_ADVANCED);
+        object_attach(atalk, stats);
     }
-    g_atalk_nbp_object = object_new(&atalk_nbp_collection_class, NULL, "nbp");
-    if (g_atalk_nbp_object) {
-        object_set_category(g_atalk_nbp_object, M_CAT_ADVANCED);
-        object_attach(g_atalk_object, g_atalk_nbp_object);
+    struct object *nbp = object_new(&atalk_nbp_collection_class, NULL, "nbp");
+    if (nbp) {
+        object_set_category(nbp, M_CAT_ADVANCED);
+        object_attach(atalk, nbp);
     }
-    g_atalk_afp_object = object_new(&atalk_afp_class, NULL, "afp");
-    if (g_atalk_afp_object) {
-        object_set_label(g_atalk_afp_object, "File Server");
-        object_attach(g_atalk_object, g_atalk_afp_object);
-        g_atalk_volumes_object = object_new(&atalk_volumes_collection_class, NULL, "volumes");
-        if (g_atalk_volumes_object)
-            object_attach(g_atalk_afp_object, g_atalk_volumes_object);
-        g_atalk_sessions_object = object_new(&atalk_sessions_collection_class, NULL, "sessions");
-        if (g_atalk_sessions_object) {
-            object_set_category(g_atalk_sessions_object, M_CAT_ADVANCED);
-            object_attach(g_atalk_afp_object, g_atalk_sessions_object);
+    struct object *volumes = NULL, *sessions = NULL;
+    struct object *afp = object_new(&atalk_afp_class, NULL, "afp");
+    if (afp) {
+        object_set_label(afp, "File Server");
+        object_attach(atalk, afp);
+        volumes = object_new(&atalk_volumes_collection_class, NULL, "volumes");
+        if (volumes)
+            object_attach(afp, volumes);
+        sessions = object_new(&atalk_sessions_collection_class, NULL, "sessions");
+        if (sessions) {
+            object_set_category(sessions, M_CAT_ADVANCED);
+            object_attach(afp, sessions);
         }
-        g_atalk_afp_stats_object = object_new(&atalk_afp_stats_class, (void *)atalk_afp_get_stats(), "stats");
-        if (g_atalk_afp_stats_object) {
-            object_set_category(g_atalk_afp_stats_object, M_CAT_ADVANCED);
-            object_attach(g_atalk_afp_object, g_atalk_afp_stats_object);
+        struct object *afp_stats = object_new(&atalk_afp_stats_class, (void *)atalk_afp_get_stats(), "stats");
+        if (afp_stats) {
+            object_set_category(afp_stats, M_CAT_ADVANCED);
+            object_attach(afp, afp_stats);
         }
     }
-    g_atalk_printer_object = object_new(&atalk_printer_class, NULL, "printer");
-    if (g_atalk_printer_object) {
-        object_attach(g_atalk_object, g_atalk_printer_object);
-        g_atalk_printer_stats_object =
+    struct object *printer = object_new(&atalk_printer_class, NULL, "printer");
+    if (printer) {
+        object_attach(atalk, printer);
+        struct object *printer_stats =
             object_new(&atalk_printer_stats_class, (void *)atalk_printer_get_stats(), "stats");
-        if (g_atalk_printer_stats_object) {
-            object_set_category(g_atalk_printer_stats_object, M_CAT_ADVANCED);
-            object_attach(g_atalk_printer_object, g_atalk_printer_stats_object);
+        if (printer_stats) {
+            object_set_category(printer_stats, M_CAT_ADVANCED);
+            object_attach(printer, printer_stats);
         }
     }
 
     // Each program-linking layer owns its own subtree.
-    atalk_adsp_install_objects(g_atalk_object);
-    atalk_ppc_install_objects(g_atalk_object);
-    atalk_aevt_install_objects(g_atalk_object);
+    atalk_adsp_install_objects(atalk);
+    atalk_ppc_install_objects(atalk);
+    atalk_aevt_install_objects(atalk);
 
     // Collection entry objects are made on first use by their caches and
     // handed out by the get() callbacks; they are never attached.
-    object_cache_set_parent(&g_atalk_volume_entries, g_atalk_volumes_object);
-    object_cache_set_parent(&g_atalk_nbp_entries, g_atalk_nbp_object);
-    object_cache_set_parent(&g_atalk_session_entries, g_atalk_sessions_object);
+    g_net.volume_objects = (object_cache_t)OBJECT_CACHE(&atalk_volume_class, NULL);
+    g_net.nbp_objects = (object_cache_t)OBJECT_CACHE(&atalk_nbp_entry_class, NULL);
+    g_net.session_objects = (object_cache_t)OBJECT_CACHE(&atalk_session_class, NULL);
+    object_cache_set_parent(&g_net.volume_objects, volumes);
+    object_cache_set_parent(&g_net.nbp_objects, nbp);
+    object_cache_set_parent(&g_net.session_objects, sessions);
 }
 
 // ============================================================================
@@ -904,7 +914,7 @@ static void atalk_conn_plug_in(atalk_conn_t *c) {
     atalk_adsp_plug(c->adsp);
     atalk_ppc_plug(c->ppc);
     atalk_aevt_plug(c->aevt);
-    atalk_printer_plug();
+    atalk_printer_plug(c->pap);
 }
 
 // Register every timer the connection and the layers above use with its
@@ -918,7 +928,7 @@ static void atalk_conn_register_timers(atalk_conn_t *c) {
     atp_timers_init(c);
     asp_link_register_timers(c, c->asp);
     atalk_adsp_link_register_timers(c, c->adsp);
-    atalk_printer_register_timers(c);
+    atalk_printer_register_timers(c, c->pap);
 }
 
 // Take `c` off the cable, as a server sees a Mac vanish: every session with
@@ -931,7 +941,7 @@ static void atalk_conn_unplug(atalk_conn_t *c) {
     atalk_aevt_plug(NULL);
     atalk_ppc_plug(NULL);
     atalk_adsp_plug(NULL);
-    atalk_printer_unplug();
+    atalk_printer_plug(NULL);
     afp_plug(NULL);
     asp_plug(NULL);
 
@@ -966,7 +976,8 @@ atalk_conn_t *atalk_conn_new(atalk_network_t *network, scheduler_t *scheduler, s
     c->adsp = atalk_adsp_link_new();
     c->ppc = atalk_ppc_link_new();
     c->aevt = atalk_aevt_link_new();
-    if (!c->asp || !c->afp || !c->adsp || !c->ppc || !c->aevt) {
+    c->pap = atalk_printer_link_new();
+    if (!c->asp || !c->afp || !c->adsp || !c->ppc || !c->aevt || !c->pap) {
         atalk_conn_delete(c);
         return NULL;
     }
@@ -1022,6 +1033,7 @@ void atalk_conn_delete(atalk_conn_t *c) {
         return;
     if (g_net.plugged == c)
         atalk_conn_unplug(c);
+    atalk_printer_link_free(c->pap);
     atalk_aevt_link_free(c->aevt);
     atalk_ppc_link_free(c->ppc);
     atalk_adsp_link_free(c->adsp);
@@ -2653,7 +2665,7 @@ static struct object *atalk_nbp_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= ATALK_NBP_MAX_ENTRIES || !atalk_nbp_entry_in_use(index))
         return NULL;
-    return object_cache_at(&g_atalk_nbp_entries, index, NULL);
+    return object_cache_at(&g_net.nbp_objects, index, NULL);
 }
 // Named lookup so `appletalk.nbp["Shared Folders"]` resolves.
 static struct object *atalk_nbp_entry_lookup(struct object *self, const char *name) {
@@ -2661,7 +2673,7 @@ static struct object *atalk_nbp_entry_lookup(struct object *self, const char *na
     for (int i = 0; i < ATALK_NBP_MAX_ENTRIES && i < atalk_nbp_entry_max(); i++) {
         atalk_nbp_info_t info;
         if (atalk_nbp_entry_info(i, &info) && strcmp(info.object, name) == 0)
-            return object_cache_at(&g_atalk_nbp_entries, i, NULL);
+            return object_cache_at(&g_net.nbp_objects, i, NULL);
     }
     return NULL;
 }
@@ -2769,7 +2781,7 @@ static struct object *atalk_volumes_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= ATALK_AFP_MAX_VOLUMES || !atalk_afp_volume_in_use(index))
         return NULL;
-    return object_cache_at(&g_atalk_volume_entries, index, NULL);
+    return object_cache_at(&g_net.volume_objects, index, NULL);
 }
 // Name lookup, so `appletalk.afp.volumes["Shared"].cnid_count` reads naturally.
 static struct object *atalk_volumes_lookup(struct object *self, const char *name) {
@@ -2777,7 +2789,7 @@ static struct object *atalk_volumes_lookup(struct object *self, const char *name
     int slot = atalk_afp_volume_find(name);
     if (slot < 0 || slot >= ATALK_AFP_MAX_VOLUMES)
         return NULL;
-    return object_cache_at(&g_atalk_volume_entries, slot, NULL);
+    return object_cache_at(&g_net.volume_objects, slot, NULL);
 }
 
 // Constructive methods return the object they made, so a script can chain
@@ -2787,9 +2799,9 @@ static DEF_METHOD(atalk_volumes_method_add) {
     int slot = atalk_afp_volume_add(argv[0].s, argv[1].s, err, sizeof(err));
     if (slot < 0)
         return atalk_err("cannot add the volume", err);
-    if (slot >= ATALK_AFP_MAX_VOLUMES || !object_cache_at(&g_atalk_volume_entries, slot, NULL))
+    if (slot >= ATALK_AFP_MAX_VOLUMES || !object_cache_at(&g_net.volume_objects, slot, NULL))
         return val_none();
-    return val_obj(object_cache_at(&g_atalk_volume_entries, slot, NULL));
+    return val_obj(object_cache_at(&g_net.volume_objects, slot, NULL));
 }
 
 static DEF_METHOD(atalk_volumes_method_remove) {
@@ -2903,7 +2915,7 @@ static struct object *atalk_sessions_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= ATALK_ASP_MAX_SESSIONS || !atalk_asp_session_in_use(index))
         return NULL;
-    return object_cache_at(&g_atalk_session_entries, index, NULL);
+    return object_cache_at(&g_net.session_objects, index, NULL);
 }
 
 static const collection_desc_t atalk_sessions_collection_entries = {
@@ -3070,9 +3082,6 @@ static DEF_SETTER(atalk_printer_attr_set_name) {
 static DEF_GETTER(atalk_printer_attr_status) {
     return val_str(atalk_printer_get_status());
 }
-static DEF_GETTER(atalk_printer_attr_finishing) {
-    return val_bool(atalk_printer_job_finishing());
-}
 static DEF_GETTER(atalk_printer_attr_interpreter) {
     return val_bool(atalk_printer_has_interpreter());
 }
@@ -3135,10 +3144,6 @@ static const member_t atalk_printer_members[] = {
      .name = "status",
      .doc = "PAP status string as the workstation reads it",
      .attr = {.type = V_STRING, .get = atalk_printer_attr_status}                                      },
-    {.kind = M_ATTR,
-     .name = "finishing",
-     .doc = "True while a job whose data is all in has not yet produced its document",
-     .attr = {.type = V_BOOL, .presentation_flags = VAL_VOLATILE, .get = atalk_printer_attr_finishing} },
     {.kind = M_ATTR,
      .name = "interpreter",
      .doc = "True when the build links the PostScript interpreter (PLATEN=1)",

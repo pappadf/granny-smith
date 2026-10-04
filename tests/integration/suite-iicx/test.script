@@ -197,6 +197,10 @@ def row_iicx_gc_beep() {
     # carried from one machine to the next in the same process -- so it had to
     # be regenerated from a whole-suite run.  That remainder is the machine's
     # own now, and the row captures the same beep alone or in the suite.
+    # Re-captured 2026-10 when the ADB mouse stopped answering polls it had
+    # nothing new for and the 1 kHz cursor guard went away (its event alone
+    # moved this window by 3 frames): same length, one sample (index 4085)
+    # changed.
     check_sound("goldens/iicx-gc-beep.wav", 5426)
 
     # Sample-exact compare against the golden (fails the test on any divergence).
@@ -225,17 +229,24 @@ def row_iicx_gc_beep() {
     machine.adb.mouse.click false
     scheduler.run 40000000
 
-    check_sound("goldens/iicx-gc-beep2.wav", 5423)
-    # The pre-volume waveform is the first beep's: the Sound Manager re-renders
-    # the same table and no state leaks between beeps.  The second beep is
+    check_sound("goldens/iicx-gc-beep2.wav", 5426)
+    # The pre-volume waveform is the first beep's (up to the timing-phase
+    # effect below): the Sound Manager re-renders the same table and no state
+    # leaks between beeps.  The second beep is
     # LOUDER only through the volume register, asserted below.
     #
     # "byte-for-byte", as this said until 2026-09-13, overstates it and is not
     # asserted anywhere -- the two captures have never been the same length
     # (5423/5426 before the SCSI reset, 5427/5426 after).  Aligned on their
-    # shared body they agree to ONE sample in ~5,424, and that ratio is
-    # identical either side of that change, which is the invariant this row
-    # exists to guard.
+    # shared body they agreed to ONE sample in ~5,424 either side of that
+    # change.  That agreement turns out to depend on the instruction phase of
+    # the drag, not only on Sound Manager state: inserting 100, 5,000 or
+    # 300,000 instructions before this drag gives 1 to 10 differing samples
+    # on the same build (measured 2026-10).  After the 2026-10 ADB mouse fixes
+    # and the cursor guard's removal the unperturbed run lands on a phase
+    # where 317 samples of the negative half differ by one to three DAC steps
+    # (the same perturbations then give 1 to 8); both captures stay pinned by
+    # their goldens.
     assert machine.sound.volume == 6 "ASC volume register != slider level 6"
     report_perf("suite-iicx/iicx-gc-beep", scheduler.instr_count)
 }

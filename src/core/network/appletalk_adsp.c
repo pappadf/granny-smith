@@ -1225,17 +1225,26 @@ void atalk_adsp_ddp_in(const ddp_header_t *ddp, const uint8_t *buf, int len) {
 // Object model — `appletalk.adsp`
 // ============================================================================
 
-static struct object *g_adsp_object;
-static struct object *g_adsp_conns_object;
-static struct object *g_adsp_stats_object;
-
 static const class_desc_t adsp_class;
 static const class_desc_t adsp_conns_class;
 static const class_desc_t adsp_conn_class;
 static const class_desc_t adsp_stats_class;
 
-// The collection entry objects, made on first use.
-static object_cache_t g_adsp_conn_entries = OBJECT_CACHE(&adsp_conn_class, NULL);
+// ADSP's part of the network: the `appletalk.adsp.connections` entries.
+// atalk_adsp_init makes it; the network owns it.
+struct adsp_host {
+    object_cache_t conn_entries; // made on first use
+};
+
+// The network's, set by atalk_adsp_init.
+static adsp_host_t *g_host;
+
+adsp_host_t *atalk_adsp_init(void) {
+    adsp_host_t *host = calloc(1, sizeof(*host));
+    if (host)
+        g_host = host;
+    return host;
+}
 
 static adsp_conn_t *adsp_obj_conn(struct object *self) {
     int slot = object_entry_index(self);
@@ -1356,7 +1365,7 @@ static struct object *adsp_conns_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= ADSP_MAX_CONNECTIONS || !adsp_conn_at(g_adsp, index))
         return NULL;
-    return object_cache_at(&g_adsp_conn_entries, index, NULL);
+    return object_cache_at(&g_host->conn_entries, index, NULL);
 }
 
 static const collection_desc_t adsp_conns_entries = {
@@ -1425,22 +1434,21 @@ static const class_desc_t adsp_class = {
 };
 
 void atalk_adsp_install_objects(struct object *parent) {
-    if (!parent || g_adsp_object)
+    struct object *adsp = object_new(&adsp_class, NULL, "adsp");
+    if (!adsp)
         return;
-    g_adsp_object = object_new(&adsp_class, NULL, "adsp");
-    if (!g_adsp_object)
-        return;
-    object_set_category(g_adsp_object, M_CAT_ADVANCED);
-    object_attach(parent, g_adsp_object);
+    object_set_category(adsp, M_CAT_ADVANCED);
+    object_attach(parent, adsp);
 
-    g_adsp_conns_object = object_new(&adsp_conns_class, NULL, "connections");
-    if (g_adsp_conns_object)
-        object_attach(g_adsp_object, g_adsp_conns_object);
-    g_adsp_stats_object = object_new(&adsp_stats_class, NULL, "stats");
-    if (g_adsp_stats_object)
-        object_attach(g_adsp_object, g_adsp_stats_object);
+    struct object *conns = object_new(&adsp_conns_class, NULL, "connections");
+    if (conns)
+        object_attach(adsp, conns);
+    struct object *stats = object_new(&adsp_stats_class, NULL, "stats");
+    if (stats)
+        object_attach(adsp, stats);
 
     // Entry objects are handed out by the collection callbacks and never
     // attached; like the subtree, they live as long as the process.
-    object_cache_set_parent(&g_adsp_conn_entries, g_adsp_conns_object);
+    g_host->conn_entries = (object_cache_t)OBJECT_CACHE(&adsp_conn_class, NULL);
+    object_cache_set_parent(&g_host->conn_entries, conns);
 }
