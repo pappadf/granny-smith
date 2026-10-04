@@ -173,8 +173,9 @@ int atalk_printer_set_name(const char *name, char *err, size_t err_len);
 // The PAP status string as the workstation reads it.
 const char *atalk_printer_get_status(void);
 
-// True while a job whose data is all in is finishing after its connection
-// closed: the printer's, not the machine's, so it outlives a machine swap.
+// True while a job whose data is all in (the driver's EOF handed over) has
+// not yet produced its document: the printer's, not the machine's, so it
+// outlives a machine swap.
 bool atalk_printer_job_finishing(void);
 
 // True when the build links the PostScript interpreter (PLATEN=1); then a

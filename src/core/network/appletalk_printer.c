@@ -1615,13 +1615,20 @@ void atalk_printer_register_timers(struct atalk_conn *conn) {
 }
 
 // The machine was unplugged: its session goes -- a job still arriving with it
-// -- and so does the completion reply owed to it.  A job whose data was all in
-// (detached at its clean close) is the printer's, not the session's: it keeps
-// running and finishes under the next machine (atalk_printer_plug).  The
-// printer stays, with what earlier jobs made permanent.
+// -- and so does the completion reply owed to it.  A job whose data is all in
+// (the EOF handed over, whether or not the driver has closed yet) is the
+// printer's, not the session's: it keeps running and finishes under the next
+// machine (atalk_printer_plug).  The printer stays, with what earlier jobs
+// made permanent.
 void atalk_printer_unplug(void) {
     if (!g_printer.initialized)
         return;
+#if GS_PLATEN
+    // A job whose data is all in is the printer's, connection or not: it is
+    // detached as at a clean close, so the reset below leaves it running.
+    if (g_session.active && !g_detached_job)
+        pap_platen_detach_job(true);
+#endif
     pap_session_reset(); // cancels its ATP request, drops the capture, aborts a job still arriving
     memset(&g_completion, 0, sizeof(g_completion));
 #if GS_PLATEN
@@ -1756,7 +1763,9 @@ const char *atalk_printer_get_status(void) {
 
 bool atalk_printer_job_finishing(void) {
 #if GS_PLATEN
-    return g_detached_job;
+    if (g_detached_job)
+        return true;
+    return g_session.active && laserwriter_job_active() && (laserwriter_job_finishing() || g_session.eof_pending);
 #else
     return false;
 #endif

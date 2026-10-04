@@ -134,10 +134,13 @@ a desk outlives the Macs that print to it:
 
 What a machine takes with it when it is unplugged from the network is its
 PAP session and a job still arriving over it (`atalk_printer_unplug`). A
-job whose data is all in -- one finishing after its connection closed --
-is the printer's, not the machine's: it keeps running, its document still
-reaches the sink, and the next machine's scheduler drives its remaining
-polls (`atalk_printer_plug` → `laserwriter_job_resume`). So a print sent
+job whose data is all in -- the driver's EOF handed over, whether or not
+it has closed its connection yet -- is the printer's, not the machine's:
+the unplug detaches it as a clean close would, it keeps running, its
+document still reaches the sink, and the next machine's scheduler drives
+its remaining polls (`atalk_printer_plug` → `laserwriter_job_resume`).
+`appletalk.printer.finishing` is true while such a job has not yet
+produced its document. So a print sent
 just before `machine.boot` or `checkpoint.load` is not lost. The printer's
 identity, its job counts and what earlier jobs made permanent stay.
 

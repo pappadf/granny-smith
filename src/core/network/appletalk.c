@@ -3137,7 +3137,7 @@ static const member_t atalk_printer_members[] = {
      .attr = {.type = V_STRING, .get = atalk_printer_attr_status}                                      },
     {.kind = M_ATTR,
      .name = "finishing",
-     .doc = "True while a job whose data is all in finishes after its connection closed",
+     .doc = "True while a job whose data is all in has not yet produced its document",
      .attr = {.type = V_BOOL, .presentation_flags = VAL_VOLATILE, .get = atalk_printer_attr_finishing} },
     {.kind = M_ATTR,
      .name = "interpreter",
