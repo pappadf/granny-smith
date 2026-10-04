@@ -20,8 +20,11 @@
   const arch = $derived(frame?.arch ?? 'm68k');
   const groups = $derived(frame && values ? registerGroups(frame.arch, values) : []);
 
-  // Highlight the registers that changed since the previous frame; the
-  // highlight lasts until the next frame, so single-stepping reads well.
+  // Highlight the registers that changed since the previous distinct frame;
+  // the highlight lasts until the next one, so single-stepping reads well.
+  // One stop can be fetched more than once (a step's mode events and its
+  // own refresh both re-read the frame): a frame identical to the previous
+  // is that same stop again and keeps the highlight.
   let prev: Record<string, number> | null = null;
   let changed = $state<Record<string, boolean>>({});
   $effect(() => {
@@ -31,12 +34,18 @@
       changed = {};
       return;
     }
+    if (prev && sameValues(prev, next)) return;
     const flashed: Record<string, boolean> = {};
     if (prev) for (const k of Object.keys(next)) if (prev[k] !== next[k]) flashed[k] = true;
     changed = flashed;
     prev = { ...next };
     debug.registersPrev = prev;
   });
+
+  function sameValues(a: Record<string, number>, b: Record<string, number>): boolean {
+    const ka = Object.keys(a);
+    return ka.length === Object.keys(b).length && ka.every((k) => a[k] === b[k]);
+  }
 
   // A refused entry flashes its field for 400 ms.
   let invalid = $state<Record<string, boolean>>({});

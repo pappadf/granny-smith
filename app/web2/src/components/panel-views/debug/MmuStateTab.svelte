@@ -8,10 +8,16 @@
   // The MMU's own registers, read from the core for whichever kind this
   // machine has (bus/mmu.ts), re-read with each new debug frame.
   let regs = $state<MmuRegister[]>([]);
+  // Set once a read has come back, so an empty answer is not shown as an
+  // endless "Reading…".
+  let loaded = $state(false);
   $effect(() => {
     void debugFrame.current;
     const kind = machine.mmuKind;
-    void readMmuState(kind).then((r) => (regs = r));
+    void readMmuState(kind).then((r) => {
+      regs = r;
+      loaded = true;
+    });
   });
 
   const byName = $derived(Object.fromEntries(regs.map((r) => [r.name, r.value])));
@@ -33,7 +39,7 @@
 <div class="state-body">
   <p class="summary">{KIND_LABEL[machine.mmuKind] ?? 'MMU'}</p>
   {#if regs.length === 0}
-    <p class="summary">Reading the MMU…</p>
+    <p class="summary">{loaded ? 'No MMU registers to show.' : 'Reading the MMU…'}</p>
   {/if}
   {#each regs as r (r.name)}
     <div class="reg-block">

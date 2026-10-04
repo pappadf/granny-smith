@@ -14,7 +14,9 @@
   // FPCR/FPSR/FPIAR, or PPC fpr0-fpr31 and FPSCR.
   const fpu = $derived(debugFrame.current?.fpu ?? null);
 
-  // Changed since the previous frame, by register; persists until the next.
+  // Changed since the previous distinct frame, by register; persists until
+  // the next.  A frame identical to the previous is the same stop fetched
+  // again (see RegistersSection) and keeps the marks.
   let prev: { data: string[]; control: Record<string, number> } | null = null;
   let dataChanged = $state<boolean[]>([]);
   let ctlChanged = $state<Record<string, boolean>>({});
@@ -28,6 +30,13 @@
     }
     const data = next.data.map((r) => r.hex);
     const control = Object.fromEntries(next.control.map((c) => [c.name, c.value]));
+    if (
+      prev &&
+      data.length === prev.data.length &&
+      data.every((h, i) => h === prev!.data[i]) &&
+      next.control.every((c) => prev!.control[c.name] === c.value)
+    )
+      return;
     dataChanged = prev ? data.map((h, i) => h !== prev!.data[i]) : [];
     ctlChanged = prev
       ? Object.fromEntries(next.control.map((c) => [c.name, prev!.control[c.name] !== c.value]))
