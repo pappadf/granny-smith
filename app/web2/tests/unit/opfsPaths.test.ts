@@ -8,6 +8,7 @@ import {
   CHECKPOINT_DIR,
   UPLOAD_DIR,
   SCRATCH_DIR,
+  TAB_SCRATCH_DIR,
   scratchPath,
   bufferHasCheckpointSignature,
   fileHasCheckpointSignature,
@@ -22,14 +23,17 @@ describe('OPFS path constants', () => {
     expect(CD_DIR).toBe('/opfs/images/cd');
     expect(CHECKPOINT_DIR).toBe('/opfs/checkpoints');
     expect(UPLOAD_DIR).toBe('/opfs/upload');
-    // em_main.c empties this directory at startup.
+    // em_main.c creates it; each tab works in a directory of its own there.
     expect(SCRATCH_DIR).toBe('/opfs/upload/.scratch');
+    expect(TAB_SCRATCH_DIR).toMatch(/^\/opfs\/upload\/\.scratch\/[0-9a-z]+$/);
   });
 });
 
 describe('scratchPath', () => {
-  it('names a file in the scratch area that keeps its own name at the end', () => {
-    expect(scratchPath('url_hd0')).toMatch(/^\/opfs\/upload\/\.scratch\/[0-9a-z]+-url_hd0$/);
+  it("names a file in this tab's scratch directory that keeps its own name at the end", () => {
+    const p = scratchPath('url_hd0');
+    expect(p.startsWith(`${TAB_SCRATCH_DIR}/`)).toBe(true);
+    expect(p).toMatch(/^\/opfs\/upload\/\.scratch\/[0-9a-z]+\/[0-9a-z]+-url_hd0$/);
   });
 
   it('never answers the same path twice for one name', () => {
