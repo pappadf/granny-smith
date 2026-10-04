@@ -329,8 +329,8 @@ static value_t unknown_card(const char *id, const char *near, const char *catalo
 // Validate one NuBus entry against its slot and resolve the kind it seats
 // (*out_kind, NULL for an empty socket).  `named` reports whether the
 // document named the card (an explicit card must resolve its declaration ROM).
-static value_t check_nubus_entry(const hw_profile_t *p, const slot_opts_t *e, const nubus_card_kind_t **out_kind,
-                                 bool *named) {
+static value_t check_nubus_entry(const hw_profile_t *p, const slot_opts_t *e, bool roms_final,
+                                 const nubus_card_kind_t **out_kind, bool *named) {
     const nubus_slot_decl_t *d = nubus_decl(p, e->slot);
     const nubus_card_kind_t *k = NULL;
     *named = false;
@@ -391,7 +391,8 @@ static value_t check_nubus_entry(const hw_profile_t *p, const slot_opts_t *e, co
     // running machine is touched; a slot's own default degrades to an empty
     // slot with a log, and a built-in card owns its fallback (the SE/30
     // synthesises its onboard vROM).
-    if (*named && k && vrom_card_catalogued(k->id) && !vrom_card_resolvable(k->id, e->rom[0] ? e->rom : NULL))
+    if (roms_final && *named && k && vrom_card_catalogued(k->id) &&
+        !vrom_card_resolvable(k->id, e->rom[0] ? e->rom : NULL))
         return val_err(
             "machine.boot: card '%s' (slot $%X) needs a declaration ROM but no offered vROM file provides it", k->id,
             e->slot);
@@ -399,7 +400,8 @@ static value_t check_nubus_entry(const hw_profile_t *p, const slot_opts_t *e, co
 }
 
 // The PCI counterpart: card fit, options the kind accepts, PROM.
-static value_t check_pci_entry(const hw_profile_t *p, const slot_opts_t *e, const pci_card_kind_t **out_kind) {
+static value_t check_pci_entry(const hw_profile_t *p, const slot_opts_t *e, bool roms_final,
+                               const pci_card_kind_t **out_kind) {
     const pci_slot_decl_t *d = pci_decl(p, e->slot);
     const pci_card_kind_t *k = NULL;
     bool named = false;
@@ -440,7 +442,7 @@ static value_t check_pci_entry(const hw_profile_t *p, const slot_opts_t *e, cons
             return val_err("machine.boot: prom '%s' is for card '%s', not slot %d's '%s'", e->rom, pid.card_id, e->slot,
                            k ? k->id : "(none)");
     }
-    if (named && k && k->requires_prom && !prom_card_resolvable(k->id, e->rom[0] ? e->rom : NULL))
+    if (roms_final && named && k && k->requires_prom && !prom_card_resolvable(k->id, e->rom[0] ? e->rom : NULL))
         return val_err("machine.boot: card '%s' (PCI slot %d) needs a PCI expansion ROM but no offered "
                        ".prom file provides it",
                        k->id, e->slot);
@@ -523,6 +525,26 @@ static value_t apply_rom_sugar(const hw_profile_t *p, slots_bus_t bus, const boo
     return val_none();
 }
 
+// Check every entry; with roms_final, also that each card the document named
+// resolves its ROM (the ROM sugar has run).
+static value_t check_entries(const hw_profile_t *profile, slots_bus_t bus, const machine_build_opts_t *out,
+                             bool roms_final) {
+    for (int i = 0; i < out->n_slots; i++) {
+        value_t err;
+        if (bus == SLOTS_NUBUS) {
+            const nubus_card_kind_t *k = NULL;
+            bool named = false;
+            err = check_nubus_entry(profile, &out->slots[i], roms_final, &k, &named);
+        } else {
+            const pci_card_kind_t *k = NULL;
+            err = check_pci_entry(profile, &out->slots[i], roms_final, &k);
+        }
+        if (val_is_error(&err))
+            return err;
+    }
+    return val_none();
+}
+
 value_t machine_slots_resolve(const hw_profile_t *profile, const boot_config_t *doc, machine_build_opts_t *out) {
     slots_bus_t bus = model_bus(profile);
     out->n_slots = 0;
@@ -536,36 +558,16 @@ value_t machine_slots_resolve(const hw_profile_t *profile, const boot_config_t *
     if (val_is_error(&err))
         return err;
     // The cards, modes and options, slot by slot -- before the ROM sugar,
-    // which needs to know what every slot seats.
-    for (int i = 0; i < out->n_slots; i++) {
-        if (bus == SLOTS_NUBUS) {
-            const nubus_card_kind_t *k = NULL;
-            bool named = false;
-            err = check_nubus_entry(profile, &out->slots[i], &k, &named);
-        } else {
-            const pci_card_kind_t *k = NULL;
-            err = check_pci_entry(profile, &out->slots[i], &k);
-        }
-        if (val_is_error(&err))
-            return err;
-    }
+    // which needs to know what every slot seats.  Whether a named card's ROM
+    // resolves waits for the sugar, which may supply it.
+    err = check_entries(profile, bus, out, false);
+    if (val_is_error(&err))
+        return err;
     err = apply_rom_sugar(profile, bus, doc, out);
     if (val_is_error(&err))
         return err;
     // The ROM sugar may have added entries for declared cards: check them too
-    // (their ROM must provide their card, which it does by construction, and
-    // a named card must still resolve).
-    for (int i = 0; i < out->n_slots; i++) {
-        if (bus == SLOTS_NUBUS) {
-            const nubus_card_kind_t *k = NULL;
-            bool named = false;
-            err = check_nubus_entry(profile, &out->slots[i], &k, &named);
-        } else {
-            const pci_card_kind_t *k = NULL;
-            err = check_pci_entry(profile, &out->slots[i], &k);
-        }
-        if (val_is_error(&err))
-            return err;
-    }
-    return val_none();
+    // (their ROM must provide their card, which it does by construction), and
+    // now that every ROM is known, that each named card's ROM resolves.
+    return check_entries(profile, bus, out, true);
 }
