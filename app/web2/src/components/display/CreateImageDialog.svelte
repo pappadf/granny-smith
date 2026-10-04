@@ -4,6 +4,7 @@
   import Hint from '@/components/ui/Hint.svelte';
   import RadioGroup from '@/components/ui/RadioGroup.svelte';
   import { gsEval } from '@/bus';
+  import type { BlankDisk } from '@/bus/profile';
   import { FD_DIR, HD_DIR } from '@/lib/opfsPaths';
 
   interface Props {
@@ -11,87 +12,27 @@
     /** 'hd' creates a blank hard disk; 'fd' creates a blank floppy. */
     kind: 'hd' | 'fd';
     /**
-     * For kind==='hd': the `kind` of the storage bus the disk is for, as the
-     * machine's storage tree names it (bus/profile.ts StorageBus.kind).  A
-     * ProFile port takes a raw 532-byte/block Lisa/XL ProFile image; every
-     * other bus a 512-byte/block image from the drive catalog.
+     * For kind==='hd': the blank disks the target device's bus takes, from
+     * the machine's storage tree (bus/profile.ts StorageBus.blank_disks) --
+     * the core knows each bus's image format and sizes.
      */
-    busKind?: string;
+    disks?: BlankDisk[];
     onClose: () => void;
     /** Called with the bare filename of the newly created image. */
     onCreated: (name: string) => void;
   }
-  let { open, kind, busKind = 'scsi', onClose, onCreated }: Props = $props();
+  let { open, kind, disks = [], onClose, onCreated }: Props = $props();
 
-  let isProfile = $derived(kind === 'hd' && busKind === 'profile');
-
-  interface HdModel {
-    label: string;
-    sizeBytes: number;
-    mb: number;
-  }
-
-  // Standard ProFile capacities, in 532-byte blocks (verified against the Lisa
-  // OS source): the 5 MB ProFile is 9728 blocks (the canonical device); the
-  // 10 MB drive is the Widget, whose "full disk size is 19448 blocks (pages)"
-  // per the LOS installer (APIN-OFFICE.TEXT). Both fall in the LOS ProFile
-  // driver's "use actual capacity" range so the OS sizes the volume from them.
-  const PROFILE_MODELS = [
-    { label: '5 MB ProFile', blocks: 9728, mb: 5 },
-    { label: '10 MB Widget', blocks: 19448, mb: 10 },
-  ];
-
-  let hdModels = $state<HdModel[]>([]);
-  let hdSize = $state(0); // selected size in bytes
-  let profileBlocks = $state(PROFILE_MODELS[0].blocks); // selected ProFile size (blocks)
+  let diskIndex = $state(0); // the chosen entry of `disks`
   let fdDensity = $state<'800K' | '1440K'>('800K');
   let creating = $state(false);
   let error = $state('');
 
-  // Catalog-load state machine. The effect fires the load exactly once per
-  // 'idle' — it must NOT key off hdModels.length, because loadHdModels
-  // reassigns hdModels (a fresh proxy even when empty), which would re-run
-  // the effect immediately: with the emulator still starting (gsEval → null)
-  // that loop spins on the microtask queue and freezes the tab.
-  let modelsState = $state<'idle' | 'loading' | 'error' | 'ready'>('idle');
-
-  // Load the drive catalog when the HD dialog opens (any bus but a ProFile port). The list comes
-  // back as JSON strings (V_LIST<V_STRING>); dedupe by label keeping the
-  // largest size, matching the legacy dialog.
+  // A new list (another device) starts at its first size.
   $effect(() => {
-    if (open && kind === 'hd' && !isProfile && modelsState === 'idle') {
-      modelsState = 'loading';
-      void loadHdModels();
-    }
+    void disks;
+    diskIndex = 0;
   });
-
-  async function loadHdModels() {
-    const raw = await gsEval('machine.scsi.hd_models');
-    if (!Array.isArray(raw)) {
-      modelsState = 'error';
-      return;
-    }
-    const list: HdModel[] = [];
-    for (const entry of raw) {
-      // hd_models entries are native {label, vendor, product, size}
-      // objects (V_MAP through the gsEval bridge) — no inner JSON.parse.
-      if (!entry || typeof entry !== 'object') continue;
-      const m = entry as { label?: string; size?: number };
-      if (!m.label || !m.size) continue;
-      const existing = list.find((x) => x.label === m.label);
-      if (existing) {
-        if (m.size > existing.sizeBytes) {
-          existing.sizeBytes = m.size;
-          existing.mb = Math.round(m.size / (1024 * 1024));
-        }
-      } else {
-        list.push({ label: m.label, sizeBytes: m.size, mb: Math.round(m.size / (1024 * 1024)) });
-      }
-    }
-    hdModels = list;
-    hdSize = list[0]?.sizeBytes ?? 0;
-    modelsState = list.length ? 'ready' : 'error';
-  }
 
   // Timestamp keeps generated names unique without a manual rename step.
   function stamp(): number {
@@ -104,20 +45,14 @@
     try {
       let name: string;
       let ok: boolean;
-      if (isProfile) {
-        const model = PROFILE_MODELS.find((p) => p.blocks === profileBlocks) ?? PROFILE_MODELS[0];
-        name = `blank_profile_${model.mb}MB_${stamp()}.image`;
-        ok =
-          (await gsEval('files.profile_create', [`${HD_DIR}/${name}`, String(model.blocks)])) ===
-          true;
-      } else if (kind === 'hd') {
-        if (!hdSize) {
-          error = 'No drive sizes available.';
+      if (kind === 'hd') {
+        const disk = disks[diskIndex];
+        if (!disk) {
+          error = 'This device takes no hard disk.';
           return;
         }
-        const mb = Math.round(hdSize / (1024 * 1024));
-        name = `blank_${mb}MB_${stamp()}.dmg`; // UDIF: a few KB, whatever the size
-        ok = (await gsEval('files.hd_create', [`${HD_DIR}/${name}`, String(hdSize)])) === true;
+        name = `${disk.name}_${stamp()}${disk.ext}`;
+        ok = (await gsEval(disk.method, [`${HD_DIR}/${name}`, disk.arg])) === true;
       } else {
         const highDensity = fdDensity === '1440K';
         name = `blank_${fdDensity}_${stamp()}.dsk`;
@@ -134,42 +69,18 @@
   }
 </script>
 
-<Modal
-  {open}
-  title={kind === 'hd'
-    ? isProfile
-      ? 'Create Blank ProFile'
-      : 'Create Blank Hard Disk'
-    : 'Create Blank Floppy'}
-  {onClose}
->
+<Modal {open} title={kind === 'hd' ? 'Create Blank Hard Disk' : 'Create Blank Floppy'} {onClose}>
   <div class="dlg-body">
-    {#if isProfile}
-      <Hint class="dlg-help">Choose a capacity for the new (unformatted) ProFile image.</Hint>
-      <RadioGroup
-        name="pf-size"
-        label="ProFile capacity"
-        bind:value={profileBlocks}
-        options={PROFILE_MODELS.map((m) => ({
-          value: m.blocks,
-          label: `${m.label} (${m.blocks.toLocaleString()} blocks)`,
-        }))}
-      />
-    {:else if kind === 'hd'}
+    {#if kind === 'hd'}
       <Hint class="dlg-help">Choose a size for the new hard disk image.</Hint>
-      {#if modelsState === 'error'}
-        <Hint as="div" tone="error" class="dlg-error">
-          Could not load drive sizes.
-          <Button onclick={() => (modelsState = 'idle')}>Retry</Button>
-        </Hint>
-      {:else if hdModels.length === 0}
-        <Hint class="dlg-help">Loading drive sizes…</Hint>
+      {#if disks.length === 0}
+        <Hint as="div" tone="error" class="dlg-error">This device takes no hard disk.</Hint>
       {:else}
         <RadioGroup
           name="hd-size"
           label="Hard disk size"
-          bind:value={hdSize}
-          options={hdModels.map((m) => ({ value: m.sizeBytes, label: `${m.mb} MB (${m.label})` }))}
+          bind:value={diskIndex}
+          options={disks.map((d, i) => ({ value: i, label: d.label }))}
         />
       {/if}
     {:else}
@@ -194,7 +105,7 @@
       variant="primary"
       onclick={create}
       busy={creating}
-      disabled={creating || (kind === 'hd' && !isProfile && hdModels.length === 0)}
+      disabled={creating || (kind === 'hd' && disks.length === 0)}
     >
       {creating ? 'Creating…' : 'Create'}
     </Button>

@@ -264,15 +264,11 @@ value_t pci_cards_list(void);
 // the new machine's tree is built before the old machine is destroyed).
 void pci_objects_teardown_owned(pci_root_t *root);
 
-// The primary display among the seated PCI devices — first slot in
-// declared order whose ops->display() returns non-NULL — or NULL.
-display_t *pci_primary_display(pci_root_t *root);
-
 // The display the monitor shows: a pass-through 3D card while it holds the
 // output, else the device the configuration connected the monitor to (its
-// slot entry's `connected`), or NULL when none has it.
+// slot entry's `connected`), or NULL when none has it -- and the device.
 display_t *pci_connected_display(pci_root_t *root);
-pci_device_t *pci_primary_display_card(pci_root_t *root);
+pci_device_t *pci_connected_display_card(pci_root_t *root);
 
 // A display card may nominate one of the object nodes its kind attached as
 // the FRAMEBUFFER node — what `machine.screen.source` resolves to.  The

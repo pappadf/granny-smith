@@ -13,6 +13,7 @@
   import {
     getProfile,
     clearProfileCache,
+    type BlankDisk,
     type Card,
     type ConfigDocument,
     type ConfigOption,
@@ -328,7 +329,7 @@
   // --- Image pickers -------------------------------------------------------------
   let createOpen = $state(false);
   let createKind = $state<'hd' | 'fd'>('hd');
-  let createBusKind = $state('scsi');
+  let createDisks = $state<BlankDisk[]>([]);
   let createTarget = $state(''); // "fd0" or "scsi:0"
 
   // The new value of an image picker: the pick, or for "Upload image…" the
@@ -365,13 +366,13 @@
     floppyImages = { ...floppyImages, [id]: v === NO_DISK ? '' : v };
   }
 
-  async function onDeviceImage(e: Event, key: string, type: string, busKind: string) {
+  async function onDeviceImage(e: Event, key: string, type: string, disks: BlankDisk[]) {
     const select = e.target as HTMLSelectElement;
     const empty = type === 'cd' ? NO_DISC : CHOOSE_IMAGE;
     if (select.value === CREATE_SENTINEL) {
       select.value = mediaImages[key] || empty;
       createKind = 'hd';
-      createBusKind = busKind;
+      createDisks = disks;
       createTarget = key;
       createOpen = true;
       return;
@@ -711,7 +712,7 @@
                   id={`cfg-media-${bus.id}-${d.unit}`}
                   aria-label={`${mc.deviceTypeLabel(profile, d.bus, d.type)} image`}
                   value={mediaImages[key] || empty}
-                  onchange={(e) => onDeviceImage(e, key, d.type, bus.kind)}
+                  onchange={(e) => onDeviceImage(e, key, d.type, bus.blank_disks)}
                 >
                   <option>{empty}</option>
                   {#each d.type === 'cd' ? cdNames : hdNames as n (n)}
@@ -791,7 +792,7 @@
 <CreateImageDialog
   open={createOpen}
   kind={createKind}
-  busKind={createBusKind}
+  disks={createDisks}
   onClose={() => (createOpen = false)}
   onCreated={onImageCreated}
 />

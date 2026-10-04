@@ -348,13 +348,8 @@ static void se30_post_nubus(config_t *cfg) {
     // before system_destroy and closes transferred media if system_create
     // fails), and exit(1) from inside substrate->init() defeated all of it:
     // in the browser it killed the emulator, and a machine.restart's in-transit
-    // media handles went with it.
-    //
-    // The message it printed was also stale -- it demanded "a real VROM file"
-    // long after builtin_se30_video grew synthesise_vrom_fallback() precisely
-    // so the SE/30 keeps booting when no onboard-video vROM is offered, which
-    // is also why the boot document's ROM check (machine_slots.c) exempts
-    // BUILTIN cards.
+    // media handles went with it.  (The card always comes up: without Apple's
+    // onboard-video ROM it runs its substitute.)
     GS_ASSERTF(se30->vram && se30->vrom, "SE/30 slot-$E card has no %s", se30->vram ? "vROM" : "VRAM");
     memory_map_host_region(cfg->mem_map, "se30_vram", se30->vram, SE30_VRAM_BASE, SE30_VRAM_SIZE, /*writable*/ true);
     memory_map_host_region(cfg->mem_map, "se30_vrom", se30->vrom, SE30_VROM_PHYS, SE30_VROM_SIZE, /*writable*/ false);

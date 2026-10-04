@@ -310,9 +310,8 @@ bool nubus_slot_entry_check(const nubus_slot_decl_t *slots, const char *model, c
             return refuse(why, why_len, "unknown card id '%s' (see catalog.nubus_cards)", e->card);
         }
         if (!nubus_card_fits_slot(d, k))
-            return refuse(why, why_len,
-                          "card '%s' fits no slot on model '%s' (see catalog.profile(\"%s\").video_slots)", e->card,
-                          model, model);
+            return refuse(why, why_len, "card '%s' fits no slot on model '%s' (see catalog.profile(\"%s\").cards)",
+                          e->card, model, model);
         named = d->kind == NUBUS_SLOT_SOCKET;
     } else {
         k = nubus_card_find(d->kind == NUBUS_SLOT_SOCKET ? d->default_card : d->builtin_card_id);
@@ -629,41 +628,18 @@ bool nubus_startup_record(nubus_bus_t *bus, int slot, uint8_t rec[8]) {
     return k->startup_record(&bus->seated[slot], rec);
 }
 
-display_t *nubus_connected_display(nubus_bus_t *bus) {
+nubus_card_t *nubus_connected_display_card(nubus_bus_t *bus) {
     for (int i = 0; bus && i < NUBUS_MAX_SLOTS; i++) {
         nubus_card_t *card = bus->cards[i];
         if (card && bus->seated[i].connected && card->ops && card->ops->display)
-            return card->ops->display(card);
-    }
-    return NULL;
-}
-
-display_t *nubus_primary_display(nubus_bus_t *bus) {
-    if (!bus)
-        return NULL;
-    // First slot in numerical order whose ops->display() returns non-NULL.
-    for (int i = 0; i < NUBUS_MAX_SLOTS; i++) {
-        nubus_card_t *card = bus->cards[i];
-        if (!card || !card->ops || !card->ops->display)
-            continue;
-        display_t *d = card->ops->display(card);
-        if (d)
-            return d;
-    }
-    return NULL;
-}
-
-nubus_card_t *nubus_primary_display_card(nubus_bus_t *bus) {
-    if (!bus)
-        return NULL;
-    for (int i = 0; i < NUBUS_MAX_SLOTS; i++) {
-        nubus_card_t *card = bus->cards[i];
-        if (!card || !card->ops || !card->ops->display)
-            continue;
-        if (card->ops->display(card))
             return card;
     }
     return NULL;
+}
+
+display_t *nubus_connected_display(nubus_bus_t *bus) {
+    nubus_card_t *card = nubus_connected_display_card(bus);
+    return card ? card->ops->display(card) : NULL;
 }
 
 void nubus_tick_vbl(nubus_bus_t *bus) {

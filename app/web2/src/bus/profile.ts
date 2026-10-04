@@ -66,6 +66,17 @@ export interface StorageBus {
   bays: StorageUnit[];
   accepts: Choice[]; // device types: hd, cd
   startup: boolean; // the startup record can name a device here
+  // The blank hard disks its drives take: the files.* method that creates
+  // one (with `arg`), and the new file's name stem and extension.
+  blank_disks: BlankDisk[];
+}
+
+export interface BlankDisk {
+  label: string;
+  method: string;
+  arg: string;
+  name: string;
+  ext: string;
 }
 
 export interface Slot {
@@ -225,6 +236,7 @@ function normalise(r: Partial<MachineProfile>): MachineProfile {
       shares_units_with: b.shares_units_with ?? [],
       bays: b.bays ?? [],
       accepts: b.accepts ?? [],
+      blank_disks: b.blank_disks ?? [],
       startup: b.startup === true,
       external_connector: b.external_connector === true,
     })),

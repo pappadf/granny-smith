@@ -14,6 +14,7 @@
 
 #include "machine_config.h"
 
+#include "drive_catalog.h"
 #include "machine_profile.h"
 #include "monitor_catalog.h"
 #include "nubus.h"
@@ -297,6 +298,55 @@ static int unit_count(const storage_bus_decl_t *b) {
     return b->kind == STORAGE_KIND_SCSI ? (b->wide ? 16 : 8) : b->kind == STORAGE_KIND_ATA ? 2 : 1;
 }
 
+// One blank hard disk a bus's drives take, as the Create dialog offers it:
+// its label, the files.* method that creates it with `arg`, and the file
+// name's stem and extension.
+static value_t blank_disk(const char *label, const char *method, const char *arg, const char *name, const char *ext) {
+    value_map_builder_t *m = val_map_new();
+    val_map_put(m, "label", val_str(label));
+    val_map_put(m, "method", val_str(method));
+    val_map_put(m, "arg", val_str(arg));
+    val_map_put(m, "name", val_str(name));
+    val_map_put(m, "ext", val_str(ext));
+    return val_map_finish(m);
+}
+
+// The blank hard disks the bus's drives take: the ProFile port's raw
+// 532-byte-block images (the 5 MB ProFile and the 10 MB Widget, their
+// capacities per the Lisa OS installer); every other bus a 512-byte-block
+// image of a catalogue drive (the largest of each label), stored as UDIF.
+static value_t blank_disks_value(const storage_bus_decl_t *b) {
+    vlist_t l = {0};
+    if (!(b->accepts & STORAGE_DEV_HD))
+        return vl_finish(&l);
+    if (b->kind == STORAGE_KIND_PROFILE) {
+        vl_push(&l, blank_disk("5 MB ProFile (9728 blocks)", "files.profile_create", "9728", "blank_profile_5MB",
+                               ".image"));
+        vl_push(&l, blank_disk("10 MB Widget (19448 blocks)", "files.profile_create", "19448", "blank_profile_10MB",
+                               ".image"));
+        return vl_finish(&l);
+    }
+    int n = drive_catalog_count();
+    for (int i = 0; i < n; i++) {
+        const struct drive_model *md = drive_catalog_get(i);
+        bool superseded = false;
+        for (int j = 0; j < n && !superseded; j++) {
+            const struct drive_model *o = drive_catalog_get(j);
+            superseded =
+                j != i && strcmp(o->label, md->label) == 0 && (o->size > md->size || (o->size == md->size && j < i));
+        }
+        if (superseded)
+            continue;
+        unsigned mb = (unsigned)((md->size + 512u * 1024u) / (1024u * 1024u));
+        char label[64], arg[24], name[32];
+        snprintf(label, sizeof label, "%u MB (%s)", mb, md->label);
+        snprintf(arg, sizeof arg, "%zu", md->size);
+        snprintf(name, sizeof name, "blank_%uMB", mb);
+        vl_push(&l, blank_disk(label, "files.hd_create", arg, name, ".dmg"));
+    }
+    return vl_finish(&l);
+}
+
 static value_t storage_bus_value(const storage_bus_decl_t *b) {
     value_map_builder_t *m = val_map_new();
     val_map_put(m, "id", val_str(b->id));
@@ -341,6 +391,7 @@ static value_t storage_bus_value(const storage_bus_decl_t *b) {
     val_map_put(m, "bays", vl_finish(&bays));
     val_map_put(m, "accepts", vl_finish(&accepts));
     val_map_put(m, "startup", val_bool(b->startup_ok));
+    val_map_put(m, "blank_disks", blank_disks_value(b));
     return val_map_finish(m);
 }
 

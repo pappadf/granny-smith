@@ -1228,9 +1228,8 @@ static const char *c54m30_name(const pci_device_t *dev) {
     return "Cirrus 54M30";
 }
 
-// The primary display, once a mode has been programmed.  Before that the
-// descriptor has no geometry and the card advertises nothing, which is what
-// lets `pci_primary_display` fall through to whatever else a machine has.
+// The card's display, once a mode has been programmed.  Before that the
+// descriptor has no geometry and the card advertises nothing.
 static display_t *c54m30_display(pci_device_t *dev) {
     c54m30_t *c = (c54m30_t *)dev->priv;
     return (c && c->display.width && c->display.height) ? &c->display : NULL;

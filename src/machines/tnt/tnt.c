@@ -987,20 +987,6 @@ static void tnt_trigger_vbl(config_t *cfg) {
     pci_tick_vbl(cfg->pci);
 }
 
-// Primary display: the first display-capable PCI device in declared slot
-// order.  Control is itself a pci_device_t with a display op, seated in the
-// LAST declared slot (7 on the 9500, 4 on the 7500/8500), so this reads
-// "a seated video card when one exists, Control otherwise" with no
-// special-casing — the slot ordering was chosen for exactly this.
-//
-// The direct call survives as the fallback for the window between
-// tnt_control_init and slot seating, when the PCI object graph is not yet
-// answering.
-static struct display *tnt_display(config_t *cfg) {
-    struct display *d = pci_primary_display(cfg->pci);
-    return d ? d : tnt_control_display(cfg);
-}
-
 // Media attach, with the Network Servers' SECOND SCSI bus: on a Shiner a
 // medium in a rear bay is on `machine.scsi2`.
 static int tnt_media_attach(config_t *cfg, const media_slot_t *slot) {
@@ -1329,7 +1315,6 @@ const machine_substrate_t tnt_substrate = {
     .input_key = mac_input_key,
     .input_mouse_move = mac_input_mouse_move,
     .input_mouse_button = mac_input_mouse_button,
-    .display = tnt_display,
     .media_attach = tnt_media_attach,
     .media_present = tnt_media_present,
     .media_eject = tnt_media_eject,

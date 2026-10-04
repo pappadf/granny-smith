@@ -432,11 +432,11 @@ display_t *system_display_synced(void) {
 
 // System-level display accessor: the display device the monitor is plugged
 // into.  A card (or a built-in video that is a slot device -- the SE/30's,
-// the IIci's RBV, the TNT's Control) marked connected by the configuration
-// wins; otherwise the machine's own built-in video (substrate .display --
-// Plus, Lisa, the DAFB, CIVIC, Ariel), and failing that the first NuBus card
-// with a display.  Returns NULL when no machine is booted or the booted
-// machine has no screen (e.g. a IIcx with no card seated).
+// the IIci's RBV, the TNT's Control, Gossamer's Rage Pro) marked connected
+// by the configuration wins; otherwise the machine's own built-in video
+// (substrate .display -- Plus, Lisa, the DAFB, CIVIC, Ariel).  Returns NULL
+// when no machine is booted or the booted machine has no screen (a IIcx with
+// no card seated, or a configuration that plugs no monitor in).
 display_t *system_display(void) {
     NOT_DURING_CONSTRUCTION();
     config_t *cfg = global_emulator;
@@ -447,14 +447,7 @@ display_t *system_display(void) {
         connected = pci_connected_display(cfg->pci);
     if (connected)
         return connected;
-    if (cfg->machine->substrate->display) {
-        display_t *d = cfg->machine->substrate->display(cfg);
-        if (d)
-            return d;
-    }
-    if (cfg->nubus)
-        return nubus_primary_display(cfg->nubus);
-    return NULL;
+    return cfg->machine->substrate->display ? cfg->machine->substrate->display(cfg) : NULL;
 }
 
 // Check if emulator is initialized and running

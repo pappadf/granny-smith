@@ -458,7 +458,7 @@ void pci_card_set_framebuffer_object(pci_device_t *dev, struct object *obj) {
 struct object *pci_active_framebuffer_object(void) {
     if (!g_obj_root)
         return NULL;
-    pci_device_t *dev = pci_primary_display_card(g_obj_root);
+    pci_device_t *dev = pci_connected_display_card(g_obj_root);
     if (!dev)
         return NULL;
     for (int i = 0; i < PCI_OBJ_SLOTS; i++)

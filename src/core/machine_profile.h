@@ -327,12 +327,11 @@ typedef struct machine_substrate {
     // delete them, but do not read them as evidence that a substrate may skip
     // these either.
     //
-    // `display` is NULL on 3 of 9 and that IS a fallback: system_display()
-    // takes the substrate's answer when it has one and drops through to
-    // nubus_primary_display() otherwise -- including when a bound hook returns
-    // NULL.  Deliberate: built-in video wins, else the NuBus primary.  (This
-    // paragraph used to claim "one uniform path, no NULL-and-fallback" and
-    // then describe the fallback two lines later.)
+    // `display` is the built-in video that is no slot device (the Plus, the
+    // Lisa, the DAFB, CIVIC, Ariel); NULL where the built-in video, if any,
+    // is a NuBus or PCI device.  system_display() shows the device the
+    // configuration connected the monitor to, and this when no slot device
+    // has it.
     int (*fd_insert)(struct config *cfg, int drive, struct image *disk);
     bool (*fd_present)(struct config *cfg, int drive);
     // Key identity across the whole model is the ADB RAW keycode (0x00-0x7F):

@@ -2783,7 +2783,7 @@ static void v2_display_update(voodoo2_t *v) {
 }
 
 // The pass-through contract: re-resolved every frame by
-// pci_primary_display_card(), which calls this as its test.  Returning
+// pci_connected_display_card(), which calls this as its test.  Returning
 // NULL yields the monitor to the 2D card; the ONE obligation on the
 // card is to flag shape_dirty on BOTH edges of the switch, because two
 // sources of different geometry share one screen texture.

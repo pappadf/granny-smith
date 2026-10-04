@@ -34,6 +34,9 @@
 
 LOG_USE_CATEGORY_NAME("pci");
 
+// A BUILTIN_FALLBACK stand-in's seat (below).
+static void fallback_seat(pci_root_t *root, const pci_slot_decl_t *s);
+
 #define PCI_MAX_BUSES   4
 #define PCI_MAX_DEVICES 32 // IDSEL AD11..AD31 (0..10 never exist)
 #define PCI_MAX_WINDOWS 4
@@ -732,6 +735,8 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
                     kind = NULL;
                     break;
                 }
+                if (kind && !cp)
+                    fallback_seat(root, s);
                 break;
             }
             case PCI_SLOT_SOCKET:
@@ -947,42 +952,46 @@ void pci_tick_vbl(pci_root_t *root) {
     }
 }
 
-display_t *pci_connected_display(pci_root_t *root) {
+// A stand-in that seats takes the place of the display card it stands in for:
+// that card's monitor (the first socket's default card's first monitor), and
+// the connection when no other display device has it.
+static void fallback_seat(pci_root_t *root, const pci_slot_decl_t *s) {
+    slot_opts_t *e = &root->entry[s->slot];
+    bool taken = root->cfg->build_opts.builtin_connected;
+    for (int i = 0; i < PCI_MAX_SLOTS; i++)
+        taken |= i != s->slot && root->entry[i].connected;
+    const pci_card_kind_t *stood_for = NULL;
+    for (const pci_slot_decl_t *x = root->slots; x->slot && !stood_for; x++)
+        if (x->kind == PCI_SLOT_SOCKET && x->default_card)
+            stood_for = pci_card_find(x->default_card);
+    e->slot = s->slot;
+    e->sense = (stood_for && stood_for->monitors && stood_for->monitors->id) ? stood_for->monitors->sense_code
+                                                                             : MACHINE_SENSE_NONE;
+    e->connected = !taken;
+}
+
+pci_device_t *pci_connected_display_card(pci_root_t *root) {
     // A pass-through 3D card (the Voodoo2) sits between the display card and
     // the monitor and answers display() only while it holds the output:
     // then the monitor shows it, whichever device it is connected to.
     for (int i = 0; root && i < PCI_MAX_SLOTS; i++) {
         pci_device_t *dev = root->slot_dev[i];
         const pci_card_kind_t *k = pci_slot_kind(root, i);
-        if (dev && k && k->card_class && strcmp(k->card_class, "3d") == 0 && dev->ops && dev->ops->display) {
-            display_t *d = dev->ops->display(dev);
-            if (d)
-                return d;
-        }
+        if (dev && k && k->card_class && strcmp(k->card_class, "3d") == 0 && dev->ops && dev->ops->display &&
+            dev->ops->display(dev))
+            return dev;
     }
     for (int i = 0; root && i < PCI_MAX_SLOTS; i++) {
         pci_device_t *dev = root->slot_dev[i];
         if (dev && root->entry[i].connected && dev->ops && dev->ops->display)
-            return dev->ops->display(dev);
-    }
-    return NULL;
-}
-
-display_t *pci_primary_display(pci_root_t *root) {
-    pci_device_t *dev = pci_primary_display_card(root);
-    return dev ? dev->ops->display(dev) : NULL;
-}
-
-pci_device_t *pci_primary_display_card(pci_root_t *root) {
-    if (!root)
-        return NULL;
-    // First slot in declared order whose ops->display() answers.
-    for (int i = 0; i < PCI_MAX_SLOTS; i++) {
-        pci_device_t *dev = root->slot_dev[i];
-        if (dev && dev->ops && dev->ops->display && dev->ops->display(dev))
             return dev;
     }
     return NULL;
+}
+
+display_t *pci_connected_display(pci_root_t *root) {
+    pci_device_t *dev = pci_connected_display_card(root);
+    return dev ? dev->ops->display(dev) : NULL;
 }
 
 // === Slot interrupts ========================================================

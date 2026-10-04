@@ -75,7 +75,19 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
         return -1;
     }
     (void)cfg;
-    if (opts->substitute) {
+    // Apple's ROM, which the bus seats only when it is offered.  A file that
+    // went away, or a checkpoint whose ROM is not this card's, leaves the
+    // SE/30 its substitute rather than no video: the machine around the card
+    // stays whole, and a restore fails on the checkpoint's error.
+    bool substitute = opts->substitute;
+    if (!substitute && !declrom_load_vrom_card(card, builtin_se30_video_kind.id, opts->rom[0] ? opts->rom : NULL,
+                                               p->vrom, SE30_VROM_SIZE, NULL)) {
+        LOG(0, "SE/30 video: the onboard-video declaration ROM could not be loaded; running the substitute");
+        if (cp)
+            checkpoint_set_error(cp);
+        substitute = card->substitute = true;
+    }
+    if (substitute) {
         // The substitute ROM: the GS declaration ROM generated here -- a full
         // declaration ROM with a real display driver, records from
         // builtin_se30_monitors[], code fragments spliced, CRC stamped in C
@@ -87,16 +99,6 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
         if (!img || !declrom_install_builtin(card, builtin_se30_video_kind.id, img, img_size, p->vrom, SE30_VROM_SIZE))
             LOG(0, "SE/30 video: the substitute declaration ROM failed to generate; declaration ROM is zero-filled");
         declrom_builder_free(bld);
-    } else if (!declrom_load_vrom_card(card, builtin_se30_video_kind.id, opts->rom[0] ? opts->rom : NULL, p->vrom,
-                                       SE30_VROM_SIZE, NULL)) {
-        // The bus seats Apple's ROM only when it is offered (else the
-        // substitute), so this is a file that went away or a checkpoint whose
-        // ROM is not this card's.
-        LOG(0, "SE/30 video: the onboard-video declaration ROM could not be loaded");
-        free(p->vram);
-        free(p->vrom);
-        free(p);
-        return -1;
     }
 
     // Publish it, the way jmfb.c / 24ac.c / 824gc.c all do.  Without this the

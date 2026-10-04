@@ -200,19 +200,11 @@ const slot_opts_t *nubus_seat(nubus_bus_t *bus, int slot);
 // or has no monitor plugged in.
 bool nubus_startup_record(nubus_bus_t *bus, int slot, uint8_t rec[8]);
 
-// Return the primary display — the card whose framebuffer drives the
-// canvas.  v1: first slot in declared order whose ops->display() returns
-// non-NULL.
-display_t *nubus_primary_display(nubus_bus_t *bus);
-
 // The display of the card the configuration connected the monitor to (its
-// slot entry's `connected`), or NULL when no card has it.
+// slot entry's `connected`), or NULL when no card has it -- and the card,
+// which the object model wires `machine.screen.source` to.
 display_t *nubus_connected_display(nubus_bus_t *bus);
-
-// The card behind nubus_primary_display() (same selection rule), or NULL.
-// Used by the object model to wire `machine.screen.source` to the active
-// card's framebuffer node.
-nubus_card_t *nubus_primary_display_card(nubus_bus_t *bus);
+nubus_card_t *nubus_connected_display_card(nubus_bus_t *bus);
 
 // === Object-model surface ===================================================
 //

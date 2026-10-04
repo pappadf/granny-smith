@@ -415,7 +415,7 @@ void nubus_objects_teardown_owned(nubus_bus_t *bus) {
 struct object *nubus_active_framebuffer_object(void) {
     if (!g_obj_bus)
         return NULL;
-    nubus_card_t *card = nubus_primary_display_card(g_obj_bus);
+    nubus_card_t *card = nubus_connected_display_card(g_obj_bus);
     if (!card)
         return NULL;
     for (int i = 0; i < NUBUS_OBJ_SLOTS; i++)

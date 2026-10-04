@@ -344,11 +344,9 @@ static value_t build_capabilities(const hw_profile_t *p) {
     value_map_builder_t *b = val_map_new();
     val_map_put(b, "cpu", val_map_finish(cpu));
     val_map_put(b, "mmu", val_map_finish(mmu));
-    // NOTE: video configurability is the video_slots block, NOT "nubus
-    // exists" — the two are deliberately not conflated.
+    // Which expansion buses the machine has (what each slot takes is the
+    // tree's `slots` and `cards`).
     val_map_put(b, "nubus", val_bool(p->nubus_slots != NULL));
-    // Same rule for PCI: "the machine has PCI sockets", which is what the
-    // dialog's Expansion Slots section probes for.
     val_map_put(b, "pci", val_bool(p->pci_slots != NULL));
     // On-board video digitizer (webcam capture) — gates the camera UI.
     val_map_put(b, "video_in", val_bool(p->has_video_in));

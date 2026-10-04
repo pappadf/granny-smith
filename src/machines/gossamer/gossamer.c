@@ -611,10 +611,6 @@ static void gossamer_trigger_vbl(config_t *cfg) {
     pci_tick_vbl(cfg->pci);
 }
 
-static struct display *gossamer_display(config_t *cfg) {
-    return pci_primary_display(cfg->pci);
-}
-
 // A PCI slot's INTA-D line reaches the Heathrow source its declaration
 // names (A1/B1/C1 -> $17/$18/$19, the ATI -> $16).
 static void gossamer_pci_slot_irq(config_t *cfg, int slot, bool active) {
@@ -728,8 +724,8 @@ const pci_slot_decl_t gossamer_pci_slots[] = {
      .device = GOS_DEV_SLOT_C1,
      .int_line = GOS_INT_SLOT_C1},
     // The on-board ATI Rage Pro, "slot" F1 in the firmware's slot names.
-    // Declared LAST so a display card in a real slot, when one is seated,
-    // is the primary display (pci_primary_display takes the first).
+    // Its display is the screen when the configuration connects the monitor
+    // to it (the built-in video's slot entry).
     {.slot = 4,
      .kind = PCI_SLOT_BUILTIN,
      .label = "Built-in video",
@@ -765,7 +761,6 @@ const machine_substrate_t gossamer_substrate = {
     .input_key = mac_input_key,
     .input_mouse_move = mac_input_mouse_move,
     .input_mouse_button = mac_input_mouse_button,
-    .display = gossamer_display,
     .media_attach = gos_media_attach,
     .media_present = gos_media_present,
     .media_eject = gos_media_eject,

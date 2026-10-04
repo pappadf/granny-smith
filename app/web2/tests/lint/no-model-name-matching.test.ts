@@ -72,30 +72,101 @@ describe('frontend never matches on the model name', () => {
   }
 });
 
-// The configuration dialog and the code that boots and attaches media are
-// renderers over the machine-description tree (catalog.profile): which buses,
-// slots and cards a machine has is the tree's to say, so none of them may
-// branch on a bus name.  (A bus *kind* the tree reports -- CreateImageDialog's
-// ProFile image format -- is data, and lives outside these files.)
-const RENDERERS = [
-  'components/display/WelcomeConfigSlide.svelte',
-  'lib/machineConfig.ts',
-  'bus/boot.ts',
-  'bus/media.ts',
-  'bus/urlMedia.ts',
+// No hardware knowledge in the frontend at all: which buses, slots, cards and
+// models a machine has, and what each can do, is the machine-description
+// tree's to say (catalog.profile), so nothing under src/ may branch on a bus
+// or slot kind, a card id or a model id -- the tree's ids are data the
+// renderers pass back, never names they compare against.  (Literals that are
+// not comparisons -- an icon named "floppy", a log category -- are fine.)
+const MODEL_IDS = [
+  'plus',
+  'se30',
+  'lisa',
+  'macxl',
+  'iix',
+  'iicx',
+  'iifx',
+  'iici',
+  'iisi',
+  'q700',
+  'q900',
+  'q950',
+  'q840av',
+  'q660av',
+  'pm6100',
+  'pm7100',
+  'pm8100',
+  'pm7500',
+  'pm8500',
+  'pm9500',
+  'ans500',
+  'ans700',
+  'pmg3dt',
+  'pmg3mt',
 ];
-const BUS_NAME =
-  /[!=]==?\s*'(nubus|pci|scsi\d*|ata\d*|profile|floppy)'|'(nubus|pci|scsi\d*|ata\d*|profile|floppy)'\s*[!=]==?/;
+const CARD_IDS = [
+  'mdc_8_24',
+  'display_card_24ac',
+  '824gc',
+  'builtin_se30_video',
+  'builtin_rbv_video',
+  'tnt_control',
+  'mach64_gx',
+  'ati_rage_pro',
+  'cirrus_54m30',
+  'voodoo2',
+  'voodoo2_webgpu',
+];
+const BUS_AND_SLOT = ['nubus', 'pci', 'scsi\\d*', 'ata\\d*', 'profile', 'floppy', 'builtin'];
+const ID = `(?:${[...MODEL_IDS, ...CARD_IDS, ...BUS_AND_SLOT].join('|')})`;
+const ID_COMPARISON = new RegExp(
+  `[!=]==?\\s*['"\`]${ID}['"\`]|['"\`]${ID}['"\`]\\s*[!=]==?|\\bcase\\s+['"\`]${ID}['"\`]`,
+);
 
-describe('the configuration renderers never branch on a bus name', () => {
-  for (const rel of RENDERERS) {
-    it(rel, () => {
-      const offenders = readFileSync(join(SRC, rel), 'utf8')
+describe('the frontend never branches on a bus, slot, card or model id', () => {
+  const files = walk(SRC);
+  it('compares against none of them anywhere in src/', () => {
+    const offenders: string[] = [];
+    for (const file of files) {
+      readFileSync(file, 'utf8')
         .split('\n')
-        .map((line, i) => [line, i + 1] as const)
-        .filter(([line]) => BUS_NAME.test(line))
-        .map(([line, n]) => `${rel}:${n}: ${line.trim()}`);
-      expect(offenders, `bus-name branching found:\n${offenders.join('\n')}`).toEqual([]);
-    });
-  }
+        .forEach((line, i) => {
+          if (ID_COMPARISON.test(line))
+            offenders.push(`${relative(SRC, file)}:${i + 1}: ${line.trim()}`);
+        });
+    }
+    expect(offenders, `hardware-id comparison found:\n${offenders.join('\n')}`).toEqual([]);
+  });
+
+  it('would catch one', () => {
+    for (const line of [
+      "if (bus.kind === 'profile') {",
+      "x !== 'scsi2'",
+      "case 'nubus':",
+      'model == "iici"',
+      "'mach64_gx' === card.id",
+    ])
+      expect(ID_COMPARISON.test(line), line).toBe(true);
+    expect(ID_COMPARISON.test("icon: 'floppy'")).toBe(false);
+  });
+});
+
+// Parameter memory is device state the core seeds from the configuration
+// when it builds a machine; the frontend never writes it (no PRAM or NVRAM
+// poke, no boot-device byte, on the boot path or anywhere else).
+describe('the frontend never writes PRAM or NVRAM', () => {
+  it('names no parameter-memory surface in src/', () => {
+    const PRAM = /rtc\.pram|pram_init|\bnvram\b|boot_device/i;
+    const offenders: string[] = [];
+    for (const file of walk(SRC)) {
+      readFileSync(file, 'utf8')
+        .split('\n')
+        .forEach((line, i) => {
+          // Code, not prose: a comment may talk about PRAM.
+          if (PRAM.test(line.replace(/\/\/.*$/, '')))
+            offenders.push(`${relative(SRC, file)}:${i + 1}: ${line.trim()}`);
+        });
+    }
+    expect(offenders, `parameter-memory access found:\n${offenders.join('\n')}`).toEqual([]);
+  });
 });
