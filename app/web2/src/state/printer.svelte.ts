@@ -1,5 +1,7 @@
-// The emulated LaserWriter, as the page shows it: what the printer is doing
-// (the status bar) and the last document it printed (the viewer).
+// The emulated printers, as the page shows them: what the printer is doing
+// (the status bar) and the last document it printed (the viewer).  Two
+// printers report here: the LaserWriter on the AppleTalk network and the
+// machine's ImageWriter; each status and document names its printer.
 //
 // The activity comes from the core: the PAP layer announces its status
 // string on every change (a `printer_status` event, appletalk_printer.c), in
@@ -7,11 +9,13 @@
 // "status: busy; source: AppleTalk; job: <name>", "status: printing; ...;
 // page: <n>", or idle with "; error: <why>" after a failed job.  The document
 // comes from the interpreter worker (printer/platen.ts), which posts each
-// finished PDF to the page.
+// finished PDF to the page; an ImageWriter document comes from the core
+// itself, as a download marked `kind: "document"` (bus/download.ts).
 
 export type PrinterActivity = 'idle' | 'starting' | 'busy' | 'printing' | 'error';
 
 export interface PrintedDocument {
+  printer: string; // which printer: "LaserWriter", "ImageWriter II", ...
   name: string; // <job id, 5 digits>-<title>.pdf
   title: string; // the driver's job name, "" when it gave none
   pages: number;
@@ -19,6 +23,7 @@ export interface PrintedDocument {
 }
 
 export interface PrinterState {
+  name: string; // the printer the status is from
   activity: PrinterActivity;
   job: string; // the running job's name, "" when none or unknown
   page: number; // pages shown so far by the running job
@@ -31,6 +36,7 @@ export interface PrinterState {
 }
 
 export const printer: PrinterState = $state({
+  name: 'LaserWriter',
   activity: 'idle',
   job: '',
   page: 0,
@@ -50,8 +56,10 @@ function field(status: string, key: string): string {
   return '';
 }
 
-// Takes the core's status string (the printer_status event).
-export function setPrinterStatus(status: string): void {
+// Takes the core's status string (the printer_status event) and the printer
+// it is from.
+export function setPrinterStatus(status: string, name = 'LaserWriter'): void {
+  printer.name = name;
   printer.status = status;
   const state = field(status, 'status');
   const error = field(status, 'error');
@@ -88,6 +96,7 @@ function openViewer(): void {
 // A finished document from the interpreter worker: kept, and shown in the
 // viewer.  The previous document's URL is released.
 export function showPrintedDocument(doc: {
+  printer?: string;
   name: string;
   title: string;
   pages: number;
@@ -95,7 +104,13 @@ export function showPrintedDocument(doc: {
 }): void {
   const url = URL.createObjectURL(new Blob([doc.pdf as BlobPart], { type: 'application/pdf' }));
   if (printer.document) URL.revokeObjectURL(printer.document.url);
-  printer.document = { name: doc.name, title: doc.title, pages: doc.pages, url };
+  printer.document = {
+    printer: doc.printer ?? 'LaserWriter',
+    name: doc.name,
+    title: doc.title,
+    pages: doc.pages,
+    url,
+  };
   openViewer();
 }
 
@@ -113,6 +128,7 @@ export function closePrintedDocument(): void {
 // For tests: back to a printer that has done nothing.
 export function _resetPrinterForTests(): void {
   if (printer.document) URL.revokeObjectURL(printer.document.url);
+  printer.name = 'LaserWriter';
   printer.activity = 'idle';
   printer.job = '';
   printer.page = 0;

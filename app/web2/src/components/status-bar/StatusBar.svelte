@@ -49,7 +49,7 @@
     const t = setTimeout(() => (cpFlash = false), 180);
     return () => clearTimeout(t);
   });
-  // The LaserWriter: what it is doing while a job runs (the core's PAP
+  // The printer (LaserWriter or ImageWriter): what it is doing while a job runs (the core's
   // status, state/printer), then a button that reopens the last document.
   const printerJob = $derived(printer.job ? ` “${printer.job}”` : '');
   const printerLabel = $derived(
@@ -143,7 +143,7 @@
           class="gs-statusbar__item sb-item sb-printer"
           class:error={printer.activity === 'error'}
           data-state={printer.activity === 'error' ? 'error' : undefined}
-          title="LaserWriter — {printer.status}"
+          title="{printer.name} — {printer.status}"
         >
           {#if printerBusy}<ActivityDot
               class="upload-spinner"
