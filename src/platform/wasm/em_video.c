@@ -684,10 +684,28 @@ static void overlay_hide_if_up(void) {
     // clang-format on
 }
 
+// The canvas was blanked because the display had no framebuffer: the next
+// framebuffer is drawn in full, whatever its dirty flags say.
+static bool s_blanked;
+
+// No picture (no display, or one without a framebuffer -- the ANS between
+// a restart and Open Firmware reprogramming the Cirrus): show black, as a
+// monitor with no signal would, instead of the last frame.  Once per
+// transition.
+static void blank_canvas(void) {
+    if (s_blanked || s_ctx <= 0)
+        return;
+    s_blanked = true;
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glClearColor(0.25f, 0.25f, 0.25f, 1.0f);
+}
+
 void em_video_update(void) {
     display_t *d = system_display();
     if (!d || !d->bits) {
         overlay_hide_if_up(); // no display at all: nothing for the overlay to cover
+        blank_canvas();
         return;
     }
     if (!fb_fits_scratch(d)) {
@@ -733,7 +751,7 @@ void em_video_update(void) {
     // format / stride) — must always be honoured. clut_dirty /
     // response_dirty change pixel mapping without changing fb bytes,
     // so we trust those flags directly.
-    if (!content_changed && !d->shape_dirty && !d->clut_dirty && !d->response_dirty) {
+    if (!s_blanked && !content_changed && !d->shape_dirty && !d->clut_dirty && !d->response_dirty) {
         overlay_hide_if_up(); // the canvas already shows this frame
         return;
     }
@@ -741,8 +759,10 @@ void em_video_update(void) {
     if (content_changed)
         d->fb_dirty = true;
 
-    if (refresh_from_display(d, /*force_full*/ false))
+    if (refresh_from_display(d, /*force_full*/ s_blanked)) {
+        s_blanked = false;
         draw();
+    }
     overlay_hide_if_up(); // ...and now it shows a fresh one
 }
 
