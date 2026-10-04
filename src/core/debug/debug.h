@@ -183,6 +183,11 @@ typedef struct debug debug_t;
 
 debug_t *debug_init(void);
 
+// Make a constructed debugger the active one: its `debug` node joins the
+// object root and it takes the process-global memory-logpoint hook.  Called by
+// the swap step (system_swap_in), never during construction.
+void debug_activate(debug_t *debug);
+
 // Called after every GS_ASSERT failure and every GS_UNIMPLEMENTED report, once
 // the diagnostics are printed and the machine is stopped.  `kind` is
 // "assertion" or "unimplemented function"; `expr` is the failed condition,

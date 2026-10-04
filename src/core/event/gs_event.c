@@ -19,7 +19,15 @@ __attribute__((weak)) uint32_t gs_current_client(void) {
     return 0;
 }
 
+static int s_held;
+
+void gs_event_hold(int held) {
+    s_held = held;
+}
+
 void gs_event_emitf(gs_event_kind_t kind, const char *fmt, ...) {
+    if (s_held && kind != GS_EVENT_LOG)
+        return;
     char buf[GS_EVENT_MAX];
     va_list ap;
     va_start(ap, fmt);
@@ -31,6 +39,8 @@ void gs_event_emitf(gs_event_kind_t kind, const char *fmt, ...) {
 }
 
 void gs_event_emit_text(gs_event_kind_t kind, const char *event, const char *field, const char *text) {
+    if (s_held && kind != GS_EVENT_LOG)
+        return;
     if (!text)
         text = "";
     size_t n = strlen(text);

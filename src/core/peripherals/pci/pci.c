@@ -674,7 +674,8 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
             dev->cfg.interrupt_line = (uint8_t)s->int_line;
         }
     }
-    pci_objects_build(root);
+    // machine.pci's tree is built by the swap step (system_swap_in), like
+    // machine.nubus's.
 }
 
 void pci_root_delete(pci_root_t *root) {

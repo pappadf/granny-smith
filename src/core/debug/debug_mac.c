@@ -318,13 +318,6 @@ uint64_t cmd_process_info(int argc, char *argv[]) {
     return 0;
 }
 
-void debug_mac_init(void) {
-    // Empty by design: all command registration moved to the typed
-    // object-model bridge.  Kept as a stub for callers that expect a
-    // module init hook so the call site stays stable if state is ever
-    // re-introduced.
-}
-
 // Helper to print process info programmatically (used by assertion handler)
 void debug_mac_print_process_info(void) {
     (void)cmd_process_info(0, NULL);
@@ -527,7 +520,7 @@ static void set_mouse_hw(long dx, long dy) {
 // snapshot is empty or the page isn't mapped in MAE's address space.
 static bool aux_write_uint16(uint32_t va, uint16_t value) {
     uint32_t pa = 0;
-    if (!mmu_translate_with_crp(g_mmu, va, g_last_user_crp, &pa))
+    if (!mmu_translate_with_crp(g_mmu, va, g_mmu->last_user_crp, &pa))
         return false;
     return mmu_write_physical_uint16(g_mmu, pa, value);
 }
@@ -535,7 +528,7 @@ static bool aux_write_uint16(uint32_t va, uint16_t value) {
 // Same as aux_write_uint16 but for a single byte (used for CrsrNew).
 static bool aux_write_uint8(uint32_t va, uint8_t value) {
     uint32_t pa = 0;
-    if (!mmu_translate_with_crp(g_mmu, va, g_last_user_crp, &pa))
+    if (!mmu_translate_with_crp(g_mmu, va, g_mmu->last_user_crp, &pa))
         return false;
     return mmu_write_physical_uint8(g_mmu, pa, value);
 }
@@ -544,7 +537,7 @@ static bool aux_write_uint8(uint32_t va, uint8_t value) {
 // Returns false (and leaves *out untouched) if the page isn't mapped.
 static bool aux_read_uint8(uint32_t va, uint8_t *out) {
     uint32_t pa = 0;
-    if (!mmu_translate_with_crp(g_mmu, va, g_last_user_crp, &pa))
+    if (!mmu_translate_with_crp(g_mmu, va, g_mmu->last_user_crp, &pa))
         return false;
     *out = mmu_read_physical_uint8(g_mmu, pa);
     return true;
@@ -566,7 +559,7 @@ static bool aux_read_uint8(uint32_t va, uint8_t *out) {
 // kernel's $0828 region.  Forbidden under A/UX.
 //
 // `--aux` translates each VA against the *cached MAE CRP*
-// (`g_last_user_crp`, snapshotted by cpu_internal.h on every
+// (`mmu_state_t.last_user_crp`, snapshotted by cpu_internal.h on every
 // supervisor→user transition) and writes directly to the resolved
 // physical address via `mmu_write_physical_uint16`.  Three consequences:
 //
@@ -579,7 +572,7 @@ static bool aux_read_uint8(uint32_t va, uint8_t *out) {
 //      exactly once per `set-mouse --aux` call, so there is no recurring
 //      race against MAE's own cursor updates.
 //
-// If no user-mode entry has been observed yet (`g_last_user_crp == 0`),
+// If no user-mode entry has been observed yet (`last_user_crp == 0`),
 // or the snapshot CRP doesn't map a page for one of the target VAs, the
 // write is reported as failed and silently skipped — better than landing
 // on the wrong page.
@@ -599,7 +592,7 @@ static void set_mouse_aux(long x, long y) {
         set_mouse_global(x, y);
         return;
     }
-    if (g_last_user_crp == 0) {
+    if (g_mmu->last_user_crp == 0) {
         gs_outf("set-mouse --aux: no user-mode CRP observed yet; run the guest into user mode first.\n");
         return;
     }
@@ -642,7 +635,7 @@ static void set_mouse_aux(long x, long y) {
         ok++;
 
     gs_outf("set-mouse --aux: wrote MTemp/RawMouse/Mouse = (h=%d, v=%d) via MAE CRP $%08X (%d/%d writes ok)\n", (int)x,
-            (int)y, (uint32_t)(g_last_user_crp & 0xFFFFFFFF), ok, total);
+            (int)y, (uint32_t)(g_mmu->last_user_crp & 0xFFFFFFFF), ok, total);
 }
 
 // Default set-mouse: absolute coordinates, platform-dependent strategy.

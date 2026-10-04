@@ -309,11 +309,15 @@ static void scheduler_update_cpi_eff(struct scheduler *s) {
     s->cycle_frac_x256 = 0;
     // The effective speed changed (a governor step, a pin, a mode switch):
     // say so once, here, where every path that changes it passes.
-    uint32_t sp = s->pacing.mode == schedule_accelerated ? scheduler_current_speed_x256(s) : SPEED_X256_ONE;
-    if (sp != s->speed_reported_x256) {
-        s->speed_reported_x256 = sp;
-        gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"speed\",\"x256\":%u}", (unsigned)sp);
-    }
+    if (scheduler_effective_speed_x256(s) != s->speed_reported_x256)
+        scheduler_announce_speed(s);
+}
+
+void scheduler_announce_speed(struct scheduler *s) {
+    if (!s)
+        return;
+    s->speed_reported_x256 = scheduler_effective_speed_x256(s);
+    gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"speed\",\"x256\":%u}", (unsigned)s->speed_reported_x256);
 }
 
 // Reset the adaptive governor to the authentic floor with fresh estimators.

@@ -1088,7 +1088,7 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
             // scheduled user process (typically the foreground MAE app)
             // for `set-mouse --aux` to translate Toolbox globals into.
             if (!new_s && g_mmu)
-                g_last_user_crp = g_mmu->crp;
+                g_mmu->last_user_crp = g_mmu->crp;
         }
     } else {
         // 68000: no M bit, no T0

@@ -1882,20 +1882,14 @@ debug_t *debug_init(void) {
         return NULL;
     }
 
-    debug_mac_init();
-
-    // Install memory-logpoint hook so the memory slow path can emit logs.
-    // The hook is process-global; this instance owns it until another is
-    // constructed (see debug_delete).
-    g_mem_logpoint_hook = debug_memory_logpoint_hook;
-    g_mem_hook_owner = debug;
-
     // Object-tree binding — instance_data on the debug node and its
-    // collection / mac children is the debug_t* itself.
+    // collection / mac children is the debug_t* itself.  The node joins the
+    // root, and the memory-logpoint hook is installed, when the machine
+    // becomes the active one (debug_activate): a machine that fails to build
+    // must not touch either.
     debug->object = object_new(&debug_class, debug, "debug");
     if (debug->object) {
         object_set_order(debug->object, 40);
-        object_attach(object_root(), debug->object);
         debug->bp_collection_object = object_new(&bp_collection_class, debug, "breakpoints");
         if (debug->bp_collection_object)
             object_attach(debug->object, debug->bp_collection_object);
@@ -1920,6 +1914,17 @@ debug_t *debug_init(void) {
     }
 
     return debug;
+}
+
+void debug_activate(debug_t *debug) {
+    if (!debug)
+        return;
+    if (debug->object)
+        object_attach(object_root(), debug->object);
+    // The hook is process-global; this instance owns it until another is
+    // activated (see debug_delete).
+    g_mem_logpoint_hook = debug_memory_logpoint_hook;
+    g_mem_hook_owner = debug;
 }
 
 // ============================================================================

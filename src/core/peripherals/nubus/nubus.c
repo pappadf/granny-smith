@@ -328,10 +328,9 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
         }
         bus->cards[n] = card;
     }
-    // Project the declared slots into the object model:
-    // machine.nubus.slot[N].card.{framebuffer,declrom,clut,mode,…} for
-    // populated slots.
-    nubus_objects_build(bus);
+    // The object model's machine.nubus tree is built when the machine becomes
+    // the active one (system_swap_in), not here: a build that fails must leave
+    // the running machine's tree alone.
     return bus;
 }
 

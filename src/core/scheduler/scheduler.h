@@ -303,6 +303,11 @@ bool scheduler_mode_from_string(const char *name, enum schedule_mode *out);
 // governed multiplier. Divide by 256.0 for the display value.
 uint32_t scheduler_effective_speed_x256(struct scheduler *restrict s);
 
+// Emit the speed event for the current effective speed, whether or not it
+// changed.  The swap step calls it: the speed a machine settled on while it
+// was built was not announced (gs_event_hold).
+void scheduler_announce_speed(struct scheduler *s);
+
 // Set the CPU clock frequency in Hz (e.g. 7833600 for Plus, 15667200 for SE/30)
 void scheduler_set_frequency(struct scheduler *restrict s, uint32_t frequency_hz);
 

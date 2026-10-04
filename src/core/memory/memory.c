@@ -209,6 +209,7 @@ typedef struct memory {
     uint32_t address_mask;
     uintptr_t *supervisor_read, *supervisor_write, *user_read, *user_write;
     uint16_t *logpoint_page_count, *logpoint_phys_page_count;
+    tlb_track_t *tlb_track; // pages populated since the last invalidation (mmu.c)
 
     // What the machine hangs on its map (aliased while selected).
     memory_cpu_hooks_t cpu_hooks;
@@ -1523,8 +1524,7 @@ void memory_map_select(memory_map_t *mem) {
     g_mmu = mem ? mem->pmmu : NULL;
     g_lisa_mmu = mem ? mem->lisa_mmu : NULL;
     mmu_host_fill_regions_select(mem ? mem->host_fill_regions : NULL);
-    // Caches of the previously selected map's translations start over.
-    mmu_reset_global_caches();
+    tlb_track_select(mem ? mem->tlb_track : NULL);
     if (mem && mem->cpu_hooks.selected)
         mem->cpu_hooks.selected(mem->cpu_hooks.ctx);
 }
@@ -1578,6 +1578,9 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
 
     // The board's bus-error window (the slow path's alias while selected).
     mem->bus_err = bus_err;
+
+    mem->tlb_track = tlb_track_new();
+    GS_ASSERTF(mem->tlb_track != NULL, "memory_map_init: out of memory allocating the TLB tracker");
 
     // Allocate the flat RAM+ROM image (ram_size + rom_size bytes)
     size_t image_size = (size_t)ram_size + (size_t)rom_size;
@@ -1694,6 +1697,7 @@ void memory_map_delete(memory_map_t *mem) {
     if (g_installed_map == mem)
         memory_map_select(NULL);
     free(mem->page_table);
+    tlb_track_free(mem->tlb_track);
     free(mem->supervisor_read);
     free(mem->supervisor_write);
     free(mem->user_read);

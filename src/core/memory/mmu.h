@@ -92,6 +92,19 @@ typedef struct mmu_walk_result {
 } mmu_walk_result_t;
 
 // MMU state for 68030 — registers set via PMOVE instructions
+// One cached early-termination block descriptor (mmu.c's ATC model).
+typedef struct atc_block {
+    uint32_t log_base; // logical range base (aligned to coverage)
+    uint32_t log_mask; // ~(coverage-1)
+    uint32_t phys_base; // physical range base (same alignment)
+    bool supervisor_only; // S bit from the walked descriptor
+    bool write_protected; // W bit from the walked descriptor
+    bool modified; // M bit from the walked descriptor (write-fill gate)
+    bool fc_super; // FC class of the walk (matters when TC.SRE=1)
+    bool valid; // entry live?
+} atc_block_t;
+#define ATC_BLOCKS 16 // small, round-robin; the real 68030 ATC holds 22 entries
+
 typedef struct mmu_state {
     // 68030 MMU registers (set via PMOVE)
     uint64_t crp; // CPU root pointer (64-bit descriptor)
@@ -155,6 +168,21 @@ typedef struct mmu_state {
     // tracking above are shared.  `enabled` mirrors the 040 TC.E bit so the
     // memory.c fast-path checks stay unchanged.  Set via mmu_attach_mmu040.
     struct mmu040_state *m040;
+
+    // The block-descriptor cache (the model of the 68030's ATC) and its
+    // round-robin cursor.  The machine's own, so building another machine
+    // cannot flush it.
+    atc_block_t atc[ATC_BLOCKS];
+    int atc_next;
+
+    // Last CRP observed while the CPU was in user mode.  Snapshotted by the
+    // supervisor→user transition in cpu_internal.h's set_sr path.  A/UX swaps
+    // CRP per process, so this value pins the user process that was most
+    // recently on the CPU — used by `set-mouse --aux` to translate MAE
+    // Toolbox globals (MTemp/RawMouse/Mouse) into MAE's address space even
+    // when the CPU is currently in supervisor mode.  0 if no user-mode entry
+    // has been observed yet.
+    uint64_t last_user_crp;
 } mmu_state_t;
 
 // === Lifecycle ===
@@ -178,6 +206,19 @@ void mmu_invalidate_tlb(mmu_state_t *mmu);
 // the last invalidation. Callers in the slow path of memory.c use this when
 // lazy-installing an identity mapping for an MMU-disabled access.
 void tlb_track_page(uint32_t page_index);
+
+// The list of populated page indices a memory map keeps for the fast
+// invalidation above.  A map owns one (memory_map_init / _delete) and
+// memory_map_select makes it the one tlb_track_page and mmu_invalidate_tlb use.
+#define TLB_TRACK_MAX 8192 // max tracked pages before fallback to full memset
+typedef struct tlb_track {
+    uint32_t page[TLB_TRACK_MAX]; // populated page indices
+    int count; // entries in the list
+    bool overflow; // too many to list: the next invalidation zeroes everything
+} tlb_track_t;
+tlb_track_t *tlb_track_new(void);
+void tlb_track_free(tlb_track_t *t);
+void tlb_track_select(tlb_track_t *t);
 
 // === Address Translation ===
 
@@ -269,7 +310,6 @@ void *mmu_host_fill_regions_new(void);
 // cache, the user-CRP snapshot): they describe the map that was selected,
 // and every one of them refills from the tables.  Run on every memory map
 // selection and at PMMU construction.
-void mmu_reset_global_caches(void);
 void mmu_host_fill_regions_free(void *table);
 void mmu_host_fill_regions_select(void *table);
 
@@ -305,15 +345,6 @@ void mmu_set_ram_bank_b(mmu_state_t *mmu, uint32_t ram_a_size, uint8_t *bank_b_h
 
 // Global MMU state pointer (set by machine init, NULL for 68000 machines)
 extern struct mmu_state *g_mmu;
-
-// Last CRP observed while the CPU was in user mode.  Snapshotted by the
-// supervisor→user transition in cpu_internal.h's set_sr path.  A/UX swaps
-// CRP per process, so this value pins the user process that was most
-// recently on the CPU — used by `set-mouse --aux` to translate MAE
-// Toolbox globals (MTemp/RawMouse/Mouse) into MAE's address space even
-// when the CPU is currently in supervisor mode.  0 if no user-mode entry
-// has been observed yet.
-extern uint64_t g_last_user_crp;
 
 // Shared 68030/68040 fault epilogue.  After a fill attempt, a still-zero SoA
 // entry means the physical page is a device window, unmapped, or logpointed.

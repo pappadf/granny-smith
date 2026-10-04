@@ -111,6 +111,7 @@ static bool s_constructing;
 static void construction_misuse(const char *accessor) {
     (void)accessor; // unused when asserts compile out
     s_constructing = false;
+    gs_event_hold(0);
     GS_ASSERTF(false, "%s() names the active machine; a constructor uses its own cfg", accessor);
 }
 
@@ -1134,6 +1135,18 @@ static void events_part_save(void *obj, checkpoint_t *cp) {
     scheduler_checkpoint_events(obj, cp);
 }
 
+// Put the running machine's memory map back after a build selected its own:
+// the aliases memory_map_select derives, plus the access pair the CPU had
+// chosen, which selection resets to supervisor (a 68000 re-picks it only on a
+// mode change).
+static void reselect_active_map(uintptr_t *active_read, uintptr_t *active_write) {
+    memory_map_select(global_emulator ? global_emulator->mem_map : NULL);
+    if (global_emulator) {
+        g_active_read = active_read;
+        g_active_write = active_write;
+    }
+}
+
 config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t *opts, checkpoint_t *checkpoint) {
 
     assert(profile != NULL);
@@ -1146,6 +1159,11 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
         return NULL;
     memset(cfg, 0, sizeof(config_t));
     cfg->build_opts = *opts;
+
+    // The build selects its own memory map (memory_map_init); afterwards the
+    // running machine's goes back exactly as it was, down to the access mode
+    // its CPU had the fast path in.
+    uintptr_t *const active_read = g_active_read, *const active_write = g_active_write;
 
     cfg->machine = profile;
     // Main-CPU architecture tag: derived from the
@@ -1167,14 +1185,16 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     // teardown tolerates a partially-constructed machine -- each guards its
     // machine_context -- which is what makes this safe to call here.
     s_constructing = true;
+    gs_event_hold(1);
     if (profile->substrate->init(cfg, checkpoint) != 0) {
         s_constructing = false;
+        gs_event_hold(0);
         LOG(0, "Error: failed to construct %s", profile->name);
         if (profile->substrate->teardown)
             profile->substrate->teardown(cfg);
         machine_parts_free(cfg);
         free(cfg);
-        memory_map_select(global_emulator ? global_emulator->mem_map : NULL);
+        reselect_active_map(active_read, active_write);
         return NULL;
     }
 
@@ -1211,10 +1231,11 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
         scheduler_restore_events(cfg->scheduler, checkpoint);
     machine_part(cfg, checkpoint, "events", events_part_save, cfg->scheduler);
     s_constructing = false;
+    gs_event_hold(0);
 
-    // The build selected its own memory map (memory_map_init); the fast-path
-    // aliases go back to the active machine's until the swap step.
-    memory_map_select(global_emulator ? global_emulator->mem_map : NULL);
+    // The fast-path aliases go back to the active machine's until the swap
+    // step.
+    reselect_active_map(active_read, active_write);
 
     return cfg;
 }
@@ -1234,10 +1255,23 @@ void system_swap_in(config_t *cfg, bool restored) {
     // segment.
     machine_set_active_label(cfg->machine->name);
 
+    // The expansion buses' slot trees (machine.nubus.slot[N], machine.pci.
+    // slot[N]) -- and with them machine.screen.source -- project this
+    // machine's cards.  They are process state, so they change here, never
+    // while a machine is being built.  Before root_install, which attaches the
+    // bus nodes they register.
+    if (cfg->nubus)
+        nubus_objects_build(cfg->nubus);
+    if (cfg->pci)
+        pci_objects_build(cfg->pci);
+
     // Stand up the object-model root: attaches stub classes for
     // cpu/memory/scheduler/machine/shell/storage so `eval` can read
     // runtime state.
     root_install(cfg);
+
+    // The debugger's node and the memory-logpoint hook it owns.
+    debug_activate(cfg->debugger);
 
     // The new machine takes the AppleTalk cable.  The one it replaces comes
     // off it now, its sessions closing as a server sees a Mac vanish; the
@@ -1257,6 +1291,7 @@ void system_swap_in(config_t *cfg, bool restored) {
 
     // A new machine is active: machine.boot and checkpoint.load both end here
     // (machine.restart builds nothing).  The page reloads its object trees on this.
+    scheduler_announce_speed(cfg->scheduler);
     gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"machine_booted\",\"model\":\"%s\",\"restored\":%s}",
                    cfg->machine->id ? cfg->machine->id : "", restored ? "true" : "false");
     platform_machine_attached();
