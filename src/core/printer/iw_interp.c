@@ -297,7 +297,11 @@ static bool pick_glyph(iw_interp_t *in, uint8_t code, iw_glyph_t *g) {
     sel.slash_zero = is_iw2(in) && (st->soft_b & IW_SWB_SLASH_ZERO);
     if (!iw_font_glyph(&sel, code, g))
         return false;
-    if (g->placeholder && !st->placeholder_used) {
+    // A blank (the space) looks the same in any font
+    bool inked = false;
+    for (int i = 0; i < g->n; i++)
+        inked |= g->cols[i] != 0;
+    if (g->placeholder && inked && !st->placeholder_used) {
         st->placeholder_used = true;
         LOG(1, "text printed with the placeholder font: no glyph table for this character set");
     }

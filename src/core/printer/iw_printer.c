@@ -77,6 +77,7 @@ typedef struct {
     uint8_t paper; // index into papers[]
     bool capture;
     bool paper_out;
+    bool panel_deselected; // the front panel's SELECT is off
     uint32_t idle_timeout_ms;
     uint8_t inks[4][3]; // Y, M, C, K ink colours
 } iw_settings_t;
@@ -123,6 +124,12 @@ static void idle_event(void *source, uint64_t data);
 static void reply_event(void *source, uint64_t data);
 static void update_ready(iw_printer_t *p);
 
+// Deselected at the front panel or out of paper: the printer stops printing.
+// What it has already received stays in its buffer, and the job waits.
+static bool paused(const iw_printer_t *p) {
+    return p->set.panel_deselected || p->set.paper_out;
+}
+
 // --- Names ---------------------------------------------------------------------
 
 const char *iw_printer_name(const iw_printer_t *p) {
@@ -140,7 +147,7 @@ static void update_status(iw_printer_t *p) {
     char s[64];
     if (p->set.paper_out)
         snprintf(s, sizeof(s), "status: out of paper");
-    else if (!p->interp.st.selected)
+    else if (p->set.panel_deselected || !p->interp.st.selected)
         snprintf(s, sizeof(s), "status: deselected");
     else if (p->job.job_active)
         snprintf(s, sizeof(s), "status: printing; page: %u", (unsigned)p->interp.st.pages_done + 1);
@@ -161,7 +168,7 @@ bool iw_printer_paper_out(const iw_printer_t *p) {
 }
 
 bool iw_printer_selected(const iw_printer_t *p) {
-    return p->interp.st.selected;
+    return !p->set.panel_deselected && p->interp.st.selected;
 }
 
 bool iw_printer_sheet_feeder(const iw_printer_t *p) {
@@ -193,10 +200,13 @@ static void default_settings(iw_settings_t *s, iw_model_t model) {
     s->icfg.dip2 = IW_DIP2_BAUD;
     s->icfg.color_ribbon = model == IW_MODEL_IW2;
     s->icfg.sheet_feeder = false;
-    // The Technical Reference sets top of form half an inch below the top
-    // edge of the page ("roll the paper so that the top of the page is one
-    // half inch above the print head")
-    s->icfg.tof_offset_144 = 72;
+    // Where the print line sits below the sheet's top edge at top of form.
+    // The Technical Reference recommends half an inch ("roll the paper so
+    // that the top of the page is one half inch above the print head"); the
+    // drivers assume a little more -- the Lisa Office System's driver 80/144
+    // in, and the Macintosh driver backs the paper up 76/144 in at the start
+    // of a job -- so 80 keeps both on the sheet they mean.
+    s->icfg.tof_offset_144 = 80;
     s->icfg.cut_sheet = false;
     s->icfg.dpi = 288;
     s->icfg.dot_shape = IW_DOT_DISC;
@@ -390,8 +400,8 @@ static void process_event(void *source, uint64_t data) {
     (void)data;
     iw_printer_t *p = source;
     size_t n = byteq_len(&p->input);
-    if (!n)
-        return;
+    if (!n || paused(p))
+        return; // resumed (resume_input) when the printer is ready again
     // Copy out first: interpreting may end a job, which must not see the queue change
     uint8_t *buf = malloc(n);
     if (!buf)
@@ -409,6 +419,11 @@ static void idle_event(void *source, uint64_t data) {
     if (!p->job.job_active)
         return;
     double timeout = (double)p->set.idle_timeout_ms * 1e6;
+    // A paused printer is not idle: its job waits for the operator
+    if (paused(p)) {
+        scheduler_new_cpu_event(p->scheduler, idle_event, p, 0, 0, (uint64_t)timeout);
+        return;
+    }
     double quiet = scheduler_time_ns(p->scheduler) - p->job.last_rx_ns;
     if (quiet + 1.0 < timeout || byteq_len(&p->input)) {
         double left = timeout - quiet;
@@ -458,7 +473,7 @@ static const scc_port_device_t iw_port_device_iw2 = {.name = "imagewriter2", .tx
 
 // Whether the printer takes data: selected, with paper
 static bool printer_ready(const iw_printer_t *p) {
-    return p->interp.st.selected && !p->set.paper_out;
+    return !p->set.panel_deselected && p->interp.st.selected && !p->set.paper_out;
 }
 
 // Tell the host whether the printer takes data: the ready line (DTR), or
@@ -913,15 +928,28 @@ static DEF_SETTER(attr_tof_offset_set) {
     return val_none();
 }
 
-static DEF_GETTER(attr_selected) {
-    return val_bool(printer_from(self)->interp.st.selected);
+// Pick up queued input once the printer is ready again.
+static void resume_input(iw_printer_t *p) {
+    if (paused(p) || !byteq_len(&p->input) || !p->scheduler)
+        return;
+    if (!has_event(p->scheduler, process_event))
+        scheduler_new_cpu_event(p->scheduler, process_event, p, 0, 0, IW_PROCESS_DELAY_NS);
 }
 
+static DEF_GETTER(attr_selected) {
+    return val_bool(iw_printer_selected(printer_from(self)));
+}
+
+// The front panel's SELECT button: off, the printer drops its ready line and
+// stops; on, it is selected again (also after a DC3 from the host)
 static DEF_SETTER(attr_selected_set) {
     iw_printer_t *p = printer_from(self);
-    p->interp.st.selected = in.b;
+    p->set.panel_deselected = !in.b;
+    if (in.b)
+        p->interp.st.selected = true;
     update_ready(p);
     update_status(p);
+    resume_input(p);
     return val_none();
 }
 
@@ -934,6 +962,7 @@ static DEF_SETTER(attr_paper_out_set) {
     p->set.paper_out = in.b;
     update_ready(p);
     update_status(p);
+    resume_input(p);
     return val_none();
 }
 
@@ -1126,12 +1155,12 @@ static const member_t iw_printer_members[] = {
     {.kind = M_ATTR,
      .name = "tof_offset",
      .flags = M_CAT_ADVANCED,
-     .doc = "How far below the sheet's top edge the print line is at top of form, in 1/144 in (72 = the half "
-            "inch the manual recommends); applies from the next reset", .attr = {.type = V_UINT, .get = attr_tof_offset, .set = attr_tof_offset_set}},
+     .doc = "How far below the sheet's top edge the print line is at top of form, in 1/144 in (default 80, "
+            "what the drivers assume; the manual recommends 72); applies from the next reset", .attr = {.type = V_UINT, .get = attr_tof_offset, .set = attr_tof_offset_set}},
     {.kind = M_ATTR,
      .name = "selected",
-     .doc = "The front panel's SELECT light: deselected, the printer takes no data",
-     .attr = {.type = V_BOOL, .get = attr_selected, .set = attr_selected_set}},
+     .doc = "The front panel's SELECT light: deselected, the printer drops its ready line and stops printing "
+            "(what it already received waits in its buffer)", .attr = {.type = V_BOOL, .get = attr_selected, .set = attr_selected_set}},
     {.kind = M_ATTR,
      .name = "paper_out",
      .doc = "Simulate running out of paper",

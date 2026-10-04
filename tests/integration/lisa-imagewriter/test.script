@@ -75,7 +75,7 @@ assert machine.imagewriter.jobs == 1 "the print did not become one job"
 assert machine.imagewriter.last_job_pages == 1 "the Calculator tape is one page"
 assert machine.imagewriter.last_outcome == "ok" "the job did not finish cleanly"
 # The golden: the PDF is deterministic (graphics only, so fonts do not touch it)
-assert machine.imagewriter.last_pdf_crc == 0x12043a1c "the PDF differs from the golden"
+assert machine.imagewriter.last_pdf_crc == 0xe5ef64ac "the PDF differs from the golden"
 assert machine.imagewriter.busy == false "the job did not end on idle"
 assert machine.imagewriter.status == "status: idle" "the printer is not idle after the job"
 assert files.path_size("${$TEST_RESULTS_DIR}/imagewriter2-00001-Print.pdf") == machine.imagewriter.last_pdf_bytes "the PDF is not in the print directory"
