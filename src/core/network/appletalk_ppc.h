@@ -144,20 +144,6 @@ uint64_t atalk_ppc_session_bytes_in(const ppc_session_t *s);
 uint64_t atalk_ppc_session_bytes_out(const ppc_session_t *s);
 uint32_t atalk_ppc_session_id(const ppc_session_t *s);
 
-// === Counters ===============================================================
-
-typedef struct {
-    uint64_t sessions_opened;
-    uint64_t sessions_rejected;
-    uint64_t sessions_refused; // rejections we sent
-    uint64_t blocks_in;
-    uint64_t blocks_out;
-    uint64_t browses;
-    uint64_t malformed; // message blocks too short for their header
-} ppc_stats_t;
-
-const ppc_stats_t *atalk_ppc_get_stats(void);
-
 // === Object model ===========================================================
 
 void atalk_ppc_install_objects(struct object *parent);

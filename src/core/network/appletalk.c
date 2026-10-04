@@ -230,6 +230,7 @@ struct atalk_conn {
     adsp_link_t *adsp;
     ppc_link_t *ppc;
     aevt_link_t *aevt;
+    pap_link_t *pap;
 };
 
 // The network: one per process, created by appletalk_network_init.  The
@@ -904,6 +905,7 @@ static void atalk_conn_plug_in(atalk_conn_t *c) {
     atalk_adsp_plug(c->adsp);
     atalk_ppc_plug(c->ppc);
     atalk_aevt_plug(c->aevt);
+    atalk_printer_plug(c->pap);
 }
 
 // Register every timer the connection and the layers above use with its
@@ -917,7 +919,7 @@ static void atalk_conn_register_timers(atalk_conn_t *c) {
     atp_timers_init(c);
     asp_link_register_timers(c, c->asp);
     atalk_adsp_link_register_timers(c, c->adsp);
-    atalk_printer_register_timers(c);
+    atalk_printer_register_timers(c, c->pap);
 }
 
 // Take `c` off the cable, as a server sees a Mac vanish: every session with
@@ -930,7 +932,7 @@ static void atalk_conn_unplug(atalk_conn_t *c) {
     atalk_aevt_plug(NULL);
     atalk_ppc_plug(NULL);
     atalk_adsp_plug(NULL);
-    atalk_printer_unplug();
+    atalk_printer_plug(NULL);
     afp_plug(NULL);
     asp_plug(NULL);
 
@@ -965,7 +967,8 @@ atalk_conn_t *atalk_conn_new(atalk_network_t *network, scheduler_t *scheduler, s
     c->adsp = atalk_adsp_link_new();
     c->ppc = atalk_ppc_link_new();
     c->aevt = atalk_aevt_link_new();
-    if (!c->asp || !c->afp || !c->adsp || !c->ppc || !c->aevt) {
+    c->pap = atalk_printer_link_new();
+    if (!c->asp || !c->afp || !c->adsp || !c->ppc || !c->aevt || !c->pap) {
         atalk_conn_delete(c);
         return NULL;
     }
@@ -1021,6 +1024,7 @@ void atalk_conn_delete(atalk_conn_t *c) {
         return;
     if (g_net.plugged == c)
         atalk_conn_unplug(c);
+    atalk_printer_link_free(c->pap);
     atalk_aevt_link_free(c->aevt);
     atalk_ppc_link_free(c->ppc);
     atalk_adsp_link_free(c->adsp);

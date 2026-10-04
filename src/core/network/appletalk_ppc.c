@@ -113,7 +113,16 @@ static atalk_nbp_entry_t *g_host_nbp;
 static const ppc_client_t *g_inbound_client;
 static void *g_inbound_ctx;
 
-static ppc_stats_t g_stats;
+// Counters published as `appletalk.ppc.stats`.
+typedef struct {
+    uint64_t sessions_opened;
+    uint64_t sessions_rejected;
+    uint64_t sessions_refused; // rejections we sent
+    uint64_t blocks_in;
+    uint64_t blocks_out;
+    uint64_t browses;
+    uint64_t malformed; // message blocks too short for their header
+} ppc_stats_t;
 
 // Machines the current browse has found but not yet queried.
 typedef struct {
@@ -125,8 +134,9 @@ typedef struct {
 #define PPC_MAX_MACHINES 8
 
 // PPC's part of a machine's connection (atalk_conn_t): the sessions with that
-// Mac, and what a browse of it has found.
+// Mac, what a browse of it has found, and the traffic's counters.
 struct ppc_link {
+    ppc_stats_t stats; // published as `appletalk.ppc.stats`
     ppc_session_t sessions[PPC_MAX_SESSIONS];
     uint32_t next_session_id;
     ppc_port_info_t ports[PPC_MAX_PORTS];
@@ -325,7 +335,7 @@ static int ppc_write_reject(ppc_session_t *s, uint32_t reason) {
     uint8_t blk[PPC_ANSWER_SIZE];
     WR_BE32(&blk[0], PPC_MSG_SREJ);
     WR_BE32(&blk[4], reason);
-    g_stats.sessions_refused++;
+    g_ppc->stats.sessions_refused++;
     LOG(3, "PPC: rejecting a session request, reason %u", (unsigned)reason);
     return ppc_write_message(s, blk, sizeof(blk));
 }
@@ -362,7 +372,7 @@ int atalk_ppc_send_block(ppc_session_t *s, uint32_t creator, uint32_t type, uint
     if (adsp_write(stack, s->conn, payload, len, true) < 0)
         return -1;
     s->bytes_out += (uint64_t)(PPC_BLOCK_HEADER_SIZE + len);
-    g_stats.blocks_out++;
+    g_ppc->stats.blocks_out++;
     return 0;
 }
 
@@ -449,7 +459,7 @@ int atalk_ppc_browse(char *err, size_t err_len) {
     g_ppc->browse_active = true;
     g_ppc->machine_count = 0;
     ppc_ports_clear();
-    g_stats.browses++;
+    g_ppc->stats.browses++;
     // Every program-linking machine registers one entity of this type (§3).
     if (atalk_nbp_lookup("=", PPC_NBP_TYPE, "*", PPC_CLIENT_SOCKET, ppc_on_nbp_reply, NULL) != 0) {
         g_ppc->browse_active = false;
@@ -530,7 +540,7 @@ static void ppc_handle_session_answer(ppc_session_t *s, const uint8_t *msg, int 
     switch (kind) {
     case PPC_MSG_SAPT:
         s->state = PPC_SESSION_OPEN;
-        g_stats.sessions_opened++;
+        g_ppc->stats.sessions_opened++;
         LOG(3, "PPC: session %u to '%s' accepted", (unsigned)s->id, s->port_name);
         if (s->client && s->client->on_ready)
             s->client->on_ready(s->client_ctx, s);
@@ -548,20 +558,20 @@ static void ppc_handle_session_answer(ppc_session_t *s, const uint8_t *msg, int 
             "program linking is switched off on that machine",
         };
         const char *why = (detail < ARRAY_LEN(REASONS)) ? REASONS[detail] : "the far side rejected the session";
-        g_stats.sessions_rejected++;
+        g_ppc->stats.sessions_rejected++;
         ppc_session_release(s, why, true);
         return;
     }
     case PPC_MSG_UREJ: {
         char why[96];
         snprintf(why, sizeof(why), "the program refused the link (code %u)", (unsigned)detail);
-        g_stats.sessions_rejected++;
+        g_ppc->stats.sessions_rejected++;
         ppc_session_release(s, why, true);
         return;
     }
     case PPC_MSG_ACNT:
         // Authenticated linking; we only speak guest (§4.5).
-        g_stats.sessions_rejected++;
+        g_ppc->stats.sessions_rejected++;
         ppc_session_release(s, "that port requires an authenticated link, which is not implemented", true);
         return;
     default:
@@ -605,7 +615,7 @@ static void ppc_handle_session_request(ppc_session_t *s, const uint8_t *msg, int
 
     snprintf(s->port_name, sizeof(s->port_name), "%s", src_name[0] ? src_name : dest_name);
     s->state = PPC_SESSION_OPEN;
-    g_stats.sessions_opened++;
+    g_ppc->stats.sessions_opened++;
     LOG(3, "PPC: accepted a guest session from '%s' on node %u", s->port_name, (unsigned)s->peer_node);
     if (ppc_write_accept(s) != 0) {
         ppc_session_release(s, "the acceptance could not be sent", true);
@@ -658,14 +668,14 @@ static void ppc_handle_message(ppc_session_t *s, const uint8_t *msg, int len) {
 
     // An open session carries message blocks (§4.7).
     if (len < PPC_BLOCK_HEADER_SIZE) {
-        g_stats.malformed++;
+        g_ppc->stats.malformed++;
         LOG(3, "PPC: session %u sent a %d-byte block, shorter than its header", (unsigned)s->id, len);
         return;
     }
     uint32_t creator = RD_BE32(&msg[0]);
     uint32_t type = RD_BE32(&msg[4]);
     uint32_t user_data = RD_BE32(&msg[8]);
-    g_stats.blocks_in++;
+    g_ppc->stats.blocks_in++;
     if (s->client && s->client->on_block)
         s->client->on_block(s->client_ctx, s, creator, type, user_data, msg + PPC_BLOCK_HEADER_SIZE,
                             len - PPC_BLOCK_HEADER_SIZE);
@@ -974,9 +984,6 @@ uint64_t atalk_ppc_session_bytes_out(const ppc_session_t *s) {
 uint32_t atalk_ppc_session_id(const ppc_session_t *s) {
     return s ? s->id : 0;
 }
-const ppc_stats_t *atalk_ppc_get_stats(void) {
-    return &g_stats;
-}
 
 // ============================================================================
 // Lifecycle
@@ -1230,14 +1237,19 @@ static const class_desc_t ppc_sessions_class = {
 
 // --- appletalk.ppc.stats -----------------------------------------------------
 
+// The plugged-in connection's counters: zero while none is.
+static DEF_GETTER(ppc_stats_get) {
+    return obj_u64_at(&g_ppc->stats, m);
+}
+
 static const member_t ppc_stats_members[] = {
-    OBJ_U64_FIELD(ppc_stats_t, sessions_opened, "Sessions that reached the open state"),
-    OBJ_U64_FIELD(ppc_stats_t, sessions_rejected, "Session requests the far side turned down"),
-    OBJ_U64_FIELD(ppc_stats_t, sessions_refused, "Session requests we turned down"),
-    OBJ_U64_FIELD(ppc_stats_t, blocks_in, "Message blocks received"),
-    OBJ_U64_FIELD(ppc_stats_t, blocks_out, "Message blocks sent"),
-    OBJ_U64_FIELD(ppc_stats_t, browses, "Port browses started"),
-    OBJ_U64_FIELD(ppc_stats_t, malformed, "Message blocks discarded as malformed"),
+    OBJ_U64_FIELD_WITH(ppc_stats_t, sessions_opened, "Sessions that reached the open state", ppc_stats_get),
+    OBJ_U64_FIELD_WITH(ppc_stats_t, sessions_rejected, "Session requests the far side turned down", ppc_stats_get),
+    OBJ_U64_FIELD_WITH(ppc_stats_t, sessions_refused, "Session requests we turned down", ppc_stats_get),
+    OBJ_U64_FIELD_WITH(ppc_stats_t, blocks_in, "Message blocks received", ppc_stats_get),
+    OBJ_U64_FIELD_WITH(ppc_stats_t, blocks_out, "Message blocks sent", ppc_stats_get),
+    OBJ_U64_FIELD_WITH(ppc_stats_t, browses, "Port browses started", ppc_stats_get),
+    OBJ_U64_FIELD_WITH(ppc_stats_t, malformed, "Message blocks discarded as malformed", ppc_stats_get),
 };
 
 static const class_desc_t ppc_stats_class = {
@@ -1293,7 +1305,7 @@ void atalk_ppc_install_objects(struct object *parent) {
         object_set_category(g_ppc_sessions_object, M_CAT_ADVANCED);
         object_attach(g_ppc_object, g_ppc_sessions_object);
     }
-    g_ppc_stats_object = object_new(&ppc_stats_class, (void *)atalk_ppc_get_stats(), "stats");
+    g_ppc_stats_object = object_new(&ppc_stats_class, NULL, "stats");
     if (g_ppc_stats_object) {
         object_set_category(g_ppc_stats_object, M_CAT_ADVANCED);
         object_attach(g_ppc_object, g_ppc_stats_object);

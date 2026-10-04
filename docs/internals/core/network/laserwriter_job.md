@@ -135,7 +135,7 @@ machine into the next:
 | an interpreter wedged by an earlier job | replaced, logged |
 
 A new printer is what `appletalk.printer.restart()` makes
-(`atalk_printer_unplug`, when another machine takes the cable): the PAP
+(`atalk_printer_plug(NULL)`, when a machine leaves the cable): the PAP
 session goes, any job in flight is abandoned -- one finishing after its
 connection closed included -- and what earlier jobs made permanent goes
 with the interpreter. The printer's name, enabled state and capture setting

@@ -268,14 +268,17 @@ void atalk_nbp_lookup_cancel(void);
 // which its substrate constructs with the network as an argument when it
 // builds the SCC.  The connection holds what exists only between the network
 // and that one Mac: the link's state and counters, LLAP timing, ATP
-// transactions, and the ASP / AFP / ADSP / PPC sessions with it, their open
-// forks, enumeration snapshots and Apple-event traffic.
+// transactions, and the ASP / AFP / ADSP / PPC / PAP sessions with it, their
+// open forks, enumeration snapshots and Apple-event traffic and counters.
+// Only the link's settings, its counters and the session numbering go into
+// a checkpoint; the sessions never do.
 //
 // The network has one cable.  A connection is built off it and plugged in
 // when its machine becomes the active one (system_swap_in), which unplugs
-// whichever was: its sessions close, as a server sees a Mac vanish, and the
-// LaserWriter restarts, so no print job runs on from one machine into the
-// next (the network's other nodes keep their configuration).  Deleting
+// whichever was.  To the restored or new Mac every node has restarted: the
+// servers have no sessions with it, and the LaserWriter has restarted, so no
+// print job runs on from one machine into the next (the nodes keep their
+// configuration: shares, names, settings).  Deleting
 // a connection unplugs it only if it is the one on the cable, so a machine
 // whose build failed -- never plugged in -- leaves the running one's sessions
 // alone.

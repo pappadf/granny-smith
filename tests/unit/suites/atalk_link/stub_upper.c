@@ -137,12 +137,20 @@ void atalk_aevt_plug(aevt_link_t *link) {
 void atalk_printer_register(void) {
     g_printer_registers++;
 }
-void atalk_printer_register_timers(struct atalk_conn *conn) {
+pap_link_t *atalk_printer_link_new(void) {
+    return (pap_link_t *)(void *)&g_link_dummy;
+}
+void atalk_printer_link_free(pap_link_t *link) {
+    (void)link;
+}
+void atalk_printer_register_timers(struct atalk_conn *conn, pap_link_t *link) {
     (void)conn;
+    (void)link;
     g_printer_timer_registrations++;
 }
-void atalk_printer_unplug(void) {
-    g_printer_unplugs++;
+void atalk_printer_plug(pap_link_t *link) {
+    if (!link)
+        g_printer_unplugs++;
 }
 void atalk_printer_link_down(void) {}
 const char *atalk_printer_get_status(void) {

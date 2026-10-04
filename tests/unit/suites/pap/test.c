@@ -209,16 +209,24 @@ static void answer(const char *const *parts, int n, bool eof) {
     advance(20000000);
 }
 
+// The test machine's connection's PAP link.
+static pap_link_t *g_link;
+
 static void setup(void) {
     g_captures = 0;
     g_captured_len = 0;
     g_close_requests = 0;
     g_close_replies = 0;
     memset(&g_req_cb, 0, sizeof(g_req_cb));
-    atalk_printer_unplug(); // the last test's machine goes
+    // The last test's machine goes, and a new one takes the cable.
+    atalk_printer_plug(NULL);
+    atalk_printer_link_free(g_link);
+    g_link = atalk_printer_link_new();
+    ASSERT_TRUE(g_link != NULL);
     g_n_armed = 0;
     atalk_printer_register();
-    atalk_printer_register_timers(NULL);
+    atalk_printer_register_timers(NULL, g_link);
+    atalk_printer_plug(g_link);
     ASSERT_TRUE(g_pap != NULL);
 }
 
