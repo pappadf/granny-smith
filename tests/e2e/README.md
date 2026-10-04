@@ -109,7 +109,11 @@ npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.web2.config
 
 Each config's `webServer` block builds `app/web2/dist` (`make ui2`) and serves
 it with the COOP/COEP headers `SharedArrayBuffer` needs — no manual server step.
-`make ui2` expects the WASM (`make`) to have been built already.
+`make ui2` brings the WASM core up to date first (an incremental `make`), so a
+run never tests a stale core; when nothing changed it neither recompiles nor
+relinks, and the build ID — which checkpoints are matched against — stays the
+same across runs. Build with the flags of the core you want served
+(`make ui2 MODE=debug` after `make debug`): other flags rebuild the tree.
 
 ## Prerequisites
 
