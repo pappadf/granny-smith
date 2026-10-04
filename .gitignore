@@ -55,6 +55,7 @@ Thumbs.db
 /local/
 /tmp/
 .claude/scheduled_tasks.lock
+.claude/worktrees/
 __pycache__/
 
 # A working clone of pappadf/m68k-test, used to settle 68k FPU questions
