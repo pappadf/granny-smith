@@ -9,6 +9,8 @@
   import DriveLight from '../ui/DriveLight.svelte';
   import StatusDot from '../ui/StatusDot.svelte';
   import ActivityDot from '../ui/ActivityDot.svelte';
+  import { openContextMenu } from '../common/ContextMenu.svelte';
+  import { revealInSystem } from '@/state/system.svelte';
 
   // Hidden before first machine start. Also surfaces during
   // pre-boot uploads so the user can see large-file progress in the
@@ -63,6 +65,16 @@
             ? `Print failed: ${printer.error}`
             : '',
   );
+  // Right-click on an ImageWriter's item: its settings, in the SYSTEM tab.
+  function printerMenu(ev: MouseEvent, name: string): void {
+    if (!name.startsWith('ImageWriter')) return;
+    ev.preventDefault();
+    openContextMenu(
+      [{ label: 'Printer settings', action: () => revealInSystem('machine.imagewriter') }],
+      ev.clientX,
+      ev.clientY,
+    );
+  }
   const printerBusy = $derived(
     printer.activity === 'starting' ||
       printer.activity === 'busy' ||
@@ -144,6 +156,8 @@
           class:error={printer.activity === 'error'}
           data-state={printer.activity === 'error' ? 'error' : undefined}
           title="{printer.name} — {printer.status}"
+          role="status"
+          oncontextmenu={(ev) => printerMenu(ev, printer.name)}
         >
           {#if printerBusy}<ActivityDot
               class="upload-spinner"
@@ -155,6 +169,7 @@
           class="gs-statusbar__item gs-statusbar__button sb-item sb-printer sb-printed"
           title="Show the last printed document ({printer.document.name})"
           onclick={reopenPrintedDocument}
+          oncontextmenu={(ev) => printer.document && printerMenu(ev, printer.document.printer)}
         >
           <Icon name="file" size="sm" /><span class="printer-label"
             >{printer.document.title || printer.document.name}</span

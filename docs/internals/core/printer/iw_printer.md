@@ -197,6 +197,10 @@ channel. `help machine.imagewriter` has the full text.
 
 ## 9. Checkpoints
 
+The printer's settings live in the machine checkpoint, as AppleTalk's do, so
+they persist across sessions wherever the machine does; a fresh boot starts
+from the defaults.
+
 The printer is a machine part (`machine_part_imagewriter`, after the SCC and
 AppleTalk): its settings and job state, the interpreter state as one block,
 the sheet in progress (planes deflated), the document so far (the PDF
@@ -223,6 +227,6 @@ The goldens are CRCs (`last_pdf_crc`): every output is deterministic.
 ## 11. Not done yet
 
 The original ImageWriter's character generator and its vertical format unit;
-a dedicated printer panel in the web UI (today the SYSTEM tab edits
-`machine.imagewriter`); persistence of the printer settings across sessions;
-a title for Lisa jobs.
+a dedicated printer section in the machine settings (today the SYSTEM tab
+edits `machine.imagewriter`, and the status bar's printer item opens it
+there); a title for Lisa jobs.

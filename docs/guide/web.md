@@ -164,7 +164,8 @@ transports, installed at module construction:
   is free to use it; a browser without an inline viewer
   (`navigator.pdfViewerEnabled` false, e.g. Chrome on Android) downloads
   it at once instead.  The status bar shows the printer's activity from
-  the `printer_status` event and reopens the last document.  The protocol is
+  the `printer_status` event and reopens the last document; right-clicking
+  an ImageWriter's item opens `machine.imagewriter` in the SYSTEM tab.  The protocol is
   [`laserwriter_ring_protocol.h`](../../src/core/network/laserwriter_ring_protocol.h)
   / `printer/platenProtocol.ts`; the whole path is
   [`docs/reference/protocols/laserwriter-session.md`](../reference/protocols/laserwriter-session.md) §5.5.
