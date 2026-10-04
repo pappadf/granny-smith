@@ -764,11 +764,20 @@ static pci_device_t *control_factory(int slot_index, config_t *cfg, const rom_im
     return dev;
 }
 
+// Its stock monitor, as a card row: what the 9500's stand-in senses when no
+// card's monitor is there to borrow (the built-in port's own monitors are
+// tnt_builtin_video's).
+static const nubus_monitor_t control_stock_monitor[] = {
+    {.id = "hires", .monitor = "13in_rgb", .width = 640, .height = 480, .sense_code = 0x6},
+    {0},
+};
+
 const pci_card_kind_t tnt_control_kind = {
     .id = "tnt_control",
     .display_name = "Built-in video",
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "display",
+    .monitors = control_stock_monitor,
     .factory = control_factory,
 };
 

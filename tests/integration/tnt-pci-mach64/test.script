@@ -379,10 +379,14 @@ assert !machine.screen.matches("${$WORK_DIR}/raster-565.png") "...and must rejec
 # retires, and the 9500 is the single-display machine the hardware is.
 assert try(machine.pci.slot[7].card.name, "(empty)") == "(empty)" "Control must stand down for a real display card"
 
-# ...and with no card named it stands in again, so a cardless boot still
-# has somewhere to draw.
-machine.boot model="pm9500" ram=32768 rom="${$ROM}"
+# ...and with no display card seated it stands in again, so a cardless boot
+# still has somewhere to draw.
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" slots="1=none"
 assert machine.pci.slot[7].card.name == "Control" "Control stands in when no display card is seated"
+# With nothing named, the 9500 has its factory card (its ROM is offered here).
+machine.boot model="pm9500" ram=32768 rom="${$ROM}"
+assert machine.pci.slot[1].card.id == "mach64_gx" "the 9500's default card is the Accelerated PCI Graphics Card"
+assert try(machine.pci.slot[7].card.name, "(empty)") == "(empty)" "Control stands down for the default card"
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
 
 # --- Card options reach the card through the boot document. -----------------

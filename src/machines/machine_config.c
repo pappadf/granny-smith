@@ -942,6 +942,12 @@ static void doc_defaults(const hw_profile_t *p, doc_t *d) {
     for (int i = 0; i < ns; i++) {
         if (!socks[i].default_card)
             continue;
+        // A factory card whose ROM is not offered, and that has no
+        // substitute, is not in the default configuration: the socket opens
+        // empty (and a stand-in, where the machine has one, shows instead).
+        const pci_card_kind_t *pk = socks[i].pci ? pci_card_find(socks[i].default_card) : NULL;
+        if (pk && pci_status(pk) == CARD_UNAVAILABLE)
+            continue;
         doc_card_t *c = &d->cards[d->n_cards++];
         *c = (doc_card_t){.pci = socks[i].pci, .slot = socks[i].slot};
         copy_str(c->card, sizeof c->card, socks[i].default_card);

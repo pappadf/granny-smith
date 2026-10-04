@@ -49,10 +49,14 @@ static const uint32_t pm9500_ram_options_kb[] = {
 // D1/E1/F1, having judged the strings "not decidable from the token
 // stream"; the ROM's own property decides them.
 static const pci_slot_decl_t pm9500_pci_slots[] = {
+    // The factory card: the Apple Accelerated PCI Graphics Card (the Mach64
+    // GX) -- when its expansion ROM is offered; without it the default
+    // configuration has no card and Control stands in (slot 7).
     {.slot = 1,
      .kind = PCI_SLOT_SOCKET,
      .label = "PCI slot A1",
      .detail = "A1",
+     .default_card = "mach64_gx",
      .fill_order = 1,
      .bus = TNT_PCI_BUS_1,
      .device = 13,

@@ -170,8 +170,9 @@ assert machine.pci.slot[4].card.config.command == 0x0002 "Control decodes memory
 
 # --- The 9500 declares six sockets across two Bandits. -----------------------
 # Same three IDSELs on each bus; Apple's own external-interrupt table puts
-# Bandit 2's slots on Grand Central 27/28/29.
-machine.boot model="pm9500" ram=32768 rom="${$ROM}"
+# Bandit 2's slots on Grand Central 27/28/29.  Slot A1 emptied of the
+# factory Mach64, so Control stands in.
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" slots="1=none"
 # Slot labels come from each bridge's own `slot-names` property, dumped
 # live in TN1062: Bandit 1 publishes "A1" "B1" "C1", Bandit 2 publishes
 # "D2" "E2" "F2" (an earlier guess of D1/E1/F1 was wrong).
@@ -210,8 +211,9 @@ machine.memory.poke.l(0xF4800000, 0x00000000)
 # --- Naming the machine's own builtin changes nothing. ------------------------
 # tnt_control is a soldered-down kind (BUILTIN attach), so it can never be
 # seated in a socket: compatibility is computed, not enumerated.  pci_card=
-# naming it is "this machine with its Control", and the socket stays empty.
-machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="tnt_control"
+# naming it is "this machine with its Control", and the socket (emptied of
+# its factory Mach64 here) stays empty.
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="tnt_control" slots="1=none"
 assert try(machine.pci.slot[1].card.name, none) == none "a builtin kind must not be seated in a socket"
 # An unknown id is rejected before the running machine is touched.
 assert !machine.boot(model="pm9500", rom="${$ROM}", pci_card="nonesuch") "unknown pci_card id must be rejected"
