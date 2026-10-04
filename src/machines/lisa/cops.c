@@ -615,8 +615,8 @@ void cops_delete(cops_t *c) {
 // re-derived by the reset handshake -- a restored Lisa without this comes up
 // with an empty FIFO, the mouse disabled and any in-flight warp forgotten.
 //
-// The stream is positional and unversioned (build-ID gated), so this and
-// cops_restore must change together, in one commit.
+// The block is unversioned (build-ID gated), so this and cops_restore must
+// change together, in one commit.
 void cops_checkpoint(cops_t *c, checkpoint_t *cp) {
     if (!c || !cp)
         return;

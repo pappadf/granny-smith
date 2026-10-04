@@ -22,6 +22,7 @@
 
 #include "mac030_glue.h"
 #include "machine.h"
+#include "machine_checkpoint.h"
 #include "mdu.h" // mdu_substrate + mac030_mdu_board_t
 #include "mmu_checkpoint.h"
 #include "slot_tables.h"
@@ -30,7 +31,6 @@
 #include "adb.h"
 #include "asc.h"
 #include "builtin_rbv_video.h"
-#include "checkpoint_images.h"
 #include "cpu.h"
 #include "egret.h"
 #include "floppy.h"
@@ -259,20 +259,23 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     // not by the VIA1 shift register — pass NULL for the VIA argument.
     st->adb = adb_init(NULL, cfg->scheduler, checkpoint);
     cfg->adb = st->adb;
+    machine_part(cfg, checkpoint, "adb", part_save_adb, st->adb);
 
-    if (checkpoint)
-        mac_checkpoint_restore_images(cfg, checkpoint);
+    machine_part_images(cfg, checkpoint);
 
     cfg->scsi = profile_scsi_init(cfg->machine, checkpoint, CONFIG_IMAGES(cfg));
     scsi_5380_attach(cfg->scsi, checkpoint); // IIsi: NCR 5380
+    machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
     scsi_set_irq_callback(cfg->scsi, iisi_scsi_irq, cfg);
     setup_images(cfg);
 
     st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
+    machine_part(cfg, checkpoint, "asc", part_save_asc, st->asc);
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
     st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), checkpoint,
                              CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
+    machine_part(cfg, checkpoint, "floppy", part_save_floppy, st->floppy);
 
     // Egret companion: owns ADB / RTC / PRAM / 1-sec tick / soft power-off via
     // the VIA1 shift register.  Created after via1/rtc/adb exist.
@@ -281,6 +284,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
         LOG(0, "Error: out of memory constructing the Egret");
         return -1;
     }
+    machine_part(cfg, checkpoint, "egret", part_save_egret, st->egret);
     egret_set_power_off_callback(st->egret, iisi_power_off, cfg);
 
     // RBV chip in the V8/VISA variant.  Default monitor sense 6 = 13" RGB.
@@ -289,6 +293,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
         LOG(0, "Error: out of memory constructing the RBV");
         return -1;
     }
+    machine_part(cfg, checkpoint, "rbv", part_save_rbv, st->rbv);
     rbv_set_irq_callback(st->rbv, iisi_rbv_irq, cfg);
     rbv_set_power_off_callback(st->rbv, iisi_power_off, cfg);
     rbv_set_mode_callback(st->rbv, iisi_rbv_mode, cfg);
@@ -331,13 +336,13 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     builtin_rbv_video_set_framebuffer(st->video_card, ram_base + IISI_FB_PHYS_OFFSET, IISI_FB_SCREEN_OFFSET,
                                       /*blank*/ checkpoint == NULL);
 
-    // Card-side display state (palette, mode, VDAC), written by
-    // mdu_checkpoint_save right after the RBV chip.  Restored here rather than
-    // at nubus_init because the framebuffer pointer above must be attached
-    // first — this machine's framebuffer is main RAM, so the card must already
-    // know it does not own the buffer.
+    // Card-side display state (palette, mode, VDAC).  Restored here rather
+    // than at nubus_init because the framebuffer pointer above must be
+    // attached first — this machine's framebuffer is main RAM, so the card
+    // must already know it does not own the buffer.
     if (checkpoint)
         nubus_checkpoint_restore(cfg->nubus, checkpoint);
+    machine_part(cfg, checkpoint, "nubus.cards", part_save_nubus_cards, cfg->nubus);
 
     iisi_memory_layout_init(cfg);
 
@@ -348,6 +353,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
         cpu_attach_mmu(cfg->cpu, st->mmu);
         via_redrive_outputs(cfg->via1);
     }
+    machine_part(cfg, checkpoint, "mmu", part_save_mmu, st->mmu);
     return 0;
 }
 

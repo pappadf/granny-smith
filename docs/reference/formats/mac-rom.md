@@ -325,16 +325,14 @@ the ROM region filled, and the CPU starts from its reset vector by the
 same path every reset takes. A damaged ROM (not `intact`) still boots,
 with a warning naming the part that does not verify: research on damaged
 or hand-edited images is a legitimate headless use. The path and the id
-go into the built-from record as `machine.config.rom` and
-`machine.config.rom_id`.
+are `machine.rom.path` and `machine.rom.id`.
 
 A running machine's ROM is never swapped: a different ROM is a new
 `machine.boot`.
 
 `machine.rom.id`, `machine.rom.intact` and `machine.rom.name` describe the
 loaded ROM by running the same identification over the ROM region, so
-`rom.id` always equals what `rom.identify` said about the file and what
-`machine.config.rom_id` records.
+`rom.id` always equals what `rom.identify` said about the file.
 
 The Lisa two-chip loader (`rom_load_lisa_pair`) picks the high/low chip
 orientation whose interleave passes the boot ROM's own self-check; the check
@@ -356,8 +354,8 @@ has two instances, `vrom.c` and `prom.c`, with the same behaviour:
   catalog rows in order. No filename ever enters the comparison
   (`offer_registry_find`). A card loader tries the candidates in that order
   and takes the first that lays out cleanly (`declrom_load_vrom_card`,
-  `src/core/peripherals/nubus/declrom.c`; `prom_load_card`). Its choice is
-  recorded in `machine.config.vroms`.
+  `src/core/peripherals/nubus/declrom.c`; `prom_load_card`). A NuBus card
+  names its choice: `machine.nubus.slot[N].card.declrom.path` and `.crc`.
 - **A slot's own ROM.** A boot document may name the file for a slot:
   `machine.boot slots="9=824gc,rom=<file>"`, or `vrom=`/`prom=` as sugar for
   every slot whose card the file provides. The file is identified and

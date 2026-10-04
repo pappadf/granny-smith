@@ -22,13 +22,14 @@ const uint8_t *declrom_builder_bytes(const declrom_builder_t *b, size_t *out_siz
 void declrom_builder_free(declrom_builder_t *b) {
     (void)b;
 }
-bool declrom_install_builtin(const char *card_id, const uint8_t *chip, size_t chip_size, uint8_t *bus_buf,
-                             size_t bus_size) {
-    (void)card_id, (void)chip, (void)chip_size, (void)bus_buf, (void)bus_size;
+bool declrom_install_builtin(struct nubus_card *card, const char *card_id, const uint8_t *chip, size_t chip_size,
+                             uint8_t *bus_buf, size_t bus_size) {
+    (void)card, (void)card_id, (void)chip, (void)chip_size, (void)bus_buf, (void)bus_size;
     return false;
 }
-bool declrom_load_vrom_card(const char *card_id, const char *rom, uint8_t *bus_buf, size_t bus_size, char **out_path) {
-    (void)card_id, (void)rom, (void)bus_buf, (void)bus_size, (void)out_path;
+bool declrom_load_vrom_card(struct nubus_card *card, const char *card_id, const char *rom, uint8_t *bus_buf,
+                            size_t bus_size, char **out_path) {
+    (void)card, (void)card_id, (void)rom, (void)bus_buf, (void)bus_size, (void)out_path;
     return false;
 }
 struct declrom_builder *gsvrom_generate(gsvrom_personality_t p, const struct nubus_monitor *monitors) {

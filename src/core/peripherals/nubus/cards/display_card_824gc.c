@@ -784,7 +784,7 @@ static memory_interface_t s_gc824_mem_iface = {
 // ends at the slot top).
 static bool load_vrom(display_card_824gc_priv_t *p, const char *rom) {
     char *path = NULL;
-    if (!declrom_load_vrom_card(display_card_824gc_kind.id, rom, p->vrom, GC824_DECLROM_BUS_SIZE, &path))
+    if (!declrom_load_vrom_card(p->card, display_card_824gc_kind.id, rom, p->vrom, GC824_DECLROM_BUS_SIZE, &path))
         return false;
     free(p->vrom_path);
     p->vrom_path = path;
@@ -987,8 +987,8 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         declrom_builder_t *bld = gsvrom_generate(GSVROM_MDCGC, display_card_824gc_generic_kind.monitors);
         size_t img_size = 0;
         const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
-        if (img &&
-            declrom_install_builtin(display_card_824gc_generic_kind.id, img, img_size, p->vrom, GC824_DECLROM_BUS_SIZE))
+        if (img && declrom_install_builtin(p->card, display_card_824gc_generic_kind.id, img, img_size, p->vrom,
+                                           GC824_DECLROM_BUS_SIZE))
             p->vrom_size = GC824_DECLROM_BUS_SIZE;
         else
             LOG(0, "8*24 GC: 8_24gc: built-in declaration ROM failed to generate; declaration ROM is zero-filled");

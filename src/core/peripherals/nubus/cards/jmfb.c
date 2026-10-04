@@ -312,7 +312,7 @@ static memory_interface_t s_jmfb_mem_iface = {
 // JMFB_DECLROM_BUS_SIZE = 128 KB).  Returns true on success.
 static bool load_vrom(jmfb_priv_t *p, const char *rom) {
     char *path = NULL;
-    if (!declrom_load_vrom_card(mdc_8_24_kind.id, rom, p->vrom, JMFB_DECLROM_BUS_SIZE, &path))
+    if (!declrom_load_vrom_card(p->card, mdc_8_24_kind.id, rom, p->vrom, JMFB_DECLROM_BUS_SIZE, &path))
         return false;
     free(p->vrom_path);
     p->vrom_path = path;
@@ -322,10 +322,11 @@ static bool load_vrom(jmfb_priv_t *p, const char *rom) {
 
 static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts,
                             bool generic) {
-    // The monitor sense the caller asked for, or the board default.
+    // The monitor on the card's connector: its slot entry's sense (from the
+    // document on a boot, from the bus's block on a restore), or the default.
     uint8_t sense = JMFB_SENSE_DEFAULT;
-    if (cfg->build_opts.video_sense >= 0 && cfg->build_opts.video_sense <= 7)
-        sense = (uint8_t)cfg->build_opts.video_sense;
+    if (opts->video_sense >= 0 && opts->video_sense <= 7)
+        sense = (uint8_t)opts->video_sense;
     (void)cp;
     jmfb_priv_t *p = calloc(1, sizeof(*p));
     if (!p)
@@ -395,7 +396,8 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         declrom_builder_t *bld = gsvrom_generate(GSVROM_JMFB, gen_monitors);
         size_t img_size = 0;
         const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
-        if (img && declrom_install_builtin(jmfb_generic_kind.id, img, img_size, p->vrom, JMFB_DECLROM_BUS_SIZE))
+        if (img &&
+            declrom_install_builtin(p->card, jmfb_generic_kind.id, img, img_size, p->vrom, JMFB_DECLROM_BUS_SIZE))
             p->vrom_size = JMFB_DECLROM_BUS_SIZE;
         else
             LOG(0, "JMFB: 8_24: built-in declaration ROM failed to generate; declaration ROM is zero-filled");

@@ -121,15 +121,31 @@ static DEF_GETTER(declrom_attr_present) {
     nubus_card_t *c = node_card(self);
     return val_bool(c && c->declrom && c->declrom_size > 0);
 }
+static DEF_GETTER(declrom_attr_path) {
+    nubus_card_t *c = node_card(self);
+    return val_str(c && c->rom_path ? c->rom_path : "");
+}
+static DEF_GETTER(declrom_attr_crc) {
+    nubus_card_t *c = node_card(self);
+    return val_uint(4, c ? c->rom_crc : 0);
+}
 static const member_t declrom_members[] = {
+    {.kind = M_ATTR,
+     .name = "path",
+     .doc = "The file the declaration ROM was loaded from; \"builtin:<card>\" for a generated one",
+     .attr = {.type = V_STRING, .get = declrom_attr_path}                            },
+    {.kind = M_ATTR,
+     .name = "crc",
+     .doc = "The declaration ROM's Format-Block CRC: which revision the card runs",
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = declrom_attr_crc}},
     {.kind = M_ATTR,
      .name = "size",
      .doc = "Declaration ROM size in bytes (bus-space, byte-lane expanded)",
-     .attr = {.type = V_UINT, .get = declrom_attr_size}   },
+     .attr = {.type = V_UINT, .get = declrom_attr_size}                              },
     {.kind = M_ATTR,
      .name = "present",
      .doc = "True if a declaration ROM is loaded",
-     .attr = {.type = V_BOOL, .get = declrom_attr_present}},
+     .attr = {.type = V_BOOL, .get = declrom_attr_present}                           },
 };
 static const class_desc_t nubus_declrom_class = {
     .name = "declrom", .members = declrom_members, .n_members = sizeof(declrom_members) / sizeof(declrom_members[0])};
@@ -195,7 +211,16 @@ static DEF_GETTER(card_attr_slot) {
     nubus_card_t *c = node_card(self);
     return val_int(c ? c->slot : -1);
 }
+static DEF_GETTER(card_attr_id) {
+    nubus_card_t *c = node_card(self);
+    const nubus_card_kind_t *k = c ? nubus_slot_kind(c->bus, c->slot) : NULL;
+    return val_str(k && k->id ? k->id : "");
+}
 static const member_t card_members[] = {
+    {.kind = M_ATTR,
+     .name = "id",
+     .doc = "Card kind id (catalog.nubus_cards)",
+     .attr = {.type = V_STRING, .get = card_attr_id}                                                              },
     {.kind = M_ATTR, .name = "name", .doc = "Card display name", .attr = {.type = V_STRING, .get = card_attr_name}},
     {.kind = M_ATTR,
      .name = "slot",

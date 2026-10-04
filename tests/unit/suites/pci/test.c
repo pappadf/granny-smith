@@ -104,12 +104,6 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
     (void)device;
 }
 
-void machine_config_note_slot_card(int bus_kind, int slot, const char *card_id) {
-    (void)bus_kind;
-    (void)slot;
-    (void)card_id;
-}
-
 // The object model is exercised by the integration suites, not here.
 void pci_objects_build(pci_root_t *root) {
     (void)root;

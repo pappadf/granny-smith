@@ -248,18 +248,14 @@ static uint64_t ariel_fb_base(void *owner) {
     return ram ? (uint64_t)(st->video.display.bits - ram) : 0;
 }
 
-void pdm_video_init(config_t *cfg) {
+uint8_t pdm_monitor_for_build(const config_t *cfg) {
+    int want = cfg->build_opts.video_sense;
+    return (want >= 0 && want <= 7) ? (uint8_t)want : PDM_MONITOR_SENSE_DEFAULT;
+}
+
+void pdm_video_init(config_t *cfg, uint8_t monitor) {
     pdm_state_t *st = pdm_st(cfg);
-    // A restore has already loaded the saved strap; only a cold build takes
-    // the caller's pick.  Nothing to consume or reset now
-    // that the pick is a build option rather than a one-shot static -- a
-    // forgotten `monitor=` cannot leak into the next boot because the next
-    // boot fills its own options.
-    if (!st->video.sense_restored) {
-        int want = cfg->build_opts.video_sense;
-        st->video.sense = (want >= 0 && want <= 7) ? (uint8_t)want : PDM_MONITOR_SENSE_DEFAULT;
-    }
-    st->video.sense_restored = false;
+    st->video.sense = monitor;
     st->video.blank = calloc(1, PDM_VIDEO_MAX_BYTES);
     if (!st->video.blank)
         LOG(0, "Ariel: Error: out of memory allocating the blanked raster; the screen stays live while blanked");

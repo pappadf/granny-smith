@@ -285,7 +285,7 @@ atalk_network_t *appletalk_network(void);
 // sessions -- to the guest, the server has restarted.
 atalk_conn_t *atalk_conn_new(atalk_network_t *network, scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint);
 
-// Write the connection's block (machine_checkpoint_save_core).
+// Write the connection's block (its checkpoint part, machine_parts.h).
 void atalk_conn_checkpoint(const atalk_conn_t *conn, checkpoint_t *checkpoint);
 
 // Put `conn` on the cable, unplugging whichever connection is there.

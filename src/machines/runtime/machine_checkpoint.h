@@ -2,50 +2,51 @@
 // Copyright (c) pappadf
 
 // machine_checkpoint.h
-// The one config_t-owned checkpoint prefix, shared by every machine family
-// whose construction order allows it.
+// The checkpoint parts every machine family has (machine_parts.h).
 //
-// This is `mac030_checkpoint_save_core()` renamed and generalised.  The
-// helper already served five of the nine families, and the `mac030_` prefix
-// -- plus a header comment saying the PowerPC families do not use it -- was
-// most of what stopped the other four adopting it.  It is a rename and an
-// extension, not a second helper.
-//
-// Nothing is parameterised, because nothing needed to be: every difference
-// between the families falls out of which handles the config actually has.
-// A PowerPC machine has cfg->ppc and no cfg->cpu, so it takes the ppc block
-// and skips cfg->irq (PDM and TNT keep interrupt state in their own register
-// blobs and never read cfg->irq at all).  A machine with one VIA passes
-// straight through the second, because via_checkpoint(NULL) writes nothing.
-//
-// THE ORDER IS THE CONTRACT.  The checkpoint stream is positional and there
-// is no version field -- a build mismatch is rejected outright, so layout is
-// free to change, but a save and its restore must move together.  The
-// restore side is each family's init, where rtc_init, scc_init and
-// atalk_conn_new consume their own block as they construct, so save order
-// must mirror construction order.  A swapped pair does not fail at the swap:
-// it cross-loads and dies later at whichever block first disagrees on size,
-// which is exactly what the IIfx did.
-//
-// NOT every family: the Lisa's construction order genuinely differs -- it has
-// no RTC (the COPS does that job), no AppleTalk at this point, and writes the
-// SCC last, after the VIAs and the ProFile.  Forcing it into this order would
-// mean reordering lisa_init's construction for no gain.  It keeps its own
-// save function and says so there.
+// A family registers each part right after the constructor that reads its
+// block on a restore, so a checkpoint's order is the family's construction
+// order by construction.  The save functions below write the devices every
+// family shares; a family's own blocks use family-local save functions.
 
 #ifndef GS_MACHINES_RUNTIME_MACHINE_CHECKPOINT_H
 #define GS_MACHINES_RUNTIME_MACHINE_CHECKPOINT_H
 
-struct config;
-struct checkpoint;
+#include "common.h"
+#include "machine_parts.h"
 
-// Write the core blocks every adopting family shares, in this order:
-//
-//   memory map -> cpu | ppc -> scheduler -> [cfg->irq, 68k only] ->
-//   RTC -> SCC -> AppleTalk -> VIA1 -> [VIA2]
-//
-// The family then appends its own devices and its substrate tail, in its
-// own construction order.
-void machine_checkpoint_save_core(struct config *cfg, struct checkpoint *cp);
+struct config;
+
+// Part-save functions: `obj` is the device the part names.
+void part_save_memory(void *obj, checkpoint_t *cp); // memory_map_t
+void part_save_cpu(void *obj, checkpoint_t *cp); // cpu_t
+void part_save_ppc(void *obj, checkpoint_t *cp); // ppc_t
+void part_save_scheduler(void *obj, checkpoint_t *cp); // struct scheduler
+void part_save_rtc(void *obj, checkpoint_t *cp); // rtc_t
+void part_save_scc(void *obj, checkpoint_t *cp); // scc_t
+void part_save_atalk(void *obj, checkpoint_t *cp); // atalk_conn_t
+void part_save_via(void *obj, checkpoint_t *cp); // via_t
+void part_save_adb(void *obj, checkpoint_t *cp); // adb_t
+void part_save_scsi(void *obj, checkpoint_t *cp); // scsi_t
+void part_save_asc(void *obj, checkpoint_t *cp); // asc_t
+void part_save_floppy(void *obj, checkpoint_t *cp); // floppy_t
+void part_save_keyboard(void *obj, checkpoint_t *cp); // keyboard_t
+void part_save_mouse(void *obj, checkpoint_t *cp); // mouse_t
+void part_save_sound(void *obj, checkpoint_t *cp); // sound_t
+void part_save_mmu(void *obj, checkpoint_t *cp); // mmu_state_t (the 68030 PMMU)
+void part_save_nubus_cards(void *obj, checkpoint_t *cp); // nubus_bus_t: each seated card's state
+void part_save_scsi96(void *obj, checkpoint_t *cp); // scsi_53c96_t
+void part_save_sonic(void *obj, checkpoint_t *cp); // sonic_t
+void part_save_egret(void *obj, checkpoint_t *cp); // egret_t (the IIsi's Egret, the towers' Caboose)
+void part_save_iop(void *obj, checkpoint_t *cp); // iop_t
+void part_save_cuda(void *obj, checkpoint_t *cp); // av_cuda_t
+
+// cfg->irq, the 68k families' aggregated interrupt-source bitmap: read it
+// on a restore, and register it.
+void machine_part_irq(struct config *cfg, checkpoint_t *cp);
+
+// The machine's image list (checkpoint_images.h): read it on a restore,
+// before the devices that reference it, and register it.
+void machine_part_images(struct config *cfg, checkpoint_t *cp);
 
 #endif // GS_MACHINES_RUNTIME_MACHINE_CHECKPOINT_H

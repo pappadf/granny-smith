@@ -83,7 +83,7 @@ The headless target has no `localStorage` and no machine-id concept. Pass `--che
   - Two on-disk formats are used:
     - **v2 (`GSCHKPT2`)** — Used for consolidated (full-export) checkpoints. Per-block RLE compression with file/line metadata for diagnostics. Data blocks >= 64 bytes are RLE-compressed individually.
     - **v3 (`GSCHKPT3`)** — Used for quick (background auto-save) checkpoints. All data is accumulated into a pre-allocated memory buffer behind a header-sized gap; at close the header is filled in and the whole buffer is one file the I/O worker writes and publishes. No RLE (the payload is mostly uncompressible RAM: `compressed_size == uncompressed_size` marks it raw) and no per-block metadata (filenames, line numbers).
-  - The v3 format structure: `GSCHKPT3` (8 bytes) + build id + model id + ram_size_kb + uncompressed_size (8 bytes) + compressed_size (8 bytes) + raw payload.
+  - The v3 format structure: `GSCHKPT3` (8 bytes) + build id + uncompressed_size (8 bytes) + compressed_size (8 bytes) + raw payload.  The header says nothing about the machine: what it is -- the model and the RAM size -- is the payload's first part, the board's (below).
   - The reader auto-detects the format by inspecting the 8-byte magic signature.
 
 
@@ -145,11 +145,14 @@ Read-only image opens (`image_open_readonly`) park their throwaway delta and jou
 - **Struct layout guideline:**
   - Place POD (plain old data) fields first, pointers and non-POD fields last. This allows a single block I/O for the contiguous POD region, then serializes any pointed-to buffers separately. Use `offsetof(struct <type>, first_pointer_field)` to bound the POD region when helpful.
   - Restated for device authors, alongside the scheduler-lifetime and assert rules, in [`../../guide/STYLE_GUIDE.md`](../../guide/STYLE_GUIDE.md) § "Device module conventions".
-  - **Layout changes are free.** The stream is positional with no version field and a build-ID mismatch is rejected outright (`checkpoint.c`; the ID is `__DATE__ " " __TIME__`, force-recompiled every build), so a checkpoint can only ever be restored by the exact binary that wrote it. There is no old format to support. The one real constraint is that a save and its restore must change **together, in the same commit** — a swapped pair does not fail at the swap, it cross-loads and dies later at whichever block first disagrees on size.
+  - **Layout changes are free.** There is no version field and a build-ID mismatch is rejected outright (`checkpoint.c`; the ID is `__DATE__ " " __TIME__`, force-recompiled every build), so a checkpoint can only ever be restored by the exact binary that wrote it. There is no old format to support. A device's save and its restore must change **together, in the same commit**.
 
-- **Orchestration and ordering:**
-  - `system_checkpoint(file, kind)` opens a write handle and delegates to the machine profile's `substrate->checkpoint_save` callback, which invokes each subsystem's `<subsystem>_checkpoint` in a well-defined order (the shared prefix, `machine_checkpoint_save_core`, writes RAM, CPU, scheduler, IRQ, RTC, SCC, AppleTalk, VIA, then the family adds its own devices).
-  - The machine profile's `init(cfg, checkpoint)` (e.g. `plus_init`) constructs all subsystems with the same stream handle so each subsystem can restore directly during init.
+- **The checkpoint is the machine's parts, in construction order** (`src/core/machine_parts.h`):
+  - Every object whose state a checkpoint carries registers itself as a *part* where it is built: `machine_part(cfg, cp, name, save, obj)`, right after the constructor that reads its block on a restore.  The shared part-save functions (`part_save_scc`, `part_save_via`, ...) and the image-list and IRQ parts are in `src/machines/runtime/machine_checkpoint.h`; a family's own blocks use family-local ones.
+  - `system_checkpoint(file, kind)` walks the list (`machine_parts_save`): each part's block, then its name.  There is no per-machine save function -- the order a checkpoint is written in is, by construction, the order the machine is built in.
+  - The first part is the board's (`system_create`): the model and the RAM size.  A restore (`system_restore`) reads it to choose what to build, then builds it: `system_create(profile, opts, checkpoint)` runs the family's `init(cfg, checkpoint)` exactly as a boot does, and each constructor reads its own block as it builds.  Registering a part on a restore reads the name that follows the block and checks it, so a checkpoint that does not match the machine being built fails at the first part that differs, naming it.
+  - Construction facts travel in the blocks of the objects they belong to: the NuBus bus's and the PCI root's parts carry the slot entries they seated (card, ROM, mode, options), so a restore seats the same cards; the built-in video devices' identity parts carry their monitor strap (`dafb.monitor`, `ariel.monitor`).  Nothing else describes the machine.
+  - The last part is the event queue (`events`), restored once every event source exists.
 
 - **Cross-subsystem state:**
   - If a command or state spans multiple subsystems (e.g., floppy + image paths), keep the serialization logic in `system.c` or at an appropriate orchestration layer to avoid tight coupling inside a device subsystem.

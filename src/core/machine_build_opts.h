@@ -54,6 +54,10 @@ typedef struct slot_opts {
     char video_mode[40]; // "monitor_Nbpp" mode id; "" = the card's default
     char custom_mode[40]; // "WxHxD" custom geometry (generic cards); "" = none
     char rom[SLOT_ROM_PATH_MAX]; // declaration ROM / FCode PROM file; "" = the catalog
+    // The monitor sense on the card's video connector, MACHINE_SENSE_UNSET
+    // for the card's default.  Not a document field: the bus fills it from
+    // the document's video_sense= on a boot, and its block carries it.
+    int video_sense;
     int n_options;
     slot_option_t options[SLOT_OPTIONS_MAX];
 } slot_opts_t;

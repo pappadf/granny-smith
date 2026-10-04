@@ -130,11 +130,11 @@ hook, and options through `accepts_option()`, so the generic layer never
 learns a card's identity — the two places `nubus.c` had to include card
 headers.
 
-The seated cards are listed in the built-from record
-(`machine_config_note_slot_card`) for *both* buses, and the record keeps
-the resolved slot entries, which a checkpoint restore builds the slots
-from. (`machine.restart` builds nothing: the cards it power-cycles are the
-ones already seated.)
+Each seated card names its kind (`machine.pci.slot[N].card.id`, and
+`machine.nubus.slot[N].card.id` on the other bus), and the root's part of a
+checkpoint carries the slot entries it seated, which a checkpoint restore
+builds the slots from. (`machine.restart` builds nothing: the cards it
+power-cycles are the ones already seated.)
 
 ## Interrupts
 

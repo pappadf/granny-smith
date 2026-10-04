@@ -16,7 +16,6 @@
 #include "laserwriter_job.h"
 #include "log.h"
 #include "machine.h"
-#include "machine_config.h"
 #include "memory.h"
 #include "nubus.h"
 #include "prom.h"

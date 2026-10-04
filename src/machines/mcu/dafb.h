@@ -37,8 +37,11 @@ typedef struct dafb dafb_t;
 typedef void (*dafb_irq_cb)(void *context, bool active);
 
 // Create the DAFB with `vram_size` bytes of installed VRAM (512 KiB / 1 MiB /
-// 2 MiB; the CPU aperture is fixed at 2 MiB regardless).
-dafb_t *dafb_init(uint32_t vram_size, checkpoint_t *cp);
+// 2 MiB; the CPU aperture is fixed at 2 MiB regardless) and the monitor
+// `monitor` strapped to its port, an indexed sense code (below): what the
+// monitor's sense pins read is hardware, so it is fixed when the chip is
+// built -- from the boot document, or on a restore from the board's block.
+dafb_t *dafb_init(uint32_t vram_size, uint8_t monitor, checkpoint_t *cp);
 void dafb_delete(dafb_t *dafb);
 void dafb_checkpoint(dafb_t *dafb, checkpoint_t *cp);
 
@@ -63,12 +66,12 @@ void dafb_set_irq_callback(dafb_t *dafb, dafb_irq_cb cb, void *context);
 #define DAFB_SENSE_INDEXED_MSB2 13u // multiscan band 2
 #define DAFB_SENSE_INDEXED_MSB3 14u // multiscan band 3
 #define DAFB_SENSE_INDEXED_MAX  15u
-void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code);
 
-// Pending-sense staging for `machine.boot video_sense=N` (the JMFB
-// pattern): machine.c stages, the Quadra constructors consume; the slot
-// self-resets to $6 on consumption.
-// The monitor sense this build should use, from cfg->build_opts.
+// The monitor strapped to the chip (dafb_init).
+uint8_t dafb_monitor(const dafb_t *dafb);
+
+// The monitor a boot straps, from the document's video_sense= (or the
+// default $6).
 uint8_t dafb_sense_for_build(const struct config *cfg);
 
 // Board revision facts.  `version` is served in DAFB_Test bits

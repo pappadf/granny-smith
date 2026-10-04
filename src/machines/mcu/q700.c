@@ -9,6 +9,7 @@
 // Caboose, one SCSI bus.  Shares the 420DBFF3 ROM with the Quadra 900 (model
 // sense on VIA1 PA distinguishes them).
 
+#include "machine_checkpoint.h"
 #include "mcu.h"
 
 #include "mac_host_io.h"
@@ -18,7 +19,6 @@
 
 #include "adb.h"
 #include "asc.h"
-#include "checkpoint_images.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "cpu_internal.h" // cpu->mmu — the CPU-owned 040 MMU register file
@@ -135,30 +135,35 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     st->adb = adb_init(cfg->via1, cfg->scheduler, cp);
     cfg->adb = st->adb;
+    machine_part(cfg, cp, "adb", part_save_adb, st->adb);
 
-    if (cp)
-        mac_checkpoint_restore_images(cfg, cp);
+    machine_part_images(cfg, cp);
 
     // The bus/target model carries the disks and CD; the 53C96 chip model
     // is the protocol front-end driving it through the external-initiator
     // API (there is no NCR 5380 register file on this family).
     cfg->scsi = profile_scsi_init(cfg->machine, cp, CONFIG_IMAGES(cfg));
+    machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
+    machine_part(cfg, cp, "scsi96", part_save_scsi96, st->scsi96);
     scsi_53c96_set_irq_callback(st->scsi96, q700_scsi96_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
 
     // SONIC Ethernet (~20 MHz part on the Q700, no wire in v1).
     st->sonic = sonic_init(cp);
+    machine_part(cfg, cp, "sonic", part_save_sonic, st->sonic);
     sonic_set_irq_callback(st->sonic, q700_sonic_irq, cfg);
     // SONIC bus-master DMA: the shared guest-physical port.
     sonic_set_memory_port(st->sonic, &dma_mem_port_physical);
 
     st->asc = asc_init(NULL, cfg->scheduler, cp); // EASC: ASC-compatible core
+    machine_part(cfg, cp, "asc", part_save_asc, st->asc);
     asc_set_mix(st->asc, ASC_MIX_CH_A);
     asc_set_irq_handler(st->asc, q700_asc_irq, cfg);
     st->floppy =
         floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp, CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
+    machine_part(cfg, cp, "floppy", part_save_floppy, st->floppy);
 
     if (mcu_build_dafb(cfg, cp) != 0)
         return -1;
@@ -188,8 +193,7 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     mcu_io_bind(&st->io, cfg, desc, st->asc, st->floppy);
     mcu_memory_layout(cfg);
 
-    if (cp)
-        mcu_restore_private(cfg, cp);
+    mcu_private_part(cfg, cp);
     return 0;
 }
 

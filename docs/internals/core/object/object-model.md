@@ -314,7 +314,7 @@ remaining segments index into that value — dotted `map.key`, bracket
 `map["key"]` (any string expression), and numeric `list[N]`. The same
 segments work after a call form and through bindings:
 
-    machine.config.vroms[0].card_id            # list → map → value
+    machine.rom.identify("boot.rom").compatible[0]   # call → map → list → value
     catalog.profile("se30").capabilities.mmu.kind
     let info = machine.rom.identify("boot.rom")
     echo "${$info.checksum} ${$info["name"]}"
@@ -642,7 +642,7 @@ them. A new machine inherits nothing from the old one.
 |---|---|---|---|
 | 2 | `machine.reset` | **Warm reset** (the reset button): the board's /RESET net, then the CPU back to its reset vector. RAM is kept. | `machine_method_reset` → `system_machine_reset` (`src/core/system.c`) |
 | 3 | `machine.restart` | **Power cycle**: the same reset with the RAM cleared to the state a new machine's has, and the board's power-on-only state (`substrate->power_on`) back to its constructed values. Nothing is torn down or rebuilt. | `machine_method_restart` → `system_machine_power_cycle` |
-| -- | `machine.boot(...)` | **New machine from a document** ([Boot arguments](#boot-arguments)): validates the whole document, tears the running machine down, constructs, installs the ROM, writes the record. | `machine_method_boot` → `machine_boot_apply` (`src/machines/machine.c`) |
+| -- | `machine.boot(...)` | **New machine from a document** ([Boot arguments](#boot-arguments)): validates the whole document, builds the new machine with its ROM, swaps it in and destroys the old one. | `machine_method_boot` → `machine_boot_apply` (`src/machines/machine.c`) |
 | -- | `checkpoint.load(path)` | Builds a new machine from a checkpoint: it creates the new machine first and destroys the old one afterwards. | `system_checkpoint_load` → `system_restore` |
 
 Level 1 is the 68k `RESET` instruction: the /RESET net alone, with the CPU
@@ -650,9 +650,9 @@ untouched (`system_reset_devices`). It has no verb -- it is an instruction
 and a wire, not something a user does.
 
 `machine.boot` and headless startup both go through
-`machine_boot_apply`, so they share one sequence: validate, tear down,
-construct, record. Every check runs before `system_destroy`, so a rejected
-boot leaves the running machine and its record untouched
+`machine_boot_apply`, so they share one sequence: validate, build, swap,
+destroy. Every check runs before the running machine is touched, so a
+rejected boot leaves it untouched
 (`tests/integration/boot-config`). `tests/integration/reset-levels` runs
 the level contract over every model in the registry.
 
@@ -661,7 +661,7 @@ the level contract over every model in the registry.
 | State | `machine.boot` | `machine.restart` | `machine.reset` | `checkpoint.load` |
 |---|---|---|---|---|
 | Devices | New | **Kept** | **Kept** | New |
-| Model, RAM size, cards | From the document; each omitted field takes the model's default | Unchanged | Unchanged | From the checkpoint's model id, RAM size and stored record (its slot entries) |
+| Model, RAM size, cards | From the document; each omitted field takes the model's default | Unchanged | Unchanged | From the checkpoint's parts: the board's (model, RAM size) and each bus's (its slot entries) |
 | ROM bytes | Read from the `rom=` file before the running machine is touched, and built into the new machine's ROM region at construction | Unchanged | Unchanged | From the checkpoint, by content or file reference |
 | RAM contents | Zeroed (fresh `calloc`) | **Cleared** to zero | **Kept** | Restored |
 | CPU registers | Reset | Reset vector, reset-state SR/VBR/CACR, MMU and TTx enables off | The same | Restored |
@@ -672,9 +672,9 @@ the level contract over every model in the registry.
 | Caps Lock latch | Released | **Kept** | Kept (`adb_reset` preserves held keys) | From the checkpoint's ADB state |
 | ADB devices | New | Back at their default addresses (the bus loses power: `adb_power_on`) | Kept; the ROM's ADB SendReset resets them | Restored |
 | Scheduler pacing (`scheduler.mode`, `.speed`, `.max_speed`) | Host state (the platform's run loop): untouched, and the new machine runs under it | Unchanged | Unchanged | Untouched: never in a checkpoint |
-| `machine.config.created` | Stamped now | Unchanged | Unchanged | From the checkpoint's record |
 | vROM/PROM offer registries | Process-global; survive | Survive | Survive | Survive |
-| A slot's ROM file (`vrom=`/`prom=`, a slot's `rom=`) | The document's, an argument of that slot's card; never written to the offer registries | Unchanged | Unchanged | The checkpoint record's slot entries |
+| A slot's ROM file (`vrom=`/`prom=`, a slot's `rom=`) | The document's, an argument of that slot's card; never written to the offer registries | Unchanged | Unchanged | From the bus's part of the checkpoint (its slot entries) |
+| A built-in video's monitor strap (`monitor=`, `video_sense=`) | The document's, an argument of the video device | Unchanged | Unchanged | From the device's identity part of the checkpoint |
 | Object tree | Machine-scoped nodes rebuilt (`root_install`); process singletons (`machine`, `rom`, `vrom`, `prom`, `appletalk`) stay | Untouched | Untouched | Rebuilt |
 | AppleTalk network (`appletalk.*`: the AFP server and its shares, the LaserWriter, the program-linking peer, their NBP names) | Host state: untouched; the new machine plugs into it | Untouched | Untouched | Untouched: never in a checkpoint |
 | The machine's AppleTalk connection (`cfg->atalk`: link state and counters, ATP transactions, its ASP / AFP / ADSP / PPC sessions, forks, Apple events) | New, with no sessions; the old machine's sessions closed | Kept | Kept | Its block restored (enabled flag, link counters, session numbering), with no sessions: the guest sees a restarted server |
@@ -682,7 +682,7 @@ the level contract over every model in the registry.
 **`machine.boot` inherits nothing from the running machine.** The
 document is the whole specification. `model` and `rom` are required, and
 every other field falls back to the **model's** defaults, never to the
-previous record. That holds across a model change too
+previous machine. That holds across a model change too
 (`tests/integration/boot-config`). For this reason the integration runner
 passes the ROM explicitly: it starts headless with `rom=` and also exports
 the same path as `$ROM`, so a script re-boots with
@@ -774,12 +774,13 @@ to its *default* card degrades to an empty slot with a log instead, and a
 soldered-down card such as the SE/30's onboard video synthesises its own
 declaration ROM.
 
-The resolved configuration is recorded in `machine.config` (`model`,
-`ram`, `rom`, `rom_id`, `rom2`, `vroms`, `slot_cards`, `video_card`,
-`video_sense`, `video_mode`, `custom_mode`, `monitor`, `pci_card`,
-`pci_option`, `created`, `valid`; `src/core/machine_config.c`), with the
-resolved slot entries. A checkpoint stores it, and `checkpoint.load`
-builds from it, the built-in `monitor` strap included.
+A running machine keeps no record of the document it was built from: each
+fact is read from the object that holds it -- `machine.id`, `machine.ram`,
+`machine.rom.path` / `.id`, `machine.nubus.slot[N].card.id` and its
+`declrom.path` / `.crc` (the declaration ROM the card resolved),
+`machine.pci.slot[N].card.id`.  A checkpoint carries each fact in the part
+of the object it belongs to, and `checkpoint.load` builds from those parts
+(`src/core/machine_parts.h`; [checkpointing.md](../checkpointing.md)).
 
 **Headless command line.** The CLI arguments fill the same document and
 call `machine_boot_apply` directly (`src/platform/headless/headless_main.c:1343-1350`):

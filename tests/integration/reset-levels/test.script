@@ -58,8 +58,8 @@ def levels(model, ram_kb, rom, budget, check_ticks) {
         }
     }
 
-    # --- level 3: machine.restart.  The same, cold; nothing is rebuilt.
-    let created = machine.config.created
+    # --- level 3: machine.restart.  The same, cold; nothing is rebuilt -- the
+    # stores below are the same chips.
     let pram2 = pram()
     let nv2 = nvram()
     let t_before2 = 0
@@ -68,7 +68,6 @@ def levels(model, ram_kb, rom, budget, check_ticks) {
     assert machine.cpu.pc == $pc0 "${$model}: machine.restart did not land on the reset vector"
     assert pram() == $pram2 "${$model}: I2: PRAM lost on machine.restart"
     assert nvram() == $nv2 "${$model}: I2: NVRAM lost on machine.restart"
-    assert machine.config.created == $created "${$model}: machine.restart rebuilt the machine"
     if $check_ticks {
         assert rebooted($budget, $t_before2) "${$model}: machine.restart did not reboot the machine"
     } else {

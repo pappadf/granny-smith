@@ -16,6 +16,7 @@
 //     $F402/$F502 (OrwellDecoderTable); INTs wire-OR onto VIA2 CB2
 //   * five NuBus '90 slots A-E on VIA2 PA1-PA5
 
+#include "machine_checkpoint.h"
 #include "mcu.h"
 #include "q900_internal.h"
 
@@ -26,7 +27,6 @@
 
 #include "adb.h"
 #include "asc.h"
-#include "checkpoint_images.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "cpu_internal.h" // cpu->mmu — the CPU-owned 040 MMU register file
@@ -179,14 +179,16 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // the VIA so slot-3 IOP traffic reaches adb_iop_transact() directly.
     st->adb = adb_init(NULL, cfg->scheduler, cp);
     cfg->adb = st->adb;
+    machine_part(cfg, cp, "adb", part_save_adb, st->adb);
 
-    if (cp)
-        mac_checkpoint_restore_images(cfg, cp);
+    machine_part_images(cfg, cp);
 
     // Internal SCSI bus: carries the configured disks + CD through the
     // shared bus/target model; the internal 53C96 fronts it.
     cfg->scsi = profile_scsi_init(cfg->machine, cp, CONFIG_IMAGES(cfg));
+    machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
+    machine_part(cfg, cp, "scsi96", part_save_scsi96, st->scsi96);
     scsi_53c96_set_irq_callback(st->scsi96, q900_scsi96_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
 
@@ -202,22 +204,27 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // TNT already does it this way (tnt.c: "scsi2"), and scsi.h documents the
     // second-bus case; the Q900 predates the helper and was never converted.
     st->scsi_ext = scsi_init_named(cp, CONFIG_IMAGES(cfg), "scsi2");
+    machine_part(cfg, cp, "scsi2", part_save_scsi, st->scsi_ext);
     st->scsi96_ext = scsi_53c96_init(cfg->scheduler, 25000000, cp);
+    machine_part(cfg, cp, "scsi96_ext", part_save_scsi96, st->scsi96_ext);
     scsi_53c96_set_irq_callback(st->scsi96_ext, q900_scsi96_ext_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96_ext, st->scsi_ext);
 
     // SONIC Ethernet (20 MHz-class part on the Q900; no wire in v1).
     st->sonic = sonic_init(cp);
+    machine_part(cfg, cp, "sonic", part_save_sonic, st->sonic);
     sonic_set_irq_callback(st->sonic, q900_sonic_irq, cfg);
     // SONIC bus-master DMA: the shared guest-physical port.
     sonic_set_memory_port(st->sonic, &dma_mem_port_physical);
 
     st->asc = asc_init(NULL, cfg->scheduler, cp); // EASC: ASC-compatible core
+    machine_part(cfg, cp, "asc", part_save_asc, st->asc);
     asc_set_mix(st->asc, ASC_MIX_CH_A);
     asc_set_irq_handler(st->asc, q900_asc_irq, cfg);
     st->floppy =
         floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp, CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
+    machine_part(cfg, cp, "floppy", part_save_floppy, st->floppy);
 
     // Caboose: the Egret-protocol system manager (RTC/PRAM/power/keyswitch;
     // the ROM drives it through the same EgretMgr dispatch it uses for
@@ -228,6 +235,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
         LOG(0, "Error: out of memory constructing the Caboose");
         return -1;
     }
+    machine_part(cfg, cp, "caboose", part_save_egret, st->caboose);
 
     // The two Apple PIC/IOPs.  The host aperture layout matches the IIfx
     // PIC exactly (shared HardwarePrivateEqu.a equates), so the IIfx bridge
@@ -235,8 +243,10 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // and IRQ routing differ.  Front-side devices ride the bypass windows.
     st->scc_iop =
         iop_init(SccIopNum, scc_get_memory_interface(cfg->scc), cfg->scc, q900_scc_iop_irq, cfg, cfg->scheduler, cp);
+    machine_part(cfg, cp, "scc_iop", part_save_iop, st->scc_iop);
     st->swim_iop = iop_init(SwimIopNum, floppy_get_memory_interface(st->floppy), st->floppy, q900_swim_iop_irq, cfg,
                             cfg->scheduler, cp);
+    machine_part(cfg, cp, "swim_iop", part_save_iop, st->swim_iop);
 
     if (mcu_build_dafb(cfg, cp) != 0)
         return -1;
@@ -266,8 +276,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     st->io.iface[MAC030_DEV_SWIM_IOP] = iop_get_memory_interface(st->swim_iop);
     mcu_memory_layout(cfg);
 
-    if (cp)
-        mcu_restore_private(cfg, cp);
+    mcu_private_part(cfg, cp);
     return 0;
 }
 

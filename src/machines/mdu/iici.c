@@ -23,6 +23,7 @@
 
 #include "mac030_glue.h"
 #include "machine.h"
+#include "machine_checkpoint.h"
 #include "mdu.h" // mdu_substrate + mac030_mdu_board_t
 #include "mmu_checkpoint.h"
 #include "slot_tables.h"
@@ -31,7 +32,6 @@
 #include "adb.h"
 #include "asc.h"
 #include "builtin_rbv_video.h"
-#include "checkpoint_images.h"
 #include "cpu.h"
 #include "floppy.h"
 #include "iici_internal.h"
@@ -300,20 +300,23 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
 
     st->adb = adb_init(cfg->via1, cfg->scheduler, checkpoint);
     cfg->adb = st->adb;
+    machine_part(cfg, checkpoint, "adb", part_save_adb, st->adb);
 
-    if (checkpoint)
-        mac_checkpoint_restore_images(cfg, checkpoint);
+    machine_part_images(cfg, checkpoint);
 
     cfg->scsi = profile_scsi_init(cfg->machine, checkpoint, CONFIG_IMAGES(cfg));
     scsi_5380_attach(cfg->scsi, checkpoint); // IIci: NCR 5380
+    machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
     scsi_set_irq_callback(cfg->scsi, iici_scsi_irq, cfg);
     setup_images(cfg);
 
     st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
+    machine_part(cfg, checkpoint, "asc", part_save_asc, st->asc);
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
     st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), checkpoint,
                              CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
+    machine_part(cfg, checkpoint, "floppy", part_save_floppy, st->floppy);
 
     // RBV chip (VIA2 replacement + video control).  Default monitor sense 6
     // = 13" RGB.  IRQ → IPL 2; RvPowerOff → scheduler stop.
@@ -322,6 +325,7 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
         LOG(0, "Error: out of memory constructing the RBV");
         return -1;
     }
+    machine_part(cfg, checkpoint, "rbv", part_save_rbv, st->rbv);
     rbv_set_irq_callback(st->rbv, iici_rbv_irq, cfg);
     rbv_set_power_off_callback(st->rbv, iici_power_off, cfg);
     rbv_set_mode_callback(st->rbv, iici_rbv_mode, cfg);
@@ -352,11 +356,11 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     // (the RAM image already carries it).
     builtin_rbv_video_set_framebuffer(st->video_card, ram_native_pointer(cfg->mem_map, 0), 0,
                                       /*blank*/ checkpoint == NULL);
-    // Card-side display state (palette, mode) — written by
-    // mdu_checkpoint_save immediately after the RBV chip, so it reads back
-    // here, before the MMU tail below.
+    // Card-side display state (palette, mode), after the frame buffer is
+    // attached above.
     if (checkpoint)
         nubus_checkpoint_restore(cfg->nubus, checkpoint);
+    machine_part(cfg, checkpoint, "nubus.cards", part_save_nubus_cards, cfg->nubus);
 
     // Bind device handles + the board's I/O window table for the shared engine.
     mdu_io_bind(&st->mdu_io, cfg, &iici_board_desc, st->asc, st->floppy, st->rbv, st->video_card);
@@ -377,6 +381,7 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
         memory_map_set_pmmu(cfg->mem_map, st->mmu);
         cpu_attach_mmu(cfg->cpu, st->mmu);
     }
+    machine_part(cfg, checkpoint, "mmu", part_save_mmu, st->mmu);
     return 0;
 }
 

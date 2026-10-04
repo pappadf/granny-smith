@@ -22,7 +22,7 @@
 #include "checkpoint.h"
 #include "config_space.h"
 #include "log.h"
-#include "machine_config.h" // the built-from record's seated cards
+#include "machine_parts.h"
 #include "machine_profile.h" // machine_substrate_t (slot-IRQ routing)
 #include "system_config.h"
 
@@ -72,6 +72,10 @@ struct pci_root {
     int bus_count;
     pci_device_t *slot_dev[PCI_MAX_SLOTS]; // device seated in slot N
     const pci_card_kind_t *slot_kind[PCI_MAX_SLOTS]; // and the kind that made it
+    // What the document said about each slot (the card a socket seats, its
+    // ROM and options): the root's checkpoint block, so a restore seats
+    // exactly these.  A slot it says nothing about has slot == 0.
+    slot_opts_t entry[PCI_MAX_SLOTS];
 };
 
 // === Card-kind registry =====================================================
@@ -557,11 +561,34 @@ static const char *socket_card_id(const pci_slot_decl_t *s, const slot_opts_t *e
     return s->default_card;
 }
 
+static void pci_slots_part_save(void *obj, checkpoint_t *cp) {
+    pci_root_t *root = obj;
+    system_write_checkpoint_data(cp, root->entry, sizeof(root->entry), "pci");
+}
+
+// The document's entry for `slot`, or NULL when it said nothing about it.
+static const slot_opts_t *slot_entry(const pci_root_t *root, int slot) {
+    if (slot < 0 || slot >= PCI_MAX_SLOTS || root->entry[slot].slot != slot || !slot)
+        return NULL;
+    return &root->entry[slot];
+}
+
 void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
     if (!root)
         return;
+    // A boot takes the slot entries from the document; a restore, from the
+    // root's own block.
+    if (cp)
+        system_read_checkpoint_data(cp, root->entry, sizeof(root->entry), "pci");
+    else {
+        for (int i = 0; i < root->cfg->build_opts.n_slots; i++) {
+            const slot_opts_t *e = &root->cfg->build_opts.slots[i];
+            if (e->slot > 0 && e->slot < PCI_MAX_SLOTS)
+                root->entry[e->slot] = *e;
+        }
+    }
+    machine_part(root->cfg, cp, "pci", pci_slots_part_save, root);
     if (root->slots) {
-        const machine_build_opts_t *opts = &root->cfg->build_opts;
         // Which card classes the SOCKETS will supply.  Resolved in a first
         // pass so a BUILTIN_FALLBACK can stand down before it is built —
         // the machine's slot table lists the fallback last, but a socket
@@ -571,14 +598,14 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
         for (const pci_slot_decl_t *s = root->slots; s->slot != 0; s++) {
             if (s->kind != PCI_SLOT_SOCKET)
                 continue;
-            const pci_card_kind_t *k = pci_card_find(socket_card_id(s, machine_build_opts_slot(opts, s->slot)));
+            const pci_card_kind_t *k = pci_card_find(socket_card_id(s, slot_entry(root, s->slot)));
             if (k && k->card_class && n_socket_classes < PCI_MAX_SLOTS)
                 socket_classes[n_socket_classes++] = k->card_class;
         }
 
         for (const pci_slot_decl_t *s = root->slots; s->slot != 0; s++) {
             const pci_card_kind_t *kind = NULL;
-            const slot_opts_t *entry = machine_build_opts_slot(opts, s->slot);
+            const slot_opts_t *entry = slot_entry(root, s->slot);
             switch (s->kind) {
             case PCI_SLOT_BUILTIN:
                 kind = pci_card_find(s->builtin_card_id);
@@ -645,8 +672,6 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
             // AAPL,interrupts and the OSes copy the number into $3C, so
             // the slot table and the header cannot disagree.
             dev->cfg.interrupt_line = (uint8_t)s->int_line;
-            // The built-from record lists the seated cards.
-            machine_config_note_slot_card(MC_BUS_PCI, s->slot, kind->id);
         }
     }
     pci_objects_build(root);

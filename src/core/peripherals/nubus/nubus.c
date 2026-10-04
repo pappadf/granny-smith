@@ -8,7 +8,7 @@
 #include "nubus.h"
 #include "card.h"
 #include "log.h"
-#include "machine_config.h" // the built-from record's seated cards
+#include "machine_parts.h"
 #include "machine_profile.h" // machine_substrate_t (slot-IRQ routing)
 #include "system_config.h"
 
@@ -31,6 +31,10 @@ struct nubus_bus {
     // attach_objects without testing card identity; PCI carries the same
     // per-slot record.
     const nubus_card_kind_t *slot_kind[NUBUS_MAX_SLOTS];
+    // How each socket was built: the entry its card was seated from, with
+    // the card resolved, or `empty`.  The bus's checkpoint block, so a
+    // restore seats exactly these.
+    slot_opts_t seated[NUBUS_MAX_SLOTS];
 };
 
 // The bus-error window constants in nubus.h are spelled as literals because
@@ -247,6 +251,11 @@ bool nubus_card_fits_socket(const nubus_slot_decl_t *s, const nubus_card_kind_t 
 
 // === Bus controller =========================================================
 
+static void nubus_slots_part_save(void *obj, checkpoint_t *cp) {
+    nubus_bus_t *bus = obj;
+    system_write_checkpoint_data(cp, bus->seated, sizeof(bus->seated), "nubus");
+}
+
 nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoint_t *cp) {
     if (!cfg)
         return NULL;
@@ -256,52 +265,68 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
     bus->cfg = cfg;
     bus->slots = slots;
 
-    // Walk the slot table.  Each slot seats the card the boot document's
-    // entry names (validated before the running machine was touched), else
-    // its declared builtin / default card, so a machine boots as many cards
-    // as its sockets carry configuration for (multi-display).
-    if (slots) {
-        const machine_build_opts_t *opts = &cfg->build_opts;
+    // What each slot seats.  A boot takes the document's entry (validated
+    // before anything was built), else the slot's declared builtin / default
+    // card, so a machine boots as many cards as its sockets carry
+    // configuration for (multi-display).  The monitor sense the document
+    // chose goes into every entry: the cards that have a sense line read it
+    // from there.  A restore takes the entries from the bus's own block.
+    if (cp)
+        system_read_checkpoint_data(cp, bus->seated, sizeof(bus->seated), "nubus");
+    else if (slots) {
         for (const nubus_slot_decl_t *s = slots; s->slot != 0; s++) {
+            if (s->slot < 0 || s->slot >= NUBUS_MAX_SLOTS)
+                continue;
+            slot_opts_t *seat = &bus->seated[s->slot];
+            const slot_opts_t *entry = machine_build_opts_slot(&cfg->build_opts, s->slot);
+            if (entry)
+                *seat = *entry;
+            seat->slot = s->slot;
+            seat->video_sense = cfg->build_opts.video_sense;
             if (s->kind != NUBUS_SLOT_BUILTIN && s->kind != NUBUS_SLOT_SOCKET)
-                continue;
-            const slot_opts_t *entry = machine_build_opts_slot(opts, s->slot);
-            if (entry && entry->empty)
-                continue;
-            const char *id = (entry && entry->card[0])         ? entry->card
-                             : (s->kind == NUBUS_SLOT_BUILTIN) ? s->builtin_card_id
-                                                               : s->default_card;
-            const nubus_card_kind_t *kind = nubus_card_find(id);
-            if (!kind || !kind->ops || !kind->ops->init)
-                continue;
-            bus->slot_kind[s->slot] = kind;
-            // The bus owns the allocation, so `bus` and `slot` are populated
-            // BEFORE init runs -- a card may assert its slot IRQ, or touch any
-            // other bus service, from card_init.
-            nubus_card_t *card = calloc(1, sizeof(*card));
-            if (!card) {
-                LOG(0, "nubus: out of memory seating slot $%X card '%s'", s->slot, kind->id ? kind->id : "?");
-                continue;
-            }
-            card->ops = kind->ops;
-            card->bus = bus;
-            card->slot = s->slot;
-            // A slot the document says nothing about builds with the card's
-            // defaults.
-            slot_opts_t none = {.slot = s->slot};
-            if (card->ops->init(card, cfg, cp, entry ? entry : &none) != 0) {
-                // Typically a missing/invalid VROM file or out of memory.  Log
-                // it, so a boot-time failure does not manifest later as "the
-                // card is missing for unclear reasons".
-                LOG(1, "nubus: slot $%X card '%s' failed to initialise", s->slot, kind->id ? kind->id : "?");
-                free(card);
-                continue;
-            }
-            if (s->slot >= 0 && s->slot < NUBUS_MAX_SLOTS)
-                bus->cards[s->slot] = card;
-            // The built-from record lists the seated cards.
-            machine_config_note_slot_card(MC_BUS_NUBUS, s->slot, kind->id);
+                seat->empty = true;
+            const char *declared = s->kind == NUBUS_SLOT_BUILTIN ? s->builtin_card_id : s->default_card;
+            if (!seat->empty && !seat->card[0] && declared)
+                snprintf(seat->card, sizeof seat->card, "%s", declared);
         }
+    }
+    machine_part(cfg, cp, "nubus", nubus_slots_part_save, bus);
+
+    for (int n = 0; slots && n < NUBUS_MAX_SLOTS; n++) {
+        slot_opts_t *seat = &bus->seated[n];
+        if (seat->empty || !seat->card[0])
+            continue;
+        const nubus_card_kind_t *kind = nubus_card_find(seat->card);
+        if (!kind || !kind->ops || !kind->ops->init) {
+            seat->empty = true;
+            continue;
+        }
+        bus->slot_kind[n] = kind;
+        // The bus owns the allocation, so `bus` and `slot` are populated
+        // BEFORE init runs -- a card may assert its slot IRQ, or touch any
+        // other bus service, from card_init.
+        nubus_card_t *card = calloc(1, sizeof(*card));
+        if (!card) {
+            LOG(0, "nubus: out of memory seating slot $%X card '%s'", n, kind->id ? kind->id : "?");
+            bus->slot_kind[n] = NULL;
+            seat->empty = true;
+            continue;
+        }
+        card->ops = kind->ops;
+        card->bus = bus;
+        card->slot = n;
+        if (card->ops->init(card, cfg, cp, seat) != 0) {
+            // Typically a missing/invalid VROM file or out of memory.  Log
+            // it, so a boot-time failure does not manifest later as "the
+            // card is missing for unclear reasons".
+            LOG(1, "nubus: slot $%X card '%s' failed to initialise", n, kind->id ? kind->id : "?");
+            free(card->rom_path);
+            free(card);
+            bus->slot_kind[n] = NULL;
+            seat->empty = true;
+            continue;
+        }
+        bus->cards[n] = card;
     }
     // Project the declared slots into the object model:
     // machine.nubus.slot[N].card.{framebuffer,declrom,clut,mode,…} for
@@ -324,6 +349,7 @@ void nubus_delete(nubus_bus_t *bus) {
         if (card->ops && card->ops->teardown)
             card->ops->teardown(card, bus->cfg);
         free(card->declrom);
+        free(card->rom_path);
         free(card);
         bus->cards[i] = NULL;
     }
@@ -354,10 +380,9 @@ const nubus_card_kind_t *nubus_slot_kind(nubus_bus_t *bus, int slot) {
 
 // Serialise every seated card that implements the hooks, in slot order.
 //
-// Save and restore walk the slots identically, and a machine restores with the
-// same slot table it saved with (the built-from record pins the staging), so
-// the stream stays in step without any per-card tagging.  Cards that do not
-// implement the hooks contribute nothing, exactly as before.
+// Save and restore walk the slots identically, and a restore seats the same
+// cards it saved (the bus's own part, nubus_init), so the cards' blocks stay
+// in step.  Cards that do not implement the hooks contribute nothing.
 void nubus_checkpoint_save(nubus_bus_t *bus, checkpoint_t *cp) {
     if (!bus || !cp)
         return;

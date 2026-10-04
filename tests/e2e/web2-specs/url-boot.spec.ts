@@ -189,13 +189,10 @@ test('?vrom= goes in the boot document: the card runs the URL’s declaration RO
   await page.goto('/index.html?rom=url-iicx.rom&model=iicx&vrom=url-card.vrom');
   await expect(page.locator('.toast .msg').filter({ hasText: 'Booted iicx from URL parameters' }))
     .toBeVisible({ timeout: 60_000 });
-  const picks = (await gsEvalInPage(page, 'machine.config.vroms')) as Array<{
-    card_id: string;
-    path: string;
-  }>;
-  expect(picks.find((p) => p.card_id === 'mdc_8_24')).toMatchObject({
-    path: '/opfs/images/vrom/d1629664',
-  });
+  expect(await gsEvalInPage(page, 'machine.nubus.slot[9].card.id')).toBe('mdc_8_24');
+  expect(await gsEvalInPage(page, 'machine.nubus.slot[9].card.declrom.path')).toBe(
+    '/opfs/images/vrom/d1629664',
+  );
   expect(await gsEvalInPage(page, 'machine.nubus.slot[9].card.declrom.present')).toBe(true);
 });
 
@@ -217,6 +214,5 @@ test('?vrom= that is not a declaration ROM is left out of the boot, which says s
   ).toBeVisible({ timeout: 60_000 });
   await expect(page.locator('.toast .msg').filter({ hasText: 'Booted plus from URL parameters' }))
     .toBeVisible({ timeout: 60_000 });
-  expect(await gsEvalInPage(page, 'machine.config.vrom')).toBe('');
   expect((await opfsFiles(page)).filter((p) => p.startsWith('/opfs/images/vrom/'))).toEqual([]);
 });

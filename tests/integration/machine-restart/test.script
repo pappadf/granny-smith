@@ -2,8 +2,8 @@
 #
 # The contract under test:
 #   * restart (level 3) tears nothing down: the media, the PRAM and the RTC are
-#     the same devices before and after, the record is untouched, and the
-#     guest cold-boots to the Finder again off the same disk;
+#     the same devices before and after, and the guest cold-boots to the
+#     Finder again off the same disk;
 #   * a checkpoint restore brings the saved machine back with its medium, and
 #     the restored machine's controllers answer at once.
 
@@ -24,7 +24,6 @@ machine.floppy.drive[0].insert "${$WORK_DIR}/scratch.fd" true
 assert machine.floppy.drive[0].disk.present "floppy inserted"
 
 # Capture the identity of everything that must survive.
-let created0 = machine.config.created
 let hd_stem0 = machine.scsi.device[0].image.path
 let hd_file0 = machine.scsi.device[0].image.filename
 let fd_file0 = machine.floppy.drive[0].disk.filename
@@ -38,7 +37,6 @@ let pram0 = machine.rtc.pram.peek(0x10)
 let rtc0 = machine.rtc.time
 machine.memory.poke.b(0x500000, 0xA5)
 machine.restart
-assert machine.config.created == $created0 "restart: created stamp untouched"
 assert machine.scsi.device[0].image.path == $hd_stem0 "restart: HD is the same open instance"
 assert machine.floppy.drive[0].disk.filename == $fd_file0 "restart: floppy still inserted"
 assert machine.rtc.pram.peek(0x10) == $pram0 "restart: PRAM survives a power cycle"

@@ -127,8 +127,10 @@ def row_gsvrom_sweep() {
     check("goldens/welcome-21in_rgb-1152x870-8bpp.png")
     report_row("7.0.1", "gsvrom", "rom-stage 1152x870x8 21in_rgb")
 
-    # --- built-from record: the generic blob is recorded path-less by CRC --------
-    assert machine.config.video_card == "8_24"       "built-from video_card != 8_24"
+    # --- the card's declaration ROM is the generated blob, path-less, by CRC ----
+    assert machine.nubus.slot[9].card.id == "8_24"   "slot $9 does not seat the 8_24"
+    assert machine.nubus.slot[9].card.declrom.path == "builtin:8_24" "declaration ROM is not the generated one"
+    assert machine.nubus.slot[9].card.declrom.crc != 0 "the generated declaration ROM has no CRC"
     report_perf("iicx-gsvrom/gsvrom-sweep", scheduler.instr_count)
 }
 
@@ -185,7 +187,6 @@ def row_gsvrom_custom_mode() {
     scheduler.run 130000000
     assert machine.screen.width == 800                "custom width != 800"
     assert machine.screen.height == 600               "custom height != 600"
-    assert machine.config.custom_mode == "800x600x8"  "custom_mode not recorded"
     assert machine.rtc.pram.peek(0x48) == 0x83        "savedMode != 0x83 (8bpp)"
     assert machine.rtc.pram.peek(0x49) == 0xa6        "sister != 0xa6 (default monitor)"
     check("goldens/finder-custom-800x600-8bpp.png")

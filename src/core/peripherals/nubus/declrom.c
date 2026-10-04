@@ -13,7 +13,6 @@
 #include "declrom.h"
 #include "card.h"
 #include "log.h"
-#include "machine_config.h" // resolved-pick reporting into the built-from record
 #include "vrom.h" // content identification + the platform-fed offer registry
 
 #include <stdint.h>
@@ -929,8 +928,18 @@ static bool load_chip_into_bus(const char *path, size_t chip_size, uint8_t *bus_
     return ok;
 }
 
-bool declrom_install_builtin(const char *card_id, const uint8_t *chip, size_t chip_size, uint8_t *bus_buf,
-                             size_t bus_size) {
+// Record the declaration ROM a card was given: its file (or the builtin
+// locator) and its Format-Block CRC.
+static void note_card_rom(nubus_card_t *card, const char *path, uint32_t crc) {
+    if (!card)
+        return;
+    free(card->rom_path);
+    card->rom_path = strdup(path);
+    card->rom_crc = crc;
+}
+
+bool declrom_install_builtin(nubus_card_t *card, const char *card_id, const uint8_t *chip, size_t chip_size,
+                             uint8_t *bus_buf, size_t bus_size) {
     if (!card_id || !chip || chip_size < 20 || !bus_buf)
         return false;
     // Lay the blob out exactly like a file-backed chip: byteLanes from the
@@ -943,17 +952,17 @@ bool declrom_install_builtin(const char *card_id, const uint8_t *chip, size_t ch
             card_id, byte_lanes);
         return false;
     }
-    // Report the pick into the built-from record like any resolved declROM —
-    // path-less, identified by the blob's stored Format-Block CRC.
+    // Path-less, identified by the blob's stored Format-Block CRC.
     const uint8_t *t = chip + chip_size - 12; // CRC field, big-endian
     uint32_t crc = ((uint32_t)t[0] << 24) | ((uint32_t)t[1] << 16) | ((uint32_t)t[2] << 8) | (uint32_t)t[3];
     char locator[64];
     snprintf(locator, sizeof locator, "builtin:%s", card_id);
-    machine_config_note_vrom(card_id, locator, crc);
+    note_card_rom(card, locator, crc);
     return true;
 }
 
-bool declrom_load_vrom_card(const char *card_id, const char *rom, uint8_t *bus_buf, size_t bus_size, char **out_path) {
+bool declrom_load_vrom_card(nubus_card_t *card, const char *card_id, const char *rom, uint8_t *bus_buf, size_t bus_size,
+                            char **out_path) {
     if (out_path)
         *out_path = NULL;
     if (!card_id || !bus_buf || bus_size == 0)
@@ -969,7 +978,7 @@ bool declrom_load_vrom_card(const char *card_id, const char *rom, uint8_t *bus_b
         }
         if (!load_chip_into_bus(rom, id.chip_size, bus_buf, bus_size))
             return false;
-        machine_config_note_vrom(card_id, rom, id.crc);
+        note_card_rom(card, rom, id.crc);
         if (out_path)
             *out_path = strdup(rom);
         return true;
@@ -987,10 +996,8 @@ bool declrom_load_vrom_card(const char *card_id, const char *rom, uint8_t *bus_b
         if (!path)
             break;
         if (load_chip_into_bus(path, chip_size, bus_buf, bus_size)) {
-            // Report the winning pick into the built-from record so
-            // machine.config.vroms answers which revision this machine
-            // actually runs.
-            machine_config_note_vrom(card_id, path, crc);
+            // The winning pick: which revision this card actually runs.
+            note_card_rom(card, path, crc);
             if (out_path)
                 *out_path = strdup(path);
             return true;

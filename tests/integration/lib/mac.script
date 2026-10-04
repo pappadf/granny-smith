@@ -333,12 +333,10 @@ def about_box_quad() {
 
 # --- boot helpers ------------------------------------------------------------
 #
-# SUITE-AUTHOR NOTE on machine.boot inside a suite: unspecified arguments
-# are inherited from the built-from record, i.e. from whatever the
-# PREVIOUS row booted. So any row whose behaviour depends on the video
-# card, the vROM, or the monitor sense must name those explicitly, even
-# when the machine's default would be right in a fresh process — a row
-# that omits video_card silently runs on the card a row above it seated.
+# SUITE-AUTHOR NOTE on machine.boot inside a suite: the document is the
+# whole specification -- an argument a row leaves out is the model's own
+# default, never what the PREVIOUS row booted.  A row whose behaviour
+# depends on the video card, the vROM or the monitor sense names them.
 # (Found the hard way: suite-iix's portrait row inherited the 8•24 GC
 # from the card-seat row two rows earlier and never applied the portrait
 # sense, while passing in isolation.)

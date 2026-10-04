@@ -229,6 +229,11 @@ static DEF_GETTER(card_attr_name) {
     pci_device_t *d = card_dev(self);
     return val_str((d && d->ops && d->ops->name) ? d->ops->name(d) : "");
 }
+static DEF_GETTER(card_attr_id) {
+    pci_device_t *d = card_dev(self);
+    const pci_card_kind_t *k = d && g_obj_root ? pci_slot_kind(g_obj_root, d->slot_index) : NULL;
+    return val_str(k && k->id ? k->id : "");
+}
 static DEF_GETTER(card_attr_vendor) {
     pci_device_t *d = card_dev(self);
     return val_uint(2, (d && d->decl) ? d->decl->vendor_id : 0);
@@ -243,6 +248,10 @@ static DEF_GETTER(card_attr_class) {
 }
 
 static const member_t card_members[] = {
+    {.kind = M_ATTR,
+     .name = "id",
+     .doc = "Card kind id (catalog.pci_cards)",
+     .attr = {.type = V_STRING, .get = card_attr_id}                                                                },
     {.kind = M_ATTR, .name = "name", .doc = "Device display name", .attr = {.type = V_STRING, .get = card_attr_name}},
     {.kind = M_ATTR,
      .name = "vendor_id",

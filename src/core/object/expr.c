@@ -715,8 +715,8 @@ value_t expr_object_path_read(struct object *root, const char *path) {
         return node_get(node);
     // The full path is not a tree node. Resolve the longest prefix that
     // is, read its value, and descend the remaining segments into that
-    // value — this is what makes `machine.config.vroms[0].card_id` read
-    // through a map/list-shaped attribute result.
+    // value — this is what makes `node.attr[0].key` read through a
+    // map/list-shaped attribute result.
     size_t splits[64];
     int n_splits = 0;
     const char *p = path;
@@ -1181,7 +1181,7 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
                 return val_err("path '%s' did not resolve", path_buf);
             }
             // Not a tree node: try a map/list read through a structured
-            // attribute value (machine.config.vroms[0].card_id).
+            // attribute value (node.attr[0].key).
             return expr_object_path_read(ctx->root, path_buf);
         }
         if (call_open) {

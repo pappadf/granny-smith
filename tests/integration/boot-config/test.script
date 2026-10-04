@@ -2,25 +2,24 @@
 # NOTHING — the document is the whole specification.
 #
 # Pins the boot-document contract end-to-end:
-#   * headless startup writes the built-from record (same path as scripts);
+#   * headless startup boots through the same path as scripts;
 #   * model and rom are required; every other omitted field resolves to the
-#     MODEL's own default, never to the previous machine's record —
-#     including after a model change;
+#     MODEL's own default, never to the previous machine's — including
+#     after a model change;
 #   * all validation runs BEFORE teardown: a rejected boot leaves the
-#     running machine (and its record) untouched;
+#     running machine untouched;
 #   * slots= configures each slot (card, mode, ROM, options); video_card=
 #     is sugar for the first socket's card, and the two may not disagree;
-#   * machine.config.vroms records the declaration-ROM picks the loader
-#     actually resolved; vrom= (or a slot's rom=) pins a specific revision;
-#   * the record rides in checkpoints: checkpoint.load builds the saved
-#     machine, its slots and its monitor strap from it.
+#   * each card names the declaration ROM it actually resolved
+#     (machine.nubus.slot[N].card.declrom); vrom= (or a slot's rom=) pins a
+#     specific revision;
+#   * checkpoint.load builds the saved machine -- its slots and its monitor
+#     strap -- from the checkpoint's own parts.
 
-# --- Startup boot wrote the built-from record (headless CLI = same path). ---
-assert machine.config.valid "record valid after startup boot"
-assert machine.config.model == "iicx" "record model from CLI"
-assert machine.config.ram == 8192 "record ram from CLI"
-assert machine.config.rom_id == "97221136" "record rom_id"
-assert machine.config.created != "" "record created stamped"
+# --- Startup boot (headless CLI = the same path). ---
+assert machine.id == "iicx" "model from CLI"
+assert machine.ram == 8192 "ram from CLI"
+assert machine.rom.id == "97221136" "rom from CLI"
 
 # --- Slot nodes describe what is installed: an empty socket has none. ---
 assert machine.nubus.slot[9].number == 9 "populated socket $9 missing from object model"
@@ -60,15 +59,15 @@ assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc,rom=../../data/
 assert !machine.boot(model="iicx", rom="${$ROM}", slots="9=824gc,rom=../../data/roms/mdc-8-24-revb-d1629664.vrom") "a slot ROM for another card must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", video_card="824gc", slots="9=display_card_24ac") "video_card= and slots= disagreeing about a slot must be rejected"
 assert machine.id == "iicx" "machine survives every rejected boot"
-assert machine.config.ram == 8192 "record intact after rejected boots"
+assert machine.ram == 8192 "machine intact after rejected boots"
 
 # --- Non-inheritance: omitted fields resolve to the MODEL's defaults. ---
 machine.boot model="iicx" ram=16384 rom="${$ROM}" video_card="824gc"
-assert machine.config.ram == 16384 "explicit ram recorded"
-assert machine.config.video_card == "824gc" "explicit card recorded"
+assert machine.ram == 16384 "explicit ram"
+assert machine.nubus.slot[9].card.id == "824gc" "explicit card"
 machine.boot model="iicx" rom="${$ROM}"
-assert machine.config.ram == 8192 "omitted ram must be the model default, not the record's 16384"
-assert machine.config.video_card == "" "omitted video_card must not come from the record"
+assert machine.ram == 8192 "omitted ram must be the model default, not the previous machine's 16384"
+assert machine.nubus.slot[9].card.id == "mdc_8_24" "omitted card must resolve to the slot default"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24" "omitted card must resolve to the slot default"
 assert machine.rom.loaded == true "boot must stage the ROM"
 
@@ -85,65 +84,67 @@ assert try(machine.nubus.slot[9].card.name, none) == none "slots=9=none must lea
 # --- Sugar: video_card= applies to the machine's first socket. ---
 machine.boot model="iicx" rom="${$ROM}" video_card="824gc"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "video_card= not applied to first socket"
-assert machine.config.video_card == "824gc" "record video_card"
-assert machine.config.vroms != "[]" "vroms record must list resolved picks"
+assert machine.nubus.slot[9].card.declrom.crc != 0 "the card names the declaration ROM it resolved"
 
-# --- The record lists the seated cards, including the socket video_card=
+# --- Each socket names the card it seats, including the socket video_card=
 # cannot name. ---
 machine.boot model="iicx" rom="${$ROM}" slots="9=display_card_24ac;10=824gc"
-assert machine.config.slot_cards == "[{\"bus\":\"nubus\",\"slot\":9,\"card_id\":\"display_card_24ac\"}, {\"bus\":\"nubus\",\"slot\":10,\"card_id\":\"824gc\"}]" "both populated sockets must appear in the record"
+assert machine.nubus.slot[9].card.id == "display_card_24ac" "socket $9's card"
+assert machine.nubus.slot[10].card.id == "824gc" "socket $A's card"
 # ...and a slot the document says nothing about resolves its default.
 machine.boot model="iicx" rom="${$ROM}"
-assert machine.config.slot_cards == "[{\"bus\":\"nubus\",\"slot\":9,\"card_id\":\"mdc_8_24\"}]" "a default-populated socket is recorded"
+assert machine.nubus.slot[9].card.id == "mdc_8_24" "a default-populated socket"
+assert try(machine.nubus.slot[10].card.id, none) == none "an unconfigured socket stays empty"
 
 # --- A slot's video mode: the 8-bpp seed reaches its card. ---
 machine.boot model="iicx" rom="${$ROM}" slots="9=824gc,mode=gc_640x480_8bpp"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "mode test: card not seated"
 assert machine.nubus.slot[9].card.mode.depth == 8 "the slot's video mode did not set 8 bpp"
 
-# --- Checkpoint round-trip of the built-from record. ---
-machine.boot model="iicx" ram=16384 rom="${$ROM}" slots="9=824gc,mode=gc_640x480_8bpp;10=display_card_24ac"
+# --- A checkpoint restores the machine it was built as: its RAM, and the card
+# and declaration ROM in each slot (the board's and the bus's own parts). ---
+machine.boot model="iicx" ram=16384 rom="${$ROM}" slots="9=824gc,mode=gc_640x480_8bpp,rom=../../data/roms/824gc-v1.0-reva-9e9857e8.vrom;10=display_card_24ac"
 scheduler.run 100000
 assert checkpoint.save("${$WORK_DIR}/bootcfg.checkpoint") "checkpoint save"
 machine.boot model="iicx" rom="${$ROM}" video_card="display_card_24ac"
-assert machine.config.video_card == "display_card_24ac" "pre-restore record differs"
+assert machine.nubus.slot[9].card.id == "display_card_24ac" "pre-restore machine differs"
 assert checkpoint.load("${$WORK_DIR}/bootcfg.checkpoint") "checkpoint load"
-assert machine.config.model == "iicx" "restored record model"
-assert machine.config.ram == 16384 "restored record ram"
+assert machine.id == "iicx" "restored model"
+assert machine.ram == 16384 "restored ram"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "restored machine: slot $9's card"
+assert machine.nubus.slot[9].card.declrom.crc == 0x9e9857e8 "restored machine: slot $9's pinned declaration ROM"
 assert machine.nubus.slot[10].card.name == "Apple Macintosh Display Card 24AC" "restored machine: slot $A's card"
 # Under a non-inheriting boot a bare machine.boot after restore is an error.
 assert !machine.boot() "bare machine.boot after restore must be rejected"
 
-# --- vrom= pins a revision: the record's resolved-pick list shows the v1.0
-# ROM (crc $9E9857E8) used instead of the catalog-preferred v1.1. ---
+# --- vrom= pins a revision: the card runs the v1.0 ROM (crc $9E9857E8)
+# instead of the catalog-preferred v1.1. ---
 machine.boot model="iicx" rom="${$ROM}" video_card="824gc" vrom="../../data/roms/824gc-v1.0-reva-9e9857e8.vrom"
-assert machine.config.vroms == "[{\"card_id\":\"824gc\",\"path\":\"../../data/roms/824gc-v1.0-reva-9e9857e8.vrom\",\"crc\":\"0x9e9857e8\"}]" "vrom= v1.0 must be used over the preferred v1.1"
+assert machine.nubus.slot[9].card.declrom.path == "../../data/roms/824gc-v1.0-reva-9e9857e8.vrom" "vrom= v1.0 must be used over the preferred v1.1"
+assert machine.nubus.slot[9].card.declrom.crc == 0x9e9857e8 "vrom= v1.0's CRC"
 # ...for that document only: the next boot without vrom= resolves the
 # catalog-preferred v1.1 again (a boot never writes the catalog).
 machine.boot model="iicx" rom="${$ROM}" video_card="824gc"
-assert machine.config.vroms[0].crc == "0xd722b053" "the previous boot's vrom= must not outlive it"
+assert machine.nubus.slot[9].card.declrom.crc == 0xd722b053 "the previous boot's vrom= must not outlive it"
 # A slot's own rom= does the same for that slot alone: two GCs, two revisions.
 machine.boot model="iicx" rom="${$ROM}" slots="9=824gc,rom=../../data/roms/824gc-v1.0-reva-9e9857e8.vrom;10=824gc"
-assert machine.config.vroms[0].crc == "0x9e9857e8" "slot $9 runs its own rom="
-assert machine.config.vroms[1].crc == "0xd722b053" "slot $A resolves the catalog's preferred revision"
+assert machine.nubus.slot[9].card.declrom.crc == 0x9e9857e8 "slot $9 runs its own rom="
+assert machine.nubus.slot[10].card.declrom.crc == 0xd722b053 "slot $A resolves the catalog's preferred revision"
 # vrom= is the ROM of every slot whose card it provides.
 machine.boot model="iicx" rom="${$ROM}" slots="9=824gc;10=824gc" vrom="../../data/roms/824gc-v1.0-reva-9e9857e8.vrom"
-assert machine.config.vroms[0].crc == "0x9e9857e8" "vrom= reaches slot $9"
-assert machine.config.vroms[1].crc == "0x9e9857e8" "vrom= reaches slot $A"
+assert machine.nubus.slot[9].card.declrom.crc == 0x9e9857e8 "vrom= reaches slot $9"
+assert machine.nubus.slot[10].card.declrom.crc == 0x9e9857e8 "vrom= reaches slot $A"
 
-# --- The built-in monitor strap (PDM) is part of the record: checkpoint.load
-# builds with it.  monitor=none leaves the port unconnected, so the machine
-# has no screen until a card provides one. ---
+# --- The built-in monitor strap (PDM) is a construction fact of the built-in
+# video: checkpoint.load builds with the saved one.  monitor=none leaves the
+# port unconnected, so the machine has no screen until a card provides one. ---
 let pdm_rom = "../../data/roms/pm6100-pm7100-pm8100-9feb69b3.rom"
 machine.boot model="pm7100" rom=$pdm_rom monitor="none"
-assert machine.config.monitor == "none" "record carries the monitor strap"
 assert machine.screen.width == 0 "monitor=none: no built-in screen"
 assert checkpoint.save("${$WORK_DIR}/monitor.checkpoint") "checkpoint save (pm7100)"
 machine.boot model="pm7100" rom=$pdm_rom
 assert machine.screen.width == 640 "default strap: the built-in 640x480"
 assert checkpoint.load("${$WORK_DIR}/monitor.checkpoint") "checkpoint load (pm7100)"
-assert machine.config.monitor == "none" "restored record carries the strap"
 assert machine.screen.width == 0 "restored machine has no built-in screen"
 
 # --- A model change carries nothing (the v0.8.0 staging regression). ---
@@ -154,12 +155,12 @@ assert machine.screen.width == 0 "restored machine has no built-in screen"
 # failed with "model 'q660av' has no NuBus slots for video_card 'se30'".
 # The AV machines declare no NuBus slots at all, so they are the strict case.
 machine.boot model="iicx" rom="${$ROM}" video_card="824gc"
-assert machine.config.video_card == "824gc" "precondition: record carries a card"
+assert machine.nubus.slot[9].card.id == "824gc" "precondition: the machine has the card"
 assert machine.boot(model="q660av", rom="../../data/roms/q840av-q660av-5bf10fd1.rom") "a slotless model must boot cleanly after a carded one"
-assert machine.config.video_card == "" "the old card must not enter the new record"
+assert try(machine.nubus.slot[9].card.id, none) == none "the old card must not reach the new machine"
 # Coming back does not resurrect it either — the IIcx boots on its slot default.
 assert machine.boot(model="iicx", rom="${$ROM}") "back to a carded model"
-assert machine.config.video_card == "" "video_card must not survive any model change"
+assert machine.nubus.slot[9].card.id == "mdc_8_24" "video_card must not survive any model change"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24" "slot default after the round trip"
 
 quit

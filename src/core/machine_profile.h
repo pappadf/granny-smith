@@ -231,9 +231,9 @@ bool media_bus_parse(const char *name, media_bus_t *out);
 // hw_profile_t is pure descriptor DATA and points at one of
 // these.  system.c / nubus.c / pci.c dispatch through it; every hook is
 // NULL-safe.
-// (memory_layout_init and checkpoint_restore are deliberately absent — they
-// were never dispatched: each init runs its own layout directly and restore
-// is folded into init.)
+// There is no checkpoint hook: init builds the machine, and on a restore
+// each device it builds reads its own block and registers itself as a
+// checkpoint part (machine_parts.h), which is what a save walks.
 typedef struct machine_substrate {
     // Build the machine.  Returns 0 on success, non-zero on failure --
     // matching the NuBus card layer's ops->init, which has always worked this
@@ -291,7 +291,6 @@ typedef struct machine_substrate {
     // §4.7.2).
     void (*power_on)(struct config *cfg);
     void (*teardown)(struct config *cfg);
-    void (*checkpoint_save)(struct config *cfg, checkpoint_t *cp);
 
     void (*trigger_vbl)(struct config *cfg);
 
@@ -515,8 +514,8 @@ typedef struct hw_profile {
     const struct pram_defaults *pram;
 
     // "Bespoke substrate" is not "bespoke machine": every 68k family, the IIfx
-    // included, builds through mac030_build_core + mac030_build_lowspeed,
-    // checkpoints through machine_checkpoint_save_core, and tears down through
+    // included, builds through mac030_build_core + mac030_build_lowspeed and
+    // tears down through
     // machine_teardown_config_devices.  What a family keeps for itself is what
     // its hardware actually does differently -- for the IIfx, the OSS
     // interrupt controller, the FMC ROM-invert POST window, the SCSI DMA

@@ -14,10 +14,15 @@
 #include <stdio.h>
 #include <string.h>
 
-static dafb_t *make_dafb(void) {
-    dafb_t *d = dafb_init(0x200000u, NULL);
+// A DAFB with `monitor` (an indexed sense code) strapped to its port.
+static dafb_t *make_dafb_monitor(uint8_t monitor) {
+    dafb_t *d = dafb_init(0x200000u, monitor, NULL);
     ASSERT_TRUE(d != NULL);
     return d;
+}
+
+static dafb_t *make_dafb(void) {
+    return make_dafb_monitor(6); // 13" RGB, the board default
 }
 
 static void w32(dafb_t *d, uint32_t off, uint32_t val) {
@@ -121,8 +126,7 @@ TEST(clut_component_phase) {
 }
 
 TEST(sense_protocol_13in) {
-    dafb_t *d = make_dafb();
-    dafb_set_monitor_sense(d, 6); // 13" RGB: line 0 grounded by the monitor
+    dafb_t *d = make_dafb_monitor(6); // 13" RGB: line 0 grounded by the monitor
     // Reset state: drives tristate; read returns the inverted passive code.
     ASSERT_EQ_INT(0x1, (int)(r32(d, 0x01C) & 7)); // ~6 & 7
     // The extended cross-drive tuple (DepVideoEqu.a masks): each probe
@@ -144,8 +148,7 @@ TEST(sense_protocol_13in) {
 // one extended monitor this ROM family has timings for, and it is what the
 // Quadra's 832x624 coverage rides on.
 TEST(sense_protocol_extended_16in) {
-    dafb_t *d = make_dafb();
-    dafb_set_monitor_sense(d, DAFB_SENSE_INDEXED_GF);
+    dafb_t *d = make_dafb_monitor(DAFB_SENSE_INDEXED_GF);
     // Passive probe must read as no-connect ($7) — that is what makes the
     // ROM run the extended algorithm at all.  Register is inverted.
     ASSERT_EQ_INT(0x0, (int)(r32(d, 0x01C) & 7)); // ~7 & 7
@@ -161,8 +164,10 @@ TEST(sense_protocol_extended_16in) {
     unsigned c = ((~r32(d, 0x01C)) & 0x6u) >> 1; // ROM: ANDI #dafbCMask, LSR #1
     ASSERT_EQ_INT(0x2D, (int)((a << 4) | (b << 2) | c));
 
+    dafb_delete(d);
+
     // A passive monitor must not answer the tie matrix at all.
-    dafb_set_monitor_sense(d, 6);
+    d = make_dafb_monitor(6);
     w32(d, 0x01C, 0x3);
     ASSERT_EQ_INT(0x5, (int)(r32(d, 0x01C) & 7));
     dafb_delete(d);

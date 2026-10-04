@@ -23,11 +23,6 @@
 #include <string.h>
 
 // --- Stubs for declrom.c's loader-side dependencies (unused here) -----------
-void machine_config_note_vrom(const char *card_id, const char *path, uint32_t crc) {
-    (void)card_id;
-    (void)path;
-    (void)crc;
-}
 bool vrom_identify_card(const char *path, vrom_id_t *out) {
     (void)path;
     (void)out;

@@ -404,9 +404,9 @@ def row_q700_checkpoint() {
 # Regression for the boot/restore asymmetry in the monitor sense: a Quadra
 # booted with a non-default video_sense once came back from a restore
 # reporting the hardcoded default (6) on its sense pins, because the restore
-# path handed the sense to the JMFB and not the DAFB.  The sense is a build
-# option (machine_build_opts_t.video_sense) every video model reads, and the
-# restore takes it from the checkpoint's built-from record -- sense pins are
+# path handed the sense to the JMFB and not the DAFB.  The strap is a
+# construction argument of the DAFB: a boot takes it from the document, a
+# restore from the DAFB's own part of the checkpoint -- sense pins are
 # passive, so the guest cannot change them.
 #
 # ROM-only, so it costs a few million instructions. Reading the sense register
@@ -466,10 +466,9 @@ if row_on("q950-76-hd") {
 if row_on("q700-checkpoint") { row_end("q700-checkpoint", try(row_q700_checkpoint(), "FAILED")) }
 if row_on("q700-sense-checkpoint") { row_end("q700-sense-checkpoint", try(row_q700_sense_checkpoint(), "FAILED")) }
 
-# The two monitor-sense rows run LAST on purpose: they stage non-default
-# monitor senses, and machine.boot inherits unspecified staging from the
-# built-from record, so any row after them would boot with the last sense
-# still selected (that is exactly how it first broke q900-76-fd).
+# The two monitor-sense rows run last.  machine.boot inherits nothing, so
+# their non-default senses cannot reach another row; they were once moved
+# here because it did (that is how they first broke q900-76-fd).
 if row_on("q700-75-monitors") {
     if have_media($hd_75) {
         row_end("q700-75-monitors", try(row_q700_75_monitors(), "FAILED"))

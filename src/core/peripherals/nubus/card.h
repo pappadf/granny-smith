@@ -81,6 +81,11 @@ struct nubus_card {
                 // that snags some tooling).
     uint8_t *declrom; // 8 KB or larger declaration ROM
     size_t declrom_size;
+    // Where the declaration ROM came from: its file, or "builtin:<kind>" for
+    // a generated one (NULL: none loaded), and its Format-Block CRC.  Set by
+    // declrom_load_vrom_card / declrom_install_builtin; freed by the bus.
+    char *rom_path;
+    uint32_t rom_crc;
 };
 
 // (The per-card factory is gone.  The bus controller allocates the

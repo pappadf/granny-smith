@@ -128,10 +128,9 @@ def row_iicx_gc_beep() {
     # "gc_640x480_1bpp" produces the same two screen goldens but shifts
     # the beep timing enough that the second capture stops being
     # byte-identical to the first (measured 2026-07-28), which would
-    # destroy this row's whole point. So the row must run BEFORE the
-    # 8 bpp rows, before anything stages a mode into the built-from
-    # record that machine.boot would inherit; the depth assert below
-    # fails loudly if that ordering is ever broken.
+    # destroy this row's whole point. So the row names no mode and boots
+    # at the card's default depth; the depth assert below fails loudly if
+    # that default ever changes.
     machine.boot model="iicx" ram=8192 video_card="824gc" rom="${$ROM}"
 
     # Pin the RTC so the run is deterministic. This must come AFTER machine.boot

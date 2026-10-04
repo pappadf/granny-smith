@@ -188,13 +188,7 @@ void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc);
 // the AppleTalk network on its LocalTalk channel.  Pass NULL for `scc_irq` to take the family
 // default (mac030_glue_scc_irq).
 //
-// This is the READ side of the stream machine_checkpoint_save_core() writes
-// below, and the pairing is the point: rtc_init, scc_init and atalk_conn_new
-// each consume their own block from `cp` as they build, so construction order
-// here IS restore order.  While the save half was shared and the restore half
-// was copied into five families, the IIfx drifted out of order and every
-// checkpoint.load on that machine failed.  Change one of these two functions
-// and you must change the other.
+// Each is a checkpoint part, registered as it is built (machine_parts.h).
 //
 // The VIAs are deliberately NOT here: one machine or two, different port
 // hooks, different IRQ sinks, and the GLUE machines' exact 20:1 clock ratio

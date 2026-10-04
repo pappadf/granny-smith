@@ -199,9 +199,6 @@ typedef struct pdm_video {
     rgba8_t clut_view[256]; // depth-windowed palette the renderer indexes
     uint8_t *blank; // black raster presented while the blank bit is set
     uint8_t sense; // monitor strap (PDM_SENSE_NONE = nothing connected)
-    // Set when the substrate restored `sense` from a checkpoint, so
-    // pdm_video_init leaves it alone instead of taking the build-options default.
-    bool sense_restored;
     // machine.video -- the framebuffer node every display source exposes
     // (display_class.h).
     display_fb_node_t fb_node;
@@ -455,7 +452,12 @@ int pdm_swim3_index_pulse(config_t *cfg);
 // === ariel.c ================================================================
 // Onboard video: the Sonora-model control registers ($50F28000), the Ariel II
 // CLUT/DAC ($50F24000), and the scanout descriptor over physical DRAM 0.
-void pdm_video_init(config_t *cfg); // after the memory layout exists
+// After the memory layout exists; `monitor` is the strap (a sense code, or
+// PDM_SENSE_NONE), a construction argument of the built-in video.
+void pdm_video_init(config_t *cfg, uint8_t monitor);
+// The strap a boot builds the built-in video with: the document's
+// video_sense= / monitor=, or the Hi-Res default.
+uint8_t pdm_monitor_for_build(const config_t *cfg);
 void pdm_video_teardown(config_t *cfg);
 // The monitor strapped to the HDI-45.  Set before the machine runs; with
 // PDM_SENSE_NONE the substrate publishes no display and the ROM turns its

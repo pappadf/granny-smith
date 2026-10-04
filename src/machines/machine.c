@@ -11,7 +11,6 @@
 #include "gs_out.h"
 #include "image.h"
 #include "log.h"
-#include "machine_config.h"
 #include "nubus.h"
 #include "object.h"
 #include "platform.h"
@@ -729,16 +728,6 @@ static void format_ram_options(char *buf, size_t bufsize, const hw_profile_t *p)
 // leaves the running machine untouched.  machine.restart is the verb for
 // "power-cycle this machine".
 
-// Stamp the record's `created` field with the current UTC time (ISO8601).
-static void stamp_created(char *buf, size_t bufsize) {
-    time_t now = time(NULL);
-    struct tm tm_utc;
-    if (gmtime_r(&now, &tm_utc))
-        strftime(buf, bufsize, "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
-    else
-        snprintf(buf, bufsize, "unknown");
-}
-
 // Read the document's ROM -- the file, or the two Lisa/XL chips interleaved --
 // and check it is a recognised ROM for an emulated machine, compatible with
 // `profile`, and exactly the model's ROM size.  On success *bytes is the
@@ -896,36 +885,14 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     // 3. Build, then swap, then destroy.  The new machine is built from the
     // document alone while the running one is untouched; only a complete
     // build replaces it.
-    machine_config_reset_vroms();
-    machine_config_reset_slot_cards();
     config_t *cfg = system_create(profile, &build_opts, NULL);
     free(rom_bytes); // copied into the ROM region
     if (!cfg)
         return val_err("machine.boot: failed to create %s", profile->id);
 
-    // 4. The built-from record — the machine's birth certificate.
-    machine_config_record_t *w = machine_config_record_mut();
-    snprintf(w->model, sizeof(w->model), "%s", profile->id);
-    w->ram_kb = cfg->ram_size / 1024u;
-    snprintf(w->rom, sizeof(w->rom), "%s", doc.rom);
-    snprintf(w->rom_id, sizeof(w->rom_id), "%s", rom_identity.id);
-    snprintf(w->rom2, sizeof(w->rom2), "%s", doc.rom2 ? doc.rom2 : "");
-    snprintf(w->video_card, sizeof(w->video_card), "%s", doc.video_card ? doc.video_card : "");
-    w->video_sense = doc.video_sense;
-    snprintf(w->video_mode, sizeof(w->video_mode), "%s", doc.video_mode ? doc.video_mode : "");
-    snprintf(w->custom_mode, sizeof(w->custom_mode), "%s", doc.custom_mode ? doc.custom_mode : "");
-    snprintf(w->monitor, sizeof(w->monitor), "%s", doc.monitor ? doc.monitor : "");
-    snprintf(w->pci_card, sizeof(w->pci_card), "%s", doc.pci_card ? doc.pci_card : "");
-    snprintf(w->pci_option, sizeof(w->pci_option), "%s", doc.pci_option ? doc.pci_option : "");
-    w->n_slots = build_opts.n_slots;
-    memcpy(w->slots, build_opts.slots, sizeof(w->slots));
-    stamp_created(w->created, sizeof(w->created));
-    w->valid = true;
-
-    // 5. The swap: the new machine becomes the active one, and the one it
+    // 4. The swap: the new machine becomes the active one, and the one it
     // replaces is destroyed.
     system_swap_in(cfg, false);
-
     LOG(1, "Machine created: %s (%s), RAM: %u KB", profile->name, profile->id, cfg->ram_size / 1024u);
     return val_none();
 }
@@ -983,8 +950,7 @@ static DEF_METHOD(machine_method_reset) {
 // machine.reset, with the RAM cold.  The machine is NOT torn down: switching a
 // real machine off and on does not replace its chips, so the PRAM/NVRAM, the
 // RTC (still ticking), mounted media, the Caps Lock latch and the LaserWriter
-// all survive because nothing destroyed them.  The built-from record and
-// `created` are untouched for the same reason.
+// all survive because nothing destroyed them.
 static DEF_METHOD(machine_method_restart) {
     if (!global_emulator)
         return val_err("machine.restart: no machine is running; boot one first");
@@ -1281,9 +1247,6 @@ struct object *machine_object(void) {
             object_set_order(s_machine_object, 0); // machine sorts first under the root
             object_set_domain(s_machine_object, OBJ_DOMAIN_MACHINE);
             object_attach(object_root(), s_machine_object);
-            // The read-only built-from record rides along for the process
-            // lifetime, like the machine container itself.
-            machine_config_object_init(s_machine_object);
         }
     }
     return s_machine_object;

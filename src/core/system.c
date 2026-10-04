@@ -23,7 +23,7 @@
 #include "image_wrap.h"
 #include "keyboard.h"
 #include "log.h"
-#include "machine_config.h"
+#include "machine_parts.h"
 #include "machine_profile.h"
 #include "memory.h"
 #include "mouse.h"
@@ -1113,6 +1113,27 @@ __attribute__((weak)) bool gs_audio_in_debug(char *buf, size_t buflen) {
 
 // Create an emulator instance for the given machine profile.
 // Allocates config_t, wires the machine descriptor, and calls profile->substrate->init().
+// The board's block: the model and the RAM size, which the rest of the
+// machine is built for.  It is the checkpoint's first part, so a restore
+// reads it before it builds anything (system_restore).
+typedef struct {
+    char model[40];
+    uint32_t ram_kb;
+} board_block_t;
+
+static void board_part_save(void *obj, checkpoint_t *cp) {
+    const config_t *cfg = obj;
+    board_block_t b;
+    memset(&b, 0, sizeof b);
+    snprintf(b.model, sizeof b.model, "%s", cfg->machine->id);
+    b.ram_kb = cfg->ram_size / 1024u;
+    system_write_checkpoint_data(cp, &b, sizeof b, "machine");
+}
+
+static void events_part_save(void *obj, checkpoint_t *cp) {
+    scheduler_checkpoint_events(obj, cp);
+}
+
 config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t *opts, checkpoint_t *checkpoint) {
 
     assert(profile != NULL);
@@ -1134,6 +1155,11 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     // The RAM size is a build option: the caller validated and defaulted it.
     cfg->ram_size = cfg->build_opts.ram_kb * 1024u;
 
+    // The board is the checkpoint's first part: what the machine is.  On a
+    // restore, system_restore has read its block to choose the model and the
+    // RAM size it is built with.
+    machine_part(cfg, checkpoint, "machine", board_part_save, cfg);
+
     // Delegate all machine-specific initialisation to the profile.  A
     // non-zero return means the machine could not be built (the only cause
     // today is an allocation failure); tear down whatever it managed and
@@ -1146,6 +1172,7 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
         LOG(0, "Error: failed to construct %s", profile->name);
         if (profile->substrate->teardown)
             profile->substrate->teardown(cfg);
+        machine_parts_free(cfg);
         free(cfg);
         memory_map_select(global_emulator ? global_emulator->mem_map : NULL);
         return NULL;
@@ -1178,10 +1205,11 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     // because it wants the scheduler.
     cfg->host_input = host_input_init(cfg, cfg->scheduler);
 
-    // The event queue is the checkpoint's last block, restored once every
+    // The event queue is the checkpoint's last part, restored once every
     // event source has been constructed and registered its types.
     if (checkpoint)
         scheduler_restore_events(cfg->scheduler, checkpoint);
+    machine_part(cfg, checkpoint, "events", events_part_save, cfg->scheduler);
     s_constructing = false;
 
     // The build selected its own memory map (memory_map_init); the fast-path
@@ -1309,6 +1337,7 @@ void system_destroy(config_t *config) {
     if (global_emulator == config)
         global_emulator = NULL;
 
+    machine_parts_free(config);
     free(config);
 }
 
@@ -1577,33 +1606,17 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
         LOG_WITH(log_register_category("ckpt"), 0, "Error: no emulator instance to checkpoint");
         return GS_ERROR;
     }
-    if (!global_emulator->machine || !global_emulator->machine->substrate->checkpoint_save) {
-        LOG_WITH(log_register_category("ckpt"), 0, "Error: machine has no checkpoint_save callback");
-        return GS_ERROR;
-    }
-
     double start_time = host_time_ms();
 
-    // Pass the machine model ID and RAM size so they're stored in the checkpoint header
-    const char *model_id = global_emulator->machine->id;
-    uint32_t ram_size_kb = global_emulator->ram_size / 1024;
-    checkpoint_t *checkpoint = checkpoint_open_write(filename, kind, model_id, ram_size_kb);
+    checkpoint_t *checkpoint = checkpoint_open_write(filename, kind);
     if (!checkpoint) {
         LOG_WITH(log_register_category("ckpt"), 0, "Error: failed to open checkpoint file for writing: %s", filename);
         return GS_ERROR;
     }
 
-    // Built-from record first (fixed-size POD; the stream is build-ID-gated
-    // so the layout may change freely between builds). Restore reads it
-    // symmetrically in system_restore before machine construction.
-    system_write_checkpoint_data(checkpoint, machine_config_record(), sizeof(machine_config_record_t));
-
-    // Delegate all state serialisation to the machine profile
-    global_emulator->machine->substrate->checkpoint_save(global_emulator, checkpoint);
-
-    // The event queue last: a restore reads it once the whole machine -- every
-    // event source -- exists (system_create).
-    scheduler_checkpoint_events(global_emulator->scheduler, checkpoint);
+    // Every part of the machine, in the order it was built: the board first,
+    // the event queue last (machine_parts.h).
+    machine_parts_save(global_emulator, checkpoint);
 
     if (checkpoint_has_error(checkpoint)) {
         LOG_WITH(log_register_category("ckpt"), 0, "Error: failed to write checkpoint");
@@ -1629,73 +1642,32 @@ config_t *system_restore(const char *filename) {
         return NULL;
     }
 
-    // Save the current global emulator so we can restore it on error.
-    config_t *prev = global_emulator;
-
-    // Read the built-from record (mirrors the write in system_checkpoint).
-    // It is installed only after the restore succeeds, so a failed restore
-    // leaves the previous machine's record intact.
-    machine_config_record_t restored_record;
-    memset(&restored_record, 0, sizeof(restored_record));
-    system_read_checkpoint_data(checkpoint, &restored_record, sizeof(restored_record));
-
-    // Determine machine profile from the checkpoint header, falling back to
-    // the current machine or Plus for backward compatibility.
-    const hw_profile_t *profile = NULL;
-    const char *saved_model_id = checkpoint_get_model_id(checkpoint);
-    if (saved_model_id && saved_model_id[0])
-        profile = machine_find(saved_model_id);
-    if (!profile)
-        profile = (prev && prev->machine) ? prev->machine : machine_find("plus");
-
-    // Every file this build accepts carries the record (build-ID gating);
-    // one without it is not a checkpoint this build wrote.
-    if (!restored_record.valid) {
-        LOG_WITH(log_register_category("ckpt"), 0, "Error: checkpoint %s carries no machine record", filename);
+    // The board's block comes first: the model and the RAM size to build.
+    // Everything else -- the cards in the slots, their ROMs and options, the
+    // monitor straps -- is read by the part it belongs to as the machine is
+    // built.
+    board_block_t board;
+    system_read_checkpoint_data(checkpoint, &board, sizeof board, "machine");
+    board.model[sizeof board.model - 1] = '\0';
+    const hw_profile_t *profile = checkpoint_has_error(checkpoint) ? NULL : machine_find(board.model);
+    if (!profile) {
+        LOG_WITH(log_register_category("ckpt"), 0, "Error: checkpoint %s names no model this build has ('%s')",
+                 filename, board.model);
         checkpoint_close(checkpoint);
         return NULL;
     }
 
-    // The RAM size comes from the record and is validated like a boot's: a
-    // size the model does not offer rejects the restore rather than clamping.
-    if (!hw_profile_ram_option_allowed(profile, restored_record.ram_kb)) {
-        LOG_WITH(log_register_category("ckpt"), 0, "Error: checkpoint RAM %u KB is not a size %s offers",
-                 restored_record.ram_kb, profile->name);
+    // The RAM size is validated like a boot's: a size the model does not
+    // offer rejects the restore rather than clamping.
+    if (!hw_profile_ram_option_allowed(profile, board.ram_kb)) {
+        LOG_WITH(log_register_category("ckpt"), 0, "Error: checkpoint RAM %u KB is not a size %s offers", board.ram_kb,
+                 profile->name);
         checkpoint_close(checkpoint);
         return NULL;
     }
 
-    // Construction arguments from the restored record: the RAM size, the
-    // monitor sense and the expansion-slot entries the machine was built with,
-    // so the slots seat the SAVED card configuration (a checkpoint written
-    // with a non-default card must not restore against the slot default --
-    // the strictly-ordered stream would misalign).
     machine_build_opts_t build_opts = machine_build_opts_default();
-    build_opts.ram_kb = restored_record.ram_kb;
-    if (restored_record.n_slots < 0 || restored_record.n_slots > MACHINE_SLOTS_MAX) {
-        LOG_WITH(log_register_category("ckpt"), 0, "Error: checkpoint %s carries %d slot entries", filename,
-                 (int)restored_record.n_slots);
-        checkpoint_close(checkpoint);
-        return NULL;
-    }
-    build_opts.n_slots = restored_record.n_slots;
-    memcpy(build_opts.slots, restored_record.slots, sizeof(build_opts.slots));
-    // The sense goes into the build options, which every video model
-    // reads -- the JMFB cards, the DAFB and PDM's Ariel alike.
-    if (restored_record.video_sense >= 0)
-        build_opts.video_sense = restored_record.video_sense;
-    // The built-in monitor strap resolves to a sense code exactly as
-    // machine.boot resolves it (machine_boot_apply), and wins over
-    // video_sense there too.  The record's id was validated at boot.
-    if (restored_record.monitor[0] && profile->builtin_video && profile->builtin_video->monitor_sense) {
-        uint8_t mon_sense = 0;
-        if (profile->builtin_video->monitor_sense(restored_record.monitor, &mon_sense))
-            build_opts.video_sense = mon_sense;
-    }
-
-    // Fresh vROM-pick list for the restore construction (the card loaders
-    // re-report their picks during system_create).
-    machine_config_reset_vroms();
+    build_opts.ram_kb = board.ram_kb;
 
     config_t *config = system_create(profile, &build_opts, checkpoint);
 
@@ -1709,18 +1681,6 @@ config_t *system_restore(const char *filename) {
     }
 
     checkpoint_close(checkpoint);
-
-    // Install the restored built-from record so machine.config answers for
-    // the restored machine. The vROM
-    // pick list reflects THIS construction (the loaders re-reported during
-    // system_create), so keep the fresh entries over the serialized ones.
-    machine_config_record_t *rec = machine_config_record_mut();
-    machine_config_vrom_t fresh_vroms[MC_MAX_VROMS];
-    memcpy(fresh_vroms, rec->vroms, sizeof(fresh_vroms));
-    int32_t fresh_n = rec->n_vroms;
-    *rec = restored_record;
-    memcpy(rec->vroms, fresh_vroms, sizeof(rec->vroms));
-    rec->n_vroms = fresh_n;
 
     LOG_WITH(log_register_category("ckpt"), 1, "Checkpoint restored from %s", filename);
     return config;

@@ -143,11 +143,12 @@ calls `gsvrom_generate` to build its image, then installs it directly
 (`declrom_install_builtin`) rather than consulting the offer registry of
 supplied ROM files. The finished image is laid out exactly like a
 file-backed chip — tail-placed at the top of the card's declaration-ROM
-window per its `byteLanes` byte — and the choice is recorded in the
-machine's built-from record path-lessly, as `builtin:<id>`. Generation is
-deterministic within one emulator build, so a checkpoint restore
-reconstructs bit-identical content from the recorded configuration (kind +
-video_mode + custom mode); the recorded CRC is informational, since it
+window per its `byteLanes` byte — and the card names it path-lessly, as
+`builtin:<id>` (`machine.nubus.slot[N].card.declrom.path`, with its CRC in
+`.crc`). Generation is deterministic within one emulator build, so a
+checkpoint restore reconstructs bit-identical content from the slot entry
+the bus's part carries (kind + video_mode + custom mode); the CRC is
+informational, since it
 varies with the mode set and with the binutils version that assembled the
 fragments.
 

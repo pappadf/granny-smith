@@ -14,7 +14,6 @@
 
 #include "adb.h"
 #include "asc.h"
-#include "checkpoint_images.h"
 #include "cpu.h"
 #include "debug.h"
 #include "floppy.h"
@@ -41,24 +40,27 @@ int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_s
                                   const mac030_board_desc_t *desc) {
     st->adb = adb_init(cfg->via1, cfg->scheduler, cp);
     cfg->adb = st->adb;
+    machine_part(cfg, cp, "adb", part_save_adb, st->adb);
 
-    // Restore the image list before devices that reference it.
-    if (cp)
-        mac_checkpoint_restore_images(cfg, cp);
+    // The image list before the devices that reference it.
+    machine_part_images(cfg, cp);
 
     cfg->scsi = profile_scsi_init(cfg->machine, cp, CONFIG_IMAGES(cfg));
     // SE/30, IIcx and IIx: an NCR 5380 behind the glue's own decode.
     scsi_5380_attach(cfg->scsi, cp);
+    machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
     scsi_set_via(cfg->scsi, cfg->via2);
     setup_images(cfg);
 
     st->asc = asc_init(NULL, cfg->scheduler, cp);
+    machine_part(cfg, cp, "asc", part_save_asc, st->asc);
     asc_set_via(st->asc, cfg->via2);
     asc_set_mix(st->asc, desc->asc_mix); // board speaker fold (not checkpointed)
 
     st->floppy =
         floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp, CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
+    machine_part(cfg, cp, "floppy", part_save_floppy, st->floppy);
 
     mac030_glue_io_bind(&st->glue_io, cfg, desc, st->asc, st->floppy);
     return 0;
@@ -132,39 +134,25 @@ void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc) {
     memory_map_add(cfg->mem_map, desc->rom_end, MAC030_GLUE_IO_SIZE, "I/O", &st->io_interface, &st->glue_io);
 }
 
-// The head of every 68k family's checkpoint stream, in the one order -- see
-// the header.  Nine writes that were replicated across five families, which
-// made a replicated FILE FORMAT: the stream is positional, so those nine
-// lines ARE the layout, and a family that dropped one silently wrote a
-// different format (TNT's copy omitted appletalk).
-//
-// via2 is written unconditionally on purpose.  via_checkpoint(NULL, cp)
-// returns before writing anything, so a single-VIA machine emits nothing
-// here -- byte-identical to the four families that used to omit the call --
-// and the restore side stays symmetric because those families never call
-// via_init() for a second VIA either.
-
 // Build the low-speed spine every 68k family shares: the RTC, the SCC at the
 // Mac's clocks, and the machine's connection to the AppleTalk network on its
 // LocalTalk channel.
 //
-// This is the READ side of the stream machine_checkpoint_save_core() writes,
-// and the two must stay in step: construction order here is restore order,
-// because rtc_init, scc_init and atalk_conn_new each consume their own block
-// from the checkpoint as they build.  Keeping both halves in one function
-// each is the point -- when the save half was shared and the restore half was
-// copied per family, the IIfx drifted out of order and every checkpoint.load
-// on that machine failed.
+// Each of the three is a checkpoint part, registered as it is built
+// (machine_parts.h).
 //
 // `scc_irq` is the only genuine per-family variation at this level; the VIAs
 // below it differ enough (one or two, different hooks, different IRQ sinks)
 // that they stay with each family.
 void mac030_build_lowspeed(config_t *cfg, checkpoint_t *cp, void (*scc_irq)(void *, bool)) {
     cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram);
+    machine_part(cfg, cp, "rtc", part_save_rtc, cfg->rtc);
     cfg->scc = scc_init(NULL, cfg->scheduler, scc_irq ? scc_irq : mac030_glue_scc_irq, cfg, cp);
+    machine_part(cfg, cp, "scc", part_save_scc, cfg->scc);
     // 3.6864 MHz PCLK / 7.8336 MHz RTxC -- the same pair on every 68k Mac.
     scc_set_clocks(cfg->scc, 7833600, 3686400);
     cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, cp);
+    machine_part(cfg, cp, "appletalk", part_save_atalk, cfg->atalk);
 }
 
 // Finish init: debugger, scheduler start, cold-boot IRQ/IPL reset.
@@ -197,8 +185,7 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
     mac030_build_core(cfg, board->desc, cp);
     if (board->pre_devices)
         board->pre_devices(cfg);
-    if (cp)
-        system_read_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
+    machine_part_irq(cfg, cp);
 
     mac030_build_lowspeed(cfg, cp, NULL); // NULL: the family-default SCC IRQ
 
@@ -211,8 +198,10 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
     uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
     cfg->via1 = via_init(NULL, cfg->scheduler, via_ff, "via1", board->via1_output, board->via1_shift_out,
                          mac030_glue_via1_irq, cfg, cp);
+    machine_part(cfg, cp, "via1", part_save_via, cfg->via1);
     cfg->via2 = via_init(NULL, cfg->scheduler, via_ff, "via2", board->via2_output, board->via2_shift_out,
                          mac030_glue_via2_irq, cfg, cp);
+    machine_part(cfg, cp, "via2", part_save_via, cfg->via2);
     rtc_set_via(cfg->rtc, cfg->via1);
 
     board->setup_id(cfg);
@@ -233,9 +222,13 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
     if (board->memory_layout_tail)
         board->memory_layout_tail(cfg);
 
-    if (cp) {
-        nubus_checkpoint_restore(cfg->nubus, cp); // matches glue_checkpoint_save
+    if (cp)
+        nubus_checkpoint_restore(cfg->nubus, cp);
+    machine_part(cfg, cp, "nubus.cards", part_save_nubus_cards, cfg->nubus);
+    if (cp)
         mmu_checkpoint_restore(st->mmu, cp);
+    machine_part(cfg, cp, "mmu", part_save_mmu, st->mmu);
+    if (cp) {
         mmu_invalidate_tlb(st->mmu);
         memory_map_set_pmmu(cfg->mem_map, st->mmu);
         cpu_attach_mmu(cfg->cpu, st->mmu);
@@ -254,9 +247,12 @@ void mac030_build_core(config_t *cfg, const struct mac030_board_desc *desc, chec
     const memory_bus_err_window_t bus_err = {.lo = desc->bus_err_lo, .hi = desc->bus_err_hi};
     cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, bus_err,
                                    &cfg->build_opts.rom, cp);
+    machine_part(cfg, cp, "memory", part_save_memory, cfg->mem_map);
     cfg->cpu = cpu_init(cfg->machine->cpu_model, cp);
+    machine_part(cfg, cp, "cpu", part_save_cpu, cfg->cpu);
     sched_cpu_if_t cpu_if = cpu_sched_if(cfg->cpu); // the 68K main-CPU seam adapter
     cfg->scheduler = scheduler_init(&cpu_if, cp);
+    machine_part(cfg, cp, "scheduler", part_save_scheduler, cfg->scheduler);
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
     scheduler_set_cpi(cfg->scheduler, 4);
 }
@@ -464,22 +460,6 @@ static void glue_teardown(config_t *cfg) {
     }
 }
 
-static void glue_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
-    mac030_glue_state_t *st = (mac030_glue_state_t *)cfg->machine_context;
-    machine_checkpoint_save_core(cfg, cp);
-    adb_checkpoint(st->adb, cp);
-    mac_checkpoint_save_images(cfg, cp);
-    scsi_checkpoint(cfg->scsi, cp);
-    asc_checkpoint(st->asc, cp);
-    floppy_checkpoint(st->floppy, cp);
-    // Card-side display state (VRAM, palette, active mode) — last before the
-    // block below, so a machine that restores with fewer cards than it saved
-    // short-reads here without shifting anything that follows (mdu.c:190,
-    // pdm.c:537 use the same position).
-    nubus_checkpoint_save(cfg->nubus, cp);
-    mmu_checkpoint_save(st->mmu, cp);
-}
-
 // One 60.15 Hz VBL pulse on a VIA's CA1.  The lines idle high (via_init parks
 // them there), so the active transition is the falling edge and the line is
 // left back at rest.
@@ -513,7 +493,6 @@ const machine_substrate_t glue_substrate = {
     .init = glue_init,
     .bus_reset = glue_bus_reset,
     .teardown = glue_teardown,
-    .checkpoint_save = glue_checkpoint_save,
     .trigger_vbl = glue_trigger_vbl,
     .nubus_slot_irq = mac030_glue_nubus_slot_irq,
     .fd_insert = mac_fd_insert,

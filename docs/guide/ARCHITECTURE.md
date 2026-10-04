@@ -583,8 +583,8 @@ model before the running machine is touched and handed to each card's
 constructor as its slot's entry — while `video_card=` / `video_mode=` /
 `custom_mode=` are sugar for "the first socket" (what the config dialog and
 the headless `video_card=` arg use). `machine.screen` shows the *primary*
-display: the first populated video slot in declared order. The resolved
-slot entries are kept in the built-from record, so a checkpoint restore
+display: the first populated video slot in declared order. The bus's part
+of a checkpoint carries the slot entries it seated, so a checkpoint restore
 re-seats every populated socket.
 
 **PCI (`core/peripherals/pci/`)** is the same architecture ported to the

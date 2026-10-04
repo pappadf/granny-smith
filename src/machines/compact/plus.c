@@ -15,7 +15,6 @@
 #include "system_config.h" // full config_t definition
 
 #include "appletalk.h"
-#include "checkpoint_images.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "debug.h"
@@ -215,8 +214,8 @@ static void plus_memory_layout_init(config_t *cfg) {
 // Init / Teardown
 // ============================================================
 
-// Initialise all Plus subsystems.
-// If checkpoint is non-NULL, each device restores state from it (same order as checkpoint_save).
+// Initialise all Plus subsystems.  With a checkpoint, each device restores
+// its state from it as it is built, and registers its part right after.
 static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // Allocate Plus-specific peripheral state
     plus_state_t *ps = malloc(sizeof(plus_state_t));
@@ -230,6 +229,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // Initialise parameterised memory: 24-bit address space, configured RAM, 128 KB ROM
     cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size,
                                    MEMORY_BUS_ERR_NONE, &cfg->build_opts.rom, checkpoint); // no bus-error watchdog
+    machine_part(cfg, checkpoint, "memory", part_save_memory, cfg->mem_map);
 
     // Populate Plus-specific memory layout (RAM/ROM page table + Phase Read)
     plus_memory_layout_init(cfg);
@@ -245,9 +245,11 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // the profile unconditionally, so a profile that ever disagreed with a
     // hardcoded core here would tag the machine with an arch it is not running.
     cfg->cpu = cpu_init(cfg->machine->cpu_model, checkpoint);
+    machine_part(cfg, checkpoint, "cpu", part_save_cpu, cfg->cpu);
 
     sched_cpu_if_t cpu_if = cpu_sched_if(cfg->cpu); // the 68K main-CPU seam adapter
     cfg->scheduler = scheduler_init(&cpu_if, checkpoint);
+    machine_part(cfg, checkpoint, "scheduler", part_save_scheduler, cfg->scheduler);
     // Average CPI for the 7.8336 MHz 68000: the Plus retires ~783k
     // instructions per emulated second (~0.78 MIPS, slightly above the
     // ~0.7 MIPS of real hardware). Calibrated against MusicWorks 0.42: its
@@ -268,34 +270,28 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
     scheduler_set_cpi(cfg->scheduler, 10);
 
-    // Restore global interrupt state after scheduler (same order as checkpoint_save)
-    if (checkpoint) {
-        system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
-    }
+    machine_part_irq(cfg, checkpoint);
 
     cfg->rtc = rtc_init(cfg->scheduler, checkpoint, true, cfg->machine->pram);
+    machine_part(cfg, checkpoint, "rtc", part_save_rtc, cfg->rtc);
 
     cfg->scc = scc_init(cfg->mem_map, cfg->scheduler, plus_scc_irq, cfg, checkpoint);
+    machine_part(cfg, checkpoint, "scc", part_save_scc, cfg->scc);
 
     // SCC PCLK = C8M (7.8336 MHz = CPU clock), RTxC = 3.6864 MHz
     scc_set_clocks(cfg->scc, 7833600, 3686400);
 
-    // Plug the machine into the AppleTalk network through the SCC.  Passing
-    // the checkpoint restores the connection's block (enablement, counters,
-    // session numbering) in the same order plus_checkpoint_save writes it.
+    // The machine's connection to the AppleTalk network, through the SCC.
     cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, checkpoint);
+    machine_part(cfg, checkpoint, "appletalk", part_save_atalk, cfg->atalk);
 
     // 7.8336 MHz / 783.36 kHz = exactly 10, so this is the literal it replaces.
     cfg->via1 = via_init(cfg->mem_map, cfg->scheduler, via_freq_factor_for_clock(cfg->machine->freq), "via1",
                          plus_via_output, plus_via_shift_out, plus_via_irq, cfg, checkpoint);
+    machine_part(cfg, checkpoint, "via1", part_save_via, cfg->via1);
 
-    // The sound chip is built AFTER the VIA now, and the save half moved with
-    // it: construction order IS restore order, and the shared checkpoint
-    // prefix ends at the VIAs.  Neither depends on the
-    // other -- sound_init takes the map and the scheduler, via_init takes the
-    // map, the scheduler and this machine's hooks -- so the swap is only
-    // about where their blocks sit in the stream.
     ps->sound = sound_init(cfg->mem_map, cfg->scheduler, checkpoint);
+    machine_part(cfg, checkpoint, "sound", part_save_sound, ps->sound);
     cfg->sound = ps->sound; // mirror onto cfg so the object-model `sound`
                             // class can find it via cfg->sound
 
@@ -309,16 +305,14 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     rtc_set_via(cfg->rtc, cfg->via1);
 
     cfg->mouse = mouse_init(cfg->scheduler, cfg->scc, cfg->via1, checkpoint);
+    machine_part(cfg, checkpoint, "mouse", part_save_mouse, cfg->mouse);
 
-    // Restore the image list from the checkpoint before any device that
-    // may reference an image.  Shared helper (checkpoint_images.c) so the
-    // Plus uses the same stream layout — and the same base-image
-    // protection — as every other machine.
-    if (checkpoint)
-        mac_checkpoint_restore_images(cfg, checkpoint);
+    // The image list, before any device that may reference an image.
+    machine_part_images(cfg, checkpoint);
 
     cfg->scsi = profile_scsi_init(cfg->machine, checkpoint, CONFIG_IMAGES(cfg));
     scsi_5380_attach(cfg->scsi, checkpoint);
+    machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
     // Where the 5380 answers is this machine's decode, not the chip model's.
     //
     // Guide to the Macintosh Family Hardware, 2nd ed., ch. 3: the SCSI
@@ -338,10 +332,11 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     setup_images(cfg);
 
     cfg->keyboard = keyboard_init(cfg->scheduler, cfg->scc, cfg->via1, checkpoint);
+    machine_part(cfg, checkpoint, "keyboard", part_save_keyboard, cfg->keyboard);
 
-    // Initialise floppy last to match checkpoint save order
     cfg->floppy = floppy_init(FLOPPY_TYPE_IWM, cfg->mem_map, cfg->scheduler, profile_floppy_count(cfg->machine),
                               checkpoint, CONFIG_IMAGES(cfg));
+    machine_part(cfg, checkpoint, "floppy", part_save_floppy, cfg->floppy);
 
     // Initialise the display descriptor before anything that might call
     // plus_use_video_buffer().  Both the cold-boot default and the
@@ -437,28 +432,6 @@ static void plus_teardown(config_t *cfg) {
 
 // Save complete Plus machine state to an open checkpoint stream.
 // Order must match the restore path in plus_init().
-static void plus_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
-    // The shared core prefix: mem_map, CPU,
-    // scheduler, cfg->irq, RTC, SCC, AppleTalk, VIA1.  The Plus's own copy
-    // of those eight differed only in interposing the sound chip before the
-    // VIA; plus_init's construction moved with this.
-    machine_checkpoint_save_core(cfg, cp);
-
-    plus_state_t *ps = plus_state(cfg);
-    sound_checkpoint(ps ? ps->sound : NULL, cp);
-    mouse_checkpoint(cfg->mouse, cp);
-
-    // Checkpoint list of images (path + writable) before devices that reference
-    // them.  Shared helper, matching the restore side in plus_init: this was an
-    // inline copy of mac_checkpoint_save_images byte for byte, so the two could
-    // have drifted apart silently.
-    mac_checkpoint_save_images(cfg, cp);
-
-    scsi_checkpoint(cfg->scsi, cp);
-    keyboard_checkpoint(cfg->keyboard, cp);
-    floppy_checkpoint(cfg->floppy, cp);
-}
-
 // ============================================================
 // VIA / SCC callbacks
 // ============================================================
@@ -604,7 +577,6 @@ static const machine_substrate_t plus_substrate = {
     .init = plus_init,
     .bus_reset = plus_bus_reset,
     .teardown = plus_teardown,
-    .checkpoint_save = plus_checkpoint_save,
     .trigger_vbl = plus_trigger_vbl,
     .fd_insert = mac_fd_insert,
     .fd_present = mac_fd_present,

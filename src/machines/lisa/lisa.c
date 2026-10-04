@@ -10,10 +10,10 @@
 // Mac architecture.  See docs/reference/machines/lisa/lisa.md for the hardware reference.
 
 #include "machine.h"
+#include "machine_checkpoint.h"
 #include "machine_teardown.h"
 #include "system_config.h"
 
-#include "checkpoint_images.h"
 #include "cops.h"
 #include "cpu.h"
 #include "debug.h"
@@ -896,6 +896,11 @@ static void lisa_register_power_object(config_t *cfg) {
 static void lisa_vbl_off(void *source, uint64_t data); // defined in the VBL section
 static void lisa_vbl_ack(void *source); // defined in the VBL section
 
+MACHINE_PART_SAVE(lisa_mmu_checkpoint, lisa_mmu_t)
+MACHINE_PART_SAVE(cops_checkpoint, cops_t)
+MACHINE_PART_SAVE(lisa_fdc_checkpoint, lisa_fdc_t)
+MACHINE_PART_SAVE(lisa_profile_checkpoint, lisa_profile_t)
+
 static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     lisa_state_t *ls = (lisa_state_t *)malloc(sizeof(lisa_state_t));
     if (!ls) {
@@ -908,6 +913,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // 24-bit address space, configured RAM, 16 KB interleaved boot ROM.
     cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size,
                                    MEMORY_BUS_ERR_NONE, &cfg->build_opts.rom, checkpoint); // no bus-error watchdog
+    machine_part(cfg, checkpoint, "memory", part_save_memory, cfg->mem_map);
 
     // The profile is the source of truth for the CPU model, as it is for the
     // clock below and as mac030_build_core states for the II families.  Both
@@ -916,8 +922,10 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // the profile unconditionally, so a profile that ever disagreed with a
     // hardcoded core here would tag the machine with an arch it is not running.
     cfg->cpu = cpu_init(cfg->machine->cpu_model, checkpoint);
+    machine_part(cfg, checkpoint, "cpu", part_save_cpu, cfg->cpu);
     sched_cpu_if_t cpu_if = cpu_sched_if(cfg->cpu); // the 68K main-CPU seam adapter
     cfg->scheduler = scheduler_init(&cpu_if, checkpoint);
+    machine_part(cfg, checkpoint, "scheduler", part_save_scheduler, cfg->scheduler);
     // Run at the Lisa's real 5.09375 MHz, not the scheduler's Mac-Plus default
     // (7.8336 MHz).  Set before the VIAs init: their timer clock is CPU/4, so the
     // wrong CPU frequency would skew every VIA-timer-derived rate — including the
@@ -931,8 +939,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // with its own test re-pin, out of scope for the two-modes change.
     scheduler_set_cpi(cfg->scheduler, 4);
 
-    if (checkpoint)
-        system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
+    machine_part_irq(cfg, checkpoint);
 
     // The segment MMU owns all translation; it reads/writes directly into the
     // flat RAM+ROM image the memory map allocated, ROM already in place.
@@ -940,6 +947,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     ls->mmu =
         lisa_mmu_init(ram_native_pointer(cfg->mem_map, 0), cfg->ram_size, (uint8_t *)memory_rom_bytes(cfg->mem_map),
                       memory_rom_size(cfg->mem_map), ram_high, checkpoint);
+    machine_part(cfg, checkpoint, "lisa_mmu", lisa_mmu_checkpoint_part, ls->mmu);
     memory_map_set_lisa_mmu(cfg->mem_map, ls->mmu); // the slow path's g_lisa_mmu
     lisa_mmu_attach_object(ls->mmu, cfg->cpu); // machine.cpu.mmu, like every MMU kind
     lisa_mmu_set_nmi(ls->mmu, lisa_parity_nmi, cfg); // level-7 parity NMI (PARTST)
@@ -956,8 +964,10 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // stale one.
     cfg->via1 =
         via_init(NULL, cfg->scheduler, 4, "via1", lisa_via1_output, lisa_via_shift_out, lisa_via1_irq, cfg, checkpoint);
+    machine_part(cfg, checkpoint, "via1", part_save_via, cfg->via1);
     cfg->via2 =
         via_init(NULL, cfg->scheduler, 4, "via2", lisa_via2_output, lisa_via_shift_out, lisa_via2_irq, cfg, checkpoint);
+    machine_part(cfg, checkpoint, "via2", part_save_via, cfg->via2);
 
     // Register each VIA at its Lisa physical I/O base through the stride
     // adapter.  16 registers: VIA1 spans 16*2=32 bytes from $DD81, VIA2 uses an
@@ -979,18 +989,19 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // COPS keyboard/mouse/clock/power microcontroller on VIA1 port A.
     ls->cops = cops_init(cfg->via1, cfg->scheduler, checkpoint);
+    machine_part(cfg, checkpoint, "cops", cops_checkpoint_part, ls->cops);
 
     // Intelligent floppy controller: 6504 + 1 KB shared RAM on the ODD bus
     // bytes of physical $00C000-$00C7FF (docs/reference/machines/lisa/lisa.md §13).  Mapped from the
     // even base $00C000 so word/long accesses at the even base (used by Xenix's
     // boot loader) reach the controller; the iface models the odd-byte RAM.
     // FDIR completion is signalled on VIA1 PB4.
-    // Mirrors lisa_checkpoint_save: the image list lands before the FDC and
-    // the ProFile, both of which reference it.
-    if (checkpoint)
-        mac_checkpoint_restore_images(cfg, checkpoint);
+    // The image list lands before the FDC and the ProFile, both of which
+    // reference it.
+    machine_part_images(cfg, checkpoint);
 
     ls->fdc = lisa_fdc_init(cfg->scheduler, lisa_fdc_fdir, cfg, checkpoint, CONFIG_IMAGES(cfg));
+    machine_part(cfg, checkpoint, "lisa_fdc", lisa_fdc_checkpoint_part, ls->fdc);
     lisa_mmu_map_io(ls->mmu, 0xC000, 0x800, &lisa_fdc_iface, ls->fdc);
     // PB4 carries the FDC's FDIR (drive interrupt request) line.  The 6504A drives
     // it — it is not a floating/pulled-up input — and at reset there is no pending
@@ -1023,6 +1034,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // ProFile parallel hard disk on VIA2: control lines via the port-B output
     // callback (lisa_via2_output), data via the port-A hooks, BSY back to PB1/CA1.
     ls->profile = lisa_profile_init(cfg->scheduler, lisa_profile_bsy, cfg, checkpoint);
+    machine_part(cfg, checkpoint, "profile", lisa_profile_checkpoint_part, ls->profile);
     via_set_porta_hooks(cfg->via2, lisa_profile_porta_read_cb, lisa_profile_porta_write_cb, cfg);
     lisa_profile_update_lines(cfg); // no disk yet → OCD/ high (disconnected)
     lisa_register_profile_object(cfg);
@@ -1036,6 +1048,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // (docs/reference/machines/lisa/lisa.md §15).  PCLK 4 MHz (chan A) / 3.6864 MHz
     // (chan B).  Autovectored at IPL 6.
     cfg->scc = scc_init(NULL, cfg->scheduler, lisa_scc_irq, cfg, checkpoint);
+    machine_part(cfg, checkpoint, "scc", part_save_scc, cfg->scc);
     scc_set_clocks(cfg->scc, 4000000, 3686400);
     lisa_mmu_map_io(ls->mmu, 0xD000, 0x400, (memory_interface_t *)scc_get_memory_interface(cfg->scc), cfg->scc);
 
@@ -1128,33 +1141,6 @@ static void lisa_teardown(config_t *cfg) {
 // ============================================================
 // Checkpoint
 // ============================================================
-
-// The Lisa is the one family NOT on machine_checkpoint_save_core, and not by
-// omission: its construction order genuinely differs.  It has no RTC -- the
-// COPS keeps the time -- no AppleTalk at this point, and it builds the SCC
-// last, after both VIAs, the COPS, the image list, the FDC and the ProFile.
-// Since save order IS construction order (the stream is positional and each
-// *_init consumes its own block as it builds), adopting the shared prefix would
-// mean reordering lisa_init for no gain.  The first four lines below are the
-// shared ones and are deliberately kept in step with it.
-static void lisa_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
-    memory_map_checkpoint(cfg->mem_map, cp);
-    cpu_checkpoint(cfg->cpu, cp);
-    scheduler_checkpoint(cfg->scheduler, cp);
-    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
-    lisa_state_t *ls = lisa_state(cfg);
-    lisa_mmu_checkpoint(ls ? ls->mmu : NULL, cp);
-    // Same order as the restore path in lisa_init (via1, via2, cops, fdc).
-    via_checkpoint(cfg->via1, cp);
-    via_checkpoint(cfg->via2, cp);
-    cops_checkpoint(ls ? ls->cops : NULL, cp);
-    // The image list before the two devices that reference it (the FDC records
-    // only which entry was in the drive; the ProFile carries its own image).
-    mac_checkpoint_save_images(cfg, cp);
-    lisa_fdc_checkpoint(ls ? ls->fdc : NULL, cp);
-    lisa_profile_checkpoint(ls ? ls->profile : NULL, cp);
-    scc_checkpoint(cfg->scc, cp);
-}
 
 // ============================================================
 // VBL
@@ -1265,7 +1251,6 @@ static const machine_substrate_t lisa_substrate = {
     .init = lisa_init,
     .power_on = lisa_power_on,
     .teardown = lisa_teardown,
-    .checkpoint_save = lisa_checkpoint_save,
     .trigger_vbl = lisa_trigger_vbl,
     .display = lisa_display,
     .fd_insert = lisa_fd_insert,

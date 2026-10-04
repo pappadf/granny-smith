@@ -21,7 +21,6 @@ def restarts(model, ram_kb) {
     assert machine.scsi2.device[4].type == "hd" "${$model}: channel 1 bay 4 not mounted"
 
     # Everything that must survive the power cycle.
-    let created0 = machine.config.created
     let ch0_stem = machine.scsi.device[0].image.path
     let ch0_file = machine.scsi.device[0].image.filename
     let ch1_stem = machine.scsi2.device[4].image.path
@@ -31,7 +30,6 @@ def restarts(model, ram_kb) {
 
     assert machine.id == "${$model}" "${$model}: same model"
     assert machine.ram == $ram_kb "${$model}: same RAM"
-    assert machine.config.created == $created0 "${$model}: created stamp untouched"
     assert machine.pci.slot[8].card.name == "53C825A #0" "${$model}: fast/wide channel 0 gone"
     assert machine.pci.slot[9].card.name == "53C825A #1" "${$model}: fast/wide channel 1 gone"
 

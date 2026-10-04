@@ -12,7 +12,7 @@
 #     (a probe must never hang), and Open Firmware's own probe-slots sizes
 #     and assigns Control's two BARs through the generic header.
 #   * The topology reaches the guest — BoxID's slot-presence pins follow
-#     live population, and the built-from record lists the seated cards.
+#     live population, and each seated card names its kind.
 #
 # Config-port note: the address and data ports are LITTLE-ENDIAN (the guest
 # drives them with lwbrx/stwbrx), and machine.memory.peek/poke are raw
@@ -220,9 +220,9 @@ assert !machine.boot(model="pm9500", rom="${$ROM}", pci_card="nonesuch") "unknow
 assert !machine.boot(model="pm9500", rom="${$ROM}", pci_card="cirrus_54m30") "a card that fits no socket must be rejected"
 assert machine.id == "pm9500" "machine survives the rejected boot"
 
-# --- The built-from record lists the seated cards. ----------------------------
+# --- Each seated card names its kind. -----------------------------------------
 # Control is the slot table's own builtin.
-assert machine.config.slot_cards == "[{\"bus\":\"pci\",\"slot\":7,\"card_id\":\"tnt_control\"}]" "seated cards recorded"
+assert machine.pci.slot[7].card.id == "tnt_control" "slot 7 seats Control"
 
 # --- A "3d" card does NOT retire the 9500's builtin-fallback video. ----------
 # The Voodoo2 is a pass-through 3D accelerator: its PCI class code says

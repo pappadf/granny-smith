@@ -33,7 +33,6 @@
 
 #include "adb.h"
 #include "appletalk.h"
-#include "checkpoint_images.h"
 #include "debug.h"
 #include "floppy.h"
 #include "image.h"
@@ -518,6 +517,56 @@ void tnt_nvram_clear(config_t *cfg) {
     LOG(1, "NVRAM cleared (battery removed)");
 }
 
+// Checkpoint parts of the TNT board's own (machine_parts.h).
+static void part_save_dbdma(void *obj, checkpoint_t *cp) {
+    dbdma_checkpoint(obj, cp);
+}
+
+static void part_save_mesh(void *obj, checkpoint_t *cp) {
+    mesh_checkpoint(obj, cp);
+}
+
+static void part_save_pci_config(void *obj, checkpoint_t *cp) {
+    pci_checkpoint_save(obj, cp);
+}
+
+// Hammerhead, Grand Central and the bridges' mode registers.
+static void part_save_tnt_board(void *obj, checkpoint_t *cp) {
+    tnt_state_t *st = obj;
+    system_write_checkpoint_data(cp, &st->hh, sizeof(st->hh));
+    system_write_checkpoint_data(cp, &st->gc, sizeof(st->gc));
+    for (int i = 0; i < st->bridge_count; i++) {
+        system_write_checkpoint_data(cp, &st->bridge[i].cfg_addr, sizeof(st->bridge[i].cfg_addr));
+        system_write_checkpoint_data(cp, &st->bridge[i].mode_select, sizeof(st->bridge[i].mode_select));
+    }
+}
+
+// AWACS and Control, with Control's VRAM where the board has Control.
+static void part_save_tnt_av(void *obj, checkpoint_t *cp) {
+    tnt_state_t *st = obj;
+    system_write_checkpoint_data(cp, &st->awacs, sizeof(st->awacs));
+    system_write_checkpoint_data(cp, &st->control, sizeof(st->control));
+    if (st->vram)
+        system_write_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
+}
+
+// The GBUS island (Network Servers only; zeroed and unread elsewhere), and
+// the floppy controller with its DBDMA byte ring.
+static void part_save_tnt_io(void *obj, checkpoint_t *cp) {
+    tnt_state_t *st = obj;
+    system_write_checkpoint_data(cp, &st->gbus, sizeof(st->gbus));
+    system_write_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
+    // offsetof, not sizeof: swim3_t's tail is `struct floppy *fd; struct
+    // scheduler *sched; swim3_backend_t be;` and swim3.h labels it "not
+    // checkpointed; swim3_bind".  Writing the whole struct put host pointers
+    // in a user-shareable save file, and made two saves of the same guest
+    // state differ -- which defeats any diff-based checkpoint testing.  The
+    // restore re-binds through *_swim3_bind either way, so the values were
+    // harmless; the leak and the non-reproducibility were not.
+    system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
+    system_write_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
+}
+
 static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     tnt_state_t *st = calloc(1, sizeof(*st));
     if (!st) {
@@ -534,6 +583,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     cfg->mem_map =
         memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, MEMORY_BUS_ERR_NONE,
                         &cfg->build_opts.rom, cp); // no bus-error watchdog: unanswered floats to $FF
+    machine_part(cfg, cp, "memory", part_save_memory, cfg->mem_map);
     // No 68k MMU owns this machine's page table; host-backed regions that
     // core code registers on the bus map are filled through our filler.
     memory_map_set_host_fill(cfg->mem_map, tnt_fill_page);
@@ -547,8 +597,10 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
         LOG(0, "Error: out of memory constructing the PowerPC core");
         return -1;
     }
+    machine_part(cfg, cp, "cpu", part_save_ppc, cfg->ppc);
     sched_cpu_if_t cpu_if = ppc_sched_if(cfg->ppc);
     cfg->scheduler = scheduler_init(&cpu_if, cp);
+    machine_part(cfg, cp, "scheduler", part_save_scheduler, cfg->scheduler);
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
     // CPI 2: a real 601/604 under Mac OS sustains well under one
     // instruction per clock (cache misses, the 68k emulator's dispatch);
@@ -563,6 +615,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, tick_hz);
 
     cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram);
+    machine_part(cfg, cp, "rtc", part_save_rtc, cfg->rtc);
 
     // The ESCC cell behind the Grand Central decode, reachable through two
     // apertures (legacy +$12000 for the 68k Serial Driver, ESCC +$13000
@@ -571,17 +624,17 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // INT line fans to Grand Central interrupts 15/16 (ch A/B) — per-
     // channel splitting belongs to the serial datapath.
     cfg->scc = scc_init(NULL, cfg->scheduler, tnt_scc_irq, cfg, cp);
+    machine_part(cfg, cp, "scc", part_save_scc, cfg->scc);
     scc_set_clocks(cfg->scc, 15667200, 3672000);
 
     // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
-    // the SCC exists -- and, because the checkpoint stream is positional, in
-    // the same relative place the save writes it (right after scc_checkpoint).
-    // LocalTalk is the only AppleTalk path these machines have here: the
+    // the SCC exists.  LocalTalk is the only AppleTalk path these machines have here: the
     // Grand Central MACE window is a #define and nothing else, so there is no
     // EtherTalk to prefer.  NOTE: the stack has only ever been exercised
     // against a Mac Plus guest (tests/integration/appletalk-*), so this wires
     // the family up rather than proving it.
     cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, cp);
+    machine_part(cfg, cp, "appletalk", part_save_atalk, cfg->atalk);
 
     // VIA1: one real 6522 behind the Grand Central decode, byte-wide on
     // $200 centres.  Timer clock: 783.36 kHz is the classic rate and the
@@ -590,6 +643,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
     cfg->via1 =
         via_init(NULL, cfg->scheduler, via_ff, "via1", tnt_via1_output, tnt_via1_shift_out, tnt_via1_irq, cfg, cp);
+    machine_part(cfg, cp, "via1", part_save_via, cfg->via1);
     via_set_exact_clock(cfg->via1, cfg->machine->freq);
 
     // VIA1 idle input levels: PB3 is Cuda TREQ (active-low, idle high);
@@ -601,6 +655,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
 
     // ADB device state, serviced through Cuda packets (the AV pattern).
     cfg->adb = adb_init(NULL, cfg->scheduler, cp);
+    machine_part(cfg, cp, "adb", part_save_adb, cfg->adb);
 
     // The behavioral Cuda (firmware 2.37 — the same 341S0788 part as the
     // AV and PDM machines) on the VIA1 shift register + PB3/4/5.  The
@@ -611,6 +666,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
         LOG(0, "Error: out of memory constructing the Cuda");
         return -1;
     }
+    machine_part(cfg, cp, "cuda", part_save_cuda, st->cuda);
     // Control's pixel-clock synthesiser hangs off Cuda's I2C bus (device
     // $50): the video driver programs it with three RdWrIIC packets per
     // mode-set, and the retrace period derives from what it wrote.
@@ -623,12 +679,14 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     st->dbdma = dbdma_init(cp, DBDMA_CHANNELS_GRAND_CENTRAL);
     if (!st->dbdma)
         return -1;
+    machine_part(cfg, cp, "dbdma", part_save_dbdma, st->dbdma);
     // The internal SuperDrive behind SWIM3: the shared floppy module owns
     // the drive and media, the shared SWIM3 model (core/peripherals) the
     // chip, and swim3.c here binds the two to Grand Central and DBDMA
     // channel 1.  No memory map of its own: the island decodes it.
     cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp,
                               CONFIG_IMAGES(cfg));
+    machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
     tnt_swim3_bind(cfg);
     tnt_swim3_init(cfg);
     tnt_scc_dma_init(cfg);
@@ -673,8 +731,8 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // or to Bandit 2 depending on whether the VCI bus seated anything.
     tnt_bandit_claim_memory(cfg);
 
-    // Substrate-private checkpoint tail: register files + NVRAM are plain
-    // data; the CPU line is recomputed below.
+    // The board's own state: register files + NVRAM are plain data; the CPU
+    // line is recomputed below.
     if (cp) {
         system_read_checkpoint_data(cp, &st->hh, sizeof(st->hh));
         tnt_hh_remap(cfg);
@@ -684,54 +742,63 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
             system_read_checkpoint_data(cp, &st->bridge[i].mode_select, sizeof(st->bridge[i].mode_select));
         }
         tnt_bandit_modes_restored(cfg); // the buses are rebuilt, not restored
-        // Every seated device's config header, in canonical (bus, device)
-        // order; the restore replays each BAR transition so the decode is
-        // rebuilt without any device code.
+    }
+    machine_part(cfg, cp, "tnt", part_save_tnt_board, st);
+    // Every seated device's config header, in canonical (bus, device) order;
+    // the restore replays each BAR transition so the decode is rebuilt
+    // without any device code.
+    if (cp)
         pci_checkpoint_restore(cfg->pci, cp);
+    machine_part(cfg, cp, "pci.config", part_save_pci_config, cfg->pci);
+    if (cp) {
         system_read_checkpoint_data(cp, &st->awacs, sizeof(st->awacs));
+        // Control's registers, the monitor strap among them: the strap a
+        // boot took from the document (tnt_control_init) is the board's.
         system_read_checkpoint_data(cp, &st->control, sizeof(st->control));
         // Control's VRAM is only there on a board that has Control.  A
         // Network Server's video is a PCI card in a socket, so `st->vram`
-        // is NULL and the block is absent from the stream on both sides.
+        // is NULL and the block is absent on both sides.
         if (st->vram)
             system_read_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
+    }
+    machine_part(cfg, cp, "tnt.av", part_save_tnt_av, st);
+    if (cp) {
         via_redrive_outputs(cfg->via1);
         tnt_gc_recompute(cfg);
         if (st->vram)
             tnt_control_update(cfg); // rebuild the descriptor from restored regs
     }
 
-    // SCSI (appended at the end of the positional stream).  The
-    // image list restores before the devices that resolve media out of
-    // it, then the shared bus, then the chips.  hd= media land on
+    // SCSI.  The image list restores before the devices that resolve media
+    // out of it, then the shared bus, then the chips.  hd= media land on
     // cfg->scsi = the MESH internal bus (boot disks are internal on the
     // real machines); the external 53C94 is instantiated with NO bus
     // attached — every select times out, the empty-chain presentation
     // (the PDM 8100 fast-chip precedent).  No CD-ROM sits on the 53C94
     // chain yet (see pm7500.c's has_cdrom).
-    if (cp)
-        mac_checkpoint_restore_images(cfg, cp);
+    machine_part_images(cfg, cp);
     cfg->scsi = profile_scsi_init(cfg->machine, cp, CONFIG_IMAGES(cfg));
+    machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
     // The Network Servers carry TWO fast/wide buses.  `cfg->scsi` is
     // channel 0 (Open Firmware's `scsi-int`, bays 0-3, the `disk0`..`disk3`
     // aliases), so `hd=` / `cd=` and every existing consumer of
     // `machine.scsi` keep landing where the boot disk goes.  Channel 1
     // (`scsi-int2`, bays 4-6 plus the 700's two rear drives) mounts beside
     // it as `machine.scsi2`.
-    if (tnt_board(cfg)->kind == TNT_BOARD_SHINER)
+    if (tnt_board(cfg)->kind == TNT_BOARD_SHINER) {
         st->scsi2 = scsi_init_named(cp, CONFIG_IMAGES(cfg), "scsi2");
+        machine_part(cfg, cp, "scsi2", part_save_scsi, st->scsi2);
+    }
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp); // 25 MHz (OF clock-frequency)
+    machine_part(cfg, cp, "scsi96", part_save_scsi96, st->scsi96);
     scsi_53c96_set_irq_callback(st->scsi96, tnt_scsi96_irq, cfg);
-    // Built HERE, before the reads below, because mesh_init() consumes its own
-    // block from the stream and tnt_checkpoint writes that block before gbus.
-    // Construction order is stream order; getting them out of step misaligns
-    // everything that follows and the machine restores with a corrupted GBus.
     if (tnt_board(cfg)->has_mesh) {
         // MESH is a controller like any other: the machine builds it, tells it
         // where its interrupt goes and which bus it drives, and registers its
         // DBDMA channel-10 port.  It used to reach all three back through
         // config_t from inside its own model.
         st->mesh = mesh_init(cfg->scheduler, cp);
+        machine_part(cfg, cp, "mesh", part_save_mesh, st->mesh);
         mesh_attach_bus(st->mesh, cfg->scsi);
         mesh_set_irq_callback(st->mesh, tnt_mesh_irq, cfg);
         mesh_set_dbdma_kick(st->mesh, tnt_mesh_dbdma_kick, cfg);
@@ -752,19 +819,18 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     if (cp) {
         system_read_checkpoint_data(cp, &st->gbus, sizeof(st->gbus));
         system_read_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
-        // Mirrors the save: the prefix only, then *_swim3_bind re-attaches
-        // the pointer tail.
+        // The prefix only; *_swim3_bind re-attaches the pointer tail.
         system_read_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
         system_read_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
         tnt_swim3_bind(cfg); // the restore overwrote the chip's pointer tail
         tnt_gc_recompute(cfg); // mesh/53C94 lines fold into the fabric
     }
+    machine_part(cfg, cp, "tnt.io", part_save_tnt_io, st);
     // MESH is a Macintosh-only cell.  The Network Servers deleted it — two
     // 53C825A PCI controllers carry the internal fast/wide buses instead —
     // so the board flag gates construction, the island decode
     // (grand_central.c) and DBDMA channel 10, which simply goes unused
-    // there along with TNT_INT_MESH.  The checkpoint stream still carries
-    // the (untouched) struct so it stays positional across both boards.
+    // there along with TNT_INT_MESH.
     tnt_scsi0_port_init(cfg); // DBDMA ch-0 port (53C94 pdma)
     // Hand each 53C825A its bus.  The controllers are PCI cards seated by
     // the slot walk, so this runs after it — and after the buses exist,
@@ -884,58 +950,6 @@ static void tnt_teardown(config_t *cfg) {
         free(st);
         cfg->machine_context = NULL;
     }
-}
-
-static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
-    tnt_state_t *st = tnt_st(cfg);
-    // Same relative order as the tnt_init construction sequence (the
-    // checkpoint stream is positional).
-    // The shared core prefix, byte-identical to the
-    // seven lines it replaces -- see pdm.c for why the PowerPC families come
-    // out the same as the 68k ones through it.
-    machine_checkpoint_save_core(cfg, cp);
-    adb_checkpoint(cfg->adb, cp);
-    av_cuda_checkpoint(st->cuda, cp);
-    dbdma_checkpoint(st->dbdma, cp);
-    // The floppy drive and media, where floppy_init reads them back on a
-    // restore (right after the DBDMA engine, before the board state).
-    floppy_checkpoint(cfg->floppy, cp);
-    // Substrate-private tail (mirrored by the restore block in tnt_init).
-    system_write_checkpoint_data(cp, &st->hh, sizeof(st->hh));
-    system_write_checkpoint_data(cp, &st->gc, sizeof(st->gc));
-    for (int i = 0; i < st->bridge_count; i++) {
-        system_write_checkpoint_data(cp, &st->bridge[i].cfg_addr, sizeof(st->bridge[i].cfg_addr));
-        system_write_checkpoint_data(cp, &st->bridge[i].mode_select, sizeof(st->bridge[i].mode_select));
-    }
-    pci_checkpoint_save(cfg->pci, cp);
-    system_write_checkpoint_data(cp, &st->awacs, sizeof(st->awacs));
-    system_write_checkpoint_data(cp, &st->control, sizeof(st->control));
-    if (st->vram)
-        system_write_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
-    // SCSI block (mirrors the tnt_init append order exactly).
-    mac_checkpoint_save_images(cfg, cp);
-    scsi_checkpoint(cfg->scsi, cp);
-    if (st->scsi2)
-        scsi_checkpoint(st->scsi2, cp);
-    scsi_53c96_checkpoint(st->scsi96, cp);
-    if (st->mesh)
-        mesh_checkpoint(st->mesh, cp);
-    // The GBUS island (Network Servers only; zeroed and unread elsewhere).
-    // Both blobs are plain data: the LCD's DDRAM and the board's keyswitch
-    // positions and injected environmental faults.
-    system_write_checkpoint_data(cp, &st->gbus, sizeof(st->gbus));
-    system_write_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
-    // The floppy controller and its DBDMA byte ring (swim3.c); the drive
-    // itself is in the images block above.
-    // offsetof, not sizeof: swim3_t's tail is `struct floppy *fd; struct
-    // scheduler *sched; swim3_backend_t be;` and swim3.h labels it "not
-    // checkpointed; swim3_bind".  Writing the whole struct put host pointers
-    // in a user-shareable save file, and made two saves of the same guest
-    // state differ -- which defeats any diff-based checkpoint testing.  The
-    // restore re-binds through *_swim3_bind either way, so the values were
-    // harmless; the leak and the non-reproducibility were not.
-    system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
-    system_write_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
 }
 
 // Frame tick (scheduler-paced, one per VBL frame-unit): the 60.15 Hz
@@ -1190,7 +1204,6 @@ const machine_substrate_t tnt_substrate = {
     .bus_reset = tnt_bus_reset,
     .power_on = tnt_power_on,
     .teardown = tnt_teardown,
-    .checkpoint_save = tnt_checkpoint_save,
     .pci_slot_irq = tnt_pci_slot_irq,
     .trigger_vbl = tnt_trigger_vbl,
     .fd_insert = tnt_fd_insert,

@@ -23,7 +23,6 @@
 #include "machine.h"
 
 #include "log.h"
-#include "machine_config.h"
 #include "machine_profile.h"
 #include "nubus.h"
 #include "prom.h"

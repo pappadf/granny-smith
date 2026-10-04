@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 // Pull in the checkpoint typedef from common.h
+#include "machine_parts.h"
 #include "../../../src/core/common.h"
 
 // Minimal checkpoint kind enum (for tests not linking with system.h)
@@ -76,4 +77,13 @@ size_t checkpoint_read_file_loc(checkpoint_t *checkpoint, uint8_t *dest, size_t 
         *out_path = NULL;
     }
     return 0;
+}
+
+// A unit test builds no machine checkpoint: parts register into nothing.
+void machine_part(struct config *cfg, checkpoint_t *cp, const char *name, machine_part_save_fn save, void *obj) {
+    (void)cfg;
+    (void)cp;
+    (void)name;
+    (void)save;
+    (void)obj;
 }

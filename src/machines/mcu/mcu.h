@@ -196,7 +196,10 @@ void mcu_set_overlay(config_t *cfg, bool on);
 // out of the field is what lets the three boards declare the same kind of value.
 void mcu_apply_via1_model_sense(config_t *cfg, const mcu_board_desc_t *desc);
 
-void mcu_restore_private(config_t *cfg, checkpoint_t *cp);
+// The family's own checkpoint part (overlay, Orwell, YANCC, the IRQ
+// aggregates): read it on a restore and re-drive the lines it derives,
+// then register it.  The last thing each board's build_devices does.
+void mcu_private_part(config_t *cfg, checkpoint_t *cp);
 
 // Drive one /SLOTIRQ source (VIA2 PA bit 0-6, `active` in source polarity):
 // sets the active-low PA input and re-resolves the CA1 aggregate.

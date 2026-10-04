@@ -17,7 +17,6 @@
 
 #include "adb.h"
 #include "asc.h"
-#include "checkpoint_images.h"
 #include "cpu.h"
 #include "cpu_internal.h" // cpu->mmu (attach the 040 walker to the bus resolver)
 #include "dafb.h"
@@ -458,26 +457,36 @@ static void mcu_dafb_irq(void *context, bool active) {
     mcu_slot_irq_source(cfg, 6, active);
 }
 
+// The DAFB's identity part: the monitor strapped to it.
+static void part_save_dafb_monitor(void *obj, checkpoint_t *cp) {
+    uint8_t monitor = dafb_monitor(((mcu_state_t *)obj)->dafb);
+    system_write_checkpoint_data(cp, &monitor, sizeof monitor, "dafb.monitor");
+}
+
+static void part_save_dafb(void *obj, checkpoint_t *cp) {
+    dafb_checkpoint(obj, cp);
+}
+
 int mcu_build_dafb(config_t *cfg, checkpoint_t *cp) {
     mcu_state_t *st = mcu_st(cfg);
     const mcu_board_desc_t *desc = mcu_board(cfg)->desc;
 
-    st->dafb = dafb_init(desc->dafb_vram_size, cp);
+    // The monitor on the built-in port: the document's on a boot, the one
+    // the board was built with on a restore.
+    uint8_t monitor = dafb_sense_for_build(cfg);
+    if (cp)
+        system_read_checkpoint_data(cp, &monitor, sizeof monitor, "dafb.monitor");
+    machine_part(cfg, cp, "dafb.monitor", part_save_dafb_monitor, st);
+
+    st->dafb = dafb_init(desc->dafb_vram_size, monitor, cp);
     if (!st->dafb) {
         LOG(0, "Error: out of memory constructing the DAFB");
         return -1;
     }
+    machine_part(cfg, cp, "dafb", part_save_dafb, st->dafb);
     dafb_attach_scheduler(st->dafb, cfg->scheduler);
     dafb_set_irq_callback(st->dafb, mcu_dafb_irq, cfg);
     dafb_attach_objects(st->dafb); // machine.video{,.framebuffer}
-
-    // Consume unconditionally so a staged sense never leaks into a later
-    // boot, but only APPLY it on a cold build: on a restore, dafb_init()
-    // has already read the saved sense out of the checkpoint, and this
-    // call would otherwise overwrite it with the default.
-    uint8_t staged_sense = dafb_sense_for_build(cfg); // default 6 = 13" RGB
-    if (!cp)
-        dafb_set_monitor_sense(st->dafb, staged_sense);
 
     dafb_set_version(st->dafb, desc->dafb_version); // 3 on the Q950 (DAFB 3)
     dafb_set_ac842a(st->dafb, desc->has_ac842a); // AC842a x555 on the Q950
@@ -566,8 +575,7 @@ static int mcu_init(config_t *cfg, checkpoint_t *cp) {
     // Shared core (mem_map, 68040 CPU from the profile, scheduler) + RTC +
     // SCC + the two VIAs.
     mac030_build_core(cfg, &board->desc->common, cp);
-    if (cp)
-        system_read_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
+    machine_part_irq(cfg, cp);
 
     // Towers intercept the SCC chip INT (OR with the SCC IOP host INT);
     // the Q700 routes it straight to the level-4 source, which is the
@@ -580,7 +588,9 @@ static int mcu_init(config_t *cfg, checkpoint_t *cp) {
     uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
     cfg->via1 = via_init(NULL, cfg->scheduler, via_ff, "via1", board->via1_output, board->via1_shift_out,
                          mac030_glue_via1_irq, cfg, cp);
+    machine_part(cfg, cp, "via1", part_save_via, cfg->via1);
     cfg->via2 = via_init(NULL, cfg->scheduler, via_ff, "via2", board->via2_output, NULL, mac030_glue_via2_irq, cfg, cp);
+    machine_part(cfg, cp, "via2", part_save_via, cfg->via2);
     // Exact-rational phi2: the integer divisor above rounds, and on this
     // substrate that rounding is not negligible -- the Q950 lands 1.04% slow, the Q700/Q900 0.27%.  via_set_exact_clock
     // installs ticks = cycles x 783360/cpu_hz reduced, which is what the
@@ -597,11 +607,9 @@ static int mcu_init(config_t *cfg, checkpoint_t *cp) {
     // over the bus-error range, and slot IRQs route through the substrate's
     // nubus_slot_irq into the VIA2 PA aggregate.
     cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, cp);
-    // The substrate tail was read by mcu_restore_private inside build_devices
-    // above, so the card block that mcu_checkpoint_save wrote after it reads
-    // back here.
     if (cp)
         nubus_checkpoint_restore(cfg->nubus, cp);
+    machine_part(cfg, cp, "nubus.cards", part_save_nubus_cards, cfg->nubus);
     // Project the cards' host regions (VRAM, declaration ROMs) into the
     // page table so CPU accesses resolve with the MMU off; the bus
     // resolver serves the 040 walker when it's on.  No Mode-24 aliases —
@@ -695,35 +703,17 @@ static void mcu_teardown(config_t *cfg) {
     }
 }
 
-static void mcu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
-    mcu_state_t *st = mcu_st(cfg);
-    machine_checkpoint_save_core(cfg, cp);
-    adb_checkpoint(st->adb, cp);
-    mac_checkpoint_save_images(cfg, cp);
-    // Device order mirrors the build_devices construction order exactly
-    // (q900_build_devices is the superset; the tower entries are guarded so
-    // the same save set serves the Q700's subset stream).
-    if (cfg->scsi)
-        scsi_checkpoint(cfg->scsi, cp);
-    scsi_53c96_checkpoint(st->scsi96, cp);
-    if (st->scsi_ext)
-        scsi_checkpoint(st->scsi_ext, cp);
-    if (st->scsi96_ext)
-        scsi_53c96_checkpoint(st->scsi96_ext, cp);
-    sonic_checkpoint(st->sonic, cp);
-    asc_checkpoint(st->asc, cp);
-    floppy_checkpoint(st->floppy, cp);
-    if (st->caboose)
-        egret_checkpoint(st->caboose, cp);
-    if (st->scc_iop)
-        iop_checkpoint(st->scc_iop, cp);
-    if (st->swim_iop)
-        iop_checkpoint(st->swim_iop, cp);
-    dafb_checkpoint(st->dafb, cp);
-    // Substrate-private state: overlay flag + Orwell config/bank starts +
-    // the YANCC register file +
-    // the /SLOTIRQ aggregate mask + the in-flight SONIC write latch + the
-    // tower wire-OR IRQ masks (zero on the Q700).
+void mcu_apply_via1_model_sense(config_t *cfg, const mcu_board_desc_t *desc) {
+    for (int bit = 0; bit < 8; bit++)
+        via_input(cfg->via1, 0, bit, (desc->via1_pa_model >> bit) & 1);
+    via_input(cfg->via1, 0, 0, 1); // PA0 diagnostic strap high (see mcu.h)
+}
+
+// The substrate-private part: overlay flag + Orwell config/bank starts + the
+// YANCC register file + the /SLOTIRQ aggregate mask + the in-flight SONIC
+// write latch + the tower wire-OR IRQ masks (zero on the Q700).
+static void part_save_mcu_private(void *obj, checkpoint_t *cp) {
+    mcu_state_t *st = obj;
     system_write_checkpoint_data(cp, &st->overlay.armed, sizeof(st->overlay.armed));
     system_write_checkpoint_data(cp, &st->orwell_cfg, sizeof(st->orwell_cfg));
     system_write_checkpoint_data(cp, st->bank_start, sizeof(st->bank_start));
@@ -735,24 +725,22 @@ static void mcu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &st->sonic_byte2, sizeof(st->sonic_byte2));
     system_write_checkpoint_data(cp, &st->scc_irq_or, sizeof(st->scc_irq_or));
     system_write_checkpoint_data(cp, &st->scsi_irq_or, sizeof(st->scsi_irq_or));
-    // Card-side display state (VRAM, palette, active mode) — last before the
-    // block below, so a machine that restores with fewer cards than it saved
-    // short-reads here without shifting anything that follows (mdu.c:190,
-    // pdm.c:537 use the same position).
-    nubus_checkpoint_save(cfg->nubus, cp);
 }
 
-// Restore the substrate-private checkpoint tail (mirrors the tail writes in
-// mcu_checkpoint_save) and re-drive the derived interrupt lines.  Called at
-// the end of each board's build_devices on the restore path, after the
-// memory layout armed the overlay and parked the VIA input lines at idle.
-void mcu_apply_via1_model_sense(config_t *cfg, const mcu_board_desc_t *desc) {
-    for (int bit = 0; bit < 8; bit++)
-        via_input(cfg->via1, 0, bit, (desc->via1_pa_model >> bit) & 1);
-    via_input(cfg->via1, 0, 0, 1); // PA0 diagnostic strap high (see mcu.h)
+// The substrate-private part, read on a restore -- then the derived
+// interrupt lines re-driven.  At the end of each board's build_devices,
+// after the memory layout armed the overlay and parked the VIA input lines
+// at idle.
+static void mcu_restore_private(config_t *cfg, checkpoint_t *cp);
+
+void mcu_private_part(config_t *cfg, checkpoint_t *cp) {
+    mcu_state_t *st = mcu_st(cfg);
+    if (cp)
+        mcu_restore_private(cfg, cp);
+    machine_part(cfg, cp, "mcu", part_save_mcu_private, st);
 }
 
-void mcu_restore_private(config_t *cfg, checkpoint_t *cp) {
+static void mcu_restore_private(config_t *cfg, checkpoint_t *cp) {
     mcu_state_t *st = mcu_st(cfg);
     bool overlay = false;
     system_read_checkpoint_data(cp, &overlay, sizeof(overlay));
@@ -802,7 +790,6 @@ const machine_substrate_t mcu_substrate = {
     .init = mcu_init,
     .bus_reset = mcu_bus_reset,
     .teardown = mcu_teardown,
-    .checkpoint_save = mcu_checkpoint_save,
     .trigger_vbl = mcu_trigger_vbl,
     .nubus_slot_irq = mcu_nubus_slot_irq, // slots → VIA2 PA1-PA5 + /SLOTIRQ aggregate
     .fd_insert = mac_fd_insert,
