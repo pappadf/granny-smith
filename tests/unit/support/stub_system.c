@@ -123,6 +123,12 @@ void remove_event(scheduler_t *sched, event_callback_t callback, void *source) {
     (void)source;
 }
 
+bool has_event(scheduler_t *sched, event_callback_t callback) {
+    (void)sched;
+    (void)callback;
+    return false;
+}
+
 void scheduler_forget_source(scheduler_t *sched, void *source) {
     (void)sched;
     (void)source;

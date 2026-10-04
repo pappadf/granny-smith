@@ -14,15 +14,6 @@
 #include <stdio.h>
 #include <string.h>
 
-// `has_event` is only referenced by dafb_attach_scheduler, which these
-// bus-level tests never call; provide the missing stub.
-#include "scheduler.h"
-bool has_event(struct scheduler *s, event_callback_t cb) {
-    (void)s;
-    (void)cb;
-    return false;
-}
-
 static dafb_t *make_dafb(void) {
     dafb_t *d = dafb_init(0x200000u, NULL);
     ASSERT_TRUE(d != NULL);

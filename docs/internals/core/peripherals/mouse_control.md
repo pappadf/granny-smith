@@ -573,49 +573,42 @@ Prevents phantom ADB data from corrupting MTemp after `mouse.move ... "global"`.
 
 ### Design
 
-A periodic scheduler event fires every 1ms and checks whether MTemp has
-drifted from the target position.  If drift detected, it restores MTemp,
-RawMouse, and Mouse.
+A periodic scheduler event fires every 1 ms and checks whether MTemp has
+drifted from the target position.  If it has, it restores MTemp, RawMouse
+and Mouse.
 
-```c
-#define MOUSE_GUARD_INTERVAL_NS (1 * 1000 * 1000) // 1 ms
+The event is the guard's only state.  Its payload carries the target point
+(h in bits 0-15, v in bits 16-31), and the guard is armed exactly while the
+event is pending.  Its source is the machine's input object (`host_input`,
+`cfg->host_input`), which registers the `mouse.guard` event type at
+construction.  Two things follow:
 
-static void mouse_guard_tick(void *source, uint64_t data) {
-    if (!mouse_guard_active)
-        return;
+- **It is per machine.**  A new machine (`machine.boot`, `checkpoint.load`)
+  starts without a guard; the old machine's teardown drops its event with the
+  rest of `host_input`'s.
+- **It survives a checkpoint.**  A checkpoint taken with the guard armed saves
+  the pending event, payload included, and the restore binds it back to the
+  new machine's input object.
 
-    int16_t cur_v = (int16_t)memory_read_uint16(0x0828);
-    int16_t cur_h = (int16_t)memory_read_uint16(0x082A);
-
-    if (cur_v != mouse_guard_v || cur_h != mouse_guard_h) {
-        memory_write_uint16(0x0828, (uint16_t)mouse_guard_v);
-        memory_write_uint16(0x082A, (uint16_t)mouse_guard_h);
-        memory_write_uint16(0x082C, (uint16_t)mouse_guard_v);
-        memory_write_uint16(0x082E, (uint16_t)mouse_guard_h);
-        memory_write_uint16(0x0830, (uint16_t)mouse_guard_v);
-        memory_write_uint16(0x0832, (uint16_t)mouse_guard_h);
-    }
-
-    scheduler_new_cpu_event(sched, &mouse_guard_tick,
-                            NULL, 0, 0, MOUSE_GUARD_INTERVAL_NS);
-}
-```
+Besides phantom ADB deltas, the guard also holds the position against guest
+code that rewrites the globals itself.  Measured 2026-10 over the integration
+tests that use `"global"`: every correction the guard made was of that kind
+(the ROM's cursor initialisation writing `(0,0)`, `(-1,-1)` or `(15,15)`
+during a boot); none was a phantom delta.  The guard is kept for both.
 
 ### Guard Lifecycle
 
-| Event | Guard state |
-|-------|-------------|
-| `set-mouse X Y --global` | **Activated** at (X, Y) |
-| `set-mouse X Y --global` (again) | **Updated** to new (X, Y) |
-| `set-mouse X Y` (default mode) | **Deactivated** |
-| `set-mouse X Y --hw` | **Deactivated** |
-| `mouse-button down` | Guard stays active (no deactivation) |
-| `mouse-button up` | Guard stays active (no deactivation) |
+| Call | Guard state |
+|------|-------------|
+| `mouse.move X Y "global"` | **Armed** at (X, Y) |
+| `mouse.move X Y "global"` (again) | **Re-armed** at the new (X, Y) |
+| `mouse.move X Y` in any other mode | **Disarmed** |
+| `mouse.click` (either direction, any mode) | Unchanged |
+| `machine.boot` / `checkpoint.load` | The new machine has none, unless the checkpoint saved one |
 
-The guard remains active until the next `set-mouse` call.  It is NOT
-deactivated by mouse-button commands.  This ensures the cursor stays pinned
-during TrackControl's tracking loop (which reads Mouse repeatedly while the
-button is held).
+The guard stays armed until the next `mouse.move` in another mode.  Clicks do
+not disarm it, so the cursor stays pinned during TrackControl's tracking loop
+(which reads Mouse repeatedly while the button is held).
 
 ### Timing Analysis
 
@@ -673,11 +666,14 @@ approaches for a proper fix:
 
 ### Implementation
 
-Source: `src/core/debug/debug_mac.c`
+Source: `src/core/debug/debug_mac.c`; the event type is registered in
+`src/core/host_input.c`.
 
-- `mouse_guard_start(h, v)`: registers scheduler event, sets target, activates
-- `mouse_guard_tick()`: checks and corrects MTemp; reschedules
-- `mouse_guard_stop()`: sets `mouse_guard_active = false`
+- `mouse_guard_start(hi, h, v)`: replaces any pending guard event with one
+  carrying (h, v)
+- `debug_mac_mouse_guard_tick()`: checks and corrects MTemp; reschedules
+  itself with the same payload
+- `mouse_guard_stop(hi)`: removes the pending event
 
 ---
 
@@ -977,9 +973,10 @@ never fires, yet the OS tracks cursor position correctly.
 **Debug commands** (`src/core/debug/debug_mac.c`):
 
 - `set_mouse_global(x, y)`: writes MTemp, RawMouse, Mouse, CrsrNew
-- `mouse_guard_start(h, v)`: registers scheduler event, activates guard
-- `mouse_guard_tick()`: checks/corrects MTemp, reschedules every 1ms
-- `mouse_guard_stop()`: deactivates guard
+- `mouse_guard_start(hi, h, v)`: arms the guard (an event sourced on the
+  machine's `host_input`)
+- `debug_mac_mouse_guard_tick()`: checks/corrects MTemp, reschedules every 1 ms
+- `mouse_guard_stop(hi)`: disarms it
 
 ---
 

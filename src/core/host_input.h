@@ -18,6 +18,10 @@
 // through system_input_key like any other; the only per-machine number is how
 // many key-transition bytes the machine's queue can hold before it starts
 // dropping, which the substrate declares.
+//
+// The object is also the source of the mouse guard's and the mouse trace's
+// events (debug_mac.c), for the same reason: they belong to one machine, and
+// a checkpoint taken with either running must restore it.
 
 #ifndef HOST_INPUT_H
 #define HOST_INPUT_H

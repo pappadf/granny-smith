@@ -1230,10 +1230,7 @@ int scheduler_pending_events(const struct scheduler *scheduler) {
 }
 
 // Number of queued events that belong to an OBJECT, i.e. carry a non-NULL
-// source.  A NULL-sourced event belongs to no device -- debug_mac.c's
-// mouse_guard tick is one, registered for the lifetime of the process -- so it
-// can never dangle and is not evidence of a destructor that forgot to clean
-// up.  This is what the teardown backstop counts.
+// source -- what the teardown backstop counts.
 int scheduler_pending_device_events(const struct scheduler *scheduler) {
     GS_ASSERT(scheduler != NULL);
     int n = 0;

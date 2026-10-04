@@ -17,7 +17,6 @@
 #include "checkpoint_images.h"
 #include "cpu.h"
 #include "debug.h"
-#include "debug_mac.h"
 #include "floppy.h"
 #include "image.h"
 #include "log.h"
@@ -257,7 +256,6 @@ void mac030_build_core(config_t *cfg, const struct mac030_board_desc *desc, chec
     cfg->cpu = cpu_init(cfg->machine->cpu_model, cp);
     sched_cpu_if_t cpu_if = cpu_sched_if(cfg->cpu); // the 68K main-CPU seam adapter
     cfg->scheduler = scheduler_init(&cpu_if, cp);
-    debug_mac_register_scheduler_events(cfg->scheduler);
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
     scheduler_set_cpi(cfg->scheduler, 4);
 }

@@ -109,6 +109,7 @@ static bool s_constructing;
 // The assert handler itself reads the active machine (its backtrace), so the
 // flag is cleared before it runs.
 static void construction_misuse(const char *accessor) {
+    (void)accessor; // unused when asserts compile out
     s_constructing = false;
     GS_ASSERTF(false, "%s() names the active machine; a constructor uses its own cfg", accessor);
 }

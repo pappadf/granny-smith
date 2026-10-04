@@ -19,7 +19,6 @@
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "debug.h"
-#include "debug_mac.h"
 #include "display.h"
 #include "floppy.h"
 #include "image.h"
@@ -249,7 +248,6 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     sched_cpu_if_t cpu_if = cpu_sched_if(cfg->cpu); // the 68K main-CPU seam adapter
     cfg->scheduler = scheduler_init(&cpu_if, checkpoint);
-    debug_mac_register_scheduler_events(cfg->scheduler);
     // Average CPI for the 7.8336 MHz 68000: the Plus retires ~783k
     // instructions per emulated second (~0.78 MIPS, slightly above the
     // ~0.7 MIPS of real hardware). Calibrated against MusicWorks 0.42: its

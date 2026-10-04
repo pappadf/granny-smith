@@ -35,7 +35,6 @@
 #include "appletalk.h"
 #include "checkpoint_images.h"
 #include "debug.h"
-#include "debug_mac.h"
 #include "floppy.h"
 #include "image.h"
 #include "log.h"
@@ -550,7 +549,6 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     }
     sched_cpu_if_t cpu_if = ppc_sched_if(cfg->ppc);
     cfg->scheduler = scheduler_init(&cpu_if, cp);
-    debug_mac_register_scheduler_events(cfg->scheduler);
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
     // CPI 2: a real 601/604 under Mac OS sustains well under one
     // instruction per clock (cache misses, the 68k emulator's dispatch);
