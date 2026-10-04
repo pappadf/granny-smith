@@ -30,6 +30,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
+import { gsCallInPage, gsEvalInPage } from '../helpers/web2-eval';
 
 const PLUS_ROM = path.resolve(__dirname, '../../data/roms/plus-v3-4d1f8172.rom');
 const SE30_ROM = path.resolve(__dirname, '../../data/roms/iix-iicx-se30-97221136.rom');
@@ -90,18 +91,6 @@ async function reloadWeb2(page: Page): Promise<void> {
 
 const resumeModal = (page: Page) =>
   page.locator('.modal, [role="dialog"]').filter({ hasText: 'Continue from saved checkpoint?' });
-
-// Drive the Terminal panel: type a shell line and return once the given
-// pattern shows up in the console output.
-async function terminalExpect(page: Page, line: string, pattern: RegExp): Promise<void> {
-  await page.locator('button.ptab[data-tab="terminal"]').click();
-  const term = page.locator('.console');
-  await expect(term).toBeVisible({ timeout: 15_000 });
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-  await expect(page.locator('.console-output')).toContainText(pattern, { timeout: 15_000 });
-}
 
 test('tick-auto checkpoint: status-bar CP glyph updates, terminal stays silent', async ({
   page,
@@ -170,16 +159,11 @@ test.describe('checkpoint save → reload → resume', () => {
     await stageOpfsFile(page, '/opfs/images/fd/System_6_0_8.dsk', SYSTEM_608);
     await uploadRom(page, PLUS_ROM);
     await startMachine(page, 'plus');
-    await terminalExpect(
-      page,
-      'machine.floppy.drive[0].insert "/opfs/images/fd/System_6_0_8.dsk" writable=true',
-      /insert/,
-    );
-    await terminalExpect(
-      page,
-      'echo "fd=${files.images[0].filename}"',
-      /fd=\/opfs\/images\/fd\/System_6_0_8\.dsk/,
-    );
+    await gsCallInPage(page, 'machine.floppy.drive[0].insert', {
+      path: '/opfs/images/fd/System_6_0_8.dsk',
+      writable: true,
+    });
+    expect(await gsEvalInPage(page, 'files.images[0].filename')).toBe('/opfs/images/fd/System_6_0_8.dsk');
     await page.waitForTimeout(2_000);
     await createCheckpoint(page);
 
@@ -190,11 +174,7 @@ test.describe('checkpoint save → reload → resume', () => {
       page.locator('.toast .msg').filter({ hasText: 'Resumed from saved checkpoint' }),
     ).toBeVisible({ timeout: 60_000 });
     await expect(statusLabel(page)).toHaveText('Running', { timeout: 15_000 });
-    await terminalExpect(
-      page,
-      'echo "fd=${files.images[0].filename}"',
-      /fd=\/opfs\/images\/fd\/System_6_0_8\.dsk/,
-    );
+    expect(await gsEvalInPage(page, 'files.images[0].filename')).toBe('/opfs/images/fd/System_6_0_8.dsk');
   });
 
   test('Start fresh discards the checkpoint and a second reload does not re-prompt', async ({
@@ -248,8 +228,7 @@ test.describe('checkpoint save → reload → resume', () => {
 
     // The restored machine must identify as an SE/30 — system_restore()
     // falling back to the default (Plus) profile is the historical failure
-    // this pins (legacy state test 10). The Terminal panel is the shipped
-    // typed path to the object model (web2 has no window.gsEval).
-    await terminalExpect(page, 'machine.id', /se30/);
+    // this pins (legacy state test 10).
+    expect(await gsEvalInPage(page, 'machine.id')).toBe('se30');
   });
 });

@@ -101,18 +101,6 @@ test('a URL boot shows download progress and no start-up dialogs', async ({ page
   await expect(page.getByText('Granny Smith — preview build')).toHaveCount(0);
 });
 
-// Type one line into the Terminal panel (web2 has no window.gsEval) and wait
-// for its output to match.
-async function terminalExpect(page: Page, line: string, pattern: RegExp): Promise<void> {
-  await page.locator('button.ptab[data-tab="terminal"]').click();
-  const term = page.locator('.console');
-  await expect(term).toBeVisible({ timeout: 15_000 });
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-  await expect(page.locator('.console-output')).toContainText(pattern, { timeout: 15_000 });
-}
-
 // URL media is kept the way an upload is: the fetched floppy is stored in
 // /opfs/images/fd/ under its URL's name and inserted from there, not from
 // volatile /tmp.  It then survives a reload and shows in
@@ -133,8 +121,8 @@ test('?fd0= media is persisted to /opfs/images/fd and inserted from there', asyn
   const cont = page.getByRole('button', { name: 'Continue' });
   if (await cont.isVisible().catch(() => false)) await cont.click();
 
-  await terminalExpect(page, 'machine.floppy.drive[0].disk.filename', /\/opfs\/images\/fd\/url-system\.dsk/);
-  await terminalExpect(page, 'files.path_exists "/opfs/images/fd/url-system.dsk"', /true/);
+  expect(await gsEvalInPage(page, 'machine.floppy.drive[0].disk.filename')).toBe('/opfs/images/fd/url-system.dsk');
+  expect(await gsEvalInPage(page, 'files.path_exists', ['/opfs/images/fd/url-system.dsk'])).toBe(true);
 });
 
 // Every file under /opfs, from the browser's own view of OPFS.

@@ -37,7 +37,7 @@ import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { gotoWeb2, stageOpfsFileStreaming } from '../helpers/web2-fs';
-import { terminalRun } from '../helpers/terminal';
+import { gsCallInPage, gsEvalInPage } from '../helpers/web2-eval';
 
 const PDM_ROM = path.resolve(__dirname, '../../data/roms/pm6100-pm7100-pm8100-9feb69b3.rom');
 const MACOS81_HD = path.resolve(__dirname, '../../../tmp/macos81.img');
@@ -61,23 +61,12 @@ function burstStarts(samples: RmsSample[], threshold = 0.01, gapMs = 1500): numb
   return starts;
 }
 
-// Echo an expression through the terminal under a unique key and return the
-// printed value (same idiom as machine-restart.spec.ts).
-let probeSeq = 0;
-async function terminalEval(page: Page, expr: string): Promise<string | null> {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const key = `dbp${++probeSeq}`;
-    await terminalRun(page, `echo "${key}=\${${expr}}"`);
-    for (let i = 0; i < 10; i++) {
-      await page.waitForTimeout(400);
-      const text = await page.locator('.console-output').innerText();
-      const values = [...text.matchAll(new RegExp(`${key}=(\\S+)`, 'g'))]
-        .map((m) => m[1])
-        .filter((v) => !v.startsWith('$'));
-      if (values.length) return values[values.length - 1];
-    }
-  }
-  return null;
+// Sum of every logpoint's hit count.
+async function logpointHits(page: Page): Promise<number> {
+  const n = Number(await gsEvalInPage(page, 'debug.logpoints.count'));
+  let hits = 0;
+  for (let i = 0; i < n; i++) hits += Number(await gsEvalInPage(page, `debug.logpoints[${i}].hit_count`));
+  return hits;
 }
 
 // Configure a pm6100 (24 MB, the 8.1 HD) through the New Machine dialog and
@@ -172,7 +161,7 @@ test('pm6100 + Mac OS 8.1 HD boots exactly once — also on a previously-used im
   await configureAndStart(page);
   await page.locator('[title^="Fast-Forward"]').click();
   await page.waitForTimeout(120_000);
-  const phase1Instr = await terminalEval(page, 'scheduler.instr_count');
+  const phase1Instr = await gsEvalInPage(page, 'scheduler.instr_count');
   console.log(`phase 1 (dirtying) reached instr_count=${phase1Instr}`);
   await page.locator('[aria-label="Shut down"]').click();
   await expect(page.getByRole('button', { name: 'New Machine...' })).toBeVisible({
@@ -183,8 +172,8 @@ test('pm6100 + Mac OS 8.1 HD boots exactly once — also on a previously-used im
   const bannersBefore = await bannerCount(page);
   const t0 = await configureAndStart(page);
 
-  // Critical window: watch the terminal WITHOUT typing for ~16 s and keep
-  // the maximum banner count seen.
+  // Critical window: watch the terminal for ~16 s and keep the maximum
+  // banner count seen.
   let banners = 0;
   const started = Date.now();
   while (Date.now() - started < 16_000) {
@@ -193,21 +182,15 @@ test('pm6100 + Mac OS 8.1 HD boots exactly once — also on a previously-used im
     await page.waitForTimeout(700);
   }
 
-  // Safe to type now: arm the reset-vector logpoint (this add gets a fresh
-  // id — read it back positionally via the printed attributes is brittle,
-  // so probe both plausible ids) and sample instr_count out to ~60 s.
-  await terminalRun(page, 'debug.logpoints.add addr=0xFFF00100 message="RESETVEC"');
+  // Arm the reset-vector logpoint and sample instr_count out to ~60 s.
+  await gsCallInPage(page, 'debug.logpoints.add', { addr: 0xfff00100, message: 'RESETVEC' });
   const samples: number[] = [];
   while (Date.now() - started < 80_000) {
-    const v = await terminalEval(page, 'scheduler.instr_count');
-    if (v !== null) {
-      const n = Number(v);
-      if (Number.isFinite(n)) samples.push(n);
-    }
+    const n = Number(await gsEvalInPage(page, 'scheduler.instr_count'));
+    if (Number.isFinite(n)) samples.push(n);
     await page.waitForTimeout(1_500);
   }
-  const hits =
-    (await terminalEval(page, 'try(debug.logpoints[0].hit_count, 0) + try(debug.logpoints[1].hit_count, 0)')) ?? '0';
+  const hits = await logpointHits(page);
 
   const rmsLog = await page.evaluate(
     () => (window as unknown as { __rmsLog: RmsSample[] }).__rmsLog,
@@ -233,6 +216,6 @@ test('pm6100 + Mac OS 8.1 HD boots exactly once — also on a previously-used im
   const decreases = samples.filter((v, i) => i > 0 && v < samples[i - 1]);
   expect(decreases, `instr_count went backwards (${samples.join(', ')})`).toHaveLength(0);
   // No guest warm reset after the banner window.
-  expect(Number(hits), 'the 601 reset vector was re-entered — the machine rebooted').toBe(0);
-  expect(await terminalEval(page, 'machine.id')).toBe('pm6100');
+  expect(hits, 'the 601 reset vector was re-entered — the machine rebooted').toBe(0);
+  expect(await gsEvalInPage(page, 'machine.id')).toBe('pm6100');
 });
