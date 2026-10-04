@@ -285,7 +285,7 @@ callbacks is emitted at its source too; the page routes each in
 | `notify:drive_activity` | the tick, on a light's edge; a machine change turns lit lights off and re-bases | `{kind, state}` |
 | `notify:checkpoint_saved` | `system_quick_checkpoint` | `{elapsed_ms}` |
 | `notify:printer_status` | the PAP layer, when the LaserWriter's status string changes | `{status}` |
-| `notify:download_chunk` | the download job, per 4 MB chunk | `{id, handle, ptr, len, last, name}` |
+| `notify:download_chunk` | the download job, per 4 MB chunk | `{id, handle, ptr, len, last, name}`; a printed document adds `kind: "document", printer, job, pages, title` |
 | `log:log` | the log sink, every line | `{line}` |
 | `log:output` | the job layer, a job's printed text | `{id, client, text}` |
 
@@ -359,7 +359,13 @@ acknowledges the buffer (the worker refills it), and on the last chunk
 saves the Blob through a transient anchor (`bus/download.ts`). Neither
 thread waits on the other; a page that never acknowledges times the job
 out after 30 s, not the machine. The LaserWriter's PostScript capture
-(`appletalk.printer.capture`) takes the same road.
+(`appletalk.printer.capture`) takes the same road, and so does every
+document the ImageWriter prints (`printer_sink_document` in `em_main.c`):
+its chunks carry `kind: "document"` and the printer's name, job, pages and
+title, and the page opens the finished bytes in the print viewer instead of
+saving them (or saves them where the browser shows no PDF inline). The
+ImageWriter's status changes are `notify:printer_status` events like the
+LaserWriter's, with a `printer` field naming it.
 
 **Ctrl-C, exactly.** The terminal is client 2 (the rest of the page is
 client 1). Ctrl-C cancels the terminal's foreground job if it has one;
