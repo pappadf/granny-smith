@@ -125,6 +125,7 @@ typedef struct {
     uint32_t buffer_waits; // times the simulated buffer filled and the printer went busy
     uint64_t dropped; // bytes lost to a full buffer
     uint32_t buffer_peak; // the most bytes waiting at once, since the last job began
+    char title[PRINTER_TITLE_MAX + 1]; // the current (or last) job's title
     int64_t drain_credit_ns; // print time available (negative: still printing what was taken)
     double drain_last_ns; // guest time the credit was last brought up to date
 } iw_job_state_t;
@@ -141,6 +142,7 @@ struct iw_printer {
     byteq_t capture; // this job's input, when capturing
     pdf_writer_t *pdf; // this job's document, from its first page
     char status[64];
+    iw_title_fn title_fn; // the machine's title source, or NULL
     struct object *object;
 };
 
@@ -266,7 +268,7 @@ static void default_settings(iw_settings_t *s, iw_model_t model) {
 static void on_page_done(void *ctx, const iw_page_t *page) {
     iw_printer_t *p = ctx;
     if (!p->pdf) {
-        p->pdf = pdf_writer_new("Print", "Granny Smith");
+        p->pdf = pdf_writer_new(p->job.title[0] ? p->job.title : "Print", "Granny Smith");
         if (!p->pdf) {
             LOG(1, "out of memory starting job %u's document", (unsigned)p->job.job_id);
             return;
@@ -316,9 +318,12 @@ static void job_begin(iw_printer_t *p) {
     j->job_active = true;
     j->job_id++;
     j->buffer_peak = (uint32_t)byteq_len(&p->input);
+    // The application printing is the one in front as the job begins
+    if (!p->title_fn || !p->title_fn(j->title, sizeof(j->title)) || !j->title[0])
+        snprintf(j->title, sizeof(j->title), "%s", "Print");
     byteq_clear(&p->capture);
     iw_interp_begin_job(&p->interp);
-    LOG(2, "job %u started", (unsigned)j->job_id);
+    LOG(2, "job %u started ('%s')", (unsigned)j->job_id, j->title);
     update_status(p);
 }
 
@@ -374,7 +379,7 @@ static void job_end(iw_printer_t *p) {
     printer_document_t doc = {.printer = iw_printer_name(p),
                               .slug = printer_slug(p),
                               .job_id = j->job_id,
-                              .title = "Print",
+                              .title = j->title[0] ? j->title : "Print",
                               .pdf = pdf,
                               .pdf_len = pdf_len,
                               .pages = pages,
@@ -814,6 +819,11 @@ iw_printer_t *iw_printer_new(struct scheduler *scheduler, scc_t *scc, const iw_p
         object_attach(machine_object(), p->object);
     }
     return p;
+}
+
+void iw_printer_set_title_source(iw_printer_t *p, iw_title_fn fn) {
+    if (p)
+        p->title_fn = fn;
 }
 
 void iw_printer_delete(iw_printer_t *p) {

@@ -67,7 +67,7 @@ echo "faster: ${machine.imagewriter.bytes} bytes, jobs ${machine.imagewriter.job
 assert machine.imagewriter.jobs == 1 "the Faster print did not become one document"
 assert machine.imagewriter.last_job_pages == 1 "the directory listing is one page"
 assert machine.imagewriter.last_outcome == "ok" "the Faster job did not finish cleanly"
-assert machine.imagewriter.last_pdf_crc == 0xd871ca40 "the Faster PDF differs from the golden"
+assert machine.imagewriter.last_pdf_crc == 0x0f4f3a4e "the Faster PDF differs from the golden"
 assert machine.imagewriter.status == "status: idle" "the printer is not idle"
 
 # Best, deselected at the front panel once the job is under way
@@ -88,7 +88,7 @@ scheduler.run 200000000
 echo "best: ${machine.imagewriter.bytes} bytes, jobs ${machine.imagewriter.jobs}, ${machine.imagewriter.last_job_pages} page(s), ${machine.imagewriter.last_outcome}, crc ${machine.imagewriter.last_pdf_crc}"
 assert machine.imagewriter.jobs == 2 "the Best print did not become a document"
 assert machine.imagewriter.last_job_pages == 1 "the Best listing is one page"
-assert machine.imagewriter.last_pdf_crc == 0xae7bb4bd "the Best PDF differs from the golden"
+assert machine.imagewriter.last_pdf_crc == 0x8e785088 "the Best PDF differs from the golden"
 
 # Draft: the driver sends text, printed in the printer's own draft font
 print_directory(327)
@@ -96,7 +96,7 @@ scheduler.run 200000000
 echo "draft: ${machine.imagewriter.bytes} bytes, jobs ${machine.imagewriter.jobs}, ${machine.imagewriter.last_job_pages} page(s), ${machine.imagewriter.last_outcome}, crc ${machine.imagewriter.last_pdf_crc}"
 assert machine.imagewriter.jobs == 3 "the Draft print did not become a document"
 assert machine.imagewriter.last_outcome == "ok" "the Draft job used the placeholder font or failed"
-assert machine.imagewriter.last_pdf_crc == 0x00c46754 "the Draft PDF differs from the golden"
+assert machine.imagewriter.last_pdf_crc == 0xbe977215 "the Draft PDF differs from the golden"
 
 # Faster again through the simulated 2 KB buffer, printing at about the
 # printer's speed: the driver keeps ahead of it without losing a byte (the
@@ -112,7 +112,7 @@ echo "faster, 2k buffer: ${machine.imagewriter.bytes} bytes, peak ${machine.imag
 assert machine.imagewriter.jobs == 4 "the buffered Faster print did not become a document"
 assert machine.imagewriter.buffer_peak > 0 "nothing waited in the buffer"
 assert machine.imagewriter.dropped == 0 "the driver sent into a full buffer"
-assert machine.imagewriter.last_pdf_crc == 0xd871ca40 "the buffered Faster PDF differs from the unbuffered one"
+assert machine.imagewriter.last_pdf_crc == 0x0f4f3a4e "the buffered Faster PDF differs from the unbuffered one"
 
 echo "PASS: mac-imagewriter"
 quit

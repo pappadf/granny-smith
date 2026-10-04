@@ -40,10 +40,18 @@ typedef struct {
     bool ready_level;
 } iw_port_wiring_t;
 
+// Where a job's title comes from: the name of the guest's foreground
+// application as UTF-8 in `out` (`cap` bytes), false when there is none.
+typedef bool (*iw_title_fn)(char *out, size_t cap);
+
 // Build the machine's printer.  `wiring[0]`/`[1]` describe SCC channels A
 // and B.  With `checkpoint`, the printer restores its state from it.
 iw_printer_t *iw_printer_new(struct scheduler *scheduler, scc_t *scc, const iw_port_wiring_t wiring[2],
                              checkpoint_t *checkpoint);
+
+// The machine's title source (a Macintosh reads CurApName); jobs without
+// one are titled "Print".
+void iw_printer_set_title_source(iw_printer_t *p, iw_title_fn fn);
 
 void iw_printer_delete(iw_printer_t *p);
 

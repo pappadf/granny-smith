@@ -162,12 +162,18 @@ as a printer keeps them until reset.
 
 ## 7. Output
 
+The byte stream carries no title. On a Macintosh the machine glue gives the
+printer a title source (`iw_printer_set_title_source`) that reads the
+foreground application's name from the low-memory global `CurApName` as the
+job begins (the Finder for Print Directory); on the Lisa, or when the global
+holds no name (the boot prompt), the title is `Print`. It names the PDF's
+document title and its file.
+
 At the end of a job the PDF goes to `printer_sink_deliver()`:
 
 - **Headless** (`headless_main.c`): `<print-dir>/<slug>-<job:05>-<title>.pdf`
-  (`imagewriter2-00001-Print.pdf`), and with `capture` the job's raw input as
-  `<slug>-<job:05>.iw` beside it. The title is `Print`: the serial stream
-  carries none.
+  (`imagewriter2-00001-Finder.pdf`), and with `capture` the job's raw input as
+  `<slug>-<job:05>.iw` beside it.
 - **Browser** (`em_main.c`): the bytes go to the page over the download path
   (I/O job, transfer buffer, `download_chunk` events) with
   `kind: "document"`, the printer's name, job, pages and title;
@@ -218,5 +224,5 @@ The goldens are CRCs (`last_pdf_crc`): every output is deterministic.
 
 The original ImageWriter's character generator and its vertical format unit;
 a dedicated printer panel in the web UI (today the SYSTEM tab edits
-`machine.imagewriter`); the title from the guest's foreground application;
-persistence of the printer settings across sessions.
+`machine.imagewriter`); persistence of the printer settings across sessions;
+a title for Lisa jobs.

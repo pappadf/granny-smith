@@ -68,7 +68,7 @@ echo "localtalk: ${machine.imagewriter.bytes} bytes, jobs ${machine.imagewriter.
 assert machine.imagewriter.jobs == 1 "the print did not become a document"
 assert machine.imagewriter.last_job_pages == 1 "the directory listing is one page"
 # The very stream the serial port carries, less the ESC ? query: the same PDF
-assert machine.imagewriter.last_pdf_crc == 0xd871ca40 "the PDF differs from the serial port's"
+assert machine.imagewriter.last_pdf_crc == 0x0f4f3a4e "the PDF differs from the serial port's"
 assert machine.imagewriter.busy == false "the job did not end at the EOF"
 
 # Out of paper: the driver reads it from the OpenConnReply and waits
@@ -83,7 +83,7 @@ scheduler.run 2000000
 click(440, 118)
 scheduler.run 300000000
 assert machine.imagewriter.jobs == 2 "the job did not print after paper was added"
-assert machine.imagewriter.last_pdf_crc == 0xd871ca40 "the resumed job's PDF differs"
+assert machine.imagewriter.last_pdf_crc == 0x0f4f3a4e "the resumed job's PDF differs"
 
 echo "PASS: appletalk-imagewriter"
 quit
