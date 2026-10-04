@@ -58,8 +58,8 @@ def levels(model, ram_kb, rom, budget, check_ticks) {
         }
     }
 
-    # --- level 3: machine.restart.  The same, cold; nothing is rebuilt.
-    let created = machine.config.created
+    # --- level 3: machine.restart.  The same, cold; nothing is rebuilt -- the
+    # stores below are the same chips.
     let pram2 = pram()
     let nv2 = nvram()
     let t_before2 = 0
@@ -68,19 +68,18 @@ def levels(model, ram_kb, rom, budget, check_ticks) {
     assert machine.cpu.pc == $pc0 "${$model}: machine.restart did not land on the reset vector"
     assert pram() == $pram2 "${$model}: I2: PRAM lost on machine.restart"
     assert nvram() == $nv2 "${$model}: I2: NVRAM lost on machine.restart"
-    assert machine.config.created == $created "${$model}: machine.restart rebuilt the machine"
     if $check_ticks {
         assert rebooted($budget, $t_before2) "${$model}: machine.restart did not reboot the machine"
     } else {
         scheduler.run $budget
     }
 
-    # --- level 4: machine.rebuild.  A new machine inherits no store (R1).
-    machine.rebuild
-    assert machine.id == "${$model}" "${$model}: machine.rebuild built another model"
-    assert machine.cpu.pc == $pc0 "${$model}: a rebuilt machine is not at its reset vector"
-    assert pram() == $pram_fresh "${$model}: R1: machine.rebuild inherited PRAM"
-    assert nvram() == $nv_fresh "${$model}: R1: machine.rebuild inherited NVRAM"
+    # --- A new machine, from the same document, inherits no store (R1).
+    machine.boot model="${$model}" ram=$ram_kb rom="../../data/roms/${$rom}"
+    assert machine.id == "${$model}" "${$model}: machine.boot built another model"
+    assert machine.cpu.pc == $pc0 "${$model}: a new machine is not at its reset vector"
+    assert pram() == $pram_fresh "${$model}: R1: a new machine inherited PRAM"
+    assert nvram() == $nv_fresh "${$model}: R1: a new machine inherited NVRAM"
     echo "reset-levels ${$model}: ok"
 }
 

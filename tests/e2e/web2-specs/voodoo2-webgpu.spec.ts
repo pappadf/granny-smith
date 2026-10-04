@@ -35,16 +35,60 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { stageOpfsFile } from "../helpers/web2-fs";
+import { gsEvalInPage } from "../helpers/web2-eval";
 import {
   BASE_ARGS,
+  STORED_ROM,
   WEBGPU_ARGS,
   bootWithCard,
   composeScript,
   probe,
+  storeTntRom,
   terminalRun,
 } from "../helpers/voodoo2";
 
 test.use({ launchOptions: { args: [...BASE_ARGS, ...WEBGPU_ARGS] } });
+
+// The page writes whether a WebGPU device exists to the core before it
+// reports ready, so a machine booted the moment the page is ready builds the
+// card on the GPU -- even when the adapter's answer is slow.  The GPU
+// worker's script is held back here, so the answer lands well after the
+// emulator's own start-up; the page waits for it instead of letting the
+// boot read the default "no" and fall back to the thread backend.
+test("a boot at page-ready gets the GPU backend, even with a slow adapter answer", async ({
+  page,
+}) => {
+  test.setTimeout(5 * 60 * 1000);
+  await storeTntRom(page);
+  let held = 0;
+  await page.route("**/assets/voodoo2Gpu.worker-*.js", async (route) => {
+    held++;
+    await new Promise((r) => setTimeout(r, 1000));
+    await route.continue();
+  });
+  await page.reload();
+  await page.waitForFunction(
+    () => (window as { __gsReady?: boolean }).__gsReady === true,
+    undefined,
+    { timeout: 60_000 },
+  );
+  // At once: nothing between the ready signal and the boot.
+  expect(
+    await gsEvalInPage(page, "machine.boot", {
+      model: "pm7500",
+      ram: 32768,
+      rom: STORED_ROM,
+      pci_card: "voodoo2_webgpu",
+    }),
+  ).toBe(true);
+  // Halted before any vblank: headless Chromium destroys the device on the
+  // first present (see the header).
+  await gsEvalInPage(page, "scheduler.stop");
+  expect(held).toBe(1);
+  expect(await gsEvalInPage(page, "machine.pci.slot[1].card.regs.raster")).toBe(
+    "webgpu",
+  );
+});
 
 test("the takeover engages when the card takes the monitor, and the GPU covers exactly the walker pixels", async ({
   page,

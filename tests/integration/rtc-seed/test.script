@@ -38,8 +38,8 @@ machine.restart
 assert machine.rtc.time == $t1 "machine.restart restarted the clock"
 scheduler.run 60000000
 assert machine.rtc.time > $t1 "the clock stopped across machine.restart"
-machine.rebuild
-assert machine.rtc.time > 3700000000 "machine.rebuild kept the old RTC instead of building a new one"
+machine.boot model="se30" ram=8192 rom="${$ROM}"
+assert machine.rtc.time > 3700000000 "a new machine kept the old RTC instead of building a new one"
 
 # --- determinism: a pinned boot run twice is byte-identical ------------------
 machine.boot model="plus" ram=4096 rom="${$plus_rom}"
@@ -47,8 +47,9 @@ machine.rtc.time = $PIN
 machine.floppy.drive[0].insert "../../data/systems/System_6_0_8.dsk" false
 scheduler.run 60000000
 let frame1 = machine.screen.checksum()
-machine.rebuild
+machine.boot model="plus" ram=4096 rom="${$plus_rom}"
 machine.rtc.time = $PIN
+machine.floppy.drive[0].insert "../../data/systems/System_6_0_8.dsk" false
 scheduler.run 60000000
 assert machine.screen.checksum() == $frame1 "a pinned boot run twice drew different frames"
 

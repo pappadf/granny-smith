@@ -2,17 +2,19 @@
 // Copyright (c) pappadf
 
 // nubus.c
-// NuBus subsystem: the card-kind registry, the per-slot staged
-// configuration, the bus controller, and slot-IRQ routing.
+// NuBus subsystem: the card-kind registry, the bus controller, and
+// slot-IRQ routing.
 
 #include "nubus.h"
 #include "card.h"
-#include "jmfb.h" // ONLY for stage_custom_for_kind; see the note there
+#include "checkpoint.h"
 #include "log.h"
-#include "machine_config.h" // the built-from record's per-slot picks
+#include "machine_parts.h"
 #include "machine_profile.h" // machine_substrate_t (slot-IRQ routing)
 #include "system_config.h"
+#include "vrom.h"
 
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,6 +34,10 @@ struct nubus_bus {
     // attach_objects without testing card identity; PCI carries the same
     // per-slot record.
     const nubus_card_kind_t *slot_kind[NUBUS_MAX_SLOTS];
+    // How each socket was built: the entry its card was seated from, with
+    // the card resolved, or `empty`.  The bus's checkpoint block, so a
+    // restore seats exactly these.
+    slot_opts_t seated[NUBUS_MAX_SLOTS];
 };
 
 // The bus-error window constants in nubus.h are spelled as literals because
@@ -161,61 +167,6 @@ const char *nubus_card_suggest(const char *id) {
     return NULL;
 }
 
-// === Staged per-slot configuration ==========================================
-//
-// One entry per slot ($9..$E) plus the WILDCARD entry [0] meaning "the
-// machine's first SOCKET" (the machine-independent channel behind the
-// `machine.nubus.video_card` / `video_mode` aliases and the headless
-// `video_card=` startup arg).  nubus_init consumes the whole table and
-// clears it so a stale pick can't leak into the next boot.
-typedef struct nubus_staged_slot {
-    char card[32]; // staged card-kind id ("" = none)
-    char mode[40]; // staged video-mode id ("" = none)
-    char custom[40]; // staged "WxHxD" custom resolution ("" = none)
-} nubus_staged_slot_t;
-static nubus_staged_slot_t s_staged[NUBUS_MAX_SLOTS];
-
-// Valid staged-table keys: the wildcard, or a physical slot number.
-static bool staged_slot_valid(int slot) {
-    return slot == NUBUS_STAGED_WILDCARD || (slot >= 9 && slot < NUBUS_MAX_SLOTS);
-}
-
-void nubus_staged_card_set(int slot, const char *id) {
-    if (!staged_slot_valid(slot))
-        return;
-    snprintf(s_staged[slot].card, sizeof s_staged[slot].card, "%s", (id && *id) ? id : "");
-}
-
-const char *nubus_staged_card_get(int slot) {
-    if (!staged_slot_valid(slot))
-        return NULL;
-    return s_staged[slot].card[0] ? s_staged[slot].card : NULL;
-}
-
-void nubus_staged_mode_set(int slot, const char *id) {
-    if (!staged_slot_valid(slot))
-        return;
-    snprintf(s_staged[slot].mode, sizeof s_staged[slot].mode, "%s", (id && *id) ? id : "");
-}
-
-const char *nubus_staged_mode_get(int slot) {
-    if (!staged_slot_valid(slot))
-        return NULL;
-    return s_staged[slot].mode[0] ? s_staged[slot].mode : NULL;
-}
-
-void nubus_staged_custom_mode_set(int slot, const char *spec) {
-    if (!staged_slot_valid(slot))
-        return;
-    snprintf(s_staged[slot].custom, sizeof s_staged[slot].custom, "%s", (spec && *spec) ? spec : "");
-}
-
-const char *nubus_staged_custom_mode_get(int slot) {
-    if (!staged_slot_valid(slot))
-        return NULL;
-    return s_staged[slot].custom[0] ? s_staged[slot].custom : NULL;
-}
-
 // Parse a "WxHxD" custom-mode spec into width/height/depth.  Returns true
 // on a well-formed spec with each field in range (the numeric limits the
 // generic cards can honour); false — with *err set to a static reason —
@@ -288,10 +239,6 @@ done:
     return true;
 }
 
-static void staged_clear_all(void) {
-    memset(s_staged, 0, sizeof s_staged);
-}
-
 // Card ↔ slot compatibility, COMPUTED from the two declarations (see the
 // prototype comment in nubus.h): the slot must be user-configurable and the
 // kind must attach through a genuine NuBus connector.  Builtin pseudo-cards
@@ -305,75 +252,177 @@ bool nubus_card_fits_socket(const nubus_slot_decl_t *s, const nubus_card_kind_t 
     return kind->attach == CARD_ATTACH_NUBUS;
 }
 
-// Resolve a SOCKET slot's card id: a staged pick for this exact slot beats
-// the wildcard (honoured only on the machine's FIRST socket, preserving the
-// single-pending era's semantics); both are honoured iff the named kind
-// physically fits the slot; the fallback is the declared default_card
-// (NULL = the socket ships empty).  Rejections log at level 0 so a bad pick
-// is visible by default instead of silently booting the wrong card.
-// *out_explicit reports whether the USER named the winner — the built-from
-// record keeps the two apart, because a default that cannot resolve its
-// declaration ROM degrades to an empty slot while an explicit one fails the
-// boot (machine_config_slot_card_t).
-static const char *socket_card_id(const nubus_slot_decl_t *s, bool is_first_socket, bool *out_explicit) {
-    *out_explicit = false;
-    const char *staged = nubus_staged_card_get(s->slot);
-    if (!staged && is_first_socket)
-        staged = nubus_staged_card_get(NUBUS_STAGED_WILDCARD);
-    if (staged) {
-        if (nubus_card_fits_socket(s, nubus_card_find(staged))) {
-            *out_explicit = true;
-            return staged;
-        }
-        LOG(0, "nubus: staged card '%s' does not fit slot $%X; using default '%s'", staged, s->slot,
-            s->default_card ? s->default_card : "(none)");
+bool nubus_card_fits_slot(const nubus_slot_decl_t *s, const nubus_card_kind_t *kind) {
+    if (!s || !kind)
+        return false;
+    if (s->kind == NUBUS_SLOT_SOCKET)
+        return nubus_card_fits_socket(s, kind);
+    if (s->kind != NUBUS_SLOT_BUILTIN || !s->builtin_card_id)
+        return false;
+    if (strcmp(s->builtin_card_id, kind->id) == 0)
+        return true;
+    // A sibling of the declared card: on-board too, and driving the same
+    // monitors (the SE/30's generic and real video).
+    const nubus_card_kind_t *declared = nubus_card_find(s->builtin_card_id);
+    return declared && kind->attach == CARD_ATTACH_BUILTIN && declared->monitors &&
+           kind->monitors == declared->monitors;
+}
+
+// Format a refusal into the caller's buffer and say no.
+__attribute__((format(printf, 3, 4))) static bool refuse(char *why, size_t len, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(why, len, fmt, ap);
+    va_end(ap);
+    return false;
+}
+
+bool nubus_slot_entry_check(const nubus_slot_decl_t *slots, const char *model, const slot_opts_t *e, bool roms_final,
+                            char *why, size_t why_len) {
+    const nubus_slot_decl_t *d = NULL;
+    for (const nubus_slot_decl_t *s = slots; s && s->slot; s++) {
+        if (s->slot == e->slot)
+            d = s;
     }
-    return s->default_card;
-}
-
-// The staged video-mode id for a SOCKET slot: this exact slot's entry, or
-// the wildcard's on the machine's first socket.
-static const char *socket_staged_mode(const nubus_slot_decl_t *s, bool is_first_socket) {
-    const char *mode = nubus_staged_mode_get(s->slot);
-    if (!mode && is_first_socket)
-        mode = nubus_staged_mode_get(NUBUS_STAGED_WILDCARD);
-    return mode;
-}
-
-// Route a staged video-mode id into the resolved card kind's pending-mode
-// channel — the per-driver static its factory consumes at init.  Validated
-// against the kind's own catalog so a mode staged for a different card is
-// skipped with a log rather than silently mis-seeding the slot PRAM.
-static void stage_mode_for_kind(int slot, const nubus_card_kind_t *kind, const char *mode) {
-    if (!mode || !*mode || !kind)
-        return;
-    if (kind->stage_video_mode && nubus_monitor_mode_lookup(kind->monitors, mode, NULL, NULL))
-        kind->stage_video_mode(mode);
-    else
-        LOG(0, "nubus: staged video_mode '%s' does not belong to slot $%X card '%s' — ignored", mode, slot, kind->id);
-}
-
-// Route a staged "WxHxD" custom resolution into the resolved kind's
-// pending-custom channel.  Only the generic JMFB kind honours it today —
-// it generates its declaration ROM at card_init and can boot its default
-// monitor at the custom geometry; the real-dump kinds carry fixed images,
-// and the other generic kinds are a follow-up.
-static void stage_custom_for_kind(int slot, const nubus_card_kind_t *kind, const char *spec) {
-    if (!spec || !*spec || !kind)
-        return;
-    // The last identity test in this file, kept DELIBERATELY.  Routing it
-    // through a kind hook would mean adding another staging seam, and the
-    // staging channel is slated to go outright -- the custom mode becomes a
-    // machine_build_opts_t field handed to the factory, at which point this
-    // function and jmfb.h's include above both go.  Making a condemned
-    // channel more polite is not worth a new hook.
-    if (kind == &jmfb_generic_kind)
-        jmfb_pending_custom_mode_set(spec);
-    else
-        LOG(0, "nubus: custom_mode '%s' unsupported on slot $%X card '%s' — ignored", spec, slot, kind->id);
+    if (!d || (d->kind != NUBUS_SLOT_SOCKET && d->kind != NUBUS_SLOT_BUILTIN))
+        return refuse(why, why_len, "NuBus slot $%X on model '%s' takes no card", e->slot, model);
+    const nubus_card_kind_t *k = NULL;
+    bool named = false;
+    if (e->empty) {
+        if (d->kind != NUBUS_SLOT_SOCKET)
+            return refuse(why, why_len, "NuBus slot $%X on model '%s' is built in and cannot be emptied", e->slot,
+                          model);
+    } else if (e->card[0]) {
+        k = nubus_card_find(e->card);
+        if (!k) {
+            const char *near = nubus_card_suggest(e->card);
+            if (near)
+                return refuse(why, why_len, "unknown card id '%s' — did you mean '%s'? (see catalog.nubus_cards)",
+                              e->card, near);
+            return refuse(why, why_len, "unknown card id '%s' (see catalog.nubus_cards)", e->card);
+        }
+        if (!nubus_card_fits_slot(d, k))
+            return refuse(why, why_len,
+                          "card '%s' fits no slot on model '%s' (see catalog.profile(\"%s\").video_slots)", e->card,
+                          model, model);
+        named = d->kind == NUBUS_SLOT_SOCKET;
+    } else {
+        k = nubus_card_find(d->kind == NUBUS_SLOT_SOCKET ? d->default_card : d->builtin_card_id);
+    }
+    if (e->video_mode[0]) {
+        if (!nubus_video_mode_known(e->video_mode))
+            return refuse(why, why_len, "unknown video-mode id '%s'", e->video_mode);
+        if (!k || !nubus_monitor_mode_lookup(k->monitors, e->video_mode, NULL, NULL))
+            return refuse(why, why_len, "video mode '%s' does not belong to slot $%X's card '%s'", e->video_mode,
+                          e->slot, k ? k->id : "(none)");
+    }
+    if (e->custom_mode[0]) {
+        const char *bad = NULL;
+        uint32_t w = 0, h = 0, depth = 0;
+        if (!nubus_custom_mode_parse(e->custom_mode, &w, &h, &depth, &bad))
+            return refuse(why, why_len, "custom_mode '%s' invalid: %s", e->custom_mode, bad);
+        if (!k || !k->custom_mode_fits)
+            return refuse(why, why_len, "slot $%X's card '%s' takes no custom geometry", e->slot, k ? k->id : "(none)");
+        if (!k->custom_mode_fits(w, h, depth, &bad))
+            return refuse(why, why_len, "custom_mode '%s' on slot $%X's card '%s': %s", e->custom_mode, e->slot, k->id,
+                          bad);
+    }
+    if (e->n_options)
+        return refuse(why, why_len, "slot $%X's card '%s' takes no option '%s'", e->slot, k ? k->id : "(none)",
+                      e->options[0].key);
+    if (e->rom[0]) {
+        vrom_id_t vid;
+        if (!vrom_identify_card(e->rom, &vid))
+            return refuse(why, why_len, "vrom '%s' is not a recognised declaration ROM", e->rom);
+        if (!k || strcmp(vid.card_id, k->id) != 0)
+            return refuse(why, why_len, "vrom '%s' is for card '%s', not slot $%X's '%s'", e->rom, vid.card_id, e->slot,
+                          k ? k->id : "(none)");
+    }
+    // A card the document named must resolve its declaration ROM before the
+    // running machine is touched; a slot's own default degrades to an empty
+    // slot with a log, and a built-in card owns its fallback (the SE/30
+    // synthesises its onboard vROM).
+    if (roms_final && named && k && vrom_card_catalogued(k->id) &&
+        !vrom_card_resolvable(k->id, e->rom[0] ? e->rom : NULL))
+        return refuse(why, why_len, "card '%s' (slot $%X) needs a declaration ROM but no offered vROM file provides it",
+                      k->id, e->slot);
+    return true;
 }
 
 // === Bus controller =========================================================
+
+// The largest declaration-ROM chip a card's block may carry (the 8•24 GC
+// v1.1's 64 KB).
+#define CARD_ROM_MAX (64u * 1024u)
+
+// A card's block: the declaration ROM it runs -- its source path and the chip
+// image, empty for a generated ROM -- then the card's own state.  The image
+// is always in the block, so a checkpoint restores the card it was saved with
+// whatever ROM files the host offers now.
+static void nubus_card_part_save(void *obj, checkpoint_t *cp) {
+    nubus_card_t *card = obj;
+    bool file_backed = card->rom_chip && card->rom_chip_size;
+    checkpoint_write_string(cp, file_backed ? card->rom_path : NULL);
+    uint32_t size = file_backed ? (uint32_t)card->rom_chip_size : 0;
+    system_write_checkpoint_data(cp, &size, sizeof size, "card.rom");
+    if (size)
+        system_write_checkpoint_data(cp, card->rom_chip, size, "card.rom");
+    if (card->ops->checkpoint_save)
+        card->ops->checkpoint_save(card, cp);
+}
+
+// Read the ROM a card's block carries: none (*size 0, a generated ROM) or a
+// bounded chip image.  False when the block is malformed.
+static bool read_card_rom(checkpoint_t *cp, int slot, uint8_t **out, size_t *size, char **path) {
+    *out = NULL;
+    *size = 0;
+    *path = checkpoint_read_string(cp, CHECKPOINT_MAX_PATH, "card ROM path");
+    uint32_t n = 0;
+    system_read_checkpoint_data(cp, &n, sizeof n, "card.rom");
+    if (checkpoint_has_error(cp))
+        return false;
+    if (!n)
+        return true;
+    if (n > CARD_ROM_MAX) {
+        LOG(0, "Error: the checkpoint's slot $%X card ROM is %u bytes (at most %u)", slot, n, CARD_ROM_MAX);
+        return false;
+    }
+    *out = malloc(n);
+    if (!*out)
+        return false;
+    system_read_checkpoint_data(cp, *out, n, "card.rom");
+    *size = n;
+    return !checkpoint_has_error(cp);
+}
+
+// A restore's slot table is a file the user supplied: every entry that seats
+// a card goes through the checks machine.boot applies to a document's, bar
+// the ROM file (the card's ROM comes from its own block, not from a path).  A
+// bad entry fails the restore, naming the slot.
+static bool slot_table_valid(slot_opts_t *seated, const nubus_slot_decl_t *slots, const char *model) {
+    for (int n = 0; n < NUBUS_MAX_SLOTS; n++) {
+        slot_opts_t *e = &seated[n];
+        if (!slot_opts_sanitize(e, n)) {
+            LOG(0, "Error: the checkpoint's NuBus slot $%X entry is malformed", n);
+            return false;
+        }
+        if (!e->card[0])
+            continue;
+        slot_opts_t check = *e;
+        check.rom[0] = '\0';
+        char why[256];
+        if (!nubus_slot_entry_check(slots, model, &check, false, why, sizeof why)) {
+            LOG(0, "Error: the checkpoint's NuBus slot $%X: %s", n, why);
+            return false;
+        }
+    }
+    return true;
+}
+
+static void nubus_slots_part_save(void *obj, checkpoint_t *cp) {
+    nubus_bus_t *bus = obj;
+    system_write_checkpoint_data(cp, bus->seated, sizeof(bus->seated), "nubus");
+}
 
 nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoint_t *cp) {
     if (!cfg)
@@ -384,111 +433,102 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
     bus->cfg = cfg;
     bus->slots = slots;
 
-    // Walk the slot table.  BUILTIN slots resolve their card via
-    // nubus_card_find(.builtin_card_id); each SOCKET resolves its staged
-    // pick (or default) independently, so a machine boots as many cards as
-    // its sockets carry configuration for (multi-display).
-    if (slots) {
-        // The machine's first SOCKET — the slot the WILDCARD staged entry
-        // (the `machine.nubus.video_card` alias) applies to.
-        int first_socket = -1;
+    // What each slot seats.  A boot takes the document's entry (validated
+    // before anything was built), else the slot's declared builtin / default
+    // card, so a machine boots as many cards as its sockets carry
+    // configuration for (multi-display).  The monitor sense the document
+    // chose goes into every entry: the cards that have a sense line read it
+    // from there.  A restore takes the entries from the bus's own block.
+    machine_part_begin(cfg, cp, "nubus");
+    if (cp) {
+        system_read_checkpoint_data(cp, bus->seated, sizeof(bus->seated), "nubus");
+        if (!slot_table_valid(bus->seated, slots, cfg->machine->id))
+            checkpoint_set_error(cp);
+    } else if (slots) {
         for (const nubus_slot_decl_t *s = slots; s->slot != 0; s++) {
-            if (s->kind == NUBUS_SLOT_SOCKET) {
-                first_socket = s->slot;
-                break;
-            }
-        }
-        for (const nubus_slot_decl_t *s = slots; s->slot != 0; s++) {
-            const nubus_card_kind_t *kind = NULL;
-            const char *staged_mode = NULL;
-            bool explicit_pick = false; // did the USER name this card?
-            switch (s->kind) {
-            case NUBUS_SLOT_BUILTIN: {
-                // A BUILTIN slot boots its declared card, but a staged pick
-                // (video_card= — this exact slot, or the wildcard on a
-                // machine with no sockets) may substitute another BUILTIN-
-                // attach sibling: this is how the SE/30 chooses between its
-                // generic default and the real-vROM kind.
-                const char *staged = nubus_staged_card_get(s->slot);
-                if (!staged && first_socket < 0)
-                    staged = nubus_staged_card_get(NUBUS_STAGED_WILDCARD);
-                if (staged) {
-                    const nubus_card_kind_t *k = nubus_card_find(staged);
-                    if (k && k->attach == CARD_ATTACH_BUILTIN) {
-                        kind = k;
-                        explicit_pick = true;
-                    } else
-                        LOG(0, "nubus: staged card '%s' cannot replace builtin slot $%X; using '%s'", staged, s->slot,
-                            s->builtin_card_id);
-                }
-                if (!kind)
-                    kind = nubus_card_find(s->builtin_card_id);
-                staged_mode = (first_socket < 0) ? nubus_staged_mode_get(NUBUS_STAGED_WILDCARD) : NULL;
-                if (!staged_mode)
-                    staged_mode = nubus_staged_mode_get(s->slot);
-                break;
-            }
-            case NUBUS_SLOT_SOCKET:
-                kind = nubus_card_find(socket_card_id(s, s->slot == first_socket, &explicit_pick));
-                staged_mode = socket_staged_mode(s, s->slot == first_socket);
-                break;
-            case NUBUS_SLOT_ABSENT:
-            case NUBUS_SLOT_EMPTY:
+            if (s->slot < 0 || s->slot >= NUBUS_MAX_SLOTS)
                 continue;
-            }
-            if (!kind || !kind->ops || !kind->ops->init)
-                continue;
-            // Route this slot's staged video mode into the kind's pending
-            // channel immediately before its factory consumes it, so each
-            // socket's mode seeds its own card even with several sockets.
-            if (staged_mode)
-                stage_mode_for_kind(s->slot, kind, staged_mode);
-            // Likewise for a staged custom resolution: the generic display
-            // kinds generate a sResource for it and boot at its geometry.
-            // Wildcard applies to the first socket / a socketless machine's
-            // builtin, same as the mode channel.
-            const char *staged_custom = nubus_staged_custom_mode_get(s->slot);
-            if (!staged_custom && s->slot == first_socket)
-                staged_custom = nubus_staged_custom_mode_get(NUBUS_STAGED_WILDCARD);
-            if (!staged_custom && first_socket < 0)
-                staged_custom = nubus_staged_custom_mode_get(NUBUS_STAGED_WILDCARD);
-            if (staged_custom)
-                stage_custom_for_kind(s->slot, kind, staged_custom);
-            bus->slot_kind[s->slot] = kind;
-            // The bus owns the allocation, so `bus` and `slot` are populated
-            // BEFORE init runs -- a card may assert its slot IRQ, or touch any
-            // other bus service, from card_init.
-            nubus_card_t *card = calloc(1, sizeof(*card));
-            if (!card) {
-                LOG(0, "nubus: out of memory seating slot $%X card '%s'", s->slot, kind->id ? kind->id : "?");
-                continue;
-            }
-            card->ops = kind->ops;
-            card->bus = bus;
-            card->slot = s->slot;
-            if (card->ops->init(card, cfg, cp) != 0) {
-                // Typically a missing/invalid VROM file or out of memory.  Log
-                // it, so a boot-time failure does not manifest later as "the
-                // card is missing for unclear reasons".
-                LOG(1, "nubus: slot $%X card '%s' failed to initialise", s->slot, kind->id ? kind->id : "?");
-                free(card);
-                continue;
-            }
-            if (s->slot >= 0 && s->slot < NUBUS_MAX_SLOTS)
-                bus->cards[s->slot] = card;
-            // Capture the RESOLVED pick in the built-from record, so
-            // machine.restart re-seats every populated slot and not just
-            // the wildcard one.
-            machine_config_note_slot_card(MC_BUS_NUBUS, s->slot, kind->id, explicit_pick);
+            slot_opts_t *seat = &bus->seated[s->slot];
+            const slot_opts_t *entry = machine_build_opts_slot(&cfg->build_opts, s->slot);
+            if (entry)
+                *seat = *entry;
+            seat->slot = s->slot;
+            seat->video_sense = machine_slot_sense(&cfg->build_opts);
+            if (s->kind != NUBUS_SLOT_BUILTIN && s->kind != NUBUS_SLOT_SOCKET)
+                seat->empty = true;
+            const char *declared = s->kind == NUBUS_SLOT_BUILTIN ? s->builtin_card_id : s->default_card;
+            if (!seat->empty && !seat->card[0] && declared)
+                snprintf(seat->card, sizeof seat->card, "%s", declared);
         }
     }
-    // Consume the whole staged table so a stale selection doesn't leak
-    // into the next machine.boot (mirrors jmfb's pending-sense reset).
-    staged_clear_all();
-    // Project the declared slots into the object model:
-    // machine.nubus.slot[N].card.{framebuffer,declrom,clut,mode,…} for
-    // populated slots, staged card_id/video_mode attrs on empty sockets.
-    nubus_objects_build(bus);
+    machine_part(cfg, cp, "nubus", nubus_slots_part_save, bus);
+
+    for (int n = 0; slots && n < NUBUS_MAX_SLOTS; n++) {
+        slot_opts_t *seat = &bus->seated[n];
+        if (seat->empty || !seat->card[0])
+            continue;
+        const nubus_card_kind_t *kind = nubus_card_find(seat->card);
+        if (!kind || !kind->ops || !kind->ops->init) {
+            seat->empty = true;
+            continue;
+        }
+        bus->slot_kind[n] = kind;
+        // The bus owns the allocation, so `bus` and `slot` are populated
+        // BEFORE init runs -- a card may assert its slot IRQ, or touch any
+        // other bus service, from card_init.
+        nubus_card_t *card = calloc(1, sizeof(*card));
+        if (!card) {
+            LOG(0, "nubus: out of memory seating slot $%X card '%s'", n, kind->id ? kind->id : "?");
+            bus->slot_kind[n] = NULL;
+            seat->empty = true;
+            continue;
+        }
+        card->ops = kind->ops;
+        card->bus = bus;
+        card->slot = n;
+
+        // Each card is a part of its own, after the slot table: on a restore
+        // its block gives the declaration ROM it runs, which init takes, and
+        // then its state.
+        char part[32];
+        snprintf(part, sizeof part, "nubus.slot.%X", n);
+        machine_part_begin(cfg, cp, part);
+        uint8_t *rom = NULL;
+        char *rom_path = NULL;
+        if (cp && !read_card_rom(cp, n, &rom, &card->restored_rom.size, &rom_path))
+            checkpoint_set_error(cp);
+        card->restored_rom.data = rom;
+        card->restored_rom.path = rom_path;
+        int rc = card->ops->init(card, cfg, cp, seat);
+        card->restored_rom = (rom_image_t){0};
+        free(rom);
+        free(rom_path);
+        if (rc != 0) {
+            // Typically a missing/invalid VROM file or out of memory.  Log
+            // it, so a boot-time failure does not manifest later as "the
+            // card is missing for unclear reasons".  A restore cannot go on
+            // without a card its checkpoint carries.
+            LOG(1, "nubus: slot $%X card '%s' failed to initialise", n, kind->id ? kind->id : "?");
+            if (cp) {
+                LOG(0, "Error: the checkpoint's slot $%X card '%s' could not be built", n, kind->id ? kind->id : "?");
+                checkpoint_set_error(cp);
+            }
+            machine_part_cancel(cfg);
+            free(card->rom_path);
+            free(card->rom_chip);
+            free(card);
+            bus->slot_kind[n] = NULL;
+            seat->empty = true;
+            continue;
+        }
+        bus->cards[n] = card;
+        if (cp && card->ops->checkpoint_restore)
+            card->ops->checkpoint_restore(card, cp);
+        machine_part(cfg, cp, part, nubus_card_part_save, card);
+    }
+    // The object model's machine.nubus tree is built when the machine becomes
+    // the active one (system_swap_in), not here: a build that fails must leave
+    // the running machine's tree alone.
     return bus;
 }
 
@@ -506,6 +546,8 @@ void nubus_delete(nubus_bus_t *bus) {
         if (card->ops && card->ops->teardown)
             card->ops->teardown(card, bus->cfg);
         free(card->declrom);
+        free(card->rom_path);
+        free(card->rom_chip);
         free(card);
         bus->cards[i] = NULL;
     }
@@ -532,32 +574,6 @@ const nubus_card_kind_t *nubus_slot_kind(nubus_bus_t *bus, int slot) {
     if (!bus || slot < 0 || slot >= NUBUS_MAX_SLOTS)
         return NULL;
     return bus->slot_kind[slot];
-}
-
-// Serialise every seated card that implements the hooks, in slot order.
-//
-// Save and restore walk the slots identically, and a machine restores with the
-// same slot table it saved with (the built-from record pins the staging), so
-// the stream stays in step without any per-card tagging.  Cards that do not
-// implement the hooks contribute nothing, exactly as before.
-void nubus_checkpoint_save(nubus_bus_t *bus, checkpoint_t *cp) {
-    if (!bus || !cp)
-        return;
-    for (int i = 0; i < NUBUS_MAX_SLOTS; i++) {
-        nubus_card_t *card = bus->cards[i];
-        if (card && card->ops && card->ops->checkpoint_save)
-            card->ops->checkpoint_save(card, cp);
-    }
-}
-
-void nubus_checkpoint_restore(nubus_bus_t *bus, checkpoint_t *cp) {
-    if (!bus || !cp)
-        return;
-    for (int i = 0; i < NUBUS_MAX_SLOTS; i++) {
-        nubus_card_t *card = bus->cards[i];
-        if (card && card->ops && card->ops->checkpoint_restore)
-            card->ops->checkpoint_restore(card, cp);
-    }
 }
 
 display_t *nubus_primary_display(nubus_bus_t *bus) {

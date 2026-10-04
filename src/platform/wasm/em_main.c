@@ -14,7 +14,6 @@
 
 #include <assert.h>
 #include <ctype.h>
-#include <dirent.h>
 #include <emscripten.h>
 #include <emscripten/atomic.h>
 #include <emscripten/emscripten.h>
@@ -55,6 +54,7 @@
 #include "prom.h"
 #include "scheduler.h"
 #include "shell.h"
+#include "storage_util.h"
 #include "system.h"
 #include "vrom.h"
 
@@ -66,7 +66,8 @@ static void em_assertion_callback(const char *kind, const char *expr, const char
 
 // The always-present AppleShare volume.  The path literal lives here, in the
 // platform layer, because core never fabricates or interprets a path (PR #69);
-// core publishes it after every machine build (system_set_default_share).
+// the AppleTalk network publishes it once, at startup
+// (system_set_default_share), for every machine that plugs in.
 // Under OPFS the directory — and the AppleDouble sidecars the AFP server
 // writes beside each file — persist across page reloads for free.
 #define GS_DEFAULT_SHARE_PATH "/opfs/shared"
@@ -251,6 +252,19 @@ static int tick_counter = 0;
 static int checkpoint_tick_counter = 0;
 static bool checkpoint_auto_enabled = true; // Can be disabled for tests
 static double last_time = 0;
+// The page's pacing (the toolbar, ?speed=, scheduler.mode / speed /
+// max_speed): host state, so it outlives every machine, is never in a
+// checkpoint, and reaches the machine only as the run loop's argument.
+static host_pacing_t s_pacing = HOST_PACING_DEFAULT;
+
+host_pacing_t *platform_pacing(void) {
+    return &s_pacing;
+}
+
+// The instruction count at the last perf sample (MIPS is the delta).
+static uint64_t last_instr = 0;
+// The activity lights' state and the counter baselines they compare against.
+static drive_activity_t lights;
 static double ticks_per_second = 0;
 
 // Per-tick wall-clock samples for the last PERF_UPDATE_INTERVAL ticks: the
@@ -426,7 +440,6 @@ void em_main_tick(void) {
     if (tick_counter % PERF_UPDATE_INTERVAL == 0) {
         double current_time = emscripten_get_now();
         uint64_t instr_now = cpu_instr_count();
-        static uint64_t last_instr = 0;
 
         if (last_time > 0) {
             double elapsed_ms = current_time - last_time;
@@ -459,7 +472,7 @@ void em_main_tick(void) {
             }
         }
 
-        scheduler_main_loop(global_emulator, now); // Pass milliseconds
+        scheduler_main_loop(global_emulator, now, &s_pacing); // Pass milliseconds
 
         // Update video if framebuffer changed
         em_video_update();
@@ -499,7 +512,6 @@ void em_main_tick(void) {
     // state edge only: the counters are sampled here, once per tick, and
     // drive_activity_update holds a light on for its minimum visible time.
     {
-        static drive_activity_t lights;
         uint64_t reads[DRIVE_KIND_COUNT], writes[DRIVE_KIND_COUNT];
         system_drive_io_counts(reads, writes);
         unsigned changed = drive_activity_update(&lights, reads, writes, emscripten_get_now());
@@ -510,6 +522,22 @@ void em_main_tick(void) {
                            (int)lights.light[k]);
         }
     }
+}
+
+// A new machine is the active one (platform hook, system.h).  Nothing sampled
+// from the previous machine is compared with this one: the MIPS meter skips
+// the sample that would straddle the change, and the activity lights go dark
+// and take their baselines from the new machine's counters.
+void platform_machine_attached(void) {
+    last_time = 0; // the next perf sample only sets the baseline
+    last_instr = cpu_instr_count();
+    for (int k = 0; k < DRIVE_KIND_COUNT; k++) {
+        if (lights.light[k] != DRIVE_LIGHT_IDLE)
+            gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"drive_activity\",\"kind\":%d,\"state\":%d}", k,
+                           (int)DRIVE_LIGHT_IDLE);
+    }
+    memset(&lights, 0, sizeof(lights));
+    em_video_machine_attached();
 }
 
 // Exposed tick wrapper for Emscripten main loop.  Times the whole tick and
@@ -579,13 +607,13 @@ void laserwriter_ring_notify(volatile uint32_t *addr) {
 }
 
 // ============================================================================
-// Downloads: a file (or a buffer) to the page, in staged chunks
+// Downloads: a file (or a buffer) to the page, through a transfer buffer
 // ============================================================================
 // An I/O job (io/io_worker.h) reads the file GS_DL_CHUNK bytes at a time
 // into a buffer the page can see; each chunk is announced to the page as
 // EVT_NOTIFY {"event":"download_chunk","id":req,"handle":h,"ptr":p,
 // "len":n,"last":0|1,"name":...} (a note the emulator thread turns into the
-// event: mailbox.h, staged buffers), the page copies the bytes into a Blob
+// event: mailbox.h, transfer buffers), the page copies the bytes into a Blob
 // part and answers REQ_ACK_BUF {handle}, and the worker refills.  Neither
 // the emulator thread nor the page ever waits on the other; a page that
 // never acks times the JOB out (GS_DL_ACK_MS), not the machine.  This
@@ -601,7 +629,7 @@ typedef struct {
     char name[256]; // the download's file name
     uint32_t token; // the deferral (0: answering now)
     uint32_t io_id; // the worker job
-    uint32_t handle; // the staged buffer (published on the first chunk)
+    uint32_t handle; // the transfer buffer (published on the first chunk)
     uint8_t *buf; // GS_DL_CHUNK bytes
     uint32_t req_id; // the request, named in the events
     uint64_t total;
@@ -680,10 +708,10 @@ static void download_note(const char *json, void *ud) {
     int last = 0;
     sscanf(json, "{\"chunk\":%u,\"last\":%d}", &n, &last);
     if (!d->handle)
-        d->handle = gs_staged_publish(d->buf, GS_DL_CHUNK, d->io_id);
+        d->handle = gs_transfer_publish(d->io_id);
     if (!d->handle) {
-        // No room in the staged table: the job times out on its ack.
-        printf("download: no staged buffer for '%s'\n", d->name);
+        // No room in the transfer table: the job times out on its ack.
+        printf("download: no transfer buffer for '%s'\n", d->name);
         return;
     }
     gs_event_emitf(GS_EVENT_NOTIFY,
@@ -700,7 +728,7 @@ static void download_progress(uint64_t done, uint64_t total, void *ud) {
 
 static void download_free(download_job_t *d) {
     if (d->handle)
-        gs_staged_release(d->handle);
+        gs_transfer_release(d->handle);
     free(d->buf);
     free(d->bytes);
     free(d->path);
@@ -839,29 +867,15 @@ static void install_background_checkpoint_handlers(void) {
     g_background_handlers_installed = true;
 }
 
-// A streamed image import writes /opfs/upload/<name>.dmg.part and moves it
-// into /opfs/images only when it is complete and valid, and Save State
-// stages its file there while the download is made; one a closed tab or a
-// crash left behind is never finished, and costs its size in the origin's
-// quota until removed.
-static void sweep_partial_imports(const char *dir) {
-    DIR *d = opendir(dir);
-    if (!d)
-        return;
-    struct dirent *e;
-    while ((e = readdir(d)) != NULL) {
-        size_t n = strlen(e->d_name);
-        bool part = (n > 9 && strcmp(e->d_name + n - 9, ".dmg.part") == 0) ||
-                    (n > 12 && strcmp(e->d_name + n - 12, ".dmg.part.re") == 0) ||
-                    strncmp(e->d_name, "saved-state-", 12) == 0; // a Save State being downloaded
-        if (!part)
-            continue;
-        char path[PATH_MAX];
-        snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
-        unlink(path);
-    }
-    closedir(d);
-}
+// The web app's scratch area (app/web2 lib/opfsPaths.ts SCRATCH_DIR): every
+// file the page writes on its way somewhere else -- an upload being probed, a
+// URL download, a streamed import's .dmg.part, a Save State being downloaded
+// -- lives there, in its tab's own part, and the operation that wrote it
+// removes it on every exit.  The page clears what no live tab holds
+// (bus/scratch.ts): the core cannot tell a closed tab's part from another
+// open tab's, so it only makes sure the directory exists.  The rest of
+// /opfs/upload is the user's, and is not touched.
+#define SCRATCH_DIR "/opfs/upload/.scratch"
 
 // ============================================================================
 // Exported Runtime Query Functions (for tests and diagnostics)
@@ -894,7 +908,7 @@ int main(void) {
     mkdir("/opfs/images/cd", 0777);
     mkdir("/opfs/checkpoints", 0777);
     mkdir("/opfs/upload", 0777);
-    sweep_partial_imports("/opfs/upload");
+    mkdir(SCRATCH_DIR, 0777);
 
     // Offer every file in the persistent vROM store to the core's content-
     // addressed registry (names are irrelevant — each offer is identified by

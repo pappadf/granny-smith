@@ -14,9 +14,6 @@
 const char *macos_atrap_name(uint16_t trap);
 
 // Initializes the Mac debug subsystem
-void debug_mac_init(void);
-struct scheduler;
-void debug_mac_register_scheduler_events(struct scheduler *sched);
 
 // Prints process information (same as 'pi' debugger command)
 void debug_mac_print_process_info(void);
@@ -39,7 +36,16 @@ void debug_mac_print_process_info_header(void);
 // === Public mouse / trace control ===========================================
 //
 // Backing entry points used by the typed `mouse.move` / `mouse.click` /
-// `mouse.trace` root methods.
+// `mouse.trace` root methods.  The MTemp guard and the trace are scheduler
+// events whose source is the machine's host_input object (host_input.h),
+// which registers the two callbacks below at construction.
+
+struct host_input;
+
+// The guard's 1 kHz re-pin and the trace's 1 Hz sample.  Scheduler event
+// callbacks; the payload is their whole state.
+void debug_mac_mouse_guard_tick(void *source, uint64_t data);
+void debug_mac_mouse_trace_tick(void *source, uint64_t data);
 
 // Set mouse position with explicit routing mode. Mode chars:
 //   'g' = global (Mac OS Toolbox MTemp + MTemp guard)
@@ -47,16 +53,15 @@ void debug_mac_print_process_info_header(void);
 //   'a' = aux (A/UX MAE physical-page write)
 //   else = default (per-platform best route)
 // Returns 0 on success, -1 if the memory system isn't initialised.
-int debug_mac_set_mouse_mode(long x, long y, char mode);
+int debug_mac_set_mouse_mode(struct host_input *hi, long x, long y, char mode);
 
 // Inject a mouse button event with explicit routing mode.
 //   'g' = global (write MBState directly)
 //   else = hw / default (route through ADB/VIA PB3)
 void debug_mac_mouse_button_mode(bool button_down, char mode);
 
-// Toggle the 1 Hz mouse-position trace logger. Equivalent to
-// `trace-mouse start` / `trace-mouse stop`.
-void debug_mac_set_trace_mouse(bool enabled);
+// Toggle the 1 Hz mouse-position trace logger on the machine `hi` belongs to.
+void debug_mac_set_trace_mouse(struct host_input *hi, bool enabled);
 
 // Resolve a key name (e.g. "return", "esc", "0x24") to an ADB
 // keycode (0..0x7F). Returns -1 if the name doesn't match any

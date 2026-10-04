@@ -90,14 +90,20 @@ struct asp_session {
 };
 
 #define MAX_ASP_SESS ATALK_ASP_MAX_SESSIONS
-static asp_session_t g_sessions[MAX_ASP_SESS];
-static uint32_t g_next_sess_ref = 0x0021; // atalk_id_alloc cursors
-static uint32_t g_next_sess_id = 1;
+
+struct asp_link {
+    asp_session_t sessions[MAX_ASP_SESS];
+    uint32_t next_sess_ref; // atalk_id_alloc cursors
+    uint32_t next_sess_id;
+    atalk_timer_t sweep_timer; // idle-session expiry, armed while any session is open
+};
+
+// The link of the connection plugged into the network, NULL while none is.
+static asp_link_t *g_asp;
 
 static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx);
 static void asp_arm_session_sweep(void);
 static void asp_sweep_cb(void *source, uint64_t data);
-static atalk_timer_t g_asp_sweep_timer; // idle-session expiry, armed while any session is open
 
 // === The client ===============================================================
 
@@ -122,7 +128,7 @@ static uint32_t asp_client_command(uint16_t session_ref, uint8_t opcode, const u
 static bool sess_ref_in_use(uint32_t ref, const void *ctx) {
     (void)ctx;
     for (int i = 0; i < MAX_ASP_SESS; i++)
-        if (g_sessions[i].in_use && g_sessions[i].sess_ref == ref)
+        if (g_asp->sessions[i].in_use && g_asp->sessions[i].sess_ref == ref)
             return true;
     return false;
 }
@@ -130,7 +136,7 @@ static bool sess_ref_in_use(uint32_t ref, const void *ctx) {
 static bool sess_id_in_use(uint32_t id, const void *ctx) {
     (void)ctx;
     for (int i = 0; i < MAX_ASP_SESS; i++)
-        if (g_sessions[i].in_use && g_sessions[i].sess_id == id)
+        if (g_asp->sessions[i].in_use && g_asp->sessions[i].sess_id == id)
             return true;
     return false;
 }
@@ -143,7 +149,7 @@ static bool sess_id_in_use(uint32_t id, const void *ctx) {
 // guessing one byte.
 static asp_session_t *asp_find(uint8_t sess_id, const ddp_header_t *ddp) {
     for (int i = 0; i < MAX_ASP_SESS; i++) {
-        asp_session_t *s = &g_sessions[i];
+        asp_session_t *s = &g_asp->sessions[i];
         if (s->in_use && s->sess_id == sess_id && s->client_node == ddp->llap.src)
             return s;
     }
@@ -151,9 +157,11 @@ static asp_session_t *asp_find(uint8_t sess_id, const ddp_header_t *ddp) {
 }
 
 static asp_session_t *asp_by_ref(uint16_t ref) {
+    if (!g_asp)
+        return NULL;
     for (int i = 0; i < MAX_ASP_SESS; i++)
-        if (g_sessions[i].in_use && g_sessions[i].sess_ref == ref)
-            return &g_sessions[i];
+        if (g_asp->sessions[i].in_use && g_asp->sessions[i].sess_ref == ref)
+            return &g_asp->sessions[i];
     return NULL;
 }
 
@@ -176,13 +184,16 @@ static void asp_session_release(asp_session_t *s) {
         g_client->on_close(g_client_ctx, ref);
 }
 
-// Session numbering travels in the stack's checkpoint record.
-uint16_t asp_next_ref(void) {
-    return (uint16_t)g_next_sess_ref;
+// Session numbering travels in the connection's checkpoint block.
+void asp_link_numbering(const asp_link_t *link, uint16_t *next_ref, uint8_t *next_id) {
+    *next_ref = (uint16_t)link->next_sess_ref;
+    *next_id = (uint8_t)link->next_sess_id;
 }
-void asp_set_next_ref(uint16_t ref) {
-    if (ref)
-        g_next_sess_ref = ref;
+void asp_link_set_numbering(asp_link_t *link, uint16_t next_ref, uint8_t next_id) {
+    if (next_ref)
+        link->next_sess_ref = next_ref;
+    if (next_id)
+        link->next_sess_id = next_id;
 }
 
 // === ASP session views, attention and expiry ================================
@@ -193,13 +204,13 @@ int atalk_asp_session_max(void) {
 }
 
 bool atalk_asp_session_in_use(int index) {
-    return index >= 0 && index < MAX_ASP_SESS && g_sessions[index].in_use;
+    return g_asp && index >= 0 && index < MAX_ASP_SESS && g_asp->sessions[index].in_use;
 }
 
 bool atalk_asp_session_info(int index, atalk_session_info_t *out) {
     if (!atalk_asp_session_in_use(index) || !out)
         return false;
-    const asp_session_t *s = &g_sessions[index];
+    const asp_session_t *s = &g_asp->sessions[index];
     memset(out, 0, sizeof(*out));
     out->session_ref = s->sess_ref;
     out->client_node = s->client_node;
@@ -237,14 +248,18 @@ int atalk_asp_send_attention(uint16_t session_ref, uint16_t code) {
 }
 
 void atalk_asp_broadcast_attention(uint16_t code) {
+    if (!g_asp)
+        return;
     for (int i = 0; i < MAX_ASP_SESS; i++)
-        if (g_sessions[i].in_use)
-            atalk_asp_send_attention(g_sessions[i].sess_ref, code);
+        if (g_asp->sessions[i].in_use)
+            atalk_asp_send_attention(g_asp->sessions[i].sess_ref, code);
 }
 
 void atalk_asp_close_all_sessions(void) {
+    if (!g_asp)
+        return;
     for (int i = 0; i < MAX_ASP_SESS; i++)
-        asp_session_release(&g_sessions[i]);
+        asp_session_release(&g_asp->sessions[i]);
 }
 
 // Close every session that has gone quiet past the ASP timeout, returning
@@ -252,7 +267,7 @@ void atalk_asp_close_all_sessions(void) {
 static void asp_expire_sessions(void) {
     uint64_t now = atalk_now_ns();
     for (int i = 0; i < MAX_ASP_SESS; i++) {
-        asp_session_t *s = &g_sessions[i];
+        asp_session_t *s = &g_asp->sessions[i];
         if (!s->in_use || now < s->last_activity_ns + ASP_SESSION_TIMEOUT_NS)
             continue;
         LOG(1, "ASP: session 0x%04X expired after %llu s of silence", s->sess_ref,
@@ -263,7 +278,7 @@ static void asp_expire_sessions(void) {
 
 // Scheduler callback: expire stale sessions and re-arm while any remain.
 static void asp_sweep_cb(void *source, uint64_t data) {
-    (void)source;
+    (void)source; // the plugged link's timer: only its timers are registered
     (void)data;
     asp_expire_sessions();
     asp_arm_session_sweep();
@@ -272,10 +287,10 @@ static void asp_sweep_cb(void *source, uint64_t data) {
 static void asp_arm_session_sweep(void) {
     bool any = false;
     for (int i = 0; i < MAX_ASP_SESS; i++)
-        any |= g_sessions[i].in_use;
+        any |= g_asp->sessions[i].in_use;
     if (!any)
         return; // nothing to watch; the next OpenSess re-arms
-    atalk_timer_arm(&g_asp_sweep_timer, 0, ASP_SESSION_SWEEP_NS);
+    atalk_timer_arm(&g_asp->sweep_timer, 0, ASP_SESSION_SWEEP_NS);
 }
 
 // === Replies =====================================================================
@@ -478,10 +493,10 @@ static void asp_open_session(const ddp_header_t *ddp, const atp_packet_t *atp) {
         err = ASP_ERR_BAD_VERS_NUM;
     } else {
         for (int i = 0; i < MAX_ASP_SESS && !s; i++)
-            if (!g_sessions[i].in_use)
-                s = &g_sessions[i];
-        if (!s || !atalk_id_alloc(&g_next_sess_ref, 1, 0xFFFF, sess_ref_in_use, NULL, &ref) ||
-            !atalk_id_alloc(&g_next_sess_id, 1, 255, sess_id_in_use, NULL, &id)) {
+            if (!g_asp->sessions[i].in_use)
+                s = &g_asp->sessions[i];
+        if (!s || !atalk_id_alloc(&g_asp->next_sess_ref, 1, 0xFFFF, sess_ref_in_use, NULL, &ref) ||
+            !atalk_id_alloc(&g_asp->next_sess_id, 1, 255, sess_id_in_use, NULL, &id)) {
             err = ASP_ERR_SERVER_BUSY;
             s = NULL;
         } else if (g_client && g_client->on_open && !g_client->on_open(g_client_ctx, (uint16_t)ref)) {
@@ -595,22 +610,42 @@ static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
 // === Lifecycle ==================================================================
 
 // Forget every session and every pending write without calling back: the
-// machine is going away (its ATP requests are dropped with it), or coming up.
-static void asp_reset(void) {
+// connection is being unplugged (its ATP requests are dropped with it).
+static void asp_reset(asp_link_t *link) {
     for (int i = 0; i < MAX_ASP_SESS; i++)
-        free(g_sessions[i].write);
-    memset(g_sessions, 0, sizeof(g_sessions));
+        free(link->sessions[i].write);
+    memset(link->sessions, 0, sizeof(link->sessions));
 }
 
 void asp_init(void) {
-    asp_reset();
-    if (atalk_scheduler())
-        atalk_timer_init(&g_asp_sweep_timer, "asp", "session_sweep", &asp_sweep_cb);
     static const atp_socket_handler_t handler = {.handle_request = asp_in};
     atp_register_socket_handler(HOST_AFP_SOCKET, &handler, NULL);
     atp_register_socket_handler(HOST_AFP_COMPAT_SOCKET, &handler, NULL);
 }
 
-void asp_shutdown(void) {
-    asp_reset();
+asp_link_t *asp_link_new(void) {
+    asp_link_t *link = calloc(1, sizeof(*link));
+    if (!link)
+        return NULL;
+    link->next_sess_ref = 0x0021;
+    link->next_sess_id = 1;
+    return link;
+}
+
+void asp_link_free(asp_link_t *link) {
+    if (!link)
+        return;
+    GS_ASSERT(link != g_asp);
+    asp_reset(link);
+    free(link);
+}
+
+void asp_link_register_timers(struct atalk_conn *conn, asp_link_t *link) {
+    atalk_timer_init(conn, &link->sweep_timer, "asp", "session_sweep", &asp_sweep_cb);
+}
+
+void asp_plug(asp_link_t *link) {
+    if (g_asp && !link)
+        asp_reset(g_asp);
+    g_asp = link;
 }

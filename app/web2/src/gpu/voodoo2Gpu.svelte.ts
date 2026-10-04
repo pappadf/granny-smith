@@ -82,10 +82,25 @@ export function startVoodooGpu(canvas3d: HTMLCanvasElement): Promise<boolean> {
   return ready;
 }
 
-// Resolves once the worker has answered (true: a device exists).  False
+// Resolves once the worker has answered (true: a device exists), or false
+// when it has not answered within `timeoutMs` -- counted as no adapter, and
+// logged: page startup waits on this, so it must not wait forever.  False
 // immediately when the worker was never started.
-export function whenVoodooGpuReady(): Promise<boolean> {
-  return ready ?? Promise.resolve(false);
+export function whenVoodooGpuReady(timeoutMs: number): Promise<boolean> {
+  const answer = ready;
+  if (!answer) return Promise.resolve(false);
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => {
+      console.warn(
+        `[voodoo2-gpu] no WebGPU adapter answer within ${timeoutMs} ms: counted as no adapter`,
+      );
+      resolve(false);
+    }, timeoutMs);
+    void answer.then((ok) => {
+      clearTimeout(timer);
+      resolve(ok);
+    });
+  });
 }
 
 // Module.onVoodooGpuAttach: the core allocated a shared region at

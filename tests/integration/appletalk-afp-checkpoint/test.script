@@ -1,4 +1,5 @@
-# AppleTalk AFP — a checkpoint taken mid-conversation restores.
+# AppleTalk AFP — a checkpoint taken mid-conversation restores, and to the
+# guest the restore is a server restart.
 #
 # The appletalk-afp flow (Chooser → AppleShare → mount "My Volume" → open its
 # window), then a checkpoint saved at an instant when an ATP transaction is in
@@ -6,20 +7,19 @@
 #
 # Every AFP command rides an ATP exactly-once transaction, and the responder
 # holds a release timer (atp.xo_release) for it until the client's TRel comes
-# back.  ATP registered that timer's event type only when it first armed one,
-# and a restore replays the saved event queue into a fresh scheduler before any
-# transaction exists -- so a checkpoint saved inside that window failed:
-# "cannot restore event 'atp.xo_release' — type not registered", and in the
-# release build (asserts compiled out) the restore indexed event_types[-1].
-# The browser saves a background checkpoint every ~15 s, so ordinary file
-# sharing hit it.  The same held for PAP, the LaserWriter job and its
-# transport.  Every one is now registered when the stack comes up
-# (atalk_timer_t).
+# back.  A restore replays the saved event queue into a fresh scheduler before
+# any transaction exists, so every event type the connection can schedule is
+# registered when it is plugged into the network (atalk_timer_t); a checkpoint
+# saved inside that window restores.  The run steps the machine in small
+# slices right after the Finder starts reading the volume, until
+# scheduler.events shows an ATP event queued, and saves there.
 #
-# The run steps the machine in small slices right after the Finder starts
-# reading the volume, until scheduler.events shows an ATP event queued, and
-# saves there.  After the load the share must still be published under the
-# same volume id.
+# The AFP server is a node on the network, not part of the Mac: the share is
+# still published after the load, under its name, but the restored machine's
+# connection has no sessions.  The guest's next request on the session it
+# held is refused (SessClosed), the AppleShare client sees the connection
+# closed and drops the volume -- cleanly, no hang -- and it mounts again
+# through the Chooser, on a new session.
 
 include "../lib/mac.script"
 
@@ -145,20 +145,86 @@ break
 }
 assert $hit == 1 "no ATP event was ever pending to checkpoint"
 
-let vol_id = appletalk.afp.volumes["My Volume"].vol_id
+let old_ref = appletalk.afp.sessions[0].session_ref
 assert checkpoint.save("${$WORK_DIR}/afp.checkpoint") "checkpoint save"
 assert checkpoint.load("${$WORK_DIR}/afp.checkpoint") "checkpoint load"
 
-# The share is still published, under the id the guest cached for it
-# (a load used to drop every volume).
-assert appletalk.afp.volumes["My Volume"].vol_id == $vol_id "the share did not come back under its volume id"
+# The share is still published, under its name: it is the network's.
+assert appletalk.afp.volumes["My Volume"].path == "${$WORK_DIR}/share" "the share is gone after the load"
+
+# The restored connection has no sessions: to the guest, the server restarted.
+assert try(appletalk.afp.sessions[0].session_ref, 0) == 0 "a session survived the load"
 
 # The restored queue still holds the transaction's timer, resolved to a live
 # callback -- not dropped, and not a wild pointer.
 assert contains("${scheduler.events}", "\"atp\"") "the restored queue lost the ATP event"
 
-# ...and the machine runs on past the instant that timer fires.  (An assert
-# anywhere in this run fails it: headless exits non-zero on one.)
+# The machine runs on past the instant that timer fires, and the guest's next
+# request on its old session is refused: the volume leaves the desktop, and
+# nothing hangs.  (An assert anywhere in this run fails it: headless exits
+# non-zero on one.)
 scheduler.run 60000000
+check("volume-dropped.png")
+
+# ...and the volume mounts again, the way a user would: Chooser → AppleShare
+# (AppleTalk is already active) → Shared Folders → Guest → My Volume.
+machine.adb.mouse.move 25 10
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.move 25 123
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+machine.adb.mouse.move 95 90
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+machine.adb.mouse.move 280 88
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 6000000
+machine.adb.mouse.move 333 178
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+machine.adb.mouse.move 392 259
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+check("volume-list-again.png")
+
+# A new session, under a new reference: the old one is not reissued.
+let new_ref = appletalk.afp.sessions[0].session_ref
+assert $new_ref != 0 "no session after reconnecting"
+assert $new_ref != $old_ref "the restored server reissued the old session's reference"
+
+machine.adb.mouse.move 150 113
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 8000000
+machine.adb.mouse.move 333 259
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+machine.adb.mouse.move 72 47
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+check("desktop-mounted.png")
 
 quit

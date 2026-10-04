@@ -47,6 +47,10 @@ typedef struct {
 // *out.  False for anything else (missing, wrong size, unknown CRC).
 bool vrom_identify_card(const char *path, vrom_id_t *out);
 
+// The same, for a chip image already in memory (a card's ROM as its
+// checkpoint carries it).
+bool vrom_identify_bytes(const uint8_t *img, size_t size, vrom_id_t *out);
+
 // === The offer registry =====================================================
 //
 // The platform hands core candidate vROM files before machine.boot.  Core
@@ -66,36 +70,21 @@ void vrom_offer_dir(const char *dir, const char *ext);
 void vrom_offer_clear(void);
 
 // Enumerate the offered candidates that provide the card `card_id`, in pick
-// order: the explicit vrom= offer first, then catalog `preferred` rows,
-// then remaining catalog order.  Returns the idx'th candidate's path
-// (borrowed; valid until the registry changes) and its chip size via
-// *out_chip_size (optional), or NULL when exhausted.
-const char *vrom_offer_find(const char *card_id, int idx, size_t *out_chip_size);
-
-// Content facts for a registered offer, looked up by its path (as returned
-// from vrom_offer_find).  Used by the card loader to report the resolved
-// pick into the built-from record.  Returns false if the path is not a
-// registered offer.
-bool vrom_offer_info(const char *path, uint32_t *out_crc, bool *out_explicit);
+// order: catalog `preferred` rows, then remaining catalog order.  Returns the
+// idx'th candidate's path (borrowed; valid until the registry changes), its
+// chip size via *out_chip_size and its Format-Block CRC via *out_crc (both
+// optional), or NULL when exhausted.
+const char *vrom_offer_find(const char *card_id, int idx, size_t *out_chip_size, uint32_t *out_crc);
 
 // True iff the catalog lists a declaration ROM for this card id — i.e. the
 // card needs a vROM and boot's strict-resolution validation applies.
 bool vrom_card_catalogued(const char *card_id);
 
-// True iff an offered candidate resolves for this card id (pick order as
-// vrom_offer_find).  Boot validation rejects a configuration whose
-// catalogued cards cannot all resolve.
-bool vrom_card_resolvable(const char *card_id);
-
-// Register the boot document's vrom= explicit pick: an offer that is also
-// the *preferred* candidate for whichever card its content provides.
-// Returns 0 on success, -1 on an
-// empty path.
-int vrom_set_path(const char *path);
-
-// Drop the explicit pick (the file stays offered).  Each boot document is
-// the whole specification, so machine.boot clears the previous one first.
-void vrom_clear_explicit(void);
+// True iff card `card_id` has a declaration ROM: `rom` (the slot's own file,
+// NULL for none) when given -- it must identify as this card's -- else an
+// offered candidate.  Boot validation rejects a configuration whose named
+// catalogued cards cannot all resolve.  No side effect.
+bool vrom_card_resolvable(const char *card_id, const char *rom);
 
 // Create the catalog.vroms registry node under `parent` (the catalog).
 struct object;

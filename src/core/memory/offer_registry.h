@@ -7,10 +7,10 @@
 // The platform hands the emulator whole directories of candidate ROM files and
 // the machine later asks "is there an image for this card?".  Between those two
 // moments sits a registry: fixed shape, content-keyed, duplicate-collapsing,
-// with one explicit pick that wins the order and catalog order deciding the
-// rest.  vrom.c (NuBus declaration ROMs) and prom.c (PCI Open Firmware
-// expansion ROMs) each had their own copy of it -- 86 of 123 lines identical,
-// and the improvements made to one never reached the other.
+// with catalog order deciding the pick.  A boot never writes it: a file the
+// boot document names for a slot goes to that slot's card directly.  vrom.c (NuBus declaration ROMs) and prom.c (PCI
+// Open Firmware expansion ROMs) each had their own copy of it -- 86 of 123 lines identical, and the improvements made
+// to one never reached the other.
 //
 // What genuinely differs between the two is IDENTIFICATION: the validation
 // gates, size classes and identity spans of a declaration ROM and a PCI
@@ -32,7 +32,6 @@ typedef struct offer_entry {
     size_t size; // the image/chip size the identifier reported
     const char *card_id; // catalog row (static storage)
     char *path; // opaque locator (owned)
-    bool explicit_pick; // the boot document's explicit pick
 } offer_entry_t;
 
 // What the registry needs to know about its catalog, without knowing the row
@@ -56,12 +55,8 @@ typedef struct offer_registry {
 } offer_registry_t;
 
 // Register one candidate.  Idempotent by content: one entry per CRC, and a
-// re-offer refreshes the path (the newest locator for these bytes) and may
-// promote the entry to the explicit pick.  At most one entry is explicit.
-void offer_registry_add(offer_registry_t *r, const char *path, bool explicit_pick);
-
-// Demote the explicit pick, if any, to an ordinary offer.  The entry stays.
-void offer_registry_clear_explicit(offer_registry_t *r);
+// re-offer refreshes the path (the newest locator for these bytes).
+void offer_registry_add(offer_registry_t *r, const char *path);
 
 // Offer every file in `dir` whose name ends in `ext` (NULL: any name),
 // skipping dotfiles -- each identified by content like any offer.  The one
@@ -73,13 +68,11 @@ void offer_registry_add_dir(offer_registry_t *r, const char *dir, const char *ex
 void offer_registry_clear(offer_registry_t *r);
 
 // The idx'th candidate path for `card_id`, or NULL past the end.  Pick order:
-// the explicit pick first, then catalog rows with the `preferred` bit, then the
-// remaining rows in catalog order.  All content-based -- no filename ever
-// enters the comparison.  `out_size` receives the identified size.
-const char *offer_registry_find(const offer_registry_t *r, const char *card_id, int idx, size_t *out_size);
-
-// Facts about an already-registered path.
-bool offer_registry_info(const offer_registry_t *r, const char *path, uint32_t *out_crc, bool *out_explicit);
+// catalog rows with the `preferred` bit, then the remaining rows in catalog
+// order.  All content-based -- no filename ever enters the comparison.
+// `out_size` / `out_crc` (optional) receive the identified size and CRC.
+const char *offer_registry_find(const offer_registry_t *r, const char *card_id, int idx, size_t *out_size,
+                                uint32_t *out_crc);
 
 // Does the catalog have a row for this card at all (independent of whether any
 // file has been offered for it)?

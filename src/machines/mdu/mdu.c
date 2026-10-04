@@ -10,7 +10,6 @@
 #include "mdu.h"
 #include "appletalk.h"
 #include "log.h"
-#include "machine_checkpoint.h"
 
 #include "mac030_glue.h" // shared core/finish/reset/irq/build_mmu + board desc
 #include "mac_host_io.h" // mac_fd_*/mac_input_*
@@ -19,12 +18,12 @@
 
 #include "adb.h"
 #include "asc.h"
-#include "checkpoint_images.h"
 #include "cpu.h"
 #include "debug.h"
 #include "egret.h"
 #include "floppy.h"
 #include "image.h"
+#include "machine_checkpoint.h"
 #include "memory.h"
 #include "mmu.h"
 #include "mmu_checkpoint.h"
@@ -61,9 +60,8 @@ int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *b
     // Shared II-family core (mem_map, cpu-from-profile, scheduler) + RTC + SCC +
     // VIA1.  Note: no VIA2 (the RBV replaces it), and rtc_set_via is left to the
     // machine (IIci bit-bangs the RTC on VIA1; the IIsi drives it via Egret).
-    mac030_build_core(cfg, cp);
-    if (cp)
-        system_read_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
+    mac030_build_core(cfg, board->desc, cp);
+    machine_part_irq(cfg, cp);
 
     mac030_build_lowspeed(cfg, cp, NULL); // NULL: the family-default SCC IRQ
 
@@ -72,8 +70,10 @@ int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *b
     // them.  It used to be 20 — correct for the 16 MHz IIcx this code was
     // adapted from, and 1.6x too fast on a IIci, which is what made MacTest's
     // VIA timer test overshoot its interrupt-count window.
+    machine_part_begin(cfg, cp, "via1");
     cfg->via1 = via_init(NULL, cfg->scheduler, via_freq_factor_for_clock(cfg->machine->freq), "via1",
                          board->via1_output, board->via1_shift_out, mac030_glue_via1_irq, cfg, cp);
+    machine_part(cfg, cp, "via1", part_save_via, cfg->via1);
     // Exact-rational phi2: the integer divisor above rounds, and on this
     // substrate that rounding is not negligible -- the IIsi lands 1.80% slow, the IIci 0.27%.  via_set_exact_clock
     // installs ticks = cycles x 783360/cpu_hz reduced, which is what the
@@ -87,6 +87,10 @@ int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *b
 
     mac030_glue_finish(cfg, cp, &st->mdu_io);
     return 0;
+}
+
+void part_save_rbv(void *obj, checkpoint_t *cp) {
+    rbv_checkpoint(obj, cp);
 }
 
 static int mdu_init(config_t *cfg, checkpoint_t *cp) {
@@ -153,23 +157,6 @@ static void mdu_teardown(config_t *cfg) {
     }
 }
 
-static void mdu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
-    mac030_mdu_state_t *st = mdu_st(cfg);
-    machine_checkpoint_save_core(cfg, cp);
-    adb_checkpoint(st->adb, cp);
-    if (st->egret) // IIsi only; IIci leaves egret NULL
-        egret_checkpoint(st->egret, cp);
-    mac_checkpoint_save_images(cfg, cp);
-    scsi_checkpoint(cfg->scsi, cp);
-    asc_checkpoint(st->asc, cp);
-    floppy_checkpoint(st->floppy, cp);
-    rbv_checkpoint(st->rbv, cp);
-    // The RBV chip's registers are above; this covers the display CARD behind
-    // it — VRAM, palette and active mode.
-    nubus_checkpoint_save(cfg->nubus, cp);
-    mmu_checkpoint_save(st->mmu, cp);
-}
-
 // substrate.nubus_slot_irq — the RBV aggregates NuBus slot interrupts itself
 // (RvSInt & RvSEnb -> RvAnySlot -> the chip's combined interrupt -> IPL 2), so a
 // slot source has to go to the chip, not to a generic IPL setter.
@@ -211,7 +198,6 @@ const machine_substrate_t mdu_substrate = {
     .bus_reset = mdu_bus_reset,
     .power_on = mdu_power_on,
     .teardown = mdu_teardown,
-    .checkpoint_save = mdu_checkpoint_save,
     .trigger_vbl = mdu_trigger_vbl,
     .nubus_slot_irq = mdu_nubus_slot_irq, // straight to the RBV's slot-interrupt register
     .fd_insert = mac_fd_insert,
@@ -219,7 +205,6 @@ const machine_substrate_t mdu_substrate = {
     .input_key = mac_input_key,
     .input_mouse_move = mac_input_mouse_move,
     .input_mouse_button = mac_input_mouse_button,
-    .media_detach = system_media_detach_std,
     .media_attach = system_media_attach_std,
     .media_present = system_media_present_std,
     .media_eject = system_media_eject_std,

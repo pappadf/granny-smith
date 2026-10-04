@@ -1594,36 +1594,60 @@ static void pap_platen_detached_event(laserwriter_event_t event, const char *det
 
 #endif // GS_PLATEN
 
-// Registers the printer PAP socket handler and auto-enables the LaserWriter advertisement.
+// Registers the printer PAP socket handler and enables the LaserWriter
+// advertisement: once, when the network comes up.  A printer is enabled by
+// default; from then on its configuration is what a script sets.
 void atalk_printer_register(void) {
     pap_printer_init();
-    // Timers are registered each time the stack comes up, before a checkpoint
-    // restore replays the saved queue (atalk_timer_t).
-    if (atalk_scheduler()) {
-        atalk_timer_init(&g_pap_gap_timer, "pap", "senddata_gap", &pap_senddata_gap_cb);
-        atalk_timer_init(&g_pap_idle_timer, "pap", "idle", &pap_idle_cb);
-        laserwriter_job_init();
-    }
     static const atp_socket_handler_t handler = {.handle_request = pap_socket_request_handler};
     atp_register_socket_handler(HOST_PAP_SOCKET, &handler, NULL);
-    // Publish on every stack: the previous one withdrew the advertisement in
-    // atalk_printer_shutdown.  (A printer is enabled by default, and this has
-    // always re-enabled one a script turned off -- that is configuration,
-    // which the checkpoint's configuration record carries through a restore.)
     if (atalk_printer_enable(NULL) != 0)
         LOG(1, "pap: failed to auto-enable printer");
 }
 
-void atalk_printer_shutdown(void) {
+// A machine's connection is being built: its scheduler will run the
+// printer's guest-time timers once it is plugged in, and a checkpoint restore
+// replays the saved queue before that (atalk_timer_t).
+void atalk_printer_register_timers(struct atalk_conn *conn) {
+    atalk_timer_init(conn, &g_pap_gap_timer, "pap", "senddata_gap", &pap_senddata_gap_cb);
+    atalk_timer_init(conn, &g_pap_idle_timer, "pap", "idle", &pap_idle_cb);
+    laserwriter_job_register_timers(conn);
+}
+
+// The machine was unplugged: its session goes -- a job still arriving with it
+// -- and so does the completion reply owed to it.  A job whose data is all in
+// (the EOF handed over, whether or not the driver has closed yet) is the
+// printer's, not the session's: it keeps running and finishes under the next
+// machine (atalk_printer_plug).  The printer stays, with what earlier jobs
+// made permanent.
+void atalk_printer_unplug(void) {
     if (!g_printer.initialized)
         return;
 #if GS_PLATEN
-    pap_platen_forget_detached(); // a job finishing after its close goes too
+    // A job whose data is all in is the printer's, connection or not: it is
+    // detached as at a clean close, so the reset below leaves it running.
+    if (g_session.active && !g_detached_job)
+        pap_platen_detach_job(true);
 #endif
-    pap_session_reset(); // cancels its ATP request, drops the capture, aborts the job
+    pap_session_reset(); // cancels its ATP request, drops the capture, aborts a job still arriving
     memset(&g_completion, 0, sizeof(g_completion));
-    atalk_nbp_withdraw(&g_printer.nbp_entry);
-    atp_unregister_socket_handler(HOST_PAP_SOCKET);
+#if GS_PLATEN
+    if (g_detached_job)
+        return; // still printing: the status says so until it finishes
+#endif
+    if (g_printer.enabled)
+        pap_printer_set_status_idle();
+}
+
+// A machine was plugged in: a job that outlived the one before it carries on,
+// driven by this machine's scheduler now.
+void atalk_printer_plug(void) {
+    if (!g_printer.initialized)
+        return;
+#if GS_PLATEN
+    if (g_detached_job)
+        laserwriter_job_resume();
+#endif
 }
 
 void atalk_printer_link_down(void) {
@@ -1735,6 +1759,16 @@ int atalk_printer_set_name(const char *name, char *err, size_t err_len) {
 const char *atalk_printer_get_status(void) {
     pap_printer_init();
     return g_printer.status_text;
+}
+
+bool atalk_printer_job_finishing(void) {
+#if GS_PLATEN
+    if (g_detached_job)
+        return true;
+    return g_session.active && laserwriter_job_active() && (laserwriter_job_finishing() || g_session.eof_pending);
+#else
+    return false;
+#endif
 }
 
 bool atalk_printer_has_interpreter(void) {

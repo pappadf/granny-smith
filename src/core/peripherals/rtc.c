@@ -500,8 +500,8 @@ rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, 
     if (checkpoint) {
         size_t data_size = offsetof(rtc_t, via);
         system_read_checkpoint_data(checkpoint, rtc, data_size);
-        // Do NOT schedule the default one-second event here; it will be restored
-        // from the scheduler's checkpointed event queue in scheduler_start().
+        // Do NOT schedule the default one-second event here; it is restored
+        // from the scheduler's checkpointed event queue once the machine is built.
         LOG(1, "rtc_init: restored from checkpoint");
     } else {
         // Fresh boot: arm the one-second interrupt ONCE, periodically.

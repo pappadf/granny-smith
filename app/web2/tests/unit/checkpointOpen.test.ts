@@ -65,7 +65,7 @@ describe('Open Checkpoint...', () => {
     pickerAnswers(checkpoint());
     await pickAndLoadCheckpoint();
     const staged = written[0];
-    expect(staged).toMatch(/^\/opfs\/upload\/.*saved-state-1\.bin$/);
+    expect(staged).toMatch(/^\/opfs\/upload\/\.scratch\/.*saved-state-1\.bin$/);
     const load = bridge.calls.find((c) => c.path === 'checkpoint.load');
     expect(load?.args).toEqual([staged]);
     expect(bridge.calls.find((c) => c.path === 'files.rm')?.args).toEqual([staged]);

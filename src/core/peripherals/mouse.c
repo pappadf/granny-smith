@@ -11,6 +11,7 @@
 #include "log.h"
 #include "object.h"
 #include "system.h"
+#include "system_config.h"
 #include "value.h"
 
 #include <assert.h>
@@ -206,8 +207,9 @@ void mouse_checkpoint(mouse_t *restrict mouse, checkpoint_t *checkpoint) {
 
 // === Object-model class descriptor =========================================
 //
-// `input.mouse`. Methods move(x, y), click(down), trace(enabled). Wraps
-// debug_mac_set_mouse_mode / system_mouse_update / debug_mac_set_trace_mouse.
+// `mouse`. Methods move(x, y), click(down), trace(enabled).  Each acts on the
+// current machine's input (cfg->host_input) and answers "no machine" when
+// none is booted.
 
 // Mode-string → mode char for debug_mac_*_mode().
 //   "default" / NULL → 'd' (default routing)
@@ -236,6 +238,8 @@ static char mouse_mode_char(const value_t *v) {
 }
 
 static DEF_METHOD(mouse_method_move) {
+    if (!global_emulator)
+        return val_err("mouse.move: no machine");
     int64_t x = argv[0].i;
     int64_t y = argv[1].i;
     const char *modestr = (argc >= 3 && argv[2].kind == V_STRING && argv[2].s) ? argv[2].s : "default";
@@ -250,6 +254,8 @@ static DEF_METHOD(mouse_method_move) {
 }
 
 static DEF_METHOD(mouse_method_click) {
+    if (!global_emulator)
+        return val_err("mouse.click: no machine");
     bool down = (argc >= 1 && argv[0].kind == V_BOOL) ? argv[0].b : true;
     const char *modestr = (argc >= 2 && argv[1].kind == V_STRING && argv[1].s) ? argv[1].s : "default";
     // Validate the cursor mode up front so a bad mode gives a clear error.
@@ -262,7 +268,9 @@ static DEF_METHOD(mouse_method_click) {
 }
 
 static DEF_METHOD(mouse_method_trace) {
-    debug_mac_set_trace_mouse(argv[0].b);
+    if (!global_emulator)
+        return val_err("mouse.trace: no machine");
+    debug_mac_set_trace_mouse(global_emulator->host_input, argv[0].b);
     return val_none();
 }
 
@@ -323,9 +331,9 @@ static const class_desc_t mouse_class = {
 
 // === Process-singleton lifecycle ============================================
 //
-// `mouse` is a stateless facade over the platform-level debug_mac_*
-// helpers; nothing it exposes depends on a booted machine or a specific
-// cfg lifetime. Register once at shell_init time (idempotent).
+// `mouse` is a stateless facade: every method forwards to whatever machine
+// is current, so the node itself outlives machines.  Register once at
+// shell_init time (idempotent).
 
 static struct object *s_mouse_object = NULL;
 

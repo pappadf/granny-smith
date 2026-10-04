@@ -64,10 +64,6 @@ uint32_t cpu_get_pc(cpu_t *restrict cpu) {
 void via_input_c(via_t *via, int port, int c, bool value) {
     (void)via, (void)port, (void)c, (void)value;
 }
-image_t *setup_get_image_by_filename(const char *filename) {
-    (void)filename;
-    return NULL;
-}
 int system_hd_attach(const char *path, int scsi_id) {
     (void)path, (void)scsi_id;
     return -1;
@@ -103,7 +99,7 @@ static void make_disk(void) {
 }
 
 static scsi_t *attach_disk(void) {
-    scsi_t *scsi = scsi_init(NULL);
+    scsi_t *scsi = scsi_init(NULL, NULL, NULL, NULL, 0);
     ASSERT_TRUE(scsi != NULL);
     // These tests drive the 5380's register file, so the bus needs one
     // attached -- a bus on its own has no registers to write.

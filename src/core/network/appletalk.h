@@ -34,15 +34,18 @@ typedef struct scheduler scheduler_t;
 
 // === Stack-level state (object model: `appletalk`) ==========================
 
-// Attach/detach the stack from the SCC link.  Enabled by default; disabling
-// makes the emulated machine behave as if nothing were on the network.
+// Attach/detach the plugged-in machine's connection from the SCC link.
+// Enabled by default; disabling makes the emulated machine behave as if
+// nothing were on the network.  False, and the setter refused, while no
+// machine is plugged in.
 bool atalk_get_enabled(void);
-void atalk_set_enabled(bool enabled);
+int atalk_set_enabled(bool enabled, char *err, size_t err_len);
 
-// Current LLAP node ID (0 while unassigned).
+// Current LLAP node ID (0 while unassigned or nothing is plugged in).
 unsigned atalk_node_id(void);
 
-// Link- and transport-level counters (object model: `appletalk.stats`).
+// Link- and transport-level counters of the plugged-in connection (object
+// model: `appletalk.stats`); all zero while none is.
 typedef struct {
     uint64_t llap_rx;
     uint64_t llap_tx;
@@ -81,10 +84,6 @@ bool atalk_nbp_entry_info(int index, atalk_nbp_info_t *out);
 // Publish `path` as the AFP volume `name`.  Returns the slot, or -1 with the
 // reason written into `err`.
 int atalk_afp_volume_add(const char *name, const char *path, char *err, size_t err_len);
-
-// The same, keeping the volume id a checkpoint recorded, so a restored guest's
-// cached id still names it.  Fails if the id is taken.
-int atalk_afp_volume_restore(const char *name, const char *path, unsigned vol_id, char *err, size_t err_len);
 
 // Withdraw a volume by name, closing its forks and flushing its catalog.
 int atalk_afp_volume_remove(const char *name, char *err, size_t err_len);
@@ -160,7 +159,8 @@ bool atalk_asp_session_info(int index, atalk_session_info_t *out);
 int atalk_asp_send_attention(uint16_t session_ref, uint16_t code);
 void atalk_asp_broadcast_attention(uint16_t code);
 
-// Tear down every ASP session (server disable, machine teardown).
+// Tear down every ASP session (server disable, the link detached, the
+// connection unplugged).
 void atalk_asp_close_all_sessions(void);
 
 // === Printer (object model: `appletalk.printer`) ============================
@@ -172,6 +172,11 @@ int atalk_printer_set_name(const char *name, char *err, size_t err_len);
 
 // The PAP status string as the workstation reads it.
 const char *atalk_printer_get_status(void);
+
+// True while a job whose data is all in (the driver's EOF handed over) has
+// not yet produced its document: the printer's, not the machine's, so it
+// outlives a machine swap.
+bool atalk_printer_job_finishing(void);
 
 // True when the build links the PostScript interpreter (PLATEN=1); then a
 // job produces a PDF through the platform sink and the capture is optional.
@@ -201,7 +206,7 @@ uint32_t atalk_printer_documents(void);
 uint32_t atalk_printer_last_pages(void);
 const char *atalk_printer_last_outcome(void);
 
-// The machine's printer (laserwriter_job.h, "The printer"): jobs it has
+// The printer (laserwriter_job.h, "The printer"): jobs it has
 // served since it was created, and of those, jobs exitserver made permanent.
 uint32_t atalk_printer_interpreter_jobs(void);
 uint32_t atalk_printer_interpreter_permanent_jobs(void);
@@ -249,25 +254,61 @@ int atalk_nbp_lookup(const char *object, const char *type, const char *zone, uin
                      atalk_nbp_reply_fn cb, void *ctx);
 void atalk_nbp_lookup_cancel(void);
 
-// === ASP Status Block ===
+// === Lifecycle ===
+//
+// The network is host state, one per process: the LocalTalk cable and the
+// nodes the emulator puts on it -- the AFP file server with its shares, the
+// LaserWriter, the "gs-host" program-linking peer -- with their NBP names and
+// the `appletalk` object tree.  appletalk_network_init creates it at startup;
+// no machine creates, tears down, carries or checkpoints it.
+//
+// Nor does anything persist it: the network's settings (shares added or
+// removed, the printer's name and enabled state, the peer) last as long as
+// the process.  On the web a page reload starts a new process, and the
+// network comes back with only the default share the platform publishes at
+// startup (system_set_default_share); a checkpoint restored there plugs its
+// machine into that network, not the one it was saved beside.
+//
+// A machine is plugged into it through its connection (config_t.atalk),
+// which its substrate constructs with the network as an argument when it
+// builds the SCC.  The connection holds what exists only between the network
+// and that one Mac: the link's state and counters, LLAP timing, ATP
+// transactions, and the ASP / AFP / ADSP / PPC sessions with it, their open
+// forks, enumeration snapshots and Apple-event traffic.
+//
+// The network has one cable.  A connection is built off it and plugged in
+// when its machine becomes the active one (system_swap_in), which unplugs
+// whichever was: its sessions close, as a server sees a Mac vanish.  Deleting
+// a connection unplugs it only if it is the one on the cable, so a machine
+// whose build failed -- never plugged in -- leaves the running one's sessions
+// alone.
+typedef struct atalk_network atalk_network_t;
+typedef struct atalk_conn atalk_conn_t;
 
-// === Lifecycle (Constructor / Destructor) ===
+// Create the network (once; later calls return it).  Called from setup_init.
+atalk_network_t *appletalk_network_init(void);
+// The network, or NULL before appletalk_network_init.
+atalk_network_t *appletalk_network(void);
 
-// Initialization hook for AppleTalk module (registers shell commands)
-void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint);
+// Construct a machine's connection on `scc` and `scheduler`, not plugged in;
+// its timers are registered with `scheduler`.
+// With `checkpoint`, its block is read back first: the link's enabled flag
+// and counters and the next session reference.  It comes back with no
+// sessions -- to the guest, the server has restarted.
+atalk_conn_t *atalk_conn_new(atalk_network_t *network, scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint);
 
-// Serialize the AppleTalk/AFP session and fork tables into a checkpoint.
-void appletalk_checkpoint(checkpoint_t *checkpoint);
+// Write the connection's block (its checkpoint part, machine_parts.h).
+void atalk_conn_checkpoint(const atalk_conn_t *conn, checkpoint_t *checkpoint);
 
-// Destructor: `scc` is the departing machine's SCC.  A no-op unless the stack
-// is bound to that machine (see appletalk.c).  `power_cycle`: the machine is
-// being rebuilt as itself (machine.restart), so it keeps its printer; any
-// other teardown ends the printer with the machine.
-void appletalk_delete(scc_t *scc, bool power_cycle);
+// Put `conn` on the cable, unplugging whichever connection is there.
+void atalk_conn_plug(atalk_conn_t *conn);
 
-// Server module hooks: publish the NBP advertisement at startup, release
-// volumes and forks at teardown.
+// Destroy a machine's connection (machine teardown).  Closes its sessions if
+// it is plugged in; the network is untouched.
+void atalk_conn_delete(atalk_conn_t *conn);
+
+// The AFP server's network hook: register as ASP's client and publish the
+// NBP advertisement (appletalk_network_init).
 void atalk_server_init(void);
-void atalk_server_delete(void);
 
 #endif // APPLETALK_H

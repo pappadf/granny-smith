@@ -33,8 +33,8 @@ slot ID software uses.  Measured on the shipping ROM: a booted 8100 enables
 slot-interrupt bits `$38` — bits 3/4/5, which under the `bit = slot - 9`
 numbering are `$C`/`$D`/`$E` — always those three, whichever connector holds
 a card, with bit 6 the built-in video VBL.  The ROM's own PDM slot-interrupt
-path masks the slot bits with `$78` (bits 3–6), agreeing.  A card staged
-into `$B` landed on bit 2, which nothing enables and nothing services: its
+path masks the slot bits with `$78` (bits 3–6), agreeing.  A card seated
+in `$B` landed on bit 2, which nothing enables and nothing services: its
 `/NMRQ` latched and stayed latched forever, the Slot Manager never ran that
 slot's VBL task queue, and with the card as the main screen the cursor stopped
 moving.  BART still *decodes* a `$B` window; nothing answers there, so an

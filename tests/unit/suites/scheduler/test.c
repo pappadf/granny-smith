@@ -90,6 +90,9 @@ double platform_audio_ring_fill(void) {
 static scheduler_t *g_sched;
 static uint64_t g_vbls; // frame-units executed (trigger_vbl calls)
 
+scheduler_t *system_running_scheduler(void) {
+    return NULL;
+}
 scheduler_t *system_scheduler(void) {
     return g_sched;
 }
@@ -190,6 +193,10 @@ void checkpoint_set_error(checkpoint_t *checkpoint) {
     (void)checkpoint;
     g_cp_errors++;
 }
+bool checkpoint_has_error(checkpoint_t *checkpoint) {
+    (void)checkpoint;
+    return g_cp_errors > 0;
+}
 
 // Object tree: the scheduler tolerates a NULL binding (object_new failure
 // path), so the whole surface stubs to no-ops.
@@ -212,6 +219,10 @@ void object_detach(struct object *o) {
 void object_set_order(struct object *o, int order) {
     (void)o;
     (void)order;
+}
+void object_set_category(struct object *o, uint16_t category) {
+    (void)o;
+    (void)category;
 }
 void object_delete(struct object *o) {
     (void)o;
@@ -344,7 +355,23 @@ static void stop_event(void *source, uint64_t data) {
     scheduler_stop(g_sched);
 }
 
+// The host pacing the tests run under is platform_pacing's weak default;
+// these set it and hand it to the scheduler, as a platform's run loop does.
+static void test_set_mode(scheduler_t *s, enum schedule_mode mode) {
+    platform_pacing()->mode = mode;
+    scheduler_apply_pacing(s, platform_pacing());
+}
+static void test_set_speed(scheduler_t *s, double multiplier) {
+    host_pacing_set_speed(platform_pacing(), multiplier);
+    scheduler_apply_pacing(s, platform_pacing());
+}
+static void test_set_max_speed(scheduler_t *s, double multiplier) {
+    host_pacing_set_max_speed(platform_pacing(), multiplier);
+    scheduler_apply_pacing(s, platform_pacing());
+}
+
 static scheduler_t *fresh_scheduler(bool with_ping) {
+    *platform_pacing() = HOST_PACING_DEFAULT; // each test starts from the host default
     g_now = 0.0;
     g_secs_per_instr = 0.0;
     g_audio_fill = -1.0;
@@ -371,7 +398,7 @@ static int tick_at(double now_s) {
     uint64_t before = g_vbls;
     if (now_s > g_now)
         g_now = now_s; // keep host_time() >= the tick timestamps we feed
-    scheduler_main_loop(TEST_CFG, now_s * 1000.0);
+    scheduler_main_loop(TEST_CFG, now_s * 1000.0, platform_pacing());
     return (int)(g_vbls - before);
 }
 
@@ -464,7 +491,7 @@ TEST(test_paced_background_reset) {
 // estimator has data, batching ramps up beyond 1 frame-unit per tick.
 TEST(test_turbo_first_tick_and_batching) {
     scheduler_t *s = fresh_scheduler(false);
-    scheduler_set_mode(s, schedule_unthrottled);
+    test_set_mode(s, schedule_unthrottled);
     // Simulated emulation speed: ~2 ms of host time per frame-unit's worth
     // of instructions, so ~4 frame-units fit in half of a 60 Hz tick.
     g_secs_per_instr = 0.002 / 10852.0;
@@ -493,7 +520,7 @@ TEST(test_turbo_first_tick_and_batching) {
 // and cpu_cycles must stay monotonic across the switch.
 TEST(test_mode_switch_estimator_reset) {
     scheduler_t *s = fresh_scheduler(false);
-    scheduler_set_mode(s, schedule_unthrottled);
+    test_set_mode(s, schedule_unthrottled);
     g_secs_per_instr = 0.002 / 10852.0;
 
     double now = 0.0;
@@ -503,7 +530,7 @@ TEST(test_mode_switch_estimator_reset) {
     }
 
     uint64_t cycles_at_switch = scheduler_cpu_cycles(s);
-    scheduler_set_mode(s, schedule_paced);
+    test_set_mode(s, schedule_paced);
     g_secs_per_instr = 0.0;
 
     for (int i = 0; i < 50; i++) {
@@ -538,7 +565,7 @@ TEST(test_single_timeline_across_modes) {
 
     // (b) turbo until the same frame count
     s = fresh_scheduler(true);
-    scheduler_set_mode(s, schedule_unthrottled);
+    test_set_mode(s, schedule_unthrottled);
     g_secs_per_instr = 0.002 / 10852.0;
     now = 0.0;
     while (g_vbls < frames) {
@@ -559,7 +586,7 @@ TEST(test_single_timeline_across_modes) {
     // (c) headless-style: exactly `frames` back-to-back frame-units
     s = fresh_scheduler(true);
     for (uint64_t f = 0; f < frames; f++)
-        scheduler_run_frame(s, TEST_CFG);
+        scheduler_run_frame(s, TEST_CFG, platform_pacing());
     uint64_t headless_cycles = scheduler_cpu_cycles(s);
     uint64_t headless_instr = cpu_instr_count();
     uint64_t headless_pings = g_pings;
@@ -584,7 +611,7 @@ TEST(test_cpi_mode_independent) {
     scheduler_run_instructions(s, 1000);
     ASSERT_TRUE(scheduler_cpu_cycles(s) - c0 == 1000ULL * DEFAULT_CPI);
 
-    scheduler_set_mode(s, schedule_unthrottled);
+    test_set_mode(s, schedule_unthrottled);
     c0 = scheduler_cpu_cycles(s);
     scheduler_run_instructions(s, 1000);
     ASSERT_TRUE(scheduler_cpu_cycles(s) - c0 == 1000ULL * DEFAULT_CPI);
@@ -612,7 +639,7 @@ TEST(test_short_runs_dont_multiply_vbls) {
     // Reference: whole frame-units back to back — one VBL each, by definition.
     scheduler_t *s = fresh_scheduler(false);
     for (int f = 0; f < frames; f++)
-        scheduler_run_frame(s, TEST_CFG);
+        scheduler_run_frame(s, TEST_CFG, platform_pacing());
     uint64_t whole_cycles = scheduler_cpu_cycles(s);
     uint64_t whole_vbls = g_vbls;
     teardown(s);
@@ -629,7 +656,7 @@ TEST(test_short_runs_dont_multiply_vbls) {
     uint64_t calls = 0;
     while (scheduler_cpu_cycles(s) < whole_cycles) {
         scheduler_new_cpu_event(s, stop_event, &g_dummy_cfg, 0, slice, 0);
-        scheduler_run_frame(s, TEST_CFG);
+        scheduler_run_frame(s, TEST_CFG, platform_pacing());
         calls++;
     }
     uint64_t chopped_vbls = g_vbls;
@@ -656,7 +683,7 @@ TEST(test_accelerated_timebase_invariant) {
     // Reference: authentic paced run
     scheduler_t *s = fresh_scheduler(true);
     for (int f = 0; f < frames; f++)
-        scheduler_run_frame(s, TEST_CFG);
+        scheduler_run_frame(s, TEST_CFG, platform_pacing());
     uint64_t ref_cycles = scheduler_cpu_cycles(s);
     uint64_t ref_instr = cpu_instr_count();
     uint64_t ref_pings = g_pings;
@@ -665,10 +692,10 @@ TEST(test_accelerated_timebase_invariant) {
     static const double speeds[] = {1.0, 2.0, 3.0, 4.0, 8.0};
     for (unsigned i = 0; i < sizeof(speeds) / sizeof(speeds[0]); i++) {
         s = fresh_scheduler(true);
-        scheduler_set_mode(s, schedule_accelerated);
-        scheduler_set_speed(s, speeds[i]);
+        test_set_mode(s, schedule_accelerated);
+        test_set_speed(s, speeds[i]);
         for (int f = 0; f < frames; f++)
-            scheduler_run_frame(s, TEST_CFG);
+            scheduler_run_frame(s, TEST_CFG, platform_pacing());
 
         // Timebase: total cycles within one instruction's truncation per frame
         int64_t drift = (int64_t)scheduler_cpu_cycles(s) - (int64_t)ref_cycles;
@@ -693,8 +720,8 @@ TEST(test_accelerated_timebase_invariant) {
 // (the remainder telescopes across sprint and run boundaries).
 TEST(test_accelerated_budget_exact) {
     scheduler_t *s = fresh_scheduler(false);
-    scheduler_set_mode(s, schedule_accelerated);
-    scheduler_set_speed(s, 5.0); // deliberately non-dyadic: exercises the carry
+    test_set_mode(s, schedule_accelerated);
+    test_set_speed(s, 5.0); // deliberately non-dyadic: exercises the carry
     const uint64_t eff_x256 = (12ULL << 16) / (5 * 256); // = 614
 
     uint64_t i0 = cpu_instr_count();
@@ -713,24 +740,24 @@ TEST(test_accelerated_mode_switch_hygiene) {
     scheduler_t *s = fresh_scheduler(false);
 
     // Authentic per-frame instruction count (paced, speed setting present)
-    scheduler_set_speed(s, 8.0); // must be inert outside accelerated
+    test_set_speed(s, 8.0); // must be inert outside accelerated
     uint64_t i0 = cpu_instr_count();
-    scheduler_run_frame(s, TEST_CFG);
+    scheduler_run_frame(s, TEST_CFG, platform_pacing());
     uint64_t paced_instr = cpu_instr_count() - i0;
 
     // Accelerated at 8x: ~8x the instructions per frame
-    scheduler_set_mode(s, schedule_accelerated);
+    test_set_mode(s, schedule_accelerated);
     i0 = cpu_instr_count();
-    scheduler_run_frame(s, TEST_CFG);
+    scheduler_run_frame(s, TEST_CFG, platform_pacing());
     uint64_t accel_instr = cpu_instr_count() - i0;
     ASSERT_TRUE(accel_instr > paced_instr * 7 && accel_instr < paced_instr * 9);
 
     // Back to paced: per-frame count returns to authentic exactly, and the
     // frame advances instructions * CPI cycles (no leftover fractional carry)
-    scheduler_set_mode(s, schedule_paced);
+    test_set_mode(s, schedule_paced);
     i0 = cpu_instr_count();
     uint64_t c0 = scheduler_cpu_cycles(s);
-    scheduler_run_frame(s, TEST_CFG);
+    scheduler_run_frame(s, TEST_CFG, platform_pacing());
     uint64_t di = cpu_instr_count() - i0;
     ASSERT_TRUE(di == paced_instr);
     ASSERT_TRUE(scheduler_cpu_cycles(s) - c0 == di * DEFAULT_CPI);
@@ -743,25 +770,25 @@ TEST(test_accelerated_speed_clamp) {
     // Authentic reference frame
     scheduler_t *s = fresh_scheduler(false);
     uint64_t i0 = cpu_instr_count();
-    scheduler_run_frame(s, TEST_CFG);
+    scheduler_run_frame(s, TEST_CFG, platform_pacing());
     uint64_t ref = cpu_instr_count() - i0;
     teardown(s);
 
     // 0.25x clamps up to the 1x floor (never slower than real hardware)
     s = fresh_scheduler(false);
-    scheduler_set_mode(s, schedule_accelerated);
-    scheduler_set_speed(s, 0.25);
+    test_set_mode(s, schedule_accelerated);
+    test_set_speed(s, 0.25);
     i0 = cpu_instr_count();
-    scheduler_run_frame(s, TEST_CFG);
+    scheduler_run_frame(s, TEST_CFG, platform_pacing());
     ASSERT_TRUE(cpu_instr_count() - i0 == ref);
     teardown(s);
 
     // 100x clamps down to the 8x cap
     s = fresh_scheduler(false);
-    scheduler_set_mode(s, schedule_accelerated);
-    scheduler_set_speed(s, 100.0);
+    test_set_mode(s, schedule_accelerated);
+    test_set_speed(s, 100.0);
     i0 = cpu_instr_count();
-    scheduler_run_frame(s, TEST_CFG);
+    scheduler_run_frame(s, TEST_CFG, platform_pacing());
     double ratio = (double)(cpu_instr_count() - i0) / (double)ref;
     ASSERT_TRUE(ratio > 8.0 * 0.99 && ratio < 8.0 * 1.01);
     teardown(s);
@@ -772,8 +799,8 @@ TEST(test_accelerated_speed_clamp) {
 // multiplier must never change how many frame-units a host tick earns.
 TEST(test_accelerated_paced_pacing) {
     scheduler_t *s = fresh_scheduler(false);
-    scheduler_set_mode(s, schedule_accelerated);
-    scheduler_set_speed(s, 4.0);
+    test_set_mode(s, schedule_accelerated);
+    test_set_speed(s, 4.0);
 
     double now = 0.0;
     int ticks = (int)(100.0 * 60.0); // ~100 seconds of a 60 Hz host
@@ -791,7 +818,7 @@ TEST(test_accelerated_paced_pacing) {
 static uint64_t authentic_per_frame(void) {
     scheduler_t *s = fresh_scheduler(false);
     uint64_t i0 = cpu_instr_count();
-    scheduler_run_frame(s, TEST_CFG);
+    scheduler_run_frame(s, TEST_CFG, platform_pacing());
     uint64_t pf = cpu_instr_count() - i0;
     teardown(s);
     return pf;
@@ -847,7 +874,7 @@ TEST(test_governor_climbs_to_cap) {
     uint64_t pf1 = authentic_per_frame();
 
     scheduler_t *s = fresh_scheduler(false);
-    scheduler_set_mode(s, schedule_accelerated); // speed defaults to auto
+    test_set_mode(s, schedule_accelerated); // speed defaults to auto
     // 1x utilization ~0.05: plenty of headroom all the way to 8x (~0.40)
     g_secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
 
@@ -868,7 +895,7 @@ TEST(test_governor_slow_host_stays_authentic) {
     uint64_t pf1 = authentic_per_frame();
 
     scheduler_t *s = fresh_scheduler(false);
-    scheduler_set_mode(s, schedule_accelerated);
+    test_set_mode(s, schedule_accelerated);
     g_secs_per_instr = 0.95 * VBL_PERIOD / (double)pf1; // 1x utilization ~0.95
 
     double now = 0.0;
@@ -887,7 +914,7 @@ TEST(test_governor_spike_backoff) {
     uint64_t pf1 = authentic_per_frame();
 
     scheduler_t *s = fresh_scheduler(false);
-    scheduler_set_mode(s, schedule_accelerated);
+    test_set_mode(s, schedule_accelerated);
     g_secs_per_instr = 0.06 * VBL_PERIOD / (double)pf1;
 
     double now = 0.0;
@@ -908,7 +935,7 @@ TEST(test_governor_audio_pressure) {
     uint64_t pf1 = authentic_per_frame();
 
     scheduler_t *s = fresh_scheduler(false);
-    scheduler_set_mode(s, schedule_accelerated);
+    test_set_mode(s, schedule_accelerated);
     g_secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
 
     double now = 0.0;
@@ -931,8 +958,8 @@ TEST(test_governor_max_speed_cap) {
     uint64_t pf1 = authentic_per_frame();
 
     scheduler_t *s = fresh_scheduler(false);
-    scheduler_set_mode(s, schedule_accelerated);
-    scheduler_set_max_speed(s, 3.0);
+    test_set_mode(s, schedule_accelerated);
+    test_set_max_speed(s, 3.0);
     g_secs_per_instr = 0.05 * VBL_PERIOD / (double)pf1;
 
     double now = 0.0;
@@ -942,9 +969,9 @@ TEST(test_governor_max_speed_cap) {
     ASSERT_TRUE((double)t.max_pf / (double)pf1 < 3.1); // never above it
 
     // A pinned speed is clamped to the cap as well
-    scheduler_set_speed(s, 8.0);
+    test_set_speed(s, 8.0);
     uint64_t i0 = cpu_instr_count();
-    scheduler_run_frame(s, TEST_CFG);
+    scheduler_run_frame(s, TEST_CFG, platform_pacing());
     double pinned = (double)(cpu_instr_count() - i0) / (double)pf1;
     ASSERT_TRUE(pinned > 2.9 && pinned < 3.1);
     teardown(s);
@@ -956,24 +983,24 @@ TEST(test_governor_pin_unpin) {
     uint64_t pf1 = authentic_per_frame();
 
     scheduler_t *s = fresh_scheduler(false);
-    scheduler_set_mode(s, schedule_accelerated);
+    test_set_mode(s, schedule_accelerated);
 
     // Auto, no main-loop ticks yet: the governor sits at the authentic floor
     uint64_t i0 = cpu_instr_count();
-    scheduler_run_frame(s, TEST_CFG);
+    scheduler_run_frame(s, TEST_CFG, platform_pacing());
     ASSERT_TRUE(cpu_instr_count() - i0 == pf1);
 
     // Pin 4x: takes effect immediately, no governor involved
-    scheduler_set_speed(s, 4.0);
+    test_set_speed(s, 4.0);
     i0 = cpu_instr_count();
-    scheduler_run_frame(s, TEST_CFG);
+    scheduler_run_frame(s, TEST_CFG, platform_pacing());
     double pinned = (double)(cpu_instr_count() - i0) / (double)pf1;
     ASSERT_TRUE(pinned > 3.9 && pinned < 4.1);
 
     // Unpin (0 = auto): back to the floor until the governor earns headroom
-    scheduler_set_speed(s, 0.0);
+    test_set_speed(s, 0.0);
     i0 = cpu_instr_count();
-    scheduler_run_frame(s, TEST_CFG);
+    scheduler_run_frame(s, TEST_CFG, platform_pacing());
     ASSERT_TRUE(cpu_instr_count() - i0 == pf1);
     teardown(s);
 }
@@ -1185,6 +1212,7 @@ static void cp_save_valid(uint32_t cpi) {
     scheduler_set_frequency(a, 16000000);
     scheduler_set_cpi(a, cpi);
     scheduler_checkpoint(a, (checkpoint_t *)1);
+    scheduler_checkpoint_events(a, (checkpoint_t *)1);
     ASSERT_TRUE(g_cp_w[0] > 0);
     scheduler_delete(a);
     g_cp_r = 0;
@@ -1205,26 +1233,30 @@ TEST(test_restore_refuses_zero_cpi) {
     scheduler_delete(b);
 }
 
-TEST(test_restore_refuses_unknown_mode) {
-    cp_save_valid(173);
-    // `mode` is the first member of struct scheduler, so it is the first four
-    // bytes of the prefix.  0x7FFFFFFF is no schedule_mode.
-    cp_poke_u32(0, 0x7FFFFFFFu);
+// Pacing is host state: a checkpoint saved accelerated restores under
+// whatever the host runs now, and carries nothing of the saved pacing.
+TEST(test_restore_runs_under_the_host_pacing) {
+    scheduler_t *a = fresh_scheduler(false);
+    test_set_mode(a, schedule_accelerated);
+    test_set_speed(a, 4.0);
+    ASSERT_EQ_INT((int)scheduler_effective_speed_x256(a), 4 * 256);
+    g_cp_w[0] = g_cp_w[1] = g_cp_r = 0;
+    g_cp_slot = 0;
+    scheduler_checkpoint(a, (checkpoint_t *)1);
+    teardown(a);
 
-    g_cp_errors = 0;
+    *platform_pacing() = HOST_PACING_DEFAULT; // the host now paces
+    g_cp_r = 0;
     scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
     ASSERT_TRUE(b != NULL);
-    ASSERT_EQ_INT(g_cp_errors, 1);
-    // ...and the scheduler came back on a known-good mode rather than running
-    // on the value from the file.
-    ASSERT_EQ_INT((int)scheduler_get_mode(b), (int)schedule_paced);
+    ASSERT_EQ_INT((int)scheduler_effective_speed_x256(b), 256);
     scheduler_delete(b);
 }
 
 TEST(test_restore_refuses_absurd_event_count) {
     cp_save_valid(173);
-    // The save writes the prefix and then num_events; with an empty queue that
-    // count is the last four bytes of the stream.  An unchecked count drove
+    // The save writes the prefix and then the event block's num_events; with
+    // an empty queue that count is the last four bytes of the stream.  An unchecked count drove
     // malloc(count * sizeof(event_as_checkpoint_t)) directly.
     //
     // 50000 is chosen deliberately, and the first version of this test used
@@ -1248,12 +1280,13 @@ TEST(test_restore_refuses_absurd_event_count) {
     g_cp_errors = 0;
     scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
     ASSERT_TRUE(b != NULL);
+    scheduler_restore_events(b, (checkpoint_t *)1);
     ASSERT_EQ_INT(g_cp_errors, 1);
     scheduler_delete(b);
 }
 
 // The saved event queue is resolved against the types registered by the time
-// scheduler_start runs.  Both checks on a saved event were GS_ASSERTs: in a
+// it is read -- the last block of a machine checkpoint.  Both checks on a saved event were GS_ASSERTs: in a
 // release build an unknown type indexed event_types[-1] and restored a wild
 // callback (reproduced with a real AppleShare session -- `atp.xo_release` was
 // registered only when first armed).  A checkpoint is
@@ -1271,6 +1304,7 @@ static void cp_save_with_one_event(void) {
     scheduler_new_event_type(a, "net", &g_restore_owner, "poll", ping_event);
     scheduler_new_cpu_event(a, ping_event, &g_restore_owner, 7, 0, 1000000);
     scheduler_checkpoint(a, (checkpoint_t *)1);
+    scheduler_checkpoint_events(a, (checkpoint_t *)1);
     scheduler_delete(a);
     g_cp_r = 0;
 }
@@ -1281,7 +1315,7 @@ TEST(test_restore_resolves_a_registered_event) {
     scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
     ASSERT_TRUE(b != NULL);
     scheduler_new_event_type(b, "net", &g_restore_owner, "poll", ping_event);
-    scheduler_start(b);
+    scheduler_restore_events(b, (checkpoint_t *)1);
     ASSERT_EQ_INT(g_cp_errors, 0);
     ASSERT_EQ_INT(scheduler_pending_device_events(b), 1);
     scheduler_delete(b);
@@ -1293,7 +1327,7 @@ TEST(test_restore_refuses_an_event_whose_type_is_not_registered) {
     scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
     ASSERT_TRUE(b != NULL);
     // Nothing registers "net.poll" this time.
-    scheduler_start(b);
+    scheduler_restore_events(b, (checkpoint_t *)1);
     ASSERT_EQ_INT(g_cp_errors, 1);
     ASSERT_EQ_INT(scheduler_pending_device_events(b), 0);
     scheduler_delete(b);
@@ -1470,7 +1504,7 @@ TEST(test_a_mode_reports_its_owner_and_its_reason) {
     ASSERT_TRUE(strstr(g_last_event, "\"budget\":1000") != NULL);
     ASSERT_EQ_INT(scheduler_run_owner(s), 7);
     while (scheduler_is_running(s))
-        scheduler_run_frame(s, TEST_CFG);
+        scheduler_run_frame(s, TEST_CFG, platform_pacing());
     ASSERT_EQ_INT(g_events, 2);
     ASSERT_TRUE(strstr(g_last_event, "\"event\":\"mode_ended\"") != NULL);
     ASSERT_TRUE(strstr(g_last_event, "\"reason\":\"budget\"") != NULL);
@@ -1483,7 +1517,7 @@ TEST(test_a_mode_reports_its_owner_and_its_reason) {
     ASSERT_TRUE(scheduler_run_with_budget(s, 0));
     ASSERT_EQ_INT(g_events, 3);
     ASSERT_TRUE(strstr(g_last_event, "\"owner\":0") != NULL);
-    scheduler_run_frame(s, TEST_CFG);
+    scheduler_run_frame(s, TEST_CFG, platform_pacing());
     ASSERT_TRUE(scheduler_is_running(s));
     ASSERT_EQ_INT(g_events, 3);
     // A client's stop does not end a mode it does not own; any-owner does.
@@ -1532,7 +1566,7 @@ int main(void) {
     RUN(test_forget_source_drops_events_and_types);
     RUN(test_checkpoint_carries_no_host_timing);
     RUN(test_restore_refuses_zero_cpi);
-    RUN(test_restore_refuses_unknown_mode);
+    RUN(test_restore_runs_under_the_host_pacing);
     RUN(test_restore_refuses_absurd_event_count);
     RUN(test_restore_resolves_a_registered_event);
     RUN(test_restore_refuses_an_event_whose_type_is_not_registered);

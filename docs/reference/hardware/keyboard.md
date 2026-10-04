@@ -29,8 +29,8 @@ code) and translates them internally to Mac Plus raw transition bytes.
 `machine.adb.keyboard` is a **per-machine object** (`src/core/host_input.c`),
 built by `system_create` and torn down with the machine. It has to be: `type`
 paces its key transitions as scheduler events, and a scheduler source must be
-constructed with the machine, registered as an event type before
-`scheduler_start` so a checkpoint with typing in flight can restore, and
+constructed with the machine, registered as an event type at construction
+so a checkpoint with typing in flight can restore, and
 forgotten in the machine's teardown. It used to be a process-lifetime facade
 with no such anchor, which is why `type` reached past the substrate into
 `adb_t` and so worked *only* on ADB Macs — the Plus and the Lisa answered

@@ -44,4 +44,7 @@ int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *b
 // The one MDU+RBV-family substrate (IIci + IIsi).
 extern const machine_substrate_t mdu_substrate;
 
+// The RBV's checkpoint part-save function (machine_parts.h).
+void part_save_rbv(void *obj, checkpoint_t *cp);
+
 #endif // GS_MACHINES_MDU_MDU_H

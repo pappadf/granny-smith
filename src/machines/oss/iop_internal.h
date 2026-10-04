@@ -70,9 +70,8 @@ typedef struct iop_behavior {
 
     // Called once from iop_init so this IOP's periodic-timer callbacks
     // can register themselves with the scheduler. Required for
-    // scheduler_checkpoint to name pending events at save time and for
-    // scheduler_start to resolve saved events back to live callback
-    // pointers on restore. NULL if the behaviour schedules no events
+    // the scheduler to name pending events at save time and to resolve
+    // saved events back to live callback pointers on restore. NULL if the behaviour schedules no events
     // (e.g. SCC IOP, which is purely event-driven on host kicks).
     void (*register_events)(iop_t *iop);
 

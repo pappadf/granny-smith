@@ -179,10 +179,10 @@ typedef struct pdm_monitor_kind {
 // absent rather than half-supported.
 extern const pdm_monitor_kind_t pdm_monitors[];
 const pdm_monitor_kind_t *pdm_monitor_lookup(const char *id);
-// Stage the strap for the NEXT machine built (machine.boot `monitor=`).
 
 // hw_profile_t.builtin_video for the three PDM leaves: the registry walks the
-// table above and stages a pick through this, so it needs no pdm_ symbol and
+// table above through this, and the pick reaches the machine as an argument of
+// its construction (machine.boot `monitor=`), so it needs no pdm_ symbol and
 // no knowledge of the sense strap.
 extern const builtin_video_desc_t pdm_builtin_video;
 
@@ -199,9 +199,6 @@ typedef struct pdm_video {
     rgba8_t clut_view[256]; // depth-windowed palette the renderer indexes
     uint8_t *blank; // black raster presented while the blank bit is set
     uint8_t sense; // monitor strap (PDM_SENSE_NONE = nothing connected)
-    // Set when the substrate restored `sense` from a checkpoint, so
-    // pdm_video_init leaves it alone instead of taking the staged default.
-    bool sense_restored;
     // machine.video -- the framebuffer node every display source exposes
     // (display_class.h).
     display_fb_node_t fb_node;
@@ -304,7 +301,7 @@ uint32_t pdm_id_read32(void *ctx, uint32_t offset);
 // === amic.c =================================================================
 
 void pdm_amic_init(config_t *cfg);
-void pdm_amic_register_events(config_t *cfg); // before scheduler_start
+void pdm_amic_register_events(config_t *cfg); // at construction
 void pdm_amic_start_vbl(config_t *cfg); // fresh boot: free-running raster
 uint8_t pdm_amic_read(config_t *cfg, uint32_t offset); // island offsets < $40000
 void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value);
@@ -355,7 +352,7 @@ void pdm_bart_slot_irq(config_t *cfg, int slot, bool active);
 // command-port handshake, and the output datapath (half-buffer render into
 // the host audio stream).  State lives in pdm_amic_t; these are the
 // behavior.
-void pdm_awacs_register_events(config_t *cfg); // before scheduler_start
+void pdm_awacs_register_events(config_t *cfg); // at construction
 void pdm_awacs_init(config_t *cfg); // staging buffer + machine.sound node
 void pdm_awacs_teardown(config_t *cfg);
 uint8_t pdm_awacs_read(config_t *cfg, uint32_t offset); // block offsets 0..$1F
@@ -371,8 +368,8 @@ uint8_t pdm_awacs_irq_summary(pdm_amic_t *a); // the $0A sound byte
 uint8_t pdm_swim3_read(config_t *cfg, uint32_t off);
 void pdm_swim3_write(config_t *cfg, uint32_t off, uint8_t value);
 void pdm_swim3_bind(config_t *cfg); // after floppy_init and after a restore
-void pdm_swim3_register_events(config_t *cfg); // before scheduler_start
-void pdm_swim3_xfer_register_events(config_t *cfg); // before scheduler_start
+void pdm_swim3_register_events(config_t *cfg); // at construction
+void pdm_swim3_xfer_register_events(config_t *cfg); // at construction
 
 // === bart.c =================================================================
 // The NuBus '90 bridge: the $F0000000 register file, the slot-space windows,
@@ -387,7 +384,7 @@ void pdm_bart_slot_irq(config_t *cfg, int slot, bool active);
 // command-port handshake, and the output datapath (half-buffer render into
 // the host audio stream).  State lives in pdm_amic_t; these are the
 // behavior.
-void pdm_awacs_register_events(config_t *cfg); // before scheduler_start
+void pdm_awacs_register_events(config_t *cfg); // at construction
 void pdm_awacs_init(config_t *cfg); // staging buffer + machine.sound node
 void pdm_awacs_teardown(config_t *cfg);
 uint8_t pdm_awacs_read(config_t *cfg, uint32_t offset); // block offsets 0..$1F
@@ -442,8 +439,8 @@ void pdm_swim3_raise(config_t *cfg, uint8_t bits);
 // format, raw (copy-protect) capture, and the GCR nibble codec.  It reads
 // and writes the disk image through the shared floppy module and moves its
 // bytes through the AMIC floppy DMA channel.
-void pdm_swim3_register_events(config_t *cfg); // before scheduler_start
-void pdm_swim3_xfer_register_events(config_t *cfg); // before scheduler_start
+void pdm_swim3_register_events(config_t *cfg); // at construction
+void pdm_swim3_xfer_register_events(config_t *cfg); // at construction
 // Mode-register edges: GO or GoStep just became set / cleared.
 void pdm_swim3_engine_update(config_t *cfg);
 // Drive geometry answers the sense protocol needs (media present, density,
@@ -455,13 +452,13 @@ int pdm_swim3_index_pulse(config_t *cfg);
 // === ariel.c ================================================================
 // Onboard video: the Sonora-model control registers ($50F28000), the Ariel II
 // CLUT/DAC ($50F24000), and the scanout descriptor over physical DRAM 0.
-void pdm_video_init(config_t *cfg); // after the memory layout exists
+// After the memory layout exists; `monitor` is the strap (a sense code, or
+// PDM_SENSE_NONE), a construction argument of the built-in video.
+void pdm_video_init(config_t *cfg, uint8_t monitor);
+// The strap a boot builds the built-in video with: the document's
+// video_sense= / monitor=, or the Hi-Res default.
+uint8_t pdm_monitor_for_build(const config_t *cfg);
 void pdm_video_teardown(config_t *cfg);
-// The monitor strapped to the HDI-45.  Set before the machine runs; with
-// PDM_SENSE_NONE the substrate publishes no display and the ROM turns its
-// own built-in video off (see the strap notes above).
-void pdm_video_set_sense(config_t *cfg, uint8_t sense);
-uint8_t pdm_video_sense(config_t *cfg);
 void pdm_video_update(config_t *cfg); // re-derive the descriptor from the regs
 void pdm_video_vbl(config_t *cfg); // per-VBL framebuffer re-upload mark
 display_t *pdm_video_display(config_t *cfg);

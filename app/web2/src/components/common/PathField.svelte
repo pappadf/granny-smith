@@ -2,7 +2,7 @@
   // A path argument's field: text, plus a Browse list of the emulator's file
   // system (files.list), one directory at a time.  Picking a directory opens
   // it; picking a file (or "Use this folder") fills the field.
-  import { gsEval } from '@/bus/emulator';
+  import { gsEval, gsErrorText } from '@/bus/emulator';
   import Button from '@/components/ui/Button.svelte';
   import TextInput from '@/components/ui/TextInput.svelte';
 
@@ -34,7 +34,7 @@
     error = '';
     const r = await gsEval('files.list', [d]);
     if (!Array.isArray(r)) {
-      error = `cannot list ${d}`;
+      error = `cannot list ${d}: ${gsErrorText(r)}`;
       entries = [];
       return;
     }

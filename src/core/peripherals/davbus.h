@@ -72,7 +72,7 @@ typedef struct davbus_host {
     struct object *snd_object; // machine.sound
 } davbus_host_t;
 
-// The event type (before scheduler_start replays a restore).
+// The event type (registered at construction).
 void davbus_register_events(davbus_host_t *h);
 // Open the host stream, attach the output channel's port, build
 // machine.sound.

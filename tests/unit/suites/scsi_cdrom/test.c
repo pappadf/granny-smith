@@ -54,10 +54,6 @@ uint32_t cpu_get_pc(cpu_t *restrict cpu) {
 void via_input_c(via_t *via, int port, int c, bool value) {
     (void)via, (void)port, (void)c, (void)value;
 }
-image_t *setup_get_image_by_filename(const char *filename) {
-    (void)filename;
-    return NULL;
-}
 int system_hd_attach(const char *path, int scsi_id) {
     (void)path, (void)scsi_id;
     return -1;
@@ -118,7 +114,7 @@ static int issue_cdb6(scsi_t *scsi, const uint8_t cdb[6]) {
 }
 
 static scsi_t *attach_disc(void) {
-    scsi_t *scsi = scsi_init(NULL);
+    scsi_t *scsi = scsi_init(NULL, NULL, NULL, NULL, 0);
     ASSERT_TRUE(scsi != NULL);
     image_t *img = image_open_readonly(g_path);
     ASSERT_TRUE(img != NULL);
@@ -164,6 +160,21 @@ static size_t read6(scsi_t *scsi, uint32_t lba, uint8_t tl, uint8_t first[4]) {
 
 // 64 blocks * 2048 = 131072 — exactly BUF_LIMIT, the largest read that
 // succeeded even before the fix.  Pins the boundary from below.
+// A machine's CD bay is built with its bus: the profile's drive, empty, at the
+// bay's id from power-on -- nothing seats it afterwards.
+TEST(cd_bay_is_built_with_the_bus) {
+    static const scsi_cd_drive_t drive = {
+        .vendor = "SONY", .product = "CD-ROM CDU-8002", .revision = "1.8g", .block_size = CD_BLOCK};
+    scsi_t *scsi = scsi_init(NULL, NULL, NULL, &drive, 3);
+    ASSERT_TRUE(scsi != NULL);
+    ASSERT_TRUE(scsi_device_present(scsi, 3));
+    ASSERT_TRUE(scsi->devices[3].type == scsi_dev_cdrom);
+    ASSERT_TRUE(!scsi->devices[3].medium_present);
+    ASSERT_TRUE(memcmp(scsi->devices[3].vendor_id, "SONY    ", 8) == 0);
+    ASSERT_TRUE(!scsi_device_present(scsi, 0));
+    scsi_delete(scsi);
+}
+
 TEST(read6_at_buf_limit) {
     scsi_t *scsi = attach_disc();
     uint8_t first[4] = {0};
@@ -277,8 +288,8 @@ TEST(read6_past_end_still_refused) {
 // ===========================================================================
 //
 // AUTHORITY: Sony CDU-541 SCSI manual S4.1.3 -- the drive we advertise is a
-// SONY CD-ROM CDU-8002 (system.c), so its sense vocabulary is the one that
-// applies, not SCSI-2's.  The unit attention condition arises on power-on, a
+// SONY CD-ROM CDU-8002 (the profiles' mac_cdrom_drive_applecd), so its sense
+// vocabulary is the one that applies, not SCSI-2's.  The unit attention condition arises on power-on, a
 // reset, "the insertion of a caddy with the successful recovery of the table
 // of contents", or MODE SELECT from another initiator.  Its UNIT ATTENTION
 // (6h) table holds exactly three codes: 0x28 caddy inserted, 0x29 power-on or
@@ -313,7 +324,7 @@ static int start_stop(scsi_t *scsi, uint8_t flags) {
 // A freshly inserted disc reports 0x28 "caddy inserted" -- not a hardcoded
 // constant, but the cause staged at the point of insertion.
 TEST(unit_attention_on_insert_reports_caddy_inserted) {
-    scsi_t *scsi = scsi_init(NULL);
+    scsi_t *scsi = scsi_init(NULL, NULL, NULL, NULL, 0);
     ASSERT_TRUE(scsi != NULL);
     image_t *img = image_open_readonly(g_path);
     ASSERT_TRUE(img != NULL);
@@ -372,7 +383,7 @@ TEST(empty_bay_keeps_failing_not_just_once) {
 // ejecting a disc that was only just inserted fails, swallowed by the insert's
 // own still-pending attention.
 TEST(eject_is_exempt_from_pending_unit_attention) {
-    scsi_t *scsi = scsi_init(NULL);
+    scsi_t *scsi = scsi_init(NULL, NULL, NULL, NULL, 0);
     ASSERT_TRUE(scsi != NULL);
     image_t *img = image_open_readonly(g_path);
     ASSERT_TRUE(img != NULL);
@@ -405,7 +416,7 @@ TEST(eject_is_exempt_from_pending_unit_attention) {
 // INQUIRY is exempt in both the ANSI text and Sony's, and must NOT clear the
 // condition -- the attention still has to be reported to the next real command.
 TEST(inquiry_does_not_clear_unit_attention) {
-    scsi_t *scsi = scsi_init(NULL);
+    scsi_t *scsi = scsi_init(NULL, NULL, NULL, NULL, 0);
     ASSERT_TRUE(scsi != NULL);
     image_t *img = image_open_readonly(g_path);
     ASSERT_TRUE(img != NULL);
@@ -1122,6 +1133,7 @@ TEST(mode_select_with_no_block_length_leaves_the_size_alone) {
 
 int main(void) {
     make_disc();
+    RUN(cd_bay_is_built_with_the_bus);
     RUN(read6_at_buf_limit);
     RUN(read6_over_buf_limit_cdrom);
     RUN(read6_max_blocks_cdrom);

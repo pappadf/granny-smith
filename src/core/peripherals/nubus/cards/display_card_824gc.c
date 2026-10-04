@@ -778,12 +778,13 @@ static memory_interface_t s_gc824_mem_iface = {
 // === VROM load ==============================================================
 // Content-driven (Format-Block CRC): loads whichever of the three known GC
 // declaration ROMs (v1.1 64 KB / v1.0 / alpha 32 KB) is actually present —
-// the explicit machine.boot vrom= first (any filename), then the other
-// offered candidates in catalog order (see vrom.h).  A 32 KB revision lands in the top half of
-// the 256 KB bus window (the Format Block always ends at the slot top).
-static bool load_vrom(display_card_824gc_priv_t *p) {
+// the slot's own ROM file when the document names one (any filename), else
+// the offered candidates in catalog order (see vrom.h).  A 32 KB revision
+// lands in the top half of the 256 KB bus window (the Format Block always
+// ends at the slot top).
+static bool load_vrom(display_card_824gc_priv_t *p, const char *rom) {
     char *path = NULL;
-    if (!declrom_load_vrom_card(display_card_824gc_kind.id, p->vrom, GC824_DECLROM_BUS_SIZE, &path))
+    if (!declrom_load_vrom_card(p->card, display_card_824gc_kind.id, rom, p->vrom, GC824_DECLROM_BUS_SIZE, &path))
         return false;
     free(p->vrom_path);
     p->vrom_path = path;
@@ -791,15 +792,6 @@ static bool load_vrom(display_card_824gc_priv_t *p) {
     return true;
 }
 
-// === Video-mode selection (machine.nubus.video_mode) ========================
-// STAGING -- ON DEATH ROW.  This is a construction input travelling as a
-// hidden per-module global: the visible per-slot channel
-// (machine.nubus.slot[N].video_mode) funnels through here, and the factory
-// consumes it destructively.  The intended end state replaces every one of
-// these with a machine_build_opts_t field passed to the factory as an
-// ARGUMENT -- no holder, no staged copy, no pending slot.  Do not add
-// another one; the per-slot channel is already there to carry it.
-static char s_pending_video_mode_id[NUBUS_VIDEO_MODE_ID_MAX] = "";
 static const nubus_monitor_t display_card_824gc_monitors[]; // fwd
 
 static pixel_format_t format_for_bpp(int bpp) {
@@ -929,7 +921,8 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     p->clut[1] = (rgba8_t){0, 0, 0, 255};
 }
 
-static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, bool generic) {
+static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts,
+                            bool generic) {
     (void)cp;
     display_card_824gc_priv_t *p = calloc(1, sizeof(*p));
     if (!p)
@@ -940,13 +933,12 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     // GCQD command-block window: card+$16C = std base | (slot<<20); gcp = +$8C00.
     p->gcp_base = (p->slot_base | ((uint32_t)card->slot << 20)) + GC824_GCP_OFFSET;
 
-    // Consume a pending video-mode pick (machine.nubus.video_mode = "...").
+    // The slot's video mode (checked against this card's catalog before the
+    // boot began).
     const nubus_monitor_t *seeded_monitor = NULL;
     int seeded_depth_bpp = 0;
-    if (s_pending_video_mode_id[0] &&
-        display_card_824gc_video_mode_lookup(s_pending_video_mode_id, &seeded_monitor, &seeded_depth_bpp))
-        s_pending_video_mode_id[0] = '\0';
-    else
+    if (!opts->video_mode[0] ||
+        !display_card_824gc_video_mode_lookup(opts->video_mode, &seeded_monitor, &seeded_depth_bpp))
         seeded_monitor = NULL;
 
     p->vram = calloc(1, GC824_VRAM_SIZE);
@@ -995,13 +987,13 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         declrom_builder_t *bld = gsvrom_generate(GSVROM_MDCGC, display_card_824gc_generic_kind.monitors);
         size_t img_size = 0;
         const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
-        if (img &&
-            declrom_install_builtin(display_card_824gc_generic_kind.id, img, img_size, p->vrom, GC824_DECLROM_BUS_SIZE))
+        if (img && declrom_install_builtin(p->card, display_card_824gc_generic_kind.id, img, img_size, p->vrom,
+                                           GC824_DECLROM_BUS_SIZE))
             p->vrom_size = GC824_DECLROM_BUS_SIZE;
         else
             LOG(0, "8*24 GC: 8_24gc: built-in declaration ROM failed to generate; declaration ROM is zero-filled");
         declrom_builder_free(bld);
-    } else if (!load_vrom(p))
+    } else if (!load_vrom(p, opts->rom[0] ? opts->rom : NULL))
         LOG(0, "8*24 GC: no 8•24 GC declaration ROM offered (pass a GC vROM as machine.boot vrom=, "
                "or make one available where the platform offers vROM files); "
                "declaration ROM is zero-filled");
@@ -1009,7 +1001,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     card->declrom = p->vrom;
     card->declrom_size = p->vrom_size;
 
-    // Default monitor: 640×480 (multisync), or a pending pick.  The seeded
+    // Default monitor: 640×480 (multisync), or the slot entry's video_mode.  The seeded
     // depth persists in priv (not just PRAM) so set_poweron_defaults restores
     // it across every /RESET — the guest's boot-time mode programming (the
     // direct MFB/ACDC path) isn't decoded, and the PRAM seed tells the driver
@@ -1056,9 +1048,11 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     p->ctx_super = (gc_reg_ctx_t){.p = p, .region_base = p->super_base};
     memory_map_add(cfg->mem_map, p->super_base, 0x10000000u, "gc824_super", &s_gc824_mem_iface, &p->ctx_super);
 
-    // Seed PRAM for the picked video mode (mirrors jmfb.c / 24AC).
-    if (seeded_monitor && seeded_depth_bpp > 0) {
-        rtc_t *rtc = system_rtc();
+    // Seed PRAM for the picked video mode (mirrors jmfb.c / 24AC) -- on a cold
+    // boot only: a restore's PRAM is the RTC's own block, holding whatever the
+    // guest wrote there.
+    if (!cp && seeded_monitor && seeded_depth_bpp > 0) {
+        rtc_t *rtc = cfg->rtc;
         if (rtc) {
             uint8_t spDepth = spdepth_for_bpp(seeded_depth_bpp);
             // The XPRAM token and the Start Manager table (PRAMInitTbl) are the
@@ -1142,12 +1136,12 @@ static const char *card_name(const nubus_card_t *card) {
 
 // Thin per-kind init wrappers — the sibling pair shares one HLE model
 // (hard rule: one HLE model per real/generic pair).
-static int card_init_real(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
-    return card_init_common(card, cfg, cp, /*generic*/ false);
+static int card_init_real(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
+    return card_init_common(card, cfg, cp, opts, /*generic*/ false);
 }
 
-static int card_init_generic(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
-    return card_init_common(card, cfg, cp, /*generic*/ true);
+static int card_init_generic(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
+    return card_init_common(card, cfg, cp, opts, /*generic*/ true);
 }
 
 static const char *card_name_generic(const nubus_card_t *card) {
@@ -1213,12 +1207,17 @@ static void ckpt_save_cache(checkpoint_t *cp, uint32_t key, uint32_t size, const
         system_write_checkpoint_data(cp, (void *)(uintptr_t)data, size);
 }
 
+// The caches hold copies of data the guest keeps in the card's DRAM, so no
+// entry is larger than it; the count bounds what the file may ask us to
+// allocate.
 static uint8_t *ckpt_restore_cache(checkpoint_t *cp, uint32_t *key, uint32_t *size, uint8_t *old) {
     free(old);
     system_read_checkpoint_data(cp, key, sizeof(*key));
-    system_read_checkpoint_data(cp, size, sizeof(*size));
-    if (!*size)
+    if (!checkpoint_read_count(cp, size, GC824_DRAM_SIZE, "8*24 GC cache bytes") || !*size) {
+        *key = 0;
+        *size = 0;
         return NULL;
+    }
     uint8_t *d = (uint8_t *)calloc(1, *size);
     if (!d) {
         *key = 0;
@@ -1345,7 +1344,7 @@ static const nubus_card_ops_t display_card_824gc_generic_ops = {
 // exactly like real hardware.  Sense codes follow the JMFB family.
 static const int display_card_824gc_depths[] = {1, 2, 4, 8, 0};
 // Monitor ids are prefixed "gc_" so they don't collide with the 24AC's
-// "rgb_*" ids when nubus.video_mode routes a pick to the matching card.
+// "rgb_*" ids when a slot entry's video_mode= names one.
 static const nubus_monitor_t display_card_824gc_monitors[] = {
     {.id = "gc_640x480",
      .name = "13\" AppleColor (640×480)",
@@ -1475,7 +1474,6 @@ const nubus_card_kind_t display_card_824gc_kind = {
     .requires_vrom = true,
     .monitors = display_card_824gc_monitors,
     .ops = &display_card_824gc_ops,
-    .stage_video_mode = display_card_824gc_pending_video_mode_set,
     .attach_objects = display_card_824gc_attach_objects,
 };
 
@@ -1506,19 +1504,10 @@ const nubus_card_kind_t display_card_824gc_generic_kind = {
     .requires_vrom = false,
     .monitors = display_card_824gc_generic_monitors,
     .ops = &display_card_824gc_generic_ops,
-    .stage_video_mode = display_card_824gc_pending_video_mode_set,
     .attach_objects = display_card_824gc_attach_objects,
 };
 
 // === Video-mode selection ===================================================
-
-void display_card_824gc_pending_video_mode_set(const char *id) {
-    if (!id || !*id) {
-        s_pending_video_mode_id[0] = '\0';
-        return;
-    }
-    snprintf(s_pending_video_mode_id, sizeof s_pending_video_mode_id, "%s", id);
-}
 
 bool display_card_824gc_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp) {
     return nubus_monitor_mode_lookup(display_card_824gc_monitors, id, out_monitor, out_depth_bpp);

@@ -32,7 +32,6 @@
 #include "appletalk.h"
 #include "checkpoint_images.h"
 #include "debug.h"
-#include "debug_mac.h"
 #include "floppy.h"
 #include "image.h"
 #include "log.h"
@@ -103,7 +102,7 @@ void gos_clear_page(uint32_t page_index) {
 // Memory layout
 // ============================================================
 
-static void gos_memory_layout(config_t *cfg) {
+static void gos_memory_layout(config_t *cfg, checkpoint_t *cp) {
     // ROM: the 4 MB image at $FFC00000, and its alias at $FF800000 — "any
     // system ROM space that is not physically implemented in a bank will be
     // aliased to the physical device(s) within that bank" (MPC106UM §6.5).
@@ -118,8 +117,8 @@ static void gos_memory_layout(config_t *cfg) {
     // header, the windows, the board page), then Heathrow on the bus.
     cfg->pci = pci_root_create(cfg);
     pci_init(cfg->pci, cfg->machine->pci_slots);
-    gos_grackle_init(cfg);
-    gos_heathrow_pci_attach(cfg);
+    gos_grackle_init(cfg, cp);
+    gos_heathrow_pci_attach(cfg, cp);
 }
 
 // ============================================================
@@ -288,7 +287,7 @@ static void gos_swim3_init(config_t *cfg) {
 
 // The NVRAM is non-volatile: its content survives machine.restart (the
 // power switch) because a restart never destroys the machine, and a new
-// machine (machine.boot, machine.rebuild) gets a new part -- the TNT rule
+// machine (machine.boot) gets a new part -- the TNT rule
 // and its reasons (tnt.c).  Nothing carries it across a teardown.  The new
 // part holds what the board's own firmware formats (of_nvram.h): OF 2.4's
 // variables and the ROM's parameter RAM defaults.  The Rev A ROM's OF
@@ -303,6 +302,40 @@ void gos_nvram_clear(config_t *cfg) {
     LOG(1, "NVRAM cleared (battery removed)");
 }
 
+// Checkpoint parts of the board's own (machine_parts.h).
+static void part_save_dbdma(void *obj, checkpoint_t *cp) {
+    dbdma_checkpoint(obj, cp);
+}
+
+static void part_save_mesh(void *obj, checkpoint_t *cp) {
+    mesh_checkpoint(obj, cp);
+}
+
+// Grackle, Heathrow, the I2C bus and the Screamer registers.
+static void part_save_gossamer_board(void *obj, checkpoint_t *cp) {
+    gossamer_state_t *st = obj;
+    system_write_checkpoint_data(cp, &st->grackle.cfg, sizeof(st->grackle.cfg));
+    system_write_checkpoint_data(cp, &st->grackle.cfg_addr, sizeof(st->grackle.cfg_addr));
+    system_write_checkpoint_data(cp, &st->hr, sizeof(st->hr));
+    system_write_checkpoint_data(cp, &st->i2c, sizeof(st->i2c));
+    system_write_checkpoint_data(cp, &st->screamer, sizeof(st->screamer));
+}
+
+// The floppy controller (its plain-data prefix) and its DBDMA byte ring.
+static void part_save_gossamer_swim3(void *obj, checkpoint_t *cp) {
+    gossamer_state_t *st = obj;
+    system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
+    system_write_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
+}
+
+static void part_save_gossamer_ata(void *obj, checkpoint_t *cp) {
+    gos_ata_checkpoint_save(obj, cp);
+}
+
+static void part_save_gossamer_bmac(void *obj, checkpoint_t *cp) {
+    gos_bmac_checkpoint_save(obj, cp);
+}
+
 static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     gossamer_state_t *st = calloc(1, sizeof(*st));
     if (!st) {
@@ -315,17 +348,28 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
 
     // Core: memory map, the 750 with the board's PVR and PLL straps, the
     // scheduler on the PPC seam.
-    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, cp);
-    g_mem_host_fill = gos_fill_page;
+    machine_part_begin(cfg, cp, "memory");
+    cfg->mem_map =
+        memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, MEMORY_BUS_ERR_NONE,
+                        &cfg->build_opts.rom, cp); // no bus-error watchdog: unanswered floats to $FF
+    machine_part(cfg, cp, "memory", part_save_memory, cfg->mem_map);
+    memory_map_set_host_fill(cfg->mem_map, gos_fill_page);
+    machine_part_begin(cfg, cp, "cpu");
     cfg->ppc = ppc_init(cp, cfg->machine->cpu_model);
+    if (cfg->ppc) {
+        memory_cpu_hooks_t hooks = ppc_memory_hooks(cfg->ppc);
+        memory_map_set_cpu_hooks(cfg->mem_map, &hooks);
+    }
     if (!cfg->ppc) {
         LOG(0, "Error: out of memory constructing the PowerPC core");
         return -1;
     }
+    machine_part(cfg, cp, "cpu", part_save_ppc, cfg->ppc);
     ppc_set_identity(cfg->ppc, board->pvr, board->hid1);
     sched_cpu_if_t cpu_if = ppc_sched_if(cfg->ppc);
+    machine_part_begin(cfg, cp, "scheduler");
     cfg->scheduler = scheduler_init(&cpu_if, cp);
-    debug_mac_register_scheduler_events(cfg->scheduler);
+    machine_part(cfg, cp, "scheduler", part_save_scheduler, cfg->scheduler);
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
     // CPI 2, the TNT rationale: a 750 running the 68k emulator sustains
     // well under one instruction per clock.
@@ -334,42 +378,59 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     // timebase-frequency $00FEE5E8; MPC750UM §2.1.1).
     ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, board->bus_hz / 4u);
 
+    machine_part_begin(cfg, cp, "rtc");
     cfg->rtc = rtc_init(cfg->scheduler, cp, true, cfg->machine->pram);
+    machine_part(cfg, cp, "rtc", part_save_rtc, cfg->rtc);
 
     // The ESCC behind Heathrow's two apertures; RTxC 3.6864 MHz, the value
     // every driver assumes (Linux ZS_CLOCK 3686400; NetBSD "RTxC is 230400*16").
+    machine_part_begin(cfg, cp, "scc");
     cfg->scc = scc_init(NULL, cfg->scheduler, gos_scc_irq, cfg, cp);
+    machine_part(cfg, cp, "scc", part_save_scc, cfg->scc);
     scc_set_clocks(cfg->scc, 15667200, 3686400);
-    appletalk_init(cfg->scheduler, cfg->scc, cp);
+    machine_part_begin(cfg, cp, "appletalk");
+    cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, cp);
+    machine_part(cfg, cp, "appletalk", part_save_atalk, cfg->atalk);
 
     // VIA1: the 6522 cell at Heathrow +$16000 ($200 stride), timers at the
     // classic 783.36 kHz.
     uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
+    machine_part_begin(cfg, cp, "via1");
     cfg->via1 =
         via_init(NULL, cfg->scheduler, via_ff, "via1", gos_via1_output, gos_via1_shift_out, gos_via1_irq, cfg, cp);
+    machine_part(cfg, cp, "via1", part_save_via, cfg->via1);
     via_set_exact_clock(cfg->via1, cfg->machine->freq);
     via_input(cfg->via1, 1, 3, 1); // PB3 = Cuda TREQ, idle high
     via_input_c(cfg->via1, 0, 0, 1);
     via_input_c(cfg->via1, 1, 0, 1);
     via_input_c(cfg->via1, 1, 1, 1);
 
+    machine_part_begin(cfg, cp, "adb");
     cfg->adb = adb_init(NULL, cfg->scheduler, cp);
+    machine_part(cfg, cp, "adb", part_save_adb, cfg->adb);
 
     // Cuda: the 341S0060 part with firmware 2.40, the RTC seed in the
     // Mode3Clock tick (the PDM/TNT choice), and the board's I2C bus.
+    machine_part_begin(cfg, cp, "cuda");
     st->cuda = av_cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/true);
     if (!st->cuda) {
         LOG(0, "Error: out of memory constructing the Cuda");
         return -1;
     }
+    machine_part(cfg, cp, "cuda", part_save_cuda, st->cuda);
     av_cuda_set_firmware_240(st->cuda);
     av_cuda_attach_i2c_bus(st->cuda, gos_i2c_read, gos_i2c_write, cfg);
 
     // DBDMA: Heathrow's thirteen channel blocks.
+    machine_part_begin(cfg, cp, "dbdma");
     st->dbdma = dbdma_init(cp, DBDMA_CHANNELS_HEATHROW);
     if (!st->dbdma)
         return -1;
-    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, cp);
+    machine_part(cfg, cp, "dbdma", part_save_dbdma, st->dbdma);
+    machine_part_begin(cfg, cp, "floppy");
+    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp,
+                              CONFIG_IMAGES(cfg));
+    machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
     gos_swim3_bind(cfg);
     gos_swim3_init(cfg);
     gos_scc_dma_init(cfg);
@@ -406,12 +467,13 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     gos_heathrow_init(cfg);
     gos_grackle_attach_objects(cfg);
     gos_heathrow_attach_objects(cfg);
-    gos_memory_layout(cfg);
+    gos_memory_layout(cfg, cp);
 
-    // The PCI slot walk: builtins and whatever the user staged.
+    // The PCI slot walk: builtins and whatever the boot document names.
     pci_seat_slots(cfg->pci, cp);
 
-    // Substrate tail (mirrored by gossamer_checkpoint_save).
+    // The board's own state.
+    machine_part_begin(cfg, cp, "gossamer");
     if (cp) {
         system_read_checkpoint_data(cp, &st->grackle.cfg, sizeof(st->grackle.cfg));
         system_read_checkpoint_data(cp, &st->grackle.cfg_addr, sizeof(st->grackle.cfg_addr));
@@ -419,16 +481,25 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, &st->hr, sizeof(st->hr));
         system_read_checkpoint_data(cp, &st->i2c, sizeof(st->i2c));
         system_read_checkpoint_data(cp, &st->screamer, sizeof(st->screamer));
-        pci_checkpoint_restore(cfg->pci, cp);
+    }
+    machine_part(cfg, cp, "gossamer", part_save_gossamer_board, st);
+    // Every PCI device read its config header with its own part; its decode
+    // waits for the bus windows, which exist now.
+    if (cp)
+        pci_replay_decode(cfg->pci);
+    if (cp) {
         via_redrive_outputs(cfg->via1);
         gos_recompute_irq(cfg);
     }
 
     // SCSI: the one MESH bus (internal and external connectors share it).
-    if (cp)
-        mac_checkpoint_restore_images(cfg, cp);
-    cfg->scsi = scsi_init(cp);
+    machine_part_images(cfg, cp);
+    machine_part_begin(cfg, cp, "scsi");
+    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, cp, CONFIG_IMAGES(cfg));
+    machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
+    machine_part_begin(cfg, cp, "mesh");
     st->mesh = mesh_init(cfg->scheduler, cp);
+    machine_part(cfg, cp, "mesh", part_save_mesh, st->mesh);
     mesh_attach_bus(st->mesh, cfg->scsi);
     mesh_set_irq_callback(st->mesh, gos_mesh_irq, cfg);
     mesh_set_dbdma_kick(st->mesh, gos_mesh_dbdma_kick, cfg);
@@ -441,24 +512,28 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     };
     dbdma_set_port(st->dbdma, GOS_DMA_MESH, &mesh_port);
 
+    machine_part_begin(cfg, cp, "swim3");
     if (cp) {
         system_read_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
         system_read_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
         gos_swim3_bind(cfg);
         gos_recompute_irq(cfg);
     }
+    machine_part(cfg, cp, "swim3", part_save_gossamer_swim3, st);
 
-    // The two ATA cells and their ATAPI back end (restored last, as saved).
+    // The two ATA cells and their ATAPI back end.
+    machine_part_begin(cfg, cp, "ata");
     gos_ata_init(cfg, cp);
+    machine_part(cfg, cp, "ata", part_save_gossamer_ata, cfg);
     gos_ata_attach_objects(cfg);
-    // BMAC, after the ATA cells in the stream too.
+    machine_part_begin(cfg, cp, "bmac");
     gos_bmac_init(cfg, cp);
+    machine_part(cfg, cp, "bmac", part_save_gossamer_bmac, cfg);
     gos_bmac_attach_objects(cfg);
     if (cp)
         gos_recompute_irq(cfg);
 
     cfg->debugger = debug_init();
-    scheduler_start(cfg->scheduler);
     return 0;
 }
 
@@ -522,29 +597,6 @@ static void gossamer_teardown(config_t *cfg) {
         free(st);
         cfg->machine_context = NULL;
     }
-}
-
-static void gossamer_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
-    gossamer_state_t *st = gos_st(cfg);
-    // Same relative order as the gossamer_init construction sequence.
-    machine_checkpoint_save_core(cfg, cp);
-    adb_checkpoint(cfg->adb, cp);
-    av_cuda_checkpoint(st->cuda, cp);
-    dbdma_checkpoint(st->dbdma, cp);
-    floppy_checkpoint(cfg->floppy, cp);
-    system_write_checkpoint_data(cp, &st->grackle.cfg, sizeof(st->grackle.cfg));
-    system_write_checkpoint_data(cp, &st->grackle.cfg_addr, sizeof(st->grackle.cfg_addr));
-    system_write_checkpoint_data(cp, &st->hr, sizeof(st->hr));
-    system_write_checkpoint_data(cp, &st->i2c, sizeof(st->i2c));
-    system_write_checkpoint_data(cp, &st->screamer, sizeof(st->screamer));
-    pci_checkpoint_save(cfg->pci, cp);
-    mac_checkpoint_save_images(cfg, cp);
-    scsi_checkpoint(cfg->scsi, cp);
-    mesh_checkpoint(st->mesh, cp);
-    system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
-    system_write_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
-    gos_ata_checkpoint_save(cfg, cp);
-    gos_bmac_checkpoint_save(cfg, cp);
 }
 
 // Frame tick: the 60.15 Hz reference into VIA1 CA1 (the Cuda driver waits
@@ -633,7 +685,6 @@ const machine_substrate_t gossamer_substrate = {
     .bus_reset = gossamer_bus_reset,
     .power_on = gossamer_power_on,
     .teardown = gossamer_teardown,
-    .checkpoint_save = gossamer_checkpoint_save,
     .pci_slot_irq = gossamer_pci_slot_irq,
     .trigger_vbl = gossamer_trigger_vbl,
     .fd_insert = gossamer_fd_insert,
@@ -642,7 +693,6 @@ const machine_substrate_t gossamer_substrate = {
     .input_mouse_move = mac_input_mouse_move,
     .input_mouse_button = mac_input_mouse_button,
     .display = gossamer_display,
-    .media_detach = gos_media_detach,
     .media_attach = gos_media_attach,
     .media_present = gos_media_present,
     .media_eject = gos_media_eject,

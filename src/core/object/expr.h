@@ -65,7 +65,8 @@ typedef struct expr_ctx {
 // against `root`. Resolves the full path as a tree node when possible;
 // otherwise resolves the longest prefix that is a node, reads its value,
 // and descends the remaining segments into that V_MAP / V_LIST value —
-// the access path behind `machine.config.vroms[0].card_id`. Returns the
+// the access path behind `node.attr[0].key` when `attr` answers a map or a
+// list. Returns the
 // (owned) value or V_ERROR.
 value_t expr_object_path_read(struct object *root, const char *path);
 

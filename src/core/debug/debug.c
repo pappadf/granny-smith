@@ -636,7 +636,7 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
                     // the physical compare.  Unwatched pages arrive
                     // already-physical and compare as-is.
                     bool ok;
-                    uint32_t pa = g_mem_logical_xlate(addr, &ok);
+                    uint32_t pa = g_mem_logical_xlate(g_mem_logical_xlate_ctx, addr, &ok);
                     if (ok)
                         phys_addr = pa;
                 }
@@ -991,13 +991,11 @@ void list_breakpoints(debug_t *debug) {
 }
 
 // Check if tracing is active (for log capture hook)
+// The ACTIVE machine's trace: a log line goes there whichever machine wrote
+// it, including one being built alongside it.
 int debug_trace_is_active(void) {
-    if (!system_is_initialized())
-        return 0;
-    debug_t *debug = system_debug();
-    if (!debug)
-        return 0;
-    return debug->trace_entries != NULL;
+    debug_t *debug = global_emulator ? global_emulator->debugger : NULL;
+    return debug && debug->trace_entries != NULL;
 }
 
 // Check if debug functionality is engaged (breakpoints, logpoints, or tracing)
@@ -1884,20 +1882,14 @@ debug_t *debug_init(void) {
         return NULL;
     }
 
-    debug_mac_init();
-
-    // Install memory-logpoint hook so the memory slow path can emit logs.
-    // The hook is process-global; this instance owns it until another is
-    // constructed (see debug_delete).
-    g_mem_logpoint_hook = debug_memory_logpoint_hook;
-    g_mem_hook_owner = debug;
-
     // Object-tree binding — instance_data on the debug node and its
-    // collection / mac children is the debug_t* itself.
+    // collection / mac children is the debug_t* itself.  The node joins the
+    // root, and the memory-logpoint hook is installed, when the machine
+    // becomes the active one (debug_activate): a machine that fails to build
+    // must not touch either.
     debug->object = object_new(&debug_class, debug, "debug");
     if (debug->object) {
         object_set_order(debug->object, 40);
-        object_attach(object_root(), debug->object);
         debug->bp_collection_object = object_new(&bp_collection_class, debug, "breakpoints");
         if (debug->bp_collection_object)
             object_attach(debug->object, debug->bp_collection_object);
@@ -1922,6 +1914,17 @@ debug_t *debug_init(void) {
     }
 
     return debug;
+}
+
+void debug_activate(debug_t *debug) {
+    if (!debug)
+        return;
+    if (debug->object)
+        object_attach(object_root(), debug->object);
+    // The hook is process-global; this instance owns it until another is
+    // activated (see debug_delete).
+    g_mem_logpoint_hook = debug_memory_logpoint_hook;
+    g_mem_hook_owner = debug;
 }
 
 // ============================================================================
@@ -3262,7 +3265,7 @@ static DEF_METHOD(debug_method_step) {
     if (!scheduler_run_with_budget(s, (uint64_t)count))
         return val_err("debug.step: instruction count too large");
     while (scheduler_is_running(s))
-        scheduler_run_frame(s, global_emulator);
+        scheduler_run_frame(s, global_emulator, platform_pacing());
     return val_bool(true);
 }
 

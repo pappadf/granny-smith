@@ -77,6 +77,12 @@ let fd_boot = "../../data/systems/SSW-7.6-1.4M/Install 1.img"
 # Finder desktop.
 def boot_pdm_75(model, ram_kb, id) {
     machine.boot model=$model ram=$ram_kb rom="${$ROM}"
+    run_pdm_75($model, $id)
+}
+
+# The same, on the machine just booted (a row whose document says more than
+# model and RAM boots it itself, then runs this).
+def run_pdm_75(model, id) {
     machine.rtc.time = 0xE0000000
     machine.scsi.attach_hd "${$hd_75}" $id
     # The Start Manager's default startup device is the disk's own id --
@@ -156,13 +162,11 @@ def row_8100_75_hd() { pdm_75_row("pm8100", 16384, 59, true, 0, "goldens/pm8100-
 #     up as screen two; the desktop golden here is the ON-BOARD framebuffer;
 #   * the other two sockets stay empty next to a populated one.
 def row_8100_75_24ac() {
-    machine.boot model="pm8100" ram=16384 rom="${$ROM}"
-    machine.nubus.slot[12].card_id = "24ac"
-    boot_pdm_75("pm8100", 16384, 0)
+    machine.boot model="pm8100" ram=16384 rom="${$ROM}" slots="12=24ac"
+    run_pdm_75("pm8100", 0)
 
     assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC (generic video ROM)" "slot C card != 24AC"
     assert machine.nubus.slot[12].card.declrom.present "slot C declaration ROM not present"
-    assert machine.nubus.slot[12].card_id == "" "staged card_id not consumed at boot"
     # The empty sockets either side of it are still empty — what an
     # unpopulated BART window must look like, to us and to the Slot
     # Manager alike.
@@ -206,7 +210,6 @@ def row_8100_75_24ac() {
 def row_pdm_nubus_empty() {
     machine.boot model="pm8100" ram=16384 rom="${$ROM}"
     machine.rtc.time = 0xE0000000
-    assert machine.nubus.slot[12].card_id == "" "slot C carries a staged pick"
     assert try(machine.nubus.slot[12].card.name, none) == none "slot C is populated"
     # machine.amic — the AMIC has no per-source mask of its own, so
     # `enabled` reports all six ICR sources and the masking that matters is
@@ -233,10 +236,10 @@ def row_pdm_nubus_empty() {
     # cosmetic: the pseudo-VIA2 slot bit is `slot - 9`, so a socket at $B
     # would land on bit 2 — which the OS never enables and never services,
     # leaving that card's /NMRQ latched forever and its slot VBL tasks
-    # (the cursor task, when the card is the main screen) never run.  The
-    # staging channel only exists for declared sockets, so a $B socket
-    # would make this setter succeed.
-    assert try(machine.nubus.slot[11].card_id, none) == none "slot B is declared a socket; the connectors are C/D/E (see pm8100.c)"
+    # (the cursor task, when the card is the main screen) never run.  A boot
+    # document can only seat a card in a declared socket, so a $B socket
+    # would make this boot succeed.
+    assert !machine.boot(model="pm8100", ram=16384, rom="${$ROM}", slots="11=24ac") "slot B is declared a socket; the connectors are C/D/E (see pm8100.c)"
     # Chip init, the slot scan, and on to the "insert disk" gray desktop.
     scheduler.run 360000000
     while (machine.cpu.msr & 0x4000) == 0 { scheduler.run 1000 }

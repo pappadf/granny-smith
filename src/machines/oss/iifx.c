@@ -15,7 +15,6 @@
 
 #include "adb.h"
 #include "asc.h"
-#include "checkpoint_images.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "cpu_internal.h"
@@ -298,7 +297,6 @@ static inline iifx_state_t *iifx_state(config_t *cfg) {
 static int iifx_init(config_t *cfg, checkpoint_t *checkpoint);
 static void iifx_teardown(config_t *cfg);
 static void iifx_bus_reset(config_t *cfg);
-static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp);
 static void iifx_memory_layout_init(config_t *cfg);
 static void iifx_nubus_slot_irq(config_t *cfg, int slot, bool active);
 static void iifx_trigger_vbl(config_t *cfg);
@@ -1245,7 +1243,7 @@ static void iifx_oss_irq_changed(void *context) {
     iifx_state_t *st = iifx_state(cfg);
     cfg->irq = oss_pending(st->oss);
     cpu_set_ipl(cfg->cpu, oss_highest_ipl(st->oss));
-    cpu_reschedule();
+    cpu_reschedule(cfg->scheduler);
 }
 
 // Handles OSS ROM-control and power-off writes.  Bit 7 is the power-off
@@ -1503,6 +1501,21 @@ static const mac030_board_desc_t iifx_board_desc = {
     .bus_err_hi = NUBUS_BERR_HI,
 };
 
+// Checkpoint parts of the IIfx's own (machine_parts.h).
+static void part_save_oss(void *obj, checkpoint_t *cp) {
+    oss_checkpoint(obj, cp);
+}
+
+// The SCSI DMA engine's registers, which live in the machine state.
+static void part_save_scsi_dma(void *obj, checkpoint_t *cp) {
+    iifx_state_t *st = obj;
+    system_write_checkpoint_data(cp, &st->scsi_dma_ctrl, sizeof(st->scsi_dma_ctrl));
+    system_write_checkpoint_data(cp, &st->scsi_dma_count, sizeof(st->scsi_dma_count));
+    system_write_checkpoint_data(cp, &st->scsi_dma_addr, sizeof(st->scsi_dma_addr));
+    system_write_checkpoint_data(cp, &st->scsi_dma_watchdog_reload, sizeof(st->scsi_dma_watchdog_reload));
+    system_write_checkpoint_data(cp, &st->scsi_dma_fifo_word, sizeof(st->scsi_dma_fifo_word));
+}
+
 // Initializes a Macintosh IIfx machine.
 static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     iifx_state_t *st = calloc(1, sizeof(*st));
@@ -1513,17 +1526,18 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->machine_context = st;
 
     // Build the shared II-family core (mem_map, cpu-from-profile, scheduler).
-    mac030_build_core(cfg, checkpoint);
-    if (checkpoint)
-        system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
+    mac030_build_core(cfg, &iifx_board_desc, checkpoint);
+    machine_part_irq(cfg, checkpoint);
 
     mac030_build_lowspeed(cfg, checkpoint, iifx_scc_irq);
 
     // Divisor derived from the profile clock rather than the literal 51 this
     // used to carry -- via.h asks for exactly that, since a literal that suits
     // one member of a family is wrong for any sibling with a different clock.
+    machine_part_begin(cfg, checkpoint, "via1");
     cfg->via1 = via_init(NULL, cfg->scheduler, via_freq_factor_for_clock(cfg->machine->freq), "via1", iifx_via1_output,
                          iifx_via1_shift_out, iifx_via1_irq, cfg, checkpoint);
+    machine_part(cfg, checkpoint, "via1", part_save_via, cfg->via1);
     // Exact-rational phi2: the integer divisor above rounds, and on this
     // substrate that rounding is not negligible -- 40 MHz lands 0.12% fast.  via_set_exact_clock
     // installs ticks = cycles x 783360/cpu_hz reduced, which is what the
@@ -1543,17 +1557,23 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     via_input_c(cfg->via1, 1, 0, 1);
     via_input_c(cfg->via1, 1, 1, 1);
 
-    if (checkpoint)
-        mac_checkpoint_restore_images(cfg, checkpoint);
+    machine_part_images(cfg, checkpoint);
 
-    cfg->scsi = scsi_init(checkpoint);
+    machine_part_begin(cfg, checkpoint, "scsi");
+    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, checkpoint, CONFIG_IMAGES(cfg));
     scsi_5380_attach(cfg->scsi, checkpoint); // IIfx: NCR 5380 behind the OSS
+    machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
     setup_images(cfg);
 
+    machine_part_begin(cfg, checkpoint, "asc");
     st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
+    machine_part(cfg, checkpoint, "asc", part_save_asc, st->asc);
+    machine_part_begin(cfg, checkpoint, "floppy");
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, checkpoint);
+    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), checkpoint,
+                             CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
+    machine_part(cfg, checkpoint, "floppy", part_save_floppy, st->floppy);
 
     // ADB device state: the IIfx's ADB bus is bit-banged by the SWIM IOP
     // firmware ($F032 in iop-swim.bin), not by VIA1's shift register, so
@@ -1562,8 +1582,10 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     // via_input_sr() / via_input(pb3).  cfg->adb exposes this instance
     // to system_mouse_update / adb_keyboard_event so host-side mouse +
     // keyboard input routes here transparently.
+    machine_part_begin(cfg, checkpoint, "adb");
     st->adb = adb_init(NULL, cfg->scheduler, checkpoint);
     cfg->adb = st->adb;
+    machine_part(cfg, checkpoint, "adb", part_save_adb, st->adb);
 
     st->via1_iface = via_get_memory_interface(cfg->via1);
     st->scc_iface = scc_get_memory_interface(cfg->scc);
@@ -1571,13 +1593,19 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     st->asc_iface = asc_get_memory_interface(st->asc);
     st->floppy_iface = floppy_get_memory_interface(st->floppy);
 
+    machine_part_begin(cfg, checkpoint, "oss");
     st->oss = oss_init(iifx_oss_irq_changed, iifx_oss_control, cfg, cfg->scheduler, checkpoint);
+    machine_part(cfg, checkpoint, "oss", part_save_oss, st->oss);
     st->oss_iface = oss_get_memory_interface(st->oss);
     asc_set_irq_handler(st->asc, iifx_asc_irq, cfg); // sound IRQ → OSS source 8
     scsi_set_irq_callback(cfg->scsi, iifx_scsi_irq, cfg);
+    machine_part_begin(cfg, checkpoint, "scc_iop");
     st->scc_iop = iop_init(SccIopNum, st->scc_iface, cfg->scc, iifx_scc_iop_irq, cfg, cfg->scheduler, checkpoint);
+    machine_part(cfg, checkpoint, "scc_iop", part_save_iop, st->scc_iop);
+    machine_part_begin(cfg, checkpoint, "swim_iop");
     st->swim_iop =
         iop_init(SwimIopNum, st->floppy_iface, st->floppy, iifx_swim_iop_irq, cfg, cfg->scheduler, checkpoint);
+    machine_part(cfg, checkpoint, "swim_iop", part_save_iop, st->swim_iop);
     st->scc_iop_iface = iop_get_memory_interface(st->scc_iop);
     st->swim_iop_iface = iop_get_memory_interface(st->swim_iop);
 
@@ -1588,23 +1616,28 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     st->mmu = mac030_build_mmu(cfg, iifx_board_desc.rom_base, iifx_board_desc.rom_end);
     if (!st->mmu)
         return -1; // mac030_build_mmu reported the reason
-    st->mmu->tt1 = 0xF00F8043;
+    st->mmu->tt1 = st->mmu->tt1_board = 0xF00F8043; // supervisor-only identity map for NuBus $F0..$FF, from power-on
 
     cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, checkpoint);
-    memory_set_bus_error_range(cfg->mem_map, iifx_board_desc.bus_err_lo, iifx_board_desc.bus_err_hi);
 
     iifx_memory_layout_init(cfg);
 
+    machine_part_begin(cfg, checkpoint, "scsi_dma");
     if (checkpoint) {
         system_read_checkpoint_data(checkpoint, &st->scsi_dma_ctrl, sizeof(st->scsi_dma_ctrl));
         system_read_checkpoint_data(checkpoint, &st->scsi_dma_count, sizeof(st->scsi_dma_count));
         system_read_checkpoint_data(checkpoint, &st->scsi_dma_addr, sizeof(st->scsi_dma_addr));
         system_read_checkpoint_data(checkpoint, &st->scsi_dma_watchdog_reload, sizeof(st->scsi_dma_watchdog_reload));
         system_read_checkpoint_data(checkpoint, &st->scsi_dma_fifo_word, sizeof(st->scsi_dma_fifo_word));
-        nubus_checkpoint_restore(cfg->nubus, checkpoint); // matches iifx_checkpoint_save
+    }
+    machine_part(cfg, checkpoint, "scsi_dma", part_save_scsi_dma, st);
+    machine_part_begin(cfg, checkpoint, "mmu");
+    if (checkpoint)
         mmu_checkpoint_restore(st->mmu, checkpoint);
+    machine_part(cfg, checkpoint, "mmu", part_save_mmu, st->mmu);
+    if (checkpoint) {
         mmu_invalidate_tlb(st->mmu);
-        g_mmu = st->mmu;
+        memory_map_set_pmmu(cfg->mem_map, st->mmu);
         cpu_attach_mmu(cfg->cpu, st->mmu);
         via_redrive_outputs(cfg->via1);
     }
@@ -1663,41 +1696,6 @@ static void iifx_teardown(config_t *cfg) {
     }
 }
 
-// Saves an IIfx checkpoint.
-static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
-    iifx_state_t *st = iifx_state(cfg);
-    machine_checkpoint_save_core(cfg, cp);
-    mac_checkpoint_save_images(cfg, cp);
-    scsi_checkpoint(cfg->scsi, cp);
-    // Save order must mirror iifx_init's construction order exactly, because
-    // the stream is positional.  These three were saved asc -> adb -> floppy
-    // while init restored asc -> floppy -> adb, which made every
-    // checkpoint.load on this machine fail with "expected 9840 at
-    // floppy.c:708 but file contains 336 at adb.c:891" -- a confusing message
-    // naming an innocent block several positions past the actual swap.
-    //
-    // The subsystems below now tag their own blocks, so a future divergence
-    // is caught AT the swap and reported by name.  Nothing is needed here:
-    // the protection travels with the device, not with this call site.
-    asc_checkpoint(st->asc, cp);
-    floppy_checkpoint(st->floppy, cp);
-    adb_checkpoint(st->adb, cp);
-    oss_checkpoint(st->oss, cp);
-    iop_checkpoint(st->scc_iop, cp);
-    iop_checkpoint(st->swim_iop, cp);
-    system_write_checkpoint_data(cp, &st->scsi_dma_ctrl, sizeof(st->scsi_dma_ctrl));
-    system_write_checkpoint_data(cp, &st->scsi_dma_count, sizeof(st->scsi_dma_count));
-    system_write_checkpoint_data(cp, &st->scsi_dma_addr, sizeof(st->scsi_dma_addr));
-    system_write_checkpoint_data(cp, &st->scsi_dma_watchdog_reload, sizeof(st->scsi_dma_watchdog_reload));
-    system_write_checkpoint_data(cp, &st->scsi_dma_fifo_word, sizeof(st->scsi_dma_fifo_word));
-    // Card-side display state (VRAM, palette, active mode) — last before the
-    // block below, so a machine that restores with fewer cards than it saved
-    // short-reads here without shifting anything that follows (mdu.c:190,
-    // pdm.c:537 use the same position).
-    nubus_checkpoint_save(cfg->nubus, cp);
-    mmu_checkpoint_save(st->mmu, cp);
-}
-
 // Machine descriptor data.
 static const uint32_t iifx_ram_options_kb[] = {4096, 8192, 16384, 32768, 65536, 131072, 0};
 
@@ -1711,7 +1709,6 @@ static const machine_substrate_t iifx_substrate = {
     .bus_reset = iifx_bus_reset,
     .power_on = iifx_power_on,
     .teardown = iifx_teardown,
-    .checkpoint_save = iifx_checkpoint_save,
     .trigger_vbl = iifx_trigger_vbl,
     .nubus_slot_irq = iifx_nubus_slot_irq, // slots $9-$E → OSS source bits 0-5
     .fd_insert = mac_fd_insert,
@@ -1719,7 +1716,6 @@ static const machine_substrate_t iifx_substrate = {
     .input_key = mac_input_key,
     .input_mouse_move = mac_input_mouse_move,
     .input_mouse_button = mac_input_mouse_button,
-    .media_detach = system_media_detach_std,
     .media_attach = system_media_attach_std,
     .media_present = system_media_present_std,
     .media_eject = system_media_eject_std,
@@ -1743,6 +1739,7 @@ const hw_profile_t machine_iifx = {
     .scsi_buses = iifx_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
 
     .nubus_slots = iifx_slots,
 

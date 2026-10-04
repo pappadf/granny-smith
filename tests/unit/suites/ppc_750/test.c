@@ -290,7 +290,7 @@ static void test_other_models_reject(void) {
 int main(void) {
     // 32-bit map with RAM at 0 (the vectors land at $00000xxx).
     test_context_t *ctx = calloc(1, sizeof(test_context_t));
-    ctx->memory = memory_map_init(32, 0x800000, 0x20000, NULL);
+    ctx->memory = memory_map_init(32, 0x800000, 0x20000, MEMORY_BUS_ERR_NONE, NULL, NULL);
     if (!ctx->memory) {
         printf("FAIL: memory_map_init\n");
         return 1;

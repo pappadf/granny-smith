@@ -82,9 +82,12 @@ dumps. Adding a card ROM is one row.
 
 `prom_offer_find()` yields candidates in this order, all content-based:
 
-1. the explicit `machine.boot prom=` pick;
-2. catalog rows carrying `preferred`;
-3. the remaining catalog rows, in order.
+1. catalog rows carrying `preferred`;
+2. the remaining catalog rows, in order.
+
+A slot whose boot-document entry names a file (`slots="N=card,rom=<file>"`,
+or `machine.boot prom=` for every slot whose card the file provides) takes
+that file instead; `prom_load_card(card_id, rom, ...)` is handed it.
 
 ## Serving the ROM to the guest
 

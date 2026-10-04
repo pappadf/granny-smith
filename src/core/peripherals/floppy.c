@@ -687,12 +687,6 @@ bool floppy_is_inserted(floppy_t *floppy, int drive) {
     return floppy->disk[drive] != NULL;
 }
 
-void floppy_set_drive_count(floppy_t *floppy, int n) {
-    if (!floppy)
-        return;
-    floppy->n_drives = n < 0 ? 0 : n > NUM_DRIVES ? NUM_DRIVES : n;
-}
-
 // Get the memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *floppy_get_memory_interface(floppy_t *floppy) {
     return &floppy->memory_interface;
@@ -864,7 +858,8 @@ static void floppy_validate_restored_state(floppy_t *floppy) {
 }
 
 // Initializes a floppy controller of the given type and maps it to memory
-floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, checkpoint_t *checkpoint) {
+floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, int n_drives, checkpoint_t *checkpoint,
+                      const image_list_t *images) {
     floppy_t *floppy = malloc(sizeof(floppy_t));
     if (!floppy) {
         LOG(1, "Floppy: Allocation failed");
@@ -872,7 +867,7 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
     }
 
     memset(floppy, 0, sizeof(floppy_t));
-    floppy->n_drives = NUM_DRIVES;
+    floppy->n_drives = n_drives < 0 ? 0 : n_drives > NUM_DRIVES ? NUM_DRIVES : n_drives;
     for (int d = 0; d < NUM_DRIVES; d++)
         floppy->drives[d].write_hdr_start = -1;
     floppy->type = type;
@@ -920,7 +915,14 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
                 char *name = malloc(len);
                 if (name) {
                     system_read_checkpoint_data(checkpoint, name, len);
-                    floppy->disk[i] = setup_get_image_by_filename(name);
+                    name[len - 1] = '\0';
+                    floppy->disk[i] = images_find(images, name);
+                    if (!floppy->disk[i]) {
+                        // The drive held a disk: a restore without it is not
+                        // the machine that was saved.
+                        LOG(0, "floppy drive %d: the checkpoint's disk '%s' is not among its images", i, name);
+                        checkpoint_set_error(checkpoint);
+                    }
                     floppy_notify_present(i, floppy->disk[i] != NULL);
                     free(name);
                 } else {

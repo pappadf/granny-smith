@@ -433,8 +433,8 @@ iop_t *iop_init(iop_kind_t kind, const memory_interface_t *bypass_iface, void *b
     }
 
     // Register periodic-event types with the scheduler so checkpoint
-    // save / restore can name and resolve them. Done unconditionally,
-    // before scheduler_start runs the checkpoint-event resolution pass.
+    // save / restore can name and resolve them. Done unconditionally, at
+    // construction: the saved queue is resolved once the machine is built.
     if (iop->behavior->register_events)
         iop->behavior->register_events(iop);
 

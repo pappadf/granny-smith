@@ -24,9 +24,8 @@ typedef enum {
 // Opens a checkpoint file for reading
 checkpoint_t *checkpoint_open_read(const char *filename);
 
-// Opens a checkpoint file for writing with the specified kind, machine model ID, and RAM size
-checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind, const char *model_id,
-                                    uint32_t ram_size_kb);
+// Opens a checkpoint file for writing with the specified kind
+checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind);
 
 // Closes a checkpoint file and frees resources
 void checkpoint_close(checkpoint_t *checkpoint);
@@ -40,12 +39,6 @@ void checkpoint_set_error(checkpoint_t *checkpoint);
 // Returns the kind of an open checkpoint
 checkpoint_kind_t checkpoint_get_kind(checkpoint_t *checkpoint);
 
-// Returns the machine model ID stored in the checkpoint header (e.g. "plus", "se30")
-const char *checkpoint_get_model_id(checkpoint_t *checkpoint);
-
-// Returns the RAM size (in KB) stored in the checkpoint header (0 = use machine default)
-uint32_t checkpoint_get_ram_size_kb(checkpoint_t *checkpoint);
-
 // === Block I/O (with file:line metadata for diagnostics) ===
 
 // Reads a data block from the checkpoint with size and tag validation
@@ -58,15 +51,14 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
 
 // === Block tags ===
 //
-// The stream is positional: subsystem N's state is whatever bytes sit between
-// N-1's and N+1's, and integrity rests entirely on the save and restore
-// functions visiting subsystems in the same order.  Nothing checks that they
-// do.  When they diverge, what happens depends only on whether the block
-// sizes happen to match: different sizes surface as a confusing mismatch
-// several blocks later, pointing at an innocent bystander; **equal sizes are
-// not detected at all, in either format**, and each subsystem silently
-// restores the other's state.  The IIfx once did exactly this -- it saved
-// ASC -> ADB -> floppy and restored ASC -> floppy -> ADB.
+// A machine's checkpoint is the list of its parts in construction order, each
+// followed by its name (machine_parts.h), so a part that is not where the
+// machine being built expects it fails at that part.  Within a part, blocks
+// are read in the order they were written, and the tags catch a part whose
+// own save and restore disagree -- different sizes would surface as a
+// confusing mismatch a block later, and **equal sizes would not be detected
+// at all**: the IIfx once saved ASC -> ADB -> floppy and restored ASC ->
+// floppy -> ADB.
 //
 // So every block carries a 32-bit tag beside its size.  Pass an optional
 // fourth argument naming the block, on BOTH paths:
@@ -137,14 +129,6 @@ size_t checkpoint_read_file_loc(checkpoint_t *checkpoint, uint8_t *dest, size_t 
 #define checkpoint_write_file(cp, path) checkpoint_write_file_loc((cp), (path), __FILE__, __LINE__)
 #define checkpoint_read_file(cp, dest, cap, out_path)                                                                  \
     checkpoint_read_file_loc((cp), (dest), (cap), (out_path), __FILE__, __LINE__)
-
-// === File-as-reference mode control ===
-
-// Sets whether files should be stored as references (true) or embedded (false)
-void checkpoint_set_files_as_refs(bool refs);
-
-// Returns the current file-as-reference mode setting
-bool checkpoint_get_files_as_refs(void);
 
 // Validate that a checkpoint file's build ID matches the current build.
 // Opens the file, reads magic + build ID, compares with current build.

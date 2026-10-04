@@ -15,6 +15,7 @@ import {
   urlSchedulerMode,
 } from '@/bus/urlMedia';
 import { whenModuleReady, onEmulatorCrash, applySchedulerMode } from '@/bus/emulator';
+import { claimScratch } from '@/bus/scratch';
 import { setSchedulerMode } from '@/state/machine.svelte';
 import { beginUrlBoot } from '@/state/urlBoot.svelte';
 import { installEvalHookForAutomation, installUiHookForAutomation } from '@/bus/testHook';
@@ -110,9 +111,10 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
   // `whenModuleReady()` exactly when the bridge is live.
   const urlParams = new URLSearchParams(window.location.search);
   const mediaParams = parseUrlMediaParams(urlParams);
-  // ?speed= is the toolbar's pacing preference from the start: a boot pushes
-  // it to the fresh core (reconcileUiWithMachine), and a resumed machine is
-  // switched to it below.
+  // ?speed= is the toolbar's pacing preference from the start.  The core's
+  // pacing is the host's setting, there with or without a machine, so it is
+  // pushed as soon as the core is up (below) and every machine the page then
+  // boots or restores runs under it.
   const urlMode = urlSchedulerMode(mediaParams.speed);
   if (urlMode) setSchedulerMode(urlMode);
   // A ROM in the URL means the page boots a machine by itself: it shows the
@@ -149,13 +151,14 @@ async function bootApp(target: HTMLElement): Promise<unknown> {
     installEvalHookForAutomation();
     installUiHookForAutomation();
 
+    // This tab's scratch area, before anything writes to it.
+    await claimScratch();
+    if (urlMode) await applySchedulerMode(urlMode);
+
     // The machine the URL names wins over the one this browser saved: the
     // saved checkpoint is left as it is, unoffered.
     const resumed = urlBoots ? false : await maybeOfferBackgroundCheckpoint();
-    if (resumed) {
-      if (urlMode) await applySchedulerMode(urlMode);
-      return;
-    }
+    if (resumed) return;
 
     // Any media parameter starts URL processing: ?cd= or ?vrom= alone used to
     // be ignored.

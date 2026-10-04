@@ -16,7 +16,6 @@
 #include "laserwriter_job.h"
 #include "log.h"
 #include "machine.h"
-#include "machine_config.h"
 #include "memory.h"
 #include "nubus.h"
 #include "prom.h"
@@ -247,6 +246,8 @@ static void print_usage(const char *program) {
     printf("  fd1=<file>      Floppy disk image for drive 1 (external)\n");
     printf("  video_card=<id> NuBus video card for the configurable slot (e.g. 824gc);\n");
     printf("                  default: the machine's default card\n");
+    printf("  slots=<spec>    expansion-slot cards, 'SLOT=CARD[,key=value]*;...'\n");
+    printf("                  (e.g. slots='$A=824gc,mode=gc_640x480_8bpp;$B=8_24')\n");
     printf("  monitor=<id>    monitor on the built-in video port ('none' = unconnected,\n");
     printf("                  which hands the screen to a NuBus card)\n");
     printf("  script=<file>   Shell script file to execute at startup (optional)\n");
@@ -391,6 +392,25 @@ static void hl_mailbox_init(void) {
     gs_mailbox_set_ready(&g_mbx);
 }
 
+// The daemon's pacing (--speed=, scheduler.mode / speed / max_speed): host
+// state, so it outlives every machine and is never in a checkpoint.  Headless
+// execution is budget-driven and never consults the *pacing*; 'accelerated'
+// does change execution -- frame-units retire more instructions at the
+// lowered effective CPI, at the pinned scheduler.speed.
+static host_pacing_t s_pacing = HOST_PACING_DEFAULT;
+
+host_pacing_t *platform_pacing(void) {
+    return &s_pacing;
+}
+
+// A new machine is the active one: what the session counts of the previous
+// machine is not compared with it (the --max-cycles count, main()).
+static bool s_count_rebase;
+
+void platform_machine_attached(void) {
+    s_count_rebase = true;
+}
+
 // One turn of the loop: a frame-unit if the machine runs, then the drain.
 // Returns whether anything happened (a frame ran or a request was served).
 // One frame, when the machine runs.  Also what inline mode (job.h) calls
@@ -398,7 +418,7 @@ static void hl_mailbox_init(void) {
 static bool hl_run_frame(void) {
     scheduler_t *sched = system_scheduler();
     if (sched && global_emulator && scheduler_is_running(sched)) {
-        scheduler_run_frame(sched, global_emulator);
+        scheduler_run_frame(sched, global_emulator, &s_pacing);
         return true;
     }
     return false;
@@ -1261,11 +1281,11 @@ int main(int argc, char *argv[]) {
     const char *fd_explicit[FLOPPY_NUM_DRIVES] = {NULL}; // fd0= and fd1= explicit drive assignments
     const char *script_file = NULL;
     const char *speed_mode = "paced";
-    enum schedule_mode speed = schedule_paced;
     uint64_t max_cycles = 0;
     uint32_t ram_kb = 0;
     const char *model_override = NULL;
     const char *video_card_arg = NULL;
+    const char *slots_arg = NULL;
     const char *monitor_arg = NULL;
     int quiet = 0;
     int script_stdin = 0;
@@ -1338,7 +1358,9 @@ int main(int argc, char *argv[]) {
         if (strncmp(arg, "--speed=", 8) == 0) {
             speed_mode = arg + 8;
             // An unknown mode is an error, not a silent paced run.
-            if (!scheduler_mode_from_string(speed_mode, &speed)) {
+            // The daemon's pacing is host state: every machine it builds or
+            // restores runs under it (platform_pacing).
+            if (!scheduler_mode_from_string(speed_mode, &s_pacing.mode)) {
                 fprintf(stderr, "Error: unknown --speed '%s' (paced, accelerated or turbo)\n", speed_mode);
                 return 1;
             }
@@ -1437,6 +1459,11 @@ int main(int argc, char *argv[]) {
 
         if ((value = parse_arg(arg, "video_card")) != NULL) {
             video_card_arg = value;
+            continue;
+        }
+
+        if ((value = parse_arg(arg, "slots")) != NULL) {
+            slots_arg = value;
             continue;
         }
 
@@ -1540,7 +1567,7 @@ int main(int argc, char *argv[]) {
         if (env_dir && *env_dir)
             snprintf(g_shared_dir, sizeof(g_shared_dir), "%s", env_dir);
     }
-    system_set_default_share(g_shared_dir); // core publishes it after each machine build
+    system_set_default_share(g_shared_dir); // the network publishes it now, for every machine
 
     // $GS_PRINT_DIR is the fallback for --print-dir.  A directory without the
     // interpreter linked would never receive anything; say so up front.
@@ -1619,14 +1646,14 @@ int main(int argc, char *argv[]) {
     offer_sibling_card_roms(rom_file);
 
     // Startup is the same boot-document path scripts use (machine.boot):
-    // CLI args fill the document, machine_boot_apply validates and
-    // constructs, and the built-from record lets a later machine.restart
-    // power-cycle this configuration.
+    // CLI args fill the document, and machine_boot_apply validates and
+    // constructs.
     boot_config_t boot_doc = {
         .model = target_model,
         .ram_kb = ram_kb,
         .rom = rom_file,
         .video_card = video_card_arg,
+        .slots = slots_arg,
         .monitor = monitor_arg,
         .video_sense = -1,
     };
@@ -1725,16 +1752,6 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Set scheduler pacing mode (validated at parse time, the same names
-    // scheduler.mode takes).  Headless execution is budget-driven and never
-    // consults the *pacing*; this keeps the flag surface consistent with the
-    // WASM target.  'accelerated' does change execution — frame-units retire
-    // more instructions at the lowered effective CPI; scheduler.speed picks
-    // the multiplier.
-    scheduler_t *sched = system_scheduler();
-    if (sched)
-        scheduler_set_mode(sched, speed);
-
     // Run startup script if provided
     if (script_file) {
         if (!quiet)
@@ -1790,20 +1807,28 @@ int main(int argc, char *argv[]) {
     if (g_running) {
         if (!quiet)
             printf("\nStarting emulation (Ctrl+C to stop)...\n\n");
-
-        scheduler_t *s = system_scheduler();
-        if (s)
-            scheduler_start(s);
     }
 
-    // Main loop
-    uint64_t start_cycles = cpu_instr_count();
+    // Main loop.  --max-cycles counts instructions run, across every machine
+    // the session runs: a machine.boot or checkpoint.load replaces the one
+    // being counted, and the count carries on from the new one's start
+    // (platform_machine_attached) rather than subtracting across them.
+    uint64_t spent_cycles = 0;
+    uint64_t last_cycles = cpu_instr_count();
+    s_count_rebase = false;
 
     while (g_running && !quit_requested) {
         // Check for max cycles limit
         if (max_cycles > 0) {
-            uint64_t elapsed_cycles = cpu_instr_count() - start_cycles;
-            if (elapsed_cycles >= max_cycles) {
+            uint64_t now = cpu_instr_count();
+            if (s_count_rebase) {
+                s_count_rebase = false;
+                last_cycles = now;
+            }
+            if (now > last_cycles)
+                spent_cycles += now - last_cycles;
+            last_cycles = now;
+            if (spent_cycles >= max_cycles) {
                 if (!quiet)
                     printf("\nReached cycle limit (%llu cycles)\n", (unsigned long long)max_cycles);
                 break;

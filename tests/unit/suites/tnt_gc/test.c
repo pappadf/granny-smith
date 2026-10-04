@@ -92,6 +92,9 @@ void pci_bus_add_device(pci_bus_t *bus, pci_device_t *dev, int device_num) {
     (void)dev;
     (void)device_num;
 }
+void pci_device_part(struct config *cfg, checkpoint_t *cp, pci_device_t *dev, const char *name) {
+    (void)cfg, (void)cp, (void)dev, (void)name;
+}
 void pci_cfg_reset(pci_device_t *dev) {
     (void)dev;
 }

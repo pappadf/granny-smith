@@ -23,6 +23,7 @@
 struct image;
 struct scsi;
 struct checkpoint;
+struct image_list;
 
 // Task-file register indices (the register's offset / 16 on Heathrow).
 enum {
@@ -172,6 +173,6 @@ bool ata_dma_pending(const ata_channel_t *ch);
 // Checkpoint: the register block, the staged data and the device table; HD
 // media are re-bound by filename through the machine's image table.
 void ata_checkpoint_save(ata_channel_t *ch, struct checkpoint *cp);
-void ata_checkpoint_restore(ata_channel_t *ch, struct checkpoint *cp);
+void ata_checkpoint_restore(ata_channel_t *ch, struct checkpoint *cp, const struct image_list *images);
 
 #endif // GS_CORE_PERIPHERALS_ATA_H

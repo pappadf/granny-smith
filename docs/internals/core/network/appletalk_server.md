@@ -2512,10 +2512,16 @@ addressed by a 16-bit offset measured from the first parameter byte.
 # 3 Object-model surface
 
 Everything the server holds is reachable — and, where it is state rather than
-an operation, settable — through the object tree:
+an operation, settable — through the object tree.  `appletalk` is the
+network, one per process: created at startup, never torn down or
+checkpointed by a machine (`appletalk.h`, "Lifecycle").  The nodes that
+describe a machine's connection to it -- `enabled`, `node_id`, `stats`,
+`afp.sessions` -- answer for the machine plugged in (detached, zero, empty
+while none is); the shares, the server's identity and the printer are the
+network's and outlive machines.
 
 ```
-appletalk                        the stack itself
+appletalk                        the network
   enabled          rw  bool      attach/detach from the SCC link (default true)
   node_id          ro  uint      current LLAP node ID (0 while detached)
   stats            ro  child     llap_rx/tx, malformed, unhandled,
@@ -2557,9 +2563,11 @@ Two conventions worth stating, because tests depend on them:
   error value itself; nothing is hidden behind "failed (see log)".
 
 The default volume is configuration, not server code: the platform layer
-creates its directory and issues the ordinary `volumes.add` after each machine
-is built — `/opfs/shared` under wasm, `--shared-dir` (or `$GS_SHARED_DIR`) on
-the headless build. No path literal lives in `src/core`.
+names its directory once, at startup (`system_set_default_share`), and the
+network publishes it with the ordinary `volumes.add` then — `/opfs/shared`
+under wasm, `--shared-dir` (or `$GS_SHARED_DIR`) on the headless build. Like
+every share it stays for every machine that plugs in. No path literal lives
+in `src/core`.
 
 ---
 
@@ -2754,20 +2762,31 @@ timestamp. It exists because the backup date is the one volume parameter
 ## 4.6 What is deliberately not persisted
 
 ASP sessions, open forks, byte-range locks, desktop-database refnums and
-FPEnumerate snapshots are client-session state: reconstructible, and
-meaningless once the transport that owned them is gone. A checkpoint therefore
-records the stack's durable state (enablement, counters, session numbering)
-and its **configuration** -- every published volume with its path and volume
-ID, the server name, enablement and message, the printer's enablement, name
-and capture setting, and the Apple event port -- and drops the rest on
-restore. The backing bytes are already on disk, so a restored guest finds its
-shares where they were, under the same volume IDs; its ASP session is gone, so
-it sees the connection close and reconnects. A volume whose folder no longer
-exists at restore time is skipped with a log line, not an error.
+FPEnumerate snapshots are client-session state: they belong to the machine's
+connection to the network (`cfg->atalk`), and are meaningless once the
+transport that owned them is gone. The server's configuration -- its shares,
+name, enablement and message, the printer, the Apple event port -- belongs
+to the network, which no machine checkpoints.
 
-A restore that fails after the stack has come up for the new machine gives
-the stack back to the machine that keeps running, with that machine's
-configuration (its sessions do not survive).
+A machine checkpoint therefore carries the connection's block only: the
+link's enabled flag and counters, and the session numbering (the next
+session reference and wire session id). A restored connection has no
+sessions, which to the guest is a **server restart**: its next request on
+the session it held is answered `SessClosed` -- never dropped, which would
+leave it waiting out a timeout -- the AppleShare client sees the connection
+closed and drops the volume, and the user or an alias mounts it again. The
+restored numbering keeps a new session from being given the old one's id,
+so the stale session stays refused rather than aliased. Volume IDs are not
+carried: they name a volume only inside the session that opened it, and a
+reconnecting client opens the volume again. What must outlive a restart --
+the CNIDs aliases store -- lives in each share's catalog on the host (§4.1).
+
+A load builds the new machine while the old one still runs, off the cable:
+its timers are registered with its own scheduler, and nothing else changes.
+Only when the build is complete and the new machine becomes the active one
+does its connection take the cable, and the old one's sessions close. If the
+load fails, the new connection was never plugged in, and the running
+machine's sessions carry on untouched.
 
 ---
 

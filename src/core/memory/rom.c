@@ -5,22 +5,19 @@
 // ROM content identity, file I/O, and the rom.* object-model surface.  The
 // table of known ROMs lives in rom_table.c.
 //
-// New machine model: the user picks a machine via machine.boot(model[, ram_kb])
-// before loading a ROM. rom.load(path) only writes bytes into the active
-// machine; it does NOT pick the machine for you. Multiple machines can share
-// the same ROM image (the SE/30, IIcx, and IIx all run the universal ROM),
-// so rom.identify(path) returns the *list* of compatible models — the user
-// is the source of truth.
+// The ROM is a construction argument: machine.boot reads and validates the
+// file and the machine is built with it (machine_build_opts_t.rom); a running
+// machine's ROM is never swapped.  Multiple machines can share the same ROM
+// image (the SE/30, IIcx, and IIx all run the universal ROM), so
+// rom.identify(path) returns the *list* of compatible models — the user is the
+// source of truth.
 
 #include "rom.h"
 #include "gs_out.h"
 #include "source.h"
 
-#include "cpu.h"
-#include "machine_config.h"
 #include "machine_profile.h"
 #include "memory.h"
-#include "mmu.h"
 #include "object.h"
 #include "system.h"
 #include "value.h"
@@ -236,7 +233,7 @@ int rom_info_compatible_count(const rom_info_t *info) {
 // Read an entire ROM file into a fresh buffer. Caller frees on success.  The
 // path goes through the VFS, so a ROM may be a member of an archive or a
 // file inside a disk image (roms.zip/Plus.rom).
-static uint8_t *read_rom_file(const char *filename, size_t *out_size, bool quiet) {
+uint8_t *rom_read_file(const char *filename, size_t *out_size, bool quiet) {
     uint8_t *rom_data = NULL;
     size_t file_size = 0;
     int rc = gs_read_path(filename, ROM_FILE_MAX, &rom_data, &file_size);
@@ -257,7 +254,7 @@ int rom_probe_file(const char *path, rom_file_info_t *out) {
     if (!path || !*path)
         return -1;
     size_t file_size = 0;
-    uint8_t *data = read_rom_file(path, &file_size, true);
+    uint8_t *data = rom_read_file(path, &file_size, true);
     if (!data)
         return -1;
     out->info = rom_identify_data(data, file_size, &out->identity);
@@ -292,10 +289,10 @@ uint8_t *rom_load_lisa_pair(const char *path_a, const char *path_b, size_t *out_
         return NULL;
 
     size_t a_size = 0, b_size = 0;
-    uint8_t *a = read_rom_file(path_a, &a_size, false);
+    uint8_t *a = rom_read_file(path_a, &a_size, false);
     if (!a)
         return NULL;
-    uint8_t *b = read_rom_file(path_b, &b_size, false);
+    uint8_t *b = rom_read_file(path_b, &b_size, false);
     if (!b) {
         free(a);
         return NULL;
@@ -321,7 +318,7 @@ uint8_t *rom_load_lisa_pair(const char *path_a, const char *path_b, size_t *out_
             }
         }
     } else {
-        gs_outf("rom.load_lisa: each chip must be %d bytes (got %zu and %zu)\n", LISA_ROM_SIZE / 2, a_size, b_size);
+        gs_outf("Lisa ROM: each chip must be %d bytes (got %zu and %zu)\n", LISA_ROM_SIZE / 2, a_size, b_size);
     }
 
     free(a);
@@ -334,123 +331,6 @@ uint8_t *rom_load_lisa_pair(const char *path_a, const char *path_b, size_t *out_
         gs_outf("Warning: interleaved image does not pass the Lisa/XL boot ROM self-check\n");
     *out_size = LISA_ROM_SIZE;
     return combined;
-}
-
-// ============================================================================
-// Load into active machine
-// ============================================================================
-
-// Install already-loaded ROM bytes into the active machine: identify, warn on
-// incompatibility / size mismatch, remember the path (for SE/30 vrom
-// discovery), copy into the ROM region, invalidate stale SoA/TLB entries, and
-// reset the CPU from the ROM's reset vectors. `rom_data` is owned by the
-// caller. Returns 0 on success, -1 if no machine is active.
-static int install_rom_into_machine(const uint8_t *rom_data, size_t file_size, const char *path) {
-    memory_map_t *mem = system_memory();
-    if (!mem) {
-        gs_outf("rom.load: no machine — call machine.boot(model) first\n");
-        return -1;
-    }
-
-    rom_identity_t id;
-    const rom_info_t *info = rom_identify_data(rom_data, file_size, &id);
-    if (info)
-        gs_outf("ROM: %s (id %s)\n", info->family_name, id.id);
-    else
-        gs_outf("ROM: unknown (id %s, size %zu bytes)\n", id.id[0] ? id.id : "none", file_size);
-    // A damaged dump still loads — research on damaged or hand-edited images
-    // is a legitimate use — but says which part does not verify.
-    if (id.kind != ROM_KIND_NONE && !id.intact)
-        gs_outf("Warning: ROM %s — the dump is probably damaged\n", id.reason);
-
-    // Compatibility check against the active machine. Allow load with a
-    // warning if the ROM is recognised but the active machine isn't in the
-    // compatibility list — useful for swapping between Plus revisions, etc.
-    const char *active = system_machine_model_id();
-    if (info && active) {
-        bool ok = false;
-        for (const char *const *p = info->compatible; *p; p++) {
-            if (strcmp(*p, active) == 0) {
-                ok = true;
-                break;
-            }
-        }
-        if (!ok)
-            gs_outf("Warning: this ROM is not listed as compatible with %s — loading anyway\n", active);
-    }
-
-    if (file_size != memory_rom_size(mem)) {
-        gs_outf("Warning: ROM file is %zu bytes, machine expects %u — truncating/padding to fit\n", file_size,
-                memory_rom_size(mem));
-    }
-
-    // Write the built-from record back so machine.config keeps answering
-    // "how do I recreate what I'm looking at" after a live ROM swap.
-    machine_config_note_rom(path, id.id);
-
-    memory_install_rom(mem, rom_data, file_size, path);
-
-    // Invalidate any SoA / TLB entries that cached the old ROM bytes — without
-    // this, an SE/30 reload after the MMU is set up keeps stale host pointers
-    // until the next PFLUSH / _SwapMMUMode cycle.
-    if (g_mmu)
-        mmu_invalidate_tlb(g_mmu);
-
-    // Reset CPU from the ROM reset vectors (SSP at offset 0, PC at offset 4).
-    // Read directly from the ROM region — Plus has ROM at 0x400000, not
-    // overlaid at address 0, so going through the address bus would miss.
-    cpu_t *cpu = system_cpu();
-    const uint8_t *rom_base = memory_rom_bytes(mem);
-    if (cpu && rom_base && memory_rom_size(mem) >= 8) {
-        uint32_t initial_ssp =
-            ((uint32_t)rom_base[0] << 24) | ((uint32_t)rom_base[1] << 16) | ((uint32_t)rom_base[2] << 8) | rom_base[3];
-        uint32_t initial_pc =
-            ((uint32_t)rom_base[4] << 24) | ((uint32_t)rom_base[5] << 16) | ((uint32_t)rom_base[6] << 8) | rom_base[7];
-        cpu_set_an(cpu, 7, initial_ssp);
-        cpu_set_pc(cpu, initial_pc);
-        gs_outf("CPU reset: PC=%08X SSP=%08X\n", initial_pc, initial_ssp);
-    }
-
-    gs_outf("ROM loaded successfully from %s\n", path);
-    return 0;
-}
-
-int rom_load_into_machine(const char *path) {
-    if (!path || !*path) {
-        gs_outf("rom.load: expected a path\n");
-        return -1;
-    }
-    if (!system_memory()) {
-        gs_outf("rom.load: no machine — call machine.boot(model) first\n");
-        return -1;
-    }
-    size_t file_size = 0;
-    uint8_t *rom_data = read_rom_file(path, &file_size, false);
-    if (!rom_data)
-        return -1;
-    int rc = install_rom_into_machine(rom_data, file_size, path);
-    free(rom_data);
-    return rc;
-}
-
-int rom_load_lisa_into_machine(const char *path_a, const char *path_b) {
-    if (!path_a || !*path_a || !path_b || !*path_b) {
-        gs_outf("rom.load_lisa: expected two chip paths\n");
-        return -1;
-    }
-    if (!system_memory()) {
-        gs_outf("rom.load_lisa: no machine — call machine.boot(model) first\n");
-        return -1;
-    }
-    size_t size = 0;
-    uint8_t *combined = rom_load_lisa_pair(path_a, path_b, &size);
-    if (!combined)
-        return -1;
-    // Record the high-byte chip path so SE/30-style sibling discovery is inert
-    // (Lisa has no vrom) but the pending-path bookkeeping stays populated.
-    int rc = install_rom_into_machine(combined, size, path_a);
-    free(combined);
-    return rc;
 }
 
 // ============================================================================
@@ -504,22 +384,6 @@ static DEF_GETTER(rom_attr_name) {
     return val_str(info ? info->family_name : "");
 }
 
-static DEF_METHOD(rom_method_load) {
-    if (rom_load_into_machine(argv[0].s) != 0)
-        return val_err("rom.load: failed");
-    return val_bool(true);
-}
-
-// rom.load_lisa(chip_a, chip_b) — interleave two 8 KB Lisa/XL byte-slice chip
-// files into the 16 KB boot ROM and load it into the active machine. The two
-// chips may be given in either order (the loader detects the high/low byte
-// orientation by checking for a valid Lisa signature).
-static DEF_METHOD(rom_method_load_lisa) {
-    if (rom_load_lisa_into_machine(argv[0].s, argv[1].s) != 0)
-        return val_err("rom.load_lisa: failed");
-    return val_bool(true);
-}
-
 // rom.identify(path) → typed info map describing the ROM file:
 //   { recognised, supported, compatible, name, variant, size, kind, id, intact,
 //     reason }
@@ -559,55 +423,40 @@ static const arg_decl_t rom_path_arg[] = {
     {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "ROM file path"},
 };
 
-static const arg_decl_t rom_lisa_pair_args[] = {
-    {.name = "chip_a", .kind = V_STRING, .doc = "First Lisa/XL ROM chip file (8 KB)" },
-    {.name = "chip_b", .kind = V_STRING, .doc = "Second Lisa/XL ROM chip file (8 KB)"},
-};
-
 static const member_t rom_members[] = {
     {.kind = M_ATTR,
      .name = "path",
      .doc = "Path of the currently loaded ROM (empty if none)",
-     .attr = {.type = V_STRING, .get = rom_attr_path, .set = NULL}},
+     .attr = {.type = V_STRING, .get = rom_attr_path, .set = NULL}                                                                                                                  },
     {.kind = M_ATTR,
      .name = "loaded",
      .doc = "True if a ROM has been loaded into the active machine",
-     .attr = {.type = V_BOOL, .get = rom_attr_loaded, .set = NULL}},
+     .attr = {.type = V_BOOL, .get = rom_attr_loaded, .set = NULL}                                                                                                                  },
     {.kind = M_ATTR,
      .name = "id",
      .doc = "Content id of the loaded ROM (its own stored checksum fields, lowercase hex)",
-     .attr = {.type = V_STRING, .get = rom_attr_id, .set = NULL}},
+     .attr = {.type = V_STRING, .get = rom_attr_id, .set = NULL}                                                                                                                    },
     {.kind = M_ATTR,
      .name = "intact",
      .doc = "True if the loaded ROM's own checksum verifies",
-     .attr = {.type = V_BOOL, .get = rom_attr_intact, .set = NULL}},
+     .attr = {.type = V_BOOL, .get = rom_attr_intact, .set = NULL}                                                                                                                  },
     {.kind = M_ATTR,
      .name = "size",
      .doc = "ROM region size in bytes",
-     .attr = {.type = V_UINT, .get = rom_attr_size, .set = NULL}},
+     .attr = {.type = V_UINT, .get = rom_attr_size, .set = NULL}                                                                                                                    },
     {.kind = M_ATTR,
      .name = "name",
      .doc = "Family name of the loaded ROM (e.g. \"Universal IIx/IIcx/SE/30 ROM\")",
-     .attr = {.type = V_STRING, .get = rom_attr_name, .set = NULL}},
-    {.kind = M_METHOD,
-     .name = "load",
-     .flags = M_CAT_ADVANCED,
-     .doc = "Load ROM bytes into the active machine and reset the CPU",
-     .method = {.args = rom_path_arg, .nargs = 1, .result = V_BOOL, .fn = rom_method_load}},
-    {.kind = M_METHOD,
-     .name = "load_lisa",
-     .flags = M_CAT_ADVANCED,
-     .doc = "Interleave two Lisa/XL ROM chip files into the 16 KB boot ROM and load it",
-     .method = {.args = rom_lisa_pair_args, .nargs = 2, .result = V_BOOL, .fn = rom_method_load_lisa}},
+     .attr = {.type = V_STRING, .get = rom_attr_name, .set = NULL}                                                                                                                  },
     {.kind = M_METHOD,
      .name = "identify",
      .doc = "Return a typed info map for a ROM file "
-            "(recognised/supported/compatible/name/variant/size/kind/id/intact/reason)", .method = {.args = rom_path_arg, .nargs = 1, .result = V_MAP, .fn = rom_method_identify}},
+            "(recognised/supported/compatible/name/variant/size/kind/id/intact/reason)",    .method = {.args = rom_path_arg, .nargs = 1, .result = V_MAP, .fn = rom_method_identify}},
 };
 
 static const class_desc_t rom_class = {
     .name = "rom",
-    .doc = "The machine ROM: identity, integrity, load",
+    .doc = "The machine ROM: identity and integrity",
     .members = rom_members,
     .n_members = sizeof(rom_members) / sizeof(rom_members[0]),
 };

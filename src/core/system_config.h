@@ -40,12 +40,16 @@ struct ppc;
 
 struct config {
     const hw_profile_t *machine; // active machine profile (set by system_create)
-    // Choices that had to be known before the devices existed: what the
-    // caller asked for, filled by system_create and READ (never consumed) by
-    // whoever needs it during construction.  Replaces three per-module
-    // one-shot statics -- jmfb/dafb/pdm's pending sense (machine_build_opts.h).
+    // Construction's arguments: what the caller asked for, filled by
+    // system_create and read by whoever needs it during construction, then
+    // cleared once the machine is built -- nothing reads them afterwards
+    // (machine_build_opts.h).
     machine_build_opts_t build_opts;
-    uint32_t ram_size; // actual RAM size in bytes (from setup --ram or machine default)
+    uint32_t ram_size; // actual RAM size in bytes
+    // The checkpoint parts, in construction order (machine_parts.h).
+    struct machine_part_entry *parts;
+    int n_parts, cap_parts;
+    char part_open[32]; // the part being built (machine_part_begin), "" between parts
     void *machine_context; // machine-specific state (e.g., plus_state_t)
 
     // Core CPU and memory subsystems.  The main CPU is a tagged handle:
@@ -63,6 +67,9 @@ struct config {
 
     // Other peripherals
     scc_t *scc;
+    // The machine's connection to the AppleTalk network (appletalk.h),
+    // plugged into the SCC's LocalTalk channel; NULL on a machine without one.
+    struct atalk_conn *atalk;
     scsi_t *scsi;
     rtc_t *rtc;
     floppy_t *floppy; // floppy controller: IWM (Plus) or SWIM (SE/30)
@@ -92,5 +99,9 @@ struct config {
     // sibling card.h would shadow the NuBus one included above).
     struct pci_root *pci;
 };
+
+// The machine's image list as a construction argument (image_list_t): the
+// controllers a restore builds resolve their saved media in it.
+#define CONFIG_IMAGES(cfg) (&(const image_list_t){(cfg)->images, (cfg)->n_images})
 
 #endif // SYSTEM_CONFIG_H

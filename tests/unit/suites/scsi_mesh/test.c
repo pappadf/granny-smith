@@ -91,9 +91,15 @@ void via_input_c(via_t *via, int port, int c, bool value) {
 }
 // No image is re-opened here: these tests care about the register and device
 // state around the medium, not the medium itself.
-image_t *setup_get_image_by_filename(const char *filename) {
-    (void)filename;
+image_t *images_find(const image_list_t *images, const char *name) {
+    (void)images;
+    (void)name;
     return NULL;
+}
+
+// scsi_init flags a checkpoint whose bus lacks the CD bay's drive.
+void checkpoint_set_error(checkpoint_t *checkpoint) {
+    (void)checkpoint;
 }
 int system_hd_attach(const char *path, int scsi_id) {
     (void)path, (void)scsi_id;
@@ -143,7 +149,7 @@ void scheduler_forget_source(struct scheduler *sch, void *source) {
     (void)source;
 }
 // The medium itself is out of scope here: these tests stage the state AROUND a
-// device, not its contents, and setup_get_image_by_filename() returns NULL so
+// device, not its contents, and images_find() returns NULL so
 // no image is ever opened.
 size_t disk_read_data(image_t *img, size_t off, uint8_t *buf, size_t len) {
     (void)img, (void)off, (void)buf, (void)len;
@@ -222,7 +228,7 @@ static void on_kick(void *ctx) {
 static void setup(void) {
     s_irq_level = 0;
     s_dbdma_kicks = 0;
-    s_bus = scsi_init(NULL);
+    s_bus = scsi_init(NULL, NULL, NULL, NULL, 0);
     ASSERT_TRUE(s_bus != NULL);
     scsi_add_device(s_bus, TARGET, "GS", "SCRATCH", "1.0", NULL, scsi_dev_hd, BLK, false);
     s_m = mesh_init(NULL, NULL);

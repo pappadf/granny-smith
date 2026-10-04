@@ -117,7 +117,7 @@
   // filenames. The available cards + their requires_vrom / monitors come from
   // catalog.profile (the core owns this); each uploaded vROM is probed to the
   // card it provides (vrom.identify → card_id), so we only offer cards whose
-  // vROM is actually present, and set machine.nubus.video_card at boot.
+  // vROM is actually present, and send it as machine.boot's video_card=.
 
   // card-id -> the OPFS VROM files that provide it.
   let vromsByCardId = $derived.by(() => {
@@ -127,8 +127,8 @@
   });
   // The slot this dialog configures: the FIRST video_slots entry.  Machines now
   // declare every socket, all offering the same computed card list — the single
-  // picker drives the first one via the machine.nubus.video_card first-socket
-  // alias; a per-socket UI is future work.  On builtin-first machines (SE/30,
+  // picker drives the first one through machine.boot's video_card= (the
+  // first-socket sugar for slots=); a per-socket UI is future work.  On builtin-first machines (SE/30,
   // IIci, IIsi) the first entry is the fixed built-in video, which keeps their
   // no-picker/vROM-row behavior exactly as before.
   let configSlot = $derived((currentProfile?.video_slots ?? [])[0]);
@@ -163,7 +163,7 @@
     const out: NonNullable<MachineProfile['pci_slots']>[number]['cards'] = [];
     for (const slot of currentProfile?.pci_slots ?? []) {
       // SOCKETS only. A fixed slot's card is soldered down and can never be
-      // staged into a socket — the core's own pci_card_fits_socket refuses
+      // seated in a socket — the core's own pci_card_fits_socket refuses
       // it — so offering it here would put a choice in the picker that the
       // boot path is guaranteed to reject.
       if (slot.fixed) continue;
@@ -235,9 +235,9 @@
   let selectedPciCard = $derived(availablePciCards.find((c) => c.id === cardId));
   let pciSelected = $derived(!!selectedPciCard);
   // The options the selected PCI card declares. Only a socket card can take
-  // them: a soldered one is not staged, so there is nothing to attach an
-  // option to.  A display pick and an expansion pick are mutually
-  // exclusive holders of the wildcard socket, so exactly one of them
+  // them: a soldered one is not named by the boot document, so there is
+  // nothing to attach an option to.  A display pick and an expansion pick
+  // are mutually exclusive holders of the first socket, so exactly one of them
   // supplies the option list (activePciCard, defined with the expansion
   // picker below).
   // Every PCI SOCKET the machine declares, for the Expansion Slots list.
@@ -288,8 +288,8 @@
   );
 
   // The expansion ROM handed to the core for the selected PCI card.  As with
-  // the vROM, an explicit pick is preferred over letting the offer registry
-  // content-match, so the user sees the file they uploaded actually used.
+  // the vROM, naming the file (prom=) is preferred over letting the offer
+  // registry content-match, so the user sees the file they uploaded used.
   let resolvedProm = $derived(
     activePciCard?.requires_prom ? (promsByCardId[activePciCard.id]?.[0] ?? null) : null,
   );
@@ -304,7 +304,7 @@
   // asymmetry): a card declares requires_vrom, not the machine.
   let needsVrom = $derived(selectedCard?.requires_vrom === true);
   // The vROM file handed to the core for the selected card (machine.boot's
-  // vrom= argument, the explicit pick that wins the offer order); it also gates "is this card
+  // vrom= argument, the ROM of the card's slot); it also gates "is this card
   // installable". Without it the card factory falls back to whatever the
   // platform offered from the OPFS store (content-matched).
   let resolvedVrom = $derived(needsVrom ? (vromsByCardId[cardId]?.[0] ?? null) : null);
@@ -344,17 +344,17 @@
   let ramOptions = $derived(currentProfile?.ram_options ?? []);
   let floppySlots = $derived(currentProfile?.floppy_slots ?? []);
   // Video-mode list for the *selected card*: its monitors × supported depths.
-  // Ids/labels match what the C side emits ("<monitor>_<depth>bpp"), so the
-  // boot-time `machine.nubus.video_mode` seed is unchanged.
+  // Ids/labels match what the C side emits ("<monitor>_<depth>bpp"): the
+  // boot document's video_mode= for the first NuBus socket.
   //
   // NuBus cards ONLY.  A PCI display card's monitor list is real, but the
   // boot document has no field that carries it: video_mode is validated
   // against the NuBus catalog (nubus_video_mode_known), so sending a PCI
   // card's mode id fails the boot outright — "unknown video-mode id
-  // '14in_rgb_8bpp'".  The card does take a `monitor` staged option, but
-  // nothing reaches pci_staged_option_set from a boot document yet, so
-  // there is no honest way to offer the choice.  Until there is, the row
-  // stays hidden for a PCI pick and the card senses its default monitor.
+  // '14in_rgb_8bpp'".  A PCI card's monitor is a card option instead
+  // (pci_option="monitor=...", which the card accepts or rejects), and the
+  // card does not declare it as an offered option, so the row stays hidden
+  // for a PCI pick and the card senses its default monitor.
   let videoModes = $derived.by(() => {
     const out: Array<{ id: string; label: string }> = [];
     for (const m of selectedCard?.monitors ?? []) {
@@ -663,10 +663,10 @@
     }
     const selected = romsForCurrentModel.find((r) => r.path === romPath) ?? romsForCurrentModel[0];
     // The chosen card auto-resolves its vROM (probed by card id); '(auto)'
-    // means no explicit pick — the card factory content-matches among the
-    // files the platform offered from the OPFS store.
+    // means the document names none — the card factory content-matches among
+    // the files the platform offered from the OPFS store.
     const vromPath = resolvedVrom ? resolvedVrom.path : '(auto)';
-    // Same contract for a PCI card's expansion ROM: an explicit pick when we
+    // Same contract for a PCI card's expansion ROM: name the file when we
     // have one, otherwise let the core's offer registry content-match.
     const promPath = resolvedProm ? resolvedProm.path : '(auto)';
     // Resolve each pick back to the path it was scanned from (fdPaths etc.);
@@ -846,7 +846,7 @@
         {#if pciSockets.length > 1 && pciSelected}
           <Field
             class="form-row"
-            help="A card is installed in the first socket. Filling the others needs a per-socket pick, which the boot document does not carry yet."
+            help="A card is installed in the first socket. The others are configured socket by socket with machine.boot's slots=, which this dialog does not offer yet."
           />
         {/if}
         {#each pciCardOptions_ as opt (opt.key)}

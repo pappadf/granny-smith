@@ -123,6 +123,12 @@ void remove_event(scheduler_t *sched, event_callback_t callback, void *source) {
     (void)source;
 }
 
+bool has_event(scheduler_t *sched, event_callback_t callback) {
+    (void)sched;
+    (void)callback;
+    return false;
+}
+
 void scheduler_forget_source(scheduler_t *sched, void *source) {
     (void)sched;
     (void)source;
@@ -194,12 +200,6 @@ bool system_mouse_pending_adb(int *dx, int *dy) {
     if (dy)
         *dy = 0;
     return false;
-}
-
-// Machine management stub (used by cmd_rom in memory.c)
-int system_ensure_machine(const char *model_id) {
-    (void)model_id;
-    return -1; // no machine in unit tests
 }
 
 // ROM identification stub (used by cmd_rom in memory.c)

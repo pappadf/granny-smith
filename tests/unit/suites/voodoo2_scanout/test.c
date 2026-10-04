@@ -103,8 +103,8 @@ static void reg_write(uint32_t idx, uint32_t value) {
 static pci_device_t *seat_driving(uint32_t width, uint32_t height) {
     config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
-    voodoo2_kind.stage_option("raster", "sw"); // no worker thread
-    pci_device_t *dev = voodoo2_kind.factory(0, &cfg, NULL);
+    slot_opts_t opts = {.slot = 1, .n_options = 1, .options = {{"raster", "sw"}}}; // no worker thread
+    pci_device_t *dev = voodoo2_kind.factory(0, &cfg, NULL, &opts);
     ASSERT_TRUE(dev && s_bar_if);
     dev->ops->cfg_write(dev, 0x40, 0, 0x01); // initEnable: fbiInit writes on
     reg_write(R_FBIINIT1, 0x0001E000u); // outputs enabled; no reset, no blank

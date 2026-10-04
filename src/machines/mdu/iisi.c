@@ -22,6 +22,7 @@
 
 #include "mac030_glue.h"
 #include "machine.h"
+#include "machine_checkpoint.h"
 #include "mdu.h" // mdu_substrate + mac030_mdu_board_t
 #include "mmu_checkpoint.h"
 #include "slot_tables.h"
@@ -30,7 +31,6 @@
 #include "adb.h"
 #include "asc.h"
 #include "builtin_rbv_video.h"
-#include "checkpoint_images.h"
 #include "cpu.h"
 #include "egret.h"
 #include "floppy.h"
@@ -214,7 +214,7 @@ static void iisi_via1_shift_out(void *context, uint8_t byte) {
 // slot index is an implementation detail (same arrangement as the IIci's
 // slot-$B seating); there are no user-visible expansion slots in v1.
 static const nubus_slot_decl_t iisi_slots[] = {
-    {.slot = 0xE, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "builtin_rbv_video"},
+    {.slot = 0xE, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "builtin_rbv_video", .fb_in_ram = true},
     {0},
 };
 
@@ -229,6 +229,8 @@ static const mac030_board_desc_t iisi_board_desc = {
     .io_ranges = mdu_io_ranges_tbl,
     .io_mirror_mask = 0x0003FFFFUL,
     .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
+    // No addressable card in slot $E (built-in video is main DRAM mapped by
+    // the OS), so the $FExxxxxx slot aperture legitimately bus-errors.
     .bus_err_lo = NUBUS_BERR_LO,
     .bus_err_hi = NUBUS_BERR_HI,
 };
@@ -255,37 +257,49 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
 
     // ADB is driven by Egret via adb_iop_transact() (like the IIfx IOP path),
     // not by the VIA1 shift register — pass NULL for the VIA argument.
+    machine_part_begin(cfg, checkpoint, "adb");
     st->adb = adb_init(NULL, cfg->scheduler, checkpoint);
     cfg->adb = st->adb;
+    machine_part(cfg, checkpoint, "adb", part_save_adb, st->adb);
 
-    if (checkpoint)
-        mac_checkpoint_restore_images(cfg, checkpoint);
+    machine_part_images(cfg, checkpoint);
 
-    cfg->scsi = scsi_init(checkpoint);
+    machine_part_begin(cfg, checkpoint, "scsi");
+    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, checkpoint, CONFIG_IMAGES(cfg));
     scsi_5380_attach(cfg->scsi, checkpoint); // IIsi: NCR 5380
+    machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
     scsi_set_irq_callback(cfg->scsi, iisi_scsi_irq, cfg);
     setup_images(cfg);
 
+    machine_part_begin(cfg, checkpoint, "asc");
     st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
+    machine_part(cfg, checkpoint, "asc", part_save_asc, st->asc);
+    machine_part_begin(cfg, checkpoint, "floppy");
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, checkpoint);
+    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), checkpoint,
+                             CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
+    machine_part(cfg, checkpoint, "floppy", part_save_floppy, st->floppy);
 
     // Egret companion: owns ADB / RTC / PRAM / 1-sec tick / soft power-off via
     // the VIA1 shift register.  Created after via1/rtc/adb exist.
+    machine_part_begin(cfg, checkpoint, "egret");
     st->egret = egret_init(cfg->via1, cfg->rtc, st->adb, cfg->scheduler, checkpoint);
     if (!st->egret) {
         LOG(0, "Error: out of memory constructing the Egret");
         return -1;
     }
+    machine_part(cfg, checkpoint, "egret", part_save_egret, st->egret);
     egret_set_power_off_callback(st->egret, iisi_power_off, cfg);
 
     // RBV chip in the V8/VISA variant.  Default monitor sense 6 = 13" RGB.
+    machine_part_begin(cfg, checkpoint, "rbv");
     st->rbv = rbv_init(RBV_VARIANT_V8_IISI, checkpoint);
     if (!st->rbv) {
         LOG(0, "Error: out of memory constructing the RBV");
         return -1;
     }
+    machine_part(cfg, checkpoint, "rbv", part_save_rbv, st->rbv);
     rbv_set_irq_callback(st->rbv, iisi_rbv_irq, cfg);
     rbv_set_power_off_callback(st->rbv, iisi_power_off, cfg);
     rbv_set_mode_callback(st->rbv, iisi_rbv_mode, cfg);
@@ -299,7 +313,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     if (!st->mmu)
         return -1; // mac030_build_mmu reported the reason
     // TT1 identity-maps NuBus space $F0-$FF for supervisor FCs (same as IIci).
-    st->mmu->tt1 = 0xF00F8043;
+    st->mmu->tt1 = st->mmu->tt1_board = 0xF00F8043; // supervisor-only identity map for NuBus $F0..$FF, from power-on
 
     // Two physical RAM banks (Developer Note §3.2/§3.3): Bank A is the soldered
     // 1 MB at physical 0 (its bottom is the video frame buffer); Bank B is the
@@ -319,37 +333,24 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     mdu_io_bind(&st->mdu_io, cfg, &iisi_board_desc, st->asc, st->floppy, st->rbv, st->video_card);
 
     // On-board video reads its frame buffer from the BOTTOM of Bank A — physical
-    // 0 (Developer Note §8.2; VideoInfoMacIIsi screen physical base = 0).  Point
-    // the card at Bank A's base; the active screen is at the frame-buffer start
-    // (offset 0), as on the IIci.  The OS reaches
-    // the screen through its PMMU tree (slot-$E base $FEE08000 / $00E08000 ->
-    // physical 0), so the guest's writes and the renderer share Bank A directly —
-    // no separate VRAM aperture and no $E00000 offset.
-    builtin_rbv_video_set_framebuffer(st->video_card, ram_base + IISI_FB_PHYS_OFFSET, IISI_FB_SCREEN_OFFSET,
-                                      /*blank*/ checkpoint == NULL);
-
-    // Card-side display state (palette, mode, VDAC), written by
-    // mdu_checkpoint_save right after the RBV chip.  Restored here rather than
-    // at nubus_init because the framebuffer pointer above must be attached
-    // first — this machine's framebuffer is main RAM, so the card must already
-    // know it does not own the buffer.
-    if (checkpoint)
-        nubus_checkpoint_restore(cfg->nubus, checkpoint);
-
-    // NuBus expansion / slot space bus-errors on unmapped reads.  There is no
-    // addressable card in slot $E (built-in video is main DRAM mapped by the OS),
-    // so the $FExxxxxx slot aperture legitimately bus-errors when probed.
-    memory_set_bus_error_range(cfg->mem_map, iisi_board_desc.bus_err_lo, iisi_board_desc.bus_err_hi);
+    // 0 (Developer Note §8.2; VideoInfoMacIIsi screen physical base = 0), and
+    // the active screen is at the frame-buffer start (offset 0), as on the
+    // IIci.  The card points there when it is built (the slot's fb_in_ram).
+    // The OS reaches the screen through its PMMU tree (slot-$E base $FEE08000 /
+    // $00E08000 -> physical 0), so the guest's writes and the renderer share
+    // Bank A directly — no separate VRAM aperture and no $E00000 offset.
 
     iisi_memory_layout_init(cfg);
 
+    machine_part_begin(cfg, checkpoint, "mmu");
     if (checkpoint) {
         mmu_checkpoint_restore(st->mmu, checkpoint);
         mmu_invalidate_tlb(st->mmu);
-        g_mmu = st->mmu;
+        memory_map_set_pmmu(cfg->mem_map, st->mmu);
         cpu_attach_mmu(cfg->cpu, st->mmu);
         via_redrive_outputs(cfg->via1);
     }
+    machine_part(cfg, checkpoint, "mmu", part_save_mmu, st->mmu);
     return 0;
 }
 
@@ -395,6 +396,7 @@ const hw_profile_t machine_iisi = {
     .scsi_buses = iisi_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
     // Built-in V8 video has no separate declaration ROM — the boot ROM drives
     // it from the hard-coded VideoInfoMacIIsi record.
 

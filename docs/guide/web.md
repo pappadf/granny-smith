@@ -16,7 +16,7 @@ input, and compositing.
 
 **Threading model**
 - **Main (browser) thread:** DOM events, the Terminal console, UI chrome,
-  OPFS reads via the browser API, file uploads staged to `/opfs/upload/`.
+  OPFS reads via the browser API, file uploads staged to `/opfs/upload/.scratch/`.
 - **Emulator worker thread:** CPU emulation, OPFS file I/O via WasmFS
   (delta/journal/checkpoint), shell command execution, all object-model
   dispatch.
@@ -53,7 +53,7 @@ for reads. (This is why `BrowserOpfs.delete` / `.move` in
 **Core / frontend separation.** The emulator core is path-agnostic: it
 accepts paths as command arguments. The web app owns the directory
 layout under `/opfs/`. The C side creates `/opfs/images/{rom,vrom,fd,
-fdhd,hd,cd}` and `/opfs/{checkpoints,upload}` at boot via
+fdhd,hd,cd}`, `/opfs/{checkpoints,upload}` and `/opfs/upload/.scratch` at boot via
 `mkdir`-on-worker; the web app reads them via the browser's OPFS API.
 
 **Cross-thread communication.** JS on the main thread cannot directly
@@ -93,21 +93,11 @@ So `r !== null` is never a success test — `{ error }` passes it.  Use
 
 What the core says about the machine arrives as **events on the mailbox's
 event ring** (see "Events from the core" below): the run state, the
-effective speed, the floppy drives, the activity lights, the perf
+effective speed, the screen geometry, the floppy drives, the activity lights, the perf
 samples, checkpoint saves, log lines, breakpoint hits and assertion
 failures. The `Module.*` callbacks that remain are the platform
 transports, installed at module construction:
 
-- **`Module.onScreenResize(width, height, parW, parH)`** — fired via
-  `MAIN_THREAD_ASYNC_EM_ASM` from `em_video.c::resize_canvas` whenever
-  the framebuffer's intrinsic dimensions change. Transition-only
-  (guarded against repeated identical sizes). Fires at minimum once per
-  machine boot, again on every video-mode switch (e.g. the JMFB driver
-  flipping a IIcx from 512×342 to 640×480). ASYNC because the worker
-  doesn't block on JS layout. `parW:parH` is the monitor's pixel aspect
-  ratio (the Lisa's 720×364 raster is 2:3, see
-  [video.md](../reference/machines/lisa/video.md) §1), so the renderer can show
-  non-square pixels.
 - **`Module.print` / `Module.printErr`** — Emscripten's stdout/stderr
   pipes. `logSink` routes these to the Terminal console.
 - **`Module.onAbort(what)`** — the glue's `abort()`: the worker trapped.
@@ -142,9 +132,12 @@ transports, installed at module construction:
   `Atomics.waitAsync` on the ring's head, `Atomics.notify` on its tail
   and the acknowledge word — while the C side waits with futexes.  The
   worker is started once at page load with the `#screen3d` overlay
-  canvas (transferred), and writes whether a WebGPU device exists into
-  the bridge's `gpu_available` word so the core's backend choice is
-  honest at machine creation.  The page shows the overlay exactly
+  canvas (transferred), and the page writes whether a WebGPU device
+  exists into the bridge's `gpu_available` word before it reports ready
+  (`bootstrap` awaits the answer; one not in within 2 s counts as no
+  adapter and is logged), so no boot and no `catalog.profile` read can
+  come first: the card catalog's `voodoo2_webgpu` offer and the core's
+  backend choice at machine creation are honest.  The page shows the overlay exactly
   while GPU mode is engaged (the worker relays the MODE records it
   consumes).  The protocol is
   [`voodoo2_gpu_protocol.h`](../../src/core/peripherals/pci/cards/voodoo2_gpu_protocol.h)
@@ -215,7 +208,7 @@ records: {u32 kind, u32 len} + payload; len a multiple of 8; PAD to the end
   REQ_EVAL      {id, client, deadline_ms, path_len, args_len} + path + args
   REQ_SCRIPT    {id, client, deadline_ms, src_len} + src          (a job)
   REQ_CANCEL    {id, client, target_id}     REQ_MODE_STOP {id, client, owner}
-  REQ_ACK_BUF   {id, client, handle}        (a staged buffer was consumed)
+  REQ_ACK_BUF   {id, client, handle}        (a transfer buffer was consumed)
   EVT_RESULT    {id, ok, json_len, out_len} + json + output
   EVT_PROGRESS  {json_len} + {"id":request,"done":n,"total":n}
   EVT_STATE / EVT_NOTIFY / EVT_LOG {json_len} + json      (events from the core)
@@ -223,9 +216,12 @@ records: {u32 kind, u32 len} + payload; len a multiple of 8; PAD to the end
 
 Limits: a path of up to 1023 bytes and an arguments document of up to
 128 KB (the page refuses larger ones before writing); a result of up to
-256 KB in the answer slot. A result the event ring has no room for is held
-back and delivered once the page has read; the core never blocks on the
-page.
+256 KB (`GS_MBX_RESULT_MAX`), on every client. A larger result is an error
+that names its size and the limit — never truncated, never routed some
+other way; data that can be larger is a download (below) or is asked for
+in bounded pieces, as `memory.peek.bytes` is. A result the event ring has
+no room for is held back and delivered once the page has read; the core
+never blocks on the page.
 
 **Output.** What a leaf prints while it runs (every stdout site in the core
 goes through the sink `gs_out.h`) travels with its answer: `EVT_RESULT`'s
@@ -236,15 +232,16 @@ job's output (below) arrives as `EVT_LOG {"event":"output","id":request,
 the job's result. Outside any request — boot messages, a breakpoint hit —
 text still goes to stdout and `Module.print`.
 
-**Staged buffers.** A result larger than the answer slot is not refused:
-the core formats it into a buffer in its heap and answers
-`{"$buf":handle,"ptr":p,"len":n}`; the page reads the JSON through the
-memory as it is at that moment (`Module.wasmMemory.buffer`, never a cached
-view: the heap grows) and releases it with `REQ_ACK_BUF {handle}`. The
-same mechanism carries a download to the page, chunk by chunk (below),
-and could carry an upload's chunks; today the transfer window
-(`files.xfer_buffer`, 2 MB, static) already is a shared buffer the page
-fills, and its `xfer_write` / `xfer_read` run as I/O jobs.
+**Transfer buffers.** Bulk data reaches the page through a buffer in the
+core's heap that an I/O job owns: the job publishes it under a handle,
+an event names it as `{handle, ptr, len}`, the page reads the bytes
+through the memory as it is at that moment (`Module.wasmMemory.buffer`,
+never a cached view: the heap grows) and acknowledges it with
+`REQ_ACK_BUF {handle}`, and the core hands it back to the job to refill.
+Every buffer has an owner, the job, which releases its handle when it
+ends. Downloads (below) take this road; uploads go through the transfer
+window (`files.xfer_buffer`, 2 MB, static), a shared buffer the page
+fills, whose `xfer_write` / `xfer_read` run as I/O jobs.
 
 ### Events from the core
 
@@ -280,11 +277,12 @@ callbacks is emitted at its source too; the page routes each in
 | `state:speed` | the scheduler, whenever the effective speed changes (governor step, pin, mode switch) | `{x256}` |
 | `state:breakpoint_hit` | the debugger, at the hit | `{pc, addr}` |
 | `state:assert_failed`, `state:assert_expr` | the failure hook | `{where}`, `{expr}` |
-| `state:perf` | the tick, ~1 Hz | `{mips, tps, tick_max_ms, tick_p50_ms, poll_max_ms}` |
-| `state:machine_booted` | the end of `system_create`: `machine.boot`, `machine.rebuild`, `checkpoint.load` (not `machine.restart`, which builds nothing) | `{model, restored}` |
+| `state:perf` | the tick, ~1 Hz; the sample that would straddle a machine change is skipped | `{mips, tps, tick_max_ms, tick_p50_ms, poll_max_ms}` |
+| `state:screen` | the renderer, where it consumes a shape change, and once when a machine is attached (boot or restore, before any frame) | `{width, height, par_w, par_h}` |
+| `state:machine_booted` | the swap step (`system_swap_in`): `machine.boot`, `checkpoint.load` (not `machine.restart`, which builds nothing) | `{model, restored}` |
 | `notify:floppy` | the floppy controller, on insert, eject (guest or host) and restore | `{drive, present}` |
 | `notify:media` | the SCSI bus, when a device's medium is inserted or ejected (guest or host) | `{bus, id, present}` |
-| `notify:drive_activity` | the tick, on a light's edge | `{kind, state}` |
+| `notify:drive_activity` | the tick, on a light's edge; a machine change turns lit lights off and re-bases | `{kind, state}` |
 | `notify:checkpoint_saved` | `system_quick_checkpoint` | `{elapsed_ms}` |
 | `notify:printer_status` | the PAP layer, when the LaserWriter's status string changes | `{status}` |
 | `notify:download_chunk` | the download job, per 4 MB chunk | `{id, handle, ptr, len, last, name}` |
@@ -292,7 +290,7 @@ callbacks is emitted at its source too; the page routes each in
 | `log:output` | the job layer, a job's printed text | `{id, client, text}` |
 
 What still crosses as a `Module.on*` callback is a platform transport
-handing the page a handle or a buffer (screen geometry, the Voodoo2 and
+handing the page a handle or a buffer (the Voodoo2 and
 printer rings, camera and microphone rings): not an event about the
 machine.
 
@@ -355,7 +353,7 @@ guest write to it fails meanwhile, as a drive being copied does. Without
 a worker (`--io=sync`) the same work runs inline, with the same hooks.
 
 **Downloads.** `files.download path` is an I/O job that reads the file 4 MB at
-a time into a staged buffer and announces each chunk as
+a time into a transfer buffer and announces each chunk as
 `notify:download_chunk`; the page copies the bytes into a Blob part,
 acknowledges the buffer (the worker refills it), and on the last chunk
 saves the Blob through a transient anchor (`bus/download.ts`). Neither
@@ -623,7 +621,16 @@ worker's OPFS request through the page's thread — it deadlocked the page.
    validates is copied out into its store. A floppy goes into the first empty drive the
    model has, a CD into the model's CD bay (`bus/media.ts`; an occupied
    bay is refused, not overwritten); ROMs trigger a full cold boot via
-   `maybeBootFromRom`.
+   `maybeBootFromRom`.  **Several files in one drop** each run that
+   single-file flow on their own (`acceptOne`: stage, probe, store or
+   reject, discard; a large one streamed as below), and the drop ends with
+   one summary instead of a message per file — "3 stored (2 floppies,
+   1 ROM), 1 rejected: 'notes.txt' doesn't look like …".  What follows is
+   what single drops would do, and no more: a ROM boots only when it is the
+   drop's only ROM, and per category only the first file goes into an empty
+   drive.  A checkpoint is loaded only when dropped on its own; in a drop
+   with other files it is rejected ("drop a checkpoint on its own"), since
+   loading it would replace the machine they were meant for.
 3. **Drag-and-drop onto the Filesystem tab** —
    [`FilesystemView.svelte`](../../app/web2/src/components/panel-views/filesystem/FilesystemView.svelte)
    accepts external file drops on folder rows, calls
@@ -650,8 +657,8 @@ dropped on the Display, picked or dropped as an HD/CD, or dropped into
 [`bus/importImage.ts`](../../app/web2/src/bus/importImage.ts): its decoded
 bytes stream through the transfer window into the core's UDIF writer
 (`files.udif_open` / `udif_append` / `udif_finish`), which drops zero runs and
-deflates the rest in 64 KB chunks, into `/opfs/upload/<name>.dmg.part`; that
-is validated as a CD or hard disk (the image layer reads UDIF in place) and
+deflates the rest in 64 KB chunks, into a `<name>.dmg.part` of its own in the
+scratch area (below); that is validated as a CD or hard disk (the image layer reads UDIF in place) and
 moved into `/opfs/images/<category>/<name>.dmg`.  A zip is unpacked
 forward-only on the way ([`lib/zipStream.ts`](../../app/web2/src/lib/zipStream.ts):
 local headers, `DecompressionStream('deflate-raw')`, CRC-32 checked, data
@@ -661,10 +668,26 @@ emulator can read in place is stored as it is (`files.udif_info`), one with
 chunks too large is re-chunked (`files.convert`).  Mac archives (StuffIt,
 Compact Pro, BinHex, MacBinary) still go through staging and
 `files.archive.extract`.  The status bar shows bytes read and stored and a
-cancel button, for an `HD=` / `CD=` download as for an upload; a failure
-or a cancel removes the `.part`, and any `.dmg.part` left by a
-closed tab is swept at boot (`em_main.c`).  Smaller files keep the staged
-flow, now moved (`files.mv`) into place rather than copied.
+cancel button, for an `HD=` / `CD=` download as for an upload; every exit
+— stored, failed or cancelled — removes the `.part`.  Smaller files keep the
+staged flow, now moved (`files.mv`) into place rather than copied.
+
+**The scratch area.** Every file the page writes on its way somewhere else
+lives in the tab's own directory under `/opfs/upload/.scratch/`
+(`lib/opfsPaths.ts`: `TAB_SCRATCH_DIR`, `scratchPath`): an upload being probed, a dropped checkpoint being loaded, a
+URL download, a streamed import's `.dmg.part`, the Save State file while it
+is downloaded, a file copied out of an image to be downloaded.  Each
+operation writes under a name no other uses (`<nonce>-<name>`), so two
+uploads of one name, or two URL boots of one slot, never touch each other's
+file, and removes its file on every exit (`try`/`finally`).  Nothing is ever
+attached from the scratch area: what is kept is moved into
+`/opfs/images/<category>/` first.  Each tab holds a Web Lock named after its
+directory for as long as it lives; at startup a tab removes every directory
+under `.scratch/` whose lock nobody holds (`bus/scratch.ts::claimScratch`),
+which covers an operation a closed tab or a crash cut short and never touches
+the files of another tab still open.
+The rest of `/opfs/upload` is the user's (the Filesystem tab may put files
+there) and is never touched.
 
 All four paths run through `startActivity` / `endActivity`
 ([`state/activity.svelte.ts`](../../app/web2/src/state/activity.svelte.ts)) so
@@ -724,11 +747,9 @@ typed-dispatch and introspection surface.
   machine).
 - **`machine.restart`** — power-cycles the running machine: a reset with
   the RAM cold. Nothing is torn down, so PRAM/NVRAM, the clock, the
-  mounted media and the Caps Lock latch survive; the Restart button
-  re-asserts nothing afterwards.
-- **`machine.rebuild`** — constructs the recorded machine again
-  (`machine.config`), with the mounted media still attached: what makes a
-  staged hardware change take effect.
+  mounted media, the Caps Lock latch and the LaserWriter survive; the
+  Restart button re-asserts nothing afterwards. A changed configuration
+  is a new `machine.boot` document.
 - **`debug.frame([addr], [count], [before])`** — bundled snapshot for
   the Debug tab, the same call as **`machine.cpu.frame`**: `{arch, pc,
   regs, rows, fpu?}` — the core's own register names, disasm rows with
@@ -784,7 +805,8 @@ typed-dispatch and introspection surface.
 │   │   └── <machine-id>-<ts>/  Per-machine checkpoint dirs
 │   │       ├── state.checkpoint
 │   │       └── <id>.delta / <id>.journal   Writable image state
-│   └── upload/                 Staging; <name>.dmg.part while an import streams
+│   └── upload/                 The user's; the page writes only in .scratch/
+│       └── .scratch/<tab>/     Files on their way into a store; one directory per tab
 └── tmp/                        Memory mount (volatile)
 ```
 
@@ -824,9 +846,13 @@ response) it is indeterminate, with the bytes received so far.  Rows go
 Waiting → downloading → Unpacking… (a container member) → ✓ size, then
 "Starting the machine…" until the core reports it running, when the view
 goes (a later Shut Down shows the ordinary Welcome).  The ROM is fetched
-first; if it cannot be had, the disks are not fetched ("Not needed"), and the
-view says why and offers **Go to the start screen**.  A failed disk does not
-stop the boot.  Per-file "fetched" toasts are left to pages not showing the
+first; if it cannot be had, or is not a ROM, the disks are not fetched ("Not
+needed"), and the view says why and offers **Go to the start screen**.  A
+failed disk does not stop the boot: one that cannot be downloaded, or is not
+valid as its slot's kind (an 800 KB floppy image given as `hd0=`), is
+rejected exactly as the same file dropped on its category is — its row and a
+toast give the validator's reason — and the machine boots without it.
+Nothing is attached from the scratch copy.  Per-file "fetched" toasts are left to pages not showing the
 view; errors still toast.
 
 - `rom=<url>` — downloaded into `/opfs/images/rom/`, auto-identified,
@@ -855,12 +881,16 @@ view; errors still toast.
   ([bare-volume-wrapper.md](../internals/core/storage/bare-volume-wrapper.md)).
 - `cd=<url>` — streamed into `/opfs/images/cd/` as a UDIF, inserted into the
   model's CD bay (`machine.attach_cdrom`), on a model that has one.
-- `vrom=<url>` — downloaded into `/opfs/images/vrom/` (SE/30 / IIcx /
-  IIfx).
+- `vrom=<url>` — downloaded into `/opfs/images/vrom/` and passed in the
+  boot document (`machine.boot … vrom=`), so it is this boot's pick for its
+  card's declaration ROM, ahead of any other revision of it already stored
+  (SE/30 / IIcx / IIfx).  One that is not a vROM is rejected like any other
+  medium (above) and the machine boots without it, saying so.  Storing it
+  also offers it to the core's ROM catalog, for later boots.
 - `speed=paced|accelerated|turbo` — the toolbar's pacing mode from the
-  start: a boot pushes it to the core (`scheduler.mode`), and a resumed
-  machine is switched to it (legacy `max`/`realtime`/`hardware` are
-  accepted as aliases).  The wasm module takes no command line.
+  start, set once on the page's run loop (`pacing.mode`); pacing is host
+  state, so every machine the page boots or restores runs under it (legacy
+  `max`/`realtime`/`hardware` are accepted as aliases).  The wasm module takes no command line.
 - `model=<id>` — preferred machine id (must be in the ROM's compatible
   list).
 - `skin=<id>` — show this load in another skin (an id from
@@ -954,7 +984,7 @@ Plus-only minimal install: pair it with
 `tests/e2e/web2-specs/url-archive-boot.spec.ts` replays this URL with
 archive.org's endpoints routed to the gs-test-data copies.
 
-Downloads run one at a time and stream to `/opfs/upload/` through the
+Downloads run one at a time and stream to the scratch area through the
 same chunked writer as uploads (`bus/upload.ts::streamToOpfs`), so an
 image is never held whole in memory — except a zip, which is read back
 whole to unzip.
@@ -967,7 +997,9 @@ The same sequence as Module Bootstrapping above, end to end:
    never mounted).
 2. Mount Svelte; `ScreenView` calls `bootstrap(canvas)`: load the
    module (`createModule`, no command line), wire the callbacks, resolve
-   the mailbox's control block and verify its MAGIC and VERSION.
+   the mailbox's control block and verify its MAGIC and VERSION; wait
+   for the emulator worker and for the WebGPU adapter's answer, which is
+   written to the core (`gpu_available`; bounded, see above).
 3. Run `machine.register(<machine-id>, <created>)` to set the per-
    machine checkpoint dir.
 4. `whenModuleReady()` resolves; `__gsReady = true`.

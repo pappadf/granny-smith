@@ -42,15 +42,33 @@ typedef struct {
 // atalk_server_init.
 void asp_set_client(const asp_client_t *client, void *ctx);
 
-// Called by appletalk_init: forget every session, register the session sweep
-// timer, and take the AFP sockets.
+// Called once, when the network comes up: take the AFP sockets.
 void asp_init(void);
-// Called by appletalk_teardown, after the client is gone: forget every session
-// and the pending write without calling back.
-void asp_shutdown(void);
 
-// Session numbering, carried in the stack's checkpoint record.
-uint16_t asp_next_ref(void);
-void asp_set_next_ref(uint16_t ref);
+// ASP's part of a machine's connection (atalk_conn_t): the sessions with
+// that Mac and the session numbering.
+typedef struct asp_link asp_link_t;
+
+asp_link_t *asp_link_new(void);
+void asp_link_free(asp_link_t *link);
+
+// Register `link`'s session sweep timer with `conn`'s machine's scheduler,
+// while the connection is being built.
+struct atalk_conn;
+void asp_link_register_timers(struct atalk_conn *conn, asp_link_t *link);
+
+// Serve `link`'s sessions: the connection was plugged in.  NULL when it is
+// unplugged, after the sessions were closed: forget what is left -- a write
+// waiting for its data -- without calling back.  The numbering stays with the
+// link, so a connection plugged in again does not reissue a reference.
+void asp_plug(asp_link_t *link);
+
+// Session numbering, carried in the connection's checkpoint block: the next
+// session reference and the next one-byte session id the wire carries.  A
+// restored connection continues from both, so a request on a session the
+// guest held before the restore names no session and is refused (SessClosed)
+// rather than taken for a new session's.
+void asp_link_numbering(const asp_link_t *link, uint16_t *next_ref, uint8_t *next_id);
+void asp_link_set_numbering(asp_link_t *link, uint16_t next_ref, uint8_t next_id);
 
 #endif // APPLETALK_ASP_H

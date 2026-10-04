@@ -51,13 +51,6 @@ LOG_USE_CATEGORY_NAME("ata");
 static const int ata_irq_source[2] = {GOS_INT_ATA0, GOS_INT_ATA1};
 static const int ata_dma_chan[2] = {GOS_DMA_ATA0, GOS_DMA_ATA1};
 
-typedef struct {
-    config_t *cfg;
-    int cell;
-} gos_ata_ctx_t;
-
-static gos_ata_ctx_t s_ctx[2];
-
 static void ata_irq(void *ctx, bool level) {
     gos_ata_ctx_t *c = (gos_ata_ctx_t *)ctx;
     gos_set_source(c->cfg, ata_irq_source[c->cell], level);
@@ -232,17 +225,18 @@ void gos_ata_write32(config_t *cfg, uint32_t off, uint32_t value) {
 
 void gos_ata_init(config_t *cfg, checkpoint_t *cp) {
     gossamer_state_t *st = gos_st(cfg);
-    st->atapi = scsi_init_named(cp, "atapi");
+    st->atapi = scsi_init_named(cfg->scheduler, cp, CONFIG_IMAGES(cfg), "atapi");
     for (int c = 0; c < 2; c++) {
         ata_channel_t *ch = &st->ata[c];
         ata_channel_init(ch, c);
-        s_ctx[c] = (gos_ata_ctx_t){.cfg = cfg, .cell = c};
-        ata_set_irq(ch, ata_irq, &s_ctx[c]);
-        ata_set_dma_kick(ch, ata_kick, &s_ctx[c]);
-        scheduler_new_event_type(cfg->scheduler, c ? "ata1" : "ata0", &s_ctx[c], "dma_pump", ata_pump_fn[c]);
+        gos_ata_ctx_t *ctx = &st->ata_ctx[c];
+        *ctx = (gos_ata_ctx_t){.cfg = cfg, .cell = c};
+        ata_set_irq(ch, ata_irq, ctx);
+        ata_set_dma_kick(ch, ata_kick, ctx);
+        scheduler_new_event_type(cfg->scheduler, c ? "ata1" : "ata0", ctx, "dma_pump", ata_pump_fn[c]);
         ata_set_atapi_bus(ch, st->atapi);
         if (cp)
-            ata_checkpoint_restore(ch, cp);
+            ata_checkpoint_restore(ch, cp, CONFIG_IMAGES(cfg));
         dbdma_port_t port = {.out = ata_dma_out, .in = ata_dma_in, .s_bits = NULL, .ctx = ch, .burst = ATA_DMA_BURST};
         dbdma_set_port(st->dbdma, ata_dma_chan[c], &port);
     }
@@ -286,31 +280,13 @@ void gos_ata_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
         ata_checkpoint_save(&st->ata[c], cp);
 }
 
-// ---- media: transit across machine.restart and the runtime verbs ------------
+// ---- media: attach and the runtime verbs -------------------------------------
 //
 // MEDIA_BUS_ATA unit u = cell * 2 + device.  A hard disk is the ATA device
 // itself; a CD-ROM is the SCSI device at id u on the ATAPI back end.
 
 static bool unit_ok(int unit) {
     return unit >= 0 && unit < 4;
-}
-
-int gos_media_detach(config_t *cfg, media_slot_t *out, int max) {
-    int n = system_media_detach_std(cfg, out, max);
-    gossamer_state_t *st = gos_st(cfg);
-    if (!st || !st->ata_ready)
-        return n;
-    for (int u = 0; u < 4 && n < max; u++) {
-        ata_channel_t *ch = &st->ata[u >> 1];
-        image_t *img = ch->img[u & 1];
-        if (!img || ata_device_kind(ch, u & 1) != ATA_DEV_HD)
-            continue;
-        out[n] = (media_slot_t){.bus = MEDIA_BUS_ATA, .unit = u, .img = img, .scsi_type = 1};
-        config_remove_image(cfg, img);
-        n++;
-    }
-    n += system_media_detach_scsi_bus(cfg, st->atapi, MEDIA_BUS_ATA, out + n, max - n);
-    return n;
 }
 
 int gos_media_attach(config_t *cfg, const media_slot_t *slot) {

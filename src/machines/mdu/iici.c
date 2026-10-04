@@ -23,6 +23,7 @@
 
 #include "mac030_glue.h"
 #include "machine.h"
+#include "machine_checkpoint.h"
 #include "mdu.h" // mdu_substrate + mac030_mdu_board_t
 #include "mmu_checkpoint.h"
 #include "slot_tables.h"
@@ -31,7 +32,6 @@
 #include "adb.h"
 #include "asc.h"
 #include "builtin_rbv_video.h"
-#include "checkpoint_images.h"
 #include "cpu.h"
 #include "floppy.h"
 #include "iici_internal.h"
@@ -250,7 +250,7 @@ static void iici_via1_output(void *context, uint8_t port, uint8_t output) {
 // logical slot 0 = RvIRQ0 independently).  Slots $C/$D/$E are the
 // user-visible NuBus expansion slots (empty in v1).
 static const nubus_slot_decl_t iici_slots[] = {
-    {.slot = 0xB, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "builtin_rbv_video"},
+    {.slot = 0xB, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "builtin_rbv_video", .fb_in_ram = true},
     // The three physical sockets ship empty (no default_card): the RBV
     // built-in video is the factory display; a socketed card is an add-on.
     {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET},
@@ -269,6 +269,9 @@ static const mac030_board_desc_t iici_board_desc = {
     .io_ranges = mdu_io_ranges_tbl,
     .io_mirror_mask = 0x0003FFFFUL,
     .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
+    // NuBus expansion slots $9..$E bus-error on unmapped reads.  The built-in
+    // video's $FBxxxxxx screen base is logical only: the guest's tables send
+    // it to Bank A before this physical range is consulted.
     .bus_err_lo = NUBUS_BERR_LO,
     .bus_err_hi = NUBUS_BERR_HI,
 };
@@ -295,29 +298,39 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     via_input_c(cfg->via1, 0, 0, 1);
     via_input_c(cfg->via1, 1, 0, 1);
 
+    machine_part_begin(cfg, checkpoint, "adb");
     st->adb = adb_init(cfg->via1, cfg->scheduler, checkpoint);
     cfg->adb = st->adb;
+    machine_part(cfg, checkpoint, "adb", part_save_adb, st->adb);
 
-    if (checkpoint)
-        mac_checkpoint_restore_images(cfg, checkpoint);
+    machine_part_images(cfg, checkpoint);
 
-    cfg->scsi = scsi_init(checkpoint);
+    machine_part_begin(cfg, checkpoint, "scsi");
+    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, checkpoint, CONFIG_IMAGES(cfg));
     scsi_5380_attach(cfg->scsi, checkpoint); // IIci: NCR 5380
+    machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
     scsi_set_irq_callback(cfg->scsi, iici_scsi_irq, cfg);
     setup_images(cfg);
 
+    machine_part_begin(cfg, checkpoint, "asc");
     st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
+    machine_part(cfg, checkpoint, "asc", part_save_asc, st->asc);
+    machine_part_begin(cfg, checkpoint, "floppy");
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, checkpoint);
+    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), checkpoint,
+                             CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
+    machine_part(cfg, checkpoint, "floppy", part_save_floppy, st->floppy);
 
     // RBV chip (VIA2 replacement + video control).  Default monitor sense 6
     // = 13" RGB.  IRQ → IPL 2; RvPowerOff → scheduler stop.
+    machine_part_begin(cfg, checkpoint, "rbv");
     st->rbv = rbv_init(RBV_VARIANT_IICI, checkpoint);
     if (!st->rbv) {
         LOG(0, "Error: out of memory constructing the RBV");
         return -1;
     }
+    machine_part(cfg, checkpoint, "rbv", part_save_rbv, st->rbv);
     rbv_set_irq_callback(st->rbv, iici_rbv_irq, cfg);
     rbv_set_power_off_callback(st->rbv, iici_power_off, cfg);
     rbv_set_mode_callback(st->rbv, iici_rbv_mode, cfg);
@@ -341,29 +354,17 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     // the 320 KB the ROM keeps out of the logical RAM map (its level-A
     // descriptor $00050019 starts logical 0 at physical $50000).  The ROM's own
     // tables map the screen base $FBB08000 (and $00B08000 in 24-bit mode) to
-    // physical 0; A/UX builds its tables the same way.  Point the card at Bank
-    // A so every path to the screen -- ROM tables, A/UX tables, a physical
-    // access -- lands where the renderer reads, as on the IIsi.  Before the
-    // checkpoint restore below, so the card knows it does not own the buffer
-    // (the RAM image already carries it).
-    builtin_rbv_video_set_framebuffer(st->video_card, ram_native_pointer(cfg->mem_map, 0), 0,
-                                      /*blank*/ checkpoint == NULL);
-    // Card-side display state (palette, mode) — written by
-    // mdu_checkpoint_save immediately after the RBV chip, so it reads back
-    // here, before the MMU tail below.
-    if (checkpoint)
-        nubus_checkpoint_restore(cfg->nubus, checkpoint);
+    // physical 0; A/UX builds its tables the same way.  The card points at Bank
+    // A when it is built (the slot's fb_in_ram), so every path to the screen --
+    // ROM tables, A/UX tables, a physical access -- lands where the renderer
+    // reads, as on the IIsi.
 
     // Bind device handles + the board's I/O window table for the shared engine.
     mdu_io_bind(&st->mdu_io, cfg, &iici_board_desc, st->asc, st->floppy, st->rbv, st->video_card);
 
-    // NuBus expansion slots $9..$E bus-error on unmapped reads.  The built-in
-    // video's $FBxxxxxx screen base is logical only: the guest's tables send
-    // it to Bank A before this physical range is consulted.
-    memory_set_bus_error_range(cfg->mem_map, iici_board_desc.bus_err_lo, iici_board_desc.bus_err_hi);
-
     iici_memory_layout_init(cfg);
 
+    machine_part_begin(cfg, checkpoint, "mmu");
     if (checkpoint) {
         // Re-drive VIA1 first, while the PMMU is still the fresh, disabled one:
         // its Overlay output switches the ROM overlay off, which writes RAM
@@ -375,9 +376,10 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
         via_redrive_outputs(cfg->via1);
         mmu_checkpoint_restore(st->mmu, checkpoint);
         mmu_invalidate_tlb(st->mmu);
-        g_mmu = st->mmu;
+        memory_map_set_pmmu(cfg->mem_map, st->mmu);
         cpu_attach_mmu(cfg->cpu, st->mmu);
     }
+    machine_part(cfg, checkpoint, "mmu", part_save_mmu, st->mmu);
     return 0;
 }
 
@@ -424,6 +426,7 @@ const hw_profile_t machine_iici = {
     .scsi_buses = iici_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
     // Built-in RBV video has no separate declaration ROM — the boot ROM
     // drives it from the hard-coded VideoInfoMDU record.
 

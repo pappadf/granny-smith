@@ -1118,10 +1118,16 @@ const adsp_stats_t *adsp_get_stats(const adsp_stack_t *s) {
 // Production instance — DDP transport and scheduler timers
 // ============================================================================
 
+struct adsp_link {
+    adsp_stack_t *stack;
+    atalk_timer_t timer; // the one event at the engine's earliest deadline
+    uint64_t armed_at;
+};
+
+// The link of the connection plugged into the network, NULL while none is.
+static adsp_link_t *g_adsp_link;
+// Its stack, which every entry point below uses.
 static adsp_stack_t *g_adsp;
-static scheduler_t *g_adsp_scheduler;
-static atalk_timer_t g_adsp_timer; // the one event at the engine's earliest deadline
-static uint64_t g_adsp_armed_at = ADSP_NO_DEADLINE;
 
 static uint64_t adsp_host_now(void *ctx) {
     (void)ctx;
@@ -1134,57 +1140,74 @@ static int adsp_host_send(void *ctx, const atalk_socket_addr_t *dest, uint8_t sr
 }
 
 static void adsp_host_timer_cb(void *source, uint64_t data) {
-    (void)source;
     (void)data;
-    g_adsp_armed_at = ADSP_NO_DEADLINE;
-    adsp_run_timers(g_adsp);
+    adsp_link_t *link = (adsp_link_t *)((char *)source - offsetof(adsp_link_t, timer));
+    link->armed_at = ADSP_NO_DEADLINE;
+    adsp_run_timers(link->stack);
 }
 
 // Keep exactly one scheduler event outstanding, at the engine's earliest
 // deadline.  Emulated time only — the wire trace is a function of the
 // instruction stream, never of the host clock.
+// `ctx` is the stack's link (adsp_config_t.ctx).
 static void adsp_host_rearm(void *ctx, uint64_t deadline_ns) {
-    (void)ctx;
-    if (!g_adsp_scheduler)
+    adsp_link_t *link = ctx;
+    if (link != g_adsp_link || !atalk_scheduler())
+        return; // only the plugged-in connection's timer is registered
+    if (deadline_ns == link->armed_at)
         return;
-    if (deadline_ns == g_adsp_armed_at)
-        return;
-    g_adsp_armed_at = deadline_ns;
+    link->armed_at = deadline_ns;
     if (deadline_ns == ADSP_NO_DEADLINE) {
-        atalk_timer_cancel_all(&g_adsp_timer);
+        atalk_timer_cancel_all(&link->timer);
         return;
     }
     uint64_t now = adsp_host_now(NULL);
     // A deadline already due arms the shortest delay atalk_timer_arm allows
     // (the scheduler refuses a zero one).
-    atalk_timer_arm(&g_adsp_timer, 0, (deadline_ns > now) ? (deadline_ns - now) : 0);
+    atalk_timer_arm(&link->timer, 0, (deadline_ns > now) ? (deadline_ns - now) : 0);
 }
 
-void atalk_adsp_init(scheduler_t *scheduler) {
-    atalk_adsp_shutdown();
-    g_adsp_scheduler = scheduler;
-    g_adsp_armed_at = ADSP_NO_DEADLINE;
-    if (scheduler)
-        atalk_timer_init(&g_adsp_timer, "adsp", "timer", &adsp_host_timer_cb);
+adsp_link_t *atalk_adsp_link_new(void) {
+    adsp_link_t *link = calloc(1, sizeof(*link));
+    if (!link)
+        return NULL;
+    link->armed_at = ADSP_NO_DEADLINE;
     adsp_config_t cfg = {
-        .ctx = NULL,
+        .ctx = link,
         .now_ns = adsp_host_now,
         .send = adsp_host_send,
         .rearm = adsp_host_rearm,
     };
-    g_adsp = adsp_stack_new(&cfg);
-    LOG(3, "ADSP: endpoint ready (DDP type %d)", DDP_TYPE_ADSP);
+    link->stack = adsp_stack_new(&cfg);
+    if (!link->stack) {
+        free(link);
+        return NULL;
+    }
+    return link;
 }
 
-void atalk_adsp_shutdown(void) {
-    if (g_adsp) {
-        adsp_close_all(g_adsp, "the emulated machine is going away");
-        adsp_stack_free(g_adsp);
-        g_adsp = NULL;
+void atalk_adsp_link_free(adsp_link_t *link) {
+    if (!link)
+        return;
+    GS_ASSERT(link != g_adsp_link);
+    adsp_stack_free(link->stack);
+    free(link);
+}
+
+void atalk_adsp_plug(adsp_link_t *link) {
+    if (g_adsp_link && !link) {
+        adsp_close_all(g_adsp_link->stack, "the emulated machine is going away");
+        atalk_timer_cancel_all(&g_adsp_link->timer);
+        g_adsp_link->armed_at = ADSP_NO_DEADLINE;
     }
-    atalk_timer_cancel_all(&g_adsp_timer);
-    g_adsp_scheduler = NULL;
-    g_adsp_armed_at = ADSP_NO_DEADLINE;
+    g_adsp_link = link;
+    g_adsp = link ? link->stack : NULL;
+    if (link)
+        LOG(3, "ADSP: endpoint ready (DDP type %d)", DDP_TYPE_ADSP);
+}
+
+void atalk_adsp_link_register_timers(struct atalk_conn *conn, adsp_link_t *link) {
+    atalk_timer_init(conn, &link->timer, "adsp", "timer", &adsp_host_timer_cb);
 }
 
 adsp_stack_t *atalk_adsp_stack(void) {
@@ -1418,18 +1441,6 @@ void atalk_adsp_install_objects(struct object *parent) {
         object_attach(g_adsp_object, g_adsp_stats_object);
 
     // Entry objects are handed out by the collection callbacks and never
-    // attached, so the cascade delete does not free them (we do, below).
+    // attached; like the subtree, they live as long as the process.
     object_cache_set_parent(&g_adsp_conn_entries, g_adsp_conns_object);
-}
-
-void atalk_adsp_remove_objects(void) {
-    object_cache_clear(&g_adsp_conn_entries);
-    struct object **nodes[] = {&g_adsp_conns_object, &g_adsp_stats_object, &g_adsp_object};
-    for (int i = 0; i < ARRAY_LEN(nodes); i++) {
-        if (!*nodes[i])
-            continue;
-        object_detach(*nodes[i]);
-        object_delete(*nodes[i]);
-        *nodes[i] = NULL;
-    }
 }

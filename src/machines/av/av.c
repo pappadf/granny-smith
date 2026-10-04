@@ -29,7 +29,6 @@
 #include "mmu040.h"
 
 #include "adb.h"
-#include "checkpoint_images.h"
 #include "cpu.h"
 #include "cpu_internal.h" // cpu->mmu (attach the 040 walker to the bus resolver)
 #include "debug.h"
@@ -251,7 +250,7 @@ void av_update_ipl(config_t *cfg, int source, bool active) {
         cfg->irq &= ~source;
     int new_ipl = mac030_irq_resolve_ipl(av_irq_routes_tbl, (uint32_t)cfg->irq);
     cpu_set_ipl(cfg->cpu, new_ipl);
-    cpu_reschedule();
+    cpu_reschedule(cfg->scheduler);
 }
 
 // VIA1 interrupt line → IPL 1.
@@ -523,6 +522,14 @@ void av_via1_shift_out(void *context, uint8_t byte) {
 // Device construction (shared by both leaves)
 // ============================================================
 
+MACHINE_PART_SAVE(av_psc_checkpoint, av_psc_t)
+MACHINE_PART_SAVE(av_dsp_checkpoint, av_dsp_t)
+MACHINE_PART_SAVE(av_singer_checkpoint, av_singer_t)
+MACHINE_PART_SAVE(av_new_age_checkpoint, av_new_age_t)
+MACHINE_PART_SAVE(av_mace_checkpoint, av_mace_t)
+MACHINE_PART_SAVE(av_civic_checkpoint, av_civic_t)
+MACHINE_PART_SAVE(av_vdc_checkpoint, av_vdc_t)
+
 int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     av_state_t *st = av_st(cfg);
     const av_board_desc_t *desc = av_board(cfg)->desc;
@@ -542,76 +549,97 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // The PSC interrupt controller + DMA engine (VIA2 window, L3-L6,
     // sndPhase, the 7 channels).
+    machine_part_begin(cfg, cp, "psc");
     st->psc = av_psc_init(cfg, cp);
     if (!st->psc) {
         LOG(0, "Error: out of memory constructing the PSC");
         return -1;
     }
+    machine_part(cfg, cp, "psc", av_psc_checkpoint_part, st->psc);
     av_psc_set_memory_port(st->psc, &dma_mem_port_physical); // the shared physical-memory pair
 
     // The DSP3210 aux core on the PSC's dspOverRun reset latch, and the
     // Singer sound frame engine that feeds it EXT1 ticks.
+    machine_part_begin(cfg, cp, "dsp");
     st->dsp = av_dsp_init(cfg, cp);
     if (!st->dsp) {
         LOG(0, "Error: out of memory constructing the DSP3210");
         return -1;
     }
+    machine_part(cfg, cp, "dsp", av_dsp_checkpoint_part, st->dsp);
     av_psc_set_dsp_hook(st->psc, av_dsp_overrun_hook, st->dsp);
+    machine_part_begin(cfg, cp, "singer");
     st->singer = av_singer_init(cfg, cp);
     if (!st->singer) {
         LOG(0, "Error: out of memory constructing the Singer codec");
         return -1;
     }
+    machine_part(cfg, cp, "singer", av_singer_checkpoint_part, st->singer);
 
     // ADB device state, serviced through Cuda packets (adb_iop_transact),
     // not the VIA shifter — pass NULL for the VIA (the IIsi/Egret pattern).
+    machine_part_begin(cfg, cp, "adb");
     st->adb = adb_init(NULL, cfg->scheduler, cp);
     cfg->adb = st->adb;
+    machine_part(cfg, cp, "adb", part_save_adb, st->adb);
 
     // The behavioral Cuda on VIA1's shift register + PB3/PB4/PB5.
+    machine_part_begin(cfg, cp, "cuda");
     st->cuda = av_cuda_init(cfg->via1, cfg->rtc, st->adb, cfg->scheduler, cp, /*mode3_clock=*/false);
     if (!st->cuda) {
         LOG(0, "Error: out of memory constructing the Cuda");
         return -1;
     }
+    machine_part(cfg, cp, "cuda", part_save_cuda, st->cuda);
 
     // New Age FDC stub ("no drive" — ST3 = $FF).
+    machine_part_begin(cfg, cp, "new_age");
     st->fdc = av_new_age_init(cfg, cp);
     if (!st->fdc) {
         LOG(0, "Error: out of memory constructing the New Age FDC");
         return -1;
     }
+    machine_part(cfg, cp, "new_age", av_new_age_checkpoint_part, st->fdc);
 
     // MACE Ethernet register stub + address PROM (no wire).
+    machine_part_begin(cfg, cp, "mace");
     st->mace = av_mace_init(cfg, cp);
     if (!st->mace) {
         LOG(0, "Error: out of memory constructing the MACE Ethernet");
         return -1;
     }
+    machine_part(cfg, cp, "mace", av_mace_checkpoint_part, st->mace);
 
     // CIVIC + Sebastian video (Hi-Res 640x480 monitor, 2 MB VRAM).
+    machine_part_begin(cfg, cp, "civic");
     st->civic = av_civic_init(cfg, cp);
     if (!st->civic) {
         LOG(0, "Error: out of memory constructing the CIVIC");
         return -1;
     }
+    machine_part(cfg, cp, "civic", av_civic_checkpoint_part, st->civic);
 
     // The video digitizer (DMSD + VDC + frame engine), reached through
     // Cuda pseudo-command $22 and CIVIC's video-in gates.
+    machine_part_begin(cfg, cp, "vdc");
     st->vdc = av_vdc_init(cfg, cp);
     if (!st->vdc) {
         LOG(0, "Error: out of memory constructing the VDC");
         return -1;
     }
+    machine_part(cfg, cp, "vdc", av_vdc_checkpoint_part, st->vdc);
     av_cuda_attach_vdc(st->cuda, st->vdc);
 
-    if (cp)
-        mac_checkpoint_restore_images(cfg, cp);
+    machine_part_images(cfg, cp);
 
     // SCSI: the bus/target model carries the disks and CD; the 53C96 chip
     // model fronts it through the external-initiator API.
-    cfg->scsi = scsi_init(cp);
+    machine_part_begin(cfg, cp, "scsi");
+    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, cp, CONFIG_IMAGES(cfg));
+    machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
+    machine_part_begin(cfg, cp, "scsi96");
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
+    machine_part(cfg, cp, "scsi96", part_save_scsi96, st->scsi96);
     scsi_53c96_set_irq_callback(st->scsi96, av_scsi96_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
     // The HAL polls PSC-VIA2 IFR bit 0 for the chip's DREQ (see psc.c).
@@ -636,7 +664,7 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
         LOG(0, "Error: out of memory constructing the 040 bus MMU");
         return -1;
     }
-    g_mmu = st->bus_mmu;
+    memory_map_set_pmmu(cfg->mem_map, st->bus_mmu);
     mmu_attach_mmu040(st->bus_mmu, (mmu040_state_t *)cfg->cpu->mmu);
 
     setup_images(cfg);
@@ -647,16 +675,21 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // VRAM pages + the $50036000 CIVIC alias layer over the flat map.
     av_civic_install_memory(cfg, st->civic);
-
-    // NuBus super-slot and slot space bus-errors on probes (the ROM's slot
-    // scan expects it even with no cards).
-    memory_set_bus_error_range(cfg->mem_map, desc->common.bus_err_lo, desc->common.bus_err_hi);
     return 0;
 }
 
 // ============================================================
 // Substrate lifecycle
 // ============================================================
+
+// The substrate-private part: the overlay flag, YMCA and MUNI.
+static void part_save_av_private(void *obj, checkpoint_t *cp) {
+    av_state_t *st = obj;
+    system_write_checkpoint_data(cp, &st->overlay.armed, sizeof(st->overlay.armed));
+    system_write_checkpoint_data(cp, st->ymca_regs, sizeof(st->ymca_regs));
+    system_write_checkpoint_data(cp, &st->muni_intcntrl, sizeof(st->muni_intcntrl));
+    system_write_checkpoint_data(cp, &st->muni_control, sizeof(st->muni_control));
+}
 
 static int av_init(config_t *cfg, checkpoint_t *cp) {
     const av_board_t *board = av_board(cfg);
@@ -669,15 +702,16 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
 
     // Shared core (mem_map, 68040 CPU from the profile, scheduler) + RTC +
     // SCC + the single VIA (there is no VIA2 chip on this platform).
-    mac030_build_core(cfg, cp);
-    if (cp)
-        system_read_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
+    mac030_build_core(cfg, &board->desc->common, cp);
+    machine_part_irq(cfg, cp);
 
     mac030_build_lowspeed(cfg, cp, av_scc_irq);
 
     uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
+    machine_part_begin(cfg, cp, "via1");
     cfg->via1 =
         via_init(NULL, cfg->scheduler, via_ff, "via1", board->via1_output, board->via1_shift_out, av_via1_irq, cfg, cp);
+    machine_part(cfg, cp, "via1", part_save_via, cfg->via1);
     // Exact-rational phi2: the integer divisor above rounds, and on this
     // substrate that rounding is not negligible -- the 840AV lands 0.12% fast, the 660AV 0.27% slow.
     // via_set_exact_clock installs ticks = cycles x 783360/cpu_hz reduced, which is what the PowerPC families already
@@ -690,14 +724,17 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
 
     cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, cp);
 
-    // Substrate-private checkpoint tail.
+    // The substrate's own part.
+    bool overlay = true;
+    machine_part_begin(cfg, cp, "av");
     if (cp) {
-        bool overlay = true;
         system_read_checkpoint_data(cp, &overlay, sizeof(overlay));
         system_read_checkpoint_data(cp, st->ymca_regs, sizeof(st->ymca_regs));
         system_read_checkpoint_data(cp, &st->muni_intcntrl, sizeof(st->muni_intcntrl));
         system_read_checkpoint_data(cp, &st->muni_control, sizeof(st->muni_control));
-        nubus_checkpoint_restore(cfg->nubus, cp); // matches av_checkpoint_save
+    }
+    machine_part(cfg, cp, "av", part_save_av_private, st);
+    if (cp) {
         if (!overlay)
             av_set_overlay(cfg, false);
         mmu_invalidate_tlb(st->bus_mmu);
@@ -786,36 +823,6 @@ static void av_teardown(config_t *cfg) {
     }
 }
 
-static void av_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
-    av_state_t *st = av_st(cfg);
-    machine_checkpoint_save_core(cfg, cp);
-    // Device order mirrors the checkpoint READS in av_build_devices — the
-    // stream is sequential, so save and restore must walk it identically.
-    av_psc_checkpoint(st->psc, cp);
-    av_dsp_checkpoint(st->dsp, cp);
-    av_singer_checkpoint(st->singer, cp);
-    adb_checkpoint(st->adb, cp);
-    av_cuda_checkpoint(st->cuda, cp);
-    av_new_age_checkpoint(st->fdc, cp);
-    av_mace_checkpoint(st->mace, cp);
-    av_civic_checkpoint(st->civic, cp);
-    av_vdc_checkpoint(st->vdc, cp);
-    mac_checkpoint_save_images(cfg, cp);
-    if (cfg->scsi)
-        scsi_checkpoint(cfg->scsi, cp);
-    scsi_53c96_checkpoint(st->scsi96, cp);
-    // Substrate-private tail (mirrored by the restore block in av_init).
-    system_write_checkpoint_data(cp, &st->overlay.armed, sizeof(st->overlay.armed));
-    system_write_checkpoint_data(cp, st->ymca_regs, sizeof(st->ymca_regs));
-    system_write_checkpoint_data(cp, &st->muni_intcntrl, sizeof(st->muni_intcntrl));
-    system_write_checkpoint_data(cp, &st->muni_control, sizeof(st->muni_control));
-    // Card-side display state (VRAM, palette, active mode) — last before the
-    // block below, so a machine that restores with fewer cards than it saved
-    // short-reads here without shifting anything that follows (mdu.c:190,
-    // pdm.c:537 use the same position).
-    nubus_checkpoint_save(cfg->nubus, cp);
-}
-
 // VBL tick: VIA1 CA1 pulse (60 Hz reference) + the PSC's own 60.15 Hz
 // level-6 source.
 static void av_trigger_vbl(config_t *cfg) {
@@ -840,7 +847,6 @@ const machine_substrate_t av_substrate = {
     .bus_reset = av_bus_reset,
     .power_on = av_power_on,
     .teardown = av_teardown,
-    .checkpoint_save = av_checkpoint_save,
     .nubus_slot_irq = av_nubus_slot_irq, // slots C/D/E → PSC SInt bits 3-5
     .trigger_vbl = av_trigger_vbl,
     .fd_insert = mac_fd_insert,
@@ -848,7 +854,6 @@ const machine_substrate_t av_substrate = {
     .input_key = mac_input_key,
     .input_mouse_move = mac_input_mouse_move,
     .input_mouse_button = mac_input_mouse_button,
-    .media_detach = system_media_detach_std,
     .media_attach = system_media_attach_std,
     .media_present = system_media_present_std,
     .media_eject = system_media_eject_std,

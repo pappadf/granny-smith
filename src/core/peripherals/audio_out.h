@@ -73,11 +73,9 @@ value_t audio_out_match_value(const char *golden_wav);
 // --- Object-model surface ---------------------------------------------------
 
 // Attaches a `capture` child node (start/stop methods, active/frames attrs)
-// under the given machine sound node. One capture node exists at a time; the
-// owning sound frontend must call audio_out_capture_detach() on teardown.
+// under the given machine sound node; it is deleted with that node's tree.
+// Each machine's sound node has its own, so a machine built beside the
+// running one gets its own capture node.
 struct object *audio_out_capture_attach(struct object *parent);
-
-// Detaches and deletes the capture node attached by audio_out_capture_attach.
-void audio_out_capture_detach(void);
 
 #endif // AUDIO_OUT_H

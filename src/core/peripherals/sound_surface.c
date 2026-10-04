@@ -181,14 +181,13 @@ void sound_object_delete(struct object *obj) {
     if (!obj)
         return;
     void *copy = object_data(obj);
-    // Capture owns its own node and deletes it; everything else attached here
-    // is the engine's own detail child (machine.sound.asc), which object_delete
-    // would NOT tear down -- it detaches the node from its parent but leaves
-    // that node's children pointing at memory it is about to free.  Across a
-    // run that reboots repeatedly (boot-config does it 28 times) those stale
-    // children accumulate with dangling parents.  object_delete_tree is
-    // post-order and takes the subtree.
-    audio_out_capture_detach();
+    // The capture node and the engine's own detail child (machine.sound.asc)
+    // are children here, which object_delete would NOT tear down -- it
+    // detaches the node from its parent but leaves that node's children
+    // pointing at memory it is about to free.  Across a run that reboots
+    // repeatedly (boot-config does it 28 times) those stale children
+    // accumulate with dangling parents.  object_delete_tree is post-order and
+    // takes the subtree.
     object_detach(obj);
     object_delete_tree(obj);
     free(copy);

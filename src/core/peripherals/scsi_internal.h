@@ -164,7 +164,8 @@
 // reset raises on every target (ANSI X3.131-1986 S6.1.3).
 #define ASC_POWER_ON_OR_RESET  0x29
 #define ASC_MEDIUM_NOT_PRESENT 0x3A
-// The drive we advertise is a SONY CD-ROM CDU-8002 (system.c), so its sense
+// The drive we advertise is a SONY CD-ROM CDU-8002 (the profiles' CD bay
+// declaration, mac_cdrom_drive_applecd), so its sense
 // vocabulary is the CDU-541 manual's, not SCSI-2's.  That manual's NOT READY
 // (2h) table has no 0x3A at all -- an empty bay is vendor code 0xB0, "Caddy not
 // inserted in drive" (CDU-541 SCSI manual, sense code tables).  Apple's CD-ROM
@@ -345,21 +346,23 @@ struct scsi {
     // An armed selection time-out, if a controller is waiting on one.
     //
     // Below the plain-data line deliberately: fn is a host function pointer and
-    // ctx a host address, so neither may be written to a checkpoint, and
-    // seltmo_registered names a scheduler registration belonging to THIS
-    // process.  A restore therefore lands with nothing armed -- the contract is
-    // spelled out on scsi_bus_arm_select_timeout() in scsi.h.
+    // ctx a host address, so neither may be written to a checkpoint.  A restore
+    // therefore lands with nothing armed -- the contract is spelled out on
+    // scsi_bus_arm_select_timeout() in scsi.h.  Its event type is registered
+    // when the bus is built, so a time-out pending at a save restores.
     scsi_select_timeout_fn seltmo_fn;
     void *seltmo_ctx;
-    bool seltmo_registered;
 
-    // Likewise a scheduler registration belonging to THIS process, so it stays
-    // below the line: a restore starts false and the next phase_data_out()
-    // re-establishes it.  The PENDING state itself is above the line, because a
-    // checkpoint taken mid-settle must come back mid-settle.
-    bool data_out_evt_registered;
+    // The machine's scheduler (NULL in the unit suites, which have no time):
+    // the bus's events are its, registered when the bus is built.
+    struct scheduler *sched;
 
     scsi_5380_t *chip5380;
+
+    // The id of the machine's CD bay (its built-in CD-ROM drive), or -1: a
+    // construction fact, so a hard disk can be refused there when it is
+    // attached rather than make the next checkpoint unloadable.
+    int cd_bay_id;
 
     struct object *object; // top-level scsi node
     struct object *bus_object; // scsi.bus child
@@ -418,15 +421,9 @@ struct scsi_5380 {
     int cdr_idx;
 
     // ---- NOT saved -------------------------------------------------------
-    // Deliberately below the line rather than merely omitted.
-    //
-    // drq_evt_registered records that this PROCESS registered the DRQ service
-    // event type with its scheduler.  Restoring it as true would make a fresh
-    // process skip the registration and lose the event entirely, so it must
-    // start false and be re-established by the first schedule.
-    bool drq_evt_registered;
-
-    // Runtime pointers: re-bound by the machine after a restore.
+    // Runtime pointers: re-bound by the machine after a restore.  Its DRQ
+    // service event type is registered when the chip is attached
+    // (scsi_5380_attach), on the bus's scheduler.
     scsi_t *bus;
     memory_map_t *memory_map;
     memory_interface_t memory_interface;
@@ -475,6 +472,8 @@ void scsi_5380_entered_data_out(scsi_t *bus);
 void scsi_5380_bus_freed(scsi_t *bus);
 void scsi_5380_dma_push_byte(scsi_t *bus, uint8_t byte);
 void scsi_bus_accept_data_out_byte(scsi_t *scsi, uint8_t value);
+// Register the bus's own event types with its scheduler (scsi_init_named).
+void scsi_bus_register_events(scsi_t *bus);
 
 // ============================================================================
 // Phase Transition Helpers (defined in scsi_bus.c, used by scsi_cdrom.c)

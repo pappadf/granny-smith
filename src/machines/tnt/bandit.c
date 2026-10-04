@@ -391,7 +391,8 @@ static void data_write32(void *ctx, uint32_t offset, uint32_t value) {
 
 // One bridge: its two config ports, its bus, and its own device-11 header
 // seated on that bus.
-static tnt_bandit_t *bridge_add(config_t *cfg, uint32_t base, bool is_chaos, int bus_index, const char *name) {
+static tnt_bandit_t *bridge_add(config_t *cfg, checkpoint_t *cp, uint32_t base, bool is_chaos, int bus_index,
+                                const char *name) {
     tnt_state_t *st = tnt_st(cfg);
     tnt_bandit_t *b = &st->bridge[st->bridge_count++];
     memset(b, 0, sizeof(*b));
@@ -430,19 +431,22 @@ static tnt_bandit_t *bridge_add(config_t *cfg, uint32_t base, bool is_chaos, int
         b->self_dev.priv = b;
         pci_cfg_reset(&b->self_dev);
         pci_bus_add_device(b->bus, &b->self_dev, 11);
+        char part[32];
+        snprintf(part, sizeof part, "pci.%s", name);
+        pci_device_part(cfg, cp, &b->self_dev, part);
     }
     return b;
 }
 
-void tnt_bandit_init(config_t *cfg) {
+void tnt_bandit_init(config_t *cfg, checkpoint_t *cp) {
     tnt_state_t *st = tnt_st(cfg);
     st->bridge_count = 0;
 
-    bridge_add(cfg, TNT_CHAOS_BASE, true, TNT_PCI_BUS_VCI, "Chaos");
-    tnt_bandit_t *bandit1 = bridge_add(cfg, TNT_BANDIT1_BASE, false, TNT_PCI_BUS_1, "Bandit 1");
+    bridge_add(cfg, cp, TNT_CHAOS_BASE, true, TNT_PCI_BUS_VCI, "Chaos");
+    tnt_bandit_t *bandit1 = bridge_add(cfg, cp, TNT_BANDIT1_BASE, false, TNT_PCI_BUS_1, "Bandit 1");
     tnt_bandit_t *bandit2 = NULL;
     if (tnt_board(cfg)->bandit_count >= 2)
-        bandit2 = bridge_add(cfg, TNT_BANDIT2_BASE, false, TNT_PCI_BUS_2, "Bandit 2");
+        bandit2 = bridge_add(cfg, cp, TNT_BANDIT2_BASE, false, TNT_PCI_BUS_2, "Bandit 2");
 
     // Each Bandit's PCI I/O window.  The bridge's own `ranges` property,
     // dumped from a real 9500 under Open Firmware 1.0.5 (Apple Technote
@@ -479,7 +483,7 @@ void tnt_bandit_init(config_t *cfg) {
                            "PCI I/O (Bandit 2)");
 
     // Grand Central's config presence at device 16 (grand_central.c).
-    tnt_gc_pci_attach(cfg, bandit1->bus);
+    tnt_gc_pci_attach(cfg, bandit1->bus, cp);
     // The island and its DBDMA engine sit behind Bandit 1: the board's
     // direct mapping of them follows this bus's lane mode (tnt.c).
     st->gc_bus = bandit1->bus;

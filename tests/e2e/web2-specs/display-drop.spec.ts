@@ -6,7 +6,7 @@
 // rejection. Replaces the legacy tests/e2e/specs/drag-drop/ suite (retired
 // with the legacy UI); DropOverlay.test.ts covers the overlay state machine
 // at component level, but nothing else exercised the real
-// processDataTransfer → probeAndPersist pipeline against the live worker.
+// processDataTransfer → acceptFiles pipeline against the live worker.
 //
 // Only the drag GESTURE is synthetic (Playwright/CDP cannot drive native
 // HTML5 drag-and-drop) — the DataTransfer carries a real File and the
@@ -19,7 +19,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 import { terminalRun } from '../helpers/terminal';
-import { gsEvalInPage } from '../helpers/web2-eval';
+import { gsEvalInPage, scratchFiles } from '../helpers/web2-eval';
 
 const DATA = path.resolve(__dirname, '../../data');
 const PLUS_ROM = path.join(DATA, 'roms', 'plus-v3-4d1f8172.rom');
@@ -32,21 +32,31 @@ const ARCHIVE = path.join(DATA, 'apps', 'MacTest_Disk.image_.sit_.hqx');
 // the DataTransfer. Coordinates target the display's centre so the state
 // machine routes Active → Display (isOverDisplay) rather than FsTree.
 async function dropOnDisplay(page: Page, fileName: string, hostFile: string | Uint8Array) {
-  const bytes = typeof hostFile === 'string' ? fs.readFileSync(hostFile) : hostFile;
-  const b64 = Buffer.from(bytes).toString('base64');
+  await dropFilesOnDisplay(page, [[fileName, hostFile]]);
+}
+
+// The same, with several files in one drop.
+async function dropFilesOnDisplay(page: Page, dropped: Array<[string, string | Uint8Array]>) {
+  const files = dropped.map(([name, hostFile]) => ({
+    name,
+    data: Buffer.from(typeof hostFile === 'string' ? fs.readFileSync(hostFile) : hostFile).toString(
+      'base64',
+    ),
+  }));
   await page.evaluate(
-    ({ name, data }: { name: string; data: string }) => {
+    (files: Array<{ name: string; data: string }>) => {
       const el = document.querySelector('.gs-display-content, .screen-view');
       if (!el) throw new Error('display area not found');
       const r = el.getBoundingClientRect();
       const cx = r.x + r.width / 2;
       const cy = r.y + r.height / 2;
-      const bin = atob(data);
-      const buf = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
-      const file = new File([buf], name, { type: 'application/octet-stream' });
       const dt = new DataTransfer();
-      dt.items.add(file);
+      for (const { name, data } of files) {
+        const bin = atob(data);
+        const buf = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+        dt.items.add(new File([buf], name, { type: 'application/octet-stream' }));
+      }
       const fire = (type: string) =>
         el.dispatchEvent(
           new DragEvent(type, {
@@ -61,7 +71,7 @@ async function dropOnDisplay(page: Page, fileName: string, hostFile: string | Ui
       fire('dragover');
       fire('drop');
     },
-    { name: fileName, data: b64 },
+    files,
   );
 }
 
@@ -124,8 +134,39 @@ test('drop an archive: the floppy inside is stored and inserted, nothing unpacke
   expect(await gsEvalInPage(page, 'files.path_size', ['/opfs/images/fd/MacTest Disk.image'])).toBe(
     419284,
   );
-  const upload = (await gsEvalInPage(page, 'files.list', ['/opfs/upload'])) as { name: string }[];
-  expect(upload.map((e) => e.name).filter((n) => n !== '.' && n !== '..')).toEqual([]);
+  expect(await scratchFiles(page)).toEqual([]);
+});
+
+// Several files in one drop: each runs the single-file flow on its own and
+// the drop ends with one summary.  The ROM -- the drop's only one -- boots a
+// machine and the first floppy goes into its empty drive; the text file is
+// rejected with its reason; nothing is left in the scratch area.  (A drop of
+// several files used to stage them all, report "N files uploaded" and store
+// none of them.)
+test('drop several files: each is stored or rejected, with one summary', async ({ page }) => {
+  test.setTimeout(240_000);
+  await gotoWeb2(page);
+  await dropFilesOnDisplay(page, [
+    ['plus-v3-4d1f8172.rom', PLUS_ROM],
+    ['System_6_0_8.dsk', SYSTEM_FD],
+    ['System_6_0_5.dsk', path.join(DATA, 'systems', 'System_6_0_5.dsk')],
+    ['notes.txt', new Uint8Array(Buffer.from('just some notes\n'))],
+  ]);
+  await expect(
+    toast(
+      page,
+      "3 stored (1 ROM, 2 floppies), 1 rejected: 'notes.txt' doesn't look like a ROM, floppy, HD, CD, or archive",
+    ),
+  ).toBeVisible({ timeout: 60_000 });
+  await expect(toast(page, 'Booted plus from uploaded ROM')).toBeVisible({ timeout: 60_000 });
+  await expect(toast(page, 'Inserted into floppy drive 1')).toBeVisible({ timeout: 60_000 });
+
+  const fd = (await gsEvalInPage(page, 'files.list', ['/opfs/images/fd'])) as { name: string }[];
+  expect(fd.map((e) => e.name).filter((n) => n.endsWith('.dsk')).sort()).toEqual([
+    'System_6_0_5.dsk',
+    'System_6_0_8.dsk',
+  ]);
+  expect(await scratchFiles(page)).toEqual([]);
 });
 
 // Boot a Plus from a dropped ROM, pause it, save a checkpoint through the

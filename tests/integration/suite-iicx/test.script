@@ -128,10 +128,9 @@ def row_iicx_gc_beep() {
     # "gc_640x480_1bpp" produces the same two screen goldens but shifts
     # the beep timing enough that the second capture stops being
     # byte-identical to the first (measured 2026-07-28), which would
-    # destroy this row's whole point. So the row must run BEFORE the
-    # 8 bpp rows, before anything stages a mode into the built-from
-    # record that machine.boot would inherit; the depth assert below
-    # fails loudly if that ordering is ever broken.
+    # destroy this row's whole point. So the row names no mode and boots
+    # at the card's default depth; the depth assert below fails loudly if
+    # that default ever changes.
     machine.boot model="iicx" ram=8192 video_card="824gc" rom="${$ROM}"
 
     # Pin the RTC so the run is deterministic. This must come AFTER machine.boot
@@ -194,8 +193,10 @@ def row_iicx_gc_beep() {
     # attentions move this row by 127 instructions in 380 million.  The
     # waveform survived that unchanged: aligned on their shared body the old
     # and new captures differ in 25 samples of 5,423, all at the window edges.
-    # It is also context-sensitive, so REGEN it from a WHOLE-SUITE run: on its
-    # own this row captures 5424 for the second beep instead of 5426.
+    # It used to be context-sensitive as well -- the I/O wait-state remainder
+    # carried from one machine to the next in the same process -- so it had to
+    # be regenerated from a whole-suite run.  That remainder is the machine's
+    # own now, and the row captures the same beep alone or in the suite.
     check_sound("goldens/iicx-gc-beep.wav", 5426)
 
     # Sample-exact compare against the golden (fails the test on any divergence).

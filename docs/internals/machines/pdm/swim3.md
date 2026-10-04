@@ -119,7 +119,7 @@ the presence gates, §4.4–§4.8 for the read/write/format driver paths.)
 ## Machine seams
 
 `pdm_init` creates the drive with `floppy_init(FLOPPY_TYPE_SWIM3, NULL,
-…)` — the NULL map is deliberate: PDM decodes SWIM3 through the AMIC
+…)`, cabling the profile's one drive — the NULL map is deliberate: PDM decodes SWIM3 through the AMIC
 island, not through a memory-mapped floppy region, so the shared module
 carries only the drive and the media.  `pdm_fd_insert` / `pdm_fd_present`
 forward to it for drive 0 and refuse drive 1, which does not exist on this

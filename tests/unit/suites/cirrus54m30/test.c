@@ -150,7 +150,7 @@ static pci_device_t *seat(void) {
     memset(&s_profile, 0, sizeof(s_profile));
     s_fb_if = s_io_if = s_vga_if = NULL;
     s_cycles = 0;
-    pci_device_t *dev = cirrus_54m30_kind.factory(1, &s_cfg, NULL);
+    pci_device_t *dev = cirrus_54m30_kind.factory(1, &s_cfg, NULL, &(slot_opts_t){.slot = 1});
     ASSERT_TRUE(dev && s_fb_if && s_io_if && s_vga_if);
     return dev;
 }

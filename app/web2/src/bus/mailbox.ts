@@ -69,11 +69,10 @@ export const EVT_LOG = 20;
 // REQ_EVAL payload words: {id, client, deadline_ms, path_len, args_len} + path + args.
 // REQ_SCRIPT payload words: {id, client, deadline_ms, src_len} + src.
 // REQ_CANCEL payload words: {id, client, target_id}; REQ_MODE_STOP: {id, client, owner};
-// REQ_ACK_BUF: {id, client, handle}.
+// REQ_ACK_BUF: {id, client, handle} (a transfer buffer was consumed).
 // EVT_RESULT payload words: {id, ok, json_len, out_len} + json + output (each
-// padded to 4).  A result too large for the ring arrives as
-// {"$buf": handle, "ptr": p, "len": n}: the JSON lies in a STAGED BUFFER in
-// the core's heap, read here and released with REQ_ACK_BUF.
+// padded to 4).  The JSON is at most the core's result limit
+// (GS_MBX_RESULT_MAX); a larger result arrives as an error naming its size.
 // EVT_PROGRESS / EVT_STATE / EVT_NOTIFY / EVT_LOG payload words: {json_len} + json;
 // progress is {"id": request, "done": n, "total": n}.  A job's EVT_LOG
 // records are "output" (its printed text) and, among them at the positions
@@ -126,7 +125,7 @@ interface Pending {
 }
 
 // The core's heap, fresh each time: under ALLOW_MEMORY_GROWTH the buffer a
-// view was made over can be replaced, so a staged buffer (anywhere in the
+// view was made over can be replaced, so a transfer buffer (anywhere in the
 // heap, unlike the rings) is read through a view made at that moment.
 export type HeapAccessor = () => ArrayBufferLike;
 
@@ -151,7 +150,7 @@ export class Mailbox {
 
   // Binds to the control block at `ctrlPtr` in `heap`.  Throws on a MAGIC
   // or VERSION mismatch: the page and the core are out of step.  `liveHeap`
-  // returns the heap as it is now (staged buffers are read through it);
+  // returns the heap as it is now (transfer buffers are read through it);
   // default: the buffer given.
   constructor(heap: ArrayBufferLike, ctrlPtr: number, client: number, liveHeap?: HeapAccessor) {
     this.ctrl = new Int32Array(heap, ctrlPtr, 32);
@@ -279,8 +278,8 @@ export class Mailbox {
     );
   }
 
-  // Tells the core a staged buffer has been consumed: the core frees it, or
-  // hands it back to the I/O job that fills it.  Resolves true if it was one.
+  // Tells the core a transfer buffer has been consumed: the core hands it
+  // back to the I/O job that fills it.  Resolves true if it was one.
   async ackBuf(handle: number): Promise<boolean> {
     const r = await this.post(REQ_ACK_BUF, this.client, 10_000, [handle], []);
     return r.ok && r.json === 'true';
@@ -414,18 +413,11 @@ export class Mailbox {
           // moves) -- and TextDecoder refuses a view over shared memory, so
           // slice(), which copies, not subarray().
           const jsonAt = p + 4 * RESULT_WORDS;
-          let json = utf8dec.decode(this.evt.u8.slice(jsonAt, jsonAt + n));
+          const json = utf8dec.decode(this.evt.u8.slice(jsonAt, jsonAt + n));
           const outAt = jsonAt + pad4(n);
           const output = outLen ? utf8dec.decode(this.evt.u8.slice(outAt, outAt + outLen)) : '';
           this.pending.delete(id);
           if (pending.timer) clearTimeout(pending.timer);
-          // A spilled result: the JSON is in a staged buffer; read it and
-          // give the buffer back.
-          const staged = ok ? stagedRef(json) : null;
-          if (staged) {
-            json = utf8dec.decode(this.heapBytes(staged.ptr, staged.len).slice());
-            void this.ackBuf(staged.handle);
-          }
           pending.resolve({ ok, json, output });
         }
         // else: a late answer past its deadline, or an id we never issued -- dropped.
@@ -469,17 +461,4 @@ export class Mailbox {
 // The bytes one REQ_EVAL occupies, for callers that size things.
 export function requestBytes(pathLen: number, argsLen: number): number {
   return pad8(HDR_BYTES + 4 * EVAL_WORDS + pad4(pathLen) + pad4(argsLen));
-}
-
-// A result document naming a staged buffer, or null.
-export function stagedRef(json: string): { handle: number; ptr: number; len: number } | null {
-  if (!json.startsWith('{"$buf"')) return null;
-  try {
-    const d = JSON.parse(json) as { $buf?: number; ptr?: number; len?: number };
-    if (typeof d.$buf === 'number' && typeof d.ptr === 'number' && typeof d.len === 'number')
-      return { handle: d.$buf, ptr: d.ptr, len: d.len };
-  } catch {
-    // not a staged reference
-  }
-  return null;
 }

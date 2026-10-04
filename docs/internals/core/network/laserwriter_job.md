@@ -110,44 +110,47 @@ this gives).
 
 ## The printer
 
-Every job runs on the emulated machine's **printer**: an interpreter
+Every job runs on the network's **printer**: an interpreter
 (`platen_printer`) built once from the identity and prelude and kept
 between jobs. Each job starts from the printer's state and is reverted at
 its end, except what it made permanent with `exitserver` or `startjob`,
 which every later job inherits — the way a LaserWriter keeps a downloaded
 procset until it is switched off. The classic driver relies on it: it asks
 whether PatchPrep is resident and uploads it with `exitserver` only when
-not, so from the second print on a machine the upload is skipped.
+not, so from the second print on the upload is skipped.
 
-The printer lives as long as the emulated machine:
+The LaserWriter is a node on the AppleTalk network, not part of the Mac
+(`appletalk.h`, "Lifecycle"), so it outlives machines the way a printer on
+a desk outlives the Macs that print to it:
 
 | Event | Printer |
 |---|---|
-| `machine.boot` (a new machine) | new |
-| `machine.rebuild` (the recorded machine built again) | kept, like its disks (an explicit transfer) |
-| `machine.restart` (the same machine power-cycled; nothing rebuilt) | kept |
-| `machine.reset` (no rebuild) | kept |
-| `checkpoint.load` that succeeds | new (an interpreter is not saved in a checkpoint) |
-| `checkpoint.load` that fails | kept: the running machine goes on |
+| `machine.boot` (a new machine) | kept |
+| `machine.restart` (the same machine power-cycled; nothing torn down) | kept |
+| `machine.reset` (warm reset) | kept |
+| `checkpoint.load`, whether it succeeds or fails | kept (the printer is never in a checkpoint) |
 | `appletalk.printer.restart()` | new; the machine is untouched |
 | an interpreter wedged by an earlier job | replaced, logged |
 
+What a machine takes with it when it is unplugged from the network is its
+PAP session and a job still arriving over it (`atalk_printer_unplug`). A
+job whose data is all in -- the driver's EOF handed over, whether or not
+it has closed its connection yet -- is the printer's, not the machine's:
+the unplug detaches it as a clean close would, it keeps running, its
+document still reaches the sink, and the next machine's scheduler drives
+its remaining polls (`atalk_printer_plug` → `laserwriter_job_resume`).
+`appletalk.printer.finishing` is true while such a job has not yet
+produced its document. So a print sent
+just before `machine.boot` or `checkpoint.load` is not lost. The printer's
+identity, its job counts and what earlier jobs made permanent stay.
+
 The bridge names printers with a process-unique id (`g_lw.printer_id`,
 never reused; 0 until the first job) and passes it with every OPEN, so the
-interpreter itself is created on the printer's first job and a machine
-that never prints costs nothing. The machine lifecycle moves the id
-(`laserwriter_job.h`, "The printer"):
-
-- `laserwriter_printer_retire()` — the machine is gone: the job is
-  abandoned, PRINTER_FREE sent, and the next job gets a new id.
-  `appletalk_delete` calls it unless its `power_cycle` argument says the
-  machine is being rebuilt as itself (`machine_teardown.c` passes
-  `machine_boot_is_restart()`).
-- `laserwriter_printer_detach()` / `reattach()` / `free_detached()` — a
-  checkpoint load builds the new machine before the old one goes;
-  `appletalk_init` detaches the old machine's printer into `g_superseded`
-  beside the rest of the old stack, and `appletalk_delete` frees it (the
-  load succeeded) or puts it back (it failed).
+interpreter itself is created on the printer's first job and a printer
+that never prints costs nothing. Only `appletalk.printer.restart()` moves
+the id: `laserwriter_printer_retire()` abandons the job, sends
+PRINTER_FREE, and the next job gets a new id (`laserwriter_job.h`, "The
+printer").
 
 A printer whose `platen_printer_job` fails is *wedged*: an earlier job
 kept its interpreter (a document that could not be closed, a panic). The

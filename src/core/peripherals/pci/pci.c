@@ -3,8 +3,7 @@
 
 // pci.c
 // The PCI bus controller: device tables, config dispatch, bridge-window
-// decode, the card-kind registry, staged per-slot configuration, the slot
-// walk and the lifecycle / interrupt fan-outs.  See pci.h and
+// decode, the card-kind registry, the slot walk and the lifecycle / interrupt fan-outs.  See pci.h and
 // docs/internals/core/peripherals/pci.md.
 //
 // Nothing here knows about any machine: a family creates a bus per host
@@ -23,23 +22,22 @@
 #include "checkpoint.h"
 #include "config_space.h"
 #include "log.h"
-#include "machine_config.h" // the built-from record's per-slot picks
+#include "machine_parts.h"
 #include "machine_profile.h" // machine_substrate_t (slot-IRQ routing)
+#include "prom.h"
 #include "system_config.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("pci");
 
-#define PCI_MAX_BUSES     4
-#define PCI_MAX_DEVICES   32 // IDSEL AD11..AD31 (0..10 never exist)
-#define PCI_MAX_WINDOWS   4
-#define PCI_MAX_SLOTS     16 // slot numbers are 1-based; [0] is the wildcard
-#define PCI_STAGED_OPTS   2 // keyed options staged per slot
-#define PCI_OPT_KEY_MAX   24
-#define PCI_OPT_VALUE_MAX 48
+#define PCI_MAX_BUSES   4
+#define PCI_MAX_DEVICES 32 // IDSEL AD11..AD31 (0..10 never exist)
+#define PCI_MAX_WINDOWS 4
+#define PCI_MAX_SLOTS   16 // slot numbers are 1-based
 
 // One decode window a bridge forwards onto its bus.
 typedef struct pci_window {
@@ -76,6 +74,10 @@ struct pci_root {
     int bus_count;
     pci_device_t *slot_dev[PCI_MAX_SLOTS]; // device seated in slot N
     const pci_card_kind_t *slot_kind[PCI_MAX_SLOTS]; // and the kind that made it
+    // What the document said about each slot (the card a socket seats, its
+    // ROM and options): the root's checkpoint block, so a restore seats
+    // exactly these.  A slot it says nothing about has slot == 0.
+    slot_opts_t entry[PCI_MAX_SLOTS];
 };
 
 // === Card-kind registry =====================================================
@@ -156,92 +158,6 @@ bool pci_card_fits_socket(const pci_slot_decl_t *s, const pci_card_kind_t *kind)
     if (s->kind != PCI_SLOT_SOCKET)
         return false;
     return kind->attach == PCI_ATTACH_PCI;
-}
-
-// === Staged per-slot configuration ==========================================
-
-typedef struct pci_staged_opt {
-    char key[PCI_OPT_KEY_MAX];
-    char value[PCI_OPT_VALUE_MAX];
-} pci_staged_opt_t;
-
-typedef struct pci_staged_slot {
-    char card[32];
-    pci_staged_opt_t opt[PCI_STAGED_OPTS];
-} pci_staged_slot_t;
-
-static pci_staged_slot_t s_staged[PCI_MAX_SLOTS];
-
-static bool staged_slot_valid(int slot) {
-    return slot >= 0 && slot < PCI_MAX_SLOTS;
-}
-
-void pci_staged_card_set(int slot, const char *id) {
-    if (!staged_slot_valid(slot))
-        return;
-    snprintf(s_staged[slot].card, sizeof s_staged[slot].card, "%s", (id && *id) ? id : "");
-}
-
-const char *pci_staged_card_get(int slot) {
-    if (!staged_slot_valid(slot))
-        return NULL;
-    return s_staged[slot].card[0] ? s_staged[slot].card : NULL;
-}
-
-void pci_staged_option_set(int slot, const char *key, const char *value) {
-    if (!staged_slot_valid(slot) || !key || !*key)
-        return;
-    pci_staged_opt_t *free_slot = NULL;
-    for (int i = 0; i < PCI_STAGED_OPTS; i++) {
-        pci_staged_opt_t *o = &s_staged[slot].opt[i];
-        if (strcmp(o->key, key) == 0) {
-            snprintf(o->value, sizeof o->value, "%s", (value && *value) ? value : "");
-            if (!o->value[0])
-                o->key[0] = '\0'; // "" clears the entry
-            return;
-        }
-        if (!free_slot && !o->key[0])
-            free_slot = o;
-    }
-    if (!value || !*value)
-        return; // clearing an option that was never staged
-    if (!free_slot) {
-        LOG(0, "staged-option table full; slot %d option '%s' dropped", slot, key);
-        return;
-    }
-    snprintf(free_slot->key, sizeof free_slot->key, "%s", key);
-    snprintf(free_slot->value, sizeof free_slot->value, "%s", value);
-}
-
-void pci_staged_option_set_spec(int slot, const char *spec) {
-    if (!spec || !*spec)
-        return;
-    char buf[PCI_OPT_VALUE_MAX * PCI_STAGED_OPTS * 2];
-    snprintf(buf, sizeof buf, "%s", spec);
-    for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
-        char *eq = strchr(tok, '=');
-        if (!eq || eq == tok) {
-            LOG(0, "pci option '%s' is not key=value — ignored", tok);
-            continue;
-        }
-        *eq = '\0';
-        pci_staged_option_set(slot, tok, eq + 1);
-    }
-}
-
-const char *pci_staged_option_get(int slot, const char *key) {
-    if (!staged_slot_valid(slot) || !key)
-        return NULL;
-    for (int i = 0; i < PCI_STAGED_OPTS; i++) {
-        const pci_staged_opt_t *o = &s_staged[slot].opt[i];
-        if (o->key[0] && strcmp(o->key, key) == 0)
-            return o->value;
-    }
-    return NULL;
-}
-
-void pci_staged_clear_all(void) {
-    memset(s_staged, 0, sizeof s_staged);
 }
 
 // === Bridge-window decode ===================================================
@@ -636,74 +552,152 @@ const pci_card_kind_t *pci_slot_kind(pci_root_t *root, int slot) {
     return root->slot_kind[slot];
 }
 
-// Resolve a SOCKET's card id: a staged pick for this exact slot beats the
-// wildcard (honoured only on the machine's FIRST socket); both are
-// honoured only if the named kind physically fits; the fallback is the
-// declared default_card.  Rejections log at level 0 so a bad pick is
-// visible by default instead of silently booting the wrong thing.
-// *out_explicit reports whether the USER named the winner — the
-// built-from record keeps the two apart (machine_config_slot_card_t).
-static const char *socket_card_id(const pci_slot_decl_t *s, bool is_first_socket, bool *out_explicit) {
-    *out_explicit = false;
-    const char *staged = pci_staged_card_get(s->slot);
-    if (!staged && is_first_socket)
-        staged = pci_staged_card_get(PCI_STAGED_WILDCARD);
-    if (staged) {
-        if (pci_card_fits_socket(s, pci_card_find(staged))) {
-            *out_explicit = true;
-            return staged;
-        }
-        LOG(0, "staged card '%s' does not fit slot %d; using default '%s'", staged, s->slot,
-            s->default_card ? s->default_card : "(none)");
-    }
+// The card a SOCKET seats: the boot document's entry for it (machine_slots.c
+// validated that the card fits), else the declared default_card (NULL = the
+// socket ships empty).
+static const char *socket_card_id(const pci_slot_decl_t *s, const slot_opts_t *e) {
+    if (e && e->empty)
+        return NULL;
+    if (e && e->card[0])
+        return e->card;
     return s->default_card;
 }
 
-// Route this slot's staged options into the resolved kind through its own
-// stage_option() hook.  A kind that rejects the key logs and the option is
-// dropped — the generic layer never learns a card's identity (the fix for
-// the NuBus stage_mode_for_kind wart).
-static void stage_one_option(int slot, const pci_card_kind_t *kind, const char *key, const char *value) {
-    if (kind->stage_option && kind->stage_option(key, value))
-        return;
-    LOG(0, "staged option '%s'='%s' is not understood by slot %d card '%s' — ignored", key, value, slot, kind->id);
+// Format a refusal into the caller's buffer and say no.
+__attribute__((format(printf, 3, 4))) static bool refuse(char *why, size_t len, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(why, len, fmt, ap);
+    va_end(ap);
+    return false;
 }
 
-// `take_wildcard` is set for the machine's FIRST socket, which is also the
-// slot machine.boot's pci_card= applies to — so pci_option= reaches the
-// same card through the same rule.  A slot-specific option wins over the
-// wildcard's for the same key: naming a concrete slot is the more explicit
-// statement of the two.
-static void stage_options_for_kind(int slot, bool take_wildcard, const pci_card_kind_t *kind) {
-    for (int i = 0; i < PCI_STAGED_OPTS; i++) {
-        const char *key = s_staged[slot].opt[i].key;
-        if (!key[0])
-            continue;
-        stage_one_option(slot, kind, key, s_staged[slot].opt[i].value);
+bool pci_slot_entry_check(const pci_slot_decl_t *slots, const char *model, const slot_opts_t *e, bool roms_final,
+                          char *why, size_t why_len) {
+    const pci_slot_decl_t *d = NULL;
+    for (const pci_slot_decl_t *s = slots; s && s->slot; s++) {
+        if (s->slot == e->slot)
+            d = s;
     }
-    if (!take_wildcard || slot == PCI_STAGED_WILDCARD)
-        return;
-    for (int i = 0; i < PCI_STAGED_OPTS; i++) {
-        const char *key = s_staged[PCI_STAGED_WILDCARD].opt[i].key;
-        if (!key[0] || pci_staged_option_get(slot, key))
-            continue;
-        stage_one_option(slot, kind, key, s_staged[PCI_STAGED_WILDCARD].opt[i].value);
+    if (!d || d->kind == PCI_SLOT_ABSENT)
+        return refuse(why, why_len, "PCI slot %d on model '%s' takes no card", e->slot, model);
+    const pci_card_kind_t *k = NULL;
+    bool named = false;
+    if (e->empty) {
+        if (d->kind != PCI_SLOT_SOCKET)
+            return refuse(why, why_len, "PCI slot %d on model '%s' is built in and cannot be emptied", e->slot, model);
+    } else if (e->card[0]) {
+        k = pci_card_find(e->card);
+        if (!k) {
+            const char *near = pci_card_suggest(e->card);
+            if (near)
+                return refuse(why, why_len, "unknown card id '%s' — did you mean '%s'? (see catalog.pci_cards)",
+                              e->card, near);
+            return refuse(why, why_len, "unknown card id '%s' (see catalog.pci_cards)", e->card);
+        }
+        bool fits = d->kind == PCI_SLOT_SOCKET ? pci_card_fits_socket(d, k)
+                                               : (d->builtin_card_id && strcmp(d->builtin_card_id, k->id) == 0);
+        if (!fits)
+            return refuse(why, why_len, "card '%s' fits no slot on model '%s' (see catalog.profile(\"%s\").pci_slots)",
+                          e->card, model, model);
+        named = d->kind == PCI_SLOT_SOCKET;
+    } else {
+        k = pci_card_find(d->kind == PCI_SLOT_SOCKET ? d->default_card : d->builtin_card_id);
     }
+    if (e->video_mode[0] || e->custom_mode[0])
+        return refuse(why, why_len, "PCI slot %d takes no video mode (a PCI display card senses its monitor)", e->slot);
+    for (int i = 0; i < e->n_options; i++) {
+        if (!k || !k->accepts_option || !k->accepts_option(e->options[i].key, e->options[i].value))
+            return refuse(why, why_len, "slot %d's card '%s' does not take option %s=%s", e->slot, k ? k->id : "(none)",
+                          e->options[i].key, e->options[i].value);
+    }
+    if (e->rom[0]) {
+        prom_id_t pid;
+        if (!prom_identify_card(e->rom, &pid))
+            return refuse(why, why_len,
+                          "prom '%s' is not a recognised PCI expansion ROM (see catalog.proms.identify for what it is "
+                          "instead)",
+                          e->rom);
+        if (!k || strcmp(pid.card_id, k->id) != 0)
+            return refuse(why, why_len, "prom '%s' is for card '%s', not slot %d's '%s'", e->rom, pid.card_id, e->slot,
+                          k ? k->id : "(none)");
+    }
+    if (roms_final && named && k && k->requires_prom && !prom_card_resolvable(k->id, e->rom[0] ? e->rom : NULL))
+        return refuse(why, why_len,
+                      "card '%s' (PCI slot %d) needs a PCI expansion ROM but no offered .prom file provides it", k->id,
+                      e->slot);
+    return true;
+}
+
+// A device's checkpoint part, opened before it is built and closed after
+// (defined with the part's save, below).
+static void device_part_open(config_t *cfg, checkpoint_t *cp, const char *name, rom_image_t *rom);
+static void device_part_close(config_t *cfg, checkpoint_t *cp, pci_device_t *dev, const char *name);
+
+// A restore's slot table is a file the user supplied: every entry that seats
+// a card goes through the checks machine.boot applies to a document's, bar
+// the PROM file (the card's PROM comes from its own block).  A bad entry
+// fails the restore, naming the slot.
+static bool slot_table_valid(slot_opts_t *entry, const pci_slot_decl_t *slots, const char *model) {
+    for (int n = 0; n < PCI_MAX_SLOTS; n++) {
+        slot_opts_t *e = &entry[n];
+        if (!slot_opts_sanitize(e, n)) {
+            LOG(0, "Error: the checkpoint's PCI slot %d entry is malformed", n);
+            return false;
+        }
+        if (!e->card[0])
+            continue;
+        slot_opts_t check = *e;
+        check.rom[0] = '\0';
+        char why[256];
+        if (!pci_slot_entry_check(slots, model, &check, false, why, sizeof why)) {
+            LOG(0, "Error: the checkpoint's PCI slot %d: %s", n, why);
+            return false;
+        }
+    }
+    return true;
+}
+
+static void pci_slots_part_save(void *obj, checkpoint_t *cp) {
+    pci_root_t *root = obj;
+    system_write_checkpoint_data(cp, root->entry, sizeof(root->entry), "pci");
+}
+
+// The document's entry for `slot`, or NULL when it said nothing about it.
+static const slot_opts_t *slot_entry(const pci_root_t *root, int slot) {
+    if (slot < 0 || slot >= PCI_MAX_SLOTS || root->entry[slot].slot != slot || !slot)
+        return NULL;
+    return &root->entry[slot];
 }
 
 void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
     if (!root)
         return;
-    if (root->slots) {
-        // The machine's first SOCKET — the slot the WILDCARD staged entry
-        // (machine.boot's pci_card=) applies to.
-        int first_socket = -1;
-        for (const pci_slot_decl_t *s = root->slots; s->slot != 0; s++) {
-            if (s->kind == PCI_SLOT_SOCKET) {
-                first_socket = s->slot;
-                break;
-            }
+    // A boot takes the slot entries from the document; a restore, from the
+    // root's own block.
+    machine_part_begin(root->cfg, cp, "pci");
+    if (cp) {
+        system_read_checkpoint_data(cp, root->entry, sizeof(root->entry), "pci");
+        if (!slot_table_valid(root->entry, root->slots, root->cfg->machine->id))
+            checkpoint_set_error(cp);
+    } else {
+        for (int i = 0; i < root->cfg->build_opts.n_slots; i++) {
+            const slot_opts_t *e = &root->cfg->build_opts.slots[i];
+            if (e->slot > 0 && e->slot < PCI_MAX_SLOTS)
+                root->entry[e->slot] = *e;
         }
+        // A built-in video's monitor is an argument of its construction, so
+        // its slot entry carries the build's sense (as the NuBus seats do),
+        // and the table's block gives it back on a restore.
+        for (const pci_slot_decl_t *s = root->slots; s && s->slot != 0; s++) {
+            if (s->kind != PCI_SLOT_BUILTIN || s->slot <= 0 || s->slot >= PCI_MAX_SLOTS)
+                continue;
+            root->entry[s->slot].slot = s->slot;
+            root->entry[s->slot].video_sense = machine_slot_sense(&root->cfg->build_opts);
+        }
+    }
+    machine_part(root->cfg, cp, "pci", pci_slots_part_save, root);
+    if (root->slots) {
         // Which card classes the SOCKETS will supply.  Resolved in a first
         // pass so a BUILTIN_FALLBACK can stand down before it is built —
         // the machine's slot table lists the fallback last, but a socket
@@ -713,15 +707,14 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
         for (const pci_slot_decl_t *s = root->slots; s->slot != 0; s++) {
             if (s->kind != PCI_SLOT_SOCKET)
                 continue;
-            bool ignored = false;
-            const pci_card_kind_t *k = pci_card_find(socket_card_id(s, s->slot == first_socket, &ignored));
+            const pci_card_kind_t *k = pci_card_find(socket_card_id(s, slot_entry(root, s->slot)));
             if (k && k->card_class && n_socket_classes < PCI_MAX_SLOTS)
                 socket_classes[n_socket_classes++] = k->card_class;
         }
 
         for (const pci_slot_decl_t *s = root->slots; s->slot != 0; s++) {
             const pci_card_kind_t *kind = NULL;
-            bool explicit_pick = false; // did the USER name this card?
+            const slot_opts_t *entry = slot_entry(root, s->slot);
             switch (s->kind) {
             case PCI_SLOT_BUILTIN:
                 kind = pci_card_find(s->builtin_card_id);
@@ -741,7 +734,7 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
                 break;
             }
             case PCI_SLOT_SOCKET:
-                kind = pci_card_find(socket_card_id(s, s->slot == first_socket, &explicit_pick));
+                kind = pci_card_find(socket_card_id(s, entry));
                 break;
             case PCI_SLOT_ABSENT:
                 continue;
@@ -759,10 +752,25 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
                 LOG(0, "slot %d names bus %d, which this machine does not have", s->slot, s->bus);
                 continue;
             }
-            stage_options_for_kind(s->slot, s->slot == first_socket, kind);
-            pci_device_t *dev = kind->factory(s->slot, root->cfg, cp);
+            // Each seated card is a part of its own, after the slot table: on a
+            // restore its block gives the expansion ROM it runs, which the
+            // factory takes, then its config header and state.
+            char part[32];
+            snprintf(part, sizeof part, "pci.slot.%d", s->slot);
+            rom_image_t rom;
+            device_part_open(root->cfg, cp, part, &rom);
+            // A slot the document says nothing about builds with the card's
+            // defaults.
+            slot_opts_t none = {.slot = s->slot};
+            pci_device_t *dev = kind->factory(s->slot, root->cfg, rom.data ? &rom : NULL, entry ? entry : &none);
+            free((void *)rom.data);
             if (!dev) {
                 LOG(1, "slot %d card factory '%s' returned NULL", s->slot, kind->id);
+                if (cp) {
+                    LOG(0, "Error: the checkpoint's PCI slot %d card '%s' could not be built", s->slot, kind->id);
+                    checkpoint_set_error(cp);
+                }
+                machine_part_cancel(root->cfg);
                 continue;
             }
             dev->slot_index = s->slot;
@@ -773,6 +781,7 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
                 // leave a phantom nobody frees.
                 LOG(0, "slot %d: device %d on bus %d is already seated; '%s' dropped", s->slot, s->device, s->bus,
                     kind->id);
+                machine_part_cancel(root->cfg);
                 if (dev->ops && dev->ops->teardown)
                     dev->ops->teardown(dev, root->cfg);
                 free(dev->rom);
@@ -786,16 +795,11 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
             // AAPL,interrupts and the OSes copy the number into $3C, so
             // the slot table and the header cannot disagree.
             dev->cfg.interrupt_line = (uint8_t)s->int_line;
-            // The built-from record captures the RESOLVED pick, so
-            // machine.restart rebuilds a multi-card machine faithfully
-            // (the staged table is cleared below).
-            machine_config_note_slot_card(MC_BUS_PCI, s->slot, kind->id, explicit_pick);
+            device_part_close(root->cfg, cp, dev, part);
         }
     }
-    // Consume the whole staged table so a stale selection can't leak into
-    // the next machine.boot (the NuBus rule).
-    pci_staged_clear_all();
-    pci_objects_build(root);
+    // machine.pci's tree is built by the swap step (system_swap_in), like
+    // machine.nubus's.
 }
 
 void pci_root_delete(pci_root_t *root) {
@@ -843,31 +847,79 @@ static int pci_collect(pci_root_t *root, pci_device_t **out, int max) {
 
 #define PCI_MAX_TOTAL_DEVICES (PCI_MAX_BUSES * PCI_MAX_DEVICES)
 
-void pci_checkpoint_save(pci_root_t *root, checkpoint_t *cp) {
-    if (!root || !cp)
-        return;
-    pci_device_t *devs[PCI_MAX_TOTAL_DEVICES];
-    int n = pci_collect(root, devs, PCI_MAX_TOTAL_DEVICES);
-    for (int i = 0; i < n; i++) {
-        system_write_checkpoint_data(cp, &devs[i]->cfg, sizeof(devs[i]->cfg));
-        if (devs[i]->ops && devs[i]->ops->checkpoint_save)
-            devs[i]->ops->checkpoint_save(devs[i], cp);
-    }
+// The largest expansion ROM a device's block may carry.
+#define DEVICE_ROM_MAX (256u * 1024u)
+
+// A device's block: its expansion ROM (none for most), its config header,
+// then its own state.  The ROM is always in the block, so a checkpoint
+// restores the card it was saved with whatever PROM files the host offers now.
+static void pci_device_part_save(void *obj, checkpoint_t *cp) {
+    pci_device_t *dev = obj;
+    uint32_t size = dev->rom ? (uint32_t)dev->rom_size : 0;
+    system_write_checkpoint_data(cp, &size, sizeof size, "pci.rom");
+    if (size)
+        system_write_checkpoint_data(cp, dev->rom, size, "pci.rom");
+    system_write_checkpoint_data(cp, &dev->cfg, sizeof(dev->cfg), "pci.cfg");
+    if (dev->ops && dev->ops->checkpoint_save)
+        dev->ops->checkpoint_save(dev, cp);
 }
 
-void pci_checkpoint_restore(pci_root_t *root, checkpoint_t *cp) {
-    if (!root || !cp)
+// Open the part `name` and, on a restore, read the expansion ROM its block
+// begins with into *rom (data owned by the caller; size 0 for none).
+static void device_part_open(config_t *cfg, checkpoint_t *cp, const char *name, rom_image_t *rom) {
+    *rom = (rom_image_t){0};
+    machine_part_begin(cfg, cp, name);
+    if (!cp)
+        return;
+    uint32_t size = 0;
+    system_read_checkpoint_data(cp, &size, sizeof size, "pci.rom");
+    if (checkpoint_has_error(cp) || !size)
+        return;
+    if (size > DEVICE_ROM_MAX) {
+        LOG(0, "Error: the checkpoint's '%s' expansion ROM is %u bytes (at most %u)", name, size, DEVICE_ROM_MAX);
+        checkpoint_set_error(cp);
+        return;
+    }
+    uint8_t *data = malloc(size);
+    if (!data) {
+        checkpoint_set_error(cp);
+        return;
+    }
+    system_read_checkpoint_data(cp, data, size, "pci.rom");
+    *rom = (rom_image_t){.data = data, .size = size};
+}
+
+// Read the rest of a built device's block -- its config header and state --
+// and register it as the open part.
+static void device_part_close(config_t *cfg, checkpoint_t *cp, pci_device_t *dev, const char *name) {
+    if (cp) {
+        system_read_checkpoint_data(cp, &dev->cfg, sizeof(dev->cfg), "pci.cfg");
+        if (dev->ops && dev->ops->checkpoint_restore)
+            dev->ops->checkpoint_restore(dev, cp);
+    }
+    machine_part(cfg, cp, name, pci_device_part_save, dev);
+}
+
+void pci_device_part(config_t *cfg, checkpoint_t *cp, pci_device_t *dev, const char *name) {
+    rom_image_t rom;
+    device_part_open(cfg, cp, name, &rom);
+    if (rom.data) {
+        // A board chip carries no expansion ROM; a block that says otherwise
+        // was not written by this machine.
+        LOG(0, "Error: the checkpoint gives board device '%s' an expansion ROM", name);
+        checkpoint_set_error(cp);
+        free((void *)rom.data);
+    }
+    device_part_close(cfg, cp, dev, name);
+}
+
+void pci_replay_decode(pci_root_t *root) {
+    if (!root)
         return;
     pci_device_t *devs[PCI_MAX_TOTAL_DEVICES];
     int n = pci_collect(root, devs, PCI_MAX_TOTAL_DEVICES);
-    for (int i = 0; i < n; i++) {
-        system_read_checkpoint_data(cp, &devs[i]->cfg, sizeof(devs[i]->cfg));
-        if (devs[i]->ops && devs[i]->ops->checkpoint_restore)
-            devs[i]->ops->checkpoint_restore(devs[i], cp);
-        // Replay the BAR transitions from the restored latches so the
-        // decode is rebuilt without any card code.
+    for (int i = 0; i < n; i++)
         pci_device_regions_changed(devs[i]);
-    }
 }
 
 void pci_reset(pci_root_t *root) {

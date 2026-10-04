@@ -238,7 +238,12 @@ interactions are handled cleanly.
     machine descriptor, and dispatches to
     `profile->substrate->init(cfg, cp)`; the machine's substrate constructs
     all modules in dependency order and optionally restores from a
-    checkpoint.
+    checkpoint, whose event queue is read last.  The new machine is not the
+    active one: constructors use the `cfg` they are given, never
+    `global_emulator` or the `system_*()` accessors (which assert it).
+  - `system_swap_in(config_t *, bool restored)`: makes a built machine the
+    active one (global, object root, memory-map selection, label,
+    `machine_booted`) and destroys the machine it replaces.
   - `system_destroy(config_t *)`: Deletes the NuBus cards, calls
     `profile->substrate->teardown(cfg)` (the family delete-chain, reverse
     order), closes images, and frees the configuration.
@@ -572,14 +577,15 @@ no per-machine edits (`nubus_card_fits_socket` in
 `src/core/peripherals/nubus/nubus.c`).
 
 Each socket resolves its configuration independently at boot, so machines
-boot multi-card (e.g. two displays). Picks are staged per slot in the object
-model — `machine.nubus.slot[N].card_id` / `.video_mode`, consumed by the
-next `machine.boot` — while the boot document's `video_card=` /
-`video_sense=` / `video_mode=` arguments name "the first socket" (what the
-config dialog and the headless `video_card=` arg use). `machine.screen` shows the *primary*
-display: the first populated video slot in declared order. The **resolved**
-per-slot picks are captured in the built-from record, so `machine.rebuild`
-re-seats every populated socket rather than only the wildcard one.
+boot multi-card (e.g. two displays). The boot document configures each slot
+— `machine.boot slots="SLOT=CARD[,key=value]*;..."`, validated against the
+model before the running machine is touched and handed to each card's
+constructor as its slot's entry — while `video_card=` / `video_mode=` /
+`custom_mode=` are sugar for "the first socket" (what the config dialog and
+the headless `video_card=` arg use). `machine.screen` shows the *primary*
+display: the first populated video slot in declared order. The bus's part
+of a checkpoint carries the slot entries it seated, so a checkpoint restore
+re-seats every populated socket.
 
 **PCI (`core/peripherals/pci/`)** is the same architecture ported to the
 second expansion bus, deliberately as a parallel module rather than a

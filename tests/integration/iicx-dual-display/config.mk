@@ -1,17 +1,16 @@
 # Integration test configuration: IIcx dual display (multi-card).
 #
 # Two video cards on one machine: the default 8•24 (JMFB) in socket $9 plus
-# an 8•24 GC staged into socket $A via the per-slot config surface
-# (machine.nubus.slot[10].card_id — docs/guide/ARCHITECTURE.md, "Computed
-# card compatibility").  The slot table once froze every non-video slot as
-# EMPTY and the single pending pick could only populate one slot.
+# an 8•24 GC in socket $A, named by the boot document's per-slot entry
+# (machine.boot slots= — docs/guide/ARCHITECTURE.md, "Computed card
+# compatibility").
 
 TEST_NAME := IIcx dual display
-TEST_DESC := Boot the IIcx with two video cards (JMFB in $9 + 8•24 GC staged into $A) and pin the dual-card contract
+TEST_DESC := Boot the IIcx with two video cards (JMFB in $9 + 8•24 GC in $A) and pin the dual-card contract
 
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
-# The harness boots the IIcx once; the script stages socket $A and re-boots.
+# The harness boots the IIcx once; the script boots it again with a card in $A.
 TEST_ARGS := model=iicx ram=8192
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended

@@ -62,6 +62,7 @@ const hw_profile_t machine_pmg3dt = {
     // boot through).
     .has_cdrom = true,
     .cdrom_id = 3,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
     .floppy_slots = mac_floppy_slots_1hd,
 
     .pci_slots = gossamer_pci_slots,

@@ -575,7 +575,9 @@ void cpu_reset_to_vector_68030(cpu_t *restrict cpu) {
         mmu->enabled = false;
         mmu->tc = 0;
         mmu->tt0 &= ~0x8000u; // TTx.E, bit 15
-        mmu->tt1 &= ~0x8000u;
+        // ...except where the board holds TT1 at a value of its own from
+        // power-on: a reset brings back the machine as it powers on.
+        mmu->tt1 = mmu->tt1_board ? mmu->tt1_board : (mmu->tt1 & ~0x8000u);
         mmu_invalidate_tlb(mmu);
     }
 }

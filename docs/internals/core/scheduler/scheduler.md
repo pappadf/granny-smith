@@ -160,10 +160,14 @@ zero and every code path is bit-identical to the pre-fractional arithmetic — p
 budgets do not move.
 
 `scheduler.speed` picks the multiplier: **0 = auto** (the adaptive governor, the
-default) or 1.0 .. 8.0 to pin a fixed multiplier. The *setting* (and the
-`scheduler.max_speed` cap) persist in the checkpoint prefix while the derived
+default) or 1.0 .. 8.0 to pin a fixed multiplier. The mode, the *setting* and the
+`scheduler.max_speed` cap are **host** state (`host_pacing_t`, owned by the
+platform's run loop — `em_main.c`, the headless daemon — through
+`platform_pacing()`): they outlive every machine and are never checkpointed. They
+reach a machine only as the argument of its run step (`scheduler_run_frame`,
+`scheduler_main_loop`), which hands them to `scheduler_apply_pacing`; the derived
 `cpi_eff_x256`, the remainder, and all governor state are transient and
-re-derived/cleared on restore and on every mode/CPI/speed change.
+re-derived/cleared on restore and whenever the pacing or the CPI changes.
 
 ### 2.3 The adaptive governor (speed = auto)
 
@@ -181,7 +185,7 @@ underruns and stutter. Per paced main-loop tick that executed frame-units, it:
    the utilization *projected at the next rung* stays under the 0.80 target.
 3. **Bounds**: floor = the authentic CPI (rung 0 — accelerated never runs slower
    than real hardware; an overloaded host degrades to exactly `paced` behavior);
-   ceiling = `scheduler.max_speed` (default 8×, persisted).
+   ceiling = `scheduler.max_speed` (default 8×, the host's setting).
 
 The dwell/holdoff slew limit and the coarse quantization are **correctness
 requirements**, not tuning niceties: the guest calibrates
@@ -215,10 +219,9 @@ for timing:
 
 ```c
 struct scheduler {
-    enum schedule_mode mode;         // paced | unthrottled | accelerated
     uint32_t cpi;                    // Per-machine authentic CPI constant
-    uint32_t speed_x256;             // Accelerated-mode multiplier setting (persisted)
     uint32_t frequency;              // CPU clock in Hz
+    host_pacing_t pacing;            // The host's pacing it runs under (mode, speed; not checkpointed)
 
     uint32_t cpi_eff_x256;           // Effective CPI, x256 (derived; not checkpointed)
     uint32_t cycle_frac_x256;        // Sub-cycle sprint remainder (transient)
@@ -494,8 +497,12 @@ the cycle count still advances correctly because `cpu_cycles` is increased by
 is subtracted from `total_instructions` in step 3 above so the *instruction* counter
 only reflects real work.
 
-The `g_io_penalty_remainder` fraction deliberately **persists across sprints** so
-sub-CPI penalties accumulate correctly over time ([scheduler.c:939](../../../../src/core/scheduler/scheduler.c#L939)).
+The sub-CPI remainder belongs to the scheduler (`io_penalty_remainder`, in its
+checkpointed prefix and zero on a new machine), so sub-CPI penalties accumulate
+correctly over time and a restore resumes them exactly. `g_io_penalty_remainder` is
+its sprint-time alias: copied in at sprint start, copied back at sprint end. Outside a
+sprint (an inspection access dispatching into a device handler) `memory_io_penalty`
+returns early and never touches timing.
 
 ### 6.3 IRQs cut the current sprint short
 
@@ -506,7 +513,7 @@ etc.), usually from inside an event callback. The code path is:
 device raises IRQ -> machine_update_ipl() -> cpu_set_ipl(cpu, level) -> cpu_reschedule()
 ```
 
-`cpu_reschedule()` is just `reconcile_sprint()` on the global scheduler
+`cpu_reschedule(scheduler)` is just `reconcile_sprint()` on the machine's scheduler
 ([scheduler.c:835](../../../../src/core/scheduler/scheduler.c#L835)). It sets
 `sprint_burndown = 0` while leaving all derived quantities (`current_cpu_cycles`,
 `cpu_instr_count`) intact. That has two effects:
@@ -618,7 +625,7 @@ patterns are:
 
 ## 9. Mode switching and the CPI invariant
 
-Between `paced` and `unthrottled`, `scheduler_set_mode` touches **only pacing state**
+Between `paced` and `unthrottled`, `scheduler_apply_pacing` touches **only pacing state**
 (it resets the wall-clock estimators, §10.3); CPI never changes with the mode. As long
 as the machine never enters `accelerated` and the `scheduler.cpi` debug override is
 untouched, the linear relationship
@@ -733,7 +740,7 @@ whole number of frame-units and runs that many via `scheduler_run_frame()`:
   conversion of NaN is undefined behaviour.
 
 A smoothed EWMA of host seconds per VBL/loop drives the turbo heuristic; a >1 s gap
-(tab backgrounded) resets rather than fast-forwarding. `scheduler_set_mode` resets
+(tab backgrounded) resets rather than fast-forwarding. `scheduler_apply_pacing` resets
 the estimators and the accumulator on every switch, so turbo-shaped estimates never
 leak into paced pacing.
 
@@ -819,30 +826,30 @@ mechanism that forces every device scheduling events to declare them by name.
 
 ### 11.2 Restore
 
-Restore happens in two phases:
+The scheduler's state and its event queue are separate blocks of a machine
+checkpoint, and the queue is the **last** block of the stream:
 
-**Phase 1 (`scheduler_init` with a non-NULL checkpoint):**
+**The scheduler (`scheduler_init` with a non-NULL checkpoint):**
 
-- Plain-data fields are read back into the struct.
+- Plain-data fields are read back into the struct, `total_instructions` and
+  `frame_cycles_left` included.
 - Host-timing fields (`previous_time`, `vbl_acc_error`, `host_secs_per_vbl`,
   `host_secs_per_loop`) are re-initialized from the *current* host clock — they do not
   survive a restore.
-- `total_instructions` is *reconstructed* from `cpu_cycles` using the restored mode's
-  CPI (§9 caveat).
-- Event data is read into `tmp_events`, a flat array. Pointers cannot be resolved yet
-  because devices haven't registered their event types.
 
-**Phase 2 (`scheduler_start`, called after all devices have booted and registered
-their event types):**
+**The event queue (`scheduler_restore_events`, called by `system_create` once
+the whole machine is built):** every event source has been constructed and
+has registered its types by then, so each saved event binds as it is read:
 
-- Each saved event is matched by `(source_name, event_name)` against the live
-  `event_types` registry.
-- A live `event_t` is malloc'd, populated with the resolved `source` and `callback`
-  pointers, and inserted into `cpu_events` via `insert_event_queue`.
-- `tmp_events` is freed.
+- It is matched by `(source_name, event_name)` against the live `event_types`
+  registry.
+- A live `event_t` is allocated, populated with the resolved `source` and
+  `callback` pointers, and inserted into `cpu_events` via `insert_event_queue`.
 
-Unresolved events (no matching type) cause a hard assert — a checkpoint with a stale
-or misnamed event type cannot be silently dropped.
+An event whose type no source registered, or whose time is already past, fails
+the restore: the checkpoint is flagged, the build is discarded, and the machine
+that was running stays. Event types are registered at construction, never on
+first use.
 
 ### 11.3 Cross-target checkpoints (headless ↔ WASM)
 
@@ -902,14 +909,22 @@ The scheduler is an object-model citizen (`scheduler.*` paths in the typed shell
 |-----------------------------|------------------------------------------------------------|
 | `scheduler.run [N]`         | Start execution; optionally stop after N instructions.     |
 | `scheduler.stop`            | Stop execution immediately.                                |
-| `scheduler.mode`            | Pacing mode: `"paced"` \| `"accelerated"` \| `"turbo"` (writable; legacy aliases `real`/`hw` → paced, `max` → turbo, `accel` → accelerated). Survives `machine.boot` / `machine.restart`: pacing is the host harness's setting (`--speed=`), not part of the machine's boot document, so the rebuild re-asserts it on the new machine's scheduler. |
-| `scheduler.cpi`             | Per-machine CPI constant; writable as a debug override (1..255). |
-| `scheduler.speed`           | Accelerated-mode multiplier in force (live). Write `0` for auto (adaptive governor) or 1.0 .. 8.0 to pin; persisted, but only takes effect in mode `accelerated`. |
+| `scheduler.mode`            | Pacing mode: `"paced"` \| `"accelerated"` \| `"turbo"` (writable; strict: the legacy aliases are rejected). The host's setting, the same one as `pacing.mode`, reached through the running machine. |
+| `scheduler.cpi`             | Per-machine CPI constant; writable as a debug override (1..255). A checkpoint carries it, override included. |
+| `scheduler.speed`           | Accelerated-mode multiplier in force (live). Write `0` for auto (adaptive governor) or 1.0 .. 8.0 to pin; the host's setting (`pacing.speed`), and only takes effect in mode `accelerated`. |
 | `scheduler.speed_auto`      | RO: true while the adaptive governor is choosing the speed (`speed = 0`). |
-| `scheduler.max_speed`       | Cap on the accelerated multiplier (1.0 .. 8.0, default 8): the governor's ceiling, and pinned speeds clamp to it. Persisted. |
+| `scheduler.max_speed`       | Cap on the accelerated multiplier (1.0 .. 8.0, default 8): the governor's ceiling, and pinned speeds clamp to it. The host's setting (`pacing.max_speed`). |
 | `scheduler.running`         | True while executing (useful for scripts).                 |
 | `scheduler.cycles` / `.instr_count` | Cycle / instruction counters.                      |
 | `events`                    | Dump the pending event queue with Δcycles and Δµs.         |
+
+The pacing setting itself is the host's, not the machine's: `pacing.mode`,
+`pacing.speed` (0 = auto) and `pacing.max_speed` are there with or without a
+machine -- the page sets `?speed=` through them before it boots anything, and
+`--speed=` sets them in headless.  It outlives every machine and is never in a
+checkpoint: a machine is built at the default pacing and runs under the host's
+from the moment it becomes the active one (`system_swap_in`), a restored one
+included.
 
 The `events` command is the quickest way to diagnose a timing issue — it shows each
 event's absolute timestamp, delta from `cpu_cycles`, delta in microseconds, its

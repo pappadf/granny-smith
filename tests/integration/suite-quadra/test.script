@@ -371,8 +371,8 @@ def row_q950_76_hd() {
     assert_addr(true)
     # 7.6 puts up "AppleTalk cannot be used because no AppleTalk address is
     # available" on this machine, and that is CORRECT: the Quadras have no
-    # network hardware wired (the SONIC has no wire, and appletalk_init is only
-    # called for the Plus), so a real Q950 with nothing plugged in says exactly
+    # network hardware wired (the SONIC has no wire), so a real Q950 with
+    # nothing plugged in says exactly
     # this. It did not appear before 2026-07-29 only because the VIA phi2 clock
     # ran 2.15x fast on this substrate, so AppleTalk never finished its failing
     # startup inside the row's window — the clean desktop this row used to match
@@ -401,18 +401,13 @@ def row_q700_checkpoint() {
 }
 
 # ---- q700-sense-checkpoint --------------------------------------------------
-# Regression for the boot/restore asymmetry in monitor-sense staging.
-# machine.boot stages the sense into BOTH video paths (jmfb_pending_sense_set +
-# dafb_pending_sense_set, machine.c), but the checkpoint restore path in
-# system.c only staged the jmfb half — so a Quadra booted with a non-default
-# video_sense came back from a restore reporting the hardcoded default (6) on
-# its sense pins.
-#
-# The sense is NOT carried in the checkpoint stream on purpose: that stream is
-# strictly ordered, so adding a field would misalign every checkpoint written
-# before the change. It is re-staged from the built-from record, which already
-# persists video_sense and is authoritative — sense pins are passive, so the
-# guest cannot change them.
+# Regression for the boot/restore asymmetry in the monitor sense: a Quadra
+# booted with a non-default video_sense once came back from a restore
+# reporting the hardcoded default (6) on its sense pins, because the restore
+# path handed the sense to the JMFB and not the DAFB.  The strap is a
+# construction argument of the DAFB: a boot takes it from the document, a
+# restore from the DAFB's own part of the checkpoint -- sense pins are
+# passive, so the guest cannot change them.
 #
 # ROM-only, so it costs a few million instructions. Reading the sense register
 # ($F9800000 + $1C) needs the drive bits released first ($7 = tristate);
@@ -471,10 +466,9 @@ if row_on("q950-76-hd") {
 if row_on("q700-checkpoint") { row_end("q700-checkpoint", try(row_q700_checkpoint(), "FAILED")) }
 if row_on("q700-sense-checkpoint") { row_end("q700-sense-checkpoint", try(row_q700_sense_checkpoint(), "FAILED")) }
 
-# The two monitor-sense rows run LAST on purpose: they stage non-default
-# monitor senses, and machine.boot inherits unspecified staging from the
-# built-from record, so any row after them would boot with the last sense
-# still selected (that is exactly how it first broke q900-76-fd).
+# The two monitor-sense rows run last.  machine.boot inherits nothing, so
+# their non-default senses cannot reach another row; they were once moved
+# here because it did (that is how they first broke q900-76-fd).
 if row_on("q700-75-monitors") {
     if have_media($hd_75) {
         row_end("q700-75-monitors", try(row_q700_75_monitors(), "FAILED"))

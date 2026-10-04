@@ -45,8 +45,6 @@ static struct {
     int16_t *samples; // interleaved samples (frames * channels)
     size_t nsamples; // samples recorded so far
     size_t max_samples; // allocated capacity
-
-    struct object *object; // the attached `capture` object node (or NULL)
 } s;
 
 // ============================================================================
@@ -454,23 +452,15 @@ static const class_desc_t audio_capture_class = {
     .n_members = sizeof(capture_members) / sizeof(capture_members[0]),
 };
 
-// Attaches the singleton `capture` node under a machine's sound object
+// Attaches a `capture` node under a machine's sound object.  The node is the
+// sound object's child: it goes with that object's tree.
 struct object *audio_out_capture_attach(struct object *parent) {
-    if (s.object || !parent)
-        return s.object;
-    s.object = object_new(&audio_capture_class, NULL, "capture");
-    if (s.object) {
-        object_set_label(s.object, "Capture");
-        object_attach(parent, s.object);
+    if (!parent)
+        return NULL;
+    struct object *node = object_new(&audio_capture_class, NULL, "capture");
+    if (node) {
+        object_set_label(node, "Capture");
+        object_attach(parent, node);
     }
-    return s.object;
-}
-
-// Detaches and deletes the capture node (machine teardown)
-void audio_out_capture_detach(void) {
-    if (!s.object)
-        return;
-    object_detach(s.object);
-    object_delete(s.object);
-    s.object = NULL;
+    return node;
 }

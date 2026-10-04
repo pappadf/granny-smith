@@ -3,12 +3,17 @@
 // drag-and-drop overlay, the Upload-ROM button, and the URL-media path).
 //
 // Flow:
-//   1. Check first file for checkpoint signature — short-circuit to load.
-//   2. Stage each file into /opfs/upload/ (see stageUpload).
-//   3. Probe the staged file (ROM? floppy? archive? something else?).
-//   4. If a ROM was uploaded, also boot a default machine from it.
-//   5. Persist to the right /opfs/images/<category>/ via gsEval('files.cp').
-//   6. Cleanup the staging copy.
+//   1. A checkpoint dropped on its own short-circuits to load; one in a drop
+//      with other files is refused.
+//   2. Every other file runs the single-file flow on its own (acceptOne):
+//      stage it into the scratch area, /opfs/upload/.scratch/ (see
+//      stageUpload), under a name no other upload uses; probe it (ROM?
+//      floppy? archive? something else?); move it into the right
+//      /opfs/images/<category>/ or refuse it; discard the staging copy,
+//      whatever came of it.
+//   3. Then, as a single drop would: boot a default machine from a ROM that
+//      is the drop's only ROM, and put the first file of each category into
+//      an empty drive.  A drop of several files ends with one summary.
 //
 // STAGING (see stageUpload): the write goes through the emulator's own
 // filesystem, on the emulator thread: the page copies each chunk into the
@@ -33,7 +38,7 @@ import { machine } from '@/state/machine.svelte';
 import { setMounted, bumpImagesRevision } from '@/state/images.svelte';
 import { startActivity, endActivity } from '@/state/activity.svelte';
 import { sanitizeName } from '@/lib/archive';
-import { fileHasCheckpointSignature, ROMS_DIR, UPLOAD_DIR, HD_DIR, CD_DIR } from '@/lib/opfsPaths';
+import { fileHasCheckpointSignature, scratchPath, ROMS_DIR, HD_DIR, CD_DIR } from '@/lib/opfsPaths';
 import {
   MEDIA_TYPES,
   LARGE_IMPORT_BYTES,
@@ -111,11 +116,14 @@ export async function streamToOpfs(
   }
 }
 
-// Stage an uploaded file into /opfs/upload for probing/persisting and return the
-// staged path (or null on failure). Callers cleanup via discardStaging().
+// Stage an uploaded file in the scratch area for probing/persisting and return
+// the staged path (or null on failure, with nothing left behind).  Callers
+// discard it via discardStaging() on every exit.
 async function stageUpload(file: File): Promise<string | null> {
-  const path = `${UPLOAD_DIR}/${sanitizeName(file.name) || 'image.img'}`;
-  return (await streamToOpfs(path, file)) ? path : null;
+  const path = scratchPath(sanitizeName(file.name) || 'image.img');
+  if (await streamToOpfs(path, file)) return path;
+  await discardStaging(path); // a partial write
+  return null;
 }
 
 // Best-effort removal of a staged file or directory. Everything staging touches is written
@@ -136,61 +144,143 @@ export interface AcceptFilesOptions {
   autoBootOnRom?: boolean;
 }
 
+// What one uploaded file came to: stored as `category` at `path`, or not
+// stored -- `reason` completes "'<name>' …", and `told` is set when the user
+// has already been told why (a streamed import, a failed store say so).
+export type FileOutcome =
+  | { stored: true; category: MediaTypeId; path: string }
+  | { stored: false; reason: string; severity: 'error' | 'warning'; told?: boolean };
+
+// How a drop of several files names what it stored, by category.
+const STORED_NOUN: Record<MediaTypeId, [string, string]> = {
+  rom: ['ROM', 'ROMs'],
+  vrom: ['video ROM', 'video ROMs'],
+  prom: ['PCI expansion ROM', 'PCI expansion ROMs'],
+  fd: ['floppy', 'floppies'],
+  hd: ['hard disk', 'hard disks'],
+  cdrom: ['CD-ROM', 'CD-ROMs'],
+};
+
+// The one message a drop of several files ends with: how many were stored,
+// as what, and each one that was not with its reason -- e.g. "3 stored
+// (2 floppies, 1 ROM), 1 rejected: 'notes.txt' doesn't look like …".
+export function dropSummary(
+  names: string[],
+  outcomes: FileOutcome[],
+): { msg: string; severity: 'info' | 'warning' | 'error' } {
+  const counts = new Map<MediaTypeId, number>();
+  const rejected: string[] = [];
+  outcomes.forEach((o, i) => {
+    if (o.stored) counts.set(o.category, (counts.get(o.category) ?? 0) + 1);
+    else rejected.push(`'${names[i]}' ${o.reason}`);
+  });
+  const stored = outcomes.length - rejected.length;
+  const kinds = [...counts].map(([c, n]) => `${n} ${STORED_NOUN[c][n === 1 ? 0 : 1]}`);
+  let msg = `${stored} stored${kinds.length ? ` (${kinds.join(', ')})` : ''}`;
+  if (rejected.length) msg += `, ${rejected.length} rejected: ${rejected.join('; ')}`;
+  const severity = !rejected.length ? 'info' : stored ? 'warning' : 'error';
+  return { msg, severity };
+}
+
+// The Display drop and the generic Upload button.  Every file runs the
+// single-file flow on its own, and a drop of several ends with one summary
+// of what each came to.  A checkpoint is loaded when it is dropped alone,
+// and refused in a drop with other files: loading it would replace the
+// machine they were meant for.
 export async function acceptFiles(files: File[], opts: AcceptFilesOptions = {}): Promise<void> {
   if (!files.length) return;
   if (!isModuleReady()) {
     showNotification('Emulator still starting; please retry', 'warning');
     return;
   }
-  const autoBootOnRom = opts.autoBootOnRom ?? true;
-
-  // Checkpoint short-circuit on single-file drop.
-  if (files.length === 1 && (await fileHasCheckpointSignature(files[0]))) {
+  const single = files.length === 1;
+  if (single && (await fileHasCheckpointSignature(files[0]))) {
     await loadCheckpointFile(files[0]);
     return;
   }
 
-  startActivity(files[0].name);
-  try {
-    // A large file is a disk image (or an archive holding one): streamed
-    // into a compact UDIF, never staged expanded.  A Mac archive is not
-    // unpacked there; it falls through to the staged flow below.
-    if (files.length === 1 && files[0].size > LARGE_IMPORT_BYTES) {
-      const file = files[0];
-      const out = await importImage({ kind: 'blob', blob: file }, file.name, {
-        categories: ['cdrom', 'hd'],
-        onSmall: async (path, name) => {
-          const outcome = await probeAs(path, name, ALL_ORDER, { autoBootOnRom });
-          await discardStaging(path);
-          return outcome === 'persisted' ? path : null;
-        },
-      });
-      if (out.handled) {
-        if (out.path && out.category) await autoMountIfEmpty(out.path, out.category);
-        return;
-      }
+  const outcomes: FileOutcome[] = [];
+  for (const file of files) {
+    startActivity(file.name);
+    try {
+      outcomes.push(
+        (await fileHasCheckpointSignature(file))
+          ? {
+              stored: false,
+              reason: 'is a checkpoint: drop a checkpoint on its own',
+              severity: 'error',
+            }
+          : await acceptOne(file, !single),
+      );
+    } finally {
+      endActivity();
     }
-    let firstStagedPath: string | null = null;
-    for (const file of files) {
-      const staging = await stageUpload(file);
-      if (staging) {
-        if (!firstStagedPath) firstStagedPath = staging;
-      } else {
-        showNotification(`Upload failed: ${file.name}`, 'error');
-        continue;
-      }
-    }
-    if (!firstStagedPath) return;
+  }
 
-    // For now, single-file flow only — multi-file drag is rare and the C side
-    // doesn't compose well with multiple images at once.
-    if (files.length === 1) {
-      await probeAndPersist(firstStagedPath, files[0], { autoBootOnRom });
-    } else {
-      showNotification(`${files.length} files uploaded`, 'info');
+  if (!single) {
+    const { msg, severity } = dropSummary(
+      files.map((f) => f.name),
+      outcomes,
+    );
+    showNotification(msg, severity);
+  } else if (!outcomes[0].stored && !outcomes[0].told) {
+    showNotification(`'${files[0].name}' ${outcomes[0].reason}`, outcomes[0].severity);
+  }
+  await actOnStored(
+    outcomes.flatMap((o) => (o.stored ? [o] : [])),
+    opts.autoBootOnRom ?? true,
+  );
+}
+
+// One file of an upload through the single-file flow: a large one streamed
+// into a compact disk image, any other staged, probed, stored or refused,
+// and discarded.  `quiet` holds the per-file "uploaded" messages back for a
+// drop that ends with a summary.
+async function acceptOne(file: File, quiet: boolean): Promise<FileOutcome> {
+  // A large file is a disk image (or an archive holding one): streamed into
+  // a compact UDIF, never staged expanded.  A Mac archive is not unpacked
+  // there; it falls through to the staged flow below.
+  if (file.size > LARGE_IMPORT_BYTES) {
+    let small = null as FileOutcome | null;
+    const out = await importImage({ kind: 'blob', blob: file }, file.name, {
+      categories: ['cdrom', 'hd'],
+      onSmall: async (path, name) => {
+        small = await probeStaged(path, name, quiet);
+        return small.stored ? small.path : null;
+      },
+    });
+    if (out.handled) {
+      if (small) return small;
+      if (out.path && out.category) return { stored: true, category: out.category, path: out.path };
+      // The import has said why.
+      return { stored: false, reason: 'was not stored', severity: 'error', told: true };
     }
+  }
+  const staging = await stageUpload(file);
+  if (!staging) return { stored: false, reason: 'could not be uploaded', severity: 'error' };
+  try {
+    return await probeStaged(staging, file.name, quiet);
   } finally {
-    endActivity();
+    await discardStaging(staging);
+  }
+}
+
+// What a drop does with what it stored, exactly as single drops would: a ROM
+// boots a default machine when it is the drop's only ROM, and the first file
+// of each other category goes into an empty drive.  Nothing more is mounted.
+async function actOnStored(
+  stored: Array<{ category: MediaTypeId; path: string }>,
+  autoBootOnRom: boolean,
+): Promise<void> {
+  const roms = stored.filter((s) => s.category === 'rom');
+  if (autoBootOnRom && roms.length === 1) await maybeBootFromRom(roms[0].path);
+  else if (autoBootOnRom && roms.length > 1)
+    showNotification(`Not booting: the drop holds ${roms.length} ROMs`, 'info');
+  const mounted = new Set<MediaTypeId>();
+  for (const s of stored) {
+    if (s.category === 'rom' || mounted.has(s.category)) continue;
+    mounted.add(s.category);
+    await autoMountIfEmpty(s.path, s.category);
   }
 }
 
@@ -220,20 +310,19 @@ export async function acceptFilesAsCategory(
       showNotification(`Upload failed: ${file.name}`, 'error');
       return null;
     }
-    const descriptor = MEDIA_TYPES[category];
-    const result = await descriptor.validate(staging, gsEval);
-    if (!result.valid) {
-      // A refusal says why; anything else is simply not this kind of file.
-      const why = result.reject ?? `is not a valid ${descriptor.label}`;
-      showNotification(`'${file.name}' ${why}`, 'error');
+    let stored: PersistOutcome;
+    try {
+      stored = await persistAs(staging, file.name, category);
+    } finally {
       await discardStaging(staging);
+    }
+    if (!stored.ok) {
+      showNotification(`'${file.name}' ${stored.reason}`, 'error');
       return null;
     }
-    const persisted = await persist(staging, file.name, descriptor, result.info);
-    if (!persisted) return null;
-    if (category === 'rom') await maybeBootFromRom(persisted);
-    else await autoMountIfEmpty(persisted, category);
-    return persisted;
+    if (category === 'rom') await maybeBootFromRom(stored.path);
+    else await autoMountIfEmpty(stored.path, category);
+    return stored.path;
   } finally {
     endActivity();
   }
@@ -362,54 +451,36 @@ export async function processDataTransfer(dt: DataTransfer): Promise<void> {
 const STRICT_ORDER: MediaTypeId[] = ['rom', 'vrom', 'prom', 'fd', 'cdrom'];
 const ALL_ORDER: MediaTypeId[] = [...STRICT_ORDER, 'hd'];
 
-// What probing one file came to: stored, refused (said why), or no match.
-type ProbeOutcome = 'persisted' | 'rejected' | 'none';
-
 // Try `order`'s media types on the file at `path` (named `name` for the
 // store and the messages) and persist it as the first that validates.
+// Null when none of them matched.
 async function probeAs(
   path: string,
   name: string,
   order: MediaTypeId[],
-  opts: { autoBootOnRom: boolean; inArchive?: boolean },
-): Promise<ProbeOutcome> {
+  opts: { quiet: boolean; inArchive?: boolean },
+): Promise<FileOutcome | null> {
   for (const id of order) {
     const descriptor = MEDIA_TYPES[id];
     const result = await descriptor.validate(path, gsEval);
-    if (result.reject) {
-      // This IS that kind of file, refused: say why and stop, rather than
-      // letting the permissive hd probe store it as a disk image.
-      showNotification(`'${name}' ${result.reject}`, 'error');
-      return 'rejected';
-    }
+    // This IS that kind of file, refused: say why and stop, rather than
+    // letting the permissive hd probe store it as a disk image.
+    if (result.reject) return { stored: false, reason: result.reject, severity: 'error' };
     if (!result.valid) continue;
-    const persisted = await persist(path, name, descriptor, result.info, opts.inArchive);
-    if (persisted) {
-      if (id === 'rom') {
-        if (opts.autoBootOnRom) await maybeBootFromRom(persisted);
-      } else await autoMountIfEmpty(persisted, id);
-    }
-    return 'persisted';
+    const persisted = await persist(path, name, descriptor, result.info, opts);
+    if (persisted) return { stored: true, category: id, path: persisted };
+    // persist has said so, unless quiet.
+    return { stored: false, reason: 'could not be stored', severity: 'error', told: !opts.quiet };
   }
-  return 'none';
+  return null;
 }
 
-// Probe a freshly-staged upload to figure out what kind of media it is,
-// then persist it appropriately. If it looks like a ROM and no machine is
-// running, auto-boot from it (same heuristic the legacy drop.js used)
-// — gated by autoBootOnRom so the Welcome "Upload ROM..." button can
-// keep the user on the Welcome screen instead of stranding them in a
-// VROM-less / disk-less mid-boot.
-async function probeAndPersist(
-  stagingPath: string,
-  file: File,
-  opts: { autoBootOnRom: boolean },
-): Promise<void> {
+// Probe a staged upload to figure out what kind of media it is, and store
+// it as that.  The staged file is the caller's to discard.
+async function probeStaged(path: string, name: string, quiet: boolean): Promise<FileOutcome> {
   // The strict types first: a ROM dump named .bin is a ROM, not MacBinary.
-  if ((await probeAs(stagingPath, file.name, STRICT_ORDER, opts)) !== 'none') {
-    await discardStaging(stagingPath);
-    return;
-  }
+  const strict = await probeAs(path, name, STRICT_ORDER, { quiet });
+  if (strict) return strict;
 
   // Then archives, before the permissive hd probe can claim them.  Whether a
   // file is one -- zip, StuffIt, Compact Pro, BinHex, MacBinary, gzip -- is
@@ -417,44 +488,65 @@ async function probeAndPersist(
   // archive is a VFS namespace, so its members are probed where they are
   // and only the first medium that validates is copied out: nothing else is
   // unpacked.
-  if (await stagedArchiveFormat(stagingPath)) {
-    const outcome = await probeArchive(stagingPath, opts);
-    await discardStaging(stagingPath);
-    if (outcome === 'none') showNotification(`No mountable media inside ${file.name}`, 'warning');
-    return;
-  }
+  if (await stagedArchiveFormat(path))
+    return (
+      (await probeArchive(path, quiet)) ?? {
+        stored: false,
+        reason: 'has no mountable media inside',
+        severity: 'warning',
+      }
+    );
 
-  if ((await probeAs(stagingPath, file.name, ['hd'], opts)) === 'none')
-    showNotification(`${file.name} doesn't look like a ROM, floppy, HD, CD, or archive`, 'warning');
-  await discardStaging(stagingPath);
+  return (
+    (await probeAs(path, name, ['hd'], { quiet })) ?? {
+      stored: false,
+      reason: "doesn't look like a ROM, floppy, HD, CD, or archive",
+      severity: 'warning',
+    }
+  );
 }
 
 // Probe the members of the archive staged at `stagingPath` through its VFS
 // path: every file, in listing order, as any kind of medium, until one
 // validates.  Dot files (AppleDouble "._" sidecars, which some zips carry)
-// are never media.
-async function probeArchive(
-  stagingPath: string,
-  opts: { autoBootOnRom: boolean },
-): Promise<ProbeOutcome> {
+// are never media.  Null when no member is a medium.
+async function probeArchive(stagingPath: string, quiet: boolean): Promise<FileOutcome | null> {
   for (const inner of await listFiles(stagingPath)) {
     const base = inner.split('/').pop() ?? '';
     if (!base || base.startsWith('.')) continue;
     // Stored under its member name, made safe for OPFS (an HFS-derived
     // name can carry ':').
-    const outcome = await probeAs(inner, opfsSafeName(base), ALL_ORDER, {
-      ...opts,
-      inArchive: true,
-    });
-    if (outcome !== 'none') return outcome;
+    const outcome = await probeAs(inner, opfsSafeName(base), ALL_ORDER, { quiet, inArchive: true });
+    if (!outcome) continue;
+    // A refusal names the member it is about.
+    if (!outcome.stored) return { ...outcome, reason: `holds '${base}', which ${outcome.reason}` };
+    return outcome;
   }
-  return 'none';
+  return null;
+}
+
+// Where to store `name` in `dir`: its own name when nothing is there or the
+// file there is byte-identical to `source`, else the first "name N.ext"
+// free.
+async function freeStorePath(dir: string, name: string, source: string): Promise<string> {
+  const dot = name.lastIndexOf('.');
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : '';
+  for (let n = 1; ; n++) {
+    const path = n === 1 ? `${dir}/${name}` : `${dir}/${stem} ${n}${ext}`;
+    if ((await gsEval('files.path_exists', [path])) !== true) return path;
+    if ((await gsEval('files.path_compare', [source, path])) === -1) return path;
+  }
 }
 
 // Every file under `dir` (depth first, in listing order), as full paths.
 async function listFiles(dir: string): Promise<string[]> {
   const entries = await gsEval('files.list', [dir]);
-  if (!Array.isArray(entries)) return [];
+  if (!Array.isArray(entries)) {
+    // An unreadable or oversized listing is said, not taken for an empty one.
+    showNotification(`Cannot list ${dir}: ${gsErrorText(entries)}`, 'error');
+    return [];
+  }
   const out: string[] = [];
   for (const e of entries as { name: string; kind: string }[]) {
     const path = `${dir}/${e.name}`;
@@ -482,13 +574,14 @@ async function persist(
   descriptor: MediaTypeDescriptor,
   info:
     { persistDir?: string; checksum?: string; cardId?: string; [k: string]: unknown } | undefined,
-  // The source is a member of a (read-only) archive: copy it out, and leave
-  // the archive for the caller to discard.
-  inArchive = false,
+  // inArchive: the source is a member of a (read-only) archive: copy it
+  // out, and leave the archive for the caller to discard.  quiet: no
+  // per-file message (a drop of several files ends with a summary).
+  opts: { inArchive?: boolean; quiet?: boolean } = {},
 ): Promise<string | null> {
+  const { inArchive = false, quiet = false } = opts;
   const finalName = descriptor.nameFn ? descriptor.nameFn(originalName, info) : originalName;
   const targetDir = info?.persistDir ?? descriptor.persistDir;
-  const finalPath = `${targetDir}/${finalName}`;
   // files.cp does not create parent directories, and the category dirs are
   // made once at startup — so a store added after a user's OPFS was first
   // laid down has nowhere to copy to, and every upload of that kind fails
@@ -501,14 +594,18 @@ async function persist(
   // worker — see stageUpload). Creating it on one side and copying on the
   // other is exactly the bug this is fixing.
   await gsEval('files.mkdir', [targetDir]);
-  // Moved, not copied, so storing never holds the file twice; an existing
-  // file of that name (a content-named ROM uploaded again) is replaced, as
-  // the copy always replaced it.
+  // A file of that name already stored is replaced only when it is the same
+  // file (a content-named ROM uploaded again): a different one keeps its
+  // place and this one is stored beside it ("name 2.ext"), so two media of
+  // one name -- two floppies of a URL, two uploads -- never overwrite each
+  // other.
+  const finalPath = await freeStorePath(targetDir, finalName, sourcePath);
+  // Moved, not copied, so storing never holds the file twice.
   const exists = (await gsEval('files.path_exists', [finalPath])) === true;
   const verb = exists || inArchive ? 'files.cp' : 'files.mv';
   const ok = (await gsEval(verb, [sourcePath, finalPath])) === true;
   if (!ok) {
-    showNotification(`Failed to save ${originalName}`, 'error');
+    if (!quiet) showNotification(`Failed to save ${originalName}`, 'error');
     return null;
   }
   if (!inArchive) await discardStaging(sourcePath);
@@ -534,26 +631,34 @@ async function persist(
   const cardId = info?.cardId as string | undefined;
   const cardFor = descriptor.id === 'prom' ? 'PCI expansion ROM' : 'Video ROM';
   const shown = cardId ? `${originalName} (${cardFor} for '${cardId}')` : originalName;
-  showNotification(`${shown} uploaded`, 'info');
+  if (!quiet) showNotification(`${shown} uploaded`, 'info');
   return finalPath;
 }
 
-// Persist a file that is already on the worker's filesystem (staged
-// anywhere, e.g. /tmp) as `category`: validate it as that category, then
-// copy it into /opfs/images/<category>/ exactly as an upload of that kind
-// is stored.  Returns the persisted path, or null if the file is not valid
-// as `category` or could not be copied (the source is left in place).  The
-// URL-media path uses this so a fetched image is kept the way a dropped one
-// is, rather than attached from volatile /tmp.
+// What storing a file as one category came to: where it was stored, or why
+// it was not (completing "'<name>' …" in a message).
+export type PersistOutcome = { ok: true; path: string } | { ok: false; reason: string };
+
+// Persist a file that is already on the worker's filesystem (in the scratch
+// area) as `category`: validate it as that category, then move it into
+// /opfs/images/<category>/ exactly as an upload of that kind is stored.  A
+// file that is not valid as `category` is refused with the validator's
+// reason, and is the caller's to discard, as one that could not be moved is.
+// Category-strict uploads and URL media both store through here, so a
+// download is accepted or rejected exactly as the same file dropped on its
+// category is.
 export async function persistAs(
   sourcePath: string,
   originalName: string,
   category: MediaTypeId,
-): Promise<string | null> {
+): Promise<PersistOutcome> {
   const descriptor = MEDIA_TYPES[category];
   const result = await descriptor.validate(sourcePath, gsEval);
-  if (!result.valid) return null;
-  return persist(sourcePath, originalName, descriptor, result.info);
+  // A refusal says why; anything else is simply not this kind of file.
+  if (!result.valid)
+    return { ok: false, reason: result.reject ?? `is not a valid ${descriptor.label}` };
+  const path = await persist(sourcePath, originalName, descriptor, result.info);
+  return path ? { ok: true, path } : { ok: false, reason: 'could not be stored' };
 }
 
 // If the user dropped a ROM and no machine is running yet, boot a default
@@ -580,17 +685,21 @@ async function maybeBootFromRom(romPath: string): Promise<void> {
 }
 
 async function loadCheckpointFile(file: File): Promise<void> {
-  // Staged like any upload, a chunk at a time, under /opfs/upload, and
+  // Staged like any upload, a chunk at a time, in the scratch area, and
   // deleted once loaded.  It used to be read whole into memory and written
   // to the memory-backed /tmp, where it stayed for the session.
-  const staged = `${UPLOAD_DIR}/dropped-${Date.now()}-${sanitizeName(file.name)}`;
-  if (!(await streamToOpfs(staged, file))) {
-    showNotification('Emulator not ready for checkpoint load', 'warning');
-    return;
+  const staged = scratchPath(sanitizeName(file.name) || 'checkpoint');
+  let ok = false;
+  try {
+    if (!(await streamToOpfs(staged, file))) {
+      showNotification('Emulator not ready for checkpoint load', 'warning');
+      return;
+    }
+    showNotification(`Loading checkpoint ${file.name}…`, 'info');
+    ok = (await gsEval('checkpoint.load', [staged])) === true;
+  } finally {
+    await discardStaging(staged);
   }
-  showNotification(`Loading checkpoint ${file.name}…`, 'info');
-  const ok = (await gsEval('checkpoint.load', [staged])) === true;
-  await discardStaging(staged);
   if (ok) {
     await reconcileUiWithMachine('restore');
     showNotification(`Checkpoint loaded (${file.name})`, 'info');

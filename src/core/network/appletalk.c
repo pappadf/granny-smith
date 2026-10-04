@@ -10,6 +10,7 @@
 
 #include "appletalk.h"
 
+#include "afp_server.h"
 #include "appletalk_adsp.h"
 #include "appletalk_aevt.h"
 #include "appletalk_asp.h"
@@ -40,160 +41,6 @@
 // Constants and Macros
 // ============================================================================
 
-// Module-level state: dependencies passed at init time (Pattern B)
-static scc_t *g_scc = NULL;
-static scheduler_t *g_scheduler = NULL;
-
-scheduler_t *atalk_scheduler(void) {
-    return g_scheduler;
-}
-
-uint64_t atalk_now_ns(void) {
-    return g_scheduler ? (uint64_t)scheduler_time_ns(g_scheduler) : 0;
-}
-
-// === Timers (appletalk_internal.h) ===========================================
-
-// Every timer initialised since the stack came up, so teardown can forget
-// them all: nine today (llap x2, atp x2, asp, pap, laserwriter x2, adsp).
-#define ATALK_MAX_TIMERS 16
-static atalk_timer_t *g_timers[ATALK_MAX_TIMERS];
-static int g_num_timers;
-
-void atalk_timer_init(atalk_timer_t *t, const char *source_name, const char *event_name, atalk_timer_fn cb) {
-    GS_ASSERT(t && cb && g_scheduler);
-    if (!t || !cb || !g_scheduler)
-        return;
-    t->cb = cb;
-    scheduler_new_event_type(g_scheduler, source_name, t, event_name, cb);
-    if (!t->registered) {
-        GS_ASSERT(g_num_timers < ATALK_MAX_TIMERS);
-        if (g_num_timers < ATALK_MAX_TIMERS)
-            g_timers[g_num_timers++] = t;
-        t->registered = true;
-    }
-}
-
-void atalk_timer_arm(atalk_timer_t *t, uint64_t data, uint64_t delay_ns) {
-    if (!g_scheduler)
-        return;
-    GS_ASSERT(t->registered); // an init path missed atalk_timer_init
-    if (delay_ns < ATALK_TIMER_MIN_NS)
-        delay_ns = ATALK_TIMER_MIN_NS;
-    remove_event_by_data(g_scheduler, t->cb, t, data);
-    scheduler_new_cpu_event(g_scheduler, t->cb, t, data, 0, delay_ns);
-}
-
-void atalk_timer_cancel(atalk_timer_t *t, uint64_t data) {
-    if (g_scheduler && t->registered)
-        remove_event_by_data(g_scheduler, t->cb, t, data);
-}
-
-void atalk_timer_cancel_all(atalk_timer_t *t) {
-    if (g_scheduler && t->registered)
-        remove_event(g_scheduler, t->cb, t);
-}
-
-// Cancel every timer and drop the registrations: the scheduler is going away
-// with the machine, and the next stack registers against its own.
-static void atalk_timers_forget(void) {
-    for (int i = 0; i < g_num_timers; i++) {
-        if (g_scheduler)
-            scheduler_forget_source(g_scheduler, g_timers[i]);
-        g_timers[i]->registered = false;
-        g_timers[i] = NULL;
-    }
-    g_num_timers = 0;
-}
-
-// Object-model class descriptors live near the bottom of the file but
-// appletalk_init / appletalk_delete reference them.
-static const class_desc_t atalk_class;
-static const class_desc_t atalk_stats_class;
-static const class_desc_t atalk_nbp_collection_class;
-static const class_desc_t atalk_nbp_entry_class;
-static const class_desc_t atalk_afp_class;
-static const class_desc_t atalk_afp_stats_class;
-static const class_desc_t atalk_volumes_collection_class;
-static const class_desc_t atalk_volume_class;
-static const class_desc_t atalk_sessions_collection_class;
-static const class_desc_t atalk_session_class;
-static const class_desc_t atalk_printer_class;
-static const class_desc_t atalk_printer_stats_class;
-
-static object_cache_t g_atalk_volume_entries = OBJECT_CACHE(&atalk_volume_class, NULL);
-static object_cache_t g_atalk_nbp_entries = OBJECT_CACHE(&atalk_nbp_entry_class, NULL);
-static object_cache_t g_atalk_session_entries = OBJECT_CACHE(&atalk_session_class, NULL);
-
-// Singleton object-tree nodes — lifetime tied to appletalk_init/delete.
-static struct object *g_atalk_object;
-static struct object *g_atalk_stats_object;
-static struct object *g_atalk_nbp_object;
-static struct object *g_atalk_afp_object;
-static struct object *g_atalk_afp_stats_object;
-static struct object *g_atalk_volumes_object;
-static struct object *g_atalk_sessions_object;
-static struct object *g_atalk_printer_object;
-static struct object *g_atalk_printer_stats_object;
-
-// Checkpoint record. Only durable state travels; open forks, locks and
-// enumeration snapshots are reconstructible client-session state.
-#define ATALK_PERSIST_MAGIC 0x41544B31u // 'ATK1'
-
-typedef struct {
-    uint32_t magic;
-    bool enabled;
-    uint16_t next_sess_ref;
-    atalk_stats_t stats;
-} atalk_persist_t;
-
-// The stack's configuration: what a user or a script set, as opposed to what
-// the guest is doing.  One record, used three ways -- written to a checkpoint
-// and applied from one (a restored machine finds its shares,
-// server identity and printer as they were), and captured before a checkpoint
-// load replaces the stack so a load that fails can put it back.
-// Sessions, forks and print jobs are not configuration and are not here.
-#define ATALK_CONFIG_MAX_VOLUMES 8
-typedef struct {
-    char afp_name[33];
-    bool afp_enabled;
-    char afp_message[200];
-    bool printer_enabled;
-    char printer_name[33];
-    bool printer_capture;
-    atalk_aevt_config_t aevt;
-    int n_volumes;
-    struct {
-        char name[33];
-        char path[PATH_MAX];
-        unsigned vol_id;
-    } volumes[ATALK_CONFIG_MAX_VOLUMES];
-} atalk_config_t;
-
-// A checkpoint load builds the new machine before destroying the running one,
-// so appletalk_init can find the stack still bound to that machine.  It takes
-// it down and keeps what it needs to put it back here, until one of the two
-// machines is destroyed (appletalk_delete): the old one -- the load
-// succeeded, drop this -- or the new one -- the load failed, so rebuild the
-// stack for the machine that keeps running.  The old machine's printer waits
-// here too (detached, not freed): a failed load gives it back.
-static struct {
-    scc_t *scc;
-    scheduler_t *scheduler;
-    atalk_config_t *config;
-    laserwriter_printer_t printer;
-} g_superseded;
-
-static void appletalk_teardown(void);
-
-// Stack enablement. The stack is attached to the SCC link by default; the
-// object model is the user's switch to take the machine off the network.
-// Every frame in and out passes this guard.
-static bool g_atalk_enabled = true;
-
-// Link/transport counters published as `appletalk.stats`.
-static atalk_stats_t g_atalk_stats;
-
 #ifndef ARRAY_LEN
 #define ARRAY_LEN(a) ((int)(sizeof(a) / sizeof((a)[0])))
 #endif
@@ -207,49 +54,6 @@ static atalk_stats_t g_atalk_stats;
 #define LLAP_ACK 0x82
 #define LLAP_RTS 0x84
 #define LLAP_CTS 0x85
-
-// ============================================================================
-// Forward Declarations
-// ============================================================================
-
-// Lower layers at top of file, higher at bottom. These prototypes resolve circular references.
-static void ddp_short_in(llap_header_t *llap, const uint8_t *buf, size_t len);
-static void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len);
-static void nbp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len);
-static void atp_in(const ddp_header_t *ddp, const uint8_t *buf, int len);
-static void atp_timers_init(void);
-static void atp_reset(bool teardown);
-static void nbp_reset(void);
-// Logging category function used by LOG() macro; provided by LOG_USE_CATEGORY_NAME later
-static log_category_t *_log_get_local_category(void);
-static void log_hex(log_category_t *cat, int level, const char *tag, const uint8_t *data, size_t len);
-static log_category_t *llap_log_category(void);
-static log_category_t *atp_log_category(void);
-#define LOG_LLAP(level, fmt, ...) LOG_WITH(llap_log_category(), (level), (fmt), ##__VA_ARGS__)
-#define LOG_ATP(level, fmt, ...)  LOG_WITH(atp_log_category(), (level), (fmt), ##__VA_ARGS__)
-
-// Every frame the stack discards goes through here, counted by why, so
-// `appletalk.stats` says what was thrown away.  There is no
-// CRC anywhere in the stack -- the SCC hands over whole frames -- so there is
-// no "CRC error"; what the old crc_errors counted was malformed frames, and
-// only three of the thirty-odd places that drop one counted anything.
-typedef enum {
-    ATALK_DROP_MALFORMED, // cannot be parsed: short, lengths disagree, bad type
-    ATALK_DROP_UNHANDLED, // well-formed, but nothing here serves it
-    ATALK_DROP_TX, // one of ours that could not be transmitted
-} atalk_drop_t;
-
-static void atalk_drop(atalk_drop_t kind, const char *fmt, ...)
-#ifdef __GNUC__
-    __attribute__((format(printf, 2, 3)))
-#endif
-    ;
-
-// ============================================================================
-// Operations
-// ============================================================================
-
-// =============================== LLAP (LocalTalk) - lowest layer ===============================
 
 // One directed data frame parked for LocalTalk's RTS/CTS exchange: LLAP
 // requires a directed transmission to open with lapRTS and send the data
@@ -276,13 +80,330 @@ typedef struct {
     uint8_t buf[3 + LLAP_DATA_MAX_SIZE]; // header + payload
 } llap_queued_frame_t;
 
-static struct {
+// The RTS/CTS queue of one connection.
+typedef struct {
     llap_queued_frame_t q[LLAP_RTS_QUEUE_DEPTH];
     int head, count; // ring; q[head] is the frame whose RTS is on the wire
     bool rts_out; // an RTS for q[head] has been sent and awaits its CTS
     int attempts; // RTSs sent for q[head] without a CTS
     uint32_t generation; // bumps on every RTS; a stale timeout is ignored
-} g_llap_rts;
+} llap_rts_queue_t;
+
+#define ATP_MAX_HANDLERS     8
+#define ATP_MAX_OUTGOING     16
+#define ATP_MAX_XO_CACHE     16
+#define ATP_DEFAULT_RETRY_MS 2000u
+
+// A server socket's request handler (ASP on 8 and 54, PAP on 6).
+typedef struct {
+    bool in_use;
+    uint8_t socket;
+    atp_socket_handler_t handler;
+    void *ctx;
+} atp_handler_slot_t;
+
+// One transaction this host originated.
+struct atp_request_handle {
+    bool in_use;
+    bool xo;
+    bool infinite_retries;
+    uint8_t src_socket;
+    uint16_t tid;
+    uint8_t base_ctl;
+    uint8_t trel_hint;
+    uint8_t initial_bitmap;
+    uint8_t pending_bitmap;
+    uint8_t user[4];
+    uint8_t payload[ATP_MAX_ATP_PAYLOAD];
+    int payload_len;
+    atalk_socket_addr_t dest;
+    uint64_t retry_timeout_ns;
+    int retries_remaining;
+    uint32_t timer_generation;
+    atp_request_callbacks_t callbacks;
+    void *cb_ctx;
+};
+
+typedef struct {
+    bool valid;
+    uint8_t seq;
+    int len;
+    uint8_t bytes[DDP_MAX_DATA_SIZE];
+} atp_resp_packet_cache_t;
+
+// An exactly-once transaction the guest sent us: the response, kept for a
+// retransmitted request until the release timer or the guest's TRel.
+typedef struct {
+    bool in_use;
+    bool response_ready;
+    uint16_t tid;
+    uint8_t requester_node;
+    uint8_t requester_socket;
+    uint8_t responder_socket;
+    uint8_t trel_hint;
+    uint32_t release_generation;
+    atp_resp_packet_cache_t packets[ATP_MAX_RESPONSE_FRAGMENTS];
+} atp_xo_entry_t;
+
+#define NBP_OBJECT_MAX            32
+#define NBP_TYPE_MAX              32
+#define NBP_ZONE_MAX              32
+#define NBP_MAX_ENTRIES           ATALK_NBP_MAX_ENTRIES
+#define NBP_MAX_TUPLES_PER_PACKET 8
+#define NBP_APPROX_CHAR           0xC5 // MacRoman "≈" wildcard per Inside AppleTalk
+
+struct atalk_nbp_entry {
+    bool in_use;
+    char object[NBP_OBJECT_MAX + 1];
+    char type[NBP_TYPE_MAX + 1];
+    char zone[NBP_ZONE_MAX + 1];
+    uint8_t object_len;
+    uint8_t type_len;
+    uint8_t zone_len;
+    uint16_t net;
+    uint8_t node;
+    uint8_t socket;
+    uint8_t enumerator;
+};
+
+// One outstanding outgoing lookup.  The PPC browse is the only client, and it
+// re-issues rather than queueing, so a single slot is enough.
+typedef struct {
+    bool active;
+    uint8_t nbp_id;
+    atalk_nbp_reply_fn cb;
+    void *ctx;
+} nbp_lookup_t;
+
+// Every timer one connection has registered with its machine's scheduler,
+// so unplugging it can drop their pending events: the link and transport
+// timers below, and those of the layers above (ASP, ADSP, the printer's PAP
+// and LaserWriter timers).
+#define ATALK_MAX_TIMERS 16
+
+// ============================================================================
+// The network and the connection (appletalk.h, "Lifecycle")
+// ============================================================================
+
+// A machine's connection to the network: its end of the cable and everything
+// that exists only between the network and that one Mac -- the link's state
+// and counters, the RTS/CTS exchange and the wire's timing, ATP transactions
+// in either direction, the NBP lookup in flight, and the session tables of
+// the layers above.
+struct atalk_conn {
+    scc_t *scc;
+    scheduler_t *scheduler;
+    // Attached to the link.  The object model is the user's switch to take
+    // the machine off the network; every frame in and out passes this guard.
+    bool enabled;
+    atalk_stats_t stats; // published as `appletalk.stats`
+
+    atalk_timer_t *timers[ATALK_MAX_TIMERS];
+    int num_timers;
+
+    // LLAP
+    llap_rts_queue_t llap_rts;
+    atalk_timer_t llap_rts_timer; // CTS did not come: retry the RTS (data = generation)
+    atalk_timer_t llap_kick_timer; // the wire is free again: open the next dialog
+    double wire_busy_until_ns; // scheduler time the wire frees up
+    // Set between answering the guest's lapRTS with lapCTS and the arrival of
+    // its data frame: the wire is reserved for that dialog, and our own lapRTS
+    // must wait (see llap_wire_note_peer_frame).
+    bool peer_reserved;
+
+    // ATP
+    atp_request_handle_t atp_requests[ATP_MAX_OUTGOING];
+    atp_xo_entry_t xo_entries[ATP_MAX_XO_CACHE];
+    uint32_t next_tid; // atalk_id_alloc cursor
+    // Per-request retry and per-transaction XO release; many can be pending at
+    // once, told apart by their data (atp_encode_event_data).
+    atalk_timer_t atp_retry_timer;
+    atalk_timer_t atp_release_timer;
+
+    // NBP
+    nbp_lookup_t nbp_lookup;
+    uint8_t nbp_next_lookup_id;
+
+    // The layers above: their sessions with this Mac
+    asp_link_t *asp;
+    afp_link_t *afp;
+    adsp_link_t *adsp;
+    ppc_link_t *ppc;
+    aevt_link_t *aevt;
+};
+
+// The network: one per process, created by appletalk_network_init.  The
+// nodes it provides keep their own state in their modules (the AFP server in
+// afp_volume.c, the printer in appletalk_printer.c and laserwriter_job.c, the
+// program-linking peer in appletalk_ppc.c and appletalk_aevt.c); what is
+// gathered here is the registry they share and the cable.
+struct atalk_network {
+    bool up; // appletalk_network_init has run
+    // The cable: the one connection the network is serving, or NULL.  The
+    // active machine's connection is plugged in (atalk_conn_plug, from
+    // system_swap_in); deleting it leaves the cable empty.
+    atalk_conn_t *plugged;
+    atalk_nbp_entry_t nbp_entries[NBP_MAX_ENTRIES]; // names this host registers
+    uint8_t nbp_next_enum[256]; // per-socket enumerator cursors
+    atp_handler_slot_t atp_handlers[ATP_MAX_HANDLERS];
+};
+
+static atalk_network_t g_net;
+
+// The connection a timer belongs to, from the address of its timer member.
+#define CONN_OF(source, member) ((atalk_conn_t *)(void *)((char *)(source) - offsetof(atalk_conn_t, member)))
+
+// Counters read while no machine is plugged in.
+static const atalk_stats_t k_no_stats;
+
+scheduler_t *atalk_scheduler(void) {
+    return g_net.plugged ? g_net.plugged->scheduler : NULL;
+}
+
+uint64_t atalk_now_ns(void) {
+    scheduler_t *s = atalk_scheduler();
+    return s ? (uint64_t)scheduler_time_ns(s) : 0;
+}
+
+// === Timers (appletalk_internal.h) ===========================================
+
+void atalk_timer_init(atalk_conn_t *c, atalk_timer_t *t, const char *source_name, const char *event_name,
+                      atalk_timer_fn cb) {
+    GS_ASSERT(c && t && cb && c->scheduler);
+    if (!c || !t || !cb || !c->scheduler)
+        return;
+    t->cb = cb;
+    scheduler_new_event_type(c->scheduler, source_name, t, event_name, cb);
+    for (int i = 0; i < c->num_timers; i++)
+        if (c->timers[i] == t)
+            return;
+    GS_ASSERT(c->num_timers < ATALK_MAX_TIMERS);
+    if (c->num_timers < ATALK_MAX_TIMERS)
+        c->timers[c->num_timers++] = t;
+}
+
+void atalk_timer_arm(atalk_timer_t *t, uint64_t data, uint64_t delay_ns) {
+    scheduler_t *s = atalk_scheduler();
+    if (!s)
+        return;
+    GS_ASSERT(t->cb); // a registration hook missed atalk_timer_init
+    if (delay_ns < ATALK_TIMER_MIN_NS)
+        delay_ns = ATALK_TIMER_MIN_NS;
+    remove_event_by_data(s, t->cb, t, data);
+    scheduler_new_cpu_event(s, t->cb, t, data, 0, delay_ns);
+}
+
+void atalk_timer_cancel(atalk_timer_t *t, uint64_t data) {
+    scheduler_t *s = atalk_scheduler();
+    if (s && t->cb)
+        remove_event_by_data(s, t->cb, t, data);
+}
+
+void atalk_timer_cancel_all(atalk_timer_t *t) {
+    scheduler_t *s = atalk_scheduler();
+    if (s && t->cb)
+        remove_event(s, t->cb, t);
+}
+
+// Drop every pending event of the timers the connection registered: it is
+// coming off the cable.  The registrations stay with its scheduler, which
+// goes with its machine.
+static void atalk_timers_forget(atalk_conn_t *c) {
+    if (!c->scheduler)
+        return;
+    for (int i = 0; i < c->num_timers; i++)
+        scheduler_forget_source(c->scheduler, c->timers[i]);
+}
+
+// Object-model class descriptors live near the bottom of the file but
+// appletalk_network_init references them.
+static const class_desc_t atalk_class;
+static const class_desc_t atalk_stats_class;
+static const class_desc_t atalk_nbp_collection_class;
+static const class_desc_t atalk_nbp_entry_class;
+static const class_desc_t atalk_afp_class;
+static const class_desc_t atalk_afp_stats_class;
+static const class_desc_t atalk_volumes_collection_class;
+static const class_desc_t atalk_volume_class;
+static const class_desc_t atalk_sessions_collection_class;
+static const class_desc_t atalk_session_class;
+static const class_desc_t atalk_printer_class;
+static const class_desc_t atalk_printer_stats_class;
+
+static object_cache_t g_atalk_volume_entries = OBJECT_CACHE(&atalk_volume_class, NULL);
+static object_cache_t g_atalk_nbp_entries = OBJECT_CACHE(&atalk_nbp_entry_class, NULL);
+static object_cache_t g_atalk_session_entries = OBJECT_CACHE(&atalk_session_class, NULL);
+
+// The network's object tree, built once by appletalk_network_init and never
+// taken down: `appletalk` lives as long as the process.
+static struct object *g_atalk_object;
+static struct object *g_atalk_stats_object;
+static struct object *g_atalk_nbp_object;
+static struct object *g_atalk_afp_object;
+static struct object *g_atalk_afp_stats_object;
+static struct object *g_atalk_volumes_object;
+static struct object *g_atalk_sessions_object;
+static struct object *g_atalk_printer_object;
+static struct object *g_atalk_printer_stats_object;
+
+// The connection's checkpoint block -- all a machine checkpoint carries of
+// AppleTalk.  The network is not in it: the shares, the server's identity,
+// the printer and the program-linking peer are host state.  Nor are the
+// sessions: a restored connection has none, which is what the guest sees
+// when a server restarts.  The session numbering keeps the restored server
+// from handing out a session reference or wire id the guest still holds, so
+// a request on a stale session is refused rather than taken for a new one's.
+#define ATALK_PERSIST_MAGIC 0x41544B31u // 'ATK1'
+
+typedef struct {
+    uint32_t magic;
+    bool enabled;
+    uint8_t next_sess_id;
+    uint16_t next_sess_ref;
+    atalk_stats_t stats;
+} atalk_persist_t;
+
+// ============================================================================
+// Forward Declarations
+// ============================================================================
+
+// Lower layers at top of file, higher at bottom. These prototypes resolve circular references.
+static void ddp_short_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *buf, size_t len);
+static void ddp_in(atalk_conn_t *c, ddp_header_t *ddp, const uint8_t *buf, size_t len);
+static void nbp_in(atalk_conn_t *c, ddp_header_t *ddp, const uint8_t *buf, size_t len);
+static void atp_in(atalk_conn_t *c, const ddp_header_t *ddp, const uint8_t *buf, int len);
+static void atp_timers_init(atalk_conn_t *c);
+static void atp_reset(atalk_conn_t *c, bool teardown);
+// Logging category function used by LOG() macro; provided by LOG_USE_CATEGORY_NAME later
+static log_category_t *_log_get_local_category(void);
+static void log_hex(log_category_t *cat, int level, const char *tag, const uint8_t *data, size_t len);
+static log_category_t *llap_log_category(void);
+static log_category_t *atp_log_category(void);
+#define LOG_LLAP(level, fmt, ...) LOG_WITH(llap_log_category(), (level), (fmt), ##__VA_ARGS__)
+#define LOG_ATP(level, fmt, ...)  LOG_WITH(atp_log_category(), (level), (fmt), ##__VA_ARGS__)
+
+// Every frame the stack discards goes through here, counted by why, so
+// `appletalk.stats` says what was thrown away.  There is no
+// CRC anywhere in the stack -- the SCC hands over whole frames -- so there is
+// no "CRC error"; what the old crc_errors counted was malformed frames, and
+// only three of the thirty-odd places that drop one counted anything.
+typedef enum {
+    ATALK_DROP_MALFORMED, // cannot be parsed: short, lengths disagree, bad type
+    ATALK_DROP_UNHANDLED, // well-formed, but nothing here serves it
+    ATALK_DROP_TX, // one of ours that could not be transmitted
+} atalk_drop_t;
+
+static void atalk_drop(atalk_conn_t *c, atalk_drop_t kind, const char *fmt, ...)
+#ifdef __GNUC__
+    __attribute__((format(printf, 3, 4)))
+#endif
+    ;
+
+// ============================================================================
+// Operations
+// ============================================================================
+
+// =============================== LLAP (LocalTalk) - lowest layer ===============================
 
 // A node that does not answer lapRTS with lapCTS is busy or gone.  Real
 // LLAP waits an interframe gap (200 us) for the CTS, retries the RTS up to
@@ -311,41 +432,34 @@ static struct {
 #define LLAP_BYTE_NS 35000.0
 #define LLAP_IFG_NS  200000.0 // interframe gap before the next dialog opens
 
-static atalk_timer_t g_llap_rts_timer; // CTS did not come: retry the RTS (data = generation)
-static atalk_timer_t g_llap_kick_timer; // the wire is free again: open the next dialog
-static double g_llap_wire_busy_until_ns; // scheduler time the wire frees up
-// Set between answering the guest's lapRTS with lapCTS and the arrival of
-// its data frame: the wire is reserved for that dialog, and our own lapRTS
-// must wait (see llap_wire_note_peer_frame).
-static bool g_llap_peer_reserved;
 // The longest LLAP frame on the wire (header + data + CRC + flags), the
 // reservation's ceiling should the guest never send the frame it asked for.
 #define LLAP_MAX_FRAME_NS ((3.0 + LLAP_DATA_MAX_SIZE + 4.0) * LLAP_BYTE_NS)
 static void llap_rts_timeout_cb(void *source, uint64_t data);
 static void llap_rts_kick_cb(void *source, uint64_t data);
-static void llap_wire_send(const uint8_t *buf, size_t total);
+static void llap_wire_send(atalk_conn_t *c, const uint8_t *buf, size_t total);
 
-static void llap_timers_init(void) {
-    atalk_timer_init(&g_llap_rts_timer, "llap", "rts_timeout", &llap_rts_timeout_cb);
-    atalk_timer_init(&g_llap_kick_timer, "llap", "rts_kick", &llap_rts_kick_cb);
+static void llap_timers_init(atalk_conn_t *c) {
+    atalk_timer_init(c, &c->llap_rts_timer, "llap", "rts_timeout", &llap_rts_timeout_cb);
+    atalk_timer_init(c, &c->llap_kick_timer, "llap", "rts_kick", &llap_rts_kick_cb);
 }
 
-static void llap_rts_reset(void) {
-    atalk_timer_cancel_all(&g_llap_rts_timer);
-    atalk_timer_cancel_all(&g_llap_kick_timer);
-    memset(&g_llap_rts, 0, sizeof(g_llap_rts));
-    g_llap_wire_busy_until_ns = 0;
-    g_llap_peer_reserved = false;
+static void llap_rts_reset(atalk_conn_t *c) {
+    atalk_timer_cancel_all(&c->llap_rts_timer);
+    atalk_timer_cancel_all(&c->llap_kick_timer);
+    memset(&c->llap_rts, 0, sizeof(c->llap_rts));
+    c->wire_busy_until_ns = 0;
+    c->peer_reserved = false;
 }
 
 // A data frame of `total` bytes just went out: the wire stays busy for its
 // transmission time plus the interframe gap.
-static void llap_wire_note_busy(size_t total) {
-    if (!g_scheduler)
+static void llap_wire_note_busy(atalk_conn_t *c, size_t total) {
+    if (!c->scheduler)
         return;
-    double until = scheduler_time_ns(g_scheduler) + (double)total * LLAP_BYTE_NS + LLAP_IFG_NS;
-    if (until > g_llap_wire_busy_until_ns)
-        g_llap_wire_busy_until_ns = until;
+    double until = scheduler_time_ns(c->scheduler) + (double)total * LLAP_BYTE_NS + LLAP_IFG_NS;
+    if (until > c->wire_busy_until_ns)
+        c->wire_busy_until_ns = until;
 }
 
 // The guest's frames occupy the wire too.  The SCC completes the driver's
@@ -356,112 +470,111 @@ static void llap_wire_note_busy(size_t total) {
 // frame -- or between its lapRTS and the data frame that follows -- which on
 // real LocalTalk cannot happen; the driver, still transmitting, never saw it,
 // and a read it had outstanding never completed.
-static void llap_wire_note_peer_frame(size_t total) {
-    if (!g_scheduler)
+static void llap_wire_note_peer_frame(atalk_conn_t *c, size_t total) {
+    if (!c->scheduler)
         return;
-    double until = scheduler_time_ns(g_scheduler) + (double)total * LLAP_BYTE_NS + LLAP_IFG_NS;
-    if (g_llap_peer_reserved) {
+    double until = scheduler_time_ns(c->scheduler) + (double)total * LLAP_BYTE_NS + LLAP_IFG_NS;
+    if (c->peer_reserved) {
         // The frame the reservation was for has arrived; only its own wire
         // time remains, not the reservation's ceiling.
-        g_llap_peer_reserved = false;
-        g_llap_wire_busy_until_ns = until;
-    } else if (until > g_llap_wire_busy_until_ns) {
-        g_llap_wire_busy_until_ns = until;
+        c->peer_reserved = false;
+        c->wire_busy_until_ns = until;
+    } else if (until > c->wire_busy_until_ns) {
+        c->wire_busy_until_ns = until;
     }
 }
 
 // We answered the guest's lapRTS with lapCTS: its data frame is next on the
 // wire.  Reserve the wire until it arrives, up to the longest frame.
-static void llap_wire_reserve_for_peer(void) {
-    if (!g_scheduler)
+static void llap_wire_reserve_for_peer(atalk_conn_t *c) {
+    if (!c->scheduler)
         return;
-    double until = scheduler_time_ns(g_scheduler) + LLAP_IFG_NS + LLAP_MAX_FRAME_NS;
-    if (until > g_llap_wire_busy_until_ns)
-        g_llap_wire_busy_until_ns = until;
-    g_llap_peer_reserved = true;
+    double until = scheduler_time_ns(c->scheduler) + LLAP_IFG_NS + LLAP_MAX_FRAME_NS;
+    if (until > c->wire_busy_until_ns)
+        c->wire_busy_until_ns = until;
+    c->peer_reserved = true;
 }
 
-static void llap_rts_kick(void);
+static void llap_rts_kick(atalk_conn_t *c);
 
 static void llap_rts_kick_cb(void *source, uint64_t data) {
-    (void)source;
     (void)data;
-    llap_rts_kick();
+    llap_rts_kick(CONN_OF(source, llap_kick_timer));
 }
 
 // Put the RTS for the frame at the queue head on the wire (if any) — once
 // the wire is free.
-static void llap_rts_kick(void) {
-    if (g_llap_rts.rts_out || g_llap_rts.count == 0)
+static void llap_rts_kick(atalk_conn_t *c) {
+    if (c->llap_rts.rts_out || c->llap_rts.count == 0)
         return;
-    if (g_scheduler) {
-        double now = scheduler_time_ns(g_scheduler);
-        if (now < g_llap_wire_busy_until_ns) {
+    if (c->scheduler) {
+        double now = scheduler_time_ns(c->scheduler);
+        if (now < c->wire_busy_until_ns) {
             // atalk_timer_arm never waits less than ATALK_TIMER_MIN_NS: a
             // sub-ns remainder would fire with time unchanged and re-arm
             // forever.
-            atalk_timer_arm(&g_llap_kick_timer, 0, (uint64_t)(g_llap_wire_busy_until_ns - now));
+            atalk_timer_arm(&c->llap_kick_timer, 0, (uint64_t)(c->wire_busy_until_ns - now));
             return;
         }
     }
-    llap_queued_frame_t *f = &g_llap_rts.q[g_llap_rts.head];
+    llap_queued_frame_t *f = &c->llap_rts.q[c->llap_rts.head];
     uint8_t rts[3] = {f->dst, f->buf[1], LLAP_RTS};
-    g_llap_rts.rts_out = true;
-    g_llap_rts.attempts++;
-    g_llap_rts.generation++;
+    c->llap_rts.rts_out = true;
+    c->llap_rts.attempts++;
+    c->llap_rts.generation++;
     LOG_LLAP(8, "LLAP tx: RTS to %02X, %zu-byte data queued for CTS (%d queued, attempt %d)", f->dst, f->len,
-             g_llap_rts.count, g_llap_rts.attempts);
-    llap_wire_send(rts, sizeof(rts));
-    atalk_timer_arm(&g_llap_rts_timer, g_llap_rts.generation, (uint64_t)LLAP_RTS_TIMEOUT_NS);
+             c->llap_rts.count, c->llap_rts.attempts);
+    llap_wire_send(c, rts, sizeof(rts));
+    atalk_timer_arm(&c->llap_rts_timer, c->llap_rts.generation, (uint64_t)LLAP_RTS_TIMEOUT_NS);
 }
 
 static void llap_rts_timeout_cb(void *source, uint64_t data) {
-    (void)source;
-    if (!g_llap_rts.rts_out || data != g_llap_rts.generation)
+    atalk_conn_t *c = CONN_OF(source, llap_rts_timer);
+    if (!c->llap_rts.rts_out || data != c->llap_rts.generation)
         return; // the CTS came (or a newer RTS is out): stale timeout
-    g_llap_rts.rts_out = false;
-    if (g_llap_rts.attempts >= LLAP_RTS_MAX_ATTEMPTS) {
-        llap_queued_frame_t *f = &g_llap_rts.q[g_llap_rts.head];
+    c->llap_rts.rts_out = false;
+    if (c->llap_rts.attempts >= LLAP_RTS_MAX_ATTEMPTS) {
+        llap_queued_frame_t *f = &c->llap_rts.q[c->llap_rts.head];
         LOG_LLAP(2, "LLAP tx: no CTS from %02X after %d RTS attempts, dropping a %zu-byte frame", f->dst,
-                 g_llap_rts.attempts, f->len);
-        g_atalk_stats.tx_dropped++;
-        g_llap_rts.head = (g_llap_rts.head + 1) % LLAP_RTS_QUEUE_DEPTH;
-        g_llap_rts.count--;
-        g_llap_rts.attempts = 0;
+                 c->llap_rts.attempts, f->len);
+        c->stats.tx_dropped++;
+        c->llap_rts.head = (c->llap_rts.head + 1) % LLAP_RTS_QUEUE_DEPTH;
+        c->llap_rts.count--;
+        c->llap_rts.attempts = 0;
     }
-    llap_rts_kick(); // retry this frame's RTS, or open the next frame's exchange
+    llap_rts_kick(c); // retry this frame's RTS, or open the next frame's exchange
 }
 
-static void llap_wire_send(const uint8_t *buf, size_t total) {
+static void llap_wire_send(atalk_conn_t *c, const uint8_t *buf, size_t total) {
     // llap_send checks this too, but a frame queued for its CTS goes out from
     // the RTS timer, which does not pass through llap_send again.
-    if (!g_atalk_enabled)
+    if (!c->enabled)
         return;
     log_hex(llap_log_category(), 11, "LLAP tx dump", buf, total);
-    g_atalk_stats.llap_tx++;
-    if (g_scc)
-        scc_sdlc_send(g_scc, (uint8_t *)buf, total);
+    c->stats.llap_tx++;
+    if (c->scc)
+        scc_sdlc_send(c->scc, (uint8_t *)buf, total);
 }
 
 // Returns 0 on success, -1 if `len` exceeds the LLAP payload max (caller bug).
 // We refuse to transmit truncated frames rather than silently emit a corrupted
 // one — the peer would see a malformed LLAP and discard it anyway, but in
 // our local trace it would look like a successful send.
-static int llap_send(const llap_header_t *llap, const uint8_t *data, size_t len) {
-    if (!g_atalk_enabled)
+static int llap_send(atalk_conn_t *c, const llap_header_t *llap, const uint8_t *data, size_t len) {
+    if (!c->enabled)
         return -1; // the stack is detached from the link
-    if (g_scc && !scc_sdlc_ready(g_scc)) {
+    if (c->scc && !scc_sdlc_ready(c->scc)) {
         // Nothing is listening yet: the guest has not put the SCC into SDLC
         // mode, so its AppleTalk driver is not loaded.  Replies never reach
         // here (they answer a frame the guest just sent), but traffic we
         // originate can, and it must not be forced onto a dead link.
         LOG_LLAP(4, "LLAP tx: dropped, the guest's AppleTalk driver is not up");
-        g_atalk_stats.tx_dropped++;
+        c->stats.tx_dropped++;
         return -1;
     }
     if (len > LLAP_DATA_MAX_SIZE) {
         LOG_LLAP(1, "LLAP tx: refused oversize frame (%zu > %d)", len, LLAP_DATA_MAX_SIZE);
-        g_atalk_stats.tx_dropped++;
+        c->stats.tx_dropped++;
         return -1;
     }
     uint8_t buf[LLAP_HEADER_SIZE + LLAP_DATA_MAX_SIZE];
@@ -476,39 +589,39 @@ static int llap_send(const llap_header_t *llap, const uint8_t *data, size_t len)
 
     size_t total = len + LLAP_HEADER_SIZE;
 
-    // Directed DATA frames go through the RTS/CTS exchange (see g_llap_rts).
+    // Directed DATA frames go through the RTS/CTS exchange (see c->llap_rts).
     if (llap->dst != 0xFF && llap->type < 0x80) {
-        if (g_llap_rts.count >= LLAP_RTS_QUEUE_DEPTH) {
+        if (c->llap_rts.count >= LLAP_RTS_QUEUE_DEPTH) {
             // The wire cannot keep up; the upper layers (ATP) retransmit.
             LOG_LLAP(2, "LLAP tx: RTS queue full, dropping a %zu-byte frame to %02X", total, llap->dst);
-            g_atalk_stats.tx_dropped++;
+            c->stats.tx_dropped++;
             return -1;
         }
-        int slot = (g_llap_rts.head + g_llap_rts.count) % LLAP_RTS_QUEUE_DEPTH;
-        llap_queued_frame_t *f = &g_llap_rts.q[slot];
+        int slot = (c->llap_rts.head + c->llap_rts.count) % LLAP_RTS_QUEUE_DEPTH;
+        llap_queued_frame_t *f = &c->llap_rts.q[slot];
         memcpy(f->buf, buf, total);
         f->len = total;
         f->dst = llap->dst;
-        g_llap_rts.count++;
-        llap_rts_kick();
+        c->llap_rts.count++;
+        llap_rts_kick(c);
         return 0;
     }
 
-    llap_wire_send(buf, total);
+    llap_wire_send(c, buf, total);
     return 0;
 }
 
-static void atalk_drop(atalk_drop_t kind, const char *fmt, ...) {
+static void atalk_drop(atalk_conn_t *c, atalk_drop_t kind, const char *fmt, ...) {
     static const char *const names[] = {"malformed", "unhandled", "not transmitted"};
     switch (kind) {
     case ATALK_DROP_MALFORMED:
-        g_atalk_stats.malformed++;
+        c->stats.malformed++;
         break;
     case ATALK_DROP_UNHANDLED:
-        g_atalk_stats.unhandled++;
+        c->stats.unhandled++;
         break;
     case ATALK_DROP_TX:
-        g_atalk_stats.tx_dropped++;
+        c->stats.tx_dropped++;
         break;
     }
     char msg[160];
@@ -519,24 +632,24 @@ static void atalk_drop(atalk_drop_t kind, const char *fmt, ...) {
     LOG(5, "dropped (%s): %s", names[kind], msg);
 }
 
-static void llap_in(const uint8_t *buf, size_t len) {
+static void llap_in(atalk_conn_t *c, const uint8_t *buf, size_t len) {
     llap_header_t header;
 
-    if (!g_atalk_enabled)
+    if (!c->enabled)
         return; // the stack is detached from the link
 
     // Short/malformed packets can arrive from the SCC during A/UX
     // initialization.
     if (len < LLAP_HEADER_SIZE) {
-        atalk_drop(ATALK_DROP_MALFORMED, "LLAP frame of %zu bytes", len);
+        atalk_drop(c, ATALK_DROP_MALFORMED, "LLAP frame of %zu bytes", len);
         return;
     }
-    g_atalk_stats.llap_rx++;
+    c->stats.llap_rx++;
 
     header.dst = buf[0];
     header.src = buf[1];
     header.type = buf[2];
-    llap_wire_note_peer_frame(len);
+    llap_wire_note_peer_frame(c, len);
 
     // LLAP rx hexdump at high verbosity
     log_hex(llap_log_category(), 11, "LLAP rx dump", buf, len);
@@ -547,7 +660,7 @@ static void llap_in(const uint8_t *buf, size_t len) {
         if (len != LLAP_HEADER_SIZE) {
             // Control frames are exactly 3 bytes; drop wire junk instead of
             // dying on it (guest drivers do emit malformed traffic).
-            atalk_drop(ATALK_DROP_MALFORMED, "LLAP ENQ of %zu bytes", len);
+            atalk_drop(c, ATALK_DROP_MALFORMED, "LLAP ENQ of %zu bytes", len);
             break;
         }
         LOG_LLAP(11, "LLAP ENQ src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
@@ -558,13 +671,13 @@ static void llap_in(const uint8_t *buf, size_t len) {
             ack.src = LLAP_HOST_NODE;
             ack.type = LLAP_ACK;
             LOG_LLAP(11, "LLAP send ACK to=%02X", (unsigned)ack.dst);
-            llap_send(&ack, NULL, 0);
+            llap_send(c, &ack, NULL, 0);
         }
         break;
 
     case LLAP_RTS:
         if (len != LLAP_HEADER_SIZE) {
-            atalk_drop(ATALK_DROP_MALFORMED, "LLAP RTS of %zu bytes", len);
+            atalk_drop(c, ATALK_DROP_MALFORMED, "LLAP RTS of %zu bytes", len);
             break;
         }
         LOG_LLAP(11, "LLAP RTS src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
@@ -575,52 +688,52 @@ static void llap_in(const uint8_t *buf, size_t len) {
             cts.src = LLAP_HOST_NODE;
             cts.type = LLAP_CTS;
             LOG_LLAP(11, "LLAP send CTS to=%02X", (unsigned)cts.dst);
-            llap_send(&cts, NULL, 0);
-            llap_wire_reserve_for_peer();
+            llap_send(c, &cts, NULL, 0);
+            llap_wire_reserve_for_peer(c);
         }
         break;
 
     case LLAP_CTS:
         if (len != LLAP_HEADER_SIZE) {
-            atalk_drop(ATALK_DROP_MALFORMED, "LLAP CTS of %zu bytes", len);
+            atalk_drop(c, ATALK_DROP_MALFORMED, "LLAP CTS of %zu bytes", len);
             break;
         }
         // The receiver granted our lapRTS: transmit the parked data frame.
         LOG_LLAP(8, "LLAP CTS src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
-        if (g_llap_rts.rts_out && g_llap_rts.count > 0 && header.dst == LLAP_HOST_NODE &&
-            header.src == g_llap_rts.q[g_llap_rts.head].dst) {
-            llap_queued_frame_t *f = &g_llap_rts.q[g_llap_rts.head];
-            g_llap_rts.rts_out = false;
-            g_llap_rts.attempts = 0;
-            g_llap_rts.head = (g_llap_rts.head + 1) % LLAP_RTS_QUEUE_DEPTH;
-            g_llap_rts.count--;
-            llap_wire_send(f->buf, f->len);
-            llap_wire_note_busy(f->len);
-            llap_rts_kick(); // next queued frame opens its own exchange (after the wire frees up)
+        if (c->llap_rts.rts_out && c->llap_rts.count > 0 && header.dst == LLAP_HOST_NODE &&
+            header.src == c->llap_rts.q[c->llap_rts.head].dst) {
+            llap_queued_frame_t *f = &c->llap_rts.q[c->llap_rts.head];
+            c->llap_rts.rts_out = false;
+            c->llap_rts.attempts = 0;
+            c->llap_rts.head = (c->llap_rts.head + 1) % LLAP_RTS_QUEUE_DEPTH;
+            c->llap_rts.count--;
+            llap_wire_send(c, f->buf, f->len);
+            llap_wire_note_busy(c, f->len);
+            llap_rts_kick(c); // next queued frame opens its own exchange (after the wire frees up)
         }
         break;
 
     case LLAP_DDP_SHORT:
         LOG_LLAP(11, "LLAP DDP_SHORT rx len=%zu", len - 3);
-        ddp_short_in(&header, buf + 3, len - 3);
+        ddp_short_in(c, &header, buf + 3, len - 3);
         break;
 
     case LLAP_DDP_EXTENDED:
         // LocalTalk nodes use short headers; extended DDP is for routers.
-        atalk_drop(ATALK_DROP_UNHANDLED, "extended DDP from %02X", (unsigned)header.src);
+        atalk_drop(c, ATALK_DROP_UNHANDLED, "extended DDP from %02X", (unsigned)header.src);
         break;
 
     default:
-        atalk_drop(ATALK_DROP_UNHANDLED, "LLAP type %02X from %02X", (unsigned)header.type, (unsigned)header.src);
+        atalk_drop(c, ATALK_DROP_UNHANDLED, "LLAP type %02X from %02X", (unsigned)header.type, (unsigned)header.src);
         break;
     }
 }
 
 // The SCC's frame sink (scc_set_frame_sink): a frame the guest transmitted on
-// the LocalTalk port.
+// the LocalTalk port of the machine whose connection `ctx` is.  The sink is
+// installed only while that connection is plugged in.
 static void llap_receive(void *ctx, const uint8_t *buf, size_t size) {
-    (void)ctx;
-    llap_in(buf, size);
+    llap_in((atalk_conn_t *)ctx, buf, size);
 }
 
 // =============================== DDP (Datagram Delivery Protocol) ===============================
@@ -689,200 +802,36 @@ static void ddp_setup_reply(const ddp_header_t *request, ddp_header_t *reply) {
 }
 
 // ============================================================================
-// Lifecycle: Constructor
+// Lifecycle: the network
 // ============================================================================
 
-// === Configuration record (atalk_config_t) ====================================
+static void atalk_install_objects(void);
 
-static void cfg_copy(char *dst, size_t cap, const char *src) {
-    snprintf(dst, cap, "%s", src ? src : "");
-}
-
-// Capture the running stack's configuration.
-static void atalk_config_capture(atalk_config_t *c) {
-    memset(c, 0, sizeof(*c));
-    cfg_copy(c->afp_name, sizeof(c->afp_name), atalk_afp_get_name());
-    c->afp_enabled = atalk_afp_get_enabled();
-    cfg_copy(c->afp_message, sizeof(c->afp_message), atalk_afp_get_message());
-    c->printer_enabled = atalk_printer_get_enabled();
-    cfg_copy(c->printer_name, sizeof(c->printer_name), atalk_printer_get_name());
-    c->printer_capture = atalk_printer_get_capture();
-    atalk_aevt_get_config(&c->aevt);
-    for (int slot = 0; slot < atalk_afp_volume_max() && c->n_volumes < ATALK_CONFIG_MAX_VOLUMES; slot++) {
-        if (!atalk_afp_volume_in_use(slot))
-            continue;
-        cfg_copy(c->volumes[c->n_volumes].name, sizeof(c->volumes[0].name), atalk_afp_volume_name(slot));
-        cfg_copy(c->volumes[c->n_volumes].path, sizeof(c->volumes[0].path), atalk_afp_volume_path(slot));
-        c->volumes[c->n_volumes].vol_id = atalk_afp_volume_vol_id(slot);
-        c->n_volumes++;
-    }
-}
-
-// Apply a configuration to the stack that has just come up.  Each setting
-// goes through the same call the object model makes, so it is validated the
-// same way; one that is refused -- a share whose folder is gone -- is logged
-// and skipped, never an error: the machine comes up either way.
-static void atalk_config_apply(const atalk_config_t *c) {
-    char err[192];
-    if (atalk_afp_set_name(c->afp_name, err, sizeof(err)) != 0)
-        LOG(1, "atalk: server name not restored: %s", err);
-    if (atalk_afp_set_message(c->afp_message, err, sizeof(err)) != 0)
-        LOG(1, "atalk: server message not restored: %s", err);
-    if (atalk_afp_set_enabled(c->afp_enabled, err, sizeof(err)) != 0)
-        LOG(1, "atalk: file server state not restored: %s", err);
-    if (atalk_printer_set_name(c->printer_name, err, sizeof(err)) != 0)
-        LOG(1, "atalk: printer name not restored: %s", err);
-    if (atalk_printer_set_enabled(c->printer_enabled, err, sizeof(err)) != 0)
-        LOG(1, "atalk: printer state not restored: %s", err);
-    atalk_printer_set_capture(c->printer_capture);
-    atalk_aevt_set_config(&c->aevt);
-    for (int i = 0; i < c->n_volumes; i++) {
-        if (atalk_afp_volume_restore(c->volumes[i].name, c->volumes[i].path, c->volumes[i].vol_id, err, sizeof(err)) <
-            0)
-            LOG(1, "atalk: share '%s' not restored: %s", c->volumes[i].name, err);
-    }
-}
-
-static void cfg_write_bool(checkpoint_t *cp, bool b) {
-    uint8_t v = b ? 1 : 0;
-    system_write_checkpoint_data(cp, &v, sizeof(v));
-}
-
-static bool cfg_read_bool(checkpoint_t *cp) {
-    uint8_t v = 0;
-    system_read_checkpoint_data(cp, &v, sizeof(v));
-    return v != 0;
-}
-
-// Strings travel with their length and are bounded and terminated on the way
-// back in (checkpoint_read_string): a checkpoint is a user-supplied file.
-static void cfg_read_string(checkpoint_t *cp, char *dst, size_t cap, const char *what) {
-    char *s = checkpoint_read_string(cp, (uint32_t)cap, what);
-    cfg_copy(dst, cap, s);
-    free(s);
-}
-
-static void atalk_config_write(checkpoint_t *cp, const atalk_config_t *c) {
-    checkpoint_write_string(cp, c->afp_name);
-    cfg_write_bool(cp, c->afp_enabled);
-    checkpoint_write_string(cp, c->afp_message);
-    cfg_write_bool(cp, c->printer_enabled);
-    checkpoint_write_string(cp, c->printer_name);
-    cfg_write_bool(cp, c->printer_capture);
-    cfg_write_bool(cp, c->aevt.enabled);
-    checkpoint_write_string(cp, c->aevt.port_name);
-    checkpoint_write_string(cp, c->aevt.auto_reply);
-    uint32_t n = (uint32_t)c->n_volumes;
-    system_write_checkpoint_data(cp, &n, sizeof(n), "appletalk.volumes");
-    for (int i = 0; i < c->n_volumes; i++) {
-        checkpoint_write_string(cp, c->volumes[i].name);
-        checkpoint_write_string(cp, c->volumes[i].path);
-        uint32_t id = c->volumes[i].vol_id;
-        system_write_checkpoint_data(cp, &id, sizeof(id));
-    }
-}
-
-// False (and the checkpoint in error) if the record could not be read.
-static bool atalk_config_read(checkpoint_t *cp, atalk_config_t *c) {
-    memset(c, 0, sizeof(*c));
-    cfg_read_string(cp, c->afp_name, sizeof(c->afp_name), "AFP server name");
-    c->afp_enabled = cfg_read_bool(cp);
-    cfg_read_string(cp, c->afp_message, sizeof(c->afp_message), "AFP server message");
-    c->printer_enabled = cfg_read_bool(cp);
-    cfg_read_string(cp, c->printer_name, sizeof(c->printer_name), "printer name");
-    c->printer_capture = cfg_read_bool(cp);
-    c->aevt.enabled = cfg_read_bool(cp);
-    cfg_read_string(cp, c->aevt.port_name, sizeof(c->aevt.port_name), "Apple event port name");
-    cfg_read_string(cp, c->aevt.auto_reply, sizeof(c->aevt.auto_reply), "Apple event auto-reply");
-    uint32_t n = 0;
-    system_read_checkpoint_data(cp, &n, sizeof(n), "appletalk.volumes");
-    if (n > ATALK_CONFIG_MAX_VOLUMES) {
-        LOG(0, "Error: checkpoint claims %u AFP volumes (cap %d)", n, ATALK_CONFIG_MAX_VOLUMES);
-        checkpoint_set_error(cp);
-        return false;
-    }
-    for (uint32_t i = 0; i < n; i++) {
-        cfg_read_string(cp, c->volumes[i].name, sizeof(c->volumes[i].name), "AFP volume name");
-        cfg_read_string(cp, c->volumes[i].path, sizeof(c->volumes[i].path), "AFP volume path");
-        uint32_t id = 0;
-        system_read_checkpoint_data(cp, &id, sizeof(id));
-        c->volumes[i].vol_id = id;
-    }
-    c->n_volumes = (int)n;
-    return !checkpoint_has_error(cp);
-}
-
-void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint) {
-    // A previous machine may still be installed (checkpoint restore builds the
-    // new machine first).  Take it down now so this init starts from a clean
-    // tree, keeping its bindings and configuration in case the load fails.
-    if (g_atalk_object) {
-        free(g_superseded.config);
-        laserwriter_printer_free_detached(g_superseded.printer); // an earlier load never resolved
-        g_superseded.scc = g_scc;
-        g_superseded.scheduler = g_scheduler;
-        g_superseded.config = malloc(sizeof(atalk_config_t));
-        if (g_superseded.config)
-            atalk_config_capture(g_superseded.config);
-        appletalk_teardown();
-        // The new machine gets a printer of its own
-        g_superseded.printer = laserwriter_printer_detach();
-    }
-    g_scc = scc; // Store SCC dependency for later use
-    scc_set_frame_sink(scc, llap_receive, NULL);
-    g_scheduler = scheduler; // Store scheduler for ATP timers
-    g_atalk_enabled = true;
-    llap_rts_reset(); // no RTS exchange survives a machine boot
-    // Every timer is registered here, before a checkpoint restore replays the
-    // saved queue (atalk_timer_t).  The printer and ADSP register theirs from
-    // their own inits below.
-    if (g_scheduler) {
-        llap_timers_init();
-        atp_timers_init();
-    }
-    memset(&g_atalk_stats, 0, sizeof(g_atalk_stats));
-    asp_init(); // sessions over ATP, on the AFP sockets
-    atalk_server_init(); // registers itself as ASP's client
+atalk_network_t *appletalk_network_init(void) {
+    if (g_net.up)
+        return &g_net;
+    g_net.up = true;
+    // The nodes on the cable, each publishing its NBP name and taking its
+    // sockets: the file server over ASP (8 and 54), the LaserWriter (6), and
+    // the program-linking peer -- ADSP carries PPC sessions, which carry Apple
+    // events (docs/internals/core/network/ppc_appleevents.md §1).
+    asp_init();
+    atalk_server_init();
     atalk_printer_register();
-    // The three program-linking layers, bottom up: ADSP carries PPC sessions,
-    // which carry Apple events (docs/internals/core/network/ppc_appleevents.md §1).
-    atalk_adsp_init(scheduler);
-    atalk_ppc_init();
     atalk_aevt_init();
+    atalk_install_objects();
+    return &g_net;
+}
 
-    // Restore the reconstructible session view from a checkpoint, then drop
-    // every fork and enumeration snapshot the old machine held: the backing
-    // bytes are on disk, but the client's refnums belong to a session that no
-    // longer has a transport.
-    if (checkpoint) {
-        // The reader zero-fills on failure, and a checkpoint in error is not
-        // applied at all: this stack's state is process-wide, so a block
-        // applied during a load that then fails survives into the machine
-        // that keeps running.
-        atalk_persist_t saved;
-        system_read_checkpoint_data(checkpoint, &saved, sizeof(saved), "appletalk");
-        if (!checkpoint_has_error(checkpoint) && saved.magic == ATALK_PERSIST_MAGIC) {
-            // A bool read off disk may hold any byte; take it as a byte.
-            uint8_t enabled_byte;
-            memcpy(&enabled_byte, &saved.enabled, 1);
-            g_atalk_enabled = enabled_byte != 0;
-            g_atalk_stats = saved.stats;
-            asp_set_next_ref(saved.next_sess_ref);
-            LOG(1, "appletalk_init: restored from checkpoint (stack %s)", g_atalk_enabled ? "enabled" : "disabled");
-        }
-        // The configuration: shares (with their volume ids), server identity,
-        // printer, Apple event port.  The guest's end of every session is
-        // gone, so it reconnects -- to shares that are still there.
-        atalk_config_t *cfg = malloc(sizeof(*cfg));
-        if (cfg && atalk_config_read(checkpoint, cfg))
-            atalk_config_apply(cfg);
-        free(cfg);
-        atalk_aevt_reset_transient_state();
-    }
+atalk_network_t *appletalk_network(void) {
+    return g_net.up ? &g_net : NULL;
+}
 
-    // Object-tree binding — instance_data is unused (NULL) for the singleton
-    // nodes (their accessors call into the AppleTalk subsystem directly).
-    // Collection entries carry their slot index.
+// The object tree: `appletalk` at the root, attached once.  instance_data is
+// unused (NULL) for the singleton nodes -- their accessors call into the
+// modules, which answer for whatever connection is plugged in.  Collection
+// entries carry their slot index.
+static void atalk_install_objects(void) {
     g_atalk_object = object_new(&atalk_class, NULL, "appletalk");
     if (!g_atalk_object)
         return;
@@ -890,7 +839,7 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     object_set_domain(g_atalk_object, OBJ_DOMAIN_NETWORK);
     object_attach(object_root(), g_atalk_object);
 
-    g_atalk_stats_object = object_new(&atalk_stats_class, (void *)atalk_get_stats(), "stats");
+    g_atalk_stats_object = object_new(&atalk_stats_class, NULL, "stats");
     if (g_atalk_stats_object) {
         object_set_category(g_atalk_stats_object, M_CAT_ADVANCED);
         object_attach(g_atalk_object, g_atalk_stats_object);
@@ -935,160 +884,167 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     atalk_aevt_install_objects(g_atalk_object);
 
     // Collection entry objects are made on first use by their caches and
-    // handed out by the get() callbacks; they are never attached, so the
-    // cascade delete does not free them (this module does, in
-    // appletalk_delete).
+    // handed out by the get() callbacks; they are never attached.
     object_cache_set_parent(&g_atalk_volume_entries, g_atalk_volumes_object);
     object_cache_set_parent(&g_atalk_nbp_entries, g_atalk_nbp_object);
     object_cache_set_parent(&g_atalk_session_entries, g_atalk_sessions_object);
 }
 
 // ============================================================================
-// Checkpointing
+// Lifecycle: the connection
 // ============================================================================
 
-void appletalk_checkpoint(checkpoint_t *checkpoint) {
-    if (!checkpoint)
+// Put `c` on the cable: the network serves its machine from now on.
+static void atalk_conn_plug_in(atalk_conn_t *c) {
+    g_net.plugged = c;
+    if (c->scc)
+        scc_set_frame_sink(c->scc, llap_receive, c);
+    asp_plug(c->asp);
+    afp_plug(c->afp);
+    atalk_adsp_plug(c->adsp);
+    atalk_ppc_plug(c->ppc);
+    atalk_aevt_plug(c->aevt);
+    atalk_printer_plug();
+}
+
+// Register every timer the connection and the layers above use with its
+// machine's scheduler, while the machine is being built: before a checkpoint
+// restore replays the saved queue, and before the machine is plugged in
+// (atalk_timer_t).
+static void atalk_conn_register_timers(atalk_conn_t *c) {
+    if (!c->scheduler)
         return;
-    // Only durable, reconstructible-from-disk state is written.  Open forks,
-    // byte-range locks and enumeration snapshots are deliberately not: their
-    // backing bytes already live on the host filesystem, and a restored
-    // machine's clients re-open what they need.
+    llap_timers_init(c);
+    atp_timers_init(c);
+    asp_link_register_timers(c, c->asp);
+    atalk_adsp_link_register_timers(c, c->adsp);
+    atalk_printer_register_timers(c);
+}
+
+// Take `c` off the cable, as a server sees a Mac vanish: every session with
+// it closes and every transaction with it ends, and the network itself --
+// shares, names, printer -- is untouched.
+static void atalk_conn_unplug(atalk_conn_t *c) {
+    // Sessions first, top down: closing them hands the AFP layer its forks
+    // back, and ADSP's close puts CLOSE advice on the wire.
+    atalk_asp_close_all_sessions();
+    atalk_aevt_plug(NULL);
+    atalk_ppc_plug(NULL);
+    atalk_adsp_plug(NULL);
+    atalk_printer_unplug();
+    afp_plug(NULL);
+    asp_plug(NULL);
+
+    // Then the transport: nothing above can call into it any more, so
+    // requests are dropped without completing.
+    atp_reset(c, true);
+    atalk_nbp_lookup_cancel();
+    llap_rts_reset(c);
+
+    // Every timer last: the closes above can still transmit, and a frame that
+    // waits for a CTS arms an LLAP timer.
+    atalk_timers_forget(c);
+
+    if (c->scc)
+        scc_set_frame_sink(c->scc, NULL, NULL);
+    g_net.plugged = NULL;
+}
+
+atalk_conn_t *atalk_conn_new(atalk_network_t *network, scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint) {
+    (void)network; // unused when asserts compile out
+    GS_ASSERT(network == &g_net && network->up);
+    atalk_conn_t *c = calloc(1, sizeof(*c));
+    if (!c)
+        return NULL;
+    c->scc = scc;
+    c->scheduler = scheduler;
+    c->enabled = true;
+    c->next_tid = 0x2000;
+    c->nbp_next_lookup_id = 1;
+    c->asp = asp_link_new();
+    c->afp = afp_link_new();
+    c->adsp = atalk_adsp_link_new();
+    c->ppc = atalk_ppc_link_new();
+    c->aevt = atalk_aevt_link_new();
+    if (!c->asp || !c->afp || !c->adsp || !c->ppc || !c->aevt) {
+        atalk_conn_delete(c);
+        return NULL;
+    }
+
+    // The connection's block.  The reader zero-fills on failure, and a
+    // checkpoint in error is not applied.
+    if (checkpoint) {
+        atalk_persist_t saved;
+        system_read_checkpoint_data(checkpoint, &saved, sizeof(saved), "appletalk");
+        if (!checkpoint_has_error(checkpoint) && saved.magic == ATALK_PERSIST_MAGIC) {
+            // A bool read off disk may hold any byte; take it as a byte.
+            uint8_t enabled_byte;
+            memcpy(&enabled_byte, &saved.enabled, 1);
+            c->enabled = enabled_byte != 0;
+            c->stats = saved.stats;
+            asp_link_set_numbering(c->asp, saved.next_sess_ref, saved.next_sess_id);
+            LOG(1, "atalk: connection restored from checkpoint (%s)", c->enabled ? "enabled" : "disabled");
+        }
+    }
+
+    // Built, not plugged in: the machine takes the cable when it becomes the
+    // active one (atalk_conn_plug), so a build that fails touches nothing.
+    atalk_conn_register_timers(c);
+    return c;
+}
+
+void atalk_conn_plug(atalk_conn_t *c) {
+    if (!c || g_net.plugged == c)
+        return;
+    if (g_net.plugged)
+        atalk_conn_unplug(g_net.plugged);
+    atalk_conn_plug_in(c);
+}
+
+void atalk_conn_checkpoint(const atalk_conn_t *c, checkpoint_t *checkpoint) {
+    if (!c || !checkpoint)
+        return;
     atalk_persist_t out;
     memset(&out, 0, sizeof(out));
     out.magic = ATALK_PERSIST_MAGIC;
-    out.enabled = g_atalk_enabled;
-    out.next_sess_ref = asp_next_ref();
-    out.stats = g_atalk_stats;
+    out.enabled = c->enabled;
+    asp_link_numbering(c->asp, &out.next_sess_ref, &out.next_sess_id);
+    out.stats = c->stats;
     system_write_checkpoint_data(checkpoint, &out, sizeof(out), "appletalk");
-    atalk_config_t *cfg = malloc(sizeof(*cfg));
-    if (!cfg) {
-        checkpoint_set_error(checkpoint);
-        return;
-    }
-    atalk_config_capture(cfg);
-    atalk_config_write(checkpoint, cfg);
-    free(cfg);
 }
 
-// ============================================================================
-// Lifecycle: Destructor
-// ============================================================================
-
-static void appletalk_teardown(void) {
-    // Sessions first: closing them hands the AFP layer its forks back.
-    atalk_asp_close_all_sessions();
-    atalk_server_delete();
-    atalk_aevt_remove_objects();
-    atalk_aevt_shutdown();
-    atalk_ppc_remove_objects();
-    atalk_ppc_shutdown();
-    atalk_adsp_remove_objects();
-    atalk_adsp_shutdown();
-    atalk_printer_shutdown();
-
-    // Then the transport, top down: nothing above can call into it any more,
-    // so requests are dropped without completing.  (When none of this was
-    // reset, a rebuilt machine inherited the old one's ATP requests, XO cache,
-    // pending ASP write and NBP registrations, and a new session's Write was
-    // never served.)
-    asp_shutdown();
-    atp_reset(true);
-    nbp_reset();
-    llap_rts_reset();
-
-    // Every timer last: the shutdowns above can still transmit -- ADSP's
-    // close-all puts CLOSE advice on the wire -- and a frame that waits for a
-    // CTS arms an LLAP timer.
-    atalk_timers_forget();
-
-    // Collection entry objects are never attached, so free them here.
-    object_cache_clear(&g_atalk_volume_entries);
-    object_cache_clear(&g_atalk_nbp_entries);
-    object_cache_clear(&g_atalk_session_entries);
-
-    struct object **attached[] = {&g_atalk_volumes_object,       &g_atalk_sessions_object, &g_atalk_afp_stats_object,
-                                  &g_atalk_afp_object,           &g_atalk_stats_object,    &g_atalk_nbp_object,
-                                  &g_atalk_printer_stats_object, &g_atalk_printer_object};
-    for (size_t i = 0; i < ARRAY_LEN(attached); i++) {
-        if (!*attached[i])
-            continue;
-        object_detach(*attached[i]);
-        object_delete(*attached[i]);
-        *attached[i] = NULL;
-    }
-    if (g_atalk_object) {
-        object_detach(g_atalk_object);
-        object_delete(g_atalk_object);
-        g_atalk_object = NULL;
-    }
-
-    // Stop receiving from this machine's SCC, and forget it: the machine that
-    // owns it is going away.
-    if (g_scc)
-        scc_set_frame_sink(g_scc, NULL, NULL);
-    g_scc = NULL;
-}
-
-// Public teardown, called for every machine that goes away with the SCC it
-// was built with.
-//
-// The stack is one per process but belongs to one machine: the one whose SCC
-// it is bound to.  A checkpoint load builds the new machine first, and its
-// appletalk_init takes the running machine's stack down (see g_superseded),
-// so the delete that follows for the OLD machine must leave the new stack
-// alone -- dismantling it is what once made `appletalk.adsp`, `.ppc` and
-// `.aevt` vanish after a restore.  And when the load FAILS, the new machine is
-// the one destroyed while the old one keeps running: the stack is bound to
-// the new machine's freed SCC and scheduler, so it goes, and is rebuilt for the
-// old machine from what init kept.  (It used to stay bound to the freed
-// machine: the next frame read the freed SCC.)  The guest's sessions
-// do not survive that; its shares, names and printer do.
-//
-// The printer lives as long as the machine (laserwriter_job.h): it ends
-// here with the machine, unless `power_cycle` says the machine is being
-// rebuilt as itself.  After a successful load the old machine's printer is
-// freed; after a failed one it goes back into service.
-void appletalk_delete(scc_t *scc, bool power_cycle) {
-    if (!scc || scc != g_scc) {
-        // Not the machine this stack serves: a Lisa, or the machine a
-        // successful checkpoint load replaced.
-        if (scc && scc == g_superseded.scc) {
-            laserwriter_printer_free_detached(g_superseded.printer);
-            free(g_superseded.config);
-            memset(&g_superseded, 0, sizeof(g_superseded));
-        }
+// Deleting a connection unplugs it only if it is the one on the cable: the
+// machine a new one replaced was unplugged when that one took the cable, and
+// its delete leaves the new machine's connection alone; a build that failed
+// was never plugged in.
+void atalk_conn_delete(atalk_conn_t *c) {
+    if (!c)
         return;
-    }
-    appletalk_teardown();
-    if (g_superseded.scc) {
-        scc_t *prev_scc = g_superseded.scc;
-        scheduler_t *prev_sched = g_superseded.scheduler;
-        atalk_config_t *prev_cfg = g_superseded.config;
-        laserwriter_printer_t prev_printer = g_superseded.printer;
-        memset(&g_superseded, 0, sizeof(g_superseded));
-        LOG(1, "atalk: the checkpoint load failed; restoring the stack of the machine that keeps running");
-        laserwriter_printer_reattach(prev_printer); // retires the failed machine's
-        appletalk_init(prev_sched, prev_scc, NULL);
-        if (prev_cfg)
-            atalk_config_apply(prev_cfg);
-        free(prev_cfg);
-    } else if (!power_cycle) {
-        // The machine is gone, and its printer with it
-        laserwriter_printer_retire();
-    }
+    if (g_net.plugged == c)
+        atalk_conn_unplug(c);
+    atalk_aevt_link_free(c->aevt);
+    atalk_ppc_link_free(c->ppc);
+    atalk_adsp_link_free(c->adsp);
+    afp_link_free(c->afp);
+    asp_link_free(c->asp);
+    free(c);
 }
 
 // === Stack-level object-model accessors ====================================
 
 bool atalk_get_enabled(void) {
-    return g_atalk_enabled;
+    return g_net.plugged && g_net.plugged->enabled;
 }
 
-void atalk_set_enabled(bool enabled) {
-    if (enabled == g_atalk_enabled)
-        return;
-    g_atalk_enabled = enabled;
+int atalk_set_enabled(bool enabled, char *err, size_t err_len) {
+    atalk_conn_t *c = g_net.plugged;
+    if (!c) {
+        snprintf(err, err_len, "no machine is connected to the network");
+        return -1;
+    }
+    if (enabled == c->enabled)
+        return 0;
+    c->enabled = enabled;
     if (!enabled) {
         // Detaching from the link strands every session; drop them rather than
         // leave forks and locks held by clients that can no longer be reached.
@@ -1099,28 +1055,29 @@ void atalk_set_enabled(bool enabled) {
         // ...and nothing below them keeps talking: outgoing requests end as
         // ABORTED, the lookup is cancelled, and frames waiting for a CTS are
         // dropped.
-        atp_reset(false);
+        atp_reset(c, false);
         atalk_nbp_lookup_cancel();
-        llap_rts_reset();
+        llap_rts_reset(c);
     }
     LOG(1, "atalk: stack %s", enabled ? "attached to the link" : "detached from the link");
+    return 0;
 }
 
 // Our LLAP node address is fixed (LLAP_HOST_NODE) rather than acquired by the
 // dynamic-node-assignment probe, so it is known as soon as the stack is up.
 unsigned atalk_node_id(void) {
-    return g_atalk_enabled ? LLAP_HOST_NODE : 0;
+    return atalk_get_enabled() ? LLAP_HOST_NODE : 0;
 }
 
 const atalk_stats_t *atalk_get_stats(void) {
-    return &g_atalk_stats;
+    return g_net.plugged ? &g_net.plugged->stats : &k_no_stats;
 }
 
 // Send a DDP packet to the Mac via LocalTalk
 // Returns 0 once the frame is on the link, -1 if it could not be sent (the
 // stack is detached, the guest's driver is not up, or the payload will not
 // fit a DDP packet).  Callers that originate traffic report that upwards.
-static int ddp_send(const ddp_header_t *header, const uint8_t *data, int size) {
+static int ddp_send(atalk_conn_t *c, const ddp_header_t *header, const uint8_t *data, int size) {
     if (!header || size <= 0 || size > DDP_MAX_DATA_SIZE)
         return -1;
 
@@ -1141,8 +1098,8 @@ static int ddp_send(const ddp_header_t *header, const uint8_t *data, int size) {
     log_hex(_log_get_local_category(), 9, "DDP tx dump", buffer, length);
     LOG_INDENT(-4);
 
-    g_atalk_stats.ddp_out++;
-    return llap_send(&header->llap, buffer, length);
+    c->stats.ddp_out++;
+    return llap_send(c, &header->llap, buffer, length);
 }
 
 // Send one datagram to a remote socket.  The higher protocol modules (ADSP,
@@ -1150,10 +1107,11 @@ static int ddp_send(const ddp_header_t *header, const uint8_t *data, int size) {
 // than reaching into the DDP header layout themselves.
 int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8_t ddp_type, const uint8_t *data,
                       int len) {
+    atalk_conn_t *c = g_net.plugged;
     if (!dest || len < 0 || len > DDP_MAX_DATA_SIZE)
         return -1;
-    if (!g_atalk_enabled)
-        return -1;
+    if (!c || !c->enabled)
+        return -1; // no machine on the cable, or it is detached from the link
     ddp_header_t ddp;
     memset(&ddp, 0, sizeof(ddp));
     ddp.llap.dst = dest->node;
@@ -1164,12 +1122,12 @@ int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8
     ddp.dst_socket = dest->socket;
     ddp.src_socket = src_socket;
     ddp.type = ddp_type;
-    return ddp_send(&ddp, data, len);
+    return ddp_send(c, &ddp, data, len);
 }
 
 // Process an incoming DDP packet and dispatch to appropriate protocol handler
-static void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
-    g_atalk_stats.ddp_in++;
+static void ddp_in(atalk_conn_t *c, ddp_header_t *ddp, const uint8_t *buf, size_t len) {
+    c->stats.ddp_in++;
     switch (ddp->type) {
 
     case DDP_NBP:
@@ -1177,7 +1135,7 @@ static void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
         if (ddp->dst_socket != 2) {
             LOG(4, "NBP rx on unexpected dstSock=%u (expected 2)", (unsigned)ddp->dst_socket);
         }
-        nbp_in(ddp, buf, len);
+        nbp_in(c, ddp, buf, len);
         break;
 
     case DDP_ATP:
@@ -1186,7 +1144,7 @@ static void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
         // counts -- the rest.  A list of sockets here duplicated that registry
         // and would have dropped the response to any request sent from a
         // socket not on it.
-        atp_in(ddp, buf, (int)len);
+        atp_in(c, ddp, buf, (int)len);
         break;
 
     case DDP_AEP: {
@@ -1196,15 +1154,15 @@ static void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
         // Echo Reply.  It used to echo anything on any socket unchanged -- so a
         // pinging client never saw a reply, only its own request coming back.
         if (ddp->dst_socket != 4) {
-            atalk_drop(ATALK_DROP_UNHANDLED, "AEP on socket %u", (unsigned)ddp->dst_socket);
+            atalk_drop(c, ATALK_DROP_UNHANDLED, "AEP on socket %u", (unsigned)ddp->dst_socket);
             break;
         }
         if (len == 0) {
-            atalk_drop(ATALK_DROP_MALFORMED, "AEP packet with no data");
+            atalk_drop(c, ATALK_DROP_MALFORMED, "AEP packet with no data");
             break;
         }
         if (buf[0] != AEP_ECHO_REQUEST) {
-            atalk_drop(ATALK_DROP_UNHANDLED, "AEP function %u", (unsigned)buf[0]);
+            atalk_drop(c, ATALK_DROP_UNHANDLED, "AEP function %u", (unsigned)buf[0]);
             break;
         }
         uint8_t echo[DDP_MAX_DATA_SIZE];
@@ -1214,7 +1172,7 @@ static void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
         ddp_setup_reply(ddp, &reply);
         reply.type = DDP_AEP;
         LOG(3, "AEP: echoing %zu bytes", len);
-        ddp_send(&reply, echo, (int)len);
+        ddp_send(c, &reply, echo, (int)len);
         break;
     }
 
@@ -1231,13 +1189,13 @@ static void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
         break;
 
     default:
-        atalk_drop(ATALK_DROP_UNHANDLED, "DDP type %02X", (unsigned)ddp->type);
+        atalk_drop(c, ATALK_DROP_UNHANDLED, "DDP type %02X", (unsigned)ddp->type);
         break;
     }
 }
 
 // Process an incoming short DDP header and dispatch to ddp_in
-static void ddp_short_in(llap_header_t *llap, const uint8_t *buf, size_t len) {
+static void ddp_short_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *buf, size_t len) {
     ddp_header_t ddp;
 
     // These three were asserts, on bytes the guest wrote.
@@ -1245,18 +1203,18 @@ static void ddp_short_in(llap_header_t *llap, const uint8_t *buf, size_t len) {
     // browser build, which compiles them out, a frame under five bytes was
     // parsed from stale buffer bytes and passed on with len - 5 wrapped.
     if (len < DDP_SHORT_HEADER_SIZE || len > DDP_MAX_DATA_SIZE + DDP_SHORT_HEADER_SIZE) {
-        atalk_drop(ATALK_DROP_MALFORMED, "DDP frame of %zu bytes", len);
+        atalk_drop(c, ATALK_DROP_MALFORMED, "DDP frame of %zu bytes", len);
         return;
     }
     // Decode 10-bit length from short header: low 2 bits from first byte, then full second byte.
     ddp.len = (uint16_t)(((buf[0] & 0x03) << 8) | buf[1]);
     if (ddp.len != len) {
-        atalk_drop(ATALK_DROP_MALFORMED, "DDP length field %u in a %zu-byte frame", (unsigned)ddp.len, len);
+        atalk_drop(c, ATALK_DROP_MALFORMED, "DDP length field %u in a %zu-byte frame", (unsigned)ddp.len, len);
         return;
     }
     // Data for another node, or from us: nobody else is on this wire.
     if (llap->dst != LLAP_HOST_NODE && llap->dst != 0xFF) {
-        atalk_drop(ATALK_DROP_UNHANDLED, "DDP for node %02X", (unsigned)llap->dst);
+        atalk_drop(c, ATALK_DROP_UNHANDLED, "DDP for node %02X", (unsigned)llap->dst);
         return;
     }
 
@@ -1274,7 +1232,7 @@ static void ddp_short_in(llap_header_t *llap, const uint8_t *buf, size_t len) {
     LOG_INDENT(4);
     // Full DDP hexdump at high verbosity (includes 5-byte header + payload)
     log_hex(_log_get_local_category(), 9, "DDP rx dump", buf, len);
-    ddp_in(&ddp, buf + 5, len - 5);
+    ddp_in(c, &ddp, buf + 5, len - 5);
     LOG_INDENT(-4);
 }
 
@@ -1427,43 +1385,10 @@ static void log_hex(log_category_t *cat, int level, const char *tag, const uint8
 }
 
 // =============================== NBP (Name Binding Protocol) ===============================
-#define NBP_OBJECT_MAX            32
-#define NBP_TYPE_MAX              32
-#define NBP_ZONE_MAX              32
-#define NBP_MAX_ENTRIES           ATALK_NBP_MAX_ENTRIES
-#define NBP_MAX_TUPLES_PER_PACKET 8
-#define NBP_APPROX_CHAR           0xC5 // MacRoman "≈" wildcard per Inside AppleTalk
 
-struct atalk_nbp_entry {
-    bool in_use;
-    char object[NBP_OBJECT_MAX + 1];
-    char type[NBP_TYPE_MAX + 1];
-    char zone[NBP_ZONE_MAX + 1];
-    uint8_t object_len;
-    uint8_t type_len;
-    uint8_t zone_len;
-    uint16_t net;
-    uint8_t node;
-    uint8_t socket;
-    uint8_t enumerator;
-};
-
-static atalk_nbp_entry_t g_nbp_entries[NBP_MAX_ENTRIES];
-static uint8_t g_nbp_next_enum[256];
-
-static void nbp_send(const ddp_header_t *ddp_header, const nbp_header_t *nbp_header, const nbp_tuple_t *nbp_tuple);
-static void nbp_deliver_lookup_reply(uint8_t nbp_id, const nbp_tuple_t *tuples, int count);
-
-// One outstanding outgoing lookup.  The PPC browse is the only client, and it
-// re-issues rather than queueing, so a single slot is enough.
-static struct {
-    bool active;
-    uint8_t nbp_id;
-    atalk_nbp_reply_fn cb;
-    void *ctx;
-} g_nbp_lookup;
-
-static uint8_t g_nbp_next_lookup_id = 1;
+static void nbp_send(atalk_conn_t *c, const ddp_header_t *ddp_header, const nbp_header_t *nbp_header,
+                     const nbp_tuple_t *nbp_tuple);
+static void nbp_deliver_lookup_reply(atalk_conn_t *c, uint8_t nbp_id, const nbp_tuple_t *tuples, int count);
 
 // === NBP registry views (object model: `appletalk.nbp`) ====================
 
@@ -1472,13 +1397,13 @@ int atalk_nbp_entry_max(void) {
 }
 
 bool atalk_nbp_entry_in_use(int index) {
-    return index >= 0 && index < NBP_MAX_ENTRIES && g_nbp_entries[index].in_use;
+    return index >= 0 && index < NBP_MAX_ENTRIES && g_net.nbp_entries[index].in_use;
 }
 
 bool atalk_nbp_entry_info(int index, atalk_nbp_info_t *out) {
     if (!atalk_nbp_entry_in_use(index) || !out)
         return false;
-    const atalk_nbp_entry_t *e = &g_nbp_entries[index];
+    const atalk_nbp_entry_t *e = &g_net.nbp_entries[index];
     memset(out, 0, sizeof(*out));
     snprintf(out->object, sizeof(out->object), "%s", e->object);
     snprintf(out->type, sizeof(out->type), "%s", e->type);
@@ -1499,7 +1424,7 @@ static int nbp_entry_index(const atalk_nbp_entry_t *entry) {
     if (!entry)
         return -1;
     for (int i = 0; i < NBP_MAX_ENTRIES; i++) {
-        if (&g_nbp_entries[i] == entry)
+        if (&g_net.nbp_entries[i] == entry)
             return i;
     }
     return -1;
@@ -1524,7 +1449,7 @@ static int nbp_copy_field(char *dst, size_t dst_cap, const char *src, bool allow
 static bool nbp_enumerator_in_use(uint32_t e, const void *ctx) {
     uint8_t socket = *(const uint8_t *)ctx;
     for (int i = 0; i < NBP_MAX_ENTRIES; i++) {
-        const atalk_nbp_entry_t *entry = &g_nbp_entries[i];
+        const atalk_nbp_entry_t *entry = &g_net.nbp_entries[i];
         if (entry->in_use && entry->socket == socket && entry->enumerator == e)
             return true;
     }
@@ -1532,10 +1457,10 @@ static bool nbp_enumerator_in_use(uint32_t e, const void *ctx) {
 }
 
 static uint8_t nbp_alloc_enumerator(uint8_t socket) {
-    uint32_t cursor = g_nbp_next_enum[socket], e = 1;
+    uint32_t cursor = g_net.nbp_next_enum[socket], e = 1;
     // Cannot fail: at most NBP_MAX_ENTRIES of 255 are held.
     atalk_id_alloc(&cursor, 1, 255, nbp_enumerator_in_use, &socket, &e);
-    g_nbp_next_enum[socket] = (uint8_t)cursor;
+    g_net.nbp_next_enum[socket] = (uint8_t)cursor;
     return (uint8_t)e;
 }
 
@@ -1553,7 +1478,7 @@ static bool nbp_entry_conflicts(const atalk_nbp_entry_t *candidate, int skip_ind
     for (int i = 0; i < NBP_MAX_ENTRIES; i++) {
         if (i == skip_index)
             continue;
-        const atalk_nbp_entry_t *existing = &g_nbp_entries[i];
+        const atalk_nbp_entry_t *existing = &g_net.nbp_entries[i];
         if (!existing->in_use)
             continue;
         if (!nbp_field_equals_ci(existing->object, existing->object_len, candidate->object, candidate->object_len))
@@ -1601,7 +1526,7 @@ static int nbp_register(const atalk_nbp_service_desc_t *desc, atalk_nbp_entry_t 
         return -1;
     int free_slot = -1;
     for (int i = 0; i < NBP_MAX_ENTRIES; i++) {
-        if (!g_nbp_entries[i].in_use) {
+        if (!g_net.nbp_entries[i].in_use) {
             free_slot = i;
             break;
         }
@@ -1623,9 +1548,9 @@ static int nbp_register(const atalk_nbp_service_desc_t *desc, atalk_nbp_entry_t 
         return -1;
     }
 
-    g_nbp_entries[free_slot] = candidate;
+    g_net.nbp_entries[free_slot] = candidate;
     if (out_entry)
-        *out_entry = &g_nbp_entries[free_slot];
+        *out_entry = &g_net.nbp_entries[free_slot];
     LOG(3, "NBP register: object='%s' type='%s' zone='%s' socket=%u enum=%u", candidate.object, candidate.type,
         candidate.zone, (unsigned)candidate.socket, (unsigned)candidate.enumerator);
     return 0;
@@ -1640,15 +1565,15 @@ static int nbp_update(atalk_nbp_entry_t *entry, const atalk_nbp_service_desc_t *
     if (nbp_populate_entry(&candidate, desc) != 0)
         return -1;
     candidate.in_use = true;
-    if (candidate.socket == g_nbp_entries[idx].socket)
-        candidate.enumerator = g_nbp_entries[idx].enumerator;
+    if (candidate.socket == g_net.nbp_entries[idx].socket)
+        candidate.enumerator = g_net.nbp_entries[idx].enumerator;
     else
         candidate.enumerator = nbp_alloc_enumerator(candidate.socket);
 
     if (nbp_entry_conflicts(&candidate, idx))
         return -1;
 
-    g_nbp_entries[idx] = candidate;
+    g_net.nbp_entries[idx] = candidate;
     return 0;
 }
 
@@ -1656,10 +1581,10 @@ static int nbp_unregister(atalk_nbp_entry_t *entry) {
     int idx = nbp_entry_index(entry);
     if (idx < 0)
         return -1;
-    if (!g_nbp_entries[idx].in_use)
+    if (!g_net.nbp_entries[idx].in_use)
         return 0;
-    LOG(3, "NBP unregister: object='%s' type='%s'", g_nbp_entries[idx].object, g_nbp_entries[idx].type);
-    memset(&g_nbp_entries[idx], 0, sizeof(g_nbp_entries[idx]));
+    LOG(3, "NBP unregister: object='%s' type='%s'", g_net.nbp_entries[idx].object, g_net.nbp_entries[idx].type);
+    memset(&g_net.nbp_entries[idx], 0, sizeof(g_net.nbp_entries[idx]));
     return 0;
 }
 
@@ -1752,7 +1677,8 @@ static void nbp_build_tuple_from_entry(const atalk_nbp_entry_t *entry, nbp_tuple
     memcpy(tuple->zone, entry->zone, entry->zone_len);
 }
 
-static void nbp_send_reply_batch(const ddp_header_t *request, uint8_t nbp_id, const nbp_tuple_t *tuples, int count) {
+static void nbp_send_reply_batch(atalk_conn_t *c, const ddp_header_t *request, uint8_t nbp_id,
+                                 const nbp_tuple_t *tuples, int count) {
     if (count <= 0)
         return;
     ddp_header_t reply;
@@ -1761,17 +1687,18 @@ static void nbp_send_reply_batch(const ddp_header_t *request, uint8_t nbp_id, co
     nbp_header.function = NBP_LKUP_REPLY;
     nbp_header.tuple_count = (count > 15) ? 15 : count;
     nbp_header.nbp_id = nbp_id;
-    nbp_send(&reply, &nbp_header, tuples);
+    nbp_send(c, &reply, &nbp_header, tuples);
 }
 
-static void nbp_handle_lookup_tuple(const ddp_header_t *request, uint8_t nbp_id, const nbp_tuple_t *query) {
+static void nbp_handle_lookup_tuple(atalk_conn_t *c, const ddp_header_t *request, uint8_t nbp_id,
+                                    const nbp_tuple_t *query) {
     if (!request || !query)
         return;
     nbp_tuple_t batch[NBP_MAX_TUPLES_PER_PACKET];
     int batch_len = 0;
 
     for (int i = 0; i < NBP_MAX_ENTRIES; i++) {
-        const atalk_nbp_entry_t *entry = &g_nbp_entries[i];
+        const atalk_nbp_entry_t *entry = &g_net.nbp_entries[i];
         if (!entry->in_use)
             continue;
         if (!nbp_zone_matches(query, entry))
@@ -1782,16 +1709,16 @@ static void nbp_handle_lookup_tuple(const ddp_header_t *request, uint8_t nbp_id,
             continue;
         nbp_build_tuple_from_entry(entry, &batch[batch_len++]);
         if (batch_len == NBP_MAX_TUPLES_PER_PACKET) {
-            nbp_send_reply_batch(request, nbp_id, batch, batch_len);
+            nbp_send_reply_batch(c, request, nbp_id, batch, batch_len);
             batch_len = 0;
         }
     }
     if (batch_len > 0)
-        nbp_send_reply_batch(request, nbp_id, batch, batch_len);
+        nbp_send_reply_batch(c, request, nbp_id, batch, batch_len);
 }
 
-static void nbp_dispatch(const ddp_header_t *ddp_header, const nbp_header_t *header, nbp_tuple_t *tuples,
-                         int tuple_count) {
+static void nbp_dispatch(atalk_conn_t *c, const ddp_header_t *ddp_header, const nbp_header_t *header,
+                         nbp_tuple_t *tuples, int tuple_count) {
     if (!header || !ddp_header)
         return;
     switch (header->function) {
@@ -1799,23 +1726,23 @@ static void nbp_dispatch(const ddp_header_t *ddp_header, const nbp_header_t *hea
     case NBP_LKUP:
     case NBP_FWDREQ:
         for (int i = 0; i < tuple_count; i++)
-            nbp_handle_lookup_tuple(ddp_header, header->nbp_id, &tuples[i]);
+            nbp_handle_lookup_tuple(c, ddp_header, header->nbp_id, &tuples[i]);
         break;
     case NBP_LKUP_REPLY:
         // Replies to a lookup we issued (the PPC browse is the only client).
-        nbp_deliver_lookup_reply(header->nbp_id, tuples, tuple_count);
+        nbp_deliver_lookup_reply(c, header->nbp_id, tuples, tuple_count);
         break;
     default:
-        atalk_drop(ATALK_DROP_UNHANDLED, "NBP function %d", (int)header->function);
+        atalk_drop(c, ATALK_DROP_UNHANDLED, "NBP function %d", (int)header->function);
         break;
     }
 }
 
-static void nbp_parse_and_dispatch(const ddp_header_t *ddp, const uint8_t *buf, size_t len) {
+static void nbp_parse_and_dispatch(atalk_conn_t *c, const ddp_header_t *ddp, const uint8_t *buf, size_t len) {
     if (!ddp || !buf)
         return;
     if (len < 2) {
-        atalk_drop(ATALK_DROP_MALFORMED, "NBP packet of %zu bytes", len);
+        atalk_drop(c, ATALK_DROP_MALFORMED, "NBP packet of %zu bytes", len);
         return;
     }
     nbp_header_t header;
@@ -1851,14 +1778,15 @@ static void nbp_parse_and_dispatch(const ddp_header_t *ddp, const uint8_t *buf, 
     // A packet whose tuples run out before its count does is not a shorter
     // packet: drop it rather than act on the part that parsed.
     if (parsed != header.tuple_count) {
-        atalk_drop(ATALK_DROP_MALFORMED, "NBP packet claims %d tuples, %d parse", (int)header.tuple_count, parsed);
+        atalk_drop(c, ATALK_DROP_MALFORMED, "NBP packet claims %d tuples, %d parse", (int)header.tuple_count, parsed);
         return;
     }
 
-    nbp_dispatch(ddp, &header, tuples, parsed);
+    nbp_dispatch(c, ddp, &header, tuples, parsed);
 }
 
-static void nbp_send(const ddp_header_t *ddp_header, const nbp_header_t *nbp_header, const nbp_tuple_t *nbp_tuple) {
+static void nbp_send(atalk_conn_t *c, const ddp_header_t *ddp_header, const nbp_header_t *nbp_header,
+                     const nbp_tuple_t *nbp_tuple) {
     uint8_t buffer[DDP_MAX_DATA_SIZE];
     int size = 0;
 
@@ -1916,7 +1844,7 @@ static void nbp_send(const ddp_header_t *ddp_header, const nbp_header_t *nbp_hea
             (unsigned)nbp_header->nbp_id, size);
     }
     LOG_INDENT(4);
-    ddp_send(ddp_header, buffer, size);
+    ddp_send(c, ddp_header, buffer, size);
     LOG_INDENT(-4);
 
 #undef NBP_ENSURE
@@ -1927,8 +1855,8 @@ static void nbp_send(const ddp_header_t *ddp_header, const nbp_header_t *nbp_hea
 // Hand every tuple of a matching reply to the waiting caller.  Replies to a
 // broadcast trickle in one packet per responder, so the slot stays armed
 // until the caller issues another lookup.
-static void nbp_deliver_lookup_reply(uint8_t nbp_id, const nbp_tuple_t *tuples, int count) {
-    if (!g_nbp_lookup.active || g_nbp_lookup.nbp_id != nbp_id || !g_nbp_lookup.cb)
+static void nbp_deliver_lookup_reply(atalk_conn_t *c, uint8_t nbp_id, const nbp_tuple_t *tuples, int count) {
+    if (!c->nbp_lookup.active || c->nbp_lookup.nbp_id != nbp_id || !c->nbp_lookup.cb)
         return;
     for (int i = 0; i < count; i++) {
         atalk_nbp_info_t info;
@@ -1940,15 +1868,16 @@ static void nbp_deliver_lookup_reply(uint8_t nbp_id, const nbp_tuple_t *tuples, 
         info.node = tuples[i].node;
         info.socket = tuples[i].socket;
         LOG(4, "NBP reply: '%s:%s@%s' at %u:%u", info.object, info.type, info.zone, info.node, info.socket);
-        g_nbp_lookup.cb(g_nbp_lookup.ctx, &info);
+        c->nbp_lookup.cb(c->nbp_lookup.ctx, &info);
     }
 }
 
 int atalk_nbp_lookup(const char *object, const char *type, const char *zone, uint8_t reply_socket,
                      atalk_nbp_reply_fn cb, void *ctx) {
+    atalk_conn_t *c = g_net.plugged;
     if (!object || !type || !cb || reply_socket == 0)
         return -1;
-    if (!g_atalk_enabled)
+    if (!c || !c->enabled)
         return -1;
 
     size_t obj_len = strlen(object);
@@ -1963,8 +1892,8 @@ int atalk_nbp_lookup(const char *object, const char *type, const char *zone, uin
     uint8_t buf[2 + 5 + 3 * 33];
     int n = 0;
     buf[n++] = (uint8_t)((NBP_LKUP << 4) | 1);
-    g_nbp_next_lookup_id = (uint8_t)(g_nbp_next_lookup_id == 255 ? 1 : g_nbp_next_lookup_id + 1);
-    buf[n++] = g_nbp_next_lookup_id;
+    c->nbp_next_lookup_id = (uint8_t)(c->nbp_next_lookup_id == 255 ? 1 : c->nbp_next_lookup_id + 1);
+    buf[n++] = c->nbp_next_lookup_id;
     buf[n++] = 0; // net high
     buf[n++] = 0; // net low
     buf[n++] = LLAP_HOST_NODE;
@@ -1980,35 +1909,27 @@ int atalk_nbp_lookup(const char *object, const char *type, const char *zone, uin
     memcpy(&buf[n], zone_str, zone_len);
     n += (int)zone_len;
 
-    g_nbp_lookup.active = true;
-    g_nbp_lookup.nbp_id = g_nbp_next_lookup_id;
-    g_nbp_lookup.cb = cb;
-    g_nbp_lookup.ctx = ctx;
+    c->nbp_lookup.active = true;
+    c->nbp_lookup.nbp_id = c->nbp_next_lookup_id;
+    c->nbp_lookup.cb = cb;
+    c->nbp_lookup.ctx = ctx;
 
     // NBP runs on socket 2 of every node; the lookup goes to the broadcast
     // node so every machine on the segment answers.
     atalk_socket_addr_t dest = {.net = 0, .node = 0xFF, .socket = 2};
     LOG(4, "NBP lookup '%s:%s@%s' (id=%u, replies to socket %u)", object, type, zone_str,
-        (unsigned)g_nbp_next_lookup_id, (unsigned)reply_socket);
+        (unsigned)c->nbp_next_lookup_id, (unsigned)reply_socket);
     return atalk_ddp_send_to(&dest, reply_socket, DDP_NBP, buf, n);
 }
 
 void atalk_nbp_lookup_cancel(void) {
-    g_nbp_lookup.active = false;
-    g_nbp_lookup.cb = NULL;
-    g_nbp_lookup.ctx = NULL;
+    atalk_conn_t *c = g_net.plugged;
+    if (c)
+        memset(&c->nbp_lookup, 0, sizeof(c->nbp_lookup));
 }
 
-// Forget every registration and the outstanding lookup.  Each service
-// withdraws its own entry when it shuts down; this is what is left when one
-// did not, so the next stack does not advertise it.
-static void nbp_reset(void) {
-    atalk_nbp_lookup_cancel();
-    memset(g_nbp_entries, 0, sizeof(g_nbp_entries));
-}
-
-static void nbp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
-    g_atalk_stats.nbp_packets++;
+static void nbp_in(atalk_conn_t *c, ddp_header_t *ddp, const uint8_t *buf, size_t len) {
+    c->stats.nbp_packets++;
     uint8_t header_byte = (len >= 1) ? buf[0] : 0;
     uint8_t nbp_id = (len >= 2) ? buf[1] : 0;
     int function = (header_byte >> 4) & 0x0F;
@@ -2020,72 +1941,11 @@ static void nbp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
         LOG(4, "NBP <- Mac func=%d: tuples=%d nbpId=%u len=%zu", function, tuple_count, (unsigned)nbp_id, len);
     }
     LOG_INDENT(4);
-    nbp_parse_and_dispatch(ddp, buf, len);
+    nbp_parse_and_dispatch(c, ddp, buf, len);
     LOG_INDENT(-4);
 }
 
 // =============================== ATP (AppleTalk Transaction Protocol) ===============================
-
-#define ATP_MAX_HANDLERS     8
-#define ATP_MAX_OUTGOING     16
-#define ATP_MAX_XO_CACHE     16
-#define ATP_DEFAULT_RETRY_MS 2000u
-
-typedef struct {
-    bool in_use;
-    uint8_t socket;
-    atp_socket_handler_t handler;
-    void *ctx;
-} atp_handler_slot_t;
-
-struct atp_request_handle {
-    bool in_use;
-    bool xo;
-    bool infinite_retries;
-    uint8_t src_socket;
-    uint16_t tid;
-    uint8_t base_ctl;
-    uint8_t trel_hint;
-    uint8_t initial_bitmap;
-    uint8_t pending_bitmap;
-    uint8_t user[4];
-    uint8_t payload[ATP_MAX_ATP_PAYLOAD];
-    int payload_len;
-    atalk_socket_addr_t dest;
-    uint64_t retry_timeout_ns;
-    int retries_remaining;
-    uint32_t timer_generation;
-    atp_request_callbacks_t callbacks;
-    void *cb_ctx;
-};
-
-typedef struct {
-    bool valid;
-    uint8_t seq;
-    int len;
-    uint8_t bytes[DDP_MAX_DATA_SIZE];
-} atp_resp_packet_cache_t;
-
-typedef struct {
-    bool in_use;
-    bool response_ready;
-    uint16_t tid;
-    uint8_t requester_node;
-    uint8_t requester_socket;
-    uint8_t responder_socket;
-    uint8_t trel_hint;
-    uint32_t release_generation;
-    atp_resp_packet_cache_t packets[ATP_MAX_RESPONSE_FRAGMENTS];
-} atp_xo_entry_t;
-
-static atp_handler_slot_t g_atp_handlers[ATP_MAX_HANDLERS];
-static atp_request_handle_t g_atp_requests[ATP_MAX_OUTGOING];
-static atp_xo_entry_t g_xo_entries[ATP_MAX_XO_CACHE];
-static uint32_t g_next_tid = 0x2000; // atalk_id_alloc cursor
-// Per-request retry and per-transaction XO release; many can be pending at
-// once, told apart by their data (atp_encode_event_data).
-static atalk_timer_t g_atp_retry_timer;
-static atalk_timer_t g_atp_release_timer;
 
 // Utility helpers -----------------------------------------------------------
 static void atp_retry_timeout_cb(void *source, uint64_t data);
@@ -2131,19 +1991,19 @@ static bool atp_decode_event_data(uint64_t data, uint16_t *index, uint32_t *gene
     return true;
 }
 
-// Called from appletalk_init.  These used to be registered at first arm, so a
+// Called when the connection is plugged in, never lazily at first arm: a
 // checkpoint taken with an ATP transaction in flight -- any AFP command, any
-// print job -- could not be restored.
-static void atp_timers_init(void) {
-    atalk_timer_init(&g_atp_retry_timer, "atp", "retry_timeout", &atp_retry_timeout_cb);
-    atalk_timer_init(&g_atp_release_timer, "atp", "xo_release", &atp_release_timeout_cb);
+// print job -- replays its events into the restored machine's scheduler.
+static void atp_timers_init(atalk_conn_t *c) {
+    atalk_timer_init(c, &c->atp_retry_timer, "atp", "retry_timeout", &atp_retry_timeout_cb);
+    atalk_timer_init(c, &c->atp_release_timer, "atp", "xo_release", &atp_release_timeout_cb);
 }
 
 // Handler registry ---------------------------------------------------------
 static atp_handler_slot_t *atp_find_handler_slot(uint8_t socket) {
     for (int i = 0; i < ATP_MAX_HANDLERS; i++) {
-        if (g_atp_handlers[i].in_use && g_atp_handlers[i].socket == socket)
-            return &g_atp_handlers[i];
+        if (g_net.atp_handlers[i].in_use && g_net.atp_handlers[i].socket == socket)
+            return &g_net.atp_handlers[i];
     }
     return NULL;
 }
@@ -2158,11 +2018,11 @@ int atp_register_socket_handler(uint8_t socket, const atp_socket_handler_t *hand
         return 0;
     }
     for (int i = 0; i < ATP_MAX_HANDLERS; i++) {
-        if (!g_atp_handlers[i].in_use) {
-            g_atp_handlers[i].in_use = true;
-            g_atp_handlers[i].socket = socket;
-            g_atp_handlers[i].handler = *handler;
-            g_atp_handlers[i].ctx = ctx;
+        if (!g_net.atp_handlers[i].in_use) {
+            g_net.atp_handlers[i].in_use = true;
+            g_net.atp_handlers[i].socket = socket;
+            g_net.atp_handlers[i].handler = *handler;
+            g_net.atp_handlers[i].ctx = ctx;
             return 0;
         }
     }
@@ -2180,6 +2040,7 @@ void atp_unregister_socket_handler(uint8_t socket) {
 // A TID is taken while another outstanding request from the same socket
 // holds it (the request being numbered is already in the table).
 typedef struct {
+    const atalk_conn_t *conn;
     uint8_t socket;
     const atp_request_handle_t *self;
 } atp_tid_scope_t;
@@ -2187,37 +2048,37 @@ typedef struct {
 static bool atp_tid_in_use(uint32_t tid, const void *ctx) {
     const atp_tid_scope_t *scope = ctx;
     for (int i = 0; i < ATP_MAX_OUTGOING; i++) {
-        const atp_request_handle_t *r = &g_atp_requests[i];
+        const atp_request_handle_t *r = &scope->conn->atp_requests[i];
         if (r != scope->self && r->in_use && r->src_socket == scope->socket && r->tid == tid)
             return true;
     }
     return false;
 }
 
-static atp_request_handle_t *atp_alloc_request_slot(void) {
+static atp_request_handle_t *atp_alloc_request_slot(atalk_conn_t *c) {
     for (int i = 0; i < ATP_MAX_OUTGOING; i++) {
-        if (!g_atp_requests[i].in_use) {
-            memset(&g_atp_requests[i], 0, sizeof(g_atp_requests[i]));
-            g_atp_requests[i].in_use = true;
-            return &g_atp_requests[i];
+        if (!c->atp_requests[i].in_use) {
+            memset(&c->atp_requests[i], 0, sizeof(c->atp_requests[i]));
+            c->atp_requests[i].in_use = true;
+            return &c->atp_requests[i];
         }
     }
     return NULL;
 }
 
-static void atp_request_complete(atp_request_handle_t *req, atp_request_result_t result) {
+static void atp_request_complete(atalk_conn_t *c, atp_request_handle_t *req, atp_request_result_t result) {
     if (!req || !req->in_use)
         return;
     // Cancel any pending retry timer
-    uint16_t index = (uint16_t)(req - g_atp_requests);
-    atalk_timer_cancel(&g_atp_retry_timer, atp_encode_event_data(index, req->timer_generation));
+    uint16_t index = (uint16_t)(req - c->atp_requests);
+    atalk_timer_cancel(&c->atp_retry_timer, atp_encode_event_data(index, req->timer_generation));
     req->timer_generation++;
     req->in_use = false;
     if (req->callbacks.on_complete)
         req->callbacks.on_complete(req, result, req->cb_ctx);
 }
 
-static void atp_send_trel(const atp_request_handle_t *req) {
+static void atp_send_trel(atalk_conn_t *c, const atp_request_handle_t *req) {
     if (!req || !req->xo)
         return;
     uint8_t buffer[8] = {0};
@@ -2234,12 +2095,12 @@ static void atp_send_trel(const atp_request_handle_t *req) {
     ddp.dst_socket = req->dest.socket;
     ddp.src_socket = req->src_socket;
     ddp.type = DDP_ATP;
-    ddp_send(&ddp, buffer, sizeof(buffer));
+    ddp_send(c, &ddp, buffer, sizeof(buffer));
     LOG_ATP(3, "ATP: sent TRel tid=0x%04X srcSock=%u dstSock=%u", req->tid, (unsigned)req->src_socket,
             (unsigned)req->dest.socket);
 }
 
-static void atp_send_request_packets(atp_request_handle_t *req, uint8_t bitmap) {
+static void atp_send_request_packets(atalk_conn_t *c, atp_request_handle_t *req, uint8_t bitmap) {
     uint8_t atp_buf[DDP_MAX_DATA_SIZE];
     atp_buf[0] = req->base_ctl;
     atp_buf[1] = bitmap;
@@ -2259,59 +2120,60 @@ static void atp_send_request_packets(atp_request_handle_t *req, uint8_t bitmap) 
     ddp.dst_socket = req->dest.socket;
     ddp.src_socket = req->src_socket;
     ddp.type = DDP_ATP;
-    ddp_send(&ddp, atp_buf, total);
+    ddp_send(c, &ddp, atp_buf, total);
     LOG_ATP(3, "ATP: sent TReq tid=0x%04X srcSock=%u dstSock=%u bitmap=0x%02X", req->tid, (unsigned)req->src_socket,
             (unsigned)req->dest.socket, (unsigned)bitmap);
 }
 
-static void atp_arm_retry_timer(atp_request_handle_t *req) {
-    uint16_t index = (uint16_t)(req - g_atp_requests);
+static void atp_arm_retry_timer(atalk_conn_t *c, atp_request_handle_t *req) {
+    uint16_t index = (uint16_t)(req - c->atp_requests);
     // Cancel any existing retry event before scheduling a new one
-    atalk_timer_cancel(&g_atp_retry_timer, atp_encode_event_data(index, req->timer_generation));
+    atalk_timer_cancel(&c->atp_retry_timer, atp_encode_event_data(index, req->timer_generation));
     req->timer_generation++;
     LOG_ATP(5, "ATP: arm retry timer tid=0x%04X timeout_ns=%" PRIu64, req->tid, req->retry_timeout_ns);
-    atalk_timer_arm(&g_atp_retry_timer, atp_encode_event_data(index, req->timer_generation), req->retry_timeout_ns);
+    atalk_timer_arm(&c->atp_retry_timer, atp_encode_event_data(index, req->timer_generation), req->retry_timeout_ns);
 }
 
-static void atp_retry_request(atp_request_handle_t *req, bool consume_retry) {
+static void atp_retry_request(atalk_conn_t *c, atp_request_handle_t *req, bool consume_retry) {
     if (!req || req->pending_bitmap == 0)
         return;
     if (!req->infinite_retries && consume_retry) {
         if (req->retries_remaining == 0) {
             LOG_ATP(2, "ATP: retries exhausted for tid=0x%04X", req->tid);
-            atp_send_trel(req);
-            atp_request_complete(req, ATP_REQUEST_RESULT_TIMEOUT);
+            atp_send_trel(c, req);
+            atp_request_complete(c, req, ATP_REQUEST_RESULT_TIMEOUT);
             return;
         }
         req->retries_remaining--;
     }
-    g_atalk_stats.atp_retries++;
-    atp_send_request_packets(req, req->pending_bitmap);
-    atp_arm_retry_timer(req);
+    c->stats.atp_retries++;
+    atp_send_request_packets(c, req, req->pending_bitmap);
+    atp_arm_retry_timer(c, req);
 }
 
 static void atp_retry_timeout_cb(void *source, uint64_t data) {
-    (void)source;
+    atalk_conn_t *c = CONN_OF(source, atp_retry_timer);
     uint16_t index;
     uint32_t generation;
     if (!atp_decode_event_data(data, &index, &generation))
         return;
     if (index >= ATP_MAX_OUTGOING)
         return;
-    atp_request_handle_t *req = &g_atp_requests[index];
+    atp_request_handle_t *req = &c->atp_requests[index];
     if (!req->in_use || req->timer_generation != generation)
         return;
     LOG_ATP(3, "ATP: retry timeout tid=0x%04X bitmap=0x%02X", req->tid, (unsigned)req->pending_bitmap);
-    atp_retry_request(req, true);
+    atp_retry_request(c, req, true);
 }
 
 atp_request_handle_t *atp_request_submit(const atp_request_params_t *params, const atp_request_callbacks_t *callbacks,
                                          void *ctx) {
-    if (!params || params->bitmap == 0)
-        return NULL;
+    atalk_conn_t *c = g_net.plugged;
+    if (!c || !params || params->bitmap == 0)
+        return NULL; // nobody is on the cable to ask
     if (params->payload_len < 0 || params->payload_len > ATP_MAX_ATP_PAYLOAD)
         return NULL;
-    atp_request_handle_t *req = atp_alloc_request_slot();
+    atp_request_handle_t *req = atp_alloc_request_slot(c);
     if (!req)
         return NULL;
 
@@ -2335,35 +2197,39 @@ atp_request_handle_t *atp_request_submit(const atp_request_params_t *params, con
         req->base_ctl |= ATP_CONTROL_XO;
         req->base_ctl |= req->trel_hint;
     }
-    atp_tid_scope_t scope = {.socket = req->src_socket, .self = req};
+    atp_tid_scope_t scope = {.conn = c, .socket = req->src_socket, .self = req};
     uint32_t tid = 0;
-    if (!atalk_id_alloc(&g_next_tid, 0, 0xFFFF, atp_tid_in_use, &scope, &tid)) {
+    if (!atalk_id_alloc(&c->next_tid, 0, 0xFFFF, atp_tid_in_use, &scope, &tid)) {
         req->in_use = false; // cannot happen: at most ATP_MAX_OUTGOING of 65,536 are held
         return NULL;
     }
     req->tid = (uint16_t)tid;
 
-    g_atalk_stats.atp_requests++;
-    atp_send_request_packets(req, req->pending_bitmap);
-    atp_arm_retry_timer(req);
+    c->stats.atp_requests++;
+    atp_send_request_packets(c, req, req->pending_bitmap);
+    atp_arm_retry_timer(c, req);
     return req;
 }
 
 void atp_request_cancel(atp_request_handle_t *handle) {
-    if (!handle || !handle->in_use)
+    // A live request belongs to the plugged connection: unplugging one
+    // drops its requests.
+    atalk_conn_t *c = g_net.plugged;
+    if (!c || !handle || !handle->in_use)
         return;
     LOG_ATP(3, "ATP: cancel request tid=0x%04X", handle->tid);
-    atp_request_complete(handle, ATP_REQUEST_RESULT_ABORTED);
+    atp_request_complete(c, handle, ATP_REQUEST_RESULT_ABORTED);
 }
 
 // XO cache helpers ---------------------------------------------------------
-static int atp_xo_find(uint16_t tid, uint8_t requester_node, uint8_t requester_socket, uint8_t responder_socket) {
+static int atp_xo_find(atalk_conn_t *c, uint16_t tid, uint8_t requester_node, uint8_t requester_socket,
+                       uint8_t responder_socket) {
     for (int i = 0; i < ATP_MAX_XO_CACHE; i++) {
-        if (!g_xo_entries[i].in_use)
+        if (!c->xo_entries[i].in_use)
             continue;
-        if (g_xo_entries[i].tid == tid && g_xo_entries[i].requester_node == requester_node &&
-            g_xo_entries[i].requester_socket == requester_socket &&
-            g_xo_entries[i].responder_socket == responder_socket) {
+        if (c->xo_entries[i].tid == tid && c->xo_entries[i].requester_node == requester_node &&
+            c->xo_entries[i].requester_socket == requester_socket &&
+            c->xo_entries[i].responder_socket == responder_socket) {
             return i;
         }
     }
@@ -2371,20 +2237,20 @@ static int atp_xo_find(uint16_t tid, uint8_t requester_node, uint8_t requester_s
 }
 
 // Forward declaration for atp_xo_alloc
-static void atp_xo_schedule_release(atp_xo_entry_t *entry);
+static void atp_xo_schedule_release(atalk_conn_t *c, atp_xo_entry_t *entry);
 
-static int atp_xo_alloc(const ddp_header_t *ddp, const atp_packet_t *atp) {
+static int atp_xo_alloc(atalk_conn_t *c, const ddp_header_t *ddp, const atp_packet_t *atp) {
     for (int i = 0; i < ATP_MAX_XO_CACHE; i++) {
-        if (!g_xo_entries[i].in_use) {
-            memset(&g_xo_entries[i], 0, sizeof(g_xo_entries[i]));
-            g_xo_entries[i].in_use = true;
-            g_xo_entries[i].tid = atp->tid;
-            g_xo_entries[i].requester_node = ddp->llap.src;
-            g_xo_entries[i].requester_socket = ddp->src_socket;
-            g_xo_entries[i].responder_socket = ddp->dst_socket;
-            g_xo_entries[i].trel_hint = (uint8_t)(atp->ctl & 0x07);
+        if (!c->xo_entries[i].in_use) {
+            memset(&c->xo_entries[i], 0, sizeof(c->xo_entries[i]));
+            c->xo_entries[i].in_use = true;
+            c->xo_entries[i].tid = atp->tid;
+            c->xo_entries[i].requester_node = ddp->llap.src;
+            c->xo_entries[i].requester_socket = ddp->src_socket;
+            c->xo_entries[i].responder_socket = ddp->dst_socket;
+            c->xo_entries[i].trel_hint = (uint8_t)(atp->ctl & 0x07);
             // Start release timer immediately (Inside AppleTalk p. 9-17)
-            atp_xo_schedule_release(&g_xo_entries[i]);
+            atp_xo_schedule_release(c, &c->xo_entries[i]);
             LOG_ATP(10, "ATP: XO alloc slot=%d tid=0x%04X node=%u sock=%u->%u trel=%u", i, atp->tid, ddp->llap.src,
                     ddp->src_socket, ddp->dst_socket, atp->ctl & 0x07);
             return i;
@@ -2394,40 +2260,38 @@ static int atp_xo_alloc(const ddp_header_t *ddp, const atp_packet_t *atp) {
     return -1;
 }
 
-static void atp_xo_free(atp_xo_entry_t *entry) {
+static void atp_xo_free(atalk_conn_t *c, atp_xo_entry_t *entry) {
     if (!entry)
         return;
-    uint16_t index = (uint16_t)(entry - g_xo_entries);
+    uint16_t index = (uint16_t)(entry - c->xo_entries);
     LOG_ATP(10, "ATP: XO free slot=%u tid=0x%04X", index, entry->tid);
     // Cancel pending release timer event
-    atalk_timer_cancel(&g_atp_release_timer, atp_encode_event_data(index, entry->release_generation));
+    atalk_timer_cancel(&c->atp_release_timer, atp_encode_event_data(index, entry->release_generation));
     entry->in_use = false;
     entry->release_generation++;
 }
 
 // Drop every outgoing request and every XO cache entry, and their timers.
 // When the stack is only being detached from the link its clients are still
-// up, so each outstanding request completes as ABORTED and they clean up.  At
-// teardown they are already gone: requests are dropped without a callback,
-// and the socket handlers go too (each init registers its own).
-static void atp_reset(bool teardown) {
+// up, so each outstanding request completes as ABORTED and they clean up.
+// When the connection is unplugged they are already gone: requests are
+// dropped without a callback.  The socket handlers are the network's and stay.
+static void atp_reset(atalk_conn_t *c, bool teardown) {
     for (int i = 0; i < ATP_MAX_OUTGOING; i++) {
-        atp_request_handle_t *req = &g_atp_requests[i];
+        atp_request_handle_t *req = &c->atp_requests[i];
         if (!req->in_use)
             continue;
         if (!teardown) {
-            atp_request_complete(req, ATP_REQUEST_RESULT_ABORTED);
+            atp_request_complete(c, req, ATP_REQUEST_RESULT_ABORTED);
         } else {
-            atalk_timer_cancel(&g_atp_retry_timer, atp_encode_event_data((uint16_t)i, req->timer_generation));
+            atalk_timer_cancel(&c->atp_retry_timer, atp_encode_event_data((uint16_t)i, req->timer_generation));
             req->timer_generation++;
             req->in_use = false;
         }
     }
     for (int i = 0; i < ATP_MAX_XO_CACHE; i++)
-        if (g_xo_entries[i].in_use)
-            atp_xo_free(&g_xo_entries[i]);
-    if (teardown)
-        memset(g_atp_handlers, 0, sizeof(g_atp_handlers));
+        if (c->xo_entries[i].in_use)
+            atp_xo_free(c, &c->xo_entries[i]);
 }
 
 static void atp_xo_store_packet(atp_xo_entry_t *entry, uint8_t seq, const uint8_t *bytes, int len) {
@@ -2440,35 +2304,35 @@ static void atp_xo_store_packet(atp_xo_entry_t *entry, uint8_t seq, const uint8_
     memcpy(slot->bytes, bytes, (size_t)len);
 }
 
-static void atp_xo_schedule_release(atp_xo_entry_t *entry) {
+static void atp_xo_schedule_release(atalk_conn_t *c, atp_xo_entry_t *entry) {
     if (!entry)
         return;
-    uint16_t index = (uint16_t)(entry - g_xo_entries);
+    uint16_t index = (uint16_t)(entry - c->xo_entries);
     // Cancel any existing release event for this entry before scheduling a new one
-    atalk_timer_cancel(&g_atp_release_timer, atp_encode_event_data(index, entry->release_generation));
+    atalk_timer_cancel(&c->atp_release_timer, atp_encode_event_data(index, entry->release_generation));
     entry->release_generation++;
     uint32_t seconds = atp_trel_hint_seconds(entry->trel_hint);
-    atalk_timer_arm(&g_atp_release_timer, atp_encode_event_data(index, entry->release_generation),
+    atalk_timer_arm(&c->atp_release_timer, atp_encode_event_data(index, entry->release_generation),
                     atp_seconds_to_ns(seconds));
 }
 
 static void atp_release_timeout_cb(void *source, uint64_t data) {
-    (void)source;
+    atalk_conn_t *c = CONN_OF(source, atp_release_timer);
     uint16_t index;
     uint32_t generation;
     if (!atp_decode_event_data(data, &index, &generation))
         return;
     if (index >= ATP_MAX_XO_CACHE)
         return;
-    atp_xo_entry_t *entry = &g_xo_entries[index];
+    atp_xo_entry_t *entry = &c->xo_entries[index];
     if (!entry->in_use || entry->release_generation != generation)
         return;
     LOG_ATP(3, "ATP: XO release timeout tid=0x%04X", entry->tid);
-    atp_xo_free(entry);
+    atp_xo_free(c, entry);
 }
 
 // Retransmit cached XO response packets matching the bitmap
-static void atp_xo_send_cached(atp_xo_entry_t *entry, const ddp_header_t *ddp, uint8_t bitmap) {
+static void atp_xo_send_cached(atalk_conn_t *c, atp_xo_entry_t *entry, const ddp_header_t *ddp, uint8_t bitmap) {
     if (!entry || !entry->response_ready)
         return;
     LOG_ATP(6, "ATP: XO retransmit cached tid=0x%04X bitmap=0x%02X", entry->tid, bitmap);
@@ -2479,7 +2343,7 @@ static void atp_xo_send_cached(atp_xo_entry_t *entry, const ddp_header_t *ddp, u
         // bitmap=0x00: peer received all packets, resend the last (EOM) packet
         for (int i = ATP_MAX_RESPONSE_FRAGMENTS - 1; i >= 0; i--) {
             if (entry->packets[i].valid) {
-                ddp_send(&reply, entry->packets[i].bytes, entry->packets[i].len);
+                ddp_send(c, &reply, entry->packets[i].bytes, entry->packets[i].len);
                 break;
             }
         }
@@ -2491,16 +2355,17 @@ static void atp_xo_send_cached(atp_xo_entry_t *entry, const ddp_header_t *ddp, u
                 continue;
             if (!(bitmap & (1u << slot->seq)))
                 continue;
-            ddp_send(&reply, slot->bytes, slot->len);
+            ddp_send(c, &reply, slot->bytes, slot->len);
         }
     }
-    atp_xo_schedule_release(entry);
+    atp_xo_schedule_release(c, entry);
 }
 
 // Outgoing response helpers -------------------------------------------------
 int atp_responder_send_packets(const ddp_header_t *request_ddp, const atp_packet_t *request_atp,
                                const atp_response_packet_desc_t *packets, size_t packet_count) {
-    if (!request_ddp || !request_atp || !packets || packet_count == 0)
+    atalk_conn_t *c = g_net.plugged;
+    if (!c || !request_ddp || !request_atp || !packets || packet_count == 0)
         return -1;
     if (packet_count > ATP_MAX_RESPONSE_FRAGMENTS)
         return -1;
@@ -2512,9 +2377,9 @@ int atp_responder_send_packets(const ddp_header_t *request_ddp, const atp_packet
     int xo_index = -1;
     if (xo) {
         xo_index =
-            atp_xo_find(request_atp->tid, request_ddp->llap.src, request_ddp->src_socket, request_ddp->dst_socket);
+            atp_xo_find(c, request_atp->tid, request_ddp->llap.src, request_ddp->src_socket, request_ddp->dst_socket);
         if (xo_index < 0)
-            xo_index = atp_xo_alloc(request_ddp, request_atp);
+            xo_index = atp_xo_alloc(c, request_ddp, request_atp);
     }
 
     for (size_t i = 0; i < packet_count; i++) {
@@ -2540,13 +2405,13 @@ int atp_responder_send_packets(const ddp_header_t *request_ddp, const atp_packet
         if (desc->payload_len > 0 && desc->payload)
             memcpy(&buffer[8], desc->payload, (size_t)desc->payload_len);
         int total = 8 + desc->payload_len;
-        ddp_send(&reply, buffer, total);
+        ddp_send(c, &reply, buffer, total);
         if (xo_index >= 0)
-            atp_xo_store_packet(&g_xo_entries[xo_index], (uint8_t)i, buffer, total);
+            atp_xo_store_packet(&c->xo_entries[xo_index], (uint8_t)i, buffer, total);
     }
     if (xo_index >= 0) {
-        g_xo_entries[xo_index].response_ready = true;
-        atp_xo_schedule_release(&g_xo_entries[xo_index]);
+        c->xo_entries[xo_index].response_ready = true;
+        atp_xo_schedule_release(c, &c->xo_entries[xo_index]);
     }
     return (int)packet_count;
 }
@@ -2574,9 +2439,9 @@ static int parse_atp(const uint8_t *buf, int len, atp_packet_t *atp) {
 }
 
 // Incoming response handling -----------------------------------------------
-static atp_request_handle_t *atp_match_request(const ddp_header_t *ddp, const atp_packet_t *atp) {
+static atp_request_handle_t *atp_match_request(atalk_conn_t *c, const ddp_header_t *ddp, const atp_packet_t *atp) {
     for (int i = 0; i < ATP_MAX_OUTGOING; i++) {
-        atp_request_handle_t *req = &g_atp_requests[i];
+        atp_request_handle_t *req = &c->atp_requests[i];
         if (!req->in_use)
             continue;
         if (req->tid != atp->tid)
@@ -2590,10 +2455,10 @@ static atp_request_handle_t *atp_match_request(const ddp_header_t *ddp, const at
     return NULL;
 }
 
-static void atp_handle_response(const ddp_header_t *ddp, const atp_packet_t *atp) {
-    atp_request_handle_t *req = atp_match_request(ddp, atp);
+static void atp_handle_response(atalk_conn_t *c, const ddp_header_t *ddp, const atp_packet_t *atp) {
+    atp_request_handle_t *req = atp_match_request(c, ddp, atp);
     if (!req) {
-        atalk_drop(ATALK_DROP_UNHANDLED, "ATP response tid %04X matches no request", (unsigned)atp->tid);
+        atalk_drop(c, ATALK_DROP_UNHANDLED, "ATP response tid %04X matches no request", (unsigned)atp->tid);
         return;
     }
     uint8_t seq = atp->bitmap & 0x07;
@@ -2618,68 +2483,68 @@ static void atp_handle_response(const ddp_header_t *ddp, const atp_packet_t *atp
         }
     }
     if (atp->ctl & ATP_CONTROL_STS) {
-        atp_retry_request(req, false);
+        atp_retry_request(c, req, false);
         return;
     }
     if (req->pending_bitmap == 0) {
-        atp_send_trel(req);
-        atp_request_complete(req, ATP_REQUEST_RESULT_OK);
+        atp_send_trel(c, req);
+        atp_request_complete(c, req, ATP_REQUEST_RESULT_OK);
     } else if (!duplicate) {
         // Re-arm the retry timer on each valid response so it doesn't fire
         // while the Mac is still actively sending response packets.
-        atp_arm_retry_timer(req);
+        atp_arm_retry_timer(c, req);
     }
 }
 
-static void atp_handle_trel(const ddp_header_t *ddp, const atp_packet_t *atp) {
-    int idx = atp_xo_find(atp->tid, ddp->llap.src, ddp->src_socket, ddp->dst_socket);
+static void atp_handle_trel(atalk_conn_t *c, const ddp_header_t *ddp, const atp_packet_t *atp) {
+    int idx = atp_xo_find(c, atp->tid, ddp->llap.src, ddp->src_socket, ddp->dst_socket);
     LOG_ATP(10, "ATP: TRel tid=0x%04X node=%u sock=%u xo_slot=%d", atp->tid, ddp->llap.src, ddp->src_socket, idx);
     if (idx >= 0)
-        atp_xo_free(&g_xo_entries[idx]);
+        atp_xo_free(c, &c->xo_entries[idx]);
 }
 
 // Request dispatch ---------------------------------------------------------
-static void atp_dispatch_registered_request(const ddp_header_t *ddp, atp_packet_t *atp) {
+static void atp_dispatch_registered_request(atalk_conn_t *c, const ddp_header_t *ddp, atp_packet_t *atp) {
     atp_handler_slot_t *slot = atp_find_handler_slot(ddp->dst_socket);
     if (!slot) {
-        atalk_drop(ATALK_DROP_UNHANDLED, "ATP request for socket %u", (unsigned)ddp->dst_socket);
+        atalk_drop(c, ATALK_DROP_UNHANDLED, "ATP request for socket %u", (unsigned)ddp->dst_socket);
         return;
     }
     bool xo = (atp->ctl & ATP_CONTROL_XO) != 0;
     if (xo) {
-        int existing = atp_xo_find(atp->tid, ddp->llap.src, ddp->src_socket, ddp->dst_socket);
+        int existing = atp_xo_find(c, atp->tid, ddp->llap.src, ddp->src_socket, ddp->dst_socket);
         if (existing >= 0) {
-            atp_xo_send_cached(&g_xo_entries[existing], ddp, atp->bitmap);
+            atp_xo_send_cached(c, &c->xo_entries[existing], ddp, atp->bitmap);
             return;
         }
-        if (atp_xo_alloc(ddp, atp) < 0)
+        if (atp_xo_alloc(c, ddp, atp) < 0)
             LOG_ATP(2, "ATP: XO cache full, duplicate protection degraded");
     }
     slot->handler.handle_request(ddp, atp, slot->ctx);
 }
 
-static void atp_in(const ddp_header_t *ddp, const uint8_t *buf, int len) {
+static void atp_in(atalk_conn_t *c, const ddp_header_t *ddp, const uint8_t *buf, int len) {
     atp_packet_t atp;
     if (parse_atp(buf, len, &atp) != 0) {
-        atalk_drop(ATALK_DROP_MALFORMED, "ATP packet of %d bytes", len);
+        atalk_drop(c, ATALK_DROP_MALFORMED, "ATP packet of %d bytes", len);
         return;
     }
     uint8_t ctl_type = (uint8_t)(atp.ctl & 0xC0);
 
     if (ctl_type == ATP_CONTROL_TREL) {
-        atp_handle_trel(ddp, &atp);
+        atp_handle_trel(c, ddp, &atp);
         return;
     }
     if (ctl_type == ATP_CONTROL_TRESP) {
-        atp_handle_response(ddp, &atp);
+        atp_handle_response(c, ddp, &atp);
         return;
     }
     if (ctl_type != ATP_CONTROL_TREQ) {
-        atalk_drop(ATALK_DROP_MALFORMED, "ATP control byte %02X", (unsigned)atp.ctl);
+        atalk_drop(c, ATALK_DROP_MALFORMED, "ATP control byte %02X", (unsigned)atp.ctl);
         return;
     }
 
-    atp_dispatch_registered_request(ddp, &atp);
+    atp_dispatch_registered_request(c, ddp, &atp);
 }
 
 // === Object-model class descriptors =========================================
@@ -2708,17 +2573,22 @@ static value_t atalk_err(const char *fallback, const char *buf) {
 
 // --- appletalk.stats -------------------------------------------------------
 
+// The counters of whichever connection is plugged in (zeros while none is).
+static DEF_GETTER(atalk_stats_get) {
+    return obj_u64_at(atalk_get_stats(), m);
+}
+
 static const member_t atalk_stats_members[] = {
-    OBJ_U64_FIELD(atalk_stats_t, llap_rx, "LLAP frames received"),
-    OBJ_U64_FIELD(atalk_stats_t, llap_tx, "LLAP frames transmitted"),
-    OBJ_U64_FIELD(atalk_stats_t, malformed, "Frames discarded as malformed, at any layer"),
-    OBJ_U64_FIELD(atalk_stats_t, unhandled, "Well-formed frames nothing here serves"),
-    OBJ_U64_FIELD(atalk_stats_t, tx_dropped, "Frames the stack gave up transmitting"),
-    OBJ_U64_FIELD(atalk_stats_t, ddp_in, "DDP datagrams delivered inbound"),
-    OBJ_U64_FIELD(atalk_stats_t, ddp_out, "DDP datagrams sent"),
-    OBJ_U64_FIELD(atalk_stats_t, atp_requests, "ATP transactions this host originated"),
-    OBJ_U64_FIELD(atalk_stats_t, atp_retries, "ATP request retransmissions"),
-    OBJ_U64_FIELD(atalk_stats_t, nbp_packets, "NBP packets processed"),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, llap_rx, "LLAP frames received", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, llap_tx, "LLAP frames transmitted", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, malformed, "Frames discarded as malformed, at any layer", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, unhandled, "Well-formed frames nothing here serves", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, tx_dropped, "Frames the stack gave up transmitting", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, ddp_in, "DDP datagrams delivered inbound", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, ddp_out, "DDP datagrams sent", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, atp_requests, "ATP transactions this host originated", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, atp_retries, "ATP request retransmissions", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, nbp_packets, "NBP packets processed", atalk_stats_get),
 };
 
 static const class_desc_t atalk_stats_class = {
@@ -3200,6 +3070,9 @@ static DEF_SETTER(atalk_printer_attr_set_name) {
 static DEF_GETTER(atalk_printer_attr_status) {
     return val_str(atalk_printer_get_status());
 }
+static DEF_GETTER(atalk_printer_attr_finishing) {
+    return val_bool(atalk_printer_job_finishing());
+}
 static DEF_GETTER(atalk_printer_attr_interpreter) {
     return val_bool(atalk_printer_has_interpreter());
 }
@@ -3263,6 +3136,10 @@ static const member_t atalk_printer_members[] = {
      .doc = "PAP status string as the workstation reads it",
      .attr = {.type = V_STRING, .get = atalk_printer_attr_status}                                      },
     {.kind = M_ATTR,
+     .name = "finishing",
+     .doc = "True while a job whose data is all in has not yet produced its document",
+     .attr = {.type = V_BOOL, .presentation_flags = VAL_VOLATILE, .get = atalk_printer_attr_finishing} },
+    {.kind = M_ATTR,
      .name = "interpreter",
      .doc = "True when the build links the PostScript interpreter (PLATEN=1)",
      .attr = {.type = V_BOOL, .get = atalk_printer_attr_interpreter}                                   },
@@ -3284,7 +3161,7 @@ static const member_t atalk_printer_members[] = {
      .attr = {.type = V_STRING, .get = atalk_printer_attr_last_outcome}                                },
     {.kind = M_ATTR,
      .name = "interpreter_jobs",
-     .doc = "Jobs this machine's printer has served since it was created (0 until its first job)",
+     .doc = "Jobs the printer has served since it was created (0 until its first job)",
      .attr = {.type = V_INT, .get = atalk_printer_attr_interpreter_jobs}                               },
     {.kind = M_ATTR,
      .name = "interpreter_permanent_jobs",
@@ -3313,7 +3190,9 @@ static DEF_GETTER(atalk_attr_enabled) {
     return val_bool(atalk_get_enabled());
 }
 static DEF_SETTER(atalk_attr_set_enabled) {
-    atalk_set_enabled(in.b);
+    char err[192];
+    if (atalk_set_enabled(in.b, err, sizeof(err)) != 0)
+        return atalk_err("cannot change the link state", err);
     return val_none();
 }
 static DEF_GETTER(atalk_attr_node_id) {

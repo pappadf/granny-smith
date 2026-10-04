@@ -28,7 +28,7 @@ const DATA = path.resolve(__dirname, "../../data");
 const TNT_ROM = path.join(DATA, "roms", "pm7500-pm8500-pm9500-96cd923d.rom");
 // Uploads are stored under the ROM's content id (rom.identify): its header
 // sum plus the ConfigInfo 64-bit sum.
-const STORED_ROM = "/opfs/images/rom/96cd923d-c241cd82bf90797a";
+export const STORED_ROM = "/opfs/images/rom/96cd923d-c241cd82bf90797a";
 const ROW = path.resolve(__dirname, "../../integration/tnt-pci-voodoo2");
 
 // The base launch args of playwright.web2.config.ts (software WebGL for
@@ -62,10 +62,9 @@ export async function probe(page: Page, expr: string): Promise<string> {
   throw new Error(`terminal probe never answered: ${expr}`);
 }
 
-// Boot the 7500 with the requested card kind seated ("voodoo2" draws
-// exactly, "voodoo2_webgpu" on the host GPU) and halt the guest, leaving
-// the Terminal live.  The aperture is driven from there.
-export async function bootWithCard(page: Page, cardId: string): Promise<void> {
+// Open the page and store the 7500's ROM through Welcome's Upload ROM
+// button; it is then at STORED_ROM, for this page and any reload of it.
+export async function storeTntRom(page: Page): Promise<void> {
   await gotoWeb2(page);
   const [chooser] = await Promise.all([
     page.waitForEvent("filechooser"),
@@ -77,6 +76,13 @@ export async function bootWithCard(page: Page, cardId: string): Promise<void> {
       .locator(".toast .msg")
       .filter({ hasText: "pm7500-pm8500-pm9500-96cd923d.rom uploaded" }),
   ).toBeVisible({ timeout: 60_000 });
+}
+
+// Boot the 7500 with the requested card kind seated ("voodoo2" draws
+// exactly, "voodoo2_webgpu" on the host GPU) and halt the guest, leaving
+// the Terminal live.  The aperture is driven from there.
+export async function bootWithCard(page: Page, cardId: string): Promise<void> {
+  await storeTntRom(page);
   await page.getByRole("button", { name: "New Machine..." }).click();
   const model = page.locator("#cfg-model");
   await expect(model.locator('option[value="pm7500"]')).toHaveCount(1, {

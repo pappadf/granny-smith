@@ -3,18 +3,11 @@
 // out of emulator.ts, the bridge, because it is built on bus/profile.ts and
 // bus/media.ts, which are built on the bridge.
 
-import { gsEval, gsErrorText, isGsError, applySchedulerMode, handleScreenResize } from './emulator';
+import { gsEval, gsErrorText, isGsError } from './emulator';
 import { getProfile } from './profile';
 import { attachHardDisk, attachCdrom, insertFloppy, type MediaResult } from './media';
 import type { MachineConfig } from './types';
-import {
-  machine,
-  resetDriveActivity,
-  setSchedulerMode,
-  type MmuKind,
-  type AuxCpu,
-  type SchedulerMode,
-} from '@/state/machine.svelte';
+import { machine, resetDriveActivity, type MmuKind, type AuxCpu } from '@/state/machine.svelte';
 import { images, setMounted } from '@/state/images.svelte';
 import { reapplyCameraSource } from '@/state/camera.svelte';
 import { reapplyMicrophoneSource } from '@/state/microphone.svelte';
@@ -111,11 +104,11 @@ function reportMount(path: string, r: MediaResult, what: string): void {
 }
 
 // Boot a machine from a config. Construction-time settings travel as ONE
-// machine.boot configuration document (named JSON-object args) — the core
-// validates everything
-// before tearing the old machine down, stages the vROM pick, seeds the
-// video card/sense/mode, and installs the ROM itself. Only runtime media
-// (floppies/HD/CD) remain imperative calls after the boot.
+// machine.boot configuration document (named JSON-object args): the core
+// validates all of it, builds the new machine from it -- its ROM, its cards
+// and their ROMs, the video sense and mode -- and only then replaces the
+// running one. Only runtime media (floppies/HD/CD) remain imperative calls
+// after the boot.
 export async function initEmulator(config: MachineConfig): Promise<void> {
   const doc: Record<string, unknown> = {};
   if (config.model) doc.model = config.model;
@@ -123,11 +116,13 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   if (config.ramKb) doc.ram = config.ramKb;
   // rom is required by machine.boot (the document inherits nothing); a
   // missing one is rejected by the core with a clear error. For vrom,
-  // '(auto)' means "let the offer registry resolve" — omit the field.
+  // '(auto)' means "let the offer registry resolve" — omit the field. A vrom
+  // gives a seated card its ROM and never chooses one: a file for a card no
+  // slot holds is rejected.
   if (config.rom && config.rom !== '(auto)') doc.rom = config.rom;
   if (config.vrom && config.vrom !== '(auto)') doc.vrom = config.vrom;
   if (config.videoCard) doc.video_card = config.videoCard;
-  // A PCI card is staged by id; '(auto)' for its expansion ROM means the
+  // A PCI card is named by id; '(auto)' for its expansion ROM means the
   // same thing it does for a vROM — omit the field and let the core's
   // offer registry content-match among the files the platform published.
   if (config.pciCard) doc.pci_card = config.pciCard;
@@ -195,20 +190,13 @@ export async function setStartupDisk(mount: { bus?: string; drive: number }): Pr
 // prepareFreshMachine.  Neither touches PRAM.  Restart is not among them: it
 // power-cycles the SAME machine, so there is nothing new to reconcile with.
 
-// How the machine came to be running.  A restore brings its own scheduler
-// mode (the checkpoint carries it); a boot gets the toolbar's.
+// How the machine came to be running.  Pacing is the page's, not the
+// machine's: neither origin touches it.
 export type MachineOrigin = 'boot' | 'restore';
 
 // The model the UI last reconciled with: a restore of another model resets
 // the Debug layout, a restore of the same one keeps it.
 let reconciledModel: string | null = null;
-
-// The core's scheduler.mode -> the toolbar's mode.
-const UI_MODE: Record<string, SchedulerMode> = {
-  paced: 'live',
-  accelerated: 'accel',
-  turbo: 'turbo',
-};
 
 export async function reconcileUiWithMachine(origin: MachineOrigin): Promise<void> {
   const id = await gsEval('machine.id');
@@ -229,33 +217,6 @@ export async function reconcileUiWithMachine(origin: MachineOrigin): Promise<voi
     resetDebugSections();
   }
   reconciledModel = model;
-  if (origin === 'restore') {
-    // The checkpoint restored the core's pacing: show it, do not override it.
-    // An enum crosses the bridge as {enum: <name>, index: <n>}.
-    const mode = await gsEval('scheduler.mode');
-    const name =
-      mode && typeof mode === 'object' && typeof (mode as { enum?: unknown }).enum === 'string'
-        ? (mode as { enum: string }).enum
-        : undefined;
-    const ui = name ? UI_MODE[name] : undefined;
-    if (ui) setSchedulerMode(ui);
-  } else {
-    // A fresh core boots paced; re-assert the user's toolbar selection so a
-    // pre-selected Turbo survives machine (re)creation.
-    await applySchedulerMode(machine.scheduler);
-  }
-  await seedScreenFromCore();
-}
-
-// The screen geometry is pushed when it changes, and a restore can land on
-// one that never changed in this page: read the live size once.
-async function seedScreenFromCore(): Promise<void> {
-  const w = await gsEval('machine.screen.width');
-  const h = await gsEval('machine.screen.height');
-  if (typeof w !== 'number' || typeof h !== 'number' || w <= 0 || h <= 0) return;
-  const pw = await gsEval('machine.screen.par_w');
-  const ph = await gsEval('machine.screen.par_h');
-  handleScreenResize(w, h, typeof pw === 'number' ? pw : 1, typeof ph === 'number' ? ph : 1);
 }
 
 // A fresh machine (a boot) is ready to run.  The Caps Lock latch is

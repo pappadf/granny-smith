@@ -196,7 +196,7 @@ The board model is the chipset skeleton plus the DMA architecture:
   document's `monitor=` (`hires`, the default: line C grounded — extended
   sense `$2B`, the head of the ROM's own mode table; `twopage` grounds all
   three and Open Firmware programs 1152x870; `portrait`, `rubik`, `none`;
-  the pick survives `machine.restart`, `machine.rebuild` and a checkpoint, #146),
+  the pick survives `machine.restart` and a checkpoint, #146),
   and VBL as Grand Central interrupt **26** while `intr_ena` is
   set (an earlier map guessed 30; the shipping video driver toggles
   mask bit 26 as it writes `INTR_ENA`, and Apple's own 9500
@@ -636,10 +636,9 @@ setting sticks for the same reason it does on the real machine.
 **What the store survives.** The store follows the machine, not the
 process: `machine.reset` and `machine.restart` (the power switch) never
 destroy the machine, so the soldered part is simply never touched, while
-`machine.boot` and `machine.rebuild` build a *new* machine with a new
-part (a machine inherits nothing it was not given). Nothing carries a
-store across a teardown -- the process-lifetime holder that used to is
-gone, and that is the fix for #112.
+`machine.boot` builds a *new* machine with a new part (a machine
+inherits nothing it was not given). Nothing holds a store across a
+teardown (#112).
 
 **What a new part holds.** A new Macintosh board's part is not blank: it
 holds the store its own firmware formats (`src/machines/runtime/of_nvram.c`).
@@ -694,8 +693,8 @@ sets after `machine.boot`; and `depth` (8/16/32), Control's saved depth --
 with no `'gprf'` record yet it writes the one the driver's first save
 would for the monitor on the port, so a fresh 7500 comes up in 256
 colours on its first boot. The store the object edits is the live chip, so a poke followed by `machine.restart` is what
-the machine boots on; a poke followed by `machine.boot` or
-`machine.rebuild` is lost with the rest of the old machine.
+the machine boots on; a poke followed by `machine.boot` is lost with the rest of the old
+machine.
 
 The 54M30 also answers the **legacy** VGA I/O block (`$3B0`-`$3DF`) rather
 than its relocatable BAR, because this board installs no pull-down on MD51

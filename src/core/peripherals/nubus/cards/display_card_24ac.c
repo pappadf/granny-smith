@@ -95,7 +95,7 @@ struct display_card_24ac_priv {
     uint8_t sense_ext; // 6-bit extended-sense code (for primary 6/7 monitors)
     uint8_t sense_last_write; // last byte written to 0xD8000D (which lines driven)
     // The CONNECTED monitor — physical-plug state, chosen at card_init
-    // (default or staged video mode).  Survives the /RESET hook: a bus
+    // (default or the slot's video mode).  Survives the /RESET hook: a bus
     // reset re-initialises registers, it does not unplug the display.
     uint16_t mon_width; // connected monitor geometry
     uint16_t mon_height;
@@ -649,33 +649,19 @@ static memory_interface_t s_display_card_24ac_mem_iface = {
 // === VROM load ==============================================================
 
 // Load the 24AC declaration ROM through the shared content-driven declrom
-// loader: the offered candidates in pick order (the explicit machine.boot
-// vrom= first, then the Format-Block-CRC catalog's preferred revision, then
+// loader: the slot's own ROM file when the document names one, else the
+// offered candidates (the Format-Block-CRC catalog's preferred revision, then
 // catalog order; see vrom.h), then byteLanes expansion.  Returns true on success.
-static bool load_vrom(display_card_24ac_priv_t *p) {
+static bool load_vrom(display_card_24ac_priv_t *p, const char *rom) {
     char *path = NULL;
-    if (!declrom_load_vrom_card(display_card_24ac_kind.id, p->vrom, DISPLAY_CARD_24AC_DECLROM_BUS_SIZE, &path))
+    if (!declrom_load_vrom_card(p->card, display_card_24ac_kind.id, rom, p->vrom, DISPLAY_CARD_24AC_DECLROM_BUS_SIZE,
+                                &path))
         return false;
     free(p->vrom_path);
     p->vrom_path = path;
     p->vrom_size = DISPLAY_CARD_24AC_DECLROM_BUS_SIZE;
     return true;
 }
-
-// === Video-mode selection (machine.nubus.video_mode) ========================
-//
-// A pending "<monitor>_<N>bpp" id (e.g. "rgb_640x480_8bpp") set before
-// machine.boot; consumed by the next card_init, which sets the monitor sense +
-// depth and seeds PRAM so the OS boots at that mode (mirrors jmfb.c).  The id
-// is resolved against display_card_24ac_monitors[] × its depth list.
-// STAGING -- ON DEATH ROW.  This is a construction input travelling as a
-// hidden per-module global: the visible per-slot channel
-// (machine.nubus.slot[N].video_mode) funnels through here, and the factory
-// consumes it destructively.  The intended end state replaces every one of
-// these with a machine_build_opts_t field passed to the factory as an
-// ARGUMENT -- no holder, no staged copy, no pending slot.  Do not add
-// another one; the per-slot channel is already there to carry it.
-static char s_pending_video_mode_id[NUBUS_VIDEO_MODE_ID_MAX] = "";
 
 // bpp → MODE register depth bits (vrom RE depth ladder; no 2-bpp mode).
 static uint8_t modebits_for_format(pixel_format_t f) {
@@ -776,8 +762,8 @@ static void sense_for_sister(uint8_t sister, uint8_t *primary, uint8_t *ext) {
 // Power-on register/engine/display state, shared by card_init and the /RESET
 // hook (card_reset).  Restores exactly what the card's silicon presents at
 // power-on WITHOUT touching VRAM, the declaration ROM, or the host memory-map
-// regions — those persist across a warm /RESET, as the hardware does.  A
-// pending video-mode pick (card_init only) is applied over these defaults by
+// regions — those persist across a warm /RESET, as the hardware does.  The
+// slot's video mode (card_init only) is applied over these defaults by
 // the caller; a warm reset keeps the power-on default because the mode is
 // re-selected from the (battery-backed, un-reset) PRAM as the ROM re-boots.
 // `cold` is true only for card_init.  A warm /RESET must leave VRAM alone --
@@ -800,10 +786,10 @@ static void set_poweron_defaults(display_card_24ac_priv_t *p, bool cold) {
     p->mode_reg = 0x40u; // 8 bpp depth code in bits 7-5 (0x40 = code 2, vrom RE)
     p->depth_reg = 0;
     // Monitor sense reflects the CONNECTED monitor (p->mon_*, set at
-    // card_init — default 640×480 multisync, ext code $03, or the staged
-    // video-mode pick).  A warm /RESET must not "unplug" the display:
+    // card_init — default 640×480 multisync, ext code $03, or the slot's
+    // video mode).  A warm /RESET must not "unplug" the display:
     // the boot ROM executes a 68k RESET early in StartBoot, and the
-    // sensed monitor has to survive it or a staged mode silently falls
+    // sensed monitor has to survive it or a chosen mode silently falls
     // back to the default monitor when PrimaryInit re-reads the lines.
     p->sense_primary = p->mon_sense_primary;
     p->sense_ext = p->mon_sense_ext;
@@ -862,7 +848,8 @@ static void set_poweron_defaults(display_card_24ac_priv_t *p, bool cold) {
     }
 }
 
-static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, bool generic) {
+static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts,
+                            bool generic) {
     (void)cp;
     display_card_24ac_priv_t *p = calloc(1, sizeof(*p));
     if (!p)
@@ -870,15 +857,14 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     p->card = card;
     p->slot_base = nubus_slot_base(card->slot);
 
-    // Consume a pending video-mode pick (machine.nubus.video_mode = "..."):
-    // it overrides the power-on sense/geometry/depth below and seeds PRAM at
-    // the end of init so the OS boots at the chosen monitor + depth.
+    // The slot's video mode ("rgb_640x480_8bpp", checked against this card's
+    // catalog before the boot began) overrides the power-on sense/geometry/
+    // depth below and seeds PRAM at the end of init so the OS boots at the
+    // chosen monitor + depth.
     const nubus_monitor_t *seeded_monitor = NULL;
     int seeded_depth_bpp = 0;
-    if (s_pending_video_mode_id[0] &&
-        display_card_24ac_video_mode_lookup(s_pending_video_mode_id, &seeded_monitor, &seeded_depth_bpp))
-        s_pending_video_mode_id[0] = '\0'; // consume on match (ignore foreign ids)
-    else
+    if (!opts->video_mode[0] ||
+        !display_card_24ac_video_mode_lookup(opts->video_mode, &seeded_monitor, &seeded_depth_bpp))
         seeded_monitor = NULL;
 
     p->vram = calloc(1, DISPLAY_CARD_24AC_VRAM_SIZE);
@@ -898,13 +884,13 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         declrom_builder_t *bld = gsvrom_generate(GSVROM_BOOGIE, display_card_24ac_generic_kind.monitors);
         size_t img_size = 0;
         const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
-        if (img && declrom_install_builtin(display_card_24ac_generic_kind.id, img, img_size, p->vrom,
+        if (img && declrom_install_builtin(p->card, display_card_24ac_generic_kind.id, img, img_size, p->vrom,
                                            DISPLAY_CARD_24AC_DECLROM_BUS_SIZE))
             p->vrom_size = DISPLAY_CARD_24AC_DECLROM_BUS_SIZE;
         else
             LOG(0, "24ac: built-in declaration ROM failed to generate; declaration ROM is zero-filled");
         declrom_builder_free(bld);
-    } else if (!load_vrom(p)) {
+    } else if (!load_vrom(p, opts->rom[0] ? opts->rom : NULL)) {
         // requires_vrom gates the dialog on a real file; reaching here means
         // CI ran without one.  Log loudly and continue with a zero declrom —
         // PrimaryInit finds no Format Header and the OS skips the slot.
@@ -917,8 +903,8 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     card->declrom = p->vrom;
     card->declrom_size = p->vrom_size;
 
-    // The connected monitor: the default 640×480 multisync, or the staged
-    // video-mode pick.  Stored as plug state so it survives the /RESET hook
+    // The connected monitor: the default 640×480 multisync, or the slot's
+    // video mode.  Stored as plug state so it survives the /RESET hook
     // (set_poweron_defaults derives sense + geometry from it).
     p->mon_width = 640;
     p->mon_height = 480;
@@ -937,7 +923,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     // set_poweron_defaults.
     set_poweron_defaults(p, /*cold*/ true);
 
-    // Apply a pending video-mode pick's DEPTH over the power-on defaults
+    // Apply the slot entry's video_mode DEPTH over the power-on defaults
     // (the OS re-confirms it via the sResource + the PRAM seed below).
     if (seeded_monitor) {
         pixel_format_t f = format_for_bpp(seeded_depth_bpp);
@@ -1015,9 +1001,11 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     // lands on the chosen depth.  It survives the boot because the RTC's
     // power-up PRAM already carries the 'NuMc' token and a complete Start
     // Manager table -- which is also why the machine still finds and boots a
-    // SCSI volume (a bare token with a zeroed boot device cannot).
-    if (seeded_monitor && seeded_depth_bpp > 0) {
-        rtc_t *rtc = system_rtc();
+    // SCSI volume (a bare token with a zeroed boot device cannot).  A cold
+    // boot only: a restore's PRAM is the RTC's own block, holding whatever the
+    // guest wrote there.
+    if (!cp && seeded_monitor && seeded_depth_bpp > 0) {
+        rtc_t *rtc = cfg->rtc;
         if (rtc) {
             uint8_t saved_mode = savedmode_for_bpp(seeded_depth_bpp);
             // The XPRAM token and the Start Manager table (PRAMInitTbl) are the
@@ -1100,12 +1088,12 @@ static const char *card_name_generic(const nubus_card_t *card) {
 
 // Thin per-kind init wrappers — the sibling pair shares one HLE model
 // (hard rule: one HLE model per real/generic pair).
-static int card_init_real(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
-    return card_init_common(card, cfg, cp, /*generic*/ false);
+static int card_init_real(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
+    return card_init_common(card, cfg, cp, opts, /*generic*/ false);
 }
 
-static int card_init_generic(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
-    return card_init_common(card, cfg, cp, /*generic*/ true);
+static int card_init_generic(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
+    return card_init_common(card, cfg, cp, opts, /*generic*/ true);
 }
 
 // === Checkpoint =============================================================
@@ -1319,7 +1307,6 @@ const nubus_card_kind_t display_card_24ac_kind = {
     .requires_vrom = true,
     .monitors = display_card_24ac_monitors,
     .ops = &display_card_24ac_ops,
-    .stage_video_mode = display_card_24ac_pending_video_mode_set,
     .attach_objects = display_card_24ac_attach_objects,
 };
 
@@ -1333,19 +1320,10 @@ const nubus_card_kind_t display_card_24ac_generic_kind = {
     .requires_vrom = false,
     .monitors = display_card_24ac_monitors,
     .ops = &display_card_24ac_generic_ops,
-    .stage_video_mode = display_card_24ac_pending_video_mode_set,
     .attach_objects = display_card_24ac_attach_objects,
 };
 
-// === Video-mode selection (machine.nubus.video_mode) ========================
-
-void display_card_24ac_pending_video_mode_set(const char *id) {
-    if (!id || !*id) {
-        s_pending_video_mode_id[0] = '\0';
-        return;
-    }
-    snprintf(s_pending_video_mode_id, sizeof s_pending_video_mode_id, "%s", id);
-}
+// === Video-mode selection ===================================================
 
 // Parse "<monitor>_<N>bpp" (e.g. "rgb_640x480_8bpp") into (monitor, N): the
 // monitor name is matched against display_card_24ac_monitors[] and N validated

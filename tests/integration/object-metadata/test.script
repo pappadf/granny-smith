@@ -52,9 +52,10 @@ assert $at.domain == "network" "appletalk domain"
 let sch = member_of(meta.members(), "scheduler")
 assert $sch.domain == "emulator" "scheduler domain"
 
-# A lookup-backed child of a collection entry has the entry's path.
-machine.scsi.attach_hd ../../data/systems/System_6_0_8.dsk 3
-assert machine.scsi.device[3].image.meta.path == "machine.scsi.device[3].image" "lookup child path"
+# A lookup-backed child of a collection entry has the entry's path.  (Id 2:
+# the IIcx's id 3 is its CD bay, which takes only the CD-ROM drive.)
+machine.scsi.attach_hd ../../data/systems/System_6_0_8.dsk 2
+assert machine.scsi.device[2].image.meta.path == "machine.scsi.device[2].image" "lookup child path"
 
 # Tiers: statistics and plumbing.
 let _m6 = member_of(scheduler.meta.members(), "cycles")

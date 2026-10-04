@@ -97,7 +97,7 @@ state, the Screamer registers, the PCI bus, the image table, the MESH bus
 and chip, SWIM3, the ATAPI bus and the two ATA channels, and last BMAC.  The NVRAM
 is part of the Heathrow block; it survives `machine.reset` and
 `machine.restart` because neither destroys the machine (the board
-battery), and a new machine (`machine.boot`, `machine.rebuild`) gets a new
+battery), and a new machine (`machine.boot`) gets a new
 part. The new part holds what the board's own firmware formats
 (`src/machines/runtime/of_nvram.c`, the TNT rule in
 `docs/internals/machines/tnt/tnt.md`): OF 2.4's variables (Rev C; the Rev A

@@ -65,9 +65,12 @@ typedef struct mac030_glue_state {
 // The II-family construction prefix shared by every GLUE machine: build the
 // memory map, the CPU (model read FROM THE PROFILE — closing the drift
 // where every init hardcoded CPU_MODEL_68030), the scheduler, and its
-// frequency/CPI.  The caller continues with any machine-specific scheduler
-// event types, IRQ-state restore, and device construction.
-void mac030_build_core(config_t *cfg, checkpoint_t *cp);
+// frequency/CPI.  `desc` supplies the board's bus-error window, which the
+// memory map takes at construction.  The caller continues with any
+// machine-specific scheduler event types, IRQ-state restore, and device
+// construction.
+struct mac030_board_desc;
+void mac030_build_core(config_t *cfg, const struct mac030_board_desc *desc, checkpoint_t *cp);
 
 // Shared GLUE IRQ callbacks: route the SCC / VIA1 / VIA2 interrupt line to
 // the CPU IPL via mac030_glue_update_ipl.  Identical across se30/iicx/iix.
@@ -138,8 +141,8 @@ struct nubus_slot_decl;
 // the family-specific device construction stays a code path (see each init).
 // The field set every 68k board descriptor shares, and that the shared code
 // reads: mac030_io_* takes io_ranges / io_mirror_mask / io_unmapped_read,
-// mac030_build_mmu takes rom_base / rom_end, and memory_set_bus_error_range
-// takes the bus-error pair.  The MCU and AV descriptors EMBED this rather
+// mac030_build_mmu takes rom_base / rom_end, and mac030_build_core passes the
+// bus-error pair to memory_map_init.  The MCU and AV descriptors EMBED this rather
 // than redeclaring the fields -- which is what lets
 // mcu_io_bind and av_io_bind hand &desc->common to mac030_glue_io_bind
 // instead of each carrying its own copy of the same four assignments.
@@ -181,17 +184,11 @@ typedef struct mac030_board_desc {
 void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc);
 
 // Build the low-speed spine every 68k family shares: RTC, the SCC at the Mac's
-// clocks (3.6864 MHz PCLK / 7.8336 MHz RTxC), and the AppleTalk stack that
-// rides its LocalTalk channel.  Pass NULL for `scc_irq` to take the family
+// clocks (3.6864 MHz PCLK / 7.8336 MHz RTxC), and the machine's connection to
+// the AppleTalk network on its LocalTalk channel.  Pass NULL for `scc_irq` to take the family
 // default (mac030_glue_scc_irq).
 //
-// This is the READ side of the stream machine_checkpoint_save_core() writes
-// below, and the pairing is the point: rtc_init, scc_init and appletalk_init
-// each consume their own block from `cp` as they build, so construction order
-// here IS restore order.  While the save half was shared and the restore half
-// was copied into five families, the IIfx drifted out of order and every
-// checkpoint.load on that machine failed.  Change one of these two functions
-// and you must change the other.
+// Each is a checkpoint part, registered as it is built (machine_parts.h).
 //
 // The VIAs are deliberately NOT here: one machine or two, different port
 // hooks, different IRQ sinks, and the GLUE machines' exact 20:1 clock ratio

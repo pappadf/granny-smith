@@ -81,6 +81,7 @@ const hw_profile_t machine_q950 = {
     .scsi_buses = q950_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
 
     .nubus_slots = q900_nubus_slots, // same Eclipse board (q900_internal.h)
 

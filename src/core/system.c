@@ -21,15 +21,14 @@
 #include "host_input.h"
 #include "image.h"
 #include "image_wrap.h"
-#include "jmfb.h" // restored-record sense seeding on checkpoint load
 #include "keyboard.h"
 #include "log.h"
-#include "machine_config.h"
+#include "machine_parts.h"
 #include "machine_profile.h"
 #include "memory.h"
 #include "mouse.h"
 #include "nubus.h"
-#include "pci.h" // staged-pick re-seeding on checkpoint restore
+#include "pci.h"
 #include "ppc.h" // ppc_debug_if (the PPC main-CPU debug seam)
 #include "rom.h"
 #include "root.h"
@@ -59,17 +58,6 @@ LOG_USE_CATEGORY_NAME("setup");
 
 // Global emulator pointer (definition)
 config_t *global_emulator = NULL;
-
-// Pending RAM override (KB). Set by `setup --ram` or headless `ram=` arg.
-// Consumed by system_create(); 0 means use machine default.
-static uint32_t g_pending_ram_kb = 0;
-
-void system_set_pending_ram_kb(uint32_t kb) {
-    g_pending_ram_kb = kb;
-}
-uint32_t system_get_pending_ram_kb(void) {
-    return g_pending_ram_kb;
-}
 
 // Pick the delta directory for a fresh writable mount.  Default is the
 // active machine directory (so deltas live alongside state.checkpoint and
@@ -107,35 +95,24 @@ void config_add_image(config_t *cfg, image_t *image) {
     cfg->n_images++;
 }
 
-// Remove an image from the config's tracked image list WITHOUT closing it
-// (machine.restart handle transfer: the caller takes ownership so the handle
-// survives system_destroy's close loop).  Order is not preserved-sensitive;
-// the tail is compacted down.
-void config_remove_image(config_t *cfg, image_t *image) {
-    if (!cfg || !image)
-        return;
-    for (int i = 0; i < cfg->n_images; ++i) {
-        if (cfg->images[i] != image)
-            continue;
-        for (int j = i + 1; j < cfg->n_images; ++j)
-            cfg->images[j - 1] = cfg->images[j];
-        cfg->n_images--;
-        cfg->images[cfg->n_images] = NULL;
-        return;
-    }
-}
+// Set while system_create builds a machine.  The machine under construction
+// is not the active machine -- it may be built while another one runs -- so a
+// constructor reaches its devices through the cfg it was given, never through
+// the accessors below, which name the ACTIVE machine.  They assert it.
+static bool s_constructing;
+#define NOT_DURING_CONSTRUCTION()                                                                                      \
+    do {                                                                                                               \
+        if (s_constructing)                                                                                            \
+            construction_misuse(__func__);                                                                             \
+    } while (0)
 
-// Find an image object by its filename path
-image_t *setup_get_image_by_filename(const char *filename) {
-    struct config *config = global_emulator;
-    if (!config || !filename)
-        return NULL;
-    for (int i = 0; i < config->n_images; ++i) {
-        const char *name = image_get_filename(config->images[i]);
-        if (name && strcmp(name, filename) == 0)
-            return config->images[i];
-    }
-    return NULL;
+// The assert handler itself reads the active machine (its backtrace), so the
+// flag is cleared before it runs.
+static void construction_misuse(const char *accessor) {
+    (void)accessor; // unused when asserts compile out
+    s_constructing = false;
+    gs_event_hold(0);
+    GS_ASSERTF(false, "%s() names the active machine; a constructor uses its own cfg", accessor);
 }
 
 // System-level mouse input wrapper: routes input to appropriate mouse device model
@@ -218,13 +195,10 @@ void system_keyboard_update(key_event_t event, int key) {
 //
 // One entry point now does both halves, in the order the hardware imposes:
 // the overlay must be back before the vectors at $0/$4 are read.
-void system_machine_reset(void) {
-    config_t *cfg = global_emulator;
-    if (!cfg)
-        return;
-
-    system_reset_devices(); // level 1: the board's /RESET net
-
+// The CPU to its reset vector: the 68k cores fetch SSP and PC from the ROM,
+// the PowerPC goes to its reset state.  The CPU half of every reset level,
+// and the one CPU reset a new machine gets at construction.
+static void system_cpu_reset(config_t *cfg) {
     if (cfg->cpu) {
         if (cfg->machine && cfg->machine->cpu_model == CPU_MODEL_68040)
             cpu_reset_to_vector_68040(cfg->cpu);
@@ -233,6 +207,15 @@ void system_machine_reset(void) {
     } else if (cfg->ppc) {
         ppc_reset(cfg->ppc);
     }
+}
+
+void system_machine_reset(void) {
+    config_t *cfg = global_emulator;
+    if (!cfg)
+        return;
+
+    system_reset_devices(); // level 1: the board's /RESET net
+    system_cpu_reset(cfg);
 }
 
 // LEVEL 3 -- a power cycle (machine.restart).  Switching a machine off and on
@@ -332,21 +315,25 @@ void system_reset_devices(void) {
 
 // System-level scheduler accessor: returns the current scheduler object
 scheduler_t *system_scheduler(void) {
+    NOT_DURING_CONSTRUCTION();
     return global_emulator ? global_emulator->scheduler : NULL;
 }
 
 // System-level memory accessor: returns the current memory object
 memory_map_t *system_memory(void) {
+    NOT_DURING_CONSTRUCTION();
     return global_emulator ? global_emulator->mem_map : NULL;
 }
 
 // System-level debug accessor: returns the current debugger object
 debug_t *system_debug(void) {
+    NOT_DURING_CONSTRUCTION();
     return global_emulator ? global_emulator->debugger : NULL;
 }
 
 // System-level CPU accessor: returns the current CPU object
 cpu_t *system_cpu(void) {
+    NOT_DURING_CONSTRUCTION();
     return global_emulator ? global_emulator->cpu : NULL;
 }
 
@@ -354,6 +341,7 @@ cpu_t *system_cpu(void) {
 // a machine with a main CPU has been built (ctx doubles as the "populated"
 // flag — system_create fills the vtable right after substrate init).
 const struct cpu_debug_if *system_cpu_debug_if(void) {
+    NOT_DURING_CONSTRUCTION();
     if (!global_emulator || !global_emulator->cpu_dbg.ctx)
         return NULL;
     return &global_emulator->cpu_dbg;
@@ -361,7 +349,16 @@ const struct cpu_debug_if *system_cpu_debug_if(void) {
 
 // The active machine configuration (what host-input/object methods act on).
 config_t *system_config(void) {
+    NOT_DURING_CONSTRUCTION();
     return global_emulator;
+}
+
+config_t *system_running(void) {
+    return global_emulator;
+}
+
+struct scheduler *system_running_scheduler(void) {
+    return global_emulator ? global_emulator->scheduler : NULL;
 }
 
 // Per-kind sums of the tracked images' I/O counters -- the images the
@@ -415,6 +412,7 @@ int system_input_mouse_button(bool down, const char *mode) {
 
 // System-level RTC accessor: returns the current RTC object
 rtc_t *system_rtc(void) {
+    NOT_DURING_CONSTRUCTION();
     return global_emulator ? global_emulator->rtc : NULL;
 }
 
@@ -439,6 +437,7 @@ display_t *system_display_synced(void) {
 // machine is booted or the booted machine has no primary display (e.g. a
 // IIcx with no card seated).
 display_t *system_display(void) {
+    NOT_DURING_CONSTRUCTION();
     config_t *cfg = global_emulator;
     if (!cfg || !cfg->machine)
         return NULL;
@@ -462,41 +461,6 @@ const char *system_machine_model_id(void) {
     if (!global_emulator || !global_emulator->machine)
         return NULL;
     return global_emulator->machine->id;
-}
-
-// Ensure the correct machine is active for the given model id.
-// Creates a new machine if none exists, or tears down and recreates if the
-// current machine's id doesn't match.  Returns 0 on success, -1 on error.
-int system_ensure_machine(const char *model_id) {
-    if (!model_id)
-        return -1;
-
-    const hw_profile_t *needed = machine_find(model_id);
-    if (!needed) {
-        LOG(1, "system_ensure_machine: unknown model '%s'", model_id);
-        return -1;
-    }
-
-    // Already have the right machine?
-    const char *current = system_machine_model_id();
-    if (current && strcmp(current, model_id) == 0)
-        return 0;
-
-    // Teardown existing machine if wrong type
-    if (global_emulator) {
-        LOG(1, "Switching machine from %s to %s", global_emulator->machine->id, model_id);
-        system_destroy(global_emulator); // clears global_emulator itself
-    }
-
-    // Create the new machine
-    config_t *cfg = system_create(needed, NULL, NULL);
-    if (!cfg) {
-        LOG(1, "system_ensure_machine: failed to create %s", model_id);
-        return -1;
-    }
-
-    LOG(1, "Machine created: %s (%s)", needed->name, needed->id);
-    return 0;
 }
 
 // Floppy insertion through the machine substrate: every
@@ -763,32 +727,29 @@ void setup_init() {
     log_register_manifest();
 
     image_init(NULL);
+
+    // The AppleTalk network: host state, one per process.  Machines plug into
+    // it as they are built (atalk_conn_new) and never tear it down.
+    appletalk_network_init();
 }
 
-// The default AppleShare volume.  The platform registers its path once
-// (the browser: /opfs/shared; headless: --shared-dir or $GS_SHARED_DIR); core
-// publishes it after every machine build, because a machine's teardown drops
-// the volume table.  Both platforms used to carry the same provisioning in a
-// system_post_create override, with different mkdir modes and log styles.
+// The default AppleShare volume.  The platform names its path once, at
+// startup, after setup_init (the browser: /opfs/shared; headless:
+// --shared-dir or $GS_SHARED_DIR), and the network publishes it then: a
+// share is the network's, so it is there for every machine that plugs in.
+// A failure is a logged warning, never a startup error -- a user who removed
+// the directory still gets a running emulator.
 #define GS_DEFAULT_SHARE_NAME "Shared"
-static char g_default_share[1024];
 
 void system_set_default_share(const char *path) {
-    snprintf(g_default_share, sizeof(g_default_share), "%s", path ? path : "");
-}
-
-// Publish the default share.  Idempotent; a failure is a logged warning,
-// never a boot error — a user who removed the directory still gets a
-// running machine.
-static void provision_default_share(void) {
-    if (!g_default_share[0] || atalk_afp_volume_find(GS_DEFAULT_SHARE_NAME) >= 0)
+    if (!path || !*path || atalk_afp_volume_find(GS_DEFAULT_SHARE_NAME) >= 0)
         return;
-    if (mkdir(g_default_share, 0755) != 0 && errno != EEXIST) {
-        LOG(0, "warning: default share: cannot create %s: %s", g_default_share, strerror(errno));
+    if (mkdir(path, 0755) != 0 && errno != EEXIST) {
+        LOG(0, "warning: default share: cannot create %s: %s", path, strerror(errno));
         return;
     }
     char err[192];
-    if (atalk_afp_volume_add(GS_DEFAULT_SHARE_NAME, g_default_share, err, sizeof(err)) < 0)
+    if (atalk_afp_volume_add(GS_DEFAULT_SHARE_NAME, path, err, sizeof(err)) < 0)
         LOG(0, "warning: default share: %s", err);
 }
 
@@ -796,6 +757,12 @@ static void provision_default_share(void) {
 // headless build has no auto-checkpoint loop, so the weak defaults
 // just stub out; em_main.c overrides them to read/write the live
 // `checkpoint_auto_enabled` flag.
+// A new machine is the active one (machine.boot, checkpoint.load).  The host
+// re-bases whatever it samples from the machine: nothing it observed of the
+// previous machine is compared with this one (the page's MIPS sample, headless
+// --max-cycles' count).  The weak default serves a host that samples nothing.
+__attribute__((weak)) void platform_machine_attached(void) {}
+
 __attribute__((weak)) bool gs_checkpoint_auto_get(void) {
     return false;
 }
@@ -894,7 +861,7 @@ int system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
     // instruction count.  Not a stop: the machine's run state is saved as
     // it is, and no mode ends (the run-state event would otherwise report
     // a pause the user never asked for).
-    cpu_reschedule();
+    cpu_reschedule(sched);
 
     // The previous save's write is still in flight on the I/O worker: the
     // buffer is its, and a save now would have nothing to save into.  Skip
@@ -1156,37 +1123,70 @@ __attribute__((weak)) bool gs_audio_in_debug(char *buf, size_t buflen) {
 
 // Create an emulator instance for the given machine profile.
 // Allocates config_t, wires the machine descriptor, and calls profile->substrate->init().
+// The board's block: the model and the RAM size, which the rest of the
+// machine is built for.  It is the checkpoint's first part, so a restore
+// reads it before it builds anything (system_restore).
+typedef struct {
+    char model[40];
+    uint32_t ram_kb;
+} board_block_t;
+
+static void board_part_save(void *obj, checkpoint_t *cp) {
+    const config_t *cfg = obj;
+    board_block_t b;
+    memset(&b, 0, sizeof b);
+    snprintf(b.model, sizeof b.model, "%s", cfg->machine->id);
+    b.ram_kb = cfg->ram_size / 1024u;
+    system_write_checkpoint_data(cp, &b, sizeof b, "machine");
+}
+
+static void events_part_save(void *obj, checkpoint_t *cp) {
+    scheduler_checkpoint_events(obj, cp);
+}
+
+// Put the running machine's memory map back after a build selected its own:
+// the aliases memory_map_select derives, plus the access pair the CPU had
+// chosen, which selection resets to supervisor (a 68000 re-picks it only on a
+// mode change).
+static void reselect_active_map(uintptr_t *active_read, uintptr_t *active_write) {
+    memory_map_select(global_emulator ? global_emulator->mem_map : NULL);
+    if (global_emulator) {
+        g_active_read = active_read;
+        g_active_write = active_write;
+    }
+}
+
 config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t *opts, checkpoint_t *checkpoint) {
 
     assert(profile != NULL);
     assert(profile->substrate != NULL && profile->substrate->init != NULL);
+    assert(opts != NULL && opts->ram_kb != 0);
+    assert(checkpoint != NULL || (opts->rom.data != NULL && opts->rom.size != 0)); // a machine has its ROM
 
     config_t *cfg = malloc(sizeof(config_t));
     if (!cfg)
         return NULL;
     memset(cfg, 0, sizeof(config_t));
-    cfg->build_opts = opts ? *opts : machine_build_opts_default();
+    cfg->build_opts = *opts;
+
+    // The build selects its own memory map (memory_map_init); afterwards the
+    // running machine's goes back exactly as it was, down to the access mode
+    // its CPU had the fast path in.
+    uintptr_t *const active_read = g_active_read, *const active_write = g_active_write;
 
     cfg->machine = profile;
     // Main-CPU architecture tag: derived from the
     // profile's cpu_model; the substrate init below builds the matching core.
     cfg->cpu_arch = cpu_arch_for_model(profile->cpu_model);
-    global_emulator = cfg;
 
-    // Label the machine container node with the active model name so the
-    // SYSTEM tab shows "Macintosh IIcx" rather than the bare "machine"
-    // segment. Covers cold boot and checkpoint restore — both land here.
-    machine_set_active_label(profile->name);
+    // The RAM size is a build option: the caller validated and defaulted it.
+    cfg->ram_size = cfg->build_opts.ram_kb * 1024u;
 
-    // Compute RAM size: use pending override if set, otherwise machine default
-    if (g_pending_ram_kb > 0) {
-        cfg->ram_size = g_pending_ram_kb * 1024;
-        if (cfg->ram_size > profile->ram_max)
-            cfg->ram_size = profile->ram_max;
-        g_pending_ram_kb = 0; // consume the override
-    } else {
-        cfg->ram_size = profile->ram_default;
-    }
+    // The board is the checkpoint's first part: what the machine is.  On a
+    // restore, system_restore has read it -- name and block -- to choose the
+    // model and the RAM size it is built with, so nothing is read here.
+    machine_part_begin(cfg, NULL, "machine");
+    machine_part(cfg, checkpoint, "machine", board_part_save, cfg);
 
     // Delegate all machine-specific initialisation to the profile.  A
     // non-zero return means the machine could not be built (the only cause
@@ -1194,17 +1194,32 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     // report the failure rather than handing back a half-built config.  Every
     // teardown tolerates a partially-constructed machine -- each guards its
     // machine_context -- which is what makes this safe to call here.
+    s_constructing = true;
+    gs_event_hold(1);
     if (profile->substrate->init(cfg, checkpoint) != 0) {
+        s_constructing = false;
+        gs_event_hold(0);
         LOG(0, "Error: failed to construct %s", profile->name);
         if (profile->substrate->teardown)
             profile->substrate->teardown(cfg);
+        machine_parts_free(cfg);
         free(cfg);
+        reselect_active_map(active_read, active_write);
         return NULL;
     }
 
-    // The floppy controller learns how many drives this machine cables.
-    if (cfg->floppy)
-        floppy_set_drive_count(cfg->floppy, sys_fd_count(cfg));
+    // The build options are construction's arguments, and construction is
+    // over: every device took what it needed (the memory map copied the ROM,
+    // the buses their slot entries, the video its monitor strap).  Nothing
+    // reads them again, so the machine keeps none of them.
+    cfg->build_opts = machine_build_opts_default();
+
+    // A new machine powers on: the CPU starts from its reset vector, with the
+    // ROM already in place, by the same path every reset takes.  Every device
+    // was constructed in its power-on state, so the board's /RESET net has
+    // nothing to do.  A restored CPU carries its own state.
+    if (!checkpoint)
+        system_cpu_reset(cfg);
 
     // Bind the main-CPU debug seam to whichever core the substrate built.
     switch (cfg->cpu_arch) {
@@ -1218,45 +1233,84 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
         break;
     }
 
-    // A machine with a CD bay has the DRIVE on the bus from power-on, disc or
-    // no disc.  SCSI is not hot-plug: the guest's CD driver claims its targets
-    // during the boot-time bus scan and polls only those, so a drive that
-    // materialises later — when the user picks Insert — is one nothing ever
-    // looks at, and the disc never mounts.  Registering it empty here makes a
-    // later insert an ordinary medium change (UNIT ATTENTION), which is what
-    // the driver notices and the Finder mounts on.
-    //
-    // Skip a slot that is already occupied: restoring a checkpoint rebuilds
-    // the bus from the saved state, and that device outranks a blank bay.
-    if (profile->has_cdrom && cfg->scsi && !scsi_device_present(cfg->scsi, (unsigned)profile->cdrom_id))
-        scsi_add_device(cfg->scsi, profile->cdrom_id, "SONY", "CD-ROM CDU-8002", "1.8g", NULL, scsi_dev_cdrom, 2048,
-                        true);
-
     // The `machine.adb.keyboard` object, per machine.  After the substrate
-    // because it wants the scheduler, before scheduler_start because its
-    // event type has to exist when the scheduler re-binds restored events.
+    // because it wants the scheduler.
     cfg->host_input = host_input_init(cfg, cfg->scheduler);
+
+    // The event queue is the checkpoint's last part, restored once every
+    // event source has been constructed and registered its types.
+    machine_part_begin(cfg, checkpoint, "events");
+    if (checkpoint)
+        scheduler_restore_events(cfg->scheduler, checkpoint);
+    machine_part(cfg, checkpoint, "events", events_part_save, cfg->scheduler);
+    s_constructing = false;
+    gs_event_hold(0);
+
+    // The fast-path aliases go back to the active machine's until the swap
+    // step.
+    reselect_active_map(active_read, active_write);
+
+    return cfg;
+}
+
+// Make a constructed machine the active one, then destroy the machine it
+// replaces: the swap step of build, swap, destroy.  Everything that names "the
+// active machine" changes here and nowhere else, so a build that fails --
+// system_create returning NULL, or a restore whose checkpoint flagged an
+// error -- has changed nothing and leaves nothing to put back.
+void system_swap_in(config_t *cfg, bool restored, const struct host_pacing *pacing) {
+    config_t *old = global_emulator;
+    global_emulator = cfg;
+    memory_map_select(cfg->mem_map);
+
+    // Label the machine container node with the active model name so the
+    // SYSTEM tab shows "Macintosh IIcx" rather than the bare "machine"
+    // segment.
+    machine_set_active_label(cfg->machine->name);
+
+    // The expansion buses' slot trees (machine.nubus.slot[N], machine.pci.
+    // slot[N]) -- and with them machine.screen.source -- project this
+    // machine's cards.  They are process state, so they change here, never
+    // while a machine is being built.  Before root_install, which attaches the
+    // bus nodes they register.
+    if (cfg->nubus)
+        nubus_objects_build(cfg->nubus);
+    if (cfg->pci)
+        pci_objects_build(cfg->pci);
 
     // Stand up the object-model root: attaches stub classes for
     // cpu/memory/scheduler/machine/shell/storage so `eval` can read
-    // runtime state. The legacy shell remains primary.
+    // runtime state.
     root_install(cfg);
 
-    // The volume table went with the previous machine: publish the share.
-    provision_default_share();
+    // The debugger's node and the memory-logpoint hook it owns.
+    debug_activate(cfg->debugger);
+
+    // The new machine takes the AppleTalk cable.  The one it replaces comes
+    // off it now, its sessions closing as a server sees a Mac vanish; the
+    // network itself is untouched.
+    atalk_conn_plug(cfg->atalk);
 
     // Cold boot: stamp out a manifest documenting what was set up.  Skipped
     // on checkpoint restore — the manifest is fixed at original creation
     // time and is purely informational.  Failure is non-fatal.
-    if (!checkpoint && checkpoint_machine_dir())
+    if (!restored && checkpoint_machine_dir())
         checkpoint_machine_write_manifest();
 
-    // A new machine exists: machine.boot, machine.restart and checkpoint.load
-    // all end here.  The page reloads its object trees on this.
-    gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"machine_booted\",\"model\":\"%s\",\"restored\":%s}",
-                   profile->id ? profile->id : "", checkpoint ? "true" : "false");
+    // The machine it replaces goes last; its teardown leaves the new
+    // machine's object tree alone (root_uninstall_if).
+    if (old)
+        system_destroy(old);
 
-    return cfg;
+    // A new machine is active: machine.boot and checkpoint.load both end here
+    // (machine.restart builds nothing).  The page reloads its object trees on this.
+    // The machine runs as the host says from its first frame: a machine is
+    // built at the default pacing and given the host's here.
+    scheduler_apply_pacing(cfg->scheduler, pacing);
+    scheduler_announce_speed(cfg->scheduler);
+    gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"machine_booted\",\"model\":\"%s\",\"restored\":%s}",
+                   cfg->machine->id ? cfg->machine->id : "", restored ? "true" : "false");
+    platform_machine_attached();
 }
 
 // Destroy an emulator instance: call machine teardown and free all resources.
@@ -1327,12 +1381,14 @@ void system_destroy(config_t *config) {
     // all of them pointing at freed memory -- and system_is_initialized()
     // answering true for it.
     //
-    // The guard is what keeps system_restore working: it installs the new
+    // The guard is what keeps the swap step working: it installs the new
     // config first and destroys the old one after, so by the time this runs
-    // the global already names someone else and must not be cleared.
+    // the global already names someone else and must not be cleared; a build
+    // that failed was never installed at all.
     if (global_emulator == config)
         global_emulator = NULL;
 
+    machine_parts_free(config);
     free(config);
 }
 
@@ -1362,6 +1418,12 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
         return slot->img != NULL;
     }
     if (cdrom) {
+        // The drive is the one the machine's profile declares for its CD bay.
+        const struct scsi_cd_drive *drive = global_emulator ? global_emulator->machine->cdrom_drive : NULL;
+        if (!drive) {
+            gs_outf("Cannot attach a CD-ROM: this machine takes no CD-ROM drive\n");
+            return false;
+        }
         // CD-ROM images are always opened read-only
         slot->img = image_open_readonly(path);
         if (!slot->img) {
@@ -1386,13 +1448,13 @@ static bool media_open(media_bus_t bus, bool cdrom, const char *path, media_slot
         // Finder offers to initialize the disc.  Mapping the map's 512-byte units
         // onto 2048-byte sectors is the driver's job, and it does it in software.
         slot->scsi_type = scsi_dev_cdrom;
-        slot->block_size = 2048;
+        slot->block_size = drive->block_size;
         slot->read_only = true;
-        snprintf(slot->vendor, sizeof(slot->vendor), "SONY");
-        snprintf(slot->product, sizeof(slot->product), "CD-ROM CDU-8002");
-        snprintf(slot->revision, sizeof(slot->revision), "1.8g");
-        gs_outf("Attaching SCSI CD-ROM: %s as SONY CD-ROM CDU-8002 (size: %zu bytes, %u-byte blocks)\n", path,
-                disk_size(slot->img), slot->block_size);
+        snprintf(slot->vendor, sizeof(slot->vendor), "%s", drive->vendor);
+        snprintf(slot->product, sizeof(slot->product), "%s", drive->product);
+        snprintf(slot->revision, sizeof(slot->revision), "%s", drive->revision);
+        gs_outf("Attaching SCSI CD-ROM: %s as %s %s (size: %zu bytes, %u-byte blocks)\n", path, drive->vendor,
+                drive->product, disk_size(slot->img), slot->block_size);
         return true;
     }
     slot->img = image_create(path, pick_delta_dir(path));
@@ -1459,7 +1521,11 @@ bool add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const c
     if (!media_open(MEDIA_BUS_SCSI, false, filename, &slot))
         return false;
     slot.unit = scsi_id;
-    return system_media_attach_scsi_bus(config, bus, &slot) == 0;
+    if (system_media_attach_scsi_bus(config, bus, &slot) != 0) {
+        image_close(slot.img);
+        return false;
+    }
+    return true;
 }
 
 // Add a SCSI CD-ROM to the configuration (AppleCD SC Plus / Sony CDU-8002)
@@ -1477,62 +1543,23 @@ bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const c
     if (!media_open(MEDIA_BUS_SCSI, true, filename, &slot))
         return false;
     slot.unit = scsi_id;
-    return system_media_attach_scsi_bus(config, bus, &slot) == 0;
+    if (system_media_attach_scsi_bus(config, bus, &slot) != 0) {
+        image_close(slot.img);
+        return false;
+    }
+    return true;
 }
 
-// === machine.restart media transfer ========================================
+// === Media attach ===========================================================
 //
 // The standard substrate implementation over cfg->floppy + cfg->scsi, bound
 // into every Mac substrate's vtable (the Lisa implements its own: parallel
-// FDC + ProFile).  Detach removes the open handles from cfg->images — the
-// list system_destroy would otherwise close — so they survive the teardown;
-// attach hands each handle back through the same device paths a fresh mount
-// uses, minus the open-by-path step.
+// FDC + ProFile).  It hands an opened image to the same device paths a fresh
+// mount uses, minus the open-by-path step.
 
-// Capture every mounted medium's handle + attachment coordinates into `out`
-// and disown them from the tracked-image list.  Returns the count.
-int system_media_detach_std(config_t *cfg, media_slot_t *out, int max) {
-    int n = 0;
-    for (int d = 0; d < 2 && n < max; ++d) {
-        image_t *img = cfg->floppy ? floppy_drive_image(cfg->floppy, (unsigned)d) : NULL;
-        if (!img)
-            continue;
-        out[n] = (media_slot_t){.bus = MEDIA_BUS_FLOPPY, .unit = d, .img = img};
-        config_remove_image(cfg, img);
-        n++;
-    }
-    n += system_media_detach_scsi_bus(cfg, cfg->scsi, MEDIA_BUS_SCSI, out + n, max - n);
-    return n;
-}
-
-// Capture one SCSI bus's mounted media, tagged with the bus they came off.
-// Split out because a machine may have more than one visible bus and a SCSI
-// id does not identify a device on its own there (the Network Servers' two
-// fast/wide channels); a substrate with a second bus calls this again for
-// it.  Returns the count appended.
-int system_media_detach_scsi_bus(config_t *cfg, struct scsi *bus, media_bus_t which, media_slot_t *out, int max) {
-    int n = 0;
-    for (unsigned id = 0; id < 8 && n < max; ++id) {
-        image_t *img = bus ? scsi_device_image(bus, id) : NULL;
-        if (!img)
-            continue;
-        media_slot_t *s = &out[n];
-        *s = (media_slot_t){.bus = which, .unit = (int)id, .img = img};
-        s->scsi_type = scsi_device_type(bus, id);
-        s->block_size = scsi_device_block_size(bus, id);
-        s->read_only = scsi_device_read_only(bus, id);
-        snprintf(s->vendor, sizeof(s->vendor), "%s", scsi_device_vendor(bus, id));
-        snprintf(s->product, sizeof(s->product), "%s", scsi_device_product(bus, id));
-        snprintf(s->revision, sizeof(s->revision), "%s", scsi_device_revision(bus, id));
-        config_remove_image(cfg, img);
-        n++;
-    }
-    return n;
-}
-
-// Re-attach one transferred medium to the freshly built machine.  Returns 0
-// on success (the machine owns the handle again), <0 when the medium cannot
-// be attached (the caller must close the handle).
+// Attach one opened medium to the running machine.  Returns 0 on success
+// (the machine owns the handle), <0 when the medium cannot be attached (the
+// caller must close the handle).
 int system_media_attach_std(config_t *cfg, const media_slot_t *slot) {
     switch (slot->bus) {
     case MEDIA_BUS_FLOPPY:
@@ -1547,11 +1574,19 @@ int system_media_attach_std(config_t *cfg, const media_slot_t *slot) {
     }
 }
 
-// Hand one transferred medium back to a named SCSI bus.  The counterpart of
-// system_media_detach_scsi_bus, and the same reason for existing.
+// Attach one opened medium to a named SCSI bus: a machine may have more than
+// one visible bus, and a SCSI id does not identify a device on its own there
+// (the Network Servers' two fast/wide channels).
 int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const media_slot_t *slot) {
     if (!bus)
         return -1;
+    // The CD bay holds the machine's CD-ROM drive: anything else there would
+    // save a checkpoint whose bus no restore of this machine can rebuild.
+    if (slot->scsi_type != scsi_dev_cdrom && slot->unit == scsi_cd_bay_id(bus)) {
+        gs_outf("Cannot attach %s at SCSI id %d: that is the CD bay (insert a CD there instead)\n",
+                slot->img ? image_get_filename(slot->img) : "the image", slot->unit);
+        return -1;
+    }
     add_image(cfg, slot->img);
     scsi_add_device(bus, slot->unit, slot->vendor, slot->product, slot->revision, slot->img,
                     (enum scsi_device_type)slot->scsi_type, slot->block_size, slot->read_only);
@@ -1561,8 +1596,7 @@ int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const media_sl
 // === Machine-level attach and eject ===========================
 //
 // One verb for "put this disk in that bay", whatever bus the bay is on: the
-// same substrate dispatch machine.restart hands media back through
-// (media_attach), fed by media_open instead of a transferred handle.  Before,
+// one substrate dispatch (media_attach), fed by media_open.  Before,
 // every caller branched on hd_bus itself and chose between scsi.attach_hd,
 // scsi2.attach_hd and hd.attach -- and several chose wrong.
 
@@ -1638,45 +1672,25 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
         LOG_WITH(log_register_category("ckpt"), 0, "Error: no emulator instance to checkpoint");
         return GS_ERROR;
     }
-    if (!global_emulator->machine || !global_emulator->machine->substrate->checkpoint_save) {
-        LOG_WITH(log_register_category("ckpt"), 0, "Error: machine has no checkpoint_save callback");
-        return GS_ERROR;
-    }
-
     double start_time = host_time_ms();
 
-    // Quick checkpoints store files as references (paths only), never content.
-    bool prev_files_mode = checkpoint_get_files_as_refs();
-    if (kind == CHECKPOINT_KIND_QUICK) {
-        checkpoint_set_files_as_refs(true);
-    }
-
-    // Pass the machine model ID and RAM size so they're stored in the checkpoint header
-    const char *model_id = global_emulator->machine->id;
-    uint32_t ram_size_kb = global_emulator->ram_size / 1024;
-    checkpoint_t *checkpoint = checkpoint_open_write(filename, kind, model_id, ram_size_kb);
+    checkpoint_t *checkpoint = checkpoint_open_write(filename, kind);
     if (!checkpoint) {
         LOG_WITH(log_register_category("ckpt"), 0, "Error: failed to open checkpoint file for writing: %s", filename);
         return GS_ERROR;
     }
 
-    // Built-from record first (fixed-size POD; the stream is build-ID-gated
-    // so the layout may change freely between builds). Restore reads it
-    // symmetrically in system_restore before machine construction.
-    system_write_checkpoint_data(checkpoint, machine_config_record(), sizeof(machine_config_record_t));
-
-    // Delegate all state serialisation to the machine profile
-    global_emulator->machine->substrate->checkpoint_save(global_emulator, checkpoint);
+    // Every part of the machine, in the order it was built: the board first,
+    // the event queue last (machine_parts.h).
+    machine_parts_save(global_emulator, checkpoint);
 
     if (checkpoint_has_error(checkpoint)) {
         LOG_WITH(log_register_category("ckpt"), 0, "Error: failed to write checkpoint");
         checkpoint_close(checkpoint);
-        checkpoint_set_files_as_refs(prev_files_mode);
         return GS_ERROR;
     }
 
     checkpoint_close(checkpoint);
-    checkpoint_set_files_as_refs(prev_files_mode);
 
     double elapsed_ms = host_time_ms() - start_time;
     // Ambient by default — the browser's background auto-saves land here
@@ -1694,149 +1708,49 @@ config_t *system_restore(const char *filename) {
         return NULL;
     }
 
-    // Save the current global emulator so we can restore it on error.
-    config_t *prev = global_emulator;
-
-    // Read the built-from record (mirrors the write in system_checkpoint).
-    // It is installed only after the restore succeeds, so a failed restore
-    // leaves the previous machine's record intact.
-    machine_config_record_t restored_record;
-    memset(&restored_record, 0, sizeof(restored_record));
-    system_read_checkpoint_data(checkpoint, &restored_record, sizeof(restored_record));
-
-    // Determine machine profile from the checkpoint header, falling back to
-    // the current machine or Plus for backward compatibility.
-    const hw_profile_t *profile = NULL;
-    const char *saved_model_id = checkpoint_get_model_id(checkpoint);
-    if (saved_model_id && saved_model_id[0])
-        profile = machine_find(saved_model_id);
-    if (!profile)
-        profile = (prev && prev->machine) ? prev->machine : machine_find("plus");
-
-    // Restore the RAM size from the checkpoint so system_create uses the
-    // correct size instead of the machine default.
-    uint32_t saved_ram_kb = checkpoint_get_ram_size_kb(checkpoint);
-    if (saved_ram_kb > 0)
-        system_set_pending_ram_kb(saved_ram_kb);
-
-    // Seed the construction channels from the restored record so socket
-    // resolution recreates the SAVED card configuration — the staged table
-    // was consumed by the previous boot, and a checkpoint written with a
-    // non-default card must not restore against the slot default (the
-    // strictly-ordered stream would misalign).
-    machine_build_opts_t build_opts = machine_build_opts_default();
-    if (restored_record.valid) {
-        if (restored_record.video_card[0])
-            nubus_staged_card_set(NUBUS_STAGED_WILDCARD, restored_record.video_card);
-        if (restored_record.video_mode[0])
-            nubus_staged_mode_set(NUBUS_STAGED_WILDCARD, restored_record.video_mode);
-        if (restored_record.custom_mode[0])
-            nubus_staged_custom_mode_set(NUBUS_STAGED_WILDCARD, restored_record.custom_mode);
-        // The sense goes into the build options, which every video model
-        // reads -- the JMFB cards, the DAFB and PDM's Ariel alike.  This used
-        // to call jmfb_pending_sense_set() and note that "the DAFB's half is
-        // NOT staged here: dafb.h is a machine header and core may not
-        // include it", so the Quadras carried their sense through the
-        // checkpoint as device state instead.  machine_build_opts_t lives in
-        // core, so one channel now serves both and the layering test is
-        // satisfied by construction rather than by a second mechanism.
-        if (restored_record.video_sense >= 0)
-            build_opts.video_sense = restored_record.video_sense;
-        // The built-in monitor strap resolves to a sense code exactly as
-        // machine.boot resolves it (machine_boot_apply), and wins over
-        // video_sense there too.  The record's id was validated at boot.
-        if (restored_record.monitor[0] && profile->builtin_video && profile->builtin_video->monitor_sense) {
-            uint8_t mon_sense = 0;
-            if (profile->builtin_video->monitor_sense(restored_record.monitor, &mon_sense))
-                build_opts.video_sense = mon_sense;
-        }
-        // The record's explicit vrom=/prom= picks replace whatever the
-        // running machine registered.
-        machine_config_set_explicit_picks(restored_record.vrom, restored_record.prom);
-        // The PCI half of the same rule: a checkpoint written with a
-        // socketed PCI card (and its options) must re-seat that card, or
-        // the slot resolves its default (usually empty) and the
-        // strictly-ordered PCI device stream misaligns on the first
-        // record the missing card wrote.
-        if (restored_record.pci_card[0])
-            pci_staged_card_set(PCI_STAGED_WILDCARD, restored_record.pci_card);
-        pci_staged_option_set_spec(PCI_STAGED_WILDCARD, restored_record.pci_option);
-        // ...and the explicit per-slot picks beyond the wildcard, the
-        // multi-card surface machine.restart already replays.
-        for (int i = 0; i < restored_record.n_slot_cards; i++) {
-            const machine_config_slot_card_t *e = &restored_record.slot_cards[i];
-            if (!e->explicit_pick)
-                continue;
-            if (e->bus_kind == MC_BUS_PCI)
-                pci_staged_card_set(e->slot, e->card_id);
-            else
-                nubus_staged_card_set(e->slot, e->card_id);
-        }
+    // The board's block comes first: the model and the RAM size to build.
+    // Everything else -- the cards in the slots, their ROMs and options, the
+    // monitor straps -- is read by the part it belongs to as the machine is
+    // built.
+    board_block_t board;
+    machine_part_expect(checkpoint, "machine", 0);
+    system_read_checkpoint_data(checkpoint, &board, sizeof board, "machine");
+    board.model[sizeof board.model - 1] = '\0';
+    const hw_profile_t *profile = checkpoint_has_error(checkpoint) ? NULL : machine_find(board.model);
+    if (!profile) {
+        LOG_WITH(log_register_category("ckpt"), 0, "Error: checkpoint %s names no model this build has ('%s')",
+                 filename, board.model);
+        checkpoint_close(checkpoint);
+        return NULL;
     }
 
-    // Fresh vROM-pick list for the restore construction (the card loaders
-    // re-report their picks during system_create).
-    machine_config_reset_vroms();
+    // The RAM size is validated like a boot's: a size the model does not
+    // offer rejects the restore rather than clamping.
+    if (!hw_profile_ram_option_allowed(profile, board.ram_kb)) {
+        LOG_WITH(log_register_category("ckpt"), 0, "Error: checkpoint RAM %u KB is not a size %s offers", board.ram_kb,
+                 profile->name);
+        checkpoint_close(checkpoint);
+        return NULL;
+    }
+
+    machine_build_opts_t build_opts = machine_build_opts_default();
+    build_opts.ram_kb = board.ram_kb;
 
     config_t *config = system_create(profile, &build_opts, checkpoint);
 
-    if (checkpoint_has_error(checkpoint)) {
+    // The build is not yet the active machine, so a failure leaves the
+    // running one exactly as it was.
+    if (!config || checkpoint_has_error(checkpoint)) {
         LOG(0, "Error: Failed to read checkpoint");
         checkpoint_close(checkpoint);
-        global_emulator = prev;
-        if (config)
-            system_destroy(config);
-        // Put the surviving machine's object tree back.
-        //
-        // system_create() ran root_install(config) on the way in, which tore
-        // down `prev`'s stubs and claimed g_installed_cfg; system_destroy()
-        // then ran root_uninstall_if(config), which matched and uninstalled
-        // again.  Nothing reinstalled `prev`.  So a truncated or mismatched
-        // checkpoint left the still-running machine executing with `shell`,
-        // `shell.functions`, `shell.alias`, `storage`, `files.images`,
-        // `machine.nubus` and `machine.pci` all detached and the root methods
-        // gone -- the entire tooling surface evaporated, with no diagnostic
-        // beyond "Failed to read checkpoint".
-        if (prev)
-            root_install(prev);
-        // ...and its explicit picks: the installed record is still prev's.
-        machine_config_set_explicit_picks(machine_config_record()->vrom, machine_config_record()->prom);
+        system_destroy(config);
         return NULL;
     }
 
     checkpoint_close(checkpoint);
 
-    // Install the restored built-from record so machine.config answers for
-    // the restored machine and machine.restart can replay it. The vROM
-    // pick list reflects THIS construction (the loaders re-reported during
-    // system_create), so keep the fresh entries over the serialized ones.
-    machine_config_record_t *rec = machine_config_record_mut();
-    machine_config_vrom_t fresh_vroms[MC_MAX_VROMS];
-    memcpy(fresh_vroms, rec->vroms, sizeof(fresh_vroms));
-    int32_t fresh_n = rec->n_vroms;
-    *rec = restored_record;
-    memcpy(rec->vroms, fresh_vroms, sizeof(rec->vroms));
-    rec->n_vroms = fresh_n;
-
     LOG_WITH(log_register_category("ckpt"), 1, "Checkpoint restored from %s", filename);
     return config;
-}
-
-// Save the current state to a checkpoint file.
-//
-// Was cmd_save_checkpoint(argc, argv) -- the retired command shape -- reached
-// by the typed checkpoint.save() building a fake argv[] and then string-
-// matching the mode back out of it.  The typed method calls this directly now
-// and the mode arrives as a validated V_ENUM, so the framework rejects a typo
-// instead of the body re-checking it.
-int system_checkpoint_save(const char *filename, bool files_as_refs) {
-    if (!filename || !*filename)
-        return -1;
-    bool prev_mode = checkpoint_get_files_as_refs();
-    checkpoint_set_files_as_refs(files_as_refs);
-    int result = system_checkpoint(filename, CHECKPOINT_KIND_CONSOLIDATED);
-    checkpoint_set_files_as_refs(prev_mode); // restore previous setting
-    return result;
 }
 
 // Load a saved checkpoint.  `filename` NULL or empty auto-loads the latest
@@ -1859,17 +1773,14 @@ int system_checkpoint_load(const char *filename) {
         filename = auto_buf;
     }
 
-    config_t *old_config = global_emulator;
     config_t *new_config = system_restore(filename);
     if (!new_config)
         return -1;
 
-    // Replace global emulator with restored state.  Safe because commands are
-    // registered globally rather than per-config, global_emulator now names
-    // new_config, and no part of the call stack holds old_config.
-    global_emulator = new_config;
-    if (old_config)
-        system_destroy(old_config);
+    // Swap the restored machine in; the old one is destroyed.  Safe because
+    // commands are registered globally rather than per-config, and no part of
+    // the call stack holds the old config.
+    system_swap_in(new_config, true, platform_pacing());
 
     // Force a one-shot screen redraw so the restored framebuffer appears
     extern void frontend_force_redraw(void);

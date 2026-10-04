@@ -31,6 +31,7 @@
 #include "display.h"
 #include "log.h"
 #include "system.h"
+#include "event/gs_event.h"
 
 // The renderer is part of the display path, so it shares its category:
 // `log.set("video", N)` turns on the producers AND the consumer.
@@ -470,37 +471,20 @@ static void upload_clut(const display_t *d) {
 // Resize the canvas element + viewport to match the live display.  The
 // CSS scale (zoom) is applied JS-side via the screen-wrapper element; here
 // we set the *intrinsic* canvas resolution so 1 canvas pixel == 1 emulator
-// pixel.
-//
-// Notifies the JS layout layer via Module.onScreenResize(width, height)
-// on every transition so the page can reflow its screen-wrapper element
-// to match the new aspect ratio / size.  Without this the wrapper stays
-// at the previous size — the canvas's intrinsic resolution updates but
-// CSS-driven display dimensions don't, and the page shows a stretched /
-// letterboxed framebuffer (this surfaced for the IIcx when the JMFB
-// driver flipped from the SE/30-default 512×342 to 640×480).  Mirrors
-// a change-only push.
-static void resize_canvas(uint32_t width, uint32_t height, uint32_t par_w, uint32_t par_h) {
-    // The canvas's intrinsic resolution is always the raw framebuffer size; the
-    // pixel aspect ratio only changes the CSS display size, applied JS-side.
-    if (par_w == 0)
-        par_w = 1;
-    if (par_h == 0)
-        par_h = 1;
+// pixel.  The page learns the geometry from the screen event, not from here.
+static void resize_canvas(uint32_t width, uint32_t height) {
     emscripten_set_canvas_element_size("#screen", (int)width, (int)height);
     glViewport(0, 0, (int)width, (int)height);
-    static uint32_t last_w = 0, last_h = 0, last_pw = 0, last_ph = 0;
-    if (width != last_w || height != last_h || par_w != last_pw || par_h != last_ph) {
-        last_w = width;
-        last_h = height;
-        last_pw = par_w;
-        last_ph = par_h;
-        // clang-format off
-        MAIN_THREAD_ASYNC_EM_ASM(
-            { if (typeof Module.onScreenResize === 'function') Module.onScreenResize($0, $1, $2, $3); },
-            (int)width, (int)height, (int)par_w, (int)par_h);
-        // clang-format on
-    }
+}
+
+// Announce the display's geometry to the page (a `screen` state event):
+// the framebuffer size and the monitor's pixel aspect ratio, so the page can
+// reflow its screen wrapper and show non-square pixels (the Lisa's 720x364
+// raster is 2:3).  Sent where a shape change is consumed and once when a
+// machine is attached; the page holds the only copy.
+static void announce_geometry(const display_t *d) {
+    gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"screen\",\"width\":%u,\"height\":%u,\"par_w\":%u,\"par_h\":%u}",
+                   d->width, d->height, d->par_w ? d->par_w : 1u, d->par_h ? d->par_h : 1u);
 }
 
 // ============================================================================
@@ -641,7 +625,11 @@ static bool refresh_from_display(display_t *d, bool force_full) {
             glUniform1i(u->u_response, 2);
         }
         allocate_fb_texture(d->format, d->stride, d->height);
-        resize_canvas(d->width, d->height, d->par_w, d->par_h);
+        resize_canvas(d->width, d->height);
+        // A producer changed the shape: tell the page (a forced full redraw
+        // alone changed nothing it shows).
+        if (d->shape_dirty)
+            announce_geometry(d);
     }
 
     if (fb)
@@ -768,4 +756,13 @@ void em_video_force_redraw(void) {
 
 void frontend_force_redraw(void) {
     em_video_force_redraw();
+}
+
+// A machine was attached: announce its display's geometry before any frame,
+// so a restored machine whose mode never changes in this page still shows
+// at the right size.
+void em_video_machine_attached(void) {
+    display_t *d = system_display();
+    if (d && d->width && d->height)
+        announce_geometry(d);
 }

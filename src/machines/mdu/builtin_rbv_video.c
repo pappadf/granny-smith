@@ -15,8 +15,10 @@
 #include "checkpoint.h"
 #include "display.h"
 #include "log.h"
+#include "memory.h" // ram_native_pointer: the frame buffer in main RAM
 #include "nubus.h"
 #include "rbv.h"
+#include "system_config.h"
 
 #include <stddef.h> // offsetof — the checkpoint range
 #include <stdint.h>
@@ -134,9 +136,10 @@ static void rbv_video_apply_clut_window(rbv_video_priv_t *p) {
 
 // === Card vtable ============================================================
 
-static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
+static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
     (void)cfg;
     (void)cp;
+    (void)opts;
     rbv_video_priv_t *p = calloc(1, sizeof(*p));
     if (!p)
         return -1;
@@ -179,6 +182,14 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     rbv_video_apply_clut_window(p);
 
     card->priv = p;
+
+    // The IIci and IIsi scan out of main RAM: a board fact, so it is taken
+    // here, before the card's checkpoint part is read -- a card that does not
+    // own its buffer has no VRAM in its block.  A cold boot blanks the screen;
+    // a restore's RAM image already holds it.
+    const nubus_slot_decl_t *decl = nubus_slot_decl_get(card->bus, card->slot);
+    if (decl && decl->fb_in_ram)
+        builtin_rbv_video_set_framebuffer(card, ram_native_pointer(cfg->mem_map, 0), 0, /*blank*/ cp == NULL);
     return 0;
 }
 

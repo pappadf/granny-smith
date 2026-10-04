@@ -312,30 +312,27 @@ identify:
 
 ### 10.2 What `rom=` resolves
 
-`machine.boot rom=` (and `rom.load`) take a **filesystem path**. Nothing
-searches for it or looks it up in a registry. A relative path resolves
-against the process's working directory. At boot the file must be
-readable, must identify through `rom_table`, must boot at least one
-emulated model, and must list the requested model as compatible. The
-two-chip Lisa form (`rom2=`) skips the per-file identification
-(`machine_boot_apply`, `src/machines/machine.c`). Once the new machine is
-constructed, `rom_load_into_machine` copies the bytes into the ROM region.
-A file of the wrong size is truncated or padded, with a warning. A damaged
-ROM (not `intact`) still loads, with a warning naming the part that does
-not verify: research on damaged or hand-edited images is a legitimate
-headless use. The path and the id go into the built-from record as
-`machine.config.rom` and `machine.config.rom_id`.
+`machine.boot rom=` takes a **filesystem path**. Nothing searches for it
+or looks it up in a registry. A relative path resolves against the
+process's working directory. The ROM is a construction argument: before
+the running machine is touched, the file — or, in the two-chip Lisa form
+(`rom2=`), the two chips interleaved — is read and must identify through
+`rom_table`, must boot at least one emulated model, must list the
+requested model as compatible, and must be exactly the model's ROM size;
+anything else rejects the boot (`boot_rom_read`, `src/machines/machine.c`).
+The bytes travel in `machine_build_opts_t.rom`, `memory_map_init` creates
+the ROM region filled, and the CPU starts from its reset vector by the
+same path every reset takes. A damaged ROM (not `intact`) still boots,
+with a warning naming the part that does not verify: research on damaged
+or hand-edited images is a legitimate headless use. The path and the id
+are `machine.rom.path` and `machine.rom.id`.
 
-`rom.load(path)` swaps the ROM of the running machine. If the ROM is not
-listed as compatible with the model it only warns, then loads anyway,
-writes the new path and id into the record so `machine.restart`
-rebuilds with it, and resets the CPU from the new vectors
-(`install_rom_into_machine`, `rom.c`).
+A running machine's ROM is never swapped: a different ROM is a new
+`machine.boot`.
 
 `machine.rom.id`, `machine.rom.intact` and `machine.rom.name` describe the
 loaded ROM by running the same identification over the ROM region, so
-`rom.id` always equals what `rom.identify` said about the file and what
-`machine.config.rom_id` records.
+`rom.id` always equals what `rom.identify` said about the file.
 
 The Lisa two-chip loader (`rom_load_lisa_pair`) picks the high/low chip
 orientation whose interleave passes the boot ROM's own self-check; the check
@@ -345,7 +342,7 @@ covers both chips, so a swapped pair never passes it.
 
 Declaration ROMs and expansion ROMs are not named in the boot document by
 default. The platform **offers** candidate files, and a card factory asks
-for the ROM of its card kind. The registry (`src/core/memory/offer_registry.c`)
+for the ROM of its card kind unless its slot names one. The registry (`src/core/memory/offer_registry.c`)
 has two instances, `vrom.c` and `prom.c`, with the same behaviour:
 
 - **Registration by content.** `offer_registry_add` runs the kind's
@@ -353,32 +350,32 @@ has two instances, `vrom.c` and `prom.c`, with the same behaviour:
   strays are expected when a whole directory is offered. The registry
   keeps one entry per content id, and offering the same bytes again
   refreshes the stored path (`offer_registry.c:19-70`).
-- **Pick order.** First the explicit pick, then catalog rows marked
-  `preferred`, then the remaining catalog rows in order. No filename ever
-  enters the comparison (`offer_registry_find`, `offer_registry.c:83`). A
-  card loader tries the candidates in that order and takes the first that
-  lays out cleanly (`declrom_load_vrom_card`,
-  `src/core/peripherals/nubus/declrom.c:956`; `prom_load_card`). Its
-  choice is recorded in `machine.config.vroms`.
-- **Explicit pick.** `machine.boot vrom=`/`prom=` identifies the file and
-  offers it as the explicit pick (`vrom_set_path` / `prom_set_path`;
-  `machine.c:964-984`). A registry holds one explicit pick at a time, and
-  the pick belongs to that boot document only: every boot first clears the
-  previous one (`machine_config_set_explicit_picks`), so a later boot that
-  omits `vrom=` resolves by catalog order again. A boot rejected before
-  teardown puts the running machine's pick back.
-- **Strict resolution.** A card the user picked explicitly that finds no
-  offer fails the boot before teardown. A default card degrades to an
-  empty slot, and the SE/30's onboard video synthesises a fallback ROM
-  (`machine.c:737-798`;
-  `src/machines/glue/builtin_se30_video.c:163`). See
+- **Pick order.** Catalog rows marked `preferred`, then the remaining
+  catalog rows in order. No filename ever enters the comparison
+  (`offer_registry_find`). A card loader tries the candidates in that order
+  and takes the first that lays out cleanly (`declrom_load_vrom_card`,
+  `src/core/peripherals/nubus/declrom.c`; `prom_load_card`). A NuBus card
+  names its choice: `machine.nubus.slot[N].card.declrom.path` and `.crc`.
+- **A slot's own ROM.** A boot document may name the file for a slot:
+  `machine.boot slots="9=824gc,rom=<file>"`, or `vrom=`/`prom=` as sugar for
+  every slot whose card the file provides. The file is identified and
+  checked against the slot's card before teardown, and it is handed to that
+  card's constructor as an argument: the loader takes it instead of the
+  catalog (`declrom_load_vrom_card(card_id, rom, ...)`,
+  `prom_load_card(card_id, rom, ...)`). A boot never writes the registry,
+  so a later boot that names no file resolves by catalog order again.
+- **Strict resolution.** A card the document names that finds no ROM — its
+  slot's file or an offer — fails the boot before teardown
+  (`vrom_card_resolvable(card, rom)` / `prom_card_resolvable(card, rom)`,
+  checked by `machine_slots_resolve`). A default card degrades to an empty
+  slot, and the SE/30's onboard video synthesises a fallback ROM
+  (`src/machines/glue/builtin_se30_video.c`). See
   [object-model.md, Boot arguments](../../internals/core/object/object-model.md#boot-arguments).
 - **Lifetime.** The registries are process-global. Offers survive
   `machine.boot`, `machine.restart` and `checkpoint.load`, and are dropped
   only by `vrom_delete`/`prom_delete`. The card ROMs themselves are not
-  checkpointed; on restore they are resolved again from the registry, with
-  the record's `vrom` and `prom` made the explicit picks again
-  (`system_restore`).
+  checkpointed; on restore each slot's is resolved again from the record's
+  slot entry (its named file) or the registry (`system_restore`).
 - **Hooks.** `catalog.vroms.offer(path)` and `catalog.proms.offer(path)`
   register one file and return `true` only if it was recognised.
 
@@ -391,7 +388,7 @@ has two instances, `vrom.c` and `prom.c`, with the same behaviour:
 | PROM | The same offer pass for `*.prom` (`headless_main.c:946`). | The same, from `/opfs/images/prom/` (`em_main.c:729`; `upload.ts:401`). |
 
 In the browser, a dropped file is classified by trying the
-identifiers in the order `rom`, `vrom`, `prom`, `fd`, `cdrom`, `hd` (`upload.ts`, `probeAndPersist`).
+identifiers in the order `rom`, `vrom`, `prom`, `fd`, `cdrom`, `hd` (`upload.ts`, `probeStaged`).
 A descriptor that recognises the file but refuses it (`reject`) ends the
 probe with that message, so a refused ROM is never stored as a disk image.
 vROM and PROM cannot claim each other's files, because they identify from

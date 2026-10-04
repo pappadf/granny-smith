@@ -299,12 +299,16 @@ host_input_t *host_input_init(struct config *cfg, struct scheduler *scheduler) {
     int declared = cfg->machine && cfg->machine->substrate ? cfg->machine->substrate->key_queue_bytes : 0;
     hi->budget = declared > 0 ? declared : KEY_QUEUE_BYTES_DEFAULT;
 
-    // Registered here, before scheduler_start, so a checkpoint taken with
-    // typing in flight can bind its saved events back to this callback --
-    // scheduler_start resolves the restored (source_name, event_name) pairs,
-    // and an event type registered after it would be too late.
-    if (hi->sched)
+    // Registered at construction, so a checkpoint taken with typing in flight
+    // binds its saved events back to this callback (the event queue is
+    // restored after the whole machine is built).
+    // The mouse guard and trace (debug_mac.c) are this machine's too, for the
+    // same reason: a checkpoint with either running restores it.
+    if (hi->sched) {
         scheduler_new_event_type(hi->sched, "keyboard", hi, "typed", &host_typed_key);
+        scheduler_new_event_type(hi->sched, "mouse", hi, "guard", &debug_mac_mouse_guard_tick);
+        scheduler_new_event_type(hi->sched, "mouse", hi, "trace", &debug_mac_mouse_trace_tick);
+    }
 
     // instance_data is the host_input_t: this node is per machine, and that
     // is what makes the scheduler source above legitimate.

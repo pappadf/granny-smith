@@ -12,9 +12,9 @@ const { machine } = await import('@/state/machine.svelte');
 const { debug } = await import('@/state/debug.svelte');
 const { images } = await import('@/state/images.svelte');
 
-// The reconcile's last step reads the live screen geometry: its request
-// marks that the reconcile ran.
-const RECONCILE_MARK = 'machine.screen.width';
+// The reconcile's first step reads the machine's id: its request marks that
+// the reconcile ran.
+const RECONCILE_MARK = 'machine.id';
 
 // A running SE/30, as the core would answer after a boot or a restore.
 function se30(mode = 'paced'): void {
@@ -24,10 +24,6 @@ function se30(mode = 'paced'): void {
   bridge.reply('machine.name', 'Macintosh SE/30');
   bridge.reply('machine.ram', 8192);
   bridge.reply('catalog.profile', { id: 'se30', capabilities: { mmu: { kind: '68030_pmmu' } } });
-  bridge.reply('machine.screen.width', 512);
-  bridge.reply('machine.screen.height', 342);
-  bridge.reply('machine.screen.par_w', 1);
-  bridge.reply('machine.screen.par_h', 1);
   // An enum reads as {enum, index} over the bridge.
   const index = ['paced', 'accelerated', 'turbo'].indexOf(mode);
   bridge.reply('scheduler.mode', (args: unknown) => (args ? null : { enum: mode, index }));
@@ -62,8 +58,8 @@ describe('one post-boot reconciliation, every path', () => {
     expect(machine.model).toBe('Macintosh SE/30');
     expect(machine.ram).toBe('8 MB');
     expect(machine.mmuKind).toBe('68030_pmmu');
-    // A boot keeps the toolbar's pacing (and pushes it to the fresh core)
-    // rather than reading back the core's default.
+    // A boot keeps the toolbar's pacing: pacing is the page's, not the
+    // machine's, so nothing reads it back from the core.
     se30('turbo');
     await initEmulator(BOOT);
     expect(machine.scheduler).toBe('live');
@@ -112,10 +108,12 @@ describe('one post-boot reconciliation, every path', () => {
     delete images.mounted['/opfs/images/hd/a.img'];
   });
 
-  it('a restore shows the pacing the checkpoint brought, and does not override it', async () => {
+  it("pacing is the page's: neither a boot nor a restore reads or re-asserts it", async () => {
     se30('turbo');
     await reconcileUiWithMachine('restore');
-    expect(machine.scheduler).toBe('turbo');
+    await reconcileUiWithMachine('boot');
+    expect(machine.scheduler).toBe('live');
+    expect(bridge.paths()).not.toContain('scheduler.mode');
     expect(images.fdDriveCount).toBe(-1);
   });
 

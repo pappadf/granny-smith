@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// A download from the core reaches the browser through staged buffers: the
+// A download from the core reaches the browser through a transfer buffer: the
 // I/O worker reads the file a chunk at a time into a buffer the page can
 // see, each chunk is announced as a `download_chunk` event, the page
 // copies it into a Blob part and acknowledges the buffer, and the last
@@ -21,7 +21,7 @@ import { terminalRun } from '../helpers/terminal';
 const DATA = path.resolve(__dirname, '../../data');
 const ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
 
-test('a download arrives in staged chunks and lands as one file', async ({ page }) => {
+test('a download arrives in transfer-buffer chunks and lands as one file', async ({ page }) => {
   test.setTimeout(3 * 60 * 1000);
   await gotoWeb2(page);
   await stageOpfsFile(page, '/opfs/images/rom/97221136', ROM);

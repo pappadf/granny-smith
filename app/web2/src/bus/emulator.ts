@@ -98,7 +98,6 @@ interface EmscriptenModuleConfig {
   printErr?(s: string): void;
   // Called by the glue's abort() (needs "onAbort" in INCOMING_MODULE_JS_API).
   onAbort?(what: unknown): void;
-  onScreenResize?(w: number, h: number, parW?: number, parH?: number): void;
   onVideoInReady?(ptr: number): void;
   onVideoInState?(active: boolean): void;
   onAudioInReady?(ptr: number): void;
@@ -181,12 +180,13 @@ async function waitForWorkerReady(): Promise<void> {
 
 // Run-state mirror so we can ignore redundant transitions.
 let isRunningUI = false;
-let lastScreenW = 0;
-let lastScreenH = 0;
-let lastScreenParW = 0;
-let lastScreenParH = 0;
 
 // --- Bootstrap ----------------------------------------------------------
+
+// How long page startup waits for the WebGPU adapter's answer (typically
+// tens of milliseconds, overlapped with the worker's start-up); an answer
+// that takes longer counts as no adapter.
+const GPU_ANSWER_TIMEOUT_MS = 2000;
 
 // Initialise the WASM module. The canvas is handed to Emscripten; subsequent
 // resize callbacks update machine.screen so ScreenView can reflow.
@@ -232,7 +232,6 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
     print: routePrintLine,
     printErr: routeErrLine,
     onAbort: (what: unknown) => markBridgeDead(`Aborted(${String(what ?? '')})`),
-    onScreenResize: handleScreenResize,
     onVideoInReady,
     onVideoInState,
     onAudioInReady,
@@ -248,9 +247,9 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
   // Bind the mailbox (throws on a MAGIC / VERSION mismatch: page and core
   // out of step).  The control block is laid out by a constructor in the
   // core, so it is valid before main() runs.
-  // The rings are static and below the boot-time heap size; a staged buffer
-  // (a spilled result, a download chunk) is anywhere in the heap, so the
-  // mailbox reads those through the memory as it is at that moment.
+  // The rings are static and below the boot-time heap size; a transfer
+  // buffer (a download chunk) is anywhere in the heap, so the mailbox reads
+  // those through the memory as it is at that moment.
   const memMod = Module as unknown as { wasmMemory?: WebAssembly.Memory; HEAPU8: Uint8Array };
   mailbox = new Mailbox(
     Module.HEAP32.buffer,
@@ -260,14 +259,19 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
   );
   mailbox.setLostHandler((why) => markBridgeDead(why));
   mailbox.on(dispatchCoreEvent);
-  // Tell the core whether the Voodoo2 takeover has a WebGPU device
-  // (the worker was started by ScreenView before the module; its answer
-  // is normally in long before a machine boots).
-  void whenVoodooGpuReady().then((ok) => mailbox?.setGpuAvailable(ok));
+  // Whether the Voodoo2 takeover has a WebGPU device is host state the
+  // core reads when it offers the voodoo2_webgpu card kind and when a card
+  // picks its raster backend, so it is written before the page reports
+  // ready: nothing can boot, or read the card catalog, before it is known.
+  // The GPU worker was started by ScreenView before the module and answers
+  // while the emulator worker starts; its time-out runs from when the
+  // emulator worker is up, so a slow worker start-up is not counted against
+  // the GPU (an answer already in costs nothing).
   // Nothing is sent until the worker says it can dispatch; a worker that
   // never comes up fails the boot here instead of parking the first
   // request forever.
   await waitForWorkerReady();
+  mailbox.setGpuAvailable(await whenVoodooGpuReady(GPU_ANSWER_TIMEOUT_MS));
   moduleReady = true;
   startHeartbeatWatch();
 
@@ -338,12 +342,12 @@ export async function gsEvalWithProgress(
   return executeMailboxRequest(path || '', argsJson, onProgress);
 }
 
-// A view of `len` bytes of the core's heap at `ptr`, fresh (a staged
-// buffer named by an event), and the acknowledgement that releases it.
+// A view of `len` bytes of the core's heap at `ptr`, fresh (a transfer
+// buffer named by an event), and the acknowledgement that hands it back.
 export function heapBytes(ptr: number, len: number): Uint8Array | null {
   return mailbox ? mailbox.heapBytes(ptr, len) : null;
 }
-export async function ackStagedBuffer(handle: number): Promise<boolean> {
+export async function ackTransferBuffer(handle: number): Promise<boolean> {
   return mailbox ? mailbox.ackBuf(handle) : false;
 }
 
@@ -732,6 +736,9 @@ function routeCoreEvent(ev: CoreEvent): void {
     case 'state:speed':
       setAcceleratedSpeed(num(d.x256) / 256);
       break;
+    case 'state:screen':
+      handleScreenResize(num(d.width), num(d.height), num(d.par_w), num(d.par_h));
+      break;
     case 'state:perf':
       setPerfStats(num(d.mips), num(d.tps), {
         tickMaxMs: num(d.tick_max_ms),
@@ -801,29 +808,15 @@ function handleRunStateChange(running: boolean): void {
   else if (machine.status === 'running') machine.status = 'paused';
 }
 
-// Also called with the live geometry after a checkpoint restore, where no
-// resize is pushed (bus/boot.ts reconcileUiWithMachine).
-export function handleScreenResize(w: number, h: number, parW?: number, parH?: number): void {
-  const width = w | 0;
-  const height = h | 0;
-  // Pixel aspect ratio (display pixel width:height). 0/undefined => square 1:1.
-  const pw = (parW ?? 0) | 0 || 1;
-  const ph = (parH ?? 0) | 0 || 1;
-  if (
-    width === lastScreenW &&
-    height === lastScreenH &&
-    pw === lastScreenParW &&
-    ph === lastScreenParH
-  )
-    return;
-  lastScreenW = width;
-  lastScreenH = height;
-  lastScreenParW = pw;
-  lastScreenParH = ph;
-  machine.screen.width = width;
-  machine.screen.height = height;
-  machine.screen.parW = pw;
-  machine.screen.parH = ph;
+// The display's geometry, from the core's `screen` event: sent when the shape
+// changes and once when a machine is attached, so the page's copy is the only
+// one and is never seeded by a read.
+function handleScreenResize(w: number, h: number, parW: number, parH: number): void {
+  machine.screen.width = w | 0;
+  machine.screen.height = h | 0;
+  // Pixel aspect ratio (display pixel width:height). 0 => square 1:1.
+  machine.screen.parW = parW | 0 || 1;
+  machine.screen.parH = parH | 0 || 1;
 }
 
 // --- Module access for upload pipeline (FS writes to /tmp) -------------
@@ -870,7 +863,7 @@ export async function resumeEmulator(): Promise<void> {
   await gsEval('scheduler.run');
 }
 
-// UI mode name → core `scheduler.mode` value.
+// UI mode name → core `pacing.mode` value.
 const CORE_MODE: Record<SchedulerMode, string> = {
   live: 'paced',
   accel: 'accelerated',
@@ -879,9 +872,11 @@ const CORE_MODE: Record<SchedulerMode, string> = {
 
 // Push a pacing-mode change to the core and mirror it into UI state. The
 // toolbar buttons route through here so they actually reach the scheduler
-// (the pre-two-modes buttons only flipped local UI state).
+// (the pre-two-modes buttons only flipped local UI state). `pacing` is the
+// host's setting: it takes a mode with no machine running, and every machine
+// runs under it.
 export async function applySchedulerMode(mode: SchedulerMode): Promise<void> {
-  const res = await gsEval('scheduler.mode', [CORE_MODE[mode]]);
+  const res = await gsEval('pacing.mode', [CORE_MODE[mode]]);
   if (res && typeof res === 'object' && 'error' in res) {
     showNotification(`Scheduler mode failed: ${gsErrorText(res)}`, 'warning');
     return;

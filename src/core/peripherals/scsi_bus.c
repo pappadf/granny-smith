@@ -250,13 +250,12 @@ int scsi_data_in_alloc(scsi_t *scsi, int have, int alloc) {
 //
 // The reason is ownership.  A scheduler event means a registration belonging to
 // one process, which has to sit below the checkpoint line and be re-armed on
-// restore -- the discipline seltmo_registered and drq_evt_registered already
-// carry.  A deadline is plain data: it rides in the saved block, and a
+// restore.  A deadline is plain data: it rides in the saved block, and a
 // checkpoint taken mid-settle comes back mid-settle with nothing to re-arm.
 void scsi_bus_settle_poll(scsi_t *scsi) {
     if (!scsi || !scsi->bus.data_out_pending)
         return;
-    scheduler_t *sch = system_scheduler();
+    scheduler_t *sch = scsi->sched;
     if (sch && scheduler_cpu_cycles(sch) < scsi->bus.data_out_ready_cy)
         return; // still preparing
     // Settled: X3.131 5.1.5 -- "the target shall continuously envelope the
@@ -287,7 +286,7 @@ void phase_data_out(scsi_t *scsi, int bytes) {
     // REQ.  The initiator shall drive DB(7-0,P) ... and assert ACK."  REQ comes
     // first; an initiator that drives data before it is not handshaking, and
     // nothing is transferred.  That is what happens to A/UX's blind primer.
-    scheduler_t *sch = system_scheduler();
+    scheduler_t *sch = scsi->sched;
     scsi->bus.phase = scsi_data_out;
     scsi->bus.bsy = true;
     scsi->bus.req = false; // ...but not asking for a byte yet
@@ -1501,16 +1500,12 @@ static void scsi_bus_seltmo_event(void *source, uint64_t data) {
 void scsi_bus_arm_select_timeout(scsi_t *bus, uint64_t ns, scsi_select_timeout_fn fn, void *ctx) {
     if (!bus || !fn)
         return;
-    scheduler_t *s = system_scheduler();
+    scheduler_t *s = bus->sched;
     if (!s) {
         // No scheduler underneath: the unit suites drive the models directly,
         // and there is no time for a wait to pass in.
         fn(ctx);
         return;
-    }
-    if (!bus->seltmo_registered) {
-        scheduler_new_event_type(s, "scsi", bus, "select_timeout", &scsi_bus_seltmo_event);
-        bus->seltmo_registered = true;
     }
     bus->seltmo_fn = fn;
     bus->seltmo_ctx = ctx;
@@ -1538,9 +1533,13 @@ void scsi_bus_cancel_select_timeout(scsi_t *bus) {
         return;
     bus->seltmo_fn = NULL;
     bus->seltmo_ctx = NULL;
-    scheduler_t *s = system_scheduler();
-    if (s)
-        remove_event(s, &scsi_bus_seltmo_event, bus);
+    if (bus->sched)
+        remove_event(bus->sched, &scsi_bus_seltmo_event, bus);
+}
+
+void scsi_bus_register_events(scsi_t *bus) {
+    if (bus->sched)
+        scheduler_new_event_type(bus->sched, "scsi", bus, "select_timeout", &scsi_bus_seltmo_event);
 }
 
 // A SCSI bus reset, as every device on the wire sees it.

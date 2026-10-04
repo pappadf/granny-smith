@@ -154,7 +154,6 @@ lisa_mmu_t *lisa_mmu_init(uint8_t *ram, uint32_t ram_size, uint8_t *rom, uint32_
     m->start = true;
     m->vidlatch = 0;
     m->bad_par_gran = 0xFFFFFFFFu; // no bad-parity location
-    g_lisa_mmu = m;
     if (cp)
         lisa_mmu_checkpoint_restore(m, cp); // same field order as the save
     return m;

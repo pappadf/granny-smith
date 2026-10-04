@@ -126,11 +126,10 @@ scheduler.stop                 # from a second connection
 debug.step                     # one instruction
 debug.step 100
 machine.cpu.instr_count
-scheduler.mode                 # turbo | paced | accelerated (writable)
+pacing.mode                    # turbo | paced | accelerated (writable; also scheduler.mode)
 machine.reset                  # warm reset: keeps RAM, PRAM/NVRAM, the clock and media
 machine.restart                # power cycle: RAM cold, nothing rebuilt (PRAM/NVRAM, clock, media kept)
-machine.rebuild                # a new machine from machine.config: fresh stores, media transferred
-machine.boot model="iicx" rom="tests/data/roms/iix-iicx-se30-97221136.rom" ram=8192
+machine.boot model="iicx" rom="tests/data/roms/iix-iicx-se30-97221136.rom" ram=8192   # a new machine; media go with the old one
 ```
 
 - `debug.step N` runs through the frame loop exactly as `scheduler.run N`
@@ -291,7 +290,8 @@ breakpoints do. For memory watches, boot fresh instead.
 
 ```
 machine.id                                  # plus, se30, iicx, ...
-machine.config                              # model ram rom vroms slot_cards video_card ...
+machine.ram                                 # KB
+machine.nubus.slot[9].card.id               # what a slot seats (also .card.declrom.path / .crc)
 catalog.profile "se30"                      # static model description
 machine.rom.identify "tests/data/roms/plus-v3-4d1f8172.rom"
 machine.floppy.create "/tmp/blank.dsk"      # 800K blank, into a free drive; won't overwrite

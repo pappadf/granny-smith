@@ -2896,7 +2896,8 @@ static void write_host_file(const char *dir, const char *name) {
 
 // A withdrawn volume's FPEnumerate snapshots go with it.  They stayed until
 // the session closed, and a volume later given the same ID -- by a wrap of
-// the ID counter, or a restore -- was listed with the removed share's names.
+// the ID counter (the suite builds with AFP_VOL_ID_MAX = 16) -- was listed
+// with the removed share's names.
 TEST(a_withdrawn_volume_takes_its_listings_with_it) {
     fixture_up("f09");
     write_file("SecretA1", "");
@@ -2914,7 +2915,18 @@ TEST(a_withdrawn_volume_takes_its_listings_with_it) {
     write_host_file(other, "B1");
     write_host_file(other, "B2");
     write_host_file(other, "B3");
-    ASSERT_TRUE(atalk_afp_volume_restore("Other", other, g_vol_id, err, sizeof err) >= 0);
+    // Add the other share until the ID counter comes round to the withdrawn
+    // volume's ID.
+    int slot = -1;
+    for (int i = 0; i < 32; i++) {
+        slot = atalk_afp_volume_add("Other", other, err, sizeof err);
+        ASSERT_TRUE(slot >= 0);
+        if (atalk_afp_volume_vol_id(slot) == (unsigned)g_vol_id)
+            break;
+        ASSERT_EQ_INT(0, atalk_afp_volume_remove("Other", err, sizeof err));
+        slot = -1;
+    }
+    ASSERT_TRUE(slot >= 0);
     ASSERT_EQ_INT(g_vol_id, open_named_vol_as(SESSION, "Other"));
 
     char names[8][96];
@@ -3824,6 +3836,9 @@ TEST(cat_search_parses_find_files_request) {
 }
 
 int main(void) {
+    // The server serves the plugged-in connection's sessions; here, one
+    // connection for the whole run.
+    afp_plug(afp_link_new());
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);
 

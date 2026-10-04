@@ -55,6 +55,48 @@ typedef void (*event_callback_t)(void *source, uint64_t data);
 // per frame-unit scale with the speed setting.
 enum schedule_mode { schedule_paced, schedule_unthrottled, schedule_accelerated };
 
+// Accelerated mode: bounds for the fixed speed multiplier, x256 fixed point.
+// Floor 1x = authentic (the mode never runs the guest slower than real
+// hardware); the 8x cap keeps instruction-timed guest code (TimeDBRA-derived
+// busy-waits) from drifting absurdly far on fast hosts.
+#define SPEED_X256_ONE 256
+#define SPEED_X256_MAX (8 * 256)
+// scheduler.speed == 0 means "auto": the adaptive governor picks the speed.
+#define SPEED_X256_AUTO 0
+
+// Pacing: how the HOST runs the guest timeline -- the mode, the pinned
+// accelerated speed (SPEED_X256_AUTO lets the governor pick) and the cap on
+// it.  Host policy: it lives in the platform's run loop (em_main, the
+// headless daemon), outlives every machine and is never in a checkpoint.  It
+// reaches a machine only as an argument of the scheduler's run step, so a new
+// or restored machine simply runs under whatever the host says.
+typedef struct host_pacing {
+    enum schedule_mode mode;
+    uint32_t speed_x256; // pinned accelerated multiplier, or SPEED_X256_AUTO
+    uint32_t max_speed_x256; // cap on the accelerated multiplier
+} host_pacing_t;
+
+// The host's pacing as a process starts: paced, governor auto, 8x cap.
+#define HOST_PACING_DEFAULT                                                                                            \
+    ((host_pacing_t){.mode = schedule_paced, .speed_x256 = SPEED_X256_AUTO, .max_speed_x256 = SPEED_X256_MAX})
+
+// The platform's pacing setting (its run loop owns the one instance).  A weak
+// default serves a build with no run loop (the unit suites).  scheduler.mode,
+// scheduler.speed and scheduler.max_speed read and write it.
+host_pacing_t *platform_pacing(void);
+
+// The root `pacing` object: the host's setting, there with or without a
+// machine (registered at shell start, like `checkpoint`).
+void pacing_init(void);
+
+// Set the pinned accelerated speed (0 = auto: the adaptive governor picks,
+// bounded by the cap; otherwise clamped to 1x..8x) or the cap (clamped to
+// 1x..8x) of a pacing setting.  Only accelerated mode uses either; paced and
+// turbo always run the authentic CPI.  The governor needs the paced main
+// loop's host-timing signal, so headless accelerated runs pin a speed.
+void host_pacing_set_speed(host_pacing_t *p, double multiplier);
+void host_pacing_set_max_speed(host_pacing_t *p, double multiplier);
+
 struct scheduler;
 typedef struct scheduler scheduler_t;
 
@@ -81,8 +123,15 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
 // Free all resources associated with a scheduler instance
 void scheduler_delete(struct scheduler *scheduler);
 
-// Save scheduler state to a checkpoint
+// Save scheduler state to a checkpoint (everything but the event queue).
 void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *checkpoint);
+
+// Save / restore the event queue.  It is the LAST block of a machine
+// checkpoint: system_create restores it once the whole machine -- every event
+// source -- exists, so every saved event binds as it is read, or the restore
+// fails.
+void scheduler_checkpoint_events(struct scheduler *restrict scheduler, checkpoint_t *checkpoint);
+void scheduler_restore_events(struct scheduler *restrict scheduler, checkpoint_t *checkpoint);
 
 // === Operations ===
 
@@ -174,8 +223,8 @@ extern double scheduler_time_ns(struct scheduler *restrict scheduler);
 
 // Main loop iteration for real-time emulation with VBL-based timing.  The
 // WASM/web2 RAF entry point: maps elapsed host time onto whole VBL frame-units
-// and runs them via scheduler_run_frame().
-void scheduler_main_loop(config_t *restrict config, double now_msecs);
+// and runs them via scheduler_run_frame(), under the host's `pacing`.
+void scheduler_main_loop(config_t *restrict config, double now_msecs, const host_pacing_t *pacing);
 
 // Run one VBL frame-unit: pulse the machine's VBL line (trigger_vbl) then run
 // exactly one VBL period of emulated time.  This is the atomic unit shared by
@@ -186,16 +235,20 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs);
 // A frame cut short (instruction budget, breakpoint, daemon client input) is
 // resumed by the next call rather than restarted, so the VBL line is pulsed
 // once per VBL period of emulated time however finely the caller steps.
-void scheduler_run_frame(struct scheduler *restrict s, config_t *config);
+// `pacing` is the host's setting the frame runs under (scheduler_apply_pacing).
+void scheduler_run_frame(struct scheduler *restrict s, config_t *config, const host_pacing_t *pacing);
+
+// Run under the host's `pacing` from now on: re-derives the effective CPI and
+// resets the governor and pacing estimators when it differs from what the
+// scheduler last ran under.  Every run step calls it; so do the scheduler.*
+// pacing setters, so a change shows at once.
+void scheduler_apply_pacing(struct scheduler *restrict s, const host_pacing_t *pacing);
 
 // Run the scheduler for a specified number of instructions
 void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n);
 
 // Run the scheduler for a specified number of microseconds
 void scheduler_run_usecs(struct scheduler *restrict s, uint64_t usecs);
-
-// Complete deferred checkpoint restore after all devices have registered event types
-void scheduler_start(struct scheduler *restrict s);
 
 // Why a run ended.  A mode (a run started by scheduler_run_with_budget)
 // carries the reason it stopped and whose it was; scheduler_run_frame
@@ -245,34 +298,19 @@ void scheduler_set_running(struct scheduler *restrict scheduler, bool running);
 // Check if the scheduler is currently running
 bool scheduler_is_running(struct scheduler *restrict s);
 
-// Set scheduler pacing mode (paced/unthrottled/accelerated)
-void scheduler_set_mode(struct scheduler *restrict s, enum schedule_mode mode);
 // The one parser of a pacing-mode name, for scheduler.mode and headless
-// --speed alike: "paced" (and the legacy real/realtime/hw/hardware),
-// "accelerated" (accel), "turbo" (max).  False for anything else.
+// --speed alike: "paced", "accelerated", "turbo".  False for anything else.
 bool scheduler_mode_from_string(const char *name, enum schedule_mode *out);
-
-// Read the current pacing mode (paced when there is no scheduler)
-enum schedule_mode scheduler_get_mode(const struct scheduler *s);
-
-// Set the accelerated-mode CPU speed multiplier: 0 = auto (the adaptive
-// governor picks moment to moment, bounded by max_speed), any other value
-// pins a fixed multiplier (clamped to [1.0, 8.0]; stored as x256 fixed
-// point). Retained across mode switches and checkpoints, but only takes
-// effect while the mode is schedule_accelerated — paced and unthrottled
-// always run the authentic CPI. The governor needs the paced main loop's
-// host-timing signal, so headless accelerated runs use a pinned speed.
-void scheduler_set_speed(struct scheduler *restrict s, double multiplier);
-
-// Set the user cap on the accelerated-mode multiplier (clamped to
-// [1.0, 8.0]): the adaptive governor's ceiling, and pinned speeds are
-// clamped to it at use. Persisted with the checkpoint prefix.
-void scheduler_set_max_speed(struct scheduler *restrict s, double multiplier);
 
 // The speed multiplier actually applied to the CPU right now, x256 fixed point
 // (256 = 1x). 1x in paced/unthrottled; in accelerated mode the live pinned or
 // governed multiplier. Divide by 256.0 for the display value.
 uint32_t scheduler_effective_speed_x256(struct scheduler *restrict s);
+
+// Emit the speed event for the current effective speed, whether or not it
+// changed.  The swap step calls it: the speed a machine settled on while it
+// was built was not announced (gs_event_hold).
+void scheduler_announce_speed(struct scheduler *s);
 
 // Set the CPU clock frequency in Hz (e.g. 7833600 for Plus, 15667200 for SE/30)
 void scheduler_set_frequency(struct scheduler *restrict s, uint32_t frequency_hz);
@@ -284,8 +322,11 @@ void scheduler_set_cpi(struct scheduler *restrict s, uint32_t cpi);
 
 // Get the total number of CPU instructions executed so far
 uint64_t cpu_instr_count(void);
+// The same count for one scheduler (0 for NULL).
+uint64_t scheduler_instr_count(struct scheduler *s);
 
-// Reconcile sprint counters (called from IRQ handlers to stabilize accounting)
-void cpu_reschedule(void);
+// Reconcile sprint counters (called from IRQ handlers to stabilize accounting).
+// NULL (a machine without its scheduler yet) is a no-op.
+void cpu_reschedule(struct scheduler *s);
 
 #endif // SCHEDULE_H

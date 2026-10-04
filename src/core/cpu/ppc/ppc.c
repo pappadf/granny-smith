@@ -930,18 +930,25 @@ static void ppc_fastpath_changed(void) {
     ppc_mmu_logpoints_changed();
 }
 
-// The instance behind the parameterless memory hooks below (one main CPU
-// per machine; rebound on every ppc_init).
-static ppc_t *g_hook_ppc;
-
 // g_mem_logical_xlate: current-data-context logical→physical for the
 // memory slow path's logpoint resolution.  Side-effect-free.
-static uint32_t ppc_hook_logical_xlate(uint32_t addr, bool *ok) {
-    if (!g_hook_ppc) {
-        *ok = false;
-        return addr;
-    }
-    return ppc_mmu_translate_debug(g_hook_ppc, addr, true, ok);
+static uint32_t ppc_hook_logical_xlate(void *ctx, uint32_t addr, bool *ok) {
+    return ppc_mmu_translate_debug((ppc_t *)ctx, addr, true, ok);
+}
+
+static void ppc_hook_selected(void *ctx) {
+    ppc_mmu_caches_unknown();
+    ppc_update_active_maps((ppc_t *)ctx); // the active pair follows the MSR, not the sprint
+}
+
+memory_cpu_hooks_t ppc_memory_hooks(ppc_t *p) {
+    // The user SoA arrays carry this MMU's logical fills — the generic
+    // identity-restore paths must leave them alone (memory.h).
+    return (memory_cpu_hooks_t){.user_soa_reserved = true,
+                                .map_changed = ppc_fastpath_changed,
+                                .logical_xlate = ppc_hook_logical_xlate,
+                                .selected = ppc_hook_selected,
+                                .ctx = p};
 }
 
 ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
@@ -949,13 +956,6 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
     if (!p)
         return NULL;
     assert(cpu_model == CPU_MODEL_PPC601 || cpu_model == CPU_MODEL_PPC604 || cpu_model == CPU_MODEL_PPC750);
-
-    // The user SoA arrays carry this MMU's logical fills — the generic
-    // identity-restore paths must leave them alone (memory.h).
-    g_user_soa_reserved = true;
-    g_mem_map_changed = ppc_fastpath_changed;
-    g_hook_ppc = p;
-    g_mem_logical_xlate = ppc_hook_logical_xlate;
 
     if (checkpoint) {
         // The stream carries the prefix only; the pointer section is not in
@@ -1009,12 +1009,6 @@ void ppc_delete(ppc_t *p) {
         return;
     // The decrementer event carries `p`; only the live re-arm path removed it.
     scheduler_forget_source(p->scheduler, p);
-    // Drop the parameterless-hook binding if it is ours (memory_map_init
-    // also clears the function pointers on machine swap).
-    if (g_hook_ppc == p) {
-        g_hook_ppc = NULL;
-        g_mem_logical_xlate = NULL;
-    }
     if (p->fpu_object) {
         object_detach(p->fpu_object);
         object_delete(p->fpu_object);

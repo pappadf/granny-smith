@@ -904,6 +904,17 @@ const char *image_get_filename(const image_t *image) {
     return image ? image->filename : NULL;
 }
 
+image_t *images_find(const image_list_t *images, const char *name) {
+    if (!images || !name)
+        return NULL;
+    for (int i = 0; i < images->n; i++) {
+        const char *n = image_get_filename(images->items[i]);
+        if (n && strcmp(n, name) == 0)
+            return images->items[i];
+    }
+    return NULL;
+}
+
 void image_init(checkpoint_t *checkpoint) {
     (void)checkpoint;
 }

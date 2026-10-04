@@ -12,13 +12,13 @@
 
 #include "stub_upper.h"
 
+#include "afp_server.h"
 #include "appletalk.h"
 #include "appletalk_adsp.h"
 #include "appletalk_aevt.h"
 #include "appletalk_asp.h"
 #include "appletalk_internal.h"
 #include "appletalk_ppc.h"
-#include "laserwriter_job.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -83,12 +83,74 @@ unsigned atalk_afp_volume_cnid_count(int s) {
     return 0;
 }
 
+// ---- the connection's parts above ASP -----------------------------------------
+//
+// Each layer's part of a connection is opaque to appletalk.c: any non-NULL
+// handle will do, and plugging one in or out is counted.
+static int g_link_dummy;
+int g_printer_registers;
+int g_printer_timer_registrations;
+int g_printer_unplugs;
+
+afp_link_t *afp_link_new(void) {
+    return (afp_link_t *)(void *)&g_link_dummy;
+}
+void afp_link_free(afp_link_t *link) {
+    (void)link;
+}
+void afp_plug(afp_link_t *link) {
+    (void)link;
+}
+adsp_link_t *atalk_adsp_link_new(void) {
+    return (adsp_link_t *)(void *)&g_link_dummy;
+}
+void atalk_adsp_link_free(adsp_link_t *link) {
+    (void)link;
+}
+void atalk_adsp_link_register_timers(struct atalk_conn *conn, adsp_link_t *link) {
+    (void)conn;
+    (void)link;
+}
+void atalk_adsp_plug(adsp_link_t *link) {
+    (void)link;
+}
+ppc_link_t *atalk_ppc_link_new(void) {
+    return (ppc_link_t *)(void *)&g_link_dummy;
+}
+void atalk_ppc_link_free(ppc_link_t *link) {
+    (void)link;
+}
+void atalk_ppc_plug(ppc_link_t *link) {
+    (void)link;
+}
+aevt_link_t *atalk_aevt_link_new(void) {
+    return (aevt_link_t *)(void *)&g_link_dummy;
+}
+void atalk_aevt_link_free(aevt_link_t *link) {
+    (void)link;
+}
+void atalk_aevt_plug(aevt_link_t *link) {
+    (void)link;
+}
+
 // ---- printer (appletalk_printer.c) ----------------------------------------
-void atalk_printer_register(void) {}
-void atalk_printer_shutdown(void) {}
+void atalk_printer_register(void) {
+    g_printer_registers++;
+}
+void atalk_printer_register_timers(struct atalk_conn *conn) {
+    (void)conn;
+    g_printer_timer_registrations++;
+}
+void atalk_printer_unplug(void) {
+    g_printer_unplugs++;
+}
+void atalk_printer_plug(void) {}
 void atalk_printer_link_down(void) {}
 const char *atalk_printer_get_status(void) {
     return "";
+}
+bool atalk_printer_job_finishing(void) {
+    return false;
 }
 bool atalk_printer_has_interpreter(void) {
     return false;
@@ -118,51 +180,7 @@ int atalk_printer_restart(char *err, size_t err_len) {
     return 0;
 }
 
-// ---- the printer's lifetime (laserwriter_job.c) ------------------------------
-//
-// A model of the bridge's printer, so the tests can see which printer each
-// machine lifecycle step keeps, frees or gives back.
-uint32_t g_printer_current;
-uint32_t g_printer_freed[16];
-int g_printer_nfreed;
-static uint32_t g_printer_next = 1;
-
-static void printer_freed(uint32_t id) {
-    if (id && g_printer_nfreed < 16)
-        g_printer_freed[g_printer_nfreed++] = id;
-}
-uint32_t stub_printer_use(void) {
-    if (!g_printer_current)
-        g_printer_current = g_printer_next++;
-    return g_printer_current;
-}
-void stub_printer_reset(void) {
-    g_printer_current = 0;
-    g_printer_nfreed = 0;
-    memset(g_printer_freed, 0, sizeof g_printer_freed);
-}
-void laserwriter_printer_retire(void) {
-    printer_freed(g_printer_current);
-    g_printer_current = 0;
-}
-laserwriter_printer_t laserwriter_printer_detach(void) {
-    laserwriter_printer_t p = {.id = g_printer_current};
-    g_printer_current = 0;
-    return p;
-}
-void laserwriter_printer_reattach(laserwriter_printer_t printer) {
-    laserwriter_printer_retire();
-    g_printer_current = printer.id;
-}
-void laserwriter_printer_free_detached(laserwriter_printer_t printer) {
-    printer_freed(printer.id);
-}
-
 // ---- ADSP / PPC / AEVT -------------------------------------------------------
-void atalk_adsp_init(scheduler_t *s) {
-    (void)s;
-}
-void atalk_adsp_shutdown(void) {}
 adsp_stack_t *atalk_adsp_stack(void) {
     return NULL;
 }
@@ -179,38 +197,21 @@ void atalk_adsp_ddp_in(const ddp_header_t *ddp, const uint8_t *buf, int len) {
 void atalk_adsp_install_objects(struct object *p) {
     (void)p;
 }
-void atalk_adsp_remove_objects(void) {}
-void atalk_ppc_init(void) {}
-void atalk_ppc_shutdown(void) {}
 void atalk_ppc_close_all(const char *r) {
     (void)r;
 }
 void atalk_ppc_install_objects(struct object *p) {
     (void)p;
 }
-void atalk_ppc_remove_objects(void) {}
-atalk_aevt_config_t g_aevt_restored;
-int g_aevt_set_calls;
 void atalk_aevt_init(void) {}
-void atalk_aevt_shutdown(void) {}
-void atalk_aevt_get_config(atalk_aevt_config_t *o) {
-    memset(o, 0, sizeof(*o));
-}
-void atalk_aevt_set_config(const atalk_aevt_config_t *in) {
-    g_aevt_set_calls++;
-    g_aevt_restored = *in;
-}
-void atalk_aevt_reset_transient_state(void) {}
 void atalk_aevt_install_objects(struct object *p) {
     (void)p;
 }
-void atalk_aevt_remove_objects(void) {}
 
-// ---- configuration the stack captures and restores ---------------------------
+// ---- the network's configuration ---------------------------------------------
 //
-// Stateful, like the real modules: a checkpoint round trip can be checked.
-// Server identity and printer settings are process-wide and survive a
-// teardown; the volume table does not (atalk_server_delete empties it).
+// Stateful, like the real modules, so a test can see that no machine's
+// lifecycle touches it.
 
 static char g_afp_name[33] = "Test Server";
 static char g_afp_message[200];
@@ -226,9 +227,6 @@ static struct {
 } g_stub_vols[8];
 static unsigned g_stub_next_vol_id = 1;
 
-void atalk_server_delete(void) {
-    memset(g_stub_vols, 0, sizeof(g_stub_vols));
-}
 const char *atalk_afp_get_name(void) {
     return g_afp_name;
 }
@@ -253,9 +251,9 @@ int atalk_afp_set_message(const char *m, char *e, size_t el) {
     snprintf(g_afp_message, sizeof(g_afp_message), "%s", m);
     return 0;
 }
-int atalk_afp_volume_restore(const char *n, const char *p, unsigned vol_id, char *e, size_t el) {
+int atalk_afp_volume_add(const char *n, const char *p, char *e, size_t el) {
     for (int i = 0; i < 8; i++)
-        if (g_stub_vols[i].in_use && (g_stub_vols[i].vol_id == vol_id || strcmp(g_stub_vols[i].name, n) == 0)) {
+        if (g_stub_vols[i].in_use && strcmp(g_stub_vols[i].name, n) == 0) {
             snprintf(e, el, "taken");
             return -1;
         }
@@ -264,16 +262,11 @@ int atalk_afp_volume_restore(const char *n, const char *p, unsigned vol_id, char
             g_stub_vols[i].in_use = true;
             snprintf(g_stub_vols[i].name, sizeof(g_stub_vols[i].name), "%s", n);
             snprintf(g_stub_vols[i].path, sizeof(g_stub_vols[i].path), "%s", p);
-            g_stub_vols[i].vol_id = vol_id;
-            if (vol_id >= g_stub_next_vol_id)
-                g_stub_next_vol_id = vol_id + 1;
+            g_stub_vols[i].vol_id = g_stub_next_vol_id++;
             return i;
         }
     snprintf(e, el, "full");
     return -1;
-}
-int atalk_afp_volume_add(const char *n, const char *p, char *e, size_t el) {
-    return atalk_afp_volume_restore(n, p, g_stub_next_vol_id, e, el);
 }
 int atalk_afp_volume_remove(const char *n, char *e, size_t el) {
     (void)e, (void)el;

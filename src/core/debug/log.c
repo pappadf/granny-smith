@@ -16,9 +16,9 @@
 #include "log_categories.h"
 
 #include "ppc.h" // PowerPC pc / r24 for the PC decoration
-#include "scheduler.h" // cpu_instr_count()
+#include "scheduler.h" // scheduler_instr_count()
 #include "shell.h"
-#include "system.h" // system_config() / system_cpu()
+#include "system.h" // system_running()
 #include "system_config.h" // config_t::ppc
 #include "value.h"
 
@@ -29,7 +29,7 @@ struct log_category {
     char *name; // Category name (owned)
     int level; // Current level threshold; 0 = off
     int to_stdout; // Emit to stdout
-    int timestamp; // Include cpu_instr_count() prefix
+    int timestamp; // Include the instruction-count prefix
     int show_pc; // Include PC register in output
     char *file_path; // Optional file sink path (owned)
     FILE *file_fp; // Opened file handle (append mode)
@@ -372,18 +372,20 @@ void log_vemit(const log_category_t *cat, int level, const char *fmt, va_list ap
     // main CPU is the 601/604 and the interesting "PC" for driver-level
     // logs is usually the emulated 68k one, which the ROM's emulator keeps
     // in r24 while 68k code runs — show both.
+    //
+    // The decorations describe the running machine, which a build -- a log
+    // line from a constructor -- leaves as it is (system_running).
+    config_t *running = system_running();
     char pcstr[40] = "";
     if (c->show_pc) {
-        config_t *cfg = system_config();
-        if (cfg && cfg->ppc) {
-            snprintf(pcstr, sizeof(pcstr), "PC=%08x r24=%08x", (unsigned)ppc_get_pc(cfg->ppc),
-                     (unsigned)ppc_get_gpr(cfg->ppc, 24));
+        if (running && running->ppc) {
+            snprintf(pcstr, sizeof(pcstr), "PC=%08x r24=%08x", (unsigned)ppc_get_pc(running->ppc),
+                     (unsigned)ppc_get_gpr(running->ppc, 24));
         } else {
-            cpu_t *cpu = system_cpu();
             uint32_t pc_value = 0;
-            if (cpu) {
+            if (running && running->cpu) {
                 extern uint32_t cpu_get_pc(cpu_t *restrict cpu);
-                pc_value = cpu_get_pc(cpu);
+                pc_value = cpu_get_pc(running->cpu);
             }
             snprintf(pcstr, sizeof(pcstr), "PC=%08x", (unsigned)pc_value);
         }
@@ -391,13 +393,13 @@ void log_vemit(const log_category_t *cat, int level, const char *fmt, va_list ap
 
     // Format line with timestamp and/or PC as needed
     if (c->timestamp && c->show_pc) {
-        unsigned long long t = (unsigned long long)cpu_instr_count();
+        unsigned long long t = (unsigned long long)scheduler_instr_count(running ? running->scheduler : NULL);
         if (indent_spaces > 0)
             snprintf(line, sizeof(line), "[%s] %d @%llu %s %s%s\n", name, level, t, pcstr, indent_buf, body);
         else
             snprintf(line, sizeof(line), "[%s] %d @%llu %s %s\n", name, level, t, pcstr, body);
     } else if (c->timestamp) {
-        unsigned long long t = (unsigned long long)cpu_instr_count();
+        unsigned long long t = (unsigned long long)scheduler_instr_count(running ? running->scheduler : NULL);
         if (indent_spaces > 0)
             snprintf(line, sizeof(line), "[%s] %d @%llu %s%s\n", name, level, t, indent_buf, body);
         else

@@ -6,6 +6,7 @@
 #include "io_leaf.h"
 
 #include "image.h"
+#include "value_format.h"
 #include "io/io_worker.h"
 #include "mailbox/mailbox.h"
 
@@ -42,24 +43,23 @@ static int io_leaf_run(void *ud, char *err, size_t cap) {
     return rc;
 }
 
-// The object model's JSON formatter (object/api.h), weak so a build without
-// the object layer links.
-size_t gs_format_value_json_alloc(const struct value *v, char **out, size_t max) __attribute__((weak));
-
-// Largest structured answer an I/O leaf sends.
-#define IO_LEAF_JSON_MAX (1u << 20) // the formatter tries 1 MiB first
-
 // The success value as the JSON the answer carries: a string, a number, a
-// boolean, a map or a list; anything else is `true`.
+// boolean, a map or a list; anything else is `true`.  A map or a list is
+// formatted as gs_eval formats one, and is held to the same result limit.
 static void complete_with(uint32_t token, value_t *v) {
-    if ((v->kind == V_MAP || v->kind == V_LIST) && gs_format_value_json_alloc) {
-        char *buf = NULL;
-        if (gs_format_value_json_alloc(v, &buf, IO_LEAF_JSON_MAX) && buf) {
-            gs_result_complete(token, true, buf);
-            free(buf);
-            return;
+    if (v->kind == V_MAP || v->kind == V_LIST) {
+        vbuf_t b = {0};
+        value_format(v, VFMT_JSON_TAGGED, &b);
+        if (b.p && b.len < GS_MBX_RESULT_MAX) // the result's limit (mailbox.h), its NUL aside
+            gs_result_complete(token, true, b.p);
+        else {
+            char err[128];
+            snprintf(err, sizeof err, "result is %zu bytes, over the %u-byte result limit", b.len,
+                     (unsigned)GS_MBX_RESULT_MAX);
+            gs_result_complete_error(token, err);
         }
-        free(buf);
+        vbuf_free(&b);
+        return;
     }
     char json[1100];
     if (v->kind == V_STRING && v->s) {

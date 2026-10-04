@@ -25,6 +25,7 @@
 struct config;
 struct nubus_slot_decl;
 struct image;
+struct image_list;
 struct object;
 struct scsi;
 
@@ -104,7 +105,7 @@ const char *hd_bus_to_string(hd_bus_t bus);
 // A substrate-published built-in display, owned by the family that models it.
 //
 // The registry (machines/machine.c) publishes this in catalog.profile and
-// validates/stages `monitor=` through it, so a second family with built-in
+// validates `monitor=` through it, so a second family with built-in
 // video -- the TNT's Control, the AV's CIVIC -- gets its OWN monitor list
 // rather than the PDM's.  Before this was a descriptor it was a bare label
 // and the registry reached straight into pdm/pdm.h for the rest.
@@ -169,7 +170,7 @@ struct aux_cpu_slot {
     uint32_t freq; // core clock in Hz
 };
 
-// Which bus a medium in transit is attached through (media_slot_t below).
+// Which bus a medium is attached through (media_slot_t below).
 typedef enum media_bus {
     MEDIA_BUS_FLOPPY = 0, // unit = drive index
     MEDIA_BUS_SCSI, // unit = SCSI id; the device-identity fields apply
@@ -185,17 +186,14 @@ typedef enum media_bus {
     MEDIA_BUS_ATA,
 } media_bus_t;
 
-// One mounted medium in transit across a machine.restart power-cycle: the
-// OPEN image handle — never a captured
-// path, so delta writes and blank images survive by construction — plus the
-// attachment coordinates needed to hand the handle back to the rebuilt
-// machine.
+// One medium to attach: the OPEN image handle plus the attachment
+// coordinates (media_attach).
 typedef struct media_slot {
     media_bus_t bus;
     int unit; // floppy drive index / SCSI id
-    struct image *img; // open handle; ownership is in transit
-    // SCSI device identity (MEDIA_BUS_SCSI only), captured from the dying
-    // device so the rebuilt one presents the same drive to the guest.
+    struct image *img; // open handle; the machine owns it once attached
+    // SCSI device identity (MEDIA_BUS_SCSI only): the drive presented to the
+    // guest.
     int scsi_type; // enum scsi_device_type value (1 = hd, 2 = cdrom)
     uint16_t block_size;
     bool read_only;
@@ -203,10 +201,6 @@ typedef struct media_slot {
     char product[17];
     char revision[5];
 } media_slot_t;
-
-// Transfer capacity: 2 floppy drives + 8 SCSI ids on each of two buses +
-// 1 ProFile + 4 ATA units.
-#define MEDIA_SLOTS_MAX 24
 
 // A ProFile block: 512 data bytes plus a 20-byte tag.  A property of the
 // ProFile protocol (MEDIA_BUS_PROFILE), whatever machine the drive is on.
@@ -237,9 +231,9 @@ bool media_bus_parse(const char *name, media_bus_t *out);
 // hw_profile_t is pure descriptor DATA and points at one of
 // these.  system.c / nubus.c / pci.c dispatch through it; every hook is
 // NULL-safe.
-// (memory_layout_init and checkpoint_restore are deliberately absent — they
-// were never dispatched: each init runs its own layout directly and restore
-// is folded into init.)
+// There is no checkpoint hook: init builds the machine, and on a restore
+// each device it builds reads its own block and registers itself as a
+// checkpoint part (machine_parts.h), which is what a save walks.
 typedef struct machine_substrate {
     // Build the machine.  Returns 0 on success, non-zero on failure --
     // matching the NuBus card layer's ops->init, which has always worked this
@@ -297,7 +291,6 @@ typedef struct machine_substrate {
     // §4.7.2).
     void (*power_on)(struct config *cfg);
     void (*teardown)(struct config *cfg);
-    void (*checkpoint_save)(struct config *cfg, checkpoint_t *cp);
 
     void (*trigger_vbl)(struct config *cfg);
 
@@ -363,16 +356,12 @@ typedef struct machine_substrate {
     int (*input_mouse_button)(struct config *cfg, bool down, const char *mode);
     struct display *(*display)(struct config *cfg);
 
-    // machine.restart media transfer.
-    // media_detach hands every mounted medium's open image handle (plus its
-    // attachment coordinates) to `out`, removing them from whatever would
-    // close them during teardown, and returns the count; media_attach hands
-    // one such handle back to the freshly built machine (0 = attached, the
-    // callee now owns the handle; <0 = the caller must close it).  Macs bind
-    // the shared cfg->floppy/cfg->scsi implementation in system.c
-    // (system_media_detach_std / system_media_attach_std); the Lisa
-    // implements its own (parallel FDC + ProFile).
-    int (*media_detach)(struct config *cfg, media_slot_t *out, int max);
+    // media_attach hands one opened image handle (plus its attachment
+    // coordinates) to the running machine (0 = attached, the callee now owns
+    // the handle; <0 = the caller must close it).  Macs bind the shared
+    // cfg->floppy/cfg->scsi implementation in system.c
+    // (system_media_attach_std); the Lisa implements its own (parallel FDC +
+    // ProFile).
     int (*media_attach)(struct config *cfg, const media_slot_t *slot);
     // The runtime half of the same dispatch, for the machine-level attach and
     // eject verbs (machine.attach_hd / attach_cdrom / eject_media):
@@ -448,6 +437,10 @@ typedef struct hw_profile {
     // gates dialog display while individual models catch up driver-wise.
     bool has_cdrom;
     int cdrom_id; // SCSI bus id for the CD bay; conventionally 3.
+    // The CD-ROM drive this machine takes -- in its bay (has_cdrom), and on
+    // any CD attach: the identity it answers INQUIRY with and its block size.
+    // NULL on a machine that takes none (the Lisa).
+    const struct scsi_cd_drive *cdrom_drive;
 
     // On-board video digitizer (the AV family's DMSD/VDC capture path).
     // Drives the exported `video_in` capability, which gates the frontend's
@@ -482,7 +475,7 @@ typedef struct hw_profile {
     // identical" when the guarantee was really a hand-maintained invariant
     // nothing checked (they did all agree, as it happens).
     // The two feed different consumers -- the profile drives the config
-    // dialog and validate_vrom_resolution, nubus_init builds what the guest
+    // dialog and the boot document's slot checks, nubus_init builds what the guest
     // sees -- so a divergence would have offered a card for a socket that
     // never gets populated.  Reading the profile directly is what makes the
     // sentence above true rather than aspirational; the same is already so
@@ -521,8 +514,8 @@ typedef struct hw_profile {
     const struct pram_defaults *pram;
 
     // "Bespoke substrate" is not "bespoke machine": every 68k family, the IIfx
-    // included, builds through mac030_build_core + mac030_build_lowspeed,
-    // checkpoints through machine_checkpoint_save_core, and tears down through
+    // included, builds through mac030_build_core + mac030_build_lowspeed and
+    // tears down through
     // machine_teardown_config_devices.  What a family keeps for itself is what
     // its hardware actually does differently -- for the IIfx, the OSS
     // interrupt controller, the FMC ROM-invert POST window, the SCSI DMA
@@ -562,6 +555,18 @@ typedef struct hw_profile {
 // Registry: find a machine profile by id (NULL if unknown).
 const hw_profile_t *machine_find(const char *id);
 
+// True if `kb` is one of the RAM sizes the profile offers (ram_options).  The
+// one check a boot document's ram= and a restored checkpoint's size both pass.
+static inline bool hw_profile_ram_option_allowed(const hw_profile_t *p, uint32_t kb) {
+    if (!p->ram_options)
+        return false;
+    for (const uint32_t *r = p->ram_options; *r; r++) {
+        if (*r == kb)
+            return true;
+    }
+    return false;
+}
+
 // Registry: enumerate the built-in profiles.  *out_count receives the count.
 const hw_profile_t *const *machine_list(size_t *out_count);
 
@@ -576,6 +581,11 @@ bool profile_default_hd_bay(const hw_profile_t *p, media_bay_t *out);
 bool profile_cdrom_bay(const hw_profile_t *p, media_bay_t *out);
 // How many floppy drives the machine has (its floppy_slots).
 int profile_floppy_count(const hw_profile_t *p);
+// Build the machine's primary SCSI bus with the fixed devices the profile
+// declares on it: the CD bay's drive (has_cdrom, cdrom_id, cdrom_drive).
+struct scheduler;
+struct scsi *profile_scsi_init(const hw_profile_t *p, struct scheduler *sched, checkpoint_t *cp,
+                               const struct image_list *images);
 
 // === Machine-level attach and eject (system.c) =============================
 // Open `path` as the medium `bay` takes (a hard disk, or with `cdrom` a CD)

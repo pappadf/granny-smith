@@ -27,6 +27,7 @@
 
 #include "common.h"
 #include "config_space.h"
+#include "machine_build_opts.h" // slot_opts_t
 #include "memory.h" // memory_interface_t (a BAR's device-handler backing)
 
 #include <stdbool.h>
@@ -150,9 +151,14 @@ struct pci_device {
 };
 
 // Per-card constructor.  The bus controller calls this once per populated
-// slot during pci_seat_slots().  Returns the new device (the bus takes
-// ownership) or NULL on failure.
-typedef pci_device_t *(*pci_card_factory_fn)(int slot_index, config_t *cfg, checkpoint_t *cp);
+// slot during pci_seat_slots(), with what the boot document says about the
+// slot (`opts`, never NULL; empty fields mean the card's defaults): its
+// options and its expansion-ROM file.  On a restore `rom` is the expansion
+// ROM the card's checkpoint part carries, which a card with one takes instead
+// of looking its file up again (NULL on a boot, or when it had none).  Returns
+// the new device (the bus takes ownership) or NULL on failure.
+typedef pci_device_t *(*pci_card_factory_fn)(int slot_index, config_t *cfg, const rom_image_t *rom,
+                                             const slot_opts_t *opts);
 
 // What a card kind physically attaches through.  BUILTIN is deliberately
 // 0 so a kind that forgets to declare its attachment is conservatively
@@ -168,7 +174,7 @@ typedef enum pci_attach {
 // One user-selectable card option, and the values it takes.  `values` is a
 // NULL-terminated list of ids; `labels` runs alongside it (same length) and
 // may be NULL, in which case the ids are shown.  `default_value` is the id
-// the card uses when nothing is staged, so a dialog can show what "leave it
+// the card uses when the document names none, so a dialog can show what "leave it
 // alone" means rather than inventing a blank entry.
 typedef struct pci_card_option {
     const char *key; // "vram" — what pci_option= carries
@@ -194,7 +200,7 @@ typedef struct pci_card_kind {
     const struct nubus_monitor *monitors; // display cards only; NULL otherwise
     pci_card_factory_fn factory;
 
-    // What stage_option() will accept, DECLARED so a frontend can render a
+    // What accepts_option() will accept, DECLARED so a frontend can render a
     // control for it without knowing what card this is.  Sentinel-
     // terminated (an entry whose key is NULL ends the list); NULL means the
     // card takes no options a user should be offered.  The card is still
@@ -202,10 +208,12 @@ typedef struct pci_card_kind {
     // not the accepted set.
     const struct pci_card_option *options;
 
-    // The two seams NuBus lacked: the generic layer routes staged options and
-    // attaches extra object children through the KIND, never by testing card
-    // identity.  Both optional.
-    bool (*stage_option)(const char *key, const char *value);
+    // Does the kind take option key=value?  machine_boot_apply asks before
+    // the running machine is touched, so the factory only ever sees options
+    // it accepts.  NULL: the kind takes no options.  Like attach_objects
+    // below, a seam through the KIND, so the generic layer never tests card
+    // identity.
+    bool (*accepts_option)(const char *key, const char *value);
     void (*attach_objects)(pci_device_t *dev, struct object *card_node);
 
     // Is the kind OFFERED on this host right now?  NULL means always.  A

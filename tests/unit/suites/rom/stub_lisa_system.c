@@ -80,14 +80,6 @@ bool lisa_mmu_debug_write(uint32_t addr, unsigned size, bool supervisor, uint32_
     return false;
 }
 
-cpu_t *system_cpu(void) {
-    return NULL;
-}
-
-const char *system_machine_model_id(void) {
-    return NULL;
-}
-
 rtc_t *system_rtc(void) {
     return NULL;
 }
@@ -97,17 +89,4 @@ rtc_t *system_rtc(void) {
 struct cpu_debug_if;
 const struct cpu_debug_if *system_cpu_debug_if(void) {
     return NULL;
-}
-
-// machine_config.c's explicit-pick helper drives the vROM/PROM offer
-// registries, which this harness does not link.
-void vrom_clear_explicit(void) {}
-void prom_clear_explicit(void) {}
-int vrom_set_path(const char *path) {
-    (void)path;
-    return 0;
-}
-int prom_set_path(const char *path) {
-    (void)path;
-    return 0;
 }

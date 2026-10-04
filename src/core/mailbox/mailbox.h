@@ -43,15 +43,13 @@
 //              answers request `target_id` of this client
 //   REQ_MODE_STOP {id, client, owner}       stop a mode by owner (0: any)
 //   REQ_ACK_BUF {id, client, handle}        the client has consumed a
-//              staged buffer (below); the core frees or refills it
+//              transfer buffer (below); the job that owns it refills it
 //   EVT_RESULT {id, ok, json_len, out_len} + json + output
 //              The answer: ok = 1 when the leaf or job succeeded, else 0
 //              (the JSON then carries {"error": ...}); `output` is the text
 //              the leaf printed while it ran (gs_out.h), when the platform
-//              captures it.  A result too large for the event ring arrives
-//              as {"$buf": handle, "ptr": p, "len": n}: the JSON lies in a
-//              STAGED BUFFER in the core's heap, which the client reads
-//              and then releases with REQ_ACK_BUF.
+//              captures it.  The JSON is at most GS_MBX_RESULT_MAX bytes: a
+//              larger result is an error naming its size and the limit.
 //   EVT_PROGRESS {json_len} + {"id": request, "done": n, "total": n}
 //              An I/O job's progress (bytes, files; total 0 when unknown).
 //   EVT_STATE / EVT_NOTIFY / EVT_LOG {json_len} + json
@@ -94,8 +92,12 @@
 #ifndef GS_MBX_EVT_BYTES
 #define GS_MBX_EVT_BYTES (1024u << 10)
 #endif
-// The largest answer gs_eval may produce (the old bridge's output slot).
+// The largest result any eval may produce, on every client: a larger one is
+// an error that names its size and this limit, never truncated.  Bulk data
+// is a download (transfer buffers, below), not a result.
 #define GS_MBX_RESULT_MAX (256u << 10)
+// The answer buffer: the largest result and its terminating NUL.
+#define GS_MBX_RESULT_OUT (GS_MBX_RESULT_MAX + 1u)
 // The largest request path and arguments document accepted.
 #define GS_MBX_PATH_MAX 1023u
 #define GS_MBX_ARGS_MAX (128u << 10)
@@ -131,7 +133,7 @@
 #define GS_MBX_REQ_SCRIPT    2u // run a script as a job; the result comes when it ends
 #define GS_MBX_REQ_CANCEL    3u // cancel a job of this client
 #define GS_MBX_REQ_MODE_STOP 4u // stop a mode by owner (0: any)
-#define GS_MBX_REQ_ACK_BUF   5u // a staged buffer was consumed: {id, client, handle}
+#define GS_MBX_REQ_ACK_BUF   5u // a transfer buffer was consumed: {id, client, handle}
 #define GS_MBX_EVT_RESULT    16u
 #define GS_MBX_EVT_PROGRESS  17u // an I/O job's progress: {json_len} + json
 #define GS_MBX_EVT_STATE     18u // a core event (gs_event.h): run state
@@ -168,9 +170,8 @@
 // The most output one answer carries; beyond it the rest is dropped and
 // the text ends in "...".
 #define GS_MBX_OUTPUT_MAX (64u << 10)
-// Staged buffers: results spilled out of the ring, and I/O hand-offs.
-#define GS_MBX_STAGED_MAX 8
-#define GS_MBX_SPILL_MAX  (64u << 20) // the largest result that is spilled rather than refused
+// Transfer buffers published at once (I/O jobs' chunks to the client).
+#define GS_MBX_TRANSFER_MAX 8
 // EVT_STATE / EVT_NOTIFY / EVT_LOG payload words: {json_len} + json.
 #define GS_MBX_EVENT_JSON_LEN 0
 #define GS_MBX_EVENT_WORDS    1
@@ -299,18 +300,15 @@ bool gs_mailbox_output_append(const char *text, size_t len);
 // The client whose request the process's mailbox is serving (0: none).
 uint32_t gs_mailbox_serving_client(void);
 
-// --- Staged buffers -----------------------------------------------------------
-// A region of the core's heap described to the client by {handle, ptr,
-// len} inside an event or a result; the client reads (or writes) it
-// through the shared memory and releases it with REQ_ACK_BUF.  A buffer
-// bound to an I/O job (`io_job` non-zero) is the job's own: the ack is
-// forwarded to it (io_worker_ack) and the job refills; an unbound one is
-// freed on ack.  Emulator thread only.  Returns the handle, 0 when the
-// table is full.
-uint32_t gs_staged_publish(void *ptr, size_t len, uint32_t io_job);
-// Releases a handle the way an ack would (a job that ends unlinks its own).
-void gs_staged_release(uint32_t handle);
-bool gs_staged_lookup(uint32_t handle, void **ptr, size_t *len);
+// --- Transfer buffers ---------------------------------------------------------
+// A region of the core's heap owned by an I/O job, described to the client
+// by {handle, ptr, len} inside an event; the client reads (or writes) it
+// through the shared memory and acks it with REQ_ACK_BUF, which is
+// forwarded to the job (io_worker_ack) so it refills.  Emulator thread
+// only.  Returns the handle, 0 when the table is full.
+uint32_t gs_transfer_publish(uint32_t io_job);
+// Unlinks a handle (a job that ends releases its own).
+void gs_transfer_release(uint32_t handle);
 
 // --- An in-process client ---------------------------------------------------
 // The other side of the same mailbox, in C: what the headless driver's

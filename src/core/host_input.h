@@ -7,7 +7,7 @@
 // This is a PER-MACHINE object, unlike the process-lifetime facade it
 // replaces.  It has to be: keyboard.type paces its key transitions as
 // scheduler events, and a scheduler event needs a source that is constructed
-// with the machine, registered as an event type before scheduler_start so a
+// with the machine, registered as an event type at construction so a
 // checkpoint with keys in flight can restore, and forgotten in the machine's
 // teardown.  The old facade had no such anchor, which is why type() reached
 // past the substrate into adb_t and so worked only on ADB Macs — the Plus and
@@ -18,6 +18,10 @@
 // through system_input_key like any other; the only per-machine number is how
 // many key-transition bytes the machine's queue can hold before it starts
 // dropping, which the substrate declares.
+//
+// The object is also the source of the mouse guard's and the mouse trace's
+// events (debug_mac.c), for the same reason: they belong to one machine, and
+// a checkpoint taken with either running must restore it.
 
 #ifndef HOST_INPUT_H
 #define HOST_INPUT_H
@@ -31,7 +35,7 @@ typedef struct host_input host_input_t;
 
 // Build the keyboard object for this machine and attach it under
 // `machine.adb`.  Called once per machine from system_create, after the
-// substrate has built the scheduler and before scheduler_start.
+// substrate has built the scheduler.
 host_input_t *host_input_init(struct config *cfg, struct scheduler *scheduler);
 
 // Detach and destroy it, and drop any typing still in flight.

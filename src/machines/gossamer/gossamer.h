@@ -233,6 +233,14 @@ typedef struct gos_scc_dma_ctx {
 } gos_scc_dma_ctx_t;
 
 // === Family state ===========================================================
+// Callback context of one ATA cell (IRQ, DMA kick, the dma_pump event's
+// source): names its machine and cell.  Owned by the machine's state, so two
+// Gossamer machines alive at once (a restore) each wire their own.
+typedef struct gos_ata_ctx {
+    struct config *cfg;
+    int cell;
+} gos_ata_ctx_t;
+
 typedef struct gossamer_state {
     gos_grackle_t grackle;
     gos_heathrow_t hr;
@@ -254,6 +262,7 @@ typedef struct gossamer_state {
     // The two ATA cells (+$20000, +$21000) and the SCSI bus that carries
     // their ATAPI CD-ROMs (machine.atapi): gossamer_ata.c.
     ata_channel_t ata[2];
+    gos_ata_ctx_t ata_ctx[2];
     struct scsi *atapi;
     bool ata_ready;
     struct object *ata_object; // machine.ata
@@ -301,7 +310,7 @@ int gos_dbdma_source(int chan);
 // Build the bridge: config ports, the PCI bus, Grackle's own header at
 // device 0, the PCI memory/I/O windows, the board-register page.  Requires
 // cfg->pci.
-void gos_grackle_init(config_t *cfg);
+void gos_grackle_init(config_t *cfg, checkpoint_t *cp);
 void gos_grackle_reset(config_t *cfg); // power-on register file (DIMM inventory survives)
 void gos_grackle_remap(config_t *cfg); // rebuild the RAM decode from the bank registers
 uint16_t gos_board_id(config_t *cfg); // the $FF000004 halfword
@@ -309,7 +318,7 @@ uint16_t gos_board_id(config_t *cfg); // the $FF000004 halfword
 // === heathrow.c =============================================================
 
 void gos_heathrow_init(config_t *cfg); // power-on registers (NVRAM survives)
-void gos_heathrow_pci_attach(config_t *cfg); // header + BAR0 backing at device $10
+void gos_heathrow_pci_attach(config_t *cfg, checkpoint_t *cp); // header + BAR0 backing at device $10
 void gos_grackle_attach_objects(config_t *cfg);
 void gos_grackle_detach_objects(config_t *cfg);
 void gos_heathrow_attach_objects(config_t *cfg);
@@ -364,7 +373,6 @@ void gos_ata_write16(config_t *cfg, uint32_t off, uint16_t value);
 uint32_t gos_ata_read32(config_t *cfg, uint32_t off);
 void gos_ata_write32(config_t *cfg, uint32_t off, uint32_t value);
 // The substrate's media hooks: the standard floppy/SCSI set plus the ATA units.
-int gos_media_detach(config_t *cfg, media_slot_t *out, int max);
 int gos_media_attach(config_t *cfg, const media_slot_t *slot);
 bool gos_media_present(config_t *cfg, media_bus_t bus, int unit);
 int gos_media_eject(config_t *cfg, media_bus_t bus, int unit);

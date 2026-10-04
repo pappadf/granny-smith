@@ -11,7 +11,6 @@
 #include "cpu.h"
 #include "debug.h"
 #include "log.h"
-#include "machine_config.h"
 #include "memory.h"
 #include "ppc.h"
 #include "rtc.h"
@@ -41,11 +40,11 @@ void machine_teardown_config_devices(config_t *cfg) {
         via_delete(cfg->via1);
         cfg->via1 = NULL;
     }
-    // The AppleTalk stack is a client of the SCC's LocalTalk channel, so it
-    // goes first -- it holds the scc pointer it was given at init.  A
-    // machine.rebuild constructs the same machine again, which keeps its
-    // printer the way it keeps its media (machine_config.h).
-    appletalk_delete(cfg->scc, machine_boot_is_rebuild());
+    // The AppleTalk connection is a client of the SCC's LocalTalk channel, so
+    // it goes first -- it holds the scc pointer it was built with.  Its
+    // sessions close as a server sees a Mac vanish; the network stays.
+    atalk_conn_delete(cfg->atalk);
+    cfg->atalk = NULL;
     if (cfg->scc) {
         scc_delete(cfg->scc);
         cfg->scc = NULL;

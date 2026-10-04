@@ -354,6 +354,7 @@ void ppc_mmu_invalidate_all(ppc_t *p);
 void ppc_mmu_tlbie(ppc_t *p, uint32_t ea);
 void ppc_mmu_flush_fetch(void);
 void ppc_mmu_logpoints_changed(void); // memory-logpoint shape changed: drop xtlb + fetch caches
+void ppc_mmu_caches_unknown(void); // the memory map was selected: the fill tracker and caches start over
 
 // Segment-register write with change-triggered invalidation (the
 // nanokernel reloads identical SR values wholesale on space touches).

@@ -109,16 +109,10 @@ typedef struct {
 // Module state
 // ============================================================================
 
-static aevt_event_t g_events[AEVT_MAX_EVENTS];
-static int g_event_count; // append-only high-water mark
-static aevt_inbox_t g_inbox[AEVT_MAX_INBOX];
-static int g_inbox_count;
-
+// The host port's configuration: the network's.
 static bool g_enabled = true;
 static char g_port_name[33] = "gs-host";
 static char g_auto_reply[256] = "";
-
-static uint32_t g_next_return_id = 1;
 
 // Counters published as `appletalk.aevt.stats`.
 typedef struct {
@@ -132,7 +126,21 @@ typedef struct {
     uint64_t dropped; // events received with the inbox full (answered, not kept)
 } aevt_stats_t;
 
-static aevt_stats_t g_stats;
+// The Apple-event layer's part of a machine's connection (atalk_conn_t): the
+// events a script sent that Mac, the ones it sent us, and their counters.
+struct aevt_link {
+    aevt_event_t events[AEVT_MAX_EVENTS];
+    int event_count; // append-only high-water mark
+    aevt_inbox_t inbox[AEVT_MAX_INBOX];
+    int inbox_count;
+    uint32_t next_return_id;
+    aevt_stats_t stats;
+};
+
+// The link of the connection plugged into the network.  While none is, this
+// points at an empty link no event is added to (sends are refused).
+static aevt_link_t g_no_link;
+static aevt_link_t *g_aevt = &g_no_link;
 
 // ============================================================================
 // Forward declarations
@@ -151,15 +159,15 @@ static bool aevt_dispatch(aevt_event_t *ev, char *err, size_t err_len);
 // ============================================================================
 
 static aevt_event_t *aevt_alloc_event(void) {
-    // Events are append-only for the life of the run so the V_OBJECT a send
-    // returns stays valid in a `let` binding (§8).
-    if (g_event_count >= AEVT_MAX_EVENTS)
+    // Events are append-only for the life of the connection so the V_OBJECT a
+    // send returns stays valid in a `let` binding (§8).
+    if (g_aevt == &g_no_link || g_aevt->event_count >= AEVT_MAX_EVENTS)
         return NULL;
-    aevt_event_t *ev = &g_events[g_event_count];
+    aevt_event_t *ev = &g_aevt->events[g_aevt->event_count];
     memset(ev, 0, sizeof(*ev));
     ev->in_use = true;
-    ev->slot = g_event_count++;
-    ev->return_id = g_next_return_id++;
+    ev->slot = g_aevt->event_count++;
+    ev->return_id = g_aevt->next_return_id++;
     ev->reply = val_none();
     ev->request = val_none();
     return ev;
@@ -180,7 +188,7 @@ static void aevt_fail(aevt_event_t *ev, const char *reason) {
     free(ev->error);
     ev->error = strdup(reason ? reason : "the event failed");
     aevt_settle(ev);
-    g_stats.errors++;
+    g_aevt->stats.errors++;
     LOG(3, "AE: event %u to '%s' failed — %s", (unsigned)ev->return_id, ev->target, reason ? reason : "");
 }
 
@@ -196,16 +204,16 @@ static aevt_state_t aevt_effective_state(aevt_event_t *ev) {
             free(ev->error);
             ev->error = strdup("no reply within the instruction budget");
             aevt_settle(ev);
-            g_stats.timeouts++;
+            g_aevt->stats.timeouts++;
         }
     }
     return ev->state;
 }
 
 static aevt_event_t *aevt_find_by_return_id(uint32_t return_id) {
-    for (int i = 0; i < g_event_count; i++) {
-        if (g_events[i].in_use && g_events[i].return_id == return_id)
-            return &g_events[i];
+    for (int i = 0; i < g_aevt->event_count; i++) {
+        if (g_aevt->events[i].in_use && g_aevt->events[i].return_id == return_id)
+            return &g_aevt->events[i];
     }
     return NULL;
 }
@@ -257,7 +265,7 @@ static bool aevt_dispatch(aevt_event_t *ev, char *err, size_t err_len) {
         return false;
     ev->state = ev->no_reply ? AEVT_STATE_REPLIED : AEVT_STATE_SENT;
     ev->sent_at_instr = cpu_instr_count();
-    g_stats.sent++;
+    g_aevt->stats.sent++;
     LOG(3, "AE: sent %s/%s to '%s' (return id %u)", ev->class4, ev->id4, ev->target, (unsigned)ev->return_id);
     return true;
 }
@@ -273,8 +281,8 @@ static void aevt_session_ready(void *ctx, ppc_session_t *s) {
 
 static void aevt_session_failed(void *ctx, ppc_session_t *s, const char *reason) {
     (void)ctx;
-    for (int i = 0; i < g_event_count; i++) {
-        aevt_event_t *ev = &g_events[i];
+    for (int i = 0; i < g_aevt->event_count; i++) {
+        aevt_event_t *ev = &g_aevt->events[i];
         if (ev->in_use && ev->session == s && (ev->state == AEVT_STATE_QUEUED || ev->state == AEVT_STATE_SENT))
             aevt_fail(ev, reason);
     }
@@ -282,8 +290,8 @@ static void aevt_session_failed(void *ctx, ppc_session_t *s, const char *reason)
 
 static void aevt_session_closed(void *ctx, ppc_session_t *s) {
     (void)ctx;
-    for (int i = 0; i < g_event_count; i++) {
-        aevt_event_t *ev = &g_events[i];
+    for (int i = 0; i < g_aevt->event_count; i++) {
+        aevt_event_t *ev = &g_aevt->events[i];
         if (ev->in_use && ev->session == s) {
             if (ev->state == AEVT_STATE_SENT || ev->state == AEVT_STATE_QUEUED)
                 aevt_fail(ev, "the session closed before a reply arrived");
@@ -299,14 +307,14 @@ static void aevt_session_block(void *ctx, ppc_session_t *s, uint32_t creator, ui
     (void)ctx;
     (void)user_data;
     if (len < AEVT_HLE_HEADER_SIZE) {
-        g_stats.malformed++;
+        g_aevt->stats.malformed++;
         LOG(3, "AE: a %d-byte block is too short to be a high-level event", len);
         return;
     }
     uint16_t header_len = RD_BE16(&payload[0]);
     uint16_t version = RD_BE16(&payload[2]);
     if (header_len < AEVT_HLE_HEADER_SIZE || header_len > len) {
-        g_stats.malformed++;
+        g_aevt->stats.malformed++;
         LOG(3, "AE: high-level event header length %u is not usable", (unsigned)header_len);
         return;
     }
@@ -382,7 +390,7 @@ static void aevt_send_auto_reply(ppc_session_t *s, uint32_t return_id) {
         return;
     }
     if (aevt_write_event(s, class4, id4, return_id, true, stream, len, err, sizeof(err)))
-        g_stats.auto_replies++;
+        g_aevt->stats.auto_replies++;
     else
         LOG(2, "AE: the auto-reply could not be sent — %s", err);
     value_free(&reply);
@@ -419,7 +427,7 @@ void atalk_aevt_deliver(ppc_session_t *session, const char *sender, const char *
         ev->errn = aevt_reply_errn(&ev->reply);
         ev->state = AEVT_STATE_REPLIED;
         aevt_settle(ev);
-        g_stats.replied++;
+        g_aevt->stats.replied++;
         LOG(3, "AE: event %u replied (errn=%lld)", (unsigned)return_id, (long long)ev->errn);
         return;
     }
@@ -429,18 +437,18 @@ void atalk_aevt_deliver(ppc_session_t *session, const char *sender, const char *
     // inbox is full and it is not kept.  A full inbox returned without
     // answering: the guest waited out its own timeout, and nothing counted the
     // loss.
-    g_stats.received++;
-    if (g_inbox_count >= AEVT_MAX_INBOX) {
-        g_stats.dropped++;
+    g_aevt->stats.received++;
+    if (g_aevt->inbox_count >= AEVT_MAX_INBOX) {
+        g_aevt->stats.dropped++;
         LOG(2, "AE: the inbox is full; answering but not keeping %s/%s (inbox.clear() makes room)", class4, id4);
         value_free(&map);
         aevt_send_auto_reply(session, return_id);
         return;
     }
-    aevt_inbox_t *in = &g_inbox[g_inbox_count];
+    aevt_inbox_t *in = &g_aevt->inbox[g_aevt->inbox_count];
     memset(in, 0, sizeof(*in));
     in->in_use = true;
-    in->slot = g_inbox_count++;
+    in->slot = g_aevt->inbox_count++;
     snprintf(in->sender, sizeof(in->sender), "%s", sender ? sender : "");
     snprintf(in->class4, sizeof(in->class4), "%s", class4 ? class4 : "");
     snprintf(in->id4, sizeof(in->id4), "%s", id4 ? id4 : "");
@@ -478,9 +486,9 @@ static void aevt_settle(aevt_event_t *ev) {
     ppc_session_t *s = ev->session;
     ev->session = NULL;
     // Any other event still riding this session loses it too.
-    for (int i = 0; i < g_event_count; i++)
-        if (g_events[i].in_use && g_events[i].session == s)
-            g_events[i].session = NULL;
+    for (int i = 0; i < g_aevt->event_count; i++)
+        if (g_aevt->events[i].in_use && g_aevt->events[i].session == s)
+            g_aevt->events[i].session = NULL;
     atalk_ppc_close(s, "the event it carried has been answered");
 }
 
@@ -493,8 +501,8 @@ static void aevt_settle(aevt_event_t *ev) {
 // several events into one session, which the application services only once.
 // The stress test caught it as a leaked initiator session.
 static void aevt_flush_session(ppc_session_t *s) {
-    for (int i = 0; i < g_event_count; i++) {
-        aevt_event_t *ev = &g_events[i];
+    for (int i = 0; i < g_aevt->event_count; i++) {
+        aevt_event_t *ev = &g_aevt->events[i];
         if (!ev->in_use || ev->state != AEVT_STATE_QUEUED || ev->session != s)
             continue;
         char err[192] = "";
@@ -529,62 +537,49 @@ static void aevt_begin(aevt_event_t *ev) {
 // nothing can be left holding one.
 static void aevt_inbox_clear(void) {
     for (int i = 0; i < AEVT_MAX_INBOX; i++) {
-        if (!g_inbox[i].in_use)
+        if (!g_aevt->inbox[i].in_use)
             continue;
-        value_free(&g_inbox[i].map);
-        free(g_inbox[i].text);
-        memset(&g_inbox[i], 0, sizeof(g_inbox[i]));
+        value_free(&g_aevt->inbox[i].map);
+        free(g_aevt->inbox[i].text);
+        memset(&g_aevt->inbox[i], 0, sizeof(g_aevt->inbox[i]));
     }
-    g_inbox_count = 0;
+    g_aevt->inbox_count = 0;
 }
 
-void atalk_aevt_reset_transient_state(void) {
-    for (int i = 0; i < AEVT_MAX_EVENTS; i++)
-        if (g_events[i].in_use)
-            aevt_event_free_contents(&g_events[i]);
-    g_event_count = 0;
-    aevt_inbox_clear();
-    g_next_return_id = 1;
-    memset(&g_stats, 0, sizeof(g_stats));
-}
-
+// Once, when the network comes up: take the PPC layer's inbound events and
+// publish the host port.
 void atalk_aevt_init(void) {
-    atalk_aevt_reset_transient_state();
-    g_enabled = true;
-    snprintf(g_port_name, sizeof(g_port_name), "gs-host");
-    g_auto_reply[0] = '\0';
     atalk_ppc_set_inbound_client(&g_session_client, NULL);
     char err[192] = "";
     if (atalk_ppc_set_host_port(g_port_name, g_enabled, err, sizeof(err)) != 0)
         LOG(2, "AE: the host port could not be published — %s", err);
 }
 
-void atalk_aevt_shutdown(void) {
-    atalk_aevt_reset_transient_state();
-    atalk_ppc_set_inbound_client(NULL, NULL);
+aevt_link_t *atalk_aevt_link_new(void) {
+    aevt_link_t *link = calloc(1, sizeof(*link));
+    if (link)
+        link->next_return_id = 1;
+    return link;
 }
 
-void atalk_aevt_get_config(atalk_aevt_config_t *out) {
-    if (!out)
+void atalk_aevt_link_free(aevt_link_t *link) {
+    if (!link)
         return;
-    out->enabled = g_enabled;
-    snprintf(out->port_name, sizeof(out->port_name), "%s", g_port_name);
-    snprintf(out->auto_reply, sizeof(out->auto_reply), "%s", g_auto_reply);
+    GS_ASSERT(link != g_aevt);
+    free(link);
 }
 
-void atalk_aevt_set_config(const atalk_aevt_config_t *in) {
-    if (!in)
-        return;
-    // `in` may come straight off a checkpoint, so nothing in it is trusted to
-    // be terminated or to be a valid bool.
-    uint8_t enabled_byte;
-    memcpy(&enabled_byte, &in->enabled, 1);
-    g_enabled = enabled_byte != 0;
-    snprintf(g_port_name, sizeof(g_port_name), "%.*s", (int)sizeof(in->port_name), in->port_name);
-    snprintf(g_auto_reply, sizeof(g_auto_reply), "%.*s", (int)sizeof(in->auto_reply), in->auto_reply);
-    char err[192] = "";
-    if (atalk_ppc_set_host_port(g_port_name, g_enabled, err, sizeof(err)) != 0)
-        LOG(2, "AE: the host port could not be republished — %s", err);
+void atalk_aevt_plug(aevt_link_t *link) {
+    if (!link && g_aevt != &g_no_link) {
+        // The Mac is gone, and with it every event to or from it.
+        for (int i = 0; i < AEVT_MAX_EVENTS; i++)
+            if (g_aevt->events[i].in_use)
+                aevt_event_free_contents(&g_aevt->events[i]);
+        memset(g_aevt->events, 0, sizeof(g_aevt->events));
+        g_aevt->event_count = 0;
+        aevt_inbox_clear();
+    }
+    g_aevt = link ? link : &g_no_link;
 }
 
 // ============================================================================
@@ -613,9 +608,9 @@ static int aevt_obj_slot(struct object *self) {
 
 static aevt_event_t *aevt_obj_event(struct object *self) {
     int slot = aevt_obj_slot(self);
-    if (slot < 0 || slot >= g_event_count || !g_events[slot].in_use)
+    if (slot < 0 || slot >= g_aevt->event_count || !g_aevt->events[slot].in_use)
         return NULL;
-    return &g_events[slot];
+    return &g_aevt->events[slot];
 }
 
 // --- appletalk.aevt.events[i] ------------------------------------------------
@@ -723,15 +718,15 @@ static const class_desc_t aevt_event_class = {
 
 static struct object *aevt_events_get(struct object *self, int index) {
     (void)self;
-    if (index < 0 || index >= g_event_count || !g_events[index].in_use)
+    if (index < 0 || index >= g_aevt->event_count || !g_aevt->events[index].in_use)
         return NULL;
     return object_cache_at(&g_aevt_event_entries, index, NULL);
 }
 // Name lookup resolves the `tag:` given at send time (§8).
 static struct object *aevt_events_lookup(struct object *self, const char *name) {
     (void)self;
-    for (int i = 0; i < g_event_count; i++)
-        if (g_events[i].in_use && g_events[i].tag[0] && !strcmp(g_events[i].tag, name))
+    for (int i = 0; i < g_aevt->event_count; i++)
+        if (g_aevt->events[i].in_use && g_aevt->events[i].tag[0] && !strcmp(g_aevt->events[i].tag, name))
             return object_cache_at(&g_aevt_event_entries, i, NULL);
     return NULL;
 }
@@ -757,9 +752,9 @@ static const class_desc_t aevt_events_class = {
 
 static aevt_inbox_t *aevt_obj_inbox(struct object *self) {
     int slot = aevt_obj_slot(self);
-    if (slot < 0 || slot >= g_inbox_count || !g_inbox[slot].in_use)
+    if (slot < 0 || slot >= g_aevt->inbox_count || !g_aevt->inbox[slot].in_use)
         return NULL;
-    return &g_inbox[slot];
+    return &g_aevt->inbox[slot];
 }
 
 static DEF_GETTER(aevt_inbox_attr_sender) {
@@ -820,7 +815,7 @@ static const class_desc_t aevt_inbox_entry_class = {
 
 static struct object *aevt_inbox_get(struct object *self, int index) {
     (void)self;
-    if (index < 0 || index >= g_inbox_count || !g_inbox[index].in_use)
+    if (index < 0 || index >= g_aevt->inbox_count || !g_aevt->inbox[index].in_use)
         return NULL;
     return object_cache_at(&g_aevt_inbox_entries, index, NULL);
 }
@@ -855,15 +850,21 @@ static const class_desc_t aevt_inbox_class = {
 
 // --- appletalk.aevt.stats ----------------------------------------------------
 
+// The plugged-in connection's counters (zeros while none is).
+static DEF_GETTER(aevt_stats_get) {
+    return obj_u64_at(&g_aevt->stats, m);
+}
+
 static const member_t aevt_stats_members[] = {
-    OBJ_U64_FIELD(aevt_stats_t, sent, "Events put on the wire"),
-    OBJ_U64_FIELD(aevt_stats_t, replied, "Events that came back answered"),
-    OBJ_U64_FIELD(aevt_stats_t, errors, "Events that failed"),
-    OBJ_U64_FIELD(aevt_stats_t, timeouts, "Events whose instruction budget ran out"),
-    OBJ_U64_FIELD(aevt_stats_t, received, "Events guests sent us"),
-    OBJ_U64_FIELD(aevt_stats_t, auto_replies, "Automatic replies we sent"),
-    OBJ_U64_FIELD(aevt_stats_t, malformed, "Blocks discarded as no high-level event"),
-    OBJ_U64_FIELD(aevt_stats_t, dropped, "Events received with the inbox full: answered, not kept"),
+    OBJ_U64_FIELD_WITH(aevt_stats_t, sent, "Events put on the wire", aevt_stats_get),
+    OBJ_U64_FIELD_WITH(aevt_stats_t, replied, "Events that came back answered", aevt_stats_get),
+    OBJ_U64_FIELD_WITH(aevt_stats_t, errors, "Events that failed", aevt_stats_get),
+    OBJ_U64_FIELD_WITH(aevt_stats_t, timeouts, "Events whose instruction budget ran out", aevt_stats_get),
+    OBJ_U64_FIELD_WITH(aevt_stats_t, received, "Events guests sent us", aevt_stats_get),
+    OBJ_U64_FIELD_WITH(aevt_stats_t, auto_replies, "Automatic replies we sent", aevt_stats_get),
+    OBJ_U64_FIELD_WITH(aevt_stats_t, malformed, "Blocks discarded as no high-level event", aevt_stats_get),
+    OBJ_U64_FIELD_WITH(aevt_stats_t, dropped, "Events received with the inbox full: answered, not kept",
+                       aevt_stats_get),
 };
 
 static const class_desc_t aevt_stats_class = {
@@ -943,7 +944,9 @@ static DEF_METHOD(aevt_method_send) {
     aevt_event_t *ev = aevt_alloc_event();
     if (!ev) {
         value_free(&request);
-        return val_err("no room for another event this run (limit %d)", AEVT_MAX_EVENTS);
+        if (g_aevt == &g_no_link)
+            return val_err("no machine is connected to the network");
+        return val_err("no room for another event on this connection (limit %d)", AEVT_MAX_EVENTS);
     }
     aevt_event_codes(&request, ev->class4, ev->id4);
     ev->request = request;
@@ -1006,7 +1009,9 @@ static DEF_METHOD(aevt_method_send_raw) {
     aevt_event_t *ev = aevt_alloc_event();
     if (!ev) {
         value_free(&request);
-        return val_err("no room for another event this run (limit %d)", AEVT_MAX_EVENTS);
+        if (g_aevt == &g_no_link)
+            return val_err("no machine is connected to the network");
+        return val_err("no room for another event on this connection (limit %d)", AEVT_MAX_EVENTS);
     }
     snprintf(ev->class4, sizeof(ev->class4), "%-4.4s", class4);
     snprintf(ev->id4, sizeof(ev->id4), "%-4.4s", id4);
@@ -1029,7 +1034,7 @@ static DEF_METHOD(aevt_method_send_raw) {
         else {
             ev->state = AEVT_STATE_SENT;
             ev->sent_at_instr = cpu_instr_count();
-            g_stats.sent++;
+            g_aevt->stats.sent++;
         }
     } else {
         aevt_fail(ev, "no session to that port is open yet; browse and retry");
@@ -1130,7 +1135,7 @@ void atalk_aevt_install_objects(struct object *parent) {
     g_aevt_inbox_object = object_new(&aevt_inbox_class, NULL, "inbox");
     if (g_aevt_inbox_object)
         object_attach(g_aevt_object, g_aevt_inbox_object);
-    g_aevt_stats_object = object_new(&aevt_stats_class, &g_stats, "stats");
+    g_aevt_stats_object = object_new(&aevt_stats_class, NULL, "stats");
     if (g_aevt_stats_object) {
         object_set_category(g_aevt_stats_object, M_CAT_ADVANCED);
         object_attach(g_aevt_object, g_aevt_stats_object);
@@ -1138,17 +1143,4 @@ void atalk_aevt_install_objects(struct object *parent) {
 
     object_cache_set_parent(&g_aevt_event_entries, g_aevt_events_object);
     object_cache_set_parent(&g_aevt_inbox_entries, g_aevt_inbox_object);
-}
-
-void atalk_aevt_remove_objects(void) {
-    object_cache_clear(&g_aevt_event_entries);
-    object_cache_clear(&g_aevt_inbox_entries);
-    struct object **nodes[] = {&g_aevt_events_object, &g_aevt_inbox_object, &g_aevt_stats_object, &g_aevt_object};
-    for (int i = 0; i < ARRAY_LEN(nodes); i++) {
-        if (!*nodes[i])
-            continue;
-        object_detach(*nodes[i]);
-        object_delete(*nodes[i]);
-        *nodes[i] = NULL;
-    }
 }

@@ -107,11 +107,9 @@ def row_iix_701_fd() {
 # it all the way to the Finder — so this is the first time any test
 # renders a full desktop at portrait geometry.
 #
-# NOTE for suite authors: this row must name video_card explicitly.
-# machine.boot inherits unspecified fields from the built-from record, so
-# without it the row would silently run on whatever card the PREVIOUS row
-# seated (the 8•24 GC, two rows up) and the portrait sense would not
-# apply — which is exactly how this row first failed.
+# NOTE for suite authors: this row names video_card explicitly -- the
+# portrait sense applies to the card it names, and without it the row would
+# run on the slot's default card.
 def row_iix_portrait_603() {
     machine.rtc.time = 3000000000
     machine.boot model="iix" ram=4096 video_card="mdc_8_24" video_sense=1 rom="${$ROM}"

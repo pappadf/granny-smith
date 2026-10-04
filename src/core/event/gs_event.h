@@ -35,6 +35,13 @@ void gs_event_emit(gs_event_kind_t kind, const char *json);
 #define GS_EVENT_MAX 1024
 void gs_event_emitf(gs_event_kind_t kind, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
+// While held, STATE and NOTIFY events are dropped (log lines still go out).
+// They describe the active machine, and a machine being built is not it: it
+// may be built while another one runs, and it may never become active.
+// system_create holds them for the build; the swap step then announces the
+// new machine (machine_booted), and the page re-reads everything on that.
+void gs_event_hold(int held);
+
 // Emits {"event":<event>,<field>:"<text>"} with `text` JSON-escaped and
 // of any length (a log line, an assertion's expression).
 void gs_event_emit_text(gs_event_kind_t kind, const char *event, const char *field, const char *text);

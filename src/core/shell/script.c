@@ -1583,7 +1583,7 @@ static void exec_command(stmt_t *st, exec_ctx_t *cx) {
         }
         // Bare read into a structured value: the head may address a map
         // key / list slot inside an attribute result
-        // (`machine.config.vroms[0].card_id`). Only for argument-less
+        // (`node.attr[0].key`). Only for argument-less
         // heads — values cannot take command arguments.
         if (!fn && !is_command && norm_path[0] && path_base && *skip_sp(p) == '\0') {
             value_t v = expr_object_path_read(path_base, norm_path);

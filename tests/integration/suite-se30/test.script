@@ -104,7 +104,7 @@ def row_se30_71_fd() {
 
 # ---- se30-701-gsvrom --------------------------------------------------------
 # The runtime-generated generic GS vROM drives the built-in video: the
-# boot reaches the Finder and the built-from record names a vROM.
+# boot reaches the Finder, off the generated declaration ROM.
 def row_se30_701_gsvrom() {
     machine.rtc.time = 3000000000
     machine.boot model="se30" ram=8192 rom="${$ROM}"
@@ -115,11 +115,11 @@ def row_se30_701_gsvrom() {
     # "Disk Tools", and at 512x342 mono the 7.0.1 and 7.1 Finders draw an
     # identical desktop. The version is not what either golden proves: se30-71-fd
     # pins 7.1 through its About-box golden, and this row's own claim is the
-    # generic vROM, asserted below via machine.config.vroms.
+    # generic vROM, asserted below via the card's declaration ROM.
     let spent = wait_match("goldens/se30-7.0.1-512x342-gsvrom-finder.png", 600000000, 10000000)
     assert machine.id == "se30" "se30-701-gsvrom: machine.id != se30"
     assert machine.ram == 8192 "se30-701-gsvrom: machine.ram != 8192"
-    assert machine.config.vroms != "" "se30-701-gsvrom: built-from vrom record empty"
+    assert machine.nubus.slot[14].card.declrom.path == "builtin:se30" "se30-701-gsvrom: not the generated vROM"
     assert_addr(false)
     report_row("7.0.1", "gsvrom", "fd-boot generic-vrom")
     report_perf("suite-se30/se30-701-gsvrom", scheduler.instr_count)

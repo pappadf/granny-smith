@@ -143,6 +143,19 @@ TEST(test_wrapper_charges_via_penalty_slots) {
     g_sprint_burndown_ptr = NULL;
 }
 
+// Outside a sprint (an inspection access dispatching into a device handler)
+// a penalty never touches guest timing: no burn, no remainder.
+TEST(test_penalty_outside_a_sprint_is_ignored) {
+    g_io_cpi_x256 = 4 << 8;
+    g_io_penalty_remainder = 0;
+    g_io_phantom_instructions = 0;
+    g_sprint_burndown_ptr = NULL;
+    memory_io_penalty(20);
+    ASSERT_EQ_INT((int)g_io_penalty_remainder, 0);
+    ASSERT_EQ_INT((int)g_io_phantom_instructions, 0);
+    g_io_cpi_x256 = 0;
+}
+
 TEST(test_wrapper_fractional_cpi) {
     // Accelerated-mode effective CPI 1.5 (x256 = 384): a 20-cycle penalty
     // burns floor(20 / 1.5) = 13 slots and carries the remaining half slot
@@ -179,6 +192,7 @@ int main(void) {
     RUN(test_tight_loop_locks_to_one_access_per_period);
     RUN(test_wrapper_charges_via_penalty_slots);
     RUN(test_wrapper_fractional_cpi);
+    RUN(test_penalty_outside_a_sprint_is_ignored);
     fprintf(stderr, "esync: all tests passed\n");
     return 0;
 }

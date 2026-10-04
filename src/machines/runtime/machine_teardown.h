@@ -18,7 +18,7 @@ struct config;
 
 // Free every config_t-owned device, in the one canonical order:
 //
-//   scsi -> via2 -> via1 -> appletalk -> scc -> rtc -> scheduler ->
+//   scsi -> via2 -> via1 -> atalk -> scc -> rtc -> scheduler ->
 //   cpu | ppc -> mem_map -> debugger
 //
 // Any NULL handle is skipped, so a machine with one VIA or no SCSI passes
@@ -26,9 +26,9 @@ struct config;
 // of cfg->cpu / cfg->ppc the family built.
 //
 // Two orderings in here are load-bearing, and are why this is one function
-// rather than a per-family list: the AppleTalk stack holds the SCC pointer it
-// was given at init, so it goes before scc_delete; and every device that holds
-// a VIA must already be gone by the time the VIAs are freed.
+// rather than a per-family list: the AppleTalk connection holds the SCC
+// pointer it was built with, so it goes before scc_delete; and every device
+// that holds a VIA must already be gone by the time the VIAs are freed.
 //
 // Call it AFTER freeing whatever lives in the machine's private state, and
 // free that state afterwards.  Every family's teardown is therefore:

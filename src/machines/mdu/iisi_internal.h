@@ -66,9 +66,7 @@ static inline iisi_state_t *iisi_state(config_t *cfg) {
 // / $00E08000 24-bit) is mapped by the OS's PMMU onto physical 0.  So the card
 // renders straight out of Bank A at offset 0 — there is no $8000 wrap offset on
 // the IIsi (unlike the IIci's separate-buffer card).
-#define IISI_VRAM_BASE        0xFEE00000UL // slot-$E aligned 32-bit aperture base (reference)
-#define IISI_FB_PHYS_OFFSET   0x00000000UL // frame buffer at physical 0 (Bank A bottom)
-#define IISI_FB_SCREEN_OFFSET 0x0UL // active screen sits at the frame-buffer start
+#define IISI_VRAM_BASE 0xFEE00000UL // slot-$E aligned 32-bit aperture base (reference)
 
 // Two physical RAM banks (Developer Note §3.2/§3.3/§6.1):
 //   Bank A: soldered 1 MB at physical $00000000 (holds the video frame buffer

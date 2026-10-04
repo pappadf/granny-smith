@@ -354,7 +354,8 @@ static void se30_post_nubus(config_t *cfg) {
     // The message it printed was also stale -- it demanded "a real VROM file"
     // long after builtin_se30_video grew synthesise_vrom_fallback() precisely
     // so the SE/30 keeps booting when no onboard-video vROM is offered, which
-    // is also why machine.c's validate_vrom_resolution exempts BUILTIN cards.
+    // is also why the boot document's ROM check (machine_slots.c) exempts
+    // BUILTIN cards.
     GS_ASSERTF(se30->vram && se30->vrom, "SE/30 slot-$E card has no %s", se30->vram ? "vROM" : "VRAM");
     memory_map_host_region(cfg->mem_map, "se30_vram", se30->vram, SE30_VRAM_BASE, SE30_VRAM_SIZE, /*writable*/ true);
     memory_map_host_region(cfg->mem_map, "se30_vrom", se30->vrom, SE30_VROM_PHYS, SE30_VROM_SIZE, /*writable*/ false);
@@ -441,6 +442,7 @@ const hw_profile_t machine_se30 = {
     .scsi_buses = se30_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
 
     // Built-in slot-$E video card.  Exposed in the profile so the config
     // dialog reads the VROM requirement from the card (it needs the SE/30

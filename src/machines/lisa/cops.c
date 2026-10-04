@@ -585,7 +585,7 @@ cops_t *cops_init(via_t *via1, struct scheduler *scheduler, checkpoint_t *cp) {
     if (cp) {
         // Restore the plain-data block.  Do NOT arm any events here: the
         // scheduler's own checkpointed queue brings back this source's crdy,
-        // pump and mouse events in scheduler_start(), matching the
+        // pump and mouse events once the machine is built, matching the
         // pump_scheduled / mouse_scheduled flags we just read.
         //
         // Arming unconditionally (as this did before) meant a restored Lisa
@@ -615,8 +615,8 @@ void cops_delete(cops_t *c) {
 // re-derived by the reset handshake -- a restored Lisa without this comes up
 // with an empty FIFO, the mouse disabled and any in-flight warp forgotten.
 //
-// The stream is positional and unversioned (build-ID gated), so this and
-// cops_restore must change together, in one commit.
+// The block is unversioned (build-ID gated), so this and cops_restore must
+// change together, in one commit.
 void cops_checkpoint(cops_t *c, checkpoint_t *cp) {
     if (!c || !cp)
         return;

@@ -20,11 +20,6 @@ LOG_USE_CATEGORY_NAME("mmu");
 // Global MMU state pointer (NULL for 68000 machines)
 mmu_state_t *g_mmu = NULL;
 
-// Last CRP observed while the CPU was in user mode.  Updated by the
-// supervisor→user transition in cpu_internal.h.  0 until first user-mode
-// entry.  Cleared when the MMU is destroyed.
-uint64_t g_last_user_crp = 0;
-
 // ============================================================================
 // TLB population tracking (for fast invalidation)
 // ============================================================================
@@ -33,24 +28,43 @@ uint64_t g_last_user_crp = 0;
 // memset on a 32-bit address space), track which pages have been populated and
 // only zero those.  Typical working sets are ~2000-3000 pages (8-12 MB of RAM
 // + ROM + VRAM), reducing invalidation cost from O(address_space) to O(working_set).
-#define TLB_TRACK_MAX 8192 // max tracked pages before fallback to full memset
+//
+// The tracker belongs to the memory map whose arrays it indexes; this aliases
+// the selected map's (memory_map_select), so building another machine -- which
+// selects its own map while it is constructed -- never touches the running
+// machine's list.
+static tlb_track_t *g_tlb = NULL;
 
-static uint32_t g_tlb_track[TLB_TRACK_MAX]; // populated page indices
-static int g_tlb_track_count = 0; // entries in tracking list
-// Start in overflow mode so the first invalidation (after memory_init
-// populates entries without tracking) does a full memset.  Subsequent
-// invalidations use the fast tracked path.
-static bool g_tlb_track_overflow = true;
+tlb_track_t *tlb_track_new(void) {
+    tlb_track_t *t = (tlb_track_t *)calloc(1, sizeof(tlb_track_t));
+    // Start in overflow mode so the first invalidation (after memory_init
+    // populates entries without tracking) does a full memset.  Subsequent
+    // invalidations use the fast tracked path.
+    if (t)
+        t->overflow = true;
+    return t;
+}
+
+void tlb_track_free(tlb_track_t *t) {
+    if (g_tlb == t)
+        g_tlb = NULL;
+    free(t);
+}
+
+void tlb_track_select(tlb_track_t *t) {
+    g_tlb = t;
+}
 
 // Record that a page index has been populated in the SoA TLB arrays
 void tlb_track_page(uint32_t page_index) {
-    if (g_tlb_track_overflow)
+    tlb_track_t *t = g_tlb;
+    if (!t || t->overflow)
         return; // already in fallback mode
-    if (g_tlb_track_count >= TLB_TRACK_MAX) {
-        g_tlb_track_overflow = true;
+    if (t->count >= TLB_TRACK_MAX) {
+        t->overflow = true;
         return;
     }
-    g_tlb_track[g_tlb_track_count++] = page_index;
+    t->page[t->count++] = page_index;
 }
 
 // ============================================================================
@@ -66,20 +80,8 @@ void tlb_track_page(uint32_t page_index) {
 // Instead, cache the walked descriptor itself; on a later fault inside the
 // covered range, fill only the touched 4 KB page from the cached descriptor —
 // no re-walk.
-typedef struct atc_block {
-    uint32_t log_base; // logical range base (aligned to coverage)
-    uint32_t log_mask; // ~(coverage-1)
-    uint32_t phys_base; // physical range base (same alignment)
-    bool supervisor_only; // S bit from the walked descriptor
-    bool write_protected; // W bit from the walked descriptor
-    bool modified; // M bit from the walked descriptor (write-fill gate)
-    bool fc_super; // FC class of the walk (matters when TC.SRE=1)
-    bool valid; // entry live?
-} atc_block_t;
-#define ATC_BLOCKS 16 // small, round-robin; the real 68030 ATC holds 22 entries
-
-static atc_block_t g_atc_blocks[ATC_BLOCKS]; // cached block descriptors
-static int g_atc_next = 0; // round-robin replacement cursor
+// The cache itself is the MMU's (mmu_state_t.atc): one per machine, like the
+// hardware's.
 
 // Drop every cached block descriptor.  Runs wherever a real ATC dies: any
 // invalidation that actually zeroes the SoA (PMOVE to TC/CRP/SRP/TT without
@@ -87,34 +89,11 @@ static int g_atc_next = 0; // round-robin replacement cursor
 // skip mmu_invalidate_tlb entirely, so cached blocks survive them — exactly
 // the hardware contract A/UX's "clear root after PMOVE, rely on ATC
 // residency" sequence needs.
-static void atc_flush(void) {
-    memset(g_atc_blocks, 0, sizeof(g_atc_blocks));
-    g_atc_next = 0;
-}
-
-// Reset the file-scope translation caches that belong to one machine.
-//
-// Called from BOTH mmu_init and mmu_delete, and the init side is the one that
-// matters.  g_tlb_track*, g_last_user_crp and the ATC block cache are file
-// statics shared by every machine in the process, and mmu_delete only resets
-// them when the machine being destroyed is still the live one.  On
-// checkpoint.load the new machine is CONSTRUCTED BEFORE the old one is
-// destroyed (system.c), so that guard fails: the outgoing mmu_delete skips the
-// reset, and the incoming machine's first invalidate then walks the previous
-// machine's page-index list -- zeroing the wrong SoA entries and leaving its
-// own eagerly-installed identity entries live under an enabled PMMU.  Stale
-// indices can also point past a smaller machine's SoA arrays.  Resetting at
-// construction is ordering-independent, which the teardown-side reset is not.
-static void mmu_reset_global_caches(void) {
-    // A fresh machine must not inherit the previous instance's user-CRP
-    // snapshot.
-    g_last_user_crp = 0;
-    // overflow=true makes the first invalidate fall back to a full memset,
-    // matching the file-scope default.
-    g_tlb_track_count = 0;
-    g_tlb_track_overflow = true;
-    // Cached block descriptors belong to the old machine's tables.
-    atc_flush();
+static void atc_flush(mmu_state_t *mmu) {
+    if (!mmu)
+        return;
+    memset(mmu->atc, 0, sizeof(mmu->atc));
+    mmu->atc_next = 0;
 }
 
 // Find the cached block covering logical_addr for this FC class, if any.
@@ -123,7 +102,7 @@ static void mmu_reset_global_caches(void) {
 static inline atc_block_t *atc_probe(mmu_state_t *mmu, uint32_t logical_addr, bool supervisor) {
     bool sre_split = TC_SRE(mmu->tc) != 0;
     for (int i = 0; i < ATC_BLOCKS; i++) {
-        atc_block_t *b = &g_atc_blocks[i];
+        atc_block_t *b = &mmu->atc[i];
         if (!b->valid)
             continue;
         if ((logical_addr & b->log_mask) != b->log_base)
@@ -146,10 +125,10 @@ static void atc_invalidate_covering(mmu_state_t *mmu, uint32_t logical_addr, boo
 }
 
 // Record a successful walk's early-termination descriptor in the block cache.
-static void atc_record(uint32_t log_base, uint32_t log_mask, uint32_t phys_base, bool supervisor_only,
+static void atc_record(mmu_state_t *mmu, uint32_t log_base, uint32_t log_mask, uint32_t phys_base, bool supervisor_only,
                        bool write_protected, bool modified, bool fc_super) {
-    atc_block_t *b = &g_atc_blocks[g_atc_next];
-    g_atc_next = (g_atc_next + 1) % ATC_BLOCKS;
+    atc_block_t *b = &mmu->atc[mmu->atc_next];
+    mmu->atc_next = (mmu->atc_next + 1) % ATC_BLOCKS;
     b->log_base = log_base;
     b->log_mask = log_mask;
     b->phys_base = phys_base;
@@ -700,7 +679,6 @@ mmu_state_t *mmu_init(uint8_t *physical_ram, uint32_t ram_size, uint32_t ram_siz
     mmu->rom_region_end = rom_region_end;
     mmu->enabled = false;
     mmu->tlb_was_enabled = false;
-    mmu_reset_global_caches();
 
     return mmu;
 }
@@ -709,10 +687,8 @@ mmu_state_t *mmu_init(uint8_t *physical_ram, uint32_t ram_size, uint32_t ram_siz
 void mmu_delete(mmu_state_t *mmu) {
     if (!mmu)
         return;
-    if (g_mmu == mmu) {
+    if (g_mmu == mmu)
         g_mmu = NULL;
-        mmu_reset_global_caches();
-    }
     free(mmu);
 }
 
@@ -862,8 +838,13 @@ typedef struct mem_host_fill_region {
     uint32_t size;
     bool writable;
 } mem_host_fill_region_t;
-static mem_host_fill_region_t g_host_fill_regions[MEM_HOST_FILL_MAX];
-static int g_host_fill_count = 0;
+// A memory map's table (memory_map_host_fill_regions); the selected map's is
+// aliased by g_host_fill.
+typedef struct mem_host_fill_table {
+    mem_host_fill_region_t regions[MEM_HOST_FILL_MAX];
+    int count;
+} mem_host_fill_table_t;
+static mem_host_fill_table_t *g_host_fill;
 
 // Fill one host window through the hook, page by page.
 static void host_fill_region(uint8_t *host_ptr, uint32_t phys_base, uint32_t size, bool writable) {
@@ -871,10 +852,18 @@ static void host_fill_region(uint8_t *host_ptr, uint32_t phys_base, uint32_t siz
         g_mem_host_fill((phys_base + off) >> PAGE_SHIFT, host_ptr + off, writable);
 }
 
-// Forget the recorded fill windows — a new memory map means a new machine
-// (memory_map_init calls this).
-void mmu_host_fill_regions_reset(void) {
-    g_host_fill_count = 0;
+void *mmu_host_fill_regions_new(void) {
+    return calloc(1, sizeof(mem_host_fill_table_t));
+}
+
+void mmu_host_fill_regions_free(void *table) {
+    if (g_host_fill == table)
+        g_host_fill = NULL;
+    free(table);
+}
+
+void mmu_host_fill_regions_select(void *table) {
+    g_host_fill = (mem_host_fill_table_t *)table;
 }
 
 void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr, uint32_t phys_base, uint32_t size,
@@ -892,8 +881,8 @@ void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr
         host_fill_region(host_ptr, phys_base, size, writable);
         // Re-registration of the same window replaces its record (same rule
         // as mmu_register_host_region).
-        for (int i = 0; i < g_host_fill_count; i++) {
-            mem_host_fill_region_t *r = &g_host_fill_regions[i];
+        for (int i = 0; i < g_host_fill->count; i++) {
+            mem_host_fill_region_t *r = &g_host_fill->regions[i];
             if (r->phys_base == phys_base && r->size == size) {
                 r->host = host_ptr;
                 r->writable = writable;
@@ -902,12 +891,12 @@ void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr
                 return;
             }
         }
-        if (g_host_fill_count >= MEM_HOST_FILL_MAX) {
+        if (g_host_fill->count >= MEM_HOST_FILL_MAX) {
             LOG(0, "memory_map_host_region: fill list full (%d); region $%08X+$%X not recorded", MEM_HOST_FILL_MAX,
                 phys_base, size);
             return;
         }
-        g_host_fill_regions[g_host_fill_count++] =
+        g_host_fill->regions[g_host_fill->count++] =
             (mem_host_fill_region_t){.host = host_ptr, .phys_base = phys_base, .size = size, .writable = writable};
         if (g_mem_map_changed)
             g_mem_map_changed();
@@ -924,8 +913,8 @@ void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uin
         // Machine-owned physical view: the alias is a second page fill of the same host
         // bytes.  Card register windows are registered AFTER their aliases
         // (display_card_24ac.c), so a device page still wins its page.
-        for (int i = 0; i < g_host_fill_count; i++) {
-            const mem_host_fill_region_t *r = &g_host_fill_regions[i];
+        for (int i = 0; i < g_host_fill->count; i++) {
+            const mem_host_fill_region_t *r = &g_host_fill->regions[i];
             if (r->phys_base == original_phys_base) {
                 host_fill_region(r->host, alias_phys_base, r->size, r->writable);
                 return;
@@ -951,9 +940,6 @@ void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uin
         alias_phys_base);
 }
 
-// memory_set_bus_error_range now lives in memory.c: the window is a bus
-// property, not an MMU one.
-
 // Invalidate the software TLB.  Uses the tracking list to zero only
 // populated entries — typically ~2000-3000 pages vs 1M+ for a full memset.
 // Falls back to full memset if the tracking list overflowed.
@@ -978,8 +964,9 @@ void mmu_invalidate_tlb(mmu_state_t *mmu) {
     // A real invalidation is where the hardware ATC dies too: drop the cached
     // block descriptors along with the SoA fill.  (The dis→dis early-out above
     // and the FD PMOVE forms — which never call here — both preserve them.)
-    atc_flush();
-    if (g_tlb_track_overflow) {
+    atc_flush(mmu);
+    tlb_track_t *track = g_tlb;
+    if (!track || track->overflow) {
         // Tracking overflowed — fall back to zeroing everything
         size_t sz = (size_t)g_page_count * sizeof(uintptr_t);
         if (g_supervisor_read)
@@ -994,8 +981,8 @@ void mmu_invalidate_tlb(mmu_state_t *mmu) {
         // Fast path: zero only pages that were actually populated.
         // Bounds-check each index in case the tracker carries entries from a
         // previous machine with a larger page table (see mmu_delete's reset).
-        for (int i = 0; i < g_tlb_track_count; i++) {
-            uint32_t p = g_tlb_track[i];
+        for (int i = 0; i < track->count; i++) {
+            uint32_t p = track->page[i];
             if (p >= g_page_count)
                 continue;
             if (g_supervisor_read)
@@ -1010,8 +997,10 @@ void mmu_invalidate_tlb(mmu_state_t *mmu) {
     }
 
     // Reset tracking state
-    g_tlb_track_count = 0;
-    g_tlb_track_overflow = false;
+    if (track) {
+        track->count = 0;
+        track->overflow = false;
+    }
 
     // When the MMU is disabled, host-backed pages (RAM/ROM/VRAM) are
     // installed lazily on first access by the memory.c slow path via
@@ -1157,8 +1146,8 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
         // not be aligned to the coverage (see the walk): recover it from the
         // translated address rather than masking it to the range.
         uint32_t phys_range_base = result.physical_addr - (logical_addr & ~log_mask);
-        atc_record(logical_addr & log_mask, log_mask, phys_range_base, result.supervisor_only, result.write_protected,
-                   result.modified, supervisor);
+        atc_record(mmu, logical_addr & log_mask, log_mask, phys_range_base, result.supervisor_only,
+                   result.write_protected, result.modified, supervisor);
     }
 
     // If phys_to_host returned NULL (unmapped physical), the SoA entry

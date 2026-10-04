@@ -29,11 +29,19 @@ void afp_session_closed(uint16_t session_id);
 // The AFP version a session logged in with ("" before FPLogin), or NULL.
 const char *afp_session_version(uint16_t session_ref);
 
-// Drop every reconstructible per-session cache.
-void afp_reset_transient_state(void);
-
 // Forks a session currently holds open.
 uint32_t afp_session_open_forks(uint16_t session_id);
+
+// The AFP server's part of a machine's connection (atalk_conn_t): the AFP
+// state of the sessions with that Mac -- login state, open forks, FPEnumerate
+// snapshots.  The server serves the plugged-in connection's link; afp_plug
+// with NULL, when the connection is unplugged, releases everything its
+// sessions held.
+typedef struct afp_link afp_link_t;
+
+afp_link_t *afp_link_new(void);
+void afp_link_free(afp_link_t *link);
+void afp_plug(afp_link_t *link);
 
 // Build the ASP GetStatus Service Status Block.
 // Inputs: server_name and machine_type as C-strings (may be NULL -> treated as empty).

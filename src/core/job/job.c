@@ -601,7 +601,7 @@ int job_layer_service(struct gs_mailbox *m) {
             break;
         bool ok;
         if (j->rc == 0) {
-            int rc = m->eval("shell.prompt", NULL, m->out, GS_MBX_RESULT_MAX);
+            int rc = m->eval("shell.prompt", NULL, m->out, GS_MBX_RESULT_OUT);
             ok = rc == 0;
         } else {
             snprintf(m->out, GS_MBX_RESULT_MAX, "{\"error\":\"%s\"}", j->cancel ? "cancelled" : "command failed");

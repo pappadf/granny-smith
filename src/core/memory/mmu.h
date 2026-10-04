@@ -92,6 +92,19 @@ typedef struct mmu_walk_result {
 } mmu_walk_result_t;
 
 // MMU state for 68030 — registers set via PMOVE instructions
+// One cached early-termination block descriptor (mmu.c's ATC model).
+typedef struct atc_block {
+    uint32_t log_base; // logical range base (aligned to coverage)
+    uint32_t log_mask; // ~(coverage-1)
+    uint32_t phys_base; // physical range base (same alignment)
+    bool supervisor_only; // S bit from the walked descriptor
+    bool write_protected; // W bit from the walked descriptor
+    bool modified; // M bit from the walked descriptor (write-fill gate)
+    bool fc_super; // FC class of the walk (matters when TC.SRE=1)
+    bool valid; // entry live?
+} atc_block_t;
+#define ATC_BLOCKS 16 // small, round-robin; the real 68030 ATC holds 22 entries
+
 typedef struct mmu_state {
     // 68030 MMU registers (set via PMOVE)
     uint64_t crp; // CPU root pointer (64-bit descriptor)
@@ -99,6 +112,12 @@ typedef struct mmu_state {
     uint32_t tc; // Translation control
     uint32_t tt0; // Transparent translation register 0
     uint32_t tt1; // Transparent translation register 1
+    // The TT1 value the board holds from power-on, which every CPU reset
+    // restores (0: none -- a reset clears TT1.E as the 68030 does).  The II
+    // boards use it for a supervisor-only identity map of NuBus $F0..$FF that
+    // their slot space depends on (mac030_glue.c); a construction fact of the
+    // board, not guest state, so it is not checkpointed.
+    uint32_t tt1_board;
     uint16_t mmusr; // MMU status register
 
     bool enabled; // TC.E bit — is translation active?
@@ -149,6 +168,21 @@ typedef struct mmu_state {
     // tracking above are shared.  `enabled` mirrors the 040 TC.E bit so the
     // memory.c fast-path checks stay unchanged.  Set via mmu_attach_mmu040.
     struct mmu040_state *m040;
+
+    // The block-descriptor cache (the model of the 68030's ATC) and its
+    // round-robin cursor.  The machine's own, so building another machine
+    // cannot flush it.
+    atc_block_t atc[ATC_BLOCKS];
+    int atc_next;
+
+    // Last CRP observed while the CPU was in user mode.  Snapshotted by the
+    // supervisor→user transition in cpu_internal.h's set_sr path.  A/UX swaps
+    // CRP per process, so this value pins the user process that was most
+    // recently on the CPU — used by `set-mouse --aux` to translate MAE
+    // Toolbox globals (MTemp/RawMouse/Mouse) into MAE's address space even
+    // when the CPU is currently in supervisor mode.  0 if no user-mode entry
+    // has been observed yet.
+    uint64_t last_user_crp;
 } mmu_state_t;
 
 // === Lifecycle ===
@@ -172,6 +206,19 @@ void mmu_invalidate_tlb(mmu_state_t *mmu);
 // the last invalidation. Callers in the slow path of memory.c use this when
 // lazy-installing an identity mapping for an MMU-disabled access.
 void tlb_track_page(uint32_t page_index);
+
+// The list of populated page indices a memory map keeps for the fast
+// invalidation above.  A map owns one (memory_map_init / _delete) and
+// memory_map_select makes it the one tlb_track_page and mmu_invalidate_tlb use.
+#define TLB_TRACK_MAX 8192 // max tracked pages before fallback to full memset
+typedef struct tlb_track {
+    uint32_t page[TLB_TRACK_MAX]; // populated page indices
+    int count; // entries in the list
+    bool overflow; // too many to list: the next invalidation zeroes everything
+} tlb_track_t;
+tlb_track_t *tlb_track_new(void);
+void tlb_track_free(tlb_track_t *t);
+void tlb_track_select(tlb_track_t *t);
 
 // === Address Translation ===
 
@@ -253,10 +300,18 @@ bool mmu_phys_is_writable(mmu_state_t *mmu, uint32_t phys_addr);
 // with each mmu_init.  Logs and drops the region when the list is full.
 void mmu_register_host_region(mmu_state_t *mmu, uint8_t *host, uint32_t phys_base, uint32_t size, bool writable);
 
-// Drop the host-region fill records kept for machines with NO 68k MMU, whose
+// The host-region fill records kept for machines with NO 68k MMU, whose
 // windows are filled straight into the page table instead (see
-// memory_map_host_region).  Called when a new memory map is built.
-void mmu_host_fill_regions_reset(void);
+// memory_map_host_region): one table per memory map, which owns it; the
+// selected map's is the one memory_map_host_region uses.
+void *mmu_host_fill_regions_new(void);
+
+// Forget the PMMU's process-wide caches (the TLB fill tracker, the ATC block
+// cache, the user-CRP snapshot): they describe the map that was selected,
+// and every one of them refills from the tables.  Run on every memory map
+// selection and at PMMU construction.
+void mmu_host_fill_regions_free(void *table);
+void mmu_host_fill_regions_select(void *table);
 
 // Project every registered host region into the CPU page table by calling
 // `fill(page, host_ptr, writable)` per 4 KiB page — machines run this after
@@ -290,15 +345,6 @@ void mmu_set_ram_bank_b(mmu_state_t *mmu, uint32_t ram_a_size, uint8_t *bank_b_h
 
 // Global MMU state pointer (set by machine init, NULL for 68000 machines)
 extern struct mmu_state *g_mmu;
-
-// Last CRP observed while the CPU was in user mode.  Snapshotted by the
-// supervisor→user transition in cpu_internal.h's set_sr path.  A/UX swaps
-// CRP per process, so this value pins the user process that was most
-// recently on the CPU — used by `set-mouse --aux` to translate MAE
-// Toolbox globals (MTemp/RawMouse/Mouse) into MAE's address space even
-// when the CPU is currently in supervisor mode.  0 if no user-mode entry
-// has been observed yet.
-extern uint64_t g_last_user_crp;
 
 // Shared 68030/68040 fault epilogue.  After a fill attempt, a still-zero SoA
 // entry means the physical page is a device window, unmapped, or logpointed.

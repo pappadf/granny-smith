@@ -9,6 +9,7 @@
 
 // === Includes ===
 #include "common.h"
+#include "machine_build_opts.h" // rom_image_t
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -53,6 +54,9 @@ static inline void memory_store_host32(void *p, uint32_t v) {
 }
 
 // === Type Definitions ===
+struct mmu_state;
+struct lisa_mmu;
+
 typedef struct memory_interface {
     uint8_t (*read_uint8)(void *device, uint32_t addr);
     uint16_t (*read_uint16)(void *device, uint32_t addr);
@@ -65,16 +69,64 @@ typedef struct memory_interface {
 struct memory;
 typedef struct memory memory_map_t;
 
+// The board's bus-error window: the inclusive address range where "no chip
+// answered" ends in a bus error (the board's watchdog) instead of the bus
+// floating to $FF.  A property of the board's bus, fixed at construction.
+// lo > hi is an empty window.
+typedef struct memory_bus_err_window {
+    uint32_t lo;
+    uint32_t hi;
+} memory_bus_err_window_t;
+
+// A board with no bus-error watchdog: every unanswered access floats to $FF.
+#define MEMORY_BUS_ERR_NONE ((memory_bus_err_window_t){.lo = 1u, .hi = 0u})
+
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 
 // Initialise a memory map with parameterised address space and RAM/ROM sizes.
 // address_bits: 24 for Plus (16 MB), 32 for SE/30 (4 GB)
 // ram_size: RAM size in bytes (e.g. 0x400000 for Plus)
 // rom_size: ROM size in bytes (e.g. 0x020000 for Plus)
+// bus_err: the board's bus-error window (MEMORY_BUS_ERR_NONE for none)
+// rom: the ROM to build the region with (copied in; NULL or empty leaves it
+//      zero), or nothing on a restore
 // checkpoint: if non-NULL, restore RAM and ROM from checkpoint
-extern memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_size, checkpoint_t *checkpoint);
+extern memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_size,
+                                     memory_bus_err_window_t bus_err, const rom_image_t *rom, checkpoint_t *checkpoint);
 
 void memory_map_delete(memory_map_t *mem);
+
+// The fast-path globals (g_page_table, the SoA arrays, the logpoint counts,
+// g_address_mask, the CPU hooks, g_mmu / g_lisa_mmu, the bus-error window)
+// are ALIASES of one memory map's own state: the map selected here.
+// memory_map_init selects the map it creates, so the machine under
+// construction builds into its own map; the swap step selects the active
+// machine's (NULL clears every alias).  A map that is not selected keeps its
+// state, and deleting it touches no alias.
+void memory_map_select(memory_map_t *mem);
+
+// What the main CPU hangs on its map (the PowerPC front end): see
+// g_user_soa_reserved, g_mem_map_changed and g_mem_logical_xlate below.
+typedef struct memory_cpu_hooks {
+    bool user_soa_reserved;
+    void (*map_changed)(void);
+    uint32_t (*logical_xlate)(void *ctx, uint32_t addr, bool *ok);
+    // The map was selected: the CPU's process-wide translation caches describe
+    // whichever map was selected before, so they start over.
+    void (*selected)(void *ctx);
+    void *ctx; // passed to logical_xlate and selected
+} memory_cpu_hooks_t;
+void memory_map_set_cpu_hooks(memory_map_t *mem, const memory_cpu_hooks_t *hooks);
+
+// The machine's physical page-fill hook (g_mem_host_fill), its 68030 PMMU
+// (g_mmu) and the Lisa's MMU (g_lisa_mmu): state of the map, aliased while it
+// is selected.
+void memory_map_set_host_fill(memory_map_t *mem, void (*fill)(uint32_t page_index, uint8_t *host_ptr, bool writable));
+void memory_map_set_pmmu(memory_map_t *mem, struct mmu_state *mmu);
+void memory_map_set_lisa_mmu(memory_map_t *mem, struct lisa_mmu *mmu);
+
+// The map's host-fill region table (mmu.c's, opaque here), owned by the map.
+void *memory_map_host_fill_regions(memory_map_t *mem);
 
 void memory_map_checkpoint(memory_map_t *restrict mem, checkpoint_t *checkpoint);
 
@@ -133,21 +185,17 @@ void memory_signal_bus_error(uint32_t addr, bool write);
 // Physical page-fill hook for machines whose page table is not owned by a
 // 68k mmu_state_t (the PowerPC families).  When set, memory_map_host_region()
 // routes each page of a card-registered host region through it instead of
-// the 68k MMU's host-region list.  See src/machines/pdm/pdm.c.
+// the 68k MMU's host-region list.  See src/machines/pdm/pdm.c.  Alias of the
+// selected map's (memory_map_set_host_fill).
 extern void (*g_mem_host_fill)(uint32_t page_index, uint8_t *host_ptr, bool writable);
 
 // True while an inspection (debug) access is dispatching into a device
 // handler — see memory_signal_bus_error.
 extern bool g_mem_debug_access;
 
-// Address range where unmapped accesses raise a bus error.  Outside this
-// range, unmapped reads return 0 silently (matches GLUE behaviour for
-// non-NuBus slots).
-void memory_set_bus_error_range(memory_map_t *m, uint32_t start, uint32_t end);
-
 // True when an unanswered access at `addr` should raise a bus error rather
-// than float to $FF.  The window is a BUS property, so it applies with the
-// MMU on or off -- see memory.c.
+// than float to $FF: inside the installed map's bus-error window.  The window
+// is a BUS property, so it applies with the MMU on or off -- see memory.c.
 bool memory_addr_faults_when_unmapped(uint32_t addr);
 
 extern void memory_map_remove(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name,
@@ -163,15 +211,11 @@ uint32_t memory_ram_size(memory_map_t *mem);
 // Return the filename of the currently loaded ROM, or NULL if none.
 const char *memory_rom_filename(memory_map_t *mem);
 
-// Direct accessors for the loaded ROM region. Returned pointer is owned by
-// the memory map and remains valid until the next memory_install_rom() call.
+// Direct accessors for the ROM region. The returned pointer is owned by the
+// memory map and valid for its lifetime: the ROM is filled at construction
+// and never replaced.
 const uint8_t *memory_rom_bytes(memory_map_t *mem);
 uint32_t memory_rom_size(memory_map_t *mem);
-
-// Copy ROM bytes into the ROM region and store
-// the filename for checkpointing. Truncates if size > rom_size. Returns the
-// number of bytes actually written.
-size_t memory_install_rom(memory_map_t *mem, const uint8_t *data, size_t size, const char *filename);
 
 uint32_t memory_read(unsigned int size, uint32_t addr);
 
@@ -243,7 +287,7 @@ extern uint32_t *g_bus_error_instr_ptr; // points to decoder's instruction count
 // The CPI is the scheduler's *effective* CPI in x256 fixed point (cpi << 8
 // unless accelerated mode lowered it), so penalties convert at the same rate
 // the sprint accounts cycles. g_io_cpi_x256 == 0 disables the mechanism.
-extern uint32_t g_io_penalty_remainder; // sub-slot penalty fraction, x256 cycles, carried across sprints
+extern uint32_t g_io_penalty_remainder; // sprint-time alias of the scheduler's io_penalty_remainder (x256 cycles)
 extern uint32_t g_io_phantom_instructions; // phantom instructions consumed this sprint
 extern uint32_t g_io_cpi_x256; // effective CPI for conversion, x256 (0 = disabled)
 extern uint32_t *g_sprint_burndown_ptr; // points to sprint_burndown during sprint
@@ -283,14 +327,15 @@ static inline uint32_t memory_esync_penalty_cycles(uint64_t now_cycles, uint32_t
 static inline void memory_io_penalty(uint32_t extra_cycles) {
     if (__builtin_expect(g_io_cpi_x256 == 0, 0))
         return; // penalties disabled
+    if (__builtin_expect(g_sprint_burndown_ptr == NULL, 0))
+        return; // outside a sprint (an inspection access): never touches guest timing
     g_io_penalty_remainder += extra_cycles << 8; // whole cycles onto the x256 grid
     uint32_t burn = g_io_penalty_remainder / g_io_cpi_x256;
     if (__builtin_expect(burn > 0, 1)) {
         g_io_penalty_remainder -= burn * g_io_cpi_x256;
         g_io_phantom_instructions += burn;
         uint32_t *bp = g_sprint_burndown_ptr;
-        if (bp)
-            *bp = (*bp > burn) ? (*bp - burn) : 0;
+        *bp = (*bp > burn) ? (*bp - burn) : 0;
     }
 }
 
@@ -393,7 +438,9 @@ extern void (*g_mem_map_changed)(void);
 // that arrives with its LOGICAL address (ppc_dxlate_slow keeps the EA for
 // watched plain-RAM pages instead of rewriting it to physical).  Must be
 // side-effect-free; *ok=false → treat as identity.  NULL on 68K machines.
-extern uint32_t (*g_mem_logical_xlate)(uint32_t addr, bool *ok);
+// Called with g_mem_logical_xlate_ctx.  Alias of the selected map's hooks.
+extern uint32_t (*g_mem_logical_xlate)(void *ctx, uint32_t addr, bool *ok);
+extern void *g_mem_logical_xlate_ctx;
 
 // === Value Trap (fast-path needle search) ===
 // Catches writes of a specific (PA, size, value) combination without forcing

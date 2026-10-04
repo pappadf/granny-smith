@@ -143,13 +143,11 @@ extern const nubus_card_kind_t display_card_24ac_kind;
 // model, no vROM file needed (see docs/internals/core/peripherals/nubus_generic_vrom.md).
 extern const nubus_card_kind_t display_card_24ac_generic_kind;
 
-// === Video-mode selection (machine.nubus.video_mode) ========================
-// A pending "<monitor>_<N>bpp" id (e.g. "rgb_640x480_8bpp"), consumed by the
-// next card_init: it sets the monitor sense + depth and seeds a complete valid
-// PRAM so the OS boots at that mode (and still boots a configured SCSI HD).
-// nubus.video_mode dispatches here when the id names a 24AC mode.  Mirrors the
-// jmfb_* equivalents.
-void display_card_24ac_pending_video_mode_set(const char *id);
+// === Video-mode selection ===================================================
+// A slot's "<monitor>_<N>bpp" video mode (e.g. "rgb_640x480_8bpp"), resolved
+// against this card's catalog: card_init sets the monitor sense + depth and
+// seeds a complete valid PRAM so the OS boots at that mode (and still boots a
+// configured SCSI HD).
 bool display_card_24ac_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp);
 
 // === Engine introspection (object model — slot[N].card.engine) ==============

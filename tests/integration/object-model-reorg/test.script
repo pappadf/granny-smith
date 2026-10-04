@@ -9,7 +9,7 @@ for m in meta.members() {
 }
 echo "root children:$kids"
 echo "root methods:$verbs"
-assert $kids == " machine scheduler checkpoint files debug log shell catalog appletalk" "root children in the fixed order"
+assert $kids == " machine scheduler checkpoint pacing files debug log shell catalog appletalk" "root children in the fixed order"
 assert $verbs == " objects attributes methods help time quit echo" "root methods (no download)"
 
 # === files: one node for host files, images, mounts, archives ==============
@@ -88,7 +88,6 @@ checkpoint.save "${$WORK_DIR}/reorg.gscp"
 checkpoint.load "${$WORK_DIR}/reorg.gscp"
 let hits2 = debug.find.long(0x4D1F8172, 0x400000, 0x400010)
 assert debug.find.meta.path == "debug.find" "debug.find after a load"
-assert scheduler.mode == "turbo" "checkpoint restore keeps the scheduler mode"
 
 # === Callback-backed children have paths ===================================
 assert machine.scsi.device.meta.path == "machine.scsi.device" "collection container path"

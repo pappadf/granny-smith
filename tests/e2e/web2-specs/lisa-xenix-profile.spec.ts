@@ -15,8 +15,8 @@
 // the config dialog labels the hard-disk row "ProFile" (not "SCSI HD") and
 // initEmulator routes the attach to profile.attach rather than scsi.attach_hd.
 // A successful start (the "Machine started" toast + the Welcome screen giving
-// way to the running display) confirms the whole path: machine.boot lisa →
-// rom.load → profile.attach → scheduler.run.
+// way to the running display) confirms the whole path: machine.boot lisa
+// (the ROM a construction argument) → profile.attach → scheduler.run.
 //
 // The ROM and the Xenix ProFile image are the same artifacts the
 // lisa-xenix-install / lisa-xenix-boot integration tests use, staged under
@@ -71,7 +71,7 @@ test('configure a Lisa 2 with the Xenix ProFile and boot', async ({ page }) => {
   await expect(start).toBeEnabled();
   await start.click();
 
-  // initEmulator ran the full boot sequence (machine.boot lisa → rom.load →
+  // initEmulator ran the full boot sequence (machine.boot lisa →
   // profile.attach → scheduler.run) and the Welcome screen is gone.
   await expect(page.locator('.toast .msg').filter({ hasText: 'Machine started' })).toBeVisible({
     timeout: 30_000,

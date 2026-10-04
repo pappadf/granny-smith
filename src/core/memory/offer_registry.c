@@ -16,7 +16,7 @@
 
 LOG_USE_CATEGORY_NAME("rom");
 
-void offer_registry_add(offer_registry_t *r, const char *path, bool explicit_pick) {
+void offer_registry_add(offer_registry_t *r, const char *path) {
     if (!r || !r->identify || !path || !*path)
         return;
 
@@ -59,21 +59,7 @@ void offer_registry_add(offer_registry_t *r, const char *path, bool explicit_pic
     e->crc = crc;
     e->size = size;
     e->card_id = card_id;
-    if (explicit_pick) {
-        // Only one explicit pick at a time -- the latest wins.
-        for (size_t i = 0; i < r->count; i++)
-            r->entries[i].explicit_pick = false;
-        e->explicit_pick = true;
-    }
-    LOG(2, "%s: '%s' provides card '%s' (crc $%08X)%s", r->tag, path, e->card_id, e->crc,
-        explicit_pick ? " [explicit]" : "");
-}
-
-void offer_registry_clear_explicit(offer_registry_t *r) {
-    if (!r)
-        return;
-    for (size_t i = 0; i < r->count; i++)
-        r->entries[i].explicit_pick = false;
+    LOG(2, "%s: '%s' provides card '%s' (crc $%08X)", r->tag, path, e->card_id, e->crc);
 }
 
 void offer_registry_clear(offer_registry_t *r) {
@@ -87,21 +73,12 @@ void offer_registry_clear(offer_registry_t *r) {
     r->cap = 0;
 }
 
-const char *offer_registry_find(const offer_registry_t *r, const char *card_id, int idx, size_t *out_size) {
+const char *offer_registry_find(const offer_registry_t *r, const char *card_id, int idx, size_t *out_size,
+                                uint32_t *out_crc) {
     if (!r || !card_id)
         return NULL;
-    // Pass 0: the explicit pick (at most one entry carries the flag).
-    for (size_t i = 0; i < r->count; i++) {
-        if (!r->entries[i].explicit_pick || strcmp(r->entries[i].card_id, card_id) != 0)
-            continue;
-        if (idx-- == 0) {
-            if (out_size)
-                *out_size = r->entries[i].size;
-            return r->entries[i].path;
-        }
-    }
-    // Passes 1..2: catalog order, preferred rows first.  One offer per CRC
-    // (registry invariant), so each row yields at most one candidate.
+    // Catalog order, preferred rows first.  One offer per CRC (registry
+    // invariant), so each row yields at most one candidate.
     if (!r->catalog.row)
         return NULL;
     for (int want_preferred = 1; want_preferred >= 0; want_preferred--) {
@@ -113,32 +90,19 @@ const char *offer_registry_find(const offer_registry_t *r, const char *card_id, 
             if (preferred != (bool)want_preferred || !row_card || strcmp(row_card, card_id) != 0)
                 continue;
             for (size_t i = 0; i < r->count; i++) {
-                if (r->entries[i].crc != row_crc || r->entries[i].explicit_pick)
-                    continue; // the explicit entry was already yielded in pass 0
+                if (r->entries[i].crc != row_crc)
+                    continue;
                 if (idx-- == 0) {
                     if (out_size)
                         *out_size = r->entries[i].size;
+                    if (out_crc)
+                        *out_crc = r->entries[i].crc;
                     return r->entries[i].path;
                 }
             }
         }
     }
     return NULL;
-}
-
-bool offer_registry_info(const offer_registry_t *r, const char *path, uint32_t *out_crc, bool *out_explicit) {
-    if (!r || !path)
-        return false;
-    for (size_t i = 0; i < r->count; i++) {
-        if (strcmp(r->entries[i].path, path) != 0)
-            continue;
-        if (out_crc)
-            *out_crc = r->entries[i].crc;
-        if (out_explicit)
-            *out_explicit = r->entries[i].explicit_pick;
-        return true;
-    }
-    return false;
 }
 
 bool offer_registry_catalogued(const offer_registry_t *r, const char *card_id) {
@@ -156,7 +120,7 @@ bool offer_registry_catalogued(const offer_registry_t *r, const char *card_id) {
 }
 
 bool offer_registry_resolvable(const offer_registry_t *r, const char *card_id) {
-    return offer_registry_find(r, card_id, 0, NULL) != NULL;
+    return offer_registry_find(r, card_id, 0, NULL, NULL) != NULL;
 }
 
 void offer_registry_add_dir(offer_registry_t *r, const char *dir, const char *ext) {
@@ -178,7 +142,7 @@ void offer_registry_add_dir(offer_registry_t *r, const char *dir, const char *ex
         const char *sep = dir[strlen(dir) - 1] == '/' ? "" : "/";
         if (snprintf(path, sizeof(path), "%s%s%s", dir, sep, name) >= (int)sizeof(path))
             continue;
-        offer_registry_add(r, path, false);
+        offer_registry_add(r, path);
     }
     closedir(d);
 }

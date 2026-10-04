@@ -218,7 +218,7 @@ void av_dsp_overrun_write(av_dsp_t *d, uint8_t bits, uint8_t written) {
         d->carry_x256 = 0;
         d->last_burst_cycles = scheduler_cpu_cycles(d->cfg->scheduler);
         av_dsp_arm(d, 1);
-        cpu_reschedule();
+        cpu_reschedule(d->cfg->scheduler);
     }
 }
 
@@ -233,7 +233,7 @@ void av_dsp_irq(av_dsp_t *d, int vector) {
     // Wake a parked core promptly: burst at the next cycle, and end the
     // main sprint at the next instruction boundary (the IRQ trick).
     av_dsp_arm(d, 1);
-    cpu_reschedule();
+    cpu_reschedule(d->cfg->scheduler);
 }
 
 // Frame tick: a short active-low pulse on EXT1 (IR1N), width in core time
@@ -251,7 +251,7 @@ void av_dsp_ext1_tick(av_dsp_t *d) {
         return;
     dsp3210_ext_pulse(d->core, DSP3210_VEC_EXT1, AV_DSP_EXT1_PULSE_SLOTS);
     av_dsp_arm(d, 1);
-    cpu_reschedule();
+    cpu_reschedule(d->cfg->scheduler);
 }
 
 bool av_dsp_ext1_pending(av_dsp_t *d) {

@@ -7,9 +7,9 @@
 # OS, which nothing did before (iicx-dual-display proves the ROM-level
 # contract only).
 #
-# Both cards go in explicitly via the per-slot staging channel
-# (nubus.slot[N].card_id, the iicx-dual-display mechanism) rather than the
-# video_card= wildcard, which can only seat one.
+# Both cards go in through the boot document's per-slot entries (slots=,
+# the iicx-dual-display mechanism) rather than video_card=, which names
+# only the first socket's.
 #
 # The Quadras' DAFB must remain the boot screen with either card present
 # (ScrnBase on the DAFB aperture), and on a 68040 the 8•24 GC's INIT must

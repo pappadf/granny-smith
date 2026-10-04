@@ -153,13 +153,13 @@ static void synthesise_vrom_fallback(uint8_t *rom) {
 }
 
 // Load the real onboard-video declaration ROM through the shared content-
-// driven loader (the offer registry the platform populated — no search, no
-// filenames).  The SE/30's chip is byteLanes $0F (4-lane, flat copy), so it
+// driven loader: the slot's own ROM file when the document names one, else the
+// offer registry the platform populated.  The SE/30's chip is byteLanes $0F (4-lane, flat copy), so it
 // fills the whole 32 KB window.  Stores the path used in *out_path (caller
 // takes ownership) on success.
-static bool load_real_vrom(uint8_t *vrom_buf, char **out_path) {
+static bool load_real_vrom(nubus_card_t *card, const char *rom, uint8_t *vrom_buf, char **out_path) {
     *out_path = NULL;
-    if (!declrom_load_vrom_card(builtin_se30_video_kind.id, vrom_buf, SE30_VROM_SIZE, out_path)) {
+    if (!declrom_load_vrom_card(card, builtin_se30_video_kind.id, rom, vrom_buf, SE30_VROM_SIZE, out_path)) {
         LOG(0, "No SE/30 onboard-video vROM offered — falling back to the synthesised declaration ROM");
         return false;
     }
@@ -169,7 +169,8 @@ static bool load_real_vrom(uint8_t *vrom_buf, char **out_path) {
 
 // === Card vtable ============================================================
 
-static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, bool generic) {
+static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts,
+                            bool generic) {
     (void)cp;
     se30_priv_t *p = calloc(1, sizeof(*p));
     if (!p)
@@ -193,10 +194,10 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         size_t img_size = 0;
         const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
         if (!img ||
-            !declrom_install_builtin(builtin_se30_video_generic_kind.id, img, img_size, p->vrom, SE30_VROM_SIZE))
+            !declrom_install_builtin(card, builtin_se30_video_generic_kind.id, img, img_size, p->vrom, SE30_VROM_SIZE))
             LOG(0, "SE/30 video: built-in declaration ROM failed to generate; declaration ROM is zero-filled");
         declrom_builder_free(bld);
-    } else if (!load_real_vrom(p->vrom, &p->vrom_path)) {
+    } else if (!load_real_vrom(card, opts->rom[0] ? opts->rom : NULL, p->vrom, &p->vrom_path)) {
         if (!cp) {
             // Real VROM was the long-standing requirement on cold boot;
             // fall back to the synthesised image so the real kind keeps
@@ -264,12 +265,12 @@ static const char *card_name(const nubus_card_t *card) {
 }
 
 // Thin per-kind init wrappers — the sibling pair shares one HLE model.
-static int card_init_real(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
-    return card_init_common(card, cfg, cp, /*generic*/ false);
+static int card_init_real(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
+    return card_init_common(card, cfg, cp, opts, /*generic*/ false);
 }
 
-static int card_init_generic(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
-    return card_init_common(card, cfg, cp, /*generic*/ true);
+static int card_init_generic(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
+    return card_init_common(card, cfg, cp, opts, /*generic*/ true);
 }
 
 static const char *card_name_generic(const nubus_card_t *card) {

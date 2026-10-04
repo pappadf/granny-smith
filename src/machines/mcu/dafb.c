@@ -108,6 +108,7 @@ struct dafb {
     uint8_t sense_code; // attached monitor's passive 3-bit code
     uint8_t sense_ext; // raw 6-bit extended-sense code (valid when sense_ext_on)
     bool sense_ext_on; // monitor answers the tie-matrix probe
+    uint8_t monitor; // the strap these three came from: an indexed sense code (dafb.h)
 
     // TurboSCSI DRQ observation (per channel; bit 9)
     dafb_drq_query_fn drq_fn[2];
@@ -683,7 +684,9 @@ static void dafb_poweron_display(dafb_t *dafb, bool cold) {
 // Lifecycle
 // ============================================================
 
-dafb_t *dafb_init(uint32_t vram_size, checkpoint_t *cp) {
+static void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code);
+
+dafb_t *dafb_init(uint32_t vram_size, uint8_t monitor, checkpoint_t *cp) {
     dafb_t *dafb = (dafb_t *)calloc(1, sizeof(dafb_t));
     if (!dafb)
         return NULL;
@@ -694,7 +697,7 @@ dafb_t *dafb_init(uint32_t vram_size, checkpoint_t *cp) {
         return NULL;
     }
 
-    dafb->sense_code = 6; // 13" 640×480 RGB by default
+    dafb_set_monitor_sense(dafb, monitor);
     // The sense drive lines wake up tristated: the ROM's very first $01C
     // read (before it writes anything) must return the monitor's passive
     // code.  A reset value of 0 reads as "all driven low" → code 0 → the
@@ -713,9 +716,6 @@ dafb_t *dafb_init(uint32_t vram_size, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, &dafb->pcbr1, sizeof(dafb->pcbr1));
         system_read_checkpoint_data(cp, dafb->clk_reg, sizeof(dafb->clk_reg));
         system_read_checkpoint_data(cp, &dafb->clock_hz, sizeof(dafb->clock_hz));
-        system_read_checkpoint_data(cp, &dafb->sense_code, sizeof(dafb->sense_code));
-        system_read_checkpoint_data(cp, &dafb->sense_ext, sizeof(dafb->sense_ext));
-        system_read_checkpoint_data(cp, &dafb->sense_ext_on, sizeof(dafb->sense_ext_on));
         system_read_checkpoint_data(cp, dafb->vram, vram_size);
         reconfigure(dafb);
         // ...and the INTERRUPT LEVEL, which is derived from the register file
@@ -769,16 +769,6 @@ void dafb_checkpoint(dafb_t *dafb, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &dafb->pcbr1, sizeof(dafb->pcbr1));
     system_write_checkpoint_data(cp, dafb->clk_reg, sizeof(dafb->clk_reg));
     system_write_checkpoint_data(cp, &dafb->clock_hz, sizeof(dafb->clock_hz));
-    // The attached monitor's passive sense code. It is configuration rather
-    // than something the guest can write — the pins are passive — but it has
-    // to survive a restore, and it cannot be re-staged from core: dafb.h is a
-    // machine header and src/core/ may not include it (core-layering test).
-    // So it rides in the device's own stream. Changing this stream costs
-    // nothing: checkpoint.c rejects any file whose build ID differs from the
-    // running binary, so no older checkpoint can reach this code.
-    system_write_checkpoint_data(cp, &dafb->sense_code, sizeof(dafb->sense_code));
-    system_write_checkpoint_data(cp, &dafb->sense_ext, sizeof(dafb->sense_ext));
-    system_write_checkpoint_data(cp, &dafb->sense_ext_on, sizeof(dafb->sense_ext_on));
     system_write_checkpoint_data(cp, dafb->vram, dafb->vram_size);
 }
 
@@ -812,8 +802,13 @@ static const uint8_t k_indexed_ext[] = {
     [DAFB_SENSE_INDEXED_MSB3] = 0x23u, // extendedMSB3
 };
 
-void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code) {
-    if (dafb && code >= DAFB_SENSE_INDEXED_VGA && code < DAFB_SENSE_INDEXED_MAX) {
+uint8_t dafb_monitor(const dafb_t *dafb) {
+    return dafb ? dafb->monitor : 0x6u;
+}
+
+static void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code) {
+    dafb->monitor = code;
+    if (code >= DAFB_SENSE_INDEXED_VGA && code < DAFB_SENSE_INDEXED_MAX) {
         // Extended monitor: the pins read as no-connect ($7), which is what
         // makes the ROM run the tie-matrix probe in the first place.
         dafb->sense_code = 0x7u;
@@ -821,23 +816,14 @@ void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code) {
         dafb->sense_ext_on = true;
         return;
     }
-    if (dafb)
-        dafb->sense_ext_on = false;
-    if (dafb)
-        dafb->sense_code = code & 0x7u;
+    dafb->sense_ext_on = false;
+    dafb->sense_code = code & 0x7u;
 }
 
-// The monitor sense for this Quadra's built-in video: what the caller asked
-// for, or the default $6 (13" RGB).
-//
-// This used to be a file-static "pending" slot that machine.c poked by name
-// and mcu.c consumed destructively -- a second mirror of the JMFB one, which
-// existed only because core could not reach a machine header to set both.
-// machine_build_opts_t lives in core,
-// so both now read one value and neither consumes it.
+// The monitor strap a boot builds this Quadra's built-in video with: what the
+// document asked for, or the default $6 (13" RGB).
 uint8_t dafb_sense_for_build(const struct config *cfg) {
-    int s = cfg->build_opts.video_sense;
-    return (s >= 0 && (unsigned)s < DAFB_SENSE_INDEXED_MAX) ? (uint8_t)s : 0x6u;
+    return machine_sense_or(cfg->build_opts.video_sense, DAFB_SENSE_INDEXED_MAX, 0x6u);
 }
 
 void dafb_set_version(dafb_t *dafb, uint8_t version) {

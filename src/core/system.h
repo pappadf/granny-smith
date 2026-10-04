@@ -72,38 +72,41 @@ typedef struct config config_t;
 image_t *config_get_image(config_t *cfg, int index);
 int config_get_n_images(config_t *cfg);
 void config_add_image(config_t *cfg, image_t *image);
-// Remove an image from the tracked list WITHOUT closing it (machine.restart
-// handle transfer — ownership moves to the caller).
-void config_remove_image(config_t *cfg, image_t *image);
-
-// Standard substrate implementation of the machine.restart media transfer
-// (cfg->floppy + cfg->scsi); Mac substrates bind these into their vtables,
-// the Lisa provides its own.  See machine_profile.h media_slot_t.
+// Standard substrate implementation of media attach (cfg->floppy +
+// cfg->scsi); Mac substrates bind it into their vtables, the Lisa provides
+// its own.  See machine_profile.h media_slot_t.
 struct media_slot;
-int system_media_detach_std(config_t *cfg, struct media_slot *out, int max);
 int system_media_attach_std(config_t *cfg, const struct media_slot *slot);
 // One SCSI bus's worth of the same, for a machine with more than one.
-int system_media_detach_scsi_bus(config_t *cfg, struct scsi *bus, enum media_bus which, struct media_slot *out,
-                                 int max);
 int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const struct media_slot *slot);
 
 // === Generic Machine Lifecycle ===
 
-// One-time global initialisation: logging categories, image system, shell commands.
+// One-time global initialisation: logging categories, image system, the
+// AppleTalk network.
 extern void setup_init(void);
 
-// Register the directory the default "Shared" AppleShare volume serves
-// (NULL or "": none).  Core publishes it after every machine build.
+// Publish the directory the default "Shared" AppleShare volume serves (NULL
+// or "": none) on the AppleTalk network.  Called once, at startup, after
+// setup_init; the share stays for every machine that plugs in.
 void system_set_default_share(const char *path);
 
 // Create an emulator instance for the given machine profile.
 // If checkpoint is non-NULL, device state is restored from that checkpoint.
-// Sets global_emulator and returns the new config handle.
-// `opts` carries the choices that must be known before devices exist (see
-// machine_build_opts.h).  Pass NULL for "nothing chosen", which is what the
-// internal rebuild paths want; machine_boot_apply and the checkpoint restore
-// both fill it from what the caller actually asked for.
+// Returns the new config handle, NOT yet the active machine: construction
+// touches nothing outside it (global_emulator, the object root, the machine
+// label), so a failed build has changed nothing.  system_swap_in makes it
+// the active machine.  `opts` carries the construction arguments (see
+// machine_build_opts.h); machine_boot_apply and the checkpoint restore both
+// fill it.
 extern config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t *opts, checkpoint_t *checkpoint);
+
+// Make a constructed machine the active one -- global_emulator, the object
+// root, the machine label, the machine_booted event -- and destroy the one it
+// replaces.  `restored`: the machine came from a checkpoint.  `pacing`: the
+// host's pacing setting, which the machine runs under from its first frame.
+struct host_pacing;
+void system_swap_in(config_t *cfg, bool restored, const struct host_pacing *pacing);
 
 // Destroy an emulator instance: call machine teardown and free all resources.
 extern void system_destroy(config_t *config);
@@ -123,16 +126,12 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind);
 config_t *system_restore(const char *filename);
 
 // Command handlers for checkpoint operations
-// Checkpoint save / load / probe.  These replace the retired
-// cmd_save_checkpoint(argc, argv) and cmd_load_checkpoint(argc, argv), which
-// the typed checkpoint.* methods reached by building a fake argv[] and then
-// string-matching their arguments back out of it.
-int system_checkpoint_save(const char *filename, bool files_as_refs);
+// Checkpoint load / probe.  These replace the retired
+// cmd_load_checkpoint(argc, argv), which the typed checkpoint.* methods
+// reached by building a fake argv[] and then string-matching their arguments
+// back out of it.
 int system_checkpoint_load(const char *filename); // NULL/empty = auto-load latest
 bool system_checkpoint_probe(void);
-
-// Lookup an image by its full filename within the current config's image list
-image_t *setup_get_image_by_filename(const char *filename);
 
 // System-level input wrappers (route to appropriate device models)
 // Note: system_keyboard_update requires keyboard.h to be included for key_event_t
@@ -196,6 +195,13 @@ const struct cpu_debug_if *system_cpu_debug_if(void);
 // The active machine configuration (NULL before setup).  Used by the keyboard /
 // mouse object methods to find a machine-specific host-input hook.
 config_t *system_config(void);
+// The running machine, for an observer that may run while another machine is
+// being built -- a log line's PC and instruction-count decoration describes
+// the machine that is running, which a build does not change.  Constructors
+// use their own cfg; everything else uses system_config().
+config_t *system_running(void);
+// The running machine's scheduler, or NULL with no machine.
+struct scheduler *system_running_scheduler(void);
 
 // Per-kind (DRIVE_KIND_*) sums of the attached images' read / write call
 // counters, for the drive-activity lights (storage/drive_activity.h).
@@ -243,11 +249,6 @@ bool system_is_initialized(void);
 // Return the model_id of the current machine, or NULL if none is active
 const char *system_machine_model_id(void);
 
-// Ensure the correct machine is active for the given model_id.
-// Creates a new machine if none exists, or tears down and recreates if the
-// current machine's model_id doesn't match.  Returns 0 on success, -1 on error.
-int system_ensure_machine(const char *model_id);
-
 // Create a blank floppy image at `path` and auto-mount it. high_density
 // chooses 1.44 MB vs 800 KB. preferred is the target drive (0 or 1; pass
 // -1 to let the system pick the first free drive). Returns 0 on success
@@ -284,9 +285,10 @@ int system_hd_attach(const char *path, int scsi_id);
 int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id);
 int system_hd_create(const char *path, const char *size_str);
 
-// Pending RAM override for next system_create() call (KB, 0 = use default)
-void system_set_pending_ram_kb(uint32_t kb);
-uint32_t system_get_pending_ram_kb(void);
+// Platform hook: a new machine has become the active one (boot or restore).
+// The host re-bases its samples of the machine and announces what it shows
+// of it; a weak no-op where the host observes nothing.
+void platform_machine_attached(void);
 
 // Reset Mac hardware to initial state
 extern void mac_reset(config_t *restrict sim);

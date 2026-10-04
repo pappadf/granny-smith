@@ -1187,7 +1187,6 @@ av_singer_t *av_singer_init(config_t *cfg, checkpoint_t *cp) {
 void av_singer_delete(av_singer_t *s) {
     if (!s)
         return;
-    audio_out_capture_detach();
     if (s->ain_cap_object) {
         object_detach(s->ain_cap_object);
         object_delete(s->ain_cap_object);

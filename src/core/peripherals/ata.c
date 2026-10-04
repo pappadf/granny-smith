@@ -979,7 +979,7 @@ void ata_checkpoint_save(ata_channel_t *ch, checkpoint_t *cp) {
     }
 }
 
-void ata_checkpoint_restore(ata_channel_t *ch, checkpoint_t *cp) {
+void ata_checkpoint_restore(ata_channel_t *ch, checkpoint_t *cp, const image_list_t *images) {
     free_resp(ch);
     system_read_checkpoint_data(cp, ch, offsetof(ata_channel_t, buf));
     system_read_checkpoint_data(cp, ch->buf, ATA_BUF_SIZE);
@@ -1009,9 +1009,13 @@ void ata_checkpoint_restore(ata_channel_t *ch, checkpoint_t *cp) {
         }
         system_read_checkpoint_data(cp, name, len);
         name[len - 1] = '\0';
-        ch->img[u] = setup_get_image_by_filename(name);
-        if (!ch->img[u])
-            LOG(1, "ch%d dev%d: image '%s' is not in the machine's image table — device absent", ch->index, u, name);
+        ch->img[u] = images_find(images, name);
+        if (!ch->img[u]) {
+            // The unit held a disk: a restore without it is not the machine
+            // that was saved.
+            LOG(0, "ch%d dev%d: the checkpoint's image '%s' is not among its images", ch->index, u, name);
+            checkpoint_set_error(cp);
+        }
         free(name);
     }
     for (int u = 0; u < 2; u++)

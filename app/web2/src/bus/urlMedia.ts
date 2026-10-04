@@ -8,15 +8,22 @@
 // a page may read — see lib/mediaUrl.ts for the addressing rules.
 //
 // Each parameter value is fetched, one at a time (relative paths resolve
-// against the page origin), streamed to /opfs/upload/url_<slot>, the named
-// member (or, for a bare archive, the first file / the found medium) taken
-// out of a container, then persisted into
-// /opfs/images/<category>/ the way an upload of that kind is (upload.ts
-// persistAs) and mounted from there; the staging copy is then removed.  The
-// frontend owns where media lives; the core no longer copies volatile paths
-// into OPFS behind the caller's back.  A file that does not
-// validate as its slot's category is attached from its staging copy, with a
-// warning.
+// against the page origin), streamed to a scratch file of its own
+// (/opfs/upload/.scratch/<nonce>-url_<slot>), the named member (or, for a
+// bare archive, the first file / the found medium) taken out of a container,
+// then persisted into /opfs/images/<category>/ the way an upload of that
+// kind is (upload.ts persistAs) and mounted from there.  The frontend owns
+// where media lives; the core no longer copies volatile paths into OPFS
+// behind the caller's back.  A file that does not validate as its slot's
+// category is rejected exactly as the same file dropped on its category is,
+// with the validator's reason: a ROM that fails does not boot, a disk that
+// fails is left out of the boot, and the run says so.  Nothing is attached
+// from the scratch area, and every exit discards the scratch file.
+//
+// The ROM and a `vrom=` go into the one machine.boot document: the URL's
+// declaration ROM is the ROM of the slot whose card it provides, ahead of any
+// other revision of it already stored.  (Storing it also offers it to the
+// core's ROM catalog, for later boots; that is not how this boot gets it.)
 //
 // While a ROM-led boot runs (state/urlBoot: the page was opened to boot),
 // every file is listed up front and its download progress reported for the
@@ -47,7 +54,7 @@ import {
 } from '@/lib/mediaUrl';
 import { identifyRom, type MediaTypeId } from '@/lib/media';
 import { persistAs, streamToOpfs, discardStaging, stagedArchiveFormat } from './upload';
-import { UPLOAD_DIR } from '@/lib/opfsPaths';
+import { scratchPath } from '@/lib/opfsPaths';
 import { getProfile } from './profile';
 import { attachHardDisk, attachCdrom, insertFloppy, type MediaResult } from './media';
 import { importImage, type DiskCategory, type ImportSource } from './importImage';
@@ -137,10 +144,9 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   const params = parseUrlMediaParams(rawParams);
   if (!hasUrlMedia(params)) return false;
 
-  // Slot -> the path to attach it from: its persisted path, or its staging
-  // path when it did not validate as its category, or undefined when the
-  // fetch failed.  One download at a time: in parallel, every large image
-  // was in flight at once.
+  // Slot -> the path to attach it from: its persisted path, or undefined
+  // when the fetch failed or the file was rejected.  One download at a time:
+  // in parallel, every large image was in flight at once.
   const paths = new Map<string, string | undefined>();
   if (params.rom) {
     queueUrlFile('rom', params.rom);
@@ -207,8 +213,18 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
 
   // One boot document: the core validates model/rom together, installs the
   // ROM itself and boots the model's own default RAM (there was a 4096 KB
-  // fallback here, which two models cannot boot).
-  const booted = await gsEval('machine.boot', { model: chosen, rom: romPath });
+  // fallback here, which two models cannot boot).  The URL's vROM is part of
+  // it -- vrom= is the ROM of its card's slot -- unless it could not be
+  // had (not downloaded, or not a vROM): then the boot goes ahead without
+  // it, and says so.
+  const vrom = paths.get('vrom');
+  if (params.vrom && !vrom)
+    showNotification(`Booting ${chosen} without the URL's video ROM`, 'warning');
+  const booted = await gsEval('machine.boot', {
+    model: chosen,
+    rom: romPath,
+    ...(vrom ? { vrom } : {}),
+  });
   if (booted !== true) {
     // A rejected document leaves the previous machine (or none) in place:
     // do not attach media to it or report a boot.
@@ -269,10 +285,10 @@ function report(slot: string, path: string, r: MediaResult): void {
   else showNotification(`${slot}: not attached: ${r.reason}`, 'error');
 }
 
-// Fetch a URL, stage it, and persist it as `category`.  Returns the path to
-// attach from: the persisted /opfs/images/<category>/ path (the staging copy
-// is then removed), or the staging path when the file does not validate as
-// that category, or undefined when the fetch failed.
+// Fetch a URL, stage it, and persist it as `category`.  Returns the
+// persisted /opfs/images/<category>/ path to attach from, or undefined when
+// the fetch failed or the file is not valid as that category (rejected,
+// with the validator's reason).  The staging copy is discarded either way.
 async function fetchAndPersist(
   slot: string,
   url: string,
@@ -284,16 +300,22 @@ async function fetchAndPersist(
   }
   const staged = await fetchAndStage(slot, url);
   if (!staged) return undefined;
-  const persisted = await persistAs(staged.path, staged.name, category);
-  if (persisted) {
+  try {
+    const stored = await persistAs(staged.path, staged.name, category);
+    if (stored.ok) return stored.path;
+    rejectDownload(slot, staged.name, stored.reason);
+    return undefined;
+  } finally {
     await discardStaging(staged.path);
-    return persisted;
   }
-  showNotification(
-    `${slot}: not recognised as ${category}; attaching the downloaded copy`,
-    'warning',
-  );
-  return staged.path;
+}
+
+// A download its slot's category refuses: rejected as the same file dropped
+// on that category is, with the validator's reason, and never attached.
+function rejectDownload(slot: string, name: string, reason: string): void {
+  const why = `'${name}' ${reason}`;
+  showNotification(`${slot.toUpperCase()}: ${why}`, 'error');
+  updateUrlFile(slot, { status: 'failed', error: why });
 }
 
 // Fetch a hard-disk or CD value and stream it into a compact UDIF
@@ -343,7 +365,7 @@ async function fetchAndImport(
     ? { kind: 'stream', stream: res.body, total }
     : { kind: 'blob', blob: await res.blob() };
   const progress = progressReporter(slot);
-  let smallPath: string | null = null;
+  let rejected = false;
   // In the status bar like an upload, with its Cancel button (importImage
   // sets it while the import can be cancelled).
   startActivity(plan.member ?? plan.fileName, 'Downloading');
@@ -354,29 +376,24 @@ async function fetchAndImport(
       categories: [category],
       member: plan.container ? plan.member : null,
       onProgress: (read) => progress(read),
+      // importImage discards the staged file when this returns.
       onSmall: async (path, name) => {
-        const persisted = await persistAs(path, sanitizeName(name) || slot, category);
-        if (persisted) {
-          await discardStaging(path);
-          return persisted;
-        }
-        showNotification(
-          `${slot}: not recognised as ${category}; attaching the downloaded copy`,
-          'warning',
-        );
-        smallPath = path;
-        return path;
+        const stored = await persistAs(path, sanitizeName(name) || slot, category);
+        if (stored.ok) return stored.path;
+        rejectDownload(slot, name, stored.reason);
+        rejected = true;
+        return null;
       },
     },
   ).finally(endActivity);
   if (!out.handled) return false;
   if (!out.path) {
-    updateUrlFile(slot, { status: 'failed', error: 'not stored' });
+    if (!rejected) updateUrlFile(slot, { status: 'failed', error: 'not stored' });
     return undefined;
   }
   const size = await gsEval('files.path_size', [out.path]);
   const name = out.path.split('/').pop() ?? plan.fileName;
-  if (!urlBoot.requested && !smallPath)
+  if (!urlBoot.requested)
     showNotification(
       `${label}: ${name}${typeof size === 'number' ? ` (${sizeText(size)} stored)` : ''}`,
       'info',
@@ -389,40 +406,47 @@ async function fetchAndImport(
 // into one image, and persist it as a ROM.  Which chip holds the even bytes
 // is not for the URL to say: both orders are tried and the one whose own
 // checksum verifies (machine.rom.identify) is kept.  Returns the persisted
-// path, or undefined (with a message) when the pair is not a ROM.
+// path, or undefined (with a message) when the pair is not a ROM.  Both
+// halves' scratch files are discarded on every exit.
 async function fetchRomPair(urlA: string, urlB: string): Promise<string | undefined> {
   const a = await fetchAndStage('rom', urlA);
   if (!a) return undefined;
-  const b = await fetchAndStage('rom2', urlB);
-  if (!b) return undefined;
-  const bytesA = await xferReadAll(a.path);
-  const bytesB = await xferReadAll(b.path);
-  await discardStaging(b.path);
-  if (bytesA.length !== bytesB.length) {
+  let b: { path: string; name: string } | null = null;
+  try {
+    b = await fetchAndStage('rom2', urlB);
+    if (!b) return undefined;
+    const bytesA = await xferReadAll(a.path);
+    const bytesB = await xferReadAll(b.path);
+    if (bytesA.length !== bytesB.length) {
+      showNotification(
+        `ROM: the two halves differ in size (${bytesA.length} and ${bytesB.length} bytes)`,
+        'error',
+      );
+      return undefined;
+    }
+    for (const [even, odd] of [
+      [bytesA, bytesB],
+      [bytesB, bytesA],
+    ]) {
+      if (!(await streamToOpfs(a.path, interleaveHalves(even, odd)))) return undefined;
+      const id = (await gsEval('machine.rom.identify', [a.path])) as { intact?: boolean } | null;
+      if (id?.intact) {
+        const name = `${a.name}+${b.name}`;
+        const stored = await persistAs(a.path, name, 'rom');
+        if (stored.ok) return stored.path;
+        rejectDownload('rom', name, stored.reason);
+        return undefined;
+      }
+    }
     showNotification(
-      `ROM: the two halves differ in size (${bytesA.length} and ${bytesB.length} bytes)`,
+      `ROM: ${a.name} and ${b.name} do not interleave into a ROM whose checksum verifies`,
       'error',
     );
     return undefined;
+  } finally {
+    await discardStaging(a.path);
+    if (b) await discardStaging(b.path);
   }
-  for (const [even, odd] of [
-    [bytesA, bytesB],
-    [bytesB, bytesA],
-  ]) {
-    if (!(await streamToOpfs(a.path, interleaveHalves(even, odd)))) return undefined;
-    const id = (await gsEval('machine.rom.identify', [a.path])) as { intact?: boolean } | null;
-    if (id?.intact) {
-      const persisted = await persistAs(a.path, `${a.name}+${b.name}`, 'rom');
-      if (persisted) await discardStaging(a.path);
-      return persisted ?? a.path;
-    }
-  }
-  await discardStaging(a.path);
-  showNotification(
-    `ROM: ${a.name} and ${b.name} do not interleave into a ROM whose checksum verifies`,
-    'error',
-  );
-  return undefined;
 }
 
 // GET `url` for JSON (the archive.org metadata API).
@@ -447,14 +471,16 @@ function fetchFailureText(e: unknown, url: string): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-// Fetch a URL-media value and stage its bytes at /opfs/upload/url_<slot>,
-// streamed through the one chunked writer (upload.ts streamToOpfs).  When
+// Fetch a URL-media value and stage its bytes at a scratch path of its own
+// (scratchPath, so a later URL boot of the same slot never writes the file a
+// running machine may still be reading), streamed through the one chunked writer (upload.ts streamToOpfs).  When
 // the value names a member of a container, the container is fetched whole
 // and the member taken out of it (a zip in JS — unzipping needs the whole
 // archive in memory — a Mac archive by the C side); archive.org extracts zip
 // members itself.  A container fetched without a member path keeps the old
 // behaviour: a zip's first file, a Mac archive's found medium.  Returns the
-// staged path and the name to store it under, or null.
+// staged path and the name to store it under -- the caller discards it --
+// or null, with nothing left behind.
 async function fetchAndStage(
   slot: string,
   url: string,
@@ -470,7 +496,8 @@ async function fetchAndStage(
     return null;
   }
   updateUrlFile(slot, { name: plan.member ?? plan.fileName, status: 'downloading' });
-  const staged = `${UPLOAD_DIR}/url_${slot}`;
+  const staged = scratchPath(`url_${slot}`);
+  let handedOver = false;
   try {
     let res: Response;
     try {
@@ -521,14 +548,17 @@ async function fetchAndStage(
       status: 'done',
       ...(typeof size === 'number' ? { received: size, total: size } : {}),
     });
+    handedOver = true;
     return { path: staged, name: sanitizeName(name) || slot };
   } catch (e) {
     console.error(`[urlMedia] fetch ${slot} failed`, e);
     const msg = fetchFailureText(e, plan.fetchUrl);
     showNotification(`${label}: ${msg}`, 'error');
     updateUrlFile(slot, { status: 'failed', error: msg });
-    await discardStaging(staged);
     return null;
+  } finally {
+    // Every exit but the one handing the file to the caller discards it.
+    if (!handedOver) await discardStaging(staged);
   }
 }
 
@@ -579,7 +609,7 @@ async function unpackMacArchive(
     if (member !== null && plan) throw new MediaUrlError(`${plan.containerName}: not an archive`);
     return true;
   }
-  const extractDir = `${UPLOAD_DIR}/url_${slot}_unpacked`;
+  const extractDir = scratchPath(`url_${slot}_unpacked`);
   try {
     if ((await gsEval('files.archive.extract', [staged, extractDir])) !== true)
       throw new MediaUrlError(`could not unpack ${plan?.containerName ?? 'the archive'}`);
@@ -596,16 +626,21 @@ async function unpackMacArchive(
   }
 }
 
-// Every file under `dir`, as paths relative to it.
+// Every file under `dir`, as paths relative to it.  Each entry says what it is
+// (files.list), so a subdirectory that cannot be listed is an error -- the
+// URL's media is rejected -- never taken for a file.
 async function listTree(dir: string, prefix = ''): Promise<string[]> {
-  const entries = await gsEval('files.list_dir', [prefix ? `${dir}/${prefix}` : dir]);
-  if (!Array.isArray(entries)) return [];
+  const at = prefix ? `${dir}/${prefix}` : dir;
+  const entries = await gsEval('files.list', [at]);
+  // An unreadable or oversized listing is the core's error: said, not taken
+  // for an empty one.
+  if (!Array.isArray(entries))
+    throw new MediaUrlError(`cannot list ${at}: ${gsErrorText(entries)}`);
   const out: string[] = [];
-  for (const e of entries) {
-    if (typeof e !== 'string' || e === '.' || e === '..') continue;
-    const rel = prefix ? `${prefix}/${e}` : e;
-    const sub = await gsEval('files.list_dir', [`${dir}/${rel}`]);
-    if (Array.isArray(sub)) out.push(...(await listTree(dir, rel)));
+  for (const e of entries as { name?: unknown; kind?: unknown }[]) {
+    if (typeof e?.name !== 'string' || e.name === '.' || e.name === '..') continue;
+    const rel = prefix ? `${prefix}/${e.name}` : e.name;
+    if (e.kind === 'directory') out.push(...(await listTree(dir, rel)));
     else out.push(rel);
   }
   return out;

@@ -28,9 +28,10 @@ test("the command browser walks the model and shows usage", async ({
   await expect(browser).toBeVisible({ timeout: 15_000 });
 
   // Expandable sections: the root's commands, its domains from the model
-  // (Network appears once a machine brings AppleTalk up), Aliases, Language.
+  // (Network is the host's AppleTalk network, there before any machine),
+  // Aliases, Language.
   await expect(browser.locator(".cmd-row.kind-section .name")).toHaveText(
-    ["Commands", "Machine", "Emulator", "Aliases", "Language"],
+    ["Commands", "Machine", "Emulator", "Network", "Aliases", "Language"],
     { timeout: 15_000 },
   );
 

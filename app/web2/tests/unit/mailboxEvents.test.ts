@@ -37,10 +37,9 @@ function layout(): {
   evt: Ring;
   req: Ring;
   ctrl: Int32Array;
-  spare: number; // a heap offset past the rings, for staged buffers
 } {
   const ctrlPtr = 64;
-  const heap = new SharedArrayBuffer(ctrlPtr + 128 + REQ + EVT + 1024);
+  const heap = new SharedArrayBuffer(ctrlPtr + 128 + REQ + EVT);
   const ctrl = new Int32Array(heap, ctrlPtr, 32);
   ctrl[C_MAGIC] = MAGIC | 0;
   ctrl[C_VERSION] = VERSION;
@@ -56,7 +55,6 @@ function layout(): {
     ctrl,
     evt: { u8, base: ctrlPtr + 128 + REQ, size: EVT },
     req: { u8, base: ctrlPtr + 128, size: REQ },
-    spare: ctrlPtr + 128 + REQ + EVT,
   };
 }
 
@@ -67,11 +65,12 @@ function answer(
   id: number,
   json: string,
   output = '',
+  ok = true,
 ): number {
   const j = utf8.encode(json);
   const o = utf8.encode(output);
   const tail = Atomics.load(l.ctrl, C_EVT_TAIL) >>> 0;
-  const next = ringWrite(l.evt, wr, tail, EVT_RESULT, [id, 1, j.length, o.length], [j, o]);
+  const next = ringWrite(l.evt, wr, tail, EVT_RESULT, [id, ok ? 1 : 0, j.length, o.length], [j, o]);
   if (next < 0) throw new Error('no room');
   Atomics.store(l.ctrl, C_EVT_HEAD, next | 0);
   Atomics.notify(l.ctrl, C_EVT_HEAD);
@@ -156,25 +155,35 @@ describe('core events on the mailbox', () => {
     expect(Atomics.load(l.ctrl, C_EVT_TAIL) >>> 0).toBe(wr);
   });
 
-  it('a spilled result is read from its staged buffer and the buffer is acknowledged', async () => {
+  it('an oversized result is the core error, and nothing is acknowledged', async () => {
     const l = layout();
     const mb = new Mailbox(l.heap, l.ctrlPtr, 1);
-    const big = JSON.stringify({ rows: Array.from({ length: 40 }, (_, i) => `row ${i}`) });
-    const bytes = utf8.encode(big);
-    l.req.u8.set(bytes, l.spare);
     const p = mb.request('debug.disasm', '', 0);
     let rd = 0;
     const req = nextRequest(l, rd);
     rd = req.next;
     expect(req.kind).toBe(REQ_EVAL);
-    answer(l, 0, req.words[0], `{"$buf":7,"ptr":${l.spare},"len":${bytes.length}}`);
+    const error =
+      '{"error":"result of \'debug.disasm\' is 300000 bytes, over the 262144-byte result limit"}';
+    let wr = answer(l, 0, req.words[0], error, '', false);
+    // A late answer (an id no longer pending) is dropped the same way.
+    wr = answer(l, wr, 999, '"late"');
     const r = await p;
-    expect(r.ok).toBe(true);
-    expect(r.json).toBe(big);
-    // The ack names the handle.
-    for (let i = 0; i < 20 && Atomics.load(l.ctrl, C_REQ_HEAD) >>> 0 === rd; i++) await tick();
-    const ack = nextRequest(l, rd);
+    expect(r).toEqual({ ok: false, json: error, output: '' });
+    for (let i = 0; i < 20 && Atomics.load(l.ctrl, C_EVT_TAIL) >>> 0 !== wr; i++) await tick();
+    expect(Atomics.load(l.ctrl, C_EVT_TAIL) >>> 0).toBe(wr);
+    expect(Atomics.load(l.ctrl, C_REQ_HEAD) >>> 0).toBe(rd);
+  });
+
+  it('a transfer buffer is acknowledged by its handle', async () => {
+    const l = layout();
+    const mb = new Mailbox(l.heap, l.ctrlPtr, 1);
+    const p = mb.ackBuf(7);
+    for (let i = 0; i < 20 && Atomics.load(l.ctrl, C_REQ_HEAD) >>> 0 === 0; i++) await tick();
+    const ack = nextRequest(l, 0);
     expect(ack.kind).toBe(REQ_ACK_BUF);
     expect(ack.words[2]).toBe(7);
+    answer(l, 0, ack.words[0], 'true');
+    expect(await p).toBe(true);
   });
 });

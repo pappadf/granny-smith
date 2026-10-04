@@ -212,7 +212,7 @@ The shell exposes the configuration as a typed method on the root `log` object: 
     static log_category_t* appletalk_cat;
     LOG_USE_CATEGORY(appletalk_cat);  // set the file’s implicit category symbol
 
-  void appletalk_init(void) {
+  void appletalk_network_init(void) {
     appletalk_cat = log_register_category("appletalk");
   }
     ```

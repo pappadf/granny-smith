@@ -82,33 +82,22 @@ void prom_offer(const char *path);
 void prom_offer_dir(const char *dir, const char *ext);
 void prom_offer_clear(void);
 
-// Enumerate the offered candidates providing `card_id`, in pick order: the
-// explicit machine.boot `prom=` pick first, then catalog `preferred` rows,
-// then remaining catalog order.  Returns the idx'th path (borrowed) or NULL.
+// Enumerate the offered candidates providing `card_id`, in pick order:
+// catalog `preferred` rows, then remaining catalog order.  Returns the idx'th
+// path (borrowed) or NULL.
 const char *prom_offer_find(const char *card_id, int idx, size_t *out_size);
 
-// Content facts for a registered offer, looked up by its path.
-bool prom_offer_info(const char *path, uint32_t *out_crc, bool *out_explicit);
+// True iff card `card_id` has an expansion ROM: `rom` (the slot's own file,
+// NULL for none) when given -- it must identify as this card's -- else an
+// offered candidate.  No side effect.
+bool prom_card_resolvable(const char *card_id, const char *rom);
 
-// True iff the catalog lists an expansion ROM for this card id — i.e. the
-// card needs one and boot's strict-resolution validation applies.
-bool prom_card_catalogued(const char *card_id);
-
-// True iff an offered candidate resolves for this card id.
-bool prom_card_resolvable(const char *card_id);
-
-// Register the boot document's explicit `prom=` pick.  0 on success, -1 on
-// an empty path.
-int prom_set_path(const char *path);
-
-// Drop the explicit pick (the file stays offered); see vrom_clear_explicit.
-void prom_clear_explicit(void);
-
-// Load the resolved image for `card_id` into a malloc'd buffer the caller
-// (a card factory) hands to pci_device_t.rom / .rom_size.  *out_path (if
-// non-NULL) receives a malloc'd copy of the resolved path for the
-// built-from record.  False when nothing resolves.
-bool prom_load_card(const char *card_id, uint8_t **out_buf, size_t *out_size, char **out_path);
+// Load the image for `card_id` into a malloc'd buffer the caller (a card
+// factory) hands to pci_device_t.rom / .rom_size: `rom` (the slot's own
+// file) when given, else the offered candidates in pick order.  *out_path
+// (if non-NULL) receives a malloc'd copy of the path it came from.  False
+// when nothing loads.
+bool prom_load_card(const char *card_id, const char *rom, uint8_t **out_buf, size_t *out_size, char **out_path);
 
 // === Lifecycle =============================================================
 

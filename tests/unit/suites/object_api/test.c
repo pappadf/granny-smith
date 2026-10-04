@@ -152,6 +152,25 @@ TEST(test_typed_setter_writes) {
     fixture_down(a, b);
 }
 
+// The result limit is the buffer less its NUL: a result of exactly that
+// many bytes is the result; one byte more is an error naming both sizes,
+// never a truncated document.
+TEST(test_result_limit_is_exact_and_explicit) {
+    struct object *a, *b;
+    fixture_up(&a, &b);
+    g_pc = 0x2222; // "8738": four bytes
+    char small[5];
+    ASSERT_EQ_INT(0, gs_eval("a.pc", NULL, small, sizeof(small)));
+    ASSERT_TRUE(strcmp(small, "8738") == 0);
+    ASSERT_EQ_INT(-1, gs_eval("a.pc", NULL, small, sizeof(small) - 1));
+    g_pc = 100000; // "100000": six bytes
+    ASSERT_EQ_INT(-1, gs_eval("a.pc", NULL, out, 6));
+    char big[256];
+    ASSERT_EQ_INT(0, gs_eval("a.pc", NULL, big, sizeof(big)));
+    ASSERT_TRUE(strcmp(big, "100000") == 0);
+    fixture_down(a, b);
+}
+
 // The synthetic `count` hangs off the collection's owner, not off the
 // indexed member: `bucket.count` resolves, `bucket.devices.count` does not.
 // web2's breakpoint list read the second form and so never listed anything.
@@ -223,6 +242,7 @@ TEST(test_wellformed_args_still_parse) {
 int main(void) {
     RUN(test_shell_assignment_is_not_a_path);
     RUN(test_typed_setter_writes);
+    RUN(test_result_limit_is_exact_and_explicit);
     RUN(test_count_is_on_the_owner);
     RUN(test_enumerate_with_meta_indices);
     RUN(test_truncated_args_are_refused);

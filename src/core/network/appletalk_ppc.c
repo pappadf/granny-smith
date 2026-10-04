@@ -105,11 +105,7 @@ struct ppc_session {
 // Module state
 // ============================================================================
 
-static ppc_session_t g_sessions[PPC_MAX_SESSIONS];
-static ppc_port_info_t g_ports[PPC_MAX_PORTS];
-static int g_port_count;
-static uint32_t g_next_session_id = 1;
-
+// The host port: the network's program-linking peer, published by NBP.
 static char g_host_port[33] = "gs-host";
 static bool g_host_enabled;
 static atalk_nbp_entry_t *g_host_nbp;
@@ -127,9 +123,23 @@ typedef struct {
 } ppc_machine_t;
 
 #define PPC_MAX_MACHINES 8
-static ppc_machine_t g_machines[PPC_MAX_MACHINES];
-static int g_machine_count;
-static bool g_browse_active;
+
+// PPC's part of a machine's connection (atalk_conn_t): the sessions with that
+// Mac, and what a browse of it has found.
+struct ppc_link {
+    ppc_session_t sessions[PPC_MAX_SESSIONS];
+    uint32_t next_session_id;
+    ppc_port_info_t ports[PPC_MAX_PORTS];
+    int port_count;
+    ppc_machine_t machines[PPC_MAX_MACHINES];
+    int machine_count;
+    bool browse_active;
+};
+
+// The link of the connection plugged into the network.  While none is, this
+// points at an empty link that no session or browse can start on.
+static ppc_link_t g_no_link;
+static ppc_link_t *g_ppc = &g_no_link;
 
 // ============================================================================
 // Forward declarations
@@ -199,14 +209,16 @@ static void put_location(uint8_t *dst, const char *object) {
 // ============================================================================
 
 static ppc_session_t *ppc_alloc_session(void) {
+    if (g_ppc == &g_no_link)
+        return NULL; // no machine to hold a session with
     for (int i = 0; i < PPC_MAX_SESSIONS; i++) {
-        ppc_session_t *s = &g_sessions[i];
+        ppc_session_t *s = &g_ppc->sessions[i];
         if (s->in_use)
             continue;
         memset(s, 0, sizeof(*s));
         s->in_use = true;
         s->slot = i;
-        s->id = g_next_session_id++;
+        s->id = g_ppc->next_session_id++;
         s->rx = (uint8_t *)malloc(PPC_MAX_MESSAGE);
         if (!s->rx) {
             s->in_use = false;
@@ -226,7 +238,7 @@ static uint8_t ppc_alloc_client_socket(void) {
     for (uint8_t sock = PPC_CLIENT_SOCKET; sock < PPC_CLIENT_SOCKET + PPC_MAX_SESSIONS * 2; sock++) {
         bool taken = false;
         for (int i = 0; i < PPC_MAX_SESSIONS; i++) {
-            const ppc_session_t *s = &g_sessions[i];
+            const ppc_session_t *s = &g_ppc->sessions[i];
             if (s->in_use && s->initiator && s->local_socket == sock) {
                 taken = true;
                 break;
@@ -240,8 +252,8 @@ static uint8_t ppc_alloc_client_socket(void) {
 
 static ppc_session_t *ppc_session_for_conn(adsp_conn_t *c) {
     for (int i = 0; i < PPC_MAX_SESSIONS; i++) {
-        if (g_sessions[i].in_use && g_sessions[i].conn == c)
-            return &g_sessions[i];
+        if (g_ppc->sessions[i].in_use && g_ppc->sessions[i].conn == c)
+            return &g_ppc->sessions[i];
     }
     return NULL;
 }
@@ -359,28 +371,28 @@ int atalk_ppc_send_block(ppc_session_t *s, uint32_t creator, uint32_t type, uint
 // ============================================================================
 
 static void ppc_ports_clear(void) {
-    g_port_count = 0;
-    memset(g_ports, 0, sizeof(g_ports));
+    g_ppc->port_count = 0;
+    memset(g_ppc->ports, 0, sizeof(g_ppc->ports));
 }
 
 static void ppc_port_add(const char *machine, uint8_t node, uint8_t socket, const char *name, const char *type,
                          bool auth_required) {
     // Ports are keyed by (machine, name): a re-browse refreshes in place
     // rather than growing the table.
-    for (int i = 0; i < g_port_count; i++) {
-        if (!strcmp(g_ports[i].machine, machine) && !strcmp(g_ports[i].name, name)) {
-            g_ports[i].node = node;
-            g_ports[i].socket = socket;
-            g_ports[i].auth_required = auth_required;
-            snprintf(g_ports[i].type, sizeof(g_ports[i].type), "%s", type);
+    for (int i = 0; i < g_ppc->port_count; i++) {
+        if (!strcmp(g_ppc->ports[i].machine, machine) && !strcmp(g_ppc->ports[i].name, name)) {
+            g_ppc->ports[i].node = node;
+            g_ppc->ports[i].socket = socket;
+            g_ppc->ports[i].auth_required = auth_required;
+            snprintf(g_ppc->ports[i].type, sizeof(g_ppc->ports[i].type), "%s", type);
             return;
         }
     }
-    if (g_port_count >= PPC_MAX_PORTS) {
+    if (g_ppc->port_count >= PPC_MAX_PORTS) {
         LOG(2, "PPC: port table full, dropping '%s'", name);
         return;
     }
-    ppc_port_info_t *p = &g_ports[g_port_count++];
+    ppc_port_info_t *p = &g_ppc->ports[g_ppc->port_count++];
     snprintf(p->machine, sizeof(p->machine), "%s", machine);
     snprintf(p->name, sizeof(p->name), "%s", name);
     snprintf(p->type, sizeof(p->type), "%s", type);
@@ -404,24 +416,24 @@ static int ppc_port_cmp(const void *a, const void *b) {
 }
 
 static void ppc_ports_sort(void) {
-    if (g_port_count > 1)
-        qsort(g_ports, (size_t)g_port_count, sizeof(g_ports[0]), ppc_port_cmp);
+    if (g_ppc->port_count > 1)
+        qsort(g_ppc->ports, (size_t)g_ppc->port_count, sizeof(g_ppc->ports[0]), ppc_port_cmp);
 }
 
 // One NBP reply tuple: a machine that speaks program linking (§3).
 static void ppc_on_nbp_reply(void *ctx, const atalk_nbp_info_t *info) {
     (void)ctx;
-    if (!info || !g_browse_active)
+    if (!info || !g_ppc->browse_active)
         return;
     if (info->node == LLAP_HOST_NODE)
         return; // that is our own advertisement
-    for (int i = 0; i < g_machine_count; i++) {
-        if (g_machines[i].node == info->node && g_machines[i].socket == info->socket)
+    for (int i = 0; i < g_ppc->machine_count; i++) {
+        if (g_ppc->machines[i].node == info->node && g_ppc->machines[i].socket == info->socket)
             return; // already queried this round
     }
-    if (g_machine_count >= PPC_MAX_MACHINES)
+    if (g_ppc->machine_count >= PPC_MAX_MACHINES)
         return;
-    ppc_machine_t *m = &g_machines[g_machine_count++];
+    ppc_machine_t *m = &g_ppc->machines[g_ppc->machine_count++];
     snprintf(m->name, sizeof(m->name), "%s", info->object);
     m->node = info->node;
     m->socket = info->socket;
@@ -434,13 +446,13 @@ int atalk_ppc_browse(char *err, size_t err_len) {
         snprintf(err, err_len, "the AppleTalk stack is detached from the link");
         return -1;
     }
-    g_browse_active = true;
-    g_machine_count = 0;
+    g_ppc->browse_active = true;
+    g_ppc->machine_count = 0;
     ppc_ports_clear();
     g_stats.browses++;
     // Every program-linking machine registers one entity of this type (§3).
     if (atalk_nbp_lookup("=", PPC_NBP_TYPE, "*", PPC_CLIENT_SOCKET, ppc_on_nbp_reply, NULL) != 0) {
-        g_browse_active = false;
+        g_ppc->browse_active = false;
         snprintf(err, err_len, "the NBP lookup could not be sent");
         return -1;
     }
@@ -448,30 +460,30 @@ int atalk_ppc_browse(char *err, size_t err_len) {
 }
 
 bool atalk_ppc_browse_in_flight(void) {
-    if (!g_browse_active)
+    if (!g_ppc->browse_active)
         return false;
     for (int i = 0; i < PPC_MAX_SESSIONS; i++)
-        if (g_sessions[i].in_use && g_sessions[i].use == PPC_USE_BROWSE)
+        if (g_ppc->sessions[i].in_use && g_ppc->sessions[i].use == PPC_USE_BROWSE)
             return true;
     return false;
 }
 
 int atalk_ppc_port_count(void) {
-    return g_port_count;
+    return g_ppc->port_count;
 }
 
 bool atalk_ppc_port_info(int index, ppc_port_info_t *out) {
-    if (index < 0 || index >= g_port_count || !out)
+    if (index < 0 || index >= g_ppc->port_count || !out)
         return false;
-    *out = g_ports[index];
+    *out = g_ppc->ports[index];
     return true;
 }
 
 int atalk_ppc_port_find(const char *name) {
     if (!name)
         return -1;
-    for (int i = 0; i < g_port_count; i++)
-        if (!strcmp(g_ports[i].name, name))
+    for (int i = 0; i < g_ppc->port_count; i++)
+        if (!strcmp(g_ppc->ports[i].name, name))
             return i;
     return -1;
 }
@@ -681,7 +693,7 @@ static void ppc_adsp_open(void *ctx, adsp_conn_t *c) {
     char type[33] = "";
     int idx = atalk_ppc_port_find(s->port_name);
     if (idx >= 0)
-        snprintf(type, sizeof(type), "%s", g_ports[idx].type);
+        snprintf(type, sizeof(type), "%s", g_ppc->ports[idx].type);
     if (ppc_write_session_request(s, s->port_name, type) != 0)
         ppc_session_release(s, "the session request could not be sent", true);
 }
@@ -808,7 +820,7 @@ ppc_session_t *atalk_ppc_open(const char *port_name, const ppc_client_t *client,
         snprintf(err, err_len, "no program-linking port named '%s' has been discovered", port_name);
         return NULL;
     }
-    if (g_ports[idx].auth_required) {
+    if (g_ppc->ports[idx].auth_required) {
         snprintf(err, err_len, "'%s' requires an authenticated link, which is not implemented", port_name);
         return NULL;
     }
@@ -820,12 +832,12 @@ ppc_session_t *atalk_ppc_open(const char *port_name, const ppc_client_t *client,
     s->initiator = true;
     s->use = PPC_USE_SESSION;
     s->state = PPC_SESSION_CONNECTING;
-    s->peer_node = g_ports[idx].node;
-    s->peer_socket = g_ports[idx].socket;
+    s->peer_node = g_ppc->ports[idx].node;
+    s->peer_socket = g_ppc->ports[idx].socket;
     s->client = client;
     s->client_ctx = ctx;
     snprintf(s->port_name, sizeof(s->port_name), "%s", port_name);
-    snprintf(s->machine, sizeof(s->machine), "%s", g_ports[idx].machine);
+    snprintf(s->machine, sizeof(s->machine), "%s", g_ppc->ports[idx].machine);
 
     atalk_socket_addr_t dest = {.net = 0, .node = s->peer_node, .socket = s->peer_socket};
     s->local_socket = ppc_alloc_client_socket();
@@ -843,7 +855,7 @@ ppc_session_t *atalk_ppc_find_open(const char *port_name) {
     if (!port_name)
         return NULL;
     for (int i = 0; i < PPC_MAX_SESSIONS; i++) {
-        ppc_session_t *s = &g_sessions[i];
+        ppc_session_t *s = &g_ppc->sessions[i];
         if (s->in_use && s->use == PPC_USE_SESSION && s->state == PPC_SESSION_OPEN && !strcmp(s->port_name, port_name))
             return s;
     }
@@ -856,13 +868,19 @@ void atalk_ppc_close(ppc_session_t *s, const char *reason) {
 
 void atalk_ppc_close_all(const char *reason) {
     for (int i = 0; i < PPC_MAX_SESSIONS; i++)
-        if (g_sessions[i].in_use)
-            atalk_ppc_close(&g_sessions[i], reason);
+        if (g_ppc->sessions[i].in_use)
+            atalk_ppc_close(&g_ppc->sessions[i], reason);
 }
 
 // ============================================================================
 // Operations — the host port
 // ============================================================================
+
+// Accept guest sessions on the plugged-in connection's ADSP stack.
+static int ppc_listen(void) {
+    adsp_unlisten(atalk_adsp_stack(), PPC_HOST_SOCKET);
+    return adsp_listen(atalk_adsp_stack(), PPC_HOST_SOCKET, &g_listen_client, NULL);
+}
 
 const char *atalk_ppc_host_port_name(void) {
     return g_host_port;
@@ -881,7 +899,8 @@ int atalk_ppc_set_host_port(const char *name, bool enabled, char *err, size_t er
         g_host_enabled = false;
         // Sessions belong to the port; withdrawing it strands them.
         atalk_ppc_close_all("the host program-linking port was withdrawn");
-        adsp_unlisten(atalk_adsp_stack(), PPC_HOST_SOCKET);
+        if (atalk_adsp_stack())
+            adsp_unlisten(atalk_adsp_stack(), PPC_HOST_SOCKET);
         return 0;
     }
 
@@ -904,8 +923,9 @@ int atalk_ppc_set_host_port(const char *name, bool enabled, char *err, size_t er
     if (port != g_host_port)
         snprintf(g_host_port, sizeof(g_host_port), "%s", port);
     if (!g_host_enabled) {
-        adsp_unlisten(atalk_adsp_stack(), PPC_HOST_SOCKET);
-        if (adsp_listen(atalk_adsp_stack(), PPC_HOST_SOCKET, &g_listen_client, NULL) != 0) {
+        // Accepting sessions needs a machine on the cable; one plugged in
+        // later listens when it is (atalk_ppc_plug).
+        if (atalk_adsp_stack() && ppc_listen() != 0) {
             atalk_nbp_withdraw(&g_host_nbp);
             snprintf(err, err_len, "the PPC listening socket could not be opened");
             return -1;
@@ -929,9 +949,9 @@ int atalk_ppc_session_slot_max(void) {
     return PPC_MAX_SESSIONS;
 }
 ppc_session_t *atalk_ppc_session_at(int slot) {
-    if (slot < 0 || slot >= PPC_MAX_SESSIONS || !g_sessions[slot].in_use)
+    if (slot < 0 || slot >= PPC_MAX_SESSIONS || !g_ppc->sessions[slot].in_use)
         return NULL;
-    return &g_sessions[slot];
+    return &g_ppc->sessions[slot];
 }
 ppc_session_state_t atalk_ppc_session_state(const ppc_session_t *s) {
     return s ? s->state : PPC_SESSION_FREE;
@@ -962,26 +982,33 @@ const ppc_stats_t *atalk_ppc_get_stats(void) {
 // Lifecycle
 // ============================================================================
 
-void atalk_ppc_init(void) {
-    atalk_ppc_shutdown();
-    memset(&g_stats, 0, sizeof(g_stats));
-    g_next_session_id = 1;
-    snprintf(g_host_port, sizeof(g_host_port), "gs-host");
+ppc_link_t *atalk_ppc_link_new(void) {
+    ppc_link_t *link = calloc(1, sizeof(*link));
+    if (link)
+        link->next_session_id = 1;
+    return link;
 }
 
-void atalk_ppc_shutdown(void) {
-    for (int i = 0; i < PPC_MAX_SESSIONS; i++) {
-        if (g_sessions[i].in_use) {
-            free(g_sessions[i].rx);
-            memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
-        }
+void atalk_ppc_link_free(ppc_link_t *link) {
+    if (!link)
+        return;
+    GS_ASSERT(link != g_ppc);
+    free(link);
+}
+
+void atalk_ppc_plug(ppc_link_t *link) {
+    if (!link && g_ppc != &g_no_link) {
+        // The Mac is gone: its sessions close (their ADSP connections are
+        // still up and say goodbye), and a browse of it ends.
+        atalk_ppc_close_all("the emulated machine is going away");
+        g_ppc->browse_active = false;
+        g_ppc->machine_count = 0;
+        ppc_ports_clear();
     }
-    atalk_nbp_withdraw(&g_host_nbp);
-    g_host_enabled = false;
-    g_browse_active = false;
-    g_machine_count = 0;
-    ppc_ports_clear();
-    atalk_nbp_lookup_cancel();
+    g_ppc = link ? link : &g_no_link;
+    // The published host port takes sessions on the new machine's stack.
+    if (link && g_host_enabled && atalk_adsp_stack() && ppc_listen() != 0)
+        LOG(1, "PPC: the host port cannot accept sessions on this machine");
 }
 
 // ============================================================================
@@ -1274,17 +1301,4 @@ void atalk_ppc_install_objects(struct object *parent) {
 
     object_cache_set_parent(&g_ppc_port_entries, g_ppc_ports_object);
     object_cache_set_parent(&g_ppc_session_entries, g_ppc_sessions_object);
-}
-
-void atalk_ppc_remove_objects(void) {
-    object_cache_clear(&g_ppc_port_entries);
-    object_cache_clear(&g_ppc_session_entries);
-    struct object **nodes[] = {&g_ppc_ports_object, &g_ppc_sessions_object, &g_ppc_stats_object, &g_ppc_object};
-    for (int i = 0; i < ARRAY_LEN(nodes); i++) {
-        if (!*nodes[i])
-            continue;
-        object_detach(*nodes[i]);
-        object_delete(*nodes[i]);
-        *nodes[i] = NULL;
-    }
 }

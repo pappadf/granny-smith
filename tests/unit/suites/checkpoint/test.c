@@ -71,9 +71,9 @@ int system_checkpoint_load(const char *filename) {
     (void)filename;
     return 1;
 }
-int system_checkpoint_save(const char *filename, bool files_as_refs) {
+int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
     (void)filename;
-    (void)files_as_refs;
+    (void)kind;
     return 1;
 }
 bool system_checkpoint_probe(void) {
@@ -148,7 +148,7 @@ static const uint16_t BLOCK_C = 0xC1C2u;
 
 static void write_valid(checkpoint_kind_t kind) {
     cp_unlink();
-    checkpoint_t *cp = checkpoint_open_write(CP_PATH, kind, "plus", 4096);
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, kind);
     ASSERT_TRUE(cp != NULL);
     uint32_t a = BLOCK_A;
     uint64_t b = BLOCK_B;
@@ -179,8 +179,6 @@ TEST(consolidated_round_trip) {
     ASSERT_TRUE(b == BLOCK_B);
     ASSERT_TRUE(c == BLOCK_C);
     ASSERT_EQ_INT((int)checkpoint_get_kind(cp), (int)CHECKPOINT_KIND_CONSOLIDATED);
-    ASSERT_TRUE(strcmp(checkpoint_get_model_id(cp), "plus") == 0);
-    ASSERT_EQ_INT((int)checkpoint_get_ram_size_kb(cp), 4096);
     checkpoint_close(cp);
     cp_unlink();
 }
@@ -406,7 +404,7 @@ TEST(corrupt_quick_payload_is_refused) {
 
 TEST(bounded_count_accepts_within_cap) {
     cp_unlink();
-    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED, "plus", 4096);
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED);
     ASSERT_TRUE(cp != NULL);
     uint32_t n = 7;
     system_write_checkpoint_data(cp, &n, sizeof(n));
@@ -424,7 +422,7 @@ TEST(bounded_count_accepts_within_cap) {
 
 TEST(bounded_count_refuses_over_cap) {
     cp_unlink();
-    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED, "plus", 4096);
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED);
     ASSERT_TRUE(cp != NULL);
     uint32_t n = 0xFFFFFFFFu; // once a four-billion-iteration loop
     system_write_checkpoint_data(cp, &n, sizeof(n));
@@ -447,7 +445,7 @@ TEST(bounded_count_refuses_over_cap) {
 // with NO terminator and requires the reader to supply one.
 TEST(bounded_string_terminates_what_the_writer_did_not) {
     cp_unlink();
-    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED, "plus", 4096);
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED);
     ASSERT_TRUE(cp != NULL);
     uint32_t len = 5;
     system_write_checkpoint_data(cp, &len, sizeof(len));
@@ -468,7 +466,7 @@ TEST(bounded_string_terminates_what_the_writer_did_not) {
 
 TEST(bounded_string_refuses_over_cap) {
     cp_unlink();
-    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED, "plus", 4096);
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED);
     ASSERT_TRUE(cp != NULL);
     uint32_t len = 0xFFFFFFFFu; // a 4 GB malloc on the 32-bit wasm heap
     system_write_checkpoint_data(cp, &len, sizeof(len));
@@ -560,7 +558,7 @@ TEST(block_header_filename_length_is_bounded) {
 
 TEST(matching_tags_round_trip) {
     cp_unlink();
-    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED, "plus", 4096);
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED);
     ASSERT_TRUE(cp != NULL);
     uint32_t a = BLOCK_A, b32 = 0xBBBBBBBBu;
     system_write_checkpoint_data(cp, &a, sizeof(a), "asc");
@@ -584,7 +582,7 @@ TEST(matching_tags_round_trip) {
 // the size check passes and each subsystem loads the other's state.
 TEST(swapped_same_sized_blocks_fail_by_name) {
     cp_unlink();
-    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED, "plus", 4096);
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED);
     ASSERT_TRUE(cp != NULL);
     uint32_t adb_state = 0x0ADB0ADBu, floppy_state = 0x0F10F10Fu;
     system_write_checkpoint_data(cp, &adb_state, sizeof(adb_state), "adb");
@@ -604,7 +602,7 @@ TEST(swapped_same_sized_blocks_fail_by_name) {
 // Same, in the quick format the browser writes every 15 seconds.
 TEST(swapped_blocks_fail_by_name_in_quick_format_too) {
     cp_unlink();
-    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_QUICK, "plus", 4096);
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_QUICK);
     ASSERT_TRUE(cp != NULL);
     uint32_t x = 0x11111111u, y = 0x22222222u;
     system_write_checkpoint_data(cp, &x, sizeof(x), "adb");
@@ -626,7 +624,7 @@ TEST(swapped_blocks_fail_by_name_in_quick_format_too) {
 // is the case that would silently shift every subsequent block.
 TEST(tagged_and_untagged_sides_interoperate) {
     cp_unlink();
-    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED, "plus", 4096);
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED);
     ASSERT_TRUE(cp != NULL);
     uint32_t a = 0xAAAAAAAAu, b32 = 0xBBBBBBBBu;
     system_write_checkpoint_data(cp, &a, sizeof(a)); // writer does not name it

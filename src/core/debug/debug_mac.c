@@ -318,26 +318,6 @@ uint64_t cmd_process_info(int argc, char *argv[]) {
     return 0;
 }
 
-static void mouse_guard_tick(void *source, uint64_t data);
-
-// Register this module's scheduler event types on a NEW scheduler (each
-// machine creation / checkpoint restore builds one).  The mouse guard arms
-// its event lazily on first use; a checkpoint saved with the guard armed
-// then failed to restore into a fresh scheduler ("cannot restore event
-// 'test.mouse_guard' — type not registered").
-void debug_mac_register_scheduler_events(scheduler_t *sched) {
-    if (!sched)
-        return;
-    scheduler_new_event_type(sched, "test", NULL, "mouse_guard", &mouse_guard_tick);
-}
-
-void debug_mac_init(void) {
-    // Empty by design: all command registration moved to the typed
-    // object-model bridge.  Kept as a stub for callers that expect a
-    // module init hook so the call site stays stable if state is ever
-    // re-introduced.
-}
-
 // Helper to print process info programmatically (used by assertion handler)
 void debug_mac_print_process_info(void) {
     (void)cmd_process_info(0, NULL);
@@ -435,92 +415,55 @@ void debug_mac_print_process_info_header(void) {
 // The SE/30 ROM's ADB mouse handler reads deltas from a shared buffer at
 // ADBBase+$164/$165.  Stale data from keyboard auto-poll can contaminate this
 // buffer, causing the handler to apply phantom deltas to MTemp even when no
-// real mouse movement occurred.  This corrupts the position set by --global
+// real mouse movement occurred.  This corrupts the position set by "global"
 // mode and causes clicks to miss their target (TrackControl reads the drifted
-// Mouse position during the button-hold tracking loop).
+// Mouse position during the button-hold tracking loop).  The guard also holds
+// the position against guest code that rewrites the globals itself -- the
+// ROM's cursor initialisation during a boot does.
 //
 // The guard is a periodic scheduler event that restores MTemp (and RawMouse,
 // Mouse) to the target position whenever drift is detected.  It runs at ~1 kHz
 // (every 1 ms of emulated time), which is fast enough to correct MTemp before
-// the next VBL (~16 ms) copies it to Mouse.  Activated by set-mouse --global,
-// deactivated by the next set-mouse call or mouse-button up.
+// the next VBL (~16 ms) copies it to Mouse.  Armed by mouse.move "global",
+// disarmed by the next mouse.move in any other mode.
+//
+// The event is the guard's only state: its payload carries the target, and
+// the guard is on exactly while the event is pending.  Its source is the machine's host_input object, which
+// registers the type at construction, so a checkpoint taken with the guard
+// armed restores it, and a new machine starts without one.
 
 #define MOUSE_GUARD_INTERVAL_NS (1 * 1000 * 1000) // 1 ms
 
-static bool mouse_guard_active = false;
-static int16_t mouse_guard_h = 0; // target horizontal (x)
-static int16_t mouse_guard_v = 0; // target vertical (y)
-// When true, the guard tick only re-pins MTemp when the CPU is in user
-// mode at the moment of the tick.  Used by --aux under A/UX, where
-// VA $0828 in supervisor mode points at A/UX kernel data and re-pinning
-// in supervisor would corrupt the kernel.
-static bool mouse_guard_user_only = false;
+// Payload (also the trace's sample): bits 0-15 h, bits 16-31 v.
+static uint64_t mouse_point_pack(int16_t h, int16_t v) {
+    return (uint64_t)(uint16_t)h | ((uint64_t)(uint16_t)v << 16);
+}
 
-static void mouse_guard_tick(void *source, uint64_t data) {
-    (void)source;
-    (void)data;
-    if (!mouse_guard_active)
-        return;
+void debug_mac_mouse_guard_tick(void *source, uint64_t data) {
+    int16_t h = (int16_t)(data & 0xFFFF);
+    int16_t v = (int16_t)((data >> 16) & 0xFFFF);
 
-    // Under --aux, skip the tick when the CPU is in supervisor mode —
-    // VA $0828 maps to kernel data there, and re-pinning would corrupt
-    // it.  We detect mode via the active SoA: if g_active_write equals
-    // g_supervisor_write, the CPU was in supervisor mode at the moment
-    // the scheduler fired this event.
-    if (mouse_guard_user_only && g_active_write == g_supervisor_write) {
-        scheduler_t *sched = system_scheduler();
-        if (sched)
-            scheduler_new_cpu_event(sched, &mouse_guard_tick, NULL, 0, 0, MOUSE_GUARD_INTERVAL_NS);
-        return;
-    }
-
-    // Check if MTemp has drifted from the target position
-    int16_t cur_v = (int16_t)read16(0x0828);
-    int16_t cur_h = (int16_t)read16(0x082A);
-
-    if (cur_v != mouse_guard_v || cur_h != mouse_guard_h) {
+    if ((int16_t)read16(0x0828) != v || (int16_t)read16(0x082A) != h) {
         // Restore all position globals to the target
-        write16(0x0828, (uint16_t)mouse_guard_v); // MTemp.v
-        write16(0x082A, (uint16_t)mouse_guard_h); // MTemp.h
-        write16(0x082C, (uint16_t)mouse_guard_v); // RawMouse.v
-        write16(0x082E, (uint16_t)mouse_guard_h); // RawMouse.h
-        write16(0x0830, (uint16_t)mouse_guard_v); // Mouse.v
-        write16(0x0832, (uint16_t)mouse_guard_h); // Mouse.h
+        write16(0x0828, (uint16_t)v); // MTemp.v
+        write16(0x082A, (uint16_t)h); // MTemp.h
+        write16(0x082C, (uint16_t)v); // RawMouse.v
+        write16(0x082E, (uint16_t)h); // RawMouse.h
+        write16(0x0830, (uint16_t)v); // Mouse.v
+        write16(0x0832, (uint16_t)h); // Mouse.h
     }
 
-    // Reschedule
-    scheduler_t *sched = system_scheduler();
-    if (sched)
-        scheduler_new_cpu_event(sched, &mouse_guard_tick, NULL, 0, 0, MOUSE_GUARD_INTERVAL_NS);
+    scheduler_new_cpu_event(system_scheduler(), &debug_mac_mouse_guard_tick, source, data, 0, MOUSE_GUARD_INTERVAL_NS);
 }
 
-static void mouse_guard_start(int16_t h, int16_t v, bool user_only) {
+static void mouse_guard_start(struct host_input *hi, int16_t h, int16_t v) {
     scheduler_t *sched = system_scheduler();
-    if (!sched)
-        return;
-
-    // Idempotent — scheduler_new_event_type updates an existing entry
-    // in place if (callback, source) is already present. Calling on
-    // every guard start is safe and also handles the multi-machine
-    // case (boot-matrix), where scheduler_init resets num_event_types
-    // to zero but this translation unit's state survives.
-    scheduler_new_event_type(sched, "test", NULL, "mouse_guard", &mouse_guard_tick);
-
-    mouse_guard_h = h;
-    mouse_guard_v = v;
-    mouse_guard_active = true;
-    mouse_guard_user_only = user_only;
-
-    // Remove any existing guard event and schedule a fresh one
-    remove_event(sched, &mouse_guard_tick, NULL);
-    scheduler_new_cpu_event(sched, &mouse_guard_tick, NULL, 0, 0, MOUSE_GUARD_INTERVAL_NS);
+    remove_event(sched, &debug_mac_mouse_guard_tick, hi);
+    scheduler_new_cpu_event(sched, &debug_mac_mouse_guard_tick, hi, mouse_point_pack(h, v), 0, MOUSE_GUARD_INTERVAL_NS);
 }
 
-static void mouse_guard_stop(void) {
-    mouse_guard_active = false;
-    scheduler_t *sched = system_scheduler();
-    if (sched)
-        remove_event(sched, &mouse_guard_tick, NULL);
+static void mouse_guard_stop(struct host_input *hi) {
+    remove_event(system_scheduler(), &debug_mac_mouse_guard_tick, hi);
 }
 
 // Writes absolute cursor position to Mac low-memory globals (MTemp, RawMouse, Mouse, CrsrNew).
@@ -577,7 +520,7 @@ static void set_mouse_hw(long dx, long dy) {
 // snapshot is empty or the page isn't mapped in MAE's address space.
 static bool aux_write_uint16(uint32_t va, uint16_t value) {
     uint32_t pa = 0;
-    if (!mmu_translate_with_crp(g_mmu, va, g_last_user_crp, &pa))
+    if (!mmu_translate_with_crp(g_mmu, va, g_mmu->last_user_crp, &pa))
         return false;
     return mmu_write_physical_uint16(g_mmu, pa, value);
 }
@@ -585,7 +528,7 @@ static bool aux_write_uint16(uint32_t va, uint16_t value) {
 // Same as aux_write_uint16 but for a single byte (used for CrsrNew).
 static bool aux_write_uint8(uint32_t va, uint8_t value) {
     uint32_t pa = 0;
-    if (!mmu_translate_with_crp(g_mmu, va, g_last_user_crp, &pa))
+    if (!mmu_translate_with_crp(g_mmu, va, g_mmu->last_user_crp, &pa))
         return false;
     return mmu_write_physical_uint8(g_mmu, pa, value);
 }
@@ -594,7 +537,7 @@ static bool aux_write_uint8(uint32_t va, uint8_t value) {
 // Returns false (and leaves *out untouched) if the page isn't mapped.
 static bool aux_read_uint8(uint32_t va, uint8_t *out) {
     uint32_t pa = 0;
-    if (!mmu_translate_with_crp(g_mmu, va, g_last_user_crp, &pa))
+    if (!mmu_translate_with_crp(g_mmu, va, g_mmu->last_user_crp, &pa))
         return false;
     *out = mmu_read_physical_uint8(g_mmu, pa);
     return true;
@@ -616,7 +559,7 @@ static bool aux_read_uint8(uint32_t va, uint8_t *out) {
 // kernel's $0828 region.  Forbidden under A/UX.
 //
 // `--aux` translates each VA against the *cached MAE CRP*
-// (`g_last_user_crp`, snapshotted by cpu_internal.h on every
+// (`mmu_state_t.last_user_crp`, snapshotted by cpu_internal.h on every
 // supervisor→user transition) and writes directly to the resolved
 // physical address via `mmu_write_physical_uint16`.  Three consequences:
 //
@@ -629,7 +572,7 @@ static bool aux_read_uint8(uint32_t va, uint8_t *out) {
 //      exactly once per `set-mouse --aux` call, so there is no recurring
 //      race against MAE's own cursor updates.
 //
-// If no user-mode entry has been observed yet (`g_last_user_crp == 0`),
+// If no user-mode entry has been observed yet (`last_user_crp == 0`),
 // or the snapshot CRP doesn't map a page for one of the target VAs, the
 // write is reported as failed and silently skipped — better than landing
 // on the wrong page.
@@ -649,7 +592,7 @@ static void set_mouse_aux(long x, long y) {
         set_mouse_global(x, y);
         return;
     }
-    if (g_last_user_crp == 0) {
+    if (g_mmu->last_user_crp == 0) {
         gs_outf("set-mouse --aux: no user-mode CRP observed yet; run the guest into user mode first.\n");
         return;
     }
@@ -692,7 +635,7 @@ static void set_mouse_aux(long x, long y) {
         ok++;
 
     gs_outf("set-mouse --aux: wrote MTemp/RawMouse/Mouse = (h=%d, v=%d) via MAE CRP $%08X (%d/%d writes ok)\n", (int)x,
-            (int)y, (uint32_t)(g_last_user_crp & 0xFFFFFFFF), ok, total);
+            (int)y, (uint32_t)(g_mmu->last_user_crp & 0xFFFFFFFF), ok, total);
 }
 
 // Default set-mouse: absolute coordinates, platform-dependent strategy.
@@ -742,7 +685,7 @@ static void set_mouse_default(long x, long y) {
 // Returns 0 on success, non-zero if memory is unavailable. Coordinates are
 // clamped to int16 for absolute modes ('g'/'a'/default) since the Mac OS
 // Point type is 16-bit signed; 'h' passes deltas through unchanged.
-int debug_mac_set_mouse_mode(long x, long y, char mode) {
+int debug_mac_set_mouse_mode(struct host_input *hi, long x, long y, char mode) {
     if (!system_memory())
         return -1;
     if (mode != 'h') {
@@ -758,21 +701,19 @@ int debug_mac_set_mouse_mode(long x, long y, char mode) {
     switch (mode) {
     case 'g':
         set_mouse_global(x, y);
-        // Activate the MTemp guard to protect against phantom ADB deltas.
-        // user_only=false: classic Mac OS — kernel addresses don't matter
-        // because there is no separate Unix kernel.
-        mouse_guard_start((int16_t)x, (int16_t)y, /*user_only=*/false);
+        // Arm the MTemp guard to protect against phantom ADB deltas.
+        mouse_guard_start(hi, (int16_t)x, (int16_t)y);
         break;
     case 'h':
-        mouse_guard_stop();
+        mouse_guard_stop(hi);
         set_mouse_hw(x, y);
         break;
     case 'a':
-        mouse_guard_stop();
+        mouse_guard_stop(hi);
         set_mouse_aux(x, y);
         break;
     default:
-        mouse_guard_stop();
+        mouse_guard_stop(hi);
         set_mouse_default(x, y);
         break;
     }
@@ -780,35 +721,23 @@ int debug_mac_set_mouse_mode(long x, long y, char mode) {
 }
 
 // ---- trace-mouse implementation ----
-// Schedules an event every second that reads the classic Mac low-memory MTemp (Point {v,h})
-// and prints it. Uses the scheduler's ns-based API for 1 Hz cadence.
-static int trace_mouse_active = 0;
-static int trace_mouse_have_last = 0; // whether we have a previous sample
-static int16_t trace_mouse_last_h = 0;
-static int16_t trace_mouse_last_v = 0;
-static void trace_mouse_tick(void *source, uint64_t data) {
-    (void)source;
-    (void)data;
-    if (!trace_mouse_active)
-        return; // Do not reschedule if stopped during callback
+// A 1 Hz event that reads the classic Mac low-memory Mouse (Point {v,h}) and
+// prints it when it changes.  Like the guard, the event is the trace's only
+// state: the payload is the last sample printed (bit 32 = there is one), and
+// the trace is on exactly while the event is pending.
 
-    scheduler_t *sched = system_scheduler();
-    if (!system_memory() || !sched)
-        return;
+#define TRACE_MOUSE_INTERVAL_NS 1000000000ULL // 1 s
+#define TRACE_MOUSE_HAVE_LAST   (1ull << 32)
+
+void debug_mac_mouse_trace_tick(void *source, uint64_t data) {
     uint32_t addr_Mouse = debug_mac_lookup_global_address("Mouse");
-    uint16_t v_be = memory_debug_read_uint16(addr_Mouse);
-    uint16_t h_be = memory_debug_read_uint16(addr_Mouse + 2);
-    int16_t v = (int16_t)v_be;
-    int16_t h = (int16_t)h_be;
-    if (!trace_mouse_have_last || h != trace_mouse_last_h || v != trace_mouse_last_v) {
+    int16_t v = (int16_t)memory_debug_read_uint16(addr_Mouse);
+    int16_t h = (int16_t)memory_debug_read_uint16(addr_Mouse + 2);
+    uint64_t sample = mouse_point_pack(h, v) | TRACE_MOUSE_HAVE_LAST;
+    if (sample != data)
         gs_outf("[trace-mouse] h=%d v=%d\n", h, v);
-        trace_mouse_last_h = h;
-        trace_mouse_last_v = v;
-        trace_mouse_have_last = 1;
-    }
-
-    // Reschedule next tick in 1 second
-    scheduler_new_cpu_event(sched, &trace_mouse_tick, NULL, 0, 0, 1000000000ULL);
+    scheduler_new_cpu_event(system_scheduler(), &debug_mac_mouse_trace_tick, source, sample, 0,
+                            TRACE_MOUSE_INTERVAL_NS);
 }
 
 // === Public mouse / trace control =====================================
@@ -816,28 +745,14 @@ static void trace_mouse_tick(void *source, uint64_t data) {
 // Thin wrappers around the file-private helpers used by the typed
 // `mouse.move` / `mouse.click` / `mouse.trace` root methods.
 
-void debug_mac_set_trace_mouse(bool enabled) {
+void debug_mac_set_trace_mouse(struct host_input *hi, bool enabled) {
     scheduler_t *sched = system_scheduler();
-    if (!sched)
+    if (enabled == has_event(sched, &debug_mac_mouse_trace_tick))
         return;
-    // Idempotent — scheduler_new_event_type updates an existing entry
-    // in place. Calling on every enable is safe and also handles
-    // multi-machine sequences (boot-matrix), where scheduler_init
-    // resets num_event_types to zero across machines.
-    scheduler_new_event_type(sched, "test", NULL, "trace_mouse", &trace_mouse_tick);
-    if (enabled) {
-        if (trace_mouse_active)
-            return;
-        trace_mouse_active = 1;
-        trace_mouse_have_last = 0;
-        remove_event(sched, &trace_mouse_tick, NULL);
-        scheduler_new_cpu_event(sched, &trace_mouse_tick, NULL, 0, 0, 1000000000ULL);
-    } else {
-        if (!trace_mouse_active)
-            return;
-        trace_mouse_active = 0;
-        remove_event(sched, &trace_mouse_tick, NULL);
-    }
+    if (enabled)
+        scheduler_new_cpu_event(sched, &debug_mac_mouse_trace_tick, hi, 0, 0, TRACE_MOUSE_INTERVAL_NS);
+    else
+        remove_event(sched, &debug_mac_mouse_trace_tick, hi);
 }
 
 // ---- mouse-button implementation ----

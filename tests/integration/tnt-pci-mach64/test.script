@@ -379,7 +379,7 @@ assert !machine.screen.matches("${$WORK_DIR}/raster-565.png") "...and must rejec
 # retires, and the 9500 is the single-display machine the hardware is.
 assert try(machine.pci.slot[7].card.name, "(empty)") == "(empty)" "Control must stand down for a real display card"
 
-# ...and with no card staged it stands in again, so a cardless boot still
+# ...and with no card named it stands in again, so a cardless boot still
 # has somewhere to draw.
 machine.boot model="pm9500" ram=32768 rom="${$ROM}"
 assert machine.pci.slot[7].card.name == "Control" "Control stands in when no display card is seated"
@@ -387,9 +387,9 @@ machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
 
 # --- Card options reach the card through the boot document. -----------------
 # pci_option= carries "key=value" pairs to the same socket pci_card= names.
-# Which keys mean anything is the CARD's business: the generic layer stages
-# them and the kind's stage_option hook accepts or rejects each one, so no
-# card identity leaks into the boot path.  MEM_CNTL's MEM_SIZE field is the
+# Which keys mean anything is the CARD's business: the kind's accepts_option
+# hook accepts or rejects each one before the boot begins, so no card
+# identity leaks into the boot path.  MEM_CNTL's MEM_SIZE field is the
 # card telling the driver how much VRAM it has, so it is the honest place
 # to read the answer back.
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
@@ -400,11 +400,13 @@ assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 3 "the 109-31600-00 expan
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx" pci_option="vram=2m,monitor=15in_multi"
 assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "a comma-separated list must apply every pair"
 assert machine.pci.slot[1].card.monitor.id == "15in_multi" "...including the second one"
-# A malformed pair is dropped with a log, NOT fatal: this layer cannot tell
-# a typo from a key it simply does not know, and refusing the boot would
-# make every unknown option fatal.
-assert machine.boot(model="pm9500", ram=32768, rom="${$ROM}", pci_card="mach64_gx", pci_option="bogus") "a malformed option must not fail the boot"
-assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "and must leave the card at its default"
+# A malformed pair, a key the card does not take and a value it does not
+# offer each reject the boot, before the running machine is touched: the
+# card answers for its own options, so a typo is never silently a default.
+assert !machine.boot(model="pm9500", ram=32768, rom="${$ROM}", pci_card="mach64_gx", pci_option="bogus") "a malformed option must reject the boot"
+assert !machine.boot(model="pm9500", ram=32768, rom="${$ROM}", pci_card="mach64_gx", pci_option="memory=8m") "a key the card does not take must reject the boot"
+assert !machine.boot(model="pm9500", ram=32768, rom="${$ROM}", pci_card="mach64_gx", pci_option="vram=3m") "a value the card does not offer must reject the boot"
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "the running card is untouched"
 
 # The card DECLARES what it will accept, so a frontend can offer a control
 # without knowing which card it is.
@@ -413,11 +415,12 @@ assert catalog.profile("pm9500").pci_slots[0].cards[0].options[0].default_value 
 
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
 
-# --- A checkpoint crosses the VRAM staging boundary. ------------------------
-# The card is CONSTRUCTED from the staged options and the stream is replayed
-# into it afterwards, so a 4 MB checkpoint really can land in a card staged at
-# the 2 MB default.  The restore resizes rather than truncating -- and it has
-# to resize all THREE buffers, because `blank` and `compose` are sized to
+# --- A checkpoint crosses a VRAM-size change. -------------------------------
+# The restore builds the card from the checkpoint's own slot entry (vram=4m)
+# and replays the stream into it, so a 4 MB checkpoint lands in a 4 MB card
+# whatever the running machine was built with.  Where a stream's size and the
+# card's differ, the restore resizes rather than truncating -- and it has to
+# resize all THREE buffers, because `blank` and `compose` are sized to
 # vram_size and every scan is bounded by vram_size, which is the only reason a
 # buffer of that size is always big enough.  Growing `vram` alone left the
 # other two at the old size and turned the mach64_update() that the restore
@@ -435,9 +438,9 @@ checkpoint.save "${$WORK_DIR}/mach64-4m.ckpt"
 
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx" pci_option="vram=2m"
 scheduler.run 40000000
-assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "restore target: staged at the 2 MB default"
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "the running machine: built at the 2 MB default"
 checkpoint.load "${$WORK_DIR}/mach64-4m.ckpt"
-assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 3 "the 4 MB stream must win over the 2 MB staging"
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 3 "the 4 MB checkpoint must restore a 4 MB card"
 assert machine.pci.slot[1].card.regs.vram_size == 0x400000 "...and the card must report 4 MB afterwards"
 # Every buffer moved, so a scanout still pointing into a freed one would read
 # garbage or fault.  Keep running: the restore already called mach64_update()
@@ -447,8 +450,8 @@ assert machine.pci.slot[1].card.regs.vram_size == 0x400000 "...and the card must
 scheduler.run 20000000
 assert machine.id == "pm9500" "the machine survives scanning on the resized buffers"
 
-# ...and the same in the other direction, which is the case that SHRINKS the
-# buffers: a 2 MB stream into a card staged at 4 MB.
+# ...and the round trip: the restored machine's own checkpoint restores over
+# another 4 MB machine.
 checkpoint.save "${$WORK_DIR}/mach64-2m.ckpt"
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx" pci_option="vram=4m"
 scheduler.run 40000000

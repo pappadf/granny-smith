@@ -27,24 +27,15 @@ LOG_USE_CATEGORY_NAME("memory");
 
 // === Bus-error window ======================================================
 //
-// The address range where "no chip answered" means the board's watchdog fires
-// and the cycle ends in a bus error, rather than the bus floating to the
-// pull-ups and reading $FF.  Per board; see each machine's bus_err_lo/hi.
-//
-// It lives HERE, not in mmu_state_t, because it is a property of the BUS.
-// Keeping it in the MMU had two consequences: the test
-// was written out twice, once in mmu.c and once in mmu040.c, and it could
-// only ever fire on the MMU's transparent-translation path -- so with the MMU
-// disabled, which is most of POST, the same address returned $FF and never
-// faulted.
-static uint32_t g_bus_err_lo = 1; // lo > hi: an empty window until a board sets one
+// The window is a field of the memory map (bus_err), passed to memory_map_init
+// by the board.  The slow path that consults it runs on the fast-path aliases
+// and holds no memory_map_t, so the selected map's window is aliased here,
+// with the other aliases, by memory_map_select.
+// The test lives in memory.c rather than in each MMU because it is a property
+// of the BUS: it applies with the MMU off (most of POST) as well as on the
+// MMUs' transparent-translation paths.
+static uint32_t g_bus_err_lo = 1; // lo > hi: an empty window while no map is installed
 static uint32_t g_bus_err_hi = 0;
-
-void memory_set_bus_error_range(memory_map_t *m, uint32_t start, uint32_t end) {
-    (void)m;
-    g_bus_err_lo = start;
-    g_bus_err_hi = end;
-}
 
 // True when an unanswered access at `addr` should fault rather than float.
 bool memory_addr_faults_when_unmapped(uint32_t addr) {
@@ -121,7 +112,7 @@ void (*g_mem_host_fill)(uint32_t page_index, uint8_t *host_ptr, bool writable) =
 // Penalty cycles are converted to "phantom instructions" that consume sprint
 // burndown slots, causing sprints with I/O to end sooner and keeping event
 // timing accurate.
-uint32_t g_io_penalty_remainder = 0; // sub-slot penalty fraction, x256 cycles, carried across sprints
+uint32_t g_io_penalty_remainder = 0; // sprint-time alias of the scheduler's io_penalty_remainder (x256 cycles)
 uint64_t g_sprint_base_cycles = 0; // scheduler cpu_cycles at sprint start
 uint32_t g_sprint_frac_x256 = 0; // sub-cycle remainder at sprint start (x256)
 uint32_t g_sprint_total_slots = 0; // sprint slot budget at sprint start
@@ -144,18 +135,19 @@ uint32_t *g_sprint_burndown_ptr = NULL; // points to scheduler's sprint_burndown
 // never touched the address.  One extra byte per 4 KB of address space.
 uint16_t *g_mem_logpoint_page_count = NULL;
 uint16_t *g_mem_logpoint_phys_page_count = NULL;
-// Armed-logpoint count (install calls minus uninstall calls).  Zero lets
-// every slow-path access skip logpoint_lookup with one load — the arrays
-// above are always allocated, so their NULL checks never short-circuit.
-// Teardown paths that free the arrays without uninstalling leave this high,
-// which only costs the (armed-era) full lookup; the unsafe direction —
-// zero while pages are armed — would need unbalanced extra uninstalls,
-// which the clamp below turns into a saturating no-op.
+// Alias of the installed map's armed-logpoint count (memory_map_t's
+// logpoints_active, install calls minus uninstall calls).  Zero lets every
+// slow-path access skip logpoint_lookup with one load — the arrays above are
+// always allocated, so their NULL checks never short-circuit.  Set from the
+// map at memory_map_init and cleared with it, like the arrays it summarises.
 static uint32_t g_mem_logpoints_active = 0;
+// The map whose state the aliases above currently mirror (NULL: none).
+static memory_map_t *g_installed_map = NULL;
 memory_logpoint_hook_t g_mem_logpoint_hook = NULL;
 bool g_user_soa_reserved = false;
 void (*g_mem_map_changed)(void) = NULL;
-uint32_t (*g_mem_logical_xlate)(uint32_t addr, bool *ok) = NULL;
+uint32_t (*g_mem_logical_xlate)(void *ctx, uint32_t addr, bool *ok) = NULL;
+void *g_mem_logical_xlate_ctx = NULL;
 
 // Slow-path access counter (diagnostic; exposed as memory.slowpath_count)
 uint64_t g_mem_slowpath_count = 0;
@@ -210,9 +202,27 @@ typedef struct memory {
 
     uint8_t *image; // flat RAM+ROM buffer
 
-    // Per-instance page table (points to g_page_table when active)
+    // The page table and fast-path arrays this map owns; the g_* fast-path
+    // globals alias them while the map is selected (memory_map_select).
     page_entry_t *page_table;
     int page_count;
+    uint32_t address_mask;
+    uintptr_t *supervisor_read, *supervisor_write, *user_read, *user_write;
+    uint16_t *logpoint_page_count, *logpoint_phys_page_count;
+    tlb_track_t *tlb_track; // pages populated since the last invalidation (mmu.c)
+
+    // What the machine hangs on its map (aliased while selected).
+    memory_cpu_hooks_t cpu_hooks;
+    void (*host_fill)(uint32_t page_index, uint8_t *host_ptr, bool writable);
+    struct mmu_state *pmmu;
+    struct lisa_mmu *lisa_mmu;
+    void *host_fill_regions; // mmu.c's table
+
+    // The board's bus-error window (aliased by g_bus_err_lo/hi while installed)
+    memory_bus_err_window_t bus_err;
+
+    // Armed memory logpoints on this map (aliased by g_mem_logpoints_active)
+    uint32_t logpoints_active;
 
     // Machine-parameterised sizes (set by memory_map_init)
     uint32_t ram_size; // RAM region size in bytes
@@ -276,7 +286,7 @@ static bool logpoint_lookup_armed(uint32_t addr, uint8_t **host_out, bool *writa
         // (ppc_dxlate_slow keeps the EA for watched pages); resolve the
         // physical backing through the CPU's current data context.
         bool ok;
-        uint32_t pa = g_mem_logical_xlate(addr, &ok);
+        uint32_t pa = g_mem_logical_xlate(g_mem_logical_xlate_ctx, addr, &ok);
         if (ok)
             phys_addr = pa;
     }
@@ -1110,10 +1120,20 @@ static void rebuild_soa_page(uint32_t p) {
     }
 }
 
+// Count one logpoint armed (+1) or disarmed (-1) on the installed map and
+// refresh the slow path's alias.  A disarm with nothing armed is a no-op.
+static void logpoints_active_adjust(int delta) {
+    memory_map_t *m = g_installed_map;
+    if (!m || (delta < 0 && m->logpoints_active == 0))
+        return;
+    m->logpoints_active += (uint32_t)delta;
+    g_mem_logpoints_active = m->logpoints_active;
+}
+
 void memory_logpoint_install(uint32_t start_page, uint32_t end_page) {
     if (!g_mem_logpoint_page_count)
         return;
-    g_mem_logpoints_active++;
+    logpoints_active_adjust(+1);
     for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
         if (g_mem_logpoint_page_count[p] < 0xFFFF)
             g_mem_logpoint_page_count[p]++;
@@ -1136,8 +1156,7 @@ void memory_logpoint_install(uint32_t start_page, uint32_t end_page) {
 void memory_logpoint_uninstall(uint32_t start_page, uint32_t end_page) {
     if (!g_mem_logpoint_page_count)
         return;
-    if (g_mem_logpoints_active)
-        g_mem_logpoints_active--;
+    logpoints_active_adjust(-1);
     for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
         if (g_mem_logpoint_page_count[p])
             g_mem_logpoint_page_count[p]--;
@@ -1151,7 +1170,7 @@ void memory_logpoint_uninstall(uint32_t start_page, uint32_t end_page) {
 void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page) {
     if (!g_mem_logpoint_phys_page_count)
         return;
-    g_mem_logpoints_active++;
+    logpoints_active_adjust(+1);
     for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
         if (g_mem_logpoint_phys_page_count[p] < 0xFFFF)
             g_mem_logpoint_phys_page_count[p]++;
@@ -1178,8 +1197,7 @@ void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page) {
 void memory_logpoint_uninstall_phys(uint32_t start_page, uint32_t end_page) {
     if (!g_mem_logpoint_phys_page_count)
         return;
-    if (g_mem_logpoints_active)
-        g_mem_logpoints_active--;
+    logpoints_active_adjust(-1);
     for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
         if (g_mem_logpoint_phys_page_count[p])
             g_mem_logpoint_phys_page_count[p]--;
@@ -1344,24 +1362,6 @@ const char *memory_rom_filename(memory_map_t *mem) {
     return mem ? mem->rom_filename : NULL;
 }
 
-// Copy ROM bytes into the rom region (immediately after RAM) and remember
-// the file name. Truncates if size > mem->rom_size, drops nothing if
-// size < mem->rom_size (the trailing bytes keep whatever they had — for
-// freshly-allocated memory that's zero).
-size_t memory_install_rom(memory_map_t *mem, const uint8_t *data, size_t size, const char *filename) {
-    if (!mem || !mem->image || !data || size == 0)
-        return 0;
-    size_t copy_size = size < mem->rom_size ? size : mem->rom_size;
-    memcpy(mem->image + mem->ram_size, data, copy_size);
-    if (mem->rom_filename) {
-        free(mem->rom_filename);
-        mem->rom_filename = NULL;
-    }
-    if (filename)
-        mem->rom_filename = strdup(filename);
-    return copy_size;
-}
-
 // Direct read access to the ROM region (read-only). Returns NULL if the
 // memory map has no ROM bytes loaded yet.
 const uint8_t *memory_rom_bytes(memory_map_t *mem) {
@@ -1495,67 +1495,92 @@ void memory_populate_ram_mirror(memory_map_t *mem, uint32_t mirror_start, uint32
 // ============================================================================
 // Lifecycle: Constructor
 // ============================================================================
+// Selection: the fast-path aliases
+// ============================================================================
+
+void memory_map_select(memory_map_t *mem) {
+    g_installed_map = mem;
+    g_page_table = mem ? mem->page_table : NULL;
+    g_page_count = mem ? (uint32_t)mem->page_count : 0;
+    g_address_mask = mem ? mem->address_mask : 0;
+    g_supervisor_read = mem ? mem->supervisor_read : NULL;
+    g_supervisor_write = mem ? mem->supervisor_write : NULL;
+    g_user_read = mem ? mem->user_read : NULL;
+    g_user_write = mem ? mem->user_write : NULL;
+    // Supervisor until the CPU picks the active pair: a 68K at its next
+    // sprint, the PowerPC through its selected hook below.
+    g_active_read = g_supervisor_read;
+    g_active_write = g_supervisor_write;
+    g_mem_logpoint_page_count = mem ? mem->logpoint_page_count : NULL;
+    g_mem_logpoint_phys_page_count = mem ? mem->logpoint_phys_page_count : NULL;
+    g_mem_logpoints_active = mem ? mem->logpoints_active : 0;
+    g_bus_err_lo = mem ? mem->bus_err.lo : MEMORY_BUS_ERR_NONE.lo;
+    g_bus_err_hi = mem ? mem->bus_err.hi : MEMORY_BUS_ERR_NONE.hi;
+    g_user_soa_reserved = mem ? mem->cpu_hooks.user_soa_reserved : false;
+    g_mem_map_changed = mem ? mem->cpu_hooks.map_changed : NULL;
+    g_mem_logical_xlate = mem ? mem->cpu_hooks.logical_xlate : NULL;
+    g_mem_logical_xlate_ctx = mem ? mem->cpu_hooks.ctx : NULL;
+    g_mem_host_fill = mem ? mem->host_fill : NULL;
+    g_mmu = mem ? mem->pmmu : NULL;
+    g_lisa_mmu = mem ? mem->lisa_mmu : NULL;
+    mmu_host_fill_regions_select(mem ? mem->host_fill_regions : NULL);
+    tlb_track_select(mem ? mem->tlb_track : NULL);
+    if (mem && mem->cpu_hooks.selected)
+        mem->cpu_hooks.selected(mem->cpu_hooks.ctx);
+}
+
+void memory_map_set_cpu_hooks(memory_map_t *mem, const memory_cpu_hooks_t *hooks) {
+    mem->cpu_hooks = *hooks;
+    if (g_installed_map == mem)
+        memory_map_select(mem);
+}
+
+void memory_map_set_host_fill(memory_map_t *mem, void (*fill)(uint32_t page_index, uint8_t *host_ptr, bool writable)) {
+    mem->host_fill = fill;
+    if (g_installed_map == mem)
+        g_mem_host_fill = fill;
+}
+
+void memory_map_set_pmmu(memory_map_t *mem, struct mmu_state *mmu) {
+    mem->pmmu = mmu;
+    if (g_installed_map == mem)
+        g_mmu = mmu;
+}
+
+void memory_map_set_lisa_mmu(memory_map_t *mem, struct lisa_mmu *mmu) {
+    mem->lisa_mmu = mmu;
+    if (g_installed_map == mem)
+        g_lisa_mmu = mmu;
+}
+
+void *memory_map_host_fill_regions(memory_map_t *mem) {
+    return mem ? mem->host_fill_regions : NULL;
+}
+
+// ============================================================================
 
 // Allocate and initialise a memory map for the given address space and RAM/ROM sizes.
 // The page table is allocated dynamically based on address_bits.
 // Machine-specific memory layout (page table population) is done by the machine's
 // memory_layout_init callback, not here.
-memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_size, checkpoint_t *checkpoint) {
+memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_size, memory_bus_err_window_t bus_err,
+                              const rom_image_t *rom, checkpoint_t *checkpoint) {
     // Validate address_bits before deciding the page-table shape so a 28 or 0
     // doesn't silently default to the 24-bit layout.
     GS_ASSERTF(address_bits == 24 || address_bits == 32, "memory_map_init: address_bits must be 24 or 32 (got %d)",
                address_bits);
-    // A fresh map means a fresh machine: drop any CPU-MMU claims the
-    // previous machine left on the user SoA arrays (a 68K machine booted
-    // after a PPC one must get the classic all-four-arrays behavior back;
-    // the new machine's CPU init re-registers what it needs).
-    g_user_soa_reserved = false;
-    g_mem_map_changed = NULL;
-    g_mem_logical_xlate = NULL;
-    // Card host regions filled through the hook (PowerPC families) belong to
-    // the outgoing machine's page table; forget them with it.
-    g_mem_host_fill = NULL;
-    mmu_host_fill_regions_reset();
-    // Hand over from any still-installed map.
-    //
-    // checkpoint.load deliberately builds the new machine BEFORE destroying
-    // the old one (see system_restore / system_reload_checkpoint), so the
-    // outgoing map is still installed here.  That is legal, but the outgoing
-    // map's SoA fast-path and logpoint arrays are reachable ONLY through these
-    // globals — its memory_map_t keeps a pointer to page_table and nothing
-    // else — so overwriting them below would strand the allocations.  Free
-    // them now, while they are still reachable.
-    //
-    // g_page_table itself is deliberately NOT freed: the outgoing
-    // memory_map_t owns it and frees it in memory_map_delete, which skips the
-    // global teardown once it sees the globals have moved on.
-    //
-    // This used to be an assertion (`previous memory map not torn down before
-    // re-init`), which fired on every checkpoint restore and would have
-    // stopped a build with asserts fatal.  The lifetime it complained about
-    // was real; the response was wrong.
-    if (g_page_table != NULL) {
-        free(g_supervisor_read);
-        free(g_supervisor_write);
-        free(g_user_read);
-        free(g_user_write);
-        free(g_mem_logpoint_page_count);
-        free(g_mem_logpoint_phys_page_count);
-        g_supervisor_read = g_supervisor_write = NULL;
-        g_user_read = g_user_write = NULL;
-        g_active_read = g_active_write = NULL;
-        g_mem_logpoint_page_count = NULL;
-        g_mem_logpoint_phys_page_count = NULL;
-        g_page_table = NULL;
-        g_page_count = 0;
-    }
-
     memory_map_t *mem = (memory_map_t *)calloc(1, sizeof(memory_map_t));
     GS_ASSERTF(mem != NULL, "memory_map_init: out of memory allocating memory_map_t");
 
     // Store parameterised sizes for later use by layout, checkpoint, and cmd_rom
     mem->ram_size = ram_size;
     mem->rom_size = rom_size;
+
+    // The board's bus-error window (the slow path's alias while selected).
+    mem->bus_err = bus_err;
+
+    mem->tlb_track = tlb_track_new();
+    GS_ASSERTF(mem->tlb_track != NULL, "memory_map_init: out of memory allocating the TLB tracker");
 
     // Allocate the flat RAM+ROM image (ram_size + rom_size bytes)
     size_t image_size = (size_t)ram_size + (size_t)rom_size;
@@ -1564,42 +1589,44 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
 
     // Allocate page table sized for the given address space
     if (address_bits == 32) {
-        g_address_mask = 0xFFFFFFFFUL; // full 32-bit
-        g_page_count = 1 << (32 - PAGE_SHIFT); // 1,048,576 pages
+        mem->address_mask = 0xFFFFFFFFUL; // full 32-bit
+        mem->page_count = 1 << (32 - PAGE_SHIFT); // 1,048,576 pages
     } else {
         // 24-bit (Macintosh Plus / SE)
-        g_address_mask = 0x00FFFFFFUL;
-        g_page_count = 1 << (24 - PAGE_SHIFT); // 4,096 pages
+        mem->address_mask = 0x00FFFFFFUL;
+        mem->page_count = 1 << (24 - PAGE_SHIFT); // 4,096 pages
     }
+    size_t pages = (size_t)mem->page_count;
 
     // AoS cold-path page table (device dispatch)
-    g_page_table = (page_entry_t *)calloc(g_page_count, sizeof(page_entry_t));
-    assert(g_page_table != NULL && "failed to allocate page table");
-    mem->page_table = g_page_table;
-    mem->page_count = g_page_count;
+    mem->page_table = (page_entry_t *)calloc(pages, sizeof(page_entry_t));
+    assert(mem->page_table != NULL && "failed to allocate page table");
 
     // SoA fast-path arrays (calloc → zero = slow path for all pages initially)
-    g_supervisor_read = (uintptr_t *)calloc(g_page_count, sizeof(uintptr_t));
-    g_supervisor_write = (uintptr_t *)calloc(g_page_count, sizeof(uintptr_t));
-    g_user_read = (uintptr_t *)calloc(g_page_count, sizeof(uintptr_t));
-    g_user_write = (uintptr_t *)calloc(g_page_count, sizeof(uintptr_t));
-    assert(g_supervisor_read && g_supervisor_write && g_user_read && g_user_write);
+    mem->supervisor_read = (uintptr_t *)calloc(pages, sizeof(uintptr_t));
+    mem->supervisor_write = (uintptr_t *)calloc(pages, sizeof(uintptr_t));
+    mem->user_read = (uintptr_t *)calloc(pages, sizeof(uintptr_t));
+    mem->user_write = (uintptr_t *)calloc(pages, sizeof(uintptr_t));
+    assert(mem->supervisor_read && mem->supervisor_write && mem->user_read && mem->user_write);
 
-    // Memory logpoint reference-count array (zero = no logpoint on that page)
-    g_mem_logpoint_page_count = (uint16_t *)calloc(g_page_count, sizeof(uint16_t));
-    assert(g_mem_logpoint_page_count);
+    // Memory logpoint reference-count array (zero = no logpoint on that page),
+    // and the physical-page one, sized the same way so any physical page the
+    // guest can reach is coverable.
+    mem->logpoint_page_count = (uint16_t *)calloc(pages, sizeof(uint16_t));
+    mem->logpoint_phys_page_count = (uint16_t *)calloc(pages, sizeof(uint16_t));
+    assert(mem->logpoint_page_count && mem->logpoint_phys_page_count);
 
-    // Physical-page logpoint reference count.  Sized the same way as the
-    // logical array so any physical page the guest can reach is coverable.
-    g_mem_logpoint_phys_page_count = (uint16_t *)calloc(g_page_count, sizeof(uint16_t));
-    assert(g_mem_logpoint_phys_page_count);
+    mem->host_fill_regions = mmu_host_fill_regions_new();
 
-    // Default active pointers: supervisor mode
-    g_active_read = g_supervisor_read;
-    g_active_write = g_supervisor_write;
+    // The machine under construction builds into its own map: select it.
+    memory_map_select(mem);
 
-    // Note: rom command is registered once from setup_init() so it's
-    // available before any machine is created (deferred boot).
+    // The ROM is on the board from power-on: the region is created filled.
+    if (rom && rom->data && rom->size) {
+        memcpy(mem->image + ram_size, rom->data, rom->size < rom_size ? rom->size : rom_size);
+        if (rom->path)
+            mem->rom_filename = strdup(rom->path);
+    }
 
     // Load from checkpoint if provided
     if (checkpoint) {
@@ -1666,34 +1693,18 @@ void memory_map_delete(memory_map_t *mem) {
         free(m);
         m = next;
     }
-    // Free this instance's page table
-    if (mem->page_table) {
-        // Only clear globals if this instance owns the active page table
-        if (g_page_table == mem->page_table) {
-            g_page_table = NULL;
-            g_page_count = 0;
-
-            // Free SoA fast-path arrays
-            free(g_supervisor_read);
-            g_supervisor_read = NULL;
-            free(g_supervisor_write);
-            g_supervisor_write = NULL;
-            free(g_user_read);
-            g_user_read = NULL;
-            free(g_user_write);
-            g_user_write = NULL;
-            g_active_read = NULL;
-            g_active_write = NULL;
-
-            // Free logpoint page-count arrays
-            free(g_mem_logpoint_page_count);
-            g_mem_logpoint_page_count = NULL;
-            free(g_mem_logpoint_phys_page_count);
-            g_mem_logpoint_phys_page_count = NULL;
-        }
-        free(mem->page_table);
-        mem->page_table = NULL;
-    }
+    // Deselect it if it is the selected map, then free what it owns.
+    if (g_installed_map == mem)
+        memory_map_select(NULL);
+    free(mem->page_table);
+    tlb_track_free(mem->tlb_track);
+    free(mem->supervisor_read);
+    free(mem->supervisor_write);
+    free(mem->user_read);
+    free(mem->user_write);
+    free(mem->logpoint_page_count);
+    free(mem->logpoint_phys_page_count);
+    mmu_host_fill_regions_free(mem->host_fill_regions);
     // Free RAM/ROM image buffer
     if (mem->image) {
         free(mem->image);

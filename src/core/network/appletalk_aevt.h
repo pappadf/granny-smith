@@ -72,26 +72,20 @@ bool aevt_set_attr(value_t *event, const char *key, value_t leaf);
 
 // === Object model / lifecycle ==============================================
 
+// Once, when the network comes up: publish the host port (its name,
+// enablement and auto-reply are the network's) and take inbound events.
 void atalk_aevt_init(void);
-void atalk_aevt_shutdown(void);
 void atalk_aevt_install_objects(struct object *parent);
-void atalk_aevt_remove_objects(void);
 
-// Durable configuration, the only part of this layer a checkpoint carries
-// (ppc_appleevents.md §7): sessions, connections and the events collection
-// are volatile client state and are dropped on restore.
-typedef struct {
-    bool enabled;
-    char port_name[33];
-    char auto_reply[256];
-} atalk_aevt_config_t;
+// The Apple-event layer's part of a machine's connection (atalk_conn_t): the
+// events sent to that Mac, its inbox and their counters.  The network serves
+// the plugged-in connection's link; atalk_aevt_plug with NULL, when the
+// connection is unplugged, drops every event and inbox entry it held.
+typedef struct aevt_link aevt_link_t;
 
-void atalk_aevt_get_config(atalk_aevt_config_t *out);
-void atalk_aevt_set_config(const atalk_aevt_config_t *in);
-
-// Drop every event, inbox entry and counter (checkpoint restore, machine
-// teardown).
-void atalk_aevt_reset_transient_state(void);
+aevt_link_t *atalk_aevt_link_new(void);
+void atalk_aevt_link_free(aevt_link_t *link);
+void atalk_aevt_plug(aevt_link_t *link);
 
 // Delivery hook, called by the PPC session layer when a high-level event
 // arrives on `session`: either the reply to a pending send, or a new inbox

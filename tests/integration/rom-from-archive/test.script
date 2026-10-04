@@ -17,8 +17,8 @@ assert files.path_compare($member, $ROM) == -1 "the member decodes to the ROM"
 
 # Booting names the member: the ROM is identified from what it decodes to.
 assert machine.boot(model="plus", rom="${$member}") "boot from the archive member"
-assert machine.config.rom_id == "4d1f8172" "the ROM read out of the archive"
-assert machine.config.rom == $member "the record names the member"
+assert machine.rom.id == "4d1f8172" "the ROM read out of the archive"
+assert machine.rom.path == $member "the machine's ROM names the member"
 
 # And the machine runs it: the ROM's boot code draws the screen.
 let before = machine.screen.checksum()

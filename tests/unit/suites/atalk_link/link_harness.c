@@ -13,12 +13,11 @@
 #include "test_assert.h"
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 // --- the SCC ------------------------------------------------------------------
 
-// Only their addresses are ever used: the stack hands one back to the SCC
+// Only their addresses are ever used: the network hands one back to the SCC
 // functions below.  Two, because a checkpoint load builds a second machine
 // while the first is still running (link_load).
 static int g_fake_scc_storage[2];
@@ -188,7 +187,7 @@ static void run_until(double t) {
 
 // --- the checkpoint stream -------------------------------------------------------
 //
-// A byte stream: appletalk_checkpoint appends, appletalk_init reads back in
+// A byte stream: atalk_conn_checkpoint appends, atalk_conn_new reads back in
 // order.  A "failed" stream hands the saved bytes back AND reports the
 // checkpoint in error -- the reader's contract says nothing read from it may
 // be applied, and this is how a test can tell whether it was.
@@ -233,87 +232,71 @@ void checkpoint_set_error(checkpoint_t *cp) {
     g_cp_error = true;
 }
 
-// checkpoint.c's string pair, over the stream above.
-void checkpoint_write_string(checkpoint_t *cp, const char *s) {
-    uint32_t len = (s && *s) ? (uint32_t)strlen(s) + 1 : 0;
-    system_write_checkpoint_data_loc(cp, &len, sizeof(len), NULL, NULL, 0);
-    if (len)
-        system_write_checkpoint_data_loc(cp, s, len, NULL, NULL, 0);
-}
-
-char *checkpoint_read_string(checkpoint_t *cp, uint32_t max, const char *what) {
-    (void)what;
-    uint32_t len = 0;
-    system_read_checkpoint_data_loc(cp, &len, sizeof(len), NULL, NULL, 0);
-    if (g_cp_error || len == 0)
-        return NULL;
-    if (len > max) {
-        g_cp_error = true;
-        return NULL;
-    }
-    char *buf = malloc((size_t)len + 1);
-    ASSERT_TRUE(buf != NULL);
-    system_read_checkpoint_data_loc(cp, buf, len, NULL, NULL, 0);
-    buf[len] = '\0';
-    return buf;
-}
-
 // --- harness API ---------------------------------------------------------------
 
-void link_boot(void) {
+// Each machine's connection, by the SCC it was built on.
+static atalk_conn_t *g_conns[2];
+
+static void fresh_wire_and_clock(void) {
     g_machine = 0;
     memset(g_ev, 0, sizeof g_ev);
     memset(g_reg, 0, sizeof g_reg);
     g_nreg = 0;
     g_now_ns = 0;
     wire_clear();
-    appletalk_init(&g_sched, FAKE_SCC, NULL);
+}
+
+void link_boot(void) {
+    fresh_wire_and_clock();
+    g_conns[0] = atalk_conn_new(appletalk_network_init(), &g_sched, FAKE_SCC, NULL);
+    ASSERT_TRUE(g_conns[0] != NULL);
+    atalk_conn_plug(g_conns[0]); // the machine becomes the active one
 }
 
 void link_checkpoint(void) {
     g_cp_len = 0;
-    appletalk_checkpoint(FAKE_CP);
+    atalk_conn_checkpoint(g_conns[g_machine], FAKE_CP);
     ASSERT_TRUE(g_cp_len > 0);
 }
 
 void link_boot_from_checkpoint(bool read_fails) {
-    g_machine = 0;
-    memset(g_ev, 0, sizeof g_ev);
-    memset(g_reg, 0, sizeof g_reg);
-    g_nreg = 0;
-    g_now_ns = 0;
-    wire_clear();
+    fresh_wire_and_clock();
     g_cp_fail = read_fails;
     g_cp_error = false;
     g_cp_pos = 0;
-    appletalk_init(&g_sched, FAKE_SCC, FAKE_CP);
+    g_conns[0] = atalk_conn_new(appletalk_network_init(), &g_sched, FAKE_SCC, FAKE_CP);
+    ASSERT_TRUE(g_conns[0] != NULL);
+    atalk_conn_plug(g_conns[0]);
 }
 
 void link_delete(void) {
-    appletalk_delete(FAKE_SCC_N(g_machine), false);
+    atalk_conn_delete(g_conns[g_machine]);
+    g_conns[g_machine] = NULL;
     ASSERT_TRUE(g_sinks[0] == NULL && g_sinks[1] == NULL);
     ASSERT_EQ_INT(0, sched_pending());
 }
 
-void link_restart(void) {
-    appletalk_delete(FAKE_SCC_N(g_machine), true);
-    ASSERT_TRUE(g_sinks[0] == NULL && g_sinks[1] == NULL);
-    appletalk_init(&g_sched, FAKE_SCC_N(g_machine), NULL);
-}
-
 void link_load(bool fails) {
     int prev = g_machine, next = 1 - g_machine;
-    g_cp_fail = false; // the stack's own record reads fine...
+    g_cp_fail = false; // the connection's own block reads fine...
     g_cp_error = false;
     g_cp_pos = 0;
-    appletalk_init(&g_sched, FAKE_SCC_N(next), FAKE_CP);
+    g_conns[next] = atalk_conn_new(appletalk_network(), &g_sched, FAKE_SCC_N(next), FAKE_CP);
+    ASSERT_TRUE(g_conns[next] != NULL);
+    // Built, not plugged in: the running machine still has the cable.
+    ASSERT_TRUE(link_sink_on(prev) && !link_sink_on(next));
     if (fails) {
         // ...but something later in the checkpoint does not, and the load
-        // destroys the machine it was building; the old one keeps running.
-        appletalk_delete(FAKE_SCC_N(next), false);
+        // destroys the machine it was building; the old one keeps running,
+        // never unplugged.
+        atalk_conn_delete(g_conns[next]);
+        g_conns[next] = NULL;
         g_machine = prev;
     } else {
-        appletalk_delete(FAKE_SCC_N(prev), false);
+        // The swap: the new machine takes the cable, then the old one goes.
+        atalk_conn_plug(g_conns[next]);
+        atalk_conn_delete(g_conns[prev]);
+        g_conns[prev] = NULL;
         g_machine = next;
     }
 }

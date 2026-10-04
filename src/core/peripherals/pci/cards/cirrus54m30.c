@@ -1361,8 +1361,9 @@ static const pci_device_ops_t c54m30_ops = {
     .name = c54m30_name,
 };
 
-static pci_device_t *c54m30_factory(int slot_index, config_t *cfg, checkpoint_t *cp) {
-    (void)cp;
+static pci_device_t *c54m30_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+    (void)rom;
+    (void)opts;
     pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
     c54m30_t *c = (c54m30_t *)calloc(1, sizeof(*c));
     uint8_t *vram = (uint8_t *)calloc(1, C54M30_VRAM);
