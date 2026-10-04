@@ -31,7 +31,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
-import { terminalRun } from '../helpers/terminal';
+import { gsCallInPage, gsEvalInPage } from '../helpers/web2-eval';
 
 const DATA = path.resolve(__dirname, '../../data');
 const TNT_ROM = path.join(DATA, 'roms', 'pm7500-pm8500-pm9500-96cd923d.rom');
@@ -147,43 +147,18 @@ test('an uploaded .prom is still offered after a reload', async ({ page }) => {
   if (await cont.isVisible().catch(() => false)) await cont.click();
 
   // Both files survived the reload, content-addressed.
-  await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
-  expect(await terminalEval(page, `files.path_size("${STORED_PROM}")`)).toBe('32768');
+  expect(await gsEvalInPage(page, 'files.path_size', [STORED_PROM])).toBe(32768);
 
   // An "(auto)" boot — a document with pci_card= but NO prom= pick. Strict
   // resolution refuses it unless the stored file was offered at startup, so
   // this is the reload guard rather than a second copy of the UI test.
-  await terminalRun(
-    page,
-    `machine.boot model="pm9500" ram=32768 rom="${STORED_ROM}" pci_card="mach64_gx"`,
-  );
-  await page.waitForTimeout(3_000);
-  expect(await terminalEval(page, 'machine.id')).toBe('pm9500');
+  await gsCallInPage(page, 'machine.boot', {
+    model: 'pm9500',
+    ram: 32768,
+    rom: STORED_ROM,
+    pci_card: 'mach64_gx',
+  });
+  await expect.poll(() => gsEvalInPage(page, 'machine.id'), { timeout: 30_000 }).toBe('pm9500');
   // The card really is seated in socket A1, not merely a boot that survived.
-  expect(await terminalEval(page, 'machine.pci.slot[1].card.name')).toContain('Mach64 GX');
+  expect(await gsEvalInPage(page, 'machine.pci.slot[1].card.name')).toContain('Mach64 GX');
 });
-
-// --- terminal helpers (same shape as vrom-offer-ingest.spec.ts) ------------
-
-// Echo an expression under a unique key and return the printed value. The
-// typed line is echoed too, so values still starting with `$` are the input
-// echo rather than the result; poll until the evaluated line lands.
-let probeSeq = 0;
-async function terminalEval(page: Page, expr: string): Promise<string | null> {
-  const key = `ppi${++probeSeq}`;
-  await terminalRun(page, `echo "${key}=\${${expr}}"`);
-  for (let i = 0; i < 25; i++) {
-    await page.waitForTimeout(400);
-    const text = await page.locator('.console-output').innerText();
-    // Capture to end of line, not the first whitespace-delimited token: card
-    // names have spaces in them ("ATI Mach64 GX"), and a \S+ probe silently
-    // truncates to "ATI" — which reads as a wrong value rather than a wrong
-    // probe. Trim stray whitespace.
-    const values = [...text.matchAll(new RegExp(`${key}=(.+)`, 'g'))]
-      .map((m) => m[1].trim())
-      .filter((v) => v.length > 0 && !v.startsWith('$'));
-    if (values.length) return values[values.length - 1];
-  }
-  return null;
-}

@@ -289,6 +289,12 @@ Server may force-close all jobs via **SLClose**.
 * PAPStatus is sent to a server’s SLS at any time—no connection required.
 * Server’s PAP replies with **Status** response containing Pascal-style status string (1 length byte + ≤255 bytes).
 * Status strings are supplied by SLInit or HeresStatus.
+* Not every server sends a string. The ImageWriter II's LocalTalk Option
+  card answers OpenConn and SendStatus with a binary **statusBits** word in
+  place of the string: the status data at offset 4 is a length byte of 2 and
+  the word, high byte first (bit 14 SheetFeeder installed, bit 13 paper out,
+  bit 10 paper jam) — Apple Technical Note NW20, "PAP Status Buffer"; see
+  [imagewriter.md](../hardware/imagewriter.md) §8.
 
 
 ---

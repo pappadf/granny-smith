@@ -86,7 +86,8 @@ test('a URL boot shows download progress and no start-up dialogs', async ({ page
   await expect(view).toBeVisible({ timeout: 60_000 });
   await expect(view.locator('.title')).toHaveText('Granny Smith');
   await expect(view.locator('.headline')).toContainText('Downloading');
-  await expect(view.locator('[data-slot="rom"]')).toContainText('url-held-plus.rom');
+  // Listed under its slot and the time, not a name from the URL.
+  await expect(view.locator('[data-slot="rom"]')).toContainText(/rom_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}/);
   await expect(view.getByRole('progressbar')).toHaveCount(1);
   await expect(page.locator('.welcome-view')).toHaveCount(0);
   await expect(page.getByText('Granny Smith — preview build')).toHaveCount(0);
@@ -101,20 +102,9 @@ test('a URL boot shows download progress and no start-up dialogs', async ({ page
   await expect(page.getByText('Granny Smith — preview build')).toHaveCount(0);
 });
 
-// Type one line into the Terminal panel (web2 has no window.gsEval) and wait
-// for its output to match.
-async function terminalExpect(page: Page, line: string, pattern: RegExp): Promise<void> {
-  await page.locator('button.ptab[data-tab="terminal"]').click();
-  const term = page.locator('.console');
-  await expect(term).toBeVisible({ timeout: 15_000 });
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-  await expect(page.locator('.console-output')).toContainText(pattern, { timeout: 15_000 });
-}
-
 // URL media is kept the way an upload is: the fetched floppy is stored in
-// /opfs/images/fd/ under its URL's name and inserted from there, not from
+// /opfs/images/fd/ under its slot and the time it was fetched
+// (fd0_2026-10-04_17-42-05) and inserted from there, not from
 // volatile /tmp.  It then survives a reload and shows in
 // the Images tab like any other floppy.
 test('?fd0= media is persisted to /opfs/images/fd and inserted from there', async ({ page }) => {
@@ -133,8 +123,11 @@ test('?fd0= media is persisted to /opfs/images/fd and inserted from there', asyn
   const cont = page.getByRole('button', { name: 'Continue' });
   if (await cont.isVisible().catch(() => false)) await cont.click();
 
-  await terminalExpect(page, 'machine.floppy.drive[0].disk.filename', /\/opfs\/images\/fd\/url-system\.dsk/);
-  await terminalExpect(page, 'files.path_exists "/opfs/images/fd/url-system.dsk"', /true/);
+  const STORED = /\/opfs\/images\/fd\/fd0_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}/;
+  expect(await gsEvalInPage(page, 'machine.floppy.drive[0].disk.filename')).toMatch(STORED);
+  const stored = (await opfsFiles(page)).find((p) => STORED.test(p));
+  expect(stored).toBeDefined();
+  expect(await gsEvalInPage(page, 'files.path_exists', [stored])).toBe(true);
 });
 
 // Every file under /opfs, from the browser's own view of OPFS.
@@ -165,7 +158,7 @@ test('?hd0= that is not a hard disk is rejected, and the machine boots without i
 
   await page.goto('/index.html?rom=url-plus.rom&model=plus&hd0=url-floppy-as-hd.img');
   await expect(
-    page.locator('.toast .msg').filter({ hasText: "HD0: 'url-floppy-as-hd.img' is not a valid Hard Disk image" }),
+    page.locator('.toast .msg').filter({ hasText: /HD0: 'hd0_[\d_-]+' is not a valid Hard Disk image/ }),
   ).toBeVisible({ timeout: 60_000 });
   await expect(page.locator('.toast .msg').filter({ hasText: 'Booted plus from URL parameters' }))
     .toBeVisible({ timeout: 60_000 });
@@ -207,7 +200,7 @@ test('?vrom= that is not a declaration ROM is left out of the boot, which says s
 
   await page.goto('/index.html?rom=url-plus.rom&model=plus&vrom=url-not-a.vrom');
   await expect(
-    page.locator('.toast .msg').filter({ hasText: "VROM: 'url-not-a.vrom' is not a valid Video ROM image" }),
+    page.locator('.toast .msg').filter({ hasText: /VROM: 'vrom_[\d_-]+' is not a valid Video ROM image/ }),
   ).toBeVisible({ timeout: 60_000 });
   await expect(
     page.locator('.toast .msg').filter({ hasText: "Booting plus without the URL's video ROM" }),

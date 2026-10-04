@@ -10,6 +10,7 @@
 #include "appletalk.h"
 #include "cpu.h"
 #include "debug.h"
+#include "iw_printer.h"
 #include "log.h"
 #include "memory.h"
 #include "ppc.h"
@@ -45,6 +46,9 @@ void machine_teardown_config_devices(config_t *cfg) {
     // sessions close as a server sees a Mac vanish; the network stays.
     atalk_conn_delete(cfg->atalk);
     cfg->atalk = NULL;
+    // The printer is plugged into the SCC (or the network): it goes first too
+    iw_printer_delete(cfg->imagewriter);
+    cfg->imagewriter = NULL;
     if (cfg->scc) {
         scc_delete(cfg->scc);
         cfg->scc = NULL;

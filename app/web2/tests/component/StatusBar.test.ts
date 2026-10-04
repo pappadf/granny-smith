@@ -3,6 +3,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import StatusBar from '@/components/status-bar/StatusBar.svelte';
 import { tick } from 'svelte';
 import { machine, setDriveActivity, type MachineStatus } from '@/state/machine.svelte';
+import { layout } from '@/state/layout.svelte';
+import { systemView } from '@/state/system.svelte';
 import {
   printer,
   setPrinterStatus,
@@ -144,5 +146,29 @@ describe('StatusBar', () => {
     expect(button.textContent).toContain('MacOS7');
     button.click();
     expect(printer.viewerOpen).toBe(true);
+  });
+
+  it("right-click on an ImageWriter's document shows its settings in SYSTEM", async () => {
+    machine.status = 'running';
+    const { container } = render(StatusBar);
+    showPrintedDocument({
+      printer: 'ImageWriter II',
+      name: 'imagewriter2-00001-Finder.pdf',
+      title: 'Finder',
+      pages: 1,
+      pdf: new Uint8Array([0x25]),
+    });
+    printer.viewerOpen = false;
+    await tick();
+    const button = container.querySelector('button.sb-printed') as HTMLButtonElement;
+    button.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    await tick();
+    const item = Array.from(document.querySelectorAll('[role="menuitem"]')).find((el) =>
+      el.textContent?.includes('Printer settings'),
+    ) as HTMLElement;
+    expect(item).toBeTruthy();
+    item.click();
+    expect(systemView.reveal).toBe('machine.imagewriter');
+    expect(layout.activeTab).toBe('machine');
   });
 });

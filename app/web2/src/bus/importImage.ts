@@ -52,6 +52,15 @@ export interface ImportOptions {
   onSmall?: (path: string, name: string) => Promise<string | null>;
   // Progress (bytes of the source read; its length when known; bytes stored).
   onProgress?: (read: number, total: number | null, stored: number) => void;
+  // The name to store the image under, and to report it as, instead of its
+  // own (URL media are named by slot and time: the source's own name then
+  // only hints at a streamed UDIF).
+  storeAs?: string;
+  // Where the image came from (the URL of URL media), recorded in a UDIF the
+  // import writes as gs-origin and reported back by files.udif_info: what a
+  // later URL boot looks for to use the stored image instead of downloading
+  // it again (bus/urlMedia.ts).
+  origin?: string;
 }
 
 export interface ImportOutcome {
@@ -306,7 +315,7 @@ async function writeUdif(
   opts: ImportOptions,
   cancelled: () => boolean,
 ): Promise<{ bytes_in: number; stored_bytes: number }> {
-  const h = await gsEval('files.udif_open', [part, 64, 1, name]);
+  const h = await gsEval('files.udif_open', [part, 64, 1, name, opts.origin ?? '']);
   if (typeof h !== 'number' || h < 0) throw new Error(gsErrorText(h));
   let stored = 0;
   try {
@@ -412,6 +421,7 @@ async function importDecoded(
     }
   }
 
+  const shown = opts.storeAs ?? name;
   // A UDIF is stored as it is (or re-chunked): never compressed twice.  A
   // Blob's trailer is read directly; a stream's is known by its name.
   let isUdif = /\.(dmg|smi|udif)$/i.test(name);
@@ -432,21 +442,21 @@ async function importDecoded(
         await rmQuiet(part);
         if (!r || typeof r !== 'object' || 'error' in (r as object))
           throw new Error(gsErrorText(r));
-        const placed = await placeUdif(dmg, name, opts.categories);
-        if (placed) showNotification(`${name} stored`, 'info');
+        const placed = await placeUdif(dmg, shown, opts.categories);
+        if (placed) showNotification(`${shown} stored`, 'info');
         return { handled: true, path: placed?.path ?? null, category: placed?.category };
       }
       const settled = await settleUdif(part, name);
-      const placed = await placeUdif(settled, name, opts.categories);
-      if (placed) showNotification(`${name} stored`, 'info');
+      const placed = await placeUdif(settled, shown, opts.categories);
+      if (placed) showNotification(`${shown} stored`, 'info');
       return { handled: true, path: placed?.path ?? null, category: placed?.category };
     }
 
     const st = await writeUdif(part, name, pump, opts, cancelled);
-    const placed = await placeUdif(part, name, opts.categories);
+    const placed = await placeUdif(part, shown, opts.categories);
     if (placed)
       showNotification(
-        `${name}: ${sizeText(st.bytes_in)} disk stored in ${sizeText(st.stored_bytes)}`,
+        `${shown}: ${sizeText(st.bytes_in)} disk stored in ${sizeText(st.stored_bytes)}`,
         'info',
       );
     return { handled: true, path: placed?.path ?? null, category: placed?.category };
@@ -478,20 +488,25 @@ async function importMacArchive(
     )
       throw new Error('could not stage the archive');
     setActivityDetail('decoding the archive...');
-    const r = (await gsEval('files.archive.import', [staged, part, opts.member ?? ''])) as {
+    const r = (await gsEval('files.archive.import', [
+      staged,
+      part,
+      opts.member ?? '',
+      opts.origin ?? '',
+    ])) as {
       member?: string;
       bytes_in?: number;
       stored_bytes?: number;
     } | null;
     if (!r || typeof r !== 'object' || typeof r.member !== 'string')
       return { handled: false, path: null };
-    const member = r.member.split('/').pop() || name;
+    const shown = opts.storeAs ?? (r.member.split('/').pop() || name);
     for (const cat of opts.categories) {
       if ((await MEDIA_TYPES[cat].validate(part, gsEval)).valid) {
-        const placed = await placeUdif(part, member, [cat]);
+        const placed = await placeUdif(part, shown, [cat]);
         if (placed && r.bytes_in && r.stored_bytes)
           showNotification(
-            `${member}: ${sizeText(r.bytes_in)} disk stored in ${sizeText(r.stored_bytes)}`,
+            `${shown}: ${sizeText(r.bytes_in)} disk stored in ${sizeText(r.stored_bytes)}`,
             'info',
           );
         return { handled: true, path: placed?.path ?? null, category: placed?.category };

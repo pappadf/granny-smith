@@ -16,7 +16,7 @@
 //      identifies it by the card it provides, and it lands at
 //      /opfs/images/vrom/d1629664 (content-hashed);
 //   2. upload the IIcx ROM via the Welcome button (no auto-boot);
-//   3. boot the IIcx from the Terminal panel WITHOUT any vrom= pick — the
+//   3. boot the IIcx WITHOUT any vrom= pick — the
 //      slot-$9 default card (mdc_8_24) must content-match the offered file
 //      and expose its declaration ROM (machine.nubus.slot[9].card.declrom).
 
@@ -24,7 +24,7 @@ import { test, expect, type Page } from "@playwright/test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { gotoWeb2 } from "../helpers/web2-fs";
-import { terminalRun } from "../helpers/terminal";
+import { gsCallInPage, gsEvalInPage } from "../helpers/web2-eval";
 
 const DATA = path.resolve(__dirname, "../../data");
 const IICX_ROM = path.join(DATA, "roms", "iix-iicx-se30-97221136.rom");
@@ -67,26 +67,6 @@ async function dropOnDisplay(page: Page, fileName: string, hostFile: string) {
   );
 }
 
-// Echo an expression through the terminal under a unique key and return the
-// printed value (fresh key per probe so stale echoes can't satisfy the
-// match). The typed line itself is echoed too — `voiN=${expr}` — so matches
-// whose value still starts with `$` are the input echo, not the result;
-// poll until the evaluated line lands.
-let probeSeq = 0;
-async function terminalEval(page: Page, expr: string): Promise<string | null> {
-  const key = `voi${++probeSeq}`;
-  await terminalRun(page, `echo "${key}=\${${expr}}"`);
-  for (let i = 0; i < 25; i++) {
-    await page.waitForTimeout(400);
-    const text = await page.locator(".console-output").innerText();
-    const values = [...text.matchAll(new RegExp(`${key}=(\\S+)`, "g"))]
-      .map((m) => m[1])
-      .filter((v) => !v.startsWith("$"));
-    if (values.length) return values[values.length - 1];
-  }
-  return null;
-}
-
 test('mid-session vROM upload is offered: "(auto)" boot content-matches it without a reload', async ({
   page,
 }) => {
@@ -114,23 +94,23 @@ test('mid-session vROM upload is offered: "(auto)" boot content-matches it witho
       .filter({ hasText: "iix-iicx-se30-97221136.rom uploaded" }),
   ).toBeVisible({ timeout: 60_000 });
 
-  // 3. Everything below runs in the shipped Terminal panel — web2 has no
-  //    window.gsEval. Open it and verify the vROM landed content-hashed.
-  await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator(".console")).toBeVisible({ timeout: 15_000 });
+  // 3. The vROM landed content-hashed.
   expect(
-    await terminalEval(page, 'files.path_size("/opfs/images/vrom/d1629664")'),
-  ).toBe("32768");
+    await gsEvalInPage(page, "files.path_size", ["/opfs/images/vrom/d1629664"]),
+  ).toBe(32768);
 
   // 4. "(auto)" boot: one boot document with NO vrom= pick. The slot-$9
   //    default card (mdc_8_24) must find its declaration ROM among the
   //    offered candidates — the file we just dropped, under its hash name.
-  await terminalRun(page, 'machine.boot model="iicx" ram=8192 rom="/opfs/images/rom/97221136"');
-  // Let the boot's terminal output settle before typing the next line —
-  // keystrokes race the console render of the ROM-load prints otherwise.
-  await page.waitForTimeout(3_000);
-  expect(await terminalEval(page, "machine.id")).toBe("iicx");
+  await gsCallInPage(page, "machine.boot", {
+    model: "iicx",
+    ram: 8192,
+    rom: "/opfs/images/rom/97221136",
+  });
+  await expect
+    .poll(() => gsEvalInPage(page, "machine.id"), { timeout: 30_000 })
+    .toBe("iicx");
   expect(
-    await terminalEval(page, "machine.nubus.slot[9].card.declrom.present"),
-  ).toBe("true");
+    await gsEvalInPage(page, "machine.nubus.slot[9].card.declrom.present"),
+  ).toBe(true);
 });

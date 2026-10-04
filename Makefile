@@ -225,11 +225,16 @@ LDFLAGS := $(MODE_CFLAGS) -Wno-pthreads-mem-growth \
            -s USE_WEBGL2=1 \
            $(EXTRA_CFLAGS) $(EXTRA_LDFLAGS)
 
+# The link's counterpart of FLAGS_STAMP: a change to LDFLAGS alone recompiles
+# no object, so nothing else would relink the module.
+LDFLAGS_HASH  := $(shell printf '%s' '$(subst ','\'',$(LDFLAGS) $(PLATEN_LDLIBS))' | md5sum | cut -c1-12)
+LDFLAGS_STAMP := $(OBJ_DIR)/ldflags-$(LDFLAGS_HASH).stamp
+
 # -- Phony targets --
 
 .PHONY: all release debug sanitize run \
         headless unit-test integration-test integration-test-valgrind \
-        e2e-test test clean help FORCE \
+        e2e-test test clean help \
         ui2 ui2-dev ui2-test ui2-check ui2-check-dist ui2-prod-smoke ui2-e2e ui2-gallery ui2-diag run2
 
 # -- WASM build --
@@ -263,9 +268,12 @@ $(OBJ_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Force-rebuild build_id.o so __DATE__/__TIME__ stay current
-FORCE:
-$(OBJ_DIR)/$(CORE_DIR)/build_id.o: FORCE
+# build_id.o carries __DATE__/__TIME__, so it is recompiled whenever anything
+# else in the link changes -- any other object, or the link flags -- and only
+# then: an unchanged tree keeps its build ID (checkpoints refuse a mismatched
+# one) and a repeated `make` or `make ui2` does not relink.
+BUILD_ID_OBJ := $(OBJ_DIR)/$(CORE_DIR)/build_id.o
+$(BUILD_ID_OBJ): $(filter-out $(BUILD_ID_OBJ),$(OBJ)) $(LDFLAGS_STAMP)
 
 # gsvrom_data.c embeds the generated fragments header.
 $(OBJ_DIR)/$(CORE_DIR)/peripherals/nubus/gsvrom_data.o: $(VROM68K_HEADER)
@@ -281,6 +289,14 @@ $(FLAGS_STAMP):
 	@mkdir -p $(dir $@)
 	@rm -f $(OBJ_DIR)/flags-*.stamp $(OBJ_DIR)/platen-*.stamp
 	@touch $@
+
+# The link-flags stamp: creating it (any LDFLAGS change) relinks, through
+# build_id.o, with a fresh build ID.
+$(LDFLAGS_STAMP):
+	@mkdir -p $(dir $@)
+	@rm -f $(OBJ_DIR)/ldflags-*.stamp
+	@touch $@
+
 $(OBJ): $(FLAGS_STAMP) $(PLATEN_PREREQS) | check-emcc
 
 # Link all objects into the final WASM module
@@ -398,23 +414,24 @@ test: unit-test integration-test
 # -- UI (app/web2) — Svelte 5 + Vite + TypeScript --
 # `make run` builds and serves this UI.
 
-ui2:
+# ui2 depends on the WASM build, so the dist never serves a core older than
+# the sources: an incremental emcc pass, a no-op (same build ID) when fresh.
+# Build with the same flags as the core you want served (`make ui2 MODE=debug`
+# after `make debug`): other flags rebuild the tree.
+ui2: all
 	cd $(WEB2_DIR) && npm ci --silent && npm run build
 	@# Copy the WASM build's runtime artifacts into the served dist directory:
 	@# the module, the service worker and the LaserWriter interpreter.  Never
 	@# the object tree ($(BUILD_DIR)/wasm): nothing loads it, and dist/ is what
-	@# gets deployed.  Skipped if the WASM build hasn't run yet.
-	@if [ -f $(BUILD_DIR)/main.mjs ]; then \
-		cp $(BUILD_DIR)/main.mjs $(BUILD_DIR)/main.wasm $(WEB2_DIST)/ ; \
-		if [ -f $(BUILD_DIR)/coi-serviceworker.js ]; then \
-			cp $(BUILD_DIR)/coi-serviceworker.js $(WEB2_DIST)/ ; \
-		fi ; \
-		for f in $(BUILD_DIR)/platen-*.js $(BUILD_DIR)/platen-*.wasm; do \
-			[ -f "$$f" ] && cp "$$f" $(WEB2_DIST)/ ; \
-		done ; \
-	else \
-		echo "Note: $(BUILD_DIR)/main.mjs not found; run 'make' first to produce WASM artifacts" ; \
-	fi
+	@# gets deployed.
+	@[ -f $(BUILD_DIR)/main.mjs ] || { echo "ui2: $(BUILD_DIR)/main.mjs missing after the WASM build" >&2; exit 1; }
+	cp $(BUILD_DIR)/main.mjs $(BUILD_DIR)/main.wasm $(WEB2_DIST)/
+	@if [ -f $(BUILD_DIR)/coi-serviceworker.js ]; then \
+		cp $(BUILD_DIR)/coi-serviceworker.js $(WEB2_DIST)/ ; \
+	fi ; \
+	for f in $(BUILD_DIR)/platen-*.js $(BUILD_DIR)/platen-*.wasm; do \
+		[ -f "$$f" ] && cp "$$f" $(WEB2_DIST)/ ; \
+	done ; true
 
 ui2-dev:
 	cd $(WEB2_DIR) && npm run dev

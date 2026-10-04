@@ -160,6 +160,7 @@ void mac030_build_lowspeed(config_t *cfg, checkpoint_t *cp, void (*scc_irq)(void
     machine_part_begin(cfg, cp, "appletalk");
     cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, cp);
     machine_part(cfg, cp, "appletalk", part_save_atalk, cfg->atalk);
+    machine_part_imagewriter(cfg, cp, false);
 }
 
 // Finish init: debugger, scheduler start, cold-boot IRQ/IPL reset.

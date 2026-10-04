@@ -1070,6 +1070,8 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // Port B (AppleBus, and the boot ROM's loopback self-test) is left as
     // it was.
     scc_set_port_ready_line(cfg->scc, 0, SCC_PIN_SYNC, true);
+    // The ImageWriter the Office System prints to, on Serial A or B
+    machine_part_imagewriter(cfg, checkpoint, true);
 
     lisa_display_init(cfg);
     scheduler_new_event_type(cfg->scheduler, "lisa", cfg, "vbl_off", &lisa_vbl_off);

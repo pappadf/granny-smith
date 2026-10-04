@@ -6,19 +6,20 @@
 //
 // The worked example in docs/guide/web.md is
 //
-//   ?ROM=https://archive.org/download/<rom item>/<rom item>.zip/368CADFE%20-%20Mac%20IIci.ROM
-//   &HD0=https://archive.org/download/AppleMacintoshSystem753/System7_5_3.img
+//   ?ROM=<the ROM archive's file server>/view_archive.php?archive=…zip&file=368CADFE…
+//        (percent-encoded as a whole)
+//   &HD0=https://archive.org/cors/AppleMacintoshSystem753/System7_5_3.img
 //
 // which exercises everything this feature is made of: case-insensitive
-// names, a member path through a zip, archive.org routing (server-side zip
-// extraction for the ROM, /cors/ for the disk image, whose plain /download/
-// path carries no CORS header), and a bare HFS volume that only boots because
+// names, URLs fetched exactly as given (the link names archive.org's
+// CORS-enabled endpoints itself: the page has no routing for any host), a
+// query string inside a value, and a bare HFS volume that only boots because
 // scsi.attach_hd wraps it with a partition map and the GSDisk driver.
 //
-// No network: archive.org's two endpoints are routed to the same bytes on
-// disk (the gs-test-data copies of those items), and the spec asserts the
-// page asked for exactly the URLs archive.org serves with CORS.  The
-// generic-host rows build a small zip in the spec and route it likewise.
+// No network: archive.org's endpoints are routed to the same bytes on disk
+// (the gs-test-data copies of those items), and the spec asserts the page
+// asked for exactly the URLs the link gave.  The generic-host rows build a
+// small zip in the spec and route it likewise.
 
 import { test, expect, type Page, type Route } from '@playwright/test';
 import * as fs from 'node:fs';
@@ -31,9 +32,17 @@ const PLUS_ROM = path.resolve(__dirname, '../../data/roms/plus-v3-4d1f8172.rom')
 const BARE_753 = path.resolve(__dirname, '../../data/systems/system_7_5_3_25mb_bare.img');
 
 const ROM_ITEM = 'mac_rom_archive_-_as_of_8-19-2011';
-const ROM_MEMBER_URL = `https://archive.org/download/${ROM_ITEM}/${ROM_ITEM}.zip/368CADFE%20-%20Mac%20IIci.ROM`;
-const HD_URL = 'https://archive.org/download/AppleMacintoshSystem753/System7_5_3.img';
+// A zip member, extracted by the item's file server (view_archive.php, with
+// CORS); the server and directory come from archive.org/metadata/<item>.
+const ROM_MEMBER_URL =
+  `https://ia800908.us.archive.org/view_archive.php?archive=/12/items/${ROM_ITEM}/${ROM_ITEM}.zip` +
+  '&file=368CADFE%20-%20Mac%20IIci.ROM';
+// A whole file through /cors/, the file path that carries CORS headers.
 const HD_CORS_URL = 'https://archive.org/cors/AppleMacintoshSystem753/System7_5_3.img';
+
+// Route every archive.org host (archive.org and its file servers).
+const ARCHIVE_ORG = (url: URL): boolean =>
+  url.hostname === 'archive.org' || url.hostname.endsWith('.archive.org');
 
 // A STORED (uncompressed) zip holding `entries`, in order.
 function storedZip(entries: Array<{ name: string; data: Buffer }>): Buffer {
@@ -110,7 +119,7 @@ test('archive.org ROM-in-zip + bare HD0 image boots the IIci off the wrapped vol
   test.skip(!fs.existsSync(BARE_753), `no bare volume at ${BARE_753}`);
   test.setTimeout(300_000);
   const asked: string[] = [];
-  await page.route('https://archive.org/**', (route) => {
+  await page.route(ARCHIVE_ORG, (route) => {
     const url = route.request().url();
     asked.push(url);
     if (url === ROM_MEMBER_URL) return serve(route, fs.readFileSync(IICI_ROM));
@@ -118,7 +127,7 @@ test('archive.org ROM-in-zip + bare HD0 image boots the IIci off the wrapped vol
     return route.fulfill({ status: 404, body: 'not routed' });
   });
 
-  const q = `?ROM=${encodeURIComponent(ROM_MEMBER_URL)}&HD0=${encodeURIComponent(HD_URL)}&speed=turbo`;
+  const q = `?ROM=${encodeURIComponent(ROM_MEMBER_URL)}&HD0=${encodeURIComponent(HD_CORS_URL)}&speed=turbo`;
   await page.goto(`/index.html${q}`);
   await waitReady(page);
 
@@ -128,10 +137,8 @@ test('archive.org ROM-in-zip + bare HD0 image boots the IIci off the wrapped vol
   ).toBeVisible({ timeout: 120_000 });
   await expect(page.locator('.welcome-layer')).toHaveCount(0);
 
-  // The page asked archive.org only for endpoints that carry CORS headers.
-  expect(asked).toContain(ROM_MEMBER_URL);
-  expect(asked).toContain(HD_CORS_URL);
-  expect(asked).not.toContain(HD_URL);
+  // The page fetched exactly the URLs it was given, and nothing else.
+  expect(asked).toEqual([ROM_MEMBER_URL, HD_CORS_URL]);
 
   // The bare volume went in as a hard disk, grown by the wrapper's prefix.
   expect(await gsEvalInPage(page, 'machine.scsi.device[0].type')).toMatchObject({ enum: 'hd' });
@@ -143,6 +150,11 @@ test('archive.org ROM-in-zip + bare HD0 image boots the IIci off the wrapped vol
       wrapped = true;
   }
   expect(wrapped).toBe(true);
+  // Stored under the slot and the time, not a name from the URL.
+  const names: string[] = [];
+  for (let i = 0; i < images; i++)
+    names.push(String(await gsEvalInPage(page, `files.images[${i}].filename`)));
+  expect(names.some((n) => /\/hd0_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}/.test(n))).toBe(true);
 
   // And the machine boots System 7.5.3 from it to the Finder: a boot drive,
   // an open System file, and an application heap apart from the system's.
@@ -158,6 +170,42 @@ test('archive.org ROM-in-zip + bare HD0 image boots the IIci off the wrapped vol
       intervals: [2000],
     })
     .toBe(true);
+});
+
+// A disk the page stored from a URL records that URL (the UDIF's gs-origin):
+// a second boot of the same link attaches the stored image and does not
+// download the disk again.  The ROM, a small file, is fetched both times.
+test('a second boot of the same link uses the stored disk, not a new download', async ({
+  page,
+}) => {
+  test.skip(!fs.existsSync(BARE_753), `no bare volume at ${BARE_753}`);
+  test.setTimeout(300_000);
+  const asked: string[] = [];
+  await page.route(ARCHIVE_ORG, (route) => {
+    const url = route.request().url();
+    asked.push(url);
+    if (url === ROM_MEMBER_URL) return serve(route, fs.readFileSync(IICI_ROM));
+    if (url === HD_CORS_URL) return serve(route, fs.readFileSync(BARE_753));
+    return route.fulfill({ status: 404, body: 'not routed' });
+  });
+  const q = `?ROM=${encodeURIComponent(ROM_MEMBER_URL)}&HD0=${encodeURIComponent(HD_CORS_URL)}&speed=turbo`;
+
+  await page.goto(`/index.html${q}`);
+  await waitReady(page);
+  await expect(
+    page.locator('.toast .msg').filter({ hasText: 'Booted iici from URL parameters' }),
+  ).toBeVisible({ timeout: 120_000 });
+  expect(asked).toEqual([ROM_MEMBER_URL, HD_CORS_URL]);
+
+  // The same link again, in the same browser (its OPFS kept).
+  asked.length = 0;
+  await page.goto(`/index.html${q}`);
+  await waitReady(page);
+  await expect(
+    page.locator('.toast .msg').filter({ hasText: 'Booted iici from URL parameters' }),
+  ).toBeVisible({ timeout: 120_000 });
+  expect(asked).toEqual([ROM_MEMBER_URL]);
+  await expect.poll(() => macGlobal(page, 'BootDrive'), { timeout: 240_000, intervals: [2000] }).toBeGreaterThan(0);
 });
 
 test('a zip member path picks that member, not the first file', async ({ page }) => {
@@ -194,7 +242,7 @@ test('a member that is not in the zip is reported with what is there', async ({ 
 
 // The Lisa: the ProFile images in archive.org's "Apple Lisa Profile HD Disk
 // Images for LisaEM and IDLE" item are raw 532-byte-block ProFile disks inside
-// zips, so HD0= names the member and archive.org extracts it.  A fresh Lisa
+// zips, so HD0= is the file server's view_archive.php for the member.  A fresh Lisa
 // stops at the boot ROM's startup-device screen unless its parameter memory
 // names the ProFile, which the page does for hd0 (bus/boot.ts setStartupDisk).
 const LISA_ROM = path.resolve(__dirname, '../../data/roms/lisa2-revh-098917b2.rom');
@@ -204,15 +252,18 @@ const LOS_PROFILE = path.resolve(
 );
 const LISA_ITEM =
   'apple-lisa-profile-hd-disk-images-for-lisaem-and-idle-lisa-office-system-3.1-lis';
-const LISA_HD_URL = `https://archive.org/download/${LISA_ITEM}/IDLE_LOS3.1-after1stBoot.zip/profile.raw`;
+const LISA_HD_URL =
+  `https://ia600806.us.archive.org/view_archive.php?archive=/22/items/${LISA_ITEM}` +
+  '/IDLE_LOS3.1-after1stBoot.zip&file=profile.raw';
 // The boot ROM, as the "Lisa Software" item's two Rev H chip dumps: 341-0175-H
 // holds the even bytes, 341-0176-H the odd.  The URL names the odd chip first
 // on purpose: the page tries both interleavings and keeps the one whose
 // checksum verifies.
 const LISA_FW =
-  'https://archive.org/download/lisa-software/Lisa%20Software.zip/Lisa%20Software/firmware';
-const LISA_EVEN_URL = `${LISA_FW}/341-0175-H.BIN`;
-const LISA_ODD_URL = `${LISA_FW}/341-0176-H.BIN`;
+  'https://ia600103.us.archive.org/view_archive.php?archive=/21/items/lisa-software' +
+  '/Lisa%20Software.zip&file=Lisa%20Software%2Ffirmware%2F';
+const LISA_EVEN_URL = `${LISA_FW}341-0175-H.BIN`;
+const LISA_ODD_URL = `${LISA_FW}341-0176-H.BIN`;
 
 test('a Lisa boots Office System from archive.org: two ROM chips + a ProFile zip member', async ({
   page,
@@ -223,7 +274,7 @@ test('a Lisa boots Office System from archive.org: two ROM chips + a ProFile zip
   const even = Buffer.from(rom.filter((_, i) => i % 2 === 0));
   const odd = Buffer.from(rom.filter((_, i) => i % 2 === 1));
   const asked: string[] = [];
-  await page.route('https://archive.org/**', (route) => {
+  await page.route(ARCHIVE_ORG, (route) => {
     const url = route.request().url();
     asked.push(url);
     if (url === LISA_EVEN_URL) return serve(route, even);

@@ -291,6 +291,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part_begin(cfg, checkpoint, "appletalk");
     cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, checkpoint);
     machine_part(cfg, checkpoint, "appletalk", part_save_atalk, cfg->atalk);
+    machine_part_imagewriter(cfg, checkpoint, false);
 
     // 7.8336 MHz / 783.36 kHz = exactly 10, so this is the literal it replaces.
     machine_part_begin(cfg, checkpoint, "via1");

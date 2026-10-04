@@ -638,6 +638,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     machine_part_begin(cfg, cp, "appletalk");
     cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, cp);
     machine_part(cfg, cp, "appletalk", part_save_atalk, cfg->atalk);
+    machine_part_imagewriter(cfg, cp, false);
 
     // VIA1: one real 6522 behind the Grand Central decode, byte-wide on
     // $200 centres.  Timer clock: 783.36 kHz is the classic rate and the

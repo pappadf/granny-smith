@@ -13,6 +13,7 @@
   if (v === 'resume') checkpointPrompt.shown = true;
   if (v === 'print') {
     printer.document = {
+      printer: 'LaserWriter',
       name: '00042-Read Me.pdf',
       title: 'Read Me',
       pages: 3,

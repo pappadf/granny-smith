@@ -164,7 +164,8 @@ transports, installed at module construction:
   is free to use it; a browser without an inline viewer
   (`navigator.pdfViewerEnabled` false, e.g. Chrome on Android) downloads
   it at once instead.  The status bar shows the printer's activity from
-  the `printer_status` event and reopens the last document.  The protocol is
+  the `printer_status` event and reopens the last document; right-clicking
+  an ImageWriter's item opens `machine.imagewriter` in the SYSTEM tab.  The protocol is
   [`laserwriter_ring_protocol.h`](../../src/core/network/laserwriter_ring_protocol.h)
   / `printer/platenProtocol.ts`; the whole path is
   [`docs/reference/protocols/laserwriter-session.md`](../reference/protocols/laserwriter-session.md) §5.5.
@@ -285,7 +286,7 @@ callbacks is emitted at its source too; the page routes each in
 | `notify:drive_activity` | the tick, on a light's edge; a machine change turns lit lights off and re-bases | `{kind, state}` |
 | `notify:checkpoint_saved` | `system_quick_checkpoint` | `{elapsed_ms}` |
 | `notify:printer_status` | the PAP layer, when the LaserWriter's status string changes | `{status}` |
-| `notify:download_chunk` | the download job, per 4 MB chunk | `{id, handle, ptr, len, last, name}` |
+| `notify:download_chunk` | the download job, per 4 MB chunk | `{id, handle, ptr, len, last, name}`; a printed document adds `kind: "document", printer, job, pages, title` |
 | `log:log` | the log sink, every line | `{line}` |
 | `log:output` | the job layer, a job's printed text | `{id, client, text}` |
 
@@ -359,7 +360,13 @@ acknowledges the buffer (the worker refills it), and on the last chunk
 saves the Blob through a transient anchor (`bus/download.ts`). Neither
 thread waits on the other; a page that never acknowledges times the job
 out after 30 s, not the machine. The LaserWriter's PostScript capture
-(`appletalk.printer.capture`) takes the same road.
+(`appletalk.printer.capture`) takes the same road, and so does every
+document the ImageWriter prints (`printer_sink_document` in `em_main.c`):
+its chunks carry `kind: "document"` and the printer's name, job, pages and
+title, and the page opens the finished bytes in the print viewer instead of
+saving them (or saves them where the browser shows no PDF inline). The
+ImageWriter's status changes are `notify:printer_status` events like the
+LaserWriter's, with a `printer` field naming it.
 
 **Ctrl-C, exactly.** The terminal is client 2 (the rest of the page is
 client 1). Ctrl-C cancels the terminal's foreground job if it has one;
@@ -923,24 +930,54 @@ few names the container does hold.
 **Encoding.**  Write a value `encodeURIComponent`-encoded.  Browsers let
 `:` and `/` through unencoded, so a hand-typed URL works — *unless* it
 contains `&` (splits the query), `#` (ends it), `+` (becomes a space) or
-`%` (starts an escape).  Member names in the archive.org ROM archive
-contain `&` (`9630C68B - Power Mac 7200&7500&8500&9500 v2.ROM`): write it
-`%26`.  Spaces may be typed or written `%20`.
+`%` (starts an escape).  A value that has a query string of its own
+(`…/view_archive.php?archive=…&file=…`) must be encoded as a whole.
+Spaces may be typed or written `%20`.
 
-**archive.org.**  Its file servers send no CORS headers, so a page on
-another origin cannot read `archive.org/download/<item>/<file>` at all.
-The page rewrites archive.org URLs to the endpoints that do allow it
-(verified 2026-09-28 with `Origin: https://pappadf.github.io`):
+**URLs are fetched as given.**  The page has no routing for any host: it
+requests exactly the URL in the value (or, for a container member path,
+that container).  A link that needs a particular endpoint — one that sends
+CORS headers, a server-side extraction — names it itself.
 
-| The value names | Fetched from | Notes |
+For archive.org, whose `/download/<item>/<file>` URLs send no CORS headers
+(a page on another origin cannot read them), write links this way
+(verified 2026-10-04 with `Origin: https://pappadf.github.io`):
+
+| What | Link to | Notes |
 |---|---|---|
-| `/download/<item>/<file>` | `/cors/<item>/<file>` | whole file; `/cors/` ignores `Range` |
-| `/download/<item>/<x.zip>/<member>` | unchanged | archive.org extracts the member server-side (`view_archive.php`); whole member |
-| `/details/<item>/<file>` | as `/download/…` | |
-| `/details/<item>` | the item's one original media file | found through `archive.org/metadata/<item>`; an item with several asks you to name one |
+| a whole file | `https://archive.org/cors/<item>/<file>` | the file path that carries CORS headers; ignores `Range` |
+| a file inside a zip | `https://<server>/view_archive.php?archive=<dir>/<zip>&file=<member>` | the item's file server extracts the member, with CORS; `<server>` and `<dir>` are the `server` and `dir` fields of `https://archive.org/metadata/<item>`; escape `file=` (a member named with `&` is `%26`), then encode the whole URL inside the value |
+| a file inside a StuffIt/Mac archive | `https://archive.org/cors/<item>/<x.sit>/<member>` | the page fetches the archive and unpacks the member itself |
 
-Neither endpoint serves partial content, so remote media is always
-downloaded whole (then kept in OPFS like any upload).
+archive.org's own `/download/<item>/<x.zip>/<member>` redirects a browser
+to `view_archive.php` with the member name unescaped, so a member whose
+name contains `&` fails there (503); linking `view_archive.php` directly
+avoids that.  If archive.org moves an item to another file server, its
+`view_archive.php` links need the new `server`.  Neither endpoint serves
+partial content, so remote media is always downloaded whole (then kept in
+OPFS like any upload).
+
+**Names.**  A downloaded file is stored, listed in the Images tab and shown
+in the progress view under its slot and the local date and time it was
+fetched (`hd0_2026-10-04_17-42-05`, stored as `hd0_2026-10-04_17-42-05.dmg`
+when compressed) — nothing in a URL says reliably what it serves, so none
+of it goes into the name.  A ROM, video ROM or PCI ROM is stored under its
+own content id as always.
+
+**Downloaded before.**  A hard disk or CD big enough to be imported as a
+compact UDIF (over 16 MB, `LARGE_IMPORT_BYTES`) records the value it was
+fetched from in the image (`gs-origin`; `files.udif_open` /
+`files.archive.import` take it as `origin`).  Before downloading an
+`hd*=` or `cd=` value, the page reads `files.udif_info` of each `.dmg` in
+that category's store and, when one's `origin` is the value exactly, attaches
+it instead: nothing is downloaded, and the progress view shows "Already
+stored".  A stored image is never written to (a machine's writes go to a
+delta of its own), so it is still what was downloaded.  The match is on the
+value as given — two spellings of one file download twice — and a URL whose
+content has since changed keeps the old copy until it is deleted in the
+Images tab.  Floppies, ROMs and small disks carry no origin and are fetched
+every time.  The lookup is the page's: the core only records and reports the
+string.
 
 **Mixed content.**  An `http://` value on an `https://` page is refused
 before fetching (the browser would block it), with a message saying so;
@@ -948,41 +985,48 @@ network, CORS, 404 and member-not-found failures are each reported as
 such.
 
 **Worked example** — a Macintosh IIci booting System 7.5.3 off a bare
-archive.org volume, with the ROM taken out of archive.org's ROM archive:
+archive.org volume, with the ROM taken out of archive.org's ROM archive
+(shown with the `ROM=` value decoded for reading; encode it as a whole):
 
 ```
 https://pappadf.github.io/gs-pages/staging/
-  ?ROM=https://archive.org/download/mac_rom_archive_-_as_of_8-19-2011/mac_rom_archive_-_as_of_8-19-2011.zip/368CADFE%20-%20Mac%20IIci.ROM
-  &HD0=https://archive.org/download/AppleMacintoshSystem753/System7_5_3.img
+  ?ROM=https://ia800908.us.archive.org/view_archive.php?archive=/12/items/mac_rom_archive_-_as_of_8-19-2011/mac_rom_archive_-_as_of_8-19-2011.zip&file=368CADFE%20-%20Mac%20IIci.ROM
+  &HD0=https://archive.org/cors/AppleMacintoshSystem753/System7_5_3.img
 ```
 
-(one line, no spaces).  A **Lisa 2** booting the Office System 3.1, all from
-archive.org — the Rev H boot ROM as its two chip dumps from the `lisa-software`
-item, and an IDLE ProFile image out of a zip:
+which, as a link, is (one line, no spaces):
+
+```
+https://pappadf.github.io/gs-pages/staging/?ROM=https%3A%2F%2Fia800908.us.archive.org%2Fview_archive.php%3Farchive%3D%2F12%2Fitems%2Fmac_rom_archive_-_as_of_8-19-2011%2Fmac_rom_archive_-_as_of_8-19-2011.zip%26file%3D368CADFE%2520-%2520Mac%2520IIci.ROM&HD0=https://archive.org/cors/AppleMacintoshSystem753/System7_5_3.img
+```
+
+A **Lisa 2** booting the Office System 3.1, all from archive.org — the Rev H
+boot ROM as its two chip dumps from the `lisa-software` item, and an IDLE
+ProFile image out of a zip (values decoded for reading):
 
 ```
 https://pappadf.github.io/gs-pages/staging/
-  ?ROM=https://archive.org/download/lisa-software/Lisa%20Software.zip/Lisa%20Software/firmware/341-0175-H.BIN
-  &ROM=https://archive.org/download/lisa-software/Lisa%20Software.zip/Lisa%20Software/firmware/341-0176-H.BIN
-  &HD0=https://archive.org/download/apple-lisa-profile-hd-disk-images-for-lisaem-and-idle-lisa-office-system-3.1-lis/IDLE_LOS3.1-after1stBoot.zip/profile.raw
+  ?ROM=https://ia600103.us.archive.org/view_archive.php?archive=/21/items/lisa-software/Lisa%20Software.zip&file=Lisa%20Software%2Ffirmware%2F341-0175-H.BIN
+  &ROM=https://ia600103.us.archive.org/view_archive.php?archive=/21/items/lisa-software/Lisa%20Software.zip&file=Lisa%20Software%2Ffirmware%2F341-0176-H.BIN
+  &HD0=https://ia600806.us.archive.org/view_archive.php?archive=/22/items/apple-lisa-profile-hd-disk-images-for-lisaem-and-idle-lisa-office-system-3.1-lis/IDLE_LOS3.1-after1stBoot.zip&file=profile.raw
 ```
 
 The IDLE images in that item are raw 532-byte-block ProFile disks; the
 Office System 3.1, Workshop 3.0 and Xenix ones boot (verified 2026-09-28);
 `IDLE_MacWorksXL30` stops with boot-ROM error 23.  The `LisaEM_*` ones <!-- lint-allow: LisaEm -->
 are DiskCopy 4.2 ProFile images (20 tag bytes per block, logical block
-order) and attach as they are: name the `.dc42` member as `HD0=`
-(`LisaEM_LOS3.1with7LisaApps.zip/lisaem-profile.dc42` boots the Office <!-- lint-allow: LisaEm -->
+order) and attach as they are: link the `.dc42` member as `HD0=`
+(`LisaEM_LOS3.1with7LisaApps.zip`, member `lisaem-profile.dc42`, boots the Office <!-- lint-allow: LisaEm -->
 System with LisaWrite, LisaDraw and the rest installed; verified headless
-2026-10-03, not yet from the URL).  The
+2026-10-03).  The
 `apple-lisa-h-1983` item's chip dumps do not verify (scattered single-bit
 differences from the known Rev H ROM) and are refused.
 
 `AppleMacintoshSystem701/System7_0_1.img` is a
 Plus-only minimal install: pair it with
 `4D1F8172%20-%20MacPlus%20v3.ROM`.  The e2e spec
-`tests/e2e/web2-specs/url-archive-boot.spec.ts` replays this URL with
-archive.org's endpoints routed to the gs-test-data copies.
+`tests/e2e/web2-specs/url-archive-boot.spec.ts` replays the IIci and Lisa
+links with archive.org's endpoints routed to the gs-test-data copies.
 
 Downloads run one at a time and stream to the scratch area through the
 same chunked writer as uploads (`bus/upload.ts::streamToOpfs`), so an

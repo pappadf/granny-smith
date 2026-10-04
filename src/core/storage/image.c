@@ -29,7 +29,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -200,25 +199,6 @@ static void mint_random_hex_id(char out[static 17]) {
     out[16] = '\0';
 }
 
-// Return the directory part of a path (caller frees).  Returns "." for paths
-// without a slash.
-static char *dirname_of(const char *path) {
-    if (!path || !*path)
-        return gs_strdup(".");
-    const char *last = strrchr(path, '/');
-    if (!last)
-        return gs_strdup(".");
-    if (last == path)
-        return gs_strdup("/");
-    size_t len = (size_t)(last - path);
-    char *out = (char *)malloc(len + 1);
-    if (!out)
-        return NULL;
-    memcpy(out, path, len);
-    out[len] = '\0';
-    return out;
-}
-
 // Normalise a geometry's block size, treating 0 as the default (512).
 static uint32_t geometry_block_size(image_geometry_t geom) {
     return geom.block_size ? geom.block_size : STORAGE_BLOCK_SIZE;
@@ -276,7 +256,7 @@ size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t s
 
 // Scratch sidecars -- read-only deltas and blank-image deltas -- live under
 // image_scratch_dir() (image_scratch.h), which honours GS_STORAGE_CACHE;
-// so does the default writable delta placement below.  Decoded images are
+// so does a writable mount whose caller names no delta directory.  Decoded images are
 // never written anywhere: an NDIF, UDIF or archived image is a source the
 // storage reads through (source.h, format_registry.h).
 
@@ -438,34 +418,18 @@ image_t *image_create_with_geometry(const char *base_path, const char *delta_dir
     // base can legitimately live on a read-only FS (some tests, distribution
     // mounts) -- or inside an image or an archive.
     //
-    // Default delta_dir: GS_STORAGE_CACHE when set (sidecars routed away
-    // from the media — see image_scratch_dir), else the directory
-    // containing the base image, when that is a host directory, else the
-    // scratch root.  Headless callers may pass NULL when they have no
-    // machine-id concept.
-    char *derived_dir = NULL;
-    if (!delta_dir || !*delta_dir) {
-        const char *cache = getenv("GS_STORAGE_CACHE");
-        if (cache && *cache) {
-            delta_dir = cache;
-        } else {
-            derived_dir = dirname_of(base_path);
-            struct stat st;
-            if (derived_dir && (stat(derived_dir, &st) != 0 || !S_ISDIR(st.st_mode))) {
-                free(derived_dir);
-                derived_dir = gs_strdup(image_scratch_dir()); // the base is inside an image
-            }
-            delta_dir = derived_dir;
-        }
-    }
-    if (!delta_dir || gs_mkdir_p(delta_dir) != 0) {
-        gs_outf("image_create: cannot create delta directory: %s\n", delta_dir ? delta_dir : "(null)");
-        free(derived_dir);
+    // Default delta_dir: the scratch root (image_scratch_dir: GS_STORAGE_CACHE
+    // when set).  Never the base's own directory: a delta is per-instance, so
+    // one left beside the base is an orphan the moment the process exits, and
+    // shared media (tests/data) would collect them.  Headless callers with no
+    // machine directory pass NULL.
+    if (!delta_dir || !*delta_dir)
+        delta_dir = image_scratch_dir();
+    if (gs_mkdir_p(delta_dir) != 0) {
+        gs_outf("image_create: cannot create delta directory: %s\n", delta_dir);
         return NULL;
     }
-    image_t *img = image_open_path(base_path, geom, OPEN_CREATE, delta_dir);
-    free(derived_dir);
-    return img;
+    return image_open_path(base_path, geom, OPEN_CREATE, delta_dir);
 }
 
 image_t *image_open(const char *base_path, const char *instance_path) {

@@ -156,6 +156,12 @@ void atalk_printer_plug(pap_link_t *link) {
     if (!link)
         g_printer_unplugs++;
 }
+// The ImageWriter's LocalTalk Option card (appletalk_imagewriter.c)
+void atalk_imagewriter_register(void) {}
+void atalk_imagewriter_register_timers(struct atalk_conn *conn) {
+    (void)conn;
+}
+void atalk_imagewriter_unplug(void) {}
 void atalk_printer_link_down(void) {}
 const char *atalk_printer_get_status(void) {
     return "";

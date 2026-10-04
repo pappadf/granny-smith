@@ -50,6 +50,7 @@ tests/e2e/
 │   ├── download-transfer.spec.ts        # A core download reaches the page in chunks through a transfer buffer, acked one by one
 │   ├── iicx-video-modes.spec.ts         # Post-shader WebGL canvas baselines (per monitor × depth)
 │   ├── iifx-aux3-realtime.spec.ts       # A/UX 3.0.1 boot to login under the real RAF scheduler
+│   ├── imagewriter-print.spec.ts        # An ImageWriter job, fed to the printer, opens in the print viewer
 │   ├── laserwriter-print.spec.ts        # LaserWriter print from System 6 ends as a PDF download (platen worker)
 │   ├── lisa-xenix-profile.spec.ts       # Lisa/XL ProFile-vs-SCSI config + boot
 │   ├── machine-restart.spec.ts          # Restart power-cycles the machine; the attached disk survives, same open instance
@@ -64,7 +65,7 @@ tests/e2e/
 │   ├── system-edit.spec.ts              # SYSTEM tab: edit machine.cpu.d0 (literal / expression / error), echo, Copy path
 │   ├── terminal-jobs.spec.ts            # Terminal lines as jobs: a run waits, a runaway loop costs nothing, Ctrl-C semantics
 │   ├── upload.spec.ts                   # Upload picker: streamed staging through the core (Safari regression)
-│   ├── url-archive-boot.spec.ts         # ?ROM=…zip/member, archive.org routing, bare-volume HD boot
+│   ├── url-archive-boot.spec.ts         # ?ROM=…zip/member, archive.org links fetched as given, bare-volume HD boot
 │   ├── url-boot.spec.ts                 # ?rom=… URL-parameter boot
 │   ├── voodoo2-thread.spec.ts           # Voodoo2 raster on a second Web Worker; LFB/counter fences
 │   ├── voodoo2-webgpu-fallback.spec.ts  # voodoo2_webgpu without WebGPU falls back to the thread backend, and says so
@@ -109,7 +110,11 @@ npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.web2.config
 
 Each config's `webServer` block builds `app/web2/dist` (`make ui2`) and serves
 it with the COOP/COEP headers `SharedArrayBuffer` needs — no manual server step.
-`make ui2` expects the WASM (`make`) to have been built already.
+`make ui2` brings the WASM core up to date first (an incremental `make`), so a
+run never tests a stale core; when nothing changed it neither recompiles nor
+relinks, and the build ID — which checkpoints are matched against — stays the
+same across runs. Build with the flags of the core you want served
+(`make ui2 MODE=debug` after `make debug`): other flags rebuild the tree.
 
 ## Prerequisites
 
@@ -188,11 +193,17 @@ behaviour that only a browser exercises.
 
 ## Driving the emulator from a spec
 
-web2 has no `window.gsEval`. The typed object-model path from a test is the
-**Terminal panel**: click `.xterm`, type a shell line (`machine.cpu.pc`,
-`scheduler.run N`, `debug.breakpoints.add(…)`), and read results back from
-`.xterm-rows`. The machine auto-runs after boot, so `scheduler.stop` before any
-bounded `scheduler.run`. See `helpers/web2-fs.ts` and the existing specs for the
+Read and call the object model with `gsEvalInPage` / `gsCallInPage`
+(`helpers/web2-eval.ts`): under automation (`navigator.webdriver`) web2 installs
+`window.__gsEvalForTests`, the same `gsEval` the UI uses, so a probe is one
+request with a typed answer (`true`, `32768`, `{ enum, index }`) — no
+keystrokes, no scraping the console, no sleeps for the render to settle.
+`gsCallInPage` fails the spec on a refusal (`{ error }`). Named arguments go
+as an object (`gsCallInPage(page, 'machine.boot', { model: 'iicx', ram: 8192,
+rom })`), positional ones as an array. Type into the Terminal panel
+(`helpers/terminal.ts`) only when the console itself is what the spec tests.
+The machine auto-runs after boot, so `scheduler.stop` before any bounded
+`scheduler.run`. See `helpers/web2-fs.ts` and the existing specs for the
 OPFS-staging and drag-gesture patterns (only the HTML5 drag *gesture* is
 synthesised; the handlers, worker, and OPFS run for real).
 

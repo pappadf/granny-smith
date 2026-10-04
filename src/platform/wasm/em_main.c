@@ -51,6 +51,7 @@
 #include "machine.h"
 #include "mouse.h"
 #include "platform.h"
+#include "printer_sink.h"
 #include "prom.h"
 #include "scheduler.h"
 #include "shell.h"
@@ -627,6 +628,7 @@ typedef struct {
     uint8_t *bytes; // an in-memory source (copied), or NULL
     size_t bytes_len;
     char name[256]; // the download's file name
+    char meta[384]; // extra JSON members for the page (",\"kind\":\"document\",..."), or ""
     uint32_t token; // the deferral (0: answering now)
     uint32_t io_id; // the worker job
     uint32_t handle; // the transfer buffer (published on the first chunk)
@@ -716,8 +718,8 @@ static void download_note(const char *json, void *ud) {
     }
     gs_event_emitf(GS_EVENT_NOTIFY,
                    "{\"event\":\"download_chunk\",\"id\":%u,\"handle\":%u,\"ptr\":%u,\"len\":%u,\"last\":%d,"
-                   "\"name\":\"%s\"}",
-                   (unsigned)d->req_id, (unsigned)d->handle, (unsigned)(uintptr_t)d->buf, n, last, d->name);
+                   "\"name\":\"%s\"%s}",
+                   (unsigned)d->req_id, (unsigned)d->handle, (unsigned)(uintptr_t)d->buf, n, last, d->name, d->meta);
 }
 
 static void download_progress(uint64_t done, uint64_t total, void *ud) {
@@ -799,6 +801,74 @@ void laserwriter_sink_capture(const laserwriter_capture_t *cap) {
     memcpy(d->bytes, cap->ps, cap->ps_len);
     d->bytes_len = cap->ps_len;
     download_start(d);
+}
+
+// Copy `s` into `out` with what JSON strings and file names cannot hold
+// replaced: quotes, backslashes and control bytes become '_' (`file`: also
+// anything outside [A-Za-z0-9.-]).
+static void sanitize(char *out, size_t cap, const char *s, bool file) {
+    size_t n = 0;
+    for (; s && *s && n + 1 < cap; s++) {
+        unsigned char c = (unsigned char)*s;
+        bool ok = c >= 0x20 && c < 0x7F && c != '"' && c != '\\';
+        if (file)
+            ok = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '.' || c == '-';
+        out[n++] = ok ? (char)c : '_';
+    }
+    out[n] = '\0';
+}
+
+// Platform sink for a document a printer rasterised in the core (the
+// ImageWriter, printer_sink.h): the bytes go to the page through the
+// download path, marked as a document, and the page shows them in the print
+// viewer (or downloads them where the browser has no PDF viewer).
+void printer_sink_document(const printer_document_t *doc) {
+    download_job_t *d = (download_job_t *)calloc(1, sizeof(*d));
+    if (!d)
+        return;
+    char title[PRINTER_TITLE_MAX + 1], ftitle[PRINTER_TITLE_MAX + 1], printer[64];
+    sanitize(title, sizeof title, doc->title, false);
+    sanitize(ftitle, sizeof ftitle, doc->title, true);
+    sanitize(printer, sizeof printer, doc->printer, false);
+    snprintf(d->name, sizeof d->name, "%s-%05u-%s.pdf", doc->slug, (unsigned)doc->job_id,
+             ftitle[0] ? ftitle : "untitled");
+    snprintf(d->meta, sizeof d->meta,
+             ",\"kind\":\"document\",\"printer\":\"%s\",\"job\":%u,\"pages\":%u,\"title\":\"%s\"", printer,
+             (unsigned)doc->job_id, (unsigned)doc->pages, title);
+    d->bytes = (uint8_t *)malloc(doc->pdf_len ? doc->pdf_len : 1);
+    if (!d->bytes) {
+        free(d);
+        return;
+    }
+    memcpy(d->bytes, doc->pdf, doc->pdf_len);
+    d->bytes_len = doc->pdf_len;
+    download_start(d);
+}
+
+// Platform sink for a printer job's raw input (the printer's `capture`):
+// downloaded as <printer>-<job>.<ext>.
+void printer_sink_capture(const printer_capture_t *cap) {
+    download_job_t *d = (download_job_t *)calloc(1, sizeof(*d));
+    if (!d)
+        return;
+    snprintf(d->name, sizeof d->name, "%s-%05u.%s", cap->slug, (unsigned)cap->job_id, cap->ext);
+    d->bytes = (uint8_t *)malloc(cap->len ? cap->len : 1);
+    if (!d->bytes) {
+        free(d);
+        return;
+    }
+    memcpy(d->bytes, cap->data, cap->len);
+    d->bytes_len = cap->len;
+    download_start(d);
+}
+
+// A core printer's status changed: the same printer_status event the
+// LaserWriter sends, naming the printer.
+void printer_sink_status(const char *printer, const char *status) {
+    char p[64], st[128];
+    sanitize(p, sizeof p, printer, false);
+    sanitize(st, sizeof st, status, false);
+    gs_event_emitf(GS_EVENT_NOTIFY, "{\"event\":\"printer_status\",\"printer\":\"%s\",\"status\":\"%s\"}", p, st);
 }
 
 // Platform impl of gs_download (weak default in system.c stubs out).

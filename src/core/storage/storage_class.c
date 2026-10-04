@@ -810,6 +810,7 @@ typedef struct {
     uint32_t chunk_kb;
     int level;
     char *source_name;
+    char *origin;
     uint64_t len;
     udif_writer_stats_t st;
     bool raw; // convert: to a flat raw image instead
@@ -817,8 +818,10 @@ typedef struct {
 
 static void udif_job_cleanup(io_leaf_t *j) {
     udif_job_t *u = (udif_job_t *)j->ud;
-    if (u)
+    if (u) {
         free(u->source_name);
+        free(u->origin);
+    }
     free(u);
 }
 
@@ -867,7 +870,8 @@ static int work_udif_open(io_leaf_t *j) {
         return -EBUSY;
     }
     gs_mkdir_parents(j->a);
-    udif_writer_opts_t o = {.chunk_sectors = u->chunk_kb * 2, .level = u->level, .source_name = u->source_name};
+    udif_writer_opts_t o = {
+        .chunk_sectors = u->chunk_kb * 2, .level = u->level, .source_name = u->source_name, .origin = u->origin};
     g_udif[h] = udif_writer_open(j->a, &o, j->err, sizeof j->err);
     if (!g_udif[h])
         return -EIO;
@@ -1176,8 +1180,9 @@ static DEF_METHOD(files_method_xfer_read_disk) {
     return io_leaf_dispatch(j, "files.xfer_read_disk");
 }
 
-// `files.udif_open(path, [chunk_kb], [level], [source_name])` -- start
-// writing a UDIF at `path` (which must not exist); answers a handle.
+// `files.udif_open(path, [chunk_kb], [level], [source_name], [origin])` --
+// start writing a UDIF at `path` (which must not exist); answers a handle.
+// `origin` is recorded as is (gs-origin) and reported by files.udif_info.
 static DEF_METHOD(files_method_udif_open) {
     int64_t kb = argc > 1 ? opt_int(&argv[1], 64) : 64;
     int64_t level = argc > 2 ? opt_int(&argv[2], 1) : 1;
@@ -1192,6 +1197,8 @@ static DEF_METHOD(files_method_udif_open) {
         u->level = (int)level;
         if (argc > 3 && argv[3].kind == V_STRING && argv[3].s && *argv[3].s)
             u->source_name = gs_strdup(argv[3].s);
+        if (argc > 4 && argv[4].kind == V_STRING && argv[4].s && *argv[4].s)
+            u->origin = gs_strdup(argv[4].s);
     }
     return udif_dispatch(argv[0].s, NULL, u, work_udif_open, answer_udif_handle, "files.udif_open");
 }
@@ -1284,6 +1291,7 @@ static DEF_METHOD(files_method_udif_info) {
     val_map_put(b, "gs_profile", val_bool(in.gs_profile));
     val_map_put(b, "in_place", val_bool(in.gs_profile || in.max_chunk_bytes <= udif_inplace_max_chunk()));
     val_map_put(b, "source_name", val_str(in.source_name));
+    val_map_put(b, "origin", val_str(in.origin));
     return val_map_finish(b);
 }
 
@@ -1315,6 +1323,11 @@ static const arg_decl_t files_udif_open_args[] = {
                                                       .kind = V_STRING,
                                                       .validation_flags = OBJ_ARG_OPTIONAL,
                                                       .doc = "The original file name, recorded in the image",
+                                                      .default_doc = "none"},
+    {.name = "origin",
+                                                      .kind = V_STRING,
+                                                      .validation_flags = OBJ_ARG_OPTIONAL,
+                                                      .doc = "Where the bytes came from (e.g. a URL), recorded in the image as is",
                                                       .default_doc = "none"},
 };
 static const arg_decl_t files_udif_append_args[] = {
@@ -1449,7 +1462,7 @@ static const member_t files_members[] = {
      .flags = M_CAT_INTERNAL,
      .doc = "Start writing a UDIF (.dmg) image from decoded bytes; answers a handle for udif_append",
      .method =
-         {.ui_flags = MM_IO, .args = files_udif_open_args, .nargs = 4, .result = V_INT, .fn = files_method_udif_open}},
+         {.ui_flags = MM_IO, .args = files_udif_open_args, .nargs = 5, .result = V_INT, .fn = files_method_udif_open}},
     {.kind = M_METHOD,
      .name = "udif_append",
      .flags = M_CAT_INTERNAL,
@@ -1505,7 +1518,7 @@ static const member_t files_members[] = {
      .examples = EXAMPLES("files.udif_info \"/opfs/images/hd/system.dmg\""),
      .doc = "What a UDIF (.dmg) image's block map says, without decoding it",
      .method = {.result_doc = "{sectors, bytes, stored_bytes, zero_bytes, extents, tables, crc, max_chunk_bytes, "
-                              "gs_profile, in_place, source_name}",
+                              "gs_profile, in_place, source_name, origin}",
                 .args = files_path_arg,
                 .nargs = 1,
                 .result = V_MAP,

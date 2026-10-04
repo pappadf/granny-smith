@@ -40,6 +40,13 @@ void part_save_egret(void *obj, checkpoint_t *cp); // egret_t (the IIsi's Egret,
 void part_save_iop(void *obj, checkpoint_t *cp); // iop_t
 void part_save_cuda(void *obj, checkpoint_t *cp); // av_cuda_t
 
+// The machine's ImageWriter (iw_printer.h): build it, reading its block on a
+// restore, and register it.  After the SCC and the AppleTalk connection.
+// `lisa`: the Lisa's Serial A ready line is wired by the machine itself and
+// it has no AppleTalk; the Macs wire the printer's DTR to HSKi -> /CTS on
+// both ports when a printer is plugged in.
+void machine_part_imagewriter(struct config *cfg, checkpoint_t *cp, bool lisa);
+
 // cfg->irq, the 68k families' aggregated interrupt-source bitmap: read it
 // on a restore, and register it.
 void machine_part_irq(struct config *cfg, checkpoint_t *cp);

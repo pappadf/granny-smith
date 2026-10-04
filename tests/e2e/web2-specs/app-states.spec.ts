@@ -199,7 +199,10 @@ for (const skin of SKINS) {
       await page.route("**/never.rom", () => undefined);
       await open(page, "/index.html?rom=never.rom&model=plus");
       await expect(page.locator(".url-boot-layer")).toBeVisible();
-      await shot(page, `url-boot-${skin}.png`);
+      // The file's name is its slot and the time it was queued: masked.
+      await shot(page, `url-boot-${skin}.png`, [
+        page.locator(".url-boot .file .name"),
+      ]);
     });
 
     test(`debug view of a paused machine (${skin})`, async ({ page }) => {

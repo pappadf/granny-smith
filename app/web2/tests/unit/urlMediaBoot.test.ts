@@ -119,7 +119,7 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     const boot = bridge.calls.find((c) => c.path === 'machine.boot');
     expect(boot?.args).toEqual({ model: 'plus', rom: '/opfs/images/rom/4D1F8172' });
     expect(media.insertFloppy).not.toHaveBeenCalled();
-    expect(toastText()).toMatch(/FD0: 'bad\.dsk' is not a valid Floppy Disk image/);
+    expect(toastText()).toMatch(/FD0: 'fd0_[\d_-]+' is not a valid Floppy Disk image/);
     expect(scratchLeft()).toEqual([]);
   });
 
@@ -128,7 +128,7 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     served['floppy.img'] = FLOPPY;
     expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&hd0=floppy.img'))).toBe(true);
     expect(media.attachHardDisk).not.toHaveBeenCalled();
-    expect(toastText()).toMatch(/HD0: 'floppy\.img' is not a valid Hard Disk image/);
+    expect(toastText()).toMatch(/HD0: 'hd0_[\d_-]+' is not a valid Hard Disk image/);
     expect(scratchLeft()).toEqual([]);
     expect([...files.keys()].some((p) => p.startsWith('/opfs/images/hd/'))).toBe(false);
   });
@@ -137,7 +137,10 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     served['plus.rom'] = PLUS_ROM;
     served['sys.dsk'] = FLOPPY;
     await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=sys.dsk'));
-    expect(media.insertFloppy).toHaveBeenCalledWith('/opfs/images/fd/sys.dsk', true, 0);
+    // Stored under the slot and the time, not the URL's name.
+    const stored = [...files.keys()].find((p) => p.startsWith('/opfs/images/fd/fd0_'));
+    expect(stored).toBeDefined();
+    expect(media.insertFloppy).toHaveBeenCalledWith(stored, true, 0);
     expect(scratchLeft()).toEqual([]);
   });
 
@@ -161,7 +164,8 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     served['one.dsk'] = FLOPPY;
     await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=one.dsk'));
     const first = written.filter((p) => p.includes('url_fd0'));
-    const mounted = files.get('/opfs/images/fd/one.dsk');
+    const firstPath = [...files.keys()].find((p) => p.startsWith('/opfs/images/fd/fd0_')) ?? '';
+    const mounted = files.get(firstPath);
     expect(mounted).toBeDefined();
     written.length = 0;
 
@@ -171,8 +175,8 @@ describe('URL media: an unvalidated download is rejected, never attached from sc
     expect(first.length).toBeGreaterThan(0);
     expect(second.length).toBeGreaterThan(0);
     expect(new Set(second).has(first[0])).toBe(false);
-    expect(written).not.toContain('/opfs/images/fd/one.dsk');
-    expect(files.get('/opfs/images/fd/one.dsk')).toBe(mounted);
+    expect(written).not.toContain(firstPath);
+    expect(files.get(firstPath)).toBe(mounted);
     expect(scratchLeft()).toEqual([]);
   });
 });
@@ -197,8 +201,52 @@ describe("the URL's vROM is the boot's", () => {
     expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&vrom=junk.vrom'))).toBe(true);
     const boot = bridge.calls.find((c) => c.path === 'machine.boot');
     expect(boot?.args).toEqual({ model: 'plus', rom: '/opfs/images/rom/4D1F8172' });
-    expect(toastText()).toMatch(/VROM: 'junk\.vrom' is not a valid Video ROM image/);
+    expect(toastText()).toMatch(/VROM: 'vrom_[\d_-]+' is not a valid Video ROM image/);
     expect(toastText()).toMatch(/Booting plus without the URL's video ROM/);
     expect(scratchLeft()).toEqual([]);
+  });
+});
+
+describe('URL media: a disk an earlier download stored is used, not fetched again', () => {
+  const URL_HD = 'https://h/disks/big.img';
+  // One stored image in /opfs/images/hd whose UDIF records `origin`.
+  function storedImage(origin: string): string {
+    const path = '/opfs/images/hd/hd0_2026-10-01_10-00-00.dmg';
+    files.set(path, new Uint8Array(4096).fill(0x11));
+    bridge.reply('files.list', (args: unknown) =>
+      (args as [string])[0] === '/opfs/images/hd'
+        ? [
+            { name: 'hd0_2026-10-01_10-00-00.dmg', kind: 'file' },
+            { name: 'notes.txt', kind: 'file' },
+          ]
+        : [],
+    );
+    bridge.reply('files.udif_info', (args: unknown) =>
+      (args as [string])[0] === path ? { gs_profile: true, origin } : { error: 'not a UDIF' },
+    );
+    return path;
+  }
+
+  it('an image whose origin is the URL is attached, and the disk is not downloaded', async () => {
+    const path = storedImage(URL_HD);
+    served['plus.rom'] = PLUS_ROM;
+    expect(await processUrlMedia(new URLSearchParams(`rom=plus.rom&hd0=${URL_HD}`))).toBe(true);
+    const asked = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) =>
+      String(c[0]),
+    );
+    expect(asked.some((u) => u.endsWith('plus.rom'))).toBe(true);
+    expect(asked.some((u) => u.includes('big.img'))).toBe(false);
+    expect(media.attachHardDisk).toHaveBeenCalledWith(path, 0);
+    expect(scratchLeft()).toEqual([]);
+  });
+
+  it('an image with another origin is left alone: the URL is downloaded', async () => {
+    storedImage('https://h/disks/other.img');
+    served['plus.rom'] = PLUS_ROM;
+    await processUrlMedia(new URLSearchParams(`rom=plus.rom&hd0=${URL_HD}`));
+    const asked = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) =>
+      String(c[0]),
+    );
+    expect(asked.some((u) => u.includes('big.img'))).toBe(true);
   });
 });

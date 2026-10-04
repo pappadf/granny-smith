@@ -220,6 +220,7 @@ static bool member_is_junk(const peel_entry_t *e) {
 typedef struct {
     char member[512];
     char *want; // the member asked for, or NULL
+    char *origin; // recorded in the image as gs-origin, or NULL
     udif_writer_stats_t st;
 } import_job_t;
 
@@ -328,7 +329,7 @@ static int work_archive_import(io_leaf_t *j) {
     // Again with the sink that is the writer.
     import_sink_t *k = calloc(1, sizeof(*k));
     const char *base = strrchr(u->member, '/');
-    udif_writer_opts_t o = {.level = 1, .source_name = base ? base + 1 : u->member};
+    udif_writer_opts_t o = {.level = 1, .source_name = base ? base + 1 : u->member, .origin = u->origin};
     gs_mkdir_parents(j->b);
     if (k)
         k->w = udif_writer_open(j->b, &o, j->err, sizeof j->err);
@@ -397,8 +398,10 @@ static value_t answer_archive_import(io_leaf_t *j) {
 
 static void cleanup_archive_import(io_leaf_t *j) {
     import_job_t *u = j->ud;
-    if (u)
+    if (u) {
         free(u->want);
+        free(u->origin);
+    }
     free(u);
 }
 
@@ -442,6 +445,8 @@ static DEF_METHOD(archive_method_import) {
         return val_err("files.archive.import: out of memory");
     }
     u->want = member ? strdup(member) : NULL;
+    if (argc >= 4 && argv[3].kind == V_STRING && argv[3].s && *argv[3].s)
+        u->origin = strdup(argv[3].s);
     j->ud = u;
     j->work = work_archive_import;
     j->answer = answer_archive_import;
@@ -457,6 +462,11 @@ static const arg_decl_t archive_import_args[] = {
                                                           .validation_flags = OBJ_ARG_OPTIONAL,
                                                           .doc = "The member to take (exact, case-blind, or by its last name component)",
                                                           .default_doc = "the largest file"},
+    {.name = "origin",
+                                                          .kind = V_STRING,
+                                                          .validation_flags = OBJ_ARG_OPTIONAL,
+                                                          .doc = "Where the archive came from (e.g. a URL), recorded in the image as is",
+                                                          .default_doc = "none"            },
 };
 
 static const arg_decl_t archive_path_arg[] = {
@@ -500,7 +510,7 @@ static const member_t archive_members[] = {
      .method = {.result_doc = "{member, bytes_in, stored_bytes, sectors}",
                 .ui_flags = MM_IO,
                 .args = archive_import_args,
-                .nargs = 3,
+                .nargs = 4,
                 .result = V_MAP,
                 .fn = archive_method_import}},
 };

@@ -756,7 +756,11 @@ function routeCoreEvent(ev: CoreEvent): void {
       setCheckpointSaved(num(d.elapsed_ms));
       break;
     case 'notify:printer_status':
-      if (typeof d.status === 'string') setPrinterStatus(d.status);
+      if (typeof d.status === 'string')
+        setPrinterStatus(
+          d.status,
+          typeof d.printer === 'string' && d.printer ? d.printer : 'LaserWriter',
+        );
       break;
     case 'log:log':
       if (typeof d.line === 'string') routeLogEmit(d.line);
