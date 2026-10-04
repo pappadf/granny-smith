@@ -75,12 +75,12 @@ def levels(model, ram_kb, rom, budget, check_ticks) {
         scheduler.run $budget
     }
 
-    # --- level 4: machine.rebuild.  A new machine inherits no store (R1).
-    machine.rebuild
-    assert machine.id == "${$model}" "${$model}: machine.rebuild built another model"
-    assert machine.cpu.pc == $pc0 "${$model}: a rebuilt machine is not at its reset vector"
-    assert pram() == $pram_fresh "${$model}: R1: machine.rebuild inherited PRAM"
-    assert nvram() == $nv_fresh "${$model}: R1: machine.rebuild inherited NVRAM"
+    # --- A new machine, from the same document, inherits no store (R1).
+    machine.boot model="${$model}" ram=$ram_kb rom="../../data/roms/${$rom}"
+    assert machine.id == "${$model}" "${$model}: machine.boot built another model"
+    assert machine.cpu.pc == $pc0 "${$model}: a new machine is not at its reset vector"
+    assert pram() == $pram_fresh "${$model}: R1: a new machine inherited PRAM"
+    assert nvram() == $nv_fresh "${$model}: R1: a new machine inherited NVRAM"
     echo "reset-levels ${$model}: ok"
 }
 

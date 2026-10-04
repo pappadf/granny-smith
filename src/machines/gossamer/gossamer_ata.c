@@ -280,31 +280,13 @@ void gos_ata_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
         ata_checkpoint_save(&st->ata[c], cp);
 }
 
-// ---- media: transit across machine.restart and the runtime verbs ------------
+// ---- media: attach and the runtime verbs -------------------------------------
 //
 // MEDIA_BUS_ATA unit u = cell * 2 + device.  A hard disk is the ATA device
 // itself; a CD-ROM is the SCSI device at id u on the ATAPI back end.
 
 static bool unit_ok(int unit) {
     return unit >= 0 && unit < 4;
-}
-
-int gos_media_detach(config_t *cfg, media_slot_t *out, int max) {
-    int n = system_media_detach_std(cfg, out, max);
-    gossamer_state_t *st = gos_st(cfg);
-    if (!st || !st->ata_ready)
-        return n;
-    for (int u = 0; u < 4 && n < max; u++) {
-        ata_channel_t *ch = &st->ata[u >> 1];
-        image_t *img = ch->img[u & 1];
-        if (!img || ata_device_kind(ch, u & 1) != ATA_DEV_HD)
-            continue;
-        out[n] = (media_slot_t){.bus = MEDIA_BUS_ATA, .unit = u, .img = img, .scsi_type = 1};
-        config_remove_image(cfg, img);
-        n++;
-    }
-    n += system_media_detach_scsi_bus(cfg, st->atapi, MEDIA_BUS_ATA, out + n, max - n);
-    return n;
 }
 
 int gos_media_attach(config_t *cfg, const media_slot_t *slot) {

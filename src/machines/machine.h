@@ -53,7 +53,4 @@ extern const hw_profile_t machine_pmg3mt;
 // the running machine is touched; V_ERROR names the slot on a rejection.
 value_t machine_slots_resolve(const hw_profile_t *profile, const boot_config_t *doc, machine_build_opts_t *out);
 
-// Write resolved entries back as one slots= spec.  False when it does not fit.
-bool machine_slots_format(const slot_opts_t *slots, int n, char *buf, size_t size);
-
 #endif // MACHINE_H

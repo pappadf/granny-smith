@@ -1046,10 +1046,9 @@ static void appletalk_teardown(void) {
 // do not survive that; its shares, names and printer do.
 //
 // The printer lives as long as the machine (laserwriter_job.h): it ends
-// here with the machine, unless `power_cycle` says the machine is being
-// rebuilt as itself.  After a successful load the old machine's printer is
-// freed; after a failed one it goes back into service.
-void appletalk_delete(scc_t *scc, bool power_cycle) {
+// here with the machine.  After a successful load the old machine's printer
+// is freed; after a failed one it goes back into service.
+void appletalk_delete(scc_t *scc) {
     if (!scc || scc != g_scc) {
         // Not the machine this stack serves: a Lisa, or the machine a
         // successful checkpoint load replaced.
@@ -1073,7 +1072,7 @@ void appletalk_delete(scc_t *scc, bool power_cycle) {
         if (prev_cfg)
             atalk_config_apply(prev_cfg);
         free(prev_cfg);
-    } else if (!power_cycle) {
+    } else {
         // The machine is gone, and its printer with it
         laserwriter_printer_retire();
     }

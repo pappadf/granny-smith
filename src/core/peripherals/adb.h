@@ -67,13 +67,6 @@ void adb_keyboard_event(adb_t *adb, key_event_t event, int key);
 uint8_t adb_keyboard_address(adb_t *adb);
 uint8_t adb_mouse_address(adb_t *adb);
 
-// The Caps Lock latch.  Caps Lock is a mechanically locking switch, so its
-// state belongs to the keyboard, not the machine: machine.restart reads it
-// off the dying machine and re-latches it on the rebuilt one, the same way
-// mounted media survive the power-cycle.
-bool adb_capslock_latched(adb_t *adb);
-void adb_capslock_latch(adb_t *adb);
-
 // Updates mouse movement and button state; accumulates deltas until next Talk R0
 void adb_mouse_event(adb_t *adb, bool button, int dx, int dy);
 

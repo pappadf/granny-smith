@@ -742,19 +742,6 @@ TEST(a_machine_that_goes_frees_its_printer) {
     ASSERT_EQ_INT((int)a, (int)g_printer_freed[0]);
 }
 
-// machine.restart rebuilds the same machine, which keeps its printer --
-// and with it what jobs made permanent -- the way it keeps its disks.
-TEST(a_power_cycle_keeps_the_printer) {
-    stub_printer_reset();
-    link_boot();
-    uint32_t a = stub_printer_use();
-    link_restart();
-    ASSERT_EQ_INT((int)a, (int)g_printer_current);
-    ASSERT_EQ_INT(0, g_printer_nfreed);
-    link_delete();
-    ASSERT_EQ_INT((int)a, (int)g_printer_freed[0]);
-}
-
 // A load that succeeds is a different machine: it starts without a printer,
 // and the old machine's is freed when that machine goes.
 TEST(a_successful_load_frees_the_old_printer) {
@@ -796,7 +783,6 @@ int main(void) {
     RUN(a_failed_load_gives_the_stack_back_to_the_running_machine);
     RUN(a_successful_load_moves_the_stack_to_the_new_machine);
     RUN(a_machine_that_goes_frees_its_printer);
-    RUN(a_power_cycle_keeps_the_printer);
     RUN(a_successful_load_frees_the_old_printer);
     RUN(a_failed_load_gives_the_printer_back);
     RUN(a_malformed_ddp_frame_is_dropped_and_counted);

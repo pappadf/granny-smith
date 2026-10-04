@@ -124,9 +124,8 @@ The printer lives as long as the emulated machine:
 | Event | Printer |
 |---|---|
 | `machine.boot` (a new machine) | new |
-| `machine.rebuild` (the recorded machine built again) | kept, like its disks (an explicit transfer) |
-| `machine.restart` (the same machine power-cycled; nothing rebuilt) | kept |
-| `machine.reset` (no rebuild) | kept |
+| `machine.restart` (the same machine power-cycled; nothing torn down) | kept |
+| `machine.reset` (warm reset) | kept |
 | `checkpoint.load` that succeeds | new (an interpreter is not saved in a checkpoint) |
 | `checkpoint.load` that fails | kept: the running machine goes on |
 | `appletalk.printer.restart()` | new; the machine is untouched |
@@ -140,9 +139,8 @@ that never prints costs nothing. The machine lifecycle moves the id
 
 - `laserwriter_printer_retire()` — the machine is gone: the job is
   abandoned, PRINTER_FREE sent, and the next job gets a new id.
-  `appletalk_delete` calls it unless its `power_cycle` argument says the
-  machine is being rebuilt as itself (`machine_teardown.c` passes
-  `machine_boot_is_restart()`).
+  `appletalk_delete` calls it whenever the machine it serves is torn
+  down (teardown has no modes).
 - `laserwriter_printer_detach()` / `reattach()` / `free_detached()` — a
   checkpoint load builds the new machine before the old one goes;
   `appletalk_init` detaches the old machine's printer into `g_superseded`

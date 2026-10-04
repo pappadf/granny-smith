@@ -4,8 +4,8 @@
 # defaults (never the previous record's, including across a model change),
 # validate-before-teardown, the per-slot slots= configuration and its
 # video_card= sugar, the machine.config record (including resolved vROM
-# picks), the vrom= / slot rom= revision pin, machine.rebuild, and the
-# checkpoint round-trip of the record.
+# picks), the vrom= / slot rom= revision pin, and the checkpoint round-trip
+# of the record.
 
 TEST_NAME := Configuration-document boot (IIcx)
 TEST_DESC := machine.boot document semantics, machine.config record, per-slot configuration

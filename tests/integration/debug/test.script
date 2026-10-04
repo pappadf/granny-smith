@@ -158,17 +158,17 @@ debug.disasm 0x400090 3
 # scheduler.run does, so VBL pulses while stepping.  Before, stepping ran the
 # guest with the VBL line dead and the two diverged within a few frames.
 # 600000 Plus instructions span several
-# VBLs.  (Last in the script: it rebuilds the machine -- both runs must start
-# from the same constructed machine, instruction counter included, which a
-# machine.restart (a power cycle of the SAME machine) does not give.)
+# VBLs.  (Last in the script: it boots the machine again -- both runs must
+# start from the same constructed machine, instruction counter included, which
+# a machine.restart (a power cycle of the SAME machine) does not give.)
 
-machine.rebuild
+machine.boot model="plus" rom="../../data/roms/plus-v3-4d1f8172.rom"
 machine.rtc.time = 3000000000
 scheduler.run 400000
 debug.step 600000
 let step_pc = machine.cpu.pc
 let step_n = machine.cpu.instr_count
-machine.rebuild
+machine.boot model="plus" rom="../../data/roms/plus-v3-4d1f8172.rom"
 machine.rtc.time = 3000000000
 scheduler.run 400000
 scheduler.run 600000

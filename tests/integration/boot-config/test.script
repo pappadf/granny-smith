@@ -1,6 +1,5 @@
 # Integration test: configuration-document boot.  machine.boot inherits
-# NOTHING — the document is the whole specification — and machine.rebuild
-# is the verb for "construct this machine again from its record".
+# NOTHING — the document is the whole specification.
 #
 # Pins the boot-document contract end-to-end:
 #   * headless startup writes the built-from record (same path as scripts);
@@ -13,9 +12,8 @@
 #     is sugar for the first socket's card, and the two may not disagree;
 #   * machine.config.vroms records the declaration-ROM picks the loader
 #     actually resolved; vrom= (or a slot's rom=) pins a specific revision;
-#   * machine.rebuild rebuilds the machine the record describes (without
-#     restamping `created`), and the record rides in checkpoints —
-#     machine.rebuild after checkpoint.load replays the restored record.
+#   * the record rides in checkpoints: checkpoint.load builds the saved
+#     machine, its slots and its monitor strap from it.
 
 # --- Startup boot wrote the built-from record (headless CLI = same path). ---
 assert machine.config.valid "record valid after startup boot"
@@ -90,50 +88,32 @@ assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 G
 assert machine.config.video_card == "824gc" "record video_card"
 assert machine.config.vroms != "[]" "vroms record must list resolved picks"
 
-# --- The record lists the seated cards, and machine.rebuild re-seats a
-# multi-card machine from it, including the socket video_card= cannot name. ---
+# --- The record lists the seated cards, including the socket video_card=
+# cannot name. ---
 machine.boot model="iicx" rom="${$ROM}" slots="9=display_card_24ac;10=824gc"
 assert machine.config.slot_cards == "[{\"bus\":\"nubus\",\"slot\":9,\"card_id\":\"display_card_24ac\"}, {\"bus\":\"nubus\",\"slot\":10,\"card_id\":\"824gc\"}]" "both populated sockets must appear in the record"
-machine.rebuild
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "rebuild must re-seat socket $9"
-assert machine.nubus.slot[10].card.name == "Apple Macintosh Display Card 8•24 GC" "rebuild must re-seat socket $A"
-
-# ...and a slot the document said nothing about resolves its default again.
+# ...and a slot the document says nothing about resolves its default.
 machine.boot model="iicx" rom="${$ROM}"
 assert machine.config.slot_cards == "[{\"bus\":\"nubus\",\"slot\":9,\"card_id\":\"mdc_8_24\"}]" "a default-populated socket is recorded"
-machine.rebuild
-assert machine.config.slot_cards == "[{\"bus\":\"nubus\",\"slot\":9,\"card_id\":\"mdc_8_24\"}]" "rebuild re-resolves the default"
 
 # --- A slot's video mode: the 8-bpp seed reaches its card. ---
 machine.boot model="iicx" rom="${$ROM}" slots="9=824gc,mode=gc_640x480_8bpp"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "mode test: card not seated"
 assert machine.nubus.slot[9].card.mode.depth == 8 "the slot's video mode did not set 8 bpp"
 
-# --- machine.rebuild: rebuild exactly the machine the record describes. ---
-machine.boot model="iicx" ram=16384 rom="${$ROM}" video_card="824gc" video_mode="gc_640x480_8bpp"
-let created0 = machine.config.created
-machine.rebuild
-assert machine.id == "iicx" "rebuild constructs the same model"
-assert machine.config.ram == 16384 "rebuild keeps the recorded ram"
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "rebuild reseats the recorded card"
-assert machine.config.created == $created0 "rebuild must not restamp created"
-
 # --- Checkpoint round-trip of the built-from record. ---
+machine.boot model="iicx" ram=16384 rom="${$ROM}" slots="9=824gc,mode=gc_640x480_8bpp;10=display_card_24ac"
 scheduler.run 100000
 assert checkpoint.save("${$WORK_DIR}/bootcfg.checkpoint") "checkpoint save"
 machine.boot model="iicx" rom="${$ROM}" video_card="display_card_24ac"
 assert machine.config.video_card == "display_card_24ac" "pre-restore record differs"
 assert checkpoint.load("${$WORK_DIR}/bootcfg.checkpoint") "checkpoint load"
-assert machine.config.video_card == "824gc" "restored record video_card"
 assert machine.config.model == "iicx" "restored record model"
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "restored machine card"
-# Under a non-inheriting boot a bare machine.boot after restore is an error;
-# the idiom for "build the restored configuration again" is machine.rebuild,
-# which replays the restored record cold.
+assert machine.config.ram == 16384 "restored record ram"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "restored machine: slot $9's card"
+assert machine.nubus.slot[10].card.name == "Apple Macintosh Display Card 24AC" "restored machine: slot $A's card"
+# Under a non-inheriting boot a bare machine.boot after restore is an error.
 assert !machine.boot() "bare machine.boot after restore must be rejected"
-machine.rebuild
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "machine.rebuild after checkpoint.load must rebuild the restored configuration"
-assert machine.config.ram == 16384 "rebuild after restore keeps the restored ram"
 
 # --- vrom= pins a revision: the record's resolved-pick list shows the v1.0
 # ROM (crc $9E9857E8) used instead of the catalog-preferred v1.1. ---
@@ -152,17 +132,13 @@ machine.boot model="iicx" rom="${$ROM}" slots="9=824gc;10=824gc" vrom="../../dat
 assert machine.config.vroms[0].crc == "0x9e9857e8" "vrom= reaches slot $9"
 assert machine.config.vroms[1].crc == "0x9e9857e8" "vrom= reaches slot $A"
 
-# --- The built-in monitor strap (PDM) is part of the record: rebuild and
-# checkpoint.load rebuild with it.  monitor=none leaves the port unconnected,
-# so the machine has no screen until a card provides one; a rebuild used to
-# drop the strap and bring the built-in 640x480 back. ---
+# --- The built-in monitor strap (PDM) is part of the record: checkpoint.load
+# builds with it.  monitor=none leaves the port unconnected, so the machine
+# has no screen until a card provides one. ---
 let pdm_rom = "../../data/roms/pm6100-pm7100-pm8100-9feb69b3.rom"
 machine.boot model="pm7100" rom=$pdm_rom monitor="none"
 assert machine.config.monitor == "none" "record carries the monitor strap"
 assert machine.screen.width == 0 "monitor=none: no built-in screen"
-machine.rebuild
-assert machine.config.monitor == "none" "rebuild keeps the strap in the record"
-assert machine.screen.width == 0 "rebuild must rebuild with the strap"
 assert checkpoint.save("${$WORK_DIR}/monitor.checkpoint") "checkpoint save (pm7100)"
 machine.boot model="pm7100" rom=$pdm_rom
 assert machine.screen.width == 640 "default strap: the built-in 640x480"

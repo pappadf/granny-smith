@@ -290,15 +290,9 @@ void link_boot_from_checkpoint(bool read_fails) {
 }
 
 void link_delete(void) {
-    appletalk_delete(FAKE_SCC_N(g_machine), false);
+    appletalk_delete(FAKE_SCC_N(g_machine));
     ASSERT_TRUE(g_sinks[0] == NULL && g_sinks[1] == NULL);
     ASSERT_EQ_INT(0, sched_pending());
-}
-
-void link_restart(void) {
-    appletalk_delete(FAKE_SCC_N(g_machine), true);
-    ASSERT_TRUE(g_sinks[0] == NULL && g_sinks[1] == NULL);
-    appletalk_init(&g_sched, FAKE_SCC_N(g_machine), NULL);
 }
 
 void link_load(bool fails) {
@@ -310,10 +304,10 @@ void link_load(bool fails) {
     if (fails) {
         // ...but something later in the checkpoint does not, and the load
         // destroys the machine it was building; the old one keeps running.
-        appletalk_delete(FAKE_SCC_N(next), false);
+        appletalk_delete(FAKE_SCC_N(next));
         g_machine = prev;
     } else {
-        appletalk_delete(FAKE_SCC_N(prev), false);
+        appletalk_delete(FAKE_SCC_N(prev));
         g_machine = next;
     }
 }

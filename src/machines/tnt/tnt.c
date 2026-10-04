@@ -478,7 +478,7 @@ static void tnt_fwscsi_attach(config_t *cfg) {
 // power cycles, and it does so here for the hardware's own reason --
 // machine.restart (the power switch) and machine.reset never destroy the
 // machine, so the part is simply never touched.  A new machine
-// (machine.boot, machine.rebuild) gets a new part; nothing carries a store
+// (machine.boot) gets a new part; nothing carries a store
 // across a teardown.  That rule is the fix for #112: the store used to ride
 // a process-lifetime holder across every teardown, and a run stopped part-
 // way through Open Firmware's format of a blank store left it torn.
@@ -968,20 +968,8 @@ static struct display *tnt_display(config_t *cfg) {
     return d ? d : tnt_control_display(cfg);
 }
 
-// machine.restart handle transfer, with the Network Servers' SECOND SCSI
-// bus.  The standard transfer walks the floppies and `cfg->scsi`; on a
-// Shiner a medium in a rear bay is on `machine.scsi2`, and a transfer that
-// does not know that drops it — the handle stays on the tracked-image list
-// and system_destroy closes it, so the drive is simply gone after a
-// power-cycle, with every delta write in it.
-static int tnt_media_detach(config_t *cfg, media_slot_t *out, int max) {
-    int n = system_media_detach_std(cfg, out, max);
-    tnt_state_t *st = tnt_st(cfg);
-    if (st && st->scsi2)
-        n += system_media_detach_scsi_bus(cfg, st->scsi2, MEDIA_BUS_SCSI2, out + n, max - n);
-    return n;
-}
-
+// Media attach, with the Network Servers' SECOND SCSI bus: on a Shiner a
+// medium in a rear bay is on `machine.scsi2`.
 static int tnt_media_attach(config_t *cfg, const media_slot_t *slot) {
     if (slot->bus == MEDIA_BUS_SCSI2) {
         tnt_state_t *st = tnt_st(cfg);
@@ -1209,7 +1197,6 @@ const machine_substrate_t tnt_substrate = {
     .input_mouse_move = mac_input_mouse_move,
     .input_mouse_button = mac_input_mouse_button,
     .display = tnt_display,
-    .media_detach = tnt_media_detach,
     .media_attach = tnt_media_attach,
     .media_present = tnt_media_present,
     .media_eject = tnt_media_eject,

@@ -6,9 +6,8 @@
 //
 // The boot document carries every construction-time setting of one
 // machine.boot call; the record is the live machine's immutable birth
-// certificate — written by boot, read by
-// the read-only machine.config object, replayed by machine.restart, and
-// serialized into checkpoints.
+// certificate — written by boot, read by the read-only machine.config object,
+// and serialized into checkpoints, whose restore builds the machine from it.
 
 #ifndef GS_MACHINE_CONFIG_H
 #define GS_MACHINE_CONFIG_H
@@ -146,18 +145,10 @@ void machine_config_note_slot_card(int bus_kind, int slot, const char *card_id);
 void machine_config_object_init(struct object *machine_obj);
 
 // Apply one boot document: validate → tear down → construct → record
-// (defined in machines/machine.c; shared by machine.boot, machine.rebuild
+// (defined in machines/machine.c; shared by machine.boot
 // and headless startup).  Returns V_NONE on success; V_ERROR — with the
 // old machine still running — on rejection.
 value_t machine_boot_apply(const boot_config_t *doc);
-
-// True while machine_boot_apply is rebuilding the SAME machine for
-// machine.rebuild(), false while it is building a NEW machine for
-// machine.boot.  A rebuild carries exactly the explicit, named transfers
-// declared at its call site -- the mounted media, the Caps Lock latch and the
-// host-side LaserWriter -- and no device state: a non-volatile store does not
-// cross a teardown (machine.restart, which keeps it, tears nothing down).
-bool machine_boot_is_rebuild(void);
 
 #ifdef __cplusplus
 }

@@ -36,9 +36,6 @@
 void link_boot(void);
 // appletalk_delete, then check nothing of the stack's is left queued.
 void link_delete(void);
-// A power cycle (machine.restart): the machine's stack is torn down as the
-// same machine being rebuilt, then brought up again on the same SCC.
-void link_restart(void);
 // Save the running stack's checkpoint record.
 void link_checkpoint(void);
 // link_boot, restoring the saved record; with `read_fails` the read hands the

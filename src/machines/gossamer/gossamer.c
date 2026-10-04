@@ -288,7 +288,7 @@ static void gos_swim3_init(config_t *cfg) {
 
 // The NVRAM is non-volatile: its content survives machine.restart (the
 // power switch) because a restart never destroys the machine, and a new
-// machine (machine.boot, machine.rebuild) gets a new part -- the TNT rule
+// machine (machine.boot) gets a new part -- the TNT rule
 // and its reasons (tnt.c).  Nothing carries it across a teardown.  The new
 // part holds what the board's own firmware formats (of_nvram.h): OF 2.4's
 // variables and the ROM's parameter RAM defaults.  The Rev A ROM's OF
@@ -644,7 +644,6 @@ const machine_substrate_t gossamer_substrate = {
     .input_mouse_move = mac_input_mouse_move,
     .input_mouse_button = mac_input_mouse_button,
     .display = gossamer_display,
-    .media_detach = gos_media_detach,
     .media_attach = gos_media_attach,
     .media_present = gos_media_present,
     .media_eject = gos_media_eject,

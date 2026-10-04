@@ -72,19 +72,12 @@ typedef struct config config_t;
 image_t *config_get_image(config_t *cfg, int index);
 int config_get_n_images(config_t *cfg);
 void config_add_image(config_t *cfg, image_t *image);
-// Remove an image from the tracked list WITHOUT closing it (machine.restart
-// handle transfer — ownership moves to the caller).
-void config_remove_image(config_t *cfg, image_t *image);
-
-// Standard substrate implementation of the machine.restart media transfer
-// (cfg->floppy + cfg->scsi); Mac substrates bind these into their vtables,
-// the Lisa provides its own.  See machine_profile.h media_slot_t.
+// Standard substrate implementation of media attach (cfg->floppy +
+// cfg->scsi); Mac substrates bind it into their vtables, the Lisa provides
+// its own.  See machine_profile.h media_slot_t.
 struct media_slot;
-int system_media_detach_std(config_t *cfg, struct media_slot *out, int max);
 int system_media_attach_std(config_t *cfg, const struct media_slot *slot);
 // One SCSI bus's worth of the same, for a machine with more than one.
-int system_media_detach_scsi_bus(config_t *cfg, struct scsi *bus, enum media_bus which, struct media_slot *out,
-                                 int max);
 int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const struct media_slot *slot);
 
 // === Generic Machine Lifecycle ===

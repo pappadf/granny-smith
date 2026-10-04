@@ -628,26 +628,27 @@ the caller having to track machine-lifetime explicitly.
 
 ## Machine lifecycle
 
-Five operations put a machine in place or restart the one that is running.
-They are four reset **levels** plus a checkpoint load, and they differ in
-exactly one thing: whether the machine is torn down. Only building a
-different machine tears down; a reset or a power cycle keeps every device,
-so the non-volatile stores survive for the hardware's own reason --
-nothing destroyed them.
+Four operations put a machine in place or restart the one that is running.
+Two are reset **levels** of the running machine; the other two build a new
+machine, from a boot document or from a checkpoint. They differ in exactly
+one thing: whether the machine is torn down. Only building a new machine
+tears down; a reset or a power cycle keeps every device, so the
+non-volatile stores, the mounted media, the Caps Lock latch and the
+LaserWriter survive for the hardware's own reason -- nothing destroyed
+them. A new machine inherits nothing from the old one.
 
 | Level | Operation | What it does | Entry point |
 |---|---|---|---|
 | 2 | `machine.reset` | **Warm reset** (the reset button): the board's /RESET net, then the CPU back to its reset vector. RAM is kept. | `machine_method_reset` → `system_machine_reset` (`src/core/system.c`) |
 | 3 | `machine.restart` | **Power cycle**: the same reset with the RAM cleared to the state a new machine's has, and the board's power-on-only state (`substrate->power_on`) back to its constructed values. Nothing is torn down or rebuilt. | `machine_method_restart` → `system_machine_power_cycle` |
-| 4 | `machine.rebuild` | **New machine from the record**: tears down and constructs the machine `machine.config` describes, takes no arguments, and carries three explicit transfers -- the mounted media, the Caps Lock latch, the LaserWriter. | `machine_method_rebuild` → `machine_boot_apply` |
-| 4 | `machine.boot(...)` | **New machine from a document** ([Boot arguments](#boot-arguments)): validates the whole document, tears the running machine down, constructs, installs the ROM, writes the record. | `machine_method_boot` → `machine_boot_apply` (`src/machines/machine.c`) |
+| -- | `machine.boot(...)` | **New machine from a document** ([Boot arguments](#boot-arguments)): validates the whole document, tears the running machine down, constructs, installs the ROM, writes the record. | `machine_method_boot` → `machine_boot_apply` (`src/machines/machine.c`) |
 | -- | `checkpoint.load(path)` | Builds a new machine from a checkpoint: it creates the new machine first and destroys the old one afterwards. | `system_checkpoint_load` → `system_restore` |
 
 Level 1 is the 68k `RESET` instruction: the /RESET net alone, with the CPU
 untouched (`system_reset_devices`). It has no verb -- it is an instruction
 and a wire, not something a user does.
 
-`machine.boot`, `machine.rebuild` and headless startup all go through
+`machine.boot` and headless startup both go through
 `machine_boot_apply`, so they share one sequence: validate, tear down,
 construct, record. Every check runs before `system_destroy`, so a rejected
 boot leaves the running machine and its record untouched
@@ -656,24 +657,24 @@ the level contract over every model in the registry.
 
 ### What each operation keeps
 
-| State | `machine.boot` | `machine.rebuild` | `machine.restart` | `machine.reset` | `checkpoint.load` |
-|---|---|---|---|---|---|
-| Devices | New | New | **Kept** | **Kept** | New |
-| Model, RAM size, cards | From the document; each omitted field takes the model's default | From the record (its slot entries as one `slots=`) | Unchanged | Unchanged | From the checkpoint's model id, RAM size and stored record (its slot entries) |
-| ROM bytes | Read from the `rom=` file before the running machine is touched, and built into the new machine's ROM region at construction | Read again from the recorded path, so a changed file is picked up | Unchanged | Unchanged | From the checkpoint, by content or file reference |
-| RAM contents | Zeroed (fresh `calloc`) | Zeroed | **Cleared** to zero | **Kept** | Restored |
-| CPU registers | Reset | Reset | Reset vector, reset-state SR/VBR/CACR, MMU and TTx enables off | The same | Restored |
-| PRAM (RTC parameter RAM) | Family construction defaults (`rtc_init` → `pram_defaults_apply`; tables in `src/machines/runtime/pram_defaults.h`) | Construction defaults | **Kept** | **Kept** | Restored |
-| NVRAM (`machine.nvram`: Grand Central on TNT/ANS, Heathrow on the beige G3) | Blank | Blank -- nothing crosses a teardown | **Kept** | **Kept** | From the checkpoint |
-| RTC time | Host wall clock at construction; the Lisa's COPS clock starts at 1 January 1984 (`src/machines/lisa/cops.c`; hardware reference: [cops.md](../../../reference/machines/lisa/cops.md)) | Host wall clock (a new RTC) | **Keeps counting** | **Keeps counting** | The saved value |
-| Mounted media | None. The old machine's images are closed; a CD bay is registered empty | **Carried**: the same open handles pass through the substrate's `media_detach`/`media_attach`, so the write delta survives | **Kept** | **Kept** (`floppy_reset` keeps media) | From the checkpoint |
-| Caps Lock latch | Released | **Carried** | **Kept** | Kept (`adb_reset` preserves held keys) | From the checkpoint's ADB state |
-| ADB devices | New | New | Back at their default addresses (the bus loses power: `adb_power_on`) | Kept; the ROM's ADB SendReset resets them | Restored |
-| Scheduler pacing (`scheduler.mode`, `.speed`, `.max_speed`) | Host state (the platform's run loop): untouched, and the new machine runs under it | Untouched | Unchanged | Unchanged | Untouched: never in a checkpoint |
-| `machine.config.created` | Stamped now | **Preserved** | Unchanged | Unchanged | From the checkpoint's record |
-| vROM/PROM offer registries | Process-global; survive | Survive | Survive | Survive | Survive |
-| A slot's ROM file (`vrom=`/`prom=`, a slot's `rom=`) | The document's, an argument of that slot's card; never written to the offer registries | The record's slot entries | Unchanged | Unchanged | The checkpoint record's slot entries |
-| Object tree | Machine-scoped nodes rebuilt (`root_install`); process singletons (`machine`, `rom`, `vrom`, `prom`) stay | Rebuilt | Untouched | Untouched | Rebuilt |
+| State | `machine.boot` | `machine.restart` | `machine.reset` | `checkpoint.load` |
+|---|---|---|---|---|
+| Devices | New | **Kept** | **Kept** | New |
+| Model, RAM size, cards | From the document; each omitted field takes the model's default | Unchanged | Unchanged | From the checkpoint's model id, RAM size and stored record (its slot entries) |
+| ROM bytes | Read from the `rom=` file before the running machine is touched, and built into the new machine's ROM region at construction | Unchanged | Unchanged | From the checkpoint, by content or file reference |
+| RAM contents | Zeroed (fresh `calloc`) | **Cleared** to zero | **Kept** | Restored |
+| CPU registers | Reset | Reset vector, reset-state SR/VBR/CACR, MMU and TTx enables off | The same | Restored |
+| PRAM (RTC parameter RAM) | Family construction defaults (`rtc_init` → `pram_defaults_apply`; tables in `src/machines/runtime/pram_defaults.h`) | **Kept** | **Kept** | Restored |
+| NVRAM (`machine.nvram`: Grand Central on TNT/ANS, Heathrow on the beige G3) | Blank | **Kept** | **Kept** | From the checkpoint |
+| RTC time | Host wall clock at construction; the Lisa's COPS clock starts at 1 January 1984 (`src/machines/lisa/cops.c`; hardware reference: [cops.md](../../../reference/machines/lisa/cops.md)) | **Keeps counting** | **Keeps counting** | The saved value |
+| Mounted media | None. The old machine's images are closed (`system_destroy`); a CD bay is registered empty | **Kept** | **Kept** (`floppy_reset` keeps media) | From the checkpoint |
+| Caps Lock latch | Released | **Kept** | Kept (`adb_reset` preserves held keys) | From the checkpoint's ADB state |
+| ADB devices | New | Back at their default addresses (the bus loses power: `adb_power_on`) | Kept; the ROM's ADB SendReset resets them | Restored |
+| Scheduler pacing (`scheduler.mode`, `.speed`, `.max_speed`) | Host state (the platform's run loop): untouched, and the new machine runs under it | Unchanged | Unchanged | Untouched: never in a checkpoint |
+| `machine.config.created` | Stamped now | Unchanged | Unchanged | From the checkpoint's record |
+| vROM/PROM offer registries | Process-global; survive | Survive | Survive | Survive |
+| A slot's ROM file (`vrom=`/`prom=`, a slot's `rom=`) | The document's, an argument of that slot's card; never written to the offer registries | Unchanged | Unchanged | The checkpoint record's slot entries |
+| Object tree | Machine-scoped nodes rebuilt (`root_install`); process singletons (`machine`, `rom`, `vrom`, `prom`) stay | Untouched | Untouched | Rebuilt |
 
 **`machine.boot` inherits nothing from the running machine.** The
 document is the whole specification. `model` and `rom` are required, and
@@ -683,9 +684,9 @@ previous record. That holds across a model change too
 passes the ROM explicitly: it starts headless with `rom=` and also exports
 the same path as `$ROM`, so a script re-boots with
 `machine.boot model=... rom="${$ROM}"`
-(`scripts/run-integration-test.sh`). To bring back the machine you have
-(including one just restored from a checkpoint), call `machine.rebuild`;
-a bare `machine.boot()` is an error. A new boot does still see three kinds
+(`scripts/run-integration-test.sh`). To get the machine you have again
+from scratch, boot the same document again with `machine.boot`, or restore
+a checkpoint with `checkpoint.load`; a bare `machine.boot()` is an error. A new boot does still see three kinds
 of process-level state that are not part of any machine:
 
 - scheduler pacing (the table above);
@@ -724,22 +725,11 @@ power with the machine (`adb_power_on`), and with VIA1 reset the RTC's
   `machine.reset` fetches the vectors through whatever map the OS left.
   What the hardware then does is the ROM's warm-start path and is not
   verified; `machine.restart` (power-on) is.
-- *Media transfer by substrate (rebuild only).* Floppies and
-  `machine.scsi` go through the standard pair (`system_media_detach_std` /
-  `system_media_attach_std`). The TNT family also carries `machine.scsi2`,
-  and the Network Servers' second channel keeps its bus
-  (`tnt_media_detach`; `tests/integration/ans-machine-restart`). The
-  beige G3 adds its ATA units on `MEDIA_BUS_ATA` (`gos_media_detach`,
-  `gossamer_ata.c`). The Lisa carries its Sony disk and its ProFile
-  (`lisa_media_detach`). A medium that cannot be re-attached is closed
-  and logged.
-- *Failure after teardown.* If `system_create` fails during a boot or
-  rebuild, the previous machine is already gone and the process has no
+- *Failure after teardown.* If `system_create` fails during a boot, the previous machine is already gone and the process has no
   machine. (The ROM is read and validated before teardown, so a bad ROM
   rejects the boot instead.)
 - Host-side state outside the construction configuration (volume,
-  camera/microphone capture sources) is not carried by a boot or a
-  rebuild. The frontend asserts it again (`app/web2/src/bus/boot.ts`,
+  camera/microphone capture sources) is not part of a boot document. The frontend asserts it again (`app/web2/src/bus/boot.ts`,
   `reconcileUiWithMachine`). A restart keeps the machine, so the
   frontend re-asserts nothing after one.
 
@@ -784,8 +774,8 @@ The resolved configuration is recorded in `machine.config` (`model`,
 `ram`, `rom`, `rom_id`, `rom2`, `vroms`, `slot_cards`, `video_card`,
 `video_sense`, `video_mode`, `custom_mode`, `monitor`, `pci_card`,
 `pci_option`, `created`, `valid`; `src/core/machine_config.c`), with the
-resolved slot entries. `machine.rebuild` and `checkpoint.load` rebuild
-from it, the built-in `monitor` strap included.
+resolved slot entries. A checkpoint stores it, and `checkpoint.load`
+builds from it, the built-in `monitor` strap included.
 
 **Headless command line.** The CLI arguments fill the same document and
 call `machine_boot_apply` directly (`src/platform/headless/headless_main.c:1343-1350`):

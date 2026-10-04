@@ -1639,9 +1639,8 @@ int main(int argc, char *argv[]) {
     offer_sibling_card_roms(rom_file);
 
     // Startup is the same boot-document path scripts use (machine.boot):
-    // CLI args fill the document, machine_boot_apply validates and
-    // constructs, and the built-from record lets a later machine.restart
-    // power-cycle this configuration.
+    // CLI args fill the document, and machine_boot_apply validates and
+    // constructs.
     boot_config_t boot_doc = {
         .model = target_model,
         .ram_kb = ram_kb,

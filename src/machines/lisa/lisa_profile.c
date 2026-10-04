@@ -439,23 +439,7 @@ void lisa_profile_detach(lisa_profile_t *pf) {
     pf->phase = PH_IDLE;
 }
 
-// machine.restart handle transfer: hand the open image to the caller
-// WITHOUT closing it (the delta stays live, so writes survive the
-// power-cycle by construction).  Mirrors detach minus the image_close.
-image_t *lisa_profile_take_image(lisa_profile_t *pf) {
-    if (!pf || !pf->image)
-        return NULL;
-    if (pf->sched)
-        remove_event(pf->sched, &pro_complete, pf); // drop any in-flight read completion
-    image_t *img = pf->image;
-    pf->image = NULL;
-    pf->nblocks = 0;
-    pf->phase = PH_IDLE;
-    return img;
-}
-
-// machine.restart handle transfer: attach an already-open 532-bytes/block
-// handle to a fresh device.  No open-by-path step — geometry is re-derived
+// Attach an already-open 532-bytes/block handle (media_attach).  No open-by-path step — geometry is re-derived
 // from the handle, so nothing is re-probed (the checkpoint-restore caveat
 // about the ProFile's block size does not apply here).
 bool lisa_profile_attach_image(lisa_profile_t *pf, image_t *img) {

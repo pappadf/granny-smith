@@ -729,17 +729,6 @@ static void format_ram_options(char *buf, size_t bufsize, const hw_profile_t *p)
 // leaves the running machine untouched.  machine.restart is the verb for
 // "power-cycle this machine".
 
-// Armed by machine.rebuild for the duration of its machine_boot_apply call:
-// carry the mounted media's open image handles across the teardown.  A plain
-// machine.boot never transfers — a new machine starts with empty drives.
-static bool s_transfer_media = false;
-
-// Is machine_boot_apply rebuilding the same machine (machine.rebuild) rather
-// than building a new one?  Only the named transfers ask (machine_config.h).
-bool machine_boot_is_rebuild(void) {
-    return s_transfer_media;
-}
-
 // Stamp the record's `created` field with the current UTC time (ISO8601).
 static void stamp_created(char *buf, size_t bufsize) {
     time_t now = time(NULL);
@@ -890,23 +879,9 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     if (val_is_error(&rerr))
         return rerr;
 
-    // 3. Teardown + atomic construction.  On a machine.rebuild the mounted
-    // media's open handles are detached first so they survive
-    // system_destroy's close loop — the delta stays with its open
-    // instance, so writes survive the power-cycle by construction.
-    media_slot_t media[MEDIA_SLOTS_MAX];
-    int n_media = 0;
-    bool caps_latched = false;
+    // 3. Teardown + atomic construction.  Nothing is carried from the machine
+    // being destroyed: the new one is built from the document alone.
     if (global_emulator) {
-        if (s_transfer_media && global_emulator->machine->substrate->media_detach)
-            n_media = global_emulator->machine->substrate->media_detach(global_emulator, media, MEDIA_SLOTS_MAX);
-        // Caps Lock is a mechanically locking switch: like the mounted
-        // media, its state belongs to the hardware that outlives the
-        // power-cycle, not to the machine being torn down.  (Booting
-        // Copland depends on it: the latch has to be down across the
-        // restart into the diverted boot.)
-        if (s_transfer_media)
-            caps_latched = adb_capslock_latched(global_emulator->adb);
         system_destroy(global_emulator);
         global_emulator = NULL;
     }
@@ -929,27 +904,8 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     machine_config_reset_slot_cards();
     config_t *cfg = system_create(profile, &build_opts, NULL);
     free(rom_bytes); // copied into the ROM region
-    if (!cfg) {
-        for (int i = 0; i < n_media; ++i)
-            image_close(media[i].img); // machine gone; nothing to attach to
+    if (!cfg)
         return val_err("machine.boot: failed to create %s", profile->id);
-    }
-
-    // Hand the transferred media handles back through the device attach
-    // paths.  The rebuilt machine is the same model by construction
-    // (the restart document IS the record), so every slot re-resolves.
-    for (int i = 0; i < n_media; ++i) {
-        if (cfg->machine->substrate->media_attach && cfg->machine->substrate->media_attach(cfg, &media[i]) == 0)
-            continue;
-        LOG(1, "machine.rebuild: could not re-attach medium '%s'; closing it",
-            image_get_filename(media[i].img) ? image_get_filename(media[i].img) : "(unnamed)");
-        image_close(media[i].img);
-    }
-
-    // The carried Caps Lock latch (see above): re-latch it before the
-    // machine runs, so the ROM's ADB init finds the key already down.
-    if (caps_latched)
-        adb_capslock_latch(cfg->adb);
 
     // 4. The built-from record — the machine's birth certificate.
     machine_config_record_t *w = machine_config_record_mut();
@@ -986,8 +942,7 @@ static uint64_t boot_uint(const value_t *v, uint64_t unset) {
 // machine.boot — atomic, self-contained configuration document.  model and
 // rom are required; every other field falls back to the model's own
 // defaults.  An explicitly empty value is rejected by the named-argument
-// grammar.  Use machine.restart to power-cycle the running machine, and
-// machine.rebuild to construct it again from its record.
+// grammar.  Use machine.restart to power-cycle the running machine.
 static DEF_METHOD(machine_method_boot) {
     uint64_t sense = boot_uint(&argv[5], 0xFF);
     boot_config_t doc = {
@@ -1029,64 +984,11 @@ static DEF_METHOD(machine_method_reset) {
 // real machine off and on does not replace its chips, so the PRAM/NVRAM, the
 // RTC (still ticking), mounted media, the Caps Lock latch and the LaserWriter
 // all survive because nothing destroyed them.  The built-from record and
-// `created` are untouched for the same reason.  Use machine.rebuild to
-// construct the recorded machine again instead.
+// `created` are untouched for the same reason.
 static DEF_METHOD(machine_method_restart) {
     if (!global_emulator)
         return val_err("machine.restart: no machine is running; boot one first");
     system_machine_power_cycle();
-    return val_bool(true);
-}
-
-// machine.rebuild — level 4 from the built-from record: tear the running
-// machine down and construct the machine the record describes, taking no
-// configuration arguments.  Like
-// machine.boot it inherits no device state -- the new machine's stores are
-// its own fresh ones -- but it keeps three explicit, named transfers: the
-// mounted media (the open image handles, so every write survives), the Caps
-// Lock latch and the host-side LaserWriter.  Errors when no machine is
-// running.
-static DEF_METHOD(machine_method_rebuild) {
-    const machine_config_record_t *rec = machine_config_record();
-    if (!global_emulator || !rec->valid)
-        return val_err("machine.rebuild: no machine is running; boot one first");
-
-    // Work from a snapshot: boot_apply rewrites the record in place, so doc
-    // pointers into the live record would alias their own destination — and
-    // the original `created` stamp must survive (the record describes the
-    // same configuration; it is the birth certificate of the configuration,
-    // not of the devices).
-    machine_config_record_t snap = *rec;
-    // The record keeps the slot entries resolved from the document's slots=
-    // and sugar; they go back as one slots= spec.
-    char slots[MACHINE_SLOTS_MAX * (SLOT_ROM_PATH_MAX + 160)];
-    if (!machine_slots_format(snap.slots, snap.n_slots, slots, sizeof slots))
-        return val_err("machine.rebuild: the record's slot configuration does not fit a slots= spec");
-    boot_config_t doc = {
-        .model = snap.model,
-        .ram_kb = snap.ram_kb,
-        .rom = snap.rom,
-        .rom2 = snap.rom2[0] ? snap.rom2 : NULL,
-        .video_sense = snap.video_sense,
-        .monitor = snap.monitor[0] ? snap.monitor : NULL,
-        .slots = slots,
-    };
-    s_transfer_media = true;
-    value_t err = machine_boot_apply(&doc);
-    s_transfer_media = false;
-    if (val_is_error(&err))
-        return err;
-    value_free(&err);
-
-    // The same document, so the same record: the sugar fields as the
-    // original boot wrote them, and its `created` stamp.
-    machine_config_record_t *w = machine_config_record_mut();
-    memcpy(w->video_card, snap.video_card, sizeof w->video_card);
-    memcpy(w->video_mode, snap.video_mode, sizeof w->video_mode);
-    memcpy(w->custom_mode, snap.custom_mode, sizeof w->custom_mode);
-    memcpy(w->pci_card, snap.pci_card, sizeof w->pci_card);
-    memcpy(w->pci_option, snap.pci_option, sizeof w->pci_option);
-    snprintf(w->created, sizeof(w->created), "%s", snap.created);
     return val_bool(true);
 }
 
@@ -1318,11 +1220,6 @@ static const member_t machine_members[] = {
      .examples = EXAMPLES("machine.restart"),
      .doc = "Power-cycle the running machine: a reset with the RAM cold; nothing is rebuilt, so PRAM/NVRAM, "
             "the clock and media survive", .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = machine_method_restart}},
-    {.kind = M_METHOD,
-     .name = "rebuild",
-     .examples = EXAMPLES("machine.rebuild"),
-     .doc = "Construct the recorded machine again (machine.config): a new machine with fresh stores, keeping "
-            "mounted media attached", .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = machine_method_rebuild}},
     {.kind = M_METHOD,
      .name = "register",
      .flags = M_CAT_ADVANCED,

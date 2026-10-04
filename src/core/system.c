@@ -95,24 +95,6 @@ void config_add_image(config_t *cfg, image_t *image) {
     cfg->n_images++;
 }
 
-// Remove an image from the config's tracked image list WITHOUT closing it
-// (machine.restart handle transfer: the caller takes ownership so the handle
-// survives system_destroy's close loop).  Order is not preserved-sensitive;
-// the tail is compacted down.
-void config_remove_image(config_t *cfg, image_t *image) {
-    if (!cfg || !image)
-        return;
-    for (int i = 0; i < cfg->n_images; ++i) {
-        if (cfg->images[i] != image)
-            continue;
-        for (int j = i + 1; j < cfg->n_images; ++j)
-            cfg->images[j - 1] = cfg->images[j];
-        cfg->n_images--;
-        cfg->images[cfg->n_images] = NULL;
-        return;
-    }
-}
-
 // Find an image object by its filename path
 image_t *setup_get_image_by_filename(const char *filename) {
     struct config *config = global_emulator;
@@ -1203,8 +1185,8 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     if (!checkpoint && checkpoint_machine_dir())
         checkpoint_machine_write_manifest();
 
-    // A new machine exists: machine.boot, machine.restart and checkpoint.load
-    // all end here.  The page reloads its object trees on this.
+    // A new machine exists: machine.boot and checkpoint.load both end here
+    // (machine.restart builds nothing).  The page reloads its object trees on this.
     gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"machine_booted\",\"model\":\"%s\",\"restored\":%s}",
                    profile->id ? profile->id : "", checkpoint ? "true" : "false");
     platform_machine_attached();
@@ -1439,59 +1421,16 @@ bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const c
     return system_media_attach_scsi_bus(config, bus, &slot) == 0;
 }
 
-// === machine.restart media transfer ========================================
+// === Media attach ===========================================================
 //
 // The standard substrate implementation over cfg->floppy + cfg->scsi, bound
 // into every Mac substrate's vtable (the Lisa implements its own: parallel
-// FDC + ProFile).  Detach removes the open handles from cfg->images — the
-// list system_destroy would otherwise close — so they survive the teardown;
-// attach hands each handle back through the same device paths a fresh mount
-// uses, minus the open-by-path step.
+// FDC + ProFile).  It hands an opened image to the same device paths a fresh
+// mount uses, minus the open-by-path step.
 
-// Capture every mounted medium's handle + attachment coordinates into `out`
-// and disown them from the tracked-image list.  Returns the count.
-int system_media_detach_std(config_t *cfg, media_slot_t *out, int max) {
-    int n = 0;
-    for (int d = 0; d < 2 && n < max; ++d) {
-        image_t *img = cfg->floppy ? floppy_drive_image(cfg->floppy, (unsigned)d) : NULL;
-        if (!img)
-            continue;
-        out[n] = (media_slot_t){.bus = MEDIA_BUS_FLOPPY, .unit = d, .img = img};
-        config_remove_image(cfg, img);
-        n++;
-    }
-    n += system_media_detach_scsi_bus(cfg, cfg->scsi, MEDIA_BUS_SCSI, out + n, max - n);
-    return n;
-}
-
-// Capture one SCSI bus's mounted media, tagged with the bus they came off.
-// Split out because a machine may have more than one visible bus and a SCSI
-// id does not identify a device on its own there (the Network Servers' two
-// fast/wide channels); a substrate with a second bus calls this again for
-// it.  Returns the count appended.
-int system_media_detach_scsi_bus(config_t *cfg, struct scsi *bus, media_bus_t which, media_slot_t *out, int max) {
-    int n = 0;
-    for (unsigned id = 0; id < 8 && n < max; ++id) {
-        image_t *img = bus ? scsi_device_image(bus, id) : NULL;
-        if (!img)
-            continue;
-        media_slot_t *s = &out[n];
-        *s = (media_slot_t){.bus = which, .unit = (int)id, .img = img};
-        s->scsi_type = scsi_device_type(bus, id);
-        s->block_size = scsi_device_block_size(bus, id);
-        s->read_only = scsi_device_read_only(bus, id);
-        snprintf(s->vendor, sizeof(s->vendor), "%s", scsi_device_vendor(bus, id));
-        snprintf(s->product, sizeof(s->product), "%s", scsi_device_product(bus, id));
-        snprintf(s->revision, sizeof(s->revision), "%s", scsi_device_revision(bus, id));
-        config_remove_image(cfg, img);
-        n++;
-    }
-    return n;
-}
-
-// Re-attach one transferred medium to the freshly built machine.  Returns 0
-// on success (the machine owns the handle again), <0 when the medium cannot
-// be attached (the caller must close the handle).
+// Attach one opened medium to the running machine.  Returns 0 on success
+// (the machine owns the handle), <0 when the medium cannot be attached (the
+// caller must close the handle).
 int system_media_attach_std(config_t *cfg, const media_slot_t *slot) {
     switch (slot->bus) {
     case MEDIA_BUS_FLOPPY:
@@ -1506,8 +1445,9 @@ int system_media_attach_std(config_t *cfg, const media_slot_t *slot) {
     }
 }
 
-// Hand one transferred medium back to a named SCSI bus.  The counterpart of
-// system_media_detach_scsi_bus, and the same reason for existing.
+// Attach one opened medium to a named SCSI bus: a machine may have more than
+// one visible bus, and a SCSI id does not identify a device on its own there
+// (the Network Servers' two fast/wide channels).
 int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const media_slot_t *slot) {
     if (!bus)
         return -1;
@@ -1520,8 +1460,7 @@ int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const media_sl
 // === Machine-level attach and eject ===========================
 //
 // One verb for "put this disk in that bay", whatever bus the bay is on: the
-// same substrate dispatch machine.restart hands media back through
-// (media_attach), fed by media_open instead of a transferred handle.  Before,
+// one substrate dispatch (media_attach), fed by media_open.  Before,
 // every caller branched on hd_bus itself and chose between scsi.attach_hd,
 // scsi2.attach_hd and hd.attach -- and several chose wrong.
 
@@ -1740,7 +1679,7 @@ config_t *system_restore(const char *filename) {
     checkpoint_close(checkpoint);
 
     // Install the restored built-from record so machine.config answers for
-    // the restored machine and machine.restart can replay it. The vROM
+    // the restored machine. The vROM
     // pick list reflects THIS construction (the loaders re-reported during
     // system_create), so keep the fresh entries over the serialized ones.
     machine_config_record_t *rec = machine_config_record_mut();

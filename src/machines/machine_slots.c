@@ -569,33 +569,3 @@ value_t machine_slots_resolve(const hw_profile_t *profile, const boot_config_t *
     }
     return val_none();
 }
-
-bool machine_slots_format(const slot_opts_t *slots, int n, char *buf, size_t size) {
-    size_t pos = 0;
-    if (size)
-        buf[0] = '\0';
-    for (int i = 0; i < n; i++) {
-        const slot_opts_t *e = &slots[i];
-        int w = snprintf(buf + pos, size - pos, "%s%d=%s", i ? ";" : "", e->slot, e->empty ? "none" : e->card);
-        if (w < 0 || (size_t)w >= size - pos)
-            return false;
-        pos += (size_t)w;
-        const char *keys[3] = {"mode", "custom", "rom"};
-        const char *vals[3] = {e->video_mode, e->custom_mode, e->rom};
-        for (int k = 0; k < 3; k++) {
-            if (!vals[k][0])
-                continue;
-            w = snprintf(buf + pos, size - pos, ",%s=%s", keys[k], vals[k]);
-            if (w < 0 || (size_t)w >= size - pos)
-                return false;
-            pos += (size_t)w;
-        }
-        for (int k = 0; k < e->n_options; k++) {
-            w = snprintf(buf + pos, size - pos, ",%s=%s", e->options[k].key, e->options[k].value);
-            if (w < 0 || (size_t)w >= size - pos)
-                return false;
-            pos += (size_t)w;
-        }
-    }
-    return true;
-}

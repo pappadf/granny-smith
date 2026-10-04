@@ -46,18 +46,18 @@ the guest's, not ours: a pin *earlier* than the file dates on an installed
 volume makes Copland's File Manager reject the catalog at volume mount, so
 `pm7100-copland-boot` pins a time after its installation.
 
-## Across the reset levels
+## Across resets and new machines
 
 | Operation | Clock | PRAM | Serial interface |
 |---|---|---|---|
 | `machine.reset` (level 2) | keeps counting | kept | idle (see below) |
 | `machine.restart` (level 3) | keeps counting | kept | idle |
-| `machine.rebuild`, `machine.boot` (level 4) | a new chip: the wall clock | the family's defaults | idle |
+| `machine.boot` (a new machine) | a new chip: the wall clock | the family's defaults | idle |
 | `checkpoint.load` | the saved value | the saved bytes | the saved state |
 
 The RTC is battery-backed and is not on any board's `/RESET` net, so no
 reset or power cycle touches the counter or the PRAM: they survive for the
-hardware's own reason, because nothing rebuilds the chip. What a reset does
+hardware's own reason, because nothing destroys the chip. What a reset does
 reach is the **serial interface**: when VIA1 is reset it stops driving
 port B, the RTC's `/CE` line floats to its pull-up, and the chip abandons
 any transfer the guest left half-done. `rtc_deselect` models that edge

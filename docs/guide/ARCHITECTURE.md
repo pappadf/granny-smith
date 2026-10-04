@@ -579,8 +579,8 @@ constructor as its slot's entry — while `video_card=` / `video_mode=` /
 `custom_mode=` are sugar for "the first socket" (what the config dialog and
 the headless `video_card=` arg use). `machine.screen` shows the *primary*
 display: the first populated video slot in declared order. The resolved
-slot entries are kept in the built-from record, so `machine.rebuild` and a
-checkpoint restore re-seat every populated socket.
+slot entries are kept in the built-from record, so a checkpoint restore
+re-seats every populated socket.
 
 **PCI (`core/peripherals/pci/`)** is the same architecture ported to the
 second expansion bus, deliberately as a parallel module rather than a

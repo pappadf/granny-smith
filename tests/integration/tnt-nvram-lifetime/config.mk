@@ -6,10 +6,10 @@
 # store and never booted (Open Firmware sat at its serial-console prompt
 # behind a black screen).  Now the store survives exactly the operations that
 # keep the machine -- machine.reset and machine.restart -- and every new
-# machine (machine.boot, machine.rebuild) starts from a virgin one.
+# machine (machine.boot) starts from a virgin one.
 
 TEST_NAME := TNT NVRAM lifetime (#112)
-TEST_DESC := NVRAM survives machine.reset and machine.restart; machine.boot and machine.rebuild start blank; a boot after a torn store still boots
+TEST_DESC := NVRAM survives machine.reset and machine.restart; machine.boot starts blank; a boot after a torn store still boots
 
 TEST_ROM := roms/pm7500-pm8500-pm9500-96cd923d.rom
 TEST_ARGS := model=pm7500 ram=32768

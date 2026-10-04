@@ -280,7 +280,7 @@ callbacks is emitted at its source too; the page routes each in
 | `state:assert_failed`, `state:assert_expr` | the failure hook | `{where}`, `{expr}` |
 | `state:perf` | the tick, ~1 Hz; the sample that would straddle a machine change is skipped | `{mips, tps, tick_max_ms, tick_p50_ms, poll_max_ms}` |
 | `state:screen` | the renderer, where it consumes a shape change, and once when a machine is attached (boot or restore, before any frame) | `{width, height, par_w, par_h}` |
-| `state:machine_booted` | the end of `system_create`: `machine.boot`, `machine.rebuild`, `checkpoint.load` (not `machine.restart`, which builds nothing) | `{model, restored}` |
+| `state:machine_booted` | the end of `system_create`: `machine.boot`, `checkpoint.load` (not `machine.restart`, which builds nothing) | `{model, restored}` |
 | `notify:floppy` | the floppy controller, on insert, eject (guest or host) and restore | `{drive, present}` |
 | `notify:media` | the SCSI bus, when a device's medium is inserted or ejected (guest or host) | `{bus, id, present}` |
 | `notify:drive_activity` | the tick, on a light's edge; a machine change turns lit lights off and re-bases | `{kind, state}` |
@@ -745,11 +745,9 @@ typed-dispatch and introspection surface.
   machine).
 - **`machine.restart`** — power-cycles the running machine: a reset with
   the RAM cold. Nothing is torn down, so PRAM/NVRAM, the clock, the
-  mounted media and the Caps Lock latch survive; the Restart button
-  re-asserts nothing afterwards.
-- **`machine.rebuild`** — constructs the recorded machine again
-  (`machine.config`), with the mounted media still attached: what makes a
-  staged hardware change take effect.
+  mounted media, the Caps Lock latch and the LaserWriter survive; the
+  Restart button re-asserts nothing afterwards. A changed configuration
+  is a new `machine.boot` document.
 - **`debug.frame([addr], [count], [before])`** — bundled snapshot for
   the Debug tab, the same call as **`machine.cpu.frame`**: `{arch, pc,
   regs, rows, fpu?}` — the core's own register names, disasm rows with

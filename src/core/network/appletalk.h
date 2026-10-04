@@ -260,10 +260,9 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
 void appletalk_checkpoint(checkpoint_t *checkpoint);
 
 // Destructor: `scc` is the departing machine's SCC.  A no-op unless the stack
-// is bound to that machine (see appletalk.c).  `power_cycle`: the machine is
-// being rebuilt as itself (machine.restart), so it keeps its printer; any
-// other teardown ends the printer with the machine.
-void appletalk_delete(scc_t *scc, bool power_cycle);
+// is bound to that machine (see appletalk.c).  The printer ends with the
+// machine.
+void appletalk_delete(scc_t *scc);
 
 // Server module hooks: publish the NBP advertisement at startup, release
 // volumes and forks at teardown.
