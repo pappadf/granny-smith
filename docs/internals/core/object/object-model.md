@@ -205,8 +205,9 @@ domains:
 | Order | Node | Domain | Holds |
 |---|---|---|---|
 | 0 | `machine` | machine | the emulated computer that exists now |
-| 10 | `scheduler` | emulator | running, pacing (`mode` is the enum `paced` / `accelerated` / `turbo`) |
+| 10 | `scheduler` | emulator | running the machine; its `mode` / `speed` / `max_speed` are the host's pacing, reached through the machine (`mode` is the enum `paced` / `accelerated` / `turbo`) |
 | 20 | `checkpoint` | emulator | save / load / snapshot |
+| 21 | `pacing` | emulator | the host's pacing setting (`mode`, `speed`, `max_speed`), there with or without a machine; advanced |
 | 30 | `files` | emulator | host files and disk images (`ls`, `cp`, `hd_create`, …, `download`), `files.images[n]` (the machine's configured images), `files.mounts[n]` (the image-VFS auto-mount cache, indexed by a never-reused mount serial; `find(path)`, `[n].unmount()`), `files.archive` |
 | 40 | `debug` | emulator | breakpoints, logpoints, watchpoints, `debug.find` (memory search), `debug.mac` |
 | 50 | `log` | emulator | `log.set(cat, level=, …)`, `log.levels`, `log.category["<cat>"]` with `level` / `stdout` / `file` / `ts` / `pc` |

@@ -4,7 +4,7 @@
 // Local stubs for the isolated lisa_profile unit suite.
 //
 // The ProFile device now references the checkpoint/image-restore machinery —
-// the per-machine delta directory (checkpoint_machine_dir, via pro_delta_dir)
+// the per-machine delta directory (system_media_delta_dir)
 // and the geometry-aware single-image restore (mac_checkpoint_restore_one_image,
 // via lisa_profile_init).  This suite exercises only the device handshake and
 // the real base+delta block I/O, never checkpoint save/restore, so we stub the
@@ -15,8 +15,14 @@
 #include "checkpoint_machine.h"
 
 // No active per-machine directory under test → deltas land adjacent to the base
-// (image_create's NULL-delta_dir derivation), which is what the suite wants.
+// (image_attach's NULL-delta_dir derivation), which is what the suite wants.
 const char *checkpoint_machine_dir(void) {
+    return NULL;
+}
+
+// system.c's rule for where a medium's delta goes, here: the default.
+const char *system_media_delta_dir(const char *path) {
+    (void)path;
     return NULL;
 }
 

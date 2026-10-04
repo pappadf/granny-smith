@@ -220,6 +220,10 @@ void object_set_order(struct object *o, int order) {
     (void)o;
     (void)order;
 }
+void object_set_category(struct object *o, uint16_t category) {
+    (void)o;
+    (void)category;
+}
 void object_delete(struct object *o) {
     (void)o;
 }

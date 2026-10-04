@@ -24,7 +24,7 @@ assert !files.list("${$fd}/partition1") "a writable floppy is still served by th
 # Attached before the VFS ever mounted it.  The notification this replaced
 # was sent at attach time and found no mount to mark, so the first mount made
 # afterwards served the file as if nothing held it.
-machine.scsi.attach_hd "${$raw}" 3
+machine.scsi.attach_hd "${$raw}" 4
 assert !files.list("${$raw}/partition1") "a disk attached before its first mount is served by the VFS"
 
 # machine.restart tears nothing down, so the disk never stops being held.

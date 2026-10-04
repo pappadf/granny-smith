@@ -51,13 +51,13 @@ static void write_block(image_t *img, unsigned block, uint8_t v) {
 
 // Write, close, mount again: the writes are there, the base is untouched.
 TEST(writes_survive_close_and_reopen) {
-    image_t *img = image_create(g_base, g_deltas);
+    image_t *img = image_attach(g_base, g_deltas);
     ASSERT_TRUE(img != NULL);
     write_block(img, 3, 0xA3);
     write_block(img, 40, 0xB4);
     image_close(img);
 
-    img = image_create(g_base, g_deltas);
+    img = image_attach(g_base, g_deltas);
     ASSERT_TRUE(img != NULL);
     ASSERT_EQ_INT(read_byte(img, 3), 0xA3);
     ASSERT_EQ_INT(read_byte(img, 40), 0xB4);
@@ -66,7 +66,7 @@ TEST(writes_survive_close_and_reopen) {
     // A second round, overwriting a block the first round wrote.
     write_block(img, 3, 0xC3);
     image_close(img);
-    img = image_create(g_base, g_deltas);
+    img = image_attach(g_base, g_deltas);
     ASSERT_TRUE(img != NULL);
     ASSERT_EQ_INT(read_byte(img, 3), 0xC3);
     ASSERT_EQ_INT(read_byte(img, 40), 0xB4);
@@ -82,8 +82,30 @@ TEST(writes_survive_close_and_reopen) {
     ASSERT_EQ_INT(b[0], 0x11);
 }
 
+// image_revert: the next mount starts from the base; refused while mounted.
+TEST(revert_discards_the_writes_of_a_closed_disk) {
+    image_t *img = image_attach(g_base, g_deltas);
+    ASSERT_TRUE(img != NULL);
+    write_block(img, 5, 0xD5);
+    const char *why = NULL;
+    ASSERT_EQ_INT(image_revert(g_base, g_deltas, &why), -1); // attached
+    ASSERT_TRUE(why != NULL);
+    image_close(img);
+
+    why = NULL;
+    ASSERT_EQ_INT(image_revert(g_base, g_deltas, &why), 0);
+    img = image_attach(g_base, g_deltas);
+    ASSERT_TRUE(img != NULL);
+    ASSERT_EQ_INT(read_byte(img, 5), 0x11);
+    ASSERT_EQ_INT(read_byte(img, 3), 0x11); // the earlier test's writes went too
+    image_close(img);
+    // Nothing to discard is not an error.
+    ASSERT_EQ_INT(image_revert(g_base, g_deltas, &why), 0);
+}
+
 int main(void) {
     make_base();
     RUN(writes_survive_close_and_reopen);
+    RUN(revert_discards_the_writes_of_a_closed_disk);
     return 0;
 }

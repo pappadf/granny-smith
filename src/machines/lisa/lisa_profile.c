@@ -21,6 +21,7 @@
 // this synchronously: the boot ROM polls the BSY level, the OS the CA1 edge.
 
 #include "lisa_profile.h"
+#include "system.h"
 
 #include "checkpoint.h"
 #include "checkpoint_images.h"
@@ -379,18 +380,6 @@ bool lisa_profile_save_as(const lisa_profile_t *pf, const char *path) {
     return true;
 }
 
-// Where a writable mount's delta+journal live.  Mirrors system.c's
-// pick_delta_dir: a volatile /tmp base keeps its delta adjacent (NULL ⇒
-// image_create derives the dir); everything else routes the delta under the
-// active per-machine checkpoint directory so it shares state.checkpoint's
-// lifetime (docs/internals/core/checkpointing.md).  checkpoint_machine_dir() is
-// NULL when no machine dir is active (headless tests) → adjacent-to-base.
-static const char *pro_delta_dir(const char *base) {
-    if (base && strncmp(base, "/tmp/", 5) == 0)
-        return NULL;
-    return checkpoint_machine_dir();
-}
-
 bool lisa_profile_attach(lisa_profile_t *pf, const char *path, bool writable) {
     if (!pf)
         return false;
@@ -406,12 +395,12 @@ bool lisa_profile_attach(lisa_profile_t *pf, const char *path, bool writable) {
         img = image_create_blank(PRO_DEFAULT_BLOCKS, geom);
     } else {
         // Open base+delta: a writable mount gets a persistent delta under the
-        // per-machine checkpoint dir (pro_delta_dir, mirroring system.c's
-        // pick_delta_dir, so the delta shares state.checkpoint's lifetime and
+        // per-machine checkpoint dir (system_media_delta_dir, as every other
+        // writable medium, so the delta shares state.checkpoint's lifetime and
         // gets cleaned with it), a read-only mount an ephemeral scratch delta.
         // Either way the base is immutable.  The path is used as given: where
         // media lives is the frontend's choice.
-        img = writable ? image_create_with_geometry(path, pro_delta_dir(path), geom)
+        img = writable ? image_attach_with_geometry(path, system_media_delta_dir(path), geom)
                        : image_open_readonly_with_geometry(path, geom);
     }
     if (!img) {

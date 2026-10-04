@@ -55,6 +55,7 @@ def row_iicx_chime() {
 def gc_boot_8bpp() {
     machine.rtc.time = 3000000000
     machine.boot model="iicx" ram=8192 video_card="824gc" video_mode="gc_640x480_8bpp" rom="${$ROM}"
+    files.revert "${$hd_608_gc}"
     machine.scsi.attach_hd "${$hd_608_gc}" 0
 }
 
@@ -92,6 +93,7 @@ def row_iicx_gc_decline8() {
     machine.rtc.time = 3000000000
     machine.boot model="iicx" ram=8192 video_card="824gc" video_mode="gc_640x480_8bpp" rom="${$ROM}"
     machine.nubus.slot[9].card.gc.force_decline = true
+    files.revert "${$hd_608_gc}"
     machine.scsi.attach_hd "${$hd_608_gc}" 0
     scheduler.run 200000000
     wait_stable(600000000)
@@ -138,6 +140,7 @@ def row_iicx_gc_beep() {
     # is visible in the golden, so an unpinned RTC changes pixels run-to-run.
     machine.rtc.time = 3000000000
 
+    files.revert "../../data/systems/system_6_0_8_20mb_8_24gc.img"
     machine.scsi.attach_hd "../../data/systems/system_6_0_8_20mb_8_24gc.img" 0
     scheduler.run 200000000
 
@@ -276,6 +279,7 @@ def row_iicx_24ac() {
     # The complete valid PRAM lets the ROM boot straight from SCSI (no cold-init
     # scan).  The image reaches a stable Finder by ~150M instr; 200M gives margin
     # and the frame is steady well beyond it.
+    files.revert "../../data/systems/system_7_1_20mb_24ac_cd_32bit_gc.img"
     machine.scsi.attach_hd "../../data/systems/system_7_1_20mb_24ac_cd_32bit_gc.img" 0
     scheduler.run 200000000
 
@@ -379,6 +383,7 @@ def row_iicx_24ac_restart() {
 
     # === Boot the 24AC 32-bit SCSI cdev image to the 8-bpp Finder desktop. ======
     machine.boot model="iicx" ram=8192 video_card="display_card_24ac" video_mode="rgb_640x480_8bpp" rom="${$ROM}"
+    files.revert "../../data/systems/system_7_1_20mb_24ac_cd_32bit_gc.img"
     machine.scsi.attach_hd "../../data/systems/system_7_1_20mb_24ac_cd_32bit_gc.img" 0
     scheduler.run 200000000
 

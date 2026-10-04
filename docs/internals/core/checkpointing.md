@@ -31,7 +31,7 @@ Background checkpoints (quick checkpoints saved automatically) are serialised in
 
 - `<machine_id>` is a 16-hex-char opaque token (8 random bytes) held in `localStorage` under `gs.checkpoint.machine`. Generated on first boot, rotated only on explicit "new machine" actions.
 - `<created>` is a UTC timestamp in compact ISO 8601 (`YYYYMMDDTHHMMSSZ`) — purely for human legibility in `ls /opfs/checkpoints/`. Code never parses it.
-- `<id>` (per-image instance id) is also 16 hex chars, minted by the image layer in `image_create`. Each writable image gets a fresh one — reusing the same base image for an unrelated machine no longer replays stale deltas.
+- `<id>` (per-image instance id) is also 16 hex chars, from the image layer: a disk attached to the machine (`image_attach`) has the base's own instance, which it keeps across `machine.boot` within one machine directory and one process; a checkpoint restore's disks get fresh ones (`image_create`). Reusing the same base image for an unrelated machine never replays stale deltas (`docs/internals/core/storage/image.md`).
 
 The C side is told about the active machine via `machine.register(<id>, <created>)`, which the frontend (`app/web2/src/bus/emulator.ts`, from the identity minted in `app/web2/src/lib/machineId.ts`) issues exactly once on startup before any image is opened. The handler routes through `gs_register_machine`, which calls `checkpoint_machine_set`.
 
@@ -91,7 +91,7 @@ The headless target has no `localStorage` and no machine-id concept. Pass `--che
 
 Quick checkpoints assume that disk image base files and their delta/journal pairs exist in persistent storage at restore time. In the browser that is arranged by the web app, not the core: an uploaded or URL-fetched image is copied into `/opfs/images/<category>/` (`app/web2/src/bus/upload.ts::persist`) *before* it is attached, so the path the machine opens — and a checkpoint records — is already on OPFS. The core opens the path it is given and does not copy media anywhere.
 
-`/opfs/images/` is **strictly read-only base content**. The writable side — delta and journal — is rooted under the per-machine checkpoint directory (`/opfs/checkpoints/<machine_id>-<created>/<id>.delta` and `<id>.journal`), not next to the base. This is the key bug fix from the storage-isolation rewrite: reusing the same base image for an unrelated machine no longer replays stale deltas, because every `image_create` mints a fresh random instance id (see `docs/internals/core/storage/image.md`).
+`/opfs/images/` is **strictly read-only base content**. The writable side — delta and journal — is rooted under the per-machine checkpoint directory (`/opfs/checkpoints/<machine_id>-<created>/<id>.delta` and `<id>.journal`), not next to the base. This is the key bug fix from the storage-isolation rewrite: reusing the same base image for an unrelated machine no longer replays stale deltas, because each machine directory holds its own instances (see `docs/internals/core/storage/image.md`).
 
 ### How It Works
 
