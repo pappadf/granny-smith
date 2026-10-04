@@ -194,8 +194,10 @@ def row_iicx_gc_beep() {
     # attentions move this row by 127 instructions in 380 million.  The
     # waveform survived that unchanged: aligned on their shared body the old
     # and new captures differ in 25 samples of 5,423, all at the window edges.
-    # It is also context-sensitive, so REGEN it from a WHOLE-SUITE run: on its
-    # own this row captures 5424 for the second beep instead of 5426.
+    # It used to be context-sensitive as well -- the I/O wait-state remainder
+    # carried from one machine to the next in the same process -- so it had to
+    # be regenerated from a whole-suite run.  That remainder is the machine's
+    # own now, and the row captures the same beep alone or in the suite.
     check_sound("goldens/iicx-gc-beep.wav", 5426)
 
     # Sample-exact compare against the golden (fails the test on any divergence).
