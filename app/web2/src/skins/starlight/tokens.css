@@ -110,7 +110,7 @@
     --gs-syntax-comment: #8a8068;
     --gs-syntax-unknown: var(--gs-danger-fg);
     --gs-syntax-error: var(--gs-danger-fg);
-    --gs-syntax-dim: #a29780;
+    --gs-syntax-dim: #7a6f58; /* ≥4.5:1 on the console */
 
     /* Code and data views */
     --gs-code-pc-row-bg: linear-gradient(90deg, rgba(201, 160, 90, 0.34), rgba(201, 160, 90, 0.04));

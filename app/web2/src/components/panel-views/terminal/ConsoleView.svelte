@@ -8,6 +8,7 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { seedPrompt, needsContinuation, whenModuleReady } from '@/bus/emulator';
   import { machine } from '@/state/machine.svelte';
+  import { layout } from '@/state/layout.svelte';
   import { appConsole, type Console } from '@/state/console.svelte';
   import {
     commandsText,
@@ -35,6 +36,7 @@
   let outputEl = $state<HTMLDivElement | null>(null);
   let inputHost = $state<HTMLDivElement | null>(null);
   let input: ConsoleInput | null = null;
+  let inputReady = $state(false);
   let destroyed = false;
   let startupError = $state('');
 
@@ -78,6 +80,22 @@
       await seedPrompt();
       if (!destroyed && consoleState.runningSince === null) con.refreshPrompt();
     })();
+  });
+
+  // Opening the Terminal tab (or the console first mounting while it shows)
+  // puts the cursor on the input line, so it is plain where to type.  Not
+  // while the screen holds the pointer (keys belong to the guest), nor when
+  // another text field already has the focus.
+  $effect(() => {
+    if (!inputReady || layout.activeTab !== 'terminal') return;
+    if (document.pointerLockElement) return;
+    const a = document.activeElement as HTMLElement | null;
+    const typing =
+      a &&
+      a !== document.body &&
+      (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));
+    if (typing && !inputHost?.contains(a)) return;
+    input?.focus();
   });
 
   // --- find -----------------------------------------------------------------------
@@ -201,27 +219,32 @@
       // CodeMirror is code-split: it loads when the console first mounts.
       const { createConsoleInput } = await import('./ConsoleInput');
       if (destroyed || !inputHost) return;
-      input = createConsoleInput(inputHost, {
-        submit: (text) => {
-          // Submitting always brings the view back to the bottom.
-          scroll.follow();
-          con.submit(text, assist.spansFor(text));
+      input = createConsoleInput(
+        inputHost,
+        {
+          submit: (text) => {
+            // Submitting always brings the view back to the bottom.
+            scroll.follow();
+            con.submit(text, assist.spansFor(text));
+          },
+          needsContinuation: (text) => needsContinuation(text),
+          complete: (line, cursor) => assist.complete(line, cursor),
+          interrupt: () => {
+            input?.setText('');
+            void con.interrupt();
+          },
+          clear: () => con.model.clear(),
+          find: openFind,
+          outputSelection,
+          history,
+          onChange: (text, cursor) => assist.onChange(text, cursor),
+          showHint: () => assist.showHint(),
+          escape: () => assist.escapeHint(),
         },
-        needsContinuation: (text) => needsContinuation(text),
-        complete: (line, cursor) => assist.complete(line, cursor),
-        interrupt: () => {
-          input?.setText('');
-          void con.interrupt();
-        },
-        clear: () => con.model.clear(),
-        find: openFind,
-        outputSelection,
-        history,
-        onChange: (text, cursor) => assist.onChange(text, cursor),
-        showHint: () => assist.showHint(),
-        escape: () => assist.escapeHint(),
-      });
+        'Type a command — try help',
+      );
       registerConsoleInput(input);
+      inputReady = true;
     })();
     void (async () => {
       try {
