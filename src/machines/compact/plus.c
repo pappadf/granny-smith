@@ -249,7 +249,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     sched_cpu_if_t cpu_if = cpu_sched_if(cfg->cpu); // the 68K main-CPU seam adapter
     cfg->scheduler = scheduler_init(&cpu_if, checkpoint);
-    debug_mac_register_scheduler_events(cfg->scheduler); // before scheduler_start replays a restore
+    debug_mac_register_scheduler_events(cfg->scheduler);
     // Average CPI for the 7.8336 MHz 68000: the Plus retires ~783k
     // instructions per emulated second (~0.78 MIPS, slightly above the
     // ~0.7 MIPS of real hardware). Calibrated against MusicWorks 0.42: its
@@ -319,7 +319,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     if (checkpoint)
         mac_checkpoint_restore_images(cfg, checkpoint);
 
-    cfg->scsi = profile_scsi_init(cfg->machine, checkpoint);
+    cfg->scsi = profile_scsi_init(cfg->machine, checkpoint, CONFIG_IMAGES(cfg));
     scsi_5380_attach(cfg->scsi, checkpoint);
     // Where the 5380 answers is this machine's decode, not the chip model's.
     //
@@ -342,8 +342,8 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->keyboard = keyboard_init(cfg->scheduler, cfg->scc, cfg->via1, checkpoint);
 
     // Initialise floppy last to match checkpoint save order
-    cfg->floppy =
-        floppy_init(FLOPPY_TYPE_IWM, cfg->mem_map, cfg->scheduler, profile_floppy_count(cfg->machine), checkpoint);
+    cfg->floppy = floppy_init(FLOPPY_TYPE_IWM, cfg->mem_map, cfg->scheduler, profile_floppy_count(cfg->machine),
+                              checkpoint, CONFIG_IMAGES(cfg));
 
     // Initialise the display descriptor before anything that might call
     // plus_use_video_buffer().  Both the cold-boot default and the
@@ -377,8 +377,6 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     }
 
     cfg->debugger = debug_init();
-
-    scheduler_start(cfg->scheduler);
 
     // Initialise IRQ/IPL only for cold boot; on restore, devices already re-assert.
     if (!checkpoint) {
@@ -497,7 +495,7 @@ static void plus_update_ipl(config_t *sim, int source_mask, bool value) {
     LOG(1, "plus_update_ipl: source_mask=%d value=%d irq:%d->%d ipl:%d->%d", source_mask, value ? 1 : 0, old_irq,
         sim->irq, old_ipl, new_ipl);
 
-    cpu_reschedule();
+    cpu_reschedule(sim->scheduler);
 }
 
 // Plus-specific VIA output callback: routes port changes to floppy, video, sound, RTC

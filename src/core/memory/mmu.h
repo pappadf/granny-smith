@@ -259,10 +259,19 @@ bool mmu_phys_is_writable(mmu_state_t *mmu, uint32_t phys_addr);
 // with each mmu_init.  Logs and drops the region when the list is full.
 void mmu_register_host_region(mmu_state_t *mmu, uint8_t *host, uint32_t phys_base, uint32_t size, bool writable);
 
-// Drop the host-region fill records kept for machines with NO 68k MMU, whose
+// The host-region fill records kept for machines with NO 68k MMU, whose
 // windows are filled straight into the page table instead (see
-// memory_map_host_region).  Called when a new memory map is built.
-void mmu_host_fill_regions_reset(void);
+// memory_map_host_region): one table per memory map, which owns it; the
+// selected map's is the one memory_map_host_region uses.
+void *mmu_host_fill_regions_new(void);
+
+// Forget the PMMU's process-wide caches (the TLB fill tracker, the ATC block
+// cache, the user-CRP snapshot): they describe the map that was selected,
+// and every one of them refills from the tables.  Run on every memory map
+// selection and at PMMU construction.
+void mmu_reset_global_caches(void);
+void mmu_host_fill_regions_free(void *table);
+void mmu_host_fill_regions_select(void *table);
 
 // Project every registered host region into the CPU page table by calling
 // `fill(page, host_ptr, writable)` per 4 KiB page — machines run this after

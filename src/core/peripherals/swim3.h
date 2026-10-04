@@ -99,7 +99,7 @@ void swim3_bind(swim3_t *sw, struct floppy *fd, struct scheduler *sched, const s
 // backend pointers survive, being wiring rather than state.  See swim3.c.
 void swim3_reset(swim3_t *sw);
 
-// Register the chip's scheduler event types — before scheduler_start
+// Register the chip's scheduler event types — at construction
 // (the timer in swim3.c, the transfer engine in swim3_xfer.c).
 void swim3_register_events(swim3_t *sw);
 void swim3_xfer_register_events(swim3_t *sw);

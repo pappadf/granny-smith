@@ -185,7 +185,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // Internal SCSI bus: carries the configured disks + CD through the
     // shared bus/target model; the internal 53C96 fronts it.
-    cfg->scsi = profile_scsi_init(cfg->machine, cp);
+    cfg->scsi = profile_scsi_init(cfg->machine, cp, CONFIG_IMAGES(cfg));
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
     scsi_53c96_set_irq_callback(st->scsi96, q900_scsi96_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
@@ -201,7 +201,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // The boot disk on the internal bus was unreachable from the object tree.
     // TNT already does it this way (tnt.c: "scsi2"), and scsi.h documents the
     // second-bus case; the Q900 predates the helper and was never converted.
-    st->scsi_ext = scsi_init_named(cp, "scsi2");
+    st->scsi_ext = scsi_init_named(cp, CONFIG_IMAGES(cfg), "scsi2");
     st->scsi96_ext = scsi_53c96_init(cfg->scheduler, 25000000, cp);
     scsi_53c96_set_irq_callback(st->scsi96_ext, q900_scsi96_ext_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96_ext, st->scsi_ext);
@@ -215,7 +215,8 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     st->asc = asc_init(NULL, cfg->scheduler, cp); // EASC: ASC-compatible core
     asc_set_mix(st->asc, ASC_MIX_CH_A);
     asc_set_irq_handler(st->asc, q900_asc_irq, cfg);
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp);
+    st->floppy =
+        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp, CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
 
     // Caboose: the Egret-protocol system manager (RTC/PRAM/power/keyswitch;
@@ -251,7 +252,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
         LOG(0, "Error: out of memory constructing the 040 bus MMU");
         return -1;
     }
-    g_mmu = st->bus_mmu;
+    memory_map_set_pmmu(cfg->mem_map, st->bus_mmu);
     mmu_attach_mmu040(st->bus_mmu, (mmu040_state_t *)cfg->cpu->mmu);
 
     setup_images(cfg);

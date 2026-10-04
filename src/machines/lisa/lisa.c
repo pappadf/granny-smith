@@ -215,7 +215,7 @@ static void lisa_update_ipl(config_t *cfg, int level, bool active) {
         }
     }
     cpu_set_ipl(cfg->cpu, ipl);
-    cpu_reschedule();
+    cpu_reschedule(cfg->scheduler);
 }
 
 // ============================================================
@@ -919,7 +919,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->cpu = cpu_init(cfg->machine->cpu_model, checkpoint);
     sched_cpu_if_t cpu_if = cpu_sched_if(cfg->cpu); // the 68K main-CPU seam adapter
     cfg->scheduler = scheduler_init(&cpu_if, checkpoint);
-    debug_mac_register_scheduler_events(cfg->scheduler); // before scheduler_start replays a restore
+    debug_mac_register_scheduler_events(cfg->scheduler);
     // Run at the Lisa's real 5.09375 MHz, not the scheduler's Mac-Plus default
     // (7.8336 MHz).  Set before the VIAs init: their timer clock is CPU/4, so the
     // wrong CPU frequency would skew every VIA-timer-derived rate — including the
@@ -942,6 +942,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     ls->mmu =
         lisa_mmu_init(ram_native_pointer(cfg->mem_map, 0), cfg->ram_size, (uint8_t *)memory_rom_bytes(cfg->mem_map),
                       memory_rom_size(cfg->mem_map), ram_high, checkpoint);
+    memory_map_set_lisa_mmu(cfg->mem_map, ls->mmu); // the slow path's g_lisa_mmu
     lisa_mmu_attach_object(ls->mmu, cfg->cpu); // machine.cpu.mmu, like every MMU kind
     lisa_mmu_set_nmi(ls->mmu, lisa_parity_nmi, cfg); // level-7 parity NMI (PARTST)
     lisa_mmu_set_clock(ls->mmu, cfg->scheduler); // cycle source for the retrace status bit
@@ -991,25 +992,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     if (checkpoint)
         mac_checkpoint_restore_images(cfg, checkpoint);
 
-    ls->fdc = lisa_fdc_init(cfg->scheduler, lisa_fdc_fdir, cfg, checkpoint);
-
-    // Put the saved diskette back in the drive.  lisa_fdc_init recorded only
-    // its name; the image itself came back in the list above, so match on it
-    // and go through the normal insert path (which also re-establishes the
-    // FDC's disk_cache entry).
-    if (checkpoint) {
-        char *media = lisa_fdc_take_pending_media(ls->fdc);
-        if (media) {
-            for (int i = 0; i < cfg->n_images; i++) {
-                const char *fn = cfg->images[i] ? image_get_filename(cfg->images[i]) : NULL;
-                if (fn && strcmp(fn, media) == 0) {
-                    lisa_fdc_insert(ls->fdc, cfg->images[i]);
-                    break;
-                }
-            }
-            free(media);
-        }
-    }
+    ls->fdc = lisa_fdc_init(cfg->scheduler, lisa_fdc_fdir, cfg, checkpoint, CONFIG_IMAGES(cfg));
     lisa_mmu_map_io(ls->mmu, 0xC000, 0x800, &lisa_fdc_iface, ls->fdc);
     // PB4 carries the FDC's FDIR (drive interrupt request) line.  The 6504A drives
     // it — it is not a floating/pulled-up input — and at reset there is no pending
@@ -1072,8 +1055,6 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     scheduler_new_event_type(cfg->scheduler, "lisa", cfg, "nmi_off", &lisa_nmi_off);
 
     cfg->debugger = debug_init();
-
-    scheduler_start(cfg->scheduler);
 
     if (!checkpoint) {
         cfg->irq = 0;

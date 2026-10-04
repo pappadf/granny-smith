@@ -91,12 +91,18 @@ void system_set_default_share(const char *path);
 
 // Create an emulator instance for the given machine profile.
 // If checkpoint is non-NULL, device state is restored from that checkpoint.
-// Sets global_emulator and returns the new config handle.
-// `opts` carries the choices that must be known before devices exist (see
-// machine_build_opts.h).  Pass NULL for "nothing chosen", which is what the
-// internal rebuild paths want; machine_boot_apply and the checkpoint restore
-// both fill it from what the caller actually asked for.
+// Returns the new config handle, NOT yet the active machine: construction
+// touches nothing outside it (global_emulator, the object root, the machine
+// label), so a failed build has changed nothing.  system_swap_in makes it
+// the active machine.  `opts` carries the construction arguments (see
+// machine_build_opts.h); machine_boot_apply and the checkpoint restore both
+// fill it.
 extern config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t *opts, checkpoint_t *checkpoint);
+
+// Make a constructed machine the active one -- global_emulator, the object
+// root, the machine label, the machine_booted event -- and destroy the one it
+// replaces.  `restored`: the machine came from a checkpoint.
+void system_swap_in(config_t *cfg, bool restored);
 
 // Destroy an emulator instance: call machine teardown and free all resources.
 extern void system_destroy(config_t *config);
@@ -122,9 +128,6 @@ config_t *system_restore(const char *filename);
 // back out of it.
 int system_checkpoint_load(const char *filename); // NULL/empty = auto-load latest
 bool system_checkpoint_probe(void);
-
-// Lookup an image by its full filename within the current config's image list
-image_t *setup_get_image_by_filename(const char *filename);
 
 // System-level input wrappers (route to appropriate device models)
 // Note: system_keyboard_update requires keyboard.h to be included for key_event_t

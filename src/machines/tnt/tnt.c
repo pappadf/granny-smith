@@ -537,16 +537,20 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
                         &cfg->build_opts.rom, cp); // no bus-error watchdog: unanswered floats to $FF
     // No 68k MMU owns this machine's page table; host-backed regions that
     // core code registers on the bus map are filled through our filler.
-    g_mem_host_fill = tnt_fill_page;
+    memory_map_set_host_fill(cfg->mem_map, tnt_fill_page);
     const int cpu_model = cfg->machine->cpu_model;
     cfg->ppc = ppc_init(cp, cpu_model);
+    if (cfg->ppc) {
+        memory_cpu_hooks_t hooks = ppc_memory_hooks(cfg->ppc);
+        memory_map_set_cpu_hooks(cfg->mem_map, &hooks);
+    }
     if (!cfg->ppc) {
         LOG(0, "Error: out of memory constructing the PowerPC core");
         return -1;
     }
     sched_cpu_if_t cpu_if = ppc_sched_if(cfg->ppc);
     cfg->scheduler = scheduler_init(&cpu_if, cp);
-    debug_mac_register_scheduler_events(cfg->scheduler); // before scheduler_start replays a restore
+    debug_mac_register_scheduler_events(cfg->scheduler);
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
     // CPI 2: a real 601/604 under Mac OS sustains well under one
     // instruction per clock (cache misses, the 68k emulator's dispatch);
@@ -625,7 +629,8 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // the drive and media, the shared SWIM3 model (core/peripherals) the
     // chip, and swim3.c here binds the two to Grand Central and DBDMA
     // channel 1.  No memory map of its own: the island decodes it.
-    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp);
+    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp,
+                              CONFIG_IMAGES(cfg));
     tnt_swim3_bind(cfg);
     tnt_swim3_init(cfg);
     tnt_scc_dma_init(cfg);
@@ -708,7 +713,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // chain yet (see pm7500.c's has_cdrom).
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
-    cfg->scsi = profile_scsi_init(cfg->machine, cp);
+    cfg->scsi = profile_scsi_init(cfg->machine, cp, CONFIG_IMAGES(cfg));
     // The Network Servers carry TWO fast/wide buses.  `cfg->scsi` is
     // channel 0 (Open Firmware's `scsi-int`, bays 0-3, the `disk0`..`disk3`
     // aliases), so `hd=` / `cd=` and every existing consumer of
@@ -716,7 +721,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // (`scsi-int2`, bays 4-6 plus the 700's two rear drives) mounts beside
     // it as `machine.scsi2`.
     if (tnt_board(cfg)->kind == TNT_BOARD_SHINER)
-        st->scsi2 = scsi_init_named(cp, "scsi2");
+        st->scsi2 = scsi_init_named(cp, CONFIG_IMAGES(cfg), "scsi2");
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp); // 25 MHz (OF clock-frequency)
     scsi_53c96_set_irq_callback(st->scsi96, tnt_scsi96_irq, cfg);
     // Built HERE, before the reads below, because mesh_init() consumes its own
@@ -768,9 +773,8 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // which is why it is here rather than in the card factory.
     tnt_fwscsi_attach(cfg);
 
-    // Finish: debugger + scheduler start.
+    // Finish: the debugger.
     cfg->debugger = debug_init();
-    scheduler_start(cfg->scheduler);
     return 0;
 }
 

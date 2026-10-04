@@ -304,7 +304,7 @@ uint32_t pdm_id_read32(void *ctx, uint32_t offset);
 // === amic.c =================================================================
 
 void pdm_amic_init(config_t *cfg);
-void pdm_amic_register_events(config_t *cfg); // before scheduler_start
+void pdm_amic_register_events(config_t *cfg); // at construction
 void pdm_amic_start_vbl(config_t *cfg); // fresh boot: free-running raster
 uint8_t pdm_amic_read(config_t *cfg, uint32_t offset); // island offsets < $40000
 void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value);
@@ -355,7 +355,7 @@ void pdm_bart_slot_irq(config_t *cfg, int slot, bool active);
 // command-port handshake, and the output datapath (half-buffer render into
 // the host audio stream).  State lives in pdm_amic_t; these are the
 // behavior.
-void pdm_awacs_register_events(config_t *cfg); // before scheduler_start
+void pdm_awacs_register_events(config_t *cfg); // at construction
 void pdm_awacs_init(config_t *cfg); // staging buffer + machine.sound node
 void pdm_awacs_teardown(config_t *cfg);
 uint8_t pdm_awacs_read(config_t *cfg, uint32_t offset); // block offsets 0..$1F
@@ -371,8 +371,8 @@ uint8_t pdm_awacs_irq_summary(pdm_amic_t *a); // the $0A sound byte
 uint8_t pdm_swim3_read(config_t *cfg, uint32_t off);
 void pdm_swim3_write(config_t *cfg, uint32_t off, uint8_t value);
 void pdm_swim3_bind(config_t *cfg); // after floppy_init and after a restore
-void pdm_swim3_register_events(config_t *cfg); // before scheduler_start
-void pdm_swim3_xfer_register_events(config_t *cfg); // before scheduler_start
+void pdm_swim3_register_events(config_t *cfg); // at construction
+void pdm_swim3_xfer_register_events(config_t *cfg); // at construction
 
 // === bart.c =================================================================
 // The NuBus '90 bridge: the $F0000000 register file, the slot-space windows,
@@ -387,7 +387,7 @@ void pdm_bart_slot_irq(config_t *cfg, int slot, bool active);
 // command-port handshake, and the output datapath (half-buffer render into
 // the host audio stream).  State lives in pdm_amic_t; these are the
 // behavior.
-void pdm_awacs_register_events(config_t *cfg); // before scheduler_start
+void pdm_awacs_register_events(config_t *cfg); // at construction
 void pdm_awacs_init(config_t *cfg); // staging buffer + machine.sound node
 void pdm_awacs_teardown(config_t *cfg);
 uint8_t pdm_awacs_read(config_t *cfg, uint32_t offset); // block offsets 0..$1F
@@ -442,8 +442,8 @@ void pdm_swim3_raise(config_t *cfg, uint8_t bits);
 // format, raw (copy-protect) capture, and the GCR nibble codec.  It reads
 // and writes the disk image through the shared floppy module and moves its
 // bytes through the AMIC floppy DMA channel.
-void pdm_swim3_register_events(config_t *cfg); // before scheduler_start
-void pdm_swim3_xfer_register_events(config_t *cfg); // before scheduler_start
+void pdm_swim3_register_events(config_t *cfg); // at construction
+void pdm_swim3_xfer_register_events(config_t *cfg); // at construction
 // Mode-register edges: GO or GoStep just became set / cleared.
 void pdm_swim3_engine_update(config_t *cfg);
 // Drive geometry answers the sense protocol needs (media present, density,

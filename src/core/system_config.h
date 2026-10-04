@@ -93,4 +93,8 @@ struct config {
     struct pci_root *pci;
 };
 
+// The machine's image list as a construction argument (image_list_t): the
+// controllers a restore builds resolve their saved media in it.
+#define CONFIG_IMAGES(cfg) (&(const image_list_t){(cfg)->images, (cfg)->n_images})
+
 #endif // SYSTEM_CONFIG_H

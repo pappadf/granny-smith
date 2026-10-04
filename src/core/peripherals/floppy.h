@@ -37,7 +37,8 @@ typedef struct floppy floppy_t;
 // cables (its profile's floppy_slots): the chip always has two drive
 // selects, but drives past n_drives are not in the object model and refuse an
 // insert.
-floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, int n_drives, checkpoint_t *checkpoint);
+floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, int n_drives, checkpoint_t *checkpoint,
+                      const image_list_t *images);
 // Frees all resources associated with the floppy controller
 // Bus /RESET: controller registers, mode latches and motor enable back to
 // power-on.  Media, decoded tracks and head position are NOT disturbed.

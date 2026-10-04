@@ -95,17 +95,22 @@ void config_add_image(config_t *cfg, image_t *image) {
     cfg->n_images++;
 }
 
-// Find an image object by its filename path
-image_t *setup_get_image_by_filename(const char *filename) {
-    struct config *config = global_emulator;
-    if (!config || !filename)
-        return NULL;
-    for (int i = 0; i < config->n_images; ++i) {
-        const char *name = image_get_filename(config->images[i]);
-        if (name && strcmp(name, filename) == 0)
-            return config->images[i];
-    }
-    return NULL;
+// Set while system_create builds a machine.  The machine under construction
+// is not the active machine -- it may be built while another one runs -- so a
+// constructor reaches its devices through the cfg it was given, never through
+// the accessors below, which name the ACTIVE machine.  They assert it.
+static bool s_constructing;
+#define NOT_DURING_CONSTRUCTION()                                                                                      \
+    do {                                                                                                               \
+        if (s_constructing)                                                                                            \
+            construction_misuse(__func__);                                                                             \
+    } while (0)
+
+// The assert handler itself reads the active machine (its backtrace), so the
+// flag is cleared before it runs.
+static void construction_misuse(const char *accessor) {
+    s_constructing = false;
+    GS_ASSERTF(false, "%s() names the active machine; a constructor uses its own cfg", accessor);
 }
 
 // System-level mouse input wrapper: routes input to appropriate mouse device model
@@ -308,21 +313,25 @@ void system_reset_devices(void) {
 
 // System-level scheduler accessor: returns the current scheduler object
 scheduler_t *system_scheduler(void) {
+    NOT_DURING_CONSTRUCTION();
     return global_emulator ? global_emulator->scheduler : NULL;
 }
 
 // System-level memory accessor: returns the current memory object
 memory_map_t *system_memory(void) {
+    NOT_DURING_CONSTRUCTION();
     return global_emulator ? global_emulator->mem_map : NULL;
 }
 
 // System-level debug accessor: returns the current debugger object
 debug_t *system_debug(void) {
+    NOT_DURING_CONSTRUCTION();
     return global_emulator ? global_emulator->debugger : NULL;
 }
 
 // System-level CPU accessor: returns the current CPU object
 cpu_t *system_cpu(void) {
+    NOT_DURING_CONSTRUCTION();
     return global_emulator ? global_emulator->cpu : NULL;
 }
 
@@ -330,6 +339,7 @@ cpu_t *system_cpu(void) {
 // a machine with a main CPU has been built (ctx doubles as the "populated"
 // flag — system_create fills the vtable right after substrate init).
 const struct cpu_debug_if *system_cpu_debug_if(void) {
+    NOT_DURING_CONSTRUCTION();
     if (!global_emulator || !global_emulator->cpu_dbg.ctx)
         return NULL;
     return &global_emulator->cpu_dbg;
@@ -337,6 +347,7 @@ const struct cpu_debug_if *system_cpu_debug_if(void) {
 
 // The active machine configuration (what host-input/object methods act on).
 config_t *system_config(void) {
+    NOT_DURING_CONSTRUCTION();
     return global_emulator;
 }
 
@@ -391,6 +402,7 @@ int system_input_mouse_button(bool down, const char *mode) {
 
 // System-level RTC accessor: returns the current RTC object
 rtc_t *system_rtc(void) {
+    NOT_DURING_CONSTRUCTION();
     return global_emulator ? global_emulator->rtc : NULL;
 }
 
@@ -415,6 +427,7 @@ display_t *system_display_synced(void) {
 // machine is booted or the booted machine has no primary display (e.g. a
 // IIcx with no card seated).
 display_t *system_display(void) {
+    NOT_DURING_CONSTRUCTION();
     config_t *cfg = global_emulator;
     if (!cfg || !cfg->machine)
         return NULL;
@@ -840,7 +853,7 @@ int system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
     // instruction count.  Not a stop: the machine's run state is saved as
     // it is, and no mode ends (the run-state event would otherwise report
     // a pause the user never asked for).
-    cpu_reschedule();
+    cpu_reschedule(sched);
 
     // The previous save's write is still in flight on the I/O worker: the
     // buffer is its, and a save now would have nothing to save into.  Skip
@@ -1119,12 +1132,6 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     // Main-CPU architecture tag: derived from the
     // profile's cpu_model; the substrate init below builds the matching core.
     cfg->cpu_arch = cpu_arch_for_model(profile->cpu_model);
-    global_emulator = cfg;
-
-    // Label the machine container node with the active model name so the
-    // SYSTEM tab shows "Macintosh IIcx" rather than the bare "machine"
-    // segment. Covers cold boot and checkpoint restore — both land here.
-    machine_set_active_label(profile->name);
 
     // The RAM size is a build option: the caller validated and defaulted it.
     cfg->ram_size = cfg->build_opts.ram_kb * 1024u;
@@ -1135,11 +1142,14 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     // report the failure rather than handing back a half-built config.  Every
     // teardown tolerates a partially-constructed machine -- each guards its
     // machine_context -- which is what makes this safe to call here.
+    s_constructing = true;
     if (profile->substrate->init(cfg, checkpoint) != 0) {
+        s_constructing = false;
         LOG(0, "Error: failed to construct %s", profile->name);
         if (profile->substrate->teardown)
             profile->substrate->teardown(cfg);
         free(cfg);
+        memory_map_select(global_emulator ? global_emulator->mem_map : NULL);
         return NULL;
     }
 
@@ -1167,13 +1177,40 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     }
 
     // The `machine.adb.keyboard` object, per machine.  After the substrate
-    // because it wants the scheduler, before scheduler_start because its
-    // event type has to exist when the scheduler re-binds restored events.
+    // because it wants the scheduler.
     cfg->host_input = host_input_init(cfg, cfg->scheduler);
+
+    // The event queue is the checkpoint's last block, restored once every
+    // event source has been constructed and registered its types.
+    if (checkpoint)
+        scheduler_restore_events(cfg->scheduler, checkpoint);
+    s_constructing = false;
+
+    // The build selected its own memory map (memory_map_init); the fast-path
+    // aliases go back to the active machine's until the swap step.
+    memory_map_select(global_emulator ? global_emulator->mem_map : NULL);
+
+    return cfg;
+}
+
+// Make a constructed machine the active one, then destroy the machine it
+// replaces: the swap step of build, swap, destroy.  Everything that names "the
+// active machine" changes here and nowhere else, so a build that fails --
+// system_create returning NULL, or a restore whose checkpoint flagged an
+// error -- has changed nothing and leaves nothing to put back.
+void system_swap_in(config_t *cfg, bool restored) {
+    config_t *old = global_emulator;
+    global_emulator = cfg;
+    memory_map_select(cfg->mem_map);
+
+    // Label the machine container node with the active model name so the
+    // SYSTEM tab shows "Macintosh IIcx" rather than the bare "machine"
+    // segment.
+    machine_set_active_label(cfg->machine->name);
 
     // Stand up the object-model root: attaches stub classes for
     // cpu/memory/scheduler/machine/shell/storage so `eval` can read
-    // runtime state. The legacy shell remains primary.
+    // runtime state.
     root_install(cfg);
 
     // The volume table went with the previous machine: publish the share.
@@ -1182,16 +1219,19 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     // Cold boot: stamp out a manifest documenting what was set up.  Skipped
     // on checkpoint restore — the manifest is fixed at original creation
     // time and is purely informational.  Failure is non-fatal.
-    if (!checkpoint && checkpoint_machine_dir())
+    if (!restored && checkpoint_machine_dir())
         checkpoint_machine_write_manifest();
 
-    // A new machine exists: machine.boot and checkpoint.load both end here
+    // The machine it replaces goes last; its teardown leaves the new
+    // machine's object tree alone (root_uninstall_if).
+    if (old)
+        system_destroy(old);
+
+    // A new machine is active: machine.boot and checkpoint.load both end here
     // (machine.restart builds nothing).  The page reloads its object trees on this.
     gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"machine_booted\",\"model\":\"%s\",\"restored\":%s}",
-                   profile->id ? profile->id : "", checkpoint ? "true" : "false");
+                   cfg->machine->id ? cfg->machine->id : "", restored ? "true" : "false");
     platform_machine_attached();
-
-    return cfg;
 }
 
 // Destroy an emulator instance: call machine teardown and free all resources.
@@ -1262,9 +1302,10 @@ void system_destroy(config_t *config) {
     // all of them pointing at freed memory -- and system_is_initialized()
     // answering true for it.
     //
-    // The guard is what keeps system_restore working: it installs the new
+    // The guard is what keeps the swap step working: it installs the new
     // config first and destroys the old one after, so by the time this runs
-    // the global already names someone else and must not be cleared.
+    // the global already names someone else and must not be cleared; a build
+    // that failed was never installed at all.
     if (global_emulator == config)
         global_emulator = NULL;
 
@@ -1560,6 +1601,10 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
     // Delegate all state serialisation to the machine profile
     global_emulator->machine->substrate->checkpoint_save(global_emulator, checkpoint);
 
+    // The event queue last: a restore reads it once the whole machine -- every
+    // event source -- exists (system_create).
+    scheduler_checkpoint_events(global_emulator->scheduler, checkpoint);
+
     if (checkpoint_has_error(checkpoint)) {
         LOG_WITH(log_register_category("ckpt"), 0, "Error: failed to write checkpoint");
         checkpoint_close(checkpoint);
@@ -1654,25 +1699,12 @@ config_t *system_restore(const char *filename) {
 
     config_t *config = system_create(profile, &build_opts, checkpoint);
 
-    if (checkpoint_has_error(checkpoint)) {
+    // The build is not yet the active machine, so a failure leaves the
+    // running one exactly as it was.
+    if (!config || checkpoint_has_error(checkpoint)) {
         LOG(0, "Error: Failed to read checkpoint");
         checkpoint_close(checkpoint);
-        global_emulator = prev;
-        if (config)
-            system_destroy(config);
-        // Put the surviving machine's object tree back.
-        //
-        // system_create() ran root_install(config) on the way in, which tore
-        // down `prev`'s stubs and claimed g_installed_cfg; system_destroy()
-        // then ran root_uninstall_if(config), which matched and uninstalled
-        // again.  Nothing reinstalled `prev`.  So a truncated or mismatched
-        // checkpoint left the still-running machine executing with `shell`,
-        // `shell.functions`, `shell.alias`, `storage`, `files.images`,
-        // `machine.nubus` and `machine.pci` all detached and the root methods
-        // gone -- the entire tooling surface evaporated, with no diagnostic
-        // beyond "Failed to read checkpoint".
-        if (prev)
-            root_install(prev);
+        system_destroy(config);
         return NULL;
     }
 
@@ -1714,17 +1746,14 @@ int system_checkpoint_load(const char *filename) {
         filename = auto_buf;
     }
 
-    config_t *old_config = global_emulator;
     config_t *new_config = system_restore(filename);
     if (!new_config)
         return -1;
 
-    // Replace global emulator with restored state.  Safe because commands are
-    // registered globally rather than per-config, global_emulator now names
-    // new_config, and no part of the call stack holds old_config.
-    global_emulator = new_config;
-    if (old_config)
-        system_destroy(old_config);
+    // Swap the restored machine in; the old one is destroyed.  Safe because
+    // commands are registered globally rather than per-config, and no part of
+    // the call stack holds the old config.
+    system_swap_in(new_config, true);
 
     // Force a one-shot screen redraw so the restored framebuffer appears
     extern void frontend_force_redraw(void);

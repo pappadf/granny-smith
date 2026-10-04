@@ -32,6 +32,7 @@
 
 struct scheduler;
 struct image;
+struct image_list;
 typedef struct image image_t;
 typedef struct lisa_fdc lisa_fdc_t;
 
@@ -41,18 +42,15 @@ typedef void (*lisa_fdc_fdir_fn)(void *ctx, bool asserted);
 
 // === Lifecycle =============================================================
 
-lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb, void *fdir_ctx, checkpoint_t *cp);
+// `images`: the restored image list a restore resolves the saved diskette in
+// (NULL on a cold build).
+lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb, void *fdir_ctx, checkpoint_t *cp,
+                          const struct image_list *images);
 // Set the disk-controller ROM id ($FCC031) the boot ROM reads to detect the
 // machine type (Lisa 1 vs Lisa 2 / fast vs slow timers).  See lisa_fdc.c.
 void lisa_fdc_set_diskrom(lisa_fdc_t *fdc, uint8_t id);
 void lisa_fdc_delete(lisa_fdc_t *fdc);
 void lisa_fdc_checkpoint(lisa_fdc_t *fdc, checkpoint_t *cp);
-
-// Checkpoint restore: the filename of the diskette that was in the drive, or
-// NULL.  The caller looks it up in cfg->images and re-inserts it through the
-// normal path — the FDC does not own images.  Ownership of the string passes
-// to the caller.
-char *lisa_fdc_take_pending_media(lisa_fdc_t *fdc);
 
 // === Media ==================================================================
 

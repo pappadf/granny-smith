@@ -25,6 +25,7 @@
 struct config;
 struct nubus_slot_decl;
 struct image;
+struct image_list;
 struct object;
 struct scsi;
 
@@ -583,7 +584,7 @@ bool profile_cdrom_bay(const hw_profile_t *p, media_bay_t *out);
 int profile_floppy_count(const hw_profile_t *p);
 // Build the machine's primary SCSI bus with the fixed devices the profile
 // declares on it: the CD bay's drive (has_cdrom, cdrom_id, cdrom_drive).
-struct scsi *profile_scsi_init(const hw_profile_t *p, checkpoint_t *cp);
+struct scsi *profile_scsi_init(const hw_profile_t *p, checkpoint_t *cp, const struct image_list *images);
 
 // === Machine-level attach and eject (system.c) =============================
 // Open `path` as the medium `bay` takes (a hard disk, or with `cdrom` a CD)

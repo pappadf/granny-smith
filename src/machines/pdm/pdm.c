@@ -319,15 +319,19 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // No 68k MMU owns this machine's page table, so host-backed regions that
     // core code registers on the bus map — a NuBus card's VRAM and
     // declaration ROM — are filled through our own page filler.
-    g_mem_host_fill = pdm_fill_page;
+    memory_map_set_host_fill(cfg->mem_map, pdm_fill_page);
     cfg->ppc = ppc_init(cp, cfg->machine->cpu_model);
+    if (cfg->ppc) {
+        memory_cpu_hooks_t hooks = ppc_memory_hooks(cfg->ppc);
+        memory_map_set_cpu_hooks(cfg->mem_map, &hooks);
+    }
     if (!cfg->ppc) {
         LOG(0, "Error: out of memory constructing the PowerPC core");
         return -1;
     }
     sched_cpu_if_t cpu_if = ppc_sched_if(cfg->ppc);
     cfg->scheduler = scheduler_init(&cpu_if, cp);
-    debug_mac_register_scheduler_events(cfg->scheduler); // before scheduler_start replays a restore
+    debug_mac_register_scheduler_events(cfg->scheduler);
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
     scheduler_set_cpi(cfg->scheduler, 1);
     // The 601's RTC input: 7.8336 MHz on every PDM board.
@@ -386,7 +390,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // discrete 53CF96 on its fast internal bus (40 MHz), instantiated with
     // no bus attached: every select times out, the empty-bus presentation.
     // hd=/cd= media land on cfg->scsi, i.e. the Curio bus, on all models.
-    cfg->scsi = profile_scsi_init(cfg->machine, cp);
+    cfg->scsi = profile_scsi_init(cfg->machine, cp, CONFIG_IMAGES(cfg));
     st->scsi96[0] = scsi_53c96_init(cfg->scheduler, 20000000, cp);
     scsi_53c96_set_irq_callback(st->scsi96[0], pdm_scsi96a_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96[0], cfg->scsi);
@@ -398,7 +402,8 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // The internal SuperDrive behind SWIM3.  No memory map: PDM decodes
     // the controller through the AMIC island, not through a floppy region
     // of its own, so the shared module only carries the drive and media.
-    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp);
+    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp,
+                              CONFIG_IMAGES(cfg));
 
     // Board state + memory map.
     pdm_hmc_init(cfg);
@@ -451,9 +456,8 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     pdm_video_init(cfg);
     pdm_awacs_init(cfg);
 
-    // Finish: debugger + scheduler start (the mac030_glue_finish shape).
+    // Finish: the debugger (the mac030_glue_finish shape).
     cfg->debugger = debug_init();
-    scheduler_start(cfg->scheduler);
 
     // Fresh boot: start the free-running VBL raster (a restore rebinds
     // the checkpointed pending event through the registered type).

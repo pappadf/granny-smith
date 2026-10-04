@@ -1135,8 +1135,8 @@ scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint) {
 }
 
 // Initialize the SCSI controller and optionally restore from checkpoint
-scsi_t *scsi_init(checkpoint_t *checkpoint, const scsi_cd_drive_t *cd_drive, int cd_id) {
-    scsi_t *scsi = scsi_init_named(checkpoint, "scsi");
+scsi_t *scsi_init(checkpoint_t *checkpoint, const image_list_t *images, const scsi_cd_drive_t *cd_drive, int cd_id) {
+    scsi_t *scsi = scsi_init_named(checkpoint, images, "scsi");
     if (!scsi || !cd_drive)
         return scsi;
     GS_ASSERTF(cd_id >= 0 && cd_id < 7, "scsi_init: CD bay id %d is not a target slot", cd_id);
@@ -1154,7 +1154,7 @@ scsi_t *scsi_init(checkpoint_t *checkpoint, const scsi_cd_drive_t *cd_drive, int
     return scsi;
 }
 
-scsi_t *scsi_init_named(checkpoint_t *checkpoint, const char *name) {
+scsi_t *scsi_init_named(checkpoint_t *checkpoint, const image_list_t *images, const char *name) {
     scsi_t *scsi = (scsi_t *)malloc(sizeof(scsi_t));
     if (scsi == NULL)
         return NULL;
@@ -1207,10 +1207,16 @@ scsi_t *scsi_init_named(checkpoint_t *checkpoint, const char *name) {
                 char *name = (char *)malloc(len);
                 if (name) {
                     system_read_checkpoint_data(checkpoint, name, len);
-                    image_t *img = setup_get_image_by_filename(name);
+                    name[len - 1] = '\0';
+                    image_t *img = images_find(images, name);
                     if (img) {
                         scsi->device_images[i] = img;
                         scsi->devices[i].medium_present = true;
+                    } else {
+                        // The device held a medium: a restore without it is
+                        // not the machine that was saved.
+                        LOG(0, "SCSI id %d: the checkpoint's medium '%s' is not among its images", i, name);
+                        checkpoint_set_error(checkpoint);
                     }
                     free(name);
                 } else {

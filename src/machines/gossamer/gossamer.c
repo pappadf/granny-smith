@@ -318,8 +318,12 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     cfg->mem_map =
         memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, MEMORY_BUS_ERR_NONE,
                         &cfg->build_opts.rom, cp); // no bus-error watchdog: unanswered floats to $FF
-    g_mem_host_fill = gos_fill_page;
+    memory_map_set_host_fill(cfg->mem_map, gos_fill_page);
     cfg->ppc = ppc_init(cp, cfg->machine->cpu_model);
+    if (cfg->ppc) {
+        memory_cpu_hooks_t hooks = ppc_memory_hooks(cfg->ppc);
+        memory_map_set_cpu_hooks(cfg->mem_map, &hooks);
+    }
     if (!cfg->ppc) {
         LOG(0, "Error: out of memory constructing the PowerPC core");
         return -1;
@@ -371,7 +375,8 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     st->dbdma = dbdma_init(cp, DBDMA_CHANNELS_HEATHROW);
     if (!st->dbdma)
         return -1;
-    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp);
+    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp,
+                              CONFIG_IMAGES(cfg));
     gos_swim3_bind(cfg);
     gos_swim3_init(cfg);
     gos_scc_dma_init(cfg);
@@ -429,7 +434,7 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     // SCSI: the one MESH bus (internal and external connectors share it).
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
-    cfg->scsi = profile_scsi_init(cfg->machine, cp);
+    cfg->scsi = profile_scsi_init(cfg->machine, cp, CONFIG_IMAGES(cfg));
     st->mesh = mesh_init(cfg->scheduler, cp);
     mesh_attach_bus(st->mesh, cfg->scsi);
     mesh_set_irq_callback(st->mesh, gos_mesh_irq, cfg);
@@ -460,7 +465,6 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
         gos_recompute_irq(cfg);
 
     cfg->debugger = debug_init();
-    scheduler_start(cfg->scheduler);
     return 0;
 }
 

@@ -227,14 +227,10 @@ struct scheduler {
     sched_cpu_if_t cpu; // the main-CPU seam (copied at init; ctx outlives us)
     event_t *cpu_events; // priority queue sorted by timestamp
 
-    // Temporary storage used during checkpoint restore
-    unsigned int tmp_num_events;
-    event_as_checkpoint_t *tmp_events;
-    // The checkpoint those came from, still open until scheduler_start has
-    // resolved them: a saved event that cannot be restored fails the load.
-    checkpoint_t *tmp_checkpoint;
-
     uint32_t frequency;
+    // The VIA E-clock period in CPU cycles x256, derived from `frequency`;
+    // the sprint publishes it as g_esync_period_x256.
+    uint32_t esync_period_x256;
 
     // Object-tree binding — lifetime tied to scheduler_init / scheduler_delete.
     struct object *object;
@@ -852,42 +848,12 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
         s->sprint_total = 0;
         s->sprint_burndown = 0;
 
-        // Save event data for deferred restoration (names must be resolved after device registration).
-        system_read_checkpoint_data(checkpoint, &s->tmp_num_events, sizeof(s->tmp_num_events));
-        // An on-disk count drives the allocation below, so it is checked
-        // before it is used rather than asserted after.  MAX_SANE_EVENTS
-        // bounds the allocation at ~10k entries; the largest queue the corpus
-        // produces is orders of magnitude smaller.
-        if (s->tmp_num_events > MAX_SANE_EVENTS) {
-            LOG(0, "Error: checkpoint claims %u pending events (cap %d); refusing the restore", s->tmp_num_events,
-                MAX_SANE_EVENTS);
-            checkpoint_set_error(checkpoint);
-            s->tmp_num_events = 0;
-        }
-        if (s->tmp_num_events == 0) {
-            s->tmp_events = NULL;
-        } else {
-            s->tmp_events = (event_as_checkpoint_t *)malloc((size_t)s->tmp_num_events * sizeof(event_as_checkpoint_t));
-            if (!s->tmp_events) {
-                // The old GS_ASSERT here fell straight through to a read into
-                // a NULL pointer -- in every build, for the reason above.
-                LOG(0, "Error: out of memory restoring %u scheduler events", s->tmp_num_events);
-                checkpoint_set_error(checkpoint);
-                s->tmp_num_events = 0;
-            } else {
-                system_read_checkpoint_data(checkpoint, s->tmp_events,
-                                            (size_t)s->tmp_num_events * sizeof(event_as_checkpoint_t));
-                s->tmp_checkpoint = checkpoint;
-            }
-        }
     } else {
         // Fresh boot
         s->cpu_cycles = 0;
         s->total_instructions = 0;
         s->sprint_total = 0;
         s->sprint_burndown = 0;
-        s->tmp_num_events = 0;
-        s->tmp_events = NULL;
     }
 
     // Derive the transient governor + effective-CPI state (fresh boot and
@@ -937,12 +903,6 @@ void scheduler_delete(struct scheduler *scheduler) {
         e = next;
     }
 
-    // Free temporary checkpoint restore data
-    if (scheduler->tmp_events) {
-        free(scheduler->tmp_events);
-        scheduler->tmp_events = NULL;
-    }
-
     free(scheduler);
 }
 
@@ -963,6 +923,13 @@ void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *ch
 
     // Save plain-data portion of struct
     system_write_checkpoint_data(checkpoint, scheduler, offsetof(struct scheduler, previous_time));
+}
+
+// Save the event queue: the last block of a machine checkpoint, so its
+// restore runs once every event source exists (scheduler_restore_events).
+void scheduler_checkpoint_events(struct scheduler *restrict scheduler, checkpoint_t *checkpoint) {
+    GS_ASSERT(scheduler != NULL && checkpoint != NULL);
+    validate_cpu_events(scheduler);
 
     // Convert event queue to checkpoint-friendly format (names instead of pointers)
     unsigned int num_events = num_events_in_queue(scheduler);
@@ -1016,77 +983,84 @@ void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *ch
 // Operations
 // ============================================================================
 
-// Complete deferred checkpoint restore after all devices have registered event types
-void scheduler_start(struct scheduler *restrict s) {
-    GS_ASSERT(s != NULL);
+// Restore the event queue saved by scheduler_checkpoint_events.  The caller
+// reads it after constructing the whole machine, so every event source has
+// registered its types: each saved event binds as it is read.
+void scheduler_restore_events(struct scheduler *restrict s, checkpoint_t *checkpoint) {
+    GS_ASSERT(s != NULL && checkpoint != NULL);
 
-    // Nothing to restore if not from checkpoint
-    if (s->tmp_events == NULL)
+    unsigned int num_events = 0;
+    system_read_checkpoint_data(checkpoint, &num_events, sizeof(num_events));
+    // An on-disk count drives the reads below, so it is checked before it is
+    // used rather than asserted after.  MAX_SANE_EVENTS bounds it at ~10k
+    // entries; the largest queue the corpus produces is orders of magnitude
+    // smaller.
+    if (checkpoint_has_error(checkpoint))
         return;
+    if (num_events > MAX_SANE_EVENTS) {
+        LOG(0, "Error: checkpoint claims %u pending events (cap %d); refusing the restore", num_events,
+            MAX_SANE_EVENTS);
+        checkpoint_set_error(checkpoint);
+        return;
+    }
 
-    // Resolve saved event names to live pointers and rebuild the event queue.
-    //
     // Everything below comes off disk, so it is checked, not asserted: a
-    // release build compiles GS_ASSERT out, and an unknown type then indexed
-    // event_types[-1].  A saved event whose type nothing
-    // registered -- a checkpoint from a different build, or a module that
-    // registers its types only when it first arms one -- or whose time is
+    // release build compiles GS_ASSERT out.  A saved event whose type nothing
+    // registered -- a checkpoint from a different build -- or whose time is
     // already past fails the load, and the machine that was running stays.
-    bool ok = true;
-    for (unsigned int i = 0; i < s->tmp_num_events; i++) {
-        event_as_checkpoint_t *saved = &s->tmp_events[i];
+    if (num_events == 0)
+        return;
+    event_as_checkpoint_t *all = (event_as_checkpoint_t *)malloc((size_t)num_events * sizeof(event_as_checkpoint_t));
+    if (!all) {
+        LOG(0, "Error: out of memory restoring %u scheduler events", num_events);
+        checkpoint_set_error(checkpoint);
+        return;
+    }
+    system_read_checkpoint_data(checkpoint, all, (size_t)num_events * sizeof(event_as_checkpoint_t));
+    for (unsigned int i = 0; i < num_events && !checkpoint_has_error(checkpoint); i++) {
+        event_as_checkpoint_t saved = all[i];
+        // Null-terminate defensively: the names came off disk.
+        saved.source_name[sizeof(saved.source_name) - 1] = '\0';
+        saved.event_name[sizeof(saved.event_name) - 1] = '\0';
 
-        // Find matching registered event type by name. The name buffers are
-        // null-terminated on both sides, so strcmp catches differences past
-        // the buffer length too (a 64-byte strncmp would alias collisions).
         int found = -1;
         for (int j = 0; j < s->num_event_types; j++) {
-            if (strcmp(s->event_types[j].source_name, saved->source_name) == 0 &&
-                strcmp(s->event_types[j].event_name, saved->event_name) == 0) {
+            if (strcmp(s->event_types[j].source_name, saved.source_name) == 0 &&
+                strcmp(s->event_types[j].event_name, saved.event_name) == 0) {
                 found = j;
                 break;
             }
         }
         if (found < 0) {
-            LOG(0, "Error: checkpoint holds a pending '%.*s.%.*s' event, and no such event type is registered",
-                (int)sizeof(saved->source_name), saved->source_name, (int)sizeof(saved->event_name), saved->event_name);
-            ok = false;
-            continue;
+            LOG(0, "Error: checkpoint holds a pending '%s.%s' event, and no such event type is registered",
+                saved.source_name, saved.event_name);
+            checkpoint_set_error(checkpoint);
+            break;
         }
         // The documented invariant: timestamp + CPI >= cpu_cycles (so an
         // event that legitimately fired on the same cycle the checkpoint was
         // taken can still be restored).
-        if (saved->timestamp + avg_cycles_per_instr(s) < s->cpu_cycles) {
-            LOG(0, "Error: checkpoint's '%.*s.%.*s' event is due at cycle %llu, before the saved clock (%llu)",
-                (int)sizeof(saved->source_name), saved->source_name, (int)sizeof(saved->event_name), saved->event_name,
-                (unsigned long long)saved->timestamp, (unsigned long long)s->cpu_cycles);
-            ok = false;
-            continue;
+        if (saved.timestamp + avg_cycles_per_instr(s) < s->cpu_cycles) {
+            LOG(0, "Error: checkpoint's '%s.%s' event is due at cycle %llu, before the saved clock (%llu)",
+                saved.source_name, saved.event_name, (unsigned long long)saved.timestamp,
+                (unsigned long long)s->cpu_cycles);
+            checkpoint_set_error(checkpoint);
+            break;
         }
 
-        // Recreate and insert event
         event_t *e = event_alloc();
         GS_ASSERT(e != NULL);
-
-        e->timestamp = saved->timestamp;
+        e->timestamp = saved.timestamp;
         e->callback = s->event_types[found].callback;
         e->source = s->event_types[found].source;
-        e->data = saved->data;
+        e->data = saved.data;
         // A periodic with a zero interval would spin, so refuse it rather
         // than restore it -- this value came off disk like the rest.
-        e->periodic = saved->periodic != 0 && saved->interval_cycles != 0;
-        e->interval_cycles = e->periodic ? saved->interval_cycles : 0;
-
+        e->periodic = saved.periodic != 0 && saved.interval_cycles != 0;
+        e->interval_cycles = e->periodic ? saved.interval_cycles : 0;
         s->cpu_events = insert_event_queue(s->cpu_events, e);
     }
-    if (!ok && s->tmp_checkpoint)
-        checkpoint_set_error(s->tmp_checkpoint);
-
-    // Cleanup temporary storage
-    free(s->tmp_events);
-    s->tmp_events = NULL;
-    s->tmp_num_events = 0;
-    s->tmp_checkpoint = NULL;
+    free(all);
 
     CHECK_INVARIANTS(s);
 }
@@ -1347,8 +1321,7 @@ uint64_t cpu_instr_count(void) {
 }
 
 // Reconcile sprint counters (public API for external callers like IRQ handlers)
-void cpu_reschedule(void) {
-    struct scheduler *s = system_scheduler();
+void cpu_reschedule(struct scheduler *s) {
     if (s == NULL)
         return;
     reconcile_sprint(s);
@@ -1499,10 +1472,10 @@ void scheduler_set_frequency(struct scheduler *restrict s, uint32_t frequency_hz
         return;
     GS_ASSERT(frequency_hz > 0);
     s->frequency = frequency_hz;
-    // Publish the VIA E-clock period (783.360 kHz) in CPU cycles x256 for the
-    // E-synchronized I/O penalty (memory_io_esync_penalty). Machines without
-    // esync-flagged I/O ranges simply never read it.
-    g_esync_period_x256 = (uint32_t)(((uint64_t)frequency_hz * 256 + 783360 / 2) / 783360);
+    // The VIA E-clock period (783.360 kHz) in CPU cycles x256 for the
+    // E-synchronized I/O penalty (memory_io_esync_penalty), published per
+    // sprint. Machines without esync-flagged I/O ranges simply never read it.
+    s->esync_period_x256 = (uint32_t)(((uint64_t)frequency_hz * 256 + 783360 / 2) / 783360);
 }
 
 // Set the per-machine cycles-per-instruction constant (mode-independent)
@@ -1614,6 +1587,7 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         g_sprint_base_cycles = s->cpu_cycles;
         g_sprint_frac_x256 = s->cycle_frac_x256;
         g_sprint_total_slots = instr_to_exec;
+        g_esync_period_x256 = s->esync_period_x256;
         // The penalty remainder lives in the scheduler; the sprint runs on its alias.
         g_io_penalty_remainder = s->io_penalty_remainder;
         cpu->run_sprint(cpu->ctx, &s->sprint_burndown);

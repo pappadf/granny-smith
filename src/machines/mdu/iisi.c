@@ -263,14 +263,15 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     if (checkpoint)
         mac_checkpoint_restore_images(cfg, checkpoint);
 
-    cfg->scsi = profile_scsi_init(cfg->machine, checkpoint);
+    cfg->scsi = profile_scsi_init(cfg->machine, checkpoint, CONFIG_IMAGES(cfg));
     scsi_5380_attach(cfg->scsi, checkpoint); // IIsi: NCR 5380
     scsi_set_irq_callback(cfg->scsi, iisi_scsi_irq, cfg);
     setup_images(cfg);
 
     st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), checkpoint);
+    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), checkpoint,
+                             CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
 
     // Egret companion: owns ADB / RTC / PRAM / 1-sec tick / soft power-off via
@@ -343,7 +344,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     if (checkpoint) {
         mmu_checkpoint_restore(st->mmu, checkpoint);
         mmu_invalidate_tlb(st->mmu);
-        g_mmu = st->mmu;
+        memory_map_set_pmmu(cfg->mem_map, st->mmu);
         cpu_attach_mmu(cfg->cpu, st->mmu);
         via_redrive_outputs(cfg->via1);
     }

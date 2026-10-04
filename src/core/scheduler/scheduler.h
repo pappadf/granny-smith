@@ -119,8 +119,15 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
 // Free all resources associated with a scheduler instance
 void scheduler_delete(struct scheduler *scheduler);
 
-// Save scheduler state to a checkpoint
+// Save scheduler state to a checkpoint (everything but the event queue).
 void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *checkpoint);
+
+// Save / restore the event queue.  It is the LAST block of a machine
+// checkpoint: system_create restores it once the whole machine -- every event
+// source -- exists, so every saved event binds as it is read, or the restore
+// fails.
+void scheduler_checkpoint_events(struct scheduler *restrict scheduler, checkpoint_t *checkpoint);
+void scheduler_restore_events(struct scheduler *restrict scheduler, checkpoint_t *checkpoint);
 
 // === Operations ===
 
@@ -239,9 +246,6 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n);
 // Run the scheduler for a specified number of microseconds
 void scheduler_run_usecs(struct scheduler *restrict s, uint64_t usecs);
 
-// Complete deferred checkpoint restore after all devices have registered event types
-void scheduler_start(struct scheduler *restrict s);
-
 // Why a run ended.  A mode (a run started by scheduler_run_with_budget)
 // carries the reason it stopped and whose it was; scheduler_run_frame
 // reports both in a mode_ended event (gs_event.h) at the point where
@@ -310,7 +314,8 @@ void scheduler_set_cpi(struct scheduler *restrict s, uint32_t cpi);
 // Get the total number of CPU instructions executed so far
 uint64_t cpu_instr_count(void);
 
-// Reconcile sprint counters (called from IRQ handlers to stabilize accounting)
-void cpu_reschedule(void);
+// Reconcile sprint counters (called from IRQ handlers to stabilize accounting).
+// NULL (a machine without its scheduler yet) is a no-op.
+void cpu_reschedule(struct scheduler *s);
 
 #endif // SCHEDULE_H

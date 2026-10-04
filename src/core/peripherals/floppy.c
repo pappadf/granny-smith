@@ -858,8 +858,8 @@ static void floppy_validate_restored_state(floppy_t *floppy) {
 }
 
 // Initializes a floppy controller of the given type and maps it to memory
-floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, int n_drives,
-                      checkpoint_t *checkpoint) {
+floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, int n_drives, checkpoint_t *checkpoint,
+                      const image_list_t *images) {
     floppy_t *floppy = malloc(sizeof(floppy_t));
     if (!floppy) {
         LOG(1, "Floppy: Allocation failed");
@@ -915,7 +915,14 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
                 char *name = malloc(len);
                 if (name) {
                     system_read_checkpoint_data(checkpoint, name, len);
-                    floppy->disk[i] = setup_get_image_by_filename(name);
+                    name[len - 1] = '\0';
+                    floppy->disk[i] = images_find(images, name);
+                    if (!floppy->disk[i]) {
+                        // The drive held a disk: a restore without it is not
+                        // the machine that was saved.
+                        LOG(0, "floppy drive %d: the checkpoint's disk '%s' is not among its images", i, name);
+                        checkpoint_set_error(checkpoint);
+                    }
                     floppy_notify_present(i, floppy->disk[i] != NULL);
                     free(name);
                 } else {

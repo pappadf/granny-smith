@@ -1800,10 +1800,6 @@ int main(int argc, char *argv[]) {
     if (g_running) {
         if (!quiet)
             printf("\nStarting emulation (Ctrl+C to stop)...\n\n");
-
-        scheduler_t *s = system_scheduler();
-        if (s)
-            scheduler_start(s);
     }
 
     // Main loop

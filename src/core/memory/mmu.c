@@ -105,7 +105,7 @@ static void atc_flush(void) {
 // own eagerly-installed identity entries live under an enabled PMMU.  Stale
 // indices can also point past a smaller machine's SoA arrays.  Resetting at
 // construction is ordering-independent, which the teardown-side reset is not.
-static void mmu_reset_global_caches(void) {
+void mmu_reset_global_caches(void) {
     // A fresh machine must not inherit the previous instance's user-CRP
     // snapshot.
     g_last_user_crp = 0;
@@ -862,8 +862,13 @@ typedef struct mem_host_fill_region {
     uint32_t size;
     bool writable;
 } mem_host_fill_region_t;
-static mem_host_fill_region_t g_host_fill_regions[MEM_HOST_FILL_MAX];
-static int g_host_fill_count = 0;
+// A memory map's table (memory_map_host_fill_regions); the selected map's is
+// aliased by g_host_fill.
+typedef struct mem_host_fill_table {
+    mem_host_fill_region_t regions[MEM_HOST_FILL_MAX];
+    int count;
+} mem_host_fill_table_t;
+static mem_host_fill_table_t *g_host_fill;
 
 // Fill one host window through the hook, page by page.
 static void host_fill_region(uint8_t *host_ptr, uint32_t phys_base, uint32_t size, bool writable) {
@@ -871,10 +876,18 @@ static void host_fill_region(uint8_t *host_ptr, uint32_t phys_base, uint32_t siz
         g_mem_host_fill((phys_base + off) >> PAGE_SHIFT, host_ptr + off, writable);
 }
 
-// Forget the recorded fill windows — a new memory map means a new machine
-// (memory_map_init calls this).
-void mmu_host_fill_regions_reset(void) {
-    g_host_fill_count = 0;
+void *mmu_host_fill_regions_new(void) {
+    return calloc(1, sizeof(mem_host_fill_table_t));
+}
+
+void mmu_host_fill_regions_free(void *table) {
+    if (g_host_fill == table)
+        g_host_fill = NULL;
+    free(table);
+}
+
+void mmu_host_fill_regions_select(void *table) {
+    g_host_fill = (mem_host_fill_table_t *)table;
 }
 
 void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr, uint32_t phys_base, uint32_t size,
@@ -892,8 +905,8 @@ void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr
         host_fill_region(host_ptr, phys_base, size, writable);
         // Re-registration of the same window replaces its record (same rule
         // as mmu_register_host_region).
-        for (int i = 0; i < g_host_fill_count; i++) {
-            mem_host_fill_region_t *r = &g_host_fill_regions[i];
+        for (int i = 0; i < g_host_fill->count; i++) {
+            mem_host_fill_region_t *r = &g_host_fill->regions[i];
             if (r->phys_base == phys_base && r->size == size) {
                 r->host = host_ptr;
                 r->writable = writable;
@@ -902,12 +915,12 @@ void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr
                 return;
             }
         }
-        if (g_host_fill_count >= MEM_HOST_FILL_MAX) {
+        if (g_host_fill->count >= MEM_HOST_FILL_MAX) {
             LOG(0, "memory_map_host_region: fill list full (%d); region $%08X+$%X not recorded", MEM_HOST_FILL_MAX,
                 phys_base, size);
             return;
         }
-        g_host_fill_regions[g_host_fill_count++] =
+        g_host_fill->regions[g_host_fill->count++] =
             (mem_host_fill_region_t){.host = host_ptr, .phys_base = phys_base, .size = size, .writable = writable};
         if (g_mem_map_changed)
             g_mem_map_changed();
@@ -924,8 +937,8 @@ void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uin
         // Machine-owned physical view: the alias is a second page fill of the same host
         // bytes.  Card register windows are registered AFTER their aliases
         // (display_card_24ac.c), so a device page still wins its page.
-        for (int i = 0; i < g_host_fill_count; i++) {
-            const mem_host_fill_region_t *r = &g_host_fill_regions[i];
+        for (int i = 0; i < g_host_fill->count; i++) {
+            const mem_host_fill_region_t *r = &g_host_fill->regions[i];
             if (r->phys_base == original_phys_base) {
                 host_fill_region(r->host, alias_phys_base, r->size, r->writable);
                 return;

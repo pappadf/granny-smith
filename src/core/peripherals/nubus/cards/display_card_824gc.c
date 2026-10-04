@@ -1050,7 +1050,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
 
     // Seed PRAM for the picked video mode (mirrors jmfb.c / 24AC).
     if (seeded_monitor && seeded_depth_bpp > 0) {
-        rtc_t *rtc = system_rtc();
+        rtc_t *rtc = cfg->rtc;
         if (rtc) {
             uint8_t spDepth = spdepth_for_bpp(seeded_depth_bpp);
             // The XPRAM token and the Start Manager table (PRAMInitTbl) are the

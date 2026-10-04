@@ -135,6 +135,17 @@ static void user_soa_invalidate_all(void) {
     g_fill_track_overflow = false;
 }
 
+// The machine's memory map was selected: the translation caches and the fill
+// tracker describe whichever map was selected before, so the tracker goes
+// back to its conservative state (the next invalidation zeroes everything)
+// and the caches refill.
+void ppc_mmu_caches_unknown(void) {
+    g_fill_track_count = 0;
+    g_fill_track_overflow = true;
+    memset(g_xtlb, 0, sizeof(g_xtlb));
+    ppc_mmu_flush_fetch();
+}
+
 // Memory-logpoint install/uninstall reshaped the watch arrays: drop the
 // translation TLB too — a stale entry would keep rewriting a now-watched
 // EA to physical before ppc_dxlate_slow's keep-logical check can run.

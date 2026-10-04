@@ -165,8 +165,8 @@ bool profile_default_hd_bay(const hw_profile_t *p, media_bay_t *out) {
     return profile_hd_bays(p, out, 1) == 1;
 }
 
-struct scsi *profile_scsi_init(const hw_profile_t *p, checkpoint_t *cp) {
-    return scsi_init(cp, p->has_cdrom ? p->cdrom_drive : NULL, p->cdrom_id);
+struct scsi *profile_scsi_init(const hw_profile_t *p, checkpoint_t *cp, const image_list_t *images) {
+    return scsi_init(cp, images, p->has_cdrom ? p->cdrom_drive : NULL, p->cdrom_id);
 }
 
 bool profile_cdrom_bay(const hw_profile_t *p, media_bay_t *out) {
@@ -879,13 +879,6 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     if (val_is_error(&rerr))
         return rerr;
 
-    // 3. Teardown + atomic construction.  Nothing is carried from the machine
-    // being destroyed: the new one is built from the document alone.
-    if (global_emulator) {
-        system_destroy(global_emulator);
-        global_emulator = NULL;
-    }
-
     // One channel for every video model that needs the sense at construction
     // -- the JMFB cards, the Quadras' DAFB, PDM's Ariel.
     build_opts.ram_kb = ram_kb; // validated and defaulted above
@@ -900,6 +893,9 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
             build_opts.video_sense = mon_sense;
     }
 
+    // 3. Build, then swap, then destroy.  The new machine is built from the
+    // document alone while the running one is untouched; only a complete
+    // build replaces it.
     machine_config_reset_vroms();
     machine_config_reset_slot_cards();
     config_t *cfg = system_create(profile, &build_opts, NULL);
@@ -925,6 +921,10 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     memcpy(w->slots, build_opts.slots, sizeof(w->slots));
     stamp_created(w->created, sizeof(w->created));
     w->valid = true;
+
+    // 5. The swap: the new machine becomes the active one, and the one it
+    // replaces is destroyed.
+    system_swap_in(cfg, false);
 
     LOG(1, "Machine created: %s (%s), RAM: %u KB", profile->name, profile->id, cfg->ram_size / 1024u);
     return val_none();
@@ -1351,7 +1351,7 @@ void catalog_init(void) {
 // Update the machine node's display label to the active model name
 // ("Macintosh IIcx"), or clear it back to the bare "machine" segment when no
 // machine is booted. The profile name is static for the process lifetime, so
-// the borrowed pointer stays valid. Called from system_create / system_destroy.
+// the borrowed pointer stays valid. Called from the swap step (system_swap_in).
 void machine_set_active_label(const char *name) {
     object_set_label(machine_object(), name);
 }

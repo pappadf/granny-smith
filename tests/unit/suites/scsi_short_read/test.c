@@ -39,10 +39,6 @@ uint32_t cpu_get_pc(cpu_t *restrict cpu) {
 void via_input_c(via_t *via, int port, int c, bool value) {
     (void)via, (void)port, (void)c, (void)value;
 }
-image_t *setup_get_image_by_filename(const char *filename) {
-    (void)filename;
-    return NULL;
-}
 int system_hd_attach(const char *path, int scsi_id) {
     (void)path, (void)scsi_id;
     return -1;
@@ -77,7 +73,7 @@ static scsi_t *attach_disk(void) {
     for (uint32_t lba = 0; lba < BLOCKS; lba++)
         ASSERT_TRUE(write(fd, blk, BLK) == (ssize_t)BLK);
     close(fd);
-    scsi_t *scsi = scsi_init(NULL, NULL, 0);
+    scsi_t *scsi = scsi_init(NULL, NULL, NULL, 0);
     ASSERT_TRUE(scsi != NULL);
     image_t *img = image_create(g_path, NULL);
     ASSERT_TRUE(img != NULL);

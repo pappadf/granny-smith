@@ -134,8 +134,6 @@ struct object *audio_out_capture_attach(struct object *parent) {
     return NULL;
 }
 
-void audio_out_capture_detach(void) {}
-
 value_t audio_out_match_value(const char *golden_wav) {
     (void)golden_wav;
     value_t v;

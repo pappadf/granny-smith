@@ -117,9 +117,6 @@ void scheduler_forget_source(struct scheduler *s, void *source) {
         if (s_events[i].src == source)
             s_events[i].live = false;
 }
-void scheduler_start(struct scheduler *restrict s) {
-    (void)s;
-}
 
 // Fire everything currently queued, in passes.  A pass snapshots the live
 // slots and runs those, so a self-re-arming event (the CRDY toggler runs

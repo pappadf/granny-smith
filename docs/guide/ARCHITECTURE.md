@@ -238,7 +238,12 @@ interactions are handled cleanly.
     machine descriptor, and dispatches to
     `profile->substrate->init(cfg, cp)`; the machine's substrate constructs
     all modules in dependency order and optionally restores from a
-    checkpoint.
+    checkpoint, whose event queue is read last.  The new machine is not the
+    active one: constructors use the `cfg` they are given, never
+    `global_emulator` or the `system_*()` accessors (which assert it).
+  - `system_swap_in(config_t *, bool restored)`: makes a built machine the
+    active one (global, object root, memory-map selection, label,
+    `machine_booted`) and destroys the machine it replaces.
   - `system_destroy(config_t *)`: Deletes the NuBus cards, calls
     `profile->substrate->teardown(cfg)` (the family delete-chain, reverse
     order), closes images, and frees the configuration.

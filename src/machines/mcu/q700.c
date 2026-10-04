@@ -142,7 +142,7 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     // The bus/target model carries the disks and CD; the 53C96 chip model
     // is the protocol front-end driving it through the external-initiator
     // API (there is no NCR 5380 register file on this family).
-    cfg->scsi = profile_scsi_init(cfg->machine, cp);
+    cfg->scsi = profile_scsi_init(cfg->machine, cp, CONFIG_IMAGES(cfg));
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
     scsi_53c96_set_irq_callback(st->scsi96, q700_scsi96_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
@@ -156,7 +156,8 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     st->asc = asc_init(NULL, cfg->scheduler, cp); // EASC: ASC-compatible core
     asc_set_mix(st->asc, ASC_MIX_CH_A);
     asc_set_irq_handler(st->asc, q700_asc_irq, cfg);
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp);
+    st->floppy =
+        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp, CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
 
     if (mcu_build_dafb(cfg, cp) != 0)
@@ -175,7 +176,7 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
         LOG(0, "Error: out of memory constructing the 040 bus MMU");
         return -1;
     }
-    g_mmu = st->bus_mmu;
+    memory_map_set_pmmu(cfg->mem_map, st->bus_mmu);
     // Attach the CPU-owned 040 register file: translation now dispatches to
     // the mmu040 walker; `enabled` mirrors TC.E.  (The cpu.mmu debug object
     // is bound by cpu_init itself — the 040-shaped mmu040_class in cpu.c.)

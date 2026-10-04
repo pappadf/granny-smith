@@ -636,7 +636,7 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
                     // the physical compare.  Unwatched pages arrive
                     // already-physical and compare as-is.
                     bool ok;
-                    uint32_t pa = g_mem_logical_xlate(addr, &ok);
+                    uint32_t pa = g_mem_logical_xlate(g_mem_logical_xlate_ctx, addr, &ok);
                     if (ok)
                         phys_addr = pa;
                 }
@@ -991,13 +991,11 @@ void list_breakpoints(debug_t *debug) {
 }
 
 // Check if tracing is active (for log capture hook)
+// The ACTIVE machine's trace: a log line goes there whichever machine wrote
+// it, including one being built alongside it.
 int debug_trace_is_active(void) {
-    if (!system_is_initialized())
-        return 0;
-    debug_t *debug = system_debug();
-    if (!debug)
-        return 0;
-    return debug->trace_entries != NULL;
+    debug_t *debug = global_emulator ? global_emulator->debugger : NULL;
+    return debug && debug->trace_entries != NULL;
 }
 
 // Check if debug functionality is engaged (breakpoints, logpoints, or tracing)

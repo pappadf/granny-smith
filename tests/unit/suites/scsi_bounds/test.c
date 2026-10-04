@@ -60,10 +60,6 @@ uint32_t cpu_get_pc(cpu_t *restrict cpu) {
 void via_input_c(via_t *via, int port, int c, bool value) {
     (void)via, (void)port, (void)c, (void)value;
 }
-image_t *setup_get_image_by_filename(const char *filename) {
-    (void)filename;
-    return NULL;
-}
 int system_hd_attach(const char *path, int scsi_id) {
     (void)path, (void)scsi_id;
     return -1;
@@ -109,7 +105,7 @@ static void make_disk(void) {
 }
 
 static scsi_t *attach_disk(void) {
-    scsi_t *scsi = scsi_init(NULL, NULL, 0);
+    scsi_t *scsi = scsi_init(NULL, NULL, NULL, 0);
     ASSERT_TRUE(scsi != NULL);
     image_t *img = image_create(g_path, NULL);
     ASSERT_TRUE(img != NULL);
@@ -427,7 +423,7 @@ TEST(test_valid_read_still_transfers) {
 // this attaches one directly at 1024 to exercise what the literals hid.
 TEST(mode_sense_and_read_capacity_agree_about_block_size) {
     const uint16_t odd_blk = 1024;
-    scsi_t *scsi = scsi_init(NULL, NULL, 0);
+    scsi_t *scsi = scsi_init(NULL, NULL, NULL, 0);
     ASSERT_TRUE(scsi != NULL);
     image_t *img = image_create(g_path, NULL);
     ASSERT_TRUE(img != NULL);
@@ -923,7 +919,7 @@ TEST(test_unit_ready_says_no_when_there_is_no_medium) {
 // CDU-8002, whose NOT READY table has no 3Ah in it at all -- an empty bay is
 // the vendor code B0h, which is what Apple's CD-ROM driver expects.
 TEST(an_empty_cd_bay_still_speaks_sony) {
-    scsi_t *scsi = scsi_init(NULL, NULL, 0);
+    scsi_t *scsi = scsi_init(NULL, NULL, NULL, 0);
     ASSERT_TRUE(scsi != NULL);
     scsi_add_device(scsi, TARGET, "SONY", "CD-ROM CDU-8002", "1.8g", NULL, scsi_dev_cdrom, 2048, true);
 
@@ -949,7 +945,7 @@ TEST(a_medium_smaller_than_a_block_does_not_underflow) {
     ASSERT_TRUE(write(fd, pad, sizeof pad) == (ssize_t)sizeof pad);
     close(fd);
 
-    scsi_t *scsi = scsi_init(NULL, NULL, 0);
+    scsi_t *scsi = scsi_init(NULL, NULL, NULL, 0);
     ASSERT_TRUE(scsi != NULL);
     image_t *img = image_create(tiny, NULL);
     ASSERT_TRUE(img != NULL);

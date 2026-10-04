@@ -615,12 +615,13 @@ then runs every subsystem's **install hook**: a subsystem registers
 attaches its own nodes with `root_attach_stub` — `files.images`,
 `machine.nubus`, `machine.pci` — so the object layer includes no
 subsystem header. It is idempotent for the
-same `cfg` and atomic across cfg changes: a checkpoint reload that
-calls `system_create(new)` followed by `system_destroy(old)` does the
-right thing because the install path detaches stubs from the previous
-cfg before attaching the new ones, and the destroy path no-ops when
-the installed cfg is no longer "its" cfg. This invariant lives in
-`root.c`.
+same `cfg` and atomic across cfg changes.  `machine.boot` and
+`checkpoint.load` both build, then swap, then destroy: `system_create(new)`
+builds a machine that is not yet the active one, `system_swap_in(new)` runs
+`root_install(new)` and destroys the old machine, and the destroy path no-ops
+when the installed cfg is no longer "its" cfg. This invariant lives in
+`root.c`.  A build that fails was never installed, so the running machine's
+tree, label and state are untouched.
 
 The result is that paths like `machine.cpu.pc` resolve as soon as a machine is
 booted and disappear cleanly when the machine is torn down, without
@@ -725,9 +726,10 @@ power with the machine (`adb_power_on`), and with VIA1 reset the RTC's
   `machine.reset` fetches the vectors through whatever map the OS left.
   What the hardware then does is the ROM's warm-start path and is not
   verified; `machine.restart` (power-on) is.
-- *Failure after teardown.* If `system_create` fails during a boot, the previous machine is already gone and the process has no
-  machine. (The ROM is read and validated before teardown, so a bad ROM
-  rejects the boot instead.)
+- *A failed build.* `machine.boot` and `checkpoint.load` build the new
+  machine while the running one stays active; a build that fails is
+  discarded and the running machine is exactly as it was
+  (`tests/integration/checkpoint-failed-restore`).
 - Host-side state outside the construction configuration (volume,
   camera/microphone capture sources) is not part of a boot document. The frontend asserts it again (`app/web2/src/bus/boot.ts`,
   `reconcileUiWithMachine`). A restart keeps the machine, so the

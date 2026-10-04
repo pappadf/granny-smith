@@ -207,6 +207,17 @@ void image_tick_all(config_t *config);
 // Returns the full path+name used to open the image
 const char *image_get_filename(const image_t *image);
 
+// A machine's restored images, handed to the media controllers as a
+// construction argument: each resolves the media it saved by name.
+typedef struct image_list {
+    image_t *const *items;
+    int n;
+} image_list_t;
+
+// The image in `images` whose image_get_filename is `name`, or NULL (also
+// when `images` is NULL).
+image_t *images_find(const image_list_t *images, const char *name);
+
 // Create an empty disk image file of the specified size (for checkpoint restore)
 int image_create_empty(const char *filename, size_t size);
 

@@ -529,13 +529,12 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     // unmapped memory and QuickDraw bus-errors.
     memory_map_host_region_alias(cfg->mem_map, p->slot_base + 0x900000u, p->slot_base);
 
-    // If the user picked a video mode via `machine.video_mode = "id"`,
-    // seed PRAM so the Slot Manager's GET_SLOT_DEPTH lands on it at
-    // boot.  Mirrors the dance `tests/integration/iicx-video-modes/
+    // The slot's video mode seeds PRAM so the Slot Manager's GET_SLOT_DEPTH
+    // lands on it at boot.  Mirrors the dance `tests/integration/iicx-video-modes/
     // test.script` does shell-side.  PRAM is already alive at this
     // point — RTC is initialised earlier in the machine init sequence.
     if (seeded_monitor && seeded_depth_bpp > 0) {
-        rtc_t *rtc = system_rtc();
+        rtc_t *rtc = cfg->rtc;
         if (rtc) {
             uint8_t spDepth = 0x80;
             switch (seeded_depth_bpp) {

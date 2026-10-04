@@ -47,7 +47,7 @@ int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_s
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
 
-    cfg->scsi = profile_scsi_init(cfg->machine, cp);
+    cfg->scsi = profile_scsi_init(cfg->machine, cp, CONFIG_IMAGES(cfg));
     // SE/30, IIcx and IIx: an NCR 5380 behind the glue's own decode.
     scsi_5380_attach(cfg->scsi, cp);
     scsi_set_via(cfg->scsi, cfg->via2);
@@ -57,7 +57,8 @@ int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_s
     asc_set_via(st->asc, cfg->via2);
     asc_set_mix(st->asc, desc->asc_mix); // board speaker fold (not checkpointed)
 
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp);
+    st->floppy =
+        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp, CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
 
     mac030_glue_io_bind(&st->glue_io, cfg, desc, st->asc, st->floppy);
@@ -75,7 +76,7 @@ struct mmu_state *mac030_build_mmu(config_t *cfg, uint32_t rom_base, uint32_t ro
         LOG(0, "Error: out of memory constructing the PMMU");
         return NULL; // mac030_build_mmu returns the MMU, not a status
     }
-    g_mmu = mmu;
+    memory_map_set_pmmu(cfg->mem_map, mmu);
     cpu_attach_mmu(cfg->cpu, mmu);
     return mmu;
 }
@@ -173,7 +174,6 @@ void mac030_glue_finish(config_t *cfg, checkpoint_t *cp, const mac030_io_t *io) 
     // quietly skip it -- see mac030_io_validate.
     mac030_io_validate(io, cfg->machine->id);
     cfg->debugger = debug_init();
-    scheduler_start(cfg->scheduler);
     if (!cp) {
         cfg->irq = 0;
         cpu_set_ipl(cfg->cpu, 0);
@@ -183,8 +183,8 @@ void mac030_glue_finish(config_t *cfg, checkpoint_t *cp, const mac030_io_t *io) 
 // The shared GLUE init — board-driven (see header).  Order is the canonical
 // se30/iicx/iix init spine; per-machine deltas come from the board's data and
 // hooks.  TT1 is uniform across the GLUE family ($F0..$FF supervisor identity);
-// it is set right after the PMMU is built (no MMU walk happens before
-// scheduler_start, so the exact moment is immaterial).
+// it is set right after the PMMU is built (no MMU walk happens during
+// construction, so the exact moment is immaterial).
 int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t *board) {
     mac030_glue_state_t *st = calloc(1, sizeof(*st));
     if (!st) {
@@ -237,7 +237,7 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
         nubus_checkpoint_restore(cfg->nubus, cp); // matches glue_checkpoint_save
         mmu_checkpoint_restore(st->mmu, cp);
         mmu_invalidate_tlb(st->mmu);
-        g_mmu = st->mmu;
+        memory_map_set_pmmu(cfg->mem_map, st->mmu);
         cpu_attach_mmu(cfg->cpu, st->mmu);
         via_redrive_outputs(cfg->via1);
         via_redrive_outputs(cfg->via2);
@@ -257,7 +257,7 @@ void mac030_build_core(config_t *cfg, const struct mac030_board_desc *desc, chec
     cfg->cpu = cpu_init(cfg->machine->cpu_model, cp);
     sched_cpu_if_t cpu_if = cpu_sched_if(cfg->cpu); // the 68K main-CPU seam adapter
     cfg->scheduler = scheduler_init(&cpu_if, cp);
-    debug_mac_register_scheduler_events(cfg->scheduler); // before scheduler_start replays a restore
+    debug_mac_register_scheduler_events(cfg->scheduler);
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
     scheduler_set_cpi(cfg->scheduler, 4);
 }
@@ -364,7 +364,7 @@ void mac030_glue_update_ipl(config_t *cfg, int source, bool active) {
     cpu_set_ipl(cfg->cpu, new_ipl);
     LOG(2, "mac030_glue_update_ipl: source=%d active=%d irq:%d->%d ipl->%d", source, active ? 1 : 0, old_irq, cfg->irq,
         new_ipl);
-    cpu_reschedule();
+    cpu_reschedule(cfg->scheduler);
 }
 
 // substrate.nubus_slot_irq (GLUE): each NuBus slot's /NMRQ line maps to a VIA2

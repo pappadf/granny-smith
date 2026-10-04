@@ -456,7 +456,7 @@ void tnt_awacs_write32(config_t *cfg, uint32_t offset, uint32_t value);
 // The floppy: Grand Central +$15000 on $10 centres, interrupt 19, DBDMA
 // channel 1.  init attaches the channel port; bind (after floppy_init and
 // after a restore) points the shared model at the drive, the scheduler and
-// the DBDMA movers; register_events before scheduler_start.
+// the DBDMA movers; register_events at construction.
 void tnt_swim3_init(config_t *cfg);
 
 void tnt_scc_dma_init(config_t *cfg); // attach the ESCC's four DBDMA ports (after dbdma_init)

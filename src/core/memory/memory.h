@@ -54,6 +54,9 @@ static inline void memory_store_host32(void *p, uint32_t v) {
 }
 
 // === Type Definitions ===
+struct mmu_state;
+struct lisa_mmu;
+
 typedef struct memory_interface {
     uint8_t (*read_uint8)(void *device, uint32_t addr);
     uint16_t (*read_uint16)(void *device, uint32_t addr);
@@ -92,6 +95,38 @@ extern memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32
                                      memory_bus_err_window_t bus_err, const rom_image_t *rom, checkpoint_t *checkpoint);
 
 void memory_map_delete(memory_map_t *mem);
+
+// The fast-path globals (g_page_table, the SoA arrays, the logpoint counts,
+// g_address_mask, the CPU hooks, g_mmu / g_lisa_mmu, the bus-error window)
+// are ALIASES of one memory map's own state: the map selected here.
+// memory_map_init selects the map it creates, so the machine under
+// construction builds into its own map; the swap step selects the active
+// machine's (NULL clears every alias).  A map that is not selected keeps its
+// state, and deleting it touches no alias.
+void memory_map_select(memory_map_t *mem);
+
+// What the main CPU hangs on its map (the PowerPC front end): see
+// g_user_soa_reserved, g_mem_map_changed and g_mem_logical_xlate below.
+typedef struct memory_cpu_hooks {
+    bool user_soa_reserved;
+    void (*map_changed)(void);
+    uint32_t (*logical_xlate)(void *ctx, uint32_t addr, bool *ok);
+    // The map was selected: the CPU's process-wide translation caches describe
+    // whichever map was selected before, so they start over.
+    void (*selected)(void *ctx);
+    void *ctx; // passed to logical_xlate and selected
+} memory_cpu_hooks_t;
+void memory_map_set_cpu_hooks(memory_map_t *mem, const memory_cpu_hooks_t *hooks);
+
+// The machine's physical page-fill hook (g_mem_host_fill), its 68030 PMMU
+// (g_mmu) and the Lisa's MMU (g_lisa_mmu): state of the map, aliased while it
+// is selected.
+void memory_map_set_host_fill(memory_map_t *mem, void (*fill)(uint32_t page_index, uint8_t *host_ptr, bool writable));
+void memory_map_set_pmmu(memory_map_t *mem, struct mmu_state *mmu);
+void memory_map_set_lisa_mmu(memory_map_t *mem, struct lisa_mmu *mmu);
+
+// The map's host-fill region table (mmu.c's, opaque here), owned by the map.
+void *memory_map_host_fill_regions(memory_map_t *mem);
 
 void memory_map_checkpoint(memory_map_t *restrict mem, checkpoint_t *checkpoint);
 
@@ -150,7 +185,8 @@ void memory_signal_bus_error(uint32_t addr, bool write);
 // Physical page-fill hook for machines whose page table is not owned by a
 // 68k mmu_state_t (the PowerPC families).  When set, memory_map_host_region()
 // routes each page of a card-registered host region through it instead of
-// the 68k MMU's host-region list.  See src/machines/pdm/pdm.c.
+// the 68k MMU's host-region list.  See src/machines/pdm/pdm.c.  Alias of the
+// selected map's (memory_map_set_host_fill).
 extern void (*g_mem_host_fill)(uint32_t page_index, uint8_t *host_ptr, bool writable);
 
 // True while an inspection (debug) access is dispatching into a device
@@ -402,7 +438,9 @@ extern void (*g_mem_map_changed)(void);
 // that arrives with its LOGICAL address (ppc_dxlate_slow keeps the EA for
 // watched plain-RAM pages instead of rewriting it to physical).  Must be
 // side-effect-free; *ok=false → treat as identity.  NULL on 68K machines.
-extern uint32_t (*g_mem_logical_xlate)(uint32_t addr, bool *ok);
+// Called with g_mem_logical_xlate_ctx.  Alias of the selected map's hooks.
+extern uint32_t (*g_mem_logical_xlate)(void *ctx, uint32_t addr, bool *ok);
+extern void *g_mem_logical_xlate_ctx;
 
 // === Value Trap (fast-path needle search) ===
 // Catches writes of a specific (PA, size, value) combination without forcing

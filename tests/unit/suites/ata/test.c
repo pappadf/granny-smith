@@ -72,7 +72,8 @@ uint32_t disk_block_size(image_t *img) {
 const char *image_get_filename(const image_t *img) {
     return img == &s_hd_img ? "hd.img" : img == &s_cd_img ? "cd.iso" : NULL;
 }
-image_t *setup_get_image_by_filename(const char *filename) {
+image_t *images_find(const image_list_t *images, const char *filename) {
+    (void)images;
     if (filename && strcmp(filename, "hd.img") == 0)
         return &s_hd_img;
     if (filename && strcmp(filename, "cd.iso") == 0)
@@ -230,7 +231,7 @@ static void setup(void) {
     s_cd_img.type = image_cdrom;
     s_cd_img.raw_size = sizeof s_cd; // what the bus model's range check reads
     s_hd_img.raw_size = sizeof s_hd;
-    s_bus = scsi_init_named(NULL, "atapi");
+    s_bus = scsi_init_named(NULL, NULL, "atapi");
     ASSERT_TRUE(s_bus != NULL);
     scsi_add_device(s_bus, CD_ID, "GS", "CD-ROM", "1.0", &s_cd_img, scsi_dev_cdrom, 2048, true);
     ata_channel_init(&s_ch, 0);
@@ -603,7 +604,7 @@ TEST(a_checkpoint_mid_read_resumes_the_stream) {
     ata_channel_init(&s_ch, 0);
     ata_set_irq(&s_ch, on_irq, NULL);
     ata_set_atapi_bus(&s_ch, s_bus);
-    ata_checkpoint_restore(&s_ch, NULL);
+    ata_checkpoint_restore(&s_ch, NULL, NULL);
     pio_in(b + 256, 1024 - 256);
     ASSERT_TRUE(memcmp(b, s_hd + 30 * 512, sizeof b) == 0);
     teardown();

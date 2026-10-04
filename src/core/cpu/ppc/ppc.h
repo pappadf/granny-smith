@@ -36,6 +36,7 @@
 
 #include "common.h"
 #include "debug.h" // cpu_debug_if_t
+#include "memory.h" // memory_cpu_hooks_t
 #include "scheduler.h" // sched_cpu_if_t
 
 #include <stdbool.h>
@@ -56,6 +57,11 @@ typedef struct ppc ppc_t;
 // Registers the `machine.cpu` object node and `$` register aliases (the
 // main-CPU privilege per docs/internals/core/cpu/cores.md).
 ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model);
+
+// The hooks this CPU hangs on its machine's memory map
+// (memory_map_set_cpu_hooks): logical fills in the user SoA arrays, the
+// map-changed notification and the logical->physical translation.
+memory_cpu_hooks_t ppc_memory_hooks(ppc_t *p);
 
 void ppc_delete(ppc_t *p);
 
@@ -89,7 +95,7 @@ sched_cpu_if_t ppc_sched_if(ppc_t *p);
 // `tick_hz` is the 7.8336 MHz RTC input (RTCL advances 128 ns-units, DEC
 // decrements 128 units per tick); on the 604 it is the timebase rate (bus
 // clock / 4 — 604UM §1.3.2.2), with TB incrementing and DEC decrementing once
-// per tick.  Registers the "ppc.dec" event type, so call before scheduler_start.
+// per tick.  Registers the "ppc.dec" event type, so call it at construction.
 // Unbound (unit tests), the time SPRs are static state.
 void ppc_bind_time(ppc_t *p, struct scheduler *s, uint32_t freq_hz, uint32_t tick_hz);
 

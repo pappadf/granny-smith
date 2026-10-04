@@ -107,13 +107,6 @@ struct lisa_fdc {
     int n_cache;
 
     uint8_t ram[FDC_RAM_BYTES];
-
-    // Checkpoint restore only: the filename of the diskette that was in the
-    // drive when the checkpoint was written.  The FDC does NOT own images —
-    // cfg->images[] does — so lisa_init looks this up in the restored image
-    // list and re-inserts through the normal path.  Owned here, freed on
-    // delete or on hand-off.
-    char *pending_media;
 };
 
 // Guest PC for the floppy command/access trace (LOG level 1, category
@@ -609,7 +602,8 @@ bool lisa_fdc_pram_load(lisa_fdc_t *fdc, const char *path) {
 
 // === Lifecycle =============================================================
 
-lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb, void *fdir_ctx, checkpoint_t *cp) {
+lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb, void *fdir_ctx, checkpoint_t *cp,
+                          const image_list_t *images) {
     lisa_fdc_t *fdc = (lisa_fdc_t *)calloc(1, sizeof(*fdc));
     if (!fdc)
         return NULL;
@@ -628,7 +622,11 @@ lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb,
     // else in the region was ever set.
     lisa_fdc_pram_init(fdc, 1, true, false); // BootVol = 1 (Sony floppy), valid, factory-fresh
     // Checkpoint restore (init-reads convention, mirroring lisa_profile_init):
-    // read back exactly what lisa_fdc_checkpoint wrote, in the same order.
+    // read back exactly what lisa_fdc_checkpoint wrote, in the same order.  The
+    // diskette that was in the drive is resolved in the restored image list
+    // (the FDC does not own images -- cfg->images[] does) and inserted once
+    // the rest of the state is read.
+    image_t *disk = NULL;
     if (cp) {
         uint8_t attached = 0;
         system_read_checkpoint_data(cp, &attached, sizeof(attached));
@@ -640,7 +638,14 @@ lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb,
                 if (name) {
                     system_read_checkpoint_data(cp, name, len);
                     name[len - 1] = '\0';
-                    fdc->pending_media = name;
+                    disk = images_find(images, name);
+                    if (!disk) {
+                        // The drive held a disk: a restore without it is not
+                        // the machine that was saved.
+                        LOG(0, "the checkpoint's diskette '%s' is not among its images", name);
+                        checkpoint_set_error(cp);
+                    }
+                    free(name);
                 } else {
                     // Keep the stream aligned even if the allocation fails.
                     for (uint32_t k = 0; k < len; ++k) {
@@ -655,6 +660,8 @@ lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb,
         fdc->num_sides = (int)sides;
         system_read_checkpoint_data(cp, fdc->ram, FDC_RAM_BYTES);
     }
+    if (disk)
+        lisa_fdc_insert(fdc, disk);
     return fdc;
 }
 
@@ -672,7 +679,6 @@ void lisa_fdc_delete(lisa_fdc_t *fdc) {
     if (!fdc)
         return;
     scheduler_forget_source(fdc->sched, fdc);
-    free(fdc->pending_media);
     free(fdc);
 }
 
@@ -707,13 +713,4 @@ void lisa_fdc_checkpoint(lisa_fdc_t *fdc, checkpoint_t *cp) {
     uint8_t empty[FDC_RAM_BYTES];
     memset(empty, 0, sizeof(empty));
     system_write_checkpoint_data(cp, fdc ? fdc->ram : empty, FDC_RAM_BYTES);
-}
-
-// Hand the restored diskette filename to the caller, which owns it from here.
-char *lisa_fdc_take_pending_media(lisa_fdc_t *fdc) {
-    if (!fdc)
-        return NULL;
-    char *m = fdc->pending_media;
-    fdc->pending_media = NULL;
-    return m;
 }

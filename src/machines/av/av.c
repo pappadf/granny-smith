@@ -251,7 +251,7 @@ void av_update_ipl(config_t *cfg, int source, bool active) {
         cfg->irq &= ~source;
     int new_ipl = mac030_irq_resolve_ipl(av_irq_routes_tbl, (uint32_t)cfg->irq);
     cpu_set_ipl(cfg->cpu, new_ipl);
-    cpu_reschedule();
+    cpu_reschedule(cfg->scheduler);
 }
 
 // VIA1 interrupt line → IPL 1.
@@ -610,7 +610,7 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // SCSI: the bus/target model carries the disks and CD; the 53C96 chip
     // model fronts it through the external-initiator API.
-    cfg->scsi = profile_scsi_init(cfg->machine, cp);
+    cfg->scsi = profile_scsi_init(cfg->machine, cp, CONFIG_IMAGES(cfg));
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
     scsi_53c96_set_irq_callback(st->scsi96, av_scsi96_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
@@ -636,7 +636,7 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
         LOG(0, "Error: out of memory constructing the 040 bus MMU");
         return -1;
     }
-    g_mmu = st->bus_mmu;
+    memory_map_set_pmmu(cfg->mem_map, st->bus_mmu);
     mmu_attach_mmu040(st->bus_mmu, (mmu040_state_t *)cfg->cpu->mmu);
 
     setup_images(cfg);

@@ -190,6 +190,10 @@ void checkpoint_set_error(checkpoint_t *checkpoint) {
     (void)checkpoint;
     g_cp_errors++;
 }
+bool checkpoint_has_error(checkpoint_t *checkpoint) {
+    (void)checkpoint;
+    return g_cp_errors > 0;
+}
 
 // Object tree: the scheduler tolerates a NULL binding (object_new failure
 // path), so the whole surface stubs to no-ops.
@@ -1201,6 +1205,7 @@ static void cp_save_valid(uint32_t cpi) {
     scheduler_set_frequency(a, 16000000);
     scheduler_set_cpi(a, cpi);
     scheduler_checkpoint(a, (checkpoint_t *)1);
+    scheduler_checkpoint_events(a, (checkpoint_t *)1);
     ASSERT_TRUE(g_cp_w[0] > 0);
     scheduler_delete(a);
     g_cp_r = 0;
@@ -1243,8 +1248,8 @@ TEST(test_restore_runs_under_the_host_pacing) {
 
 TEST(test_restore_refuses_absurd_event_count) {
     cp_save_valid(173);
-    // The save writes the prefix and then num_events; with an empty queue that
-    // count is the last four bytes of the stream.  An unchecked count drove
+    // The save writes the prefix and then the event block's num_events; with
+    // an empty queue that count is the last four bytes of the stream.  An unchecked count drove
     // malloc(count * sizeof(event_as_checkpoint_t)) directly.
     //
     // 50000 is chosen deliberately, and the first version of this test used
@@ -1268,12 +1273,13 @@ TEST(test_restore_refuses_absurd_event_count) {
     g_cp_errors = 0;
     scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
     ASSERT_TRUE(b != NULL);
+    scheduler_restore_events(b, (checkpoint_t *)1);
     ASSERT_EQ_INT(g_cp_errors, 1);
     scheduler_delete(b);
 }
 
 // The saved event queue is resolved against the types registered by the time
-// scheduler_start runs.  Both checks on a saved event were GS_ASSERTs: in a
+// it is read -- the last block of a machine checkpoint.  Both checks on a saved event were GS_ASSERTs: in a
 // release build an unknown type indexed event_types[-1] and restored a wild
 // callback (reproduced with a real AppleShare session -- `atp.xo_release` was
 // registered only when first armed).  A checkpoint is
@@ -1291,6 +1297,7 @@ static void cp_save_with_one_event(void) {
     scheduler_new_event_type(a, "net", &g_restore_owner, "poll", ping_event);
     scheduler_new_cpu_event(a, ping_event, &g_restore_owner, 7, 0, 1000000);
     scheduler_checkpoint(a, (checkpoint_t *)1);
+    scheduler_checkpoint_events(a, (checkpoint_t *)1);
     scheduler_delete(a);
     g_cp_r = 0;
 }
@@ -1301,7 +1308,7 @@ TEST(test_restore_resolves_a_registered_event) {
     scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
     ASSERT_TRUE(b != NULL);
     scheduler_new_event_type(b, "net", &g_restore_owner, "poll", ping_event);
-    scheduler_start(b);
+    scheduler_restore_events(b, (checkpoint_t *)1);
     ASSERT_EQ_INT(g_cp_errors, 0);
     ASSERT_EQ_INT(scheduler_pending_device_events(b), 1);
     scheduler_delete(b);
@@ -1313,7 +1320,7 @@ TEST(test_restore_refuses_an_event_whose_type_is_not_registered) {
     scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
     ASSERT_TRUE(b != NULL);
     // Nothing registers "net.poll" this time.
-    scheduler_start(b);
+    scheduler_restore_events(b, (checkpoint_t *)1);
     ASSERT_EQ_INT(g_cp_errors, 1);
     ASSERT_EQ_INT(scheduler_pending_device_events(b), 0);
     scheduler_delete(b);

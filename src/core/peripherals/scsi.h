@@ -62,7 +62,7 @@ typedef struct scsi_cd_drive {
 // must be a medium change on a drive that was always there.  A restore builds
 // the same bus and loads the drive's state into it; a checkpoint whose bus
 // lacks the bay's drive is an error.
-scsi_t *scsi_init(checkpoint_t *checkpoint, const scsi_cd_drive_t *cd_drive, int cd_id);
+scsi_t *scsi_init(checkpoint_t *checkpoint, const image_list_t *images, const scsi_cd_drive_t *cd_drive, int cd_id);
 
 // A SECOND (third, …) bus on the same machine, mounted under its own name.
 //
@@ -80,7 +80,7 @@ scsi_t *scsi_init(checkpoint_t *checkpoint, const scsi_cd_drive_t *cd_drive, int
 // this, and inventing a `machine.scsi.bus[N]` collection would have to
 // rename the existing `machine.scsi.bus` node (the live phase/target view)
 // out from under every consumer of it.
-scsi_t *scsi_init_named(checkpoint_t *checkpoint, const char *name);
+scsi_t *scsi_init_named(checkpoint_t *checkpoint, const image_list_t *images, const char *name);
 
 void scsi_delete(scsi_t *scsi);
 

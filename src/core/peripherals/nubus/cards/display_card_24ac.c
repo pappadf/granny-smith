@@ -1002,7 +1002,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     // Manager table -- which is also why the machine still finds and boots a
     // SCSI volume (a bare token with a zeroed boot device cannot).
     if (seeded_monitor && seeded_depth_bpp > 0) {
-        rtc_t *rtc = system_rtc();
+        rtc_t *rtc = cfg->rtc;
         if (rtc) {
             uint8_t saved_mode = savedmode_for_bpp(seeded_depth_bpp);
             // The XPRAM token and the Start Manager table (PRAMInitTbl) are the

@@ -513,7 +513,7 @@ etc.), usually from inside an event callback. The code path is:
 device raises IRQ -> machine_update_ipl() -> cpu_set_ipl(cpu, level) -> cpu_reschedule()
 ```
 
-`cpu_reschedule()` is just `reconcile_sprint()` on the global scheduler
+`cpu_reschedule(scheduler)` is just `reconcile_sprint()` on the machine's scheduler
 ([scheduler.c:835](../../../../src/core/scheduler/scheduler.c#L835)). It sets
 `sprint_burndown = 0` while leaving all derived quantities (`current_cpu_cycles`,
 `cpu_instr_count`) intact. That has two effects:
@@ -826,30 +826,30 @@ mechanism that forces every device scheduling events to declare them by name.
 
 ### 11.2 Restore
 
-Restore happens in two phases:
+The scheduler's state and its event queue are separate blocks of a machine
+checkpoint, and the queue is the **last** block of the stream:
 
-**Phase 1 (`scheduler_init` with a non-NULL checkpoint):**
+**The scheduler (`scheduler_init` with a non-NULL checkpoint):**
 
-- Plain-data fields are read back into the struct.
+- Plain-data fields are read back into the struct, `total_instructions` and
+  `frame_cycles_left` included.
 - Host-timing fields (`previous_time`, `vbl_acc_error`, `host_secs_per_vbl`,
   `host_secs_per_loop`) are re-initialized from the *current* host clock — they do not
   survive a restore.
-- `total_instructions` is *reconstructed* from `cpu_cycles` using the restored mode's
-  CPI (§9 caveat).
-- Event data is read into `tmp_events`, a flat array. Pointers cannot be resolved yet
-  because devices haven't registered their event types.
 
-**Phase 2 (`scheduler_start`, called after all devices have booted and registered
-their event types):**
+**The event queue (`scheduler_restore_events`, called by `system_create` once
+the whole machine is built):** every event source has been constructed and
+has registered its types by then, so each saved event binds as it is read:
 
-- Each saved event is matched by `(source_name, event_name)` against the live
-  `event_types` registry.
-- A live `event_t` is malloc'd, populated with the resolved `source` and `callback`
-  pointers, and inserted into `cpu_events` via `insert_event_queue`.
-- `tmp_events` is freed.
+- It is matched by `(source_name, event_name)` against the live `event_types`
+  registry.
+- A live `event_t` is allocated, populated with the resolved `source` and
+  `callback` pointers, and inserted into `cpu_events` via `insert_event_queue`.
 
-Unresolved events (no matching type) cause a hard assert — a checkpoint with a stale
-or misnamed event type cannot be silently dropped.
+An event whose type no source registered, or whose time is already past, fails
+the restore: the checkpoint is flagged, the build is discarded, and the machine
+that was running stays. Event types are registered at construction, never on
+first use.
 
 ### 11.3 Cross-target checkpoints (headless ↔ WASM)
 

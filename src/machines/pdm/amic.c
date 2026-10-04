@@ -876,8 +876,8 @@ void pdm_amic_start_vbl(config_t *cfg) {
     scheduler_new_cpu_event(cfg->scheduler, pdm_vbl_event, cfg, 0, vbl_period_cycles(cfg), 0);
 }
 
-// Register the event types (called from pdm.c before scheduler_start so
-// checkpoint restore can rebind them).
+// Register the event types (called from pdm.c at construction so checkpoint
+// restore can rebind them).
 void pdm_amic_register_events(config_t *cfg) {
     scheduler_new_event_type(cfg->scheduler, "amic", cfg, "vbl", pdm_vbl_event);
     scheduler_new_event_type(cfg->scheduler, "amic", cfg, "scsi_pump", pdm_scsi_pump_event);

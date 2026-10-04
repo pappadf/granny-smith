@@ -585,7 +585,7 @@ cops_t *cops_init(via_t *via1, struct scheduler *scheduler, checkpoint_t *cp) {
     if (cp) {
         // Restore the plain-data block.  Do NOT arm any events here: the
         // scheduler's own checkpointed queue brings back this source's crdy,
-        // pump and mouse events in scheduler_start(), matching the
+        // pump and mouse events once the machine is built, matching the
         // pump_scheduled / mouse_scheduled flags we just read.
         //
         // Arming unconditionally (as this did before) meant a restored Lisa

@@ -1245,7 +1245,7 @@ static void iifx_oss_irq_changed(void *context) {
     iifx_state_t *st = iifx_state(cfg);
     cfg->irq = oss_pending(st->oss);
     cpu_set_ipl(cfg->cpu, oss_highest_ipl(st->oss));
-    cpu_reschedule();
+    cpu_reschedule(cfg->scheduler);
 }
 
 // Handles OSS ROM-control and power-off writes.  Bit 7 is the power-off
@@ -1546,13 +1546,14 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     if (checkpoint)
         mac_checkpoint_restore_images(cfg, checkpoint);
 
-    cfg->scsi = profile_scsi_init(cfg->machine, checkpoint);
+    cfg->scsi = profile_scsi_init(cfg->machine, checkpoint, CONFIG_IMAGES(cfg));
     scsi_5380_attach(cfg->scsi, checkpoint); // IIfx: NCR 5380 behind the OSS
     setup_images(cfg);
 
     st->asc = asc_init(NULL, cfg->scheduler, checkpoint);
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), checkpoint);
+    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), checkpoint,
+                             CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
 
     // ADB device state: the IIfx's ADB bus is bit-banged by the SWIM IOP
@@ -1603,7 +1604,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
         nubus_checkpoint_restore(cfg->nubus, checkpoint); // matches iifx_checkpoint_save
         mmu_checkpoint_restore(st->mmu, checkpoint);
         mmu_invalidate_tlb(st->mmu);
-        g_mmu = st->mmu;
+        memory_map_set_pmmu(cfg->mem_map, st->mmu);
         cpu_attach_mmu(cfg->cpu, st->mmu);
         via_redrive_outputs(cfg->via1);
     }
