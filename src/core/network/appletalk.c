@@ -904,7 +904,6 @@ static void atalk_conn_plug_in(atalk_conn_t *c) {
     atalk_adsp_plug(c->adsp);
     atalk_ppc_plug(c->ppc);
     atalk_aevt_plug(c->aevt);
-    atalk_printer_plug();
 }
 
 // Register every timer the connection and the layers above use with its
@@ -3070,9 +3069,6 @@ static DEF_SETTER(atalk_printer_attr_set_name) {
 static DEF_GETTER(atalk_printer_attr_status) {
     return val_str(atalk_printer_get_status());
 }
-static DEF_GETTER(atalk_printer_attr_finishing) {
-    return val_bool(atalk_printer_job_finishing());
-}
 static DEF_GETTER(atalk_printer_attr_interpreter) {
     return val_bool(atalk_printer_has_interpreter());
 }
@@ -3135,10 +3131,6 @@ static const member_t atalk_printer_members[] = {
      .name = "status",
      .doc = "PAP status string as the workstation reads it",
      .attr = {.type = V_STRING, .get = atalk_printer_attr_status}                                      },
-    {.kind = M_ATTR,
-     .name = "finishing",
-     .doc = "True while a job whose data is all in has not yet produced its document",
-     .attr = {.type = V_BOOL, .presentation_flags = VAL_VOLATILE, .get = atalk_printer_attr_finishing} },
     {.kind = M_ATTR,
      .name = "interpreter",
      .doc = "True when the build links the PostScript interpreter (PLATEN=1)",

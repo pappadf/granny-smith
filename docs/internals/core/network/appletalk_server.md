@@ -2517,8 +2517,10 @@ network, one per process: created at startup, never torn down or
 checkpointed by a machine (`appletalk.h`, "Lifecycle").  The nodes that
 describe a machine's connection to it -- `enabled`, `node_id`, `stats`,
 `afp.sessions` -- answer for the machine plugged in (detached, zero, empty
-while none is); the shares, the server's identity and the printer are the
-network's and outlive machines.
+while none is); the shares, the server's identity and the printer's
+configuration are the network's and outlive machines.  The LaserWriter
+itself restarts with a change of machine (`machine.boot`, a checkpoint
+load): no print job runs on from one machine into the next.
 
 ```
 appletalk                        the network

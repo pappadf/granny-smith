@@ -413,11 +413,6 @@ void laserwriter_job_register_timers(struct atalk_conn *conn) {
     laserwriter_transport_register_timers(conn);
 }
 
-void laserwriter_job_resume(void) {
-    if (lw_outstanding())
-        lw_poll_arm();
-}
-
 void laserwriter_job_set_listener(laserwriter_listener_t fn, void *ctx) {
     static const laserwriter_transport_callbacks_t callbacks = {
         .on_opened = lw_on_opened,
@@ -607,8 +602,6 @@ bool laserwriter_job_available(void) {
 void laserwriter_job_register_timers(struct atalk_conn *conn) {
     (void)conn;
 }
-
-void laserwriter_job_resume(void) {}
 
 void laserwriter_job_set_listener(laserwriter_listener_t fn, void *ctx) {
     (void)fn;

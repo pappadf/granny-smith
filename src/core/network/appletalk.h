@@ -173,11 +173,6 @@ int atalk_printer_set_name(const char *name, char *err, size_t err_len);
 // The PAP status string as the workstation reads it.
 const char *atalk_printer_get_status(void);
 
-// True while a job whose data is all in (the driver's EOF handed over) has
-// not yet produced its document: the printer's, not the machine's, so it
-// outlives a machine swap.
-bool atalk_printer_job_finishing(void);
-
 // True when the build links the PostScript interpreter (PLATEN=1); then a
 // job produces a PDF through the platform sink and the capture is optional.
 bool atalk_printer_has_interpreter(void);
@@ -278,7 +273,9 @@ void atalk_nbp_lookup_cancel(void);
 //
 // The network has one cable.  A connection is built off it and plugged in
 // when its machine becomes the active one (system_swap_in), which unplugs
-// whichever was: its sessions close, as a server sees a Mac vanish.  Deleting
+// whichever was: its sessions close, as a server sees a Mac vanish, and the
+// LaserWriter restarts, so no print job runs on from one machine into the
+// next (the network's other nodes keep their configuration).  Deleting
 // a connection unplugs it only if it is the one on the cable, so a machine
 // whose build failed -- never plugged in -- leaves the running one's sessions
 // alone.

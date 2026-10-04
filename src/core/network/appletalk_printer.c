@@ -1614,40 +1614,31 @@ void atalk_printer_register_timers(struct atalk_conn *conn) {
     laserwriter_job_register_timers(conn);
 }
 
-// The machine was unplugged: its session goes -- a job still arriving with it
-// -- and so does the completion reply owed to it.  A job whose data is all in
-// (the EOF handed over, whether or not the driver has closed yet) is the
-// printer's, not the session's: it keeps running and finishes under the next
-// machine (atalk_printer_plug).  The printer stays, with what earlier jobs
-// made permanent.
+#if GS_PLATEN
+// Replace the interpreter: the job a closed connection left finishing goes,
+// its output with it, and the next job starts on a new printer.
+static void pap_platen_new_printer(void) {
+    pap_platen_forget_detached();
+    laserwriter_job_discard_output();
+    laserwriter_printer_retire();
+}
+#endif
+
+// The machine was unplugged: another machine (machine.boot, a checkpoint
+// load) takes the cable.  The printer restarts with the change: the session
+// and any job in flight go, and so does what earlier jobs made permanent, so
+// no job crosses from one machine to the next.  Its name, advertisement and
+// capture setting stay: they are the host's configuration.
 void atalk_printer_unplug(void) {
     if (!g_printer.initialized)
         return;
-#if GS_PLATEN
-    // A job whose data is all in is the printer's, connection or not: it is
-    // detached as at a clean close, so the reset below leaves it running.
-    if (g_session.active && !g_detached_job)
-        pap_platen_detach_job(true);
-#endif
-    pap_session_reset(); // cancels its ATP request, drops the capture, aborts a job still arriving
+    pap_session_reset(); // cancels its ATP request, drops the capture, aborts the job
     memset(&g_completion, 0, sizeof(g_completion));
 #if GS_PLATEN
-    if (g_detached_job)
-        return; // still printing: the status says so until it finishes
+    pap_platen_new_printer();
 #endif
     if (g_printer.enabled)
         pap_printer_set_status_idle();
-}
-
-// A machine was plugged in: a job that outlived the one before it carries on,
-// driven by this machine's scheduler now.
-void atalk_printer_plug(void) {
-    if (!g_printer.initialized)
-        return;
-#if GS_PLATEN
-    if (g_detached_job)
-        laserwriter_job_resume();
-#endif
 }
 
 void atalk_printer_link_down(void) {
@@ -1761,16 +1752,6 @@ const char *atalk_printer_get_status(void) {
     return g_printer.status_text;
 }
 
-bool atalk_printer_job_finishing(void) {
-#if GS_PLATEN
-    if (g_detached_job)
-        return true;
-    return g_session.active && laserwriter_job_active() && (laserwriter_job_finishing() || g_session.eof_pending);
-#else
-    return false;
-#endif
-}
-
 bool atalk_printer_has_interpreter(void) {
     return laserwriter_job_available();
 }
@@ -1820,10 +1801,7 @@ int atalk_printer_restart(char *err, size_t err_len) {
     pap_printer_init();
     if (g_session.active)
         pap_session_abort("the printer was restarted");
-    // A job finishing after its close goes too: its printer is gone
-    pap_platen_forget_detached();
-    laserwriter_job_discard_output();
-    laserwriter_printer_retire();
+    pap_platen_new_printer();
     pap_printer_set_status_idle();
     LOG(2, "pap: printer restarted");
     return 0;
