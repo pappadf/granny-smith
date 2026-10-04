@@ -29,8 +29,8 @@ LOG_USE_CATEGORY_NAME("memory");
 //
 // The window is a field of the memory map (bus_err), passed to memory_map_init
 // by the board.  The slow path that consults it runs on the fast-path aliases
-// and holds no memory_map_t, so the installed map's window is aliased here:
-// set by memory_map_init, cleared by memory_map_delete with the other aliases.
+// and holds no memory_map_t, so the selected map's window is aliased here,
+// with the other aliases, by memory_map_select.
 // The test lives in memory.c rather than in each MMU because it is a property
 // of the BUS: it applies with the MMU off (most of POST) as well as on the
 // MMUs' transparent-translation paths.

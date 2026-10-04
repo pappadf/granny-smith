@@ -641,7 +641,7 @@ approaches for a proper fix:
   and a program running *inside* the Mac is a legitimate participant in the
   ROM's data structures. An emulator's device model doing the same thing is
   impersonating the ROM. (3) Doing it instead from the existing
-  `mouse_guard_tick` in `debug_mac.c` — which already knows `ADBBase` and
+  `debug_mac_mouse_guard_tick` in `debug_mac.c` — which already knows `ADBBase` and
   already runs only on the global-mouse path — dodges (1) and (2), but not the
   objection below, which is the one that decides it.
 - **SRQ scan audit:** Trace the ROM's SRQ scan path to understand exactly when

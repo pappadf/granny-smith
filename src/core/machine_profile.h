@@ -475,7 +475,7 @@ typedef struct hw_profile {
     // identical" when the guarantee was really a hand-maintained invariant
     // nothing checked (they did all agree, as it happens).
     // The two feed different consumers -- the profile drives the config
-    // dialog and validate_vrom_resolution, nubus_init builds what the guest
+    // dialog and the boot document's slot checks, nubus_init builds what the guest
     // sees -- so a divergence would have offered a card for a socket that
     // never gets populated.  Reading the profile directly is what makes the
     // sentence above true rather than aspirational; the same is already so
