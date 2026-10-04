@@ -15,7 +15,7 @@
 # input, matched pixel-exact at each protocol-visible stage.
 
 TEST_NAME := AppleTalk AFP checkpoint mid-transaction
-TEST_DESC := Mount an AFP volume, save a checkpoint while an ATP transaction is in flight, load it, run on.
+TEST_DESC := Mount an AFP volume, save a checkpoint while an ATP transaction is in flight, load it: the guest sees a restarted server, drops the volume and mounts it again.
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 

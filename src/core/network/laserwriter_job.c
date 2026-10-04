@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // laserwriter_job.c
-// One interpreter job per EOF-delimited PAP job, on the machine's printer,
+// One interpreter job per EOF-delimited PAP job, on the network's printer,
 // driven through the transport: begin issues OPEN, feed issues FEED, finish
 // issues FINISH, and the transport's answers arrive later as callbacks that
 // this module turns into the PAP layer's events.  The printer's identity
@@ -408,11 +408,9 @@ bool laserwriter_job_available(void) {
     return true;
 }
 
-void laserwriter_job_init(void) {
-    if (!atalk_scheduler())
-        return;
-    atalk_timer_init(&g_lw_poll_timer, "laserwriter", "transport_poll", &lw_poll_cb);
-    laserwriter_transport_init();
+void laserwriter_job_register_timers(struct atalk_conn *conn) {
+    atalk_timer_init(conn, &g_lw_poll_timer, "laserwriter", "transport_poll", &lw_poll_cb);
+    laserwriter_transport_register_timers(conn);
 }
 
 void laserwriter_job_set_listener(laserwriter_listener_t fn, void *ctx) {
@@ -583,34 +581,6 @@ void laserwriter_printer_retire(void) {
     g_lw.printer_permanent_jobs = 0;
 }
 
-laserwriter_printer_t laserwriter_printer_detach(void) {
-    laserwriter_job_abort();
-    laserwriter_printer_t p = {
-        .id = g_lw.printer_id, .jobs = g_lw.printer_jobs, .permanent_jobs = g_lw.printer_permanent_jobs};
-    if (p.id)
-        LOG(2, "laserwriter: printer %u detached", (unsigned)p.id);
-    g_lw.printer_id = 0;
-    g_lw.printer_jobs = 0;
-    g_lw.printer_permanent_jobs = 0;
-    return p;
-}
-
-void laserwriter_printer_reattach(laserwriter_printer_t printer) {
-    laserwriter_printer_retire();
-    g_lw.printer_id = printer.id;
-    g_lw.printer_jobs = printer.jobs;
-    g_lw.printer_permanent_jobs = printer.permanent_jobs;
-    if (printer.id)
-        LOG(2, "laserwriter: printer %u back in service", (unsigned)printer.id);
-}
-
-void laserwriter_printer_free_detached(laserwriter_printer_t printer) {
-    if (printer.id) {
-        LOG(2, "laserwriter: detached printer %u freed", (unsigned)printer.id);
-        laserwriter_transport_printer_free(printer.id);
-    }
-}
-
 uint32_t laserwriter_printer_jobs(void) {
     return g_lw.printer_jobs;
 }
@@ -629,7 +599,9 @@ bool laserwriter_job_available(void) {
     return false;
 }
 
-void laserwriter_job_init(void) {}
+void laserwriter_job_register_timers(struct atalk_conn *conn) {
+    (void)conn;
+}
 
 void laserwriter_job_set_listener(laserwriter_listener_t fn, void *ctx) {
     (void)fn;
@@ -696,19 +668,6 @@ const char *laserwriter_job_last_outcome(void) {
 }
 
 void laserwriter_printer_retire(void) {}
-
-laserwriter_printer_t laserwriter_printer_detach(void) {
-    laserwriter_printer_t none = {0, 0, 0};
-    return none;
-}
-
-void laserwriter_printer_reattach(laserwriter_printer_t printer) {
-    (void)printer;
-}
-
-void laserwriter_printer_free_detached(laserwriter_printer_t printer) {
-    (void)printer;
-}
 
 uint32_t laserwriter_printer_jobs(void) {
     return 0;

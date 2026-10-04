@@ -581,7 +581,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // EtherTalk to prefer.  NOTE: the stack has only ever been exercised
     // against a Mac Plus guest (tests/integration/appletalk-*), so this wires
     // the family up rather than proving it.
-    appletalk_init(cfg->scheduler, cfg->scc, cp);
+    cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, cp);
 
     // VIA1: one real 6522 behind the Grand Central decode, byte-wide on
     // $200 centres.  Timer clock: 783.36 kHz is the classic rate and the

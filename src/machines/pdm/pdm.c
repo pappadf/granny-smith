@@ -343,10 +343,11 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     cfg->scc = scc_init(NULL, cfg->scheduler, pdm_scc_irq, cfg, cp);
     scc_set_clocks(cfg->scc, 15667200, 3672000);
 
-    // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
-    // the SCC exists — and, because the checkpoint stream is positional, in
-    // the same relative place the save writes it (right after scc_checkpoint).
-    appletalk_init(cfg->scheduler, cfg->scc, cp);
+    // The AppleTalk connection rides the SCC's LocalTalk channel, so it is
+    // built as soon as the SCC exists — and, because the checkpoint stream is
+    // positional, in the same relative place the save writes it (right after
+    // scc_checkpoint).
+    cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, cp);
 
     // The AMIC pseudo-VIA1 is a real 6522 core instance behind the island
     // decode.  Its timers run at 783.36 kHz on every model, and no PDM CPU

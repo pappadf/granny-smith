@@ -1560,7 +1560,7 @@ int main(int argc, char *argv[]) {
         if (env_dir && *env_dir)
             snprintf(g_shared_dir, sizeof(g_shared_dir), "%s", env_dir);
     }
-    system_set_default_share(g_shared_dir); // core publishes it after each machine build
+    system_set_default_share(g_shared_dir); // the network publishes it now, for every machine
 
     // $GS_PRINT_DIR is the fallback for --print-dir.  A directory without the
     // interpreter linked would never receive anything; say so up front.

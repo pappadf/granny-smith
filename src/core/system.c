@@ -718,32 +718,29 @@ void setup_init() {
     log_register_manifest();
 
     image_init(NULL);
+
+    // The AppleTalk network: host state, one per process.  Machines plug into
+    // it as they are built (atalk_conn_new) and never tear it down.
+    appletalk_network_init();
 }
 
-// The default AppleShare volume.  The platform registers its path once
-// (the browser: /opfs/shared; headless: --shared-dir or $GS_SHARED_DIR); core
-// publishes it after every machine build, because a machine's teardown drops
-// the volume table.  Both platforms used to carry the same provisioning in a
-// system_post_create override, with different mkdir modes and log styles.
+// The default AppleShare volume.  The platform names its path once, at
+// startup, after setup_init (the browser: /opfs/shared; headless:
+// --shared-dir or $GS_SHARED_DIR), and the network publishes it then: a
+// share is the network's, so it is there for every machine that plugs in.
+// A failure is a logged warning, never a startup error -- a user who removed
+// the directory still gets a running emulator.
 #define GS_DEFAULT_SHARE_NAME "Shared"
-static char g_default_share[1024];
 
 void system_set_default_share(const char *path) {
-    snprintf(g_default_share, sizeof(g_default_share), "%s", path ? path : "");
-}
-
-// Publish the default share.  Idempotent; a failure is a logged warning,
-// never a boot error — a user who removed the directory still gets a
-// running machine.
-static void provision_default_share(void) {
-    if (!g_default_share[0] || atalk_afp_volume_find(GS_DEFAULT_SHARE_NAME) >= 0)
+    if (!path || !*path || atalk_afp_volume_find(GS_DEFAULT_SHARE_NAME) >= 0)
         return;
-    if (mkdir(g_default_share, 0755) != 0 && errno != EEXIST) {
-        LOG(0, "warning: default share: cannot create %s: %s", g_default_share, strerror(errno));
+    if (mkdir(path, 0755) != 0 && errno != EEXIST) {
+        LOG(0, "warning: default share: cannot create %s: %s", path, strerror(errno));
         return;
     }
     char err[192];
-    if (atalk_afp_volume_add(GS_DEFAULT_SHARE_NAME, g_default_share, err, sizeof(err)) < 0)
+    if (atalk_afp_volume_add(GS_DEFAULT_SHARE_NAME, path, err, sizeof(err)) < 0)
         LOG(0, "warning: default share: %s", err);
 }
 
@@ -1214,8 +1211,10 @@ void system_swap_in(config_t *cfg, bool restored) {
     // runtime state.
     root_install(cfg);
 
-    // The volume table went with the previous machine: publish the share.
-    provision_default_share();
+    // The new machine takes the AppleTalk cable.  The one it replaces comes
+    // off it now, its sessions closing as a server sees a Mac vanish; the
+    // network itself is untouched.
+    atalk_conn_plug(cfg->atalk);
 
     // Cold boot: stamp out a manifest documenting what was set up.  Skipped
     // on checkpoint restore — the manifest is fixed at original creation

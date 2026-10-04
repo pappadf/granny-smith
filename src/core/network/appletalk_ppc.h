@@ -85,8 +85,16 @@ typedef struct {
 
 // === Lifecycle ==============================================================
 
-void atalk_ppc_init(void);
-void atalk_ppc_shutdown(void);
+// PPC's part of a machine's connection (atalk_conn_t): the sessions with that
+// Mac and what a browse of it found.  The network serves the plugged-in
+// connection's link; atalk_ppc_plug with NULL, when the connection is
+// unplugged, drops its sessions and browse results.  Plugging one in puts the
+// host port's listener on its ADSP stack (atalk_adsp_plug runs first).
+typedef struct ppc_link ppc_link_t;
+
+ppc_link_t *atalk_ppc_link_new(void);
+void atalk_ppc_link_free(ppc_link_t *link);
+void atalk_ppc_plug(ppc_link_t *link);
 
 // Publish (or withdraw) the host port.  Registering it puts the NBP entity on
 // the network and starts accepting guest sessions on PPC_HOST_SOCKET.
@@ -153,6 +161,5 @@ const ppc_stats_t *atalk_ppc_get_stats(void);
 // === Object model ===========================================================
 
 void atalk_ppc_install_objects(struct object *parent);
-void atalk_ppc_remove_objects(void);
 
 #endif // APPLETALK_PPC_H

@@ -22,7 +22,7 @@
 // is no version field -- a build mismatch is rejected outright, so layout is
 // free to change, but a save and its restore must move together.  The
 // restore side is each family's init, where rtc_init, scc_init and
-// appletalk_init consume their own block as they construct, so save order
+// atalk_conn_new consume their own block as they construct, so save order
 // must mirror construction order.  A swapped pair does not fail at the swap:
 // it cross-loads and dies later at whichever block first disagrees on size,
 // which is exactly what the IIfx did.

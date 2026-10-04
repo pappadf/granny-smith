@@ -35,7 +35,9 @@ static struct {
     uint64_t due;
 } g_armed[MAX_ARMED];
 static int g_n_armed;
-void atalk_timer_init(atalk_timer_t *t, const char *source_name, const char *event_name, atalk_timer_fn cb) {
+void atalk_timer_init(struct atalk_conn *conn, atalk_timer_t *t, const char *source_name, const char *event_name,
+                      atalk_timer_fn cb) {
+    (void)conn;
     (void)source_name;
     (void)event_name;
     t->cb = cb;
@@ -213,9 +215,10 @@ static void setup(void) {
     g_close_requests = 0;
     g_close_replies = 0;
     memset(&g_req_cb, 0, sizeof(g_req_cb));
-    atalk_printer_shutdown(); // the last test's connection goes
+    atalk_printer_unplug(); // the last test's machine goes
     g_n_armed = 0;
     atalk_printer_register();
+    atalk_printer_register_timers(NULL);
     ASSERT_TRUE(g_pap != NULL);
 }
 

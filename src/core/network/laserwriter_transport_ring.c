@@ -288,7 +288,9 @@ static void ring_dispatch(uint32_t kind, const uint8_t *p, uint32_t payload_len)
 // ============================================================================
 
 // The ring has no guest-time timers: the bridge's poll tick drains it.
-void laserwriter_transport_init(void) {}
+void laserwriter_transport_register_timers(struct atalk_conn *conn) {
+    (void)conn;
+}
 
 void laserwriter_transport_set_callbacks(const laserwriter_transport_callbacks_t *callbacks, void *ctx) {
     if (callbacks)

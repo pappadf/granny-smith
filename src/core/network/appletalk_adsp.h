@@ -211,17 +211,28 @@ const adsp_stats_t *adsp_get_stats(const adsp_stack_t *s);
 
 // === Production instance ====================================================
 //
-// One stack instance wired to the emulator's DDP layer and scheduler.
+// ADSP's part of a machine's connection (atalk_conn_t): one stack instance --
+// the connection ends with that Mac -- wired to the emulator's DDP layer and
+// to the machine's scheduler.  The network serves the plugged-in
+// connection's stack; atalk_adsp_plug with NULL, when the connection is
+// unplugged, closes every connection end it holds.
+typedef struct adsp_link adsp_link_t;
 
-void atalk_adsp_init(scheduler_t *scheduler);
-void atalk_adsp_shutdown(void);
+adsp_link_t *atalk_adsp_link_new(void);
+void atalk_adsp_link_free(adsp_link_t *link);
+// Register `link`'s timer with `conn`'s machine's scheduler, while the
+// connection is being built.
+struct atalk_conn;
+void atalk_adsp_link_register_timers(struct atalk_conn *conn, adsp_link_t *link);
+void atalk_adsp_plug(adsp_link_t *link);
+
+// The plugged-in connection's stack, or NULL while none is plugged in.
 adsp_stack_t *atalk_adsp_stack(void);
 
 // DDP dispatch hook, called by appletalk.c for DDP type 7.
 void atalk_adsp_ddp_in(const ddp_header_t *ddp, const uint8_t *buf, int len);
 
-// Object-model surface: attaches `adsp` under `appletalk`.
+// Object-model surface: attaches `adsp` under `appletalk`, once.
 void atalk_adsp_install_objects(struct object *parent);
-void atalk_adsp_remove_objects(void);
 
 #endif // APPLETALK_ADSP_H

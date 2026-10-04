@@ -122,19 +122,19 @@ print_directory()
 assert appletalk.printer.interpreter_permanent_jobs == 1 "the restarted printer did not need PatchPrep again"
 assert appletalk.printer.interpreter_jobs == $first "the print on the restarted printer ran a different job sequence"
 
-# --- A checkpoint load is a new machine too ---------------------------------------
+# --- A checkpoint load keeps the printer ----------------------------------------
 #
-# The interpreter cannot be saved in a checkpoint, so the restored machine
-# starts with a fresh printer (its driver re-uploads, as after a LaserWriter
-# is switched off).  No print needed: the counters say it.
+# The printer is not part of the machine, so it is never in a checkpoint and
+# a load does not touch it.  No print needed: the counters say it.
 
-assert appletalk.printer.interpreter_jobs > 0 "nothing to lose before the load"
+let jobs = appletalk.printer.interpreter_jobs
+assert $jobs > 0 "nothing to keep before the load"
 checkpoint.save "${$WORK_DIR}/persist.gscp"
 checkpoint.load "${$WORK_DIR}/persist.gscp"
-assert appletalk.printer.interpreter_jobs == 0 "the restored machine kept the printer"
-assert appletalk.printer.interpreter_permanent_jobs == 0 "the restored machine kept the printer's downloads"
+assert appletalk.printer.interpreter_jobs == $jobs "the load replaced the printer"
+assert appletalk.printer.interpreter_permanent_jobs == 1 "the load lost the printer's downloads"
 
-# --- 5. machine.boot is a new machine with a new printer -------------------------
+# --- 5. machine.boot is a new machine, printing to the same printer --------------
 
 machine.boot model="plus" rom="${$ROM}"
 machine.scsi.attach_hd "${$HD}" 0
@@ -142,12 +142,12 @@ machine.rtc.time = "2026-04-26T23:00:00"
 scheduler.run 30000000
 appletalk.printer.enabled = true
 scheduler.run 20000000
-assert appletalk.printer.interpreter_jobs == 0 "machine.boot kept the old machine's printer"
+assert appletalk.printer.interpreter_jobs == $jobs "machine.boot replaced the printer"
 choose_printer()
 open_disk()
 print_directory()
-assert appletalk.printer.interpreter_permanent_jobs == 1 "the new machine's printer did not need PatchPrep"
-assert appletalk.printer.interpreter_jobs == $first "the new machine's first print ran a different job sequence"
+assert appletalk.printer.interpreter_permanent_jobs == 1 "the new machine's print downloaded PatchPrep again: the printer forgot it"
+assert appletalk.printer.interpreter_jobs - $jobs == $second "the new machine's print did not skip the upload"
 
 echo done
 quit

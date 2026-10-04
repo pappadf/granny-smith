@@ -107,28 +107,40 @@ typedef struct {
     char version[24]; // negotiated at FPLogin
 } afp_session_t;
 
-static afp_session_t g_afp_sessions[AFP_MAX_SESSIONS];
+// The AFP server's part of a machine's connection (atalk_conn_t): what the
+// sessions with that Mac have done in AFP -- their login state, the forks
+// they hold open and their FPEnumerate snapshots.
+struct afp_link {
+    afp_session_t sessions[AFP_MAX_SESSIONS];
+    afp_fork_table_t forks;
+    afp_enum_table_t *enums;
+};
+
+// The link of the connection plugged into the network, NULL while none is.
+static afp_link_t *g_afp_link;
 
 static afp_session_t *afp_session(uint16_t ref) {
+    if (!g_afp_link)
+        return NULL;
     for (int i = 0; i < AFP_MAX_SESSIONS; i++)
-        if (g_afp_sessions[i].in_use && g_afp_sessions[i].ref == ref)
-            return &g_afp_sessions[i];
+        if (g_afp_link->sessions[i].in_use && g_afp_link->sessions[i].ref == ref)
+            return &g_afp_link->sessions[i];
     return NULL;
 }
 
 static void afp_session_release(uint16_t session_id);
 
 bool afp_session_opened(uint16_t session_ref) {
-    if (!g_afp_enabled)
+    if (!g_afp_enabled || !g_afp_link)
         return false; // a disabled server takes no new sessions
     if (afp_session(session_ref))
         return true;
     for (int i = 0; i < AFP_MAX_SESSIONS; i++)
-        if (!g_afp_sessions[i].in_use) {
-            memset(&g_afp_sessions[i], 0, sizeof(g_afp_sessions[i]));
-            g_afp_sessions[i].in_use = true;
-            g_afp_sessions[i].ref = session_ref;
-            g_afp_sessions[i].state = AFP_SESS_OPEN;
+        if (!g_afp_link->sessions[i].in_use) {
+            memset(&g_afp_link->sessions[i], 0, sizeof(g_afp_link->sessions[i]));
+            g_afp_link->sessions[i].in_use = true;
+            g_afp_link->sessions[i].ref = session_ref;
+            g_afp_link->sessions[i].state = AFP_SESS_OPEN;
             return true;
         }
     return false;
@@ -2365,16 +2377,44 @@ uint32_t afp_session_open_forks(uint16_t session_id) {
     return afp_fork_count_session(session_id);
 }
 
-// Drop every volume-scoped cache — used when a checkpoint restore replaces
-// the machine underneath a live mount.
-void afp_reset_transient_state(void) {
-    for (int i = 0; i < AFP_MAX_VOLUMES; i++) {
-        if (!g_vols[i].in_use)
-            continue;
-        enum_snapshots_drop(ENUM_ANY, g_vols[i].vol_id);
-        g_vols[i].open_by.n = 0;
-        g_vols[i].dt_open_by.n = 0;
-        g_vols[i].mutations++;
+// === The connection's AFP state ================================================
+
+afp_link_t *afp_link_new(void) {
+    afp_link_t *link = calloc(1, sizeof(*link));
+    if (!link)
+        return NULL;
+    afp_fork_table_init(&link->forks);
+    link->enums = enum_table_new();
+    if (!link->enums) {
+        free(link);
+        return NULL;
     }
-    afp_fork_shutdown();
+    return link;
+}
+
+void afp_link_free(afp_link_t *link) {
+    if (!link)
+        return;
+    GS_ASSERT(link != g_afp_link);
+    enum_table_free(link->enums);
+    free(link);
+}
+
+void afp_plug(afp_link_t *link) {
+    if (g_afp_link && !link) {
+        // The Mac is gone: what its sessions held goes with it.  ASP closed
+        // the sessions first, so this is what a session left behind.
+        for (int i = 0; i < AFP_MAX_SESSIONS; i++)
+            if (g_afp_link->sessions[i].in_use)
+                afp_session_closed(g_afp_link->sessions[i].ref);
+        afp_fork_close_all();
+        enum_snapshots_drop(ENUM_ANY, ENUM_ANY);
+        for (int i = 0; i < AFP_MAX_VOLUMES; i++) {
+            g_vols[i].open_by.n = 0;
+            g_vols[i].dt_open_by.n = 0;
+        }
+    }
+    g_afp_link = link;
+    afp_fork_plug(link ? &link->forks : NULL);
+    enum_table_plug(link ? link->enums : NULL);
 }

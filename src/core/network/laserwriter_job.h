@@ -3,7 +3,7 @@
 
 // laserwriter_job.h
 // The PostScript side of the emulated LaserWriter: one interpreter job per
-// EOF-delimited PAP job, on the emulated machine's printer, run by
+// EOF-delimited PAP job, on the network's printer, run by
 // EfterScript's platen library behind a laserwriter_transport (in this
 // process for headless, in a Web Worker for the browser).  Everything is asynchronous: the PAP layer
 // (appletalk_printer.c) issues begin / feed / finish and hears back through
@@ -78,12 +78,13 @@ bool laserwriter_job_available(void);
 // Installs the PAP layer's listener (once).
 void laserwriter_job_set_listener(laserwriter_listener_t fn, void *ctx);
 
-// Register the bridge's and the transport's timers with the stack's
-// scheduler.  Called from atalk_printer_register each time the stack comes up,
-// so a checkpoint restore finds them (atalk_timer_t).
-void laserwriter_job_init(void);
+// Register the bridge's and the transport's timers with `conn`'s machine's
+// scheduler.  Called from atalk_printer_register_timers each time a machine's
+// connection is built, so a checkpoint restore finds them (atalk_timer_t).
+struct atalk_conn;
+void laserwriter_job_register_timers(struct atalk_conn *conn);
 
-// Starts the job for PAP job `job_id` on the machine's printer (created
+// Starts the job for PAP job `job_id` on the printer (created
 // from the identity and prelude on its first job), opened through the
 // transport.  Returns false when the request could not be issued;
 // otherwise OPENED or FAILED follows.  A job still held is abandoned first.
@@ -140,40 +141,20 @@ const char *laserwriter_job_last_outcome(void);
 
 // === The printer ===
 //
-// The interpreter jobs run on lives as long as the emulated machine: every
-// job starts from its state and is reverted at its end, except what the
-// job made permanent with exitserver or startjob, which every later job
-// inherits -- the way a LaserWriter keeps a downloaded procset until it is
-// switched off.  The printer is named by a process-unique id; the machine
-// lifecycle (appletalk.c) moves it:
-//   - a new machine (machine.boot, a checkpoint load) gets a new printer;
-//   - the same machine power-cycled (machine.restart) keeps its printer;
-//   - appletalk.printer.restart() replaces it without touching the machine.
-// The interpreter is created on the printer's first job, so a machine that
-// never prints costs nothing.
-
-// A printer taken out of service without being freed (laserwriter_printer_detach).
-typedef struct {
-    uint32_t id; // 0 = none (no job ever ran on it)
-    uint32_t jobs; // its interpreter_jobs count
-    uint32_t permanent_jobs; // its interpreter_permanent_jobs count
-} laserwriter_printer_t;
+// The interpreter jobs run on is the LaserWriter's: every job starts from its
+// state and is reverted at its end, except what the job made permanent with
+// exitserver or startjob, which every later job inherits -- the way a
+// LaserWriter keeps a downloaded procset until it is switched off.  The
+// printer is a node on the network, not part of a Mac, so it outlives
+// machines like a printer on a desk: machine.boot, machine.restart and a
+// checkpoint load all leave it as it is.  Only appletalk.printer.restart()
+// replaces it.  The printer is named by a process-unique id, and its
+// interpreter is created on its first job, so a session that never prints
+// costs nothing.
 
 // Ends the current printer: abandons its job, has the transport free the
 // interpreter, and starts the next job on a new printer.
 void laserwriter_printer_retire(void);
-
-// Takes the current printer out of service without freeing it and starts
-// a new one; returns the old one.  For a checkpoint load, which builds the
-// new machine before the old one goes: the old machine's printer waits
-// here until the load's outcome is known.
-laserwriter_printer_t laserwriter_printer_detach(void);
-
-// Puts a detached printer back (the load failed), retiring the current one.
-void laserwriter_printer_reattach(laserwriter_printer_t printer);
-
-// Frees a detached printer (the load succeeded).
-void laserwriter_printer_free_detached(laserwriter_printer_t printer);
 
 // Jobs the current printer has served since it was created, and of those,
 // the jobs whose replies carried exitserver's acknowledgement

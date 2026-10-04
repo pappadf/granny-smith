@@ -60,8 +60,23 @@ typedef enum {
 // end beyond it is AFP_FORK_DISK_FULL -- not a 4 GB sparse file.
 #define AFP_FORK_MAX_LENGTH 0x7FFFFC00u
 
-// Release every backing and handle.  Called from the server's teardown.
-void afp_fork_shutdown(void);
+// The open forks of one connection's sessions (part of its afp_link_t): the
+// handles, the backings they share, and the refnum cursor.  The fork layer
+// serves the plugged-in connection's table; with none plugged in there are no
+// forks.
+typedef struct afp_fork_table {
+    struct afp_backing *backings;
+    struct afp_fork *forks;
+    uint32_t next_ref; // atalk_id_alloc cursor
+    uint32_t open_count;
+} afp_fork_table_t;
+
+void afp_fork_table_init(afp_fork_table_t *table);
+void afp_fork_plug(afp_fork_table_t *table);
+
+// Release every backing and handle of the plugged-in table: the server was
+// disabled, or the connection is being unplugged.
+void afp_fork_close_all(void);
 
 // Open a fork.  `host_path` is the data file's host path (the sidecar path is
 // derived for resource forks) and `rel_path` its volume-relative path, kept

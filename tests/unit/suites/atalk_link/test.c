@@ -7,9 +7,9 @@
 // Before this suite the link and transport layers had no unit coverage at
 // all: appletalk.c could not be linked into a suite (a stub of its entry
 // point sat in the shared harness), and it calls into every layer above it.
-// The eight network integration tests exercise it through real Mac clients;
-// this suite is where a malformed frame, a lost CTS or a machine rebuild can
-// be staged exactly.
+// The network integration tests exercise it through real Mac clients; this
+// suite is where a malformed frame, a lost CTS or a machine plugged in and
+// out can be staged exactly.
 
 #include "appletalk.h"
 #include "link_harness.h"
@@ -19,8 +19,14 @@
 #include <stdio.h>
 #include <string.h>
 
-// appletalk_init installs the stack's receiver on the machine's SCC, and
-// appletalk_delete takes it off again (link_delete checks).
+// Attach or detach the plugged-in connection from the link.
+static void set_enabled(bool enabled) {
+    char err[128];
+    ASSERT_EQ_INT(0, atalk_set_enabled(enabled, err, sizeof err));
+}
+
+// Constructing a machine's connection installs the network's receiver on the
+// machine's SCC, and deleting it takes it off again (link_delete checks).
 TEST(boot_installs_the_frame_sink_and_delete_removes_it) {
     link_boot();
     ASSERT_TRUE(link_sink_installed());
@@ -92,11 +98,10 @@ TEST(nbp_lookup_is_answered_after_the_rts_cts_handshake) {
 }
 
 // Every event type the transport can schedule is registered the moment the
-// stack comes up -- before a checkpoint restore replays the saved queue.  ATP
-// used to register its two only when it first armed one, so a checkpoint taken
-// with an AFP command or a print job in flight could not be restored (the
-// printer, LaserWriter and ADSP timers are stubbed out of this suite and are
-// covered by the appletalk-afp-checkpoint row).
+// connection is plugged in -- before a checkpoint restore replays the saved
+// queue -- so a checkpoint taken with an AFP command or a print job in flight
+// can be restored (the printer, LaserWriter and ADSP timers are stubbed out
+// of this suite and are covered by the appletalk-afp-checkpoint row).
 TEST(every_transport_timer_is_registered_at_init) {
     link_boot();
     ASSERT_EQ_INT(0, sched_pending()); // registered, not armed
@@ -144,12 +149,10 @@ static void asp_write(uint8_t node, uint8_t sid, uint16_t tid, uint16_t seq) {
     guest_advance_to(link_now_ns() + 5e6);
 }
 
-// A machine rebuild -- machine.boot, a checkpoint load -- tears the stack down
-// and brings a new one up in the same process.  Teardown reset nothing below
-// ASP, so the new stack inherited the old one's outgoing ATP requests, XO
-// cache and pending ASP write: here the old machine's WriteContinue was still
-// "pending", and the new machine's first Write was never answered -- not after
-// 600 s of guest time.
+// A new machine -- machine.boot, a checkpoint load -- gets a connection of its
+// own: none of the old machine's outgoing ATP requests, XO cache or pending ASP
+// write carries over.  Here the old machine's WriteContinue is never answered,
+// and the new machine's first Write is served all the same.
 TEST(a_rebuilt_stack_serves_a_write_the_old_one_left_pending) {
     link_boot();
     uint8_t s1 = asp_open_session(GUEST_NODE, 100, 0x1001);
@@ -192,7 +195,7 @@ TEST(detaching_the_stack_stops_its_transmitter) {
         guest_idle_until(link_now_ns() + 1e5);
     ASSERT_EQ_INT(1, wire_count_type(GUEST_NODE, LLAP_TYPE_RTS));
 
-    atalk_set_enabled(false);
+    set_enabled(false);
     wire_clear();
     // Without answering any RTS: run well past eight RTS timeouts.
     double end = link_now_ns() + 50e6;
@@ -200,111 +203,122 @@ TEST(detaching_the_stack_stops_its_transmitter) {
         guest_idle_until(link_now_ns() + 1e6);
     ASSERT_EQ_INT(0, wire_count());
 
-    atalk_set_enabled(true);
+    set_enabled(true);
     atalk_nbp_withdraw(&entry);
     link_delete();
 }
 
-// The stack's checkpoint record round-trips: what was saved is applied.
-TEST(the_checkpoint_record_is_restored) {
+// The connection's checkpoint block round-trips: what was saved is applied.
+TEST(the_checkpoint_block_is_restored) {
     link_boot();
-    atalk_set_enabled(false);
+    uint8_t ping[] = {1, 'p'};
+    guest_ddp(GUEST_NODE, 4, 200, 4, ping, sizeof ping);
+    uint64_t ddp_in = atalk_get_stats()->ddp_in;
+    ASSERT_TRUE(ddp_in > 0);
+    set_enabled(false);
     link_checkpoint();
     link_delete();
-    g_aevt_set_calls = 0;
     link_boot_from_checkpoint(false);
     ASSERT_TRUE(!atalk_get_enabled());
-    ASSERT_EQ_INT(1, g_aevt_set_calls);
+    ASSERT_EQ_INT((int)ddp_in, (int)atalk_get_stats()->ddp_in); // the link's counters come back
+    set_enabled(true);
     link_delete();
 }
 
-// A record read from a checkpoint in error is not applied.  The stack is
-// process-wide: a restore that fails keeps the running machine, and whatever
-// this stack applied on the way stays with it -- the old restore tested only
-// the magic word, in a local the reader had not written, and then copied the
-// Apple event strings out of it.
-TEST(a_record_from_a_failed_checkpoint_is_not_applied) {
+// A block read from a checkpoint in error is not applied: the connection
+// starts as a new one would.
+TEST(a_block_from_a_failed_checkpoint_is_not_applied) {
     link_boot();
-    atalk_set_enabled(false);
+    set_enabled(false);
     link_checkpoint();
     link_delete();
-    g_aevt_set_calls = 0;
     link_boot_from_checkpoint(true);
-    ASSERT_TRUE(atalk_get_enabled()); // the default, not the record's
-    ASSERT_EQ_INT(0, g_aevt_set_calls);
+    ASSERT_TRUE(atalk_get_enabled()); // the default, not the block's
     link_delete();
 }
 
-// The configuration a user or script set travels in the checkpoint and comes
-// back on restore: shares with their volume ids, server identity, printer
-// settings.  A load used to drop every AFP volume while the restored guest
-// still had one mounted -- its next call got ParamErr -- and the server name
-// survived only because it was a process static nobody reset.
-TEST(configuration_survives_a_checkpoint) {
+// --- the network outside the machine ---------------------------------------------
+//
+// The network -- its shares, the server's identity, the printer -- is host
+// state: created once, and never torn down, carried or checkpointed by a
+// machine.  Machines plug into it and out of it.
+
+// A machine that goes leaves the network as it was, and the next machine finds
+// it so: the shares (under the same volume ids), the server's name, the
+// printer's settings.  Nothing of it travels in the checkpoint either.
+TEST(the_network_outlives_every_machine) {
     link_boot();
+    ASSERT_EQ_INT(1, g_printer_registers); // the printer joined the network once, at its creation
     char err[128];
     ASSERT_TRUE(atalk_afp_volume_add("Share A", "/share/a", err, sizeof err) >= 0);
-    ASSERT_TRUE(atalk_afp_volume_add("Share B", "/share/b", err, sizeof err) >= 0);
-    int slot_b = atalk_afp_volume_find("Share B");
-    unsigned id_b = atalk_afp_volume_vol_id(slot_b);
+    int slot = atalk_afp_volume_find("Share A");
+    unsigned id = atalk_afp_volume_vol_id(slot);
     ASSERT_EQ_INT(0, atalk_afp_set_name("Renamed Server", err, sizeof err));
     atalk_printer_set_capture(true);
     link_checkpoint();
-    link_delete(); // empties the volume table, as a machine teardown does
-    ASSERT_EQ_INT(-1, atalk_afp_volume_find("Share B"));
-    atalk_afp_set_name("Something Else", err, sizeof err);
-    atalk_printer_set_capture(false);
-
-    link_boot_from_checkpoint(false);
-    slot_b = atalk_afp_volume_find("Share B");
-    ASSERT_TRUE(slot_b >= 0);
-    ASSERT_EQ_INT((int)id_b, (int)atalk_afp_volume_vol_id(slot_b)); // the guest's cached id still names it
-    ASSERT_TRUE(atalk_afp_volume_find("Share A") >= 0);
+    link_delete();
+    ASSERT_EQ_INT(slot, atalk_afp_volume_find("Share A")); // the share stays published
     ASSERT_TRUE(strcmp(atalk_afp_get_name(), "Renamed Server") == 0);
     ASSERT_TRUE(atalk_printer_get_capture());
+
+    link_boot_from_checkpoint(false);
+    ASSERT_EQ_INT((int)id, (int)atalk_afp_volume_vol_id(atalk_afp_volume_find("Share A")));
+    ASSERT_EQ_INT(1, g_printer_registers); // not registered again
     link_delete();
+    ASSERT_EQ_INT(0, atalk_afp_volume_remove("Share A", err, sizeof err));
+    ASSERT_EQ_INT(0, atalk_afp_set_name("Test Server", err, sizeof err));
     atalk_printer_set_capture(false);
 }
 
-// A checkpoint load that fails after the new machine's stack came up: the stack
-// was left bound to the new machine's SCC and scheduler, which the load then
-// freed -- the next frame read freed memory (found under Valgrind).  Now the
-// stack is rebuilt for the machine that keeps running, with that machine's
-// shares, not the checkpoint's.
-TEST(a_failed_load_gives_the_stack_back_to_the_running_machine) {
+// Each machine built puts the printer's timers on its scheduler, and each
+// one unplugged drops the printer's session with it -- the printer itself
+// stays, as a printer on a desk outlives the Macs that print to it.
+TEST(machines_plug_into_the_printer_and_out_again) {
+    int regs = g_printer_timer_registrations, unplugs = g_printer_unplugs;
+    link_boot();
+    ASSERT_EQ_INT(regs + 1, g_printer_timer_registrations);
+    link_checkpoint();
+    link_load(false); // the new machine takes the cable from the old one
+    ASSERT_EQ_INT(regs + 2, g_printer_timer_registrations);
+    ASSERT_EQ_INT(unplugs + 1, g_printer_unplugs);
+    link_delete();
+    ASSERT_EQ_INT(unplugs + 2, g_printer_unplugs);
+}
+
+// A checkpoint load that fails after the new machine was built: the new
+// machine is destroyed, its connection with it, and the machine that keeps
+// running was never unplugged.  The network never moved.
+TEST(a_failed_load_leaves_the_running_machine_plugged_in) {
     link_boot();
     char err[128];
     ASSERT_TRUE(atalk_afp_volume_add("Live Share", "/live", err, sizeof err) >= 0);
-    link_checkpoint(); // a record with "Live Share" in it...
-    ASSERT_EQ_INT(0, atalk_afp_volume_remove("Live Share", err, sizeof err));
-    ASSERT_TRUE(atalk_afp_volume_add("Other Share", "/other", err, sizeof err) >= 0);
-    // ...but the running machine now publishes "Other Share".
-
+    link_checkpoint();
     link_load(true);
     ASSERT_TRUE(link_sink_on(0));
     ASSERT_TRUE(!link_sink_on(1));
-    ASSERT_TRUE(atalk_afp_volume_find("Other Share") >= 0);
-    ASSERT_EQ_INT(-1, atalk_afp_volume_find("Live Share"));
-    // ...and it answers the guest on the machine that is still there.
+    ASSERT_TRUE(atalk_afp_volume_find("Live Share") >= 0);
+    // ...and the network answers the guest on the machine that is still there.
     wire_clear();
     uint8_t enq[3] = {HOST_NODE, GUEST_NODE, LLAP_TYPE_ENQ};
     guest_frame(enq, sizeof enq);
     ASSERT_EQ_INT(1, wire_count_type(GUEST_NODE, LLAP_TYPE_ACK));
     link_delete();
+    ASSERT_EQ_INT(0, atalk_afp_volume_remove("Live Share", err, sizeof err));
 }
 
-// ...and a load that succeeds leaves the stack with the new machine: the old
-// machine's delete does not dismantle it, and the record's shares are what
-// the new machine publishes.
-TEST(a_successful_load_moves_the_stack_to_the_new_machine) {
+// ...and a load that succeeds leaves the cable with the new machine: taking
+// it unplugged the old one, so the old machine's delete leaves the new
+// machine's connection alone.
+TEST(destroying_the_replaced_machine_leaves_the_new_one_plugged_in) {
     link_boot();
-    char err[128];
-    ASSERT_TRUE(atalk_afp_volume_add("Saved Share", "/saved", err, sizeof err) >= 0);
     link_checkpoint();
     link_load(false);
     ASSERT_TRUE(link_sink_on(1));
     ASSERT_TRUE(!link_sink_on(0));
-    ASSERT_TRUE(atalk_afp_volume_find("Saved Share") >= 0);
+    wire_clear();
+    uint8_t enq[3] = {HOST_NODE, GUEST_NODE, LLAP_TYPE_ENQ};
+    guest_frame(enq, sizeof enq);
+    ASSERT_EQ_INT(1, wire_count_type(GUEST_NODE, LLAP_TYPE_ACK));
     link_delete();
 }
 
@@ -687,6 +701,39 @@ TEST(two_sessions_write_at_once) {
     link_delete();
 }
 
+// A restore is a server restart.  The guest held a session when the checkpoint
+// was taken; the restored connection has none, so a command on it is answered
+// SessClosed -- the AppleShare client then sees the connection closed and
+// drops the volume -- never dropped, which would leave it waiting out a
+// timeout.  A new session gets neither the old session's wire id nor its
+// reference, so the stale one stays refused.
+TEST(a_restored_connection_is_a_restarted_server) {
+    link_boot();
+    uint8_t sid = asp_open_session(GUEST_NODE, 100, 0x1001);
+    ASSERT_TRUE(sid != 0);
+    atalk_session_info_t info;
+    ASSERT_TRUE(atalk_asp_session_info(0, &info));
+    unsigned ref = info.session_ref;
+    link_checkpoint();
+    link_load(false);
+    ASSERT_EQ_INT(0, live_sessions());
+
+    g_afp_calls = 0;
+    uint8_t cmd[] = {0x08};
+    wire_clear();
+    asp_request(GUEST_NODE, ASP_COMMAND, sid, 0x1002, cmd, sizeof cmd);
+    ASSERT_EQ_INT(0, g_afp_calls);
+    const uint8_t *r = last_tresp(GUEST_NODE, NULL);
+    ASSERT_TRUE(r != NULL);
+    ASSERT_EQ_INT((int)0xFFFFEC62u, (int)tresp_result(r)); // SessClosed
+
+    uint8_t sid2 = asp_open_session(GUEST_NODE, 100, 0x1003);
+    ASSERT_TRUE(sid2 != 0 && sid2 != sid);
+    ASSERT_TRUE(atalk_asp_session_info(0, &info));
+    ASSERT_TRUE(info.session_ref != ref);
+    link_delete();
+}
+
 // A rename that cannot be published changes nothing: the entry keeps its old
 // name, still found by a lookup (services stored the new name first, or
 // withdrew first).
@@ -724,51 +771,6 @@ TEST(a_publish_that_fails_changes_nothing) {
     link_delete();
 }
 
-// --- the printer's lifetime ---------------------------------------------------
-//
-// The printer lives as long as the emulated machine (laserwriter_job.h):
-// appletalk.c moves it with the machine lifecycle.  These drive the stack
-// through each step and read what the printer model saw.
-
-// A machine that goes takes its printer with it; the next machine starts
-// with none (its first job makes one).
-TEST(a_machine_that_goes_frees_its_printer) {
-    stub_printer_reset();
-    link_boot();
-    uint32_t a = stub_printer_use();
-    link_delete();
-    ASSERT_EQ_INT(0, (int)g_printer_current);
-    ASSERT_EQ_INT(1, g_printer_nfreed);
-    ASSERT_EQ_INT((int)a, (int)g_printer_freed[0]);
-}
-
-// A load that succeeds is a different machine: it starts without a printer,
-// and the old machine's is freed when that machine goes.
-TEST(a_successful_load_frees_the_old_printer) {
-    stub_printer_reset();
-    link_boot();
-    uint32_t a = stub_printer_use();
-    link_checkpoint();
-    link_load(false);
-    ASSERT_EQ_INT(0, (int)g_printer_current);
-    ASSERT_EQ_INT(1, g_printer_nfreed);
-    ASSERT_EQ_INT((int)a, (int)g_printer_freed[0]);
-    link_delete();
-}
-
-// A load that fails leaves the running machine as it was -- printer and all.
-TEST(a_failed_load_gives_the_printer_back) {
-    stub_printer_reset();
-    link_boot();
-    uint32_t a = stub_printer_use();
-    link_checkpoint();
-    link_load(true);
-    ASSERT_EQ_INT((int)a, (int)g_printer_current);
-    ASSERT_EQ_INT(0, g_printer_nfreed);
-    link_delete();
-    ASSERT_EQ_INT((int)a, (int)g_printer_freed[0]);
-}
-
 int main(void) {
     RUN(a_publish_that_fails_changes_nothing);
     RUN(boot_installs_the_frame_sink_and_delete_removes_it);
@@ -777,14 +779,12 @@ int main(void) {
     RUN(every_transport_timer_is_registered_at_init);
     RUN(a_rebuilt_stack_serves_a_write_the_old_one_left_pending);
     RUN(detaching_the_stack_stops_its_transmitter);
-    RUN(the_checkpoint_record_is_restored);
-    RUN(a_record_from_a_failed_checkpoint_is_not_applied);
-    RUN(configuration_survives_a_checkpoint);
-    RUN(a_failed_load_gives_the_stack_back_to_the_running_machine);
-    RUN(a_successful_load_moves_the_stack_to_the_new_machine);
-    RUN(a_machine_that_goes_frees_its_printer);
-    RUN(a_successful_load_frees_the_old_printer);
-    RUN(a_failed_load_gives_the_printer_back);
+    RUN(the_checkpoint_block_is_restored);
+    RUN(a_block_from_a_failed_checkpoint_is_not_applied);
+    RUN(the_network_outlives_every_machine);
+    RUN(machines_plug_into_the_printer_and_out_again);
+    RUN(a_failed_load_leaves_the_running_machine_plugged_in);
+    RUN(destroying_the_replaced_machine_leaves_the_new_one_plugged_in);
     RUN(a_malformed_ddp_frame_is_dropped_and_counted);
     RUN(every_discard_is_counted_by_reason);
     RUN(a_lookup_matching_eight_names_answers_with_eight_tuples);
@@ -796,6 +796,7 @@ int main(void) {
     RUN(commands_reach_only_their_own_session);
     RUN(get_status_runs_no_command);
     RUN(two_sessions_write_at_once);
+    RUN(a_restored_connection_is_a_restarted_server);
     printf("[PASS] All atalk_link tests passed\n");
     return 0;
 }

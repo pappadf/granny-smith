@@ -197,8 +197,8 @@ static bool vol_id_in_use(uint32_t id, const void *ctx) {
     return find_vol_by_id((uint16_t)id) != NULL;
 }
 
-// Publish `path` as volume `name`, with `vol_id` or, when 0, the next free id.
-static int vol_add(const char *name, const char *path, uint16_t vol_id, char *err, size_t err_len) {
+// Publish `path` as volume `name`, under the next free volume id.
+int atalk_afp_volume_add(const char *name, const char *path, char *err, size_t err_len) {
     if (err && err_len)
         err[0] = '\0';
     if (!name || !*name)
@@ -225,26 +225,18 @@ static int vol_add(const char *name, const char *path, uint16_t vol_id, char *er
         }
     if (slot < 0)
         return vol_fail(err, err_len, "volume table full (max %d)", AFP_MAX_VOLUMES);
-    if (vol_id && find_vol_by_id(vol_id))
-        return vol_fail(err, err_len, "volume id %u is already in use", (unsigned)vol_id);
 
     vol_t *v = &g_vols[slot];
     memset(v, 0, sizeof(*v));
     snprintf(v->name, sizeof(v->name), "%s", name);
     char resolved[PATH_MAX];
     snprintf(v->root, sizeof(v->root), "%s", realpath(path, resolved) ? resolved : path);
-    if (vol_id) {
-        v->vol_id = vol_id;
-        if (vol_id >= g_next_vol_id)
-            g_next_vol_id = (uint32_t)vol_id + 1;
-    } else {
-        uint32_t id = 0;
-        if (!atalk_id_alloc(&g_next_vol_id, 1, 0xFFFF, vol_id_in_use, NULL, &id)) {
-            memset(v, 0, sizeof(*v)); // cannot happen: at most AFP_MAX_VOLUMES of 65,535 are held
-            return vol_fail(err, err_len, "no volume id is free");
-        }
-        v->vol_id = (uint16_t)id;
+    uint32_t id = 0;
+    if (!atalk_id_alloc(&g_next_vol_id, 1, 0xFFFF, vol_id_in_use, NULL, &id)) {
+        memset(v, 0, sizeof(*v)); // cannot happen: at most AFP_MAX_VOLUMES of 65,535 are held
+        return vol_fail(err, err_len, "no volume id is free");
     }
+    v->vol_id = (uint16_t)id;
     v->catalog = afp_catalog_open(v->root);
     if (!v->catalog) {
         memset(v, 0, sizeof(*v));
@@ -256,16 +248,6 @@ static int vol_add(const char *name, const char *path, uint16_t vol_id, char *er
     LOG(1, "AFP: added volume '%s' -> '%s' (vol %u, %u catalog entries)", v->name, v->root, (unsigned)v->vol_id,
         afp_catalog_count(v->catalog));
     return slot;
-}
-
-int atalk_afp_volume_add(const char *name, const char *path, char *err, size_t err_len) {
-    return vol_add(name, path, 0, err, err_len);
-}
-
-int atalk_afp_volume_restore(const char *name, const char *path, unsigned vol_id, char *err, size_t err_len) {
-    if (vol_id == 0 || vol_id > 0xFFFF)
-        return vol_fail(err, err_len, "volume id %u is out of range", vol_id);
-    return vol_add(name, path, (uint16_t)vol_id, err, err_len);
 }
 
 // Release a volume's live state without touching the table entry itself.
@@ -425,7 +407,7 @@ int atalk_afp_set_enabled(bool enabled, char *err, size_t err_len) {
         // state: NBP lookups stop resolving and OpenSess is refused.
         atalk_asp_broadcast_attention(ATALK_ATTN_SHUTDOWN);
         afp_nbp_withdraw();
-        afp_fork_shutdown();
+        afp_fork_close_all();
         atalk_asp_close_all_sessions();
         for (int i = 0; i < AFP_MAX_VOLUMES; i++) {
             g_vols[i].open_by.n = 0;
@@ -486,29 +468,15 @@ static const asp_client_t k_afp_asp_client = {
     .session_version = afp_asp_version,
 };
 
+// Once, when the network comes up: the server takes ASP's sessions and
+// advertises itself.  Its shares, name, message and counters are the
+// network's, and no machine's lifecycle touches them.
 void atalk_server_init(void) {
-    memset(&g_afp_stats, 0, sizeof(g_afp_stats));
-    memset(g_afp_err_tally, 0, sizeof(g_afp_err_tally));
-    memset(g_afp_ok_tally, 0, sizeof(g_afp_ok_tally));
-    // Nothing a previous machine's sessions held survives into this one.
-    afp_reset_transient_state();
     asp_set_client(&k_afp_asp_client, NULL);
     if (!g_afp_enabled)
         return;
     if (afp_nbp_publish(g_afp_server_object) != 0)
         LOG(1, "AFP: failed to register NBP advertisement");
-}
-
-void atalk_server_delete(void) {
-    for (int i = 0; i < AFP_MAX_VOLUMES; i++) {
-        if (!g_vols[i].in_use)
-            continue;
-        vol_teardown(&g_vols[i]);
-        memset(&g_vols[i], 0, sizeof(g_vols[i]));
-    }
-    afp_fork_shutdown();
-    afp_nbp_withdraw();
-    asp_set_client(NULL, NULL);
 }
 
 // ============================================================================

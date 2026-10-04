@@ -63,7 +63,7 @@ typedef struct {
     char dir_rel[AFP_MAX_REL_PATH];
     uint32_t generation; // catalog generation at capture
     uint32_t mutations; // volume mutation counter at capture
-    uint64_t last_used; // g_enum_clock at the last page served
+    uint64_t last_used; // the table's clock at the last page served
     enum_entry_t *entries;
     size_t count;
 } enum_snapshot_t;
@@ -80,17 +80,40 @@ typedef struct {
 #ifndef AFP_MAX_ENUM_ENTRIES
 #define AFP_MAX_ENUM_ENTRIES 65535u
 #endif
-static enum_snapshot_t g_enum_snapshots[AFP_MAX_ENUM_SNAPSHOTS];
-static uint64_t g_enum_clock;
+struct afp_enum_table {
+    enum_snapshot_t snapshots[AFP_MAX_ENUM_SNAPSHOTS];
+    uint64_t clock;
+};
+
+// The table of the connection plugged into the network, NULL while none is.
+static afp_enum_table_t *g_enum;
 
 static void enum_snapshot_free(enum_snapshot_t *s) {
     free(s->entries);
     memset(s, 0, sizeof(*s));
 }
 
+afp_enum_table_t *enum_table_new(void) {
+    return calloc(1, sizeof(afp_enum_table_t));
+}
+
+void enum_table_free(afp_enum_table_t *table) {
+    if (!table)
+        return;
+    for (int i = 0; i < AFP_MAX_ENUM_SNAPSHOTS; i++)
+        enum_snapshot_free(&table->snapshots[i]);
+    free(table);
+}
+
+void enum_table_plug(afp_enum_table_t *table) {
+    g_enum = table;
+}
+
 void enum_snapshots_drop(uint32_t session_id, uint32_t vol_id) {
+    if (!g_enum)
+        return;
     for (int i = 0; i < AFP_MAX_ENUM_SNAPSHOTS; i++) {
-        enum_snapshot_t *s = &g_enum_snapshots[i];
+        enum_snapshot_t *s = &g_enum->snapshots[i];
         if (s->in_use && (session_id == ENUM_ANY || s->session_id == session_id) &&
             (vol_id == ENUM_ANY || s->vol_id == vol_id))
             enum_snapshot_free(s);
@@ -112,7 +135,7 @@ static enum_snapshot_t *enum_snapshot_lru(uint32_t session_id, int *held) {
     enum_snapshot_t *lru = NULL;
     *held = 0;
     for (int i = 0; i < AFP_MAX_ENUM_SNAPSHOTS; i++) {
-        enum_snapshot_t *s = &g_enum_snapshots[i];
+        enum_snapshot_t *s = &g_enum->snapshots[i];
         if (!s->in_use || (session_id != ENUM_ANY && s->session_id != session_id))
             continue;
         (*held)++;
@@ -128,7 +151,7 @@ static enum_snapshot_t *enum_snapshot_lru(uint32_t session_id, int *held) {
 // session's own listing from a moment before included.
 static enum_snapshot_t *enum_snapshot_slot(uint16_t session_id, uint16_t vol_id, uint32_t dir_cnid) {
     for (int i = 0; i < AFP_MAX_ENUM_SNAPSHOTS; i++) {
-        enum_snapshot_t *s = &g_enum_snapshots[i];
+        enum_snapshot_t *s = &g_enum->snapshots[i];
         if (s->in_use && s->session_id == session_id && s->vol_id == vol_id && s->dir_cnid == dir_cnid)
             return s;
     }
@@ -137,8 +160,8 @@ static enum_snapshot_t *enum_snapshot_slot(uint16_t session_id, uint16_t vol_id,
     if (held >= AFP_ENUM_SNAPSHOTS_PER_SESSION)
         return own;
     for (int i = 0; i < AFP_MAX_ENUM_SNAPSHOTS; i++)
-        if (!g_enum_snapshots[i].in_use)
-            return &g_enum_snapshots[i];
+        if (!g_enum->snapshots[i].in_use)
+            return &g_enum->snapshots[i];
     return enum_snapshot_lru(ENUM_ANY, &held);
 }
 
@@ -217,7 +240,7 @@ static enum_snapshot_t *enum_snapshot_build(afp_ctx_t *ctx, vol_t *vol, uint32_t
     slot->vol_id = vol->vol_id;
     slot->dir_cnid = dir_cnid;
     snprintf(slot->dir_rel, sizeof(slot->dir_rel), "%s", dir_rel);
-    slot->last_used = ++g_enum_clock;
+    slot->last_used = ++g_enum->clock;
     slot->generation = afp_catalog_generation(vol->catalog);
     slot->mutations = vol->mutations;
     slot->entries = entries;
@@ -228,14 +251,14 @@ static enum_snapshot_t *enum_snapshot_build(afp_ctx_t *ctx, vol_t *vol, uint32_t
 // Find a still-valid snapshot for this (session, volume, directory), or NULL.
 static enum_snapshot_t *enum_snapshot_find(afp_ctx_t *ctx, vol_t *vol, uint32_t dir_cnid) {
     for (int i = 0; i < AFP_MAX_ENUM_SNAPSHOTS; i++) {
-        enum_snapshot_t *s = &g_enum_snapshots[i];
+        enum_snapshot_t *s = &g_enum->snapshots[i];
         if (!s->in_use || s->session_id != ctx->session_id || s->vol_id != vol->vol_id || s->dir_cnid != dir_cnid)
             continue;
         if (s->generation != afp_catalog_generation(vol->catalog) || s->mutations != vol->mutations) {
             enum_snapshot_free(s);
             return NULL;
         }
-        s->last_used = ++g_enum_clock;
+        s->last_used = ++g_enum->clock;
         return s;
     }
     return NULL;
@@ -246,6 +269,8 @@ static enum_snapshot_t *enum_snapshot_find(afp_ctx_t *ctx, vol_t *vol, uint32_t 
 // ============================================================================
 
 uint32_t afp_cmd_enumerate(afp_req_t *r) {
+    if (!g_enum)
+        return AFPERR_MiscErr; // no connection, so no session to list for
     if (r->in_len < 18)
         return AFPERR_ParamErr;
     afp_log_hex("AFP FPEnumerate req", r->in, r->in_len);

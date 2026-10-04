@@ -66,7 +66,8 @@ static void em_assertion_callback(const char *kind, const char *expr, const char
 
 // The always-present AppleShare volume.  The path literal lives here, in the
 // platform layer, because core never fabricates or interprets a path (PR #69);
-// core publishes it after every machine build (system_set_default_share).
+// the AppleTalk network publishes it once, at startup
+// (system_set_default_share), for every machine that plugs in.
 // Under OPFS the directory — and the AppleDouble sidecars the AFP server
 // writes beside each file — persist across page reloads for free.
 #define GS_DEFAULT_SHARE_PATH "/opfs/shared"

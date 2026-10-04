@@ -371,8 +371,8 @@ def row_q950_76_hd() {
     assert_addr(true)
     # 7.6 puts up "AppleTalk cannot be used because no AppleTalk address is
     # available" on this machine, and that is CORRECT: the Quadras have no
-    # network hardware wired (the SONIC has no wire, and appletalk_init is only
-    # called for the Plus), so a real Q950 with nothing plugged in says exactly
+    # network hardware wired (the SONIC has no wire), so a real Q950 with
+    # nothing plugged in says exactly
     # this. It did not appear before 2026-07-29 only because the VIA phi2 clock
     # ran 2.15x fast on this substrate, so AppleTalk never finished its failing
     # startup inside the row's window — the clean desktop this row used to match

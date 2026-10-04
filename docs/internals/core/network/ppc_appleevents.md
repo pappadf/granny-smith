@@ -600,13 +600,16 @@ assert $e.errn == 0
 Named arguments use the shell's `name=value` form — `timeout=`, `tag=`,
 `mode=` — not a `name:` spelling.
 
-Event objects are append-only for the life of the run, so the `V_OBJECT` a
-`send` returns stays valid in a `let` binding.
+Event objects are append-only for the life of the machine's connection to
+the network, so the `V_OBJECT` a `send` returns stays valid in a `let`
+binding.
 
-**Limits.** A run holds **256 events** and an inbox of **32**.
+**Limits.** A connection holds **256 events** and an inbox of **32**.
 
 - The 257th `send` (or `send_raw`) is an error: "no room for another event
-  this run (limit 256)". A statement that produces an error stops the
+  on this connection (limit 256)". With no machine plugged into the network
+  a `send` is the error "no machine is connected to the network". A
+  statement that produces an error stops the
   script at that line (`shell.md`, Errors), so a script that wants to carry
   on writes `let e = try(appletalk.aevt.send(…), none)` and tests `$e`.
   There is no `events.clear()`: it would invalidate — or silently re-point —
@@ -614,9 +617,14 @@ Event objects are append-only for the life of the run, so the `V_OBJECT` a
 - An event a guest sends to a full inbox is still **answered** — its
   `AESend` completes — but not kept, and counts in `stats.dropped`.
   `inbox.clear()` makes room; inbox entries are never handed out as
-  bindings, so nothing is left holding one. A checkpoint restore drops
-sessions, connections and the events collection, and keeps only
-`enabled`, `port_name` and `auto_reply`.
+  bindings, so nothing is left holding one.
+
+**Lifetime.** The host port -- `enabled`, `port_name`, `auto_reply` -- is the
+network's: it outlives machines and is never written into a checkpoint
+(`appletalk.h`, "Lifecycle").  The sessions, ADSP connections, the events
+collection, the inbox and the counters belong to the machine's connection:
+a machine that goes takes them with it, and a restored machine starts with
+none of them -- to the guest, the peer has restarted.
 
 ---
 

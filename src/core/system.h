@@ -82,11 +82,13 @@ int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const struct m
 
 // === Generic Machine Lifecycle ===
 
-// One-time global initialisation: logging categories, image system, shell commands.
+// One-time global initialisation: logging categories, image system, the
+// AppleTalk network.
 extern void setup_init(void);
 
-// Register the directory the default "Shared" AppleShare volume serves
-// (NULL or "": none).  Core publishes it after every machine build.
+// Publish the directory the default "Shared" AppleShare volume serves (NULL
+// or "": none) on the AppleTalk network.  Called once, at startup, after
+// setup_init; the share stays for every machine that plugs in.
 void system_set_default_share(const char *path);
 
 // Create an emulator instance for the given machine profile.

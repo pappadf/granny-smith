@@ -280,10 +280,10 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // SCC PCLK = C8M (7.8336 MHz = CPU clock), RTxC = 3.6864 MHz
     scc_set_clocks(cfg->scc, 7833600, 3686400);
 
-    // Initialise AppleTalk with scheduler and SCC dependencies.  Passing the
-    // checkpoint restores the stack's durable state (enablement, counters,
+    // Plug the machine into the AppleTalk network through the SCC.  Passing
+    // the checkpoint restores the connection's block (enablement, counters,
     // session numbering) in the same order plus_checkpoint_save writes it.
-    appletalk_init(cfg->scheduler, cfg->scc, checkpoint);
+    cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, checkpoint);
 
     // 7.8336 MHz / 783.36 kHz = exactly 10, so this is the literal it replaces.
     cfg->via1 = via_init(cfg->mem_map, cfg->scheduler, via_freq_factor_for_clock(cfg->machine->freq), "via1",

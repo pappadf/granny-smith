@@ -366,9 +366,10 @@ void root_install(struct config *cfg) {
 
     // Subsystem-scoped objects are registered by their owners (cpu_init,
     // memory_map_init, scc_init, rtc_init, via_init, scsi_init,
-    // floppy_init, sound_init, appletalk_init, debug_init). The
-    // platform-level facades (mouse, screen, files, log, catalog) are
-    // process-singletons attached from shell_init.
+    // floppy_init, sound_init, debug_init). The platform-level facades
+    // (mouse, screen, files, log, catalog) are process-singletons attached
+    // from shell_init, and the AppleTalk network's `appletalk` tree is
+    // attached once by appletalk_network_init.
     //
     // What remains here is the Shell class instance with its children, and
     // then each registered subsystem hook (files.images, machine.nubus,

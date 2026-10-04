@@ -14,11 +14,21 @@
 #include <stdio.h>
 #include <string.h>
 
+// The endpoint is the network's, set up once; each test plugs in a fresh
+// connection, whose inbox, events and counters start empty.
+static aevt_link_t *g_link;
+
 static void setup(void) {
-    atalk_aevt_remove_objects();
-    object_root_reset();
-    atalk_aevt_init();
-    atalk_aevt_install_objects(object_root());
+    static bool installed;
+    if (!installed) {
+        atalk_aevt_init();
+        atalk_aevt_install_objects(object_root());
+        installed = true;
+    }
+    atalk_aevt_plug(NULL);
+    atalk_aevt_link_free(g_link);
+    g_link = atalk_aevt_link_new();
+    atalk_aevt_plug(g_link);
     stub_ppc_reset();
 }
 

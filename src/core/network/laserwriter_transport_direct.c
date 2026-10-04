@@ -369,9 +369,8 @@ static bool direct_queue(direct_op_t op, uint32_t job_id) {
 // Operations (Public API)
 // ============================================================================
 
-void laserwriter_transport_init(void) {
-    if (atalk_scheduler())
-        atalk_timer_init(&g_direct_timer, "laserwriter", "direct_reply", &direct_event_cb);
+void laserwriter_transport_register_timers(struct atalk_conn *conn) {
+    atalk_timer_init(conn, &g_direct_timer, "laserwriter", "direct_reply", &direct_event_cb);
 }
 
 void laserwriter_transport_set_callbacks(const laserwriter_transport_callbacks_t *callbacks, void *ctx) {
@@ -484,7 +483,9 @@ const char *laserwriter_transport_name(void) {
 // Stubs for builds without the interpreter
 // ============================================================================
 
-void laserwriter_transport_init(void) {}
+void laserwriter_transport_register_timers(struct atalk_conn *conn) {
+    (void)conn;
+}
 
 void laserwriter_transport_set_callbacks(const laserwriter_transport_callbacks_t *callbacks, void *ctx) {
     (void)callbacks;

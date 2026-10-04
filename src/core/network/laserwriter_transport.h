@@ -106,9 +106,11 @@ typedef struct {
 // Installs the result callbacks (once, at bridge init).
 void laserwriter_transport_set_callbacks(const laserwriter_transport_callbacks_t *callbacks, void *ctx);
 
-// Register the transport's timers with the stack's scheduler.  Called from
-// laserwriter_job_init each time the stack comes up (atalk_timer_t).
-void laserwriter_transport_init(void);
+// Register the transport's timers with `conn`'s machine's scheduler.  Called
+// from laserwriter_job_register_timers each time a machine's connection is
+// built (atalk_timer_t).
+struct atalk_conn;
+void laserwriter_transport_register_timers(struct atalk_conn *conn);
 
 // Starts job `job_id` on printer `printer_id` (non-zero), creating the
 // printer from `cfg` if it does not exist yet.  Returns false when the

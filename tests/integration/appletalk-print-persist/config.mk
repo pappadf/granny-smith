@@ -1,13 +1,14 @@
 # Integration test: the emulated LaserWriter keeps what a job downloads for
-# as long as the machine lives
+# as long as the printer lives -- and the printer outlives machines
 #
-# The printer is an interpreter that lives as long as the emulated machine
-# (src/core/network/laserwriter_job.h, "The printer"): each job is reverted
-# at its end except what it made permanent with exitserver, which every
-# later job inherits -- as a LaserWriter keeps a downloaded procset until it
-# is switched off.  A new machine (machine.boot, a checkpoint load) gets a
-# new printer; the same machine power-cycled (machine.restart) keeps it;
-# appletalk.printer.restart() is the printer's own power switch.
+# The printer is an interpreter on the AppleTalk network, not part of the
+# Mac (src/core/network/laserwriter_job.h, "The printer"): each job is
+# reverted at its end except what it made permanent with exitserver, which
+# every later job inherits -- as a LaserWriter keeps a downloaded procset
+# until it is switched off.  Like a printer on a desk it outlives the
+# machines that print to it: machine.restart, a checkpoint load and a
+# machine.boot all keep it; appletalk.printer.restart() is the printer's
+# own power switch.
 #
 # The classic LaserWriter driver shows it without any instrumentation: it
 # asks the printer whether its PatchPrep procset is resident and, when not,
@@ -21,8 +22,8 @@
 #   2. second print                     no upload, fewer jobs
 #   3. machine.restart, print           the printer was kept: no upload
 #   4. appletalk.printer.restart(), print   a new printer: uploads again
-#   -  checkpoint.save, checkpoint.load     the restored machine: a new printer
-#   5. machine.boot, Chooser, print     a new machine, a new printer: uploads
+#   -  checkpoint.save, checkpoint.load     the restored machine: the same printer
+#   5. machine.boot, Chooser, print     a new machine, the same printer: no upload
 #
 # GATED ON THE INTERPRETER, like the other print rows: a PLATEN=0 binary has
 # no bridge, so the row logs a skip and passes.  To run it for real:
@@ -30,7 +31,7 @@
 #   make -C tests/integration test-appletalk-print-persist PLATEN=1
 
 TEST_NAME := LaserWriter printer lifetime (platen)
-TEST_DESC := Five prints across a machine.restart, a printer restart and a machine.boot: exitserver downloads live as long as the printer.
+TEST_DESC := Five prints across a machine.restart, a printer restart, a checkpoint load and a machine.boot: exitserver downloads live as long as the printer, which outlives machines.
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 

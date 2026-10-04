@@ -21,8 +21,13 @@ uint64_t atalk_now_ns(void) {
     return 0;
 }
 
-void atalk_timer_init(atalk_timer_t *t, const char *source_name, const char *event_name, atalk_timer_fn cb) {
-    (void)t, (void)source_name, (void)event_name, (void)cb;
+struct scheduler *atalk_scheduler(void) {
+    return NULL;
+}
+
+void atalk_timer_init(struct atalk_conn *conn, atalk_timer_t *t, const char *source_name, const char *event_name,
+                      atalk_timer_fn cb) {
+    (void)conn, (void)t, (void)source_name, (void)event_name, (void)cb;
 }
 void atalk_timer_arm(atalk_timer_t *t, uint64_t data, uint64_t delay_ns) {
     (void)t, (void)data, (void)delay_ns;

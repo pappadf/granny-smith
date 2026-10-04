@@ -63,6 +63,9 @@ struct config {
 
     // Other peripherals
     scc_t *scc;
+    // The machine's connection to the AppleTalk network (appletalk.h),
+    // plugged into the SCC's LocalTalk channel; NULL on a machine without one.
+    struct atalk_conn *atalk;
     scsi_t *scsi;
     rtc_t *rtc;
     floppy_t *floppy; // floppy controller: IWM (Plus) or SWIM (SE/30)

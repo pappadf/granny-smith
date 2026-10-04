@@ -35,7 +35,7 @@ void machine_checkpoint_save_core(struct config *cfg, struct checkpoint *cp) {
         system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
     rtc_checkpoint(cfg->rtc, cp);
     scc_checkpoint(cfg->scc, cp);
-    appletalk_checkpoint(cp);
+    atalk_conn_checkpoint(cfg->atalk, cp);
     via_checkpoint(cfg->via1, cp);
     via_checkpoint(cfg->via2, cp); // no-op on a one-VIA machine
 }

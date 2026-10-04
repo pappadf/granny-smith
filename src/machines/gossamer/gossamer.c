@@ -344,7 +344,7 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     // every driver assumes (Linux ZS_CLOCK 3686400; NetBSD "RTxC is 230400*16").
     cfg->scc = scc_init(NULL, cfg->scheduler, gos_scc_irq, cfg, cp);
     scc_set_clocks(cfg->scc, 15667200, 3686400);
-    appletalk_init(cfg->scheduler, cfg->scc, cp);
+    cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, cp);
 
     // VIA1: the 6522 cell at Heathrow +$16000 ($200 stride), timers at the
     // classic 783.36 kHz.

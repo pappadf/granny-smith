@@ -198,6 +198,14 @@ uint32_t afp_cmd_enumerate(afp_req_t *r);
 #define ENUM_ANY UINT32_MAX
 void enum_snapshots_drop(uint32_t session_id, uint32_t vol_id);
 
+// The FPEnumerate snapshots of one connection's sessions (part of its
+// afp_link_t).  FPEnumerate serves the plugged-in connection's table; with
+// none plugged in there are no snapshots.
+typedef struct afp_enum_table afp_enum_table_t;
+afp_enum_table_t *enum_table_new(void);
+void enum_table_free(afp_enum_table_t *table);
+void enum_table_plug(afp_enum_table_t *table);
+
 // --- Handlers and dispatch (appletalk_server.c) --------------------------------
 
 uint32_t afp_resolve_target(const afp_ctx_t *ctx, uint16_t vol_id, uint32_t dir_id, const afp_path_t *path,

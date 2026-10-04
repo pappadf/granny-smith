@@ -4,8 +4,9 @@
 // link_harness.h
 // The wire and the clock around a real appletalk.c, for the atalk_link suite.
 //
-// The stack is entered exactly where the SCC enters it -- the frame sink
-// appletalk_init installs with scc_set_frame_sink -- and every frame it puts
+// The stack is entered exactly where the SCC enters it -- the frame sink a
+// connection installs with scc_set_frame_sink while it is plugged into the
+// network -- and every frame it puts
 // on the wire is captured at scc_sdlc_send.  The scheduler is a flat list the
 // test owns, so time only moves when a test moves it, and it records which
 // event types were registered so a test can ask.
@@ -31,21 +32,25 @@
 
 // --- lifecycle ---------------------------------------------------------------
 
-// A fresh stack on a fresh wire and clock: clears the capture, the event list
-// and the registration record, then appletalk_init.
+// A fresh machine on a fresh wire and clock: clears the capture, the event
+// list and the registration record, then constructs the machine's connection
+// (atalk_conn_new) on the network, which the first boot creates
+// (appletalk_network_init) and every later one finds as it was.
 void link_boot(void);
-// appletalk_delete, then check nothing of the stack's is left queued.
+// atalk_conn_delete, then check nothing of the connection's is left queued
+// and no SCC has the network's frame sink.
 void link_delete(void);
-// Save the running stack's checkpoint record.
+// Save the running machine's connection block.
 void link_checkpoint(void);
-// link_boot, restoring the saved record; with `read_fails` the read hands the
+// link_boot, restoring the saved block; with `read_fails` the read hands the
 // bytes back but leaves the checkpoint in error.
 void link_boot_from_checkpoint(bool read_fails);
 // A checkpoint load while a machine is running, as system.c does it: build a
-// second machine from the saved record, then destroy the old machine (the
-// load succeeded) or the new one (`fails`: the load failed after the
-// stack's record was read).  The guest's frames then arrive on whichever
-// machine is left.
+// second machine from the saved block -- its connection takes the cable --
+// then destroy the old machine (the load succeeded), or destroy the new one
+// and plug the old one's connection back in (`fails`: the load failed after
+// the connection's block was read).  The guest's frames then arrive on
+// whichever machine is left.
 void link_load(bool fails);
 // True if the stack's frame sink is installed on machine 0 or 1's SCC.
 bool link_sink_on(int machine);

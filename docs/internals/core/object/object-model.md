@@ -675,7 +675,9 @@ the level contract over every model in the registry.
 | `machine.config.created` | Stamped now | Unchanged | Unchanged | From the checkpoint's record |
 | vROM/PROM offer registries | Process-global; survive | Survive | Survive | Survive |
 | A slot's ROM file (`vrom=`/`prom=`, a slot's `rom=`) | The document's, an argument of that slot's card; never written to the offer registries | Unchanged | Unchanged | The checkpoint record's slot entries |
-| Object tree | Machine-scoped nodes rebuilt (`root_install`); process singletons (`machine`, `rom`, `vrom`, `prom`) stay | Untouched | Untouched | Rebuilt |
+| Object tree | Machine-scoped nodes rebuilt (`root_install`); process singletons (`machine`, `rom`, `vrom`, `prom`, `appletalk`) stay | Untouched | Untouched | Rebuilt |
+| AppleTalk network (`appletalk.*`: the AFP server and its shares, the LaserWriter, the program-linking peer, their NBP names) | Host state: untouched; the new machine plugs into it | Untouched | Untouched | Untouched: never in a checkpoint |
+| The machine's AppleTalk connection (`cfg->atalk`: link state and counters, ATP transactions, its ASP / AFP / ADSP / PPC sessions, forks, Apple events) | New, with no sessions; the old machine's sessions closed | Kept | Kept | Its block restored (enabled flag, link counters, session numbering), with no sessions: the guest sees a restarted server |
 
 **`machine.boot` inherits nothing from the running machine.** The
 document is the whole specification. `model` and `rom` are required, and
@@ -693,8 +695,8 @@ of process-level state that are not part of any machine:
 - scheduler pacing (the table above);
 - the offer registries ([mac-rom.md §10](../../../reference/formats/mac-rom.md#10-rom-provisioning)),
   which a boot reads and never writes;
-- the host share, published again for every new machine
-  (`provision_default_share`).
+- the AppleTalk network (the table above), with the default share the
+  platform published on it once, at startup (`system_set_default_share`).
 
 There is no way to configure the next machine except its document: the
 running machine's slot nodes describe what is installed, and a different

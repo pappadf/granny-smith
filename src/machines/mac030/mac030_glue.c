@@ -145,11 +145,12 @@ void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc) {
 // via_init() for a second VIA either.
 
 // Build the low-speed spine every 68k family shares: the RTC, the SCC at the
-// Mac's clocks, and the AppleTalk stack that rides its LocalTalk channel.
+// Mac's clocks, and the machine's connection to the AppleTalk network on its
+// LocalTalk channel.
 //
 // This is the READ side of the stream machine_checkpoint_save_core() writes,
 // and the two must stay in step: construction order here is restore order,
-// because rtc_init, scc_init and appletalk_init each consume their own block
+// because rtc_init, scc_init and atalk_conn_new each consume their own block
 // from the checkpoint as they build.  Keeping both halves in one function
 // each is the point -- when the save half was shared and the restore half was
 // copied per family, the IIfx drifted out of order and every checkpoint.load
@@ -163,7 +164,7 @@ void mac030_build_lowspeed(config_t *cfg, checkpoint_t *cp, void (*scc_irq)(void
     cfg->scc = scc_init(NULL, cfg->scheduler, scc_irq ? scc_irq : mac030_glue_scc_irq, cfg, cp);
     // 3.6864 MHz PCLK / 7.8336 MHz RTxC -- the same pair on every 68k Mac.
     scc_set_clocks(cfg->scc, 7833600, 3686400);
-    appletalk_init(cfg->scheduler, cfg->scc, cp);
+    cfg->atalk = atalk_conn_new(appletalk_network(), cfg->scheduler, cfg->scc, cp);
 }
 
 // Finish init: debugger, scheduler start, cold-boot IRQ/IPL reset.

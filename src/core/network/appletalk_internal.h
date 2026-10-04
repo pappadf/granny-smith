@@ -11,37 +11,40 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// The scheduler the stack was initialised with (NULL before appletalk_init),
+// The scheduler of the machine plugged into the network (NULL while none is),
 // for guest-time timers in the protocol modules.
 struct scheduler *atalk_scheduler(void);
 
-// The stack's clock: guest time from the machine's scheduler, in ns, so a run
-// is deterministic; 0 before a scheduler is attached.  ASP, PAP and ADSP all
-// read it -- PAP used to fall back to the host's clock.
+// The network's clock: guest time from the plugged-in machine's scheduler, in
+// ns, so a run is deterministic; 0 while no machine is plugged in.  ASP, PAP
+// and ADSP all read it.
 uint64_t atalk_now_ns(void);
 
-// A guest-time timer the stack owns -- one scheduler event type.
+// A guest-time timer -- one scheduler event type.
 //
-// Every one is registered with the machine's scheduler while the stack comes
-// up: atalk_timer_init is called from the owning module's init, which
-// appletalk_init reaches.  Never lazily at first arm: a checkpoint restore
-// replays the saved event queue into a fresh scheduler before any session
-// exists, and a saved event whose type nothing has registered fails the load
-// (when ATP, PAP and the LaserWriter job registered at first arm, a
-// checkpoint taken during file sharing or printing could not be restored).
-// appletalk_teardown forgets every initialised timer.
+// Every one is registered with each machine's scheduler when that machine's
+// connection is built (appletalk.c, atalk_conn_new): each module registers
+// its timers from a hook that takes the connection.  Never lazily at first
+// arm, and never at plug-in: a checkpoint restore replays the saved event
+// queue at the end of construction, before the machine is plugged in, and a
+// saved event whose type nothing has registered fails the load.  Unplugging
+// the connection drops every pending event of its timers, and arming one
+// while nothing is plugged in does nothing.
 //
 // The scheduler source is the timer itself, so a timer's callback receives
 // its own address as `source`.
 typedef void (*atalk_timer_fn)(void *source, uint64_t data);
 typedef struct atalk_timer {
-    atalk_timer_fn cb;
-    bool registered; // with the current stack's scheduler
+    atalk_timer_fn cb; // set by the first registration
 } atalk_timer_t;
 
-// Register `t` as "source_name.event_name" with the stack's scheduler.  Call
-// from the owning module's init; repeat calls are harmless.
-void atalk_timer_init(atalk_timer_t *t, const char *source_name, const char *event_name, atalk_timer_fn cb);
+struct atalk_conn;
+
+// Register `t` as "source_name.event_name" with `conn`'s machine's
+// scheduler.  Call from the owning module's registration hook while the
+// connection is being built; repeat calls are harmless.
+void atalk_timer_init(struct atalk_conn *conn, atalk_timer_t *t, const char *source_name, const char *event_name,
+                      atalk_timer_fn cb);
 // One-shot `delay_ns` from now, carrying `data`; replaces a pending event of
 // this timer with the same `data`, so distinct data (one per ATP transaction)
 // can be pending together.  Delays under ATALK_TIMER_MIN_NS are raised to it:
@@ -209,14 +212,18 @@ int atp_responder_send_simple(const ddp_header_t *request_ddp, const atp_packet_
 int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8_t ddp_type, const uint8_t *data,
                       int len);
 
-// Printer AppleTalk entry points.  register runs each time the stack comes
-// up; shutdown pairs it when the stack goes away with its machine (the
-// session, the job and the advertisement go; the configuration -- enabled,
-// name, capture -- stays for the next stack); link_down drops the session
-// when the stack is detached from the link, since its client is unreachable.
+// Printer AppleTalk entry points.  register runs once, when the network comes
+// up: the PAP socket and the advertisement.  register_timers runs when a machine's
+// connection is built (the PAP and LaserWriter timers on its scheduler).  link_down
+// drops the session when the connection is detached from the link, since its
+// client is unreachable; unplug, when the machine is unplugged, also drops a
+// job still finishing after its close, whose timers go with that machine's
+// scheduler.  The printer itself -- its name, its interpreter and what jobs
+// made permanent -- stays.
 void atalk_printer_register(void);
-void atalk_printer_shutdown(void);
+void atalk_printer_register_timers(struct atalk_conn *conn);
 void atalk_printer_link_down(void);
+void atalk_printer_unplug(void);
 
 // Publish (or rename) / withdraw the LaserWriter NBP entity.  The object model
 // drives these through atalk_printer_set_enabled / atalk_printer_set_name.
