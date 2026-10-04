@@ -491,6 +491,34 @@ TEST(test_rom_glyphs_nlq_proportional) {
     ASSERT_EQ_INT(g.n, 16);
 }
 
+// The original ImageWriter's own sets: 8 fixed columns, proportional
+// widths, its languages (no Danish: that switch setting is American).
+TEST(test_rom_glyphs_iw1) {
+    iw_font_sel_t sel = {.iw1 = true};
+    iw_glyph_t g, us, de;
+    ASSERT_TRUE(iw_font_glyph(&sel, 'H', &g));
+    ASSERT_TRUE(!g.placeholder && !g.half && g.n == 8);
+    ASSERT_TRUE(g.cols[1] == 0x7F); // the left stem, wires 1-7
+    ASSERT_TRUE(iw_font_glyph(&sel, 'g', &g));
+    int low = 0;
+    for (int i = 0; i < g.n; i++)
+        low |= g.cols[i] & 0x100;
+    ASSERT_TRUE(low); // the descender reaches wire 9
+    ASSERT_TRUE(iw_font_glyph(&sel, '[', &us));
+    sel.language = 4; // German: [ is A-umlaut
+    ASSERT_TRUE(iw_font_glyph(&sel, '[', &de));
+    ASSERT_TRUE(memcmp(us.cols, de.cols, sizeof(us.cols)) != 0);
+    sel.language = 2; // American on the original ImageWriter
+    ASSERT_TRUE(iw_font_glyph(&sel, '[', &de));
+    ASSERT_TRUE(memcmp(us.cols, de.cols, sizeof(us.cols)) == 0);
+    sel.language = 0;
+    sel.proportional = true;
+    ASSERT_TRUE(iw_font_glyph(&sel, 'i', &g));
+    int wi = g.n;
+    ASSERT_TRUE(iw_font_glyph(&sel, 'W', &g));
+    ASSERT_TRUE(!g.placeholder && g.n > wi);
+}
+
 int main(void) {
     RUN(test_pdf_structure);
     RUN(test_pdf_serialise);
@@ -514,6 +542,7 @@ int main(void) {
     RUN(test_deterministic_page);
     RUN(test_rom_glyphs);
     RUN(test_rom_glyphs_nlq_proportional);
+    RUN(test_rom_glyphs_iw1);
     iw_interp_free(&g_in);
     fprintf(stderr, "All imagewriter tests passed\n");
     return 0;

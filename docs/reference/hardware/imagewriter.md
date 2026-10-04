@@ -226,6 +226,12 @@ columns, one byte per column, bit 0 the top wire [6]:
   the widest is 18. NLQ proportional has a second table of pass-two columns
   laid out the same way. There is no proportional MouseText.
 
+The original ImageWriter's firmware holds its own two sets [6]: fixed, eight
+columns per character for codes $00–$7F, with the alternate-language
+characters in the control-code slots (and a slashed zero); and proportional,
+a table of pointers to glyphs that each start with their width in columns. It
+has no MouseText and one quality.
+
 In all of them, a byte with bit 7 set means its bits 0–6 print two wires lower
 (wires 3–9): that is how the descenders of g, j, p, q, y, the comma and
 semicolon, and the underscore reach wire 9 [6], [1] App. C.
@@ -245,6 +251,13 @@ codes [1] Table A-8, App. C:
 | Swedish | # | @ | Ä | Ö | Å | \` | ä | ö | å | ~ |
 | French | £ | à | ° | ç | § | \` | é | ù | è | ¨ |
 | Spanish | £ | § | ¡ | Ñ | ¿ | \` | ° | ñ | ç | ~ |
+
+The original ImageWriter has the same substitutions without Danish: its
+switch setting for Danish (1-1 open, 1-2 closed, 1-3 open) is a second
+American. On both printers `ESC Z` / `ESC D` with bits 0–2 of the first byte
+change the language, and bit 5 whether a full line feeds the paper — off at
+power-on on the ImageWriter II (soft switch A-6), on on the original [5]
+(alternate languages, buffer overflow action).
 
 ### 6.3 MouseText and custom characters
 
@@ -321,8 +334,7 @@ preceded by `ESC K0`.
 - What the ImageWriter II prints for MouseText in a proportional pitch (it
   has no proportional MouseText shapes), and whether draft is ever used
   with proportional spacing.
-- The original ImageWriter's character generator, and whether it answers
-  `ESC ?`.
+- Whether the original ImageWriter answers `ESC ?`.
 - The undocumented ImageWriter II control GS ($1D, a vertical-format
   command) and the original ImageWriter's vertical format unit programming.
 - Exact half-height, superscript and subscript dot placement.
@@ -341,7 +353,7 @@ see [internals/core/printer/iw_printer.md](../../internals/core/printer/iw_print
 3. Apple Computer, *Guide to the Macintosh Family Hardware*, 2nd ed. (1990), ch. 10, Table 10-1.
 4. [lisa.md](../machines/lisa/lisa.md) §15 (serial ports).
 5. Apple Computer, *ImageWriter User's Manual, Part 1: Reference* (1983).
-6. ImageWriter II firmware ROM (32 KB, uPD7810), character tables: disassembly and table analysis.
+6. ImageWriter II firmware ROM (32 KB, uPD7810) and original ImageWriter firmware ROM (16 KB, 8085), character tables: disassembly and table analysis.
 7. Apple Computer, *ImageWriter II/LQ LocalTalk Option User's Guide* (1988).
 8. Gursharan S. Sidhu, Richard F. Andrews, Alan B. Oppenheimer, *Inside AppleTalk*, 2nd ed. (1990), ch. 10; [pap.md](../protocols/pap.md).
 9. Apple Computer, Technical Note NW20, "PAP Status Buffer" (1990).

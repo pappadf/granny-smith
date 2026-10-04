@@ -254,11 +254,12 @@ static void do_ff(iw_interp_t *in) {
     form_motion(in);
 }
 
-// The line is full: print it, back to the margin, LF if A-6 says so.
+// The line is full: print it, back to the margin, LF if A-6 says so (on
+// the original ImageWriter the same switch bit, set at power-on).
 static void line_full(iw_interp_t *in) {
     commit_line(in);
     in->st.head_x = in->st.left_margin;
-    if (is_iw2(in) && (in->st.soft_a & IW_SWA_LF_FULL))
+    if (in->st.soft_a & IW_SWA_LF_FULL)
         line_motion(in, in->st.line_spacing);
 }
 
@@ -292,7 +293,9 @@ static bool pick_glyph(iw_interp_t *in, uint8_t code, iw_glyph_t *g) {
         (sel.proportional || (st->attr & (IW_ATTR_BOLD | IW_ATTR_DOUBLE_WIDTH | IW_ATTR_HALF_HEIGHT |
                                           IW_ATTR_SUPERSCRIPT | IW_ATTR_SUBSCRIPT))))
         sel.quality = IW_QUALITY_CORRESPONDENCE;
-    sel.language = (uint8_t)(is_iw2(in) ? (st->soft_a & IW_SWA_LANGUAGE) : (in->cfg->dip1 & IW_DIP1_LANGUAGE));
+    // Both printers take the language from DIP 1-1 .. 1-3 at power-on and
+    // change it with ESC D / ESC Z
+    sel.language = (uint8_t)(st->soft_a & IW_SWA_LANGUAGE);
     sel.mousetext = (st->attr & IW_ATTR_MOUSETEXT) != 0;
     sel.slash_zero = is_iw2(in) && (st->soft_b & IW_SWB_SLASH_ZERO);
     if (!iw_font_glyph(&sel, code, g))
@@ -445,7 +448,7 @@ static void soft_defaults(iw_interp_t *in) {
     st->bs_pending = false;
     // Software switches from the DIPs
     st->soft_a = (uint8_t)((c->dip1 & IW_DIP1_LANGUAGE) | IW_SWA_NO_SELECT | IW_SWA_PRINT_LFFF |
-                           ((c->dip1 & IW_DIP1_AUTO_LF) ? IW_SWA_AUTO_LF : 0));
+                           ((c->dip1 & IW_DIP1_AUTO_LF) ? IW_SWA_AUTO_LF : 0) | (is_iw2(in) ? 0 : IW_SWA_LF_FULL));
     st->soft_b = (uint8_t)(IW_SWB_7BIT | ((c->dip1 & IW_DIP1_PERF) ? 0 : IW_SWB_NO_PERF));
     // IW I: vertical tabs every 6 lines
     st->n_evfu = 0;
