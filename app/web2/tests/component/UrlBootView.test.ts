@@ -59,6 +59,22 @@ describe('urlBoot state', () => {
 });
 
 describe('UrlBootView', () => {
+  it('says a file was already stored instead of downloaded', () => {
+    beginUrlBoot('iici');
+    queueUrlFile('hd0');
+    updateUrlFile('hd0', {
+      name: 'hd0_2026-10-01_10-00-00.dmg',
+      status: 'done',
+      reused: true,
+      received: 7864320,
+      total: 7864320,
+    });
+    const { container } = render(UrlBootView);
+    const hd = container.querySelector('[data-slot="hd0"]');
+    expect(hd?.textContent).toContain('Already stored');
+    expect(hd?.textContent).toContain('hd0_2026-10-01_10-00-00.dmg');
+  });
+
   it('shows the headline and one progress bar per file', () => {
     beginUrlBoot('iici');
     queueUrlFile('rom');

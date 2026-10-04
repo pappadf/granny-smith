@@ -65,6 +65,7 @@ struct udif_writer {
     FILE *f;
     char *path;
     char *source_name;
+    char *origin;
     uint32_t chunk_sectors;
     size_t chunk_bytes;
     int level;
@@ -147,6 +148,7 @@ udif_writer_t *udif_writer_open(const char *path, const udif_writer_opts_t *opts
     w->f = fdopen(fd, "wb");
     w->path = gs_strdup(path);
     w->source_name = o.source_name ? gs_strdup(o.source_name) : NULL;
+    w->origin = o.origin && *o.origin ? gs_strdup(o.origin) : NULL;
     w->chunk_sectors = o.chunk_sectors;
     w->chunk_bytes = (size_t)o.chunk_sectors * UDIF_SECTOR_SIZE;
     w->level = o.level;
@@ -154,7 +156,8 @@ udif_writer_t *udif_writer_open(const char *path, const udif_writer_opts_t *opts
     w->zcap = deflate_bound(w->chunk_bytes);
     w->zbuf = malloc(w->zcap);
     w->ds = o.level > 0 ? deflate_state_new(w->chunk_bytes) : NULL;
-    if (!w->f || !w->path || !w->partial || !w->zbuf || (o.level > 0 && !w->ds)) {
+    if (!w->f || !w->path || !w->partial || !w->zbuf || (o.level > 0 && !w->ds) ||
+        (o.origin && *o.origin && !w->origin)) {
         if (!w->f)
             close(fd);
         set_err(err, errcap, "'%s': %s", path, ENOMEM);
@@ -330,6 +333,7 @@ static void writer_free(udif_writer_t *w) {
         fclose(w->f);
     free(w->path);
     free(w->source_name);
+    free(w->origin);
     free(w->partial);
     free(w->zbuf);
     deflate_state_free(w->ds);
@@ -504,6 +508,13 @@ static char *build_plist(const udif_writer_t *w, size_t *out_len) {
     if (w->source_name && *w->source_name) {
         sb_str(&s, "\t<key>gs-source</key>\n\t<string>");
         sb_xml(&s, w->source_name);
+        sb_str(&s, "</string>\n");
+    }
+    // Where the bytes came from, as the caller put it (a URL, for one the
+    // page downloaded): opaque here, reported back by udif_info.
+    if (w->origin) {
+        sb_str(&s, "\t<key>gs-origin</key>\n\t<string>");
+        sb_xml(&s, w->origin);
         sb_str(&s, "</string>\n");
     }
     sb_str(&s, "</dict>\n</plist>\n");
@@ -818,6 +829,7 @@ int udif_info(gs_source_t *data, udif_info_t *out) {
                 out->byte_length = n;
         }
         plist_value(xml, xl, "gs-source", out->source_name, sizeof(out->source_name));
+        plist_value(xml, xl, "gs-origin", out->origin, sizeof(out->origin));
         for (size_t t = 0; t < map->n_tables; t++) {
             for (size_t i = 0; i < map->tables[t].n_chunks; i++) {
                 const udif_chunk_t *c = &map->tables[t].chunks[i];

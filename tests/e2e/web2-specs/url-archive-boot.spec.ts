@@ -172,6 +172,42 @@ test('archive.org ROM-in-zip + bare HD0 image boots the IIci off the wrapped vol
     .toBe(true);
 });
 
+// A disk the page stored from a URL records that URL (the UDIF's gs-origin):
+// a second boot of the same link attaches the stored image and does not
+// download the disk again.  The ROM, a small file, is fetched both times.
+test('a second boot of the same link uses the stored disk, not a new download', async ({
+  page,
+}) => {
+  test.skip(!fs.existsSync(BARE_753), `no bare volume at ${BARE_753}`);
+  test.setTimeout(300_000);
+  const asked: string[] = [];
+  await page.route(ARCHIVE_ORG, (route) => {
+    const url = route.request().url();
+    asked.push(url);
+    if (url === ROM_MEMBER_URL) return serve(route, fs.readFileSync(IICI_ROM));
+    if (url === HD_CORS_URL) return serve(route, fs.readFileSync(BARE_753));
+    return route.fulfill({ status: 404, body: 'not routed' });
+  });
+  const q = `?ROM=${encodeURIComponent(ROM_MEMBER_URL)}&HD0=${encodeURIComponent(HD_CORS_URL)}&speed=turbo`;
+
+  await page.goto(`/index.html${q}`);
+  await waitReady(page);
+  await expect(
+    page.locator('.toast .msg').filter({ hasText: 'Booted iici from URL parameters' }),
+  ).toBeVisible({ timeout: 120_000 });
+  expect(asked).toEqual([ROM_MEMBER_URL, HD_CORS_URL]);
+
+  // The same link again, in the same browser (its OPFS kept).
+  asked.length = 0;
+  await page.goto(`/index.html${q}`);
+  await waitReady(page);
+  await expect(
+    page.locator('.toast .msg').filter({ hasText: 'Booted iici from URL parameters' }),
+  ).toBeVisible({ timeout: 120_000 });
+  expect(asked).toEqual([ROM_MEMBER_URL]);
+  await expect.poll(() => macGlobal(page, 'BootDrive'), { timeout: 240_000, intervals: [2000] }).toBeGreaterThan(0);
+});
+
 test('a zip member path picks that member, not the first file', async ({ page }) => {
   test.setTimeout(120_000);
   // The first entry is a decoy: the old behaviour (first file) would boot

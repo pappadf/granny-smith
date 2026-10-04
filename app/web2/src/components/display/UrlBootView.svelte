@@ -49,7 +49,7 @@
       case 'unpacking':
         return 'Unpacking…';
       case 'done':
-        return size(f.received);
+        return f.reused ? `Already stored · ${size(f.received)}` : size(f.received);
       case 'failed':
         return 'Failed';
       case 'skipped':
