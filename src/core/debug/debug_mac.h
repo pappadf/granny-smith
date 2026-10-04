@@ -36,24 +36,23 @@ void debug_mac_print_process_info_header(void);
 // === Public mouse / trace control ===========================================
 //
 // Backing entry points used by the typed `mouse.move` / `mouse.click` /
-// `mouse.trace` root methods.  The MTemp guard and the trace are scheduler
-// events whose source is the machine's host_input object (host_input.h),
-// which registers the two callbacks below at construction.
+// `mouse.trace` root methods.  The trace is a scheduler event whose source
+// is the machine's host_input object (host_input.h), which registers the
+// callback below at construction.
 
 struct host_input;
 
-// The guard's 1 kHz re-pin and the trace's 1 Hz sample.  Scheduler event
-// callbacks; the payload is their whole state.
-void debug_mac_mouse_guard_tick(void *source, uint64_t data);
+// The trace's 1 Hz sample.  A scheduler event callback; the payload is its
+// whole state.
 void debug_mac_mouse_trace_tick(void *source, uint64_t data);
 
 // Set mouse position with explicit routing mode. Mode chars:
-//   'g' = global (Mac OS Toolbox MTemp + MTemp guard)
+//   'g' = global (Mac OS Toolbox MTemp)
 //   'h' = hardware (raw quadrature / ADB delta)
 //   'a' = aux (A/UX MAE physical-page write)
 //   else = default (per-platform best route)
 // Returns 0 on success, -1 if the memory system isn't initialised.
-int debug_mac_set_mouse_mode(struct host_input *hi, long x, long y, char mode);
+int debug_mac_set_mouse_mode(long x, long y, char mode);
 
 // Inject a mouse button event with explicit routing mode.
 //   'g' = global (write MBState directly)

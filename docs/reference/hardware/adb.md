@@ -749,8 +749,10 @@ The emulator implements this via `adb_autopoll_deferred`, a scheduler callback:
 
 1. **Scheduled on IDLE entry**: When `adb_port_b_output` transitions to state 3,
    it cancels any stale auto-poll and schedules a new one at 11 ms.
-2. **Checks for pending data**: Mouse deltas, keyboard queue entries, or a held
-   mouse button all count as pending.
+2. **Checks for pending data**: Mouse motion or a mouse button change, and
+   keyboard queue entries, count as pending.  A button held still does not:
+   a real mouse reports the press once and then stays silent until it moves
+   or the button changes again.
 3. **Polls `last_poll_addr`**: Always repeats the last Talk R0 target issued by
    the ROM (tracked in `last_poll_addr`). The emulator does NOT choose which
    device to poll — this matches real transceiver behaviour.
@@ -832,8 +834,9 @@ The ADB controller is driven primarily by the port B output callback:
      This is necessary because the ROM may transition CMD→IDLE without
      fetching reply data (aborted Talk during SRQ scan), leaving stale
      events that would fire spuriously. Detect aborted Talks (reply prepared
-     but never fetched) and re-mark `mouse_data_pending` so the next
-     auto-poll can retry delivery. Update vADBInt (bit 3) to reflect
+     but never fetched) and restore what that Talk consumed (keyboard queue
+     tail, or mouse deltas and `mouse_data_pending`; nothing for a register
+     Talk) so the next auto-poll can retry delivery. Update vADBInt (bit 3) to reflect
      whether any device has pending data. Cancel any stale auto-poll event
      and schedule a new `adb_autopoll_deferred` callback at
      `ADB_AUTOPOLL_INTERVAL` (~11 ms).
@@ -976,8 +979,12 @@ and no future auto-poll would deliver it.
 
 Fix: Cancel stale `shift_complete` and `deliver_next_byte` events on IDLE
 entry. Detect aborted Talks (reply prepared but `reply_index == 0` and
-`!dummy_sent`) and re-mark `mouse_data_pending = true` so the next auto-poll
-retries delivery.
+`!dummy_sent`) and restore exactly the data the aborted Talk consumed: the
+keyboard queue tail for a keyboard Talk R0, the deltas plus
+`mouse_data_pending = true` for a mouse Talk R0. An aborted register Talk
+(R2, R3) consumed nothing and restores nothing. (An earlier version also set
+`mouse_data_pending` for those, so the mouse answered a poll a real one would
+have left unanswered.)
 
 **BUG-008** (fixed): Mouse pointer froze on SE/30 after MacTest installed a
 custom ADB mouse handler via `_SetADBInfo`. Two sub-issues:

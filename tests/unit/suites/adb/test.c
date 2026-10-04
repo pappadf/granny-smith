@@ -455,6 +455,91 @@ TEST(test_the_mouse_refuses_a_handler_it_does_not_implement) {
     adb_delete(adb);
 }
 
+// === Mouse Register 0 ======================================================
+//
+// A real ADB mouse answers Talk R0 only when it has something new: motion, or
+// a change of button state.  Otherwise it does not drive the bus and the
+// host's poll times out.  The button's level rides in every report it does
+// send, but a button held still is not new data.
+
+// Talk R0 to `addr` through the IOP transport; true if the device answered.
+static bool talk_r0(adb_t *adb, uint8_t addr, uint8_t *out) {
+    int n = 0;
+    bool replied = adb_iop_transact(adb, TALK_R0(addr), NULL, 0, out, &n);
+    ASSERT_EQ_INT(replied ? 2 : 0, n);
+    return replied;
+}
+
+// The press is reported once; holding the button still is silence, on both
+// the direct Talk and the auto-poll engine.
+TEST(test_a_held_button_is_reported_once) {
+    adb_t *adb = setup();
+    uint8_t r0[8];
+    uint8_t cmd = 0;
+
+    adb_mouse_event(adb, true, 0, 0); // press, no motion
+    ASSERT_TRUE(talk_r0(adb, 3, r0));
+    ASSERT_EQ_INT(0x00, r0[0]); // bit 7 clear: button down, dy 0
+    ASSERT_EQ_INT(0x80, r0[1]); // dx 0
+
+    // Still held, not moving: the mouse has nothing to say.
+    ASSERT_TRUE(!talk_r0(adb, 3, r0));
+    ASSERT_TRUE(!poll(adb, 0, &cmd));
+
+    // Motion while held is reported, with the button still down.
+    adb_mouse_event(adb, true, 2, 0);
+    ASSERT_TRUE(talk_r0(adb, 3, r0));
+    ASSERT_EQ_INT(0x00, r0[0]);
+    ASSERT_EQ_INT(0x82, r0[1]);
+    ASSERT_TRUE(!talk_r0(adb, 3, r0));
+
+    // The release is one report, then silence again.
+    adb_mouse_event(adb, false, 0, 0);
+    ASSERT_TRUE(poll(adb, 0, &cmd));
+    ASSERT_EQ_INT(TALK_R0(3), cmd);
+    ASSERT_TRUE(!talk_r0(adb, 3, r0));
+    ASSERT_TRUE(!poll(adb, 0, &cmd));
+
+    adb_delete(adb);
+}
+
+// Run one Talk on the VIA shift-register path and abort it the way the ROM's
+// SRQ scan does: CMD, then straight back to IDLE without fetching a byte.
+static void aborted_via_talk(adb_t *adb, uint8_t cmd) {
+    s_sr_value = cmd;
+    adb_port_b_output(adb, ST_CMD);
+    adb_port_b_output(adb, ST_IDLE);
+}
+
+// An aborted Talk R3 consumed nothing, so nothing is restored -- in
+// particular it does not leave the mouse with a report to make up.
+TEST(test_an_aborted_register_talk_does_not_make_the_mouse_answer) {
+    adb_t *adb = setup();
+    uint8_t r0[8];
+
+    aborted_via_talk(adb, (uint8_t)((3 << 4) | 0x0F)); // Talk R3, mouse
+    ASSERT_TRUE(!talk_r0(adb, 3, r0));
+    aborted_via_talk(adb, (uint8_t)((2 << 4) | 0x0F)); // Talk R3, keyboard
+    ASSERT_TRUE(!talk_r0(adb, 3, r0));
+
+    adb_delete(adb);
+}
+
+// An aborted Talk R0 to the mouse is the one whose data IS put back: the
+// press it carried is presented again, once.
+TEST(test_an_aborted_mouse_talk_re_presents_its_report) {
+    adb_t *adb = setup();
+    uint8_t r0[8];
+
+    adb_mouse_event(adb, true, 0, -3);
+    aborted_via_talk(adb, TALK_R0(3));
+    ASSERT_TRUE(talk_r0(adb, 3, r0));
+    ASSERT_EQ_INT(0x7D, r0[0]); // button down, dy -3
+    ASSERT_TRUE(!talk_r0(adb, 3, r0));
+
+    adb_delete(adb);
+}
+
 int main(void) {
     RUN(test_rtc_bit_banging_is_not_an_adb_transition);
     RUN(test_an_st_change_still_lands_under_rtc_traffic);
@@ -469,6 +554,9 @@ int main(void) {
     RUN(test_listen_r3_carries_the_srq_bit);
     RUN(test_a_device_with_srq_off_does_not_interrupt_the_poll);
     RUN(test_the_mouse_refuses_a_handler_it_does_not_implement);
+    RUN(test_a_held_button_is_reported_once);
+    RUN(test_an_aborted_register_talk_does_not_make_the_mouse_answer);
+    RUN(test_an_aborted_mouse_talk_re_presents_its_report);
     printf("[PASS] All ADB tests passed\n");
     return 0;
 }
