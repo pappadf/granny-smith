@@ -401,18 +401,13 @@ def row_q700_checkpoint() {
 }
 
 # ---- q700-sense-checkpoint --------------------------------------------------
-# Regression for the boot/restore asymmetry in monitor-sense staging.
-# machine.boot stages the sense into BOTH video paths (jmfb_pending_sense_set +
-# dafb_pending_sense_set, machine.c), but the checkpoint restore path in
-# system.c only staged the jmfb half — so a Quadra booted with a non-default
-# video_sense came back from a restore reporting the hardcoded default (6) on
-# its sense pins.
-#
-# The sense is NOT carried in the checkpoint stream on purpose: that stream is
-# strictly ordered, so adding a field would misalign every checkpoint written
-# before the change. It is re-staged from the built-from record, which already
-# persists video_sense and is authoritative — sense pins are passive, so the
-# guest cannot change them.
+# Regression for the boot/restore asymmetry in the monitor sense: a Quadra
+# booted with a non-default video_sense once came back from a restore
+# reporting the hardcoded default (6) on its sense pins, because the restore
+# path handed the sense to the JMFB and not the DAFB.  The sense is a build
+# option (machine_build_opts_t.video_sense) every video model reads, and the
+# restore takes it from the checkpoint's built-from record -- sense pins are
+# passive, so the guest cannot change them.
 #
 # ROM-only, so it costs a few million instructions. Reading the sense register
 # ($F9800000 + $1C) needs the drive bits released first ($7 = tristate);
