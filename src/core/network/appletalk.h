@@ -163,6 +163,21 @@ void atalk_asp_broadcast_attention(uint16_t code);
 // connection unplugged).
 void atalk_asp_close_all_sessions(void);
 
+// === The ImageWriter's LocalTalk Option card (appletalk_imagewriter.c) ======
+//
+// The machine's ImageWriter (iw_printer.h) publishes itself on the network
+// while its `connection` is "localtalk": NBP `<name>:ImageWriter@*`, a PAP
+// server feeding each job to the printer.
+
+// Publish (true) or withdraw (false) the card's NBP entry; a connection in
+// progress is closed on withdrawal.  -1 when the network is down or the name
+// is taken.
+int atalk_imagewriter_publish(bool on);
+bool atalk_imagewriter_published(void);
+// The NBP object name ("Virtual ImageWriter"); renaming re-publishes.
+const char *atalk_imagewriter_name(void);
+int atalk_imagewriter_set_name(const char *name);
+
 // === Printer (object model: `appletalk.printer`) ============================
 
 bool atalk_printer_get_enabled(void);

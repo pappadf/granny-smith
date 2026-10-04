@@ -1,0 +1,89 @@
+# The AppleTalk ImageWriter: Chooser, Print Directory over PAP, paper out.
+# See config.mk.  Screen coordinates are the Plus's 512x342 desktop.
+
+def click(x, y) {
+    machine.adb.mouse.move($x, $y)
+    scheduler.run 2000000
+    machine.adb.mouse.click true
+    scheduler.run 2000000
+    machine.adb.mouse.click false
+}
+
+# File -> Print Directory..., then OK (Faster, the dialog's default)
+def print_directory() {
+    machine.adb.mouse.move 53 10
+    scheduler.run 2000000
+    machine.adb.mouse.click true
+    scheduler.run 4000000
+    machine.adb.mouse.move 100 203
+    scheduler.run 4000000
+    machine.adb.mouse.click false
+    scheduler.run 60000000
+    click(448, 62)
+}
+
+machine.imagewriter.connection = "localtalk"
+assert machine.imagewriter.localtalk_name == "Virtual ImageWriter" "the card's name"
+
+machine.rtc.time = "2026-04-26T21:30:36"
+scheduler.run 30000000
+
+# Apple menu -> Chooser
+machine.adb.mouse.move 25 10
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.move 25 123
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+
+# AppleTalk ImageWriter; "requires AppleTalk" -> OK (makes AppleTalk active)
+click(165, 85)
+scheduler.run 30000000
+click(187, 206)
+scheduler.run 80000000
+
+# The card is in the list: select it, close the Chooser
+click(300, 88)
+scheduler.run 30000000
+click(72, 47)
+scheduler.run 40000000
+
+# Open the disk's window
+machine.adb.mouse.move 470 52
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 80000
+machine.adb.mouse.click false
+scheduler.run 80000
+machine.adb.mouse.click true
+scheduler.run 80000
+machine.adb.mouse.click false
+scheduler.run 40000000
+
+print_directory()
+scheduler.run 300000000
+echo "localtalk: ${machine.imagewriter.bytes} bytes, jobs ${machine.imagewriter.jobs}, ${machine.imagewriter.last_job_pages} page(s), ${machine.imagewriter.last_outcome}, crc ${machine.imagewriter.last_pdf_crc}"
+assert machine.imagewriter.jobs == 1 "the print did not become a document"
+assert machine.imagewriter.last_job_pages == 1 "the directory listing is one page"
+# The very stream the serial port carries, less the ESC ? query: the same PDF
+assert machine.imagewriter.last_pdf_crc == 0xd871ca40 "the PDF differs from the serial port's"
+assert machine.imagewriter.busy == false "the job did not end at the EOF"
+
+# Out of paper: the driver reads it from the OpenConnReply and waits
+machine.imagewriter.paper_out = true
+print_directory()
+scheduler.run 150000000
+assert machine.imagewriter.jobs == 1 "a printer out of paper printed"
+assert machine.imagewriter.bytes == 4140 "data was sent to a printer out of paper"
+# Paper in, then the alert's Continue
+machine.imagewriter.paper_out = false
+scheduler.run 2000000
+click(440, 118)
+scheduler.run 300000000
+assert machine.imagewriter.jobs == 2 "the job did not print after paper was added"
+assert machine.imagewriter.last_pdf_crc == 0xd871ca40 "the resumed job's PDF differs"
+
+echo "PASS: appletalk-imagewriter"
+quit

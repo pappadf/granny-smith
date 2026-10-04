@@ -818,6 +818,7 @@ atalk_network_t *appletalk_network_init(void) {
     asp_init();
     atalk_server_init();
     atalk_printer_register();
+    atalk_imagewriter_register();
     atalk_aevt_init();
     atalk_install_objects();
     return &g_net;
@@ -919,6 +920,7 @@ static void atalk_conn_register_timers(atalk_conn_t *c) {
     asp_link_register_timers(c, c->asp);
     atalk_adsp_link_register_timers(c, c->adsp);
     atalk_printer_register_timers(c);
+    atalk_imagewriter_register_timers(c);
 }
 
 // Take `c` off the cable, as a server sees a Mac vanish: every session with
@@ -932,6 +934,7 @@ static void atalk_conn_unplug(atalk_conn_t *c) {
     atalk_ppc_plug(NULL);
     atalk_adsp_plug(NULL);
     atalk_printer_unplug();
+    atalk_imagewriter_unplug();
     afp_plug(NULL);
     asp_plug(NULL);
 
@@ -1052,6 +1055,7 @@ int atalk_set_enabled(bool enabled, char *err, size_t err_len) {
         atalk_ppc_close_all("the stack was detached from the link");
         adsp_close_all(atalk_adsp_stack(), "the stack was detached from the link");
         atalk_printer_link_down();
+        atalk_imagewriter_unplug();
         // ...and nothing below them keeps talking: outgoing requests end as
         // ABORTED, the lookup is cancelled, and frames waiting for a CTS are
         // dropped.

@@ -62,6 +62,7 @@ void atalk_timer_cancel_all(atalk_timer_t *t);
 #define HOST_AFP_SOCKET        8
 #define HOST_AFP_COMPAT_SOCKET 54
 #define HOST_PAP_SOCKET        6
+#define HOST_IW_PAP_SOCKET     9 // the ImageWriter's LocalTalk Option card
 
 // DDP protocol type field values (Inside AppleTalk 4-11).  ADSP is 7 — the
 // stack doc claimed 10 until the ADSP work corrected it.
@@ -226,6 +227,13 @@ void atalk_printer_register_timers(struct atalk_conn *conn);
 void atalk_printer_link_down(void);
 void atalk_printer_unplug(void);
 void atalk_printer_plug(void);
+
+// The ImageWriter's LocalTalk Option card (appletalk_imagewriter.c): its
+// socket is installed when the network comes up, its timers with each
+// connection, and its connection drops when the machine is unplugged.
+void atalk_imagewriter_register(void);
+void atalk_imagewriter_register_timers(struct atalk_conn *conn);
+void atalk_imagewriter_unplug(void);
 
 // Publish (or rename) / withdraw the LaserWriter NBP entity.  The object model
 // drives these through atalk_printer_set_enabled / atalk_printer_set_name.

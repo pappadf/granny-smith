@@ -15,6 +15,7 @@
 
 #include "iw_printer.h"
 
+#include "appletalk.h"
 #include "byteq.h"
 #include "crc32.h"
 #include "iw_interp.h"
@@ -524,10 +525,15 @@ static void port_attach(iw_printer_t *p, bool attach) {
             }
         }
     } else if (p->set.connection == IW_CONN_LOCALTALK) {
-        if (attach)
+        // The LocalTalk Option card: the printer on the network, by NBP name
+        if (attach) {
             g_localtalk = p;
-        else if (g_localtalk == p)
+            if (atalk_imagewriter_publish(true) != 0)
+                LOG(1, "the LocalTalk Option card could not publish its name");
+        } else if (g_localtalk == p) {
+            atalk_imagewriter_publish(false);
             g_localtalk = NULL;
+        }
     }
 }
 
@@ -938,6 +944,18 @@ static void resume_input(iw_printer_t *p) {
         scheduler_new_cpu_event(p->scheduler, process_event, p, 0, 0, IW_PROCESS_DELAY_NS);
 }
 
+static DEF_GETTER(attr_localtalk_name) {
+    return val_str(atalk_imagewriter_name());
+}
+
+static DEF_SETTER(attr_localtalk_name_set) {
+    int rc = atalk_imagewriter_set_name(in.s);
+    value_free(&in);
+    if (rc != 0)
+        return val_err("localtalk_name: 1-32 characters, and not a name another printer holds");
+    return val_none();
+}
+
 static DEF_GETTER(attr_selected) {
     return val_bool(iw_printer_selected(printer_from(self)));
 }
@@ -1105,6 +1123,10 @@ static const member_t iw_printer_members[] = {
      .doc = "Where it is plugged in: none, serial-a, serial-b, or localtalk (the ImageWriter II's LocalTalk "
             "Option card, printing over AppleTalk)", .examples = EXAMPLES("machine.imagewriter.connection = \"serial-b\""),
      .attr = {.type = V_STRING, .get = attr_connection, .set = attr_connection_set}},
+    {.kind = M_ATTR,
+     .name = "localtalk_name",
+     .doc = "The name the LocalTalk Option card publishes (NBP <name>:ImageWriter@*), what the Chooser lists",
+     .attr = {.type = V_STRING, .get = attr_localtalk_name, .set = attr_localtalk_name_set}},
     {.kind = M_ATTR,
      .name = "status",
      .doc = "What the printer is doing, as the UI shows it",
