@@ -536,7 +536,7 @@ configure, and what the JS frontend operates on:
 - **Scripts (headless).** Integration tests and reproducible boot
   scripts contain exactly the same path forms users type. `assert`,
   `echo`, and `${…}` interpolation are root methods on `emu`.
-  Scripted machine setup (`machine.boot(model=..., rom=...)`, `machine.rom.load(...)`,
+  Scripted machine setup (`machine.boot(model=..., rom=...)`,
   `machine.floppy.drive[0].insert(...)`, `machine.scsi.attach_hd(...)`) is the same
   call sequence whether it runs from a script, from the user's
   terminal, or from the URL-media auto-boot path on the web.
@@ -660,7 +660,7 @@ the level contract over every model in the registry.
 |---|---|---|---|---|---|
 | Devices | New | New | **Kept** | **Kept** | New |
 | Model, RAM size, cards | From the document; each omitted field takes the model's default | From the record; per-slot picks replayed only where the user chose them | Unchanged | Unchanged | From the checkpoint's model id, RAM size and stored record |
-| ROM bytes | Read from the `rom=` file | Read again from the recorded path, so a changed file is picked up. A live `rom.load` rewrites the record first (`rom.c`) | Unchanged | Unchanged | From the checkpoint, by content or file reference |
+| ROM bytes | Read from the `rom=` file before the running machine is touched, and built into the new machine's ROM region at construction | Read again from the recorded path, so a changed file is picked up | Unchanged | Unchanged | From the checkpoint, by content or file reference |
 | RAM contents | Zeroed (fresh `calloc`) | Zeroed | **Cleared** to zero | **Kept** | Restored |
 | CPU registers | Reset | Reset | Reset vector, reset-state SR/VBR/CACR, MMU and TTx enables off | The same | Restored |
 | PRAM (RTC parameter RAM) | Family construction defaults (`rtc_init` → `pram_defaults_apply`; tables in `src/machines/runtime/pram_defaults.h`) | Construction defaults | **Kept** | **Kept** | Restored |
@@ -732,9 +732,10 @@ power with the machine (`adb_power_on`), and with VIA1 reset the RTC's
   `gossamer_ata.c`). The Lisa carries its Sony disk and its ProFile
   (`lisa_media_detach`). A medium that cannot be re-attached is closed
   and logged.
-- *Failure after teardown.* If `system_create` or ROM staging fails
-  during a boot or rebuild, the previous machine is already gone and the
-  process has no machine.
+- *Failure after teardown.* If `system_create` fails during a boot or
+  rebuild, the previous machine is already gone and the process has no
+  machine. (The ROM is read and validated before teardown, so a bad ROM
+  rejects the boot instead.)
 - Host-side state outside the construction configuration (volume,
   camera/microphone capture sources) is not carried by a boot or a
   rebuild. The frontend asserts it again (`app/web2/src/bus/boot.ts`,

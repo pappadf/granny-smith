@@ -939,7 +939,7 @@ int main(void) {
     // 32-bit address space: 8 MB RAM at 0, 128 KB ROM at $40800000 (the
     // ppc-suite context shape).
     test_context_t *ctx = calloc(1, sizeof(test_context_t));
-    ctx->memory = memory_map_init(32, 0x800000, 0x20000, MEMORY_BUS_ERR_NONE, NULL);
+    ctx->memory = memory_map_init(32, 0x800000, 0x20000, MEMORY_BUS_ERR_NONE, NULL, NULL);
     if (!ctx->memory) {
         printf("FAIL: memory_map_init\n");
         return 1;

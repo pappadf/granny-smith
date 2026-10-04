@@ -6,7 +6,7 @@
 //
 // The boot document carries every construction-time setting of one
 // machine.boot call; the record is the live machine's immutable birth
-// certificate — written by boot (plus the rom.load write-back), read by
+// certificate — written by boot, read by
 // the read-only machine.config object, replayed by machine.restart, and
 // serialized into checkpoints.
 
@@ -151,10 +151,6 @@ void machine_config_note_vrom(const char *card_id, const char *path, uint32_t cr
 // the reporter once per slot it actually populates, after resolution.
 void machine_config_reset_slot_cards(void);
 void machine_config_note_slot_card(int bus_kind, int slot, const char *card_id, bool explicit_pick);
-
-// rom.load write-back: keep the record answering "how do I recreate
-// what I'm looking at" after a live ROM swap.
-void machine_config_note_rom(const char *path, const char *rom_id);
 
 // Attach the read-only `machine.config` child object (idempotent).
 void machine_config_object_init(struct object *machine_obj);

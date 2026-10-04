@@ -313,8 +313,9 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // Core: memory map, the 601, the scheduler on the PPC seam.  CPI is
     // 1.0 — the 601 is near-1-CPI on HWInit's measurement loop, and 1.0
     // makes the measured clock land exactly on the snap-table value.
-    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size,
-                                   MEMORY_BUS_ERR_NONE, cp); // no bus-error watchdog: unanswered floats to $FF
+    cfg->mem_map =
+        memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, MEMORY_BUS_ERR_NONE,
+                        &cfg->build_opts.rom, cp); // no bus-error watchdog: unanswered floats to $FF
     // No 68k MMU owns this machine's page table, so host-backed regions that
     // core code registers on the bus map — a NuBus card's VRAM and
     // declaration ROM — are filled through our own page filler.

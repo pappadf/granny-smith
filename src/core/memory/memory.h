@@ -9,6 +9,7 @@
 
 // === Includes ===
 #include "common.h"
+#include "machine_build_opts.h" // rom_image_t
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -84,9 +85,11 @@ typedef struct memory_bus_err_window {
 // ram_size: RAM size in bytes (e.g. 0x400000 for Plus)
 // rom_size: ROM size in bytes (e.g. 0x020000 for Plus)
 // bus_err: the board's bus-error window (MEMORY_BUS_ERR_NONE for none)
+// rom: the ROM to build the region with (copied in; NULL or empty leaves it
+//      zero), or nothing on a restore
 // checkpoint: if non-NULL, restore RAM and ROM from checkpoint
 extern memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_size,
-                                     memory_bus_err_window_t bus_err, checkpoint_t *checkpoint);
+                                     memory_bus_err_window_t bus_err, const rom_image_t *rom, checkpoint_t *checkpoint);
 
 void memory_map_delete(memory_map_t *mem);
 
@@ -172,15 +175,11 @@ uint32_t memory_ram_size(memory_map_t *mem);
 // Return the filename of the currently loaded ROM, or NULL if none.
 const char *memory_rom_filename(memory_map_t *mem);
 
-// Direct accessors for the loaded ROM region. Returned pointer is owned by
-// the memory map and remains valid until the next memory_install_rom() call.
+// Direct accessors for the ROM region. The returned pointer is owned by the
+// memory map and valid for its lifetime: the ROM is filled at construction
+// and never replaced.
 const uint8_t *memory_rom_bytes(memory_map_t *mem);
 uint32_t memory_rom_size(memory_map_t *mem);
-
-// Copy ROM bytes into the ROM region and store
-// the filename for checkpointing. Truncates if size > rom_size. Returns the
-// number of bytes actually written.
-size_t memory_install_rom(memory_map_t *mem, const uint8_t *data, size_t size, const char *filename);
 
 uint32_t memory_read(unsigned int size, uint32_t addr);
 

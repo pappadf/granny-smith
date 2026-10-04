@@ -926,7 +926,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // 24-bit address space, configured RAM, 16 KB interleaved boot ROM.
     cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size,
-                                   MEMORY_BUS_ERR_NONE, checkpoint); // no bus-error watchdog
+                                   MEMORY_BUS_ERR_NONE, &cfg->build_opts.rom, checkpoint); // no bus-error watchdog
 
     // The profile is the source of truth for the CPU model, as it is for the
     // clock below and as mac030_build_core states for the II families.  Both
@@ -955,8 +955,7 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
         system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
 
     // The segment MMU owns all translation; it reads/writes directly into the
-    // flat RAM+ROM image the memory map allocated.  The ROM region is filled
-    // later by rom.load_lisa(); the host pointer stays valid (same buffer).
+    // flat RAM+ROM image the memory map allocated, ROM already in place.
     bool ram_high = lisa_board_of(cfg)->ram_high;
     ls->mmu =
         lisa_mmu_init(ram_native_pointer(cfg->mem_map, 0), cfg->ram_size, (uint8_t *)memory_rom_bytes(cfg->mem_map),

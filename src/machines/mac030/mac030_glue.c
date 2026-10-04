@@ -223,7 +223,7 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
     st->mmu = mac030_build_mmu(cfg, board->desc->rom_base, board->desc->rom_end);
     if (!st->mmu)
         return -1; // mac030_build_mmu reported the reason
-    st->mmu->tt1 = 0xF00F8043; // supervisor-only identity map for NuBus $F0..$FF
+    st->mmu->tt1 = st->mmu->tt1_board = 0xF00F8043; // supervisor-only identity map for NuBus $F0..$FF
 
     cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, cp);
     if (board->post_nubus)
@@ -252,7 +252,8 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
 void mac030_build_core(config_t *cfg, const struct mac030_board_desc *desc, checkpoint_t *cp) {
     // The board's NuBus bus-error window is part of the bus it builds.
     const memory_bus_err_window_t bus_err = {.lo = desc->bus_err_lo, .hi = desc->bus_err_hi};
-    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, bus_err, cp);
+    cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, bus_err,
+                                   &cfg->build_opts.rom, cp);
     cfg->cpu = cpu_init(cfg->machine->cpu_model, cp);
     sched_cpu_if_t cpu_if = cpu_sched_if(cfg->cpu); // the 68K main-CPU seam adapter
     cfg->scheduler = scheduler_init(&cpu_if, cp);

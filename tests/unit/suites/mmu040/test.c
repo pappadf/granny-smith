@@ -62,7 +62,7 @@ static uint32_t phys32_read(ctx_t *c, uint32_t addr) {
 // Create memory map + bus MMU + attached 040 register file
 static void ctx_open(ctx_t *c) {
     memset(c, 0, sizeof(*c));
-    c->mem = memory_map_init(32, 0x400000, 0x040000, MEMORY_BUS_ERR_NONE, NULL);
+    c->mem = memory_map_init(32, 0x400000, 0x040000, MEMORY_BUS_ERR_NONE, NULL, NULL);
     ASSERT_TRUE(c->mem != NULL);
     memory_populate_pages(c->mem, 0x40000000, 0x40080000);
     c->ram = ram_native_pointer(c->mem, 0);

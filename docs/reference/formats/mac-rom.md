@@ -312,25 +312,24 @@ identify:
 
 ### 10.2 What `rom=` resolves
 
-`machine.boot rom=` (and `rom.load`) take a **filesystem path**. Nothing
-searches for it or looks it up in a registry. A relative path resolves
-against the process's working directory. At boot the file must be
-readable, must identify through `rom_table`, must boot at least one
-emulated model, and must list the requested model as compatible. The
-two-chip Lisa form (`rom2=`) skips the per-file identification
-(`machine_boot_apply`, `src/machines/machine.c`). Once the new machine is
-constructed, `rom_load_into_machine` copies the bytes into the ROM region.
-A file of the wrong size is truncated or padded, with a warning. A damaged
-ROM (not `intact`) still loads, with a warning naming the part that does
-not verify: research on damaged or hand-edited images is a legitimate
-headless use. The path and the id go into the built-from record as
-`machine.config.rom` and `machine.config.rom_id`.
+`machine.boot rom=` takes a **filesystem path**. Nothing searches for it
+or looks it up in a registry. A relative path resolves against the
+process's working directory. The ROM is a construction argument: before
+the running machine is touched, the file — or, in the two-chip Lisa form
+(`rom2=`), the two chips interleaved — is read and must identify through
+`rom_table`, must boot at least one emulated model, must list the
+requested model as compatible, and must be exactly the model's ROM size;
+anything else rejects the boot (`boot_rom_read`, `src/machines/machine.c`).
+The bytes travel in `machine_build_opts_t.rom`, `memory_map_init` creates
+the ROM region filled, and the CPU starts from its reset vector by the
+same path every reset takes. A damaged ROM (not `intact`) still boots,
+with a warning naming the part that does not verify: research on damaged
+or hand-edited images is a legitimate headless use. The path and the id
+go into the built-from record as `machine.config.rom` and
+`machine.config.rom_id`.
 
-`rom.load(path)` swaps the ROM of the running machine. If the ROM is not
-listed as compatible with the model it only warns, then loads anyway,
-writes the new path and id into the record so `machine.restart`
-rebuilds with it, and resets the CPU from the new vectors
-(`install_rom_into_machine`, `rom.c`).
+A running machine's ROM is never swapped: a different ROM is a new
+`machine.boot`.
 
 `machine.rom.id`, `machine.rom.intact` and `machine.rom.name` describe the
 loaded ROM by running the same identification over the ROM region, so

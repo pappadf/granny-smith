@@ -99,6 +99,12 @@ typedef struct mmu_state {
     uint32_t tc; // Translation control
     uint32_t tt0; // Transparent translation register 0
     uint32_t tt1; // Transparent translation register 1
+    // The TT1 value the board holds from power-on, which every CPU reset
+    // restores (0: none -- a reset clears TT1.E as the 68030 does).  The II
+    // boards use it for a supervisor-only identity map of NuBus $F0..$FF that
+    // their slot space depends on (mac030_glue.c); a construction fact of the
+    // board, not guest state, so it is not checkpointed.
+    uint32_t tt1_board;
     uint16_t mmusr; // MMU status register
 
     bool enabled; // TC.E bit — is translation active?

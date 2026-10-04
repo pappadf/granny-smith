@@ -8,7 +8,17 @@
 #define MACHINE_BUILD_OPTS_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+
+// A ROM image to build a machine with: its bytes, their size and the file
+// they came from.  The bytes are borrowed: the caller owns them for the
+// length of system_create, which copies them into the ROM region.
+typedef struct rom_image {
+    const uint8_t *data;
+    size_t size;
+    const char *path;
+} rom_image_t;
 
 // Some choices cannot be made by writing a device after the machine is built,
 // because they decide what the device IS.  The monitor sense is the clearest
@@ -42,6 +52,11 @@ typedef struct machine_build_opts {
     // RAM size in KB, already validated against the profile's ram_options and
     // defaulted by the caller; never 0 by the time system_create sees it.
     uint32_t ram_kb;
+    // The ROM, read and validated by the caller (identified, compatible with
+    // the model, the model's size).  memory_map_init creates the ROM region
+    // filled, so every constructor after it sees the real ROM.  Empty on a
+    // restore, which reads the ROM from the memory map's checkpoint block.
+    rom_image_t rom;
 } machine_build_opts_t;
 
 // "No sense chosen" -- distinct from every legal 3-bit code, including 0.
@@ -52,6 +67,7 @@ static inline machine_build_opts_t machine_build_opts_default(void) {
     machine_build_opts_t o;
     o.video_sense = MACHINE_SENSE_UNSET;
     o.ram_kb = 0;
+    o.rom = (rom_image_t){.data = NULL, .size = 0, .path = NULL};
     return o;
 }
 

@@ -207,13 +207,10 @@ void system_keyboard_update(key_event_t event, int key) {
 //
 // One entry point now does both halves, in the order the hardware imposes:
 // the overlay must be back before the vectors at $0/$4 are read.
-void system_machine_reset(void) {
-    config_t *cfg = global_emulator;
-    if (!cfg)
-        return;
-
-    system_reset_devices(); // level 1: the board's /RESET net
-
+// The CPU to its reset vector: the 68k cores fetch SSP and PC from the ROM,
+// the PowerPC goes to its reset state.  The CPU half of every reset level,
+// and the one CPU reset a new machine gets at construction.
+static void system_cpu_reset(config_t *cfg) {
     if (cfg->cpu) {
         if (cfg->machine && cfg->machine->cpu_model == CPU_MODEL_68040)
             cpu_reset_to_vector_68040(cfg->cpu);
@@ -222,6 +219,15 @@ void system_machine_reset(void) {
     } else if (cfg->ppc) {
         ppc_reset(cfg->ppc);
     }
+}
+
+void system_machine_reset(void) {
+    config_t *cfg = global_emulator;
+    if (!cfg)
+        return;
+
+    system_reset_devices(); // level 1: the board's /RESET net
+    system_cpu_reset(cfg);
 }
 
 // LEVEL 3 -- a power cycle (machine.restart).  Switching a machine off and on
@@ -1120,6 +1126,7 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     assert(profile != NULL);
     assert(profile->substrate != NULL && profile->substrate->init != NULL);
     assert(opts != NULL && opts->ram_kb != 0);
+    assert(checkpoint != NULL || (opts->rom.data != NULL && opts->rom.size != 0)); // a machine has its ROM
 
     config_t *cfg = malloc(sizeof(config_t));
     if (!cfg)
@@ -1154,6 +1161,17 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
         free(cfg);
         return NULL;
     }
+
+    // The ROM's bytes and path were borrowed for construction (the memory map
+    // copied them): drop them from the options the machine keeps.
+    cfg->build_opts.rom = (rom_image_t){.data = NULL, .size = 0, .path = NULL};
+
+    // A new machine powers on: the CPU starts from its reset vector, with the
+    // ROM already in place, by the same path every reset takes.  Every device
+    // was constructed in its power-on state, so the board's /RESET net has
+    // nothing to do.  A restored CPU carries its own state.
+    if (!checkpoint)
+        system_cpu_reset(cfg);
 
     // Bind the main-CPU debug seam to whichever core the substrate built.
     switch (cfg->cpu_arch) {

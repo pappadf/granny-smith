@@ -8,6 +8,7 @@
 
 #include "adb.h"
 #include "cpu.h"
+#include "gs_out.h"
 #include "image.h"
 #include "log.h"
 #include "machine_config.h"
@@ -17,6 +18,7 @@
 #include "prom.h"
 #include "rom.h"
 #include "scheduler.h"
+#include "scsi.h"
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
@@ -872,6 +874,58 @@ static bool pci_card_pick_fits(const hw_profile_t *p, const pci_card_kind_t *k) 
     return first_socket && pci_card_fits_socket(first_socket, k);
 }
 
+// Read the document's ROM -- the file, or the two Lisa/XL chips interleaved --
+// and check it is a recognised ROM for an emulated machine, compatible with
+// `profile`, and exactly the model's ROM size.  On success *bytes is the
+// caller's to free and *rom describes it.
+static value_t boot_rom_read(const boot_config_t *doc, const hw_profile_t *profile, uint8_t **bytes, rom_image_t *rom,
+                             rom_identity_t *id) {
+    size_t size = 0;
+    uint8_t *data = (doc->rom2 && *doc->rom2) ? rom_load_lisa_pair(doc->rom, doc->rom2, &size)
+                                              : rom_read_file(doc->rom, &size, true);
+    if (!data) {
+        if (doc->rom2 && *doc->rom2)
+            return val_err("machine.boot: cannot read the ROM chip pair '%s' / '%s'", doc->rom, doc->rom2);
+        return val_err("machine.boot: cannot read rom '%s'", doc->rom);
+    }
+    const rom_info_t *info = rom_identify_data(data, size, id);
+    value_t err = val_none();
+    if (!info) {
+        err = val_err("machine.boot: rom '%s' is not a recognised ROM image (id %s)", doc->rom,
+                      id->id[0] ? id->id : "none");
+    } else if (!rom_is_supported(info)) {
+        // A real ROM we know, for a machine that is not emulated.
+        err = val_err("machine.boot: rom '%s' is the %s, for a machine Granny Smith does not emulate", doc->rom,
+                      info->family_name);
+    } else {
+        bool ok = false;
+        for (const char *const *p = info->compatible; *p; p++) {
+            if (strcmp(*p, profile->id) == 0) {
+                ok = true;
+                break;
+            }
+        }
+        if (!ok)
+            err = val_err("machine.boot: rom '%s' (%s) is not compatible with model '%s'", doc->rom, info->family_name,
+                          profile->id);
+        else if (size != profile->rom_size)
+            err = val_err("machine.boot: rom '%s' is %zu bytes; %s takes a %u-byte ROM", doc->rom, size, profile->id,
+                          profile->rom_size);
+    }
+    if (val_is_error(&err)) {
+        free(data);
+        return err;
+    }
+    gs_outf("ROM: %s (id %s)\n", info->family_name, id->id);
+    // A damaged dump still boots -- research on damaged or hand-edited images
+    // is a legitimate use -- but says which part does not verify.
+    if (!id->intact)
+        gs_outf("Warning: ROM %s — the dump is probably damaged\n", id->reason);
+    *bytes = data;
+    *rom = (rom_image_t){.data = data, .size = size, .path = doc->rom};
+    return val_none();
+}
+
 // Apply one boot document: validate → tear down → construct → record.
 // Shared by machine.boot, machine.restart and headless startup.  Returns
 // V_NONE on success, V_ERROR (with the old machine still running) on
@@ -901,35 +955,9 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
 
     if (!doc.rom || !*doc.rom)
         return val_err("machine.boot: rom is required (machine.restart power-cycles the running machine)");
-    rom_file_info_t rom_fi = {0};
-    if (rom_probe_file(doc.rom, &rom_fi) != 0)
-        return val_err("machine.boot: cannot read rom '%s'", doc.rom);
-    if (doc.rom2 && *doc.rom2) {
-        // Two-chip Lisa/XL form: the chips identify only after interleaving,
-        // so per-file identification is skipped here; the loader validates.
-        FILE *f = fopen(doc.rom2, "rb");
-        if (!f)
-            return val_err("machine.boot: cannot read rom2 '%s'", doc.rom2);
-        fclose(f);
-    } else if (rom_fi.info && !rom_is_supported(rom_fi.info)) {
-        // A real ROM we know, for a machine that is not emulated.
-        return val_err("machine.boot: rom '%s' is the %s, for a machine Granny Smith does not emulate", doc.rom,
-                       rom_fi.info->family_name);
-    } else if (rom_fi.info) {
-        bool ok = false;
-        for (const char *const *p = rom_fi.info->compatible; *p; p++) {
-            if (strcmp(*p, profile->id) == 0) {
-                ok = true;
-                break;
-            }
-        }
-        if (!ok)
-            return val_err("machine.boot: rom '%s' (%s) is not compatible with model '%s'", doc.rom,
-                           rom_fi.info->family_name, profile->id);
-    } else {
-        return val_err("machine.boot: rom '%s' is not a recognised ROM image (id %s)", doc.rom,
-                       rom_fi.identity.id[0] ? rom_fi.identity.id : "none");
-    }
+    // The ROM itself is read, identified and checked last (boot_rom_read),
+    // just before the running machine is touched: the new machine is built
+    // with its bytes.
 
     if (doc.video_card && *doc.video_card) {
         if (!profile->nubus_slots)
@@ -1039,6 +1067,16 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
         return perr;
     }
 
+    // The ROM, read now: the machine is built with it, so a ROM that cannot
+    // be read, is unknown, belongs to another model or has the wrong size is
+    // a rejected boot, never a machine without a ROM.
+    uint8_t *rom_bytes = NULL;
+    rom_image_t build_rom;
+    rom_identity_t rom_identity;
+    value_t rerr = boot_rom_read(&doc, profile, &rom_bytes, &build_rom, &rom_identity);
+    if (val_is_error(&rerr))
+        return rerr;
+
     // 3. Teardown + atomic construction.  On a machine.rebuild the mounted
     // media's open handles are detached first so they survive
     // system_destroy's close loop — the delta stays with its open
@@ -1079,6 +1117,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     // would have been missed silently.
     machine_build_opts_t build_opts = machine_build_opts_default();
     build_opts.ram_kb = ram_kb; // validated and defaulted above
+    build_opts.rom = build_rom; // read and validated above
     if (doc.video_sense >= 0)
         build_opts.video_sense = doc.video_sense;
     // The built-in monitor strap resolves to a sense code and joins the other
@@ -1092,30 +1131,11 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     machine_config_reset_vroms();
     machine_config_reset_slot_cards();
     config_t *cfg = system_create(profile, &build_opts, NULL);
+    free(rom_bytes); // copied into the ROM region
     if (!cfg) {
         for (int i = 0; i < n_media; ++i)
             image_close(media[i].img); // machine gone; nothing to attach to
         return val_err("machine.boot: failed to create %s", profile->id);
-    }
-
-    int rom_rc;
-    if (doc.rom2 && *doc.rom2)
-        rom_rc = rom_load_lisa_into_machine(doc.rom, doc.rom2);
-    else
-        rom_rc = rom_load_into_machine(doc.rom);
-    if (rom_rc != 0) {
-        for (int i = 0; i < n_media; ++i)
-            image_close(media[i].img); // half-built machine; drop the transfer
-        // system_create() already succeeded, so the object root is installed
-        // for this cfg and global_emulator names it -- and the PREVIOUS machine
-        // is already gone.  Returning here left the process with a fully
-        // installed machine that has no valid ROM: machine.cpu.*,
-        // machine.memory.* and the whole machine.* subtree resolve and answer
-        // with garbage.  The `!cfg` branch a few lines above unwinds; this one
-        // did not, and it was the only partial-init failure in the create flow
-        // that did not.
-        system_destroy(cfg); // clears global_emulator itself
-        return val_err("machine.boot: machine created but ROM staging failed for '%s'", doc.rom);
     }
 
     // Hand the transferred media handles back through the device attach
@@ -1139,7 +1159,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     snprintf(w->model, sizeof(w->model), "%s", profile->id);
     w->ram_kb = cfg->ram_size / 1024u;
     snprintf(w->rom, sizeof(w->rom), "%s", doc.rom);
-    snprintf(w->rom_id, sizeof(w->rom_id), "%s", rom_fi.identity.id);
+    snprintf(w->rom_id, sizeof(w->rom_id), "%s", rom_identity.id);
     snprintf(w->rom2, sizeof(w->rom2), "%s", doc.rom2 ? doc.rom2 : "");
     snprintf(w->vrom, sizeof(w->vrom), "%s", doc.vrom ? doc.vrom : "");
     snprintf(w->prom, sizeof(w->prom), "%s", doc.prom ? doc.prom : "");

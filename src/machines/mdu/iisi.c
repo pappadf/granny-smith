@@ -301,7 +301,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     if (!st->mmu)
         return -1; // mac030_build_mmu reported the reason
     // TT1 identity-maps NuBus space $F0-$FF for supervisor FCs (same as IIci).
-    st->mmu->tt1 = 0xF00F8043;
+    st->mmu->tt1 = st->mmu->tt1_board = 0xF00F8043; // supervisor-only identity map for NuBus $F0..$FF, from power-on
 
     // Two physical RAM banks (Developer Note §3.2/§3.3): Bank A is the soldered
     // 1 MB at physical 0 (its bottom is the video frame buffer); Bank B is the

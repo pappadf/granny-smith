@@ -27,7 +27,7 @@ static void cleanup(memory_map_t *mem) {
 
 // Verify 24-bit init produces correct address mask and page count
 TEST(test_24bit_init) {
-    memory_map_t *mem = memory_map_init(24, 0x400000, 0x020000, MEMORY_BUS_ERR_NONE, NULL);
+    memory_map_t *mem = memory_map_init(24, 0x400000, 0x020000, MEMORY_BUS_ERR_NONE, NULL, NULL);
     ASSERT_TRUE(mem != NULL);
     ASSERT_EQ_INT((int)0x00FFFFFFUL, (int)g_address_mask);
     ASSERT_EQ_INT(1 << (24 - 12), g_page_count); // 4096 pages
@@ -37,7 +37,7 @@ TEST(test_24bit_init) {
 
 // Verify 32-bit init produces correct address mask and page count
 TEST(test_32bit_init) {
-    memory_map_t *mem = memory_map_init(32, 0x400000, 0x020000, MEMORY_BUS_ERR_NONE, NULL);
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x020000, MEMORY_BUS_ERR_NONE, NULL, NULL);
     ASSERT_TRUE(mem != NULL);
     ASSERT_EQ_INT((int)0xFFFFFFFFUL, (int)g_address_mask);
     // 1M pages for 32-bit space (2^20)
@@ -48,7 +48,7 @@ TEST(test_32bit_init) {
 
 // Verify RAM pages are writable and point into the flat buffer
 TEST(test_24bit_ram_pages) {
-    memory_map_t *mem = memory_map_init(24, 0x400000, 0x020000, MEMORY_BUS_ERR_NONE, NULL);
+    memory_map_t *mem = memory_map_init(24, 0x400000, 0x020000, MEMORY_BUS_ERR_NONE, NULL, NULL);
     ASSERT_TRUE(mem != NULL);
 
     // Populate the Plus memory layout
@@ -74,7 +74,7 @@ TEST(test_24bit_ram_pages) {
 
 // Verify ROM pages are read-only and correctly mirrored in the page table
 TEST(test_24bit_rom_pages) {
-    memory_map_t *mem = memory_map_init(24, 0x400000, 0x020000, MEMORY_BUS_ERR_NONE, NULL);
+    memory_map_t *mem = memory_map_init(24, 0x400000, 0x020000, MEMORY_BUS_ERR_NONE, NULL, NULL);
     ASSERT_TRUE(mem != NULL);
 
     memory_populate_pages(mem, 0x400000, 0x580000);
@@ -105,7 +105,7 @@ TEST(test_24bit_rom_pages) {
 
 // Verify delete clears globals
 TEST(test_delete_clears_globals) {
-    memory_map_t *mem = memory_map_init(24, 0x400000, 0x020000, MEMORY_BUS_ERR_NONE, NULL);
+    memory_map_t *mem = memory_map_init(24, 0x400000, 0x020000, MEMORY_BUS_ERR_NONE, NULL, NULL);
     ASSERT_TRUE(mem != NULL);
     ASSERT_TRUE(g_page_table != NULL);
 
@@ -119,14 +119,14 @@ TEST(test_delete_clears_globals) {
 // without a watchdog built after one with a window must float, not fault.
 TEST(test_bus_err_window_is_the_maps) {
     const memory_bus_err_window_t nubus = {.lo = 0xF1000000u, .hi = 0xFFFFFFFFu};
-    memory_map_t *mem = memory_map_init(32, 0x400000, 0x020000, nubus, NULL);
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x020000, nubus, NULL, NULL);
     ASSERT_TRUE(mem != NULL);
     ASSERT_TRUE(memory_addr_faults_when_unmapped(0xF9000000u));
     ASSERT_TRUE(!memory_addr_faults_when_unmapped(0x50000000u));
     memory_map_delete(mem);
     ASSERT_TRUE(!memory_addr_faults_when_unmapped(0xF9000000u));
 
-    mem = memory_map_init(32, 0x400000, 0x020000, MEMORY_BUS_ERR_NONE, NULL);
+    mem = memory_map_init(32, 0x400000, 0x020000, MEMORY_BUS_ERR_NONE, NULL, NULL);
     ASSERT_TRUE(mem != NULL);
     ASSERT_TRUE(!memory_addr_faults_when_unmapped(0xF9000000u));
     cleanup(mem);

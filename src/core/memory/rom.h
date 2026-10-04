@@ -124,20 +124,10 @@ typedef struct rom_file_info {
 // non-zero on read error. `out` is always zero-initialised.
 int rom_probe_file(const char *path, rom_file_info_t *out);
 
-// === Loading into the active machine ========================================
-
-// Load a ROM file into the currently-active machine's memory and reset the
-// CPU. Caller must have created a machine (via machine.boot) first; this
-// function does NOT pick a machine for you. Returns 0 on success, -1 on
-// failure (no machine, file unreadable, OOM). Size mismatch with the
-// machine's expected ROM size produces a warning but is not fatal — the
-// truncating copy matches historical behaviour for Plus ROMs.
-int rom_load_into_machine(const char *path);
-
-// Like rom_load_into_machine, but for the Lisa/XL two-chip boot ROM: interleave
-// `path_a` and `path_b` (either order) into 16 KB and install. Returns 0 on
-// success, -1 on failure (no machine, unreadable/wrong-size chips).
-int rom_load_lisa_into_machine(const char *path_a, const char *path_b);
+// Read an entire ROM file (through the VFS: a ROM may be an archive member)
+// into a fresh buffer the caller frees.  NULL on failure, saying why unless
+// `quiet`.
+uint8_t *rom_read_file(const char *path, size_t *out_size, bool quiet);
 
 void rom_init(void);
 void rom_delete(void);

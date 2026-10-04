@@ -80,14 +80,6 @@ bool lisa_mmu_debug_write(uint32_t addr, unsigned size, bool supervisor, uint32_
     return false;
 }
 
-cpu_t *system_cpu(void) {
-    return NULL;
-}
-
-const char *system_machine_model_id(void) {
-    return NULL;
-}
-
 rtc_t *system_rtc(void) {
     return NULL;
 }

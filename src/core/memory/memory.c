@@ -1349,24 +1349,6 @@ const char *memory_rom_filename(memory_map_t *mem) {
     return mem ? mem->rom_filename : NULL;
 }
 
-// Copy ROM bytes into the rom region (immediately after RAM) and remember
-// the file name. Truncates if size > mem->rom_size, drops nothing if
-// size < mem->rom_size (the trailing bytes keep whatever they had — for
-// freshly-allocated memory that's zero).
-size_t memory_install_rom(memory_map_t *mem, const uint8_t *data, size_t size, const char *filename) {
-    if (!mem || !mem->image || !data || size == 0)
-        return 0;
-    size_t copy_size = size < mem->rom_size ? size : mem->rom_size;
-    memcpy(mem->image + mem->ram_size, data, copy_size);
-    if (mem->rom_filename) {
-        free(mem->rom_filename);
-        mem->rom_filename = NULL;
-    }
-    if (filename)
-        mem->rom_filename = strdup(filename);
-    return copy_size;
-}
-
 // Direct read access to the ROM region (read-only). Returns NULL if the
 // memory map has no ROM bytes loaded yet.
 const uint8_t *memory_rom_bytes(memory_map_t *mem) {
@@ -1506,7 +1488,7 @@ void memory_populate_ram_mirror(memory_map_t *mem, uint32_t mirror_start, uint32
 // Machine-specific memory layout (page table population) is done by the machine's
 // memory_layout_init callback, not here.
 memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_size, memory_bus_err_window_t bus_err,
-                              checkpoint_t *checkpoint) {
+                              const rom_image_t *rom, checkpoint_t *checkpoint) {
     // Validate address_bits before deciding the page-table shape so a 28 or 0
     // doesn't silently default to the 24-bit layout.
     GS_ASSERTF(address_bits == 24 || address_bits == 32, "memory_map_init: address_bits must be 24 or 32 (got %d)",
@@ -1613,8 +1595,12 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     g_active_read = g_supervisor_read;
     g_active_write = g_supervisor_write;
 
-    // Note: rom command is registered once from setup_init() so it's
-    // available before any machine is created (deferred boot).
+    // The ROM is on the board from power-on: the region is created filled.
+    if (rom && rom->data && rom->size) {
+        memcpy(mem->image + ram_size, rom->data, rom->size < rom_size ? rom->size : rom_size);
+        if (rom->path)
+            mem->rom_filename = strdup(rom->path);
+    }
 
     // Load from checkpoint if provided
     if (checkpoint) {
