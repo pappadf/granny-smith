@@ -29,7 +29,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as zlib from "node:zlib";
-import { gsEvalInPage } from "../helpers/web2-eval";
+import { gsEvalInPage, scratchFiles } from "../helpers/web2-eval";
 
 // GS_COMPACT_IMPORT_MB shrinks the disk for a quick local run.
 const DISK_BYTES =
@@ -246,10 +246,8 @@ for (const variant of ["sized", "chunked", "zip"] as const) {
     // Never more than the stored image plus one transfer window or so.
     expect(growth).toBeLessThan(disk.size + 8 * 1024 * 1024);
     // Nothing left in staging.
-    const staging = (await gsEvalInPage(page, "files.list_dir", [
-      "/opfs/upload/.scratch",
-    ])) as string[];
-    expect((staging ?? []).filter((n) => n.includes(".part"))).toEqual([]);
+    const staging = await scratchFiles(page);
+    expect(staging.filter((n) => n.includes(".part"))).toEqual([]);
     // The image is the disk: its decoded size, verified checksums.
     const info = (await gsEvalInPage(page, "files.udif_info", [
       "/opfs/images/hd/Big_Disk.dmg",
@@ -337,9 +335,7 @@ test("a 2 GiB local file upload is stored compact, never expanded", async ({
 async function expectNothingLeft(page: Page): Promise<void> {
   await expect
     .poll(async () => {
-      const staging = ((await gsEvalInPage(page, "files.list_dir", [
-        "/opfs/upload/.scratch",
-      ])) ?? []) as string[];
+      const staging = await scratchFiles(page);
       return [
         ...staging.filter((n) => n.includes(".part")),
         ...(await storedDisks(page)).map((d) => d.name),
@@ -362,11 +358,7 @@ test("an HD= import cancelled midway leaves nothing behind", async ({
   await expect
     .poll(
       async () =>
-        (
-          ((await gsEvalInPage(page, "files.list_dir", [
-            "/opfs/upload/.scratch",
-          ])) ?? []) as string[]
-        ).some((n) => n.endsWith(".dmg.part")),
+        (await scratchFiles(page)).some((n) => n.endsWith(".dmg.part")),
       { timeout: 60_000 },
     )
     .toBe(true);

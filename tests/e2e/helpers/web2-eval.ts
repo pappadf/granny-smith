@@ -6,7 +6,7 @@
 // thin wrapper over the same gsEval the UI uses; it is installed once the
 // bridge is ready, so call this after gotoWeb2().
 
-import { type Page } from '@playwright/test';
+import { type Page } from "@playwright/test";
 
 // gsEval(path, args) inside the page; resolves to the core's JSON answer —
 // a value, null (a method that returns nothing), or { error }.
@@ -24,10 +24,31 @@ export async function gsEvalInPage(
       ).__gsEvalForTests;
       if (!hook)
         throw new Error(
-          '__gsEvalForTests missing: is the page under automation and the bridge ready?',
+          "__gsEvalForTests missing: is the page under automation and the bridge ready?",
         );
       return hook(path, args);
     },
     { path, args },
   );
+}
+
+// Every file under the scratch area, as paths relative to it: each tab writes
+// in its own directory there (app/web2 lib/opfsPaths.ts), so "nothing left in
+// scratch" means no file at any depth, not an empty listing.
+export async function scratchFiles(page: Page): Promise<string[]> {
+  const out: string[] = [];
+  async function walk(rel: string): Promise<void> {
+    const dir = rel ? `/opfs/upload/.scratch/${rel}` : "/opfs/upload/.scratch";
+    const entries = (await gsEvalInPage(page, "files.list", [dir])) as
+      { name: string; kind: string }[] | { error: string };
+    if (!Array.isArray(entries)) return;
+    for (const e of entries) {
+      if (e.name === "." || e.name === "..") continue;
+      const p = rel ? `${rel}/${e.name}` : e.name;
+      if (e.kind === "directory") await walk(p);
+      else out.push(p);
+    }
+  }
+  await walk("");
+  return out;
 }

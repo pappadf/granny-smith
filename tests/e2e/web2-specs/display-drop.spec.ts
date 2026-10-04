@@ -19,7 +19,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
 import { terminalRun } from '../helpers/terminal';
-import { gsEvalInPage } from '../helpers/web2-eval';
+import { gsEvalInPage, scratchFiles } from '../helpers/web2-eval';
 
 const DATA = path.resolve(__dirname, '../../data');
 const PLUS_ROM = path.join(DATA, 'roms', 'plus-v3-4d1f8172.rom');
@@ -134,10 +134,7 @@ test('drop an archive: the floppy inside is stored and inserted, nothing unpacke
   expect(await gsEvalInPage(page, 'files.path_size', ['/opfs/images/fd/MacTest Disk.image'])).toBe(
     419284,
   );
-  const scratch = (await gsEvalInPage(page, 'files.list', ['/opfs/upload/.scratch'])) as {
-    name: string;
-  }[];
-  expect(scratch.map((e) => e.name).filter((n) => n !== '.' && n !== '..')).toEqual([]);
+  expect(await scratchFiles(page)).toEqual([]);
 });
 
 // Several files in one drop: each runs the single-file flow on its own and
@@ -169,10 +166,7 @@ test('drop several files: each is stored or rejected, with one summary', async (
     'System_6_0_5.dsk',
     'System_6_0_8.dsk',
   ]);
-  const scratch = (await gsEvalInPage(page, 'files.list', ['/opfs/upload/.scratch'])) as {
-    name: string;
-  }[];
-  expect(scratch.map((e) => e.name).filter((n) => n !== '.' && n !== '..')).toEqual([]);
+  expect(await scratchFiles(page)).toEqual([]);
 });
 
 // Boot a Plus from a dropped ROM, pause it, save a checkpoint through the

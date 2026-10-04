@@ -29,7 +29,8 @@ export async function claimScratch(): Promise<void> {
   const entries = await gsEval('files.list', [SCRATCH_DIR]);
   if (!Array.isArray(entries)) return;
   for (const e of entries as { name?: unknown; kind?: unknown }[]) {
-    if (typeof e?.name !== 'string' || e.name === SCRATCH_ID) continue;
+    if (typeof e?.name !== 'string' || e.name === '.' || e.name === '..' || e.name === SCRATCH_ID)
+      continue;
     // A tab's part goes when nobody holds its lock; a loose file (written
     // before parts existed) only when no other tab is alive to own it.
     const abandoned = e.kind === 'directory' ? !held.has(SCRATCH_LOCK_PREFIX + e.name) : !others;
