@@ -134,15 +134,36 @@ is why `ESC ?` (§7) is answered late on a busy printer [1] ch. 6.
 | BS $08 | The next character backs up by its own width and is printed over the previous one |
 | HT $09 | Next horizontal tab stop |
 | LF $0A | Print the line; feed one line (reverse after `ESC r`); a CR first unless `ESC l 1` |
-| VT $0B | ImageWriter II: a fixed 2/144 in feed. ImageWriter: next vertical tab stop |
+| VT $0B | ImageWriter II: a fixed 2/144 in feed. ImageWriter: next B vertical tab stop (§4.4) |
 | FF $0C | Print the line; feed to the next top of form |
 | CR $0D | Print the line; head to the left margin; LF too if A-8 / DIP 1-8 |
 | SO $0E / SI $0F | Double width on / off (characters and graphics) |
 | DC1 $11 / DC3 $13 | Select / deselect (software select response only) |
 | CAN $18 | Erase the line not yet printed |
-| US $1F *n* | Feed *n* lines, *n* = '1' … '9', ':' … '?' (1 … 15) |
+| US $1F *n* | ImageWriter II: feed *n* lines, *n* = '1' … '9', ':' … '?' (1 … 15). ImageWriter: `US A` … `US F`, next vertical tab stop (§4.4) |
+| GS $1D | ImageWriter: program the vertical format unit, or `GS 0` reset it (§4.4). ImageWriter II: undocumented (§10) |
 
-### 4.4 ESC commands
+### 4.4 The original ImageWriter's vertical format unit
+
+The original ImageWriter keeps vertical tab stops in an electronic vertical
+format unit (EVFU) that counts lines from top of form at the current line
+spacing [5] ch. 5. Each line of the form has channels A (top and bottom of
+form) and B … F (five independent sets of tab stops, one per kind of form).
+
+- **Programming:** `GS`, then two bytes per line — a letter whose bits 1–5
+  are channels B … F and bit 0 channel A, and `@` — from the top of form
+  (`A@`) through the bottom of form (`C@`) and padding (`@@`) to the next
+  form's top (`A@`), then RS ($1E). The form is the lines before the last
+  `A@`; its top is where the paper is. At most 66 or 72 lines (DIP 1-4) are
+  kept.
+- **Using it:** `US B` … `US F` move down to the next line with a stop in
+  that channel; with none left in the form, to the bottom of form. `US A`
+  moves to the next bottom or top of form, FF to the next top.
+- **Power-on and `GS 0`:** the form is the page length with a B stop every
+  six lines; `GS 0` also makes the current line the top of form. `ESC c`
+  keeps the stops.
+
+### 4.5 ESC commands
 
 | Command | Parameters | Function |
 |---|---|---|
@@ -336,7 +357,7 @@ preceded by `ESC K0`.
   with proportional spacing.
 - Whether the original ImageWriter answers `ESC ?`.
 - The undocumented ImageWriter II control GS ($1D, a vertical-format
-  command) and the original ImageWriter's vertical format unit programming.
+  command).
 - Exact half-height, superscript and subscript dot placement.
 - Where column 0 lies on the sheet (a quarter inch from the left edge is
   assumed for a centred 8.5 in sheet).

@@ -27,6 +27,7 @@ LOG_USE_CATEGORY_NAME("imagewriter");
 #define CAN 0x18
 #define ESC 0x1B
 #define GS  0x1D
+#define RS  0x1E
 #define US  0x1F
 #define EOT 0x04
 
@@ -425,6 +426,106 @@ static void do_ht(iw_interp_t *in) {
     }
 }
 
+// --- The original ImageWriter's vertical format unit ------------------------------------
+//
+// The EVFU counts lines from top of form at the current line spacing: a form
+// of n lines, each with channels A (top and bottom of form) and B .. F (tab
+// stops).  At power-on and after GS 0 the form is the page length with a B
+// stop every six lines.  (ImageWriter User's Manual, Part I, ch. 5.)
+
+static int64_t evfu_spacing(const iw_interp_t *in) {
+    return in->st.line_spacing > 0 ? in->st.line_spacing : 24;
+}
+
+// The form's length in lines.
+static int evfu_form_lines(const iw_interp_t *in) {
+    if (in->st.n_evfu)
+        return in->st.n_evfu;
+    int64_t len = in->st.page_len > 0 ? in->st.page_len : 1584;
+    int n = (int)(len / evfu_spacing(in));
+    return n > 0 ? n : 1;
+}
+
+// The channels of form line `line`.
+static uint8_t evfu_channels(const iw_interp_t *in, int line) {
+    if (in->st.n_evfu)
+        return line < IW_EVFU_LINES ? in->st.evfu[line] : 0;
+    return (uint8_t)((line == 0 ? IW_EVFU_A : 0) | (line % 6 == 0 ? IW_EVFU_B : 0));
+}
+
+// CTRL-_ x (and VT, channel B): down to the next line with a stop in
+// `channel`.  With none left in this form, down to the bottom of form (the
+// next A line), or the next top of form.
+static void evfu_tab(iw_interp_t *in, uint8_t channel) {
+    iw_state_t *st = &in->st;
+    if (lf_prints(in))
+        commit_line(in);
+    if (st->cr_before_lf)
+        st->head_x = st->left_margin;
+    int64_t ls = evfu_spacing(in);
+    int n = evfu_form_lines(in);
+    int line = (int)(mod_pos(st->y - st->tof, (int64_t)n * ls) / ls);
+    int target = n; // the next top of form
+    for (int l = line + 1; l < n; l++) {
+        if (evfu_channels(in, l) & channel) {
+            target = l;
+            break;
+        }
+    }
+    if (target == n && channel != IW_EVFU_A) {
+        for (int l = line + 1; l < n; l++) {
+            if (evfu_channels(in, l) & IW_EVFU_A) {
+                target = l;
+                break;
+            }
+        }
+    }
+    paper_move(in, (int64_t)(target - line) * ls);
+}
+
+// A byte of GS programming: GS 0 resets the EVFU, GS then pairs (a channel
+// letter and '@') from the top-of-form "A@" to the next form's "A@" and RS.
+static void evfu_program(iw_interp_t *in, uint8_t b) {
+    iw_state_t *st = &in->st;
+    if (st->evfu_lines == 0 && !st->evfu_c1 && b == '0') {
+        st->ps = IW_PS_NORMAL;
+        st->n_evfu = 0;
+        st->tof = st->y;
+        st->page_len = (in->cfg->dip1 & IW_DIP1_FORM12) ? 12 * 144 : 11 * 144;
+        return;
+    }
+    if (!st->evfu_c1 && b == RS) {
+        // The last pair was the next form's top: the form is the lines before it
+        st->ps = IW_PS_NORMAL;
+        if (st->evfu_lines > 1) {
+            st->n_evfu = (uint8_t)(st->evfu_lines - 1);
+            st->page_len = (int32_t)(st->n_evfu * evfu_spacing(in));
+        }
+        return;
+    }
+    if (!st->evfu_c1) {
+        if (b < 0x40 || b > 0x7F) {
+            st->ps = IW_PS_NORMAL; // not a channel code: programming abandoned
+            return;
+        }
+        st->evfu_c1 = b;
+        return;
+    }
+    uint8_t ch = (uint8_t)(st->evfu_c1 & 0x3F);
+    st->evfu_c1 = 0;
+    if (st->evfu_lines == 0) {
+        if (!(ch & IW_EVFU_A)) {
+            st->ps = IW_PS_NORMAL; // a form starts at its top
+            return;
+        }
+        st->tof = st->y;
+    }
+    // Lines past the 66 or 72 the unit holds (DIP 1-4), plus the next top, are ignored
+    int max = ((in->cfg->dip1 & IW_DIP1_FORM12) ? 72 : 66) + 1;
+    if (st->evfu_lines < max && st->evfu_lines < IW_EVFU_LINES)
+        st->evfu[st->evfu_lines++] = ch;
+}
+
 // --- Resets --------------------------------------------------------------------------
 
 // The settings ESC c and power-on share (Table A-2).
@@ -450,8 +551,9 @@ static void soft_defaults(iw_interp_t *in) {
     st->soft_a = (uint8_t)((c->dip1 & IW_DIP1_LANGUAGE) | IW_SWA_NO_SELECT | IW_SWA_PRINT_LFFF |
                            ((c->dip1 & IW_DIP1_AUTO_LF) ? IW_SWA_AUTO_LF : 0) | (is_iw2(in) ? 0 : IW_SWA_LF_FULL));
     st->soft_b = (uint8_t)(IW_SWB_7BIT | ((c->dip1 & IW_DIP1_PERF) ? 0 : IW_SWB_NO_PERF));
-    // IW I: vertical tabs every 6 lines
-    st->n_evfu = 0;
+    // ESC c keeps the IW I's vertical tabs, and with them its form length
+    if (st->n_evfu)
+        st->page_len = (int32_t)(st->n_evfu * st->line_spacing);
 }
 
 void iw_interp_power_on(iw_interp_t *in) {
@@ -804,15 +906,10 @@ static void control(iw_interp_t *in, uint8_t b) {
         do_lf(in);
         break;
     case VT:
-        if (is_iw2(in)) {
+        if (is_iw2(in))
             line_motion(in, 2); // a fixed 2/144 in micro-feed
-        } else {
-            // Next vertical tab stop: every 6 lines from top of form
-            commit_line(in);
-            int64_t lines = (st->y - st->tof) / (st->line_spacing ? st->line_spacing : 24);
-            int64_t next = (lines / 6 + 1) * 6;
-            paper_move(in, st->tof + next * st->line_spacing - st->y);
-        }
+        else
+            evfu_tab(in, IW_EVFU_B); // the next B tab stop
         break;
     case FF:
         do_ff(in);
@@ -848,11 +945,16 @@ static void control(iw_interp_t *in, uint8_t b) {
         st->ps = IW_PS_ESC;
         break;
     case US:
-        if (is_iw2(in))
-            st->ps = IW_PS_US;
+        st->ps = is_iw2(in) ? IW_PS_US : IW_PS_VTAB;
         break;
     case GS:
-        LOG(3, "GS (vertical format) ignored");
+        if (is_iw2(in)) {
+            LOG(3, "GS (vertical format) ignored");
+        } else {
+            st->ps = IW_PS_GS;
+            st->evfu_lines = 0;
+            st->evfu_c1 = 0;
+        }
         break;
     default:
         break; // BEL and the rest print nothing
@@ -968,6 +1070,14 @@ static void feed_byte(iw_interp_t *in, uint8_t b) {
         st->tab_digits = false;
         if (b != ',')
             st->ps = IW_PS_NORMAL; // '.' ends the list (anything else too)
+        return;
+    case IW_PS_GS:
+        evfu_program(in, b);
+        return;
+    case IW_PS_VTAB:
+        st->ps = IW_PS_NORMAL;
+        if (b >= 'A' && b <= 'F')
+            evfu_tab(in, (uint8_t)(1u << (b - 'A')));
         return;
     case IW_PS_US: {
         uint8_t n = (uint8_t)((b - '0') & 0x0F);

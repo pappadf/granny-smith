@@ -45,7 +45,9 @@ one interpreter for the byte stream, whichever front end delivers it.
 
 `iw_interp_feed()` runs bytes through a state machine (`IW_PS_*`): normal,
 after ESC, collecting a command's fixed-length parameters, a tab list, a
-counted graphics run, `US n`, and the three states of a custom-character load.
+counted graphics run, `US n`, the three states of a custom-character load,
+and on the original ImageWriter the vertical format unit's programming (`GS`)
+and tab channel (`US x`; imagewriter.md §4.4).
 Graphics bytes are counted, never interpreted, so the Lisa Office System's
 opening CAN run completes a graphics command an aborted job left unfinished.
 The eighth bit is stripped before dispatch when soft switch B-6 (IW II) or DIP
@@ -214,7 +216,7 @@ printer back into its port or re-publishes the card.
 
 | Test | What it covers |
 |---|---|
-| unit `imagewriter` | parser, switches, tabs, pixel-exact columns for every pitch, interleave, opaque graphics, the CAN recovery, pages, perforation skip, colour planes, self ID, the eighth bit, custom characters, ROM glyphs (draft, NLQ passes, proportional widths), PDF structure, determinism and serialisation |
+| unit `imagewriter` | parser, switches, tabs, pixel-exact columns for every pitch, interleave, opaque graphics, the CAN recovery, pages, perforation skip, colour planes, self ID, the eighth bit, custom characters, ROM glyphs (draft, NLQ passes, proportional widths, the original ImageWriter's), its vertical format unit, PDF structure, determinism and serialisation |
 | unit `scc_port` | the port-device seam: bytes to the device, ready line, RX injection |
 | `lisa-imagewriter` | LOS 3.1 prints the Calculator tape on Serial A; PDF golden |
 | `mac-imagewriter` | a Plus with System 6.0.8 prints Faster, Best (deselected mid-job), Draft, and Faster through the 2 KB buffer on the printer port; PDF goldens |
@@ -227,7 +229,6 @@ The goldens are CRCs (`last_pdf_crc`): every output is deterministic.
 
 ## 11. Not done yet
 
-The original ImageWriter's vertical format unit;
-a dedicated printer section in the machine settings (today the SYSTEM tab
+A dedicated printer section in the machine settings (today the SYSTEM tab
 edits `machine.imagewriter`, and the status bar's printer item opens it
 there); a title for Lisa jobs.

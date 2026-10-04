@@ -519,6 +519,51 @@ TEST(test_rom_glyphs_iw1) {
     ASSERT_TRUE(!g.placeholder && g.n > wi);
 }
 
+// The original ImageWriter's EVFU, with the manual's own example: a 12-line
+// form, tabs B on lines 3 and 6, C on 4 and 7, D on 6 and 7, E on 9, bottom
+// of form on 10 (lines counted from 1 at top of form).
+TEST(test_iw1_evfu) {
+    setup(IW_MODEL_IW1);
+    int64_t ls = g_in.st.line_spacing;
+    // Power-on: a B stop every six lines
+    FEED("\x0b");
+    ASSERT_EQ_INT(g_in.st.y - g_in.st.tof, 6 * ls);
+    FEED("\x1d"
+         "A@@@B@D@@@J@L@@@P@C@@@@@A@\x1e");
+    ASSERT_EQ_INT(g_in.st.n_evfu, 12);
+    ASSERT_EQ_INT(g_in.st.page_len, 12 * ls);
+    int64_t top = g_in.st.y; // programming sets top of form here
+    FEED("\x1f"
+         "C"); // to line 4
+    ASSERT_EQ_INT(g_in.st.y - top, 3 * ls);
+    FEED("\x1f"
+         "B"); // to line 6
+    ASSERT_EQ_INT(g_in.st.y - top, 5 * ls);
+    FEED("\x1f"
+         "E"); // to line 9
+    ASSERT_EQ_INT(g_in.st.y - top, 8 * ls);
+    FEED("\x1f"
+         "D"); // no D left: to the bottom of form, line 10
+    ASSERT_EQ_INT(g_in.st.y - top, 9 * ls);
+    FEED("\x1f"
+         "A"); // the next top of form
+    ASSERT_EQ_INT(g_in.st.y - top, 12 * ls);
+    FEED("\x1f"
+         "B\x1f"
+         "B"); // lines 3 and 6 of the next form
+    ASSERT_EQ_INT(g_in.st.y - top, 17 * ls);
+    FEED("\x0c"); // form feed: the next top of form
+    ASSERT_EQ_INT(g_in.st.y - top, 24 * ls);
+    // ESC c keeps the tabs; GS 0 restores the power-on ones
+    FEED("\x1b"
+         "c");
+    ASSERT_EQ_INT(g_in.st.n_evfu, 12);
+    FEED("\x1d"
+         "0");
+    ASSERT_EQ_INT(g_in.st.n_evfu, 0);
+    ASSERT_EQ_INT(g_in.st.page_len, 11 * 144);
+}
+
 int main(void) {
     RUN(test_pdf_structure);
     RUN(test_pdf_serialise);
@@ -543,6 +588,7 @@ int main(void) {
     RUN(test_rom_glyphs);
     RUN(test_rom_glyphs_nlq_proportional);
     RUN(test_rom_glyphs_iw1);
+    RUN(test_iw1_evfu);
     iw_interp_free(&g_in);
     fprintf(stderr, "All imagewriter tests passed\n");
     return 0;

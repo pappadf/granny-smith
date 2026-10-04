@@ -142,7 +142,13 @@ typedef enum {
     IW_PS_CUSTOM_KEY, // ESC I: a key or CTRL-D
     IW_PS_CUSTOM_WIDTH, // ESC I: the width code
     IW_PS_CUSTOM_DATA, // ESC I: the columns
+    IW_PS_GS, // IW I CTRL-]: programming the EVFU, or GS 0
+    IW_PS_VTAB, // IW I CTRL-_: the tab channel letter
 } iw_parse_state_t;
+
+// IW I EVFU channels: A marks top and bottom of form, B .. F the tab stops
+#define IW_EVFU_A 0x01
+#define IW_EVFU_B 0x02
 
 // Everything the printer remembers.  Plain data: a checkpoint writes it as
 // one block.
@@ -171,8 +177,10 @@ typedef struct {
     bool reverse; // ESC r
     bool cr_before_lf; // ESC l 0 (default)
     bool paper_out_sensor; // ESC o / ESC O
-    uint8_t evfu[IW_EVFU_LINES]; // IW I vertical tab stops (line numbers)
-    uint8_t n_evfu;
+    uint8_t evfu[IW_EVFU_LINES]; // IW I EVFU: channels (IW_EVFU_*) per line from top of form
+    uint8_t n_evfu; // the programmed form's length in lines; 0: power-on tabs
+    uint8_t evfu_lines; // programming: lines received so far
+    uint8_t evfu_c1; // programming: the first byte of a pair, 0 when none
     // --- parser ---
     uint8_t ps; // iw_parse_state_t
     uint8_t cmd; // current ESC command
