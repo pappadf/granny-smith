@@ -18,7 +18,11 @@
 // CORS headers (a page on another origin cannot read them):
 //   /download/<item>/<file>             -> /cors/<item>/<file> (CORS, whole file)
 //   /download/<item>/<x.zip>/<member>   -> unchanged: archive.org extracts the
-//                                          member server-side, with CORS
+//                                          member server-side, with CORS;
+//                                          a member named with & # + % goes
+//                                          to the file server's
+//                                          view_archive.php directly (via
+//                                          the metadata API)
 //   /details/<item>[/<file>]            -> the item's single media file (via
 //                                          the metadata API), or <file>
 
@@ -132,6 +136,30 @@ function pickItemFile(item: string, meta: unknown): string {
   );
 }
 
+// Characters that end or change a query-string value when left unescaped.
+const QUERY_SPECIAL = /[&#+%]/;
+
+// The view_archive.php URL that extracts `member` from the zip `zip` (a path
+// inside archive.org item `item`), on the file server the item's metadata
+// names, with both parameters escaped.
+async function viewArchiveUrl(
+  item: string,
+  zip: string,
+  member: string,
+  fetchJson: JsonFetch,
+): Promise<string> {
+  const meta = (await fetchJson(`https://archive.org/metadata/${encodeURIComponent(item)}`)) as {
+    server?: unknown;
+    dir?: unknown;
+  } | null;
+  const server = meta?.server;
+  const dir = meta?.dir;
+  if (typeof server !== 'string' || typeof dir !== 'string' || !/^[\w.-]+$/.test(server))
+    throw new MediaUrlError(`archive.org item "${item}" was not found or has no file server`);
+  const archive = encodeURIComponent(`${dir}/${zip}`).replace(/%2F/g, '/');
+  return `https://${server}/view_archive.php?archive=${archive}&file=${encodeURIComponent(member)}`;
+}
+
 // The plan for an archive.org URL.
 async function planArchiveOrg(url: URL, fetchJson: JsonFetch): Promise<MediaFetchPlan> {
   const segs = url.pathname.split('/').slice(1);
@@ -153,13 +181,24 @@ async function planArchiveOrg(url: URL, fetchJson: JsonFetch): Promise<MediaFetc
   if (split && ZIP_EXT.test(decodeSegment(split.containerPath[split.containerPath.length - 1]))) {
     // archive.org extracts a zip member itself (view_archive.php, with CORS).
     const member = split.memberPath.filter((s) => s !== '').map(decodeSegment);
-    return {
+    const plan: MediaFetchPlan = {
       fetchUrl: download.href,
       member: null,
       container: null,
       fileName: member[member.length - 1],
       containerName: decodeSegment(split.containerPath[split.containerPath.length - 1]),
     };
+    // /download/ answers a member request with a redirect to view_archive.php
+    // on the item's file server; for a browser's request that redirect
+    // carries the member name unescaped, so a name with `&` ("9FEB69B3 -
+    // Power Mac 6100 & 7100 & 8100.ROM") is cut at the `&` and the
+    // extraction fails (503).  Such a name goes to view_archive.php directly,
+    // on the server and directory the item's metadata names.
+    if (member.some((m) => QUERY_SPECIAL.test(m))) {
+      const zip = split.containerPath.slice(2).map(decodeSegment).join('/');
+      plan.fetchUrl = await viewArchiveUrl(item, zip, member.join('/'), fetchJson);
+    }
+    return plan;
   }
   // Anything else is fetched whole through /cors/, the one file path that
   // carries CORS headers; a Mac-archive member is then taken out locally.

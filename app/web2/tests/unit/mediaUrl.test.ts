@@ -117,10 +117,60 @@ describe('planMediaFetch — archive.org', () => {
   });
   it('an encoded & in a member survives; an unencoded one splits the query', async () => {
     const enc = new URLSearchParams(`ROM=${ROMS}/420DBFF3%20-%20Quadra%20700%26900.ROM&x=1`);
-    const p = await planMediaFetch(enc.get('ROM') as string, PAGE, noFetch);
+    const meta = async (): Promise<unknown> => ({
+      server: 'ia1.us.archive.org',
+      dir: '/1/items/R',
+    });
+    const p = await planMediaFetch(enc.get('ROM') as string, PAGE, meta);
     expect(p.fileName).toBe('420DBFF3 - Quadra 700&900.ROM');
     const raw = new URLSearchParams(`ROM=${ROMS}/420DBFF3 - Quadra 700&900.ROM`);
     expect(raw.get('ROM')).toBe(`${ROMS}/420DBFF3 - Quadra 700`);
+  });
+  it("a zip member named with & goes to the file server's view_archive.php directly", async () => {
+    let asked = '';
+    const meta = async (u: string): Promise<unknown> => {
+      asked = u;
+      return {
+        server: 'ia800908.us.archive.org',
+        dir: '/12/items/mac_rom_archive_-_as_of_8-19-2011',
+      };
+    };
+    const p = await planMediaFetch(
+      `${ROMS}/9FEB69B3%20-%20Power%20Mac%206100%20%26%207100%20%26%208100.ROM`,
+      PAGE,
+      meta,
+    );
+    expect(asked).toBe('https://archive.org/metadata/mac_rom_archive_-_as_of_8-19-2011');
+    expect(p.fetchUrl).toBe(
+      'https://ia800908.us.archive.org/view_archive.php?archive=' +
+        '/12/items/mac_rom_archive_-_as_of_8-19-2011/mac_rom_archive_-_as_of_8-19-2011.zip' +
+        '&file=9FEB69B3%20-%20Power%20Mac%206100%20%26%207100%20%26%208100.ROM',
+    );
+    expect(p.member).toBeNull();
+    expect(p.fileName).toBe('9FEB69B3 - Power Mac 6100 & 7100 & 8100.ROM');
+    expect(p.containerName).toBe('mac_rom_archive_-_as_of_8-19-2011.zip');
+  });
+  it('a nested member path with & keeps its folders in file=', async () => {
+    const meta = async (): Promise<unknown> => ({
+      server: 'ia1.us.archive.org',
+      dir: '/1/items/X',
+    });
+    const p = await planMediaFetch(
+      'https://archive.org/download/X/My%20Disks.zip/A%20%26%20B/c%2Bd.img',
+      PAGE,
+      meta,
+    );
+    expect(p.fetchUrl).toBe(
+      'https://ia1.us.archive.org/view_archive.php?archive=/1/items/X/My%20Disks.zip' +
+        '&file=A%20%26%20B%2Fc%2Bd.img',
+    );
+    expect(p.fileName).toBe('c+d.img');
+  });
+  it('a member with & in an item whose metadata has no server is refused', async () => {
+    const meta = async (): Promise<unknown> => ({});
+    await expect(planMediaFetch(`${ROMS}/A%20%26%20B.ROM`, PAGE, meta)).rejects.toThrow(
+      MediaUrlError,
+    );
   });
   it('an http archive.org URL is upgraded to https', async () => {
     const p = await planMediaFetch('http://archive.org/download/X/a.img', PAGE, noFetch);
