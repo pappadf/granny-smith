@@ -62,7 +62,7 @@ async function openNewMachine(page: Page): Promise<void> {
   await model.selectOption('pm9500');
 }
 
-test('a 9500 is configured and booted on an uploaded PCI display card', async ({ page }) => {
+test('a 9500 boots its factory PCI display card once its ROM is uploaded', async ({ page }) => {
   test.setTimeout(240_000);
   await gotoWeb2(page);
 
@@ -95,18 +95,14 @@ test('a 9500 is configured and booted on an uploaded PCI display card', async ({
     page.locator('.toast .msg').filter({ hasText: "PCI expansion ROM for 'mach64_gx'" }),
   ).toBeVisible({ timeout: 60_000 });
 
-  // --- The card becomes addable. --------------------------------------------
+  // --- The factory card is in the default configuration now. --------------
+  // The 9500 shipped with the Apple Accelerated PCI Graphics Card in slot A1;
+  // with its expansion ROM offered, the dialog opens with it seated (and the
+  // emulator's Control/Chaos stand-in nowhere).
   await openNewMachine(page);
-  await page.getByTestId('cfg-add-card').click({ timeout: 30_000 });
-  const card = page.locator('#cfg-add-card');
-  const gx = card.locator('option[value="mach64_gx"]');
-  await expect(gx).toHaveCount(1);
-  await expect(gx).toBeEnabled();
-  await expect(card.locator('option', { hasText: 'on-board video' })).toHaveCount(0);
-  await card.selectOption('mach64_gx');
-  await page.getByRole('button', { name: 'Add', exact: true }).click();
-  await expect(page.locator('.item-row[data-card="mach64_gx"]')).toHaveCount(1);
+  await expect(page.locator('.item-row[data-card="mach64_gx"]')).toHaveCount(1, { timeout: 30_000 });
   await expect(page.locator('.config-form')).not.toContainText('It will start with no screen');
+  await expect(page.locator('.config-form')).not.toContainText('on-board video');
 
   // --- Start it.  This is the assertion the other three bugs hid behind. ---
   // Everything above is a picker rendering the right strings; only this
