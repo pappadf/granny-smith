@@ -19,7 +19,9 @@ const DATA = path.resolve(__dirname, '../../data');
 const PLUS_ROM = path.join(DATA, 'roms', 'plus-v3-4d1f8172.rom');
 const SYSTEM_HD = path.join(DATA, 'systems', 'system_6_0_8_20mb_8_24gc.img');
 
-const PRINT_SCRIPT = `machine.boot model="plus" rom="/opfs/images/rom/4D1F8172"
+// AppleTalk starts inactive, so the Chooser's "LaserWriter requires
+// AppleTalk" step this walks through appears.
+const PRINT_SCRIPT = `machine.boot model="plus" rom="/opfs/images/rom/4D1F8172" config="{\\"options\\":{\\"appletalk\\":\\"inactive\\"}}"
 scheduler.stop
 scheduler.mode = "turbo"
 machine.scsi.attach_hd "/opfs/images/hd/print-hd.img" 0

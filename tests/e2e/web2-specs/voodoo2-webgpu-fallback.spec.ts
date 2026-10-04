@@ -20,10 +20,10 @@ test("voodoo2_webgpu falls back to the thread backend, honestly, at creation", a
   expect(await probe(page, "machine.pci.slot[1].card.regs.raster")).toBe(
     "thread",
   );
-  // ...and the dialog would not have offered it: the profile omits the kind.
-  expect(
-    await probe(page, 'len(catalog.profile("pm7500").pci_slots[0].cards)'),
-  ).toBe("2");
+  // ...and the dialog would not have offered it: the WebGPU kind is the
+  // card's Rendering value, never a card of its own, so the tree lists the
+  // Mach64 and the Voodoo2 alone.
+  expect(await probe(page, 'len(catalog.profile("pm7500").cards)')).toBe("2");
   expect(await probe(page, "machine.pci.slot[1].card.regs.gpu_engaged")).toBe(
     "false",
   );
