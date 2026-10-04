@@ -65,7 +65,7 @@ bool nubus_video_mode_known(const char *id) {
 // The card node and its resource children carry the nubus_card_t as
 // instance_data, so their accessors read live card state (the display_t,
 // the declrom, the card engine) and copy nothing; the slot wrapper carries
-// only its slot number (an empty socket has no card to point at).
+// only its slot number.
 // Resolution and SYSTEM-tab enumeration both work through object_attach: the
 // `slot` indexed member returns the slot wrapper, whose attached `card` child
 // (and its attached resource children) the resolver/meta-walker discover.
@@ -207,11 +207,9 @@ static const class_desc_t nubus_card_class = {
 
 // --- slot wrapper node ------------------------------------------------------
 //
-// Slot nodes exist for every declared SOCKET (populated or not) and every
-// BUILTIN slot, so an empty socket can be configured for the next boot via
-// its staged attrs.  Instance data is a per-slot int (the slot number) —
-// NOT the card — because empty sockets have no card; the card CHILD node
-// keeps the card pointer as before.
+// Slot nodes describe what is installed: one per populated slot, carrying its
+// number and the card child.  Instance data is a per-slot int (the slot
+// number); the card CHILD node keeps the card pointer.
 static int s_slot_numbers[NUBUS_OBJ_SLOTS]; // instance data for slot nodes
 
 static int node_slot_number(struct object *self) {
@@ -223,97 +221,18 @@ static DEF_GETTER(slot_attr_number) {
     return val_int(node_slot_number(self));
 }
 
-// `slot[N].card_id` — stage a card pick for THIS slot for the next
-// machine.boot (the concrete-slot sibling of the `nubus.video_card`
-// wildcard alias; a concrete entry beats the wildcard).  Only SOCKET slots
-// accept a pick; reads return the staged id ("" when none, and always ""
-// on builtin slots).  Cleared when nubus_init consumes it.
-static DEF_GETTER(slot_attr_card_id_get) {
-    const char *id = nubus_staged_card_get(node_slot_number(self));
-    return val_str(id ? id : "");
-}
-
-static DEF_SETTER(slot_attr_card_id_set) {
-    int slot = node_slot_number(self);
-    if (in.kind != V_STRING) {
-        value_free(&in);
-        return val_err("slot[%X].card_id: expected card-id string (e.g. \"824gc\")", slot);
-    }
-    const char *id = in.s ? in.s : "";
-    const nubus_slot_decl_t *decl = nubus_slot_decl_get(g_obj_bus, slot);
-    if (!decl || decl->kind != NUBUS_SLOT_SOCKET) {
-        value_free(&in);
-        return val_err("slot[%X].card_id: slot is not a user-configurable socket", slot);
-    }
-    // "" clears; a non-empty id must name a registered card (typo guard).
-    if (*id && !nubus_card_find(id)) {
-        const char *near = nubus_card_suggest(id);
-        value_t err =
-            near ? val_err("slot[%X].card_id: unknown card id '%s' — did you mean '%s'? (see catalog.nubus_cards)",
-                           slot, id, near)
-                 : val_err("slot[%X].card_id: unknown card id '%s' (see catalog.nubus_cards)", slot, id);
-        value_free(&in);
-        return err;
-    }
-    nubus_staged_card_set(slot, id);
-    value_free(&in);
-    return val_none();
-}
-
-// `slot[N].video_mode` — stage a video-mode id for THIS slot for the next
-// machine.boot (concrete-slot sibling of the `nubus.video_mode` alias).
-// At boot the id is routed into the slot's resolved card kind; a mode that
-// doesn't belong to that card logs and is ignored.
-static DEF_GETTER(slot_attr_video_mode_get) {
-    const char *id = nubus_staged_mode_get(node_slot_number(self));
-    return val_str(id ? id : "");
-}
-
-static DEF_SETTER(slot_attr_video_mode_set) {
-    int slot = node_slot_number(self);
-    if (in.kind != V_STRING) {
-        value_free(&in);
-        return val_err("slot[%X].video_mode: expected string id (e.g. \"gc_640x480_8bpp\")", slot);
-    }
-    const char *id = in.s ? in.s : "";
-    const nubus_slot_decl_t *decl = nubus_slot_decl_get(g_obj_bus, slot);
-    if (!decl || decl->kind != NUBUS_SLOT_SOCKET) {
-        value_free(&in);
-        return val_err("slot[%X].video_mode: slot is not a user-configurable socket", slot);
-    }
-    if (*id && !video_mode_id_known(id)) {
-        value_t err = val_err("slot[%X].video_mode: unknown video-mode id '%s'", slot, id);
-        value_free(&in);
-        return err;
-    }
-    nubus_staged_mode_set(slot, id);
-    value_free(&in);
-    return val_none();
-}
-
 static const member_t slot_members[] = {
     {.kind = M_ATTR,
      .name = "number",
      .doc = "NuBus slot number ($9..$E)",
      .attr = {.type = V_INT, .presentation_flags = VAL_HEX, .get = slot_attr_number}},
-    {.kind = M_ATTR,
-     .name = "card_id",
-     .doc = "Staged card pick for this socket for the next machine.boot (\"\" = none)",
-     .flags = 0,
-     .attr = {.type = V_STRING, .get = slot_attr_card_id_get, .set = slot_attr_card_id_set}},
-    {.kind = M_ATTR,
-     .name = "video_mode",
-     .doc = "Staged video-mode id for this socket for the next machine.boot (\"\" = none)",
-     .flags = 0,
-     .attr = {.type = V_STRING, .get = slot_attr_video_mode_get, .set = slot_attr_video_mode_set}},
 };
 static const class_desc_t nubus_slot_class = {
     .name = "slot", .members = slot_members, .n_members = sizeof(slot_members) / sizeof(slot_members[0])};
 
 // --- indexed `slot` member: enumerate declared slots -------------------------
-// A slot node exists for every populated slot AND every declared (possibly
-// empty) SOCKET — nubus_objects_build decides; enumeration keys off the
-// node's existence so the two can't disagree.
+// A slot node exists for every populated slot -- nubus_objects_build decides;
+// enumeration keys off the node's existence so the two can't disagree.
 static struct object *nubus_slot_get(struct object *self, int index) {
     (void)self;
     if (!g_obj_bus || index < 0 || index >= NUBUS_OBJ_SLOTS)
@@ -384,12 +303,8 @@ void nubus_objects_build(nubus_bus_t *bus) {
     g_obj_bus = bus;
     for (int i = NUBUS_OBJ_FIRST; i <= NUBUS_OBJ_LAST; i++) {
         nubus_card_t *card = nubus_card(bus, i);
-        // A node exists for every populated slot and every declared SOCKET
-        // (even when empty — its staged card_id/video_mode attrs are how an
-        // empty socket gets configured for the next boot).
-        const nubus_slot_decl_t *decl = nubus_slot_decl_get(bus, i);
-        if (!card && (!decl || decl->kind != NUBUS_SLOT_SOCKET))
-            continue;
+        if (!card)
+            continue; // a node exists for every populated slot
         nubus_slot_nodes_t *n = &g_slot_nodes[i];
 
         s_slot_numbers[i] = i;
@@ -398,9 +313,6 @@ void nubus_objects_build(nubus_bus_t *bus) {
             continue;
         object_set_label(n->slot, "Slot");
         object_set_order(n->slot, i);
-
-        if (!card)
-            continue; // empty socket: just the wrapper + staged attrs
 
         n->card = object_new(&nubus_card_class, card, "card");
         if (n->card) {

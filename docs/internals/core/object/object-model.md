@@ -659,7 +659,7 @@ the level contract over every model in the registry.
 | State | `machine.boot` | `machine.rebuild` | `machine.restart` | `machine.reset` | `checkpoint.load` |
 |---|---|---|---|---|---|
 | Devices | New | New | **Kept** | **Kept** | New |
-| Model, RAM size, cards | From the document; each omitted field takes the model's default | From the record; per-slot picks replayed only where the user chose them | Unchanged | Unchanged | From the checkpoint's model id, RAM size and stored record |
+| Model, RAM size, cards | From the document; each omitted field takes the model's default | From the record (its slot entries as one `slots=`) | Unchanged | Unchanged | From the checkpoint's model id, RAM size and stored record (its slot entries) |
 | ROM bytes | Read from the `rom=` file before the running machine is touched, and built into the new machine's ROM region at construction | Read again from the recorded path, so a changed file is picked up | Unchanged | Unchanged | From the checkpoint, by content or file reference |
 | RAM contents | Zeroed (fresh `calloc`) | Zeroed | **Cleared** to zero | **Kept** | Restored |
 | CPU registers | Reset | Reset | Reset vector, reset-state SR/VBR/CACR, MMU and TTx enables off | The same | Restored |
@@ -672,7 +672,7 @@ the level contract over every model in the registry.
 | Scheduler pacing (`scheduler.mode`, `.speed`, `.max_speed`) | Host state (the platform's run loop): untouched, and the new machine runs under it | Untouched | Unchanged | Unchanged | Untouched: never in a checkpoint |
 | `machine.config.created` | Stamped now | **Preserved** | Unchanged | Unchanged | From the checkpoint's record |
 | vROM/PROM offer registries | Process-global; survive | Survive | Survive | Survive | Survive |
-| The explicit `vrom=`/`prom=` pick | The document's, replacing the previous one (none if the document names none); a rejected boot puts the running machine's back (`machine_config_set_explicit_picks`) | The record's | Unchanged | Unchanged | The checkpoint record's |
+| A slot's ROM file (`vrom=`/`prom=`, a slot's `rom=`) | The document's, an argument of that slot's card; never written to the offer registries | The record's slot entries | Unchanged | Unchanged | The checkpoint record's slot entries |
 | Object tree | Machine-scoped nodes rebuilt (`root_install`); process singletons (`machine`, `rom`, `vrom`, `prom`) stay | Rebuilt | Untouched | Untouched | Rebuilt |
 
 **`machine.boot` inherits nothing from the running machine.** The
@@ -685,17 +685,18 @@ the same path as `$ROM`, so a script re-boots with
 `machine.boot model=... rom="${$ROM}"`
 (`scripts/run-integration-test.sh`). To bring back the machine you have
 (including one just restored from a checkpoint), call `machine.rebuild`;
-a bare `machine.boot()` is an error. A new boot does still see four kinds
+a bare `machine.boot()` is an error. A new boot does still see three kinds
 of process-level state that are not part of any machine:
 
 - scheduler pacing (the table above);
 - the offer registries ([mac-rom.md §10](../../../reference/formats/mac-rom.md#10-rom-provisioning)),
-  though not the previous document's explicit `vrom=`/`prom=` pick;
-- per-slot staged picks the caller made before the boot
-  (`machine.nubus.slot[N].card_id` / `.video_mode`,
-  `machine.pci.slot[N].card_id`), each consumed by that boot;
+  which a boot reads and never writes;
 - the host share, published again for every new machine
   (`provision_default_share`).
+
+There is no way to configure the next machine except its document: the
+running machine's slot nodes describe what is installed, and a different
+card is a different `machine.boot`.
 
 **Device state is written to the device, never staged.** A caller who
 wants a different clock, PRAM byte or NVRAM setting writes it on the
@@ -759,32 +760,32 @@ old machine keeps running.
 | `rom` | string | **required** | Path to the ROM file. It must be readable and identify, by content id, as a known ROM whose compatible list contains `model` ([mac-rom.md §10](../../../reference/formats/mac-rom.md#10-rom-provisioning); `machine.c:873-899`). |
 | `ram` | uint (KB) | the model's `ram_default` | Must be one of the model's `ram_options` (`hw_profile_ram_option_allowed`, `machine_profile.h`); a restored checkpoint's size passes the same check. |
 | `rom2` | string | none | The second chip of a two-chip Lisa/XL ROM. It only has to be readable: the chips identify after interleaving, so per-file identification and the compatibility check are skipped (`machine.c:878-884`). |
-| `vrom` | string | resolved from the offers | An explicit NuBus declaration-ROM pick. The file must identify as a known declaration ROM (`vrom_identify_card`, `machine.c:964-969`). It then wins the pick order for the card its content provides. |
-| `video_card` | string | the slot default | Card id for the machine's **first** NuBus socket. Rejected on a model with no NuBus slots, and for an unknown id (with a "did you mean" hint) (`machine.c:901-912`). A per-slot `machine.nubus.slot[N].card_id` staged before the boot beats it for that slot. |
+| `slots` | string | the slots' own cards | Per-slot configuration, `SLOT=CARD[,key=value]*;...` (`machine_slots.c`). `SLOT` is the slot number as `machine.nubus.slot[N]` / `machine.pci.slot[N]` index it (decimal, or `$A` / `0xA`); `CARD` is a card id, `none` for an empty socket, or empty for the slot's own card. `mode=`, `custom=` and `rom=` set the slot's video mode, custom geometry and ROM file; any other key is a card option. Every entry is checked against its slot before teardown: the slot exists and takes a card, the card fits it, the mode belongs to the card, the geometry fits it, the card accepts each option, and the ROM identifies as the card's. |
+| `vrom` | string | resolved from the offers | A NuBus declaration-ROM file: the ROM of every slot whose card its content provides (sugar for those slots' `rom=`). The file must identify as a known declaration ROM (`vrom_identify_card`). |
+| `video_card` | string | the slot default | Card id for the machine's **first** NuBus socket (on a machine with none, its built-in slot): sugar for that slot's `slots=` entry, which it may not contradict. Rejected on a model with no NuBus slots, and for an unknown id (with a "did you mean" hint). |
 | `video_sense` | uint | the card's own default | Monitor sense: 0–7 is the passive code; 8–14 is Apple's indexed numbering for monitors that answer the extended probe (only the DAFB models it). Values up to 14 are accepted (`machine.c:933-935`). |
-| `video_mode` | string | the card's default | Video-mode id for the first socket. It must be a known mode id (`nubus_video_mode_known`, `machine.c:936`). |
-| `custom_mode` | string | none | Custom resolution `WxHxD` for the generic `8_24` kind. Parsed and rejected with the reason (`machine.c:957-961`). |
+| `video_mode` | string | the card's default | Video-mode id for the first socket (sugar for its `mode=`). It must belong to that slot's card. |
+| `custom_mode` | string | none | Custom resolution `WxHxD` for the first socket (sugar for its `custom=`); only the generic `8_24` kind takes one (its `custom_mode_fits` hook). Parsed and rejected with the reason. |
 | `monitor` | string | the model's default | Monitor strapped to the **built-in** video port. The value must be one of the family's monitor ids (see `catalog.profile`), and the model must have configurable built-in video. `none` leaves the port unconnected, which hands the screen to a NuBus card. It resolves to a sense code at construction (`machine.c:938-955`, `1047-1051`). |
-| `pci_card` | string | the slot default | Card id for the machine's **first** PCI socket. Rejected on a model with no PCI slots, and for an unknown id (`machine.c:913-924`). |
-| `prom` | string | resolved from the offers | An explicit PCI expansion-ROM pick. The file must identify as a known Open Firmware expansion ROM (`prom_identify_card`, `machine.c:970-977`). |
-| `pci_option` | string | none | `key=value[,key=value]` options for the `pci_card` socket (for example `vram=4m`). A malformed pair is logged and dropped. Whether a key means anything is up to the card's `stage_option` hook (`stage_pci_options`, `machine.c:806`). |
+| `pci_card` | string | the slot default | Card id for the machine's **first** PCI socket (sugar for its `slots=` entry). Rejected on a model with no PCI slots, and for an unknown id. |
+| `prom` | string | resolved from the offers | A PCI expansion-ROM file: the ROM of every slot whose card its content provides. The file must identify as a known Open Firmware expansion ROM (`prom_identify_card`). |
+| `pci_option` | string | none | `key=value[,key=value]` options for the `pci_card` socket (for example `vram=4m`; sugar for that slot's options). Each pair must be one the card's `accepts_option` hook accepts, or the boot is rejected. |
 
-After the per-field checks comes **strict card resolution**. A card the
-user *explicitly* picked (a staged per-slot entry, or the wildcard
-`video_card`/`pci_card` on the first socket) that needs a declaration ROM
-or FCode expansion ROM must resolve from the offer registry. Otherwise the
-boot is rejected before teardown (`validate_vrom_resolution` /
-`validate_prom_resolution`, `machine.c:745`/`775`). A socket that falls
-back to its *default* card degrades to an empty slot with a log instead,
-and a soldered-down card such as the SE/30's onboard video synthesises its
-own declaration ROM.
+The sugar and `slots=` resolve, once, into one entry per configured slot
+(`machine_slots_resolve`); below `machine_boot_apply` nothing knows the
+sugar exists. A card the **document names** that needs a declaration ROM
+or FCode expansion ROM must have one -- its slot's `rom=` or an offered
+file -- or the boot is rejected before teardown. A socket that falls back
+to its *default* card degrades to an empty slot with a log instead, and a
+soldered-down card such as the SE/30's onboard video synthesises its own
+declaration ROM.
 
 The resolved configuration is recorded in `machine.config` (`model`,
-`ram`, `rom`, `rom_id`, `rom2`, `vrom`, `vroms`, `slot_cards`,
-`video_card`, `video_sense`, `video_mode`, `custom_mode`, `monitor`,
-`pci_card`, `prom`, `pci_option`, `created`, `valid`;
-`src/core/machine_config.c`). `machine.rebuild` and `checkpoint.load`
-rebuild from it, the built-in `monitor` strap included.
+`ram`, `rom`, `rom_id`, `rom2`, `vroms`, `slot_cards`, `video_card`,
+`video_sense`, `video_mode`, `custom_mode`, `monitor`, `pci_card`,
+`pci_option`, `created`, `valid`; `src/core/machine_config.c`), with the
+resolved slot entries. `machine.rebuild` and `checkpoint.load` rebuild
+from it, the built-in `monitor` strap included.
 
 **Headless command line.** The CLI arguments fill the same document and
 call `machine_boot_apply` directly (`src/platform/headless/headless_main.c:1343-1350`):
@@ -795,6 +796,7 @@ call `machine_boot_apply` directly (`src/platform/headless/headless_main.c:1343-
 | `model=<id>` | `model` | Defaults to the first entry of the ROM's compatible list (for the Universal ROM, `se30`). An id outside that list is refused with the list printed (`headless_main.c:1303-1326`). |
 | `ram=<kb>` | `ram` | Parsed with `strtoul`. A non-number becomes `0`, which means the model default (`headless_main.c:1156`). |
 | `video_card=<id>` | `video_card` | |
+| `slots=<spec>` | `slots` | |
 | `monitor=<id>` | `monitor` | |
 | (none) | `video_sense` | Always `-1` (unset). |
 

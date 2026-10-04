@@ -21,7 +21,6 @@
 #include "host_input.h"
 #include "image.h"
 #include "image_wrap.h"
-#include "jmfb.h" // restored-record sense seeding on checkpoint load
 #include "keyboard.h"
 #include "log.h"
 #include "machine_config.h"
@@ -29,7 +28,7 @@
 #include "memory.h"
 #include "mouse.h"
 #include "nubus.h"
-#include "pci.h" // staged-pick re-seeding on checkpoint restore
+#include "pci.h"
 #include "ppc.h" // ppc_debug_if (the PPC main-CPU debug seam)
 #include "rom.h"
 #include "root.h"
@@ -1682,27 +1681,23 @@ config_t *system_restore(const char *filename) {
         return NULL;
     }
 
-    // Seed the construction channels from the restored record so socket
-    // resolution recreates the SAVED card configuration — the staged table
-    // was consumed by the previous boot, and a checkpoint written with a
-    // non-default card must not restore against the slot default (the
-    // strictly-ordered stream would misalign).
+    // Construction arguments from the restored record: the RAM size, the
+    // monitor sense and the expansion-slot entries the machine was built with,
+    // so the slots seat the SAVED card configuration (a checkpoint written
+    // with a non-default card must not restore against the slot default --
+    // the strictly-ordered stream would misalign).
     machine_build_opts_t build_opts = machine_build_opts_default();
     build_opts.ram_kb = restored_record.ram_kb;
-    if (restored_record.video_card[0])
-        nubus_staged_card_set(NUBUS_STAGED_WILDCARD, restored_record.video_card);
-    if (restored_record.video_mode[0])
-        nubus_staged_mode_set(NUBUS_STAGED_WILDCARD, restored_record.video_mode);
-    if (restored_record.custom_mode[0])
-        nubus_staged_custom_mode_set(NUBUS_STAGED_WILDCARD, restored_record.custom_mode);
+    if (restored_record.n_slots < 0 || restored_record.n_slots > MACHINE_SLOTS_MAX) {
+        LOG_WITH(log_register_category("ckpt"), 0, "Error: checkpoint %s carries %d slot entries", filename,
+                 (int)restored_record.n_slots);
+        checkpoint_close(checkpoint);
+        return NULL;
+    }
+    build_opts.n_slots = restored_record.n_slots;
+    memcpy(build_opts.slots, restored_record.slots, sizeof(build_opts.slots));
     // The sense goes into the build options, which every video model
-    // reads -- the JMFB cards, the DAFB and PDM's Ariel alike.  This used
-    // to call jmfb_pending_sense_set() and note that "the DAFB's half is
-    // NOT staged here: dafb.h is a machine header and core may not
-    // include it", so the Quadras carried their sense through the
-    // checkpoint as device state instead.  machine_build_opts_t lives in
-    // core, so one channel now serves both and the layering test is
-    // satisfied by construction rather than by a second mechanism.
+    // reads -- the JMFB cards, the DAFB and PDM's Ariel alike.
     if (restored_record.video_sense >= 0)
         build_opts.video_sense = restored_record.video_sense;
     // The built-in monitor strap resolves to a sense code exactly as
@@ -1712,28 +1707,6 @@ config_t *system_restore(const char *filename) {
         uint8_t mon_sense = 0;
         if (profile->builtin_video->monitor_sense(restored_record.monitor, &mon_sense))
             build_opts.video_sense = mon_sense;
-    }
-    // The record's explicit vrom=/prom= picks replace whatever the
-    // running machine registered.
-    machine_config_set_explicit_picks(restored_record.vrom, restored_record.prom);
-    // The PCI half of the same rule: a checkpoint written with a
-    // socketed PCI card (and its options) must re-seat that card, or
-    // the slot resolves its default (usually empty) and the
-    // strictly-ordered PCI device stream misaligns on the first
-    // record the missing card wrote.
-    if (restored_record.pci_card[0])
-        pci_staged_card_set(PCI_STAGED_WILDCARD, restored_record.pci_card);
-    pci_staged_option_set_spec(PCI_STAGED_WILDCARD, restored_record.pci_option);
-    // ...and the explicit per-slot picks beyond the wildcard, the
-    // multi-card surface machine.restart already replays.
-    for (int i = 0; i < restored_record.n_slot_cards; i++) {
-        const machine_config_slot_card_t *e = &restored_record.slot_cards[i];
-        if (!e->explicit_pick)
-            continue;
-        if (e->bus_kind == MC_BUS_PCI)
-            pci_staged_card_set(e->slot, e->card_id);
-        else
-            nubus_staged_card_set(e->slot, e->card_id);
     }
 
     // Fresh vROM-pick list for the restore construction (the card loaders
@@ -1761,8 +1734,6 @@ config_t *system_restore(const char *filename) {
         // beyond "Failed to read checkpoint".
         if (prev)
             root_install(prev);
-        // ...and its explicit picks: the installed record is still prev's.
-        machine_config_set_explicit_picks(machine_config_record()->vrom, machine_config_record()->prom);
         return NULL;
     }
 

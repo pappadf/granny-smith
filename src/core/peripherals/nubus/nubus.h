@@ -45,7 +45,7 @@ typedef struct nubus_slot_decl {
     nubus_slot_kind_t kind;
     const char *builtin_card_id; // BUILTIN: card-id resolved via nubus_card_find()
     const char *default_card; // SOCKET: factory-default population when the
-                              // user hasn't staged a pick (NULL = ships empty)
+                              // boot document names no card (NULL = ships empty)
 } nubus_slot_decl_t;
 
 // True iff card kind `kind` may be seated in slot `s`.  Compatibility is
@@ -53,7 +53,7 @@ typedef struct nubus_slot_decl {
 // attachment (card_attach_t); nobody enumerates (machine, card) pairs.
 // Today's rule is the bus standard's: any NuBus-attach card fits any
 // user-configurable slot.  Shared by the catalog.profile encoder and
-// nubus_init's pick validation so the two can never diverge.
+// the boot document's slot validation so the two can never diverge.
 bool nubus_card_fits_socket(const nubus_slot_decl_t *s, const nubus_card_kind_t *kind);
 
 // Standard slot space base for slot s (s ∈ $9..$E):
@@ -108,11 +108,10 @@ static inline uint32_t nubus_super_slot_base(int slot) {
 // and the machine has always excluded it.
 #define NUBUS_BERR_HI_EXCL_SLOT_E 0xFDFFFFFFu // == nubus_slot_base(0xD) + 0xFFFFFF
 
-// Bus controller.  Walks the slot table at init; for each BUILTIN entry
-// looks up .builtin_card_id via nubus_card_find() and calls the resolved
-// factory.  For the VIDEO entry (at most one per machine) it reads the
-// user's pick via the video.* pending statics and resolves through the
-// same path.  Returns NULL on failure.
+// Bus controller.  Walks the slot table at init: each slot seats the card
+// the boot document's entry for it names (cfg->build_opts, validated by
+// machine_slots_resolve), else its declared builtin / default card, and the
+// card's init gets the slot's entry.  Returns NULL on failure.
 nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoint_t *cp);
 
 // Serialise per-card state (framebuffer, palette, mode) for every seated card
@@ -121,31 +120,6 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
 void nubus_checkpoint_save(nubus_bus_t *bus, checkpoint_t *cp);
 void nubus_checkpoint_restore(nubus_bus_t *bus, checkpoint_t *cp);
 void nubus_delete(nubus_bus_t *bus);
-
-// === Staged per-slot configuration ==========================================
-//
-// User picks for the NEXT machine.boot live in a small staged table keyed by
-// slot number, consumed (and cleared) by nubus_init.  Slot 0 is the WILDCARD
-// entry meaning "the machine's first SOCKET" — the machine-independent
-// staging channel behind `machine.nubus.video_card` (and the headless
-// `video_card=` startup arg), preserved from the single-pending era.
-// Concrete slots ($9..$E) are staged via `machine.nubus.slot[N].card_id` /
-// `.video_mode`; a concrete entry beats the wildcard for that slot.  At
-// boot, a staged card is honoured iff it fits the slot per
-// nubus_card_fits_socket (else it logs and the slot falls back to
-// default_card); a staged mode is routed to the resolved card kind's
-// pending-mode channel just before its factory runs.
-#define NUBUS_STAGED_WILDCARD 0 // staged-table key for "first socket"
-void nubus_staged_card_set(int slot, const char *id); // NULL/"" clears
-const char *nubus_staged_card_get(int slot);
-void nubus_staged_mode_set(int slot, const char *id); // NULL/"" clears
-const char *nubus_staged_mode_get(int slot);
-
-// Staged "WxHxD" custom resolution:
-// the generic display kinds generate a video sResource for it and boot
-// their default monitor at that geometry.  NULL/"" clears.
-void nubus_staged_custom_mode_set(int slot, const char *spec);
-const char *nubus_staged_custom_mode_get(int slot);
 
 // Parse/validate a "WxHxD" custom-mode spec (shared by boot validation
 // and card_init).  Returns false with *err set (static string) on a
@@ -157,8 +131,7 @@ bool nubus_custom_mode_parse(const char *spec, uint32_t *out_w, uint32_t *out_h,
 bool nubus_video_mode_known(const char *id);
 
 // The slot declaration for slot `slot` on the running bus, or NULL when the
-// bus doesn't declare it.  Backs the object model's staged-attr validation
-// and empty-socket node enumeration.
+// bus doesn't declare it.
 const nubus_slot_decl_t *nubus_slot_decl_get(nubus_bus_t *bus, int slot);
 
 // Per-slot IRQ assertion.  The bus aggregates and drives VIA2 PA[0..5]

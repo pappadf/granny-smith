@@ -172,15 +172,15 @@ bool declrom_layout_chip(const uint8_t *chip, size_t chip_size, uint8_t *bus_buf
 // its byteLanes byte (see declrom_layout_chip; the Format Block always ends
 // at the slot top, so a smaller ROM revision occupies the top of a window
 // sized for the largest one).  Candidates come exclusively from the offer
-// registry the platform populated before boot (vrom.offer / machine.boot vrom= — see
-// vrom.h): they are tried in pick order (explicit vrom= first, then the
-// catalog's preferred revision, then catalog order).  Core never fabricates
-// a search path.
+// registry the platform populated before boot (vrom.offer — see vrom.h),
+// tried in pick order (the catalog's preferred revision, then catalog order)
+// -- or, when `rom` is given (the slot's own file from the boot document),
+// that file alone.  Core never fabricates a search path.
 // On success returns true and stores a freshly-strdup'd copy of the path it
 // loaded from in *out_path (caller frees); on miss returns false and leaves
 // *out_path NULL.  Shared by every card with a real ROM file (JMFB, 24AC,
 // 8•24 GC, SE/30 built-in video).
-bool declrom_load_vrom_card(const char *card_id, uint8_t *bus_buf, size_t bus_size, char **out_path);
+bool declrom_load_vrom_card(const char *card_id, const char *rom, uint8_t *bus_buf, size_t bus_size, char **out_path);
 
 // Install a BUILT-IN declaration ROM image (a gsvrom.h blob) into the tail
 // of the card's bus window, exactly as declrom_load_vrom_card lays out a

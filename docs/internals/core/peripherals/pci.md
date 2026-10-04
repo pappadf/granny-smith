@@ -2,13 +2,12 @@
 
 `src/core/peripherals/pci/` is the platform-agnostic PCI substrate: the bus
 controller, the generic type-0 configuration header, the card-kind
-registry, staged per-slot configuration and the `machine.pci.*` object
-model. It is the PCI sibling of `nubus/`, and deliberately a separate
+registry, the slot walk and the `machine.pci.*` object model. It is the PCI sibling of `nubus/`, and deliberately a separate
 module — see "Why not one expansion-bus abstraction" below.
 
 | File | What it holds |
 |---|---|
-| `pci.h` / `pci.c` | bus controller: buses, devices, decode windows, config dispatch, slot table, kind registry, staged config, lifecycle and interrupt fan-outs |
+| `pci.h` / `pci.c` | bus controller: buses, devices, decode windows, config dispatch, slot table, kind registry, slot walk, lifecycle and interrupt fan-outs |
 | `pci_card.h` | `pci_device_t` / `pci_device_ops_t` / `pci_card_kind_t` — the only header a card driver under `cards/` needs |
 | `config_space.h` / `config_space.c` | the generic type-0 header: IDs, class, command/status, BAR latch + sizing, expansion-ROM BAR, interrupt line |
 | `pci_class.c` | the `machine.pci.slot[N]` object surface |
@@ -23,7 +22,7 @@ Host **bridges** are chipset, so they live with their family
 A machine has one `pci_root_t` and one `pci_bus_t` per host bridge. The
 family creates the buses, hands each one the decode **windows** its bridge
 forwards, and seats its own builtin devices; the slot walk then seats
-whatever the user staged into a socket. A **device** answers config
+whatever the boot document names for each socket. A **device** answers config
 cycles: registered → the generic header plus whatever quirks its ops
 claim; unregistered IDSEL → all-ones, which is the entire "empty slot"
 model. A device's **regions** are not geographic the way NuBus slot space
@@ -114,33 +113,28 @@ decodes is chipset truth owned by the family, which *sockets* exist is
 topology owned by the profile, and which *cards* fit is computed. Three
 parties, three files.
 
-## Staged configuration
+## Slot configuration
 
-User picks for the next `machine.boot` live in a staged table keyed by
-slot, consumed **and cleared** by `pci_seat_slots`. Slot 0 is the wildcard
-— "the machine's first socket" — which is what `machine.boot`'s
-`pci_card=` writes; concrete slots are staged through
-`machine.pci.slot[N].card_id`. Precedence is concrete > wildcard >
-`default_card`, and a staged pick is honoured only if it fits
-(`pci_card_fits_socket`); a rejection logs at a visible level rather than
-silently booting something else.
+What each socket seats is the boot document's: `machine.boot slots=` names
+a card (or `none`), its options and its expansion-ROM file per slot, and
+`pci_card=` / `pci_option=` / `prom=` are sugar for the first socket (and,
+for `prom=`, every slot whose card the file provides).
+`machine_slots_resolve` validates every entry before the running machine
+is touched — the card fits (`pci_card_fits_socket`), the kind accepts each
+option (`accepts_option`), the PROM identifies as the card's — and puts the
+result in `cfg->build_opts`. `pci_seat_slots` seats each socket from its
+entry, else its `default_card`, and hands the factory its slot's entry.
 
-Per-slot **options** go through one keyed channel routed to the resolved
-kind's `stage_option()` hook, and card-specific object children through
-its `attach_objects()` hook. Both exist so the generic layer never learns
-a card's identity — the two places `nubus.c` had to include card headers.
+Card-specific object children go through the kind's `attach_objects()`
+hook, and options through `accepts_option()`, so the generic layer never
+learns a card's identity — the two places `nubus.c` had to include card
+headers.
 
-The **resolved** picks are captured in the built-from record
-(`machine_config_note_slot_card`) for *both* buses, so `machine.rebuild`
-re-seats every populated slot instead of only the wildcard one. Each entry
-records whether the USER named the card or the slot resolved its own
-default, and **rebuild replays only the explicit ones** — that distinction
-is load-bearing, not bookkeeping: an explicit pick whose declaration ROM
-cannot be resolved *fails* the boot, while a default degrades to an empty
-slot with a log, so replaying a default as an explicit pick would make
-`machine.rebuild` reject itself on any machine with no ROM offered.
-(`machine.restart` builds nothing: the cards it power-cycles are the ones
-already seated.)
+The seated cards are listed in the built-from record
+(`machine_config_note_slot_card`) for *both* buses, and the record keeps
+the resolved slot entries, which a checkpoint restore builds the slots
+from. (`machine.restart` builds nothing: the cards it power-cycles are the
+ones already seated.)
 
 ## Interrupts
 
@@ -153,10 +147,10 @@ own source bit in the machine's interrupt controller.
 
 ## Object model
 
-`machine.pci.slot[N]` carries `number`, `label`, `bus`, `device`, `irq`
-and the read/write staged `card_id`. A node exists for **every declared
-socket and builtin, populated or not** — an empty socket's staged
-attribute is exactly how the next boot gets configured. A populated slot
+`machine.pci.slot[N]` carries `number`, `label`, `bus`, `device` and
+`irq`. A node exists for **every declared socket and builtin, populated or
+not** — the board's topology. It configures nothing: a different card is a
+different `machine.boot`. A populated slot
 grows a `card` subtree with the identity attributes and a `config` child
 (Advanced) exposing the live header and one `bar[i]` node per declared BAR
 plus the expansion-ROM BAR. `catalog.pci_cards` lists the registry.
@@ -256,7 +250,7 @@ learns any card's identity and declaration order does not matter.
 The generic core, the TNT family migrated onto it (Bandit/Chaos as adapters,
 Control as a registered BUILTIN card kind, Grand Central's config presence
 at device 16), slot topology for all three TNT models, the object model,
-staged configuration and the profile surface — and now the PCI I/O window
+per-slot configuration and the profile surface — and now the PCI I/O window
 on both Bandits, non-BAR region decode, expansion-ROM provisioning
 (`docs/reference/hardware/pci/expansion-rom.md`), and the first pluggable card kind,
 the Apple Accelerated PCI Graphics Card
@@ -282,12 +276,12 @@ rule — MMU not in the path — rather than through the bus).
 ## Card options
 
 `machine.boot`'s `pci_option="key=value[,key=value]"` carries options to
-the card `pci_card=` names. The generic layer only splits and stages them;
-each pair is offered to the kind's `stage_option()` hook, which accepts or
-rejects it, so no card identity reaches the boot path. A malformed or
-unrecognised pair is logged and dropped rather than failing the boot —
-this layer cannot tell a typo from a key it does not know, and refusing
-would make every unknown option fatal.
+the card `pci_card=` names (a `slots=` entry carries them for any slot).
+The generic layer only splits them; each pair is offered to the kind's
+`accepts_option()` hook before the boot begins, and one the card does not
+accept rejects the boot, so no card identity reaches the boot path and a
+typo is never silently the default. The factory reads its options from its
+slot's entry (`slot_opts_option`).
 
 A kind also DECLARES the options a user should be offered
 (`pci_card_kind_t.options`), and `catalog.profile` publishes them, so a
@@ -297,10 +291,9 @@ not advertise (the Mach64 GX accepts `monitor=` for debugging but offers
 only `vram=`, because it senses its monitor for itself).
 
 A PCI display card's video MODE is a different matter and still has no
-path: `video_mode` is validated against the NuBus catalog
-(`nubus_video_mode_known`) and rejects a PCI card's mode ids, so the web UI
-hides the Video Mode row for a PCI pick and the card uses the mode its
-driver programs.
+path: `video_mode=` is NuBus sugar and a PCI slot entry takes no `mode=`
+(the boot is rejected), so the web UI hides the Video Mode row for a PCI
+pick and the card uses the mode its driver programs.
 
 `pci_bus_is_populated()` exists for one caller: a family that has to pick
 between two bridges claiming the same physical range, where the tie is

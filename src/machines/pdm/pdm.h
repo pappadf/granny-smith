@@ -200,7 +200,7 @@ typedef struct pdm_video {
     uint8_t *blank; // black raster presented while the blank bit is set
     uint8_t sense; // monitor strap (PDM_SENSE_NONE = nothing connected)
     // Set when the substrate restored `sense` from a checkpoint, so
-    // pdm_video_init leaves it alone instead of taking the staged default.
+    // pdm_video_init leaves it alone instead of taking the build-options default.
     bool sense_restored;
     // machine.video -- the framebuffer node every display source exposes
     // (display_class.h).

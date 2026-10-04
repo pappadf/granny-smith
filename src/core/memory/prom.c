@@ -279,7 +279,7 @@ static offer_registry_t s_offers = {
 };
 
 void prom_offer(const char *path) {
-    offer_registry_add(&s_offers, path, false);
+    offer_registry_add(&s_offers, path);
 }
 
 void prom_offer_dir(const char *dir, const char *ext) {
@@ -291,44 +291,33 @@ void prom_offer_clear(void) {
 }
 
 const char *prom_offer_find(const char *card_id, int idx, size_t *out_size) {
-    return offer_registry_find(&s_offers, card_id, idx, out_size);
-}
-
-bool prom_offer_info(const char *path, uint32_t *out_crc, bool *out_explicit) {
-    return offer_registry_info(&s_offers, path, out_crc, out_explicit);
+    return offer_registry_find(&s_offers, card_id, idx, out_size, NULL);
 }
 
 bool prom_card_catalogued(const char *card_id) {
     return offer_registry_catalogued(&s_offers, card_id);
 }
 
-bool prom_card_resolvable(const char *card_id) {
+bool prom_card_resolvable(const char *card_id, const char *rom) {
+    if (rom && *rom) {
+        prom_id_t id;
+        return prom_identify_card(rom, &id) && strcmp(id.card_id, card_id) == 0;
+    }
     return offer_registry_resolvable(&s_offers, card_id);
 }
 
-int prom_set_path(const char *path) {
-    if (!path || !*path) {
-        gs_outf("prom: expected a non-empty path\n");
-        return -1;
-    }
-    offer_registry_add(&s_offers, path, true);
-    return 0;
-}
-
-void prom_clear_explicit(void) {
-    offer_registry_clear_explicit(&s_offers);
-}
-
-bool prom_load_card(const char *card_id, uint8_t **out_buf, size_t *out_size, char **out_path) {
+bool prom_load_card(const char *card_id, const char *rom, uint8_t **out_buf, size_t *out_size, char **out_path) {
     if (out_buf)
         *out_buf = NULL;
     if (out_size)
         *out_size = 0;
     if (out_path)
         *out_path = NULL;
+    // The slot's own file is the only candidate when the document names one
+    // (machine_boot_apply checked it provides this card).
     for (int idx = 0;; idx++) {
         size_t declared = 0;
-        const char *path = prom_offer_find(card_id, idx, &declared);
+        const char *path = (rom && *rom) ? (idx == 0 ? rom : NULL) : prom_offer_find(card_id, idx, &declared);
         if (!path)
             break;
         size_t size = 0;

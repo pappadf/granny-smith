@@ -630,10 +630,6 @@ typedef struct mach64 {
     } host_op;
 } mach64_t;
 
-// The staged options a `pci_card=` boot can carry, consumed by the factory.
-static char s_staged_monitor[32];
-static uint32_t s_staged_vram = MACH64_VRAM_2MB;
-
 // ============================================================
 // The register file — two faces, one file
 // ============================================================
@@ -3301,11 +3297,11 @@ static const pci_device_ops_t ragepro_ops = {
 };
 
 // ============================================================
-// Staged options
+// Options
 // ============================================================
-// Routed through the KIND's stage_option hook, so the generic layer never
-// learns this card's identity.  Returning false makes the generic layer
-// log the key as not understood and drop it.
+// Checked through the KIND's accepts_option hook before the boot begins, so
+// the generic layer never learns this card's identity; the factory reads
+// them from its slot's entry.
 
 // What a frontend may offer.  The monitor list is deliberately NOT here:
 // this card SENSES its monitor over the DAC's ID pins (mach64_sense_step),
@@ -3324,37 +3320,29 @@ static const pci_card_option_t mach64_options[] = {
     {.key = NULL},
 };
 
-static bool mach64_stage_option(const char *key, const char *value) {
-    if (!key || !value)
-        return false;
-    if (strcmp(key, "monitor") == 0) {
-        for (const mach64_monitor_sense_t *s = mach64_sense; s->id; s++) {
-            if (strcmp(s->id, value) == 0) {
-                snprintf(s_staged_monitor, sizeof s_staged_monitor, "%s", value);
-                return true;
-            }
-        }
-        LOG(0,
-            "unknown monitor id '%s' — the card offers 14in_rgb, 15in_multi, 17in_multi, "
-            "20in_multi, 21in_color",
-            value);
-        return true; // the key IS ours; the value was the problem
+// The monitor a `monitor=` option straps, or NULL when `value` names none.
+static const mach64_monitor_sense_t *mach64_monitor_by_id(const char *value) {
+    for (const mach64_monitor_sense_t *s = mach64_sense; s->id; s++) {
+        if (strcmp(s->id, value) == 0)
+            return s;
     }
-    if (strcmp(key, "vram") == 0) {
-        if (strcmp(value, "2m") == 0) {
-            s_staged_vram = MACH64_VRAM_2MB;
-            return true;
-        }
-        if (strcmp(value, "4m") == 0) {
-            s_staged_vram = MACH64_VRAM_4MB;
-            return true;
-        }
-        LOG(0,
-            "unknown vram size '%s' — the card takes 2m (soldered) or 4m (the "
-            "109-31600-00 expansion module)",
-            value);
-        return true;
-    }
+    return NULL;
+}
+
+// The VRAM a `vram=` option selects, or 0 when `value` is not a size.
+static uint32_t mach64_vram_by_id(const char *value) {
+    if (strcmp(value, "2m") == 0)
+        return MACH64_VRAM_2MB;
+    if (strcmp(value, "4m") == 0)
+        return MACH64_VRAM_4MB; // the 109-31600-00 expansion module
+    return 0;
+}
+
+static bool mach64_accepts_option(const char *key, const char *value) {
+    if (strcmp(key, "monitor") == 0)
+        return mach64_monitor_by_id(value) != NULL;
+    if (strcmp(key, "vram") == 0)
+        return mach64_vram_by_id(value) != 0;
     return false;
 }
 
@@ -3599,7 +3587,7 @@ static void mach64_attach_objects(pci_device_t *dev, struct object *card_node) {
 // The factory and the card kind
 // ============================================================
 
-static pci_device_t *mach64_factory(int slot_index, config_t *cfg, checkpoint_t *cp) {
+static pci_device_t *mach64_factory(int slot_index, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
     (void)cp;
     pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
     mach64_t *m = (mach64_t *)calloc(1, sizeof(*m));
@@ -3618,14 +3606,14 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, checkpoint_t 
 
     // The card is useless without its own firmware: Open Firmware runs the
     // FCode to build the node, and Mac OS loads the ndrv the same image
-    // publishes.  An explicitly picked card that cannot resolve one has
+    // publishes.  A card the document named that cannot resolve one has
     // already failed machine.boot's validation; reaching here with nothing
     // means a slot DEFAULT could not resolve, which degrades to an empty
     // slot with a log rather than killing the boot.
     uint8_t *rom = NULL;
     size_t rom_size = 0;
     char *rom_path = NULL;
-    if (!prom_load_card("mach64_gx", &rom, &rom_size, &rom_path)) {
+    if (!prom_load_card("mach64_gx", opts->rom[0] ? opts->rom : NULL, &rom, &rom_size, &rom_path)) {
         LOG(0,
             "slot %d: no expansion ROM available for the Mach64 GX — the card cannot enumerate "
             "without its own FCode, so the slot is left empty",
@@ -3638,7 +3626,8 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, checkpoint_t 
     dev->rom_size = rom_size;
     free(rom_path);
 
-    m->vram_size = s_staged_vram;
+    const char *vram = slot_opts_option(opts, "vram");
+    m->vram_size = vram ? mach64_vram_by_id(vram) : MACH64_VRAM_2MB;
     m->vram = (uint8_t *)calloc(1, m->vram_size);
     m->blank = (uint8_t *)calloc(1, m->vram_size);
     m->compose = (uint8_t *)calloc(1, m->vram_size);
@@ -3652,20 +3641,12 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, checkpoint_t 
         return NULL;
     }
 
-    // The strapped monitor: the staged pick if the user made one, else the
-    // 14" AppleColor, which is the safe default — a primary code of 6 can
-    // never trip the card's "No monitor" bail (that needs 7 AND $3F).
-    m->mon = &mach64_sense[0];
-    if (s_staged_monitor[0]) {
-        for (const mach64_monitor_sense_t *s = mach64_sense; s->id; s++) {
-            if (strcmp(s->id, s_staged_monitor) == 0) {
-                m->mon = s;
-                break;
-            }
-        }
-    }
-    s_staged_monitor[0] = '\0';
-    s_staged_vram = MACH64_VRAM_2MB;
+    // The strapped monitor: the slot's monitor= option if the document gave
+    // one, else the 14" AppleColor, which is the safe default — a primary
+    // code of 6 can never trip the card's "No monitor" bail (that needs 7
+    // AND $3F).
+    const char *monitor = slot_opts_option(opts, "monitor");
+    m->mon = monitor ? mach64_monitor_by_id(monitor) : &mach64_sense[0];
 
     mach64_reset(dev, cfg);
 
@@ -3708,7 +3689,7 @@ const pci_card_kind_t mach64_gx_kind = {
     .monitors = mach64_monitors,
     .factory = mach64_factory,
     .options = mach64_options,
-    .stage_option = mach64_stage_option,
+    .accepts_option = mach64_accepts_option,
     .attach_objects = mach64_attach_objects,
 };
 
@@ -3728,8 +3709,9 @@ const pci_card_kind_t mach64_gx_kind = {
 // The monitor is Apple's 14" RGB (sense 6, extended from its straps): a
 // 640 x 480 display whose code every Mac driver knows.
 
-static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, checkpoint_t *cp) {
+static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
     (void)cp;
+    (void)opts;
     pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
     mach64_t *m = (mach64_t *)calloc(1, sizeof(*m));
     if (!dev || !m) {

@@ -662,7 +662,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
 
     // The PCI slot walk: seats every device the machine's slot table names
     // — Control (the BUILTIN video entry, whose factory allocates its VRAM
-    // and display) and any card the user staged into a socket — then
+    // and display) and any card the boot document names for a socket — then
     // projects the whole topology into the object model.
     pci_seat_slots(cfg->pci, cp);
 

@@ -247,6 +247,8 @@ static void print_usage(const char *program) {
     printf("  fd1=<file>      Floppy disk image for drive 1 (external)\n");
     printf("  video_card=<id> NuBus video card for the configurable slot (e.g. 824gc);\n");
     printf("                  default: the machine's default card\n");
+    printf("  slots=<spec>    expansion-slot cards, 'SLOT=CARD[,key=value]*;...'\n");
+    printf("                  (e.g. slots='$A=824gc,mode=gc_640x480_8bpp;$B=8_24')\n");
     printf("  monitor=<id>    monitor on the built-in video port ('none' = unconnected,\n");
     printf("                  which hands the screen to a NuBus card)\n");
     printf("  script=<file>   Shell script file to execute at startup (optional)\n");
@@ -1276,6 +1278,7 @@ int main(int argc, char *argv[]) {
     uint32_t ram_kb = 0;
     const char *model_override = NULL;
     const char *video_card_arg = NULL;
+    const char *slots_arg = NULL;
     const char *monitor_arg = NULL;
     int quiet = 0;
     int script_stdin = 0;
@@ -1449,6 +1452,11 @@ int main(int argc, char *argv[]) {
 
         if ((value = parse_arg(arg, "video_card")) != NULL) {
             video_card_arg = value;
+            continue;
+        }
+
+        if ((value = parse_arg(arg, "slots")) != NULL) {
+            slots_arg = value;
             continue;
         }
 
@@ -1639,6 +1647,7 @@ int main(int argc, char *argv[]) {
         .ram_kb = ram_kb,
         .rom = rom_file,
         .video_card = video_card_arg,
+        .slots = slots_arg,
         .monitor = monitor_arg,
         .video_sense = -1,
     };

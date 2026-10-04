@@ -344,7 +344,7 @@ covers both chips, so a swapped pair never passes it.
 
 Declaration ROMs and expansion ROMs are not named in the boot document by
 default. The platform **offers** candidate files, and a card factory asks
-for the ROM of its card kind. The registry (`src/core/memory/offer_registry.c`)
+for the ROM of its card kind unless its slot names one. The registry (`src/core/memory/offer_registry.c`)
 has two instances, `vrom.c` and `prom.c`, with the same behaviour:
 
 - **Registration by content.** `offer_registry_add` runs the kind's
@@ -352,32 +352,32 @@ has two instances, `vrom.c` and `prom.c`, with the same behaviour:
   strays are expected when a whole directory is offered. The registry
   keeps one entry per content id, and offering the same bytes again
   refreshes the stored path (`offer_registry.c:19-70`).
-- **Pick order.** First the explicit pick, then catalog rows marked
-  `preferred`, then the remaining catalog rows in order. No filename ever
-  enters the comparison (`offer_registry_find`, `offer_registry.c:83`). A
-  card loader tries the candidates in that order and takes the first that
-  lays out cleanly (`declrom_load_vrom_card`,
-  `src/core/peripherals/nubus/declrom.c:956`; `prom_load_card`). Its
-  choice is recorded in `machine.config.vroms`.
-- **Explicit pick.** `machine.boot vrom=`/`prom=` identifies the file and
-  offers it as the explicit pick (`vrom_set_path` / `prom_set_path`;
-  `machine.c:964-984`). A registry holds one explicit pick at a time, and
-  the pick belongs to that boot document only: every boot first clears the
-  previous one (`machine_config_set_explicit_picks`), so a later boot that
-  omits `vrom=` resolves by catalog order again. A boot rejected before
-  teardown puts the running machine's pick back.
-- **Strict resolution.** A card the user picked explicitly that finds no
-  offer fails the boot before teardown. A default card degrades to an
-  empty slot, and the SE/30's onboard video synthesises a fallback ROM
-  (`machine.c:737-798`;
-  `src/machines/glue/builtin_se30_video.c:163`). See
+- **Pick order.** Catalog rows marked `preferred`, then the remaining
+  catalog rows in order. No filename ever enters the comparison
+  (`offer_registry_find`). A card loader tries the candidates in that order
+  and takes the first that lays out cleanly (`declrom_load_vrom_card`,
+  `src/core/peripherals/nubus/declrom.c`; `prom_load_card`). Its choice is
+  recorded in `machine.config.vroms`.
+- **A slot's own ROM.** A boot document may name the file for a slot:
+  `machine.boot slots="9=824gc,rom=<file>"`, or `vrom=`/`prom=` as sugar for
+  every slot whose card the file provides. The file is identified and
+  checked against the slot's card before teardown, and it is handed to that
+  card's constructor as an argument: the loader takes it instead of the
+  catalog (`declrom_load_vrom_card(card_id, rom, ...)`,
+  `prom_load_card(card_id, rom, ...)`). A boot never writes the registry,
+  so a later boot that names no file resolves by catalog order again.
+- **Strict resolution.** A card the document names that finds no ROM — its
+  slot's file or an offer — fails the boot before teardown
+  (`vrom_card_resolvable(card, rom)` / `prom_card_resolvable(card, rom)`,
+  checked by `machine_slots_resolve`). A default card degrades to an empty
+  slot, and the SE/30's onboard video synthesises a fallback ROM
+  (`src/machines/glue/builtin_se30_video.c`). See
   [object-model.md, Boot arguments](../../internals/core/object/object-model.md#boot-arguments).
 - **Lifetime.** The registries are process-global. Offers survive
   `machine.boot`, `machine.restart` and `checkpoint.load`, and are dropped
   only by `vrom_delete`/`prom_delete`. The card ROMs themselves are not
-  checkpointed; on restore they are resolved again from the registry, with
-  the record's `vrom` and `prom` made the explicit picks again
-  (`system_restore`).
+  checkpointed; on restore each slot's is resolved again from the record's
+  slot entry (its named file) or the registry (`system_restore`).
 - **Hooks.** `catalog.vroms.offer(path)` and `catalog.proms.offer(path)`
   register one file and return `true` only if it was recognised.
 

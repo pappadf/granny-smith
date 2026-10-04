@@ -215,8 +215,9 @@ regeneration determinism.
 - **24AC direct colour.** 16/32-bpp boot is partially validated — 16 bpp
   reaches the desktop; colour fidelity at the direct depths is unverified.
 - **Custom resolutions on other kinds.** `custom_mode=` is wired for the
-  generic `8_24` (JMFB) kind; the other generic kinds fall back to their
-  fixed monitor sets (they log and ignore a staged custom mode).
+  generic `8_24` (JMFB) kind; the other generic kinds take none, and a
+  boot document that gives one is rejected (their kinds have no
+  `custom_mode_fits`).
 
 ## See also
 

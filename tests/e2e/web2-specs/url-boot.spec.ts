@@ -178,9 +178,9 @@ test('?hd0= that is not a hard disk is rejected, and the machine boots without i
   expect(files.filter((p) => p.startsWith('/opfs/upload/'))).toEqual([]);
 });
 
-// The URL's vROM is part of the boot document, so it is the boot's explicit
-// pick for its card -- not a file left in the ROM catalog for the card to
-// find if it happens to win the catalog's pick order.
+// The URL's vROM is part of the boot document, so it is the ROM of the slot
+// whose card it provides -- not a file left in the ROM catalog for the card
+// to find if it happens to win the catalog's pick order.
 test('?vrom= goes in the boot document: the card runs the URL’s declaration ROM', async ({ page }) => {
   test.setTimeout(120_000);
   await routeRom(page, 'url-iicx.rom', IICX_ROM);
@@ -189,15 +189,12 @@ test('?vrom= goes in the boot document: the card runs the URL’s declaration RO
   await page.goto('/index.html?rom=url-iicx.rom&model=iicx&vrom=url-card.vrom');
   await expect(page.locator('.toast .msg').filter({ hasText: 'Booted iicx from URL parameters' }))
     .toBeVisible({ timeout: 60_000 });
-  expect(await gsEvalInPage(page, 'machine.config.vrom')).toBe('/opfs/images/vrom/d1629664');
   const picks = (await gsEvalInPage(page, 'machine.config.vroms')) as Array<{
     card_id: string;
     path: string;
-    explicit: boolean;
   }>;
   expect(picks.find((p) => p.card_id === 'mdc_8_24')).toMatchObject({
     path: '/opfs/images/vrom/d1629664',
-    explicit: true,
   });
   expect(await gsEvalInPage(page, 'machine.nubus.slot[9].card.declrom.present')).toBe(true);
 });

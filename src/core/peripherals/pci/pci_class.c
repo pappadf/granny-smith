@@ -5,11 +5,10 @@
 // The `machine.pci.*` object-model surface (docs/internals/core/peripherals/pci.md,
 // "Object model").
 //
-// The nubus_class.c shape, ported — with its two warts fixed.  A slot node
-// exists for EVERY declared socket and builtin, populated or not, because
-// an empty socket's staged `card_id` attribute is how the next boot gets
-// configured; a populated slot grows a `card` subtree whose `config` child
-// exposes the live header (command/status and the six BARs plus the
+// The nubus_class.c shape, ported.  A slot node exists for every declared
+// slot and describes the board: its declaration (number, label, bus, device,
+// irq) and, when populated, a `card` subtree whose `config` child exposes the
+// live header (command/status and the six BARs plus the
 // expansion-ROM BAR).  Card-specific children are attached through the
 // KIND's attach_objects() hook, never by identity tests here.
 
@@ -25,10 +24,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define PCI_OBJ_SLOTS 16 // slot numbers are 1-based; [0] is the wildcard key
+#define PCI_OBJ_SLOTS 16 // slot numbers are 1-based
 
-// One declared slot's node tree.  `dev` is NULL for an empty socket — its
-// staged attrs are the whole point of the node existing.
+// One declared slot's node tree.  `dev` is NULL for an empty socket.
 typedef struct pci_slot_nodes {
     struct object *slot;
     struct object *card;
@@ -293,46 +291,11 @@ static DEF_GETTER(slot_attr_irq) {
     return val_int(d ? d->int_line : -1);
 }
 
-// `slot[N].card_id` — stage a card pick for THIS slot for the next
-// machine.boot (the concrete-slot sibling of machine.boot's `pci_card=`
-// wildcard; a concrete entry beats the wildcard).  Only SOCKET slots
-// accept a pick; "" clears.  Consumed and cleared by pci_seat_slots.
-static DEF_GETTER(slot_attr_card_id_get) {
-    const char *id = pci_staged_card_get(node_slot_number(self));
-    return val_str(id ? id : "");
-}
-
-static DEF_SETTER(slot_attr_card_id_set) {
-    int slot = node_slot_number(self);
-    if (in.kind != V_STRING) {
-        value_free(&in);
-        return val_err("slot[%d].card_id: expected a card-id string (see catalog.pci_cards)", slot);
-    }
-    const char *id = in.s ? in.s : "";
-    const pci_slot_decl_t *decl = pci_slot_decl_get(g_obj_root, slot);
-    if (!decl || decl->kind != PCI_SLOT_SOCKET) {
-        value_free(&in);
-        return val_err("slot[%d].card_id: slot is not a user-configurable socket", slot);
-    }
-    if (*id && !pci_card_find(id)) {
-        const char *near = pci_card_suggest(id);
-        value_t err = near ? val_err("slot[%d].card_id: unknown card id '%s' — did you mean '%s'? "
-                                     "(see catalog.pci_cards)",
-                                     slot, id, near)
-                           : val_err("slot[%d].card_id: unknown card id '%s' (see catalog.pci_cards)", slot, id);
-        value_free(&in);
-        return err;
-    }
-    pci_staged_card_set(slot, id);
-    value_free(&in);
-    return val_none();
-}
-
 static const member_t slot_members[] = {
     {.kind = M_ATTR,
      .name = "number",
      .doc = "Logical slot number (1-based, in the machine's declared order)",
-     .attr = {.type = V_INT, .get = slot_attr_number}},
+     .attr = {.type = V_INT, .get = slot_attr_number}  },
     {.kind = M_ATTR,
      .name = "label",
      .doc = "Slot name silkscreened on the board (\"A1\", \"VCI\")",
@@ -340,20 +303,15 @@ static const member_t slot_members[] = {
     {.kind = M_ATTR,
      .name = "bus",
      .doc = "Host-bridge bus index this slot sits on",
-     .attr = {.type = V_INT, .get = slot_attr_bus}},
+     .attr = {.type = V_INT, .get = slot_attr_bus}     },
     {.kind = M_ATTR,
      .name = "device",
      .doc = "PCI device number (IDSEL AD line) on that bus",
-     .attr = {.type = V_INT, .get = slot_attr_device}},
+     .attr = {.type = V_INT, .get = slot_attr_device}  },
     {.kind = M_ATTR,
      .name = "irq",
      .doc = "Interrupt-controller line the slot's strapped INTA-D reaches",
-     .attr = {.type = V_INT, .get = slot_attr_irq}},
-    {.kind = M_ATTR,
-     .name = "card_id",
-     .doc = "Staged card pick for this socket for the next machine.boot (\"\" = none)",
-     .flags = 0,
-     .attr = {.type = V_STRING, .get = slot_attr_card_id_get, .set = slot_attr_card_id_set}},
+     .attr = {.type = V_INT, .get = slot_attr_irq}     },
 };
 static const class_desc_t pci_slot_class = {
     .name = "slot", .members = slot_members, .n_members = sizeof(slot_members) / sizeof(slot_members[0])};
@@ -425,7 +383,7 @@ void pci_objects_build(pci_root_t *root) {
         object_set_label(n->slot, decl->label ? decl->label : "Slot");
         object_set_order(n->slot, i);
         if (!n->dev)
-            continue; // empty socket: the wrapper plus its staged attrs
+            continue; // empty socket: its declaration only
 
         n->card = object_new(&pci_card_class, n->dev, "card");
         if (!n->card)

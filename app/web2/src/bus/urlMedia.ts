@@ -21,7 +21,7 @@
 // from the scratch area, and every exit discards the scratch file.
 //
 // The ROM and a `vrom=` go into the one machine.boot document: the URL's
-// declaration ROM is that boot's explicit pick for its card, ahead of any
+// declaration ROM is the ROM of the slot whose card it provides, ahead of any
 // other revision of it already stored.  (Storing it also offers it to the
 // core's ROM catalog, for later boots; that is not how this boot gets it.)
 //
@@ -214,7 +214,7 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   // One boot document: the core validates model/rom together, installs the
   // ROM itself and boots the model's own default RAM (there was a 4096 KB
   // fallback here, which two models cannot boot).  The URL's vROM is part of
-  // it -- an explicit vrom= wins the card's pick -- unless it could not be
+  // it -- vrom= is the ROM of its card's slot -- unless it could not be
   // had (not downloaded, or not a vROM): then the boot goes ahead without
   // it, and says so.
   const vrom = paths.get('vrom');

@@ -217,7 +217,7 @@ static void rig_setup(void) {
     // Bandit reverses its eight byte lanes for a little-endian client.
     pci_bus_set_lane_reverse(g_bus, true);
 
-    g_dev = cirrus_54m30_kind.factory(0, &g_cfg, NULL);
+    g_dev = cirrus_54m30_kind.factory(0, &g_cfg, NULL, &(slot_opts_t){.slot = 1});
     ASSERT_TRUE(g_dev != NULL);
     pci_bus_add_device(g_bus, g_dev, 15);
 

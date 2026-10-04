@@ -7,17 +7,11 @@
 include "../lib/mac.script"
 
 
-# Seat both cards before the boot consumes the staging channels: the 24AC
-# in socket $D (where the single-card tests put their card) and the 8*24 GC
-# in socket $E.
-machine.nubus.slot[13].card_id = "display_card_24ac"
-machine.nubus.slot[14].card_id = "824gc"
-# Per-slot staging seats a card but does NOT carry a mode, unlike the
-# video_card= wildcard the single-card tests used — so the 24AC's 8 bpp
-# mode has to be staged for its slot explicitly, or it comes up at the
-# card default and the depth assert below fails.
-machine.nubus.slot[13].video_mode = "rgb_640x480_8bpp"
-machine.boot model="q700" ram=8192 rom="${$ROM}"
+# Both cards in one boot document: the 24AC in socket $D (13, where the
+# single-card tests put their card) at 8 bpp — without the mode it comes up
+# at the card default and the depth assert below fails — and the 8*24 GC in
+# socket $E (14).
+machine.boot model="q700" ram=8192 rom="${$ROM}" slots="13=display_card_24ac,mode=rgb_640x480_8bpp;14=824gc"
 machine.rtc.time = 3000000000
 machine.scsi.attach_hd "$WORK_DIR/hd.img" 0
 scheduler.run 700000000
@@ -25,13 +19,11 @@ wait_stable(1800000000)
 
 assert machine.id == "q700" "machine.id != q700"
 
-# Both staged cards came up, each with its declaration ROM bound.
+# Both cards came up, each with its declaration ROM bound.
 assert machine.nubus.slot[13].card.name == "Apple Macintosh Display Card 24AC" "slot $D card != 24AC"
 assert machine.nubus.slot[14].card.name == "Apple Macintosh Display Card 8•24 GC" "slot $E card != 8•24 GC"
 assert machine.nubus.slot[13].card.declrom.present "slot $D declaration ROM not present"
 assert machine.nubus.slot[14].card.declrom.present "slot $E declaration ROM not present"
-assert machine.nubus.slot[13].card_id == "" "staged card_id for slot $D not consumed at boot"
-assert machine.nubus.slot[14].card_id == "" "staged card_id for slot $E not consumed at boot"
 
 # From q700-24ac: the 24AC's own framebuffer geometry/depth.
 assert machine.nubus.slot[13].card.framebuffer.width == 640 "24AC fb width != 640"

@@ -78,12 +78,12 @@ LOG_USE_CATEGORY_NAME("board");
 // An earlier revision of this file declared $B/$C/$D from the schematic
 // silkscreen (051-0333 rev A sheet 22, where the 96-pin connectors
 // J11/J12/J13 are labelled NuBus Slot B, C and D).  That numbering is a
-// board-level label, not the slot ID the software uses: a card staged into
+// board-level label, not the slot ID the software uses: a card seated in
 // $B lands on interrupt bit 2, which nothing enables and nothing services,
 // so its /NMRQ latched and stayed latched forever.  The Slot Manager then
 // never ran that slot's VBL task queue — which, when the card is the main
 // screen, is where the cursor task lives, so the mouse stopped moving.
-// Each ships empty; the user stages a card per slot.
+// Each ships empty; the boot document names a card per slot.
 const struct nubus_slot_decl pdm_nubus_slots_cde[] = {
     {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET},
     {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET},
@@ -440,10 +440,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // NuBus: the bus controller seats whatever cards the slots carry, and
     // each card registers its own regions over the empty windows BART
     // claimed above.  Card state comes LAST in the stream on purpose — a
-    // machine can restore with fewer cards than it saved (the checkpoint
-    // record carries only the wildcard video-card pick, so a card staged
-    // into a specific socket does not come back), and a short read must not
-    // shift anything that follows it.
+    // short read of a card's state must not shift anything that follows it.
     cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, cp);
     if (cp)
         nubus_checkpoint_restore(cfg->nubus, cp);

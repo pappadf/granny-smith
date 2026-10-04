@@ -9,8 +9,8 @@
 // kind; the command register gates the decode; the expansion-ROM BAR's
 // enable bit is honoured; bar_map fires exactly on real transitions; the
 // bridge-window dispatcher routes to the right device and faults on
-// everything else; and staged card picks resolve by the documented
-// precedence and are consumed at the slot walk.
+// everything else; and the slot walk seats each socket from the boot
+// document's entry for it (cfg->build_opts), else its declared default.
 //
 // The empty-slot coverage in particular is the gap this suite closes: the
 // hand-rolled model it replaces was never unit-tested at all.
@@ -35,13 +35,16 @@ const pci_card_kind_t tnt_control_kind = {
     .id = "tnt_control", .display_name = "Control / Chaos on-board video", .attach = PCI_ATTACH_BUILTIN};
 // ...and the pluggable one, from core/peripherals/pci/cards/mach64gx.c, which
 // this suite also does not link (it would drag in the whole prom/object
-// stack).  requires_prom is kept true so the socket-fit and staged-pick
-// rows below exercise a card with a real ROM requirement.
+// stack).  requires_prom is kept true so the socket-fit rows below exercise a
+// card with a real ROM requirement; the factory is the counting one, so the
+// slot walk can be watched seating it.
+static pci_device_t *counting_factory(int slot_index, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts);
 const pci_card_kind_t mach64_gx_kind = {.id = "mach64_gx",
                                         .display_name = "Apple Accelerated PCI Graphics Card (ATI Mach64 GX)",
                                         .attach = PCI_ATTACH_PCI,
                                         .requires_prom = true,
-                                        .card_class = "display"};
+                                        .card_class = "display",
+                                        .factory = counting_factory};
 // ...and the beige G3's on-board Rage Pro, the same file's builtin variant.
 const pci_card_kind_t ati_rage_pro_kind = {.id = "ati_rage_pro",
                                            .display_name = "ATI 3D Rage Pro (on-board)",
@@ -679,12 +682,15 @@ TEST(test_slot_interrupts) {
 
 static int g_factory_calls;
 static int g_factory_slots[8];
+static const char *g_factory_vram[8]; // each call's vram= option, or NULL
 
-static pci_device_t *counting_factory(int slot_index, config_t *cfg, checkpoint_t *cp) {
+static pci_device_t *counting_factory(int slot_index, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
     (void)cfg;
     (void)cp;
-    if (g_factory_calls < 8)
+    if (g_factory_calls < 8) {
         g_factory_slots[g_factory_calls] = slot_index;
+        g_factory_vram[g_factory_calls] = slot_opts_option(opts, "vram");
+    }
     g_factory_calls++;
     pci_device_t *d = (pci_device_t *)calloc(1, sizeof(pci_device_t));
     if (!d)
@@ -714,29 +720,6 @@ TEST(test_card_fits_socket) {
     ASSERT_TRUE(!pci_card_fits_socket(&socket, NULL));
 }
 
-TEST(test_staged_precedence_and_consumption) {
-    pci_staged_clear_all();
-    // The wildcard is the machine-independent channel; a concrete entry
-    // beats it for that slot.
-    pci_staged_card_set(PCI_STAGED_WILDCARD, "wild");
-    pci_staged_card_set(3, "concrete");
-    ASSERT_TRUE(strcmp(pci_staged_card_get(PCI_STAGED_WILDCARD), "wild") == 0);
-    ASSERT_TRUE(strcmp(pci_staged_card_get(3), "concrete") == 0);
-    // "" clears.
-    pci_staged_card_set(3, "");
-    ASSERT_TRUE(pci_staged_card_get(3) == NULL);
-
-    // Keyed options round-trip and clear.
-    pci_staged_option_set(1, "video_mode", "640x480");
-    ASSERT_TRUE(strcmp(pci_staged_option_get(1, "video_mode"), "640x480") == 0);
-    ASSERT_TRUE(pci_staged_option_get(1, "nope") == NULL);
-    pci_staged_option_set(1, "video_mode", "");
-    ASSERT_TRUE(pci_staged_option_get(1, "video_mode") == NULL);
-
-    pci_staged_clear_all();
-    ASSERT_TRUE(pci_staged_card_get(PCI_STAGED_WILDCARD) == NULL);
-}
-
 TEST(test_slot_walk) {
     config_t *cfg = test_cfg();
     static const pci_slot_decl_t slots[] = {
@@ -749,16 +732,48 @@ TEST(test_slot_walk) {
     pci_bus_t *bus = pci_bus_create(root, "test", 0);
     pci_init(root, slots);
 
-    // A socket ships empty unless something is staged, so nothing is seated
-    // and the declarations are still visible.
+    // A socket ships empty unless the boot document names a card for it, so
+    // nothing is seated and the declarations are still visible.
     g_factory_calls = 0;
-    pci_staged_clear_all();
     pci_seat_slots(root, NULL);
     ASSERT_EQ_INT(g_factory_calls, 0);
     ASSERT_TRUE(pci_slot_decl_get(root, 2)->int_line == 24);
     ASSERT_TRUE(pci_slot_decl_get(root, 9) == NULL);
     ASSERT_TRUE(pci_bus_cfg_read(bus, 13, 0, PCI_CFG_ID) == 0xFFFFFFFFu);
     pci_root_delete(root);
+}
+
+// The slot walk seats what the boot document's entries say, slot by slot: a
+// named card, an emptied socket, and a socket the document says nothing about
+// (its declared default) -- and each factory gets its own slot's entry.
+TEST(test_slot_walk_seats_the_documents_entries) {
+    config_t *cfg = test_cfg();
+    static const pci_slot_decl_t slots[] = {
+        {.slot = 1, .kind = PCI_SLOT_SOCKET, .label = "A1", .bus = 0, .device = 13, .default_card = "mach64_gx"},
+        {.slot = 2, .kind = PCI_SLOT_SOCKET, .label = "B1", .bus = 0, .device = 14, .default_card = "mach64_gx"},
+        {.slot = 3, .kind = PCI_SLOT_SOCKET, .label = "C1", .bus = 0, .device = 15},
+        {0},
+    };
+    cfg->build_opts = machine_build_opts_default();
+    cfg->build_opts.n_slots = 2;
+    cfg->build_opts.slots[0] = (slot_opts_t){.slot = 2, .empty = true};
+    cfg->build_opts.slots[1] =
+        (slot_opts_t){.slot = 3, .card = "mach64_gx", .n_options = 1, .options = {{"vram", "4m"}}};
+    pci_root_t *root = pci_root_create(cfg);
+    pci_bus_t *bus = pci_bus_create(root, "test", 0);
+    pci_init(root, slots);
+
+    g_factory_calls = 0;
+    pci_seat_slots(root, NULL);
+    ASSERT_EQ_INT(g_factory_calls, 2);
+    ASSERT_EQ_INT(g_factory_slots[0], 1); // the default, no options
+    ASSERT_TRUE(g_factory_vram[0] == NULL);
+    ASSERT_EQ_INT(g_factory_slots[1], 3); // the document's card and option
+    ASSERT_TRUE(g_factory_vram[1] && strcmp(g_factory_vram[1], "4m") == 0);
+    ASSERT_TRUE(pci_slot_device(root, 2) == NULL); // emptied despite its default
+    ASSERT_TRUE(pci_bus_cfg_read(bus, 14, 0, PCI_CFG_ID) == 0xFFFFFFFFu);
+    pci_root_delete(root);
+    cfg->build_opts = machine_build_opts_default();
 }
 
 // pci_bus_is_populated is the whole question behind "which bridge decodes
@@ -799,8 +814,8 @@ int main(void) {
     RUN(test_fixed_region_contiguous);
     RUN(test_slot_interrupts);
     RUN(test_card_fits_socket);
-    RUN(test_staged_precedence_and_consumption);
     RUN(test_slot_walk);
+    RUN(test_slot_walk_seats_the_documents_entries);
     RUN(test_bus_population);
     fprintf(stderr, "pci: all tests passed\n");
     return 0;

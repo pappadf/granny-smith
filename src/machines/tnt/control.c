@@ -735,9 +735,10 @@ static const pci_device_ops_t control_pci_ops = {
 // The card kind.  Control is soldered down, so it attaches BUILTIN and is
 // instantiable only where a machine's slot table names it — it can never
 // be offered on a socket (pci_card_fits_socket).
-static pci_device_t *control_factory(int slot_index, config_t *cfg, checkpoint_t *cp) {
+static pci_device_t *control_factory(int slot_index, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
     (void)slot_index;
     (void)cp;
+    (void)opts;
     tnt_state_t *st = tnt_st(cfg);
     pci_device_t *dev = calloc(1, sizeof(*dev));
     if (!dev)

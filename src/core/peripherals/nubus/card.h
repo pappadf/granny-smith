@@ -8,6 +8,7 @@
 #define NUBUS_CARD_H
 
 #include "common.h"
+#include "machine_build_opts.h" // slot_opts_t
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -30,8 +31,10 @@ typedef struct nubus_card nubus_card_t;
 typedef struct nubus_card_ops {
     // Called once during machine init.  Returns 0 on success.  The card
     // may allocate VRAM, register host-backed regions on the bus map, and
-    // populate any internal state.
-    int (*init)(nubus_card_t *card, config_t *cfg, checkpoint_t *cp);
+    // populate any internal state.  `opts` is what the boot document says
+    // about this slot (never NULL; empty fields mean the card's defaults):
+    // its video mode, custom geometry and declaration-ROM file.
+    int (*init)(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts);
 
     // Called during machine teardown, in inverse init order.
     void (*teardown)(nubus_card_t *card, config_t *cfg);
@@ -156,13 +159,12 @@ typedef struct nubus_card_kind {
     // Nine kinds also carried five byte-identical `factory_common` bodies to
     // do the allocation.
     const nubus_card_ops_t *ops;
-    // Hand a staged `machine.nubus.video_mode` id to this kind's pending-mode
-    // channel -- the per-driver static its factory consumes at init.  NULL for
-    // a kind with no video-mode staging.  Without it the bus controller had to
-    // if/else over card identity to route a staged mode, which is core code
-    // knowing every display card by name -- exactly what
-    // pci_card_kind_t.stage_option exists to avoid on the PCI side.
-    void (*stage_video_mode)(const char *id);
+    // Can the kind build at a w x h x d custom geometry (custom_mode=)?  The
+    // generic kinds that generate their declaration ROM answer; NULL for a
+    // kind with no custom geometry.  The boot document is checked against it
+    // before the running machine is touched, so init never sees a geometry
+    // the card cannot build.  On false *why is a static reason.
+    bool (*custom_mode_fits)(uint32_t w, uint32_t h, uint32_t d, const char **why);
 
     // Attach this kind's OWN object children under the generic card node.
     // The same seam PCI has: a card's private nodes belong to the card, not

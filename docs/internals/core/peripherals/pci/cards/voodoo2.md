@@ -62,8 +62,8 @@ Delivered in steps; this document grows as each one lands.
   identity-scanout simplification); each swapbufferCMD flips the
   front/back mapping at issue.  Checkpoint
   restore of a socketed card fixed in the GENERIC layer
-  (`system_restore` now re-seeds the PCI staged picks from the restored
-  record, the exact NuBus parallel that was already there).  web2's
+  (`system_restore` builds the slots from the restored record's slot
+  entries, NuBus and PCI alike).  web2's
   Expansion Slots section gains the one non-display socket picker.
   Gate: `suite-tnt`'s `tnt-voodoo2-display` row — take/release against a
   live 7.6 desktop with the release matching the pre-takeover golden

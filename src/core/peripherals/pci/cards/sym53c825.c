@@ -574,11 +574,13 @@ static pci_device_t *sym825_factory_for(int slot_index, config_t *cfg, checkpoin
     return dev;
 }
 
-static pci_device_t *sym825_ch0_factory(int slot_index, config_t *cfg, checkpoint_t *cp) {
+static pci_device_t *sym825_ch0_factory(int slot_index, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
+    (void)opts;
     return sym825_factory_for(slot_index, cfg, cp, 0);
 }
 
-static pci_device_t *sym825_ch1_factory(int slot_index, config_t *cfg, checkpoint_t *cp) {
+static pci_device_t *sym825_ch1_factory(int slot_index, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
+    (void)opts;
     return sym825_factory_for(slot_index, cfg, cp, 1);
 }
 

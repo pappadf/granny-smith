@@ -134,9 +134,10 @@ static void rbv_video_apply_clut_window(rbv_video_priv_t *p) {
 
 // === Card vtable ============================================================
 
-static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
+static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
     (void)cfg;
     (void)cp;
+    (void)opts;
     rbv_video_priv_t *p = calloc(1, sizeof(*p));
     if (!p)
         return -1;

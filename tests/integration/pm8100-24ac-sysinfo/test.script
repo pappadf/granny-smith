@@ -37,24 +37,16 @@
 include "../lib/mac.script"
 
 # --- Boot the 8100 with a genuine-vROM 24AC in NuBus slot $C ----------------
-# Staging is a two-step because `machine.nubus.slot[N]` only exists once a
-# machine with that socket has been built: boot the 8100 (zero
-# instructions), park the pick in slot $C, boot again.  Per-slot staging
-# seats a card but carries no mode, unlike the video_card= wildcard, so the
-# 8-bpp mode is staged for the slot explicitly (the quadra-dual-card
-# lesson) — without it the card comes up at its power-on default and the
+# The boot document's entry for slot $C (12) names the card and its 8-bpp
+# mode — without the mode the card comes up at its power-on default and the
 # depth assertion below fails.
-machine.boot model="pm8100" ram=16384 rom="${$ROM}"
-machine.rtc.time = 0xE0000000
-machine.nubus.slot[12].card_id = "display_card_24ac"
-machine.nubus.slot[12].video_mode = "rgb_640x480_8bpp"
-
+#
 # Cold-boot System 7.5 from the prepared 77 MB SCSI image to the Finder
 # desktop.  Identical recipe to suite-pdm's boot_pdm_75 (see its header for
 # the budgets): chip init and bus scan park in WaitForPollDrive, the Ticks
 # poke skips the 20 s spin-up window, then boot blocks -> CFM -> extensions
 # -> desktop.
-machine.boot model="pm8100" ram=16384 rom="${$ROM}"
+machine.boot model="pm8100" ram=16384 rom="${$ROM}" slots="12=display_card_24ac,mode=rgb_640x480_8bpp"
 machine.rtc.time = 0xE0000000
 machine.scsi.attach_hd "../../data/systems/system_7_5_0_77mb_mode32_24ac.img" 0
 scheduler.run 360000000
@@ -65,7 +57,6 @@ wait_stable(300000000)
 assert machine.id == "pm8100" "machine.id != pm8100"
 assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC" "slot $C card != 24AC (generic-vROM twin seated instead?)"
 assert machine.nubus.slot[12].card.declrom.present "slot $C declaration ROM not present"
-assert machine.nubus.slot[12].card_id == "" "staged card_id not consumed at boot"
 # The sockets either side stay empty — an unpopulated BART window must look
 # empty to us and to the Slot Manager alike.
 assert try(machine.nubus.slot[13].card.name, none) == none "slot $D is populated"

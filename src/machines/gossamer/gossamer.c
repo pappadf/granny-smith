@@ -410,7 +410,7 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     gos_heathrow_attach_objects(cfg);
     gos_memory_layout(cfg);
 
-    // The PCI slot walk: builtins and whatever the user staged.
+    // The PCI slot walk: builtins and whatever the boot document names.
     pci_seat_slots(cfg->pci, cp);
 
     // Substrate tail (mirrored by gossamer_checkpoint_save).

@@ -4,8 +4,8 @@
 # all-ones, the type-0 header assembles from the declaration, BAR sizing
 # works by masked read-back, the command register gates the decode, the
 # expansion-ROM enable bit is honoured, bridge windows dispatch to the
-# right device and fault on everything else, and staged slot picks resolve
-# by the documented precedence.
+# right device and fault on everything else, and an empty socket seats
+# nothing.
 
 TEST_NAME    := pci
 TEST_SRCS    := test.c

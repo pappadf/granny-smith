@@ -234,7 +234,7 @@ static offer_registry_t s_offers = {
 };
 
 void vrom_offer(const char *path) {
-    offer_registry_add(&s_offers, path, false);
+    offer_registry_add(&s_offers, path);
 }
 
 void vrom_offer_dir(const char *dir, const char *ext) {
@@ -245,40 +245,20 @@ void vrom_offer_clear(void) {
     offer_registry_clear(&s_offers);
 }
 
-const char *vrom_offer_find(const char *card_id, int idx, size_t *out_chip_size) {
-    return offer_registry_find(&s_offers, card_id, idx, out_chip_size);
-}
-
-bool vrom_offer_info(const char *path, uint32_t *out_crc, bool *out_explicit) {
-    return offer_registry_info(&s_offers, path, out_crc, out_explicit);
+const char *vrom_offer_find(const char *card_id, int idx, size_t *out_chip_size, uint32_t *out_crc) {
+    return offer_registry_find(&s_offers, card_id, idx, out_chip_size, out_crc);
 }
 
 bool vrom_card_catalogued(const char *card_id) {
     return offer_registry_catalogued(&s_offers, card_id);
 }
 
-bool vrom_card_resolvable(const char *card_id) {
-    return offer_registry_resolvable(&s_offers, card_id);
-}
-
-// ============================================================================
-// Explicit pick (machine.boot vrom=)
-// ============================================================================
-
-int vrom_set_path(const char *path) {
-    if (!path || !*path) {
-        gs_outf("vrom: expected a non-empty path\n");
-        return -1;
+bool vrom_card_resolvable(const char *card_id, const char *rom) {
+    if (rom && *rom) {
+        vrom_id_t id;
+        return vrom_identify_card(rom, &id) && strcmp(id.card_id, card_id) == 0;
     }
-    // The boot document's vrom= explicit pick: an offer that wins the pick
-    // order for whichever card its content provides.  An unrecognised file
-    // is dropped by the offer (with a log).
-    offer_registry_add(&s_offers, path, true);
-    return 0;
-}
-
-void vrom_clear_explicit(void) {
-    offer_registry_clear_explicit(&s_offers);
+    return offer_registry_resolvable(&s_offers, card_id);
 }
 
 // ============================================================================

@@ -15,6 +15,7 @@
 #include "declrom.h"
 #include "gsvrom.h"
 #include "test_assert.h"
+#include "vrom.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -22,23 +23,22 @@
 #include <string.h>
 
 // --- Stubs for declrom.c's loader-side dependencies (unused here) -----------
-void machine_config_note_vrom(const char *card_id, const char *path, uint32_t crc, bool explicit_pick) {
+void machine_config_note_vrom(const char *card_id, const char *path, uint32_t crc) {
     (void)card_id;
     (void)path;
     (void)crc;
-    (void)explicit_pick;
 }
-const char *vrom_offer_find(const char *card_id, int idx, size_t *out_chip_size) {
+bool vrom_identify_card(const char *path, vrom_id_t *out) {
+    (void)path;
+    (void)out;
+    return false;
+}
+const char *vrom_offer_find(const char *card_id, int idx, size_t *out_chip_size, uint32_t *out_crc) {
     (void)card_id;
     (void)idx;
     (void)out_chip_size;
-    return NULL;
-}
-bool vrom_offer_info(const char *path, uint32_t *out_crc, bool *out_explicit) {
-    (void)path;
     (void)out_crc;
-    (void)out_explicit;
-    return false;
+    return NULL;
 }
 
 // --- Monitor tables mirroring the card kinds' --------------------------------

@@ -47,9 +47,6 @@ assert machine.pci.slot[4].card.name == "Control" "Control not seated from the s
 # one entry, and every compatible socket is offered it with no machine edit.
 assert catalog.pci_cards == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu, ati_rage_pro]" "card registry"
 
-# --- Staged picks: the surface exists and starts clear. ----------------------
-assert machine.pci.slot[1].card_id == "" "an empty socket must start with no staged pick"
-
 # --- The config-cycle contract, before a single instruction runs. ------------
 # Bandit 1's own header at device 11 (kPCIBridgeSelfDevice): one-hot
 # IDSEL $00000800, vendor $106B device $0001 -> LE dword $0001106B.
@@ -211,11 +208,12 @@ machine.memory.poke.l(0xF4800000, 0x00000000)
 # on the boot that ran OF's probe, Control's VRAM BAR was assigned at
 # $90000000 and the ladder's gray desktop is drawn through it.
 
-# --- A staged pick that does not FIT leaves the socket empty. ----------------
+# --- Naming the machine's own builtin changes nothing. ------------------------
 # tnt_control is a soldered-down kind (BUILTIN attach), so it can never be
-# seated in a socket: compatibility is computed, not enumerated.
+# seated in a socket: compatibility is computed, not enumerated.  pci_card=
+# naming it is "this machine with its Control", and the socket stays empty.
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="tnt_control"
-assert try(machine.pci.slot[1].card.name, none) == none "a non-fitting staged card must not be seated"
+assert try(machine.pci.slot[1].card.name, none) == none "a builtin kind must not be seated in a socket"
 # An unknown id is rejected before the running machine is touched.
 assert !machine.boot(model="pm9500", rom="${$ROM}", pci_card="nonesuch") "unknown pci_card id must be rejected"
 # So is a real card that fits no socket of this model: the Network Server's
@@ -223,10 +221,9 @@ assert !machine.boot(model="pm9500", rom="${$ROM}", pci_card="nonesuch") "unknow
 assert !machine.boot(model="pm9500", rom="${$ROM}", pci_card="cirrus_54m30") "a card that fits no socket must be rejected"
 assert machine.id == "pm9500" "machine survives the rejected boot"
 
-# --- The built-from record captures the resolved per-slot picks. -------------
-# Control is the slot table's own builtin, not a user pick, so it is
-# recorded as NOT explicit — machine.rebuild re-resolves it from the table.
-assert machine.config.slot_cards == "[{\"bus\":\"pci\",\"slot\":7,\"card_id\":\"tnt_control\",\"explicit\":false}]" "resolved slot picks recorded"
+# --- The built-from record lists the seated cards. ----------------------------
+# Control is the slot table's own builtin; machine.rebuild re-resolves it.
+assert machine.config.slot_cards == "[{\"bus\":\"pci\",\"slot\":7,\"card_id\":\"tnt_control\"}]" "seated cards recorded"
 machine.rebuild
 assert machine.pci.slot[7].card.name == "Control" "rebuild must re-seat the recorded slot card"
 
@@ -237,7 +234,7 @@ assert machine.pci.slot[7].card.name == "Control" "rebuild must re-seat the reco
 # With one seated, the Control stand-in must remain, or a 9500 with only
 # a Voodoo2 would boot with no screen at all (docs/internals/core/peripherals/pci.md).
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="voodoo2"
-assert machine.pci.slot[1].card.name == "3dfx Voodoo2" "the ROM-less card seats with no PROM staged"
+assert machine.pci.slot[1].card.name == "3dfx Voodoo2" "the ROM-less card seats with no PROM"
 assert machine.pci.slot[7].card.name == "Control" "a 3d-class card must NOT retire the display fallback"
 
 # --- The SWIM3 is on the board's /RESET net. --------------------------------

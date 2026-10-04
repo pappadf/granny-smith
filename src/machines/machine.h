@@ -12,7 +12,10 @@
 #ifndef MACHINE_H
 #define MACHINE_H
 
+#include "machine_build_opts.h"
+#include "machine_config.h"
 #include "machine_profile.h" // public descriptor + registry API
+#include "value.h"
 
 // Built-in machine profiles (defined in each family's machine file:
 // compact/plus.c, glue/{se30,iicx,iix}.c, mdu/{iici,iisi}.c, oss/iifx.c,
@@ -41,5 +44,16 @@ extern const hw_profile_t machine_ans500;
 extern const hw_profile_t machine_ans700;
 extern const hw_profile_t machine_pmg3dt;
 extern const hw_profile_t machine_pmg3mt;
+
+// Resolve the boot document's expansion-slot configuration -- slots= and the
+// sugar (video_card= / video_mode= / custom_mode= for the first NuBus socket,
+// pci_card= / pci_option= for the first PCI socket, vrom= / prom= for every
+// slot whose card the file provides) -- into validated per-slot entries in
+// out->slots / out->n_slots (machine_slots.c).  Every check runs here, before
+// the running machine is touched; V_ERROR names the slot on a rejection.
+value_t machine_slots_resolve(const hw_profile_t *profile, const boot_config_t *doc, machine_build_opts_t *out);
+
+// Write resolved entries back as one slots= spec.  False when it does not fit.
+bool machine_slots_format(const slot_opts_t *slots, int n, char *buf, size_t size);
 
 #endif // MACHINE_H

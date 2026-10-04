@@ -949,34 +949,48 @@ bool declrom_install_builtin(const char *card_id, const uint8_t *chip, size_t ch
     uint32_t crc = ((uint32_t)t[0] << 24) | ((uint32_t)t[1] << 16) | ((uint32_t)t[2] << 8) | (uint32_t)t[3];
     char locator[64];
     snprintf(locator, sizeof locator, "builtin:%s", card_id);
-    machine_config_note_vrom(card_id, locator, crc, /*explicit_pick*/ false);
+    machine_config_note_vrom(card_id, locator, crc);
     return true;
 }
 
-bool declrom_load_vrom_card(const char *card_id, uint8_t *bus_buf, size_t bus_size, char **out_path) {
+bool declrom_load_vrom_card(const char *card_id, const char *rom, uint8_t *bus_buf, size_t bus_size, char **out_path) {
     if (out_path)
         *out_path = NULL;
     if (!card_id || !bus_buf || bus_size == 0)
         return false;
 
-    // Walk the offer registry's candidates for this card in pick order
-    // (explicit vrom= first, then catalog-preferred, then catalog order —
-    // see vrom_offer_find).  Every candidate was already content-identified
-    // at offer time; the first one that lays out cleanly wins.  Core never
-    // builds a path here — the platform offered every one of these.
+    // The slot's own file, when the document names one: the only candidate
+    // (machine_boot_apply checked that it provides this card).
+    if (rom && *rom) {
+        vrom_id_t id;
+        if (!vrom_identify_card(rom, &id) || strcmp(id.card_id, card_id) != 0) {
+            LOG(0, "declrom_load_vrom_card: '%s' is not a declaration ROM for card '%s'", rom, card_id);
+            return false;
+        }
+        if (!load_chip_into_bus(rom, id.chip_size, bus_buf, bus_size))
+            return false;
+        machine_config_note_vrom(card_id, rom, id.crc);
+        if (out_path)
+            *out_path = strdup(rom);
+        return true;
+    }
+
+    // Otherwise the offer registry's candidates for this card in pick order
+    // (catalog-preferred, then catalog order -- see vrom_offer_find).  Every
+    // candidate was already content-identified at offer time; the first one
+    // that lays out cleanly wins.  Core never builds a path here -- the
+    // platform offered every one of these.
     size_t chip_size = 0;
     for (int n = 0;; n++) {
-        const char *path = vrom_offer_find(card_id, n, &chip_size);
+        uint32_t crc = 0;
+        const char *path = vrom_offer_find(card_id, n, &chip_size, &crc);
         if (!path)
             break;
         if (load_chip_into_bus(path, chip_size, bus_buf, bus_size)) {
             // Report the winning pick into the built-from record so
             // machine.config.vroms answers which revision this machine
             // actually runs.
-            uint32_t crc = 0;
-            bool explicit_pick = false;
-            vrom_offer_info(path, &crc, &explicit_pick);
-            machine_config_note_vrom(card_id, path, crc, explicit_pick);
+            machine_config_note_vrom(card_id, path, crc);
             if (out_path)
                 *out_path = strdup(path);
             return true;

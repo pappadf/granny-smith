@@ -17,6 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "machine_build_opts.h"
 #include "value.h"
 
 #ifdef __cplusplus
@@ -36,7 +37,6 @@ typedef struct {
     char card_id[MC_ID_MAX];
     char path[MC_PATH_MAX];
     uint32_t crc; // Format-Block CRC (content identity)
-    bool explicit_pick; // true when machine.boot's vrom= explicit pick won
 } machine_config_vrom_t;
 
 #define MC_MAX_VROMS 8
@@ -49,22 +49,11 @@ typedef enum mc_bus_kind {
     MC_BUS_PCI = 1,
 } mc_bus_kind_t;
 
-// One RESOLVED per-slot card pick, reported by a bus controller during
-// machine construction.  This is what makes machine.restart rebuild a
-// multi-card machine faithfully: the boot document's wildcard card covers
-// only the first socket, and concrete per-slot picks are staged state that
-// the slot walk consumes and clears.
+// One seated card, reported by a bus controller during machine construction.
 typedef struct {
     uint8_t bus_kind; // mc_bus_kind_t
     int16_t slot; // slot number within that bus's numbering
     char card_id[MC_ID_MAX];
-    // True when the USER named this card (a staged per-slot pick, or the
-    // boot document's wildcard); false when the slot resolved its own
-    // declared default or builtin.  machine.restart replays only the
-    // explicit ones: replaying a default as an explicit pick would change
-    // its semantics, because an unsatisfiable DEFAULT degrades to an empty
-    // slot with a log while an unsatisfiable explicit pick fails the boot.
-    bool explicit_pick;
 } machine_config_slot_card_t;
 
 #define MC_MAX_SLOT_CARDS 12
@@ -78,8 +67,6 @@ typedef struct machine_config_record {
     char rom[MC_PATH_MAX];
     char rom_id[32]; // content id of the installed ROM (rom.h ROM_ID_MAX)
     char rom2[MC_PATH_MAX]; // Lisa second chip ("" = single-file ROM)
-    char vrom[MC_PATH_MAX]; // explicit vrom= pick ("" = auto-resolve)
-    char prom[MC_PATH_MAX]; // explicit prom= pick ("" = auto-resolve)
     char video_card[MC_ID_MAX]; // wildcard-socket card id ("" = slot default)
     int32_t video_sense; // -1 = unset
     char video_mode[MC_ID_MAX]; // wildcard video-mode id ("" = card default)
@@ -90,10 +77,14 @@ typedef struct machine_config_record {
     char created[24]; // ISO8601 UTC, stamped by boot
     machine_config_vrom_t vroms[MC_MAX_VROMS]; // resolved picks, in load order
     int32_t n_vroms;
-    // Resolved per-slot card picks across both expansion buses, written by
-    // the slot walks and replayed by machine.restart.
+    // The cards the slot walks seated, across both expansion buses.
     machine_config_slot_card_t slot_cards[MC_MAX_SLOT_CARDS];
     int32_t n_slot_cards;
+    // The expansion-slot entries the machine was built with (the boot
+    // document's slots resolved by machine_slots_resolve): a checkpoint
+    // restore builds the slots from these.
+    int32_t n_slots;
+    slot_opts_t slots[MACHINE_SLOTS_MAX];
 } machine_config_record_t;
 
 // The in-flight boot document: pointers borrow from the caller; NULL/0/-1
@@ -113,19 +104,23 @@ typedef struct boot_config {
     // "none" leaves it unconnected, which switches built-in video off and
     // hands the screen to a NuBus card (machine_profile_t.builtin_video).
     const char *monitor; // NULL = machine default
-    // Card id for the machine's FIRST PCI socket — the machine-independent
-    // pre-boot channel, mirroring video_card= for NuBus.  Concrete slots
-    // are staged through machine.pci.slot[N].card_id instead.
+    // Card id for the machine's FIRST PCI socket, mirroring video_card= for
+    // NuBus.  Other slots are configured through slots=.
     const char *pci_card;
-    // Explicit PCI expansion-ROM pick, the sibling of vrom= for FCode
-    // cards.  NULL auto-resolves from the offered .prom files.
+    // PCI expansion-ROM file, the sibling of vrom= for FCode cards: the ROM
+    // of every slot whose card it provides.  NULL resolves from the offered
+    // .prom files.
     const char *prom;
     // Options for that same card, as "key=value" pairs separated by commas
     // ("vram=4m", "vram=4m,monitor=15in_multi").  Which keys mean anything
-    // is the CARD's business — the generic layer stages them and the kind's
-    // stage_option() hook accepts or rejects each one, so no card identity
-    // leaks into the boot path.
+    // is the CARD's business: the kind's accepts_option() hook accepts or
+    // rejects each one before the boot begins, so no card identity leaks
+    // into the boot path.
     const char *pci_option;
+    // Per-slot configuration: "SLOT=CARD[,key=value]*;..." (machine_slots.c).
+    // The sugar above (video_card=, video_mode=, custom_mode=, pci_card=,
+    // pci_option=, vrom=, prom=) resolves into the same per-slot entries.
+    const char *slots;
 } boot_config_t;
 
 // Read-only view of the live record (never NULL; check ->valid).
@@ -138,19 +133,14 @@ machine_config_record_t *machine_config_record_mut(void);
 // loader's reports rebuild it for the new machine.
 void machine_config_reset_vroms(void);
 
-// Make the offer registries' explicit picks exactly `vrom` and `prom` (NULL
-// or "" = none).  Every boot document, restart and checkpoint restore is
-// the whole specification, so the previous machine's picks never linger.
-void machine_config_set_explicit_picks(const char *vrom, const char *prom);
-
 // Report one resolved declaration-ROM pick (called by the card loader
 // while the machine is being constructed).
-void machine_config_note_vrom(const char *card_id, const char *path, uint32_t crc, bool explicit_pick);
+void machine_config_note_vrom(const char *card_id, const char *path, uint32_t crc);
 
-// Clear / report the resolved per-slot card picks.  A bus controller calls
-// the reporter once per slot it actually populates, after resolution.
+// Clear / report the seated cards.  A bus controller calls the reporter once
+// per slot it actually populates.
 void machine_config_reset_slot_cards(void);
-void machine_config_note_slot_card(int bus_kind, int slot, const char *card_id, bool explicit_pick);
+void machine_config_note_slot_card(int bus_kind, int slot, const char *card_id);
 
 // Attach the read-only `machine.config` child object (idempotent).
 void machine_config_object_init(struct object *machine_obj);
