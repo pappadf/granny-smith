@@ -88,6 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `shell.aliases`, `shell.alias_set`, `shell.alias_unset` are removed (use `shell.alias.list/add/remove`).
   - `scheduler.mode` is an enum of `paced`, `accelerated`, `turbo`; the aliases `real`, `realtime`, `hw`, `hardware`, `accel`, `max` are no longer accepted there, by `--speed=`, or by `?speed=`.
   - Collection entries and lookup-backed children report their path (`machine.scsi.device[3].image`, `log.category["scsi"]`); new core events `state:machine_booted` and `notify:media`.
+- **The ADB mouse reports only what is new** — like a real mouse, it answers a poll only after motion or a button change: a held button is reported once, not on every poll, and an aborted register read (Talk R3) no longer makes it answer the next one.  The 1 kHz MTemp guard that re-pinned the cursor after `mouse.move … "global"` is removed; a global position now holds by itself.
 
 ## [v0.8.0] — 2026-08-11
 

@@ -188,11 +188,6 @@ int atalk_printer_set_name(const char *name, char *err, size_t err_len);
 // The PAP status string as the workstation reads it.
 const char *atalk_printer_get_status(void);
 
-// True while a job whose data is all in (the driver's EOF handed over) has
-// not yet produced its document: the printer's, not the machine's, so it
-// outlives a machine swap.
-bool atalk_printer_job_finishing(void);
-
 // True when the build links the PostScript interpreter (PLATEN=1); then a
 // job produces a PDF through the platform sink and the capture is optional.
 bool atalk_printer_has_interpreter(void);
@@ -274,7 +269,8 @@ void atalk_nbp_lookup_cancel(void);
 // The network is host state, one per process: the LocalTalk cable and the
 // nodes the emulator puts on it -- the AFP file server with its shares, the
 // LaserWriter, the "gs-host" program-linking peer -- with their NBP names and
-// the `appletalk` object tree.  appletalk_network_init creates it at startup;
+// the `appletalk` object tree.  appletalk_network_init creates it at startup,
+// and with it each node's part, which the network owns (atalk_network_t);
 // no machine creates, tears down, carries or checkpoints it.
 //
 // Nor does anything persist it: the network's settings (shares added or
@@ -288,12 +284,17 @@ void atalk_nbp_lookup_cancel(void);
 // which its substrate constructs with the network as an argument when it
 // builds the SCC.  The connection holds what exists only between the network
 // and that one Mac: the link's state and counters, LLAP timing, ATP
-// transactions, and the ASP / AFP / ADSP / PPC sessions with it, their open
-// forks, enumeration snapshots and Apple-event traffic.
+// transactions, and the ASP / AFP / ADSP / PPC / PAP sessions with it, their
+// open forks, enumeration snapshots and Apple-event traffic and counters.
+// Only the link's settings, its counters and the session numbering go into
+// a checkpoint; the sessions never do.
 //
 // The network has one cable.  A connection is built off it and plugged in
 // when its machine becomes the active one (system_swap_in), which unplugs
-// whichever was: its sessions close, as a server sees a Mac vanish.  Deleting
+// whichever was.  To the restored or new Mac every node has restarted: the
+// servers have no sessions with it, and the LaserWriter has restarted, so no
+// print job runs on from one machine into the next (the nodes keep their
+// configuration: shares, names, settings).  Deleting
 // a connection unplugs it only if it is the one on the cable, so a machine
 // whose build failed -- never plugged in -- leaves the running one's sessions
 // alone.
@@ -322,8 +323,10 @@ void atalk_conn_plug(atalk_conn_t *conn);
 // it is plugged in; the network is untouched.
 void atalk_conn_delete(atalk_conn_t *conn);
 
-// The AFP server's network hook: register as ASP's client and publish the
-// NBP advertisement (appletalk_network_init).
-void atalk_server_init(void);
+// The AFP server's network hook (appletalk_network_init): make the server,
+// register it as ASP's client and publish its NBP advertisement.  The network
+// owns what it returns.
+typedef struct afp_server afp_server_t;
+afp_server_t *atalk_server_init(void);
 
 #endif // APPLETALK_H

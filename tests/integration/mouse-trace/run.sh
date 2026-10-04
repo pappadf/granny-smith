@@ -1,5 +1,5 @@
 #!/bin/bash
-# Mouse guard / trace test (see config.mk).
+# Mouse trace test (see config.mk).
 
 set -e
 
@@ -19,7 +19,7 @@ machine.adb.mouse.move 100 80 "global"
 scheduler.run 20000000
 echo "MARK first-machine"
 
-# A new machine starts with neither running, and both can be turned on again.
+# A new machine starts without the trace, and it can be turned on again.
 machine.boot model="plus" rom="$ROM"
 scheduler.run 30000000
 echo "MARK fresh-machine"
@@ -28,24 +28,12 @@ machine.adb.mouse.move 120 90 "global"
 scheduler.run 20000000
 echo "MARK second-machine"
 
-# Saved with both running; restored into a third machine that has neither.
+# Saved with the trace running; restored into a third machine without it.
 assert checkpoint.save("$CP") "checkpoint save"
 machine.boot model="plus" rom="$ROM"
 scheduler.run 1000000
 assert checkpoint.load("$CP") "checkpoint load"
 echo "MARK restored"
-
-# The restored guard re-pins MTemp (\$0828 v, \$082A h) within its 1 ms period.
-machine.memory.poke.w(0x0828, 0)
-machine.memory.poke.w(0x082A, 0)
-scheduler.run 100000
-assert machine.memory.peek.w(0x0828) == 90 "restored guard did not re-pin MTemp.v"
-assert machine.memory.peek.w(0x082A) == 120 "restored guard did not re-pin MTemp.h"
-# A move in another mode disarms it.
-machine.adb.mouse.move 0 0 "hw"
-machine.memory.poke.w(0x0828, 0)
-scheduler.run 100000
-assert machine.memory.peek.w(0x0828) == 0 "the guard outlived a non-global move"
 machine.adb.mouse.move 10 10 "global"
 scheduler.run 20000000
 echo "MARK end"
@@ -71,5 +59,5 @@ grep -q '^\[trace-mouse\] h=100 v=80$' "$TEST_TMPDIR/out.log" || fail "no trace 
 traces fresh-machine second-machine | grep -q '^\[trace-mouse\] h=120 v=90$' || fail "mouse.trace true after machine.boot printed nothing"
 traces restored end | grep -q '^\[trace-mouse\] h=10 v=10$' || fail "the trace did not restore from the checkpoint"
 grep -q '^MARK end$' "$TEST_TMPDIR/out.log" || fail "the script did not finish"
-echo "mouse-guard-trace: trace re-enabled after a boot; guard and trace restored from a checkpoint"
+echo "mouse-trace: trace re-enabled after a boot and restored from a checkpoint"
 rm -f "$CP"

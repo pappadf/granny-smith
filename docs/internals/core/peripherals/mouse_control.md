@@ -19,8 +19,8 @@ details (SCC quadrature encoding, VIA signals, connector pinout), see
 6. [Low-Memory Globals Reference](#6-low-memory-globals-reference)
 7. [CrsrVBLTask: The VBL Cursor Task](#7-crsrvbltask-the-vbl-cursor-task)
 8. [Framebuffer Compositing](#8-framebuffer-compositing)
-9. [The Phantom ADB Data Problem](#9-the-phantom-adb-data-problem)
-10. [The MTemp Guard](#10-the-mtemp-guard)
+9. [What Holds a Global Position](#9-what-holds-a-global-position)
+10. [ADB Mouse Reporting](#10-adb-mouse-reporting)
 11. [The mouse object surface](#11-the-mouse-object-surface)
 12. [Click Mechanism: PostEvent and Applications](#12-click-mechanism-postevent-and-applications)
 13. [Mac Plus: MBTicks Hack and Quadrature Mouse](#13-mac-plus-mbticks-hack-and-quadrature-mouse)
@@ -49,10 +49,10 @@ On the SE/30, the ROM mouse handler at `$408074CE` is remarkably simple:
 - **CrsrThresh is never referenced** -- there is no acceleration in this handler.
 - Button state changes trigger `_PostEvent` **before** deltas are applied.
 
-Writing MTemp directly via `set-mouse --global` is therefore correct and
-deterministic.  The **MTemp guard** (a 1 kHz scheduler event) continuously
-pins the position to prevent drift from phantom ADB data in the shared
-response buffer.
+Writing MTemp directly via `mouse.move X Y "global"` is therefore correct
+and deterministic, and the position holds by itself: the emulated ADB mouse
+reports only motion or a button change, so nothing adds deltas to MTemp that
+the user did not cause (§9, §10).
 
 ### The Universal Positioning Technique
 
@@ -315,7 +315,7 @@ register inspection.
 3. **PostEvent fires before deltas.** `_PostEvent` at `$40807506` runs before
    the delta block at `$40807508`.  This means PostEvent reads Mouse (`$0830`)
    while it still reflects the pre-delta position -- so `event.where` is
-   always correct even if phantom deltas later corrupt MTemp.
+   the position before this report's motion.
 
 4. **Handler reads `$164(A3)` twice.** Once at `$408074D0` for button state,
    again at `$4080750A` for Y delta.  PostEvent executes between the two reads
@@ -508,172 +508,72 @@ HideCursor, spinning cursors) checks CrsrBusy first and defers if set.
 
 ---
 
-## 9. The Phantom ADB Data Problem
+## 9. What Holds a Global Position
 
-### Symptom
+After `mouse.move X Y "global"` writes MTemp, RawMouse and Mouse, nothing in
+the emulator touches them again.  The position holds because nothing else
+moves it: the ROM mouse handler only adds the deltas of a mouse report, and
+the emulated ADB mouse only reports when it has something new (§10).  Two
+things can still change the globals, and both are the guest's doing:
 
-After `set-mouse --global` writes MTemp to exact coordinates, subsequent ADB
-auto-poll activity can corrupt MTemp by applying phantom deltas.  Typical
-observed corruption: MTemp.v shifts by +60 pixels.
+- **A real mouse report.**  A `"hw"`/`"default"` move, or a button change
+  through the hardware path, makes the mouse report; its deltas are added to
+  MTemp as on a real Mac.  A button change carries zero deltas.
+- **Guest code that rewrites the globals.**  The ROM's cursor initialisation
+  does, during a boot: it writes `(0,0)`, `(-1,-1)` or `(15,15)` (measured on
+  the integration tests that use `"global"`).  A `"global"` move made before
+  the ROM has finished initialising the cursor is undone by it, exactly as a
+  VNC-style INIT's write would be on a real Mac.  Move once the ROM has set
+  the cursor up (at the desktop, or at the question-mark screen of a machine
+  with no disk), as the integration tests do.
 
-### Root Cause
+### The MTemp guard (removed)
 
-The ADB response buffer at `ADBBase+$164`/`$165` is **shared between all ADB
-devices**.  When the keyboard auto-poll delivers data, the ROM stores keyboard
-bytes at `$164`/`$165`.  If the mouse handler subsequently runs (button event,
-stale auto-poll response), it reads `$164` and interprets the keyboard data as
-mouse deltas.
+An earlier analysis saw MTemp jump after a global move and blamed **phantom
+ADB data**: the mouse handler re-reading stale keyboard bytes (`$3C $FF`) left
+in the shared response buffer at `ADBBase+$164`/`$165`.  To hide it, a 1 kHz
+scheduler event re-pinned MTemp, RawMouse and Mouse to the last global target
+until the next move in another mode.
 
-### Mechanism in Detail
-
-1. Emulator's ADB transceiver alternates auto-poll between keyboard (address
-   2) and mouse (address 3) via `last_poll_addr`.
-2. Keyboard poll delivers key data to `ADBBase+$164`/`$165`.
-3. Keyboard handler processes its data normally.
-4. Buffer now contains keyboard data (e.g., `$3C $FF`).
-5. Later, mouse data becomes pending (e.g., button press).
-6. Emulator delivers mouse bytes, overwriting the buffer.
-7. Mouse handler runs and processes correct data.
-8. **However**, under certain timing conditions (SRQ scan, interleaved
-   polling), the mouse handler can be invoked a second time with stale
-   buffer contents, applying phantom deltas.
-
-### Observed Phantom Data
-
-| Buffer | Decoded | Effect on MTemp |
-|--------|---------|-----------------|
-| `$3C $FF` | dy=+60, dx=-1 | v += 60, h -= 1 |
-| `$03 $FE` | dy=+3, dx=-2 | v += 3, h -= 2 |
-| `$FF $FF` | dy=-1, dx=-1 | v -= 1, h -= 1 |
-
-The `$3C` value (60 decimal) appears consistently and is likely a keyboard
-scan code or ADB protocol byte left from boot-time initialization.
-
-### Impact on Click Events
-
-The phantom data does **not** affect PostEvent's `where` field, because
-PostEvent fires before deltas are applied (see handler disassembly, section
-5).  However, the corrupted MTemp IS subsequently copied to Mouse at the next
-VBL tick.  Applications reading Mouse in a tracking loop (e.g., TrackControl
-during button hold) will see the corrupted position.
-
-### Measured Error
-
-From position `(15,15)`, `set-mouse 95 295` (default ADB mode) produced
-`(313, 96)` -- an error of `(+18, +1)` pixels.  This error was identical
-with and without SCSI loopback, confirming it is an ADB timing issue.
+A later measurement over every integration test that uses `"global"` found
+that every correction the guard made was the ROM's boot-time cursor
+initialisation, never a phantom delta.  Two departures of the ADB mouse from
+real hardware were then corrected (§10): a held button made the mouse answer
+every poll, and an aborted Talk R3 made it answer one it should have left
+unanswered.  With those in place the guard was removed, and every integration
+test that positions the mouse with `"global"` passes without it; none needed
+it to hold a position.  What moved were timing-phase goldens only (a sound
+capture window, a demo frame, a blink phase): fewer ADB transactions and no
+1 ms event shift exactly when the guest runs what.  The guard was itself a
+source of wrong behaviour: its writes landed in RAM that MacTest's
+destructive RAM test was verifying, so `se30-mactest` and `iicx-mactest` had
+to switch it off first.
 
 ---
 
-## 10. The MTemp Guard
+## 10. ADB Mouse Reporting
 
-### Purpose
+A real ADB mouse answers Talk Register 0 only when it has new data: motion
+since its last report, or a change of button state.  Otherwise it does not
+drive the bus, and the host's poll times out.  `adb.c` models exactly that:
 
-Prevents phantom ADB data from corrupting MTemp after `mouse.move ... "global"`.
+- `adb_mouse_event()` accumulates deltas and records the button level.  Motion
+  or a button **change** sets `mouse_data_pending`; a call that changes
+  nothing does not.
+- `device_has_pending_data()` (Talk R0 to the mouse, the transceiver's
+  auto-poll, and `adb_autopoll_next()` for the IOP, Egret and Cuda machines)
+  is `mouse_data_pending` alone.  A button held still is reported once, by the
+  report of the press; every later report (on motion) carries the level, and
+  the release is one more report.
+- `prepare_mouse_reply()` clears `mouse_data_pending` once the accumulated
+  motion has been sent (large deltas take several reports).
+- **An aborted Talk** (the ROM goes CMD → IDLE without fetching a byte, as it
+  does during its SRQ scan) restores exactly what the Talk consumed: the
+  keyboard queue tail for a keyboard Talk R0, the deltas and the pending flag
+  for a mouse Talk R0.  A register Talk (R2, R3) consumed nothing and restores
+  nothing; in particular it does not make the mouse answer the next poll.
 
-### Design
-
-A periodic scheduler event fires every 1 ms and checks whether MTemp has
-drifted from the target position.  If it has, it restores MTemp, RawMouse
-and Mouse.
-
-The event is the guard's only state.  Its payload carries the target point
-(h in bits 0-15, v in bits 16-31), and the guard is armed exactly while the
-event is pending.  Its source is the machine's input object (`host_input`,
-`cfg->host_input`), which registers the `mouse.guard` event type at
-construction.  Two things follow:
-
-- **It is per machine.**  A new machine (`machine.boot`, `checkpoint.load`)
-  starts without a guard; the old machine's teardown drops its event with the
-  rest of `host_input`'s.
-- **It survives a checkpoint.**  A checkpoint taken with the guard armed saves
-  the pending event, payload included, and the restore binds it back to the
-  new machine's input object.
-
-Besides phantom ADB deltas, the guard also holds the position against guest
-code that rewrites the globals itself.  Measured 2026-10 over the integration
-tests that use `"global"`: every correction the guard made was of that kind
-(the ROM's cursor initialisation writing `(0,0)`, `(-1,-1)` or `(15,15)`
-during a boot); none was a phantom delta.  The guard is kept for both.
-
-### Guard Lifecycle
-
-| Call | Guard state |
-|------|-------------|
-| `mouse.move X Y "global"` | **Armed** at (X, Y) |
-| `mouse.move X Y "global"` (again) | **Re-armed** at the new (X, Y) |
-| `mouse.move X Y` in any other mode | **Disarmed** |
-| `mouse.click` (either direction, any mode) | Unchanged |
-| `machine.boot` / `checkpoint.load` | The new machine has none, unless the checkpoint saved one |
-
-The guard stays armed until the next `mouse.move` in another mode.  Clicks do
-not disarm it, so the cursor stays pinned during TrackControl's tracking loop
-(which reads Mouse repeatedly while the button is held).
-
-### Timing Analysis
-
-- Guard: every 1 ms
-- Phantom corruption: every ~11 ms (ADB poll rate)
-- VBL copies MTemp → Mouse: every ~16 ms
-
-Worst case: phantom corrupts MTemp at t=0, guard restores at t<=1ms, VBL
-copies restored MTemp at t<=17ms.  The guard corrects 16x faster than VBL
-reads.
-
-### Workaround Status
-
-The MTemp guard is a **workaround**, not a root cause fix.  The underlying
-problem -- stale keyboard data at `ADBBase+$164`/`$165` being read by the
-mouse handler -- remains in the emulator's ADB state machine.  Possible
-approaches for a proper fix:
-
-- **Buffer pre-clear:** In `adb_autopoll_deferred()`, write zero-delta mouse
-  bytes (`$80 $80`) to `ADBBase+$164`/`$165` via direct memory access before
-  signaling the ROM.  This is the same approach used by ChromiVNC and MiniVNC.
-  — **CONSIDERED AND REJECTED, 2026-09-21.** Three
-  reasons. (1) `ADBBase` is a Mac OS low-memory global invented by the ROM;
-  real ADB hardware knows nothing of it. The guard at least lives in
-  `debug_mac.c`, whose job *is* poking guest globals — moving it into
-  `core/peripherals/adb.c`, the one genuinely shared, transport-agnostic,
-  five-consumer module in that area, would make it depend on classic Mac OS
-  memory layout. That is a worse place, not a better one. (2) The
-  ChromiVNC/MiniVNC precedent does not transfer: those are guest-side INITs,
-  and a program running *inside* the Mac is a legitimate participant in the
-  ROM's data structures. An emulator's device model doing the same thing is
-  impersonating the ROM. (3) Doing it instead from the existing
-  `debug_mac_mouse_guard_tick` in `debug_mac.c` — which already knows `ADBBase` and
-  already runs only on the global-mouse path — dodges (1) and (2), but not the
-  objection below, which is the one that decides it.
-- **SRQ scan audit:** Trace the ROM's SRQ scan path to understand exactly when
-  and why the mouse handler is called with keyboard buffer data.  May reveal a
-  state machine timing issue in the emulator. — A concrete starting point, if
-  anyone takes this up: the SRQ branch of `adb_autopoll_deferred()` fires
-  `IFR_SR` with `reply_len = 0`, i.e. it wakes the ROM with no bytes queued,
-  which is the shape of "the mouse handler runs with the previous device's
-  bytes still in the buffer". Note that branch is the deliberate BUG-008a
-  design (`adb.md`), so this is a hypothesis about it, not a known defect in
-  it.
-
-> **Why the pre-clear is not being implemented.** It is **not testable**.
-> Knowing whether `$80 $80` is the *correct* thing to leave in that buffer
-> requires knowing what a real SE/30 transceiver leaves there, which is not
-> in any source we hold (the *Guide to the Macintosh Family Hardware*, 2nd
-> ed., ch. 8, says nothing about it). The only observable is the fuzzy measurement in
-> §9 above: an error of `(+18, +1)` pixels. A change whose success criterion
-> is "the number got smaller" is exactly what this project's standing rule
-> excludes, so the 1 kHz guard stays and this is recorded as a decision
-> rather than left as an open suggestion.
-
-### Implementation
-
-Source: `src/core/debug/debug_mac.c`; the event type is registered in
-`src/core/host_input.c`.
-
-- `mouse_guard_start(hi, h, v)`: replaces any pending guard event with one
-  carrying (h, v)
-- `debug_mac_mouse_guard_tick()`: checks and corrects MTemp; reschedules
-  itself with the same payload
-- `mouse_guard_stop(hi)`: removes the pending event
+`tests/unit/suites/adb` covers each of these.
 
 ---
 
@@ -696,10 +596,10 @@ mouse.move X Y [mode]
 
 | `mode` | Behaviour |
 |--------|-----------|
-| `"global"` | Writes MTemp, RawMouse, Mouse to (X, Y).  Sets CrsrNew = CrsrCouple.  **Activates MTemp guard.**  Recommended for test scripts. |
-| `"hw"` / `"relative"` | Injects relative deltas (X, Y) through the hardware path — ADB on ADB machines, the quadrature encoder on a Plus.  Deactivates guard. |
+| `"global"` | Writes MTemp, RawMouse, Mouse to (X, Y).  Sets CrsrNew = CrsrCouple.  Recommended for test scripts. |
+| `"hw"` / `"relative"` | Injects relative deltas (X, Y) through the hardware path — ADB on ADB machines, the quadrature encoder on a Plus. |
 | `"aux"` | A/UX MAE routing. |
-| `"default"` (or omitted) | Computes the delta from the current MTemp to (X, Y) and injects it.  Subject to the ~6 px phantom-data error described in §9.  Deactivates guard. |
+| `"default"` (or omitted) | Computes the delta from the current MTemp to (X, Y), less any motion still queued at the ADB mouse, and injects it.  Closed-loop: the guest moves the cursor, so the result lands once the guest has consumed the reports. |
 
 **Coordinate convention:** `mouse.move X Y` where X = horizontal (column),
 Y = vertical (row).  Origin (0, 0) = top-left of screen.  The Mac Point struct
@@ -790,9 +690,8 @@ methods take the mode as a typed argument instead.
 7. TrackControl reads Mouse in a loop until button release
 8. If Mouse is inside control at release → action fires
 
-**The MTemp guard ensures Mouse always reflects the target position at step
-7**, preventing phantom data from moving the cursor outside the button during
-the hold period.
+Holding the button sends no reports (§10), so after a `"global"` move Mouse
+stays at the target through step 7 and the release lands inside the control.
 
 ### ModalDialog-based Code
 
@@ -800,7 +699,7 @@ ModalDialog runs its own event loop using GetNextEvent internally.  It needs:
 - A mouseDown event in the queue (from PostEvent via ADB path)
 - Mouse inside the button's Rect during TrackControl
 
-Same mechanism as above; the guard handles both.
+Same mechanism as above.
 
 ### Why --global Button Alone Is Insufficient
 
@@ -811,8 +710,8 @@ works for ModalDialog (which polls MBState directly in tight loops).
 ### PostEvent's `where` Field
 
 `_PostEvent` (trap `$A02F`) reads the Mouse global (`$0830`) for the event's
-`where` field.  Since the guard writes Mouse directly (alongside MTemp and
-RawMouse), `where` is always correct when the guard is active.
+`where` field.  A `"global"` move writes Mouse directly (alongside MTemp and
+RawMouse), so a click after it carries the target as `where`.
 
 ### Event Queue Internals
 
@@ -905,8 +804,9 @@ mouse events, `ADBInterrupt()`:
 **Key insight:** The ROM handler overwrites MTemp from its zero-delta packet
 immediately after Basilisk writes it.  But auto-poll is disabled and Basilisk
 rewrites MTemp every cycle (~60Hz), so the momentary overwrite is corrected
-within 16ms.  In a debugger's one-shot command with no continuous correction,
-this would be fatal -- which is why the MTemp guard is necessary.
+within 16ms.  Granny Smith does not call the handler itself: the ROM runs it
+only for a real mouse report, so a one-shot `"global"` write is not
+overwritten.
 
 ### Mini vMac
 
@@ -952,9 +852,9 @@ never fires, yet the OS tracks cursor position correctly.
 
 **ADB transceiver** (`src/core/peripherals/adb.c`):
 
-- **Auto-poll:** `adb_autopoll_deferred()` fires every ~11ms.  Checks
-  `last_poll_addr`, alternates between keyboard (address 2) and mouse
-  (address 3).
+- **Auto-poll:** `adb_autopoll_deferred()` fires every ~11ms and repeats
+  the last Talk R0 (`last_poll_addr`), signalling SRQ when another device
+  has data.  A device answers only with new data (§10).
 - **Mouse reply:** `prepare_mouse_reply()` clamps deltas to +-63 (7-bit
   range), encodes into `reply_buf[0..1]`.  Large deltas split across
   consecutive polls via `remain_dx`/`remain_dy`.
@@ -973,10 +873,6 @@ never fires, yet the OS tracks cursor position correctly.
 **Debug commands** (`src/core/debug/debug_mac.c`):
 
 - `set_mouse_global(x, y)`: writes MTemp, RawMouse, Mouse, CrsrNew
-- `mouse_guard_start(hi, h, v)`: arms the guard (an event sourced on the
-  machine's `host_input`)
-- `debug_mac_mouse_guard_tick()`: checks/corrects MTemp, reschedules every 1 ms
-- `mouse_guard_stop(hi)`: disarms it
 
 ---
 
@@ -985,8 +881,8 @@ never fires, yet the OS tracks cursor position correctly.
 ### WRONG: "ROM handler maintains a private position accumulator"
 
 The handler never references A2 (data area pointer).  Deltas go directly to
-MTemp.  The observed "overwrite" was caused by phantom ADB data, not a
-separate accumulator.  Verified by disassembly: no instructions in
+MTemp.  The observed "overwrite" was guest code rewriting the globals (the
+ROM's cursor initialisation during a boot, §9), not a separate accumulator.  Verified by disassembly: no instructions in
 `$408074CE`-`$40807538` read or write through A2.
 
 ### WRONG: "CrsrThresh doubles deltas when |delta| > threshold"
@@ -1059,8 +955,9 @@ mouse.move X Y "global"
 machine.cpu.step 5000000   # allow VBL to update cursor image on screen
 ```
 
-MTemp, RawMouse, and Mouse are set immediately.  The MTemp guard activates and
-keeps all three pinned until the next `mouse.move` call.
+MTemp, RawMouse, and Mouse are set immediately, and stay until a mouse report
+or guest code moves them.  Do it after the boot has reached the desktop: the
+ROM's cursor initialisation rewrites the globals (§9).
 
 ### Click a button
 

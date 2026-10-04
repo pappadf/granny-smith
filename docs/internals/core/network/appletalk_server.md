@@ -2514,11 +2514,16 @@ addressed by a 16-bit offset measured from the first parameter byte.
 Everything the server holds is reachable — and, where it is state rather than
 an operation, settable — through the object tree.  `appletalk` is the
 network, one per process: created at startup, never torn down or
-checkpointed by a machine (`appletalk.h`, "Lifecycle").  The nodes that
-describe a machine's connection to it -- `enabled`, `node_id`, `stats`,
-`afp.sessions` -- answer for the machine plugged in (detached, zero, empty
-while none is); the shares, the server's identity and the printer are the
-network's and outlive machines.
+checkpointed by a machine (`appletalk.h`, "Lifecycle").  Only `enabled`,
+`node_id` and `stats` describe the plugged-in machine's link (detached,
+zero and zero while none is plugged in); with the session numbering they
+are all a checkpoint keeps.  The rest is the network's nodes: the shares,
+the server's identity and the printer's configuration outlive machines,
+while their sessions -- `afp.sessions`, and ADSP's, PPC's and the Apple-event
+layer's -- are the servers' own and never checkpointed.  A change of machine
+(`machine.boot`, a checkpoint load) is a restart of every node to the Mac
+that is plugged in: the servers have no sessions with it, and the LaserWriter
+restarts, so no print job runs on from one machine into the next.
 
 ```
 appletalk                        the network

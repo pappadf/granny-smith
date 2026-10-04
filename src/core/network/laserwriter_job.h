@@ -124,11 +124,6 @@ bool laserwriter_job_finish(void);
 // Frees the job without finishing (the connection went away mid-job).
 void laserwriter_job_abort(void);
 
-// Picks a job still outstanding up again under the machine now on the cable:
-// a job whose data was all in when its machine went keeps running (its
-// transport poll re-armed on the new machine's scheduler).
-void laserwriter_job_resume(void);
-
 // Writes the PAP status text for the current state into `out`: idle,
 // starting up (open outstanding), busy with the job name, or printing with
 // the page count.
@@ -150,10 +145,10 @@ const char *laserwriter_job_last_outcome(void);
 // state and is reverted at its end, except what the job made permanent with
 // exitserver or startjob, which every later job inherits -- the way a
 // LaserWriter keeps a downloaded procset until it is switched off.  The
-// printer is a node on the network, not part of a Mac, so it outlives
-// machines like a printer on a desk: machine.boot, machine.restart and a
-// checkpoint load all leave it as it is.  Only appletalk.printer.restart()
-// replaces it.  The printer is named by a process-unique id, and its
+// printer is a node on the network, not part of a Mac: machine.restart and
+// machine.reset leave it as it is.  appletalk.printer.restart() replaces it,
+// and so does a change of machine (machine.boot, a checkpoint load), so a
+// job never runs on from one machine to the next.  The printer is named by a process-unique id, and its
 // interpreter is created on its first job, so a session that never prints
 // costs nothing.
 

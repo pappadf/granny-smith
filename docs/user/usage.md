@@ -14,13 +14,13 @@ The Granny Smith emulator offers flexible configuration options for specifying R
 #### 1. URL Parameters (Recommended for Immediate Setup)
 You can specify images directly in the page URL as query arguments (`rom=`, `fd0=`, `hd0=`, `cd=`, `model=`, `speed=`; names are case-insensitive, and `HD=` means `hd0=`). A URL with a ROM boots straight into a running machine, without the configuration dialog. Each image is downloaded, kept in the browser's storage under `/opfs/images/<kind>/`, and attached.
 
-A value may point *into* a zip or Mac archive (`…/roms.zip/iici.rom`), and archive.org URLs work as copied from the site. A bare HFS volume image (the archive.org shape, with no partition map), or a partitioned disk image without a driver (the Disk Copy 4.2 shape), boots as a SCSI hard disk.
+A value may point *into* a zip or Mac archive (`…/roms.zip/iici.rom`). Each URL is fetched exactly as given, so it must name an endpoint the browser may read from another site (for archive.org: `archive.org/cors/<item>/<file>`, or the file server's `view_archive.php` for a file inside a zip). Downloaded images are named by slot and time (`hd0_2026-10-04_17-42-05`). A bare HFS volume image (the archive.org shape, with no partition map), or a partitioned disk image without a driver (the Disk Copy 4.2 shape), boots as a SCSI hard disk.
 
 **Example** (one line):
 ```
-https://pappadf.github.io/gs-pages/staging/?ROM=https://archive.org/download/mac_rom_archive_-_as_of_8-19-2011/mac_rom_archive_-_as_of_8-19-2011.zip/368CADFE%20-%20Mac%20IIci.ROM&HD0=https://archive.org/download/AppleMacintoshSystem753/System7_5_3.img
+https://pappadf.github.io/gs-pages/staging/?ROM=https%3A%2F%2Fia800908.us.archive.org%2Fview_archive.php%3Farchive%3D%2F12%2Fitems%2Fmac_rom_archive_-_as_of_8-19-2011%2Fmac_rom_archive_-_as_of_8-19-2011.zip%26file%3D368CADFE%2520-%2520Mac%2520IIci.ROM&HD0=https://archive.org/cors/AppleMacintoshSystem753/System7_5_3.img
 ```
-Encode `&`, `#`, `+` and `%` inside a value (`&` is `%26`). The full rules — container paths, archive.org routing, errors — are in [`docs/guide/web.md`](../guide/web.md#url-parameters).
+Encode `&`, `#`, `+` and `%` inside a value (`&` is `%26`); a value with a query string of its own is encoded as a whole. The full rules — container paths, linking archive.org, names, errors — are in [`docs/guide/web.md`](../guide/web.md#url-parameters).
 
 #### 2. Persistent Storage
 If you have previously used the emulator, images may already exist in the browser's persistent storage (`/opfs/images/<kind>/` — `rom`, `vrom`, `fd`, `hd`, `cd`).

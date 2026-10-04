@@ -40,10 +40,11 @@ int mac_input_key(config_t *cfg, int adb_code, bool down) {
 // Cursor mode string → debug_mac mode char ('d'/'g'/'h'/'a'); 0 if unknown.
 
 int mac_input_mouse_move(config_t *cfg, int x, int y, const char *mode) {
+    (void)cfg;
     char m = input_mouse_mode_parse(mode);
     if (!m)
         return -1; // unknown mode
-    return debug_mac_set_mouse_mode(cfg->host_input, (long)x, (long)y, m) < 0 ? -1 : 0;
+    return debug_mac_set_mouse_mode((long)x, (long)y, m) < 0 ? -1 : 0;
 }
 
 int mac_input_mouse_button(config_t *cfg, bool down, const char *mode) {

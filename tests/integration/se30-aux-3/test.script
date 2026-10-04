@@ -10,11 +10,9 @@
 # The wall clock is pinned so the boot trajectory — and therefore every
 # rendered screen — is reproducible.
 #
-# Mouse positioning under A/UX uses --aux mode (not --global): A/UX is Unix,
-# and the 1 ms guard tick installed by --global stomps A/UX kernel data at
-# PA $0828 whenever the CPU happens to be in supervisor mode at the tick
-# boundary.  --aux uses a user-mode-only guard tick, so it pins MAE's MTemp
-# without corrupting the kernel.
+# Mouse positioning under A/UX uses "aux" mode (not "global"): A/UX is Unix,
+# and VA $0828 in supervisor mode is A/UX kernel data.  "aux" writes MAE's
+# MTemp through the user-mode address space instead.
 machine.rtc.time = "2026-04-26T21:30:36"
 
 # Boot the floppy + CD to the A/UX Easy Install screen (~600M instructions).

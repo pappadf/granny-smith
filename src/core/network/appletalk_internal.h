@@ -214,19 +214,24 @@ int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8
                       int len);
 
 // Printer AppleTalk entry points.  register runs once, when the network comes
-// up: the PAP socket and the advertisement.  register_timers runs when a machine's
-// connection is built (the PAP and LaserWriter timers on its scheduler).  link_down
-// drops the session when the connection is detached from the link, since its
-// client is unreachable; unplug, when the machine is unplugged, drops its
-// session and a job still arriving with it.  A job whose data was all in is the
-// printer's: plug, when the next machine takes the cable, picks it up again on
-// that machine's scheduler.  The printer itself -- its name, its interpreter
-// and what jobs made permanent -- stays.
-void atalk_printer_register(void);
-void atalk_printer_register_timers(struct atalk_conn *conn);
+// up: it makes the printer -- the network owns what it returns -- and takes
+// the PAP socket and the advertisement.  A machine's connection carries a
+// PAP link, the printer's session with that Mac; register_timers runs when
+// the connection is built (the PAP timers on the link, the LaserWriter's, all
+// on its scheduler).  link_down drops the session when the connection is
+// detached from the link, since its client is unreachable.  plug(link) puts
+// the connection's link on the cable; plug(NULL), when the machine leaves it
+// (a machine.boot or a checkpoint load), restarts the printer: the session,
+// any job in flight and what jobs made permanent go.  Its name and
+// configuration stay.
+typedef struct pap_printer pap_printer_t;
+typedef struct pap_link pap_link_t;
+pap_printer_t *atalk_printer_register(void);
+pap_link_t *atalk_printer_link_new(void);
+void atalk_printer_link_free(pap_link_t *link);
+void atalk_printer_register_timers(struct atalk_conn *conn, pap_link_t *link);
+void atalk_printer_plug(pap_link_t *link);
 void atalk_printer_link_down(void);
-void atalk_printer_unplug(void);
-void atalk_printer_plug(void);
 
 // The ImageWriter's LocalTalk Option card (appletalk_imagewriter.c): its
 // socket is installed when the network comes up, its timers with each

@@ -122,19 +122,21 @@ print_directory()
 assert appletalk.printer.interpreter_permanent_jobs == 1 "the restarted printer did not need PatchPrep again"
 assert appletalk.printer.interpreter_jobs == $first "the print on the restarted printer ran a different job sequence"
 
-# --- A checkpoint load keeps the printer ----------------------------------------
+# --- A checkpoint load is a new printer ----------------------------------------
 #
-# The printer is not part of the machine, so it is never in a checkpoint and
-# a load does not touch it.  No print needed: the counters say it.
+# The printer is not part of the machine, so it is never in a checkpoint; a
+# load changes the machine on the cable, and the printer restarts with it --
+# no job runs on from one machine into the next.  Its name and enabled state
+# are the host's and stay.  No print needed: the counters say it.
 
-let jobs = appletalk.printer.interpreter_jobs
-assert $jobs > 0 "nothing to keep before the load"
+assert appletalk.printer.interpreter_jobs > 0 "nothing to lose before the load"
 checkpoint.save "${$WORK_DIR}/persist.gscp"
 checkpoint.load "${$WORK_DIR}/persist.gscp"
-assert appletalk.printer.interpreter_jobs == $jobs "the load replaced the printer"
-assert appletalk.printer.interpreter_permanent_jobs == 1 "the load lost the printer's downloads"
+assert appletalk.printer.interpreter_jobs == 0 "the load kept the printer's job count"
+assert appletalk.printer.interpreter_permanent_jobs == 0 "the load kept the printer's downloads"
+assert appletalk.printer.enabled "the load disabled the printer"
 
-# --- 5. machine.boot is a new machine, printing to the same printer --------------
+# --- 5. machine.boot is a new machine, and a new printer ------------------------
 
 machine.boot model="plus" rom="${$ROM}"
 machine.scsi.attach_hd "${$HD}" 0
@@ -142,49 +144,12 @@ machine.rtc.time = "2026-04-26T23:00:00"
 scheduler.run 30000000
 appletalk.printer.enabled = true
 scheduler.run 20000000
-assert appletalk.printer.interpreter_jobs == $jobs "machine.boot replaced the printer"
+assert appletalk.printer.interpreter_jobs == 0 "machine.boot kept the printer"
 choose_printer()
 open_disk()
 print_directory()
-assert appletalk.printer.interpreter_permanent_jobs == 1 "the new machine's print downloaded PatchPrep again: the printer forgot it"
-assert appletalk.printer.interpreter_jobs - $jobs == $second "the new machine's print did not skip the upload"
-
-# --- 6. A print still finishing when the machine goes is not lost ----------------
-#
-# Once the driver has handed over the whole document (its EOF), the job is the
-# printer's: a machine.boot then takes the PAP session away, not the job, and
-# the document still reaches the sink under the next machine.
-
-let want = appletalk.printer.documents + 1
-machine.adb.mouse.move 53 10
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 4000000
-machine.adb.mouse.move 100 203
-scheduler.run 4000000
-machine.adb.mouse.click false
-scheduler.run 60000000
-click(452, 45, 100000)
-# Fine steps: the window between the EOF and the document is short.  The
-# driver runs query jobs before the document; wait for the document's.
-let n = 0
-while !(appletalk.printer.finishing && contains(appletalk.printer.status, "Macintosh HD")) && appletalk.printer.documents < $want && $n < 1000000 {
-    scheduler.run 2000
-    $n = $n + 1
-}
-assert appletalk.printer.finishing "the job's data was never all in before its document"
-assert appletalk.printer.documents < $want "the document arrived before the machine could go"
-
-machine.boot model="plus" rom="${$ROM}"
-let n = 0
-while appletalk.printer.documents < $want && $n < 300 {
-    scheduler.run 2000000
-    $n = $n + 1
-}
-assert appletalk.printer.documents == $want "a print finishing across machine.boot was lost"
-assert appletalk.printer.last_outcome == "ok" "the job finishing across machine.boot did not end cleanly"
-assert !appletalk.printer.finishing "the printer still holds the job"
-assert appletalk.printer.status == "status: idle" "the printer is not idle after the job"
+assert appletalk.printer.interpreter_permanent_jobs == 1 "the new machine's print did not download PatchPrep to the new printer"
+assert appletalk.printer.interpreter_jobs == $first "the new machine's print ran a different job sequence"
 
 echo done
 quit

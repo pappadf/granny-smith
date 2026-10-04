@@ -111,11 +111,11 @@ typedef struct {
     char ack_window[LASERWRITER_ACK_LEN]; // the last reply bytes, for the acknowledgement
     size_t ack_fill;
     bool ack_seen; // this job's replies carried it
+    uint32_t printer_counter; // the last printer id handed out; ids never repeat
+    atalk_timer_t poll_timer; // drains the transport while an answer is owed
 } laserwriter_state_t;
 
 static laserwriter_state_t g_lw;
-static uint32_t g_printer_counter; // the last printer id handed out; ids never repeat
-static atalk_timer_t g_lw_poll_timer; // drains the transport while an answer is owed
 
 // ============================================================================
 // Forward Declarations
@@ -141,21 +141,21 @@ static void lw_notify(laserwriter_event_t event, const char *detail) {
 // Arms the transport poll tick for one period; re-armed from the tick
 // while a request is outstanding.
 static void lw_poll_arm(void) {
-    atalk_timer_arm(&g_lw_poll_timer, 0, LASERWRITER_POLL_NS);
+    atalk_timer_arm(&g_lw.poll_timer, 0, LASERWRITER_POLL_NS);
 }
 
 // Cancels the poll tick.
 static void lw_poll_disarm(void) {
-    atalk_timer_cancel_all(&g_lw_poll_timer);
+    atalk_timer_cancel_all(&g_lw.poll_timer);
 }
 
 // The current printer's id, taking a new one when there is none (the
 // transport creates the interpreter on the first open for it).
 static uint32_t lw_printer_id(void) {
     if (g_lw.printer_id == 0) {
-        if (++g_printer_counter == 0)
-            g_printer_counter = 1;
-        g_lw.printer_id = g_printer_counter;
+        if (++g_lw.printer_counter == 0)
+            g_lw.printer_counter = 1;
+        g_lw.printer_id = g_lw.printer_counter;
         g_lw.printer_jobs = 0;
         g_lw.printer_permanent_jobs = 0;
         LOG(2, "laserwriter: printer %u in service", (unsigned)g_lw.printer_id);
@@ -409,13 +409,8 @@ bool laserwriter_job_available(void) {
 }
 
 void laserwriter_job_register_timers(struct atalk_conn *conn) {
-    atalk_timer_init(conn, &g_lw_poll_timer, "laserwriter", "transport_poll", &lw_poll_cb);
+    atalk_timer_init(conn, &g_lw.poll_timer, "laserwriter", "transport_poll", &lw_poll_cb);
     laserwriter_transport_register_timers(conn);
-}
-
-void laserwriter_job_resume(void) {
-    if (lw_outstanding())
-        lw_poll_arm();
 }
 
 void laserwriter_job_set_listener(laserwriter_listener_t fn, void *ctx) {
@@ -607,8 +602,6 @@ bool laserwriter_job_available(void) {
 void laserwriter_job_register_timers(struct atalk_conn *conn) {
     (void)conn;
 }
-
-void laserwriter_job_resume(void) {}
 
 void laserwriter_job_set_listener(laserwriter_listener_t fn, void *ctx) {
     (void)fn;
