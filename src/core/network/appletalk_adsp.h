@@ -232,7 +232,13 @@ adsp_stack_t *atalk_adsp_stack(void);
 // DDP dispatch hook, called by appletalk.c for DDP type 7.
 void atalk_adsp_ddp_in(const ddp_header_t *ddp, const uint8_t *buf, int len);
 
-// Object-model surface: attaches `adsp` under `appletalk`, once.
+// Once, when the network comes up: make ADSP's part of the network (its
+// object tree's entries), which the network owns.
+typedef struct adsp_host adsp_host_t;
+adsp_host_t *atalk_adsp_init(void);
+
+// Object-model surface: attaches `adsp` under `appletalk`, once, after
+// atalk_adsp_init.
 void atalk_adsp_install_objects(struct object *parent);
 
 #endif // APPLETALK_ADSP_H

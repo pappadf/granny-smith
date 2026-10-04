@@ -104,12 +104,27 @@ typedef struct {
     int out_len;
 } afp_req_t;
 
-// --- The volume table and the server (afp_volume.c) ----------------------------
+// --- The server and its volume table (afp_volume.c) ----------------------------
 
-extern vol_t g_vols[AFP_MAX_VOLUMES];
-extern atalk_afp_stats_t g_afp_stats;
-extern bool g_afp_enabled;
-extern char g_afp_message[AFP_META_COMMENT_MAX + 1];
+#define AFP_ERR_TALLY_COUNT 48
+
+// The file server's part of the network: its shares, its identity and its
+// counters.  atalk_server_init makes it when the network comes up, the
+// network owns it (atalk_network_t), and the AFP modules reach it through
+// g_afp.  No machine's lifecycle touches it.
+struct afp_server {
+    vol_t vols[AFP_MAX_VOLUMES];
+    uint32_t next_vol_id; // atalk_id_alloc cursor
+    char object[33]; // the NBP object name (appletalk.afp.name)
+    char message[AFP_META_COMMENT_MAX + 1]; // appletalk.afp.message
+    bool enabled; // serving and advertised
+    atalk_nbp_entry_t *nbp_entry;
+    atalk_afp_stats_t stats; // appletalk.afp.stats
+    uint64_t err_tally[AFP_ERR_TALLY_COUNT]; // per error code, by (0 - code - 5000)
+    uint64_t ok_tally[256]; // successes per opcode, so a test can ask whether one call worked
+};
+extern afp_server_t *g_afp;
+
 void session_set_add(afp_session_set_t *set, uint16_t session);
 void session_set_remove(afp_session_set_t *set, uint16_t session);
 bool session_set_has(const afp_session_set_t *set, uint16_t session);

@@ -120,29 +120,26 @@ whether PatchPrep is resident and uploads it with `exitserver` only when
 not, so from the second print on the upload is skipped.
 
 The LaserWriter is a node on the AppleTalk network, not part of the Mac
-(`appletalk.h`, "Lifecycle"), so it outlives machines the way a printer on
-a desk outlives the Macs that print to it:
+(`appletalk.h`, "Lifecycle"). It lives as long as the Mac it serves stays
+on the cable; a change of machine restarts it, so no job runs on from one
+machine into the next:
 
 | Event | Printer |
 |---|---|
-| `machine.boot` (a new machine) | kept |
+| `machine.boot` (a new machine) | new |
 | `machine.restart` (the same machine power-cycled; nothing torn down) | kept |
 | `machine.reset` (warm reset) | kept |
-| `checkpoint.load`, whether it succeeds or fails | kept (the printer is never in a checkpoint) |
+| `checkpoint.load` that succeeds | new (the printer is never in a checkpoint) |
+| `checkpoint.load` that fails | kept: the running machine never left the cable |
 | `appletalk.printer.restart()` | new; the machine is untouched |
 | an interpreter wedged by an earlier job | replaced, logged |
 
-What a machine takes with it when it is unplugged from the network is its
-PAP session and a job still arriving over it (`atalk_printer_unplug`). A
-job whose data is all in -- the driver's EOF handed over, whether or not
-it has closed its connection yet -- is the printer's, not the machine's:
-the unplug detaches it as a clean close would, it keeps running, its
-document still reaches the sink, and the next machine's scheduler drives
-its remaining polls (`atalk_printer_plug` → `laserwriter_job_resume`).
-`appletalk.printer.finishing` is true while such a job has not yet
-produced its document. So a print sent
-just before `machine.boot` or `checkpoint.load` is not lost. The printer's
-identity, its job counts and what earlier jobs made permanent stay.
+A new printer is what `appletalk.printer.restart()` makes
+(`atalk_printer_plug(NULL)`, when a machine leaves the cable): the PAP
+session goes, any job in flight is abandoned -- one finishing after its
+connection closed included -- and what earlier jobs made permanent goes
+with the interpreter. The printer's name, enabled state and capture setting
+are the host's configuration and stay.
 
 The bridge names printers with a process-unique id (`g_lw.printer_id`,
 never reused; 0 until the first job) and passes it with every OPEN, so the

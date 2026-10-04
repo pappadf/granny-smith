@@ -410,60 +410,9 @@ void debug_mac_print_process_info_header(void) {
 
 // Command implementation placed after init to keep file order simple
 
-// Scans argv for an optional --global / --hw / --aux flag at any position.
-// ---- MTemp guard ----
-// The SE/30 ROM's ADB mouse handler reads deltas from a shared buffer at
-// ADBBase+$164/$165.  Stale data from keyboard auto-poll can contaminate this
-// buffer, causing the handler to apply phantom deltas to MTemp even when no
-// real mouse movement occurred.  This corrupts the position set by "global"
-// mode and causes clicks to miss their target (TrackControl reads the drifted
-// Mouse position during the button-hold tracking loop).  The guard also holds
-// the position against guest code that rewrites the globals itself -- the
-// ROM's cursor initialisation during a boot does.
-//
-// The guard is a periodic scheduler event that restores MTemp (and RawMouse,
-// Mouse) to the target position whenever drift is detected.  It runs at ~1 kHz
-// (every 1 ms of emulated time), which is fast enough to correct MTemp before
-// the next VBL (~16 ms) copies it to Mouse.  Armed by mouse.move "global",
-// disarmed by the next mouse.move in any other mode.
-//
-// The event is the guard's only state: its payload carries the target, and
-// the guard is on exactly while the event is pending.  Its source is the machine's host_input object, which
-// registers the type at construction, so a checkpoint taken with the guard
-// armed restores it, and a new machine starts without one.
-
-#define MOUSE_GUARD_INTERVAL_NS (1 * 1000 * 1000) // 1 ms
-
-// Payload (also the trace's sample): bits 0-15 h, bits 16-31 v.
+// Payload of the mouse trace event (bits 0-15 h, bits 16-31 v).
 static uint64_t mouse_point_pack(int16_t h, int16_t v) {
     return (uint64_t)(uint16_t)h | ((uint64_t)(uint16_t)v << 16);
-}
-
-void debug_mac_mouse_guard_tick(void *source, uint64_t data) {
-    int16_t h = (int16_t)(data & 0xFFFF);
-    int16_t v = (int16_t)((data >> 16) & 0xFFFF);
-
-    if ((int16_t)read16(0x0828) != v || (int16_t)read16(0x082A) != h) {
-        // Restore all position globals to the target
-        write16(0x0828, (uint16_t)v); // MTemp.v
-        write16(0x082A, (uint16_t)h); // MTemp.h
-        write16(0x082C, (uint16_t)v); // RawMouse.v
-        write16(0x082E, (uint16_t)h); // RawMouse.h
-        write16(0x0830, (uint16_t)v); // Mouse.v
-        write16(0x0832, (uint16_t)h); // Mouse.h
-    }
-
-    scheduler_new_cpu_event(system_scheduler(), &debug_mac_mouse_guard_tick, source, data, 0, MOUSE_GUARD_INTERVAL_NS);
-}
-
-static void mouse_guard_start(struct host_input *hi, int16_t h, int16_t v) {
-    scheduler_t *sched = system_scheduler();
-    remove_event(sched, &debug_mac_mouse_guard_tick, hi);
-    scheduler_new_cpu_event(sched, &debug_mac_mouse_guard_tick, hi, mouse_point_pack(h, v), 0, MOUSE_GUARD_INTERVAL_NS);
-}
-
-static void mouse_guard_stop(struct host_input *hi) {
-    remove_event(system_scheduler(), &debug_mac_mouse_guard_tick, hi);
 }
 
 // Writes absolute cursor position to Mac low-memory globals (MTemp, RawMouse, Mouse, CrsrNew).
@@ -678,14 +627,14 @@ static void set_mouse_default(long x, long y) {
 }
 
 // Set the mouse cursor position via the requested routing mode.
-//   'g' = global (Mac OS Toolbox MTemp + MTemp guard)
+//   'g' = global (Mac OS Toolbox MTemp)
 //   'h' = hardware (raw quadrature / ADB delta)
 //   'a' = aux (A/UX MAE physical-page write)
 //   else = default (per-platform best route)
 // Returns 0 on success, non-zero if memory is unavailable. Coordinates are
 // clamped to int16 for absolute modes ('g'/'a'/default) since the Mac OS
 // Point type is 16-bit signed; 'h' passes deltas through unchanged.
-int debug_mac_set_mouse_mode(struct host_input *hi, long x, long y, char mode) {
+int debug_mac_set_mouse_mode(long x, long y, char mode) {
     if (!system_memory())
         return -1;
     if (mode != 'h') {
@@ -701,19 +650,14 @@ int debug_mac_set_mouse_mode(struct host_input *hi, long x, long y, char mode) {
     switch (mode) {
     case 'g':
         set_mouse_global(x, y);
-        // Arm the MTemp guard to protect against phantom ADB deltas.
-        mouse_guard_start(hi, (int16_t)x, (int16_t)y);
         break;
     case 'h':
-        mouse_guard_stop(hi);
         set_mouse_hw(x, y);
         break;
     case 'a':
-        mouse_guard_stop(hi);
         set_mouse_aux(x, y);
         break;
     default:
-        mouse_guard_stop(hi);
         set_mouse_default(x, y);
         break;
     }
@@ -722,9 +666,9 @@ int debug_mac_set_mouse_mode(struct host_input *hi, long x, long y, char mode) {
 
 // ---- trace-mouse implementation ----
 // A 1 Hz event that reads the classic Mac low-memory Mouse (Point {v,h}) and
-// prints it when it changes.  Like the guard, the event is the trace's only
-// state: the payload is the last sample printed (bit 32 = there is one), and
-// the trace is on exactly while the event is pending.
+// prints it when it changes.  The event is the trace's only state: the
+// payload is the last sample printed (bit 32 = there is one), and the trace
+// is on exactly while the event is pending.
 
 #define TRACE_MOUSE_INTERVAL_NS 1000000000ULL // 1 s
 #define TRACE_MOUSE_HAVE_LAST   (1ull << 32)

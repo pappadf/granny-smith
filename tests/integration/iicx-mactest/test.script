@@ -252,15 +252,6 @@ machine.adb.mouse.click true
 scheduler.run 5000000
 machine.adb.mouse.click false
 
-# Stop the MTemp guard NOW — before any further scheduler.run, because
-# MacTest enters the destructive RAM phase quickly after the reinsert
-# and the guard's 1 kHz writes to MTemp/RawMouse/Mouse at $0828-$0833
-# would otherwise overwrite the RAM-test verify patterns and trip the
-# ROM POST's pattern-mismatch error path (reset → SCC error-dispatch
-# loop at $40802EC0-$40803304 → "Testing RAM1..." hang).
-# Same fix sibling `se30-mactest` applies before its RAM phase.
-machine.adb.mouse.move 0 0
-
 # Run for a while to let MacTest read the app disk, skip the
 # disabled Keyboard/Mouse phases, and reach the RAM-test "Testing
 # RAM1..." status display.
@@ -281,11 +272,10 @@ machine.screen.save "$WORK_DIR/post-floppy-state.png"
 # auto-reboot path "did not fire on IIcx" — the CPU sat in the ROM's
 # SCC error-dispatch loop at $40802EC0-$40803304, never updating
 # past "Testing RAM1...".  That was never a reset-path problem; it
-# was this script running the 600 M post-floppy window with the
-# mouse guard still firing, and its 1 kHz writes to
-# MTemp/RawMouse/Mouse overwrote the RAM-test verify patterns,
-# tripping ROM POST's pattern-mismatch error path — hence the
-# mouse.move 0 0 before that run above.  A second, independent bug
+# was the emulator re-pinning MTemp/RawMouse/Mouse every millisecond
+# after a "global" move (a mechanism since removed), whose writes
+# overwrote the RAM-test verify patterns and tripped ROM POST's
+# pattern-mismatch error path.  A second, independent bug
 # had the ASC IRQ line wired to VIA2 CB1 without initialising CB1's
 # stored level, so its zero-init LOW meant the first ASC assertion
 # (active-low) produced no edge and MacTest reported a logic-board

@@ -271,8 +271,8 @@ TEST(the_network_outlives_every_machine) {
 }
 
 // Each machine built puts the printer's timers on its scheduler, and each
-// one unplugged drops the printer's session with it -- the printer itself
-// stays, as a printer on a desk outlives the Macs that print to it.
+// one unplugged takes the printer's session with it, and restarts the
+// printer.
 TEST(machines_plug_into_the_printer_and_out_again) {
     int regs = g_printer_timer_registrations, unplugs = g_printer_unplugs;
     link_boot();

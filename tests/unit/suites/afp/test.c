@@ -3836,8 +3836,9 @@ TEST(cat_search_parses_find_files_request) {
 }
 
 int main(void) {
-    // The server serves the plugged-in connection's sessions; here, one
-    // connection for the whole run.
+    // The server is the network's, made once; it serves the plugged-in
+    // connection's sessions -- here, one connection for the whole run.
+    ASSERT_TRUE(atalk_server_init() != NULL);
     afp_plug(afp_link_new());
     RUN(vol_parms_report_real_sizes_and_dates);
     RUN(set_vol_parms_persists_the_backup_date);

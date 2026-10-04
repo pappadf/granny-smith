@@ -131,7 +131,7 @@ static afp_session_t *afp_session(uint16_t ref) {
 static void afp_session_release(uint16_t session_id);
 
 bool afp_session_opened(uint16_t session_ref) {
-    if (!g_afp_enabled || !g_afp_link)
+    if (!g_afp->enabled || !g_afp_link)
         return false; // a disabled server takes no new sessions
     if (afp_session(session_ref))
         return true;
@@ -263,17 +263,17 @@ static bool afp_inhibited(const char *host_path, uint16_t bit) {
 static uint32_t afp_cmd_get_srvr_parms(afp_req_t *r) {
     int count = 0;
     for (int i = 0; i < AFP_MAX_VOLUMES; i++)
-        if (g_vols[i].in_use)
+        if (g_afp->vols[i].in_use)
             count++;
 
     WR_BE32(r->out, afp_unix_time_to_afp(time(NULL)));
     int pos = 4;
     r->out[pos++] = (uint8_t)count;
     for (int i = 0; i < AFP_MAX_VOLUMES; i++) {
-        if (!g_vols[i].in_use)
+        if (!g_afp->vols[i].in_use)
             continue;
         uint8_t name[255];
-        size_t n = (size_t)afp_mac_name(g_vols[i].name, name, sizeof(name));
+        size_t n = (size_t)afp_mac_name(g_afp->vols[i].name, name, sizeof(name));
         if (n > 31)
             n = 31; // HFS name limit
         if (pos + 2 + (int)n > r->out_max)
@@ -493,7 +493,7 @@ static uint32_t afp_cmd_get_srvr_msg(afp_req_t *r) {
         return AFPERR_ParamErr;
 
     uint8_t msg[AFP_META_COMMENT_MAX];
-    size_t len = (size_t)afp_mac_text(g_afp_message, msg, sizeof(msg));
+    size_t len = (size_t)afp_mac_text(g_afp->message, msg, sizeof(msg));
     WR_BE16(r->out + 0, msg_type);
     WR_BE16(r->out + 2, bitmap);
     r->out[4] = (uint8_t)len;
@@ -823,7 +823,7 @@ static uint32_t afp_cmd_read(afp_req_t *r) {
             }
         }
     }
-    g_afp_stats.bytes_read += got;
+    g_afp->stats.bytes_read += got;
     r->out_len = (int)got;
     LOG(2, "AFP FPRead: ref=0x%04X off=%u req=%u got=%u", afp_fork_ref(fk), offset, req_count, got);
     if (got < req_count && offset + got >= fork_len)
@@ -869,7 +869,7 @@ static uint32_t afp_cmd_write(afp_req_t *r) {
     afp_fork_status_t st = afp_fork_write(fk, start, payload, to_write, &written);
     if (st != AFP_FORK_OK)
         return afp_fork_status_to_err(st);
-    g_afp_stats.bytes_written += written;
+    g_afp->stats.bytes_written += written;
     WR_BE32(r->out, start + written);
     r->out_len = 4;
     LOG(2, "AFP FPWrite: ref=0x%04X off=%u req=%u wrote=%u", afp_fork_ref(fk), start, req_count, written);
@@ -2312,7 +2312,7 @@ uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *
         afp_count_result(opcode, AFPERR_ParamErr);
         return AFPERR_ParamErr;
     }
-    if (!g_afp_enabled) {
+    if (!g_afp->enabled) {
         LOG(2, "AFP: command 0x%02X refused — the server is disabled", opcode);
         return AFPERR_ServerGoingDown;
     }
@@ -2359,10 +2359,10 @@ static void afp_session_release(uint16_t session_id) {
     afp_fork_close_session(session_id);
     enum_snapshots_drop(session_id, ENUM_ANY);
     for (int i = 0; i < AFP_MAX_VOLUMES; i++) {
-        if (!g_vols[i].in_use)
+        if (!g_afp->vols[i].in_use)
             continue;
-        session_set_remove(&g_vols[i].open_by, session_id);
-        session_set_remove(&g_vols[i].dt_open_by, session_id);
+        session_set_remove(&g_afp->vols[i].open_by, session_id);
+        session_set_remove(&g_afp->vols[i].dt_open_by, session_id);
     }
 }
 
@@ -2410,8 +2410,8 @@ void afp_plug(afp_link_t *link) {
         afp_fork_close_all();
         enum_snapshots_drop(ENUM_ANY, ENUM_ANY);
         for (int i = 0; i < AFP_MAX_VOLUMES; i++) {
-            g_vols[i].open_by.n = 0;
-            g_vols[i].dt_open_by.n = 0;
+            g_afp->vols[i].open_by.n = 0;
+            g_afp->vols[i].dt_open_by.n = 0;
         }
     }
     g_afp_link = link;

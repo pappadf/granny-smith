@@ -109,10 +109,17 @@ typedef struct {
 // Module state
 // ============================================================================
 
-// The host port's configuration: the network's.
-static bool g_enabled = true;
-static char g_port_name[33] = "gs-host";
-static char g_auto_reply[256] = "";
+// The Apple-event layer's part of the network: the reply the host port
+// sends on its own (the port itself is PPC's), and the `appletalk.aevt`
+// collections' entries.  atalk_aevt_init makes it; the network owns it.
+struct aevt_host {
+    char auto_reply[256];
+    object_cache_t event_entries;
+    object_cache_t inbox_entries;
+};
+
+// The network's, set by atalk_aevt_init.
+static aevt_host_t *g_host;
 
 // Counters published as `appletalk.aevt.stats`.
 typedef struct {
@@ -362,8 +369,8 @@ static void aevt_send_auto_reply(ppc_session_t *s, uint32_t return_id) {
         return;
     char err[192] = "";
     value_t reply;
-    if (g_auto_reply[0]) {
-        reply = aevt_parse_text(g_auto_reply, err, sizeof(err));
+    if (g_host->auto_reply[0]) {
+        reply = aevt_parse_text(g_host->auto_reply, err, sizeof(err));
         if (val_is_error(&reply)) {
             LOG(2, "AE: the auto-reply template does not parse — %s", err);
             value_free(&reply);
@@ -548,11 +555,16 @@ static void aevt_inbox_clear(void) {
 
 // Once, when the network comes up: take the PPC layer's inbound events and
 // publish the host port.
-void atalk_aevt_init(void) {
+aevt_host_t *atalk_aevt_init(void) {
+    aevt_host_t *host = calloc(1, sizeof(*host));
+    if (!host)
+        return NULL;
+    g_host = host;
     atalk_ppc_set_inbound_client(&g_session_client, NULL);
     char err[192] = "";
-    if (atalk_ppc_set_host_port(g_port_name, g_enabled, err, sizeof(err)) != 0)
+    if (atalk_ppc_set_host_port(NULL, true, err, sizeof(err)) != 0)
         LOG(2, "AE: the host port could not be published — %s", err);
+    return host;
 }
 
 aevt_link_t *atalk_aevt_link_new(void) {
@@ -586,21 +598,12 @@ void atalk_aevt_plug(aevt_link_t *link) {
 // Object model — `appletalk.aevt`
 // ============================================================================
 
-static struct object *g_aevt_object;
-static struct object *g_aevt_events_object;
-static struct object *g_aevt_inbox_object;
-static struct object *g_aevt_stats_object;
-
 static const class_desc_t aevt_class;
 static const class_desc_t aevt_events_class;
 static const class_desc_t aevt_event_class;
 static const class_desc_t aevt_inbox_class;
 static const class_desc_t aevt_inbox_entry_class;
 static const class_desc_t aevt_stats_class;
-
-// The collection entry objects, made on first use.
-static object_cache_t g_aevt_event_entries = OBJECT_CACHE(&aevt_event_class, NULL);
-static object_cache_t g_aevt_inbox_entries = OBJECT_CACHE(&aevt_inbox_entry_class, NULL);
 
 static int aevt_obj_slot(struct object *self) {
     return object_entry_index(self);
@@ -720,14 +723,14 @@ static struct object *aevt_events_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= g_aevt->event_count || !g_aevt->events[index].in_use)
         return NULL;
-    return object_cache_at(&g_aevt_event_entries, index, NULL);
+    return object_cache_at(&g_host->event_entries, index, NULL);
 }
 // Name lookup resolves the `tag:` given at send time (§8).
 static struct object *aevt_events_lookup(struct object *self, const char *name) {
     (void)self;
     for (int i = 0; i < g_aevt->event_count; i++)
         if (g_aevt->events[i].in_use && g_aevt->events[i].tag[0] && !strcmp(g_aevt->events[i].tag, name))
-            return object_cache_at(&g_aevt_event_entries, i, NULL);
+            return object_cache_at(&g_host->event_entries, i, NULL);
     return NULL;
 }
 
@@ -817,7 +820,7 @@ static struct object *aevt_inbox_get(struct object *self, int index) {
     (void)self;
     if (index < 0 || index >= g_aevt->inbox_count || !g_aevt->inbox[index].in_use)
         return NULL;
-    return object_cache_at(&g_aevt_inbox_entries, index, NULL);
+    return object_cache_at(&g_host->inbox_entries, index, NULL);
 }
 
 static DEF_METHOD(aevt_inbox_method_clear) {
@@ -875,31 +878,29 @@ static const class_desc_t aevt_stats_class = {
 
 // --- appletalk.aevt ----------------------------------------------------------
 
+// The host port is PPC's: these read and change it there.
 static DEF_GETTER(aevt_attr_enabled) {
-    return val_bool(g_enabled);
+    return val_bool(atalk_ppc_host_port_enabled());
 }
 static DEF_SETTER(aevt_attr_set_enabled) {
     char err[192] = "";
-    if (atalk_ppc_set_host_port(g_port_name, in.b, err, sizeof(err)) != 0)
+    if (atalk_ppc_set_host_port(NULL, in.b, err, sizeof(err)) != 0)
         return val_err("cannot change the host program-linking port: %s", err);
-    g_enabled = in.b;
     return val_none();
 }
 static DEF_GETTER(aevt_attr_port_name) {
-    return val_str(g_port_name);
+    return val_str(atalk_ppc_host_port_name());
 }
 static DEF_SETTER(aevt_attr_set_port_name) {
     char err[192] = "";
-    if (atalk_ppc_set_host_port(in.s, g_enabled, err, sizeof(err)) != 0) {
-        value_free(&in);
-        return val_err("cannot rename the host program-linking port: %s", err);
-    }
-    snprintf(g_port_name, sizeof(g_port_name), "%s", in.s);
+    int rc = atalk_ppc_set_host_port(in.s, atalk_ppc_host_port_enabled(), err, sizeof(err));
     value_free(&in);
+    if (rc != 0)
+        return val_err("cannot rename the host program-linking port: %s", err);
     return val_none();
 }
 static DEF_GETTER(aevt_attr_auto_reply) {
-    return val_str(g_auto_reply);
+    return val_str(g_host->auto_reply);
 }
 static DEF_SETTER(aevt_attr_set_auto_reply) {
     const char *text = in.s ? in.s : "";
@@ -914,7 +915,7 @@ static DEF_SETTER(aevt_attr_set_auto_reply) {
             return val_err("that reply template does not parse: %s", err);
         }
     }
-    snprintf(g_auto_reply, sizeof(g_auto_reply), "%s", text);
+    snprintf(g_host->auto_reply, sizeof(g_host->auto_reply), "%s", text);
     value_free(&in);
     return val_none();
 }
@@ -922,8 +923,8 @@ static DEF_SETTER(aevt_attr_set_auto_reply) {
 // Shared tail of send and send_raw: register the event and start it.
 static value_t aevt_finish_send(aevt_event_t *ev) {
     aevt_begin(ev);
-    if (ev->slot < AEVT_MAX_EVENTS && object_cache_at(&g_aevt_event_entries, ev->slot, NULL))
-        return val_obj(object_cache_at(&g_aevt_event_entries, ev->slot, NULL));
+    if (ev->slot < AEVT_MAX_EVENTS && object_cache_at(&g_host->event_entries, ev->slot, NULL))
+        return val_obj(object_cache_at(&g_host->event_entries, ev->slot, NULL));
     return val_none();
 }
 
@@ -1024,7 +1025,7 @@ static DEF_METHOD(aevt_method_send_raw) {
     ppc_session_t *s = aevt_session_for(ev->target, err, sizeof(err));
     if (!s) {
         aevt_fail(ev, err);
-        return val_obj(object_cache_at(&g_aevt_event_entries, ev->slot, NULL));
+        return val_obj(object_cache_at(&g_host->event_entries, ev->slot, NULL));
     }
     ev->session = s;
     if (atalk_ppc_session_state(s) == PPC_SESSION_OPEN) {
@@ -1039,7 +1040,7 @@ static DEF_METHOD(aevt_method_send_raw) {
     } else {
         aevt_fail(ev, "no session to that port is open yet; browse and retry");
     }
-    return val_obj(object_cache_at(&g_aevt_event_entries, ev->slot, NULL));
+    return val_obj(object_cache_at(&g_host->event_entries, ev->slot, NULL));
 }
 
 static const value_t aevt_def_timeout = {.kind = V_UINT, .width = 8, .u = AEVT_DEFAULT_TIMEOUT_INSTR};
@@ -1121,26 +1122,27 @@ static const class_desc_t aevt_class = {
 };
 
 void atalk_aevt_install_objects(struct object *parent) {
-    if (!parent || g_aevt_object)
+    struct object *aevt = object_new(&aevt_class, NULL, "aevt");
+    if (!aevt)
         return;
-    g_aevt_object = object_new(&aevt_class, NULL, "aevt");
-    if (!g_aevt_object)
-        return;
-    object_set_label(g_aevt_object, "Apple Events");
-    object_attach(parent, g_aevt_object);
+    object_set_label(aevt, "Apple Events");
+    object_attach(parent, aevt);
 
-    g_aevt_events_object = object_new(&aevt_events_class, NULL, "events");
-    if (g_aevt_events_object)
-        object_attach(g_aevt_object, g_aevt_events_object);
-    g_aevt_inbox_object = object_new(&aevt_inbox_class, NULL, "inbox");
-    if (g_aevt_inbox_object)
-        object_attach(g_aevt_object, g_aevt_inbox_object);
-    g_aevt_stats_object = object_new(&aevt_stats_class, NULL, "stats");
-    if (g_aevt_stats_object) {
-        object_set_category(g_aevt_stats_object, M_CAT_ADVANCED);
-        object_attach(g_aevt_object, g_aevt_stats_object);
+    struct object *events = object_new(&aevt_events_class, NULL, "events");
+    if (events)
+        object_attach(aevt, events);
+    struct object *inbox = object_new(&aevt_inbox_class, NULL, "inbox");
+    if (inbox)
+        object_attach(aevt, inbox);
+    struct object *stats = object_new(&aevt_stats_class, NULL, "stats");
+    if (stats) {
+        object_set_category(stats, M_CAT_ADVANCED);
+        object_attach(aevt, stats);
     }
 
-    object_cache_set_parent(&g_aevt_event_entries, g_aevt_events_object);
-    object_cache_set_parent(&g_aevt_inbox_entries, g_aevt_inbox_object);
+    // The collection entry objects, made on first use.
+    g_host->event_entries = (object_cache_t)OBJECT_CACHE(&aevt_event_class, NULL);
+    g_host->inbox_entries = (object_cache_t)OBJECT_CACHE(&aevt_inbox_entry_class, NULL);
+    object_cache_set_parent(&g_host->event_entries, events);
+    object_cache_set_parent(&g_host->inbox_entries, inbox);
 }

@@ -78,10 +78,6 @@ typedef struct {
     uint32_t pending_seq;
     uint8_t *pending_bytes; // FEED: a copy of the program bytes
     size_t pending_len;
-    // The scheduler the pending request's delivery event is queued on.  A
-    // machine swap takes that scheduler's events with it; the next poll
-    // under the new machine sees the difference and queues it again.
-    const void *armed_on;
     // OPEN: the configuration, copied
     laserwriter_job_config_t cfg;
     char *identity_text[LASERWRITER_IDENTITY_MAX * 2];
@@ -90,6 +86,7 @@ typedef struct {
     // Output drained from the library for the result being delivered
     byteq_t reply;
     byteq_t errors;
+    atalk_timer_t timer; // delivers a result a guest-time gap after the request
 } direct_state_t;
 
 static direct_state_t g_direct;
@@ -194,12 +191,9 @@ static void direct_clear_pending(void) {
 }
 
 // Scheduler event: run the pending request now.
-static atalk_timer_t g_direct_timer; // delivers a result a guest-time gap after the request
-
 static void direct_event_cb(void *source, uint64_t data) {
     (void)source;
     (void)data;
-    g_direct.armed_on = NULL;
     direct_run_pending();
 }
 
@@ -208,15 +202,13 @@ static void direct_event_cb(void *source, uint64_t data) {
 static bool direct_arm(void) {
     if (!atalk_scheduler())
         return false;
-    atalk_timer_arm(&g_direct_timer, 0, LASERWRITER_DIRECT_DELAY_NS);
-    g_direct.armed_on = atalk_scheduler();
+    atalk_timer_arm(&g_direct.timer, 0, LASERWRITER_DIRECT_DELAY_NS);
     return true;
 }
 
 // Cancels a delivery event, if any.
 static void direct_disarm(void) {
-    atalk_timer_cancel_all(&g_direct_timer);
-    g_direct.armed_on = NULL;
+    atalk_timer_cancel_all(&g_direct.timer);
 }
 
 // Executes OPEN: builds the platen_config from the copy and creates the job.
@@ -377,7 +369,7 @@ static bool direct_queue(direct_op_t op, uint32_t job_id) {
 // ============================================================================
 
 void laserwriter_transport_register_timers(struct atalk_conn *conn) {
-    atalk_timer_init(conn, &g_direct_timer, "laserwriter", "direct_reply", &direct_event_cb);
+    atalk_timer_init(conn, &g_direct.timer, "laserwriter", "direct_reply", &direct_event_cb);
 }
 
 void laserwriter_transport_set_callbacks(const laserwriter_transport_callbacks_t *callbacks, void *ctx) {
@@ -476,14 +468,8 @@ void laserwriter_transport_printer_free(uint32_t printer_id) {
 
 void laserwriter_transport_poll(void) {
     // With a scheduler the event delivers; without one, this does
-    if (!atalk_scheduler()) {
+    if (!atalk_scheduler())
         direct_run_pending();
-        return;
-    }
-    // A request whose event went with the machine before this one (a job
-    // that outlived a machine.boot or checkpoint.load) is queued again here.
-    if (g_direct.pending != OP_NONE && g_direct.armed_on != atalk_scheduler())
-        direct_arm();
 }
 
 const char *laserwriter_transport_name(void) {

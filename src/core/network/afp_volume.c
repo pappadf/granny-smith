@@ -75,42 +75,29 @@ bool session_set_has(const afp_session_set_t *set, uint16_t session) {
     return false;
 }
 
-vol_t g_vols[AFP_MAX_VOLUMES];
 // The largest volume ID.  The unit suites build with a small one, so a later
 // volume reusing a withdrawn one's ID does not take 65,535 volumes.
 #ifndef AFP_VOL_ID_MAX
 #define AFP_VOL_ID_MAX 0xFFFFu
 #endif
-static uint32_t g_next_vol_id = 1; // atalk_id_alloc cursor
 
-// Server identity and enablement (object model: appletalk.afp.*).
-static char g_afp_server_object[33] = AFP_ENTITY_OBJECT;
-char g_afp_message[AFP_META_COMMENT_MAX + 1];
-bool g_afp_enabled = true;
-static atalk_nbp_entry_t *g_afp_nbp_entry;
+// Per-error-code tally, indexed by (0 - code) so -5000..-5047 map to 0..47.
+#define AFP_ERR_TALLY_BASE 5000
 
-// Server-wide counters (object model: appletalk.afp.stats).
-atalk_afp_stats_t g_afp_stats;
-
-// Per-error-code tally, indexed by (0 - code) so -5000..-5039 map to 0..39.
-#define AFP_ERR_TALLY_BASE  5000
-#define AFP_ERR_TALLY_COUNT 48
-static uint64_t g_afp_err_tally[AFP_ERR_TALLY_COUNT];
-// Successes per opcode, so a test can ask whether one call worked.
-static uint64_t g_afp_ok_tally[256];
+afp_server_t *g_afp;
 
 // Record one command outcome for the stats subtree.
 void afp_count_result(uint8_t opcode, uint32_t result) {
-    g_afp_stats.commands_served++;
+    g_afp->stats.commands_served++;
     if (result == AFPERR_NoErr) {
-        g_afp_ok_tally[opcode]++;
+        g_afp->ok_tally[opcode]++;
         return;
     }
-    g_afp_stats.errors++;
+    g_afp->stats.errors++;
     int32_t code = (int32_t)result;
     int idx = -code - AFP_ERR_TALLY_BASE;
     if (idx >= 0 && idx < AFP_ERR_TALLY_COUNT)
-        g_afp_err_tally[idx]++;
+        g_afp->err_tally[idx]++;
 }
 
 // ============================================================================
@@ -153,15 +140,15 @@ static int find_vol_slot_by_name(const char *name) {
     if (!name)
         return -1;
     for (int i = 0; i < AFP_MAX_VOLUMES; i++)
-        if (g_vols[i].in_use && strcmp(g_vols[i].name, name) == 0)
+        if (g_afp->vols[i].in_use && strcmp(g_afp->vols[i].name, name) == 0)
             return i;
     return -1;
 }
 
 vol_t *find_vol_by_id(uint16_t id) {
     for (int i = 0; i < AFP_MAX_VOLUMES; i++)
-        if (g_vols[i].in_use && g_vols[i].vol_id == id)
-            return &g_vols[i];
+        if (g_afp->vols[i].in_use && g_afp->vols[i].vol_id == id)
+            return &g_afp->vols[i];
     return NULL;
 }
 
@@ -174,7 +161,7 @@ vol_t *afp_session_vol(const afp_ctx_t *ctx, uint16_t vol_id) {
 
 vol_t *find_vol_by_name(const char *name) {
     int slot = find_vol_slot_by_name(name);
-    return slot < 0 ? NULL : &g_vols[slot];
+    return slot < 0 ? NULL : &g_afp->vols[slot];
 }
 
 // Report a failure through the caller's message buffer as well as the log, so
@@ -224,20 +211,20 @@ int atalk_afp_volume_add(const char *name, const char *path, char *err, size_t e
 
     int slot = -1;
     for (int i = 0; i < AFP_MAX_VOLUMES; i++)
-        if (!g_vols[i].in_use) {
+        if (!g_afp->vols[i].in_use) {
             slot = i;
             break;
         }
     if (slot < 0)
         return vol_fail(err, err_len, "volume table full (max %d)", AFP_MAX_VOLUMES);
 
-    vol_t *v = &g_vols[slot];
+    vol_t *v = &g_afp->vols[slot];
     memset(v, 0, sizeof(*v));
     snprintf(v->name, sizeof(v->name), "%s", name);
     char resolved[PATH_MAX];
     snprintf(v->root, sizeof(v->root), "%s", realpath(path, resolved) ? resolved : path);
     uint32_t id = 0;
-    if (!atalk_id_alloc(&g_next_vol_id, 1, AFP_VOL_ID_MAX, vol_id_in_use, NULL, &id)) {
+    if (!atalk_id_alloc(&g_afp->next_vol_id, 1, AFP_VOL_ID_MAX, vol_id_in_use, NULL, &id)) {
         memset(v, 0, sizeof(*v)); // cannot happen: at most AFP_MAX_VOLUMES of 65,535 are held
         return vol_fail(err, err_len, "no volume id is free");
     }
@@ -273,8 +260,8 @@ int atalk_afp_volume_remove(const char *name, char *err, size_t err_len) {
     int slot = find_vol_slot_by_name(name);
     if (slot < 0)
         return vol_fail(err, err_len, "no such volume '%s'", name ? name : "");
-    vol_teardown(&g_vols[slot]);
-    memset(&g_vols[slot], 0, sizeof(g_vols[slot]));
+    vol_teardown(&g_afp->vols[slot]);
+    memset(&g_afp->vols[slot], 0, sizeof(g_afp->vols[slot]));
     LOG(1, "AFP: removed volume '%s'", name);
     return 0;
 }
@@ -284,28 +271,28 @@ int atalk_afp_volume_find(const char *name) {
 }
 
 bool atalk_afp_volume_in_use(int slot) {
-    return slot >= 0 && slot < AFP_MAX_VOLUMES && g_vols[slot].in_use;
+    return slot >= 0 && slot < AFP_MAX_VOLUMES && g_afp->vols[slot].in_use;
 }
 const char *atalk_afp_volume_name(int slot) {
-    return atalk_afp_volume_in_use(slot) ? g_vols[slot].name : NULL;
+    return atalk_afp_volume_in_use(slot) ? g_afp->vols[slot].name : NULL;
 }
 const char *atalk_afp_volume_path(int slot) {
-    return atalk_afp_volume_in_use(slot) ? g_vols[slot].root : NULL;
+    return atalk_afp_volume_in_use(slot) ? g_afp->vols[slot].root : NULL;
 }
 unsigned atalk_afp_volume_vol_id(int slot) {
-    return atalk_afp_volume_in_use(slot) ? g_vols[slot].vol_id : 0;
+    return atalk_afp_volume_in_use(slot) ? g_afp->vols[slot].vol_id : 0;
 }
 unsigned atalk_afp_volume_open_forks(int slot) {
-    return atalk_afp_volume_in_use(slot) ? afp_fork_count_volume(g_vols[slot].vol_id) : 0;
+    return atalk_afp_volume_in_use(slot) ? afp_fork_count_volume(g_afp->vols[slot].vol_id) : 0;
 }
 unsigned atalk_afp_volume_sessions_using(int slot) {
-    return atalk_afp_volume_in_use(slot) ? g_vols[slot].open_by.n : 0;
+    return atalk_afp_volume_in_use(slot) ? g_afp->vols[slot].open_by.n : 0;
 }
 unsigned atalk_afp_volume_catalog_generation(int slot) {
-    return atalk_afp_volume_in_use(slot) ? afp_catalog_generation(g_vols[slot].catalog) : 0;
+    return atalk_afp_volume_in_use(slot) ? afp_catalog_generation(g_afp->vols[slot].catalog) : 0;
 }
 unsigned atalk_afp_volume_cnid_count(int slot) {
-    return atalk_afp_volume_in_use(slot) ? afp_catalog_count(g_vols[slot].catalog) : 0;
+    return atalk_afp_volume_in_use(slot) ? afp_catalog_count(g_afp->vols[slot].catalog) : 0;
 }
 
 // ============================================================================
@@ -313,15 +300,15 @@ unsigned atalk_afp_volume_cnid_count(int slot) {
 // ============================================================================
 
 const char *atalk_afp_get_name(void) {
-    return g_afp_server_object;
+    return g_afp->object;
 }
 
 bool atalk_afp_get_enabled(void) {
-    return g_afp_enabled;
+    return g_afp->enabled;
 }
 
 const char *atalk_afp_get_message(void) {
-    return g_afp_message;
+    return g_afp->message;
 }
 
 const char *const *atalk_afp_versions(int *count) {
@@ -331,32 +318,32 @@ const char *const *atalk_afp_versions(int *count) {
 }
 
 const atalk_afp_stats_t *atalk_afp_get_stats(void) {
-    g_afp_stats.open_forks = afp_fork_count_total();
-    return &g_afp_stats;
+    g_afp->stats.open_forks = afp_fork_count_total();
+    return &g_afp->stats;
 }
 
 uint64_t atalk_afp_error_count(int32_t code) {
     int idx = -code - AFP_ERR_TALLY_BASE;
     if (idx < 0 || idx >= AFP_ERR_TALLY_COUNT)
         return 0;
-    return g_afp_err_tally[idx];
+    return g_afp->err_tally[idx];
 }
 
 uint64_t afp_ok_count(uint8_t opcode) {
-    return g_afp_ok_tally[opcode];
+    return g_afp->ok_tally[opcode];
 }
 
 int atalk_afp_error_code_at(int index, int32_t *out_code, uint64_t *out_count) {
     int seen = 0;
     for (int i = 0; i < AFP_ERR_TALLY_COUNT; i++) {
-        if (!g_afp_err_tally[i])
+        if (!g_afp->err_tally[i])
             continue;
         if (seen++ != index)
             continue;
         if (out_code)
             *out_code = -(AFP_ERR_TALLY_BASE + i);
         if (out_count)
-            *out_count = g_afp_err_tally[i];
+            *out_count = g_afp->err_tally[i];
         return 0;
     }
     return -1;
@@ -371,12 +358,12 @@ static int afp_nbp_publish(const char *object) {
                                      .socket = HOST_AFP_SOCKET,
                                      .node = LLAP_HOST_NODE,
                                      .net = 0};
-    return atalk_nbp_publish(&g_afp_nbp_entry, &desc);
+    return atalk_nbp_publish(&g_afp->nbp_entry, &desc);
 }
 
 // Withdraw the NBP advertisement so the Chooser stops listing the server.
 static void afp_nbp_withdraw(void) {
-    atalk_nbp_withdraw(&g_afp_nbp_entry);
+    atalk_nbp_withdraw(&g_afp->nbp_entry);
 }
 
 int atalk_afp_set_name(const char *name, char *err, size_t err_len) {
@@ -388,22 +375,22 @@ int atalk_afp_set_name(const char *name, char *err, size_t err_len) {
         return vol_fail(err, err_len, "server name max 32 chars ('%s' is %zu)", name, strlen(name));
     // Published under the new name first, stored after: a name another entity
     // holds leaves the server advertised, and named, as it was.
-    if (g_afp_enabled && afp_nbp_publish(name) != 0)
+    if (g_afp->enabled && afp_nbp_publish(name) != 0)
         return vol_fail(err, err_len, "the name '%s' is already taken on the network", name);
-    snprintf(g_afp_server_object, sizeof(g_afp_server_object), "%s", name);
-    LOG(1, "AFP: server name is now '%s'", g_afp_server_object);
+    snprintf(g_afp->object, sizeof(g_afp->object), "%s", name);
+    LOG(1, "AFP: server name is now '%s'", g_afp->object);
     return 0;
 }
 
 int atalk_afp_set_enabled(bool enabled, char *err, size_t err_len) {
     if (err && err_len)
         err[0] = '\0';
-    if (enabled == g_afp_enabled)
+    if (enabled == g_afp->enabled)
         return 0;
-    g_afp_enabled = enabled;
+    g_afp->enabled = enabled;
     if (enabled) {
-        if (afp_nbp_publish(g_afp_server_object) != 0) {
-            g_afp_enabled = false;
+        if (afp_nbp_publish(g_afp->object) != 0) {
+            g_afp->enabled = false;
             return vol_fail(err, err_len, "NBP registration failed");
         }
         LOG(1, "AFP: server enabled");
@@ -415,8 +402,8 @@ int atalk_afp_set_enabled(bool enabled, char *err, size_t err_len) {
         afp_fork_close_all();
         atalk_asp_close_all_sessions();
         for (int i = 0; i < AFP_MAX_VOLUMES; i++) {
-            g_vols[i].open_by.n = 0;
-            g_vols[i].dt_open_by.n = 0;
+            g_afp->vols[i].open_by.n = 0;
+            g_afp->vols[i].dt_open_by.n = 0;
         }
         LOG(1, "AFP: server disabled");
     }
@@ -428,9 +415,9 @@ int atalk_afp_set_message(const char *message, char *err, size_t err_len) {
         err[0] = '\0';
     if (message && strlen(message) > AFP_META_COMMENT_MAX)
         return vol_fail(err, err_len, "server message max %d chars", AFP_META_COMMENT_MAX);
-    snprintf(g_afp_message, sizeof(g_afp_message), "%s", message ? message : "");
+    snprintf(g_afp->message, sizeof(g_afp->message), "%s", message ? message : "");
     // Nudge every logged-in client to fetch it (AFP_21_22 Table 1-7, "0010").
-    if (g_afp_message[0])
+    if (g_afp->message[0])
         atalk_asp_broadcast_attention(ATALK_ATTN_SERVER_MSG);
     return 0;
 }
@@ -447,7 +434,7 @@ static void afp_asp_close(void *ctx, uint16_t session_ref) {
 }
 static int afp_asp_status(void *ctx, uint8_t **out, size_t *out_len) {
     (void)ctx;
-    return atalk_build_status_block(g_afp_server_object, "GrannySmith", out, out_len);
+    return atalk_build_status_block(g_afp->object, "GrannySmith", out, out_len);
 }
 static uint32_t afp_asp_open_forks(void *ctx, uint16_t session_ref) {
     (void)ctx;
@@ -473,15 +460,21 @@ static const asp_client_t k_afp_asp_client = {
     .session_version = afp_asp_version,
 };
 
-// Once, when the network comes up: the server takes ASP's sessions and
-// advertises itself.  Its shares, name, message and counters are the
-// network's, and no machine's lifecycle touches them.
-void atalk_server_init(void) {
+// Once, when the network comes up: the server is made, takes ASP's sessions
+// and advertises itself.  The network owns it (atalk_network_t): its shares,
+// name, message and counters, which no machine's lifecycle touches.
+afp_server_t *atalk_server_init(void) {
+    afp_server_t *srv = calloc(1, sizeof(*srv));
+    if (!srv)
+        return NULL;
+    srv->next_vol_id = 1;
+    snprintf(srv->object, sizeof(srv->object), "%s", AFP_ENTITY_OBJECT);
+    srv->enabled = true;
+    g_afp = srv;
     asp_set_client(&k_afp_asp_client, NULL);
-    if (!g_afp_enabled)
-        return;
-    if (afp_nbp_publish(g_afp_server_object) != 0)
+    if (afp_nbp_publish(srv->object) != 0)
         LOG(1, "AFP: failed to register NBP advertisement");
+    return srv;
 }
 
 // ============================================================================
