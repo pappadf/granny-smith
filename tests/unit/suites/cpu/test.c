@@ -7,6 +7,7 @@
 #include "cpu.h"
 #include "harness.h"
 #include "memory.h"
+#include "predecode.h"
 #include "test_assert.h"
 
 #include <dirent.h>
@@ -774,6 +775,12 @@ TEST(cpu_single_step_tests) {
         fprintf(stderr, "[cpu] failed to initialize test harness\n");
         ASSERT_TRUE(0);
     }
+    // Every vector rewrites the page it runs from and then retires about one
+    // instruction, which is exactly what the thrash rule demotes: the page
+    // would sit on the generic tier (the switch core's decoder) and the
+    // predecoded handlers would go untested.  The rule is a performance
+    // heuristic, so the conformance replay switches it off.
+    predecode_set_thrash_ratio(0);
 
     int failures = run_all_tests(ctx);
 

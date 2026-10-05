@@ -561,6 +561,12 @@ int main(int argc, char **argv) {
         fprintf(stderr, "[m68k_vectors] test_harness_init failed\n");
         return 1;
     }
+    // Every vector rewrites the page it runs from and then retires about one
+    // instruction, which is exactly what the thrash rule demotes: the page
+    // would sit on the generic tier (the switch core's decoder) and the
+    // predecoded handlers would go untested.  The rule is a performance
+    // heuristic, so the conformance replay switches it off.
+    predecode_set_thrash_ratio(0);
     if (!init_test_memory()) {
         fprintf(stderr, "[m68k_vectors] out of memory\n");
         return 1;

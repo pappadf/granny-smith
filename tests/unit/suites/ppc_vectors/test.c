@@ -95,6 +95,12 @@ static int custom_open(ppc_backend *self, char *err, size_t errlen) {
         const char *pd_env = getenv("CPU_TEST_PREDECODE");
         predecode_set_enabled(pd_env && pd_env[0] == '1');
     }
+    // Every vector rewrites the page it runs from and then retires about one
+    // instruction, which is exactly what the thrash rule demotes: the page
+    // would sit on the generic tier (the switch core's decoder) and the
+    // predecoded handlers would go untested.  The rule is a performance
+    // heuristic, so the conformance replay switches it off.
+    predecode_set_thrash_ratio(0);
     P = ppc_init(NULL, g_backend_model);
     if (!P) {
         snprintf(err, errlen, "ppc_init failed");
