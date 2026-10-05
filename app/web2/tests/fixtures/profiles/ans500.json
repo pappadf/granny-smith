@@ -241,7 +241,58 @@
           "label": "CD-ROM drive"
         }
       ],
-      "startup": true
+      "startup": true,
+      "blank_disks": [
+        {
+          "label": "20 MB (HD20SC)",
+          "method": "files.hd_create",
+          "arg": "21411840",
+          "name": "blank_20MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "38 MB (HD40SC)",
+          "method": "files.hd_create",
+          "arg": "40061952",
+          "name": "blank_38MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "76 MB (HD80SC)",
+          "method": "files.hd_create",
+          "arg": "80061440",
+          "name": "blank_76MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "169 MB (HD160SC)",
+          "method": "files.hd_create",
+          "arg": "177269760",
+          "name": "blank_169MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "234 MB (HD230SC)",
+          "method": "files.hd_create",
+          "arg": "245427200",
+          "name": "blank_234MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "516 MB (HD500SC)",
+          "method": "files.hd_create",
+          "arg": "541499392",
+          "name": "blank_516MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "1034 MB (HD1000SC)",
+          "method": "files.hd_create",
+          "arg": "1084489728",
+          "name": "blank_1034MB",
+          "ext": ".dmg"
+        }
+      ]
     },
     {
       "id": "scsi2",
@@ -294,7 +345,58 @@
           "label": "CD-ROM drive"
         }
       ],
-      "startup": false
+      "startup": false,
+      "blank_disks": [
+        {
+          "label": "20 MB (HD20SC)",
+          "method": "files.hd_create",
+          "arg": "21411840",
+          "name": "blank_20MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "38 MB (HD40SC)",
+          "method": "files.hd_create",
+          "arg": "40061952",
+          "name": "blank_38MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "76 MB (HD80SC)",
+          "method": "files.hd_create",
+          "arg": "80061440",
+          "name": "blank_76MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "169 MB (HD160SC)",
+          "method": "files.hd_create",
+          "arg": "177269760",
+          "name": "blank_169MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "234 MB (HD230SC)",
+          "method": "files.hd_create",
+          "arg": "245427200",
+          "name": "blank_234MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "516 MB (HD500SC)",
+          "method": "files.hd_create",
+          "arg": "541499392",
+          "name": "blank_516MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "1034 MB (HD1000SC)",
+          "method": "files.hd_create",
+          "arg": "1084489728",
+          "name": "blank_1034MB",
+          "ext": ".dmg"
+        }
+      ]
     }
   ],
   "slots": [
@@ -363,7 +465,8 @@
         "kind": "prom",
         "substitute": false
       },
-      "status": "ok",
+      "status": "unavailable",
+      "reason": "Needs the card's expansion ROM (.prom)",
       "monitors": ["13in_rgb", "multiscan_15", "multiscan_17", "multiscan_20", "21in_rgb"],
       "modes": {},
       "options": [

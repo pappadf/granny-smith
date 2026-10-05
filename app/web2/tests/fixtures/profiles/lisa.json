@@ -33,6 +33,10 @@
           "label": "1 MB"
         },
         {
+          "id": "1536",
+          "label": "1.5 MB"
+        },
+        {
           "id": "2048",
           "label": "2 MB"
         }
@@ -74,7 +78,23 @@
           "label": "Hard disk"
         }
       ],
-      "startup": true
+      "startup": true,
+      "blank_disks": [
+        {
+          "label": "5 MB ProFile (9728 blocks)",
+          "method": "files.profile_create",
+          "arg": "9728",
+          "name": "blank_profile_5MB",
+          "ext": ".image"
+        },
+        {
+          "label": "10 MB Widget (19448 blocks)",
+          "method": "files.profile_create",
+          "arg": "19448",
+          "name": "blank_profile_10MB",
+          "ext": ".image"
+        }
+      ]
     }
   ],
   "slots": [],

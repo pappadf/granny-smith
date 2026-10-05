@@ -56,11 +56,13 @@ const pram_defaults_t pram_defaults_plus = {
 };
 
 // MMFlags $00: measured on every one of these ROMs (pram.md used to say $80).
+// Their ROMs are not 32-bit clean: 32-bit addressing needs MODE32.
 const pram_defaults_t pram_defaults_mac_ii = {
     .xpram_token = TOKEN_NUMC,
     .startmgr = k_startmgr_std,
     .mmflags = 0x00,
     .sysparam = k_sysparam_ii,
+    .addressing = PRAM_ADDRESSING_MODE32,
 };
 
 // The IIfx and the Quadra 700/900 ROMs: the Mac II store with the later
@@ -70,6 +72,7 @@ const pram_defaults_t pram_defaults_iifx = {
     .startmgr = k_startmgr_std,
     .mmflags = 0x00,
     .sysparam = k_sysparam_32,
+    .addressing = PRAM_ADDRESSING_SELECTABLE,
 };
 
 const pram_defaults_t pram_defaults_q950 = {
@@ -77,6 +80,7 @@ const pram_defaults_t pram_defaults_q950 = {
     .startmgr = k_startmgr_std,
     .mmflags = 0x00,
     .sysparam = k_sysparam_q950,
+    .addressing = PRAM_ADDRESSING_SELECTABLE,
 };
 
 const pram_defaults_t pram_defaults_iici = {
@@ -84,6 +88,7 @@ const pram_defaults_t pram_defaults_iici = {
     .startmgr = k_startmgr_iici,
     .mmflags = 0x00,
     .sysparam = k_sysparam_32,
+    .addressing = PRAM_ADDRESSING_SELECTABLE,
 };
 
 const pram_defaults_t pram_defaults_av = {
@@ -91,6 +96,7 @@ const pram_defaults_t pram_defaults_av = {
     .startmgr = k_startmgr_std,
     .mmflags = 0x05,
     .sysparam = k_sysparam_q950,
+    .addressing = PRAM_ADDRESSING_SELECTABLE,
 };
 
 // Bit 5 (D-2a): on blank MMFlags Mac OS 8.1 selects its DR emulator, sets

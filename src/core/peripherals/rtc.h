@@ -37,6 +37,13 @@ typedef struct pram_byte {
     uint8_t value;
 } pram_byte_t;
 
+// How MMFlags' addressing bit is configurable on a ROM family.
+typedef enum pram_addressing {
+    PRAM_ADDRESSING_FIXED = 0, // one mode only (a 68000, a PowerPC): no option
+    PRAM_ADDRESSING_SELECTABLE, // a 32-bit-clean ROM: either mode
+    PRAM_ADDRESSING_MODE32, // a "dirty" ROM: 32-bit only with MODE32 installed
+} pram_addressing_t;
+
 typedef struct pram_defaults {
     uint32_t xpram_token; // $0C..$0F, big-endian: 'NuMc' ('Bugs' on the Plus)
     const uint8_t *startmgr; // PRAMInitTbl for $76..$89 (20 bytes), or NULL
@@ -52,6 +59,11 @@ typedef struct pram_defaults {
     // table above (the PCI ROMs' $B1), so a valid token loses nothing.
     const pram_byte_t *extra;
     uint8_t n_extra;
+    // Whether the machine can run Mac OS in either addressing mode, chosen
+    // by MMFlags bit 0 (pram.md §4.3): the configuration's "addressing"
+    // option exists only where this is not FIXED, and its default is the
+    // mode `mmflags` selects -- the ROM's own.
+    pram_addressing_t addressing;
 } pram_defaults_t;
 
 #define PRAM_STARTMGR_BASE 0x76 // PRAMInitTbl's place in XPRAM
@@ -63,6 +75,12 @@ typedef struct pram_defaults {
 // waits up to 20 s for drives to spin up.  A row that wants that path
 // clears the bit after construction and keeps the token.
 #define PRAM_STARTMGR_NO_WAIT 0x80
+
+// MMFlags bit 0 selects 32-bit addressing; a System that has booted in 32-bit
+// mode leaves bit 2 set with it ($05, 7.6 and 8.1 measured), and rewrites
+// the byte and restarts when it finds them otherwise.
+#define PRAM_MMFLAGS_32BIT        0x01
+#define PRAM_MMFLAGS_32BIT_BOOTED 0x05
 
 // Write `d` into a 256-byte PRAM image.  Everything else is left as it is.
 void pram_defaults_apply(uint8_t pram[256], const pram_defaults_t *d);

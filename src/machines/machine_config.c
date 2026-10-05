@@ -19,6 +19,7 @@
 #include "monitor_catalog.h"
 #include "nubus.h"
 #include "prom.h"
+#include "rtc.h"
 #include "value.h"
 #include "vrom.h"
 #include "nubus/card.h"
@@ -108,15 +109,71 @@ static const config_option_decl_t k_appletalk_option = {
     .default_value = "active",
 };
 
-// The family's declared options plus AppleTalk, in display order (memory is
-// separate: its values are computed).  Writes up to `max` and returns the
-// count.
+static const config_value_decl_t k_addressing_values[] = {
+    {.id = "24", .label = "24-bit"},
+    {.id = "32", .label = "32-bit"},
+    {.id = NULL},
+};
+
+#define ADDRESSING_LABEL "Addressing"
+#define ADDRESSING_DETAIL                                                                                              \
+    "The Memory control panel's addressing mode, set before the first boot. Mac OS 7.6 and later need 32-bit, "        \
+    "System 6 needs 24-bit."
+
+// 24- or 32-bit addressing (MMFlags bit 0, written by the seeding step):
+// every Macintosh whose PRAM family can run both (pram_defaults_t
+// .addressing).  The default is the mode the family's own ROM selects.
+static const config_option_decl_t k_addressing_24 = {
+    .id = "addressing",
+    .label = ADDRESSING_LABEL,
+    .detail = ADDRESSING_DETAIL,
+    .values = k_addressing_values,
+    .default_value = "24",
+};
+static const config_option_decl_t k_addressing_32 = {
+    .id = "addressing",
+    .label = ADDRESSING_LABEL,
+    .detail = ADDRESSING_DETAIL,
+    .values = k_addressing_values,
+    .default_value = "32",
+};
+// The ROMs that are not 32-bit clean: 32-bit addressing takes MODE32.
+static const config_option_decl_t k_addressing_mode32 = {
+    .id = "addressing",
+    .label = ADDRESSING_LABEL,
+    .detail = "The Memory control panel's addressing mode, set before the first boot. This ROM is not 32-bit clean: "
+              "32-bit needs MODE32 on the startup disk.",
+    .values = k_addressing_values,
+    .default_value = "24",
+};
+
+static const config_option_decl_t *addressing_option(const hw_profile_t *p) {
+    const pram_defaults_t *pd = p->pram;
+    if (!pd)
+        return NULL;
+    switch (pd->addressing) {
+    case PRAM_ADDRESSING_SELECTABLE:
+        return (pd->mmflags & PRAM_MMFLAGS_32BIT) ? &k_addressing_32 : &k_addressing_24;
+    case PRAM_ADDRESSING_MODE32:
+        return &k_addressing_mode32;
+    case PRAM_ADDRESSING_FIXED:
+        break;
+    }
+    return NULL;
+}
+
+// The family's declared options plus AppleTalk and the addressing mode, in
+// display order (memory is separate: its values are computed).  Writes up
+// to `max` and returns the count.
 static int scalar_options(const hw_profile_t *p, const config_option_decl_t **out, int max) {
     int n = 0;
     for (const config_option_decl_t *o = p->options; o && o->id && n < max; o++)
         out[n++] = o;
     if (p->appletalk && n < max)
         out[n++] = &k_appletalk_option;
+    const config_option_decl_t *a = addressing_option(p);
+    if (a && n < max)
+        out[n++] = a;
     return n;
 }
 

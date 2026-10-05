@@ -26,7 +26,10 @@
 // dialog's document; absent, the model's default configuration).  `hdN`,
 // `cd` and `fdN` keep meaning the Nth hard disk / the CD-ROM drive of the
 // default configuration / floppy drive N; a floppy named for a position the
-// default configuration leaves empty puts a drive there.
+// default configuration leaves empty puts a drive there.  Every other
+// parameter is a configuration edit by name -- an option of the model's tree
+// (`addressing=32`, `memory=32768`) or the screen (`monitor=`, `mode=`,
+// `display=`) -- applied over that document (lib/urlConfig.ts).
 //
 // The ROM and a `vrom=` go into the one machine.boot document: the URL's
 // declaration ROM is the ROM of the slot whose card it provides, ahead of any
@@ -63,6 +66,13 @@ import {
   type MediaFetchPlan,
 } from '@/lib/mediaUrl';
 import { identifyRom, MEDIA_TYPES, type MediaTypeId } from '@/lib/media';
+import {
+  addUrlConfigParam,
+  applyUrlConfig,
+  emptyUrlConfigParams,
+  isUrlConfigParam,
+  type UrlConfigParams,
+} from '@/lib/urlConfig';
 import { persistAs, streamToOpfs, discardStaging, stagedArchiveFormat } from './upload';
 import { scratchPath } from '@/lib/opfsPaths';
 import { getProfile, type ConfigDocument, type MachineProfile } from './profile';
@@ -90,19 +100,27 @@ export interface UrlMediaParams {
   floppies: Array<{ slot: string; url: string }>;
   hardDisks: Array<{ slot: string; url: string }>;
   cd: string | null;
+  // The configuration edits by name (lib/urlConfig.ts): every parameter
+  // that is not one of the above or another the page reads.
+  settings: UrlConfigParams;
 }
 
 // Parse a URLSearchParams (or compatible) into structured params.  Names
 // match case-insensitively (`ROM`, `Rom`, `rom` are one parameter; `HD` is
 // `hd0`); the first occurrence of a name wins, a later spelling of it is
 // ignored with a console warning.  The one exception is a second `rom=`:
-// the other half of a two-chip ROM.
+// the other half of a two-chip ROM.  Any other name is a configuration edit
+// (settings), unless the page reads it for something else.
 export function parseUrlMediaParams(params: URLSearchParams): UrlMediaParams {
   const seen = new Map<string, string>();
+  const settings = emptyUrlConfigParams();
   let romPair: string | null = null;
   for (const [k, v] of params.entries()) {
     const name = canonicalParamName(k);
-    if (!name) continue;
+    if (!name) {
+      if (isUrlConfigParam(k.toLowerCase())) addUrlConfigParam(settings, k, v);
+      continue;
+    }
     if (name === 'rom' && seen.has('rom') && romPair === null) {
       romPair = v;
       continue;
@@ -124,6 +142,7 @@ export function parseUrlMediaParams(params: URLSearchParams): UrlMediaParams {
     floppies: [],
     hardDisks: [],
     cd: seen.get('cd') ?? null,
+    settings,
   };
   const config = seen.get('config');
   if (config !== undefined) {
@@ -250,7 +269,12 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   if (params.configInvalid)
     showNotification('The URL’s config= is not a configuration; booting the default', 'warning');
   const profile = await getProfile(chosen);
-  const config = urlConfig(profile, params);
+  let config = urlConfig(profile, params);
+  if (profile) {
+    const applied = applyUrlConfig(profile, config, params.settings);
+    config = applied.config;
+    for (const w of applied.warnings) showNotification(`${w}; booting without it`, 'warning');
+  }
   const booted = await gsEval('machine.boot', {
     model: chosen,
     rom: romPath,
