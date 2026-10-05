@@ -126,14 +126,23 @@ struct scsi_53c96 {
 // STATREG bits 2:0 ARE the MSG/C-D/I-O lines (Figure 4-2), unlatched unless
 // Config 2 bit 6 says otherwise, so this is a straight copy of the wire -- no
 // 53C96-specific encoding to apply and no table of its own to keep.
-static void refresh_phase(scsi_53c96_t *c) {
+//
+// `peek` (an inspection) reads the phase without the bus's lazy settle poll;
+// status_live computes the register, refresh_phase stores it.
+static uint8_t status_live(scsi_53c96_t *c, bool peek) {
     if (!c->bus)
-        return;
-    c->status = (uint8_t)((c->status & ~ST_PHASE) | scsi_phase_wire_bits(scsi_get_bus_phase(c->bus)));
+        return c->status;
+    int phase = peek ? scsi_get_bus_phase_peek(c->bus) : scsi_get_bus_phase(c->bus);
+    return (uint8_t)((c->status & ~ST_PHASE) | scsi_phase_wire_bits(phase));
+}
+
+static void refresh_phase(scsi_53c96_t *c) {
+    c->status = status_live(c, false);
 }
 
 static void pdma_out_byte(scsi_53c96_t *c, uint8_t value);
 static uint8_t pdma_in_byte(scsi_53c96_t *c);
+static uint8_t pdma_in_peek(const scsi_53c96_t *c, unsigned n);
 
 // Drive the INT output (and Status bit 7 mirror).
 static void set_int(scsi_53c96_t *c, bool active) {
@@ -505,8 +514,11 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
     }
 }
 
-// Register-read body (traced by the public wrapper below).
-static uint8_t reg_read_body(scsi_53c96_t *c, uint32_t reg) {
+// Register-read body (traced by the public wrapper below): the guest's read,
+// or an inspection's (`peek`), which returns the same value but pops no FIFO
+// or pseudo-DMA byte, stores no refreshed phase and leaves the interrupt
+// register's INT/latch/sequence-step clears undone.
+static uint8_t reg_read_body(scsi_53c96_t *c, uint32_t reg, bool peek) {
     switch (reg & 0xF) {
     case R_XFER_LO:
         return (uint8_t)c->xfer_counter;
@@ -521,8 +533,10 @@ static uint8_t reg_read_body(scsi_53c96_t *c, uint32_t reg) {
         // the counter never reaches zero and the completion interrupt never
         // fires.
         if (c->xfer_mode == XFER_DATA_IN)
-            return pdma_in_byte(c);
-        return fifo_pop(c);
+            return peek ? pdma_in_peek(c, 0) : pdma_in_byte(c);
+        // A pop with the flags zero reads the bottom register, the same
+        // element a successful pop returns.
+        return peek ? c->fifo.buf[c->fifo.rd] : fifo_pop(c);
     case R_COMMAND:
         return c->command;
     case R_STATUS:
@@ -531,13 +545,15 @@ static uint8_t reg_read_body(scsi_53c96_t *c, uint32_t reg) {
         // tight loop — as the System's SCSI Manager does while waiting for the
         // target to enter COMMAND phase after a select — sees the phase change
         // without issuing another chip command.  Refresh from the bus on read.
+        if (peek)
+            return status_live(c, true);
         refresh_phase(c);
         return c->status;
     case R_INTERRUPT: {
         // Reading the interrupt register releases INT and clears the
         // status latches + sequence step (ch. 4, interrupt register).
         uint8_t v = c->intr;
-        if (c->int_line) {
+        if (c->int_line && !peek) {
             c->intr = 0;
             c->seq_step = 0;
             c->status &= (uint8_t) ~(ST_GE | ST_PE | ST_VGC);
@@ -569,9 +585,13 @@ static uint8_t reg_read_body(scsi_53c96_t *c, uint32_t reg) {
 uint8_t scsi_53c96_read(scsi_53c96_t *c, uint32_t reg) {
     if (!c)
         return 0;
-    uint8_t v = reg_read_body(c, reg);
+    uint8_t v = reg_read_body(c, reg, false);
     LOG(5, "rd reg %X -> %02X", reg & 0xF, v);
     return v;
+}
+
+uint8_t scsi_53c96_peek(scsi_53c96_t *c, uint32_t reg) {
+    return c ? reg_read_body(c, reg, true) : 0;
 }
 
 void scsi_53c96_write(scsi_53c96_t *c, uint32_t reg, uint8_t value) {
@@ -770,6 +790,32 @@ static uint8_t pdma_in_byte(scsi_53c96_t *c) {
     return b;
 }
 
+// What the (n+1)-th pdma_in_byte from now would return, changing nothing: the
+// target's buffered byte, or 0 where an earlier byte would have ended the
+// transfer (pdma_in_byte's completion cases, replayed on a copy of the
+// counter and the completion latch) or the target has run out.
+static uint8_t pdma_in_peek(const scsi_53c96_t *c, unsigned n) {
+    if (!c || !c->bus || c->xfer_mode != XFER_DATA_IN)
+        return 0;
+    uint32_t counter = c->counter_live;
+    bool int_done = c->xfer_int_done != 0;
+    for (unsigned i = 0;; i++) {
+        uint8_t b;
+        if (!scsi_peek_data_in_byte(c->bus, i, &b))
+            return 0;
+        if (i == n)
+            return b;
+        if (counter > 0)
+            counter--;
+        if (!int_done && counter == c->xfer_residual) {
+            int_done = true;
+            if (c->xfer_residual == 0)
+                return 0;
+        } else if (counter == 0)
+            return 0;
+    }
+}
+
 // One payload byte through the aperture, write side (data-out or the CDB
 // tail of a DMA select).
 static void pdma_out_byte(scsi_53c96_t *c, uint8_t value) {
@@ -813,6 +859,16 @@ void scsi_53c96_pdma_write16(scsi_53c96_t *c, uint16_t value) {
 
 uint8_t scsi_53c96_pdma_read8(scsi_53c96_t *c) {
     return c ? pdma_in_byte(c) : 0;
+}
+
+uint16_t scsi_53c96_pdma_peek16(scsi_53c96_t *c) {
+    if (!c)
+        return 0;
+    return (uint16_t)((pdma_in_peek(c, 0) << 8) | pdma_in_peek(c, 1));
+}
+
+uint8_t scsi_53c96_pdma_peek8(scsi_53c96_t *c) {
+    return pdma_in_peek(c, 0);
 }
 
 void scsi_53c96_pdma_write8(scsi_53c96_t *c, uint8_t value) {

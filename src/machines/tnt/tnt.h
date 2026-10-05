@@ -483,6 +483,8 @@ void tnt_scc_dma_init(config_t *cfg); // attach the ESCC's four DBDMA ports (aft
 void tnt_swim3_bind(config_t *cfg);
 void tnt_swim3_register_events(config_t *cfg);
 uint8_t tnt_swim3_read(config_t *cfg, uint32_t off); // off from +$15000
+// The same register without the read's side effects (an inspection).
+uint8_t tnt_swim3_peek(config_t *cfg, uint32_t off);
 void tnt_swim3_write(config_t *cfg, uint32_t off, uint8_t value);
 // Island access for the +$18000 block (byte registers on $10 centres).
 

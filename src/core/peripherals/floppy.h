@@ -62,6 +62,8 @@ void floppy_set_sel_signal(floppy_t *floppy, bool sel);
 // window maps addresses onto the index -- the chip never sees an address.
 // Mirrors swim3_read / swim3_write.
 uint8_t floppy_swim_read(floppy_t *floppy, unsigned reg);
+// The same register without the read's side effects (memory_interface_t.peek_*).
+uint8_t floppy_swim_peek(floppy_t *floppy, unsigned reg);
 void floppy_swim_write(floppy_t *floppy, unsigned reg, uint8_t value);
 
 // Get the memory-mapped I/O interface for machine-level address decode

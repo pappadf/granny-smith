@@ -733,8 +733,9 @@ static void do_sequence(mesh_t *m, uint8_t value, uint32_t count) {
 // Register file
 // ============================================================
 
-// Map the live bus phase into the bus_status0 MSG/CD/IO bits.
-static uint8_t phase_bits(mesh_t *m) {
+// Map the live bus phase into the bus_status0 MSG/CD/IO bits.  An inspection
+// (`peek`) reads the phase without the bus's lazy settle poll.
+static uint8_t phase_bits(mesh_t *m, bool peek) {
     if (m->msgout_pending)
         return 0x06u; // MSG OUT — the virtual post-select-with-ATN phase
     if (msgin_pending(m))
@@ -744,18 +745,24 @@ static uint8_t phase_bits(mesh_t *m) {
     // back as 0x00 -- DATA OUT.  Unreachable today (only the 5380 drives the
     // bus into MESSAGE OUT), but wrong, and wrong in the one direction a
     // transfer-phase encoding must never be.
-    return scsi_phase_wire_bits(scsi_get_bus_phase(m->bus));
+    return scsi_phase_wire_bits(peek ? scsi_get_bus_phase_peek(m->bus) : scsi_get_bus_phase(m->bus));
 }
 
-static uint8_t mesh_read_inner(mesh_t *m, uint32_t offset);
+static uint8_t mesh_read_inner(mesh_t *m, uint32_t offset, bool peek);
 
 uint8_t mesh_read(mesh_t *m, uint32_t offset) {
-    uint8_t v = mesh_read_inner(m, offset);
+    uint8_t v = mesh_read_inner(m, offset, false);
     LOG(4, "read reg %u -> $%02X", (offset >> 4) & 0xFu, v);
     return v;
 }
 
-static uint8_t mesh_read_inner(mesh_t *m, uint32_t offset) {
+uint8_t mesh_peek(mesh_t *m, uint32_t offset) {
+    return mesh_read_inner(m, offset, true);
+}
+
+// A register read: the guest's, or an inspection's (`peek`), which returns the
+// same value but pops no FIFO byte and pumps no DATA IN refill.
+static uint8_t mesh_read_inner(mesh_t *m, uint32_t offset, bool peek) {
     uint32_t idx = (offset >> 4) & 0xFu;
     switch (idx) {
     case MR_COUNT_LO:
@@ -763,6 +770,8 @@ static uint8_t mesh_read_inner(mesh_t *m, uint32_t offset) {
     case MR_COUNT_HI:
         return (uint8_t)((m->remaining >> 8) & 0xFFu);
     case MR_FIFO: {
+        if (peek) // byte_fifo_peek reads an empty FIFO as zero, as fifo_pop does
+            return byte_fifo_peek(&m->fifo, 0);
         uint8_t v = fifo_pop(m);
         // A draining non-DMA DATAIN refills as the driver reads.
         if (m->active == CMD_DATAIN && !m->active_dma)
@@ -774,7 +783,7 @@ static uint8_t mesh_read_inner(mesh_t *m, uint32_t offset) {
     case MR_BUS_STATUS0: {
         // REQ presents whenever a target is connected: the driver class
         // spin-waits on REQ between phases before dropping ATN.
-        uint8_t v = phase_bits(m);
+        uint8_t v = phase_bits(m, peek);
         // ...except while the target is between phases: after STATUS, until
         // it presents MESSAGE IN (ack_held), and after the MESSAGE
         // IN byte, when it has nothing more to send and only waits for the

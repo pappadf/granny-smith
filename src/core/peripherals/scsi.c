@@ -61,11 +61,20 @@ static const class_desc_t scsi_image_class;
 // change, which is how a bus ended up programming a chip.
 //
 // The remaining bits ARE this chip's own: SEL and RST as it is driving them.
-static uint8_t csr_from_bus(scsi_t *scsi) {
+//
+// An inspection (`peek`) reports REQ as the bus would after its settle poll,
+// without running the poll (which stores the settled state).
+static uint8_t csr_from_bus(scsi_t *scsi, bool peek) {
     if (!scsi || !scsi->chip5380)
         return 0;
     uint8_t v = (uint8_t)(scsi_phase_wire_bits(scsi->bus.phase) << 2);
-    if (scsi_bus_req(scsi))
+    bool req;
+    if (peek)
+        req = scsi->bus.req || (scsi->bus.data_out_pending &&
+                                (!scsi->sched || scheduler_cpu_cycles(scsi->sched) >= scsi->bus.data_out_ready_cy));
+    else
+        req = scsi_bus_req(scsi);
+    if (req)
         v |= CSR_REQ;
     if (scsi_bus_bsy(scsi))
         v |= CSR_BSY;
@@ -79,12 +88,12 @@ static uint8_t csr_from_bus(scsi_t *scsi) {
 // "phase mismatch" -- it just has a phase.  It spent a while in the bus's
 // translation unit, which is how a bus ended up reading a chip's registers.
 // Compute BSR phase-match bit: true when bus phase matches TCR.
-static bool scsi_phase_match(scsi_t *scsi) {
+static bool scsi_phase_match(scsi_t *scsi, bool peek) {
     // TCR bits 2:0 = MSG, C/D, I/O  (written by initiator)
     // CSR bits 4:2 = MSG, C/D, I/O  (actual bus signals)
     // In loopback mode, CSR is computed dynamically from ICR/TCR — use
     // the live bus signals rather than the stored csr register.
-    uint8_t csr = csr_from_bus(scsi);
+    uint8_t csr = csr_from_bus(scsi, peek);
     if (scsi->loopback && (scsi->chip5380->reg.mr & MR_TARGET)) {
         if (scsi->chip5380->reg.tcr & TCR_IO)
             csr |= CSR_IO;
@@ -169,7 +178,7 @@ void scsi_update_irq(scsi_t *scsi) {
     // Phase mismatch during DMA mode is the primary IRQ source
     bool irq = false;
     if (scsi->chip5380->reg.mr & MR_DMA) {
-        if (!scsi_phase_match(scsi))
+        if (!scsi_phase_match(scsi, false))
             irq = true; // phase mismatch during DMA
         if (scsi->chip5380->end_of_dma)
             irq = true; // end of DMA
@@ -589,7 +598,7 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
     // between handshakes) and the bus is in an information-transfer
     // phase, transition immediately — the target has no pending byte
     // to deliver first.
-    if ((bits_set & ICR_ATN) && !(csr_from_bus(scsi) & CSR_REQ)) {
+    if ((bits_set & ICR_ATN) && !(csr_from_bus(scsi, false) & CSR_REQ)) {
         if (scsi->bus.phase == scsi_data_in || scsi->bus.phase == scsi_data_out || scsi->bus.phase == scsi_status ||
             scsi->bus.phase == scsi_message_in) {
             phase_message_out(scsi);
@@ -690,7 +699,7 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
         // TCR=data_in (0x01); phase_match is false, DRQ does not assert,
         // and the chip instead raises a phase-mismatch IRQ so the driver
         // can recover.
-        if (scsi->bus.phase == scsi_status && scsi_phase_match(scsi))
+        if (scsi->bus.phase == scsi_status && scsi_phase_match(scsi, false))
             scsi->chip5380->reg.bsr |= BSR_DR;
 
         scsi_update_drq(scsi);
@@ -698,9 +707,11 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
     }
 }
 
-// Read a byte from SCSI controller register
-static uint8_t read_uint8(void *s, uint32_t addr) {
-    scsi_t *scsi = (scsi_t *)s;
+// A register read: the guest's, or an inspection's (`peek`).  A peek returns
+// the same value but consumes no data-in byte, drops no REQ, makes no phase
+// change (it reports the byte or CSR the drained-buffer STATUS transition
+// would present) and leaves the RESET register's BSR/EOP/IRQ clears undone.
+static uint8_t reg_read(scsi_t *scsi, uint32_t addr, bool peek) {
 
     // [5]: on 68000, reads are to even addresses (UDS). On 68030 (SE/30,
     // IIcx), the GLUE uses R/W directly and A0 is irrelevant for direction.
@@ -716,7 +727,12 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
         // driver outputs update 2 register-write cycles after the write.
         if (scsi->loopback)
             return scsi->chip5380->cdr_pipeline[(scsi->chip5380->cdr_idx + 1) % 3];
-        if (scsi->bus.phase == scsi_data_in) {
+        if (scsi->bus.phase == scsi_data_in && peek) {
+            // The byte the read would latch: the next buffered one, or the
+            // status byte phase_status would put on the bus.
+            uint8_t next;
+            return scsi_peek_data_in_byte(scsi, 0, &next) ? next : STATUS_GOOD;
+        } else if (scsi->bus.phase == scsi_data_in) {
             if (scsi->buf.size != 0) {
                 scsi->bus.data = next_byte(scsi);
                 // In DMA mode, deassert REQ after each byte to simulate
@@ -726,7 +742,8 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
                 }
             } else
                 phase_status(scsi, STATUS_GOOD);
-        } else if (scsi->bus.phase == scsi_status && (scsi->chip5380->reg.mr & MR_DMA) && scsi_phase_match(scsi)) {
+        } else if (!peek && scsi->bus.phase == scsi_status && (scsi->chip5380->reg.mr & MR_DMA) &&
+                   scsi_phase_match(scsi, false)) {
             // Status byte consumed via pseudo-DMA read.  Only valid when
             // DRQ is asserted (phase_match true) — on real hardware the
             // pseudo-DMA ACK handshake only fires when the chip has
@@ -752,14 +769,22 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
     case TCR:
         return scsi->chip5380->reg.tcr;
 
-    case CSR:
-        // Deferred phase transition (CSR-side only).
-        if (scsi->bus.phase == scsi_data_in && scsi->buf.size == 0)
-            phase_status(scsi, STATUS_GOOD);
+    case CSR: {
+        // Deferred phase transition (CSR-side only).  A peek reports the CSR
+        // that STATUS phase would present (phase lines, REQ and BSY asserted)
+        // without making the transition.
+        uint8_t val;
+        if (scsi->bus.phase == scsi_data_in && scsi->buf.size == 0 && peek)
+            val = (uint8_t)((scsi_phase_wire_bits(scsi_status) << 2) | CSR_REQ | CSR_BSY |
+                            (scsi->chip5380->reg.csr & (CSR_SEL | CSR_RST)));
+        else {
+            if (scsi->bus.phase == scsi_data_in && scsi->buf.size == 0)
+                phase_status(scsi, STATUS_GOOD);
+            val = csr_from_bus(scsi, peek);
+        }
         // Loopback: CSR reflects initiator-driven signals from ICR and
         // target-driven signals from TCR, as they appear on the bus
         if (scsi->loopback) {
-            uint8_t val = csr_from_bus(scsi);
             // ICR-driven control signals reflected on the bus
             if (scsi->chip5380->reg.icr & ICR_BSY)
                 val |= CSR_BSY;
@@ -778,9 +803,9 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
                 if (scsi->chip5380->reg.tcr & TCR_REQ)
                     val |= CSR_REQ;
             }
-            return val;
         }
-        return csr_from_bus(scsi);
+        return val;
+    }
 
     case BSR:
         // Phase match is computed dynamically from CSR vs TCR.  BSR_EDMA
@@ -800,12 +825,12 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
                 val |= BSR_ACK;
             if (scsi->chip5380->reg.icr & ICR_ATN)
                 val |= BSR_ATN;
-            val |= (scsi_phase_match(scsi) ? BSR_PM : 0);
+            val |= (scsi_phase_match(scsi, peek) ? BSR_PM : 0);
             if (scsi->chip5380->end_of_dma)
                 val |= BSR_EDMA;
             return val;
         }
-        return scsi->chip5380->reg.bsr | (scsi_phase_match(scsi) ? BSR_PM : 0) |
+        return scsi->chip5380->reg.bsr | (scsi_phase_match(scsi, peek) ? BSR_PM : 0) |
                (scsi->chip5380->end_of_dma ? BSR_EDMA : 0);
 
     case RESET:
@@ -829,6 +854,8 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
         // scsi.c clears end_of_dma).  Doc-92's fix removed that
         // unconditional transition, so we need to clear end_of_dma here
         // (on RESET-read) to mirror real-hardware EOP-ACK semantics.
+        if (peek)
+            return 0xff;
         scsi->chip5380->reg.bsr &= ~(BSR_BE | BSR_INT | BSR_PE);
         scsi->chip5380->end_of_dma = false;
         scsi->chip5380->rst_irq = false; // S6.9 clears the IRQ latch, reset source included
@@ -838,6 +865,13 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
 
     assert(0);
     return 0;
+}
+
+static uint8_t read_uint8(void *s, uint32_t addr) {
+    return reg_read(s, addr, false);
+}
+static uint8_t peek_uint8(void *s, uint32_t addr) {
+    return reg_read(s, addr, true);
 }
 
 // Read a 16-bit word from SCSI controller. The NCR 5380 is byte-only; wide
@@ -853,6 +887,18 @@ static uint16_t read_uint16(void *scsi, uint32_t addr) {
 static uint32_t read_uint32(void *scsi, uint32_t addr) {
     (void)scsi;
     LOG(1, "scsi: long read at 0x%08X — NCR 5380 is byte-only, returning 0xFFFFFFFF", addr);
+    return 0xFFFFFFFFu;
+}
+
+// The wide reads' floating-bus values, without their log lines.
+static uint16_t peek_uint16(void *scsi, uint32_t addr) {
+    (void)scsi;
+    (void)addr;
+    return 0xFFFF;
+}
+static uint32_t peek_uint32(void *scsi, uint32_t addr) {
+    (void)scsi;
+    (void)addr;
     return 0xFFFFFFFFu;
 }
 
@@ -1113,6 +1159,9 @@ scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint) {
     chip->memory_interface.read_uint8 = &read_uint8;
     chip->memory_interface.read_uint16 = &read_uint16;
     chip->memory_interface.read_uint32 = &read_uint32;
+    chip->memory_interface.peek_uint8 = &peek_uint8;
+    chip->memory_interface.peek_uint16 = &peek_uint16;
+    chip->memory_interface.peek_uint32 = &peek_uint32;
     chip->memory_interface.write_uint8 = &write_uint8;
     chip->memory_interface.write_uint16 = &write_uint16;
     chip->memory_interface.write_uint32 = &write_uint32;

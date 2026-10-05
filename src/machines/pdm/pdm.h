@@ -367,6 +367,8 @@ uint8_t pdm_awacs_irq_summary(pdm_amic_t *a); // the $0A sound byte
 // $50F16000 (index = offset >> 9), the AMIC DMA movers and the pseudo-VIA2
 // interrupt sink.
 uint8_t pdm_swim3_read(config_t *cfg, uint32_t off);
+// The same register without the read's side effects (an inspection).
+uint8_t pdm_swim3_peek(config_t *cfg, uint32_t off);
 void pdm_swim3_write(config_t *cfg, uint32_t off, uint8_t value);
 void pdm_swim3_bind(config_t *cfg); // after floppy_init and after a restore
 void pdm_swim3_register_events(config_t *cfg); // at construction

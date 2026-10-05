@@ -92,7 +92,8 @@ static uint32_t drive_addr(swim3_t *sw) {
 // Reading a sense address also ROUTES a head: addresses 4 / 12 select head
 // 0 / 1 for data transfer, and during a GCR format the driver uses 1 / 15
 // instead, because those read back as 1 while it writes from the index.
-static uint8_t drive_sense(swim3_t *sw) {
+// An inspection (`peek`) reports the same sense but routes no head.
+static uint8_t drive_sense(swim3_t *sw, bool peek) {
     if (!drive1_selected(sw))
         return 1; // no second drive: RdData floats high at every address
 
@@ -105,7 +106,7 @@ static uint8_t drive_sense(swim3_t *sw) {
     case 0: // rDirPrev — current step-direction latch
         return sw->step_dir;
     case 1: // rStepOff — 1 = step complete (seeks retire on their own event)
-        if (sw->mode & SWIM3_M_FORMAT)
+        if ((sw->mode & SWIM3_M_FORMAT) && !peek)
             sw->xfer_side = 0; // GCRFmtSelDecode routes head 0 here
         return 1;
     case 2: // rMotorOff
@@ -113,7 +114,8 @@ static uint8_t drive_sense(swim3_t *sw) {
     case 3: // rEjectOn — the emulated drive has no eject button
         return 0;
     case 4: // rRdData0 — route head 0
-        sw->xfer_side = 0;
+        if (!peek)
+            sw->xfer_side = 0;
         return 0;
     case 5: // rMFMDrive — 1 = SuperDrive
         return 1;
@@ -130,14 +132,15 @@ static uint8_t drive_sense(swim3_t *sw) {
     case 11: // rNoTachPulse (GCR) / rIndexPulse (MFM)
         return (uint8_t)swim3_index_pulse(sw);
     case 12: // rRdData1 — route head 1
-        sw->xfer_side = 1;
+        if (!peek)
+            sw->xfer_side = 1;
         return 0;
     case 13: // rMFMModeOn
         return sw->mfm_mode;
     case 14: // rNotReady — 0 = ready: media present and the spindle turning
         return (present && fd && floppy_drive_motor_on(fd, FD)) ? 0 : 1;
     case 15: // rNotRevised (no disk) / r1MegMedia: 1 = DD media, 0 = HD
-        if (sw->mode & SWIM3_M_FORMAT)
+        if ((sw->mode & SWIM3_M_FORMAT) && !peek)
             sw->xfer_side = 1; // GCRFmtSelDecode routes head 1 here
         return swim3_media_is_hd(sw) ? 0 : 1;
     default:
@@ -272,14 +275,18 @@ void swim3_register_events(swim3_t *sw) {
 
 // === Register file ==========================================================
 
-static uint8_t swim3_read_reg(swim3_t *sw, unsigned reg) {
+// A register read: the guest's, or an inspection's (`peek`), which returns the
+// same value but clears neither read-to-clear register (ERROR, INTR, and the
+// IRQ line with INTR) and routes no head through the handshake's sense read.
+static uint8_t swim3_read_reg(swim3_t *sw, unsigned reg, bool peek) {
     uint8_t v;
     switch (reg) {
     case R_TIMER:
         return swim3_timer_read(sw);
     case R_ERROR: // read-to-clear
         v = sw->error;
-        sw->error = 0;
+        if (!peek)
+            sw->error = 0;
         return v;
     case R_PARAM:
         return sw->param;
@@ -297,7 +304,7 @@ static uint8_t swim3_read_reg(swim3_t *sw, unsigned reg) {
         // model that drove only bit 2 answered every Open Firmware sense
         // with 0 — "drive present, disk in" by luck, "single-sided" by the
         // same luck, and the firmware's open ended in BAD DISK.
-        v = drive_sense(sw) ? (H_RDDATA | H_SENSE) : 0;
+        v = drive_sense(sw, peek) ? (H_RDDATA | H_SENSE) : 0;
         if ((sw->mode & SWIM3_M_ENABLE_INTS) && (sw->intr & sw->intmask))
             v |= H_INT_PENDING;
         if (sw->error)
@@ -305,8 +312,10 @@ static uint8_t swim3_read_reg(swim3_t *sw, unsigned reg) {
         return v;
     case R_INTR: // read-to-clear — and the IRQ line drops with it
         v = sw->intr;
-        sw->intr = 0;
-        swim3_update_irq(sw);
+        if (!peek) {
+            sw->intr = 0;
+            swim3_update_irq(sw);
+        }
         return v;
     case R_STEP:
         return sw->step;
@@ -328,9 +337,13 @@ static uint8_t swim3_read_reg(swim3_t *sw, unsigned reg) {
 }
 
 uint8_t swim3_read(swim3_t *sw, unsigned reg) {
-    uint8_t v = swim3_read_reg(sw, reg);
+    uint8_t v = swim3_read_reg(sw, reg, false);
     LOG(5, "rd reg %2u %-9s = $%02X", reg, REG_RD_NAMES[reg & 15], v);
     return v;
+}
+
+uint8_t swim3_peek(swim3_t *sw, unsigned reg) {
+    return swim3_read_reg(sw, reg, true);
 }
 
 // Return the chip to its power-on state (ERS v1.2 §3.10).

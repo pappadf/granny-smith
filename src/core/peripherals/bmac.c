@@ -379,10 +379,14 @@ static void srom_write(bmac_t *b, uint16_t v) {
 // Register file
 // ============================================================
 
-uint16_t bmac_read(bmac_t *b, uint32_t off) {
+// A register read: the guest's, or an inspection's (`peek`), which returns the
+// same value but leaves the read-to-clear STATUS register (and the IRQ line it
+// drives) as it is.
+static uint16_t reg_read(bmac_t *b, uint32_t off, bool peek) {
     off &= 0xFF0u;
     if (off > 0x770u) {
-        LOG(2, "read of unmapped +$%03X", off);
+        if (!peek)
+            LOG(2, "read of unmapped +$%03X", off);
         return 0;
     }
     uint16_t v = b->reg[R(off)];
@@ -400,6 +404,8 @@ uint16_t bmac_read(bmac_t *b, uint32_t off) {
         v = (uint16_t)((b->srom_csr & ~SROM_DO) | (b->srom_do ? SROM_DO : 0));
         break;
     case BMAC_STATUS:
+        if (peek)
+            break;
         b->reg[R(BMAC_STATUS)] = 0; // reading clears it
         update_irq(b);
         break;
@@ -409,8 +415,17 @@ uint16_t bmac_read(bmac_t *b, uint32_t off) {
     default:
         break;
     }
-    LOG(4, "rd +$%03X = $%04X", off, v);
+    if (!peek)
+        LOG(4, "rd +$%03X = $%04X", off, v);
     return v;
+}
+
+uint16_t bmac_read(bmac_t *b, uint32_t off) {
+    return reg_read(b, off, false);
+}
+
+uint16_t bmac_peek(bmac_t *b, uint32_t off) {
+    return reg_read(b, off, true);
 }
 
 void bmac_write(bmac_t *b, uint32_t off, uint16_t value) {

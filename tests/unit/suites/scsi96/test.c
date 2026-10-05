@@ -109,6 +109,11 @@ int scsi_get_bus_phase(const struct scsi *bus) {
     return mb.phase;
 }
 
+int scsi_get_bus_phase_peek(const struct scsi *bus) {
+    (void)bus;
+    return mb.phase;
+}
+
 void scsi_push_data_out_byte(struct scsi *bus, uint8_t byte) {
     (void)bus;
     if (mb.phase == MB_command) {
@@ -134,6 +139,14 @@ bool scsi_pop_data_in_byte(struct scsi *bus, uint8_t *out) {
     *out = mb.data[mb.data_pos++];
     if (mb.data_pos >= mb.data_len)
         mb.phase = MB_status; // last byte consumed: target moves to STATUS
+    return true;
+}
+
+bool scsi_peek_data_in_byte(const struct scsi *bus, size_t index, uint8_t *out) {
+    (void)bus;
+    if (mb.phase != MB_data_in || mb.data_pos + index >= mb.data_len)
+        return false;
+    *out = mb.data[mb.data_pos + index];
     return true;
 }
 
@@ -288,7 +301,11 @@ static void do_read(uint32_t lba, uint32_t tl) {
         wr(R_COMMAND, 0x90); // DMA Transfer Information
         // DRQ asserted; drain 8 words through the aperture.
         for (int w = 0; w < 8; w++) {
+            // An inspection shows the word the read takes, and takes nothing.
+            uint16_t peeked = scsi_53c96_pdma_peek16(chip);
+            ASSERT_EQ_INT(peeked, scsi_53c96_pdma_peek16(chip));
             uint16_t word = scsi_53c96_pdma_read16(chip);
+            ASSERT_EQ_INT(peeked, word);
             size_t p = off + (size_t)w * 2;
             uint32_t blk0 = (uint32_t)(lba + p / MOCK_BLOCK);
             uint32_t blk1 = (uint32_t)(lba + (p + 1) / MOCK_BLOCK);
@@ -297,13 +314,20 @@ static void do_read(uint32_t lba, uint32_t tl) {
             ASSERT_EQ_INT(exp_hi, (word >> 8) & 0xFF);
             ASSERT_EQ_INT(exp_lo, word & 0xFF);
         }
-        (void)take_int(); // per-chunk bus-service interrupt
+        // per-chunk bus-service interrupt: a peek leaves INT asserted
+        ASSERT_TRUE(irq_level);
+        uint8_t ir = scsi_53c96_peek(chip, R_INTERRUPT);
+        ASSERT_TRUE(irq_level);
+        ASSERT_EQ_INT(ir, take_int());
+        ASSERT_TRUE(!irq_level);
     }
 
     // Target moved to STATUS; ICCS pulls status + COMMAND COMPLETE.
     wr(R_COMMAND, 0x11); // initiator command complete sequence
     ASSERT_TRUE(irq_level);
     (void)take_int();
+    ASSERT_EQ_INT(0x00, scsi_53c96_peek(chip, R_FIFO));
+    ASSERT_EQ_INT(2, rd(R_FIFOFLAGS) & 0x1F); // the peek popped nothing
     uint8_t status = rd(R_FIFO); // GOOD
     ASSERT_EQ_INT(0x00, status);
     uint8_t msg = rd(R_FIFO); // COMMAND COMPLETE

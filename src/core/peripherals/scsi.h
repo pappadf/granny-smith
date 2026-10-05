@@ -210,6 +210,9 @@ void scsi_hsken_data_out_byte(scsi_t *scsi, uint8_t byte);
 // target keeps the phase asserted until *after* the chip has latched
 // EOP and the initiator has acked the IRQ.
 bool scsi_pop_data_in_byte(scsi_t *scsi, uint8_t *out);
+// The byte the (index+1)-th scsi_pop_data_in_byte from now would deliver,
+// taking nothing (an inspection).  False where that pop would find none.
+bool scsi_peek_data_in_byte(const scsi_t *scsi, size_t index, uint8_t *out);
 
 // Push one byte into the chip's data-out / command buffer.  Mirrors the chip's
 // auto-handshake ODR alias semantics: the byte is taken only if the target is
@@ -344,6 +347,8 @@ int scsi_eject_device(scsi_t *scsi, int id);
 //   0=bus_free, 1=arbitration, 2=selection, 3=reselection, 4=command,
 //   5=data_in, 6=data_out, 7=status, 8=message_in, 9=message_out
 int scsi_get_bus_phase(const scsi_t *scsi);
+// The same without running the lazy settle poll (an inspection).
+int scsi_get_bus_phase_peek(const scsi_t *scsi);
 
 // The three phase lines -- MSG (bit 2), C/D (bit 1), I/O (bit 0) -- as ANSI
 // X3.131-1986 encodes them (Table 5-1: data out 000, data in 001, command 010,

@@ -374,6 +374,10 @@ uint16_t gos_ata_read16(config_t *cfg, uint32_t off);
 void gos_ata_write16(config_t *cfg, uint32_t off, uint16_t value);
 uint32_t gos_ata_read32(config_t *cfg, uint32_t off);
 void gos_ata_write32(config_t *cfg, uint32_t off, uint32_t value);
+// The same reads without their side effects (an inspection; see ata_peek).
+uint8_t gos_ata_peek8(config_t *cfg, uint32_t off);
+uint16_t gos_ata_peek16(config_t *cfg, uint32_t off);
+uint32_t gos_ata_peek32(config_t *cfg, uint32_t off);
 // The substrate's media hooks: the standard floppy/SCSI set plus the ATA units.
 int gos_media_attach(config_t *cfg, const media_slot_t *slot);
 bool gos_media_present(config_t *cfg, media_bus_t bus, int unit);

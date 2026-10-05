@@ -708,10 +708,17 @@ void ata_refresh_devices(ata_channel_t *ch) {
     }
 }
 
-uint8_t ata_read(ata_channel_t *ch, int reg) {
+static uint16_t data16_read(ata_channel_t *ch, bool peek);
+
+// A register read: the guest's, or an inspection's (`peek`).  A peek returns
+// what the register presents now but attaches or detaches no ATAPI device
+// (ata_refresh_devices; so a disc attached since the last guest access is not
+// yet on the channel), acknowledges no INTRQ and moves no PIO data.
+static uint8_t reg_read(ata_channel_t *ch, int reg, bool peek) {
     if (!ch->enabled)
         return 0xFF;
-    ata_refresh_devices(ch);
+    if (!peek)
+        ata_refresh_devices(ch);
     if (!any_device(ch))
         return 0x7F; // nothing drives the bus; DD7 is pulled down
     ata_dev_t *d = sel_dev(ch);
@@ -719,7 +726,7 @@ uint8_t ata_read(ata_channel_t *ch, int reg) {
         return reg == ATA_REG_SELECT ? ch->select : 0; // device 0 answers for an absent 1
     switch (reg) {
     case ATA_REG_DATA:
-        return (uint8_t)(ata_read_data16(ch) >> 8);
+        return (uint8_t)(data16_read(ch, peek) >> 8);
     case ATA_REG_ERROR:
         return d->error;
     case ATA_REG_NSECT:
@@ -733,20 +740,39 @@ uint8_t ata_read(ata_channel_t *ch, int reg) {
     case ATA_REG_SELECT:
         return ch->select;
     default: // Status: reading it acknowledges INTRQ
-        d->intrq = 0;
-        update_line(ch);
+        if (!peek) {
+            d->intrq = 0;
+            update_line(ch);
+        }
         return d->status;
     }
 }
 
-uint8_t ata_read_altstatus(ata_channel_t *ch) {
+uint8_t ata_read(ata_channel_t *ch, int reg) {
+    return reg_read(ch, reg, false);
+}
+
+uint8_t ata_peek(ata_channel_t *ch, int reg) {
+    return reg_read(ch, reg, true);
+}
+
+static uint8_t altstatus_read(ata_channel_t *ch, bool peek) {
     if (!ch->enabled)
         return 0xFF;
-    ata_refresh_devices(ch);
+    if (!peek)
+        ata_refresh_devices(ch);
     if (!any_device(ch))
         return 0x7F;
     ata_dev_t *d = sel_dev(ch);
     return d->kind == ATA_DEV_NONE ? 0 : d->status;
+}
+
+uint8_t ata_read_altstatus(ata_channel_t *ch) {
+    return altstatus_read(ch, false);
+}
+
+uint8_t ata_peek_altstatus(ata_channel_t *ch) {
+    return altstatus_read(ch, true);
 }
 
 void ata_write(ata_channel_t *ch, int reg, uint8_t value) {
@@ -859,18 +885,46 @@ static void block_done(ata_channel_t *ch) {
     }
 }
 
-uint16_t ata_read_data16(ata_channel_t *ch) {
-    if (!ch->enabled || ch->xfer != ATA_XFER_PIO_IN || ch->cur != sel_unit(ch))
-        return 0xFFFF;
+// The PIO buffer's halfword at `p` (first stream byte in bits 15:8).
+static uint16_t data16_at(const ata_channel_t *ch, uint32_t p) {
     const uint8_t *src = ch->atapi_resp ? ch->atapi_resp : ch->buf;
-    uint32_t p = ch->buf_pos;
     uint16_t v = (uint16_t)(src[p] << 8);
     if (p + 1 < ch->buf_len)
         v |= src[p + 1];
+    return v;
+}
+
+// The data register's next halfword; a peek leaves the PIO position (and the
+// block-done protocol step it may trigger) alone.
+static uint16_t data16_read(ata_channel_t *ch, bool peek) {
+    if (!ch->enabled || ch->xfer != ATA_XFER_PIO_IN || ch->cur != sel_unit(ch))
+        return 0xFFFF;
+    uint32_t p = ch->buf_pos;
+    uint16_t v = data16_at(ch, p);
+    if (peek)
+        return v;
     ch->buf_pos = p + 2;
     if (ch->buf_pos >= ch->buf_len)
         block_done(ch);
     return v;
+}
+
+uint16_t ata_read_data16(ata_channel_t *ch) {
+    return data16_read(ch, false);
+}
+
+uint16_t ata_peek_data16(ata_channel_t *ch) {
+    return data16_read(ch, true);
+}
+
+// Two halfword reads, as a longword cycle makes them.  The second is the
+// buffer's next halfword; where the first would end the block, the next block
+// is not staged yet (staging it reads the disk), so it reads as open bus.
+uint32_t ata_peek_data32(ata_channel_t *ch) {
+    uint32_t hi = data16_read(ch, true);
+    if (ch->enabled && ch->xfer == ATA_XFER_PIO_IN && ch->cur == sel_unit(ch) && ch->buf_pos + 2 < ch->buf_len)
+        return (hi << 16) | data16_at(ch, ch->buf_pos + 2);
+    return (hi << 16) | 0xFFFFu;
 }
 
 void ata_write_data16(ata_channel_t *ch, uint16_t value) {
