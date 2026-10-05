@@ -396,8 +396,9 @@ static uint8_t port_access_ifr_clear_mask(const via_t *restrict via, int port) {
 // distinction the datasheet draws is about pin loading, which we do not model,
 // so the programmed level is what both report.  Input pins read the live pin
 // levels, or the latched sample when ACR enables latching for this port.
-static uint8_t read_port(via_t *restrict via, int port) {
-    update_ifr(via, via->ifr & (uint8_t)~port_access_ifr_clear_mask(via, port));
+static uint8_t read_port(via_t *restrict via, int port, bool peek) {
+    if (!peek)
+        update_ifr(via, via->ifr & (uint8_t)~port_access_ifr_clear_mask(via, port));
 
     uint8_t inputs = port_latch_enabled(via, port) ? via->ports[port].latched : via->ports[port].input;
     return (via->ports[port].output & via->ports[port].direction) | (inputs & ~via->ports[port].direction);
@@ -407,9 +408,9 @@ static uint8_t read_port(via_t *restrict via, int port) {
 // Memory Interface
 // ============================================================================
 
-// Memory-mapped read handler for VIA registers
-static uint8_t via_read_uint8(void *v, uint32_t addr) {
-    via_t *via = (via_t *)v;
+// A register read: the guest's, or an inspection's (`peek`), which reports the
+// same value but clears no IFR flag and pulses no handshake.
+static uint8_t via_reg_read(via_t *via, uint32_t addr, bool peek) {
     uint8_t ret = 0;
     uint8_t rs = (addr >> 9) & 15; // register select
 
@@ -426,7 +427,7 @@ static uint8_t via_read_uint8(void *v, uint32_t addr) {
     // VIA's 4 RS (register select) lines are connected to line 9-12 of the address bus
     switch (rs) {
     case ORB_IRB:
-        ret = read_port(via, PORT_B);
+        ret = read_port(via, PORT_B, peek);
         break;
 
     case ORA_IRA:
@@ -434,9 +435,10 @@ static uint8_t via_read_uint8(void *v, uint32_t addr) {
         // unless the PCR selects an independent input (port_access_ifr_clear_mask).
         // The handshaked access pulses CA2/PSTRB, so a hooked device advances to
         // the next byte and drives it onto the input pins.
-        if (via->porta_read)
+        // An inspection shows the pins as they stand, without the pulse.
+        if (via->porta_read && !peek)
             via->ports[PORT_A].input = via->porta_read(via->porta_ctx, true);
-        ret = read_port(via, PORT_A);
+        ret = read_port(via, PORT_A, peek);
         break;
 
     case DDRB:
@@ -448,7 +450,8 @@ static uint8_t via_read_uint8(void *v, uint32_t addr) {
         break;
 
     case T1C_L:
-        update_ifr(via, via->ifr & ~IFR_T1); // interrupt flag cleared by reading T1C-L
+        if (!peek)
+            update_ifr(via, via->ifr & ~IFR_T1); // interrupt flag cleared by reading T1C-L
         ret = (uint8_t)read_timer(via, TIMER_1);
         LOG(2, "Read register T1C_L=0x%02x (%s)", ret, via->timers[TIMER_1].started ? "counting" : "stopped");
         break;
@@ -469,7 +472,8 @@ static uint8_t via_read_uint8(void *v, uint32_t addr) {
         break;
 
     case T2C_L:
-        update_ifr(via, via->ifr & ~IFR_T2);
+        if (!peek)
+            update_ifr(via, via->ifr & ~IFR_T2);
         ret = (uint8_t)read_timer(via, TIMER_2);
         LOG(2, "Read register T2C_L=0x%02x (%s)", ret, via->timers[TIMER_2].started ? "counting" : "stopped");
         break;
@@ -480,7 +484,8 @@ static uint8_t via_read_uint8(void *v, uint32_t addr) {
         break;
 
     case SR:
-        update_ifr(via, via->ifr & ~IFR_SR);
+        if (!peek)
+            update_ifr(via, via->ifr & ~IFR_SR);
         ret = via->sr;
         break;
 
@@ -504,7 +509,7 @@ static uint8_t via_read_uint8(void *v, uint32_t addr) {
         // Register 15: Read Port A WITHOUT handshake — no flag clearing.  No
         // CA2/PSTRB pulse, so a hooked device presents a level byte (e.g. the
         // ProFile state byte) without advancing.
-        if (via->porta_read)
+        if (via->porta_read && !peek)
             via->ports[PORT_A].input = via->porta_read(via->porta_ctx, false);
         ret = (via->ports[PORT_A].output & via->ports[PORT_A].direction) |
               (via->ports[PORT_A].input & ~via->ports[PORT_A].direction);
@@ -520,6 +525,13 @@ static uint8_t via_read_uint8(void *v, uint32_t addr) {
         LOG(2, "Read register %s=0x%02x", via_reg_names[rs], ret);
 
     return ret;
+}
+
+static uint8_t via_read_uint8(void *via, uint32_t addr) {
+    return via_reg_read(via, addr, false);
+}
+static uint8_t via_peek_uint8(void *via, uint32_t addr) {
+    return via_reg_read(via, addr, true);
 }
 
 // Memory-mapped write handler for VIA registers
@@ -843,6 +855,7 @@ via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t
     via->memory_interface.read_uint8 = &via_read_uint8;
     via->memory_interface.read_uint16 = &via_read_uint16;
     via->memory_interface.read_uint32 = &via_read_uint32;
+    via->memory_interface.peek_uint8 = &via_peek_uint8; // wider peeks compose
 
     via->memory_interface.write_uint8 = &via_write_uint8;
     via->memory_interface.write_uint16 = &via_write_uint16;

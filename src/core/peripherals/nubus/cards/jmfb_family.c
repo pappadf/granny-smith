@@ -217,7 +217,7 @@ static void stopwatch_write16(jmfb_regs_t *r, const jmfb_bind_t *b, uint32_t off
     }
 }
 
-static uint16_t stopwatch_read16(jmfb_regs_t *r, const jmfb_bind_t *b, uint32_t off) {
+static uint16_t stopwatch_read16(jmfb_regs_t *r, const jmfb_bind_t *b, uint32_t off, bool peek) {
     switch (off) {
     case JMFB_REG_SW_STATUS:
         // Top half of the 32-bit status word.  Real hardware exposes the VBL
@@ -227,7 +227,10 @@ static uint16_t stopwatch_read16(jmfb_regs_t *r, const jmfb_bind_t *b, uint32_t 
         return 0;
     case JMFB_REG_SW_STATUS + 2:
         // Bit 2 of this half is the VBL toggle the OS polls.  Flip it on every
-        // read so the poll sees both edges.
+        // read so the poll sees both edges; a peek reports the edge the next
+        // read would see, without flipping it.
+        if (peek)
+            return (r->sw_status ^ 0x0004u) & 0x0004u;
         r->sw_status ^= 0x0004u;
         return r->sw_status & 0x0004u;
     case JMFB_REG_SW_IC:
@@ -330,17 +333,25 @@ void jmfb_write16(jmfb_regs_t *r, const jmfb_bind_t *b, int blk, uint32_t off, u
     }
 }
 
-uint16_t jmfb_read16(jmfb_regs_t *r, const jmfb_bind_t *b, int blk, uint32_t off) {
+static uint16_t jmfb_access16(jmfb_regs_t *r, const jmfb_bind_t *b, int blk, uint32_t off, bool peek) {
     if (!r || !b)
         return 0;
     switch (blk) {
     case JMFB_BLK_JMFB:
         return jmfb_block_read16(r, b, off);
     case JMFB_BLK_STOPWATCH:
-        return stopwatch_read16(r, b, off);
+        return stopwatch_read16(r, b, off, peek);
     case JMFB_BLK_CLUT:
         return clut_read16(r, b, off);
     default:
         return 0; // Endeavor is the caller's (jmfb_family.h)
     }
+}
+
+uint16_t jmfb_read16(jmfb_regs_t *r, const jmfb_bind_t *b, int blk, uint32_t off) {
+    return jmfb_access16(r, b, blk, off, false);
+}
+
+uint16_t jmfb_peek16(jmfb_regs_t *r, const jmfb_bind_t *b, int blk, uint32_t off) {
+    return jmfb_access16(r, b, blk, off, true);
 }

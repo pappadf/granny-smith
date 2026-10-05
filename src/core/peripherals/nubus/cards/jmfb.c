@@ -238,21 +238,9 @@ static uint16_t handle_endeavor_read16(jmfb_priv_t *p, uint32_t off) {
 // Dispatch table.  Each call checks the block id then forks into
 // per-block per-width handlers.
 
-static uint8_t io_read8(void *dev, uint32_t addr) {
-    // 8-bit register reads aren't issued by the Apple driver but are
-    // tolerated.  Read the underlying 16-bit value and return the byte.
-    jmfb_priv_t *p = dev;
-    uint32_t off;
-    int blk = classify(addr, p->slot_base, &off);
-    if (blk < 0)
-        return 0;
-    uint16_t v = (blk == JMFB_BLK_ENDEAVOR) ? handle_endeavor_read16(p, off & ~1u)
-                                            : jmfb_read16(&p->regs, &p->bind, blk, off & ~1u);
-    return (uint8_t)((addr & 1) ? (v & 0xFFu) : (v >> 8));
-}
-
-static uint16_t io_read16(void *dev, uint32_t addr) {
-    jmfb_priv_t *p = dev;
+// One register read: the guest's (`peek` false) or an inspection's, which
+// leaves the Stopwatch VBL toggle where it is (memory_interface_t.peek_*).
+static uint16_t reg_read16(jmfb_priv_t *p, uint32_t addr, bool peek) {
     uint32_t off;
     int blk = classify(addr, p->slot_base, &off);
     if (blk < 0)
@@ -261,11 +249,33 @@ static uint16_t io_read16(void *dev, uint32_t addr) {
     // own (jmfb_family.h).
     if (blk == JMFB_BLK_ENDEAVOR)
         return handle_endeavor_read16(p, off);
-    return jmfb_read16(&p->regs, &p->bind, blk, off);
+    return peek ? jmfb_peek16(&p->regs, &p->bind, blk, off) : jmfb_read16(&p->regs, &p->bind, blk, off);
 }
 
+// 8-bit register reads aren't issued by the Apple driver but are tolerated:
+// the byte of the underlying 16-bit value.
+static uint8_t reg_read8(jmfb_priv_t *p, uint32_t addr, bool peek) {
+    uint16_t v = reg_read16(p, addr & ~1u, peek);
+    return (uint8_t)((addr & 1) ? (v & 0xFFu) : (v >> 8));
+}
+
+static uint8_t io_read8(void *dev, uint32_t addr) {
+    return reg_read8(dev, addr, false);
+}
+static uint16_t io_read16(void *dev, uint32_t addr) {
+    return reg_read16(dev, addr, false);
+}
 static uint32_t io_read32(void *dev, uint32_t addr) {
-    return ((uint32_t)io_read16(dev, addr) << 16) | io_read16(dev, addr + 2);
+    return ((uint32_t)reg_read16(dev, addr, false) << 16) | reg_read16(dev, addr + 2, false);
+}
+static uint8_t io_peek8(void *dev, uint32_t addr) {
+    return reg_read8(dev, addr, true);
+}
+static uint16_t io_peek16(void *dev, uint32_t addr) {
+    return reg_read16(dev, addr, true);
+}
+static uint32_t io_peek32(void *dev, uint32_t addr) {
+    return ((uint32_t)reg_read16(dev, addr, true) << 16) | reg_read16(dev, addr + 2, true);
 }
 
 static void io_write16(void *dev, uint32_t addr, uint16_t val);
@@ -299,6 +309,9 @@ static memory_interface_t s_jmfb_mem_iface = {
     .write_uint8 = io_write8,
     .write_uint16 = io_write16,
     .write_uint32 = io_write32,
+    .peek_uint8 = io_peek8,
+    .peek_uint16 = io_peek16,
+    .peek_uint32 = io_peek32,
 };
 
 // === Card vtable ============================================================

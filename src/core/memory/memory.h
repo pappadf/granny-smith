@@ -57,6 +57,14 @@ static inline void memory_store_host32(void *p, uint32_t v) {
 struct mmu_state;
 struct lisa_mmu;
 
+// A device's bus interface.  `read_*` is the guest's access and may have the
+// hardware's read side effects (a status toggle, a RAMDAC phase step, a FIFO
+// pop, a flag cleared on read).  `peek_*` is an inspection: it returns what
+// the matching read would return now and changes nothing in the device.  The
+// debugger's reads (memory.peek/.dump, find.*, the Mac-globals and
+// disassembly views) use peek_* and fall back to read_* where it is NULL, so
+// a device whose reads have any side effect MUST implement peek_* (#159).
+// A missing width composes from the narrower peek, as reads do.
 typedef struct memory_interface {
     uint8_t (*read_uint8)(void *device, uint32_t addr);
     uint16_t (*read_uint16)(void *device, uint32_t addr);
@@ -64,7 +72,20 @@ typedef struct memory_interface {
     void (*write_uint8)(void *device, uint32_t addr, uint8_t data);
     void (*write_uint16)(void *device, uint32_t addr, uint16_t data);
     void (*write_uint32)(void *device, uint32_t addr, uint32_t data);
+    uint8_t (*peek_uint8)(void *device, uint32_t addr);
+    uint16_t (*peek_uint16)(void *device, uint32_t addr);
+    uint32_t (*peek_uint32)(void *device, uint32_t addr);
 } memory_interface_t;
+
+// A byte read through `m` on behalf of an I/O island that fronts the device:
+// the guest's read, or, for an inspection (`peek`), the device's peek_uint8
+// where it has one.  An island's own peek routes through this so the device
+// behind it is inspected, not read.
+static inline uint8_t memory_iface_read8(const memory_interface_t *m, void *dev, uint32_t addr, bool peek) {
+    if (peek && m->peek_uint8)
+        return m->peek_uint8(dev, addr);
+    return m->read_uint8 ? m->read_uint8(dev, addr) : 0xFF;
+}
 
 struct memory;
 typedef struct memory memory_map_t;
@@ -188,10 +209,6 @@ void memory_signal_bus_error(uint32_t addr, bool write);
 // the 68k MMU's host-region list.  See src/machines/pdm/pdm.c.  Alias of the
 // selected map's (memory_map_set_host_fill).
 extern void (*g_mem_host_fill)(uint32_t page_index, uint8_t *host_ptr, bool writable);
-
-// True while an inspection (debug) access is dispatching into a device
-// handler — see memory_signal_bus_error.
-extern bool g_mem_debug_access;
 
 // True when an unanswered access at `addr` should raise a bus error rather
 // than float to $FF: inside the installed map's bus-error window.  The window

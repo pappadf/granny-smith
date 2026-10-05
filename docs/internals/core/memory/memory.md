@@ -138,10 +138,25 @@ timeout does (docs/internals/machines/pdm/bart.md; the hardware fault and
 timeout behavior is carried by [bart.md](../../../reference/machines/pdm/bart.md)
 section 3.5).  The fault is latched and
 delivered by the CPU seam at the sprint boundary, exactly like the unmapped
-faults the slow paths raise.  Inspection reads (`memory.peek`, `find.*`)
-dispatch into device handlers with `g_mem_debug_access` raised, and the call
-is inert while it is up — examining an empty slot must never inject a fault
-into the running guest.
+faults the slow paths raise.
+
+### Inspection reads: `peek_*`
+
+`memory_interface_t` carries `peek_uint8/16/32` beside the guest's
+`read_*`.  A peek returns what the matching read would return now and changes
+nothing in the device.  The debugger's reads (`memory.peek`, `find.*`,
+`machine.cpu.mmu.peek`, the Mac-globals and disassembly views — everything on
+`memory_debug_read_*`) dispatch to `peek_*`, falling back to `read_*` where it
+is NULL, and a missing width composes from the narrower peek.  So **a device
+whose read has any side effect implements `peek_*`**: a VBL toggle, a RAMDAC
+RGB phase or auto-incrementing index, a FIFO pop, a flag cleared on read, and
+signalling a bus error (`memory_signal_bus_error`) all count.  The usual shape
+is one register-read function taking `bool peek`, with each side effect
+guarded by `if (!peek)`, so the two paths cannot drift apart (#159).
+
+`memory.poke` is a real write, with the write's effect on the device, but it
+is not a guest bus cycle: a transfer error the device answers it with is
+discarded rather than delivered to the guest.
 
 ### Per-Instance Ownership
 

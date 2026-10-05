@@ -398,16 +398,20 @@ static void engine_store_long(display_card_24ac_priv_t *p, uint32_t dest, uint32
 
 // === Unified register/engine dispatcher =====================================
 // `off` is the full slot-relative offset (region_off + region-relative addr).
+// An inspection (`peek`) reads the same value with no side effect.
 
-static uint32_t reg_read(display_card_24ac_priv_t *p, uint32_t off, unsigned width) {
+static uint32_t reg_read(display_card_24ac_priv_t *p, uint32_t off, unsigned width, bool peek) {
     switch (off) {
     // --- Display side -------------------------------------------------------
     case DISPLAY_CARD_24AC_STATUS_OFFSET: {
         // STATUS byte: [2:0] depth (cdev), [3] class, [4] busy/sync toggle.
         // Toggle bit 4 each read so the driver's CLUT-safe / VBL-sync poll
-        // always sees both edges and exits (mirrors jmfb's VBL toggle).
-        p->status_busy ^= DISPLAY_CARD_24AC_STATUS_BUSY;
-        return (uint32_t)((p->status_depth_code & 7u) | (p->status_class_bit ? 0x08u : 0x00u) | p->status_busy);
+        // always sees both edges and exits (mirrors jmfb's VBL toggle).  A
+        // peek reports the edge the next read would see.
+        uint8_t busy = p->status_busy ^ DISPLAY_CARD_24AC_STATUS_BUSY;
+        if (!peek)
+            p->status_busy = busy;
+        return (uint32_t)((p->status_depth_code & 7u) | (p->status_class_bit ? 0x08u : 0x00u) | busy);
     }
     case DISPLAY_CARD_24AC_VIDCTL_OFFSET:
         return p->vidctl;
@@ -613,15 +617,27 @@ static void reg_write(display_card_24ac_priv_t *p, uint32_t off, uint32_t val, u
 
 static uint8_t io_read8(void *dev, uint32_t addr) {
     reg_ctx_t *c = dev;
-    return (uint8_t)reg_read(c->p, c->region_off + addr, 1);
+    return (uint8_t)reg_read(c->p, c->region_off + addr, 1, false);
 }
 static uint16_t io_read16(void *dev, uint32_t addr) {
     reg_ctx_t *c = dev;
-    return (uint16_t)reg_read(c->p, c->region_off + addr, 2);
+    return (uint16_t)reg_read(c->p, c->region_off + addr, 2, false);
 }
 static uint32_t io_read32(void *dev, uint32_t addr) {
     reg_ctx_t *c = dev;
-    return reg_read(c->p, c->region_off + addr, 4);
+    return reg_read(c->p, c->region_off + addr, 4, false);
+}
+static uint8_t io_peek8(void *dev, uint32_t addr) {
+    reg_ctx_t *c = dev;
+    return (uint8_t)reg_read(c->p, c->region_off + addr, 1, true);
+}
+static uint16_t io_peek16(void *dev, uint32_t addr) {
+    reg_ctx_t *c = dev;
+    return (uint16_t)reg_read(c->p, c->region_off + addr, 2, true);
+}
+static uint32_t io_peek32(void *dev, uint32_t addr) {
+    reg_ctx_t *c = dev;
+    return reg_read(c->p, c->region_off + addr, 4, true);
 }
 static void io_write8(void *dev, uint32_t addr, uint8_t val) {
     reg_ctx_t *c = dev;
@@ -643,6 +659,9 @@ static memory_interface_t s_display_card_24ac_mem_iface = {
     .write_uint8 = io_write8,
     .write_uint16 = io_write16,
     .write_uint32 = io_write32,
+    .peek_uint8 = io_peek8,
+    .peek_uint16 = io_peek16,
+    .peek_uint32 = io_peek32,
 };
 
 // === VROM load ==============================================================

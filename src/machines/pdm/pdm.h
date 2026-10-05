@@ -462,6 +462,8 @@ display_t *pdm_video_display(config_t *cfg);
 uint8_t pdm_video_ctl_read(config_t *cfg, uint32_t off); // $50F28000 block
 void pdm_video_ctl_write(config_t *cfg, uint32_t off, uint8_t value);
 uint8_t pdm_ariel_read(config_t *cfg, uint32_t off); // $50F24000 block
+// The same register without the read's RGB-phase step (memory_interface_t.peek_*).
+uint8_t pdm_ariel_peek(config_t *cfg, uint32_t off);
 void pdm_ariel_write(config_t *cfg, uint32_t off, uint8_t value);
 
 #endif // GS_MACHINES_PDM_H

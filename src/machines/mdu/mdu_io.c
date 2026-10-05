@@ -37,12 +37,16 @@
 static uint8_t mdu_vdac_read(void *dev, uint32_t off) {
     return builtin_rbv_video_vdac_read((nubus_card_t *)dev, off);
 }
+static uint8_t mdu_vdac_peek(void *dev, uint32_t off) {
+    return builtin_rbv_video_vdac_peek((nubus_card_t *)dev, off);
+}
 static void mdu_vdac_write(void *dev, uint32_t off, uint8_t val) {
     builtin_rbv_video_vdac_write((nubus_card_t *)dev, off, val);
 }
 static const memory_interface_t mdu_vdac_iface = {
     .read_uint8 = mdu_vdac_read,
     .write_uint8 = mdu_vdac_write,
+    .peek_uint8 = mdu_vdac_peek,
 };
 
 // The canonical MDU $50Fxxxxx decode, expressed as data.  Like GLUE but: no

@@ -498,6 +498,8 @@ void tnt_control_update(config_t *cfg); // re-derive the display descriptor
 void tnt_control_teardown(config_t *cfg);
 // RaDACal byte cells (Grand Central +$1B000, $10 centres).
 uint8_t tnt_control_rad_read(config_t *cfg, uint32_t offset);
+// The same cell without the read's RGB-phase step (memory_interface_t.peek_*).
+uint8_t tnt_control_rad_peek(config_t *cfg, uint32_t offset);
 void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value);
 // The pixel-clock synthesiser on Cuda's I2C bus (av_cuda_attach_i2c_write).
 bool tnt_control_i2c_write(void *ctx, uint8_t slave, const uint8_t *data, int len);
