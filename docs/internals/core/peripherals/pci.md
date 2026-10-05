@@ -263,7 +263,9 @@ host memory with the device as bus master. Three rules:
 
 The calls are synchronous. *Pacing* is the card's business, not the bus's:
 a command processor that must show progress rather than completion
-schedules its own fetches. The 53C8xx SCRIPTS engine predates the API
+schedules its own fetches. The Rage 128's CCE is the first card on the API: it
+fetches its ring and indirect buffer and writes its read pointer back
+through it, completing each fetch inside the guest's `WPTR` write. The 53C8xx SCRIPTS engine predates the API
 and still masters through its own copy of the same path
 (`cards/scripts53c8xx.c`), which does not consult `BUS_MASTER_EN`.
 
@@ -308,7 +310,7 @@ the **capabilities pointer** and the first **64 MB prefetchable BAR** are
 in the core, pinned by the unit suite (`tests/unit/suites/pci`). The ATI
 Rage 128 GL (`cards/rage128.c`,
 `docs/internals/core/peripherals/pci/cards/rage128.md`) is the first card
-to use the last two, and the first with a BAR its FCode leaves out of `reg`
+to use all three (its CCE masters the bus), and the first with a BAR its FCode leaves out of `reg`
 yet needs assigned: it probes through its I/O BAR.
 
 Not done, with reasons: the host-overlay BAR fast path (above); PCI-PCI

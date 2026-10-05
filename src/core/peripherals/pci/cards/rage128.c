@@ -363,6 +363,8 @@ static uint32_t r128_reg_read(rage128_t *r, uint32_t off, bool peek) {
     off &= (R128_REG_APER_SIZE - 1u) & ~3u;
     if (!peek)
         LOG(6, "Rage 128: reg $%04X read", off);
+    if (r128_cce_owns(off))
+        return r128_cce_read(r, off, peek);
     switch (off) {
     case R_MM_DATA: {
         uint32_t idx = r->reg[R_MM_INDEX / 4];
@@ -521,6 +523,14 @@ static void r128_reg_write(rage128_t *r, uint32_t off, uint32_t value, uint32_t 
                 (merged & APER_REG_ENDIAN) ? "swapped" : "straight");
         *p = merged & CONFIG_CNTL_WMASK;
         return;
+    case R_GEN_RESET_CNTL:
+        // Raising SOFT_RESET_GUI resets the engines' sequencing — a packet
+        // half gathered, a host-data operation half fed — not their
+        // registers (the drivers' reset dance, SDK §5.2).
+        if ((merged & SOFT_RESET_GUI) && !(*p & SOFT_RESET_GUI))
+            r128_cce_soft_reset(r);
+        *p = merged;
+        return;
     case R_CONFIG_APER_0_BASE:
     case R_CONFIG_APER_1_BASE:
     case R_CONFIG_APER_SIZE:
@@ -534,6 +544,10 @@ static void r128_reg_write(rage128_t *r, uint32_t off, uint32_t value, uint32_t 
     }
     if (off >= R_CFG_MIRROR && off < R_CFG_MIRROR_END)
         return; // the config mirror is read-only
+    if (r128_cce_owns(off)) {
+        r128_cce_write(r, off, merged);
+        return;
+    }
     *p = merged;
     LOG(5, "Rage 128: reg $%04X := $%08X (lanes $%08X)", off, merged, mask);
     if (off >= R_GUI_FIRST) {
@@ -554,6 +568,10 @@ static void r128_reg_write(rage128_t *r, uint32_t off, uint32_t value, uint32_t 
     default:
         break;
     }
+}
+
+void r128_reg_store(rage128_t *r, uint32_t off, uint32_t value) {
+    r128_reg_write(r, off, value, 0xFFFFFFFFu);
 }
 
 // One access of `size` bytes at aperture offset `off`, little-endian
@@ -1116,13 +1134,15 @@ static void r128_reset(pci_device_t *dev, config_t *cfg) {
     r->reg[R_CRTC_GEN_CNTL / 4] = CRTC_DISP_REQ_EN_B;
     r->reg[R_DAC_CNTL / 4] = 0xFF000000u; // DAC_MASK
     r->reg[R_CONFIG_MEMSIZE / 4] = r->vram_size;
-    r->reg[R_BUS_CNTL / 4] = 0x00000040u; // BUS_MASTER_DIS
+    r->reg[R_BUS_CNTL / 4] = BUS_MASTER_DIS;
+    r->reg[R_PCI_GART_PAGE / 4] = PCI_GART_DIS;
     r->reg[R_CRTC_EXT_CNTL / 4] = 0x00200000u; // DFIFO_EXTSENSE
     memset(r->clut, 0, sizeof(r->clut));
     r->pal_w = r->pal_r = 0;
     memset(&r->ddc, 0, sizeof(r->ddc));
     r->ddc.scl = r->ddc.sda = true;
     r128_2d_reset(r);
+    r128_cce_reset(r);
     r->depth_warned = false;
     if (r->irq_active) {
         r->irq_active = false;
@@ -1175,6 +1195,9 @@ static void r128_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     c.ddc = r->ddc;
     memcpy(c.host, &r->host, sizeof(c.host));
     system_write_checkpoint_data(cp, &c, sizeof(c));
+    // The CCE (microcode, partial packets) is large: written on its own,
+    // not through the stack-allocated header.
+    system_write_checkpoint_data(cp, &r->cce, sizeof(r->cce));
     system_write_checkpoint_data(cp, r->vram, r->vram_size);
 }
 
@@ -1191,6 +1214,7 @@ static void r128_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     r->pal_r = c.pal_r;
     r->ddc = c.ddc;
     memcpy(&r->host, c.host, sizeof(r->host));
+    system_read_checkpoint_data(cp, &r->cce, sizeof(r->cce));
     if (c.vram_size != r->vram_size)
         // The card was built from the staged memory option; a stream from a
         // card of another size fails the size-tagged read below, loudly.
@@ -1322,6 +1346,15 @@ static DEF_GETTER(regs_attr_config_cntl) {
     return val_uint(4, c ? r128_reg_read(c, R_CONFIG_CNTL, true) : 0);
 }
 
+static DEF_GETTER(regs_attr_microcode) {
+    rage128_t *c = node_card(self);
+    return val_str(c ? r128_cce_microcode_name(c) : "none");
+}
+static DEF_GETTER(regs_attr_cce_packets) {
+    rage128_t *c = node_card(self);
+    return val_uint(8, c ? c->cce.packets : 0);
+}
+
 static const arg_decl_t regs_off_arg[] = {
     {.name = "offset", .kind = V_INT, .doc = "Register byte offset in an aperture ($0000-$1FFC)"},
 };
@@ -1342,6 +1375,14 @@ static const member_t regs_members[] = {
      .name = "config_cntl",
      .doc = "CONFIG_CNTL: the aperture and register byte-order swappers",
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_config_cntl} },
+    {.kind = M_ATTR,
+     .name = "microcode",
+     .doc = "CCE microcode the guest uploaded: known, unknown or none",
+     .attr = {.type = V_STRING, .get = regs_attr_microcode}                                },
+    {.kind = M_ATTR,
+     .name = "cce_packets",
+     .doc = "CCE command packets executed since reset",
+     .attr = {.type = V_UINT, .get = regs_attr_cce_packets}                                },
     {.kind = M_METHOD,
      .name = "read",
      .doc = "Read a register by its byte offset (no side effects)",

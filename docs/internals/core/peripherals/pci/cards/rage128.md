@@ -3,9 +3,11 @@
 The ATI Rage 128 GL as a retail Macintosh PCI display card — the Rage
 Orion, Xclaim VR 128 and Nexus 128 — modelled in
 [`src/core/peripherals/pci/cards/rage128.c`](../../../../../../src/core/peripherals/pci/cards/rage128.c)
-(the card) and
+(the card),
 [`rage128_2d.c`](../../../../../../src/core/peripherals/pci/cards/rage128_2d.c)
-(its 2D draw engine), sharing
+(its 2D draw engine) and
+[`rage128_cce.c`](../../../../../../src/core/peripherals/pci/cards/rage128_cce.c)
+(its Concurrent Command Engine), sharing
 [`rage128_priv.h`](../../../../../../src/core/peripherals/pci/cards/rage128_priv.h).
 The chip's hardware reference is
 [`rage-128.md`](../../../../../reference/hardware/pci/cards/rage-128.md);
@@ -26,15 +28,16 @@ model answers registers and nothing else.
 
 ## 1. Responsibilities & design
 
-**Status.** Milestones 4b, 4c and 4d of the Rage 128 work: the PCI face, the
+**Status.** Milestones 4b–4e of the Rage 128 work: the PCI face, the
 four apertures and their byte-order swappers, the register file and its
 config mirror, the PLL file, monitor sense and DDC, the palette, the CRTC
 turned into a display descriptor at 8, 15/16 and 32 bpp, the hardware
 cursor, and the VBLANK interrupt — enough for the card's ndrv to run
-System 7.6 at every depth it offers — and the 2D draw engine. The 2D draw engine,
-the Concurrent Command Engine and the 3D engine are later milestones: their
-registers are plain storage here (the 2D engine excepted), and `GUI_STAT`, `PC_GUI_CTLSTAT` and
-`PC_NGUI_CTLSTAT` report idle.
+System 7.6 at every depth it offers — then the 2D draw engine and the
+Concurrent Command Engine that feeds it packets. The 3D engine is a later
+milestone: its registers are plain storage here, its packets are skipped,
+and `GUI_STAT`, `PM4_STAT`, `PC_GUI_CTLSTAT` and `PC_NGUI_CTLSTAT` report
+idle.
 
 **Driven by the FCode's needs.** The model was written against a decode of
 the Xclaim FCode's probe and `open`, and three facts from that decode shaped
@@ -68,6 +71,10 @@ it:
   whether an EDID EEPROM answers on it, and its sense straps in the Mach64
   card's three-step extended model.
 - `r128_ddc_t` — the bit-banged I²C slave.
+- `r128_cce_t` — the CCE: the microcode RAM and its two address counters,
+  and two packet streams being gathered (`main` for the ring and the PIO
+  FIFO, `ind` for the indirect buffer, which a ring packet can call
+  mid-stream).
 - `scripts/rage128/rage128_regs.py` — the register name ↔ offset table the
   constants here are checked against.
 
@@ -180,6 +187,45 @@ supply them. Lines are Bresenham on the `DST_BRES_*` terms, with
 `BRES_SIGN` deciding a zero error term and `DST_LAST_PEL` the end pixel.
 Scaled blits, trapezoids and the 24 bpp quirks are not modelled.
 
+**The Concurrent Command Engine** (`rage128_cce.c`). On silicon a
+microcoded processor turning command packets into register writes; here
+the packets are executed natively, with the effect SDK appendix F gives
+them, and the microcode the guest uploads (256 `DATAH`/`DATAL` pairs from
+`PM4_MICROCODE_ADDR`) is only stored and identified: its CRC-32 against
+ATI's published image (`regs.microcode` reads `known`, `unknown` or
+`none`). Packets: type 0 writes `COUNT+1` registers from `BASE_INDEX`
+(or one register, `ONE_REG_WR`), type 1 two registers, type 2 is a
+one-dword filler, type 3 an operation. The 2D operations become exactly the
+register writes a PIO driver would make into the 2D engine —
+`DP_GUI_MASTER_CNTL` and the SETTINGS block (pitch/offsets, scissors, the
+brush packet, `BRUSH_Y_X`), then a trajectory and an initiator — for
+`PAINT`, `PAINT_MULTI`, `BITBLT_MULTI` (the walk directions chosen so an
+overlapping copy is safe), `TRANS_BITBLT`, `POLYLINE` (each segment leaves
+its end pixel to the next; the last draws it only with `DST_LAST_PEL`),
+`POLYSCANLINES`/`PLY_NEXTSCAN` (span ends exclusive), `HOSTDATA_BLT`,
+`NEXTCHAR` and `SET_SCISSORS`. The 3D packets (milestone 4f), `SMALL_TEXT`,
+the scaler packets and `LOAD_PALETTE` are skipped by their count, logged
+once each.
+
+Packets arrive three ways, chosen by `PM4_BUFFER_CNTL`'s mode: through
+`PM4_FIFO_DATA_EVEN/ODD` in the PIO modes; from a ring of
+2^(n+1) dwords at `PM4_BUFFER_OFFSET` in the bus-master modes, fetched from
+`PM4_BUFFER_DL_RPTR` up to `PM4_BUFFER_DL_WPTR` once the microengine is
+free-running, with the new read pointer written back to
+`PM4_BUFFER_DL_RPTR_ADDR` (not with `NOUPDATE`); and from the indirect
+buffer, `PM4_IW_INDSIZE` dwords at `PM4_IW_INDOFF`, run when `INDSIZE` is
+written — by PIO or by a type-0 packet in the ring. The ring and the
+indirect buffer are card addresses: below 32 MB the frame buffer, above it
+the "AGP" window, which on this PCI card reaches host memory through the
+**PCI GART** (`PCI_GART_PAGE`: a table of 8192 little-endian page addresses,
+4 KB pages; bit 0 disables it) or, with the GART disabled, linearly from
+`AGP_BASE`. Every host access is `pci_dma_read/write`, so it needs both the
+PCI command register's `BUS_MASTER_EN` and `BUS_CNTL.BUS_MASTER_DIS`
+clear. The fetch runs to completion inside the `WPTR` write: a driver
+reading `RPTR` straight after finds the ring drained, and `PM4_STAT`
+reports the mode's FIFO share free and nothing busy. `SOFT_RESET_GUI`
+drops a packet half gathered and a host-data operation half fed.
+
 **Interrupts.** `GEN_INT_STATUS` latches VBLANK and VSYNC every frame
 whether or not they are enabled (write 1 to clear); `GEN_INT_CNTL` gates
 the INTA line, which is level and held until acknowledged. `CRTC_STATUS`
@@ -190,13 +236,14 @@ bit 0 is the live blank, bit 1 the since-last-cleared latch.
 `machine.pci.slot[N].card` carries `framebuffer` (the shared display node,
 nominated as `machine.screen.source`), `monitor` (`id`, `ddc`,
 `apple_sense`) and, under the advanced category, `regs` (`vram_size`,
-`crtc_gen_cntl`, `config_cntl`, `read(offset)` without side effects,
-`pll(index)`).
+`crtc_gen_cntl`, `config_cntl`, `microcode`, `cce_packets`, `read(offset)`
+without side effects, `pll(index)`).
 
 ## 5. Checkpointing
 
 The register file, PLL file, AGP/power latches, palette and indices, the
-DDC slave's state and VRAM. The ROM travels in the slot's checkpoint part.
+DDC slave's state, a 2D host-data operation in flight, the CCE (microcode
+RAM and partially gathered packets) and VRAM. The ROM travels in the slot's checkpoint part.
 A checkpoint from a card of another memory size fails the size-tagged read
 loudly.
 
@@ -211,6 +258,15 @@ loudly.
   asserts VRAM equalities for fills, blits (overlapping included),
   transparency, mono and colour host data with the big-endian swap,
   brushes, the ROP3, the write mask, the scissors and lines.
+- `tests/integration/rage128-cce` (tier `unit`) — the CCE the same way:
+  the microcode RAM, packet types 0–3 through the PIO FIFO,
+  `SOFT_RESET_GUI`, a bus-mastered ring through the PCI GART (gated by
+  `BUS_MASTER_DIS` and `BUS_MASTER_EN`, wrapping, `RPTR` written back or
+  not), the indirect buffer called from the ring and by PIO, the
+  GART-disabled linear window, and the 2D packets — VRAM and `RPTR`
+  equalities. Guest RAM is not usable before POST programs the memory
+  controller, so the row stands the card's own VRAM, reached as a PCI peer
+  through BAR0, in for host memory.
 - `tests/integration/tnt-pci-rage128` — the config header before any
   instruction; the node Open Firmware 1.0.5 builds from the FCode, read
   back with `.properties` over the serial console, for each cable and for
@@ -223,10 +279,14 @@ loudly.
 - No pixel clock: refresh is the host's, and PLL dividers are stored only.
 - `CRTC_OFFSET_CNTL` flip latching, `CRTC_VLINE` interrupts and packed
   24 bpp are not modelled.
-- No guest exercises the 2D engine yet: the ROM ndrv does not accelerate,
-  and the `ATI Graphics Accelerator` that would needs a Mac OS 9.x image
-  with the ATI stack (media-gated).
-- The CCE and the 3D engine (milestones 4e–4g).
+- No guest exercises the 2D engine or the CCE yet: the ROM ndrv does not
+  accelerate, and the `ATI Graphics Accelerator` and `ATI Rage 128 3D
+  Accelerator` that would need a Mac OS 9.x image with the ATI stack
+  (media-gated). Which CCE mode the Mac driver picks is therefore unknown.
+- The CCE does not interpret microcode: a guest that uploads its own and
+  depends on behaviour other than appendix F's would diverge.
+- `SMALL_TEXT`, `SCALE`, `TRANS_SCALE` and `LOAD_PALETTE` are not executed.
+- The 3D engine (milestones 4f–4g).
 - The revision byte is `$00` until a real card is read.
 
 ## 8. See also

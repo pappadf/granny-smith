@@ -5,7 +5,8 @@
 // Shared state and register map of the ATI Rage 128 GL card model, split
 // between the card (rage128.c: the PCI face, apertures, register file,
 // sense/DDC, CRTC and cursor) and its engines (rage128_2d.c: the 2D draw
-// engine).  Not a public header: only the card's own files include it.
+// engine; rage128_cce.c: the Concurrent Command Engine).  Not a public
+// header: only the card's own files include it.
 
 #ifndef PCI_RAGE128_PRIV_H
 #define PCI_RAGE128_PRIV_H
@@ -88,6 +89,8 @@
 #define R_CONFIG_XSTRAP        0x00E4u
 #define R_CONFIG_BONDS         0x00E8u
 #define R_GEN_RESET_CNTL       0x00F0u
+#define R_AGP_BASE             0x0170u
+#define R_PCI_GART_PAGE        0x017Cu
 #define R_CONFIG_MEMSIZE       0x00F8u
 #define R_CONFIG_APER_0_BASE   0x0100u
 #define R_CONFIG_APER_1_BASE   0x0104u
@@ -114,6 +117,13 @@
 #define R_PC_GUI_CTLSTAT       0x1748u
 #define R_GUI_STAT             0x1740u
 #define R_PM4_STAT             0x07B8u
+
+// BUS_CNTL bit 6: bus mastering disabled (the reset state).
+#define BUS_MASTER_DIS 0x00000040u
+// GEN_RESET_CNTL bit 0: hold the GUI engines (2D, 3D, CCE) in reset.
+#define SOFT_RESET_GUI 0x00000001u
+// PCI_GART_PAGE bit 0: the GART is disabled (the reset state).
+#define PCI_GART_DIS 0x00000001u
 
 // MM_INDEX (RRG §4.3): bit 31 MM_APER selects linear aperture 0 instead of
 // the register file; the address is bits 26:2.
@@ -250,6 +260,34 @@ typedef struct r128_ddc {
     bool scl, sda; // the line levels last seen
 } r128_ddc_t;
 
+// The CCE (rage128_cce.c): one packet stream being assembled — the ring
+// and the PIO FIFO share one, the indirect buffer has its own (a type-0
+// packet in the ring can call the indirect buffer mid-stream).  The longest
+// packet is a 14-bit count plus its header.
+#define R128_CCE_MAX_PACKET (0x4000u + 1u)
+typedef struct r128_cce_stream {
+    uint32_t len; // dwords gathered
+    uint32_t need; // dwords the packet holds (0: waiting for a header)
+    uint32_t buf[R128_CCE_MAX_PACKET];
+} r128_cce_stream_t;
+
+typedef struct r128_cce {
+    uint32_t ucode[256][2]; // the microcode RAM: (DATAH, DATAL) per address
+    uint32_t ucode_addr; // PM4_MICROCODE_ADDR, auto-incrementing per pair
+    uint32_t ucode_raddr; // PM4_MICROCODE_RADDR, the same for reads
+    uint8_t ucode_state; // R128_UCODE_*
+    bool in_ring; // a ring fetch is running (re-entry guard)
+    bool in_indirect; // an indirect buffer is running (re-entry guard)
+    uint64_t packets; // packets executed (diagnostics)
+    uint8_t told[32]; // once-only logs, a bit per type-3 opcode
+    r128_cce_stream_t main; // the ring and the PIO FIFO
+    r128_cce_stream_t ind; // the indirect buffer
+} r128_cce_t;
+
+#define R128_UCODE_NONE    0u // nothing uploaded since reset
+#define R128_UCODE_KNOWN   1u // ATI's published Rage 128 microcode
+#define R128_UCODE_UNKNOWN 2u // 256 pairs that are not it
+
 typedef struct rage128 {
     pci_device_t *dev;
     config_t *cfg;
@@ -301,7 +339,15 @@ typedef struct rage128 {
         uint32_t bits, nbits;
     } host;
     uint64_t blits; // operations the engine has run (diagnostics)
+
+    r128_cce_t cce; // the Concurrent Command Engine (rage128_cce.c)
 } rage128_t;
+
+// === The register file (rage128.c) =========================================
+
+// A full-dword register write with all its side effects — what the CCE's
+// type-0/1 packets and its 2D packets do to the register file.
+void r128_reg_store(rage128_t *r, uint32_t off, uint32_t value);
 
 // === The 2D draw engine (rage128_2d.c) =====================================
 
@@ -315,5 +361,23 @@ void r128_2d_write(rage128_t *r, uint32_t off, uint32_t value);
 
 // The engine's power-on register state (scissors open, write mask all ones).
 void r128_2d_reset(rage128_t *r);
+
+// === The Concurrent Command Engine (rage128_cce.c) =========================
+
+// The CCE's registers: the PM4 block at $0700-$07FF and the PIO FIFO ports
+// at $1000-$13FF.
+static inline bool r128_cce_owns(uint32_t off) {
+    return (off >= 0x0700u && off < 0x0800u) || (off >= 0x1000u && off < 0x1400u);
+}
+// A write to a CCE register (`value` already lane-merged); stores it and
+// runs whatever it starts.
+void r128_cce_write(rage128_t *r, uint32_t off, uint32_t value);
+// A read of a CCE register; `peek` suppresses side effects.
+uint32_t r128_cce_read(rage128_t *r, uint32_t off, bool peek);
+// RST#: the engine's power-on state.  SOFT_RESET_GUI: drop partial packets.
+void r128_cce_reset(rage128_t *r);
+void r128_cce_soft_reset(rage128_t *r);
+// "known", "unknown" or "none": what the guest uploaded as microcode.
+const char *r128_cce_microcode_name(const rage128_t *r);
 
 #endif // PCI_RAGE128_PRIV_H

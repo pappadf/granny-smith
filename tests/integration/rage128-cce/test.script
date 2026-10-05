@@ -1,0 +1,428 @@
+# The Rage 128 GL's Concurrent Command Engine, exercised register by register.
+#
+# As in rage128-2d, the card sits in socket A1 of a Power Macintosh 9500
+# that never runs an instruction, and this script is the driver.  Register
+# values and ring dwords are little-endian; machine.memory.peek/poke are
+# big-endian bus views, so every one goes through swap32().
+#
+# "Host memory".  Guest RAM is not usable here: until POST programs the
+# Hammerhead's bank registers every DIMM decodes at 0, so the CPU's view of
+# low RAM is not the linear store a bus master reads.  The row instead
+# stands the card's own VRAM, reached as a PCI peer through BAR0 at
+# $84C00000 (12 MB in), in for host memory: the GART walk, the ring and
+# indirect fetches and the RPTR write-back all go through pci_dma_read/
+# write exactly as they would to RAM — only pci_dma's RAM fast path is not
+# taken, and the pci unit suite covers that.
+#   HOST+$000000  the PCI GART table (4 KB aligned, one LE page address per 4 KB)
+#   HOST+$010000  the RPTR write-back word
+#   HOST+$100000  AGP page 0: the ring
+#   HOST+$180000  AGP page 1: an indirect buffer, deliberately not adjacent
+#   HOST+$200000  the ring when the GART is disabled (AGP_BASE = HOST)
+
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="rage128"
+
+def swap32(v) {
+    return (($v & 0xFF) << 24) | (($v & 0xFF00) << 8) | (($v >> 8) & 0xFF00) | (($v >> 24) & 0xFF)
+}
+# Socket A1 is IDSEL 13 on Bandit 1.
+def cfg_wr(reg, val) {
+    machine.memory.poke.l(0xF2800000, swap32(0x00002000 | $reg))
+    machine.memory.poke.l(0xF2C00000, swap32($val))
+    machine.memory.poke.l(0xF2800000, 0)
+}
+let APER = 0x84000000
+let REGS = 0x88000000
+cfg_wr(0x10, $APER)
+cfg_wr(0x18, $REGS)
+cfg_wr(0x04, 0x0006)              # memory space + bus master
+assert machine.pci.slot[1].card.config.bar[2].mapped "the register aperture decodes"
+
+def wr(off, v) {
+    machine.memory.poke.l($REGS + $off, swap32($v))
+}
+def rd(off) {
+    return swap32(machine.memory.peek.l($REGS + $off))
+}
+# Host memory as the card sees it: little-endian dwords.
+def ram_wr(addr, v) {
+    machine.memory.poke.l($addr, swap32($v))
+}
+def ram_rd(addr) {
+    return swap32(machine.memory.peek.l($addr))
+}
+
+# The scratch surface: 8 MB into VRAM, 512 pixels wide, 32 bpp.
+let SURF = 0x800000
+let STRIDE = 2048
+def px32(x, y) {
+    return swap32(machine.memory.peek.l($APER + $SURF + $y * $STRIDE + $x * 4))
+}
+def put32(x, y, v) {
+    machine.memory.poke.l($APER + $SURF + $y * $STRIDE + $x * 4, swap32($v))
+}
+# DST_PITCH_OFFSET / SRC_PITCH_OFFSET for that surface: pitch 64 x 8 pixels
+# in 30:21, the offset in 32-byte units in 20:0.
+let SURF_PO = (64 << 21) | ($SURF >> 5)
+
+# Packet headers (SDK appendix F).  `n` counts the body's dwords.
+def pkt0(reg, n) {
+    return (($n - 1) << 16) | ($reg >> 2)
+}
+def pkt1(r1, r2) {
+    return 0x40000000 | (($r2 >> 2) << 11) | ($r1 >> 2)
+}
+def pkt3(op, n) {
+    return 0xC0000000 | (($n - 1) << 16) | ($op << 8)
+}
+let PKT2 = 0x80000000
+
+# GUI_CONTROL (= DP_GUI_MASTER_CNTL): a 32 bpp destination at SURF_PO.
+let GC_DST_PO = 0x00000002
+let GC_SRC_PO = 0x00000001
+let GC_DST_32BPP = 0x00000600
+let GC_BRUSH_SOLID = 0x000000D0
+let GC_BRUSH_NONE = 0x000000F0
+let GC_SRC_MONO_FG_BG = 0x00000000
+let GC_SRC_COLOR = 0x00003000
+let GC_SRC_MEMORY = 0x02000000
+let GC_SRC_HOST = 0x03000000
+let GC_CLR_CMP_DIS = 0x10000000
+let GC_WR_MSK_DIS = 0x40000000
+let ROP_P = 0x00F00000
+let ROP_S = 0x00CC0000
+let GC_FILL = $GC_DST_PO | $GC_DST_32BPP | $GC_BRUSH_SOLID | $GC_SRC_COLOR | $ROP_P | $GC_SRC_MEMORY | $GC_CLR_CMP_DIS | $GC_WR_MSK_DIS
+let GC_COPY = $GC_SRC_PO | $GC_DST_PO | $GC_DST_32BPP | $GC_BRUSH_NONE | $GC_SRC_COLOR | $ROP_S | $GC_SRC_MEMORY | $GC_CLR_CMP_DIS | $GC_WR_MSK_DIS
+
+# Register-programmed fills (the 2D engine directly) to set up each case.
+def fill32(x, y, w, h, c) {
+    wr(0x146C, $GC_FILL)
+    wr(0x142C, $SURF_PO)
+    wr(0x147C, $c)
+    wr(0x1438, ($y << 16) | $x)
+    wr(0x143C, ($h << 16) | $w)
+}
+
+# PM4 registers.
+let PM4_BUFFER_OFFSET = 0x700
+let PM4_BUFFER_CNTL = 0x704
+let PM4_BUFFER_DL_RPTR_ADDR = 0x70C
+let PM4_BUFFER_DL_RPTR = 0x710
+let PM4_BUFFER_DL_WPTR = 0x714
+let PM4_IW_INDOFF = 0x738
+let PM4_IW_INDSIZE = 0x73C
+let PM4_STAT = 0x7B8
+let PM4_MICROCODE_ADDR = 0x7D4
+let PM4_MICROCODE_RADDR = 0x7D8
+let PM4_MICROCODE_DATAH = 0x7DC
+let PM4_MICROCODE_DATAL = 0x7E0
+let PM4_BUFFER_ADDR = 0x7F0
+let PM4_MICRO_CNTL = 0x7FC
+let PM4_FIFO_DATA_EVEN = 0x1000
+let PM4_FIFO_DATA_ODD = 0x1004
+let FREERUN = 0x40000000
+
+# --- 1. Microcode RAM (SDK §5.2: 256 DATAH/DATAL pairs from address 0) -------
+assert machine.pci.slot[1].card.regs.microcode == "none" "no microcode before an upload"
+wr($PM4_MICROCODE_ADDR, 0)
+for i in 0..256 {
+    wr($PM4_MICROCODE_DATAH, 0x00010000 | $i)
+    wr($PM4_MICROCODE_DATAL, 0x00020000 | $i)
+}
+assert rd($PM4_MICROCODE_ADDR) == 0 "the address auto-increments per pair and wraps after 256"
+# Not ATI's image (that is the guest driver's to bring): recognised as such,
+# and the packets run natively regardless.
+assert machine.pci.slot[1].card.regs.microcode == "unknown" "an arbitrary image is not the known microcode"
+wr($PM4_MICROCODE_RADDR, 5)
+assert rd($PM4_MICROCODE_DATAH) == 0x00010005 "read-back: DATAH at RADDR 5"
+assert rd($PM4_MICROCODE_DATAL) == 0x00020005 "read-back: DATAL at RADDR 5"
+# (machine.memory.peek is side-effect free, so the DATAL read's RADDR
+# increment is not observable from here.)
+wr($PM4_MICROCODE_RADDR, 255)
+assert rd($PM4_MICROCODE_DATAL) == 0x000200FF "read-back: the last pair"
+
+# --- 2. PIO mode: packets through PM4_FIFO_DATA_EVEN/ODD ---------------------
+wr($PM4_BUFFER_CNTL, 0x10000000)  # 192-dword PIO
+wr($PM4_MICRO_CNTL, $FREERUN)
+assert (rd($PM4_STAT) & 0xFFF) == 192 "PM4_STAT: the 192-entry PIO FIFO reads empty"
+assert (rd($PM4_STAT) & 0x80010000) == 0 "PM4_STAT: neither busy nor GUI-active"
+fill32(0, 0, 64, 32, 0)
+let P0 = machine.pci.slot[1].card.regs.cce_packets
+# PAINT_MULTI (SDK §F.17): GUI_CONTROL, DST_PITCH_OFFSET, the brush colour,
+# then [X | Y] [W | H] per rectangle — the 4d fill as one packet.
+wr($PM4_FIFO_DATA_EVEN, pkt3(0x9A, 7))
+wr($PM4_FIFO_DATA_ODD, $GC_FILL)
+wr($PM4_FIFO_DATA_EVEN, $SURF_PO)
+wr($PM4_FIFO_DATA_ODD, 0x00112233)
+wr($PM4_FIFO_DATA_EVEN, (20 << 16) | 10)
+wr($PM4_FIFO_DATA_ODD, (8 << 16) | 4)
+assert px32(20, 10) == 0 "a packet does nothing until its last dword arrives"
+wr($PM4_FIFO_DATA_EVEN, (40 << 16) | 0)
+wr($PM4_FIFO_DATA_ODD, (2 << 16) | 3)
+assert px32(20, 10) == 0x00112233 "PAINT_MULTI: first rectangle, top-left"
+assert px32(27, 13) == 0x00112233 "PAINT_MULTI: first rectangle, bottom-right"
+assert px32(28, 10) == 0 "PAINT_MULTI: width 8"
+assert px32(20, 14) == 0 "PAINT_MULTI: height 4"
+assert px32(41, 2) == 0x00112233 "PAINT_MULTI: the second rectangle in the same packet"
+assert px32(42, 0) == 0 "PAINT_MULTI: second rectangle width 2"
+assert machine.pci.slot[1].card.regs.cce_packets == $P0 + 1 "one packet executed"
+# Type 0 (consecutive registers), ONE_REG_WR, type 1, and a type-2 filler.
+wr($PM4_FIFO_DATA_EVEN, pkt0(0x0010, 2))      # BIOS_0_SCRATCH, BIOS_1_SCRATCH
+wr($PM4_FIFO_DATA_ODD, 0xCAFE0001)
+wr($PM4_FIFO_DATA_EVEN, 0xCAFE0002)
+wr($PM4_FIFO_DATA_ODD, $PKT2)
+assert rd(0x0010) == 0xCAFE0001 "type 0: the first register"
+assert rd(0x0014) == 0xCAFE0002 "type 0: the next register"
+wr($PM4_FIFO_DATA_EVEN, pkt0(0x0018, 3) | 0x8000)   # ONE_REG_WR: three values, one register
+wr($PM4_FIFO_DATA_ODD, 1)
+wr($PM4_FIFO_DATA_EVEN, 2)
+wr($PM4_FIFO_DATA_ODD, 3)
+assert rd(0x0018) == 3 "type 0 ONE_REG_WR: every dword to the same register, the last wins"
+assert rd(0x001C) != 2 "type 0 ONE_REG_WR: the next register is untouched"
+wr($PM4_FIFO_DATA_EVEN, pkt1(0x0010, 0x0020))
+wr($PM4_FIFO_DATA_ODD, 0x11111111)
+wr($PM4_FIFO_DATA_EVEN, 0x22222222)
+wr($PM4_FIFO_DATA_ODD, $PKT2)
+assert rd(0x0010) == 0x11111111 "type 1: REG_INDEX1"
+assert rd(0x0020) == 0x22222222 "type 1: REG_INDEX2"
+# SOFT_RESET_GUI drops a half-gathered packet; the next one starts clean.
+wr($PM4_FIFO_DATA_EVEN, pkt0(0x0010, 2))
+wr($PM4_FIFO_DATA_ODD, 0xDEAD0001)
+wr(0x00F0, 1)                     # GEN_RESET_CNTL: SOFT_RESET_GUI
+wr(0x00F0, 0)
+wr($PM4_FIFO_DATA_EVEN, pkt0(0x0024, 1))
+wr($PM4_FIFO_DATA_ODD, 0x0BADF00D)
+assert rd(0x0024) == 0x0BADF00D "after SOFT_RESET_GUI the next dword is a header again"
+assert rd(0x0014) == 0xCAFE0002 "the dropped packet's second register was never written"
+
+# --- 3. A bus-mastered ring in host memory through the PCI GART -------------
+let HOST = $APER + 0xC00000
+let GART = $HOST
+let RPTR_WB = $HOST + 0x10000
+let PAGE0 = $HOST + 0x100000
+let PAGE1 = $HOST + 0x180000
+ram_wr($GART + 0, $PAGE0)          # AGP page 0
+ram_wr($GART + 4, $PAGE1)          # AGP page 1
+ram_wr($RPTR_WB, 0xFFFFFFFF)
+wr(0x017C, $GART)                 # PCI_GART_PAGE, bit 0 clear: the GART is on
+wr($PM4_BUFFER_OFFSET, 0x02000000) # the ring at AGP offset 0
+wr($PM4_BUFFER_DL_RPTR_ADDR, $RPTR_WB)
+wr($PM4_BUFFER_DL_WPTR, 0)
+wr($PM4_BUFFER_DL_RPTR, 0)
+wr($PM4_MICRO_CNTL, 0)
+wr($PM4_BUFFER_CNTL, 0x20000000 | 9)  # 192-dword bus master, 2^(9+1) = 1024 dwords
+wr($PM4_MICRO_CNTL, $FREERUN)
+assert (rd(0x0030) & 0x40) != 0 "BUS_CNTL: bus mastering still disabled (the reset state)"
+# BITBLT_MULTI (SDK §F.18): copy a 4 x 2 block, [SRC_X | SRC_Y]
+# [DST_X | DST_Y] [W | H].
+fill32(0, 0, 64, 32, 0)
+put32(0, 0, 0x11)
+put32(3, 0, 0x44)
+put32(0, 1, 0x55)
+put32(3, 1, 0x66)
+ram_wr($PAGE0 + 0, pkt3(0x9B, 6))
+ram_wr($PAGE0 + 4, $GC_COPY)
+ram_wr($PAGE0 + 8, $SURF_PO)
+ram_wr($PAGE0 + 12, $SURF_PO)
+ram_wr($PAGE0 + 16, (0 << 16) | 0)
+ram_wr($PAGE0 + 20, (10 << 16) | 5)
+ram_wr($PAGE0 + 24, (4 << 16) | 2)
+wr($PM4_BUFFER_DL_WPTR, 7)
+assert px32(10, 5) == 0 "BUS_MASTER_DIS: the ring is not fetched"
+assert rd($PM4_BUFFER_DL_RPTR) == 0 "BUS_MASTER_DIS: RPTR does not move"
+wr(0x0030, rd(0x0030) & ~0x40)    # clear BUS_MASTER_DIS
+wr($PM4_BUFFER_DL_WPTR, 7)
+assert px32(10, 5) == 0x11 "ring BITBLT_MULTI: (0,0) -> (10,5)"
+assert px32(13, 5) == 0x44 "ring BITBLT_MULTI: (3,0) -> (13,5)"
+assert px32(10, 6) == 0x55 "ring BITBLT_MULTI: second line"
+assert px32(13, 6) == 0x66 "ring BITBLT_MULTI: second line, last pixel"
+assert px32(14, 5) == 0 "ring BITBLT_MULTI: width 4"
+assert rd($PM4_BUFFER_DL_RPTR) == 7 "RPTR reaches WPTR"
+assert ram_rd($RPTR_WB) == 7 "RPTR written back to PM4_BUFFER_DL_RPTR_ADDR by bus master"
+assert rd($PM4_BUFFER_ADDR) == 0x02000000 + 7 * 4 "PM4_BUFFER_ADDR: the next fetch address"
+# An overlapping BITBLT_MULTI: the engine walks backwards so the source is
+# read before it is overwritten.
+fill32(0, 0, 64, 32, 0)
+put32(0, 0, 0x11)
+put32(1, 0, 0x22)
+put32(2, 0, 0x33)
+put32(3, 0, 0x44)
+ram_wr($PAGE0 + 28, pkt3(0x9B, 6))
+ram_wr($PAGE0 + 32, $GC_COPY)
+ram_wr($PAGE0 + 36, $SURF_PO)
+ram_wr($PAGE0 + 40, $SURF_PO)
+ram_wr($PAGE0 + 44, (0 << 16) | 0)
+ram_wr($PAGE0 + 48, (2 << 16) | 0)
+ram_wr($PAGE0 + 52, (4 << 16) | 1)
+wr($PM4_BUFFER_DL_WPTR, 14)
+assert px32(2, 0) == 0x11 "overlapping ring blit: pixel 0 lands at 2"
+assert px32(4, 0) == 0x33 "overlapping ring blit: pixel 2 read before it was overwritten"
+assert px32(5, 0) == 0x44 "overlapping ring blit: pixel 3 lands at 5"
+assert ram_rd($RPTR_WB) == 14 "RPTR write-back follows"
+# The PCI command register's BUS_MASTER_EN gates the fetch a second time.
+cfg_wr(0x04, 0x0002)
+ram_wr($PAGE0 + 56, pkt0(0x0010, 1))
+ram_wr($PAGE0 + 60, 0x5EED0001)
+wr($PM4_BUFFER_DL_WPTR, 16)
+assert rd(0x0010) != 0x5EED0001 "BUS_MASTER_EN clear: nothing is fetched"
+cfg_wr(0x04, 0x0006)
+wr($PM4_BUFFER_DL_WPTR, 16)
+assert rd(0x0010) == 0x5EED0001 "BUS_MASTER_EN set again: the ring drains"
+assert ram_rd($RPTR_WB) == 16 "and RPTR is written back"
+
+# --- 4. Wrapping: a packet that straddles the end of a 16-dword ring ---------
+wr($PM4_MICRO_CNTL, 0)
+wr($PM4_BUFFER_CNTL, 0x20000000 | 3)  # 2^(3+1) = 16 dwords
+wr($PM4_BUFFER_DL_RPTR, 13)
+wr($PM4_BUFFER_DL_WPTR, 13)
+wr($PM4_MICRO_CNTL, $FREERUN)
+# A type-0 of three registers at ring index 13: header + 2 dwords to the
+# end, the last dword at index 0.
+ram_wr($PAGE0 + 13 * 4, pkt0(0x0010, 3))
+ram_wr($PAGE0 + 14 * 4, 0xA0000001)
+ram_wr($PAGE0 + 15 * 4, 0xA0000002)
+ram_wr($PAGE0 + 0 * 4, 0xA0000003)
+wr($PM4_BUFFER_DL_WPTR, 1)
+assert rd(0x0018) == 0xA0000003 "the ring wraps: the packet's last dword came from index 0"
+assert rd($PM4_BUFFER_DL_RPTR) == 1 "RPTR wrapped to 1"
+# The NOUPDATE bit: the driver reads RPTR from the register, nothing is
+# written back.
+ram_wr($RPTR_WB, 0x12345678)
+wr($PM4_BUFFER_CNTL, 0x20000000 | 0x08000000 | 3)
+ram_wr($PAGE0 + 1 * 4, pkt0(0x0010, 1))
+ram_wr($PAGE0 + 2 * 4, 0xB0000001)
+wr($PM4_BUFFER_DL_WPTR, 3)
+assert rd(0x0010) == 0xB0000001 "NOUPDATE: the packet still runs"
+assert ram_rd($RPTR_WB) == 0x12345678 "NOUPDATE: RPTR is not written back"
+assert rd($PM4_BUFFER_DL_RPTR) == 3 "NOUPDATE: the register follows"
+
+# --- 5. The indirect buffer, called from the ring ----------------------------
+# PAINT (SDK §F.9): [TOP | LEFT] [BOTTOM | RIGHT], exclusive, in AGP page 1 —
+# which the GART maps to a page nowhere near page 0.
+fill32(0, 0, 64, 32, 0)
+ram_wr($PAGE1 + 0, pkt3(0x91, 5))
+ram_wr($PAGE1 + 4, $GC_FILL)
+ram_wr($PAGE1 + 8, $SURF_PO)
+ram_wr($PAGE1 + 12, 0x00ABCDEF)
+ram_wr($PAGE1 + 16, (2 << 16) | 4)    # top 2, left 4
+ram_wr($PAGE1 + 20, (5 << 16) | 9)    # bottom 5, right 9
+ram_wr($PAGE1 + 24, $PKT2)            # pad to an even count
+wr($PM4_BUFFER_CNTL, 0x40000000 | 3)  # 128-dword bus master + 64 indirect
+wr($PM4_BUFFER_DL_RPTR, 0)
+wr($PM4_BUFFER_DL_WPTR, 0)
+ram_wr($PAGE0 + 0, pkt0($PM4_IW_INDOFF, 2))
+ram_wr($PAGE0 + 4, 0x02001000)        # INDOFF: AGP page 1
+ram_wr($PAGE0 + 8, 6)                 # INDSIZE: go
+ram_wr($PAGE0 + 12, pkt0(0x0010, 1))  # and the ring carries on after it
+ram_wr($PAGE0 + 16, 0xC0000001)
+wr($PM4_BUFFER_DL_WPTR, 5)
+assert px32(4, 2) == 0x00ABCDEF "indirect PAINT: top-left"
+assert px32(8, 4) == 0x00ABCDEF "indirect PAINT: bottom-right (exclusive edges)"
+assert px32(9, 4) == 0 "indirect PAINT: the right edge is exclusive"
+assert px32(4, 5) == 0 "indirect PAINT: the bottom edge is exclusive"
+assert rd(0x0010) == 0xC0000001 "the ring resumes after the indirect buffer"
+assert (rd($PM4_STAT) & 0xFFF) == 128 "PM4_STAT: the 128-entry share of the FIFO"
+# The same indirect buffer again, by PIO register writes.
+fill32(0, 0, 64, 32, 0)
+wr($PM4_IW_INDOFF, 0x02001000)
+wr($PM4_IW_INDSIZE, 6)
+assert px32(4, 2) == 0x00ABCDEF "indirect buffer started by a PIO INDSIZE write"
+
+# --- 6. The GART disabled: the AGP window is linear from AGP_BASE ------------
+wr(0x017C, 1)                     # PCI_GART_DIS
+wr(0x0170, $HOST)                 # AGP_BASE (4 MB aligned)
+wr($PM4_BUFFER_OFFSET, 0x02200000) # AGP offset $200000: HOST+$200000
+wr($PM4_BUFFER_DL_RPTR, 0)
+wr($PM4_BUFFER_DL_WPTR, 0)
+ram_wr($HOST + 0x200000, pkt0(0x0010, 1))
+ram_wr($HOST + 0x200004, 0xD0000001)
+wr($PM4_BUFFER_DL_WPTR, 2)
+assert rd(0x0010) == 0xD0000001 "GART disabled: the ring is read linearly from AGP_BASE"
+wr(0x017C, $GART)
+wr($PM4_BUFFER_OFFSET, 0x02000000)
+
+# --- 7. More 2D packets through the ring -------------------------------------
+wr($PM4_BUFFER_CNTL, 0x20000000 | 9)
+wr($PM4_BUFFER_DL_RPTR, 0)
+wr($PM4_BUFFER_DL_WPTR, 0)
+# HOSTDATA_BLT (SDK §F.11): mono expansion of one 16 x 1 bitmap.
+fill32(0, 0, 64, 32, 0)
+let GC_TEXT = $GC_DST_PO | $GC_DST_32BPP | $GC_BRUSH_NONE | $GC_SRC_MONO_FG_BG | $ROP_S | $GC_SRC_HOST | $GC_CLR_CMP_DIS | $GC_WR_MSK_DIS
+ram_wr($PAGE0 + 0, pkt3(0x94, 8))
+ram_wr($PAGE0 + 4, $GC_TEXT)
+ram_wr($PAGE0 + 8, $SURF_PO)
+ram_wr($PAGE0 + 12, 0x00FFFFFF)       # foreground
+ram_wr($PAGE0 + 16, 0x00000080)       # background
+ram_wr($PAGE0 + 20, (2 << 16) | 4)    # base y 2, x 4
+ram_wr($PAGE0 + 24, (1 << 16) | 16)   # height 1, width 16
+ram_wr($PAGE0 + 28, 1)                # one raster dword
+ram_wr($PAGE0 + 32, 0x00000FF0)
+wr($PM4_BUFFER_DL_WPTR, 9)
+assert px32(4, 2) == 0x00FFFFFF "HOSTDATA_BLT: bit 7 of byte 0 is the leftmost pixel"
+assert px32(8, 2) == 0x00000080 "HOSTDATA_BLT: background"
+assert px32(16, 2) == 0x00FFFFFF "HOSTDATA_BLT: byte 1's low nibble"
+assert px32(20, 2) == 0 "HOSTDATA_BLT: 16 pixels"
+# TRANS_BITBLT (SDK §F.19): the key colour does not draw.
+fill32(0, 0, 64, 32, 0x00ABCDEF)
+put32(0, 20, 0x00FF00FF)
+put32(1, 20, 0x00000001)
+let GC_TCOPY = $GC_SRC_PO | $GC_DST_PO | $GC_DST_32BPP | $GC_BRUSH_NONE | $GC_SRC_COLOR | $ROP_S | $GC_SRC_MEMORY | $GC_WR_MSK_DIS
+ram_wr($PAGE0 + 36, pkt3(0x9C, 9))
+ram_wr($PAGE0 + 40, $GC_TCOPY)
+ram_wr($PAGE0 + 44, $SURF_PO)
+ram_wr($PAGE0 + 48, $SURF_PO)
+ram_wr($PAGE0 + 52, 0x01000005)       # compare the source, draw where it differs
+ram_wr($PAGE0 + 56, 0x00FF00FF)
+ram_wr($PAGE0 + 60, 0)
+ram_wr($PAGE0 + 64, (20 << 16) | 0)
+ram_wr($PAGE0 + 68, (25 << 16) | 0)
+ram_wr($PAGE0 + 72, (1 << 16) | 2)
+wr($PM4_BUFFER_DL_WPTR, 19)
+assert px32(0, 25) == 0x00ABCDEF "TRANS_BITBLT: the key colour is transparent"
+assert px32(1, 25) == 0x00000001 "TRANS_BITBLT: other colours draw"
+# POLYLINE (SDK §F.12): (0,0) -> (8,4) -> (8,8); the shared vertex drawn once.
+fill32(0, 0, 64, 32, 0)
+ram_wr($PAGE0 + 76, pkt3(0x95, 6))
+ram_wr($PAGE0 + 80, $GC_FILL)
+ram_wr($PAGE0 + 84, $SURF_PO)
+ram_wr($PAGE0 + 88, 0x00F0F0F0)
+ram_wr($PAGE0 + 92, (0 << 16) | 0)
+ram_wr($PAGE0 + 96, (4 << 16) | 8)
+ram_wr($PAGE0 + 100, (8 << 16) | 8)
+wr($PM4_BUFFER_DL_WPTR, 26)
+assert px32(0, 0) == 0x00F0F0F0 "POLYLINE: the first point"
+assert px32(4, 2) == 0x00F0F0F0 "POLYLINE: the first segment's midpoint"
+assert px32(8, 4) == 0x00F0F0F0 "POLYLINE: the shared vertex"
+assert px32(8, 7) == 0x00F0F0F0 "POLYLINE: the second segment"
+assert px32(8, 8) == 0 "POLYLINE: the last point is not drawn without LAST_PEL"
+# POLYSCANLINES (SDK §F.15): one polyscanline of two spans, 2 lines thick.
+fill32(0, 0, 64, 32, 0)
+ram_wr($PAGE0 + 104, pkt3(0x98, 8))
+ram_wr($PAGE0 + 108, $GC_FILL)
+ram_wr($PAGE0 + 112, $SURF_PO)
+ram_wr($PAGE0 + 116, 0x000000AA)
+ram_wr($PAGE0 + 120, 1)               # SCAN_COUNT
+ram_wr($PAGE0 + 124, 2)               # NUM_LINE: two spans
+ram_wr($PAGE0 + 128, (2 << 16) | 10)  # height 2 at y 10
+ram_wr($PAGE0 + 132, (5 << 16) | 1)   # x 1..5
+ram_wr($PAGE0 + 136, (12 << 16) | 9)  # x 9..12
+wr($PM4_BUFFER_DL_WPTR, 35)
+assert px32(1, 10) == 0xAA "POLYSCANLINES: first span start"
+assert px32(4, 11) == 0xAA "POLYSCANLINES: first span end, second line"
+assert px32(5, 10) == 0 "POLYSCANLINES: END is exclusive"
+assert px32(9, 10) == 0xAA "POLYSCANLINES: second span"
+assert px32(9, 12) == 0 "POLYSCANLINES: height 2"
+assert rd($PM4_BUFFER_DL_RPTR) == 35 "the ring drained through every packet"
+assert ram_rd($RPTR_WB) == 35 "and said so in guest RAM"
+# A 3D packet (milestone 4f) is skipped by its count, and the stream stays
+# in step.
+ram_wr($PAGE0 + 140, pkt3(0x25, 3))
+ram_wr($PAGE0 + 144, 0)
+ram_wr($PAGE0 + 148, 0)
+ram_wr($PAGE0 + 152, 0)
+ram_wr($PAGE0 + 156, pkt0(0x0010, 1))
+ram_wr($PAGE0 + 160, 0xE0000001)
+wr($PM4_BUFFER_DL_WPTR, 41)
+assert rd(0x0010) == 0xE0000001 "after a skipped 3D packet the next packet runs"
+
+echo "rage128-cce: microcode RAM, PIO FIFO, packet types 0-3, the GART ring with wrap and write-back, the indirect buffer and the 2D packets hold"
+quit
