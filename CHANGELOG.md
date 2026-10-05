@@ -110,6 +110,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shell and terminal UX: state-aware prompt, working tab completion, quieter checkpoints, persistent history.
 
 ### Fixed
+- **Power Macintosh 6100 with one SIMM bank** — at 10, 16 (the default) and 40 MB the 6100 played its chime and then stayed black: with SIMM bank 2 empty the memory controller now also decodes bank 1 right after the soldered 8 MB, where the ROM records it. New test `pdm-6100-single-bank`.
 - **Web UI styling leftovers** — the drop-to-open overlay fades in and out (it appeared abruptly); log lines and the console take their colours from the `--gs-log-*` and `--gs-console-*` tokens, so a skin can set them; the rename, Create Image, SYSTEM argument and preview-notice dialogs use the shared form primitives (`Field`, `FormGrid`, `Hint`, `Link`); `code`, `kbd` and `strong` in empty states get base styles; the unused `port` and `empty` icons are gone. Sixteen design tokens nothing read are gone (the intent `-border` and most `-on-solid` tokens, two debugger colours, four unused scale steps, three unused component knobs), and the token lint now fails on an unread token or a literal opacity.
 - **Contrast** — the warning icon on a toast is readable in the light skins (Starlight, Platinum, Aqua, Workbench Light: a darker amber), and Workbench's danger red is a step darker so a danger button's white label meets 4.5:1.
 - The emulator defect ledger is closed: 11 of 11.
