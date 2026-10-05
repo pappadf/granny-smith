@@ -12,6 +12,7 @@
 
 #include "alias.h"
 
+#include "job/job.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,7 +55,7 @@ static void set_err(char *err_buf, size_t err_size, const char *fmt, ...) {
 }
 
 // Linear lookup. Returns the index in g_table or -1 if not found.
-// Case-sensitive — proposal §2.3 makes member names (and so aliases)
+// Case-sensitive — member names (and so aliases) are
 // pure identifiers in [A-Za-z_][A-Za-z0-9_]* with case-sensitive match.
 static int find_index(const char *name) {
     if (!name)
@@ -96,7 +97,7 @@ static int validate_name(const char *name, char *err_buf, size_t err_size) {
     return 0;
 }
 
-int alias_register_builtin(const char *name, const char *path, char *err_buf, size_t err_size) {
+static int alias_register_builtin_impl(const char *name, const char *path, char *err_buf, size_t err_size) {
     if (!path) {
         set_err(err_buf, err_size, "null path for alias '$%s'", name ? name : "?");
         return -1;
@@ -137,7 +138,7 @@ int alias_register_builtin(const char *name, const char *path, char *err_buf, si
     return 0;
 }
 
-int alias_add_user(const char *name, const char *path, char *err_buf, size_t err_size) {
+static int alias_add_user_impl(const char *name, const char *path, char *err_buf, size_t err_size) {
     if (!path) {
         set_err(err_buf, err_size, "null path for alias '$%s'", name ? name : "?");
         return -1;
@@ -169,7 +170,7 @@ int alias_add_user(const char *name, const char *path, char *err_buf, size_t err
     return 0;
 }
 
-int alias_remove_user(const char *name, char *err_buf, size_t err_size) {
+static int alias_remove_user_impl(const char *name, char *err_buf, size_t err_size) {
     int idx = find_index(name);
     if (idx < 0) {
         set_err(err_buf, err_size, "no such alias '%s'", name ? name : "(null)");
@@ -188,7 +189,7 @@ int alias_remove_user(const char *name, char *err_buf, size_t err_size) {
     return 0;
 }
 
-const char *alias_lookup(const char *name, alias_kind_t *kind_out) {
+static const char *alias_lookup_impl(const char *name, alias_kind_t *kind_out) {
     int idx = find_index(name);
     if (idx < 0)
         return NULL;
@@ -197,7 +198,7 @@ const char *alias_lookup(const char *name, alias_kind_t *kind_out) {
     return g_table[idx].path;
 }
 
-void alias_each(alias_iter_fn fn, void *ud) {
+static void alias_each_impl(alias_iter_fn fn, void *ud) {
     if (!fn)
         return;
     for (size_t i = 0; i < g_count; i++) {
@@ -206,11 +207,11 @@ void alias_each(alias_iter_fn fn, void *ud) {
     }
 }
 
-size_t alias_count(void) {
+static size_t alias_count_impl(void) {
     return g_count;
 }
 
-void alias_reset(void) {
+static void alias_reset_impl(void) {
     for (size_t i = 0; i < g_count; i++)
         free_entry(&g_table[i]);
     free(g_table);
@@ -219,7 +220,7 @@ void alias_reset(void) {
     g_capacity = 0;
 }
 
-void alias_clear_user(void) {
+static void alias_clear_user_impl(void) {
     // Compact in place: copy survivors forward.
     size_t w = 0;
     for (size_t r = 0; r < g_count; r++) {
@@ -241,20 +242,14 @@ void alias_clear_user(void) {
 //
 // `shell.alias` exposes alias add / remove / list as object methods.
 
-static value_t method_alias_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(method_alias_add) {
     char err[160];
     if (alias_add_user(argv[0].s, argv[1].s, err, sizeof(err)) < 0)
         return val_err("%s", err);
     return val_none();
 }
 
-static value_t method_alias_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(method_alias_remove) {
     char err[160];
     if (alias_remove_user(argv[0].s, err, sizeof(err)) < 0)
         return val_err("%s", err);
@@ -272,23 +267,13 @@ static bool list_acc_collect(const char *name, const char *path, alias_kind_t ki
     list_acc_t *acc = (list_acc_t *)ud;
     char buf[256];
     snprintf(buf, sizeof(buf), "%s=%s%s", name, path, kind == ALIAS_BUILTIN ? " (built-in)" : "");
-    if (acc->len + 1 > acc->cap) {
-        size_t cap = acc->cap ? acc->cap * 2 : 32;
-        value_t *t = (value_t *)realloc(acc->items, cap * sizeof(value_t));
-        if (!t)
-            return false;
-        acc->items = t;
-        acc->cap = cap;
-    }
-    acc->items[acc->len++] = val_str(buf);
+    // The shared accumulator; this was the third of five copies.
+    if (!val_list_push(&acc->items, &acc->len, &acc->cap, val_str(buf)))
+        return false;
     return true;
 }
 
-static value_t method_alias_list(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(method_alias_list) {
     list_acc_t acc = {0};
     alias_each(list_acc_collect, &acc);
     return val_list(acc.items, acc.len);
@@ -322,6 +307,74 @@ static const member_t shell_alias_members[] = {
 
 const class_desc_t shell_alias_class = {
     .name = "alias",
+    .doc = "User and built-in aliases: add, remove, list",
     .members = shell_alias_members,
     .n_members = sizeof(shell_alias_members) / sizeof(shell_alias_members[0]),
 };
+
+// === The table lock (job/job.h): every public entry takes it for the one
+// operation; the interpreter on the job thread and the emulator thread
+// (breakpoint conditions, completion, shell.vars) both read here. =========
+
+int alias_register_builtin(const char *name, const char *path, char *err_buf, size_t err_size) {
+    job_tables_lock();
+    int r = alias_register_builtin_impl(name, path, err_buf, err_size);
+    job_tables_unlock();
+    return r;
+}
+
+int alias_add_user(const char *name, const char *path, char *err_buf, size_t err_size) {
+    job_tables_lock();
+    int r = alias_add_user_impl(name, path, err_buf, err_size);
+    job_tables_unlock();
+    return r;
+}
+
+int alias_remove_user(const char *name, char *err_buf, size_t err_size) {
+    job_tables_lock();
+    int r = alias_remove_user_impl(name, err_buf, err_size);
+    job_tables_unlock();
+    return r;
+}
+
+const char *alias_lookup(const char *name, alias_kind_t *kind_out) {
+    job_tables_lock();
+    const char *r = alias_lookup_impl(name, kind_out);
+    job_tables_unlock();
+    return r;
+}
+
+bool alias_lookup_copy(const char *name, char *buf, size_t size, alias_kind_t *kind_out) {
+    job_tables_lock();
+    const char *r = alias_lookup_impl(name, kind_out);
+    bool ok = r && buf && strlen(r) < size;
+    if (ok)
+        memcpy(buf, r, strlen(r) + 1);
+    job_tables_unlock();
+    return ok;
+}
+
+void alias_each(alias_iter_fn fn, void *ud) {
+    job_tables_lock();
+    alias_each_impl(fn, ud);
+    job_tables_unlock();
+}
+
+size_t alias_count(void) {
+    job_tables_lock();
+    size_t r = alias_count_impl();
+    job_tables_unlock();
+    return r;
+}
+
+void alias_reset(void) {
+    job_tables_lock();
+    alias_reset_impl();
+    job_tables_unlock();
+}
+
+void alias_clear_user(void) {
+    job_tables_lock();
+    alias_clear_user_impl();
+    job_tables_unlock();
+}

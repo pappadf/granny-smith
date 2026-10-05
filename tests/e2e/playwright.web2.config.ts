@@ -24,10 +24,10 @@ export default defineConfig({
   retries: 0,
   reporter: process.env.CI ? 'github' : 'list',
   webServer: {
-    // Build the web2 bundle (copies the freshly-built wasm into the dist),
-    // then serve it with the cross-origin-isolation headers the worker needs.
-    // `make ui2` does not rebuild the wasm — it expects `make` to have
-    // produced build/main.{mjs,wasm} already.
+    // Build the web2 bundle (`make ui2` brings the wasm core up to date
+    // first — a no-op that keeps the build ID when it is fresh — and copies
+    // it into the dist), then serve it with the cross-origin-isolation
+    // headers the worker needs.
     // `cwd` below starts this in tests/e2e, so `cd ../..` reaches the repo
     // root. Do NOT use `git rev-parse --show-toplevel` — CI containers trip
     // git's "dubious ownership" guard, emptying the $(...) so `make ui2` runs

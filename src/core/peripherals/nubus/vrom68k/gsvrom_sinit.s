@@ -2,7 +2,7 @@
 | Copyright (c) pappadf
 |
 | gsvrom_sinit.s
-| SecondaryInit — family swap (nubus_vrom.md sec. 9).  Runs under Slot
+| SecondaryInit — family swap (declaration-rom.md sec. 9).  Runs under Slot
 | Manager v1+ with the Toolbox alive.  When 32-bit QuickDraw is present,
 | swap the 24-bit boot family (GS_BOOT_SPID) for the 32-bit one
 | (GS_DEFER_SPID) whose framebuffer lives in super-slot DRAM, and — if
@@ -30,30 +30,51 @@ GSSecondaryInit:
 	cmp.l	#0x0200,d0
 	blo	SIDone                  | classic QD only — stay 24-bit
 
-	| swap the SRT families: delete the boot one, insert the 32-bit one
+	| swap the SRT families: delete the boot one, insert the 32-bit one.
+	| The spBlock is uninitialised stack; every field a selector READS
+	| is set explicitly below.
 	suba.w	#spBlockSize,sp
 	movea.l	sp,a3
+
+	| D6 = our driver's refNum (negative iff open), read from the BOOT
+	| family's SRT record before that record goes away: the Start
+	| Manager stored it there when it opened the driver.  A missing
+	| record means nothing is open on it.
+	moveq	#0,d6
+	move.b	d5,spSlot(a3)
+	move.b	#GS_BOOT_SPID,spID(a3)
+	clr.b	spExtDev(a3)
+	movea.l	a3,a0
+	moveq	#sRsrcInfo,d0
+	dc.w	_SlotManager
+	bne.s	SIDelete
+	move.w	spRefNum(a3),d6
+SIDelete:
 	move.b	d5,spSlot(a3)
 	move.b	#GS_BOOT_SPID,spID(a3)
 	clr.b	spExtDev(a3)
 	movea.l	a3,a0
 	moveq	#sDeleteSRTRec,d0
 	dc.w	_SlotManager
+
+	| sInsertSRTRec takes spRefNum and spIOReserved as INPUTS (they
+	| become the new record's fields — the genuine GC ROM hands over the
+	| refNum exactly like this), and spsPointer/spParamData must be
+	| clear.  Leaving spRefNum uninitialised stored whatever the stack
+	| held (the _SlotManager trap word, $A06E, negative) as the family's
+	| refNum, and the DCE patch below then dereferenced unit table entry
+	| ~$A06E — a wild pointer whose fate depended on the system-heap
+	| layout, i.e. on the byte length of the DRVR copied into it.
 	move.b	d5,spSlot(a3)
 	move.b	#GS_DEFER_SPID,spID(a3)
 	clr.b	spExtDev(a3)
+	clr.l	spsPointer(a3)
+	clr.l	spParamData(a3)
+	clr.w	spIOReserved(a3)
+	move.w	d6,spRefNum(a3)
 	movea.l	a3,a0
 	moveq	#sInsertSRTRec,d0
 	dc.w	_SlotManager
-
-	| our driver's refNum (negative iff open) via sRsrcInfo
-	move.b	d5,spSlot(a3)
-	move.b	#GS_DEFER_SPID,spID(a3)
-	clr.b	spExtDev(a3)
-	movea.l	a3,a0
-	moveq	#sRsrcInfo,d0
-	dc.w	_SlotManager
-	move.w	spRefNum(a3),d6
 	adda.w	#spBlockSize,sp
 
 	| D4 = new framebuffer base: super slot base + DRAM offset

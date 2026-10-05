@@ -40,7 +40,7 @@ uint32_t g_pd_blocks_live = 0;
 const char *(*g_pd_id_name[2])(uint16_t id) = {NULL, NULL};
 
 // Decodes per id and architecture (256 KB each; the histogram behind the
-// specialization order of proposal §4.2/§6.2).
+// specialization order of the T0 shapes).
 static uint32_t *g_pd_hist[2];
 
 void predecode_count_decode(pd_arch_t arch, uint16_t id) {
@@ -540,9 +540,10 @@ static value_t pd_method_reset(struct object *self, const member_t *m, int argc,
             .user_data = (const void *)(uintptr_t)(id_)                                                                \
         }                                                                                                              \
     }
+// A read-only counter, shown only under the Advanced toggle.
 #define PD_ATTR_RO(name_, id_, doc_)                                                                                   \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .doc = doc_, .flags = VAL_RO, .attr = {                                         \
+        .kind = M_ATTR, .name = name_, .doc = doc_, .flags = M_CAT_ADVANCED, .attr = {                                 \
             .type = V_UINT,                                                                                            \
             .get = pd_attr_get,                                                                                        \
             .set = NULL,                                                                                               \

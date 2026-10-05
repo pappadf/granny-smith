@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // ppc_pd_run.h
-// The PowerPC predecoded sprint loop (proposal §6): the same page-keyed
+// The PowerPC predecoded sprint loop: the same page-keyed
 // block pool as the 68K, one entry per instruction word, specialized (T0)
 // handlers for the register-only shapes, and the flattened decode tree
 // (T1) for everything else with the raw word in the entry.  The fetch
@@ -37,15 +37,15 @@ static __attribute__((noinline)) void ppc_pd_decode(pd_block_t *blk, uint32_t id
         cur++;                                                                                                         \
         goto retire;                                                                                                   \
     } while (0)
-#define PPD_JUMP_IN(index, fold)                                                                                       \
+#define PPD_JUMP_IN(index, fold_)                                                                                      \
     do {                                                                                                               \
-        g_ppc_fold = (fold);                                                                                           \
+        p->fold = (fold_);                                                                                             \
         cur = blk->e + (index);                                                                                        \
         goto retire;                                                                                                   \
     } while (0)
 #define PPD_JUMP_PC(target)                                                                                            \
     do {                                                                                                               \
-        g_ppc_fold = 1; /* out of the page: never the instruction itself */                                            \
+        p->fold = 1; /* out of the page: never the instruction itself */                                               \
         p->pc = (target);                                                                                              \
         goto retire_relookup;                                                                                          \
     } while (0)
@@ -120,13 +120,11 @@ static __attribute__((noinline)) void ppc_pd_decode(pd_block_t *blk, uint32_t id
 
 static void PPC_PD_RUN_NAME(ppc_t *restrict p, uint32_t *instructions) {
     g_bus_error_instr_ptr = instructions; // let memory slow paths force exit
-    g_ppc_fold = 0;
-    if (__builtin_expect(g_trace_hits_mode < 0, 0))
-        ppc_trace_init();
+    p->fold = 0;
+    // The switch loop's bound on branches folded without a budget slot (two
+    // branches folding to each other must not spin a sprint forever).
+    uint64_t folds_left = (uint64_t)*instructions * 4u;
     ppc_poll_interrupt(p);
-    // The pc-trace diagnostic wants every instruction through the generic
-    // path (it hooks the fetch).
-    bool generic_only = g_trace_file != NULL;
     pd_block_t *blk = NULL; // block of the page being executed (NULL: generic tier)
     pd_entry_t *cur = NULL; // the entry to dispatch next
     uint32_t page_lo = 1; // guest address of that page (odd: none yet)
@@ -252,7 +250,7 @@ top:
             p->ctr -= 1;
             if (p->ctr != 0)
                 PPD_JUMP_IN(e.c, e.c != (uint32_t)(cur - blk->e));
-            g_ppc_fold = 1; // not taken: falls through, still folds
+            p->fold = 1; // not taken: falls through, still folds
             PPD_NEXT();
         }
         case PPD_BDNZ_OUT: {
@@ -260,48 +258,48 @@ top:
             p->ctr -= 1;
             if (p->ctr != 0)
                 PPD_JUMP_PC(e.c);
-            g_ppc_fold = 1;
+            p->fold = 1;
             PPD_NEXT();
         }
         case PPD_BC_T_IN: {
             PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
             if ((p->cr >> e.a) & 1u)
                 PPD_JUMP_IN(e.c, e.c != (uint32_t)(cur - blk->e));
-            g_ppc_fold = 1;
+            p->fold = 1;
             PPD_NEXT();
         }
         case PPD_BC_T_OUT: {
             PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
             if ((p->cr >> e.a) & 1u)
                 PPD_JUMP_PC(e.c);
-            g_ppc_fold = 1;
+            p->fold = 1;
             PPD_NEXT();
         }
         case PPD_BC_F_IN: {
             PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
             if (!((p->cr >> e.a) & 1u))
                 PPD_JUMP_IN(e.c, e.c != (uint32_t)(cur - blk->e));
-            g_ppc_fold = 1;
+            p->fold = 1;
             PPD_NEXT();
         }
         case PPD_BC_F_OUT: {
             PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
             if (!((p->cr >> e.a) & 1u))
                 PPD_JUMP_PC(e.c);
-            g_ppc_fold = 1;
+            p->fold = 1;
             PPD_NEXT();
         }
         case PPD_BLR: {
             PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
             uint32_t target = p->lr & ~3u;
-            g_ppc_fold = (target != ipc);
+            p->fold = (target != ipc);
             p->pc = target;
             goto retire_relookup;
         }
         case PPD_BCTR: {
             PD_AUDIT_PPC(blk, (uint32_t)(cur - blk->e));
             uint32_t target = p->ctr & ~3u;
-            g_ppc_fold = (target != ipc);
+            p->fold = (target != ipc);
             p->pc = target;
             goto retire_relookup;
         }
@@ -321,20 +319,24 @@ retire:
     // The switch loop's tail: a folded branch keeps its slot unless it is
     // the last one; the budget decrement saturates (an I/O penalty may have
     // zeroed it).
-    if (__builtin_expect(g_ppc_fold != 0, 0)) {
-        g_ppc_fold = 0;
-        if (*instructions > 1)
+    if (__builtin_expect(p->fold != 0, 0)) {
+        p->fold = 0;
+        if (*instructions > 1 && folds_left != 0) {
+            folds_left--;
             goto top;
+        }
     }
     if (*instructions > 0)
         (*instructions)--;
     goto top;
 
 retire_relookup:
-    if (__builtin_expect(g_ppc_fold != 0, 0)) {
-        g_ppc_fold = 0;
-        if (*instructions > 1)
+    if (__builtin_expect(p->fold != 0, 0)) {
+        p->fold = 0;
+        if (*instructions > 1 && folds_left != 0) {
+            folds_left--;
             goto relookup;
+        }
     }
     if (*instructions > 0)
         (*instructions)--;
@@ -351,8 +353,6 @@ t2_step:
             goto relookup; // ISI raised; pc now at the vector
         if (__builtin_expect(g_bus_error_pending, 0))
             goto done; // fetch faulted; delivered below
-        if (__builtin_expect(g_trace_file != NULL, 0))
-            ppc_trace(p, iw);
         p->pc += 4;
         ppc_execute(p, iw);
     }
@@ -381,7 +381,10 @@ relookup:
         predecode_enter(NULL, *instructions); // charge the page being left
         if (*instructions == 0)
             goto done;
-        if (!generic_only && !(pc & 3u)) {
+        // Little-endian mode munges every fetch (XOR 4) and is rare: it runs
+        // on the generic tier, whose fetch applies the munge.  Setting MSR[LE]
+        // flushes the fetch window, so a block never outlives the switch.
+        if (!(pc & 3u) && !(p->msr & PPC_MSR_LE)) {
             if ((pc - g_ppc_fetch.lo) >= g_ppc_fetch.span) {
                 // The window belongs to the page being left: refill it here
                 // (an ftlb hit for a page seen before) rather than through a

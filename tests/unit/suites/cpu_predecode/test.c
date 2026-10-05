@@ -1,5 +1,7 @@
-// 68K predecoded-executor unit tests (proposal-predecoded-interpreter-cores.md
-// §9.2, the cpu_predecode suite).  Hand-assembled programs in the harness's
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+// 68K predecoded-executor unit tests (docs/internals/core/cpu/predecode.md,
+// the cpu_predecode suite).  Hand-assembled programs in the harness's
 // RAM, run through cpu_run_sprint with the predecoded executor enabled, and
 // checked against the switch core where the answer is "the same timeline".
 

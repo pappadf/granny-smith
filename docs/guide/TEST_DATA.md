@@ -33,9 +33,11 @@ per-test media mapping if you need to know which test needs what.
 
 ### ROM images (`tests/data/roms/`)
 
-Machine ROMs. The filename carries the ROM's checksum, and `rom-naming`
-(unit tier) enforces that grammar, so a mismatched dump is caught rather
-than silently booted.
+Machine ROMs. Filenames are readable labels and nothing parses them: what
+a file is comes from the emulator's own identification. `rom-catalog`
+(unit tier) checks that every file is recognised and that every CPU ROM's
+own checksum verifies and boots an emulated model, so a damaged or unknown
+dump is caught rather than silently booted.
 
 | File | Machines |
 |---|---|
@@ -46,18 +48,28 @@ than silently booted.
 | `iifx-4147dd77.rom` | IIfx |
 | `q700-q900-420dbff3.rom` | Quadra 700 and 900 |
 | `q950-3dc27823.rom` | Quadra 950 |
+| `q840av-q660av-5bf10fd1.rom` | Quadra 840AV, Centris 660AV |
+| `pm6100-pm7100-pm8100-9feb69b3.rom` | Power Macintosh 6100/7100/8100 |
+| `pm7500-pm8500-pm9500-96cd923d.rom` | Power Macintosh 7500/8500/9500 (v1 ROM) |
+| `ans500-ans700-962f6c13.rom` | Apple Network Server 500/700 (Open Firmware 1.1.22) |
+| `ans500-ans700-of1.1.20.1-962f6c13-c60da96de537f08a.rom` | Apple Network Server (Open Firmware 1.1.20.1) |
+| `ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom` | Apple Network Server (Open Firmware 2.26NT) |
+| `ans500-ans700-2.26b6-9630c68b-a71fb907dd180b8a.rom` | Apple Network Server (Open Firmware 2.26B6) |
+| `ans500-ans700-proto20-49b2be8f.rom` | Apple Network Server (2.0 prototype, Mac OS) |
+| `pmg3dt-pmg3mt-78f57389.rom` | Power Macintosh G3 desktop / mini tower, Rev C ROM (`$77D.45F2`, Open Firmware 2.4) |
+| `pmg3dt-pmg3mt-reva-79d68d63.rom` | Power Macintosh G3, Rev A ROM (`$77D.40F2`, Open Firmware 2.0f1) |
 | `lisa2-revh-098917b2.rom` | Lisa 2 (rev H) |
 | `macxl-3a-094c82f0.rom` | Macintosh XL |
 
 NuBus **declaration ROMs** (`*.vrom`) live beside them — the 8•24 (JMFB),
-8•24 GC, 24AC and the SE/30 built-in video. Cards can also run on the
+8•24 GC, 24AC and the SE/30 built-in video — along with PCI **expansion
+ROMs** (`*.prom`, the mach64 GX). Cards can also run on the
 runtime-generated generic GS vROM instead; `iicx-gsvrom` covers that path.
 
 ### Prepared hard-disk images (`tests/data/systems/`)
 
 These are the workhorses: full installs that boot on any supported
-machine, so a test can pick its host freely. Naming grammar (§6.1 of
-proposal-integration-test-rework):
+machine, so a test can pick its host freely. Naming grammar:
 `system_<ver>_<size>_<trait>[_<trait>…].img`.
 
 | File | Contents |
@@ -71,8 +83,7 @@ proposal-integration-test-rework):
 
 Trait tokens in prepared-image names are a closed vocabulary: `mode32`,
 `24ac`, `824gc`, `32bit`, **`cd` — CD-ROM driver support installed in the
-System Folder** (not "cdev"; the rework proposal briefly proposed renaming it
-on that misreading and the rename was struck), and **`av` — a Quadra 840AV /
+System Folder** (not "cdev"), and **`av` — a Quadra 840AV /
 Centris 660AV install carrying System Enabler 088**, which the AV machines
 cannot boot without (its `gbly` gates on machine IDs 72 and 54, so a stock
 volume will not start them at all).
@@ -127,7 +138,7 @@ Single-disk system images (`System_<ver>.dsk`, 400K/800K raw — exactly
 `SSW-7.0-800K/`, `SSW-7.1-1.4M/`, `SSW-7.5-1.4M/`, `SSW-7.6-1.4M/`.
 
 ⚠️ **Three media labels are known to lie**, so do not trust a filename as
-a system version (each is documented in §6.2/§7 of the rework proposal):
+a system version:
 
 | File | Claims | Actually boots |
 |---|---|---|
@@ -143,7 +154,7 @@ prepared 7.1 HD images.
 
 | Path | Contents |
 |---|---|
-| `tests/data/apps/` | MacTest diagnostics, Marathon, MusicWorks, Norton System Info |
+| `tests/data/apps/` | MacTest diagnostics, Marathon, MusicWorks, Norton System Info, Quake (the Voodoo2 rows) |
 | `tests/data/Lisa/` | Lisa Office System 3.1, Xenix 3.0, MacWorks XL 3.0 (floppies + installed ProFile images) |
 | `tests/data/aux/aux_3.0.1/` | A/UX 3.0.1 retail ISO and an installed 160 MB HD image |
 | `tests/data/cdroms/` | CD-ROM images |

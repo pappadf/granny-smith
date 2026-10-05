@@ -23,8 +23,8 @@
     align-items: stretch;
     justify-content: center;
     overflow: hidden;
-    color: var(--gs-fg);
-    font-size: 13px;
+    color: var(--gs-text);
+    font-size: var(--gs-font-size-base);
     line-height: 16px;
   }
   .welcome-slides {
@@ -32,7 +32,7 @@
     height: 100%;
     position: relative;
   }
-  /* Slide stack — spec §3.5: 250 ms ease-out opacity + 10 px translateX. */
+  /* Slide stack: 250 ms ease-out opacity + 10 px translateX. */
   .welcome-slide {
     position: absolute;
     inset: 0;
@@ -44,8 +44,8 @@
     transform: translateX(10px);
     pointer-events: none;
     transition:
-      opacity 250ms ease-out,
-      transform 250ms ease-out;
+      opacity var(--gs-duration-slow) var(--gs-ease-out),
+      transform var(--gs-duration-slow) var(--gs-ease-out);
   }
   .welcome-slide.active {
     opacity: 1;

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) pappadf
 #
 # rom-manifest.sh - Generate the human-readable roms/ manifest for gs-test-data.
 #
-# Machine-derives every fact it can (size, checksum/CRC, kind, compatible
-# models / card id, family name) by running gs-headless
-# machine.(v)rom.identify over each file, computes each file's canonical name
-# by applying the tooling grammar (scripts/rom_naming.py) to its content id,
-# then merges a small curated notes table (provenance, Apple part numbers,
-# Rev A/B, "16bpp requires this ROM") that identify cannot know.  This is the
-# tool from proposal-test-rom-naming.md §4.4 — the manifest is regenerated,
-# never hand-edited.
+# Machine-derives every fact it can (size, content id / CRC, kind,
+# compatible models / card id, family name, self-check verdict) by running
+# gs-headless machine.(v|p)rom.identify over each file — the core is the only
+# place that knows what a ROM is — then merges a small curated notes table (provenance, Apple part numbers,
+# Rev A/B, "16bpp requires this ROM") that identify cannot know.  The
+# manifest is regenerated, never hand-edited.
 #
 # Usage:
 #   scripts/rom-manifest.sh [ROMS_DIR] [OUT_FILE]
@@ -41,13 +41,13 @@ while IFS= read -r -d '' f; do
     base="$(basename "$f")"
     case "$base" in
         *.rom)  obj="machine.rom.identify"  ;;
-        *.vrom) obj="machine.vrom.identify" ;;
-        *.prom) obj="machine.prom.identify" ;;
+        *.vrom) obj="catalog.vroms.identify" ;;
+        *.prom) obj="catalog.proms.identify" ;;
         *) continue ;;
     esac
     printf 'echo GSFILE %s\n' "$base" >> "$SCRIPT"
     # ${...} interpolation is only recognised inside a double-quoted string
-    # (shell v2 §4.2), so the call has to be quoted -- bare `echo ${...}`
+    # (docs/internals/core/shell/shell.md), so the call has to be quoted -- bare `echo ${...}`
     # fails to parse with "expected binding name after '$'".  The path uses
     # the raw single-quoted form because a nested double quote would close
     # the interpolating string.
@@ -57,19 +57,17 @@ echo "quit" >> "$SCRIPT"
 
 OUT="$WORK/identify.out"
 GS_STORAGE_CACHE="$WORK/cache" "$HEADLESS_BIN" \
-    rom="$BOOT_ROM" --no-prompt --speed=max "script=$SCRIPT" > "$OUT" 2>/dev/null
+    rom="$BOOT_ROM" --no-prompt --speed=turbo "script=$SCRIPT" > "$OUT" 2>/dev/null
 
-python3 - "$OUT" "$OUT_FILE" "$SCRIPT_DIR" <<'PY'
+python3 - "$OUT" "$OUT_FILE" <<'PY'
 import json, re, sys, os
 
-out_path, dest, script_dir = sys.argv[1], sys.argv[2], sys.argv[3]
-sys.path.insert(0, script_dir)
-from rom_naming import canonical_name  # the tooling naming grammar
+out_path, dest = sys.argv[1], sys.argv[2]
 
 lines = open(out_path, encoding="utf-8", errors="replace").read().splitlines()
 
-# `machine.(v)rom.identify` interpolates as compact JSON (shell v2 §4.2:
-# map-shaped values render as JSON text), so parse it as JSON rather than
+# `machine.(v)rom.identify` interpolates as compact JSON (map-shaped values
+# render as JSON text), so parse it as JSON rather than
 # scraping it -- free-text fields like `name` may contain commas and
 # quotes that no regex should have to survive.
 def field(js, key):
@@ -82,8 +80,8 @@ def rom_name(js):
 def compatible(js):
     return ",".join(js.get("compatible", []))
 
-# Curated human notes keyed by canonical filename. Machine-derived columns
-# (size/checksum/models) come from identify; this is only what identify cannot
+# Curated human notes keyed by filename. Machine-derived columns
+# (size/id/models) come from identify; this is only what identify cannot
 # know: provenance, Apple part numbers, Rev A/B, the 16bpp fact.
 NOTES = {
   "plus-v3-4d1f8172.rom":            "Macintosh Plus ROM Rev 3 (“Loud Harmonicas”).",
@@ -95,8 +93,18 @@ NOTES = {
   "q950-3dc27823.rom":               "Quadra 950 ROM.",
   "q840av-q660av-5bf10fd1.rom":      "Quadra 840AV / Centris 660AV (“Cyclone”/“Tempest”) 2 MB ROM — byte-identical across both; the YMCA strap nibble ($F vs $B), not the ROM, selects the machine.",
   "pm6100-pm7100-pm8100-9feb69b3.rom": "Power Macintosh 6100/7100/8100 (“PDM”) universal 4 MB ROM, version $077D (1994-03) — one image for all three models; the machine-ID register, not the ROM, selects the machine.",
+  "pm7500-pm8500-pm9500-v2-9630c68b-4db4a42fea3b53b3.rom": "Power Macintosh 7500/8500/9500 (“TNT”) 4 MB ROM v2 — shares its header sum with the ANS 2.26B6 ROM; the ConfigInfo 64-bit sum tells them apart.",
+  "plus-v1-4d1eeee1.rom":            "Macintosh Plus ROM Rev 1 (“Lonely Hearts”).",
+  "plus-v2-4d1eeae1.rom":            "Macintosh Plus ROM Rev 2 (“Lonely Heifers”).",
+  "ans500-ans700-962f6c13.rom":      "Apple Network Server 500/700, Open Firmware 1.1.22 (production; boots AIX).",
+  "ans500-ans700-proto20-49b2be8f.rom": "Apple Network Server 500/700, 2.0 prototype (Mac OS only; reconstructed image).",
+  "ans500-ans700-of1.1.20.1-962f6c13-c60da96de537f08a.rom": "Apple Network Server 500/700, Open Firmware 1.1.20.1 — re-interleaved from its four chip dumps.",
+  "ans500-ans700-2.26nt-962f6c13-50348b3d0126096b.rom": "Apple Network Server 500/700, Open Firmware 2.26NT (the Windows NT firmware) — re-interleaved from its four chip dumps.",
+  "ans500-ans700-2.26b6-9630c68b-a71fb907dd180b8a.rom": "Apple Network Server 500/700, Open Firmware 2.26B6 — re-interleaved from its four chip dumps; shares its header sum with the TNT v2 ROM.",
   "pm7500-pm8500-pm9500-96cd923d.rom": "Power Macintosh 7500/8500/9500 (“TNT”) universal 4 MB ROM v1 (1995-08, “Boot TNT 0.1”) — also served the unemulated 7200; the Grand Central BoxID register, not the ROM, selects the machine.",
-  "lisa2-revh-098917b2.rom":         "Apple Lisa 2 boot ROM rev H (interleaved 16 KB image; checksum is the Mac-style computed value, not the stored reset SSP).",
+  "pmg3dt-pmg3mt-78f57389.rom":     "Power Macintosh G3 (beige, “Gossamer”) 4 MB ROM Rev C, $077D.45F2, Open Firmware 2.4 — one image for the desktop and minitower; the board-ID register, not the ROM, selects the enclosure.",
+  "pmg3dt-pmg3mt-reva-79d68d63.rom": "Power Macintosh G3 (beige) 4 MB ROM Rev A, $077D.40F2, Open Firmware 2.0f1 — the first-shipping image (`AAPL,Gossamer`); same board program as Rev C.",
+  "lisa2-revh-098917b2.rom":         "Apple Lisa 2 boot ROM rev H (interleaved 16 KB image; the id is the boot ROM's own check word at $3FFE).",
   "macxl-3a-094c82f0.rom":           "Macintosh XL boot ROM “3A” (interleaved 16 KB image).",
   "builtin-se30-video-4f71ff1a.vrom":"SE/30 onboard-video declaration ROM — a built-in video slot, not a NuBus card.",
   "mdc-8-24-revb-d1629664.vrom":     "Macintosh Display Card 8•24 (non-GC, JMFB). Apple part 341-0868, Rev B. Formerly stored twice as Apple-341-0868.vrom + 341-0868.vrom.",
@@ -108,7 +116,7 @@ NOTES = {
   "mach64-gx-101-8c68216e.prom":     "Same card, ROM 113-32900-101 — an earlier programming whose part-number strings are all “000-00000-000”. Kept as a distinct dump; not the default.",
 }
 
-# Old -> new alias table, kept permanently for grep-ability (proposal §7).
+# Old -> new alias table, kept permanently for grep-ability.
 ALIASES = [
   ("Plus_v3.rom",            "plus-v3-4d1f8172.rom"),
   ("SE30.rom, IIcx.rom",     "iix-iicx-se30-97221136.rom"),
@@ -141,60 +149,58 @@ out = []
 out.append("# gs-test-data ROM manifest")
 out.append("")
 out.append("> **Generated by `scripts/rom-manifest.sh` — do not hand-edit.**")
-out.append("> Canonical names, one flat `roms/` directory, and this table follow")
-out.append("> `proposal-test-rom-naming.md`. The extension distinguishes CPU ROMs")
+out.append("> One flat `roms/` directory. Filenames are free-form labels; what each file")
+out.append("> is comes from the emulator core's identify surfaces. The extension distinguishes CPU ROMs")
 out.append("> (`.rom`) from NuBus declaration ROMs (`.vrom`) and PCI expansion ROMs (`.prom`).")
 out.append("")
 out.append("## CPU ROMs (`*.rom`)")
 out.append("")
-out.append("| Canonical file | Size | Checksum | Family / hardware | Notes |")
-out.append("|---|---|---|---|---|")
+out.append("| File | Size | Id | Intact | Family / hardware | Notes |")
+out.append("|---|---|---|---|---|---|")
 cpu = [(b, j) for b, j in rows if b.endswith(".rom")]
 vro = [(b, j) for b, j in rows if b.endswith(".vrom")]
 pro = [(b, j) for b, j in rows if b.endswith(".prom")]
 for base, js in sorted(cpu):
-    chk   = field(js, "checksum") or ""
-    canon = canonical_name(chk) or base
+    rid   = field(js, "id") or ""
     size  = human_kb(field(js, "size") or "0")
     name  = rom_name(js)
     comp  = compatible(js)
     note  = NOTES.get(base, "")
+    ok    = "yes" if js.get("intact") else f"no: {js.get('reason', '')}"
     hw = f"{name} — models: {comp}" if comp else name
-    out.append(f"| `{canon}` | {size} | `{chk}` | {hw} | {note} |")
+    out.append(f"| `{base}` | {size} | `{rid}` | {ok} | {hw} | {note} |")
 out.append("")
 out.append("## Declaration ROMs / vROMs (`*.vrom`)")
 out.append("")
-out.append("| Canonical file | Size | CRC | Card id | Notes |")
+out.append("| File | Size | CRC | Card id | Notes |")
 out.append("|---|---|---|---|---|")
 for base, js in sorted(vro):
     crc   = field(js, "crc") or ""
-    canon = canonical_name(crc) or base
     size  = human_kb(field(js, "size") or "0")
     card  = field(js, "card_id") or ""
     note  = NOTES.get(base, "")
-    out.append(f"| `{canon}` | {size} | `{crc}` | `{card}` | {note} |")
+    out.append(f"| `{base}` | {size} | `{crc}` | `{card}` | {note} |")
 out.append("")
 out.append("## PCI expansion ROMs (`*.prom`)")
 out.append("")
-out.append("| Canonical file | Size | CRC-32 | Card id | PCI ids | Notes |")
+out.append("| File | Size | CRC-32 | Card id | PCI ids | Notes |")
 out.append("|---|---|---|---|---|---|")
 for base, js in sorted(pro):
     crc   = field(js, "crc") or ""
-    canon = canonical_name(crc) or base
     size  = human_kb(field(js, "size") or "0")
     card  = field(js, "card_id") or ""
     ven   = field(js, "vendor_id") or ""
     dev   = field(js, "device_id") or ""
     ids   = f"`{int(ven):04X}:{int(dev):04X}`" if ven and dev else ""
     note  = NOTES.get(base, "")
-    out.append(f"| `{canon}` | {size} | `{crc}` | `{card}` | {ids} | {note} |")
+    out.append(f"| `{base}` | {size} | `{crc}` | `{card}` | {ids} | {note} |")
 out.append("")
 out.append("## Legacy name aliases (for grep-ability)")
 out.append("")
 out.append("Old handover docs and agent notes reference the pre-rename names; this")
-out.append("table maps them to the canonical files. The renames preserved git history.")
+out.append("table maps them to the current files. The renames preserved git history.")
 out.append("")
-out.append("| Legacy name(s) | Canonical file |")
+out.append("| Legacy name(s) | Current file |")
 out.append("|---|---|")
 for old, new in ALIASES:
     out.append(f"| `{old}` | `{new}` |")

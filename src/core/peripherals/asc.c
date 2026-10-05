@@ -28,12 +28,13 @@
 #include "log.h"
 #include "machine_profile.h" // machine_object()
 #include "object.h"
+#include "sound_surface.h"
 #include "system.h"
 #include "value.h"
 
 // Forward declaration — the `machine.sound` class descriptor lives with the
 // object-model section near the bottom of the file; asc_init references it.
-extern const class_desc_t asc_sound_class;
+static const class_desc_t asc_detail_class;
 
 #include <assert.h>
 #include <stddef.h>
@@ -181,6 +182,8 @@ struct asc {
     // restore drops at most ASC_PUSH_BATCH-1 pending frames)
     int16_t out_buf[ASC_PUSH_BATCH];
     int out_count;
+    uint64_t frames_pushed; // host-stream statistics for machine.sound
+    int32_t peak;
 
     struct object *object; // `machine.sound` node; NULL when not attached
 };
@@ -310,6 +313,12 @@ static int16_t sat16(int32_t v) {
 static void asc_flush(asc_t *asc) {
     if (asc->out_count <= 0)
         return;
+    for (int i = 0; i < asc->out_count; i++) {
+        int32_t a = asc->out_buf[i] < 0 ? -(int32_t)asc->out_buf[i] : (int32_t)asc->out_buf[i];
+        if (a > asc->peak)
+            asc->peak = a;
+    }
+    asc->frames_pushed += (uint64_t)asc->out_count;
     audio_out_push(asc->out_buf, asc->out_count, get_volume(asc));
     asc->out_count = 0;
 }
@@ -407,13 +416,14 @@ static void write_wave_reg(uint32_t *reg, int byte_pos, uint8_t data) {
 // Memory Interface
 // ============================================================================
 
-// Handles byte reads from the ASC address space (SRAM + registers)
-static uint8_t asc_read_byte(void *device, uint32_t addr) {
-    asc_t *asc = (asc_t *)device;
-
+// A byte read from the ASC address space (SRAM + registers): the guest's, or
+// an inspection's (`peek`), which reports the same value but leaves the
+// read-clears FIFO IRQ status (and the CB1 line it drives) untouched.
+static uint8_t asc_reg_read(asc_t *asc, uint32_t addr, bool peek) {
     // SRAM region (0x000-0x7FF): direct read regardless of mode
     if (addr < ASC_RAM_SIZE) {
-        LOG(4, "read ram[0x%03X] = 0x%02X", addr, asc->ram[addr]);
+        if (!peek)
+            LOG(4, "read ram[0x%03X] = 0x%02X", addr, asc->ram[addr]);
         return asc->ram[addr];
     }
 
@@ -434,6 +444,8 @@ static uint8_t asc_read_byte(void *device, uint32_t addr) {
     case REG_FIFO_IRQ: {
         // Read-clears: capture current flags then reset them
         uint8_t flags = asc->fifo_irq_status;
+        if (peek)
+            return flags;
         asc->fifo_irq_status = 0;
         asc_update_irq(asc); // deassert CB1 since flags are now cleared
         LOG(3, "read fifo_irq_status = 0x%02X (cleared)", flags);
@@ -476,8 +488,16 @@ static uint8_t asc_read_byte(void *device, uint32_t addr) {
         }
     }
 
-    LOG(2, "read unknown addr 0x%03X", addr);
+    if (!peek)
+        LOG(2, "read unknown addr 0x%03X", addr);
     return 0;
+}
+
+static uint8_t asc_read_byte(void *device, uint32_t addr) {
+    return asc_reg_read(device, addr, false);
+}
+static uint8_t asc_peek_byte(void *device, uint32_t addr) {
+    return asc_reg_read(device, addr, true);
 }
 
 // Handles byte writes to the ASC address space (SRAM + registers)
@@ -644,6 +664,62 @@ static void asc_write_long(void *device, uint32_t addr, uint32_t data) {
 // ============================================================================
 
 // Allocates and initialises an ASC instance, optionally restoring from checkpoint
+// === machine.sound surface (sound_surface.h) =================================
+//
+// The ASC's chip-register detail -- mode and the two FIFOs -- is NOT part of
+// the shared surface; it hangs off a `machine.sound.asc` child, the way the
+// capture sink already does.  What belongs on machine.sound is what every
+// engine has, and a Mac Plus has no ASC FIFO to report.
+//
+// in_enabled is false: the ASC is output-only, and unlike the AWACS machines
+// that is a property of the chip rather than a gap in the model.
+
+static uint32_t asc_snd_sample_rate(void *ctx) {
+    return asc_rate_hz((asc_t *)ctx);
+}
+static uint32_t asc_snd_volume(void *ctx) {
+    return (uint32_t)get_volume((asc_t *)ctx);
+}
+static bool asc_snd_muted(void *ctx) {
+    // The ASC has no mute bit: silence is volume 0 or a stopped mode.
+    asc_t *a = (asc_t *)ctx;
+    return get_volume(a) == 0 || a->mode == 0;
+}
+static bool asc_snd_out_enabled(void *ctx) {
+    return ((asc_t *)ctx)->mode != 0; // 0 = off, 1 = FIFO, 2 = wavetable
+}
+static bool asc_snd_in_enabled(void *ctx) {
+    (void)ctx;
+    return false; // the ASC is an output-only part
+}
+static uint64_t asc_snd_frames(void *ctx) {
+    return ((asc_t *)ctx)->frames_pushed;
+}
+static int32_t asc_snd_peak(void *ctx) {
+    return ((asc_t *)ctx)->peak;
+}
+static uint64_t asc_snd_overruns(void *ctx) {
+    (void)ctx;
+    return 0; // no over/underrun detection on the ASC FIFO path yet
+}
+
+// POC*, "Power On Clear" -- see asc.h.  Everything before memory_interface
+// is the chip's own state; it goes back to what asc_init gives it.
+void asc_power_on(asc_t *asc) {
+    if (!asc)
+        return;
+    asc_cancel_fifo_drain(asc); // the producer stops with the chip
+    uint8_t version = asc->version; // a silicon property, not state
+    memset(asc, 0, offsetof(asc_t, memory_interface));
+    asc->version = version;
+    asc->fifo_last[0] = 0x80; // DAC hold-last-byte: offset-binary silence
+    asc->fifo_last[1] = 0x80;
+    // The interrupt output follows the cleared status.  irq_active was cleared
+    // with the rest, so drive the sink inactive explicitly.
+    if (asc->irq_fn)
+        asc->irq_fn(asc->irq_ctx, false);
+}
+
 asc_t *asc_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpoint) {
     asc_t *asc = (asc_t *)malloc(sizeof(asc_t));
     if (!asc)
@@ -666,6 +742,7 @@ asc_t *asc_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpo
         .read_uint8 = asc_read_byte,
         .read_uint16 = asc_read_word,
         .read_uint32 = asc_read_long,
+        .peek_uint8 = asc_peek_byte, // wider peeks compose
         .write_uint8 = asc_write_byte,
         .write_uint16 = asc_write_word,
         .write_uint32 = asc_write_long,
@@ -678,7 +755,7 @@ asc_t *asc_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpo
     // Restore plain-data state from checkpoint if provided
     if (checkpoint) {
         size_t data_size = offsetof(asc_t, memory_interface);
-        system_read_checkpoint_data(checkpoint, asc, data_size);
+        system_read_checkpoint_data(checkpoint, asc, data_size, "asc");
     }
 
     // Register the FIFO drain event type for checkpoint save/restore
@@ -694,12 +771,24 @@ asc_t *asc_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpo
     audio_out_open(asc_rate_hz(asc), 1);
 
     // Object-tree binding: `machine.sound` facade + shared capture sink
-    asc->object = object_new(&asc_sound_class, asc, "sound");
+    const sound_surface_t surface = {
+        .sample_rate = asc_snd_sample_rate,
+        .volume = asc_snd_volume,
+        .muted = asc_snd_muted,
+        .out_enabled = asc_snd_out_enabled,
+        .in_enabled = asc_snd_in_enabled,
+        .frames = asc_snd_frames,
+        .peak = asc_snd_peak,
+        .overruns = asc_snd_overruns,
+        .ctx = asc,
+    };
+    asc->object = sound_object_new(&surface);
     if (asc->object) {
-        object_set_label(asc->object, "Sound");
-        object_set_order(asc->object, 110);
-        object_attach(machine_object(), asc->object);
-        audio_out_capture_attach(asc->object);
+        struct object *detail = object_new(&asc_detail_class, asc, "asc");
+        if (detail) {
+            object_set_category(detail, M_CAT_ADVANCED);
+            object_attach(asc->object, detail);
+        }
     }
 
     return asc;
@@ -718,10 +807,16 @@ const memory_interface_t *asc_get_memory_interface(asc_t *asc) {
 void asc_delete(asc_t *asc) {
     if (!asc)
         return;
+    // Drop everything the scheduler still holds for this object before any
+    // of it is torn down.
+    scheduler_forget_source(asc->scheduler, asc);
     if (asc->object) {
-        audio_out_capture_detach();
-        object_detach(asc->object);
-        object_delete(asc->object);
+        // sound_object_delete(), not a hand-rolled detach-and-delete: the node
+        // owns a malloc'd sound_surface_t copy AND an attached detail child
+        // (machine.sound.asc), and plain object_delete() frees neither -- it is
+        // not recursive.  sound.c has always called this; asc.c grew its own
+        // three lines and leaked both on every teardown.
+        sound_object_delete(asc->object);
         asc->object = NULL;
     }
     if (asc->map)
@@ -738,7 +833,7 @@ void asc_checkpoint(asc_t *restrict asc, checkpoint_t *checkpoint) {
     if (!asc || !checkpoint)
         return;
     size_t data_size = offsetof(asc_t, memory_interface);
-    system_write_checkpoint_data(checkpoint, asc, data_size);
+    system_write_checkpoint_data(checkpoint, asc, data_size, "asc");
 }
 
 // ============================================================================
@@ -788,109 +883,66 @@ static asc_t *asc_self_from(struct object *self) {
     return (asc_t *)object_data(self);
 }
 
-static value_t asc_attr_sample_rate(struct object *self, const member_t *m) {
-    (void)m;
-    return val_uint(4, asc_rate_hz(asc_self_from(self)));
-}
-
-static value_t asc_attr_volume(struct object *self, const member_t *m) {
-    (void)m;
-    return val_uint(1, (uint64_t)get_volume(asc_self_from(self)));
-}
-
-static value_t asc_attr_mode(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(asc_attr_mode) {
     return val_uint(1, asc_self_from(self)->mode);
 }
 
-// Side-effect-free debug views of the FIFO engine.  The guest-visible
-// FIFO-IRQ status register (0x804) is read-clears, so inspecting it via
-// memory.peek perturbs the guest; these attributes read the model state
-// directly for stall diagnosis.
-static value_t asc_attr_fifo_count_a(struct object *self, const member_t *m) {
-    (void)m;
+// Side-effect-free debug views of the FIFO engine, read from the model state
+// directly for stall diagnosis.  (The guest-visible FIFO-IRQ status register
+// 0x804 is read-clears; memory.peek inspects it through asc_peek_byte.)
+static DEF_GETTER(asc_attr_fifo_count_a) {
     return val_uint(1, asc_self_from(self)->fifo_count[0]);
 }
-static value_t asc_attr_fifo_count_b(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(asc_attr_fifo_count_b) {
     return val_uint(1, asc_self_from(self)->fifo_count[1]);
 }
-static value_t asc_attr_fifo_irq_status(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(asc_attr_fifo_irq_status) {
     return val_uint(1, asc_self_from(self)->fifo_irq_status);
 }
-static value_t asc_attr_fifo_armed_a(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(asc_attr_fifo_armed_a) {
     return val_bool(asc_self_from(self)->fifo_above_half[0]);
 }
-static value_t asc_attr_fifo_armed_b(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(asc_attr_fifo_armed_b) {
     return val_bool(asc_self_from(self)->fifo_above_half[1]);
 }
 
 // `sound.match(reference)` — sample-exact compare of the last capture against
 // a golden PCM WAV (delegates to the shared capture sink; same contract as
 // the Plus sound class and screen.match).
-static value_t asc_method_match(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    return audio_out_match_value(argv[0].s);
-}
 
-static const arg_decl_t asc_match_args[] = {
-    {.name = "reference", .kind = V_STRING, .doc = "Reference WAV path (PCM int16)"},
-};
-
-static const member_t asc_sound_members[] = {
-    {.kind = M_ATTR,
-     .name = "sample_rate",
-     .flags = VAL_RO,
-     .doc = "Output sample rate in Hz (from ascClockRate)",
-     .attr = {.type = V_UINT, .get = asc_attr_sample_rate, .set = NULL}},
-    {.kind = M_ATTR,
-     .name = "volume",
-     .flags = VAL_RO,
-     .doc = "Guest-set output level (ascVolControl bits 5-7, 0..7)",
-     .attr = {.type = V_UINT, .get = asc_attr_volume, .set = NULL}},
+// The ASC's own register view, attached as `machine.sound.asc`.  These are
+// chip internals, not the shared sound contract: a machine without an ASC has
+// nothing to report here, which is why they hang off a child rather than
+// sitting on machine.sound (sound_surface.h).
+static const member_t asc_detail_members[] = {
     {.kind = M_ATTR,
      .name = "mode",
-     .flags = VAL_RO,
      .doc = "Chip mode (0 = off, 1 = FIFO, 2 = wavetable)",
-     .attr = {.type = V_UINT, .get = asc_attr_mode, .set = NULL}},
+     .attr = {.type = V_UINT, .get = asc_attr_mode, .set = NULL}           },
     {.kind = M_ATTR,
      .name = "fifo_count_a",
-     .flags = VAL_RO,
      .doc = "Bytes currently in FIFO A (debug view, no side effects)",
-     .attr = {.type = V_UINT, .get = asc_attr_fifo_count_a, .set = NULL}},
+     .attr = {.type = V_UINT, .get = asc_attr_fifo_count_a, .set = NULL}   },
     {.kind = M_ATTR,
      .name = "fifo_count_b",
-     .flags = VAL_RO,
      .doc = "Bytes currently in FIFO B (debug view, no side effects)",
-     .attr = {.type = V_UINT, .get = asc_attr_fifo_count_b, .set = NULL}},
+     .attr = {.type = V_UINT, .get = asc_attr_fifo_count_b, .set = NULL}   },
     {.kind = M_ATTR,
      .name = "fifo_irq_status",
-     .flags = VAL_RO,
      .doc = "FIFO IRQ status flags without the read-clears side effect",
      .attr = {.type = V_UINT, .get = asc_attr_fifo_irq_status, .set = NULL}},
     {.kind = M_ATTR,
      .name = "fifo_armed_a",
-     .flags = VAL_RO,
      .doc = "Half-empty latch armed for FIFO A (filled above half since last fire)",
-     .attr = {.type = V_BOOL, .get = asc_attr_fifo_armed_a, .set = NULL}},
+     .attr = {.type = V_BOOL, .get = asc_attr_fifo_armed_a, .set = NULL}   },
     {.kind = M_ATTR,
      .name = "fifo_armed_b",
-     .flags = VAL_RO,
      .doc = "Half-empty latch armed for FIFO B (filled above half since last fire)",
-     .attr = {.type = V_BOOL, .get = asc_attr_fifo_armed_b, .set = NULL}},
-    {.kind = M_METHOD,
-     .name = "match",
-     .doc = "Compare the last capture against a reference WAV (true if identical)",
-     .method = {.args = asc_match_args, .nargs = 1, .result = V_BOOL, .fn = asc_method_match}},
+     .attr = {.type = V_BOOL, .get = asc_attr_fifo_armed_b, .set = NULL}   },
 };
 
-const class_desc_t asc_sound_class = {
-    .name = "sound",
-    .members = asc_sound_members,
-    .n_members = sizeof(asc_sound_members) / sizeof(asc_sound_members[0]),
+static const class_desc_t asc_detail_class = {
+    .name = "asc",
+    .members = asc_detail_members,
+    .n_members = sizeof asc_detail_members / sizeof asc_detail_members[0],
 };

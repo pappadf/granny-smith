@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Lisa segment-MMU link stubs for the `cpu` unit-test harness.
 //
 // The cpu harness links the real src/core/memory/memory.c, whose slow path

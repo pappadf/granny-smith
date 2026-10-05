@@ -1,13 +1,20 @@
 import { render, waitFor, fireEvent } from '@testing-library/svelte';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-// Mock the emulator bridge so vfs.list returns canned partition / volume
+// Mock the emulator bridge so files.list returns canned partition / volume
 // listings — exercises the Filesystem tree's descent into a disk image
-// without a running WASM module. vfs.list returns a native array of
+// without a running WASM module. files.list returns a native array of
 // {name,kind,size} objects (V_LIST of V_MAP through the gsEval bridge), so
 // the mock returns arrays directly rather than JSON strings. Declared via
 // vi.hoisted so the spy exists before the (hoisted) vi.mock factory runs.
-const { gsEvalMock } = vi.hoisted(() => ({ gsEvalMock: vi.fn() }));
+const { gsEvalMock, mediaMock, core } = vi.hoisted(() => ({
+  gsEvalMock: vi.fn(),
+  core: { machineCreated: false },
+  mediaMock: {
+    insertFloppy: vi.fn(),
+    mountImage: vi.fn(),
+  },
+}));
 
 vi.mock('@/bus/emulator', () => ({
   gsEval: (path: string, args?: unknown[]) => gsEvalMock(path, args),
@@ -16,8 +23,16 @@ vi.mock('@/bus/emulator', () => ({
   getModule: () => null,
 }));
 
+// The drive helpers, so "Insert into floppy drive" on an in-image file can be
+// checked for the path it hands over without a machine profile behind it.
+vi.mock('@/bus/media', () => ({
+  insertFloppy: (...a: unknown[]) => mediaMock.insertFloppy(...a),
+  mountImage: (...a: unknown[]) => mediaMock.mountImage(...a),
+}));
+
 import FilesystemView from '@/components/panel-views/filesystem/FilesystemView.svelte';
-import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
+import { setOpfsBackend } from '@/bus/opfs';
+import { MockOpfs } from '../helpers/mockOpfs';
 import type { OpfsEntry } from '@/bus/types';
 import { filesystem, setFsExpanded, clearFsSelection } from '@/state/filesystem.svelte';
 import { makeDataTransfer, labels, rowFor } from '../helpers/fsTree';
@@ -58,6 +73,15 @@ class ImgRootOpfs extends MockOpfs {
   }
 }
 
+// The core's files.list of /opfs: the same entries, with the one file its
+// format registry recognises marked expandable (the tree routes on the flag,
+// not on the ".img" extension).
+const OPFS_ROOT_LISTING = [
+  { name: 'extracted', kind: 'directory', size: 0, expandable: false },
+  { name: 'disk.img', kind: 'file', size: 819200, expandable: true },
+  { name: 'notes.txt', kind: 'file', size: 12, expandable: false },
+];
+
 const createObjectURL = vi.fn(() => 'blob:mock');
 
 let backend: ImgRootOpfs;
@@ -73,11 +97,25 @@ beforeEach(() => {
   (URL as unknown as { createObjectURL: unknown }).createObjectURL = createObjectURL;
   (URL as unknown as { revokeObjectURL: unknown }).revokeObjectURL = () => {};
   vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  core.machineCreated = false;
+  for (const m of Object.values(mediaMock)) {
+    m.mockReset();
+    m.mockResolvedValue({ ok: true, mount: { kind: 'fd', bus: 'floppy', drive: 0 } });
+  }
   gsEvalMock.mockReset();
   gsEvalMock.mockImplementation(async (path: string, args?: unknown[]) => {
-    if (path === 'storage.cp') return true;
-    if (path !== 'vfs.list') return null;
+    if (path === 'files.cp') return true;
+    if (path === 'machine.created') return core.machineCreated;
+    const target = (args?.[0] as string) ?? '';
+    if (path === 'files.path_size')
+      return target.endsWith('.img') ? (target.endsWith('HD.img') ? 20971520 : 819200) : 4522;
+    if (path === 'machine.floppy.identify')
+      return target.endsWith('.img') && !target.endsWith('HD.img') ? '800K' : '';
+    if (path === 'machine.scsi.identify_hd') return target.endsWith('HD.img');
+    if (path === 'machine.scsi.identify_cdrom') return false;
+    if (path !== 'files.list') return null;
     const dir = (args?.[0] as string) ?? '';
+    if (dir === '/opfs') return OPFS_ROOT_LISTING;
     if (dir === '/opfs/disk.img') {
       return [
         { name: 'partition1', kind: 'directory', size: 0 },
@@ -90,6 +128,7 @@ beforeEach(() => {
         { name: 'Read Me', kind: 'file', size: 4522 },
         // A name the HFS reader surfaced from an in-name '/': OPFS rejects ':'.
         { name: 'Install 1:2.img', kind: 'file', size: 819200 },
+        { name: 'HD.img', kind: 'file', size: 20971520 },
       ];
     }
     return [];
@@ -100,8 +139,9 @@ describe('FilesystemView — disk-image descent', () => {
   it('collapses a lone synthetic partition (floppy shows volume contents directly)', async () => {
     // A floppy has no partition map — the VFS reports a single partition1.
     gsEvalMock.mockImplementation(async (path: string, args?: unknown[]) => {
-      if (path !== 'vfs.list') return null;
+      if (path !== 'files.list') return null;
       const dir = (args?.[0] as string) ?? '';
+      if (dir === '/opfs') return OPFS_ROOT_LISTING;
       if (dir === '/opfs/disk.img') return [{ name: 'partition1', kind: 'directory', size: 0 }];
       if (dir === '/opfs/disk.img/partition1')
         return [
@@ -136,14 +176,14 @@ describe('FilesystemView — disk-image descent', () => {
       expect(labels(container)).toContain('partition1');
       expect(labels(container)).toContain('partition2');
     });
-    expect(gsEvalMock).toHaveBeenCalledWith('vfs.list', ['/opfs/disk.img']);
+    expect(gsEvalMock).toHaveBeenCalledWith('files.list', ['/opfs/disk.img']);
 
     await fireEvent.click(rowFor(container, 'partition1'));
     await waitFor(() => {
       expect(labels(container)).toContain('System Folder');
       expect(labels(container)).toContain('Read Me');
     });
-    expect(gsEvalMock).toHaveBeenCalledWith('vfs.list', ['/opfs/disk.img/partition1']);
+    expect(gsEvalMock).toHaveBeenCalledWith('files.list', ['/opfs/disk.img/partition1']);
   });
 
   it('shows no context menu for a read-only node inside an image', async () => {
@@ -174,7 +214,7 @@ describe('FilesystemView — disk-image descent', () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
   });
 
-  it('downloads a file inside an image by extracting it via storage.cp', async () => {
+  it('downloads a file inside an image by extracting it via files.cp', async () => {
     const { container } = render(FilesystemView);
     setFsExpanded('/opfs', true);
     await waitFor(() => expect(labels(container)).toContain('disk.img'));
@@ -192,7 +232,7 @@ describe('FilesystemView — disk-image descent', () => {
     await fireEvent.click(download);
 
     await waitFor(() => {
-      const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'storage.cp');
+      const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'files.cp');
       expect(cp).toBeTruthy();
       const [src, scratch] = cp![1] as [string, string];
       expect(src).toBe('/opfs/disk.img/partition1/Read Me');
@@ -203,7 +243,7 @@ describe('FilesystemView — disk-image descent', () => {
     });
   });
 
-  it('downloads a plain OPFS file by reading it directly (no storage.cp)', async () => {
+  it('downloads a plain OPFS file by reading it directly (no files.cp)', async () => {
     const { container } = render(FilesystemView);
     setFsExpanded('/opfs', true);
     await waitFor(() => expect(labels(container)).toContain('notes.txt'));
@@ -220,7 +260,7 @@ describe('FilesystemView — disk-image descent', () => {
       expect(backend.readFileCalls).toContain('/opfs/notes.txt');
       expect(createObjectURL).toHaveBeenCalled();
     });
-    expect(gsEvalMock.mock.calls.find((c) => c[0] === 'storage.cp')).toBeUndefined();
+    expect(gsEvalMock.mock.calls.find((c) => c[0] === 'files.cp')).toBeUndefined();
   });
 
   it('copies a file OUT of an image when dragged to an OPFS folder', async () => {
@@ -239,7 +279,7 @@ describe('FilesystemView — disk-image descent', () => {
     await fireEvent.drop(rowFor(container, 'extracted'), { dataTransfer: dt });
 
     await waitFor(() => {
-      const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'storage.cp');
+      const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'files.cp');
       expect(cp).toBeTruthy();
       expect(cp![1]).toEqual(['/opfs/disk.img/partition1/Read Me', '/opfs/extracted/Read Me']);
     });
@@ -261,12 +301,12 @@ describe('FilesystemView — disk-image descent', () => {
     await fireEvent.drop(rowFor(container, 'extracted'), { dataTransfer: dt });
 
     await waitFor(() => {
-      const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'storage.cp');
+      const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'files.cp');
       expect(cp).toBeTruthy();
       expect(cp![1]).toEqual([
-        '-r',
         '/opfs/disk.img/partition1/System Folder',
         '/opfs/extracted/System Folder',
+        true,
       ]);
     });
   });
@@ -285,7 +325,7 @@ describe('FilesystemView — disk-image descent', () => {
     await fireEvent.drop(rowFor(container, 'extracted'), { dataTransfer: dt });
 
     await waitFor(() => {
-      const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'storage.cp');
+      const cp = gsEvalMock.mock.calls.find((c) => c[0] === 'files.cp');
       expect(cp).toBeTruthy();
       // Source keeps its ':'; destination is sanitised so the OPFS write
       // succeeds instead of silently failing.
@@ -309,7 +349,7 @@ describe('FilesystemView — disk-image descent', () => {
     await waitFor(() => {
       expect(backend.moveCalls).toContainEqual(['/opfs/notes.txt', '/opfs/extracted/notes.txt']);
     });
-    expect(gsEvalMock.mock.calls.find((c) => c[0] === 'storage.cp')).toBeUndefined();
+    expect(gsEvalMock.mock.calls.find((c) => c[0] === 'files.cp')).toBeUndefined();
   });
 
   // Regression: dragOver must set a dropEffect compatible with the dragStart
@@ -341,5 +381,64 @@ describe('FilesystemView — disk-image descent', () => {
     await fireEvent.dragStart(rowFor(container, 'notes.txt'), { dataTransfer: dt });
     await fireEvent.dragOver(rowFor(container, 'extracted'), { dataTransfer: dt });
     expect(dt.dropEffect).toBe('move');
+  });
+});
+
+describe('FilesystemView — media inside an image or archive', () => {
+  async function menuFor(name: string): Promise<string[]> {
+    const { container } = render(FilesystemView);
+    setFsExpanded('/opfs', true);
+    await waitFor(() => expect(labels(container)).toContain('disk.img'));
+    await fireEvent.click(rowFor(container, 'disk.img'));
+    await waitFor(() => expect(labels(container)).toContain('partition1'));
+    await fireEvent.click(rowFor(container, 'partition1'));
+    await waitFor(() => expect(labels(container)).toContain(name));
+    await fireEvent.contextMenu(rowFor(container, name));
+    await waitFor(() => expect(document.querySelector('.context-menu')).not.toBeNull());
+    return Array.from(document.querySelectorAll('.context-menu .item')).map(
+      (e) => e.textContent?.trim() ?? '',
+    );
+  }
+
+  function clickItem(label: string) {
+    const el = Array.from(document.querySelectorAll('.context-menu .item')).find(
+      (e) => e.textContent?.trim() === label,
+    ) as HTMLElement;
+    expect(el).toBeTruthy();
+    return fireEvent.click(el);
+  }
+
+  it('offers no drive action without a machine', async () => {
+    expect(await menuFor('Install 1:2.img')).toEqual(['Download']);
+  });
+
+  it('inserts a floppy image into a drive by its in-image path', async () => {
+    core.machineCreated = true;
+    const items = await menuFor('Install 1:2.img');
+    expect(items).toContain('Insert into floppy drive');
+    expect(items).not.toContain('Attach as hard disk');
+    await clickItem('Insert into floppy drive');
+    await waitFor(() =>
+      expect(mediaMock.insertFloppy).toHaveBeenCalledWith(
+        '/opfs/disk.img/partition1/Install 1:2.img',
+        false,
+      ),
+    );
+  });
+
+  it('attaches a hard-disk image, and offers nothing for a file that is no medium', async () => {
+    core.machineCreated = true;
+    const items = await menuFor('HD.img');
+    expect(items).toContain('Attach as hard disk');
+    expect(items).not.toContain('Insert into CD-ROM drive');
+    await clickItem('Attach as hard disk');
+    await waitFor(() =>
+      expect(mediaMock.mountImage).toHaveBeenCalledWith('hd', '/opfs/disk.img/partition1/HD.img'),
+    );
+  });
+
+  it('offers only Download for a file that is no medium', async () => {
+    core.machineCreated = true;
+    expect(await menuFor('Read Me')).toEqual(['Download']);
   });
 });

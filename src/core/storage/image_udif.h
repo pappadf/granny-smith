@@ -98,7 +98,8 @@ typedef struct {
 bool udif_detect(const uint8_t *trailer, size_t len);
 
 // Parse the 'koly' trailer.  Returns 0 and fills *out, or a negative errno:
-// -EINVAL for a bad or unsupported trailer, -ENOTSUP for a multi-segment image.
+// -EINVAL for a bad or unsupported trailer, -ENOTSUP for a multi-segment image,
+// -EFBIG for an image of more than 2^32 sectors (more than storage can open).
 int udif_parse_trailer(const uint8_t *trailer, size_t len, udif_trailer_t *out);
 
 // Parse the `blkx` block tables out of the XML property list.  Returns 0 and
@@ -113,9 +114,8 @@ void udif_map_free(udif_map_t *m);
 // (bzip2 / LZFSE / LZMA) and -EINVAL for a malformed chunk.  0 on success.
 int udif_decode_chunk(const udif_chunk_t *chunk, const uint8_t *src, size_t src_len, uint8_t *dst, size_t dst_len);
 
-// Running CRC-32 (the zlib/PNG polynomial UDIF uses), seeded with 0, so
-// callers can verify a table's decoded bytes against udif_table_t::checksum.
-// Chunks of type UDIF_CHUNK_IGNORE are excluded from that running total.
-uint32_t udif_crc32(uint32_t crc, const uint8_t *data, size_t len);
+// A table's decoded bytes are checked against udif_table_t::checksum with
+// gs_crc32 (crc32.h), the polynomial UDIF uses; chunks of type
+// UDIF_CHUNK_IGNORE are excluded from that running total.
 
 #endif // GS_IMAGE_UDIF_H

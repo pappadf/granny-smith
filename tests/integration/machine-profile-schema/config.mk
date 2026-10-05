@@ -1,15 +1,15 @@
-# Integration test: machine.profile() schema snapshot (proposal §6.1)
+# Integration test: catalog.profile() schema snapshot
 # Pins the SHAPE (keys + value types, value-independent) of every model's
-# machine.profile() JSON against a committed golden, so adding/removing/
+# catalog.profile() JSON against a committed golden, so adding/removing/
 # retyping a field fails loudly. Complements machine-capabilities, which
 # asserts specific capability *values*.
 
 TEST_NAME := Machine Profile Schema Snapshot
-TEST_DESC := machine.profile() JSON shape pinned per model (added/removed/retyped field => fail)
+TEST_DESC := catalog.profile() JSON shape pinned per model (added/removed/retyped field => fail)
 
-# Any ROM works — machine.profile() is a static registry lookup, no boot.
+# Any ROM works — catalog.profile() is a static registry lookup, no boot.
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 TEST_RUNNER := run.sh
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // ppc_pd_ids.h
-// The PowerPC predecoded-executor id space (proposal §6.1-§6.2):
+// The PowerPC predecoded-executor id space:
 //   0..15         control ids (predecode.h)
 //   16..T1_END-1  flattened-generic ids, one per ppc_decode.h leaf
 //                 (generated: build/gen/ppc_pd_t1_ids.h; c = the raw word)

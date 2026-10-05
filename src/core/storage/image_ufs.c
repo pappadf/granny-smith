@@ -11,7 +11,9 @@
 // once, so per-inode disk reads are the right granularity.
 
 #include "image_ufs.h"
+#include "common.h"
 #include "image.h"
+#include "image_part.h"
 #include "storage.h"
 
 #include <errno.h>
@@ -20,40 +22,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-// ---- Disk-read helper (byte-granular over 512-aligned blocks) ------------
-
-static int disk_read_bytes(image_t *img, uint64_t off, void *buf, size_t n) {
-    uint8_t *dst = buf;
-    size_t done = 0;
-    uint8_t blk[STORAGE_BLOCK_SIZE];
-    while (done < n) {
-        uint64_t abs = off + done;
-        uint64_t block_off = abs & ~(uint64_t)(STORAGE_BLOCK_SIZE - 1);
-        size_t in_block = (size_t)(abs - block_off);
-        size_t take = STORAGE_BLOCK_SIZE - in_block;
-        if (take > n - done)
-            take = n - done;
-        if (in_block == 0 && take == STORAGE_BLOCK_SIZE) {
-            if (disk_read_data(img, (size_t)block_off, dst + done, STORAGE_BLOCK_SIZE) != STORAGE_BLOCK_SIZE)
-                return -EIO;
-        } else {
-            if (disk_read_data(img, (size_t)block_off, blk, STORAGE_BLOCK_SIZE) != STORAGE_BLOCK_SIZE)
-                return -EIO;
-            memcpy(dst + done, blk + in_block, take);
-        }
-        done += take;
-    }
-    return 0;
-}
-
 // ---- Big-endian helpers --------------------------------------------------
 
-static uint16_t be16(const uint8_t *p) {
-    return (uint16_t)((p[0] << 8) | p[1]);
-}
-static uint32_t be32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-}
 // ---- Superblock offsets ---------------------------------------------------
 // Layout matches 4.3BSD-Tahoe struct fs; field offsets are stable in every
 // A/UX UFS the project cares about.
@@ -65,6 +35,7 @@ static uint32_t be32(const uint8_t *p) {
 #define SB_OFF_CGOFFSET 24
 #define SB_OFF_CGMASK   28
 #define SB_OFF_NCG      44
+#define UFS_MAX_BSIZE   65536u // FFS MAXBSIZE
 #define SB_OFF_BSIZE    48
 #define SB_OFF_FSIZE    52
 #define SB_OFF_FRAG     56
@@ -111,7 +82,7 @@ static uint32_t be32(const uint8_t *p) {
 // ---- Volume state --------------------------------------------------------
 
 struct ufs_volume {
-    image_t *img;
+    gs_source_t *src; // the whole disk (retained)
     uint64_t partition_off;
     uint64_t partition_size;
 
@@ -139,13 +110,9 @@ struct ufs_dir_iter {
 
 // ---- Small utilities -----------------------------------------------------
 
-// Read raw bytes from the partition (relative to partition start). Bounds
-// check is written as `n > size || off > size - n` so a hostile `off + n`
-// can't wrap and slip past `> partition_size`.
+// Read raw bytes from the partition (relative to partition start).
 static int read_partition(ufs_volume_t *vol, uint64_t off, void *buf, size_t n) {
-    if (n > vol->partition_size || off > vol->partition_size - n)
-        return -EIO;
-    return disk_read_bytes(vol->img, vol->partition_off + off, buf, n);
+    return source_read_partition(vol->src, vol->partition_off, vol->partition_size, off, buf, n);
 }
 
 // Compute the starting fragment number of cylinder group `c`.
@@ -198,13 +165,13 @@ static int resolve_block(ufs_volume_t *vol, const uint8_t *di, uint64_t off, siz
     uint32_t frag_addr = 0;
 
     if (lbn < UFS_NDADDR) {
-        frag_addr = be32(di + DI_OFF_DB + lbn * 4);
+        frag_addr = RD_BE32(di + DI_OFF_DB + lbn * 4);
     } else {
         uint32_t nindir = vol->nindir; // entries per indirect block
         uint32_t rel = lbn - UFS_NDADDR;
         if (rel < nindir) {
             // Single indirect: di_ib[0] -> block of uint32[nindir].
-            uint32_t ib1 = be32(di + DI_OFF_IB + 0 * 4);
+            uint32_t ib1 = RD_BE32(di + DI_OFF_IB + 0 * 4);
             if (ib1 == 0) {
                 *out_phys = 0;
                 *out_len = bsize - in_blk;
@@ -215,10 +182,10 @@ static int resolve_block(ufs_volume_t *vol, const uint8_t *di, uint64_t off, siz
             int rc = read_partition(vol, ib_byte + rel * 4, slot, 4);
             if (rc < 0)
                 return rc;
-            frag_addr = be32(slot);
+            frag_addr = RD_BE32(slot);
         } else if (rel < nindir + (uint64_t)nindir * nindir) {
             // Double indirect.
-            uint32_t ib2 = be32(di + DI_OFF_IB + 1 * 4);
+            uint32_t ib2 = RD_BE32(di + DI_OFF_IB + 1 * 4);
             if (ib2 == 0) {
                 *out_phys = 0;
                 *out_len = bsize - in_blk;
@@ -232,7 +199,7 @@ static int resolve_block(ufs_volume_t *vol, const uint8_t *di, uint64_t off, siz
             int rc = read_partition(vol, l1_byte, slot, 4);
             if (rc < 0)
                 return rc;
-            uint32_t ib1 = be32(slot);
+            uint32_t ib1 = RD_BE32(slot);
             if (ib1 == 0) {
                 *out_phys = 0;
                 *out_len = bsize - in_blk;
@@ -242,7 +209,7 @@ static int resolve_block(ufs_volume_t *vol, const uint8_t *di, uint64_t off, siz
             rc = read_partition(vol, l2_byte, slot, 4);
             if (rc < 0)
                 return rc;
-            frag_addr = be32(slot);
+            frag_addr = RD_BE32(slot);
         } else {
             // Triple indirect: not supported in v1.
             *out_phys = 0;
@@ -265,7 +232,7 @@ static int resolve_block(ufs_volume_t *vol, const uint8_t *di, uint64_t off, siz
 // `buf`.  Handles holes (zero-fill) and clamps against di_size.  Returns
 // the number of bytes actually filled.
 static int read_file_by_dinode(ufs_volume_t *vol, const uint8_t *di, uint64_t off, void *buf, size_t n, size_t *nread) {
-    uint32_t size = be32(di + DI_OFF_SIZE);
+    uint32_t size = RD_BE32(di + DI_OFF_SIZE);
     if (nread)
         *nread = 0;
     if (off >= size)
@@ -300,25 +267,39 @@ static int read_file_by_dinode(ufs_volume_t *vol, const uint8_t *di, uint64_t of
 // ---- Superblock probe + open --------------------------------------------
 
 bool ufs_probe(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
-    if (!img || partition_byte_size < UFS_SBOFF + 2048)
+    gs_source_t *src = image_source(img);
+    bool yes = ufs_probe_source(src, partition_byte_offset, partition_byte_size);
+    gs_source_release(src);
+    return yes;
+}
+
+bool ufs_probe_source(gs_source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
+    if (!src || partition_byte_size < UFS_SBOFF + 2048)
         return false;
     uint8_t buf[2048];
-    if (disk_read_bytes(img, partition_byte_offset + UFS_SBOFF, buf, sizeof(buf)) < 0)
+    if (gs_source_read_exact(src, partition_byte_offset + UFS_SBOFF, buf, sizeof(buf)) != 0)
         return false;
     // Magic at offset 1372; accept either endianness.
-    uint32_t be = be32(buf + SB_OFF_MAGIC);
+    uint32_t be = RD_BE32(buf + SB_OFF_MAGIC);
     uint32_t le = (uint32_t)buf[SB_OFF_MAGIC] | ((uint32_t)buf[SB_OFF_MAGIC + 1] << 8) |
                   ((uint32_t)buf[SB_OFF_MAGIC + 2] << 16) | ((uint32_t)buf[SB_OFF_MAGIC + 3] << 24);
     return be == UFS_FS_MAGIC || le == UFS_FS_MAGIC;
 }
 
 ufs_volume_t *ufs_open(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
-    if (!img || partition_byte_size < UFS_SBOFF + 2048)
+    gs_source_t *src = image_source(img);
+    ufs_volume_t *vol = ufs_open_source(src, partition_byte_offset, partition_byte_size);
+    gs_source_release(src); // the volume holds its own reference
+    return vol;
+}
+
+ufs_volume_t *ufs_open_source(gs_source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
+    if (!src || partition_byte_size < UFS_SBOFF + 2048)
         return NULL;
     uint8_t sb[2048];
-    if (disk_read_bytes(img, partition_byte_offset + UFS_SBOFF, sb, sizeof(sb)) < 0)
+    if (gs_source_read_exact(src, partition_byte_offset + UFS_SBOFF, sb, sizeof(sb)) != 0)
         return NULL;
-    if (be32(sb + SB_OFF_MAGIC) != UFS_FS_MAGIC) {
+    if (RD_BE32(sb + SB_OFF_MAGIC) != UFS_FS_MAGIC) {
         // A/UX always writes BE, but we tolerate LE-rewritten images — not
         // yet implemented because no test fixture needs it.  Document and
         // bail out for now.
@@ -328,35 +309,42 @@ ufs_volume_t *ufs_open(image_t *img, uint64_t partition_byte_offset, uint64_t pa
     ufs_volume_t *vol = calloc(1, sizeof(*vol));
     if (!vol)
         return NULL;
-    vol->img = img;
+    vol->src = gs_source_retain(src);
     vol->partition_off = partition_byte_offset;
     vol->partition_size = partition_byte_size;
 
-    vol->bsize = be32(sb + SB_OFF_BSIZE);
-    vol->fsize = be32(sb + SB_OFF_FSIZE);
-    vol->frag = be32(sb + SB_OFF_FRAG);
-    vol->ncg = be32(sb + SB_OFF_NCG);
-    vol->ipg = be32(sb + SB_OFF_IPG);
-    vol->fpg = be32(sb + SB_OFF_FPG);
-    vol->iblkno = be32(sb + SB_OFF_IBLKNO);
-    vol->cgoffset = (int32_t)be32(sb + SB_OFF_CGOFFSET);
-    vol->cgmask = (int32_t)be32(sb + SB_OFF_CGMASK);
-    vol->nindir = be32(sb + SB_OFF_NINDIR);
-    vol->inopb = be32(sb + SB_OFF_INOPB);
-    vol->fsbtodb = be32(sb + SB_OFF_FSBTODB);
+    vol->bsize = RD_BE32(sb + SB_OFF_BSIZE);
+    vol->fsize = RD_BE32(sb + SB_OFF_FSIZE);
+    vol->frag = RD_BE32(sb + SB_OFF_FRAG);
+    vol->ncg = RD_BE32(sb + SB_OFF_NCG);
+    vol->ipg = RD_BE32(sb + SB_OFF_IPG);
+    vol->fpg = RD_BE32(sb + SB_OFF_FPG);
+    vol->iblkno = RD_BE32(sb + SB_OFF_IBLKNO);
+    vol->cgoffset = (int32_t)RD_BE32(sb + SB_OFF_CGOFFSET);
+    vol->cgmask = (int32_t)RD_BE32(sb + SB_OFF_CGMASK);
+    vol->nindir = RD_BE32(sb + SB_OFF_NINDIR);
+    vol->inopb = RD_BE32(sb + SB_OFF_INOPB);
+    vol->fsbtodb = RD_BE32(sb + SB_OFF_FSBTODB);
 
     // Sanity checks.  Reject obviously-corrupt values rather than reading
-    // random bytes on subsequent calls.
-    if (vol->bsize == 0 || vol->fsize == 0 || vol->frag == 0 || vol->bsize % 512 != 0 || vol->fsize % 512 != 0 ||
-        vol->bsize / vol->fsize != vol->frag || vol->ncg == 0 || vol->ipg == 0 || vol->fpg == 0 || vol->nindir == 0 ||
-        vol->nindir > 4096) {
-        free(vol);
+    // random bytes on subsequent calls.  Block and fragment sizes are bounded
+    // (FFS allows at most 64 KiB blocks), and an indirect block holds exactly
+    // bsize / 4 pointers: an unbounded size made every fragment-to-byte
+    // multiplication below a candidate for overflow.
+    // A/UX 3.0.1 volumes are 8192 / 1024 / nindir 2048.
+    if (vol->fsize < 512 || vol->fsize > UFS_MAX_BSIZE || vol->fsize % 512 != 0 || vol->bsize < vol->fsize ||
+        vol->bsize > UFS_MAX_BSIZE || vol->bsize % 512 != 0 || vol->frag == 0 || vol->bsize / vol->fsize != vol->frag ||
+        vol->nindir != vol->bsize / 4 || vol->ncg == 0 || vol->ipg == 0 || vol->fpg == 0) {
+        ufs_close(vol);
         return NULL;
     }
     return vol;
 }
 
 void ufs_close(ufs_volume_t *vol) {
+    if (!vol)
+        return;
+    gs_source_release(vol->src);
     free(vol);
 }
 
@@ -369,10 +357,10 @@ static int load_directory(ufs_volume_t *vol, uint32_t ino, uint8_t **out_buf, ui
     int rc = load_dinode(vol, ino, di);
     if (rc < 0)
         return rc;
-    uint16_t mode = be16(di + DI_OFF_MODE);
+    uint16_t mode = RD_BE16(di + DI_OFF_MODE);
     if ((mode & UFS_IFMT) != UFS_IFDIR)
         return -ENOTDIR;
-    uint32_t size = be32(di + DI_OFF_SIZE);
+    uint32_t size = RD_BE32(di + DI_OFF_SIZE);
     if (size == 0) {
         *out_buf = NULL;
         *out_size = 0;
@@ -403,9 +391,9 @@ static int parse_direct(const uint8_t *buf, uint64_t bufsize, uint64_t off, uint
                         const char **name_ptr) {
     if (off + 8 > bufsize)
         return -1;
-    uint32_t ino = be32(buf + off);
-    uint16_t reclen = be16(buf + off + 4);
-    uint16_t namlen = be16(buf + off + 6);
+    uint32_t ino = RD_BE32(buf + off);
+    uint16_t reclen = RD_BE16(buf + off + 4);
+    uint16_t namlen = RD_BE16(buf + off + 6);
     if (reclen < 8 || reclen > bufsize - off || namlen > reclen - 8)
         return -1;
     *d_ino = ino;
@@ -425,13 +413,13 @@ static int fill_dirent_for_inode(ufs_volume_t *vol, uint32_t ino, const char *na
     int rc = load_dinode(vol, ino, di);
     if (rc < 0)
         return rc;
-    uint16_t mode = be16(di + DI_OFF_MODE);
+    uint16_t mode = RD_BE16(di + DI_OFF_MODE);
     out->mode = mode;
     uint32_t ftype = mode & UFS_IFMT;
     out->is_dir = (ftype == UFS_IFDIR);
     out->is_symlink = (ftype == UFS_IFLNK);
     if (ftype == UFS_IFREG || ftype == UFS_IFLNK)
-        out->size = be32(di + DI_OFF_SIZE);
+        out->size = RD_BE32(di + DI_OFF_SIZE);
     return 0;
 }
 
@@ -491,7 +479,7 @@ int ufs_lookup(ufs_volume_t *vol, const char *const *components, size_t nc, ufs_
             rc = load_dinode(vol, child, di);
             if (rc < 0)
                 return rc;
-            uint16_t mode = be16(di + DI_OFF_MODE);
+            uint16_t mode = RD_BE16(di + DI_OFF_MODE);
             if ((mode & UFS_IFMT) != UFS_IFDIR)
                 return -ENOTDIR;
         }
@@ -566,7 +554,7 @@ int ufs_read_file(ufs_volume_t *vol, uint32_t ino, uint64_t off, void *buf, size
             *nread = 0;
         return rc;
     }
-    uint16_t mode = be16(di + DI_OFF_MODE);
+    uint16_t mode = RD_BE16(di + DI_OFF_MODE);
     uint32_t ftype = mode & UFS_IFMT;
     if (ftype == UFS_IFDIR) {
         if (nread)

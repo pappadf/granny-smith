@@ -1,0 +1,223 @@
+# tests/integration/lib/nt.script — shared helpers for the Windows NT rows on
+# the Apple Network Server (ans-nt-install, ans-nt-installed-boot).
+#
+# Pull in after mac.script and ans.script:
+#
+#     include "../lib/mac.script"
+#     include "../lib/ans.script"
+#     include "../lib/nt.script"
+#
+# NT on this machine comes from the powermac-nt-hal boot floppy
+# (github.com/pappadf/powermac-nt-hal): three Open Firmware scripts on it
+# (setup.of, boot.of, bootdisk.of), each started with two typed lines,
+#
+#     load fd:,\<script>
+#     load-base loadsize eval
+#
+# on the serial console.  Until NT's kernel runs, SETUPLDR and the veneer
+# draw on ttya; from the kernel on NT draws only on the 54M30 and reads
+# only the ADB keyboard.  These helpers are that split.
+
+# --- Keys ---------------------------------------------------------------------
+
+# One ADB key, down and up in separate auto-polls.  Not keyboard.press()
+# (both transitions in one Talk R0 packet) and not keyboard.type() (4 ms
+# spacing, inside one 11 ms poll): NT's ADB path acts on the first
+# transition of a packet and drops the rest.  Codes are the Apple Extended
+# Keyboard's on the wire — the arrows in particular are 0x3B-0x3E, not the
+# 0x7B-0x7E virtual codes the Mac OS uses, which NT does not map.
+def nt_key(code) {
+    machine.adb.keyboard.down("${$code}")
+    scheduler.run 3000000
+    machine.adb.keyboard.up("${$code}")
+    scheduler.run 3000000
+}
+
+# `n` presses of one key, with the guest given time to act on each.
+def nt_keys(code, n) {
+    let k = 0
+    while $k < $n {
+        nt_key($code)
+        scheduler.run 60000000
+        $k = $k + 1
+    }
+}
+
+let K_RETURN = "0x24"
+let K_ESCAPE = "0x35"
+let K_PGDN = "0x79"
+let K_F8 = "0x64"
+let K_UP = "0x3E"
+let K_DOWN = "0x3D"
+
+# --- Open Firmware on ttya ---------------------------------------------------
+
+# Run until the prompt comes back, returning everything printed on the way.
+# Drain first: a stale "0 > " from the previous command would end the wait
+# before the command had even run.
+def nt_prompt(ceiling) {
+    let out = ""
+    let spent = 0
+    while !contains($out, "0 > ") {
+        assert $spent < $ceiling "Open Firmware never came back to its prompt: ${$out}"
+        scheduler.run 20000000
+        $spent = $spent + 20000000
+        $out = "${$out}${machine.scc.a.sent()}"
+    }
+    return $out
+}
+
+# Type `load fd:,\<file>` and then `load-base loadsize eval`, a few
+# characters at a time (the firmware's console drops a long burst).  Returns
+# what the eval printed within `run` instructions; the caller waits for
+# whatever the script starts.
+def nt_load_eval(chunk1, chunk2, run) {
+    let junk = machine.scc.a.sent()
+    ans_send("load fd:")
+    ans_send(",\\${$chunk1}")
+    ans_send("${$chunk2}")
+    machine.scc.a.receive("\r")
+    let loaded = nt_prompt(600000000)
+    assert contains($loaded, " ok") "load fd:,\\${$chunk1}${$chunk2} failed: ${$loaded}"
+    ans_send("load-bas")
+    ans_send("e loadsi")
+    ans_send("ze eval")
+    machine.scc.a.receive("\r")
+    let out = ""
+    let spent = 0
+    while $spent < $run {
+        scheduler.run 20000000
+        $spent = $spent + 20000000
+        $out = "${$out}${machine.scc.a.sent()}"
+    }
+    return $out
+}
+
+# --- SETUPLDR, which draws on ttya ------------------------------------------
+#
+# machine.scc.a.sent() returns the bytes ESCAPED (ESC as \x1B, a backslash
+# doubled), so the markers below avoid backslashes rather than guess at
+# how many to write.
+
+# Send one key over the serial console and run until the next screen says
+# `want`.  A little more time after the text appears lets the screen finish
+# drawing and SETUPLDR get back to its keyboard poll.
+def nt_ldr(key, want, ceiling, rung) {
+    let junk = machine.scc.a.sent()
+    if $key != "" {
+        machine.scc.a.receive("${$key}")
+    }
+    let out = ""
+    let spent = 0
+    while !contains($out, $want) {
+        assert $spent < $ceiling "${$rung}: SETUPLDR never showed '${$want}'"
+        scheduler.run 20000000
+        $spent = $spent + 20000000
+        $out = "${$out}${machine.scc.a.sent()}"
+    }
+    scheduler.run 100000000
+    return "${$out}${machine.scc.a.sent()}"
+}
+
+# --- NT, which draws only on the 54M30 ----------------------------------------
+
+# Run until the screen is `golden`, in 20 M quanta, up to `ceiling`.
+#
+# Verify mode polls screen.matches() and fails with the usual diff
+# artifacts at the ceiling.  REGEN mode waits for the picture to hold still
+# and captures it.  Two things about NT's screens make mac.script's
+# wait_match unsuitable for that: its checksum covers the whole
+# framebuffer, whose off-screen stride padding NT's display driver uses as
+# scratch (so it churns under a still picture), and a focused edit control
+# blinks its caret, so a page waiting for input alternates between two
+# pictures for ever.  This one checksums the visible region and counts
+# either of the last two pictures as still.
+def nt_screen(golden, ceiling) {
+    if $REGEN_MODE == "1" {
+        let seen = 0
+        let seen2 = 0
+        let still = 0
+        let spent = 0
+        while $still < 15 {
+            assert $spent < $ceiling "nt_screen(REGEN): ${$golden}: the screen never settled"
+            scheduler.run 20000000
+            $spent = $spent + 20000000
+            let now = machine.screen.checksum(0, 0, machine.screen.height, machine.screen.width)
+            if $now == $seen || $now == $seen2 {
+                $still = $still + 1
+            } else {
+                $seen2 = $seen
+                $seen = $now
+                $still = 0
+            }
+        }
+        machine.screen.save "${$golden}"
+        return $spent
+    }
+    let spent = 0
+    while $spent < $ceiling {
+        scheduler.run 20000000
+        $spent = $spent + 20000000
+        if machine.screen.matches("${$golden}") { return $spent }
+    }
+    machine.screen.match "${$golden}"
+    return $spent
+}
+
+# --- Power-on and setup.of ------------------------------------------------------
+
+# N1: a machine that has never been booted, on the given ROM (the 2.26NT
+# ROM: the production 1.1.22 cannot run NT), with 64 MB -- setup.of puts
+# load-base at 62 MB and boot.of / bootdisk.of stage the veneer between 59
+# and 63 MB, so the 32 MB default cannot work.  Leaves the machine at `0 >`
+# on ttya and returns what the firmware printed.
+def nt_power_on(rom) {
+    machine.boot model="ans500" ram=65536 rom="${$rom}"
+    let fw = ""
+    let spins = 0
+    while !contains($fw, "0 > ") && !contains($fw, "install-console>") && $spins < 24 {
+        scheduler.run 250000000
+        $fw = "${$fw}${machine.scc.a.sent()}"
+        $spins = $spins + 1
+    }
+    let settle = 0
+    while !contains($fw, "0 > ") && $settle < 5 {
+        scheduler.run 250000000
+        $fw = "${$fw}${machine.scc.a.sent()}"
+        $settle = $settle + 1
+    }
+    # The console on ttya.  From a virgin store 2.26NT, like the production
+    # ROM, comes up on the screen; Apple's documented terminal setup on the
+    # ADB keyboard and a power cycle move it, as ans_boot_serial does.
+    if !contains($fw, "0 > ") {
+        machine.adb.keyboard.type("setenv output-device ttya\n")
+        scheduler.run 400000000
+        machine.adb.keyboard.type("setenv input-device ttya\n")
+        scheduler.run 400000000
+        let ignored = machine.scc.a.sent()
+        machine.restart
+        $fw = "${$fw}${nt_prompt(3000000000)}"
+    }
+    assert contains($fw, "OpenFirmware2.26") "N1: this is not the 2.26NT firmware"
+    assert contains($fw, "0 > ") "N1: the firmware never reached its prompt"
+
+    # A fixed clock, set only now: the power cycle above builds a new RTC,
+    # seeded from the host.  The HAL reads the time from Cuda, NT shows it
+    # (the taskbar clock is in a golden) and stamps every file it writes
+    # with it, so the host's clock would make both depend on when the row
+    # ran.  After the date the gs-test-data disk was installed on, so
+    # nothing on it is from the future.
+    machine.rtc.time = "2026-09-28T09:00:00"
+    return $fw
+}
+
+# N2: setup.of, which the floppy's README says to run once per machine.
+# The store is virgin on every row (nt_power_on clears it), so every row
+# runs it.  It resets the machine itself; returns once the prompt is back.
+def nt_setup_of() {
+    let le = nt_load_eval("setup", ".of", 200000000)
+    assert contains($le, "setting little-endian mode") "N2: setup.of did not run: ${$le}"
+    let back = nt_prompt(6000000000)
+    assert contains($back, "OpenFirmware2.26") "N2: the machine did not come back from setup.of's reset"
+    echo "N2: little-endian configuration set; the firmware is back"
+}

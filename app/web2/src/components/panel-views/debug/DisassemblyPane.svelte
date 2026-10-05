@@ -1,45 +1,35 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
-  import { loadDebugFrame, addBreakpoint, removeBreakpoint, type DebugFrameRow } from '@/bus/debug';
+  import Icon from '@/components/common/Icon.svelte';
+  import Badge from '@/components/ui/Badge.svelte';
+  import Hint from '@/components/ui/Hint.svelte';
+  import { tick } from 'svelte';
+  import { addBreakpoint, removeBreakpointAt, type DebugFrameRow } from '@/bus/debug';
+  import { debugFrame, ROWS_BEFORE_PC } from '@/state/debugFrame.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { machine } from '@/state/machine.svelte';
   import { debug, inspectMmuWalk, inspectMemoryAt } from '@/state/debug.svelte';
   import { fmtHex32 } from '@/lib/hex';
   import { cycleListSelection, listKeyFromEvent } from '@/lib/keyboardNav';
+  import { readMetric } from '@/lib/tokens';
 
-  const ROWS = 32;
-  // Bytes to fetch *before* PC. 68K instructions are variable length so
-  // PC ends up at a variable row index (usually 4–8). The scroll
-  // anchor below normalises that visually — PC always sits at line 5
-  // from the top regardless of how many bytes the leading instructions
-  // consume.
-  const BACK_BYTES = 16;
-  // Row position (1-indexed) where the PC row should appear after a
-  // refresh. Pre-PC rows stay scrollable for context.
-  const PC_ANCHOR_LINE = 5;
-  // Single source of truth for row height — must match `.row { height: ... }`.
-  const ROW_HEIGHT_PX = 22;
+  // The PC sits on this (1-indexed) line after a refresh: the shared frame
+  // is fetched with ROWS_BEFORE_PC rows ahead of the PC, re-synchronised by
+  // the core so a row always lands exactly on it (68K instructions are
+  // variable-length).  Before, this pane chose its window from the PREVIOUS
+  // PC, so after a breakpoint hit or a far jump it showed the old code with
+  // no PC marker, and decoding from pc-16 could step over the PC.
+  const PC_ANCHOR_LINE = ROWS_BEFORE_PC + 1;
 
-  let rows = $state<DebugFrameRow[]>([]);
-  let pc = $state(0);
+  const rows = $derived<DebugFrameRow[]>(debugFrame.current?.rows ?? []);
+  const pc = $derived(debugFrame.current?.pc ?? 0);
 
-  async function refresh() {
-    // One bridge round-trip: registers + disasm rows + real per-row
-    // MMU translation. Replaces the previous ~21-call fan-out
-    // (readRegisters + disasmAt + mockMmu lookups per row).
-    const start = pc > 0 ? Math.max(0, (pc - BACK_BYTES) >>> 0) : undefined;
-    const frame = await loadDebugFrame(start, ROWS);
-    if (!frame) return;
-    pc = frame.regs.pc;
+  // A new frame: record the PC and anchor it once the rows are in the DOM.
+  $effect(() => {
+    void debugFrame.current;
     debug.currentPc = pc;
-    rows = frame.rows;
-    // Wait for the DOM to reflect the new rows, then anchor PC at the
-    // configured line. Without this, scrollTop is computed against
-    // stale layout.
-    await tick();
-    anchorPcRow();
-  }
+    void tick().then(anchorPcRow);
+  });
 
   // Scroll the pane so the PC row sits at the configured anchor line.
   // No-op when PC isn't in the current window (start-of-day before the
@@ -48,22 +38,11 @@
     if (!paneEl) return;
     const pcIdx = rows.findIndex((r) => r.addr === pc);
     if (pcIdx < 0) return;
-    const target = (pcIdx - (PC_ANCHOR_LINE - 1)) * ROW_HEIGHT_PX;
+    // Rows are --gs-size-row tall (`.row` below); read at use, so a skin's
+    // row height is honoured.
+    const target = (pcIdx - (PC_ANCHOR_LINE - 1)) * readMetric('--gs-size-row', 22);
     paneEl.scrollTop = Math.max(0, target);
   }
-
-  onMount(() => {
-    void refresh();
-  });
-
-  $effect(() => {
-    // Re-fetch on pause / running transitions and after each Step.
-    // `refreshGen` is bumped by stepInto so Steps trigger a refresh
-    // even when the status is unchanged (paused → paused).
-    void machine.status;
-    void debug.refreshGen;
-    void refresh();
-  });
 
   function bannerLabel(): string {
     const model = machine.model ?? 'Machine';
@@ -102,7 +81,7 @@
       {
         label: `Remove breakpoint at $${fmtHex32(row.addr)}`,
         action: async () => {
-          const ok = await removeBreakpoint(row.addr);
+          const ok = await removeBreakpointAt(row.addr);
           if (!ok) showNotification('Failed to remove breakpoint', 'error');
         },
       },
@@ -174,6 +153,13 @@
     const rowEls = paneEl.querySelectorAll<HTMLElement>('.row');
     rowEls[i]?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
+
+  // The address tags' intents: transparent translation, page table, none.
+  const TAG_INTENT: Record<string, 'success' | 'info' | 'danger'> = {
+    tt: 'success',
+    pt: 'info',
+    invalid: 'danger',
+  };
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
@@ -188,9 +174,11 @@
 >
   <div class="banner">{bannerLabel()}</div>
   {#if machine.status === 'running'}
-    <p class="hint">Pause the machine to see the disasm listing.</p>
+    <Hint class="hint" inset="pane">Pause the machine to see the disasm listing.</Hint>
   {:else if rows.length === 0}
-    <p class="hint">Pause the machine to see the disasm listing.</p>
+    <Hint class="hint" inset="pane"
+      >{debugFrame.loading ? 'Disassembling…' : 'No machine running.'}</Hint
+    >
   {:else}
     {#each rows as row, i (row.addr * 100 + i)}
       {@const isPc = row.addr === pc}
@@ -202,7 +190,9 @@
         class:selected={selectedIdx === i}
         oncontextmenu={(ev) => onRowContext(row, ev)}
       >
-        <span class="marker">{isPc ? '►' : ''}</span>
+        <span class="marker"
+          >{#if isPc}<Icon name="debug-stackframe" size="md" />{/if}</span
+        >
         <!-- Address group is one grid cell so the mnem/ops columns
              stay aligned across rows even when addr-p / tag are
              absent. Without the wrapper, missing optional spans
@@ -210,7 +200,10 @@
         <span class="addr">
           <span class="addr-l">{addr.logical}</span>
           {#if addr.physical}<span class="addr-p">{addr.physical}</span>{/if}
-          {#if addr.tag}<span class="tag tag-{addr.tag.toLowerCase()}">{addr.tag}</span>{/if}
+          {#if addr.tag}<Badge
+              class="tag tag-{addr.tag.toLowerCase()}"
+              intent={TAG_INTENT[addr.tag.toLowerCase()] ?? 'neutral'}>{addr.tag}</Badge
+            >{/if}
         </span>
         <span class="mnem">{row.mnem}</span>
         <span class="ops">{row.ops}</span>
@@ -224,30 +217,25 @@
     width: 100%;
     height: 100%;
     overflow: auto;
-    background: var(--gs-bg);
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
+    background: var(--gs-surface-app);
+    font-family: var(--gs-font-mono);
     /* 11 px matches the body-text baseline used by section headers
        and the MMU descriptor lines; disasm rows shouldn't read larger
        than the surrounding chrome. */
-    font-size: 11px;
+    font-size: var(--gs-font-size-xs);
   }
   .banner {
     position: sticky;
     top: 0;
-    z-index: 1;
+    z-index: var(--gs-z-raised);
     /* Opaque so disasm rows scrolling underneath don't bleed
        through; tinted border-left preserves the blue indicator. */
-    background: var(--gs-bg-alt);
-    border-left: 2px solid var(--gs-focus, #0969da);
-    border-bottom: 1px solid var(--gs-border);
-    color: var(--gs-fg);
-    font-size: 11px;
-    padding: 4px 12px;
-  }
-  .hint {
-    color: var(--gs-fg-muted);
-    padding: 12px;
-    font-size: 11px;
+    background: var(--gs-surface-raised);
+    border-left: var(--gs-border-width-strong) solid var(--gs-code-banner-rule);
+    border-bottom: var(--gs-border-width) solid var(--gs-border);
+    color: var(--gs-text);
+    font-size: var(--gs-font-size-xs);
+    padding: var(--gs-space-1) var(--gs-space-3);
   }
   .row {
     /* Four stable columns: PC marker, address group (logical / phys /
@@ -256,74 +244,51 @@
        x. ops gets `1fr` to take the rest. */
     display: grid;
     grid-template-columns: 14px auto auto 1fr;
-    column-gap: 8px;
+    column-gap: var(--gs-space-2);
     align-items: center;
-    height: 22px;
-    padding: 0 8px 0 4px;
-    line-height: 22px;
+    height: var(--gs-size-row);
+    padding: 0 var(--gs-space-2) 0 var(--gs-space-1);
+    line-height: var(--gs-size-row);
     cursor: default;
     white-space: nowrap;
   }
   .addr {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--gs-space-1-5);
   }
   .row:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.05));
+    background: var(--gs-row-hover);
   }
   .row.pc {
-    background: rgba(80, 140, 220, 0.2);
+    background: var(--gs-code-pc-row-bg);
   }
   .row.selected {
-    outline: 1px solid var(--gs-focus, #0969da);
-    outline-offset: -1px;
-  }
-  .disasm-pane:focus {
-    outline: none;
+    outline: var(--gs-focus-width) solid var(--gs-focus-ring);
+    outline-offset: var(--gs-focus-offset);
   }
   .disasm-pane:focus-visible {
-    outline: 1px solid var(--gs-focus, #0969da);
-    outline-offset: -1px;
+    outline: var(--gs-focus-width) solid var(--gs-focus-ring);
+    outline-offset: var(--gs-focus-offset);
   }
   .marker {
-    color: var(--gs-focus, #0969da);
-    text-align: center;
+    display: inline-flex;
+    justify-content: center;
+    color: var(--gs-code-pc-marker);
   }
   .addr-l,
   .addr-p {
-    color: var(--gs-fg-muted);
-    text-transform: uppercase;
-  }
-  .tag {
-    border-radius: 9999px;
-    padding: 0 6px;
-    font-size: 10px;
-    font-weight: 600;
-    line-height: 14px;
-    height: 14px;
-    text-transform: uppercase;
-  }
-  .tag-tt {
-    background: rgba(35, 134, 54, 0.25);
-    color: #4ac26b;
-  }
-  .tag-pt {
-    background: rgba(80, 140, 220, 0.25);
-    color: #6aa6ff;
-  }
-  .tag-invalid {
-    background: rgba(248, 81, 73, 0.25);
-    color: #f48771;
+    color: var(--gs-code-address);
+    text-transform: uppercase; /* hex digits */
   }
   .mnem {
-    color: var(--gs-fg-bright);
+    color: var(--gs-code-mnemonic);
   }
   .ops {
-    color: var(--gs-fg);
+    color: var(--gs-code-operand);
   }
-  .cmt {
-    color: var(--gs-fg-muted);
-    font-style: italic;
+  /* A breakpoint row (a hook for the breakpoint gutter; not set yet). */
+  .row:global([data-state='breakpoint']) .marker {
+    color: var(--gs-code-breakpoint);
   }
 </style>

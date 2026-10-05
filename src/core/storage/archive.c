@@ -2,237 +2,36 @@
 // Copyright (c) pappadf
 
 // archive.c
-// Mac archive file handling. Wraps the third-party peeler library so the
-// emulator-side surface (archive.identify, archive.extract) doesn't
-// leak the library name to users.
+// Mac archive file handling: files.archive.identify and files.archive.extract.
+// Archives are namespaces of the VFS (namespace.h), so identify is a bounded
+// probe of the file and extract is a copy of its tree; the in-tree peeler
+// library does the format work, and its name does not leak to users.
 
 #include "archive.h"
+#include "gs_out.h"
 
-#include "appledouble.h"
+#include "io_leaf.h"
+#include "io/io_worker.h"
+
+#include "image_chunkmap.h"
 #include "log.h"
 #include "object.h"
 #include "peeler.h"
+#include "shell.h"
+#include "source.h"
+#include "storage_util.h"
+#include "udif_writer.h"
 #include "value.h"
+#include "vfs.h"
 
 #include <errno.h>
-#include <libgen.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-// ============================================================================
-// Extraction helpers
-// ============================================================================
-
-typedef struct {
-    const char *output_dir;
-    int file_count;
-} archive_ctx_t;
-
-// mkdir -p: create `path` and any missing parents.  Returns 0 on success or
-// when the leaf already exists; -1 on any other error.
-static int mkdir_p(const char *path) {
-    if (!path || !*path)
-        return -1;
-    char tmp[1024];
-    size_t len = strlen(path);
-    if (len >= sizeof(tmp))
-        return -1;
-    memcpy(tmp, path, len + 1);
-    if (tmp[len - 1] == '/')
-        tmp[len - 1] = '\0';
-    for (char *p = tmp + 1; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
-                return -1;
-            *p = '/';
-        }
-    }
-    if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
-        return -1;
-    return 0;
-}
-
-// Recursively create the directory chain leading to `path` under
-// ctx->output_dir. Last component is treated as a directory.
-static int ensure_dir_exists(const archive_ctx_t *ctx, const char *path) {
-    char *path_copy = strdup(path);
-    if (!path_copy)
-        return -1;
-
-    char *dir = dirname(path_copy);
-    char full_path[1024];
-
-    if (snprintf(full_path, sizeof(full_path), "%s/%s", ctx->output_dir, dir) >= (int)sizeof(full_path)) {
-        fprintf(stderr, "archive: path too long\n");
-        free(path_copy);
-        return -1;
-    }
-    free(path_copy);
-
-    char *p = full_path;
-    if (*p == '/')
-        p++;
-
-    while ((p = strchr(p, '/'))) {
-        *p = '\0';
-        if (mkdir(full_path, 0755) != 0 && errno != EEXIST) {
-            fprintf(stderr, "archive: cannot create directory '%s': %s\n", full_path, strerror(errno));
-            *p = '/';
-            return -1;
-        }
-        *p = '/';
-        p++;
-    }
-
-    if (mkdir(full_path, 0755) != 0 && errno != EEXIST) {
-        fprintf(stderr, "archive: cannot create directory '%s': %s\n", full_path, strerror(errno));
-        return -1;
-    }
-
-    return 0;
-}
-
-// Synthesize the 32-byte Finder Info block (FInfo + FXInfo) from peeler's
-// best-effort metadata — type, creator, Finder flags (big-endian), rest zero.
-// Returns true if any field was set (i.e. worth persisting).
-static bool build_finder_info(const peel_file_meta_t *m, uint8_t out[32]) {
-    memset(out, 0, 32);
-    out[0] = (uint8_t)(m->mac_type >> 24);
-    out[1] = (uint8_t)(m->mac_type >> 16);
-    out[2] = (uint8_t)(m->mac_type >> 8);
-    out[3] = (uint8_t)m->mac_type;
-    out[4] = (uint8_t)(m->mac_creator >> 24);
-    out[5] = (uint8_t)(m->mac_creator >> 16);
-    out[6] = (uint8_t)(m->mac_creator >> 8);
-    out[7] = (uint8_t)m->mac_creator;
-    out[8] = (uint8_t)(m->finder_flags >> 8);
-    out[9] = (uint8_t)m->finder_flags;
-    return m->mac_type || m->mac_creator || m->finder_flags;
-}
-
-// Write an AppleDouble "._<name>" header sidecar next to the extracted data
-// file at `data_full_path`, carrying the resource fork (entry 2) and Finder
-// Info (entry 9).  This keeps a Mac file lossless on the flat host FS — e.g. a
-// StuffIt/MacBinary-wrapped NDIF disk image unpacks to a mountable pair — and
-// interoperates with macOS/Netatalk (proposal-appledouble-support.md §Phase 3).
-// A file with neither a resource fork nor Finder Info gets no sidecar.
-// Returns 0 on success (including the no-sidecar case), -1 on write failure.
-static int write_ad_sidecar(const char *data_full_path, const peel_file_t *file) {
-    uint8_t finder[32];
-    bool finder_set = build_finder_info(&file->meta, finder);
-    if (file->resource_fork.size == 0 && !finder_set)
-        return 0; // data-only file: nothing to preserve
-
-    uint8_t *hdr = NULL;
-    size_t hdr_len = 0;
-    if (ad_build_sidecar(file->resource_fork.data, file->resource_fork.size, finder_set ? finder : NULL, &hdr,
-                         &hdr_len) != 0)
-        return 0;
-
-    char sidecar[1024];
-    const char *slash = strrchr(data_full_path, '/');
-    int n = slash ? snprintf(sidecar, sizeof(sidecar), "%.*s._%s", (int)(slash - data_full_path + 1), data_full_path,
-                             slash + 1)
-                  : snprintf(sidecar, sizeof(sidecar), "._%s", data_full_path);
-    if (n < 0 || n >= (int)sizeof(sidecar)) {
-        free(hdr);
-        fprintf(stderr, "archive: sidecar path too long\n");
-        return -1;
-    }
-
-    FILE *fp = fopen(sidecar, "wb");
-    if (!fp) {
-        free(hdr);
-        fprintf(stderr, "archive: cannot create '%s': %s\n", sidecar, strerror(errno));
-        return -1;
-    }
-    size_t written = fwrite(hdr, 1, hdr_len, fp);
-    int close_rc = fclose(fp);
-    free(hdr);
-    if (written != hdr_len || close_rc != 0) {
-        remove(sidecar);
-        fprintf(stderr, "archive: write error on sidecar '%s'\n", sidecar);
-        return -1;
-    }
-    return 0;
-}
-
-// Write a single extracted file to disk under ctx->output_dir: the data fork
-// under its name, and — when the file carries a resource fork and/or Finder
-// Info — an AppleDouble "._<name>" sidecar beside it so the fork is preserved
-// (see write_ad_sidecar).
-static int write_extracted_file(const archive_ctx_t *ctx, const peel_file_t *file) {
-    const char *name = file->meta.name;
-    if (!name[0])
-        name = "untitled";
-
-    if (ensure_dir_exists(ctx, name) != 0)
-        return -1;
-
-    char full_path[1024];
-    if (snprintf(full_path, sizeof(full_path), "%s/%s", ctx->output_dir, name) >= (int)sizeof(full_path)) {
-        fprintf(stderr, "archive: path too long\n");
-        return -1;
-    }
-
-    FILE *fp = fopen(full_path, "wb");
-    if (!fp) {
-        fprintf(stderr, "archive: cannot create file '%s': %s\n", full_path, strerror(errno));
-        return -1;
-    }
-
-    if (file->data_fork.size > 0) {
-        size_t written = fwrite(file->data_fork.data, 1, file->data_fork.size, fp);
-        if (written != file->data_fork.size) {
-            fprintf(stderr, "archive: write error: %s\n", strerror(errno));
-            fclose(fp);
-            return -1;
-        }
-    }
-
-    fclose(fp);
-
-    // Preserve the resource fork + Finder Info as a sibling AppleDouble sidecar.
-    return write_ad_sidecar(full_path, file);
-}
-
-static int process_archive(archive_ctx_t *ctx, const char *filepath) {
-    peel_err_t *err = NULL;
-    peel_file_list_t list = peel_path(filepath, &err);
-
-    if (err) {
-        fprintf(stderr, "archive: failed to extract '%s': %s\n", filepath, peel_err_msg(err));
-        peel_err_free(err);
-        return -1;
-    }
-
-    if (list.count == 0) {
-        fprintf(stderr, "archive: no files extracted from '%s'\n", filepath);
-        peel_file_list_free(&list);
-        return -1;
-    }
-
-    int status = 0;
-    for (int i = 0; i < list.count; i++) {
-        if (write_extracted_file(ctx, &list.files[i]) != 0) {
-            status = -1;
-            break;
-        }
-    }
-
-    int count = list.count;
-    peel_file_list_free(&list);
-
-    if (status == 0)
-        ctx->file_count += count;
-
-    return status;
-}
 
 // ============================================================================
 // Public API
@@ -241,87 +40,486 @@ static int process_archive(archive_ctx_t *ctx, const char *filepath) {
 const char *archive_identify_file(const char *path) {
     if (!path || !*path)
         return NULL;
-    peel_err_t *err = NULL;
-    peel_buf_t buf = peel_read_file(path, &err);
-    if (err) {
-        peel_err_free(err);
+    // Through the VFS, so an archive inside an image or another archive is
+    // identified too; detection reads a bounded probe, never the whole file.
+    int err = 0;
+    gs_source_t *src = vfs_open_source(path, GS_FORK_DATA, &err);
+    if (!src)
         return NULL;
+    peel_probe_t p;
+    const char *format = NULL;
+    if (peel_probe_init(&p, src) == 0) {
+        const peel_format_desc_t *d = peel_identify(&p);
+        format = d ? d->name : NULL;
+        peel_probe_free(&p);
     }
-    const char *format = peel_detect(buf.data, buf.size);
-    peel_free(&buf);
+    gs_source_release(src);
     return format;
 }
 
 int archive_extract_file(const char *path, const char *out_dir) {
     if (!path)
         return -1;
-    archive_ctx_t ctx = {
-        .output_dir = (out_dir && *out_dir) ? out_dir : ".",
-        .file_count = 0,
-    };
-    if (mkdir_p(ctx.output_dir) != 0) {
-        fprintf(stderr, "archive: cannot create output directory '%s': %s\n", ctx.output_dir, strerror(errno));
+    const char *dir = (out_dir && *out_dir) ? out_dir : ".";
+    if (gs_mkdir_p(dir) != 0) {
+        fprintf(stderr, "archive: cannot create output directory '%s': %s\n", dir, strerror(errno));
         return -1;
     }
-    int rc = process_archive(&ctx, path);
+    // The archive is a namespace (namespace.h): extracting it is copying its
+    // tree out, the same walk files.cp does out of a disk image -- each file's
+    // data fork under its name, its resource fork and Finder info in an
+    // AppleDouble "._" sidecar.  Wrappers peel on the way (a .sit.hqx
+    // extracts the .sit's files).
+    uint64_t files = 0, bytes = 0;
+    char err[400];
+    int rc = shell_cp_contents(path, dir, &files, &bytes, err, sizeof(err));
+    if (rc == -ECANCELED)
+        return rc;
+    if (rc != 0) {
+        fprintf(stderr, "archive: failed to extract '%s': %s\n", path, err);
+        return -1;
+    }
+    if (files == 0) {
+        fprintf(stderr, "archive: no files extracted from '%s'\n", path);
+        return -1;
+    }
+    gs_outf("Successfully extracted '%s' (%llu file%s)\n", path, (unsigned long long)files, files == 1 ? "" : "s");
+    return 0;
+}
+
+// The extraction as an I/O job (io_leaf.h): the archive is decoded and its
+// files written on the I/O worker; the answer comes when it is done.
+static int work_extract(io_leaf_t *j) {
+    int rc = archive_extract_file(j->a, j->b);
+    if (rc == -ECANCELED)
+        snprintf(j->err, sizeof j->err, "cancelled");
+    else if (rc != 0)
+        snprintf(j->err, sizeof j->err, "extraction of '%s' failed", j->a);
+    return rc == 0 ? 0 : (rc == -ECANCELED ? -ECANCELED : -EIO);
+}
+
+// ============================================================================
+// Import: one member, decoded straight into a UDIF
+// ============================================================================
+//
+// A disk image inside a StuffIt / Compact Pro / BinHex / MacBinary archive is
+// imported without extracting it: peeler's decode-through source fills a
+// sink as it decodes, and this sink's write() is the UDIF writer's append,
+// so the decoded disk streams into the compact image a 64 KB piece at a time.
+// The sink keeps only the last piece, which is all the decode-through ever
+// reads back here (one byte at the end of the fork drives the whole decode).
+
+#define IMPORT_TAIL (64u * 1024u)
+
+typedef struct {
+    udif_writer_t *w;
+    uint64_t expected; // the fork's declared length (PEEL_SIZE_UNKNOWN if not)
+    uint64_t written;
+    uint8_t tail[IMPORT_TAIL]; // the last bytes written, at tail_off
+    uint64_t tail_off;
+    size_t tail_len;
+    int err; // the writer's error, or -ECANCELED
+} import_sink_t;
+
+static int64_t isink_read(peel_source_t *s, uint64_t off, void *buf, size_t len) {
+    import_sink_t *k = s->ctx;
+    if (off < k->tail_off || off >= k->tail_off + k->tail_len)
+        return off >= k->written ? 0 : -EIO; // gone into the writer
+    size_t at = (size_t)(off - k->tail_off);
+    size_t n = k->tail_len - at < len ? k->tail_len - at : len;
+    memcpy(buf, k->tail + at, n);
+    return (int64_t)n;
+}
+
+static uint64_t isink_size(peel_source_t *s) {
+    import_sink_t *k = s->ctx;
+    return k->expected == PEEL_SIZE_UNKNOWN ? k->written : k->expected;
+}
+
+static const char *isink_key(peel_source_t *s) {
+    (void)s;
+    return "archive-import-sink";
+}
+
+static peel_tier_t isink_tier(peel_source_t *s) {
+    (void)s;
+    return PEEL_TIER_STREAM;
+}
+
+static void isink_close(peel_source_t *s) {
+    (void)s; // the context belongs to the import
+}
+
+static const peel_source_ops_t isink_ops = {isink_read, isink_size, isink_key, isink_tier, isink_close, NULL};
+
+static peel_source_t *isink_create(void *ctx, const char *key, uint64_t expected_len) {
+    (void)key;
+    import_sink_t *k = ctx;
+    k->expected = expected_len;
+    return peel_source_new(&isink_ops, k, NULL);
+}
+
+static int64_t isink_write(peel_source_t *s, uint64_t off, const void *buf, size_t len) {
+    import_sink_t *k = s->ctx;
+    if (off != k->written || k->err)
+        return -1;
+    if (io_check_cancelled()) {
+        k->err = -ECANCELED;
+        return -1;
+    }
+    int rc = udif_writer_append(k->w, buf, len);
+    if (rc) {
+        k->err = rc;
+        return -1;
+    }
+    // Keep the newest IMPORT_TAIL bytes.
+    const uint8_t *p = buf;
+    if (len >= IMPORT_TAIL) {
+        memcpy(k->tail, p + len - IMPORT_TAIL, IMPORT_TAIL);
+        k->tail_len = IMPORT_TAIL;
+    } else {
+        if (k->tail_len + len > IMPORT_TAIL) {
+            size_t drop = k->tail_len + len - IMPORT_TAIL;
+            memmove(k->tail, k->tail + drop, k->tail_len - drop);
+            k->tail_len -= drop;
+        }
+        memcpy(k->tail + k->tail_len, p, len);
+        k->tail_len += len;
+    }
+    k->written += len;
+    k->tail_off = k->written - k->tail_len;
+    io_report_progress(k->written, k->expected == PEEL_SIZE_UNKNOWN ? 0 : k->expected);
+    return (int64_t)len;
+}
+
+static void isink_commit(peel_source_t *s) {
+    (void)s;
+}
+
+static const peel_sink_ops_t import_sink_ops = {isink_create, isink_write, isink_commit};
+
+// True when `name` (an entry path) matches `member` exactly, case-blind, or
+// by its last component.
+static bool member_matches(const char *name, const char *member) {
+    while (*member == '/')
+        member++;
+    if (strcmp(name, member) == 0 || strcasecmp(name, member) == 0)
+        return true;
+    const char *nb = strrchr(name, '/');
+    const char *mb = strrchr(member, '/');
+    return strcasecmp(nb ? nb + 1 : name, mb ? mb + 1 : member) == 0;
+}
+
+// Junk an archive carries besides its media.
+static bool member_is_junk(const peel_entry_t *e) {
+    const char *b = strrchr(e->path, '/');
+    b = b ? b + 1 : e->path;
+    return e->is_dir || b[0] == '.' || strncmp(e->path, "__MACOSX/", 9) == 0;
+}
+
+typedef struct {
+    char member[512];
+    char *want; // the member asked for, or NULL
+    char *origin; // recorded in the image as gs-origin, or NULL
+    udif_writer_stats_t st;
+} import_job_t;
+
+// The archive to take a member from: through wrapper layers whose payload
+// is itself an archive (a .sit.hqx), each payload being the compressed --
+// small -- side.  A new reference, or NULL with a message.
+static peel_source_t *innermost_archive(peel_source_t *src, char *err, size_t cap) {
+    peel_source_t *cur = peel_source_retain(src);
+    for (int depth = 0; depth < 4; depth++) {
+        peel_err_t *pe = NULL;
+        peel_archive_t *a = peel_open(cur, NULL, NULL, &pe);
+        if (!a) {
+            snprintf(err, cap, "not an archive: %s", pe ? peel_err_msg(pe) : "unrecognised");
+            peel_err_free(pe);
+            peel_source_release(cur);
+            return NULL;
+        }
+        if (!peel_is_wrapper(a) || peel_count(a) != 1) {
+            peel_close(a);
+            return cur;
+        }
+        peel_source_t *payload = peel_open_fork(a, 0, PEEL_FORK_DATA, &pe);
+        peel_close(a);
+        if (!payload) {
+            peel_err_free(pe);
+            return cur;
+        }
+        peel_probe_t p;
+        bool inner = false;
+        if (peel_probe_init(&p, payload) == 0) {
+            const peel_format_desc_t *d = peel_identify(&p);
+            inner = d != NULL;
+            peel_probe_free(&p);
+        }
+        if (!inner) {
+            peel_source_release(payload);
+            return cur; // the wrapper's payload is the medium
+        }
+        peel_source_release(cur);
+        cur = payload;
+    }
+    return cur;
+}
+
+static int work_archive_import(io_leaf_t *j) {
+    import_job_t *u = j->ud;
+    int e = 0;
+    vfs_stat_t vst;
+    if (vfs_stat(j->b, &vst) == 0) {
+        snprintf(j->err, sizeof j->err, "'%s' exists (refuses to overwrite)", j->b);
+        return -EEXIST;
+    }
+    gs_source_t *src = vfs_open_source(j->a, GS_FORK_DATA, &e);
+    if (!src) {
+        snprintf(j->err, sizeof j->err, "cannot open '%s'", j->a);
+        return -ENOENT;
+    }
+    peel_source_t *arc = innermost_archive(src, j->err, sizeof j->err);
+    gs_source_release(src);
+    if (!arc)
+        return -EINVAL;
+
+    // Structure first (headers only), to choose the member.
+    peel_err_t *pe = NULL;
+    peel_archive_t *a = peel_open(arc, NULL, NULL, &pe);
+    int pick = -1;
+    uint64_t best = 0;
+    for (int i = 0; a && i < peel_count(a); i++) {
+        const peel_entry_t *en = peel_entry(a, i);
+        if (u->want) {
+            if (!en->is_dir && member_matches(en->path, u->want)) {
+                pick = i;
+                break;
+            }
+        } else if (!member_is_junk(en) && en->data_len > best) {
+            best = en->data_len; // the largest file: a disk image dwarfs the rest
+            pick = i;
+        }
+    }
+    bool ndif = false;
+    if (a && pick >= 0) {
+        snprintf(u->member, sizeof u->member, "%s", peel_entry(a, pick)->path);
+        // An NDIF image's block map is its resource fork, which a UDIF's
+        // payload cannot carry: that one is extracted (forks kept) instead.
+        if (peel_entry(a, pick)->rsrc_len > 0) {
+            peel_source_t *rf = peel_open_fork(a, pick, PEEL_FORK_RSRC, &pe);
+            ndif = rf && ndif_source_detect(rf);
+            peel_source_release(rf);
+        }
+    }
+    if (a)
+        peel_close(a);
+    peel_err_free(pe);
+    if (ndif) {
+        snprintf(j->err, sizeof j->err, "'%.200s' is a Disk Copy 6 (NDIF) image: extract it instead", u->member);
+        peel_source_release(arc);
+        return -ENOTSUP;
+    }
+    if (pick < 0) {
+        snprintf(j->err, sizeof j->err, u->want ? "\"%s\" is not in the archive" : "the archive holds no file%s",
+                 u->want ? u->want : "");
+        peel_source_release(arc);
+        return -ENOENT;
+    }
+
+    // Again with the sink that is the writer.
+    import_sink_t *k = calloc(1, sizeof(*k));
+    const char *base = strrchr(u->member, '/');
+    udif_writer_opts_t o = {.level = 1, .source_name = base ? base + 1 : u->member, .origin = u->origin};
+    gs_mkdir_parents(j->b);
+    if (k)
+        k->w = udif_writer_open(j->b, &o, j->err, sizeof j->err);
+    if (!k || !k->w) {
+        free(k);
+        peel_source_release(arc);
+        return -EIO;
+    }
+    a = peel_open(arc, &import_sink_ops, k, &pe);
+    peel_source_t *fork = a ? peel_open_fork(a, pick, PEEL_FORK_DATA, &pe) : NULL;
+    int rc = fork ? 0 : -EIO;
+    uint64_t len = fork ? peel_source_size(fork) : 0;
+    if (fork && peel_source_tier(fork) == PEEL_TIER_RANDOM) {
+        // Stored: a view of the archive; copy it across.
+        uint8_t *buf = malloc(1u << 20);
+        rc = buf ? 0 : -ENOMEM;
+        for (uint64_t at = 0; !rc && at < len;) {
+            if (io_check_cancelled()) {
+                rc = -ECANCELED;
+                break;
+            }
+            size_t n = len - at < (1u << 20) ? (size_t)(len - at) : (1u << 20);
+            if (peel_source_read_exact(fork, at, buf, n) != 0)
+                rc = -EIO;
+            else
+                rc = udif_writer_append(k->w, buf, n);
+            at += n;
+            io_report_progress(at, len);
+        }
+        free(buf);
+    } else if (fork && len > 0) {
+        // Compressed: one byte at the end drives the whole decode through
+        // the sink, a piece at a time.
+        uint8_t last;
+        if (peel_source_read(fork, len - 1, &last, 1) != 1)
+            rc = k->err ? k->err : -EIO;
+    }
+    if (rc == 0 && k->err)
+        rc = k->err;
+    peel_source_release(fork);
+    if (a)
+        peel_close(a);
+    peel_err_free(pe);
+    peel_source_release(arc);
     if (rc == 0)
-        printf("Successfully extracted '%s' (%d file%s)\n", path, ctx.file_count, ctx.file_count == 1 ? "" : "s");
+        rc = udif_writer_finish(k->w, &u->st);
+    else
+        udif_writer_abort(k->w);
+    free(k);
+    if (rc == -ECANCELED)
+        snprintf(j->err, sizeof j->err, "cancelled");
+    else if (rc != 0 && !j->err[0])
+        snprintf(j->err, sizeof j->err, "importing '%.100s' from '%.100s' failed: %s", u->member, j->a, strerror(-rc));
     return rc;
+}
+
+static value_t answer_archive_import(io_leaf_t *j) {
+    import_job_t *u = j->ud;
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "member", val_str(u->member));
+    val_map_put(b, "bytes_in", val_uint(8, u->st.bytes_in));
+    val_map_put(b, "stored_bytes", val_uint(8, u->st.stored_bytes));
+    val_map_put(b, "sectors", val_uint(8, u->st.sectors));
+    return val_map_finish(b);
+}
+
+static void cleanup_archive_import(io_leaf_t *j) {
+    import_job_t *u = j->ud;
+    if (u) {
+        free(u->want);
+        free(u->origin);
+    }
+    free(u);
 }
 
 // ============================================================================
 // Object-model class descriptor
 // ============================================================================
 
-// `archive.identify(path)` — return the format short name for a recognised
-// Mac archive ("sit" / "cpt" / "hqx" / "bin" / "sea"), or empty string
+// `files.archive.identify(path)` — return the format short name for a recognised
+// archive ("sit" / "cpt" / "zip" / "hqx" / "bin" / "gz"), or empty string
 // when the file is unreadable or not an archive. Empty is falsy under
 // the predicate-truthy rule — same shape as floppy.identify.
-static value_t archive_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(archive_method_identify) {
     const char *format = archive_identify_file(argv[0].s);
     return val_str(format ? format : "");
 }
 
-// `archive.extract(path, [out_dir])` — extract a Mac archive into out_dir
+// `files.archive.extract(path, [out_dir])` — extract a Mac archive into out_dir
 // (defaults to the current working directory). Returns true on success.
-static value_t archive_method_extract(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
+static DEF_METHOD(archive_method_extract) {
     const char *path = argv[0].s;
     const char *out_dir = (argc >= 2 && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
-    return val_bool(archive_extract_file(path, out_dir) == 0);
+    io_leaf_t *j = io_leaf_new(path, out_dir);
+    if (!j)
+        return val_err("files.archive.extract: out of memory");
+    j->work = work_extract;
+    return io_leaf_dispatch(j, "files.archive.extract");
 }
 
+// `files.archive.import(path, dst, [member])` — decode one member of a Mac
+// archive (the named one, or the largest file) straight into a compact UDIF
+// at `dst`, without extracting anything.  Answers {member, bytes_in,
+// stored_bytes, sectors}.
+static DEF_METHOD(archive_method_import) {
+    const char *member = (argc >= 3 && argv[2].kind == V_STRING && argv[2].s && *argv[2].s) ? argv[2].s : NULL;
+    io_leaf_t *j = io_leaf_new(argv[0].s, argv[1].s);
+    import_job_t *u = calloc(1, sizeof *u);
+    if (!j || !u) {
+        free(u);
+        if (j)
+            free(j->a), free(j->b), free(j);
+        return val_err("files.archive.import: out of memory");
+    }
+    u->want = member ? strdup(member) : NULL;
+    if (argc >= 4 && argv[3].kind == V_STRING && argv[3].s && *argv[3].s)
+        u->origin = strdup(argv[3].s);
+    j->ud = u;
+    j->work = work_archive_import;
+    j->answer = answer_archive_import;
+    j->cleanup = cleanup_archive_import;
+    return io_leaf_dispatch(j, "files.archive.import");
+}
+
+static const arg_decl_t archive_import_args[] = {
+    ARG_PATH("path", "Archive file path"),
+    ARG_PATH("dst", "The UDIF (.dmg) to write (must not exist)"),
+    {.name = "member",
+                                                          .kind = V_STRING,
+                                                          .validation_flags = OBJ_ARG_OPTIONAL,
+                                                          .doc = "The member to take (exact, case-blind, or by its last name component)",
+                                                          .default_doc = "the largest file"},
+    {.name = "origin",
+                                                          .kind = V_STRING,
+                                                          .validation_flags = OBJ_ARG_OPTIONAL,
+                                                          .doc = "Where the archive came from (e.g. a URL), recorded in the image as is",
+                                                          .default_doc = "none"            },
+};
+
 static const arg_decl_t archive_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Archive file path"},
+    ARG_PATH("path", "Archive file path"),
 };
 
 static const arg_decl_t archive_extract_args[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Archive file path"},
+    ARG_PATH("path", "Archive file path"),
     {.name = "out_dir",
-     .kind = V_STRING,
-     .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Output directory (default: cwd)"},
+                                   .kind = V_STRING,
+                                   .presentation_flags = VAL_PATH,
+                                   .validation_flags = OBJ_ARG_OPTIONAL,
+                                   .doc = "Output directory",
+                                   .default_doc = "the current directory"},
 };
 
 static const member_t archive_members[] = {
     {.kind = M_METHOD,
      .name = "identify",
-     .doc = "Return the archive format (\"sit\" / \"cpt\" / \"hqx\" / \"bin\" / \"sea\") or empty if not an archive",
-     .method = {.args = archive_path_arg, .nargs = 1, .result = V_STRING, .fn = archive_method_identify} },
+     .examples = EXAMPLES("files.archive.identify \"/opfs/downloads/app.sit\""),
+     .doc = "Identify a Mac archive's format",
+     .method = {.result_doc =
+                    "\"sit\", \"cpt\", \"zip\", \"tar\", \"hqx\", \"bin\" or \"gz\"; empty when not an archive",
+                .args = archive_path_arg,
+                .nargs = 1,
+                .result = V_STRING,
+                .fn = archive_method_identify}},
     {.kind = M_METHOD,
      .name = "extract",
+     .examples = EXAMPLES("files.archive.extract \"/opfs/downloads/app.sit\"",
+     "files.archive.extract \"/opfs/downloads/app.sit\" \"/opfs/unpacked\""),
      .doc = "Extract a Mac archive into out_dir",
-     .method = {.args = archive_extract_args, .nargs = 2, .result = V_BOOL, .fn = archive_method_extract}},
+     .method =
+         {.ui_flags = MM_IO, .args = archive_extract_args, .nargs = 2, .result = V_BOOL, .fn = archive_method_extract}},
+    {.kind = M_METHOD,
+     .name = "import",
+     .examples =
+         EXAMPLES("files.archive.import \"/opfs/upload/disk.sit\" \"/opfs/upload/disk.dmg.part\"",
+     "files.archive.import \"/opfs/upload/cd.sit.hqx\" \"/opfs/upload/cd.dmg.part\" \"CD Image.toast\""),
+     .doc = "Decode one member of an archive straight into a compact UDIF (.dmg), extracting nothing",
+     .method = {.result_doc = "{member, bytes_in, stored_bytes, sectors}",
+                .ui_flags = MM_IO,
+                .args = archive_import_args,
+                .nargs = 4,
+                .result = V_MAP,
+                .fn = archive_method_import}},
 };
 
-const class_desc_t archive_class = {
+static const class_desc_t archive_class = {
     .name = "archive",
     .members = archive_members,
     .n_members = sizeof(archive_members) / sizeof(archive_members[0]),
+    .doc = "Archive formats (StuffIt, Compact Pro, Zip, tar, BinHex, MacBinary, gzip): identify and extract",
 };
 
 // ============================================================================
@@ -330,12 +528,15 @@ const class_desc_t archive_class = {
 
 static struct object *s_archive_object = NULL;
 
-void archive_init(void) {
+void archive_init(struct object *parent) {
     if (s_archive_object)
         return;
     s_archive_object = object_new(&archive_class, NULL, "archive");
-    if (s_archive_object)
-        object_attach(object_root(), s_archive_object);
+    if (s_archive_object) {
+        object_set_label(s_archive_object, "Archives");
+        object_set_order(s_archive_object, 30);
+        object_attach(parent ? parent : object_root(), s_archive_object);
+    }
 }
 
 void archive_delete(void) {

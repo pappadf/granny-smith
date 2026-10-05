@@ -1,0 +1,28 @@
+# The host's setting, read and written with no regard to the machine.
+pacing.mode = "accelerated"
+pacing.speed = 2.0
+assert pacing.mode == "accelerated" "pacing takes a mode"
+assert pacing.speed == 2.0 "pacing takes a pinned speed"
+assert scheduler.mode == "accelerated" "the running machine runs under it at once"
+
+# A machine booted afterwards runs under it from its first frame.
+assert machine.boot(model="plus", rom="${$ROM}") "boot"
+assert scheduler.mode == "accelerated" "a booted machine runs under the host's pacing"
+assert scheduler.speed == 2.0 "and at its pinned speed"
+
+# A checkpoint carries no pacing: a restore runs as the host says now.
+scheduler.run 200000
+assert checkpoint.save("${$WORK_DIR}/pacing.checkpoint") "save"
+pacing.mode = "turbo"
+assert checkpoint.load("${$WORK_DIR}/pacing.checkpoint") "load"
+assert scheduler.mode == "turbo" "a restored machine runs under the host's pacing, not the saved one"
+
+# scheduler.mode is the same setting, reached through the machine.
+scheduler.mode = "paced"
+assert pacing.mode == "paced" "scheduler.mode writes the host's pacing"
+pacing.speed = 0
+assert pacing.speed == 0 "0 is auto"
+assert try(shell.eval("pacing.mode = \"max\""), "rejected") == "rejected" "pacing.mode is a strict enum"
+assert try(shell.eval("pacing.speed = 9"), "rejected") == "rejected" "pacing.speed is bounded"
+echo "pacing-host ok"
+quit

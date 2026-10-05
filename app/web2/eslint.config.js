@@ -50,21 +50,18 @@ export default [
     // keep all `no-restricted-syntax` selectors in this single block
     // and route them to the right files via the source-pattern.
     //
-    //   - `shell.run`: master plan §6.1 / proposal-shell-as-object-
-    //     model-citizen.md §5.3. Only TerminalPane.svelte may construct
-    //     shell-line strings; bus/* uses typed object-model paths.
-    //     gsEvalLine in bus/emulator.ts is the one legitimate exception
-    //     and carries a local eslint-disable-next-line.
-    //   - `toast()`: master plan §12 Phase 7. The legacy alias was
-    //     retired in favour of `showNotification(msg, severity)`.
+    //   - `shell.run`: only the console (state/console.svelte.ts) may construct
+    //     shell-line strings, and it runs them as script jobs through
+    //     gsEvalLine; bus/* uses typed object-model paths.
+    //   - `toast()`: the legacy alias was retired in favour of
+    //     `showNotification(msg, severity)`.
     files: ['src/**/*.{ts,svelte,svelte.ts}'],
     rules: {
       'no-restricted-syntax': [
         'error',
         {
           selector: "CallExpression[callee.name='toast']",
-          message:
-            'Use showNotification(msg, severity) — the toast() alias was removed in Phase 7.',
+          message: 'Use showNotification(msg, severity) — the toast() alias was removed.',
         },
       ],
     },
@@ -77,13 +74,20 @@ export default [
         'error',
         {
           selector: "CallExpression[callee.name='toast']",
-          message:
-            'Use showNotification(msg, severity) — the toast() alias was removed in Phase 7.',
+          message: 'Use showNotification(msg, severity) — the toast() alias was removed.',
         },
         {
           selector: "CallExpression[callee.name='gsEval'][arguments.0.value='shell.run']",
           message:
-            "bus/* must not call gsEval('shell.run', ...). Use a typed object-model path instead. Only TerminalPane.svelte may construct shell-line strings.",
+            "bus/* must not call gsEval('shell.run', ...). Use a typed object-model path instead. Only the console (state/console.svelte.ts) may construct shell-line strings.",
+        },
+        {
+          // The shell-line escape hatch is the terminal's; the bus speaks
+          // typed paths (seedPram's four untyped PRAM pokes were the last
+          // bus-side callers).
+          selector: "CallExpression[callee.name='gsEvalLine']",
+          message:
+            "bus/* must not call gsEvalLine: it is the terminal's shell-line path. Use gsEval with a typed object-model path.",
         },
       ],
     },

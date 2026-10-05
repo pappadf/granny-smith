@@ -62,6 +62,11 @@ bool ufs_probe(image_t *img, uint64_t partition_byte_offset, uint64_t partition_
 // Open a UFS volume.  Returns NULL on not-UFS / malformed superblock / OOM.
 ufs_volume_t *ufs_open(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size);
 
+// The same over a byte source holding the disk (retained by the volume).
+struct peel_source;
+ufs_volume_t *ufs_open_source(struct peel_source *src, uint64_t partition_byte_offset, uint64_t partition_byte_size);
+bool ufs_probe_source(struct peel_source *src, uint64_t partition_byte_offset, uint64_t partition_byte_size);
+
 // Release the volume and all cached state.  Safe on NULL.
 void ufs_close(ufs_volume_t *vol);
 

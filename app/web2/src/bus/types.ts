@@ -1,55 +1,32 @@
 // Shared TypeScript shapes for the bus layer. Anything that crosses the
 // bus seam (UI <-> emulator / OPFS) goes through one of these types.
 
+import type { ConfigDocument } from './profile';
+
+// One image for one storage position of the configuration.
+export interface MediaImage {
+  bus: string; // a storage bus id of the tree ("scsi", "ata0", "profile")
+  unit: number;
+  type: string; // "hd" | "cd"
+  path: string;
+}
+
 export interface MachineConfig {
   /** Model id as accepted by `machine.boot` (e.g. "plus", "se30", "iici"). */
   model: string;
-  /** Optional human-readable model name from `machine.profile(id).name`,
-   *  used for status-bar display when set. Falls back to `model` if absent. */
-  modelName?: string;
-  /** ROM image path (under /opfs/images/rom/). Becomes the boot document's
-   *  `rom` field, which machine.boot requires — the document is the whole
-   *  specification and inherits nothing (proposal-boot-vs-reset §3.1). */
+  /** ROM image path (under /opfs/images/rom/).  machine.boot requires it:
+   *  the boot inherits nothing. */
   rom?: string;
-  vrom: string;
-  /** NuBus video card-kind id to install (e.g. "display_card_24ac", "mdc_8_24") —
-   *  the boot document's `video_card` field. Unset = use the slot's default
-   *  card. The dialog derives this from the chosen card (whose vROM it
-   *  auto-resolves), so the right card boots instead of the slot default. */
-  videoCard?: string;
-  // A display-class PCI card and the expansion ROM that drives it.
-  // Separate from videoCard because they are different buses and the
-  // boot document has a field for each.
-  pciCard?: string;
-  prom?: string;
-  // "key=value[,key=value]" for the staged PCI card (e.g. "vram=4m").
-  pciOption?: string;
-  /** JMFB video-mode id (e.g. "13in_rgb_1bpp") — the boot document's
-   *  `video_mode` field; the card factory consumes it during boot (sense
-   *  lines + slot-PRAM/video defaults).  Without it the JMFB card never
-   *  seeds its slot-PRAM / video defaults and A/UX hangs while enabling
-   *  its device drivers on real hardware.  Unset on models with no
-   *  configurable video (Plus / SE/30). */
-  videoMode?: string;
-  /** Which port the monitor is plugged into on a machine that has BOTH
-   *  built-in video and NuBus slots (the PDM family).  'none' leaves the
-   *  built-in port unconnected, which makes the ROM turn built-in video off
-   *  and hands the screen to the NuBus card.  Unset = the machine's own
-   *  default monitor. */
-  monitor?: string;
-  ram: string;
-  /** Ordered list of floppy image paths, one per drive slot. Entries that
-   *  are empty / '(none)' are skipped (no insertion into that slot). */
-  floppies: string[];
-  hd: string;
-  /** How to attach `hd`: 'scsi' (default — scsi.attach_hd) or 'profile' (the
-   *  Lisa/XL parallel-port ProFile — profile.attach). Sourced from the model's
-   *  `machine.profile(id).hd_bus`. */
-  hdBus?: 'scsi' | 'profile';
-  /** SCSI id (bay) to attach `hd` at. Chosen in the dialog from the model's
-   *  `scsi_slots`; defaults to the slot flagged `boot`, else the first one. */
-  hdId?: number;
-  cd: string;
+  /** The configuration document (bus/profile.ts ConfigDocument), sent as
+   *  machine.boot's config=.  Omitted: the model's default configuration.
+   *  Card ROMs are not configuration: the core resolves each card's ROM
+   *  from the files the platform offers, or boots its substitute. */
+  config?: ConfigDocument;
+  /** Floppy images by drive position id ("fd0", "fd1"). */
+  floppies?: Record<string, string>;
+  /** Images for the configuration's hard disks and CD-ROM drives, each by
+   *  its position (machine.attach_media). */
+  media?: MediaImage[];
 }
 
 export interface RomInfo {
@@ -62,17 +39,8 @@ export interface OpfsEntry {
   name: string;
   path: string;
   kind: 'file' | 'directory';
-}
-
-export interface RecentEntry {
-  model: string;
-  ram: string;
-  media: string;
-  /** ROM image path to boot with. machine.boot requires a rom in every
-   *  document (nothing is inherited), so a recent without one cannot be
-   *  relaunched directly. */
-  rom?: string;
-  lastUsedAt: number;
+  // A file the core can descend into (an image or archive), from files.list.
+  expandable?: boolean;
 }
 
 export type ImageCategory = 'rom' | 'vrom' | 'prom' | 'fd' | 'hd' | 'cd';
@@ -91,8 +59,10 @@ export interface CheckpointEntry {
   created: string;
   /** Human label (manifest.json `label`, else the formatted timestamp) */
   label: string;
-  /** Machine model (manifest.json `machine`, else "unknown") */
-  machine: string;
+  /** The machine's model id (manifest.json `machine.model`), null if unknown */
+  model: string | null;
+  /** Its RAM in bytes (manifest.json `machine.ram_bytes`), 0 if unknown */
+  ramBytes: number;
   /** Sum of file sizes inside the dir; 0 if unreadable */
   sizeBytes: number;
 }

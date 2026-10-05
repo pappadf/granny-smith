@@ -4,6 +4,8 @@ import {
   formatCheckpointLabel,
   checkpointCreatedToDate,
   formatBytes,
+  manifestMachine,
+  describeMachine,
 } from '@/lib/checkpointMeta';
 
 describe('parseCheckpointDirName', () => {
@@ -61,5 +63,26 @@ describe('formatBytes', () => {
   it('zero and negative return "0 B"', () => {
     expect(formatBytes(0)).toBe('0 B');
     expect(formatBytes(-1)).toBe('0 B');
+  });
+});
+
+describe('manifestMachine', () => {
+  it('reads the core manifest object', () => {
+    expect(manifestMachine({ model: 'plus', ram_bytes: 4194304 })).toEqual({
+      model: 'plus',
+      ramBytes: 4194304,
+    });
+  });
+  it('reads an older string manifest', () => {
+    expect(manifestMachine('plus')).toEqual({ model: 'plus', ramBytes: 0 });
+  });
+  it('rejects anything else', () => {
+    expect(manifestMachine(undefined)).toBeNull();
+    expect(manifestMachine({})).toBeNull();
+    expect(manifestMachine(42)).toBeNull();
+  });
+  it('describes the machine with its RAM', () => {
+    expect(describeMachine('Macintosh Plus', 4194304)).toBe('Macintosh Plus · 4 MB');
+    expect(describeMachine('Macintosh Plus', 0)).toBe('Macintosh Plus');
   });
 });

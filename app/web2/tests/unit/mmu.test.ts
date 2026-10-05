@@ -1,10 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { decodeTc, decodeCrpFromHex, dtName, fmtAddrPair, fmtRangePair } from '@/lib/mmu';
-import { mmuLookup, mmuMap, mmuDescriptors, mmuRegs } from '@/bus/mockMmu';
+import { decodeTc, decodeRootPointer, formatEntry, fmtSize } from '@/lib/mmu';
 
 describe('decodeTc', () => {
-  it('extracts the prototype fixture fields', () => {
-    const t = decodeTc(mmuRegs.tc); // 0x80008307
+  it('extracts the TC fields', () => {
+    const t = decodeTc(0x80008307);
     expect(t.E).toBe(1);
     expect(t.SRE).toBe(0);
     expect(t.PS).toBe(0); // (0x80008307 >> 20) & 0xf == 0
@@ -13,87 +12,51 @@ describe('decodeTc', () => {
   });
 });
 
-describe('decodeCrpFromHex', () => {
-  it('splits high/low + decodes limit/dt/pointer', () => {
-    const r = decodeCrpFromHex('00000002_001FE000');
+describe('decodeRootPointer', () => {
+  it('decodes limit/dt/pointer from the two words', () => {
+    const r = decodeRootPointer(0x00000002, 0x001fe000);
     expect(r.dt).toBe(2);
     expect(r.pointer).toBe(0x001fe000);
     expect(r.limit).toBe(0);
   });
 });
 
-describe('dtName', () => {
-  it('maps DT values to canonical names', () => {
-    expect(dtName(0)).toBe('INVALID');
-    expect(dtName(1)).toBe('PAGE');
-    expect(dtName(2)).toBe('TABLE8');
-    expect(dtName(3)).toBe('TABLE4');
+describe('formatEntry', () => {
+  it('lays out a table level: index, where it was read, what it held, where it led', () => {
+    const e = formatEntry('level', {
+      name: 'A',
+      index: 8,
+      addr: 0x40800070,
+      desc: 0x40800019,
+      type: 'page',
+      wp: false,
+      u: true,
+      phys: 0x40826cc0,
+    });
+    expect(e.title).toBe('LEVEL A');
+    expect(e.main).toBe('[8] @$40800070 = $40800019 page → P:$40826CC0');
+    expect(e.extra).toEqual(['U']);
+  });
+
+  it('shows a fault reason and a long descriptor pair', () => {
+    const e = formatEntry('pteg', {
+      name: 'secondary',
+      addr: 0x4effc0,
+      desc: 0x80000000,
+      desc_lo: 0x1,
+      reason: 'no matching PTE',
+      hash: 0x7ffff,
+    });
+    expect(e.main).toBe('@$004EFFC0 = $80000000 $00000001 (no matching PTE)');
+    expect(e.extra).toEqual(['hash=$0007FFFF']);
   });
 });
 
-describe('mmuLookup (mock fixtures)', () => {
-  it('returns TT for low-memory addresses', () => {
-    const r = mmuLookup(0x00001234);
-    expect(r.valid).toBe(true);
-    expect(r.kind).toBe('TT');
-    expect(r.phys).toBe(0x00001234);
-  });
-  it('returns PT for the user-code range with rebased phys', () => {
-    const r = mmuLookup(0x00400000);
-    expect(r.valid).toBe(true);
-    expect(r.kind).toBe('PT');
-    expect(r.phys).toBe(0x50000000);
-  });
-  it('returns invalid for unmapped addresses', () => {
-    const r = mmuLookup(0x20000000);
-    expect(r.valid).toBe(false);
-  });
-});
-
-describe('fmtAddrPair', () => {
-  it('plain $hex with no lookup', () => {
-    expect(fmtAddrPair(0x400)).toEqual({ logical: '$00000400' });
-  });
-  it('TT lookup → both columns + TT tag', () => {
-    const p = fmtAddrPair(0x100, { valid: true, phys: 0x100, kind: 'TT' });
-    expect(p.logical).toBe('L:$00000100');
-    expect(p.physical).toBe('P:$00000100');
-    expect(p.tag).toBe('TT');
-  });
-  it('invalid → INVALID tag, no physical', () => {
-    const p = fmtAddrPair(0xdeadbeef, { valid: false });
-    expect(p.tag).toBe('INVALID');
-    expect(p.physical).toBeUndefined();
-  });
-});
-
-describe('fmtRangePair', () => {
-  it('mmu off → single column + size', () => {
-    const r = fmtRangePair(0, 0x3ff, 0, false);
-    expect(r.l).toBe('$00000000 – $000003FF');
-    expect(r.p).toBeUndefined();
-  });
-  it('mmu on → both columns', () => {
-    const r = fmtRangePair(0x400000, 0x4001ff, 0x50000000, true);
-    expect(r.l).toBe('L:$00400000 – $004001FF');
-    expect(r.p).toBe('P:$50000000 – $500001FF');
-  });
-});
-
-describe('mmuMap fixture', () => {
-  it('overlap filter returns ranges intersecting the window', () => {
-    const r = mmuMap(0x00000000, 0x00ffffff);
-    expect(r.length).toBeGreaterThan(0);
-    expect(r.some((m) => m.lo === 0x00400000)).toBe(true);
-  });
-});
-
-describe('mmuDescriptors fixture', () => {
-  it('returns one row per descriptor cycling DT 0..3', () => {
-    const rows = mmuDescriptors(0x001fe000, 4);
-    expect(rows[0].dt).toBe(0);
-    expect(rows[1].dt).toBe(1);
-    expect(rows[2].dt).toBe(2);
-    expect(rows[3].dt).toBe(3);
+describe('fmtSize', () => {
+  it('uses K/M/G when exact, hex otherwise', () => {
+    expect(fmtSize(0x100000)).toBe('1M');
+    expect(fmtSize(2 ** 32)).toBe('4G');
+    expect(fmtSize(0x4000)).toBe('16K');
+    expect(fmtSize(0x1234)).toBe('$1234');
   });
 });

@@ -32,8 +32,6 @@ void sound_checkpoint(sound_t *restrict sound, checkpoint_t *checkpoint);
 
 // === Operations ===
 
-void sound_buffer(sound_t *restrict sound, uint16_t *buffer);
-
 void sound_use_buffer(sound_t *restrict sound, bool main);
 
 void sound_volume(sound_t *restrict sound, unsigned int volume);
@@ -42,20 +40,20 @@ void sound_enable(sound_t *restrict sound, bool enabled);
 
 void sound_vbl(sound_t *restrict sound);
 
-void validate_sound(sound_t *restrict sound);
-
-// === M7f — object-model accessors ===========================================
+// === Object-model accessors =================================================
 //
-// Read-only views over the sound subsystem used by the `sound` object
-// class. `mute(bool)` is a thin wrapper over sound_enable so users
-// don't have to remember the inverted semantics ("mute true" → enabled
-// false). `sample_rate` is the legacy 22.255 kHz PWM rate hardcoded in
-// the platform layer; we expose it as an attribute for parity with the
-// proposal §5.4 listing.
+// Read-only views over the sound subsystem, read by the `sound_surface_t`
+// vtable this module fills in (see sound_surface.h) rather than by a
+// hand-rolled class of its own.  `sample_rate` is the legacy 22.255 kHz PWM
+// rate hardcoded in the platform layer; it is exposed as an attribute so the
+// Plus reports the same vocabulary as every other engine.
+//
+// There is no `sound_mute()`: the surface's set_muted hook goes straight to
+// plus_snd_set_muted -> sound_enable(), which is the inverted-semantics
+// wrapper a mute helper would have been.
 
 bool sound_get_enabled(const sound_t *sound);
 unsigned sound_get_volume(const sound_t *sound);
 unsigned sound_get_sample_rate(const sound_t *sound);
-void sound_mute(sound_t *sound, bool muted);
 
 #endif // SOUND_H

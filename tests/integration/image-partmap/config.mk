@@ -1,7 +1,7 @@
 # Integration test: image partmap + probe
-# Exercises the Phase 1 image command against an APM-formatted A/UX hard
-# disk image.  Verifies the command runs to completion without triggering
-# an assertion or non-zero exit.
+# Exercises the image command against an APM-formatted A/UX hard disk
+# image.  Verifies the command runs to completion without triggering an
+# assertion or non-zero exit.
 
 TEST_NAME := Image partmap
 TEST_DESC := Exercises `image partmap` and `image probe` against an APM-formatted A/UX disk image
@@ -9,5 +9,5 @@ TEST_DESC := Exercises `image partmap` and `image probe` against an APM-formatte
 # Universal ROM shared by SE/30, IIcx, IIx
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

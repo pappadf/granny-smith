@@ -1,0 +1,19 @@
+assert machine.hd.present "hd= attached the ProFile"
+assert try(machine.attach_cdrom("${$WORK_DIR}/pro.img"), "none") == "none" "no CD bay on a Lisa"
+machine.eject_media "profile"
+assert !machine.hd.present "eject_media took the ProFile out"
+let b = machine.attach_hd("${$WORK_DIR}/pro.img")
+assert $b.bus == "profile" "attach_hd on a Lisa uses the ProFile"
+assert machine.hd.present "and it is attached"
+
+# A Lisa has no SCSI.  After a Mac with a controller was booted and replaced,
+# machine.scsi must not answer from that Mac's controller: the machine-bound
+# members error, and only the pre-machine probe surface remains.
+machine.boot model="plus" rom="../../data/roms/plus-v3-4d1f8172.rom"
+assert try(machine.scsi.loopback, "none") != "none" "the Plus has a live controller"
+machine.boot model="lisa" rom="${$ROM}"
+assert try(machine.scsi.loopback, "none") == "none" "a Lisa has no SCSI controller to answer"
+assert try(machine.scsi.device[0].type, "none") == "none" "nor SCSI devices"
+assert machine.scsi.hd_models != none "the probe surface still answers"
+echo "media-bays-lisa-ok"
+quit

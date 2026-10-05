@@ -1,6 +1,6 @@
 // Pure state-transition table for the Display/Filesystem drag-and-drop
-// state machine specced in ui-design-spec.md §8.5. Lives in lib/ (not
-// the component) so unit tests can drive it without a DOM.
+// state machine drawn below. Lives in lib/ (not the component) so unit
+// tests can drive it without a DOM.
 //
 //   Idle ──dragenter(Files)──▶ Active
 //                              ├─ over-display ──▶ Display
@@ -42,13 +42,6 @@ export function nextDragState(s: DragState, e: DragEvt): DragState {
       // overlay highlight that the previous over-* event set.
       return s === 'idle' ? s : 'active';
   }
-}
-
-// Respect the OS-level reduced-motion preference. Used by the overlay
-// component to set transition: 0ms.
-export function isReducedMotion(): boolean {
-  if (typeof window === 'undefined' || !window.matchMedia) return false;
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches === true;
 }
 
 // Helper: is the (x, y) point inside the viewport? Used to detect

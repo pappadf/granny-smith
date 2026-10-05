@@ -21,5 +21,5 @@ TEST_SETUP := cp "$(TEST_DATA)/systems/system_7_5_0_77mb_mode32_24ac.img" "$(TES
 
 TEST_ARGS := model=iici ram=8192 hd=$(TEST_TMPDIR)/hd.img
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended

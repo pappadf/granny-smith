@@ -70,11 +70,26 @@ typedef struct iop_behavior {
 
     // Called once from iop_init so this IOP's periodic-timer callbacks
     // can register themselves with the scheduler. Required for
-    // scheduler_checkpoint to name pending events at save time and for
-    // scheduler_start to resolve saved events back to live callback
-    // pointers on restore. NULL if the behaviour schedules no events
+    // the scheduler to name pending events at save time and to resolve
+    // saved events back to live callback pointers on restore. NULL if the behaviour schedules no events
     // (e.g. SCC IOP, which is purely event-driven on host kicks).
     void (*register_events)(iop_t *iop);
+
+    // Called by iop_power_on: cancel every event this behaviour scheduled
+    // with the IOP as its source.  The callbacks are static to the
+    // behaviour's file, so only it can name them -- and scheduler_forget_
+    // source is for destructors only (it drops the event TYPES too).  NULL
+    // if the behaviour schedules nothing.
+    void (*cancel_events)(iop_t *iop);
+
+    // Called from iop_init after a checkpoint has been read into the
+    // PIC's state, to re-establish what the behaviour hangs off other
+    // devices (the SCC IOP's LocalTalk link).  NULL if nothing.
+    void (*on_restore)(iop_t *iop);
+
+    // Called from iop_delete before the IOP is freed, while the devices it
+    // fronts still exist.  NULL if nothing.
+    void (*on_delete)(iop_t *iop);
 
 } iop_behavior_t;
 
@@ -91,11 +106,64 @@ extern const iop_behavior_t iop_swim_behavior;
 // and mutate the shared RAM and host-visible status bits directly.
 // ============================================================================
 
+// The SCC IOP's LocalTalk driver ('iopc', downloaded by the System's IOP
+// LocalTalk 'ltlk'), as iop_scc.c models it: the LLAP link -- node
+// acquisition, the lapENQ/lapACK and lapRTS/lapCTS dialogs, frames to and from
+// the wire -- with DDP and above left to the host's .MPP.  Plain data, so it
+// rides in the PIC's checkpoint prefix.
+#define IOP_LT_FRAME_MAX 603 // LLAP header + 600 data bytes
+#define IOP_LT_RXQ_DEPTH 8 // frames waiting for RcvMsg[5]
+
+// What a channel's downloaded driver is, decided at Initialize Driver
+enum {
+    IOP_DRIVER_NONE = 0, // not initialised
+    IOP_DRIVER_SERIAL, // the asynchronous serial driver
+    IOP_DRIVER_LOCALTALK, // the LocalTalk driver (channel B only)
+};
+
+typedef struct iop_lt_frame {
+    uint16_t len;
+    uint8_t buf[IOP_LT_FRAME_MAX];
+} iop_lt_frame_t;
+
+typedef struct iop_scc_state {
+    // IOP Kernel driver table: 0 = free, else the owner's ClientID.
+    uint8_t driver_client[2];
+    uint8_t driver_kind[2]; // IOP_DRIVER_*: what Initialize Driver found
+
+    // The serial drivers ('SERD'), per channel (Serial IOP Driver ERS)
+    bool ser_open[2];
+    bool ser_read_waiting[2]; // a read is held until bytes arrive
+    uint16_t ser_wbuf[2]; // IOP RAM addresses handed to the host
+    uint16_t ser_stats[2];
+    // Kernel bypass: the ClientID that owns it, 0 when off.  The kernel
+    // enters bypass at reset, owned by $FF until the IOP Manager leaves it.
+    uint8_t bypass_client;
+
+    // LocalTalk driver B (boxes 5-7, SCC channel B)
+    bool lt_open;
+    uint8_t lt_node; // the node the IOP answers for and stamps as source
+    uint8_t lt_nodes[32]; // receive filter: bitmap of the nodes it answers for
+    uint16_t lt_wbuf; // IOP RAM addresses handed to the host
+    uint16_t lt_rbuf;
+    uint16_t lt_stats;
+    bool lt_rx_posted; // RcvMsg[5] holds a frame the host has not released
+    uint8_t lt_rxq_head;
+    uint8_t lt_rxq_count;
+    iop_lt_frame_t lt_rxq[IOP_LT_RXQ_DEPTH];
+} iop_scc_state_t;
+
 struct iop {
     uint8_t ram[IOP_RAM_SIZE];
     uint16_t ram_addr; // host-side iopRamAddr (16-bit pointer into iop->ram)
     uint8_t stat_ctl; // host-visible iopStatCtl (bits per iop_regs.h)
     bool host_irq; // current state of the `hint` line to OSS
+
+    // Extent of the host's RAM writes outside the mailboxes since the
+    // behaviour last reset it: where a downloaded driver image landed.
+    uint16_t dl_lo, dl_hi;
+
+    iop_scc_state_t scc; // SCC IOP only (iop_scc.c)
 
     const iop_behavior_t *behavior;
 

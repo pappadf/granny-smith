@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+//
+// offer_registry.c
+// See offer_registry.h.  One copy of the registry both ROM layers used to
+// carry; identification stays behind the caller's `identify` callback.
+
+#include "offer_registry.h"
+
+#include "log.h"
+
+#include <dirent.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+LOG_USE_CATEGORY_NAME("rom");
+
+void offer_registry_add(offer_registry_t *r, const char *path) {
+    if (!r || !r->identify || !path || !*path)
+        return;
+
+    uint64_t key = 0;
+    size_t size = 0;
+    const char *card_id = NULL;
+    if (!r->identify(path, &key, &size, &card_id) || !card_id)
+        return; // not ours; the identifier logged which kind of stray it was
+
+    // Idempotent by content: one entry per key.
+    offer_entry_t *e = NULL;
+    for (size_t i = 0; i < r->count; i++) {
+        if (r->entries[i].key == key) {
+            e = &r->entries[i];
+            break;
+        }
+    }
+    if (!e) {
+        if (r->count == r->cap) {
+            size_t cap = r->cap ? r->cap * 2 : 8;
+            offer_entry_t *grown = realloc(r->entries, cap * sizeof(*grown));
+            if (!grown)
+                return;
+            r->entries = grown;
+            r->cap = cap;
+        }
+        e = &r->entries[r->count];
+        memset(e, 0, sizeof(*e));
+        r->count++;
+    }
+    char *dup = strdup(path);
+    if (!dup) {
+        // A fresh entry with no path is useless -- roll the append back.
+        if (!e->path)
+            r->count--;
+        return;
+    }
+    free(e->path);
+    e->path = dup;
+    e->key = key;
+    e->size = size;
+    e->card_id = card_id;
+    LOG(2, "%s: '%s' provides card '%s' (key $%012llX)", r->tag, path, e->card_id, (unsigned long long)e->key);
+}
+
+void offer_registry_clear(offer_registry_t *r) {
+    if (!r)
+        return;
+    for (size_t i = 0; i < r->count; i++)
+        free(r->entries[i].path);
+    free(r->entries);
+    r->entries = NULL;
+    r->count = 0;
+    r->cap = 0;
+}
+
+const char *offer_registry_find(const offer_registry_t *r, const char *card_id, int idx, size_t *out_size,
+                                uint64_t *out_key) {
+    if (!r || !card_id)
+        return NULL;
+    // Catalog order, preferred rows first.  One offer per key (registry
+    // invariant), so each row yields at most one candidate.
+    if (!r->catalog.row)
+        return NULL;
+    for (int want_preferred = 1; want_preferred >= 0; want_preferred--) {
+        for (size_t row = 0; row < r->catalog.count; row++) {
+            const char *row_card = NULL;
+            uint64_t row_key = 0;
+            bool preferred = false;
+            r->catalog.row(row, &row_card, &row_key, &preferred);
+            if (preferred != (bool)want_preferred || !row_card || strcmp(row_card, card_id) != 0)
+                continue;
+            for (size_t i = 0; i < r->count; i++) {
+                if (r->entries[i].key != row_key)
+                    continue;
+                if (idx-- == 0) {
+                    if (out_size)
+                        *out_size = r->entries[i].size;
+                    if (out_key)
+                        *out_key = r->entries[i].key;
+                    return r->entries[i].path;
+                }
+            }
+        }
+    }
+    return NULL;
+}
+
+bool offer_registry_catalogued(const offer_registry_t *r, const char *card_id) {
+    if (!r || !r->catalog.row || !card_id || !*card_id)
+        return false;
+    for (size_t row = 0; row < r->catalog.count; row++) {
+        const char *row_card = NULL;
+        uint64_t key = 0;
+        bool preferred = false;
+        r->catalog.row(row, &row_card, &key, &preferred);
+        if (row_card && strcmp(row_card, card_id) == 0)
+            return true;
+    }
+    return false;
+}
+
+bool offer_registry_resolvable(const offer_registry_t *r, const char *card_id) {
+    return offer_registry_find(r, card_id, 0, NULL, NULL) != NULL;
+}
+
+void offer_registry_add_dir(offer_registry_t *r, const char *dir, const char *ext) {
+    if (!dir || !*dir)
+        return;
+    DIR *d = opendir(dir);
+    if (!d)
+        return;
+    size_t ext_len = ext ? strlen(ext) : 0;
+    struct dirent *entry;
+    char path[1200];
+    while ((entry = readdir(d)) != NULL) {
+        const char *name = entry->d_name;
+        size_t len = strlen(name);
+        if (name[0] == '.')
+            continue; // dotfiles, and . and ..
+        if (ext && (len <= ext_len || strcmp(name + len - ext_len, ext) != 0))
+            continue;
+        const char *sep = dir[strlen(dir) - 1] == '/' ? "" : "/";
+        if (snprintf(path, sizeof(path), "%s%s%s", dir, sep, name) >= (int)sizeof(path))
+            continue;
+        offer_registry_add(r, path);
+    }
+    closedir(d);
+}

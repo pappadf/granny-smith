@@ -53,6 +53,7 @@
 //     +4.. NUL-terminated strings; symbols reference by byte offset >= 4
 
 #include "coff.h"
+#include "common.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -63,14 +64,8 @@
 #define COFF_SCNHDR_SIZE 40
 #define COFF_SYMENT_SIZE 18
 
-static uint16_t be_u16(const uint8_t *p) {
-    return (uint16_t)((p[0] << 8) | p[1]);
-}
-static uint32_t be_u32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
-}
 static int16_t be_i16(const uint8_t *p) {
-    return (int16_t)be_u16(p);
+    return (int16_t)RD_BE16(p);
 }
 
 struct coff {
@@ -101,7 +96,7 @@ struct coff {
 };
 
 bool coff_is_coff(const uint8_t *data, size_t len) {
-    return data && len >= 2 && be_u16(data) == COFF_M68K_MAGIC;
+    return data && len >= 2 && RD_BE16(data) == COFF_M68K_MAGIC;
 }
 
 // Resolve an n_name field into the caller's buffer.  Handles both the
@@ -110,9 +105,9 @@ bool coff_is_coff(const uint8_t *data, size_t len) {
 static size_t resolve_name(const uint8_t *n_name, const uint8_t *strtab, size_t strtab_len, char *out, size_t cap) {
     if (cap == 0)
         return 0;
-    if (be_u32(n_name) == 0) {
+    if (RD_BE32(n_name) == 0) {
         // Long-name form: offset is in the second u32.
-        uint32_t off = be_u32(n_name + 4);
+        uint32_t off = RD_BE32(n_name + 4);
         if (strtab && off < strtab_len) {
             size_t i = 0;
             while (i + 1 < cap && off + i < strtab_len && strtab[off + i] != '\0') {
@@ -150,7 +145,7 @@ coff_t *coff_parse(const uint8_t *data, size_t len, const char **errmsg) {
     if (!data || len < COFF_FILHDR_SIZE)
         FAIL("truncated file header");
 
-    uint16_t f_magic = be_u16(data + 0);
+    uint16_t f_magic = RD_BE16(data + 0);
     if (f_magic != COFF_M68K_MAGIC)
         FAIL("not a COFF M68K binary");
 
@@ -161,12 +156,12 @@ coff_t *coff_parse(const uint8_t *data, size_t len, const char **errmsg) {
     cf->len = len;
     cf->magic = f_magic;
 
-    uint16_t f_nscns = be_u16(data + 2);
-    cf->timestamp = be_u32(data + 4);
-    uint32_t f_symptr = be_u32(data + 8);
-    uint32_t f_nsyms = be_u32(data + 12);
-    uint16_t f_opthdr = be_u16(data + 16);
-    cf->flags = be_u16(data + 18);
+    uint16_t f_nscns = RD_BE16(data + 2);
+    cf->timestamp = RD_BE32(data + 4);
+    uint32_t f_symptr = RD_BE32(data + 8);
+    uint32_t f_nsyms = RD_BE32(data + 12);
+    uint16_t f_opthdr = RD_BE16(data + 16);
+    cf->flags = RD_BE16(data + 18);
 
     // Bound checks.
     if ((uint64_t)COFF_FILHDR_SIZE + f_opthdr > len)
@@ -177,14 +172,14 @@ coff_t *coff_parse(const uint8_t *data, size_t len, const char **errmsg) {
     if (f_opthdr >= 28) {
         const uint8_t *opt = data + COFF_FILHDR_SIZE;
         cf->has_aouthdr = true;
-        cf->aout_magic = be_u16(opt + 0);
+        cf->aout_magic = RD_BE16(opt + 0);
         // skip vstamp at +2
-        cf->tsize = be_u32(opt + 4);
-        cf->dsize = be_u32(opt + 8);
-        cf->bsize = be_u32(opt + 12);
-        cf->entry = be_u32(opt + 16);
-        cf->text_start = be_u32(opt + 20);
-        cf->data_start = be_u32(opt + 24);
+        cf->tsize = RD_BE32(opt + 4);
+        cf->dsize = RD_BE32(opt + 8);
+        cf->bsize = RD_BE32(opt + 12);
+        cf->entry = RD_BE32(opt + 16);
+        cf->text_start = RD_BE32(opt + 20);
+        cf->data_start = RD_BE32(opt + 24);
     }
 
     // Section headers — immediately after the optional header.
@@ -205,7 +200,7 @@ coff_t *coff_parse(const uint8_t *data, size_t len, const char **errmsg) {
     // String table base = f_symptr + f_nsyms*18; first u32 = total length.
     size_t strtab_off = (size_t)f_symptr + (size_t)f_nsyms * COFF_SYMENT_SIZE;
     if (f_symptr != 0 && f_nsyms > 0 && strtab_off + 4 <= len) {
-        uint32_t strtab_len = be_u32(data + strtab_off);
+        uint32_t strtab_len = RD_BE32(data + strtab_off);
         if (strtab_len >= 4 && strtab_off + strtab_len <= len) {
             cf->strtab = data + strtab_off;
             cf->strtab_len = strtab_len;
@@ -236,10 +231,10 @@ coff_t *coff_parse(const uint8_t *data, size_t len, const char **errmsg) {
                 s->name[i2] = '\0';
             }
         }
-        s->vaddr = be_u32(sh + 12);
-        s->size = be_u32(sh + 16);
-        s->file_offset = be_u32(sh + 20);
-        s->flags = be_u32(sh + 36);
+        s->vaddr = RD_BE32(sh + 12);
+        s->size = RD_BE32(sh + 16);
+        s->file_offset = RD_BE32(sh + 20);
+        s->flags = RD_BE32(sh + 36);
         // Sanity: section's raw bytes (if any) must fit inside the file.
         if (s->file_offset != 0 && (uint64_t)s->file_offset + s->size > len) {
             // Clamp rather than fail — A/UX BSS-style sections sometimes
@@ -268,9 +263,9 @@ coff_t *coff_parse(const uint8_t *data, size_t len, const char **errmsg) {
             if (!s)
                 FAIL("out of memory");
             resolve_name(e, cf->strtab, cf->strtab_len, s->name, sizeof(s->name));
-            s->value = be_u32(e + 8);
+            s->value = RD_BE32(e + 8);
             s->scnum = be_i16(e + 12);
-            s->type = be_u16(e + 14);
+            s->type = RD_BE16(e + 14);
             s->sclass = e[16];
             uint8_t n_aux = e[17];
             cf->symbols[i] = s;

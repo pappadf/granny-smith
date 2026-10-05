@@ -6,13 +6,16 @@
 
 #include "oss.h"
 
-#include "log.h"
+#include "irq_controller.h"
+#include "machine.h"
+#include "object.h"
+#include "regfile.h"
+#include "scheduler.h"
 #include "system.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
-
-LOG_USE_CATEGORY_NAME("oss");
 
 // Number of software-visible OSS interrupt sources.
 #define OSS_NUM_SOURCES 15
@@ -20,12 +23,16 @@ LOG_USE_CATEGORY_NAME("oss");
 // OSS register offsets (canonical IIfx hardware layout).
 #define OSS_LEVEL_FIRST 0x000
 #define OSS_LEVEL_LAST  0x00E
-#define OSS_INT_STAT    0x202
-#define OSS_ROM_CTRL    0x204
-#define OSS_COUNTER_CTL 0x205
-#define OSS_INPUT_STAT  0x206
-#define OSS_60HZ_ACK    0x207
-#define OSS_COUNTER     0x208
+// Interrupt-status longword.  The four byte lanes live at $200-$203; OSS_INT_STAT
+// is lane 2, the one the ROM's byte accesses use.  Both decode sites open-coded
+// the range and the define was never referenced.
+#define OSS_INT_STAT_BASE 0x200
+#define OSS_INT_STAT      0x202
+#define OSS_ROM_CTRL      0x204
+#define OSS_COUNTER_CTL   0x205
+#define OSS_INPUT_STAT    0x206
+#define OSS_60HZ_ACK      0x207
+#define OSS_COUNTER       0x208
 
 // OSS source numbers used by the IIfx ROM.
 #define OSS_SRC_60HZ 10
@@ -36,12 +43,19 @@ struct oss {
     uint16_t pending;
     uint8_t rom_ctrl;
     uint8_t counter_ctl;
-    uint64_t counter;
+    // Free-running counter, derived from emulated time rather than stored as
+    // a running value: `counter_base` is its value at `counter_base_ns`, and
+    // a read adds the elapsed ticks.  Writing the control register rebases
+    // both, so start/stop is exact.  See oss_counter_value().
+    uint64_t counter_base;
+    uint64_t counter_base_ns;
 
     memory_interface_t memory_interface;
     oss_irq_fn irq_cb;
     oss_control_fn control_cb;
     void *cb_context;
+    struct scheduler *scheduler; // counter time base; not checkpointed
+    struct object *object; // machine.oss; after the blob, never saved
 };
 
 // Notifies the owning machine that CPU IPL may need recomputing.
@@ -51,13 +65,13 @@ static void oss_notify(oss_t *oss) {
 }
 
 // Reads one big-endian byte from a 32-bit register value.
-static uint8_t be32_byte(uint32_t value, unsigned index) {
-    return (uint8_t)(value >> ((3u - (index & 3u)) * 8u));
-}
-
 // Clears pending bits selected by a byte write to the long status register.
-static void clear_status_byte(oss_t *oss, uint32_t addr, uint8_t value) {
-    unsigned lane = addr & 3u;
+// Write-1-to-clear one byte lane of the 32-bit interrupt-status word.  `lane`
+// is a lane index 0-3 (lane 0 is the MSB on this bus), not an address -- the
+// parameter used to be named `addr` while every caller passed an index, which
+// is how an off-by-$200 gets introduced later.
+static void clear_status_byte(oss_t *oss, uint32_t lane, uint8_t value) {
+    lane &= 3u;
     uint32_t mask = (uint32_t)value << ((3u - lane) * 8u);
     uint16_t old_pending = oss->pending;
     oss->pending &= (uint16_t)~mask;
@@ -65,16 +79,42 @@ static void clear_status_byte(oss_t *oss, uint32_t addr, uint8_t value) {
         oss_notify(oss);
 }
 
-// Reads one OSS byte register.
-static uint8_t oss_read_uint8(void *device, uint32_t addr) {
-    oss_t *oss = (oss_t *)device;
+// Current value of the free-running counter.
+//
+// The counter advances with EMULATED TIME.  It used to be incremented once per
+// byte read -- so reading it as eight byte accesses advanced it eight times, a
+// 32-bit read four times, and its rate was a function of the guest's own
+// access pattern rather than of time.  Every other
+// timer in the tree is scheduler-derived: VIA T1/T2, the RBV and DAFB Swatch,
+// the PSC's sndPhase/UTSC, the PPC decrementer.  The OSS was the outlier.
+//
+// RATE IS UNATTESTED.  Neither the F19 theory-of-operation volumes nor
+// docs/reference/machines/iifx/iop.md states what clock drives it, so this follows the
+// precedent of psc_utsc(), which is scheduler_time_ns()/1000
+// -- and ticks at 1 MHz.  Nothing in the corpus reads the counter at all
+// (measured across iifx-mactest, iifx-marathon and iifx-install-76: zero
+// reads), so no behaviour depends on the choice today; a source that settles
+// the real rate should change the divisor here and nothing else.
+//
+// Control bit 0 stops the count.  A read is now side-effect-free, which also
+// means a memory.peek of $208-$20F no longer perturbs guest-visible state.
+static uint64_t oss_counter_value(const oss_t *oss) {
+    if (oss->counter_ctl & 1u)
+        return oss->counter_base; // stopped: frozen where it was rebased
+    uint64_t now_ns = (uint64_t)scheduler_time_ns(oss->scheduler);
+    uint64_t elapsed_us = (now_ns - oss->counter_base_ns) / 1000u;
+    return oss->counter_base + elapsed_us;
+}
+
+// Reads one OSS byte register; an inspection (`peek`) acknowledges nothing.
+static uint8_t oss_reg_read(oss_t *oss, uint32_t addr, bool peek) {
     uint32_t offset = addr & 0x1fff;
 
     if (offset <= OSS_LEVEL_LAST)
         return oss->level[offset] & 7u;
 
-    if (offset >= 0x200 && offset <= 0x203)
-        return be32_byte((uint32_t)oss->pending, offset - 0x200);
+    if (offset >= OSS_INT_STAT_BASE && offset <= OSS_INT_STAT_BASE + 3)
+        return be_lane8((uint32_t)oss->pending, offset - OSS_INT_STAT_BASE);
 
     if (offset == OSS_ROM_CTRL)
         return oss->rom_ctrl;
@@ -83,17 +123,23 @@ static uint8_t oss_read_uint8(void *device, uint32_t addr) {
     if (offset == OSS_INPUT_STAT)
         return 0;
     if (offset == OSS_60HZ_ACK) {
-        oss_set_source(oss, OSS_SRC_60HZ, false);
+        if (!peek)
+            oss_set_source(oss, OSS_SRC_60HZ, false);
         return 0;
     }
     if (offset >= OSS_COUNTER && offset < OSS_COUNTER + 8) {
-        uint64_t value = oss->counter;
-        if ((oss->counter_ctl & 1u) == 0)
-            oss->counter++;
+        uint64_t value = oss_counter_value(oss);
         return (uint8_t)(value >> ((7u - ((offset - OSS_COUNTER) & 7u)) * 8u));
     }
 
     return 0;
+}
+
+static uint8_t oss_read_uint8(void *device, uint32_t addr) {
+    return oss_reg_read(device, addr, false);
+}
+static uint8_t oss_peek_uint8(void *device, uint32_t addr) {
+    return oss_reg_read(device, addr, true);
 }
 
 // Reads one OSS word register.
@@ -137,15 +183,23 @@ static void oss_write_uint8(void *device, uint32_t addr, uint8_t value) {
                 // Write of 0 (disable): clear source 10 pending.
                 oss_set_source(oss, OSS_SRC_60HZ, false);
             }
-            // oss_set_source already calls oss_notify on a change.
+            // oss_set_source notifies only when the pending bit CHANGES, but
+            // the level changed regardless, and the IPL depends on it.  The
+            // VBL sets source 10 every frame, so when phase $92 wrote its
+            // level the bit was often already pending: no change, no
+            // notify, the CPU's IPL stayed at the old level 0 and the
+            // test's interrupt never came.  Whether it did was down to the
+            // VBL phase -- a fresh boot happened to pass, a power-cycled one
+            // failed POST.
+            oss_notify(oss);
             return;
         }
         oss_notify(oss);
         return;
     }
 
-    if (offset >= 0x200 && offset <= 0x203) {
-        clear_status_byte(oss, offset - 0x200, value);
+    if (offset >= OSS_INT_STAT_BASE && offset <= OSS_INT_STAT_BASE + 3) {
+        clear_status_byte(oss, offset - OSS_INT_STAT_BASE, value);
         return;
     }
 
@@ -157,6 +211,10 @@ static void oss_write_uint8(void *device, uint32_t addr, uint8_t value) {
         return;
     }
     if (offset == OSS_COUNTER_CTL) {
+        // Rebase across the transition so neither starting nor stopping the
+        // counter loses or invents ticks.
+        oss->counter_base = oss_counter_value(oss);
+        oss->counter_base_ns = (uint64_t)scheduler_time_ns(oss->scheduler);
         oss->counter_ctl = value;
         return;
     }
@@ -181,24 +239,138 @@ static void oss_write_uint32(void *device, uint32_t addr, uint32_t value) {
 }
 
 // Creates an OSS instance with ROM-like default source priorities.
-oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, checkpoint_t *checkpoint) {
-    oss_t *oss = calloc(1, sizeof(*oss));
-    if (!oss)
-        return NULL;
+// === Object node: machine.oss ===============================================
+//
+// The IIfx has no VIA2 and no RBV; the OSS *is* its interrupt controller, so
+// before this node an IRQ storm on a IIfx was not inspectable at all.  The
+// chip-specific half matters here more than anywhere: the OSS has no mask
+// register, and "disabled" means a source whose level register reads 0, so
+// `source_levels` is the thing an investigation actually needs.
 
-    oss->irq_cb = irq_cb;
-    oss->control_cb = control_cb;
-    oss->cb_context = context;
+static uint32_t oss_obj_pending(void *ctx) {
+    return oss_pending((const oss_t *)ctx);
+}
+
+// The OSS has no enable mask.  A source is enabled exactly when its level
+// register is non-zero -- "Writing 0 disables that source" (IIfx note),
+// which is also why level[10] starts at 0 above.
+static uint32_t oss_obj_enabled(void *ctx) {
+    const oss_t *oss = (const oss_t *)ctx;
+    uint32_t mask = 0;
+    for (int i = 0; i < OSS_NUM_SOURCES; i++) {
+        if (oss->level[i] & 7u)
+            mask |= 1u << i;
+    }
+    return mask;
+}
+
+static int oss_obj_ipl(void *ctx) {
+    return (int)oss_highest_ipl((const oss_t *)ctx);
+}
+
+static int oss_obj_level_count(void *ctx) {
+    (void)ctx;
+    return 7; // IPL 1..7
+}
+
+static uint32_t oss_obj_level(void *ctx, int index) {
+    const oss_t *oss = (const oss_t *)ctx;
+    uint32_t mask = 0;
+    for (int i = 0; i < OSS_NUM_SOURCES; i++) {
+        if ((oss->level[i] & 7u) == (uint8_t)(index + 1))
+            mask |= 1u << i;
+    }
+    return mask;
+}
+
+static const irq_controller_ops_t oss_irq_ops = {
+    .chip = "OSS",
+    .pending = oss_obj_pending,
+    .enabled = oss_obj_enabled,
+    .ipl = oss_obj_ipl,
+    .level_count = oss_obj_level_count,
+    .level = oss_obj_level,
+    .level_base = 1,
+};
+
+// The per-source programmed level, in source order -- the OSS's own view,
+// and the inverse of `levels`.  Reading both together is how you tell a
+// source that is shouting from a source that was programmed to the wrong
+// priority.
+static DEF_GETTER(oss_attr_source_levels) {
+    const oss_t *oss = (const oss_t *)object_data(self);
+    value_t *items = (value_t *)calloc(OSS_NUM_SOURCES, sizeof(value_t));
+    if (!items)
+        return val_err("oss.source_levels: out of memory");
+    for (int i = 0; i < OSS_NUM_SOURCES; i++)
+        items[i] = val_uint(1, oss->level[i] & 7u);
+    return val_list(items, OSS_NUM_SOURCES);
+}
+
+static DEF_GETTER(oss_attr_rom_ctrl) {
+    value_t v = val_uint(1, ((const oss_t *)object_data(self))->rom_ctrl);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static DEF_GETTER(oss_attr_counter_ctl) {
+    value_t v = val_uint(1, ((const oss_t *)object_data(self))->counter_ctl);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static DEF_GETTER(oss_attr_counter) {
+    return val_uint(4, oss_counter_value((const oss_t *)object_data(self)));
+}
+
+static const member_t oss_members[] = {
+    IRQ_CONTROLLER_MEMBERS(&oss_irq_ops){
+                                         .kind = M_ATTR,
+                                         .name = "source_levels",
+                                         .doc = "Programmed CPU level per OSS source, source order (0 = disabled)",
+                                         .attr = {.type = V_LIST, .presentation_flags = VAL_VOLATILE, .get = oss_attr_source_levels, .set = NULL}},
+    {.kind = M_ATTR,
+                                         .name = "rom_ctrl",
+                                         .doc = "ROM control register ($204)",
+                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = oss_attr_rom_ctrl, .set = NULL}          },
+    {.kind = M_ATTR,
+                                         .name = "counter_ctl",
+                                         .doc = "Free-running counter control ($20C)",
+                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = oss_attr_counter_ctl, .set = NULL}       },
+    {.kind = M_ATTR,
+                                         .name = "counter",
+                                         .doc = "Free-running counter, derived from emulated time",
+                                         .attr = {.type = V_UINT, .presentation_flags = VAL_VOLATILE, .get = oss_attr_counter, .set = NULL}      },
+};
+
+static const class_desc_t oss_class = {
+    .name = "irq_controller",
+    .doc = "OSS, the Mac IIfx interrupt controller: sources and levels",
+    .members = oss_members,
+    .n_members = sizeof(oss_members) / sizeof(oss_members[0]),
+};
+
+static void oss_attach_object(oss_t *oss) {
+    oss->object = object_new(&oss_class, oss, "oss");
+    if (!oss->object)
+        return;
+    object_set_order(oss->object, 45); // between the VIAs (40) and the RTC (60)
+    object_attach(machine_object(), oss->object);
+}
+
+// The register state oss_init constructs -- shared with oss_power_on, so a
+// power cycle and a new machine start from the same OSS.
+static void oss_set_power_on_defaults(oss_t *oss) {
     oss->rom_ctrl = 0x0d;
 
     // Default level[] state.  These specific non-zero values are what
-    // test #$11 (called from §16b at $40841282) expects to find when
+    // test #$11 (called at $40841282) expects to find when
     // it reads OSS level registers — empirically validated by live
     // trace: with these defaults, test #$11 leaves a properly-formed
     // `(ptr, size, $FFFFFFFF, ...)` table at $FFFFEC..$FFFFFC that
-    // §16c walks correctly to find its sentinel.  Changing any of
-    // these alters test #$11's RAM-write side effects and breaks
-    // §16c.
+    // the POST code that follows walks correctly to find its sentinel.
+    // Changing any of these alters test #$11's RAM-write side effects
+    // and breaks that walk.
     //
     // SPECIAL CASE: level[10] = 0 (NOT 1).  This is the OSS source 10
     // (60Hz) priority.  At hardware reset, all level registers are 0
@@ -225,6 +397,19 @@ oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, che
     oss->level[12] = 3;
     oss->level[13] = 1;
     oss->level[14] = 7;
+}
+
+oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, struct scheduler *scheduler,
+                checkpoint_t *checkpoint) {
+    oss_t *oss = calloc(1, sizeof(*oss));
+    if (!oss)
+        return NULL;
+
+    oss->irq_cb = irq_cb;
+    oss->control_cb = control_cb;
+    oss->cb_context = context;
+    oss->scheduler = scheduler;
+    oss_set_power_on_defaults(oss);
 
     oss->memory_interface = (memory_interface_t){
         .read_uint8 = oss_read_uint8,
@@ -233,33 +418,53 @@ oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, che
         .write_uint8 = oss_write_uint8,
         .write_uint16 = oss_write_uint16,
         .write_uint32 = oss_write_uint32,
+        .peek_uint8 = oss_peek_uint8, // wider peeks compose
     };
 
     if (checkpoint) {
-        system_read_checkpoint_data(checkpoint, oss->level, sizeof(oss->level));
-        system_read_checkpoint_data(checkpoint, &oss->pending, sizeof(oss->pending));
-        system_read_checkpoint_data(checkpoint, &oss->rom_ctrl, sizeof(oss->rom_ctrl));
-        system_read_checkpoint_data(checkpoint, &oss->counter_ctl, sizeof(oss->counter_ctl));
-        system_read_checkpoint_data(checkpoint, &oss->counter, sizeof(oss->counter));
+        // Mirrors oss_checkpoint: one blob, so the two halves cannot drift.
+        system_read_checkpoint_data(checkpoint, oss, offsetof(oss_t, memory_interface), "oss");
     }
 
+    oss_attach_object(oss);
     return oss;
 }
 
 // Frees an OSS instance.
+// See oss.h.  The prefix up to memory_interface is the chip's own state.
+void oss_power_on(oss_t *oss) {
+    if (!oss)
+        return;
+    memset(oss, 0, offsetof(oss_t, memory_interface));
+    oss_set_power_on_defaults(oss);
+    // The counter is running (counter_ctl 0) from zero NOW.  oss_init's
+    // base_ns of 0 is right only because a new machine's clock is at 0; left
+    // at 0 here, the counter would read as if it had run since construction,
+    // which is how POST's phase $92 failed on a power-cycled IIfx.
+    oss->counter_base_ns = (uint64_t)scheduler_time_ns(oss->scheduler);
+    oss_notify(oss); // nothing pending any more: let the board drop the IPL
+}
+
 void oss_delete(oss_t *oss) {
+    if (oss && oss->object) {
+        object_detach(oss->object);
+        object_delete(oss->object);
+    }
     free(oss);
 }
 
 // Saves OSS plain state to a checkpoint.
+// One blob of everything before the first pointer, the idiom via.c, rbv.c,
+// psc.c, new_age.c and civic.c already use and swim3.h:51-53 documents.
+// This was six per-field calls whose order had to be kept in step BY HAND
+// with six more in oss_init -- the most error-prone of the three idioms in
+// the tree, and the one the IOP's lost `host_irq` field lived in.  A field
+// added to the struct prefix is now carried automatically
+// instead of being silently dropped.
 void oss_checkpoint(oss_t *oss, checkpoint_t *checkpoint) {
     if (!oss || !checkpoint)
         return;
-    system_write_checkpoint_data(checkpoint, oss->level, sizeof(oss->level));
-    system_write_checkpoint_data(checkpoint, &oss->pending, sizeof(oss->pending));
-    system_write_checkpoint_data(checkpoint, &oss->rom_ctrl, sizeof(oss->rom_ctrl));
-    system_write_checkpoint_data(checkpoint, &oss->counter_ctl, sizeof(oss->counter_ctl));
-    system_write_checkpoint_data(checkpoint, &oss->counter, sizeof(oss->counter));
+    system_write_checkpoint_data(checkpoint, oss, offsetof(oss_t, memory_interface), "oss");
 }
 
 // Returns the OSS memory interface.

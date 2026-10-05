@@ -1,5 +1,4 @@
-# Apple Network Server PCI topology and the built-in device identities
-# (proposal-apple-network-server-500-700 §5.2 / §5.3 / §5.7 / §5.8).
+# Apple Network Server PCI topology and the built-in device identities.
 #
 # Config-port note, inherited verbatim from `tnt-pci-slots`: the Bandit
 # address and data ports are LITTLE-ENDIAN (the guest drives them with
@@ -29,7 +28,7 @@ def topology(model) {
     machine.boot model="${$model}" ram=32768 rom="${$ROM}"
 
     # --- The profile, as the configuration layer sees it ---------------------
-    assert machine.profile("${$model}").capabilities.pci "${$model} must advertise PCI"
+    assert catalog.profile("${$model}").capabilities.pci "${$model} must advertise PCI"
 
     # --- The six PCI sockets -------------------------------------------------
     # Apple settles the split in two places: "The Network Server uses two
@@ -39,23 +38,27 @@ def topology(model) {
     # boot commands printed in "Using the PCI RAID Card", which show slots
     # 1-2 on `pci1` at @d/@e and slots 3-6 on `pci2` at @d/@e/@f/@10.
     #
-    # The labels are the ROM's own `slot-names` strings.  Note the bus
+    # The firmware names are the ROM's own `slot-names` strings.  Note the bus
     # number in them is zero-based while Apple's prose and its device
     # aliases are one-based.
-    assert machine.pci.slot[1].label == "SLOT1_PCI0" "${$model} slot 1 label"
+    assert machine.pci.slot[1].label == "PCI slot 1" "${$model} slot 1 label"
+    assert machine.pci.slot[1].firmware_name == "SLOT1_PCI0" "${$model} slot 1 firmware name"
     assert machine.pci.slot[1].bus == 0 "${$model} slot 1 is on Bandit 1"
     assert machine.pci.slot[1].device == 13 "${$model} slot 1 IDSEL"
-    assert machine.pci.slot[2].label == "SLOT2_PCI0" "${$model} slot 2 label"
+    assert machine.pci.slot[2].label == "PCI slot 2" "${$model} slot 2 label"
+    assert machine.pci.slot[2].firmware_name == "SLOT2_PCI0" "${$model} slot 2 firmware name"
     assert machine.pci.slot[2].bus == 0 "${$model} slot 2 is on Bandit 1"
     assert machine.pci.slot[2].device == 14 "${$model} slot 2 IDSEL"
-    assert machine.pci.slot[3].label == "SLOT3_PCI1" "${$model} slot 3 label"
+    assert machine.pci.slot[3].label == "PCI slot 3" "${$model} slot 3 label"
+    assert machine.pci.slot[3].firmware_name == "SLOT3_PCI1" "${$model} slot 3 firmware name"
     assert machine.pci.slot[3].bus == 1 "${$model} slot 3 moved to Bandit 2"
     assert machine.pci.slot[3].device == 13 "${$model} slot 3 IDSEL"
     assert machine.pci.slot[4].bus == 1 "${$model} slot 4 is on Bandit 2"
     assert machine.pci.slot[4].device == 14 "${$model} slot 4 IDSEL"
     assert machine.pci.slot[5].bus == 1 "${$model} slot 5 is on Bandit 2"
     assert machine.pci.slot[5].device == 15 "${$model} slot 5 IDSEL"
-    assert machine.pci.slot[6].label == "SLOT6_PCI1" "${$model} slot 6 label"
+    assert machine.pci.slot[6].label == "PCI slot 6" "${$model} slot 6 label"
+    assert machine.pci.slot[6].firmware_name == "SLOT6_PCI1" "${$model} slot 6 firmware name"
     assert machine.pci.slot[6].bus == 1 "${$model} slot 6 is on Bandit 2"
     assert machine.pci.slot[6].device == 16 "${$model} slot 6 IDSEL"
 
@@ -80,7 +83,7 @@ def topology(model) {
     # Six devices on one bridge with no PCI-to-PCI bridge: two sockets, the
     # 54M30 at IDSEL 15, Grand Central at 16 (attached by grand_central.c,
     # so it has no slot entry), and the two 53C825As at 17 and 18.
-    assert machine.pci.slot[7].label == "VIDEO" "${$model} builtin video slot"
+    assert machine.pci.slot[7].firmware_name == "VIDEO" "${$model} builtin video slot"
     assert machine.pci.slot[7].bus == 0 "${$model} the 54M30 is on Bandit 1"
     assert machine.pci.slot[7].device == 15 "${$model} 54M30 IDSEL"
     # "The 54M30 does not have an interrupt" — allocating it a Grand Central
@@ -141,8 +144,7 @@ def topology(model) {
     # --- The card registry ---------------------------------------------------
     # Adding a card driver is one extern plus one entry; the ANS work added
     # three, and none of them may be offered on a socket (all BUILTIN).
-    assert machine.pci.cards() == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1]" "card registry"
-    assert machine.pci.slot[1].card_id == "" "${$model} an empty socket starts with no staged pick"
+    assert catalog.pci_cards == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu, ati_rage_pro]" "card registry"
 
     # --- The machine survives being written down -----------------------------
     # A Network Server has no Control, so it has no Control VRAM — and the

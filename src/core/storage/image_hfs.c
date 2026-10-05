@@ -20,7 +20,9 @@
 // HFS Plus on-disk format.
 
 #include "image_hfs.h"
+#include "common.h"
 #include "image.h"
+#include "image_part.h"
 #include "macroman.h"
 #include "storage.h"
 
@@ -30,48 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// disk_read_data requires 512-aligned offset + length.  HFS and the VFS
-// layer work in byte-granular chunks; this helper does the bounce-buffer
-// work so callers don't repeat it.  Returns 0 on success, -EIO on short
-// read.
-static int disk_read_bytes(image_t *img, uint64_t off, void *buf, size_t n) {
-    uint8_t *dst = buf;
-    size_t done = 0;
-    uint8_t blk[STORAGE_BLOCK_SIZE];
-    while (done < n) {
-        uint64_t abs = off + done;
-        uint64_t block_off = abs & ~(uint64_t)(STORAGE_BLOCK_SIZE - 1);
-        size_t in_block = (size_t)(abs - block_off);
-        size_t take = STORAGE_BLOCK_SIZE - in_block;
-        if (take > n - done)
-            take = n - done;
-        if (in_block == 0 && take == STORAGE_BLOCK_SIZE) {
-            // Fast path: block-aligned whole-block read straight into dst.
-            if (disk_read_data(img, (size_t)block_off, dst + done, STORAGE_BLOCK_SIZE) != STORAGE_BLOCK_SIZE)
-                return -EIO;
-        } else {
-            if (disk_read_data(img, (size_t)block_off, blk, STORAGE_BLOCK_SIZE) != STORAGE_BLOCK_SIZE)
-                return -EIO;
-            memcpy(dst + done, blk + in_block, take);
-        }
-        done += take;
-    }
-    return 0;
-}
-
 // ---- Big-endian helpers ----------------------------------------------------
-
-static uint16_t be16(const uint8_t *p) {
-    return (uint16_t)((p[0] << 8) | p[1]);
-}
-
-static uint32_t be32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-}
-
-static uint64_t be64(const uint8_t *p) {
-    return ((uint64_t)be32(p) << 32) | (uint64_t)be32(p + 4);
-}
 
 // MacRoman -> UTF-8 transcoder lives in macroman.{c,h} so future
 // consumers can share the table without depending on image_hfs.c.
@@ -216,7 +177,7 @@ typedef struct hfs_xt_rec {
 } hfs_xt_rec_t;
 
 struct hfs_volume {
-    image_t *img;
+    gs_source_t *src; // the whole disk (retained)
     uint64_t partition_off; // byte offset of the partition inside the image
     uint64_t partition_size; // partition length in bytes
     uint32_t alloc_block_size;
@@ -248,20 +209,18 @@ struct hfs_dir_iter {
 // inline extents.
 static void parse_fork(const uint8_t *rec_data, size_t logical_off, size_t ext_off, uint32_t file_id, uint8_t fork_type,
                        hfs_fork_t *out) {
-    out->logical_size = be32(rec_data + logical_off);
+    out->logical_size = RD_BE32(rec_data + logical_off);
     out->file_id = file_id;
     out->fork_type = fork_type;
     for (int i = 0; i < HFS_INLINE_EXTENTS; i++) {
-        out->extents[i].start_ablock = be16(rec_data + ext_off + i * 4);
-        out->extents[i].num_ablocks = be16(rec_data + ext_off + i * 4 + 2);
+        out->extents[i].start_ablock = RD_BE16(rec_data + ext_off + i * 4);
+        out->extents[i].num_ablocks = RD_BE16(rec_data + ext_off + i * 4 + 2);
     }
 }
 
 // Read raw bytes from the image relative to the partition start.
 static int read_partition(hfs_volume_t *vol, uint64_t off, void *buf, size_t n) {
-    if (off + n > vol->partition_size)
-        return -EIO;
-    return disk_read_bytes(vol->img, vol->partition_off + off, buf, n);
+    return source_read_partition(vol->src, vol->partition_off, vol->partition_size, off, buf, n);
 }
 
 // ---- Catalog file assembly ------------------------------------------------
@@ -269,7 +228,7 @@ static int read_partition(hfs_volume_t *vol, uint64_t off, void *buf, size_t n) 
 // Read up to 3 extents of the catalog file into a freshly-allocated buffer.
 // Returns 0 on success, negated errno on failure; caller frees *out_buf.
 static int load_catalog_file(hfs_volume_t *vol, const uint8_t *mdb, uint8_t **out_buf, size_t *out_size) {
-    uint32_t cat_size = be32(mdb + MDB_OFF_CT_FL_SIZE);
+    uint32_t cat_size = RD_BE32(mdb + MDB_OFF_CT_FL_SIZE);
     if (cat_size == 0 || cat_size > 64 * 1024 * 1024) {
         // 64 MiB cap guards against corruption; realistic catalogs are < 8 MiB.
         return -EINVAL;
@@ -280,8 +239,8 @@ static int load_catalog_file(hfs_volume_t *vol, const uint8_t *mdb, uint8_t **ou
 
     uint64_t filled = 0;
     for (int i = 0; i < HFS_INLINE_EXTENTS && filled < cat_size; i++) {
-        uint32_t start = be16(mdb + MDB_OFF_CT_EXT_REC + i * 4);
-        uint32_t count = be16(mdb + MDB_OFF_CT_EXT_REC + i * 4 + 2);
+        uint32_t start = RD_BE16(mdb + MDB_OFF_CT_EXT_REC + i * 4);
+        uint32_t count = RD_BE16(mdb + MDB_OFF_CT_EXT_REC + i * 4 + 2);
         if (count == 0)
             continue;
         uint64_t ext_bytes = (uint64_t)count * vol->alloc_block_size;
@@ -289,13 +248,13 @@ static int load_catalog_file(hfs_volume_t *vol, const uint8_t *mdb, uint8_t **ou
         uint64_t take = cat_size - filled;
         if (take > ext_bytes)
             take = ext_bytes;
-        if (byte_off + take > vol->partition_size) {
+        if (!image_range_fits(byte_off, take, vol->partition_size)) {
             // Don't read past the end of the partition; catalog is malformed
             // or the extent overflow file is needed.  Bail out; remaining
             // bytes stay zeroed.
             break;
         }
-        int rc = disk_read_bytes(vol->img, vol->partition_off + byte_off, buf + filled, (size_t)take);
+        int rc = read_partition(vol, byte_off, buf + filled, (size_t)take);
         if (rc < 0) {
             free(buf);
             return rc;
@@ -317,27 +276,31 @@ static int load_catalog_file(hfs_volume_t *vol, const uint8_t *mdb, uint8_t **ou
 // Parse one leaf node and append its records to *dst (realloc as needed).
 // Returns 0 on success, negated errno on failure.
 static int parse_leaf_node(const uint8_t *node, size_t node_size, cat_rec_t **dst, size_t *dst_n, size_t *dst_cap) {
-    uint16_t nrecs = be16(node + NODE_OFF_NRECS);
+    uint16_t nrecs = RD_BE16(node + NODE_OFF_NRECS);
     // Record offset table lives at the end of the node: 2 bytes per pointer,
     // nrecs+1 entries (last one is the free-space sentinel).
     if (node_size < 14 + (size_t)(nrecs + 1) * 2)
         return -EINVAL;
 
     for (uint16_t i = 0; i < nrecs; i++) {
-        uint16_t off = be16(node + node_size - (i + 1) * 2);
-        uint16_t next = be16(node + node_size - (i + 2) * 2);
+        uint16_t off = RD_BE16(node + node_size - (i + 1) * 2);
+        uint16_t next = RD_BE16(node + node_size - (i + 2) * 2);
         if (off < 14 || next > node_size || next <= off)
             continue; // skip malformed record quietly
         size_t rec_size = next - off;
         const uint8_t *rec = node + off;
-        // Key: keyLen(1) + body
+        // Key: keyLen(1) + reserved(1) + parID(4) + nameLen(1) + name[]
+        if (rec_size < 7)
+            continue;
         uint8_t key_len = rec[0];
         if (key_len < 1 + 4 || key_len > 37)
             continue;
-        // Catalog key body: reserved(1) + parID(4) + nameLen(1) + name[]
-        uint32_t parent_cnid = be32(rec + 2);
+        uint32_t parent_cnid = RD_BE32(rec + 2);
         uint8_t name_len = rec[6];
-        if (name_len > 31)
+        // The name must lie inside both the key and the record.  The key
+        // length alone bounds neither, and the name is read -- and shown to
+        // the user -- before anything else checks it.
+        if (name_len > 31 || (size_t)name_len + 6 > key_len || (size_t)name_len + 7 > rec_size)
             continue;
         // Key storage (including keyLen byte) padded up to even length.
         size_t key_bytes = 1 + key_len;
@@ -371,10 +334,10 @@ static int parse_leaf_node(const uint8_t *node, size_t node_size, cat_rec_t **ds
         r->record_type = type;
 
         if (type == CAT_REC_FOLDER && data_size >= 10) {
-            r->valence = be16(rec_data + FOLDER_OFF_VALENCE);
-            r->cnid = be32(rec_data + FOLDER_OFF_DIRID);
+            r->valence = RD_BE16(rec_data + FOLDER_OFF_VALENCE);
+            r->cnid = RD_BE32(rec_data + FOLDER_OFF_DIRID);
         } else if (type == CAT_REC_FILE && data_size >= 98) {
-            r->cnid = be32(rec_data + FILE_OFF_FILEID);
+            r->cnid = RD_BE32(rec_data + FILE_OFF_FILEID);
             // 0x00 = data fork, 0xFF = resource fork (HFS convention,
             // matches the EO-file key's forkType byte).
             parse_fork(rec_data, FILE_OFF_DATA_LGLEN, FILE_OFF_DATA_EXT, r->cnid, 0x00, &r->data_fork);
@@ -406,7 +369,7 @@ static int parse_leaf_node(const uint8_t *node, size_t node_size, cat_rec_t **ds
 // errno on failure; caller frees *out_buf.  If the file is empty
 // (drXTFlSize == 0) this returns 0 with *out_size == 0.
 static int load_xt_file(hfs_volume_t *vol, const uint8_t *mdb, uint8_t **out_buf, size_t *out_size) {
-    uint32_t xt_size = be32(mdb + MDB_OFF_XT_FL_SIZE);
+    uint32_t xt_size = RD_BE32(mdb + MDB_OFF_XT_FL_SIZE);
     *out_buf = NULL;
     *out_size = 0;
     if (xt_size == 0)
@@ -418,8 +381,8 @@ static int load_xt_file(hfs_volume_t *vol, const uint8_t *mdb, uint8_t **out_buf
         return -ENOMEM;
     uint64_t filled = 0;
     for (int i = 0; i < HFS_INLINE_EXTENTS && filled < xt_size; i++) {
-        uint32_t start = be16(mdb + MDB_OFF_XT_EXT_REC + i * 4);
-        uint32_t count = be16(mdb + MDB_OFF_XT_EXT_REC + i * 4 + 2);
+        uint32_t start = RD_BE16(mdb + MDB_OFF_XT_EXT_REC + i * 4);
+        uint32_t count = RD_BE16(mdb + MDB_OFF_XT_EXT_REC + i * 4 + 2);
         if (count == 0)
             continue;
         uint64_t ext_bytes = (uint64_t)count * vol->alloc_block_size;
@@ -427,9 +390,9 @@ static int load_xt_file(hfs_volume_t *vol, const uint8_t *mdb, uint8_t **out_buf
         uint64_t take = xt_size - filled;
         if (take > ext_bytes)
             take = ext_bytes;
-        if (byte_off + take > vol->partition_size)
+        if (!image_range_fits(byte_off, take, vol->partition_size))
             break;
-        int rc = disk_read_bytes(vol->img, vol->partition_off + byte_off, buf + filled, (size_t)take);
+        int rc = read_partition(vol, byte_off, buf + filled, (size_t)take);
         if (rc < 0) {
             free(buf);
             return rc;
@@ -455,30 +418,24 @@ static int load_xt_file(hfs_volume_t *vol, const uint8_t *mdb, uint8_t **out_buf
 // implies a 7-byte key body of forkType(1) + fileNumber(4) + startBlock(2)).
 static int parse_xt_leaf_node(const uint8_t *node, size_t node_size, hfs_xt_rec_t **dst, size_t *dst_n,
                               size_t *dst_cap) {
-    uint16_t nrecs = be16(node + NODE_OFF_NRECS);
+    uint16_t nrecs = RD_BE16(node + NODE_OFF_NRECS);
     if (node_size < 14 + (size_t)(nrecs + 1) * 2)
         return -EINVAL;
     for (uint16_t i = 0; i < nrecs; i++) {
-        uint16_t off = be16(node + node_size - (i + 1) * 2);
-        uint16_t next = be16(node + node_size - (i + 2) * 2);
+        uint16_t off = RD_BE16(node + node_size - (i + 1) * 2);
+        uint16_t next = RD_BE16(node + node_size - (i + 2) * 2);
         if (off < 14 || next > node_size || next <= off)
             continue;
         size_t rec_size = next - off;
         const uint8_t *rec = node + off;
-        uint8_t key_len = rec[0];
-        // EO key is exactly 7 bytes: forkType + fileNumber + startBlock.
-        if (key_len != 7)
+        // keyLen(1) + a 7-byte key (forkType, fileNumber, startBlock), then
+        // three extents (12 bytes).  Checked before any field is read.
+        const size_t key_bytes = 1 + 7;
+        if (rec_size < key_bytes + 12 || rec[0] != 7)
             continue;
-        // Key body starts at rec+1.
         uint8_t fork_type = rec[1];
-        uint32_t file_id = be32(rec + 2);
-        uint16_t start_block = be16(rec + 6);
-        // Key storage rounds up to even.
-        size_t key_bytes = 1 + key_len; // == 8, already even
-        if (key_bytes & 1)
-            key_bytes++;
-        if (key_bytes + 12 > rec_size)
-            continue; // need 12 bytes of extent data
+        uint32_t file_id = RD_BE32(rec + 2);
+        uint16_t start_block = RD_BE16(rec + 6);
         const uint8_t *rec_data = rec + key_bytes;
 
         if (*dst_n == *dst_cap) {
@@ -495,8 +452,8 @@ static int parse_xt_leaf_node(const uint8_t *node, size_t node_size, hfs_xt_rec_
         r->file_id = file_id;
         r->start_block = start_block;
         for (int e = 0; e < HFS_INLINE_EXTENTS; e++) {
-            r->extents[e].start_ablock = be16(rec_data + e * 4);
-            r->extents[e].num_ablocks = be16(rec_data + e * 4 + 2);
+            r->extents[e].start_ablock = RD_BE16(rec_data + e * 4);
+            r->extents[e].num_ablocks = RD_BE16(rec_data + e * 4 + 2);
         }
     }
     return 0;
@@ -523,7 +480,7 @@ static int collect_xt_records(hfs_volume_t *vol, const uint8_t *xt_buf, size_t x
             free(dst);
             return rc;
         }
-        node_idx = be32(node + NODE_OFF_F_LINK);
+        node_idx = RD_BE32(node + NODE_OFF_F_LINK);
     }
     vol->xt_records = dst;
     vol->n_xt_records = n;
@@ -574,7 +531,7 @@ static int collect_catalog_records(hfs_volume_t *vol, const uint8_t *cat_buf, si
             free(dst);
             return rc;
         }
-        node_idx = be32(node + NODE_OFF_F_LINK);
+        node_idx = RD_BE32(node + NODE_OFF_F_LINK);
     }
 
     vol->records = dst;
@@ -653,19 +610,29 @@ static void fill_dirent(const cat_rec_t *r, hfs_dirent_t *out) {
 // Open a classic HFS volume.  `mdb` is the already-read 512-byte Master
 // Directory Block (signature "BD" verified by the caller); re-using it
 // avoids a second read.
-static hfs_volume_t *open_classic(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size,
+// Validate a B-tree node size read from a header record: a power of two in
+// [512, max] and no larger than the file we loaded.  Classic HFS allows up
+// to 8192 (HFS_NODE_MAX), HFS+ up to 32768 (HFSP_NODE_MAX); every B-tree of
+// both goes through here.
+#define HFS_NODE_MAX  8192
+#define HFSP_NODE_MAX 32768
+static bool node_size_ok(size_t node_size, size_t max, size_t file_size) {
+    return node_size >= 512 && node_size <= max && (node_size & (node_size - 1)) == 0 && node_size <= file_size;
+}
+
+static hfs_volume_t *open_classic(gs_source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size,
                                   const uint8_t *mdb) {
     hfs_volume_t *vol = calloc(1, sizeof(*vol));
     if (!vol)
         return NULL;
-    vol->img = img;
+    vol->src = gs_source_retain(src);
     vol->partition_off = partition_byte_offset;
     vol->partition_size = partition_byte_size;
-    vol->alloc_block_size = be32(mdb + MDB_OFF_AL_BLK_SIZ);
-    uint32_t al_bl_st = be16(mdb + MDB_OFF_AL_BL_ST);
+    vol->alloc_block_size = RD_BE32(mdb + MDB_OFF_AL_BLK_SIZ);
+    uint32_t al_bl_st = RD_BE16(mdb + MDB_OFF_AL_BL_ST);
     vol->alloc_block0_byte_off = (uint64_t)al_bl_st * 512;
     if (vol->alloc_block_size == 0 || vol->alloc_block_size % 512 != 0) {
-        free(vol);
+        hfs_close(vol);
         return NULL;
     }
 
@@ -680,40 +647,32 @@ static hfs_volume_t *open_classic(image_t *img, uint64_t partition_byte_offset, 
     size_t cat_size = 0;
     int rc = load_catalog_file(vol, mdb, &cat, &cat_size);
     if (rc < 0) {
-        free(vol);
+        hfs_close(vol);
         return NULL;
     }
 
     // Parse B-tree header node (node 0).  Standard HFS node size is 512.
     if (cat_size < 14 + 106) {
         free(cat);
-        free(vol);
+        hfs_close(vol);
         return NULL;
     }
     // The header record starts right after the 14-byte node descriptor.
-    size_t node_size = be16(cat + 14 + HDR_OFF_NODE_SIZE);
+    size_t node_size = RD_BE16(cat + 14 + HDR_OFF_NODE_SIZE);
     if (node_size == 0)
         node_size = 512;
-    if (node_size < 512 || node_size > 8192 || (node_size & (node_size - 1)) != 0) {
-        // node_size must be a power of two in [512, 8192].
+    // A catalog shorter than one node would send the leaf walker past EOF.
+    if (!node_size_ok(node_size, HFS_NODE_MAX, cat_size)) {
         free(cat);
-        free(vol);
+        hfs_close(vol);
         return NULL;
     }
-    // Reject volumes whose catalog file is shorter than one B-tree node —
-    // otherwise the leaf-chain walker below reads garbage past EOF.
-    if (cat_size < node_size) {
-        free(cat);
-        free(vol);
-        return NULL;
-    }
-    uint32_t first_leaf = be32(cat + 14 + HDR_OFF_FIRST_LEAF);
+    uint32_t first_leaf = RD_BE32(cat + 14 + HDR_OFF_FIRST_LEAF);
 
     rc = collect_catalog_records(vol, cat, cat_size, node_size, first_leaf);
     free(cat);
     if (rc < 0) {
-        free(vol->records);
-        free(vol);
+        hfs_close(vol);
         return NULL;
     }
 
@@ -726,9 +685,9 @@ static hfs_volume_t *open_classic(image_t *img, uint64_t partition_byte_offset, 
     uint8_t *xt = NULL;
     size_t xt_size = 0;
     if (load_xt_file(vol, mdb, &xt, &xt_size) == 0 && xt != NULL && xt_size >= 14 + HDR_OFF_NODE_SIZE + 2) {
-        size_t xt_node_size = be16(xt + 14 + HDR_OFF_NODE_SIZE);
-        if (xt_node_size > 0 && xt_node_size <= xt_size) {
-            uint32_t xt_first_leaf = be32(xt + 14 + HDR_OFF_FIRST_LEAF);
+        size_t xt_node_size = RD_BE16(xt + 14 + HDR_OFF_NODE_SIZE);
+        if (node_size_ok(xt_node_size, HFS_NODE_MAX, xt_size)) {
+            uint32_t xt_first_leaf = RD_BE32(xt + 14 + HDR_OFF_FIRST_LEAF);
             if (collect_xt_records(vol, xt, xt_size, xt_node_size, xt_first_leaf) < 0) {
                 // Non-fatal — fall through with whatever (if anything)
                 // we did manage to collect.
@@ -756,10 +715,10 @@ static void utf16be_to_utf8(const uint8_t *src, size_t units, char *dst, size_t 
     if (dstcap == 0)
         return;
     for (size_t i = 0; i < units; i++) {
-        uint32_t c = be16(src + i * 2);
+        uint32_t c = RD_BE16(src + i * 2);
         if (c >= 0xD800 && c <= 0xDBFF) {
             // High surrogate: combine with the following low surrogate.
-            uint32_t lo = (i + 1 < units) ? be16(src + (i + 1) * 2) : 0;
+            uint32_t lo = (i + 1 < units) ? RD_BE16(src + (i + 1) * 2) : 0;
             if (lo >= 0xDC00 && lo <= 0xDFFF) {
                 c = 0x10000 + ((c - 0xD800) << 10) + (lo - 0xDC00);
                 i++;
@@ -798,12 +757,12 @@ static void utf16be_to_utf8(const uint8_t *src, size_t units, char *dst, size_t 
 
 // Populate a fork descriptor from an 80-byte HFSPlusForkData (8 extents).
 static void parse_hfsplus_fork(const uint8_t *fd, uint32_t file_id, uint8_t fork_type, hfs_fork_t *out) {
-    out->logical_size = be64(fd + FORKDATA_OFF_LGLEN);
+    out->logical_size = RD_BE64(fd + FORKDATA_OFF_LGLEN);
     out->file_id = file_id;
     out->fork_type = fork_type;
     for (int i = 0; i < HFS_FORK_EXTENTS; i++) {
-        out->extents[i].start_ablock = be32(fd + FORKDATA_OFF_EXTENT + i * 8);
-        out->extents[i].num_ablocks = be32(fd + FORKDATA_OFF_EXTENT + i * 8 + 4);
+        out->extents[i].start_ablock = RD_BE32(fd + FORKDATA_OFF_EXTENT + i * 8);
+        out->extents[i].num_ablocks = RD_BE32(fd + FORKDATA_OFF_EXTENT + i * 8 + 4);
     }
 }
 
@@ -834,27 +793,27 @@ static int read_fork_to_buffer(hfs_volume_t *vol, const hfs_fork_t *fork, uint64
 // HFSPlusExtentKey; data is 8 extent descriptors (64 bytes).
 static int parse_hfsplus_xt_leaf(const uint8_t *node, size_t node_size, hfs_xt_rec_t **dst, size_t *dst_n,
                                  size_t *dst_cap) {
-    uint16_t nrecs = be16(node + NODE_OFF_NRECS);
+    uint16_t nrecs = RD_BE16(node + NODE_OFF_NRECS);
     if (node_size < 14 + (size_t)(nrecs + 1) * 2)
         return -EINVAL;
     for (uint16_t i = 0; i < nrecs; i++) {
-        uint16_t off = be16(node + node_size - (i + 1) * 2);
-        uint16_t next = be16(node + node_size - (i + 2) * 2);
+        uint16_t off = RD_BE16(node + node_size - (i + 1) * 2);
+        uint16_t next = RD_BE16(node + node_size - (i + 2) * 2);
         if (off < 14 || next > node_size || next <= off)
             continue;
         size_t rec_size = next - off;
         const uint8_t *rec = node + off;
         if (rec_size < 2)
             continue;
-        uint16_t key_len = be16(rec); // big (uint16) keys
+        uint16_t key_len = RD_BE16(rec); // big (uint16) keys
         if (key_len != 10)
             continue;
         size_t key_area = 2 + 10;
         if (key_area + 64 > rec_size)
             continue; // need 8 extents of data
         uint8_t fork_type = rec[2]; // forkType (rec[3] is pad)
-        uint32_t file_id = be32(rec + 4);
-        uint32_t start_block = be32(rec + 8);
+        uint32_t file_id = RD_BE32(rec + 4);
+        uint32_t start_block = RD_BE32(rec + 8);
         const uint8_t *recdata = rec + key_area;
 
         if (*dst_n == *dst_cap) {
@@ -871,8 +830,8 @@ static int parse_hfsplus_xt_leaf(const uint8_t *node, size_t node_size, hfs_xt_r
         r->file_id = file_id;
         r->start_block = start_block;
         for (int e = 0; e < HFS_FORK_EXTENTS; e++) {
-            r->extents[e].start_ablock = be32(recdata + e * 8);
-            r->extents[e].num_ablocks = be32(recdata + e * 8 + 4);
+            r->extents[e].start_ablock = RD_BE32(recdata + e * 8);
+            r->extents[e].num_ablocks = RD_BE32(recdata + e * 8 + 4);
         }
     }
     return 0;
@@ -898,7 +857,7 @@ static int collect_hfsplus_xt(hfs_volume_t *vol, const uint8_t *xt_buf, size_t x
             free(dst);
             return rc;
         }
-        node_idx = be32(node + NODE_OFF_F_LINK);
+        node_idx = RD_BE32(node + NODE_OFF_F_LINK);
     }
     vol->xt_records = dst;
     vol->n_xt_records = n;
@@ -910,12 +869,12 @@ static int collect_hfsplus_xt(hfs_volume_t *vol, const uint8_t *xt_buf, size_t x
 // root folder record itself), from which we recover the volume name.
 static int parse_hfsplus_catalog_leaf(const uint8_t *node, size_t node_size, cat_rec_t **dst, size_t *dst_n,
                                       size_t *dst_cap, char *vol_name, size_t vol_name_cap) {
-    uint16_t nrecs = be16(node + NODE_OFF_NRECS);
+    uint16_t nrecs = RD_BE16(node + NODE_OFF_NRECS);
     if (node_size < 14 + (size_t)(nrecs + 1) * 2)
         return -EINVAL;
     for (uint16_t i = 0; i < nrecs; i++) {
-        uint16_t off = be16(node + node_size - (i + 1) * 2);
-        uint16_t next = be16(node + node_size - (i + 2) * 2);
+        uint16_t off = RD_BE16(node + node_size - (i + 1) * 2);
+        uint16_t next = RD_BE16(node + node_size - (i + 2) * 2);
         if (off < 14 || next > node_size || next <= off)
             continue;
         size_t rec_size = next - off;
@@ -923,12 +882,12 @@ static int parse_hfsplus_catalog_leaf(const uint8_t *node, size_t node_size, cat
         if (rec_size < 2)
             continue;
         // HFSPlusCatalogKey: keyLength(2) parentID(4) nodeName{len:2, UTF16}.
-        uint16_t key_len = be16(rec);
+        uint16_t key_len = RD_BE16(rec);
         size_t key_area = 2 + (size_t)key_len;
         if (key_len < 6 || key_area > rec_size)
             continue;
-        uint32_t parent_cnid = be32(rec + HFSP_KEY_OFF_PARENT);
-        uint16_t name_units = be16(rec + HFSP_KEY_OFF_NAMELEN);
+        uint32_t parent_cnid = RD_BE32(rec + HFSP_KEY_OFF_PARENT);
+        uint16_t name_units = RD_BE16(rec + HFSP_KEY_OFF_NAMELEN);
         if (name_units > 255 || HFSP_KEY_OFF_NAME + (size_t)name_units * 2 > key_area)
             continue;
         const uint8_t *namep = rec + HFSP_KEY_OFF_NAME;
@@ -936,12 +895,12 @@ static int parse_hfsplus_catalog_leaf(const uint8_t *node, size_t node_size, cat
         size_t data_size = rec_size - key_area;
         if (data_size < 2)
             continue;
-        int16_t type = (int16_t)be16(recdata);
+        int16_t type = (int16_t)RD_BE16(recdata);
 
         // The root folder's thread record holds the volume name.
         if (type == HFSP_REC_FOLDER_THREAD && parent_cnid == HFSP_ROOT_FOLDER_ID && vol_name) {
             uint16_t vn_units =
-                (data_size >= HFSP_THREAD_OFF_NAMELEN + 2) ? be16(recdata + HFSP_THREAD_OFF_NAMELEN) : 0;
+                (data_size >= HFSP_THREAD_OFF_NAMELEN + 2) ? RD_BE16(recdata + HFSP_THREAD_OFF_NAMELEN) : 0;
             if (vn_units > 0 && (size_t)HFSP_THREAD_OFF_NAMELEN + 2 + (size_t)vn_units * 2 <= data_size)
                 utf16be_to_utf8(recdata + HFSP_THREAD_OFF_NAMELEN + 2, vn_units, vol_name, vol_name_cap);
             continue;
@@ -968,15 +927,15 @@ static int parse_hfsplus_catalog_leaf(const uint8_t *node, size_t node_size, cat
 
         if (type == HFSP_REC_FOLDER) {
             r->record_type = CAT_REC_FOLDER;
-            r->valence = be32(recdata + HFSP_FOLDER_OFF_VALENCE);
-            r->cnid = be32(recdata + HFSP_FOLDER_OFF_ID);
+            r->valence = RD_BE32(recdata + HFSP_FOLDER_OFF_VALENCE);
+            r->cnid = RD_BE32(recdata + HFSP_FOLDER_OFF_ID);
             // The root folder record (folderID==2) names the volume; use it
             // as a fallback if the thread record didn't already set the name.
             if (r->cnid == HFSP_ROOT_FOLDER_ID && vol_name && vol_name[0] == '\0')
                 snprintf(vol_name, vol_name_cap, "%s", r->name);
         } else { // HFSP_REC_FILE
             r->record_type = CAT_REC_FILE;
-            r->cnid = be32(recdata + HFSP_FILE_OFF_ID);
+            r->cnid = RD_BE32(recdata + HFSP_FILE_OFF_ID);
             parse_hfsplus_fork(recdata + HFSP_FILE_OFF_DATAFORK, r->cnid, 0x00, &r->data_fork);
             parse_hfsplus_fork(recdata + HFSP_FILE_OFF_RSRCFORK, r->cnid, 0xFF, &r->rsrc_fork);
             // FInfo (16) + FXInfo (16) are contiguous in the record.
@@ -1007,39 +966,33 @@ static int collect_hfsplus_catalog(hfs_volume_t *vol, const uint8_t *cat_buf, si
             free(dst);
             return rc;
         }
-        node_idx = be32(node + NODE_OFF_F_LINK);
+        node_idx = RD_BE32(node + NODE_OFF_F_LINK);
     }
     vol->records = dst;
     vol->n_records = n;
     return 0;
 }
 
-// Validate a B-tree node size read from a header record: power of two in
-// [512, 32768] and no larger than the file we loaded.
-static bool node_size_ok(size_t node_size, size_t file_size) {
-    return node_size >= 512 && node_size <= 32768 && (node_size & (node_size - 1)) == 0 && node_size <= file_size;
-}
-
 // Open an HFS+ / HFSX volume whose Volume Header sits at offset 1024 from
 // `partition_byte_offset`.  Returns NULL on any error.
-static hfs_volume_t *open_plus(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
+static hfs_volume_t *open_plus(gs_source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
     if (partition_byte_size < HFSP_VH_OFF_IN_VOL + 512)
         return NULL;
 
     uint8_t vh[512];
-    if (disk_read_data(img, partition_byte_offset + HFSP_VH_OFF_IN_VOL, vh, sizeof(vh)) != sizeof(vh))
+    if (gs_source_read_exact(src, partition_byte_offset + HFSP_VH_OFF_IN_VOL, vh, sizeof(vh)) != 0)
         return NULL;
-    uint16_t sig = be16(vh + VH_OFF_SIG);
+    uint16_t sig = RD_BE16(vh + VH_OFF_SIG);
     if (sig != HFS_SIG_HP && sig != HFS_SIG_HX)
         return NULL;
-    uint32_t block_size = be32(vh + VH_OFF_BLOCK_SIZE);
+    uint32_t block_size = RD_BE32(vh + VH_OFF_BLOCK_SIZE);
     if (block_size == 0 || block_size % 512 != 0 || block_size > (1u << 20))
         return NULL;
 
     hfs_volume_t *vol = calloc(1, sizeof(*vol));
     if (!vol)
         return NULL;
-    vol->img = img;
+    vol->src = gs_source_retain(src);
     vol->partition_off = partition_byte_offset;
     vol->partition_size = partition_byte_size;
     vol->alloc_block_size = block_size;
@@ -1056,10 +1009,10 @@ static hfs_volume_t *open_plus(image_t *img, uint64_t partition_byte_offset, uin
         size_t xt_size = 0;
         if (read_fork_to_buffer(vol, &ext_fork, 32u * 1024 * 1024, &xt, &xt_size) == 0) {
             if (xt_size >= 14 + HDR_OFF_NODE_SIZE + 2) {
-                size_t xt_node = be16(xt + 14 + HDR_OFF_NODE_SIZE);
-                uint32_t xt_first = be32(xt + 14 + HDR_OFF_FIRST_LEAF);
+                size_t xt_node = RD_BE16(xt + 14 + HDR_OFF_NODE_SIZE);
+                uint32_t xt_first = RD_BE32(xt + 14 + HDR_OFF_FIRST_LEAF);
                 // An empty extents tree (firstLeafNode == 0) is normal.
-                if (xt_first != 0 && node_size_ok(xt_node, xt_size))
+                if (xt_first != 0 && node_size_ok(xt_node, HFSP_NODE_MAX, xt_size))
                     (void)collect_hfsplus_xt(vol, xt, xt_size, xt_node, xt_first); // non-fatal
             }
             free(xt);
@@ -1072,30 +1025,25 @@ static hfs_volume_t *open_plus(image_t *img, uint64_t partition_byte_offset, uin
     uint8_t *cat = NULL;
     size_t cat_size = 0;
     if (read_fork_to_buffer(vol, &cat_fork, 128u * 1024 * 1024, &cat, &cat_size) < 0) {
-        free(vol->xt_records);
-        free(vol);
+        hfs_close(vol);
         return NULL;
     }
     if (cat_size < 14 + HDR_OFF_NODE_SIZE + 2) {
         free(cat);
-        free(vol->xt_records);
-        free(vol);
+        hfs_close(vol);
         return NULL;
     }
-    size_t node_size = be16(cat + 14 + HDR_OFF_NODE_SIZE);
-    uint32_t first_leaf = be32(cat + 14 + HDR_OFF_FIRST_LEAF);
-    if (!node_size_ok(node_size, cat_size)) {
+    size_t node_size = RD_BE16(cat + 14 + HDR_OFF_NODE_SIZE);
+    uint32_t first_leaf = RD_BE32(cat + 14 + HDR_OFF_FIRST_LEAF);
+    if (!node_size_ok(node_size, HFSP_NODE_MAX, cat_size)) {
         free(cat);
-        free(vol->xt_records);
-        free(vol);
+        hfs_close(vol);
         return NULL;
     }
     int rc = collect_hfsplus_catalog(vol, cat, cat_size, node_size, first_leaf);
     free(cat);
     if (rc < 0) {
-        free(vol->records);
-        free(vol->xt_records);
-        free(vol);
+        hfs_close(vol);
         return NULL;
     }
 
@@ -1107,27 +1055,34 @@ static hfs_volume_t *open_plus(image_t *img, uint64_t partition_byte_offset, uin
 // ---- Public API -----------------------------------------------------------
 
 hfs_volume_t *hfs_open(image_t *img, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
-    if (!img || partition_byte_size < HFS_MDB_OFF_IN_VOL + 512)
+    gs_source_t *src = image_source(img);
+    hfs_volume_t *vol = hfs_open_source(src, partition_byte_offset, partition_byte_size);
+    gs_source_release(src); // the volume holds its own reference
+    return vol;
+}
+
+hfs_volume_t *hfs_open_source(gs_source_t *src, uint64_t partition_byte_offset, uint64_t partition_byte_size) {
+    if (!src || partition_byte_size < HFS_MDB_OFF_IN_VOL + 512)
         return NULL;
 
     // Read the 512-byte block at volume+1024: a classic HFS MDB or an HFS+
     // Volume Header.  The signature word decides which parser to run.
     uint8_t hdr[512];
-    if (disk_read_data(img, partition_byte_offset + HFS_MDB_OFF_IN_VOL, hdr, sizeof(hdr)) != sizeof(hdr))
+    if (gs_source_read_exact(src, partition_byte_offset + HFS_MDB_OFF_IN_VOL, hdr, sizeof(hdr)) != 0)
         return NULL;
-    uint16_t sig = be16(hdr + MDB_OFF_SIG);
+    uint16_t sig = RD_BE16(hdr + MDB_OFF_SIG);
 
     if (sig == HFS_SIG_HP || sig == HFS_SIG_HX)
-        return open_plus(img, partition_byte_offset, partition_byte_size);
+        return open_plus(src, partition_byte_offset, partition_byte_size);
 
     if (sig == HFS_SIG_BD) {
         // Classic HFS — unless it's a thin wrapper around an embedded HFS+
         // volume (drEmbedSigWord == "H+"), in which case redirect there.
-        if (be16(hdr + MDB_OFF_EMBED_SIG) == HFS_SIG_HP) {
-            uint32_t al_blk_siz = be32(hdr + MDB_OFF_AL_BLK_SIZ);
-            uint32_t al_bl_st = be16(hdr + MDB_OFF_AL_BL_ST);
-            uint32_t emb_start = be16(hdr + MDB_OFF_EMBED_START);
-            uint32_t emb_count = be16(hdr + MDB_OFF_EMBED_COUNT);
+        if (RD_BE16(hdr + MDB_OFF_EMBED_SIG) == HFS_SIG_HP) {
+            uint32_t al_blk_siz = RD_BE32(hdr + MDB_OFF_AL_BLK_SIZ);
+            uint32_t al_bl_st = RD_BE16(hdr + MDB_OFF_AL_BL_ST);
+            uint32_t emb_start = RD_BE16(hdr + MDB_OFF_EMBED_START);
+            uint32_t emb_count = RD_BE16(hdr + MDB_OFF_EMBED_COUNT);
             if (al_blk_siz == 0 || al_blk_siz % 512 != 0)
                 return NULL;
             // Embedded-volume location, per TN1150 "HFS Wrapper".
@@ -1137,9 +1092,9 @@ hfs_volume_t *hfs_open(image_t *img, uint64_t partition_byte_offset, uint64_t pa
                 return NULL;
             if (emb_size == 0 || emb_off + emb_size > partition_byte_size)
                 emb_size = partition_byte_size - emb_off; // tolerate a bad blockCount
-            return open_plus(img, partition_byte_offset + emb_off, emb_size);
+            return open_plus(src, partition_byte_offset + emb_off, emb_size);
         }
-        return open_classic(img, partition_byte_offset, partition_byte_size, hdr);
+        return open_classic(src, partition_byte_offset, partition_byte_size, hdr);
     }
 
     return NULL;
@@ -1150,6 +1105,7 @@ void hfs_close(hfs_volume_t *vol) {
         return;
     free(vol->records);
     free(vol->xt_records);
+    gs_source_release(vol->src);
     free(vol);
 }
 
@@ -1266,9 +1222,15 @@ int hfs_read_fork(hfs_volume_t *vol, const hfs_fork_t *fork, uint64_t off, void 
                 if (take > n - done)                                                                                   \
                     take = n - done;                                                                                   \
                 uint64_t ext_start_byte = vol->alloc_block0_byte_off + (uint64_t)(START) * vol->alloc_block_size;      \
-                int _rc = read_partition(vol, ext_start_byte + rel, dst + done, (size_t)take);                         \
-                if (_rc < 0)                                                                                           \
-                    return _rc;                                                                                        \
+                if (image_range_fits(ext_start_byte + rel, take, vol->partition_size)) {                               \
+                    int _rc = read_partition(vol, ext_start_byte + rel, dst + done, (size_t)take);                     \
+                    if (_rc < 0)                                                                                       \
+                        return _rc;                                                                                    \
+                } else {                                                                                               \
+                    /* An extent outside the partition is a hole, zero-filled like any range no extent */              \
+                    /* covers -- not a reason to fail the whole fork. */                                               \
+                    memset(dst + done, 0, (size_t)take);                                                               \
+                }                                                                                                      \
                 done += (size_t)take;                                                                                  \
             }                                                                                                          \
             cursor = ext_end;                                                                                          \

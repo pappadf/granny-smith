@@ -1,5 +1,5 @@
 // Reactive state for the Debug panel view. UI-only — not persisted.
-// Section expansion lives here (Phase 7 will tee this to OPFS).
+// Section expansion lives here.
 
 export type MmuSubtab = 'state' | 'translate' | 'map' | 'descriptors';
 export type MemoryMode = 'logical' | 'physical';
@@ -20,6 +20,8 @@ interface DebugState {
     watchpoints: boolean;
     callstack: boolean;
   };
+  /** Open state of each auxiliary core's section, by its node name. */
+  auxOpen: Record<string, boolean>;
   /** Last-rendered register values keyed by name (e.g. 'd0', 'pc'). Used
    *  by RegistersSection to flash changed values for ~800 ms after a
    *  Step. */
@@ -27,7 +29,7 @@ interface DebugState {
   /** Monotonic counter bumped after every Step Into / Step Over. The
    *  Debug panes watch this in their $effects in addition to
    *  machine.status — stepping while paused doesn't change run-state
-   *  (paused → paused, no onRunStateChange push), so we need a
+   *  (paused → paused, no mode event), so we need a
    *  reactive signal of "PC moved, re-fetch" to trigger refreshes. */
   refreshGen: number;
 }
@@ -52,6 +54,7 @@ export const debug: DebugState = $state({
     watchpoints: false,
     callstack: false,
   },
+  auxOpen: {},
   registersPrev: {},
   refreshGen: 0,
 });
@@ -83,8 +86,7 @@ export function inspectMemoryAt(addr: number): void {
   debug.sections.memory = true;
 }
 
-// Phase 7 will surface this via OPFS persistence; for now it's just a
-// session reset hook used by tests + by the panel-position change
+// A session reset hook used by tests + by the panel-position change
 // handler if we want to reset orientations.
 export function resetDebugSections(): void {
   debug.sections = {

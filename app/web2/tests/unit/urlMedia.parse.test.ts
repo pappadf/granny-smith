@@ -17,11 +17,11 @@ describe('parseUrlMediaParams', () => {
   });
 
   it('extracts rom, vrom, model, speed', () => {
-    const p = parseUrlMediaParams(make('rom=/r&vrom=/v&model=Macintosh+Plus&speed=max'));
+    const p = parseUrlMediaParams(make('rom=/r&vrom=/v&model=Macintosh+Plus&speed=turbo'));
     expect(p.rom).toBe('/r');
     expect(p.vrom).toBe('/v');
     expect(p.model).toBe('Macintosh Plus');
-    expect(p.speed).toBe('max');
+    expect(p.speed).toBe('turbo');
   });
 
   it('collects floppies fd0..fdN', () => {
@@ -57,5 +57,41 @@ describe('hasUrlMedia', () => {
   });
   it('false when only an unrelated key is set', () => {
     expect(hasUrlMedia(parseUrlMediaParams(make('foo=bar')))).toBe(false);
+  });
+});
+
+describe('parseUrlMediaParams — names', () => {
+  it('matches names case-insensitively', () => {
+    const p = parseUrlMediaParams(make('ROM=/r&Model=iici&HD0=/h&Fd1=/f&CD=/c'));
+    expect(p.rom).toBe('/r');
+    expect(p.model).toBe('iici');
+    expect(p.cd).toBe('/c');
+    expect(p.hardDisks).toEqual([{ slot: 'hd0', url: '/h' }]);
+    expect(p.floppies).toEqual([{ slot: 'fd1', url: '/f' }]);
+  });
+
+  it('HD and FD mean the first bay and drive', () => {
+    const p = parseUrlMediaParams(make('HD=/h&fd=/f'));
+    expect(p.hardDisks).toEqual([{ slot: 'hd0', url: '/h' }]);
+    expect(p.floppies).toEqual([{ slot: 'fd0', url: '/f' }]);
+  });
+
+  it('the first spelling of a name wins', () => {
+    const p = parseUrlMediaParams(make('rom=/first&ROM=/second&hd0=/a&HD=/b'));
+    expect(p.rom).toBe('/first');
+    expect(p.hardDisks).toEqual([{ slot: 'hd0', url: '/a' }]);
+  });
+});
+
+describe('parseUrlMediaParams — two-chip ROM', () => {
+  it('a second ROM= is the other chip', () => {
+    const p = parseUrlMediaParams(make('ROM=/even.bin&rom=/odd.bin'));
+    expect(p.rom).toBe('/even.bin');
+    expect(p.romPair).toBe('/odd.bin');
+  });
+  it('one ROM= has no pair, and a third is ignored', () => {
+    expect(parseUrlMediaParams(make('rom=/r')).romPair).toBeNull();
+    const p = parseUrlMediaParams(make('rom=/a&rom=/b&rom=/c'));
+    expect([p.rom, p.romPair]).toEqual(['/a', '/b']);
   });
 });

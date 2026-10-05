@@ -3218,7 +3218,6 @@ fpu_unpacked_t fpu_op_asin(fpu_state_t *fpu, fpu_unpacked_t src, float80_reg_t r
         // |X| >= 1. Check if exactly 1.0
         fpu_unpacked_t abs_src = src;
         abs_src.sign = false;
-        fpu_unpacked_t one = {false, 0, 0x8000000000000000ULL, 0};
 
         // fabs(X) == 1.0?
         if (abs_src.exponent == 0 && abs_src.mantissa_hi == 0x8000000000000000ULL && abs_src.mantissa_lo == 0) {

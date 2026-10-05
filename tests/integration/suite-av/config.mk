@@ -1,5 +1,4 @@
 # Integration suite: the AV family (Quadra 840AV / Centris 660AV)
-# (proposal-quadra-av.md §5.1)
 #
 # One daemon run; rows re-instantiate via machine.boot with every staging
 # argument named, and the shared library in ../lib/mac.script provides the
@@ -22,5 +21,5 @@ TEST_DESC := Cyclone/Tempest identity + 7.1 HD boot to the Finder desktop
 TEST_ROM := roms/q840av-q660av-5bf10fd1.rom
 TEST_ARGS := model=q840av ram=16384
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

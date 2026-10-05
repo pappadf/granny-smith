@@ -1,6 +1,6 @@
 # Integration test: IIcx + Display Card 24AC — floppy insert + launch System Info
 #
-# A variant of iicx-24ac.  Same boot: the genuine "Step B" artifact
+# A variant of iicx-24ac.  Same boot: the genuine pre-installed disk image
 # (systems/system_7_1_20mb_24ac_cd_32bit_gc.img — a 20 MB System 7.1 SCSI HD with
 # the 24AC cdev pre-installed and 32-bit addressing on) boots the IIcx + Display
 # Card 24AC to an 8-bpp COLOUR Finder desktop (640x480).  But rather than
@@ -39,7 +39,7 @@ machine.scsi.attach_hd "../../data/systems/system_7_1_20mb_24ac_cd_32bit_gc.img"
 # System Info (below) pops a modal "System Differences" dialog before running if
 # the machine's Disk Cache != 128 KB or AppleTalk != off vs its reference config.
 # Both settings live in the legacy 20-byte SysParam PRAM block (physical offsets
-# here; SysParam logical->physical map per docs/core/memory/pram.md §2):
+# here; SysParam logical->physical map per docs/internals/core/memory/pram.md §2):
 #   * Disk cache size  = SysParam $12 -> physical $0A, in 32 KB blocks -> 4 = 128 KB.
 #   * AppleTalk on/off = SysParam $03 (SPConfig) -> physical $13; active=$01,
 #     inactive=$22 (also SPPrint $0F -> physical $1F goes $00->$01 when inactive).
@@ -67,7 +67,7 @@ scheduler.run 200000000
 
 # The card that booted into the IIcx video slot ($9) is the 24AC, at 8-bpp
 # colour 640x480 — i.e. machine.nubus.video_card took effect.
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "slot $9 card != 24AC"
+assert machine.nubus.slot[9].card.name == "Macintosh Display Card 24AC" "slot $9 card != 24AC"
 assert machine.screen.width == 640 "boot: screen width != 640"
 assert machine.screen.height == 480 "boot: screen height != 480"
 assert (machine.memory.peek.b(0xF9D80001) & 0xE0) == 0x40 "boot: MODE depth latch != 8 bpp"

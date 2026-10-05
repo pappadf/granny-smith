@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // ppc_pd_classify.h
-// ppc_decode.h in its third role: the predecode CLASSIFIER (proposal §6.2).
+// ppc_decode.h in its third role: the predecode CLASSIFIER.
 // Included by ppc_run.c after the executors, with every OP_ leaf redefined
 // to return an id: the generated defaults return the leaf's T1 id (the raw
 // word travels in c), and the overrides below return a specialized id for

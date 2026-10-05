@@ -1,13 +1,17 @@
 <script lang="ts">
+  import Hint from '@/components/ui/Hint.svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
-  import TabStrip from '@/components/common/TabStrip.svelte';
+  import Tabs from '@/components/ui/Tabs.svelte';
   import { debug, toggleSection, type MmuSubtab } from '@/state/debug.svelte';
   import { machine } from '@/state/machine.svelte';
   import MmuStateTab from './MmuStateTab.svelte';
   import MmuTranslateTab from './MmuTranslateTab.svelte';
   import MmuMapTab from './MmuMapTab.svelte';
   import MmuDescriptorsTab from './MmuDescriptorsTab.svelte';
+  import SegmentedControl from '@/components/ui/SegmentedControl.svelte';
 
+  // Every tab reads the core's own MMU (bus/mmu.ts): its registers, a
+  // walk of one address, the mapped ranges, and raw descriptors.
   const TABS = [
     { key: 'state', label: 'State' },
     { key: 'translate', label: 'Translate' },
@@ -15,84 +19,51 @@
     { key: 'descriptors', label: 'Descriptors' },
   ] as const;
 
-  // Gate the MMU register panel on the typed capability kind directly: the
-  // TC/CRP/SRP/TT0/TT1/MMUSR views are a 68030 PMMU concept (the Lisa segment
-  // MMU and "none" never show them).  The other debug panels gate on the
-  // derived machine.mmuEnabled bool, which is the same condition expressed as
-  // the logical-vs-physical addressing flag they need.
-  const visible = $derived(machine.mmuKind === '68030_pmmu');
+  // Every MMU kind: the 68030 PMMU, the 68040, the PowerPC 601/604 and the
+  // Lisa's segment MMU all answer the same translate / walk / map /
+  // descriptor / peek (the section used to show only on a 68030, with
+  // fixtures).
+  const visible = $derived(machine.mmuKind !== 'none');
 </script>
 
 {#if visible}
   <CollapsibleSection title="MMU" open={debug.sections.mmu} onToggle={() => toggleSection('mmu')}>
     {#if machine.status === 'running'}
-      <p class="mmu-hint">Pause the machine to inspect MMU state.</p>
+      <Hint class="mmu-hint" inset="block">Pause the machine to inspect MMU state.</Hint>
     {:else}
-      <TabStrip
+      <Tabs
+        tabClass="tab"
         tabs={TABS}
         active={debug.mmuSubtab}
         onSelect={(k: MmuSubtab) => (debug.mmuSubtab = k)}
       >
         {#snippet accessory()}
-          <div class="su-toggle" role="group" aria-label="Supervisor / User root">
-            <button
-              type="button"
-              class="su-btn"
-              class:active={debug.mmuSupervisor}
-              onclick={() => (debug.mmuSupervisor = true)}
-              title="Supervisor root"
-            >
-              S
-            </button>
-            <button
-              type="button"
-              class="su-btn"
-              class:active={!debug.mmuSupervisor}
-              onclick={() => (debug.mmuSupervisor = false)}
-              title="User root"
-            >
-              U
-            </button>
-          </div>
+          <SegmentedControl
+            class="su-toggle"
+            optionClass="su-btn"
+            framed
+            label="Supervisor / User root"
+            value={debug.mmuSupervisor}
+            onChange={(v) => (debug.mmuSupervisor = v)}
+            options={[
+              { value: true, label: 'S', title: 'Supervisor root' },
+              { value: false, label: 'U', title: 'User root' },
+            ]}
+          />
         {/snippet}
-      </TabStrip>
-      {#if debug.mmuSubtab === 'state'}
-        <MmuStateTab />
-      {:else if debug.mmuSubtab === 'translate'}
+      </Tabs>
+      {#if debug.mmuSubtab === 'translate'}
         <MmuTranslateTab />
       {:else if debug.mmuSubtab === 'map'}
         <MmuMapTab />
-      {:else}
+      {:else if debug.mmuSubtab === 'descriptors'}
         <MmuDescriptorsTab />
+      {:else}
+        <MmuStateTab />
       {/if}
     {/if}
   </CollapsibleSection>
 {/if}
 
 <style>
-  .mmu-hint {
-    color: var(--gs-fg-muted);
-    font-size: 11px;
-    padding: 8px 16px;
-  }
-  .su-toggle {
-    display: inline-flex;
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    overflow: hidden;
-    height: 20px;
-  }
-  .su-btn {
-    background: transparent;
-    color: var(--gs-fg-muted);
-    border: none;
-    padding: 0 8px;
-    font-size: 11px;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .su-btn.active {
-    background: var(--gs-row-selected, rgba(80, 140, 220, 0.25));
-    color: var(--gs-fg-bright);
-  }
 </style>

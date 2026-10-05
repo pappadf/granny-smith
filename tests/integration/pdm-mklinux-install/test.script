@@ -14,10 +14,10 @@
 #   4  export, verify, publish
 #
 # THE HAND-OFF is where one emulator defect stood: a BAT register write must
-# not steer instruction fetch until the processor context-synchronizes
-# (gs-docs projects/mklinux/notes/bat-context-sync.md).  DR3's start.s writes
-# `mtibatu 0` then `mtibatl 0` with nothing but a trailing sync/isync, and the
-# half-written pair relocates the kernel's own text off the end of RAM.
+# not steer instruction fetch until the processor context-synchronizes.
+# DR3's start.s writes `mtibatu 0` then `mtibatl 0` with nothing but a
+# trailing sync/isync, and the half-written pair relocates the kernel's own
+# text off the end of RAM.
 #
 # EVERY SCREEN IS WAITED FOR, NOT BUDGETED FOR.  `screen()` runs in quanta
 # until the frame equals the golden and then lets the guest finish painting.
@@ -32,18 +32,18 @@
 #     after each match is what makes the typing land.
 #
 # KEYBOARD: DR3's ADB driver reads the arrow cluster at $3B-$3E and claims
-# $7B-$7E as the right-hand modifiers, so arrows are pressed as raw keycodes
-# (notes/dr3-guest-quirks.md).  And on the Root Password screen focus starts on
-# **Ok**, not on the field — one Tab reaches it, and typing without that Tab
-# goes nowhere at all.
+# $7B-$7E as the right-hand modifiers, so arrows are pressed as raw keycodes.
+# And on the Root Password screen focus starts on **Ok**, not on the field —
+# one Tab reaches it, and typing without that Tab goes nowhere at all.
 #
-# MEDIA: the DR3 disc and the drive `pdm-mklinux-disk` publishes both live
-# under local/gs-docs/projects/mklinux/, so this test SKIPS cleanly where they
-# are absent.
+# MEDIA: the DR3 disc and the drive `pdm-mklinux-disk` publishes are not
+# redistributable and not part of the test data.  Both are read from
+# $GS_EXTRA_MEDIA_DIR/mklinux/media/, and this test SKIPS cleanly where they
+# are absent; the finished image is published back to the same directory.
 
 include "../lib/mac.script"
 
-let mkl_root = "../../../local/gs-docs/projects/mklinux"
+let mkl_root = "${$EXTRA_MEDIA}/mklinux"
 let dr3_iso = "${$mkl_root}/media/MkLinux-DR3/MkLinux-DR3.iso"
 let drive = "${$mkl_root}/media/mklinux_single_macos_169mb.img"
 
@@ -119,18 +119,17 @@ def phase1_hand_off() {
     # The drive arrives with the map pdm-mklinux-disk wrote and nothing else.
     # Read BEFORE the attach — the VFS will not open an image the running
     # machine holds.
-    let parts = vfs.list("${$drive}")
+    let parts = files.list("${$drive}")
     assert len($parts) == 8 "the published drive has ${len($parts)} partitions, want 8"
     # Phase 4 compares the file it edits against the disc's pristine copy, and
     # by then the disc is in the drive.
-    storage.cp "${$dr3_iso}/partition1/Mac Files/lilo.conf" "${$WORK_DIR}/lilo-pristine.conf"
+    files.cp "${$dr3_iso}/partition1/Mac Files/lilo.conf" "${$WORK_DIR}/lilo-pristine.conf"
 
     machine.boot model="pm7100" ram=40960 rom="${$ROM}"
     machine.rtc.time = 0xE1100000
     machine.scsi.attach_hd "${$drive}" 0
     machine.scsi.attach_cdrom "${$dr3_iso}" 3
     scheduler.run 360000000
-    machine.memory.poke.l 0x9716A 0x2000
 
     # CLICK UNTIL IT TAKES.  The splash is only up for its ten-second
     # countdown, and when it appears depends on how long the extensions parade
@@ -176,8 +175,8 @@ def phase2_installer() {
     screen("installation-path.png", 6000000000)
     press("Return") # Install, not Upgrade
     # One drive, and MkLinux's own SCSI driver names it.  Nothing is edited
-    # here — DR3's installer cannot partition from this screen at all
-    # (notes/dr3-guest-quirks.md) and does not need to.
+    # here — DR3's installer cannot partition from this screen at all, and
+    # does not need to.
     screen("partition-disks.png", 3000000000)
 
     press("Return") # Done
@@ -295,7 +294,7 @@ def phase2_installer() {
     # from the drive we booted must be at or past it, because everything before
     # it is Mac OS's and the installer has no business there.
     machine.scsi.device[0].image.export "${$WORK_DIR}/after-install.img"
-    let wrote = storage.path_compare("${$WORK_DIR}/before-install.img", "${$WORK_DIR}/after-install.img")
+    let wrote = files.path_compare("${$WORK_DIR}/before-install.img", "${$WORK_DIR}/after-install.img")
     echo "the drive first differs from its pre-install state at ${$wrote}"
     assert $wrote >= 42303488 "the install first changed byte ${$wrote}, which is before the root partition at 42303488 — it did not install where it said it would"
 }
@@ -318,12 +317,11 @@ def untick(steps) {
 # --- phase 3: point lilo.conf at the installed root --------------------------
 
 def phase3_lilo() {
-    # The power cycle DR3 asked for and could not have.  machine.restart keeps
-    # the media attached as the same open handles, so every write above
-    # survives it by construction.
+    # The power cycle DR3 asked for and could not have.  machine.restart tears
+    # nothing down, so the media stay attached as the same open handles and
+    # every write above survives it by construction.
     machine.restart
     scheduler.run 360000000
-    machine.memory.poke.l 0x9716A 0x2000
     scheduler.run 900000000
     click(503, 177) # Boot MacOS
     scheduler.run 1500000000
@@ -393,33 +391,33 @@ def phase4_publish() {
     machine.scsi.device[0].image.export "${$WORK_DIR}/mklinux-single.img"
 
     # The map is untouched — the installer formatted INSIDE the partitions.
-    storage.partmap "${$WORK_DIR}/mklinux-single.img"
-    let parts = vfs.list("${$WORK_DIR}/mklinux-single.img")
+    files.partmap "${$WORK_DIR}/mklinux-single.img"
+    let parts = files.list("${$WORK_DIR}/mklinux-single.img")
     assert len($parts) == 8 "the installed drive has ${len($parts)} partitions, want 8"
 
     # The two files the boot test depends on, read back from the exported
     # volume rather than trusted from a golden of the editor.  Byte-compared
-    # against the disc's pristine copy rather than searched: `vfs.cat` prints a
+    # against the disc's pristine copy rather than searched: `files.cat` prints a
     # file, it does not return one, and the shell has no substring operator.
-    # `storage.path_compare` answers -1 for identical and otherwise the FIRST
+    # `files.path_compare` answers -1 for identical and otherwise the FIRST
     # differing offset — which pins not just that the file changed but where.
     let p5 = "${$WORK_DIR}/mklinux-single.img/partition5/System Folder/Preferences"
-    storage.cp "${$p5}/lilo.conf" "${$WORK_DIR}/lilo-edited.conf"
-    storage.cp "${$p5}/MkLinux.prefs" "${$WORK_DIR}/prefs-edited"
-    vfs.cat "${$WORK_DIR}/lilo-edited.conf"
-    vfs.cat "${$WORK_DIR}/prefs-edited"
+    files.cp "${$p5}/lilo.conf" "${$WORK_DIR}/lilo-edited.conf"
+    files.cp "${$p5}/MkLinux.prefs" "${$WORK_DIR}/prefs-edited"
+    files.cat "${$WORK_DIR}/lilo-edited.conf"
+    files.cat "${$WORK_DIR}/prefs-edited"
 
     # `scd0` -> `sda6` is length-preserving, and offset 1045 is the third
     # character of the device name on the file's last real line — the only byte
     # in 1110 the edit was allowed to touch first.
-    assert storage.path_size("${$WORK_DIR}/lilo-edited.conf") == 1110 "lilo.conf is ${storage.path_size("${$WORK_DIR}/lilo-edited.conf")} bytes, want 1110 (the rootdev edit is length-preserving)"
-    let lilo_diff = storage.path_compare("${$WORK_DIR}/lilo-pristine.conf", "${$WORK_DIR}/lilo-edited.conf")
+    assert files.path_size("${$WORK_DIR}/lilo-edited.conf") == 1110 "lilo.conf is ${files.path_size("${$WORK_DIR}/lilo-edited.conf")} bytes, want 1110 (the rootdev edit is length-preserving)"
+    let lilo_diff = files.path_compare("${$WORK_DIR}/lilo-pristine.conf", "${$WORK_DIR}/lilo-edited.conf")
     assert $lilo_diff == 1045 "lilo.conf first differs from the disc's copy at ${$lilo_diff}, want 1045 (inside `rootdev=/dev/s..`)"
     # `bootos=MacOS` -> `bootos=MkLinux` is two bytes longer.
-    assert storage.path_size("${$WORK_DIR}/prefs-edited") == 101 "MkLinux.prefs is ${storage.path_size("${$WORK_DIR}/prefs-edited")} bytes, want 101 (99 + `MacOS`->`MkLinux`)"
+    assert files.path_size("${$WORK_DIR}/prefs-edited") == 101 "MkLinux.prefs is ${files.path_size("${$WORK_DIR}/prefs-edited")} bytes, want 101 (99 + `MacOS`->`MkLinux`)"
 
-    storage.cp "${$WORK_DIR}/mklinux-single.img" "${$mkl_root}/media/mklinux_dr3_single_169mb.img"
-    assert storage.path_exists("${$mkl_root}/media/mklinux_dr3_single_169mb.img") "the finished image was not published"
+    files.cp "${$WORK_DIR}/mklinux-single.img" "${$mkl_root}/media/mklinux_dr3_single_169mb.img"
+    assert files.path_exists("${$mkl_root}/media/mklinux_dr3_single_169mb.img") "the finished image was not published"
 }
 
 if have_media($dr3_iso) && have_media($drive) {
@@ -429,7 +427,7 @@ if have_media($dr3_iso) && have_media($drive) {
     phase4_publish()
     report_row("DR3", "ariel", "mklinux-install mach-handoff redhat-installer lilo-conf")
 } else {
-    echo "skip: pdm-mklinux-install (the DR3 disc or the built drive is not present — see gs-docs projects/mklinux)"
+    echo "skip: pdm-mklinux-install (the DR3 disc or the built drive not present — set GS_EXTRA_MEDIA_DIR)"
 }
 
 quit

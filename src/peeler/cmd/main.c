@@ -5,10 +5,16 @@
 // CLI entry point for the `peeler` tool.
 //
 // Usage:  peeler <archive> [<output-dir>]
+//         peeler list <archive>
+//         peeler extract <archive> <member> [<output-dir>]
 //
-// Reads the archive, peels all layers, and writes each extracted file to
-// the output directory.  Resource forks are emitted as AppleDouble (._)
-// sidecar files.
+// The first form reads the archive, peels all layers, and writes each
+// extracted file to the output directory.  Resource forks are emitted as
+// AppleDouble (._) sidecar files.
+//
+// `list` and `extract` use the structure-first API: `list` reads only the
+// archive's headers and directory; `extract` decodes one member.  Both see
+// through wrappers (a .sit.hqx lists the .sit's contents).
 
 #include "peeler.h"
 
@@ -20,39 +26,8 @@
 #include <sys/stat.h>
 
 // ============================================================================
-// Constants and Macros
-// ============================================================================
-
-// AppleDouble magic and version — appledouble.md § "File Identification"
-#define APPLEDOUBLE_MAGIC   0x00051607
-#define APPLEDOUBLE_VERSION 0x00020000
-
-// AppleDouble entry IDs — appledouble.md § "Standard Entry IDs"
-#define AD_ENTRY_FINDER_INFO 9
-#define AD_ENTRY_RSRC_FORK   2
-
-// Fixed sizes within the AppleDouble header
-#define AD_HEADER_SIZE 26 // magic(4) + version(4) + filler(16) + count(2)
-#define AD_ENTRY_SIZE  12 // id(4) + offset(4) + length(4)
-#define AD_FINDER_LEN  32 // FinderInfo(16) + ExtendedFinderInfo(16)
-
-// ============================================================================
 // Static Helpers
 // ============================================================================
-
-// Write a 32-bit big-endian value to a byte pointer.
-static void put_be32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)(v);
-}
-
-// Write a 16-bit big-endian value to a byte pointer.
-static void put_be16(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)(v);
-}
 
 // Build a file path from directory and filename, writing into buf.
 // Returns false if the combined path would overflow the buffer.
@@ -98,6 +73,10 @@ static bool write_blob(const char *path, const uint8_t *data, size_t len) {
 // Write the data fork of a file to the output directory.
 static bool write_data_fork(const char *dir, const peel_file_t *f) {
     const char *name = f->meta.name[0] ? f->meta.name : "unnamed";
+    if (!peel_path_is_confined(name)) {
+        fprintf(stderr, "peeler: refusing entry '%s': it would land outside the output directory\n", name);
+        return false;
+    }
     char path[1024];
     if (!build_path(path, sizeof(path), dir, name)) {
         fprintf(stderr, "peeler: path too long for '%s'\n", name);
@@ -110,98 +89,184 @@ static bool write_data_fork(const char *dir, const peel_file_t *f) {
     return write_blob(path, f->data_fork.data, f->data_fork.size);
 }
 
-// Build an AppleDouble header file containing Finder info and the resource
-// fork.  Layout: [header][finder_entry_desc][rsrc_entry_desc][finder_data][rsrc_data]
-// appledouble.md § "Writing & Updating Rules"
+// Write the AppleDouble sidecar ("._<name>") carrying the file's resource
+// fork and Finder info, through the same builder the emulator's archive
+// extraction uses, so the two produce the same sidecar.  A file with neither
+// gets none.
 static bool write_appledouble(const char *dir, const peel_file_t *f) {
+    uint8_t *buf = NULL;
+    size_t len = 0;
+    if (peel_build_sidecar(f, &buf, &len) != 0)
+        return false;
+    if (!buf)
+        return true; // nothing to preserve
+
     const char *name = f->meta.name[0] ? f->meta.name : "unnamed";
-
-    // Build ._<name> sidecar path, inserting ._ before the filename
-    // component (e.g. "dir/subdir/._file" not "dir/._ subdir/file").
+    bool ok = false;
     char path[1024];
+    // Insert "._" before the filename component (e.g. "dir/sub/._file").
     const char *slash = strrchr(name, '/');
-    int n;
-    if (slash) {
-        // name contains a directory component
-        n = snprintf(path, sizeof(path), "%s/%.*s/._%s", dir,
-                     (int)(slash - name), name, slash + 1);
-    } else {
-        n = snprintf(path, sizeof(path), "%s/._%s", dir, name);
-    }
-    if (n <= 0 || (size_t)n >= sizeof(path)) {
+    int n = slash ? snprintf(path, sizeof(path), "%s/%.*s/._%s", dir, (int)(slash - name), name, slash + 1)
+                  : snprintf(path, sizeof(path), "%s/._%s", dir, name);
+    if (!peel_path_is_confined(name))
+        fprintf(stderr, "peeler: refusing entry '%s': it would land outside the output directory\n", name);
+    else if (n <= 0 || (size_t)n >= sizeof(path))
         fprintf(stderr, "peeler: path too long for '._%s'\n", name);
-        return false;
-    }
-    if (!ensure_parent_dirs(path)) {
+    else if (!ensure_parent_dirs(path))
         fprintf(stderr, "peeler: cannot create directories for '._%s'\n", name);
-        return false;
-    }
-
-    // Layout depends on whether resource fork data is present:
-    //   - With rsrc: header(26) + 2 descriptors(24) + FinderInfo(32) + rsrc data
-    //   - Without:   header(26) + 1 descriptor(12)  + FinderInfo(32)
-    bool has_rsrc = (f->resource_fork.size > 0);
-    size_t num_entries = has_rsrc ? 2 : 1;
-    uint32_t finder_offset = (uint32_t)(AD_HEADER_SIZE + num_entries * AD_ENTRY_SIZE);
-    uint32_t rsrc_offset = finder_offset + AD_FINDER_LEN;
-    size_t total = has_rsrc ? rsrc_offset + f->resource_fork.size
-                            : finder_offset + AD_FINDER_LEN;
-
-    uint8_t *buf = calloc(1, total);
-    if (!buf) {
-        return false;
-    }
-
-    // Fixed header — appledouble.md § "Fixed Header"
-    uint8_t *p = buf;
-    put_be32(p, APPLEDOUBLE_MAGIC);
-    p += 4;
-    put_be32(p, APPLEDOUBLE_VERSION);
-    p += 4;
-    // 16 bytes filler (already zero from calloc)
-    p += 16;
-    put_be16(p, (uint16_t)num_entries);
-    p += 2;
-
-    // Entry descriptor 1: Finder Info — appledouble.md § "Entry Descriptors"
-    put_be32(p, AD_ENTRY_FINDER_INFO);
-    p += 4;
-    put_be32(p, finder_offset);
-    p += 4;
-    put_be32(p, AD_FINDER_LEN);
-    p += 4;
-
-    // Entry descriptor 2: Resource Fork (only if present)
-    if (has_rsrc) {
-        put_be32(p, AD_ENTRY_RSRC_FORK);
-        p += 4;
-        put_be32(p, rsrc_offset);
-        p += 4;
-        put_be32(p, (uint32_t)f->resource_fork.size);
-        p += 4;
-    }
-
-    // Finder Info payload: type(4) + creator(4) + flags(2) + padding(22)
-    // appledouble.md § "Finder Info"
-    uint8_t *finder = buf + finder_offset;
-    put_be32(finder, f->meta.mac_type);
-    put_be32(finder + 4, f->meta.mac_creator);
-    put_be16(finder + 8, f->meta.finder_flags);
-    // Remaining 22 bytes are zero (from calloc)
-
-    // Resource fork payload (only if present)
-    if (has_rsrc) {
-        memcpy(buf + rsrc_offset, f->resource_fork.data, f->resource_fork.size);
-    }
-
-    bool ok = write_blob(path, buf, total);
+    else
+        ok = write_blob(path, buf, len);
     free(buf);
     return ok;
 }
 
 // Print usage text and exit.
 static void usage(const char *progname) {
-    fprintf(stderr, "usage: %s <archive> [<output-dir>]\n", progname);
+    fprintf(stderr,
+            "usage: %s <archive> [<output-dir>]\n"
+            "       %s list <archive>\n"
+            "       %s extract <archive> <member> [<output-dir>]\n",
+            progname, progname, progname);
+}
+
+// ============================================================================
+// Structure-first subcommands
+// ============================================================================
+
+// Open `path` and see through wrapper layers: while the archive is a
+// wrapper whose payload is itself an archive, open the payload instead.
+// The payload of a two-fork wrapper is its data fork, or its resource fork
+// when only that holds a recognised format (a .sea.bin).
+static peel_archive_t *open_unwrapped(const char *path, peel_err_t **err) {
+    peel_source_t *src = peel_source_file(path, err);
+    if (!src)
+        return NULL;
+    peel_archive_t *a = peel_open(src, NULL, NULL, err);
+    peel_source_release(src);
+    for (int depth = 0; a && peel_is_wrapper(a) && depth < 32; depth++) {
+        peel_archive_t *inner = NULL;
+        for (int fork = PEEL_FORK_DATA; fork <= PEEL_FORK_RSRC && !inner; fork++) {
+            peel_err_t *e = NULL;
+            peel_source_t *payload = peel_open_fork(a, 0, fork, &e);
+            if (payload && peel_source_size(payload) > 0)
+                inner = peel_open(payload, NULL, NULL, &e);
+            peel_err_free(e);
+            peel_source_release(payload);
+        }
+        if (!inner)
+            break; // the wrapper's one file is what there is
+        peel_close(a);
+        a = inner;
+    }
+    return a;
+}
+
+// One letter per tier, for the listing.
+static char tier_char(peel_tier_t t) {
+    static const char c[] = "RIESW";
+    return (unsigned)t < sizeof(c) - 1 ? c[t] : '?';
+}
+
+// `peeler list <archive>`: one line per entry.
+static int cmd_list(const char *path) {
+    peel_err_t *err = NULL;
+    peel_archive_t *a = open_unwrapped(path, &err);
+    if (!a) {
+        fprintf(stderr, "peeler: %s\n", peel_err_msg(err));
+        peel_err_free(err);
+        return 1;
+    }
+    printf("# %s, %d entries (tiers: R random, I indexed, E earned, S stream, W whole)\n", peel_format(a),
+           peel_count(a));
+    for (int i = 0; i < peel_count(a); i++) {
+        const peel_entry_t *e = peel_entry(a, i);
+        if (e->is_dir) {
+            printf("%-4s %12s %12s     %s/\n", "dir", "-", "-", e->path);
+            continue;
+        }
+        // The Mac type as four characters, "----" when there is none.
+        char type[5] = "----";
+        if (e->mac_type)
+            for (int k = 0; k < 4; k++) {
+                char c = (char)(e->mac_type >> (24 - 8 * k));
+                type[k] = (c >= 32 && c < 127) ? c : '?';
+            }
+        printf("%c%c   %12llu %12llu %s %s\n", tier_char(e->data_tier), e->rsrc_len ? tier_char(e->rsrc_tier) : '-',
+               (unsigned long long)e->data_len, (unsigned long long)e->rsrc_len, type, e->path);
+    }
+    peel_close(a);
+    return 0;
+}
+
+// Copy a whole source into `fp` a chunk at a time.  True on success.
+static bool copy_source(peel_source_t *s, FILE *fp) {
+    uint8_t buf[65536];
+    uint64_t off = 0, size = peel_source_size(s);
+    while (off < size) {
+        size_t want = size - off < sizeof(buf) ? (size_t)(size - off) : sizeof(buf);
+        if (peel_source_read_exact(s, off, buf, want) != 0 || fwrite(buf, 1, want, fp) != want)
+            return false;
+        off += want;
+    }
+    return true;
+}
+
+// `peeler extract <archive> <member> [<output-dir>]`: one member, its data
+// fork under its own name and its resource fork and Finder info in the
+// AppleDouble sidecar.
+static int cmd_extract(const char *path, const char *member, const char *out_dir) {
+    peel_err_t *err = NULL;
+    peel_archive_t *a = open_unwrapped(path, &err);
+    if (!a) {
+        fprintf(stderr, "peeler: %s\n", peel_err_msg(err));
+        peel_err_free(err);
+        return 1;
+    }
+    int i = peel_lookup(a, member);
+    const peel_entry_t *e = peel_entry(a, i);
+    if (!e || e->is_dir) {
+        fprintf(stderr, "peeler: no file '%s' in '%s'\n", member, path);
+        peel_close(a);
+        return 1;
+    }
+    if (mkdir(out_dir, 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "peeler: cannot create '%s': %s\n", out_dir, strerror(errno));
+        peel_close(a);
+        return 1;
+    }
+    const char *base = strrchr(e->path, '/');
+    base = base ? base + 1 : e->path;
+    peel_file_t f;
+    memset(&f, 0, sizeof(f));
+    snprintf(f.meta.name, sizeof(f.meta.name), "%.255s", base);
+    f.meta.mac_type = e->mac_type;
+    f.meta.mac_creator = e->mac_creator;
+    f.meta.finder_flags = e->finder_flags;
+
+    int rc = 1;
+    char dst[1024];
+    peel_source_t *data = peel_open_fork(a, i, PEEL_FORK_DATA, &err);
+    FILE *fp = NULL;
+    if (!data) {
+        fprintf(stderr, "peeler: %s\n", peel_err_msg(err));
+    } else if (!build_path(dst, sizeof(dst), out_dir, f.meta.name) || !(fp = fopen(dst, "wb"))) {
+        fprintf(stderr, "peeler: cannot create '%s'\n", dst);
+    } else if (!copy_source(data, fp)) {
+        fprintf(stderr, "peeler: '%s' did not decode\n", member);
+    } else {
+        f.resource_fork = peel_read_fork(a, i, PEEL_FORK_RSRC, &err);
+        if (err)
+            fprintf(stderr, "peeler: %s\n", peel_err_msg(err));
+        else
+            rc = write_appledouble(out_dir, &f) ? 0 : 1;
+    }
+    if (fp && fclose(fp) != 0)
+        rc = 1;
+    peel_err_free(err);
+    peel_free(&f.resource_fork);
+    peel_source_release(data);
+    peel_close(a);
+    return rc;
 }
 
 // ============================================================================
@@ -209,6 +274,10 @@ static void usage(const char *progname) {
 // ============================================================================
 
 int main(int argc, char **argv) {
+    if (argc == 3 && strcmp(argv[1], "list") == 0)
+        return cmd_list(argv[2]);
+    if ((argc == 4 || argc == 5) && strcmp(argv[1], "extract") == 0)
+        return cmd_extract(argv[2], argv[3], argc == 5 ? argv[4] : ".");
     if (argc < 2 || argc > 3) {
         usage(argv[0]);
         return 1;
@@ -244,16 +313,11 @@ int main(int argc, char **argv) {
             failures++;
         }
 
-        // Write resource fork as AppleDouble sidecar.  Create a sidecar
-        // whenever there is resource fork data OR Finder metadata
-        // (type/creator/flags), since the sidecar carries both.
-        if (f->resource_fork.size > 0 ||
-            f->meta.mac_type != 0 || f->meta.mac_creator != 0 ||
-            f->meta.finder_flags != 0) {
-            if (!write_appledouble(output_dir, f)) {
-                fprintf(stderr, "peeler: failed to write '._%s'\n", f->meta.name);
-                failures++;
-            }
+        // The AppleDouble sidecar: resource fork and Finder metadata, if
+        // the file has either.
+        if (!write_appledouble(output_dir, f)) {
+            fprintf(stderr, "peeler: failed to write '._%s'\n", f->meta.name);
+            failures++;
         }
     }
 

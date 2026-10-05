@@ -1,17 +1,21 @@
-// Declaration-ROM builder unit tests (runtime-vrom proposal stages B/C).
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+// Declaration-ROM builder unit tests.  The builder is described in
+// docs/internals/core/peripherals/nubus_generic_vrom.md.
 //
-// gsvrom_generate builds every personality's image host-side from a
-// monitors[] table mirroring the card kinds'; each image must pass the
-// §5 structural validator, carry the expected identity (BoardId, vendor
-// string, sResource names), splice the assembled fragments verbatim,
-// and regenerate bit-identically (checkpoint-restore determinism).
-// Plus the validation guards: zero offsets, non-ascending ids, and CRC
-// corruption must all be caught.
+// gsvrom_generate builds every personality's image host-side from a monitors[]
+// table mirroring the card kinds'; each image must pass the structural
+// validator, carry the expected identity (BoardId, vendor string, sResource
+// names), splice the assembled fragments verbatim, and regenerate
+// bit-identically (checkpoint-restore determinism).  Plus the validation
+// guards: zero offsets, non-ascending ids, and CRC corruption must all be
+// caught.
 
 #include "card.h"
 #include "declrom.h"
 #include "gsvrom.h"
 #include "test_assert.h"
+#include "vrom.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -19,23 +23,23 @@
 #include <string.h>
 
 // --- Stubs for declrom.c's loader-side dependencies (unused here) -----------
-void machine_config_note_vrom(const char *card_id, const char *path, uint32_t crc, bool explicit_pick) {
-    (void)card_id;
-    (void)path;
-    (void)crc;
-    (void)explicit_pick;
+bool vrom_identify_bytes(const uint8_t *data, size_t size, vrom_id_t *out) {
+    (void)data;
+    (void)size;
+    (void)out;
+    return false;
 }
-const char *vrom_offer_find(const char *card_id, int idx, size_t *out_chip_size) {
+bool vrom_identify_card(const char *path, vrom_id_t *out) {
+    (void)path;
+    (void)out;
+    return false;
+}
+const char *vrom_offer_find(const char *card_id, int idx, size_t *out_chip_size, uint32_t *out_crc) {
     (void)card_id;
     (void)idx;
     (void)out_chip_size;
-    return NULL;
-}
-bool vrom_offer_info(const char *path, uint32_t *out_crc, bool *out_explicit) {
-    (void)path;
     (void)out_crc;
-    (void)out_explicit;
-    return false;
+    return NULL;
 }
 
 // --- Monitor tables mirroring the card kinds' --------------------------------
@@ -196,7 +200,7 @@ TEST(test_generate_all_personalities) {
         size_t n = 0;
         const uint8_t *img = declrom_builder_bytes(b, &n);
         ASSERT_TRUE(img != NULL && n > 20);
-        // §5 structural validation.
+        // Structural validation.
         ASSERT_TRUE(declrom_image_validate(img, n));
         // Identity: vendor string + BoardId (the structural-recognition
         // pair vrom.identify keys on).
@@ -227,7 +231,7 @@ TEST(test_generate_all_personalities) {
 
 TEST(test_generate_determinism) {
     // Regeneration must be bit-identical (checkpoint restore rebuilds the
-    // image from the recorded configuration; proposal §4).
+    // image from the recorded configuration).
     for (size_t i = 0; i < sizeof(PERSONALITIES) / sizeof(PERSONALITIES[0]); i++) {
         declrom_builder_t *b1 = gsvrom_generate(PERSONALITIES[i].p, PERSONALITIES[i].mons);
         declrom_builder_t *b2 = gsvrom_generate(PERSONALITIES[i].p, PERSONALITIES[i].mons);

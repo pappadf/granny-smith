@@ -9,52 +9,33 @@
 // modeled, so that window reads as an empty slot).
 
 #include "pdm.h"
+#include "slot_tables.h"
 
 #include "nubus.h"
+#include "pram_defaults.h"
 
-// 8 MB soldered + fixed-window banks of {2,8,32} MB: up to 136 MB.
-static const uint32_t pm7100_ram_options_kb[] = {8192, 16384, 24576, 40960, 73728, 139264, 0};
+// 8 MB soldered + two SIMM pairs, carved into fixed-window banks of
+// {2,8,32} MB: every total the pairs make, up to 136 MB.
+static const uint32_t pm7100_ram_options_kb[] = {8192,  10240, 12288, 14336, 16384, 18432,  20480,  24576,
+                                                 26624, 28672, 32768, 40960, 43008, 45056,  49152,  57344,
+                                                 73728, 75776, 77824, 81920, 90112, 106496, 139264, 0};
 
 // One internal manual-inject SuperDrive behind SWIM3, and no external
 // port — the PDM family has no second bay (Apple, "Power Macintosh
 // Computers" Developer Note, Table 3-7).
-static const struct floppy_slot pm7100_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
-    {0},
-};
 
 // One standard 5 MB/s bus (the Curio 53C94 cell), internal + external.
-static const struct scsi_slot pm7100_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
+
+// Curio's bus: the hard disk bay, a second hard disk bay, the CD-ROM bay.
+static const storage_bay_decl_t pm7100_bays[] = {
+    {.unit = 0, .label = "Internal hard disk bay"},
+    {.unit = 1, .label = "Second hard disk bay"},
+    {.unit = 3, .label = "CD-ROM bay"},
     {0},
 };
 
-// The three NuBus connectors behind BART: $C/$D/$E.
-//
-// This is what the SOFTWARE uses, and it is the thing that matters — the
-// slot number selects the address window a card answers in, the sResource
-// the Slot Manager enumerates, and the pseudo-VIA2 interrupt bit the OS
-// enables.  Measured on the shipping ROM: a booted 8100 enables slot-
-// interrupt bits $38, i.e. bits 3/4/5, which under the Mac II bit = slot-9
-// numbering are exactly $C/$D/$E — always those three, whichever connector
-// holds a card — with bit 6 the built-in video VBL (it appears in the mask
-// only when built-in video exists).  The ROM's own PDM slot-interrupt path
-// masks the slot bits with $78, bits 3-6, agreeing.
-//
-// An earlier revision of this file declared $B/$C/$D from the schematic
-// silkscreen (051-0333 rev A sheet 22, where the 96-pin connectors
-// J11/J12/J13 are labelled NuBus Slot B, C and D).  That numbering is a
-// board-level label, not the slot ID the software uses: a card staged into
-// $B lands on interrupt bit 2, which nothing enables and nothing services,
-// so its /NMRQ latched and stayed latched forever.  The Slot Manager then
-// never ran that slot's VBL task queue — which, when the card is the main
-// screen, is where the cursor task lives, so the mouse stopped moving.
-// Each ships empty; the user stages a card per slot.
-static const struct nubus_slot_decl pm7100_nubus_slots[] = {
-    {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET},
+static const storage_bus_decl_t pm7100_storage[] = {
+    MAC_SCSI_BUS("scsi", "SCSI", MEDIA_BUS_SCSI, pm7100_bays, true),
     {0},
 };
 
@@ -63,11 +44,11 @@ static const pdm_board_desc_t pm7100_board = {
     .bus_hz = 33000000u, // 2:1 bus
     .bank_layout = PDM_BANKS_FIXED,
     .bank_count = 4,
-    .wait_state_penalty = 2, // pinned by the rung-L7 bus-ratio row
+    .wait_state_penalty = 2, // pinned by the pdm-rom-ladder L7 bus-ratio row
 };
 
 const hw_profile_t machine_pm7100 = {
-    .name = "Power Macintosh 7100/66",
+    .name = "Power Macintosh 7100",
     .id = "pm7100",
 
     .cpu_model = CPU_MODEL_PPC601,
@@ -75,22 +56,21 @@ const hw_profile_t machine_pm7100 = {
     .mmu_kind = MMU_PPC_601,
 
     .address_bits = 32,
-    .ram_default = 0x1800000, // 24 MB
+    .ram_default = 0x1800000, // 24 MB (a typical well-equipped machine)
     .ram_max = 0x8800000, // 136 MB
     .rom_size = 0x400000, // 4 MB ($9FEB69B3)
 
     .ram_options = pm7100_ram_options_kb,
-    .floppy_slots = pm7100_floppy_slots,
-    .scsi_slots = pm7100_scsi_slots,
-    // The AppleCD 300i rides the same Curio 53C96 bus as the HD slots
-    // (Phase G): no CD-specific hardware is involved, so the bay is
-    // offered as soon as that bus exists.
-    .has_cdrom = true,
-    .cdrom_id = 3,
+    .floppy_slots = mac_floppy_slots_1hd,
+    .storage = pm7100_storage,
+    .default_storage = mac_default_storage_hd0_cd3,
+    .appletalk = true,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
 
-    .builtin_video = "Built-in video (Ariel II)",
-    .nubus_slots = pm7100_nubus_slots,
+    .builtin_video = &pdm_builtin_video,
+    .nubus_slots = pdm_nubus_slots_cde,
 
+    .pram = &pram_defaults_pdm,
     .substrate = &pdm_substrate,
     .board = &pm7100_board,
 };

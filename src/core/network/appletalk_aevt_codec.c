@@ -4,7 +4,7 @@
 // appletalk_aevt_codec.c
 // The Apple event codec: AETF byte stream ⇄ V_MAP ⇄ text form.
 //
-// Coding reference: docs/core/network/ppc_appleevents.md §5.2 (stream
+// Coding reference: docs/internals/core/network/ppc_appleevents.md §5.2 (stream
 // layout), §5.4 (lists, records and factoring), §5.6 (descriptor types),
 // §6.1 (the map form) and §6.2 (the text grammar).  Section numbers in the
 // comments below refer to that document.
@@ -18,6 +18,7 @@
 // ============================================================================
 
 #include "appletalk_aevt.h"
+#include "common.h"
 
 #include "log.h"
 #include "value.h"
@@ -27,8 +28,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-LOG_USE_CATEGORY_NAME("ppc");
 
 // ============================================================================
 // Constants and Macros
@@ -41,44 +40,9 @@ LOG_USE_CATEGORY_NAME("ppc");
 // Operations — small helpers
 // ============================================================================
 
-static uint32_t rd32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-}
-
-static uint16_t rd16(const uint8_t *p) {
-    return (uint16_t)((p[0] << 8) | p[1]);
-}
-
-static void wr32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-}
-
-static void wr16(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)v;
-}
-
 // Every stream item is padded to an even offset (§5.2).
 static int round_up_even(int n) {
     return (n + 1) & ~1;
-}
-
-// Four-character codes travel as four raw bytes and live in the map as
-// four-character strings.  Bytes outside printable ASCII are escaped so a
-// binary code cannot smuggle a quote into the text form.
-static void fourcc_read(const uint8_t *p, char out[5]) {
-    for (int i = 0; i < 4; i++)
-        out[i] = (char)p[i];
-    out[4] = '\0';
-}
-
-static void fourcc_write(const char *code, uint8_t out[4]) {
-    size_t n = code ? strlen(code) : 0;
-    for (int i = 0; i < 4; i++)
-        out[i] = (i < (int)n) ? (uint8_t)code[i] : (uint8_t)' ';
 }
 
 // ============================================================================
@@ -118,8 +82,8 @@ static value_t decode_desc(rd_t *r, const char *type, const uint8_t *data, int l
 static value_t decode_collection(rd_t *r, const uint8_t *data, int len, bool keyed, int depth) {
     if (len < 8)
         return (rd_fail(r, "a %s descriptor is shorter than its header", keyed ? "record" : "list"), val_none());
-    uint32_t count = rd32(data);
-    uint32_t prefix = rd32(data + 4);
+    uint32_t count = RD_BE32(data);
+    uint32_t prefix = RD_BE32(data + 4);
     if (prefix != 0 && prefix != 4 && prefix < 8)
         return (rd_fail(r, "illegal factoring prefix size %u", (unsigned)prefix), val_none());
     if (prefix > (uint32_t)len - 8)
@@ -130,9 +94,9 @@ static value_t decode_collection(rd_t *r, const uint8_t *data, int len, bool key
     char shared_type[5] = "    ";
     int fixed_len = -1;
     if (prefix >= 4)
-        fourcc_read(data + 8, shared_type);
+        fourcc_text(RD_BE32(data + 8), shared_type);
     if (prefix >= 8) {
-        fixed_len = (int)rd32(data + 12);
+        fixed_len = (int)RD_BE32(data + 12);
         if (fixed_len < 0)
             return (rd_fail(r, "negative factored item length"), val_none());
     }
@@ -150,7 +114,7 @@ static value_t decode_collection(rd_t *r, const uint8_t *data, int len, bool key
                 rd_fail(r, "record item %u has no keyword", (unsigned)i);
                 break;
             }
-            fourcc_read(data + pos, key);
+            fourcc_text(RD_BE32(data + pos), key);
             pos += 4;
         }
         char type[5];
@@ -159,7 +123,7 @@ static value_t decode_collection(rd_t *r, const uint8_t *data, int len, bool key
                 rd_fail(r, "item %u has no type", (unsigned)i);
                 break;
             }
-            fourcc_read(data + pos, type);
+            fourcc_text(RD_BE32(data + pos), type);
             pos += 4;
         } else {
             memcpy(type, shared_type, sizeof(type));
@@ -170,7 +134,7 @@ static value_t decode_collection(rd_t *r, const uint8_t *data, int len, bool key
                 rd_fail(r, "item %u has no length", (unsigned)i);
                 break;
             }
-            item_len = (int)rd32(data + pos);
+            item_len = (int)RD_BE32(data + pos);
             pos += 4;
         } else {
             item_len = fixed_len;
@@ -256,19 +220,19 @@ static value_t decode_desc(rd_t *r, const char *type, const uint8_t *data, int l
     } else if (!strcmp(type, "long") || !strcmp(type, "magn")) {
         opaque = (len != 4);
         if (!opaque) {
-            body = val_int((int32_t)rd32(data));
+            body = val_int((int32_t)RD_BE32(data));
             have_body = true;
         }
     } else if (!strcmp(type, "shor")) {
         opaque = (len != 2);
         if (!opaque) {
-            body = val_int((int16_t)rd16(data));
+            body = val_int((int16_t)RD_BE16(data));
             have_body = true;
         }
     } else if (!strcmp(type, "comp")) {
         opaque = (len != 8);
         if (!opaque) {
-            body = val_int((int64_t)(((uint64_t)rd32(data) << 32) | rd32(data + 4)));
+            body = val_int((int64_t)(((uint64_t)RD_BE32(data) << 32) | RD_BE32(data + 4)));
             have_body = true;
         }
     } else if (!strcmp(type, "bool")) {
@@ -286,7 +250,7 @@ static value_t decode_desc(rd_t *r, const char *type, const uint8_t *data, int l
         opaque = (len != 4);
         if (!opaque) {
             char code[5];
-            fourcc_read(data, code);
+            fourcc_text(RD_BE32(data), code);
             body = val_str(code);
             have_body = true;
         }
@@ -331,7 +295,7 @@ value_t aevt_decode(const char *class4, const char *id4, const uint8_t *stream, 
         if (len < 8 || memcmp(stream, AEVT_SIGNATURE, 4) != 0) {
             rd_fail(&r, "the stream does not start with an %s header", AEVT_SIGNATURE);
         } else {
-            uint32_t version = rd32(stream + 4);
+            uint32_t version = RD_BE32(stream + 4);
             if (version != AEVT_VERSION)
                 rd_fail(&r, "unsupported AETF version 0x%08X", (unsigned)version);
             pos = 8;
@@ -342,7 +306,7 @@ value_t aevt_decode(const char *class4, const char *id4, const uint8_t *stream, 
         if (!rd_have(&r, pos, 4))
             break;
         char key[5];
-        fourcc_read(stream + pos, key);
+        fourcc_text(RD_BE32(stream + pos), key);
         if (!strcmp(key, AEVT_META_END)) {
             if (in_params) {
                 rd_fail(&r, "a second meta-section terminator at offset %d", pos);
@@ -355,8 +319,8 @@ value_t aevt_decode(const char *class4, const char *id4, const uint8_t *stream, 
         if (!rd_have(&r, pos, 12))
             break;
         char type[5];
-        fourcc_read(stream + pos + 4, type);
-        int dlen = (int)rd32(stream + pos + 8);
+        fourcc_text(RD_BE32(stream + pos + 4), type);
+        int dlen = (int)RD_BE32(stream + pos + 8);
         if (dlen < 0 || !rd_have(&r, pos + 12, dlen))
             break;
         value_t leaf = decode_desc(&r, type, stream + pos + 12, dlen, 0);
@@ -407,7 +371,7 @@ bool aevt_set_attr(value_t *event, const char *key, value_t leaf) {
             const value_t *existing = &event->map.entries[i].val;
             if (existing->kind == V_MAP) {
                 for (size_t j = 0; j < existing->map.len; j++)
-                    val_map_put(attrs, existing->map.entries[j].key, value_copy(&existing->map.entries[j].val));
+                    val_map_put(attrs, existing->map.entries[j].key, value_dup(&existing->map.entries[j].val));
             }
         }
     }
@@ -422,7 +386,7 @@ bool aevt_set_attr(value_t *event, const char *key, value_t leaf) {
             placed = true;
             continue;
         }
-        val_map_put(out, k, value_copy(&event->map.entries[i].val));
+        val_map_put(out, k, value_dup(&event->map.entries[i].val));
     }
     if (!had_attrs || !placed)
         val_map_put(out, "attrs", merged);
@@ -497,7 +461,7 @@ static void wr_pad_even(wr_t *w) {
 
 static void wr_fourcc(wr_t *w, const char *code) {
     uint8_t buf[4];
-    fourcc_write(code, buf);
+    WR_BE32(buf, fourcc_value(code));
     wr_bytes(w, buf, 4);
 }
 
@@ -530,7 +494,7 @@ static void encode_desc(wr_t *w, const value_t *leaf, int depth) {
     encode_leaf_body(w, leaf, depth);
     if (w->bad)
         return;
-    wr32(w->out + len_at, (uint32_t)(w->pos - body_at));
+    WR_BE32(w->out + len_at, (uint32_t)(w->pos - body_at));
     wr_pad_even(w);
 }
 
@@ -544,8 +508,8 @@ static void encode_collection(wr_t *w, const value_t *v, bool keyed, int depth) 
         count = (v && v->kind == V_LIST) ? v->list.len : 0;
 
     uint8_t hdr[8];
-    wr32(&hdr[0], (uint32_t)count);
-    wr32(&hdr[4], 0);
+    WR_BE32(&hdr[0], (uint32_t)count);
+    WR_BE32(&hdr[4], 0);
     wr_bytes(w, hdr, 8);
 
     for (size_t i = 0; i < count && !w->bad; i++) {
@@ -605,17 +569,17 @@ static void encode_leaf_body(wr_t *w, const value_t *leaf, int depth) {
         wr_bytes(w, &nul, 1);
     } else if (!strcmp(type, "long") || !strcmp(type, "magn")) {
         uint8_t b[4];
-        wr32(b, (uint32_t)val_as_i64(data, NULL));
+        WR_BE32(b, (uint32_t)val_as_i64(data, NULL));
         wr_bytes(w, b, 4);
     } else if (!strcmp(type, "shor")) {
         uint8_t b[2];
-        wr16(b, (uint16_t)val_as_i64(data, NULL));
+        WR_BE16(b, (uint16_t)val_as_i64(data, NULL));
         wr_bytes(w, b, 2);
     } else if (!strcmp(type, "comp")) {
         uint8_t b[8];
         uint64_t u = (uint64_t)val_as_i64(data, NULL);
-        wr32(&b[0], (uint32_t)(u >> 32));
-        wr32(&b[4], (uint32_t)u);
+        WR_BE32(&b[0], (uint32_t)(u >> 32));
+        WR_BE32(&b[4], (uint32_t)u);
         wr_bytes(w, b, 8);
     } else if (!strcmp(type, "bool")) {
         uint8_t b = val_as_bool(data) ? 1 : 0;
@@ -649,7 +613,7 @@ int aevt_encode(const value_t *event, uint8_t *out, int out_max, char *err, size
     wr_t w = {.out = out, .max = out_max};
     wr_bytes(&w, AEVT_SIGNATURE, 4);
     uint8_t ver[4];
-    wr32(ver, AEVT_VERSION);
+    WR_BE32(ver, AEVT_VERSION);
     wr_bytes(&w, ver, 4);
 
     // Meta section first, then the terminator, then the parameters (§5.2).
@@ -964,8 +928,8 @@ static value_t tx_desc(tx_t *t, int depth) {
             n = 63;
         uint8_t body[2 + 4 + 64];
         memset(body, 0, sizeof(body));
-        wr16(&body[0], (uint16_t)vref);
-        wr32(&body[2], (uint32_t)parid);
+        WR_BE16(&body[0], (uint16_t)vref);
+        WR_BE32(&body[2], (uint32_t)parid);
         body[6] = (uint8_t)n;
         memcpy(&body[7], name, n);
         free(name);
@@ -1055,7 +1019,7 @@ value_t aevt_parse_text(const char *text, char *err, size_t err_len) {
     // Parameters sit at the top level of the event map (§6.1).
     if (body.kind == V_MAP) {
         for (size_t i = 0; i < body.map.len; i++)
-            val_map_put(ev, body.map.entries[i].key, value_copy(&body.map.entries[i].val));
+            val_map_put(ev, body.map.entries[i].key, value_dup(&body.map.entries[i].val));
     }
     value_free(&body);
     return val_map_finish(ev);

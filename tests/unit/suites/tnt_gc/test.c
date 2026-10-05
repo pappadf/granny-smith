@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 //
-// Grand Central unit test (proposal-powermac-7500-8500-9500 §5.3/§8).
+// Grand Central unit test.
 //
 // Links the real tnt/grand_central.c against recording stubs and pins
-// the interrupt-fabric semantics the Phase B boot debugging established
-// (docs/machines/tnt/tnt.md "The interrupt fabric"; the dossier's
-// interrupt-map §5.1), now as directed sequences:
+// the interrupt-fabric semantics the boot debugging established
+// (docs/internals/machines/tnt/tnt.md "The interrupt fabric"), now as directed
+// sequences:
 //
 //  1. The MkLinux initialisation sequence (mask 0 / clear-all / mask 0)
 //     and its events-driven acknowledge — clear MODE 0, where the CPU
@@ -69,6 +69,9 @@ uint8_t tnt_control_rad_read(config_t *cfg, uint32_t offset) {
     (void)offset;
     return 0;
 }
+uint8_t tnt_control_rad_peek(config_t *cfg, uint32_t offset) {
+    return tnt_control_rad_read(cfg, offset); // the stubs have no side effects to avoid
+}
 void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
     (void)cfg;
     (void)offset;
@@ -92,17 +95,25 @@ void pci_bus_add_device(pci_bus_t *bus, pci_device_t *dev, int device_num) {
     (void)dev;
     (void)device_num;
 }
+void pci_device_part(struct config *cfg, checkpoint_t *cp, pci_device_t *dev, const char *name) {
+    (void)cfg, (void)cp, (void)dev, (void)name;
+}
 void pci_cfg_reset(pci_device_t *dev) {
     (void)dev;
 }
 
-uint8_t tnt_mesh_read(config_t *cfg, uint32_t offset) {
-    (void)cfg;
+// MESH is a controller with its own handle now (core/peripherals/scsi_mesh.c);
+// this suite drives Grand Central's decode, not the chip behind it.
+uint8_t mesh_read(struct mesh *m, uint32_t offset) {
+    (void)m;
     (void)offset;
     return 0;
 }
-void tnt_mesh_write(config_t *cfg, uint32_t offset, uint8_t value) {
-    (void)cfg;
+uint8_t mesh_peek(struct mesh *m, uint32_t offset) {
+    return mesh_read(m, offset); // the stubs have no side effects to avoid
+}
+void mesh_write(struct mesh *m, uint32_t offset, uint8_t value) {
+    (void)m;
     (void)offset;
     (void)value;
 }
@@ -118,6 +129,9 @@ uint8_t tnt_gbus_read8(config_t *cfg, uint32_t offset) {
     (void)offset;
     return 0;
 }
+uint8_t tnt_gbus_peek8(config_t *cfg, uint32_t offset) {
+    return tnt_gbus_read8(cfg, offset); // the stubs have no side effects to avoid
+}
 void tnt_gbus_write8(config_t *cfg, uint32_t offset, uint8_t value) {
     (void)cfg;
     (void)offset;
@@ -128,10 +142,20 @@ uint32_t tnt_gbus_read32(config_t *cfg, uint32_t offset) {
     (void)offset;
     return 0;
 }
+uint32_t tnt_gbus_peek32(config_t *cfg, uint32_t offset) {
+    return tnt_gbus_read32(cfg, offset); // the stubs have no side effects to avoid
+}
 void tnt_gbus_write32(config_t *cfg, uint32_t offset, uint32_t value) {
     (void)cfg;
     (void)offset;
     (void)value;
+}
+// The battery pull lives in machines/tnt/tnt.c; machine.nvram.clear()
+// references it, so stub it here.
+void tnt_nvram_clear(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    if (st)
+        memset(st->gc.nvram, 0, TNT_NVRAM_SIZE); // what a battery pull does to the store
 }
 // SWIM3 window: the floppy is not part of this suite's fixture.
 // grand_central.c's ESCC DBDMA ports ask the SCC how much it has received;
@@ -146,6 +170,9 @@ uint8_t tnt_swim3_read(config_t *cfg, uint32_t off) {
     (void)cfg;
     (void)off;
     return 0;
+}
+uint8_t tnt_swim3_peek(config_t *cfg, uint32_t off) {
+    return tnt_swim3_read(cfg, off); // the stubs have no side effects to avoid
 }
 void tnt_swim3_write(config_t *cfg, uint32_t off, uint8_t value) {
     (void)cfg;
@@ -167,6 +194,9 @@ uint8_t scsi_53c96_read(struct scsi_53c96 *c, uint32_t reg) {
     (void)c;
     (void)reg;
     return 0;
+}
+uint8_t scsi_53c96_peek(struct scsi_53c96 *c, uint32_t reg) {
+    return scsi_53c96_read(c, reg); // the stubs have no side effects to avoid
 }
 void scsi_53c96_write(struct scsi_53c96 *c, uint32_t reg, uint8_t value) {
     (void)c;
@@ -236,10 +266,11 @@ static void fixture(void) {
     s_cfg.machine = &s_prof;
     s_cfg.machine_context = &s_st;
     if (s_st.dbdma)
-        tnt_dbdma_delete(s_st.dbdma);
-    s_st.dbdma = tnt_dbdma_init(NULL);
-    tnt_dbdma_set_memory_hooks(s_st.dbdma, mem_read, mem_write, NULL);
-    tnt_dbdma_set_irq_hook(s_st.dbdma, dbdma_irq, &s_cfg);
+        dbdma_delete(s_st.dbdma);
+    s_st.dbdma = dbdma_init(NULL, DBDMA_CHANNELS_GRAND_CENTRAL);
+    static const dma_mem_port_t port = {.read_block = mem_read, .write_block = mem_write};
+    dbdma_set_memory_port(s_st.dbdma, &port);
+    dbdma_set_irq_hook(s_st.dbdma, dbdma_irq, &s_cfg);
     memset(s_mem, 0, sizeof(s_mem));
     tnt_gc_init(&s_cfg);
     tnt_gc_recompute(&s_cfg);
@@ -307,6 +338,43 @@ TEST(test_mode0_pulse_w1c) {
     ASSERT_EQ_INT(s_line, 0);
 }
 
+// A DBDMA channel completion is a LEVEL held until acknowledged through
+// the clear register (the tnt.c wiring: tnt_dbdma_irq -> set_source).
+// In mode 1 that is the only way the NanoKernel's ExtIntHandlerTNT —
+// which classifies from Levels & Mask and never reads Events — can see a
+// completion at all; the acknowledge deasserts it, and that deassert is
+// the change that lets the kernel lower the posted IPL again.
+TEST(test_mode1_dbdma_level_ack) {
+    fixture();
+    reg_write(R_MASK, 1u << 8); // DBDMA audio out
+    reg_write(R_CLEAR, 0x80000000u); // mode 1
+    ASSERT_EQ_INT(s_line, 0);
+    tnt_gc_set_source(&s_cfg, 8, true); // channel 8 completes an interrupt command
+    ASSERT_EQ_INT(s_line, 1);
+    reg_write(R_CLEAR, 0x80000000u); // the kernel's acknowledge drops the latch...
+    ASSERT_EQ_INT(s_line, 0);
+    ASSERT_EQ_INT((int)(reg_read(R_LEVELS) >> 8) & 1, 1); // ...but the level stands: Levels & Mask classifies it
+    ASSERT_EQ_INT((int)(reg_read(R_EVENTS) >> 8) & 1, 1);
+    // The driver's acknowledge of the channel (a plain W1C, bit 31
+    // clear, so it also selects mode 0) deasserts the level: Levels and
+    // Events both drop, and the combinational line reads the quiet
+    // controller.  (On the live machine other sources stand in Events,
+    // so this same write re-asserts the line at once and the kernel's
+    // next acknowledge re-reads quiet Levels — how the posted IPL falls.)
+    reg_write(R_CLEAR, 1u << 8);
+    ASSERT_EQ_INT((int)(reg_read(R_LEVELS) >> 8) & 1, 0);
+    ASSERT_EQ_INT((int)(reg_read(R_EVENTS) >> 8) & 1, 0);
+    ASSERT_EQ_INT(s_line, 0);
+    // Back in mode 1: an acknowledge of a channel that is not asserted
+    // changes nothing, and a fresh completion asserts again.
+    reg_write(R_CLEAR, 0x80000000u);
+    reg_write(R_CLEAR, 1u << 8);
+    ASSERT_EQ_INT(s_line, 0);
+    reg_write(R_CLEAR, 0x80000000u);
+    tnt_gc_set_source(&s_cfg, 8, true);
+    ASSERT_EQ_INT(s_line, 1);
+}
+
 // The NanoKernel acknowledge: $80000000 selects mode 1, clears no device
 // bits, and drops the latch; a standing level does NOT re-fire until its
 // next CHANGE.  Mode 1 is an interrupt-on-change scheme (the AMIC
@@ -314,7 +382,7 @@ TEST(test_mode0_pulse_w1c) {
 // that interrupt is how ExtIntHandlerTNT re-reads quiet Levels and lowers
 // the 68k emulator's posted IPL (nothing else in the kernel/emulator
 // contract does; without it the emulator redelivers the stale level
-// forever and the 68k base context starves — the Phase D2 boot wall).
+// forever and the 68k base context starves — a boot wall this model hit).
 TEST(test_mode1_latch) {
     fixture();
     reg_write(R_MASK, 1u << TNT_INT_VIA1);
@@ -328,7 +396,7 @@ TEST(test_mode1_latch) {
     ASSERT_EQ_INT((int)(reg_read(R_EVENTS) >> TNT_INT_VIA1) & 1, 1); // ...events untouched
     ASSERT_EQ_INT((int)(reg_read(R_LEVELS) >> TNT_INT_VIA1) & 1, 1); // level still up
     // No re-fire while the level merely stands (a combinational model
-    // storms here — the Phase B failure mode).
+    // storms here — an earlier boot failure mode).
     tnt_gc_recompute(&s_cfg);
     ASSERT_EQ_INT(s_line, 0);
     // The 68k handler serviced the VIA: the DEASSERTION is itself a
@@ -440,26 +508,27 @@ TEST(test_dbdma_island_routing) {
     s_mem[0x102] = (uint8_t)(op_nop >> 16);
     s_mem[0x103] = (uint8_t)(op_nop >> 24);
     s_mem[0x113] = 0x70; // STOP: cmd nibble 7 in the top byte
-    reg_write(0x8800 + TNT_DBDMA_REG_CMDPTRLO, 0x100);
-    ASSERT_EQ_INT((int)reg_read(0x8800 + TNT_DBDMA_REG_CMDPTRLO), 0x100);
-    reg_write(0x8800 + TNT_DBDMA_REG_CONTROL, (TNT_DBDMA_RUN << 16) | TNT_DBDMA_RUN);
+    reg_write(0x8800 + DBDMA_REG_CMDPTRLO, 0x100);
+    ASSERT_EQ_INT((int)reg_read(0x8800 + DBDMA_REG_CMDPTRLO), 0x100);
+    reg_write(0x8800 + DBDMA_REG_CONTROL, (DBDMA_RUN << 16) | DBDMA_RUN);
     // The program ran: parked on the STOP, RUN up / ACTIVE down.
-    uint32_t stat = reg_read(0x8800 + TNT_DBDMA_REG_STATUS);
-    ASSERT_TRUE(stat & TNT_DBDMA_RUN);
-    ASSERT_EQ_INT((int)(stat & TNT_DBDMA_ACTIVE), 0);
-    ASSERT_EQ_INT((int)reg_read(0x8800 + TNT_DBDMA_REG_CMDPTRLO), 0x110);
+    uint32_t stat = reg_read(0x8800 + DBDMA_REG_STATUS);
+    ASSERT_TRUE(stat & DBDMA_RUN);
+    ASSERT_EQ_INT((int)(stat & DBDMA_ACTIVE), 0);
+    ASSERT_EQ_INT((int)reg_read(0x8800 + DBDMA_REG_CMDPTRLO), 0x110);
     // The NOP's interrupt pulsed Grand Central event bit 8 (channel ==
     // interrupt number).
     ASSERT_EQ_INT((int)(reg_read(R_EVENTS) >> 8) & 1, 1);
     // The canonical reset through the island: RUN drops synchronously.
-    reg_write(0x8800 + TNT_DBDMA_REG_CONTROL, 0xFC000000u);
-    ASSERT_EQ_INT((int)(reg_read(0x8800 + TNT_DBDMA_REG_STATUS) & TNT_DBDMA_RUN), 0);
+    reg_write(0x8800 + DBDMA_REG_CONTROL, 0xFC000000u);
+    ASSERT_EQ_INT((int)(reg_read(0x8800 + DBDMA_REG_STATUS) & DBDMA_RUN), 0);
 }
 
 int main(void) {
     RUN(test_mklinux_init_and_ack);
     RUN(test_mode0_pulse_w1c);
     RUN(test_mode1_latch);
+    RUN(test_mode1_dbdma_level_ack);
     RUN(test_mode1_unmask_pending);
     RUN(test_mode1_mask_quiets_a_latched_source);
     RUN(test_nvram_banking);

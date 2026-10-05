@@ -48,11 +48,13 @@ static inline iisi_state_t *iisi_state(config_t *cfg) {
 
 // (I/O penalties + window offsets live with the shared dispatcher, mdu_io.c.)
 
-// Address-space constants.  Shared MDUtable layout: ROM at $40800000, I/O
-// island at $50F0xxxx mirrored across $50000000 with a $3FFFF mask so RBV
-// ($26000) and VDAC ($24000) decode distinctly from the SCSI windows.
-#define IISI_ROM_START 0x40800000UL
-#define IISI_ROM_END   0x41000000UL
+// Address-space constants.  Shared MDU layout: the 512 KB ROM repeats through
+// the whole $40000000-$4FFFFFFF ROM space (ROMBase $40800000 is one mirror;
+// see iici_internal.h), I/O island at $50F0xxxx mirrored across $50000000
+// with a $3FFFF mask so RBV ($26000) and VDAC ($24000) decode distinctly
+// from the SCSI windows.
+#define IISI_ROM_START 0x40000000UL
+#define IISI_ROM_END   0x50000000UL
 #define IISI_IO_BASE   0x50000000UL
 #define IISI_IO_SIZE   0x10000000UL
 #define IISI_IO_MIRROR 0x0003FFFFUL
@@ -64,9 +66,7 @@ static inline iisi_state_t *iisi_state(config_t *cfg) {
 // / $00E08000 24-bit) is mapped by the OS's PMMU onto physical 0.  So the card
 // renders straight out of Bank A at offset 0 — there is no $8000 wrap offset on
 // the IIsi (unlike the IIci's separate-buffer card).
-#define IISI_VRAM_BASE        0xFEE00000UL // slot-$E aligned 32-bit aperture base (reference)
-#define IISI_FB_PHYS_OFFSET   0x00000000UL // frame buffer at physical 0 (Bank A bottom)
-#define IISI_FB_SCREEN_OFFSET 0x0UL // active screen sits at the frame-buffer start
+#define IISI_VRAM_BASE 0xFEE00000UL // slot-$E aligned 32-bit aperture base (reference)
 
 // Two physical RAM banks (Developer Note §3.2/§3.3/§6.1):
 //   Bank A: soldered 1 MB at physical $00000000 (holds the video frame buffer
@@ -76,5 +76,9 @@ static inline iisi_state_t *iisi_state(config_t *cfg) {
 #define IISI_BANK_A_SIZE 0x00100000UL // 1 MB soldered Bank A
 #define IISI_BANK_B_PHYS 0x04000000UL // Bank B physical base
 #define IISI_BANK_WINDOW 0x04000000UL // 64 MB per-bank mirror window
+// The window's TOP is $08000000 -- Bank B's base plus its window.  That is an
+// address, not an installed-RAM ceiling: the most this machine can hold is
+// Bank A + the window = 65 MB, which is what hw_profile_t.ram_max carries and
+// what iisi_ram_options_kb tops out at.  The two were confused once.
 
 #endif // IISI_INTERNAL_H

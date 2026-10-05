@@ -76,7 +76,6 @@
 // reassembles in CHIP order — which is precisely the swap the ROM's
 // `-flip` words are compensating for, seen from the other side.
 
-#include "card.h"
 #include "log.h"
 #include "pci.h"
 #include "sym53c8xx.h"
@@ -151,10 +150,10 @@ static void sym825_unstack_sist(sym53c8xx_t *s) {
     // cause and the stacked one merged, which no real transaction can return.
     if (s->reg_access_depth)
         return;
-    if (s->sist0 || s->sist1 || !(s->sist0_stacked | s->sist1_stacked))
+    if (s->reg[SYM825_SIST0] || s->reg[SYM825_SIST1] || !(s->sist0_stacked | s->sist1_stacked))
         return;
-    s->sist0 = s->sist0_stacked;
-    s->sist1 = s->sist1_stacked;
+    s->reg[SYM825_SIST0] = s->sist0_stacked;
+    s->reg[SYM825_SIST1] = s->sist1_stacked;
     s->sist0_stacked = 0;
     s->sist1_stacked = 0;
 }
@@ -206,47 +205,63 @@ static void dfifo_push(sym53c8xx_t *s, uint8_t value) {
     s->dfifo_n[lane]++;
 }
 
-static uint8_t dfifo_pop(sym53c8xx_t *s) {
+// The bottom byte of the selected lane; the guest's read (`peek` false)
+// unloads it, an inspection leaves it there.
+static uint8_t dfifo_pop(sym53c8xx_t *s, bool peek) {
     unsigned lane = dfifo_lane(s);
     if (s->dfifo_n[lane] == 0) {
-        LOG(2, "ch%d: CTEST6 read with lane %u empty", s->channel, lane);
+        if (!peek)
+            LOG(2, "ch%d: CTEST6 read with lane %u empty", s->channel, lane);
         return 0;
     }
     uint8_t v = s->dfifo[lane][s->dfifo_rd[lane]];
+    if (peek)
+        return v;
     s->dfifo_rd[lane] = (uint8_t)((s->dfifo_rd[lane] + 1) % SYM825_DFIFO_DEPTH);
     s->dfifo_n[lane]--;
     return v;
 }
 
-static uint8_t sym825_reg_read(sym53c8xx_t *s, uint32_t reg) {
+// One register read: the guest's or the SCRIPTS engine's (`peek` false), or
+// an inspection's (memory_interface_t.peek_*), which returns the same byte
+// and leaves the DMA FIFO, the read-to-clear causes (DSTAT, SIST0/1 and the
+// stacked ones behind them), ISTAT's SIGP and the interrupt line alone.
+static uint8_t reg_read(sym53c8xx_t *s, uint32_t reg, bool peek) {
     switch (reg) {
     case SYM825_CTEST1:
         return dfifo_ctest1(s);
     case SYM825_CTEST6:
-        return dfifo_pop(s);
+        return dfifo_pop(s, peek);
     case SYM825_ISTAT:
         // The summary register: DIP and SIP are live views of whether the
         // DMA and SCSI cause registers hold anything, never stored state.
         return (uint8_t)((s->reg[SYM825_ISTAT] & ~(SYM825_ISTAT_DIP | SYM825_ISTAT_SIP)) |
-                         (s->dstat ? SYM825_ISTAT_DIP : 0u) | ((s->sist0 | s->sist1) ? SYM825_ISTAT_SIP : 0u));
+                         (s->reg[SYM825_DSTAT] ? SYM825_ISTAT_DIP : 0u) |
+                         ((s->reg[SYM825_SIST0] | s->reg[SYM825_SIST1]) ? SYM825_ISTAT_SIP : 0u));
     case SYM825_DSTAT: {
         // Read-to-clear.  DFE (DMA FIFO empty) is a live condition and is
         // not part of the latched cause, so it survives the read.
-        uint8_t v = (uint8_t)(s->dstat | (dfifo_all_empty(s) ? SYM825_DSTAT_DFE : 0u));
-        s->dstat = 0;
+        uint8_t v = (uint8_t)(s->reg[SYM825_DSTAT] | (dfifo_all_empty(s) ? SYM825_DSTAT_DFE : 0u));
+        if (peek)
+            return v;
+        s->reg[SYM825_DSTAT] = 0;
         sym53c8xx_update_irq(s);
         return v;
     }
     case SYM825_SIST0: {
-        uint8_t v = s->sist0;
-        s->sist0 = 0;
+        uint8_t v = s->reg[SYM825_SIST0];
+        if (peek)
+            return v;
+        s->reg[SYM825_SIST0] = 0;
         sym825_unstack_sist(s);
         sym53c8xx_update_irq(s);
         return v;
     }
     case SYM825_SIST1: {
-        uint8_t v = s->sist1;
-        s->sist1 = 0;
+        uint8_t v = s->reg[SYM825_SIST1];
+        if (peek)
+            return v;
+        s->reg[SYM825_SIST1] = 0;
         sym825_unstack_sist(s);
         sym53c8xx_update_irq(s);
         return v;
@@ -265,7 +280,8 @@ static uint8_t sym825_reg_read(sym53c8xx_t *s, uint32_t reg) {
         {
             uint8_t v =
                 (uint8_t)((s->reg[SYM825_CTEST2] & ~0x40u) | ((s->reg[SYM825_ISTAT] & SYM825_ISTAT_SIGP) ? 0x40u : 0u));
-            s->reg[SYM825_ISTAT] &= (uint8_t)~SYM825_ISTAT_SIGP;
+            if (!peek)
+                s->reg[SYM825_ISTAT] &= (uint8_t)~SYM825_ISTAT_SIGP;
             return v;
         }
     case SYM825_CTEST3:
@@ -275,6 +291,10 @@ static uint8_t sym825_reg_read(sym53c8xx_t *s, uint32_t reg) {
     default:
         return s->reg[reg];
     }
+}
+
+uint8_t sym53c8xx_reg_read(sym53c8xx_t *s, uint32_t reg) {
+    return reg_read(s, reg, false);
 }
 
 // SCNTL1's RST bit drives the SCSI RST/ line.  The driver pulses it — set,
@@ -299,7 +319,7 @@ static void sym825_scntl1_write(sym53c8xx_t *s, uint8_t value) {
     sym53c8xx_bus_reset(s);
 }
 
-static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
+void sym53c8xx_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value, bool from_script) {
     switch (reg) {
     case SYM825_CTEST3:
         // CLF (bit 2) empties the DMA FIFO; the bit is a strobe and reads
@@ -317,6 +337,14 @@ static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
         sym825_scntl1_write(s, value);
         return;
     case SYM825_ISTAT: {
+        // SRST and ABRT below re-enter chip_reset/abort, and the engine-start
+        // strobes further down re-enter sym53c8xx_start.  All three are
+        // reachable from exec_read_write/exec_load_store, i.e. from INSIDE
+        // sym53c8xx_run's dispatch loop, where restarting or resetting the
+        // engine underneath itself is not something the part does -- it is
+        // already running.  A script-side write records the bits and stops
+        // there; the host keeps the side effects.
+
         // INTF is write-ONE-to-clear, and it is the one bit here a driver
         // acknowledges rather than sets: a plain store of the value it just
         // read would re-arm the very interrupt it is dismissing.
@@ -326,7 +354,7 @@ static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
         s->reg[reg] = (uint8_t)((value & (uint8_t)~SYM825_ISTAT_INTF) | intf);
         // A software reset clears the chip but not the PCI header (that is
         // RST#'s job) — SRST is self-clearing.
-        if (value & SYM825_ISTAT_SRST) {
+        if ((value & SYM825_ISTAT_SRST) && !from_script) {
             LOG(2, "software reset (ISTAT SRST)");
             sym53c8xx_chip_reset(s);
             return;
@@ -338,7 +366,7 @@ static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
         // recovery has nothing to act on, and whatever the chip was doing
         // lands later, against a command the driver has already given up
         // on and freed.
-        if (value & SYM825_ISTAT_ABRT) {
+        if ((value & SYM825_ISTAT_ABRT) && !from_script) {
             LOG(2, "ch%d: ABRT — the driver is abandoning the current operation", s->channel);
             sym53c8xx_abort(s);
             return;
@@ -348,7 +376,7 @@ static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
         // Reselect: setting it is how the CPU tells an idle engine it has
         // work.  The instruction is re-executed, sees the bit, clears it
         // and takes its alternate address — the whole point of parking.
-        if ((value & SYM825_ISTAT_SIGP) && s->waiting_reselect)
+        if ((value & SYM825_ISTAT_SIGP) && s->waiting_reselect && !from_script)
             sym53c8xx_start(s);
         return;
     }
@@ -363,7 +391,7 @@ static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
         // fetch.  The status MUST change synchronously with this write —
         // the DBDMA lesson, transplanted: a driver's first `while (running)`
         // loop hangs with no diagnostic otherwise.
-        if (value & SYM825_DCNTL_STD)
+        if ((value & SYM825_DCNTL_STD) && !from_script)
             sym53c8xx_start(s);
         return;
     case SYM825_DSP + 3:
@@ -372,7 +400,8 @@ static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
         // eight bits begins execution of SCSI SCRIPTS").  The register file
         // is little-endian within the chip, so byte 3 is the top.
         s->reg[reg] = value;
-        sym53c8xx_start(s);
+        if (!from_script)
+            sym53c8xx_start(s);
         return;
     default:
         s->reg[reg] = value;
@@ -390,14 +419,17 @@ static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
 // host bus is strapped (the BIG_LIT strap governs DATA lanes on transfers,
 // not the register file's own numbering).
 
-static uint8_t regs_read8(void *ctx, uint32_t offset) {
-    sym53c8xx_t *s = (sym53c8xx_t *)ctx;
+// `peek`: an inspection (memory_interface_t.peek_*), reading what the guest
+// would without its read side effects (reg_read).
+static uint8_t regs_rd8(sym53c8xx_t *s, uint32_t offset, bool peek) {
     if (offset >= SYM825_REGS) {
-        LOG(3, "read above the implemented register file +$%02X -> 0", offset);
+        if (!peek)
+            LOG(3, "read above the implemented register file +$%02X -> 0", offset);
         return 0;
     }
-    uint8_t v = sym825_reg_read(s, offset);
-    LOG(5, "ch%d read +$%02X -> $%02X", s->channel, offset, v);
+    uint8_t v = reg_read(s, offset, peek);
+    if (!peek)
+        LOG(5, "ch%d read +$%02X -> $%02X", s->channel, offset, v);
     return v;
 }
 
@@ -408,17 +440,21 @@ static void regs_write8(void *ctx, uint32_t offset, uint8_t value) {
         return;
     }
     LOG(5, "ch%d write +$%02X = $%02X", s->channel, offset, value);
-    sym825_reg_write(s, offset, value);
+    sym53c8xx_reg_write(s, offset, value, false);
 }
 
 // Wider accesses decompose in BUS order — big-endian, MSB at the lowest
 // address — because that is what the processor bus delivers.  The register
 // file then reassembles them in CHIP order (low byte at the low offset),
 // which is the byte swap the ROM's `rl!-flip` performs from its side.
-static uint16_t regs_read16(void *ctx, uint32_t offset) {
-    sym53c8xx_t *s = (sym53c8xx_t *)ctx;
+// A peek's bytes are each read without side effects, so the stacked-cause
+// bookkeeping below (reg_access_depth, the unstack at the end of the
+// transaction) is the guest's alone.
+static uint16_t regs_rd16(sym53c8xx_t *s, uint32_t offset, bool peek) {
+    if (peek)
+        return (uint16_t)(((uint16_t)regs_rd8(s, offset, true) << 8) | regs_rd8(s, offset + 1, true));
     s->reg_access_depth++;
-    uint16_t v = (uint16_t)(((uint16_t)regs_read8(ctx, offset) << 8) | regs_read8(ctx, offset + 1));
+    uint16_t v = (uint16_t)(((uint16_t)regs_rd8(s, offset, false) << 8) | regs_rd8(s, offset + 1, false));
     s->reg_access_depth--;
     // The transaction is over: a cause held behind a just-cleared first
     // level may surface now, re-asserting the pin as a NEW interrupt.
@@ -434,16 +470,36 @@ static void regs_write16(void *ctx, uint32_t offset, uint16_t value) {
     regs_write8(ctx, offset + 1, (uint8_t)value);
 }
 
-static uint32_t regs_read32(void *ctx, uint32_t offset) {
-    sym53c8xx_t *s = (sym53c8xx_t *)ctx;
+static uint32_t regs_rd32(sym53c8xx_t *s, uint32_t offset, bool peek) {
+    if (peek)
+        return ((uint32_t)regs_rd16(s, offset, true) << 16) | regs_rd16(s, offset + 2, true);
     s->reg_access_depth++;
-    uint32_t v = ((uint32_t)regs_read16(ctx, offset) << 16) | regs_read16(ctx, offset + 2);
+    uint32_t v = ((uint32_t)regs_rd16(s, offset, false) << 16) | regs_rd16(s, offset + 2, false);
     s->reg_access_depth--;
     if (!s->reg_access_depth) {
         sym825_unstack_sist(s);
         sym53c8xx_update_irq(s);
     }
     return v;
+}
+
+static uint8_t regs_read8(void *ctx, uint32_t offset) {
+    return regs_rd8(ctx, offset, false);
+}
+static uint16_t regs_read16(void *ctx, uint32_t offset) {
+    return regs_rd16(ctx, offset, false);
+}
+static uint32_t regs_read32(void *ctx, uint32_t offset) {
+    return regs_rd32(ctx, offset, false);
+}
+static uint8_t regs_peek8(void *ctx, uint32_t offset) {
+    return regs_rd8(ctx, offset, true);
+}
+static uint16_t regs_peek16(void *ctx, uint32_t offset) {
+    return regs_rd16(ctx, offset, true);
+}
+static uint32_t regs_peek32(void *ctx, uint32_t offset) {
+    return regs_rd32(ctx, offset, true);
 }
 
 static void regs_write32(void *ctx, uint32_t offset, uint32_t value) {
@@ -528,8 +584,7 @@ sym53c8xx_t *sym53c8xx_from_device(pci_device_t *dev) {
 // same card kind twice, at IDSEL 17 and 18, so the factory derives the
 // channel from the slot it was asked for rather than from a global counter
 // — restarts and checkpoint restores then reproduce the same assignment.
-static pci_device_t *sym825_factory_for(int slot_index, config_t *cfg, checkpoint_t *cp, int channel) {
-    (void)cp;
+static pci_device_t *sym825_factory_for(int slot_index, config_t *cfg, int channel) {
     pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
     sym53c8xx_t *s = sym53c8xx_new(cfg, channel);
     if (!dev || !s) {
@@ -549,6 +604,9 @@ static pci_device_t *sym825_factory_for(int slot_index, config_t *cfg, checkpoin
     s->regs_if.write_uint8 = regs_write8;
     s->regs_if.write_uint16 = regs_write16;
     s->regs_if.write_uint32 = regs_write32;
+    s->regs_if.peek_uint8 = regs_peek8;
+    s->regs_if.peek_uint16 = regs_peek16;
+    s->regs_if.peek_uint32 = regs_peek32;
     s->ram_if.read_uint8 = ram_read8;
     s->ram_if.read_uint16 = ram_read16;
     s->ram_if.read_uint32 = ram_read32;
@@ -565,12 +623,18 @@ static pci_device_t *sym825_factory_for(int slot_index, config_t *cfg, checkpoin
     return dev;
 }
 
-static pci_device_t *sym825_ch0_factory(int slot_index, config_t *cfg, checkpoint_t *cp) {
-    return sym825_factory_for(slot_index, cfg, cp, 0);
+static pci_device_t *sym825_ch0_factory(int slot_index, config_t *cfg, const rom_image_t *rom,
+                                        const slot_opts_t *opts) {
+    (void)opts;
+    (void)rom;
+    return sym825_factory_for(slot_index, cfg, 0);
 }
 
-static pci_device_t *sym825_ch1_factory(int slot_index, config_t *cfg, checkpoint_t *cp) {
-    return sym825_factory_for(slot_index, cfg, cp, 1);
+static pci_device_t *sym825_ch1_factory(int slot_index, config_t *cfg, const rom_image_t *rom,
+                                        const slot_opts_t *opts) {
+    (void)opts;
+    (void)rom;
+    return sym825_factory_for(slot_index, cfg, 1);
 }
 
 // Two kinds rather than one, because a card kind's factory takes no channel
@@ -580,7 +644,7 @@ static pci_device_t *sym825_ch1_factory(int slot_index, config_t *cfg, checkpoin
 // machine's slot table names them, never offered on a socket.
 const pci_card_kind_t sym53c825_ch0_kind = {
     .id = "sym53c825_0",
-    .display_name = "Symbios 53C825A fast/wide SCSI (channel 0)",
+    .display_name = "Fast and wide SCSI-2 controller (channel 0)",
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "scsi",
     .factory = sym825_ch0_factory,
@@ -588,7 +652,7 @@ const pci_card_kind_t sym53c825_ch0_kind = {
 
 const pci_card_kind_t sym53c825_ch1_kind = {
     .id = "sym53c825_1",
-    .display_name = "Symbios 53C825A fast/wide SCSI (channel 1)",
+    .display_name = "Fast and wide SCSI-2 controller (channel 1)",
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "scsi",
     .factory = sym825_ch1_factory,

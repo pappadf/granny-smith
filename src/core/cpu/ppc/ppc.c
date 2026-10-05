@@ -2,16 +2,19 @@
 // Copyright (c) pappadf
 
 // ppc.c
-// PPC (MPC601/MPC604) core: lifecycle, exception machinery, SPR file,
+// PPC (MPC601/MPC604/MPC750) core: lifecycle, exception machinery, SPR file,
 // scheduler and debugger adapters, object class.  The interpreter lives in
 // ppc_run.c; model-specific behavior is discriminated on ppc_t.cpu_model.
 
 #include "ppc_internal.h"
 #include "ppc_softfp.h"
 
-#include <stdlib.h> // getenv (TEMP diagnostic PVR override)
+#include <stddef.h> // offsetof
+#include <stdlib.h> // malloc / free
 
 #include "alias.h"
+#include "debug.h"
+#include "debug_mmu.h"
 #include "log.h"
 #include "machine_profile.h"
 #include "object.h"
@@ -22,8 +25,13 @@
 
 LOG_USE_CATEGORY_NAME("ppc");
 
-// Forward declaration — class descriptor is at the bottom of the file.
-extern const class_desc_t ppc_cpu_class;
+// Forward declarations — the class descriptors are at the bottom of the file.
+// These must stay at file scope: a block-scope `static const class_desc_t x;`
+// is not a declaration of the file-scope object, it is a *new* zero-filled
+// one that shadows it, so object_new() would bind an empty member table.
+static const class_desc_t ppc_cpu_class;
+static const class_desc_t ppc_mmu_class;
+static const class_desc_t ppc_fpu_class;
 
 // === Exception machinery ====================================================
 
@@ -64,19 +72,32 @@ void ppc_context_sync(ppc_t *p) {
 // prefixed $FFF00000 when MSR[EP] is set.
 void ppc_exception(ppc_t *p, uint32_t vector, uint32_t srr1_hi, uint32_t resume_pc) {
     ppc_context_sync(p); // taking an exception is context-synchronizing
+    // MPC601UM 3.5.7 lists what clears an lwarx reservation, including
+    // "execution of an instruction that causes an exception" and "occurrence
+    // of an asynchronous exception"; 5.2.2 step 6 repeats it.  Without this a
+    // DEC or external interrupt arriving between lwarx and stwcx. leaves the
+    // reservation live across the handler and the rfi, so the conditional
+    // store succeeds where hardware fails it -- the exact atomicity break the
+    // pair exists to prevent.  reserve_addr is deliberately left alone: the
+    // reservation-granule compare needs it.
+    p->reserve = 0;
     p->srr0 = resume_pc;
     p->srr1 = (srr1_hi & 0xFFFF0000u) | (p->msr & 0x0000FFFFu);
-    p->msr &= ppc_msr_exception_keep(p);
+    // LE is replaced by a copy of ILE (PEM Table 6-x "MSR settings on
+    // exception"): the handler runs in the endianness the OS asked for.
+    // ILE is masked to zero on the 601, so this is a no-op there.
+    uint32_t le = (p->msr & PPC_MSR_ILE) ? PPC_MSR_LE : 0u;
+    p->msr = (p->msr & ppc_msr_exception_keep(p)) | le;
     ppc_update_active_maps(p);
     p->pc = ((p->msr & PPC_MSR_EP) ? 0xFFF00000u : 0u) + vector;
-    // Record in the shared exception trace ring (§3.9c field mapping:
+    // Record in the shared exception trace ring (field mapping:
     // vbr slot = MSR, format_frame = vector offset, fault_addr = DAR).
     exc_trace_record(vector, resume_pc, p->srr0, p->dar, 0, p->msr, 0, (uint16_t)vector, 0);
 }
 
 // Take a pending external/decrementer interrupt when MSR[EE] allows.
 // Level-sensitive: called before each instruction and from the sched-if
-// poll hook (the just-re-enabled case after rfi/mtmsr, proposal §4.6).
+// poll hook (the just-re-enabled case after rfi/mtmsr).
 void ppc_poll_interrupt(ppc_t *p) {
     if (!(p->msr & PPC_MSR_EE))
         return;
@@ -95,7 +116,7 @@ void ppc_set_ext_irq(ppc_t *p, bool level) {
     p->ext_irq = next;
 }
 
-// === RTC/TB/DEC time derivation (§3.7; TNT proposal §4.4) ===================
+// === RTC/TB/DEC time derivation =============================================
 
 // Exact rational cycles→ticks: q*mul + r*mul/div never overflows (r < div,
 // both 32-bit after reduction) and is exact over any interval.
@@ -241,6 +262,66 @@ static bool spr_undefined(ppc_t *p, uint32_t n, bool is_read) {
     return false;
 }
 
+// === 750 implementation registers (750UM §2.1.2, §9.1, §10.3) ============
+
+#define PPC750_L2CR_L2E  0x80000000u // L2 enable
+#define PPC750_L2CR_L2I  0x00200000u // global invalidate
+#define PPC750_L2CR_L2IP 0x00000001u // invalidate in progress (read-only)
+// "Approximately 32K core clock cycles" for a global invalidate (750UM
+// §9.1.5); the scheduler's cycle domain is the core clock.
+#define PPC750_L2_INVAL_CYCLES 32768u
+// Synthetic junction temperature the thermal assist unit compares against
+// (°C).  Any fixed value works: Linux's TAU driver only needs TIV to go
+// valid after it programs a threshold (750UM §10.3.2.1).
+#define PPC750_TAU_TEMP_C 40u
+
+// L2CR as software reads it: the stored bits with L2IP derived from the
+// invalidate timer.  Bound to a scheduler, L2IP stays 1 until the timer
+// runs out; unbound (unit tests), it reads 1 exactly once.
+static uint32_t ppc_l2cr_read(ppc_t *p) {
+    uint32_t v = p->l2cr & ~PPC750_L2CR_L2IP;
+    if (p->scheduler && p->tick_mul) {
+        if (scheduler_cpu_cycles(p->scheduler) < p->l2_inval_end)
+            v |= PPC750_L2CR_L2IP;
+    } else if (p->l2_inval_reads) {
+        p->l2_inval_reads--;
+        v |= PPC750_L2CR_L2IP;
+    }
+    return v;
+}
+
+// L2CR write: every bit but L2IP is stored.  A 0->1 transition of L2I
+// starts a global invalidate — the handshake the Gossamer boot program
+// polls on before any I/O (750UM §9.1.5).  The manual says software
+// should clear L2E first, but the Gossamer ROM sets L2I together with
+// L2E and still polls L2IP, so the invalidate runs either way.
+static void ppc_l2cr_write(ppc_t *p, uint32_t v) {
+    bool start = (v & PPC750_L2CR_L2I) && !(p->l2cr & PPC750_L2CR_L2I);
+    p->l2cr = v & ~PPC750_L2CR_L2IP;
+    if (start) {
+        if (p->scheduler && p->tick_mul)
+            p->l2_inval_end = scheduler_cpu_cycles(p->scheduler) + PPC750_L2_INVAL_CYCLES;
+        else
+            p->l2_inval_reads = 1;
+    }
+}
+
+// THRM1/THRM2 as read: TIV (bit 1) is valid whenever the register holds a
+// valid threshold (V, bit 31) and THRM3[E] enables comparison; TIN (bit 0)
+// then reports the compare against the synthetic temperature — above the
+// threshold with TID = 0, below it with TID = 1 (750UM Table 2-15).  The
+// thermal-management interrupt ($01700) is not delivered.
+static uint32_t ppc_thrm_read(ppc_t *p, int n) {
+    uint32_t v = p->thrm[n] & 0x3FFFFFFFu; // TIN/TIV are never stored
+    if (n < 2 && (v & 1u) && (p->thrm[2] & 1u)) {
+        uint32_t threshold = (v >> 23) & 0x7Fu;
+        bool below = (v & 0x4u) != 0; // TID
+        bool tin = below ? (PPC750_TAU_TEMP_C < threshold) : (PPC750_TAU_TEMP_C > threshold);
+        v |= 0x40000000u | (tin ? 0x80000000u : 0u);
+    }
+    return v;
+}
+
 bool ppc_mfspr(ppc_t *p, uint32_t iw) {
     uint32_t n = spr_number(iw);
     uint32_t d = PPC_RT(iw);
@@ -353,28 +434,79 @@ bool ppc_mfspr(ppc_t *p, uint32_t iw) {
         v = (n & 1) ? p->dbatl[pair] : p->dbatu[pair];
         break;
     }
-    case 952: // MMCR0 — 604 performance monitor group: read-zero stubs
-    case 953: // PMC1     (TNT proposal §4.2; the $00F00 interrupt never fires)
-    case 954: // PMC2
-    case 955: // SIA
-    case 959: // SDA
-        if (!ppc_is_604(p))
+    case 936: // UMMCR0 — 750 user-level read-only mirrors of the monitor (750UM Table 2-49)
+    case 937: // UPMC1
+    case 938: // UPMC2
+    case 939: // USIA
+    case 940: // UMMCR1
+    case 941: // UPMC3
+    case 942: // UPMC4
+        if (!ppc_is_750(p))
+            goto undefined;
+        if (n == 936 || n == 940)
+            v = p->mmcr[n == 940]; // UMMCR0 / UMMCR1
+        else if (n == 939)
+            v = p->sia;
+        else
+            v = p->pmc[(n <= 938) ? n - 937 : n - 939]; // UPMC1/2 at 937/938, UPMC3/4 at 941/942
+        break;
+    case 956: // MMCR1 (750)
+    case 957: // PMC3
+    case 958: // PMC4
+        if (!ppc_is_750(p))
             goto undefined;
         if (spr_priv_fault(p, iw))
             return false;
-        v = 0;
+        v = (n == 956) ? p->mmcr[1] : p->pmc[n - 955];
+        break;
+    case 952: // MMCR0 — 604: read-zero stubs; 750: store-and-readback
+    case 953: // PMC1     (the $00F00 interrupt never fires)
+    case 954: // PMC2
+    case 955: // SIA
+    case 959: // SDA (604 only)
+        if (!ppc_is_604(p) || (n == 959 && ppc_is_750(p)))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        if (ppc_is_750(p))
+            v = (n == 952) ? p->mmcr[0] : (n == 955) ? p->sia : p->pmc[n - 953];
+        else
+            v = 0;
         break;
     case 1008:
         if (spr_priv_fault(p, iw))
             return false;
         v = p->hid0;
         break;
-    case 1009: // HID1: 601 only (the 604 defines no HID1)
-        if (ppc_is_604(p))
+    case 1009: // HID1: 601 store-and-readback; 750 read-only PLL_CFG image; the 604 defines none
+        if (ppc_is_604(p) && !ppc_is_750(p))
             goto undefined;
         if (spr_priv_fault(p, iw))
             return false;
         v = p->hid1;
+        break;
+    case 1017: // L2CR (750)
+        if (!ppc_is_750(p))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        v = ppc_l2cr_read(p);
+        break;
+    case 1019: // ICTC (750)
+        if (!ppc_is_750(p))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        v = p->ictc;
+        break;
+    case 1020: // THRM1-3 (750)
+    case 1021:
+    case 1022:
+        if (!ppc_is_750(p))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        v = ppc_thrm_read(p, (int)(n - 1020));
         break;
     case 1010:
         if (spr_priv_fault(p, iw))
@@ -386,7 +518,9 @@ bool ppc_mfspr(ppc_t *p, uint32_t iw) {
             return false;
         v = p->dabr;
         break;
-    case 1023:
+    case 1023: // PIR: 601/604 (the 750 has none — 750UM Table 2-49)
+        if (ppc_is_750(p))
+            goto undefined;
         if (spr_priv_fault(p, iw))
             return false;
         v = p->pir;
@@ -461,14 +595,24 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
         p->rtcl = v & 0x3FFFFF80u; // RTCL: bits 25-31 and 0-1 read as zero
         p->rtc_base_ticks = ppc_ticks_now(p);
         break;
-    case 22:
+    case 22: {
         if (spr_priv_fault(p, iw))
             return false;
+        uint32_t old = ppc_dec_now(p);
         p->dec = v;
         p->dec_base_ticks = ppc_ticks_now(p);
-        p->dec_pending = 0; // re-arming clears the latched expiry
+        // Re-arming clears the latched expiry, but a write that itself turns
+        // bit 0 from 0 to 1 signals the request, as the counter's own
+        // transition does (the Programming Environments manual, Decrementer
+        // Register).  The Mac OS 9 NanoKernel's idle path counts on
+        // it: it reads an expired (negative) DEC, writes $7FFF0000, and writes
+        // the old value back to re-post the expiry; without the signal its
+        // timer queue never fires again and the boot hangs at the first
+        // timed wait.
+        p->dec_pending = (!(old & 0x80000000u) && (v & 0x80000000u)) ? 1u : 0u;
         ppc_dec_arm(p);
         break;
+    }
     case 25:
         if (spr_priv_fault(p, iw))
             return false;
@@ -558,27 +702,73 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
         }
         break;
     }
-    case 952: // 604 performance monitor group: write-ignore stubs
+    case 952: // 604: write-ignore stubs; 750: store-and-readback
     case 953:
     case 954:
     case 955:
-    case 959:
-        if (!ppc_is_604(p))
+    case 959: // SDA (604 only)
+        if (!ppc_is_604(p) || (n == 959 && ppc_is_750(p)))
             goto undefined;
         if (spr_priv_fault(p, iw))
             return false;
+        if (ppc_is_750(p)) {
+            if (n == 952)
+                p->mmcr[0] = v;
+            else if (n == 955)
+                p->sia = v;
+            else
+                p->pmc[n - 953] = v;
+        }
+        break;
+    case 956: // MMCR1 / PMC3 / PMC4 (750)
+    case 957:
+    case 958:
+        if (!ppc_is_750(p))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        if (n == 956)
+            p->mmcr[1] = v;
+        else
+            p->pmc[n - 955] = v;
         break;
     case 1008:
         if (spr_priv_fault(p, iw))
             return false;
-        p->hid0 = v;
+        // 750: ICFI/DCFI (bits 20/21) flash-invalidate and self-clear
+        // (750UM Table 2-4) — they never read back set.
+        p->hid0 = ppc_is_750(p) ? (v & ~0x00000C00u) : v;
         break;
-    case 1009: // HID1: 601 only
-        if (ppc_is_604(p))
+    case 1009: // HID1: 601 store-and-readback; 750 read-only ("executes as a no-op", 750UM §2.3.2.4.3)
+        if (ppc_is_604(p) && !ppc_is_750(p))
             goto undefined;
         if (spr_priv_fault(p, iw))
             return false;
-        p->hid1 = v;
+        if (!ppc_is_750(p))
+            p->hid1 = v;
+        break;
+    case 1017: // L2CR (750)
+        if (!ppc_is_750(p))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        ppc_l2cr_write(p, v);
+        break;
+    case 1019: // ICTC (750): accepted, no throttling modelled
+        if (!ppc_is_750(p))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        p->ictc = v;
+        break;
+    case 1020: // THRM1-3 (750): stored; TIN/TIV are read-only and derived
+    case 1021:
+    case 1022:
+        if (!ppc_is_750(p))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        p->thrm[n - 1020] = v & 0x3FFFFFFFu;
         break;
     case 1010:
         if (spr_priv_fault(p, iw))
@@ -590,7 +780,9 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
             return false;
         p->dabr = v;
         break;
-    case 1023:
+    case 1023: // PIR: 601/604
+        if (ppc_is_750(p))
+            goto undefined;
         if (spr_priv_fault(p, iw))
             return false;
         p->pir = v;
@@ -603,6 +795,15 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
 }
 
 // === Public register accessors ==============================================
+
+void ppc_set_identity(ppc_t *p, uint32_t pvr, uint32_t hid1) {
+    p->reset_pvr = pvr;
+    p->reset_hid1 = hid1;
+    if (pvr)
+        p->pvr = pvr;
+    if (ppc_is_750(p))
+        p->hid1 = hid1;
+}
 
 uint32_t ppc_get_pc(ppc_t *restrict p) {
     return p->pc;
@@ -639,12 +840,14 @@ bool ppc_is_supervisor(ppc_t *restrict p) {
 
 // Hard-reset register state per model (601UM Table 5-8; 604UM §8.8.4 —
 // HRESET sets only MSR[IP], and the 604's HID0 comes up all-zero with the
-// caches and BHT disabled).  The cpu_model itself survives the reset.
+// caches and BHT disabled; 750UM Table 2-19 — MSR[IP], HID0 = L2CR = 0,
+// DEC all-ones).  The cpu_model and the profile's identity survive.
 void ppc_reset(ppc_t *p) {
     struct object *keep_cpu = p->cpu_object;
     struct object *keep_fpu = p->fpu_object;
     struct object *keep_mmu = p->mmu_object;
     int keep_model = p->cpu_model;
+    uint32_t keep_pvr = p->reset_pvr, keep_hid1 = p->reset_hid1;
     // The TIME BINDING survives a reset, for the same reason the object
     // handles and the model do: it is not processor state, it is how this
     // core is wired to the machine's clock.  A reset line does not unbind a
@@ -663,6 +866,8 @@ void ppc_reset(ppc_t *p) {
     p->fpu_object = keep_fpu;
     p->mmu_object = keep_mmu;
     p->cpu_model = keep_model;
+    p->reset_pvr = keep_pvr;
+    p->reset_hid1 = keep_hid1;
     p->scheduler = keep_sched;
     p->tick_mul = keep_tick_mul;
     p->tick_div = keep_tick_div;
@@ -671,7 +876,11 @@ void ppc_reset(ppc_t *p) {
     // timebase read out as however long the machine had been running.
     p->rtc_base_ticks = ppc_ticks_now(p);
     p->dec_base_ticks = p->rtc_base_ticks;
-    if (ppc_is_604(p)) {
+    if (ppc_is_750(p)) {
+        p->msr = PPC_MSR_EP; // $00000040 (IP only)
+        p->pvr = 0x00080202u; // 750, revision 2.2 — the stock beige-G3 part
+        p->dec = 0xFFFFFFFFu; // 750UM Table 2-19
+    } else if (ppc_is_604(p)) {
         p->msr = PPC_MSR_EP; // $00000040 (IP only)
         p->pvr = 0x00040103u; // 604, revision 1.3 (chosen constant; the kernel keys on the $0004 half)
     } else {
@@ -679,15 +888,11 @@ void ppc_reset(ppc_t *p) {
         p->pvr = 0x00010001u;
         p->hid0 = 0x80010080u;
     }
-    // TEMP diagnostic (604 boot-wall hunt): let a run present a foreign PVR so
-    // the ROM/kernel select the other CPU's personality against this model's
-    // semantics.  Env-gated, inert otherwise.
-    {
-        const char *s = getenv("GS_PVR_OVERRIDE");
-        if (s)
-            p->pvr = (uint32_t)strtoul(s, NULL, 16);
-    }
-    p->pc = 0xFFF00100u; // reset vector, MSR[EP]=1 on both models
+    if (p->reset_pvr)
+        p->pvr = p->reset_pvr; // the profile's part (upgrade cards, other revisions)
+    if (ppc_is_750(p))
+        p->hid1 = p->reset_hid1; // PLL_CFG pins, sampled at HRESET
+    p->pc = 0xFFF00100u; // reset vector, MSR[EP]=1 on every model
     p->instruction_pc = p->pc;
     ppc_mmu_invalidate_all(p); // translation state gone with the SRs/BATs
     ppc_context_sync(p); // the fetch-side BAT view starts out cleared too
@@ -725,18 +930,25 @@ static void ppc_fastpath_changed(void) {
     ppc_mmu_logpoints_changed();
 }
 
-// The instance behind the parameterless memory hooks below (one main CPU
-// per machine; rebound on every ppc_init).
-static ppc_t *g_hook_ppc;
-
 // g_mem_logical_xlate: current-data-context logical→physical for the
 // memory slow path's logpoint resolution.  Side-effect-free.
-static uint32_t ppc_hook_logical_xlate(uint32_t addr, bool *ok) {
-    if (!g_hook_ppc) {
-        *ok = false;
-        return addr;
-    }
-    return ppc_mmu_translate_debug(g_hook_ppc, addr, true, ok);
+static uint32_t ppc_hook_logical_xlate(void *ctx, uint32_t addr, bool *ok) {
+    return ppc_mmu_translate_debug((ppc_t *)ctx, addr, true, ok);
+}
+
+static void ppc_hook_selected(void *ctx) {
+    ppc_mmu_caches_unknown();
+    ppc_update_active_maps((ppc_t *)ctx); // the active pair follows the MSR, not the sprint
+}
+
+memory_cpu_hooks_t ppc_memory_hooks(ppc_t *p) {
+    // The user SoA arrays carry this MMU's logical fills — the generic
+    // identity-restore paths must leave them alone (memory.h).
+    return (memory_cpu_hooks_t){.user_soa_reserved = true,
+                                .map_changed = ppc_fastpath_changed,
+                                .logical_xlate = ppc_hook_logical_xlate,
+                                .selected = ppc_hook_selected,
+                                .ctx = p};
 }
 
 #include "ppc_pd_ids.h"
@@ -765,27 +977,15 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
     if (!p)
         return NULL;
     g_pd_id_name[PD_ARCH_PPC] = ppc_pd_id_name;
-    assert(cpu_model == CPU_MODEL_PPC601 || cpu_model == CPU_MODEL_PPC604);
-    // The 601 keeps VXSOFT/VXSQRT as storage only (ppc_softfp.h).
-    g_ppc_fpscr_vx_any =
-        cpu_model == CPU_MODEL_PPC601 ? (PPC_FPSCR_VX_ANY & ~(PPC_FPSCR_VXSOFT | PPC_FPSCR_VXSQRT)) : PPC_FPSCR_VX_ANY;
-
-    // The user SoA arrays carry this MMU's logical fills — the generic
-    // identity-restore paths must leave them alone (memory.h).
-    g_user_soa_reserved = true;
-    g_mem_fastpath_changed = ppc_fastpath_changed;
-    g_hook_ppc = p;
-    g_mem_logical_xlate = ppc_hook_logical_xlate;
+    assert(cpu_model == CPU_MODEL_PPC601 || cpu_model == CPU_MODEL_PPC604 || cpu_model == CPU_MODEL_PPC750);
 
     if (checkpoint) {
-        // The stream carries the whole struct including save-time pointers;
-        // null them so the bindings below are rebuilt for THIS machine
-        // (the cpu.c same-process-restore double-free precedent).
-        system_read_checkpoint_data(checkpoint, p, sizeof(ppc_t));
-        p->cpu_object = NULL;
-        p->fpu_object = NULL;
-        p->mmu_object = NULL;
-        p->scheduler = NULL; // re-planted by ppc_bind_time
+        // The stream carries the prefix only; the pointer section is not in
+        // it, so zero the whole struct first and let the read fill the front.
+        // The bindings below are then rebuilt for THIS machine (the cpu.c
+        // same-process-restore double-free precedent).
+        memset(p, 0, sizeof(ppc_t));
+        system_read_checkpoint_data(checkpoint, p, offsetof(struct ppc, cpu_object));
         p->tick_mul = p->tick_div = 0;
         // The MMU caches are derived state and refill lazily; the T-bit
         // mask is derived from the restored SRs.
@@ -805,15 +1005,13 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
         object_set_label(p->cpu_object, "CPU");
         object_set_order(p->cpu_object, 10);
         object_attach(machine_object(), p->cpu_object);
-        // machine.cpu.mmu: the translation debug window (§3.9d).
-        extern const class_desc_t ppc_mmu_class;
+        // machine.cpu.mmu: the translation debug window.
         p->mmu_object = object_new(&ppc_mmu_class, p, "mmu");
         if (p->mmu_object) {
             object_set_label(p->mmu_object, "MMU");
             object_attach(p->cpu_object, p->mmu_object);
         }
-        // machine.cpu.fpu: the FPR file + FPSCR (Phase E, §3.9d).
-        extern const class_desc_t ppc_fpu_class;
+        // machine.cpu.fpu: the FPR file + FPSCR.
         p->fpu_object = object_new(&ppc_fpu_class, p, "fpu");
         if (p->fpu_object) {
             object_set_label(p->fpu_object, "FPU");
@@ -822,7 +1020,7 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
     }
 
     // `$pc`, `$r0`... — the 68K `$d0`-style aliases simply don't exist on a
-    // PPC machine (§3.9d); registration is idempotent.
+    // PPC machine; registration is idempotent.
     register_ppc_aliases();
 
     return p;
@@ -831,12 +1029,8 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
 void ppc_delete(ppc_t *p) {
     if (!p)
         return;
-    // Drop the parameterless-hook binding if it is ours (memory_map_init
-    // also clears the function pointers on machine swap).
-    if (g_hook_ppc == p) {
-        g_hook_ppc = NULL;
-        g_mem_logical_xlate = NULL;
-    }
+    // The decrementer event carries `p`; only the live re-arm path removed it.
+    scheduler_forget_source(p->scheduler, p);
     if (p->fpu_object) {
         object_detach(p->fpu_object);
         object_delete(p->fpu_object);
@@ -858,8 +1052,15 @@ void ppc_delete(ppc_t *p) {
 void ppc_checkpoint(ppc_t *restrict p, checkpoint_t *checkpoint) {
     if (!p || !checkpoint)
         return;
-    // One POD blob; pointers are nulled on restore (§3.9f).
-    system_write_checkpoint_data(checkpoint, p, sizeof(ppc_t));
+    // Everything before the pointer section, which ppc_internal.h marks and
+    // ppc_init nulls on the way back in.  It used to write sizeof(ppc_t) and
+    // null them afterwards -- harmless to the restore, but it put four host
+    // pointers into a user-shareable save file and made two saves of the same
+    // guest state differ between processes, which defeats diff-based
+    // checkpoint testing.  Measured: four 4-byte runs at 8-byte stride,
+    // exactly cpu_object/fpu_object/mmu_object/scheduler.  cpu.c's 68k
+    // checkpoint stops short of its pointers the same way.
+    system_write_checkpoint_data(checkpoint, p, offsetof(struct ppc, cpu_object));
 }
 
 // === Scheduler adapter (the main-CPU seam) ==================================
@@ -869,7 +1070,7 @@ static void ppc_if_run_sprint(void *ctx, uint32_t *instructions) {
 }
 
 // The 601 never parks: PowerPC has no STOP-equivalent the Mac uses — the
-// guest idles in loops, exactly as the real machine burns its CPU (§3.7).
+// guest idles in loops, exactly as the real machine burns its CPU.
 static bool ppc_if_is_stopped(void *ctx) {
     (void)ctx;
     return false;
@@ -884,7 +1085,7 @@ sched_cpu_if_t ppc_sched_if(ppc_t *p) {
     return cif;
 }
 
-// === Debugger adapter (§3.9b) ===============================================
+// === Debugger adapter =======================================================
 
 static uint32_t ppc_dbgif_get_pc(void *ctx) {
     return ((ppc_t *)ctx)->pc;
@@ -897,14 +1098,18 @@ static void ppc_dbgif_set_pc(void *ctx, uint32_t pc) {
 // One instruction at pc through the debug memory view; always 4 bytes.
 // The pc is translated with the fetch rules so disassembly through
 // translated pages shows the bytes the CPU would execute.
-static int ppc_dbgif_disasm(void *ctx, uint32_t pc, char *buf) {
+static int ppc_dbgif_disasm(void *ctx, uint32_t pc, char *buf, size_t buflen) {
     ppc_t *p = (ppc_t *)ctx;
     bool ok;
     uint32_t pa = ppc_mmu_translate_debug(p, pc, false, &ok);
+    // LE mode: show the word the CPU fetches (the fetch munge, pc ^ 4), so a
+    // listing of little-endian code reads in program order.
+    if (p->msr & PPC_MSR_LE)
+        pa ^= 4u;
     ppc_insn ins;
     ppc_disassemble_model(ok ? memory_debug_read_uint32(pa) : 0, pc, p->cpu_model, &ins);
     // debug.c splits on '\t'; ppc_disasm emits "mnemonic\toperands" already.
-    snprintf(buf, 100, "%s", ins.text);
+    snprintf(buf, buflen, "%s", ins.text); // ins.text is char[96]; caller gives 100
     return 4;
 }
 
@@ -920,13 +1125,83 @@ static uint32_t ppc_dbgif_translate_mac(void *ctx, uint32_t logical, bool *ok) {
     return ppc_mmu_translate_mac((ppc_t *)ctx, logical, ok);
 }
 
+// The PPC register file for debug.frame: the GPRs, PC and the user and
+// supervisor control registers a debugger reads first.  The segment and BAT
+// registers stay on machine.cpu (the MMU view reads them there).
+static void ppc_dbgif_regs(void *ctx, struct value_map_builder *regs) {
+    ppc_t *p = (ppc_t *)ctx;
+    char rname[4];
+    for (int i = 0; i < 32; i++) {
+        snprintf(rname, sizeof(rname), "r%d", i);
+        val_map_put(regs, rname, val_int((int64_t)p->gpr[i]));
+    }
+    val_map_put(regs, "pc", val_int((int64_t)p->pc));
+    val_map_put(regs, "lr", val_int((int64_t)p->lr));
+    val_map_put(regs, "ctr", val_int((int64_t)p->ctr));
+    val_map_put(regs, "cr", val_int((int64_t)p->cr));
+    val_map_put(regs, "xer", val_int((int64_t)p->xer));
+    val_map_put(regs, "msr", val_int((int64_t)p->msr));
+    val_map_put(regs, "srr0", val_int((int64_t)p->srr0));
+    val_map_put(regs, "srr1", val_int((int64_t)p->srr1));
+    if (p->cpu_model == CPU_MODEL_PPC601)
+        val_map_put(regs, "mq", val_int((int64_t)p->mq)); // POWER MQ: 601 only
+}
+
+// The FPU register file for debug.frame: fpr0-fpr31 (IEEE doubles) as raw
+// hex plus a decimal rendering, and FPSCR.  Every 601 and 604 has an FPU.
+static bool ppc_dbgif_fpu(void *ctx, struct value_map_builder *fb) {
+    ppc_t *p = (ppc_t *)ctx;
+    value_t *fps = NULL;
+    size_t n_fps = 0, cap_fps = 0;
+    char hexbuf[20];
+    char valbuf[40];
+    for (int i = 0; i < 32; i++) {
+        value_map_builder_t *fpb = val_map_new();
+        snprintf(hexbuf, sizeof(hexbuf), "%016llX", (unsigned long long)p->fpr[i]);
+        val_map_put(fpb, "hex", val_str(hexbuf));
+        double d;
+        memcpy(&d, &p->fpr[i], sizeof(d));
+        // Inf/NaN aren't legal JSON numbers: keep the value a string.
+        if (d != d)
+            snprintf(valbuf, sizeof(valbuf), "NaN");
+        else if (d > 1.7976931348623157e308 || d < -1.7976931348623157e308)
+            snprintf(valbuf, sizeof(valbuf), "%s", d < 0 ? "-Inf" : "Inf");
+        else
+            snprintf(valbuf, sizeof(valbuf), "%.17g", d);
+        val_map_put(fpb, "val", val_str(valbuf));
+        val_list_push(&fps, &n_fps, &cap_fps, val_map_finish(fpb));
+    }
+    val_map_put(fb, "fpr", val_list(fps, n_fps));
+    val_map_put(fb, "fpscr", val_int((int64_t)p->fpscr));
+    return true;
+}
+
+// Instruction-side translation for disassembly rows (the IBATs / fetch rules).
+static uint32_t ppc_dbgif_translate_code(void *ctx, uint32_t logical, bool *ok) {
+    return ppc_mmu_translate_debug((ppc_t *)ctx, logical, false, ok);
+}
+
+// Supervisor state: MSR[PR] clear.
+static bool ppc_dbgif_is_supervisor(void *ctx) {
+    return (((ppc_t *)ctx)->msr & PPC_MSR_PR) == 0;
+}
+
 cpu_debug_if_t ppc_debug_if(ppc_t *p) {
-    cpu_debug_if_t dif = {
-        p, ppc_dbgif_get_pc, ppc_dbgif_set_pc, ppc_dbgif_disasm, ppc_dbgif_translate, ppc_dbgif_translate_mac};
+    cpu_debug_if_t dif = {.ctx = p,
+                          .get_pc = ppc_dbgif_get_pc,
+                          .set_pc = ppc_dbgif_set_pc,
+                          .disasm = ppc_dbgif_disasm,
+                          .translate = ppc_dbgif_translate,
+                          .translate_mac = ppc_dbgif_translate_mac,
+                          .arch = "ppc",
+                          .regs = ppc_dbgif_regs,
+                          .fpu = ppc_dbgif_fpu,
+                          .translate_code = ppc_dbgif_translate_code,
+                          .is_supervisor = ppc_dbgif_is_supervisor};
     return dif;
 }
 
-// === Object-model class (§3.9d) =============================================
+// === Object-model class =====================================================
 
 static ppc_t *ppc_from(struct object *self) {
     return (ppc_t *)object_data(self);
@@ -950,6 +1225,10 @@ enum ppc_attr_id {
     PA_FPSCR,
     PA_DAR,
     PA_DSISR,
+    PA_PVR,
+    PA_HID0,
+    PA_HID1,
+    PA_L2CR,
     PA_GPR0 = 0x100, // ..0x11F
     PA_SR0 = 0x200, // ..0x20F
     PA_BAT0U = 0x300, // U/L interleaved ..0x307 (601 unified / 604 IBATs)
@@ -1002,11 +1281,19 @@ static uint32_t *ppc_attr_slot(ppc_t *p, int id) {
         return &p->dar;
     case PA_DSISR:
         return &p->dsisr;
+    case PA_PVR:
+        return &p->pvr;
+    case PA_HID0:
+        return &p->hid0;
+    case PA_HID1:
+        return &p->hid1;
+    case PA_L2CR:
+        return &p->l2cr;
     }
     return NULL;
 }
 
-static value_t attr_ppc_get(struct object *self, const member_t *m) {
+static DEF_GETTER(attr_ppc_get) {
     ppc_t *p = ppc_from(self);
     if (!p)
         return val_err("cpu not initialised");
@@ -1020,6 +1307,10 @@ static value_t attr_ppc_get(struct object *self, const member_t *m) {
         raw = ppc_is_604(p) ? (uint32_t)ppc_tb_now(p) : ppc_rtcl_now(p);
     else if (id == PA_DEC)
         raw = ppc_dec_now(p);
+    else if (id == PA_L2CR)
+        raw = p->l2cr | ((p->scheduler && p->tick_mul && scheduler_cpu_cycles(p->scheduler) < p->l2_inval_end)
+                             ? 1u
+                             : 0u); // L2IP without consuming a read
     else {
         uint32_t *slot = ppc_attr_slot(p, id);
         if (!slot)
@@ -1031,7 +1322,7 @@ static value_t attr_ppc_get(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_ppc_set(struct object *self, const member_t *m, value_t in) {
+static DEF_SETTER(attr_ppc_set) {
     ppc_t *p = ppc_from(self);
     if (!p)
         return val_err("cpu not initialised");
@@ -1040,7 +1331,7 @@ static value_t attr_ppc_set(struct object *self, const member_t *m, value_t in) 
     if (!slot)
         return val_err("bad register id");
     *slot = (uint32_t)in.u;
-    // An MSR poke must keep the SoA maps coherent (the §3.5 discipline);
+    // An MSR poke must keep the SoA maps coherent (ppc_update_active_maps);
     // SR/BAT/SDR1 pokes invalidate the translation caches like their
     // instruction-level counterparts do.
     if (id == PA_MSR) {
@@ -1057,9 +1348,9 @@ static value_t attr_ppc_set(struct object *self, const member_t *m, value_t in) 
     return val_none();
 }
 
-#define PPC_ATTR(name_, id_)                                                                                           \
+#define PPC_ATTR(name_, id_, doc_)                                                                                     \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .attr = {                                                                       \
+        .kind = M_ATTR, .name = name_, .doc = doc_, .attr = {                                                          \
             .type = V_UINT,                                                                                            \
             .presentation_flags = VAL_HEX,                                                                             \
             .get = attr_ppc_get,                                                                                       \
@@ -1067,83 +1358,208 @@ static value_t attr_ppc_set(struct object *self, const member_t *m, value_t in) 
             .user_data = (const void *)(uintptr_t)(id_)                                                                \
         }                                                                                                              \
     }
+// The GPR, segment-register and BAT files differ only by number, so their doc
+// text is generated with them rather than written out eighty times.
+#define PPC_GPR(N) PPC_ATTR("r" #N, PA_GPR0 + (N), "General-purpose register r" #N " (32-bit)")
+#define PPC_SREG(N)                                                                                                    \
+    PPC_ATTR("sr" #N, PA_SR0 + (N), "Segment register " #N " — maps effective address bits 0-3 to a 24-bit VSID")
+#define PPC_BAT(N)                                                                                                     \
+    PPC_ATTR("bat" #N "u", PA_BAT0U + 2 * (N), "IBAT " #N " upper — block effective address, length and valid bits"),  \
+        PPC_ATTR("bat" #N "l", PA_BAT0U + 2 * (N) + 1,                                                                 \
+                 "IBAT " #N " lower — block physical address and protection bits")
+#define PPC_DBAT(N)                                                                                                    \
+    PPC_ATTR("dbat" #N "u", PA_DBAT0U + 2 * (N),                                                                       \
+             "DBAT " #N " upper — block effective address, length and valid bits"),                                    \
+        PPC_ATTR("dbat" #N "l", PA_DBAT0U + 2 * (N) + 1,                                                               \
+                 "DBAT " #N " lower — block physical address and protection bits")
+
+// Read `instr_count`: the scheduler's retired-instruction count, which is
+// architecture-neutral (68K exposes the same attribute).
+static DEF_GETTER(ppc_attr_instr_count) {
+    return val_uint(8, cpu_instr_count());
+}
+
+// `machine.cpu.frame([addr], [count], [before])` -- this CPU's debug frame,
+// the contract every CPU-like object shares (debug_frame_build; debug.frame
+// is the same call).
+static DEF_METHOD(ppc_method_frame) {
+    ppc_t *p = ppc_from(self);
+    if (!p)
+        return val_err("cpu not initialised");
+    cpu_debug_if_t dif = ppc_debug_if(p);
+    return debug_frame_build(&dif, "machine.cpu.frame", argc, argv);
+}
 
 // clang-format off
 static const member_t ppc_members[] = {
-    PPC_ATTR("pc", PA_PC),       PPC_ATTR("msr", PA_MSR),   PPC_ATTR("cr", PA_CR),     PPC_ATTR("xer", PA_XER),
-    PPC_ATTR("lr", PA_LR),       PPC_ATTR("ctr", PA_CTR),   PPC_ATTR("mq", PA_MQ),     PPC_ATTR("srr0", PA_SRR0),
-    PPC_ATTR("srr1", PA_SRR1),   PPC_ATTR("dec", PA_DEC),   PPC_ATTR("rtcu", PA_RTCU), PPC_ATTR("rtcl", PA_RTCL),
-    PPC_ATTR("sdr1", PA_SDR1),   PPC_ATTR("fpscr", PA_FPSCR), PPC_ATTR("dar", PA_DAR),   PPC_ATTR("dsisr", PA_DSISR),
-    PPC_ATTR("r0", PA_GPR0 + 0),   PPC_ATTR("r1", PA_GPR0 + 1),   PPC_ATTR("r2", PA_GPR0 + 2),
-    PPC_ATTR("r3", PA_GPR0 + 3),   PPC_ATTR("r4", PA_GPR0 + 4),   PPC_ATTR("r5", PA_GPR0 + 5),
-    PPC_ATTR("r6", PA_GPR0 + 6),   PPC_ATTR("r7", PA_GPR0 + 7),   PPC_ATTR("r8", PA_GPR0 + 8),
-    PPC_ATTR("r9", PA_GPR0 + 9),   PPC_ATTR("r10", PA_GPR0 + 10), PPC_ATTR("r11", PA_GPR0 + 11),
-    PPC_ATTR("r12", PA_GPR0 + 12), PPC_ATTR("r13", PA_GPR0 + 13), PPC_ATTR("r14", PA_GPR0 + 14),
-    PPC_ATTR("r15", PA_GPR0 + 15), PPC_ATTR("r16", PA_GPR0 + 16), PPC_ATTR("r17", PA_GPR0 + 17),
-    PPC_ATTR("r18", PA_GPR0 + 18), PPC_ATTR("r19", PA_GPR0 + 19), PPC_ATTR("r20", PA_GPR0 + 20),
-    PPC_ATTR("r21", PA_GPR0 + 21), PPC_ATTR("r22", PA_GPR0 + 22), PPC_ATTR("r23", PA_GPR0 + 23),
-    PPC_ATTR("r24", PA_GPR0 + 24), PPC_ATTR("r25", PA_GPR0 + 25), PPC_ATTR("r26", PA_GPR0 + 26),
-    PPC_ATTR("r27", PA_GPR0 + 27), PPC_ATTR("r28", PA_GPR0 + 28), PPC_ATTR("r29", PA_GPR0 + 29),
-    PPC_ATTR("r30", PA_GPR0 + 30), PPC_ATTR("r31", PA_GPR0 + 31),
-    PPC_ATTR("sr0", PA_SR0 + 0),   PPC_ATTR("sr1", PA_SR0 + 1),   PPC_ATTR("sr2", PA_SR0 + 2),
-    PPC_ATTR("sr3", PA_SR0 + 3),   PPC_ATTR("sr4", PA_SR0 + 4),   PPC_ATTR("sr5", PA_SR0 + 5),
-    PPC_ATTR("sr6", PA_SR0 + 6),   PPC_ATTR("sr7", PA_SR0 + 7),   PPC_ATTR("sr8", PA_SR0 + 8),
-    PPC_ATTR("sr9", PA_SR0 + 9),   PPC_ATTR("sr10", PA_SR0 + 10), PPC_ATTR("sr11", PA_SR0 + 11),
-    PPC_ATTR("sr12", PA_SR0 + 12), PPC_ATTR("sr13", PA_SR0 + 13), PPC_ATTR("sr14", PA_SR0 + 14),
-    PPC_ATTR("sr15", PA_SR0 + 15),
-    PPC_ATTR("bat0u", PA_BAT0U + 0), PPC_ATTR("bat0l", PA_BAT0U + 1), PPC_ATTR("bat1u", PA_BAT0U + 2),
-    PPC_ATTR("bat1l", PA_BAT0U + 3), PPC_ATTR("bat2u", PA_BAT0U + 4), PPC_ATTR("bat2l", PA_BAT0U + 5),
-    PPC_ATTR("bat3u", PA_BAT0U + 6), PPC_ATTR("bat3l", PA_BAT0U + 7),
+    PPC_ATTR("pc",    PA_PC,    "Program counter — address of the next instruction to execute"),
+    PPC_ATTR("msr",   PA_MSR,   "Machine state register: privilege level, interrupt enables, and the MMU translation bits"),
+    PPC_ATTR("cr",    PA_CR,    "Condition register — eight 4-bit fields the compare and record-form instructions set"),
+    PPC_ATTR("xer",   PA_XER,   "Fixed-point exception register: summary overflow, overflow and carry"),
+    PPC_ATTR("lr",    PA_LR,    "Link register — the return address a branch-and-link leaves behind"),
+    PPC_ATTR("ctr",   PA_CTR,   "Count register, used as a loop counter and as an indirect branch target"),
+    PPC_ATTR("mq",    PA_MQ,    "MQ register — a 601-only holding register for multiply, divide and shift"),
+    PPC_ATTR("srr0",  PA_SRR0,  "Save/restore register 0 — the PC an exception interrupted, where rfi returns to"),
+    PPC_ATTR("srr1",  PA_SRR1,  "Save/restore register 1 — the MSR an exception interrupted, plus its status bits"),
+    PPC_ATTR("dec",   PA_DEC,   "Decrementer — counts down and raises a decrementer exception when it passes zero"),
+    PPC_ATTR("rtcu",  PA_RTCU,  "Real-time clock, upper half (601); the timebase upper half on the 604"),
+    PPC_ATTR("rtcl",  PA_RTCL,  "Real-time clock, lower half (601); the timebase lower half on the 604"),
+    PPC_ATTR("sdr1",  PA_SDR1,  "Page-table base address and size — where hashed address translation looks"),
+    PPC_ATTR("fpscr", PA_FPSCR, "Floating-point status and control: rounding mode, exception enables and sticky flags"),
+    PPC_ATTR("dar",   PA_DAR,   "Data address register — the effective address that caused the last data storage exception"),
+    PPC_ATTR("dsisr", PA_DSISR, "Data storage interrupt status — why that access faulted"),
+    PPC_ATTR("pvr",   PA_PVR,   "Processor version register — the model and revision the firmware keys on"),
+    PPC_ATTR("hid0",  PA_HID0,  "Hardware implementation register 0 — cache enables, power modes and branch-prediction controls"),
+    PPC_ATTR("hid1",  PA_HID1,  "Hardware implementation register 1 — 601 debug modes; on the 750 the read-only PLL configuration"),
+    PPC_ATTR("l2cr",  PA_L2CR,  "L2 cache control register (750) — backside L2 size, clock ratio, enable and invalidate"),
+    PPC_GPR(0),  PPC_GPR(1),  PPC_GPR(2),  PPC_GPR(3),  PPC_GPR(4),  PPC_GPR(5),  PPC_GPR(6),  PPC_GPR(7),
+    PPC_GPR(8),  PPC_GPR(9),  PPC_GPR(10), PPC_GPR(11), PPC_GPR(12), PPC_GPR(13), PPC_GPR(14), PPC_GPR(15),
+    PPC_GPR(16), PPC_GPR(17), PPC_GPR(18), PPC_GPR(19), PPC_GPR(20), PPC_GPR(21), PPC_GPR(22), PPC_GPR(23),
+    PPC_GPR(24), PPC_GPR(25), PPC_GPR(26), PPC_GPR(27), PPC_GPR(28), PPC_GPR(29), PPC_GPR(30), PPC_GPR(31),
+    PPC_SREG(0),  PPC_SREG(1),  PPC_SREG(2),  PPC_SREG(3),  PPC_SREG(4),  PPC_SREG(5),  PPC_SREG(6),  PPC_SREG(7),
+    PPC_SREG(8),  PPC_SREG(9),  PPC_SREG(10), PPC_SREG(11), PPC_SREG(12), PPC_SREG(13), PPC_SREG(14), PPC_SREG(15),
+    PPC_BAT(0), PPC_BAT(1), PPC_BAT(2), PPC_BAT(3),
     // 604 additions: the DBAT file, and tbu/tbl as aliases of the rtcu/rtcl
     // storage (which holds the timebase halves on that model).  Present on
     // both models — a static member table — and simply inert on the 601.
-    PPC_ATTR("dbat0u", PA_DBAT0U + 0), PPC_ATTR("dbat0l", PA_DBAT0U + 1), PPC_ATTR("dbat1u", PA_DBAT0U + 2),
-    PPC_ATTR("dbat1l", PA_DBAT0U + 3), PPC_ATTR("dbat2u", PA_DBAT0U + 4), PPC_ATTR("dbat2l", PA_DBAT0U + 5),
-    PPC_ATTR("dbat3u", PA_DBAT0U + 6), PPC_ATTR("dbat3l", PA_DBAT0U + 7),
-    PPC_ATTR("tbu", PA_RTCU),          PPC_ATTR("tbl", PA_RTCL),
+    PPC_DBAT(0), PPC_DBAT(1), PPC_DBAT(2), PPC_DBAT(3),
+    PPC_ATTR("tbu", PA_RTCU, "Timebase upper half (604); the same storage as rtcu"),
+    PPC_ATTR("tbl", PA_RTCL, "Timebase lower half (604); the same storage as rtcl"),
+    {.kind = M_ATTR, .name = "instr_count", 
+     .doc = "Instructions retired since the machine was created (the same count machine.cpu.instr_count gives on 68K)",
+     .attr = {.type = V_UINT, .get = ppc_attr_instr_count}},
+    {.kind = M_METHOD, .name = "frame", .examples = EXAMPLES("machine.cpu.frame", "machine.cpu.frame 0xfff00100 16"),
+     .doc = "The CPU's debug frame: registers, a disassembly window and per-row translation",
+     .method = {.result_doc = "{arch, pc, regs, rows, fpu?}", .args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = ppc_method_frame}},
 };
 // clang-format on
 
-const class_desc_t ppc_cpu_class = {
+static const class_desc_t ppc_cpu_class = {
     .name = "ppc",
     .members = ppc_members,
     .n_members = sizeof(ppc_members) / sizeof(ppc_members[0]),
+    .doc = "The main CPU (PowerPC): registers and execution state",
 };
 
-// === machine.cpu.mmu (§3.9d) ================================================
-// Debug window into the 601 translation: side-effect-free logical→physical
-// and a translated peek — the way tests and debugging reach the 68k
-// world's logical memory without knowing the HTAB layout.
+// === machine.cpu.mmu ========================================================
+// Debug window into the 601/604 translation: side-effect-free translate,
+// walk and map, the page-table entry decoder and a translated peek -- the
+// same methods and result shapes as every other MMU kind (debug_mmu.h), so
+// tests and debugging reach the 68k world's logical memory without knowing
+// the HTAB layout.
 
-static value_t mmu_method_translate(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    ppc_t *p = (ppc_t *)object_data(self);
-    if (!p)
-        return val_err("cpu not initialised");
-    bool ok;
-    uint32_t pa = ppc_mmu_translate_debug(p, (uint32_t)argv[0].u, true, &ok);
-    if (!ok)
-        return val_err("no translation for $%08X", (uint32_t)argv[0].u);
-    value_t v = val_uint(4, pa);
-    v.flags |= VAL_HEX;
-    return v;
+// The PowerPC's debugger translation (debug_mmu_xlate_fn): data side unless
+// `fetch`, which takes the instruction-side rules (the IBATs, MSR[IT]).
+static void ppc_mmu_xlate(void *ctx, uint32_t addr, bool supervisor, bool fetch, mmu_xlate_t *out, mmu_trace_t *trace) {
+    ppc_mmu_debug_translate((ppc_t *)ctx, addr, !fetch, !supervisor, out, trace);
 }
 
-static value_t mmu_method_peek(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+// translate(addr, [supervisor], [fetch]) -> {phys, valid, via, access}.
+// Omitted `supervisor` means the current MSR[PR].
+static DEF_METHOD(mmu_method_translate) {
     ppc_t *p = (ppc_t *)object_data(self);
     if (!p)
         return val_err("cpu not initialised");
-    uint32_t size = (argc >= 2) ? (uint32_t)argv[1].u : 4u;
+    return debug_mmu_translate(ppc_mmu_xlate, p, (p->msr & PPC_MSR_PR) == 0, argc, argv);
+}
+
+// walk(addr, [supervisor], [fetch]) -> translate's map plus the steps: the
+// segment register, the BAT file and each PTE group searched, in the
+// model's order (601: segment, BATs, page table; 604: BATs, segment, page
+// table).
+static DEF_METHOD(mmu_method_walk) {
+    ppc_t *p = (ppc_t *)object_data(self);
+    if (!p)
+        return val_err("cpu not initialised");
+    return debug_mmu_walk(ppc_mmu_xlate, p, (p->msr & PPC_MSR_PR) == 0, argc, argv);
+}
+
+// map([start], [end], [supervisor], [fetch], [limit]) -> the mapped runs of
+// the current context (the segment registers' VSIDs).
+static DEF_METHOD(mmu_method_map) {
+    ppc_t *p = (ppc_t *)object_data(self);
+    if (!p)
+        return val_err("cpu not initialised");
+    return debug_mmu_map(ppc_mmu_xlate, p, (p->msr & PPC_MSR_PR) == 0, 1ull << 32, 12, argc, argv);
+}
+
+// descriptor(addr, [count], [format]) -> decoded 8-byte page-table entries
+// at a physical address (eight make a PTE group).  A valid entry whose VSID
+// a segment register currently holds also gets `ea`, the effective page
+// address it maps: the page index's low bits come back out of the hash
+// that placed the entry in its group.
+static DEF_METHOD(mmu_method_descriptor) {
+    ppc_t *p = (ppc_t *)object_data(self);
+    if (!p)
+        return val_err("cpu not initialised");
+    uint32_t addr = (uint32_t)argv[0].u & ~7u; // PTEs are 8-byte aligned
+    uint32_t count = debug_mmu_desc_count(argc, argv);
+    value_t *items = NULL;
+    size_t len = 0, cap = 0;
+    for (uint32_t i = 0; i < count; i++, addr += 8) {
+        uint32_t hi = memory_debug_read_uint32(addr);
+        uint32_t lo = memory_debug_read_uint32(addr + 4);
+        bool v = (hi >> 31) != 0;
+        value_map_builder_t *b = val_map_new();
+        debug_mmu_put_hex(b, "addr", addr);
+        debug_mmu_put_hex(b, "desc", hi);
+        debug_mmu_put_hex(b, "desc_lo", lo);
+        val_map_put(b, "type", val_str(v ? "page" : "invalid"));
+        if (v) {
+            uint32_t vsid = (hi >> 7) & 0x00FFFFFFu;
+            bool h = (hi >> 6) & 1u;
+            uint32_t api = hi & 0x3Fu;
+            debug_mmu_put_hex(b, "vsid", vsid);
+            debug_mmu_put_bool(b, "h", h);
+            val_map_put(b, "api", val_uint(4, api));
+            debug_mmu_put_hex(b, "phys", lo & 0xFFFFF000u);
+            debug_mmu_put_bool(b, "r", (lo >> 8) & 1u);
+            debug_mmu_put_bool(b, "c", (lo >> 7) & 1u);
+            val_map_put(b, "wimg", val_uint(4, (lo >> 3) & 0xFu));
+            val_map_put(b, "pp", val_uint(4, lo & 3u));
+            // Reverse the hash: the group's address holds the low ten hash
+            // bits (complemented for a secondary entry), and hash = VSID ^
+            // page index, so the page index is those bits ^ the VSID's low
+            // ten, under the API's top six.
+            uint32_t hs = (addr >> 6) & 0x3FFu;
+            if (h)
+                hs = ~hs & 0x3FFu;
+            uint32_t page_idx = (api << 10) | ((hs ^ vsid) & 0x3FFu);
+            for (int sr = 0; sr < 16; sr++) {
+                if (!(p->sr[sr] & 0x80000000u) && (p->sr[sr] & 0x00FFFFFFu) == vsid) {
+                    debug_mmu_put_hex(b, "ea", ((uint32_t)sr << 28) | (page_idx << 12));
+                    break;
+                }
+            }
+        }
+        val_list_push(&items, &len, &cap, val_map_finish(b));
+    }
+    return val_list(items, len);
+}
+
+// peek(addr, [size], [space]) -> the value, big-endian.  "logical" (default)
+// reads through the data-side translation; "physical" reads the address as
+// is.  (machine.memory.peek on a PowerPC machine is physical; this is the
+// logical read a debugger wants.)
+static DEF_METHOD(mmu_method_peek) {
+    ppc_t *p = (ppc_t *)object_data(self);
+    if (!p)
+        return val_err("cpu not initialised");
+    uint32_t size = (argc >= 2 && argv[1].kind == V_UINT) ? (uint32_t)argv[1].u : 4u;
     if (size != 1 && size != 2 && size != 4)
         return val_err("size must be 1, 2 or 4");
+    bool physical;
+    if (!debug_parse_space(argc, argv, 2, &physical))
+        return val_err("peek: space must be \"logical\" or \"physical\"");
     uint32_t raw = 0;
     for (uint32_t i = 0; i < size; i++) {
-        bool ok;
-        uint32_t pa = ppc_mmu_translate_debug(p, (uint32_t)argv[0].u + i, true, &ok);
-        if (!ok)
-            return val_err("no translation for $%08X", (uint32_t)argv[0].u + i);
+        uint32_t pa = (uint32_t)argv[0].u + i;
+        if (!physical) {
+            bool ok;
+            pa = ppc_mmu_translate_debug(p, pa, true, &ok);
+            if (!ok)
+                return val_err("no translation for $%08X", (uint32_t)argv[0].u + i);
+        }
         raw = (raw << 8) | memory_debug_read_uint8(pa);
     }
     value_t v = val_uint((int)size, raw);
@@ -1151,36 +1567,97 @@ static value_t mmu_method_peek(struct object *self, const member_t *m, int argc,
     return v;
 }
 
-static const arg_decl_t mmu_translate_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "effective (logical) address"},
+// peek's default size.
+static const value_t k_peek_size4 = {.kind = V_UINT, .u = 4};
+
+// descriptor formats: the one PowerPC page-table entry layout.
+static const char *const ppc_desc_formats[] = {"pte", NULL};
+
+static const arg_decl_t mmu_desc_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "physical address of the first entry"},
+    {.name = "count",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &debug_mmu_desc_count_default,
+     .doc = "how many consecutive entries (8 = one PTE group; at most 256)"},
+    {.name = "format",
+     .kind = V_ENUM,
+     .enum_values = ppc_desc_formats,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "\"pte\", the one PowerPC entry layout (accepted for the uniform signature)",
+     .default_doc = "pte"},
 };
 static const arg_decl_t mmu_peek_args[] = {
-    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX,        .doc = "effective (logical) address"},
-    {.name = "size", .kind = V_UINT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "1, 2 or 4 bytes (default 4)"},
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "effective (logical) address"},
+    {.name = "size",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_peek_size4,
+     .doc = "1, 2 or 4 bytes"},
+    {.name = "space",
+     .kind = V_ENUM,
+     .enum_values = debug_space_values,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "\"logical\" or \"physical\"",
+     .default_doc = "logical"},
 };
 
 static const member_t ppc_mmu_members[] = {
     {.kind = M_METHOD,
      .name = "translate",
-     .doc = "Translate a data-side effective address (current MSR context, no side effects)",
-     .method = {.args = mmu_translate_args, .nargs = 1, .result = V_UINT, .fn = mmu_method_translate}},
+     .examples = EXAMPLES("machine.cpu.mmu.translate 0x5fff8000"),
+     .doc = "Translate an address, side-effect-free (same shape on every MMU kind)",
+     .method = {.result_doc = "{phys, valid, via, access}",
+                .args = debug_mmu_xlate_args,
+                .nargs = DEBUG_MMU_XLATE_NARGS,
+                .result = V_MAP,
+                .fn = mmu_method_translate}},
+    {.kind = M_METHOD,
+     .name = "walk",
+     .examples = EXAMPLES("machine.cpu.mmu.walk 0x5fff8000", "machine.cpu.mmu.walk 0x2000 supervisor=false"),
+     .doc = "Translate an address and show every step: segment register, BATs, each PTE group searched",
+     .method = {.result_doc = "{phys, valid, via, access, steps: [{step, outcome, ...}]}",
+                .args = debug_mmu_xlate_args,
+                .nargs = DEBUG_MMU_XLATE_NARGS,
+                .result = V_MAP,
+                .fn = mmu_method_walk}},
+    {.kind = M_METHOD,
+     .name = "map",
+     .examples = EXAMPLES("machine.cpu.mmu.map", "machine.cpu.mmu.map 0 0x10000000 supervisor=false"),
+     .doc = "List the mapped address ranges: runs that translate linearly with the same via and access",
+     .method = {.result_doc = "[{start, size, phys, via, access}]",
+                .args = debug_mmu_map_args,
+                .nargs = DEBUG_MMU_MAP_NARGS,
+                .result = V_LIST,
+                .fn = mmu_method_map}},
+    {.kind = M_METHOD,
+     .name = "descriptor",
+     .examples = EXAMPLES("machine.cpu.mmu.descriptor 0x00F00000 8"),
+     .doc = "Decode raw page-table entries at a physical address",
+     .method = {.result_doc = "[{addr, desc, desc_lo, type, vsid, h, api, phys, r, c, wimg, pp, ea?}]",
+                .args = mmu_desc_args,
+                .nargs = 3,
+                .result = V_LIST,
+                .fn = mmu_method_descriptor}},
     {.kind = M_METHOD,
      .name = "peek",
-     .doc = "Read guest memory through the current translation (side-effect-free)",
-     .method = {.args = mmu_peek_args, .nargs = 2, .result = V_UINT, .fn = mmu_method_peek}          },
+     .examples = EXAMPLES("machine.cpu.mmu.peek 0x5fff8000", "machine.cpu.mmu.peek 0x3000 2 physical"),
+     .doc = "Read memory, logical (through the translation) or physical; side-effect-free",
+     .method = {.args = mmu_peek_args, .nargs = 3, .result = V_UINT, .fn = mmu_method_peek}},
 };
 
-const class_desc_t ppc_mmu_class = {
+static const class_desc_t ppc_mmu_class = {
     .name = "ppc_mmu",
+    .doc = "The PowerPC MMU: translate, walk, map, descriptor and peek over the BATs, segments and page table",
     .members = ppc_mmu_members,
     .n_members = sizeof(ppc_mmu_members) / sizeof(ppc_mmu_members[0]),
 };
 
-// === machine.cpu.fpu (§3.9d) — the FPR file and FPSCR =======================
-// Registered by Phase E alongside the arithmetic datapath; its existence is
+// === machine.cpu.fpu — the FPR file and FPSCR ===============================
+// Registered alongside the arithmetic datapath; its existence is
 // also what flips the capability probe's `fpu` bit for the PDM machines.
 
-static value_t attr_fpr_get(struct object *self, const member_t *m) {
+static DEF_GETTER(attr_fpr_get) {
     ppc_t *p = ppc_from(self);
     if (!p)
         return val_err("cpu not initialised");
@@ -1190,7 +1667,7 @@ static value_t attr_fpr_get(struct object *self, const member_t *m) {
     return v;
 }
 
-static value_t attr_fpr_set(struct object *self, const member_t *m, value_t in) {
+static DEF_SETTER(attr_fpr_set) {
     ppc_t *p = ppc_from(self);
     if (!p)
         return val_err("cpu not initialised");
@@ -1202,9 +1679,9 @@ static value_t attr_fpr_set(struct object *self, const member_t *m, value_t in) 
     return val_none();
 }
 
-#define PPC_FPR_ATTR(name_, id_)                                                                                       \
+#define PPC_FPR_ATTR(name_, id_, doc_)                                                                                 \
     {                                                                                                                  \
-        .kind = M_ATTR, .name = name_, .attr = {                                                                       \
+        .kind = M_ATTR, .name = name_, .doc = doc_, .attr = {                                                          \
             .type = V_UINT,                                                                                            \
             .presentation_flags = VAL_HEX,                                                                             \
             .get = attr_fpr_get,                                                                                       \
@@ -1212,23 +1689,21 @@ static value_t attr_fpr_set(struct object *self, const member_t *m, value_t in) 
             .user_data = (const void *)(uintptr_t)(id_)                                                                \
         }                                                                                                              \
     }
+#define PPC_FPR(N) PPC_FPR_ATTR("fpr" #N, (N), "Floating-point register fpr" #N " — the raw 64-bit double")
 
 // clang-format off
 static const member_t ppc_fpu_members[] = {
-    PPC_FPR_ATTR("fpscr", 32),
-    PPC_FPR_ATTR("fpr0", 0),   PPC_FPR_ATTR("fpr1", 1),   PPC_FPR_ATTR("fpr2", 2),   PPC_FPR_ATTR("fpr3", 3),
-    PPC_FPR_ATTR("fpr4", 4),   PPC_FPR_ATTR("fpr5", 5),   PPC_FPR_ATTR("fpr6", 6),   PPC_FPR_ATTR("fpr7", 7),
-    PPC_FPR_ATTR("fpr8", 8),   PPC_FPR_ATTR("fpr9", 9),   PPC_FPR_ATTR("fpr10", 10), PPC_FPR_ATTR("fpr11", 11),
-    PPC_FPR_ATTR("fpr12", 12), PPC_FPR_ATTR("fpr13", 13), PPC_FPR_ATTR("fpr14", 14), PPC_FPR_ATTR("fpr15", 15),
-    PPC_FPR_ATTR("fpr16", 16), PPC_FPR_ATTR("fpr17", 17), PPC_FPR_ATTR("fpr18", 18), PPC_FPR_ATTR("fpr19", 19),
-    PPC_FPR_ATTR("fpr20", 20), PPC_FPR_ATTR("fpr21", 21), PPC_FPR_ATTR("fpr22", 22), PPC_FPR_ATTR("fpr23", 23),
-    PPC_FPR_ATTR("fpr24", 24), PPC_FPR_ATTR("fpr25", 25), PPC_FPR_ATTR("fpr26", 26), PPC_FPR_ATTR("fpr27", 27),
-    PPC_FPR_ATTR("fpr28", 28), PPC_FPR_ATTR("fpr29", 29), PPC_FPR_ATTR("fpr30", 30), PPC_FPR_ATTR("fpr31", 31),
+    PPC_FPR_ATTR("fpscr", 32, "Floating-point status and control register, as the FPU node sees it"),
+    PPC_FPR(0),  PPC_FPR(1),  PPC_FPR(2),  PPC_FPR(3),  PPC_FPR(4),  PPC_FPR(5),  PPC_FPR(6),  PPC_FPR(7),
+    PPC_FPR(8),  PPC_FPR(9),  PPC_FPR(10), PPC_FPR(11), PPC_FPR(12), PPC_FPR(13), PPC_FPR(14), PPC_FPR(15),
+    PPC_FPR(16), PPC_FPR(17), PPC_FPR(18), PPC_FPR(19), PPC_FPR(20), PPC_FPR(21), PPC_FPR(22), PPC_FPR(23),
+    PPC_FPR(24), PPC_FPR(25), PPC_FPR(26), PPC_FPR(27), PPC_FPR(28), PPC_FPR(29), PPC_FPR(30), PPC_FPR(31),
 };
 // clang-format on
 
-const class_desc_t ppc_fpu_class = {
+static const class_desc_t ppc_fpu_class = {
     .name = "ppc_fpu",
+    .doc = "The PowerPC floating-point registers and FPSCR",
     .members = ppc_fpu_members,
     .n_members = sizeof(ppc_fpu_members) / sizeof(ppc_fpu_members[0]),
 };

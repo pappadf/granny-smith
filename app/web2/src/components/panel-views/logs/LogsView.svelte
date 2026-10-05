@@ -1,8 +1,12 @@
 <script lang="ts">
+  import Hint from '@/components/ui/Hint.svelte';
   import { logs } from '@/state/logs.svelte';
   import { logsPanelHeader } from './logsHeader.svelte';
   import LogLine from './LogLine.svelte';
   import CategoryLevelsPopover from './CategoryLevelsPopover.svelte';
+
+  // Zebra rows (--gs-row-alt): off by default.
+  let { striped = false }: { striped?: boolean } = $props();
 
   let listEl = $state<HTMLDivElement | null>(null);
   const showPopover = $derived(logsPanelHeader.popoverOpen);
@@ -21,25 +25,25 @@
 </script>
 
 <div class="logs-view">
-  <div class="logs-scroll" bind:this={listEl}>
+  <div class="logs-scroll" data-striped={striped || undefined} bind:this={listEl}>
     {#if logs.entries.length === 0}
-      <p class="logs-empty">
+      <Hint class="logs-empty" inset="view">
         No log lines yet. Boot a machine and bring a category up with <code
           >log &lt;cat&gt; &lt;level&gt;</code
         >
         in the terminal, or use the <strong>Levels</strong> button above.
-      </p>
+      </Hint>
     {:else}
       {#each logs.entries as entry, i (i)}
         <LogLine {entry} />
       {/each}
     {/if}
   </div>
-  <div class="logs-status">
+  <Hint as="div" inset="statusline" class="logs-status">
     {logs.entries.length} lines · {catCount} categories · autoscroll: {logs.autoscroll
       ? 'on'
       : 'off'}
-  </div>
+  </Hint>
 </div>
 
 <CategoryLevelsPopover open={showPopover} onClose={() => (logsPanelHeader.popoverOpen = false)} />
@@ -56,21 +60,10 @@
     flex: 1 1 auto;
     overflow-y: auto;
     min-height: 0;
-    padding: 4px 0;
-    background: var(--gs-bg);
+    padding: var(--gs-space-1) 0;
+    background: var(--gs-surface-app);
   }
-  .logs-empty {
-    color: var(--gs-fg-muted);
-    font-size: 12px;
-    padding: 16px;
-    line-height: 1.5;
-  }
-  .logs-status {
-    flex: 0 0 auto;
-    padding: 4px 12px;
-    border-top: 1px solid var(--gs-border);
-    color: var(--gs-fg-muted);
-    font-size: 11px;
-    background: var(--gs-bg-alt, var(--gs-bg));
+  .logs-scroll[data-striped] > :global(:nth-child(even)) {
+    background: var(--gs-row-alt);
   }
 </style>

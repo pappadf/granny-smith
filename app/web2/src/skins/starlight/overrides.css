@@ -1,0 +1,68 @@
+/* ====== Starlight skin: part-hook overrides ======
+   The glass layout (../glass.css), as Midnight draws it, re-lit for a light
+   page: the few places glass.css assumes a dark page (white-alpha tracks
+   and highlights, the display's inner edge) get warm tints instead, and the
+   cards float on soft champagne shadows where Midnight's sink into the dark.
+   Scoped to this skin and in the gs.skin layer. */
+@import '../glass.css';
+
+@layer gs.skin {
+  /* The cards: pearl glass, a white top edge, a warm shadow under them. */
+  :root[data-skin='starlight'] .gs-toolbar[data-variant='bar'],
+  :root[data-skin='starlight'] .gs-workbench > .gs-panel,
+  :root[data-skin='starlight'] .gs-statusbar {
+    backdrop-filter: blur(20px) saturate(150%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.9),
+      0 1px 2px rgba(92, 66, 24, 0.06),
+      0 12px 32px -16px rgba(92, 66, 24, 0.2);
+  }
+  :root[data-skin='starlight'] .gs-display-content {
+    border-color: rgba(138, 106, 54, 0.18);
+    box-shadow: inset 0 1px 3px rgba(92, 66, 24, 0.08);
+  }
+
+  /* Run / pause: a champagne-gold disc with a soft halo. */
+  :root[data-skin='starlight']
+    .gs-toolbar[data-variant='bar']
+    > :first-child
+    > .gs-icon-button:first-child:not(:disabled) {
+    background: linear-gradient(180deg, #e2c487, #c29548);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.55),
+      0 0 0 4px var(--gs-accent-subtle),
+      0 6px 18px rgba(184, 138, 62, 0.45);
+  }
+
+  /* Recessed tracks: warm tints where Midnight lifts white out of the dark. */
+  :root[data-skin='starlight']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button,
+  :root[data-skin='starlight'] .gs-segmented {
+    background: rgba(138, 106, 54, 0.08);
+  }
+  :root[data-skin='starlight']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button[aria-pressed='true'],
+  :root[data-skin='starlight'] .gs-tabs__tab[aria-selected='true'] {
+    background: #ffffff;
+    box-shadow:
+      0 0 0 1px rgba(138, 106, 54, 0.12),
+      0 1px 3px rgba(92, 66, 24, 0.12);
+  }
+  :root[data-skin='starlight'] .gs-segmented__option[aria-pressed='true'] {
+    background: linear-gradient(180deg, rgba(232, 204, 148, 0.55), rgba(212, 172, 102, 0.4));
+    border-color: rgba(184, 138, 62, 0.45);
+  }
+
+  :root[data-skin='starlight'] .gs-select__arrow {
+    color: #8a7f6c;
+  }
+  :root[data-skin='starlight'] .gs-card {
+    box-shadow: 0 20px 50px -24px rgba(92, 66, 24, 0.3);
+  }
+}

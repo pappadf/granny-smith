@@ -6,7 +6,7 @@
 // `appletalk.aevt` surface that sends events to guest applications and
 // collects the ones they send us.
 //
-// Coding reference: docs/core/network/ppc_appleevents.md — §5.2 for the
+// Coding reference: docs/internals/core/network/ppc_appleevents.md — §5.2 for the
 // flattened stream, §5.4 for lists and records, §6.1 for the V_MAP form and
 // §6.2 for the text grammar.  Nothing here reaches for an outside source.
 //
@@ -17,6 +17,7 @@
 #ifndef APPLETALK_AEVT_H
 #define APPLETALK_AEVT_H
 
+#include "appletalk_ppc.h"
 #include "value.h"
 
 #include <stdbool.h>
@@ -71,30 +72,27 @@ bool aevt_set_attr(value_t *event, const char *key, value_t leaf);
 
 // === Object model / lifecycle ==============================================
 
-void atalk_aevt_init(void);
-void atalk_aevt_shutdown(void);
+// Once, when the network comes up: take inbound events and publish the host
+// port (PPC's).  Returns the layer's part of the network, its auto-reply,
+// which the network owns.
+typedef struct aevt_host aevt_host_t;
+aevt_host_t *atalk_aevt_init(void);
 void atalk_aevt_install_objects(struct object *parent);
-void atalk_aevt_remove_objects(void);
 
-// Durable configuration, the only part of this layer a checkpoint carries
-// (ppc_appleevents.md §7): sessions, connections and the events collection
-// are volatile client state and are dropped on restore.
-typedef struct {
-    bool enabled;
-    char port_name[33];
-    char auto_reply[256];
-} atalk_aevt_config_t;
+// The Apple-event layer's part of a machine's connection (atalk_conn_t): the
+// events sent to that Mac, its inbox and their counters.  The network serves
+// the plugged-in connection's link; atalk_aevt_plug with NULL, when the
+// connection is unplugged, drops every event and inbox entry it held.
+typedef struct aevt_link aevt_link_t;
 
-void atalk_aevt_get_config(atalk_aevt_config_t *out);
-void atalk_aevt_set_config(const atalk_aevt_config_t *in);
-
-// Drop every event, inbox entry and counter (checkpoint restore, machine
-// teardown).
-void atalk_aevt_reset_transient_state(void);
+aevt_link_t *atalk_aevt_link_new(void);
+void atalk_aevt_link_free(aevt_link_t *link);
+void atalk_aevt_plug(aevt_link_t *link);
 
 // Delivery hook, called by the PPC session layer when a high-level event
-// arrives: either the reply to a pending send, or a new inbox entry.
-void atalk_aevt_deliver(uint16_t session_id, const char *sender, const char *class4, const char *id4,
+// arrives on `session`: either the reply to a pending send, or a new inbox
+// entry, answered on the session it came in on.
+void atalk_aevt_deliver(ppc_session_t *session, const char *sender, const char *class4, const char *id4,
                         uint32_t return_id, bool is_reply, const uint8_t *stream, int len);
 
 #endif // APPLETALK_AEVT_H

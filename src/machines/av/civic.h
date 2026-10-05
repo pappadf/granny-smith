@@ -5,10 +5,9 @@
 // CIVIC (Cyclone Integrated Video Interfaces Controller, 343S1096) — the AV
 // frame-buffer / video-timing controller — plus its downstream Sebastian
 // RAMDAC/CLUT (343S0704) and the Endeavor/Clifton/PUMA pixel-clock
-// synthesizer latches.  Contracts: docs/machines/av/civic.md,
-// sebastian.md, endeavor-clifton-puma.md.
+// synthesizer latches.  Contract: docs/internals/machines/av/civic.md.
 //
-// The one thing to get right first (civic.md §2): CIVIC's register
+// The one thing to get right first: CIVIC's register
 // interface is BIT-SERIAL — one bit per longword, only D[0] meaningful,
 // LSB at the lowest address, stride 4.  A 12-bit register at $380 occupies
 // $380..$3AC.  Five 1-bit registers are also poked as plain longwords;
@@ -44,18 +43,20 @@ void av_civic_install_memory(config_t *cfg, av_civic_t *cv);
 // === I/O island handlers ====================================================
 
 // CIVIC serial registers (island $36000; also aliased at $50036000).
-uint8_t av_civic_read(config_t *cfg, uint32_t addr);
-void av_civic_write(config_t *cfg, uint32_t addr, uint8_t value);
+uint8_t av_civic_read(config_t *cfg, uint32_t win_off, uint32_t addr);
+void av_civic_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
 
 // Sebastian RAMDAC (island $30800: index/data/PCBR, $10 stride).
-uint8_t av_civic_seb_read(config_t *cfg, uint32_t addr);
-void av_civic_seb_write(config_t *cfg, uint32_t addr, uint8_t value);
+uint8_t av_civic_seb_read(config_t *cfg, uint32_t win_off, uint32_t addr);
+// The same register without the RGBA phase step (mac030_io_range_t.peek_fn).
+uint8_t av_civic_seb_peek(config_t *cfg, uint32_t win_off, uint32_t addr);
+void av_civic_seb_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
 
 // Endeavor/Clifton/PUMA clock synthesizer (island $2E000).
-uint8_t av_civic_clk_read(config_t *cfg, uint32_t addr);
-void av_civic_clk_write(config_t *cfg, uint32_t addr, uint8_t value);
+uint8_t av_civic_clk_read(config_t *cfg, uint32_t win_off, uint32_t addr);
+void av_civic_clk_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
 
-// === Video-in datapath hooks (consumed by vdc.c; video-in.md §5) ============
+// === Video-in datapath hooks (consumed by vdc.c) ============================
 
 // Gate states the frame engine consults each field.  (VDCEnb is deliberately
 // not exposed: arming is CIVIC's own business, applied in av_civic_vdc_field.)
@@ -65,6 +66,9 @@ bool av_civic_bus64(av_civic_t *cv); // BusSize $04C (1 = graphics only)
 
 // The 2 MB VRAM backing array (the video-in buffer lives at $100800).
 uint8_t *av_civic_vram(av_civic_t *cv);
+
+// A power cycle: VRAM cleared and the scanned raster blanked.
+void av_civic_power_on(av_civic_t *cv);
 
 // A captured field landed in VRAM: latch the VDC field interrupt if armed
 // and assert the shared PSC-VIA2 slot line (bit 6, shared with VBL).

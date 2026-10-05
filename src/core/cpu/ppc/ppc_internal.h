@@ -2,20 +2,23 @@
 // Copyright (c) pappadf
 
 // ppc_internal.h
-// Internal state and shared helpers for the PPC (MPC601 / MPC604) core.
-// Unqualified chapter/table citations refer to Motorola/IBM, "PowerPC 601
-// RISC Microprocessor User's Manual", 1995 (MPC601UM/AD); citations marked
-// "604UM" refer to "PowerPC 604 RISC Microprocessor User's Manual", 1994
-// (MPC604UM/AD), and "PEM" to "PowerPC Microprocessor Family: The
-// Programming Environments", 32-bit (MPCFPE32B).
+// Internal state and shared helpers for the PPC (MPC601 / MPC604 / MPC750)
+// core.  Unqualified chapter/table citations refer to Motorola/IBM,
+// "PowerPC 601 RISC Microprocessor User's Manual", 1995 (MPC601UM/AD);
+// citations marked "604UM" refer to "PowerPC 604 RISC Microprocessor User's
+// Manual", 1994 (MPC604UM/AD), "750UM" to "MPC750 RISC Microprocessor
+// User's Manual" (MPC750UM/D), and "PEM" to "PowerPC Microprocessor Family:
+// The Programming Environments", 32-bit (MPCFPE32B).
 
 #ifndef GS_CPU_PPC_INTERNAL_H
 #define GS_CPU_PPC_INTERNAL_H
 
 #include "ppc.h"
 
-#include "machine_profile.h" // CPU_MODEL_PPC601 / CPU_MODEL_PPC604
+#include "machine_profile.h" // CPU_MODEL_PPC601 / CPU_MODEL_PPC604 / CPU_MODEL_PPC750
 #include "memory.h"
+#include "mmu_trace.h"
+#include "ppc_softfp.h" // FPSCR bit masks (leaf header: stdint only)
 
 #include <assert.h>
 #include <stdbool.h>
@@ -33,9 +36,15 @@
 #define PPC_MSR_EP  0x0040u // exception prefix: 1 = $FFFnnnnn (bit 25)
 #define PPC_MSR_IT  0x0020u // instruction translation (bit 26)
 #define PPC_MSR_DT  0x0010u // data translation (bit 27)
-// 604-only MSR bits (604UM Table 4-3); ILE/LE stay unimplemented on both
-// models (big-endian Macs — TNT proposal §4.2).
+// 604-only MSR bits (604UM Table 4-3).
 #define PPC_MSR_POW 0x00040000u // power management enable (bit 13; accepted as a no-op idle hint)
+// Little-endian mode (604UM Table 4-3 bits 15/31; PEM §3.2.2).  LE selects
+// the address munging below for every data access and instruction fetch;
+// ILE is copied into LE on exception entry.  Implemented on the 604 only:
+// Apple's NT-era Open Firmware (`little-endian?` true) and the PowerPC NT
+// veneer/loaders run the 604 in this mode; the 601 Macs never leave BE.
+#define PPC_MSR_ILE 0x00010000u // exception little-endian mode (bit 15)
+#define PPC_MSR_LE  0x00000001u // little-endian mode (bit 31)
 #define PPC_MSR_BE  0x0200u // branch trace enable (bit 22)
 #define PPC_MSR_PM  0x0004u // performance monitor marked mode (bit 29)
 #define PPC_MSR_RI  0x0002u // recoverable interrupt (bit 30)
@@ -44,8 +53,8 @@
 #define PPC_MSR_MASK                                                                                                   \
     (PPC_MSR_EE | PPC_MSR_PR | PPC_MSR_FP | PPC_MSR_ME | PPC_MSR_FE0 | PPC_MSR_SE | PPC_MSR_FE1 | PPC_MSR_EP |         \
      PPC_MSR_IT | PPC_MSR_DT)
-// The 604 adds POW/BE/PM/RI (604UM Table 4-3).
-#define PPC_MSR_MASK_604 (PPC_MSR_MASK | PPC_MSR_POW | PPC_MSR_BE | PPC_MSR_PM | PPC_MSR_RI)
+// The 604 adds POW/BE/PM/RI and the little-endian pair ILE/LE (604UM Table 4-3).
+#define PPC_MSR_MASK_604 (PPC_MSR_MASK | PPC_MSR_POW | PPC_MSR_BE | PPC_MSR_PM | PPC_MSR_RI | PPC_MSR_ILE | PPC_MSR_LE)
 
 // === XER bits ===
 #define PPC_XER_SO      0x80000000u
@@ -54,7 +63,7 @@
 #define PPC_XER_BYTES   0x0000007Fu // string byte count, XER[25-31]
 #define PPC_XER_CMPBYTE 0x0000FF00u // lscbx compare byte, XER[16-23]
 
-// === Exception vector offsets (Table 5-2; §3.3 of the proposal) ===
+// === Exception vector offsets (Table 5-2) ===
 #define PPC_VEC_RESET     0x00100u
 #define PPC_VEC_MCHECK    0x00200u
 #define PPC_VEC_DSI       0x00300u // data access
@@ -112,10 +121,22 @@ struct ppc {
     uint32_t sdr1;
     uint32_t ear;
     uint32_t pvr; // $00010001, read-only
-    uint32_t hid0, hid1, iabr, dabr, pir; // HID group: store-and-readback (hid1 is 601-only)
+    uint32_t hid0, hid1, iabr, dabr, pir; // HID group: store-and-readback (hid1: 601 R/W, 750 read-only PLL_CFG)
+    // 750-only implementation registers (750UM Tables 2-48/2-49).  L2CR is
+    // stored as written except L2IP (bit 31), which is derived from
+    // l2_inval_end below.  THRM1-3 and ICTC are stored; TIN/TIV are derived
+    // on read (ppc_thrm_read).  The performance monitor is store-and-readback
+    // (pmc[] never counts).
+    uint32_t l2cr, ictc;
+    uint32_t thrm[3];
+    uint32_t mmcr[2], pmc[4], sia;
+    // Identity the machine profile chose (ppc_set_identity): PVR and the
+    // 750's HID1 PLL_CFG image.  Survive a hard reset (they are pins and
+    // mask ROM, not processor state).  Zero = the model's default.
+    uint32_t reset_pvr, reset_hid1;
     // 601: RTC pair (read SPR 4/5, write SPR 20/21).  604: TBU/TBL — the
     // timebase halves at their rebase instant (read via mftb, write SPR
-    // 285/284); same rebase discipline, different tick semantics (§4.4).
+    // 285/284); same rebase discipline, different tick semantics.
     uint32_t rtcu, rtcl;
     uint32_t batu[4],
         batl[4]; // 601: 4 unified BAT pairs, 601 format.  604: the IBATs (SPR 528-535), architected format
@@ -136,13 +157,19 @@ struct ppc {
 
     // --- execution state ---
     uint32_t instruction_pc; // address of the instruction being executed
+    uint32_t fold; // 601 branch-folding classification for the sprint loop
     uint32_t reserve; // lwarx reservation held
     uint32_t reserve_addr;
+    // 750 L2 global invalidate (750UM §9.1.5): scheduler cycle at which
+    // L2IP drops back to 0 after L2I was set with L2E clear.  With no time
+    // binding, l2_inval_reads counts the L2IP=1 reads still owed instead.
+    uint64_t l2_inval_end;
+    uint32_t l2_inval_reads;
     uint32_t ext_irq; // level of the external-interrupt line
     uint32_t dec_pending; // latched decrementer exception request
-    int cpu_model; // CPU_MODEL_PPC601 / CPU_MODEL_PPC604 (the model discriminator)
+    int cpu_model; // CPU_MODEL_PPC601 / CPU_MODEL_PPC604 / CPU_MODEL_PPC750 (the model discriminator)
 
-    // --- time derivation (§3.7: exact-rational RTC/TB/DEC) ---
+    // --- time derivation (exact-rational RTC/TB/DEC) ---
     // ticks = cycles * tick_mul / tick_div, the reduced tick_hz/freq_hz
     // rational (601: the 7.8336 MHz RTC input; 604: the timebase rate,
     // bus/4); tick_mul == 0 means unbound (unit tests: static SPRs).
@@ -159,30 +186,13 @@ struct ppc {
 
     // --- pointers (nulled on checkpoint restore, re-planted by owners) ---
     struct object *cpu_object; // machine.cpu node
-    struct object *fpu_object; // machine.cpu.fpu (Phase E)
-    struct object *mmu_object; // machine.cpu.mmu (Phase D)
+    struct object *fpu_object; // machine.cpu.fpu
+    struct object *mmu_object; // machine.cpu.mmu
     struct scheduler *scheduler; // time source (ppc_bind_time; NULL in tests)
 };
 
-// === Field extraction (BE bit numbering per 601UM Chapter 10 diagrams).
-// Kept in sync with the #ifndef-guarded copy in ppc_decode.h (which serves
-// the dependency-free disassembler TU).
-#define PPC_OPCD(iw) ((iw) >> 26)
-#define PPC_RT(iw)   (((iw) >> 21) & 31) // also RS, TO, BO, crfD<<2|..
-#define PPC_RA(iw)   (((iw) >> 16) & 31) // also BI
-#define PPC_RB(iw)   (((iw) >> 11) & 31) // also SH, NB
-#define PPC_XO10(iw) (((iw) >> 1) & 0x3FF) // X/XL/XFX-form extended opcode
-#define PPC_XO9(iw)  (((iw) >> 1) & 0x1FF) // XO-form (bit 21 = OE)
-#define PPC_XO5(iw)  (((iw) >> 1) & 0x1F) // A-form (FP arithmetic)
-#define PPC_OE(iw)   (((iw) >> 10) & 1)
-#define PPC_RC(iw)   ((iw) & 1)
-#define PPC_SIMM(iw) ((int32_t)(int16_t)(iw))
-#define PPC_UIMM(iw) ((iw) & 0xFFFFu)
-#define PPC_MB(iw)   (((iw) >> 6) & 31)
-#define PPC_ME(iw)   (((iw) >> 1) & 31)
-#define PPC_FRC(iw)  (((iw) >> 6) & 31) // A-form third operand
-#define PPC_CRFD(iw) (((iw) >> 23) & 7)
-#define PPC_CRFS(iw) (((iw) >> 18) & 7)
+// Instruction-field accessors, shared with the dependency-free disassembler.
+#include "ppc_fields.h"
 
 // (rA|0): a zero RA field reads as the value 0, not r0 (EA computation rule)
 static inline uint32_t ppc_ra0(ppc_t *p, uint32_t iw) {
@@ -190,9 +200,19 @@ static inline uint32_t ppc_ra0(ppc_t *p, uint32_t iw) {
     return a ? p->gpr[a] : 0;
 }
 
-// Model discrimination (the cpu.c 68000/030/040 pattern).
+// Model discrimination (the cpu.c 68000/030/040 pattern).  ppc_is_604 is
+// the OEA-class test — "a 604 or anything built on its programming model":
+// true for the 604 and the 750, whose MMU, timebase/DEC, exception vectors,
+// split BATs, FP group and holdover rejection are the 604's (750UM §1.1,
+// §2.3).  The 750's own deltas key on ppc_is_750.
 static inline bool ppc_is_604(const ppc_t *p) {
-    return p->cpu_model == CPU_MODEL_PPC604;
+    return p->cpu_model != CPU_MODEL_PPC601;
+}
+
+// The MPC750: L2CR/ICTC/THRM, read-only HID1, its own performance-monitor
+// map (no SDA, user mirrors), no PIR (750UM Table 2-49).
+static inline bool ppc_is_750(const ppc_t *p) {
+    return p->cpu_model == CPU_MODEL_PPC750;
 }
 
 // MSR bits the active model implements (mtmsr/rfi/pokes mask to this).
@@ -200,10 +220,51 @@ static inline uint32_t ppc_msr_mask(const ppc_t *p) {
     return ppc_is_604(p) ? PPC_MSR_MASK_604 : PPC_MSR_MASK;
 }
 
+// FPSCR bits no "move to FPSCR" instruction may write on the active model.
+// Always FEX and VX (derived summaries — MPCFPE32B Table 2-1: "cannot alter
+// explicitly"), plus VXSOFT and VXSQRT on the 601, which 601UM Table 2-1
+// marks "Not implemented in the 601" (bits 21 and 22).
+//
+// Not implemented means the bits do not exist, not merely that hardware
+// never raises them: VXSOFT can ONLY ever be set by software — MPCFPE32B
+// bit 21, "can be altered only by the mcrfs, mtfsfi, mtfsf, mtfsb0, or
+// mtfsb1 instructions" — so if the 601 held the storage the bit would be
+// fully functional and there would be nothing to call unimplemented.  The
+// same row style marks VXSQRT, whose purpose is likewise to let software
+// simulate the fsqrt/frsqrte the 601 does not have (601UM Table 5-17).
+//
+// Consequence for mtfsb1: writing an unimplemented bit is a no-op, so it
+// causes no 0->1 transition and therefore does NOT set FX.  The 604 keeps
+// both bits — the 604UM has no FPSCR table of its own and defers to the
+// architecture, where bits 21 and 22 are ordinary sticky bits.
+static inline uint32_t ppc_fpscr_nowrite(const ppc_t *p) {
+    return PPC_FPSCR_UNWRITABLE | (ppc_is_604(p) ? 0u : (PPC_FPSCR_VXSOFT | PPC_FPSCR_VXSQRT));
+}
+
 // MSR bits an exception entry preserves: ME and EP on both models, plus PM
-// on the 604 (unlisted in the 604UM per-exception MSR rows — unaltered).
+// and ILE on the 604 (unlisted in the 604UM per-exception MSR rows —
+// unaltered; LE itself is REPLACED by a copy of ILE, see ppc_exception).
 static inline uint32_t ppc_msr_exception_keep(const ppc_t *p) {
-    return PPC_MSR_ME | PPC_MSR_EP | (ppc_is_604(p) ? PPC_MSR_PM : 0u);
+    return PPC_MSR_ME | PPC_MSR_EP | (ppc_is_604(p) ? (PPC_MSR_PM | PPC_MSR_ILE) : 0u);
+}
+
+// === Little-endian mode (PEM §3.2.2 "PowerPC Byte Ordering"; 604UM §4.5.6) ===
+//
+// A 60x in LE mode does not reorder bytes: it MUNGES the low three bits of
+// every effective address — XOR 7 for a byte, 6 for a halfword, 4 for a
+// word, nothing for an aligned doubleword — and instruction fetch munges
+// like a word load.  Memory therefore holds the LE program's image with
+// every doubleword byte-reversed (code: the two words of each doubleword
+// swapped).  That is exactly the in-place transformation Apple's NT-era
+// Open Firmware performs on its own dictionary before flipping MSR[LE],
+// and the layout the PE veneer/SETUPLDR expect.  A misaligned access, or
+// any multiple/string instruction, takes the alignment exception in LE
+// mode (604UM §4.5.6).  `ea` stays architected (unmunged) everywhere the
+// instruction writes it back or reports it; only the address handed to
+// memory is munged.
+static inline uint32_t ppc_le_ea(const ppc_t *p, uint32_t ea, uint32_t size) {
+    // (8 - size) & 7 is 7/6/4/0 for size 1/2/4/8; the mask is all-ones in LE mode.
+    return ea ^ ((0u - (p->msr & PPC_MSR_LE)) & (8u - size) & 7u);
 }
 
 // True when iw is a floating-point load/store (601: alignment exception in
@@ -265,6 +326,7 @@ typedef struct ppc_fetch_window {
     uint32_t lo, span;
     uintptr_t host_adjust;
     struct pd_block *blk; // the predecoded block of the window's page (NULL: not looked up / none)
+    uint32_t le_xor; // 4 while MSR[LE] is set (fetch munges like a word load), else 0; refreshed by every refill
 } ppc_fetch_window_t;
 extern ppc_fetch_window_t g_ppc_fetch;
 
@@ -293,6 +355,7 @@ void ppc_mmu_invalidate_all(ppc_t *p);
 void ppc_mmu_tlbie(ppc_t *p, uint32_t ea);
 void ppc_mmu_flush_fetch(void);
 void ppc_mmu_logpoints_changed(void); // memory-logpoint shape changed: drop xtlb + fetch caches
+void ppc_mmu_caches_unknown(void); // the memory map was selected: the fill tracker and caches start over
 
 // Segment-register write with change-triggered invalidation (the
 // nanokernel reloads identical SR values wholesale on space touches).
@@ -306,18 +369,26 @@ void ppc_context_sync(ppc_t *p);
 // Side-effect-free translation for the debug surfaces (no R/C update, no
 // SoA fill, no exception).  data=true follows MSR[DT], else MSR[IT].
 uint32_t ppc_mmu_translate_debug(ppc_t *p, uint32_t ea, bool data, bool *ok);
+// The same with the privilege explicit (user = MSR[PR]) and, in *via (may be
+// NULL), how it resolved: "identity", "bat", "segment" or "page".
+uint32_t ppc_mmu_translate_debug_ex(ppc_t *p, uint32_t ea, bool data, bool user, bool *ok, const char **via);
+
+// The debugger's translation for machine.cpu.mmu.translate / walk / map
+// (mmu_trace.h): the answer, the protection the key sees, and, with a trace,
+// each segment register, BAT file and PTE group consulted.
+void ppc_mmu_debug_translate(ppc_t *p, uint32_t ea, bool data, bool user, mmu_xlate_t *x, mmu_trace_t *trace);
 
 // The 68k world's view (user data context, translation forced on) for
-// debug.mac — stable across supervisor/user stop contexts (§3.9e).
+// debug.mac — stable across supervisor/user stop contexts.
 uint32_t ppc_mmu_translate_mac(ppc_t *p, uint32_t ea, bool *ok);
 
-// Keep the SoA fast-path maps in sync with the (MSR[PR], MSR[DT]) pair —
-// the one global obligation of a main CPU (proposal §3.5).  Called on
-// every MSR write, exception entry, and rfi.  The user arrays hold the
-// MMU's LOGICAL fills, so they are active only for translated user-mode
-// data; every other mode runs on the machine's eager physical identity
-// view in the supervisor arrays (supervisor-translated accesses rewrite
-// their address in ppc_dxlate_slow before touching memory).
+// Keep the SoA fast-path maps in sync with the (MSR[PR], MSR[DT]) pair — the
+// one global obligation of a main CPU.  Called on every MSR write, exception
+// entry, and rfi.  The user arrays hold the MMU's LOGICAL fills, so they are
+// active only for translated user-mode data; every other mode runs on the
+// machine's eager physical identity view in the supervisor arrays
+// (supervisor-translated accesses rewrite their address in ppc_dxlate_slow
+// before touching memory).
 static inline void ppc_update_active_maps(ppc_t *p) {
     ppc_mmu_flush_fetch();
     if ((p->msr & (PPC_MSR_PR | PPC_MSR_DT)) == (PPC_MSR_PR | PPC_MSR_DT)) {
@@ -350,9 +421,9 @@ static inline bool ppc_dxlate(ppc_t *p, uint32_t iw, uint32_t *addr, bool store)
     return ppc_dxlate_slow(p, iw, addr, store);
 }
 
-// Live RTC/TB/DEC derivation (§3.7).  With no time binding these return
-// the stored SPR values unchanged.  The RTC pair is 601 semantics; the TB
-// functions are 604 semantics over the same rtcu/rtcl storage.
+// Live RTC/TB/DEC derivation.  With no time binding these return the stored SPR
+// values unchanged.  The RTC pair is 601 semantics; the TB functions are 604
+// semantics over the same rtcu/rtcl storage.
 uint64_t ppc_ticks_now(ppc_t *p);
 uint32_t ppc_rtcu_now(ppc_t *p);
 uint32_t ppc_rtcl_now(ppc_t *p);
@@ -447,11 +518,15 @@ void ppc_do_stswx(ppc_t *p, uint32_t iw);
 void ppc_do_lscbx(ppc_t *p, uint32_t iw);
 void ppc_do_stwcx(ppc_t *p, uint32_t iw);
 void ppc_ecx_fault(ppc_t *p, uint32_t ea, bool store);
+// LE-mode doubleword FP access as two munged word accesses (PEM §3.2.2:
+// a word-aligned double is two word transfers; the high-order word sits
+// at the higher LE address).  Return true when an exception was raised.
+bool ppc_le_ld64(ppc_t *p, uint32_t iw, uint32_t ea, uint64_t *v);
+bool ppc_le_st64(ppc_t *p, uint32_t iw, uint32_t ea, uint64_t v);
 
 // FP surface (ppc_fpu.c): single<->double conversion in integer code
-// (WASM/native byte determinism, proposal §3.6), compares, the FPSCR
-// instruction semantics, and the Phase-E arithmetic wrappers over the
-// integer-only kernel in ppc_softfp.c.
+// (WASM/native byte determinism), compares, the FPSCR instruction semantics,
+// and the arithmetic wrappers over the integer-only kernel in ppc_softfp.c.
 uint64_t ppc_f32_to_f64(uint32_t s);
 uint32_t ppc_f64_to_f32_store(uint64_t d);
 void ppc_fcmp(ppc_t *p, uint32_t iw, bool ordered);

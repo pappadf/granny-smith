@@ -1,0 +1,8 @@
+/* ====== Cascade layers ======
+   The order every stylesheet sits in, first to last: a later layer wins
+   over an earlier one whatever the selectors' specificity.  Component
+   <style> blocks go into gs.components through a preprocess step
+   (svelte.config.js); a skin's overrides.css writes into gs.skin;
+   gs.overrides is left for user or debug CSS.  Lint L-10 checks every
+   stylesheet is in its layer. */
+@layer gs.reset, gs.base, gs.tokens, gs.components, gs.skin, gs.overrides;

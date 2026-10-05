@@ -1,0 +1,110 @@
+# Reset-level conformance -- see config.mk.
+#
+# levels(model, ram_kb, rom, budget, ticks): `budget` instructions are enough
+# for a fresh machine of this model to reach the Mac OS start-up (Ticks
+# counting) when `ticks` is true; otherwise the row checks the vector and the
+# stores only (Open Firmware ROMs, a 601 whose start-up is far longer).
+
+# A store's snapshot, or none on a machine that does not have that store.
+def pram() { return try(machine.rtc.pram.snapshot(), none) }
+def nvram() { return try(machine.nvram.snapshot(), none) }
+def ticks() { return debug.mac.globals.read("Ticks") }
+
+# Run `budget` instructions in tenths and report whether the machine really
+# rebooted: Ticks must fall below `before` at some point (the ROM re-ran and
+# cleared it) and be counting again at the end.  A machine that kept running
+# instead only ever reads more than `before`.  (Comparing the final count with
+# a fresh boot's is not enough: a warm start skips the RAM test and reaches
+# the OS sooner.)
+def rebooted(budget, before) {
+    let lowest = 0xFFFFFFFF
+    let i = 0
+    while $i < 10 {
+        scheduler.run $budget / 10
+        let t = ticks()
+        if $t < $lowest { $lowest = $t }
+        $i = $i + 1
+    }
+    let t = ticks()
+    return $lowest < $before && $t >= 0x10 && $t < 0x10000
+}
+
+def levels(model, ram_kb, rom, budget, check_ticks) {
+    machine.boot model="${$model}" ram=$ram_kb rom="../../data/roms/${$rom}"
+    let pc0 = machine.cpu.pc
+    let pram_fresh = pram()
+    let nv_fresh = nvram()
+    scheduler.run $budget
+    let t_fresh = 0
+    if $check_ticks {
+        $t_fresh = ticks()
+        assert $t_fresh >= 0x10 && $t_fresh < 0x10000 "${$model}: a fresh machine did not reach the start-up in the budget"
+    }
+
+    # --- level 2: machine.reset.  The CPU at its vector, the stores kept.
+    let pram1 = pram()
+    let nv1 = nvram()
+    if $model != "lisa" && $model != "macxl" {
+        let t_before = 0
+        if $check_ticks { $t_before = ticks() }
+        machine.reset
+        assert machine.cpu.pc == $pc0 "${$model}: machine.reset did not land on the reset vector"
+        assert pram() == $pram1 "${$model}: I2: PRAM lost on machine.reset"
+        assert nvram() == $nv1 "${$model}: I2: NVRAM lost on machine.reset"
+        if $check_ticks {
+            assert rebooted($budget, $t_before) "${$model}: machine.reset did not reboot the machine"
+        } else {
+            scheduler.run $budget
+        }
+    }
+
+    # --- level 3: machine.restart.  The same, cold; nothing is rebuilt -- the
+    # stores below are the same chips.
+    let pram2 = pram()
+    let nv2 = nvram()
+    let t_before2 = 0
+    if $check_ticks { $t_before2 = ticks() }
+    machine.restart
+    assert machine.cpu.pc == $pc0 "${$model}: machine.restart did not land on the reset vector"
+    assert pram() == $pram2 "${$model}: I2: PRAM lost on machine.restart"
+    assert nvram() == $nv2 "${$model}: I2: NVRAM lost on machine.restart"
+    if $check_ticks {
+        assert rebooted($budget, $t_before2) "${$model}: machine.restart did not reboot the machine"
+    } else {
+        scheduler.run $budget
+    }
+
+    # --- A new machine, from the same document, inherits no store (R1).
+    machine.boot model="${$model}" ram=$ram_kb rom="../../data/roms/${$rom}"
+    assert machine.id == "${$model}" "${$model}: machine.boot built another model"
+    assert machine.cpu.pc == $pc0 "${$model}: a new machine is not at its reset vector"
+    assert pram() == $pram_fresh "${$model}: R1: a new machine inherited PRAM"
+    assert nvram() == $nv_fresh "${$model}: R1: a new machine inherited NVRAM"
+    echo "reset-levels ${$model}: ok"
+}
+
+levels("plus", 4096, "plus-v3-4d1f8172.rom", 30000000, true)
+levels("se30", 8192, "iix-iicx-se30-97221136.rom", 20000000, true)
+levels("iicx", 8192, "iix-iicx-se30-97221136.rom", 20000000, true)
+levels("iix", 8192, "iix-iicx-se30-97221136.rom", 20000000, true)
+levels("iifx", 8192, "iifx-4147dd77.rom", 40000000, true)
+levels("iici", 8192, "iici-368cadfe.rom", 35000000, true)
+levels("iisi", 9216, "iisi-36b7fb6c.rom", 30000000, true)
+levels("q700", 8192, "q700-q900-420dbff3.rom", 35000000, true)
+levels("q900", 8192, "q700-q900-420dbff3.rom", 35000000, true)
+levels("q950", 8192, "q950-3dc27823.rom", 35000000, true)
+levels("q840av", 8192, "q840av-q660av-5bf10fd1.rom", 60000000, true)
+levels("q660av", 8192, "q840av-q660av-5bf10fd1.rom", 50000000, true)
+levels("pm6100", 16384, "pm6100-pm7100-pm8100-9feb69b3.rom", 2000000, false)
+levels("pm7100", 16384, "pm6100-pm7100-pm8100-9feb69b3.rom", 250000000, true)
+levels("pm8100", 16384, "pm6100-pm7100-pm8100-9feb69b3.rom", 2000000, false)
+levels("pm7500", 32768, "pm7500-pm8500-pm9500-96cd923d.rom", 2000000, false)
+levels("pm8500", 32768, "pm7500-pm8500-pm9500-96cd923d.rom", 2000000, false)
+levels("pm9500", 32768, "pm7500-pm8500-pm9500-96cd923d.rom", 2000000, false)
+levels("ans500", 32768, "ans500-ans700-962f6c13.rom", 2000000, false)
+levels("ans700", 49152, "ans500-ans700-962f6c13.rom", 2000000, false)
+levels("pmg3dt", 65536, "pmg3dt-pmg3mt-78f57389.rom", 2000000, false)
+levels("pmg3mt", 65536, "pmg3dt-pmg3mt-78f57389.rom", 2000000, false)
+levels("lisa", 2048, "lisa2-revh-098917b2.rom", 2000000, false)
+levels("macxl", 2048, "macxl-3a-094c82f0.rom", 2000000, false)
+quit

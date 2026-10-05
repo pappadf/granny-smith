@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // cpu_pd_run.h
-// The 68K predecoded sprint loop (proposal §3.4-§3.5, §4): one flat switch
+// The 68K predecoded sprint loop: one flat switch
 // over specialized (T0), flattened-generic (T1) and generic (T2) entries of
 // the block the PC is executing from.  A template included once per core
 // file after that core's cpu_ops.h bindings and its switch executor, so
@@ -419,16 +419,17 @@ PD_DEF_ST_INC_DEC(32)
 #define PD_B_MOVEA(bits, SRC) PD_R(e.a) = (uint32_t)(int32_t)(INT(bits))(SRC)
 #define PD_B_ADDA(bits, SRC)  PD_R(e.a) += (uint32_t)(int32_t)(INT(bits))(SRC)
 #define PD_B_SUBA(bits, SRC)  PD_R(e.a) -= (uint32_t)(int32_t)(INT(bits))(SRC)
-// Division: the exception path reads CCR after CLEAR_NZVC, so the id is
-// never elided; PC is materialized before the divide can raise.
+// Division (cpu_ops.h DIV16U/DIV16S): the divide-by-zero trap is taken
+// before the CCR is touched, and PC is materialized before it can raise.
+// The ids are never elided and count as faulting for their predecessor.
 #define PD_B_DIVU(bits, SRC)                                                                                           \
     uint16_t _divisor = SRC;                                                                                           \
-    CLEAR_NZVC();                                                                                                      \
     if (!_divisor) {                                                                                                   \
         PD_MAT(_len);                                                                                                  \
         EXC_DIVIDE_BY_ZERO();                                                                                          \
         goto relookup;                                                                                                 \
     } else {                                                                                                           \
+        CLEAR_NZVC();                                                                                                  \
         uint32_t _quotient = PD_R(e.a) / (uint16_t)_divisor;                                                           \
         if (_quotient > UINT16_MAX) {                                                                                  \
             CC_V = CC_N = 1;                                                                                           \
@@ -439,19 +440,25 @@ PD_DEF_ST_INC_DEC(32)
             CC_Z = (_quotient == 0);                                                                                   \
         }                                                                                                              \
     }
+// INT32_MIN / -1 has no representable quotient, and the C division is UB
+// (the wasm build's i32.div_s traps on it), so it is tested first.
 #define PD_B_DIVS(bits, SRC)                                                                                           \
     uint16_t _divisor = SRC;                                                                                           \
-    CLEAR_NZVC();                                                                                                      \
+    int32_t _dividend = (int32_t)PD_R(e.a);                                                                            \
     if (!_divisor) {                                                                                                   \
         PD_MAT(_len);                                                                                                  \
         EXC_DIVIDE_BY_ZERO();                                                                                          \
         goto relookup;                                                                                                 \
+    } else if ((int16_t)_divisor == -1 && _dividend == INT32_MIN) {                                                    \
+        CLEAR_NZVC();                                                                                                  \
+        CC_V = CC_N = 1;                                                                                               \
     } else {                                                                                                           \
-        int32_t _q = (int32_t)PD_R(e.a) / (int16_t)_divisor;                                                           \
-        if (((int16_t)_divisor == -1 && (int32_t)PD_R(e.a) == INT32_MIN) || _q > INT16_MAX || _q < INT16_MIN) {        \
+        CLEAR_NZVC();                                                                                                  \
+        int32_t _q = _dividend / (int16_t)_divisor;                                                                    \
+        if (_q > INT16_MAX || _q < INT16_MIN) {                                                                        \
             CC_V = CC_N = 1;                                                                                           \
         } else {                                                                                                       \
-            int32_t _remainder = (int32_t)PD_R(e.a) % (int16_t)_divisor;                                               \
+            int32_t _remainder = _dividend % (int16_t)_divisor;                                                        \
             PD_R(e.a) = ((uint32_t)_remainder << 16) | ((uint32_t)_q & 0xFFFF);                                        \
             CC_N = _q & 0x8000;                                                                                        \
             CC_Z = (_q == 0);                                                                                          \

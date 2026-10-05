@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 //
-// CIVIC serial-register + sense unit test (proposal-quadra-av.md Phase F).
+// CIVIC serial-register + sense unit test.
 //
 // Links the real av/civic.c against recording stubs and pins the contracts
-// from the AV Civic and Sebastian hardware notes:
+// of the CIVIC and Sebastian chips:
 //
 //  1. The bit-serial register codec: one bit per longword, only D[0]
 //     significant, LSB at the lowest address, stride 4.  Writes stream
@@ -23,6 +23,9 @@
 #include "av.h"
 #include "civic.h"
 #include "psc.h"
+// Handler rows take (cfg, win_off, addr): the engine hands them the
+// window-relative offset it has already decoded, and keeps the raw address for
+// fault reporting.  These calls pass both.
 #include "test_assert.h"
 
 #include <stdint.h>
@@ -56,8 +59,9 @@ void av_vdc_clock_gate(struct av_vdc *vdc, bool clock_off) {
 static void (*s_frame_cb)(void *, uint64_t);
 static void *s_frame_src;
 
-event_t *scheduler_new_cpu_event(scheduler_t *sch, event_callback_t callback, void *source, uint64_t data,
-                                 uint64_t cycles, uint64_t ns) {
+event_t *scheduler_new_cpu_event_ex(scheduler_t *sch, event_callback_t callback, void *source, uint64_t data,
+                                    uint64_t cycles, uint64_t ns, bool periodic) {
+    (void)periodic;
     (void)sch;
     (void)data;
     (void)cycles;
@@ -71,6 +75,10 @@ void remove_event(scheduler_t *sch, event_callback_t callback, void *source) {
     (void)callback;
     (void)source;
     s_frame_cb = NULL;
+}
+void scheduler_forget_source(scheduler_t *sch, void *source) {
+    (void)sch;
+    (void)source;
 }
 void scheduler_new_event_type(scheduler_t *sch, const char *owner, void *source, const char *name,
                               event_callback_t callback) {
@@ -119,11 +127,11 @@ static av_state_t s_st;
 
 // One longword slot: only byte lane 3 carries D[0].
 static void slot_write(uint32_t off, uint32_t value) {
-    av_civic_write(&s_cfg, CIVIC_BASE + off + 3, (uint8_t)(value & 1));
+    av_civic_write(&s_cfg, off + 3, CIVIC_BASE + off + 3, (uint8_t)(value & 1));
 }
 
 static uint32_t slot_read(uint32_t off) {
-    return av_civic_read(&s_cfg, CIVIC_BASE + off + 3) & 1;
+    return av_civic_read(&s_cfg, off + 3, CIVIC_BASE + off + 3) & 1;
 }
 
 // dWriteCivic: stream the bits LSB->MSB ascending from the register base.
@@ -142,7 +150,7 @@ static uint32_t civic_read_reg(uint32_t off, int width) {
     return v;
 }
 
-// Hardware offsets (civic.md §3).
+// Hardware offsets.
 #define R_VBLINT    0x000
 #define R_ENABLE    0x004
 #define R_VDCINT    0x008
@@ -166,11 +174,11 @@ static uint32_t civic_read_reg(uint32_t off, int width) {
 #define SEB_PCBR 0x20
 
 static void seb_write(uint32_t reg, uint8_t v) {
-    av_civic_seb_write(&s_cfg, SEB_BASE + reg, v);
+    av_civic_seb_write(&s_cfg, reg, SEB_BASE + reg, v);
 }
 
 static uint8_t seb_read(uint32_t reg) {
-    return av_civic_seb_read(&s_cfg, SEB_BASE + reg);
+    return av_civic_seb_read(&s_cfg, reg, SEB_BASE + reg);
 }
 
 // ============================================================================
@@ -195,7 +203,7 @@ TEST(test_serial_codec) {
     ASSERT_EQ_INT((int)civic_read_reg(R_HAL, 12), 0x5A5);
 
     // Only D[0] of the datum is wired: a write of $FE stores a 0 bit.
-    av_civic_write(&s_cfg, CIVIC_BASE + R_HAL + 3, 0xFE);
+    av_civic_write(&s_cfg, R_HAL + 3, CIVIC_BASE + R_HAL + 3, 0xFE);
     ASSERT_EQ_INT((int)slot_read(R_HAL + 0), 0);
 }
 
@@ -323,7 +331,7 @@ TEST(test_sebastian_clut) {
 // visible width rendered the ROM's 1024-byte rows at a 640-byte pitch and
 // sheared the picture into diagonal bands.  The booted System reports the
 // same number in ScreenRow, and PrimaryInit paints `cvpRowWords << 3`
-// LONGWORDS per row (civic.md §4 step 15) — i.e. RowWords * 32 bytes.
+// LONGWORDS per row — i.e. RowWords * 32 bytes.
 TEST(test_stride_follows_rowwords) {
     display_t *d = av_civic_display(s_st.civic);
     seb_write(SEB_PCBR, 0x13); // 8 bpp: 640 visible bytes per row
@@ -378,6 +386,7 @@ int main(void) {
     // civic.c only drives the slot-interrupt line when a PSC exists; the
     // stub above records the calls, so any non-NULL handle will do.
     s_st.psc = (av_psc_t *)&s_st;
+    s_cfg.build_opts.builtin_sense = 6; // the Hi-Res 13" the machine ships with
     s_st.civic = av_civic_init(&s_cfg, NULL);
     ASSERT_TRUE(s_st.civic != NULL);
 

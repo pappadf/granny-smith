@@ -3,7 +3,7 @@
 
 // mmu040.h
 // MC68040 MMU interface.  A sibling of, not a patch to, the 68030 PMMU in
-// mmu.c (proposal-machine-quadra-700-900-950.md §6.5): URP/SRP roots, a
+// mmu.c: URP/SRP roots, a
 // fixed three-level table walk, four transparent-translation registers,
 // and the 040 forms of PTEST/PFLUSH.  Registers are reached via MOVEC
 // (the 040 has no PMOVE); the CPU decoder in cpu_68040.c calls in here.
@@ -13,6 +13,8 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+
+#include "mmu_trace.h"
 
 // === TC register (MOVEC $003) — 16 bits used ===
 #define TC040_E (1u << 15) // enable translation
@@ -113,5 +115,13 @@ bool mmu040_handle_fault(struct mmu_state *bus, uint32_t logical_addr, bool writ
 // and writes *pa_out on success; false (with *pa_out = logical_addr) on a
 // failed walk.
 bool mmu040_translate_checked(struct mmu_state *bus, uint32_t logical_addr, bool supervisor, uint32_t *pa_out);
+
+// The debugger's translation for machine.cpu.mmu.translate/walk/map: the
+// TT registers (the access kind's pair first -- `fetch`: ITT, else DTT --
+// then the other, as the merged software TLB does), then the three-level
+// walk, side-effect-free; `trace` (may be NULL) records each step.  Reached
+// through mmu_debug_translate.
+void mmu040_debug_translate(mmu040_state_t *mmu, struct mmu_state *bus, uint32_t logical_addr, bool supervisor,
+                            bool fetch, mmu_xlate_t *out, mmu_trace_t *trace);
 
 #endif // MMU040_H

@@ -11,9 +11,14 @@ TEST_HARNESS := isolated
 # checkpoints (always inits with a NULL checkpoint).
 EXTRA_SRCS   := ../../../../src/machines/lisa/lisa_profile.c \
                 ../../../../src/core/storage/image.c \
+                ../../../../src/core/storage/image_wrap_sniff.c \
+                ../../../../src/core/storage/image_apm.c \
+                ../../../../src/core/storage/storage_util.c \
+                ../../../../src/core/storage/image_scratch.c \
                 ../../../../src/core/storage/storage.c \
-                ../../../../src/core/storage/appledouble.c \
+                ../../../../src/peeler/lib/appledouble.c \
                 ../../../../src/core/storage/image_ndif.c \
+                ../../../../src/core/crc32.c \
                 ../../../../src/core/storage/image_udif.c \
                 ../../../../src/core/storage/inflate.c \
                 ../../../../src/core/storage/adc.c \
@@ -25,4 +30,5 @@ EXTRA_SRCS   := ../../../../src/machines/lisa/lisa_profile.c \
 # machines/runtime — neither is on common.mk's default include path.
 EXTRA_CFLAGS  = -I$(EMU_ROOT)/machines/lisa -I$(EMU_ROOT)/machines/runtime
 
+USE_SOURCE_LAYER := 1
 include ../../common.mk

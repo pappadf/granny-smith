@@ -6,12 +6,18 @@ emulator), and browser-based end-to-end tests (Playwright).
 
 ## Quick Reference
 
-| Tier | Command | Duration | Test Data Required |
-|------|---------|----------|--------------------|
-| Unit | `make -C tests/unit run` | 1–5 min | No (uses the `third-party/` vector submodules) |
-| Integration | `make integration-test` | 10–20 min (`-j` shortens) | Yes |
-| E2E | `make e2e-test` | 10–15 min | Yes |
-| Unit + Integration | `make test` | 2–7 min | Partially |
+| Tier | Command | In CI | Test data |
+|------|---------|-------|-----------|
+| Unit | `make -j$(nproc) -C tests/unit run` | 2½ min native, then 40 s for the wasm32 rerun | No, but the `third-party/single-step-tests`, `third-party/m68k-test` and `third-party/powerpc-test` submodules must be initialised |
+| Integration, unit tier | `make integration-test TIER=unit -j$(nproc)` | 1 min | Yes |
+| Integration, matrix tier | `make integration-test TIER=matrix -j$(nproc)` | 17 min | Yes |
+| Integration, extended tier | `make integration-test TIER=extended` | 33 min, serial | Yes |
+| E2E | `make e2e-test` | 16 min, one worker | Yes |
+| Unit + every integration tier | `make test` | the sum of the rows above | Yes, for the integration part |
+
+The times are CI step times on GitHub's 4-core `ubuntu-24.04` runner
+(September 2026); `-j` is what CI passes, and a row without it runs serially
+there. Locally, `-j$(nproc)` works for every tier.
 
 Test data is fetched via `scripts/fetch-test-data.sh` (requires
 `GS_TEST_DATA_TOKEN`). See [TEST_DATA.md](TEST_DATA.md).
@@ -23,145 +29,56 @@ tests/
 ├── data/                           # Proprietary test assets (.gitignored)
 ├── unit/                           # Native C unit tests
 │   ├── Makefile                   #   Orchestrator (discovers suites/*/Makefile)
-│   ├── common.mk                 #   Shared build rules + harness selection
-│   ├── suites/                    #   All test suites
-│   │   ├── cpu/                   #     CPU single-step instruction tests
-│   │   ├── disasm/                #     Disassembler corpus test
-│   │   └── storage/               #     Storage subsystem tests
-│   └── support/                   #   Shared infrastructure
-│       ├── test_assert.h          #     Assertion macros
-│       ├── harness.h              #     Harness API
-│       ├── harness_*.c            #     Harness implementations
-│       ├── stub_*.c               #     Focused stub modules
-│       ├── platform.h             #     Platform header override
-│       └── log.h                  #     Logging header override
+│   ├── common.mk                  #   The build recipe every suite includes
+│   ├── suites/<name>/             #   One directory per suite
+│   └── support/                   #   Harnesses, stubs, header shims
 ├── integration/                    # Headless emulator integration tests
 │   ├── lib/                       #   Shared row/wait/golden library (include'd)
-│   ├── suite-plus/ suite-se30/ …  #   Per-machine suites (rows, goldens/)
-│   ├── checkpoint/                #   Cross-process checkpoint save/restore
-│   ├── object-*/ shell-*/ …       #   Unit-tier object-model + shell tests
-│   └── iicx-video-modes/          #   16-cell real-vROM JMFB sweep
+│   ├── suite-<family>/            #   Per-machine suites (rows, goldens/)
+│   └── <name>/                    #   One directory per test (config.mk, test.script)
 └── e2e/                            # Browser Playwright E2E tests (web2 UI)
     ├── web2-specs/                #   Functional suite (playwright.web2.config.ts)
     ├── ui-prod-smoke/             #   Production-bundle boot smoke
-    ├── webkit-local/             #   Local WebKit upload/OPFS checks
-    ├── helpers/web2-fs.ts         #   OPFS staging + drag helpers
-    ├── test_server.py             #   COOP/COEP static server
-    └── playwright.web2.config.ts  #   Main Playwright configuration
+    └── helpers/web2-fs.ts         #   OPFS staging + drag helpers
 ```
+
+The inventories are the tools, not this page:
+
+```bash
+make -C tests/unit list           # every unit suite
+make -C tests/integration list    # every integration test, with its tier and description
+```
+
+and [tests/e2e/README.md](../../tests/e2e/README.md) annotates every e2e spec.
 
 ---
 
 ## Unit Tests
 
-### Overview
+Each suite under `tests/unit/suites/` is one native binary that compiles only
+the emulator sources it tests and links stubs for everything else. A suite
+declares a **harness mode** in its Makefile:
 
-The unit test infrastructure uses **explicit test harnesses** and **dependency
-injection**. Tests declare their requirements through a harness mode, and the
-build system provides the appropriate stubs and real implementations.
-
-### Harness Modes
-
-Each test declares a harness mode in its Makefile via `TEST_HARNESS`:
-
-| Mode | Description | Use Case |
-|------|-------------|----------|
-| `isolated` | Pure stub-only environment | Tests that don't need emulator subsystems |
-| `cpu` | Real CPU + memory subsystems | CPU and disassembler tests |
-
-Example Makefile (in `suites/<name>/`):
-```makefile
-TEST_NAME := mytest
-TEST_SRCS := test.c
-TEST_HARNESS := isolated
-include ../../common.mk
-```
-
-### Test Context
-
-Tests using the harness work with a `test_context_t` structure:
-
-```c
-#include "harness.h"
-
-int main(void) {
-    test_context_t *ctx = test_harness_init();
-    cpu_t *cpu = test_get_cpu(ctx);
-    memory_map_t *mem = test_get_memory(ctx);
-    // ... run tests ...
-    test_harness_destroy(ctx);
-    return 0;
-}
-```
-
-### Running Unit Tests
+| Mode | What the suite gets |
+|------|---------------------|
+| `isolated` (default) | A `test_context_t` harness and stubs for every subsystem |
+| `cpu` | The same harness with the real 68k CPU, FPU, memory and MMU |
+| `none` | No harness and no default stubs: its own `main()` and mocks, plus any stubs it names |
 
 ```bash
-make -C tests/unit run            # Build + run all
-make -C tests/unit list           # List discovered test names
-make -C tests/unit test-disasm    # Run disassembler test
+make -j$(nproc) -C tests/unit run   # build every suite in parallel, then run them all
+make -C tests/unit test-disasm      # build and run one suite
+make -C tests/unit list             # list the suites
 ```
 
-### Writing a New Unit Test
+`run` builds with `-k` and then runs every suite, so one failure, in the
+build or in a test, does not hide the rest; it exits non-zero if any suite
+failed. Within a suite the first failed `ASSERT_*` ends that binary.
 
-1. Create `tests/unit/suites/mytest/` with a `Makefile`:
-   ```makefile
-   TEST_NAME := mytest
-   TEST_SRCS := test.c
-   TEST_HARNESS := isolated
-   include ../../common.mk
-   ```
-2. Write `test.c`:
-   ```c
-   #include "test_assert.h"
-   #include "harness.h"
-
-   TEST(my_first_test) { ASSERT_TRUE(1 == 1); }
-   TEST(my_second_test) { ASSERT_EQ_INT(42, 42); }
-
-   int main(void) {
-       test_context_t *ctx = test_harness_init();
-       RUN(my_first_test);
-       RUN(my_second_test);
-       test_harness_destroy(ctx);
-       return 0;
-   }
-   ```
-3. Run: `make -C tests/unit test-mytest`
-
-### Assertion Macros
-
-From `test_assert.h`:
-
-- `TEST(name)` — Declare a test function
-- `RUN(testfn)` — Run a test and report pass/fail
-- `ASSERT_TRUE(expr)` — Assert expression is true
-- `ASSERT_EQ_INT(expected, actual)` — Assert integer equality
-
-### Stub Modules
-
-Stubs live in `tests/unit/support/` and are split into focused modules that can
-be selectively linked:
-
-| Stub Module | Contents |
-|-------------|----------|
-| `stub_platform.c` | `platform_bsr32()`, `platform_ntz32()`, timing functions |
-| `stub_shell.c` | `register_cmd()`, `shell_init()`, `shell_dispatch()` |
-| `stub_checkpoint.c` | `system_read_checkpoint_data_loc()`, `checkpoint_has_error()` |
-| `stub_system.c` | `system_memory()`, `system_cpu()`, etc. (uses harness context) |
-| `stub_memory.c` | Memory globals and access functions (for isolated mode) |
-| `stub_debugger.c` | `debugger_init()`, `debug_break_and_trace()` |
-| `stub_peripherals.c` | `floppy_new()`, `process_packet()` |
-| `stub_assert.c` | `gs_assert_fail()`, `init_tests()` |
-
-Each test picks the minimal subset of emulator `.c` files it needs via
-`EXTRA_SRCS`. Prefer adding a focused stub over pulling a large subsystem.
-
-### Disassembler Corpus
-
-`tests/unit/suites/disasm` expects a `disasm.txt` corpus. If absent, the test
-logs a skip message and passes. Set `REQUIRE_DISASM_CORPUS=1` to fail when
-missing.
+[tests/unit/README.md](../../tests/unit/README.md) is the reference for
+writing a suite: the Makefile variables, the three harness modes, every stub
+and what it provides, the assertion macros, and the disassembler corpus
+switch.
 
 ---
 
@@ -188,16 +105,31 @@ files there, so nothing ever writes into `tests/data` and independent
 tests can run concurrently. The per-test runner logic lives in
 `scripts/run-integration-test.sh`.
 
-Each `config.mk` declares a `TEST_TIER` (proposal-integration-test-
-rework §5.4): `unit` (zero/near-zero guest cycles, seconds for the
-whole tier), `matrix` (per-machine boot suites — the PR gate), and
-`extended` (long diagnostics, installers, app choreography — nightly).
+### Tiers
+
+Each `config.mk` declares a `TEST_TIER`: `unit` (zero/near-zero guest
+cycles, seconds for the whole tier), `matrix` (per-machine boot suites —
+the PR gate), and `extended` (long diagnostics, installers, app
+choreography — nightly). CI runs by tier, so a test with no recognised
+tier runs nowhere.
+
+The unit tier's ceiling is about a second of host CPU per test and under
+15 s for the whole tier (about 10 s today). Measure a candidate, don't
+count its instructions: a 68k machine runs 60 M instructions in about a
+second, while a PowerPC ROM ladder spends several seconds before Open
+Firmware assigns a BAR. A test that needs more belongs in `matrix`. That
+is why the PPC ROM ladders, the TNT PCI tests and `machine-restart` are
+matrix tests. The nightly Valgrind run still reaches every PowerPC family:
+the ANS through the unit tier's `ans-pci-slots` and
+`ans-machine-restart`, and PDM and TNT through their own short runs
+(`nightly.yml`).
 
 ### Suites and the shared script library
 
 Machine families are covered by *suite* directories (`suite-plus`,
 `suite-se30`, `suite-iix`, `suite-iicx`, `suite-iici`, `suite-iisi`,
-`suite-quadra`): one daemon run, one row per (system, media, RAM,
+`suite-iifx`, `suite-quadra`, `suite-av`, `suite-lisa`, `suite-pdm`,
+`suite-tnt`, `suite-ans`, `suite-gossamer`): one daemon run, one row per (system, media, RAM,
 video) cell, re-instantiating via `machine.boot` between rows. A boot
 assertion belongs as a row in its machine's suite.
 
@@ -210,7 +142,11 @@ Two rules suite rows must follow, both learned from real failures:
   default — never to what a previous row booted. A row that cares about
   the video card, vROM, or monitor sense still passes it explicitly so
   the row reads as its own specification. `machine.restart` power-cycles
-  the current machine, keeping its mounted media attached.
+  the current machine (nothing is torn down, so its PRAM/NVRAM and media
+  are simply still there); a different configuration is a new
+  `machine.boot`, which inherits nothing. Device state a row pins --
+  the clock, a PRAM byte, an NVRAM setting -- is written on the line
+  after the boot, never before it.
 - **Interacting rows use `wait_stable` + `check`, not `wait_match`.**
   `wait_match` stops at the first quantum whose frame equals the golden,
   which can precede quiescence; `wait_stable` behaves identically when
@@ -237,6 +173,10 @@ pair on the machine's own ADB keyboard and cold-boots), and its console
 drops characters from a long input burst (`ans_send` feeds it in chunks).
 See the library's header; the reasoning is worth reading before writing a
 row against a machine that narrates instead of drawing.
+
+A third, `tests/integration/lib/gossamer.script`, holds the beige G3's
+Open Firmware entry (Command-Option-O-F on the keyboard, then `ttya io`)
+and the Mac OS 9.2.1 installer choreography the install rows share.
 
 Suite variables are passed via `TEST_VARS`:
 
@@ -308,7 +248,7 @@ Neither script changes how goldens are compared. Matching is byte-exact via
 | Trigger | Runs |
 |---|---|
 | PR / push (`tests.yml`) | golden distinctness (no build or data needed), then unit + matrix tiers in parallel, **plus the extended tier while the integration-test rework settles**, then the coverage contract and the perf baselines; all gate the build. The extended tier is normally nightly-only (§5.4) — it is on the PR gate temporarily so a regression in a long row is caught before merge rather than the next morning, and the step says how to revert it. Coverage, covered cells, milestone rows and per-row spends go into the step summary. |
-| Nightly 03:20 UTC (`nightly.yml`) | the extended tier in `KEEP_GOING=1` mode (so one red row does not truncate the report), plus Valgrind rescoped to the unit tier + one boot with `PERF_FLOORS=off`. Failure uploads `tests/integration/test-results/**`. |
+| Nightly 03:20 UTC (`nightly.yml`) | the extended tier in `KEEP_GOING=1` mode (so one red row does not truncate the report), plus Valgrind rescoped to the unit tier, one short run per PowerPC family the unit tier does not boot (`pdm-rom-ladder`, `tnt-pci-slots`) and one 68k boot, with `PERF_FLOORS=off`. Failure uploads `tests/integration/test-results/**`. |
 
 Valgrind is deliberately *not* a full sweep: at its 20–50× slowdown over
 billions of guest cycles, `test-valgrind` across every test cannot run to
@@ -373,21 +313,16 @@ one shared helper is `tests/e2e/helpers/web2-fs.ts`. See
 > The legacy web UI and its `tests/e2e/specs/**` suite were retired; unique
 > coverage moved here or into the headless integration tests above.
 
-### Specs (`tests/e2e/web2-specs/`)
+### Specs
 
-| Spec | What it tests |
-|------|---------------|
-| `checkpoint-resume` | Checkpoint save → reload → resume; SE/30 profile restore |
-| `display-card-config` | New Machine dialog: video card selected by name |
-| `display-drop` | Drag-and-drop onto the Display: ROM boot, floppy mount, checkpoint restore |
-| `filesystem-tab` | Filesystem tab: descend image, copy/move/rename, unpack archive |
-| `iicx-video-modes` | Post-shader WebGL canvas baselines (monitor × depth) |
-| `iifx-aux3-realtime` | A/UX 3.0.1 boot to login under the real RAF scheduler |
-| `lisa-xenix-profile` | Lisa/XL ProFile-vs-SCSI config + boot |
-| `url-boot` | `?rom=…` URL-parameter boot |
+[tests/e2e/README.md](../../tests/e2e/README.md) lists every spec under
+`tests/e2e/web2-specs/` with what it tests; the Hygiene workflow
+(`scripts/check-doc-inventories.py`) fails if a spec is missing from it.
 
 Two more configs run separately: `ui-prod-smoke/` (production-bundle boot
-smoke, no data) and `webkit-local/` (local WebKit OPFS upload).
+smoke, no data) and `playwright.webkit-local.config.ts`, which runs
+`web2-specs/upload.spec.ts` on WebKit (macOS only: Linux WebKitGTK has no
+OPFS).
 
 ### Running E2E Tests
 
@@ -426,12 +361,13 @@ live in the headless integration tests, not here.
    import { test, expect } from '@playwright/test';
    import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
    ```
-3. Drive through the shipped UI (dialog, Terminal panel, drag-and-drop); web2
-   has no `window.gsEval` — reach the object model via the Terminal.
+3. Drive through the shipped UI (dialog, drag-and-drop); read or call the
+   object model with `gsEvalInPage` / `gsCallInPage` (`helpers/web2-eval.ts`,
+   see `tests/e2e/README.md`), not by typing into the Terminal.
 4. Run: `npx --prefix tests/e2e playwright test --config=tests/e2e/playwright.web2.config.ts foo`
 
 ### Debugging E2E Failures
 
 - Traces: `npx playwright show-trace tests/e2e/test-results/<test>/trace.zip`
 - Screenshots/artifacts land under `tests/e2e/test-results/<test>-<project>/`
-- Drive the emulator's shell from a spec via the Terminal panel (`.xterm`)
+- Drive the emulator's shell from a spec via the Terminal console (`tests/e2e/helpers/terminal.ts`: its input is `.console .cm-content`, its output `.console-output`)

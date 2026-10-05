@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // mmu.h
 // 68030 PMMU (Paged Memory Management Unit) interface.
 // Implements lazy-fill TLB using SoA pointer arrays in memory.h.
@@ -6,6 +7,9 @@
 
 #ifndef MMU_H
 #define MMU_H
+
+#include "memory.h" // g_active_read/g_active_write/g_page_count for the shared fault epilogue
+#include "mmu_trace.h" // mmu_xlate_t / mmu_trace_t for the debugger's translation
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -77,7 +81,8 @@ typedef struct mmu_host_region {
 // Result of a table walk
 typedef struct mmu_walk_result {
     uint32_t physical_addr; // resolved physical page address
-    uint32_t page_size_bits; // log2 of effective page size (e.g. 12 = 4KB, 25 = 32MB)
+    uint32_t page_size_bits; // log2 of effective page size (e.g. 12 = 4KB, 25 = 32MB); on a failed
+                             // walk, log2 of the range the failing descriptor covers
     uint32_t descriptor_addr; // physical address of the last descriptor examined (for PTEST's A-reg output)
     bool valid; // true if walk succeeded
     bool supervisor_only; // S bit from descriptor
@@ -87,6 +92,19 @@ typedef struct mmu_walk_result {
 } mmu_walk_result_t;
 
 // MMU state for 68030 — registers set via PMOVE instructions
+// One cached early-termination block descriptor (mmu.c's ATC model).
+typedef struct atc_block {
+    uint32_t log_base; // logical range base (aligned to coverage)
+    uint32_t log_mask; // ~(coverage-1)
+    uint32_t phys_base; // physical range base (same alignment)
+    bool supervisor_only; // S bit from the walked descriptor
+    bool write_protected; // W bit from the walked descriptor
+    bool modified; // M bit from the walked descriptor (write-fill gate)
+    bool fc_super; // FC class of the walk (matters when TC.SRE=1)
+    bool valid; // entry live?
+} atc_block_t;
+#define ATC_BLOCKS 16 // small, round-robin; the real 68030 ATC holds 22 entries
+
 typedef struct mmu_state {
     // 68030 MMU registers (set via PMOVE)
     uint64_t crp; // CPU root pointer (64-bit descriptor)
@@ -94,6 +112,12 @@ typedef struct mmu_state {
     uint32_t tc; // Translation control
     uint32_t tt0; // Transparent translation register 0
     uint32_t tt1; // Transparent translation register 1
+    // The TT1 value the board holds from power-on, which every CPU reset
+    // restores (0: none -- a reset clears TT1.E as the 68030 does).  The II
+    // boards use it for a supervisor-only identity map of NuBus $F0..$FF that
+    // their slot space depends on (mac030_glue.c); a construction fact of the
+    // board, not guest state, so it is not checkpointed.
+    uint32_t tt1_board;
     uint16_t mmusr; // MMU status register
 
     bool enabled; // TC.E bit — is translation active?
@@ -137,15 +161,28 @@ typedef struct mmu_state {
     // NuBus bus error range: only unmapped reads in this physical address
     // range generate bus errors.  Outside this range, unmapped TT-mapped
     // reads return 0 silently (as the hardware does for non-NuBus slots).
-    uint32_t nubus_berr_start; // first address that can bus error (inclusive)
-    uint32_t nubus_berr_end; // last address that can bus error (inclusive)
 
-    // 68040 front-end (Quadra proposal §6.5): when non-NULL, this machine's
+    // 68040 front-end: when non-NULL, this machine's
     // translation front-end (TTR match + fixed three-level walk in mmu040.c)
     // replaces the PMMU one; the physical resolver, SoA fill, and TLB
     // tracking above are shared.  `enabled` mirrors the 040 TC.E bit so the
     // memory.c fast-path checks stay unchanged.  Set via mmu_attach_mmu040.
     struct mmu040_state *m040;
+
+    // The block-descriptor cache (the model of the 68030's ATC) and its
+    // round-robin cursor.  The machine's own, so building another machine
+    // cannot flush it.
+    atc_block_t atc[ATC_BLOCKS];
+    int atc_next;
+
+    // Last CRP observed while the CPU was in user mode.  Snapshotted by the
+    // supervisor→user transition in cpu_internal.h's set_sr path.  A/UX swaps
+    // CRP per process, so this value pins the user process that was most
+    // recently on the CPU — used by `set-mouse --aux` to translate MAE
+    // Toolbox globals (MTemp/RawMouse/Mouse) into MAE's address space even
+    // when the CPU is currently in supervisor mode.  0 if no user-mode entry
+    // has been observed yet.
+    uint64_t last_user_crp;
 } mmu_state_t;
 
 // === Lifecycle ===
@@ -169,6 +206,19 @@ void mmu_invalidate_tlb(mmu_state_t *mmu);
 // the last invalidation. Callers in the slow path of memory.c use this when
 // lazy-installing an identity mapping for an MMU-disabled access.
 void tlb_track_page(uint32_t page_index);
+
+// The list of populated page indices a memory map keeps for the fast
+// invalidation above.  A map owns one (memory_map_init / _delete) and
+// memory_map_select makes it the one tlb_track_page and mmu_invalidate_tlb use.
+#define TLB_TRACK_MAX 8192 // max tracked pages before fallback to full memset
+typedef struct tlb_track {
+    uint32_t page[TLB_TRACK_MAX]; // populated page indices
+    int count; // entries in the list
+    bool overflow; // too many to list: the next invalidation zeroes everything
+} tlb_track_t;
+tlb_track_t *tlb_track_new(void);
+void tlb_track_free(tlb_track_t *t);
+void tlb_track_select(tlb_track_t *t);
 
 // === Address Translation ===
 
@@ -206,6 +256,15 @@ uint32_t mmu_translate_debug(mmu_state_t *mmu, uint32_t logical_addr, bool super
 // not be treated as identity.
 bool mmu_translate_checked(mmu_state_t *mmu, uint32_t logical_addr, bool supervisor, uint32_t *pa_out);
 
+// The debugger's translation, shared by machine.cpu.mmu.translate, .walk and
+// .map on both 68K MMU kinds (the 68040 dispatches to mmu040.c).
+// Side-effect-free (no SoA fill, no U/M updates).  Fills *out; with a
+// non-NULL `trace`, also records the TT check, the root pointer and each
+// table level the walk read.  `fetch` puts the 68040's instruction TT
+// registers ahead of its data ones; the 030 does not distinguish.
+void mmu_debug_translate(mmu_state_t *mmu, uint32_t logical_addr, bool supervisor, bool fetch, mmu_xlate_t *out,
+                         mmu_trace_t *trace);
+
 // Translate `logical_addr` against an arbitrary CRP root rather than the
 // current `mmu->crp`.  Used by the test harness to reach a known
 // user-process address space (e.g. MAE under A/UX) regardless of which
@@ -241,10 +300,18 @@ bool mmu_phys_is_writable(mmu_state_t *mmu, uint32_t phys_addr);
 // with each mmu_init.  Logs and drops the region when the list is full.
 void mmu_register_host_region(mmu_state_t *mmu, uint8_t *host, uint32_t phys_base, uint32_t size, bool writable);
 
-// Drop the host-region fill records kept for machines with NO 68k MMU, whose
+// The host-region fill records kept for machines with NO 68k MMU, whose
 // windows are filled straight into the page table instead (see
-// memory_map_host_region).  Called when a new memory map is built.
-void mmu_host_fill_regions_reset(void);
+// memory_map_host_region): one table per memory map, which owns it; the
+// selected map's is the one memory_map_host_region uses.
+void *mmu_host_fill_regions_new(void);
+
+// Forget the PMMU's process-wide caches (the TLB fill tracker, the ATC block
+// cache, the user-CRP snapshot): they describe the map that was selected,
+// and every one of them refills from the tables.  Run on every memory map
+// selection and at PMMU construction.
+void mmu_host_fill_regions_free(void *table);
+void mmu_host_fill_regions_select(void *table);
 
 // Project every registered host region into the CPU page table by calling
 // `fill(page, host_ptr, writable)` per 4 KiB page — machines run this after
@@ -279,13 +346,36 @@ void mmu_set_ram_bank_b(mmu_state_t *mmu, uint32_t ram_a_size, uint8_t *bank_b_h
 // Global MMU state pointer (set by machine init, NULL for 68000 machines)
 extern struct mmu_state *g_mmu;
 
-// Last CRP observed while the CPU was in user mode.  Snapshotted by the
-// supervisor→user transition in cpu_internal.h's set_sr path.  A/UX swaps
-// CRP per process, so this value pins the user process that was most
-// recently on the CPU — used by `set-mouse --aux` to translate MAE
-// Toolbox globals (MTemp/RawMouse/Mouse) into MAE's address space even
-// when the CPU is currently in supervisor mode.  0 if no user-mode entry
-// has been observed yet.
-extern uint64_t g_last_user_crp;
+// Shared 68030/68040 fault epilogue.  After a fill attempt, a still-zero SoA
+// entry means the physical page is a device window, unmapped, or logpointed.
+// Only clearly-garbage physical addresses -- past the RAM controller's reach
+// and below the ROM window -- bus-error; device windows dispatch in memory.c.
+// The Mac ROM probes high addresses through page table entries and expects to
+// read $FF without faulting, and the deferred bus error mechanism is
+// incompatible with the ROM's bail-out handler for data probes.
+//
+// Returning false here is a BUS TIMEOUT, not a PMMU table-walk fault, so the
+// stack frame must be the skip form ($A) rather than the retry form ($B).
+// Both copies of this function used to return without touching
+// g_bus_error_is_pmmu, leaving whatever the walk had set -- and the common
+// writers set it true -- so an unmapped physical page reached through a valid
+// descriptor produced a Format $B retry frame and the handler RTE'd straight
+// back into the same access.  The 040's transparent-translation path already
+// set the flag false explicitly for exactly this reason.
+static inline bool mmu_fault_epilogue(struct mmu_state *bus, uint32_t emu_page, uint32_t phys_page, bool write) {
+    uint32_t page_index = emu_page >> PAGE_SHIFT;
+    if (page_index < g_page_count) {
+        uintptr_t *active = write ? g_active_write : g_active_read;
+        if (active && active[page_index] == 0) {
+            // For closer ranges (e.g. $006DB000 from corrupted page tables) the
+            // f_trap handler detects unmapped instruction fetches separately.
+            if (phys_page >= bus->ram_size_max && phys_page < bus->rom_phys_base) {
+                g_bus_error_is_pmmu = false; // bus timeout: skip semantics
+                return false;
+            }
+        }
+    }
+    return true;
+}
 
 #endif // MMU_H

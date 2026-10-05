@@ -1,4 +1,7 @@
 <script lang="ts">
+  import Icon from '@/components/common/Icon.svelte';
+  import Hint from '@/components/ui/Hint.svelte';
+  import ListRow from '@/components/ui/ListRow.svelte';
   import { onMount } from 'svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
@@ -6,16 +9,25 @@
   import { machine } from '@/state/machine.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { debug, toggleSection } from '@/state/debug.svelte';
-  import { mmuLookup } from '@/bus/mockMmu';
+  import { translateMany, addrLabel, type Translation } from '@/bus/mmu';
   import { fmtHex32, parseHex } from '@/lib/hex';
+  import Button from '@/components/ui/Button.svelte';
+  import IconButton from '@/components/ui/IconButton.svelte';
+  import TextInput from '@/components/ui/TextInput.svelte';
 
   let rows = $state<Breakpoint[]>([]);
   let showAdd = $state(false);
   let addAddr = $state('');
   let addCond = $state('');
 
+  // Only the latest listing is shown.  A listing is several round trips, so
+  // one started before a remove (the refresh after a repeated add, say) can
+  // finish after the remove's own refresh and would put the row back.
+  let listGen = 0;
   async function refresh() {
-    rows = await listBreakpoints();
+    const gen = ++listGen;
+    const list = await listBreakpoints();
+    if (gen === listGen) rows = list;
   }
 
   onMount(() => {
@@ -73,7 +85,7 @@
   }
 
   async function doRemove(row: Breakpoint) {
-    const ok = await removeBreakpoint(row.addr);
+    const ok = await removeBreakpoint(row.id);
     if (!ok) {
       showNotification('Failed to remove breakpoint', 'error');
       return;
@@ -81,12 +93,17 @@
     await refresh();
   }
 
+  // Real translations for the L:/P: labels (the core's, bus/mmu.ts).
+  let xl = $state<Record<number, Translation>>({});
+  $effect(() => {
+    const addrs = rows.map((r) => r.addr);
+    if (!machine.mmuEnabled || addrs.length === 0) return;
+    void translateMany(addrs).then((m) => (xl = m));
+  });
+
   function labelFor(addr: number): string {
     if (!machine.mmuEnabled) return `$${fmtHex32(addr)}`;
-    const r = mmuLookup(addr);
-    const phys = r.valid && r.phys !== undefined ? fmtHex32(r.phys) : '!';
-    const tag = r.valid ? (r.kind ?? 'PT') : 'INVALID';
-    return `L:$${fmtHex32(addr)}  P:$${phys}  ${tag}`;
+    return addrLabel(addr, xl[addr >>> 0]);
   }
 </script>
 
@@ -96,47 +113,49 @@
   onToggle={() => toggleSection('breakpoints')}
 >
   {#snippet actions()}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <span
-      role="button"
-      tabindex="-1"
+    <IconButton
       class="add-btn"
-      title="Add breakpoint"
-      onclick={(ev: MouseEvent) => {
-        ev.stopPropagation();
-        showAdd = true;
-      }}>+</span
-    >
+      icon="plus"
+      size="sm"
+      tone="panel"
+      rest="faded"
+      iconSize="md"
+      label="Add breakpoint"
+      onclick={() => (showAdd = true)}
+    />
   {/snippet}
   {#if showAdd}
     <div class="add-row">
-      <input
-        type="text"
+      <TextInput
         class="add-addr"
+        mono
+        widthCh={12}
         placeholder="address ($hex)"
         bind:value={addAddr}
         onkeydown={onAddrKey}
         aria-label="Breakpoint address"
       />
-      <input
-        type="text"
+      <TextInput
         class="add-cond"
+        mono
+        style="flex: 1 1 auto"
         placeholder="condition (optional)"
         bind:value={addCond}
         onkeydown={onAddrKey}
         aria-label="Breakpoint condition"
       />
-      <button type="button" class="btn" onclick={commitAdd}>Add</button>
-      <button type="button" class="btn" onclick={cancelAdd}>Cancel</button>
+      <Button variant="primary" class="btn" onclick={commitAdd}>Add</Button>
+      <Button class="btn" onclick={cancelAdd}>Cancel</Button>
     </div>
   {/if}
   {#if rows.length === 0 && !showAdd}
-    <p class="hint">No breakpoints. Click + to add one.</p>
+    <Hint class="hint" inset="section">No breakpoints. Click + to add one.</Hint>
   {:else}
     {#each rows as r (r.id)}
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="bp-row" oncontextmenu={(ev) => onRowContext(r, ev)}>
-        <span class="enable">{r.enabled ? '●' : '○'}</span>
+      <ListRow class="bp-row" density="compact" mono oncontextmenu={(ev) => onRowContext(r, ev)}>
+        <span class="enable" data-state={r.enabled ? 'on' : 'off'}
+          ><Icon name={r.enabled ? 'circle-filled' : 'circle-outline'} size="xs" /></span
+        >
         <span class="addr">{labelFor(r.addr)}</span>
         {#if r.condition}
           <span class="cond">if {r.condition}</span>
@@ -144,92 +163,29 @@
         {#if r.hits > 0}
           <span class="hits">{r.hits}×</span>
         {/if}
-      </div>
+      </ListRow>
     {/each}
   {/if}
 </CollapsibleSection>
 
 <style>
-  .add-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 18px;
-    height: 18px;
-    color: var(--gs-fg-muted);
-    cursor: pointer;
-    font-size: 14px;
-    line-height: 1;
-  }
-  .add-btn:hover {
-    color: var(--gs-fg-bright);
-  }
   .add-row {
     display: flex;
-    gap: 6px;
-    padding: 6px 12px;
-  }
-  .add-addr {
-    width: 12ch;
-  }
-  .add-cond {
-    flex: 1 1 auto;
-  }
-  .add-addr,
-  .add-cond {
-    background: var(--gs-input-bg);
-    color: var(--gs-input-fg);
-    border: 1px solid var(--gs-input-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 6px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
-    outline: none;
-  }
-  .add-addr:focus,
-  .add-cond:focus {
-    border-color: var(--gs-focus);
-  }
-  .btn {
-    background: transparent;
-    color: var(--gs-fg);
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 8px;
-    font-size: 11px;
-    cursor: pointer;
-  }
-  .btn:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.06));
-  }
-  .hint {
-    color: var(--gs-fg-muted);
-    font-size: 11px;
-    padding: 6px 12px;
-  }
-  .bp-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 2px 12px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
-    color: var(--gs-fg);
-  }
-  .bp-row:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.05));
+    gap: var(--gs-space-1-5);
+    padding: var(--gs-space-1-5) var(--gs-space-3);
   }
   .enable {
-    color: var(--gs-fg-muted);
-    width: 1ch;
+    display: inline-flex;
+    color: var(--gs-code-breakpoint-off);
+  }
+  .enable[data-state='on'] {
+    color: var(--gs-code-breakpoint);
   }
   .cond {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
     font-style: italic;
   }
   .hits {
-    color: var(--gs-fg-muted);
+    color: var(--gs-text-muted);
   }
 </style>

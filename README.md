@@ -3,7 +3,7 @@
 [![CI](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml/badge.svg)](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Granny Smith** is a browser-first Macintosh and Apple Lisa emulator spanning everything from Lisa 2 to Power Macintosh 9500 and more that 15 computer models in between.
+**Granny Smith** is a browser-first Macintosh and Apple Lisa emulator spanning 24 computer models, from the Lisa 2 to the beige Power Macintosh G3 and the Apple Network Server.
 
 > **See it:** [Demos of PlainTalk speech recognition, A/UX, Marathon, and more](GALLERY.md)
 
@@ -14,7 +14,7 @@
 
 ## Emulated Computer Models
 
-In all models, the original ROMs runs without patches, and all on-board devices the software touches are emulated in enough detail to allow original device drivers to work.
+All models run their original ROMs unpatched, with devices emulated closely enough that original drivers work.
 
 - **Apple Lisa 2 and Macintosh XL**
 - **Macintosh Plus**
@@ -25,19 +25,22 @@ In all models, the original ROMs runs without patches, and all on-board devices 
 - **Macintosh Quadra 840AV and Centris 660AV** (the "AV" family)
 - **Power Macintosh 6100, 7100, and 8100** (the "PDM" family)
 - **Power Macintosh 7500, 8500, and 9500** (the "TNT" family)
+- **Power Macintosh G3 (beige)** (the "Gossamer" family)
 - **Apple Network Server 500 and 700** ("Shiner" based on the "TNT" family)
 
 ## Emulated NuBus Cards
 
-NuBus display cards can be seated in any machine with free slots, including machines that already have built-in video. Each card runs either from a dump of the real declaration ROM or from a runtime-generated generic declaration ROM (no ROM dump is required); the generic ROM can also synthesize custom resolutions (e.g. 800×600)
+NuBus display cards fit any machine with free slots, even one with built-in video. Each card runs from a real declaration ROM dump or a runtime-generated generic ROM (no dump required), which can also synthesize custom resolutions (e.g. 800×600).
 
 - **Apple Display Card 8•24** (the standard "JMFB" card)
 - **Apple Display Card 24AC** (including hardware QuickDraw acceleration)
 - **Apple Display Card 8•24 GC** (including hardware QuickDraw acceleration)
 
-## Emulated PCI Cards
+## Emulated PCI Cards and Devices
 
 - **ATI Mach64 GX (Apple "Accelerated" PCI Card)** (including 2D hardware acceleration)
+- **ATI Rage Pro** (the beige G3's on-board video)
+- **3dfx Voodoo2** (full 3D with WebGPU acceleration)
 - **Cirrus Logic 54M30** (mainly used by ANS 700/500)
 - **Symbios Logic 53C825A** (fast/wide SCSI with the on-chip SCRIPTS DMA engine)
 
@@ -45,19 +48,21 @@ NuBus display cards can be seated in any machine with free slots, including mach
 
 The emulated computer models have been tested with various combinations of the following operating systems:
 
-- **Mac OS System 2 to 7.6**
+- **Mac OS System 2 to 9.2**
 - **A/UX 3.0.1**
 - **Lisa Office System 3.1**
 - **Lisa Xenix 3.0**
 - **Lisa MacWorks XL 3.0**
 - **Copland D11E4**
 - **MkLinux DR3**
-- **AIX 4.1.5 for Apple Network Servers**
+- **AIX 4.1.5**
+- **Windows NT 4.0 (PowerPC)** (on the Apple Network Server)
 
 ## Work In Progress
 
+- New pre-decoded interpreter/execution model
 - Power Macintosh 9500MP running BeOS
-- Voodoo2 PCI Card
+- ATI Rage 128
 
 ## Project Principles
 
@@ -65,14 +70,14 @@ Two principles guide the project: **stay true to the hardware**, and **keep it s
 
 True to the hardware means that compatibility is achieved by behaving like the real underlying hardware, not by patching around differences. Machines boot their original, unpatched ROMs, and every needed on-board device the software touches is modeled. Chip behaviour is pinned against Apple documentation, chip datasheets, Apple's own system software sources.
 
-Keeping it simple means for users that the emulator runs in the browser with no installation. For developers, it means a highly portable C99 core with no special runtime requirements, no JIT or code generators, relying on the compiler and modern hardware to acheive "enough" performance. Extensive automated tests keep verification simple, and the entire project has been created to be AI agent friendly.
+Keeping it simple means for users that the emulator runs in the browser with no installation. For developers, it means a highly portable C11 core with no special runtime requirements, no JIT or code generators, relying on the compiler and modern hardware to achieve "enough" performance. Extensive automated tests keep verification simple, and the entire project has been created to be AI agent friendly.
 
 ## Getting Started
 
 You will need a ROM image and a bootable system disk image for the machine you want to run.
 
 1. **[Open Granny Smith](https://pappadf.github.io/gs-pages/latest/)** in any modern browser
-2. On first launch, upload a ROM for your chosen model (anything from the Macintosh Plus to the Power Macintosh 8100, or a Lisa); it is persisted in the browser's OPFS storage, so you only need to do this once
+2. On first launch, upload a ROM for your chosen model (any of the models above); it is verified against a checksum table of every known ROM and persisted in the browser's OPFS storage, so you only need to do this once
 3. In the **Machine Configuration** dialog, pick a model, choose RAM, and attach disk images to the floppy / SCSI / CD slots (and display cards to NuBus slots)
 4. Click **Boot** - your session is checkpointed continuously in the background, so closing or reloading the tab won't lose state
 5. Once running, you can drag-and-drop additional disk images directly onto the screen to insert them at runtime
@@ -85,9 +90,8 @@ For build, test, and contribution instructions, see [CONTRIBUTING.md](CONTRIBUTI
 
 - **Safari** - known rendering and audio issues; not currently supported
 - **Firefox** - works partially; some compatibility problems remain
-- **Ethernet** - the Quadras' SONIC and the AV machines' MACE controllers are modeled at the register/self-test level but are not bridged to a network; networking is AppleTalk over LocalTalk (serial) only
-- **Sound input** - not modeled on any machine; the Quadras' EASC currently runs as an ASC-compatible core, and the AV machines' Singer/AWACS sound is not modeled at all
-- **LaserWriter** - printer is identified, but print jobs don't complete correctly
+- **Ethernet** - the Quadras' SONIC, the AV machines' MACE and the beige G3's BMAC controllers are modeled at the register level (BMAC down to its transmit/receive filters) but are not bridged to a network; networking is AppleTalk over LocalTalk (serial) only
+- **Sound input** - modeled on the AV machines (Singer): the browser microphone reaches the guest's Sound control panel and PlainTalk speech recognition. The PDM and TNT machines' AWACS plays sound but its input is not modeled, and the Quadras' EASC runs as an ASC-compatible core
 
 ## A Note on AI
 
@@ -98,10 +102,12 @@ There is no intention to track, at the file or commit level, which code was gene
 
 Sibling projects this one is built on:
 
-- **[powerpc-sail](https://github.com/pappadf/powerpc-sail)** - a formal, executable Sail specification of the PowerPC ISA, and the oracle the PowerPC vectors are generated from
-- **[powerpc-test](https://github.com/pappadf/powerpc-test)** - single-instruction test vectors for the PowerPC 601, generated from `powerpc-sail`; used here as the `third-party/powerpc-test` submodule
-- **[m68k-test](https://github.com/pappadf/m68k-test)** - the same idea for the 68k, generated from an `m68k-sail` model
-- **[peeler](https://github.com/pappadf/peeler)** - a C library for unpacking legacy Macintosh archive formats, which is what decompresses dropped-in disk images; vendored in-tree at [src/peeler](src/peeler)
+- **[powerpc-sail](https://github.com/pappadf/powerpc-sail)** - a formal, executable Sail specification of the PowerPC ISA
+- **[powerpc-test](https://github.com/pappadf/powerpc-test)** - single-instruction test vectors for the PowerPC 601, generated from `powerpc-sail`
+- **[m68k-sail](https://github.com/pappadf/m68k-sail)** - a formal, executable Sail specification of the 68000 family (68000 to 68040 and the 68881/68882 FPUs), the 68k counterpart of `powerpc-sail`
+- **[m68k-test](https://github.com/pappadf/m68k-test)** - the same idea for the 68k, generated from the `m68k-sail` model
+- **[peeler](https://github.com/pappadf/peeler)** - a C library for unpacking legacy Macintosh archive formats
+- **[emu-core-bench](https://github.com/pappadf/emu-core-bench)** - measured comparisons of interpreter-core designs
 
 ## Acknowledgments
 

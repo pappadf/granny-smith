@@ -14,7 +14,7 @@
 //      component fixture omitted the fixed slot the real profile carries, so
 //      the mocked test passed while the UI was wrong.
 //   2. Uploading a .prom died with "Failed to save": /opfs/images/prom was
-//      missing from the startup mkdir list and storage.cp does not create
+//      missing from the startup mkdir list and files.cp does not create
 //      parent directories.  MockOpfs seeds every category directory, so no
 //      mocked test could see it.
 //   3. A stored .prom was not re-offered on reload — the startup enumeration
@@ -31,15 +31,18 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
+import { gsCallInPage, gsEvalInPage } from '../helpers/web2-eval';
 
 const DATA = path.resolve(__dirname, '../../data');
 const TNT_ROM = path.join(DATA, 'roms', 'pm7500-pm8500-pm9500-96cd923d.rom');
 const MACH64_PROM = path.join(DATA, 'roms', 'mach64-gx-104-437584e0.prom');
 
-// The ROM is stored under its checksum, the .prom under its CRC-32 — both
-// content-addressed, so the upload filename never matters.
-const STORED_ROM = '/opfs/images/rom/96CD923D';
-const STORED_PROM = '/opfs/images/prom/437584e0';
+// The ROM is stored under its content id (its header sum plus the ConfigInfo
+// 64-bit sum), the .prom under its id (the PCIR vendor and device ids plus
+// the FCode header's own checksum) — both content-addressed, so the upload
+// filename never matters.
+const STORED_ROM = '/opfs/images/rom/96cd923d-c241cd82bf90797a';
+const STORED_PROM = '/opfs/images/prom/1002-4758-c6e8';
 
 // Upload a host file through the shipped generic ingest path — the Welcome
 // "Upload ROM..." button, which probes the file against every media type
@@ -60,7 +63,7 @@ async function openNewMachine(page: Page): Promise<void> {
   await model.selectOption('pm9500');
 }
 
-test('a 9500 is configured and booted on an uploaded PCI display card', async ({ page }) => {
+test('a 9500 boots its factory PCI display card once its ROM is uploaded', async ({ page }) => {
   test.setTimeout(240_000);
   await gotoWeb2(page);
 
@@ -72,15 +75,15 @@ test('a 9500 is configured and booted on an uploaded PCI display card', async ({
   // --- Before the .prom: the machine states what it needs. -----------------
   await openNewMachine(page);
 
-  // The 9500 has no built-in video and no NuBus video slots, so with no
-  // expansion ROM there is nothing installable.  It must say which ROM it
-  // wants — a "Video ROM" here would send the user hunting for the wrong
-  // file — and it must NOT offer the soldered Control/Chaos stand-in, which
-  // is emulator scaffolding rather than hardware the 9500 ever had.
-  await expect(page.locator('.form-help').filter({ hasText: 'needs a PCI expansion ROM' })).toBeVisible(
-    { timeout: 30_000 },
-  );
-  await expect(page.locator('#cfg-card')).toHaveCount(0);
+  // The 9500 has no built-in video, so with no expansion ROM there is no
+  // display card it can take.  The dialog says the machine will start with
+  // no screen, offers the card disabled with the ROM it needs -- an expansion
+  // ROM (.prom), not a video ROM -- and never offers the emulator's
+  // Control/Chaos stand-in, which is not hardware the 9500 ever had.
+  await expect(page.locator('.config-form')).toContainText('It will start with no screen', {
+    timeout: 30_000,
+  });
+  await expect(page.locator('.config-form')).toContainText('expansion ROM (.prom)');
   await expect(page.locator('.config-form')).not.toContainText('on-board video');
 
   // --- Upload the card's expansion ROM. ------------------------------------
@@ -93,19 +96,19 @@ test('a 9500 is configured and booted on an uploaded PCI display card', async ({
     page.locator('.toast .msg').filter({ hasText: "PCI expansion ROM for 'mach64_gx'" }),
   ).toBeVisible({ timeout: 60_000 });
 
-  // --- The card becomes selectable, and only the card. ---------------------
+  // --- The factory card is in the default configuration now. --------------
+  // The 9500 shipped with the Apple Accelerated PCI Graphics Card in slot A1;
+  // with its expansion ROM offered, the dialog opens with it seated (and the
+  // emulator's Control/Chaos stand-in nowhere).
   await openNewMachine(page);
-  const card = page.locator('#cfg-card');
-  await expect(card).toBeVisible({ timeout: 30_000 });
-  await expect(card.locator('option')).toHaveCount(1);
-  await expect(card.locator('option')).toHaveText(/Mach64 GX/);
-  await expect(card.locator('option', { hasText: 'on-board video' })).toHaveCount(0);
-  await expect(page.locator('.config-form')).not.toContainText('needs a PCI expansion ROM');
+  await expect(page.locator('.item-row[data-card="mach64_gx"]')).toHaveCount(1, { timeout: 30_000 });
+  await expect(page.locator('.config-form')).not.toContainText('It will start with no screen');
+  await expect(page.locator('.config-form')).not.toContainText('on-board video');
 
   // --- Start it.  This is the assertion the other three bugs hid behind. ---
   // Everything above is a picker rendering the right strings; only this
   // proves the boot document the dialog builds is one the core accepts.
-  const start = page.getByRole('button', { name: 'Start Machine' });
+  const start = page.getByRole('button', { name: 'Start', exact: true });
   await expect(start).toBeEnabled();
   await start.click();
   await expect(page.locator('.toast .msg').filter({ hasText: 'Machine started' })).toBeVisible({
@@ -141,50 +144,18 @@ test('an uploaded .prom is still offered after a reload', async ({ page }) => {
   if (await cont.isVisible().catch(() => false)) await cont.click();
 
   // Both files survived the reload, content-addressed.
-  await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
-  expect(await terminalEval(page, `storage.path_size("${STORED_PROM}")`)).toBe('32768');
+  expect(await gsEvalInPage(page, 'files.path_size', [STORED_PROM])).toBe(32768);
 
   // An "(auto)" boot — a document with pci_card= but NO prom= pick. Strict
   // resolution refuses it unless the stored file was offered at startup, so
   // this is the reload guard rather than a second copy of the UI test.
-  await terminalRun(
-    page,
-    `machine.boot model="pm9500" ram=32768 rom="${STORED_ROM}" pci_card="mach64_gx"`,
-  );
-  await page.waitForTimeout(3_000);
-  expect(await terminalEval(page, 'machine.id')).toBe('pm9500');
+  await gsCallInPage(page, 'machine.boot', {
+    model: 'pm9500',
+    ram: 32768,
+    rom: STORED_ROM,
+    pci_card: 'mach64_gx',
+  });
+  await expect.poll(() => gsEvalInPage(page, 'machine.id'), { timeout: 30_000 }).toBe('pm9500');
   // The card really is seated in socket A1, not merely a boot that survived.
-  expect(await terminalEval(page, 'machine.pci.slot[1].card.name')).toContain('Mach64 GX');
+  expect(await gsEvalInPage(page, 'machine.pci.slot[1].card.name')).toContain('Mach64 GX');
 });
-
-// --- terminal helpers (same shape as vrom-offer-ingest.spec.ts) ------------
-
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-}
-
-// Echo an expression under a unique key and return the printed value. The
-// typed line is echoed too, so values still starting with `$` are the input
-// echo rather than the result; poll until the evaluated line lands.
-let probeSeq = 0;
-async function terminalEval(page: Page, expr: string): Promise<string | null> {
-  const key = `ppi${++probeSeq}`;
-  await terminalRun(page, `echo "${key}=\${${expr}}"`);
-  for (let i = 0; i < 25; i++) {
-    await page.waitForTimeout(400);
-    const text = await page.locator('.xterm-rows').innerText();
-    // Capture to end of line, not the first whitespace-delimited token: card
-    // names have spaces in them ("ATI Mach64 GX"), and a \S+ probe silently
-    // truncates to "ATI" — which reads as a wrong value rather than a wrong
-    // probe. Trim, since xterm pads rows out to the terminal width.
-    const values = [...text.matchAll(new RegExp(`${key}=(.+)`, 'g'))]
-      .map((m) => m[1].trim())
-      .filter((v) => v.length > 0 && !v.startsWith('$'));
-    if (values.length) return values[values.length - 1];
-  }
-  return null;
-}

@@ -1,7 +1,6 @@
-# PPC (MPC601) FPU datapath unit test (proposal-powerpc-601-pdm.md §3.6,
-# Phase E): directed 601UM §5.4.7 semantics, a randomized host-double
-# oracle, interpreter-level CR1/trap integration, and the cross-host
-# corpus digest.  `make wasm-check` builds the same corpus sweep with
+# PPC (MPC601) FPU datapath unit test: directed 601UM §5.4.7 semantics, a
+# randomized host-double oracle, interpreter-level CR1/trap integration, and the
+# cross-host corpus digest.  `make wasm-check` builds the same corpus sweep with
 # emcc, runs it under node, and diffs the digests — the native-vs-WASM
 # byte-exactness acceptance (skipped with a note when emcc is absent).
 

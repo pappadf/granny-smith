@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+
 // SWIM3 floppy controller — sixteen byte-wide registers, addressed here by
 // INDEX (the PDM decodes them on $200 centres at $50F16000, Grand Central
 // on $10 centres at +$15000; each board translates).  This file is the register file,
@@ -20,16 +23,21 @@
 // Hardware", 2nd ed., and Apple, "Power Macintosh Computers" Developer
 // Note (1994), Table 3-7.  What the ROM's .Sony driver expects of the chip
 // was established by tracing the shipping driver's own register accesses
-// on this emulator (`debug.log swim3 5`), not from its source.
+// on this emulator (`log.set swim3 5`), not from its source.
 
 #include "swim3.h"
-#include "floppy.h"
 
 #include "floppy.h"
 #include "log.h"
 #include "scheduler.h"
 
-LOG_USE_CATEGORY_NAME("swim3");
+// One log category for the whole subsystem -- drive mechanics AND every
+// controller.  `log.set swim 10` on an SE/30 used to turn on the ISM register
+// trace but NOT stepping, motor, /TKO, /TACH, GCR encode/flush or eject,
+// because those live in floppy.c under a different name; the same split hid the
+// DBDMA ring from `log.set swim3 10` on a 7500.  Level convention: 1-2 state
+// changes, 3-5 per-operation, 6+ per-register/per-byte.
+LOG_USE_CATEGORY_NAME("floppy");
 
 // Register indices (offset >> 9)
 #define R_DATA    0
@@ -77,14 +85,15 @@ static bool drive1_selected(swim3_t *sw) {
 // The {SEL,CA2,CA1,CA0} drive-register address currently addressed: SEL is
 // mode bit 5 (HeadSelect), CA0-2 are Phase bits 0-2 (§5).
 static uint32_t drive_addr(swim3_t *sw) {
-    return ((sw->mode & SWIM3_M_HEADSEL) ? 8u : 0u) | (sw->phase & 7u);
+    return ((sw->mode & SWIM3_M_HEADSEL) ? 8u : 0u) | (sw->phase & SWIM3_PH_CA_MASK);
 }
 
 // The drive's sense response for the currently addressed register (§5.2).
 // Reading a sense address also ROUTES a head: addresses 4 / 12 select head
 // 0 / 1 for data transfer, and during a GCR format the driver uses 1 / 15
 // instead, because those read back as 1 while it writes from the index.
-static uint8_t drive_sense(swim3_t *sw) {
+// An inspection (`peek`) reports the same sense but routes no head.
+static uint8_t drive_sense(swim3_t *sw, bool peek) {
     if (!drive1_selected(sw))
         return 1; // no second drive: RdData floats high at every address
 
@@ -97,7 +106,7 @@ static uint8_t drive_sense(swim3_t *sw) {
     case 0: // rDirPrev — current step-direction latch
         return sw->step_dir;
     case 1: // rStepOff — 1 = step complete (seeks retire on their own event)
-        if (sw->mode & SWIM3_M_FORMAT)
+        if ((sw->mode & SWIM3_M_FORMAT) && !peek)
             sw->xfer_side = 0; // GCRFmtSelDecode routes head 0 here
         return 1;
     case 2: // rMotorOff
@@ -105,7 +114,8 @@ static uint8_t drive_sense(swim3_t *sw) {
     case 3: // rEjectOn — the emulated drive has no eject button
         return 0;
     case 4: // rRdData0 — route head 0
-        sw->xfer_side = 0;
+        if (!peek)
+            sw->xfer_side = 0;
         return 0;
     case 5: // rMFMDrive — 1 = SuperDrive
         return 1;
@@ -122,14 +132,15 @@ static uint8_t drive_sense(swim3_t *sw) {
     case 11: // rNoTachPulse (GCR) / rIndexPulse (MFM)
         return (uint8_t)swim3_index_pulse(sw);
     case 12: // rRdData1 — route head 1
-        sw->xfer_side = 1;
+        if (!peek)
+            sw->xfer_side = 1;
         return 0;
     case 13: // rMFMModeOn
         return sw->mfm_mode;
     case 14: // rNotReady — 0 = ready: media present and the spindle turning
         return (present && fd && floppy_drive_motor_on(fd, FD)) ? 0 : 1;
     case 15: // rNotRevised (no disk) / r1MegMedia: 1 = DD media, 0 = HD
-        if (sw->mode & SWIM3_M_FORMAT)
+        if ((sw->mode & SWIM3_M_FORMAT) && !peek)
             sw->xfer_side = 1; // GCRFmtSelDecode routes head 1 here
         return swim3_media_is_hd(sw) ? 0 : 1;
     default:
@@ -212,11 +223,10 @@ void swim3_raise(swim3_t *sw, uint8_t bits) {
 // when the count reaches zero.  The ERS leaves the read-back of a running
 // count and write-0-to-stop unstated; both are modelled, because Copland's
 // floppy plugin POLLS the running count (SwimIIISmallWait loads N+1 and
-// spins until the register reads zero — measured, see
-// gs-docs/projects/copland re/bsfloppypdm.dis.txt), which is only
-// meaningful if the live count reads back.  The 7.5 .Sony driver never
-// touches the register (it uses the Time Manager), so this path is
-// exercised by Copland alone.
+// spins until the register reads zero — measured from the plugin's
+// disassembly), which is only meaningful if the live count reads back.  The
+// 7.5 .Sony driver never touches the register (it uses the Time Manager),
+// so this path is exercised by Copland alone.
 
 static void swim3_timer_event(void *source, uint64_t data) {
     (void)data;
@@ -265,14 +275,18 @@ void swim3_register_events(swim3_t *sw) {
 
 // === Register file ==========================================================
 
-static uint8_t swim3_read_reg(swim3_t *sw, unsigned reg) {
+// A register read: the guest's, or an inspection's (`peek`), which returns the
+// same value but clears neither read-to-clear register (ERROR, INTR, and the
+// IRQ line with INTR) and routes no head through the handshake's sense read.
+static uint8_t swim3_read_reg(swim3_t *sw, unsigned reg, bool peek) {
     uint8_t v;
     switch (reg) {
     case R_TIMER:
         return swim3_timer_read(sw);
     case R_ERROR: // read-to-clear
         v = sw->error;
-        sw->error = 0;
+        if (!peek)
+            sw->error = 0;
         return v;
     case R_PARAM:
         return sw->param;
@@ -290,7 +304,7 @@ static uint8_t swim3_read_reg(swim3_t *sw, unsigned reg) {
         // model that drove only bit 2 answered every Open Firmware sense
         // with 0 — "drive present, disk in" by luck, "single-sided" by the
         // same luck, and the firmware's open ended in BAD DISK.
-        v = drive_sense(sw) ? (H_RDDATA | H_SENSE) : 0;
+        v = drive_sense(sw, peek) ? (H_RDDATA | H_SENSE) : 0;
         if ((sw->mode & SWIM3_M_ENABLE_INTS) && (sw->intr & sw->intmask))
             v |= H_INT_PENDING;
         if (sw->error)
@@ -298,8 +312,10 @@ static uint8_t swim3_read_reg(swim3_t *sw, unsigned reg) {
         return v;
     case R_INTR: // read-to-clear — and the IRQ line drops with it
         v = sw->intr;
-        sw->intr = 0;
-        swim3_update_irq(sw);
+        if (!peek) {
+            sw->intr = 0;
+            swim3_update_irq(sw);
+        }
         return v;
     case R_STEP:
         return sw->step;
@@ -321,9 +337,44 @@ static uint8_t swim3_read_reg(swim3_t *sw, unsigned reg) {
 }
 
 uint8_t swim3_read(swim3_t *sw, unsigned reg) {
-    uint8_t v = swim3_read_reg(sw, reg);
+    uint8_t v = swim3_read_reg(sw, reg, false);
     LOG(5, "rd reg %2u %-9s = $%02X", reg, REG_RD_NAMES[reg & 15], v);
     return v;
+}
+
+uint8_t swim3_peek(swim3_t *sw, unsigned reg) {
+    return swim3_read_reg(sw, reg, true);
+}
+
+// Return the chip to its power-on state (ERS v1.2 §3.10).
+//
+// Two things drive this: the guest's self-clearing SoftReset bit in the
+// Setup register, and the board's /RESET net -- the SWIM3 has a hardware
+// `Reset/` input like any other part, and it is the floppy CONTROLLER on
+// PDM and TNT, which is the role `floppy_reset` fills for every other
+// family (system_reset_common_devices calls it "the SWIM of that list",
+// against the Guide's /RESET destinations "MC68000, VIA, SWIM, SCC, SCSI,
+// BBU").  Until this existed the SWIM3 was the one floppy controller in the
+// tree that survived a machine reset.
+//
+// The bound pointers survive, because they are wiring rather than state --
+// the drive, the scheduler and the DMA backend are still attached to the
+// same board after a reset.  The three non-zero seeds are the chip's
+// documented power-on register values.
+void swim3_reset(swim3_t *sw) {
+    if (!sw)
+        return;
+    swim3_t z = {0};
+    z.ctrack = 0xFF;
+    z.csect = 0x7F;
+    z.sector = 0xFF;
+    z.fd = sw->fd;
+    z.sched = sw->sched;
+    z.be = sw->be;
+    swim3_timer_stop(sw);
+    *sw = z;
+    swim3_engine_update(sw);
+    swim3_update_irq(sw);
 }
 
 void swim3_write(swim3_t *sw, unsigned reg, uint8_t value) {
@@ -337,7 +388,7 @@ void swim3_write(swim3_t *sw, unsigned reg, uint8_t value) {
         break;
     case R_PHASE: {
         // LSTRB is bit 3; a rising edge strobes the addressed drive latch.
-        uint8_t rose = (uint8_t)(value & ~sw->phase & 0x08u);
+        uint8_t rose = (uint8_t)(value & ~sw->phase & SWIM3_PH_LSTRB);
         sw->phase = value;
         route_head(sw);
         if (rose)
@@ -345,20 +396,10 @@ void swim3_write(swim3_t *sw, unsigned reg, uint8_t value) {
         break;
     }
     case R_SETUP:
-        if (value & 0x80u) {
-            // SoftReset (self-clearing): registers return to their reset
-            // state (§3.10) and any running engine stops with them.
-            swim3_t z = {0};
-            z.ctrack = 0xFF;
-            z.csect = 0x7F;
-            z.sector = 0xFF;
-            z.fd = sw->fd;
-            z.sched = sw->sched;
-            z.be = sw->be;
-            swim3_timer_stop(sw);
-            *sw = z;
-            swim3_engine_update(sw);
-            swim3_update_irq(sw);
+        if (value & SWIM3_S_SOFTRESET) {
+            // SoftReset (self-clearing).  Identical to the hardware Reset/
+            // pin, so both go through one function.
+            swim3_reset(sw);
         } else {
             sw->setup = value;
         }

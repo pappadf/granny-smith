@@ -2,9 +2,9 @@
 // Copyright (c) pappadf
 
 // ppc_mmu.c
-// The 601/604 MMU front end (proposal-powerpc-601-pdm.md §3.5; TNT
-// proposal §4.3): T=1 I/O-controller segments, BAT match, and the hashed
-// page table search, with three software caches in front of the full walk:
+// The 601/604 MMU front end: T=1 I/O-controller segments, BAT match, and the
+// hashed page table search, with three software caches in front of the full
+// walk:
 //
 //   1. the user SoA fast path — with MSR[PR]=1 and MSR[DT]=1 the active
 //      maps are g_user_read/write, which hold LOGICAL page fills made
@@ -136,6 +136,17 @@ static void user_soa_invalidate_all(void) {
     g_fill_track_overflow = false;
 }
 
+// The machine's memory map was selected: the translation caches and the fill
+// tracker describe whichever map was selected before, so the tracker goes
+// back to its conservative state (the next invalidation zeroes everything)
+// and the caches refill.
+void ppc_mmu_caches_unknown(void) {
+    g_fill_track_count = 0;
+    g_fill_track_overflow = true;
+    memset(g_xtlb, 0, sizeof(g_xtlb));
+    ppc_mmu_flush_fetch();
+}
+
 // Memory-logpoint install/uninstall reshaped the watch arrays: drop the
 // translation TLB too — a stale entry would keep rewriting a now-watched
 // EA to physical before ppc_dxlate_slow's keep-logical check can run.
@@ -226,6 +237,18 @@ typedef struct {
     bool w_ok; // store permitted with no further walk side effects
 } xl_out_t;
 
+// What the debugger's translation wants beyond xl_out_t: how the address
+// resolved, what the access key permits, how large a region resolves the
+// same way, and the step trace (mmu_trace.h).  The real translations pass
+// NULL, so the hot paths only test a pointer.
+typedef struct {
+    mmu_trace_t *trace; // may be NULL
+    const char *bat_file; // the BAT file consulted, for the trace: "bat", "ibat", "dbat"
+    const char *via; // "identity", "bat", "segment", "page"
+    bool readable, writable; // the protection the queried key sees
+    uint32_t span_bits; // log2 of the uniform region around the address
+} xl_debug_t;
+
 // PP/key evaluation (601UM Table 6-7).
 // key=0: PP 00/01/10 rw, 11 ro.  key=1: 00 none, 01 ro, 10 rw, 11 ro.
 static inline bool pp_allows(uint32_t key, uint32_t pp, bool store) {
@@ -236,12 +259,30 @@ static inline bool pp_allows(uint32_t key, uint32_t pp, bool store) {
     return !store && pp != 0u;
 }
 
+// Record a BAT hit in the debugger's trace: which pair, its two words, the
+// protection key and PP, the block size and the translated address.
+static void bat_trace_hit(mmu_trace_step_t *ts, int index, uint32_t bu, uint32_t bl, uint32_t key, uint32_t pp,
+                          uint32_t size, uint32_t pa) {
+    if (!ts)
+        return;
+    mmu_trace_uint(ts, "index", (uint32_t)index);
+    mmu_trace_hex(ts, "desc", bu);
+    mmu_trace_hex(ts, "desc_lo", bl);
+    mmu_trace_uint(ts, "key", key);
+    mmu_trace_uint(ts, "pp", pp);
+    mmu_trace_hex(ts, "size", size);
+    mmu_trace_hex(ts, "phys", pa);
+    mmu_trace_outcome(ts, "hit");
+}
+
 // 601 BAT match + protection (601UM §6.7, Tables 6-11/6-12): BATU =
 // BLPI[0:14] | WIM[25:27] | Ks[28] | Ku[29] | PP[30:31]; BATL =
 // PBN[0:14] | V[25] | BSM[26:31].  Returns true when a BAT matched
 // (result in *res); protection key = Ks supervisor / Ku user.
 static bool bat_xlate(const uint32_t *batu, const uint32_t *batl, uint32_t ea, bool user, bool store, xl_out_t *out,
-                      xl_result_t *res) {
+                      xl_result_t *res, xl_debug_t *dbg) {
+    mmu_trace_step_t *ts = dbg ? mmu_trace_step(dbg->trace, "bat") : NULL;
+    mmu_trace_str(ts, "name", dbg ? dbg->bat_file : NULL);
     for (int i = 0; i < 4; i++) {
         uint32_t bl = batl[i];
         if (!(bl & 0x40u))
@@ -252,6 +293,14 @@ static bool bat_xlate(const uint32_t *batu, const uint32_t *batl, uint32_t ea, b
         uint32_t bu = batu[i];
         uint32_t key = user ? ((bu >> 2) & 1u) : ((bu >> 3) & 1u);
         uint32_t pp = bu & 3u;
+        if (dbg) {
+            uint32_t pa = ((bl & 0xFFFE0000u) & cmp_mask) | (ea & ~cmp_mask);
+            dbg->via = "bat";
+            dbg->readable = pp_allows(key, pp, false);
+            dbg->writable = pp_allows(key, pp, true);
+            dbg->span_bits = 17; // every BAT block boundary is 128 KB aligned
+            bat_trace_hit(ts, i, bu, bl, key, pp, ~cmp_mask + 1u, pa);
+        }
         if (!pp_allows(key, pp, store)) {
             *res = XL_PROT;
             return true;
@@ -280,7 +329,9 @@ static inline bool bat604_pp_allows(uint32_t pp, bool store) {
 // BRPN[0:14] | WIMG[25:28] | PP[30:31].  Validity is per-mode (Vs
 // supervisor / Vp user), block sizes 128 KB (BL=0) through 256 MB.
 static bool bat604_xlate(const uint32_t *batu, const uint32_t *batl, uint32_t ea, bool user, bool store, xl_out_t *out,
-                         xl_result_t *res) {
+                         xl_result_t *res, xl_debug_t *dbg) {
+    mmu_trace_step_t *ts = dbg ? mmu_trace_step(dbg->trace, "bat") : NULL;
+    mmu_trace_str(ts, "name", dbg ? dbg->bat_file : NULL);
     for (int i = 0; i < 4; i++) {
         uint32_t bu = batu[i];
         if (!(bu & (user ? 1u : 2u)))
@@ -290,6 +341,14 @@ static bool bat604_xlate(const uint32_t *batu, const uint32_t *batl, uint32_t ea
             continue;
         uint32_t bl = batl[i];
         uint32_t pp = bl & 3u;
+        if (dbg) {
+            uint32_t pa = ((bl & 0xFFFE0000u) & cmp_mask) | (ea & ~cmp_mask);
+            dbg->via = "bat";
+            dbg->readable = bat604_pp_allows(pp, false);
+            dbg->writable = bat604_pp_allows(pp, true);
+            dbg->span_bits = 17; // every BAT block boundary is 128 KB aligned
+            bat_trace_hit(ts, i, bu, bl, user ? 1u : 0u, pp, ~cmp_mask + 1u, pa);
+        }
         if (!bat604_pp_allows(pp, store)) {
             *res = XL_PROT;
             return true;
@@ -315,13 +374,20 @@ static inline uint8_t *phys_host(uint32_t pa) {
     return host ? host + (pa & PAGE_MASK) : NULL;
 }
 
+// True when the physical page holding a PTE group is host-writable.  Mirrors
+// the check mmu_write_physical_uint8 makes on the 68K side.
+static inline bool ppc_pte_page_writable(uint32_t pa) {
+    uint32_t pg = pa >> PAGE_SHIFT;
+    return pg < g_page_count && g_page_table[pg].host_base && g_page_table[pg].writable;
+}
+
 // Hashed page table search (601UM §6.9): SDR1 = HTABORG[0:15] |
 // HTABMASK[23:31]; hash1 = low 19 VSID bits XOR page index; PTEG PA =
 // ORG[0:6] || (ORG[7:15] | (hash[0:8] & MASK)) || hash[9:18] || 000000.
 // On a match R is set unconditionally (even on protection violation,
 // §6.8.4) and C on permitted stores, written back to the in-RAM PTE.
 static xl_result_t htab_search(ppc_t *p, uint32_t ea, uint32_t sr, bool user, bool store, bool nosideffect,
-                               xl_out_t *out) {
+                               xl_out_t *out, xl_debug_t *dbg) {
     uint32_t vsid = sr & 0x00FFFFFFu;
     uint32_t page_idx = (ea >> 12) & 0xFFFFu;
     uint32_t api = (ea >> 22) & 0x3Fu;
@@ -331,12 +397,26 @@ static xl_result_t htab_search(ppc_t *p, uint32_t ea, uint32_t sr, bool user, bo
     // PTE word 0 to match: V | VSID[1:24] | H | API[26:31]
     uint32_t match = 0x80000000u | (vsid << 7) | api;
 
+    if (dbg) {
+        dbg->via = "page";
+        dbg->span_bits = 12; // one page
+    }
     for (int h = 0; h < 2; h++) {
         uint32_t hs = (h ? ~hash : hash) & 0x7FFFFu;
         uint32_t pteg = htaborg | ((((hs >> 10) & 0x1FFu) & htabmask) << 16) | ((hs & 0x3FFu) << 6);
+        mmu_trace_step_t *ts = dbg ? mmu_trace_step(dbg->trace, "pteg") : NULL;
+        if (ts) {
+            mmu_trace_str(ts, "name", h ? "secondary" : "primary");
+            mmu_trace_hex(ts, "addr", pteg);
+            mmu_trace_hex(ts, "hash", hs);
+            mmu_trace_uint(ts, "api", api);
+        }
         uint8_t *pte = phys_host(pteg);
-        if (!pte)
+        if (!pte) {
+            mmu_trace_str(ts, "reason", "outside RAM");
+            mmu_trace_outcome(ts, h ? "fault" : "miss");
             continue; // PTEG outside RAM: nothing to find there
+        }
         uint32_t want = match | (h ? 0x40u : 0u);
         for (int s = 0; s < 8; s++, pte += 8) {
             if (LOAD_BE32(pte) != want)
@@ -344,10 +424,36 @@ static xl_result_t htab_search(ppc_t *p, uint32_t ea, uint32_t sr, bool user, bo
             uint32_t lo = LOAD_BE32(pte + 4);
             uint32_t key = user ? ((sr >> 29) & 1u) : ((sr >> 30) & 1u);
             bool allowed = pp_allows(key, lo & 3u, store);
+            if (dbg) {
+                dbg->readable = pp_allows(key, lo & 3u, false);
+                dbg->writable = pp_allows(key, lo & 3u, true);
+                if (ts) {
+                    mmu_trace_uint(ts, "slot", (uint32_t)s);
+                    mmu_trace_hex(ts, "desc", want);
+                    mmu_trace_hex(ts, "desc_lo", lo);
+                    mmu_trace_uint(ts, "key", key);
+                    mmu_trace_uint(ts, "pp", lo & 3u);
+                    mmu_trace_uint(ts, "wimg", (lo >> 3) & 0xFu);
+                    mmu_trace_bool(ts, "r", (lo & 0x100u) != 0);
+                    mmu_trace_bool(ts, "c", (lo & 0x80u) != 0);
+                    mmu_trace_hex(ts, "phys", (lo & 0xFFFFF000u) | (ea & 0xFFFu));
+                    mmu_trace_outcome(ts, "hit");
+                }
+            }
             // R set even when protection denies (601UM §6.8.4); C only
             // when the store is permitted.  Suppressed for the
             // side-effect-free debug translate.
-            if (!nosideffect) {
+            // The R/C write-back goes straight through the host pointer, which
+            // phys_host resolves without consulting page_entry_t.writable.  A
+            // page table placed in ROM -- a guest bug, but a reachable one --
+            // therefore wrote into the ROM buffer, and that buffer is mirrored
+            // across the whole ROM window, so one stray byte poisons every
+            // later ROM read for the session, machine.rom.identify included.
+            // Update the in-memory PTE only when the page it lives on is
+            // actually writable; the translation itself still proceeds, since
+            // R/C are a hint to the OS, not a precondition.  (The 68K side has
+            // had the equivalent guard all along, in mmu_write_physical_uint8.)
+            if (!nosideffect && ppc_pte_page_writable(pteg)) {
                 uint32_t nlo = lo | 0x100u | ((store && allowed) ? 0x80u : 0u);
                 if (nlo != lo) {
                     memory_host_written(pte + 4, 4); // a PTEG that is also cached code (absurd, but honest)
@@ -363,6 +469,10 @@ static xl_result_t htab_search(ppc_t *p, uint32_t ea, uint32_t sr, bool user, bo
             // w_ok only once C is set and protection allows writes.
             out->w_ok = (lo & 0x80u) != 0 && pp_allows(key, lo & 3u, true);
             return XL_OK;
+        }
+        if (ts) {
+            mmu_trace_str(ts, "reason", "no matching PTE");
+            mmu_trace_outcome(ts, h ? "fault" : "miss");
         }
     }
     return XL_NOTFOUND;
@@ -380,6 +490,40 @@ static inline bool tseg_memory_forced(uint32_t sr, uint32_t ea, xl_out_t *out) {
     return true;
 }
 
+// Record the segment register consult in the debugger's trace, and the
+// answer when the segment decides it (T=1).  `searching` says whether a T=0
+// segment leads on to the page table (translation on) or not.
+static void seg_trace(xl_debug_t *dbg, uint32_t ea, uint32_t sr, bool user, bool searching) {
+    bool t = (sr & 0x80000000u) != 0;
+    mmu_trace_step_t *ts = mmu_trace_step(dbg->trace, "segment");
+    if (ts) {
+        mmu_trace_str(ts, "name", "sr");
+        mmu_trace_uint(ts, "index", ea >> 28);
+        mmu_trace_hex(ts, "desc", sr);
+        mmu_trace_bool(ts, "t", t);
+        mmu_trace_bool(ts, "ks", (sr >> 30) & 1u);
+        mmu_trace_bool(ts, "kp", (sr >> 29) & 1u);
+        mmu_trace_uint(ts, "key", user ? ((sr >> 29) & 1u) : ((sr >> 30) & 1u));
+    }
+    if (!t) {
+        mmu_trace_hex(ts, "vsid", sr & 0x00FFFFFFu);
+        mmu_trace_outcome(ts, searching ? "next" : "miss");
+        return;
+    }
+    uint32_t buid = (sr >> 20) & 0x1FFu;
+    mmu_trace_hex(ts, "buid", buid);
+    dbg->via = "segment";
+    dbg->readable = dbg->writable = true; // memory-forced bypasses protection
+    dbg->span_bits = 28; // the whole segment
+    if (buid == 0x07Fu) {
+        mmu_trace_hex(ts, "phys", ((sr & 0xFu) << 28) | (ea & 0x0FFFFFFFu));
+        mmu_trace_outcome(ts, "hit");
+    } else {
+        mmu_trace_str(ts, "reason", "direct-store");
+        mmu_trace_outcome(ts, "fault");
+    }
+}
+
 // Full translation for one access.  `translation_on` reflects MSR[DT] (or
 // MSR[IT] for fetches); `ifetch` selects the 604's IBAT file over the
 // DBATs (the 601's unified BATs serve both sides).
@@ -392,37 +536,58 @@ static inline bool tseg_memory_forced(uint32_t sr, uint32_t ea, xl_out_t *out) {
 // EA = PA, nothing consulted; with it on, BATs take precedence and the
 // segment (T=1 direct-store, else the hashed table) is reached only on a
 // BAT miss.
+//
+// `dbg` (the debugger's translation; NULL everywhere else) collects how the
+// address resolved and, through its trace, each register and PTE group the
+// search consulted, in the order consulted.
 static xl_result_t xlate(ppc_t *p, uint32_t ea, bool user, bool store, bool ifetch, bool translation_on,
-                         bool nosideffect, xl_out_t *out) {
+                         bool nosideffect, xl_out_t *out, xl_debug_t *dbg) {
     if (ppc_is_604(p)) {
         if (!translation_on) { // real addressing mode
             out->pa = ea;
             out->wimg = 1u;
             out->w_ok = true;
+            if (dbg) {
+                dbg->via = "identity";
+                dbg->span_bits = 32;
+            }
             return XL_OK;
         }
         xl_result_t res;
-        if (bat604_xlate(ifetch ? p->ibatu_cs : p->dbatu, ifetch ? p->ibatl_cs : p->dbatl, ea, user, store, out, &res))
+        if (dbg)
+            dbg->bat_file = ifetch ? "ibat" : "dbat";
+        if (bat604_xlate(ifetch ? p->ibatu_cs : p->dbatu, ifetch ? p->ibatl_cs : p->dbatl, ea, user, store, out, &res,
+                         dbg))
             return res;
         uint32_t sr = p->sr[ea >> 28];
+        if (dbg)
+            seg_trace(dbg, ea, sr, user, true);
         if (sr & 0x80000000u)
             return tseg_memory_forced(sr, ea, out) ? XL_OK : XL_IOSEG;
-        return htab_search(p, ea, sr, user, store, nosideffect, out);
+        return htab_search(p, ea, sr, user, store, nosideffect, out, dbg);
     }
 
     uint32_t sr = p->sr[ea >> 28];
+    if (dbg)
+        seg_trace(dbg, ea, sr, user, translation_on);
     if (sr & 0x80000000u) // T=1: I/O controller interface segment
         return tseg_memory_forced(sr, ea, out) ? XL_OK : XL_IOSEG;
     if (!translation_on) { // direct translation: EA = PA, no protection
         out->pa = ea;
         out->wimg = 1u; // WIM = 001 (§6.6)
         out->w_ok = true;
+        if (dbg) {
+            dbg->via = "identity";
+            dbg->span_bits = 28; // this segment: another may be T=1
+        }
         return XL_OK;
     }
     xl_result_t res;
-    if (bat_xlate(ifetch ? p->ibatu_cs : p->batu, ifetch ? p->ibatl_cs : p->batl, ea, user, store, out, &res))
+    if (dbg)
+        dbg->bat_file = "bat"; // the 601's BATs are unified
+    if (bat_xlate(ifetch ? p->ibatu_cs : p->batu, ifetch ? p->ibatl_cs : p->batl, ea, user, store, out, &res, dbg))
         return res;
-    return htab_search(p, ea, sr, user, store, nosideffect, out);
+    return htab_search(p, ea, sr, user, store, nosideffect, out, dbg);
 }
 
 // ============================================================
@@ -521,6 +686,30 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
 
     // Translation TLB (serves supervisor accesses and user pages that
     // could not be SoA-filled).
+    // The tag keys on EA and privilege only -- deliberately NOT on MSR[DT] --
+    // and ppc_update_active_maps flushes just the FETCH cache on mtmsr/rfi, so
+    // entries here survive a DT toggle.  That would be architecturally
+    // observable in general (MPCFPE32B Table 2-23 requires only a
+    // context-synchronizing instruction AFTER mtmsr(DR)), but it is unreachable
+    // in this model, and the reason is itself architectural:
+    //
+    //   - DT=0, non-T segment: ppc_dxlate returns before consulting the xtlb at
+    //     all, using EA as PA.
+    //   - DT=0, T=1 segment (601 only): 601UM 6.5.2.2 -- "the determination of
+    //     whether the address maps to an I/O controller interface segment
+    //     occurs PRIOR TO the checking of MSR[DT].  Therefore, I/O controller
+    //     interface address translation occurs INDEPENDENTLY OF MSR[DT] for
+    //     data accesses."  xlate() implements exactly that ordering (the T-bit
+    //     test precedes the translation-enabled test), so DT=0 and DT=1 yield
+    //     the same PA and a cross-DT hit is not a stale answer.
+    //   - 604, DT=0: ppc_recompute_sr_t_mask forces sr_t_mask = 0 (PEM 7.2 --
+    //     the 604 in real addressing mode never consults a segment), so every
+    //     DT=0 access short-circuits above.
+    //
+    // Everything else that would invalidate the key already flushes: mtsr, the
+    // BAT writes and SDR1 all call ppc_mmu_invalidate_all.  Adding DT to the
+    // tag would cost tag space and buy nothing.  The invariant lives in two
+    // other files, which is why it is written down here.
     uint32_t tag = (ea & 0xFFFFF000u) | (user ? 2u : 0u) | 1u;
     xtlb_entry_t *te = &g_xtlb[(ea >> PAGE_SHIFT) & (XTLB_SIZE - 1)];
     if (!lp_watched && te->tag == tag && (!store || te->w_ok)) {
@@ -531,7 +720,7 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
     }
 
     xl_out_t out;
-    xl_result_t res = xlate(p, ea, user, store, false, dt, false, &out);
+    xl_result_t res = xlate(p, ea, user, store, false, dt, false, &out, NULL);
     if (res == XL_IOSEG) {
         // Non-memory-forced T=1: the atomics/external-control class takes
         // a DSI with DSISR bit 5 on both models.  Past that they diverge:
@@ -623,7 +812,7 @@ int ppc_dxlate_dcbz(ppc_t *p, uint32_t iw, uint32_t *addr) {
         return 2; // T=1 I/O controller: no-op (§6.10.6)
 
     xl_out_t out;
-    xl_result_t res = xlate(p, ea, user, true, false, dt, false, &out);
+    xl_result_t res = xlate(p, ea, user, true, false, dt, false, &out, NULL);
     if (res == XL_IOSEG)
         return 2; // 604 direct-store after BAT miss: cache-op no-op
     if (res == XL_PROT) {
@@ -666,6 +855,12 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
     uint32_t page = pc & ~(uint32_t)PAGE_MASK;
     bool user = (p->msr & PPC_MSR_PR) != 0;
     uint32_t pa = pc;
+    // LE-mode fetch munge (PEM §3.2.2): the instruction word is read from
+    // pc ^ 4.  Cached in the window for the inline fast path; every MSR
+    // write flushes the window, so a stale value cannot survive a mode
+    // change.  Translation is unaffected (the munge stays inside the page).
+    const uint32_t le_xor = (p->msr & PPC_MSR_LE) ? 4u : 0u;
+    g_ppc_fetch.le_xor = le_xor;
 
     if (p->msr & PPC_MSR_IT) {
         uint32_t tag = page | (user ? 2u : 0u) | 1u;
@@ -675,11 +870,11 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
             g_ppc_fetch.span = MEM_PAGE_SIZE;
             g_ppc_fetch.host_adjust = fe->host_adjust;
             g_ppc_fetch.blk = NULL; // the predecoded loop re-derives the block
-            *iw = LOAD_BE32((uint8_t *)(fe->host_adjust + pc));
+            *iw = LOAD_BE32((uint8_t *)(fe->host_adjust + (pc ^ le_xor)));
             return true;
         }
         xl_out_t out;
-        xl_result_t res = xlate(p, pc, user, false, true, true, false, &out);
+        xl_result_t res = xlate(p, pc, user, false, true, true, false, &out, NULL);
         if (res == XL_IOSEG) {
             // T=1 fetch: the 601 raises ISI with NO SRR1 status bits
             // (quirk, Table 6-3 footnote); the 604 sets the architected
@@ -720,7 +915,7 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
             g_ppc_fetch.span = MEM_PAGE_SIZE;
             g_ppc_fetch.host_adjust = adj;
             g_ppc_fetch.blk = NULL;
-            *iw = LOAD_BE32((uint8_t *)(adj + pc));
+            *iw = LOAD_BE32((uint8_t *)(adj + (pc ^ le_xor)));
             return true;
         }
     } else {
@@ -733,7 +928,7 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
             g_ppc_fetch.span = MEM_PAGE_SIZE;
             g_ppc_fetch.host_adjust = (uintptr_t)host - page;
             g_ppc_fetch.blk = NULL;
-            *iw = LOAD_BE32((uint8_t *)(g_ppc_fetch.host_adjust + pc));
+            *iw = LOAD_BE32((uint8_t *)(g_ppc_fetch.host_adjust + (pc ^ le_xor)));
             return true;
         }
     }
@@ -743,7 +938,7 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
     // semantics stay honest.  No window: every fetch here re-resolves.
     g_ppc_fetch.span = 0;
     g_ppc_fetch.blk = NULL;
-    *iw = memory_read_uint32_slow(pa & g_address_mask);
+    *iw = memory_read_uint32_slow((pa ^ le_xor) & g_address_mask);
     return true;
 }
 
@@ -755,38 +950,63 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
 // disassembler view): no R/C updates, no fills, no exceptions.
 // data=true follows the data-access rules (MSR[DT]), else fetch rules.
 uint32_t ppc_mmu_translate_debug(ppc_t *p, uint32_t ea, bool data, bool *ok) {
-    if (ok)
-        *ok = true;
+    return ppc_mmu_translate_debug_ex(p, ea, data, (p->msr & PPC_MSR_PR) != 0, ok, NULL);
+}
+
+// The debugger's translation (machine.cpu.mmu.translate / walk / map):
+// side-effect-free, following xlate's decision order, with the protection
+// the queried key sees and, given a trace, every register and PTE group the
+// search read.  A protection failure still resolves (retried with the
+// supervisor key, as debug reads always have); only a true miss is invalid.
+void ppc_mmu_debug_translate(ppc_t *p, uint32_t ea, bool data, bool user, mmu_xlate_t *x, mmu_trace_t *trace) {
     bool on = data ? (p->msr & PPC_MSR_DT) != 0 : (p->msr & PPC_MSR_IT) != 0;
-    if (!data && !on)
-        return ea; // fetch with IT off is always direct
-    bool user = (p->msr & PPC_MSR_PR) != 0;
+    if (!data && !on) {
+        mmu_xlate_identity(x, ea); // fetch with IT off is always direct
+        return;
+    }
+    xl_debug_t dbg = {.trace = trace, .via = "page", .readable = true, .writable = true, .span_bits = 12};
     xl_out_t out;
-    xl_result_t res = xlate(p, ea, user, false, !data, on, true, &out);
-    if (res == XL_OK)
-        return out.pa;
-    // Protection failures still resolve for debug reads (retry with the
-    // supervisor key); only a true miss reports failure.
-    if (res == XL_PROT && xlate(p, ea, false, false, !data, on, true, &out) == XL_OK)
-        return out.pa;
+    xl_result_t res = xlate(p, ea, user, false, !data, on, true, &out, &dbg);
+    if (res == XL_PROT && xlate(p, ea, false, false, !data, on, true, &out, NULL) == XL_OK)
+        res = XL_OK;
+    x->valid = res == XL_OK;
+    x->phys = x->valid ? out.pa : ea;
+    x->via = dbg.via;
+    x->space = NULL;
+    x->access = mmu_access(dbg.readable, dbg.writable);
+    x->span_bits = dbg.span_bits;
+    // A 604 BAT miss narrows a T=1 segment's or real mode's uniform region to
+    // one BAT granule: a BAT elsewhere in the segment would win there.
+    if (ppc_is_604(p) && on && dbg.span_bits > 17)
+        x->span_bits = 17;
+}
+
+// ppc_mmu_translate_debug with the privilege given explicitly and, in *via,
+// how the address resolved -- "identity", "bat", "segment" (a T=1
+// direct-store segment) or "page" -- following xlate's decision order.
+uint32_t ppc_mmu_translate_debug_ex(ppc_t *p, uint32_t ea, bool data, bool user, bool *ok, const char **via) {
+    mmu_xlate_t x;
+    ppc_mmu_debug_translate(p, ea, data, user, &x, NULL);
     if (ok)
-        *ok = false;
-    return ea;
+        *ok = x.valid;
+    if (via)
+        *via = x.via;
+    return x.phys;
 }
 
 // The 68k world's view: user data context with translation forced on,
 // independent of where the sprint stopped (the nanokernel relocates
 // logical low memory once the framebuffer claims physical 0, so a
 // supervisor-context read of a 68k global lands in the frame buffer —
-// debug.mac must always resolve against the user mapping; §3.9e).
+// debug.mac must always resolve against the user mapping).
 uint32_t ppc_mmu_translate_mac(ppc_t *p, uint32_t ea, bool *ok) {
     xl_out_t out;
     if (ok)
         *ok = true;
-    xl_result_t res = xlate(p, ea, true, false, false, true, true, &out);
+    xl_result_t res = xlate(p, ea, true, false, false, true, true, &out, NULL);
     if (res == XL_OK)
         return out.pa;
-    if (res == XL_PROT && xlate(p, ea, false, false, false, true, true, &out) == XL_OK)
+    if (res == XL_PROT && xlate(p, ea, false, false, false, true, true, &out, NULL) == XL_OK)
         return out.pa;
     if (ok)
         *ok = false;

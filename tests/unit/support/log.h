@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 #ifndef LOG_H
 #define LOG_H
 /* Minimal no-op logging API for unit tests.
@@ -56,6 +58,18 @@ static inline void log_vemit(const log_category_t *cat, int level, const char *f
     (void)ap;
 }
 
+/* Indentation control, as in the real log.h */
+static inline void log_indent_set(int spaces) {
+    (void)spaces;
+}
+static inline int log_indent_get(void) {
+    return 0;
+}
+static inline void log_indent_adjust(int delta) {
+    (void)delta;
+}
+#define LOG_INDENT(delta) log_indent_adjust((delta))
+
 /* Macros and predicates (no-op) */
 static inline int log_would_log(const log_category_t *cat, int level) {
     (void)cat;
@@ -64,13 +78,13 @@ static inline int log_would_log(const log_category_t *cat, int level) {
 }
 
 #define LOG_USE_CATEGORY(catptr)                                                                                       \
-    static inline log_category_t *_log_get_local_category(void) {                                                      \
+    static inline __attribute__((unused)) log_category_t *_log_get_local_category(void) {                              \
         return (catptr);                                                                                               \
     }
 
 #define LOG_USE_CATEGORY_NAME(name)                                                                                    \
     static log_category_t _log_dummy_cat;                                                                              \
-    static inline log_category_t *_log_get_local_category(void) {                                                      \
+    static inline __attribute__((unused)) log_category_t *_log_get_local_category(void) {                              \
         (void)(name);                                                                                                  \
         return &_log_dummy_cat;                                                                                        \
     }
@@ -79,16 +93,38 @@ static inline int log_would_log(const log_category_t *cat, int level) {
 #define LOG_COMPILE_MIN_LEVEL 0
 #endif
 
+/* Never-called sinks for LOG / LOG_WITH: taking the arguments type-checks them
+   (format attribute included) and counts them as used, as the real macros do */
+static inline void log_noop_(int level, const char *fmt, ...)
+#ifdef __GNUC__
+    __attribute__((format(printf, 2, 3)))
+#endif
+    ;
+static inline void log_noop_(int level, const char *fmt, ...) {
+    (void)level;
+    (void)fmt;
+}
+static inline void log_noop_with_(const log_category_t *cat, int level, const char *fmt, ...)
+#ifdef __GNUC__
+    __attribute__((format(printf, 3, 4)))
+#endif
+    ;
+static inline void log_noop_with_(const log_category_t *cat, int level, const char *fmt, ...) {
+    (void)cat;
+    (void)level;
+    (void)fmt;
+}
+
+/* The arguments are compiled but never evaluated (if (0)) */
 #define LOG_WITH(cat, level, fmt, ...)                                                                                 \
     do {                                                                                                               \
-        (void)(cat);                                                                                                   \
-        (void)(level);                                                                                                 \
-        (void)(fmt);                                                                                                   \
+        if (0)                                                                                                         \
+            log_noop_with_((cat), (level), fmt, ##__VA_ARGS__);                                                        \
     } while (0)
 #define LOG(level, fmt, ...)                                                                                           \
     do {                                                                                                               \
-        (void)(level);                                                                                                 \
-        (void)(fmt);                                                                                                   \
+        if (0)                                                                                                         \
+            log_noop_((level), fmt, ##__VA_ARGS__);                                                                    \
     } while (0)
 
 #ifdef __cplusplus

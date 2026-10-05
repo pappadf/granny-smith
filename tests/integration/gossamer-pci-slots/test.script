@@ -1,0 +1,61 @@
+# Beige G3 PCI slots (docs/internals/machines/gossamer/gossamer.md §1).
+#
+# One Grackle bus: the three sockets A1/B1/C1 at IDSEL 13/14/15 with their
+# INTA lines on Heathrow sources 23/24/25, Heathrow at device 16 and the
+# on-board Rage Pro at device 18 ("slot" F1, source 22)
+# (docs/reference/machines/g3/g3.md §3.2, §4.6).
+#
+# Config-port note: Grackle's CONFIG_ADDR ($FEC00000) and CONFIG_DATA
+# ($FEE00000) are little-endian and peek/poke are raw big-endian views, so
+# every literal is byte-swapped.  CONFIG_ADDR = $80000000 | dev << 11 | reg
+# (MPC106 user's manual, address map B): device 13 register 0 is
+# $80006800, poked as $00680080.
+
+# --- The slot table, as the object model and the profile see it. -------------
+assert catalog.profile("pmg3dt").capabilities.pci "pmg3dt must advertise PCI"
+assert machine.pci.slot[1].firmware_name == "A1" "slot 1 label"
+assert machine.pci.slot[1].device == 13 "A1 IDSEL"
+assert machine.pci.slot[1].irq == 23 "A1 interrupt line"
+assert machine.pci.slot[2].firmware_name == "B1" "slot 2 label"
+assert machine.pci.slot[2].device == 14 "B1 IDSEL"
+assert machine.pci.slot[2].irq == 24 "B1 interrupt line"
+assert machine.pci.slot[3].firmware_name == "C1" "slot 3 label"
+assert machine.pci.slot[3].device == 15 "C1 IDSEL"
+assert machine.pci.slot[3].irq == 25 "C1 interrupt line"
+assert machine.pci.slot[4].firmware_name == "F1" "the on-board graphics' slot name"
+assert machine.pci.slot[4].device == 18 "the Rage Pro's IDSEL"
+assert machine.pci.slot[4].irq == 22 "the Rage Pro's interrupt source"
+assert machine.pci.slot[4].card.name == "ATI 3D Rage Pro" "the Rage Pro is seated from the slot table"
+
+# --- The config-cycle contract: empty sockets read all-ones. -----------------
+machine.memory.poke.l(0xFEC00000, 0x00680080)   # device 13 (A1)
+assert machine.memory.peek.l(0xFEE00000) == 0xFFFFFFFF "empty socket A1 must read all-ones"
+machine.memory.poke.l(0xFEE00000, 0x12345678)
+assert machine.memory.peek.l(0xFEE00000) == 0xFFFFFFFF "a write to an empty socket must vanish"
+machine.memory.poke.l(0xFEC00000, 0x00700080)   # device 14 (B1)
+assert machine.memory.peek.l(0xFEE00000) == 0xFFFFFFFF "empty socket B1 must read all-ones"
+machine.memory.poke.l(0xFEC00000, 0x00780080)   # device 15 (C1)
+assert machine.memory.peek.l(0xFEE00000) == 0xFFFFFFFF "empty socket C1 must read all-ones"
+machine.memory.poke.l(0xFEC00000, 0x00800080)   # device 16: Heathrow
+assert machine.memory.peek.l(0xFEE00000) == 0x6B101000 "Heathrow: vendor $106B device $0010"
+machine.memory.poke.l(0xFEC00000, 0x00900080)   # device 18: the Rage Pro
+assert machine.memory.peek.l(0xFEE00000) == 0x02105047 "Rage Pro: vendor $1002 device $4750"
+machine.memory.poke.l(0xFEC00000, 0x00000000)
+
+# --- A mach64 GX in socket A1. ------------------------------------------------
+assert catalog.proms.offer("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom") "the GX's expansion ROM must register as an offer"
+machine.boot model="pmg3dt" ram=65536 rom="${$ROM}" pci_card="mach64_gx"
+assert machine.pci.slot[1].card.name == "ATI Mach64 GX" "the card is seated in A1"
+assert machine.pci.slot[1].card.config.interrupt_line == 23 "the interrupt line follows the slot table"
+machine.memory.poke.l(0xFEC00000, 0x00680080)
+assert machine.memory.peek.l(0xFEE00000) == 0x02105847 "A1: vendor $1002 device $4758"
+machine.memory.poke.l(0xFEC00000, 0x00700080)
+assert machine.memory.peek.l(0xFEE00000) == 0xFFFFFFFF "B1 stays empty"
+# Open Firmware probes the socket, sizes the card's 16 MB BAR0 and assigns
+# it at the bottom of the PCI memory window.
+scheduler.run 700000000
+machine.memory.poke.l(0xFEC00000, 0x10680080)
+assert machine.memory.peek.l(0xFEE00000) == 0x00000081 "Open Firmware must assign BAR0 at $81000000"
+machine.memory.poke.l(0xFEC00000, 0x00000000)
+echo "gossamer-pci-slots: topology, empty sockets and the A1 card assignment hold"
+quit

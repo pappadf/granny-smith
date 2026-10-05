@@ -1,5 +1,7 @@
-// Code-page coherence unit tests (proposal-predecoded-interpreter-cores.md
-// Phase A, §3.6).  A predecoded block makes its host page a "code page":
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+// Code-page coherence unit tests (memory.h "Code-page coherence",
+// docs/internals/core/cpu/predecode.md).  A predecoded block makes its host page a "code page":
 // the page's WRITE SoA entries must vanish for every logical alias, stay
 // vanished across every refill site, and every store into the page — guest
 // or host-side — must reach the invalidation hook before it lands.
@@ -36,7 +38,7 @@ static void reset_hook(void) {
 
 // Plus layout: 4 MB RAM at 0 (mirrored up to the ROM), 128 KB ROM at $400000.
 static memory_map_t *make_plus(void) {
-    memory_map_t *mem = memory_map_init(24, 0x400000, 0x020000, NULL);
+    memory_map_t *mem = memory_map_init(24, 0x400000, 0x020000, MEMORY_BUS_ERR_NONE, NULL, NULL);
     memory_populate_pages(mem, 0x400000, 0x580000);
     memory_populate_ram_mirror(mem, 0x400000 - 0x400000 + 0x100000 * 0, 0); // no-op range
     return mem;
@@ -175,7 +177,7 @@ TEST(test_debug_write_reports) {
 // suppresses the write entry of the other, and a store through the alias
 // invalidates the same host bytes.
 TEST(test_alias_mirror) {
-    memory_map_t *mem = memory_map_init(24, 0x100000, 0x020000, NULL); // 1 MB RAM
+    memory_map_t *mem = memory_map_init(24, 0x100000, 0x020000, MEMORY_BUS_ERR_NONE, NULL, NULL); // 1 MB RAM
     memory_populate_pages(mem, 0x400000, 0x580000);
     memory_populate_ram_mirror(mem, 0x100000, 0x400000); // 3 aliases of RAM
     reset_hook();
@@ -201,7 +203,7 @@ TEST(test_alias_mirror) {
 // marked physical page (and plants the read entry), and rebuild after a
 // logpoint uninstall declines too.
 TEST(test_refill_sites_honour_mark) {
-    memory_map_t *mem = memory_map_init(32, 0x400000, 0x080000, NULL);
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x080000, MEMORY_BUS_ERR_NONE, NULL, NULL);
     memory_populate_pages(mem, 0x40800000, 0x40900000);
     uint8_t *ram = ram_native_pointer(mem, 0);
     mmu_state_t *mmu =
@@ -237,7 +239,7 @@ TEST(test_refill_sites_honour_mark) {
 // The MMU-enabled slow write path completes a store to a marked page
 // through the physical host pointer (the write entry stays suppressed).
 TEST(test_mmu_slow_write_lands) {
-    memory_map_t *mem = memory_map_init(32, 0x400000, 0x080000, NULL);
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x080000, MEMORY_BUS_ERR_NONE, NULL, NULL);
     memory_populate_pages(mem, 0x40800000, 0x40900000);
     uint8_t *ram = ram_native_pointer(mem, 0);
     mmu_state_t *mmu =

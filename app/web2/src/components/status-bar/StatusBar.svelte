@@ -1,11 +1,18 @@
 <script lang="ts">
   import { machine, type MachineStatus } from '@/state/machine.svelte';
-  import { activity } from '@/state/activity.svelte';
+  import { activity, bridgeBusy } from '@/state/activity.svelte';
+  import { printer, reopenPrintedDocument } from '@/state/printer.svelte';
   import { setCapsLock } from '@/bus/emulator';
-  import DriveActivity from './DriveActivity.svelte';
+  import { shortModel } from '@/lib/machine';
   import Icon from '../common/Icon.svelte';
+  import ToggleChip from '../ui/ToggleChip.svelte';
+  import DriveLight from '../ui/DriveLight.svelte';
+  import StatusDot from '../ui/StatusDot.svelte';
+  import ActivityDot from '../ui/ActivityDot.svelte';
+  import { openContextMenu } from '../common/ContextMenu.svelte';
+  import { revealInSystem } from '@/state/system.svelte';
 
-  // Spec §11: hidden before first machine start. Also surfaces during
+  // Hidden before first machine start. Also surfaces during
   // pre-boot uploads so the user can see large-file progress in the
   // status bar.
   const visible = $derived(machine.status !== 'no-machine' || activity.current !== null);
@@ -15,15 +22,12 @@
     running: 'Running',
     paused: 'Paused',
     stopped: 'Stopped',
+    crashed: 'Crashed',
   };
 
   const desc = $derived(
     machine.model && machine.ram ? `${shortModel(machine.model)} · ${machine.ram}` : '',
   );
-
-  function shortModel(model: string): string {
-    return model.replace(/^Macintosh\s+/i, '');
-  }
 
   // Accelerated-mode CPU speed readout. The core pushes the applied multiplier
   // (1x in every other mode), so gate on the mode too. The governor's ladder
@@ -47,6 +51,39 @@
     const t = setTimeout(() => (cpFlash = false), 180);
     return () => clearTimeout(t);
   });
+  // The printer (LaserWriter or ImageWriter): what it is doing while a job runs (the core's
+  // status, state/printer), then a button that reopens the last document.
+  const printerJob = $derived(printer.job ? ` “${printer.job}”` : '');
+  const printerLabel = $derived(
+    printer.activity === 'starting'
+      ? 'Printer starting up'
+      : printer.activity === 'busy'
+        ? `Printing${printerJob}`
+        : printer.activity === 'printing'
+          ? `Printing${printerJob} · page ${printer.page}`
+          : printer.activity === 'error'
+            ? `Print failed: ${printer.error}`
+            : '',
+  );
+  // Right-click on an ImageWriter's item: its settings, in the SYSTEM tab.
+  function printerMenu(ev: MouseEvent, name: string): void {
+    if (!name.startsWith('ImageWriter')) return;
+    ev.preventDefault();
+    openContextMenu(
+      [{ label: 'Printer settings', action: () => revealInSystem('machine.imagewriter') }],
+      ev.clientX,
+      ev.clientY,
+    );
+  }
+  const printerBusy = $derived(
+    printer.activity === 'starting' ||
+      printer.activity === 'busy' ||
+      printer.activity === 'printing',
+  );
+
+  // The bar's state: no machine reads as idle.
+  const barState = $derived(machine.status === 'no-machine' ? 'idle' : machine.status);
+
   const cpTitle = $derived(
     machine.checkpoint
       ? `Last background checkpoint ${new Date(machine.checkpoint.at).toLocaleTimeString()} (${machine.checkpoint.ms.toFixed(1)} ms)`
@@ -55,89 +92,142 @@
 </script>
 
 {#if visible}
-  <div
-    class="gs-statusbar"
-    class:running={machine.status === 'running'}
-    class:paused={machine.status === 'paused'}
-    class:stopped={machine.status === 'stopped'}
-    role="status"
-  >
+  <div class="gs-statusbar" data-state={barState} role="status">
     <div class="statusbar-left">
-      <div class="sb-item sb-state" title="Machine state">
-        <span class="dot"></span><span class="label">{stateLabel[machine.status]}</span>
+      <div class="gs-statusbar__item sb-item sb-state" title="Machine state">
+        {#if barState === 'crashed'}<Icon name="error" size="sm" />{:else}<StatusDot
+            class="dot"
+            state={barState}
+          />{/if}<span class="label">{stateLabel[machine.status]}</span>
       </div>
       {#if showSpeed}
         <div
-          class="sb-item sb-speed"
-          title="CPU running at {speedLabel} the original Mac's speed (Accelerated mode); games, sound and animation stay real-time"
+          class="gs-statusbar__item sb-item sb-speed"
+          title="CPU running at {speedLabel} the original Mac's speed (Faster mode); games, sound and animation stay real-time"
         >
-          <Icon name="chip" size={13} /><span class="label">{speedLabel}</span>
+          <Icon name="chip" size="sm" /><span class="label">{speedLabel}</span>
         </div>
       {/if}
       {#if machine.status === 'running' && machine.mips > 0}
         <div
-          class="sb-item sb-mips"
+          class="gs-statusbar__item sb-item sb-mips"
           title="Emulated CPU throughput: {machine.mips.toFixed(
             1,
-          )} million instructions/second ({machine.ticksPerSecond.toFixed(0)} ticks/s)"
+          )} million instructions/second ({machine.ticksPerSecond.toFixed(
+            0,
+          )} ticks/s); tick {machine.tickP50Ms.toFixed(1)} ms typical, {machine.tickMaxMs.toFixed(
+            1,
+          )} ms worst; bridge request {machine.pollMaxMs.toFixed(1)} ms worst"
         >
           <span class="label">{machine.mips.toFixed(1)} MIPS</span>
         </div>
       {/if}
-      <DriveActivity label="HD" title="Hard disk" activity={machine.driveActivity.hd} />
-      <DriveActivity label="FD" title="Floppy disk" activity={machine.driveActivity.fd} />
-      <DriveActivity label="CD" title="CD-ROM" activity={machine.driveActivity.cd} />
-      <DriveActivity label="CP" title={cpTitle} activity={cpFlash ? 'write' : 'idle'} />
-      <button
-        class="sb-item sb-caps"
-        class:on={machine.capsLock}
+      {#if machine.drives.hd}
+        <DriveLight label="HD" title="Hard disk" activity={machine.driveActivity.hd} />
+      {/if}
+      {#if machine.drives.fd}
+        <DriveLight label="FD" title="Floppy disk" activity={machine.driveActivity.fd} />
+      {/if}
+      {#if machine.drives.cd}
+        <DriveLight label="CD" title="CD-ROM" activity={machine.driveActivity.cd} />
+      {/if}
+      <DriveLight label="CP" title={cpTitle} activity={cpFlash ? 'write' : 'idle'} />
+      <ToggleChip
+        class="gs-statusbar__item sb-item sb-caps"
+        pressed={machine.capsLock}
+        label="Caps Lock"
         title="Caps Lock latch — a mechanically locking key, kept down across restarts. Latch it and Restart to boot Mac OS 8 (Copland) from a volume that has it installed."
-        aria-pressed={machine.capsLock}
-        onclick={() => void setCapsLock(!machine.capsLock)}
-      >
-        <span class="label">⇪</span>
-      </button>
+        icon="arrow-up"
+        onToggle={() => void setCapsLock(!machine.capsLock)}
+      />
     </div>
     <div class="statusbar-right">
-      {#if activity.current}
-        <div class="sb-item sb-upload" title="{activity.verb} in progress">
-          <span class="upload-spinner"></span>
-          <span class="upload-label">{activity.verb}: {activity.current}</span>
+      {#if bridgeBusy.path}
+        <div
+          class="gs-statusbar__item sb-item sb-busy"
+          title="The emulator is still working on a request"
+        >
+          <span class="label">Busy: {bridgeBusy.path} ({bridgeBusy.seconds} s)</span>
         </div>
       {/if}
-      <div class="sb-item sb-desc">{desc}</div>
+      {#if printerLabel}
+        <div
+          class="gs-statusbar__item sb-item sb-printer"
+          class:error={printer.activity === 'error'}
+          data-state={printer.activity === 'error' ? 'error' : undefined}
+          title="{printer.name} — {printer.status}"
+          role="status"
+          oncontextmenu={(ev) => printerMenu(ev, printer.name)}
+        >
+          {#if printerBusy}<ActivityDot
+              class="upload-spinner"
+            />{:else if printer.activity === 'error'}<Icon name="error" size="sm" />{/if}
+          <span class="printer-label">{printerLabel}</span>
+        </div>
+      {:else if printer.document}
+        <button
+          class="gs-statusbar__item gs-statusbar__button sb-item sb-printer sb-printed"
+          title="Show the last printed document ({printer.document.name})"
+          onclick={reopenPrintedDocument}
+          oncontextmenu={(ev) => printer.document && printerMenu(ev, printer.document.printer)}
+        >
+          <Icon name="file" size="sm" /><span class="printer-label"
+            >{printer.document.title || printer.document.name}</span
+          >
+        </button>
+      {/if}
+      {#if activity.current}
+        <div class="gs-statusbar__item sb-item sb-upload" title="{activity.verb} in progress">
+          <ActivityDot class="upload-spinner" />
+          <span class="upload-label">{activity.verb}: {activity.current}</span>
+          {#if activity.detail}<span class="upload-detail">{activity.detail}</span>{/if}
+          {#if activity.cancel}
+            <button
+              type="button"
+              class="gs-statusbar__button upload-cancel"
+              title="Cancel"
+              aria-label="Cancel {activity.verb.toLowerCase()}"
+              onclick={() => activity.cancel?.()}>&times;</button
+            >
+          {/if}
+        </div>
+      {/if}
+      <div class="gs-statusbar__item sb-item sb-desc">{desc}</div>
     </div>
   </div>
 {/if}
 
 <style>
   .gs-statusbar {
-    flex: 0 0 22px;
-    height: 22px;
+    flex: 0 0 var(--gs-statusbar-height);
+    height: var(--gs-statusbar-height);
     display: flex;
     align-items: stretch;
-    background: var(--gs-sb-idle-bg);
-    color: var(--gs-sb-idle-fg);
-    font-size: 12px;
-    line-height: 22px;
-    border-top: 1px solid var(--gs-border);
+    background: var(--gs-statusbar-bg-idle);
+    color: var(--gs-statusbar-fg-idle);
+    font-size: var(--gs-statusbar-font-size);
+    line-height: var(--gs-statusbar-height);
+    border-top: var(--gs-border-width) solid var(--gs-border);
     transition:
-      background-color 0.15s ease-out,
-      color 0.15s ease-out;
-    padding: 0 4px;
+      background-color var(--gs-duration-quick) var(--gs-ease-out),
+      color var(--gs-duration-quick) var(--gs-ease-out);
+    padding: 0 var(--gs-space-1);
     user-select: none;
   }
-  .gs-statusbar.running {
-    background: var(--gs-sb-running);
-    color: var(--gs-sb-fg-running);
+  .gs-statusbar:not([data-state='idle']) {
+    color: var(--gs-statusbar-fg-active);
   }
-  .gs-statusbar.paused {
-    background: var(--gs-sb-paused);
-    color: var(--gs-sb-fg-running);
+  .gs-statusbar[data-state='running'] {
+    background: var(--gs-statusbar-bg-running);
   }
-  .gs-statusbar.stopped {
-    background: var(--gs-sb-stopped);
-    color: var(--gs-sb-fg-running);
+  .gs-statusbar[data-state='paused'] {
+    background: var(--gs-statusbar-bg-paused);
+  }
+  .gs-statusbar[data-state='stopped'] {
+    background: var(--gs-statusbar-bg-stopped);
+  }
+  .gs-statusbar[data-state='crashed'] {
+    background: var(--gs-statusbar-bg-crashed);
   }
   .statusbar-left,
   .statusbar-right {
@@ -148,90 +238,73 @@
     flex: 1 1 auto;
     min-width: 0;
   }
-  .sb-caps {
+  .statusbar-right {
+    flex-direction: row-reverse;
+  }
+  /* Items are plain text; only the buttons (the caps chip, the printed
+     document) light up under the pointer. */
+  .gs-statusbar__item {
+    display: flex;
+    align-items: center;
+    gap: var(--gs-space-1);
+    padding: 0 var(--gs-space-2);
+  }
+  .gs-statusbar__button {
+    cursor: pointer;
+  }
+  .gs-statusbar__button:hover {
+    background: var(--gs-statusbar-item-hover);
+  }
+  .gs-statusbar__button:focus-visible {
+    outline: var(--gs-focus-width) solid var(--gs-focus-ring);
+    outline-offset: var(--gs-focus-offset);
+  }
+  .sb-speed {
+    font-variant-numeric: var(--gs-numeric);
+  }
+  .sb-speed :global(.icon) {
+    opacity: var(--gs-statusbar-icon-opacity);
+  }
+  .sb-mips {
+    font-variant-numeric: var(--gs-numeric);
+    opacity: var(--gs-statusbar-meta-opacity);
+  }
+  .sb-upload {
+    gap: var(--gs-space-1-5);
+    font-size: var(--gs-font-size-xs);
+  }
+  .sb-printer {
+    gap: var(--gs-space-1-5);
+    font-size: var(--gs-font-size-xs);
+  }
+  .sb-printer[data-state='error'] {
+    color: var(--gs-statusbar-printer-error);
+  }
+  .sb-printed {
     background: none;
     border: none;
     color: inherit;
     font: inherit;
+    font-size: var(--gs-font-size-xs);
     line-height: inherit;
-    padding: 0 7px;
+  }
+  .upload-detail {
+    opacity: var(--gs-statusbar-meta-opacity);
+    white-space: nowrap;
+  }
+  .upload-cancel {
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
     cursor: pointer;
-    opacity: 0.4;
-    border-radius: 3px;
-    align-self: center;
-    height: 18px;
+    padding: 0 var(--gs-space-1);
   }
-  .sb-caps.on {
-    opacity: 1;
-    font-weight: 700;
-    background: rgba(255, 255, 255, 0.28);
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
-  }
-  .statusbar-right {
-    flex-direction: row-reverse;
-  }
-  .sb-item {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 0 8px;
-    cursor: pointer;
-  }
-  .sb-item:hover {
-    background: var(--gs-sb-hover);
-  }
-  .sb-state .dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--gs-fg-dim);
-    display: inline-block;
-  }
-  .gs-statusbar.running .sb-state .dot {
-    background: #89d185;
-  }
-  .gs-statusbar.paused .sb-state .dot {
-    background: #cca700;
-  }
-  .gs-statusbar.stopped .sb-state .dot {
-    background: #f14c4c;
-  }
-  .sb-speed {
-    gap: 4px;
-    font-variant-numeric: tabular-nums;
-  }
-  .sb-speed :global(.icon) {
-    opacity: 0.85;
-  }
-  .sb-mips {
-    font-variant-numeric: tabular-nums;
-    opacity: 0.75;
-  }
-  .sb-upload {
-    gap: 6px;
-    font-size: 11px;
-  }
-  .upload-spinner {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: currentColor;
-    opacity: 0.6;
-    animation: gs-upload-pulse 1s ease-in-out infinite;
-  }
+  .printer-label,
   .upload-label {
     max-width: 28ch;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  @keyframes gs-upload-pulse {
-    0%,
-    100% {
-      opacity: 0.3;
-    }
-    50% {
-      opacity: 1;
-    }
   }
 </style>

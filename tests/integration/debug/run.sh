@@ -20,7 +20,7 @@ echo "Running headless with test.script; capturing output to $LOG"
 GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     rom="$ROM_PATH" \
     script=test.script \
-    --speed=max \
+    --speed=turbo \
     >"$LOG" 2>&1 || true
 
 rc=0
@@ -41,7 +41,7 @@ expect_not() {
     fi
 }
 
-# Introspection: methods("find") prints a JSON list of the four
+# Introspection: methods("debug.find") prints a JSON list of the four
 # sub-command method names.
 expect "str" "methods(\"find\") should list 'str'"
 expect "bytes" "methods(\"find\") should list 'bytes'"
@@ -51,14 +51,20 @@ expect "long" "methods(\"find\") should list 'long'"
 # Typed find results: the script echoes stable markers derived from
 # the returned V_LIST values ($0040A714 is where "Apple" lives in the
 # Plus ROM mirror).
-expect 'str-first=0040a714' "find.str first hit should be the known ROM offset"
-expect 'word-first=0040a714' "find.word should hit at the 'Apple' offset"
-expect 'long-first=0040a714' "find.long should hit at the 'Apple' offset"
-expect 'nop-count=' "find.bytes should report its hit count"
+expect 'str-first=0040a714' "debug.find.str first hit should be the known ROM offset"
+expect 'word-first=0040a714' "debug.find.word should hit at the 'Apple' offset"
+expect 'long-first=0040a714' "debug.find.long should hit at the 'Apple' offset"
+expect 'nop-count=' "debug.find.bytes should report its hit count"
 
 # Error paths are exercised in-script with try(...) asserts; if any of
 # them regressed, an ASSERT FAILED marker appears.
 expect_not "ASSERT FAILED" "all in-script assertions must pass"
+
+# Breakpoint entries (dedupe, meta.indices, enabled, remove by id): the
+# section ends with a marker, so an assert that aborts it cannot pass.
+expect "bp-contract-ok" "breakpoint entry contract section must run to its end"
+expect "irq-entry-probe-ok" "probes on an interrupt handler's first instruction fire on every entry"
+expect "step-matches-run-ok" "debug.step N must match scheduler.run N across VBLs"
 
 # Format specs in ${expr:fmt}. The literal $ is doubled here so the
 # shell that runs run.sh doesn't expand the value before grep sees it.

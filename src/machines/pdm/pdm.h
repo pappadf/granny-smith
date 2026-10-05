@@ -3,27 +3,28 @@
 
 // pdm.h
 // The PDM family (Power Macintosh 6100/7100/8100) — the first machines whose
-// main CPU is the PowerPC 601 (proposal-powerpc-601-pdm.md Phase C).
+// main CPU is the PowerPC 601.
 //
 // Board model: HMC (memory controller: serial config, RAM bank windows,
 // machine ID) + AMIC (everything I/O: decode, pseudo-VIA1/2, interrupt
 // control, DMA register file, sound engine, video control) around silicon
-// the repo already models (Cuda, 6522, 53C96, SCC).  Register truth comes
-// from the shipping-ROM-verified dossier; source citations in the .c files
-// use the underlying primary documents (Apple Developer Notes, schematics,
-// MPC601 UM).
+// the repo already models (Cuda, 6522, 53C96, SCC).  Register truth is
+// verified against the shipping ROM; source citations in the .c files use
+// the primary documents (Apple Developer Notes, schematics, MPC601 UM).
 //
-// Phase C scope: the machine skeleton and the HWInit boot ladder (rungs
-// L1-L12) — memory map with all ROM alias windows, HMC with both boot-time
-// measurement mechanisms, the AMIC register file (datapaths stubbed), and
-// Cuda on the pseudo-VIA1 transport.
+// The core of the substrate is the machine skeleton that carries the HWInit
+// boot ladder (pdm-rom-ladder rungs L1-L12): the memory map with all ROM
+// alias windows, the HMC with both boot-time measurement mechanisms, the
+// AMIC register file, and Cuda on the pseudo-VIA1 transport.
 
 #ifndef GS_MACHINES_PDM_H
 #define GS_MACHINES_PDM_H
 
 #include "display.h"
+#include "display_class.h"
 #include "machine.h"
 #include "memory.h"
+#include "nubus.h" // struct nubus_slot_decl, for the shared slot table below
 #include "swim3.h"
 #include "system_config.h"
 
@@ -51,7 +52,7 @@ typedef struct pdm_board_desc {
     int bank_count; // SIMM bank windows this board decodes
     // Extra bus cycles charged per load while the HMC wait-state config bit
     // is set — sized so HWInit's bus-ratio measurement lands on the real
-    // machine's CPU:bus ratio (proposal §5.2; pinned at rung L7).
+    // machine's CPU:bus ratio (pinned at pdm-rom-ladder rung L7).
     uint32_t wait_state_penalty;
     // 8100 only: the discrete 53CF96 on the fast internal bus (SCSI bus 0,
     // register file at island +$11000, AMIC DMA channel B).
@@ -89,7 +90,7 @@ typedef struct pdm_via2 {
 } pdm_via2_t;
 
 // One AMIC DMA channel's software-visible register set (control byte plus
-// the address/count bytes the drivers program; datapaths are later phases).
+// the address/count bytes the drivers program).
 typedef struct pdm_dma_ch {
     uint32_t addr;
     uint16_t count;
@@ -106,8 +107,15 @@ typedef struct pdm_dma_ch {
 // $200): the shared model (core/peripherals/swim3.h), bound to the AMIC
 // floppy DMA channel and the pseudo-VIA2 interrupt bank in pdm/swim3.c.
 // Drive and media state lives in the shared floppy module (cfg->floppy);
-// the struct is checkpointed positionally inside pdm_amic_t and re-bound
-// with pdm_swim3_bind() after a restore.
+// the struct is checkpointed as its own block and re-bound with
+// pdm_swim3_bind() after a restore.
+//
+// It sits in pdm_state_t rather than inside pdm_amic_t, matching TNT
+// (tnt.h).  It lived in the AMIC until a reset path was found clearing it:
+// pdm_amic_init() memsets the whole AMIC, so any reset that reached it
+// zeroed the chip's bound fd/sched/backend pointers with the registers.
+// Keeping it out of every struct a reset memsets is what makes that class
+// of bug unreachable rather than merely fixed.
 
 typedef struct pdm_amic {
     // Interrupt control register $50F2A000
@@ -142,7 +150,7 @@ typedef struct pdm_amic {
     double snd_half_start_ns; // when the in-flight output half began playing
     uint32_t snd_halves; // output half-buffers rendered since power-on
     int32_t snd_peak; // loudest |sample| pushed to the host since power-on
-    swim3_t swim3; // floppy controller (core/peripherals/swim3.c)
+    uint64_t snd_underruns; // half-buffers the guest never consumed (machine.sound.overruns)
 } pdm_amic_t;
 
 // === Monitor sense strap (ariel.c) ==========================================
@@ -161,7 +169,7 @@ typedef struct pdm_amic {
 
 typedef struct pdm_monitor_kind {
     const char *id; // config token ("hires", "none", ...)
-    const char *name; // human-readable, for the object model
+    const char *monitor; // its shared catalogue id (monitor_catalog.h)
     uint8_t sense; // the 3-bit strap this monitor presents
 } pdm_monitor_kind_t;
 
@@ -171,8 +179,17 @@ typedef struct pdm_monitor_kind {
 // absent rather than half-supported.
 extern const pdm_monitor_kind_t pdm_monitors[];
 const pdm_monitor_kind_t *pdm_monitor_lookup(const char *id);
-// Stage the strap for the NEXT machine built (machine.boot `monitor=`).
-void pdm_pending_monitor_set(uint8_t sense);
+
+// hw_profile_t.builtin_video for the three PDM leaves: the registry walks the
+// table above through this, and the pick reaches the machine as an argument of
+// its construction (machine.boot `monitor=`), so it needs no pdm_ symbol and
+// no knowledge of the sense strap.
+extern const builtin_video_desc_t pdm_builtin_video;
+
+// The three NuBus connectors behind BART ($C/$D/$E), shared by the 7100
+// and the 8100 (pdm.c).  The 6100 declares NULL and no BART instead --
+// its single slot needs the optional PDS adapter, which carries the bridge.
+extern const struct nubus_slot_decl pdm_nubus_slots_cde[];
 
 // === Video presentation state (ariel.c) =====================================
 // Everything here is DERIVED from the amic register file (vid_mode/vid_depth/
@@ -182,6 +199,10 @@ typedef struct pdm_video {
     rgba8_t clut_view[256]; // depth-windowed palette the renderer indexes
     uint8_t *blank; // black raster presented while the blank bit is set
     uint8_t sense; // monitor strap (PDM_SENSE_NONE = nothing connected)
+    // machine.video -- the framebuffer node every display source exposes
+    // (display_class.h).
+    display_fb_node_t fb_node;
+    struct object *video_node;
 } pdm_video_t;
 
 // === BART state (bart.c) ====================================================
@@ -214,6 +235,7 @@ typedef struct pdm_bart {
 typedef struct pdm_state {
     pdm_hmc_t hmc;
     pdm_amic_t amic;
+    swim3_t swim3; // floppy controller (see above; NOT inside pdm_amic_t)
     struct av_cuda *cuda;
     // SCSI: [0] = the Curio 53C94 cell (all models, island +$10000, AMIC
     // DMA channel A, bus = cfg->scsi); [1] = the 8100's discrete 53CF96
@@ -234,13 +256,14 @@ typedef struct pdm_state {
     // Memory interfaces registered with the map
     memory_interface_t io_interface; // $50F00000..$50F4FFFF island
     memory_interface_t id_interface; // $5FFFF000 machine-ID page
-    memory_interface_t wait_interface; // page-0 wait-state forwarder (§5.2)
+    memory_interface_t wait_interface; // page-0 wait-state forwarder
     memory_interface_t bart_reg_interface; // $F0000000 BART register file
 
     // Derived presentation state, never checkpointed
     pdm_video_t video; // scanout descriptor (ariel.c)
     int16_t *snd_stage; // one half-buffer of staged stereo samples (awacs.c)
     struct object *snd_object; // the machine.sound node (awacs.c)
+    struct object *amic_object; // the machine.amic node (amic.c)
 } pdm_state_t;
 
 static inline pdm_state_t *pdm_st(config_t *cfg) {
@@ -267,6 +290,7 @@ void pdm_clear_page(uint32_t page_index);
 
 void pdm_hmc_init(config_t *cfg);
 uint8_t pdm_hmc_read(config_t *cfg, uint32_t offset); // island offset $40000+
+uint8_t pdm_hmc_peek(config_t *cfg, uint32_t offset); // the same, bit pointer left alone
 void pdm_hmc_write(config_t *cfg, uint32_t offset, uint8_t value);
 // (Re)build the RAM decode per the current config code; also the cold-boot
 // power-on mapping when called with the reset config.
@@ -278,14 +302,15 @@ uint32_t pdm_id_read32(void *ctx, uint32_t offset);
 // === amic.c =================================================================
 
 void pdm_amic_init(config_t *cfg);
-void pdm_amic_register_events(config_t *cfg); // before scheduler_start
+void pdm_amic_register_events(config_t *cfg); // at construction
 void pdm_amic_start_vbl(config_t *cfg); // fresh boot: free-running raster
 uint8_t pdm_amic_read(config_t *cfg, uint32_t offset); // island offsets < $40000
+uint8_t pdm_amic_peek(config_t *cfg, uint32_t offset); // the same, side-effect-free
 void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value);
 // Recompute the ICR source levels and drive the 601 EXT line (level-
-// sensitive; called after every flag/enable write — proposal §4.6).
+// sensitive; called after every flag/enable write).
 void pdm_amic_recompute(config_t *cfg);
-// External source lines into the ICR (bit numbers per the dossier)
+// External source lines into the ICR
 #define PDM_ICR_VIA1 0
 #define PDM_ICR_VIA2 1
 #define PDM_ICR_SCC  2
@@ -293,6 +318,12 @@ void pdm_amic_recompute(config_t *cfg);
 #define PDM_ICR_DMA  4
 #define PDM_ICR_NMI  5
 void pdm_amic_set_source(config_t *cfg, int bit, bool level);
+
+// machine.amic — the interrupt-controller node.
+// Attached from machine construction, not from pdm_amic_init: that memsets
+// the whole AMIC and also runs on a reset.
+void pdm_amic_attach_object(config_t *cfg);
+void pdm_amic_detach_object(config_t *cfg);
 // 53C9x INT pin levels into the pseudo-VIA2 device bank (chip 0 = Curio →
 // bit 3, chip 1 = 53CF96 → bit 6; the DRQ bits 0/2 are read live from the
 // chips' DREQ outputs, never latched).
@@ -323,7 +354,7 @@ void pdm_bart_slot_irq(config_t *cfg, int slot, bool active);
 // command-port handshake, and the output datapath (half-buffer render into
 // the host audio stream).  State lives in pdm_amic_t; these are the
 // behavior.
-void pdm_awacs_register_events(config_t *cfg); // before scheduler_start
+void pdm_awacs_register_events(config_t *cfg); // at construction
 void pdm_awacs_init(config_t *cfg); // staging buffer + machine.sound node
 void pdm_awacs_teardown(config_t *cfg);
 uint8_t pdm_awacs_read(config_t *cfg, uint32_t offset); // block offsets 0..$1F
@@ -337,10 +368,12 @@ uint8_t pdm_awacs_irq_summary(pdm_amic_t *a); // the $0A sound byte
 // $50F16000 (index = offset >> 9), the AMIC DMA movers and the pseudo-VIA2
 // interrupt sink.
 uint8_t pdm_swim3_read(config_t *cfg, uint32_t off);
+// The same register without the read's side effects (an inspection).
+uint8_t pdm_swim3_peek(config_t *cfg, uint32_t off);
 void pdm_swim3_write(config_t *cfg, uint32_t off, uint8_t value);
 void pdm_swim3_bind(config_t *cfg); // after floppy_init and after a restore
-void pdm_swim3_register_events(config_t *cfg); // before scheduler_start
-void pdm_swim3_xfer_register_events(config_t *cfg); // before scheduler_start
+void pdm_swim3_register_events(config_t *cfg); // at construction
+void pdm_swim3_xfer_register_events(config_t *cfg); // at construction
 
 // === bart.c =================================================================
 // The NuBus '90 bridge: the $F0000000 register file, the slot-space windows,
@@ -355,7 +388,7 @@ void pdm_bart_slot_irq(config_t *cfg, int slot, bool active);
 // command-port handshake, and the output datapath (half-buffer render into
 // the host audio stream).  State lives in pdm_amic_t; these are the
 // behavior.
-void pdm_awacs_register_events(config_t *cfg); // before scheduler_start
+void pdm_awacs_register_events(config_t *cfg); // at construction
 void pdm_awacs_init(config_t *cfg); // staging buffer + machine.sound node
 void pdm_awacs_teardown(config_t *cfg);
 uint8_t pdm_awacs_read(config_t *cfg, uint32_t offset); // block offsets 0..$1F
@@ -410,8 +443,8 @@ void pdm_swim3_raise(config_t *cfg, uint8_t bits);
 // format, raw (copy-protect) capture, and the GCR nibble codec.  It reads
 // and writes the disk image through the shared floppy module and moves its
 // bytes through the AMIC floppy DMA channel.
-void pdm_swim3_register_events(config_t *cfg); // before scheduler_start
-void pdm_swim3_xfer_register_events(config_t *cfg); // before scheduler_start
+void pdm_swim3_register_events(config_t *cfg); // at construction
+void pdm_swim3_xfer_register_events(config_t *cfg); // at construction
 // Mode-register edges: GO or GoStep just became set / cleared.
 void pdm_swim3_engine_update(config_t *cfg);
 // Drive geometry answers the sense protocol needs (media present, density,
@@ -423,19 +456,18 @@ int pdm_swim3_index_pulse(config_t *cfg);
 // === ariel.c ================================================================
 // Onboard video: the Sonora-model control registers ($50F28000), the Ariel II
 // CLUT/DAC ($50F24000), and the scanout descriptor over physical DRAM 0.
-void pdm_video_init(config_t *cfg); // after the memory layout exists
+// After the memory layout exists; `monitor` is the strap (a sense code, or
+// PDM_SENSE_NONE), a construction argument of the built-in video.
+void pdm_video_init(config_t *cfg, uint8_t monitor);
 void pdm_video_teardown(config_t *cfg);
-// The monitor strapped to the HDI-45.  Set before the machine runs; with
-// PDM_SENSE_NONE the substrate publishes no display and the ROM turns its
-// own built-in video off (see the strap notes above).
-void pdm_video_set_sense(config_t *cfg, uint8_t sense);
-uint8_t pdm_video_sense(config_t *cfg);
 void pdm_video_update(config_t *cfg); // re-derive the descriptor from the regs
 void pdm_video_vbl(config_t *cfg); // per-VBL framebuffer re-upload mark
 display_t *pdm_video_display(config_t *cfg);
 uint8_t pdm_video_ctl_read(config_t *cfg, uint32_t off); // $50F28000 block
 void pdm_video_ctl_write(config_t *cfg, uint32_t off, uint8_t value);
 uint8_t pdm_ariel_read(config_t *cfg, uint32_t off); // $50F24000 block
+// The same register without the read's RGB-phase step (memory_interface_t.peek_*).
+uint8_t pdm_ariel_peek(config_t *cfg, uint32_t off);
 void pdm_ariel_write(config_t *cfg, uint32_t off, uint8_t value);
 
 #endif // GS_MACHINES_PDM_H

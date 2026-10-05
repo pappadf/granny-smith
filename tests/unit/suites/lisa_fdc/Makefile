@@ -12,9 +12,14 @@ TEST_HARNESS := isolated
 # that belong to subsystems this isolated suite deliberately does not link.
 EXTRA_SRCS   := ../../../../src/machines/lisa/lisa_fdc.c \
                 ../../../../src/core/storage/image.c \
+                ../../../../src/core/storage/image_wrap_sniff.c \
+                ../../../../src/core/storage/image_apm.c \
+                ../../../../src/core/storage/storage_util.c \
+                ../../../../src/core/storage/image_scratch.c \
                 ../../../../src/core/storage/storage.c \
-                ../../../../src/core/storage/appledouble.c \
+                ../../../../src/peeler/lib/appledouble.c \
                 ../../../../src/core/storage/image_ndif.c \
+                ../../../../src/core/crc32.c \
                 ../../../../src/core/storage/image_udif.c \
                 ../../../../src/core/storage/inflate.c \
                 ../../../../src/core/storage/adc.c \
@@ -25,4 +30,5 @@ EXTRA_SRCS   := ../../../../src/machines/lisa/lisa_fdc.c \
 # lisa_fdc.h lives under machines/lisa, which is not on common.mk's default path.
 EXTRA_CFLAGS  = -I$(EMU_ROOT)/machines/lisa
 
+USE_SOURCE_LAYER := 1
 include ../../common.mk

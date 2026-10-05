@@ -1,0 +1,18 @@
+# Restart-video conformance -- see config.mk.
+
+def cold(model, rom, budget) {
+    machine.boot model="${$model}" ram=8192 rom="../../data/roms/${$rom}"
+    scheduler.run $budget
+    let before = machine.screen.checksum()
+    machine.restart
+    let after = try(machine.screen.checksum(), none)
+    assert $after != $before "${$model}: machine.restart still shows the pre-restart frame"
+    echo "restart-video-cold ${$model}: ok"
+}
+
+cold("iicx", "iix-iicx-se30-97221136.rom", 30000000)
+cold("iifx", "iifx-4147dd77.rom", 40000000)
+cold("q700", "q700-q900-420dbff3.rom", 30000000)
+cold("q840av", "q840av-q660av-5bf10fd1.rom", 150000000)
+
+quit

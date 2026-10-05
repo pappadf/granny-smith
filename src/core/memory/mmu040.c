@@ -174,50 +174,128 @@ static inline void desc_write(struct mmu_state *bus, uint32_t phys_addr, uint32_
     (void)mmu_write_physical_uint32(bus, phys_addr, value);
 }
 
+// Record one table level of the walk in the debugger's trace (no-op
+// without one): the level, its index, the descriptor read and its type.
+static mmu_trace_step_t *m040_trace_level(mmu_trace_t *trace, const char *name, uint32_t index, uint32_t addr,
+                                          uint32_t desc, const char *type) {
+    mmu_trace_step_t *ts = mmu_trace_step(trace, "level");
+    if (ts) {
+        mmu_trace_str(ts, "name", name);
+        mmu_trace_uint(ts, "index", index);
+        mmu_trace_hex(ts, "addr", addr);
+        mmu_trace_hex(ts, "desc", desc);
+        mmu_trace_uint(ts, "dt", desc & 3u);
+        mmu_trace_str(ts, "type", type);
+    }
+    return ts;
+}
+
+// Mark a traced level as the end of an unsuccessful walk.
+static void m040_trace_fault(mmu_trace_step_t *ts) {
+    mmu_trace_str(ts, "reason", "invalid");
+    mmu_trace_outcome(ts, "fault");
+}
+
+// Record an upper-level (root/pointer) descriptor's flags and next table.
+static void m040_trace_next(mmu_trace_step_t *ts, uint32_t desc, uint32_t next) {
+    if (!ts)
+        return;
+    mmu_trace_bool(ts, "wp", (desc & DESC040_W) != 0);
+    mmu_trace_bool(ts, "u", (desc & DESC040_U) != 0);
+    mmu_trace_hex(ts, "next", next);
+    mmu_trace_outcome(ts, "next");
+}
+
 // Walk the translation tables for `la`.  With `update_um` set, the walk
 // performs the architectural U-bit updates (and the M-bit update for an
 // allowed write), exactly once per descriptor touched (MC68040UM §3.2.2.3:
-// the processor never clears U or M).
+// the processor never clears U or M).  `trace`, when non-NULL, records the
+// root pointer and each level for the debugger's `walk`; `span_bits_out`
+// (may be NULL) receives log2 of the region the last descriptor read covers.
 static m040_walk_result_t m040_walk(mmu040_state_t *mmu, struct mmu_state *bus, uint32_t la, bool write,
-                                    bool supervisor, bool update_um) {
+                                    bool supervisor, bool update_um, mmu_trace_t *trace, uint32_t *span_bits_out) {
     m040_walk_result_t r = {0};
     bool page8k = (mmu->tc & TC040_P) != 0;
     uint32_t root = supervisor ? mmu->srp : mmu->urp;
+    uint32_t span_bits = 25; // a root-level descriptor covers 32 MB
+
+    mmu_trace_step_t *ts = mmu_trace_step(trace, "root");
+    if (ts) {
+        mmu_trace_str(ts, "name", supervisor ? "srp" : "urp");
+        mmu_trace_hex(ts, "desc", root);
+        mmu_trace_hex(ts, "next", root & 0xFFFFFE00u);
+        mmu_trace_outcome(ts, "next");
+    }
 
     // Root level: RI = LA[31:25], 128 four-byte descriptors per table.
     uint32_t rdesc_addr = (root & 0xFFFFFE00u) | (((la >> 25) & 0x7Fu) << 2);
     uint32_t rdesc = desc_read(bus, rdesc_addr);
-    if ((rdesc & DESC040_UDT_MASK) < 2)
+    ts = m040_trace_level(trace, "root", (la >> 25) & 0x7Fu, rdesc_addr, rdesc,
+                          (rdesc & DESC040_UDT_MASK) < 2 ? "invalid" : "table");
+    if ((rdesc & DESC040_UDT_MASK) < 2) {
+        m040_trace_fault(ts);
+        if (span_bits_out)
+            *span_bits_out = span_bits;
         return r; // invalid — R stays clear in MMUSR
+    }
     bool wp = (rdesc & DESC040_W) != 0;
+    m040_trace_next(ts, rdesc, rdesc & 0xFFFFFE00u);
     if (update_um && !(rdesc & DESC040_U))
         desc_write(bus, rdesc_addr, rdesc | DESC040_U);
 
     // Pointer level: PI = LA[24:18], 128 four-byte descriptors per table.
+    uint32_t table_mask = page8k ? 0xFFFFFF80u : 0xFFFFFF00u;
     uint32_t pdesc_addr = (rdesc & 0xFFFFFE00u) | (((la >> 18) & 0x7Fu) << 2);
     uint32_t pdesc = desc_read(bus, pdesc_addr);
-    if ((pdesc & DESC040_UDT_MASK) < 2)
+    span_bits = 18; // a pointer-level descriptor covers 256 KB
+    ts = m040_trace_level(trace, "pointer", (la >> 18) & 0x7Fu, pdesc_addr, pdesc,
+                          (pdesc & DESC040_UDT_MASK) < 2 ? "invalid" : "table");
+    if ((pdesc & DESC040_UDT_MASK) < 2) {
+        m040_trace_fault(ts);
+        if (span_bits_out)
+            *span_bits_out = span_bits;
         return r;
+    }
     wp |= (pdesc & DESC040_W) != 0;
+    m040_trace_next(ts, pdesc, pdesc & table_mask);
     if (update_um && !(pdesc & DESC040_U))
         desc_write(bus, pdesc_addr, pdesc | DESC040_U);
 
     // Page level: PGI = LA[17:12] (4K, 64 entries) or LA[17:13] (8K, 32).
-    uint32_t table_mask = page8k ? 0xFFFFFF80u : 0xFFFFFF00u;
     uint32_t pgi = page8k ? ((la >> 13) & 0x1Fu) : ((la >> 12) & 0x3Fu);
     uint32_t pgdesc_addr = (pdesc & table_mask) | (pgi << 2);
     uint32_t pgdesc = desc_read(bus, pgdesc_addr);
+    span_bits = page8k ? 13 : 12; // one page
+    if (span_bits_out)
+        *span_bits_out = span_bits;
 
     uint32_t pdt = pgdesc & 3u;
+    ts = m040_trace_level(trace, "page", pgi, pgdesc_addr, pgdesc,
+                          pdt == 0   ? "invalid"
+                          : pdt == 2 ? "indirect"
+                                     : "page");
     if (pdt == 2) {
         // Indirect descriptor: bits 31:2 point at the real page descriptor,
         // which must itself be resident (indirect-to-indirect is invalid).
         pgdesc_addr = pgdesc & 0xFFFFFFFCu;
+        mmu_trace_hex(ts, "next", pgdesc_addr);
+        mmu_trace_outcome(ts, "next");
         pgdesc = desc_read(bus, pgdesc_addr);
         pdt = pgdesc & 3u;
-        if (pdt == 0 || pdt == 2)
+        ts = mmu_trace_step(trace, "level");
+        if (ts) {
+            mmu_trace_str(ts, "name", "indirect");
+            mmu_trace_hex(ts, "addr", pgdesc_addr);
+            mmu_trace_hex(ts, "desc", pgdesc);
+            mmu_trace_uint(ts, "dt", pdt);
+            mmu_trace_str(ts, "type", (pdt == 0 || pdt == 2) ? "invalid" : "page");
+        }
+        if (pdt == 0 || pdt == 2) {
+            m040_trace_fault(ts);
             return r;
+        }
     } else if (pdt == 0) {
+        m040_trace_fault(ts);
         return r;
     }
 
@@ -238,6 +316,17 @@ static m040_walk_result_t m040_walk(mmu040_state_t *mmu, struct mmu_state *bus, 
 
     r.physical_addr = page8k ? ((pgdesc & 0xFFFFE000u) | (la & 0x1FFFu)) : ((pgdesc & 0xFFFFF000u) | (la & 0xFFFu));
     r.valid = true;
+    if (ts) {
+        mmu_trace_bool(ts, "wp", (pgdesc & DESC040_W) != 0);
+        mmu_trace_bool(ts, "u", (pgdesc & DESC040_U) != 0);
+        mmu_trace_bool(ts, "m", modified);
+        mmu_trace_bool(ts, "s", s_only);
+        mmu_trace_bool(ts, "g", (pgdesc & DESC040_G) != 0);
+        mmu_trace_uint(ts, "cm", (pgdesc >> 5) & 3u);
+        mmu_trace_hex(ts, "phys", r.physical_addr);
+        mmu_trace_hex(ts, "size", 1u << span_bits);
+        mmu_trace_outcome(ts, "hit");
+    }
     r.write_protected = wp;
     r.supervisor_only = s_only;
     r.modified = modified;
@@ -252,22 +341,6 @@ static m040_walk_result_t m040_walk(mmu040_state_t *mmu, struct mmu_state *bus, 
 // ============================================================================
 // TLB-miss handling (dispatched from mmu_handle_fault)
 // ============================================================================
-
-// Mirror of mmu.c's fault epilogue: after a fill attempt, if the SoA entry
-// stayed zero the physical page is a device, unmapped, or logpointed.  Only
-// clearly-garbage physical addresses (past the RAM controller's reach and
-// below the ROM window) bus-error; device windows dispatch in memory.c.
-static inline bool m040_fault_epilogue(struct mmu_state *bus, uint32_t emu_page, uint32_t phys_page, bool write) {
-    uint32_t page_index = emu_page >> PAGE_SHIFT;
-    if ((int)page_index < g_page_count) {
-        uintptr_t *active = write ? g_active_write : g_active_read;
-        if (active && active[page_index] == 0) {
-            if (phys_page >= bus->ram_size_max && phys_page < bus->rom_phys_base)
-                return false;
-        }
-    }
-    return true;
-}
 
 bool mmu040_handle_fault(struct mmu_state *bus, uint32_t logical_addr, bool write, bool supervisor) {
     mmu040_state_t *mmu = bus ? bus->m040 : NULL;
@@ -288,8 +361,8 @@ bool mmu040_handle_fault(struct mmu_state *bus, uint32_t logical_addr, bool writ
         // window on reads; silent otherwise (same policy as the PMMU path).
         if (!write) {
             uint32_t page_index = emu_page >> PAGE_SHIFT;
-            if ((int)page_index < g_page_count && g_supervisor_read && g_supervisor_read[page_index] == 0 &&
-                logical_addr >= bus->nubus_berr_start && logical_addr <= bus->nubus_berr_end) {
+            if (page_index < g_page_count && g_supervisor_read && g_supervisor_read[page_index] == 0 &&
+                memory_addr_faults_when_unmapped(logical_addr)) {
                 g_bus_error_is_pmmu = false; // bus timeout: skip semantics
                 return false;
             }
@@ -298,7 +371,7 @@ bool mmu040_handle_fault(struct mmu_state *bus, uint32_t logical_addr, bool writ
     }
 
     // Three-level walk with architectural U/M updates.
-    m040_walk_result_t r = m040_walk(mmu, bus, logical_addr, write, supervisor, true);
+    m040_walk_result_t r = m040_walk(mmu, bus, logical_addr, write, supervisor, true, NULL, NULL);
 
     // Publish the walk's MMUSR, mirroring the PMMU path: kernels read the
     // status from their bus-error handlers without issuing PTEST.
@@ -333,7 +406,7 @@ bool mmu040_handle_fault(struct mmu_state *bus, uint32_t logical_addr, bool writ
     bool fill_user = (!supervisor || shared_roots) && !r.supervisor_only;
 
     mmu_fill_soa_page(bus, emu_page, phys_page, fill_super, fill_user, writable);
-    return m040_fault_epilogue(bus, emu_page, phys_page, write);
+    return mmu_fault_epilogue(bus, emu_page, phys_page, write);
 }
 
 // Side-effect-free translation for debugger reads and memory.c dispatch
@@ -350,10 +423,54 @@ bool mmu040_translate_checked(struct mmu_state *bus, uint32_t logical_addr, bool
             *pa_out = logical_addr;
         return true;
     }
-    m040_walk_result_t r = m040_walk(mmu, bus, logical_addr, false, supervisor, false);
+    m040_walk_result_t r = m040_walk(mmu, bus, logical_addr, false, supervisor, false, NULL, NULL);
     if (pa_out)
         *pa_out = r.valid ? r.physical_addr : logical_addr;
     return r.valid;
+}
+
+// The debugger's translation (mmu_debug_translate's 68040 half): the TT
+// registers, then the walk, both side-effect-free.  The access kind's own
+// pair is consulted first (a fetch the ITTs, data the DTTs), then the other
+// pair, because the SoA-filling path above serves both streams from one
+// software TLB and so translates either through any matching TTR
+// (ttr_lookup); the trace names the register that matched.
+void mmu040_debug_translate(mmu040_state_t *mmu, struct mmu_state *bus, uint32_t logical_addr, bool supervisor,
+                            bool fetch, mmu_xlate_t *out, mmu_trace_t *trace) {
+    out->space = NULL;
+    const uint32_t regs[4] = {fetch ? mmu->itt0 : mmu->dtt0, fetch ? mmu->itt1 : mmu->dtt1,
+                              fetch ? mmu->dtt0 : mmu->itt0, fetch ? mmu->dtt1 : mmu->itt1};
+    static const char *const names[2][4] = {
+        {"dtt0", "dtt1", "itt0", "itt1"},
+        {"itt0", "itt1", "dtt0", "dtt1"}
+    };
+    mmu_trace_step_t *ts = mmu_trace_step(trace, "tt");
+    const char *tt_name = NULL;
+    uint32_t tt = 0;
+    for (int i = 0; i < 4 && !tt_name; i++) {
+        if (ttr_matches(regs[i], logical_addr, supervisor)) {
+            tt_name = names[fetch ? 1 : 0][i];
+            tt = regs[i];
+        }
+    }
+    if (tt_name) {
+        mmu_trace_str(ts, "name", tt_name);
+        mmu_trace_hex(ts, "value", tt);
+        mmu_trace_outcome(ts, "hit");
+        out->phys = logical_addr;
+        out->valid = true;
+        out->via = "tt";
+        out->access = mmu_access(true, !TT040_W(tt));
+        out->span_bits = 24; // TT registers match on A31-A24
+        return;
+    }
+    uint32_t span_bits = 0;
+    m040_walk_result_t r = m040_walk(mmu, bus, logical_addr, false, supervisor, false, trace, &span_bits);
+    out->via = "page";
+    out->valid = r.valid;
+    out->phys = r.valid ? r.physical_addr : logical_addr;
+    out->access = mmu_access(!(r.supervisor_only && !supervisor), !r.write_protected);
+    out->span_bits = span_bits;
 }
 
 // PTESTR/PTESTW (An): load MMUSR with the translation result.  The address
@@ -377,6 +494,6 @@ void mmu040_ptest(mmu040_state_t *mmu, uint32_t addr, bool write, uint32_t fc) {
         mmu->mmusr = 0;
         return;
     }
-    m040_walk_result_t r = m040_walk(mmu, mmu->bus, addr, write, supervisor, true);
+    m040_walk_result_t r = m040_walk(mmu, mmu->bus, addr, write, supervisor, true, NULL, NULL);
     mmu->mmusr = r.valid ? r.mmusr : 0; // R clear on nonresident
 }

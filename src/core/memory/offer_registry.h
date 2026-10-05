@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+//
+// offer_registry.h
+// The shape a ROM offer registry has, once.
+//
+// The platform hands the emulator whole directories of candidate ROM files and
+// the machine later asks "is there an image for this card?".  Between those two
+// moments sits a registry: fixed shape, content-keyed, duplicate-collapsing,
+// with catalog order deciding the pick.  A boot never writes it: a file the
+// boot document names for a slot goes to that slot's card directly.  vrom.c (NuBus declaration ROMs) and prom.c (PCI
+// Open Firmware expansion ROMs) each had their own copy of it -- 86 of 123 lines identical, and the improvements made
+// to one never reached the other.
+//
+// What genuinely differs between the two is IDENTIFICATION: the validation
+// gates, size classes and identity spans of a declaration ROM and a PCI
+// expansion ROM have almost nothing in common, and prom.c says so in its own
+// header.  That half stays where it is, behind the `identify` callback -- which
+// is also where each side's per-failure diagnostics belong, since only the
+// identifier knows what kind of stray it just rejected.
+
+#ifndef OFFER_REGISTRY_H
+#define OFFER_REGISTRY_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+// One registered candidate, keyed by its content identity: the identifier's
+// own key (a vROM's Format-Block CRC; a PROM's vendor, device and FCode
+// checksum), opaque to the registry.
+typedef struct offer_entry {
+    uint64_t key;
+    size_t size; // the image/chip size the identifier reported
+    const char *card_id; // catalog row (static storage)
+    char *path; // opaque locator (owned)
+} offer_entry_t;
+
+// What the registry needs to know about its catalog, without knowing the row
+// type: how many rows, and how to read the three fields the pick order uses.
+typedef struct offer_catalog {
+    size_t count;
+    void (*row)(size_t r, const char **card_id, uint64_t *key, bool *preferred);
+} offer_catalog_t;
+
+// A registry instance.  `entries`/`count`/`cap` are owned here; the rest is
+// the caller's static configuration.
+typedef struct offer_registry {
+    offer_entry_t *entries;
+    size_t count, cap;
+    const char *tag; // log prefix, e.g. "vrom_offer"
+    // Identify a candidate file.  Returns true to register it, filling key,
+    // size and card_id (which must be static storage).  On false the callback
+    // has ALREADY logged why -- only it knows which kind of stray this is.
+    bool (*identify)(const char *path, uint64_t *out_key, size_t *out_size, const char **out_card_id);
+    offer_catalog_t catalog;
+} offer_registry_t;
+
+// Register one candidate.  Idempotent by content: one entry per key, and a
+// re-offer refreshes the path (the newest locator for these bytes).
+void offer_registry_add(offer_registry_t *r, const char *path);
+
+// Offer every file in `dir` whose name ends in `ext` (NULL: any name),
+// skipping dotfiles -- each identified by content like any offer.  The one
+// directory walk the platforms share: headless offers the ROM's sibling
+// *.vrom / *.prom, the browser its persistent vROM and PROM stores.
+void offer_registry_add_dir(offer_registry_t *r, const char *dir, const char *ext);
+
+// Drop every entry and free the registry's storage.
+void offer_registry_clear(offer_registry_t *r);
+
+// The idx'th candidate path for `card_id`, or NULL past the end.  Pick order:
+// catalog rows with the `preferred` bit, then the remaining rows in catalog
+// order.  All content-based -- no filename ever enters the comparison.
+// `out_size` / `out_key` (optional) receive the identified size and key.
+const char *offer_registry_find(const offer_registry_t *r, const char *card_id, int idx, size_t *out_size,
+                                uint64_t *out_key);
+
+// Does the catalog have a row for this card at all (independent of whether any
+// file has been offered for it)?
+bool offer_registry_catalogued(const offer_registry_t *r, const char *card_id);
+
+// Is there at least one offered file for this card?
+bool offer_registry_resolvable(const offer_registry_t *r, const char *card_id);
+
+#endif // OFFER_REGISTRY_H

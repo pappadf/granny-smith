@@ -1,61 +1,61 @@
 # Integration test: Debug tooling — `find` family (shell v2).
 #
-# `find.{str|bytes|word|long}` return a V_LIST of match addresses
-# (shell v2 §6.1); failures return V_ERROR. This script asserts on the
-# typed results and echoes stable markers that run.sh greps.
+# `find.{str|bytes|word|long}` return a V_LIST of match addresses; failures
+# return V_ERROR. This script asserts on the typed results and echoes stable
+# markers that run.sh greps.
 
 # === find: introspection ================================================
 
-# methods("find") lists the four sub-command methods this script
+# methods("debug.find") lists the four sub-command methods this script
 # exercises.
-echo "${methods("find")}"
+echo "${methods("debug.find")}"
 
-# === find.str: ASCII search =============================================
+# === debug.find.str: ASCII search =============================================
 
 # "Apple" appears in the Plus ROM (which is mirrored at 0x400000).
 # Restrict the scan to the primary mirror so the expected hit count is
 # stable.
-let hits = find.str("Apple", 0x400000, 0x440000)
-assert len($hits) > 0 "find.str should locate 'Apple' in the ROM mirror"
+let hits = debug.find.str("Apple", 0x400000, 0x440000)
+assert len($hits) > 0 "debug.find.str should locate 'Apple' in the ROM mirror"
 echo "str-first=${$hits[0]:08x}"
 echo "str-count=${len($hits)}"
 
 # Bounded scan (start + count window).
-let windowed = find.str("Apple", 0x400000, 0x400000 + 0x40000 - 1)
+let windowed = debug.find.str("Apple", 0x400000, 0x400000 + 0x40000 - 1)
 assert len($windowed) == len($hits) "windowed scan should see the same hits"
 
 # Empty pattern is a typed error, not a silent no-op.
-assert try(find.str("", 0x400000, 0x440000), none) == none "empty pattern must error"
+assert try(debug.find.str("", 0x400000, 0x440000), none) == none "empty pattern must error"
 
-# === find.bytes: hex-byte-sequence search ===============================
+# === debug.find.bytes: hex-byte-sequence search ===============================
 
 # Search for NOP (4E 71) in the mapped address range.
-let nops = find.bytes("4E 71", 0x400000, 0x440000)
-assert len($nops) > 0 "find.bytes should hit 68K NOPs"
+let nops = debug.find.bytes("4E 71", 0x400000, 0x440000)
+assert len($nops) > 0 "debug.find.bytes should hit 68K NOPs"
 echo "nop-count=${len($nops)}"
 
 # Non-hex token is rejected.
-assert try(find.bytes("ZZ"), none) == none "non-hex byte token must error"
+assert try(debug.find.bytes("ZZ"), none) == none "non-hex byte token must error"
 
-# === find.word / find.long: big-endian value search =====================
+# === debug.find.word / debug.find.long: big-endian value search =====================
 
 # "Apple" begins with bytes 41 70 ('A','p'), so word 0x4170 hits where
 # "Apple" starts — same location the str test already asserts.
 # Probe a window pinned at the known str hit so the first word/long
 # match is exactly that address (0x4170 also occurs elsewhere in ROM).
-let w = find.word(0x4170, $hits[0], $hits[0] + 3)
-assert $w[0] == $hits[0] "find.word should hit at the str offset"
+let w = debug.find.word(0x4170, $hits[0], $hits[0] + 3)
+assert $w[0] == $hits[0] "debug.find.word should hit at the str offset"
 echo "word-first=${$w[0]:08x}"
 
-let l = find.long(0x4170706C, $hits[0], $hits[0] + 7)
-assert $l[0] == $hits[0] "find.long should hit at the str offset"
+let l = debug.find.long(0x4170706C, $hits[0], $hits[0] + 7)
+assert $l[0] == $hits[0] "debug.find.long should hit at the str offset"
 echo "long-first=${$l[0]:08x}"
 
 # Values exceeding 16 bits must be rejected — not silently truncated.
-assert try(find.word(0x10000, 0x400000, 0x440000), none) == none "16-bit overflow must error"
+assert try(debug.find.word(0x10000, 0x400000, 0x440000), none) == none "16-bit overflow must error"
 
 # Backwards range is rejected.
-assert try(find.str("Apple", 0x500000, 0x400000), none) == none "backwards range must error"
+assert try(debug.find.str("Apple", 0x500000, 0x400000), none) == none "backwards range must error"
 
 # === format specs in ${expr:fmt} ========================================
 #
@@ -79,6 +79,70 @@ debug.breakpoints.clear
 assert try(debug.breakpoints[42], none) == none "empty slot read must error"
 assert len(debug.breakpoints.entries) == 0 "cleared collection reads as empty list"
 
+# === breakpoint entries: dedupe, enumerate, enable, remove ==============
+#
+# What web2's Breakpoints panel relies on.  Ids are stable and never
+# reused, so a list is walked with meta.indices, never with count; a second
+# add at one address returns the existing entry; a disabled entry stays
+# listed but does not fire.
+
+debug.breakpoints.clear
+debug.breakpoints.add 0x400100
+debug.breakpoints.add 0x400100
+assert debug.breakpoints.count == 1 "a duplicate add must not stack"
+debug.breakpoints.add 0x400200
+assert debug.breakpoints.count == 2 "two addresses, two entries"
+let first = debug.breakpoints.meta.indices("entries")[0]
+assert debug.breakpoints.entries[$first].enabled == true "enabled by default"
+debug.breakpoints.entries[$first].remove
+assert debug.breakpoints.count == 1 "remove by id"
+assert len(debug.breakpoints.meta.indices("entries")) == 1 "indices follow the removal"
+
+# A disabled breakpoint on a PC the ROM keeps passing does not fire;
+# re-enabled, it stops the machine there.
+debug.breakpoints.clear
+scheduler.run 200000
+let loop_pc = machine.cpu.pc
+debug.breakpoints.add $loop_pc
+let bp = debug.breakpoints.meta.indices("entries")[0]
+debug.breakpoints.entries[$bp].enabled = false
+scheduler.run 200000
+assert debug.breakpoints.entries[$bp].hit_count == 0 "a disabled breakpoint must not fire"
+debug.breakpoints.entries[$bp].enabled = true
+scheduler.run 200000
+assert debug.breakpoints.entries[$bp].hit_count == 1 "re-enabled, it fires"
+assert machine.cpu.pc == $loop_pc "and stops the machine at its address"
+debug.breakpoints.clear
+echo "bp-contract-ok"
+
+# === probes on an interrupt handler's first instruction ===============
+#
+# The probes ran after each instruction, at the next PC, while a pending
+# interrupt was taken at the sprint's entry: the handler's first instruction
+# executed before any probe saw its address, so a breakpoint or PC logpoint
+# there almost never fired (#173).  The Plus ROM's level-1 autovector ($64)
+# is its VIA handler, entered at least once per VBL; Ticks counts the VBLs.
+# The ROM's RAM test runs for the first ~20 M instructions; the vector and
+# Ticks are live once it idles at the disk icon.
+debug.logpoints.clear
+scheduler.run 25000000
+let lvl1 = machine.memory.peek.l(0x64)
+assert $lvl1 >= 0x400000 && $lvl1 < 0x420000 "the level-1 vector points into the ROM (${$lvl1:08x})"
+let t0 = debug.mac.globals.read("Ticks")
+debug.logpoints.add addr=$lvl1 message="lvl1"
+scheduler.run 1000000
+let vbls = debug.mac.globals.read("Ticks") - $t0
+assert $vbls > 10 "VBLs during the run (${$vbls})"
+let lp = debug.logpoints.meta.indices("entries")[0]
+let hits = debug.logpoints.entries[$lp].hit_count
+assert $hits >= $vbls "the handler's first instruction is probed on every entry (${$hits} hits, ${$vbls} VBLs)"
+debug.logpoints.clear
+debug.breakpoints.add $lvl1
+scheduler.run 1000000
+assert machine.cpu.pc == $lvl1 "a breakpoint on the handler's first instruction stops there"
+debug.breakpoints.clear
+echo "irq-entry-probe-ok"
+
 # === debug.disasm with explicit address =================================
 #
 # `debug.disasm` accepts an optional starting address. The two-arg form
@@ -87,5 +151,29 @@ assert len(debug.breakpoints.entries) == 0 "cleared collection reads as empty li
 # this test boots against.
 
 debug.disasm 0x400090 3
+
+# === debug.step runs through the frame loop =============================
+#
+# N stepped instructions must be N run ones: debug.step arms the same budget
+# scheduler.run does, so VBL pulses while stepping.  Before, stepping ran the
+# guest with the VBL line dead and the two diverged within a few frames.
+# 600000 Plus instructions span several
+# VBLs.  (Last in the script: it boots the machine again -- both runs must
+# start from the same constructed machine, instruction counter included, which
+# a machine.restart (a power cycle of the SAME machine) does not give.)
+
+machine.boot model="plus" rom="../../data/roms/plus-v3-4d1f8172.rom"
+machine.rtc.time = 3000000000
+scheduler.run 400000
+debug.step 600000
+let step_pc = machine.cpu.pc
+let step_n = machine.cpu.instr_count
+machine.boot model="plus" rom="../../data/roms/plus-v3-4d1f8172.rom"
+machine.rtc.time = 3000000000
+scheduler.run 400000
+scheduler.run 600000
+assert machine.cpu.instr_count == $step_n "same instruction count"
+assert machine.cpu.pc == $step_pc "debug.step N must end where scheduler.run N does"
+echo "step-matches-run-ok"
 
 quit

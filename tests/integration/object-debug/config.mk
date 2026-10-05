@@ -1,4 +1,4 @@
-# Integration test: debug.* indexed-child surface (M6)
+# Integration test: debug.* indexed-child surface
 # Boots Plus, exercises the debug.breakpoints / .logpoints tree, and
 # verifies legacy `break` commands and the new `debug.breakpoints.add`
 # method touch the same entries.
@@ -8,5 +8,5 @@ TEST_DESC := debug.breakpoints/.logpoints indexed children with sparse stable in
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

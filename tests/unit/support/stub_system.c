@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // System accessor stubs for unit tests
 // Routes system_*() calls to the active test context via the harness API.
 
@@ -91,15 +93,19 @@ bool system_is_initialized(void) {
     return test_get_active_context() != NULL;
 }
 
+struct event;
+
 // Scheduler stubs for mouse automation commands
-void scheduler_new_cpu_event(scheduler_t *sched, event_callback_t callback, void *source, uint64_t data,
-                             uint64_t cpu_cycles, uint64_t ns_delay) {
+struct event *scheduler_new_cpu_event_ex(scheduler_t *sched, event_callback_t callback, void *source, uint64_t data,
+                                         uint64_t cpu_cycles, uint64_t ns_delay, bool periodic) {
+    (void)periodic;
     (void)sched;
     (void)callback;
     (void)source;
     (void)data;
     (void)cpu_cycles;
     (void)ns_delay;
+    return 0;
 }
 
 void scheduler_new_event_type(scheduler_t *sched, const char *module, void *source, const char *name,
@@ -114,6 +120,17 @@ void scheduler_new_event_type(scheduler_t *sched, const char *module, void *sour
 void remove_event(scheduler_t *sched, event_callback_t callback, void *source) {
     (void)sched;
     (void)callback;
+    (void)source;
+}
+
+bool has_event(scheduler_t *sched, event_callback_t callback) {
+    (void)sched;
+    (void)callback;
+    return false;
+}
+
+void scheduler_forget_source(scheduler_t *sched, void *source) {
+    (void)sched;
     (void)source;
 }
 
@@ -143,6 +160,13 @@ uint64_t scheduler_cpu_cycles(scheduler_t *sched) {
 // harness, so this is a no-op.  Weak so a suite that must observe the pulse
 // (m68k_vectors counts them for the `rsto` element) can override it.
 void __attribute__((weak)) system_reset_devices(void) {}
+
+// The level-2 entry points are declared weak in system.h so a suite can link a
+// device without system.c.  A weak UNDEFINED symbol that is actually called is
+// a NULL call, though, so define them here too: a suite that reaches the Cuda
+// reset path gets a no-op rather than a segfault.
+void system_machine_reset(void) {}
+void system_hardware_reset(void) {}
 
 // Keyboard stub for key injection command
 typedef enum { key_up, key_down } key_event_t;
@@ -179,18 +203,13 @@ bool system_mouse_pending_adb(int *dx, int *dy) {
     return false;
 }
 
-// Machine management stub (used by cmd_rom in memory.c)
-int system_ensure_machine(const char *model_id) {
-    (void)model_id;
-    return -1; // no machine in unit tests
-}
-
 // ROM identification stub (used by cmd_rom in memory.c)
 typedef struct rom_info rom_info_t;
-const rom_info_t *rom_identify_data(const uint8_t *data, size_t size, uint32_t *out_checksum) {
+struct rom_identity;
+const rom_info_t *rom_identify_data(const uint8_t *data, size_t size, struct rom_identity *out) {
     (void)data;
     (void)size;
-    (void)out_checksum;
+    (void)out;
     return NULL;
 }
 

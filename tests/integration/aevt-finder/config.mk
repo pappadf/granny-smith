@@ -1,5 +1,5 @@
 # Integration test configuration: Apple events against the Scriptable Finder
-# (proposal-appletalk-ppc-appleevents.md §7.2, the flagship script).
+# (the flagship script).
 #
 # System 7.5 on a IIci — the combination this feature exists for.  7.5 brings
 # the Scriptable Finder, and the IIci has the AppleTalk stack now that it is
@@ -20,5 +20,5 @@ TEST_SETUP := cp "$(TEST_DATA)/systems/system_7_5_0_77mb_mode32_24ac.img" "$(TES
 
 TEST_ARGS := model=iici ram=8192 hd=$(TEST_TMPDIR)/hd.img
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended

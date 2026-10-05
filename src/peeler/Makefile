@@ -34,7 +34,12 @@ FMT_DIR   = $(BUILD)/lib/formats
 # ============================================================================
 
 LIB_SRCS  = lib/err.c      \
+            lib/appledouble.c \
             lib/util.c     \
+            lib/source.c   \
+            lib/reader.c   \
+            lib/inflate.c  \
+            lib/archive.c  \
             lib/peeler.c
 
 FMT_SRCS  = lib/formats/hqx.c   \
@@ -43,7 +48,10 @@ FMT_SRCS  = lib/formats/hqx.c   \
             lib/formats/sit3.c   \
             lib/formats/sit13.c  \
             lib/formats/sit15.c  \
-            lib/formats/cpt.c
+            lib/formats/cpt.c    \
+            lib/formats/zip.c    \
+            lib/formats/gz.c     \
+            lib/formats/tar.c
 
 CMD_SRCS  = cmd/main.c
 

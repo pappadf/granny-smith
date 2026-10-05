@@ -1,4 +1,6 @@
-// Generic PCI core unit tests (proposal-pci-architecture §13).
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+// Generic PCI core unit tests.
 //
 // Links the real config_space.c + pci.c against a stub bus environment and
 // pins the contract every guest on these machines depends on: absent
@@ -7,8 +9,8 @@
 // kind; the command register gates the decode; the expansion-ROM BAR's
 // enable bit is honoured; bar_map fires exactly on real transitions; the
 // bridge-window dispatcher routes to the right device and faults on
-// everything else; and staged card picks resolve by the documented
-// precedence and are consumed at the slot walk.
+// everything else; and the slot walk seats each socket from the boot
+// document's entry for it (cfg->build_opts), else its declared default.
 //
 // The empty-slot coverage in particular is the gap this suite closes: the
 // hand-rolled model it replaces was never unit-tested at all.
@@ -23,6 +25,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+// stub_prom.c: whether a card's PROM is offered.
+extern bool stub_prom_offered;
+
 // --- Stubs for the environment pci.c reaches into ---------------------------
 //
 // pci.c's card registry names the one registered driver by extern, exactly
@@ -33,13 +38,21 @@ const pci_card_kind_t tnt_control_kind = {
     .id = "tnt_control", .display_name = "Control / Chaos on-board video", .attach = PCI_ATTACH_BUILTIN};
 // ...and the pluggable one, from core/peripherals/pci/cards/mach64gx.c, which
 // this suite also does not link (it would drag in the whole prom/object
-// stack).  requires_prom is kept true so the socket-fit and staged-pick
-// rows below exercise a card with a real ROM requirement.
+// stack).  requires_prom is kept true so the socket-fit rows below exercise a
+// card with a real ROM requirement; the factory is the counting one, so the
+// slot walk can be watched seating it.
+static pci_device_t *counting_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts);
 const pci_card_kind_t mach64_gx_kind = {.id = "mach64_gx",
                                         .display_name = "Apple Accelerated PCI Graphics Card (ATI Mach64 GX)",
                                         .attach = PCI_ATTACH_PCI,
                                         .requires_prom = true,
-                                        .card_class = "display"};
+                                        .card_class = "display",
+                                        .factory = counting_factory};
+// ...and the beige G3's on-board Rage Pro, the same file's builtin variant.
+const pci_card_kind_t ati_rage_pro_kind = {.id = "ati_rage_pro",
+                                           .display_name = "ATI 3D Rage Pro (on-board)",
+                                           .attach = PCI_ATTACH_BUILTIN,
+                                           .card_class = "display"};
 // ...and the three soldered-down devices of the Apple Network Server, whose
 // real drivers live in cards/cirrus54m30.c and cards/sym53c825.c.  All
 // BUILTIN, so they never appear in a socket-fit row; they are here because
@@ -56,6 +69,21 @@ const pci_card_kind_t sym53c825_ch1_kind = {.id = "sym53c825_1",
                                             .display_name = "Symbios 53C825A fast/wide SCSI (channel 1)",
                                             .attach = PCI_ATTACH_BUILTIN,
                                             .card_class = "scsi"};
+// ...and the ROM-less Voodoo2 (cards/voodoo2.c) — the first socket card
+// with requires_prom FALSE, kept that way here so socket-fit rows cover
+// a card with no ROM requirement.
+const pci_card_kind_t voodoo2_kind = {.id = "voodoo2",
+                                      .display_name = "3dfx Voodoo2",
+                                      .attach = PCI_ATTACH_PCI,
+                                      .requires_prom = false,
+                                      .card_class = "3d"};
+// ...and its WebGPU variant: the same card, registered everywhere (a boot
+// document or a checkpoint may name it) and offered only with a device.
+const pci_card_kind_t voodoo2_webgpu_kind = {.id = "voodoo2_webgpu",
+                                             .display_name = "3dfx Voodoo2 (WebGPU)",
+                                             .attach = PCI_ATTACH_PCI,
+                                             .requires_prom = false,
+                                             .card_class = "3d"};
 
 static uint32_t g_bus_error_addr;
 static int g_bus_errors;
@@ -77,12 +105,6 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
     (void)name;
     (void)iface;
     (void)device;
-}
-
-void machine_config_note_slot_card(int bus_kind, int slot, const char *card_id) {
-    (void)bus_kind;
-    (void)slot;
-    (void)card_id;
 }
 
 // The object model is exercised by the integration suites, not here.
@@ -456,6 +478,69 @@ TEST(test_window_dispatch_and_faults) {
     pci_root_delete(root);
 }
 
+// Little-endian byte-lane reversal on a bridge window (pci.h): a host
+// bridge feeding a little-endian client reverses its eight byte lanes so
+// PCI stays byte-address-invariant.  An N-byte access at window offset o
+// reaches PCI offset o ^ (8-N) with its bytes reversed; the device model
+// underneath never sees anything but plain PCI byte addresses and values.
+// (The Apple Network Server's Bandit does exactly this for its NT-capable
+// little-endian firmware.)
+TEST(test_window_lane_reversal) {
+    config_t *cfg = test_cfg();
+    pci_root_t *root = pci_root_create(cfg);
+    pci_bus_t *bus = pci_bus_create(root, "test", 0);
+    device_reset();
+    pci_bus_add_device(bus, &g_dev, 13);
+    pci_bus_add_window(bus, PCI_SPACE_MEM, 0x80000000u, 0x10000000u, 0x80000000u, 0xFFFFFFFFu, "mem");
+
+    // BAR0 (the register block) assigned and enabled at $80001000.
+    cfg_write_dword(&g_dev, PCI_CFG_BAR0, 0x80001000u);
+    cfg_write_dword(&g_dev, PCI_CFG_BAR0 + 4, 0x81000000u);
+    cfg_write_dword(&g_dev, PCI_CFG_BAR0 + 8, 0x00002000u);
+    cfg_write_dword(&g_dev, PCI_CFG_COMMAND, PCI_CMD_MEM_SPACE | PCI_CMD_IO_SPACE);
+
+    const memory_interface_t *mem_if = pci_bus_window_iface(bus, 0);
+    void *mem_ctx = pci_bus_window_ctx(bus, 0);
+
+    // Off by default; the register-region backing returns the sub-offset as
+    // an 8-bit read, so the offset the device saw is directly observable.
+    ASSERT_TRUE(!pci_bus_lane_reverse(bus));
+    mem_if->read_uint8(mem_ctx, 0x1040u);
+    ASSERT_EQ_INT((int)g_regs.last_offset, 0x40);
+
+    // Turn the reversal on and read the flag back.
+    pci_bus_set_lane_reverse(bus, true);
+    ASSERT_TRUE(pci_bus_lane_reverse(bus));
+
+    // A byte read at offset $1040 now reaches device offset $1040^7 = $1047.
+    mem_if->read_uint8(mem_ctx, 0x1040u);
+    ASSERT_EQ_INT((int)g_regs.last_offset, 0x47);
+
+    // A word read flips by 4 ($1040 -> $1044) and comes back byte-reversed:
+    // the region hands out $DEADBEEF, the window returns $EFBEADDE.
+    uint32_t v = mem_if->read_uint32(mem_ctx, 0x1040u);
+    ASSERT_EQ_INT((int)g_regs.last_offset, 0x44);
+    ASSERT_TRUE(v == 0xEFBEADDEu);
+
+    // A byte write flips by 7 and passes the value through unchanged.
+    mem_if->write_uint8(mem_ctx, 0x1010u, 0x5A);
+    ASSERT_EQ_INT((int)g_regs.last_offset, 0x17);
+    ASSERT_EQ_INT((int)g_regs.last_value, 0x5A);
+
+    // A halfword write flips by 6 ($1010 -> $1016) and its two bytes swap.
+    mem_if->write_uint16(mem_ctx, 0x1010u, 0x1234);
+    ASSERT_EQ_INT((int)g_regs.last_offset, 0x16);
+    ASSERT_EQ_INT((int)g_regs.last_value, 0x3412);
+
+    // Back to straight lanes: the transform is gone and the flag clears.
+    pci_bus_set_lane_reverse(bus, false);
+    ASSERT_TRUE(!pci_bus_lane_reverse(bus));
+    mem_if->read_uint8(mem_ctx, 0x1040u);
+    ASSERT_EQ_INT((int)g_regs.last_offset, 0x40);
+
+    pci_root_delete(root);
+}
+
 // A device that decodes I/O at STRAPPED addresses, with no I/O BAR — the
 // mach64 GX's arrangement, and the reason pci_device_add_fixed_region
 // exists.  Three things are pinned: a sparse region answers only its own
@@ -594,12 +679,15 @@ TEST(test_slot_interrupts) {
 
 static int g_factory_calls;
 static int g_factory_slots[8];
+static const char *g_factory_vram[8]; // each call's vram= option, or NULL
 
-static pci_device_t *counting_factory(int slot_index, config_t *cfg, checkpoint_t *cp) {
+static pci_device_t *counting_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)cfg;
-    (void)cp;
-    if (g_factory_calls < 8)
+    (void)rom;
+    if (g_factory_calls < 8) {
         g_factory_slots[g_factory_calls] = slot_index;
+        g_factory_vram[g_factory_calls] = slot_opts_option(opts, "vram");
+    }
     g_factory_calls++;
     pci_device_t *d = (pci_device_t *)calloc(1, sizeof(pci_device_t));
     if (!d)
@@ -629,29 +717,6 @@ TEST(test_card_fits_socket) {
     ASSERT_TRUE(!pci_card_fits_socket(&socket, NULL));
 }
 
-TEST(test_staged_precedence_and_consumption) {
-    pci_staged_clear_all();
-    // The wildcard is the machine-independent channel; a concrete entry
-    // beats it for that slot.
-    pci_staged_card_set(PCI_STAGED_WILDCARD, "wild");
-    pci_staged_card_set(3, "concrete");
-    ASSERT_TRUE(strcmp(pci_staged_card_get(PCI_STAGED_WILDCARD), "wild") == 0);
-    ASSERT_TRUE(strcmp(pci_staged_card_get(3), "concrete") == 0);
-    // "" clears.
-    pci_staged_card_set(3, "");
-    ASSERT_TRUE(pci_staged_card_get(3) == NULL);
-
-    // Keyed options round-trip and clear.
-    pci_staged_option_set(1, "video_mode", "640x480");
-    ASSERT_TRUE(strcmp(pci_staged_option_get(1, "video_mode"), "640x480") == 0);
-    ASSERT_TRUE(pci_staged_option_get(1, "nope") == NULL);
-    pci_staged_option_set(1, "video_mode", "");
-    ASSERT_TRUE(pci_staged_option_get(1, "video_mode") == NULL);
-
-    pci_staged_clear_all();
-    ASSERT_TRUE(pci_staged_card_get(PCI_STAGED_WILDCARD) == NULL);
-}
-
 TEST(test_slot_walk) {
     config_t *cfg = test_cfg();
     static const pci_slot_decl_t slots[] = {
@@ -664,16 +729,62 @@ TEST(test_slot_walk) {
     pci_bus_t *bus = pci_bus_create(root, "test", 0);
     pci_init(root, slots);
 
-    // A socket ships empty unless something is staged, so nothing is seated
-    // and the declarations are still visible.
+    // A socket ships empty unless the boot document names a card for it, so
+    // nothing is seated and the declarations are still visible.
     g_factory_calls = 0;
-    pci_staged_clear_all();
     pci_seat_slots(root, NULL);
     ASSERT_EQ_INT(g_factory_calls, 0);
     ASSERT_TRUE(pci_slot_decl_get(root, 2)->int_line == 24);
     ASSERT_TRUE(pci_slot_decl_get(root, 9) == NULL);
     ASSERT_TRUE(pci_bus_cfg_read(bus, 13, 0, PCI_CFG_ID) == 0xFFFFFFFFu);
     pci_root_delete(root);
+}
+
+// The slot walk seats what the boot document's entries say, slot by slot: a
+// named card, an emptied socket, and a socket the document says nothing about
+// (its declared default) -- and each factory gets its own slot's entry.
+TEST(test_slot_walk_seats_the_documents_entries) {
+    config_t *cfg = test_cfg();
+    static const pci_slot_decl_t slots[] = {
+        {.slot = 1, .kind = PCI_SLOT_SOCKET, .label = "A1", .bus = 0, .device = 13, .default_card = "mach64_gx"},
+        {.slot = 2, .kind = PCI_SLOT_SOCKET, .label = "B1", .bus = 0, .device = 14, .default_card = "mach64_gx"},
+        {.slot = 3, .kind = PCI_SLOT_SOCKET, .label = "C1", .bus = 0, .device = 15},
+        {0},
+    };
+    cfg->build_opts = machine_build_opts_default();
+    cfg->build_opts.n_slots = 2;
+    cfg->build_opts.slots[0] = (slot_opts_t){.slot = 2, .empty = true};
+    cfg->build_opts.slots[1] =
+        (slot_opts_t){.slot = 3, .card = "mach64_gx", .n_options = 1, .options = {{"vram", "4m"}}};
+    pci_root_t *root = pci_root_create(cfg);
+    pci_bus_t *bus = pci_bus_create(root, "test", 0);
+    pci_init(root, slots);
+
+    stub_prom_offered = true;
+    g_factory_calls = 0;
+    pci_seat_slots(root, NULL);
+    stub_prom_offered = false;
+    ASSERT_EQ_INT(g_factory_calls, 2);
+    ASSERT_EQ_INT(g_factory_slots[0], 1); // the default, no options
+    ASSERT_TRUE(g_factory_vram[0] == NULL);
+    ASSERT_EQ_INT(g_factory_slots[1], 3); // the document's card and option
+    ASSERT_TRUE(g_factory_vram[1] && strcmp(g_factory_vram[1], "4m") == 0);
+    ASSERT_TRUE(pci_slot_device(root, 2) == NULL); // emptied despite its default
+    ASSERT_TRUE(pci_bus_cfg_read(bus, 14, 0, PCI_CFG_ID) == 0xFFFFFFFFu);
+    pci_root_delete(root);
+
+    // A default card whose PROM nobody offers is not seated: the socket the
+    // document says nothing about stays empty.
+    root = pci_root_create(cfg);
+    pci_bus_create(root, "test", 0);
+    pci_init(root, slots);
+    g_factory_calls = 0;
+    pci_seat_slots(root, NULL);
+    ASSERT_EQ_INT(g_factory_calls, 1);
+    ASSERT_EQ_INT(g_factory_slots[0], 3); // only the document's card
+    ASSERT_TRUE(pci_slot_device(root, 1) == NULL);
+    pci_root_delete(root);
+    cfg->build_opts = machine_build_opts_default();
 }
 
 // pci_bus_is_populated is the whole question behind "which bridge decodes
@@ -709,12 +820,13 @@ int main(void) {
     RUN(test_bar_map_transitions);
     RUN(test_absent_devices_read_all_ones);
     RUN(test_window_dispatch_and_faults);
+    RUN(test_window_lane_reversal);
     RUN(test_fixed_region_sparse_decode);
     RUN(test_fixed_region_contiguous);
     RUN(test_slot_interrupts);
     RUN(test_card_fits_socket);
-    RUN(test_staged_precedence_and_consumption);
     RUN(test_slot_walk);
+    RUN(test_slot_walk_seats_the_documents_entries);
     RUN(test_bus_population);
     fprintf(stderr, "pci: all tests passed\n");
     return 0;

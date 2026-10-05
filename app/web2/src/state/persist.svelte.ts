@@ -2,14 +2,15 @@
 // `gs-*` namespace. Same keys as the prototype so existing user
 // settings carry across.
 //
-// Phase 7 extends the original (theme + panelPos + panelSize) with
-// view-state for Debug sections, MMU subtab, Memory address/mode,
-// Logs autoscroll, Filesystem expansion, Images collapsed map,
-// Checkpoints sort. Each Phase 7 key uses a `{v, data}` envelope so
-// future migrations are tractable. Reads tolerate missing/malformed
-// values silently.
+// View-state keys extend the original (skin + panelPos + panelSize)
+// with Debug sections, MMU subtab, Memory address/mode, Logs
+// autoscroll, Filesystem expansion, Images collapsed map, Checkpoints
+// sort and the microphone device. Each of those uses a `{v, data}`
+// envelope so future migrations are tractable. Reads tolerate
+// missing/malformed values silently.
 
-import { theme } from './theme.svelte';
+import { appearance } from './appearance.svelte';
+import { DEFAULT_SKIN, getSkin } from '@/skins/registry';
 import { layout, type PanelPos } from './layout.svelte';
 import { debug, type MmuSubtab, type MemoryMode } from './debug.svelte';
 import { logs } from './logs.svelte';
@@ -20,11 +21,11 @@ import { microphone } from './microphone.svelte';
 import type { ImageCategory } from '@/bus/types';
 
 const KEYS = {
-  // Phase 3
-  theme: 'gs-theme',
+  // The original keys: plain values.
+  skin: 'gs-skin',
   panelPos: 'gs-panel-pos',
   panelSize: 'gs-panel-size',
-  // Phase 7
+  // View-state keys, each in a `{v, data}` envelope.
   debugSections: 'gs-debug-sections',
   debugMemory: 'gs-debug-memory',
   debugMmu: 'gs-debug-mmu',
@@ -32,7 +33,6 @@ const KEYS = {
   fsExpanded: 'gs-fs-expanded',
   imagesCollapsed: 'gs-images-collapsed',
   checkpointsSort: 'gs-checkpoints-sort',
-  // Phase 8
   micDevice: 'gs-mic-device',
 } as const;
 
@@ -81,12 +81,10 @@ function writeEnvelope<T>(key: string, data: T): void {
 // Read persisted values once, before mount, and apply them to the state
 // modules. Called from main.ts.
 export function loadPersistedState(): void {
-  const savedTheme = readLS(KEYS.theme);
-  if (savedTheme === 'dark' || savedTheme === 'light') {
-    theme.mode = savedTheme;
-  } else {
-    theme.mode = 'system';
-  }
+  // A skin this build does not know (one removed since), or none, is the
+  // default.
+  const savedSkin = readLS(KEYS.skin);
+  appearance.skin = savedSkin && getSkin(savedSkin).id === savedSkin ? savedSkin : DEFAULT_SKIN;
 
   const savedPos = readLS(KEYS.panelPos);
   if (savedPos === 'bottom' || savedPos === 'left' || savedPos === 'right') {
@@ -105,7 +103,7 @@ export function loadPersistedState(): void {
     }
   }
 
-  // Phase 7 keys — all best-effort.
+  // View-state keys — all best-effort.
   const sections = readEnvelope<Record<string, boolean>>(KEYS.debugSections);
   if (sections) Object.assign(debug.sections, sections);
 
@@ -173,9 +171,9 @@ export function loadPersistedState(): void {
 // Wire up effects that mirror state changes back to localStorage. Must be
 // called from a root-effect context (or from a component's $effect).
 export function startPersistEffects(): void {
+  // The default skin is not stored.
   $effect(() => {
-    if (theme.mode === 'system') writeLS(KEYS.theme, null);
-    else writeLS(KEYS.theme, theme.mode);
+    writeLS(KEYS.skin, appearance.skin === DEFAULT_SKIN ? null : appearance.skin);
   });
   $effect(() => {
     writeLS(KEYS.panelPos, layout.panelPos);
@@ -184,7 +182,7 @@ export function startPersistEffects(): void {
     writeLS(KEYS.panelSize, JSON.stringify(layout.panelSize));
   });
 
-  // Phase 7 effects.
+  // View-state effects.
   $effect(() => writeEnvelope(KEYS.debugSections, { ...debug.sections }));
   $effect(() =>
     writeEnvelope(KEYS.debugMemory, { address: debug.memoryAddress, mode: debug.memoryMode }),
@@ -202,6 +200,5 @@ export function startPersistEffects(): void {
     }),
   );
 
-  // Phase 8 effects.
   $effect(() => writeEnvelope(KEYS.micDevice, microphone.deviceId));
 }

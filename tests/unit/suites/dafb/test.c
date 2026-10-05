@@ -1,4 +1,6 @@
-// DAFB register-level tests (Quadra proposal Phase D; reference §22.9).
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+// DAFB register-level tests.
 //
 // Drives dafb.c through its memory interface exactly as the bus would.
 // The Swatch/DP8531 values are the boot ROM's observed 640×480 mode set
@@ -12,19 +14,15 @@
 #include <stdio.h>
 #include <string.h>
 
-// `has_event` is only referenced by dafb_attach_scheduler, which these
-// bus-level tests never call; provide the missing stub.
-#include "scheduler.h"
-bool has_event(struct scheduler *s, event_callback_t cb) {
-    (void)s;
-    (void)cb;
-    return false;
+// A DAFB with `monitor` (an indexed sense code) strapped to its port.
+static dafb_t *make_dafb_monitor(uint8_t monitor) {
+    dafb_t *d = dafb_init(0x200000u, monitor, NULL);
+    ASSERT_TRUE(d != NULL);
+    return d;
 }
 
 static dafb_t *make_dafb(void) {
-    dafb_t *d = dafb_init(0x200000u, NULL);
-    ASSERT_TRUE(d != NULL);
-    return d;
+    return make_dafb_monitor(6); // 13" RGB, the board default
 }
 
 static void w32(dafb_t *d, uint32_t off, uint32_t val) {
@@ -86,7 +84,7 @@ TEST(depth_matrix_pcbr0) {
         ASSERT_EQ_INT((int)rows[i].fmt, (int)dafb_display(d)->format);
         ASSERT_EQ_INT(640, (int)dafb_display(d)->width);
     }
-    // Undefined depth pattern: mode unchanged, no crash (Trap 24: logged)
+    // Undefined depth pattern: mode unchanged, no crash (logged)
     w32(d, 0x220, 0x04);
     ASSERT_EQ_INT((int)PIXEL_32BPP_XRGB, (int)dafb_display(d)->format);
     // PCBR0's VidClk field (bits 6:5) picks the RAMDAC's PixClk/1,/2,/4 tap,
@@ -116,7 +114,7 @@ TEST(clut_component_phase) {
     ASSERT_EQ_INT(0x44, disp->clut[6].r);
     ASSERT_EQ_INT(0x66, disp->clut[6].b);
     // A partial triplet is real state: an address write resets the phase
-    // without committing (Trap 11).
+    // without committing.
     w32(d, 0x200, 9);
     w32(d, 0x210, 0x77); // R only
     w32(d, 0x200, 9); // phase reset
@@ -128,8 +126,7 @@ TEST(clut_component_phase) {
 }
 
 TEST(sense_protocol_13in) {
-    dafb_t *d = make_dafb();
-    dafb_set_monitor_sense(d, 6); // 13" RGB: line 0 grounded by the monitor
+    dafb_t *d = make_dafb_monitor(6); // 13" RGB: line 0 grounded by the monitor
     // Reset state: drives tristate; read returns the inverted passive code.
     ASSERT_EQ_INT(0x1, (int)(r32(d, 0x01C) & 7)); // ~6 & 7
     // The extended cross-drive tuple (DepVideoEqu.a masks): each probe
@@ -151,8 +148,7 @@ TEST(sense_protocol_13in) {
 // one extended monitor this ROM family has timings for, and it is what the
 // Quadra's 832x624 coverage rides on.
 TEST(sense_protocol_extended_16in) {
-    dafb_t *d = make_dafb();
-    dafb_set_monitor_sense(d, DAFB_SENSE_INDEXED_GF);
+    dafb_t *d = make_dafb_monitor(DAFB_SENSE_INDEXED_GF);
     // Passive probe must read as no-connect ($7) — that is what makes the
     // ROM run the extended algorithm at all.  Register is inverted.
     ASSERT_EQ_INT(0x0, (int)(r32(d, 0x01C) & 7)); // ~7 & 7
@@ -168,8 +164,10 @@ TEST(sense_protocol_extended_16in) {
     unsigned c = ((~r32(d, 0x01C)) & 0x6u) >> 1; // ROM: ANDI #dafbCMask, LSR #1
     ASSERT_EQ_INT(0x2D, (int)((a << 4) | (b << 2) | c));
 
+    dafb_delete(d);
+
     // A passive monitor must not answer the tie matrix at all.
-    dafb_set_monitor_sense(d, 6);
+    d = make_dafb_monitor(6);
     w32(d, 0x01C, 0x3);
     ASSERT_EQ_INT(0x5, (int)(r32(d, 0x01C) & 7));
     dafb_delete(d);

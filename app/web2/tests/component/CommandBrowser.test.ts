@@ -1,96 +1,476 @@
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import CommandBrowser from '@/components/panel-views/terminal/CommandBrowser.svelte';
-import { registerTerminalInsert } from '@/components/panel-views/terminal/terminalBridge';
+import {
+  registerConsoleInput,
+  type ConsoleInputApi,
+} from '@/components/panel-views/terminal/terminalBridge';
+import { publishCompletion } from '@/state/terminalSync.svelte';
+import { invalidate } from '@/bus/memberStore';
 
-// The browser is now generated from the model (proposal §8.6), so mock the
-// bus to feed buildCommandsTree a tiny tree: one subsystem (`cpu`) with a
-// `step` method. Categories are model-derived (subsystem bucket + the static
-// Language keywords group), not a hand-listed catalogue.
+// The browser renders whatever the model says: mock the bus with a small
+// tree (machine → cpu, a two-drive collection; debug) and a usage text, and
+// drive the component.
 vi.mock('@/bus/emulator', () => {
-  const methodInfo = (name: string, doc = '') => ({
-    name,
-    verb: name,
-    category: 'basic',
-    task: '',
-    doc,
-    destructive: false,
-    mutate: false,
-    hidden: false,
-    nargs: 0,
-  });
+  const t = { kind: 'uint', width: 0, presentation: 'hex', enum: null };
+  const members: Record<string, unknown[]> = {
+    'meta.members': [
+      {
+        name: 'machine',
+        kind: 'child',
+        category: 'basic',
+        label: 'M',
+        doc: 'The computer',
+        domain: 'machine',
+        collection: false,
+      },
+      {
+        name: 'debug',
+        kind: 'child',
+        category: 'basic',
+        label: 'debug',
+        doc: 'Debugger',
+        domain: 'emulator',
+        collection: false,
+      },
+    ],
+    'machine.meta.members': [
+      {
+        name: 'cpu',
+        kind: 'child',
+        category: 'basic',
+        label: 'cpu',
+        doc: 'CPU',
+        collection: false,
+      },
+      {
+        name: 'drive',
+        kind: 'child',
+        category: 'basic',
+        label: 'Drives',
+        doc: 'Floppy drives',
+        collection: true,
+        indices: [0, 1],
+        keys: null,
+      },
+      {
+        name: 'category',
+        kind: 'child',
+        category: 'basic',
+        label: 'category',
+        doc: 'Log categories',
+        collection: true,
+        indices: null,
+        keys: ['scsi'],
+      },
+    ],
+    'machine.cpu.meta.members': [
+      {
+        name: 'pc',
+        kind: 'attr',
+        category: 'basic',
+        label: 'pc',
+        doc: 'Program counter. The next instruction.',
+        readonly: false,
+        type: t,
+      },
+      {
+        name: 'vbr',
+        kind: 'attr',
+        category: 'advanced',
+        label: 'vbr',
+        doc: 'Vector base',
+        readonly: false,
+        type: t,
+      },
+      {
+        name: 'step',
+        kind: 'method',
+        category: 'basic',
+        label: 'step',
+        doc: 'Run N instructions',
+        hidden: false,
+      },
+      {
+        name: 'insert',
+        kind: 'method',
+        category: 'basic',
+        label: 'insert',
+        doc: 'Mount an image',
+        hidden: false,
+      },
+    ],
+    'machine.category.meta.members': [
+      {
+        name: 'entries',
+        kind: 'child',
+        category: 'basic',
+        label: 'entries',
+        doc: '',
+        indexed: true,
+        indices: null,
+        keys: ['scsi'],
+      },
+    ],
+    'machine.drive.meta.members': [
+      {
+        name: 'entries',
+        kind: 'child',
+        category: 'basic',
+        label: 'entries',
+        doc: '',
+        indexed: true,
+        indices: [0, 1],
+        keys: null,
+      },
+    ],
+  };
   return {
     isModuleReady: () => true,
+    onCoreEvent: () => () => {},
+    whenModuleReady: () => Promise.resolve(),
     gsEval: async (path: string, args?: unknown[]) => {
-      if (path === 'meta.methods') return []; // no root verbs in this fixture
-      if (path === 'objects') return ['cpu'];
-      if (path === 'cpu.meta.methods') return ['step'];
-      if (path === 'cpu.meta.method_info')
-        return methodInfo(String(args?.[0]), 'run N instructions');
-      if (path === 'cpu.meta.children') return [];
-      if (path === 'shell.aliases') return [];
+      if (path in members) return members[path];
+      if (path === 'shell.highlight' && args?.[0] === 'machine.cpu.insert <path> [writable]')
+        return [
+          { start: 0, end: 7, class: 'object' },
+          { start: 8, end: 11, class: 'object' },
+          { start: 12, end: 18, class: 'method' },
+        ];
+      if (path === 'shell.highlight' && args?.[0] === 'machine.cpu.insert a.img')
+        return [{ start: 12, end: 18, class: 'method' }];
+      if (path === 'shell.highlight') return [];
+      if (path === 'shell.usage' && args?.[0] === 'machine.cpu.insert')
+        return {
+          signature: 'machine.cpu.insert <path> [writable]',
+          arg_spans: [
+            [19, 25],
+            [26, 36],
+          ],
+          text: 'machine.cpu.insert <path> [writable]\ne.g.  machine.cpu.insert a.img\n\nMount an image',
+        };
+      if (path === 'shell.usage')
+        return { signature: '', arg_spans: [], text: `USAGE OF ${String(args?.[0])}` };
+      if (path === 'shell.alias.list') return [];
+      if (path === 'shell.keywords') return [];
+      if (path === 'shell.command.list')
+        return [
+          { name: 'ls', target: 'debug.step', doc: 'Step', builtin: true, available: true },
+          { name: 'run', target: 'scheduler.run', doc: '', builtin: true, available: false },
+        ];
       return null;
     },
   };
 });
 
-// machine.status is read by the rebuild effect.
 vi.mock('@/state/machine.svelte', () => ({ machine: { status: 'idle' } }));
 
+// A console input that records what the browser does to it.
+function fakeInput() {
+  const writes: string[] = [];
+  const api = {
+    writes,
+    replaceToken: vi.fn((t: string) => void writes.push(t)),
+    focusEnd: vi.fn(),
+  };
+  registerConsoleInput(api as ConsoleInputApi);
+  return api;
+}
+
 beforeEach(() => {
-  registerTerminalInsert(null);
+  registerConsoleInput(null);
+  invalidate('');
 });
 
-describe('CommandBrowser (model-generated)', () => {
-  it('renders model-derived top-level categories', async () => {
+// The row whose name is `name`, once rendered.
+async function row(container: HTMLElement, name: string): Promise<HTMLElement> {
+  return waitFor(() => {
+    const el = Array.from(container.querySelectorAll('.cmd-row')).find(
+      (r) => r.querySelector('.name')?.textContent === name,
+    ) as HTMLElement | undefined;
+    if (!el) throw new Error(`row ${name} not rendered yet`);
+    return el;
+  });
+}
+
+// The details pane's usage text, or null when the pane is closed.
+function usageText(container: HTMLElement): string | null {
+  return container.querySelector('.details .usage')?.textContent ?? null;
+}
+
+async function open(container: HTMLElement, name: string): Promise<void> {
+  const r = await row(container, name);
+  await fireEvent.click(r.querySelector('.twistie')!);
+}
+
+// A row's filter verdict (match, dim), from its line's data-state.
+const filterOf = (r: Element) => r.querySelector('.cmd-line')?.getAttribute('data-state');
+
+describe('CommandBrowser (structural, model-generated)', () => {
+  it('the root is expandable sections; Aliases and Language start collapsed', async () => {
     const { container } = render(CommandBrowser);
-    await waitFor(() => {
-      const names = Array.from(
-        container.querySelectorAll('.cmd-row.category > .cmd-line > .name'),
-      ).map((c) => c.textContent);
-      expect(names).toContain('cpu'); // subsystem bucket
-      expect(names).toContain('Language'); // shell keywords group
-    });
+    await row(container, 'machine');
+    const sections = Array.from(container.querySelectorAll('.cmd-row.kind-section'));
+    expect(sections.map((s) => s.querySelector('.name')?.textContent)).toEqual([
+      'Commands',
+      'Machine',
+      'Emulator',
+      'Aliases',
+      'Language',
+    ]);
+    expect(sections.map((s) => s.getAttribute('aria-expanded'))).toEqual([
+      'true',
+      'true',
+      'true',
+      'false',
+      'false',
+    ]);
+    // Collapsing a domain hides its members.
+    await fireEvent.click(sections[1].querySelector('.twistie')!);
+    await waitFor(() =>
+      expect(
+        Array.from(container.querySelectorAll('.name')).some((n) => n.textContent === 'machine'),
+      ).toBe(false),
+    );
   });
 
-  it('clicking a category expands it and reveals its commands', async () => {
+  it('Commands lists the available commands, typed bare', async () => {
+    const input = fakeInput();
     const { container } = render(CommandBrowser);
-    const cpuCat = await waitFor(() => {
-      const el = Array.from(container.querySelectorAll('.cmd-row.category > .cmd-line')).find((l) =>
-        l.textContent?.includes('cpu'),
-      ) as HTMLElement | undefined;
-      if (!el) throw new Error('cpu category not rendered yet');
-      return el;
-    });
-    await fireEvent.click(cpuCat);
-    await waitFor(() => {
-      const leaf = Array.from(container.querySelectorAll('.cmd-line .name')).some(
-        (e) => e.textContent === 'cpu.step',
-      );
-      expect(leaf).toBe(true);
-    });
+    const ls = await row(container, 'ls');
+    expect(ls.querySelector('.doc')?.textContent).toContain('debug.step');
+    expect(
+      Array.from(container.querySelectorAll('.name')).some((n) => n.textContent === 'run'),
+    ).toBe(false);
+    await fireEvent.click(ls.querySelector('.cmd-line')!);
+    expect(input.writes).toEqual([]);
+    await fireEvent.dblClick(ls.querySelector('.cmd-line')!);
+    expect(input.writes).toEqual(['ls ']);
   });
 
-  it('clicking a leaf row writes its insert text through terminalBridge', async () => {
-    const setter = vi.fn();
-    registerTerminalInsert(setter);
+  it('a leaf row shows the first sentence of its doc and its type', async () => {
     const { container } = render(CommandBrowser);
-    const cpuCat = await waitFor(() => {
-      const el = Array.from(container.querySelectorAll('.cmd-row.category > .cmd-line')).find((l) =>
-        l.textContent?.includes('cpu'),
-      ) as HTMLElement | undefined;
-      if (!el) throw new Error('cpu category not rendered yet');
-      return el;
+    await open(container, 'machine');
+    await open(container, 'cpu');
+    const pc = await row(container, 'pc');
+    expect(pc.querySelector('.doc')?.textContent).toBe('Program counter.');
+    expect(pc.querySelector('.type')?.textContent).toBe('uint, hex');
+  });
+
+  it('lists advanced members too, with no filter row', async () => {
+    const { container } = render(CommandBrowser);
+    await open(container, 'machine');
+    await open(container, 'cpu');
+    await row(container, 'pc');
+    await row(container, 'vbr');
+    expect(container.querySelector('.chips')).toBeNull();
+  });
+
+  it('a click previews: the usage shows in the details pane, nothing is written', async () => {
+    const input = fakeInput();
+    const { container } = render(CommandBrowser);
+    await open(container, 'machine');
+    await open(container, 'cpu');
+    const step = await row(container, 'step');
+    await fireEvent.click(step.querySelector('.cmd-line')!);
+    await waitFor(() => expect(usageText(container)).toBe('USAGE OF machine.cpu.step'));
+    expect(input.writes).toEqual([]);
+    // Another row replaces the preview; still nothing written.
+    await fireEvent.click((await row(container, 'pc')).querySelector('.cmd-line')!);
+    await waitFor(() => expect(usageText(container)).toBe('USAGE OF machine.cpu.pc'));
+    expect(input.writes).toEqual([]);
+  });
+
+  it('the details pane closes with ×, with Esc, and with a second click on the row', async () => {
+    fakeInput();
+    const { container, getByLabelText } = render(CommandBrowser);
+    await open(container, 'machine');
+    await open(container, 'cpu');
+    const step = await row(container, 'step');
+    const tree = container.querySelector('.cmd-tree') as HTMLElement;
+    await fireEvent.click(step.querySelector('.cmd-line')!);
+    await waitFor(() => expect(usageText(container)).not.toBeNull());
+    await fireEvent.click(getByLabelText('Close'));
+    await waitFor(() => expect(usageText(container)).toBeNull());
+    await fireEvent.click(step.querySelector('.cmd-line')!);
+    await waitFor(() => expect(usageText(container)).not.toBeNull());
+    await fireEvent.keyDown(tree, { key: 'Escape' });
+    await waitFor(() => expect(usageText(container)).toBeNull());
+    await fireEvent.click(step.querySelector('.cmd-line')!);
+    await waitFor(() => expect(usageText(container)).not.toBeNull());
+    await fireEvent.click(step.querySelector('.cmd-line')!);
+    await waitFor(() => expect(usageText(container)).toBeNull());
+  });
+
+  it('Insert writes the selection and hands focus to the console', async () => {
+    const input = fakeInput();
+    const { container, getByText } = render(CommandBrowser);
+    await open(container, 'machine');
+    await open(container, 'cpu');
+    await fireEvent.click((await row(container, 'step')).querySelector('.cmd-line')!);
+    await fireEvent.click(await waitFor(() => getByText('Insert')));
+    expect(input.writes).toEqual(['machine.cpu.step ']);
+    expect(input.focusEnd).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('CommandBrowser ↔ console', () => {
+  it('writes each kind of row as it is typed', async () => {
+    const input = fakeInput();
+    const { container } = render(CommandBrowser);
+    // A click opens an object; a double-click inserts the row.
+    const click = async (name: string) => {
+      const line = (await row(container, name)).querySelector('.cmd-line')!;
+      await fireEvent.click(line);
+      await fireEvent.dblClick(line);
+    };
+    await click('machine');
+    await click('cpu');
+    await click('pc');
+    await click('step');
+    await click('drive');
+    await click('[0]');
+    await click('category');
+    await click('["scsi"]');
+    expect(input.writes).toEqual([
+      'machine.',
+      'machine.cpu.',
+      'machine.cpu.pc',
+      'machine.cpu.step ',
+      'machine.drive[',
+      'machine.drive[0].',
+      'machine.category["',
+      'machine.category["scsi"].',
+    ]);
+  });
+
+  it('expanding and ↑/↓ write nothing', async () => {
+    const input = fakeInput();
+    const { container } = render(CommandBrowser);
+    await open(container, 'machine');
+    await row(container, 'cpu');
+    expect(input.writes).toEqual([]);
+    const tree = container.querySelector('.cmd-tree') as HTMLElement;
+    await fireEvent.keyDown(tree, { key: 'ArrowDown' });
+    await fireEvent.keyDown(tree, { key: 'ArrowDown' });
+    await waitFor(() => expect(container.querySelector('.cmd-row.selected')).not.toBeNull());
+    expect(input.writes).toEqual([]);
+  });
+
+  it('Home and End select the first and the last row', async () => {
+    const { container } = render(CommandBrowser);
+    await row(container, 'machine');
+    const tree = container.querySelector('.cmd-tree') as HTMLElement;
+    const selected = () => container.querySelector('.cmd-row.selected .name')?.textContent;
+    await fireEvent.keyDown(tree, { key: 'End' });
+    await waitFor(() => expect(selected()).toBe('Language'));
+    await fireEvent.keyDown(tree, { key: 'Home' });
+    await waitFor(() => expect(selected()).toBe('Commands'));
+  });
+
+  it('Esc with the pane closed hands focus to the console, writing nothing', async () => {
+    const input = fakeInput();
+    const { container } = render(CommandBrowser);
+    const tree = container.querySelector('.cmd-tree') as HTMLElement;
+    await row(container, 'machine');
+    await fireEvent.keyDown(tree, { key: 'Escape' });
+    expect(input.focusEnd).toHaveBeenCalledTimes(1);
+    expect(input.writes).toEqual([]);
+  });
+
+  it('Enter on a leaf inserts it; Tab hands focus to the console', async () => {
+    const input = fakeInput();
+    const { container } = render(CommandBrowser);
+    await open(container, 'machine');
+    await open(container, 'cpu');
+    await fireEvent.click((await row(container, 'pc')).querySelector('.cmd-line')!);
+    const tree = container.querySelector('.cmd-tree') as HTMLElement;
+    await fireEvent.keyDown(tree, { key: 'Enter' });
+    expect(input.writes).toEqual(['machine.cpu.pc']);
+    expect(input.focusEnd).toHaveBeenCalledTimes(1);
+    await fireEvent.keyDown(tree, { key: 'Tab' });
+    expect(input.focusEnd).toHaveBeenCalledTimes(2);
+  });
+
+  it('follows the typed token: opens its levels, marks and selects the match, dims the rest', async () => {
+    fakeInput();
+    const { container } = render(CommandBrowser);
+    await row(container, 'machine');
+    publishCompletion('machine.cpu.st', 14, {
+      candidates: [{ text: 'step', kind: 'method', doc: '' }],
+      span: { start: 12, end: 14 },
+      context: { method: null, argIndex: null, argName: null },
     });
-    await fireEvent.click(cpuCat);
-    const stepLine = await waitFor(() => {
-      const el = Array.from(container.querySelectorAll('.cmd-line')).find(
-        (line) => line.querySelector('.name')?.textContent === 'cpu.step',
-      ) as HTMLElement | undefined;
-      if (!el) throw new Error('cpu.step row not rendered yet');
-      return el;
+    const step = await row(container, 'step');
+    await waitFor(() => expect(step.classList.contains('selected')).toBe(true));
+    expect(filterOf(step)).toBe('match');
+    expect(filterOf(await row(container, 'pc'))).toBe('dim');
+    await waitFor(() => expect(usageText(container)).toBe('USAGE OF machine.cpu.step'));
+  });
+
+  it('closes the details pane when the input empties (the command ran)', async () => {
+    fakeInput();
+    const { container } = render(CommandBrowser);
+    await row(container, 'machine');
+    publishCompletion('machine.cpu.st', 14, {
+      candidates: [{ text: 'step', kind: 'method', doc: '' }],
+      span: { start: 12, end: 14 },
+      context: { method: null, argIndex: null, argName: null },
     });
-    await fireEvent.click(stepLine);
-    expect(setter).toHaveBeenCalledWith('cpu.step');
+    await waitFor(() => expect(usageText(container)).toBe('USAGE OF machine.cpu.step'));
+    publishCompletion('', 0, {
+      candidates: [],
+      span: { start: 0, end: 0 },
+      context: { method: null, argIndex: null, argName: null },
+    });
+    await waitFor(() => expect(container.querySelector('.details')).toBeNull());
+  });
+
+  it('in a method’s arguments: selects the method and marks the argument in its usage', async () => {
+    fakeInput();
+    const { container } = render(CommandBrowser);
+    await row(container, 'machine');
+    publishCompletion('machine.cpu.insert /a.img writable=', 35, {
+      candidates: [],
+      span: { start: 35, end: 35 },
+      context: { method: 'machine.cpu.insert', argIndex: 1, argName: 'writable' },
+    });
+    const ins = await row(container, 'insert');
+    await waitFor(() =>
+      expect(container.querySelector('.details .usage-arg')?.textContent).toBe('[writable]'),
+    );
+    expect(ins.classList.contains('selected')).toBe(true);
+  });
+
+  it('keeps the inserted row selected when the console echoes it back', async () => {
+    fakeInput();
+    const { container } = render(CommandBrowser);
+    await open(container, 'machine');
+    await open(container, 'cpu');
+    const pc = await row(container, 'pc');
+    await fireEvent.click(pc.querySelector('.cmd-line')!);
+    publishCompletion('machine.cpu.pc', 14, {
+      candidates: [{ text: 'pc', kind: 'attr', doc: '' }],
+      span: { start: 12, end: 14 },
+      context: { method: null, argIndex: null, argName: null },
+    });
+    await waitFor(() => expect(filterOf(pc)).toBe('match'));
+    expect(pc.classList.contains('selected')).toBe(true);
+  });
+
+  it('colours the usage block: the signature and the example lines', async () => {
+    fakeInput();
+    const { container } = render(CommandBrowser);
+    await open(container, 'machine');
+    await open(container, 'cpu');
+    const ins = await row(container, 'insert');
+    await fireEvent.click(ins.querySelector('.cmd-line')!);
+    const pane = () => container.querySelector('.details .usage');
+    await waitFor(() => expect(pane()?.querySelectorAll('.hl-method').length).toBe(2));
+    const methods = Array.from(pane()!.querySelectorAll('.hl-method')).map((e) => e.textContent);
+    expect(methods).toEqual(['insert', 'insert']);
+    expect(pane()?.textContent).toBe(
+      'machine.cpu.insert <path> [writable]\ne.g.  machine.cpu.insert a.img\n\nMount an image',
+    );
   });
 });

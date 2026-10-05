@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// web2 e2e: the Accelerated scheduler button (proposal-scheduler-accelerated-
-// mode.md §9, last bullet) — the third toolbar mode switches the core to
-// `accelerated`, instruction throughput rises above Real-Time (the adaptive
-// governor climbing under the real RAF loop), and the *timebase* stays locked
-// to real wall-clock while it does.
+// web2 e2e: the Accelerated scheduler button — the third toolbar mode
+// switches the core to `accelerated`, instruction throughput rises above
+// Real-Time (the adaptive governor climbing under the real RAF loop), and the
+// *timebase* stays locked to real wall-clock while it does.
 //
 // The two rates that pin the mode's contract, both read through the shipped
 // Terminal panel (web2 has no window.gsEval):
@@ -25,22 +24,17 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2 } from '../helpers/web2-fs';
+import { terminalRun as typeLine } from '../helpers/terminal';
+
+// Output is read right after each line: type, submit, then settle.
+const terminalRun = (page: Page, line: string) =>
+  typeLine(page, line, { settleMs: 250 });
 
 const DATA = path.resolve(__dirname, '../../data');
 const SE30_ROM = path.join(DATA, 'roms', 'iix-iicx-se30-97221136.rom');
 
 // SE/30: 15.6672 MHz, authentic CPI 4.
 const SE30_HZ = 15_667_200;
-
-// Type one shell line into the Terminal panel's xterm. A trailing settle
-// lets the async worker round-trip land before the next interaction.
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-  await page.waitForTimeout(250);
-}
 
 // Probe the cycle and instruction counters with a fresh key per probe so
 // stale terminal echoes can't satisfy the match (same pattern as
@@ -56,7 +50,7 @@ async function probeCounters(
       `echo "${key}=\${scheduler.cycles},\${machine.cpu.instr_count}"`,
     );
     await page.waitForTimeout(400);
-    const text = await page.locator('.xterm-rows').innerText();
+    const text = await page.locator('.console-output').innerText();
     const m = text.match(new RegExp(`${key}=(\\d+),(\\d+)`));
     if (m) return { cycles: Number(m[1]), instr: Number(m[2]) };
   }
@@ -72,7 +66,7 @@ async function probeString(page: Page, expr: string): Promise<string> {
     const key = `str${++probeSeq}`;
     await terminalRun(page, `echo "${key}=[${'$'}{${expr}}]"`);
     await page.waitForTimeout(400);
-    const text = await page.locator('.xterm-rows').innerText();
+    const text = await page.locator('.console-output').innerText();
     const m = text.match(new RegExp(`${key}=\\[([A-Za-z0-9_.-]+)\\]`));
     if (m) return m[1];
   }
@@ -119,8 +113,8 @@ test('Accelerated toolbar mode: faster CPU, real-time timebase', async ({
     timeout: 30_000,
   });
   await model.selectOption('se30');
-  await page.locator('#cfg-ram').selectOption('8 MB');
-  await page.getByRole('button', { name: 'Start Machine' }).click();
+  await page.locator('#cfg-opt-memory').selectOption('8 MB');
+  await page.getByRole('button', { name: 'Start', exact: true }).click();
   await expect(
     page.locator('.toast .msg').filter({ hasText: 'Machine started' }),
   ).toBeVisible({
@@ -129,7 +123,7 @@ test('Accelerated toolbar mode: faster CPU, real-time timebase', async ({
 
   // Terminal up (the typed path to the object model).
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
 
   // --- Real-Time baseline ---------------------------------------------------
   // Default mode is live/paced; the cycle rate must sit at the SE/30's clock
@@ -142,7 +136,7 @@ test('Accelerated toolbar mode: faster CPU, real-time timebase', async ({
   expect(live.cyclesPerSec / live.instrPerSec).toBeLessThan(4.4);
 
   // --- Switch to Accelerated -------------------------------------------------
-  await page.getByRole('button', { name: 'accelerated', exact: true }).click();
+  await page.getByRole('button', { name: 'Faster', exact: true }).click();
   await expect
     .poll(async () => probeString(page, 'scheduler.mode'), { timeout: 30_000 })
     .toBe('accelerated');
@@ -157,7 +151,7 @@ test('Accelerated toolbar mode: faster CPU, real-time timebase', async ({
     })
     .toBeGreaterThan(live.instrPerSec * 1.4);
 
-  // --- The §9 property, measured in one window -------------------------------
+  // --- The mode's property, measured in one window ---------------------------
   // CPU-bound throughput up, timebase unchanged: instructions per real second
   // beat Real-Time while cycles per real second stay at the machine's clock.
   const accel = await measureRates(page, 6);
@@ -175,7 +169,7 @@ test('Accelerated toolbar mode: faster CPU, real-time timebase', async ({
   expect(shown).toBeGreaterThan(1);
 
   // --- Back to Real-Time ------------------------------------------------------
-  await page.getByRole('button', { name: 'real-time', exact: true }).click();
+  await page.getByRole('button', { name: 'Real', exact: true }).click();
   await expect
     .poll(async () => probeString(page, 'scheduler.mode'), { timeout: 30_000 })
     .toBe('paced');

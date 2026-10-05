@@ -1,0 +1,252 @@
+/* ====== Glass: the layout Midnight and Starlight share ======
+   What tokens cannot say: the floating layout.  The page carries the glows;
+   the display toolbar, the display, the panel and the status bar become
+   separate rounded cards with gutters between them (the workbench sash is
+   widened into the gutter, so it still resizes).  Each skin's overrides.css
+   imports this file first and adds its own touches.  Only gs-* part
+   classes, their ARIA / data-* states and the page itself are targeted, all
+   scoped to the two skins and in the gs.skin layer. */
+@layer gs.skin {
+  /* ---- The page and the four cards -------------------------------------- */
+  :root:is([data-skin='midnight'], [data-skin='starlight']) body {
+    background:
+      radial-gradient(1100px 620px at 18% -12%, var(--gs-ref-glow-indigo), transparent 62%),
+      radial-gradient(900px 520px at 108% 112%, var(--gs-ref-glow-teal), transparent 60%),
+      var(--gs-surface-app);
+  }
+
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-workbench {
+    padding: 12px;
+    gap: 6px;
+  }
+  /* The resize handle fills the gutter between the display and the panel. */
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-workbench > .gs-sash {
+    --gs-sash-size: 12px;
+    --gs-sash-hover: color-mix(in srgb, var(--gs-accent) 14%, transparent);
+    border-radius: 6px;
+  }
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-workbench > .gs-display {
+    background: transparent;
+    gap: 12px;
+  }
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-workbench > .gs-panel {
+    border: 1px solid var(--gs-ref-hairline);
+    border-radius: 20px;
+    background: var(--gs-ref-glass);
+    overflow: hidden;
+  }
+  :root:is([data-skin='midnight'], [data-skin='starlight'])
+    .gs-workbench.panel-collapsed
+    > .gs-panel {
+    border-width: 0;
+  }
+
+  /* The display toolbar: a pill.  Its groups keep a gap even when it runs
+     short of room. */
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-toolbar[data-variant='bar'] {
+    gap: var(--gs-toolbar-gap);
+    padding: 0 10px;
+    border: 1px solid var(--gs-ref-hairline);
+    border-radius: 18px;
+    background: var(--gs-ref-glass);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  }
+
+  /* The display: a darker well with a soft glow behind the screen. */
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-display-content {
+    /* 20px corners: keep the screen's scroll area inside their straight
+       part. */
+    --gs-display-inset: 7px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 20px;
+    overflow: hidden;
+  }
+  :root[data-skin='midnight'] .gs-display-content {
+    border-color: rgba(255, 255, 255, 0.14);
+  }
+
+  /* Midnight's drop-down chevrons read brighter than its muted text. */
+  :root[data-skin='midnight'] .gs-select__arrow {
+    color: #c9cde0;
+  }
+
+  /* The status bar: a pill under the cards; the state is its dot. */
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-statusbar {
+    margin: 0 12px 12px;
+    padding: 0 10px;
+    border: 1px solid var(--gs-ref-hairline);
+    border-radius: 14px;
+    --gs-statusbar-drive-read: var(--gs-ref-teal);
+    --gs-statusbar-drive-write: var(--gs-ref-amber);
+    --gs-statusbar-chip-on-bg: var(--gs-accent-subtle);
+    --gs-statusbar-chip-on-ring: var(--gs-accent);
+    --gs-statusbar-printer-error: var(--gs-danger-fg);
+  }
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-status-dot[data-state='running'] {
+    box-shadow: 0 0 10px var(--gs-statusbar-dot-running);
+  }
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-status-dot[data-state='paused'] {
+    box-shadow: 0 0 10px var(--gs-statusbar-dot-paused);
+  }
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-status-dot[data-state='stopped'],
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-status-dot[data-state='crashed'] {
+    box-shadow: 0 0 10px var(--gs-statusbar-dot-stopped);
+  }
+  /* Drive lights are little chips that light up while the drive works. */
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-drive {
+    margin: 0 2px;
+    padding: 1px 7px;
+    border-radius: 6px;
+    background: var(--gs-control-hover);
+  }
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-drive[data-activity='read'],
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-drive[data-activity='write'] {
+    background: color-mix(in srgb, currentColor 16%, transparent);
+    box-shadow: 0 0 12px color-mix(in srgb, currentColor 30%, transparent);
+  }
+
+  /* ---- Controls ---------------------------------------------------------- */
+  /* Run / pause: the toolbar's first button is a lit periwinkle disc. */
+  :root:is([data-skin='midnight'], [data-skin='starlight'])
+    .gs-toolbar[data-variant='bar']
+    > :first-child
+    > .gs-icon-button:first-child:not(:disabled) {
+    border-radius: 50%;
+    background: var(--gs-accent);
+    color: var(--gs-text-on-accent);
+    box-shadow:
+      0 0 0 4px var(--gs-accent-subtle),
+      0 6px 18px color-mix(in srgb, var(--gs-accent) 45%, transparent);
+  }
+
+  /* Toolbar tools are 36px; the panel's are 30px. */
+  :root:is([data-skin='midnight'], [data-skin='starlight'])
+    .gs-toolbar[data-variant='bar']
+    .gs-icon-button[data-size='md'] {
+    width: 36px;
+    height: 36px;
+  }
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-icon-button[data-tone='panel'] {
+    width: 30px;
+    height: 30px;
+  }
+  /* The zoom level reads in the mono face. */
+  :root:is([data-skin='midnight'], [data-skin='starlight'])
+    .gs-toolbar[data-variant='bar']
+    .gs-input {
+    font-family: var(--gs-font-mono);
+    font-size: 12px;
+  }
+  /* The panel-layout buttons sit in one recessed track (the buttons after
+     the last group's groove, joined), the current one lit. */
+  :root:is([data-skin='midnight'], [data-skin='starlight'])
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button {
+    width: 34px;
+    height: 34px;
+    border-radius: 0;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--gs-text-subtle);
+  }
+  :root:is([data-skin='midnight'], [data-skin='starlight'])
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button
+    + .gs-icon-button {
+    margin-left: calc(0px - var(--gs-toolbar-gap));
+  }
+  :root:is([data-skin='midnight'], [data-skin='starlight'])
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    + .gs-icon-button {
+    border-radius: 12px 0 0 12px;
+  }
+  :root:is([data-skin='midnight'], [data-skin='starlight'])
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button:last-child {
+    border-radius: 0 12px 12px 0;
+  }
+  :root:is([data-skin='midnight'], [data-skin='starlight'])
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button[aria-pressed='true'] {
+    background: rgba(255, 255, 255, 0.12);
+    color: var(--gs-text-strong);
+  }
+  /* The debugger's continue / pause: the lit one of its tools. */
+  :root:is([data-skin='midnight'], [data-skin='starlight'])
+    .gs-toolbar[data-variant='inline']
+    > .gs-icon-button:first-child:not(:disabled) {
+    background: color-mix(in srgb, var(--gs-accent) 16%, transparent);
+    color: var(--gs-accent);
+  }
+
+  /* Segmented controls: a recessed track, the selected option a lit chip. */
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-segmented {
+    padding: 3px;
+    gap: 2px;
+    border: 1px solid var(--gs-border-subtle);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.05);
+  }
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-segmented__option {
+    border: 1px solid transparent;
+    padding: 0 9px;
+  }
+  :root:is([data-skin='midnight'], [data-skin='starlight'])
+    .gs-segmented__option[aria-pressed='true'] {
+    border-color: color-mix(in srgb, var(--gs-accent) 40%, transparent);
+    color: var(--gs-ref-periwinkle-soft);
+    font-weight: var(--gs-font-weight-medium);
+  }
+
+  /* Panel tabs: pills. */
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-panel-header {
+    padding: 0 8px;
+    border-bottom: 1px solid var(--gs-border-subtle);
+  }
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-tabs__tab {
+    border-radius: 10px;
+    margin: 0 1px;
+  }
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-tabs__tab[aria-selected='true'] {
+    background: var(--gs-ref-glass-strong);
+    font-weight: var(--gs-font-weight-semibold);
+  }
+
+  /* Buttons: soft corners; the primary one glows. */
+  :root:is([data-skin='midnight'], [data-skin='starlight'])
+    .gs-button[data-variant='primary']:not(:disabled) {
+    box-shadow: 0 6px 18px -6px color-mix(in srgb, var(--gs-accent) 70%, transparent);
+    font-weight: var(--gs-font-weight-semibold);
+  }
+
+  /* Code and lists: rows get rounded selection pills. */
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-tree-item[aria-selected='true'],
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-list-row[aria-selected='true'],
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-table__row[aria-selected='true'] {
+    border-radius: 8px;
+  }
+
+  /* Overlays: frosted. */
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-menu,
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-modal,
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-toast {
+    backdrop-filter: blur(18px) saturate(140%);
+    border-color: var(--gs-ref-hairline);
+  }
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-modal-backdrop {
+    backdrop-filter: blur(3px);
+  }
+  :root:is([data-skin='midnight'], [data-skin='starlight']) .gs-card {
+    border-color: var(--gs-ref-hairline);
+    background: var(--gs-ref-glass);
+  }
+}

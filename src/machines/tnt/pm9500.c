@@ -20,20 +20,22 @@
 // deliberately separate — it changes what probe-pci walks on a
 // boot-critical path.
 
+#include "slot_tables.h"
 #include "tnt.h"
 
 // Twelve DIMM slots, interleaved in pairs; 1.5 GB architectural max.
-static const uint32_t pm9500_ram_options_kb[] = {16384, 32768, 65536, 131072, 262144, 524288, 1048576, 1572864, 0};
+// Offered: the totals Hammerhead's four-pair carve maps today (DIMMs of at
+// most 64 MB); the six-pair and larger totals wait on the carve.
+static const uint32_t pm9500_ram_options_kb[] = {
+    16384,  24576,  32768,  40960,  49152,  57344,  65536,  73728,  81920,  90112,  98304,  106496,
+    114688, 122880, 131072, 139264, 147456, 155648, 163840, 172032, 180224, 188416, 196608, 204800,
+    212992, 221184, 229376, 237568, 245760, 262144, 270336, 278528, 286720, 294912, 303104, 311296,
+    327680, 335872, 344064, 360448, 393216, 401408, 409600, 425984, 458752, 524288, 0};
 
 // The internal fast-SCSI (MESH) bus carries the boot disks; the
 // external 53C94 chain is present but empty until the CD-ROM phase.
-static const struct scsi_slot pm9500_scsi_slots[] = {
-    {.label = "Internal HD0", .id = 0},
-    {.label = "Internal HD1", .id = 1},
-    {0},
-};
 
-// PCI topology (proposal-pci-architecture §6.1).  Six sockets — three on
+// PCI topology.  Six sockets — three on
 // each Bandit, all at IDSEL 13/14/15 on their own bus (the bandit node's
 // FCode instantiates twice) — with their strapped INTA-D lines on Grand
 // Central externals 23/24/25 (Bandit 1) and 27/28/29 (Bandit 2), which is
@@ -43,19 +45,66 @@ static const struct scsi_slot pm9500_scsi_slots[] = {
 // The slot LABELS come from each bridge's own `slot-names` property, dumped
 // live from a real 9500 under Open Firmware (Apple Technote 1062):
 // Bandit 1 publishes `0000E000 "A1" "B1" "C1"` and Bandit 2 publishes
-// `0000E000 "D2" "E2" "F2"`.  Phase 1 declared the second bank D1/E1/F1,
-// having judged the strings "not decidable from the token stream"; the
-// ROM's own property decides them.
+// `0000E000 "D2" "E2" "F2"`.  An earlier model declared the second bank
+// D1/E1/F1, having judged the strings "not decidable from the token
+// stream"; the ROM's own property decides them.
 static const pci_slot_decl_t pm9500_pci_slots[] = {
-    {.slot = 1, .kind = PCI_SLOT_SOCKET, .label = "A1", .bus = TNT_PCI_BUS_1, .device = 13, .int_line = 23},
-    {.slot = 2, .kind = PCI_SLOT_SOCKET, .label = "B1", .bus = TNT_PCI_BUS_1, .device = 14, .int_line = 24},
-    {.slot = 3, .kind = PCI_SLOT_SOCKET, .label = "C1", .bus = TNT_PCI_BUS_1, .device = 15, .int_line = 25},
-    {.slot = 4, .kind = PCI_SLOT_SOCKET, .label = "D2", .bus = TNT_PCI_BUS_2, .device = 13, .int_line = 27},
-    {.slot = 5, .kind = PCI_SLOT_SOCKET, .label = "E2", .bus = TNT_PCI_BUS_2, .device = 14, .int_line = 28},
-    {.slot = 6, .kind = PCI_SLOT_SOCKET, .label = "F2", .bus = TNT_PCI_BUS_2, .device = 15, .int_line = 29},
+    // The factory card: the Apple Accelerated PCI Graphics Card (the Mach64
+    // GX) -- when its expansion ROM is offered; without it the default
+    // configuration has no card and Control stands in (slot 7).
+    {.slot = 1,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot A1",
+     .detail = "A1",
+     .default_card = "mach64_gx",
+     .fill_order = 1,
+     .bus = TNT_PCI_BUS_1,
+     .device = 13,
+     .int_line = 23},
+    {.slot = 2,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot B1",
+     .detail = "B1",
+     .fill_order = 2,
+     .bus = TNT_PCI_BUS_1,
+     .device = 14,
+     .int_line = 24},
+    {.slot = 3,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot C1",
+     .detail = "C1",
+     .fill_order = 3,
+     .bus = TNT_PCI_BUS_1,
+     .device = 15,
+     .int_line = 25},
+    {.slot = 4,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot D2",
+     .detail = "D2",
+     .fill_order = 4,
+     .bus = TNT_PCI_BUS_2,
+     .device = 13,
+     .int_line = 27},
+    {.slot = 5,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot E2",
+     .detail = "E2",
+     .fill_order = 5,
+     .bus = TNT_PCI_BUS_2,
+     .device = 14,
+     .int_line = 28},
+    {.slot = 6,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot F2",
+     .detail = "F2",
+     .fill_order = 6,
+     .bus = TNT_PCI_BUS_2,
+     .device = 15,
+     .int_line = 29},
     {.slot = 7,
      .kind = PCI_SLOT_BUILTIN_FALLBACK,
-     .label = "VCI",
+     .label = "Built-in video",
+     .detail = "VCI",
      .bus = TNT_PCI_BUS_VCI,
      .device = 11,
      .int_line = TNT_INT_VBL,
@@ -66,8 +115,11 @@ static const pci_slot_decl_t pm9500_pci_slots[] = {
 static const tnt_board_desc_t pm9500_board = {
     // BoxID: bit 11 clear (the 9500 is flagged by Hammerhead +$20 bit 30
     // instead — the shipping ROM's identification routine at $FFC14844),
-    // MESH present, idle-high straps.
-    .boxid = 0x8000u | 0x4000u,
+    // MESH present, idle-high straps, and bit 8 — the factory-test strap
+    // — HIGH: POST tests it on every boot after the first on a formatted
+    // store and a clear bit is the Serial Test Manager instead of a boot
+    // (pm7500.c).
+    .boxid = 0x8000u | 0x4000u | 0x0100u,
     .hh_id = 0x39000000u, // $39 first byte = the TNT identification path
     // +$20 bit 30 SET = 9500 (the 68k routine tests it directly; Open
     // Firmware's selector m = (b>>5)|((b>>1)&8) over the top byte reads
@@ -81,7 +133,7 @@ static const tnt_board_desc_t pm9500_board = {
 };
 
 const hw_profile_t machine_pm9500 = {
-    .name = "Power Macintosh 9500/132",
+    .name = "Power Macintosh 9500",
     .id = "pm9500",
 
     .cpu_model = CPU_MODEL_PPC604,
@@ -89,12 +141,16 @@ const hw_profile_t machine_pm9500 = {
     .mmu_kind = MMU_PPC_604,
 
     .address_bits = 32,
-    .ram_default = 0x2000000, // 32 MB
+    .ram_default = 0x4000000, // 64 MB (a typical well-equipped machine)
     .ram_max = 0x60000000, // 1.5 GB
     .rom_size = 0x400000, // 4 MB ($96CD923D / $9630C68B)
 
     .ram_options = pm9500_ram_options_kb,
-    .scsi_slots = pm9500_scsi_slots,
+    .storage = tnt_storage_8500,
+    .default_storage = tnt_default_storage, // no CD-ROM drive yet: see pm7500.c
+    .appletalk = true,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
+    .floppy_slots = mac_floppy_slots_1hd,
 
     .pci_slots = pm9500_pci_slots,
 

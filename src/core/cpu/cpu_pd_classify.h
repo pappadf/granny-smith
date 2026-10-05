@@ -3,7 +3,7 @@
 
 // cpu_pd_classify.h
 // The 68K decode tree in its third role: the predecode CLASSIFIER
-// (proposal §4.3).  Included once per core file, AFTER that core's
+// (docs/internals/core/cpu/predecode.md).  Included once per core file, AFTER that core's
 // executors, with every OP_ name redefined to return an id instead of
 // executing: the generated defaults return the leaf's T1 id, and the
 // overrides below return a specialized (T0) id for the operand shapes they

@@ -3,12 +3,12 @@
 |
 | gsvrom_drvr.s
 | The shared slot video DRVR: Open/Close, Control/Status csCode dispatch,
-| and the slot-VBL ISR (proposal sec. 3.1 — everything above the ops line
-| never names a register address).  The Slot Manager copies this whole
-| sBlock to the system heap, so the CPB data and card ops are emitted
-| into it with the "DR" prefix.
+| and the slot-VBL ISR (everything above the ops line never names a
+| register address).  The Slot Manager copies this whole sBlock to the
+| system heap, so the CPB data and card ops are emitted into it with the
+| "DR" prefix.
 |
-| csCode ABI per docs/core/peripherals/nubus_vrom.md sec. 10 (confirmed
+| csCode ABI per docs/reference/hardware/nubus/declaration-rom.md sec. 10 (confirmed
 | against the GC ROM's driver): Control 0-9, Status 2-10.
 |
 | (The driver private storage layout — the pv* equates — lives in
@@ -62,7 +62,7 @@ DrvOpen:
 
 	| monitor geometry: dCtlSlotId names the sResource that loaded us —
 	| walk its records with the Slot Manager instead of an in-code
-	| table, exactly like the genuine 8*24/GC drivers (§3.4).
+	| table, exactly like the genuine 8*24/GC drivers.
 	moveq	#0,d0
 	move.b	dCtlSlotId(a3),d0
 	move.w	d0,pvSpID(a5)
@@ -212,9 +212,24 @@ CtlNoop:
 	moveq	#0,d0
 	rts
 
-| csCode 0 — Reset: default 1-bpp mode, page 0, gray screen.
+| PAGES.  Everything below that touches pvPage / DRSetPage is assembled
+| only for a personality that declares more than one (GS_NPAGES): a
+| single-page card has no SetPage op and no page to track, so it
+| carries none of the page code.  This fragment's byte length is
+| otherwise free to change -- the 8*24 GC bring-up failures once blamed
+| on it were SecondaryInit dereferencing an uninitialised refNum (see
+| gsvrom_sinit.s), whose fate depended on the system-heap layout.
+|
+| csCode 0 — Reset: default 1-bpp mode, page 0, gray screen.  A card with
+| more than one page must switch page 0 in here (Designing Cards and
+| Drivers 3ed, csCode 0).
 CtlReset:
 	move.w	#0x80,pvMode(a5)
+	.if	GS_NPAGES > 1
+	clr.w	pvPage(a5)
+	bsr	DRSetPage
+	moveq	#0,d2
+	.endif
 	bsr	ApplyMode
 	bsr	GrayFill
 	move.w	#0x80,csMode(a2)
@@ -224,17 +239,32 @@ CtlReset:
 	moveq	#0,d0
 	rts
 
-| csCode 2 — SetMode: switch pixel depth (page 0 only).
+| csCode 2 — SetMode: switch pixel depth AND display page.  csPage is
+| the page to switch in (Designing Cards and Drivers 3ed, csCode 2); a
+| single-page personality still rejects anything but 0 because
+| GS_NPAGES-1 is 0 there.
 CtlSetMode:
 	move.w	csMode(a2),d2
 	cmp.w	#0x80,d2
 	blo.s	CtlModeBad
 	cmp.w	#0x80+GS_NMODES-1,d2
 	bhi.s	CtlModeBad
+	.if	GS_NPAGES > 1
+	move.w	csPage(a2),d3
+	bmi.s	CtlModeBad
+	cmp.w	#GS_NPAGES-1,d3
+	bhi.s	CtlModeBad
+	move.w	d2,pvMode(a5)
+	move.w	d3,pvPage(a5)
+	bsr	DRSetPage
+	bsr	ApplyMode
+	move.w	d3,d2
+	.else
 	tst.w	csPage(a2)
 	bne.s	CtlModeBad
 	move.w	d2,pvMode(a5)
 	bsr	ApplyMode
+	.endif
 	bsr	DRBaseAddr
 	move.l	d0,csBaseAddr(a2)
 	moveq	#0,d0
@@ -473,7 +503,12 @@ StTab:
 
 StGetMode:
 	move.w	pvMode(a5),csMode(a2)
+	.if	GS_NPAGES > 1
+	move.w	pvPage(a5),csPage(a2)
+	move.w	pvPage(a5),d2
+	.else
 	clr.w	csPage(a2)
+	.endif
 	bsr	DRBaseAddr
 	move.l	d0,csBaseAddr(a2)
 	moveq	#0,d0
@@ -527,14 +562,28 @@ StGEHave:
 	moveq	#0,d0
 	rts
 
+| Status 4 — GetPages: the TOTAL number of pages in the current mode, as
+| a counting number (not the current page index), and it must match the
+| mPageCnt the declaration ROM declares for this personality.
 StGetPages:
-	move.w	#1,csPage(a2)
+	move.w	#GS_NPAGES,csPage(a2)
 	moveq	#0,d0
 	rts
 
+| Status 5 — GetBaseAddr: the base of the REQUESTED page, which need not
+| be the displayed one ("allows video pages to be written to even when
+| not displayed" -- Designing Cards and Drivers 3ed).  So this reads the
+| page and does not switch it.
 StGetBase:
+	.if	GS_NPAGES > 1
+	move.w	csPage(a2),d2
+	bmi	CtlModeBad
+	cmp.w	#GS_NPAGES-1,d2
+	bhi	CtlModeBad
+	.else
 	tst.w	csPage(a2)
 	bne	CtlModeBad
+	.endif
 	bsr	DRBaseAddr
 	move.l	d0,csBaseAddr(a2)
 	moveq	#0,d0
@@ -595,7 +644,7 @@ StGetCurMode:
 | DrvReadVP: read the head of mode-list id D0.W's VPBlock from the
 | sResource that loaded us (pvSpID) and cache vpRowBytes / width /
 | height in private storage — the driver reads the generated records
-| instead of carrying its own geometry table (§3.4).  In: D0.W = mode
+| instead of carrying its own geometry table.  In: D0.W = mode
 | id (0x80 + depth code), A5 = private.  Out: D0 = 0 on success (Z
 | set), Slot Manager error otherwise; other registers preserved.
 DrvReadVP:

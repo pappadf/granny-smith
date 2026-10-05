@@ -2,10 +2,13 @@
 // Copyright (c) pappadf
 
 // vfs_class.c
-// Object-model class descriptor for `vfs` (vfs.ls / .mkdir / .cat).
-// Split out from vfs.c so unit tests linking the core path-resolver
-// don't pull in object-model dependencies.
+// The directory-level file methods of the `files` node (files.ls / .list /
+// .mkdir / .cat); the member table lives with the rest of `files` in
+// storage/storage_class.c.  Split out from vfs.c so unit tests linking the
+// core path-resolver don't pull in object-model dependencies.
 
+#include "vfs_class.h"
+#include "gs_out.h"
 #include "vfs.h"
 
 #include "image_vfs.h"
@@ -17,13 +20,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-// === Object-model class descriptor =========================================
-//
-// Wraps the shell's filesystem commands (ls, mkdir, cat) under a single
-// object so scripts have a typed entry point. Each method delegates to
-// the vfs core API.
+// Each method delegates to the vfs core API.
 
-static value_t vfs_method_ls(struct object *self, const member_t *m, int argc, const value_t *argv) {
+value_t files_method_ls(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     const char *path = (argc >= 1 && argv[0].s && *argv[0].s) ? argv[0].s : vfs_get_cwd();
@@ -31,30 +30,33 @@ static value_t vfs_method_ls(struct object *self, const member_t *m, int argc, c
     const vfs_backend_t *be = NULL;
     int rc = vfs_opendir(path, &dir, &be);
     if (rc < 0) {
-        printf("ls: cannot open directory '%s': %s\n", path, strerror(-rc));
+        gs_outf("ls: cannot open directory '%s': %s\n", path, strerror(-rc));
         return val_bool(false);
     }
     vfs_dirent_t entry;
     int r;
     while ((r = be->readdir(dir, &entry)) > 0)
-        printf("%s\n", entry.name);
+        gs_outf("%s\n", entry.name);
     bool ok = (r == 0);
     if (r < 0) {
         // Surface readdir errors instead of silently truncating the listing.
-        printf("ls: readdir error in '%s': %s\n", path, strerror(-r));
+        gs_outf("ls: readdir error in '%s': %s\n", path, strerror(-r));
     }
     be->closedir(dir);
     return val_bool(ok);
 }
 
-// `vfs.list([path])` — like `vfs.ls`, but returns a structured listing the
+// `files.list([path])` — like `files.ls`, but returns a structured listing the
 // GUI can render instead of printing names to stdout. Result is a list of
-//   {name: "...", kind: "file"|"directory", size: <bytes>} maps.
-// Descends into disk images through the same resolver as `vfs.ls`, so a bare
-// image path lists its partitions and a partition path lists the HFS/UFS
-// volume. Read-only throughout. Returns V_ERROR (falsy via the bridge) when
-// the path can't be opened as a directory.
-static value_t vfs_method_list(struct object *self, const member_t *m, int argc, const value_t *argv) {
+//   {name: "...", kind: "file"|"directory", size: <bytes>, expandable: <bool>}
+// maps.  `expandable` is true for a file the format registry recognises as an
+// image or archive the VFS can descend into -- the GUI routes on it rather
+// than guessing from the file's extension.  Descends into disk images and
+// archives through the same resolver as `files.ls`, so a bare image path
+// lists its partitions and a partition path lists the HFS/UFS volume.
+// Read-only throughout. Returns V_ERROR (falsy via the bridge) when the path
+// can't be opened as a directory.
+value_t files_method_list(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     const char *path = (argc >= 1 && argv[0].s && *argv[0].s) ? argv[0].s : vfs_get_cwd();
@@ -62,7 +64,7 @@ static value_t vfs_method_list(struct object *self, const member_t *m, int argc,
     const vfs_backend_t *be = NULL;
     int rc = vfs_opendir(path, &dir, &be);
     if (rc < 0)
-        return val_err("vfs.list: cannot open directory '%s': %s", path, strerror(-rc));
+        return val_err("files.list: cannot open directory '%s': %s", path, strerror(-rc));
 
     value_t *items = NULL;
     size_t len = 0, cap = 0;
@@ -88,10 +90,20 @@ static value_t vfs_method_list(struct object *self, const member_t *m, int argc,
                 }
             }
         }
+        // Expandable: a non-empty file the registry recognises (read from a
+        // bounded probe of its head and tail; a compressed archive member is
+        // not decoded to find out).
+        bool expandable = false;
+        if (!(mode & VFS_MODE_DIR) && size > 0) {
+            char child[VFS_PATH_MAX];
+            if (snprintf(child, sizeof(child), "%s/%s", path, entry.name) < (int)sizeof(child))
+                expandable = vfs_is_expandable(child);
+        }
         value_map_builder_t *b = val_map_new();
         val_map_put(b, "name", val_str(entry.name));
         val_map_put(b, "kind", val_str((mode & VFS_MODE_DIR) ? "directory" : "file"));
         val_map_put(b, "size", val_int((int64_t)size));
+        val_map_put(b, "expandable", val_bool(expandable));
         val_list_push(&items, &len, &cap, val_map_finish(b));
     }
     be->closedir(dir);
@@ -101,40 +113,40 @@ static value_t vfs_method_list(struct object *self, const member_t *m, int argc,
         // surface the error rather than returning a truncated one.
         value_t partial = val_list(items, len);
         value_free(&partial);
-        return val_err("vfs.list: readdir error in '%s': %s", path, strerror(-r));
+        return val_err("files.list: readdir error in '%s': %s", path, strerror(-r));
     }
 
     return val_list(items, len);
 }
 
-static value_t vfs_method_mkdir(struct object *self, const member_t *m, int argc, const value_t *argv) {
+value_t files_method_mkdir(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
     const char *dir = argv[0].s;
     if (!dir || !*dir)
-        return val_err("vfs.mkdir: expected a non-empty path");
+        return val_err("files.mkdir: expected a non-empty path");
     int rc = vfs_mkdir(dir);
     if (rc == 0) {
-        printf("Directory '%s' created\n", dir);
+        gs_outf("Directory '%s' created\n", dir);
         return val_bool(true);
     }
-    printf("mkdir: cannot create directory '%s': %s\n", dir, strerror(-rc));
+    gs_outf("mkdir: cannot create directory '%s': %s\n", dir, strerror(-rc));
     return val_bool(false);
 }
 
-static value_t vfs_method_cat(struct object *self, const member_t *m, int argc, const value_t *argv) {
+value_t files_method_cat(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
     const char *path = argv[0].s;
     if (!path || !*path)
-        return val_err("vfs.cat: expected a non-empty path");
+        return val_err("files.cat: expected a non-empty path");
     vfs_file_t *f = NULL;
     const vfs_backend_t *be = NULL;
     int rc = vfs_open(path, &f, &be);
     if (rc < 0) {
-        printf("cat: cannot open '%s': %s\n", path, strerror(-rc));
+        gs_outf("cat: cannot open '%s': %s\n", path, strerror(-rc));
         return val_bool(false);
     }
     uint8_t buf[4096];
@@ -143,82 +155,44 @@ static value_t vfs_method_cat(struct object *self, const member_t *m, int argc, 
         size_t got = 0;
         int rr = be->read(f, off, buf, sizeof(buf), &got);
         if (rr < 0) {
-            printf("cat: read error on '%s': %s\n", path, strerror(-rr));
+            gs_outf("cat: read error on '%s': %s\n", path, strerror(-rr));
             be->close(f);
             return val_bool(false);
         }
         if (got == 0)
             break;
-        // Check fwrite return so a closed/redirected stdout doesn't silently
-        // drop bytes.
-        size_t wrote = fwrite(buf, 1, got, stdout);
-        if (wrote != got) {
-            printf("cat: write error on stdout (only %zu/%zu bytes)\n", wrote, got);
-            be->close(f);
-            return val_bool(false);
-        }
+        // The sink (gs_out.h): the job's output, or stdout.
+        gs_out((const char *)buf, got);
         off += got;
     }
     be->close(f);
     return val_bool(true);
 }
 
-static const arg_decl_t vfs_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .doc = "Filesystem path"},
-};
-static const arg_decl_t vfs_path_arg_optional[] = {
-    {.name = "path", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Directory path (default: cwd)"},
-};
-
-static const member_t vfs_members[] = {
-    {.kind = M_METHOD,
-     .name = "ls",
-     .doc = "List directory contents (or current directory)",
-     .method = {.args = vfs_path_arg_optional, .nargs = 1, .result = V_BOOL, .fn = vfs_method_ls}  },
-    {.kind = M_METHOD,
-     .name = "list",
-     .doc = "List a directory as [{name,kind,size}] maps (descends into disk images)",
-     .method = {.args = vfs_path_arg_optional, .nargs = 1, .result = V_LIST, .fn = vfs_method_list}},
-    {.kind = M_METHOD,
-     .name = "mkdir",
-     .doc = "Create a directory",
-     .method = {.args = vfs_path_arg, .nargs = 1, .result = V_BOOL, .fn = vfs_method_mkdir}        },
-    {.kind = M_METHOD,
-     .name = "cat",
-     .doc = "Print the raw bytes of a file (data fork, rsrc, finder_info)",
-     .method = {.args = vfs_path_arg, .nargs = 1, .result = V_BOOL, .fn = vfs_method_cat}          },
-};
-
-const class_desc_t vfs_class = {
-    .name = "vfs",
-    .members = vfs_members,
-    .n_members = sizeof(vfs_members) / sizeof(vfs_members[0]),
-};
-
-// === Process-singleton lifecycle ============================================
-//
-// `vfs` is a thin facade attached once to the object root. The methods route
-// through the file-level static state in vfs.c (`g_cwd`) and image_vfs.c
-// (`g_mounts`); the `vfs` object itself carries no instance data. Register
-// once at shell_init.
-
-static struct object *s_vfs_object = NULL;
-
-void vfs_class_register(void) {
-    if (s_vfs_object)
-        return;
-    s_vfs_object = object_new(&vfs_class, NULL, "vfs");
-    if (!s_vfs_object) {
-        fprintf(stderr, "vfs_class_register: object_new failed; vfs.* unavailable\n");
-        return;
-    }
-    object_attach(object_root(), s_vfs_object);
+// `files.cd(path)` -- make a directory the current one: the directory
+// relative paths start from, and what files.ls / files.list show when
+// given no path.
+value_t files_method_cd(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    char abs[VFS_PATH_MAX];
+    if (vfs_normalise_path(argv[0].s, abs, sizeof(abs)) < 0)
+        return val_err("cd: path too long");
+    vfs_stat_t st;
+    if (vfs_stat(abs, &st) < 0)
+        return val_err("cd: no such directory '%s'", argv[0].s);
+    if (!(st.mode & VFS_MODE_DIR))
+        return val_err("cd: not a directory '%s'", argv[0].s);
+    vfs_set_cwd(abs);
+    return val_none();
 }
 
-void vfs_class_unregister(void) {
-    if (s_vfs_object) {
-        object_detach(s_vfs_object);
-        object_delete(s_vfs_object);
-        s_vfs_object = NULL;
-    }
+// `files.pwd()` -- the current directory.
+value_t files_method_pwd(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    return val_str(vfs_get_cwd());
 }

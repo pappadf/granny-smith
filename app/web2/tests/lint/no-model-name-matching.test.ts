@@ -3,8 +3,8 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative } from 'node:path';
 
-// Lint guard for proposal §1.4 / §6.1: the UI must derive machine capabilities
-// from machine.profile() (the `capabilities` / `video_slots` probe), NEVER by
+// Lint guard: the UI must derive machine capabilities
+// from catalog.profile() (the `capabilities` / `video_slots` probe), NEVER by
 // matching on the human-readable model name. The original sin was
 // `/SE\/30|II/i.test(model)` duplicated across machine.ts / upload.ts /
 // emulator.ts / urlMedia.ts to decide MMU presence — so a new MMU machine
@@ -22,7 +22,7 @@ const FORBIDDEN: { why: string; pattern: RegExp }[] = [
   {
     // The smoking gun: an escaped-slash model name inside a regex literal.
     // "iix-iicx-se30-97221136.rom" (a filename) has no backslash, so it does not match this.
-    why: 'regex literal matching the "SE/30" model name (use machine.profile capabilities instead)',
+    why: 'regex literal matching the "SE/30" model name (use catalog.profile capabilities instead)',
     pattern: /SE\\\/30/,
   },
   {
@@ -31,7 +31,7 @@ const FORBIDDEN: { why: string; pattern: RegExp }[] = [
     // are legitimate; this targets capability-by-model-name only. Name
     // *fragments* in a regex literal are caught by the rule above regardless
     // of the variable they are tested against.
-    why: 'regex .test() on a model-name variable (derive capabilities from machine.profile, not the name)',
+    why: 'regex .test() on a model-name variable (derive capabilities from catalog.profile, not the name)',
     pattern: /\.test\(\s*(model|modelName|machineName|modelId)\b/,
   },
 ];
@@ -49,7 +49,7 @@ function walk(dir: string): string[] {
   return out;
 }
 
-describe('frontend never matches on the model name (proposal §1.4)', () => {
+describe('frontend never matches on the model name', () => {
   const files = walk(SRC);
 
   it('scans a non-trivial number of source files', () => {
@@ -70,4 +70,103 @@ describe('frontend never matches on the model name (proposal §1.4)', () => {
       expect(offenders, `model-name matching found:\n${offenders.join('\n')}`).toEqual([]);
     });
   }
+});
+
+// No hardware knowledge in the frontend at all: which buses, slots, cards and
+// models a machine has, and what each can do, is the machine-description
+// tree's to say (catalog.profile), so nothing under src/ may branch on a bus
+// or slot kind, a card id or a model id -- the tree's ids are data the
+// renderers pass back, never names they compare against.  (Literals that are
+// not comparisons -- an icon named "floppy", a log category -- are fine.)
+const MODEL_IDS = [
+  'plus',
+  'se30',
+  'lisa',
+  'macxl',
+  'iix',
+  'iicx',
+  'iifx',
+  'iici',
+  'iisi',
+  'q700',
+  'q900',
+  'q950',
+  'q840av',
+  'q660av',
+  'pm6100',
+  'pm7100',
+  'pm8100',
+  'pm7500',
+  'pm8500',
+  'pm9500',
+  'ans500',
+  'ans700',
+  'pmg3dt',
+  'pmg3mt',
+];
+const CARD_IDS = [
+  'mdc_8_24',
+  'display_card_24ac',
+  '824gc',
+  'builtin_se30_video',
+  'builtin_rbv_video',
+  'tnt_control',
+  'mach64_gx',
+  'ati_rage_pro',
+  'cirrus_54m30',
+  'voodoo2',
+  'voodoo2_webgpu',
+];
+const BUS_AND_SLOT = ['nubus', 'pci', 'scsi\\d*', 'ata\\d*', 'profile', 'floppy', 'builtin'];
+const ID = `(?:${[...MODEL_IDS, ...CARD_IDS, ...BUS_AND_SLOT].join('|')})`;
+const ID_COMPARISON = new RegExp(
+  `[!=]==?\\s*['"\`]${ID}['"\`]|['"\`]${ID}['"\`]\\s*[!=]==?|\\bcase\\s+['"\`]${ID}['"\`]`,
+);
+
+describe('the frontend never branches on a bus, slot, card or model id', () => {
+  const files = walk(SRC);
+  it('compares against none of them anywhere in src/', () => {
+    const offenders: string[] = [];
+    for (const file of files) {
+      readFileSync(file, 'utf8')
+        .split('\n')
+        .forEach((line, i) => {
+          if (ID_COMPARISON.test(line))
+            offenders.push(`${relative(SRC, file)}:${i + 1}: ${line.trim()}`);
+        });
+    }
+    expect(offenders, `hardware-id comparison found:\n${offenders.join('\n')}`).toEqual([]);
+  });
+
+  it('would catch one', () => {
+    for (const line of [
+      "if (bus.kind === 'profile') {",
+      "x !== 'scsi2'",
+      "case 'nubus':",
+      'model == "iici"',
+      "'mach64_gx' === card.id",
+    ])
+      expect(ID_COMPARISON.test(line), line).toBe(true);
+    expect(ID_COMPARISON.test("icon: 'floppy'")).toBe(false);
+  });
+});
+
+// Parameter memory is device state the core seeds from the configuration
+// when it builds a machine; the frontend never writes it (no PRAM or NVRAM
+// poke, no boot-device byte, on the boot path or anywhere else).
+describe('the frontend never writes PRAM or NVRAM', () => {
+  it('names no parameter-memory surface in src/', () => {
+    const PRAM = /rtc\.pram|pram_init|\bnvram\b|boot_device/i;
+    const offenders: string[] = [];
+    for (const file of walk(SRC)) {
+      readFileSync(file, 'utf8')
+        .split('\n')
+        .forEach((line, i) => {
+          // Code, not prose: a comment may talk about PRAM.
+          if (PRAM.test(line.replace(/\/\/.*$/, '')))
+            offenders.push(`${relative(SRC, file)}:${i + 1}: ${line.trim()}`);
+        });
+    }
+    expect(offenders, `parameter-memory access found:\n${offenders.join('\n')}`).toEqual([]);
+  });
 });

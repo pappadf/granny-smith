@@ -1,16 +1,24 @@
 ## Shared build logic for unit test sub-makefiles
 #
 # Usage inside a test directory Makefile (under suites/<name>/):
-#   TEST_NAME    := mytest           # (required) test binary name
-#   TEST_SRCS    := test.c           # (required) test sources (relative to test dir)
-#   TEST_HARNESS := isolated         # (required) isolated or cpu
-#   EXTRA_SRCS   := ../../../src/... # (optional) additional source files
-#   EXTRA_CFLAGS := -DFOO            # (optional) additional compiler flags
+#   TEST_NAME     := mytest           # (required) test binary name
+#   TEST_SRCS     := test.c           # (required) test sources (relative to test dir)
+#   TEST_HARNESS  := isolated         # isolated (default), cpu, or none
+#   EXTRA_SRCS    := ../../../src/... # (optional) additional source files
+#   EXTRA_CFLAGS  := -DFOO            # (optional) additional compiler flags
+#   EXTRA_LDFLAGS := -lz              # (optional) additional link flags
+#   STUBS         := assert           # (optional) support/stub_<name>.c to add
+#   OMIT_STUBS    := memory           # (optional) harness stubs to leave out
+#   SANITIZE      := -fsanitize=...   # (optional) sanitizer flags, compile + link
+#   INCLUDE_FLAGS := -I...            # (optional) replaces the default list
+#   RUN_ENV       := VAR=value        # (optional) environment for the run
 #   include ../../common.mk
 #
 # Harness modes:
 #   isolated  Pure unit tests, no emulator subsystems (only stubs)
 #   cpu       CPU tests with real memory and CPU
+#   none      No harness and no default stubs: the test supplies main() and
+#             its own mocks, and names any support stubs it wants in STUBS
 #
 # Dependency tracking: automatic via -MMD -MP.
 # Header changes trigger correct recompilations.
@@ -33,29 +41,52 @@ EMU_ROOT       := $(WORKSPACE_ROOT)/src
 
 BUILD_DIR  ?= $(UNIT_ROOT)/build
 OBJ_DIR    := $(BUILD_DIR)/obj/$(TEST_NAME)
-TARGET     := $(BUILD_DIR)/$(TEST_NAME)
+# TARGET_EXT names the wasm32 run's output (.js) apart from the native one.
+TARGET_EXT ?=
+TARGET     := $(BUILD_DIR)/$(TEST_NAME)$(TARGET_EXT)
 
 # -- Compiler and flags --
 
-CC ?= gcc
+# make's built-in CC=cc outranks `CC ?=`; replace only that default.
+ifeq ($(origin CC),default)
+CC := gcc
+endif
 
-BASE_CFLAGS := -O0 -g -Wall -Wextra
+# The product builds' dialect and warnings (see Makefile), with the feature
+# macros headless uses: without _GNU_SOURCE glibc hides strptime and the
+# like, and the unit build saw different declarations than the product.
+# WERROR=1 (set in CI) makes every warning an error.
+BASE_CFLAGS := -O0 -g -std=gnu11 -Wall -Wextra -Wno-missing-field-initializers \
+               -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L
+WERROR ?= 0
+ifeq ($(WERROR),1)
+BASE_CFLAGS += -Werror
+endif
 
-INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
-                 -I$(EMU_ROOT)/core \
-                 -I$(EMU_ROOT)/core/cpu \
-                 -I$(EMU_ROOT)/core/memory \
-                 -I$(EMU_ROOT)/core/peripherals \
-                 -I$(EMU_ROOT)/core/peripherals/nubus \
-                 -I$(EMU_ROOT)/core/scheduler \
-                 -I$(EMU_ROOT)/core/debug \
-                 -I$(EMU_ROOT)/core/storage \
-                 -I$(EMU_ROOT)/core/network \
-                 -I$(EMU_ROOT)/core/shell \
-                 -I$(EMU_ROOT)/core/object \
-                 -I$(EMU_ROOT)/core/vfs \
-                 -I$(EMU_ROOT)/machines \
+# The core and machine header directories are the ones both product builds
+# use (src/sources.mk); the unit build puts its support shims first and
+# builds against the wasm platform headers.  A suite that deliberately
+# compiles against a narrower set sets INCLUDE_FLAGS itself.
+CORE_DIR     := $(EMU_ROOT)/core
+MACHINES_DIR := $(EMU_ROOT)/machines
+PEELER_DIR   := $(EMU_ROOT)/peeler
+include $(WORKSPACE_ROOT)/src/sources.mk
+
+# The byte-source layer (src/core/storage/source.h) that storage.c and
+# image.c read through -- sources, the chunk cache, the format registry and
+# the NDIF/UDIF adapters -- and the peeler library it is built on.  A suite
+# linking storage.c or image.c sets USE_SOURCE_LAYER := 1 before including
+# this file.
+SOURCE_LAYER_SRCS := $(addprefix $(CORE_DIR)/storage/,source.c source_cache.c chunk_cache.c format_registry.c \
+                       image_chunkmap.c image_ndif.c image_udif.c image_scratch.c adc.c inflate.c deflate.c \
+                       udif_writer.c resource_fork.c \
+                       rsrc_dcmp.c macroman.c storage_util.c) \
+                     $(CORE_DIR)/crc32.c $(PEELER_SRC)
+
+INCLUDE_FLAGS ?= -I$(UNIT_ROOT)/support \
+                 $(CORE_INCLUDES) \
                  -I$(EMU_ROOT)/platform/wasm \
+                 $(PEELER_INCLUDES) \
                  -DUNIT_TEST_PLATFORM_OVERRIDE \
                  -include $(UNIT_ROOT)/support/platform.h \
                  -include $(UNIT_ROOT)/support/log.h
@@ -67,15 +98,25 @@ PDGEN_CPU_HEADERS := $(PDGEN_OUT)/cpu_pd_t1_ids.h $(PDGEN_OUT)/cpu_pd_t1_classif
 PDGEN_PPC_HEADERS := $(PDGEN_OUT)/ppc_pd_t1_ids.h $(PDGEN_OUT)/ppc_pd_t1_classify.h $(PDGEN_OUT)/ppc_pd_t1_cases.h $(PDGEN_OUT)/ppc_pd_t1_names.h
 INCLUDE_FLAGS += -I$(PDGEN_OUT)
 
-CFLAGS  := $(BASE_CFLAGS) $(INCLUDE_FLAGS)
+SANITIZE ?=
+
+CFLAGS  := $(BASE_CFLAGS) $(SANITIZE) $(INCLUDE_FLAGS)
 LDFLAGS ?=
-LDFLAGS += -rdynamic -lm
+LDFLAGS += -rdynamic -lm $(SANITIZE)
+EXTRA_LDFLAGS ?=
 
 # -- Harness and stub configuration --
 
 EMU_SRCS ?=
+STUBS ?=
+OMIT_STUBS ?=
 
-ifeq ($(TEST_HARNESS),isolated)
+ifeq ($(TEST_HARNESS),none)
+  HARNESS_SRCS :=
+  STUB_SRCS :=
+  COMMON_SRCS :=
+
+else ifeq ($(TEST_HARNESS),isolated)
   # Isolated mode: stub-only harness, no real emulator subsystems
   HARNESS_SRCS := $(UNIT_ROOT)/support/harness_common.c \
                   $(UNIT_ROOT)/support/harness_isolated.c
@@ -112,25 +153,39 @@ else ifeq ($(TEST_HARNESS),cpu)
               $(EMU_ROOT)/core/memory/memory.c \
               $(EMU_ROOT)/core/memory/mmu.c \
               $(EMU_ROOT)/core/memory/mmu040.c \
+              $(EMU_ROOT)/core/debug/debug_mmu.c \
               $(EMU_ROOT)/core/object/alias.c \
               $(EMU_ROOT)/core/object/meta.c \
               $(EMU_ROOT)/core/object/object.c \
+              $(EMU_ROOT)/core/job/seam.c \
+              $(EMU_ROOT)/core/object/parse.c \
               $(EMU_ROOT)/core/object/value.c
   COMMON_SRCS := $(HARNESS_SRCS) $(STUB_SRCS)
 
 else
-  $(error Invalid TEST_HARNESS '$(TEST_HARNESS)'. Use: isolated or cpu)
+  $(error Invalid TEST_HARNESS '$(TEST_HARNESS)'. Use: isolated, cpu or none)
 endif
+
+# Harness stubs a suite replaces with the real module (e.g. memory), and
+# support stubs it adds by name.
+COMMON_SRCS := $(filter-out $(foreach s,$(OMIT_STUBS),$(UNIT_ROOT)/support/stub_$(s).c),$(COMMON_SRCS)) \
+               $(foreach s,$(STUBS),$(UNIT_ROOT)/support/stub_$(s).c)
 
 # -- Source and object file collection --
 # All source paths are converted to absolute, then mapped to object
 # files under OBJ_DIR mirroring the workspace-relative directory
 # structure.  This avoids name collisions across directories.
 
-ALL_SRCS := $(abspath $(addprefix $(CURDIR)/,$(TEST_SRCS))) \
+# Each file once, in first-listed order: a suite's own list and a shared
+# one (SOURCE_LAYER_SRCS) may both name a file.
+uniq = $(if $1,$(firstword $1) $(call uniq,$(filter-out $(firstword $1),$1)))
+ifeq ($(USE_SOURCE_LAYER),1)
+EXTRA_SRCS += $(SOURCE_LAYER_SRCS)
+endif
+ALL_SRCS := $(call uniq,$(abspath $(addprefix $(CURDIR)/,$(TEST_SRCS))) \
             $(abspath $(COMMON_SRCS)) \
             $(abspath $(EMU_SRCS)) \
-            $(abspath $(EXTRA_SRCS))
+            $(abspath $(EXTRA_SRCS)))
 
 # /workspaces/granny-smith/some/path/foo.c -> $(OBJ_DIR)/some/path/foo.o
 OBJ := $(foreach s,$(ALL_SRCS),$(OBJ_DIR)/$(patsubst $(WORKSPACE_ROOT)/%,%,$(patsubst %.c,%.o,$(s))))
@@ -142,6 +197,17 @@ DEP := $(OBJ:.o=.d)
 
 all: $(TARGET)
 
+# Objects depend on the flags they were compiled with: a stamp named after a
+# hash of the compile flags, so changing EXTRA_CFLAGS, SANITIZE or CC
+# rebuilds the suite instead of linking objects compiled the old way.
+FLAGS_HASH  := $(shell printf '%s' '$(subst ','\'',$(CC) $(CFLAGS) $(EXTRA_CFLAGS))' | md5sum | cut -c1-12)
+FLAGS_STAMP := $(OBJ_DIR)/flags-$(FLAGS_HASH).stamp
+$(FLAGS_STAMP):
+	@mkdir -p $(dir $@)
+	@rm -f $(OBJ_DIR)/flags-*.stamp
+	@touch $@
+$(OBJ): $(FLAGS_STAMP)
+
 # Compile: workspace source -> object under OBJ_DIR
 $(OBJ_DIR)/%.o: $(WORKSPACE_ROOT)/%.c
 	@mkdir -p $(dir $@)
@@ -151,7 +217,7 @@ $(OBJ_DIR)/%.o: $(WORKSPACE_ROOT)/%.c
 $(TARGET): $(OBJ)
 	@mkdir -p $(dir $@)
 	@echo "[LD ] $@"
-	$(CC) $(OBJ) -o $@ $(LDFLAGS)
+	$(CC) $(OBJ) -o $@ $(LDFLAGS) $(EXTRA_LDFLAGS)
 
 # Include auto-generated header dependency files
 -include $(DEP)
@@ -166,9 +232,16 @@ $(PDGEN_PPC_HEADERS) &: $(EMU_ROOT)/core/cpu/ppc/ppc_decode.h $(WORKSPACE_ROOT)/
 $(OBJ_DIR)/src/core/cpu/cpu.o $(OBJ_DIR)/src/core/cpu/cpu_68000.o $(OBJ_DIR)/src/core/cpu/cpu_68030.o $(OBJ_DIR)/src/core/cpu/cpu_68040.o: $(PDGEN_CPU_HEADERS)
 $(OBJ_DIR)/src/core/cpu/ppc/ppc.o $(OBJ_DIR)/src/core/cpu/ppc/ppc_run.o: $(PDGEN_PPC_HEADERS)
 
-# Run the test binary
+# Run the test binary.  EXEC_WRAPPER lets the same suite run on wasm32 -- `make run
+# CC=emcc EXEC_WRAPPER=node` -- where size_t and long are 32 bits.  It is
+# resolved through the shell because, with emsdk on PATH,
+# /opt/emsdk/node is a directory that precedes /usr/bin and make's own exec
+# stops at it with "Permission denied".
+EXEC_WRAPPER ?=
+EXEC_WRAPPER_BIN := $(if $(EXEC_WRAPPER),$(shell command -v $(EXEC_WRAPPER)))
+RUN_ENV ?=
 run: $(TARGET)
-	$(TARGET)
+	$(RUN_ENV) $(EXEC_WRAPPER_BIN) $(TARGET)
 
 # Clean this test's artifacts
 clean:

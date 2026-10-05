@@ -98,6 +98,17 @@ iop_t *iop_init(iop_kind_t kind, const memory_interface_t *bypass_iface, void *b
 
 // Frees one IOP bridge.
 void iop_delete(iop_t *iop);
+// Power-on state: the 65C02 held in reset with its RAM cleared and the
+// mailbox seeded, exactly as iop_init constructs it, and nothing it had
+// scheduled still pending.  A power cycle; the host ROM downloads the
+// firmware again.
+void iop_power_on(iop_t *iop);
+// /RESET: "/RESET — This active low signal resets the internal PIC registers"
+// and "/RSTPIC … is forced active by a system reset" (Macintosh IIfx F19
+// theory of operation, vols 1 and 2).  The 65C02 is held in reset again and
+// whatever it had pending is dropped; its RAM is left alone (the host ROM
+// downloads the firmware again before it releases the reset).
+void iop_reset(iop_t *iop);
 
 // Saves IOP state to a checkpoint stream.
 void iop_checkpoint(iop_t *iop, checkpoint_t *checkpoint);

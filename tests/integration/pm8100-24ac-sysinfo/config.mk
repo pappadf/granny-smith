@@ -4,8 +4,8 @@
 #
 # The PowerPC sibling of iicx-24ac-sysinfo, and the first test anywhere to
 # run the GENUINE 24AC declaration ROM behind BART: suite-pdm's
-# 8100-75-24ac row seats the generic-vROM twin ("24ac"), whose card never
-# gets mode-set past 1 bpp, so the real card's PrimaryInit and its own 68K
+# 8100-75-24ac row runs the card on its substitute ROM (`rom=substitute`),
+# whose card never gets mode-set past 1 bpp, so the real card's PrimaryInit and its own 68K
 # video driver had no PowerPC coverage at all.  Here the real vROM
 # (roms/display-card-24ac-d8daab87.vrom, bound by the shared declrom
 # loader's content-addressed catalog) runs in a NuBus slot of an 8100 and
@@ -39,7 +39,7 @@ TEST_ROM := roms/pm6100-pm7100-pm8100-9feb69b3.rom
 # the script boots twice — see its header.
 TEST_ARGS := model=pm8100 ram=16384
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 # Extended, like the two IIcx sysinfo tests: this asserts an application's
 # behaviour rather than a (machine x system x card x geometry x depth)
 # cell, so it is deliberately NOT declared in matrix-targets.json.

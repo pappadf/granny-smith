@@ -5,9 +5,10 @@
 // Thin VFS layer: the shell's filesystem commands (ls, cd, cat, ...) call
 // through a small backend interface instead of libc directly. Two backends
 // ship today — `host` for plain filesystem paths and `image` (see image_vfs.h)
-// for paths that descend into a Mac disk image. The resolver
-// (`vfs_resolve`/`vfs_resolve_descend`) routes between them transparently so
-// `ls /tmp/foo.img/partition2/etc/motd` Just Works.
+// for paths that descend into a Mac disk image or an archive, to any depth.
+// The resolver (`vfs_resolve`/`vfs_resolve_descend`) routes between them
+// transparently so `ls /tmp/foo.img/partition2/etc/motd` and
+// `ls roms.zip/System.sit/Disk.img/partition1` Just Work.
 
 #pragma once
 
@@ -47,7 +48,7 @@ typedef struct vfs_dir vfs_dir_t;
 // Backend vtable.  Every method receives the backend's own ctx pointer
 // (which is NULL for the host backend since it is stateless).
 typedef struct vfs_backend {
-    const char *scheme; // "host" today; "image" in Phase 2
+    const char *scheme; // "host" or "image"
 
     int (*stat)(void *ctx, const char *path, vfs_stat_t *out);
     int (*opendir)(void *ctx, const char *path, vfs_dir_t **out);
@@ -87,7 +88,7 @@ int vfs_resolve(const char *input, char *resolved, size_t resolved_len, const vf
 // Like vfs_resolve, but if the resolved path terminates exactly at an
 // image file (no trailing slash, no further segments) the resolver still
 // descends into the image's partition-list root.  This implements the
-// ergonomic "ls/cd on a bare image path" rule from the proposal (§2.9)
+// ergonomic "ls/cd on a bare image path" rule
 // without changing the strict semantics of vfs_resolve — cat/size/stat
 // keep the "bare image = file" behaviour.
 int vfs_resolve_descend(const char *input, char *resolved, size_t resolved_len, const vfs_backend_t **be, void **ctx,
@@ -105,19 +106,40 @@ int vfs_unlink(const char *path);
 int vfs_rename(const char *src, const char *dst);
 
 // Export a disk image referenced by a VFS path as a flat **raw** image on
-// the host.  `src` may be a plain host image (raw / Disk Copy 4.2) or a disk
-// image nested inside a mounted image (e.g. an NDIF `.img` inside a Toast CD);
-// in the latter case it is decoded first (NDIF bcem/ADC → raw).  The result
-// is the decoded logical block device — single-fork, portable, directly
-// re-mountable.  Refuses to overwrite an existing `dst`.  Returns 0 on
-// success or a negated errno; on failure `err`/`err_cap` (optional) receives
-// a human-readable message.
+// the host.  `src` may be a host image or one inside an image or archive
+// (an NDIF `.img` inside a Toast CD, a `.dsk.gz` inside a zip), in any of
+// the formats the image opener peels (UDIF, NDIF, DiskCopy 4.2, MacBinary,
+// BinHex, gzip).  The result is the decoded logical block device --
+// single-fork, portable, directly re-mountable.  Refuses to overwrite an
+// existing `dst`.  Returns 0 on success or a negated errno; on failure
+// `err`/`err_cap` (optional) receives a human-readable message.
 int vfs_export_raw_image(const char *src, const char *dst, char *err, size_t err_cap);
+
+// Open fork `fork` of the file at `path` (strict resolution: a bare image
+// path is the image file) as a byte source: a host file and its AppleDouble
+// companion, or a file inside an image or archive and its forks.  NULL with
+// *err (negated errno; may be NULL).
+#include "source.h"
+gs_source_t *vfs_open_source(const char *path, gs_fork_t fork, int *err);
+
+// True when the file at `path` is an image or archive the VFS can descend
+// into (the listing's "expandable" flag).  Files that are expensive to probe
+// (a compressed archive member) answer false.
+bool vfs_is_expandable(const char *path);
+
+// Register the namespace formats and install vfs_open_source as the storage
+// engine's path opener.  Called once at start-up (files_init).
+void vfs_init(void);
 
 // current_dir accessor + setter (backed by the shell's existing static).
 // Today the cwd is a host path string; an image-rooted cwd would need
 // extending this with the resolver's auto-mount state.
 const char *vfs_get_cwd(void);
 void vfs_set_cwd(const char *path);
+
+// Normalise `input` (absolute, or relative to the current directory)
+// resolving `.` and `..`: an absolute path in `out`.  0 on success,
+// -ENAMETOOLONG when it does not fit.
+int vfs_normalise_path(const char *input, char *out, size_t outlen);
 
 #endif // VFS_H

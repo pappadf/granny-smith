@@ -1,16 +1,9 @@
-// Keyboard-navigation helpers for list-shaped widgets (Tree rows,
-// CommandBrowser tree, Tab strips, Disassembly rows). Returns the next
+// Keyboard-navigation helpers for list-shaped widgets (Tree rows, Tab
+// strips, Disassembly rows). Returns the next
 // selection index from the current one and a key. Pure — no DOM access.
 
 export type ListKey =
-  | 'ArrowUp'
-  | 'ArrowDown'
-  | 'Home'
-  | 'End'
-  | 'PageUp'
-  | 'PageDown'
-  | 'ArrowLeft'
-  | 'ArrowRight';
+  'ArrowUp' | 'ArrowDown' | 'Home' | 'End' | 'PageUp' | 'PageDown' | 'ArrowLeft' | 'ArrowRight';
 
 export interface CycleOptions {
   /** Treat the list as cyclic so ↓ from the last lands on the first. */

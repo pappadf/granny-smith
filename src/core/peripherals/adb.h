@@ -22,7 +22,7 @@
 struct adb;
 struct object;
 
-// The `machine.adb` bus container node (proposal-system-object-model.md §5.6).
+// The `machine.adb` bus container node (see docs/internals/core/object/object-model.md).
 // Lazily created under machine_object(); keyboard and mouse attach to it as
 // named children. Process-singleton, shared by adb.c (keyboard) and mouse.c.
 struct object *adb_bus_object(void);
@@ -40,13 +40,16 @@ adb_t *adb_init(via_t *via, struct scheduler *scheduler, checkpoint_t *checkpoin
 // Frees all resources associated with an ADB controller instance
 void adb_delete(adb_t *adb);
 
+// Power cycle: the ADB bus is powered by the machine, so every device on it
+// comes back at its default address and handler with its buffers empty --
+// what an ADB SendReset does -- and the transceiver goes idle.  Keys still
+// physically held, a latched Caps Lock among them, stay held.
+void adb_power_on(adb_t *adb);
+
 // Saves ADB controller state to a checkpoint
 void adb_checkpoint(adb_t *restrict adb, checkpoint_t *checkpoint);
 
 // === VIA Callback Hooks ===
-
-// Called by the machine's VIA shift-out callback when a byte is fully shifted out
-void adb_shift_byte(adb_t *adb, uint8_t byte);
 
 // Called by the machine's VIA port-B output callback when ST0/ST1 state lines change
 void adb_port_b_output(adb_t *adb, uint8_t value);
@@ -64,13 +67,6 @@ void adb_keyboard_event(adb_t *adb, key_event_t event, int key);
 uint8_t adb_keyboard_address(adb_t *adb);
 uint8_t adb_mouse_address(adb_t *adb);
 
-// The Caps Lock latch.  Caps Lock is a mechanically locking switch, so its
-// state belongs to the keyboard, not the machine: machine.restart reads it
-// off the dying machine and re-latches it on the rebuilt one, the same way
-// mounted media survive the power-cycle.
-bool adb_capslock_latched(adb_t *adb);
-void adb_capslock_latch(adb_t *adb);
-
 // Updates mouse movement and button state; accumulates deltas until next Talk R0
 void adb_mouse_event(adb_t *adb, bool button, int dx, int dy);
 
@@ -82,19 +78,51 @@ void adb_mouse_pending(const adb_t *adb, int *dx, int *dy);
 //
 // On VIA-shift machines (SE/30, IIcx, IIx) the host writes the ADB command
 // byte into VIA1's shift register and clocks bytes back via SR interrupts
-// (handled by adb_shift_byte / adb_port_b_output above).  On the Macintosh
+// (handled by adb_port_b_output above).  On the Macintosh
 // IIfx, the SWIM IOP firmware bit-bangs the ADB bus itself — the host
 // just posts an ADBMsg on XmtMsg[3] and reads the reply from RcvMsg[3].
 //
 // adb_iop_transact bridges that protocol to this module's existing device
 // state machine: given an ADB command byte plus any Listen-side payload,
 // it runs the same dispatch (Talk / Listen / Reset / Flush) and returns
-// the Talk reply (if any).  Output buffer must hold up to 8 bytes.
+// the Talk reply (if any).
+//
+// Output buffer must hold up to 8 bytes.  That is the HARDWARE's contract,
+// not this model's: the IOP ADB Driver ERS puts the ADB data field at "zero,
+// or in the range 2 to 8 bytes", and all callers size `out[8]` accordingly.
+// This model's devices never return more than 2 (reply_buf is 2 bytes), so
+// the extra headroom is unused today — but do not narrow the documented
+// contract to 2, because a tablet or an extended keyboard's Register 1 would
+// need the full width and every transport already allocates for it.
 //
 // Returns true if a device responded with `*out_data_len` reply bytes;
 // false for "no device at this address" (= NoReply, the firmware sets
 // ADBMSG_FLAG_NOREPLY on the reply).
 bool adb_iop_transact(adb_t *adb, uint8_t cmd, const uint8_t *in_data, int in_data_len, uint8_t *out_data,
                       int *out_data_len);
+
+// Bit per ADB address (bit N = address N) of the devices the model actually
+// has, at wherever Listen R3 has most recently moved them.  This is the shape
+// every transport's device bitmap takes: the IOP ADB Driver ERS's SetPollEnables
+// DevMap ("The most significant bit corresponds to device address 15, and the
+// least significant bit corresponds to device address 0"), and Cuda's
+// RdDevList, which built the same value by hand.
+uint16_t adb_device_mask(const adb_t *adb);
+
+// One autonomous auto-poll step, shared by every transport that polls the bus
+// on its own: Egret, Cuda and the IIfx's SWIM IOP, which between them used to
+// carry four copies of this loop that disagreed four ways.  (The VIA
+// transceiver in this file is deliberately NOT one of them -- it repeats the
+// last active device and leaves the SRQ scan to the 68k ADB Manager, which is
+// what Guide 2e :7798-7808 describes and what the hardware does.)
+//
+// `enable_mask` is the host's polling-enable bitmap in adb_device_mask's
+// layout; 0 means the host has installed none, so every address is eligible.
+// On a reply the answering address becomes the most-recently-used one.
+//
+// Returns true and fills *cmd_out (the Talk R0 that was issued, so the
+// transport can tell the host which device answered), out_data and *len_out.
+// out_data must hold 8 bytes, the same contract as adb_iop_transact's.
+bool adb_autopoll_next(adb_t *adb, uint16_t enable_mask, uint8_t *cmd_out, uint8_t *out_data, int *len_out);
 
 #endif // ADB_H

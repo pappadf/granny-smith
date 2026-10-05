@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import Tree, { type TreeNode, type SelectMods } from '@/components/common/Tree.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import RenameDialog from './RenameDialog.svelte';
@@ -13,15 +13,18 @@
     moveItems,
     deleteItems,
     downloadFiles,
+    downloadRawImage,
     unpackArchive,
     type BulkResult,
     type ProgressFn,
   } from '@/bus/fsOps';
-  import { isMacArchive } from '@/lib/archive';
-  import { isDiskImage, isInImageSpace, listViaVfs } from '@/lib/diskImage';
+  import { isExpandable, isInImageSpace, listViaVfs } from '@/lib/diskImage';
+  import { MEDIA_TYPES } from '@/lib/media';
+  import { gsEval } from '@/bus/emulator';
+  import { mountImage, insertFloppy } from '@/bus/media';
   import { showNotification } from '@/state/toasts.svelte';
-  import { bumpImagesRevision } from '@/state/images.svelte';
-  import { startActivity, endActivity } from '@/state/activity.svelte';
+  import { images, bumpImagesRevision, setMounted } from '@/state/images.svelte';
+  import { startActivity, endActivity, setActivityDetail } from '@/state/activity.svelte';
   import {
     filesystem,
     toggleFsExpanded,
@@ -32,7 +35,7 @@
     clearFsSelection,
   } from '@/state/filesystem.svelte';
   import { iconForFsEntry } from '@/lib/iconForFsEntry';
-  import { pathIsAncestorOrSelf, pathKey } from '@/lib/treePath';
+  import { pathIsAncestorOrSelf, pathKey, pathKeyToArray } from '@/lib/treePath';
 
   const DRAG_MIME = 'application/x-gs-tree-path';
 
@@ -65,7 +68,7 @@
   let treeKey = $state(0);
 
   function entriesToNodes(
-    entries: { name: string; path: string; kind: 'file' | 'directory' }[],
+    entries: { name: string; path: string; kind: 'file' | 'directory'; expandable?: boolean }[],
   ): TreeNode[] {
     // Hide AppleDouble sidecars ("._<name>") whose data file is present in the
     // same listing: the pair is one logical Mac file. An orphaned "._x" (no
@@ -79,9 +82,10 @@
         return a.name.localeCompare(b.name);
       })
       .map((e) => {
-        // A disk image that is a real OPFS file (not itself inside another
-        // image) is expandable: expanding it lists its partitions via VFS.
-        const expandableImage = e.kind === 'file' && isDiskImage(e.name) && !isInImageSpace(e.path);
+        // A file the core recognises as an image or archive is expandable --
+        // at any depth: expanding it lists its partitions or members via
+        // the VFS.
+        const expandableImage = e.kind === 'file' && e.expandable === true;
         return {
           id: e.path,
           label: e.name,
@@ -137,6 +141,25 @@
 
   onMount(() => {
     void loadChildren(['/opfs']);
+  });
+
+  // An upload elsewhere (the Welcome page, the New Machine dialog, the Images
+  // tab) changes /opfs/images/ behind this tree's cache and bumps
+  // images.revision.  Drop the cached listings under /opfs/images and remount,
+  // so the new file shows without a tab switch.  (refresh() bumps the same
+  // counter for this view's own mutations; the extra remount is harmless.)
+  const imagesPath = ['/opfs', '/opfs/images'];
+  let seenRevision = images.revision;
+  $effect(() => {
+    const rev = images.revision;
+    if (rev === seenRevision) return;
+    seenRevision = rev;
+    untrack(() => {
+      for (const k of Object.keys(childrenCache)) {
+        if (pathIsAncestorOrSelf(imagesPath, pathKeyToArray(k))) delete childrenCache[k];
+      }
+      treeKey++;
+    });
   });
 
   function handleDragStart(path: string[], ev: DragEvent) {
@@ -350,7 +373,7 @@
     }
   }
 
-  function handleContextMenu(path: string[], ev: MouseEvent) {
+  async function handleContextMenu(path: string[], ev: MouseEvent) {
     ev.preventDefault();
     // The '/opfs' root is the storage mount itself — never offer Rename or
     // Delete on it (the C side refuses too, but don't even show the menu).
@@ -360,24 +383,22 @@
     if (!filesystem.selected.has(pathKey(path))) selectOnly(pathKey(path));
     const targets = effectiveTargets(path);
     const multi = targets.length > 1;
-    const name = path[path.length - 1].split('/').pop() ?? '';
 
-    // Inside a disk image everything is read-only — only Download applies, and
-    // only to file targets. (Targets share a parent, so they're uniformly
-    // in-image or not.)
+    // Inside a disk image or archive everything is read-only — Download
+    // applies, to file targets, and a single medium can go into a drive.
+    // (Targets share a parent, so they're uniformly in-image or not.)
     if (isInImageSpace(path[path.length - 1])) {
       const files = targets.filter((t) => isFile(t));
       if (!files.length) return;
-      openContextMenu(
-        [
-          {
-            label: files.length > 1 ? `Download ${files.length} files` : 'Download',
-            action: () => doDownload(targets),
-          },
-        ],
-        ev.clientX,
-        ev.clientY,
-      );
+      const { clientX, clientY } = ev;
+      const items: ContextMenuItem[] = [
+        {
+          label: files.length > 1 ? `Download ${files.length} files` : 'Download',
+          action: () => doDownload(targets),
+        },
+      ];
+      if (!multi) items.push(...(await mediaItems(path[path.length - 1])));
+      openContextMenu(items, clientX, clientY);
       return;
     }
 
@@ -389,7 +410,12 @@
         label: multi ? 'Download files' : 'Download',
         action: () => doDownload(targets),
       });
-    if (!multi && isFile(path) && isMacArchive(name))
+    if (!multi && isFile(path) && /\.dmg$/i.test(path[path.length - 1]))
+      items.push({
+        label: 'Download as raw image',
+        action: () => doDownloadRaw(path[path.length - 1]),
+      });
+    if (!multi && isFile(path) && isExpandable(path[path.length - 1]))
       items.push({ label: 'Unpack', action: () => doUnpack(path) });
     items.push({ sep: true });
     items.push({
@@ -398,6 +424,44 @@
       danger: true,
     });
     openContextMenu(items, ev.clientX, ev.clientY);
+  }
+
+  // Drive actions for a file inside an image or archive that the core
+  // identifies as a medium -- the core attaches it by that path, decoding
+  // through the archive, so nothing is copied out first.  Only with a
+  // machine to attach to -- asked of the core, since a machine booted from
+  // the terminal exists before it first runs.  A floppy is what the
+  // machine's floppy controller identifies (a Disk Copy 4.2 image with tag
+  // data included, which the size-only upload check does not know); it is
+  // offered as a floppy only.  Anything else, as each of hard disk and CD
+  // the core accepts.
+  async function mediaItems(target: string): Promise<ContextMenuItem[]> {
+    if ((await gsEval('machine.created')) !== true) return [];
+    const density = await gsEval('machine.floppy.identify', [target]);
+    const valid = async (id: 'hd' | 'cdrom') =>
+      (await MEDIA_TYPES[id].validate(target, gsEval)).valid;
+    const items: ContextMenuItem[] = [];
+    if (typeof density === 'string' && density) {
+      items.push({ label: 'Insert into floppy drive', action: () => attachMedium(target, 'fd') });
+    } else {
+      if (await valid('hd'))
+        items.push({ label: 'Attach as hard disk', action: () => attachMedium(target, 'hd') });
+      if (await valid('cdrom'))
+        items.push({ label: 'Insert into CD-ROM drive', action: () => attachMedium(target, 'cd') });
+    }
+    return items.length ? [{ sep: true }, ...items] : [];
+  }
+
+  async function attachMedium(target: string, kind: 'fd' | 'hd' | 'cd') {
+    const name = target.split('/').pop() ?? target;
+    const r = kind === 'fd' ? await insertFloppy(target, false) : await mountImage(kind, target);
+    const verb = kind === 'hd' ? 'attach' : 'insert';
+    if (!r.ok) {
+      showNotification(`Couldn't ${verb} '${name}': ${r.reason}`, r.full ? 'warning' : 'error');
+      return;
+    }
+    setMounted(target, r.mount);
+    showNotification(`${kind === 'hd' ? 'Attached' : 'Inserted'} '${name}'`, 'info');
   }
 
   // Toast for a bulk move/copy, naming the items that failed (if any) and the
@@ -454,7 +518,7 @@
     const old = renameTarget;
     renameOpen = false;
     renameTarget = null;
-    // Unchanged name is a no-op, not an error (storage.mv would refuse it as
+    // Unchanged name is a no-op, not an error (files.mv would refuse it as
     // an existing destination).
     if (newName === (old.split('/').pop() ?? '')) return;
     try {
@@ -512,6 +576,21 @@
         ok ? 'warning' : 'error',
       );
     else showNotification(`Deleted ${label}`, 'info');
+  }
+
+  // Download a stored .dmg as the flat raw disk it holds (bus/fsOps.ts).
+  async function doDownloadRaw(target: string) {
+    const name = target.split('/').pop() ?? target;
+    startActivity(name, 'Downloading');
+    try {
+      const r = await downloadRawImage(target, (done, total) =>
+        setActivityDetail(`${Math.round((100 * done) / total)} %`),
+      );
+      if (!r.ok && r.error !== 'cancelled')
+        showNotification(`Could not download '${name}' as raw: ${r.error}`, 'error');
+    } finally {
+      endActivity();
+    }
   }
 
   // Download the file targets to the host (folders/partitions are skipped).
@@ -587,7 +666,7 @@
     width: 100%;
     height: 100%;
     overflow: auto;
-    background: var(--gs-bg);
-    padding: 4px 0;
+    background: var(--gs-surface-app);
+    padding: var(--gs-space-1) 0;
   }
 </style>

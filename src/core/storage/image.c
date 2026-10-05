@@ -9,15 +9,19 @@
 // A .journal file provides crash recovery.
 
 #include "image.h"
+#include "gs_out.h"
 
-#include "appledouble.h"
-#include "image_ndif.h"
+#include "format_registry.h"
+#include "image_scratch.h"
 #include "image_udif.h"
+#include "image_wrap.h"
 #include "log.h"
 #include "platform.h"
+#include "source.h"
+#include "storage_util.h"
 #include "system.h"
+#include "udif_writer.h"
 
-#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -25,7 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
+#include <strings.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -34,100 +38,6 @@
 #endif
 
 LOG_USE_CATEGORY_NAME("image")
-
-#define DISKCOPY_HEADER_SIZE 0x54
-
-// ============================================================================
-// String / path helpers
-// ============================================================================
-
-static char *dup_string(const char *src) {
-    if (!src)
-        return NULL;
-    size_t len = strlen(src) + 1;
-    char *copy = (char *)malloc(len);
-    if (!copy)
-        return NULL;
-    memcpy(copy, src, len);
-    return copy;
-}
-
-static char *str_printf(const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    va_list ap_copy;
-    va_copy(ap_copy, ap);
-    int needed = vsnprintf(NULL, 0, fmt, ap_copy);
-    va_end(ap_copy);
-    if (needed < 0) {
-        va_end(ap);
-        return NULL;
-    }
-    char *buf = (char *)malloc((size_t)needed + 1);
-    if (!buf) {
-        va_end(ap);
-        return NULL;
-    }
-    vsnprintf(buf, (size_t)needed + 1, fmt, ap);
-    va_end(ap);
-    return buf;
-}
-
-static int mkdir_if_needed(const char *path) {
-    if (!path || !*path)
-        return -1;
-#if defined(_WIN32)
-    int rc = _mkdir(path);
-#else
-    int rc = mkdir(path, 0777);
-#endif
-    if (rc == 0 || errno == EEXIST)
-        return 0;
-    return -1;
-}
-
-// Recursively create directories (like mkdir -p)
-static int mkdir_recursive(const char *path) {
-    if (!path || !*path)
-        return -1;
-    char *tmp = dup_string(path);
-    if (!tmp)
-        return -1;
-    size_t len = strlen(tmp);
-    if (len > 0 && tmp[len - 1] == '/')
-        tmp[len - 1] = '\0';
-    for (char *p = tmp + 1; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            if (mkdir_if_needed(tmp) != 0) {
-                free(tmp);
-                return -1;
-            }
-            *p = '/';
-        }
-    }
-    int rc = mkdir_if_needed(tmp);
-    free(tmp);
-    return rc;
-}
-
-// Ensure all parent directories of a file path exist
-static int ensure_parent_dirs(const char *filepath) {
-    if (!filepath || !*filepath)
-        return -1;
-    char *tmp = dup_string(filepath);
-    if (!tmp)
-        return -1;
-    char *last_sep = strrchr(tmp, '/');
-    if (!last_sep || last_sep == tmp) {
-        free(tmp);
-        return 0;
-    }
-    *last_sep = '\0';
-    int rc = mkdir_recursive(tmp);
-    free(tmp);
-    return rc;
-}
 
 // ============================================================================
 // Format detection
@@ -138,51 +48,11 @@ static enum image_type classify_image(size_t raw_size) {
         return image_fd_ss;
     if (raw_size == 800 * 1024)
         return image_fd_ds;
+    if (raw_size == 720 * 1024)
+        return image_fd_dd_mfm;
     if (raw_size == 1440 * 1024)
         return image_fd_hd;
     return image_hd;
-}
-
-static int read_file_size(const char *path, size_t *out_size) {
-    if (!path || !out_size)
-        return -1;
-    struct stat st;
-    if (stat(path, &st) != 0)
-        return -1;
-    *out_size = (size_t)st.st_size;
-    return 0;
-}
-
-static uint32_t read_be32(const uint8_t *ptr) {
-    uint32_t temp = 0;
-    memcpy(&temp, ptr, sizeof(temp));
-    return BE32(temp);
-}
-
-static int detect_diskcopy(const char *path, size_t file_size, uint32_t *out_data_size) {
-    if (file_size < DISKCOPY_HEADER_SIZE)
-        return 0;
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return -1;
-    uint8_t header[DISKCOPY_HEADER_SIZE];
-    size_t r = fread(header, 1, sizeof(header), f);
-    fclose(f);
-    if (r != sizeof(header))
-        return -1;
-    uint16_t magic = ((uint16_t)header[0x52] << 8) | header[0x53];
-    if (magic != 0x0100)
-        return 0;
-    uint32_t data_size = read_be32(header + 0x40);
-    uint32_t tag_size = read_be32(header + 0x44);
-    if (data_size == 0 || (data_size % STORAGE_BLOCK_SIZE) != 0)
-        return 0;
-    uint64_t total = (uint64_t)DISKCOPY_HEADER_SIZE + (uint64_t)data_size + (uint64_t)tag_size;
-    if (total > file_size)
-        return 0;
-    if (out_data_size)
-        *out_data_size = data_size;
-    return 1;
 }
 
 // ============================================================================
@@ -195,12 +65,85 @@ size_t disk_size(image_t *disk) {
     return disk->raw_size;
 }
 
+uint32_t disk_block_size(image_t *disk) {
+    return disk ? disk->block_size : 0;
+}
+
+// ============================================================================
+// Open writable images
+// ============================================================================
+
+// Every image opened writable and not yet closed, keyed on the canonical
+// path its caller named and on its source's key.  image_vfs asks at the
+// point of use rather than being told on attach and detach, so there is no
+// notification for an attach or detach site to forget.
+static image_t *g_open_writable;
+
+// Resolve `path` through realpath() so every spelling of the same file — the
+// relative one a script passes to files.probe, the absolute one the VFS
+// resolves, a symlink — reduces to one string.  Falls back to the input
+// when realpath cannot resolve it (a path through an image, or a file just
+// deleted).
+static void image_canonicalise(const char *path, char *out, size_t cap) {
+    // Let realpath() allocate, so a host path limit above the build-time
+    // PATH_MAX does not get silently truncated.
+    char *resolved = realpath(path, NULL);
+    snprintf(out, cap, "%s", resolved ? resolved : path);
+    free(resolved);
+}
+
+// Record a writable image under the path its caller named and the key of
+// the source it opened.  An image that cannot be recorded still works; the
+// VFS just cannot see that it is open.
+static void writable_register(image_t *image, const char *base_path) {
+    char canon[PATH_MAX];
+    image_canonicalise(base_path, canon, sizeof(canon));
+    image->source_canon = gs_strdup(canon);
+    if (!image->source_canon)
+        return;
+    image->next_writable = g_open_writable;
+    g_open_writable = image;
+}
+
+static void writable_unregister(image_t *image) {
+    for (image_t **pp = &g_open_writable; *pp; pp = &(*pp)->next_writable) {
+        if (*pp == image) {
+            *pp = image->next_writable;
+            break;
+        }
+    }
+    free(image->source_canon);
+}
+
+bool image_path_is_open_writable(const char *path) {
+    if (!path)
+        return false;
+    char canon[PATH_MAX];
+    image_canonicalise(path, canon, sizeof(canon));
+    for (const image_t *im = g_open_writable; im; im = im->next_writable)
+        if (strcmp(im->source_canon, canon) == 0 || strcmp(im->source_canon, path) == 0)
+            return true;
+    return false;
+}
+
+bool image_key_is_open_writable(const char *key) {
+    if (!key || !*key)
+        return false;
+    for (const image_t *im = g_open_writable; im; im = im->next_writable)
+        if (im->source_key && gs_key_within(key, im->source_key))
+            return true;
+    return false;
+}
+
 void image_close(image_t *image) {
     if (!image)
         return;
+    if (image->writable)
+        writable_unregister(image);
     if (image->storage)
         storage_delete(image->storage);
     free(image->tags);
+    free(image->wrap_prefix);
     // Ghost (read-only) instances were placed in a scratch dir; remove their
     // delta+journal so we don't leave clutter behind.
     if (image->ghost_instance) {
@@ -210,6 +153,8 @@ void image_close(image_t *image) {
             unlink(image->journal_path);
     }
     free(image->filename);
+    free(image->source_key);
+    free(image->format);
     free(image->instance_path);
     free(image->delta_path);
     free(image->journal_path);
@@ -217,9 +162,9 @@ void image_close(image_t *image) {
 }
 
 // Mint a 16-hex-char opaque id (8 random bytes).  Used both for image
-// instance ids and as scratch-name salt.
-static void mint_random_hex_id(char *out, size_t out_len) {
-    assert(out_len >= 17);
+// instance ids and as scratch-name salt.  `out` holds 16 chars + NUL; the
+// [static 17] lets the compiler reject a smaller buffer at the call site.
+static void mint_random_hex_id(char out[static 17]) {
     uint8_t bytes[8] = {0};
     bool got = false;
 #if !defined(_WIN32)
@@ -255,105 +200,39 @@ static void mint_random_hex_id(char *out, size_t out_len) {
     out[16] = '\0';
 }
 
-// Return the directory part of a path (caller frees).  Returns "." for paths
-// without a slash.
-static char *dirname_of(const char *path) {
-    if (!path || !*path)
-        return dup_string(".");
-    const char *last = strrchr(path, '/');
-    if (!last)
-        return dup_string(".");
-    if (last == path)
-        return dup_string("/");
-    size_t len = (size_t)(last - path);
-    char *out = (char *)malloc(len + 1);
-    if (!out)
-        return NULL;
-    memcpy(out, path, len);
-    out[len] = '\0';
-    return out;
-}
-
-// Probe a base image for size and DiskCopy framing; return 0 on success,
-// negative on failure.  `out_raw_size` and `out_is_diskcopy` are populated
-// even if the file is not a DiskCopy archive.  The raw size must be a whole
-// number of `block_size`-byte blocks.
-static int probe_base_image(const char *base_path, uint32_t block_size, size_t *out_raw_size, bool *out_is_diskcopy) {
-    size_t file_size = 0;
-    if (read_file_size(base_path, &file_size) != 0) {
-        printf("image: cannot read file size: %s\n", base_path);
-        return -1;
-    }
-    uint32_t diskcopy_size = 0;
-    int dc_probe = detect_diskcopy(base_path, file_size, &diskcopy_size);
-    if (dc_probe < 0)
-        return -1;
-    bool is_diskcopy = (dc_probe > 0);
-    size_t raw_size = is_diskcopy ? (size_t)diskcopy_size : file_size;
-    if ((raw_size % block_size) != 0)
-        return -1;
-    *out_raw_size = raw_size;
-    *out_is_diskcopy = is_diskcopy;
-    return 0;
-}
-
 // Normalise a geometry's block size, treating 0 as the default (512).
 static uint32_t geometry_block_size(image_geometry_t geom) {
     return geom.block_size ? geom.block_size : STORAGE_BLOCK_SIZE;
 }
 
-// Common storage-engine wiring for all image_* entry points.  The caller has
-// already populated image->filename, image->instance_path, image->delta_path,
-// image->journal_path, image->raw_size, image->writable, image->from_diskcopy.
 // Load the DiskCopy 4.2 tag section (after the data) into image->tags.  These
 // are read-only per-sector tags the Lisa boot ROM/OS read (e.g. the boot
-// block's FILEID = $AAAA).  Best-effort: on any failure the image simply has no
-// tags (disk_read_tag returns 0).
-static void image_load_diskcopy_tags(image_t *image) {
-    FILE *f = fopen(image->filename, "rb");
-    if (!f)
-        return;
+// block's FILEID = $AAAA).  Best-effort: on any failure the image simply has
+// no tags (disk_read_tag returns 0).  `dc42` is the DiskCopy file itself.
+static void image_load_diskcopy_tags(image_t *image, gs_source_t *dc42) {
     uint8_t header[DISKCOPY_HEADER_SIZE];
-    if (fread(header, 1, sizeof(header), f) != sizeof(header)) {
-        fclose(f);
+    if (gs_source_read_exact(dc42, 0, header, sizeof(header)) != 0)
         return;
-    }
-    uint32_t data_size = read_be32(header + 0x40);
-    uint32_t tag_size = read_be32(header + 0x44);
-    uint32_t count = (uint32_t)(image->raw_size / STORAGE_BLOCK_SIZE);
-    if (tag_size == 0 || count == 0 || (tag_size % count) != 0) {
-        fclose(f);
+    // Every value is re-derived from this header and checked against this
+    // file.  The sector count is the header's own: DiskCopy 4.2 sectors are
+    // 512 data bytes whatever geometry the image is opened with.  Bounding
+    // the tag section by the file bounds the allocation by the file.
+    uint32_t data_size = 0, tag_size = 0;
+    if (!dc42_parse_header(header, sizeof(header), gs_source_size(dc42), &data_size, &tag_size))
+        return;
+    uint32_t count = data_size / STORAGE_BLOCK_SIZE;
+    if (tag_size == 0 || count == 0 || (tag_size % count) != 0)
         return; // no tags (or unexpected layout)
-    }
     uint8_t *tags = (uint8_t *)malloc(tag_size);
-    if (!tags) {
-        fclose(f);
+    if (!tags)
         return;
-    }
-    if (fseek(f, (long)DISKCOPY_HEADER_SIZE + (long)data_size, SEEK_SET) != 0 ||
-        fread(tags, 1, tag_size, f) != tag_size) {
+    if (gs_source_read_exact(dc42, (uint64_t)DISKCOPY_HEADER_SIZE + data_size, tags, tag_size) != 0) {
         free(tags);
-        fclose(f);
         return;
     }
-    fclose(f);
     image->tags = tags;
     image->tag_bytes = tag_size / count;
     image->tag_count = count;
-}
-
-static int image_attach_storage(image_t *image, bool is_diskcopy) {
-    storage_config_t config = {0};
-    config.base_path = image->filename; // NULL for a blank no-base image
-    config.delta_path = image->delta_path;
-    config.journal_path = image->journal_path;
-    config.block_count = image->raw_size / image->block_size;
-    config.block_size = image->block_size;
-    config.base_data_offset = is_diskcopy ? DISKCOPY_HEADER_SIZE : 0;
-    int rc = storage_new(&config, &image->storage);
-    if (rc == GS_SUCCESS && is_diskcopy)
-        image_load_diskcopy_tags(image);
-    return rc;
 }
 
 size_t disk_read_tag(image_t *disk, size_t sector, uint8_t *buf, size_t size) {
@@ -376,453 +255,169 @@ size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t s
     return n;
 }
 
-// Scratch directory for read-only image deltas (kept volatile).
-#define IMAGE_RO_SCRATCH_DIR "/tmp/gs-image-ro"
+// Scratch sidecars -- read-only deltas and blank-image deltas -- live under
+// image_scratch_dir() (image_scratch.h), which honours GS_STORAGE_CACHE;
+// so does a writable mount whose caller names no delta directory.  Decoded images are
+// never written anywhere: an NDIF, UDIF or archived image is a source the
+// storage reads through (source.h, format_registry.h).
 
-// Sidecar scratch root: GS_STORAGE_CACHE, when set, redirects every
-// scratch sidecar (read-only deltas, blank-image deltas, NDIF
-// materialisations) AND the default writable delta placement below it —
-// the integration runner points it at a per-test directory so no test
-// ever writes beside shared media (tests/data stays clean, and tests
-// can run in parallel).  Unset: the fixed /tmp scratch dir.
-static const char *image_scratch_dir(void) {
-    const char *cache = getenv("GS_STORAGE_CACHE");
-    return (cache && *cache) ? cache : IMAGE_RO_SCRATCH_DIR;
+// ============================================================================
+// Opening
+// ============================================================================
+//
+// Every opener comes down to image_open_source: the caller's forks go
+// through the format registry's wrapper loop (UDIF, NDIF, DiskCopy 4.2,
+// MacBinary, BinHex, gzip -- any depth), and the innermost source is the
+// storage's base.  The path openers first open the path's forks through the
+// installed path opener, so a path may continue through an image or an
+// archive (outer.img/partition1/inner.img, roms.zip/disk.img.gz).
+
+// image_wrap_read_fn over a source.
+static bool source_read_cb(void *ctx, uint64_t offset, uint8_t *buf, size_t size) {
+    return gs_source_read_exact((gs_source_t *)ctx, offset, buf, size) == 0;
 }
 
-// === AppleDouble fork acquisition + host-file NDIF materialisation =========
-// A host `.img` file has only a data fork, but a Disk Copy 6 / NDIF image keeps
-// its block map ('bcem') in the resource fork.  When such a file was copied out
-// of an HFS volume as an AppleDouble pair, the resource fork lives in a sibling
-// "._<name>" (or legacy "%<name>", or a raw "<name>.rsrc").  This reunites the
-// forks and, when the data fork is NDIF-encoded, decodes it to a scratch raw
-// image so the rest of image.c opens it as an ordinary base.  See
-// proposal-appledouble-support.md §4.4.
-#define IMAGE_FORK_READ_CAP (16u * 1024u * 1024u)
+// How an image is opened.
+typedef enum { OPEN_READONLY, OPEN_CREATE, OPEN_REOPEN } open_mode_t;
 
-// Read up to `cap` bytes of a host file into a malloc'd buffer. 0 / -errno.
-static int read_whole_host_file(const char *path, size_t cap, uint8_t **out, size_t *out_len) {
-    *out = NULL;
-    *out_len = 0;
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return -errno;
-    if (fseek(f, 0, SEEK_END) != 0) {
-        fclose(f);
-        return -EIO;
-    }
-    long sz = ftell(f);
-    if (sz < 0 || (size_t)sz > cap) {
-        fclose(f);
-        return sz < 0 ? -EIO : -EFBIG;
-    }
-    rewind(f);
-    uint8_t *buf = (uint8_t *)malloc((size_t)sz ? (size_t)sz : 1);
-    if (!buf) {
-        fclose(f);
-        return -ENOMEM;
-    }
-    size_t got = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
-    if (got != (size_t)sz) {
-        free(buf);
-        return -EIO;
-    }
-    *out = buf;
-    *out_len = (size_t)sz;
-    return 0;
-}
-
-// Split base_path into "<dir>/" prefix (with trailing slash, or empty) and
-// basename, writing the "._<name>"-style sidecar into `out`.
-static void fork_sidecar_path(const char *base_path, const char *prefix, char *out, size_t cap) {
-    const char *slash = strrchr(base_path, '/');
-    if (slash)
-        snprintf(out, cap, "%.*s%s%s", (int)(slash - base_path + 1), base_path, prefix, slash + 1);
-    else
-        snprintf(out, cap, "%s%s", prefix, base_path);
-}
-
-// Obtain a resource fork for base_path from a companion sidecar, tried in
-// order: AppleDouble/AppleSingle header "._<name>" then legacy "%<name>", then
-// a raw sibling "<name>.rsrc".  Returns a malloc'd buffer (caller frees) and
-// sets *out_len, or NULL when no resource fork is found.
-static uint8_t *acquire_resource_fork(const char *base_path, size_t *out_len) {
-    char path[PATH_MAX];
-    // (1)+(2): AppleDouble/AppleSingle header sidecars.
-    const char *prefixes[] = {"._", "%"};
-    for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
-        fork_sidecar_path(base_path, prefixes[i], path, sizeof(path));
-        uint8_t *raw = NULL;
-        size_t raw_len = 0;
-        if (read_whole_host_file(path, IMAGE_FORK_READ_CAP, &raw, &raw_len) != 0)
-            continue;
-        ad_file_t ad;
-        if (ad_detect(raw, raw_len) && ad_parse(raw, raw_len, &ad) == 0 && ad.rsrc && ad.rsrc_len) {
-            uint8_t *rf = (uint8_t *)malloc(ad.rsrc_len);
-            if (rf) {
-                memcpy(rf, ad.rsrc, ad.rsrc_len);
-                *out_len = ad.rsrc_len;
-                free(raw);
-                return rf;
-            }
-        }
-        free(raw);
-    }
-    // (3): raw sibling "<name>.rsrc".
-    snprintf(path, sizeof(path), "%s.rsrc", base_path);
-    uint8_t *raw = NULL;
-    size_t raw_len = 0;
-    if (read_whole_host_file(path, IMAGE_FORK_READ_CAP, &raw, &raw_len) == 0 && raw_len > 0) {
-        *out_len = raw_len;
-        return raw;
-    }
-    free(raw);
-    return NULL;
-}
-
-// Decode an NDIF data fork (host file `base_path`, block map `map`) into a
-// freshly created scratch raw file `scratch`. 0 / -errno.
-static int materialize_ndif_host(const char *base_path, ndif_map_t *map, const char *scratch) {
-    FILE *df = fopen(base_path, "rb");
-    if (!df)
-        return -errno;
-    FILE *out = fopen(scratch, "wb");
-    if (!out) {
-        int e = errno;
-        fclose(df);
-        return e ? -e : -EIO;
-    }
-    int rc = 0;
-    if (ftruncate(fileno(out), (off_t)map->sectors * 512) != 0) {
-        rc = -EIO;
-        goto done;
-    }
-    for (size_t i = 0; i < map->n_chunks; i++) {
-        ndif_chunk_t *c = &map->chunks[i];
-        if (c->type == NDIF_CHUNK_ZERO || c->count == 0)
-            continue; // ftruncate already zero-filled the gap
-        size_t need = (size_t)c->count * 512;
-        uint8_t *dbuf = (uint8_t *)malloc(need);
-        uint8_t *cbuf = c->length ? (uint8_t *)malloc(c->length) : NULL;
-        if (!dbuf || (c->length && !cbuf)) {
-            free(dbuf);
-            free(cbuf);
-            rc = -ENOMEM;
-            break;
-        }
-        size_t clen = 0;
-        if (c->length) {
-            if (fseek(df, (long)c->offset, SEEK_SET) != 0) {
-                free(dbuf);
-                free(cbuf);
-                rc = -EIO;
-                break;
-            }
-            clen = fread(cbuf, 1, c->length, df);
-        }
-        if (ndif_decode_chunk(c, cbuf, clen, dbuf, need) == 0) {
-            if (fseek(out, (long)c->sector * 512, SEEK_SET) != 0 || fwrite(dbuf, 1, need, out) != need)
-                rc = -EIO;
-        } else {
-            rc = -EINVAL;
-        }
-        free(dbuf);
-        free(cbuf);
-        if (rc != 0)
-            break;
-    }
-done:
-    fclose(df);
-    if (fclose(out) != 0 && rc == 0)
-        rc = -EIO;
-    return rc;
-}
-
-// FNV-1a over a NUL-terminated string, seeded, for scratch-name derivation.
-static uint32_t fork_hash_str(const char *s, uint32_t h) {
-    for (; *s; s++)
-        h = (h ^ (uint8_t)*s) * 0x01000193u;
-    return h;
-}
-
-// Resolve `path` through realpath() so every spelling of the same file — the
-// relative one a script passes to storage.probe, the absolute one the VFS
-// resolves, a symlink — reduces to one string.  Falls back to the input when
-// realpath cannot resolve it (e.g. the file was just deleted), preserving the
-// old keying.  image_vfs.c canonicalises its mount table the same way.
-static void image_canonicalise(const char *path, char *out, size_t cap) {
-    // Let realpath() allocate, so a host path limit above the build-time
-    // PATH_MAX does not get silently truncated.
-    char *resolved = realpath(path, NULL);
-    snprintf(out, cap, "%s", resolved ? resolved : path);
-    free(resolved);
-}
-
-// Build the deterministic scratch path a decoded image is cached under:
-// "<scratch>/<tag>-<hash>.img", hashed from path + size + mtime so repeated
-// inserts reuse the decode and a changed source re-decodes.  The path is
-// canonicalised first: hashing the caller's spelling instead decoded the same
-// disc once per spelling, which for a CD-sized .dmg costs a second full decode
-// and another copy of the whole image on disk.
-static void image_scratch_path(const char *base_path, const char *tag, char *out, size_t cap) {
-    struct stat sb;
-    char canon[PATH_MAX];
-    image_canonicalise(base_path, canon, sizeof(canon));
-    uint32_t h = fork_hash_str(canon, 0x811c9dc5u);
-    if (stat(base_path, &sb) == 0) {
-        h = fork_hash_str("\x1f", h);
-        char meta[64];
-        snprintf(meta, sizeof(meta), "%lld:%lld", (long long)sb.st_size, (long long)sb.st_mtime);
-        h = fork_hash_str(meta, h);
-    }
-    snprintf(out, cap, "%s/%s-%08x.img", image_scratch_dir(), tag, h);
-}
-
-// === UDIF (.dmg) materialisation ==========================================
-// A UDIF image needs no resource fork: the 512-byte 'koly' trailer at EOF
-// points at both the compressed payload and the XML block map, so everything
-// is reachable from the one host path.  Decode it to a scratch raw image the
-// same way NDIF is handled above.  See image_udif.h.
-
-// Largest chunk we will buffer whole for decompression.  Real writers emit
-// ~1 MB chunks; anything wildly larger means a corrupt map, not a big disk.
-#define UDIF_MAX_CHUNK_BYTES (64u * 1024u * 1024u)
-
-// Read exactly `len` bytes at absolute offset `off`.  0 / -errno.
-static int read_at(FILE *f, uint64_t off, void *buf, size_t len) {
-    if (fseeko(f, (off_t)off, SEEK_SET) != 0)
-        return -EIO;
-    return fread(buf, 1, len, f) == len ? 0 : -EIO;
-}
-
-// Fold `len` zero bytes into a running CRC-32 without allocating them.
-static uint32_t crc32_zeros(uint32_t crc, uint64_t len) {
-    static const uint8_t zeros[4096] = {0};
-    while (len) {
-        size_t n = len < sizeof(zeros) ? (size_t)len : sizeof(zeros);
-        crc = udif_crc32(crc, zeros, n);
-        len -= n;
-    }
-    return crc;
-}
-
-// Copy a RAW chunk straight through in slices, folding it into `crc`.  Raw
-// chunks can cover a whole disk, so this never buffers the run whole.
-static int copy_raw_chunk(FILE *df, FILE *out, const udif_chunk_t *c, uint64_t base_sector, uint32_t *crc) {
-    uint8_t buf[64 * 1024];
-    uint64_t remaining = c->count * 512;
-    if (c->length < remaining)
-        return -EINVAL; // the map promises more sectors than the fork holds
-    uint64_t src = c->offset;
-    if (fseeko(out, (off_t)(base_sector + c->sector) * 512, SEEK_SET) != 0)
-        return -EIO;
-    while (remaining) {
-        size_t n = remaining < sizeof(buf) ? (size_t)remaining : sizeof(buf);
-        if (read_at(df, src, buf, n) != 0 || fwrite(buf, 1, n, out) != n)
-            return -EIO;
-        *crc = udif_crc32(*crc, buf, n);
-        src += n;
-        remaining -= n;
-    }
-    return 0;
-}
-
-// Decode one compressed (or zero-fill) chunk to its place in `out`, folding
-// the decoded bytes into `crc`.  0 / -errno.
-static int write_udif_chunk(FILE *df, FILE *out, const udif_chunk_t *c, uint64_t base_sector, uint32_t *crc) {
-    // Ignored chunks are unallocated space: they read as zeros and, unlike
-    // zero-fill, are excluded from the table checksum entirely.
-    if (c->type == UDIF_CHUNK_IGNORE)
-        return 0;
-    uint64_t need = c->count * 512;
-    if (need == 0)
-        return 0;
-    // Zero-fill needs no bytes written — the file was pre-extended with zeros.
-    if (c->type == UDIF_CHUNK_ZERO) {
-        *crc = crc32_zeros(*crc, need);
-        return 0;
-    }
-    if (c->type == UDIF_CHUNK_RAW)
-        return copy_raw_chunk(df, out, c, base_sector, crc);
-
-    if (need > UDIF_MAX_CHUNK_BYTES || c->length > UDIF_MAX_CHUNK_BYTES)
-        return -EFBIG;
-    uint8_t *cbuf = (uint8_t *)malloc((size_t)c->length ? (size_t)c->length : 1);
-    uint8_t *dbuf = (uint8_t *)malloc((size_t)need);
-    int rc = 0;
-    if (!cbuf || !dbuf) {
-        rc = -ENOMEM;
-    } else if (read_at(df, c->offset, cbuf, (size_t)c->length) != 0) {
-        rc = -EIO;
-    } else if ((rc = udif_decode_chunk(c, cbuf, (size_t)c->length, dbuf, (size_t)need)) == 0) {
-        if (fseeko(out, (off_t)(base_sector + c->sector) * 512, SEEK_SET) != 0 ||
-            fwrite(dbuf, 1, (size_t)need, out) != need)
-            rc = -EIO;
-        else
-            *crc = udif_crc32(*crc, dbuf, (size_t)need);
-    }
-    free(cbuf);
-    free(dbuf);
-    return rc;
-}
-
-// Decode a whole UDIF image (host file `base_path`, trailer `tr`, block map
-// `map`) into a freshly created scratch raw file `scratch`.  Each block
-// table's stored CRC-32 is verified as it is written, so a bad decode fails
-// here rather than surfacing as a subtly corrupt disk. 0 / -errno.
-static int materialize_udif_host(const char *base_path, const udif_trailer_t *tr, udif_map_t *map,
-                                 const char *scratch) {
-    FILE *df = fopen(base_path, "rb");
-    if (!df)
-        return -errno;
-    FILE *out = fopen(scratch, "wb");
-    if (!out) {
-        int e = errno;
-        fclose(df);
-        return e ? -e : -EIO;
-    }
-
-    int rc = 0;
-    if (ftruncate(fileno(out), (off_t)(tr->sectors * 512)) != 0) {
-        rc = -EIO;
-        goto done;
-    }
-    for (size_t i = 0; i < map->n_tables && rc == 0; i++) {
-        udif_table_t *t = &map->tables[i];
-        uint32_t crc = 0;
-        for (size_t j = 0; j < t->n_chunks; j++) {
-            udif_chunk_t *c = &t->chunks[j];
-            // Absolute position is the table's base plus the chunk's own
-            // sector, which restarts at 0 in every table.
-            if (t->base_sector + c->sector + c->count > tr->sectors) {
-                rc = -EINVAL;
-                break;
-            }
-            rc = write_udif_chunk(df, out, c, t->base_sector, &crc);
-            if (rc != 0) {
-                LOG(1, "UDIF chunk %zu of '%s' (type %#x) failed: %d", j, t->name, c->type, rc);
-                break;
-            }
-        }
-        // A stored CRC of zero means the writer recorded none (every table of
-        // purely unallocated space does), so only a real value is checked.
-        if (rc == 0 && t->checksum_type == UDIF_CHECKSUM_CRC32 && t->checksum != 0 && crc != t->checksum) {
-            LOG(1, "UDIF checksum mismatch in '%s': stored %08x, decoded %08x", t->name, t->checksum, crc);
-            rc = -EINVAL;
-        }
-    }
-done:
-    fclose(df);
-    if (fclose(out) != 0 && rc == 0)
-        rc = -EIO;
-    return rc;
-}
-
-// If base_path is a UDIF image, decode it to a cached scratch raw file and
-// return that path (malloc'd, caller frees).  Returns NULL when the file is
-// not UDIF at all, or when its decode failed — both fall through to the
-// remaining formats.
-static char *resolve_udif_image(const char *base_path) {
-    FILE *f = fopen(base_path, "rb");
-    if (!f)
+// Build an image over (`data`, `rsrc`), named `name`.  For OPEN_CREATE the
+// delta goes in `dir` (a fresh instance); for OPEN_REOPEN `dir` is the
+// instance stem.  NULL (with errno set) on failure.
+static image_t *image_open_source(const char *name, gs_source_t *data, gs_source_t *rsrc, image_geometry_t geom,
+                                  open_mode_t mode, const char *dir) {
+    uint32_t block_size = geometry_block_size(geom);
+    gs_unwrapped_t u;
+    gs_format_unwrap(data, rsrc, &u);
+    // A UDIF or NDIF image that would not open is no disk: read raw it is
+    // its compressed payload, which no guest should see.  (DiskCopy 4.2 and
+    // peeler's wrappers detect from content that a raw disk can also carry,
+    // so their failure leaves the bytes as they are.)
+    if (u.failed_format && (strcmp(u.failed_format, "udif") == 0 || strcmp(u.failed_format, "ndif") == 0)) {
+        gs_outf("image: '%s' is a %s image that cannot be read in place (%s)\n", name,
+                strcmp(u.failed_format, "udif") == 0 ? "UDIF" : "NDIF",
+                u.failed_rc == -EFBIG     ? "a chunk is too large to decode on demand; import it to re-chunk it"
+                : u.failed_rc == -ENOTSUP ? "it uses a compression this emulator does not decode"
+                                          : strerror(-u.failed_rc));
+        int frc = u.failed_rc;
+        gs_unwrapped_free(&u);
+        errno = frc == -ENOTSUP ? ENOTSUP : EINVAL;
         return NULL;
-    uint8_t trailer[UDIF_TRAILER_SIZE];
-    int seek_rc = fseeko(f, -(off_t)sizeof(trailer), SEEK_END);
-    bool have_trailer = seek_rc == 0 && fread(trailer, 1, sizeof(trailer), f) == sizeof(trailer);
-    fclose(f);
-    if (!have_trailer || !udif_detect(trailer, sizeof(trailer)))
-        return NULL;
-
-    udif_trailer_t tr;
-    int rc = udif_parse_trailer(trailer, sizeof(trailer), &tr);
-    if (rc != 0) {
-        LOG(1, "unsupported UDIF trailer in '%s' (%d)", base_path, rc);
+    }
+    uint64_t raw = gs_source_size(u.data);
+    if (raw == 0 || (raw % block_size) != 0 || raw > SIZE_MAX) {
+        gs_unwrapped_free(&u);
+        errno = EINVAL;
         return NULL;
     }
 
-    char scratch[PATH_MAX];
-    image_scratch_path(base_path, "udif", scratch, sizeof(scratch));
-    struct stat cached;
-    if (stat(scratch, &cached) == 0 && cached.st_size == (off_t)(tr.sectors * 512))
-        return dup_string(scratch); // already materialised
-
-    // The block map lives in the XML plist the trailer points at.
-    uint8_t *xml = (uint8_t *)malloc((size_t)tr.xml_length);
-    if (!xml)
-        return NULL;
-    f = fopen(base_path, "rb");
-    if (!f || read_at(f, tr.xml_offset, xml, (size_t)tr.xml_length) != 0) {
-        if (f)
-            fclose(f);
-        free(xml);
-        LOG(1, "UDIF '%s': cannot read block map", base_path);
+    image_t *image = (image_t *)calloc(1, sizeof(image_t));
+    if (!image) {
+        gs_unwrapped_free(&u);
+        errno = ENOMEM;
         return NULL;
     }
-    fclose(f);
-
-    udif_map_t *map = NULL;
-    rc = udif_parse_blkx(xml, (size_t)tr.xml_length, &map);
-    free(xml);
-    if (rc != 0) {
-        LOG(1, "UDIF '%s': block map parse failed (%d)", base_path, rc);
-        return NULL;
+    // A volume trimmed short of its own header's claim is opened at that
+    // claim (image_wrap.h): the storage's base becomes the file followed by
+    // zeros, with a copy of the volume's header where its alternate belongs
+    // (the second-last block; Disk First Aid rejects a volume without it).
+    // Guest writes to the tail land in the delta like any others.
+    gs_source_t *padded = NULL;
+    if (block_size == STORAGE_BLOCK_SIZE) {
+        uint64_t start = 0;
+        uint64_t blocks = image_wrap_extended_blocks(source_read_cb, u.data, raw / block_size, &start);
+        uint8_t hdr[STORAGE_BLOCK_SIZE];
+        if (blocks * block_size > raw && blocks * block_size <= SIZE_MAX &&
+            gs_source_read_exact(u.data, (start + 2) * block_size, hdr, sizeof(hdr)) == 0) {
+            uint64_t alt = (blocks - 2) * block_size;
+            padded = gs_source_pad(u.data, blocks * block_size, alt, hdr, alt >= raw ? sizeof(hdr) : 0);
+        }
+        if (padded) {
+            LOG(1, "'%s': its volume claims %llu blocks but the file holds %llu; the missing tail reads as zeros", name,
+                (unsigned long long)blocks, (unsigned long long)(raw / block_size));
+            raw = blocks * block_size;
+        }
     }
 
-    char *result = NULL;
-    mkdir_recursive(image_scratch_dir());
-    if (materialize_udif_host(base_path, &tr, map, scratch) == 0) {
-        LOG(3, "decoded UDIF '%s' -> '%s' (%llu sectors, %zu partitions)", base_path, scratch,
-            (unsigned long long)tr.sectors, map->n_tables);
-        result = dup_string(scratch);
+    image->filename = gs_strdup(name);
+    image->source_key = gs_strdup(gs_source_key(data));
+    image->format = gs_strdup(u.chain[0] ? u.chain : "raw");
+    image->raw_size = (size_t)raw;
+    image->block_size = block_size;
+    image->type = classify_image((size_t)raw);
+    image->writable = mode != OPEN_READONLY;
+    image->from_diskcopy = u.dc42 != NULL;
+
+    if (mode == OPEN_REOPEN) {
+        image->instance_path = gs_strdup(dir);
+    } else if (mode == OPEN_CREATE) {
+        char id[17];
+        mint_random_hex_id(id);
+        image->instance_path = gs_str_printf("%s/%s", dir, id);
     } else {
-        remove(scratch);
-        LOG(1, "UDIF decode failed for '%s'", base_path);
+        // A read-only mount's delta+journal are ghosts in the scratch root,
+        // so they never land beside the media.
+        gs_mkdir_p(image_scratch_dir());
+        char id[17];
+        mint_random_hex_id(id);
+        image->ghost_instance = true;
+        image->delta_path = gs_str_printf("%s/%s.delta", image_scratch_dir(), id);
+        image->journal_path = gs_str_printf("%s/%s.journal", image_scratch_dir(), id);
     }
-    udif_map_free(map);
-    return result;
+    if (image->instance_path) {
+        image->delta_path = gs_str_printf("%s.delta", image->instance_path);
+        image->journal_path = gs_str_printf("%s.journal", image->instance_path);
+    }
+    if (!image->filename || !image->source_key || !image->format || !image->delta_path || !image->journal_path) {
+        gs_source_release(padded);
+        gs_unwrapped_free(&u);
+        image_close(image);
+        errno = ENOMEM;
+        return NULL;
+    }
+
+    storage_config_t config = {0};
+    config.base = padded ? padded : u.data;
+    config.delta_path = image->delta_path;
+    config.journal_path = image->journal_path;
+    config.block_count = image->raw_size / image->block_size;
+    config.block_size = image->block_size;
+    int rc = storage_new(&config, &image->storage);
+    gs_source_release(padded);
+    if (rc == GS_SUCCESS && u.dc42)
+        image_load_diskcopy_tags(image, u.dc42);
+    gs_unwrapped_free(&u);
+    if (rc != GS_SUCCESS) {
+        gs_outf("image: storage engine failed for %s (error %d)\n", name, rc);
+        image_close(image);
+        errno = EIO;
+        return NULL;
+    }
+    if (image->writable)
+        writable_register(image, name);
+    LOG(3, "opened '%s' (%s, %zu bytes%s)", name, image->format, image->raw_size, image->writable ? ", writable" : "");
+    return image;
 }
 
-// If base_path is a compressed disk image, decode it to a cached scratch raw
-// file and return that path (malloc'd, caller frees / image takes ownership).
-// UDIF (.dmg) is self-contained and checked first; NDIF needs its block map
-// recovered from a fork sidecar.  Otherwise return a copy of base_path.
-// NULL only on allocation failure.
-static char *resolve_base_image(const char *base_path) {
-    char *udif = resolve_udif_image(base_path);
-    if (udif)
-        return udif;
-
-    size_t rlen = 0;
-    uint8_t *rfork = acquire_resource_fork(base_path, &rlen);
-    if (!rfork)
-        return dup_string(base_path);
-
-    char *result = NULL;
-    if (ndif_detect(rfork, rlen)) {
-        ndif_map_t *map = NULL;
-        if (ndif_parse(rfork, rlen, &map) == 0) {
-            char scratch[PATH_MAX];
-            image_scratch_path(base_path, "ndif", scratch, sizeof(scratch));
-
-            struct stat cached;
-            if (stat(scratch, &cached) == 0 && cached.st_size == (off_t)map->sectors * 512) {
-                result = dup_string(scratch); // already materialised
-            } else {
-                mkdir_recursive(image_scratch_dir());
-                if (materialize_ndif_host(base_path, map, scratch) == 0) {
-                    LOG(3, "decoded NDIF '%s' -> '%s' (%u sectors)", base_path, scratch, map->sectors);
-                    result = dup_string(scratch);
-                } else {
-                    remove(scratch);
-                    LOG(1, "NDIF decode failed for '%s'", base_path);
-                }
-            }
-            ndif_map_free(map);
-        }
+// Open the forks of `path` and build the image.  The resource fork is
+// optional (an NDIF image needs it; nothing else does).
+static image_t *image_open_path(const char *path, image_geometry_t geom, open_mode_t mode, const char *dir) {
+    if (!path || !*path) {
+        errno = EINVAL;
+        return NULL;
     }
-    free(rfork);
-    return result ? result : dup_string(base_path);
+    int err = 0;
+    gs_source_t *data = gs_source_open_path(path, GS_FORK_DATA, &err);
+    if (!data) {
+        errno = err ? -err : ENOENT;
+        return NULL;
+    }
+    gs_source_t *rsrc = gs_source_open_path(path, GS_FORK_RSRC, NULL);
+    image_t *img = image_open_source(path, data, rsrc, geom, mode, dir);
+    int saved = errno;
+    gs_source_release(data);
+    gs_source_release(rsrc);
+    errno = saved;
+    return img;
 }
 
 image_t *image_open_readonly(const char *base_path) {
@@ -830,55 +425,16 @@ image_t *image_open_readonly(const char *base_path) {
 }
 
 image_t *image_open_readonly_with_geometry(const char *base_path, image_geometry_t geom) {
-    if (!base_path || !*base_path)
-        return NULL;
-    uint32_t block_size = geometry_block_size(geom);
+    return image_open_path(base_path, geom, OPEN_READONLY, NULL);
+}
 
-    char *effective = resolve_base_image(base_path);
-    if (!effective)
-        return NULL;
-
-    size_t raw_size = 0;
-    bool is_diskcopy = false;
-    if (probe_base_image(effective, block_size, &raw_size, &is_diskcopy) != 0) {
-        free(effective);
+image_t *image_open_readonly_source(const char *name, gs_source_t *data, gs_source_t *rsrc) {
+    if (!data) {
+        errno = EINVAL;
         return NULL;
     }
-
-    image_t *image = (image_t *)calloc(1, sizeof(image_t));
-    if (!image) {
-        free(effective);
-        return NULL;
-    }
-    image->filename = effective; // owns the (possibly NDIF-materialised) base path
-    image->raw_size = raw_size;
-    image->block_size = block_size;
-    image->type = classify_image(raw_size);
-    image->writable = false;
-    image->from_diskcopy = is_diskcopy;
-    image->ghost_instance = true;
-
-    // Mint a scratch instance under the scratch root so the read-only
-    // mount does not pollute the base image's directory with delta
-    // sidecars.
-    mkdir_recursive(image_scratch_dir());
-    char id[17];
-    mint_random_hex_id(id, sizeof(id));
-    image->instance_path = NULL; // never serialized for read-only mounts
-    image->delta_path = str_printf("%s/%s.delta", image_scratch_dir(), id);
-    image->journal_path = str_printf("%s/%s.journal", image_scratch_dir(), id);
-    if (!image->filename || !image->delta_path || !image->journal_path) {
-        image_close(image);
-        return NULL;
-    }
-
-    int err = image_attach_storage(image, is_diskcopy);
-    if (err != GS_SUCCESS) {
-        printf("image_open_readonly: storage engine failed for %s (error %d)\n", base_path, err);
-        image_close(image);
-        return NULL;
-    }
-    return image;
+    return image_open_source(name, data, rsrc, (image_geometry_t){.block_size = STORAGE_BLOCK_SIZE}, OPEN_READONLY,
+                             NULL);
 }
 
 image_t *image_create(const char *base_path, const char *delta_dir) {
@@ -888,76 +444,22 @@ image_t *image_create(const char *base_path, const char *delta_dir) {
 image_t *image_create_with_geometry(const char *base_path, const char *delta_dir, image_geometry_t geom) {
     if (!base_path || !*base_path)
         return NULL;
-    uint32_t block_size = geometry_block_size(geom);
-
     // No write-access probe: only the delta needs to be writable, and the
     // base can legitimately live on a read-only FS (some tests, distribution
-    // mounts). The probe that used to live here had no effect on subsequent
-    // behaviour.
-
-    char *effective = resolve_base_image(base_path);
-    if (!effective)
-        return NULL;
-
-    size_t raw_size = 0;
-    bool is_diskcopy = false;
-    if (probe_base_image(effective, block_size, &raw_size, &is_diskcopy) != 0) {
-        free(effective);
-        return NULL;
-    }
-
-    // Default delta_dir: GS_STORAGE_CACHE when set (sidecars routed away
-    // from the media — see image_scratch_dir), else the directory
-    // containing the (original) base image.  Headless callers may pass
-    // NULL when they have no machine-id concept (§2.4).
-    char *derived_dir = NULL;
-    if (!delta_dir || !*delta_dir) {
-        const char *cache = getenv("GS_STORAGE_CACHE");
-        if (cache && *cache) {
-            delta_dir = cache;
-        } else {
-            derived_dir = dirname_of(base_path);
-            delta_dir = derived_dir;
-        }
-    }
-    if (mkdir_recursive(delta_dir) != 0) {
-        printf("image_create: cannot create delta directory: %s\n", delta_dir);
-        free(derived_dir);
-        free(effective);
+    // mounts) -- or inside an image or an archive.
+    //
+    // Default delta_dir: the scratch root (image_scratch_dir: GS_STORAGE_CACHE
+    // when set).  Never the base's own directory: a delta is per-instance, so
+    // one left beside the base is an orphan the moment the process exits, and
+    // shared media (tests/data) would collect them.  Headless callers with no
+    // machine directory pass NULL.
+    if (!delta_dir || !*delta_dir)
+        delta_dir = image_scratch_dir();
+    if (gs_mkdir_p(delta_dir) != 0) {
+        gs_outf("image_create: cannot create delta directory: %s\n", delta_dir);
         return NULL;
     }
-
-    char id[17];
-    mint_random_hex_id(id, sizeof(id));
-
-    image_t *image = (image_t *)calloc(1, sizeof(image_t));
-    if (!image) {
-        free(derived_dir);
-        free(effective);
-        return NULL;
-    }
-    image->filename = effective; // owns the (possibly NDIF-materialised) base path
-    image->raw_size = raw_size;
-    image->block_size = block_size;
-    image->type = classify_image(raw_size);
-    image->writable = true;
-    image->from_diskcopy = is_diskcopy;
-    image->instance_path = str_printf("%s/%s", delta_dir, id);
-    image->delta_path = str_printf("%s.delta", image->instance_path);
-    image->journal_path = str_printf("%s.journal", image->instance_path);
-    free(derived_dir);
-    if (!image->filename || !image->instance_path || !image->delta_path || !image->journal_path) {
-        image_close(image);
-        return NULL;
-    }
-
-    int err = image_attach_storage(image, is_diskcopy);
-    if (err != GS_SUCCESS) {
-        printf("image_create: storage engine failed for %s (error %d)\n", base_path, err);
-        image_close(image);
-        return NULL;
-    }
-    return image;
+    return image_open_path(base_path, geom, OPEN_CREATE, delta_dir);
 }
 
 image_t *image_open(const char *base_path, const char *instance_path) {
@@ -967,45 +469,7 @@ image_t *image_open(const char *base_path, const char *instance_path) {
 image_t *image_open_with_geometry(const char *base_path, const char *instance_path, image_geometry_t geom) {
     if (!base_path || !*base_path || !instance_path || !*instance_path)
         return NULL;
-    uint32_t block_size = geometry_block_size(geom);
-
-    char *effective = resolve_base_image(base_path);
-    if (!effective)
-        return NULL;
-
-    size_t raw_size = 0;
-    bool is_diskcopy = false;
-    if (probe_base_image(effective, block_size, &raw_size, &is_diskcopy) != 0) {
-        free(effective);
-        return NULL;
-    }
-
-    image_t *image = (image_t *)calloc(1, sizeof(image_t));
-    if (!image) {
-        free(effective);
-        return NULL;
-    }
-    image->filename = effective; // owns the (possibly NDIF-materialised) base path
-    image->raw_size = raw_size;
-    image->block_size = block_size;
-    image->type = classify_image(raw_size);
-    image->writable = true;
-    image->from_diskcopy = is_diskcopy;
-    image->instance_path = dup_string(instance_path);
-    image->delta_path = str_printf("%s.delta", instance_path);
-    image->journal_path = str_printf("%s.journal", instance_path);
-    if (!image->filename || !image->instance_path || !image->delta_path || !image->journal_path) {
-        image_close(image);
-        return NULL;
-    }
-
-    int err = image_attach_storage(image, is_diskcopy);
-    if (err != GS_SUCCESS) {
-        printf("image_open: storage engine failed for %s (instance %s, error %d)\n", base_path, instance_path, err);
-        image_close(image);
-        return NULL;
-    }
-    return image;
+    return image_open_path(base_path, geom, OPEN_REOPEN, instance_path);
 }
 
 image_t *image_create_blank(uint64_t block_count, image_geometry_t geom) {
@@ -1027,21 +491,28 @@ image_t *image_create_blank(uint64_t block_count, image_geometry_t geom) {
     // Place the delta+journal in the scratch root so the blank disk's
     // sidecars don't clutter any user directory; ghost_instance unlinks them on
     // image_close.  The image is ephemeral unless exported via image_export_to.
-    mkdir_recursive(image_scratch_dir());
+    gs_mkdir_p(image_scratch_dir());
     char id[17];
-    mint_random_hex_id(id, sizeof(id));
+    mint_random_hex_id(id);
     image->instance_path = NULL; // never serialized
-    image->delta_path = str_printf("%s/%s.delta", image_scratch_dir(), id);
-    image->journal_path = str_printf("%s/%s.journal", image_scratch_dir(), id);
+    image->delta_path = gs_str_printf("%s/%s.delta", image_scratch_dir(), id);
+    image->journal_path = gs_str_printf("%s/%s.journal", image_scratch_dir(), id);
     if (!image->delta_path || !image->journal_path) {
+        image->writable = false; // never registered
         image_close(image);
         return NULL;
     }
 
-    int err = image_attach_storage(image, false);
+    storage_config_t config = {0};
+    config.delta_path = image->delta_path;
+    config.journal_path = image->journal_path;
+    config.block_count = block_count;
+    config.block_size = block_size;
+    int err = storage_new(&config, &image->storage);
     if (err != GS_SUCCESS) {
-        printf("image_create_blank: storage engine failed (%llu x %u, error %d)\n", (unsigned long long)block_count,
-               block_size, err);
+        gs_outf("image_create_blank: storage engine failed (%llu x %u, error %d)\n", (unsigned long long)block_count,
+                block_size, err);
+        image->writable = false;
         image_close(image);
         return NULL;
     }
@@ -1058,18 +529,45 @@ const char *image_path(const image_t *image) {
 // Image I/O
 // ============================================================================
 
+// Bytes of synthesised wrapper prefix in front of the storage (0 unless
+// the image was wrapped — image_wrap.h).
+static size_t wrap_bytes(const image_t *disk) {
+    return (size_t)disk->wrap_blocks * disk->block_size;
+}
+
+static size_t storage_read_range(image_t *disk, size_t offset, uint8_t *buf, size_t size);
+static size_t storage_write_range(image_t *disk, size_t offset, uint8_t *buf, size_t size);
+
 size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
     if (!disk || !disk->storage || !buf || size == 0)
         return 0;
+    disk->reads++; // the activity light's only cost on this path
     GS_ASSERT((offset % disk->block_size) == 0);
     GS_ASSERT((size % disk->block_size) == 0);
+    size_t pre = wrap_bytes(disk);
+    if (offset < pre) {
+        // The wrapper's prefix is served from memory; the rest of the
+        // request continues on the volume's storage.
+        size_t n = pre - offset < size ? pre - offset : size;
+        memcpy(buf, disk->wrap_prefix + offset, n);
+        if (n == size)
+            return size;
+        return n + storage_read_range(disk, 0, buf + n, size - n);
+    }
+    return storage_read_range(disk, offset - pre, buf, size);
+}
+
+// Read whole blocks at `offset` of the image's volume (past any wrapper
+// prefix; wrap_base bytes into the storage).  Returns `size`, or the bytes read before a backing failure.
+static size_t storage_read_range(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
+    size_t vol_size = disk->raw_size - wrap_bytes(disk);
     // An undersized / truncated image (a host file shorter than the media it
     // backs) can be read past its end — e.g. the Finder reading high tracks
     // while ejecting a 400K/800K-geometry floppy backed by a too-small file.
     // Serve the unbacked tail as blank media (zeroes) rather than asserting,
     // so the guest sees readable-but-empty sectors and the operation can
     // finish.  `backed` is the in-bounds, whole-block byte count.
-    size_t backed = (offset < disk->raw_size) ? (disk->raw_size - offset) : 0;
+    size_t backed = (offset < vol_size) ? (vol_size - offset) : 0;
     if (backed > size)
         backed = size;
     backed -= backed % disk->block_size;
@@ -1081,7 +579,7 @@ size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
     }
     size_t transferred = 0;
     while (transferred < backed) {
-        int rc = storage_read_block(disk->storage, offset + transferred, buf + transferred);
+        int rc = storage_read_block(disk->storage, disk->wrap_base + offset + transferred, buf + transferred);
         GS_ASSERTF(rc == GS_SUCCESS, "storage_read_block failed (%d)", rc);
         if (rc != GS_SUCCESS)
             return transferred; // genuine in-bounds backing-store failure
@@ -1094,13 +592,33 @@ size_t disk_read_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
 size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
     if (!disk || !disk->storage || !buf || size == 0)
         return 0;
+    disk->writes++;
     GS_ASSERT((offset % disk->block_size) == 0);
     GS_ASSERT((size % disk->block_size) == 0);
+    size_t pre = wrap_bytes(disk);
+    if (offset < pre) {
+        // A write into the wrapper's prefix (a partitioning tool rewriting
+        // the map) lands in the in-memory prefix only: the volume file is
+        // never given a partition map, and the prefix is rebuilt on reopen.
+        size_t n = pre - offset < size ? pre - offset : size;
+        memcpy(disk->wrap_prefix + offset, buf, n);
+        LOG(1, "disk_write_data: %zu-byte write into the wrapper prefix at %zu kept in memory only", n, offset);
+        if (n == size)
+            return size;
+        return n + storage_write_range(disk, 0, buf + n, size - n);
+    }
+    return storage_write_range(disk, offset - pre, buf, size);
+}
+
+// Write whole blocks at `offset` of the image's volume (past any wrapper
+// prefix; wrap_base bytes into the storage).  Returns `size`, or the bytes written before a backing failure.
+static size_t storage_write_range(image_t *disk, size_t offset, uint8_t *buf, size_t size) {
+    size_t vol_size = disk->raw_size - wrap_bytes(disk);
     // Symmetric with disk_read_data: a write past the end of an undersized
     // image targets sectors with no backing store.  Drop the unbacked tail
     // (it cannot be stored) rather than asserting, so the guest's volume
     // flush during eject completes; warn so the dropped write is visible.
-    size_t backed = (offset < disk->raw_size) ? (disk->raw_size - offset) : 0;
+    size_t backed = (offset < vol_size) ? (vol_size - offset) : 0;
     if (backed > size)
         backed = size;
     backed -= backed % disk->block_size;
@@ -1110,7 +628,7 @@ size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) 
             size, offset, disk->raw_size, size - backed);
     size_t transferred = 0;
     while (transferred < backed) {
-        int rc = storage_write_block(disk->storage, offset + transferred, buf + transferred);
+        int rc = storage_write_block(disk->storage, disk->wrap_base + offset + transferred, buf + transferred);
         GS_ASSERTF(rc == GS_SUCCESS, "storage_write_block failed (%d)", rc);
         if (rc != GS_SUCCESS)
             return transferred; // genuine in-bounds backing-store failure
@@ -1147,47 +665,132 @@ static char *stream_set_large_buffer(FILE *f) {
     return buf;
 }
 
-size_t image_save(image_t *image) {
-    if (!image || !image->storage || !image->filename)
-        return (size_t)-1;
-    if (image->from_diskcopy) {
-        LOG(1, "image_save: exporting DiskCopy images is not supported (%s)", image->filename);
-        return (size_t)-1;
-    }
-    FILE *f = fopen(image->filename, "wb");
-    if (!f)
-        return (size_t)-1;
-    char *iobuf = stream_set_large_buffer(f);
-    storage_checkpoint(image->storage, NULL);
-    int rc = storage_save_state(image->storage, f, file_write_cb);
-    fclose(f);
-    free(iobuf);
-    return (rc == GS_SUCCESS) ? 0 : (size_t)-1;
-}
+struct image_export {
+    storage_export_view_t *view;
+    char *dest;
+    char *name; // the image's own name, recorded in a UDIF export
+    uint32_t block_size;
+};
 
-// Export the full disk content (base + delta) to a new file at dest_path.
-int image_export_to(image_t *image, const char *dest_path) {
-    if (!image || !image->storage || !dest_path || !*dest_path)
-        return -1;
+image_export_t *image_export_begin(image_t *image, const char *dest_path, char *err, size_t err_cap) {
+    if (err && err_cap)
+        err[0] = '\0';
+    if (!image || !image->storage || !dest_path || !*dest_path) {
+        if (err)
+            snprintf(err, err_cap, "no medium, or no destination");
+        return NULL;
+    }
     // Refuse to overwrite existing files
     FILE *exist = fopen(dest_path, "rb");
     if (exist) {
         fclose(exist);
-        return -1;
+        if (err)
+            snprintf(err, err_cap, "'%s' exists (refuses to overwrite)", dest_path);
+        return NULL;
     }
-    ensure_parent_dirs(dest_path);
-    FILE *f = fopen(dest_path, "wb");
-    if (!f)
-        return -1;
-    char *iobuf = stream_set_large_buffer(f);
-    int rc = storage_save_state(image->storage, f, file_write_cb);
-    fclose(f);
-    free(iobuf);
+    image_export_t *e = calloc(1, sizeof *e);
+    if (!e)
+        return NULL;
+    e->dest = strdup(dest_path);
+    e->block_size = image->block_size;
+    if (image->filename) {
+        const char *slash = strrchr(image->filename, '/');
+        e->name = strdup(slash ? slash + 1 : image->filename);
+    }
+    e->view = storage_export_view_begin(image->storage);
+    if (!e->dest || !e->view) {
+        if (err)
+            snprintf(err, err_cap, "cannot snapshot the disk for export");
+        image_export_end(e);
+        return NULL;
+    }
+    return e;
+}
+
+// A destination named .dmg gets a UDIF (udif_writer.h): zero runs cost
+// nothing and the rest is deflated, so a modified 2 GB disk exports at its
+// content's size.  Any other name gets the flat raw image.
+static bool export_is_udif(const image_export_t *e) {
+    size_t n = strlen(e->dest);
+    return e->block_size == UDIF_SECTOR_SIZE && n >= 4 && strcasecmp(e->dest + n - 4, ".dmg") == 0;
+}
+
+static int udif_write_cb(void *ctx, const void *data, size_t size) {
+    return udif_writer_append((udif_writer_t *)ctx, data, size) == 0 ? 0 : -1;
+}
+
+static int image_export_run_udif(image_export_t *e, char *err, size_t err_cap) {
+    udif_writer_opts_t o = {.level = 1, .source_name = e->name};
+    udif_writer_t *w = udif_writer_open(e->dest, &o, err, err_cap);
+    if (!w)
+        return -EIO;
+    int rc = storage_export_view_write(e->view, w, udif_write_cb);
     if (rc != GS_SUCCESS) {
-        remove(dest_path);
-        return -1;
+        udif_writer_abort(w);
+        if (rc == -ECANCELED) {
+            if (err)
+                snprintf(err, err_cap, "cancelled");
+            return -ECANCELED;
+        }
+        if (err)
+            snprintf(err, err_cap, "write to '%s' failed", e->dest);
+        return -EIO;
+    }
+    rc = udif_writer_finish(w, NULL);
+    if (rc != 0 && err)
+        snprintf(err, err_cap, "write to '%s' failed: %s", e->dest, strerror(-rc));
+    return rc;
+}
+
+int image_export_run(image_export_t *e, char *err, size_t err_cap) {
+    if (!e || !e->view)
+        return -EINVAL;
+    gs_mkdir_parents(e->dest);
+    if (export_is_udif(e))
+        return image_export_run_udif(e, err, err_cap);
+    FILE *f = fopen(e->dest, "wb");
+    if (!f) {
+        int rc = errno ? errno : EIO;
+        if (err)
+            snprintf(err, err_cap, "cannot create '%s': %s", e->dest, strerror(rc));
+        return -rc;
+    }
+    char *iobuf = stream_set_large_buffer(f);
+    int rc = storage_export_view_write(e->view, f, file_write_cb);
+    bool closed = fclose(f) == 0;
+    free(iobuf);
+    if (rc != GS_SUCCESS || !closed) {
+        remove(e->dest);
+        if (rc == -ECANCELED) {
+            if (err)
+                snprintf(err, err_cap, "cancelled");
+            return -ECANCELED;
+        }
+        if (err)
+            snprintf(err, err_cap, "write to '%s' failed", e->dest);
+        return -EIO;
     }
     return 0;
+}
+
+void image_export_end(image_export_t *e) {
+    if (!e)
+        return;
+    storage_export_view_end(e->view);
+    free(e->dest);
+    free(e->name);
+    free(e);
+}
+
+// Export the full disk content (base + delta) to a new file at dest_path,
+// here and now.
+int image_export_to(image_t *image, const char *dest_path) {
+    image_export_t *e = image_export_begin(image, dest_path, NULL, 0);
+    if (!e)
+        return -1;
+    int rc = image_export_run(e, NULL, 0);
+    image_export_end(e);
+    return rc == 0 ? 0 : -1;
 }
 
 // ============================================================================
@@ -1197,7 +800,7 @@ int image_export_to(image_t *image, const char *dest_path) {
 int image_create_empty(const char *filename, size_t size) {
     if (!filename || !*filename || size == 0)
         return -1;
-    ensure_parent_dirs(filename);
+    gs_mkdir_parents(filename);
     FILE *f = fopen(filename, "wb");
     if (!f)
         return -1;
@@ -1212,6 +815,13 @@ int image_create_empty(const char *filename, size_t size) {
     }
     fclose(f);
     return 0;
+}
+
+int image_create_empty_udif(const char *filename, uint64_t size) {
+    if (!filename || !*filename || size == 0)
+        return -1;
+    gs_mkdir_parents(filename);
+    return udif_create_empty(filename, size) == 0 ? 0 : -1;
 }
 
 int image_create_blank_floppy(const char *filename, bool overwrite, bool high_density) {
@@ -1246,7 +856,7 @@ int image_create_blank_profile(const char *filename, uint32_t block_count) {
         fclose(exist);
         return -2;
     }
-    ensure_parent_dirs(filename);
+    gs_mkdir_parents(filename);
     FILE *f = fopen(filename, "wb");
     if (!f)
         return -1;
@@ -1262,116 +872,6 @@ int image_create_blank_profile(const char *filename, uint32_t block_count) {
     }
     fclose(f);
     return 0;
-}
-
-// ============================================================================
-// Volatile → persistent image copy
-// ============================================================================
-
-static bool path_is_volatile(const char *path) {
-    // Paths under /opfs/ are persistent (OPFS-backed). Everything else is volatile.
-    return !(path && strncmp(path, "/opfs/", 6) == 0);
-}
-
-// FNV-1a hash over the first 64 KB of data plus total file size → 8-char hex.
-static uint32_t fnv1a_image_hash(FILE *f, size_t file_size) {
-    uint32_t h = 0x811c9dc5u;
-    uint8_t buf[4096];
-    size_t remaining = file_size < 65536 ? file_size : 65536;
-
-    fseek(f, 0, SEEK_SET);
-    while (remaining > 0) {
-        size_t chunk = remaining > sizeof(buf) ? sizeof(buf) : remaining;
-        size_t got = fread(buf, 1, chunk, f);
-        if (got == 0)
-            break;
-        for (size_t i = 0; i < got; i++) {
-            h ^= buf[i];
-            h *= 0x01000193u;
-        }
-        remaining -= got;
-    }
-    // Mix in file size
-    h ^= (uint32_t)file_size;
-    h *= 0x01000193u;
-    return h;
-}
-
-char *image_persist_volatile(const char *path) {
-    if (!path || !*path)
-        return NULL;
-
-    // Already persistent — return a copy
-    if (!path_is_volatile(path))
-        return dup_string(path);
-
-    FILE *src = fopen(path, "rb");
-    if (!src)
-        return NULL;
-
-    // Get file size
-    fseek(src, 0, SEEK_END);
-    size_t file_size = (size_t)ftell(src);
-    if (file_size == 0) {
-        fclose(src);
-        return NULL;
-    }
-
-    // Hash the file for content-addressed naming
-    uint32_t hash = fnv1a_image_hash(src, file_size);
-    char *dest_path = str_printf("/opfs/images/%08x.img", hash);
-    if (!dest_path) {
-        fclose(src);
-        return NULL;
-    }
-
-    // Skip copy if destination already exists with the same size
-    struct stat st;
-    if (stat(dest_path, &st) == 0 && (size_t)st.st_size == file_size) {
-        fclose(src);
-        return dest_path;
-    }
-
-    // Ensure /images/ directory exists
-    mkdir_if_needed("/opfs/images");
-
-    // Copy file
-    FILE *dst = fopen(dest_path, "wb");
-    if (!dst) {
-        fclose(src);
-        free(dest_path);
-        return NULL;
-    }
-
-    fseek(src, 0, SEEK_SET);
-    uint8_t buf[4096];
-    size_t remaining = file_size;
-    bool ok = true;
-    while (remaining > 0) {
-        size_t chunk = remaining > sizeof(buf) ? sizeof(buf) : remaining;
-        size_t got = fread(buf, 1, chunk, src);
-        if (got != chunk) {
-            ok = false;
-            break;
-        }
-        if (fwrite(buf, 1, got, dst) != got) {
-            ok = false;
-            break;
-        }
-        remaining -= got;
-    }
-
-    fclose(src);
-    fclose(dst);
-
-    if (!ok) {
-        remove(dest_path);
-        free(dest_path);
-        return NULL;
-    }
-
-    printf("[persist] copied %s -> %s (%zu bytes)\n", path, dest_path, file_size);
-    return dest_path;
 }
 
 // ============================================================================
@@ -1396,6 +896,17 @@ void image_tick_all(config_t *config) {
 
 const char *image_get_filename(const image_t *image) {
     return image ? image->filename : NULL;
+}
+
+image_t *images_find(const image_list_t *images, const char *name) {
+    if (!images || !name)
+        return NULL;
+    for (int i = 0; i < images->n; i++) {
+        const char *n = image_get_filename(images->items[i]);
+        if (n && strcmp(n, name) == 0)
+            return images->items[i];
+    }
+    return NULL;
 }
 
 void image_init(checkpoint_t *checkpoint) {
@@ -1425,19 +936,31 @@ void image_checkpoint(const image_t *image, checkpoint_t *checkpoint) {
     if (len)
         system_write_checkpoint_data(checkpoint, name, len);
 
-    char writable_flag = (char)(image->writable ? 1 : 0);
-    system_write_checkpoint_data(checkpoint, &writable_flag, sizeof(writable_flag));
+    // Bit 0: writable.  Bit 1: wrapped by the bare-volume wrapper — the
+    // restore re-wraps rather than trusting the file to say so (the prefix
+    // is never in the file).  raw_size is the storage's own size, which is
+    // what the restore's geometry check and base materialisation expect.
+    char flags = (char)((image->writable ? IMAGE_CKPT_WRITABLE : 0) | (image->wrap_prefix ? IMAGE_CKPT_WRAPPED : 0));
+    system_write_checkpoint_data(checkpoint, &flags, sizeof(flags));
 
-    uint64_t raw_size = (uint64_t)image->raw_size;
+    uint64_t raw_size = (uint64_t)(image->wrap_prefix ? image->wrap_storage_size : image->raw_size);
     system_write_checkpoint_data(checkpoint, &raw_size, sizeof(raw_size));
 
     // Persist the instance path so a future restore can reopen the same delta
-    // directory without relying on adjacent-to-base sidecars (§2.8).  Empty
+    // directory without relying on adjacent-to-base sidecars.  Empty
     // string for read-only / ghost mounts.
     const char *instance = (image->writable && image->instance_path) ? image->instance_path : "";
     uint32_t instance_len = (uint32_t)(strlen(instance) + 1);
     system_write_checkpoint_data(checkpoint, &instance_len, sizeof(instance_len));
     system_write_checkpoint_data(checkpoint, instance, instance_len);
+
+    // The key of the source the path opened (source.h): a restore that
+    // reuses the base checks it is still the same bytes -- the same file,
+    // size and time stamp, or the same member of the same archive.
+    const char *key = image->source_key ? image->source_key : "";
+    uint32_t key_len = (uint32_t)(strlen(key) + 1);
+    system_write_checkpoint_data(checkpoint, &key_len, sizeof(key_len));
+    system_write_checkpoint_data(checkpoint, key, key_len);
 
     if (image->storage) {
         int rc = storage_checkpoint(image->storage, checkpoint);

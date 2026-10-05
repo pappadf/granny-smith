@@ -49,7 +49,7 @@ static lisa_fdc_t *make_fdc(void) {
     // The scheduler is only used to defer EXEC's completion interrupt; the
     // isolated harness stubs scheduler_* as no-ops, so a sentinel pointer is
     // enough and the deferred event never has to fire for these checks.
-    lisa_fdc_t *fdc = lisa_fdc_init((struct scheduler *)0x1, fdir_cb, NULL, NULL);
+    lisa_fdc_t *fdc = lisa_fdc_init((struct scheduler *)0x1, fdir_cb, NULL, NULL, NULL);
     ASSERT_TRUE(fdc != NULL);
     return fdc;
 }

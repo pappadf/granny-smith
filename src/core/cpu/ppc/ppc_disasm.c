@@ -4,9 +4,8 @@
 // ppc_disasm.c
 // Dependency-free MPC601/MPC604 disassembler: the second instantiation of
 // the shared decode tree (ppc_decode.h), with the OP_ leaves overloaded by
-// sprintf-style printing macros — the cpu_disasm.c pattern
-// (proposal-heterogeneous-multi-cpu.md §3.3.1).  Because this is literally
-// the same decode tree the interpreter runs, the two cannot drift.
+// sprintf-style printing macros — the cpu_disasm.c pattern.  Because this is
+// literally the same decode tree the interpreter runs, the two cannot drift.
 //
 // Output uses standard mnemonics with the common simplified forms (li,
 // lis, mr, nop, blr, bctr, cmpwi, mflr, ...) the way the development
@@ -16,28 +15,11 @@
 
 #include "ppc_disasm.h"
 
+#include "ppc_fields.h"
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
-
-// Field extraction (BE bit numbering) — the dependency-free copy of the
-// accessor set ppc_internal.h provides to the emulator; kept in sync.
-#define PPC_OPCD(iw) ((iw) >> 26)
-#define PPC_RT(iw)   (((iw) >> 21) & 31)
-#define PPC_RA(iw)   (((iw) >> 16) & 31)
-#define PPC_RB(iw)   (((iw) >> 11) & 31)
-#define PPC_XO10(iw) (((iw) >> 1) & 0x3FF)
-#define PPC_XO9(iw)  (((iw) >> 1) & 0x1FF)
-#define PPC_XO5(iw)  (((iw) >> 1) & 0x1F)
-#define PPC_OE(iw)   (((iw) >> 10) & 1)
-#define PPC_RC(iw)   ((iw) & 1)
-#define PPC_SIMM(iw) ((int32_t)(int16_t)(iw))
-#define PPC_UIMM(iw) ((iw) & 0xFFFFu)
-#define PPC_MB(iw)   (((iw) >> 6) & 31)
-#define PPC_ME(iw)   (((iw) >> 1) & 31)
-#define PPC_FRC(iw)  (((iw) >> 6) & 31)
-#define PPC_CRFD(iw) (((iw) >> 23) & 7)
-#define PPC_CRFS(iw) (((iw) >> 18) & 7)
 
 // === Printing helpers =======================================================
 
@@ -136,6 +118,20 @@ static const char *spr_name(uint32_t n) {
         return "dbat3u";
     case 543:
         return "dbat3l";
+    case 936:
+        return "ummcr0"; // 750 user-level monitor mirrors (750UM Table 2-49)
+    case 937:
+        return "upmc1";
+    case 938:
+        return "upmc2";
+    case 939:
+        return "usia";
+    case 940:
+        return "ummcr1";
+    case 941:
+        return "upmc3";
+    case 942:
+        return "upmc4";
     case 952:
         return "mmcr0"; // 604 performance monitor group
     case 953:
@@ -144,6 +140,12 @@ static const char *spr_name(uint32_t n) {
         return "pmc2";
     case 955:
         return "sia";
+    case 956:
+        return "mmcr1"; // 750 additions to the monitor group
+    case 957:
+        return "pmc3";
+    case 958:
+        return "pmc4";
     case 959:
         return "sda";
     case 1008:
@@ -154,6 +156,16 @@ static const char *spr_name(uint32_t n) {
         return "iabr";
     case 1013:
         return "dabr";
+    case 1017:
+        return "l2cr"; // 750 implementation registers
+    case 1019:
+        return "ictc";
+    case 1020:
+        return "thrm1";
+    case 1021:
+        return "thrm2";
+    case 1022:
+        return "thrm3";
     case 1023:
         return "pir";
     default:
@@ -587,7 +599,8 @@ int ppc_disassemble_model(uint32_t word, uint32_t addr, int model, ppc_insn *out
     ppc_disassemble(word, addr, out);
     // The other model's exclusives trap as illegal there — render them
     // the way any invalid word renders.
-    if ((model == 604 && out->is_power) || (model == 601 && out->is_604))
+    // The 750 shares the 604's instruction-set view (750UM §2.3).
+    if ((model != 601 && out->is_power) || (model == 601 && out->is_604))
         invalid(out);
     return out->status;
 }

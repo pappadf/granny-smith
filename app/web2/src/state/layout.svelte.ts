@@ -3,15 +3,9 @@
 
 export type PanelPos = 'bottom' | 'left' | 'right';
 export type PanelTab =
-  | 'terminal'
-  | 'machine'
-  | 'filesystem'
-  | 'images'
-  | 'checkpoints'
-  | 'debug'
-  | 'logs';
+  'terminal' | 'machine' | 'filesystem' | 'images' | 'checkpoints' | 'debug' | 'logs';
 
-// Tab order is locked by spec §4 and affects future config serialization.
+// Tab order is fixed and affects future config serialization.
 export const PANEL_TABS: ReadonlyArray<PanelTab> = [
   'terminal',
   'machine',
@@ -63,7 +57,7 @@ export function setPanelCollapsed(collapsed: boolean): void {
 
 export function setActiveTab(tab: PanelTab): void {
   layout.activeTab = tab;
-  // Auto-uncollapse on tab switch (matches prototype app.js:978).
+  // Auto-uncollapse on tab switch.
   if (layout.panelCollapsed) layout.panelCollapsed = false;
 }
 
@@ -76,7 +70,7 @@ export function getPanelMin(pos: PanelPos): number {
 }
 
 // Pick a sensible default Panel position for a fresh load based on viewport
-// shape. Mirrors prototype app.js:596-599. On wider-than-3:2 viewports the
+// shape. On wider-than-3:2 viewports the
 // canvas fits comfortably with a right-side panel; on narrower viewports the
 // panel goes at the bottom.
 export function autoPickPanelPos(width: number, height: number): PanelPos {

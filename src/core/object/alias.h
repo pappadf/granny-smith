@@ -3,7 +3,7 @@
 
 // alias.h
 // Two-tier alias table for `$name` substitution. See
-// proposal-module-object-model.md §4.4.
+// docs/internals/core/shell/shell.md ("Bindings").
 //
 // - **Built-in aliases** are registered by classes / the framework at
 //   init time (alias_register_builtin). Re-registration of the same
@@ -13,7 +13,7 @@
 //   alias_remove_user). They cannot collide with built-ins or with
 //   reserved words.
 //
-// Aliases are session-only — no persistence layer in M3. Reset on
+// Aliases are session-only — no persistence layer. Reset on
 // emulator destroy via alias_reset().
 
 #ifndef GS_OBJECT_ALIAS_H
@@ -52,7 +52,14 @@ int alias_remove_user(const char *name, char *err_buf, size_t err_size);
 // Look up the path for `name`. Returns a pointer into the table's
 // own storage (valid until the alias is removed) or NULL if no such
 // alias exists. Optionally writes the alias kind into `kind_out`.
+// Only for the job thread, which is the one that changes aliases; any other
+// thread uses alias_lookup_copy.
 const char *alias_lookup(const char *name, alias_kind_t *kind_out);
+
+// The same, copying the path into `buf` (`size` bytes) under the table
+// lock: safe from any thread.  False when no such alias exists or the path
+// does not fit.
+bool alias_lookup_copy(const char *name, char *buf, size_t size, alias_kind_t *kind_out);
 
 // Iterate every alias in registration order. The callback returns
 // `true` to continue, `false` to stop early.
@@ -65,8 +72,8 @@ size_t alias_count(void);
 // Drop every alias (both tiers). Tests use this to start clean.
 void alias_reset(void);
 
-// Drop only user aliases — used by checkpoint restore (per
-// proposal §4.4.5: checkpoints don't preserve user aliases).
+// Drop only user aliases — used by checkpoint restore (checkpoints don't
+// preserve user aliases).
 void alias_clear_user(void);
 
 #ifdef __cplusplus

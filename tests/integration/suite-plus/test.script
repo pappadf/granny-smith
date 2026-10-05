@@ -7,7 +7,7 @@
 #                  (frame-exact window — the constants are load-bearing)
 #   plus-20-fd     System 2.0 @ 1 MB (factory-default RAM)
 #   plus-32-fd     System 3.2 @ 2 MB
-#   plus-4x-fd     **System 4.1 @ 2.5 MB** — one of §6.2's unused
+#   plus-4x-fd     **System 4.1 @ 2.5 MB** — one of the unused
 #                  single-disk system images, on the asymmetric-bank
 #                  RAM config
 #   plus-42-fd     System 4.2, moved to the 4 MB maximum
@@ -48,15 +48,16 @@ def plus_fd_row(label, ram, media, golden, ceiling) {
 }
 
 # ---- plus-beep --------------------------------------------------------------
-# Deterministic PWM audio through the generalized audio path. The fixed
-# window and the exact frame count are both the assertion (§5.2's
-# run_exact class), not padding.
+# Deterministic PWM audio through the generalized audio path. The fixed window
+# and the exact frame count are both the assertion, not padding.  The
+# machine boots with its parameter RAM already valid (the configuration's
+# seed), so the ROM skips its own PRAMInit and the window holds 15112 frames.
 def row_plus_beep() {
     machine.boot model="plus" ram=1024 rom="${$ROM}"
     machine.sound.capture.start
     scheduler.run 1000000
     machine.sound.capture.stop
-    assert machine.sound.capture.frames == 15432 "plus-beep: unexpected capture length"
+    assert machine.sound.capture.frames == 15112 "plus-beep: unexpected capture length"
     machine.sound.match goldens/plus-beep.wav
     report_perf("suite-plus/plus-beep", scheduler.instr_count)
 }
@@ -79,8 +80,8 @@ def row_plus_32_fd() {
     report_perf("suite-plus/plus-32-fd", $spent)
 }
 
-# NEW ROW: System 4.1 — one of the single-disk system images that sat
-# unused in tests/data (§6.2), on the asymmetric two-bank RAM config.
+# NEW ROW: System 4.1 — one of the single-disk system images that sat unused in
+# tests/data, on the asymmetric two-bank RAM config.
 def row_plus_4x_fd() {
     let t0 = scheduler.host_user_ns
     let spent = plus_fd_row("plus-4x-fd", 2560, $sys_41, "goldens/plus-4.1-512x342-finder.png", 90000000)
@@ -110,11 +111,11 @@ def row_plus_608_fd() {
     assert machine.ram == 2048 "plus-608-fd: machine.ram != 2048"
     check("goldens/plus-6.0.8-512x342-finder.png")
     # No assert_addr here: the Plus is a 68000, always 24-bit, and it has
-    # no MMU32bit global (§3.4 — the axis is n/a for this class).
+    # no MMU32bit global (the axis is n/a for this class).
     report_row("6.0.8", "builtin", "fd-boot iwm 800k-gcr")
 
     # Blank second floppy → the System's initialize-disk dialog.
-    assert storage.fd_create("${$WORK_DIR}/blank.dsk") "plus-608-fd: fd_create failed"
+    assert files.fd_create("${$WORK_DIR}/blank.dsk") "plus-608-fd: fd_create failed"
     machine.floppy.drive[1].insert "${$WORK_DIR}/blank.dsk" true
     wait_stable(300000000)
     assert machine.floppy.drive[1].present "plus-608-fd: blank floppy not present in drive 1"
@@ -166,6 +167,116 @@ def row_plus_71_hd() {
     report_perf("suite-plus/plus-71-hd", scheduler.instr_count)
 }
 
+# ---- plus-keyboard ----------------------------------------------------------
+# The Plus keypad sends aliased raw codes: every keypad key shares its byte
+# with a main-keyboard key, and the $79 / $71 prefixes are what make the
+# Keyboard Driver add $40 and produce the keypad key code instead.  Until
+# 2026-09-21 the model omitted the $71 Shift prefix entirely and gave Clear
+# no prefix at all, so five keys delivered the wrong character to the guest:
+# Clear typed X, and + * / = arrived as Left, Right, Up and Down.
+#
+# The oracle is the ROM's own KeyMap bitmap at $174 (keyboard.md §8.5): 16
+# bytes, byte = code >> 3, bit = code & 7, LSB-first within the byte.  It is
+# maintained by the keyboard VBL task hooked at JKybdTask, so it is live long
+# before the Finder -- but rather than guess how early, the row proves the
+# oracle with a control key first.
+def keymap_bit(code) {
+    let byte = machine.memory.peek.b(0x174 + ($code >> 3))
+    return ($byte >> ($code & 7)) & 1
+}
+
+def row_plus_keyboard() {
+    machine.boot model="plus" ram=4096 rom="${$ROM}"
+    machine.scsi.attach_hd "${$hd_71}" 0
+    scheduler.run 60000000
+    wait_stable(1200000000)
+
+    # KbdType is non-zero once the Model Number handshake has completed
+    # (Guide 2e p.281: the first command the computer sends is Model Number,
+    # and normal Inquiry operation only begins after a successful reply).
+    assert debug.mac.globals.read("KbdType") != 0 "plus-keyboard: keyboard handshake did not complete"
+
+    # Positive control.  Space is $31 -- deliberately NOT X ($07), because X
+    # is the very bit keypad Clear used to collide with, and a control that
+    # shared the bit under test would mask the defect it is there to catch.
+    machine.adb.keyboard.down 0x31
+    run_ticks(10)
+    assert keymap_bit(0x31) == 1 "plus-keyboard: control key (space) did not reach KeyMap -- oracle not live"
+    machine.adb.keyboard.up 0x31
+    run_ticks(10)
+    assert keymap_bit(0x31) == 0 "plus-keyboard: control key (space) stuck down"
+
+    # Keypad Clear must be $47, not X ($07).
+    machine.adb.keyboard.down 0x47
+    run_ticks(10)
+    assert keymap_bit(0x47) == 1 "plus-keyboard: keypad Clear did not set $47"
+    assert keymap_bit(0x07) == 0 "plus-keyboard: keypad Clear also typed X ($07)"
+    machine.adb.keyboard.up 0x47
+    run_ticks(10)
+
+    # The four Shift-prefixed operators.  On a Plus the keypad symbol and its
+    # arrow SHARE the key code, so the assertion is not "not the arrow bit" --
+    # it is that Shift is down alongside it.  Shift is $38.
+    machine.adb.keyboard.down 0x45
+    run_ticks(10)
+    assert keymap_bit(0x38) == 1 "plus-keyboard: keypad + did not assert Shift"
+    machine.adb.keyboard.up 0x45
+    run_ticks(10)
+    # ... and the Shift latch must clear on release, or every later keystroke
+    # arrives shifted.  This is the guard on the inferred $F1 release byte.
+    assert keymap_bit(0x38) == 0 "plus-keyboard: Shift latch stuck down after keypad + release"
+
+    machine.adb.keyboard.down 0x4B
+    run_ticks(10)
+    assert keymap_bit(0x38) == 1 "plus-keyboard: keypad / did not assert Shift"
+    machine.adb.keyboard.up 0x4B
+    run_ticks(10)
+    assert keymap_bit(0x38) == 0 "plus-keyboard: Shift latch stuck down after keypad / release"
+
+    # keyboard.press("a") used to fail on EVERY machine, Mac included --
+    # debug_mac_resolve_key_name knew fourteen named keys and the hex form and
+    # nothing else, while adb.c's own argument doc promised
+    # `Key name ("return"/"esc"/"a"/...)`.  Letters and digits now resolve
+    # through the layout table that was already there.
+    machine.adb.keyboard.down "a"
+    run_ticks(10)
+    assert keymap_bit(0x00) == 1 "plus-keyboard: keyboard.press(\"a\") did not resolve"
+    machine.adb.keyboard.up "a"
+    run_ticks(10)
+    assert keymap_bit(0x00) == 0 "plus-keyboard: 'a' stuck down"
+
+    machine.adb.keyboard.down "7"
+    run_ticks(10)
+    assert keymap_bit(0x1A) == 1 "plus-keyboard: keyboard.press(\"7\") did not resolve"
+    machine.adb.keyboard.up "7"
+    run_ticks(10)
+
+    report_row("7.1", "builtin", "hd-boot keypad-prefix keymap key-names")
+}
+
+# ---- plus-checkpoint --------------------------------------------------------
+# The Plus had no save/restore round trip at all, which is the coverage the
+# family needed before it could move onto the shared checkpoint prefix: the
+# checkpoint stream is positional and has no version field, so a save and its
+# restore that drift apart do not fail at the drift -- they cross-load and die
+# later at whichever block first disagrees on size (the IIfx did exactly that).
+# Boot to the 6.0.8 Finder, save, boot a DIFFERENT machine, load, and require
+# the restored machine to be the saved one down to the pixel.
+def row_plus_checkpoint() {
+    machine.boot model="plus" ram=2048 rom="${$ROM}"
+    machine.floppy.drive[0].insert "${$ssw_608}"
+    scheduler.run 30000000
+    wait_stable(300000000)
+    check("goldens/plus-6.0.8-512x342-finder.png")
+    assert checkpoint.save("${$WORK_DIR}/suite-plus.gsc") "plus-checkpoint: save failed"
+    machine.boot model="plus" ram=1024 rom="${$ROM}"
+    assert checkpoint.load("${$WORK_DIR}/suite-plus.gsc") "plus-checkpoint: load failed"
+    scheduler.run 5000000
+    assert machine.ram == 2048 "plus-checkpoint: restored RAM size wrong"
+    check("goldens/plus-6.0.8-512x342-finder.png")
+    report_perf("suite-plus/plus-checkpoint", scheduler.instr_count)
+}
+
 # ---- row dispatch -----------------------------------------------------------
 
 if row_on("plus-beep") { row_end("plus-beep", try(row_plus_beep(), "FAILED")) }
@@ -175,6 +286,8 @@ if row_on("plus-4x-fd") { row_end("plus-4x-fd", try(row_plus_4x_fd(), "FAILED"))
 if row_on("plus-42-fd") { row_end("plus-42-fd", try(row_plus_42_fd(), "FAILED")) }
 if row_on("plus-608-fd") { row_end("plus-608-fd", try(row_plus_608_fd(), "FAILED")) }
 if row_on("plus-71-hd") { row_end("plus-71-hd", try(row_plus_71_hd(), "FAILED")) }
+if row_on("plus-keyboard") { row_end("plus-keyboard", try(row_plus_keyboard(), "FAILED")) }
+if row_on("plus-checkpoint") { row_end("plus-checkpoint", try(row_plus_checkpoint(), "FAILED")) }
 
 suite_done()
 quit

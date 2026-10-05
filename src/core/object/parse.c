@@ -7,6 +7,8 @@
 #include "parse.h"
 
 #include <ctype.h>
+#include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -116,7 +118,7 @@ value_t parse_string_literal(const char **p) {
     *p = q + 1;
     // Wrap the heap buffer into a V_STRING. val_str strdups, so we then
     // free our own buffer — slightly wasteful, but keeps the "constructors
-    // copy" rule consistent (proposal §2.6).
+    // copy" rule consistent.
     value_t v = val_str(buf ? buf : "");
     free(buf);
     return v;
@@ -195,16 +197,31 @@ value_t parse_integer_literal(const char **p) {
         q++; // swallow optional bit-width
 
     char *endp = NULL;
+    errno = 0;
     unsigned long long uv = strtoull(tmp, &endp, base);
     if (endp == tmp)
         return val_err("malformed integer literal");
+    // strtoull saturates at ULLONG_MAX and sets ERANGE.  Unchecked, a typo in
+    // an address literal became a plausible-looking wrong value rather than an
+    // error: 99999999999999999999 silently read as UINT64_MAX.
+    if (errno == ERANGE)
+        return val_err("integer literal out of range");
     *p = q;
 
     if (force_unsigned || (!force_signed && !negative)) {
         return val_uint(8, (uint64_t)uv);
     }
-    int64_t iv = negative ? -(int64_t)uv : (int64_t)uv;
-    return val_int(iv);
+    // Negate through uint64_t.  `-(int64_t)uv` is implementation-defined for
+    // uv > INT64_MAX and undefined for uv == 2^63 exactly -- the one value
+    // that has no positive counterpart.  parse_unary already does it this way.
+    if (negative) {
+        if (uv > (unsigned long long)INT64_MAX + 1ull)
+            return val_err("integer literal out of range");
+        return val_int((int64_t)(0 - (uint64_t)uv));
+    }
+    if (uv > (unsigned long long)INT64_MAX)
+        return val_err("integer literal out of range");
+    return val_int((int64_t)uv);
 }
 
 // Parse a float literal at *p. Returns V_ERROR if not a float; on
@@ -319,7 +336,7 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
 
     // Literal keywords (reserved words; cannot be shadowed). `on`/`off`/
     // `yes`/`no` are no longer global literals — bool-typed slots coerce
-    // those strings in validate_slot instead (shell v2 §3.11).
+    // those strings in validate_slot instead.
     {
         const char *r;
         if ((r = match_keyword(q, "true"))) {
@@ -388,8 +405,7 @@ value_t parse_literal(const char **p, const char *const *enum_table, size_t n_en
         value_t iv = parse_integer_literal(p);
         if (iv.kind == V_INT || iv.kind == V_UINT) {
             // Optional bytes suffix: NUMBER:N → big-endian V_BYTES of N
-            // bytes. Proposal §4.2 spells "0xDEAD_BEEF:4" — N is the byte
-            // width.
+            // bytes: "0xDEAD_BEEF:4" — N is the byte width.
             if (**p == ':') {
                 const char *r = *p + 1;
                 long long n = 0;

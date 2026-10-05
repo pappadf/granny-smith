@@ -117,7 +117,7 @@ function upsample2x(x: Int16Array): Int16Array {
   // here: an early version carried a stray factor of two, which put the
   // fixture 6 dB hot, and 6-12 dB hot is precisely the level error that
   // makes Apple's recognizer reject an utterance (its AGC winds the codec
-  // gain down; see dsp3210-plaintalk/sr-test-audio-assets.md §2). A fixture
+  // gain down). A fixture
   // that mis-levels the signal cannot tell you the product mis-levelled it.
   for (const parity of [0, 1]) {
     let sum = 0;

@@ -53,10 +53,10 @@
 // driver reads Apple's sense lines through GP_IO, a register that does not
 // exist on the 88800GX at all.
 
-#include "card.h"
 #include "checkpoint.h"
 #include "config_space.h"
 #include "display.h"
+#include "display_class.h"
 #include "log.h"
 #include "memory.h"
 #include "object.h"
@@ -71,7 +71,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("mach64");
+LOG_USE_CATEGORY_NAME("video");
 
 // The card's little-endian register domain.  The ONE sanctioned swap point
 // in this file; see the endianness note above.
@@ -89,6 +89,23 @@ LOG_USE_CATEGORY_NAME("mach64");
 // monitor.  Apple's own dump reports `revision-id 00000002`.
 #define MACH64_REVISION 0x02u
 #define MACH64_CLASS    0x030000u // display / VGA-compatible / no prog-if
+
+// The Rage Pro as soldered to the beige Power Macintosh G3 (Rev B/C boards):
+// PCI $1002:$4750, revision $7C.  CONFIG_CHIP_ID repeats the device ID and
+// revision; CONFIG_STAT0 = $0080001D (SGRAM, type 5) and CONFIG_CNTL =
+// $2042 (a 2 x 8 MB aperture, its location fixed by the BAR) are the
+// values a real Rev C machine reports.
+#define RAGEPRO_DEVICE_ID    0x4750u
+#define RAGEPRO_REVISION     0x7Cu
+#define RAGEPRO_CHIP_ID      ((uint32_t)RAGEPRO_REVISION << 24 | RAGEPRO_DEVICE_ID)
+#define RAGEPRO_CONFIG_STAT0 0x0080001Du
+#define RAGEPRO_CONFIG_CNTL  0x00002042u
+#define GUI_STAT_FIFO_FREE   32u // GUI_STAT FIFO_CNT with the command FIFO empty
+#define RAGEPRO_BAR_IO       1 // config $14 — 256 B of block-decoded I/O
+#define RAGEPRO_BAR_AUX      2 // config $18 — the 4 KB register aperture
+#define RAGEPRO_IO_SIZE      0x100u
+#define RAGEPRO_AUX_SIZE     0x1000u
+#define RAGEPRO_BLOCK1_OFF   0x7FF800u // block 1 in the little-endian aperture
 
 #define MACH64_BAR_APER  0 // config $10 — the 16 MB aperture BAR
 #define MACH64_APER_SIZE 0x1000000u // 16 MB, what the card's `reg` declares
@@ -171,6 +188,35 @@ LOG_USE_CATEGORY_NAME("mach64");
 #define DW_FIFO_STAT          0xC4
 #define DW_GUI_STAT           0xCE
 
+// --- the Rage Pro (mach64 GP) differences in block 0 -----------------------
+// The CT-generation parts integrate the DAC and the clock synthesizer and
+// move CONFIG_CNTL into the memory-mapped file (ATI, *3D RAGE PRO Register
+// Reference* ch. 3; the GX has it on the I/O face only, see DW_CONFIG_CNTL).
+#define DW_DSP_CONFIG     0x08
+#define DW_DSP_ON_OFF     0x09
+#define DW_GP_IO          0x1E
+#define DW_GP_IO_CNTL     0x1F
+#define DW_EXT_MEM_CNTL   0x2B
+#define DW_CONFIG_CNTL_GP 0x37
+
+// BUS_CNTL (RRG p. 36; PRG p. 140).
+#define BUS_APER_REG_DIS 0x00000010u // block 0 no longer aliased at the top of BAR0
+#define BUS_EXT_REG_EN   0x08000000u // block 1 decoded at BAR0 + 8 MB - 2 KB
+
+// CLOCK_CNTL: the indirect port to the PLL register file.  Byte 1 carries
+// PLL_WR_EN (bit 9) and PLL_ADDR (bits 15:10), byte 2 the data.
+#define CLOCK_PLL_WR_EN      0x00000200u
+#define CLOCK_PLL_ADDR(v)    (((v) >> 10) & 0x3Fu)
+#define CLOCK_PLL_DATA_SHIFT 16
+
+// GP_IO: Apple wires the three monitor-sense lines to data bits 13, 12 and
+// 8 (A, B, C), with their direction bits 16 higher (1 = output).
+#define GPIO_SENSE_A    0x2000u
+#define GPIO_SENSE_B    0x1000u
+#define GPIO_SENSE_C    0x0100u
+#define GPIO_SENSE_MASK (GPIO_SENSE_A | GPIO_SENSE_B | GPIO_SENSE_C)
+#define GPIO_DIR_SHIFT  16
+
 // The draw engine occupies dwords $40 and up; its WRITES pass a 16-entry
 // command FIFO while everything below $40 is unFIFOed and reads never are
 // (PRG, "The Command FIFO").  That documented split is why the model can
@@ -244,6 +290,10 @@ LOG_USE_CATEGORY_NAME("mach64");
 #define DP_MONO_PATTERN  1u
 #define DP_MONO_HOST     2u
 #define DP_MONO_BLIT     3u
+
+// HOST_CNTL (dword $90): bit 0 byte-aligns 1 bpp host data per row; bit 1
+// byte-swaps colour host data for a big-endian host.
+#define HOST_CNTL_BIG_ENDIAN_EN 0x2u
 
 // PAT_REG0/PAT_REG1 hold an 8 x 8 monochrome pattern, one bit per pixel.
 #define DW_PAT_REG0 0xA0
@@ -429,11 +479,11 @@ static const char *mach64_traj_name(mach64_traj_t t) {
 // code actually selects is a driver decision we have not measured yet, and
 // the bit order WITHIN each extended pair is not stated by the note — so
 // mach64_sense_log() prints the primary and extended codes the engine
-// produced on the first run, and the table gets pinned from that (§8 Q7 of
-// the proposal).  Nothing about enumeration depends on it: the card's
-// FCode gives up only when primary == 7 AND extended == $3F together, i.e.
-// when all three pins float high in every configuration, which is what "no
-// cable attached" looks like.
+// produced on the first run, and the table gets pinned from that.  Nothing
+// about enumeration depends on it: the card's FCode gives up only when
+// primary == 7 AND extended == $3F together, i.e. when all three pins float
+// high in every configuration, which is what "no cable attached" looks
+// like.
 typedef struct mach64_monitor_sense {
     const char *id;
     uint8_t primary; // 3-bit code, pins (2,1,0), all tri-stated
@@ -457,40 +507,38 @@ static const mach64_monitor_sense_t mach64_sense[] = {
     {"20in_multi", 6, 3,              0,              2             },
     // 21" colour — a primary-only code, like the 14".
     {"21in_color", 0, STRAP_EXT01(0), STRAP_EXT02(0), STRAP_EXT12(0)},
+    // No cable: every pin floats high in every configuration, the one answer
+    // the card's FCode treats as "nothing attached" (primary 7, extended $3F).
+    {"none",       7, 3,              3,              3             },
     {NULL,         0, 0,              0,              0             },
 };
 
 // The depths Apple documents per raster at 2 MB (9500 developer note table
-// 2-1).  These reach the configuration dialog through machine.profile.
+// 2-1).  These reach the configuration dialog through catalog.profile.
 static const int depths_8_16_24[] = {8, 16, 24, 0};
 static const int depths_8_16[] = {8, 16, 0};
 
 static const struct nubus_monitor mach64_monitors[] = {
-    {.id = "14in_rgb",
-     .name = "14\" AppleColor / 12\" monochrome",
-     .width = 640,
-     .height = 480,
-     .depths = depths_8_16_24,
-     .sense_code = 6},
+    {.id = "14in_rgb", .monitor = "13in_rgb", .width = 640, .height = 480, .depths = depths_8_16_24, .sense_code = 6},
     {.id = "15in_multi",
-     .name = "15\" Multiple Scan",
+     .monitor = "multiscan_15",
      .width = 832,
      .height = 624,
      .depths = depths_8_16_24,
      .sense_code = 6},
     {.id = "17in_multi",
-     .name = "17\" Multiple Scan",
+     .monitor = "multiscan_17",
      .width = 1024,
      .height = 768,
      .depths = depths_8_16,
      .sense_code = 6},
     {.id = "20in_multi",
-     .name = "20\" Multiple Scan",
+     .monitor = "multiscan_20",
      .width = 1152,
      .height = 870,
      .depths = depths_8_16,
      .sense_code = 6},
-    {.id = "21in_color", .name = "21\" Colour", .width = 1152, .height = 870, .depths = depths_8_16, .sense_code = 0},
+    {.id = "21in_color", .monitor = "21in_rgb", .width = 1152, .height = 870, .depths = depths_8_16, .sense_code = 0},
     {.id = NULL},
 };
 
@@ -504,6 +552,15 @@ typedef struct mach64 {
 
     uint32_t reg[MACH64_NUM_REGS]; // the register file, little-endian values
     uint32_t io_base; // strapped sparse-I/O base ($2EC default)
+
+    // The Rage Pro variant (the beige G3's on-board chip): integrated DAC
+    // and PLL, register block 1, the BAR2 register aperture and the
+    // big-endian framebuffer view.  Everything below the flag is GP-only.
+    bool gp;
+    uint32_t reg1[256]; // register block 1 (overlay, scaler, 3D setup): latches
+    uint8_t pll[64]; // the PLL register file behind CLOCK_CNTL
+    memory_interface_t aux_if; // BAR2: block 1 at +0, block 0 at +$400
+    memory_interface_t bio_if; // BAR1: block-decoded I/O, dword = offset / 4
 
     uint8_t *vram;
     uint32_t vram_size;
@@ -533,6 +590,7 @@ typedef struct mach64 {
     // one of them moves; `blank` is the black stub shown while the raster
     // is disabled, and `compose` carries the hardware-cursor composite.
     display_t display;
+    display_fb_node_t fb_node; // instance data for the shared framebuffer class
     rgba8_t clut_view[256];
     uint8_t *blank;
     uint8_t *compose;
@@ -566,12 +624,9 @@ typedef struct mach64 {
         bool active;
         uint32_t x0, y0, w, h;
         uint32_t col, row;
+        uint32_t pixel; // the colour host source's current pixel
     } host_op;
 } mach64_t;
-
-// The staged options a `pci_card=` boot can carry, consumed by the factory.
-static char s_staged_monitor[32];
-static uint32_t s_staged_vram = MACH64_VRAM_2MB;
 
 // ============================================================
 // The register file — two faces, one file
@@ -630,14 +685,15 @@ static int io_dword_for_select(uint32_t sel) {
 // each is defined in its own section below.
 static void mach64_sense_step(mach64_t *m);
 static uint8_t mach64_mon_id_state(const mach64_t *m);
+static uint8_t mach64_mon_id_state_dir(const mach64_t *m, uint8_t dir);
 static uint32_t mach64_current_vline(const mach64_t *m);
-static uint32_t mach64_dac_read(mach64_t *m);
+static uint32_t mach64_dac_read(mach64_t *m, bool peek);
 static void mach64_dac_write(mach64_t *m, uint32_t value);
 static void mach64_aperture_changed(mach64_t *m);
 static uint32_t mach64_mem_size_code(const mach64_t *m);
 static uint32_t mach64_aperture_size(const mach64_t *m);
 static void mach64_clut_changed(mach64_t *m);
-static uint32_t mach64_reg_read(mach64_t *m, int dw);
+static uint32_t mach64_reg_read(mach64_t *m, int dw, bool peek);
 static void mach64_reg_write(mach64_t *m, int dw, uint32_t value);
 static void mach64_update(mach64_t *m);
 static bool mach64_in_vblank(const mach64_t *m);
@@ -658,13 +714,17 @@ static void mach64_irq_sync(mach64_t *m);
 // and corrupt the CLUT, so the byte and halfword paths route it lane-wise
 // instead of through the dword.
 
-static uint8_t mach64_dac_read_lane(mach64_t *m, uint32_t lane);
+static uint8_t mach64_dac_read_lane(mach64_t *m, uint32_t lane, bool peek);
 static void mach64_dac_write_lane(mach64_t *m, uint32_t lane, uint8_t value);
 
-static uint8_t mach64_reg_read_lane(mach64_t *m, int dw, uint32_t lane) {
+// Every register read takes `peek`: false for the guest's read, true for an
+// inspection (memory_interface_t.peek_*), which returns the same value and
+// leaves the palette cursor, the GP_IO sense direction and the once-only
+// aperture log where they are.
+static uint8_t mach64_reg_read_lane(mach64_t *m, int dw, uint32_t lane, bool peek) {
     if (dw == DW_DAC_REGS)
-        return mach64_dac_read_lane(m, lane);
-    return (uint8_t)(mach64_reg_read(m, dw) >> (8u * (lane & 3u)));
+        return mach64_dac_read_lane(m, lane, peek);
+    return (uint8_t)(mach64_reg_read(m, dw, peek) >> (8u * (lane & 3u)));
 }
 
 static void mach64_reg_write_lane(mach64_t *m, int dw, uint32_t lane, uint8_t value) {
@@ -673,14 +733,20 @@ static void mach64_reg_write_lane(mach64_t *m, int dw, uint32_t lane, uint8_t va
         return;
     }
     uint32_t shift = 8u * (lane & 3u);
-    uint32_t v = (mach64_reg_read(m, dw) & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+    uint32_t v = (mach64_reg_read(m, dw, false) & ~(0xFFu << shift)) | ((uint32_t)value << shift);
     mach64_reg_write(m, dw, v);
 }
 
 // --- reads -----------------------------------------------------------------
 
+static bool gp_reg_read(mach64_t *m, int dw, uint32_t *out, bool peek);
+static bool gp_reg_write(mach64_t *m, int dw, uint32_t value);
+
 // Registers whose value is not simply what was last written.
-static uint32_t mach64_reg_read(mach64_t *m, int dw) {
+static uint32_t mach64_reg_read(mach64_t *m, int dw, bool peek) {
+    uint32_t gpv;
+    if (m->gp && gp_reg_read(m, dw, &gpv, peek))
+        return gpv;
     switch (dw) {
     case DW_CONFIG_CHIP_ID:
         // Read-only, and exactly known.  Getting this wrong sends the
@@ -698,7 +764,7 @@ static uint32_t mach64_reg_read(mach64_t *m, int dw) {
         // straight-line code that senses nothing.  A plausible value is
         // strapped and every read of the field is logged, so the first run
         // says whether anything actually cares.
-        LOG(4, "CONFIG_STAT0 read (CFG_INIT_DAC_TYPE = %u)", (m->reg[DW_CONFIG_STAT0] >> 9) & 7u);
+        LOG(4, "Mach64: CONFIG_STAT0 read (CFG_INIT_DAC_TYPE = %u)", (m->reg[DW_CONFIG_STAT0] >> 9) & 7u);
         return m->reg[DW_CONFIG_STAT0];
 
     case DW_DAC_CNTL: {
@@ -726,7 +792,7 @@ static uint32_t mach64_reg_read(mach64_t *m, int dw) {
         return (m->reg[DW_CRTC_INT_CNTL] & ~CRTC_VBLANK) | (mach64_in_vblank(m) ? CRTC_VBLANK : 0);
 
     case DW_DAC_REGS:
-        return mach64_dac_read(m);
+        return mach64_dac_read(m, peek);
 
     default:
         return m->reg[dw];
@@ -736,6 +802,8 @@ static uint32_t mach64_reg_read(mach64_t *m, int dw) {
 // --- writes ----------------------------------------------------------------
 
 static void mach64_reg_write(mach64_t *m, int dw, uint32_t value) {
+    if (m->gp && gp_reg_write(m, dw, value))
+        return;
     switch (dw) {
     case DW_CONFIG_CHIP_ID:
     case DW_CONFIG_STAT0:
@@ -743,7 +811,7 @@ static void mach64_reg_write(mach64_t *m, int dw, uint32_t value) {
         // Read-only straps.  The card's own init table DOES write
         // CONFIG_STAT0 (value 0 on a GX, 9 on a CT), so this is a normal
         // event, not a guest bug — accept it and discard it.
-        LOG(3, "write to read-only register (dword $%02X) = $%08X — ignored", dw, value);
+        LOG(3, "Mach64: write to read-only register (dword $%02X) = $%08X — ignored", dw, value);
         return;
 
     case DW_CONFIG_CNTL: {
@@ -774,6 +842,7 @@ static void mach64_reg_write(mach64_t *m, int dw, uint32_t value) {
     case DW_CRTC_V_TOTAL_DISP:
     case DW_CRTC_OFF_PITCH:
     case DW_CRTC_GEN_CNTL:
+        LOG(3, "Mach64: CRTC dword $%02X = $%08X", dw, value);
         m->reg[dw] = value;
         mach64_update(m);
         return;
@@ -798,8 +867,8 @@ static void mach64_reg_write(mach64_t *m, int dw, uint32_t value) {
         // own init table writes 2 (= 2 MB) on a GX; a 4 MB card is the
         // expansion module.  Keep OUR size authoritative and say so.
         if ((value & 7u) != mach64_mem_size_code(m)) {
-            LOG(1, "MEM_CNTL wrote MEM_SIZE=%u but this card has %u MB — keeping %u", value & 7u, m->vram_size >> 20,
-                mach64_mem_size_code(m));
+            LOG(1, "Mach64: MEM_CNTL wrote MEM_SIZE=%u but this card has %u MB — keeping %u", value & 7u,
+                m->vram_size >> 20, mach64_mem_size_code(m));
         }
         m->reg[DW_MEM_CNTL] = (value & ~7u) | mach64_mem_size_code(m);
         return;
@@ -810,7 +879,7 @@ static void mach64_reg_write(mach64_t *m, int dw, uint32_t value) {
         if (dw >= DW_DRAW_ENGINE_FIRST) {
             // An engine register with no behaviour of its own: pattern,
             // colour-compare, context.  Stored and read back.
-            LOG(4, "draw-engine register dword $%02X = $%08X (store only)", dw, value);
+            LOG(4, "Mach64: draw-engine register dword $%02X = $%08X (store only)", dw, value);
         }
         m->reg[dw] = value;
         return;
@@ -834,12 +903,12 @@ static void mach64_reg_write(mach64_t *m, int dw, uint32_t value) {
 // code is $3F — every pin floating high in every configuration, i.e. no
 // cable attached.  Any real Apple sense code passes.
 
-// What the three pins read back in the current direction configuration.
-static uint8_t mach64_mon_id_state(const mach64_t *m) {
+// What the three pins read back with `dir` selecting the driven pin.
+static uint8_t mach64_mon_id_state_dir(const mach64_t *m, uint8_t dir) {
     const mach64_monitor_sense_t *mon = m->mon;
     if (!mon)
         return 7u; // nothing strapped: all pins float high = "no monitor"
-    switch (m->mon_id_dir) {
+    switch (dir) {
     case 0: // all three tri-stated: the primary code
         return mon->primary;
     case 1: // pin 0 driven: read (pin2, pin1)
@@ -852,9 +921,14 @@ static uint8_t mach64_mon_id_state(const mach64_t *m) {
         // Two or three pins driven at once is reserved (RRG p. 3-31).  Real
         // silicon would report whatever the drivers won; say "all high" and
         // log, so a driver doing something we have not seen announces itself.
-        LOG(1, "reserved DAC_MON_ID_DIR value %u — reporting all pins high", m->mon_id_dir);
+        LOG(1, "Mach64: reserved DAC_MON_ID_DIR value %u — reporting all pins high", dir);
         return 7u;
     }
+}
+
+// What the three pins read back in the current direction configuration.
+static uint8_t mach64_mon_id_state(const mach64_t *m) {
+    return mach64_mon_id_state_dir(m, m->mon_id_dir);
 }
 
 // Record what the guest is reading, so the first run REPORTS the codes
@@ -888,7 +962,7 @@ static void mach64_sense_step(mach64_t *m) {
             break;
         }
     }
-    LOG(3, "sense: dir=%u -> state=%u (monitor '%s': primary=%u extended=$%02X)", m->mon_id_dir, state,
+    LOG(3, "Mach64: sense: dir=%u -> state=%u (monitor '%s': primary=%u extended=$%02X)", m->mon_id_dir, state,
         m->mon ? m->mon->id : "(none)", m->sense_primary, m->sense_ext);
 }
 
@@ -923,7 +997,7 @@ static uint32_t mach64_dac_rs(const mach64_t *m, uint32_t lane) {
 static uint8_t mach64_dac_indexed_read(mach64_t *m) {
     uint16_t idx = m->dac_index;
     if (idx >= sizeof(m->dac_indexed)) {
-        LOG(1, "RGB514 indexed read past the file: $%04X", idx);
+        LOG(1, "Mach64: RGB514 indexed read past the file: $%04X", idx);
         return 0;
     }
     switch (idx) {
@@ -935,7 +1009,7 @@ static uint8_t mach64_dac_indexed_read(mach64_t *m) {
         // DAC Sense: a genuine read-only comparator.  The monitor detection
         // that matters here runs through the mach64's own pins (above), not
         // this, so return a stable value and log anyone who looks.
-        LOG(2, "RGB514 DAC Sense read");
+        LOG(2, "Mach64: RGB514 DAC Sense read");
         return 0x00;
     default:
         return m->dac_indexed[idx];
@@ -945,29 +1019,39 @@ static uint8_t mach64_dac_indexed_read(mach64_t *m) {
 static void mach64_dac_indexed_write(mach64_t *m, uint8_t value) {
     uint16_t idx = m->dac_index;
     if (idx >= sizeof(m->dac_indexed)) {
-        LOG(1, "RGB514 indexed write past the file: $%04X = $%02X", idx, value);
+        LOG(1, "Mach64: RGB514 indexed write past the file: $%04X = $%02X", idx, value);
         return;
     }
     m->dac_indexed[idx] = value;
-    LOG(3, "RGB514[$%04X] = $%02X", idx, value);
+    LOG(3, "Mach64: RGB514[$%04X] = $%02X", idx, value);
 }
 
 // DAC_REGS is one 32-bit register whose four BYTE lanes are separate DAC
 // cells, so it is read and written a lane at a time; the dword paths below
 // assemble and dissect around these.
-static uint8_t mach64_dac_read_lane(mach64_t *m, uint32_t lane) {
+static uint8_t gp_dac_read_lane(mach64_t *m, uint32_t lane, bool peek);
+static void gp_dac_write_lane(mach64_t *m, uint32_t lane, uint8_t value);
+
+// The palette data cell: the current entry's R, G or B byte; the guest's read
+// (`peek` false) then steps the cursor, and after B moves to the next entry.
+static uint8_t dac_palette_data_read(mach64_t *m, bool peek) {
+    uint8_t v = m->clut[m->clut_addr][m->clut_phase];
+    if (!peek && ++m->clut_phase == 3) {
+        m->clut_phase = 0;
+        m->clut_addr++;
+    }
+    return v;
+}
+
+static uint8_t mach64_dac_read_lane(mach64_t *m, uint32_t lane, bool peek) {
+    if (m->gp)
+        return gp_dac_read_lane(m, lane, peek);
     switch (mach64_dac_rs(m, lane)) {
     case 0: // palette address (write mode)
     case 3: // palette address (read mode)
         return m->clut_addr;
-    case 1: { // palette data — R, G, B, then the entry auto-advances
-        uint8_t v = m->clut[m->clut_addr][m->clut_phase];
-        if (++m->clut_phase == 3) {
-            m->clut_phase = 0;
-            m->clut_addr++;
-        }
-        return v;
-    }
+    case 1: // palette data — R, G, B, then the entry auto-advances
+        return dac_palette_data_read(m, peek);
     case 2:
         return m->dac_pixel_mask;
     case 4:
@@ -982,7 +1066,11 @@ static uint8_t mach64_dac_read_lane(mach64_t *m, uint32_t lane) {
 }
 
 static void mach64_dac_write_lane(mach64_t *m, uint32_t lane, uint8_t value) {
-    LOG(4, "DAC cell RS=%u (lane %u) = $%02X", mach64_dac_rs(m, lane), lane, value);
+    if (m->gp) {
+        gp_dac_write_lane(m, lane, value);
+        return;
+    }
+    LOG(4, "Mach64: DAC cell RS=%u (lane %u) = $%02X", mach64_dac_rs(m, lane), lane, value);
     switch (mach64_dac_rs(m, lane)) {
     case 0:
     case 3:
@@ -993,8 +1081,8 @@ static void mach64_dac_write_lane(mach64_t *m, uint32_t lane, uint8_t value) {
         m->clut[m->clut_addr][m->clut_phase] = value;
         if (++m->clut_phase == 3) {
             m->clut_phase = 0;
-            LOG(4, "CLUT[$%02X] = %02X %02X %02X", m->clut_addr, m->clut[m->clut_addr][0], m->clut[m->clut_addr][1],
-                m->clut[m->clut_addr][2]);
+            LOG(4, "Mach64: CLUT[$%02X] = %02X %02X %02X", m->clut_addr, m->clut[m->clut_addr][0],
+                m->clut[m->clut_addr][1], m->clut[m->clut_addr][2]);
             m->clut_addr++;
             mach64_clut_changed(m);
         }
@@ -1019,10 +1107,19 @@ static void mach64_dac_write_lane(mach64_t *m, uint32_t lane, uint8_t value) {
     }
 }
 
-static uint32_t mach64_dac_read(mach64_t *m) {
+// The four cells in lane order.  The guest's read steps the palette cursor
+// at lane 1 (palette data) before lane 3 reads it back (the read-mode
+// address, RS 011, or the Rage Pro's read index), so a peek, which leaves
+// the cursor alone, reports lane 3 as that read would: one entry on when the
+// data read finishes an entry.
+static uint32_t mach64_dac_read(mach64_t *m, bool peek) {
     uint32_t v = 0;
     for (uint32_t lane = 0; lane < 4; lane++)
-        v |= (uint32_t)mach64_dac_read_lane(m, lane) << (8u * lane);
+        v |= (uint32_t)mach64_dac_read_lane(m, lane, peek) << (8u * lane);
+    bool data_at_1 = m->gp || mach64_dac_rs(m, 1) == 1;
+    bool addr_at_3 = m->gp || mach64_dac_rs(m, 3) == 3;
+    if (peek && data_at_1 && addr_at_3 && m->clut_phase == 2)
+        v = (v & 0x00FFFFFFu) | ((uint32_t)(uint8_t)(m->clut_addr + 1u) << 24);
     return v;
 }
 
@@ -1032,11 +1129,161 @@ static void mach64_dac_write(mach64_t *m, uint32_t value) {
 }
 
 // ============================================================
+// The Rage Pro's own block-0 behaviour
+// ============================================================
+
+// The three Apple sense lines as the chip reads them back through GP_IO.
+// A line whose direction bit is set is an output and reads what is driven
+// on it; an input reads the monitor's strap, with the other lines' drive
+// applied exactly as the GX's DAC_MON_ID pins (mach64_mon_id_state) —
+// Apple's sense circuit is the same three wires whichever chip reads them.
+// The guest's read (`peek` false) also latches the driven-pin set as the
+// sense direction; a peek computes the same pin levels without latching it.
+static uint32_t gp_gpio_read(mach64_t *m, bool peek) {
+    uint32_t v = m->reg[DW_GP_IO];
+    uint32_t dir = (v >> GPIO_DIR_SHIFT) & GPIO_SENSE_MASK;
+    uint8_t pins_driven = (uint8_t)(((dir & GPIO_SENSE_A) ? 4u : 0u) | ((dir & GPIO_SENSE_B) ? 2u : 0u) |
+                                    ((dir & GPIO_SENSE_C) ? 1u : 0u));
+    uint8_t state = 7u;
+    if (pins_driven == 0 || pins_driven == 1 || pins_driven == 2 || pins_driven == 4) {
+        if (!peek)
+            m->mon_id_dir = pins_driven;
+        state = mach64_mon_id_state_dir(m, pins_driven);
+    }
+    uint32_t in =
+        ((state & 4u) ? GPIO_SENSE_A : 0u) | ((state & 2u) ? GPIO_SENSE_B : 0u) | ((state & 1u) ? GPIO_SENSE_C : 0u);
+    uint32_t data = (v & dir) | (in & ~dir & GPIO_SENSE_MASK);
+    return (v & ~GPIO_SENSE_MASK) | data;
+}
+
+static bool gp_reg_read(mach64_t *m, int dw, uint32_t *out, bool peek) {
+    switch (dw) {
+    case DW_CONFIG_CHIP_ID:
+        *out = RAGEPRO_CHIP_ID;
+        return true;
+    case DW_CONFIG_CNTL_GP:
+        // The aperture arrangement is fixed on PCI: "always 2x8 MB", its
+        // location "fixed by the PCI configuration space" (RRG p. 44).
+        *out = RAGEPRO_CONFIG_CNTL;
+        return true;
+    case DW_DAC_CNTL:
+        // No monitor-ID pins here (they moved to GP_IO): a plain latch.
+        *out = m->reg[DW_DAC_CNTL];
+        return true;
+    case DW_GP_IO:
+        *out = gp_gpio_read(m, peek);
+        return true;
+    case DW_GUI_STAT:
+        // Engine idle, and FIFO_CNT (bits 25:16) — the number of empty
+        // command-FIFO entries, "less than or equal to 32" on the 3D RAGE
+        // family (RRG 3D RAGE p. 4-106) — says the whole FIFO is free.
+        // ATI's Mac accelerator waits on this count, not on FIFO_STAT:
+        // `while (((GUI_STAT >> 16) & $3FF) < n);` hangs on a 0 here.
+        *out = GUI_STAT_FIFO_FREE << 16;
+        return true;
+    case DW_CLOCK_CNTL:
+        *out = (m->reg[DW_CLOCK_CNTL] & ~(0xFFu << CLOCK_PLL_DATA_SHIFT)) |
+               ((uint32_t)m->pll[CLOCK_PLL_ADDR(m->reg[DW_CLOCK_CNTL])] << CLOCK_PLL_DATA_SHIFT);
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool gp_reg_write(mach64_t *m, int dw, uint32_t value) {
+    switch (dw) {
+    case DW_CONFIG_CHIP_ID:
+    case DW_CONFIG_STAT0:
+    case DW_CONFIG_CNTL_GP:
+        LOG(3, "Rage Pro: write to read-only register (dword $%02X) = $%08X — ignored", dw, value);
+        return true;
+    case DW_DAC_CNTL:
+        m->reg[DW_DAC_CNTL] = value;
+        mach64_clut_changed(m); // DAC_8BIT_EN rescales the palette
+        return true;
+    case DW_GP_IO: {
+        m->reg[DW_GP_IO] = value;
+        uint32_t dir = (value >> GPIO_DIR_SHIFT) & GPIO_SENSE_MASK;
+        uint8_t driven = (uint8_t)(((dir & GPIO_SENSE_A) ? 4u : 0u) | ((dir & GPIO_SENSE_B) ? 2u : 0u) |
+                                   ((dir & GPIO_SENSE_C) ? 1u : 0u));
+        if (driven == 0 || driven == 1 || driven == 2 || driven == 4) {
+            m->mon_id_dir = driven;
+            mach64_sense_step(m);
+        }
+        return true;
+    }
+    case DW_CLOCK_CNTL:
+        // A write with PLL_WR_EN set stores byte 2 into the PLL register
+        // PLL_ADDR names.  Drivers set the address (byte 1) and then the
+        // data (byte 2) with two byte stores; the first carries the old
+        // data byte, which the second then overwrites.
+        m->reg[DW_CLOCK_CNTL] = value;
+        if (value & CLOCK_PLL_WR_EN) {
+            uint32_t a = CLOCK_PLL_ADDR(value);
+            m->pll[a] = (uint8_t)(value >> CLOCK_PLL_DATA_SHIFT);
+            LOG(3, "Rage Pro: PLL[%u] = $%02X", a, m->pll[a]);
+        }
+        return true;
+    case DW_MEM_CNTL:
+        if ((value & 0xFu) != mach64_mem_size_code(m))
+            LOG(2, "Rage Pro: MEM_CNTL wrote MEM_SIZE=%u; this chip has %u MB — keeping %u", value & 0xFu,
+                m->vram_size >> 20, mach64_mem_size_code(m));
+        m->reg[DW_MEM_CNTL] = (value & ~0xFu) | mach64_mem_size_code(m);
+        return true;
+    default:
+        return false;
+    }
+}
+
+// The integrated palette DAC (RRG p. 67; PRG p. 30): DAC_REGS' four byte
+// lanes are the write index, the data port (R, G, B, then the entry
+// auto-advances), the pixel mask and the read index.
+static uint8_t gp_dac_read_lane(mach64_t *m, uint32_t lane, bool peek) {
+    switch (lane & 3u) {
+    case 0:
+    case 3:
+        return m->clut_addr;
+    case 1:
+        return dac_palette_data_read(m, peek);
+    default:
+        return m->dac_pixel_mask;
+    }
+}
+
+static void gp_dac_write_lane(mach64_t *m, uint32_t lane, uint8_t value) {
+    switch (lane & 3u) {
+    case 0:
+    case 3:
+        m->clut_addr = value;
+        m->clut_phase = 0;
+        return;
+    case 1:
+        m->clut[m->clut_addr][m->clut_phase] = value;
+        if (++m->clut_phase == 3) {
+            m->clut_phase = 0;
+            m->clut_addr++;
+            mach64_clut_changed(m);
+        }
+        return;
+    default:
+        m->dac_pixel_mask = value;
+        return;
+    }
+}
+
+// ============================================================
 // The aperture
 // ============================================================
 
 // MEM_CNTL's MEM_SIZE encoding for the buffer this card actually has.
 static uint32_t mach64_mem_size_code(const mach64_t *m) {
+    if (m->gp) {
+        // The 4-bit field of the DSP-era parts: n < 8 is (n+1) x 512 KB,
+        // 8..11 is (n-3) MB, 12 and up (n-7) x 2 MB — so 2 MB = 3,
+        // 4 MB = 7, 6 MB = 9, 8 MB = $B.
+        uint32_t mb = m->vram_size >> 20;
+        return mb <= 4u ? mb * 2u - 1u : mb + 3u;
+    }
     return (m->vram_size >= MACH64_VRAM_4MB) ? MEM_SIZE_4M : MEM_SIZE_2M;
 }
 
@@ -1075,15 +1322,15 @@ static void mach64_aperture_changed(mach64_t *m) {
             "keeping the BAR-relative view; one of the two is wrong",
             loc, bar0);
     }
-    LOG(2, "aperture %s: %u MB at BAR0 base $%08X, register alias at +$%06X", size ? "enabled" : "DISABLED", size >> 20,
-        bar0, mach64_mmio_offset(m));
+    LOG(2, "Mach64: aperture %s: %u MB at BAR0 base $%08X, register alias at +$%06X", size ? "enabled" : "DISABLED",
+        size >> 20, bar0, mach64_mmio_offset(m));
 }
 
 // ============================================================
 // The draw engine
 // ============================================================
 //
-// §4.8 of the proposal reasoned this could stay store-and-readback: classic
+// The first design reasoned this could stay store-and-readback: classic
 // Mac OS draws through QuickDraw into the framebuffer, and the accelerated
 // paths were expected to come from the separately installed ATI Graphics
 // Accelerator extension, with the in-ROM ndrv being a display driver only.
@@ -1383,6 +1630,9 @@ static void mach64_emit(mach64_t *m, const mach64_op_t *op, uint32_t x, uint32_t
         source = mach64_get_pixel(m, from, op->bpp);
         break;
     }
+    case DP_SRC_HOST:
+        source = m->host_op.pixel; // colour host data (mach64_host_feed_colour)
+        break;
     case DP_SRC_FRGD_CLR:
     case DP_SRC_PATTERN:
     default:
@@ -1456,7 +1706,7 @@ static void mach64_engine_run(mach64_t *m) {
         m->host_op.h = height;
         m->host_op.col = 0;
         m->host_op.row = 0;
-        LOG(4, "host-data operation armed: %ux%u at (%u,%u)", width, height, dst_x, dst_y);
+        LOG(4, "Mach64: host-data operation armed: %ux%u at (%u,%u)", width, height, dst_x, dst_y);
         return;
     }
 
@@ -1484,7 +1734,9 @@ static void mach64_engine_run(mach64_t *m) {
             op.mono_sel, op.frgd_sel, op.frgd_mix, op.bkgd_sel, op.bkgd_mix, op.sc_left, op.sc_right, op.sc_top,
             op.sc_bottom, op.mask, op.cmp_fn, op.cmp_clr, op.cmp_msk, mach64_tally(m));
     else
-        LOG(3, "op #%llu %s %ux%u at (%u,%u) dst=$%X/%u mono=%u frgd=%u/%X bkgd=%u/%X clr=$%08X/$%08X wmask=$%08X %s",
+        LOG(3,
+            "Mach64: op #%llu %s %ux%u at (%u,%u) dst=$%X/%u mono=%u frgd=%u/%X bkgd=%u/%X clr=$%08X/$%08X wmask=$%08X "
+            "%s",
             (unsigned long long)m->blits, m->in_context ? "CTX" : "DIR", width, height, dst_x, dst_y, op.dst.base,
             op.dst.pitch, op.mono_sel, op.frgd_sel, op.frgd_mix, op.bkgd_sel, op.bkgd_mix, m->reg[DW_DP_FRGD_CLR],
             m->reg[DW_DP_BKGD_CLR], op.mask, mach64_tally(m));
@@ -1500,11 +1752,55 @@ static void mach64_engine_run(mach64_t *m) {
 // HOST_CNTL's HOST_BYTE_ALIGN makes consumption jump to the next byte
 // boundary whenever the trajectory steps in Y, so a glyph whose width is
 // not a multiple of 8 still starts each row on a fresh byte.
+// Colour host data: the stream carries pixels, packed at DP_HOST_PIX_WIDTH
+// (DP_PIX_WIDTH bits 18:16, the destination-width encoding), the first
+// pixel in the dword's low-order bytes.  HOST_BIG_ENDIAN_EN (HOST_CNTL bit
+// 1) byte-swaps each 16-bit pixel at 15/16 bpp and the whole dword at 32
+// bpp, so a big-endian host can store its own pixels unconverted (3D RAGE
+// LT PRO Register Reference pp. 5-33, 5-34).  The Mac accelerator draws
+// every alert, button and offscreen copy this way.
+static void mach64_host_feed_colour(mach64_t *m, const mach64_op_t *op, uint32_t host_w, uint32_t value) {
+    uint32_t bytes = host_w == 2u ? 1u : (host_w == 3u || host_w == 4u) ? 2u : host_w == 6u ? 4u : 0u;
+    if (!bytes) {
+        LOG(2, "Mach64: colour host data at DP_HOST_PIX_WIDTH %u is not modelled — dropped", host_w);
+        return;
+    }
+    if (m->reg[DW_HOST_CNTL] & HOST_CNTL_BIG_ENDIAN_EN) {
+        if (bytes == 2u)
+            value = ((value & 0x00FF00FFu) << 8) | ((value >> 8) & 0x00FF00FFu);
+        else if (bytes == 4u)
+            value = __builtin_bswap32(value);
+    }
+    uint32_t mask = bytes == 4u ? 0xFFFFFFFFu : (1u << (8u * bytes)) - 1u;
+    for (uint32_t i = 0; i < 4u / bytes && m->host_op.active; i++) {
+        m->host_op.pixel = (value >> (8u * bytes * i)) & mask;
+        uint32_t x = m->host_op.x0 + m->host_op.col;
+        uint32_t y = m->host_op.y0 + m->host_op.row;
+        bool mono = op->mono_sel == DP_MONO_ALWAYS_1 || mach64_mono_bit(m, op, x, y, m->host_op.col, m->host_op.row);
+        mach64_emit(m, op, x, y, m->host_op.col, m->host_op.row, mono);
+        if (++m->host_op.col >= m->host_op.w) {
+            m->host_op.col = 0;
+            if (++m->host_op.row >= m->host_op.h) {
+                m->host_op.active = false;
+                m->blits++;
+                m->display.fb_dirty = true;
+                LOG(3, "Mach64: op #%llu HOST colour %ux%u at (%u,%u) dst=$%X/%u", (unsigned long long)m->blits,
+                    m->host_op.w, m->host_op.h, m->host_op.x0, m->host_op.y0, op->dst.base, op->dst.pitch);
+            }
+        }
+    }
+}
+
 static void mach64_host_feed(mach64_t *m, uint32_t value) {
     if (!m->host_op.active)
         return;
     mach64_op_t op;
     mach64_op_gather(m, &op);
+    uint32_t host_w = (m->reg[DW_DP_PIX_WIDTH] >> 16) & 7u;
+    if (host_w && op.mono_sel != DP_MONO_HOST) {
+        mach64_host_feed_colour(m, &op, host_w, value);
+        return;
+    }
     bool lsb_first = (m->reg[DW_DP_PIX_WIDTH] & 0x80000000u) != 0;
     bool byte_align = (m->reg[DW_HOST_CNTL] & 0x1u) != 0;
 
@@ -1524,7 +1820,7 @@ static void mach64_host_feed(mach64_t *m, uint32_t value) {
                 m->host_op.active = false;
                 m->blits++;
                 m->display.fb_dirty = true;
-                LOG(3, "op #%llu HOST %ux%u at (%u,%u) dst=$%X/%u", (unsigned long long)m->blits, m->host_op.w,
+                LOG(3, "Mach64: op #%llu HOST %ux%u at (%u,%u) dst=$%X/%u", (unsigned long long)m->blits, m->host_op.w,
                     m->host_op.h, m->host_op.x0, m->host_op.y0, op.dst.base, op.dst.pitch);
                 return;
             }
@@ -1679,8 +1975,8 @@ static void mach64_context_load(mach64_t *m, uint32_t value) {
                 continue; // the block's own mask inhibits this DWORD
             mach64_context_apply(m, i, mach64_context_dword(m, base, i));
         }
-        LOG(2, "context load: ptr $%04X -> VRAM +$%06X mask $%08X cmd %u (DP_MIX $%08X DP_SRC $%08X)", ptr, base, mask,
-            cmd, m->reg[DW_DP_MIX], m->reg[DW_DP_SRC]);
+        LOG(2, "Mach64: context load: ptr $%04X -> VRAM +$%06X mask $%08X cmd %u (DP_MIX $%08X DP_SRC $%08X)", ptr,
+            base, mask, cmd, m->reg[DW_DP_MIX], m->reg[DW_DP_SRC]);
 
         // A context command only draws if the BLOCK supplies the operands
         // that draw needs — the trajectory for a fill, the Bresenham terms
@@ -1720,7 +2016,7 @@ static void mach64_context_load(mach64_t *m, uint32_t value) {
         // The CONTEXT_LOAD_CNTL entry continues or halts the chain.
         value = mach64_context_dword(m, base, 0x1C);
     }
-    LOG(1, "context chain exceeded 64 hops — stopping");
+    LOG(1, "Mach64: context chain exceeded 64 hops — stopping");
 }
 
 // ============================================================
@@ -1802,14 +2098,83 @@ static void mach64_engine_line(mach64_t *m) {
     m->reg[DW_DST_Y] = (uint32_t)(y & 0xFFFF);
     m->blits++;
     m->display.fb_dirty = true;
-    LOG(3, "line #%llu %u px from (%d,%d) %s-major dir(%+d,%+d)", (unsigned long long)m->blits, lnth,
+    LOG(3, "Mach64: line #%llu %u px from (%d,%d) %s-major dir(%+d,%+d)", (unsigned long long)m->blits, lnth,
         (int)(m->reg[DW_DST_X]), (int)(m->reg[DW_DST_Y]), y_major ? "Y" : "X", xstep, ystep);
 }
 
 // The engine's register writes.  Returns true when the write was the
 // engine's business, so the generic store below is skipped.
+// ---- The Rage Pro's set-up shortcuts --------------------------------------
+//
+// The 3D RAGE family adds write-only registers that load several draw-engine
+// fields from one dword.  ATI's Mac accelerator programs every fill and blit
+// through DP_SET_GUI_ENGINE2 ($BE) and never writes DP_SRC or DP_MIX, so
+// without it every operation inherits whatever DP_SRC last held — a host
+// source after a glyph — and waits for HOST_DATA that never comes.
+//
+// Field layout and side effects: 3D RAGE LT PRO Register Reference
+// (RRG-G03300, 1998), DP_SET_GUI_ENGINE2 p. 5-56/5-57, the SET_DST_PITCH
+// table under DP_SET_GUI_ENGINE p. 5-53, USR_DST_PITCH p. 5-52.
+#define DW_USR_DST_PITCH      0xBC
+#define DW_DP_SET_GUI_ENGINE2 0xBE
+#define GUI_TRAJ_PAT_MONO_EN  0x01000000u // GUI_TRAJ_CNTL bit 24
+#define SRC_CNTL_PATT_ROT_EN  0x02u
+
+// SET_DST_PITCH: 0 = USR_DST_PITCH, otherwise a pitch in pixels.
+static const uint16_t gp_set_dst_pitch[16] = {0,    320,  352,  384, 640, 800,  896, 512,
+                                              1024, 1152, 1280, 400, 832, 1600, 448, 2048};
+
+static void gp_set_gui_engine2(mach64_t *m, uint32_t v) {
+    uint32_t r = m->reg[DW_DP_MIX] & ~((0x1Fu << 16) | 0x1Fu);
+    m->reg[DW_DP_MIX] = r | (((v >> 4) & 0xFu) << 16) | (v & 0xFu);
+    r = m->reg[DW_DP_SRC] & ~((3u << 16) | (7u << 8) | 7u);
+    m->reg[DW_DP_SRC] = r | (((v >> 14) & 3u) << 16) | (((v >> 11) & 7u) << 8) | ((v >> 8) & 7u);
+
+    uint32_t dst_cntl = m->reg[DW_DST_CNTL] & ~(DST_X_DIR | DST_Y_DIR);
+    dst_cntl |= ((v >> 16) & 1u) ? DST_X_DIR : 0u;
+    dst_cntl |= ((v >> 17) & 1u) ? DST_Y_DIR : 0u;
+    uint32_t src_cntl = (m->reg[DW_SRC_CNTL] & ~SRC_CNTL_PATT_ROT_EN) | (((v >> 19) & 1u) ? SRC_CNTL_PATT_ROT_EN : 0u);
+    uint32_t traj = (m->reg[DW_GUI_TRAJ_CNTL] & ~GUI_TRAJ_PAT_MONO_EN) | (((v >> 18) & 1u) ? GUI_TRAJ_PAT_MONO_EN : 0u);
+    m->reg[DW_GUI_TRAJ_CNTL] = traj;
+    mach64_engine_write(m, DW_DST_CNTL, dst_cntl);
+    mach64_engine_write(m, DW_SRC_CNTL, src_cntl);
+
+    if ((v >> 22) & 1u)
+        m->reg[DW_DP_WRITE_MSK] = 0xFFFFFFFFu;
+
+    // DP_PIX_WIDTH: the destination depth, the source the same or mono, and
+    // the host width and byte order cleared (Table 5-13).
+    uint32_t dst_pw = (v >> 23) & 7u;
+    uint32_t src_pw = ((v >> 26) & 1u) ? dst_pw : 0u;
+    r = m->reg[DW_DP_PIX_WIDTH] & ~(0x80000000u | (7u << 16) | (7u << 8) | 7u);
+    m->reg[DW_DP_PIX_WIDTH] = r | (src_pw << 8) | dst_pw;
+
+    // DST_OFF_PITCH's pitch (bits 31:22, in 8-pixel units); the offset stays.
+    uint32_t sel = (v >> 27) & 0xFu;
+    uint32_t pitch_px = sel ? gp_set_dst_pitch[sel] : m->reg[DW_USR_DST_PITCH];
+    uint32_t pitch_field = sel ? (pitch_px / 8u) : (pitch_px & 0x3FFu);
+    m->reg[DW_DST_OFF_PITCH] = (m->reg[DW_DST_OFF_PITCH] & 0x003FFFFFu) | ((pitch_field & 0x3FFu) << 22);
+    m->reg[DW_SRC_OFF_PITCH] = ((v >> 31) & 1u) ? m->reg[DW_DST_OFF_PITCH] : 0u;
+
+    // The registers the write presets (Table 5-13).
+    mach64_engine_write(m, DW_DST_Y_X, 0);
+    m->reg[DW_DST_HEIGHT_WIDTH] = 0;
+    m->reg[DW_DST_WIDTH] = 0;
+    m->reg[DW_DST_HEIGHT] = 0;
+    mach64_engine_write(m, DW_SRC_Y_X, 0);
+    m->reg[DW_CLR_CMP_CNTL] = 0;
+    m->reg[DW_DP_SET_GUI_ENGINE2] = v;
+    LOG(4, "Rage Pro: DP_SET_GUI_ENGINE2 $%08X -> DP_MIX $%08X DP_SRC $%08X DP_PIX_WIDTH $%08X DST_OFF_PITCH $%08X", v,
+        m->reg[DW_DP_MIX], m->reg[DW_DP_SRC], m->reg[DW_DP_PIX_WIDTH], m->reg[DW_DST_OFF_PITCH]);
+}
+
 static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value) {
     switch (dw) {
+    case DW_DP_SET_GUI_ENGINE2:
+        if (!m->gp)
+            return false;
+        gp_set_gui_engine2(m, value);
+        return true;
     // FIELD ORDER.  In ATI's combined `A_B` register names the FIRST-named
     // field is the LOW halfword and the second is the HIGH halfword, so
     // DST_Y_X is (X << 16) | Y and DST_HEIGHT_WIDTH is (WIDTH << 16) |
@@ -1930,21 +2295,44 @@ static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value) {
 // Byte order is the card's own: the register value is little-endian, so
 // lane j of an address carries value bits 8j+7:8j.
 
-static uint8_t io_read8(void *ctx, uint32_t addr) {
+// Each register face reads through one `<face>_rd8/16/32(ctx, addr, peek)`;
+// this stamps out the guest's read_* (peek false) and the inspection's
+// peek_* (memory_interface_t) around them.
+#define MACH64_READ_FACE(face)                                                                                         \
+    static uint8_t face##_read8(void *ctx, uint32_t a) {                                                               \
+        return face##_rd8(ctx, a, false);                                                                              \
+    }                                                                                                                  \
+    static uint16_t face##_read16(void *ctx, uint32_t a) {                                                             \
+        return face##_rd16(ctx, a, false);                                                                             \
+    }                                                                                                                  \
+    static uint32_t face##_read32(void *ctx, uint32_t a) {                                                             \
+        return face##_rd32(ctx, a, false);                                                                             \
+    }                                                                                                                  \
+    static uint8_t face##_peek8(void *ctx, uint32_t a) {                                                               \
+        return face##_rd8(ctx, a, true);                                                                               \
+    }                                                                                                                  \
+    static uint16_t face##_peek16(void *ctx, uint32_t a) {                                                             \
+        return face##_rd16(ctx, a, true);                                                                              \
+    }                                                                                                                  \
+    static uint32_t face##_peek32(void *ctx, uint32_t a) {                                                             \
+        return face##_rd32(ctx, a, true);                                                                              \
+    }
+
+static uint8_t io_rd8(void *ctx, uint32_t addr, bool peek) {
     mach64_t *m = (mach64_t *)ctx;
     int dw = io_dword_for_select(addr >> 10);
     if (dw < 0) {
-        LOG(1, "I/O read of unassigned select $%02X (address $%04X)", addr >> 10, addr);
+        LOG(1, "Mach64: I/O read of unassigned select $%02X (address $%04X)", addr >> 10, addr);
         return 0xFFu;
     }
-    return mach64_reg_read_lane(m, dw, addr & 3u);
+    return mach64_reg_read_lane(m, dw, addr & 3u, peek);
 }
 
 static void io_write8(void *ctx, uint32_t addr, uint8_t value) {
     mach64_t *m = (mach64_t *)ctx;
     int dw = io_dword_for_select(addr >> 10);
     if (dw < 0) {
-        LOG(1, "I/O write of unassigned select $%02X (address $%04X) = $%02X", addr >> 10, addr, value);
+        LOG(1, "Mach64: I/O write of unassigned select $%02X (address $%04X) = $%02X", addr >> 10, addr, value);
         return;
     }
     // Lane-wise, so byte and halfword pokes of a 32-bit register work —
@@ -1953,8 +2341,8 @@ static void io_write8(void *ctx, uint32_t addr, uint8_t value) {
     mach64_reg_write_lane(m, dw, addr & 3u, value);
 }
 
-static uint16_t io_read16(void *ctx, uint32_t addr) {
-    return (uint16_t)((io_read8(ctx, addr) << 8) | io_read8(ctx, addr + 1));
+static uint16_t io_rd16(void *ctx, uint32_t addr, bool peek) {
+    return (uint16_t)((io_rd8(ctx, addr, peek) << 8) | io_rd8(ctx, addr + 1, peek));
 }
 
 static void io_write16(void *ctx, uint32_t addr, uint16_t value) {
@@ -1962,21 +2350,22 @@ static void io_write16(void *ctx, uint32_t addr, uint16_t value) {
     io_write8(ctx, addr + 1, (uint8_t)value);
 }
 
-static uint32_t io_read32(void *ctx, uint32_t addr) {
+static uint32_t io_rd32(void *ctx, uint32_t addr, bool peek) {
     mach64_t *m = (mach64_t *)ctx;
     int dw = io_dword_for_select(addr >> 10);
     if (dw < 0) {
-        LOG(1, "I/O read of unassigned select $%02X (address $%04X)", addr >> 10, addr);
+        LOG(1, "Mach64: I/O read of unassigned select $%02X (address $%04X)", addr >> 10, addr);
         return 0xFFFFFFFFu;
     }
-    return MACH64_LE32(mach64_reg_read(m, dw));
+    return MACH64_LE32(mach64_reg_read(m, dw, peek));
 }
+MACH64_READ_FACE(io)
 
 static void io_write32(void *ctx, uint32_t addr, uint32_t value) {
     mach64_t *m = (mach64_t *)ctx;
     int dw = io_dword_for_select(addr >> 10);
     if (dw < 0) {
-        LOG(1, "I/O write of unassigned select $%02X (address $%04X) = $%08X", addr >> 10, addr, value);
+        LOG(1, "Mach64: I/O write of unassigned select $%02X (address $%04X) = $%08X", addr >> 10, addr, value);
         return;
     }
     mach64_reg_write(m, dw, MACH64_LE32(value));
@@ -1993,8 +2382,8 @@ static void io_write32(void *ctx, uint32_t addr, uint32_t value) {
 // The card asks for a 16 MB BAR because CFG_MEM_AP_LOC has 4 MB
 // granularity while an 8 MB aperture needs 8 MB alignment, so 16 MB
 // guarantees a legal placement wherever Open Firmware puts it.  What the
-// upper half then does was the open question, and the proposal reasoned it
-// was alignment SLACK decoding nothing — modelled that way deliberately,
+// upper half then does was the open question, and the first model assumed
+// it was alignment SLACK decoding nothing — modelled that way deliberately,
 // with a loud log on any access, so that a wrong guess would announce
 // itself instead of silently rendering garbage.
 //
@@ -2012,9 +2401,48 @@ static void io_write32(void *ctx, uint32_t addr, uint32_t value) {
 #define MACH64_APER_REGS (-1)
 #define MACH64_APER_NONE (-2)
 
-static void aper_repeat_note(mach64_t *m, uint32_t offset);
+static void aper_repeat_note(mach64_t *m, uint32_t offset, bool peek);
 
-static int64_t aper_map(mach64_t *m, uint32_t offset) {
+#define MACH64_APER_REGS1 (-3)
+
+// The Rage Pro's BAR0: the little-endian aperture in the lower 8 MB with
+// block 1 (when BUS_EXT_REG_EN) and block 0 (unless BUS_APER_REG_DIS) in
+// its last 2 KB, and the big-endian aperture in the upper 8 MB (PRG p. 30).
+//
+// VRAM is held in the big-endian view — the order the display, the draw
+// engine and a Mac driver using the upper aperture all see — so it is the
+// LITTLE-endian view that swaps: within each pixel of MEM_PIX_WIDTH, byte
+// k of the lower aperture is byte (w-1-k) of the upper one.  At 8 bpp,
+// which is what Open Firmware's console uses, the two are the same.
+static int64_t gp_aper_map(mach64_t *m, uint32_t offset) {
+    if (offset < MACH64_APER_8MB) {
+        if (offset >= MACH64_MMIO_OFF_8MB && !(m->reg[DW_BUS_CNTL] & BUS_APER_REG_DIS))
+            return MACH64_APER_REGS;
+        if (offset >= RAGEPRO_BLOCK1_OFF && offset < MACH64_MMIO_OFF_8MB && (m->reg[DW_BUS_CNTL] & BUS_EXT_REG_EN))
+            return MACH64_APER_REGS1;
+        uint32_t w = 1;
+        switch ((m->reg[DW_MEM_CNTL] >> 24) & 7u) { // MEM_PIX_WIDTH
+        case CRTC_PIX_15BPP:
+        case CRTC_PIX_16BPP:
+            w = 2;
+            break;
+        case CRTC_PIX_24BPP:
+        case CRTC_PIX_32BPP:
+            w = 4;
+            break;
+        default:
+            break;
+        }
+        offset ^= (w - 1u);
+        return (int64_t)(offset & (m->vram_size - 1u));
+    }
+    return (int64_t)((offset - MACH64_APER_8MB) & (m->vram_size - 1u));
+}
+
+// `peek`: an inspection's decode, which does not trip the once-only log.
+static int64_t aper_map(mach64_t *m, uint32_t offset, bool peek) {
+    if (m->gp)
+        return gp_aper_map(m, offset);
     uint32_t size = mach64_aperture_size(m);
     if (size == 0) {
         // CFG_MEM_AP_SIZE = 0.  The manual places the registers "at the
@@ -2022,13 +2450,13 @@ static int64_t aper_map(mach64_t *m, uint32_t offset) {
         // no aperture; the alias answers regardless, because that costs
         // nothing and a driver poking it would otherwise wedge.  Log it, so
         // we learn whether it ever matters.
-        LOG(2, "aperture access at +$%06X with CFG_MEM_AP_SIZE = 0", offset);
+        LOG(2, "Mach64: aperture access at +$%06X with CFG_MEM_AP_SIZE = 0", offset);
         if ((offset & ~(MACH64_MMIO_BLOCK_LEN - 1u)) == MACH64_MMIO_OFF_8MB)
             return MACH64_APER_REGS;
         return MACH64_APER_NONE;
     }
     if (offset >= size) {
-        aper_repeat_note(m, offset);
+        aper_repeat_note(m, offset, peek);
         offset %= size; // the aperture repeats through the 16 MB BAR
     }
     if (offset >= mach64_mmio_offset(m))
@@ -2040,8 +2468,8 @@ static int64_t aper_map(mach64_t *m, uint32_t offset) {
 
 // Say so, once, when the guest reaches past the first copy of the aperture
 // — the observation that settled what the upper half of the BAR is.
-static void aper_repeat_note(mach64_t *m, uint32_t offset) {
-    if (m->aperture_warned)
+static void aper_repeat_note(mach64_t *m, uint32_t offset, bool peek) {
+    if (peek || m->aperture_warned)
         return;
     m->aperture_warned = true;
     LOG(1,
@@ -2050,43 +2478,53 @@ static void aper_repeat_note(mach64_t *m, uint32_t offset) {
         offset, mach64_aperture_size(m) >> 20);
 }
 
-static uint8_t aper_read8(void *ctx, uint32_t offset) {
+static uint8_t aper_rd8(void *ctx, uint32_t offset, bool peek) {
     mach64_t *m = (mach64_t *)ctx;
-    int64_t at = aper_map(m, offset);
+    int64_t at = aper_map(m, offset, peek);
     if (at == MACH64_APER_NONE)
         return 0xFFu;
     if (at == MACH64_APER_REGS)
-        return mach64_reg_read_lane(m, (int)((offset & 0x3FFu) >> 2), offset & 3u);
+        return mach64_reg_read_lane(m, (int)((offset & 0x3FFu) >> 2), offset & 3u, peek);
+    if (at == MACH64_APER_REGS1)
+        return (uint8_t)(m->reg1[(offset & 0x3FFu) >> 2] >> (8u * (offset & 3u)));
     return m->vram[at];
 }
 
 static void aper_write8(void *ctx, uint32_t offset, uint8_t value) {
     mach64_t *m = (mach64_t *)ctx;
-    int64_t at = aper_map(m, offset);
+    int64_t at = aper_map(m, offset, false);
     if (at == MACH64_APER_NONE)
         return;
     if (at == MACH64_APER_REGS) {
         mach64_reg_write_lane(m, (int)((offset & 0x3FFu) >> 2), offset & 3u, value);
         return;
     }
+    if (at == MACH64_APER_REGS1) {
+        uint32_t *r = &m->reg1[(offset & 0x3FFu) >> 2];
+        uint32_t sh = 8u * (offset & 3u);
+        *r = (*r & ~(0xFFu << sh)) | ((uint32_t)value << sh);
+        return;
+    }
     m->vram[at] = value;
 }
 
-static uint16_t aper_read16(void *ctx, uint32_t offset) {
+static uint16_t aper_rd16(void *ctx, uint32_t offset, bool peek) {
     mach64_t *m = (mach64_t *)ctx;
-    int64_t at = aper_map(m, offset);
+    int64_t at = aper_map(m, offset, peek);
     // Inside VRAM the aperture is a plain byte array on a big-endian bus:
     // a guest halfword load reads two consecutive bytes, MSB first.  Only
     // the REGISTER alias is little-endian.
-    if (at >= 0)
+    // (The Rage Pro's little-endian half swaps within a pixel, so its
+    // bytes are not consecutive in VRAM: it takes the byte path.)
+    if (at >= 0 && !(m->gp && offset < MACH64_APER_8MB))
         return (uint16_t)(((uint16_t)m->vram[at] << 8) | m->vram[(at + 1) & (m->vram_size - 1u)]);
-    return (uint16_t)((aper_read8(ctx, offset) << 8) | aper_read8(ctx, offset + 1));
+    return (uint16_t)((aper_rd8(ctx, offset, peek) << 8) | aper_rd8(ctx, offset + 1, peek));
 }
 
 static void aper_write16(void *ctx, uint32_t offset, uint16_t value) {
     mach64_t *m = (mach64_t *)ctx;
-    int64_t at = aper_map(m, offset);
-    if (at >= 0) {
+    int64_t at = aper_map(m, offset, false);
+    if (at >= 0 && !(m->gp && offset < MACH64_APER_8MB)) {
         m->vram[at] = (uint8_t)(value >> 8);
         m->vram[(at + 1) & (m->vram_size - 1u)] = (uint8_t)value;
         return;
@@ -2095,30 +2533,141 @@ static void aper_write16(void *ctx, uint32_t offset, uint16_t value) {
     aper_write8(ctx, offset + 1, (uint8_t)value);
 }
 
-static uint32_t aper_read32(void *ctx, uint32_t offset) {
+static uint32_t aper_rd32(void *ctx, uint32_t offset, bool peek) {
     mach64_t *m = (mach64_t *)ctx;
-    int64_t at = aper_map(m, offset);
+    int64_t at = aper_map(m, offset, peek);
     if (at == MACH64_APER_NONE)
         return 0xFFFFFFFFu;
     if (at == MACH64_APER_REGS)
-        return MACH64_LE32(mach64_reg_read(m, (int)((offset & 0x3FFu) >> 2)));
+        return MACH64_LE32(mach64_reg_read(m, (int)((offset & 0x3FFu) >> 2), peek));
+    if (at == MACH64_APER_REGS1) {
+        LOG(4, "Rage Pro: block-1 dword $%02X read", (unsigned)((offset & 0x3FFu) >> 2));
+        return MACH64_LE32(m->reg1[(offset & 0x3FFu) >> 2]);
+    }
+    if (m->gp && offset < MACH64_APER_8MB)
+        return ((uint32_t)aper_rd8(ctx, offset, peek) << 24) | ((uint32_t)aper_rd8(ctx, offset + 1, peek) << 16) |
+               ((uint32_t)aper_rd8(ctx, offset + 2, peek) << 8) | aper_rd8(ctx, offset + 3, peek);
     return ((uint32_t)m->vram[at] << 24) | ((uint32_t)m->vram[(at + 1) & (m->vram_size - 1u)] << 16) |
            ((uint32_t)m->vram[(at + 2) & (m->vram_size - 1u)] << 8) | m->vram[(at + 3) & (m->vram_size - 1u)];
 }
+MACH64_READ_FACE(aper)
 
 static void aper_write32(void *ctx, uint32_t offset, uint32_t value) {
     mach64_t *m = (mach64_t *)ctx;
-    int64_t at = aper_map(m, offset);
+    int64_t at = aper_map(m, offset, false);
     if (at == MACH64_APER_NONE)
         return;
     if (at == MACH64_APER_REGS) {
         mach64_reg_write(m, (int)((offset & 0x3FFu) >> 2), MACH64_LE32(value));
         return;
     }
+    if (at == MACH64_APER_REGS1) {
+        m->reg1[(offset & 0x3FFu) >> 2] = MACH64_LE32(value);
+        LOG(4, "Rage Pro: block-1 dword $%02X = $%08X", (unsigned)((offset & 0x3FFu) >> 2), MACH64_LE32(value));
+        return;
+    }
+    if (m->gp && offset < MACH64_APER_8MB) {
+        for (uint32_t i = 0; i < 4; i++)
+            aper_write8(ctx, offset + i, (uint8_t)(value >> (24u - 8u * i)));
+        return;
+    }
     m->vram[at] = (uint8_t)(value >> 24);
     m->vram[(at + 1) & (m->vram_size - 1u)] = (uint8_t)(value >> 16);
     m->vram[(at + 2) & (m->vram_size - 1u)] = (uint8_t)(value >> 8);
     m->vram[(at + 3) & (m->vram_size - 1u)] = (uint8_t)value;
+}
+
+// ============================================================
+// Rage Pro: BAR2 (the register aperture) and BAR1 (block-decoded I/O)
+// ============================================================
+// BAR2 maps both 1 KB blocks with no framebuffer around them — block 1 at
+// +$000, block 0 at +$400 — which is how drivers reach the registers once
+// BUS_APER_REG_DIS has taken them out of BAR0.  The BAR is 4 KB and the two
+// blocks repeat in its upper half: ATI's Mac OS accelerator streams colour
+// host data with stmw to +$E00 (block 0's HOST_DATA through the upper copy)
+// with HOST_BIG_ENDIAN_EN set — pixel order comes out right only if that
+// copy is the same little-endian face (a byte-swapping copy would swap
+// twice), and with the upper half unmapped every alert drew without its
+// text.  BAR1 is the classic block-decoded I/O file: dword = offset / 4,
+// block 0 dwords $00-$3F.  Both are little-endian register faces, like the
+// BAR0 alias.
+#define RAGEPRO_BAR2_DECODE 0x7FFu // the 2 KB of blocks, repeated through 4 KB
+
+static uint8_t aux_rd8(void *ctx, uint32_t offset, bool peek) {
+    mach64_t *m = (mach64_t *)ctx;
+    offset &= RAGEPRO_BAR2_DECODE;
+    if (offset < 0x400u)
+        return (uint8_t)(m->reg1[offset >> 2] >> (8u * (offset & 3u)));
+    return mach64_reg_read_lane(m, (int)((offset & 0x3FFu) >> 2), offset & 3u, peek);
+}
+
+static void aux_write8(void *ctx, uint32_t offset, uint8_t value) {
+    mach64_t *m = (mach64_t *)ctx;
+    offset &= RAGEPRO_BAR2_DECODE;
+    if (offset < 0x400u) {
+        uint32_t *r = &m->reg1[offset >> 2];
+        uint32_t sh = 8u * (offset & 3u);
+        *r = (*r & ~(0xFFu << sh)) | ((uint32_t)value << sh);
+    } else {
+        mach64_reg_write_lane(m, (int)((offset & 0x3FFu) >> 2), offset & 3u, value);
+    }
+}
+
+static uint16_t aux_rd16(void *ctx, uint32_t offset, bool peek) {
+    return (uint16_t)((aux_rd8(ctx, offset, peek) << 8) | aux_rd8(ctx, offset + 1, peek));
+}
+
+static void aux_write16(void *ctx, uint32_t offset, uint16_t value) {
+    aux_write8(ctx, offset, (uint8_t)(value >> 8));
+    aux_write8(ctx, offset + 1, (uint8_t)value);
+}
+
+static uint32_t aux_rd32(void *ctx, uint32_t offset, bool peek) {
+    mach64_t *m = (mach64_t *)ctx;
+    offset &= RAGEPRO_BAR2_DECODE;
+    if (offset < 0x400u) {
+        LOG(4, "Rage Pro: block-1 dword $%02X read (BAR2)", (unsigned)(offset >> 2));
+        return MACH64_LE32(m->reg1[offset >> 2]);
+    }
+    return MACH64_LE32(mach64_reg_read(m, (int)((offset & 0x3FFu) >> 2), peek));
+}
+MACH64_READ_FACE(aux)
+
+static void aux_write32(void *ctx, uint32_t offset, uint32_t value) {
+    mach64_t *m = (mach64_t *)ctx;
+    offset &= RAGEPRO_BAR2_DECODE;
+    if (offset < 0x400u) {
+        m->reg1[offset >> 2] = MACH64_LE32(value);
+        LOG(4, "Rage Pro: block-1 dword $%02X = $%08X (BAR2)", (unsigned)(offset >> 2), MACH64_LE32(value));
+    } else {
+        mach64_reg_write(m, (int)((offset & 0x3FFu) >> 2), MACH64_LE32(value));
+    }
+}
+
+static uint8_t bio_rd8(void *ctx, uint32_t offset, bool peek) {
+    return mach64_reg_read_lane((mach64_t *)ctx, (int)((offset & 0xFFu) >> 2), offset & 3u, peek);
+}
+
+static void bio_write8(void *ctx, uint32_t offset, uint8_t value) {
+    mach64_reg_write_lane((mach64_t *)ctx, (int)((offset & 0xFFu) >> 2), offset & 3u, value);
+}
+
+static uint16_t bio_rd16(void *ctx, uint32_t offset, bool peek) {
+    return (uint16_t)((bio_rd8(ctx, offset, peek) << 8) | bio_rd8(ctx, offset + 1, peek));
+}
+
+static void bio_write16(void *ctx, uint32_t offset, uint16_t value) {
+    bio_write8(ctx, offset, (uint8_t)(value >> 8));
+    bio_write8(ctx, offset + 1, (uint8_t)value);
+}
+
+static uint32_t bio_rd32(void *ctx, uint32_t offset, bool peek) {
+    return MACH64_LE32(mach64_reg_read((mach64_t *)ctx, (int)((offset & 0xFFu) >> 2), peek));
+}
+MACH64_READ_FACE(bio)
+
+static void bio_write32(void *ctx, uint32_t offset, uint32_t value) {
+    mach64_reg_write((mach64_t *)ctx, (int)((offset & 0xFFu) >> 2), MACH64_LE32(value));
 }
 
 // ============================================================
@@ -2146,7 +2695,7 @@ static uint32_t rom_read32(void *ctx, uint32_t offset) {
 
 static void rom_write8(void *ctx, uint32_t offset, uint8_t value) {
     (void)ctx;
-    LOG(2, "write to the expansion ROM at +$%04X = $%02X — ignored (it is a ROM)", offset, value);
+    LOG(2, "Mach64: write to the expansion ROM at +$%04X = $%02X — ignored (it is a ROM)", offset, value);
 }
 
 static void rom_write16(void *ctx, uint32_t offset, uint16_t value) {
@@ -2203,8 +2752,8 @@ static uint32_t mach64_current_vline(const mach64_t *m) {
 // bit wired to a latch that only the interrupt path ever set, the driver
 // spun there forever and System 7.6 never reached the mount, while the
 // card looked perfectly healthy by every other measure.  A live status bit
-// that never changes is the same trap the proposal flagged for
-// CRTC_VLINE_CRNT_VLINE.
+// that never changes is the same trap as a CRTC_VLINE_CRNT_VLINE that never
+// advances.
 static bool mach64_in_vblank(const mach64_t *m) {
     uint32_t vtotal = 0;
     uint32_t line = mach64_scanline(m, &vtotal);
@@ -2260,10 +2809,20 @@ static uint32_t mach64_bytes_per_pixel(const mach64_t *m) {
 // Materialize the palette for the renderer.  Only the indexed depth reads
 // it; the direct formats bypass it entirely.
 static void mach64_refresh_clut(mach64_t *m) {
+    // The Rage Pro's integrated DAC is 6 bits per gun unless DAC_8BIT_EN is
+    // set (RRG p. 68); a 6-bit value is widened the way the DAC's own
+    // converter spans it.  The GX's RGB514 palette is always 8 bits.
+    bool six = m->gp && !(m->reg[DW_DAC_CNTL] & DAC_8BIT_EN);
     for (uint32_t i = 0; i < 256; i++) {
-        m->clut_view[i].r = m->clut[i][0];
-        m->clut_view[i].g = m->clut[i][1];
-        m->clut_view[i].b = m->clut[i][2];
+        uint8_t r = m->clut[i][0], g = m->clut[i][1], b = m->clut[i][2];
+        if (six) {
+            r = (uint8_t)((r << 2) | ((r >> 4) & 3u));
+            g = (uint8_t)((g << 2) | ((g >> 4) & 3u));
+            b = (uint8_t)((b << 2) | ((b >> 4) & 3u));
+        }
+        m->clut_view[i].r = r;
+        m->clut_view[i].g = g;
+        m->clut_view[i].b = b;
         m->clut_view[i].a = 255;
     }
     m->display.clut = m->clut_view;
@@ -2302,9 +2861,10 @@ static void mach64_present(mach64_t *m) {
         return;
     }
 
+    // No clamp needed: mach64_update settled this geometry against vram_size
+    // through display_set_scanout, and `compose` is vram_size, so the span
+    // fits both by construction.
     size_t span = (size_t)stride * height;
-    if (span > m->vram_size)
-        span = m->vram_size;
     memcpy(m->compose, frame, span);
     m->display.bits = m->compose;
 
@@ -2318,7 +2878,8 @@ static void mach64_present(mach64_t *m) {
     uint32_t oy = CUR_OFF_V(m->reg[DW_CUR_HORZ_VERT_OFF]);
     uint32_t src = CUR_BASE(m->reg[DW_CUR_OFFSET]);
     if ((uint64_t)src + CUR_SIZE * CUR_LINE_BYTES > m->vram_size) {
-        LOG(1, "hardware cursor definition at $%06X runs past %u MB of VRAM — not drawn", src, m->vram_size >> 20);
+        LOG(1, "Mach64: hardware cursor definition at $%06X runs past %u MB of VRAM — not drawn", src,
+            m->vram_size >> 20);
         return;
     }
 
@@ -2328,6 +2889,28 @@ static void mach64_present(mach64_t *m) {
     bool indexed = m->display.format == PIXEL_8BPP;
     uint32_t clr[2] = {indexed ? (m->reg[DW_CUR_CLR0] & 0xFFu) : (m->reg[DW_CUR_CLR0] >> 8),
                        indexed ? (m->reg[DW_CUR_CLR1] & 0xFFu) : (m->reg[DW_CUR_CLR1] >> 8)};
+    if (m->gp && indexed) {
+        // The Rage Pro's integrated DAC overlays the cursor in TRUE colour at
+        // every depth — the 24 bits above the index byte.  The ROM's ndrv
+        // leaves the index bytes at 0 and 1 (Mac palette white and pale
+        // yellow) and the colours at $FFFFFF / $000000, and a real machine
+        // shows a black-outlined white arrow.  The composite is built in the
+        // frame's own depth, so each colour becomes its nearest palette entry.
+        for (int k = 0; k < 2; k++) {
+            uint32_t rgb = m->reg[k ? DW_CUR_CLR1 : DW_CUR_CLR0] >> 8;
+            int r = (int)(rgb >> 16) & 0xFF, g = (int)(rgb >> 8) & 0xFF, b = (int)rgb & 0xFF;
+            uint32_t best = 0, best_d = 0xFFFFFFFFu;
+            for (uint32_t i = 0; i < 256; i++) {
+                int dr = m->clut_view[i].r - r, dg = m->clut_view[i].g - g, db = m->clut_view[i].b - b;
+                uint32_t d = (uint32_t)(dr * dr + dg * dg + db * db);
+                if (d < best_d) {
+                    best_d = d;
+                    best = i;
+                }
+            }
+            clr[k] = best;
+        }
+    }
 
     for (uint32_t row = oy; row < CUR_SIZE; row++) {
         uint32_t y = py + (row - oy);
@@ -2374,15 +2957,10 @@ static void mach64_update(mach64_t *m) {
         format = PIXEL_32BPP_XRGB;
         break;
     case CRTC_PIX_16BPP:
-        // 5,6,5.  display.h has no format for it, and Mac OS should never
-        // select it, so keep the previous mode rather than render wrong
-        // colours silently.  If this ever fires, PIXEL_16BPP_565 is a small
-        // addition — but we would want to know it fired.
-        if (!m->pix_width_warned) {
-            m->pix_width_warned = true;
-            LOG(0, "CRTC_PIX_WIDTH = 4 (5,6,5) has no display format here — keeping the previous mode");
-        }
-        return;
+        // 5,6,5.  Mac OS never selects it, but the depth is real on this
+        // chip and PIXEL_16BPP_565 exists now (added for the Voodoo2).
+        format = PIXEL_16BPP_565;
+        break;
     case 0:
         // The power-on state: nothing is programmed yet, so there is no
         // mode to derive and nothing has gone wrong.  Present the black
@@ -2393,41 +2971,48 @@ static void mach64_update(mach64_t *m) {
         // 4 bpp, or a reserved encoding.  Same rule as 5,6,5 above.
         if (!m->pix_width_warned) {
             m->pix_width_warned = true;
-            LOG(0, "CRTC_PIX_WIDTH = %u is not a depth this model renders — keeping the previous mode",
+            LOG(0, "Mach64: CRTC_PIX_WIDTH = %u is not a depth this model renders — keeping the previous mode",
                 mach64_pix_width(m));
         }
         return;
     }
 
     if (width == 0 || width > 2048u || height == 0 || height > 1536u) {
-        LOG(2, "implausible CRTC geometry %ux%u — blanking", width, height);
+        LOG(2, "Mach64: implausible CRTC geometry %ux%u — blanking", width, height);
         width = 640;
         height = 480;
         stride = 0;
     }
 
-    m->display.width = width;
-    m->display.height = height;
     m->display.format = format;
-    m->display.stride = stride ? stride : width * bpp;
     m->display.par_w = 0;
     m->display.par_h = 0;
     m->display.crt_response = NULL;
 
-    // Blanked when the CRTC is held in reset, when the raster is disabled,
-    // when no pitch has been programmed, or when the scan would run off the
-    // end of VRAM (nothing sane is being scanned in any of those cases).
-    bool blanked =
-        !(m->reg[DW_CRTC_GEN_CNTL] & CRTC_EN) || (m->reg[DW_CRTC_GEN_CNTL] & CRTC_DISPLAY_DIS) || stride == 0;
-    uint64_t span = (uint64_t)m->display.stride * height;
-    if ((uint64_t)base + span > m->vram_size)
-        blanked = true;
-    if (blanked) {
-        size_t n = (size_t)m->display.stride * height;
-        if (n > m->vram_size)
-            n = m->vram_size;
-        memset(m->blank, display_black_fill(format), n);
-    }
+    // Blanked when the CRTC is held in reset, when the raster is disabled, or
+    // when no pitch has been programmed -- nothing sane is being scanned in
+    // any of those cases.
+    //
+    // On the Rage Pro the raster is gated by CRTC_EXT_DISP_EN instead of
+    // CRTC_EN.  The ATI FCode in the beige G3's ROM pulses CRTC_EN
+    // ($01000200 -> $03000200 -> $01000200: a CRTC reset strobe) and leaves
+    // it clear, and the real machine shows its Open Firmware console on
+    // this chip with exactly that value; the Mac OS ndrv later sets both.
+    bool on = m->gp ? (m->reg[DW_CRTC_GEN_CNTL] & CRTC_EXT_DISP_EN) != 0 : (m->reg[DW_CRTC_GEN_CNTL] & CRTC_EN) != 0;
+    bool blanked = !on || (m->reg[DW_CRTC_GEN_CNTL] & CRTC_DISPLAY_DIS) || stride == 0;
+
+    // A scan that runs off the end of VRAM blanks too -- and the geometry and
+    // the buffer are settled TOGETHER, which is the part this used to get
+    // wrong.  CRTC_PITCH reaches 32,736 and height reaches 1,536, so the
+    // advertised span reaches ~50 MB; the old code noticed, set `blanked`,
+    // clamped the MEMSET to vram_size, and then left display.stride x height at
+    // the large value over a vram_size buffer -- so every consumer still read
+    // what the producer advertised.  display_set_scanout decides both, and
+    // `blank` is vram_size, so a refused descriptor falls back to a raster the
+    // blank buffer can actually serve.
+    display_set_scanout(&m->display, blanked ? NULL : m->vram, m->vram_size, base, stride ? stride : width * bpp, width,
+                        height, m->blank, m->vram_size);
+    blanked = m->display.bits == m->blank;
     m->scan_base = base;
     m->scan_blanked = blanked;
     mach64_present(m);
@@ -2440,7 +3025,7 @@ static void mach64_update(mach64_t *m) {
     }
     m->display.shape_dirty = true;
     m->display.fb_dirty = true;
-    LOG(2, "mode: %ux%u %u bpp stride=%u base=$%06X%s", width, height, bpp * 8u, m->display.stride, base,
+    LOG(2, "Mach64: mode: %ux%u %u bpp stride=%u base=$%06X%s", width, height, bpp * 8u, m->display.stride, base,
         blanked ? " BLANKED" : "");
 }
 
@@ -2524,8 +3109,39 @@ static const pci_config_decl_t mach64gx_decl = {
 };
 
 static const char *mach64_name(const pci_device_t *dev) {
-    (void)dev;
-    return "ATI Mach64 GX";
+    const mach64_t *m = (const mach64_t *)dev->priv;
+    return (m && m->gp) ? "ATI 3D Rage Pro" : "ATI Mach64 GX";
+}
+
+// The Rage Pro header (config $00-$3F).  BAR0 16 MB (the two 8 MB
+// apertures, register blocks in the last 2 KB of the lower one), BAR1 the
+// 256-byte block-decoded I/O file (Open Firmware 2.4 does not assign it),
+// BAR2 the 4 KB register aperture.  No expansion ROM: on the beige G3 the
+// chip's FCode and ndrv are in the Mac ROM.  Status: medium DEVSEL and
+// fast back-to-back capable, which Open Firmware publishes as
+// `devsel-speed 1` and `fast-back-to-back`.
+static const pci_config_decl_t ragepro_decl = {
+    .vendor_id = MACH64_VENDOR_ID,
+    .device_id = RAGEPRO_DEVICE_ID,
+    .revision = RAGEPRO_REVISION,
+    .class_code = MACH64_CLASS,
+    .header_type = 0x00u,
+    .interrupt_pin = 1,
+    .command_writable = PCI_CMD_IO_SPACE | PCI_CMD_MEM_SPACE | PCI_CMD_MASTER | 0x0080u,
+    .status_reset = 0x0280u,
+    .bar = {[MACH64_BAR_APER] = {.size = MACH64_APER_SIZE, .kind = PCI_BAR_MEM},
+            [RAGEPRO_BAR_IO] = {.size = RAGEPRO_IO_SIZE, .kind = PCI_BAR_IO},
+            [RAGEPRO_BAR_AUX] = {.size = RAGEPRO_AUX_SIZE, .kind = PCI_BAR_MEM}},
+    .rom_size = 0,
+};
+
+// $3C-$3F: MIN_GNT = 8 (the node's `min-grant 8`), MAX_LAT = 0.  The
+// generic header has no field for either, so the dword is answered here.
+static bool ragepro_cfg_read(pci_device_t *dev, uint32_t reg, uint32_t *out) {
+    if (reg != 0x3Cu)
+        return false;
+    *out = (8u << 16) | ((uint32_t)dev->decl->interrupt_pin << 8) | dev->cfg.interrupt_line;
+    return true;
 }
 
 // PCI RST#: the chip returns to its power-on straps.  VRAM survives, as
@@ -2541,6 +3157,14 @@ static void mach64_reset(pci_device_t *dev, config_t *cfg) {
     // into something the manual does not define.
     m->reg[DW_CONFIG_STAT0] = (5u << 3) | (1u << 23) | (1u << 25);
     m->reg[DW_MEM_CNTL] = mach64_mem_size_code(m);
+    if (m->gp) {
+        // The Rage Pro's straps: SGRAM (type 5), as a real Rev C reports.
+        m->reg[DW_CONFIG_STAT0] = RAGEPRO_CONFIG_STAT0;
+        memset(m->reg1, 0, sizeof(m->reg1));
+        memset(m->pll, 0, sizeof(m->pll));
+        m->pll[2] = 0x36; // PLL_REF_DIV reset default (PRG Appendix F)
+        m->pll[4] = 0x97; // MCLK_FB_DIV reset default ("40 MHz")
+    }
     m->mon_id_dir = 0;
     m->mon_id_out = 7;
     m->sense_seen = false;
@@ -2603,6 +3227,8 @@ typedef struct mach64_ckpt {
     uint8_t dac_index_lo, dac_pixel_mask, clut_addr, clut_phase;
     uint8_t dac_indexed[0x500];
     uint8_t clut[256][3];
+    uint32_t reg1[256]; // Rage Pro block 1
+    uint8_t pll[64]; // Rage Pro PLL file
 } mach64_ckpt_t;
 
 static void mach64_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
@@ -2624,6 +3250,8 @@ static void mach64_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     c.clut_phase = m->clut_phase;
     memcpy(c.dac_indexed, m->dac_indexed, sizeof(c.dac_indexed));
     memcpy(c.clut, m->clut, sizeof(c.clut));
+    memcpy(c.reg1, m->reg1, sizeof(c.reg1));
+    memcpy(c.pll, m->pll, sizeof(c.pll));
     system_write_checkpoint_data(cp, &c, sizeof(c));
     system_write_checkpoint_data(cp, m->vram, m->vram_size);
 }
@@ -2646,14 +3274,46 @@ static void mach64_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     m->clut_phase = c.clut_phase;
     memcpy(m->dac_indexed, c.dac_indexed, sizeof(m->dac_indexed));
     memcpy(m->clut, c.clut, sizeof(m->clut));
+    memcpy(m->reg1, c.reg1, sizeof(m->reg1));
+    memcpy(m->pll, c.pll, sizeof(m->pll));
     // A checkpoint taken on a 4 MB card must not be restored into a 2 MB
-    // buffer: resize rather than truncate the stream.
+    // buffer: resize rather than truncate the stream.  The card is built from
+    // the STAGED options (`pci_option="vram=2m"`) and the stream is replayed
+    // into it afterwards, so the two sizes really can differ.
+    //
+    // All THREE buffers move together.  `blank` and `compose` are sized to
+    // vram_size in the factory, and that is what makes them adequate: every
+    // scan is bounded by vram_size, so a buffer of that size can always hold
+    // one.  Growing `vram` alone broke the invariant and turned the very next
+    // mach64_update() -- which this function calls below -- into a 2 MB heap
+    // WRITE overflow, twice over: memcpy into `compose` in mach64_present and
+    // memset of `blank` here.
     if (c.vram_size != m->vram_size) {
-        uint8_t *grown = (uint8_t *)calloc(1, c.vram_size);
-        if (grown) {
+        uint8_t *v = (uint8_t *)calloc(1, c.vram_size);
+        uint8_t *b = (uint8_t *)calloc(1, c.vram_size);
+        uint8_t *comp = (uint8_t *)calloc(1, c.vram_size);
+        if (v && b && comp) {
             free(m->vram);
-            m->vram = grown;
+            free(m->blank);
+            free(m->compose);
+            m->vram = v;
+            m->blank = b;
+            m->compose = comp;
             m->vram_size = c.vram_size;
+        } else {
+            // Out of memory: keep the card exactly as it was.  The read below
+            // then asks for the staged size against a block holding
+            // c.vram_size, and every checkpoint format size-tags its blocks
+            // and fails the restore on a mismatch -- so this ends as a loud
+            // failed restore, which is the right answer.  Say why here, since
+            // the size-mismatch message alone would not mention the OOM.
+            free(v);
+            free(b);
+            free(comp);
+            LOG(0,
+                "Mach64: restore: out of memory resizing VRAM %u -> %u bytes; the restore will fail rather than "
+                "truncate",
+                m->vram_size, c.vram_size);
         }
     }
     system_read_checkpoint_data(cp, m->vram, m->vram_size);
@@ -2672,12 +3332,23 @@ static const pci_device_ops_t mach64_ops = {
     .checkpoint_restore = mach64_checkpoint_restore,
 };
 
+static const pci_device_ops_t ragepro_ops = {
+    .teardown = mach64_teardown,
+    .reset = mach64_reset,
+    .name = mach64_name,
+    .display = mach64_display,
+    .on_vbl = mach64_on_vbl,
+    .cfg_read = ragepro_cfg_read,
+    .checkpoint_save = mach64_checkpoint_save,
+    .checkpoint_restore = mach64_checkpoint_restore,
+};
+
 // ============================================================
-// Staged options
+// Options
 // ============================================================
-// Routed through the KIND's stage_option hook, so the generic layer never
-// learns this card's identity.  Returning false makes the generic layer
-// log the key as not understood and drop it.
+// Checked through the KIND's accepts_option hook before the boot begins, so
+// the generic layer never learns this card's identity; the factory reads
+// them from its slot's entry.
 
 // What a frontend may offer.  The monitor list is deliberately NOT here:
 // this card SENSES its monitor over the DAC's ID pins (mach64_sense_step),
@@ -2689,44 +3360,36 @@ static const char *const mach64_vram_values[] = {"2m", "4m", NULL};
 static const char *const mach64_vram_labels[] = {"2 MB", "4 MB (expansion module)", NULL};
 static const pci_card_option_t mach64_options[] = {
     {.key = "vram",
-     .label = "Video Memory",
+     .label = "Video memory",
      .values = mach64_vram_values,
      .labels = mach64_vram_labels,
      .default_value = "2m"},
     {.key = NULL},
 };
 
-static bool mach64_stage_option(const char *key, const char *value) {
-    if (!key || !value)
-        return false;
-    if (strcmp(key, "monitor") == 0) {
-        for (const mach64_monitor_sense_t *s = mach64_sense; s->id; s++) {
-            if (strcmp(s->id, value) == 0) {
-                snprintf(s_staged_monitor, sizeof s_staged_monitor, "%s", value);
-                return true;
-            }
-        }
-        LOG(0,
-            "unknown monitor id '%s' — the card offers 14in_rgb, 15in_multi, 17in_multi, "
-            "20in_multi, 21in_color",
-            value);
-        return true; // the key IS ours; the value was the problem
+// The monitor a `monitor=` option straps, or NULL when `value` names none.
+static const mach64_monitor_sense_t *mach64_monitor_by_id(const char *value) {
+    for (const mach64_monitor_sense_t *s = mach64_sense; s->id; s++) {
+        if (strcmp(s->id, value) == 0)
+            return s;
     }
-    if (strcmp(key, "vram") == 0) {
-        if (strcmp(value, "2m") == 0) {
-            s_staged_vram = MACH64_VRAM_2MB;
-            return true;
-        }
-        if (strcmp(value, "4m") == 0) {
-            s_staged_vram = MACH64_VRAM_4MB;
-            return true;
-        }
-        LOG(0,
-            "unknown vram size '%s' — the card takes 2m (soldered) or 4m (the "
-            "109-31600-00 expansion module)",
-            value);
-        return true;
-    }
+    return NULL;
+}
+
+// The VRAM a `vram=` option selects, or 0 when `value` is not a size.
+static uint32_t mach64_vram_by_id(const char *value) {
+    if (strcmp(value, "2m") == 0)
+        return MACH64_VRAM_2MB;
+    if (strcmp(value, "4m") == 0)
+        return MACH64_VRAM_4MB; // the 109-31600-00 expansion module
+    return 0;
+}
+
+static bool mach64_accepts_option(const char *key, const char *value) {
+    if (strcmp(key, "monitor") == 0)
+        return mach64_monitor_by_id(value) != NULL;
+    if (strcmp(key, "vram") == 0)
+        return mach64_vram_by_id(value) != 0;
     return false;
 }
 
@@ -2738,28 +3401,23 @@ static mach64_t *node_card(struct object *self) {
     return (mach64_t *)object_data(self);
 }
 
-static value_t mon_attr_id(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mon_attr_id) {
     mach64_t *c = node_card(self);
     return val_str((c && c->mon) ? c->mon->id : "");
 }
-static value_t mon_attr_primary(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mon_attr_primary) {
     mach64_t *c = node_card(self);
     return val_uint(1, (c && c->mon) ? c->mon->primary : 7);
 }
-static value_t mon_attr_sensed_primary(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mon_attr_sensed_primary) {
     mach64_t *c = node_card(self);
     return val_uint(1, c ? c->sense_primary : 0);
 }
-static value_t mon_attr_sensed_ext(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mon_attr_sensed_ext) {
     mach64_t *c = node_card(self);
     return val_uint(1, c ? c->sense_ext : 0);
 }
-static value_t mon_attr_probed(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(mon_attr_probed) {
     mach64_t *c = node_card(self);
     return val_bool(c && c->sense_seen);
 }
@@ -2767,77 +3425,62 @@ static value_t mon_attr_probed(struct object *self, const member_t *m) {
 static const member_t monitor_members[] = {
     {.kind = M_ATTR,
      .name = "id",
-     .doc = "Strapped monitor id (see machine.profile for the card's list)",
-     .flags = VAL_RO,
+     .doc = "Strapped monitor id (see catalog.profile for the card's list)",
      .attr = {.type = V_STRING, .get = mon_attr_id}                                     },
     {.kind = M_ATTR,
      .name = "sense_code",
      .doc = "The monitor's 3-bit primary sense code",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = mon_attr_primary}                                  },
     {.kind = M_ATTR,
      .name = "probed",
      .doc = "True once the guest has driven the monitor-ID pins",
-     .flags = VAL_RO,
      .attr = {.type = V_BOOL, .get = mon_attr_probed}                                   },
     {.kind = M_ATTR,
      .name = "sensed_primary",
      .doc = "The primary code the guest actually read back",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = mon_attr_sensed_primary}                           },
     {.kind = M_ATTR,
      .name = "sensed_extended",
      .doc = "The 6-bit extended code the guest's four-step walk assembled",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = mon_attr_sensed_ext}},
 };
 static const class_desc_t mach64_monitor_class = {
     .name = "monitor", .members = monitor_members, .n_members = sizeof(monitor_members) / sizeof(monitor_members[0])};
 
-static value_t regs_attr_chip_id(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(regs_attr_chip_id) {
     return val_uint(4, MACH64_CHIP_ID);
 }
-static value_t regs_attr_config_cntl(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_config_cntl) {
     mach64_t *c = node_card(self);
     return val_uint(4, c ? c->reg[DW_CONFIG_CNTL] : 0);
 }
-static value_t regs_attr_aperture(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_aperture) {
     mach64_t *c = node_card(self);
     return val_uint(4, c ? mach64_aperture_size(c) : 0);
 }
-static value_t regs_attr_vram(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_vram) {
     mach64_t *c = node_card(self);
     return val_uint(4, c ? c->vram_size : 0);
 }
-static value_t regs_attr_crtc_gen(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_crtc_gen) {
     mach64_t *c = node_card(self);
     return val_uint(4, c ? c->reg[DW_CRTC_GEN_CNTL] : 0);
 }
-static value_t regs_attr_mem_cntl(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_mem_cntl) {
     mach64_t *c = node_card(self);
     return val_uint(4, c ? c->reg[DW_MEM_CNTL] : 0);
 }
-static value_t regs_attr_dac_cntl(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(regs_attr_dac_cntl) {
     mach64_t *c = node_card(self);
-    return val_uint(4, c ? mach64_reg_read(c, DW_DAC_CNTL) : 0);
+    return val_uint(4, c ? mach64_reg_read(c, DW_DAC_CNTL, true) : 0);
 }
-static value_t regs_method_read(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(regs_method_read) {
     mach64_t *c = node_card(self);
     int64_t dw = argv[0].i;
     if (!c || dw < 0 || dw >= MACH64_NUM_REGS)
         return val_err("regs.read: dword index must be 0..$%X (or $%X for CONFIG_CNTL)", MACH64_NUM_REGS - 2,
                        DW_CONFIG_CNTL);
-    return val_uint(4, mach64_reg_read(c, (int)dw));
+    return val_uint(4, mach64_reg_read(c, (int)dw, true));
 }
 
 static const arg_decl_t regs_read_arg[] = {
@@ -2848,38 +3491,31 @@ static const member_t regs_members[] = {
     {.kind = M_ATTR,
      .name = "chip_id",
      .doc = "CONFIG_CHIP_ID: 'GX', class 0, revision 2 (GX-2)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_chip_id}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_chip_id}      },
     {.kind = M_ATTR,
      .name = "config_cntl",
      .doc = "CONFIG_CNTL (I/O only): aperture size, location and VGA disable",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_config_cntl}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_config_cntl}  },
     {.kind = M_ATTR,
      .name = "aperture_size",
      .doc = "Bytes of BAR0 the aperture currently covers (0 = disabled)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = regs_attr_aperture}},
+     .attr = {.type = V_UINT, .get = regs_attr_aperture}                                    },
     {.kind = M_ATTR,
      .name = "vram_size",
      .doc = "Bytes of video memory on this card",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = regs_attr_vram}},
+     .attr = {.type = V_UINT, .get = regs_attr_vram}                                        },
     {.kind = M_ATTR,
      .name = "crtc_gen_cntl",
      .doc = "CRTC_GEN_CNTL: pixel width, extended-display and CRTC enables",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_crtc_gen}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_crtc_gen}     },
     {.kind = M_ATTR,
      .name = "mem_cntl",
      .doc = "MEM_CNTL: MEM_SIZE in bits 2:0",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_mem_cntl}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_mem_cntl}     },
     {.kind = M_ATTR,
      .name = "dac_cntl",
      .doc = "DAC_CNTL, monitor-ID pins read live in bits 26:24",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_dac_cntl}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = regs_attr_dac_cntl}     },
     {.kind = M_METHOD,
      .name = "read",
      .doc = "Read any register by its DWORD offset",
@@ -2888,29 +3524,23 @@ static const member_t regs_members[] = {
 static const class_desc_t mach64_regs_class = {
     .name = "regs", .members = regs_members, .n_members = sizeof(regs_members) / sizeof(regs_members[0])};
 
-static value_t dac_attr_index(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dac_attr_index) {
     mach64_t *c = node_card(self);
     return val_uint(2, c ? c->dac_index : 0);
 }
-static value_t dac_attr_pixel_format(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dac_attr_pixel_format) {
     mach64_t *c = node_card(self);
     return val_uint(1, c ? c->dac_indexed[0x0A] : 0);
 }
-static value_t dac_attr_misc2(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dac_attr_misc2) {
     mach64_t *c = node_card(self);
     return val_uint(1, c ? c->dac_indexed[0x71] : 0);
 }
-static value_t dac_attr_pixel_mask(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dac_attr_pixel_mask) {
     mach64_t *c = node_card(self);
     return val_uint(1, c ? c->dac_pixel_mask : 0);
 }
-static value_t dac_method_read(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
+static DEF_METHOD(dac_method_read) {
     mach64_t *c = node_card(self);
     int64_t idx = argv[0].i;
     if (!c || idx < 0 || idx >= (int64_t)sizeof(c->dac_indexed))
@@ -2926,23 +3556,19 @@ static const member_t dac_members[] = {
     {.kind = M_ATTR,
      .name = "index",
      .doc = "The RGB514's 16-bit indexed-register pointer",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = dac_attr_index}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = dac_attr_index}       },
     {.kind = M_ATTR,
      .name = "pixel_format",
      .doc = "Indexed $0A Pixel Format (3 = 8 bpp, 4 = 15/16, 5 = 24, 6 = 32)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = dac_attr_pixel_format}},
+     .attr = {.type = V_UINT, .get = dac_attr_pixel_format}                               },
     {.kind = M_ATTR,
      .name = "misc_control_2",
      .doc = "Indexed $71: pixel-clock select, colour resolution, port select",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = dac_attr_misc2}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = dac_attr_misc2}       },
     {.kind = M_ATTR,
      .name = "pixel_mask",
      .doc = "The RS 010 pixel mask ($FF = no masking)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = dac_attr_pixel_mask}},
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = dac_attr_pixel_mask}  },
     {.kind = M_METHOD,
      .name = "read",
      .doc = "Read an RGB514 indexed register",
@@ -2952,80 +3578,27 @@ static const class_desc_t mach64_dac_class = {
     .name = "dac", .members = dac_members, .n_members = sizeof(dac_members) / sizeof(dac_members[0])};
 
 // --- the framebuffer node ---------------------------------------------------
-// Mirrors what the NuBus cards expose, so `machine.screen.source.depth`
-// reads the same on either bus.
-
-static value_t fb_attr_width(struct object *self, const member_t *m) {
-    (void)m;
-    mach64_t *c = node_card(self);
-    return val_uint(4, c ? c->display.width : 0);
+// The framebuffer node is display_class.c's, shared with the NuBus cards and
+// the built-in chips, so `machine.screen.source` reads the same on either bus.
+// This card used to re-implement it with `size` where NuBus said `raw_size`,
+// V_UINT where NuBus said V_INT, and no `format` at all -- the node was
+// declared to mirror the NuBus one and did not.
+static display_t *mach64_fb_resolve(void *owner) {
+    mach64_t *c = (mach64_t *)owner;
+    return c ? &c->display : NULL;
 }
-static value_t fb_attr_height(struct object *self, const member_t *m) {
-    (void)m;
-    mach64_t *c = node_card(self);
-    return val_uint(4, c ? c->display.height : 0);
+static uint64_t mach64_fb_base(void *owner) {
+    // A byte offset into VRAM, not an address: CRTC_OFFSET x 8.
+    mach64_t *c = (mach64_t *)owner;
+    return c ? (uint64_t)(c->reg[DW_CRTC_OFF_PITCH] & 0xFFFFFu) * 8u : 0;
 }
-static value_t fb_attr_stride(struct object *self, const member_t *m) {
-    (void)m;
-    mach64_t *c = node_card(self);
-    return val_uint(4, c ? c->display.stride : 0);
-}
-static value_t fb_attr_depth(struct object *self, const member_t *m) {
-    (void)m;
-    mach64_t *c = node_card(self);
-    return val_uint(4, c ? mach64_bytes_per_pixel(c) * 8u : 0);
-}
-static value_t fb_attr_base(struct object *self, const member_t *m) {
-    (void)m;
-    mach64_t *c = node_card(self);
-    return val_uint(4, c ? (c->reg[DW_CRTC_OFF_PITCH] & 0xFFFFFu) * 8u : 0);
-}
-static value_t fb_attr_size(struct object *self, const member_t *m) {
-    (void)m;
-    mach64_t *c = node_card(self);
-    return val_uint(4, c ? (uint64_t)c->display.stride * c->display.height : 0);
-}
-
-static const member_t fb_members[] = {
-    {.kind = M_ATTR,
-     .name = "width",
-     .doc = "Active raster width in pixels",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_width}                              },
-    {.kind = M_ATTR,
-     .name = "height",
-     .doc = "Active raster height in lines",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_height}                             },
-    {.kind = M_ATTR,
-     .name = "stride",
-     .doc = "Bytes per scan line (CRTC_PITCH x 8 x bytes-per-pixel)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_stride}                             },
-    {.kind = M_ATTR,
-     .name = "depth",
-     .doc = "Bits per pixel, from CRTC_PIX_WIDTH",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_depth}                              },
-    {.kind = M_ATTR,
-     .name = "base",
-     .doc = "Scan base as a byte offset into VRAM (CRTC_OFFSET x 8)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = fb_attr_base}},
-    {.kind = M_ATTR,
-     .name = "size",
-     .doc = "Active framebuffer size in bytes (stride x height)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_size}                               },
-};
-static const class_desc_t mach64_fb_class = {
-    .name = "framebuffer", .members = fb_members, .n_members = sizeof(fb_members) / sizeof(fb_members[0])};
 
 static void mach64_attach_objects(pci_device_t *dev, struct object *card_node) {
     mach64_t *m = (mach64_t *)dev->priv;
     if (!m || !card_node)
         return;
-    struct object *fb = object_new(&mach64_fb_class, m, "framebuffer");
+    m->fb_node = (display_fb_node_t){.owner = m, .resolve = mach64_fb_resolve, .base = mach64_fb_base};
+    struct object *fb = object_new(&display_fb_class, &m->fb_node, "framebuffer");
     if (fb) {
         object_set_label(fb, "Framebuffer");
         object_set_order(fb, 10);
@@ -3050,7 +3623,7 @@ static void mach64_attach_objects(pci_device_t *dev, struct object *card_node) {
     }
     struct object *dac = object_new(&mach64_dac_class, m, "dac");
     if (dac) {
-        object_set_label(dac, "RAMDAC (IBM RGB514)");
+        object_set_label(dac, m->gp ? "Palette DAC (integrated)" : "RAMDAC (IBM RGB514)");
         object_set_order(dac, 40);
         object_set_category(dac, M_CAT_ADVANCED);
         object_attach(card_node, dac);
@@ -3061,8 +3634,7 @@ static void mach64_attach_objects(pci_device_t *dev, struct object *card_node) {
 // The factory and the card kind
 // ============================================================
 
-static pci_device_t *mach64_factory(int slot_index, config_t *cfg, checkpoint_t *cp) {
-    (void)cp;
+static pci_device_t *mach64_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
     mach64_t *m = (mach64_t *)calloc(1, sizeof(*m));
     if (!dev || !m) {
@@ -3080,14 +3652,22 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, checkpoint_t 
 
     // The card is useless without its own firmware: Open Firmware runs the
     // FCode to build the node, and Mac OS loads the ndrv the same image
-    // publishes.  An explicitly picked card that cannot resolve one has
+    // publishes.  A card the document named that cannot resolve one has
     // already failed machine.boot's validation; reaching here with nothing
     // means a slot DEFAULT could not resolve, which degrades to an empty
     // slot with a log rather than killing the boot.
-    uint8_t *rom = NULL;
-    size_t rom_size = 0;
-    char *rom_path = NULL;
-    if (!prom_load_card("mach64_gx", &rom, &rom_size, &rom_path)) {
+    // A restore hands back the ROM the card ran, from its checkpoint.
+    uint8_t *prom = NULL;
+    size_t prom_size = 0;
+    char *prom_path = NULL;
+    if (rom && rom->data && rom->size) {
+        prom = (uint8_t *)malloc(rom->size);
+        if (prom) {
+            memcpy(prom, rom->data, rom->size);
+            prom_size = rom->size;
+        }
+    }
+    if (!prom && !prom_load_card("mach64_gx", opts->rom[0] ? opts->rom : NULL, &prom, &prom_size, &prom_path)) {
         LOG(0,
             "slot %d: no expansion ROM available for the Mach64 GX — the card cannot enumerate "
             "without its own FCode, so the slot is left empty",
@@ -3096,11 +3676,12 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, checkpoint_t 
         free(dev);
         return NULL;
     }
-    dev->rom = rom;
-    dev->rom_size = rom_size;
-    free(rom_path);
+    dev->rom = prom;
+    dev->rom_size = prom_size;
+    free(prom_path);
 
-    m->vram_size = s_staged_vram;
+    const char *vram = slot_opts_option(opts, "vram");
+    m->vram_size = vram ? mach64_vram_by_id(vram) : MACH64_VRAM_2MB;
     m->vram = (uint8_t *)calloc(1, m->vram_size);
     m->blank = (uint8_t *)calloc(1, m->vram_size);
     m->compose = (uint8_t *)calloc(1, m->vram_size);
@@ -3114,20 +3695,12 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, checkpoint_t 
         return NULL;
     }
 
-    // The strapped monitor: the staged pick if the user made one, else the
-    // 14" AppleColor, which is the safe default — a primary code of 6 can
-    // never trip the card's "No monitor" bail (that needs 7 AND $3F).
-    m->mon = &mach64_sense[0];
-    if (s_staged_monitor[0]) {
-        for (const mach64_monitor_sense_t *s = mach64_sense; s->id; s++) {
-            if (strcmp(s->id, s_staged_monitor) == 0) {
-                m->mon = s;
-                break;
-            }
-        }
-    }
-    s_staged_monitor[0] = '\0';
-    s_staged_vram = MACH64_VRAM_2MB;
+    // The strapped monitor: the slot's monitor= option if the document gave
+    // one, else the 14" AppleColor, which is the safe default — a primary
+    // code of 6 can never trip the card's "No monitor" bail (that needs 7
+    // AND $3F).
+    const char *monitor = slot_opts_option(opts, "monitor");
+    m->mon = monitor ? mach64_monitor_by_id(monitor) : &mach64_sense[0];
 
     mach64_reset(dev, cfg);
 
@@ -3137,12 +3710,18 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, checkpoint_t 
     m->io_if.write_uint8 = io_write8;
     m->io_if.write_uint16 = io_write16;
     m->io_if.write_uint32 = io_write32;
+    m->io_if.peek_uint8 = io_peek8;
+    m->io_if.peek_uint16 = io_peek16;
+    m->io_if.peek_uint32 = io_peek32;
     m->aper_if.read_uint8 = aper_read8;
     m->aper_if.read_uint16 = aper_read16;
     m->aper_if.read_uint32 = aper_read32;
     m->aper_if.write_uint8 = aper_write8;
     m->aper_if.write_uint16 = aper_write16;
     m->aper_if.write_uint32 = aper_write32;
+    m->aper_if.peek_uint8 = aper_peek8;
+    m->aper_if.peek_uint16 = aper_peek16;
+    m->aper_if.peek_uint32 = aper_peek32;
     m->rom_if.read_uint8 = rom_read8;
     m->rom_if.read_uint16 = rom_read16;
     m->rom_if.read_uint32 = rom_read32;
@@ -3156,20 +3735,113 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, checkpoint_t 
     // addresses congruent to the strapped base modulo 1024 are ours.
     pci_device_add_fixed_region(dev, PCI_SPACE_IO, 0, MACH64_IO_SPAN, MACH64_IO_MATCH_MASK, m->io_base, &m->io_if, m);
 
-    LOG(1, "seated in slot %d: %u MB VRAM, monitor '%s' (primary sense %u), %zu-byte expansion ROM", slot_index,
-        m->vram_size >> 20, m->mon->id, m->mon->primary, rom_size);
+    LOG(1, "Mach64: seated in slot %d: %u MB VRAM, monitor '%s' (primary sense %u), %zu-byte expansion ROM", slot_index,
+        m->vram_size >> 20, m->mon->id, m->mon->primary, prom_size);
     return dev;
 }
 
 const pci_card_kind_t mach64_gx_kind = {
     .id = "mach64_gx",
-    .display_name = "Apple Accelerated PCI Graphics Card (ATI Mach64 GX)",
+    .display_name = "Apple Accelerated PCI Graphics Card",
     .attach = PCI_ATTACH_PCI,
     .requires_prom = true,
     .card_class = "display",
     .monitors = mach64_monitors,
     .factory = mach64_factory,
     .options = mach64_options,
-    .stage_option = mach64_stage_option,
+    .accepts_option = mach64_accepts_option,
+    .attach_objects = mach64_attach_objects,
+};
+
+// ============================================================
+// The Rage Pro — the beige Power Macintosh G3's on-board video
+// ============================================================
+//
+// The same mach64 register file, CRTC, palette path and draw engine as the
+// GX above, with the CT-generation differences switched on by `gp`: the
+// integrated DAC and PLL, GP_IO monitor sense, register block 1, the BAR2
+// register aperture and the big-endian framebuffer view.  It is soldered
+// to the logic board (a builtin, not a card), carries no expansion ROM —
+// Open Firmware runs the ATI FCode stored in the Mac ROM for device $4750
+// and Mac OS loads the ROM's `ATY,RAGEIII` ndrv — and has 2 MB of SGRAM,
+// the shipping configuration.
+//
+// The monitor is Apple's 14" RGB (sense 6, extended from its straps): a
+// 640 x 480 display whose code every Mac driver knows.
+
+static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+    (void)rom;
+    (void)opts;
+    pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
+    mach64_t *m = (mach64_t *)calloc(1, sizeof(*m));
+    if (!dev || !m) {
+        free(dev);
+        free(m);
+        return NULL;
+    }
+    dev->ops = &ragepro_ops;
+    dev->decl = &ragepro_decl;
+    dev->priv = m;
+    pci_cfg_reset(dev);
+    m->dev = dev;
+    m->cfg = cfg;
+    m->gp = true;
+    m->vram_size = MACH64_VRAM_2MB;
+    m->vram = (uint8_t *)calloc(1, m->vram_size);
+    m->blank = (uint8_t *)calloc(1, m->vram_size);
+    m->compose = (uint8_t *)calloc(1, m->vram_size);
+    if (!m->vram || !m->blank || !m->compose) {
+        free(m->vram);
+        free(m->blank);
+        free(m->compose);
+        free(m);
+        free(dev);
+        return NULL;
+    }
+    m->mon = &mach64_sense[0];
+    mach64_reset(dev, cfg);
+
+    m->aper_if.read_uint8 = aper_read8;
+    m->aper_if.read_uint16 = aper_read16;
+    m->aper_if.read_uint32 = aper_read32;
+    m->aper_if.write_uint8 = aper_write8;
+    m->aper_if.write_uint16 = aper_write16;
+    m->aper_if.write_uint32 = aper_write32;
+    m->aper_if.peek_uint8 = aper_peek8;
+    m->aper_if.peek_uint16 = aper_peek16;
+    m->aper_if.peek_uint32 = aper_peek32;
+    m->aux_if.read_uint8 = aux_read8;
+    m->aux_if.read_uint16 = aux_read16;
+    m->aux_if.read_uint32 = aux_read32;
+    m->aux_if.write_uint8 = aux_write8;
+    m->aux_if.write_uint16 = aux_write16;
+    m->aux_if.write_uint32 = aux_write32;
+    m->aux_if.peek_uint8 = aux_peek8;
+    m->aux_if.peek_uint16 = aux_peek16;
+    m->aux_if.peek_uint32 = aux_peek32;
+    m->bio_if.read_uint8 = bio_read8;
+    m->bio_if.read_uint16 = bio_read16;
+    m->bio_if.read_uint32 = bio_read32;
+    m->bio_if.write_uint8 = bio_write8;
+    m->bio_if.write_uint16 = bio_write16;
+    m->bio_if.write_uint32 = bio_write32;
+    m->bio_if.peek_uint8 = bio_peek8;
+    m->bio_if.peek_uint16 = bio_peek16;
+    m->bio_if.peek_uint32 = bio_peek32;
+    pci_bar_backing_iface(dev, MACH64_BAR_APER, &m->aper_if, m);
+    pci_bar_backing_iface(dev, RAGEPRO_BAR_IO, &m->bio_if, m);
+    pci_bar_backing_iface(dev, RAGEPRO_BAR_AUX, &m->aux_if, m);
+
+    LOG(1, "Rage Pro: seated at slot %d: %u MB SGRAM, monitor '%s' (primary sense %u)", slot_index, m->vram_size >> 20,
+        m->mon->id, m->mon->primary);
+    return dev;
+}
+
+const pci_card_kind_t ati_rage_pro_kind = {
+    .id = "ati_rage_pro",
+    .display_name = "Built-in video",
+    .attach = PCI_ATTACH_BUILTIN,
+    .card_class = "display",
+    .factory = ragepro_factory,
     .attach_objects = mach64_attach_objects,
 };

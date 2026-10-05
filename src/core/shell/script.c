@@ -2,25 +2,29 @@
 // Copyright (c) pappadf
 
 // script.c
-// Shell v2 statement parser + interpreter. See script.h and
-// proposal-shell-control-flow-and-functions.md §3.
+// Shell statement parser + interpreter. See script.h and
+// docs/internals/core/shell/shell.md.
 //
 // Pipeline: source text → lines → statement tree (blocks resolved by
 // the line-position rule; inline blocks allowed for one statement) →
 // interpretation. Expressions are stored as text and evaluated with
 // expr_eval where they appear, so loop conditions re-test naturally.
-// Two parsing modes (§3.2): command arguments parse bare words as
+// Two parsing modes: command arguments parse bare words as
 // strings (argument mode); every other value slot is expression mode.
 
 #include "script.h"
+#include "value_format.h"
+#include "job/job.h"
 
 #include "alias.h"
+#include "commands.h"
 #include "expr.h"
 #include "object.h"
 #include "parse.h"
 #include "shell_funcs.h"
 #include "shell_internal.h"
 #include "shell_var.h"
+#include "syntax.h"
 #include "value.h"
 
 #include <ctype.h>
@@ -34,6 +38,7 @@
 typedef enum {
     ST_LET = 1,
     ST_ALIAS,
+    ST_COMMAND_DEF,
     ST_ASSIGN,
     ST_COMMAND,
     ST_EXPR,
@@ -210,12 +215,16 @@ bool script_needs_continuation(const char *buf) {
 
 // === Parser =================================================================
 
+// Room for a one-line diagnostic from a parse or a helper (a binding,
+// alias, command or include error); reports themselves are not bounded.
+#define SCRIPT_ERR_MAX 512
+
 typedef struct parser {
     char **lines; // stripped statement lines (comments removed)
     int *line_nos; // original 1-based line numbers
     int n_lines;
     int i; // cursor
-    char err[256];
+    char err[SCRIPT_ERR_MAX];
     int err_line;
     bool err_set;
 } parser_t;
@@ -610,204 +619,83 @@ fail:
     return false;
 }
 
-// Classify + parse one single-line statement (no block forms) from raw
-// text. Used for inline block bodies and by parse_stmt for the simple
-// statement kinds.
+// Duplicate [s, e) trimmed (NULL when s is NULL).
+static char *dup_span(const char *s, const char *e) {
+    return s ? dup_trim(s, e) : NULL;
+}
+
+// Build one single-line statement (no block forms) from raw text: inline
+// block bodies, and parse_stmt for the simple statement kinds.  What the
+// text is comes from script_classify (syntax.h), which the highlighter and
+// completion read too.
 static stmt_t *parse_stmt_text(parser_t *ps, const char *text, int line_no) {
-    const char *p = skip_sp(text);
-    const char *after;
-
-    if ((after = kw_match(p, "break"))) {
-        if (*skip_sp(after) != '\0') {
-            parse_error(ps, line_no, "break takes no arguments");
-            return NULL;
-        }
+    script_stmt_t c;
+    script_classify(text, text + strlen(text), &c);
+    stmt_kind_t kind;
+    switch (c.kind) {
+    case SCRIPT_STMT_EMPTY:
+        parse_error(ps, line_no, "empty statement");
+        return NULL;
+    case SCRIPT_STMT_INVALID:
+        parse_error(ps, line_no, "%s", c.error);
+        return NULL;
+    case SCRIPT_STMT_ELIF:
+    case SCRIPT_STMT_ELSE:
+        parse_error(ps, line_no, "'%s' without a preceding if-block", c.kind == SCRIPT_STMT_ELIF ? "elif" : "else");
+        return NULL;
+    case SCRIPT_STMT_IF:
+    case SCRIPT_STMT_WHILE:
+    case SCRIPT_STMT_FOR:
+    case SCRIPT_STMT_DEF:
+        // Only an inline block's body gets here: parse_stmt takes the rest.
+        parse_error(ps, line_no, "inline blocks cannot nest");
+        return NULL;
+    case SCRIPT_STMT_BREAK:
         return stmt_new(ST_BREAK, line_no);
-    }
-    if ((after = kw_match(p, "continue"))) {
-        if (*skip_sp(after) != '\0') {
-            parse_error(ps, line_no, "continue takes no arguments");
-            return NULL;
-        }
+    case SCRIPT_STMT_CONTINUE:
         return stmt_new(ST_CONTINUE, line_no);
+    case SCRIPT_STMT_RETURN:
+        kind = ST_RETURN;
+        break;
+    case SCRIPT_STMT_INCLUDE:
+        kind = ST_INCLUDE;
+        break;
+    case SCRIPT_STMT_ASSERT:
+        kind = ST_ASSERT;
+        break;
+    case SCRIPT_STMT_LET:
+        kind = ST_LET;
+        break;
+    case SCRIPT_STMT_ALIAS:
+        kind = ST_ALIAS;
+        break;
+    case SCRIPT_STMT_COMMAND_DEF:
+        kind = ST_COMMAND_DEF;
+        break;
+    case SCRIPT_STMT_ASSIGN:
+        kind = ST_ASSIGN;
+        break;
+    case SCRIPT_STMT_COMMAND:
+        kind = ST_COMMAND;
+        break;
+    default:
+        kind = ST_EXPR;
+        break;
     }
-    if ((after = kw_match(p, "return"))) {
-        stmt_t *st = stmt_new(ST_RETURN, line_no);
-        st->text = dup_trim(after, after + strlen(after));
-        return st;
-    }
-    if ((after = kw_match(p, "include"))) {
-        const char *body = skip_sp(after);
-        if (*body == '\0') {
-            parse_error(ps, line_no, "include: missing path");
-            return NULL;
-        }
-        stmt_t *st = stmt_new(ST_INCLUDE, line_no);
-        st->text = strdup(body);
-        return st;
-    }
-    if ((after = kw_match(p, "assert"))) {
-        const char *body = skip_sp(after);
-        if (*body == '\0') {
-            parse_error(ps, line_no, "assert: missing predicate");
-            return NULL;
-        }
-        stmt_t *st = stmt_new(ST_ASSERT, line_no);
-        st->text = strdup(body);
-        return st;
-    }
-    if ((after = kw_match(p, "let"))) {
-        const char *q = skip_sp(after);
-        if (!ident_start(*q)) {
-            parse_error(ps, line_no, "let: expected a name");
-            return NULL;
-        }
-        const char *ns = q;
-        while (ident_char(*q))
-            q++;
-        char *name = dup_trim(ns, q);
-        q = skip_sp(q);
-        if (*q != '=' || q[1] == '=') {
-            parse_error(ps, line_no, "let: expected '=' after name");
-            free(name);
-            return NULL;
-        }
-        q = skip_sp(q + 1);
-        if (*q == '\0') {
-            parse_error(ps, line_no, "let: missing expression");
-            free(name);
-            return NULL;
-        }
-        stmt_t *st = stmt_new(ST_LET, line_no);
-        st->name = name;
-        st->text = strdup(q);
-        return st;
-    }
-    // `alias NAME = PATH` — only the exact statement shape is the
-    // keyword; anything else (e.g. a path starting with `alias.`) falls
-    // through to command parsing.
-    if ((after = kw_match(p, "alias"))) {
-        const char *q = skip_sp(after);
-        if (ident_start(*q)) {
-            const char *ns = q;
-            const char *scan = q;
-            while (ident_char(*scan))
-                scan++;
-            const char *eq = skip_sp(scan);
-            if (*eq == '=' && eq[1] != '=') {
-                char *name = dup_trim(ns, scan);
-                const char *path = skip_sp(eq + 1);
-                if (*path == '\0') {
-                    parse_error(ps, line_no, "alias: missing path");
-                    free(name);
-                    return NULL;
-                }
-                stmt_t *st = stmt_new(ST_ALIAS, line_no);
-                st->name = name;
-                st->text = strdup(path);
-                return st;
-            }
-        }
-        parse_error(ps, line_no, "alias: expected `alias NAME = PATH`");
+    stmt_t *st = stmt_new(kind, line_no);
+    if (!st) {
+        parse_error(ps, line_no, "out of memory");
         return NULL;
     }
-    if (kw_match(p, "elif") || kw_match(p, "else")) {
-        parse_error(ps, line_no, "'%s' without a preceding if-block", kw_match(p, "elif") ? "elif" : "else");
-        return NULL;
+    if (kind == ST_COMMAND || kind == ST_EXPR) {
+        // The whole statement: the head is part of the command or expression.
+        st->text = dup_span(c.start, c.end);
+    } else {
+        st->text = dup_span(c.rest, c.end);
+        st->name = dup_span(c.name, c.name_end);
+        if (kind == ST_ASSIGN)
+            st->lvalue = dup_span(c.head, c.head_end);
     }
-
-    // Path-or-binding statement head: decide assignment vs command vs
-    // bare expression by what follows the leading path token.
-    if (*p == '$' || ident_start(*p)) {
-        // Scan the path token: `$`? ident ( '.'seg | '[' … ']' )* —
-        // bracket contents skipped quote-aware.
-        const char *q = p;
-        bool is_binding = (*q == '$');
-        if (is_binding)
-            q++;
-        if (ident_start(*q)) {
-            while (ident_char(*q))
-                q++;
-            const char *ident_end = q;
-            while (1) {
-                if (*q == '.' && (ident_char(q[1]))) {
-                    q++;
-                    while (ident_char(*q))
-                        q++;
-                } else if (*q == '[') {
-                    qstate_t qs = {0};
-                    int depth = 0;
-                    const char *r = q;
-                    for (; *r; r++) {
-                        if (!qs.quote && !qs.esc) {
-                            if (*r == '[')
-                                depth++;
-                            else if (*r == ']') {
-                                depth--;
-                                if (depth == 0) {
-                                    r++;
-                                    break;
-                                }
-                            }
-                        }
-                        qstate_step(&qs, *r);
-                    }
-                    if (depth != 0) {
-                        parse_error(ps, line_no, "unbalanced '['");
-                        return NULL;
-                    }
-                    q = r;
-                } else {
-                    break;
-                }
-            }
-            const char *rest = skip_sp(q);
-            if (*rest == '=' && rest[1] != '=') {
-                // Assignment: LVALUE = EXPR.
-                const char *rhs = skip_sp(rest + 1);
-                if (*rhs == '\0') {
-                    parse_error(ps, line_no, "assignment: missing right-hand side");
-                    return NULL;
-                }
-                stmt_t *st = stmt_new(ST_ASSIGN, line_no);
-                st->lvalue = dup_trim(p, q);
-                st->text = strdup(rhs);
-                return st;
-            }
-            if (*rest == '\0') {
-                if (is_binding && q == ident_end) {
-                    // Plain `$name` → binding read, expression statement.
-                    stmt_t *st = stmt_new(ST_EXPR, line_no);
-                    st->text = strdup(p);
-                    return st;
-                }
-                // Bare path (or `$binding.path`) → zero-argument command:
-                // methods are called, attributes/objects are read.
-                stmt_t *st = stmt_new(ST_COMMAND, line_no);
-                st->text = strdup(p);
-                return st;
-            }
-            if (*q == '(') {
-                // `(` immediately after the path (no space): call form
-                // as a statement → expression statement. (A space then
-                // `(` is a command with a parenthesized argument.)
-                stmt_t *st = stmt_new(ST_EXPR, line_no);
-                st->text = strdup(p);
-                return st;
-            }
-            // Command with arguments.
-            stmt_t *st = stmt_new(ST_COMMAND, line_no);
-            st->text = strdup(p);
-            return st;
-        }
-        // `$` not followed by identifier — let the expression parser
-        // produce its error.
-    }
-
-    // Everything else — numbers, strings, parens, operators — is an
-    // expression statement.
-    stmt_t *st = stmt_new(ST_EXPR, line_no);
-    st->text = strdup(p);
     return st;
 }
 
@@ -818,10 +706,14 @@ static stmt_t *parse_stmt(parser_t *ps) {
     int line_no = ps->line_nos[ps->i];
     ps->i++;
 
+    // The block forms by their keyword (script_classify); the rest is one
+    // line.
     const char *p = skip_sp(line);
-    if (kw_match(p, "if"))
+    script_stmt_t c;
+    script_classify(p, p + strlen(p), &c);
+    if (c.kind == SCRIPT_STMT_IF)
         return parse_if(ps, p, line_no);
-    if (kw_match(p, "while")) {
+    if (c.kind == SCRIPT_STMT_WHILE) {
         char *head = NULL;
         script_block_t *body = NULL;
         if (!parse_block_header(ps, p, line_no, &head, &body))
@@ -839,7 +731,7 @@ static stmt_t *parse_stmt(parser_t *ps) {
         free(head);
         return st;
     }
-    if (kw_match(p, "for")) {
+    if (c.kind == SCRIPT_STMT_FOR) {
         char *head = NULL;
         script_block_t *body = NULL;
         if (!parse_block_header(ps, p, line_no, &head, &body))
@@ -879,7 +771,7 @@ static stmt_t *parse_stmt(parser_t *ps) {
         free(head);
         return st;
     }
-    if (kw_match(p, "def")) {
+    if (c.kind == SCRIPT_STMT_DEF) {
         char *head = NULL;
         script_block_t *body = NULL;
         if (!parse_block_header(ps, p, line_no, &head, &body))
@@ -1013,7 +905,7 @@ typedef enum {
     SIG_CONTINUE,
     SIG_RETURN,
     SIG_ERROR,
-    SIG_QUIT, // pump hook requested a clean stop (quit)
+    SIG_QUIT, // the job was cancelled: a clean stop, not an error
 } exec_sig_t;
 
 typedef struct exec_ctx {
@@ -1024,12 +916,7 @@ typedef struct exec_ctx {
     value_t ret; // SIG_RETURN payload
 } exec_ctx_t;
 
-static script_pump_fn g_pump_hook = NULL;
 static volatile bool g_interrupt = false;
-
-void script_set_pump_hook(script_pump_fn fn) {
-    g_pump_hook = fn;
-}
 
 void script_interrupt(void) {
     g_interrupt = true;
@@ -1046,26 +933,130 @@ void script_expr_ctx(expr_ctx_t *out) {
     out->binding_ud = NULL;
 }
 
-// Report a statement-level error and set the abort signal.
 // Include stack (`include "path"`, script_run_file): the chain of files
 // currently executing, innermost last. Drives relative-path resolution,
 // the cycle guard, and file attribution in diagnostics.
+// Per thread: a job on the job thread and an inline script on the emulator
+// thread (a breakpoint action, shell.eval) each have their own chain.
 #define INCLUDE_MAX_DEPTH 16
-static char *g_include_stack[INCLUDE_MAX_DEPTH];
-static int g_include_depth = 0;
+static _Thread_local char *g_include_stack[INCLUDE_MAX_DEPTH];
+static _Thread_local int g_include_depth = 0;
 
-static void exec_error(exec_ctx_t *cx, int line, const char *fmt, ...) {
-    char buf[512];
+// The innermost file being executed (the include stack's top), or "".
+static const char *current_file(void) {
+    return g_include_depth > 0 ? g_include_stack[g_include_depth - 1] : "";
+}
+
+// `s`, cut to `max` bytes (0: whole), as a string value.
+static value_t str_cut(const char *s, size_t max) {
+    if (!max || strlen(s) <= max)
+        return val_str(s);
+    char *cut = strndup(s, max);
+    value_t v = val_str(cut ? cut : "");
+    free(cut);
+    return v;
+}
+
+// The fields of an `error` annotation; `max` bounds each string (the
+// reduced form, which says `truncated`), 0 for the full one.
+static value_t error_fields(const char *file, int line, const char *msg, const char *text, size_t max) {
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "file", str_cut(file, max ? 256 : 0));
+    val_map_put(b, "line", val_int(line));
+    val_map_put(b, "message", str_cut(msg, max));
+    // The stderr text split at newlines, the empty last element dropped.
+    value_t *items = NULL;
+    size_t len = 0, cap = 0;
+    for (const char *p = text; *p;) {
+        size_t n = strcspn(p, "\n");
+        char *ln = strndup(p, n);
+        val_list_push(&items, &len, &cap, str_cut(ln ? ln : "", max));
+        free(ln);
+        p += n;
+        if (*p == '\n')
+            p++;
+    }
+    val_map_put(b, "lines", val_list(items, len));
+    if (max)
+        val_map_put(b, "truncated", val_bool(true));
+    return val_map_finish(b);
+}
+
+void script_report_error(const char *file, int line, const char *msg, const char *text) {
+    // Inside a job: once, as an `error` annotation at this point of the
+    // job's record stream (clients print or render it).  stderr only when no
+    // record can carry it whole: outside a job, past the output cut, or when
+    // only the shortened form fits (that record says `truncated`).
+    file = file ? file : "";
+    msg = msg ? msg : "";
+    value_t full = error_fields(file, line, msg, text, 0);
+    value_t reduced = error_fields(file, line, msg, text, 512);
+    bool shortened = false;
+    if (!job_annotate("error", &full, &reduced, &shortened) || shortened)
+        fputs(text, stderr);
+    value_free(&full);
+    value_free(&reduced);
+}
+
+// printf into a malloc'd string (NULL when out of memory).
+static char *vformat(const char *fmt, va_list ap) __attribute__((format(printf, 1, 0)));
+static char *vformat(const char *fmt, va_list ap) {
+    va_list ap2;
+    va_copy(ap2, ap);
+    int n = vsnprintf(NULL, 0, fmt, ap2);
+    va_end(ap2);
+    if (n < 0)
+        return NULL;
+    char *s = (char *)malloc((size_t)n + 1);
+    if (s)
+        vsnprintf(s, (size_t)n + 1, fmt, ap);
+    return s;
+}
+
+// printf into a malloc'd string (NULL when out of memory).
+static char *format_msg(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static char *format_msg(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
+    char *s = vformat(fmt, ap);
     va_end(ap);
-    // Prefix the innermost executing file so suite/library diagnostics
-    // carry an accurate file:line even across `include`.
-    if (g_include_depth > 0)
-        fprintf(stderr, "%s: line %d: %s\n", g_include_stack[g_include_depth - 1], line, buf);
-    else
-        fprintf(stderr, "line %d: %s\n", line, buf);
+    return s;
+}
+
+void script_report_errorf(const char *file, int line, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    char *msg = vformat(fmt, ap);
+    va_end(ap);
+    file = file ? file : "";
+    // The report as printed: `FILE: line N: MSG`, each prefix only when known.
+    vbuf_t text = {0};
+    if (file[0])
+        vbuf_appendf(&text, "%s: ", file);
+    if (line > 0)
+        vbuf_appendf(&text, "line %d: ", line);
+    vbuf_appendf(&text, "%s\n", msg ? msg : "out of memory");
+    script_report_error(file, line, msg ? msg : "out of memory", text.p);
+    vbuf_free(&text);
+    free(msg);
+}
+
+// An error with no line of its own (a parse error, a failed include):
+// reported with file "" and line 0, its text the message plus a newline.
+static void report_plain_error(const char *err) {
+    script_report_errorf("", 0, "%s", err);
+}
+
+// Report a statement error at `line` of the innermost executing file (so
+// suite and library diagnostics carry an accurate file:line across
+// `include`) and set the abort signal.
+static void exec_error(exec_ctx_t *cx, int line, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    char *msg = vformat(fmt, ap);
+    va_end(ap);
+    script_report_errorf(current_file(), line, "%s", msg ? msg : "out of memory");
+    free(msg);
     cx->sig = SIG_ERROR;
 }
 
@@ -1093,7 +1084,7 @@ static char *include_dirname(const char *path) {
 static char *include_resolve(const char *path) {
     if (path[0] == '/' || g_include_depth == 0)
         return strdup(path);
-    char *dir = include_dirname(g_include_stack[g_include_depth - 1]);
+    char *dir = include_dirname(current_file());
     if (!dir)
         return NULL;
     if (!dir[0]) {
@@ -1132,10 +1123,10 @@ static char *slurp_script_file(const char *path) {
 // Parse + execute one script file with the include stack maintained —
 // the shared engine behind `include` and script_run_file(). Returns the
 // terminating signal (SIG_NONE on success) with a one-line diagnostic
-// in `err` on SIG_ERROR.
-static exec_sig_t include_exec_file(const char *path, char *err, size_t err_size) {
+// in `*err` (malloc'd, the caller frees it) on SIG_ERROR.
+static exec_sig_t include_exec_file(const char *path, char **err) {
     if (g_include_depth >= INCLUDE_MAX_DEPTH) {
-        snprintf(err, err_size, "include depth limit (%d) exceeded at '%s'", INCLUDE_MAX_DEPTH, path);
+        *err = format_msg("include depth limit (%d) exceeded at '%s'", INCLUDE_MAX_DEPTH, path);
         return SIG_ERROR;
     }
     // Cycle guard: the canonical path may not already be executing.
@@ -1143,27 +1134,27 @@ static exec_sig_t include_exec_file(const char *path, char *err, size_t err_size
     const char *key = realpath(path, canon) ? canon : path;
     for (int i = 0; i < g_include_depth; i++) {
         if (strcmp(g_include_stack[i], key) == 0) {
-            snprintf(err, err_size, "include cycle: '%s' is already being included", path);
+            *err = format_msg("include cycle: '%s' is already being included", path);
             return SIG_ERROR;
         }
     }
     char *src = slurp_script_file(path);
     if (!src) {
-        snprintf(err, err_size, "cannot open '%s'", path);
+        *err = format_msg("cannot open '%s'", path);
         return SIG_ERROR;
     }
-    char perr[256];
+    char perr[SCRIPT_ERR_MAX];
     script_t *s = script_parse(src, perr, sizeof(perr));
     free(src);
     if (!s) {
         // perr already reads "line N: msg" — prefix the file.
-        snprintf(err, err_size, "%s: %s", path, perr);
+        *err = format_msg("%s: %s", path, perr);
         return SIG_ERROR;
     }
     char *frame = strdup(key);
     if (!frame) {
         script_free(s);
-        snprintf(err, err_size, "out of memory");
+        *err = format_msg("out of memory");
         return SIG_ERROR;
     }
     g_include_stack[g_include_depth++] = frame;
@@ -1174,7 +1165,7 @@ static exec_sig_t include_exec_file(const char *path, char *err, size_t err_size
     script_free(s);
     if (cx.sig == SIG_ERROR) {
         // The failing statement already printed its own file:line.
-        snprintf(err, err_size, "'%s' failed", path);
+        *err = format_msg("'%s' failed", path);
         return SIG_ERROR;
     }
     return cx.sig == SIG_QUIT ? SIG_QUIT : SIG_NONE;
@@ -1185,66 +1176,16 @@ static exec_sig_t include_exec_file(const char *path, char *err, size_t err_size
 // Scan `('.' seg | '[' EXPR ']')*` at *p, appending to out (bracket
 // expressions evaluated to integers). Returns false with *errv set.
 static bool scan_path_continuation(const char **p, const expr_ctx_t *ectx, char *out, size_t out_size, value_t *errv) {
-    size_t pi = strlen(out);
-    while (1) {
-        if ((*p)[0] == '.' && (ident_char((*p)[1]))) {
-            const char *q = *p + 1;
-            const char *s = q;
-            while (ident_char(*q))
-                q++;
-            int n = snprintf(out + pi, out_size - pi, ".%.*s", (int)(q - s), s);
-            if (n < 0 || (size_t)n >= out_size - pi) {
-                *errv = val_err("path too long");
-                return false;
-            }
-            pi += (size_t)n;
-            *p = q;
-        } else if ((*p)[0] == '[') {
-            const char *q = *p + 1;
-            value_t idx = expr_eval_at(&q, ectx);
-            if (val_is_error(&idx)) {
-                *errv = idx;
-                return false;
-            }
-            q = skip_sp(q);
-            if (*q != ']') {
-                value_free(&idx);
-                *errv = val_err("expected ']'");
-                return false;
-            }
-            q++;
-            // Integer index (indexed child / list slot) or string index
-            // (map key, emitted as a `["key"]` segment).
-            int n;
-            if (idx.kind == V_STRING) {
-                const char *k = idx.s ? idx.s : "";
-                if (strpbrk(k, "\"\\")) {
-                    value_free(&idx);
-                    *errv = val_err("map key may not contain '\"' or '\\'");
-                    return false;
-                }
-                n = snprintf(out + pi, out_size - pi, "[\"%s\"]", k);
-            } else {
-                bool ok = false;
-                int64_t iv = val_as_i64(&idx, &ok);
-                if (!ok) {
-                    value_free(&idx);
-                    *errv = val_err("index must be numeric or a string key");
-                    return false;
-                }
-                n = snprintf(out + pi, out_size - pi, "[%lld]", (long long)iv);
-            }
-            value_free(&idx);
-            if (n < 0 || (size_t)n >= out_size - pi) {
-                *errv = val_err("path too long");
-                return false;
-            }
-            pi += (size_t)n;
-            *p = q;
-        } else {
-            return true;
-        }
-    }
+    // One grammar, in expr.c.  This used to be a second implementation of it:
+    // identifier scanning, `.seg` and `[expr]` appending, and the
+    // same `"`/`\` rejection for map keys, ~170 lines that had to be kept in
+    // step with expr.c by hand and had already drifted.
+    char err[SCRIPT_ERR_MAX];
+    err[0] = '\0';
+    if (expr_read_path_segments(p, ectx, out, out_size, NULL, err, sizeof(err)))
+        return true;
+    *errv = val_err("%s", err[0] ? err : "bad path");
+    return false;
 }
 
 // Resolve a command/lvalue head at *p into a node. Handles both bare
@@ -1393,11 +1334,10 @@ static char *scan_bare_word(const char **p) {
     return buf ? buf : strdup("");
 }
 
-// Parse one argument-mode value at *p (§3.2). Returns V_ERROR on
-// failure. Advances *p. `raw_template` marks a template-typed slot
-// (§6.3): a double-quoted value is captured as its raw body — no escape
-// decoding, no interpolation — for the subsystem to evaluate at fire
-// time.
+// Parse one argument-mode value at *p. Returns V_ERROR on
+// failure. Advances *p. `raw_template` marks a template-typed slot: a
+// double-quoted value is captured as its raw body — no escape decoding, no
+// interpolation — for the subsystem to evaluate at fire time.
 static value_t parse_arg_value(const char **p, const expr_ctx_t *ectx, bool raw_template) {
     const char *q = *p;
     // Interpolating string (or raw capture for template slots).
@@ -1558,24 +1498,9 @@ static value_t exec_command_tail(const char *p, const expr_ctx_t *ectx, node_t n
             }
         }
         // Template slot? Look up the declared argument this value will
-        // land in; template-typed strings are captured raw (§6.3).
-        bool raw_template = false;
-        if (node.member && node.member->kind == M_METHOD && node.member->method.args) {
-            const arg_decl_t *args = node.member->method.args;
-            int nargs = node.member->method.nargs;
-            const arg_decl_t *decl = NULL;
-            if (name) {
-                for (int i = 0; i < nargs; i++) {
-                    if (args[i].name && strcmp(args[i].name, name) == 0) {
-                        decl = &args[i];
-                        break;
-                    }
-                }
-            } else if (pos_n < nargs) {
-                decl = &args[pos_n];
-            }
-            raw_template = decl && (decl->validation_flags & OBJ_ARG_TEMPLATE);
-        }
+        // land in; template-typed strings are captured raw.
+        int slot = script_arg_slot(node.member, pos_n, name, name ? strlen(name) : 0);
+        bool raw_template = slot >= 0 && (node.member->method.args[slot].validation_flags & OBJ_ARG_TEMPLATE);
         value_t v = parse_arg_value(&p, ectx, raw_template);
         if (val_is_error(&v)) {
             result = v;
@@ -1634,32 +1559,33 @@ static void exec_command(stmt_t *st, exec_ctx_t *cx) {
     value_t errv = val_none();
     char norm_path[512] = "";
     struct object *path_base = NULL;
+    bool is_command = false;
 
     // Try the object tree first; fall back to the user-function
     // registry for single-identifier heads.
     const char *head = p;
     if (!resolve_path_head_ex(&p, &ectx, &node, &errv, norm_path, sizeof(norm_path), &path_base)) {
-        // Single bare identifier → user function?
+        // A single bare word: a `def` function, else a command (the word
+        // runs the method it names).  commands.h has the order.
         const char *q = head;
         if (ident_start(*q)) {
             const char *s = q;
             while (ident_char(*q))
                 q++;
-            char name[64];
-            size_t n = (size_t)(q - s) < sizeof(name) - 1 ? (size_t)(q - s) : sizeof(name) - 1;
-            memcpy(name, s, n);
-            name[n] = '\0';
-            fn = shell_func_find(name);
-            if (fn) {
+            shell_head_t h = SHELL_HEAD_NONE;
+            if (*q != '.' && *q != '[')
+                h = shell_word_resolve(s, (size_t)(q - s), &node, &fn, NULL, 0);
+            if (h == SHELL_HEAD_FUNCTION || h == SHELL_HEAD_COMMAND) {
                 value_free(&errv);
                 p = q;
+                is_command = h == SHELL_HEAD_COMMAND;
             }
         }
         // Bare read into a structured value: the head may address a map
         // key / list slot inside an attribute result
-        // (`machine.config.vroms[0].card_id`). Only for argument-less
+        // (`node.attr[0].key`). Only for argument-less
         // heads — values cannot take command arguments.
-        if (!fn && norm_path[0] && path_base && *skip_sp(p) == '\0') {
+        if (!fn && !is_command && norm_path[0] && path_base && *skip_sp(p) == '\0') {
             value_t v = expr_object_path_read(path_base, norm_path);
             if (!val_is_error(&v)) {
                 value_free(&errv);
@@ -1679,7 +1605,7 @@ static void exec_command(stmt_t *st, exec_ctx_t *cx) {
             }
             value_free(&v);
         }
-        if (!fn) {
+        if (!fn && !is_command) {
             exec_error(cx, st->line, "%s", errv.err ? errv.err : "unknown command");
             value_free(&errv);
             return;
@@ -1687,6 +1613,7 @@ static void exec_command(stmt_t *st, exec_ctx_t *cx) {
     }
 
     value_t result = exec_command_tail(p, &ectx, node, fn);
+    shell_func_release(fn);
     if (val_is_error(&result)) {
         exec_error(cx, st->line, "%s", result.err ? result.err : "command failed");
         value_free(&result);
@@ -1849,7 +1776,7 @@ static void exec_while(stmt_t *st, exec_ctx_t *cx) {
     expr_ctx_t ectx;
     script_expr_ctx(&ectx);
     while (1) {
-        if (g_interrupt) {
+        if (g_interrupt || job_current_cancelled()) {
             g_interrupt = false;
             exec_error(cx, st->line, "interrupted");
             return;
@@ -1878,6 +1805,9 @@ static void exec_while(stmt_t *st, exec_ctx_t *cx) {
     }
 }
 
+// How many times a `for … in <range>` body may run.  See exec_for.
+#define FOR_RANGE_MAX_ITERATIONS (1u << 20)
+
 static void exec_for(stmt_t *st, exec_ctx_t *cx) {
     expr_ctx_t ectx;
     script_expr_ctx(&ectx);
@@ -1895,10 +1825,19 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
     }
 
     // Save any shadowed same-named binding in the current scope; the
-    // loop variable is removed at every exit route (§3.8).
+    // loop variable is removed at every exit route.
     value_t saved = val_none();
     bool had = shell_binding_save_top(st->name, &saved);
 
+    // The one cap, and it bounds TIME rather than memory: a range denotes its
+    // values without allocating, so what needs limiting is how many times the
+    // body runs.  An uncapped loop hangs a headless script or CI, where
+    // g_interrupt below cannot reach it.  The largest `for … in a..b` in the
+    // corpus is 0..4096, so this is 256x headroom.
+    //
+    // Real collections are NOT capped: iterating a list, map or bytes walks
+    // data that already exists, and its size is whatever the machine already
+    // holds.
     size_t count = 0;
     if (iter.kind == V_LIST)
         count = iter.list.len;
@@ -1906,11 +1845,19 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
         count = iter.map.len;
     else if (iter.kind == V_BYTES)
         count = iter.bytes.n;
-    else
-        count = iter.range.stop > iter.range.start ? (size_t)(iter.range.stop - iter.range.start) : 0;
+    else {
+        uint64_t n = val_range_count(&iter);
+        if (n > FOR_RANGE_MAX_ITERATIONS) {
+            exec_error(cx, st->line, "for: range of %llu exceeds the %llu-iteration cap", (unsigned long long)n,
+                       (unsigned long long)FOR_RANGE_MAX_ITERATIONS);
+            value_free(&iter);
+            return;
+        }
+        count = (size_t)n;
+    }
 
     for (size_t i = 0; i < count; i++) {
-        if (g_interrupt) {
+        if (g_interrupt || job_current_cancelled()) {
             g_interrupt = false;
             exec_error(cx, st->line, "interrupted");
             break;
@@ -1924,8 +1871,8 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
         else if (iter.kind == V_BYTES)
             item = val_uint(1, iter.bytes.p[i]);
         else
-            item = val_int(iter.range.start + (int64_t)i);
-        char err[160];
+            item = val_int(iter.range.start + (int64_t)i * iter.range.step);
+        char err[SCRIPT_ERR_MAX];
         if (shell_binding_let(st->name, item, err, sizeof(err)) < 0) {
             exec_error(cx, st->line, "%s", err);
             break;
@@ -1945,7 +1892,7 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
 
     shell_binding_remove_top(st->name);
     if (had) {
-        char err[160];
+        char err[SCRIPT_ERR_MAX];
         shell_binding_let(st->name, saved, err, sizeof(err));
     }
     value_free(&iter);
@@ -1971,20 +1918,28 @@ static void exec_assert(stmt_t *st, exec_ctx_t *cx) {
     bool ok = !is_err && val_as_bool(&v);
     if (ok) {
         value_free(&v);
-        return; // silent on success (§5)
+        return; // silent on success
     }
-    // Failure: format the message (interpolated now, at failure time).
-    char msg[512] = "";
+    // Failure: the message, interpolated now (at failure time).
+    value_t m = val_none();
     if (msg_at) {
         const char *mp = msg_at;
-        value_t m = expr_parse_dq_string(&mp, &ectx);
-        if (m.kind == V_STRING && m.s)
-            snprintf(msg, sizeof(msg), "%s", m.s);
-        value_free(&m);
+        m = expr_parse_dq_string(&mp, &ectx);
     }
+    const char *msg = m.kind == V_STRING && m.s && m.s[0] ? m.s : st->text;
+    // One report, with its predicate error.  These are one failure event and
+    // used to go to two streams, so a test log could interleave them in
+    // either order or split them across files -- and that output is exactly
+    // what a failure investigation reads.
+    vbuf_t text = {0}, amsg = {0};
     if (is_err)
-        fprintf(stderr, "line %d: %s\n", st->line, v.err ? v.err : "error in assert predicate");
-    printf("ASSERT FAILED: %s\n", msg[0] ? msg : st->text);
+        vbuf_appendf(&text, "line %d: %s\n", st->line, v.err ? v.err : "error in assert predicate");
+    vbuf_appendf(&text, "ASSERT FAILED: %s\n", msg);
+    vbuf_appendf(&amsg, "ASSERT FAILED: %s", msg);
+    script_report_error(current_file(), st->line, amsg.p, text.p);
+    vbuf_free(&text);
+    vbuf_free(&amsg);
+    value_free(&m);
     value_free(&v);
     cx->sig = SIG_ERROR;
 }
@@ -2012,13 +1967,14 @@ static void exec_include(stmt_t *st, exec_ctx_t *cx) {
         exec_error(cx, st->line, "include: out of memory");
         return;
     }
-    char err[512];
-    exec_sig_t sig = include_exec_file(path, err, sizeof(err));
+    char *err = NULL;
+    exec_sig_t sig = include_exec_file(path, &err);
     free(path);
     if (sig == SIG_ERROR)
-        exec_error(cx, st->line, "include: %s", err);
+        exec_error(cx, st->line, "include: %s", err ? err : "out of memory");
     else if (sig == SIG_QUIT)
         cx->sig = SIG_QUIT;
+    free(err);
 }
 
 // --- statement dispatch -----------------------------------------------------
@@ -2034,15 +1990,21 @@ static void exec_stmt(stmt_t *st, exec_ctx_t *cx) {
             value_free(&v);
             return;
         }
-        char err[160];
+        char err[SCRIPT_ERR_MAX];
         if (shell_binding_let(st->name, v, err, sizeof(err)) < 0)
             exec_error(cx, st->line, "%s", err);
         return;
     }
     case ST_ALIAS: {
-        char err[160];
+        char err[SCRIPT_ERR_MAX];
         if (alias_add_user(st->name, st->text, err, sizeof(err)) < 0)
             exec_error(cx, st->line, "alias: %s", err);
+        return;
+    }
+    case ST_COMMAND_DEF: {
+        char err[SCRIPT_ERR_MAX];
+        if (shell_command_define(st->name, st->text, err, sizeof(err)) < 0)
+            exec_error(cx, st->line, "command: %s", err);
         return;
     }
     case ST_ASSIGN:
@@ -2108,7 +2070,7 @@ static void exec_stmt(stmt_t *st, exec_ctx_t *cx) {
         return;
     }
     case ST_DEF: {
-        char err[200];
+        char err[SCRIPT_ERR_MAX];
         if (shell_func_define(st->name, st->params, st->n_params, st->body, err, sizeof(err)) < 0) {
             exec_error(cx, st->line, "def: %s", err);
             return;
@@ -2128,12 +2090,13 @@ static void exec_stmt(stmt_t *st, exec_ctx_t *cx) {
     }
 }
 
+// The statement boundary: where a job notices it was cancelled (job/job.h)
+// and unwinds.  Nothing else happens between statements -- the emulator
+// runs on its own thread, and a `scheduler.run N` waited inside its call.
 static void exec_block(script_block_t *b, exec_ctx_t *cx) {
     for (int i = 0; i < b->n && cx->sig == SIG_NONE; i++) {
         exec_stmt(b->stmts[i], cx);
-        // Give the platform a chance to drive the scheduler after each
-        // statement (`scheduler.run N` schedules; the pump executes).
-        if (cx->sig == SIG_NONE && g_pump_hook && g_pump_hook())
+        if (cx->sig == SIG_NONE && job_current_cancelled())
             cx->sig = SIG_QUIT;
     }
 }
@@ -2145,6 +2108,11 @@ int script_exec(script_t *s, bool interactive) {
     cx.interactive = interactive;
     exec_block(s->top, &cx);
     value_free(&cx.ret);
+    // An interrupt cancels the script that is running.  One raised while a
+    // top-level statement (a plain `scheduler.run`) was in flight has no loop
+    // to consume it; left set, it aborted the next loop the shell saw, on the
+    // daemon's next connection (#171).
+    g_interrupt = false;
     return cx.sig == SIG_ERROR ? -1 : 0;
 }
 
@@ -2164,10 +2132,10 @@ value_t script_exec_func_body(script_block_t *body) {
 }
 
 int script_run_line(const char *line) {
-    char err[256];
+    char err[SCRIPT_ERR_MAX];
     script_t *s = script_parse(line, err, sizeof(err));
     if (!s) {
-        fprintf(stderr, "%s\n", err);
+        report_plain_error(err);
         return -1;
     }
     int rc = script_exec(s, true);
@@ -2175,24 +2143,51 @@ int script_run_line(const char *line) {
     return rc;
 }
 
-int script_run_source(const char *src) {
-    char err[256];
+// Runs a parsed text as its own context: an error in it is attributed to
+// its line, not to whatever file the caller was including -- which is what
+// a job thread's empty stack gives a `shell.eval` from a script, and what
+// an inline run (the same thread, the includer's frames still on the
+// stack) must give too.
+static int exec_isolated(script_t *s, bool interactive) {
+    char *saved[INCLUDE_MAX_DEPTH];
+    int saved_depth = g_include_depth;
+    memcpy(saved, g_include_stack, sizeof saved);
+    g_include_depth = 0;
+    int rc = script_exec(s, interactive);
+    g_include_depth = saved_depth;
+    memcpy(g_include_stack, saved, sizeof saved);
+    return rc;
+}
+
+int script_run_text(const char *src, bool interactive) {
+    char err[SCRIPT_ERR_MAX];
     script_t *s = script_parse(src, err, sizeof(err));
     if (!s) {
-        fprintf(stderr, "%s\n", err);
+        report_plain_error(err);
         return -1;
     }
-    int rc = script_exec(s, false);
+    int rc = exec_isolated(s, interactive);
+    script_free(s);
+    return rc;
+}
+
+int script_run_source(const char *src) {
+    char err[SCRIPT_ERR_MAX];
+    script_t *s = script_parse(src, err, sizeof(err));
+    if (!s) {
+        report_plain_error(err);
+        return -1;
+    }
+    int rc = exec_isolated(s, false);
     script_free(s);
     return rc;
 }
 
 int script_run_file(const char *path) {
-    char err[512];
-    exec_sig_t sig = include_exec_file(path, err, sizeof(err));
-    if (sig == SIG_ERROR) {
-        fprintf(stderr, "%s\n", err);
-        return -1;
-    }
-    return 0; // SIG_QUIT is a clean stop, not a failure
+    char *err = NULL;
+    exec_sig_t sig = include_exec_file(path, &err);
+    if (sig == SIG_ERROR)
+        report_plain_error(err ? err : "out of memory");
+    free(err);
+    return sig == SIG_ERROR ? -1 : 0; // SIG_QUIT is a clean stop, not a failure
 }

@@ -18,8 +18,8 @@
 # the smallest catalog entry above the installer's floor.  Formatting it here
 # yields a 479,254-block (245,378,048 byte) HFS volume, which clears 230 MB
 # whether the installer means decimal MB or MiB.
-assert storage.hd_create("${$WORK_DIR}/apple230.img", "HD230SC") "hd_create HD230SC failed"
-assert storage.path_size("${$WORK_DIR}/apple230.img") == 245427200 "HD230SC wrong image size"
+assert files.hd_create("${$WORK_DIR}/apple230.img", "HD230SC") "hd_create HD230SC failed"
+assert files.path_size("${$WORK_DIR}/apple230.img") == 245427200 "HD230SC wrong image size"
 
 machine.scsi.attach_hd "$WORK_DIR/apple230.img" 0
 

@@ -22,35 +22,47 @@
 # slot: socket A1 is device 13, so bit 13 -> LE $00002000 -> $00200000.
 
 # --- Expansion-ROM identification, before anything is seated. ---------------
-# Identity is the CRC-32 of the whole chip image; no filename is ever
-# inspected.  The two catalogued dumps of this card:
-assert machine.prom.identify("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom").recognised "the -104 dump must be recognised"
-assert machine.prom.identify("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom").card_id == "mach64_gx" "and must provide the mach64_gx card"
-assert machine.prom.identify("${$TEST_DATA}/roms/mach64-gx-101-8c68216e.prom").card_id == "mach64_gx" "so must the earlier -101 programming"
+# Identity is made of standard fields only (#186): the PCI Data Structure's
+# vendor and device ids say which card, the IEEE 1275 FCode header's own
+# checksum which programming of its ROM -- "vvvv-dddd-cccc".  No filename is
+# ever inspected.  The two catalogued programmings of this card share the
+# card and differ in the checksum:
+assert catalog.proms.identify("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom").recognised "the -104 dump must be recognised"
+assert catalog.proms.identify("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom").card_id == "mach64_gx" "and must provide the mach64_gx card"
+assert catalog.proms.identify("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom").id == "1002-4758-c6e8" "-104 identity"
+assert catalog.proms.identify("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom").intact "-104's FCode checksum verifies"
+assert catalog.proms.identify("${$TEST_DATA}/roms/mach64-gx-101-8c68216e.prom").card_id == "mach64_gx" "so must the earlier -101 programming"
+assert catalog.proms.identify("${$TEST_DATA}/roms/mach64-gx-101-8c68216e.prom").id == "1002-4758-d71a" "-101 identity"
 # ...and the failures, each told apart from the others.  A PC/x86 option
 # ROM is the predictable user error and must not be mistaken for "not a ROM".
-assert !machine.prom.identify("${$WORK_DIR}/fake-x86-vga.prom").recognised "an x86 option ROM must be rejected"
-assert !machine.prom.offer("${$WORK_DIR}/fake-x86-vga.prom") "...and must not register as an offer"
-assert !machine.prom.identify("${$WORK_DIR}/uncatalogued.prom").recognised "an uncatalogued OF ROM must be rejected"
-assert !machine.prom.identify("${$ROM}").recognised "a 4 MB CPU ROM is not an expansion ROM"
+assert !catalog.proms.identify("${$WORK_DIR}/fake-x86-vga.prom").recognised "an x86 option ROM must be rejected"
+assert !catalog.proms.offer("${$WORK_DIR}/fake-x86-vga.prom") "...and must not register as an offer"
+assert !catalog.proms.identify("${$WORK_DIR}/uncatalogued.prom").recognised "an uncatalogued OF ROM must be rejected"
+assert catalog.proms.identify("${$WORK_DIR}/uncatalogued.prom").intact "...though it is intact: the right card, an unknown programming"
+# A damaged dump names a catalogued identity but must not be recognised.
+assert !catalog.proms.identify("${$WORK_DIR}/damaged-104.prom").recognised "a dump whose FCode checksum fails must be rejected"
+assert catalog.proms.identify("${$WORK_DIR}/damaged-104.prom").id == "1002-4758-c6e8" "...though its header still names -104"
+assert !catalog.proms.identify("${$WORK_DIR}/damaged-104.prom").intact "...and it reports why"
+assert !catalog.proms.offer("${$WORK_DIR}/damaged-104.prom") "a damaged dump must not register as an offer"
+assert !catalog.proms.identify("${$ROM}").recognised "a 4 MB CPU ROM is not an expansion ROM"
 
 # The frontend's ingest path, end to end: a persistent store that does not
 # exist yet is created, the staged file is copied into it, and the copy is
 # offered.  This is not hypothetical — the web UI shipped briefly with the
 # store directory missing from its startup mkdir list, and every upload of
-# a .prom died with a bare "Failed to save" because storage.cp does not
+# a .prom died with a bare "Failed to save" because files.cp does not
 # create parent directories.
-vfs.mkdir "${$WORK_DIR}/prom-store"
-assert storage.cp("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom", "${$WORK_DIR}/prom-store/437584e0") "a freshly created store must accept the copy"
-assert machine.prom.offer("${$WORK_DIR}/prom-store/437584e0") "and the stored copy must register as an offer"
-assert machine.prom.identify("${$WORK_DIR}/prom-store/437584e0").card_id == "mach64_gx" "identity survives the copy and the rename"
+files.mkdir "${$WORK_DIR}/prom-store"
+assert files.cp("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom", "${$WORK_DIR}/prom-store/1002-4758-c6e8") "a freshly created store must accept the copy"
+assert catalog.proms.offer("${$WORK_DIR}/prom-store/1002-4758-c6e8") "and the stored copy must register as an offer"
+assert catalog.proms.identify("${$WORK_DIR}/prom-store/1002-4758-c6e8").card_id == "mach64_gx" "identity survives the copy and the rename"
 
 # --- The card kind reaches the configuration layer from one declaration. ----
-assert machine.pci.cards() == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1]" "the card must be registered"
+assert catalog.pci_cards == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu, ati_rage_pro]" "the card must be registered"
 
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
 
-assert machine.pci.slot[1].label == "A1" "the card sits in socket A1"
+assert machine.pci.slot[1].firmware_name == "A1" "the card sits in socket A1"
 assert machine.pci.slot[1].irq == 23 "A1's strapped INTA-D reaches Grand Central 23 (TN1062: AAPL,interrupts $17)"
 assert machine.pci.slot[1].card.name == "ATI Mach64 GX" "the card is seated"
 
@@ -320,6 +332,58 @@ machine.memory.poke.l(0x817FFC18, 0x06000000)
 assert (machine.memory.peek.l(0xF300002C) & 0x00008000) == 0 "acknowledging at the card must clear Grand Central 23"
 assert (machine.memory.peek.l(0x817FFC18) & 0x02000000) != 0 "and the acknowledge must not clear CRTC_VBLANK_INT_EN"
 
+# --- 5-6-5 is a real mode (PIXEL_16BPP_565). --------------------------------
+# CRTC_PIX_WIDTH = 4 selects 5,6,5 — a depth this chip supports, Mac OS
+# never selects, and the model used to refuse ("keeping the previous
+# mode").  The Voodoo2's framebuffer is natively 5-6-5, so display.h now
+# has the format and the refusal became a mode.  Program a small raster
+# through the register alias, fill it with a synthetic pattern, and pin
+# the whole path against fixtures make-fixtures.py expands INDEPENDENTLY
+# from the documented rules: 5 bits replicate their top 3, the 6-bit
+# green replicates its top 2.
+#
+# The positive control is the point: the SAME framebuffer bytes are also
+# expanded under the 5-5-5 rule, and each mode must match its own fixture
+# and REJECT the other's — a format expander that silently falls through
+# to the neighbouring case is the predictable bug, and it looks exactly
+# like success until the two interpretations are required to differ.
+def swap32(v) {
+    return (($v & 0xFF) << 24) | (($v & 0xFF00) << 8) | (($v >> 8) & 0xFF00) | (($v >> 24) & 0xFF)
+}
+# 64x32, pitch 8 characters (64 px), framebuffer at VRAM offset 0.  The
+# alias is little-endian, so every literal goes through swap32.
+machine.memory.poke.l($AL + 0x00, swap32(0x00070009))
+machine.memory.poke.l($AL + 0x08, swap32(0x001F002C))
+machine.memory.poke.l($AL + 0x14, swap32(0x02000000))
+let GEN = machine.pci.slot[1].card.regs.crtc_gen_cntl
+machine.memory.poke.l($AL + 0x1C, swap32(($GEN & 0xFFFFF8FF) | 0x400))
+assert machine.screen.width == 64 "the reprogrammed CRTC must shape a 64-pixel raster"
+assert machine.screen.height == 32 "...32 lines high"
+assert machine.screen.depth == 16 "5,6,5 reports 16 bpp"
+assert machine.screen.source.stride == 128 "pitch 8 characters at 2 bytes per pixel"
+# The raster: pixel(x,y) = (x&31)<<11 | ((x+y)&63)<<5 | (y&31), written
+# big-endian two pixels per poke — the byte order PIXEL_16BPP_565 declares.
+for y in 0..32 {
+    for xw in 0..32 {
+        let X0 = 2 * $xw
+        let P0 = ((($X0) & 31) << 11) | ((($X0 + $y) & 63) << 5) | ($y & 31)
+        let P1 = ((($X0 + 1) & 31) << 11) | ((($X0 + 1 + $y) & 63) << 5) | ($y & 31)
+        machine.memory.poke.l(0x81000000 + ($y * 128) + ($xw * 4), ($P0 << 16) | $P1)
+    }
+}
+# The checksum is stable — same bytes, same answer — and the PNG encoder
+# expands to the RGB the rule says, not merely to something self-consistent.
+let C565 = machine.screen.checksum(0, 0, 32, 64)
+assert $C565 != 0 "the synthetic raster must not hash to nothing"
+assert machine.screen.checksum(0, 0, 32, 64) == $C565 "the 5-6-5 checksum must be stable"
+machine.screen.match "${$WORK_DIR}/raster-565.png"
+assert !machine.screen.matches("${$WORK_DIR}/raster-555.png") "the 5-5-5 expansion of the same bytes must NOT match"
+# Flip only the pixel-width field to 5-5-5: identical bytes, other rule.
+machine.memory.poke.l($AL + 0x1C, swap32(($GEN & 0xFFFFF8FF) | 0x300))
+assert machine.screen.depth == 16 "5,5,5 is also 16 bpp"
+machine.screen.match "${$WORK_DIR}/raster-555.png"
+assert !machine.screen.matches("${$WORK_DIR}/raster-565.png") "...and must reject the 5-6-5 expansion"
+
 # --- The authentic 9500: no onboard video. ----------------------------------
 # The real machine has none — it "requires a display card in a PCI slot" —
 # so the Control/Chaos entry is a BUILTIN_FALLBACK that stands in only
@@ -327,17 +391,21 @@ assert (machine.memory.peek.l(0x817FFC18) & 0x02000000) != 0 "and the acknowledg
 # retires, and the 9500 is the single-display machine the hardware is.
 assert try(machine.pci.slot[7].card.name, "(empty)") == "(empty)" "Control must stand down for a real display card"
 
-# ...and with no card staged it stands in again, so a cardless boot still
-# has somewhere to draw.
-machine.boot model="pm9500" ram=32768 rom="${$ROM}"
+# ...and with no display card seated it stands in again, so a cardless boot
+# still has somewhere to draw.
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" slots="1=none"
 assert machine.pci.slot[7].card.name == "Control" "Control stands in when no display card is seated"
+# With nothing named, the 9500 has its factory card (its ROM is offered here).
+machine.boot model="pm9500" ram=32768 rom="${$ROM}"
+assert machine.pci.slot[1].card.id == "mach64_gx" "the 9500's default card is the Accelerated PCI Graphics Card"
+assert try(machine.pci.slot[7].card.name, "(empty)") == "(empty)" "Control stands down for the default card"
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
 
 # --- Card options reach the card through the boot document. -----------------
 # pci_option= carries "key=value" pairs to the same socket pci_card= names.
-# Which keys mean anything is the CARD's business: the generic layer stages
-# them and the kind's stage_option hook accepts or rejects each one, so no
-# card identity leaks into the boot path.  MEM_CNTL's MEM_SIZE field is the
+# Which keys mean anything is the CARD's business: the kind's accepts_option
+# hook accepts or rejects each one before the boot begins, so no card
+# identity leaks into the boot path.  MEM_CNTL's MEM_SIZE field is the
 # card telling the driver how much VRAM it has, so it is the honest place
 # to read the answer back.
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
@@ -348,23 +416,70 @@ assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 3 "the 109-31600-00 expan
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx" pci_option="vram=2m,monitor=15in_multi"
 assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "a comma-separated list must apply every pair"
 assert machine.pci.slot[1].card.monitor.id == "15in_multi" "...including the second one"
-# A malformed pair is dropped with a log, NOT fatal: this layer cannot tell
-# a typo from a key it simply does not know, and refusing the boot would
-# make every unknown option fatal.
-assert machine.boot(model="pm9500", ram=32768, rom="${$ROM}", pci_card="mach64_gx", pci_option="bogus") "a malformed option must not fail the boot"
-assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "and must leave the card at its default"
+# A malformed pair, a key the card does not take and a value it does not
+# offer each reject the boot, before the running machine is touched: the
+# card answers for its own options, so a typo is never silently a default.
+assert !machine.boot(model="pm9500", ram=32768, rom="${$ROM}", pci_card="mach64_gx", pci_option="bogus") "a malformed option must reject the boot"
+assert !machine.boot(model="pm9500", ram=32768, rom="${$ROM}", pci_card="mach64_gx", pci_option="memory=8m") "a key the card does not take must reject the boot"
+assert !machine.boot(model="pm9500", ram=32768, rom="${$ROM}", pci_card="mach64_gx", pci_option="vram=3m") "a value the card does not offer must reject the boot"
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "the running card is untouched"
 
 # The card DECLARES what it will accept, so a frontend can offer a control
 # without knowing which card it is.
-assert machine.profile("pm9500").pci_slots[0].cards[0].options[0].key == "vram" "the card must declare its option"
-assert machine.profile("pm9500").pci_slots[0].cards[0].options[0].default_value == "2m" "...and what it does by default"
+assert catalog.profile("pm9500").cards[0].options[0].id == "vram" "the card must declare its option"
+assert catalog.profile("pm9500").cards[0].options[0].default == "2m" "...and what it does by default"
+
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
+
+# --- A checkpoint crosses a VRAM-size change. -------------------------------
+# The restore builds the card from the checkpoint's own slot entry (vram=4m)
+# and replays the stream into it, so a 4 MB checkpoint lands in a 4 MB card
+# whatever the running machine was built with.  Where a stream's size and the
+# card's differ, the restore resizes rather than truncating -- and it has to
+# resize all THREE buffers, because `blank` and `compose` are sized to
+# vram_size and every scan is bounded by vram_size, which is the only reason a
+# buffer of that size is always big enough.  Growing `vram` alone left the
+# other two at the old size and turned the mach64_update() that the restore
+# itself performs into a heap WRITE overflow.
+#
+# This pins the invariant rather than the crash: firing the overflow needs the
+# guest in a mode spanning more than 2 MB, which a ROM-stage boot never reaches.
+# What it does catch is the resize going wrong in either direction, and under
+# the nightly valgrind tier it is also where a reintroduced mismatch would show
+# up as an invalid write.
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx" pci_option="vram=4m"
+scheduler.run 40000000
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 3 "checkpoint source: the card is the 4 MB build"
+checkpoint.save "${$WORK_DIR}/mach64-4m.ckpt"
+
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx" pci_option="vram=2m"
+scheduler.run 40000000
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "the running machine: built at the 2 MB default"
+checkpoint.load "${$WORK_DIR}/mach64-4m.ckpt"
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 3 "the 4 MB checkpoint must restore a 4 MB card"
+assert machine.pci.slot[1].card.regs.vram_size == 0x400000 "...and the card must report 4 MB afterwards"
+# Every buffer moved, so a scanout still pointing into a freed one would read
+# garbage or fault.  Keep running: the restore already called mach64_update()
+# once, and this drives more of them plus the VBL presents.  (There is no
+# geometry to assert at this point -- the Open Firmware ROM does not program
+# this card's CRTC at ROM stage, so the descriptor is legitimately 0x0 here.)
+scheduler.run 20000000
+assert machine.id == "pm9500" "the machine survives scanning on the resized buffers"
+
+# ...and the round trip: the restored machine's own checkpoint restores over
+# another 4 MB machine.
+checkpoint.save "${$WORK_DIR}/mach64-2m.ckpt"
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx" pci_option="vram=4m"
+scheduler.run 40000000
+checkpoint.load "${$WORK_DIR}/mach64-2m.ckpt"
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 3 "the 4 MB stream restores into the 4 MB card"
 
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
 
 # --- A card that requires an expansion ROM cannot boot without one. ---------
 # Strict resolution runs BEFORE the running machine is touched, so a
 # rejected boot leaves the current machine alive.
-machine.prom.offer("${$WORK_DIR}/fake-x86-vga.prom")
+catalog.proms.offer("${$WORK_DIR}/fake-x86-vga.prom")
 assert machine.id == "pm9500" "the machine survives"
 
 quit

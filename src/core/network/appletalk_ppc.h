@@ -6,12 +6,14 @@
 // NBP, guest-mode sessions in both directions over ADSP, and the port browse
 // that finds what a guest has to offer.
 //
-// Coding reference: docs/core/network/ppc_appleevents.md §2 (record layouts),
+// Coding reference: docs/internals/core/network/ppc_appleevents.md §2 (record layouts),
 // §3 (discovery), §4 (the session layer).  Its only client is the Apple event
 // layer in appletalk_aevt.c.
 
 #ifndef APPLETALK_PPC_H
 #define APPLETALK_PPC_H
+
+#include "appletalk.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -64,7 +66,7 @@ extern const char *const PPC_SESSION_STATE_NAMES[];
 typedef struct {
     char name[33];
     char type[33];
-    char machine[33]; // the NBP object name of the machine holding it
+    char machine[ATALK_NBP_TEXT_CAP]; // the NBP object name of the machine holding it, UTF-8
     uint8_t node;
     uint8_t socket;
     bool auth_required;
@@ -85,13 +87,30 @@ typedef struct {
 
 // === Lifecycle ==============================================================
 
-void atalk_ppc_init(void);
-void atalk_ppc_shutdown(void);
+// PPC's part of a machine's connection (atalk_conn_t): the sessions with that
+// Mac and what a browse of it found.  The network serves the plugged-in
+// connection's link; atalk_ppc_plug with NULL, when the connection is
+// unplugged, drops its sessions and browse results.  Plugging one in puts the
+// host port's listener on its ADSP stack (atalk_adsp_plug runs first).
+typedef struct ppc_link ppc_link_t;
 
-// Publish (or withdraw) the host port.  Registering it puts the NBP entity on
-// the network and starts accepting guest sessions on PPC_HOST_SOCKET.
+ppc_link_t *atalk_ppc_link_new(void);
+void atalk_ppc_link_free(ppc_link_t *link);
+void atalk_ppc_plug(ppc_link_t *link);
+
+// Once, when the network comes up: make PPC's part of the network, the host
+// port (named PPC_HOST_PORT_DEFAULT, not yet published), which the network
+// owns.
+#define PPC_HOST_PORT_DEFAULT "gs-host"
+typedef struct ppc_host ppc_host_t;
+ppc_host_t *atalk_ppc_init(void);
+
+// Publish (or withdraw) the host port; a NULL or empty name keeps the
+// current one.  Registering it puts the NBP entity on the network and starts
+// accepting guest sessions on PPC_HOST_SOCKET.
 int atalk_ppc_set_host_port(const char *name, bool enabled, char *err, size_t err_len);
 const char *atalk_ppc_host_port_name(void);
+bool atalk_ppc_host_port_enabled(void);
 
 // Where inbound events go.  Set once by the Apple event layer.
 void atalk_ppc_set_inbound_client(const ppc_client_t *client, void *ctx);
@@ -136,22 +155,9 @@ uint64_t atalk_ppc_session_bytes_in(const ppc_session_t *s);
 uint64_t atalk_ppc_session_bytes_out(const ppc_session_t *s);
 uint32_t atalk_ppc_session_id(const ppc_session_t *s);
 
-// === Counters ===============================================================
-
-typedef struct {
-    uint64_t sessions_opened;
-    uint64_t sessions_rejected;
-    uint64_t sessions_refused; // rejections we sent
-    uint64_t blocks_in;
-    uint64_t blocks_out;
-    uint64_t browses;
-} ppc_stats_t;
-
-const ppc_stats_t *atalk_ppc_get_stats(void);
-
 // === Object model ===========================================================
 
+// Attaches `ppc` under `appletalk`, once, after atalk_ppc_init.
 void atalk_ppc_install_objects(struct object *parent);
-void atalk_ppc_remove_objects(void);
 
 #endif // APPLETALK_PPC_H

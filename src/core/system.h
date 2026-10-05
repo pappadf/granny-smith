@@ -8,14 +8,17 @@
 #define SETUP_H
 
 // === Includes ===
+#include "machine_build_opts.h"
 #include <stdbool.h>
 #include <stddef.h>
 
 #include "checkpoint.h"
 #include "common.h"
 #include "debug.h"
+#include "drive_activity.h"
 #include "image.h"
 #include "keyboard.h"
+#include "machine_profile.h" // enum media_bus, media_slot_t
 #include "platform.h"
 #include "scheduler.h"
 
@@ -69,37 +72,48 @@ typedef struct config config_t;
 image_t *config_get_image(config_t *cfg, int index);
 int config_get_n_images(config_t *cfg);
 void config_add_image(config_t *cfg, image_t *image);
-// Remove an image from the tracked list WITHOUT closing it (machine.restart
-// handle transfer — ownership moves to the caller).
-void config_remove_image(config_t *cfg, image_t *image);
-
-// Standard substrate implementation of the machine.restart media transfer
-// (cfg->floppy + cfg->scsi); Mac substrates bind these into their vtables,
-// the Lisa provides its own.  See machine_profile.h media_slot_t.
+// Standard substrate implementation of media attach (cfg->floppy +
+// cfg->scsi); Mac substrates bind it into their vtables, the Lisa provides
+// its own.  See machine_profile.h media_slot_t.
 struct media_slot;
-int system_media_detach_std(config_t *cfg, struct media_slot *out, int max);
 int system_media_attach_std(config_t *cfg, const struct media_slot *slot);
 // One SCSI bus's worth of the same, for a machine with more than one.
-int system_media_detach_scsi_bus(config_t *cfg, struct scsi *bus, enum media_bus which, struct media_slot *out,
-                                 int max);
 int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const struct media_slot *slot);
 
 // === Generic Machine Lifecycle ===
 
-// One-time global initialisation: logging categories, image system, shell commands.
+// One-time global initialisation: logging categories, image system, the
+// AppleTalk network.
 extern void setup_init(void);
+
+// Publish the directory the default "Shared" AppleShare volume serves (NULL
+// or "": none) on the AppleTalk network.  Called once, at startup, after
+// setup_init; the share stays for every machine that plugs in.
+void system_set_default_share(const char *path);
 
 // Create an emulator instance for the given machine profile.
 // If checkpoint is non-NULL, device state is restored from that checkpoint.
-// Sets global_emulator and returns the new config handle.
-extern config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint);
+// Returns the new config handle, NOT yet the active machine: construction
+// touches nothing outside it (global_emulator, the object root, the machine
+// label), so a failed build has changed nothing.  system_swap_in makes it
+// the active machine.  `opts` carries the construction arguments (see
+// machine_build_opts.h); machine_boot_apply and the checkpoint restore both
+// fill it.
+extern config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t *opts, checkpoint_t *checkpoint);
+
+// Make a constructed machine the active one -- global_emulator, the object
+// root, the machine label, the machine_booted event -- and destroy the one it
+// replaces.  `restored`: the machine came from a checkpoint.  `pacing`: the
+// host's pacing setting, which the machine runs under from its first frame.
+struct host_pacing;
+void system_swap_in(config_t *cfg, bool restored, const struct host_pacing *pacing);
 
 // Destroy an emulator instance: call machine teardown and free all resources.
 extern void system_destroy(config_t *config);
 
 extern config_t *global_emulator;
 
-void add_scsi_drive(config_t *restrict config, const char *filename, int scsi_id);
+bool add_scsi_drive(config_t *restrict config, const char *filename, int scsi_id);
 
 void trigger_vbl(config_t *restrict config);
 
@@ -112,11 +126,12 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind);
 config_t *system_restore(const char *filename);
 
 // Command handlers for checkpoint operations
-uint64_t cmd_save_checkpoint(int argc, char *argv[]);
-uint64_t cmd_load_checkpoint(int argc, char *argv[]);
-
-// Lookup an image by its full filename within the current config's image list
-image_t *setup_get_image_by_filename(const char *filename);
+// Checkpoint load / probe.  These replace the retired
+// cmd_load_checkpoint(argc, argv), which the typed checkpoint.* methods
+// reached by building a fake argv[] and then string-matching their arguments
+// back out of it.
+int system_checkpoint_load(const char *filename); // NULL/empty = auto-load latest
+bool system_checkpoint_probe(void);
 
 // System-level input wrappers (route to appropriate device models)
 // Note: system_keyboard_update requires keyboard.h to be included for key_event_t
@@ -130,6 +145,20 @@ void system_keyboard_update(key_event_t event, int key);
 // peripherals (VIA overlay, MMU, etc.).  Called by the CPU on double bus error
 // (HALT → GLU RESET) BEFORE the CPU reads SSP/PC from $0/$4.
 // Weak: unit tests that don't link system.c get a no-op stub.
+// Level 2 -- a machine reset: the board's /RESET net plus the CPU back to its
+// reset vector.  The reset button, machine.reset(), Finder > Restart, the
+// Cuda's CMD_RESET.  Weak for the same reason as its two siblings here: a
+// unit suite that links a device without system.c must still resolve it.
+__attribute__((weak)) void system_machine_reset(void);
+
+// Level 3 -- a power cycle: the machine stays standing, RAM goes cold, and
+// everything else is a level-2 reset.  No device is freed or rebuilt, so the
+// non-volatile stores, the RTC counter, mounted media and latched switches
+// survive for the hardware's own reason: nothing destroyed them.
+void system_machine_power_cycle(void);
+
+// Retained under its old name for callers that mean level 2; an alias for
+// system_machine_reset above.
 __attribute__((weak)) void system_hardware_reset(void);
 
 // Bus /RESET line asserted by the 68k RESET instruction: reset the external
@@ -139,6 +168,10 @@ __attribute__((weak)) void system_hardware_reset(void);
 // the single-step CPU unit test (which executes the RESET opcode) links a
 // no-op stub in tests/unit/support/stub_system.c.
 __attribute__((weak)) void system_reset_devices(void);
+
+// The devices every Macintosh board wires to /RESET.  A family's bus_reset
+// calls this, then resets its own chipset.
+void system_reset_common_devices(struct config *cfg);
 
 // System-level scheduler accessor: returns the current scheduler object
 scheduler_t *system_scheduler(void);
@@ -152,7 +185,7 @@ debug_t *system_debug(void);
 // System-level CPU accessor: returns the current CPU object
 cpu_t *system_cpu(void);
 
-// Main-CPU debug interface accessor (PPC proposal §3.9b): the vtable the
+// Main-CPU debug interface accessor: the vtable the
 // debugger routes PC/disasm/translate through, populated by system_create
 // from whichever core is the machine's main CPU.  NULL before a machine is
 // built.  The pointed-to struct lives inside config_t (stable until destroy).
@@ -162,11 +195,28 @@ const struct cpu_debug_if *system_cpu_debug_if(void);
 // The active machine configuration (NULL before setup).  Used by the keyboard /
 // mouse object methods to find a machine-specific host-input hook.
 config_t *system_config(void);
+// The running machine, for an observer that may run while another machine is
+// being built -- a log line's PC and instruction-count decoration describes
+// the machine that is running, which a build does not change.  Constructors
+// use their own cfg; everything else uses system_config().
+config_t *system_running(void);
+// The running machine's scheduler, or NULL with no machine.
+struct scheduler *system_running_scheduler(void);
 
-// Host-input dispatch to a machine-specific hook (e.g. the Lisa COPS).  Each
-// returns 1 if the machine hook handled the request, 0 if there is no hook (the
-// caller should use the default Mac path), or -1 if the hook rejected it.
-int system_input_key(const char *key, bool down);
+// Per-kind (DRIVE_KIND_*) sums of the attached images' read / write call
+// counters, for the drive-activity lights (storage/drive_activity.h).
+void system_drive_io_counts(uint64_t reads[DRIVE_KIND_COUNT], uint64_t writes[DRIVE_KIND_COUNT]);
+
+// Host-input dispatch through the machine's substrate (a Mac's ADB or M0110A,
+// the Lisa's COPS).  Each returns 0 when the machine took the request and -1
+// when it refused it (a key its keyboard has not got, a bad mouse mode) or no
+// machine is running.
+// `adb_code` is an ADB raw keycode (0x00-0x7F) -- the model's universal
+// key identity, see machine_profile.h.  Resolve names with
+// debug_mac_resolve_key_name before calling.
+int system_input_key(int adb_code, bool down);
+// This machine's own keyboard wire byte; -1 if the machine has no raw form.
+int system_input_key_raw(uint8_t byte);
 int system_input_mouse_move(int x, int y, const char *mode);
 int system_input_mouse_button(bool down, const char *mode);
 
@@ -176,6 +226,10 @@ rtc_t *system_rtc(void);
 // System-level framebuffer accessor: returns pointer to video RAM buffer.
 // Equivalent to system_display()->bits.
 uint8_t *system_framebuffer(void);
+// The active display after its pixels were made current: a card whose
+// frame lives elsewhere (the Voodoo2 under the WebGPU takeover) reads
+// it back first.  Use this, not system_display(), before READING bits.
+display_t *system_display_synced(void);
 
 // Forward declaration; full definition in nubus/display.h.
 struct display;
@@ -195,11 +249,6 @@ bool system_is_initialized(void);
 // Return the model_id of the current machine, or NULL if none is active
 const char *system_machine_model_id(void);
 
-// Ensure the correct machine is active for the given model_id.
-// Creates a new machine if none exists, or tears down and recreates if the
-// current machine's model_id doesn't match.  Returns 0 on success, -1 on error.
-int system_ensure_machine(const char *model_id);
-
 // Create a blank floppy image at `path` and auto-mount it. high_density
 // chooses 1.44 MB vs 800 KB. preferred is the target drive (0 or 1; pass
 // -1 to let the system pick the first free drive). Returns 0 on success
@@ -210,13 +259,13 @@ int system_create_floppy(const char *path, bool high_density, int preferred);
 // `cdrom_attach` and the legacy `cdrom attach` command alike — the
 // underlying primitive opens the image, registers it as a SCSI device,
 // and emits the legacy "Attaching CD-ROM" stdout message.
-void add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id);
+bool add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id);
 // The same, on an explicitly named SCSI bus.  A machine with more than one
 // visible bus — the Apple Network Servers' two fast/wide 53C825A channels —
 // needs `machine.scsi2.attach_cdrom` to land on the second one; NULL means
 // the machine's primary bus and is what every Macintosh path passes.
-void add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id);
-void add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id);
+bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id);
+bool add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id);
 
 // Probe a floppy image at `path`. Persists volatile (/tmp/, /fd/) paths
 // to OPFS first, then opens read-only and prints the detected density.
@@ -229,64 +278,68 @@ int system_probe_floppy(const char *path);
 bool system_fd_present(int drive);
 
 // Typed object-model entry points for disk operations. The typed
-// methods (floppy.drives[N].insert, scsi.attach_hd, storage.hd_create)
+// methods (floppy.drives[N].insert, scsi.attach_hd, files.hd_create)
 // call these directly. Each returns 0 on success, negative on error.
 int system_fd_insert(const char *path, int drive, bool writable);
 int system_hd_attach(const char *path, int scsi_id);
 int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id);
 int system_hd_create(const char *path, const char *size_str);
 
-// Pending RAM override for next system_create() call (KB, 0 = use default)
-void system_set_pending_ram_kb(uint32_t kb);
-uint32_t system_get_pending_ram_kb(void);
+// Platform hook: a new machine has become the active one (boot or restore).
+// The host re-bases its samples of the machine and announces what it shows
+// of it; a weak no-op where the host observes nothing.
+void platform_machine_attached(void);
 
 // Reset Mac hardware to initial state
 extern void mac_reset(config_t *restrict sim);
 
-// Background auto-checkpoint state. WASM platform overrides the weak
-// defaults in em_main.c to read/write the live flag; the headless
-// build has no auto-checkpoint loop and the defaults stub out.
+// Background auto-checkpoint state.  The wasm platform overrides the weak
+// defaults to read/write its live flag; a platform with no auto-checkpoint
+// loop (headless) reads false and refuses the set (-2, "not supported").
 bool gs_checkpoint_auto_get(void);
-void gs_checkpoint_auto_set(bool enabled);
+int gs_checkpoint_auto_set(bool enabled);
 
-// Platform-specific entry points used by typed root methods.  Each has
-// a weak default in system.c that stubs to the headless behaviour;
-// em_main.c overrides them on the WASM platform with the real
-// browser-driven implementations.
+// Platform-specific entry points used by typed root methods: a weak default
+// in system.c answers -2 ("not supported on this platform"), and the
+// platform that has the thing overrides it.  0 on success.
 //
-//   gs_quit()                — request emulator shutdown.  Headless
-//                              sets the quit flag; WASM no-ops.
-//   gs_download(path)        — trigger a browser download of a file.
-//                              Headless prints a "not supported"
-//                              message; WASM streams via blob+anchor.
-//   gs_background_checkpoint(reason)
-//                            — capture a quick checkpoint.  Headless
-//                              prints "not supported"; WASM saves via
-//                              save_quick_checkpoint.
-//   gs_checkpoint_clear()    — delete all checkpoint files for the
-//                              active machine.  Headless prints
-//                              "not supported"; WASM nukes the
-//                              per-machine checkpoint dir contents.
-//   gs_register_machine(id, created)
-//                            — register the active machine identity
-//                              for checkpoint scoping.  Headless
-//                              no-ops; WASM updates the OPFS layout.
-// Returns 0 on success, non-zero on failure.
-void gs_quit(void);
+//   gs_quit()                — request emulator shutdown.  Headless sets
+//                              the quit flag; the browser owns the page.
+//   gs_download(path)        — hand a file to the browser as a download
+//                              (wasm, via blob+anchor); headless has none.
+int gs_quit(void);
 int gs_download(const char *path);
+// The quick save's publish ended (emulator thread, from checkpoint.c): the
+// checkpoint_saved event goes out here.
+void system_quick_checkpoint_written(bool ok, double ms, const char *error);
+
+// Checkpoints of the running machine, and finding media -- core, the same on
+// every platform (system.c).  0 on success, non-zero on failure.
+//
+//   system_quick_checkpoint(reason, verbose, rate_limit)
+//                            — save state.checkpoint in the machine's
+//                              directory (tmp + rename), at most once per
+//                              750 ms when rate-limited.  GS_SUCCESS/GS_ERROR.
+//   gs_background_checkpoint(reason)
+//                            — the same, unthrottled and verbose.
+//   gs_checkpoint_clear()    — delete the machine's checkpoint files.
+//   gs_register_machine(id, created)
+//                            — set the machine identity that scopes its
+//                              checkpoint directory.
+//   gs_find_media(dir, [dest])
+//                            — find the first floppy image in `dir`,
+//                              optionally copy it to `dest`; prints the
+//                              path on success.
+int system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit);
 int gs_background_checkpoint(const char *reason);
 int gs_checkpoint_clear(void);
 int gs_register_machine(const char *machine_id, const char *created);
-// gs_find_media(dir, [dest]) — find the first floppy image in `dir`,
-// optionally copy to `dest`.  WASM provides the impl; headless gets
-// the weak stub.  Prints the discovered path on success.
 int gs_find_media(const char *dir_path, const char *dest);
 
-// Host video-input seam (the AV video digitizer's webcam source —
-// proposal-av-video-in.md §2.2).  The weak defaults model "no camera":
-// headless machines use the deterministic machine.videoin sources
-// instead; the WASM platform overrides these with the getUserMedia
-// frame path (em_camera.c).
+// Host video-input seam (the AV video digitizer's webcam source).  The weak
+// defaults model "no camera": headless machines use the deterministic
+// machine.videoin sources instead; the WASM platform overrides these with the
+// getUserMedia frame path (em_camera.c).
 //
 //   gs_video_in_connected()  — true when a host camera is attached and
 //                              delivering frames (drives the DMSD's
@@ -297,15 +350,27 @@ int gs_find_media(const char *dir_path, const char *dest);
 //   gs_video_in_state(active)— capture-engine on/off notification (the
 //                              guest gating the VDC clock); the browser
 //                              attaches/stops the camera track on it.
+// Host GPU-transport seam for the Voodoo2's WebGPU takeover
+// (voodoo2_gpu.c): the browser build attaches a GPU worker to a shared
+// region in the wasm heap and wakes it through Atomics; the defaults
+// in system.c model "no GPU" so native builds fall back to the thread
+// backend.  `ctrl` is the region's control block
+// (voodoo2_gpu_protocol.h); `wait` blocks the CALLING pthread until
+// *addr != expected or the timeout (returns 0 when woken).
+bool gs_v2gpu_available(void);
+bool gs_v2gpu_attach(void *ctrl, uint32_t bytes);
+void gs_v2gpu_detach(void *ctrl);
+int gs_v2gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms);
+void gs_v2gpu_notify(volatile uint32_t *addr);
+
 bool gs_video_in_connected(void);
 int gs_video_in_frame(uint8_t *rgba);
 void gs_video_in_state(bool active);
 
-// Host audio-input seam (the AV Singer codec's microphone source —
-// proposal-dsp3210-plaintalk.md §2.5, mirroring the video-in seam).  The
-// weak defaults model "no microphone": headless machines use the
-// deterministic machine.audioin sources instead; a browser platform
-// override (getUserMedia audio) can trail in a follow-up.
+// Host audio-input seam (the AV Singer codec's microphone source,
+// mirroring the video-in seam).  The weak defaults model "no microphone":
+// headless machines use the deterministic machine.audioin sources instead; a
+// browser platform override (getUserMedia audio) can trail in a follow-up.
 //
 //   gs_audio_in_connected()      — true when a host microphone is
 //                                  attached and delivering samples

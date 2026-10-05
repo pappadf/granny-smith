@@ -1,7 +1,10 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 #ifndef TEST_ASSERT_H
 #define TEST_ASSERT_H
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define ASSERT_EQ_INT(a, b)                                                                                            \
     do {                                                                                                               \
@@ -20,8 +23,14 @@
     } while (0)
 
 #define TEST(name) static void name(void)
+// TEST_ONLY=<test name> runs that test alone -- how a fixture is checked
+// against unfixed code on its own, when an earlier test's failure (a crash,
+// say) would otherwise end the run before it.
 #define RUN(testfn)                                                                                                    \
     do {                                                                                                               \
+        const char *test_only_ = getenv("TEST_ONLY");                                                                  \
+        if (test_only_ && strcmp(test_only_, #testfn) != 0)                                                            \
+            break;                                                                                                     \
         fprintf(stderr, "[RUN ] %s\n", #testfn);                                                                       \
         testfn();                                                                                                      \
         fprintf(stderr, "[PASS] %s\n", #testfn);                                                                       \

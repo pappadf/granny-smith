@@ -2,9 +2,9 @@
 // Copyright (c) pappadf
 
 // script.h
-// Shell v2 statement parser + interpreter (proposal-shell-control-flow-
-// and-functions.md §3). A script is parsed into a statement tree
-// (blocks resolved by the line-position rule), then interpreted.
+// Shell statement parser + interpreter (see docs/internals/core/shell/shell.md).
+// A script is parsed into a statement tree (blocks resolved by the
+// line-position rule), then interpreted.
 // Expressions are stored as text and evaluated where they appear, at
 // statement-execution time — which is what makes `while` conditions
 // re-test per iteration.
@@ -34,7 +34,7 @@ void script_free(script_t *s);
 
 // Execute a parsed script at top level. `interactive` selects REPL
 // semantics (non-V_NONE statement results print); scripts print
-// nothing implicitly (§5). Returns 0 on success, -1 if the script
+// nothing implicitly. Returns 0 on success, -1 if the script
 // aborted on an error.
 int script_exec(script_t *s, bool interactive);
 
@@ -47,6 +47,10 @@ int script_run_line(const char *line);
 // shell.script_run, the headless script= runner). Returns 0 / -1.
 int script_run_source(const char *src);
 
+// Parse and run `src` with or without REPL result printing.  What a job
+// runs (job/job.h).
+int script_run_text(const char *src, bool interactive);
+
 // Parse + execute a script file with the include stack maintained: an
 // `include "path"` inside the file resolves relative to the file's own
 // directory, and diagnostics carry the file name. Returns 0 / -1.
@@ -57,15 +61,23 @@ int script_run_file(const char *path);
 // more lines before submitting.
 bool script_needs_continuation(const char *buf);
 
-// Platform pump hook: called after every executed statement so the
-// platform can drive the scheduler to completion (`scheduler.run N`
-// merely schedules a stop event; the platform loop executes it).
-// Return true to abort the script cleanly (quit requested).
-typedef bool (*script_pump_fn)(void);
-void script_set_pump_hook(script_pump_fn fn);
+// Every statement-error report goes through here.  `text` is the report
+// as printed (newline-terminated, possibly several lines).  Inside a job it
+// becomes an `error` annotation at this point of the job's record stream:
+// file (the include path of the reporting site, or ""), line (0 when
+// none), message and the text's lines.  It goes to stderr only when no
+// record can carry it whole (outside a job, past the output cut, or as a
+// `truncated` record's full text).
+void script_report_error(const char *file, int line, const char *msg, const char *text);
+
+// The same with the message built from `fmt` and the text the usual
+// `FILE: line N: MESSAGE` (the file part only when `file` is non-empty,
+// the line part only when `line` > 0).
+void script_report_errorf(const char *file, int line, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 
 // Ctrl-C for loops: the interpreter checks this once per iteration and
-// unwinds with an error (§3.8). Wired to `shell.interrupt`.
+// unwinds with an error. Wired to `shell.interrupt`.  It cancels the script
+// in flight only: script_exec clears it when the top-level script ends.
 void script_interrupt(void);
 
 // Fill an expr_ctx bound to the object root and the shell binding

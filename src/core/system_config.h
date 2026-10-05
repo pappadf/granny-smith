@@ -20,6 +20,7 @@
 #include "floppy.h"
 #include "image.h"
 #include "keyboard.h"
+#include "machine_build_opts.h"
 #include "machine_profile.h"
 #include "memory.h"
 #include "mouse.h"
@@ -39,11 +40,26 @@ struct ppc;
 
 struct config {
     const hw_profile_t *machine; // active machine profile (set by system_create)
-    uint32_t ram_size; // actual RAM size in bytes (from setup --ram or machine default)
+    // Construction's arguments: what the caller asked for, filled by
+    // system_create and read by whoever needs it during construction, then
+    // cleared once the machine is built -- nothing reads them afterwards
+    // (machine_build_opts.h).
+    machine_build_opts_t build_opts;
+    // The storage devices the machine was built with -- its document's, or
+    // its model's default configuration's: the positions an image can be
+    // attached to (machine.storage).  Kept for the machine's life and in its
+    // checkpoint.
+    int n_storage;
+    machine_storage_dev_t storage[MACHINE_STORAGE_MAX];
+    uint32_t ram_size; // actual RAM size in bytes
+    // The checkpoint parts, in construction order (machine_parts.h).
+    struct machine_part_entry *parts;
+    int n_parts, cap_parts;
+    char part_open[32]; // the part being built (machine_part_begin), "" between parts
     void *machine_context; // machine-specific state (e.g., plus_state_t)
 
-    // Core CPU and memory subsystems.  The main CPU is a tagged handle
-    // (PPC proposal §3.9a): cpu_arch discriminates, and exactly one of
+    // Core CPU and memory subsystems.  The main CPU is a tagged handle:
+    // cpu_arch discriminates, and exactly one of
     // cpu / ppc is non-NULL on a built machine.
     cpu_arch_t cpu_arch; // set by system_create from machine->cpu_model
     cpu_t *cpu; // 68K main CPU (NULL on PPC machines)
@@ -57,6 +73,12 @@ struct config {
 
     // Other peripherals
     scc_t *scc;
+    // The machine's connection to the AppleTalk network (appletalk.h),
+    // plugged into the SCC's LocalTalk channel; NULL on a machine without one.
+    struct atalk_conn *atalk;
+    // The machine's ImageWriter (iw_printer.h), on a serial port or LocalTalk;
+    // NULL on a machine without an SCC.
+    struct iw_printer *imagewriter;
     scsi_t *scsi;
     rtc_t *rtc;
     floppy_t *floppy; // floppy controller: IWM (Plus) or SWIM (SE/30)
@@ -64,6 +86,9 @@ struct config {
     mouse_t *mouse;
     keyboard_t *keyboard;
     adb_t *adb; // ADB controller (SE/30, IIcx); NULL for Plus
+    // The machine.adb.keyboard object and its paced typing (host_input.h).
+    // Per machine on every family, including the ones with no adb_t.
+    struct host_input *host_input;
 
     debug_t *debugger;
 
@@ -83,5 +108,9 @@ struct config {
     // sibling card.h would shadow the NuBus one included above).
     struct pci_root *pci;
 };
+
+// The machine's image list as a construction argument (image_list_t): the
+// controllers a restore builds resolve their saved media in it.
+#define CONFIG_IMAGES(cfg) (&(const image_list_t){(cfg)->images, (cfg)->n_images})
 
 #endif // SYSTEM_CONFIG_H

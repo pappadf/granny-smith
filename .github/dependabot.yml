@@ -15,6 +15,35 @@ updates:
     commit-message:
       prefix: "deps"
       include: "scope"
+  # The shipped frontend (Svelte + Vite + TypeScript); its dist/ is what the
+  # publish workflows deploy.  Dependabot PRs get no secrets, so they run
+  # without test data: svelte-check, lint, vitest, the build and prod-smoke
+  # still gate them, the data-backed e2e does not.  Minor/patch bumps are
+  # grouped so they arrive as one PR; major bumps stay ungrouped so one that
+  # needs code changes can't hold back the rest.
+  - package-ecosystem: "npm"
+    directory: "/app/web2"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "npm"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    groups:
+      web2-dev:
+        dependency-type: "development"
+        update-types: ["minor", "patch"]
+      web2-prod:
+        dependency-type: "production"
+        update-types: ["minor", "patch"]
+    ignore:
+      # svelte-check's peer range stops at TypeScript 6; drop this once a
+      # svelte-check release accepts TypeScript 7.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
   # Enable version updates for GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"

@@ -11,8 +11,7 @@
 //   - Browser too old for WebGL 2 (Safari < 15, etc.)
 
 export type WebGLCheckResult =
-  | { ok: true }
-  | { ok: false; reason: 'no-webgl2' | 'no-webgl' | 'no-canvas'; detail?: string };
+  { ok: true } | { ok: false; reason: 'no-webgl2' | 'no-webgl' | 'no-canvas'; detail?: string };
 
 export function checkWebGL2Available(): WebGLCheckResult {
   let canvas: HTMLCanvasElement;

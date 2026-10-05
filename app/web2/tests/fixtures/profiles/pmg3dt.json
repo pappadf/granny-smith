@@ -1,0 +1,569 @@
+{
+  "id": "pmg3dt",
+  "name": "Power Macintosh G3 Desktop",
+  "freq": 267280000,
+  "capabilities": {
+    "cpu": {
+      "model": 750,
+      "address_bits": 32,
+      "fpu": true
+    },
+    "mmu": {
+      "present": true,
+      "kind": "ppc_604"
+    },
+    "nubus": false,
+    "pci": true,
+    "video_in": false,
+    "audio_in": false,
+    "aux_cpus": []
+  },
+  "options": [
+    {
+      "id": "memory",
+      "label": "Memory",
+      "kind": "choice",
+      "values": [
+        {
+          "id": "32768",
+          "label": "32 MB"
+        },
+        {
+          "id": "65536",
+          "label": "64 MB"
+        },
+        {
+          "id": "98304",
+          "label": "96 MB"
+        },
+        {
+          "id": "131072",
+          "label": "128 MB"
+        },
+        {
+          "id": "163840",
+          "label": "160 MB"
+        },
+        {
+          "id": "196608",
+          "label": "192 MB"
+        },
+        {
+          "id": "229376",
+          "label": "224 MB"
+        },
+        {
+          "id": "262144",
+          "label": "256 MB"
+        },
+        {
+          "id": "294912",
+          "label": "288 MB"
+        },
+        {
+          "id": "327680",
+          "label": "320 MB"
+        },
+        {
+          "id": "360448",
+          "label": "352 MB"
+        },
+        {
+          "id": "393216",
+          "label": "384 MB"
+        },
+        {
+          "id": "425984",
+          "label": "416 MB"
+        },
+        {
+          "id": "458752",
+          "label": "448 MB"
+        },
+        {
+          "id": "524288",
+          "label": "512 MB"
+        },
+        {
+          "id": "557056",
+          "label": "544 MB"
+        },
+        {
+          "id": "589824",
+          "label": "576 MB"
+        },
+        {
+          "id": "655360",
+          "label": "640 MB"
+        },
+        {
+          "id": "786432",
+          "label": "768 MB"
+        }
+      ],
+      "default": "65536"
+    },
+    {
+      "id": "appletalk",
+      "label": "AppleTalk",
+      "kind": "choice",
+      "values": [
+        {
+          "id": "active",
+          "label": "Active"
+        },
+        {
+          "id": "inactive",
+          "label": "Inactive"
+        }
+      ],
+      "default": "active"
+    }
+  ],
+  "floppies": [
+    {
+      "id": "fd0",
+      "label": "Internal floppy drive",
+      "types": [
+        {
+          "id": "hd",
+          "label": "SuperDrive (1.4 MB)"
+        }
+      ],
+      "default": "hd"
+    }
+  ],
+  "storage": [
+    {
+      "id": "scsi",
+      "label": "SCSI",
+      "detail": "MESH",
+      "kind": "scsi",
+      "width": "narrow",
+      "units": [
+        {
+          "unit": 0,
+          "label": "ID 0 \u00b7 External",
+          "short": "ID 0"
+        },
+        {
+          "unit": 1,
+          "label": "ID 1 \u00b7 External",
+          "short": "ID 1"
+        },
+        {
+          "unit": 2,
+          "label": "ID 2 \u00b7 External",
+          "short": "ID 2"
+        },
+        {
+          "unit": 3,
+          "label": "ID 3 \u00b7 External",
+          "short": "ID 3"
+        },
+        {
+          "unit": 4,
+          "label": "ID 4 \u00b7 External",
+          "short": "ID 4"
+        },
+        {
+          "unit": 5,
+          "label": "ID 5 \u00b7 External",
+          "short": "ID 5"
+        },
+        {
+          "unit": 6,
+          "label": "ID 6 \u00b7 External",
+          "short": "ID 6"
+        }
+      ],
+      "reserved": [7],
+      "shares_units_with": [],
+      "external_connector": true,
+      "bays": [],
+      "accepts": [
+        {
+          "id": "hd",
+          "label": "Hard disk"
+        },
+        {
+          "id": "cd",
+          "label": "CD-ROM drive"
+        }
+      ],
+      "startup": true,
+      "blank_disks": [
+        {
+          "label": "20 MB (HD20SC)",
+          "method": "files.hd_create",
+          "arg": "21411840",
+          "name": "blank_20MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "38 MB (HD40SC)",
+          "method": "files.hd_create",
+          "arg": "40061952",
+          "name": "blank_38MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "76 MB (HD80SC)",
+          "method": "files.hd_create",
+          "arg": "80061440",
+          "name": "blank_76MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "169 MB (HD160SC)",
+          "method": "files.hd_create",
+          "arg": "177269760",
+          "name": "blank_169MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "234 MB (HD230SC)",
+          "method": "files.hd_create",
+          "arg": "245427200",
+          "name": "blank_234MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "516 MB (HD500SC)",
+          "method": "files.hd_create",
+          "arg": "541499392",
+          "name": "blank_516MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "1034 MB (HD1000SC)",
+          "method": "files.hd_create",
+          "arg": "1084489728",
+          "name": "blank_1034MB",
+          "ext": ".dmg"
+        }
+      ]
+    },
+    {
+      "id": "ata0",
+      "label": "Primary ATA bus",
+      "kind": "ata",
+      "units": [
+        {
+          "unit": 0,
+          "label": "Master",
+          "short": "Master"
+        },
+        {
+          "unit": 1,
+          "label": "Slave",
+          "short": "Slave"
+        }
+      ],
+      "reserved": [],
+      "shares_units_with": [],
+      "external_connector": false,
+      "bays": [],
+      "accepts": [
+        {
+          "id": "hd",
+          "label": "Hard disk"
+        }
+      ],
+      "startup": false,
+      "blank_disks": [
+        {
+          "label": "20 MB (HD20SC)",
+          "method": "files.hd_create",
+          "arg": "21411840",
+          "name": "blank_20MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "38 MB (HD40SC)",
+          "method": "files.hd_create",
+          "arg": "40061952",
+          "name": "blank_38MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "76 MB (HD80SC)",
+          "method": "files.hd_create",
+          "arg": "80061440",
+          "name": "blank_76MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "169 MB (HD160SC)",
+          "method": "files.hd_create",
+          "arg": "177269760",
+          "name": "blank_169MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "234 MB (HD230SC)",
+          "method": "files.hd_create",
+          "arg": "245427200",
+          "name": "blank_234MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "516 MB (HD500SC)",
+          "method": "files.hd_create",
+          "arg": "541499392",
+          "name": "blank_516MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "1034 MB (HD1000SC)",
+          "method": "files.hd_create",
+          "arg": "1084489728",
+          "name": "blank_1034MB",
+          "ext": ".dmg"
+        }
+      ]
+    },
+    {
+      "id": "ata1",
+      "label": "Secondary ATA bus",
+      "kind": "ata",
+      "units": [
+        {
+          "unit": 0,
+          "label": "Master",
+          "short": "Master"
+        },
+        {
+          "unit": 1,
+          "label": "Slave",
+          "short": "Slave"
+        }
+      ],
+      "reserved": [],
+      "shares_units_with": [],
+      "external_connector": false,
+      "bays": [],
+      "accepts": [
+        {
+          "id": "hd",
+          "label": "Hard disk"
+        }
+      ],
+      "startup": false,
+      "blank_disks": [
+        {
+          "label": "20 MB (HD20SC)",
+          "method": "files.hd_create",
+          "arg": "21411840",
+          "name": "blank_20MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "38 MB (HD40SC)",
+          "method": "files.hd_create",
+          "arg": "40061952",
+          "name": "blank_38MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "76 MB (HD80SC)",
+          "method": "files.hd_create",
+          "arg": "80061440",
+          "name": "blank_76MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "169 MB (HD160SC)",
+          "method": "files.hd_create",
+          "arg": "177269760",
+          "name": "blank_169MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "234 MB (HD230SC)",
+          "method": "files.hd_create",
+          "arg": "245427200",
+          "name": "blank_234MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "516 MB (HD500SC)",
+          "method": "files.hd_create",
+          "arg": "541499392",
+          "name": "blank_516MB",
+          "ext": ".dmg"
+        },
+        {
+          "label": "1034 MB (HD1000SC)",
+          "method": "files.hd_create",
+          "arg": "1084489728",
+          "name": "blank_1034MB",
+          "ext": ".dmg"
+        }
+      ]
+    }
+  ],
+  "slots": [
+    {
+      "id": "pci_1",
+      "label": "PCI slot A1",
+      "detail": "A1",
+      "bus": "pci",
+      "kind": "socket",
+      "excludes": [],
+      "fill_order": 1
+    },
+    {
+      "id": "pci_2",
+      "label": "PCI slot B1",
+      "detail": "B1",
+      "bus": "pci",
+      "kind": "socket",
+      "excludes": [],
+      "fill_order": 2
+    },
+    {
+      "id": "pci_3",
+      "label": "PCI slot C1",
+      "detail": "C1",
+      "bus": "pci",
+      "kind": "socket",
+      "excludes": [],
+      "fill_order": 3
+    }
+  ],
+  "cards": [
+    {
+      "id": "mach64_gx",
+      "label": "Apple Accelerated PCI Graphics Card",
+      "class": "display",
+      "fits": ["pci_1", "pci_2", "pci_3"],
+      "rom": {
+        "kind": "prom",
+        "substitute": false
+      },
+      "status": "unavailable",
+      "reason": "Needs the card's expansion ROM (.prom)",
+      "monitors": ["13in_rgb", "multiscan_15", "multiscan_17", "multiscan_20", "21in_rgb"],
+      "modes": {},
+      "options": [
+        {
+          "id": "vram",
+          "label": "Video memory",
+          "kind": "choice",
+          "values": [
+            {
+              "id": "2m",
+              "label": "2 MB"
+            },
+            {
+              "id": "4m",
+              "label": "4 MB (expansion module)"
+            }
+          ],
+          "default": "2m"
+        }
+      ]
+    },
+    {
+      "id": "voodoo2",
+      "label": "3dfx Voodoo2",
+      "class": "3d",
+      "fits": ["pci_1", "pci_2", "pci_3"],
+      "rom": null,
+      "status": "ok",
+      "monitors": [],
+      "modes": {},
+      "options": [
+        {
+          "id": "raster",
+          "label": "Rendering",
+          "kind": "choice",
+          "values": [
+            {
+              "id": "thread",
+              "label": "Software"
+            }
+          ],
+          "default": "thread"
+        }
+      ]
+    }
+  ],
+  "displays": {
+    "builtin": {
+      "id": "builtin",
+      "label": "Built-in video",
+      "detail": "ATI Rage Pro",
+      "monitors": ["13in_rgb"],
+      "default_monitor": "13in_rgb",
+      "modes": {},
+      "options": []
+    },
+    "max_connected": 1
+  },
+  "monitors": [
+    {
+      "id": "13in_rgb",
+      "label": "13\u2033 AppleColor High-Resolution RGB",
+      "width": 640,
+      "height": 480
+    },
+    {
+      "id": "21in_rgb",
+      "label": "21\u2033 Macintosh Color Display",
+      "width": 1152,
+      "height": 870
+    },
+    {
+      "id": "multiscan_15",
+      "label": "15\u2033 Apple Multiple Scan Display",
+      "width": 832,
+      "height": 624
+    },
+    {
+      "id": "multiscan_17",
+      "label": "17\u2033 Apple Multiple Scan Display",
+      "width": 1024,
+      "height": 768
+    },
+    {
+      "id": "multiscan_20",
+      "label": "20\u2033 Apple Multiple Scan Display",
+      "width": 1152,
+      "height": 870
+    }
+  ],
+  "defaults": {
+    "model": "pmg3dt",
+    "options": {
+      "memory": "65536",
+      "appletalk": "active"
+    },
+    "floppies": {
+      "fd0": "hd"
+    },
+    "storage": [
+      {
+        "bus": "scsi",
+        "unit": 0,
+        "type": "hd"
+      },
+      {
+        "bus": "scsi",
+        "unit": 3,
+        "type": "cd"
+      }
+    ],
+    "startup": {
+      "bus": "scsi",
+      "unit": 0
+    },
+    "cards": [],
+    "displays": {
+      "builtin": {
+        "monitor": "13in_rgb"
+      }
+    }
+  }
+}

@@ -13,24 +13,40 @@ case there is nothing to do.
 
 ## Repository Directory Overview
 
-- `src/core/`: Platform-agnostic emulator (cpu/, memory/, peripherals/, scheduler/, debug/, storage/, network/, shell/)
-- `src/peeler/`: In-tree Mac-archive library (StuffIt/BinHex/Compact Pro/MacBinary); wrapped as the `archive` object. See `docs/guide/peeler.md`.
+- `src/core/`: Platform-agnostic emulator (cpu/, memory/, peripherals/, scheduler/, debug/, storage/, network/, shell/, object/, vfs/, plus the system and machine-configuration files at its root)
+- `src/peeler/`: In-tree archive library (StuffIt/Compact Pro/Zip archives; BinHex/MacBinary/gzip wrappers) over byte sources; its archives are VFS namespaces and it backs the `files.archive` object. See `docs/guide/peeler.md`.
 - `src/platform/`: Platform-specific code (wasm/, headless/)
   - `wasm/`: WebAssembly platform for browser (em_main.c, em_audio.c, em_video.c) — compiled with Emscripten
   - `headless/`: Native command-line platform for testing (headless_main.c)
 - `app/web2/`: Browser frontend (Svelte 5 + Vite + TypeScript) — the only UI
-- `docs/`: Design, architecture, and developer docs, mirroring the code tree:
-  `docs/guide/` (dev/process), `docs/core/<subsystem>/` (mirrors `src/core/`),
-  `docs/machines/<family>/` (mirrors `src/machines/`), `docs/notes/` (dated
-  investigation logs, not reference)
+- `docs/`: Four classes of content, split by the classification rule in
+  `docs/README.md` (the map of the whole tree — read it first):
+  `docs/guide/` (dev/process), `docs/internals/core/<area>/` for `src/core/`,
+  `docs/internals/machines/<family>/` for `src/machines/` — all granny-smith
+  internals; `docs/user/` (end-user docs, no source checkout needed);
+  `docs/reference/` (granny-smith-agnostic hardware/protocol/format
+  reference: `hardware/`, `machines/<family>/`, `protocols/`, `formats/`,
+  planned `os/`), with one family/machine/device page set per machine
+  family — pages not yet written are placeholder stubs, marked
+  `<!-- gs-doc-status: stub -->`; `docs/articles/` (curated long-form);
+  `docs/notes/` (investigation logs, not reference). `docs/internals/`
+  mirrors `src/` (a `src/` file needs no doc, but a doc that exists lives
+  at the mirrored path — exceptions are registered in
+  `docs/internals/README.md`, enforced by `scripts/check-doc-mirror.py`);
+  a family doc may cover
+  several sources (`tnt/tnt.md` is the whole TNT family). `src/machines/runtime/`
+  is shared infrastructure and has no doc directory. A PR adding a machine,
+  family or device to `src/` also adds its `reference/` page, at least as a
+  stub, in the same PR; content rules R1–R6 and the doc templates live in
+  `docs/README.md`, linted by `scripts/check-doc-rules.py`.
 - `build/`: Generated artifacts — do not edit
 - `scripts/`: Tools and helpers
 - `tests/unit`: Unit tests (native, suites in `suites/`, infrastructure in `support/`)
-- `tests/e2e`: Playwright end-to-end tests (specs in `specs/`, helpers in `helpers/`)
+- `tests/e2e`: Playwright end-to-end tests (specs in `web2-specs/`, helpers in `helpers/`)
 - `third-party/`: External libraries (git submodules, e.g. single-step-tests,
   powerpc-test, m68k-test)
 
-Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/core/*/` and documentation under `docs/core/<subsystem>/`; machine/family docs live under `docs/machines/<family>/`.
+Emulator modules (e.g., scsi, cpu) have `.c`/`.h` files in `src/core/*/` and documentation under `docs/internals/core/<subsystem>/` (the model) with their hardware reference pages under `docs/reference/hardware/`; machine/family docs live under `docs/internals/machines/<family>/` (the model) and `docs/reference/machines/<family>/` (the hardware).
 
   - The `peeler` archive library now lives in-tree at `src/peeler/` (formerly a
     `third-party/peeler` submodule), so no submodule init is needed for it.
@@ -41,14 +57,14 @@ Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/c
 ## Tools and Environments
 
 **Devcontainer (recommended):**
-- Prebuilt image: `ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk4.0.10-node22`
-- All prerequisites preinstalled: Emscripten 4.0.10, Node.js 22.x, Playwright, build tools
+- Prebuilt image: `ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk6.0.7-node22`
+- All prerequisites preinstalled: Emscripten 6.0.7, Node.js 22.x, Playwright, build tools
 
 **Manual setup (outside devcontainer):**
-1. Install Emscripten 4.0.10:
+1. Install Emscripten 6.0.7:
    ```bash
    git clone https://github.com/emscripten-core/emsdk
-   cd emsdk && ./emsdk install 4.0.10 && ./emsdk activate 4.0.10
+   cd emsdk && ./emsdk install 6.0.7 && ./emsdk activate 6.0.7
    source ./emsdk_env.sh
    ```
 2. Install Node.js 18+ and npm
@@ -58,7 +74,7 @@ Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/c
    npx playwright install --with-deps chromium
    ```
 
-**Required tools:** `emcc` (4.0.10), `make`, `node` (18+), `python3`, `git`,
+**Required tools:** `emcc` (6.0.7), `make`, `node` (18+), `python3`, `git`,
 `binutils-m68k-linux-gnu` (2.42+; assembles the generic NuBus declaration-ROM
 68K fragments — `src/core/peripherals/nubus/vrom68k/`. Any m68k-targeted
 binutils works; override `M68K_AS`/`M68K_OBJCOPY` if yours differ. Shipped in
@@ -74,11 +90,11 @@ the devcontainer image.)
 - Output: `build/` directory with `index.html`, `main.mjs`, etc.
 
 **Run tests:**
-- Unit tests (CPU): `make -C tests/unit run` (~1–5 min) — uses `third-party/single-step-tests`
-  (68000, MAME-derived), `third-party/m68k-test` (68000/68030/68040, sail model) and
-  `third-party/powerpc-test` (601); all are submodules, so init them first.
+- Unit tests: `make -j$(nproc) -C tests/unit run` (~1.5 min at -j8; ~6 min serial) — uses the
+  `third-party/single-step-tests` (68000, MAME-derived), `third-party/m68k-test` (68000/68030/68040,
+  sail model) and `third-party/powerpc-test` (601) corpora; all are submodules, so init them first.
   `CPU_TEST_PREDECODE=1`/`0` routes the CPU suites through the predecoded or the switch executor
-- Integration tests: `make integration-test` (~10–20 min serial; add `-j$(nproc)` to parallelize, or `TIER=unit` / `TIER=matrix` for a subset — see docs/guide/TESTING.md) — builds headless emulator, runs tests in `tests/integration/`
+- Integration tests: `make integration-test` (all three tiers: the better part of an hour even with `-j$(nproc)`; `TIER=unit` takes about a minute, `TIER=matrix` about fifteen at -j — see docs/guide/TESTING.md) — builds headless emulator, runs tests in `tests/integration/`
 - Single integration test: `make integration-test-<name>` (e.g., `make integration-test-se30-format-hd`)
 - List available integration tests: `make -C tests/integration list`
 - E2E/UI tests (Playwright, web2):
@@ -183,30 +199,39 @@ to not break this rule in the first place.
 - `tools/disasm/disasm` — standalone 68K disassembler for ROM images and binaries (see `.agents/skills/disasm-tool/`)
 - `build/headless/gs-headless` — headless emulator with TCP shell for interactive debugging (see `.agents/skills/headless-debug/`)
 
-- `printf()` and `LOG(...)` output goes to **xterm.js** (browser terminal panel), not the JS console
+- Core code prints through the output sink (`gs_outf` / `gs_outs` / `gs_out`, `src/core/gs_out.h`), never `printf`: the text reaches the client whose request it is (a terminal line's output records, a page leaf's answer). `LOG(...)` lines and text printed outside any request land in the **Terminal console** (browser terminal panel), not the JS console
 - In E2E tests, artifacts (traces, screenshots) land in `tests/e2e/test-results/<test-name>-<project>/`
 - Test specs live in `tests/e2e/web2-specs/`, shared helper in `tests/e2e/helpers/web2-fs.ts`
 
 **Log categories and levels:**
 - Each module has its own log category (e.g., `cpu`, `floppy`, `scsi`, `logpoint`)
 - Categories have a level threshold (0 = off); a `LOG(level, ...)` call only emits if `level <= category_level`
-- Enable via shell: `debug.log <category> <level>` (e.g., `debug.log cpu 10`)
-- Redirect to file: `debug.log cpu "level=10 file=tmp/cpu.log"`
+- Enable via shell: `log.set <category> <level>` (e.g., `log.set cpu 10`)
+- Redirect to file: `log.set cpu level=10 file=tmp/cpu.log`
 
 **Logpoints (`src/core/debug/debug.c`):**
 - PC logpoints emit a log message when the CPU executes a specific address or range, without stopping
-- Set via shell (named arguments, shell v2 §6.2): `debug.logpoints.add addr=<addr> [message="…"] [category=<name>] [level=<n>]`
-- The default category is `logpoint` for PC logpoints; enable it with `debug.log logpoint 10`
+- Set via shell (named arguments): `debug.logpoints.add addr=<addr> [message="…"] [category=<name>] [level=<n>]`
+- The default category is `logpoint` for PC logpoints; enable it with `log.set logpoint 10`
 - Memory logpoints fire on **read** or **write** accesses without halting:
   - `debug.logpoints.add addr=<addr> mode=write width=l message="…"` — log every write (`mode=read` / `mode=rw` likewise; `width` is `b`/`w`/`l`)
-  - Default category is `memory` (enable with `debug.log memory 1`)
-  - `message=` is a fire-time template (shell v2 §6.3): `${machine.cpu.pc}` splices any expression; `$value`, `$addr`, `$size` are per-fire bindings
+  - Default category is `memory` (enable with `log.set memory 1`)
+  - `message=` is a fire-time template (see `docs/internals/core/shell/shell.md`): `${machine.cpu.pc}` splices any expression; `$value`, `$addr`, `$size` are per-fire bindings
   - Implemented without slowing the fast path: covered pages are zeroed in the
-    SoA arrays so only logged pages take the slow-path penalty (see `docs/core/memory/memory.md`)
+    SoA arrays so only logged pages take the slow-path penalty (see `docs/internals/core/memory/memory.md`)
 - Bus-error / exception trace ring is always on; dump with `debug.exceptions [filter]`,
-  stream live with `debug.log exceptions 1`
+  stream live with `log.set exceptions 1`
 
-**In Playwright E2E tests:** Use `await runCommand(page, 'debug.log <category> <level>')` or `await runCommand(page, 'debug.logpoints.add ...')` to enable logging or set logpoints programmatically.
+**Watchpoints (`debug.watchpoints`):** a memory logpoint that **stops** the machine
+after the instruction that makes the access, instead of logging:
+- `debug.watchpoints.add addr=<addr> [mode=write|read|rw] [width=b|w|l] [end=<addr>] [space=logical|physical]`
+  (mode defaults to `write`); the hit is printed with the address, value, access kind and PC
+- Entries carry `addr`, `end_addr`, `mode`, `space`, `enabled` (writable), `hit_count`, `id` and
+  `remove()`; the count is `debug.watchpoints.count`; `debug.watchpoints.clear` removes them all
+- Same page machinery as memory logpoints, and the same semantics on 68K and PowerPC; a
+  watchpoint is never listed under `debug.logpoints`
+
+**In Playwright E2E tests:** Use `await runCommand(page, 'log.set <category> <level>')` or `await runCommand(page, 'debug.logpoints.add ...')` to enable logging or set logpoints programmatically.
 
 ## Coding Guidelines
 
@@ -226,40 +251,59 @@ to not break this rule in the first place.
 Every emulator subsystem is exposed through a single tagged-union value
 type and an opaque `object_t` tree rooted at the implicit `emu` root (never
 typed). Emulated hardware nests under one `machine` node
-(proposal-system-object-model.md); the emulator's own services and the
+(see `docs/internals/core/object/object-model.md`); the emulator's own services and the
 simulated network are its siblings at the root:
 
-- **`machine`** (the emulated computer): `machine.cpu` (+ `.mmu`, `.fpu`),
-  `machine.memory`, `machine.rom`, `machine.vrom`, `machine.via1`/`via2`,
+- **`machine`** (the emulated computer): `machine.cpu` (+ `.mmu`, `.fpu`;
+  every MMU kind — 68030, 68040, PowerPC, the Lisa's segment MMU — answers
+  `mmu.translate(addr, [supervisor], [fetch])` → `{phys, valid, via, access}`,
+  `mmu.walk` (the same plus every step the MMU took), `mmu.map` (the mapped
+  runs), `mmu.descriptor` (raw table entries decoded) and
+  `mmu.peek(addr, [size], [space])` the same way —
+  `docs/internals/core/debug/debug_mmu.md`),
+  `machine.memory`, `machine.rom`, `machine.via1`/`via2`,
   `machine.scc`, `machine.rtc`, `machine.adb.keyboard` / `machine.adb.mouse`,
   `machine.floppy.drive[N].disk`, `machine.scsi.device[N].image`,
-  `machine.sound`, `machine.screen`, `machine.nubus`; the AV machines add
+  `machine.sound`, `machine.screen`, `machine.nubus` / `machine.pci` (only
+  on a machine with that bus; `slot[N]` collections); the AV machines add
   `machine.dsp` (the DSP3210 aux core), `machine.videoin` and
   `machine.audioin` (host camera/microphone source surfaces). (Lisa adds
   `machine.hd` (ProFile) and `machine.power`.)
-- **meta services** (siblings of `machine`): `scheduler`, `debug` (+ `.mac`),
-  `storage`, `vfs`, `checkpoint`, `archive`, `find`, `shell`.
+- **emulator services** (siblings of `machine`, in this fixed root order):
+  `scheduler`, `checkpoint`, `files` (host files, disk images and mounts:
+  `files.ls`/`cp`/`hd_create`/…, `files.images[N]`, `files.mounts[N]`,
+  `files.archive`), `debug` (+ `.find`, `.mac`, `breakpoints`/`logpoints`/
+  `watchpoints`), `log` (`log.set`, `log.levels`, `log.category["scsi"]`),
+  `shell`, `catalog` (what the emulator can build or fit: `models`,
+  `profile(model)`, `nubus_cards`, `pci_cards`, `vroms`, `proms`).
 - **network**: `appletalk` (+ `stats`, `nbp`, `afp` with its `volumes` /
-  `sessions` / `stats` subtrees, and `printer`).
+  `sessions` / `stats` subtrees, `printer` with its `stats`, and the
+  program-linking layers `adsp`, `ppc` and `aevt`).
 - **root verbs**: `objects`, `attributes`, `methods`, `help`, `echo`,
-  `download`, `quit`, `assert`, `time`.
+  `quit`, `time` (`assert` is a statement keyword).
 
 Hardware paths are model-independent: `machine.scsi.device[0]` means the
 same on a Plus, a IIcx, and a Lisa. The `$reg` aliases (`$pc`, `$d0`, …)
 still resolve (now to `machine.cpu.*`). On the PowerPC machines (pm6100/
-pm7100/pm8100 and the TNT pm7500/pm8500/pm9500) the aliases are the PPC
+pm7100/pm8100, the TNT pm7500/pm8500/pm9500 and the beige G3 pmg3dt/
+pmg3mt) the aliases are the PPC
 set instead — `$pc $lr $ctr $cr
 $msr $xer $r0..$r31` — and `machine.cpu` exposes the PPC register file
 (`pc`, `r0..r31`, `lr`, `ctr`, `cr`, `xer`, `msr`, `srr0/1`, `dec`,
 `rtcu/rtcl`, `mq`, `sdr1`, `sr0..15`, `bat0u..bat3l`, `dbat0u..dbat3l`,
 `tbu/tbl`, `fpscr`); the 68K-style `$d0`/`$a0` aliases don't exist there.
-The `dbat*`/`tbu`/`tbl` members are live on the 604 model (the TNT
-pm8500/pm9500 — on a 604, `rtcu/rtcl` read the timebase halves) and inert
-on the 601.
+The `dbat*`/`tbu`/`tbl` members are live on the 604 and 750 models (the
+TNT pm8500/pm9500, the G3 — there `rtcu/rtcl` read the timebase halves)
+and inert on the 601.
 
 The browser frontend calls into the tree via `gsEval(path, args?)` (see
-`app/web2/src/bus/emulator.ts`). Inside the shell (v2 script language —
-see `docs/core/shell/shell.md`), the same tree is reachable via:
+`app/web2/src/bus/emulator.ts`). It resolves to a value, to `null` only for a
+method that returns nothing, or to an `{error}` object on any failure — so
+check success with `gsOk(r)` (or `=== true` for a boolean method), never
+`r !== null`; write an attribute as `gsEval('machine.cpu.d0', [v])`, never as
+a `"path = value"` string (docs/internals/core/object/object-model.md, "The result
+contract"). Inside the shell (v2 script language —
+see `docs/internals/core/shell/shell.md`), the same tree is reachable via:
 
   machine.cpu.pc                 # bare path → read (& print at the REPL)
   machine.cpu.d0 = 0x1234        # path = expr → typed write
@@ -274,21 +318,24 @@ The v2 language also has `if`/`elif`/`else`, `while`, `for … in`,
 FALLBACK)`/`none` for expected-failure probes. Scripts print nothing
 implicitly (use `echo`); the first error aborts the script.
 
-The legacy `eval <path>` and `runCommand`/`runCommandJSON` JS helpers
-remain only as the terminal-input bridge and the two pre-main-loop
-boot calls (`main.js` / `checkpoint.js`); everything else goes through
-`gsEval`.
+A terminal line is a script job (`REQ_SCRIPT` on the mailbox, run on the
+job thread; `gsEvalLine` in `bus/emulator.ts` is its only caller);
+everything else on the page goes through `gsEval`. There is no other
+JS→C path: no `ccall`, no `Module.on*` callback carrying machine state
+(the core's events come back on the mailbox's event ring — see
+`docs/guide/web.md`, "Events from the core").
 
 ## When AGENTS.md Is Wrong
 
-If instructions in AGENTS.md are incorrect, incomplete, or misleading (e.g., wrong paths, missing build steps, outdated commands), log it in `notes/feedback.md`:
+If instructions in AGENTS.md are incorrect, incomplete, or misleading (e.g., wrong paths, missing build steps, outdated commands), fix AGENTS.md in the same change, and say so in the commit message:
 
 ```
-- [YYYY-MM-DD] <What was wrong in AGENTS.md>
-  - Problem: <Instruction that didn't work or was missing>
-  - Fix: <What you had to do instead>
-  - Update needed: <How to fix AGENTS.md>
+AGENTS.md: <what was wrong>
+  - Problem: <instruction that didn't work or was missing>
+  - Fix: <what you had to do instead>
 ```
+
+A correction kept anywhere else is invisible to the next reader: `/notes/` at the repository root is ignored by git and exists only on the machine that wrote it.
 
 This is ONLY for documentation gaps in AGENTS.md — not for general code changes or feature work.
 

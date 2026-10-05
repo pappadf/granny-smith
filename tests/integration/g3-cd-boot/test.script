@@ -1,0 +1,51 @@
+# Mac OS 9.2.1 install CD -> Finder on a beige Power Macintosh G3, twice.
+#
+# C1  the CD on the MESH bus as a SCSI CD-ROM (id 3, the profile's CD bay):
+#     the ROM's SCSI Manager finds it, loads the disc's own CD driver, and
+#     the 9.2.1 System on the CD runs to the Finder.  Exercises MESH's
+#     select / command / data-in / status / message cycle under Apple's
+#     driver (ACK held on the status byte), DBDMA channel 0, the NanoKernel's
+#     decrementer re-post, and the Rage Pro accelerator through the
+#     ATI extensions on the CD.
+# C2  the same disc as an ATAPI CD-ROM on ATA cell 0, device 1: the ROM's
+#     ATA Manager probes the channel (signatures, IDENTIFY PACKET DEVICE),
+#     reads the disc with READ(12) over DBDMA channel 11, and the disc's
+#     driver asks MODE SENSE(10) page $2A; the long reads stream through a
+#     short descriptor program re-armed on a parked channel.
+#
+# MEDIA-GATED: $GS_EXTRA_MEDIA_DIR/macos-9.2.1/macos921.iso (the retail
+# Mac OS 9.2.1 CD as a 2048-byte-sector image).  The row skips without it.
+#
+# The clock is pinned so the frames are reproducible; the menu-bar clock is
+# excluded from the match anyway.
+
+include "../lib/mac.script"
+
+let cd = "${$EXTRA_MEDIA}/macos-9.2.1/macos921.iso"
+
+def finder(label, golden) {
+    # ~13 G instructions: Open Firmware, the 68k Start Manager's media hunt,
+    # the CD's System and extensions, the Finder opening the disc's window.
+    scheduler.run 13000000000
+    try(machine.screen.save("${$RESULTS_DIR}/${$label}.png"), none)
+    check_ex($golden, 0, 440, 20, 640)
+}
+
+if have_media($cd) {
+    # --- C1: SCSI CD-ROM on MESH ------------------------------------------------
+    machine.boot model="pmg3dt" ram=65536 rom="${$ROM}"
+    machine.rtc.time = "2026-10-01T12:00:00"
+    assert machine.scsi.attach_cdrom($cd, 3) "C1: attach the CD at SCSI id 3"
+    finder("c1-scsi", "finder-cd.png")
+
+    # --- C2: ATAPI CD-ROM on ATA cell 0, device 1 -------------------------------
+    machine.boot model="pmg3dt" ram=65536 rom="${$ROM}"
+    machine.rtc.time = "2026-10-01T12:00:00"
+    assert machine.ata.attach_cdrom($cd, 1) "C2: attach the CD as ATAPI unit 1"
+    assert machine.ata.devices == "- atapi - -" "C2: the ATAPI drive is not on cell 0 device 1"
+    finder("c2-atapi", "finder-cd.png")
+} else {
+    echo "skip: g3-cd-boot (the Mac OS 9.2.1 CD is not under GS_EXTRA_MEDIA_DIR/macos-9.2.1/ -- see this row's header)"
+}
+
+quit

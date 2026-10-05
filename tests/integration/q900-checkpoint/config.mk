@@ -1,5 +1,4 @@
 # Integration test: Quadra 900 checkpoint save/restore across processes
-# (proposal-machine-quadra-700-900-950.md Phase I)
 #
 # Step 1 boots the tower HD image halfway (mid-extension load: the IOP
 # mailboxes, Caboose, dual 53C96, SONIC and DAFB all carry live state) and
@@ -23,5 +22,5 @@ TEST_SETUP := cp "$(TEST_DATA)/systems/system_7_1_20mb_24ac_cd_32bit.img" "$(TES
 # Two-step custom runner (save process + restore process).
 TEST_RUNNER := run.sh
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

@@ -14,8 +14,8 @@
 // that points it at the in-tree smoke tier for the members this emulator has
 // a core for (68000, 68030, 68040; the 68010 and 68020 tiers are not run).
 //
-// What a pass means: agreement with the model, NOT with silicon (m68k-test
-// INTEGRATING.md).  What the suite tests independently of that: the read set
+// What a pass means: agreement with the model, NOT with silicon (the
+// m68k-test integration guide).  What the suite tests independently of that: the read set
 // (unlisted state is randomized every replay, so an instruction that
 // consults a register it should not fails almost surely) and the write set
 // (anything randomized and unlisted must survive the step untouched) — the
@@ -235,7 +235,7 @@ static void load_state(const state_t *st) {
     for (int i = 0; i < 7; i++)
         cpu->a[i] = get32(st, ei_a[i]);
 
-    // SR by field (FORMAT.md §3.2); the M bit exists from the 68020 on.
+    // SR by field (the m68k-test vector format); the M bit exists from the 68020 on.
     uint32_t s = get32(st, ei_sr_s) & 1, m = has_m ? (get32(st, ei_sr_m) & 1) : 0;
     uint16_t sr =
         (uint16_t)(((get32(st, ei_sr_t) & 3) << 14) | (s << 13) | (m << 12) | ((get32(st, ei_sr_i) & 7) << 8) |
@@ -243,7 +243,7 @@ static void load_state(const state_t *st) {
                    ((get32(st, ei_sr_v) & 1) << 1) | (get32(st, ei_sr_c) & 1));
     // From a known mode so write_sr's stack swap and SoA repoint are
     // well-defined, then the three stack pointers and the A7 encoding they
-    // select (FORMAT.md §3.3) are planted directly.
+    // select (as the vector format encodes them) are planted directly.
     cpu->supervisor = 1;
     cpu->m = 0;
     cpu_set_sr(cpu, sr);
@@ -260,7 +260,7 @@ static void load_state(const state_t *st) {
     cpu->sfc = get32(st, ei_sfc) & 7;
     cpu->dfc = get32(st, ei_dfc) & 7;
 
-    // Execution state: nothing pending, no interrupt request (RUNNING.md §2).
+    // Execution state: nothing pending, no interrupt request (the runner contract).
     cpu->ipl = 0;
     cpu->stopped = 0;
     cpu->halted = 0;
@@ -390,7 +390,7 @@ static void store_state(state_t *st) {
 
 // Which exception vector (if any) holds `pc` in the window's vector table —
 // the tell-tale of an exception the model did not take, since the table's
-// other entries are randomized (RUNNING.md §3.3).
+// other entries are randomized by the runner.
 static int vector_holding(const state_t *st, uint32_t pc) {
     if (st->window_base != 0 || st->window_size < 0x400)
         return -1;

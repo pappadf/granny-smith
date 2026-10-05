@@ -1,4 +1,6 @@
-// Unit tests for M4: argument-position expressions and method
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+// Unit tests for argument-position expressions and method
 // dispatch over the object model.
 //
 // Strategy: register a small toy `math2` class with methods that
@@ -122,13 +124,24 @@ static const arg_decl_t any_arg[] = {
 static const member_t math2_members[] = {
     {.kind = M_METHOD,
      .name = "close",
-     .method = {.args = close_args, .nargs = 3, .result = V_BOOL, .fn = math2_close}                               },
-    {.kind = M_METHOD, .name = "min",  .method = {.args = pair_args, .nargs = 2, .result = V_INT, .fn = math2_min} },
-    {.kind = M_METHOD, .name = "id",   .method = {.args = one_arg, .nargs = 1, .result = V_INT, .fn = math2_id}    },
-    {.kind = M_METHOD, .name = "poly", .method = {.args = width_arg, .nargs = 1, .result = V_ANY, .fn = math2_poly}},
+     .doc = "three args, bool result",
+     .method = {.args = close_args, .nargs = 3, .result = V_BOOL, .fn = math2_close}},
+    {.kind = M_METHOD,
+     .name = "min",
+     .doc = "two args, int result",
+     .method = {.args = pair_args, .nargs = 2, .result = V_INT, .fn = math2_min}    },
+    {.kind = M_METHOD,
+     .name = "id",
+     .doc = "one arg, int result",
+     .method = {.args = one_arg, .nargs = 1, .result = V_INT, .fn = math2_id}       },
+    {.kind = M_METHOD,
+     .name = "poly",
+     .doc = "declared V_ANY result",
+     .method = {.args = width_arg, .nargs = 1, .result = V_ANY, .fn = math2_poly}   },
     {.kind = M_METHOD,
      .name = "kind_of",
-     .method = {.args = any_arg, .nargs = 1, .result = V_INT, .fn = math2_kind_of}                                 },
+     .doc = "V_ANY argument slot",
+     .method = {.args = any_arg, .nargs = 1, .result = V_INT, .fn = math2_kind_of}  },
 };
 
 static const class_desc_t math2_class = {
@@ -227,7 +240,7 @@ TEST(test_method_error_propagates) {
 
 TEST(test_zero_arg_method_call_explicit) {
     install_math2();
-    // proposal §3.3: zero-arg calls require parens in expression
+    // Zero-arg calls require parens in expression
     // context. `math2.id()` would call (and error here on missing
     // arg); `math2.id` without parens is an attribute read of a
     // method member, which node_get should reject.
@@ -329,7 +342,7 @@ static value_t any_attr_get(struct object *self, const member_t *m) {
     return val_uint(4, 0);
 }
 static const member_t any_attr_members[] = {
-    {.kind = M_ATTR, .name = "x", .flags = VAL_RO, .attr = {.type = V_ANY, .get = any_attr_get}},
+    {.kind = M_ATTR, .name = "x", .doc = "V_ANY attribute slot", .attr = {.type = V_ANY, .get = any_attr_get}},
 };
 static const class_desc_t any_attr_class = {
     .name = "anyattr",
@@ -343,7 +356,232 @@ TEST(test_any_attribute_slot_rejected) {
     ASSERT_TRUE(strstr(err, "ANY") != NULL);
 }
 
+// === A skipped optional reaches the body as none ============================
+//
+// An optional slot with no default that the caller leaves out -- even as a
+// hole before a later named slot -- is filled with V_NONE, so the body can
+// tell "not supplied" from "set to a default" (log.set(cat, level=3, ts=on)
+// skips `file`, which sits between them).  A grouped slot is the exception:
+// it cannot be skipped alone.
+static value_t skippable_fn(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    // Report which slots arrived set, as a bitmask.
+    int mask = 0;
+    for (int i = 0; i < 3; i++)
+        if (argv[i].kind != V_NONE)
+            mask |= 1 << i;
+    return val_int(mask);
+}
+
+static const arg_decl_t skippable_args[] = {
+    {.name = "a", .kind = V_UINT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "a"},
+    {.name = "b", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "b"},
+    {.name = "c", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "c"},
+};
+
+static const member_t skippable_members[] = {
+    {.kind = M_METHOD,
+     .name = "opt",
+     .doc = "optional slots",
+     .method = {.args = skippable_args, .nargs = 3, .result = V_INT, .fn = skippable_fn}},
+};
+
+static const class_desc_t skippable_class = {
+    .name = "skippable",
+    .members = skippable_members,
+    .n_members = sizeof(skippable_members) / sizeof(skippable_members[0]),
+};
+
+TEST(test_interior_optional_slot_can_be_skipped) {
+    object_root_reset();
+    struct object *o = object_new(&skippable_class, NULL, "sk");
+    object_attach(object_root(), o);
+
+    // Name the FIRST and THIRD slots, leaving a hole in the middle.
+    named_arg_t named[2] = {
+        {.name = "a", .value = val_uint(8, 7)},
+        {.name = "c", .value = val_bool(true)}
+    };
+    node_t n = object_resolve(object_root(), "sk.opt");
+    ASSERT_TRUE(node_valid(n));
+
+    value_t bound[8];
+    int bound_n = 0;
+    value_t e = node_bind_args(n, 0, NULL, 2, named, bound, &bound_n);
+    ASSERT_TRUE(!val_is_error(&e));
+    value_t r = node_call(n, bound_n, bound);
+    ASSERT_TRUE(!val_is_error(&r));
+    bool ok = false;
+    ASSERT_EQ_INT((int)val_as_i64(&r, &ok), 0b101); // a and c set, b unset
+    value_free(&r);
+    object_root_reset();
+}
+
+static const arg_decl_t grouped_args[] = {
+    {.name = "a", .kind = V_UINT, .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED, .doc = "a"},
+    {.name = "b", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED, .doc = "b"},
+};
+
+static const member_t grouped_members[] = {
+    {.kind = M_METHOD,
+     .name = "opt",
+     .doc = "grouped slots",
+     .method = {.args = grouped_args, .nargs = 2, .result = V_INT, .fn = skippable_fn}},
+};
+
+static const class_desc_t grouped_class = {.name = "grouped", .members = grouped_members, .n_members = 1};
+
+TEST(test_grouped_slot_cannot_be_skipped) {
+    object_root_reset();
+    struct object *o = object_new(&grouped_class, NULL, "gr");
+    object_attach(object_root(), o);
+    named_arg_t named[1] = {
+        {.name = "b", .value = val_bool(true)}
+    };
+    node_t n = object_resolve(object_root(), "gr.opt");
+    value_t bound[8];
+    int bound_n = 0;
+    value_t e = node_bind_args(n, 0, NULL, 1, named, bound, &bound_n);
+    ASSERT_TRUE(!val_is_error(&e));
+    value_t r = node_call(n, bound_n, bound);
+    ASSERT_TRUE(val_is_error(&r));
+    ASSERT_TRUE(strstr(r.err, "missing argument 'a'") != NULL);
+    value_free(&r);
+    object_root_reset();
+}
+
+// A counter block published through OBJ_U64_FIELD (the object's data) and
+// OBJ_U64_FIELD_WITH (a getter of its own): each attribute reads its field,
+// read-only, and follows the block as it changes.
+typedef struct {
+    uint64_t hits;
+    uint64_t misses;
+} counters_t;
+
+static counters_t g_counters;
+
+static value_t counters_misses(struct object *self, const member_t *m) {
+    (void)self;
+    return obj_u64_at(&g_counters, m);
+}
+
+static const member_t counters_members[] = {
+    OBJ_U64_FIELD(counters_t, hits, "Hits"),
+    OBJ_U64_FIELD_WITH(counters_t, misses, "Misses", counters_misses),
+};
+
+static const class_desc_t counters_class = {
+    .name = "counters",
+    .members = counters_members,
+    .n_members = sizeof(counters_members) / sizeof(counters_members[0]),
+};
+
+TEST(test_counter_fields_read_their_block) {
+    object_root_reset();
+    object_attach(object_root(), object_new(&counters_class, &g_counters, "counters"));
+    g_counters.hits = 5;
+    g_counters.misses = 1ull << 40;
+    value_t h = node_get(object_resolve(object_root(), "counters.hits"));
+    value_t m = node_get(object_resolve(object_root(), "counters.misses"));
+    ASSERT_EQ_INT(5, (int)val_as_u64(&h, NULL));
+    ASSERT_TRUE(val_as_u64(&m, NULL) == (1ull << 40));
+    value_free(&h);
+    value_free(&m);
+    g_counters.hits++;
+    h = node_get(object_resolve(object_root(), "counters.hits"));
+    ASSERT_EQ_INT(6, (int)val_as_u64(&h, NULL));
+    value_free(&h);
+    ASSERT_TRUE(counters_members[0].attr.set == NULL);
+}
+
+// An indexed collection that gives `slots` and no next(): the core walks
+// get() over the slots, skipping holes, and synthesizes `count` (15 of 17
+// collections once carried a next() doing exactly that, and a count() the core
+// never called).
+static struct object *g_sparse_items[4];
+static struct object *sparse_get(struct object *self, int index) {
+    (void)self;
+    return (index >= 0 && index < 4) ? g_sparse_items[index] : NULL;
+}
+static const class_desc_t sparse_item_class = {.name = "sparse_item", .members = NULL, .n_members = 0};
+static const collection_desc_t sparse_entries = {
+    .entry = &sparse_item_class, .by_index = {.get = sparse_get, .slots = 4}
+};
+
+static const member_t sparse_members[] = {
+    {.kind = M_CHILD, .name = "entries", .child = {.collection = &sparse_entries}},
+};
+static const class_desc_t sparse_class = {.name = "sparse", .members = sparse_members, .n_members = 1};
+
+TEST(test_slots_walk_and_count) {
+    object_root_reset();
+    struct object *c = object_new(&sparse_class, NULL, "sparse");
+    object_attach(object_root(), c);
+    g_sparse_items[1] = object_new(&sparse_item_class, NULL, NULL);
+    g_sparse_items[3] = object_new(&sparse_item_class, NULL, NULL);
+    const member_t *m = &sparse_members[0];
+    ASSERT_EQ_INT(1, object_child_next(c, m, -1));
+    ASSERT_EQ_INT(3, object_child_next(c, m, 1));
+    ASSERT_EQ_INT(-1, object_child_next(c, m, 3));
+    value_t n = node_get(object_resolve(object_root(), "sparse.count"));
+    ASSERT_EQ_INT(2, (int)val_as_u64(&n, NULL));
+    value_free(&n);
+    g_sparse_items[3] = NULL; // a hole again: the count follows
+    n = node_get(object_resolve(object_root(), "sparse.count"));
+    ASSERT_EQ_INT(1, (int)val_as_u64(&n, NULL));
+    value_free(&n);
+}
+
+// An entry cache: entries made on first use, found again by index or key,
+// each knowing its index and linked to the container once it is set; a sweep
+// frees the dead ones and clear frees the rest.
+static bool keep_even(struct object *entry, void *ud) {
+    (void)ud;
+    return object_entry_index(entry) % 2 == 0;
+}
+
+TEST(test_object_cache_entries) {
+    object_root_reset();
+    object_cache_t cache = OBJECT_CACHE(&sparse_item_class, NULL);
+    struct object *e1 = object_cache_at(&cache, 1, NULL);
+    ASSERT_TRUE(e1 != NULL);
+    ASSERT_TRUE(object_cache_at(&cache, 1, NULL) == e1);
+    ASSERT_EQ_INT(1, object_entry_index(e1));
+    ASSERT_TRUE(object_cache_find(&cache, 2) == NULL);
+    ASSERT_TRUE(object_cache_at(&cache, -1, NULL) == NULL);
+    ASSERT_EQ_INT(-1, object_entry_index(NULL));
+
+    // The container, set after the entry was made, becomes its logical parent.
+    struct object *box = object_new(&sparse_class, NULL, "box");
+    object_attach(object_root(), box);
+    object_cache_set_parent(&cache, box);
+    ASSERT_TRUE(object_logical_parent(e1) == box);
+    ASSERT_EQ_INT(1, object_logical_index(e1));
+    struct object *k = object_cache_key(&cache, "scsi", NULL);
+    ASSERT_TRUE(k != NULL && object_cache_key(&cache, "scsi", NULL) == k);
+    ASSERT_TRUE(strcmp(object_logical_key(k), "scsi") == 0);
+
+    // A sweep frees the entries whose record is gone (odd indices, the key).
+    object_cache_at(&cache, 2, NULL);
+    object_cache_sweep(&cache, keep_even, NULL);
+    ASSERT_TRUE(object_cache_find(&cache, 1) == NULL);
+    ASSERT_TRUE(object_cache_find(&cache, 2) != NULL);
+
+    // The container going first only costs the entries their path.
+    object_delete(box);
+    ASSERT_TRUE(cache.parent == NULL);
+    ASSERT_TRUE(object_logical_parent(object_cache_find(&cache, 2)) == NULL);
+    object_cache_clear(&cache);
+    ASSERT_TRUE(object_cache_find(&cache, 2) == NULL);
+    object_root_reset();
+}
+
 int main(void) {
+    RUN(test_object_cache_entries);
+    RUN(test_slots_walk_and_count);
+    RUN(test_counter_fields_read_their_block);
     RUN(test_node_call_succeeds);
     RUN(test_node_call_too_few_args);
     RUN(test_call_form_inside_expr);
@@ -357,5 +595,7 @@ int main(void) {
     RUN(test_variant_result_in_expr);
     RUN(test_any_arg_slot_accepts_every_kind);
     RUN(test_any_attribute_slot_rejected);
+    RUN(test_interior_optional_slot_can_be_skipped);
+    RUN(test_grouped_slot_cannot_be_skipped);
     return 0;
 }

@@ -20,13 +20,13 @@ describe('PanelHeader', () => {
       t.textContent?.trim(),
     );
     expect(labels).toEqual([
-      'TERMINAL',
-      'SYSTEM',
-      'FILESYSTEM',
-      'IMAGES',
-      'CHECKPOINTS',
-      'DEBUG',
-      'LOGS',
+      'Terminal',
+      'System',
+      'Filesystem',
+      'Images',
+      'Checkpoints',
+      'Debug',
+      'Logs',
     ]);
   });
 
@@ -37,10 +37,10 @@ describe('PanelHeader', () => {
     expect(layout.activeTab).toBe('machine');
   });
 
-  it('active tab has the .active class', async () => {
+  it('the active tab is aria-selected', async () => {
     const { container } = render(PanelHeader);
     await fireEvent.click(container.querySelector('[data-tab="logs"]') as HTMLButtonElement);
     const logsTab = container.querySelector('[data-tab="logs"]') as HTMLElement;
-    expect(logsTab.classList.contains('active')).toBe(true);
+    expect(logsTab.getAttribute('aria-selected')).toBe('true');
   });
 });

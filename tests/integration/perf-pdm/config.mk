@@ -1,5 +1,5 @@
 # Integration test: perf-pdm — the PowerPC throughput row
-# (proposal-predecoded-interpreter-cores.md, Phase 0).
+# of the predecoded cores (docs/internals/core/cpu/predecode.md).
 #
 # The 6100 ROM boot to the SCSI-scan wall: 200 M instructions of the 601
 # interpreter with no media attached, so the row measures the core (with
@@ -12,5 +12,5 @@ TEST_DESC := 200M-instruction 601 ROM boot: MIPS floor + instruction-spend basel
 
 TEST_ROM := roms/pm6100-pm7100-pm8100-9feb69b3.rom
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

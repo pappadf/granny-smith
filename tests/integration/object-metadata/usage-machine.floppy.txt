@@ -1,0 +1,6 @@
+machine.floppy — Floppy
+Floppy controller and drives
+
+attributes: type, sel
+methods: identify, create
+children: controller, drive

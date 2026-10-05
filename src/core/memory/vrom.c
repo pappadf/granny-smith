@@ -13,7 +13,10 @@
 // only ever an opaque handle used to open the file.
 
 #include "vrom.h"
+#include "common.h"
 #include "declrom.h" // structural recognition of generated GS images
+#include "gs_out.h"
+#include "offer_registry.h"
 
 #include "log.h"
 #include "machine_profile.h"
@@ -37,7 +40,7 @@ bool vrom_probe_file(const char *path, size_t *out_size) {
     if (!path || !*path)
         return false;
     // stat is portable for binary-file sizing; fseek(SEEK_END)+ftell on a
-    // binary stream is implementation-defined per ISO C. See [F-354].
+    // binary stream is implementation-defined per ISO C.
     struct stat st;
     if (stat(path, &st) != 0 || st.st_size <= 0)
         return false;
@@ -51,7 +54,7 @@ bool vrom_probe_file(const char *path, size_t *out_size) {
 // genuine cards and the "fake" SE/30 onboard-video ROM alike — carries a
 // 20-byte Format Block at the top of the dense chip image; its 4-byte CRC
 // (preceded by the `$5A932BC7` TestPattern) is the intrinsic, Slot-Manager-
-// validated checksum.  See docs/core/peripherals/nubus_vrom.md §2.  We read
+// validated checksum.  See docs/reference/hardware/nubus/declaration-rom.md §2.  We read
 // it as identity, the direct analog of rom.c keying on the main ROM's
 // checksum word — no emulator-invented hash.  Field offsets from EOF of the
 // dense chip (high address = end), per §2 / §12:
@@ -62,19 +65,14 @@ bool vrom_probe_file(const char *path, size_t *out_size) {
 #define VROM_TESTPATTERN_OFF 6 // bytes from EOF to the first TestPattern byte
 #define VROM_CRC_OFF         12 // bytes from EOF to the first (MSB) CRC byte
 
-static uint32_t vrom_be32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-}
-
 // Catalog of known VROM blobs.  Maps the declaration ROM's Format-Block CRC
 // to the nubus card-kind id the blob provides — content→hardware facts only,
-// no filenames (canonical fixture naming is a tooling concern; see
-// scripts/rom_naming.py).  The id is the machine-readable link a UI uses to
-// pick the card (machine.nubus.video_card); the human label is owned by the
+// no filenames (a file's name is never evidence of what it is).  The id is the machine-readable link a UI uses to
+// pick the card (a `slots=` entry's card id); the human label is owned by the
 // card kind (nubus_card_find(id)->display_name) so it never drifts.  The
 // `preferred` bit marks the default revision when one card has several ROMs.
-// Adding a new VROM = one row here.  Keyed exactly like rom.c's ROM_TABLE
-// {checksum -> ...}.
+// Adding a new VROM = one row here.  Keyed by content, like rom_table.c's
+// {id -> ...}.
 struct vrom_known {
     uint32_t crc;
     size_t chip_size; // dense chip image size on disk
@@ -101,10 +99,10 @@ static const struct vrom_known VROM_CATALOG[] = {
 
 #define VROM_CATALOG_COUNT (sizeof(VROM_CATALOG) / sizeof(VROM_CATALOG[0]))
 
-// Content-identification core shared by vrom.identify, the offer registry,
+// Content-identification core shared by catalog.vroms.identify, the offer registry,
 // and the card factories' loader (declrom_load_vrom_card).  Reads the file's
 // trailing Format Block, gates on the $5A932BC7 TestPattern, and looks the
-// CRC up in the catalog.  Result codes let vrom.identify keep its
+// CRC up in the catalog.  Result codes let catalog.vroms.identify keep its
 // error/unrecognised distinction.
 enum vrom_id_result {
     VROM_ID_UNREADABLE, // stat/open/read failed
@@ -112,37 +110,23 @@ enum vrom_id_result {
     VROM_ID_UNKNOWN, // right size; *out_crc valid; not a catalog entry (or no TestPattern)
     VROM_ID_KNOWN, // recognised: *out filled from the catalog row
 };
-static enum vrom_id_result vrom_identify_core(const char *path, vrom_id_t *out, size_t *out_size, uint32_t *out_crc) {
-    size_t size = 0;
-    vrom_probe_file(path, &size); // fills *size regardless of the 32 KB gate
-    if (out_size)
-        *out_size = size;
-    // vrom_probe_file leaves size == 0 only when stat failed (missing /
-    // unreadable).
-    if (size == 0)
-        return VROM_ID_UNREADABLE;
+// Identify a whole chip image already in memory: gate on size and the
+// TestPattern, look the CRC up in the catalog, else recognise one of our own
+// generated images by its board sResource.
+static enum vrom_id_result vrom_identify_image(const uint8_t *img, size_t size, vrom_id_t *out, uint32_t *out_crc) {
     // Declaration-ROM chips come in two sizes: 32 KB (SE/30, JMFB, 24AC, the
     // 8•24 GC v1.0 / alpha) and 64 KB (the 8•24 GC v1.1).  The Format Block +
     // CRC live in the trailing bytes either way, so accept both.
     if (size != VROM_EXPECTED_SIZE && size != 2u * VROM_EXPECTED_SIZE)
         return VROM_ID_WRONG_SIZE;
-
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return VROM_ID_UNREADABLE;
     // Only the trailing Format Block matters for identity.
-    uint8_t tail[VROM_CRC_OFF];
-    if (fseek(f, (long)(size - sizeof(tail)), SEEK_SET) != 0 || fread(tail, 1, sizeof(tail), f) != sizeof(tail)) {
-        fclose(f);
-        return VROM_ID_UNREADABLE;
-    }
-    fclose(f);
+    const uint8_t *tail = img + size - VROM_CRC_OFF;
 
     // Gate on the TestPattern: a right-sized blob without `$5A932BC7` in the
     // Format Block is not a declaration ROM (don't trust a stray CRC match).
-    const uint8_t *tp = tail + sizeof(tail) - VROM_TESTPATTERN_OFF;
+    const uint8_t *tp = tail + VROM_CRC_OFF - VROM_TESTPATTERN_OFF;
     bool is_declrom = tp[0] == 0x5Au && tp[1] == 0x93u && tp[2] == 0x2Bu && tp[3] == 0xC7u;
-    uint32_t crc = vrom_be32(tail);
+    uint32_t crc = RD_BE32(tail);
     if (out_crc)
         *out_crc = crc;
     if (!is_declrom)
@@ -158,43 +142,62 @@ static enum vrom_id_result vrom_identify_core(const char *path, vrom_id_t *out, 
         }
     }
     // Not a catalogued Apple dump — recognise a dumped copy of one of our
-    // own GENERATED generic images structurally: the runtime-generated GS
+    // own GENERATED substitute images (the card's, a ROM for that card)
+    // structurally: the runtime-generated GS
     // vROM has no fixed CRC to match (its content varies with the mode
     // set and the toolchain that assembled the fragments), so identity is
-    // the board sResource's "granny-smith" VendorId plus its BoardId
-    // (proposal-nubus-runtime-vrom §4).
+    // the board sResource's "granny-smith" VendorId plus its BoardId.
     static const struct {
         uint16_t board_id;
         const char *card_id;
     } gs_boards[] = {
-        {0x0027, "8_24"  },
-        {0x05FA, "24ac"  },
-        {0x002C, "8_24gc"},
-        {0x000C, "se30"  },
+        {0x0027, "mdc_8_24"          },
+        {0x05FA, "display_card_24ac" },
+        {0x002C, "824gc"             },
+        {0x000C, "builtin_se30_video"},
     };
-    uint8_t *whole = malloc(size);
-    if (whole) {
-        f = fopen(path, "rb");
-        bool read_ok = f && fread(whole, 1, size, f) == size;
-        if (f)
-            fclose(f);
-        uint16_t board_id = 0;
-        if (read_ok && declrom_identify_vendor(whole, size, "granny-smith", &board_id)) {
-            for (size_t i = 0; i < sizeof(gs_boards) / sizeof(gs_boards[0]); i++) {
-                if (gs_boards[i].board_id == board_id) {
-                    if (out) {
-                        out->crc = crc;
-                        out->chip_size = size;
-                        out->card_id = gs_boards[i].card_id;
-                    }
-                    free(whole);
-                    return VROM_ID_KNOWN;
+    uint16_t board_id = 0;
+    if (declrom_identify_vendor(img, size, "granny-smith", &board_id)) {
+        for (size_t i = 0; i < sizeof(gs_boards) / sizeof(gs_boards[0]); i++) {
+            if (gs_boards[i].board_id == board_id) {
+                if (out) {
+                    out->crc = crc;
+                    out->chip_size = size;
+                    out->card_id = gs_boards[i].card_id;
                 }
+                return VROM_ID_KNOWN;
             }
         }
-        free(whole);
     }
     return VROM_ID_UNKNOWN;
+}
+
+// The file form: read the chip and identify it.
+static enum vrom_id_result vrom_identify_core(const char *path, vrom_id_t *out, size_t *out_size, uint32_t *out_crc) {
+    size_t size = 0;
+    vrom_probe_file(path, &size); // fills *size regardless of the 32 KB gate
+    if (out_size)
+        *out_size = size;
+    // vrom_probe_file leaves size == 0 only when stat failed (missing /
+    // unreadable).
+    if (size == 0)
+        return VROM_ID_UNREADABLE;
+    if (size != VROM_EXPECTED_SIZE && size != 2u * VROM_EXPECTED_SIZE)
+        return VROM_ID_WRONG_SIZE;
+    uint8_t *img = malloc(size);
+    if (!img)
+        return VROM_ID_UNREADABLE;
+    FILE *f = fopen(path, "rb");
+    bool read_ok = f && fread(img, 1, size, f) == size;
+    if (f)
+        fclose(f);
+    enum vrom_id_result r = read_ok ? vrom_identify_image(img, size, out, out_crc) : VROM_ID_UNREADABLE;
+    free(img);
+    return r;
+}
+
+bool vrom_identify_bytes(const uint8_t *img, size_t size, vrom_id_t *out) {
+    return img && vrom_identify_image(img, size, out, NULL) == VROM_ID_KNOWN;
 }
 
 bool vrom_identify_card(const char *path, vrom_id_t *out) {
@@ -207,191 +210,80 @@ bool vrom_identify_card(const char *path, vrom_id_t *out) {
 // Offer registry
 // ============================================================================
 
-// One registered candidate: a recognised file the platform offered, keyed by
-// its content identity.  The direct analog of the old single pending-path
-// static, generalised to N entries.
-struct vrom_offer_entry {
-    uint32_t crc; // content identity (registry key)
-    size_t chip_size; // actual file size (32 KB or 64 KB)
-    const char *card_id; // catalog card-kind id (static storage)
-    char *path; // opaque locator (owned)
-    bool explicit_pick; // set by vrom.load — wins the pick order
-};
-
-static struct vrom_offer_entry *s_offers = NULL;
-static size_t s_offer_count = 0;
-static size_t s_offer_cap = 0;
-
-// Register one candidate.  `explicit_pick` marks the vrom.load offer, which
-// takes priority in vrom_offer_find (at most one entry carries the flag).
-static void vrom_offer_add(const char *path, bool explicit_pick) {
-    if (!path || !*path)
-        return;
+// Identify one candidate for the registry.  The vROM side's validation gates,
+// size classes and identity spans are nothing like the PCI side's, which is
+// exactly why this half is NOT shared (offer_registry.h).
+static bool vrom_offer_identify(const char *path, uint64_t *out_key, size_t *out_size, const char **out_card_id) {
     vrom_id_t id;
     if (!vrom_identify_card(path, &id)) {
         // Not a recognised declaration ROM — drop it quietly (the platform
         // offers whole directories; strays are expected, not errors).
         LOG(2, "vrom_offer: '%s' is not a recognised declaration ROM — ignored", path);
-        return;
+        return false;
     }
-    // Idempotent by content: one entry per CRC.  A re-offer refreshes the
-    // path (the newest locator for these bytes) and may promote to explicit.
-    struct vrom_offer_entry *e = NULL;
-    for (size_t i = 0; i < s_offer_count; i++) {
-        if (s_offers[i].crc == id.crc) {
-            e = &s_offers[i];
-            break;
-        }
-    }
-    if (!e) {
-        if (s_offer_count == s_offer_cap) {
-            size_t cap = s_offer_cap ? s_offer_cap * 2 : 8;
-            struct vrom_offer_entry *grown = realloc(s_offers, cap * sizeof(*grown));
-            if (!grown)
-                return;
-            s_offers = grown;
-            s_offer_cap = cap;
-        }
-        e = &s_offers[s_offer_count];
-        memset(e, 0, sizeof(*e));
-        s_offer_count++;
-    }
-    char *dup = strdup(path);
-    if (!dup) {
-        // Fresh entry with no path is useless — roll the append back.
-        if (!e->path)
-            s_offer_count--;
-        return;
-    }
-    free(e->path);
-    e->path = dup;
-    e->crc = id.crc;
-    e->chip_size = id.chip_size;
-    e->card_id = id.card_id;
-    if (explicit_pick) {
-        // Only one explicit pick at a time — latest vrom.load wins.
-        for (size_t i = 0; i < s_offer_count; i++)
-            s_offers[i].explicit_pick = false;
-        e->explicit_pick = true;
-    }
-    LOG(2, "vrom_offer: '%s' provides card '%s' (crc 0x%08x)%s", path, e->card_id, e->crc,
-        explicit_pick ? " [explicit]" : "");
+    *out_key = id.crc; // a declaration ROM's identity is its Format-Block CRC
+    *out_size = id.chip_size;
+    *out_card_id = id.card_id;
+    return true;
 }
 
+static void vrom_catalog_row(size_t r, const char **card_id, uint64_t *key, bool *preferred) {
+    *card_id = VROM_CATALOG[r].card_id;
+    *key = VROM_CATALOG[r].crc;
+    *preferred = VROM_CATALOG[r].preferred;
+}
+
+static offer_registry_t s_offers = {
+    .tag = "vrom_offer",
+    .identify = vrom_offer_identify,
+    .catalog = {.count = VROM_CATALOG_COUNT, .row = vrom_catalog_row},
+};
+
 void vrom_offer(const char *path) {
-    vrom_offer_add(path, false);
+    offer_registry_add(&s_offers, path);
+}
+
+void vrom_offer_dir(const char *dir, const char *ext) {
+    offer_registry_add_dir(&s_offers, dir, ext);
 }
 
 void vrom_offer_clear(void) {
-    for (size_t i = 0; i < s_offer_count; i++)
-        free(s_offers[i].path);
-    free(s_offers);
-    s_offers = NULL;
-    s_offer_count = 0;
-    s_offer_cap = 0;
+    offer_registry_clear(&s_offers);
 }
 
-const char *vrom_offer_find(const char *card_id, int idx, size_t *out_chip_size) {
-    if (!card_id)
-        return NULL;
-    // Pick order: the explicit vrom.load offer first, then catalog rows with
-    // the `preferred` bit, then the remaining catalog rows in order.  All
-    // content-based — no filename ever enters the comparison.
-    // Pass 0: the explicit pick (at most one entry carries the flag).
-    for (size_t i = 0; i < s_offer_count; i++) {
-        if (!s_offers[i].explicit_pick || strcmp(s_offers[i].card_id, card_id) != 0)
-            continue;
-        if (idx-- == 0) {
-            if (out_chip_size)
-                *out_chip_size = s_offers[i].chip_size;
-            return s_offers[i].path;
-        }
-    }
-    // Passes 1..2: catalog order, preferred rows first.  One offer per CRC
-    // (registry invariant), so each row yields at most one candidate.
-    for (int want_preferred = 1; want_preferred >= 0; want_preferred--) {
-        for (size_t r = 0; r < VROM_CATALOG_COUNT; r++) {
-            if (VROM_CATALOG[r].preferred != (bool)want_preferred)
-                continue;
-            if (strcmp(VROM_CATALOG[r].card_id, card_id) != 0)
-                continue;
-            for (size_t i = 0; i < s_offer_count; i++) {
-                if (s_offers[i].crc != VROM_CATALOG[r].crc || s_offers[i].explicit_pick)
-                    continue; // explicit entry was already yielded in pass 0
-                if (idx-- == 0) {
-                    if (out_chip_size)
-                        *out_chip_size = s_offers[i].chip_size;
-                    return s_offers[i].path;
-                }
-            }
-        }
-    }
-    return NULL;
-}
-
-bool vrom_offer_info(const char *path, uint32_t *out_crc, bool *out_explicit) {
-    if (!path)
-        return false;
-    for (size_t i = 0; i < s_offer_count; i++) {
-        if (strcmp(s_offers[i].path, path) != 0)
-            continue;
-        if (out_crc)
-            *out_crc = s_offers[i].crc;
-        if (out_explicit)
-            *out_explicit = s_offers[i].explicit_pick;
-        return true;
-    }
-    return false;
+const char *vrom_offer_find(const char *card_id, int idx, size_t *out_chip_size, uint32_t *out_crc) {
+    uint64_t key = 0;
+    const char *path = offer_registry_find(&s_offers, card_id, idx, out_chip_size, &key);
+    if (out_crc)
+        *out_crc = (uint32_t)key;
+    return path;
 }
 
 bool vrom_card_catalogued(const char *card_id) {
-    if (!card_id || !*card_id)
-        return false;
-    for (size_t r = 0; r < VROM_CATALOG_COUNT; r++) {
-        if (strcmp(VROM_CATALOG[r].card_id, card_id) == 0)
-            return true;
-    }
-    return false;
+    return offer_registry_catalogued(&s_offers, card_id);
 }
 
-bool vrom_card_resolvable(const char *card_id) {
-    return vrom_offer_find(card_id, 0, NULL) != NULL;
-}
-
-// ============================================================================
-// Explicit pick (vrom.load)
-// ============================================================================
-
-int vrom_set_path(const char *path) {
-    if (!path || !*path) {
-        printf("vrom: expected a non-empty path\n");
-        return -1;
+bool vrom_card_resolvable(const char *card_id, const char *rom) {
+    if (rom && *rom) {
+        vrom_id_t id;
+        return vrom_identify_card(rom, &id) && strcmp(id.card_id, card_id) == 0;
     }
-    // The boot document's vrom= explicit pick: an offer that wins the pick
-    // order for whichever card its content provides.  An unrecognised file
-    // is dropped by the offer (with a log).
-    vrom_offer_add(path, true);
-    return 0;
+    return offer_registry_resolvable(&s_offers, card_id);
 }
 
 // ============================================================================
 // Object-model class descriptor
 // ============================================================================
 
-static value_t vrom_attr_size(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(vrom_attr_size) {
     return val_uint(4, VROM_EXPECTED_SIZE);
 }
 
-// vrom.offer(path) — platform/UI hook into the offer registry, e.g. web2's
+// catalog.vroms.offer(path) — platform/UI hook into the offer registry, e.g. web2's
 // upload ingest offering a freshly stored file so an "(auto)" boot sees it
 // without a page reload.  Returns true iff the file was recognised and
 // registered; false is "not a vROM", not an error.
-static value_t vrom_method_offer(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(vrom_method_offer) {
     vrom_id_t id;
     bool recognised = vrom_identify_card(argv[0].s, &id);
     if (recognised)
@@ -399,7 +291,7 @@ static value_t vrom_method_offer(struct object *self, const member_t *m, int arg
     return val_bool(recognised);
 }
 
-// vrom.identify(path) — returns a JSON map of content facts describing the
+// catalog.vroms.identify(path) — returns a JSON map of content facts describing the
 // file, keyed off the declaration ROM's Format-Block CRC:
 //   {
 //     "recognised":     bool,
@@ -411,13 +303,10 @@ static value_t vrom_method_offer(struct object *self, const member_t *m, int arg
 // `compatible` mirrors rom.identify's `compatible:[model_ids]` shape (a list,
 // usually length 1).  JS callers use crc to persist the file under a stable
 // content-addressed name, and card_id / compatible to pick the card; the
-// human-readable name comes from machine.profile, not here.  (The card
+// human-readable name comes from catalog.profile, not here.  (The card
 // factories load by CONTENT — declrom_load_vrom_card — so the on-disk name
 // never matters.)
-static value_t vrom_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(vrom_method_identify) {
     const char *path = argv[0].s;
     vrom_id_t id;
     size_t size = 0;
@@ -427,7 +316,7 @@ static value_t vrom_method_identify(struct object *self, const member_t *m, int 
         // Distinguish "can't read the file" from "present, but not a vROM",
         // mirroring rom.identify: a missing/unreadable path is a V_ERROR,
         // while a real file of the wrong size is simply unrecognised.
-        return val_err("vrom.identify: cannot read '%s'", path);
+        return val_err("catalog.vroms.identify: cannot read '%s'", path);
     case VROM_ID_WRONG_SIZE: {
         value_map_builder_t *b = val_map_new();
         val_map_put(b, "recognised", val_bool(false));
@@ -464,29 +353,29 @@ static value_t vrom_method_identify(struct object *self, const member_t *m, int 
 }
 
 static const arg_decl_t vrom_path_arg[] = {
-    {.name = "path", .kind = V_STRING, .doc = "VROM file path"},
+    {.name = "path", .kind = V_STRING, .presentation_flags = VAL_PATH, .doc = "VROM file path"},
 };
 
 static const member_t vrom_members[] = {
     {.kind = M_ATTR,
      .name = "size",
      .doc = "Expected VROM size in bytes (32 KB)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = vrom_attr_size, .set = NULL}},
+     .attr = {.type = V_UINT, .get = vrom_attr_size, .set = NULL}                              },
     {.kind = M_METHOD,
      .name = "offer",
      .doc = "Offer a candidate VROM file; true iff recognised and registered",
-     .method = {.args = vrom_path_arg, .nargs = 1, .result = V_BOOL, .fn = vrom_method_offer}},
+     .method = {.args = vrom_path_arg, .nargs = 1, .result = V_BOOL, .fn = vrom_method_offer}  },
     {.kind = M_METHOD,
      .name = "identify",
      .doc = "Typed map: {recognised, card_id?, compatible?, size, crc}.",
      .method = {.args = vrom_path_arg, .nargs = 1, .result = V_MAP, .fn = vrom_method_identify}},
 };
 
-const class_desc_t vrom_class = {
+static const class_desc_t vrom_class = {
     .name = "vrom",
     .members = vrom_members,
     .n_members = sizeof(vrom_members) / sizeof(vrom_members[0]),
+    .doc = "Registry of video (NuBus declaration) ROM files",
 };
 
 // ============================================================================
@@ -495,14 +384,15 @@ const class_desc_t vrom_class = {
 
 static struct object *s_vrom_object = NULL;
 
-void vrom_init(void) {
+void vrom_init(struct object *parent) {
     if (s_vrom_object)
         return;
-    s_vrom_object = object_new(&vrom_class, NULL, "vrom");
+    s_vrom_object = object_new(&vrom_class, NULL, "vroms");
     if (s_vrom_object) {
-        object_set_label(s_vrom_object, "Video ROM");
-        object_set_order(s_vrom_object, 95);
-        object_attach(machine_object(), s_vrom_object);
+        object_set_label(s_vrom_object, "Video ROMs");
+        object_set_order(s_vrom_object, 20);
+        object_set_category(s_vrom_object, M_CAT_ADVANCED);
+        object_attach(parent, s_vrom_object);
     }
 }
 

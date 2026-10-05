@@ -21,9 +21,11 @@
 // Apple's shared VIA2/RBV OS code additionally reaches the IFR and IER at
 // the VIA-register-spaced aliases Rv2IFR = vIFR+RvIFR = $1A03 and
 // Rv2IER = vIER+RvIER = $1C13 (the IER decode requires A4=1 — an RBV ASIC
-// quirk documented in the mac68k headers and local rbv-byte-lane-findings).
-// We decode both the native small offsets and those two aliases so code
-// written either way reaches the same register.
+// quirk documented in the mac68k headers).
+// A/UX 3.0.1's level-2 handler reads the slot-interrupt register the same
+// way, at vBufA+RvSInt = $1E02 (the 6522 VIA2's port A carried the slot
+// lines).  We decode the native small offsets and those three aliases so
+// code written either way reaches the same register.
 //
 // Interrupt model.  RBV's SCSI / slot / sound interrupts are level inputs;
 // we recompute the aggregated IFR from the live source state on every
@@ -34,7 +36,10 @@
 #include "rbv.h"
 
 #include "checkpoint.h"
+#include "irq_controller.h"
 #include "log.h"
+#include "machine.h"
+#include "object.h"
 #include "system.h"
 
 #include <stddef.h>
@@ -55,8 +60,9 @@ LOG_USE_CATEGORY_NAME("rbv");
 #define RV_IER   0x013 // RvIER
 
 // VIA2-spaced aliases the shared OS code uses (see file header).
-#define RV_IFR_ALIAS 0x1A03 // Rv2IFR = vIFR($1A00) + RvIFR($003)
-#define RV_IER_ALIAS 0x1C13 // Rv2IER = vIER($1C00) + RvIER($013)
+#define RV_IFR_ALIAS  0x1A03 // Rv2IFR = vIFR($1A00) + RvIFR($003)
+#define RV_IER_ALIAS  0x1C13 // Rv2IER = vIER($1C00) + RvIER($013)
+#define RV_SINT_ALIAS 0x1E02 // vBufA($1E00) + RvSInt($002): A/UX's slot-interrupt read
 
 // === RvDataB bits ===========================================================
 
@@ -121,7 +127,13 @@ struct rbv {
     void (*power_cb)(void *ctx);
     void *power_ctx;
     void (*mode_cb)(void *ctx, int depth_code);
+    // RvVIDOff (RvMonP bit 6).  A separate seam from mode_cb because blanking
+    // and depth are separate bits the driver sets independently -- it blanks,
+    // reprograms, then unblanks.
+    void (*blank_cb)(void *ctx, bool video_off);
+    void *blank_ctx;
     void *mode_ctx;
+    struct object *object; // machine.rbv; after the blob, never saved
 };
 
 // === Interrupt aggregation ==================================================
@@ -154,7 +166,31 @@ static void rbv_update_irq(rbv_t *rbv) {
 // === Register read ==========================================================
 
 // Translate a window offset (native or VIA-spaced alias) to a register id,
-// or 0xFF if unmapped.
+// or 0xFFFF if unmapped.
+//
+// The decode is deliberately NARROW -- eight exact offsets plus two named
+// aliases -- where the AMIC's equivalent pseudo-VIA2 bank partial-decodes on
+// the low five address bits (amic.c) and mirrors its 32-byte file across the
+// whole window.  That difference looks like a gap that `off & 0x1F` here
+// would close.  It must not be applied:
+//
+//   - The accesses we have evidence of -- the compact offsets, the
+//     classic-VIA stride ($1A03 for the IFR, $1C13 for the IER), and A/UX's
+//     $1E02 slot-interrupt read -- are covered by RV_IFR_ALIAS, RV_IER_ALIAS
+//     and RV_SINT_ALIAS.  ($1E02 was the one that bit: undecoded, it read
+//     $FF = "no slot pending", so the IIci kernel's level-2 handler could
+//     never see or clear the built-in video VBL (RvIRQ0) and spun in
+//     via2intr for the rest of the boot.)  Widening buys no access we have
+//     evidence anyone makes.
+//   - It would alias offsets we have no evidence about onto registers with
+//     side effects.  $1A00 -- vBufB, the VIA2 base the same shared OS code
+//     touches -- masks to $00, which is RvDataB, whose write path runs the
+//     soft power-off sequence (see RV_DATAB below).  Aliasing an unknown
+//     access onto "turn the machine off" is a worse failure than the missing
+//     mirror it would fix.
+//
+// The IIci and IIsi developer notes would settle the real decode width; our
+// copies are image-only scans, so this stays narrow and says why.
 static uint16_t rbv_decode(uint32_t off) {
     switch (off) {
     case RV_DATAB:
@@ -170,13 +206,15 @@ static uint16_t rbv_decode(uint32_t off) {
         return RV_IFR;
     case RV_IER_ALIAS:
         return RV_IER;
+    case RV_SINT_ALIAS:
+        return RV_SINT;
     default:
         return 0xFFFF;
     }
 }
 
-static uint8_t rbv_read_byte(void *device, uint32_t addr) {
-    rbv_t *rbv = (rbv_t *)device;
+// A register read; an inspection (`peek`) leaves the clear-on-read VBL flag.
+static uint8_t rbv_reg_read(rbv_t *rbv, uint32_t addr, bool peek) {
     uint16_t reg = rbv_decode(addr);
     switch (reg) {
     case RV_DATAB:
@@ -186,6 +224,8 @@ static uint8_t rbv_read_byte(void *device, uint32_t addr) {
     case RV_SINT: {
         // RvSInt is active-low: a set bit means "no interrupt on that slot".
         uint8_t v = (uint8_t)(~rbv->slot_pending & 0x7Fu);
+        if (peek)
+            return v;
         LOG(4, "read RvSInt = $%02X", v);
         // The built-in-video VBL flag (RvIRQ0 = bit 6) is clear-on-read: a
         // vblank pulse is observed once per frame then deasserts.  NuBus slot
@@ -250,16 +290,33 @@ static void rbv_write_byte(void *device, uint32_t addr, uint8_t value) {
         // are accepted (the OS pokes it during self-test) but do not latch.
         LOG(3, "write RvSInt = $%02X (accept-and-log)", value);
         return;
-    case RV_IFR:
-        // IFR is composed live from source state.  The OS clears flags by
-        // writing with bit 7 = 0; the underlying sources deassert on
-        // service, so the recompute below reflects the result.  Accept the
-        // write so diagnostic poke/peek sequences see no bus error.
+    case RV_IFR: {
+        // Most of RvIFR is composed live from source state (rbv_compose_ifr),
+        // and for those bits the write needs no effect: the underlying source
+        // deasserts on service and the recompute below reflects it.
+        //
+        // RvIRQ0 -- the built-in video's frame interrupt, slot_pending bit 6 --
+        // is the exception.  It is a LATCH, set by the vblank and otherwise
+        // cleared only by reading RvSInt, and it feeds RvAnySlot.  Discarding
+        // the written value meant a driver that acknowledges the VBL through
+        // RvIFR (or through the Rv2IFR alias, which is the path the shared
+        // VIA2/RBV OS code takes) never cleared it, and the machine took a
+        // level-2 interrupt continuously.
+        //
+        // So honour write-1-to-clear over the latched set, the way the PSC
+        // does with AV_PSC_VIA2_LATCH_MASK: bit 7 = 0 selects clear, and a 1
+        // in RvAnySlot clears the only latched contributor there is.
         LOG(3, "write RvIFR = $%02X (set/clr=%d)", value, (value & RVIFR_SETCLR) ? 1 : 0);
+        if (!(value & RVIFR_SETCLR) && (value & RVIFR_ANYSLOT) && (rbv->slot_pending & (1u << 6))) {
+            rbv->slot_pending &= (uint8_t) ~(1u << 6);
+            LOG(4, "  RvIRQ0 latch cleared by RvIFR write");
+        }
         rbv_update_irq(rbv);
         return;
+    }
     case RV_MONP: {
         uint8_t old_depth = rbv->reg_monp & RVMONP_DEPTH_MASK;
+        bool old_vidoff = (rbv->reg_monp & RVMONP_VIDOFF) != 0;
         // Depth (bits 0-2) and video on/off (bits 6-7) are writable; the
         // monitor-sense field (bits 3-5) is read-only and preserved.
         rbv->reg_monp = (uint8_t)((value & ~RVMONP_SENSE_MASK) | (rbv->reg_monp & RVMONP_SENSE_MASK));
@@ -268,6 +325,9 @@ static void rbv_write_byte(void *device, uint32_t addr, uint8_t value) {
             (rbv->reg_monp & RVMONP_VIDOFF) ? 1 : 0);
         if (new_depth != old_depth && rbv->mode_cb)
             rbv->mode_cb(rbv->mode_ctx, new_depth);
+        bool new_vidoff = (rbv->reg_monp & RVMONP_VIDOFF) != 0;
+        if (new_vidoff != old_vidoff && rbv->blank_cb)
+            rbv->blank_cb(rbv->blank_ctx, new_vidoff);
         return;
     }
     case RV_CHPT:
@@ -303,6 +363,13 @@ static void rbv_write_byte(void *device, uint32_t addr, uint8_t value) {
 
 // RBV is an 8-bit peripheral; compose wider accesses from byte ops so an
 // occasional word/long touch from the OS doesn't fault.
+static uint8_t rbv_read_byte(void *device, uint32_t addr) {
+    return rbv_reg_read(device, addr, false);
+}
+static uint8_t rbv_peek_byte(void *device, uint32_t addr) {
+    return rbv_reg_read(device, addr, true);
+}
+
 static uint16_t rbv_read_word(void *device, uint32_t addr) {
     return (uint16_t)((rbv_read_byte(device, addr) << 8) | rbv_read_byte(device, addr + 1));
 }
@@ -323,7 +390,80 @@ static void rbv_write_long(void *device, uint32_t addr, uint32_t value) {
 
 // === Lifecycle ==============================================================
 
-rbv_t *rbv_init(rbv_variant_t variant, checkpoint_t *cp) {
+// === Object node: machine.rbv ===============================================
+//
+// The IIci and IIsi have no VIA2 -- the RBV replaces it -- so `machine.via2`
+// does not exist on them and there was nothing else to look at.  RvIFR is
+// composed on demand from live source state rather than stored, which is
+// exactly why it needs a node: there is no register to peek.
+
+static uint32_t rbv_obj_pending(void *ctx) {
+    return rbv_compose_ifr((const rbv_t *)ctx);
+}
+static uint32_t rbv_obj_enabled(void *ctx) {
+    return ((const rbv_t *)ctx)->reg_ier & 0x7Fu;
+}
+// One line to the CPU, at IPL 1 through VIA1's CA1 slot-interrupt input.
+static int rbv_obj_ipl(void *ctx) {
+    const rbv_t *rbv = (const rbv_t *)ctx;
+    return (rbv_compose_ifr(rbv) & rbv->reg_ier & 0x7Fu) ? 1 : 0;
+}
+
+static const irq_controller_ops_t rbv_irq_ops = {
+    .chip = "RBV",
+    .pending = rbv_obj_pending,
+    .enabled = rbv_obj_enabled,
+    .ipl = rbv_obj_ipl,
+};
+
+#define RBV_BYTE_ATTR(FIELD)                                                                                           \
+    static value_t rbv_attr_##FIELD(struct object *self, const member_t *m) {                                          \
+        (void)m;                                                                                                       \
+        value_t v = val_uint(1, ((const rbv_t *)object_data(self))->FIELD);                                            \
+        v.flags |= VAL_HEX;                                                                                            \
+        return v;                                                                                                      \
+    }
+
+RBV_BYTE_ATTR(slot_pending)
+RBV_BYTE_ATTR(reg_senb)
+RBV_BYTE_ATTR(reg_monp)
+RBV_BYTE_ATTR(reg_datab)
+
+static DEF_GETTER(rbv_attr_variant) {
+    return val_str(((const rbv_t *)object_data(self))->variant == RBV_VARIANT_V8_IISI ? "V8/IIsi" : "RBV/IIci");
+}
+
+static const member_t rbv_members[] = {
+    IRQ_CONTROLLER_MEMBERS(&rbv_irq_ops){.kind = M_ATTR,
+                                         .name = "variant",
+                                         .doc = "RBV silicon variant",
+                                         .attr = {.type = V_STRING, .get = rbv_attr_variant, .set = NULL}                                                 },
+    {.kind = M_ATTR,
+                                         .name = "slot_pending",
+                                         .doc = "Raw slot IRQ requests, active-high (before RvSEnb)",
+                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = rbv_attr_slot_pending, .set = NULL}},
+    {.kind = M_ATTR,
+                                         .name = "slot_enable",
+                                         .doc = "RvSEnb: which slots may raise RvAnySlot",
+                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = rbv_attr_reg_senb, .set = NULL}                   },
+    {.kind = M_ATTR,
+                                         .name = "monp",
+                                         .doc = "RvMonP: depth, monitor sense and video bits",
+                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = rbv_attr_reg_monp, .set = NULL}                   },
+    {.kind = M_ATTR,
+                                         .name = "datab",
+                                         .doc = "RvDataB: latched control bits (cache, soft power, sound path)",
+                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = rbv_attr_reg_datab, .set = NULL}                  },
+};
+
+static const class_desc_t rbv_class = {
+    .name = "irq_controller",
+    .doc = "RBV, the IIci/IIsi RAM-based video and interrupt chip",
+    .members = rbv_members,
+    .n_members = sizeof(rbv_members) / sizeof(rbv_members[0]),
+};
+
+rbv_t *rbv_init(rbv_variant_t variant, uint8_t sense3, checkpoint_t *cp) {
     rbv_t *rbv = (rbv_t *)calloc(1, sizeof(*rbv));
     if (!rbv)
         return NULL;
@@ -333,8 +473,8 @@ rbv_t *rbv_init(rbv_variant_t variant, checkpoint_t *cp) {
     // Reset defaults: cache enabled, power on, sound to internal speaker.
     // RvPowerOff (bit 2) idles high (= powered on); the detector arms on it.
     rbv->reg_datab = RVDATAB_POWEROFF | RVDATAB_CFLUSH | RVDATAB_SNDEXT;
-    // Default monitor sense = 6 (binary 110 = Macintosh II 13" RGB), depth 0.
-    rbv->reg_monp = (uint8_t)((6u << RVMONP_SENSE_SHIFT) & RVMONP_SENSE_MASK);
+    // The monitor strap on the sense lines, depth 0.
+    rbv->reg_monp = (uint8_t)(((uint32_t)sense3 << RVMONP_SENSE_SHIFT) & RVMONP_SENSE_MASK);
 
     rbv->memory_interface = (memory_interface_t){
         .read_uint8 = rbv_read_byte,
@@ -343,6 +483,7 @@ rbv_t *rbv_init(rbv_variant_t variant, checkpoint_t *cp) {
         .write_uint8 = rbv_write_byte,
         .write_uint16 = rbv_write_word,
         .write_uint32 = rbv_write_long,
+        .peek_uint8 = rbv_peek_byte, // wider peeks compose
     };
 
     if (cp) {
@@ -350,10 +491,49 @@ rbv_t *rbv_init(rbv_variant_t variant, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, rbv, data_size);
     }
 
+    rbv->object = object_new(&rbv_class, rbv, "rbv");
+    if (rbv->object) {
+        object_set_order(rbv->object, 45); // beside the other controllers
+        object_attach(machine_object(), rbv->object);
+    }
     return rbv;
 }
 
+// The RBV stands where VIA2 stands, and VIA2 is on the board's /RESET net
+// (Guide to the Macintosh Family Hardware 2e, Table 14-2).  Designing Cards
+// and Drivers 3e p. 403 also has a cache card follow RBV register 0 "or
+// when the RESET signal is asserted".  So: the registers rbv_init sets, the
+// soft-power detector disarmed again (the ROM's early RvDataB write has the
+// power bit low, and an armed detector would take it for a power-off), and
+// the RvIRQ0 frame latch dropped.  The sense bits are an input strap and the
+// SCSI / sound / slot request lines belong to the chips driving them.
+void rbv_reset(rbv_t *rbv) {
+    if (!rbv)
+        return;
+    uint8_t old_depth = rbv->reg_monp & RVMONP_DEPTH_MASK;
+    bool old_vidoff = (rbv->reg_monp & RVMONP_VIDOFF) != 0;
+    rbv->reg_datab = RVDATAB_POWEROFF | RVDATAB_CFLUSH | RVDATAB_SNDEXT; // as rbv_init
+    rbv->reg_exp = 0;
+    rbv->reg_monp &= RVMONP_SENSE_MASK; // depth 0, video on, the strap kept
+    rbv->reg_chpt = 0;
+    rbv->reg_ier = 0;
+    rbv->reg_senb = 0;
+    rbv->power_armed = false; // re-arms on the first bit-high, as at power-on
+    rbv->slot_pending &= (uint8_t) ~(1u << 6); // RvIRQ0 is a latch inside the RBV
+    // The video follows the registers back, the same seams a write drives.
+    if (old_depth != 0 && rbv->mode_cb)
+        rbv->mode_cb(rbv->mode_ctx, 0);
+    if (old_vidoff && rbv->blank_cb)
+        rbv->blank_cb(rbv->blank_ctx, false);
+    rbv_update_irq(rbv);
+    LOG(1, "RBV reset");
+}
+
 void rbv_delete(rbv_t *rbv) {
+    if (rbv && rbv->object) {
+        object_detach(rbv->object);
+        object_delete(rbv->object);
+    }
     free(rbv);
 }
 
@@ -378,6 +558,11 @@ void rbv_set_irq_callback(rbv_t *rbv, void (*cb)(void *ctx, bool active), void *
 void rbv_set_power_off_callback(rbv_t *rbv, void (*cb)(void *ctx), void *ctx) {
     rbv->power_cb = cb;
     rbv->power_ctx = ctx;
+}
+
+void rbv_set_blank_callback(rbv_t *rbv, void (*cb)(void *ctx, bool video_off), void *ctx) {
+    rbv->blank_cb = cb;
+    rbv->blank_ctx = ctx;
 }
 
 void rbv_set_mode_callback(rbv_t *rbv, void (*cb)(void *ctx, int depth_code), void *ctx) {
@@ -429,11 +614,6 @@ void rbv_set_snd_irq(rbv_t *rbv, bool active) {
 }
 
 // === Configuration ==========================================================
-
-void rbv_set_monitor_sense(rbv_t *rbv, uint8_t sense3) {
-    rbv->reg_monp = (uint8_t)((rbv->reg_monp & ~RVMONP_SENSE_MASK) |
-                              (((uint32_t)sense3 << RVMONP_SENSE_SHIFT) & RVMONP_SENSE_MASK));
-}
 
 int rbv_current_depth(rbv_t *rbv) {
     return rbv->reg_monp & RVMONP_DEPTH_MASK;

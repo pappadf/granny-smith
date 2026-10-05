@@ -39,7 +39,7 @@
   .gs-workbench.panel-right {
     flex-direction: row;
   }
-  /* Panel ordering — see prototype styles.css:216-226. */
+  /* Panel ordering. */
   .gs-workbench.panel-left > :global(.gs-panel) {
     order: 0;
   }
@@ -73,27 +73,27 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    background: var(--gs-bg);
+    background: var(--gs-surface-app);
     position: relative;
   }
   /* Panel sizing rules apply to a child component with the .gs-panel class. */
   .gs-workbench.panel-bottom > :global(.gs-panel) {
     height: var(--gs-panel-size);
     width: 100%;
-    border-top: 1px solid var(--gs-border);
+    border-top: var(--gs-border-width) solid var(--gs-border);
   }
   .gs-workbench.panel-left > :global(.gs-panel) {
     width: var(--gs-panel-size);
     height: 100%;
-    border-right: 1px solid var(--gs-border);
+    border-right: var(--gs-border-width) solid var(--gs-border);
   }
   .gs-workbench.panel-right > :global(.gs-panel) {
     width: var(--gs-panel-size);
     height: 100%;
-    border-left: 1px solid var(--gs-border);
+    border-left: var(--gs-border-width) solid var(--gs-border);
   }
   .gs-workbench.panel-collapsed.panel-bottom > :global(.gs-panel) {
-    height: 35px;
+    height: var(--gs-size-toolbar);
   }
   .gs-workbench.panel-collapsed.panel-left > :global(.gs-panel),
   .gs-workbench.panel-collapsed.panel-right > :global(.gs-panel) {

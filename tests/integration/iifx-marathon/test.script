@@ -19,16 +19,16 @@
 #    +260M — click at +180M, inside the window.
 
 # Pin the RTC so the boot is deterministic run-to-run.
-machine.rtc.time = 3000000000
 
 machine.boot model="iifx" ram=16384 video_card="824gc" video_mode="gc_640x480_8bpp" rom="${$ROM}"
+machine.rtc.time = 3000000000
 
 machine.scsi.attach_hd "../../data/apps/marathon_8_24gc.img" 0
 scheduler.run 200000000
 
 # The card that booted into slot $9 is the 8•24 GC at 640x480 8 bpp.
 assert machine.id == "iifx" "machine.id != iifx"
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "slot $9 card != 8•24 GC"
+assert machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC" "slot $9 card != 8•24 GC"
 assert machine.screen.width == 640 "screen width != 640"
 assert machine.screen.height == 480 "screen height != 480"
 assert machine.nubus.slot[9].card.framebuffer.depth == 8 "framebuffer not 8 bpp"

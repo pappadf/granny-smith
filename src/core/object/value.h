@@ -57,8 +57,8 @@ typedef enum {
 #define VAL_DEC       0x0002u // prefer decimal output
 #define VAL_VOLATILE  0x0004u // re-read every time (no caching)
 #define VAL_SENSITIVE 0x0008u // do not print payload (passwords, etc.)
-#define VAL_RO        0x0010u // attribute is read-only
 #define VAL_BIN       0x0020u // prefer binary output
+#define VAL_PATH      0x0040u // a string naming a VFS path (argument forms offer a file picker)
 
 // Forward declaration; defined in object.h.
 struct object;
@@ -102,6 +102,7 @@ typedef struct value {
         struct {
             int64_t start;
             int64_t stop;
+            int64_t step; // never 0; 1 for the `a..b` form
         } range; // half-open [start, stop)
     };
 } value_t;
@@ -130,7 +131,21 @@ value_t val_map(struct value_entry *entries, size_t len); // takes ownership of 
 value_t val_obj(struct object *o);
 value_t val_err(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 value_t val_ref(const char *path); // node reference by path text (strdup'd)
-value_t val_range(int64_t start, int64_t stop); // half-open [start, stop)
+// Half-open [start, stop) with a stride.  `step` must not be 0.
+//
+// A range is LAZY: it carries three integers and never allocates, however
+// many values it denotes.  range() used to materialise a V_LIST instead,
+// capped at 2^20 entries -- which at sizeof(value_t) == 32 permitted a 32 MB
+// single calloc on the 32-bit wasm heap, to run a loop.  `for` over a real
+// collection legitimately walks a list that already exists; range() was the
+// only iterable that fabricated one.
+value_t val_range_step(int64_t start, int64_t stop, int64_t step);
+
+// Shorthand for step 1, the `a..b` spelling.
+value_t val_range(int64_t start, int64_t stop);
+
+// Number of values a range denotes, saturating rather than overflowing.
+uint64_t val_range_count(const value_t *v);
 
 // Convenience constants.
 #define V_NONE_VAL (val_none())
@@ -197,11 +212,24 @@ void value_free_ptr(value_t *v); // wrapper compatible with cleanup attribute
 uint64_t val_as_u64(const value_t *v, bool *ok);
 int64_t val_as_i64(const value_t *v, bool *ok);
 double val_as_f64(const value_t *v, bool *ok);
-bool val_as_bool(const value_t *v); // truthiness (proposal §2.5)
+bool val_as_bool(const value_t *v); // truthiness
 
 // Borrowed pointer to the string body or NULL. The pointer is only valid
 // while *v is alive.
 const char *val_as_str(const value_t *v);
+
+// Coerce a boolean-ish word to a bool.  Accepts true/on/yes/1 and
+// false/off/no/0, CASE-SENSITIVELY, matching the identifier rules everywhere
+// else in the object model.
+//
+// One vocabulary, because there were two that disagreed: validate_slot's was
+// case-sensitive and log.c's parse_onoff was case-INsensitive and accepted a
+// narrower set, so `log.set cpu stdout=ON` worked while
+// `machine.floppy.drive[0].insert path ON` did not, for no reason a user
+// could infer.  Note this does NOT subsume the
+// true/false/none LITERAL grammars in parse.c and script.c: those are
+// language keywords, not coercions, and must not start accepting "yes".
+bool val_parse_bool(const char *s, bool *out);
 
 // True if *v carries an error.
 static inline bool val_is_error(const value_t *v) {
@@ -211,9 +239,14 @@ static inline bool val_is_error(const value_t *v) {
 // True if *v is one of the heap-owning kinds.
 bool val_is_heap(const value_t *v);
 
-// Deep copy. Inline kinds are returned by value; heap-owning kinds duplicate
-// their storage. Lists recurse.
-value_t value_copy(const value_t *v);
+// Lower-case name of a kind ("uint", "enum", "any" for V_ANY): the one
+// spelling used by type descriptors, usage text and validation errors.
+const char *value_kind_name(value_kind_t k);
+
+// (value_copy was a second deep-copier and is gone -- see value_dup.  It
+// reported OOM by silently returning a broken value, and for V_BYTES left
+// `n` at the source length with `p` NULL, breaking the invariant its readers
+// rely on.  Every new call site was a coin flip on error behaviour.)
 
 #ifdef __cplusplus
 }

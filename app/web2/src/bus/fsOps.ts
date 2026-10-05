@@ -8,7 +8,8 @@ import { gsEval, gsErrorText } from './emulator';
 import { opfs } from './opfs';
 import { sanitizeName } from '@/lib/archive';
 import { isInImageSpace } from '@/lib/diskImage';
-import { UPLOAD_DIR } from '@/lib/opfsPaths';
+import { scratchPath } from '@/lib/opfsPaths';
+import { xferReadDisk } from './xfer';
 
 // Per-item progress hook (e.g. to drive the status-bar indicator).
 export type ProgressFn = (name: string, index: number, total: number) => void;
@@ -26,8 +27,6 @@ export interface CopySource {
   isDir: boolean;
 }
 
-let downloadSeq = 0;
-
 // Make a name safe for an OPFS / cross-platform destination: replace the
 // characters OPFS or Windows reject (notably ':' which the HFS reader produces
 // from an in-name '/') and trim trailing dots/spaces. Spaces and leading dots
@@ -42,7 +41,7 @@ function basename(path: string): string {
 
 // AppleDouble header sidecar path for an OPFS data-file path: "<dir>/._<name>".
 // The sidecar carries the resource fork + Finder Info; the two files are one
-// logical Mac file and move/rename/delete together (see proposal §4.6).
+// logical Mac file and move/rename/delete together.
 export function adSidecarPath(path: string): string {
   const i = path.lastIndexOf('/');
   return i >= 0 ? `${path.slice(0, i + 1)}._${path.slice(i + 1)}` : `._${path}`;
@@ -93,11 +92,11 @@ export async function copyOutOfImage(
       if (!firstError) firstError = `'${safe}' already exists in destination`;
       continue;
     }
-    // storage.cp preserves forks: a file carrying a resource fork / Finder
+    // files.cp preserves forks: a file carrying a resource fork / Finder
     // Info (e.g. an NDIF disk image, whose block map lives in the resource
     // fork) is written as an AppleDouble pair — the data fork under `dst` plus
     // a sibling "._<name>" header — so the copy is lossless and re-mountable.
-    const res = await gsEval('storage.cp', sources[i].isDir ? ['-r', src, dst] : [src, dst]);
+    const res = await gsEval('files.cp', sources[i].isDir ? [src, dst, true] : [src, dst]);
     if (res !== true) {
       failures.push(name);
       if (!firstError) firstError = gsErrorText(res);
@@ -163,14 +162,14 @@ function saveBlob(blob: Blob, filename: string): void {
 }
 
 // Download one file. A plain OPFS file is read straight from OPFS; a file
-// inside a (read-only) image has its data fork copied out to a scratch OPFS
-// path first, then read and removed.
+// inside a (read-only) image has its data fork copied out to a file of its
+// own in the scratch area first, then read and removed.
 async function downloadOne(target: string): Promise<boolean> {
   const name = basename(target) || 'download';
   try {
     if (isInImageSpace(target)) {
-      const scratch = `${UPLOAD_DIR}/.dl-${downloadSeq++}-${sanitizeName(name)}`;
-      if ((await gsEval('storage.cp', [target, scratch])) !== true) return false;
+      const scratch = scratchPath(sanitizeName(name) || 'download');
+      if ((await gsEval('files.cp', [target, scratch])) !== true) return false;
       try {
         // readFile returns a lazy File backed by the OPFS entry; the browser
         // streams it AFTER the anchor click. Materialise the bytes before
@@ -188,6 +187,82 @@ async function downloadOne(target: string): Promise<boolean> {
   } catch (err) {
     console.error('download failed', err);
     return false;
+  }
+}
+
+// Without a save picker, a raw download is assembled in memory first; past
+// this it is refused rather than risk the tab.
+const RAW_DOWNLOAD_IN_MEMORY_MAX = 512 * 1024 * 1024;
+
+// Download the disk a stored image holds (a .dmg) as a flat raw image.  The
+// decoded bytes are read from the core a transfer window at a time
+// (files.xfer_read_disk) and written to a file the user picks (the File
+// System Access save picker), so neither OPFS nor memory ever holds the raw
+// image; a browser without the picker gets an in-memory Blob up to
+// RAW_DOWNLOAD_IN_MEMORY_MAX.  `onProgress` hears bytes written of the total.
+export async function downloadRawImage(
+  path: string,
+  onProgress?: (done: number, total: number) => void,
+): Promise<{ ok: boolean; error?: string }> {
+  const info = (await gsEval('files.udif_info', [path])) as { bytes?: number } | null;
+  const total =
+    info && typeof info === 'object' && typeof info.bytes === 'number' ? info.bytes : null;
+  if (total === null) return { ok: false, error: 'not a UDIF image' };
+  const name = (basename(path) || 'disk').replace(/\.dmg$/i, '') + '.img';
+  const window = 2 * 1024 * 1024;
+  const picker = (
+    globalThis as {
+      showSaveFilePicker?: (o: unknown) => Promise<{
+        createWritable(): Promise<{
+          write(d: Uint8Array): Promise<void>;
+          close(): Promise<void>;
+          abort(): Promise<void>;
+        }>;
+      }>;
+    }
+  ).showSaveFilePicker;
+  try {
+    if (picker) {
+      let handle;
+      try {
+        handle = await picker({ suggestedName: name });
+      } catch {
+        return { ok: false, error: 'cancelled' };
+      }
+      const out = await handle.createWritable();
+      try {
+        for (let at = 0; at < total;) {
+          const part = await xferReadDisk(path, at, window);
+          if (!part.length) break;
+          await out.write(part);
+          at += part.length;
+          onProgress?.(at, total);
+        }
+        await out.close();
+      } catch (e) {
+        await out.abort().catch(() => undefined);
+        throw e;
+      }
+      return { ok: true };
+    }
+    if (total > RAW_DOWNLOAD_IN_MEMORY_MAX)
+      return {
+        ok: false,
+        error: `this browser cannot save a ${Math.round(total / (1024 * 1024))} MB raw image (no save picker); download the .dmg instead`,
+      };
+    const parts: Uint8Array[] = [];
+    for (let at = 0; at < total;) {
+      const part = await xferReadDisk(path, at, window);
+      if (!part.length) break;
+      parts.push(part);
+      at += part.length;
+      onProgress?.(at, total);
+    }
+    saveBlob(new Blob(parts as BlobPart[]), name);
+    return { ok: true };
+  } catch (err) {
+    console.error('raw download failed', err);
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -209,7 +284,7 @@ export async function unpackArchive(path: string): Promise<{ ok: boolean; base: 
   const base = name.replace(/\.[^.]+$/, '') || name;
   let ok = false;
   try {
-    ok = (await gsEval('archive.extract', [path, `${parentDir}/${base}_unpacked`])) === true;
+    ok = (await gsEval('files.archive.extract', [path, `${parentDir}/${base}_unpacked`])) === true;
   } catch {
     ok = false;
   }

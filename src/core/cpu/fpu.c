@@ -92,24 +92,6 @@ static inline void uint64_mul128(uint64_t a, uint64_t b, uint64_t *hi, uint64_t 
 #endif
 }
 
-// 128-bit right shift by n bits (0 <= n < 128)
-static inline void uint128_shr(uint64_t *hi, uint64_t *lo, int n) {
-    if (n == 0)
-        return;
-    if (n >= 128) {
-        *hi = 0;
-        *lo = 0;
-        return;
-    }
-    if (n >= 64) {
-        *lo = *hi >> (n - 64);
-        *hi = 0;
-    } else {
-        *lo = (*lo >> n) | (*hi << (64 - n));
-        *hi >>= n;
-    }
-}
-
 // 128-bit right shift with sticky bit: shifted-out nonzero bits OR into lsb
 static inline void uint128_shr_sticky(uint64_t *hi, uint64_t *lo, int n) {
     if (n == 0)
@@ -137,24 +119,6 @@ static inline void uint128_shr_sticky(uint64_t *hi, uint64_t *lo, int n) {
     }
     if (sticky)
         *lo |= 1;
-}
-
-// 128-bit left shift by n bits (0 <= n < 128)
-static inline void uint128_shl(uint64_t *hi, uint64_t *lo, int n) {
-    if (n == 0)
-        return;
-    if (n >= 128) {
-        *hi = 0;
-        *lo = 0;
-        return;
-    }
-    if (n >= 64) {
-        *hi = *lo << (n - 64);
-        *lo = 0;
-    } else {
-        *hi = (*hi << n) | (*lo >> (64 - n));
-        *lo <<= n;
-    }
 }
 
 // Count leading zeros in 64-bit value
@@ -272,50 +236,6 @@ void fpu_normalize(fpu_unpacked_t *v) {
             v->mantissa_hi = (v->mantissa_hi << shift) | (v->mantissa_lo >> (64 - shift));
             v->mantissa_lo <<= shift;
             v->exponent -= shift;
-        }
-    }
-}
-
-// Round mantissa to a specific number of significant bits
-static void fpu_round_mantissa(fpu_state_t *fpu, fpu_unpacked_t *val, int prec_bits) {
-    if (val->exponent == FPU_EXP_INF || val->exponent == FPU_EXP_ZERO)
-        return;
-    if (prec_bits >= 64)
-        return;
-    int discard = 64 - prec_bits;
-    uint64_t half = 1ULL << (discard - 1);
-    uint64_t mask = (half << 1) - 1;
-    uint64_t round_bits = val->mantissa_hi & mask;
-    bool has_lo = (val->mantissa_lo != 0);
-    if (round_bits != 0 || has_lo)
-        fpu->fpsr |= FPEXC_INEX2;
-    unsigned rmode = (fpu->fpcr >> 4) & 3;
-    bool round_up = false;
-    switch (rmode) {
-    case 0:
-        if (round_bits > half || (round_bits == half && !has_lo && (val->mantissa_hi & (1ULL << discard))))
-            round_up = true;
-        else if (round_bits == half && has_lo)
-            round_up = true;
-        break;
-    case 1:
-        break;
-    case 2:
-        if (val->sign && (round_bits || has_lo))
-            round_up = true;
-        break;
-    case 3:
-        if (!val->sign && (round_bits || has_lo))
-            round_up = true;
-        break;
-    }
-    val->mantissa_hi &= ~mask;
-    val->mantissa_lo = 0;
-    if (round_up) {
-        val->mantissa_hi += (1ULL << discard);
-        if (val->mantissa_hi == 0) {
-            val->mantissa_hi = 0x8000000000000000ULL;
-            val->exponent++;
         }
     }
 }
@@ -725,13 +645,13 @@ int fpu_frestore(fpu_state_t *fpu, uint32_t addr) {
     return 4 + size;
 }
 
-// MC68040 FSAVE: the on-chip FPU's frames are a single status longword —
-// NULL (version $00) when the FPU is in the reset state, IDLE (version $41,
-// size byte $00) otherwise.  The larger UNIMP/BUSY frames only exist mid-
-// exception on real silicon; this functional model completes every FP
-// operation synchronously (proposal §6.4 decision A), so there is never a
-// mid-instruction state to dump.  Frame sizes cross-checked against the
-// FPSP equates (fpsp.h: IDLE_SIZE=4, UNIMP_41_SIZE=52, BUSY_SIZE=100).
+// MC68040 FSAVE: the on-chip FPU's frames are a single status longword — NULL
+// (version $00) when the FPU is in the reset state, IDLE (version $41, size
+// byte $00) otherwise.  The larger UNIMP/BUSY frames only exist mid-exception
+// on real silicon; this functional model completes every FP operation
+// synchronously, so there is never a mid-instruction state to dump.  Frame
+// sizes cross-checked against the FPSP equates (fpsp.h: IDLE_SIZE=4,
+// UNIMP_41_SIZE=52, BUSY_SIZE=100).
 int fpu_fsave040(fpu_state_t *fpu, uint32_t addr) {
     memory_write_uint32(addr, fpu->initialized ? 0x41000000u : 0x00000000u);
     // After FSAVE the FPU is in the null state; the programmer model
@@ -1407,8 +1327,6 @@ static float80_reg_t fpu_from_packed(fpu_state_t *fpu, uint32_t w0, uint32_t w1,
     val.exponent = 63 - lz; // true binary exponent for integer value
 
     // Scale by 10^adj_exp
-    // Save FPSR: intermediate ops must not leak INEX2 into caller
-    uint32_t saved_fpsr = fpu->fpsr;
     if (adj_exp != 0) {
         // Use extended precision, round-to-nearest for intermediate computation
         uint32_t saved_fpcr = fpu->fpcr;

@@ -2,15 +2,13 @@
 // Copyright (c) pappadf
 
 // card.h
-// NuBus card abstraction shared by every card driver in cards/.  See
-// proposal-machine-iicx-iix.md §3.2.1 for the full design.  Step-3 status:
-// types and registry accessors exist; the registry is empty until the
-// SE/30 built-in card moves out in step 4.
+// NuBus card abstraction shared by every card driver in cards/.
 
 #ifndef NUBUS_CARD_H
 #define NUBUS_CARD_H
 
 #include "common.h"
+#include "machine_build_opts.h" // slot_opts_t
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -24,6 +22,7 @@ typedef struct display display_t;
 
 struct nubus_bus;
 struct nubus_card;
+struct object;
 typedef struct nubus_bus nubus_bus_t;
 typedef struct nubus_card nubus_card_t;
 
@@ -32,8 +31,11 @@ typedef struct nubus_card nubus_card_t;
 typedef struct nubus_card_ops {
     // Called once during machine init.  Returns 0 on success.  The card
     // may allocate VRAM, register host-backed regions on the bus map, and
-    // populate any internal state.
-    int (*init)(nubus_card_t *card, config_t *cfg, checkpoint_t *cp);
+    // populate any internal state.  `opts` is what the boot document says
+    // about this slot (never NULL; empty fields mean the card's defaults):
+    // its video mode, custom geometry, declaration-ROM file, whether it runs
+    // the substitute ROM, and the monitor on its connector.
+    int (*init)(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts);
 
     // Called during machine teardown, in inverse init order.
     void (*teardown)(nubus_card_t *card, config_t *cfg);
@@ -45,6 +47,12 @@ typedef struct nubus_card_ops {
     // contents and the host memory-map regions persist (they are NOT
     // re-allocated or re-registered).  NULL hooks are safe and skipped.
     void (*reset)(nubus_card_t *card, config_t *cfg);
+
+    // Called on a power cycle (machine.restart), before the /RESET that
+    // follows it: the card loses what losing power loses -- VRAM -- and
+    // comes up showing what a cold card shows.  A warm /RESET (above) keeps
+    // VRAM.  NULL hooks are safe and skipped.
+    void (*power_on)(nubus_card_t *card, config_t *cfg);
 
     // Called from the family VBL trigger (via nubus_tick_vbl) once per
     // VBL.  Cards that drive their own VSync IRQ call nubus_assert_irq()
@@ -61,10 +69,6 @@ typedef struct nubus_card_ops {
     // slot in canonical slot order.
     void (*checkpoint_save)(nubus_card_t *card, checkpoint_t *cp);
     void (*checkpoint_restore)(nubus_card_t *card, checkpoint_t *cp);
-
-    // Card-name introspection — used by the config dialog and the
-    // `machine.slot.<n>.card` object-model surface.
-    const char *(*name)(const nubus_card_t *card);
 } nubus_card_ops_t;
 
 // Concrete card instance.  Per-card private state hangs off `.private`;
@@ -80,13 +84,28 @@ struct nubus_card {
                 // that snags some tooling).
     uint8_t *declrom; // 8 KB or larger declaration ROM
     size_t declrom_size;
+    // Where the declaration ROM came from: its file, or "builtin:<kind>" for
+    // a generated one (NULL: none loaded), and its Format-Block CRC.  Set by
+    // declrom_load_vrom_card / declrom_install_builtin; freed by the bus.
+    char *rom_path;
+    uint32_t rom_crc;
+    // The chip image of a file-backed ROM (NULL for a generated one), kept so
+    // the card's checkpoint part carries the ROM it runs.  Freed by the bus.
+    uint8_t *rom_chip;
+    size_t rom_chip_size;
+    // On a restore, the declaration ROM the card's checkpoint part carries,
+    // set by the bus before ops->init: declrom_load_vrom_card takes it rather
+    // than looking the card up again (the file may be gone, or another
+    // revision offered).  Borrowed for init only.
+    rom_image_t restored_rom;
+    // The card runs the emulator's substitute declaration ROM (its seat's
+    // `substitute`, set by the bus before ops->init).
+    bool substitute;
 };
 
-// Per-card constructor signature.  The bus controller calls this once per
-// populated slot during nubus_init().  Returns the new card on success,
-// NULL on failure.  The bus takes ownership and calls ops->teardown()
-// during nubus_delete.
-typedef nubus_card_t *(*nubus_card_factory_fn)(int slot, config_t *cfg, checkpoint_t *cp);
+// (The per-card factory is gone.  The bus controller allocates the
+// nubus_card_t itself and calls ops->init on it -- see
+// nubus_card_kind_t.ops.)
 
 // One monitor a card advertises (resolution + supported depths).  Used
 // by the card-kind registry so the dialog can populate a monitor / depth
@@ -94,17 +113,15 @@ typedef nubus_card_t *(*nubus_card_factory_fn)(int slot, config_t *cfg, checkpoi
 // arrays end at the entry whose `id` is NULL.
 //
 // `sense_code` is the value the card's sense lines report when this
-// monitor is plugged in.  Setting `nubus.video_sense = sense_code`
-// before `machine.boot` tells the JMFB factory which monitor to model
-// (see jmfb.c::monitor_for_sense).  `srsrc_sister` is the top-level
-// "Ax" sister sResource ID that the JMFB driver's Slot Manager picks
-// up from PRAM for this monitor; a video-mode-aware integration test
-// (or the configuration dialog) writes this byte into PRAM offset
-// $49/$4A so `_SlotManager $06 sReadFHeader` finds the right entry
-// at boot — see tests/integration/iicx-video-modes/test.script.
+// monitor is plugged in: the bus gives a seat the row of the monitor the
+// document plugs into the card (slot_opts_t.monitor) and its code, and the
+// card models that monitor.  `srsrc_sister` is the top-level "Ax" sister
+// sResource ID that the card's driver picks up from its slot PRAM record for
+// this monitor, which the seeding step writes from a chosen video mode
+// (nubus_card_kind_t.startup_record).
 typedef struct nubus_monitor {
-    const char *id; // "13in_rgb"
-    const char *name; // "13\" AppleColor"
+    const char *id; // "13in_rgb" -- the card's own token, what a mode id names
+    const char *monitor; // the shared catalogue id (monitor_catalog.h)
     uint32_t width; // pixels
     uint32_t height; // pixels
     const int *depths; // 0-terminated array of supported bpp values
@@ -129,7 +146,7 @@ typedef struct nubus_monitor {
 // exists; a genuine NuBus card fits any NuBus socket on any machine, per
 // the bus standard.  Machine × card compatibility is COMPUTED by matching
 // this against the machine's slot table (nubus_card_fits_socket) — machines
-// never enumerate cards (proposal-nubus-computed-card-compatibility.md).
+// never enumerate cards.
 // BUILTIN is deliberately 0 so a kind that forgets to declare its
 // attachment is conservatively excluded from every socket rather than
 // wrongly offered everywhere.
@@ -141,20 +158,72 @@ typedef enum card_attach {
 } card_attach_t;
 
 // Per-card driver descriptor — one static instance per registered driver.
-// The dialog reads this via nubus.cards(); the bus controller reads it
+// The dialog reads this via catalog.nubus_cards; the bus controller reads it
 // via nubus_card_find() to resolve a card id to a factory.
 typedef struct nubus_card_kind {
     const char *id; // "mdc_8_24"
     const char *display_name; // "Apple Macintosh Display Card 8•6 / 8•24"
     card_attach_t attach; // physical attachment; drives socket matching
-    bool requires_vrom; // dialog shows VROM picker iff true
+    bool requires_vrom; // needs its real declaration ROM (a .vrom file)
+    // The emulator can generate a declaration ROM for this card (the GS
+    // vROM, docs/internals/core/peripherals/nubus_generic_vrom.md), which the
+    // card runs when Apple's is not offered, when the slot asks for it
+    // (`rom=substitute`), or for a custom geometry.  Same card, same model;
+    // only the ROM differs.
+    bool substitute;
     const nubus_monitor_t *monitors; // sentinel-terminated; NULL for non-display cards
-    nubus_card_factory_fn factory; // bus controller calls this once per populated slot
+    // The monitors the substitute ROM drives, when fewer than the card's
+    // (the 8•24 GC's carries only its 640 × 480 configuration); NULL: all.
+    const nubus_monitor_t *substitute_monitors;
+    // The card's vtable.  The bus controller allocates the nubus_card_t,
+    // fills in ops / bus / slot, and calls ops->init once per populated slot.
+    //
+    // This used to be a per-card `factory` that allocated the card itself --
+    // which meant `bus` could only be assigned AFTER the factory returned, so
+    // nubus_assert_irq / nubus_deassert_irq reached from card_init were a
+    // silent no-op (they early-return on !card->bus).  No card did that, but
+    // card_reset legitimately does, and the two call sites look identical.
+    // Nine kinds also carried five byte-identical `factory_common` bodies to
+    // do the allocation.
+    const nubus_card_ops_t *ops;
+    // Can the kind build at a w x h x d custom geometry (custom_mode=)?  A
+    // kind whose substitute ROM can carry one answers; NULL for a kind with
+    // no custom geometry.  The boot document is checked against it
+    // before the running machine is touched, so init never sees a geometry
+    // the card cannot build.  On false *why is a static reason.
+    bool (*custom_mode_fits)(uint32_t w, uint32_t h, uint32_t d, const char **why);
+
+    // The startup-mode record for the seeding step: the 8-byte slot
+    // PRAM record (sPRAMRec, at $46 + (slot - 9) * 8) a Monitors control
+    // panel would have saved for entry `e`'s video mode -- the card knows its
+    // format, the machine writes it.  False when the entry chose no mode.
+    // NULL for a kind with no startup mode.
+    bool (*startup_record)(const slot_opts_t *e, uint8_t rec[8]);
+
+    // Attach this kind's OWN object children under the generic card node.
+    // The same seam PCI has: a card's private nodes belong to the card, not
+    // to a core file testing `is_card()` on every seated slot.  NULL for a
+    // kind with nothing card-specific to expose.  Children attached here are
+    // freed with the slot's tree; the callee keeps no handle.
+    void (*attach_objects)(struct nubus_card *card, struct object *card_node);
 } nubus_card_kind_t;
 
-// Registry accessors.  The registry itself is an explicit list in
-// nubus.c (see proposal §3.2.1 "explicit list, no linker constructors").
-// Returns NULL / empty array until step 4 lands the first card.
+// Parse a "monitor_Nbpp" video-mode id against a kind's monitor catalogue.
+// One body for what were three byte-identical copies in jmfb.c, 24ac.c and
+// 824gc.c.  The monitor portion is matched case-sensitively
+// against `list`; N is decimal and must appear in that monitor's depths[].
+// Returns false (leaving the outputs untouched) on any mismatch.
+bool nubus_monitor_mode_lookup(const nubus_monitor_t *list, const char *id, const nubus_monitor_t **out_monitor,
+                               int *out_depth_bpp);
+
+// The widest video-mode id any catalogue can name, plus room for the "_32bpp"
+// suffix and the terminator.  One size for what were a 32-byte buffer in one
+// card and 40-byte buffers in the other two.
+#define NUBUS_VIDEO_MODE_ID_MAX 40
+
+// Registry accessors.  The registry itself is an explicit, NULL-terminated
+// list in nubus.c -- no linker constructors.  nubus_card_find returns NULL
+// for an unknown id.
 const nubus_card_kind_t *nubus_card_find(const char *id);
 const nubus_card_kind_t *const *nubus_card_registry(void);
 

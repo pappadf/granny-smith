@@ -1,10 +1,9 @@
 # Integration test configuration: PPC Toolbox program linking against a real
-# System 7 guest (proposal-appletalk-ppc-appleevents.md WP-8).
+# System 7 guest.
 #
-# The guest is the 20 MB System 7.1 SCSI image, booted on the Plus.  It is the
-# only machine family with the AppleTalk stack wired in (appletalk_init is
-# called from plus.c alone), and this image boots there and brings its
-# AppleTalk driver up, which is what the test needs.
+# The guest is the 20 MB System 7.1 SCSI image, booted on the Plus, which
+# plugs into the AppleTalk network through its SCC; this image boots there and
+# brings its AppleTalk driver up, which is what the test needs.
 #
 # Program linking is not enabled in the shipped image, so the script turns it
 # on the way a user would: Sharing Setup for the identity and the Program
@@ -35,5 +34,5 @@ TEST_SETUP := cp "$(TEST_DATA)/systems/system_7_1_20mb_24ac_cd_32bit.img" "$(TES
 
 TEST_ARGS := ram=4096 hd=$(TEST_TMPDIR)/hd.img
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended

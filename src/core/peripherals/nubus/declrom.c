@@ -3,18 +3,16 @@
 
 // declrom.c
 // Declaration-ROM builder + loader.  The builder generates a complete
-// declaration-ROM image at runtime from declarative inputs — board
-// identity, functional video sResources, spliced 68K code fragments —
-// and stamps the Format Block CRC in C (proposal-nubus-runtime-vrom
-// §3.3).  Serialisation is single-pass bottom-up: leaf records first,
-// then the lists that reference them, then the directory, then the
-// Format Block, so every stored offset is a backward self-relative
-// reference and no patching pass exists to get wrong.
+// declaration-ROM image at runtime from declarative inputs — board identity,
+// functional video sResources, spliced 68K code fragments — and stamps the
+// Format Block CRC in C.  Serialisation is single-pass bottom-up: leaf records
+// first, then the lists that reference them, then the directory, then the
+// Format Block, so every stored offset is a backward self-relative reference
+// and no patching pass exists to get wrong.
 
 #include "declrom.h"
 #include "card.h"
 #include "log.h"
-#include "machine_config.h" // resolved-pick reporting into the built-from record
 #include "vrom.h" // content identification + the platform-fed offer registry
 
 #include <stdint.h>
@@ -25,7 +23,7 @@
 LOG_USE_CATEGORY_NAME("nubus");
 
 // sResource / list-entry ids used by the serialiser (the byte contract
-// in docs/core/peripherals/nubus_vrom.md; clean-room values, mirroring
+// in docs/reference/hardware/nubus/declaration-rom.md; clean-room values, mirroring
 // tools/vrom/gsvrom_equ.i).
 enum {
     ID_SRSRC_TYPE = 1,
@@ -195,7 +193,7 @@ static void put_end_of_list(declrom_builder_t *b) {
 }
 
 // The rotate-left-1-add checksum over the whole image with the 4 CRC
-// bytes (at image end - 12) read as zero (nubus_vrom.md §2.6) — the
+// bytes (at image end - 12) read as zero (declaration-rom.md §2.6) — the
 // same computation crc.py performed at build time.
 static uint32_t declrom_crc(const uint8_t *img, size_t size) {
     size_t crc_at = size - 12;
@@ -525,10 +523,10 @@ bool declrom_finalise(declrom_builder_t *b, uint8_t byte_lanes) {
 }
 
 // === Structural validation ==================================================
-// The §5 permanent guard: a walk of the generated (or any dense $0F)
-// image that fails loudly instead of handing the Slot Manager a corrupt
-// directory.  The zero-offset check specifically fences the silent
-// `|`-fold class of assembler/serialiser bugs.
+// The permanent guard: a walk of the generated (or any dense $0F) image that
+// fails loudly instead of handing the Slot Manager a corrupt directory.  The
+// zero-offset check specifically fences the silent `|`-fold class of
+// assembler/serialiser bugs.
 
 // Read a big-endian long inside the image with bounds checking.
 static bool img_be32(const uint8_t *img, size_t size, size_t at, uint32_t *out) {
@@ -903,7 +901,9 @@ static bool read_chip_exact(const char *path, uint8_t *buf, size_t chip_size) {
 // top regardless of chip size — a 32 KB chip in a card whose window was sized
 // for a 64 KB one (the 8•24 GC v1.0 in the v1.1-sized window) occupies the
 // top half; the leading bytes stay zero, below the ROM's declared length.
-static bool load_chip_into_bus(const char *path, size_t chip_size, uint8_t *bus_buf, size_t bus_size) {
+static bool load_chip_into_bus(const char *path, size_t chip_size, uint8_t *bus_buf, size_t bus_size,
+                               uint8_t **out_chip) {
+    *out_chip = NULL;
     if (chip_size == 0 || bus_size < chip_size)
         return false;
     uint8_t *chip = calloc(1, chip_size);
@@ -923,15 +923,35 @@ static bool load_chip_into_bus(const char *path, size_t chip_size, uint8_t *bus_
     size_t footprint = (byte_lanes == 0x0Fu) ? chip_size : chip_size * 4;
     bool ok = bus_size >= footprint &&
               declrom_layout_chip(chip, chip_size, bus_buf + (bus_size - footprint), footprint, byte_lanes);
-    if (!ok)
+    if (!ok) {
         LOG(0, "declrom_load_vrom_card: '%s' has unsupported byteLanes $%02x (or exceeds the bus window)", path,
             byte_lanes);
-    free(chip);
-    return ok;
+        free(chip);
+        return false;
+    }
+    *out_chip = chip;
+    return true;
 }
 
-bool declrom_install_builtin(const char *card_id, const uint8_t *chip, size_t chip_size, uint8_t *bus_buf,
-                             size_t bus_size) {
+// Record the declaration ROM a card was given: its file (or the builtin
+// locator) and its Format-Block CRC.
+// `chip` (owned, NULL for a generated ROM) is the image itself, which the
+// card's checkpoint part carries.
+static void note_card_rom(nubus_card_t *card, const char *path, uint32_t crc, uint8_t *chip, size_t chip_size) {
+    if (!card) {
+        free(chip);
+        return;
+    }
+    free(card->rom_path);
+    card->rom_path = strdup(path);
+    card->rom_crc = crc;
+    free(card->rom_chip);
+    card->rom_chip = chip;
+    card->rom_chip_size = chip ? chip_size : 0;
+}
+
+bool declrom_install_builtin(nubus_card_t *card, const char *card_id, const uint8_t *chip, size_t chip_size,
+                             uint8_t *bus_buf, size_t bus_size) {
     if (!card_id || !chip || chip_size < 20 || !bus_buf)
         return false;
     // Lay the blob out exactly like a file-backed chip: byteLanes from the
@@ -944,40 +964,81 @@ bool declrom_install_builtin(const char *card_id, const uint8_t *chip, size_t ch
             card_id, byte_lanes);
         return false;
     }
-    // Report the pick into the built-from record like any resolved declROM —
-    // path-less, identified by the blob's stored Format-Block CRC.
+    // Path-less, identified by the blob's stored Format-Block CRC.
     const uint8_t *t = chip + chip_size - 12; // CRC field, big-endian
     uint32_t crc = ((uint32_t)t[0] << 24) | ((uint32_t)t[1] << 16) | ((uint32_t)t[2] << 8) | (uint32_t)t[3];
     char locator[64];
     snprintf(locator, sizeof locator, "builtin:%s", card_id);
-    machine_config_note_vrom(card_id, locator, crc, /*explicit_pick*/ false);
+    note_card_rom(card, locator, crc, NULL, 0);
     return true;
 }
 
-bool declrom_load_vrom_card(const char *card_id, uint8_t *bus_buf, size_t bus_size, char **out_path) {
+bool declrom_load_vrom_card(nubus_card_t *card, const char *card_id, const char *rom, uint8_t *bus_buf, size_t bus_size,
+                            char **out_path) {
     if (out_path)
         *out_path = NULL;
     if (!card_id || !bus_buf || bus_size == 0)
         return false;
 
-    // Walk the offer registry's candidates for this card in pick order
-    // (explicit vrom.load first, then catalog-preferred, then catalog order —
-    // see vrom_offer_find).  Every candidate was already content-identified
-    // at offer time; the first one that lays out cleanly wins.  Core never
-    // builds a path here — the platform offered every one of these.
+    // A restore: the ROM the card ran, from its checkpoint.  It must still be
+    // this card's -- the checkpoint is a file the user supplied.
+    if (card && card->restored_rom.data) {
+        const rom_image_t *r = &card->restored_rom;
+        vrom_id_t id;
+        if (!vrom_identify_bytes(r->data, r->size, &id) || strcmp(id.card_id, card_id) != 0) {
+            LOG(0, "declrom_load_vrom_card: the checkpoint's declaration ROM is not card '%s''s", card_id);
+            return false;
+        }
+        uint8_t byte_lanes = r->data[r->size - 1];
+        size_t footprint = (byte_lanes == 0x0Fu) ? r->size : r->size * 4;
+        if (bus_size < footprint ||
+            !declrom_layout_chip(r->data, r->size, bus_buf + (bus_size - footprint), footprint, byte_lanes)) {
+            LOG(0, "declrom_load_vrom_card: the checkpoint's ROM for '%s' has unsupported byteLanes $%02x", card_id,
+                byte_lanes);
+            return false;
+        }
+        const char *path = r->path && *r->path ? r->path : "checkpoint";
+        uint8_t *chip = malloc(r->size);
+        if (chip)
+            memcpy(chip, r->data, r->size);
+        note_card_rom(card, path, id.crc, chip, r->size);
+        if (out_path)
+            *out_path = strdup(path);
+        return true;
+    }
+
+    // The slot's own file, when the document names one: the only candidate
+    // (machine_boot_apply checked that it provides this card).
+    if (rom && *rom) {
+        vrom_id_t id;
+        if (!vrom_identify_card(rom, &id) || strcmp(id.card_id, card_id) != 0) {
+            LOG(0, "declrom_load_vrom_card: '%s' is not a declaration ROM for card '%s'", rom, card_id);
+            return false;
+        }
+        uint8_t *chip = NULL;
+        if (!load_chip_into_bus(rom, id.chip_size, bus_buf, bus_size, &chip))
+            return false;
+        note_card_rom(card, rom, id.crc, chip, id.chip_size);
+        if (out_path)
+            *out_path = strdup(rom);
+        return true;
+    }
+
+    // Otherwise the offer registry's candidates for this card in pick order
+    // (catalog-preferred, then catalog order -- see vrom_offer_find).  Every
+    // candidate was already content-identified at offer time; the first one
+    // that lays out cleanly wins.  Core never builds a path here -- the
+    // platform offered every one of these.
     size_t chip_size = 0;
     for (int n = 0;; n++) {
-        const char *path = vrom_offer_find(card_id, n, &chip_size);
+        uint32_t crc = 0;
+        const char *path = vrom_offer_find(card_id, n, &chip_size, &crc);
         if (!path)
             break;
-        if (load_chip_into_bus(path, chip_size, bus_buf, bus_size)) {
-            // Report the winning pick into the built-from record so
-            // machine.config.vroms answers which revision this machine
-            // actually runs (proposal-named-args-boot-config §4.2).
-            uint32_t crc = 0;
-            bool explicit_pick = false;
-            vrom_offer_info(path, &crc, &explicit_pick);
-            machine_config_note_vrom(card_id, path, crc, explicit_pick);
+        uint8_t *chip = NULL;
+        if (load_chip_into_bus(path, chip_size, bus_buf, bus_size, &chip)) {
+            // The winning pick: which revision this card actually runs.
+            note_card_rom(card, path, crc, chip, chip_size);
             if (out_path)
                 *out_path = strdup(path);
             return true;

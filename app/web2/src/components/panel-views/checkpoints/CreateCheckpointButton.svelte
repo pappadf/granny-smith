@@ -1,10 +1,12 @@
-<script lang="ts">
+<script lang="ts" module>
   import { gsEval } from '@/bus/emulator';
   import { machine } from '@/state/machine.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { checkpointsView } from './checkpointsView.svelte';
 
-  async function onClick() {
+  // Save a checkpoint of the running machine (also the panel header's
+  // overflow menu's "Create Checkpoint").
+  export async function createCheckpoint(): Promise<void> {
     if (machine.status !== 'running' && machine.status !== 'paused') {
       showNotification('Start a machine before creating a checkpoint', 'warning');
       return;
@@ -32,27 +34,14 @@
   }
 </script>
 
-<button
-  type="button"
+<script lang="ts">
+  import Button from '@/components/ui/Button.svelte';
+</script>
+
+<Button
   class="action-btn"
-  onclick={onClick}
+  onclick={createCheckpoint}
   title="Save a checkpoint of the current machine"
 >
   Create Checkpoint
-</button>
-
-<style>
-  .action-btn {
-    background: transparent;
-    color: var(--gs-fg);
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 8px;
-    font-size: 11px;
-    cursor: pointer;
-  }
-  .action-btn:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.06));
-  }
-</style>
+</Button>

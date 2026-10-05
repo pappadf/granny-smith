@@ -15,7 +15,7 @@
 //   - the wait-state bit (bit 8) that HWInit's bus-ratio measurement
 //     toggles: while set, physical page 0 takes a slow path that charges
 //     extra bus cycles per access, so the measured delta yields the real
-//     machine's CPU:bus ratio (proposal §5.2).
+//     machine's CPU:bus ratio.
 //   - the machine-ID register at $5FFFFFFC (byte-readable; a 32-bit read
 //     must NOT show the $A55A signature — the ROM's long-probe has to fail).
 //
@@ -126,8 +126,13 @@ void pdm_hmc_remap(config_t *cfg) {
         uint32_t code = (h->cfg_lo & HMC_SIMM_SIZE) >> 29;
         h->active_code = code;
         if (code == 0) {
-            // Reset map ("128 MB banks"): bank 1 at $10000000, bank 2 at
-            // $08000000, each with a 128 MB decode.
+            // Reset map ("128 MB banks"): bank 1 decodes from the
+            // motherboard top up to bank 2's window at $08000000, and again
+            // in its 128 MB probe window at $10000000; bank 2 at $08000000.
+            // Code 0 is also the configured state when bank 2 is empty:
+            // the ROM then records bank 1 at the motherboard top (any size
+            // up to 120 MB = $08000000 - 8 MB), so that is where it must be.
+            map_bank_window(cfg, 0x800000u, 0x08000000u - 0x800000u, h->bank_host_off[0], h->bank_size[0]);
             map_bank_window(cfg, 0x10000000u, 0x08000000u, h->bank_host_off[0], h->bank_size[0]);
             map_bank_window(cfg, 0x08000000u, 0x08000000u, h->bank_host_off[1], h->bank_size[1]);
         } else {
@@ -153,7 +158,7 @@ void pdm_hmc_remap(config_t *cfg) {
 }
 
 // ============================================================
-// Wait-state slow path for the bus-ratio measurement (§5.2)
+// Wait-state slow path for the bus-ratio measurement
 // ============================================================
 // While the DRAM timing field (bits 2-15) is all zero — the power-on state
 // and the ROM's $00090000 test pattern — physical page 0 is remapped to
@@ -178,6 +183,18 @@ static uint8_t wait_read8(void *ctx, uint32_t offset) {
 static uint16_t wait_read16(void *ctx, uint32_t offset) {
     memory_io_penalty(pdm_board((config_t *)ctx)->wait_state_penalty);
     return LOAD_BE16(pdm_wait_ram(ctx) + offset);
+}
+
+// An inspection reads the RAM without charging the wait state (which only
+// ever applies inside a sprint, but a debugger can read from one).
+static uint8_t wait_peek8(void *ctx, uint32_t offset) {
+    return pdm_wait_ram(ctx)[offset];
+}
+static uint16_t wait_peek16(void *ctx, uint32_t offset) {
+    return LOAD_BE16(pdm_wait_ram(ctx) + offset);
+}
+static uint32_t wait_peek32(void *ctx, uint32_t offset) {
+    return LOAD_BE32(pdm_wait_ram(ctx) + offset);
 }
 
 static uint32_t wait_read32(void *ctx, uint32_t offset) {
@@ -210,6 +227,9 @@ static void pdm_hmc_wait_state(config_t *cfg, bool on) {
         st->wait_interface.write_uint8 = wait_write8;
         st->wait_interface.write_uint16 = wait_write16;
         st->wait_interface.write_uint32 = wait_write32;
+        st->wait_interface.peek_uint8 = wait_peek8;
+        st->wait_interface.peek_uint16 = wait_peek16;
+        st->wait_interface.peek_uint32 = wait_peek32;
         pdm_clear_page(0);
         g_page_table[0].dev = &st->wait_interface;
         g_page_table[0].dev_context = cfg;
@@ -242,8 +262,8 @@ static void hmc_shift_in(config_t *cfg, uint32_t bit) {
 
     // Bit 33 selects the scanout base: set = physical 0 (the ROM's and Mac
     // OS's constant state), clear = $100000 (MkLinux's VPDM_PHYSADDR — and
-    // Copland's, whose kernel owns physical 0 for its vector page).  See
-    // powermac notes amic.md §"no framebuffer-base register" / hmc.md §2.2.
+    // Copland's, whose kernel owns physical 0 for its vector page); AMIC
+    // has no framebuffer-base register.
     if (n == 33) {
         LOG(1, "video base bit <- %u (scan from $%X)", bit, bit ? 0u : 0x100000u);
         pdm_video_update(cfg); // scan base moves with the bit (ariel.c)
@@ -261,12 +281,15 @@ static void hmc_shift_in(config_t *cfg, uint32_t bit) {
     }
 }
 
-static uint32_t hmc_shift_out(config_t *cfg) {
+// The next configuration bit; the guest's read advances the bit pointer, an
+// inspection (`peek`) does not.
+static uint32_t hmc_shift_out(config_t *cfg, bool peek) {
     pdm_hmc_t *h = &pdm_st(cfg)->hmc;
     uint32_t n = h->bit_ptr;
     if (n >= 35)
         return 0;
-    h->bit_ptr = n + 1;
+    if (!peek)
+        h->bit_ptr = n + 1;
     // Bits 0-1 read back the cache-SIMM size-sense pins: no L2 modeled, so
     // both read 0 ("no cache SIMM") regardless of what was written.
     if (n < 2)
@@ -278,7 +301,13 @@ static uint32_t hmc_shift_out(config_t *cfg) {
 
 uint8_t pdm_hmc_read(config_t *cfg, uint32_t offset) {
     if ((offset & 0xF) == 0)
-        return (uint8_t)hmc_shift_out(cfg);
+        return (uint8_t)hmc_shift_out(cfg, false);
+    return 0;
+}
+
+uint8_t pdm_hmc_peek(config_t *cfg, uint32_t offset) {
+    if ((offset & 0xF) == 0)
+        return (uint8_t)hmc_shift_out(cfg, true);
     return 0;
 }
 

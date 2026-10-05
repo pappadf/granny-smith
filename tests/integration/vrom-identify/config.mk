@@ -5,8 +5,7 @@
 # web2 machine-config dialog expects.  Asserts the {card_id, compatible, crc}
 # contract for each shipped vROM (keyed off the genuine Format-Block CRC, the
 # analog of rom.c's checksum), and that every catalog card_id resolves to a
-# registered nubus card kind.  Boots the Universal ROM as IIcx so the nubus
-# object (and its video_card setter) is present.
+# registered nubus card kind (catalog.nubus_cards).
 
 TEST_NAME := vrom.identify probe surface
 TEST_DESC := vrom.identify Format-Block CRC identity + card_id/compatible contract + catalog/registry drift guard
@@ -15,5 +14,5 @@ TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 TEST_ARGS := model=iicx ram=8192
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := unit

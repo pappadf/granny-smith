@@ -7,8 +7,8 @@
   let { entry }: Props = $props();
 
   // Color band per level — low numbers are louder (per docs/log.md
-  // "smaller means more important"). Bucket coarsely to map onto the
-  // existing toast severity tokens.
+  // "smaller means more important"), bucketed onto the --gs-log-high/
+  // mid/low-fg tokens.
   const severity = $derived(entry.level <= 1 ? 'high' : entry.level <= 3 ? 'mid' : 'low');
 </script>
 
@@ -22,21 +22,21 @@
   .log-line {
     display: flex;
     align-items: baseline;
-    gap: 6px;
-    padding: 1px 8px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 12px;
-    line-height: 1.5;
-    color: var(--gs-fg);
+    gap: var(--gs-space-1-5);
+    padding: var(--gs-space-px) var(--gs-space-2);
+    font-family: var(--gs-font-mono);
+    font-size: var(--gs-font-size-sm);
+    line-height: var(--gs-line-height-relaxed);
+    color: var(--gs-log-fg);
     white-space: pre-wrap;
     word-break: break-word;
   }
   .cat {
-    color: var(--gs-fg-muted);
+    color: var(--gs-log-meta-fg);
     flex: 0 0 auto;
   }
   .lvl {
-    color: var(--gs-fg-muted);
+    color: var(--gs-log-meta-fg);
     flex: 0 0 auto;
     min-width: 1.5ch;
     text-align: right;
@@ -46,9 +46,12 @@
     min-width: 0;
   }
   .log-line[data-sev='high'] .lvl {
-    color: var(--gs-error-fg, #ff7676);
+    color: var(--gs-log-high-fg);
   }
   .log-line[data-sev='mid'] .lvl {
-    color: var(--gs-warning-fg, #f5c542);
+    color: var(--gs-log-mid-fg);
+  }
+  .log-line[data-sev='low'] .msg {
+    color: var(--gs-log-low-fg);
   }
 </style>

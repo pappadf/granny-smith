@@ -1,17 +1,15 @@
-# Integration test: machine.restart — power-cycle the running machine
-# (proposal-boot-vs-reset §3.2/§3.3).  Boots a IIcx with an 8•24 GC card and
-# a System 6.0.8 hard disk to the Finder, inserts a floppy, restarts, and
-# asserts the same machine came back with BOTH media still attached — as the
-# SAME open storage instances (identical instance stems), which pins the
-# write-durability contract: the delta survives the power-cycle, so nothing
-# the guest wrote is lost.  A second boot to the Finder proves the
-# transferred handles actually serve I/O.
+# Integration test: machine.restart — power-cycle the running machine.  Boots
+# a IIcx with an 8•24 GC card and a System 6.0.8 hard disk to the Finder and
+# inserts a floppy.  machine.restart must tear nothing down: the media, PRAM
+# and RTC are the same devices afterwards, RAM is cold, and the guest boots
+# again off the same disk.  A checkpoint restore then brings the saved
+# machine back with its medium.
 
 TEST_NAME := machine.restart power-cycle (IIcx)
-TEST_DESC := machine.restart rebuilds the recorded machine and keeps mounted media attached
+TEST_DESC := machine.restart power-cycles without a teardown: media, PRAM and RTC kept, RAM cold, the guest boots again
 
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 TEST_ARGS := model=iicx ram=8192
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
-TEST_TIER := unit
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
+TEST_TIER := matrix

@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // lisa_profile.c
-// Apple ProFile parallel hard disk.  See lisa_profile.h and docs/machines/lisa/lisa.md §14.
+// Apple ProFile parallel hard disk.  See lisa_profile.h and docs/reference/machines/lisa/lisa.md §14.
 //
 // Behavioural model of the ProFile controller's byte-at-a-time handshake,
 // reverse-engineered from Apple's own drivers (boot ROM RM248.B and OS
@@ -35,7 +35,7 @@
 
 LOG_USE_CATEGORY_NAME("profile")
 
-// On-the-wire block geometry (docs/machines/lisa/lisa.md §14): 20-byte tag/header + 512 data.
+// On-the-wire block geometry (docs/reference/machines/lisa/lisa.md §14): 20-byte tag/header + 512 data.
 #define PRO_TAG    20
 #define PRO_DATA   512
 #define PRO_BLOCK  (PRO_TAG + PRO_DATA) // 532
@@ -49,7 +49,7 @@ LOG_USE_CATEGORY_NAME("profile")
 // command handshake) is what lets an edge-waiting driver — the SCO Xenix
 // on-disk loader, which clears CA1 right after the handshake and then polls for
 // a fresh edge — actually complete; see lisa_profile_portb and
-// docs/machines/lisa/profile.md.  A few ms, in the FDC's ballpark.
+// docs/internals/machines/lisa/profile.md.  A few ms, in the FDC's ballpark.
 #define PRO_READ_CYCLES 24000u
 
 // Standard 5 MB ProFile: 9728 logical blocks (the canonical device the Lisa
@@ -60,7 +60,7 @@ LOG_USE_CATEGORY_NAME("profile")
 // The controller's reserved device-info / spare-table block.
 #define PRO_INFO_BLOCK 0xFFFFFFu
 
-// Port-B control lines (docs/machines/lisa/lisa.md §14): CMD/ = PB4 (0 = asserted), DRW = PB3.
+// Port-B control lines (docs/reference/machines/lisa/lisa.md §14): CMD/ = PB4 (0 = asserted), DRW = PB3.
 #define PB_CMD 0x10
 #define PB_DRW 0x08
 
@@ -269,7 +269,7 @@ void lisa_profile_portb(lisa_profile_t *pf, uint8_t portb) {
             // CA1 right after this handshake (the SCO Xenix on-disk loader) then
             // sees a fresh data-ready transition rather than an edge that
             // already fired during the handshake — without which it spins
-            // forever (docs/machines/lisa/profile.md).
+            // forever (docs/internals/machines/lisa/profile.md).
             pro_enter(pf, PH_READ); // buffer already filled by pro_parse_command
             remove_event(pf->sched, &pro_complete, pf); // coalesce any prior pending
             scheduler_new_cpu_event(pf->sched, &pro_complete, pf, 0, PRO_READ_CYCLES, 0);
@@ -362,6 +362,10 @@ bool lisa_profile_connected(const lisa_profile_t *pf) {
     return lisa_profile_attached(pf);
 }
 
+image_t *lisa_profile_image(const lisa_profile_t *pf) {
+    return pf ? pf->image : NULL;
+}
+
 bool lisa_profile_save_as(const lisa_profile_t *pf, const char *path) {
     if (!pf || !pf->image || !path || !*path)
         return false;
@@ -376,11 +380,11 @@ bool lisa_profile_save_as(const lisa_profile_t *pf, const char *path) {
 }
 
 // Where a writable mount's delta+journal live.  Mirrors system.c's
-// pick_delta_dir: a volatile /tmp base keeps its delta adjacent (NULL ⇒
-// image_create derives the dir); everything else routes the delta under the
-// active per-machine checkpoint directory so it shares state.checkpoint's
-// lifetime (docs/core/storage/checkpointing.md).  checkpoint_machine_dir() is
-// NULL when no machine dir is active (headless tests) → adjacent-to-base.
+// pick_delta_dir: a volatile /tmp base keeps its delta in image_create's
+// scratch root (NULL); everything else routes the delta under the active
+// per-machine checkpoint directory so it shares state.checkpoint's lifetime
+// (docs/internals/core/checkpointing.md).  checkpoint_machine_dir() is NULL
+// when no machine dir is active (headless tests) → the scratch root.
 static const char *pro_delta_dir(const char *base) {
     if (base && strncmp(base, "/tmp/", 5) == 0)
         return NULL;
@@ -401,17 +405,14 @@ bool lisa_profile_attach(lisa_profile_t *pf, const char *path, bool writable) {
         // Blank disk: an all-zero base+delta of the canonical 5 MB geometry.
         img = image_create_blank(PRO_DEFAULT_BLOCKS, geom);
     } else {
-        // Persist volatile (/tmp, /fd) images to OPFS so they survive a reload,
-        // then open base+delta: a writable mount gets a persistent delta under
-        // the per-machine checkpoint dir (pro_delta_dir, mirroring system.c's
+        // Open base+delta: a writable mount gets a persistent delta under the
+        // per-machine checkpoint dir (pro_delta_dir, mirroring system.c's
         // pick_delta_dir, so the delta shares state.checkpoint's lifetime and
         // gets cleaned with it), a read-only mount an ephemeral scratch delta.
-        // Either way the base is immutable.
-        char *persistent = image_persist_volatile(path);
-        const char *base = persistent ? persistent : path;
-        img = writable ? image_create_with_geometry(base, pro_delta_dir(base), geom)
-                       : image_open_readonly_with_geometry(base, geom);
-        free(persistent);
+        // Either way the base is immutable.  The path is used as given: where
+        // media lives is the frontend's choice.
+        img = writable ? image_create_with_geometry(path, pro_delta_dir(path), geom)
+                       : image_open_readonly_with_geometry(path, geom);
     }
     if (!img) {
         LOG(1, "attach: cannot open %s", path ? path : "(blank)");
@@ -438,23 +439,7 @@ void lisa_profile_detach(lisa_profile_t *pf) {
     pf->phase = PH_IDLE;
 }
 
-// machine.restart handle transfer: hand the open image to the caller
-// WITHOUT closing it (the delta stays live, so writes survive the
-// power-cycle by construction).  Mirrors detach minus the image_close.
-image_t *lisa_profile_take_image(lisa_profile_t *pf) {
-    if (!pf || !pf->image)
-        return NULL;
-    if (pf->sched)
-        remove_event(pf->sched, &pro_complete, pf); // drop any in-flight read completion
-    image_t *img = pf->image;
-    pf->image = NULL;
-    pf->nblocks = 0;
-    pf->phase = PH_IDLE;
-    return img;
-}
-
-// machine.restart handle transfer: attach an already-open 532-bytes/block
-// handle to a fresh device.  No open-by-path step — geometry is re-derived
+// Attach an already-open 532-bytes/block handle (media_attach).  No open-by-path step — geometry is re-derived
 // from the handle, so nothing is re-probed (the checkpoint-restore caveat
 // about the ProFile's block size does not apply here).
 bool lisa_profile_attach_image(lisa_profile_t *pf, image_t *img) {
@@ -505,6 +490,7 @@ lisa_profile_t *lisa_profile_init(struct scheduler *scheduler, lisa_profile_bsy_
 void lisa_profile_delete(lisa_profile_t *pf) {
     if (!pf)
         return;
+    scheduler_forget_source(pf->sched, pf);
     lisa_profile_detach(pf);
     free(pf);
 }

@@ -1,7 +1,7 @@
 # PPC Toolbox program linking — discover a System 7 guest's linkable
 # applications and open an Apple event session to one of them.
 #
-# The host side is docs/core/network/ppc_appleevents.md: NBP discovery (§3),
+# The host side is docs/internals/core/network/ppc_appleevents.md: NBP discovery (§3),
 # the list-ports browse (§4.6), and the session request/accept dialog with a
 # guest user name (§4.3, §4.4), all riding the ADSP endpoint of
 # appletalk.md §3.  This test is the interop proof — every layer here is
@@ -22,6 +22,19 @@
 # is pinned so the run is reproducible.
 
 machine.rtc.time = "2026-04-26T21:30:36"
+
+# Every layer of the stack has its own log category: a name the manifest
+# does not know is an error here.  Level 0 is the default, so this only
+# names them.  Program linking is `ppctoolbox`, not `ppc` -- that is the
+# PowerPC's, which PPC and Apple events used to log into.
+log.set llap 0
+log.set atp 0
+log.set asp 0
+log.set afp 0
+log.set pap 0
+log.set laserwriter 0
+log.set ppctoolbox 0
+log.set aevt 0
 
 # --- 1. Boot ---------------------------------------------------------------
 

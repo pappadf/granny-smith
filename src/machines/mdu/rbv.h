@@ -39,11 +39,16 @@ typedef enum rbv_variant {
 
 // === Lifecycle ==============================================================
 
-// Create an RBV instance, optionally restoring plain-data state from a
+// Create an RBV instance with `sense3` strapped on its monitor-sense lines
+// (RvMonP bits 3-5: 6 = Macintosh II 13" RGB, 7 = nothing connected),
+// optionally restoring plain-data state -- the strap with it -- from a
 // checkpoint.  Does not register itself in the memory map — the machine's
 // I/O dispatcher forwards the $50F26000 window to rbv_get_memory_interface().
-rbv_t *rbv_init(rbv_variant_t variant, checkpoint_t *cp);
+rbv_t *rbv_init(rbv_variant_t variant, uint8_t sense3, checkpoint_t *cp);
 void rbv_delete(rbv_t *rbv);
+// /RESET: the registers back to their power-on values, keeping the wiring,
+// the monitor-sense strap and the live interrupt sources driven by other chips.
+void rbv_reset(rbv_t *rbv);
 void rbv_checkpoint(rbv_t *rbv, checkpoint_t *cp);
 
 // === Wiring =================================================================
@@ -60,6 +65,11 @@ void rbv_set_power_off_callback(rbv_t *rbv, void (*cb)(void *ctx), void *ctx);
 
 // Video depth-change callback — fires when the RvMonP depth field (bits 0-2)
 // changes.  `depth_code`: 0 = 1 bpp, 1 = 2 bpp, 2 = 4 bpp, 3 = 8 bpp.
+// RvMonP's RvVIDOff bit, reported when it CHANGES.  Separate from the mode
+// callback because the driver sets the two bits independently: it blanks,
+// reprograms the depth, then unblanks.
+void rbv_set_blank_callback(rbv_t *rbv, void (*cb)(void *ctx, bool video_off), void *ctx);
+
 void rbv_set_mode_callback(rbv_t *rbv, void (*cb)(void *ctx, int depth_code), void *ctx);
 
 // === Interrupt sources ======================================================
@@ -78,10 +88,6 @@ void rbv_set_scsi_drq(rbv_t *rbv, bool active);
 void rbv_set_snd_irq(rbv_t *rbv, bool active);
 
 // === Configuration ==========================================================
-
-// Set the 3-bit monitor-sense code reported in RvMonP bits 3-5 (RvMonID1-3).
-// 6 (binary 110) = Macintosh II 13" RGB — the v1 default.
-void rbv_set_monitor_sense(rbv_t *rbv, uint8_t sense3);
 
 // Current video depth code (0..3) latched in RvMonP bits 0-2.
 int rbv_current_depth(rbv_t *rbv);

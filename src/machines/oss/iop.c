@@ -21,6 +21,7 @@
 #include "log.h"
 #include "system.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -173,16 +174,39 @@ static int scc_bypass_addr(uint32_t offset) {
     }
 }
 
-static uint8_t iop_bypass_read(iop_t *iop, uint32_t offset) {
+// Converts SWIM IOP bypass offsets to the chip's sixteen-register index.  The
+// PIC exposes device registers at chip offsets $10-$1F (IIfx PIC spec §7.1,
+// "the same low-nibble device map used by the IOP at $40-$4F"), and the board
+// places PIC registers on 2-byte centres on the 68k bus -- which is what
+// iop_regs.h already encodes ($00/$01/$02/$04 -> 0x00/0x02/0x04/0x08).  So the
+// sixteen registers land at +$20, +$22 ... +$3E.
+//
+// Without this the SWIM's own memory_interface_t applied the SE/30's window
+// decode, (addr >> 9) & 0x0F, to an offset of 0..0x1F -- and (0x1F >> 9) == 0,
+// so every register aliased to index 0 for both reads and writes on the IIfx
+// and the Q900, which have no direct SWIM window at all.
+//
+// Odd offsets are the filler byte of each 2-byte slot and decode to nothing,
+// exactly as scc_bypass_addr treats the SCC's unused offsets.
+static int swim_bypass_addr(uint32_t offset) {
+    if (offset < iopBypassBase || offset > iopBypassEnd || (offset & 1u))
+        return -1;
+    return (int)(((offset - iopBypassBase) >> 1) & 0x0Fu);
+}
+
+static uint8_t iop_bypass_read(iop_t *iop, uint32_t offset, bool peek) {
     if (!iop->bypass_iface || !iop->bypass_device)
         return 0xff;
     if (iop->behavior->kind == SccIopNum) {
         int addr = scc_bypass_addr(offset);
         if (addr >= 0)
-            return iop->bypass_iface->read_uint8(iop->bypass_device, (uint32_t)addr);
+            return memory_iface_read8(iop->bypass_iface, iop->bypass_device, (uint32_t)addr, peek);
         return 0xff;
     }
-    return iop->bypass_iface->read_uint8(iop->bypass_device, offset - iopBypassBase);
+    int reg = swim_bypass_addr(offset);
+    if (reg < 0)
+        return 0xff;
+    return memory_iface_read8(iop->bypass_iface, iop->bypass_device, (uint32_t)reg, peek);
 }
 
 static void iop_bypass_write(iop_t *iop, uint32_t offset, uint8_t value) {
@@ -194,7 +218,9 @@ static void iop_bypass_write(iop_t *iop, uint32_t offset, uint8_t value) {
             iop->bypass_iface->write_uint8(iop->bypass_device, (uint32_t)addr, value);
         return;
     }
-    iop->bypass_iface->write_uint8(iop->bypass_device, offset - iopBypassBase, value);
+    int reg = swim_bypass_addr(offset);
+    if (reg >= 0)
+        iop->bypass_iface->write_uint8(iop->bypass_device, (uint32_t)reg, value);
 }
 
 // ============================================================================
@@ -237,8 +263,9 @@ static iop_reg_class_t iop_decode_offset(uint32_t offset) {
 //  Host-side reads
 // ============================================================================
 
-static uint8_t iop_read_uint8(void *device, uint32_t addr) {
-    iop_t *iop = (iop_t *)device;
+// A host-side register read; an inspection (`peek`) leaves the RAM address
+// where it is and inspects the bypassed chip rather than reading it.
+static uint8_t iop_reg_read(iop_t *iop, uint32_t addr, bool peek) {
     uint32_t offset = addr & 0x1fff;
     switch (iop_decode_offset(offset)) {
     case IOP_REG_ADDR_HI:
@@ -255,16 +282,23 @@ static uint8_t iop_read_uint8(void *device, uint32_t addr) {
         return (uint8_t)(iop->stat_ctl | iopSCCWrReqBit);
     case IOP_REG_RAM_DATA: {
         uint8_t value = iop->ram[iop->ram_addr];
-        if (iop->stat_ctl & iopIncEnableBit)
+        if ((iop->stat_ctl & iopIncEnableBit) && !peek)
             iop->ram_addr++;
         return value;
     }
     case IOP_REG_BYPASS:
-        return iop_bypass_read(iop, offset);
+        return iop_bypass_read(iop, offset, peek);
     case IOP_REG_NONE:
     default:
         return 0xff;
     }
+}
+
+static uint8_t iop_read_uint8(void *device, uint32_t addr) {
+    return iop_reg_read(device, addr, false);
+}
+static uint8_t iop_peek_uint8(void *device, uint32_t addr) {
+    return iop_reg_read(device, addr, true);
 }
 
 static uint16_t iop_read_uint16(void *device, uint32_t addr) {
@@ -351,6 +385,12 @@ static void iop_write_uint8(void *device, uint32_t addr, uint8_t value) {
             LOG(4, "%s ram[$%04x] := $%02x (mailbox state)", iop->behavior->name, iop->ram_addr, value);
         }
         iop->ram[iop->ram_addr] = value;
+        if (iop->ram_addr >= 0x0400 && iop->ram_addr <= MaxIOPRamAddr) {
+            if (iop->ram_addr < iop->dl_lo)
+                iop->dl_lo = iop->ram_addr;
+            if (iop->ram_addr > iop->dl_hi)
+                iop->dl_hi = iop->ram_addr;
+        }
         if (iop->stat_ctl & iopIncEnableBit)
             iop->ram_addr++;
         return;
@@ -399,33 +439,82 @@ iop_t *iop_init(iop_kind_t kind, const memory_interface_t *bypass_iface, void *b
         .write_uint8 = iop_write_uint8,
         .write_uint16 = iop_write_uint16,
         .write_uint32 = iop_write_uint32,
+        .peek_uint8 = iop_peek_uint8, // wider peeks compose
     };
 
     if (checkpoint) {
-        system_read_checkpoint_data(checkpoint, iop->ram, sizeof(iop->ram));
-        system_read_checkpoint_data(checkpoint, &iop->ram_addr, sizeof(iop->ram_addr));
-        system_read_checkpoint_data(checkpoint, &iop->stat_ctl, sizeof(iop->stat_ctl));
+        // Mirrors iop_checkpoint: one blob, host_irq included.
+        system_read_checkpoint_data(checkpoint, iop, offsetof(iop_t, behavior), "iop");
+        if (iop->behavior->on_restore)
+            iop->behavior->on_restore(iop);
     }
 
     // Register periodic-event types with the scheduler so checkpoint
-    // save / restore can name and resolve them. Done unconditionally,
-    // before scheduler_start runs the checkpoint-event resolution pass.
+    // save / restore can name and resolve them. Done unconditionally, at
+    // construction: the saved queue is resolved once the machine is built.
     if (iop->behavior->register_events)
         iop->behavior->register_events(iop);
 
     return iop;
 }
 
+// See iop.h.
+void iop_reset(iop_t *iop) {
+    if (!iop)
+        return;
+    if (iop->behavior->cancel_events)
+        iop->behavior->cancel_events(iop);
+    bool was_irq = iop->host_irq;
+    iop->stat_ctl = 0; // 65C02 held in reset (iopRun = 0), as at power-on
+    iop->ram_addr = 0;
+    iop->host_irq = false;
+    if (was_irq && iop->irq_cb)
+        iop->irq_cb(iop->cb_context, false);
+}
+
+// See iop.h.  The prefix before `behavior` is the PIC's own state.
+void iop_power_on(iop_t *iop) {
+    if (!iop)
+        return;
+    if (iop->behavior->cancel_events)
+        iop->behavior->cancel_events(iop);
+    bool was_irq = iop->host_irq;
+    memset(iop, 0, offsetof(iop_t, behavior));
+    iop->stat_ctl = 0; // 65C02 held in reset (iopRun = 0), as iop_init
+    iop_init_mailbox(iop);
+    if (was_irq && iop->irq_cb)
+        iop->irq_cb(iop->cb_context, false); // the host interrupt line drops with it
+}
+
 void iop_delete(iop_t *iop) {
+    if (!iop)
+        return;
+    if (iop->behavior->on_delete)
+        iop->behavior->on_delete(iop);
+    // iop_swim.c schedules eight events with `iop` as their source; this
+    // destructor was one line and dropped none of them.
+    scheduler_forget_source(iop->scheduler, iop);
     free(iop);
 }
 
+// One blob of everything before the first pointer -- the prefix idiom of
+// via.c and friends.
+//
+// It is also what keeps `host_irq` in the stream.  The three per-field calls
+// this replaces saved `ram`, `ram_addr` and `stat_ctl` but NOT `host_irq`,
+// which sits between stat_ctl and the first pointer.
+// iop_update_host_irq() is edge-suppressed -- `if (active == iop->host_irq)
+// return;` -- so a checkpoint taken with iopInt0Active set came back with
+// host_irq false while the OSS pending bit was separately restored TRUE.
+// When the guest then cleared the IOP's interrupt bits, the computed `active`
+// matched the stale false, the callback was skipped, and the OSS source
+// stayed latched forever: a restored IIfx took the same autovector on every
+// instruction boundary.  A blob of the prefix carries the field by
+// construction, which is the argument for the idiom.
 void iop_checkpoint(iop_t *iop, checkpoint_t *checkpoint) {
     if (!iop || !checkpoint)
         return;
-    system_write_checkpoint_data(checkpoint, iop->ram, sizeof(iop->ram));
-    system_write_checkpoint_data(checkpoint, &iop->ram_addr, sizeof(iop->ram_addr));
-    system_write_checkpoint_data(checkpoint, &iop->stat_ctl, sizeof(iop->stat_ctl));
+    system_write_checkpoint_data(checkpoint, iop, offsetof(iop_t, behavior), "iop");
 }
 
 const memory_interface_t *iop_get_memory_interface(iop_t *iop) {

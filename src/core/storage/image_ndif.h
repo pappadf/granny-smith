@@ -23,6 +23,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 // NDIF chunk type codes (low byte of the descriptor's first word).
 #define NDIF_CHUNK_ZERO    0x00 // zero-fill; no data-fork bytes
@@ -67,5 +68,11 @@ void ndif_map_free(ndif_map_t *m);
 // ZERO, COPY, and ADC; returns -EINVAL for unsupported types or a decode
 // error.  Returns 0 on success.
 int ndif_decode_chunk(const ndif_chunk_t *chunk, const uint8_t *src, size_t src_len, uint8_t *dst, size_t dst_len);
+
+// Largest compressed chunk decoded in one buffer.  Disk Copy writes chunks
+// of a few dozen KB; anything near this is a corrupt map, not a big disk.
+// Uncompressed chunks are read straight through and have no such limit.
+// The decoded image is served as a chunk-mapped source (image_chunkmap.h).
+#define NDIF_MAX_CHUNK_BYTES (64u * 1024u * 1024u)
 
 #endif // GS_IMAGE_NDIF_H

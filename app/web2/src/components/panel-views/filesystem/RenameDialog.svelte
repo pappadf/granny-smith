@@ -1,6 +1,19 @@
-<script lang="ts">
-  import Modal from '@/components/common/Modal.svelte';
+<script lang="ts" module>
+  // A rename target is a single path component. A '/' would silently turn
+  // the rename into a move (worst case into the item's own subtree), and
+  // '.'/'..' resolve to other directories entirely.
+  export function validateName(v: string): string {
+    if (v.includes('/') || v.includes('\\')) return 'Name cannot contain slashes';
+    if (v === '.' || v === '..') return 'Invalid name';
+    return '';
+  }
+</script>
 
+<script lang="ts">
+  import PromptDialog from '@/components/dialogs/PromptDialog.svelte';
+
+  // The Filesystem tab's rename: a PromptDialog that takes one path
+  // component.
   interface Props {
     open: boolean;
     title?: string;
@@ -9,128 +22,16 @@
     onClose: () => void;
   }
   let { open, title = 'Rename', initial, onSubmit, onClose }: Props = $props();
-
-  // Captures the initial value once; the $effect below re-syncs whenever
-  // the dialog re-opens with a new target.
-  // svelte-ignore state_referenced_locally
-  let value = $state(initial);
-  let inputEl = $state<HTMLInputElement | null>(null);
-  let error = $state('');
-
-  $effect(() => {
-    if (open) {
-      value = initial;
-      error = '';
-      // Focus + select after mount.
-      requestAnimationFrame(() => {
-        inputEl?.focus();
-        inputEl?.select();
-      });
-    }
-  });
-
-  // A rename target is a single path component. A '/' would silently turn
-  // the rename into a move (worst case into the item's own subtree), and
-  // '.'/'..' resolve to other directories entirely.
-  function validate(v: string): string {
-    if (v.includes('/') || v.includes('\\')) return 'Name cannot contain slashes';
-    if (v === '.' || v === '..') return 'Invalid name';
-    return '';
-  }
-
-  function commit() {
-    const v = value.trim();
-    if (!v) {
-      onClose();
-      return;
-    }
-    const why = validate(v);
-    if (why) {
-      error = why;
-      return;
-    }
-    onSubmit(v);
-  }
-
-  function onKey(ev: KeyboardEvent) {
-    if (ev.key === 'Enter') {
-      ev.preventDefault();
-      commit();
-    } else if (ev.key === 'Escape') {
-      ev.preventDefault();
-      onClose();
-    }
-  }
 </script>
 
-<Modal {open} {title} {onClose}>
-  <div class="rename-body">
-    <label for="rename-input" class="rename-label">New name</label>
-    <input
-      id="rename-input"
-      class="rename-input"
-      type="text"
-      bind:value
-      bind:this={inputEl}
-      onkeydown={onKey}
-      oninput={() => (error = '')}
-    />
-    {#if error}
-      <div class="rename-error" role="alert">{error}</div>
-    {/if}
-  </div>
-  {#snippet actions()}
-    <button type="button" class="btn" onclick={onClose}>Cancel</button>
-    <button type="button" class="btn primary" onclick={commit}>Rename</button>
-  {/snippet}
-</Modal>
-
-<style>
-  .rename-body {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 280px;
-  }
-  .rename-label {
-    font-size: 12px;
-    color: var(--gs-fg-muted);
-  }
-  .rename-error {
-    font-size: 12px;
-    color: var(--gs-error, #e5534b);
-  }
-  .rename-input {
-    background: var(--gs-input-bg);
-    color: var(--gs-input-fg);
-    border: 1px solid var(--gs-input-border);
-    border-radius: 2px;
-    height: 28px;
-    padding: 0 8px;
-    font-size: 13px;
-    outline: none;
-  }
-  .rename-input:focus {
-    border-color: var(--gs-focus);
-  }
-  .btn {
-    background: transparent;
-    color: var(--gs-fg);
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    padding: 4px 12px;
-    font-size: 13px;
-    cursor: pointer;
-  }
-  .btn:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.06));
-  }
-  .btn.primary {
-    background: var(--gs-primary-bg);
-    color: var(--gs-primary-fg);
-    border-color: transparent;
-  }
-  .btn.primary:hover {
-    background: var(--gs-primary-hover);
-  }
-</style>
+<PromptDialog
+  {open}
+  {title}
+  label="New name"
+  {initial}
+  submitText="Rename"
+  validate={validateName}
+  inputId="rename-input"
+  {onSubmit}
+  {onClose}
+/>

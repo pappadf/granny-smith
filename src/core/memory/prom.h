@@ -39,12 +39,22 @@ struct object;
 #define PROM_MIN_SIZE (2u * 1024u)
 #define PROM_MAX_SIZE (256u * 1024u)
 
-// One identified expansion ROM.
+// Longest identity text plus NUL ("vvvv-dddd-cccc").
+#define PROM_ID_MAX 16
+
+// One identified expansion ROM.  Its identity is made only of fields the
+// standards define, nothing hashed by us: the PCI Data Structure's vendor
+// and device ids say which card the ROM is for, and the IEEE 1275 FCode
+// header's own checksum says which programming of that card's ROM it is.
+// The checksum also verifies the program (`intact`).
 typedef struct {
-    uint32_t crc; // CRC-32 of the whole chip image (the identity)
+    uint64_t key; // vendor << 32 | device << 16 | FCode checksum
+    char id[PROM_ID_MAX]; // the same as text, lowercase hex: "1002-4758-c6e8"
+    bool intact; // the FCode checksum verifies over the program
     size_t image_size; // bytes on the chip
     uint16_t vendor_id; // from the PCI Data Structure
     uint16_t device_id;
+    uint16_t fcode_checksum; // from the FCode header (stored, not computed)
     uint32_t class_code; // 24-bit class / subclass / prog-if
     uint32_t fcode_offset; // where the FCode program starts
     const char *card_id; // pci card-kind id the blob provides (static)
@@ -58,58 +68,53 @@ typedef enum prom_id_result {
     PROM_ID_WRONG_SIZE, // exists, but not a plausible chip image
     PROM_ID_NOT_A_PROM, // no $55AA / no PCIR / no FCode start token
     PROM_ID_NOT_OPEN_FIRMWARE, // a real expansion ROM, but code type != 1
-    PROM_ID_UNKNOWN, // structurally valid; CRC is not in the catalog
-    PROM_ID_KNOWN, // recognised: *out filled from the catalog row
+    PROM_ID_UNKNOWN, // structurally valid; its identity is not in the catalog
+    PROM_ID_DAMAGED, // a catalogued identity whose FCode checksum does not verify
+    PROM_ID_KNOWN, // recognised and intact: *out filled from the catalog row
 } prom_id_result_t;
 
 // Identify the file at `path` by content.  True iff it is a *recognised*
-// expansion ROM (structurally valid AND a catalog CRC); fills *out.
+// expansion ROM (structurally valid, a catalogued identity, intact); fills *out.
 bool prom_identify_card(const char *path, prom_id_t *out);
 
-// The same, with the reason for a rejection — what prom.identify reports.
-prom_id_result_t prom_identify_detail(const char *path, prom_id_t *out, size_t *out_size, uint32_t *out_crc);
+// The same, with the reason for a rejection — what catalog.proms.identify reports.
+prom_id_result_t prom_identify_detail(const char *path, prom_id_t *out, size_t *out_size);
 
 // === The offer registry =====================================================
 //
 // The platform hands core candidate .prom files before machine.boot.  Core
 // opens each, identifies it by content, and remembers the recognised ones
-// keyed by content identity (CRC-32).  Unrecognised offers are dropped with
+// keyed by content identity (prom_id_t.key).  Unrecognised offers are dropped with
 // a log, not errors — the platform offers whole directories and strays are
 // expected.  Offers persist across machine.boot.
 
 void prom_offer(const char *path);
+// Offer every file in `dir` ending in `ext` (NULL: any), skipping dotfiles.
+void prom_offer_dir(const char *dir, const char *ext);
 void prom_offer_clear(void);
 
-// Enumerate the offered candidates providing `card_id`, in pick order: the
-// explicit machine.boot `prom=` pick first, then catalog `preferred` rows,
-// then remaining catalog order.  Returns the idx'th path (borrowed) or NULL.
+// Enumerate the offered candidates providing `card_id`, in pick order:
+// catalog `preferred` rows, then remaining catalog order.  Returns the idx'th
+// path (borrowed) or NULL.
 const char *prom_offer_find(const char *card_id, int idx, size_t *out_size);
 
-// Content facts for a registered offer, looked up by its path.
-bool prom_offer_info(const char *path, uint32_t *out_crc, bool *out_explicit);
+// True iff card `card_id` has an expansion ROM: `rom` (the slot's own file,
+// NULL for none) when given -- it must identify as this card's -- else an
+// offered candidate.  No side effect.
+bool prom_card_resolvable(const char *card_id, const char *rom);
 
-// True iff the catalog lists an expansion ROM for this card id — i.e. the
-// card needs one and boot's strict-resolution validation applies.
-bool prom_card_catalogued(const char *card_id);
-
-// True iff an offered candidate resolves for this card id.
-bool prom_card_resolvable(const char *card_id);
-
-// Register the boot document's explicit `prom=` pick.  0 on success, -1 on
-// an empty path.
-int prom_set_path(const char *path);
-
-// Load the resolved image for `card_id` into a malloc'd buffer the caller
-// (a card factory) hands to pci_device_t.rom / .rom_size.  *out_path (if
-// non-NULL) receives a malloc'd copy of the resolved path for the
-// built-from record.  False when nothing resolves.
-bool prom_load_card(const char *card_id, uint8_t **out_buf, size_t *out_size, char **out_path);
+// Load the image for `card_id` into a malloc'd buffer the caller (a card
+// factory) hands to pci_device_t.rom / .rom_size: `rom` (the slot's own
+// file) when given, else the offered candidates in pick order.  *out_path
+// (if non-NULL) receives a malloc'd copy of the path it came from.  False
+// when nothing loads.
+bool prom_load_card(const char *card_id, const char *rom, uint8_t **out_buf, size_t *out_size, char **out_path);
 
 // === Lifecycle =============================================================
 
-extern const struct class_desc prom_class;
-
-void prom_init(void);
+// Create the catalog.proms registry node under `parent` (the catalog).
+struct object;
+void prom_init(struct object *parent);
 void prom_delete(void);
 
 #endif // PROM_H

@@ -15,10 +15,10 @@
 // build_video_slots() reports an EMPTY slot list for them and `video_card=`
 // has nothing legal to name — machine.c rejects any value outright.
 //
-// The trigger is a SECOND boot in one session, not the dialog: machine.boot's
-// inheritance step (machine.c step 1) fills every field the document omits
-// from the previous machine's built-from record. The dialog correctly sends no
-// video_card for a slotless model, and the core then supplies the last one.
+// The trigger was a SECOND boot in one session, not the dialog: machine.boot
+// once filled every field the document omitted from the previous machine.
+// The dialog correctly sends no video_card for a slotless model, and the core
+// then supplied the last one.  machine.boot inherits nothing now; this pins it.
 
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
@@ -63,7 +63,7 @@ async function bootModel(page: Page, model: string): Promise<void> {
   const sel = page.locator('#cfg-model');
   await expect(sel.locator(`option[value="${model}"]`)).toHaveCount(1, { timeout: 60_000 });
   await sel.selectOption(model);
-  await page.getByRole('button', { name: 'Start Machine' }).click();
+  await page.getByRole('button', { name: 'Start', exact: true }).click();
 }
 
 test('a slotless model boots after a carded model ran in the same session', async ({ page }) => {

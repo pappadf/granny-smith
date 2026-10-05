@@ -24,7 +24,7 @@
 debug.breakpoints.add 0x00FE2DC6
 scheduler.run 40000000
 assert machine.id == "lisa" "machine.id != lisa"
-assert machine.rom.checksum == "098917B2" "rom.checksum != 098917B2 (rev-H)"
+assert machine.rom.id == "3f7b" "rom.id != 3f7b (rev-H)"
 assert machine.cpu.pc == 0x00FE2DC6 "did not reach the boot-menu input wait"
 
 # Attach a blank in-memory ProFile (drives OCD/ low; the ROM now sees it connected).

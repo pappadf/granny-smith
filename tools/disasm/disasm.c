@@ -4,7 +4,7 @@
 // disasm.c
 // Standalone disassembler tool for binary files: 68000/68030 (default,
 // via the core cpu_disasm.c decoder), DSP3210 (--arch dsp3210), or PowerPC
-// 601/604 (--arch ppc / ppc604).  Minimal dependencies in every mode.
+// 601/604/750 (--arch ppc / ppc604 / ppc750).  Minimal dependencies in every mode.
 
 #include "annotate_disasm.h"
 #include "cpu.h"
@@ -43,7 +43,8 @@ static void print_usage(const char *progname) {
             "  -l, --length <bytes>          Number of bytes to disassemble. Default: entire file from offset\n"
             "  -a, --address-offset <addr>   Base address for display (hex). Default: 0\n"
             "  -n, --count <n>               Maximum number of instructions to disassemble\n"
-            "  -A, --arch <name>             Instruction set: m68k (default), dsp3210, ppc (alias ppc601), or ppc604\n"
+            "  -A, --arch <name>             Instruction set: m68k (default), dsp3210, ppc (alias ppc601), ppc604, or "
+            "ppc750\n"
             "  -h, --help                    Show this help message\n",
             progname);
 }
@@ -100,10 +101,11 @@ int main(int argc, char *argv[]) {
     bool arch_dsp3210 = strcmp(arch, "dsp3210") == 0;
     // "ppc"/"ppc601" apply the 601's validity view, "ppc604" the 604's
     // (the two models trap each other's exclusive encodings).
-    bool arch_ppc = strcmp(arch, "ppc") == 0 || strcmp(arch, "ppc601") == 0 || strcmp(arch, "ppc604") == 0;
-    int ppc_model = strcmp(arch, "ppc604") == 0 ? 604 : 601;
+    bool arch_ppc = strcmp(arch, "ppc") == 0 || strcmp(arch, "ppc601") == 0 || strcmp(arch, "ppc604") == 0 ||
+                    strcmp(arch, "ppc750") == 0;
+    int ppc_model = strcmp(arch, "ppc604") == 0 ? 604 : strcmp(arch, "ppc750") == 0 ? 750 : 601;
     if (!arch_dsp3210 && !arch_ppc && strcmp(arch, "m68k") != 0) {
-        fprintf(stderr, "Error: unknown --arch '%s' (want m68k, dsp3210, ppc, or ppc604).\n", arch);
+        fprintf(stderr, "Error: unknown --arch '%s' (want m68k, dsp3210, ppc, ppc604, or ppc750).\n", arch);
         return 1;
     }
 
@@ -178,7 +180,7 @@ int main(int argc, char *argv[]) {
             ppc_insn ins;
             ppc_disassemble_model(w, addr, ppc_model, &ins);
             // "mnemonic\toperands" -> single aligned column pair
-            char mnem[32], ops[64];
+            char mnem[sizeof(ins.text)], ops[sizeof(ins.text)];
             const char *tab = strchr(ins.text, '\t');
             if (tab) {
                 snprintf(mnem, sizeof(mnem), "%.*s", (int)(tab - ins.text), ins.text);
@@ -258,18 +260,16 @@ int main(int argc, char *argv[]) {
 
         // split mnemonic and operands at the tab character,
         // matching the emulator's debug.c disasm() function
-        int i;
-        if (strlen(disasm_buf) == 0) {
-            strcpy(mnemonic, "ILLEGAL");
+        // Bounded: the split never writes past mnemonic[] whatever the
+        // decoder returns (unreachable today, measured, but unbounded).
+        if (disasm_buf[0] == '\0') {
+            snprintf(mnemonic, sizeof(mnemonic), "ILLEGAL");
             operands[0] = '\0';
         } else {
-            for (i = 0; disasm_buf[i] != '\0' && disasm_buf[i] != '\t'; i++)
-                mnemonic[i] = disasm_buf[i];
-            mnemonic[i] = '\0';
-            if (disasm_buf[i] == '\t')
-                snprintf(operands, sizeof(operands), "%s", disasm_buf + i + 1);
-            else
-                operands[0] = '\0';
+            const char *tab = strchr(disasm_buf, '\t');
+            int mlen = tab ? (int)(tab - disasm_buf) : (int)strlen(disasm_buf);
+            snprintf(mnemonic, sizeof(mnemonic), "%.*s", mlen, disasm_buf);
+            snprintf(operands, sizeof(operands), "%s", tab ? tab + 1 : "");
         }
 
         // annotate branch destinations on the operands string
@@ -277,10 +277,7 @@ int main(int argc, char *argv[]) {
 
         // format exactly like the emulator: "%08x  %04x  %-10s%-12s"
         // then append the branch annotation (if any) after the base output
-        char base_line[256];
-        sprintf(base_line, "$%08X  %04x  %-10s%s", (unsigned int)addr, (int)words[pos], mnemonic, annotated_buf);
-
-        printf("%s\n", base_line);
+        printf("$%08X  %04x  %-10s%s\n", (unsigned int)addr, (int)words[pos], mnemonic, annotated_buf);
 
         pos += nwords;
         instr_count++;

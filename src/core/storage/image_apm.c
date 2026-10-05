@@ -12,6 +12,7 @@
 // unit tests can link against image_apm.c without the storage stack.
 
 #include "image_apm.h"
+#include "common.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -36,15 +37,7 @@
 #define APM_MAX_PARTITIONS 256
 
 // Read a big-endian uint16 from a byte buffer.
-static uint16_t be16(const uint8_t *p) {
-    return (uint16_t)((p[0] << 8) | p[1]);
-}
-
 // Read a big-endian uint32 from a byte buffer.
-static uint32_t be32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-}
-
 // Copy a 32-byte APM name/type field into a 33-byte NUL-terminated buffer,
 // stripping trailing NULs and spaces for display.
 static void copy_apm_str(char *dst, const uint8_t *src) {
@@ -58,10 +51,10 @@ bool image_apm_probe_magic(const uint8_t *block1) {
     if (!block1)
         return false;
     // Signature "PM" must be present.
-    if (be16(block1 + APM_OFF_SIG) != APM_SIG_PM)
+    if (RD_BE16(block1 + APM_OFF_SIG) != APM_SIG_PM)
         return false;
     // pmMapBlkCnt must be plausible: non-zero and not absurdly large.
-    uint32_t map_blocks = be32(block1 + APM_OFF_MAP_BLKCNT);
+    uint32_t map_blocks = RD_BE32(block1 + APM_OFF_MAP_BLKCNT);
     if (map_blocks == 0 || map_blocks > APM_MAX_PARTITIONS)
         return false;
     return true;
@@ -109,7 +102,7 @@ apm_table_t *image_apm_parse_buffer(const uint8_t *buf, size_t buf_size, const c
         return NULL;
     }
 
-    uint32_t n = be32(entry1 + APM_OFF_MAP_BLKCNT);
+    uint32_t n = RD_BE32(entry1 + APM_OFF_MAP_BLKCNT);
     if (n == 0 || n > APM_MAX_PARTITIONS) {
         if (errmsg)
             *errmsg = image_apm_err_count;
@@ -140,10 +133,10 @@ apm_table_t *image_apm_parse_buffer(const uint8_t *buf, size_t buf_size, const c
         if (offset + APM_BLOCK_SIZE > buf_size)
             break;
         const uint8_t *block = buf + offset;
-        if (be16(block + APM_OFF_SIG) != APM_SIG_PM)
+        if (RD_BE16(block + APM_OFF_SIG) != APM_SIG_PM)
             break;
-        uint32_t start_block = be32(block + APM_OFF_PY_START);
-        uint32_t size_blocks = be32(block + APM_OFF_PART_BLKCNT);
+        uint32_t start_block = RD_BE32(block + APM_OFF_PY_START);
+        uint32_t size_blocks = RD_BE32(block + APM_OFF_PART_BLKCNT);
         // No size-vs-image cap here: this parser only sees the partition-map
         // scan window, not the full image.  Bounds-versus-image are checked
         // at read time in image_apm_parse and at use time by callers that
@@ -152,7 +145,7 @@ apm_table_t *image_apm_parse_buffer(const uint8_t *buf, size_t buf_size, const c
         p->index = i + 1;
         p->start_block = start_block;
         p->size_blocks = size_blocks;
-        p->status = be32(block + APM_OFF_STATUS);
+        p->status = RD_BE32(block + APM_OFF_STATUS);
         copy_apm_str(p->name, block + APM_OFF_NAME);
         copy_apm_str(p->type, block + APM_OFF_TYPE);
         p->fs_kind = image_apm_classify_type(p->type);

@@ -2,7 +2,7 @@
 # Mac OS 7.6, run the 7.6 Installer to completion, and boot the result.
 #
 # Part 1 (format): creates a blank HD160SC SCSI disk, boots a Macintosh IIfx
-# (16 MB) with the Apple Macintosh Display Card 8•24 (JMFB) at 13" RGB 640x480
+# (16 MB) with the Macintosh Display Card 8•24 (JMFB) at 13" RGB 640x480
 # 8 bpp from the Mac OS 7.6 "Disk Tools 1" floppy, opens Apple HD SC Setup
 # v7.3.5 off that floppy, and initialises the drive (APM partition map +
 # Apple_Driver43 + HFS "Untitled").
@@ -88,16 +88,16 @@ def settle(limit) {
 # --- Part 1: format a blank HD160SC ------------------------------------------
 
 # Create a blank HD160SC hard-disk image (177,269,760 bytes, zero-filled).
-storage.hd_create "$WORK_DIR/blank.img" HD160SC
+files.hd_create "$WORK_DIR/blank.img" HD160SC
 
 # Pin the RTC so the boot is deterministic run-to-run.
-machine.rtc.time = 3000000000
 
 # Select the Display Card 8•24 and the 13" RGB 640x480 8 bpp mode, then boot
 # the IIfx with 16 MB.  The re-boot binds the card's declaration ROM
 # (mdc-8-24-revb-d1629664.vrom, found next to iifx-4147dd77.rom) and applies
 # the pending video mode — neither can be passed as a startup argument.
 machine.boot model="iifx" ram=16384 video_card="mdc_8_24" video_mode="13in_rgb_8bpp" rom="${$ROM}"
+machine.rtc.time = 3000000000
 
 # Attach the blank HD at SCSI ID 0 (unformatted → won't boot / won't mount)
 # and insert the Mac OS 7.6 "Disk Tools 1" floppy, which carries Apple HD SC
@@ -111,8 +111,8 @@ machine.floppy.drive[0].insert "$src/Disk Tools 1.img" true
 scheduler.run 600000000
 
 assert machine.id == "iifx" "machine.id != iifx"
-assert machine.rom.checksum == "4147DD77" "rom.checksum != 4147DD77"
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24" "slot $9 card != Display Card 8•24"
+assert machine.rom.id == "4147dd77" "rom.id != 4147dd77"
+assert machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24" "slot $9 card != Display Card 8•24"
 assert machine.screen.width == 640 "screen.width != 640"
 assert machine.screen.height == 480 "screen.height != 480"
 assert machine.rtc.pram.peek(0x48) == 0x83 "savedMode != 0x83 (8bpp)"
@@ -168,16 +168,16 @@ check("done.png")
 # The formatted drive really carries an Apple Partition Map with a driver
 # partition and an HFS volume — flatten base + delta and read it back.
 machine.scsi.device[0].image.export "$WORK_DIR/formatted.img"
-storage.partmap "$WORK_DIR/formatted.img"
-assert len(vfs.list("$WORK_DIR/formatted.img")) == 4 "formatted HD partition map != 4 entries"
+files.partmap "$WORK_DIR/formatted.img"
+assert len(files.list("$WORK_DIR/formatted.img")) == 4 "formatted HD partition map != 4 entries"
 
 # --- Part 2: start a Custom Install of the minimum system --------------------
 # Fresh machine, same card/mode; the formatted HD is re-attached (empty, so
 # unbootable) and the Installer floppy is the boot medium.  This is Apple's
 # documented floppy procedure: boot "Install 1", then feed the rest into the
 # same drive as the Installer asks for them.
-machine.rtc.time = 3000000000
 machine.boot model="iifx" ram=16384 video_card="mdc_8_24" video_mode="13in_rgb_8bpp" rom="${$ROM}"
+machine.rtc.time = 3000000000
 machine.scsi.attach_hd "$WORK_DIR/formatted.img" 0
 machine.floppy.drive[0].insert "$src/Install 1.img" true
 
@@ -305,17 +305,17 @@ check("success.png")
 
 # The destination carries a real System Folder.
 machine.scsi.device[0].image.export "$WORK_DIR/installed.img"
-let root = vfs.list("$WORK_DIR/installed.img/partition1")
+let root = files.list("$WORK_DIR/installed.img/partition1")
 echo "destination root: ${$root}"
-let sysfolder = vfs.list("$WORK_DIR/installed.img/partition1/System Folder")
+let sysfolder = files.list("$WORK_DIR/installed.img/partition1/System Folder")
 echo "System Folder: ${$sysfolder}"
 assert len($sysfolder) >= 10 "System Folder has fewer than 10 items — the install did not land"
 
 # Boot the installed volume with no floppy in the drive.  Reaching the Finder
 # desktop from the freshly-installed System Folder is the end-to-end proof:
 # formatted, installed, bootable.
-machine.rtc.time = 3000000000
 machine.boot model="iifx" ram=16384 video_card="mdc_8_24" video_mode="13in_rgb_8bpp" rom="${$ROM}"
+machine.rtc.time = 3000000000
 machine.scsi.attach_hd "$WORK_DIR/installed.img" 0
 scheduler.run 900000000
 settle(120)

@@ -1,0 +1,513 @@
+/* ====== Aqua skin: part-hook overrides ======
+   What tokens cannot say: Aqua's materials.  Pinstripes behind everything, a
+   brushed toolbar, gel capsules for every button and segment (blue when on,
+   white when off), tabs as one centred capsule straddling the panel's box,
+   gradient section strips, the blue gradient selection, gel scrollbars and a
+   white plastic bezel around the screen (tokens).  Only gs-* part classes, their
+   ARIA / data-* states and the page itself are targeted, scoped to this skin
+   and in the gs.skin layer. */
+@layer gs.skin {
+  /* ---- Page, toolbar, display ------------------------------------------- */
+  /* The brushed toolbar runs the full width of the window, as a Mac OS X
+     unified toolbar does: the page draws its band behind the panel's top,
+     and a panel docked left or right starts below it. */
+  :root[data-skin='aqua'] body {
+    background:
+      linear-gradient(#8a8a8a, #8a8a8a) 0 calc(var(--gs-toolbar-height) - 1px) / 100% 1px no-repeat,
+      linear-gradient(rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0.7)) 0 0 / 100% 1px no-repeat,
+      var(--gs-ref-brushed) 0 0 / 100% var(--gs-toolbar-height) no-repeat,
+      var(--gs-ref-pinstripe);
+  }
+  :root[data-skin='aqua'] .gs-workbench.panel-left > .gs-panel,
+  :root[data-skin='aqua'] .gs-workbench.panel-right > .gs-panel {
+    height: auto;
+    margin-top: var(--gs-toolbar-height);
+  }
+  :root[data-skin='aqua'] .gs-display {
+    background: transparent;
+  }
+  /* Groups keep a gap even when the toolbar runs short of room. */
+  :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] {
+    gap: var(--gs-toolbar-gap);
+    padding: 0 12px;
+    background: var(--gs-ref-brushed);
+    border-bottom: 1px solid #8a8a8a;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  }
+  :root[data-skin='aqua'] .gs-separator {
+    width: 1px;
+    background: #a6a6a6;
+    box-shadow: 1px 0 0 #eaeaea;
+  }
+  /* ---- Gel buttons ------------------------------------------------------- */
+  :root[data-skin='aqua'] .gs-icon-button,
+  :root[data-skin='aqua'] .gs-button[data-variant='secondary'],
+  :root[data-skin='aqua'] .gs-button[data-variant='ghost'] {
+    border: 1px solid var(--gs-ref-white-border);
+    color: #2e2e2e;
+    background: var(--gs-ref-gel-white);
+    box-shadow:
+      inset 0 1px 1px #ffffff,
+      0 1px 2px rgba(0, 0, 0, 0.22);
+  }
+  :root[data-skin='aqua'] .gs-icon-button[data-tone='panel'] {
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+  }
+  :root[data-skin='aqua'] .gs-icon-button[data-tone='panel']:hover:not(:disabled) {
+    border-color: var(--gs-ref-white-border);
+    background: var(--gs-ref-gel-white);
+  }
+  :root[data-skin='aqua'] .gs-icon-button:active:not(:disabled),
+  :root[data-skin='aqua'] .gs-icon-button[data-force-state='active'],
+  :root[data-skin='aqua'] .gs-button[data-variant='secondary']:active:not(:disabled),
+  :root[data-skin='aqua'] .gs-button[data-variant='ghost']:active:not(:disabled) {
+    background: var(--gs-ref-gel-white-pressed);
+  }
+  /* On: a pressed toggle, the run button, the default button: blue gel. */
+  :root[data-skin='aqua'] .gs-icon-button[aria-pressed='true'],
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :first-child
+    > .gs-icon-button:first-child:not(:disabled),
+  :root[data-skin='aqua'] .gs-button[data-variant='primary'] {
+    border: 1px solid var(--gs-ref-gel-border);
+    color: #ffffff;
+    background: var(--gs-ref-gel-blue);
+    box-shadow:
+      inset 0 1px 1px rgba(255, 255, 255, 0.9),
+      0 1px 2px rgba(0, 0, 0, 0.3);
+    text-shadow: 0 1px 0 rgba(0, 40, 120, 0.4);
+  }
+  :root[data-skin='aqua'] .gs-button[data-variant='primary']:not(:disabled) {
+    font-weight: var(--gs-font-weight-semibold);
+    box-shadow:
+      inset 0 1px 1px rgba(255, 255, 255, 0.9),
+      0 1px 2px rgba(0, 0, 0, 0.3),
+      0 0 8px rgba(61, 143, 234, 0.55);
+  }
+  :root[data-skin='aqua'] .gs-button[data-variant='primary']:active:not(:disabled),
+  :root[data-skin='aqua'] .gs-icon-button[aria-pressed='true']:active:not(:disabled) {
+    background: var(--gs-ref-gel-blue-pressed);
+  }
+  :root[data-skin='aqua'] .gs-button[data-variant='danger'] {
+    border: 1px solid #8c1a12;
+    background: linear-gradient(to bottom, #ffc9c4 0%, #f2665a 48%, #d63a2e 52%, #f59088 100%);
+    box-shadow:
+      inset 0 1px 1px rgba(255, 255, 255, 0.8),
+      0 1px 2px rgba(0, 0, 0, 0.3);
+  }
+  /* Run and shut down are round gels, a size up. */
+  :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] > :first-child > .gs-icon-button {
+    width: 34px;
+    height: 34px;
+  }
+  /* The toolbar, as the storyboard draws it: round gels for run / shut down
+     (the first group) and the zoom steppers (the group after its groove),
+     the panel-layout buttons as one gel capsule, and every other tool a
+     bare glyph, Mac OS X toolbar style. */
+  :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] .gs-icon-button {
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+    color: #303030;
+  }
+  :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] .gs-icon-button:hover:not(:disabled) {
+    color: #000000;
+    background: rgba(0, 0, 0, 0.06);
+  }
+  :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] .gs-icon-button[aria-pressed='true'] {
+    color: var(--gs-accent);
+  }
+  :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] > :first-child > .gs-icon-button,
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :first-child
+    + .gs-separator
+    + *
+    > .gs-icon-button,
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button {
+    border: 1px solid var(--gs-ref-white-border);
+    color: #2e2e2e;
+    background: var(--gs-ref-gel-white);
+    box-shadow:
+      inset 0 1px 1px #ffffff,
+      0 1px 2px rgba(0, 0, 0, 0.22);
+  }
+  /* Zoom steppers: small round gels. */
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :first-child
+    + .gs-separator
+    + *
+    > .gs-icon-button {
+    width: 22px;
+    height: 22px;
+    padding: 3px;
+  }
+  /* Panel layout: three segments of one rounded bar, the current one blue. */
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button {
+    width: 30px;
+    height: 24px;
+    border-radius: 0;
+  }
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button
+    + .gs-icon-button {
+    margin-left: calc(-1px - var(--gs-toolbar-gap));
+  }
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    + .gs-icon-button {
+    border-radius: 6px 0 0 6px;
+  }
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button:last-child {
+    border-radius: 0 6px 6px 0;
+  }
+  /* The bare tools: larger glyphs. */
+  :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] .gs-icon-button[data-size='md'] {
+    width: 34px;
+  }
+  :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] .gs-icon-button__icon {
+    width: 20px;
+    height: 20px;
+  }
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :first-child
+    + .gs-separator
+    + *
+    .gs-icon-button__icon,
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button
+    .gs-icon-button__icon {
+    width: 14px;
+    height: 14px;
+  }
+  /* The zoom level: a small white inset field. */
+  :root[data-skin='aqua'] .gs-toolbar[data-variant='bar'] .gs-input {
+    height: 20px;
+    border: 1px solid #9a9a9a;
+    border-radius: 0;
+    background: #ffffff;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
+    text-align: center;
+    font-size: 12px;
+  }
+  :root[data-skin='aqua']
+    .gs-toolbar[data-variant='bar']
+    > :last-child
+    > .gs-separator
+    ~ .gs-icon-button[aria-pressed='true'] {
+    position: relative;
+    border-color: var(--gs-ref-gel-border);
+    color: #ffffff;
+    background: var(--gs-ref-gel-blue);
+  }
+  :root[data-skin='aqua'] .gs-icon-button:disabled,
+  :root[data-skin='aqua'] .gs-button:disabled {
+    opacity: 0.55;
+  }
+
+  /* Segmented controls and both tab strips: one capsule of gel segments. */
+  :root[data-skin='aqua'] .gs-segmented {
+    gap: 0;
+    padding: 0;
+    border-radius: 999px;
+    background: transparent;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
+  }
+  :root[data-skin='aqua'] .gs-segmented__option,
+  :root[data-skin='aqua'] .gs-tabs__tab {
+    margin-left: -1px;
+    padding: 0 9px;
+    border: 1px solid var(--gs-ref-white-border);
+    border-radius: 0;
+    color: #1a1a1a;
+    background: var(--gs-ref-gel-white);
+    box-shadow: inset 0 1px 1px #ffffff;
+  }
+  :root[data-skin='aqua'] .gs-segmented__option:first-child,
+  :root[data-skin='aqua'] .gs-tabs__tab:first-child {
+    margin-left: 0;
+    border-radius: 999px 0 0 999px;
+  }
+  :root[data-skin='aqua'] .gs-segmented__option:last-child,
+  :root[data-skin='aqua'] .gs-tabs__tab:last-child {
+    border-radius: 0 999px 999px 0;
+  }
+  :root[data-skin='aqua'] .gs-segmented__option[aria-pressed='true'],
+  :root[data-skin='aqua'] .gs-tabs__tab[aria-selected='true'] {
+    position: relative;
+    border-color: var(--gs-ref-gel-border);
+    color: #ffffff;
+    font-weight: var(--gs-font-weight-semibold);
+    background: var(--gs-ref-gel-blue);
+    text-shadow: 0 1px 0 rgba(0, 40, 120, 0.4);
+  }
+  :root[data-skin='aqua'] .gs-segmented__option:disabled {
+    opacity: 0.55;
+  }
+
+  /* Checkboxes: small white gel squares, blue gel with a tick when on. */
+  :root[data-skin='aqua'] .gs-check__control {
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border: 1px solid #8a8a8a;
+    border-radius: 3px;
+    background: var(--gs-ref-gel-white);
+    box-shadow:
+      inset 0 1px 1px #ffffff,
+      0 1px 1px rgba(0, 0, 0, 0.18);
+  }
+  :root[data-skin='aqua'] .gs-check__control:checked {
+    border-color: var(--gs-ref-gel-border);
+    background:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 7.3l2.6 2.7L11 4' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+        center / 12px 12px no-repeat,
+      var(--gs-ref-gel-blue);
+  }
+  :root[data-skin='aqua'] .gs-check__control:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(80, 150, 240, 0.45);
+  }
+
+  /* ---- The split: a Mac OS X divider with a round grip -------------------- */
+  /* The resize handle between the display and the panel takes real room
+     (no overlap) and is drawn, so it can be found and grabbed; beside a
+     docked panel it starts below the toolbar band. */
+  :root[data-skin='aqua'] .gs-workbench > .gs-sash {
+    --gs-sash-size: 9px;
+    margin: 0;
+    border: 1px solid #a4a4a4;
+    background: linear-gradient(90deg, #d9d9d9, #f4f4f4 45%, #e4e4e4 55%, #cfcfcf);
+  }
+  :root[data-skin='aqua'] .gs-workbench > .gs-sash[aria-orientation='vertical'] {
+    border-width: 0 1px;
+  }
+  :root[data-skin='aqua'] .gs-workbench > .gs-sash[aria-orientation='horizontal'] {
+    border-width: 1px 0;
+    background: linear-gradient(180deg, #d9d9d9, #f4f4f4 45%, #e4e4e4 55%, #cfcfcf);
+  }
+  :root[data-skin='aqua'] .gs-workbench.panel-left > .gs-sash,
+  :root[data-skin='aqua'] .gs-workbench.panel-right > .gs-sash {
+    height: auto;
+    margin-top: var(--gs-toolbar-height);
+  }
+  :root[data-skin='aqua'] .gs-workbench > .gs-sash::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    background: radial-gradient(circle at 40% 35%, #ffffff, #a9a9a9);
+    box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.35);
+    pointer-events: none;
+  }
+  :root[data-skin='aqua'] .gs-workbench > .gs-sash:hover,
+  :root[data-skin='aqua'] .gs-workbench > .gs-sash[data-state='dragging'] {
+    border-color: var(--gs-ref-gel-border);
+    background: linear-gradient(90deg, #c9dcf5, #eef5ff 45%, #dbe8fa 55%, #bfd3f0);
+  }
+
+  /* ---- The panel: a capsule of tabs over a recessed box ------------------ */
+  /* The box holds everything a tab shows, its header buttons too: it is
+     drawn behind the panel's header and content, its top edge at the middle
+     of the tab capsule (6px of padding + half the capsule's 28px). */
+  :root[data-skin='aqua'] .gs-workbench > .gs-panel {
+    position: relative;
+    border: 0;
+    padding: 6px 12px 12px;
+    background: transparent;
+  }
+  :root[data-skin='aqua'] .gs-workbench > .gs-panel::before {
+    content: '';
+    position: absolute;
+    inset: 20px 12px 12px;
+    border: 1px solid #b8b8b8;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.035);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
+    pointer-events: none;
+  }
+  /* The tab capsule, centred, across the box's top edge; under it, inside
+     the box, the view's buttons at the right. */
+  :root[data-skin='aqua'] .gs-panel-header {
+    position: relative;
+    z-index: 2;
+    flex: none;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    height: auto;
+    overflow: visible;
+    padding: 0 10px;
+    border-bottom: 0;
+    background: transparent;
+  }
+  :root[data-skin='aqua'] .gs-tabs--panel {
+    flex: 1 0 100%;
+    justify-content: safe center;
+    padding: 2px 3px 3px;
+  }
+  :root[data-skin='aqua'] .gs-tabs--panel .gs-tabs__tab {
+    height: 23px;
+    box-shadow:
+      inset 0 1px 1px #ffffff,
+      0 1px 2px rgba(0, 0, 0, 0.2);
+  }
+  :root[data-skin='aqua'] .gs-panel-content {
+    position: relative;
+    z-index: 1;
+    padding: 6px 10px 10px;
+    border: 0;
+    background: transparent;
+  }
+  :root[data-skin='aqua'] .gs-panel-content > * {
+    border: 1px solid #9e9e9e;
+    background: #ffffff;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.15);
+  }
+
+  /* Section strips and the table head: a light gradient with bold titles. */
+  :root[data-skin='aqua'] .gs-section__header,
+  :root[data-skin='aqua'] .gs-table__head {
+    background: var(--gs-ref-strip);
+    border-top: 1px solid #ffffff;
+    border-bottom: 1px solid #a8a8a8;
+  }
+  :root[data-skin='aqua'] .gs-table__th {
+    border-right: 1px solid #c4c4c4;
+  }
+
+  /* The selection: Aqua's blue gradient with white text. */
+  :root[data-skin='aqua'] .gs-tree-item[aria-selected='true'],
+  :root[data-skin='aqua'] .gs-list-row[aria-selected='true'],
+  :root[data-skin='aqua'] .gs-table__row[aria-selected='true'] {
+    background: var(--gs-ref-selection);
+    color: #ffffff;
+  }
+  :root[data-skin='aqua'] .gs-tree-item[aria-selected='true'] *,
+  :root[data-skin='aqua'] .gs-list-row[aria-selected='true'] *,
+  :root[data-skin='aqua'] .gs-table__row[aria-selected='true'] * {
+    color: #ffffff;
+  }
+
+  /* Fields: white with an inset edge; focus is a soft blue glow. */
+  :root[data-skin='aqua'] .gs-input {
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+  }
+  :root[data-skin='aqua'] .gs-input:focus-visible {
+    box-shadow:
+      inset 0 1px 2px rgba(0, 0, 0, 0.25),
+      0 0 0 3px rgba(80, 150, 240, 0.45);
+  }
+  :root[data-skin='aqua'] .gs-select__control {
+    border-radius: 6px;
+    background: var(--gs-ref-gel-white);
+    box-shadow:
+      inset 0 1px 1px #ffffff,
+      0 1px 2px rgba(0, 0, 0, 0.22);
+  }
+
+  /* ---- Overlays: Aqua sheets and menus ----------------------------------- */
+  :root[data-skin='aqua'] .gs-modal {
+    border: 1px solid #8e8e8e;
+    backdrop-filter: blur(10px);
+  }
+  :root[data-skin='aqua'] .gs-menu {
+    border: 1px solid rgba(0, 0, 0, 0.18);
+    backdrop-filter: blur(10px);
+  }
+  :root[data-skin='aqua'] .gs-card {
+    border: 1px solid #adadad;
+    box-shadow: 0 10px 28px -10px rgba(0, 0, 0, 0.35);
+  }
+  :root[data-skin='aqua'] .gs-progress {
+    border: 1px solid #8e8e8e;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
+  }
+
+  /* ---- The status bar: a grey strip, its state a gel bead --------------- */
+  :root[data-skin='aqua'] .gs-statusbar {
+    background: linear-gradient(#e4e4e4, #cacaca);
+    border-top: 1px solid #9a9a9a;
+    --gs-statusbar-drive-read: #1f6fd6;
+    --gs-statusbar-drive-write: #b0221a;
+    --gs-statusbar-chip-on-bg: var(--gs-accent-subtle);
+    --gs-statusbar-chip-on-ring: var(--gs-ref-gel-border);
+    --gs-statusbar-printer-error: var(--gs-danger-fg);
+  }
+  :root[data-skin='aqua'] .gs-status-dot {
+    width: 10px;
+    height: 10px;
+    background: var(--gs-ref-gel-grey);
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+  }
+  :root[data-skin='aqua'] .gs-status-dot[data-state='running'] {
+    background: var(--gs-ref-gel-green);
+  }
+  :root[data-skin='aqua'] .gs-status-dot[data-state='paused'] {
+    background: var(--gs-ref-gel-amber);
+  }
+  :root[data-skin='aqua'] .gs-status-dot[data-state='stopped'],
+  :root[data-skin='aqua'] .gs-status-dot[data-state='crashed'] {
+    background: var(--gs-ref-gel-red);
+  }
+
+  /* ---- Gel scrollbars ---------------------------------------------------- */
+  :root[data-skin='aqua'] * {
+    scrollbar-color: auto;
+    scrollbar-width: auto;
+  }
+  /* …except where a part hides its scrollbar (the panel tab strip). */
+  :root[data-skin='aqua'] .gs-tabs--panel {
+    scrollbar-width: none;
+  }
+  :root[data-skin='aqua'] ::-webkit-scrollbar {
+    width: 15px;
+    height: 15px;
+  }
+  :root[data-skin='aqua'] ::-webkit-scrollbar-track {
+    background: repeating-linear-gradient(90deg, #f4f4f4 0 2px, #e9e9e9 2px 4px);
+    box-shadow:
+      inset 1px 0 0 #c4c4c4,
+      inset 0 0 3px rgba(0, 0, 0, 0.2);
+  }
+  :root[data-skin='aqua'] ::-webkit-scrollbar-thumb {
+    border: 1px solid #2d6fc8;
+    border-radius: 8px;
+    background: linear-gradient(to right, #9ad0ff 0%, #4d9cef 45%, #2d7fe0 55%, #8ccaff 100%);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+  }
+  :root[data-skin='aqua'] ::-webkit-scrollbar-thumb:horizontal {
+    background: linear-gradient(to bottom, #9ad0ff 0%, #4d9cef 45%, #2d7fe0 55%, #8ccaff 100%);
+  }
+  :root[data-skin='aqua'] ::-webkit-scrollbar-corner {
+    background: #eeeeee;
+  }
+}

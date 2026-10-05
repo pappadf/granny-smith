@@ -2,15 +2,14 @@
 // Copyright (c) pappadf
 
 // dsp.c
-// The AV family's DSP3210 — see dsp.h.  Execution model per
-// proposal-heterogeneous-multi-cpu.md §3: the DSP runs in burst events on
-// the one scheduler queue; `ratio_x256` converts elapsed main-CPU cycles
-// into a DSP instruction budget (aux_freq / (4 CKI × main_freq), carry
+// The AV family's DSP3210 — see dsp.h.  Execution model: the DSP runs in
+// burst events on the one scheduler queue; `ratio_x256` converts elapsed
+// main-CPU cycles into a DSP instruction budget (aux_freq / (4 CKI × main_freq), carry
 // kept exact), a 4096-cycle quantum re-arms while the core is runnable,
 // and an idle core (held in reset, or parked in waiti with nothing
 // pending) costs zero events until a kick.
 //
-// Board wiring (dsp3210.md §8 + dsp3210-plaintalk findings):
+// Board wiring (docs/internals/machines/av/dsp.md):
 //   * bus hooks — guest-physical through the bus resolver (the PSC-DMA
 //     pattern; the CPU MMU is deliberately not in the path); the host
 //     decoder never maps the on-chip $5003xxxx window (the core decodes
@@ -19,13 +18,13 @@
 //     'xbus' crash dump.
 //   * dspOverRun → reset lifecycle: $83 holds (state clear), $01 releases
 //     (fetch from external physical 0 — the 7-word bootstrap), $81
-//     re-holds.  pdspResetEn is an arm interlock, not power management
-//     (rtm-rom-host-side.md §4).
+//     re-holds.  pdspResetEn is an arm interlock, not power management.
 //   * DSP→host doorbell: the kernel's per-message BIO0 toggle latches PSC
-//     L5 bit 0 (dsp-kernel-messages.md §1); the RTM's DSPhndlr acks L5IR
+//     L5 bit 0; the RTM's DSPhndlr acks L5IR
 //     itself.
 
 #include "dsp.h"
+#include "gs_out.h"
 
 #include "av.h"
 #include "psc.h"
@@ -33,6 +32,7 @@
 #include "dsp3210.h"
 #include "dsp3210_disasm.h"
 
+#include "debug.h"
 #include "log.h"
 #include "machine_profile.h"
 #include "mmu.h"
@@ -67,7 +67,7 @@ struct av_dsp {
     struct object *object; // the machine.dsp node
 };
 
-extern const class_desc_t av_dsp_class;
+static const class_desc_t av_dsp_class;
 
 static void av_dsp_burst_event(void *source, uint64_t data);
 
@@ -218,7 +218,7 @@ void av_dsp_overrun_write(av_dsp_t *d, uint8_t bits, uint8_t written) {
         d->carry_x256 = 0;
         d->last_burst_cycles = scheduler_cpu_cycles(d->cfg->scheduler);
         av_dsp_arm(d, 1);
-        cpu_reschedule();
+        cpu_reschedule(d->cfg->scheduler);
     }
 }
 
@@ -233,7 +233,7 @@ void av_dsp_irq(av_dsp_t *d, int vector) {
     // Wake a parked core promptly: burst at the next cycle, and end the
     // main sprint at the next instruction boundary (the IRQ trick).
     av_dsp_arm(d, 1);
-    cpu_reschedule();
+    cpu_reschedule(d->cfg->scheduler);
 }
 
 // Frame tick: a short active-low pulse on EXT1 (IR1N), width in core time
@@ -251,7 +251,7 @@ void av_dsp_ext1_tick(av_dsp_t *d) {
         return;
     dsp3210_ext_pulse(d->core, DSP3210_VEC_EXT1, AV_DSP_EXT1_PULSE_SLOTS);
     av_dsp_arm(d, 1);
-    cpu_reschedule();
+    cpu_reschedule(d->cfg->scheduler);
 }
 
 bool av_dsp_ext1_pending(av_dsp_t *d) {
@@ -283,68 +283,59 @@ static const char *av_dsp_state_name(av_dsp_t *d) {
     return "running";
 }
 
-static value_t dsp_attr_state(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_state) {
     av_dsp_t *d = dsp_self(self);
     return val_str(d ? av_dsp_state_name(d) : "reset");
 }
 
-static value_t dsp_attr_pc(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_pc) {
     av_dsp_t *d = dsp_self(self);
     value_t v = val_uint(4, d ? d->core->pc : 0);
     v.flags |= VAL_HEX;
     return v;
 }
 
-static value_t dsp_attr_ps(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_ps) {
     av_dsp_t *d = dsp_self(self);
     value_t v = val_uint(2, d ? d->core->ps : 0);
     v.flags |= VAL_HEX;
     return v;
 }
 
-static value_t dsp_attr_emr(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_emr) {
     av_dsp_t *d = dsp_self(self);
     value_t v = val_uint(2, d ? d->core->emr : 0);
     v.flags |= VAL_HEX;
     return v;
 }
 
-static value_t dsp_attr_pcw(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_pcw) {
     av_dsp_t *d = dsp_self(self);
     value_t v = val_uint(2, d ? d->core->pcw : 0);
     v.flags |= VAL_HEX;
     return v;
 }
 
-static value_t dsp_attr_sp(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_sp) {
     av_dsp_t *d = dsp_self(self);
     value_t v = val_uint(4, d ? d->core->r[21] : 0);
     v.flags |= VAL_HEX;
     return v;
 }
 
-static value_t dsp_attr_evtp(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_evtp) {
     av_dsp_t *d = dsp_self(self);
     value_t v = val_uint(4, d ? d->core->r[22] : 0);
     v.flags |= VAL_HEX;
     return v;
 }
 
-static value_t dsp_attr_instr_count(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(dsp_attr_instr_count) {
     av_dsp_t *d = dsp_self(self);
     return val_uint(8, d ? d->core->icount : 0);
 }
 
-static value_t dsp_method_step(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+static DEF_METHOD(dsp_method_step) {
     av_dsp_t *d = dsp_self(self);
     if (!d)
         return val_err("dsp not available");
@@ -373,43 +364,127 @@ static int dsp_peek_word(av_dsp_t *d, uint32_t addr, uint32_t *out) {
     return 0;
 }
 
-static value_t dsp_method_disasm(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
+// --- the DSP's cpu_debug_if_t: the frame contract every CPU-like object
+// shares (debug.h), so machine.dsp.frame has the main CPU's shape and the
+// Debug view renders it with the same component.  No translate: the DSP
+// addresses guest-physical memory (and its on-chip window) directly. ---
+
+static uint32_t dsp_dbgif_get_pc(void *ctx) {
+    return ((av_dsp_t *)ctx)->core->pc;
+}
+
+// Whole-text disassembly: the DSP3210's syntax is algebraic ("a0 = a1 *
+// *r2++"), with no mnemonic column to split at a tab.
+static int dsp_dbgif_disasm(void *ctx, uint32_t pc, char *buf, size_t buflen) {
+    av_dsp_t *d = (av_dsp_t *)ctx;
+    uint32_t w;
+    if (dsp_peek_word(d, pc & ~3u, &w)) {
+        snprintf(buf, buflen, "<bus error>");
+        return 4;
+    }
+    dsp3210_insn ins;
+    dsp3210_disassemble(w, pc & ~3u, &ins);
+    snprintf(buf, buflen, "%s", ins.text);
+    return 4;
+}
+
+static void dsp_dbgif_regs(void *ctx, struct value_map_builder *regs) {
+    dsp3210_t *c = ((av_dsp_t *)ctx)->core;
+    char rname[4];
+    for (int i = 1; i < 23; i++) { // r0 is hardwired zero
+        snprintf(rname, sizeof(rname), "r%d", i);
+        val_map_put(regs, rname, val_int((int64_t)c->r[i]));
+    }
+    val_map_put(regs, "pc", val_int((int64_t)c->pc));
+    val_map_put(regs, "ps", val_int((int64_t)c->ps));
+    val_map_put(regs, "emr", val_int((int64_t)c->emr));
+    val_map_put(regs, "pcw", val_int((int64_t)c->pcw));
+    val_map_put(regs, "dauc", val_int((int64_t)c->dauc));
+    val_map_put(regs, "ctr", val_int((int64_t)c->ctr));
+}
+
+// The DAU accumulators a0..a3 as the frame's floating-point block: `hex` is
+// the stored 40 bits, mantissa+guard (bits 39-8) then exponent (7-0).
+static bool dsp_dbgif_fpu(void *ctx, struct value_map_builder *fpu) {
+    dsp3210_t *c = ((av_dsp_t *)ctx)->core;
+    value_t *list = NULL;
+    size_t n = 0, cap = 0;
+    for (int i = 0; i < 4; i++) {
+        int64_t mant;
+        int exp;
+        dsp3210_acc_raw(c, i, &mant, &exp);
+        char hex[16], val[32];
+        snprintf(hex, sizeof(hex), "%08x_%02x", (unsigned)(uint32_t)mant, (unsigned)(exp & 0xff));
+        snprintf(val, sizeof(val), "%.9g", dsp3210_acc_get(c, i));
+        value_map_builder_t *e = val_map_new();
+        val_map_put(e, "hex", val_str(hex));
+        val_map_put(e, "val", val_str(val));
+        val_list_push(&list, &n, &cap, val_map_finish(e));
+    }
+    val_map_put(fpu, "a", val_list(list, n));
+    return true;
+}
+
+static cpu_debug_if_t dsp_debug_if(av_dsp_t *d) {
+    cpu_debug_if_t dif = {.ctx = d,
+                          .get_pc = dsp_dbgif_get_pc,
+                          .set_pc = NULL,
+                          .disasm = dsp_dbgif_disasm,
+                          .translate = NULL,
+                          .translate_mac = NULL,
+                          .arch = "dsp3210",
+                          .regs = dsp_dbgif_regs,
+                          .fpu = dsp_dbgif_fpu,
+                          .translate_code = NULL,
+                          .is_supervisor = NULL};
+    return dif;
+}
+
+// `machine.dsp.frame([addr], [count], [before])` -- the same frame as
+// machine.cpu.frame, for the DSP.
+static DEF_METHOD(dsp_method_frame) {
     av_dsp_t *d = dsp_self(self);
     if (!d)
         return val_err("dsp not available");
-    uint32_t addr = argc >= 1 ? (uint32_t)argv[0].u : d->core->pc;
-    uint32_t count = argc >= 2 ? (uint32_t)argv[1].u : 16;
+    cpu_debug_if_t dif = dsp_debug_if(d);
+    return debug_frame_build(&dif, "machine.dsp.frame", argc, argv);
+}
+
+// `machine.dsp.disasm([addr], [count])` prints a listing and answers true,
+// as debug.disasm does for the main CPU; the typed rows are frame's.
+static DEF_METHOD(dsp_method_disasm) {
+    av_dsp_t *d = dsp_self(self);
+    if (!d)
+        return val_err("dsp not available");
+    // `addr` carries a V_NONE default, so `dsp.disasm(count=8)` disassembles
+    // from the current pc instead of failing with "missing argument 'addr'".
+    uint32_t addr = (argc >= 1 && argv[0].kind == V_UINT) ? (uint32_t)argv[0].u : d->core->pc;
+    uint32_t count = (argc >= 2 && argv[1].kind == V_UINT) ? (uint32_t)argv[1].u : 16;
     if (count > 256)
         count = 256;
-    size_t cap = (size_t)count * 160 + 1;
-    char *buf = malloc(cap);
-    if (!buf)
-        return val_err("out of memory");
-    size_t len = 0;
     for (uint32_t i = 0; i < count; i++) {
         uint32_t a = (addr & ~3u) + 4 * i;
         uint32_t w;
         if (dsp_peek_word(d, a, &w)) {
-            len += (size_t)snprintf(buf + len, cap - len, "%08x: <bus error>\n", a);
+            gs_outf("%08x: <bus error>\n", a);
             break;
         }
         dsp3210_insn ins;
         dsp3210_disassemble(w, a, &ins);
-        len += (size_t)snprintf(buf + len, cap - len, "%08x: %08x  %s\n", a, w, ins.text);
-        if (len + 160 >= cap)
-            break;
+        gs_outf("%08x: %08x  %s\n", a, w, ins.text);
     }
-    value_t v = val_str(buf);
-    free(buf);
-    return v;
+    return val_bool(true);
 }
+
+static const value_t dsp_def_step = {.kind = V_UINT, .u = 1};
+static const value_t dsp_def_disasm = {.kind = V_UINT, .u = 16};
 
 static const arg_decl_t dsp_step_args[] = {
     {.name = "count",
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "instructions to execute (default 1)"},
+     .default_value = &dsp_def_step,
+     .doc = "instructions to execute"},
 };
 
 static const arg_decl_t dsp_disasm_args[] = {
@@ -417,66 +492,65 @@ static const arg_decl_t dsp_disasm_args[] = {
      .kind = V_UINT,
      .presentation_flags = VAL_HEX,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "start address (default: current pc)"},
+     .doc = "start address",
+     .default_doc = "the current PC"},
     {.name = "count",
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "instructions (default 16, max 256)"},
+     .default_value = &dsp_def_disasm,
+     .doc = "instructions (max 256)"},
 };
 
 static const member_t av_dsp_members[] = {
     {.kind = M_ATTR,
      .name = "state",
      .doc = "reset | running | idle | crashed",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = dsp_attr_state, .set = NULL}},
+     .attr = {.type = V_STRING, .get = dsp_attr_state, .set = NULL}                                           },
     {.kind = M_ATTR,
      .name = "pc",
      .doc = "Program counter (next instruction)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = dsp_attr_pc, .set = NULL}},
+     .attr = {.type = V_UINT, .get = dsp_attr_pc, .set = NULL}                                                },
     {.kind = M_ATTR,
      .name = "ps",
      .doc = "Processor status flags",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = dsp_attr_ps, .set = NULL}},
+     .attr = {.type = V_UINT, .get = dsp_attr_ps, .set = NULL}                                                },
     {.kind = M_ATTR,
      .name = "emr",
      .doc = "Exception mask register",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = dsp_attr_emr, .set = NULL}},
+     .attr = {.type = V_UINT, .get = dsp_attr_emr, .set = NULL}                                               },
     {.kind = M_ATTR,
      .name = "pcw",
      .doc = "Processor control word",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = dsp_attr_pcw, .set = NULL}},
+     .attr = {.type = V_UINT, .get = dsp_attr_pcw, .set = NULL}                                               },
     {.kind = M_ATTR,
      .name = "sp",
      .doc = "Stack pointer (r21)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = dsp_attr_sp, .set = NULL}},
+     .attr = {.type = V_UINT, .get = dsp_attr_sp, .set = NULL}                                                },
     {.kind = M_ATTR,
      .name = "evtp",
      .doc = "Exception vector table pointer (r22)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = dsp_attr_evtp, .set = NULL}},
+     .attr = {.type = V_UINT, .get = dsp_attr_evtp, .set = NULL}                                              },
     {.kind = M_ATTR,
      .name = "instr_count",
      .doc = "DSP instructions executed since power-on",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = dsp_attr_instr_count, .set = NULL}},
+     .attr = {.type = V_UINT, .get = dsp_attr_instr_count, .set = NULL}                                       },
     {.kind = M_METHOD,
      .name = "step",
      .doc = "Execute up to N instructions; returns the number executed",
-     .method = {.args = dsp_step_args, .nargs = 1, .result = V_UINT, .fn = dsp_method_step}},
+     .method = {.args = dsp_step_args, .nargs = 1, .result = V_UINT, .fn = dsp_method_step}                   },
     {.kind = M_METHOD,
      .name = "disasm",
-     .doc = "Disassemble N instructions through the DSP's own bus view",
-     .method = {.args = dsp_disasm_args, .nargs = 2, .result = V_STRING, .fn = dsp_method_disasm}},
+     .doc = "Print a disassembly of N instructions through the DSP's own bus view",
+     .method = {.args = dsp_disasm_args, .nargs = 2, .result = V_BOOL, .fn = dsp_method_disasm}               },
+    {.kind = M_METHOD,
+     .name = "frame",
+     .doc = "Debug frame, the same shape as machine.cpu.frame: {arch, pc, regs, rows, fpu}",
+     .method = {.args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = dsp_method_frame}},
 };
 
-const class_desc_t av_dsp_class = {
+static const class_desc_t av_dsp_class = {
     .name = "dsp",
+    .doc = "The AT&T DSP3210 on the AV Macs: registers, step, disassembly",
     .members = av_dsp_members,
     .n_members = sizeof(av_dsp_members) / sizeof(av_dsp_members[0]),
 };
@@ -539,8 +613,8 @@ void av_dsp_delete(av_dsp_t *d) {
         object_detach(d->object);
         object_delete(d->object);
     }
-    if (d->cfg && d->cfg->scheduler)
-        remove_event(d->cfg->scheduler, &av_dsp_burst_event, d);
+    if (d->cfg)
+        scheduler_forget_source(d->cfg->scheduler, d);
     free(d->core);
     free(d);
 }

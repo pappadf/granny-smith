@@ -4,8 +4,9 @@
 // storage.h
 // Public API for the delta-file storage engine.
 //
-// Each disk image is backed by three files:
-//   base   — the original image, opened read-only, never modified
+// Each disk image is backed by a base and two files:
+//   base   — the original image, a read-only byte source (source.h), never
+//            modified: a host file, or anything an adapter makes one
 //   delta  — header (magic + bitmaps) + block data area for modified blocks
 //   journal — append-only preimage log for crash recovery
 //
@@ -40,18 +41,43 @@ extern "C" {
 // Opaque handle to a storage instance.
 typedef struct storage_t storage_t;
 
+// A byte source (source.h); storage reads its base through one.
+struct peel_source;
+
 // Configuration passed to storage_new().
 typedef struct {
-    const char *base_path; // Path to original image (read-only)
+    // The original image, read-only: any byte source -- a host file, a view
+    // past a DiskCopy header, an NDIF chunk map, a member of an archive.
+    // storage_new takes its own reference.  NULL for a blank disk.
+    struct peel_source *base;
     const char *delta_path; // Path to delta file (read-write, created if missing)
     const char *journal_path; // Path to preimage journal (created if missing)
     uint64_t block_count; // Number of logical blocks
     uint32_t block_size; // Bytes per block: a multiple of 4 in [512, STORAGE_MAX_BLOCK_SIZE] (512 default, 532 ProFile)
-    size_t base_data_offset; // Byte offset to data in base file (e.g. DiskCopy header)
 } storage_config_t;
 
 // Callback signatures for streaming block data.
 typedef int (*storage_write_callback_t)(void *context, const void *data, size_t size);
+
+// === Exporting off the emulator thread ===
+//
+// An export view is a snapshot of the storage's READ side taken on the
+// emulator thread -- its own handles on the base and delta files and a copy
+// of the modification bitmap -- that another thread streams from with
+// storage_export_view_write while the guest keeps reading the disk.  The
+// storage is write-locked meanwhile: a guest write to it fails (what a
+// drive being copied does), and storage_export_view_end lifts the lock
+// (a storage deleted in between is recognised and skipped).
+typedef struct storage_export_view storage_export_view_t;
+storage_export_view_t *storage_export_view_begin(storage_t *storage);
+// Any thread: streams every block (one callback per block, the checkpoint
+// record shape), reporting progress and stopping on cancel (io_worker.h).
+// GS_SUCCESS, GS_ERROR, or -ECANCELED.
+int storage_export_view_write(storage_export_view_t *v, void *context, storage_write_callback_t write_cb);
+// Emulator thread: closes the view's handles and lifts the lock.
+void storage_export_view_end(storage_export_view_t *v);
+// True while an export of this storage is in flight.
+bool storage_export_locked(const storage_t *storage);
 typedef int (*storage_read_callback_t)(void *context, void *data, size_t size);
 
 // === Lifecycle ===
@@ -111,11 +137,9 @@ int storage_load_state(storage_t *storage, void *context, storage_read_callback_
 // No-op (consolidation is not needed with the delta model).
 int storage_tick(storage_t *storage);
 
-// Object-model lifecycle hooks for storage.images indexed children.
-// Called by root_install / root_uninstall.
-struct config;
-void storage_object_classes_init(struct config *cfg);
-void storage_object_classes_teardown(void);
+// The `files` process singleton, created at shell init.  It registers the
+// per-machine `files.images` collection with root_install.
+void files_init(void);
 
 #ifdef __cplusplus
 }

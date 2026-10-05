@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-# Build the two negative PROM fixtures this row needs.
+# Build the fixtures this row needs: two negative PROMs, and the two
+# reference PNGs for the 5-6-5 display-format rows.
 #
-# Generated rather than committed: each is a handful of header bytes, and
-# what makes them useful is exactly what the header says, which is clearer
-# as code than as an opaque blob.
+# Generated rather than committed: each is a handful of header bytes (or a
+# raster derived from a stated formula), and what makes them useful is
+# exactly what the code says, which is clearer as code than as an opaque
+# blob.
 import struct
 import sys
+import zlib
 
 out_dir = sys.argv[1]
 
@@ -23,8 +26,14 @@ def option_rom(code_type, with_fcode):
     img[0x34] = code_type
     img[0x35] = 0x80  # last image
     if with_fcode:
+        # An IEEE 1275 FCode header whose checksum verifies over a short
+        # program: start1, format, checksum, length (header included).
+        program = bytes(range(1, 33))
         img[0x40] = 0xF1  # start1
         img[0x41] = 0x08
+        img[0x42:0x44] = struct.pack(">H", sum(program) & 0xFFFF)
+        img[0x44:0x48] = struct.pack(">I", 8 + len(program))
+        img[0x48 : 0x48 + len(program)] = program
     return bytes(img)
 
 
@@ -34,9 +43,73 @@ def option_rom(code_type, with_fcode):
 with open(f"{out_dir}/fake-x86-vga.prom", "wb") as f:
     f.write(option_rom(0x00, with_fcode=False))
 
-# A structurally perfect Open Firmware expansion ROM that simply is not in
-# our catalog — the "some other card" case.
+# A structurally perfect, intact Open Firmware expansion ROM for the very
+# card the catalog knows (vendor $1002, device $4758) whose FCode checksum
+# is no catalogued programming's -- identity is the card AND the revision.
 with open(f"{out_dir}/uncatalogued.prom", "wb") as f:
     f.write(option_rom(0x01, with_fcode=True))
 
-print("tnt-pci-mach64: negative PROM fixtures written")
+# The shipping -104 dump with one byte of its FCode program flipped: its
+# header still names a catalogued identity, but the checksum no longer
+# verifies, so it must not be recognised.
+src = sys.argv[2] if len(sys.argv) > 2 else None
+if src:
+    data = bytearray(open(src, "rb").read())
+    data[0x100] ^= 0xFF  # inside the FCode program (it starts at $40)
+    with open(f"{out_dir}/damaged-104.prom", "wb") as f:
+        f.write(bytes(data))
+
+
+# --- Reference PNGs for the 5-6-5 rows --------------------------------------
+#
+# The test script pokes the raster below into VRAM and the emulator's PNG
+# encoder expands it for screen.match; these fixtures are the INDEPENDENT
+# expansion of the same 16-bit words, computed here from the documented
+# rules, so a match proves the encoder — not that the encoder agrees with
+# itself.  Two interpretations of the identical bytes, because the
+# predictable bug is a 5-6-5 expander that silently falls through to the
+# neighbouring 5-5-5 case and looks exactly like success.
+
+W, H = 64, 32
+
+
+def pixel(x, y):
+    """The synthetic raster: every channel a different walk, all 16 bits used."""
+    return ((x & 31) << 11) | (((x + y) & 63) << 5) | (y & 31)
+
+
+def expand_565(v):
+    r5, g6, b5 = (v >> 11) & 31, (v >> 5) & 63, v & 31
+    return ((r5 << 3) | (r5 >> 2), (g6 << 2) | (g6 >> 4), (b5 << 3) | (b5 >> 2))
+
+
+def expand_555(v):
+    r5, g5, b5 = (v >> 10) & 31, (v >> 5) & 31, v & 31
+    return ((r5 << 3) | (r5 >> 2), (g5 << 3) | (g5 >> 2), (b5 << 3) | (b5 >> 2))
+
+
+def write_png(path, expand):
+    """Minimal RGBA PNG, matching what save_framebuffer_as_png emits."""
+    raw = bytearray()
+    for y in range(H):
+        raw.append(0)  # filter: none
+        for x in range(W):
+            r, g, b = expand(pixel(x, y))
+            raw += bytes((r, g, b, 255))
+
+    def chunk(tag, data):
+        body = tag + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    ihdr = struct.pack(">IIBBBBB", W, H, 8, 6, 0, 0, 0)
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+        f.write(chunk(b"IHDR", ihdr))
+        f.write(chunk(b"IDAT", zlib.compress(bytes(raw))))
+        f.write(chunk(b"IEND", b""))
+
+
+write_png(f"{out_dir}/raster-565.png", expand_565)
+write_png(f"{out_dir}/raster-555.png", expand_555)
+
+print("tnt-pci-mach64: negative PROM and 5-6-5 raster fixtures written")

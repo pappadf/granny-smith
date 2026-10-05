@@ -5,7 +5,7 @@
 // Standalone reverse-engineering tool for classic-Mac forked files and
 // A/UX COFF binaries.  Takes resource-fork / data-fork / COFF blobs on
 // the host filesystem (typically extracted from an HFS image via the
-// emulator's `storage.cp` and the `/rsrc/_raw` VFS path) and produces a
+// emulator's `files.cp` and the `/rsrc/_raw` VFS path) and produces a
 // self-contained dump directory with raw resources, per-segment
 // disassembly, per-type decoded JSON, a manifest and a README.
 //

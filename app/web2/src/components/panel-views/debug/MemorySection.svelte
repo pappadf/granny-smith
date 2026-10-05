@@ -1,10 +1,15 @@
 <script lang="ts">
+  import Hint from '@/components/ui/Hint.svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
-  import { peekBytes, peekPhysBytes } from '@/bus/debug';
+  import { peekBytes } from '@/bus/debug';
   import { machine } from '@/state/machine.svelte';
   import { debug, toggleSection } from '@/state/debug.svelte';
-  import { mmuLookup } from '@/bus/mockMmu';
+  import { translateMany, addrLabel, type Translation } from '@/bus/mmu';
   import { fmtHex32, parseHex } from '@/lib/hex';
+  import Button from '@/components/ui/Button.svelte';
+  import SegmentedControl from '@/components/ui/SegmentedControl.svelte';
+  import Separator from '@/components/ui/Separator.svelte';
+  import TextInput from '@/components/ui/TextInput.svelte';
 
   let bytes = $state<Uint8Array | null>(null);
   let loading = $state(false);
@@ -31,11 +36,15 @@
   async function refresh() {
     loading = true;
     try {
-      const data =
-        debug.memoryMode === 'physical'
-          ? await peekPhysBytes(debug.memoryAddress, 128)
-          : await peekBytes(debug.memoryAddress, 128);
-      bytes = data;
+      // The space is always explicit: "logical" reads through the CPU's own
+      // translation on every architecture (the plain read is physical on a
+      // PowerPC machine), "physical" really is physical (it used to be the
+      // logical read under a physical label).
+      bytes = await peekBytes(
+        debug.memoryAddress,
+        128,
+        physicalAvailable ? debug.memoryMode : 'logical',
+      );
     } finally {
       loading = false;
     }
@@ -74,14 +83,22 @@
     return '.';
   }
 
+  // The Lisa's three physical spaces (RAM, I/O, ROM) cannot be named by a
+  // bare address, so its Memory pane is logical only.
+  const physicalAvailable = $derived(machine.mmuKind !== 'lisa_segment');
+
+  // Real translations for the row labels in logical mode (bus/mmu.ts).
+  let xl = $state<Record<number, Translation>>({});
+  $effect(() => {
+    void bytes;
+    if (!machine.mmuEnabled || debug.memoryMode !== 'logical') return;
+    const rowsAt = Array.from({ length: 8 }, (_, i) => (debug.memoryAddress + i * 16) >>> 0);
+    void translateMany(rowsAt).then((m) => (xl = m));
+  });
+
   function rowLogicalLabel(rowIndex: number): string {
     const a = ((debug.memoryAddress + rowIndex * 16) >>> 0) & 0xffffffff;
-    if (machine.mmuEnabled && debug.memoryMode === 'logical') {
-      const r = mmuLookup(a);
-      const phys = r.valid && r.phys !== undefined ? fmtHex32(r.phys) : '!';
-      const tag = r.valid ? (r.kind ?? 'PT') : 'INVALID';
-      return `L:$${fmtHex32(a)}  P:$${phys}  ${tag}`;
-    }
+    if (machine.mmuEnabled && debug.memoryMode === 'logical') return addrLabel(a, xl[a]);
     return `$${fmtHex32(a)}`;
   }
 </script>
@@ -93,44 +110,39 @@
 >
   <div class="mem-header">
     <span class="mem-label">Address:</span>
-    <input
-      type="text"
+    <TextInput
       class="mem-addr"
+      hex
+      widthCh={10}
       bind:value={inputValue}
       onkeydown={onAddrKey}
       aria-label="Memory address"
     />
-    <button type="button" class="mem-btn" onclick={commitAddress}>Go</button>
-    {#if machine.mmuEnabled}
-      <span class="mem-sep"></span>
+    <Button class="mem-btn" onclick={commitAddress}>Go</Button>
+    {#if machine.mmuEnabled && physicalAvailable}
+      <Separator class="mem-sep" />
       <span class="mem-label">Mode:</span>
-      <div class="mem-mode" role="group" aria-label="Memory access mode">
-        <button
-          type="button"
-          class="mem-mode-btn"
-          class:active={debug.memoryMode === 'logical'}
-          onclick={() => setMode('logical')}
-        >
-          Logical
-        </button>
-        <button
-          type="button"
-          class="mem-mode-btn"
-          class:active={debug.memoryMode === 'physical'}
-          onclick={() => setMode('physical')}
-        >
-          Physical
-        </button>
-      </div>
+      <SegmentedControl
+        class="mem-mode"
+        optionClass="mem-mode-btn"
+        framed
+        label="Memory access mode"
+        value={debug.memoryMode}
+        onChange={setMode}
+        options={[
+          { value: 'logical', label: 'Logical' },
+          { value: 'physical', label: 'Physical' },
+        ]}
+      />
     {/if}
   </div>
   <div class="mem-body">
     {#if machine.status === 'running'}
-      <p class="mem-hint">Pause the machine to inspect memory.</p>
+      <Hint class="mem-hint">Pause the machine to inspect memory.</Hint>
     {:else if loading && !bytes}
-      <p class="mem-hint">Reading…</p>
+      <Hint class="mem-hint">Reading…</Hint>
     {:else if !bytes}
-      <p class="mem-hint">No machine running.</p>
+      <Hint class="mem-hint">No machine running.</Hint>
     {:else}
       {#each [0, 1, 2, 3, 4, 5, 6, 7] as i (i)}
         <div class="mem-row">
@@ -151,74 +163,16 @@
   .mem-header {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 6px 12px;
+    gap: var(--gs-space-1-5);
+    padding: var(--gs-space-1-5) var(--gs-space-3);
     flex-wrap: wrap;
   }
   .mem-label {
-    color: var(--gs-fg-muted);
-    font-size: 11px;
-  }
-  .mem-addr {
-    background: var(--gs-input-bg);
-    color: var(--gs-input-fg);
-    border: 1px solid var(--gs-input-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 6px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
-    width: 10ch;
-    outline: none;
-    text-transform: uppercase;
-  }
-  .mem-addr:focus {
-    border-color: var(--gs-focus);
-  }
-  .mem-btn {
-    background: transparent;
-    color: var(--gs-fg);
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 8px;
-    font-size: 11px;
-    cursor: pointer;
-  }
-  .mem-btn:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.06));
-  }
-  .mem-sep {
-    flex: 0 0 1px;
-    height: 14px;
-    background: var(--gs-border);
-    margin: 0 4px;
-  }
-  .mem-mode {
-    display: inline-flex;
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    overflow: hidden;
-    height: 22px;
-  }
-  .mem-mode-btn {
-    background: transparent;
-    color: var(--gs-fg-muted);
-    border: none;
-    padding: 0 8px;
-    font-size: 11px;
-    cursor: pointer;
-  }
-  .mem-mode-btn.active {
-    background: var(--gs-row-selected, rgba(80, 140, 220, 0.25));
-    color: var(--gs-fg-bright);
+    color: var(--gs-text-muted);
+    font-size: var(--gs-font-size-xs);
   }
   .mem-body {
-    padding: 4px 12px 8px;
-  }
-  .mem-hint {
-    color: var(--gs-fg-muted);
-    font-size: 11px;
+    padding: var(--gs-space-1) var(--gs-space-3) var(--gs-space-2);
   }
   .mem-row {
     /* All three columns are content-width so the ASCII gutter sits
@@ -226,24 +180,29 @@
        right edge of a stretched 1fr column. */
     display: grid;
     grid-template-columns: auto auto auto;
-    column-gap: 18px;
+    column-gap: var(--gs-space-4);
     justify-content: start;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
-    line-height: 1.6;
+    font-family: var(--gs-font-mono);
+    font-size: var(--gs-font-size-xs);
+    line-height: var(--gs-line-height-code);
   }
   .mem-row-addr {
-    color: var(--gs-fg-muted);
+    color: var(--gs-code-address);
     white-space: nowrap;
   }
   .mem-row-bytes {
     display: inline-flex;
-    gap: 4px;
+    gap: var(--gs-space-1);
     flex-wrap: nowrap;
-    color: var(--gs-fg);
+    color: var(--gs-code-operand);
+  }
+  /* A byte changed since the last step (a hook; not set yet). */
+  .mem-byte:global([data-state='changed']) {
+    background: var(--gs-code-changed-bg);
+    color: var(--gs-code-changed-fg);
   }
   .mem-row-ascii {
-    color: var(--gs-fg-muted);
+    color: var(--gs-code-address);
     white-space: pre;
   }
 </style>

@@ -1,4 +1,6 @@
-// Unit tests for M6 — per-object invalidation hooks (proposal §9).
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+// Unit tests for per-object invalidation hooks.
 //
 // Hot-path consumers that hold a pre-resolved node_t (breakpoint
 // conditions, watch paths, …) need to be told when the entry behind
@@ -133,7 +135,7 @@ TEST(test_unregister_only_targeted_listener) {
 
 // === Sparse stable indices via the resolver under remove/add cycles =========
 //
-// Mirrors the M6 expectation: removing entry #0 must not renumber
+// The expectation: removing entry #0 must not renumber
 // #1, and the next add receives `max_id_ever + 1` rather than recycling
 // the freed slot. The indexed-child substrate already supports this in
 // principle; this test pins it down end-to-end through object_resolve.
@@ -172,11 +174,12 @@ static int ring_next(struct object *self, int prev) {
 
 static const class_desc_t entry_cls = {.name = "entry", .members = NULL, .n_members = 0};
 
+static const collection_desc_t ring_entries = {
+    .entry = &entry_cls, .by_index = {.get = ring_get, .next = ring_next}
+};
+
 static const member_t ring_members[] = {
-    {.kind = M_CHILD,
-     .name = "items",
-     .child =
-         {.cls = &entry_cls, .indexed = true, .get = ring_get, .count = ring_count, .next = ring_next, .lookup = NULL}},
+    {.kind = M_CHILD, .name = "items", .child = {.collection = &ring_entries}},
 };
 static const class_desc_t ring_cls = {
     .name = "ring",
@@ -213,11 +216,10 @@ TEST(test_sparse_indices_survive_remove_and_re_add) {
     ASSERT_EQ_INT(2, c);
 
     // Resolve via the iterator before any churn.
-    int seen[8];
     int n_seen = 0;
     int idx = ring_next(ring, -1);
     while (idx != -1 && n_seen < 8) {
-        seen[n_seen++] = idx;
+        n_seen++;
         idx = ring_next(ring, idx);
     }
     ASSERT_EQ_INT(3, n_seen);
@@ -242,7 +244,7 @@ TEST(test_sparse_indices_survive_remove_and_re_add) {
 
 // === Invalidation through a held node_t =====================================
 //
-// Models the M6 hot-path scenario: a consumer resolves the node once,
+// Models the hot-path scenario: a consumer resolves the node once,
 // keeps the pointer, and registers an invalidator on the entry's
 // object. When the entry is removed, the invalidator nulls the held
 // pointer and the consumer's next access fails cleanly instead of
@@ -275,6 +277,65 @@ TEST(test_held_node_invalidated_on_entry_remove) {
 
 // === Entrypoint ===========================================================
 
+static void count_cb(struct object *parent, struct object *child, void *ud) {
+    (void)parent;
+    (void)child;
+    (*(int *)ud)++;
+}
+
+static int count_children(struct object *o) {
+    int n = 0;
+    object_each_attached(o, count_cb, &n);
+    return n;
+}
+
+// === object_root_reset honours the invalidator contract ====================
+//
+// object_root_reset detached the root's children, released its Meta node and
+// free()d it -- skipping object_fire_invalidators and the destructor hook,
+// both of which object_delete runs.  The invalidator contract is what makes a
+// held node safe: shell_var.c's binding_store registers one on whatever
+// V_OBJECT it holds, so without the fire it kept a `watched` pointer into
+// freed memory, was never marked stale, and the next read dereferenced it.
+// This was the one path in the object model that opted out.
+TEST(test_root_reset_fires_invalidators) {
+    object_root_reset(); // start from a known state
+
+    struct object *root = object_root();
+    ASSERT_TRUE(root != NULL);
+
+    struct object *held = root;
+    listener_t l = {.count = 0, .p = &held};
+    object_register_invalidator(root, listener_cb, &l);
+
+    object_root_reset();
+
+    ASSERT_EQ_INT(1, l.count); // the holder was told
+    ASSERT_TRUE(held == NULL); // ...and dropped its pointer
+}
+
+// The reset must still leave a usable root behind, so the test above cannot
+// pass by breaking the reset.
+TEST(test_root_reset_leaves_a_fresh_root) {
+    object_root_reset();
+    struct object *a = object_root();
+    ASSERT_TRUE(a != NULL);
+    struct object *child = object_new(&toy_class, NULL, "kid");
+    object_attach(a, child);
+    ASSERT_EQ_INT(count_children(a), 1);
+
+    object_root_reset();
+    struct object *b = object_root();
+    ASSERT_TRUE(b != NULL);
+    ASSERT_EQ_INT(count_children(b), 0); // children went with the old root
+
+    // ...and the fresh root still works, so this cannot pass by breaking it.
+    struct object *again = object_new(&toy_class, NULL, "kid2");
+    object_attach(b, again);
+    ASSERT_EQ_INT(count_children(b), 1);
+    object_root_reset();
+}
+
 int main(void) {
     RUN(test_register_fire_clears_pointer);
     RUN(test_unregister_prevents_fire);
@@ -283,5 +344,7 @@ int main(void) {
     RUN(test_unregister_only_targeted_listener);
     RUN(test_sparse_indices_survive_remove_and_re_add);
     RUN(test_held_node_invalidated_on_entry_remove);
+    RUN(test_root_reset_fires_invalidators);
+    RUN(test_root_reset_leaves_a_fresh_root);
     return 0;
 }

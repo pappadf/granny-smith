@@ -1,7 +1,8 @@
 import { render, waitFor, fireEvent } from '@testing-library/svelte';
 import { describe, it, expect, beforeEach } from 'vitest';
 import CheckpointsView from '@/components/panel-views/checkpoints/CheckpointsView.svelte';
-import { setOpfsBackend, MockOpfs } from '@/bus/opfs';
+import { setOpfsBackend } from '@/bus/opfs';
+import { MockOpfs } from '../helpers/mockOpfs';
 import { checkpoints } from '@/state/checkpoints.svelte';
 import type { CheckpointEntry } from '@/bus/types';
 
@@ -36,7 +37,8 @@ describe('CheckpointsView', () => {
         id: 'aaaa000000000000',
         created: '20260101T000000Z',
         label: 'Before format',
-        machine: 'Plus',
+        model: 'plus',
+        ramBytes: 4194304,
         sizeBytes: 4 * 1024 * 1024,
       },
       {
@@ -45,7 +47,8 @@ describe('CheckpointsView', () => {
         id: 'bbbb000000000000',
         created: '20260201T000000Z',
         label: 'After install',
-        machine: 'SE/30',
+        model: 'se30',
+        ramBytes: 8388608,
         sizeBytes: 8 * 1024 * 1024,
       },
     ];
@@ -57,8 +60,8 @@ describe('CheckpointsView', () => {
     const allText = container.textContent ?? '';
     expect(allText).toContain('Before format');
     expect(allText).toContain('After install');
-    expect(allText).toContain('Plus');
-    expect(allText).toContain('SE/30');
+    expect(allText).toContain('plus · 4 MB');
+    expect(allText).toContain('se30 · 8 MB');
   });
 
   it('right-click on a row opens a context menu with Load + Delete', async () => {
@@ -70,7 +73,8 @@ describe('CheckpointsView', () => {
         id: 'aaaa000000000000',
         created: '20260101T000000Z',
         label: 'X',
-        machine: 'Plus',
+        model: 'plus',
+        ramBytes: 4194304,
         sizeBytes: 1,
       },
     ];

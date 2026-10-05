@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 //
-// DBDMA engine unit test (proposal-powermac-7500-8500-9500 §5.4).
+// DBDMA engine unit test.
 //
-// Drives the real tnt/dbdma.c against a flat guest-memory array and a
+// Drives the real core/peripherals/dbdma.c against a flat guest-memory array and a
 // scripted device port.  Register values on this API are already in the
 // little-endian register domain (the island dispatcher owns the bus-edge
 // swap), so the test writes the same constants a driver would compose
@@ -14,7 +14,7 @@
 //  2. A full OUTPUT program: data delivered, resCount/xferStatus written
 //     back, the channel interrupt raised AFTER the write-back, cmdptr
 //     parked on the STOP descriptor.
-//  3. Device stalls mid-command and tnt_dbdma_kick resumption (INPUT).
+//  3. Device stalls mid-command and dbdma_kick resumption (INPUT).
 //  4. The NOP+branch ring idiom and the runaway-budget guard.
 //  5. The STOP/WAKE descriptor-overwrite idiom (commit rule: descriptors
 //     are refetched, never cached).
@@ -37,7 +37,9 @@
 static uint8_t s_cp_buf[4096];
 static size_t s_cp_w, s_cp_r;
 
-void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *file, int line) {
+void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *tag,
+                                      const char *file, int line) {
+    (void)tag;
     (void)cp;
     (void)file;
     (void)line;
@@ -45,7 +47,9 @@ void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t
     s_cp_w += size;
 }
 
-void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *file, int line) {
+void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *tag, const char *file,
+                                     int line) {
+    (void)tag;
     (void)cp;
     (void)file;
     (void)line;
@@ -189,37 +193,38 @@ static void irq_reset(void) {
 // Fixture
 // ============================================================================
 
-static tnt_dbdma_t *s_d;
+static dbdma_t *s_d;
 
 // Fresh engine with hooks and a port on channel 0 (and none on 1).
 static void fixture(void) {
-    static tnt_dbdma_port_t port;
+    static dbdma_port_t port;
     if (s_d)
-        tnt_dbdma_delete(s_d);
-    s_d = tnt_dbdma_init(NULL);
-    tnt_dbdma_set_memory_hooks(s_d, mem_read, mem_write, NULL);
-    tnt_dbdma_set_irq_hook(s_d, irq_hook, NULL);
+        dbdma_delete(s_d);
+    s_d = dbdma_init(NULL, DBDMA_CHANNELS_GRAND_CENTRAL);
+    static const dma_mem_port_t mem_port = {.read_block = mem_read, .write_block = mem_write};
+    dbdma_set_memory_port(s_d, &mem_port);
+    dbdma_set_irq_hook(s_d, irq_hook, NULL);
     port.out = dev_out;
     port.in = dev_in;
     port.s_bits = dev_s_bits;
     port.ctx = NULL;
-    tnt_dbdma_set_port(s_d, 0, &port);
+    dbdma_set_port(s_d, 0, &port);
     memset(s_mem, 0, sizeof(s_mem));
     dev_reset();
     irq_reset();
 }
 
 static uint32_t status(int chan) {
-    return tnt_dbdma_reg_read(s_d, chan, TNT_DBDMA_REG_STATUS);
+    return dbdma_reg_read(s_d, chan, DBDMA_REG_STATUS);
 }
 
 static void control(int chan, uint32_t v) {
-    tnt_dbdma_reg_write(s_d, chan, TNT_DBDMA_REG_CONTROL, v);
+    dbdma_reg_write(s_d, chan, DBDMA_REG_CONTROL, v);
 }
 
 static void start(int chan, uint32_t cmdptr) {
-    tnt_dbdma_reg_write(s_d, chan, TNT_DBDMA_REG_CMDPTRLO, cmdptr);
-    control(chan, (TNT_DBDMA_RUN << 16) | TNT_DBDMA_RUN); // the canonical start
+    dbdma_reg_write(s_d, chan, DBDMA_REG_CMDPTRLO, cmdptr);
+    control(chan, (DBDMA_RUN << 16) | DBDMA_RUN); // the canonical start
 }
 
 // ============================================================================
@@ -239,8 +244,8 @@ TEST(test_control_mask_value) {
     control(0, 0x0000FFFF); // empty mask: no change
     ASSERT_EQ_INT((int)(status(0) & 0xFF), 0x02);
     // Engine-owned bits cannot be SET from the host side.
-    control(0, (TNT_DBDMA_ACTIVE << 16) | TNT_DBDMA_ACTIVE);
-    ASSERT_EQ_INT((int)(status(0) & TNT_DBDMA_ACTIVE), 0);
+    control(0, (DBDMA_ACTIVE << 16) | DBDMA_ACTIVE);
+    ASSERT_EQ_INT((int)(status(0) & DBDMA_ACTIVE), 0);
 }
 
 // The canonical start: RUN set -> ACTIVE synchronously; program runs to
@@ -257,14 +262,14 @@ TEST(test_output_program) {
     ASSERT_EQ_INT(s_dev_len, 8);
     ASSERT_EQ_INT(memcmp(s_dev_data, s_mem + 0x2000, 8), 0);
     // STOP parked the channel ON the STOP descriptor, ACTIVE dropped.
-    ASSERT_EQ_INT((int)(status(0) & TNT_DBDMA_ACTIVE), 0);
-    ASSERT_EQ_INT((int)tnt_dbdma_reg_read(s_d, 0, TNT_DBDMA_REG_CMDPTRLO), 0x1010);
+    ASSERT_EQ_INT((int)(status(0) & DBDMA_ACTIVE), 0);
+    ASSERT_EQ_INT((int)dbdma_reg_read(s_d, 0, DBDMA_REG_CMDPTRLO), 0x1010);
     // One interrupt, and the result field ALREADY held the write-back
     // when it fired: resCount 0, xferStatus with ACTIVE set.
     ASSERT_EQ_INT(s_irq_count, 1);
     ASSERT_EQ_INT(s_irq_chan, 0);
     ASSERT_EQ_INT((int)(s_irq_result & 0xFFFF), 0);
-    ASSERT_TRUE(s_irq_result & ((uint32_t)TNT_DBDMA_ACTIVE << 16));
+    ASSERT_TRUE(s_irq_result & ((uint32_t)DBDMA_ACTIVE << 16));
 }
 
 // The canonical stop and reset sequences terminate synchronously with a
@@ -279,20 +284,18 @@ TEST(test_stop_reset_sequences) {
     s_dev_data[2] = 0x33;
     s_dev_len = 3;
     start(0, 0x1000);
-    ASSERT_TRUE(status(0) & TNT_DBDMA_ACTIVE);
+    ASSERT_TRUE(status(0) & DBDMA_ACTIVE);
     ASSERT_EQ_INT(s_irq_count, 0);
     ASSERT_EQ_INT(s_mem[0x2000], 0x11);
     ASSERT_EQ_INT(s_mem[0x2002], 0x33);
     // Canonical stop: clear RUN|FLUSH; poll condition (ACTIVE|FLUSH)==0
     // must hold on the very next read, and the residual is written back.
-    control(0, (uint32_t)(TNT_DBDMA_RUN | TNT_DBDMA_FLUSH) << 16);
-    ASSERT_EQ_INT((int)(status(0) & (TNT_DBDMA_ACTIVE | TNT_DBDMA_FLUSH)), 0);
+    control(0, (uint32_t)(DBDMA_RUN | DBDMA_FLUSH) << 16);
+    ASSERT_EQ_INT((int)(status(0) & (DBDMA_ACTIVE | DBDMA_FLUSH)), 0);
     ASSERT_EQ_INT((int)(peek32(0x100C) & 0xFFFF), 5); // 8 requested - 3 moved
     // Canonical reset: clear everything; poll condition (RUN)==0.
-    control(0, (uint32_t)(TNT_DBDMA_ACTIVE | TNT_DBDMA_DEAD | TNT_DBDMA_WAKE | TNT_DBDMA_FLUSH | TNT_DBDMA_PAUSE |
-                          TNT_DBDMA_RUN)
-                   << 16);
-    ASSERT_EQ_INT((int)(status(0) & TNT_DBDMA_RUN), 0);
+    control(0, (uint32_t)(DBDMA_ACTIVE | DBDMA_DEAD | DBDMA_WAKE | DBDMA_FLUSH | DBDMA_PAUSE | DBDMA_RUN) << 16);
+    ASSERT_EQ_INT((int)(status(0) & DBDMA_RUN), 0);
 }
 
 // A stalled INPUT resumes on the device's kick and completes.
@@ -304,17 +307,150 @@ TEST(test_stall_and_kick) {
     s_dev_data[0] = 0x51;
     s_dev_data[1] = 0x52;
     start(0, 0x1000);
-    ASSERT_TRUE(tnt_dbdma_active(s_d, 0));
+    ASSERT_TRUE(dbdma_active(s_d, 0));
     ASSERT_EQ_INT(s_irq_count, 0);
     // Device produces the rest and kicks.
     memcpy(s_dev_data + 2, "\x53\x54\x55\x56", 4);
     s_dev_len = 6;
     s_irq_watch_addr = 0x1000;
-    tnt_dbdma_kick(s_d, 0);
+    dbdma_kick(s_d, 0);
     ASSERT_EQ_INT(s_irq_count, 1);
     ASSERT_EQ_INT((int)(s_irq_result & 0xFFFF), 0); // full transfer: residual 0
     ASSERT_EQ_INT(memcmp(s_mem + 0x2000, "\x51\x52\x53\x54\x55\x56", 6), 0);
-    ASSERT_EQ_INT((int)(status(0) & TNT_DBDMA_ACTIVE), 0); // parked on STOP
+    ASSERT_EQ_INT((int)(status(0) & DBDMA_ACTIVE), 0); // parked on STOP
+}
+
+// Frame devices (BMAC): `in_end` ends an INPUT command short at a frame's
+// last byte, its residual the unused remainder; a frame ending exactly on
+// a descriptor's last byte ends that descriptor only.  `out_last` fires
+// once per OUTPUT_LAST, before the result write-back.
+static bool s_frame_end;
+static int s_in_end_calls, s_out_last_calls;
+static uint32_t s_out_last_result;
+
+static bool dev_in_end(void *ctx) {
+    (void)ctx;
+    s_in_end_calls++;
+    bool e = s_frame_end;
+    s_frame_end = false;
+    return e;
+}
+
+static int dev_in_frame(void *ctx, uint8_t *buf, int len) {
+    if (s_frame_end)
+        return 0; // a boundary is pending
+    int n = dev_in(ctx, buf, len);
+    if (s_dev_pos == s_dev_len && n > 0)
+        s_frame_end = true;
+    return n;
+}
+
+static void dev_out_last(void *ctx) {
+    (void)ctx;
+    s_out_last_calls++;
+    s_out_last_result = peek32(0x1010 + 12);
+}
+
+TEST(test_frame_boundaries) {
+    fixture();
+    dbdma_port_t p = {.out = dev_out,
+                      .in = dev_in_frame,
+                      .s_bits = dev_s_bits,
+                      .ctx = NULL,
+                      .out_last = dev_out_last,
+                      .in_end = dev_in_end};
+    dbdma_set_port(s_d, 0, &p);
+    s_frame_end = false;
+    s_in_end_calls = 0;
+    // A 5-byte frame into a 16-byte INPUT_LAST: completes at 5, residual 11.
+    memcpy(s_dev_data, "\x01\x02\x03\x04\x05", 5);
+    s_dev_len = 5;
+    desc(0x1000, op(INPUT_LAST, ALWAYS, NEVER, NEVER, 16), 0x2000, 0);
+    desc(0x1010, op(INPUT_LAST, ALWAYS, NEVER, NEVER, 5), 0x2100, 0);
+    desc(0x1020, op(INPUT_LAST, ALWAYS, NEVER, NEVER, 16), 0x2200, 0);
+    desc(0x1030, op(STOP_CMD, NEVER, NEVER, NEVER, 0), 0, 0);
+    start(0, 0x1000);
+    ASSERT_EQ_INT(s_irq_count, 1);
+    ASSERT_EQ_INT((int)(peek32(0x1000 + 12) & 0xFFFF), 11);
+    // The next frame is exactly the second descriptor's size: it ends there
+    // and the third waits rather than completing empty.
+    memcpy(s_dev_data, "\x11\x12\x13\x14\x15", 5);
+    s_dev_pos = 0;
+    dbdma_kick(s_d, 0);
+    ASSERT_EQ_INT(s_irq_count, 2);
+    ASSERT_EQ_INT((int)(peek32(0x1010 + 12) & 0xFFFF), 0);
+    ASSERT_EQ_INT((int)peek32(0x1020 + 12), 0);
+    ASSERT_TRUE(dbdma_active(s_d, 0));
+    ASSERT_EQ_INT(memcmp(s_mem + 0x2100, "\x11\x12\x13\x14\x15", 5), 0);
+
+    // OUTPUT_MORE then OUTPUT_LAST: one out_last, after the last byte and
+    // before the last descriptor's result is written.
+    fixture();
+    dbdma_set_port(s_d, 0, &p);
+    s_out_last_calls = 0;
+    s_out_last_result = 0xFFFFFFFFu;
+    desc(0x1000, op(OUTPUT_MORE, NEVER, NEVER, NEVER, 3), 0x2000, 0);
+    desc(0x1010, op(OUTPUT_LAST, NEVER, NEVER, NEVER, 3), 0x2003, 0);
+    desc(0x1020, op(STOP_CMD, NEVER, NEVER, NEVER, 0), 0, 0);
+    start(0, 0x1000);
+    ASSERT_EQ_INT(s_out_last_calls, 1);
+    ASSERT_EQ_INT(s_dev_len, 6);
+    ASSERT_EQ_INT((int)s_out_last_result, 0); // not yet written back
+    ASSERT_TRUE(peek32(0x1010 + 12) != 0);
+}
+
+// A rate-limited port yields mid-command and resumes on a kick.
+//
+// Without this, a port that never returns short -- MESH pops straight off
+// the SCSI bus -- runs a whole data command inside the guest's
+// control-register store: measured at 61,440 bytes in one run_channel call
+// on suite-tnt's pm7500-76-hd, against the 2 KB per firing the AV and PDM families
+// already observe for the same job.  The burst makes the channel yield the
+// same way a short device return does, and the device's scheduler pump
+// kicks it back on the bus's cadence.
+TEST(test_port_burst_yields_mid_command_and_resumes) {
+    fixture();
+    dbdma_port_t p = {.out = dev_out, .in = dev_in, .s_bits = dev_s_bits, .burst = 4, .ctx = NULL};
+    dbdma_set_port(s_d, 0, &p);
+
+    // Ten bytes available up front: the device never stalls, only the burst
+    // does.
+    desc(0x1000, op(INPUT_LAST, ALWAYS, NEVER, NEVER, 10), 0x2000, 0);
+    desc(0x1010, op(STOP_CMD, NEVER, NEVER, NEVER, 0), 0, 0);
+    memcpy(s_dev_data, "\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A", 10);
+    s_dev_len = 10;
+
+    s_irq_watch_addr = 0x1000;
+    start(0, 0x1000);
+    // Yielded after four bytes, still ACTIVE, no completion interrupt.
+    ASSERT_TRUE(dbdma_active(s_d, 0));
+    ASSERT_EQ_INT(s_irq_count, 0);
+    ASSERT_EQ_INT(memcmp(s_mem + 0x2000, "\x01\x02\x03\x04", 4), 0);
+    ASSERT_EQ_INT((int)s_mem[0x2004], 0); // and nothing past the burst
+
+    dbdma_kick(s_d, 0); // the pump fires
+    ASSERT_EQ_INT(s_irq_count, 0);
+    ASSERT_EQ_INT(memcmp(s_mem + 0x2000, "\x01\x02\x03\x04\x05\x06\x07\x08", 8), 0);
+
+    dbdma_kick(s_d, 0); // ...and the last two bytes finish it
+    ASSERT_EQ_INT(s_irq_count, 1);
+    ASSERT_EQ_INT((int)(s_irq_result & 0xFFFF), 0); // residual 0: nothing lost
+    ASSERT_EQ_INT(memcmp(s_mem + 0x2000, "\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A", 10), 0);
+    ASSERT_EQ_INT((int)(status(0) & DBDMA_ACTIVE), 0); // parked on STOP
+}
+
+// burst = 0 is "as many as the device offers", which is what every port
+// whose device is already rate-limited (AWACS, SWIM3, the SCC rings) relies
+// on -- so the default must not have changed.
+TEST(test_zero_burst_still_runs_a_command_to_completion) {
+    fixture(); // channel 0's port leaves .burst at 0
+    desc(0x1000, op(INPUT_LAST, ALWAYS, NEVER, NEVER, 10), 0x2000, 0);
+    desc(0x1010, op(STOP_CMD, NEVER, NEVER, NEVER, 0), 0, 0);
+    memcpy(s_dev_data, "\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A", 10);
+    s_dev_len = 10;
+    start(0, 0x1000);
+    ASSERT_EQ_INT(s_irq_count, 1); // all ten in one activation
+    ASSERT_EQ_INT(memcmp(s_mem + 0x2000, "\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A", 10), 0);
 }
 
 // A channel with no device port stalls its data command honestly.
@@ -322,7 +458,7 @@ TEST(test_no_port_stalls) {
     fixture();
     desc(0x1000, op(OUTPUT_LAST, ALWAYS, NEVER, NEVER, 4), 0x2000, 0);
     start(1, 0x1000); // channel 1 has no port
-    ASSERT_TRUE(status(1) & TNT_DBDMA_ACTIVE);
+    ASSERT_TRUE(status(1) & DBDMA_ACTIVE);
     ASSERT_EQ_INT(s_irq_count, 0);
 }
 
@@ -338,12 +474,12 @@ TEST(test_nop_branch_ring) {
     s_dev_budget = 12; // three laps' worth, then the device stalls
     start(0, 0x1000);
     ASSERT_EQ_INT(s_dev_len, 12); // three laps drained
-    ASSERT_TRUE(status(0) & TNT_DBDMA_ACTIVE); // stalled mid-lap 4
-    ASSERT_TRUE(status(0) & TNT_DBDMA_BT); // last branch was taken
+    ASSERT_TRUE(status(0) & DBDMA_ACTIVE); // stalled mid-lap 4
+    ASSERT_TRUE(status(0) & DBDMA_BT); // last branch was taken
     // Pure-NOP ring on channel 1: the budget guard must return control.
     desc(0x3000, op(NOP_CMD, NEVER, ALWAYS, NEVER, 0), 0, 0x3000);
     start(1, 0x3000);
-    ASSERT_TRUE(status(1) & TNT_DBDMA_ACTIVE); // parked, not dead, not hung
+    ASSERT_TRUE(status(1) & DBDMA_ACTIVE); // parked, not dead, not hung
 }
 
 // The STOP/WAKE idiom: overwrite the parked-on STOP descriptor (commit
@@ -356,18 +492,18 @@ TEST(test_stop_wake_overwrite) {
     desc(0x1010, op(STOP_CMD, NEVER, NEVER, NEVER, 0), 0, 0);
     start(0, 0x1000);
     ASSERT_EQ_INT(s_dev_len, 4);
-    ASSERT_EQ_INT((int)(status(0) & TNT_DBDMA_ACTIVE), 0);
-    ASSERT_TRUE(status(0) & TNT_DBDMA_RUN); // still enabled, just parked
+    ASSERT_EQ_INT((int)(status(0) & DBDMA_ACTIVE), 0);
+    ASSERT_TRUE(status(0) & DBDMA_RUN); // still enabled, just parked
     // Driver appends: the old STOP becomes OUTPUT_LAST(2), a new STOP
     // follows; then the WAKE control write restarts the channel.
     poke32(0x2100, 0x0000A2A1);
     desc(0x1020, op(STOP_CMD, NEVER, NEVER, NEVER, 0), 0, 0);
     desc(0x1010, op(OUTPUT_LAST, NEVER, NEVER, NEVER, 2), 0x2100, 0);
-    control(0, (TNT_DBDMA_WAKE << 16) | TNT_DBDMA_WAKE);
+    control(0, (DBDMA_WAKE << 16) | DBDMA_WAKE);
     ASSERT_EQ_INT(s_dev_len, 6);
     ASSERT_EQ_INT(s_dev_data[4], 0xA1);
     ASSERT_EQ_INT(s_dev_data[5], 0xA2);
-    ASSERT_EQ_INT((int)tnt_dbdma_reg_read(s_d, 0, TNT_DBDMA_REG_CMDPTRLO), 0x1020);
+    ASSERT_EQ_INT((int)dbdma_reg_read(s_d, 0, DBDMA_REG_CMDPTRLO), 0x1020);
 }
 
 // STORE_QUAD writes its little-endian quad to memory; LOAD_QUAD reads
@@ -381,7 +517,7 @@ TEST(test_quads) {
     start(0, 0x1000);
     ASSERT_EQ_INT((int)peek32(0x2000), (int)0xDEADBEEF);
     ASSERT_EQ_INT((int)peek32(0x1018), (int)0xCAFEF00D); // cmdDep write-back
-    ASSERT_EQ_INT((int)tnt_dbdma_reg_read(s_d, 0, TNT_DBDMA_REG_CMDPTRLO), 0x1020);
+    ASSERT_EQ_INT((int)dbdma_reg_read(s_d, 0, DBDMA_REG_CMDPTRLO), 0x1020);
 }
 
 // Conditional branch/wait/interrupt against the select registers and the
@@ -390,40 +526,40 @@ TEST(test_conditions) {
     fixture();
     // Branch: br_sel selects s0==1.  With s0 clear, BR_IFSET falls
     // through; with s0 set, it branches (and sets BT).
-    tnt_dbdma_reg_write(s_d, 0, TNT_DBDMA_REG_BRSEL, 0x00010001);
+    dbdma_reg_write(s_d, 0, DBDMA_REG_BRSEL, 0x00010001);
     desc(0x1000, op(NOP_CMD, NEVER, IFSET, NEVER, 0), 0, 0x1030);
     desc(0x1010, op(STOP_CMD, NEVER, NEVER, NEVER, 0), 0, 0);
     desc(0x1030, op(STOP_CMD, NEVER, NEVER, NEVER, 0), 0, 0);
     start(0, 0x1000);
-    ASSERT_EQ_INT((int)tnt_dbdma_reg_read(s_d, 0, TNT_DBDMA_REG_CMDPTRLO), 0x1010); // fell through
-    ASSERT_EQ_INT((int)(status(0) & TNT_DBDMA_BT), 0);
-    control(0, (uint32_t)TNT_DBDMA_RUN << 16); // rundown
+    ASSERT_EQ_INT((int)dbdma_reg_read(s_d, 0, DBDMA_REG_CMDPTRLO), 0x1010); // fell through
+    ASSERT_EQ_INT((int)(status(0) & DBDMA_BT), 0);
+    control(0, (uint32_t)DBDMA_RUN << 16); // rundown
     s_dev_sbits = 0x01;
     start(0, 0x1000);
-    ASSERT_EQ_INT((int)tnt_dbdma_reg_read(s_d, 0, TNT_DBDMA_REG_CMDPTRLO), 0x1030); // branched
-    ASSERT_TRUE(status(0) & TNT_DBDMA_BT);
-    control(0, (uint32_t)TNT_DBDMA_RUN << 16);
+    ASSERT_EQ_INT((int)dbdma_reg_read(s_d, 0, DBDMA_REG_CMDPTRLO), 0x1030); // branched
+    ASSERT_TRUE(status(0) & DBDMA_BT);
+    control(0, (uint32_t)DBDMA_RUN << 16);
     // Wait: WAIT_IFSET on s1 parks the command until the bit drops.
-    tnt_dbdma_reg_write(s_d, 0, TNT_DBDMA_REG_WAITSEL, 0x00020002);
+    dbdma_reg_write(s_d, 0, DBDMA_REG_WAITSEL, 0x00020002);
     s_dev_sbits = 0x02;
     desc(0x4000, op(STORE_QUAD, NEVER, NEVER, IFSET, 4), 0x2000, 0x1234);
     desc(0x4010, op(STOP_CMD, NEVER, NEVER, NEVER, 0), 0, 0);
     poke32(0x2000, 0);
     start(0, 0x4000);
-    ASSERT_TRUE(status(0) & TNT_DBDMA_ACTIVE); // waiting, not executed
+    ASSERT_TRUE(status(0) & DBDMA_ACTIVE); // waiting, not executed
     ASSERT_EQ_INT((int)peek32(0x2000), 0);
     s_dev_sbits = 0; // condition clears; the device kicks
-    tnt_dbdma_kick(s_d, 0);
+    dbdma_kick(s_d, 0);
     ASSERT_EQ_INT((int)peek32(0x2000), 0x1234);
-    control(0, (uint32_t)TNT_DBDMA_RUN << 16);
+    control(0, (uint32_t)DBDMA_RUN << 16);
     // Interrupt: INTR_IFCLR on s2 — fires only while the bit is clear.
-    tnt_dbdma_reg_write(s_d, 0, TNT_DBDMA_REG_INTRSEL, 0x00040004);
+    dbdma_reg_write(s_d, 0, DBDMA_REG_INTRSEL, 0x00040004);
     desc(0x5000, op(NOP_CMD, IFCLR, NEVER, NEVER, 0), 0, 0);
     desc(0x5010, op(STOP_CMD, NEVER, NEVER, NEVER, 0), 0, 0);
     s_dev_sbits = 0x04;
     start(0, 0x5000);
     ASSERT_EQ_INT(s_irq_count, 0); // condition true -> IFCLR suppressed
-    control(0, (uint32_t)TNT_DBDMA_RUN << 16);
+    control(0, (uint32_t)DBDMA_RUN << 16);
     s_dev_sbits = 0;
     start(0, 0x5000);
     ASSERT_EQ_INT(s_irq_count, 1);
@@ -437,18 +573,18 @@ TEST(test_cmdptr_protect_and_pause) {
     desc(0x1010, op(STOP_CMD, NEVER, NEVER, NEVER, 0), 0, 0);
     s_dev_budget = 0; // stall immediately
     start(0, 0x1000);
-    ASSERT_TRUE(status(0) & TNT_DBDMA_ACTIVE);
-    tnt_dbdma_reg_write(s_d, 0, TNT_DBDMA_REG_CMDPTRLO, 0x9999); // must be ignored
-    ASSERT_EQ_INT((int)tnt_dbdma_reg_read(s_d, 0, TNT_DBDMA_REG_CMDPTRLO), 0x1000);
+    ASSERT_TRUE(status(0) & DBDMA_ACTIVE);
+    dbdma_reg_write(s_d, 0, DBDMA_REG_CMDPTRLO, 0x9999); // must be ignored
+    ASSERT_EQ_INT((int)dbdma_reg_read(s_d, 0, DBDMA_REG_CMDPTRLO), 0x1000);
     // Pause, then feed the device: the kick must NOT move data while
     // paused; unpausing resumes and completes.
-    control(0, (TNT_DBDMA_PAUSE << 16) | TNT_DBDMA_PAUSE);
+    control(0, (DBDMA_PAUSE << 16) | DBDMA_PAUSE);
     s_dev_budget = -1;
-    tnt_dbdma_kick(s_d, 0);
+    dbdma_kick(s_d, 0);
     ASSERT_EQ_INT(s_dev_len, 0);
-    control(0, (uint32_t)TNT_DBDMA_PAUSE << 16);
+    control(0, (uint32_t)DBDMA_PAUSE << 16);
     ASSERT_EQ_INT(s_dev_len, 4);
-    ASSERT_EQ_INT((int)(status(0) & TNT_DBDMA_ACTIVE), 0);
+    ASSERT_EQ_INT((int)(status(0) & DBDMA_ACTIVE), 0);
 }
 
 // Checkpoint round-trip: a mid-stall channel survives save/restore (the
@@ -460,21 +596,22 @@ TEST(test_checkpoint_roundtrip) {
     s_dev_data[0] = 0x77;
     s_dev_len = 1;
     start(0, 0x1000);
-    ASSERT_TRUE(status(0) & TNT_DBDMA_ACTIVE);
+    ASSERT_TRUE(status(0) & DBDMA_ACTIVE);
     // Save, rebuild, restore through the recording byte stream.
     s_cp_w = s_cp_r = 0;
-    tnt_dbdma_checkpoint(s_d, (checkpoint_t *)1);
-    tnt_dbdma_delete(s_d);
-    s_d = tnt_dbdma_init((checkpoint_t *)1);
-    tnt_dbdma_set_memory_hooks(s_d, mem_read, mem_write, NULL);
-    tnt_dbdma_set_irq_hook(s_d, irq_hook, NULL);
-    static tnt_dbdma_port_t port = {dev_out, dev_in, dev_s_bits, NULL};
-    tnt_dbdma_set_port(s_d, 0, &port);
-    ASSERT_TRUE(status(0) & TNT_DBDMA_ACTIVE); // still mid-program
+    dbdma_checkpoint(s_d, (checkpoint_t *)1);
+    dbdma_delete(s_d);
+    s_d = dbdma_init((checkpoint_t *)1, DBDMA_CHANNELS_GRAND_CENTRAL);
+    static const dma_mem_port_t mem_port = {.read_block = mem_read, .write_block = mem_write};
+    dbdma_set_memory_port(s_d, &mem_port);
+    dbdma_set_irq_hook(s_d, irq_hook, NULL);
+    static dbdma_port_t port = {.out = dev_out, .in = dev_in, .s_bits = dev_s_bits, .ctx = NULL};
+    dbdma_set_port(s_d, 0, &port);
+    ASSERT_TRUE(status(0) & DBDMA_ACTIVE); // still mid-program
     // The rest of the data arrives; the transfer completes from byte 1.
     memcpy(s_dev_data + 1, "\x78\x79\x7A\x7B\x7C\x7D\x7E", 7);
     s_dev_len = 8;
-    tnt_dbdma_kick(s_d, 0);
+    dbdma_kick(s_d, 0);
     ASSERT_EQ_INT(s_irq_count, 1);
     ASSERT_EQ_INT(memcmp(s_mem + 0x2000, "\x77\x78\x79\x7A\x7B\x7C\x7D\x7E", 8), 0);
 }
@@ -484,6 +621,9 @@ int main(void) {
     RUN(test_output_program);
     RUN(test_stop_reset_sequences);
     RUN(test_stall_and_kick);
+    RUN(test_frame_boundaries);
+    RUN(test_port_burst_yields_mid_command_and_resumes);
+    RUN(test_zero_burst_still_runs_a_command_to_completion);
     RUN(test_no_port_stalls);
     RUN(test_nop_branch_ring);
     RUN(test_stop_wake_overwrite);

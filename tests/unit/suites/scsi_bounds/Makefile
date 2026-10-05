@@ -1,0 +1,47 @@
+# SCSI transfer-range bounds, for READ and WRITE on both CDB lengths.
+#
+# WRITE had no bounds check at all — only two assert()s in command_complete,
+# and -DNDEBUG removes those from the release wasm profile, so an out-of-range
+# WRITE reached disk_write_data (which drops the unbacked tail) and the SCSI
+# layer then reported STATUS GOOD.  Silent data loss reported as success.  And
+# the READ check multiplied in size_t, 32 bits on wasm32, so a large LBA
+# wrapped and the wrong blocks were served as valid.
+#
+# Drives real CDBs through the real scsi.c against a real image, via the same
+# external-initiator API the 53C96 bus master uses.  No emulator, no ROM, no
+# media from gs-test-data.
+
+TEST_NAME    := scsi_bounds
+TEST_SRCS    := test.c
+TEST_HARNESS := isolated
+EXTRA_SRCS   := ../../../../src/core/job/seam.c \
+              ../../../../src/core/peripherals/scsi.c \
+                ../../../../src/core/peripherals/scsi_bus.c \
+                ../../../../src/core/event/gs_event.c \
+                ../../../../src/core/peripherals/scsi_cdrom.c \
+                ../../../../src/core/storage/image.c \
+                ../../../../src/core/storage/image_wrap_sniff.c \
+                ../../../../src/core/storage/image_apm.c \
+                ../../../../src/core/storage/storage_util.c \
+                ../../../../src/core/storage/image_scratch.c \
+                ../../../../src/core/storage/storage.c \
+                ../../../../src/peeler/lib/appledouble.c \
+                ../../../../src/core/storage/image_ndif.c \
+                ../../../../src/core/crc32.c \
+                ../../../../src/core/storage/image_udif.c \
+                ../../../../src/core/storage/inflate.c \
+                ../../../../src/core/storage/adc.c \
+                ../../../../src/core/storage/resource_fork.c \
+                ../../../../src/core/storage/rsrc_dcmp.c \
+                ../../../../src/core/storage/macroman.c \
+                ../../../../src/core/object/object.c \
+        ../../../../src/core/object/parse.c \
+                ../../../../src/core/object/value.c \
+                ../../../../src/core/object/meta.c \
+                ../../../../src/core/object/api.c \
+        ../../../../src/core/object/value_format.c \
+                ../../../../src/core/storage/drive_catalog.c
+EXTRA_SRCS += ../../../../src/core/storage/image_part.c
+USE_SOURCE_LAYER := 1
+EXTRA_SRCS += ../../../../src/core/storage/image_iso9660.c
+include ../../common.mk

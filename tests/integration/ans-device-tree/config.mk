@@ -1,5 +1,4 @@
-# Integration test: the Apple Network Server's Open Firmware device tree
-# (proposal-apple-network-server-500-700 §6, §7, ladder rungs S5-S7)
+# Integration test: the Apple Network Server's Open Firmware device tree.
 #
 # THE ACCEPTANCE ORACLE.  We do not construct a device tree; Open Firmware
 # 1.1.22 probes our registers and builds one.  If `dev / ls` does not match
@@ -16,7 +15,7 @@
 # enumerates the six children it expects under `gc` by name.
 #
 # The row drives Open Firmware over the SCC serial console, which is also
-# how ladder rung S6 is observed: the `0 >` prompt on ttya.
+# how the S6 checks see Open Firmware arrive: the `0 >` prompt on ttya.
 #
 # INPUT IS SENT IN SHORT CHUNKS.  Open Firmware's console loses characters
 # from a long burst delivered in one go; feeding it eight at a time with a
@@ -30,5 +29,5 @@ TEST_ROM := roms/ans500-ans700-962f6c13.rom
 
 TEST_ARGS := model=ans500 ram=32768
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

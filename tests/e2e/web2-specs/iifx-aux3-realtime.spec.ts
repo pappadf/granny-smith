@@ -29,9 +29,10 @@
 // as the legacy spec did. If the boot hangs or resets, no poll ever matches
 // and the test times out with the stuck frame in the failure screenshot.
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile, stageOpfsFileStreaming } from '../helpers/web2-fs';
+import { terminalRun } from '../helpers/terminal';
 
 const DATA = path.resolve(__dirname, '../../data');
 const IIFX_ROM = path.join(DATA, 'roms', 'iifx-4147dd77.rom');
@@ -48,14 +49,6 @@ const LOGIN_REF = path.join(
   'aux-login-8bpp.png',
 );
 
-// Type one shell line into the Terminal panel's xterm.
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-}
-
 test('IIfx A/UX 3.0.1 free-runs under the real RAF scheduler to the login', async ({ page }) => {
   test.setTimeout(12 * 60 * 1000);
   await gotoWeb2(page);
@@ -65,7 +58,7 @@ test('IIfx A/UX 3.0.1 free-runs under the real RAF scheduler to the login', asyn
   // the 169 MB A/UX HD. The HD is a fixture precondition here — persisting a
   // file this size through the dialog's upload path takes several minutes of
   // worker-side copying, and the streaming upload path has its own e2e
-  // (webkit-local/upload.spec.ts). Staged before the ROM upload so the config
+  // (upload.spec.ts). Staged before the ROM upload so the config
   // slide's re-scan lists everything in one pass.
   await stageOpfsFile(page, '/opfs/images/vrom/mdc-8-24-revb-d1629664.vrom', JMFB_VROM);
   await stageOpfsFile(page, '/opfs/upload/login-ref.png', LOGIN_REF);
@@ -84,14 +77,16 @@ test('IIfx A/UX 3.0.1 free-runs under the real RAF scheduler to the login', asyn
   await expect(model.locator('option[value="iifx"]')).toHaveCount(1, { timeout: 30_000 });
   await model.selectOption('iifx');
 
-  await page.locator('#cfg-ram').selectOption('16 MB');
+  await page.locator('#cfg-opt-memory').selectOption('16 MB');
 
+  // The default card's 13" monitor at 640 x 480, 256 colors.
   const videoMode = page.locator('#cfg-video-mode');
   await expect(videoMode).toBeVisible({ timeout: 30_000 });
-  await videoMode.selectOption('13in_rgb_8bpp');
+  await page.locator('#cfg-monitor').selectOption('13in_rgb');
+  await videoMode.selectOption('640x480x8');
 
   // The pre-staged A/UX HD shows up in the dialog's OPFS scan.
-  const hd = page.locator('#cfg-hd');
+  const hd = page.locator('#cfg-media-scsi-0');
   await expect(hd.locator('option', { hasText: 'hd160-with-aux-301.img' })).toHaveCount(1, {
     timeout: 30_000,
   });
@@ -99,7 +94,7 @@ test('IIfx A/UX 3.0.1 free-runs under the real RAF scheduler to the login', asyn
 
   // Start. From here the machine free-runs under the real RAF loop — exactly
   // the path a user's browser takes. We touch nothing about scheduling.
-  await page.getByRole('button', { name: 'Start Machine' }).click();
+  await page.getByRole('button', { name: 'Start', exact: true }).click();
   await expect(page.locator('.toast .msg').filter({ hasText: 'Machine started' })).toBeVisible({
     timeout: 60_000,
   });
@@ -117,7 +112,7 @@ test('IIfx A/UX 3.0.1 free-runs under the real RAF scheduler to the login', asyn
   // (false polls print "false"; nothing else in this session prints a bare
   // "true" line).
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
 
   await expect
     .poll(
@@ -125,7 +120,7 @@ test('IIfx A/UX 3.0.1 free-runs under the real RAF scheduler to the login', asyn
         await terminalRun(page, 'machine.screen.match "/opfs/upload/login-ref.png"');
         // Give the worker round-trip + echo a moment to land in the buffer.
         await page.waitForTimeout(1_000);
-        const text = await page.locator('.xterm-rows').innerText();
+        const text = await page.locator('.console-output').innerText();
         return text
           .split('\n')
           .map((l) => l.trim())

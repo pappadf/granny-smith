@@ -6,6 +6,8 @@
   import BreakpointsSection from './BreakpointsSection.svelte';
   import WatchpointsSection from './WatchpointsSection.svelte';
   import CallStackSection from './CallStackSection.svelte';
+  import AuxCoreSection from './AuxCoreSection.svelte';
+  import { machine } from '@/state/machine.svelte';
 </script>
 
 <div class="sections-pane">
@@ -16,6 +18,10 @@
   <BreakpointsSection />
   <WatchpointsSection />
   <CallStackSection />
+  <!-- The machine's auxiliary cores (capabilities.aux_cpus), after the main CPU's sections. -->
+  {#each machine.auxCpus as cpu (cpu.name)}
+    <AuxCoreSection {cpu} />
+  {/each}
 </div>
 
 <style>
@@ -23,7 +29,7 @@
     width: 100%;
     height: 100%;
     overflow-y: auto;
-    background: var(--gs-bg);
+    background: var(--gs-surface-app);
     display: flex;
     flex-direction: column;
   }

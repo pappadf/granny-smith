@@ -25,6 +25,7 @@ test-results/
 
 # ── Native unit-test build artifacts ─────────────────────────────
 tests/unit/build/
+tests/unit/build-wasm32/
 tests/unit/*.o
 tests/unit/c-tests
 
@@ -48,12 +49,22 @@ Thumbs.db
 *~
 
 # ── Internal development notes and checklists (not shipped) ─────
-notes/
-todo/
-local/
-tmp/
+# Anchored to the root: docs/notes/ is tracked.
+/notes/
+/todo/
+/local/
+/tmp/
 .claude/scheduled_tasks.lock
+.claude/worktrees/
 __pycache__/
+
+# A working clone of pappadf/m68k-test, used to settle 68k FPU questions
+# against the sail model.  NOT a submodule: unlike single-step-tests and
+# powerpc-test, which tests/unit/suites/cpu and .../ppc_vectors build against,
+# nothing in the tree consumes this one yet -- so registering it would put a
+# clone in everyone's checkout and CI for no build.  Promote it to a submodule
+# in .gitmodules the day a suite needs it.
+third-party/m68k-test/
 
 # Machine-local agent notes (never committed)
 *.local.md

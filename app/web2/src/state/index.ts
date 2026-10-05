@@ -3,8 +3,7 @@ export {
   setZoom,
   setSchedulerMode,
   setAcceleratedSpeed,
-  startDriveActivityMock,
-  stopDriveActivityMock,
+  setDriveActivity,
   type MachineStatus,
   type DriveActivity,
   type SchedulerMode,
@@ -24,16 +23,7 @@ export {
   type PanelTab,
   type WelcomeSlide,
 } from './layout.svelte';
-export {
-  theme,
-  setThemeMode,
-  cycleTheme,
-  systemTheme,
-  resolveTheme,
-  applyThemeToHtml,
-  type ThemeMode,
-  type ResolvedTheme,
-} from './theme.svelte';
+export { appearance, resolved, setSkin, applyAppearance } from './appearance.svelte';
 export {
   toasts,
   showNotification,

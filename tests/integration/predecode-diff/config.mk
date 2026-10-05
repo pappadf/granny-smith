@@ -1,5 +1,5 @@
 # Integration test: predecoded cores — differential checkpoint equality
-# (proposal-predecoded-interpreter-cores.md §9.2).
+# (docs/internals/core/cpu/predecode.md).
 #
 # The definition of "same guest timeline": boot each machine, run to fixed
 # instruction counts chosen to land mid-boot, checkpoint, and compare the
@@ -23,5 +23,5 @@ TEST_ROM := roms/plus-v3-4d1f8172.rom
 
 TEST_RUNNER := run.sh
 
-# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+# CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

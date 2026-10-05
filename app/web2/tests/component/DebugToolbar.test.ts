@@ -15,9 +15,6 @@ vi.mock('@/bus/debug', () => ({
   stepInto: vi.fn(async () => {
     calls.stepInto = (calls.stepInto ?? 0) + 1;
   }),
-  stepOver: vi.fn(async () => {
-    calls.stepOver = (calls.stepOver ?? 0) + 1;
-  }),
   stopMachine: vi.fn(async () => {
     calls.stopMachine = (calls.stopMachine ?? 0) + 1;
   }),
@@ -47,15 +44,19 @@ describe('DebugToolbar', () => {
     expect(container.querySelector('button[title="Continue"]')).toBeNull();
   });
 
-  it('Step Into / Step Over are disabled while running', () => {
+  it('Step Into is disabled while running', () => {
     machine.status = 'running';
     const { container } = render(DebugToolbar);
     expect(
       (container.querySelector('button[title="Step Into"]') as HTMLButtonElement).disabled,
     ).toBe(true);
-    expect(
-      (container.querySelector('button[title="Step Over"]') as HTMLButtonElement).disabled,
-    ).toBe(true);
+  });
+
+  // "Step Over" stepped into the callee (there is no step_over in the core);
+  // it is hidden until there is one (see #180), not faked.
+  it('offers no Step Over', () => {
+    const { container } = render(DebugToolbar);
+    expect(container.querySelector('button[title="Step Over"]')).toBeNull();
   });
 
   it('Continue click invokes continueExec', async () => {

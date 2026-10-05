@@ -28,8 +28,8 @@ struct floppy;
 struct rbv;
 struct nubus_card;
 
-// IIci state is the unified MDU+RBV state struct (mdu_io.h).  The IIci uses
-// last_port_b and leaves the egret member NULL.
+// IIci state is the unified MDU+RBV state struct (mdu_io.h).  The IIci leaves
+// the egret member NULL.
 typedef mac030_mdu_state_t iici_state_t;
 
 static inline iici_state_t *iici_state(config_t *cfg) {
@@ -44,7 +44,7 @@ static inline iici_state_t *iici_state(config_t *cfg) {
 
 // (I/O penalties + window offsets live with the shared dispatcher, mdu_io.c.)
 
-// Address-space constants.  The IIci ROM lives at $40800000 (MDUtable;
+// Address-space constants.  The IIci's ROMBase is $40800000 (MDUtable;
 // confirmed by the reset PC $4080002A), NOT the IIcx's $40000000.  The
 // I/O island shares the IIcx base/size; the mirror mask is widened to
 // $3FFFF so RBV ($26000) and VDAC ($24000) decode distinctly from the
@@ -52,8 +52,13 @@ static inline iici_state_t *iici_state(config_t *cfg) {
 #define IICI_BANK_B_PHYS 0x04000000UL // Bank B physical base
 #define IICI_BANK_WINDOW 0x04000000UL // 64 MB per-bank mirror window
 
-#define IICI_ROM_START 0x40800000UL
-#define IICI_ROM_END   0x41000000UL
+// The MDU decodes the whole $40000000-$4FFFFFFF ROM space and the 512 KB ROM
+// repeats through it; ROMBase is $40800000 by convention, but the image is
+// just as visible at $40000000.  A/UX 3.0.1's startmac reads the ROM-size
+// long at $40000040 on any ROM version >= $67C, which bus-errored (and
+// panicked the kernel) while the window began at ROMBase.
+#define IICI_ROM_START 0x40000000UL
+#define IICI_ROM_END   0x50000000UL
 #define IICI_IO_BASE   0x50000000UL
 #define IICI_IO_SIZE   0x10000000UL
 #define IICI_IO_MIRROR 0x0003FFFFUL

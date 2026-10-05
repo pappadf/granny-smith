@@ -1,21 +1,34 @@
 <script lang="ts">
+  import { askText, askConfirm } from '@/state/dialogs.svelte';
+  import { validateName } from '@/components/panel-views/filesystem/RenameDialog.svelte';
+  import Hint from '@/components/ui/Hint.svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
-  import Icon from '@/components/common/Icon.svelte';
   import ImageRow from './ImageRow.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { CATEGORY_LABELS, CATEGORY_ACCEPT, iconForCategory } from '@/lib/iconForFsEntry';
   import { opfs } from '@/bus/opfs';
   import { pickAndUploadAs, acceptFilesAsCategory } from '@/bus/upload';
-  import { gsEval, defaultHdId } from '@/bus/emulator';
+  import {
+    insertFloppy,
+    ejectMedia,
+    mountImage,
+    machineDevices,
+    deviceLabel,
+    type MachineDevice,
+  } from '@/bus/media';
   import { showNotification } from '@/state/toasts.svelte';
   import type { OpfsEntry, ImageCategory } from '@/bus/types';
-  import type { MediaTypeId } from '@/lib/media';
+  import { LARGE_IMPORT_BYTES, type MediaTypeId } from '@/lib/media';
+  import { downloadFiles, downloadRawImage } from '@/bus/fsOps';
+  import { storedDmgName } from '@/bus/importImage';
+  import { gsEval, gsErrorText } from '@/bus/emulator';
+  import { startActivity, endActivity, setActivityDetail } from '@/state/activity.svelte';
+  import IconButton from '@/components/ui/IconButton.svelte';
   import {
     images,
     setMounted,
     isMounted as isPathMounted,
     mountBadge,
-    detectFdDriveCount,
     bumpImagesRevision,
   } from '@/state/images.svelte';
 
@@ -45,12 +58,17 @@
     }
   }
 
+  // Re-scan when the section opens and whenever anything changes the image
+  // store (images.revision): an upload from the Welcome page, the New
+  // Machine dialog or the Filesystem tab would otherwise leave an open
+  // section showing its old listing.
   $effect(() => {
+    void images.revision;
     if (open) void refresh();
   });
 
   // Mounted-state mirror, kept in state/images.svelte.ts. This view's own
-  // insert/eject actions set it, and C's Module.onFloppyChange event clears a
+  // insert/eject actions set it, and the core's floppy event clears a
   // floppy badge when the guest ejects the disk on its own.
   function isMounted(entry: OpfsEntry): boolean {
     return isPathMounted(entry.path);
@@ -105,11 +123,10 @@
     if (!ev.dataTransfer?.files?.length) return;
     ev.preventDefault();
     const files = Array.from(ev.dataTransfer.files);
-    const ok = await acceptFilesAsCategory(files, mediaIdFor(cat));
-    if (ok) await refresh();
+    if ((await acceptFilesAsCategory(files, mediaIdFor(cat))) !== null) await refresh();
   }
 
-  function onRowContext(entry: OpfsEntry, ev: MouseEvent) {
+  async function onRowContext(entry: OpfsEntry, ev: MouseEvent) {
     ev.preventDefault();
     const mounted = isMounted(entry);
     const items: ContextMenuItem[] = [];
@@ -119,86 +136,137 @@
         label: verb,
         action: () => (mounted ? unmount(entry) : mount(entry)),
       });
+      // With several devices that take it, each one by name.
+      const devices = !mounted && cat !== 'fd' ? await machineDevices(cat) : [];
+      if (devices.length > 1)
+        for (const d of devices)
+          items.push({
+            label: `${verb} into ${deviceLabel(d)}`,
+            disabled: d.present,
+            action: () => mount(entry, d),
+          });
       items.push({ sep: true });
     }
-    items.push({ label: 'Download', action: () => showDownloadToast(entry) });
+    items.push({ label: 'Download', action: () => doDownload(entry) });
+    if ((cat === 'hd' || cat === 'cd') && /\.dmg$/i.test(entry.name))
+      items.push({ label: 'Download as raw image', action: () => doDownloadRaw(entry) });
+    if ((cat === 'hd' || cat === 'cd') && !/\.dmg$/i.test(entry.name) && !mounted)
+      items.push({ label: 'Compact (store as .dmg)', action: () => doCompact(entry) });
     items.push({ label: 'Rename', action: () => doRename(entry) });
     items.push({ label: 'Delete', action: () => doDelete(entry), danger: true });
     openContextMenu(items, ev.clientX, ev.clientY);
   }
 
-  async function mount(entry: OpfsEntry) {
-    try {
-      if (cat === 'fd') {
-        // Insert into the first empty drive, like dropping a disk into a Mac.
-        const n = (await detectFdDriveCount()) || 1;
-        let drive = -1;
-        let sawEmptyDrive = false;
-        for (let i = 0; i < n; i++) {
-          if ((await gsEval(`machine.floppy.drive[${i}].present`)) === true) continue;
-          // Empty slot found. A failed insert here is a real error (the image
-          // couldn't be opened), not "drives full" — track that so the two
-          // cases don't collapse into one misleading message.
-          sawEmptyDrive = true;
-          if ((await gsEval(`machine.floppy.drive[${i}].insert`, [entry.path, false])) === true) {
-            drive = i;
-            break;
-          }
-        }
-        if (drive < 0) {
-          if (sawEmptyDrive) {
-            showNotification(
-              `Couldn't insert '${entry.name}' — the image could not be opened`,
-              'error',
-            );
-          } else {
-            showNotification('All floppy drives are full', 'warning');
-          }
-          return;
-        }
-        setMounted(entry.path, { kind: 'fd', drive });
-        showNotification(`Inserted '${entry.name}'`, 'info');
-      } else if (cat === 'hd') {
-        const id = await defaultHdId();
-        await gsEval('machine.scsi.attach_hd', [entry.path, id]);
-        setMounted(entry.path, { kind: 'hd', drive: id });
-        showNotification(`Mounted '${entry.name}'`, 'info');
-      } else if (cat === 'cd') {
-        await gsEval('machine.scsi.attach_cdrom', [entry.path, 3]);
-        setMounted(entry.path, { kind: 'cd', drive: 3 });
-        showNotification(`Inserted '${entry.name}'`, 'info');
-      }
-      onMountedChange?.();
-    } catch {
-      showNotification(isRemovable ? 'Insert failed' : 'Mount failed', 'error');
+  // Mount / insert and unmount / eject through the one attach helper
+  // (bus/media.ts): a floppy into the first empty drive the machine has, a
+  // hard disk or a CD into `device`, or the running machine's first empty
+  // device that takes it (machine.storage: the devices its configuration
+  // built, on whatever bus).  Every result is checked; an unmount ejects from
+  // where the mount put it.
+  async function mount(entry: OpfsEntry, device?: MachineDevice) {
+    const r =
+      cat === 'fd'
+        ? await insertFloppy(entry.path, false)
+        : await mountImage(cat === 'hd' ? 'hd' : 'cd', entry.path, device);
+    if (!r.ok) {
+      showNotification(
+        `Couldn't ${isRemovable ? 'insert' : 'mount'} '${entry.name}': ${r.reason}`,
+        r.full ? 'warning' : 'error',
+      );
+      return;
     }
+    setMounted(entry.path, r.mount);
+    showNotification(`${isRemovable ? 'Inserted' : 'Mounted'} '${entry.name}'`, 'info');
+    onMountedChange?.();
   }
 
   async function unmount(entry: OpfsEntry) {
-    const drive = images.mounted[entry.path]?.drive ?? 0;
+    const where = images.mounted[entry.path];
+    if (!where) return;
+    const r = await ejectMedia(where);
+    if (!r.ok) {
+      showNotification(
+        `Couldn't ${isRemovable ? 'eject' : 'unmount'} '${entry.name}': ${r.reason}`,
+        'error',
+      );
+      return;
+    }
+    setMounted(entry.path, null);
+    showNotification(`${isRemovable ? 'Ejected' : 'Unmounted'} '${entry.name}'`, 'info');
+    onMountedChange?.();
+  }
+
+  async function doDownload(entry: OpfsEntry) {
+    startActivity(entry.name, 'Downloading');
     try {
-      if (cat === 'fd') {
-        await gsEval(`machine.floppy.drive[${drive}].eject`);
-      } else if (cat === 'hd') {
-        await gsEval('machine.scsi.detach_hd', [0]);
-      } else if (cat === 'cd') {
-        await gsEval('machine.scsi.detach_cdrom', [3]);
-      }
-      setMounted(entry.path, null);
-      showNotification(`${isRemovable ? 'Ejected' : 'Unmounted'} '${entry.name}'`, 'info');
-      onMountedChange?.();
-    } catch {
-      showNotification(isRemovable ? 'Eject failed' : 'Unmount failed', 'error');
+      const r = await downloadFiles([entry.path]);
+      if (r.failures.length) showNotification(`Could not download '${entry.name}'`, 'error');
+    } finally {
+      endActivity();
     }
   }
 
-  function showDownloadToast(entry: OpfsEntry) {
-    showNotification(`Download of '${entry.name}' will land in a later phase`, 'warning');
+  async function doDownloadRaw(entry: OpfsEntry) {
+    startActivity(entry.name, 'Downloading');
+    try {
+      const r = await downloadRawImage(entry.path, (done, total) =>
+        setActivityDetail(`${Math.round((100 * done) / total)} %`),
+      );
+      if (!r.ok && r.error !== 'cancelled')
+        showNotification(`Could not download '${entry.name}' as raw: ${r.error}`, 'error');
+    } finally {
+      endActivity();
+    }
+  }
+
+  // Store a raw image the compact way: convert it to a UDIF beside it (the
+  // core checks the result decodes to the same bytes), then remove the raw
+  // file.  A saved state that used the raw file by name no longer finds it,
+  // so the user is asked first.
+  async function doCompact(entry: OpfsEntry) {
+    const size = (await gsEval('files.path_size', [entry.path])) as number;
+    if (typeof size === 'number' && size <= LARGE_IMPORT_BYTES) {
+      showNotification(`'${entry.name}' is small already`, 'info');
+      return;
+    }
+    const ok = await askConfirm({
+      title: 'Compact image',
+      message: `Store '${entry.name}' compressed as a .dmg and remove the raw file? Saved states that use this disk will no longer find it.`,
+      confirmText: 'Compact',
+    });
+    if (!ok) return;
+    const dir = entry.path.replace(/\/[^/]+$/, '');
+    let dest = `${dir}/${storedDmgName(entry.name)}`;
+    for (let i = 2; (await gsEval('files.path_exists', [dest])) === true; i++)
+      dest = `${dir}/${storedDmgName(entry.name).replace(/\.dmg$/, `_${i}.dmg`)}`;
+    startActivity(entry.name, 'Compacting');
+    try {
+      const r = await gsEval('files.convert', [entry.path, dest]);
+      if (!r || typeof r !== 'object' || 'error' in (r as object)) {
+        showNotification(`Could not compact '${entry.name}': ${gsErrorText(r)}`, 'error');
+        return;
+      }
+      const st = r as { bytes_in?: number; stored_bytes?: number };
+      await gsEval('files.rm', [entry.path]);
+      showNotification(
+        `'${entry.name}' compacted: ${Math.round((st.bytes_in ?? size) / 1048576)} MB disk in ${Math.max(1, Math.round((st.stored_bytes ?? 0) / 1048576))} MB`,
+        'info',
+      );
+      bumpImagesRevision();
+      await refresh();
+    } finally {
+      endActivity();
+    }
   }
 
   async function doRename(entry: OpfsEntry) {
-    if (typeof window === 'undefined' || typeof window.prompt !== 'function') return;
-    const next = window.prompt('Rename', entry.name);
+    const next = await askText({
+      title: 'Rename',
+      label: 'New name',
+      initial: entry.name,
+      submitText: 'Rename',
+      validate: validateName,
+    });
     if (!next || next === entry.name) return;
     try {
       await opfs.rename(entry.path, next);
@@ -211,9 +279,13 @@
   }
 
   async function doDelete(entry: OpfsEntry) {
-    if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
-      if (!window.confirm(`Delete '${entry.name}'?`)) return;
-    }
+    const ok = await askConfirm({
+      title: 'Delete',
+      message: `Delete '${entry.name}'?`,
+      confirmText: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await opfs.delete(entry.path);
       await refresh();
@@ -236,23 +308,22 @@
 >
   <CollapsibleSection title={CATEGORY_LABELS[cat]} {open} {onToggle} count={entries.length}>
     {#snippet actions()}
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <span
+      <IconButton
         class="upload-btn"
-        role="button"
-        tabindex="-1"
-        title="Upload {CATEGORY_LABELS[cat]} image"
+        icon="upload"
+        iconSize="md"
+        tone="panel"
+        rest="faded"
+        label="Upload {CATEGORY_LABELS[cat]} image"
         onclick={onUploadClick}
-      >
-        <Icon name="upload" size={14} />
-      </span>
+      />
     {/snippet}
     {#if loading && entries.length === 0}
-      <p class="empty">Loading…</p>
+      <Hint class="empty" inset="list">Loading…</Hint>
     {:else if entries.length === 0}
-      <p class="empty">
+      <Hint class="empty" inset="list">
         No {CATEGORY_LABELS[cat]} images. Drop a file here or click the upload button.
-      </p>
+      </Hint>
     {:else}
       {#each entries as entry (entry.path)}
         <ImageRow
@@ -271,34 +342,11 @@
      path but click-to-upload still matters for touch / accessibility,
      so the button shouldn't be hover-gated. Muted by default so it
      doesn't compete with the section title; brightens on hover. */
-  .upload-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 22px;
-    color: var(--gs-fg-muted);
-    opacity: 0.6;
-    transition:
-      opacity 100ms,
-      color 100ms;
-    cursor: pointer;
-  }
-  .upload-btn:hover,
-  .upload-btn:focus-visible {
-    opacity: 1;
-    color: var(--gs-fg-bright);
-  }
-  .empty {
-    color: var(--gs-fg-muted);
-    font-size: 12px;
-    padding: 6px 28px;
-  }
   /* Drop-target affordance — subtle inset border while a file is
      being dragged over the section so the user sees which category
      will accept the drop. */
   .drop-host {
-    transition: background 80ms ease-out;
+    transition: background var(--gs-duration-instant) var(--gs-ease-out);
   }
   .drop-host.drop-active {
     background: var(--gs-drop-bg);

@@ -3,6 +3,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import DisplayToolbar from '@/components/display/DisplayToolbar.svelte';
 import { machine } from '@/state/machine.svelte';
 import { layout, setPanelPos } from '@/state/layout.svelte';
+import { appearance } from '@/state/appearance.svelte';
+import { closeContextMenu } from '@/components/common/ContextMenu.svelte';
 
 beforeEach(() => {
   machine.status = 'no-machine';
@@ -44,5 +46,25 @@ describe('DisplayToolbar', () => {
     ) as HTMLButtonElement;
     await fireEvent.click(bottomBtn);
     expect(layout.panelCollapsed).toBe(true);
+  });
+
+  it('the appearance menu lists the skins, and picks one', async () => {
+    appearance.skin = 'workbench';
+    const { container } = render(DisplayToolbar);
+    await fireEvent.click(container.querySelector('.appearance-menu') as HTMLElement);
+    const items = Array.from(document.querySelectorAll('.context-menu .item'));
+    const labels = items.map((i) => i.textContent?.trim());
+    expect(labels).toEqual([
+      'Midnight',
+      'Starlight',
+      'Platinum',
+      'Aqua',
+      'Workbench',
+      'Workbench Light',
+    ]);
+    await fireEvent.click(items[1] as HTMLElement);
+    expect(appearance.skin).toBe('starlight');
+    appearance.skin = 'workbench';
+    closeContextMenu();
   });
 });

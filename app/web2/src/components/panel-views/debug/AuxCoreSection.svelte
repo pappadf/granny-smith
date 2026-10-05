@@ -1,0 +1,182 @@
+<script lang="ts">
+  import SectionHeading from '@/components/ui/SectionHeading.svelte';
+  import Hint from '@/components/ui/Hint.svelte';
+  // One auxiliary core (capabilities.aux_cpus — the AV family's DSP3210) in
+  // the Debug view.  It answers the same frame as the main CPU
+  // (machine.<name>.frame), so this renders it with the shared register
+  // layout and no per-core code: run state, registers, the floating-point
+  // block and a disassembly window around its PC.  Read-only — the core
+  // exposes no register setters.
+  import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
+  import { gsEval } from '@/bus/emulator';
+  import { loadDebugFrame, type DebugFrame } from '@/bus/debug';
+  import { machine, type AuxCpu } from '@/state/machine.svelte';
+  import { debug } from '@/state/debug.svelte';
+  import { registerGroups, fmtRegister } from '@/lib/registerLayout';
+  import { fmtHex32 } from '@/lib/hex';
+
+  interface Props {
+    cpu: AuxCpu;
+  }
+  let { cpu }: Props = $props();
+
+  // Rows in the window, and how many precede the PC.
+  const ROWS = 8;
+  const BEFORE = 2;
+
+  let frame = $state<DebugFrame | null>(null);
+  let runState = $state<string | null>(null);
+  let loading = $state(false);
+
+  const open = $derived(debug.auxOpen[cpu.name] === true);
+  const groups = $derived(frame ? registerGroups(frame.arch, frame.rawRegs) : []);
+  const title = $derived(`${cpu.name.toUpperCase()} (${cpu.arch})`);
+
+  // Fetch when open and paused, and again after every step.
+  $effect(() => {
+    void debug.refreshGen;
+    if (!open || machine.status !== 'paused') {
+      if (machine.status !== 'paused') frame = null;
+      return;
+    }
+    void refresh();
+  });
+
+  async function refresh(): Promise<void> {
+    loading = true;
+    try {
+      frame = await loadDebugFrame(undefined, ROWS, BEFORE, cpu.name);
+      const s = await gsEval(`machine.${cpu.name}.state`);
+      runState = typeof s === 'string' ? s : null;
+    } finally {
+      loading = false;
+    }
+  }
+
+  function toggle(): void {
+    debug.auxOpen[cpu.name] = !open;
+  }
+</script>
+
+<CollapsibleSection {title} {open} onToggle={toggle}>
+  {#if machine.status === 'running'}
+    <Hint class="aux-hint" inset="block"
+      >Pause the machine to inspect the {cpu.name.toUpperCase()}.</Hint
+    >
+  {:else if !frame}
+    <Hint class="aux-hint" inset="block">{loading ? 'Reading…' : 'Not available.'}</Hint>
+  {:else}
+    <p class="aux-state">
+      <span class="aux-label">State</span>
+      <span class="aux-value">{runState ?? '—'}</span>
+      <span class="aux-label">PC</span>
+      <span class="aux-value mono">${fmtHex32(frame.pc)}</span>
+    </p>
+    {#each groups as group (group.title)}
+      <div class="aux-group">
+        <SectionHeading level="h4" class="aux-group-title">{group.title}</SectionHeading>
+        <div class="aux-regs">
+          {#each group.names as name (name)}
+            <span class="aux-reg">
+              <span class="aux-reg-name">{name.toUpperCase()}</span>
+              <span class="aux-reg-value mono"
+                >{fmtRegister(frame.arch, name, frame.rawRegs[name])}</span
+              >
+            </span>
+          {/each}
+        </div>
+      </div>
+    {/each}
+    {#if frame.fpu && frame.fpu.data.length}
+      <div class="aux-group">
+        <SectionHeading level="h4" class="aux-group-title">Floating point</SectionHeading>
+        {#each frame.fpu.data as reg, i (i)}
+          <div class="aux-fp mono">
+            <span class="aux-reg-name">{frame.fpu.prefix}{i}</span>
+            <span class="aux-fp-val">{reg.val}</span>
+            <span class="aux-fp-hex">{reg.hex}</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
+    <div class="aux-group">
+      <SectionHeading level="h4" class="aux-group-title">Disassembly</SectionHeading>
+      <ol class="aux-rows mono" aria-label={`${cpu.name} disassembly`}>
+        {#each frame.rows as row (row.addr)}
+          <li class="aux-row" class:pc={row.addr === frame.pc}>
+            <span class="aux-row-addr">{fmtHex32(row.addr)}</span>
+            <span class="aux-row-text">{row.mnem}{row.ops ? ` ${row.ops}` : ''}</span>
+          </li>
+        {/each}
+      </ol>
+    </div>
+  {/if}
+</CollapsibleSection>
+
+<style>
+  .mono {
+    font-family: var(--gs-font-mono);
+  }
+  .aux-state {
+    display: flex;
+    gap: var(--gs-space-2);
+    align-items: baseline;
+    font-size: var(--gs-font-size-xs);
+    padding: var(--gs-space-1-5) var(--gs-space-3) 0;
+    margin: 0;
+  }
+  .aux-label {
+    color: var(--gs-text-muted);
+  }
+  .aux-value {
+    margin-right: var(--gs-space-3);
+  }
+  .aux-group {
+    padding: var(--gs-space-1-5) var(--gs-space-3);
+  }
+  .aux-regs {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(16ch, 1fr));
+    column-gap: var(--gs-space-4);
+    font-size: var(--gs-font-size-xs);
+  }
+  .aux-reg {
+    display: inline-flex;
+    gap: var(--gs-space-2);
+  }
+  .aux-reg-name {
+    color: var(--gs-code-reg-name);
+    width: 4.5ch;
+    text-align: right;
+    flex-shrink: 0;
+    font-family: var(--gs-font-mono);
+  }
+  .aux-fp {
+    display: flex;
+    gap: var(--gs-space-2);
+    font-size: var(--gs-font-size-xs);
+  }
+  .aux-fp-val {
+    min-width: 14ch;
+  }
+  .aux-fp-hex {
+    color: var(--gs-code-address);
+  }
+  .aux-rows {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    font-size: var(--gs-font-size-xs);
+  }
+  .aux-row {
+    display: flex;
+    gap: var(--gs-space-3);
+    padding: 0 var(--gs-space-1);
+  }
+  .aux-row.pc {
+    background: var(--gs-code-pc-row-bg);
+  }
+  .aux-row-addr {
+    color: var(--gs-code-address);
+  }
+</style>

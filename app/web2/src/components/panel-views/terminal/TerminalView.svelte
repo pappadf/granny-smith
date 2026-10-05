@@ -1,11 +1,11 @@
 <script lang="ts">
   import { layout } from '@/state/layout.svelte';
   import PaneSplit from '@/components/common/PaneSplit.svelte';
-  import TerminalPane from './TerminalPane.svelte';
+  import ConsoleView from './ConsoleView.svelte';
   import CommandBrowser from './CommandBrowser.svelte';
 
-  // Spec §4.3.0: horizontal split when the panel docks at the bottom,
-  // vertical when it docks left or right. Terminal goes left/top.
+  // Horizontal split when the panel docks at the bottom,
+  // vertical when it docks left or right. Console goes left/top.
   const orientation = $derived<'horizontal' | 'vertical'>(
     layout.panelPos === 'bottom' ? 'horizontal' : 'vertical',
   );
@@ -17,7 +17,7 @@
 <div class="terminal-view">
   <PaneSplit {orientation} defaultSizePct={60} {minA} {minB}>
     {#snippet paneA()}
-      <TerminalPane />
+      <ConsoleView />
     {/snippet}
     {#snippet paneB()}
       <div class="browser-host"><CommandBrowser /></div>
@@ -37,7 +37,7 @@
     height: 100%;
     min-width: 0;
     min-height: 0;
-    background: var(--gs-bg);
+    background: var(--gs-surface-app);
     overflow: hidden;
     display: flex;
     flex-direction: column;

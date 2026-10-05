@@ -8,11 +8,13 @@
 // debug.c (screenshots and `screen.match` reference images) and the UDIF disk
 // image decoder (image_udif.c), whose 0x80000005 chunks are each a complete
 // zlib stream.  Handles all three DEFLATE block types (stored, fixed Huffman,
-// dynamic Huffman).  Compression lives in debug.c — only the PNG writer needs
-// it, and it shares the RFC 1951 length/distance tables exported below.
+// dynamic Huffman).  Compression lives in deflate.c (the PNG writer and the
+// UDIF writer use it), which shares the RFC 1951 tables exported below.
 //
 // The emulator core links no third-party C libraries, so this is a
-// first-party implementation rather than a zlib dependency.
+// first-party implementation rather than a zlib dependency: the decoder is
+// peeler's (peel_zlib_inflate), the one inflate in the tree, which zip and
+// gzip archives decode through too.
 
 #ifndef GS_INFLATE_H
 #define GS_INFLATE_H
@@ -21,16 +23,18 @@
 #include <stdint.h>
 
 // RFC 1951 §3.2.5 length/distance code tables, shared by the decoder here and
-// the deflate writer in debug.c.
+// the encoder in deflate.c.
 extern const uint16_t deflate_len_base[29];
 extern const uint8_t deflate_len_extra[29];
 extern const uint16_t deflate_dist_base[30];
 extern const uint8_t deflate_dist_extra[30];
 
 // Inflate a zlib stream into a freshly allocated buffer, for callers that do
-// not know the decompressed size up front (the PNG reader).  Returns malloc'd
-// output and sets *out_len, or NULL if the stream is truncated or malformed.
-uint8_t *inflate_zlib_alloc(const uint8_t *data, size_t data_len, size_t *out_len);
+// not know the decompressed size up front (the PNG reader).  The output may
+// not exceed `out_max` bytes -- the caller's bound on what a valid stream
+// decodes to.  Returns malloc'd output and sets *out_len, or NULL if the
+// stream is truncated, malformed, or larger than `out_max`.
+uint8_t *inflate_zlib_alloc(const uint8_t *data, size_t data_len, size_t out_max, size_t *out_len);
 
 // Inflate a zlib stream into a caller-supplied buffer, for callers that know
 // the exact expected size (a UDIF chunk covers a fixed sector run).  Returns

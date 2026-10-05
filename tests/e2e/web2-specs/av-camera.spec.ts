@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// web2 e2e: the AV camera control and the browser webcam → video-in path
-// (proposal-av-video-in.md §4 Phase 4).
+// web2 e2e: the AV camera control and the browser webcam → video-in path.
 //
 // Runs against Chromium's fake camera (--use-fake-device-for-media-stream
 // generates a moving synthetic pattern; --use-fake-ui-for-media-stream
@@ -29,6 +28,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
+import { terminalRun } from '../helpers/terminal';
 
 const DATA = path.resolve(__dirname, '../../data');
 const AV_ROM = path.join(DATA, 'roms', 'q840av-q660av-5bf10fd1.rom');
@@ -49,15 +49,7 @@ test.use({
   },
 });
 
-// Type one shell line into the Terminal panel's xterm.
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-}
-
-// Scan the xterm buffer for a probe key's answer.
+// Scan the console output for a probe key's answer.
 //
 // The answer is bracketed by the key on BOTH sides (`p1=none=p1`) and the
 // capture class excludes the `${}` characters, which makes the match immune
@@ -66,7 +58,7 @@ async function terminalRun(page: Page, line: string): Promise<void> {
 // carries the uninterpolated `p1=${...}=p1` (whose body contains `$` and `{`).
 // Only a fully rendered output line can satisfy both delimiters.
 async function readKey(page: Page, key: string): Promise<string | null> {
-  const text = await page.locator('.xterm-rows').innerText();
+  const text = await page.locator('.console-output').innerText();
   const re = new RegExp(`${key}=([^=${'${}'}\\s]+)=${key}`);
   for (const line of text.split('\n')) {
     const m = line.trim().match(re);
@@ -78,7 +70,7 @@ async function readKey(page: Page, key: string): Promise<string | null> {
 // Read one object-model value back through the terminal. A fresh key per
 // probe keeps a stale echo from satisfying the match. The answer is polled
 // out of the buffer rather than read after a fixed delay: the round trip is
-// main thread → SAB bridge → emulator worker → xterm render, and a fixed
+// main thread → SAB bridge → emulator worker → console render, and a fixed
 // wait is exactly the kind of timing assumption that flakes under load.
 let probeSeq = 0;
 async function probe(page: Page, expr: string, timeoutMs = 10_000): Promise<string | null> {
@@ -105,7 +97,7 @@ async function bootModel(page: Page, romFile: string, model: string): Promise<vo
   const sel = page.locator('#cfg-model');
   await expect(sel.locator(`option[value="${model}"]`)).toHaveCount(1, { timeout: 30_000 });
   await sel.selectOption(model);
-  await page.getByRole('button', { name: 'Start Machine' }).click();
+  await page.getByRole('button', { name: 'Start', exact: true }).click();
   await expect(page.locator('.toast .msg').filter({ hasText: 'Machine started' })).toBeVisible({
     timeout: 60_000,
   });
@@ -128,7 +120,7 @@ test('AV camera control drives the video-in path with the fake camera', async ({
   await expect(camBtn).toHaveAttribute('aria-pressed', 'false');
 
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
   // Warm up the terminal: the first typed line can land before the pane has
   // focus, so prove the round trip works before asserting on its answers.
   await expect

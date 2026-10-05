@@ -3,8 +3,15 @@
   import { machine } from '@/state/machine.svelte';
   import { bootstrap } from '@/bus/emulator';
   import { showNotification } from '@/state/toasts.svelte';
+  import { startVoodooGpu, gpuOverlay } from '@/gpu/voodoo2Gpu.svelte';
 
   let canvas: HTMLCanvasElement | undefined = $state(undefined);
+  // The Voodoo2 WebGPU takeover's overlay: transferred to the GPU worker
+  // once at mount and shown exactly while the card drives the monitor in
+  // GPU mode, so the pass-through switch is literally which canvas is on
+  // top.  It takes no pointer events — input stays on #screen, where
+  // Emscripten's proxied handlers live.
+  let canvas3d: HTMLCanvasElement | undefined = $state(undefined);
 
   // CSS-driven scaling. The canvas's intrinsic resolution (width/height
   // attributes) stays at the emulator's framebuffer dimensions; the CSS
@@ -33,12 +40,18 @@
 
   onMount(() => {
     if (!canvas) return;
+    // The GPU worker starts before the module so its answer (a device or
+    // not) is in the bridge before any machine can boot.
+    if (canvas3d) void startVoodooGpu(canvas3d);
     // Boot the Module on first canvas mount. Subsequent mounts (component
     // re-render via DisplayContent routing) are no-ops thanks to the
     // moduleReady guard.
     void bootstrap(canvas).catch((err) => {
       console.error('emulator bootstrap failed', err);
-      showNotification('Emulator failed to start (see console)', 'error');
+      showNotification(
+        `Emulator failed to start: ${err instanceof Error ? err.message : err}`,
+        'error',
+      );
     });
   });
 </script>
@@ -58,37 +71,77 @@
       (style.width / style.height) is what drives layout and is safe
       to update reactively.
     -->
+    <!-- role="application": a focusable surface that passes every key and
+         pointer event to the emulated machine, so assistive tech should not
+         intercept them; it is named for what it is. -->
+    <!-- svelte-ignore a11y_no_interactive_element_to_noninteractive_role -->
     <canvas
       id="screen"
       bind:this={canvas}
       tabindex="0"
+      role="application"
+      aria-label="Emulated machine screen"
       width="512"
       height="342"
+      style="width: {cssWidth}px; height: {cssHeight}px"
+    ></canvas>
+    <canvas
+      id="screen3d"
+      class="overlay"
+      aria-hidden="true"
+      bind:this={canvas3d}
+      width="640"
+      height="480"
+      hidden={!gpuOverlay.visible}
       style="width: {cssWidth}px; height: {cssHeight}px"
     ></canvas>
   </div>
 </div>
 
 <style>
+  /* Inset by the skin's --gs-display-inset, so a rounded display never cuts
+     into a screen too large to fit (it scrolls within straight edges). */
   .screen-view {
     position: absolute;
-    inset: 0;
+    inset: var(--gs-display-inset);
     display: flex;
     align-items: center;
     justify-content: center;
     overflow: auto;
   }
+  /* The frame around the picture: a skin may give it a bezel (padding),
+     rounded corners and its own shadow.  The canvases themselves are never
+     styled (lint L-9). */
   .screen-wrap {
     position: relative;
-    background: var(--gs-screen-bg);
-    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.8);
+    background: var(--gs-screen-frame-bg);
+    box-shadow: var(--gs-screen-frame-shadow);
+    padding: var(--gs-screen-frame-padding);
+    border-radius: var(--gs-screen-frame-radius);
   }
   canvas {
     display: block;
     image-rendering: pixelated;
     image-rendering: crisp-edges;
-    outline: none;
     /* Prevent OS touch-pan + page bounce on touch devices. */
     touch-action: none;
+  }
+  /* Keyboard focus on the emulated screen shows on its frame, not as a
+     ring drawn over the picture. */
+  canvas:focus-visible {
+    outline: none;
+  }
+  .screen-wrap:has(canvas:focus-visible) {
+    outline: var(--gs-focus-width) solid var(--gs-focus-ring);
+    outline-offset: var(--gs-focus-width);
+  }
+  canvas.overlay {
+    position: absolute;
+    left: var(--gs-screen-frame-padding);
+    top: var(--gs-screen-frame-padding);
+    pointer-events: none;
+  }
+  canvas.overlay[hidden] {
+    display: none;
   }
 </style>

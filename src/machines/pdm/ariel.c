@@ -21,6 +21,7 @@
 // mode-change, WaitVSync-gated CLUT streams, the V8-convention reduced-depth
 // palette window) this model serves.
 
+#include "display_timing.h"
 #include "pdm.h"
 
 #include "log.h"
@@ -28,7 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("ariel");
+LOG_USE_CATEGORY_NAME("video");
 
 // Monitor sense lines (the HDI-45 carries three open-collector lines A/B/C
 // with 10k pull-ups; a dumb monitor hard-wires a subset to ground and the
@@ -40,27 +41,47 @@ LOG_USE_CATEGORY_NAME("ariel");
 // The strap is per-machine (pdm.h), so the built-in port can also be left
 // UNCONNECTED — code 7 grounds nothing, and the ROM's extended-sense walk
 // then reads all-ones and turns built-in video off entirely.
-#define PDM_MONITOR_SENSE_DEFAULT 0x6u // A=1, B=1, C=0: Hi-Res 13"/14"
 
 // The straps this model can present.  Restricted to the eight 3-bit codes
 // on purpose: the monitors Apple distinguished with the EXTENDED sense walk
 // (VGA, GoldFish) need per-line strapping this model does not carry.
 const pdm_monitor_kind_t pdm_monitors[] = {
-    {"hires",    "AppleColor Hi-Res RGB 13\"/14\" (640x480)", 0x6u          },
-    {"portrait", "Macintosh Portrait Display (640x870)",      0x1u          },
-    {"rubik",    "Macintosh 12\" RGB (512x384)",              0x2u          },
-    {"none",     "No monitor connected",                      PDM_SENSE_NONE},
-    {NULL,       NULL,                                        0             },
+    {"hires",    "13in_rgb",      0x6u          },
+    {"portrait", "15in_portrait", 0x1u          },
+    {"rubik",    "12in_rgb",      0x2u          },
+    {"none",     "none",          PDM_SENSE_NONE},
+    {NULL,       NULL,            0             },
 };
 
-// Strap staged by machine.boot's `monitor=` and consumed by the next
-// pdm_video_init (the jmfb_pending_sense_set shape).  Reset to the default
-// on consumption so a forgotten setting cannot leak into the next machine.
-static uint8_t s_pending_sense = PDM_MONITOR_SENSE_DEFAULT;
-
-void pdm_pending_monitor_set(uint8_t sense) {
-    s_pending_sense = (uint8_t)(sense & 0x07u);
+// hw_profile_t.builtin_video (machine_profile.h).  Two thin adapters over
+// pdm_monitors so the machine registry can publish and validate this port
+// without reaching into this family: the sense strap stays here.
+static bool pdm_builtin_monitor_at(size_t i, const char **id, const char **monitor) {
+    size_t n = 0;
+    for (const pdm_monitor_kind_t *m = pdm_monitors; m->id; m++, n++) {
+        if (n == i) {
+            *id = m->id;
+            *monitor = m->monitor;
+            return true;
+        }
+    }
+    return false;
 }
+
+static bool pdm_builtin_monitor_sense(const char *id, uint8_t *out_sense) {
+    const pdm_monitor_kind_t *m = pdm_monitor_lookup(id);
+    if (!m)
+        return false;
+    *out_sense = m->sense;
+    return true;
+}
+
+const builtin_video_desc_t pdm_builtin_video = {
+    .detail = "Ariel II",
+    .monitor_at = pdm_builtin_monitor_at,
+    .monitor_sense = pdm_builtin_monitor_sense,
+    .default_monitor = "13in_rgb",
+};
 
 // Look a strap up by config token; NULL when the name is not one of ours.
 const pdm_monitor_kind_t *pdm_monitor_lookup(const char *id) {
@@ -72,9 +93,14 @@ const pdm_monitor_kind_t *pdm_monitor_lookup(const char *id) {
     return NULL;
 }
 
-// Largest raster any reachable mode scans out (Hi-Res/VGA at 16 bpp:
-// 640 x 480 x 2 bytes); sizes the blank buffer.
-#define PDM_VIDEO_MAX_BYTES (640u * 480u * 2u)
+// Largest raster any reachable mode scans out, which sizes the blank buffer.
+// Portrait (640x870) at 16 bpp is the maximum, not Hi-Res/VGA: 640x480x2 left
+// the buffer 499,200 bytes short of the raster the descriptor advertised in
+// Portrait mode, and the clamped memset did not shorten the descriptor, so a
+// blanked Portrait screen was read past the end of the allocation by every
+// consumer.  GoldFish 832x624x2 = 1,038,336 also fits under
+// this.
+#define PDM_VIDEO_MAX_BYTES (640u * 870u * 2u)
 
 // Timing-set geometry per monitor code (Developer Note Table 3-10).  Codes
 // the PDM sense walk can never select (Vail-only 10/13) are still decoded —
@@ -83,17 +109,22 @@ const pdm_monitor_kind_t *pdm_monitor_lookup(const char *id) {
 static bool pdm_mode_geometry(uint8_t code, uint32_t *w, uint32_t *h) {
     switch (code & 0x1Fu) {
     case 1: // Portrait 640x870 75 Hz
-        *w = 640;
-        *h = 870;
-        return true;
     case 2: // Rubik 12" 512x384 60.15 Hz
-        *w = 512;
-        *h = 384;
+    case 6: { // Hi-Res 13"/14" 640x480 66.67 Hz
+        // These three are the ordinary Apple sense codes and mean the same
+        // raster here as on every other part, so the geometry comes from the
+        // shared table instead of being spelled out again.
+        // The codes past 7 below are Sonora's OWN timing-set numbering --
+        // not sense codes, and not the same space as any other part's
+        // extended set (DAFB's 9 is PAL; this 9 is GoldFish) -- so they stay
+        // local.
+        const display_timing_t *t = display_timing_for_sense(code & 0x7u);
+        if (!t)
+            return false;
+        *w = t->width;
+        *h = t->height;
         return true;
-    case 6: // Hi-Res 13"/14" 640x480 66.67 Hz
-        *w = 640;
-        *h = 480;
-        return true;
+    }
     case 9: // GoldFish 16" 832x624 74.55 Hz
         *w = 832;
         *h = 624;
@@ -128,22 +159,6 @@ static pixel_format_t pdm_depth_format(uint8_t code) {
     }
 }
 
-static uint32_t format_bpp(pixel_format_t f) {
-    switch (f) {
-    case PIXEL_1BPP_MSB:
-        return 1;
-    case PIXEL_2BPP_MSB:
-        return 2;
-    case PIXEL_4BPP_MSB:
-        return 4;
-    case PIXEL_16BPP_555:
-        return 16;
-    case PIXEL_8BPP:
-    default:
-        return 8;
-    }
-}
-
 // Rebuild the depth-windowed palette view.  At reduced depth the hardware
 // feeds the DAC eight index lines with the unused low lines driven HIGH, so
 // a pixel value i reads CLUT entry (skip-1) + i*skip with skip =
@@ -153,7 +168,7 @@ static uint32_t format_bpp(pixel_format_t f) {
 static void pdm_video_refresh_clut(pdm_state_t *st) {
     pdm_amic_t *a = &st->amic;
     pdm_video_t *v = &st->video;
-    uint32_t bpp = format_bpp(v->display.format);
+    uint32_t bpp = display_bpp(v->display.format);
     if (bpp > 8)
         return; // direct format: CLUT bypassed
     uint32_t len = 1u << bpp;
@@ -183,34 +198,29 @@ void pdm_video_update(config_t *cfg) {
     uint32_t w = 640, h = 480;
     bool timed = pdm_mode_geometry(a->vid_mode, &w, &h);
     pixel_format_t f = pdm_depth_format(a->vid_depth);
-    v->display.width = w;
-    v->display.height = h;
     v->display.format = f;
-    v->display.stride = w * format_bpp(f) / 8u;
     v->display.par_w = 0;
     v->display.par_h = 0;
     v->display.crt_response = NULL;
+    uint32_t stride = w * display_bpp(f) / 8u;
 
     // The blank bit stops syncs; the monitor shows black.  Presenting a
     // black stub keeps guest RAM untouched (the real framebuffer bytes are
     // live guest memory — blanking must never write them).  A mode code
     // with no timing set behaves the same: nothing is being scanned.
-    if ((a->vid_mode & 0x80u) || !timed) {
-        size_t n = (size_t)v->display.stride * h;
-        if (n > PDM_VIDEO_MAX_BYTES)
-            n = PDM_VIDEO_MAX_BYTES;
-        memset(v->blank, display_black_fill(f), n);
-        v->display.bits = v->blank;
-    } else {
-        // The scan base is selected by HMC serial-config bit 33 (there is
-        // no framebuffer-base register): set = physical 0, the ROM's and
-        // Mac OS's constant state; clear = $100000, the base MkLinux
-        // (VPDM_PHYSADDR) and Copland program, both of which keep their
-        // vector page at physical 0.  Both windows sit inside the 8 MB
-        // soldered bank, which the HMC never relocates.
-        uint32_t base = (st->hmc.cfg_hi & 0x2u) ? 0u : 0x100000u;
-        v->display.bits = ram_native_pointer(cfg->mem_map, base);
-    }
+    //
+    // The scan base is selected by HMC serial-config bit 33 (there is no
+    // framebuffer-base register): set = physical 0, the ROM's and Mac OS's
+    // constant state; clear = $100000, the base MkLinux (VPDM_PHYSADDR) and
+    // Copland program, both of which keep their vector page at physical 0.
+    // Both windows sit inside the soldered bank, which the HMC never
+    // relocates — but a machine configured with less RAM than the raster
+    // needs has nothing to scan, so the geometry is decided against the
+    // store rather than asserted over it.
+    bool blanked = (a->vid_mode & 0x80u) || !timed;
+    uint32_t base = (st->hmc.cfg_hi & 0x2u) ? 0u : 0x100000u;
+    display_set_scanout(&v->display, blanked ? NULL : ram_native_pointer(cfg->mem_map, 0),
+                        memory_ram_size(cfg->mem_map), base, stride, w, h, v->blank, PDM_VIDEO_MAX_BYTES);
 
     if (f == PIXEL_16BPP_555) {
         v->display.clut = NULL;
@@ -223,17 +233,37 @@ void pdm_video_update(config_t *cfg) {
     v->display.clut_dirty = true;
 }
 
-void pdm_video_init(config_t *cfg) {
+static display_t *ariel_fb_resolve(void *owner) {
+    return pdm_video_display((config_t *)owner);
+}
+static uint64_t ariel_fb_base(void *owner) {
+    // A PHYSICAL address: there is no framebuffer-base register on Ariel, the
+    // scan window is picked by an HMC serial-config bit and the raster lives
+    // in main RAM.
+    config_t *cfg = (config_t *)owner;
+    pdm_state_t *st = cfg ? pdm_st(cfg) : NULL;
+    if (!st || !st->video.display.bits || st->video.display.bits == st->video.blank)
+        return 0;
+    const uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+    return ram ? (uint64_t)(st->video.display.bits - ram) : 0;
+}
+
+void pdm_video_init(config_t *cfg, uint8_t monitor) {
     pdm_state_t *st = pdm_st(cfg);
-    st->video.sense = s_pending_sense; // what machine.boot's monitor= staged
-    s_pending_sense = PDM_MONITOR_SENSE_DEFAULT;
+    st->video.sense = monitor;
     st->video.blank = calloc(1, PDM_VIDEO_MAX_BYTES);
+    if (!st->video.blank)
+        LOG(0, "Ariel: Error: out of memory allocating the blanked raster; the screen stays live while blanked");
     pdm_video_update(cfg);
     st->video.display.response_dirty = true;
+    st->video.fb_node = (display_fb_node_t){.owner = cfg, .resolve = ariel_fb_resolve, .base = ariel_fb_base};
+    st->video.video_node = display_attach_video_node(&st->video.fb_node, "Video (Ariel)");
 }
 
 void pdm_video_teardown(config_t *cfg) {
     pdm_state_t *st = pdm_st(cfg);
+    display_detach_video_node(st->video.video_node);
+    st->video.video_node = NULL;
     free(st->video.blank);
     st->video.blank = NULL;
 }
@@ -250,24 +280,6 @@ display_t *pdm_video_display(config_t *cfg) {
     if (st->video.sense == PDM_SENSE_NONE)
         return NULL;
     return &st->video.display;
-}
-
-// Strap a monitor (or nothing) onto the built-in port.  Called by the
-// machine builder before the first pdm_video_update; changing it while the
-// guest runs would not match hardware, where the ROM samples the lines once
-// at startup.
-void pdm_video_set_sense(config_t *cfg, uint8_t sense) {
-    pdm_state_t *st = pdm_st(cfg);
-    if (!st)
-        return;
-    st->video.sense = (uint8_t)(sense & 0x07u);
-    if (st->video.blank)
-        pdm_video_update(cfg);
-}
-
-uint8_t pdm_video_sense(config_t *cfg) {
-    pdm_state_t *st = pdm_st(cfg);
-    return st ? st->video.sense : 0u;
 }
 
 // Every VBL the framebuffer may have been drawn into by the guest (CPU
@@ -312,12 +324,12 @@ void pdm_video_ctl_write(config_t *cfg, uint32_t off, uint8_t value) {
     switch (off) {
     case 0:
         a->vid_mode = value;
-        LOG(2, "video mode = $%02X", value);
+        LOG(2, "Ariel: video mode = $%02X", value);
         pdm_video_update(cfg);
         break;
     case 1:
         a->vid_depth = value;
-        LOG(2, "video depth = $%02X", value);
+        LOG(2, "Ariel: video depth = $%02X", value);
         pdm_video_update(cfg);
         break;
     case 2:
@@ -335,14 +347,16 @@ void pdm_video_ctl_write(config_t *cfg, uint32_t off, uint8_t value) {
 // Ariel II CLUT/DAC ($50F24000)
 // ============================================================
 
-uint8_t pdm_ariel_read(config_t *cfg, uint32_t off) {
+// A register read; a data read advances the RGB phase and address unless it
+// is an inspection (`peek`).
+static uint8_t ariel_read(config_t *cfg, uint32_t off, bool peek) {
     pdm_amic_t *a = &pdm_st(cfg)->amic;
     switch (off & 3) {
     case 0:
         return a->clut_addr;
     case 1: { // data reads auto-advance the RGB phase / address
         uint8_t v = a->clut[a->clut_addr][a->clut_phase];
-        if (++a->clut_phase == 3) {
+        if (!peek && ++a->clut_phase == 3) {
             a->clut_phase = 0;
             a->clut_addr++;
         }
@@ -353,6 +367,14 @@ uint8_t pdm_ariel_read(config_t *cfg, uint32_t off) {
     default:
         return a->clut_key;
     }
+}
+
+uint8_t pdm_ariel_read(config_t *cfg, uint32_t off) {
+    return ariel_read(cfg, off, false);
+}
+
+uint8_t pdm_ariel_peek(config_t *cfg, uint32_t off) {
+    return ariel_read(cfg, off, true);
 }
 
 void pdm_ariel_write(config_t *cfg, uint32_t off, uint8_t value) {

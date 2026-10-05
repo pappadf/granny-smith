@@ -1,4 +1,4 @@
-# PDM family suite — Phase G acceptance rows (proposal-powerpc-601-pdm.md).
+# PDM family suite — the family's acceptance rows.
 #
 # Row map:
 #
@@ -37,18 +37,16 @@
 #     it now shows a fixed 0xE0000000 time instead of the host's, once the
 #     Cuda Mode3Clock tick delivers the RTC to the OS (the clock region is
 #     masked by check_ex regardless, but a deterministic clock is correct).
-#   * After 360 M instructions the boot is parked in the Start Manager's
-#     WaitForPollDrive loop (the drive-spin-up window: FindStartupDevice
-#     polls ITTBOOT every 15 ticks until the PRAM timeout, default 20 s).
-#     Jumping Ticks past the deadline skips ~1.2 G instructions of pure
-#     waiting per row; the natural timeout path was verified equivalent
-#     (handover-pdm-phase-g §9.2) — the give-up path then falls back to
-#     the drive queue, finds the driver's DQE, and boots from it.  The
-#     poke writes PHYSICAL Ticks: 68k-logical $16A + $97000 — the offset
-#     is the 604 KB framebuffer carve at physical 0 (RAM-size
-#     independent; the sensed monitor sets it, and all rows run the
-#     default 14" Hi-Res).
-#   * ~1.2 G more instructions cover boot blocks, CFM init, the
+#   * No drive-spin-up wait.  On blank PRAM the Start Manager's
+#     WaitForPollDrive polls ITTBOOT every 15 ticks until a 20 s timeout —
+#     and on these single-Curio machines the poll can never succeed, so the
+#     wait always ran to expiry.  The rows used to jump physical Ticks past
+#     the deadline; now the machine is built with PRAM that disables the
+#     wait ($01 bit 7, rtc.h pram_defaults_t), exactly as the web build
+#     has always booted, so BootDrive is set by 450 M.  The disk's SCSI id
+#     is named as the startup device through machine.rtc.pram.boot_device;
+#     the 7100 row puts its disk at id 2 to keep that honest.
+#   * ~1.1 G more instructions cover boot blocks, CFM init, the
 #     extensions parade, and the Finder through drawing the desktop;
 #     wait_stable absorbs the tail.
 #
@@ -75,17 +73,28 @@ let fd_144 = "../../data/apps/Norton-Utils-Disk-2.image"
 let fd_800 = "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
 let fd_boot = "../../data/systems/SSW-7.6-1.4M/Install 1.img"
 
-# Boot `model` from the prepared 7.5 image to a stable Finder desktop.
-def boot_pdm_75(model, ram_kb) {
+# Boot `model` from the prepared 7.5 image, at SCSI id `id`, to a stable
+# Finder desktop.
+def boot_pdm_75(model, ram_kb, id) {
     machine.boot model=$model ram=$ram_kb rom="${$ROM}"
+    run_pdm_75($model, $id)
+}
+
+# The same, on the machine just booted (a row whose document says more than
+# model and RAM boots it itself, then runs this).
+def run_pdm_75(model, id) {
     machine.rtc.time = 0xE0000000
-    machine.scsi.attach_hd "${$hd_75}" 0
-    # Chip init, bus scan, driver load, DQE post; parks in WaitForPollDrive.
-    scheduler.run 360000000
-    # Skip the 20 s spin-up window (see header).
-    machine.memory.poke.l 0x9716A 0x2000
+    machine.scsi.attach_hd "${$hd_75}" $id
+    # The Start Manager's default startup device is the disk's own id --
+    # the core writes the PRAM bytes, as the web page asks it to.
+    machine.rtc.pram.boot_device = $id
+    # Chip init, bus scan, driver load, DQE post -- and no spin-up wait: the
+    # machine's PRAM disables it (see header).  The Start Manager has
+    # committed to the disk by 450 M.
+    scheduler.run 450000000
+    assert debug.mac.globals.read("BootDrive") != 0 "${$model}: no startup device by 450 M"
     # Boot blocks -> CFM init -> extensions parade -> Finder desktop.
-    scheduler.run 1200000000
+    scheduler.run 1110000000
     wait_stable(300000000)
 }
 
@@ -100,15 +109,15 @@ def bart_exists() {
 }
 
 # Shared post-boot facts + the two goldens for one model row.
-def pdm_75_row(model, ram_kb, boxflag, want_bart) {
+def pdm_75_row(model, ram_kb, boxflag, want_bart, id, finder, about) {
     let t0 = scheduler.host_user_ns
-    boot_pdm_75($model, $ram_kb)
+    boot_pdm_75($model, $ram_kb, $id)
     assert machine.id == $model "${$model}: machine.id != ${$model}"
     assert machine.ram == $ram_kb "${$model}: machine.ram != ${$ram_kb}"
     assert machine.screen.width == 640 "${$model}: not in 640x480"
     assert machine.screen.height == 480 "${$model}: not in 640x480"
     assert machine.screen.depth == 8 "${$model}: not 8 bpp"
-    # The Start Manager committed to the SCSI drive (Phase G acceptance).
+    # The Start Manager committed to the SCSI drive.
     assert debug.mac.globals.read("BootDrive") != 0 "${$model}: BootDrive == 0 (no startup device)"
     # DynamicBoxFlag identity (ladder L16 mechanism, per-model value) —
     # read through the user-context window, so park in USER mode first.
@@ -116,10 +125,10 @@ def pdm_75_row(model, ram_kb, boxflag, want_bart) {
     assert machine.cpu.mmu.peek(0xCB3, 1) == $boxflag "${$model}: BoxFlag ${machine.cpu.mmu.peek(0xCB3, 1)}, want ${$boxflag}"
     # ...and, read the same way, what the ROM concluded about BART.
     assert bart_exists() == $want_bart "${$model}: BARTExists ${bart_exists()}, want ${$want_bart}"
-    check_ex("goldens/${$model}-7.5-640x480-finder.png", 0, 440, 20, 640)
+    check_ex("${$finder}", 0, 440, 20, 640)
     # About This Macintosh: the Gestalt machine name end-to-end.
     about_box()
-    check_ex("goldens/${$model}-7.5-640x480-about.png", 0, 440, 20, 640)
+    check_ex("${$about}", 0, 440, 20, 640)
     # Phase 0 throughput floor of the predecoded-cores proposal: the 601
     # interpreter under the 68K emulator, MMU on: measured 76 MIPS on the
     # assert-enabled build, floor well below.
@@ -128,11 +137,13 @@ def pdm_75_row(model, ram_kb, boxflag, want_bart) {
     report_perf("suite-pdm/${$model}-75-hd", scheduler.instr_count)
 }
 
+# golden-collision-ok: pm6100-7.5-640x480-finder.png pm7100-7.5-640x480-finder.png pm8100-7.5-640x480-finder.png — the same System 7.5 Finder desktop on the same 640x480x8 Ariel raster; pdm_75_row asserts each machine's BoxFlag and BART presence, and the three About-box goldens (which name the model) differ.
 # The 6100 is the row where BART must be ABSENT: its bridge ships on an
 # optional PDS adapter, so the probe faults and the machine boots anyway.
-def row_6100_75_hd() { pdm_75_row("pm6100", 24576, 69, false) }
-def row_7100_75_hd() { pdm_75_row("pm7100", 24576, 106, true) }
-def row_8100_75_hd() { pdm_75_row("pm8100", 16384, 59, true) }
+def row_6100_75_hd() { pdm_75_row("pm6100", 24576, 69, false, 0, "goldens/pm6100-7.5-640x480-finder.png", "goldens/pm6100-7.5-640x480-about.png") }
+# The disk at id 2, not 0: the startup device follows it.
+def row_7100_75_hd() { pdm_75_row("pm7100", 24576, 106, true, 2, "goldens/pm7100-7.5-640x480-finder.png", "goldens/pm7100-7.5-640x480-about.png") }
+def row_8100_75_hd() { pdm_75_row("pm8100", 16384, 59, true, 0, "goldens/pm8100-7.5-640x480-finder.png", "goldens/pm8100-7.5-640x480-about.png") }
 
 # ---- 8100-75-24ac -----------------------------------------------------------
 # The BART acceptance row: a Macintosh Display Card 24AC in NuBus slot $C of
@@ -156,13 +167,11 @@ def row_8100_75_hd() { pdm_75_row("pm8100", 16384, 59, true) }
 #     up as screen two; the desktop golden here is the ON-BOARD framebuffer;
 #   * the other two sockets stay empty next to a populated one.
 def row_8100_75_24ac() {
-    machine.boot model="pm8100" ram=16384 rom="${$ROM}"
-    machine.nubus.slot[12].card_id = "24ac"
-    boot_pdm_75("pm8100", 16384)
+    machine.boot model="pm8100" ram=16384 rom="${$ROM}" slots="12=display_card_24ac,rom=substitute"
+    run_pdm_75("pm8100", 0)
 
-    assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC (generic video ROM)" "slot C card != 24AC"
+    assert machine.nubus.slot[12].card.name == "Macintosh Display Card 24AC (substitute ROM)" "slot C card != 24AC"
     assert machine.nubus.slot[12].card.declrom.present "slot C declaration ROM not present"
-    assert machine.nubus.slot[12].card_id == "" "staged card_id not consumed at boot"
     # The empty sockets either side of it are still empty — what an
     # unpopulated BART window must look like, to us and to the Slot
     # Manager alike.
@@ -206,18 +215,36 @@ def row_8100_75_24ac() {
 def row_pdm_nubus_empty() {
     machine.boot model="pm8100" ram=16384 rom="${$ROM}"
     machine.rtc.time = 0xE0000000
-    assert machine.nubus.slot[12].card_id == "" "slot C carries a staged pick"
     assert try(machine.nubus.slot[12].card.name, none) == none "slot C is populated"
+    # machine.amic — the AMIC has no per-source mask of its own, so
+    # `enabled` reports all six ICR sources and the masking that matters is
+    # one level down in the pseudo-VIA2 IERs, which the node also carries.
+    assert machine.amic.chip == "AMIC" "pdm-nubus-empty: machine.amic missing"
+    assert machine.amic.enabled == 0x3F "pdm-nubus-empty: AMIC should report six ICR sources"
+    assert machine.amic.mode == 0 "pdm-nubus-empty: AMIC INTMODE should be 0 out of reset"
+
+    # The Ethernet ID PROM ($50F08000) and MACE ($50F0A000) windows are
+    # declared in the AMIC decode with nothing behind them yet.  They read 0,
+    # NOT the $FF that was once proposed for them and that the five mac030
+    # families float to: floating them high breaks mklinux-boot's pm7100 row,
+    # which stops reaching the login screen because MkLinux probes for Ethernet
+    # here and an all-ones ID PROM is a different answer from an empty one.
+    # Measured, not assumed -- the EPROM window is read once and MACE read 10 /
+    # written 40 times per run of this suite, so the value is live traffic.
+    # The defines stay: multi-CPU work wants OFF_EPROM wired as an IPI and
+    # LocalTalk networking keeps MACE as a stub.
+    assert machine.memory.peek.b(0x50F08000) == 0 "pdm: Ethernet ID PROM window should read 0, not float"
+    assert machine.memory.peek.b(0x50F0A000) == 0 "pdm: MACE window should read 0, not float"
     assert try(machine.nubus.slot[13].card.name, none) == none "slot D is populated"
     assert try(machine.nubus.slot[14].card.name, none) == none "slot E is populated"
     # The connectors are $C/$D/$E, and $B is NOT one of them.  This is not
     # cosmetic: the pseudo-VIA2 slot bit is `slot - 9`, so a socket at $B
     # would land on bit 2 — which the OS never enables and never services,
     # leaving that card's /NMRQ latched forever and its slot VBL tasks
-    # (the cursor task, when the card is the main screen) never run.  The
-    # staging channel only exists for declared sockets, so a $B socket
-    # would make this setter succeed.
-    assert try(machine.nubus.slot[11].card_id, none) == none "slot B is declared a socket; the connectors are C/D/E (see pm8100.c)"
+    # (the cursor task, when the card is the main screen) never run.  A boot
+    # document can only seat a card in a declared socket, so a $B socket
+    # would make this boot succeed.
+    assert !machine.boot(model="pm8100", ram=16384, rom="${$ROM}", slots="11=display_card_24ac") "slot B is declared a socket; the connectors are C/D/E (see pm8100.c)"
     # Chip init, the slot scan, and on to the "insert disk" gray desktop.
     scheduler.run 360000000
     while (machine.cpu.msr & 0x4000) == 0 { scheduler.run 1000 }
@@ -226,7 +253,7 @@ def row_pdm_nubus_empty() {
     # guest-side proof that the faults were RECOVERED, not merely taken.
     assert debug.mac.globals.read("SInfoPtr") != 0 "Slot Manager built no sInfo list"
     assert machine.screen.checksum() != 0 "no picture after the slot scan"
-    report_row("rom", "bart", "empty sockets")
+    report_row("rom", "bart", "rom-stage empty sockets")
 }
 
 # ---- pdm-nubus-checkpoint ---------------------------------------------------
@@ -235,35 +262,33 @@ def row_pdm_nubus_empty() {
 # The PDM checkpoint tail grew a BART block and a card-state block with this
 # work, and a stream that reads back in the wrong order corrupts the HMC/AMIC
 # registers silently rather than loudly — so this row pins the round trip:
-# same machine, same card in the same socket, same picture, and it still runs
-# afterwards.  It uses the `video_card=` wildcard channel (first socket = $B)
-# because that is the pick the checkpoint record carries; a card staged into a
-# SPECIFIC socket is not re-seated on restore, on any machine (the record has
-# one video-card field — reproducible on a IIcx slot $A just the same).
+# same machine, same card in the same socket on the same (substitute) ROM,
+# same picture, and it still runs afterwards.
 def row_pdm_nubus_checkpoint() {
-    machine.boot model="pm8100" ram=16384 rom="${$ROM}" video_card="24ac"
+    machine.boot model="pm8100" ram=16384 rom="${$ROM}" slots="12=display_card_24ac,rom=substitute"
     machine.rtc.time = 0xE0000000
-    assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC (generic video ROM)" "wildcard pick did not seat in the first socket"
+    assert machine.nubus.slot[12].card.name == "Macintosh Display Card 24AC (substitute ROM)" "slot C did not seat the 24AC"
     scheduler.run 360000000
     let before = machine.screen.checksum()
     assert checkpoint.save("${$RESULTS_DIR}/pdm-nubus.gs") "checkpoint save failed"
     assert checkpoint.load("${$RESULTS_DIR}/pdm-nubus.gs") "checkpoint load failed"
     assert machine.id == "pm8100" "restored machine is not a pm8100"
     assert machine.ram == 16384 "restored machine lost its RAM size"
-    assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC (generic video ROM)" "card gone after restore"
+    assert machine.nubus.slot[12].card.name == "Macintosh Display Card 24AC (substitute ROM)" "card gone after restore"
     assert machine.screen.checksum() == $before "picture changed across the restore"
     # ...and the restored machine is live, not frozen.
     scheduler.run 20000000
     assert machine.screen.checksum() == $before "picture changed after running on"
-    report_row("rom", "24ac", "nubus checkpoint")
+    report_row("rom", "24ac", "rom-stage nubus checkpoint")
 }
 
 # ---- cd-device --------------------------------------------------------------
 # The plug contract for a CD-ROM on the Curio bus, which is what the profile's
 # has_cdrom claim rests on.  A CD is an ordinary SCSI target — no CD-specific
 # hardware sits behind it — so the assertions are the ones the IIci row makes:
-# CD-typed, read-only, medium present, and a block size taken from the disc's
-# own Driver Descriptor Map rather than a hard-coded CD default.
+# CD-typed, read-only, medium present, and the 2048-byte Mode 1 sector a
+# CD-ROM drive presents regardless of how the disc's partition map is
+# addressed.
 #
 # Deliberately device-level and boot-free: attaching a disc to a booting row
 # would put a CD icon on the desktop and invalidate the goldens above.
@@ -273,10 +298,10 @@ def row_pdm_cd_device() {
     assert machine.scsi.device[3].type == "cdrom" "cd-device: SCSI 3 is not a CD-ROM"
     assert machine.scsi.device[3].read_only "cd-device: CD-ROM is not read-only"
     assert machine.scsi.device[3].medium_present "cd-device: no medium present"
-    assert machine.scsi.device[3].block_size == 512 "cd-device: block_size ${machine.scsi.device[3].block_size}, want 512 (from the disc's DDM)"
+    assert machine.scsi.device[3].block_size == 2048 "cd-device: block_size ${machine.scsi.device[3].block_size}, want 2048 (a CD-ROM's Mode 1 sector)"
     # The HD slots the same bus already served must be undisturbed by it.
     assert try(machine.scsi.device[0].type, none) == none "cd-device: something is attached at SCSI 0"
-    report_row("7.5", "curio", "cd-device")
+    report_row("rom", "curio", "rom-stage cd-device")
 }
 
 # ---- pdm-floppy-mount -------------------------------------------------------
@@ -297,12 +322,12 @@ def row_pdm_cd_device() {
 # window state, and the goldens should not depend on that.  Writes have their
 # own row below.
 def row_pdm_floppy_mount() {
-    boot_pdm_75("pm7100", 24576)
+    boot_pdm_75("pm7100", 24576, 0)
     assert machine.floppy.type == "swim3" "floppy controller type ${machine.floppy.type}, want swim3"
     assert !machine.floppy.drive[0].present "FD0 occupied before the insert"
 
-    # The family has ONE bay, so drive 1 must stay absent whatever happens.
-    assert !machine.floppy.drive[1].present "FD1 reports a disk on a family with one bay"
+    # The family has ONE bay, so there is no drive 1 to put a disk in.
+    assert try(machine.floppy.drive[1].present, "none") == "none" "FD1 exists on a family with one bay"
 
     machine.floppy.drive[0].insert "${$fd_144}"
     assert machine.floppy.drive[0].present "FD0 empty after insert"
@@ -338,7 +363,7 @@ def row_pdm_floppy_mount() {
 # into GCR mode and the headers starting; what the row asserts is the
 # outcome: an 800K System Tools disk mounts.
 def row_pdm_floppy_800k() {
-    boot_pdm_75("pm7100", 24576)
+    boot_pdm_75("pm7100", 24576, 0)
     machine.floppy.drive[0].insert "${$fd_800}"
     assert machine.floppy.drive[0].present "FD0 empty after insert"
     # GCR: the driver's MFM attempts time out first, so the mount takes
@@ -370,13 +395,13 @@ def row_pdm_floppy_800k() {
 # was seen holding its writes long past the point where a 1.44 MB one had
 # flushed them.
 def row_pdm_floppy_write_eject() {
-    boot_pdm_75("pm7100", 24576)
+    boot_pdm_75("pm7100", 24576, 0)
     machine.floppy.drive[0].insert "${$fd_144}" true
     scheduler.run 600000000
     wait_stable(900000000)
     let inst = machine.floppy.drive[0].disk.path
     let delta = "${$inst}.delta"
-    let before = storage.path_size($delta)
+    let before = files.path_size($delta)
 
     # Activate the disk's window, then File > New Folder (cmd-N).
     click(200, 140)
@@ -402,7 +427,7 @@ def row_pdm_floppy_write_eject() {
     # ...and only NOW look at the medium.  Checking before the unmount would
     # be checking the Finder's disk cache: how much of a volume it has
     # written back at any given moment is its business, not ours.
-    assert storage.path_size($delta) > $before "nothing reached the medium (delta still ${$before} bytes)"
+    assert files.path_size($delta) > $before "nothing reached the medium (delta still ${$before} bytes)"
     report_row("7.5", "swim3", "fd-write fd-eject")
     report_perf("suite-pdm/pdm-floppy-write-eject", scheduler.instr_count)
 }
@@ -420,9 +445,9 @@ def row_pdm_floppy_write_eject() {
 # pass each cover the whole surface at 300 rpm, which is what they cost on
 # real hardware too.
 def row_pdm_floppy_format() {
-    boot_pdm_75("pm7100", 24576)
+    boot_pdm_75("pm7100", 24576, 0)
     let blank = "${$WORK_DIR}/pdm-blank-1440.img"
-    assert storage.fd_create($blank, true) "could not create a blank 1.44 MB image"
+    assert files.fd_create($blank, true) "could not create a blank 1.44 MB image"
     machine.floppy.drive[0].insert "${$blank}" true
     scheduler.run 600000000
     wait_stable(900000000)
@@ -501,6 +526,27 @@ if row_on("8100-75-24ac") {
     }
 }
 
+# ---- pdm-swim3-reset --------------------------------------------------------
+# The SWIM3 is this family's floppy CONTROLLER, and it was the one controller
+# in the tree that survived a machine reset.  cfg->floppy (the drive and its
+# media) has always been reset by the shared chain; the chip in front of it was
+# not, on either PowerPC family.
+#
+# Poke a non-zero Setup register (island $16000 + register 5 x $200), reset,
+# and require the documented power-on value back.  $24 is GCR + IBMDrive and
+# deliberately NOT $80, which is the self-clearing SoftReset bit and would
+# make the chip reset itself and prove nothing.
+def row_pdm_swim3_reset() {
+    machine.boot model="pm7100" ram=24576 rom="${$ROM}"
+    scheduler.run 20000000
+    machine.memory.poke.b(0x50F16A00, 0x24)
+    assert machine.memory.peek.b(0x50F16A00) == 0x24 "pdm-swim3-reset: Setup did not take the poke"
+    machine.reset
+    scheduler.run 200000
+    assert machine.memory.peek.b(0x50F16A00) == 0 "pdm-swim3-reset: SWIM3 Setup survived a machine reset"
+    report_perf("suite-pdm/pdm-swim3-reset", scheduler.instr_count)
+}
+
 if row_on("pdm-nubus-empty") {
     row_end("pdm-nubus-empty", try(row_pdm_nubus_empty(), "FAILED"))
 }
@@ -559,6 +605,7 @@ if row_on("pdm-cd-device") {
         echo "skip: pdm-cd-device (CD disc image not fetched)"
     }
 }
+if row_on("pdm-swim3-reset") { row_end("pdm-swim3-reset", try(row_pdm_swim3_reset(), "FAILED")) }
 
 suite_done()
 quit

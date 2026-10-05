@@ -1,0 +1,151 @@
+# pm6100 + Mac OS 8.1: an AFP copy while the mouse moves (issue #124).
+#
+#   1. Boot 8.1 from the prepared image to the Finder; dismiss the image's
+#      dirty-shutdown notice and the Energy Saver first-boot message (both
+#      close on Return, as tnt-voodoo2-glide does).
+#   2. Apple menu -> Chooser -> AppleShare (AppleTalk is already active on
+#      this image) -> "Shared Folders" -> Guest -> the one volume -> OK ->
+#      close the Chooser: "Shared" is mounted.
+#   3. Open it and drag payload.image to a free spot on the desktop.
+#   4. While the Finder copies: real ADB mouse motion (the default routing
+#      mode -- Cuda autopoll packets, the half of the trigger "global"
+#      warps do not produce) every 2.5 M instructions, and Ticks must move
+#      between rounds.  A 6100 retires ~1 M instructions per tick, so a
+#      5 M round that gains fewer than 2 ticks is the #124 freeze.
+#
+# Only the copy's completion is asserted, not a golden: the icon layout
+# of the copied file is the Finder's business, and the Extensions window
+# the image leaves open makes the desktop a poor golden.
+
+include "../lib/mac.script"
+
+let img = "${$WORK_DIR}/macos81.img"
+let payload_size = files.path_size("${$WORK_DIR}/share/payload.image")
+if have_media($img) {
+
+machine.boot model="pm6100" ram=24576 rom="${$ROM}"
+machine.rtc.time = "2026-04-26T21:30:36"
+machine.scsi.attach_hd "${$img}" 0
+machine.rtc.pram.boot_device = 0
+assert appletalk.afp.volumes.add("Shared", "${$WORK_DIR}/share").path == "${$WORK_DIR}/share" "share not registered"
+
+# --- 1. Boot to the Finder ---------------------------------------------------
+scheduler.run 3500000000
+assert debug.mac.globals.read("BootDrive") == 0x8023 "BootDrive not set (driver match / mount failed)"
+assert debug.mac.globals.read("DSErrCode") == 0 "system error during startup"
+machine.adb.keyboard.press 0x24
+scheduler.run 300000000
+machine.adb.keyboard.press 0x24
+scheduler.run 300000000
+
+# --- 2. Chooser -> AppleShare -> mount -----------------------------------------
+# Apple menu (press, drag to Chooser, release).
+machine.adb.mouse.move 50 50 "global"
+scheduler.run 20000000
+machine.adb.mouse.move 12 8 "global"
+scheduler.run 20000000
+machine.adb.mouse.click true
+scheduler.run 30000000
+machine.adb.mouse.move 73 140 "global"
+scheduler.run 30000000
+machine.adb.mouse.click false
+scheduler.run 150000000
+# AppleShare: the NBP lookup lists the emulated server.
+machine.adb.mouse.move 148 110 "global"
+scheduler.run 20000000
+machine.adb.mouse.click true
+scheduler.run 3000000
+machine.adb.mouse.click false
+scheduler.run 200000000
+# Double-click "Shared Folders" -> the login dialog.
+machine.adb.mouse.move 380 112 "global"
+scheduler.run 20000000
+machine.adb.mouse.click true
+scheduler.run 3000000
+machine.adb.mouse.click false
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 3000000
+machine.adb.mouse.click false
+scheduler.run 150000000
+# Guest -> OK: FPLogin, and the volume list.
+machine.adb.mouse.move 454 306 "global"
+scheduler.run 20000000
+machine.adb.mouse.click true
+scheduler.run 3000000
+machine.adb.mouse.click false
+scheduler.run 150000000
+assert appletalk.afp.sessions.count == 1 "expected exactly one ASP session after the login"
+# The one volume is preselected: OK mounts it.
+machine.adb.mouse.move 399 306 "global"
+scheduler.run 20000000
+machine.adb.mouse.click true
+scheduler.run 3000000
+machine.adb.mouse.click false
+scheduler.run 150000000
+assert appletalk.afp.volumes["Shared"].sessions_using == 1 "the mount is not counted on the volume"
+# Close the Chooser.
+machine.adb.mouse.move 95 66 "global"
+scheduler.run 20000000
+machine.adb.mouse.click true
+scheduler.run 3000000
+machine.adb.mouse.click false
+scheduler.run 100000000
+
+# --- 3. Open the volume, drag the payload to the desktop ---------------------
+machine.adb.mouse.move 591 112 "global"
+scheduler.run 20000000
+machine.adb.mouse.click true
+scheduler.run 3000000
+machine.adb.mouse.click false
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 3000000
+machine.adb.mouse.click false
+scheduler.run 150000000
+assert appletalk.afp.volumes["Shared"].cnid_count == 2 "the payload was not listed"
+let bytes0 = appletalk.afp.stats.bytes_read
+# The Finder centres the icon over its name: payload.image's sits at
+# (47,88) in the new window (a longer name moves it right).
+machine.adb.mouse.move 47 88 "global"
+scheduler.run 20000000
+machine.adb.mouse.click true
+scheduler.run 5000000
+machine.adb.mouse.move 120 150 "global"
+scheduler.run 5000000
+machine.adb.mouse.move 150 250 "global"
+scheduler.run 5000000
+machine.adb.mouse.move 120 340 "global"
+scheduler.run 5000000
+machine.adb.mouse.move 100 380 "global"
+scheduler.run 5000000
+machine.adb.mouse.click false
+scheduler.run 5000000
+
+# --- 4. The copy, under real ADB mouse motion --------------------------------
+# Until every byte has been read, then 20 rounds more; Ticks must gain at
+# least 2 per 5 M-instruction round throughout.
+let round = 0
+let tail = 0
+while $tail < 20 {
+    assert $round < 400 "the copy did not complete within 400 motion rounds (${appletalk.afp.stats.bytes_read - $bytes0} of ${$payload_size} bytes read)"
+    let tb = debug.mac.globals.read("Ticks")
+    machine.adb.mouse.move 330 360
+    scheduler.run 2500000
+    machine.adb.mouse.move 360 380
+    scheduler.run 2500000
+    let ta = debug.mac.globals.read("Ticks")
+    assert $ta >= $tb + 2 "Ticks stalled at round ${$round} (${$tb:x} -> ${$ta:x}) with ${appletalk.afp.stats.bytes_read - $bytes0} of ${$payload_size} bytes read -- the #124 freeze"
+    if appletalk.afp.stats.bytes_read - $bytes0 >= $payload_size { $tail = $tail + 1 }
+    $round = $round + 1
+}
+echo "pdm-afp-copy-motion: ${appletalk.afp.stats.bytes_read - $bytes0} bytes read over ${appletalk.afp.stats.ok_by_command["FPRead"]} FPReads in ${$round} motion rounds"
+assert appletalk.afp.stats.open_forks == 0 "the copy left a fork open"
+assert debug.mac.globals.read("DSErrCode") == 0 "system error during the copy"
+report_row("8.1", "ariel", "afp-copy adb-motion")
+report_perf("pdm-afp-copy-motion/copy", scheduler.instr_count)
+
+} else {
+    echo "skip: pdm-afp-copy-motion/copy (tests/data/apps/quake_8_1_voodoo2.img not fetched -- gs-test-data extended media)"
+}
+quit

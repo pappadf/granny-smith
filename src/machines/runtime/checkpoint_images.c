@@ -5,27 +5,30 @@
 // Image-list checkpoint serialisation — see checkpoint_images.h.
 
 #include "checkpoint_images.h"
+#include "gs_out.h"
 
 #include "checkpoint_machine.h"
 #include "image.h"
-#include "log.h"
+#include "image_wrap.h"
+#include "source.h"
 #include "storage.h"
+#include "system.h" // MAX_IMAGES -- the real bound on the restored list
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
-
-LOG_USE_CATEGORY_NAME("setup");
 
 // Save the image list into a checkpoint stream.  Layout:
 //   uint32_t count
 //   for each image i:
 //     uint32_t name_len, name_bytes...
-//     int8_t   writable
-//     uint64_t raw_size
+//     int8_t   flags (IMAGE_CKPT_WRITABLE | IMAGE_CKPT_WRAPPED)
+//     uint64_t raw_size (the storage's, without any wrapper prefix)
 //     uint32_t instance_len, instance_bytes...
+//     uint32_t key_len, key_bytes... (the base's source key, source.h)
 //     <storage-specific blob via image_checkpoint>
 void mac_checkpoint_save_images(config_t *cfg, checkpoint_t *cp) {
     uint32_t count = (uint32_t)cfg->n_images;
@@ -39,36 +42,18 @@ void mac_checkpoint_save_images(config_t *cfg, checkpoint_t *cp) {
 // checkpoint_set_error on partial reads / failed image opens so the
 // caller's restore loop sees a marked-error checkpoint.
 image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geom) {
-    uint32_t len = 0;
-    system_read_checkpoint_data(cp, &len, sizeof(len));
-    char *name = NULL;
-    if (len > 0) {
-        name = (char *)malloc(len);
-        if (!name) {
-            char tmp;
-            for (uint32_t k = 0; k < len; ++k)
-                system_read_checkpoint_data(cp, &tmp, 1);
-        } else {
-            system_read_checkpoint_data(cp, name, len);
-        }
-    }
-    char writable = 0;
-    system_read_checkpoint_data(cp, &writable, sizeof(writable));
+    // Bounded and terminated by the reader rather than by the writer's
+    // promise: `name` goes on to access(), image_open_with_geometry() and
+    // gs_outf("%s"), so a file that omits the NUL used to read off the end of
+    // the allocation, and an unbounded length drove the malloc.
+    char *name = checkpoint_read_string(cp, CHECKPOINT_MAX_PATH, "image path");
+    char flags = 0;
+    system_read_checkpoint_data(cp, &flags, sizeof(flags));
+    bool writable = (flags & IMAGE_CKPT_WRITABLE) != 0;
     uint64_t raw_size = 0;
     system_read_checkpoint_data(cp, &raw_size, sizeof(raw_size));
-    uint32_t instance_len = 0;
-    system_read_checkpoint_data(cp, &instance_len, sizeof(instance_len));
-    char *instance_path = NULL;
-    if (instance_len > 0) {
-        instance_path = (char *)malloc(instance_len);
-        if (instance_path) {
-            system_read_checkpoint_data(cp, instance_path, instance_len);
-        } else {
-            char tmp;
-            for (uint32_t k = 0; k < instance_len; ++k)
-                system_read_checkpoint_data(cp, &tmp, 1);
-        }
-    }
+    char *instance_path = checkpoint_read_string(cp, CHECKPOINT_MAX_PATH, "image instance path");
+    char *saved_key = checkpoint_read_string(cp, CHECKPOINT_MAX_PATH, "image source key");
 
     image_t *img = NULL;
     if (name) {
@@ -92,7 +77,13 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
             // legitimately 84 bytes larger than its logical raw_size, and a
             // genuinely mismatched geometry is still caught loudly by
             // storage_restore_from_checkpoint's own check.
-            image_create_empty(name, (size_t)raw_size);
+            // A .dmg is recreated as UDIF (a few KB of zero run), not as a
+            // raw file of the full size under that name.
+            size_t nl = strlen(name);
+            if (nl >= 4 && strcasecmp(name + nl - 4, ".dmg") == 0)
+                image_create_empty_udif(name, raw_size);
+            else
+                image_create_empty(name, (size_t)raw_size);
         }
         if (writable && consolidated) {
             img = image_create_with_geometry(name, checkpoint_machine_dir(), geom);
@@ -104,23 +95,47 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
             img = image_open_readonly_with_geometry(name, geom);
         }
         if (!img) {
-            printf("Error: image_open failed for %s while restoring checkpoint\n", name);
+            gs_outf("Error: image_open failed for %s while restoring checkpoint\n", name);
+            checkpoint_set_error(cp);
+        } else if (!consolidated && saved_key && saved_key[0] && img->source_key &&
+                   !gs_key_same_source(saved_key, img->source_key)) {
+            // A quick checkpoint's disk is the base plus the saved delta: on
+            // other base bytes the delta would apply to the wrong disk.  (A
+            // consolidated one carries every block, so its base is not read.)
+            gs_outf("Error: %s is not the image the checkpoint was saved with (it was %s, it is now %s)\n", name,
+                    saved_key, img->source_key);
             checkpoint_set_error(cp);
         }
     }
+    // A volume that was attached through the wrapper is re-wrapped, so the
+    // SCSI device that re-binds to it by name sees the same disk.
+    if (img && (flags & IMAGE_CKPT_WRAPPED) && image_wrap_volume(img) < 0) {
+        gs_outf("Error: cannot re-wrap volume %s while restoring checkpoint\n", name);
+        checkpoint_set_error(cp);
+    }
     if (storage_restore_from_checkpoint(img ? img->storage : NULL, cp) != GS_SUCCESS) {
-        printf("Error: storage_restore_from_checkpoint failed for %s\n", name ? name : "<unnamed>");
+        gs_outf("Error: storage_restore_from_checkpoint failed for %s\n", name ? name : "<unnamed>");
         checkpoint_set_error(cp);
     }
     free(name);
     free(instance_path);
+    free(saved_key);
     return img;
 }
 
 void mac_checkpoint_restore_images(config_t *cfg, checkpoint_t *cp) {
+    // The count comes off disk and used to be the loop bound directly: a
+    // corrupt 0xFFFFFFFF ran four billion iterations, each one re-entering the
+    // restore, calling storage_restore_from_checkpoint and logging a line --
+    // an effective hang plus a log flood rather than an error.
     uint32_t count = 0;
-    system_read_checkpoint_data(cp, &count, sizeof(count));
+    if (!checkpoint_read_count(cp, &count, MAX_IMAGES, "images"))
+        return;
     for (uint32_t i = 0; i < count; ++i) {
+        // Stop at the first damaged entry rather than grinding through the
+        // remainder against an already-failed stream.
+        if (checkpoint_has_error(cp))
+            return;
         // Generic image list is all flat 512-byte disks (block_size 0 ⇒ 512).
         image_t *img = mac_checkpoint_restore_one_image(cp, (image_geometry_t){0});
         if (img)

@@ -6,11 +6,11 @@
 //
 // The engine (mac030_io_*) walks an ordered, sentinel-terminated table of
 // `mac030_io_range_t` windows — the address map expressed as DATA rather than a
-// hand-written if-ladder (proposal §4.2.2).  It is family-neutral: GLUE (SE/30,
+// hand-written if-ladder.  It is family-neutral: GLUE (SE/30,
 // IIcx, IIx) and MDU+RBV (IIci, IIsi) both use it, each installing its own
 // range table + mirror mask + device set into a `mac030_io_t` at bind time.
-// This makes the address map directly unit-testable (§6.1) and kills the
-// formerly cloned ~600-line dispatchers (§1.1).
+// This makes the address map directly unit-testable and kills the
+// formerly cloned ~600-line dispatchers.
 //
 // The engine is decoupled from each machine's private state struct: it reads
 // everything it needs from the small mac030_io_t the machine fills at init and
@@ -22,6 +22,7 @@
 #include "memory.h"
 #include "system_config.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
 // The canonical GLUE $50Fxxxxx island repeats every 128 KB; the 6522s decode
@@ -52,6 +53,10 @@ typedef enum {
     MAC030_IO_NORMAL = 0, // sub = offset - base
     MAC030_IO_MASK_A0, // sub = (offset - base) & ~1  — the 6522 ignores A0
     MAC030_IO_FIXED, // sub = read ? read_off : write_off — SCSI pseudo-DMA
+    MAC030_IO_STRIDE_512, // sub = ((offset - base) >> 9) & 0x0F — the SWIM/IWM
+                          // window: the chip's A0-A3 are wired to A9-A12.  A
+                          // wiring fact, declared as data, exactly like
+                          // MAC030_IO_MASK_A0 above.
 } mac030_io_xform_t;
 
 // One decoded I/O window.  The engine walks an ordered, sentinel-terminated
@@ -66,20 +71,44 @@ typedef struct mac030_io_range {
     mac030_io_xform_t xform; // offset transform
     uint16_t read_off, write_off; // sub-offsets for MAC030_IO_FIXED windows
     // Optional code hooks for windows a (device, offset) row can't express —
-    // bus-error windows, DMA engines, stateful shift registers (proposal
-    // §4.2.2 "the few things a table can't express are code hooks").  When set,
+    // bus-error windows, DMA engines, stateful shift registers.  When set,
     // the engine calls them with the machine config + the FULL bus address
     // (so a handler can report the faulting address) instead of routing to a
     // device.  NULL on every GLUE/MDU row (those are pure device routes).
-    uint8_t (*read_fn)(struct config *cfg, uint32_t addr);
-    void (*write_fn)(struct config *cfg, uint32_t addr, uint8_t value);
+    // Handler rows get the window-relative sub-offset the engine has ALREADY
+    // decoded, plus the raw bus address for fault reporting.
+    //
+    // They used to get `addr` alone, so each handler re-derived the offset by
+    // hand -- and the AV family's island mirror mask ($0003FFFF), declared
+    // once as data in q840av.c/q660av.c, was written out six more times
+    // inside psc.c and new_age.c as `(addr & 0x3FFFFu) - <window base>`.
+    // Changing io_mirror_mask on a new board would silently have broken all
+    // six.  Device rows never had this problem: they
+    // have always been handed io_sub_offset().
+    uint8_t (*read_fn)(struct config *cfg, uint32_t win_off, uint32_t addr);
+    void (*write_fn)(struct config *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
     const char *debug_name; // for the address-map unit test + tracing
     // 1 = 6522 window: charge the phase-accurate E-clock sync penalty
     // instead of the fixed `penalty` (each byte access completes at the
     // next 783.360 kHz E boundary — see memory_io_esync_penalty). Last so
     // positional initializers stay valid; flagged rows set `.esync = 1`.
     uint16_t esync;
+    // 1 = this window signals a bus error instead of completing a cycle
+    // (the IIfx RPU probe and FMC windows).  There is no bus turnaround to
+    // charge, so `penalty` is legitimately 0 -- and saying so here is what
+    // lets mac030_io_validate insist that every OTHER window declares one.
+    uint16_t berr;
+    // An inspection of a handler row (memory_interface_t.peek_*): the value
+    // read_fn would return, with none of its side effects.  Set on every
+    // row whose read_fn has one (a FIFO pop, a flag cleared on read, a bus
+    // error); NULL means read_fn is pure and serves inspections too.
+    uint8_t (*peek_fn)(struct config *cfg, uint32_t win_off, uint32_t addr);
 } mac030_io_range_t;
+
+// The island is at most 256 KB (the widest io_mirror_mask any board declares
+// is $0003FFFF), so 64 pages of 4 KB index all of it.
+#define MAC030_IO_MAX_PAGES 64
+#define MAC030_IO_NO_ROW    0xFFu
 
 // Device handles + cached memory interfaces the engine routes to, indexed by
 // mac030_dev_t.  Plus the ordered window table + mirror mask for this family.
@@ -92,6 +121,23 @@ typedef struct mac030_io {
     uint32_t mirror_mask; // addr & mask before decode
     struct config *cfg; // for handler-row (read_fn/write_fn) dispatch
     uint8_t unmapped_read; // value returned on a no-match read (0 GLUE/MDU; 0xFF OSS)
+    // Decode-miss log-once bitmaps, one bit per 4 KB of island (the largest
+    // mirror mask any board declares is $3FFFF, so 64 bits covers it).
+    // Diagnostic state only, and full of host pointers besides -- this whole
+    // struct is rebuilt at init and never checkpointed.
+    uint64_t miss_logged_read, miss_logged_write;
+    // Decode index: for each 4 KB page of the island, the span of rows that
+    // touch it -- first..last inclusive, MAC030_IO_NO_ROW when no row does.
+    // Built by mac030_io_install from the table itself.  A span, not
+    // a single row, because the table needs no particular order: the IIfx
+    // nests a 32-byte bus-error window inside the 16 KB oss_ext window and
+    // declares the narrow one FIRST so the linear walk's first-match gives
+    // it priority.  Scanning the span in table order reproduces that
+    // exactly, whatever the order and whatever overlaps.
+    uint8_t page_first_row[MAC030_IO_MAX_PAGES];
+    uint8_t page_last_row[MAC030_IO_MAX_PAGES];
+    uint8_t page_count;
+    bool indexed;
 } mac030_io_t;
 
 // Backwards-compatible alias: the GLUE state struct calls its field's type
@@ -101,11 +147,19 @@ typedef mac030_io_t mac030_glue_io_t;
 // --- The engine ------------------------------------------------------------
 
 // Pure decode: the window in `ranges` containing `offset & mirror`, or NULL if
-// unmapped.  Exposed for the address-map unit tests (§6.1).
+// unmapped.  Exposed for the address-map unit tests.
 const mac030_io_range_t *mac030_io_decode(const mac030_io_range_t *ranges, uint32_t mirror, uint32_t offset);
+
+// The same decode the dispatch path actually takes, through this board's page
+// index.  Must agree with mac030_io_decode() on every offset of the
+// island for every board -- which is what the unit test sweeps.
+const mac030_io_range_t *mac030_io_decode_indexed(const mac030_io_t *io, uint32_t addr);
 
 // The six dispatch entry-points (the shared engine).  `ctx` is a mac030_io_t*.
 uint8_t mac030_io_read_uint8(void *ctx, uint32_t addr);
+uint8_t mac030_io_peek_uint8(void *ctx, uint32_t addr);
+uint16_t mac030_io_peek_uint16(void *ctx, uint32_t addr);
+uint32_t mac030_io_peek_uint32(void *ctx, uint32_t addr);
 uint16_t mac030_io_read_uint16(void *ctx, uint32_t addr);
 uint32_t mac030_io_read_uint32(void *ctx, uint32_t addr);
 void mac030_io_write_uint8(void *ctx, uint32_t addr, uint8_t value);
@@ -115,9 +169,36 @@ void mac030_io_write_uint32(void *ctx, uint32_t addr, uint32_t value);
 // Fill `iface` with the six engine entry-points (shared by all families).
 void mac030_io_fill_interface(memory_interface_t *iface);
 
-// --- The GLUE family's tables ----------------------------------------------
-
 struct mac030_board_desc;
+
+// Install a board's window table, mirror mask and unmapped-read value, and
+// clear every device slot.  Every family bind opens with this; the family then
+// fills only the slots its own chips occupy.  Pass the shared base descriptor
+// (`&desc->common` for the families that wrap it).
+void mac030_io_install(mac030_io_t *io, struct config *cfg, const struct mac030_board_desc *desc);
+
+// Bind one device slot: its handle and the memory interface that decodes it,
+// together.  The two arrays are indexed by the same mac030_dev_t and are
+// meaningless apart -- a handle without its interface decodes to NULL, and an
+// interface without its handle dispatches on NULL -- so setting them in one
+// call is what stops them drifting.  Four families were writing the pair by
+// hand at twenty sites.
+static inline void mac030_io_bind_dev(mac030_io_t *io, mac030_dev_t dev, void *handle,
+                                      const memory_interface_t *iface) {
+    io->handle[dev] = handle;
+    io->iface[dev] = iface;
+}
+
+// Check that every device row in the installed table has a bound interface.
+// A row naming a chip nobody built is not a crash any more (the dispatcher
+// falls back to unmapped_read), which makes it silent: the machine boots and
+// the window just reads $FF forever.  This is the thing that says so.  Called
+// from mac030_glue_finish once the machine is fully built -- and it takes the
+// engine as a parameter precisely so a new family cannot forget to run it.
+// Returns the number of unbound rows found, logging each.
+int mac030_io_validate(const mac030_io_t *io, const char *machine_id);
+
+// --- The GLUE family's tables ----------------------------------------------
 
 // Cache the GLUE device interfaces and install the board's window table +
 // mirror + unmapped-read value.  Call after rtc/scc/via/scsi/asc/floppy are up,

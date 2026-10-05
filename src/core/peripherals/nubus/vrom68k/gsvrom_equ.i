@@ -3,10 +3,10 @@
 |
 | gsvrom_equ.i
 | Clean-room equates for the GS generic declaration ROM.  Every value
-| here is sourced from our own documentation — docs/core/peripherals/
-| nubus_vrom.md, the three annotated whole-ROM disassemblies under
+| here is sourced from our own documentation — docs/internals/core/peripherals/
+| declaration-rom.md, the three annotated whole-ROM disassemblies under
 | the published *Designing Cards and Drivers for the
-| Macintosh Family* text — NOT from Apple's AIncludes (proposal sec. 6.3).
+| Macintosh Family* text — NOT from Apple's AIncludes.
 
 | --- Format Block ------------------------------------------------------------
 .equ TestPattern,     0x5A932BC7      | Apple declROM magic
@@ -82,7 +82,7 @@
 .equ directType,      2               | direct RGB
 
 | VPBlock (mVidParams sBlock body) field offsets — after the long size
-| field; see nubus_vrom.md sec. 6.2.
+| field; see declaration-rom.md sec. 6.2.
 .equ vpBaseOffset,    0               | long: page-0 offset from FB base
 .equ vpRowBytes,      4               | word
 .equ vpBounds,        6               | 4 words: t/l/b/r
@@ -308,4 +308,7 @@
 .equ pvGTbl,          36+768+768      | GammaTbl block for GetGamma (12+256)
 .equ pvSpID,          36+768+768+268  | word: dCtlSlotId (the sResource that
                                         | loaded us; DrvReadVP queries it)
-.equ pvSize,          36+768+768+268+2
+.equ pvPage,          36+768+768+270  | word: currently displayed page (0-based).
+                                        | Only ever non-zero on a personality
+                                        | declaring GS_NPAGES > 1 (SE/30).
+.equ pvSize,          36+768+768+272

@@ -2,72 +2,91 @@
 // Copyright (c) pappadf
 
 // image_vfs.h
-// Auto-mount cache + image-backed VFS backend.  Path resolution treats a
-// host file as a pseudo-directory when the shell path continues past it;
-// on the first such descent we open the file via image_open(), parse its
-// partition map, and register a mount.  The resulting mount plus
-// in-image path is what backend methods (stat/opendir/readdir/...)
-// consume — identical to how host_vfs handles ordinary POSIX paths.
+// The mount table and the VFS backend for paths inside images and archives.
+// Path resolution treats a file as a pseudo-directory when the path
+// continues past it; on the first such descent the file is opened as a byte
+// source, the format registry turns it into a namespace (a disk, a
+// filesystem, an archive -- namespace.h), and a mount is registered.  The
+// backend's methods (stat/opendir/readdir/...) turn in-mount paths into
+// namespace calls, and add the synthetic resource tree ("rsrc", "finf") to
+// any file with a resource fork or Finder info.
 //
-// Read-only: mkdir/unlink/rename slots in the backend vtable are static
-// `-EROFS` rejecters, never conditionally writable.
+// Mounts are keyed by the key of the source they were opened on
+// (source.h), so one file reached by two paths is one mount.  A file inside
+// a mount is mounted in turn straight from its source -- a view of the
+// parent, or a decode-through fork -- never copied out.
+//
+// Read-only: mkdir/unlink/rename are static `-EROFS` rejecters.
 
 #pragma once
 
 #ifndef IMAGE_VFS_H
 #define IMAGE_VFS_H
 
+#include "source.h"
 #include "vfs.h"
 
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 
-// Opaque mount handle.  Each cached image file has exactly one of these.
+// Opaque mount handle.
 typedef struct image_mount image_mount_t;
+struct gs_namespace;
 
-// Accessor that returns the image backend vtable.  ctx passed to its
-// methods must be a pointer returned by image_vfs_lookup_mount or
-// image_vfs_acquire_mount.
+// The backend vtable.  ctx passed to its methods is an image_mount_t *.
 const vfs_backend_t *vfs_image_backend(void);
 
-// Probe `host_path` and, if it looks like a supported image (APM for v1),
-// register a mount in the cache or return the existing one.  Returns 0 on
-// success and sets *out_mount; returns -ENOTDIR if the file is not a
-// recognised image, or a negated errno on other failure.
-//
-// -EBUSY is returned if the file is currently attached via hd/cdrom; the
-// caller must fall through to "cannot descend" behaviour.
+// Mount the host file `host_path` (or return the existing mount).  0 and
+// *out_mount, or: -ENOTDIR when it is no image or archive; -EBUSY while an
+// image containing it is attached writable (image_key_is_open_writable) or
+// an unmount is pending; -ENOSPC when the table is full of busy mounts; or
+// another negated errno.  Every backend call on an existing mount refuses
+// with -EBUSY the same way.
 int image_vfs_acquire_mount(const char *host_path, image_mount_t **out_mount);
 
-// Explicit force-close.  Drops the cache entry for the given absolute
-// path (if any) and invalidates handles.  Returns 0 if something was
-// dropped, -ENOENT if no match.
-int image_vfs_unmount(const char *host_path);
+// Mount forks already open (a file inside another mount).  `path` is the
+// VFS path that reached them, shown in listings.  Same results as above.
+int image_vfs_acquire_mount_source(const char *path, gs_source_t *data, gs_source_t *rsrc, image_mount_t **out_mount);
 
-// Materialise a disk image that lives *inside* an already-mounted image
-// (`m`) to a host scratch file, so it can be mounted via
-// image_vfs_acquire_mount().  `in_image_file_path` is the inner file's
-// in-image path (e.g. "/partition2/Foo/Bar.img").  Disk Copy 6.x / NDIF
-// images are decoded (bcem + ADC); other files are copied verbatim (nested
-// raw / Disk Copy 4.2).  Returns a malloc'd host path (caller frees) or NULL
-// if the file could not be decoded/extracted.  The scratch name is
-// deterministic, so repeated calls reuse the same file.
-char *image_vfs_materialize_nested(image_mount_t *m, const char *in_image_file_path);
+// Open fork `fork` of the in-mount path `tail` as a source.  The synthetic
+// leaves work too: "<file>/finf" is the Finder info, "<file>/rsrc/_raw" the
+// resource fork.  NULL with *err.
+gs_source_t *image_vfs_open_source(image_mount_t *m, const char *tail, gs_fork_t fork, int *err);
 
-// Iteration over the current cache, for `image list`.  `cb` is called
-// once per live mount; return non-zero to stop early.
-typedef void (*image_vfs_list_cb)(const char *host_path, const char *format_name, uint32_t n_partitions,
-                                  uint32_t refcount, bool conflicted, void *user);
+// Explicit unmount, by the path it was mounted under (or the host file's
+// canonical path).  0; -ENOENT if there is none; -EBUSY with handles still
+// open, in which case the mount refuses every new call and the last handle
+// to close drops it.
+int image_vfs_unmount(const char *path);
+
+// Iteration over the current table, for `image list`.
+typedef void (*image_vfs_list_cb)(const char *path, const char *format_name, uint32_t n_partitions, uint32_t refcount,
+                                  bool busy, void *user);
 void image_vfs_list(image_vfs_list_cb cb, void *user);
 
-// Notify the mount cache that `host_path` is now attached to the SCSI
-// bus.  Any existing mount for that file is marked conflicted; subsequent
-// backend calls return -EBUSY.  A subsequent image_vfs_notify_detached
-// clears the flag so fresh mounts can proceed.
-void image_vfs_notify_attached(const char *host_path);
-void image_vfs_notify_detached(const char *host_path);
+// Every mount gets a serial number when it is created: a counter that never
+// repeats, even though mount slots are reused.  files.mounts[n] is indexed
+// by it.
+//
+// Snapshot of one mount, copied out under the table lock.
+typedef struct {
+    int serial;
+    char path[PATH_MAX]; // the path it was mounted under
+    const char *format; // "APM", "HFS", "UFS", or an archive's ("zip", "sit", ...) (static string)
+    uint32_t partitions; // entries at the mount's root (partitions of a disk)
+    uint32_t refcount; // open handles
+    bool unmounting; // unmount requested while handles were live
+    bool busy; // refusing service: unmounting, or inside an image attached writable
+} image_vfs_mount_info_t;
 
-// Clear the entire cache.  Intended for tests that want a fresh state.
-void image_vfs_reset(void);
+// The smallest live serial greater than `prev` (-1 to start), or -1.
+int image_vfs_next_serial(int prev);
+
+// Fill *out for the mount with `serial`; false when there is none.
+bool image_vfs_mount_info(int serial, image_vfs_mount_info_t *out);
+
+// Serial of the mount at `path` (relative or canonical), or -1.
+int image_vfs_serial_for_path(const char *path);
 
 #endif // IMAGE_VFS_H

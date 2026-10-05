@@ -1,10 +1,27 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#090b11" />
     <title>Granny Smith</title>
+    <!-- Pre-paint: the skin on <html> before any stylesheet applies, so a
+         persisted skin never flashes the default (Midnight) first.
+         state/appearance.svelte.ts corrects it against the registry when
+         the app starts. -->
+    <script>
+      (function () {
+        var d = document.documentElement;
+        var ls = null;
+        try {
+          ls = window.localStorage;
+        } catch (e) {}
+        var q = new URLSearchParams(location.search);
+        d.dataset.skin = q.get('skin') || (ls && ls.getItem('gs-skin')) || 'midnight';
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

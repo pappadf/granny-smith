@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// web2 in-browser A/B of the two interpreter executors (docs/core/cpu/
+// web2 in-browser A/B of the two interpreter executors (docs/internals/core/cpu/
 // predecode.md): the switch cores (predecode.enabled=0) against the
 // predecoded cores (=1), alternated in ONE browser session so the host,
 // the JIT tier and the page are shared by both arms.  Turbo mode, the raw

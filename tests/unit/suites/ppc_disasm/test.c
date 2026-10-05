@@ -6,8 +6,7 @@
 //
 // Vector sources:
 //   1. Real words from the PDM boot ROM's HWInit/nanokernel region
-//      (addresses in the $FFFxxxxx rows), spot-checked against the PDM
-//      dossier's published fragments — e.g. the reset vector's
+//      (addresses in the $FFFxxxxx rows) — e.g. the reset vector's
 //      `b $FFF03000` into HWInit.
 //   2. Directed encodings across the integer/POWER/branch/SPR/FP surface.
 //   3. Encodings that must NOT decode on a 601: mftb, fsel (603+),
@@ -220,6 +219,15 @@ static const struct {
     {0x00001000u, 0x7C7C43A6u, "mtspr tbl,r3"           }, // SPR 284 (604 write encoding)
     {0x00001000u, 0x7C9883A6u, "mtspr dbat0u,r4"        }, // SPR 536
     {0x00001000u, 0x7C78EAA6u, "mfspr r3,mmcr0"         }, // SPR 952
+    // 750 implementation registers (MPC750UM Table 2-49)
+    {0x00001000u, 0x7C79FAA6u, "mfspr r3,l2cr"          }, // SPR 1017
+    {0x00001000u, 0x7C99FBA6u, "mtspr l2cr,r4"          },
+    {0x00001000u, 0x7C71FAA6u, "mfspr r3,hid1"          }, // SPR 1009
+    {0x00001000u, 0x7C7CFAA6u, "mfspr r3,thrm1"         }, // SPR 1020
+    {0x00001000u, 0x7C7EFBA6u, "mtspr thrm3,r3"         }, // SPR 1022
+    {0x00001000u, 0x7C7BFBA6u, "mtspr ictc,r3"          }, // SPR 1019
+    {0x00001000u, 0x7C68EAA6u, "mfspr r3,ummcr0"        }, // SPR 936
+    {0x00001000u, 0x7C7CEBA6u, "mtspr mmcr1,r3"         }, // SPR 956
 };
 
 // Branch-target metadata checks
@@ -301,9 +309,15 @@ static void test_model_validity(void) {
         expect_model(only601[i], 601, 0, "ok");
         expect_model(only601[i], 604, 1, "ok");
     }
-    // Shared encodings stay OK under both.
+    // The 750 takes the 604's view: the 604 group is valid, holdovers trap.
+    for (unsigned i = 0; i < sizeof(only604) / sizeof(only604[0]); i++)
+        expect_model(only604[i], 750, 0, "ok");
+    for (unsigned i = 0; i < sizeof(only601) / sizeof(only601[0]); i++)
+        expect_model(only601[i], 750, 1, "ok");
+    // Shared encodings stay OK under every model.
     expect_model(0x7C642A14u, 601, 0, "ok"); // add
     expect_model(0x7C642A14u, 604, 0, "ok");
+    expect_model(0x7C642A14u, 750, 0, "ok");
 }
 
 int main(void) {

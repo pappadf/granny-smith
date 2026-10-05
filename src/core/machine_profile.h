@@ -7,7 +7,7 @@
 // (system.c / system_config.h store and read a `const hw_profile_t *`).  The
 // machine *implementation* headers (mac030/…, glue/…, mdu/…, oss/…, lisa/…,
 // runtime/…, the per-machine _internal.h) are off-limits to core — a CI
-// layering check enforces that (proposal §4.3).
+// layering check enforces that.
 //
 // machines/machine.h includes this and adds the implementation-side surface
 // (the extern profile objects + the registry/object-model entry points).
@@ -16,6 +16,8 @@
 #define GS_CORE_MACHINE_PROFILE_H
 
 #include "common.h"
+#include "machine_build_opts.h"
+#include "machine_config_decl.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -24,7 +26,9 @@
 struct config;
 struct nubus_slot_decl;
 struct image;
+struct image_list;
 struct object;
+struct scsi;
 
 // Floppy drive capabilities form a strict superset hierarchy:
 //   FLOPPY_400K reads 400K only.
@@ -60,67 +64,108 @@ typedef enum mmu_kind {
 // "68040" / "ppc_601" / "ppc_604").
 const char *mmu_kind_to_string(mmu_kind_t kind);
 
-// Main-CPU architecture of a machine (PPC proposal §3.9a).  The tagged
+// Main-CPU architecture of a machine.  The tagged
 // discriminator for config_t's main-CPU handle: exactly one of the per-arch
 // core pointers is non-NULL, selected by this tag.  Derived from
 // hw_profile_t.cpu_model — never stored in the profile separately.
 typedef enum cpu_arch {
     CPU_ARCH_M68K = 0, // Motorola 68000/68030/68040 (src/core/cpu/)
-    CPU_ARCH_PPC, // PowerPC — MPC601 (src/core/cpu/ppc/)
+    CPU_ARCH_PPC, // PowerPC — MPC601 / MPC604 / MPC750 (src/core/cpu/ppc/)
 } cpu_arch_t;
 
 // PowerPC model ids for hw_profile_t.cpu_model (the 68K ids live in cpu.h).
-// Both are models of the one `ppc` module (src/core/cpu/ppc/), discriminated
+// All are models of the one `ppc` module (src/core/cpu/ppc/), discriminated
 // by ppc_t.cpu_model the way cpu.c discriminates 68000/030/040.
 #define CPU_MODEL_PPC601 601
 #define CPU_MODEL_PPC604 604
+#define CPU_MODEL_PPC750 750
 
 // Main-CPU architecture implied by a profile's cpu_model.
 static inline cpu_arch_t cpu_arch_for_model(int cpu_model) {
-    return (cpu_model == CPU_MODEL_PPC601 || cpu_model == CPU_MODEL_PPC604) ? CPU_ARCH_PPC : CPU_ARCH_M68K;
+    return (cpu_model == CPU_MODEL_PPC601 || cpu_model == CPU_MODEL_PPC604 || cpu_model == CPU_MODEL_PPC750)
+               ? CPU_ARCH_PPC
+               : CPU_ARCH_M68K;
 }
 
-// How a machine attaches a hard-disk image.  Every Mac hangs its HD off the
-// SCSI bus (scsi.attach_hd(path, id)); the Lisa 2 / Macintosh XL use the
-// parallel-port ProFile instead (profile.attach(path, writable)).  This is the
-// typed fact the config UI reads to label the HD row and pick the attach call —
-// no model-name guessing (proposal §4.4).  Default 0 = SCSI, so every existing
-// profile keeps its behavior without an explicit field.
-typedef enum hd_bus {
-    HD_BUS_SCSI = 0, // SCSI bus: scsi.attach_hd
-    HD_BUS_PROFILE, // Lisa/XL parallel-port ProFile: profile.attach
-} hd_bus_t;
+// A machine's built-in video as a display device: the port a monitor plugs
+// into on the logic board (or the screen a compact Mac is built with).
+//
+// The registry (machines/machine.c) publishes it as catalog.profile's
+// displays.builtin and validates a document's monitor through it.  The
+// monitor list is a callback rather than an array so the family keeps
+// whatever per-monitor data it needs private: the PDM's table carries a
+// 3-bit sense strap the registry has no business seeing.
+//
+// On a machine whose built-in video is a BUILTIN NuBus pseudo-slot (SE/30,
+// IIci, IIsi) the card kind in that slot supplies the monitors; such a
+// profile sets only the label fields here and `slot_monitors` true.
+// One saved mode a built-in video port starts in (the startup video mode):
+// its depth, and the savedMode byte the port's slot PRAM record holds for it.
+typedef struct builtin_startup_mode {
+    uint8_t depth; // bits per pixel; 0 ends a list
+    uint8_t saved_mode; // the record's byte 2
+} builtin_startup_mode_t;
 
-// Wire string for an hd_bus_t ("scsi" / "profile").
-const char *hd_bus_to_string(hd_bus_t bus);
+// The startup modes a built-in port offers on one monitor, as its ROM keeps
+// them: the slot PRAM record (sPRAMRec) the ROM writes for that monitor,
+// with byte 2 (the depth) the mode's, and the depths the ROM honours from a
+// seeded record.  Measured per ROM: boot with the monitor, read the record,
+// seed each depth code and see what the ROM brings the screen up at.
+typedef struct builtin_startup {
+    const char *monitor; // catalogue id; NULL ends a list
+    uint16_t width, height;
+    uint8_t record[8];
+    builtin_startup_mode_t modes[7];
+} builtin_startup_t;
 
-// One floppy drive slot on a machine.  Sentinel-terminated arrays end at
-// the first entry whose `label` is NULL.
+typedef struct builtin_video_desc {
+    const char *detail; // the chip, shown as secondary text: "Ariel II", "DAFB"
+    // Enumerate the monitors the port takes: fill *id (the family's own
+    // token, what the legacy monitor= argument names) and *monitor (its
+    // shared catalogue id, monitor_catalog.h) for index i, or return false
+    // once past the end.  "none" (an unplugged port) may be listed; it is
+    // always available whether listed or not.
+    bool (*monitor_at)(size_t i, const char **id, const char **monitor);
+    // Resolve one of the tokens above to its monitor sense code; false if the
+    // token is not one of them.  RESOLVE ONLY -- the caller puts the answer
+    // into machine_build_opts_t and system_create carries it to the device.
+    bool (*monitor_sense)(const char *id, uint8_t *out_sense);
+    // The catalogue id of the monitor a stock machine has plugged in.
+    const char *default_monitor;
+    // The port also takes Apple's indexed sense codes 8..14 (the monitors that
+    // answer the extended-sense probe), which the video_sense= debug override
+    // may name: a Quadra's DAFB.
+    bool indexed_sense;
+    // The port's startup modes: the (pseudo-)slot whose PRAM record keeps the
+    // saved mode, and the modes by monitor.  0 / NULL: it offers none.
+    int startup_slot;
+    const builtin_startup_t *startup;
+    // The monitors come from the card kind in the machine's BUILTIN NuBus
+    // slot (its nubus_monitor_t list); monitor_at / monitor_sense are NULL.
+    bool slot_monitors;
+} builtin_video_desc_t;
+
+// One floppy drive position.  Positions are fixed (at most two per machine);
+// a position whose real counterpart can be empty (an external port, a second
+// internal bay) is `optional` and offers "None".  The document names a
+// position "fd<index>".
 struct floppy_slot {
-    const char *label; // "Internal FD0"; NULL terminates the array
-    floppy_kind_t kind;
-};
-
-// One SCSI bus slot wired up by the machine's profile (HD0, HD1, …).
-struct scsi_slot {
-    const char *label; // "SCSI HD0"; NULL terminates the array
-    int id; // Conventional SCSI bus id for this slot
-    // The bay the firmware boots from by default, when that is not the
-    // first one listed (the Network Server's Open Firmware boots
-    // `disk2:aix`, bay 2).  The configuration dialog preselects it.
-    bool boot;
+    const char *label; // "Internal floppy drive"; NULL terminates the array
+    floppy_kind_t kind; // the drive the position takes
+    bool optional; // the position may hold no drive
+    bool default_none; // ...and holds none in the default configuration
 };
 
 // One auxiliary CPU core on a machine (heterogeneous multi-CPU): a
 // peripheral processor executing real guest code on the main timeline
-// (docs/core/cpu/cores.md).  Exported as `capabilities.aux_cpus`.
+// (docs/internals/core/cpu/cores.md).  Exported as `capabilities.aux_cpus`.
 struct aux_cpu_slot {
     const char *name; // instance name — the machine.<name> node; NULL terminates
     const char *arch; // ISA token, e.g. "dsp3210"
     uint32_t freq; // core clock in Hz
 };
 
-// Which bus a medium in transit is attached through (media_slot_t below).
+// Which bus a medium is attached through (media_slot_t below).
 typedef enum media_bus {
     MEDIA_BUS_FLOPPY = 0, // unit = drive index
     MEDIA_BUS_SCSI, // unit = SCSI id; the device-identity fields apply
@@ -130,19 +175,20 @@ typedef enum media_bus {
     // ride along with the medium.
     MEDIA_BUS_SCSI2,
     MEDIA_BUS_PROFILE, // Lisa/XL parallel-port ProFile (unit unused)
+    // An ATA bus pair (the beige G3's two Heathrow cells): unit = cell * 2 +
+    // device.  A hard disk is the ATA device itself; a CD-ROM is an ATAPI
+    // drive, carried by the machine's ATAPI back end at SCSI id = unit.
+    MEDIA_BUS_ATA,
 } media_bus_t;
 
-// One mounted medium in transit across a machine.restart power-cycle
-// (proposal-boot-vs-reset §3.3): the OPEN image handle — never a captured
-// path, so delta writes and blank images survive by construction — plus the
-// attachment coordinates needed to hand the handle back to the rebuilt
-// machine.
+// One medium to attach: the OPEN image handle plus the attachment
+// coordinates (media_attach).
 typedef struct media_slot {
     media_bus_t bus;
     int unit; // floppy drive index / SCSI id
-    struct image *img; // open handle; ownership is in transit
-    // SCSI device identity (MEDIA_BUS_SCSI only), captured from the dying
-    // device so the rebuilt one presents the same drive to the guest.
+    struct image *img; // open handle; the machine owns it once attached
+    // SCSI device identity (MEDIA_BUS_SCSI only): the drive presented to the
+    // guest.
     int scsi_type; // enum scsi_device_type value (1 = hd, 2 = cdrom)
     uint16_t block_size;
     bool read_only;
@@ -151,32 +197,120 @@ typedef struct media_slot {
     char revision[5];
 } media_slot_t;
 
-// Transfer capacity: 2 floppy drives + 8 SCSI ids on each of two buses +
-// 1 ProFile.
-#define MEDIA_SLOTS_MAX 20
+// A ProFile block: 512 data bytes plus a 20-byte tag.  A property of the
+// ProFile protocol (MEDIA_BUS_PROFILE), whatever machine the drive is on.
+#define PROFILE_BLOCK_SIZE 532
 
-// Machine lifecycle + host-input vtable.  The behavior half of a machine
-// (proposal §4.4): hw_profile_t is pure descriptor DATA and points at one of
-// these.  system.c / nubus.c dispatch through it; every hook is NULL-safe.
-// (memory_layout_init and checkpoint_restore are deliberately absent — they
-// were never dispatched: each init runs its own layout directly and restore
-// is folded into init.)
+// A place a medium goes: a bus and a unit on it (floppy drive index, SCSI id,
+// or 0 for the one ProFile), with the label of the storage bus it is on.
+// Derived from the profile's storage declarations (machine_config.h) so that
+// no caller -- the web frontend, headless, a script -- knows which bus a
+// machine's disks hang off.
+typedef struct media_bay {
+    media_bus_t bus;
+    int unit;
+    const char *label;
+} media_bay_t;
+
+// Most default hard disks a caller asks for at once.
+#define MEDIA_HD_BAYS_MAX 14
+
+// Wire name of a bus, as the profile and the attach verbs spell it:
+// "floppy", "scsi", "scsi2", "profile".  The SCSI names are the bus objects'
+// own (machine.scsi, machine.scsi2).
+const char *media_bus_name(media_bus_t bus);
+// The reverse; false for an unknown name.
+bool media_bus_parse(const char *name, media_bus_t *out);
+
+// Machine lifecycle + host-input vtable.  The behavior half of a machine:
+// hw_profile_t is pure descriptor DATA and points at one of
+// these.  system.c / nubus.c / pci.c dispatch through it; every hook is
+// NULL-safe.
+// There is no checkpoint hook: init builds the machine, and on a restore
+// each device it builds reads its own block and registers itself as a
+// checkpoint part (machine_parts.h), which is what a save walks.
 typedef struct machine_substrate {
-    void (*init)(struct config *cfg, checkpoint_t *cp);
-    void (*reset)(struct config *cfg); // hardware RESET line
+    // Build the machine.  Returns 0 on success, non-zero on failure --
+    // matching the NuBus card layer's ops->init, which has always worked this
+    // way.  On failure system_create tears down what was built and returns
+    // NULL, which machine_boot_apply already handles, so a machine that cannot
+    // be constructed rejects the boot instead of leaving a half-built config
+    // for the caller to dereference.
+    // Construction inputs that must be known before devices exist reach the
+    // family through `cfg->build_opts`, filled by system_create from what the
+    // caller asked for (machine_build_opts.h).  Devices several layers below
+    // this seam read it too, which is why it rides on the config rather than
+    // being a parameter here -- one name for one thing.
+    int (*init)(struct config *cfg, checkpoint_t *cp);
+    // The board's /RESET net: every device THIS BOARD wires to it.
+    //
+    // /RESET is ONE bidirectional net with one destination list (MC68030 UM
+    // 3rd ed. §5.10.1; Guide to the Macintosh Family Hardware 2e, the 68000
+    // PDS signal table: "Master reset for entire board").  The emulator used
+    // to hold two lists -- system_reset_devices() reset cfg->scsi and
+    // cfg->nubus and nothing else, while substrate->reset re-armed the ROM
+    // overlay and disabled the MMU -- and they reset DISJOINT sets, which is
+    // how two lists always end up.  They are one list now, and both entry
+    // points call it.
+    //
+    // CPU-INTERNAL STATE IS NOT HERE.  On the 68030 the MMU is inside the
+    // CPU, so an external chip reset must not touch it; that half lives in
+    // cpu_hardware_reset / cpu_hardware_reset_040.  The dividing line is the
+    // package boundary, which is the only line the hardware draws.
+    //
+    // The ROM overlay IS here, and that is not arbitrary: the overlay is a
+    // VIA1 OUTPUT and VIA1 is on the net.  Guide p.256 -- "When VIA1 is
+    // reset, it pulls the Overlay signal high, which causes the
+    // memory-control IC (GLUE or MDU) to use the ROM overlay address map."
+    //
+    // NULL on the `compact` (Plus) and `lisa` substrates, and that is a GAP,
+    // not a statement about the hardware: both machines physically reset --
+    // the Plus from the programmer's switch, and either from a guest
+    // executing the 68000 RESET opcode -- and today the call silently does
+    // nothing on them.
+    //
+    // Distinguish this from `nubus_slot_irq` and `pci_slot_irq` below, which
+    // are NULL because the bus genuinely is not on the board.  A NULL that
+    // means "no such hardware" and a NULL that means "not written yet" must
+    // not read the same way here, or this header becomes the reason nobody
+    // notices the second kind.
+    void (*bus_reset)(struct config *cfg);
+    // Power-on-only state: what switching the machine off and on clears that
+    // the /RESET net does NOT reach -- latches and SRAM a chip initialises only
+    // when power is applied.  Called by a power cycle (machine.restart) before
+    // its level-2 reset, never by a reset.  NULL on a board whose every
+    // volatile device is on the net.  The Lisa is the case that needs it: its
+    // MMU's START latch is "satisfied automatically at power-on time" and
+    // reset does not set it, while the descriptor RAM survives a reset and
+    // does not survive a power loss (Lisa Hardware Reference Manual §2.3.3,
+    // §4.7.2).
+    void (*power_on)(struct config *cfg);
     void (*teardown)(struct config *cfg);
-    void (*checkpoint_save)(struct config *cfg, checkpoint_t *cp);
 
-    void (*update_ipl)(struct config *cfg, int source, bool active); // NuBus IRQ routing
+    // The seeding step of a new machine (level 4 only): after every device is
+    // built with its factory content and before the first instruction, write
+    // the parameter-memory records that follow from the configuration in
+    // cfg->build_opts -- the startup device, AppleTalk on/off.  Not called on
+    // a restore, a reset or a power cycle: the store is state from then on.
+    // NULL on a machine with nothing to seed.
+    void (*seed)(struct config *cfg);
+
     void (*trigger_vbl)(struct config *cfg);
 
     // Drive NuBus slot `slot` ($9..$E) /NMRQ active/inactive.  `umbrella_edge`
     // is true when this transition flips the "any slot asserted" aggregate.
-    // Every NuBus machine implements it (GLUE → VIA2 port-A bit + CA1 on the
-    // umbrella edge; MDU/OSS → the chipset's own IRQ controller via update_ipl);
-    // keeps nubus.c machine-agnostic — no cfg->via2 poke (proposal §4.4).  NULL
-    // on non-NuBus machines (Plus / Lisa), which never reach it.
-    void (*nubus_slot_irq)(struct config *cfg, int slot, bool active, bool umbrella_edge);
+    // Every NuBus machine implements it, and each converts the slot number to
+    // its own controller's numbering ITSELF: GLUE → VIA2 port-A bit + CA1 on
+    // the umbrella edge; MCU → VIA2 PA1-5 + /SLOTIRQ; MDU → the RBV's slot
+    // register; OSS → OSS source bits; AV → PSC SInt bits 3-5; PDM → BART.
+    // There is deliberately no shared "convert slot to an IRQ source mask"
+    // helper: slot numbering matches a machine's interrupt-source numbering
+    // only by coincidence, and the one that existed put a IIci's slot $C on
+    // its NMI source (mdu.c).  Keeps nubus.c machine-agnostic — no cfg->via2
+    // poke.  NULL on the three substrates with no NuBus --
+    // `compact` (Plus), `lisa`, and `tnt`, which is PCI -- and they never
+    // reach it.
+    void (*nubus_slot_irq)(struct config *cfg, int slot, bool active);
 
     // Drive PCI slot `slot`'s strapped INTA-D line active/inactive.  The
     // PCI slot lines are level-sensitive and have no umbrella (each has
@@ -186,33 +320,74 @@ typedef struct machine_substrate {
     // NULL on machines without PCI slots.
     void (*pci_slot_irq)(struct config *cfg, int slot, bool active);
 
-    // Floppy insertion + host-input injection + primary display, implemented by
-    // EVERY substrate (Macs route to the shared mac_* helpers / NuBus video;
-    // Lisa to its FDC / COPS) — one uniform path, no NULL-and-fallback
-    // (proposal §4.4).  `display` may still be NULL on machines that surface
-    // their framebuffer through the NuBus primary-display path instead.
+    // Floppy insertion + host-input injection + primary display.  The first
+    // five ARE bound by all 9 substrates (Macs route to the shared mac_*
+    // helpers, the Lisa to its FDC / COPS), so the NULL guards on them in
+    // system.c are defence-in-depth rather than a fallback path -- do not
+    // delete them, but do not read them as evidence that a substrate may skip
+    // these either.
+    //
+    // `display` is the built-in video that is no slot device (the Plus, the
+    // Lisa, the DAFB, CIVIC, Ariel); NULL where the built-in video, if any,
+    // is a NuBus or PCI device.  system_display() shows the device the
+    // configuration connected the monitor to, and this when no slot device
+    // has it.
     int (*fd_insert)(struct config *cfg, int drive, struct image *disk);
     bool (*fd_present)(struct config *cfg, int drive);
-    int (*input_key)(struct config *cfg, const char *key, bool down);
+    // Key identity across the whole model is the ADB RAW keycode (0x00-0x7F):
+    // what an ADB keyboard transmits, not the Mac OS "virtual" code its
+    // driver turns that into.  The two agree for every key but the arrows
+    // (raw $3B-$3E, virtual $7B-$7E) and the right-hand modifiers (raw
+    // $7B-$7D): a name that resolved to the virtual left arrow, $7B, pressed
+    // Right Shift on every ADB Mac.  This holds whatever the machine's own
+    // keyboard actually speaks.  That
+    // was already true for every Mac -- system_keyboard_update hands the same
+    // int to the ADB transceiver or to the Plus's M0110A, which converts on
+    // the wire with Guide 2e p.282's `(adb << 1) | 1` plus its keypad
+    // exceptions -- and the Lisa now joins, converting ADB to COPS from the
+    // boot ROM's own key table.  Name resolution happens ONCE, above the
+    // substrate, so a substrate never sees a key name.
+    int (*input_key)(struct config *cfg, int adb_code, bool down);
+    // Inject a byte in this machine's NATIVE keyboard encoding, direction bit
+    // and all.  Not portable and deliberately so: it exists for tests that
+    // drive a keyboard wire rather than press a key (the Lisa's COPS, whose
+    // bit 7 is down/up).  NULL on every machine that has no such notion, and
+    // the object surface reports that rather than guessing.
+    int (*input_key_raw)(struct config *cfg, uint8_t byte);
     int (*input_mouse_move)(struct config *cfg, int x, int y, const char *mode);
     int (*input_mouse_button)(struct config *cfg, bool down, const char *mode);
     struct display *(*display)(struct config *cfg);
 
-    // machine.restart media transfer (proposal-boot-vs-reset §3.3).
-    // media_detach hands every mounted medium's open image handle (plus its
-    // attachment coordinates) to `out`, removing them from whatever would
-    // close them during teardown, and returns the count; media_attach hands
-    // one such handle back to the freshly built machine (0 = attached, the
-    // callee now owns the handle; <0 = the caller must close it).  Macs bind
-    // the shared cfg->floppy/cfg->scsi implementation in system.c
-    // (system_media_detach_std / system_media_attach_std); the Lisa
-    // implements its own (parallel FDC + ProFile).
-    int (*media_detach)(struct config *cfg, media_slot_t *out, int max);
+    // media_attach hands one opened image handle (plus its attachment
+    // coordinates) to the running machine (0 = attached, the callee now owns
+    // the handle; <0 = the caller must close it).  Macs bind the shared
+    // cfg->floppy/cfg->scsi implementation in system.c
+    // (system_media_attach_std); the Lisa implements its own (parallel FDC +
+    // ProFile).
     int (*media_attach)(struct config *cfg, const media_slot_t *slot);
+    // The runtime half of the same dispatch, for the machine-level attach and
+    // eject verbs (machine.attach_hd / attach_cdrom / eject_media):
+    // media_present says whether a medium is in (bus, unit) now; media_eject
+    // takes it out (0 = ejected, -1 = no such bay or nothing there, -2 = the
+    // guest has locked the door).  Macs bind system_media_present_std /
+    // system_media_eject_std; a second SCSI bus or a ProFile adds its own.
+    bool (*media_present)(struct config *cfg, media_bus_t bus, int unit);
+    int (*media_eject)(struct config *cfg, media_bus_t bus, int unit);
+
+    // How many key-transition bytes this machine's keyboard queue holds
+    // before it starts dropping, which is what keyboard.type costs itself
+    // against: it refuses a line it could not deliver rather than typing half
+    // of it.  0 means the ADB default.  The Lisa's COPS FIFO is 32 bytes
+    // against the ADB ring's 128, so this cannot be one constant -- and it
+    // was one constant, sized for ADB, until keyboard.type could reach a
+    // Lisa at all.
+    int key_queue_bytes;
 } machine_substrate_t;
 
 // Machine descriptor: static metadata for each emulated machine model.  The
 // behavior (lifecycle + host input) lives on the bound machine_substrate_t.
+struct pram_defaults; // rtc.h
+
 typedef struct hw_profile {
     // Identity
     const char *name; // Human-readable, e.g. "Macintosh Plus"
@@ -222,7 +397,7 @@ typedef struct hw_profile {
     int cpu_model; // 68000, 68030
     uint32_t freq; // CPU clock in Hz
     // Typed MMU kind — the single source of truth behind the exported
-    // `mmu.kind` capability (proposal §4.4).  FPU presence is derived from
+    // `mmu.kind` capability.  FPU presence is derived from
     // cpu_model via cpu_has_fpu(); neither is a separate descriptor field.
     mmu_kind_t mmu_kind;
 
@@ -236,21 +411,19 @@ typedef struct hw_profile {
     // Zero-terminated array; the last valid entry is followed by 0.
     const uint32_t *ram_options;
 
-    // Floppy / SCSI slot tables.  Sentinel-terminated.
+    // Floppy positions, sentinel-terminated.
+    //
+    // ALWAYS point this at a table; say "this machine has none" with an EMPTY
+    // one, `{ {0} }`, not with NULL.  An empty table has a declaration to hang
+    // the explanation on -- q840av_floppy_slots carries "New Age reports 'no
+    // drive' (ST3 = $FF) -- no floppy slots offered until a real New Age model
+    // lands", which an absent field could not say.
     const struct floppy_slot *floppy_slots;
-    const struct scsi_slot *scsi_slots;
 
-    // Hard-disk attach interface (see hd_bus_t).  Default HD_BUS_SCSI (0): the
-    // HD row attaches via scsi.attach_hd and takes its label from scsi_slots.
-    // The Lisa/XL set HD_BUS_PROFILE — their parallel ProFile is not on the
-    // SCSI bus (scsi_slots stays empty) and the UI attaches via profile.attach.
-    hd_bus_t hd_bus;
-
-    // CD-ROM availability is a build-time flag, not a model-level UX policy:
-    // every emulated Mac architecturally supports a SCSI CD bay; the flag
-    // gates dialog display while individual models catch up driver-wise.
-    bool has_cdrom;
-    int cdrom_id; // SCSI bus id for the CD bay; conventionally 3.
+    // The CD-ROM drive this machine takes -- every CD-ROM drive its
+    // configuration has, and any CD attach: the identity it answers INQUIRY
+    // with and its block size.  NULL on a machine that takes none (the Lisa).
+    const struct scsi_cd_drive *cdrom_drive;
 
     // On-board video digitizer (the AV family's DMSD/VDC capture path).
     // Drives the exported `video_in` capability, which gates the frontend's
@@ -274,11 +447,22 @@ typedef struct hw_profile {
     // nubus_slot_decl_t (slot id, kind, builtin card / default card).
     // Topology only: which cards FIT a configurable slot is computed from
     // the card registry (nubus_card_fits_socket), not listed here.
-    // Used by machine.profile to enumerate cards per slot and build
+    // Used by catalog.profile to enumerate cards per slot and build
     // the per-card video-mode catalog the configuration dialog needs.
-    // NULL for non-NuBus machines (Plus, …).  The machine's `init`
-    // callback passes this same pointer to nubus_init() so the
-    // runtime view and the profile view are guaranteed identical.
+    // NULL for non-NuBus machines (Plus, …).  Every machine's `init` passes
+    // THIS pointer to nubus_init(), so the runtime view and the profile view
+    // are the same object -- not two initialisers that have to agree.
+    //
+    // They used to be two.  Eleven machines wrote the table into their board
+    // descriptor as well, and this comment claimed the views were "guaranteed
+    // identical" when the guarantee was really a hand-maintained invariant
+    // nothing checked (they did all agree, as it happens).
+    // The two feed different consumers -- the profile drives the config
+    // dialog and the boot document's slot checks, nubus_init builds what the guest
+    // sees -- so a divergence would have offered a card for a socket that
+    // never gets populated.  Reading the profile directly is what makes the
+    // sentence above true rather than aspirational; the same is already so
+    // for pci_slots, which the TNT reads from here.
     const struct nubus_slot_decl *nubus_slots;
 
     // PCI slot declarations — sentinel-terminated array of pci_slot_decl_t
@@ -286,39 +470,138 @@ typedef struct hw_profile {
     // default card).  Topology only: which cards FIT a socket is computed
     // from the card registry (pci_card_fits_socket), not listed here.  The
     // machine's `init` hands this same pointer to pci_init(), so the
-    // machine.profile view and the runtime view are identical by
+    // catalog.profile view and the runtime view are identical by
     // construction.  NULL for non-PCI machines.
     const struct pci_slot_decl *pci_slots;
 
-    // Built-in video that is NOT a NuBus pseudo-card: the display the
-    // machine's own substrate publishes (the PDM family's Ariel scanout).
-    // Non-NULL means the configuration dialog must offer it beside the
-    // NuBus display cards, AND that it can be switched off by leaving its
-    // monitor port unconnected — which is what makes a NuBus card the only
-    // screen.  NULL on machines whose built-in video is a BUILTIN slot
-    // (SE/30, IIci) or which have none at all.
-    const char *builtin_video;
+    // The machine's built-in video as a display device (see
+    // builtin_video_desc_t): what catalog.profile publishes as
+    // displays.builtin.  NULL on a machine that has none (the IIx, IIcx, IIfx
+    // and the 9500 show their screen through a display card).
+    const struct builtin_video_desc *builtin_video;
+
+    // === Configuration space ================================================
+    // What catalog.profile publishes as the machine-description tree beside
+    // the slot tables above, and what a boot document is checked against.
+    //
+    // Family-specific scalar options (power supplies, keyswitch, …), NULL-id
+    // terminated; NULL for none.  Memory (from ram_options) and AppleTalk
+    // (on every machine whose substrate seeds it) are added by the registry.
+    const config_option_decl_t *options;
+    // The storage buses (machine_config_decl.h), NULL-id terminated, and the
+    // devices the default configuration puts on them.  The first hard disk
+    // there is the default startup device.
+    const storage_bus_decl_t *storage;
+    const storage_device_decl_t *default_storage;
+    // The machine seeds AppleTalk's on/off state into its parameter memory
+    // (machine_substrate_t.seed), so it has the "AppleTalk" option.
+    bool appletalk;
 
     // Behavior: the lifecycle + host-input vtable for this machine.  Machines
-    // of the same chipset family SHARE one substrate (glue_substrate /
-    // mdu_substrate; iifx is bespoke).
+    // of the same chipset family SHARE one substrate (glue_substrate for
+    // SE/30-IIcx-IIx, mdu_substrate for IIci-IIsi, and so on).  A family with
+    // one machine still gets its own -- the IIfx and both PowerPC families --
+    // which is a statement about how many machines share the board, not about
+    // how much code the family writes for itself.
+    //
+    // The PRAM the machine powers up with (rtc.h pram_defaults_t; the
+    // tables are machines/runtime/pram_defaults.c).  NULL: all zero -- the
+    // Open Firmware machines, whose NVRAM wants its partition format first,
+    // and the Lisa, which has no such chip.
+    const struct pram_defaults *pram;
+
+    // "Bespoke substrate" is not "bespoke machine": every 68k family, the IIfx
+    // included, builds through mac030_build_core + mac030_build_lowspeed and
+    // tears down through
+    // machine_teardown_config_devices.  What a family keeps for itself is what
+    // its hardware actually does differently -- for the IIfx, the OSS
+    // interrupt controller, the FMC ROM-invert POST window, the SCSI DMA
+    // engine, and a ROM overlay that doubles as a trip-wire.
     const machine_substrate_t *substrate;
 
     // Per-machine board descriptor — chipset-family data the shared substrate
-    // interprets (proposal §4.2.2/§4.4).  Typed by convention: the family
-    // substrate casts it to its concrete type (mac030_glue_board_t for
-    // GLUE/MDU).  NULL for families whose substrate needs no board (Plus,
-    // Lisa, and the bespoke IIfx, which carry their data directly).
+    // interprets.  Typed by convention: the family
+    // substrate casts it to its concrete type.  NULL where a substrate serves
+    // exactly one machine and can therefore reach its data directly (Plus,
+    // IIfx).  The IIfx does define a mac030_board_desc_t of its own -- it
+    // simply has no second machine to vary against, so routing it through here
+    // would add a cast without adding sharing.
+    //
+    // WHAT IT POINTS AT differs by family, because the families differ in
+    // whether their machines vary in behaviour or only in data:
+    //
+    //   * Two-level (GLUE, MDU, MCU, AV) -- a board OBJECT carrying per-machine
+    //     hooks plus a `.desc` pointer to the data.  These families need hooks
+    //     because their members genuinely differ in behaviour: each GLUE board
+    //     wires different signals to VIA2's pins, and the SE/30 has built-in
+    //     video where the IIcx and IIx have NuBus.
+    //   * One-level (PDM, TNT, Lisa) -- the DESCRIPTOR itself, pure data with
+    //     no function pointers.  Their members are the same board with
+    //     different clocks, banks and one or two option bits, so the variation
+    //     fits in a field and is read as a branch (`pdm_board(cfg)->has_fast_scsi`,
+    //     `tnt_board(cfg)->kind == TNT_BOARD_SHINER`) rather than a hook.
+    //
+    // NAMING follows from that, and holds tree-wide:
+    //   <model>_board       -- whatever THIS field points at
+    //   <model>_board_desc  -- a descriptor that is not itself that thing
+    // So a two-level family has both; a one-level family has only <model>_board;
+    // and iifx_board_desc is a descriptor no profile points at.
     const void *board;
 } hw_profile_t;
 
 // Registry: find a machine profile by id (NULL if unknown).
 const hw_profile_t *machine_find(const char *id);
 
+// True if `kb` is one of the RAM sizes the profile offers (ram_options).  The
+// one check a boot document's ram= and a restored checkpoint's size both pass.
+static inline bool hw_profile_ram_option_allowed(const hw_profile_t *p, uint32_t kb) {
+    if (!p->ram_options)
+        return false;
+    for (const uint32_t *r = p->ram_options; *r; r++) {
+        if (*r == kb)
+            return true;
+    }
+    return false;
+}
+
 // Registry: enumerate the built-in profiles.  *out_count receives the count.
 const hw_profile_t *const *machine_list(size_t *out_count);
 
-// === Object-model topology (proposal-system-object-model.md §5.1) ==========
+// The profile's default hard disks, in order, as attach bays: what
+// machine.attach_hd's index and the headless hd= arguments name.  Writes up
+// to `max` into `out` and returns the count.
+int profile_hd_bays(const hw_profile_t *p, media_bay_t *out, int max);
+// The first of those: where "the hard disk" goes.  False with no bay at all.
+bool profile_default_hd_bay(const hw_profile_t *p, media_bay_t *out);
+// The default CD-ROM drive, on a machine that has one; false otherwise.
+bool profile_cdrom_bay(const hw_profile_t *p, media_bay_t *out);
+// How many floppy positions the machine has (its floppy_slots).
+int profile_floppy_count(const hw_profile_t *p);
+// How many floppy drives THIS machine is built with: the configuration's
+// count (positions left empty are not built), else the profile's.
+int machine_floppy_count(const struct config *cfg);
+// Build SCSI bus `bus_id` (the object name, "scsi" / "scsi2") with the
+// configuration's CD-ROM drives on it; a restore brings its drives back from
+// the bus's own block.
+struct scsi *machine_scsi_bus_init(struct config *cfg, checkpoint_t *cp, const char *bus_id);
+
+// === Machine-level attach and eject (system.c) =============================
+// Open `path` as the medium `bay` takes (a hard disk, or with `cdrom` a CD)
+// and attach it through the substrate's media_attach.  Refuses an occupied
+// bay.  0 on success; -1 with the reason in `err`.
+int system_media_attach_path(struct config *cfg, const media_bay_t *bay, bool cdrom, const char *path, char *err,
+                             size_t errlen);
+// Take the medium out of (bus, unit) through the substrate's media_eject:
+// 0 ejected, -1 no such bay or nothing there, -2 the guest has locked it.
+int system_media_eject(struct config *cfg, media_bus_t bus, int unit);
+// The standard media_present / media_eject over cfg->floppy and cfg->scsi,
+// and the per-bus halves a substrate with a second SCSI bus reuses.
+bool system_media_present_std(struct config *cfg, media_bus_t bus, int unit);
+int system_media_eject_std(struct config *cfg, media_bus_t bus, int unit);
+bool system_media_present_scsi_bus(struct scsi *bus, int unit);
+int system_media_eject_scsi_bus(struct scsi *bus, int unit);
+
+// === Object-model topology =================================================
 // The single `machine` container node — all emulated hardware nests under it
 // (machine.cpu, machine.scsi.device[0].image, …).  Defined in
 // machines/machine.c but declared here (the one machine header core may

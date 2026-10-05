@@ -1,5 +1,8 @@
 <script lang="ts">
   import Modal from '../common/Modal.svelte';
+  import Button from '../ui/Button.svelte';
+  import Link from '../ui/Link.svelte';
+  import { urlBoot } from '@/state/urlBoot.svelte';
 
   // Bump the version suffix to re-prompt users after a significant
   // update (e.g. moving from preview to GA).
@@ -9,6 +12,9 @@
   let open = $state(false);
 
   $effect(() => {
+    // A page opened to boot a machine from its URL asks nothing: the
+    // notice waits for a visit to the start screen.
+    if (urlBoot.requested) return;
     try {
       if (localStorage.getItem(DISMISS_KEY) !== '1') open = true;
     } catch {
@@ -34,42 +40,24 @@
   </p>
   <p>
     Looking for a stable version? Older releases are available at
-    <a href={LEGACY_URL} target="_blank" rel="noopener noreferrer">{LEGACY_URL}</a>.
+    <Link external href={LEGACY_URL} class="legacy-link">{LEGACY_URL}</Link>.
   </p>
   {#snippet actions()}
-    <button type="button" class="btn-primary" onclick={onContinue}>Continue</button>
+    <Button size="lg" variant="primary" class="btn-primary" onclick={onContinue}>Continue</Button>
   {/snippet}
 </Modal>
 
 <style>
   p {
-    margin: 0 0 10px;
+    margin: 0 0 var(--gs-space-2-5);
   }
   p:last-of-type {
     margin-bottom: 0;
   }
-  a {
-    color: var(--gs-link, var(--gs-primary-bg));
+  /* A link inside a sentence: inline, underlined, and free to break. */
+  p :global(.gs-link.legacy-link) {
+    display: inline;
     text-decoration: underline;
     word-break: break-all;
-  }
-  button {
-    font-family: inherit;
-    font-size: 13px;
-    padding: 6px 14px;
-    border-radius: 2px;
-    cursor: pointer;
-    height: 30px;
-  }
-  .btn-primary {
-    background: var(--gs-primary-bg);
-    color: var(--gs-primary-fg);
-    border: none;
-  }
-  .btn-primary:hover {
-    background: var(--gs-primary-hover);
-  }
-  .btn-primary:active {
-    background: var(--gs-primary-active);
   }
 </style>

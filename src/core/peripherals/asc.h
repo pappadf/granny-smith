@@ -28,7 +28,7 @@ typedef struct asc asc_t;
 // Board-level fold of the ASC's stereo output to the (mono) internal
 // speaker: IIx/IIcx wire the speaker to the left channel; the SE/30 board
 // sums both channels. (Headphone-jack stereo switching is deliberately not
-// modeled — see proposal-sound-support-all-models §9.)
+// modeled.)
 typedef enum asc_mix {
     ASC_MIX_CH_A = 0, // speaker = left channel (IIx, IIcx)
     ASC_MIX_SUM = 1, // speaker = left + right analog mix, averaged (SE/30)
@@ -41,6 +41,11 @@ asc_t *asc_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpo
 
 // Frees all resources associated with an ASC instance
 void asc_delete(asc_t *asc);
+
+// Power On Clear: the chip state asc_init constructs, keeping the wiring and
+// the board's speaker mix.  A power cycle's half (POC* is the chip's power-on
+// clear input; nothing we hold puts it on the /RESET net).
+void asc_power_on(asc_t *asc);
 
 // Saves ASC state to a checkpoint
 void asc_checkpoint(asc_t *restrict asc, checkpoint_t *checkpoint);

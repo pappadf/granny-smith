@@ -1,47 +1,55 @@
 // Real emulator bus — boots the WASM Module and exposes `gsEval` over the
-// SAB-backed js_bridge_t slot. Port of app/web/js/emulator.js.
+// mailbox in shared memory (src/core/mailbox/mailbox.h; bus/mailbox.ts).
 //
 // THREADING — read before adding any new JS→C call site.
 //
 // With -sPROXY_TO_PTHREAD, main() / shell_init() / scheduler / device state
 // all live on the WORKER thread. Direct Module.ccall from the main thread
 // races that state. Every JS→C call MUST route through the SAB-backed
-// bridge slot (`pending=1`, single in-flight). See docs/web.md.
+// bridge slot (`pending=1`, single in-flight). See docs/guide/web.md.
 
 import {
   machine,
   setSchedulerMode,
   setAcceleratedSpeed,
   setCheckpointSaved,
+  setDriveActivity,
   setPerfStats,
   type MachineStatus,
-  type MmuKind,
   type SchedulerMode,
 } from '@/state/machine.svelte';
 import { onFloppyDriveChange } from '@/state/images.svelte';
-import { onVideoInReady, onVideoInState, reapplyCameraSource } from '@/state/camera.svelte';
-import {
-  onAudioInReady,
-  onAudioInState,
-  onAudioInInjected,
-  reapplyMicrophoneSource,
-} from '@/state/microphone.svelte';
+import { onVideoInReady, onVideoInState } from '@/state/camera.svelte';
+import { onAudioInReady, onAudioInState, onAudioInInjected } from '@/state/microphone.svelte';
 import { showNotification } from '@/state/toasts.svelte';
+import {
+  onVoodooGpuAttach,
+  onVoodooGpuDetach,
+  onVoodooGpuOverlay,
+  whenVoodooGpuReady,
+} from '@/gpu/voodoo2Gpu.svelte';
+import { onPrinterAttach } from '@/printer/platen';
+import { setPrinterStatus } from '@/state/printer.svelte';
+import { onDownloadChunk } from './download';
+// The audio-out worklet, bundled on its own (em_audio.c loads it).
+import gsAudioWorkletUrl from '@/audio/gsAudio.worklet.ts?worker&url';
 import { getOrCreateMachine } from '@/lib/machineId';
-import { routePrintLine, routeLogEmit } from './logSink';
-import { resetDebugSections } from '@/state/debug.svelte';
-import type { MachineConfig } from './types';
+import { routePrintLine, routeErrorLine, routeConsole, routeLogEmit } from './logSink';
+import { utf16ToUtf8, utf8ToUtf16 } from '@/lib/utf8';
+import { bridgeBusy } from '@/state/activity.svelte';
+import {
+  Mailbox,
+  PATH_MAX,
+  ARGS_MAX,
+  EVT_STATE,
+  EVT_NOTIFY,
+  EVT_LOG,
+  type MailboxFailure,
+} from './mailbox';
 
-const BRIDGE_VERSION = 6;
-const OFF_VERSION = 0;
-const OFF_READY = 4;
-const OFF_PENDING = 8;
-const OFF_DONE = 12;
-const OFF_PATH = 20;
-const OFF_ARGS = 1044;
-const OFF_OUTPUT = 9236;
-const PATH_SIZE = 1024;
-const ARGS_SIZE = 8192;
+// The client id this page writes into every request (the daemon and the
+// script runner will have their own).
+const CLIENT_PAGE = 1;
 
 // Minimal Emscripten module surface — enough to type-check what bus uses.
 interface EmscriptenModule {
@@ -67,68 +75,133 @@ interface EmscriptenModule {
       length: number,
       position?: number,
     ): number;
+    read(
+      stream: unknown,
+      buffer: Uint8Array<ArrayBufferLike>,
+      offset: number,
+      length: number,
+      position?: number,
+    ): number;
     close(stream: unknown): void;
   };
-  _get_js_bridge(): number;
-  stringToUTF8(s: string, ptr: number, max: number): void;
+  _get_gs_mailbox(): number;
+  // Returns the bytes written, excluding the terminating NUL.
+  stringToUTF8(s: string, ptr: number, max: number): number;
   UTF8ToString(ptr: number): string;
 }
 
 interface EmscriptenModuleConfig {
   canvas: HTMLCanvasElement;
-  arguments?: string[];
   mainScriptUrlOrBlob?: string;
   locateFile?(path: string): string;
   print?(s: string): void;
   printErr?(s: string): void;
-  onRunStateChange?(running: boolean): void;
-  onScreenResize?(w: number, h: number, parW?: number, parH?: number): void;
-  onLogEmit?(line: string): void;
-  onFloppyChange?(drive: number, present: boolean): void;
-  onSchedulerSpeed?(speedX256: number): void;
-  onPerfUpdate?(mipsX100: number, tpsX10: number): void;
-  onCheckpointSaved?(elapsedMsX100: number): void;
-  onVideoInReady?(ptr: number, w: number, h: number): void;
+  // Called by the glue's abort() (needs "onAbort" in INCOMING_MODULE_JS_API).
+  onAbort?(what: unknown): void;
+  onVideoInReady?(ptr: number): void;
   onVideoInState?(active: boolean): void;
-  onAudioInReady?(ptr: number, len: number, rate: number): void;
+  onAudioInReady?(ptr: number): void;
   onAudioInState?(active: boolean): void;
   onAudioInInjected?(path: string): void;
+  onVoodooGpuAttach?(ctrl: number, bytes: number): void;
+  onVoodooGpuDetach?(ctrl: number): void;
+  onVoodooGpuOverlay?(visible: number): void;
+  onPrinterAttach?(ctrl: number, version: string): void;
+  // The audio-out AudioWorklet module (em_audio.c addModule()s it).
+  gsAudioWorkletUrl?: string;
 }
 
 type CreateModule = (config: EmscriptenModuleConfig) => Promise<EmscriptenModule>;
 
 let Module: EmscriptenModule | null = null;
 let moduleReady = false;
-let bridgePtr = 0;
-let cmdInFlight = false;
-const cmdWaiters: Array<() => void> = [];
+// The mailbox: the control block and two rings in the wasm heap through
+// which every request travels (bus/mailbox.ts).  Bound in bootstrap once
+// the module is up; null before that and after a crash.
+let mailbox: Mailbox | null = null;
 
 // Single-source-of-truth ready signal. Consumers `await whenModuleReady()`
 // rather than polling isModuleReady() — bootstrap() resolves this exactly
 // when moduleReady flips to true (and the machine.register bridge call
-// has completed).
+// has completed), and REJECTS it when the emulator cannot start: a bridge
+// version mismatch, a module that fails to load, or a worker that never
+// comes up.  Before this, a failure left the promise pending forever — URL
+// media never ran, the New Machine dialog stayed on "Scanning ROMs…", and a
+// worker that never started produced no message at all.
+export type BootState =
+  { phase: 'starting' } | { phase: 'ready' } | { phase: 'failed'; reason: string };
+let bootState: BootState = { phase: 'starting' };
 let resolveReady: (() => void) | null = null;
-const readyPromise: Promise<void> = new Promise((res) => {
+let rejectReady: ((e: Error) => void) | null = null;
+const readyPromise: Promise<void> = new Promise((res, rej) => {
   resolveReady = res;
+  rejectReady = rej;
 });
+// A failure may land before anyone awaits: never report it as unhandled.
+readyPromise.catch(() => undefined);
 
 export function whenModuleReady(): Promise<void> {
   return readyPromise;
 }
 
+export function getBootState(): BootState {
+  return bootState;
+}
+
+// Mark the boot failed, once, and say why to every waiter — including
+// automation, which waits on window.__gsReady or __gsBootError.
+function failBoot(reason: string): void {
+  if (bootState.phase !== 'starting') return;
+  bootState = { phase: 'failed', reason };
+  (window as unknown as { __gsBootError?: string }).__gsBootError = reason;
+  rejectReady?.(new Error(reason));
+}
+
+// The worker sets the mailbox's READY word once it can dispatch.  A pthread
+// that never starts (a stale worker script, a crash at load) never sets it,
+// and nothing else would ever notice.  Wait in slices and fail after this
+// much *visible* time: a background tab throttles the worker, so hidden time
+// is not evidence of anything.
+const WORKER_READY_BUDGET_MS = 30_000;
+async function waitForWorkerReady(): Promise<void> {
+  if (!Module || !mailbox) throw new Error('emulator module not loaded');
+  let visibleMs = 0;
+  while (!mailbox.isReady()) {
+    const slice = 1_000;
+    const outcome = await mailbox.waitReady(slice);
+    if (outcome !== 'timed-out') continue;
+    if (document.visibilityState === 'visible') visibleMs += slice;
+    if (visibleMs >= WORKER_READY_BUDGET_MS)
+      throw new Error(
+        `the emulator worker did not start within ${WORKER_READY_BUDGET_MS / 1000} s`,
+      );
+  }
+}
+
 // Run-state mirror so we can ignore redundant transitions.
 let isRunningUI = false;
-let lastScreenW = 0;
-let lastScreenH = 0;
-let lastScreenParW = 0;
-let lastScreenParH = 0;
 
 // --- Bootstrap ----------------------------------------------------------
 
+// How long page startup waits for the WebGPU adapter's answer (typically
+// tens of milliseconds, overlapped with the worker's start-up); an answer
+// that takes longer counts as no adapter.
+const GPU_ANSWER_TIMEOUT_MS = 2000;
+
 // Initialise the WASM module. The canvas is handed to Emscripten; subsequent
 // resize callbacks update machine.screen so ScreenView can reflow.
-export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = []): Promise<void> {
-  if (moduleReady) return;
+export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
+  if (moduleReady || bootState.phase === 'failed') return;
+  try {
+    await bootstrapModule(canvas);
+  } catch (e) {
+    failBoot(e instanceof Error ? e.message : String(e));
+    throw e;
+  }
+}
+
+// bootstrap()'s body: load the module, check the bridge, wait for the worker.
+async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
   const bust = Date.now();
   // Resolve main.mjs / main.wasm against the document base URL, not
   // origin-rooted. Dynamic `import()` resolves relative URLs against
@@ -145,7 +218,6 @@ export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = 
 
   Module = await createModule({
     canvas,
-    arguments: wasmArgs,
     // Pthread workers must load the exact same main.mjs URL as the main
     // thread. Without this, Emscripten spawns them with
     // `new URL('main.mjs', import.meta.url)` — the literal filename, which
@@ -158,35 +230,59 @@ export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = 
     locateFile: (p: string) =>
       p.endsWith('.wasm') ? new URL(`main.wasm?v=${bust}`, document.baseURI).href : p,
     print: routePrintLine,
-    printErr: routePrintLine,
-    onRunStateChange: handleRunStateChange,
-    onScreenResize: handleScreenResize,
-    onLogEmit: routeLogEmit,
-    onFloppyChange: onFloppyDriveChange,
-    onSchedulerSpeed: handleSchedulerSpeed,
-    onPerfUpdate: handlePerfUpdate,
-    onCheckpointSaved: handleCheckpointSaved,
+    printErr: routeErrLine,
+    onAbort: (what: unknown) => markBridgeDead(`Aborted(${String(what ?? '')})`),
     onVideoInReady,
     onVideoInState,
     onAudioInReady,
     onAudioInState,
     onAudioInInjected,
+    onVoodooGpuAttach,
+    onVoodooGpuDetach,
+    onVoodooGpuOverlay,
+    onPrinterAttach,
+    gsAudioWorkletUrl,
   });
 
-  bridgePtr = Module._get_js_bridge();
-  const v = Module.HEAP32[(bridgePtr + OFF_VERSION) >> 2];
-  if (v !== BRIDGE_VERSION) {
-    throw new Error(`js_bridge version mismatch: C=${v}, JS=${BRIDGE_VERSION}`);
-  }
+  // Bind the mailbox (throws on a MAGIC / VERSION mismatch: page and core
+  // out of step).  The control block is laid out by a constructor in the
+  // core, so it is valid before main() runs.
+  // The rings are static and below the boot-time heap size; a transfer
+  // buffer (a download chunk) is anywhere in the heap, so the mailbox reads
+  // those through the memory as it is at that moment.
+  const memMod = Module as unknown as { wasmMemory?: WebAssembly.Memory; HEAPU8: Uint8Array };
+  mailbox = new Mailbox(
+    Module.HEAP32.buffer,
+    Module._get_gs_mailbox(),
+    CLIENT_PAGE,
+    () => memMod.wasmMemory?.buffer ?? memMod.HEAPU8.buffer,
+  );
+  mailbox.setLostHandler((why) => markBridgeDead(why));
+  mailbox.on(dispatchCoreEvent);
+  // Whether the Voodoo2 takeover has a WebGPU device is host state the
+  // core reads when it offers the voodoo2_webgpu card kind and when a card
+  // picks its raster backend, so it is written before the page reports
+  // ready: nothing can boot, or read the card catalog, before it is known.
+  // The GPU worker was started by ScreenView before the module and answers
+  // while the emulator worker starts; its time-out runs from when the
+  // emulator worker is up, so a slow worker start-up is not counted against
+  // the GPU (an answer already in costs nothing).
+  // Nothing is sent until the worker says it can dispatch; a worker that
+  // never comes up fails the boot here instead of parking the first
+  // request forever.
+  await waitForWorkerReady();
+  mailbox.setGpuAvailable(await whenVoodooGpuReady(GPU_ANSWER_TIMEOUT_MS));
   moduleReady = true;
+  startHeartbeatWatch();
 
   // Activate per-machine checkpoint directory before anything that opens
   // images. Matches app/web/js/main.js:81-83.
   const id = getOrCreateMachine();
   await gsEval('machine.register', [id.id, id.created]);
 
-  // Resolve the public ready signal — TerminalPane (and anyone else
+  // Resolve the public ready signal — the console (and anyone else
   // who needs the bridge live) is awaiting this.
+  bootState = { phase: 'ready' };
   resolveReady?.();
 }
 
@@ -196,61 +292,254 @@ export function isModuleReady(): boolean {
 
 // --- gsEval -------------------------------------------------------------
 
+// The result contract:
+//   - a value     — the method or attribute's result;
+//   - null        — ONLY a successful method that returns nothing (V_NONE);
+//   - { error }   — failure.  A C-side V_ERROR carries the core's message;
+//                   a failure of the bridge itself (module not ready, a
+//                   thrown request) also sets `transport: true`.
+// So `r !== null` is never a success test: `{ error }` satisfies it.  Use
+// gsOk() for "did it work", `=== true` for a V_BOOL method, and a shape check
+// for a read.
+export interface GsError {
+  error: string;
+  transport?: true;
+}
+
+// A bridge-level failure, distinct from an error the core returned.
+function transportError(message: string): GsError {
+  return { error: message, transport: true };
+}
+
 export async function gsEval(
   path: string,
   args?: unknown[] | Record<string, unknown>,
 ): Promise<unknown> {
-  if (!Module || !moduleReady) return null;
-  await waitForBridgeReady();
-  // An array is positional; a plain object binds by declared argument name
-  // (proposal-named-args-boot-config §3.4).
+  if (bridgeDead) return transportError(`emulator crashed: ${bridgeDead}`);
+  if (!Module || !moduleReady || !mailbox) return transportError('emulator not ready');
+  // An array is positional; a plain object binds by declared argument name.
   const argsJson = args === undefined || args === null ? '' : JSON.stringify(args);
-  try {
-    return await executeGsRequest(path || '', argsJson);
-  } catch {
-    return null;
-  }
+  // Refuse before touching the ring: a too-large request is the caller's
+  // error, not the mailbox's, so it carries no `transport` flag.
+  const tooLarge = requestTooLarge(path || '', argsJson);
+  if (tooLarge) return { error: tooLarge };
+  return executeMailboxRequest(path || '', argsJson);
 }
 
-// Human-readable reason from a gsEval result. The bridge encodes a C-side
-// V_ERROR as {"error": "..."}; null means the worker/module wasn't available;
-// anything else stringifies. Single home for the error-shape knowledge so
-// callers don't each re-implement the check.
+// gsEval for an I/O job (meta.method_info `io`: a copy, an export, an
+// extraction, a download): `onProgress` gets `done` of `total` as the core
+// reports it, and the answer comes when the work ends.
+export async function gsEvalWithProgress(
+  path: string,
+  args: unknown[] | Record<string, unknown> | undefined,
+  onProgress: (done: number, total: number) => void,
+): Promise<unknown> {
+  if (bridgeDead) return transportError(`emulator crashed: ${bridgeDead}`);
+  if (!Module || !moduleReady || !mailbox) return transportError('emulator not ready');
+  const argsJson = args === undefined || args === null ? '' : JSON.stringify(args);
+  const tooLarge = requestTooLarge(path || '', argsJson);
+  if (tooLarge) return { error: tooLarge };
+  return executeMailboxRequest(path || '', argsJson, onProgress);
+}
+
+// A view of `len` bytes of the core's heap at `ptr`, fresh (a transfer
+// buffer named by an event), and the acknowledgement that hands it back.
+export function heapBytes(ptr: number, len: number): Uint8Array | null {
+  return mailbox ? mailbox.heapBytes(ptr, len) : null;
+}
+export async function ackTransferBuffer(handle: number): Promise<boolean> {
+  return mailbox ? mailbox.ackBuf(handle) : false;
+}
+
+// Refuse a request beyond the core's limits (mailbox.h): the core would
+// answer it with an error anyway, and refusing here keeps the ring for
+// requests that can be served.  Sizes are UTF-8 bytes, not characters.
+// Returns the reason, or null when it fits.
+const utf8 = new TextEncoder();
+export function requestTooLarge(path: string, argsJson: string): string | null {
+  const pathBytes = utf8.encode(path).length;
+  if (pathBytes > PATH_MAX) return `request path too large (${pathBytes} bytes > ${PATH_MAX})`;
+  const argsBytes = utf8.encode(argsJson).length;
+  if (argsBytes > ARGS_MAX) return `request arguments too large (${argsBytes} bytes > ${ARGS_MAX})`;
+  return null;
+}
+
+// --- Slow is not dead --------------------------------------
+//
+// Every request carries an id, so any number can be in flight and a slow
+// one is nobody else's problem: a request that runs long raises a
+// status-bar notice; an ordinary request past its deadline fails for its
+// caller alone (the late answer, if it ever comes, is dropped by id); and
+// a *dead* worker -- a wasm trap or abort, or a heartbeat that stops while
+// requests are pending -- fails every request at once.
+
+// Paths that are legitimately long: the notice waits longer for them.
+const LONG_REQUEST =
+  /^(checkpoint\.|machine\.(boot|restart|scsi\.device\[\d+\]\.image\.export|hd\.save)|files\.(cp|mv|import|export_raw|hd_create|xfer_|udif_|convert|verify|archive\.|download$|ls|list|mkdir|cat))/;
+const BUSY_AFTER_MS = 5_000;
+const BUSY_AFTER_LONG_MS = 30_000;
+// An ordinary request still in flight after this long is not slow, it is
+// stuck (a script loop that can never finish, until Phase 2 makes scripts
+// cancellable): its caller gets a transport error and its id is forgotten.
+// Known-long requests have no deadline.
+export const DEADLINE_MS = 120_000;
+
+// Count visible time a request has been in flight; raise the notice past its
+// threshold.  Background tabs throttle the worker, so hidden time is not
+// counted.  Returns a stop function.
+export function watchRequest(path: string): () => void {
+  const limit = LONG_REQUEST.test(path) ? BUSY_AFTER_LONG_MS : BUSY_AFTER_MS;
+  let visibleMs = 0;
+  const tick = 1_000;
+  const timer = setInterval(() => {
+    if (document.visibilityState !== 'visible') return;
+    visibleMs += tick;
+    if (visibleMs >= limit) {
+      bridgeBusy.path = path;
+      bridgeBusy.seconds = Math.round(visibleMs / 1000);
+    }
+  }, tick);
+  return () => {
+    clearInterval(timer);
+    if (bridgeBusy.path === path) bridgeBusy.path = null;
+  };
+}
+
+// The heartbeat: the core bumps a control word once per tick and once per
+// idle-wait slice.  A page with requests pending that sees it stand still
+// for this many visible seconds has a wedged worker -- a runaway script,
+// a leaf that never returns -- and marks it dead, which fails every
+// request at once (bridgeCrash.test.ts covers the crash half, this covers
+// the silent one).  Hidden tabs are excluded: the RAF loop legitimately
+// stops there.  `sample` is injected so the watch is unit-testable.
+export const STALL_AFTER_S = 3;
+export function watchHeartbeat(
+  sample: () => { heartbeat: number; inFlight: number },
+  onStall: (reason: string) => void,
+): () => void {
+  let last = -1;
+  let still = 0;
+  const timer = setInterval(() => {
+    if (document.visibilityState !== 'visible') return;
+    const s = sample();
+    if (s.inFlight === 0 || s.heartbeat !== last) {
+      last = s.heartbeat;
+      still = 0;
+      return;
+    }
+    still++;
+    if (still >= STALL_AFTER_S) {
+      onStall(`emulator not responding: no heartbeat for ${STALL_AFTER_S} s with requests pending`);
+      clearInterval(timer);
+    }
+  }, 1_000);
+  return () => clearInterval(timer);
+}
+
+function startHeartbeatWatch(): void {
+  watchHeartbeat(
+    () => ({ heartbeat: mailbox?.heartbeat() ?? -1, inFlight: mailbox?.inFlight() ?? 0 }),
+    (reason) => markBridgeDead(reason),
+  );
+}
+
+// A dead worker: a wasm trap (the glue's worker.onerror prints "worker sent
+// an error!") or an explicit abort (Module.onAbort).  Once dead, every
+// in-flight and queued request fails at once instead of waiting forever,
+// and the page is told so it can say why (onEmulatorCrash).
+let bridgeDead: string | null = null;
+const crashListeners: Array<(reason: string) => void> = [];
+
+export function onEmulatorCrash(cb: (reason: string) => void): void {
+  crashListeners.push(cb);
+}
+
+export function markBridgeDead(reason: string): void {
+  if (bridgeDead) return;
+  bridgeDead = reason;
+  machine.status = 'crashed';
+  // Fails every pending and future request; the lost handler is this
+  // function, and the guard above makes the re-entry a no-op.
+  mailbox?.markLost('lost', reason);
+  for (const cb of crashListeners) cb(reason);
+}
+
+// printErr hook: recognise the glue's crash lines, then route as usual.
+const WORKER_CRASH = /worker sent an error!|^Aborted\(/;
+export function isWorkerCrashLine(line: string): boolean {
+  return WORKER_CRASH.test(line);
+}
+function routeErrLine(line: string): void {
+  if (isWorkerCrashLine(line)) markBridgeDead(line);
+  routeErrorLine(line);
+}
+
+// True for any failure shape — the core's V_ERROR or a transport failure.
+export function isGsError(res: unknown): res is GsError {
+  return !!res && typeof res === 'object' && 'error' in res;
+}
+
+// "Did the call work?": not an error, and not a V_BOOL method's `false`.
+// A V_NONE success (null) counts as success.
+export function gsOk(res: unknown): boolean {
+  return !isGsError(res) && res !== false;
+}
+
+// Human-readable reason from a failed gsEval result. Single home for the
+// error-shape knowledge so callers don't each re-implement the check.
 export function gsErrorText(res: unknown): string {
-  if (res === null) return 'emulator not ready';
-  if (res && typeof res === 'object' && 'error' in res) {
-    return String((res as { error: unknown }).error);
-  }
+  if (isGsError(res)) return String(res.error);
+  if (res === false) return 'the operation reported failure';
+  if (res === null) return 'no result';
   return String(res);
 }
 
 // --- Shell line surface (Terminal pane only) ----------------------------
 //
-// The Terminal view is the single caller of `shell.run` — every other
-// component reaches the core through typed object-model paths via
-// gsEval. The proposal-shell-as-object-model-citizen.md §5.3 ESLint
-// rule pins this; only TerminalPane.svelte may construct shell-line
-// strings.
+// Only the console (state/console.svelte.ts) runs free-form shell lines,
+// through gsEvalLine below; every other component reaches the core through
+// typed object-model paths via gsEval (an ESLint rule in eslint.config.js
+// keeps bus/* off `shell.run`).
 
+// The prompt, from the last line's result (seeded by seedPrompt).
 let cachedPrompt: string | null = null;
 
-// Execute a free-form shell line. Returns 0 on success, -1 on dispatch
-// failure. The new prompt is returned from `shell.run` as a V_STRING and
-// cached for getRuntimePrompt(). This is the *only* call to `shell.run`
-// allowed in src/bus/** — the no-restricted-syntax rule pins that, and
-// the disable below is the single sanctioned exception (forwarded from
-// TerminalPane.svelte, the only legitimate caller).
-export async function gsEvalLine(line: string): Promise<number> {
-  if (!moduleReady) return -1;
+// The terminal is its own client: a run it starts (`scheduler.run`) is
+// its mode, and its Ctrl-C stops that and nothing else.
+export const CLIENT_TERMINAL = 2;
+
+// The terminal's foreground job: the script of the line it last
+// submitted, until its result arrives.  Ctrl-C cancels it.
+let foregroundJob: number | null = null;
+
+// Runs a terminal line as a script job (REQ_SCRIPT): the answer is the
+// shell's new prompt when the job ends -- after every `scheduler.run` in
+// it has run to its stop -- or an error, which the interpreter has already
+// printed into the job's output.  Resolves when the job is over.
+export async function gsEvalLine(line: string): Promise<void> {
+  if (!moduleReady || !mailbox) return;
   const text = (line ?? '').toString();
-  if (!text.trim()) return 0;
-  // eslint-disable-next-line no-restricted-syntax
-  const r = await gsEval('shell.run', [text]);
-  if (typeof r === 'string') {
-    cachedPrompt = r.length ? r : null;
-    return 0;
+  if (!text.trim()) return;
+  const stopWatch = watchRequest('terminal line');
+  try {
+    const r = await mailbox.script(text, CLIENT_TERMINAL, (id) => {
+      foregroundJob = id;
+      routeConsole({ kind: 'job_start', job: id });
+    });
+    // The job's output records precede its result on the ring, so what it
+    // printed is in by now: the console ends the job (a last line without a
+    // newline, a value whose marker never came).
+    if (foregroundJob !== null) routeConsole({ kind: 'job_end', job: foregroundJob });
+    if (r.ok) {
+      const prompt: unknown = JSON.parse(r.json);
+      if (typeof prompt === 'string') cachedPrompt = prompt.length ? prompt : null;
+    }
+  } catch {
+    // The request itself failed: the console shows nothing for it.
+  } finally {
+    foregroundJob = null;
+    stopWatch();
   }
-  return -1;
 }
 
 export function getRuntimePrompt(): string | null {
@@ -258,87 +547,257 @@ export function getRuntimePrompt(): string | null {
 }
 
 // Seed the cached prompt from the C-side `shell.prompt` attribute.
-// Called once by TerminalPane on mount so the first prompt is visible
+// Called by the console on mount so the first prompt is visible
 // before any user input. After this, gsEvalLine keeps cachedPrompt in
-// sync via the return value of `shell.run`.
+// sync from each line's result.
 export async function seedPrompt(): Promise<void> {
   if (!moduleReady) return;
   const r = await gsEval('shell.prompt');
   if (typeof r === 'string' && r.length) cachedPrompt = r;
 }
 
-export async function shellInterrupt(): Promise<void> {
-  if (!moduleReady) return;
-  await gsEval('shell.interrupt');
+// Ctrl-C, exactly: cancel the terminal's foreground job if it has one;
+// else stop a run the terminal itself started; else nothing (the machine
+// running because the toolbar or a resume started it is not the
+// terminal's to stop).  Returns what it did.
+export async function shellInterrupt(): Promise<'cancelled' | 'stopped' | 'nothing'> {
+  if (!moduleReady || !mailbox) return 'nothing';
+  if (foregroundJob !== null) {
+    const id = foregroundJob;
+    await mailbox.cancel(CLIENT_TERMINAL, id);
+    return 'cancelled';
+  }
+  return (await mailbox.modeStop(CLIENT_TERMINAL, CLIENT_TERMINAL)) ? 'stopped' : 'nothing';
+}
+
+// One completion candidate, as `shell.complete(…, true)` reports it.
+export interface CompletionCandidate {
+  text: string;
+  kind: string; // object, collection, attr, method, alias, keyword, value, …
+  doc: string;
 }
 
 export interface CompletionResult {
-  candidates: string[];
+  candidates: CompletionCandidate[];
+  // UTF-16 offsets into the line (the core's are UTF-8 bytes).
   span: { start: number; end: number };
+  // Set when the cursor is in an argument of a resolved method.
+  context: { method: string | null; argIndex: number | null; argName: string | null };
 }
 
+// Tab completion with detail.  `cursor` is a UTF-16 offset.
 export async function tabComplete(line: string, cursor: number): Promise<CompletionResult | null> {
   if (!moduleReady) return null;
-  const r = await gsEval('shell.complete', [line, cursor]);
-  if (r && typeof r === 'object') {
-    const obj = r as { candidates?: unknown; span?: unknown };
-    if (Array.isArray(obj.candidates) && obj.span && typeof obj.span === 'object') {
-      const span = obj.span as { start?: unknown; end?: unknown };
-      if (typeof span.start === 'number' && typeof span.end === 'number') {
-        return {
-          candidates: obj.candidates.filter((s): s is string => typeof s === 'string'),
-          span: { start: span.start, end: span.end },
-        };
-      }
+  const r = await gsEval('shell.complete', [line, utf16ToUtf8(line, cursor), true]);
+  if (!r || typeof r !== 'object') return null;
+  const obj = r as { candidates?: unknown; span?: unknown; context?: unknown };
+  if (!Array.isArray(obj.candidates) || !obj.span || typeof obj.span !== 'object') return null;
+  const span = obj.span as { start?: unknown; end?: unknown };
+  if (typeof span.start !== 'number' || typeof span.end !== 'number') return null;
+  const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+  const candidates: CompletionCandidate[] = [];
+  for (const c of obj.candidates) {
+    if (typeof c === 'string') candidates.push({ text: c, kind: '', doc: '' });
+    else if (c && typeof c === 'object' && typeof (c as { text?: unknown }).text === 'string') {
+      const o = c as Record<string, unknown>;
+      candidates.push({
+        text: o.text as string,
+        kind: str(o.kind) ?? '',
+        doc: str(o.doc) ?? '',
+      });
     }
   }
-  return null;
+  const ctx = (obj.context && typeof obj.context === 'object' ? obj.context : {}) as Record<
+    string,
+    unknown
+  >;
+  return {
+    candidates,
+    span: { start: utf8ToUtf16(line, span.start), end: utf8ToUtf16(line, span.end) },
+    context: {
+      method: str(ctx.method),
+      argIndex: typeof ctx.arg_index === 'number' ? ctx.arg_index : null,
+      argName: str(ctx.arg_name),
+    },
+  };
 }
 
-async function waitForBridgeReady(): Promise<void> {
-  if (!bridgePtr || !Module) return;
-  const idx = (bridgePtr + OFF_READY) >> 2;
-  const w = Atomics.waitAsync(Module.HEAP32, idx, 0);
-  if (w.async) await w.value;
+// Whether Enter should continue the input on a new line (an open block,
+// bracket or string) rather than submit it.
+export async function needsContinuation(text: string): Promise<boolean> {
+  if (!moduleReady) return false;
+  return (await gsEval('shell.needs_continuation', [text])) === true;
 }
 
-async function waitForBridgeDone(): Promise<void> {
-  if (!Module) return;
-  const doneIdx = (bridgePtr + OFF_DONE) >> 2;
-  const w = Atomics.waitAsync(Module.HEAP32, doneIdx, 0);
-  if (w.async) await w.value;
-  Atomics.store(Module.HEAP32, doneIdx, 0);
-}
-
-function readBridgeOutput(): unknown {
-  if (!Module || !bridgePtr) return null;
-  const s = Module.UTF8ToString(bridgePtr + OFF_OUTPUT);
-  if (!s) return null;
+// One request through the mailbox: post, await the answer by id, decode.
+// A failure of the mailbox itself (deadline, crash) is a transport error;
+// the core's own {error} documents pass through as they are.
+async function executeMailboxRequest(
+  path: string,
+  argsJson: string,
+  onProgress?: (done: number, total: number) => void,
+): Promise<unknown> {
+  if (!mailbox) return transportError('emulator not ready');
+  const stopWatch = watchRequest(path);
   try {
-    return JSON.parse(s);
-  } catch {
-    return s;
-  }
-}
-
-async function executeGsRequest(path: string, argsJson: string): Promise<unknown> {
-  while (cmdInFlight) {
-    await new Promise<void>((r) => cmdWaiters.push(r));
-  }
-  cmdInFlight = true;
-  try {
-    if (!Module) return null;
-    Module.stringToUTF8(path, bridgePtr + OFF_PATH, PATH_SIZE);
-    Module.stringToUTF8(argsJson, bridgePtr + OFF_ARGS, ARGS_SIZE);
-    Atomics.store(Module.HEAP32, (bridgePtr + OFF_DONE) >> 2, 0);
-    Atomics.store(Module.HEAP32, (bridgePtr + OFF_PENDING) >> 2, 1);
-    await waitForBridgeDone();
-    return readBridgeOutput();
+    const deadline = LONG_REQUEST.test(path) ? 0 : DEADLINE_MS;
+    const r = await mailbox.request(path, argsJson, deadline, { onProgress });
+    // What the leaf printed goes to the terminal, as it did when stdout
+    // reached it directly.
+    if (r.output) routeConsole({ kind: 'output', text: r.output, job: null });
+    if (!r.json) return null;
+    try {
+      return JSON.parse(r.json);
+    } catch {
+      return r.json;
+    }
+  } catch (e) {
+    const why = e as MailboxFailure | Error;
+    if (why === 'deadline')
+      return transportError(`'${path}' did not complete within ${DEADLINE_MS / 1000} s`);
+    if (why === 'lost' || why === 'detached')
+      return transportError(`emulator crashed: ${bridgeDead ?? 'mailbox lost'}`);
+    return transportError(
+      `mailbox request failed: ${why instanceof Error ? why.message : String(why)}`,
+    );
   } finally {
-    cmdInFlight = false;
-    const next = cmdWaiters.shift();
-    if (next) next();
+    stopWatch();
   }
+}
+
+// --- Events from the core ------------------------------------------------
+
+// What the core emits on its own (src/core/event/gs_event.h), decoded off
+// the mailbox's event ring: `kind` is the ring's family, `data` the JSON
+// object the emitter wrote, whose `event` names it.  Today: 'state' with
+// `mode_started {mode, owner, budget}` and `mode_ended {mode, owner,
+// reason, pc, instr_count}` from the scheduler.
+export type CoreEventKind = 'state' | 'notify' | 'log';
+export interface CoreEvent {
+  kind: CoreEventKind;
+  event: string;
+  data: Record<string, unknown>;
+}
+
+const coreEventListeners = new Set<(ev: CoreEvent) => void>();
+
+// Subscribes to core events; returns the unsubscribe.
+export function onCoreEvent(cb: (ev: CoreEvent) => void): () => void {
+  coreEventListeners.add(cb);
+  return () => {
+    coreEventListeners.delete(cb);
+  };
+}
+
+const CORE_EVENT_KINDS: Record<number, CoreEventKind> = {
+  [EVT_STATE]: 'state',
+  [EVT_NOTIFY]: 'notify',
+  [EVT_LOG]: 'log',
+};
+
+// The last few events, for automation and the browser console
+// (window.__gsCoreEvents): the e2e tests assert on them.
+const CORE_EVENT_TRACE_MAX = 64;
+const coreEventTrace: CoreEvent[] = [];
+
+export function dispatchCoreEvent(kindWord: number, json: string): void {
+  const kind = CORE_EVENT_KINDS[kindWord];
+  if (!kind) return;
+  let data: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (!parsed || typeof parsed !== 'object') return;
+    data = parsed as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  const ev: CoreEvent = { kind, event: typeof data.event === 'string' ? data.event : '', data };
+  if (coreEventTrace.push(ev) > CORE_EVENT_TRACE_MAX) coreEventTrace.shift();
+  if (typeof window !== 'undefined')
+    (window as unknown as { __gsCoreEvents?: CoreEvent[] }).__gsCoreEvents = coreEventTrace;
+  routeCoreEvent(ev);
+  for (const cb of coreEventListeners) cb(ev);
+}
+
+const num = (v: unknown): number => (typeof v === 'number' ? v : 0);
+
+// What the page does with each event the core emits (docs/guide/web.md,
+// "Events from the core").
+function routeCoreEvent(ev: CoreEvent): void {
+  const d = ev.data;
+  const job = jobOf(d);
+  switch (`${ev.kind}:${ev.event}`) {
+    case 'state:mode_started':
+      handleRunStateChange(true);
+      break;
+    case 'state:mode_ended':
+      handleRunStateChange(false);
+      break;
+    case 'state:speed':
+      setAcceleratedSpeed(num(d.x256) / 256);
+      break;
+    case 'state:screen':
+      handleScreenResize(num(d.width), num(d.height), num(d.par_w), num(d.par_h));
+      break;
+    case 'state:perf':
+      setPerfStats(num(d.mips), num(d.tps), {
+        tickMaxMs: num(d.tick_max_ms),
+        tickP50Ms: num(d.tick_p50_ms),
+        pollMaxMs: num(d.poll_max_ms),
+      });
+      break;
+    case 'notify:floppy':
+      onFloppyDriveChange(num(d.drive), d.present === true);
+      break;
+    case 'notify:drive_activity':
+      setDriveActivity(num(d.kind), num(d.state));
+      break;
+    case 'notify:checkpoint_saved':
+      setCheckpointSaved(num(d.elapsed_ms));
+      break;
+    case 'notify:printer_status':
+      if (typeof d.status === 'string')
+        setPrinterStatus(
+          d.status,
+          typeof d.printer === 'string' && d.printer ? d.printer : 'LaserWriter',
+        );
+      break;
+    case 'log:log':
+      if (typeof d.line === 'string') routeLogEmit(d.line);
+      break;
+    case 'log:output':
+      // A job's printed text, in order: the console shows it.
+      if (typeof d.text === 'string') routeConsole({ kind: 'output', text: d.text, job });
+      break;
+    case 'notify:download_chunk':
+      onDownloadChunk(d);
+      break;
+    // Annotation records in a job's stream, at the positions they describe:
+    // the console turns the text around them into value / error entries.
+    case 'log:value_begin':
+      if (job !== null) routeConsole({ kind: 'value_begin', job });
+      break;
+    case 'log:value':
+      if (job !== null)
+        routeConsole({ kind: 'value', job, json: d.truncated ? undefined : d.json });
+      break;
+    case 'log:error':
+      if (job !== null && Array.isArray(d.lines))
+        routeConsole({
+          kind: 'error',
+          job,
+          lines: (d.lines as unknown[]).map((l) => String(l)),
+          truncated: d.truncated === true,
+        });
+      break;
+    default:
+      break;
+  }
+}
+
+// The job id of a job-stream record, when it carries one.
+function jobOf(d: Record<string, unknown>): number | null {
+  return typeof d.id === 'number' ? d.id : null;
 }
 
 // --- C→JS push callbacks -----------------------------------------------
@@ -353,48 +812,23 @@ function handleRunStateChange(running: boolean): void {
   else if (machine.status === 'running') machine.status = 'paused';
 }
 
-// Core-pushed accelerated-mode effective CPU speed (x256; 256 = 1x). Edge-
-// driven on the governor's rung transitions — the status bar shows it in
-// Accelerated mode. Divide by 256 for the multiplier.
-function handleSchedulerSpeed(speedX256: number): void {
-  setAcceleratedSpeed((speedX256 | 0) / 256);
+// After a restore: the restored machine is live, running or paused as it was
+// saved, and a restore sends no mode edge to mirror.  boot.ts reads the
+// core's run state and sets it here and in machine.status together
+// (handleRunStateChange alone would leave 'no-machine' in place).
+export function setRunStateMirror(running: boolean): void {
+  isRunningUI = running;
 }
 
-// Core-pushed performance metrics, ~1 Hz (perf proposal P12): emulated MIPS
-// from instr_count deltas and the RAF tick rate. Fixed-point on the wire
-// (x100 / x10) since MAIN_THREAD_ASYNC_EM_ASM carries ints.
-function handlePerfUpdate(mipsX100: number, tpsX10: number): void {
-  setPerfStats((mipsX100 | 0) / 100, (tpsX10 | 0) / 10);
-}
-
-// Core-pushed quick/background checkpoint completion (elapsed ms x100 —
-// MAIN_THREAD_ASYNC_EM_ASM carries ints). The status bar flashes its CP
-// glyph and carries the time + duration in the tooltip.
-function handleCheckpointSaved(elapsedMsX100: number): void {
-  setCheckpointSaved((elapsedMsX100 | 0) / 100);
-}
-
-function handleScreenResize(w: number, h: number, parW?: number, parH?: number): void {
-  const width = w | 0;
-  const height = h | 0;
-  // Pixel aspect ratio (display pixel width:height). 0/undefined => square 1:1.
-  const pw = (parW ?? 0) | 0 || 1;
-  const ph = (parH ?? 0) | 0 || 1;
-  if (
-    width === lastScreenW &&
-    height === lastScreenH &&
-    pw === lastScreenParW &&
-    ph === lastScreenParH
-  )
-    return;
-  lastScreenW = width;
-  lastScreenH = height;
-  lastScreenParW = pw;
-  lastScreenParH = ph;
-  machine.screen.width = width;
-  machine.screen.height = height;
-  machine.screen.parW = pw;
-  machine.screen.parH = ph;
+// The display's geometry, from the core's `screen` event: sent when the shape
+// changes and once when a machine is attached, so the page's copy is the only
+// one and is never seeded by a read.
+function handleScreenResize(w: number, h: number, parW: number, parH: number): void {
+  machine.screen.width = w | 0;
+  machine.screen.height = h | 0;
+  // Pixel aspect ratio (display pixel width:height). 0 => square 1:1.
+  machine.screen.parW = parW | 0 || 1;
+  machine.screen.parH = parH | 0 || 1;
 }
 
 // --- Module access for upload pipeline (FS writes to /tmp) -------------
@@ -413,199 +847,6 @@ export function getModuleHeap(): { u8: Uint8Array; i16: Int16Array; i32: Int32Ar
 
 // --- Lifecycle wrappers --------------------------------------------------
 
-// Remember the most recent boot config so `restart()` can re-apply it
-// without a C-side reset method. Cleared on shutdown so a stale config
-// from a previous machine doesn't restart unexpectedly.
-let lastBootConfig: MachineConfig | null = null;
-
-export function getLastBootConfig(): MachineConfig | null {
-  return lastBootConfig;
-}
-
-// The SCSI id a hard disk attached outside the dialog should take: the
-// running model's slot flagged `boot` (the Network Server's bay 2, where its
-// firmware looks for `disk2:aix`), else its first slot, else 0.
-export async function defaultHdId(): Promise<number> {
-  try {
-    const model = await gsEval('machine.id');
-    if (typeof model !== 'string' || !model) return 0;
-    const r = await gsEval('machine.profile', [model]);
-    if (!r || typeof r !== 'object' || 'error' in r) return 0;
-    const slots = (r as { scsi_slots?: Array<{ id?: number; boot?: boolean }> }).scsi_slots ?? [];
-    const pick = slots.find((s) => s.boot) ?? slots[0];
-    return typeof pick?.id === 'number' ? pick.id : 0;
-  } catch {
-    return 0;
-  }
-}
-
-// Read a model's capability probe from `machine.profile().capabilities` and
-// apply it to the shared machine state. Replaces the old display-name regex
-// that silently misclassified any MMU machine whose name didn't match the
-// hardcoded pattern. `mmuEnabled` stays the boolean the debug panels gate on,
-// but it is now derived from the typed kind (only a 68030 PMMU enables the
-// register views; the Lisa segment MMU and "none" leave them off); `mmuKind`
-// carries the full typed kind for display, and `fpu` gates the FPU panel.
-export async function applyCapabilities(model: string): Promise<void> {
-  let kind: MmuKind = 'none';
-  let fpu = false;
-  let videoIn = false;
-  let audioIn = false;
-  try {
-    // machine.profile returns a native nested object (V_MAP through the
-    // gsEval bridge) — no inner JSON.parse.
-    const r = await gsEval('machine.profile', [model]);
-    if (r && typeof r === 'object' && !('error' in r)) {
-      const parsed = r as {
-        capabilities?: {
-          mmu?: { kind?: string };
-          cpu?: { fpu?: boolean };
-          video_in?: boolean;
-          audio_in?: boolean;
-        };
-      };
-      const k = parsed.capabilities?.mmu?.kind;
-      if (k === '68030_pmmu' || k === 'lisa_segment') kind = k;
-      fpu = parsed.capabilities?.cpu?.fpu === true;
-      videoIn = parsed.capabilities?.video_in === true;
-      audioIn = parsed.capabilities?.audio_in === true;
-    }
-  } catch {
-    /* leave kind = 'none', fpu = false, videoIn/audioIn = false */
-  }
-  machine.mmuKind = kind;
-  machine.mmuEnabled = kind === '68030_pmmu';
-  machine.fpu = fpu;
-  machine.videoIn = videoIn;
-  machine.audioIn = audioIn;
-}
-
-// === PRAM seeding ============================================================
-// Never boot with blank PRAM.  A real Mac's PRAM is battery-backed; ours
-// starts empty on every machine.boot, so the guest takes its
-// PRAM-is-invalid paths every session.  On the PDM machines that means
-// the Start Manager's full startup-drive discovery wait, and under
-// Mac OS 8.1 additionally a one-time "select the DR 68k emulator and
-// restart" (MMFlags bit 5) — the reported double boot with two chimes on
-// every session.  Seeding a deterministic, valid PRAM at boot removes
-// both, with no persistent state to go stale (integration tests seed the
-// same way; see docs/core/memory/pram.md).
-//
-// Verified on the pm6100 against both System 7.5 (boots straight to the
-// Finder, no discovery wait) and Mac OS 8.1 (single chime, no restart).
-// Other families keep their ROM's own PRAM init until they get the same
-// verification — their ROMs initialize PRAM without restarting.
-const PRAM_SEEDED_MODELS = new Set(['pm6100', 'pm7100', 'pm8100']);
-
-export async function seedPram(model: string, scsiId = 0): Promise<void> {
-  if (!PRAM_SEEDED_MODELS.has(model)) return;
-  // Stamp the two boot-ROM validity tokens ($A8 + 'NuMc') so the ROM's
-  // PRAMInit leaves the seeded bytes alone (pram.md §3).
-  await gsEval('machine.rtc.pram.validate');
-  // XPRAM $01 is the Start Manager wait byte (StartSearch.a): bits 0-4 =
-  // spin-up timeout seconds (0 = pristine -> 20 s default), bit 7 =
-  // disable the dynamic wait.  On single-Curio machines the startup-device
-  // poll can never succeed (a ROM HAL bug — scsi-53c96.md §8.2), so the
-  // wait always runs to full expiry before the drive-queue fallback boots;
-  // our disk is ready instantly, so skip the wait outright.
-  await gsEvalLine('machine.rtc.pram.poke 0x01 0x80:1');
-  // Start Manager defaults (pram.md §4.2): default OS, and the boot
-  // device as the SCSI driver refnum (-(33+id)) of the configured disk so
-  // the Start Manager goes straight to it.
-  const refnum = (0xffdf - (scsiId & 7)).toString(16).toUpperCase().padStart(4, '0');
-  await gsEvalLine('machine.rtc.pram.poke 0x77 0x01:1');
-  await gsEvalLine(`machine.rtc.pram.poke 0x78 0xFFFF${refnum}:4`);
-  // MMFlags: the PDM ROM's own default ($05) plus bit 5, which Mac OS 8.1
-  // reads as "the DR emulator is already selected" — without it 8.1 sets
-  // the bit and soft-restarts on every boot.  System 7.5 ignores it.
-  await gsEvalLine('machine.rtc.pram.poke 0x8A 0x25:1');
-}
-
-// Boot a machine from a config. Construction-time settings travel as ONE
-// machine.boot configuration document (named JSON-object args, proposal
-// proposal-named-args-boot-config §4) — the core validates everything
-// before tearing the old machine down, stages the vROM pick, seeds the
-// video card/sense/mode, and installs the ROM itself. Only runtime media
-// (floppies/HD/CD) remain imperative calls after the boot.
-export async function initEmulator(config: MachineConfig): Promise<void> {
-  const doc: Record<string, unknown> = {};
-  if (config.model) doc.model = config.model;
-  // Map the human-readable RAM string ('4 MB') to KB the boot path wants.
-  const ramKB = ramStringToKb(config.ram);
-  if (ramKB) doc.ram = ramKB;
-  // rom is required by machine.boot (the document inherits nothing); a
-  // missing one is rejected by the core with a clear error. For vrom,
-  // '(auto)' means "let the offer registry resolve" — omit the field.
-  if (config.rom && config.rom !== '(auto)') doc.rom = config.rom;
-  if (config.vrom && config.vrom !== '(auto)') doc.vrom = config.vrom;
-  if (config.videoCard) doc.video_card = config.videoCard;
-  // A PCI card is staged by id; '(auto)' for its expansion ROM means the
-  // same thing it does for a vROM — omit the field and let the core's
-  // offer registry content-match among the files the platform published.
-  if (config.pciCard) doc.pci_card = config.pciCard;
-  if (config.prom && config.prom !== '(auto)') doc.prom = config.prom;
-  if (config.pciOption) doc.pci_option = config.pciOption;
-  if (config.videoMode) doc.video_mode = config.videoMode;
-  if (config.monitor) doc.monitor = config.monitor;
-  const ok = await gsEval('machine.boot', doc);
-  if (ok !== true) {
-    showNotification(`Boot failed: ${gsErrorText(ok)}`, 'error');
-    return;
-  }
-  // Seed a valid PRAM before the machine runs (see seedPram above).
-  await seedPram(config.model, 0);
-  for (let i = 0; i < (config.floppies?.length ?? 0); i++) {
-    const path = config.floppies[i];
-    if (!path || path === '(none)') continue;
-    await gsEval(`machine.floppy.drive[${i}].insert`, [path, true]);
-  }
-  if (config.hd && config.hd !== '(none)') {
-    if (config.hdBus === 'profile') {
-      // Lisa/XL: the hard disk is the parallel-port ProFile, not a SCSI device.
-      await gsEval('machine.hd.attach', [config.hd, true]);
-    } else {
-      // A failed attach would boot the machine disk-less with no hint at
-      // all — surface it (the boot itself still proceeds).
-      const hdOk = await gsEval('machine.scsi.attach_hd', [config.hd, config.hdId ?? 0]);
-      if (hdOk !== true) {
-        showNotification(`Hard disk attach failed: ${gsErrorText(hdOk)}`, 'error');
-      }
-    }
-  }
-  if (config.cd && config.cd !== '(none)') {
-    await gsEval('machine.scsi.attach_cdrom', [config.cd, 3]);
-  }
-
-  machine.model = config.modelName ?? config.model;
-  machine.ram = config.ram;
-  await applyCapabilities(config.model);
-  // machine.videoin / machine.audioin reset with the machine; re-assert the
-  // user's camera and microphone toggles (or drop them if the new model has
-  // no digitizer / no audio input).
-  await reapplyCameraSource();
-  await reapplyMicrophoneSource();
-
-  // The Caps Lock latch is host-keyboard state: a mechanically locking key
-  // is already down when the machine powers on. Latch it BEFORE the machine
-  // runs, so the ROM's ADB init finds the key down and reports it into
-  // KeyMap — that is the gate Copland D11E4's boot blocks test.
-  if (machine.capsLock) await gsEval('machine.adb.keyboard.down', ['capslock']);
-  // A fresh core boots paced; re-assert the user's toolbar selection so a
-  // pre-selected Turbo survives machine (re)creation.
-  await applySchedulerMode(machine.scheduler);
-  await gsEval('scheduler.run');
-  // onRunStateChange will flip machine.status to 'running' once the
-  // worker pushes the transition.
-  lastBootConfig = config;
-  // Every new boot starts with the Debug-tab sections collapsed —
-  // only the always-visible Disassembly pane shows by default.
-  // Persisted localStorage state is overwritten by this reset, which
-  // is the user-requested behaviour (each new machine gets a clean
-  // debug layout).
-  resetDebugSections();
-  showNotification('Machine started', 'info');
-}
-
 // Toggle the Caps Lock latch: UI state plus an immediate push to the live
 // machine (down latches, up releases). The latch is re-asserted after every
 // boot/restart, which is how Copland D11E4's diverted boot is reached from
@@ -619,48 +860,22 @@ export async function setCapsLock(on: boolean): Promise<void> {
   if (r !== true) showNotification(`Caps Lock: ${gsErrorText(r)}`, 'warning');
 }
 
-// Power-cycle the running machine. machine.restart rebuilds the machine
-// from its built-from record — same model, RAM, card, ROM — and keeps the
-// mounted media attached by transferring the open image handles across the
-// teardown (proposal-boot-vs-reset §3.3), so no manual re-attachment is
-// needed here. Only runtime state that is not construction configuration
-// (camera/microphone source, scheduler mode) is re-asserted.
-export async function restartEmulator(): Promise<void> {
-  const ok = await gsEval('machine.restart');
-  if (ok !== true) {
-    showNotification(`Restart failed: ${gsErrorText(ok)}`, 'error');
-    return;
-  }
-  // The rebuilt machine starts with blank PRAM again — re-seed it.
-  const id = await gsEval('machine.id');
-  if (typeof id === 'string' && id) await seedPram(id, 0);
-  // Re-assert the Caps Lock latch (the core also carries it across
-  // machine.restart; a re-latch of an already-down key is a no-op).
-  if (machine.capsLock) await gsEval('machine.adb.keyboard.down', ['capslock']);
-  await reapplyCameraSource();
-  await reapplyMicrophoneSource();
-  await applySchedulerMode(machine.scheduler);
-  await gsEval('scheduler.run');
-  showNotification('Machine restarted', 'info');
-}
-
 export async function shutdownEmulator(): Promise<void> {
   await gsEval('scheduler.stop');
   machine.status = 'stopped' as MachineStatus;
-  lastBootConfig = null;
   showNotification('Machine stopped', 'info');
 }
 
 export async function pauseEmulator(): Promise<void> {
   await gsEval('scheduler.stop');
-  // onRunStateChange handler reflects the new state.
+  // The mode_ended event reflects the new state.
 }
 
 export async function resumeEmulator(): Promise<void> {
   await gsEval('scheduler.run');
 }
 
-// UI mode name → core `scheduler.mode` value.
+// UI mode name → core `pacing.mode` value.
 const CORE_MODE: Record<SchedulerMode, string> = {
   live: 'paced',
   accel: 'accelerated',
@@ -669,9 +884,11 @@ const CORE_MODE: Record<SchedulerMode, string> = {
 
 // Push a pacing-mode change to the core and mirror it into UI state. The
 // toolbar buttons route through here so they actually reach the scheduler
-// (the pre-two-modes buttons only flipped local UI state).
+// (the pre-two-modes buttons only flipped local UI state). `pacing` is the
+// host's setting: it takes a mode with no machine running, and every machine
+// runs under it.
 export async function applySchedulerMode(mode: SchedulerMode): Promise<void> {
-  const res = await gsEval('scheduler.mode', [CORE_MODE[mode]]);
+  const res = await gsEval('pacing.mode', [CORE_MODE[mode]]);
   if (res && typeof res === 'object' && 'error' in res) {
     showNotification(`Scheduler mode failed: ${gsErrorText(res)}`, 'warning');
     return;
@@ -681,29 +898,10 @@ export async function applySchedulerMode(mode: SchedulerMode): Promise<void> {
 
 // Save State button path. Writes to /tmp/saved-state-<ts>.bin, then triggers
 // a browser download via the C-side `download` shell command.
-export async function saveCheckpoint(): Promise<string> {
-  const ts = compactTimestamp();
-  const tmpPath = `/tmp/saved-state-${ts}.bin`;
-  await gsEval('checkpoint.save', [tmpPath]);
-  await gsEval('download', [tmpPath]);
-  return tmpPath;
-}
 
-// --- Small helpers ------------------------------------------------------
-
-function ramStringToKb(ram: string): number {
-  const m = /(\d+)\s*MB/i.exec(ram || '');
-  if (!m) return 4096;
-  return parseInt(m[1], 10) * 1024;
-}
-
-function compactTimestamp(): string {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return (
-    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-` +
-    `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
-  );
-}
-
-export { ramStringToKb };
+// Measurement builds only (VITE_GS_MEASURE=1 at build time): the
+// checkpoint-stall spec probes request latency through the page's own
+// gsEval.  Not a shipped surface -- the typed UI path to the object model is
+// the terminal (tests/e2e/README.md).
+if (import.meta.env.VITE_GS_MEASURE && typeof window !== 'undefined')
+  (window as unknown as { __gsEval?: unknown }).__gsEval = gsEval;

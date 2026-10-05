@@ -2,10 +2,10 @@
 // Copyright (c) pappadf
 
 // test.c — directed unit tests for the PPC (MPC601) core
-// (src/core/cpu/ppc/), proposal-powerpc-601-pdm.md §7 layer 2.
+// (src/core/cpu/ppc/).
 //
 // Written when no public 601 instruction-level test corpus existed (the
-// proposal's largest stated correctness risk).  One does now — see
+// core's largest correctness risk).  One does now — see
 // suites/ppc_vectors — and these stay the place where a manual-cited rule
 // is pinned in our own words.  They are directed semantics tests
 // written from the 601UM chapter-10 RTL and chapter-5 exception tables:
@@ -118,7 +118,7 @@ static void fresh(void) {
 
 // Give every segment a T=1 memory-forced identity mapping (the HWInit
 // state, $87F0000n) so MSR[DT] tests translate EA=PA — with zeroed SRs a
-// DT=1 access would take the loud Phase-D T=0 DSI instead.
+// DT=1 access would take the loud T=0 DSI instead.
 static void identity_segments(void) {
     for (uint32_t i = 0; i < 16; i++)
         P->sr[i] = 0x87F00000u | i;
@@ -339,6 +339,31 @@ static void test_mul_div(void) {
     CHECK_EQ(P->gpr[3], 3);
 }
 
+// Two branches that fold to each other must not spin the sprint forever.
+//
+// ppc_record_fold excludes only a branch to its OWN address, so `A: b B` and
+// `B: b A` both classify as folded, and the fold path consumed no budget slot.
+// The sprint then never terminated: 100% host CPU, no timer, no interrupt and
+// no debugger break, because ext_irq/dec_pending are only raised between
+// sprints and emulated time stops at a sprint boundary.  Reachable from
+// ordinary guest memory corruption -- two mutually-returning blrs after a
+// smashed LR fold the same way.  ppc_run now allows a bounded number of folds
+// per sprint (4x the initial budget, far above any real branch density, so
+// ordinary code still folds at CPI 1.0).
+//
+// Without the bound this does not fail, it HANGS -- the honest shape for a
+// liveness bug.
+static void test_mutual_branch_fold_terminates(void) {
+    fresh();
+    memory_write_uint32(0x2000, e_bc(20, 0, 4, 0, 0)); // bc always, +4 -> $2004
+    memory_write_uint32(0x2004, e_bc(20, 0, -4, 0, 0)); // bc always, -4 -> $2000
+    uint32_t budget = 1000;
+    P->pc = 0x2000;
+    ppc_run(P, &budget);
+    CHECK_EQ(budget, 0u); // ppc_run zeroes the budget on exit
+    CHECK(P->pc == 0x2000u || P->pc == 0x2004u); // still inside the pair
+}
+
 // POWER holdovers against their 601UM RTL
 static void test_power_arith(void) {
     fresh();
@@ -391,6 +416,21 @@ static void test_power_arith(void) {
     step1_valid(e_xo(3, 4, 5, 0, 331, 0));
     CHECK_EQ(P->gpr[3], (uint32_t)-14);
     CHECK_EQ(P->mq, (uint32_t)-2); // remainder sign follows dividend
+    // div of INT64_MIN by -1: the quotient is unrepresentable, so the overflow
+    // has to be recognised BEFORE the divide -- the shipping emcc/wasm build's
+    // i64.div_s traps on this pair by specification rather than returning a
+    // wrong answer.  The dividend is also assembled through unsigned, because
+    // (int64_t)rA << 32 shifts into the sign bit for every rA >= $80000000,
+    // which the -100 case just above already exercises.  Both show up under
+    // MODE=sanitize; on native they are silent.
+    fresh();
+    P->gpr[4] = 0x80000000u; // rA||MQ = $8000000000000000
+    P->mq = 0;
+    P->gpr[5] = 0xFFFFFFFFu; // -1
+    step1_valid(e_xo(3, 4, 5, 1, 331, 0)); // divo
+    CHECK_EQ(P->gpr[3], 0x80000000u);
+    CHECK_EQ(P->mq, 0u);
+    CHECK(P->xer & PPC_XER_OV);
     // divs
     fresh();
     P->gpr[4] = (uint32_t)-100;
@@ -761,7 +801,7 @@ static void test_sprs(void) {
     CHECK_EQ(P->batu[3], 0xAA55AA55u);
     // segment registers
     fresh();
-    P->gpr[4] = 0x87F00005u; // the HWInit T=1 SR value (§3.4)
+    P->gpr[4] = 0x87F00005u; // the HWInit T=1 SR value
     step1_valid((31u << 26) | (4u << 21) | (5u << 16) | (210u << 1)); // mtsr 5,r4
     CHECK_EQ(P->sr[5], 0x87F00005u);
     step1_valid((31u << 26) | (3u << 21) | (5u << 16) | (595u << 1)); // mfsr r3,5
@@ -809,7 +849,7 @@ static void test_exceptions(void) {
     // privileged from user mode + SoA switch.  The user maps hold the
     // MMU's logical fills, so they are active only for TRANSLATED user
     // data (PR=1 AND DT=1); user mode with translation off runs on the
-    // identity view like everything else (proposal §3.5 as amended).
+    // identity view like everything else.
     fresh();
     identity_segments();
     P->msr |= PPC_MSR_PR;
@@ -1102,7 +1142,7 @@ static void test_fp_surface(void) {
     memory_write_uint32(0x1000, (63u << 26) | (0u << 23) | (3u << 16) | (4u << 11));
     run_at(0x1000, 1);
     CHECK_EQ(P->cr >> 28, 2u); // EQ
-    // FP arithmetic is live since Phase E (the deep coverage lives in
+    // FP arithmetic is live (the deep coverage lives in
     // tests/unit/suites/ppc_fpu; this is the integration smoke check)
     fresh();
     P->fpr[3] = 0x3FF0000000000000ull; // 1.0
@@ -1114,9 +1154,8 @@ static void test_fp_surface(void) {
     CHECK_EQ((P->fpscr >> 12) & 0x1Fu, 0x04u); // FPRF: +normal
 }
 
-// Phase-C translation subset: T=1 memory-forced segments (incl. the HWInit
-// SR-toggle aliasing trick), the 601-format BATs, and the loud unimplemented
-// T=0 path (proposal §3.5).
+// Translation subset: T=1 memory-forced segments (incl. the HWInit SR-toggle
+// aliasing trick), the 601-format BATs, and the loud unimplemented T=0 path.
 static void test_translation(void) {
     // T=1 memory-forced: SR low nibble selects the physical segment.  The
     // flash-probe pattern: sr[5] → segment 4 makes EA $50800000 read the
@@ -1145,7 +1184,7 @@ static void test_translation(void) {
     P->gpr[4] = 0x4000;
     step1(e_d(32, 3, 4, 0));
     CHECK_EQ(P->pc, 0x00000A00u);
-    // T=0 is the Phase-D hashed walk: loud DSI with DSISR "not found"
+    // T=0 is the hashed walk: loud DSI with DSISR "not found"
     fresh();
     P->msr |= PPC_MSR_DT; // SRs all zero → T=0
     P->gpr[4] = 0x5000;
@@ -1221,7 +1260,7 @@ static void test_mq_spr(void) {
     CHECK_EQ(P->gpr[3], 0x13579BDFu);
 }
 
-// === The 604 model (TNT proposal §4; 604UM/PEM citations inline) ============
+// === The 604 model (604UM/PEM citations inline) ============================
 
 // Reset into the 604 model with EP cleared (vectors at $000xxxxx) and FP
 // on — the 604-side counterpart of fresh().  cpu_model survives ppc_reset.
@@ -1255,7 +1294,7 @@ static void test_604_reset_state(void) {
 }
 
 // Every POWER holdover and 601-only SPR encoding takes the program
-// exception on the 604 (604UM §4.5.7; TNT proposal §4.2).
+// exception on the 604 (604UM §4.5.7).
 static void test_604_holdover_rejection(void) {
     // One representative per holdover family plus every MQ/RTC SPR move,
     // built from the encoders.
@@ -1473,6 +1512,119 @@ static void test_604_alignment(void) {
     CHECK_EQ(P->gpr[3], 0x33445566u);
 }
 
+// Little-endian mode (604UM Table 4-3 ILE/LE; PEM §3.2.2).  The 60x does
+// not reorder bytes in LE mode: it munges the low EA bits (XOR 7/6/4 for
+// byte/halfword/word), so memory holds the LE program's image with every
+// doubleword byte-reversed — and instruction fetch munges like a word load,
+// so the two instructions of each doubleword swap places.  This is what
+// Apple's NT-capable Open Firmware does to its own dictionary before it
+// flips MSR[LE], and what the little-endian NT veneer expects of the CPU.
+static void test_604_little_endian(void) {
+    // Two LE instructions at LE addresses $1000/$1004 land physically at
+    // $1004/$1000.  The LE program's view of $2000..$2007 is the bytes
+    // 44 33 22 11 88 77 66 55 (words $11223344 then $55667788), which the
+    // doubleword-reversed image stores as BE words $55667788, $11223344.
+    fresh604();
+    ppc_set_msr(P, PPC_MSR_ME | PPC_MSR_FP | PPC_MSR_LE);
+    memory_write_uint32(0x2000, 0x55667788u);
+    memory_write_uint32(0x2004, 0x11223344u);
+    P->gpr[4] = 0x2000u;
+    memory_write_uint32(0x1004, e_d(32, 3, 4, 0)); // lwz r3,0(r4)   (LE address $1000)
+    memory_write_uint32(0x1000, e_d(40, 5, 4, 0)); // lhz r5,0(r4)   (LE address $1004)
+    run_at(0x1000, 2);
+    CHECK_EQ(P->pc, 0x1008u); // both fetched in LE order, no fault
+    CHECK_EQ(P->gpr[3], 0x11223344u); // the LE word at $2000
+    CHECK_EQ(P->gpr[5], 0x3344u); // the LE halfword at $2000
+    // Bytes: LE $2000 is the LSB of $11223344; LE $2003 its MSB; LE $2007 = $55.
+    memory_write_uint32(0x1004, e_d(34, 3, 4, 0)); // lbz r3,0(r4)
+    memory_write_uint32(0x1000, e_d(34, 5, 4, 3)); // lbz r5,3(r4)
+    run_at(0x1000, 2);
+    CHECK_EQ(P->gpr[3], 0x44u);
+    CHECK_EQ(P->gpr[5], 0x11u);
+    memory_write_uint32(0x1004, e_d(34, 3, 4, 7)); // lbz r3,7(r4)
+    memory_write_uint32(0x1000, e_d(42, 5, 4, 6)); // lha r5,6(r4) -> $5566 sign-extended
+    run_at(0x1000, 2);
+    CHECK_EQ(P->gpr[3], 0x55u);
+    CHECK_EQ(P->gpr[5], 0x00005566u);
+    // Stores munge the same way: stw to LE $2004 lands at physical $2000;
+    // stb to LE $200B lands at physical $200C.
+    P->gpr[6] = 0xAABBCCDDu;
+    P->gpr[7] = 0xEEu;
+    memory_write_uint32(0x200C, 0);
+    memory_write_uint32(0x1004, e_d(36, 6, 4, 4)); // stw r6,4(r4)
+    memory_write_uint32(0x1000, e_d(38, 7, 4, 0xB)); // stb r7,11(r4)
+    run_at(0x1000, 2);
+    CHECK_EQ(memory_read_uint32(0x2000), 0xAABBCCDDu);
+    CHECK_EQ(memory_read_uint32(0x200C), 0xEE000000u);
+    CHECK_EQ(memory_read_uint32(0x2004), 0x11223344u); // untouched
+    // lwbrx reads big-endian data from the LE program's point of view.
+    memory_write_uint32(0x1004, e_x(3, 0, 4, 534, 0)); // lwbrx r3,0,r4
+    memory_write_uint32(0x1000, e_x(5, 0, 4, 790, 0)); // lhbrx r5,0,r4
+    run_at(0x1000, 2);
+    CHECK_EQ(P->gpr[3], 0x44332211u);
+    CHECK_EQ(P->gpr[5], 0x4433u);
+    // Update forms write back the ARCHITECTED (unmunged) EA.
+    P->gpr[4] = 0x2000u;
+    memory_write_uint32(0x1004, e_d(33, 3, 4, 4)); // lwzu r3,4(r4)
+    memory_write_uint32(0x1000, e_d(35, 5, 4, 1)); // lbzu r5,1(r4)
+    run_at(0x1000, 2);
+    CHECK_EQ(P->gpr[3], 0xAABBCCDDu); // the LE word at $2004 (stored above)
+    CHECK_EQ(P->gpr[4], 0x2005u);
+    CHECK_EQ(P->gpr[5], 0xCCu); // LE byte $2005 = byte 1 (from the LSB) of $AABBCCDD
+    // Doubleword FP: a doubleword-aligned lfd reads the BE image as-is
+    // (hi word at LE $2004, lo at LE $2000); a word-aligned one is two
+    // munged word accesses.
+    P->gpr[4] = 0x2000u;
+    memory_write_uint32(0x2000, 0x55667788u);
+    memory_write_uint32(0x2004, 0x11223344u);
+    memory_write_uint32(0x2008, 0xDDEEFF00u);
+    memory_write_uint32(0x200C, 0x99AABBCCu);
+    memory_write_uint32(0x1004, e_d(50, 3, 4, 0)); // lfd f3,0(r4)
+    memory_write_uint32(0x1000, e_d(50, 4, 4, 4)); // lfd f4,4(r4)
+    run_at(0x1000, 2);
+    CHECK(P->fpr[3] == 0x5566778811223344ull);
+    CHECK(P->fpr[4] == 0x99AABBCC55667788ull); // hi from LE $2008 (phys $200C), lo from LE $2004 (phys $2000)
+    memory_write_uint32(0x1004,
+                        e_d(54, 4, 4, 8)); // stfd f4,8(r4): hi -> LE $200C (phys $2008), lo -> LE $2008 (phys $200C)
+    memory_write_uint32(0x1000, 0x60000000u); // nop
+    run_at(0x1000, 2);
+    CHECK_EQ(memory_read_uint32(0x2008), 0x99AABBCCu);
+    CHECK_EQ(memory_read_uint32(0x200C), 0x55667788u);
+    // Alignment (604UM §4.5.6): a misaligned scalar and any multiple/string
+    // instruction take the alignment exception in LE mode, DAR = the EA.
+    P->gpr[4] = 0x2002u;
+    memory_write_uint32(0x1004, e_d(32, 3, 4, 0)); // lwz r3,0(r4) misaligned
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000600u);
+    CHECK_EQ(P->dar, 0x2002u);
+    CHECK_EQ(P->msr & PPC_MSR_LE, 0u); // ILE clear: the handler runs big-endian
+    CHECK_EQ(P->srr1 & PPC_MSR_LE, PPC_MSR_LE); // ... and rfi will restore LE
+    ppc_set_msr(P, PPC_MSR_ME | PPC_MSR_FP | PPC_MSR_LE);
+    P->gpr[4] = 0x2000u;
+    memory_write_uint32(0x1004, e_d(46, 29, 4, 0)); // lmw r29,0(r4), aligned
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000600u);
+    ppc_set_msr(P, PPC_MSR_ME | PPC_MSR_FP | PPC_MSR_LE);
+    memory_write_uint32(0x1004, e_x(3, 4, 4, 597, 0)); // lswi r3,r4,4
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000600u);
+    // Exception entry copies ILE into LE; the handler's fetch is munged
+    // accordingly (the vector's first two words swap).  rfi brings the
+    // interrupted endianness back from SRR1.
+    ppc_set_msr(P, PPC_MSR_ME | PPC_MSR_FP | PPC_MSR_ILE); // BE with LE handlers
+    memory_write_uint32(0x1000, 0x44000002u); // sc (BE fetch)
+    memory_write_uint32(0x0C04, e_d(14, 3, 0, 0x77)); // li r3,$77  at LE $0C00
+    memory_write_uint32(0x0C00, 0x4C000064u); // rfi          at LE $0C04
+    run_at(0x1000, 3); // sc, li, rfi
+    CHECK_EQ(P->gpr[3], 0x77u); // the handler ran in LE
+    CHECK_EQ(P->pc, 0x1004u); // rfi returned...
+    CHECK_EQ(P->msr & (PPC_MSR_LE | PPC_MSR_ILE), PPC_MSR_ILE); // ...to BE, ILE kept
+    // The 601 never leaves big-endian: LE/ILE are masked off its MSR.
+    fresh();
+    ppc_set_msr(P, PPC_MSR_ME | PPC_MSR_FP | PPC_MSR_LE | PPC_MSR_ILE);
+    CHECK_EQ(P->msr, PPC_MSR_ME | PPC_MSR_FP);
+}
+
 // TEA machine check on the 604: SRR1[13] set, SRR1[30] cleared, MSR[ME]
 // cleared on entry (604UM Tables 4-2/4-8).
 static void test_604_machine_check(void) {
@@ -1491,7 +1643,7 @@ static void test_604_machine_check(void) {
 }
 
 // The optional-FP group: fsel/fres/frsqrte/stfiwx execute on the 604 and
-// trap on the 601 (PEM instruction pages; TNT proposal §4.2).
+// trap on the 601 (PEM instruction pages).
 static void test_604_optional_fp(void) {
     // fsel: frA >= 0 (incl. -0) picks frC; negative and NaN pick frB
     fresh604();
@@ -1589,7 +1741,7 @@ int main(void) {
     // canonical OS base) — the harness's own init is Plus-shaped (24-bit),
     // so the context is built by hand here.
     test_context_t *ctx = calloc(1, sizeof(test_context_t));
-    ctx->memory = memory_map_init(32, 0x800000, 0x20000, NULL);
+    ctx->memory = memory_map_init(32, 0x800000, 0x20000, MEMORY_BUS_ERR_NONE, NULL, NULL);
     if (!ctx->memory) {
         printf("FAIL: memory_map_init\n");
         return 1;
@@ -1615,6 +1767,7 @@ int main(void) {
     test_shifts();
     test_rotates();
     test_mul_div();
+    test_mutual_branch_fold_terminates();
     test_power_arith();
     test_power_masks_shifts();
     test_branches();
@@ -1631,7 +1784,7 @@ int main(void) {
     test_mq_spr();
     test_conformance_regressions();
 
-    // The 604 model matrix (TNT proposal §4.5) — these flip P's cpu_model
+    // The 604 model matrix — these flip P's cpu_model
     // and run last so every 601 test above sees an untouched 601.
     test_604_reset_state();
     test_604_holdover_rejection();
@@ -1639,6 +1792,7 @@ int main(void) {
     test_604_timebase();
     test_604_sprs();
     test_604_alignment();
+    test_604_little_endian();
     test_604_machine_check();
     test_604_optional_fp();
 

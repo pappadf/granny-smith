@@ -9,7 +9,9 @@
 //   4. On Resume, gsEval('checkpoint.load') runs and the bus updates
 //      machine.status from scheduler.running.
 
-import { gsEval } from './emulator';
+import { scratchPath } from '@/lib/opfsPaths';
+import { gsEval, gsErrorText } from './emulator';
+import { reconcileUiWithMachine } from './boot';
 import { machine } from '@/state/machine.svelte';
 import {
   checkpointPrompt,
@@ -43,12 +45,55 @@ export async function maybeOfferBackgroundCheckpoint(): Promise<boolean> {
     showNotification('Checkpoint load failed', 'error');
     return false;
   }
+  await reconcileUiWithMachine('restore');
 
-  const running = (await gsEval('scheduler.running')) === true;
-  machine.status = running ? 'running' : 'paused';
+  const running = machine.status === 'running';
   showNotification(
     running ? 'Resumed from saved checkpoint' : 'Restored checkpoint (paused)',
     'info',
   );
   return true;
+}
+
+// --- Save State (the toolbar's download) ---------------------------------
+
+// The outcome of Save State: the name the browser downloads the file as, or
+// which step failed and why.
+export type SaveCheckpointResult =
+  { ok: true; name: string } | { ok: false; step: 'save' | 'download'; message: string };
+
+export async function saveCheckpoint(): Promise<SaveCheckpointResult> {
+  const name = `saved-state-${compactTimestamp()}.bin`;
+  // Written in the OPFS scratch area, not the memory-backed /tmp: a machine
+  // with a large modified disk would otherwise hold its whole state in the
+  // wasm heap while the download is made.  In a directory of its own, so no
+  // other Save State shares the path and the download keeps the file's name.
+  const dir = scratchPath('save');
+  const tmpPath = `${dir}/${name}`;
+  try {
+    await gsEval('files.mkdir', [dir]);
+    // Both methods return V_BOOL false on failure (a full quota, no machine,
+    // a download that could not read the file back) — check each.
+    const saved = await gsEval('checkpoint.save', [tmpPath]);
+    if (saved !== true) return { ok: false, step: 'save', message: gsErrorText(saved) };
+    const downloaded = await gsEval('files.download', [tmpPath]);
+    if (downloaded !== true)
+      return { ok: false, step: 'download', message: gsErrorText(downloaded) };
+    return { ok: true, name };
+  } finally {
+    // The download has already copied it out, so remove it on every exit
+    // (one left by a closed tab goes when the scratch area is emptied at
+    // the next startup).
+    await gsEval('files.rm', [dir]);
+  }
+}
+
+// Local-time YYYYMMDD-HHMMSS for a download name.
+function compactTimestamp(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-` +
+    `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  );
 }

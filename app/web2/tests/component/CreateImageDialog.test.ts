@@ -18,8 +18,8 @@ function callTo(name: string) {
 }
 
 describe('CreateImageDialog', () => {
-  it('creates a blank floppy (800 KB default) via storage.fd_create', async () => {
-    gsEvalMock.mockImplementation(async (p: string) => (p === 'storage.fd_create' ? true : null));
+  it('creates a blank floppy (800 KB default) via files.fd_create', async () => {
+    gsEvalMock.mockImplementation(async (p: string) => (p === 'files.fd_create' ? true : null));
     const onCreated = vi.fn();
     const { getByText } = render(CreateImageDialog, {
       open: true,
@@ -29,14 +29,14 @@ describe('CreateImageDialog', () => {
     });
     await fireEvent.click(getByText('Create'));
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
-    const cp = callTo('storage.fd_create')!;
+    const cp = callTo('files.fd_create')!;
     expect(cp[1][0]).toMatch(/^\/opfs\/images\/fd\/blank_800K_\d+\.dsk$/);
     expect(cp[1][1]).toBe(false); // 800K → not high-density
     expect(onCreated).toHaveBeenCalledWith(expect.stringMatching(/^blank_800K_\d+\.dsk$/));
   });
 
   it('creates a 1.4 MB floppy when high density is selected', async () => {
-    gsEvalMock.mockImplementation(async (p: string) => (p === 'storage.fd_create' ? true : null));
+    gsEvalMock.mockImplementation(async (p: string) => (p === 'files.fd_create' ? true : null));
     const onCreated = vi.fn();
     const { getByText, container } = render(CreateImageDialog, {
       open: true,
@@ -47,62 +47,87 @@ describe('CreateImageDialog', () => {
     await fireEvent.click(container.querySelector('input[value="1440K"]') as HTMLElement);
     await fireEvent.click(getByText('Create'));
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
-    const cp = callTo('storage.fd_create')!;
+    const cp = callTo('files.fd_create')!;
     expect(cp[1][0]).toMatch(/^\/opfs\/images\/fd\/blank_1440K_\d+\.dsk$/);
     expect(cp[1][1]).toBe(true);
   });
 
-  it('lists HD sizes from scsi.hd_models and creates via storage.hd_create', async () => {
-    gsEvalMock.mockImplementation(async (p: string) => {
-      if (p === 'machine.scsi.hd_models') {
-        return [
-          { label: 'HD20SC', vendor: 'X', product: 'Y', size: 21411840 },
-          { label: 'HD40SC', vendor: 'X', product: 'Y', size: 40061952 },
-        ];
-      }
-      if (p === 'storage.hd_create') return true;
-      return null;
-    });
+  const scsiDisks = [
+    {
+      label: '20 MB (HD20SC)',
+      method: 'files.hd_create',
+      arg: '21411840',
+      name: 'blank_20MB',
+      ext: '.dmg',
+    },
+    {
+      label: '38 MB (HD40SC)',
+      method: 'files.hd_create',
+      arg: '40061952',
+      name: 'blank_38MB',
+      ext: '.dmg',
+    },
+  ];
+
+  it("lists the bus's blank disks and creates the chosen one with its method", async () => {
+    gsEvalMock.mockImplementation(async (p: string) => (p === 'files.hd_create' ? true : null));
     const onCreated = vi.fn();
     const { getByText, container } = render(CreateImageDialog, {
       open: true,
       kind: 'hd',
+      disks: scsiDisks,
       onClose: () => {},
       onCreated,
     });
-    await waitFor(() => expect(container.textContent).toContain('HD40SC'));
-    // Pick the 40 MB drive, then create.
-    await fireEvent.click(container.querySelector('input[value="40061952"]') as HTMLElement);
+    expect(container.textContent).toContain('38 MB (HD40SC)');
+    await fireEvent.click(container.querySelector('input[value="1"]') as HTMLElement);
     await fireEvent.click(getByText('Create'));
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
-    const cp = callTo('storage.hd_create')!;
-    expect(cp[1][0]).toMatch(/^\/opfs\/images\/hd\/blank_38MB_\d+\.img$/); // 40061952 ≈ 38 MiB
+    const cp = callTo('files.hd_create')!;
+    expect(cp[1][0]).toMatch(/^\/opfs\/images\/hd\/blank_38MB_\d+\.dmg$/);
     expect(cp[1][1]).toBe('40061952');
   });
 
-  it('shows an error with Retry — and does not spin — when the catalog is unavailable', async () => {
-    // gsEval returns null while the module is still starting. The old
-    // hdModels.length-keyed $effect re-triggered itself on every reassignment
-    // and froze the tab in a microtask loop; the modelsState machine must
-    // settle in 'error' instead (this test completing at all proves no spin).
-    gsEvalMock.mockResolvedValue(null);
+  it('creates a ProFile image when that is what the bus takes', async () => {
+    gsEvalMock.mockImplementation(async (p: string) =>
+      p === 'files.profile_create' ? true : null,
+    );
+    const onCreated = vi.fn();
+    const { getByText } = render(CreateImageDialog, {
+      open: true,
+      kind: 'hd',
+      disks: [
+        {
+          label: '5 MB ProFile (9728 blocks)',
+          method: 'files.profile_create',
+          arg: '9728',
+          name: 'blank_profile_5MB',
+          ext: '.image',
+        },
+      ],
+      onClose: () => {},
+      onCreated,
+    });
+    await fireEvent.click(getByText('Create'));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    const cp = callTo('files.profile_create')!;
+    expect(cp[1][0]).toMatch(/^\/opfs\/images\/hd\/blank_profile_5MB_\d+\.image$/);
+    expect(cp[1][1]).toBe('9728');
+  });
+
+  it('says so for a device that takes no hard disk', () => {
     const { container, getByText } = render(CreateImageDialog, {
       open: true,
       kind: 'hd',
       onClose: () => {},
       onCreated: () => {},
     });
-    await waitFor(() => expect(container.textContent).toContain('Could not load drive sizes'));
-    // Retry with the module now "ready" loads the catalog.
-    gsEvalMock.mockImplementation(async (p: string) =>
-      p === 'machine.scsi.hd_models' ? [{ label: 'HD20SC', size: 21411840 }] : null,
-    );
-    await fireEvent.click(getByText('Retry'));
-    await waitFor(() => expect(container.textContent).toContain('HD20SC'));
+    expect(container.textContent).toContain('This device takes no hard disk');
+    expect((getByText('Create').closest('button') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('shows an error and does not fire onCreated when creation fails', async () => {
-    gsEvalMock.mockImplementation(async (p: string) => (p === 'storage.fd_create' ? false : null));
+    gsEvalMock.mockImplementation(async (p: string) => (p === 'files.fd_create' ? false : null));
     const onCreated = vi.fn();
     const { getByText, container } = render(CreateImageDialog, {
       open: true,

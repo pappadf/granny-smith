@@ -8,6 +8,7 @@
 // layout matches real Disk Copy 6.3.3 images and Aaru's NDIF Structs.cs.
 
 #include "adc.h"
+#include "image_chunkmap.h"
 #include "image_ndif.h"
 #include "resource_fork.h"
 #include "test_assert.h"
@@ -270,6 +271,94 @@ TEST(ndif_decode_rejects_unsupported_type) {
     ASSERT_EQ_INT(-EINVAL, ndif_decode_chunk(&c, src, sizeof(src), dst, sizeof(dst)));
 }
 
+// ---- The decoded image as a source ------------------------------------------
+
+// An NDIF file's two forks, in memory: data (the chunk payload) and the
+// resource fork carrying a 'bcem' map of `n` chunks.
+static void ndif_forks(const uint8_t *data, size_t data_len, uint32_t sectors, const uint32_t *words,
+                       const uint32_t *offs, const uint32_t *lens, int n, gs_source_t **d, gs_source_t **r) {
+    size_t blen = 0, flen = 0;
+    uint8_t *bcem = build_bcem(sectors, 0, "Vol", words, offs, lens, n, &blen);
+    uint8_t *fork = build_bcem_fork(bcem, blen, &flen);
+    free(bcem);
+    *d = gs_source_memory(data, data_len, false, "ndif-test-data");
+    *r = gs_source_memory(fork, flen, true, "ndif-test-rsrc");
+    ASSERT_TRUE(*d && *r);
+}
+
+// The whole image reads back right: ADC, COPY and ZERO chunks in place,
+// exactly the declared size -- and again, from the chunk cache.
+TEST(ndif_source_round_trip) {
+    static uint8_t fork_data[2048];
+    size_t adc_len = adc_fill(fork_data, 0xCD, 512);
+    memset(fork_data + adc_len, 0x11, 512);
+    uint32_t words[] = {(0u << 8) | NDIF_CHUNK_ADC, (1u << 8) | NDIF_CHUNK_COPY, (2u << 8) | NDIF_CHUNK_ZERO,
+                        (4u << 8) | NDIF_CHUNK_END};
+    uint32_t offs[] = {0, (uint32_t)adc_len, 0, 0};
+    uint32_t lens[] = {(uint32_t)adc_len, 512, 0, 0};
+    gs_source_t *d = NULL, *r = NULL;
+    ndif_forks(fork_data, adc_len + 512, 4, words, offs, lens, 4, &d, &r);
+    ASSERT_TRUE(ndif_source_detect(r));
+    int err = 0;
+    gs_source_t *img = ndif_source_open(d, r, &err);
+    ASSERT_TRUE(img != NULL);
+    ASSERT_EQ_INT(4 * 512, (int)gs_source_size(img));
+    for (int pass = 0; pass < 2; pass++) {
+        uint8_t buf[4 * 512];
+        ASSERT_EQ_INT(0, gs_source_read_exact(img, 0, buf, sizeof(buf)));
+        for (int i = 0; i < 512; i++) {
+            ASSERT_EQ_INT(0xCD, buf[i]);
+            ASSERT_EQ_INT(0x11, buf[512 + i]);
+            ASSERT_EQ_INT(0, buf[1024 + i]);
+            ASSERT_EQ_INT(0, buf[1536 + i]);
+        }
+    }
+    // A read that starts inside a compressed chunk gets just its part.
+    uint8_t mid[16];
+    ASSERT_EQ_INT(0, gs_source_read_exact(img, 500, mid, sizeof(mid)));
+    for (int i = 0; i < 12; i++)
+        ASSERT_EQ_INT(0xCD, mid[i]);
+    for (int i = 12; i < 16; i++)
+        ASSERT_EQ_INT(0x11, mid[i]);
+    gs_source_release(img);
+    gs_source_release(d);
+    gs_source_release(r);
+}
+
+// A chunk that does not lie inside the declared image refuses the open,
+// rather than serving bytes from wherever it points.
+TEST(ndif_source_refuses_a_chunk_outside_the_image) {
+    static uint8_t fork_data[1024];
+    memset(fork_data, 0x22, sizeof(fork_data));
+    uint32_t words[] = {(3u << 8) | NDIF_CHUNK_COPY, (5u << 8) | NDIF_CHUNK_END};
+    uint32_t offs[] = {0, 0};
+    uint32_t lens[] = {1024, 0};
+    gs_source_t *d = NULL, *r = NULL;
+    ndif_forks(fork_data, sizeof(fork_data), 4, words, offs, lens, 2, &d, &r);
+    int err = 0;
+    ASSERT_TRUE(ndif_source_open(d, r, &err) == NULL);
+    ASSERT_EQ_INT(-EINVAL, err);
+    gs_source_release(d);
+    gs_source_release(r);
+}
+
+// A compressed chunk is decoded in one buffer, so it has a size limit;
+// uncompressed chunks are read straight through and do not.
+TEST(ndif_source_caps_a_compressed_chunk) {
+    static uint8_t fork_data[16];
+    uint32_t sectors = NDIF_MAX_CHUNK_BYTES / 512 + 1;
+    uint32_t words[] = {(0u << 8) | NDIF_CHUNK_ADC, (sectors << 8) | NDIF_CHUNK_END};
+    uint32_t offs[] = {0, 0};
+    uint32_t lens[] = {16, 0};
+    gs_source_t *d = NULL, *r = NULL;
+    ndif_forks(fork_data, sizeof(fork_data), sectors, words, offs, lens, 2, &d, &r);
+    int err = 0;
+    ASSERT_TRUE(ndif_source_open(d, r, &err) == NULL);
+    ASSERT_EQ_INT(-EFBIG, err);
+    gs_source_release(d);
+    gs_source_release(r);
+}
+
 int main(void) {
     RUN(adc_literal_run);
     RUN(adc_short_match_rle);
@@ -280,6 +369,9 @@ int main(void) {
     RUN(ndif_detect_false_on_plain_fork);
     RUN(ndif_decode_copy_zero_adc);
     RUN(ndif_decode_rejects_unsupported_type);
+    RUN(ndif_source_round_trip);
+    RUN(ndif_source_refuses_a_chunk_outside_the_image);
+    RUN(ndif_source_caps_a_compressed_chunk);
     fprintf(stderr, "All ndif tests passed.\n");
     return 0;
 }

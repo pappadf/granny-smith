@@ -1,7 +1,7 @@
 // Map a Filesystem-view entry to a codicon id. Keeps icon decisions out of
 // the row renderer so the lookup is unit-testable and easy to extend.
 //
-// Codicon ids resolve to <use href="/icons/sprite.svg#i-…"> inside Icon.svelte;
+// Codicon ids resolve to <use href="<sprite>#i-…"> inside Icon.svelte;
 // the sprite already ships chip / floppy / hd / cd / file / folder / json.
 
 import type { OpfsEntry } from '@/bus/types';

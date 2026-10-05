@@ -1,0 +1,129 @@
+/* ====== Workbench skin: semantic tokens ======
+   The VS Code look, derived from VS Code's workbench colours
+   (src/vs/workbench/common/theme.ts, src/vs/platform/theme/common/colors/*),
+   dark; Workbench Light is its light counterpart.  A skin defines every
+   semantic token of src/styles/contract.ts. */
+@layer gs.tokens {
+  :root[data-skin='workbench'] {
+    --gs-color-scheme: dark;
+
+    /* Surfaces */
+    --gs-surface-app: #1e1e1e; /* editor.background */
+    --gs-surface-raised: #252526; /* editorWidget.background */
+    --gs-surface-overlay: #252526;
+    --gs-surface-sunken: #0d0f11; /* terminal.background */
+    --gs-surface-screen: #000000;
+    --gs-surface-document: #ffffff;
+    --gs-backdrop: rgba(0, 0, 0, 0.45);
+
+    /* Text */
+    --gs-text: #cccccc;
+    --gs-text-strong: #e7e7e7; /* panelTitle.activeForeground */
+    --gs-text-muted: rgba(231, 231, 231, 0.6);
+    --gs-text-subtle: #858585;
+    --gs-text-link: #3794ff; /* textLink.foreground */
+    --gs-text-on-accent: #ffffff;
+
+    /* Borders and focus */
+    --gs-border: rgba(128, 128, 128, 0.35); /* panel.border */
+    --gs-border-subtle: rgba(204, 204, 204, 0.13);
+    --gs-border-card: rgba(255, 255, 255, 0.1);
+    --gs-focus-ring: #007fd4; /* focusBorder */
+
+    /* Interaction */
+    --gs-control-hover: rgba(90, 93, 94, 0.31); /* toolbar.hoverBackground */
+    --gs-control-active: rgba(90, 93, 94, 0.41);
+    --gs-accent: #0e639c;
+    --gs-accent-hover: #1177bb;
+    --gs-accent-active: #0a4c7a;
+    --gs-accent-subtle: rgba(80, 140, 220, 0.25);
+
+    /* Rows */
+    --gs-row-hover: #2a2d2e; /* list.hoverBackground */
+    --gs-row-selected: rgba(80, 140, 220, 0.25);
+    --gs-row-selected-inactive: #37373d; /* list.inactiveSelectionBackground */
+    --gs-row-alt: rgba(204, 204, 204, 0.04);
+
+    /* Inputs */
+    --gs-input-bg: #3c3c3c; /* input.background */
+    --gs-input-fg: #e7e7e7;
+    --gs-input-border: rgba(255, 255, 255, 0.1);
+
+    /* Intents */
+    --gs-info-fg: #6aa6ff;
+    --gs-info-bg: rgba(80, 140, 220, 0.25);
+    --gs-info-solid: #59a4f9;
+    --gs-success-fg: #4ac26b;
+    --gs-success-bg: rgba(35, 134, 54, 0.25);
+    --gs-success-solid: #6a9955;
+    --gs-warning-fg: #f5c542;
+    --gs-warning-bg: rgba(204, 167, 0, 0.2);
+    --gs-warning-solid: #cca700;
+    --gs-danger-fg: #f48771; /* errorForeground */
+    --gs-danger-bg: rgba(248, 81, 73, 0.25);
+    --gs-danger-solid: #d13b3b;
+    --gs-danger-on-solid: #ffffff;
+
+    /* Machine state (the status bar) */
+    --gs-state-idle-bg: #1e1e1e;
+    --gs-state-idle-fg: #858585;
+    --gs-state-running-bg: #007acc;
+    --gs-state-paused-bg: #cc6633;
+    --gs-state-stopped-bg: #cc3333;
+    --gs-state-crashed-bg: #8b1a1a;
+    --gs-state-active-fg: #ffffff;
+    --gs-state-hover: rgba(255, 255, 255, 0.12);
+
+    /* Syntax palette (VS Code Dark+): the command browser, SYSTEM, the
+       console's entries and input, the usage block. */
+    --gs-syntax-method: #dcdcaa;
+    --gs-syntax-attribute: #9cdcfe;
+    --gs-syntax-variable: #9cdcfe;
+    --gs-syntax-alias: #9cdcfe;
+    --gs-syntax-object: inherit;
+    --gs-syntax-operator: inherit;
+    --gs-syntax-decl: #569cd6;
+    --gs-syntax-interp: #569cd6;
+    --gs-syntax-keyword: #c586c0;
+    --gs-syntax-string: #ce9178;
+    --gs-syntax-number: #b5cea8;
+    --gs-syntax-enum: #4fc1ff;
+    --gs-syntax-type: #4ec9b0;
+    --gs-syntax-comment: #6a9955;
+    --gs-syntax-unknown: var(--gs-danger-fg);
+    --gs-syntax-error: var(--gs-danger-fg);
+    --gs-syntax-dim: #808080;
+
+    /* Code and data views */
+    --gs-code-pc-row-bg: rgba(80, 140, 220, 0.2);
+    /* Changed since the last step: registers, FPU, memory. */
+    --gs-code-changed-bg: rgba(255, 220, 64, 0.18);
+
+    /* Console */
+    --gs-console-bg: var(--gs-surface-sunken);
+    --gs-console-fg: #cccccc; /* terminal.foreground */
+    --gs-console-cursor: #cccccc;
+    --gs-console-selection: rgba(255, 255, 255, 0.25);
+    --gs-console-progress-bg: rgba(128, 128, 128, 0.12);
+    --gs-console-find-hit-bg: rgba(234, 92, 0, 0.33);
+    --gs-console-find-current-bg: rgba(234, 92, 0, 0.7);
+
+    /* Drag and drop */
+    --gs-drop-border: #0969da;
+    --gs-drop-bg: rgba(9, 105, 218, 0.08);
+    --gs-drop-label-bg: rgba(9, 105, 218, 0.85);
+
+    /* Scrollbars, selection, elevation */
+    --gs-scrollbar-thumb: rgba(255, 255, 255, 0.15);
+    --gs-scrollbar-thumb-hover: rgba(255, 255, 255, 0.25);
+    --gs-scrollbar-track: transparent;
+    --gs-selection-bg: #264f78; /* editor.selectionBackground */
+    --gs-shadow-popup: 0 4px 14px rgba(0, 0, 0, 0.5);
+    --gs-shadow-modal: 0 8px 32px rgba(0, 0, 0, 0.5);
+    --gs-shadow-toast: 0 0 8px 2px rgba(0, 0, 0, 0.36);
+    --gs-shadow-screen: 0 0 0 1px rgba(0, 0, 0, 0.8);
+
+    /* Component overrides: the menu's selection is VS Code's. */
+    --gs-menu-hover-bg: #04395e; /* menu.selectionBackground */
+  }
+}

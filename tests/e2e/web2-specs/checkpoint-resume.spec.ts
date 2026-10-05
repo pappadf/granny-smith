@@ -30,10 +30,12 @@
 import { test, expect, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { gotoWeb2, stageOpfsFile } from '../helpers/web2-fs';
+import { gsCallInPage, gsEvalInPage } from '../helpers/web2-eval';
 
 const PLUS_ROM = path.resolve(__dirname, '../../data/roms/plus-v3-4d1f8172.rom');
 const SE30_ROM = path.resolve(__dirname, '../../data/roms/iix-iicx-se30-97221136.rom');
 const SE30_VROM = path.resolve(__dirname, '../../data/roms/builtin-se30-video-4f71ff1a.vrom');
+const SYSTEM_608 = path.resolve(__dirname, '../../data/systems/System_6_0_8.dsk');
 
 // Upload a ROM via the Welcome "Upload ROM..." button (the shipped path; the
 // persist bumps the image revision so the config slide re-scans).
@@ -51,7 +53,7 @@ async function startMachine(page: Page, modelId: string): Promise<void> {
   const model = page.locator('#cfg-model');
   await expect(model.locator(`option[value="${modelId}"]`)).toHaveCount(1, { timeout: 30_000 });
   await model.selectOption(modelId);
-  const start = page.getByRole('button', { name: 'Start Machine' });
+  const start = page.getByRole('button', { name: 'Start', exact: true });
   await expect(start).toBeEnabled();
   await start.click();
   await expect(page.locator('.toast .msg').filter({ hasText: 'Machine started' })).toBeVisible({
@@ -90,18 +92,6 @@ async function reloadWeb2(page: Page): Promise<void> {
 const resumeModal = (page: Page) =>
   page.locator('.modal, [role="dialog"]').filter({ hasText: 'Continue from saved checkpoint?' });
 
-// Drive the Terminal panel: type a shell line and return once the given
-// pattern shows up in the xterm buffer (DOM renderer — rows are readable).
-async function terminalExpect(page: Page, line: string, pattern: RegExp): Promise<void> {
-  await page.locator('button.ptab[data-tab="terminal"]').click();
-  const term = page.locator('.xterm');
-  await expect(term).toBeVisible({ timeout: 15_000 });
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
-  await expect(page.locator('.xterm-rows')).toContainText(pattern, { timeout: 15_000 });
-}
-
 test('tick-auto checkpoint: status-bar CP glyph updates, terminal stays silent', async ({
   page,
 }) => {
@@ -115,7 +105,7 @@ test('tick-auto checkpoint: status-bar CP glyph updates, terminal stays silent',
   // Terminal open from the start so any stray "Checkpoint saved" print
   // would be captured.
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
 
   // The CP glyph is present with its idle tooltip before the first save.
   const cp = page.locator('.gs-statusbar .sb-drive', { hasText: 'CP' });
@@ -128,7 +118,7 @@ test('tick-auto checkpoint: status-bar CP glyph updates, terminal stays silent',
   });
 
   // ...and the old terminal spam is gone.
-  const text = await page.locator('.xterm-rows').innerText();
+  const text = await page.locator('.console-output').innerText();
   expect(text).not.toContain('Checkpoint saved');
 });
 
@@ -158,6 +148,33 @@ test.describe('checkpoint save → reload → resume', () => {
     ).toBeVisible({ timeout: 60_000 });
     await expect(page.locator('.welcome-layer')).toHaveCount(0);
     await expect(statusLabel(page)).toHaveText('Running', { timeout: 15_000 });
+  });
+
+  test('a floppy attached at the checkpoint is the same image after a reload', async ({ page }) => {
+    // A checkpoint records each image's source key (its file, size and time
+    // stamp) and a restore refuses a base that is no longer the same bytes.
+    // OPFS files must keep their identity across a reload for that to hold.
+    test.setTimeout(180_000);
+    await gotoWeb2(page);
+    await stageOpfsFile(page, '/opfs/images/fd/System_6_0_8.dsk', SYSTEM_608);
+    await uploadRom(page, PLUS_ROM);
+    await startMachine(page, 'plus');
+    await gsCallInPage(page, 'machine.floppy.drive[0].insert', {
+      path: '/opfs/images/fd/System_6_0_8.dsk',
+      writable: true,
+    });
+    expect(await gsEvalInPage(page, 'files.images[0].filename')).toBe('/opfs/images/fd/System_6_0_8.dsk');
+    await page.waitForTimeout(2_000);
+    await createCheckpoint(page);
+
+    await reloadWeb2(page);
+    await expect(resumeModal(page)).toBeVisible({ timeout: 30_000 });
+    await page.getByRole('button', { name: 'Resume' }).click();
+    await expect(
+      page.locator('.toast .msg').filter({ hasText: 'Resumed from saved checkpoint' }),
+    ).toBeVisible({ timeout: 60_000 });
+    await expect(statusLabel(page)).toHaveText('Running', { timeout: 15_000 });
+    expect(await gsEvalInPage(page, 'files.images[0].filename')).toBe('/opfs/images/fd/System_6_0_8.dsk');
   });
 
   test('Start fresh discards the checkpoint and a second reload does not re-prompt', async ({
@@ -211,8 +228,7 @@ test.describe('checkpoint save → reload → resume', () => {
 
     // The restored machine must identify as an SE/30 — system_restore()
     // falling back to the default (Plus) profile is the historical failure
-    // this pins (legacy state test 10). The Terminal panel is the shipped
-    // typed path to the object model (web2 has no window.gsEval).
-    await terminalExpect(page, 'machine.id', /se30/);
+    // this pins (legacy state test 10).
+    expect(await gsEvalInPage(page, 'machine.id')).toBe('se30');
   });
 });

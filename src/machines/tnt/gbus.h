@@ -98,6 +98,7 @@ typedef enum ans_keyswitch {
 typedef struct tnt_gbus {
     uint8_t keyswitch; // ans_keyswitch_t — the FRONT switch, software-visible
     uint8_t rear_locked; // the REAR switch: a power-on precondition
+    uint8_t two_supplies; // a second (redundant) supply is fitted: TwoSuppliesH
     uint16_t env_faults; // set bit = that fault is INJECTED (register shows ~this)
     uint16_t tb_enable; // $1C020 store-and-readback (bit 15 = timebases run)
     uint16_t misc; // $1C030 store-and-readback (undocumented; see gbus.c)
@@ -143,8 +144,10 @@ uint32_t tnt_gbus_boxid_bits(config_t *cfg);
 // the 32-bit forms follow the family's little-endian register convention
 // (the guest reads them with lwbrx, so the model swaps at the bus edge).
 uint8_t tnt_gbus_read8(config_t *cfg, uint32_t offset);
+uint8_t tnt_gbus_peek8(config_t *cfg, uint32_t offset); // without ringing the doorbell
 void tnt_gbus_write8(config_t *cfg, uint32_t offset, uint8_t value);
 uint32_t tnt_gbus_read32(config_t *cfg, uint32_t offset);
+uint32_t tnt_gbus_peek32(config_t *cfg, uint32_t offset); // without ringing the doorbell
 void tnt_gbus_write32(config_t *cfg, uint32_t offset, uint32_t value);
 
 // === lcd.c ==================================================================

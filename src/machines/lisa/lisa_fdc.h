@@ -6,8 +6,8 @@
 // RAM).  NOT an Apple IWM: the 68000 issues high-level commands by writing a
 // command block into the shared RAM and the coprocessor returns logical
 // 512-byte sectors.  Modeled behaviourally (the iop_swim.c pattern), reusing
-// disk_read_data / the Sony geometry helpers.  See docs/machines/lisa/lisa.md §13 and
-// proposal-machine-lisa-xl.md §4.7.
+// disk_read_data / the Sony geometry helpers.  See docs/reference/machines/lisa/lisa.md §13 and
+// docs/internals/machines/lisa/fdc.md.
 //
 // Shared RAM at physical $00C001 (logical $00FCC001), byte N at $C001 + 2*N
 // (the controller RAM sits on the odd bytes of the 68000 bus; the ROM uses
@@ -32,6 +32,7 @@
 
 struct scheduler;
 struct image;
+struct image_list;
 typedef struct image image_t;
 typedef struct lisa_fdc lisa_fdc_t;
 
@@ -41,7 +42,10 @@ typedef void (*lisa_fdc_fdir_fn)(void *ctx, bool asserted);
 
 // === Lifecycle =============================================================
 
-lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb, void *fdir_ctx, checkpoint_t *cp);
+// `images`: the restored image list a restore resolves the saved diskette in
+// (NULL on a cold build).
+lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb, void *fdir_ctx, checkpoint_t *cp,
+                          const struct image_list *images);
 // Set the disk-controller ROM id ($FCC031) the boot ROM reads to detect the
 // machine type (Lisa 1 vs Lisa 2 / fast vs slow timers).  See lisa_fdc.c.
 void lisa_fdc_set_diskrom(lisa_fdc_t *fdc, uint8_t id);
@@ -55,14 +59,24 @@ void lisa_fdc_checkpoint(lisa_fdc_t *fdc, checkpoint_t *cp);
 void lisa_fdc_insert(lisa_fdc_t *fdc, image_t *image);
 void lisa_fdc_eject(lisa_fdc_t *fdc);
 bool lisa_fdc_disk_present(const lisa_fdc_t *fdc);
-// The disk currently in the drive (NULL when empty) — machine.restart
-// media transfer reads it to carry the handle across the power-cycle.
-image_t *lisa_fdc_disk_image(const lisa_fdc_t *fdc);
 
 // Parameter memory (battery-backed NVRAM, 64 bytes at $FCC181): persist/restore
 // the OS's boot-volume + device-configuration table across launches.  Returns
 // false on I/O error.  Load before booting (the ROM reads it during startup).
 bool lisa_fdc_pram_save(const lisa_fdc_t *fdc, const char *path);
+// Write a factory-fresh parameter memory (defaults, empty device table, valid
+// checksum) into the controller RAM.  `boot_vol` is the BootVol nibble from
+// pram.md §4 -- 1 = built-in Sony floppy, 2 = the parallel-port
+// ProFile.  Called at construction; exposed so a machine can re-seed.
+// `valid` false stores a deliberately non-verifying checksum -- a machine
+// whose battery was just replaced, so the OS rebuilds the device table from
+// the boot volume's MDDF snapshot instead of trusting an empty one.
+// `installed` additionally packs the device-configuration table the LOS 3.1
+// installer leaves at a clean shutdown (ProFile as cd_paraport).  Needed only
+// for a volume installed onto but not yet cleanly shut down, whose on-disk
+// MDDF snapshot the OS cannot restore from.
+void lisa_fdc_pram_init(lisa_fdc_t *fdc, uint8_t boot_vol, bool valid, bool installed);
+
 bool lisa_fdc_pram_load(lisa_fdc_t *fdc, const char *path);
 
 // === Shared-RAM access (offset = physical address − $00C001) ================

@@ -1,0 +1,4 @@
+machine.cpu.d0 : uint, hex
+ = 0x0
+
+Data register D0 (32-bit)

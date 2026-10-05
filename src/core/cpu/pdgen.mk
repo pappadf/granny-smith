@@ -2,7 +2,7 @@
 #
 # Included by Makefile (wasm), Makefile.headless and tests/unit/common.mk:
 # the headers are derived from the two decode trees by
-# scripts/gen_pd_cases.py (proposal-predecoded-interpreter-cores.md §4.3)
+# scripts/gen_pd_cases.py (docs/internals/core/cpu/predecode.md)
 # into one shared output tree under build/gen/, and every core file that
 # instantiates a predecoded executor includes them (-I$(PDGEN_OUT)).
 

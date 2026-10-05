@@ -2,22 +2,19 @@
 // Copyright (c) pappadf
 
 // jmfb.h
-// Apple Macintosh Display Card 8•24 (Rev B, ROM `341-0868`).  See
-// proposal-machine-iicx-iix.md §3.2.5.  Driver class
+// Apple Macintosh Display Card 8•24 (Rev B, ROM `341-0868`).  Driver class
 // `Display_Video_Apple_MDC` (`catDisplay / typeVideo / DrSwApple /
 // DrHwMDC`).  All register / bit-field names mirror Apple's
 // JMFBDepVideoEqu.a verbatim.
 //
-// v1 status (per the proposal's "Steps 1-5 done, Step 6 minimum-viable"
-// scope).  The four register blocks (JMFB / Stopwatch / CLUT / Endeavor)
-// each have their offsets defined here, and the I/O dispatcher in
-// jmfb.c handles every named register; a subset (CLUTAddrReg /
-// CLUTDataReg / CLUTPBCR / JMFBVideoBase / JMFBRowWords / SWClrVInt /
-// SWICReg / JMFBCSR sense-bits) is *modelled*, the rest are
-// *accept-and-log* per §3.2.5's policy.  The card boots far enough to
-// run the System 7 JMFB driver's PrimaryInit; full mode-switch
-// (`cscSwitchMode`) lands as the JMFB driver's behavioural surface
-// expands.
+// v1 status (minimum-viable).  The four register blocks (JMFB / Stopwatch /
+// CLUT / Endeavor) each have their offsets defined here, and the I/O dispatcher
+// in jmfb.c handles every named register; a subset (CLUTAddrReg / CLUTDataReg /
+// CLUTPBCR / JMFBVideoBase / JMFBRowWords / SWClrVInt / SWICReg / JMFBCSR
+// sense-bits) is *modelled*, the rest are *accept-and-log* (logged, never a bus
+// error).  The card boots far enough to run the System 7 JMFB driver's
+// PrimaryInit; full mode-switch (`cscSwitchMode`) lands as the JMFB driver's
+// behavioural surface expands.
 
 #ifndef NUBUS_CARDS_JMFB_H
 #define NUBUS_CARDS_JMFB_H
@@ -83,52 +80,9 @@
 // to disable) in the slot's video ROM.
 #define VINT_DISABLE 0x0002u
 
-// Per-card kind descriptors — registered in nubus.c's g_card_registry.
-// mdc_8_24 is the real card (needs an offered vROM dump); 8_24 is its
-// always-available generic sibling with the built-in GS declaration ROM
-// (same HLE register model — see proposal-generic-nubus-vrom.md sec. 6.1).
+// The card kind — registered in nubus.c's g_card_registry.  It runs Apple's
+// declaration ROM when one is offered, else the emulator's substitute (the
+// GS vROM, docs/internals/core/peripherals/nubus_generic_vrom.md).
 extern const nubus_card_kind_t mdc_8_24_kind;
-extern const nubus_card_kind_t jmfb_generic_kind;
-
-// Pending monitor sense for the next-instantiated JMFB card.  Set
-// before `machine.boot` to make the new machine's JMFB report a
-// different monitor type to the boot ROM (changes display.width and
-// display.height to match — see monitor_for_sense in jmfb.c).  After
-// the next factory call the pending slot is reset to the default
-// ($6 = 13" RGB).  Valid raw-sense codes per JMFBPrimaryInit.a are
-// 0..6; 7 is "no connect / extended sense" and falls back to
-// 13" RGB dimensions.
-void jmfb_pending_sense_set(uint8_t sense);
-uint8_t jmfb_pending_sense_get(void);
-
-// Pending high-level video-mode selection consumed by the next JMFB
-// factory call.  The id matches one of the entries enumerated by
-// `machine.profile(id).video_modes[].id` (e.g. "13in_rgb_8bpp").
-// When set, the factory:
-//   1. resolves id → (monitor, depth) via mdc_8_24_monitors[],
-//   2. overrides the pending sense to the monitor's sense_code,
-//   3. seeds PRAM with the boot-ROM validity tokens ($00=$A8,
-//      $0C-$0F='NuMc') and the slot-9 sPRAMRec bytes that name
-//      the requested (sister sRsrcID, spDepth) pair, so the Slot
-//      Manager's GET_SLOT_DEPTH picks it up at first boot.
-// Mirrors how `tests/integration/iicx-video-modes/test.script`
-// drives the same dance shell-side.  Passing NULL or "" clears
-// the pending selection.
-void jmfb_pending_video_mode_set(const char *id);
-const char *jmfb_pending_video_mode_get(void);
-
-// Pending "WxHxD" custom resolution (proposal-nubus-runtime-vrom §3.6):
-// the generic 8_24 kind generates a video sResource at this geometry and
-// boots its default 13" RGB monitor on it.  NULL/"" clears.
-void jmfb_pending_custom_mode_set(const char *spec);
-const char *jmfb_pending_custom_mode_get(void);
-
-// Look up a video-mode entry by id ("monitor_Nbpp") in the JMFB
-// catalog.  Writes the resolved monitor + depth into *out_monitor
-// / *out_depth_bpp on success and returns true; returns false (and
-// leaves the out-params untouched) when id doesn't match any
-// catalog entry.  Used by the JMFB factory to consume a pending
-// video-mode selection.
-bool jmfb_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp);
 
 #endif // NUBUS_CARDS_JMFB_H

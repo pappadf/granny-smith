@@ -2,57 +2,45 @@
 #
 # Every declaration ROM (genuine cards and the "fake" SE/30 onboard-video
 # ROM alike) carries a 20-byte Format Block whose 4-byte CRC is the
-# intrinsic, Slot-Manager-validated checksum (docs/core/peripherals/
-# nubus_vrom.md §2).  vrom.identify reads it — the direct analog of
-# rom.identify keying on the main ROM's checksum word — and maps it to the
+# intrinsic, Slot-Manager-validated checksum (docs/internals/core/peripherals/
+# declaration-rom.md §2).  vrom.identify reads it — the direct analog of
+# rom.identify keying on the main ROM's stored checksum — and maps it to the
 # nubus card-kind id the blob provides, plus a `compatible:[card_ids]` list
 # mirroring rom.identify's `compatible:[model_ids]`.  Content facts only —
-# canonical fixture naming lives in tooling (scripts/rom_naming.py, enforced
-# by the rom-naming test), not in the identify payload.  This cross-check is
+# no filenames in the identify payload, and test-data filenames are free-form
+# (the rom-catalog test checks every file is recognised).  This cross-check is
 # what protects against drift between VROM_CATALOG and the card registry.
 
 # --- Part 1: the {card_id, compatible, crc} contract (stateless probe). ---
 # Output is a JSON-encoded V_STRING; echo for visibility, then exact-match.
-echo "${machine.vrom.identify("../../data/roms/mdc-8-24-revb-d1629664.vrom")}"
-echo "${machine.vrom.identify("../../data/roms/builtin-se30-video-4f71ff1a.vrom")}"
-echo "${machine.vrom.identify("../../data/roms/display-card-24ac-d8daab87.vrom")}"
+echo "${catalog.vroms.identify("../../data/roms/mdc-8-24-revb-d1629664.vrom")}"
+echo "${catalog.vroms.identify("../../data/roms/builtin-se30-video-4f71ff1a.vrom")}"
+echo "${catalog.vroms.identify("../../data/roms/display-card-24ac-d8daab87.vrom")}"
 
 # Macintosh Display Card 8•24 → JMFB card "mdc_8_24", CRC $D1629664.
-assert machine.vrom.identify("../../data/roms/mdc-8-24-revb-d1629664.vrom") == "{\"recognised\":true,\"card_id\":\"mdc_8_24\",\"compatible\":[\"mdc_8_24\"],\"size\":32768,\"crc\":\"0xd1629664\"}" "8•24 vROM identity"
+assert catalog.vroms.identify("../../data/roms/mdc-8-24-revb-d1629664.vrom") == "{\"recognised\":true,\"card_id\":\"mdc_8_24\",\"compatible\":[\"mdc_8_24\"],\"size\":32768,\"crc\":\"0xd1629664\"}" "8•24 vROM identity"
 
 # SE/30 onboard video (byteLanes $0F, 4-lane) → builtin card, CRC $4F71FF1A.
-assert machine.vrom.identify("../../data/roms/builtin-se30-video-4f71ff1a.vrom") == "{\"recognised\":true,\"card_id\":\"builtin_se30_video\",\"compatible\":[\"builtin_se30_video\"],\"size\":32768,\"crc\":\"0x4f71ff1a\"}" "SE/30 onboard-video vROM identity"
+assert catalog.vroms.identify("../../data/roms/builtin-se30-video-4f71ff1a.vrom") == "{\"recognised\":true,\"card_id\":\"builtin_se30_video\",\"compatible\":[\"builtin_se30_video\"],\"size\":32768,\"crc\":\"0x4f71ff1a\"}" "SE/30 onboard-video vROM identity"
 
-# Apple Macintosh Display Card 24AC → "display_card_24ac", CRC $D8DAAB87.
-assert machine.vrom.identify("../../data/roms/display-card-24ac-d8daab87.vrom") == "{\"recognised\":true,\"card_id\":\"display_card_24ac\",\"compatible\":[\"display_card_24ac\"],\"size\":32768,\"crc\":\"0xd8daab87\"}" "24AC vROM identity"
+# Macintosh Display Card 24AC → "display_card_24ac", CRC $D8DAAB87.
+assert catalog.vroms.identify("../../data/roms/display-card-24ac-d8daab87.vrom") == "{\"recognised\":true,\"card_id\":\"display_card_24ac\",\"compatible\":[\"display_card_24ac\"],\"size\":32768,\"crc\":\"0xd8daab87\"}" "24AC vROM identity"
 
-# Apple Macintosh Display Card 8•24 GC ("Dolphin") → "824gc".  Three genuine
+# Macintosh Display Card 8•24 GC ("Dolphin") → "824gc".  Three genuine
 # declaration ROMs (byteLanes $E1); v1.1 is a 64 KB chip, v1.0 / alpha 32 KB.
-assert machine.vrom.identify("../../data/roms/824gc-v1.1-revb-d722b053.vrom") == "{\"recognised\":true,\"card_id\":\"824gc\",\"compatible\":[\"824gc\"],\"size\":65536,\"crc\":\"0xd722b053\"}" "8•24 GC v1.1 vROM identity"
-assert machine.vrom.identify("../../data/roms/824gc-v1.0-reva-9e9857e8.vrom") == "{\"recognised\":true,\"card_id\":\"824gc\",\"compatible\":[\"824gc\"],\"size\":32768,\"crc\":\"0x9e9857e8\"}" "8•24 GC v1.0 vROM identity"
-assert machine.vrom.identify("../../data/roms/824gc-v1.0a16-4740028d.vrom") == "{\"recognised\":true,\"card_id\":\"824gc\",\"compatible\":[\"824gc\"],\"size\":32768,\"crc\":\"0x4740028d\"}" "8•24 GC alpha vROM identity"
+assert catalog.vroms.identify("../../data/roms/824gc-v1.1-revb-d722b053.vrom") == "{\"recognised\":true,\"card_id\":\"824gc\",\"compatible\":[\"824gc\"],\"size\":65536,\"crc\":\"0xd722b053\"}" "8•24 GC v1.1 vROM identity"
+assert catalog.vroms.identify("../../data/roms/824gc-v1.0-reva-9e9857e8.vrom") == "{\"recognised\":true,\"card_id\":\"824gc\",\"compatible\":[\"824gc\"],\"size\":32768,\"crc\":\"0x9e9857e8\"}" "8•24 GC v1.0 vROM identity"
+assert catalog.vroms.identify("../../data/roms/824gc-v1.0a16-4740028d.vrom") == "{\"recognised\":true,\"card_id\":\"824gc\",\"compatible\":[\"824gc\"],\"size\":32768,\"crc\":\"0x4740028d\"}" "8•24 GC alpha vROM identity"
 
 # A main ROM is the wrong size for a vROM → recognised:false (no false match).
-assert machine.vrom.identify("../../data/roms/plus-v3-4d1f8172.rom") == "{\"recognised\":false}" "non-vROM file must be unrecognised"
+assert catalog.vroms.identify("../../data/roms/plus-v3-4d1f8172.rom") == "{\"recognised\":false}" "non-vROM file must be unrecognised"
 
 # Unreadable path → V_ERROR (the shell's truthiness rule treats it as falsy).
-assert !machine.vrom.identify("/dev/null/nonexistent") "unreadable path must yield V_ERROR"
+assert !catalog.vroms.identify("/dev/null/nonexistent") "unreadable path must yield V_ERROR"
 
 # --- Part 2: every catalog card_id resolves to a registered nubus card. ---
-# The slot[N].card_id setter validates the id against nubus_card_registry();
-# the readback proves the catalog and the registry don't drift (proposal §6).
-# IIcx has a nubus with socket $9, so the staged attr exists.  Each pick is
-# cleared afterwards so no staging leaks out of the test.
-machine.boot model="iicx" ram=8192 rom="${$ROM}"
-assert machine.id == "iicx" "machine.boot iicx (nubus present)"
-machine.nubus.slot[9].card_id = "mdc_8_24"
-assert machine.nubus.slot[9].card_id == "mdc_8_24" "catalog card_id mdc_8_24 must be a registered card"
-machine.nubus.slot[9].card_id = "display_card_24ac"
-assert machine.nubus.slot[9].card_id == "display_card_24ac" "catalog card_id display_card_24ac must be a registered card"
-machine.nubus.slot[9].card_id = "builtin_se30_video"
-assert machine.nubus.slot[9].card_id == "builtin_se30_video" "catalog card_id builtin_se30_video must be a registered card"
-machine.nubus.slot[9].card_id = "824gc"
-assert machine.nubus.slot[9].card_id == "824gc" "catalog card_id 824gc must be a registered card"
-machine.nubus.slot[9].card_id = ""
+# The vROM catalog's card ids are registry ids: the card registry lists each
+# one, so the catalog and the registry don't drift.
+assert catalog.nubus_cards == "[builtin_se30_video, mdc_8_24, builtin_rbv_video, display_card_24ac, 824gc]" "the NuBus card registry"
 
 quit

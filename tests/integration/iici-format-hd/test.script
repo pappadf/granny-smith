@@ -13,7 +13,7 @@
 # the 5380 is reached through the MDU rather than GLUE, so the same guard covers
 # a second bus path.
 #
-# EVERY WAIT IS A CONDITION (§5.2). The IIcx original ran this flow on fixed
+# EVERY WAIT IS A CONDITION. The IIcx original ran this flow on fixed
 # instruction budgets tuned to that host; re-hosted unchanged, its first budget
 # landed on "Welcome to Macintosh" and the rest of the flow then clicked at the
 # splash while its goldens captured it. Nothing below states a duration as an
@@ -24,8 +24,10 @@
 # re-derived from measured frames on this host.
 include "../lib/mac.script"
 
-# Create a blank HD20SC hard-disk image (21,307,392 bytes, zero-filled).
-storage.hd_create "$WORK_DIR/blank.img" HD20SC
+# Create a blank HD20SC hard disk (21,307,392 bytes, zero-filled), stored as
+# the web app stores one: a .dmg of one zero run, a few KB.
+files.hd_create "$WORK_DIR/blank.dmg" HD20SC
+assert files.path_size("$WORK_DIR/blank.dmg") < 8192 "a blank .dmg is not a few KB"
 
 # Built-in RBV named explicitly: this row's declared cell is the RBV one, and an
 # unnamed machine.boot inherits whatever staging came before it.
@@ -34,7 +36,7 @@ machine.boot model="iici" ram=8192 video_card="builtin_rbv_video" rom="${$ROM}"
 # Attach the blank HD at SCSI ID 0 (unformatted -> won't boot / won't mount),
 # and insert the SSW 6.0.8 boot floppy (Disk2of4 is the "Utilities" disk that
 # carries Apple HD SC Setup).
-machine.scsi.attach_hd "$WORK_DIR/blank.img" 0
+machine.scsi.attach_hd "$WORK_DIR/blank.dmg" 0
 machine.floppy.drive[0].insert "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk2of4"
 
 # Boot to the Finder desktop. No Cmd-Shift-Power synthesis here, unlike the IIcx
@@ -76,6 +78,17 @@ wait_stable(900000000)
 check("done.png")
 
 report_row("6.0.8", "rbv", "hd-format 5380-drq")
+
+# The format's writes went to the delta, which holds what was written --
+# the volume's structures at both ends of the disk -- not everything up to
+# the highest block (the alternate MDB sits in the last sectors).
+let cache = files.list("$WORK_DIR/storage-cache")
+let spent = 0
+for i in 0..len($cache) {
+    $spent = $spent + $cache[$i].size
+}
+assert $spent < 2097152 "the delta of a freshly formatted 20 MB disk is ${$spent} bytes"
+assert files.path_size("$WORK_DIR/blank.dmg") < 8192 "the format wrote into the .dmg"
 
 # Export the formatted HD (base + delta flattened) for inspection.
 machine.scsi.device[0].image.export "$WORK_DIR/formatted.img"

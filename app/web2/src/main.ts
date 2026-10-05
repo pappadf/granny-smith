@@ -1,20 +1,50 @@
-import './styles/tokens.css';
-import './styles/reset.css';
-import { mount } from 'svelte';
+import './styles/index.css';
+import './skins/registry';
+import './styles/preferences.css';
+import { mount, unmount } from 'svelte';
 import App from './App.svelte';
 import { loadPersistedState } from '@/state/persist.svelte';
-import { applyThemeToHtml, theme } from '@/state/theme.svelte';
+import { applyAppearance, applyUrlSkin } from '@/state/appearance.svelte';
 import { autoPickPanelPos, layout } from '@/state/layout.svelte';
 import { setOpfsBackend, BrowserOpfs } from '@/bus/opfs';
 import { maybeOfferBackgroundCheckpoint } from '@/bus/checkpoint';
-import { processUrlMedia, parseUrlMediaParams } from '@/bus/urlMedia';
-import { whenModuleReady } from '@/bus/emulator';
+import {
+  processUrlMedia,
+  parseUrlMediaParams,
+  hasUrlMedia,
+  urlSchedulerMode,
+} from '@/bus/urlMedia';
+import { whenModuleReady, onEmulatorCrash, applySchedulerMode } from '@/bus/emulator';
+import { claimScratch } from '@/bus/scratch';
+import { setSchedulerMode } from '@/state/machine.svelte';
+import { beginUrlBoot } from '@/state/urlBoot.svelte';
+import { installEvalHookForAutomation, installUiHookForAutomation } from '@/bus/testHook';
 import { checkWebGL2Available } from '@/lib/webglCheck';
-import { renderWebGLErrorPage } from '@/lib/webglErrorPage';
+import { renderWebGLErrorPage, renderStartupErrorPage } from '@/lib/webglErrorPage';
 
-// Synchronous before-mount work: avoid theme flash + auto-pick layout.
+// A deploy replaces every hashed file.  A page still running the previous
+// build (its script cached) then asks for files that are gone -- a skin's
+// stylesheet, say -- and would show the skin half drawn.  Load the new build
+// instead, once: a reload within a minute of the last is not repeated, so a
+// file that is really missing cannot loop.
+window.addEventListener('vite:preloadError', (ev) => {
+  try {
+    const last = Number(sessionStorage.getItem('gs-stale-reload') ?? 0);
+    if (Date.now() - last < 60_000) return;
+    sessionStorage.setItem('gs-stale-reload', String(Date.now()));
+  } catch {
+    return;
+  }
+  ev.preventDefault();
+  location.reload();
+});
+
+// Synchronous before-mount work: the appearance (index.html's pre-paint
+// script already set it; this corrects it against the registry) and the
+// auto-picked layout.
 loadPersistedState();
-applyThemeToHtml(theme.mode);
+applyUrlSkin(new URLSearchParams(window.location.search));
+applyAppearance();
 
 try {
   if (!localStorage.getItem('gs-panel-pos')) {
@@ -27,10 +57,29 @@ try {
 const target = document.getElementById('app');
 if (!target) throw new Error('#app mount point missing from index.html');
 
-const app = bootApp(target);
-export default app;
+// The UI gallery (`?gallery`) exists only on the dev server: the constant
+// DEV check lets the production build drop the import entirely.
+if (import.meta.env.DEV && new URLSearchParams(window.location.search).has('gallery')) {
+  void import('./gallery/main').then((m) => m.startGallery(target));
+} else {
+  void bootApp(target);
+}
 
-function bootApp(target: HTMLElement): unknown {
+// The browser's origin-private file system holds every ROM, disk image and
+// checkpoint, and the core mounts it as /opfs: without it nothing can boot.
+// It is missing in some private-browsing modes and when site storage is
+// blocked, where BrowserOpfs used to turn every failure into an empty list.
+async function probeOpfs(): Promise<string | null> {
+  try {
+    if (!navigator.storage?.getDirectory) return 'navigator.storage.getDirectory is not available';
+    await navigator.storage.getDirectory();
+    return null;
+  } catch (e) {
+    return e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+  }
+}
+
+async function bootApp(target: HTMLElement): Promise<unknown> {
   // Probe WebGL 2 before mounting. The emulator worker can't recover from
   // a missing GPU context — show a full-page block so the user isn't
   // stuck in a half-broken UI (Display dead, terminal alive).
@@ -40,8 +89,18 @@ function bootApp(target: HTMLElement): unknown {
     return null;
   }
 
-  // Swap MockOpfs for the real browser OPFS implementation. Tests stay on
-  // MockOpfs via tests/setup.ts.
+  const opfsFailure = await probeOpfs();
+  if (opfsFailure) {
+    renderStartupErrorPage(
+      target,
+      opfsFailure,
+      'Browser storage is unavailable',
+      'The emulator keeps ROMs, disk images and saved states in this site’s browser storage (OPFS). Allow site data for this page, or leave private browsing, then reload.',
+    );
+    return null;
+  }
+
+  // The real browser OPFS (tests install MockOpfs via tests/setup.ts).
   setOpfsBackend(new BrowserOpfs());
 
   const mounted = mount(App, { target });
@@ -52,21 +111,58 @@ function bootApp(target: HTMLElement): unknown {
   // `whenModuleReady()` exactly when the bridge is live.
   const urlParams = new URLSearchParams(window.location.search);
   const mediaParams = parseUrlMediaParams(urlParams);
+  // ?speed= is the toolbar's pacing preference from the start.  The core's
+  // pacing is the host's setting, there with or without a machine, so it is
+  // pushed as soon as the core is up (below) and every machine the page then
+  // boots or restores runs under it.
+  const urlMode = urlSchedulerMode(mediaParams.speed);
+  if (urlMode) setSchedulerMode(urlMode);
+  // A ROM in the URL means the page boots a machine by itself: it shows the
+  // download progress instead of Welcome and asks nothing (no preview notice,
+  // no resume prompt).  Media without a ROM only goes into a running machine.
+  const urlBoots = !!mediaParams.rom;
+  if (urlBoots) beginUrlBoot(mediaParams.model);
 
   void (async () => {
-    await whenModuleReady();
+    try {
+      await whenModuleReady();
+    } catch (e) {
+      // The emulator cannot start: replace the half-alive UI with a blocking
+      // page that says why, as the WebGL probe does before mount.
+      void unmount(mounted);
+      renderStartupErrorPage(target, e instanceof Error ? e.message : String(e));
+      return;
+    }
+
+    // A worker that dies later (a wasm trap, an abort) cannot be recovered in
+    // this page: every request now fails at once; say so and offer a reload.
+    onEmulatorCrash((reason) => {
+      void unmount(mounted);
+      renderStartupErrorPage(target, reason, 'The emulator stopped');
+    });
 
     // Expose a single boolean flag for the headless diagnostic harness
     // (scripts/ui2-diag.mjs) and other automation to wait on. Cheaper /
     // more explicit than scraping the terminal for the prompt.
     (window as unknown as { __gsReady?: boolean }).__gsReady = true;
 
-    const resumed = await maybeOfferBackgroundCheckpoint();
+    // Under automation only, let specs read core state without typing into
+    // the terminal (bus/testHook.ts).
+    installEvalHookForAutomation();
+    installUiHookForAutomation();
+
+    // This tab's scratch area, before anything writes to it.
+    await claimScratch();
+    if (urlMode) await applySchedulerMode(urlMode);
+
+    // The machine the URL names wins over the one this browser saved: the
+    // saved checkpoint is left as it is, unoffered.
+    const resumed = urlBoots ? false : await maybeOfferBackgroundCheckpoint();
     if (resumed) return;
 
-    if (urlParams.has('rom') || mediaParams.floppies.length || mediaParams.hardDisks.length) {
-      await processUrlMedia(urlParams);
-    }
+    // Any media parameter starts URL processing: ?cd= or ?vrom= alone used to
+    // be ignored.
+    if (hasUrlMedia(mediaParams)) await processUrlMedia(urlParams);
     // Otherwise the Welcome view stays up and waits for the user.
   })();
 

@@ -3,7 +3,7 @@
 
 // afp_fork.h
 // Shared fork backing store, deny modes and byte-range locks for the AFP
-// server (proposal-afp-server-completeness.md §5 WP-6/WP-7).
+// server.
 //
 // A fork is opened many times by many sessions, so the bytes cannot live in a
 // per-open private copy: the second opener would see a stale snapshot and the
@@ -52,10 +52,31 @@ typedef enum {
     AFP_FORK_RANGE_OVERLAP,
     AFP_FORK_RANGE_NOT_LOCKED,
     AFP_FORK_IO_ERR,
+    AFP_FORK_DISK_FULL,
 } afp_fork_status_t;
 
-// Release every backing and handle.  Called from the server's teardown.
-void afp_fork_shutdown(void);
+// No fork grows past this: the 2 GB - 1 KB ceiling every size the server
+// reports is clamped to (AFP_VOL_SIZE_CEILING).  A length or a write that would
+// end beyond it is AFP_FORK_DISK_FULL -- not a 4 GB sparse file.
+#define AFP_FORK_MAX_LENGTH 0x7FFFFC00u
+
+// The open forks of one connection's sessions (part of its afp_link_t): the
+// handles, the backings they share, and the refnum cursor.  The fork layer
+// serves the plugged-in connection's table; with none plugged in there are no
+// forks.
+typedef struct afp_fork_table {
+    struct afp_backing *backings;
+    struct afp_fork *forks;
+    uint32_t next_ref; // atalk_id_alloc cursor
+    uint32_t open_count;
+} afp_fork_table_t;
+
+void afp_fork_table_init(afp_fork_table_t *table);
+void afp_fork_plug(afp_fork_table_t *table);
+
+// Release every backing and handle of the plugged-in table: the server was
+// disabled, or the connection is being unplugged.
+void afp_fork_close_all(void);
 
 // Open a fork.  `host_path` is the data file's host path (the sidecar path is
 // derived for resource forks) and `rel_path` its volume-relative path, kept
@@ -64,8 +85,9 @@ void afp_fork_shutdown(void);
 afp_fork_status_t afp_fork_open(uint16_t vol_id, uint16_t session_id, const char *host_path, const char *rel_path,
                                 bool is_resource, uint16_t access_mode, afp_fork_t **out);
 
-// Look up an open handle by its wire reference number.
-afp_fork_t *afp_fork_find(uint16_t ref);
+// Look up an open handle by its wire reference number, for the session that
+// opened it: another session's refnum is not found (ParamErr, ch. 13).
+afp_fork_t *afp_fork_find(uint16_t ref, uint16_t session_id);
 
 // Handle accessors.
 uint16_t afp_fork_ref(const afp_fork_t *fk);
@@ -105,6 +127,10 @@ void afp_fork_repoint(const char *old_host_path, const char *new_host_path, cons
 
 // Current fork length in bytes.
 uint32_t afp_fork_length(afp_fork_t *fk);
+
+// The live length of a file's data or resource fork while any session has it
+// open; false when none does, and the host file or sidecar is current.
+bool afp_fork_live_length(const char *host_path, bool is_resource, uint32_t *out);
 
 // Read up to `count` bytes at `offset`.  `*out_read` receives the byte count.
 // Fails with AFP_FORK_LOCK_ERR when the range is locked by another handle.

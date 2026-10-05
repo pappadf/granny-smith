@@ -1,0 +1,135 @@
+/* ====== Global foundation ======
+   Element defaults, native controls, scrollbars, focus, selection and
+   motion, all from tokens.  Everything a component does not style itself
+   looks like the skin because of this file. */
+@layer gs.base {
+  /* Native controls (select pickers, checkboxes, radios, number spinners,
+     scrollbars) are drawn light or dark as the skin is; checkboxes, radios
+     and ranges take the accent. */
+  :root {
+    color-scheme: var(--gs-color-scheme);
+    accent-color: var(--gs-control-accent);
+  }
+
+  body {
+    background: var(--gs-surface-app);
+    color: var(--gs-text);
+    font-family: var(--gs-font-ui);
+    font-size: var(--gs-font-size-base);
+    line-height: var(--gs-line-height-base);
+  }
+
+  input,
+  select,
+  textarea,
+  button {
+    font: inherit;
+    color: inherit;
+  }
+
+  /* Text inside empty states and hints: a command in code colours, a key
+     as a small cap, emphasis at the scale's semibold. */
+  code,
+  kbd {
+    font-family: var(--gs-font-mono);
+    color: var(--gs-code-operand);
+  }
+  kbd {
+    padding: 0 var(--gs-space-1);
+    border: var(--gs-border-width) solid var(--gs-border);
+    border-radius: var(--gs-radius-sm);
+    background: var(--gs-surface-sunken);
+  }
+  strong {
+    font-weight: var(--gs-font-weight-semibold);
+  }
+
+  /* Thin themed scrollbars.  Chromium 121+ and Firefox use scrollbar-color
+     (and ignore the ::-webkit rules when it is set); Safari uses the
+     ::-webkit rules. */
+  * {
+    scrollbar-color: var(--gs-scrollbar-thumb) var(--gs-scrollbar-track);
+    scrollbar-width: thin;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--gs-scrollbar-thumb);
+    border-radius: var(--gs-radius-pill);
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--gs-scrollbar-thumb-hover);
+  }
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
+    background: var(--gs-scrollbar-track);
+  }
+
+  /* Focus: a ring for keyboard focus only.  A component that shows focus
+     another way (an input's border) overrides :focus-visible itself. */
+  :focus {
+    outline: none;
+  }
+  :focus-visible {
+    outline: var(--gs-focus-width) solid var(--gs-focus-ring);
+    outline-offset: var(--gs-focus-offset);
+  }
+
+  ::selection {
+    background: var(--gs-selection-bg);
+    color: var(--gs-selection-fg);
+  }
+  ::placeholder {
+    color: var(--gs-text-placeholder);
+    opacity: 1;
+  }
+
+  /* Text for assistive tech only (a drive light's name in the icon style). */
+  .gs-visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* A <details> summary drawn with the disclosure chevron (ui/Disclosure):
+     SYSTEM's container values and the console's value trees. */
+  summary.gs-summary {
+    list-style: none;
+    cursor: pointer;
+  }
+  summary.gs-summary::-webkit-details-marker {
+    display: none;
+  }
+  summary.gs-summary::before {
+    content: '';
+    display: inline-block;
+    width: var(--gs-size-icon-xs);
+    height: var(--gs-size-icon-xs);
+    margin-right: var(--gs-space-1);
+    vertical-align: -0.1em;
+    background: var(--gs-disclosure-fg);
+    mask: var(--gs-disclosure-mask) center / contain no-repeat;
+    transform: rotate(var(--gs-disclosure-rotation-closed));
+    transition: transform var(--gs-disclosure-duration) var(--gs-ease-out);
+  }
+  details[open] > summary.gs-summary::before {
+    transform: none;
+  }
+
+  /* Forced colours: the status bar keeps its machine-state colours. */
+  @media (forced-colors: active) {
+    .gs-statusbar {
+      forced-color-adjust: none;
+    }
+  }
+}

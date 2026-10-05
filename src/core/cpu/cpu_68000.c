@@ -9,10 +9,7 @@
 #define CPU_DECODER_IS_68000 1 // this unit is the 68000 core: odd-address checks compile unconditionally
 #include "cpu_internal.h"
 
-#include "log.h"
 #include "system.h"
-
-LOG_USE_CATEGORY_NAME("cpu");
 
 // 68000 memory access: direct (no MMU translation); word/long operand
 // accesses go through the odd-address check (cpu_internal.h)
@@ -72,6 +69,26 @@ LOG_USE_CATEGORY_NAME("cpu");
  * in scheduler.c:reconcile_sprint on any SE/30 sprint that ended its last
  * instruction on a slow I/O access. */
 #define CPU_DECODER_PROLOGUE                                                                                           \
+    /* Double bus fault: the CPU halts, and on Mac hardware the halt line is                                           \
+     * wired straight to the board's reset input, so the machine reboots.                                              \
+     * Apple's Guide to the Macintosh Family Hardware documents the wiring for                                         \
+     * the Mac SE -- itself a 68000 machine -- twice: "/HALT ... Tied to                                               \
+     * MC68000 /RES line", and "/RESET ... Master reset for entire board; tied                                         \
+     * to MC68000 /HALT line".  MC68030UM 7.5.4 gives the CPU half of the same                                         \
+     * rule ("Only an external reset operation can restart a halted                                                    \
+     * processor"); the board is what supplies that external reset.                                                    \
+     *                                                                                                                 \
+     * Deliberately IDENTICAL to the 68030 and 68040 decoders.  The 68000                                              \
+     * previously just returned instead, leaving pc already advanced past the                                          \
+     * faulting opcode by this prologue, so the next sprint resumed                                                    \
+     * mid-instruction -- and that left the Plus and Lisa as the only machines                                         \
+     * in the tree behaving differently on a double fault, with no hardware                                            \
+     * basis for the difference. */                                                                                    \
+    if (__builtin_expect(cpu->halted, 0)) {                                                                            \
+        cpu->halted = 0;                                                                                               \
+        system_reset_devices(); /* the board's /RESET net; precedes the vector read */                                 \
+        cpu_reset_to_vector_68030(cpu); /* CPU half only; not 030-specific */                                          \
+    }                                                                                                                  \
     cpu_check_interrupt(cpu);                                                                                          \
     /* Let a memory-layer fault (lisa_raise_bus_error / memory.c) force this sprint                                    \
      * to exit immediately by zeroing the burndown counter, so a deferred DATA bus                                     \
@@ -96,9 +113,8 @@ LOG_USE_CATEGORY_NAME("cpu");
             m68k_fetch_address_error(cpu);                                                                             \
             break;                                                                                                     \
         }                                                                                                              \
-        uint32_t fetch = memory_read_uint32(cpu->pc);                                                                  \
+        uint32_t fetch = memory_read_prefetch32(cpu->pc);                                                              \
         uint16_t opcode = fetch >> 16;                                                                                 \
-        uint16_t ext_word = fetch & 0xFFFF;                                                                            \
         /* Record the address of the instruction being decoded.  The group-0                                           \
          * exception path (bus/address error, f_trap demand-segment fault on the                                       \
          * Lisa) reads cpu->instruction_pc to build the stack frame and to match                                       \
@@ -162,7 +178,7 @@ LOG_USE_CATEGORY_NAME("cpu");
 #undef CPU_DECODER_EPILOGUE
 
 // ============================================================================
-// The predecoded executor (proposal-predecoded-interpreter-cores.md): the
+// The predecoded executor (docs/internals/core/cpu/predecode.md): the
 // one-instruction executor, the sprint loop over predecoded entries, and
 // the decode tree in its classifier role — three more instantiations of
 // the same template, sharing this file's macro bindings and op bodies.

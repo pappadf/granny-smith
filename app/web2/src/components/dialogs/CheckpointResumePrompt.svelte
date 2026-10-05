@@ -1,5 +1,6 @@
 <script lang="ts">
   import Modal from '../common/Modal.svelte';
+  import Button from '../ui/Button.svelte';
   import { checkpointPrompt, resolveCheckpointPrompt } from '@/state/checkpointPrompt.svelte';
 
   function onResume() {
@@ -16,41 +17,13 @@
     or start fresh with a cold boot.
   </p>
   {#snippet actions()}
-    <button type="button" class="btn-secondary" onclick={onDiscard}>Start fresh</button>
-    <button type="button" class="btn-primary" onclick={onResume}>Resume</button>
+    <Button size="lg" class="btn-secondary" onclick={onDiscard}>Start fresh</Button>
+    <Button size="lg" variant="primary" class="btn-primary" onclick={onResume}>Resume</Button>
   {/snippet}
 </Modal>
 
 <style>
   p {
     margin: 0;
-  }
-  button {
-    font-family: inherit;
-    font-size: 13px;
-    padding: 6px 14px;
-    border-radius: 2px;
-    cursor: pointer;
-    height: 30px;
-  }
-  .btn-primary {
-    background: var(--gs-primary-bg);
-    color: var(--gs-primary-fg);
-    border: none;
-  }
-  .btn-primary:hover {
-    background: var(--gs-primary-hover);
-  }
-  .btn-primary:active {
-    background: var(--gs-primary-active);
-  }
-  .btn-secondary {
-    background: transparent;
-    color: var(--gs-fg);
-    border: 1px solid var(--gs-border);
-  }
-  .btn-secondary:hover {
-    background: var(--gs-btn-hover);
-    color: var(--gs-fg-bright);
   }
 </style>

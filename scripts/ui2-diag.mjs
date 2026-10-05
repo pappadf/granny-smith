@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
 // Headless diagnostic for app/web2. Spawns the python dev server, drives
 // Chromium via Playwright, and waits for explicit page conditions —
 // never sleeps for a hopeful "settle". Captures console + pageerror +
@@ -19,8 +21,8 @@
 //   1. python dev server reachable on PORT
 //   2. page DOM-content loaded
 //   3. window.__gsReady === true (set by main.ts once bridge is live)
-//   4. xterm prompt visible (.xterm-rows contains the prompt string)
-//   5. each typed command's response has rendered (xterm row count grew)
+//   4. console prompt visible (.console-prompt holds the prompt string)
+//   5. each typed command's response has rendered (console entry count grew)
 
 import { chromium } from '/workspaces/granny-smith/tests/e2e/node_modules/playwright/index.mjs';
 import { spawn } from 'node:child_process';
@@ -145,12 +147,16 @@ async function main() {
 
   // 4. Wait for the bridge to come up. main.ts sets window.__gsReady = true
   //    after `whenModuleReady()` resolves — no settle guesswork.
+  //    A boot that cannot start sets window.__gsBootError instead, so a
+  //    failure is reported with its reason at once, not as a timeout.
   try {
     await page.waitForFunction(
-      () => window.__gsReady === true,
+      () => window.__gsReady === true || typeof window.__gsBootError === 'string',
       null,
       { timeout: TIMEOUT_MS },
     );
+    const bootError = await page.evaluate(() => window.__gsBootError);
+    if (bootError) throw new Error(`emulator did not start: ${bootError}`);
   } catch (err) {
     // The most likely failure mode in real-browser-GPU testing: WASM
     // module loaded but the worker died before resolving ready (e.g.
@@ -164,17 +170,11 @@ async function main() {
     return;
   }
 
-  // 5. Wait for the terminal to render its first prompt. TerminalPane
-  //    seeds it from `shell.prompt` after whenModuleReady resolves.
+  // 5. Wait for the console to show its first prompt. The console seeds
+  //    it from `shell.prompt` after whenModuleReady resolves.
   try {
     await page.waitForFunction(
-      () => {
-        const rowsEl = document.querySelector('.terminal-host .xterm-rows');
-        if (!rowsEl) return false;
-        // Wait until any visible row ends with a prompt marker ('> '
-        // or '$ ' with any number of trailing spaces).
-        return /[$>] *$/m.test(rowsEl.textContent ?? '');
-      },
+      () => /[$>]\s*$/.test(document.querySelector('.console-prompt')?.textContent ?? ''),
       null,
       { timeout: TIMEOUT_MS },
     );
@@ -189,32 +189,31 @@ async function main() {
 
   report.probe = await collectProbe(page);
 
-  // 6. Send commands. Each wait condition: the row count grows.
+  // 6. Send commands. Each wait condition: the entry count grows past the
+  //    command's own entry.
   const commandsToSend = COMMANDS.length ? COMMANDS : ['help'];
   try {
-    await page.click('.terminal-host');
+    await page.focus('.console .cm-content');
     for (const cmd of commandsToSend) {
-      const beforeRows = await page.evaluate(
-        () => document.querySelectorAll('.terminal-host .xterm-rows > div').length,
+      const before = await page.evaluate(
+        () => document.querySelectorAll('.console-output .entry').length,
       );
       await page.keyboard.type(cmd, { delay: 12 });
       await page.keyboard.press('Enter');
       try {
         await page.waitForFunction(
-          (n) =>
-            document.querySelectorAll('.terminal-host .xterm-rows > div').length > n,
-          beforeRows,
+          (n) => document.querySelectorAll('.console-output .entry').length > n + 1,
+          before,
           { timeout: TIMEOUT_MS },
         );
       } catch {
         // Don't bail — capture what we got, mark the cmd as no-response.
         report.events.push({ kind: 'cmd-timeout', text: cmd });
       }
-      const text = await page.evaluate(() => {
-        const rowsEl = document.querySelector('.terminal-host .xterm-rows');
-        return rowsEl ? rowsEl.innerText : '';
-      });
-      report.transcripts.push({ cmd, xtermText: text });
+      const text = await page.evaluate(
+        () => document.querySelector('.console-output')?.innerText ?? '',
+      );
+      report.transcripts.push({ cmd, consoleText: text });
     }
   } catch (err) {
     report.transcripts.push({ cmd: '[harness]', error: String(err) });
@@ -228,8 +227,8 @@ async function main() {
 async function collectProbe(page) {
   return page.evaluate(() => {
     const cnv = document.querySelector('#screen');
-    const xterm = document.querySelector('.terminal-host');
-    const rowsEl = xterm?.querySelector('.xterm-rows');
+    const consoleEl = document.querySelector('.console');
+    const outEl = consoleEl?.querySelector('.console-output');
     return {
       crossOriginIsolated: typeof crossOriginIsolated !== 'undefined' ? crossOriginIsolated : null,
       hasSAB: typeof SharedArrayBuffer !== 'undefined',
@@ -238,8 +237,8 @@ async function collectProbe(page) {
       canvasFound: !!cnv,
       canvasWidth: cnv ? cnv.width : null,
       canvasHeight: cnv ? cnv.height : null,
-      xtermPresent: !!xterm,
-      xtermText: rowsEl ? rowsEl.innerText : '',
+      consolePresent: !!consoleEl,
+      consoleText: outEl ? outEl.innerText : '',
       serviceWorkerControlled: !!navigator.serviceWorker?.controller,
     };
   });

@@ -2,18 +2,17 @@
 // Copyright (c) pappadf
 
 // test.c — directed unit tests for the 601 MMU front end
-// (src/core/cpu/ppc/ppc_mmu.c), proposal-powerpc-601-pdm.md Phase D.
+// (src/core/cpu/ppc/ppc_mmu.c).
 //
 // Written from the MPC601 User's Manual Chapter 6 (translation) and the
-// Chapter 5 DSI/ISI register-settings tables; the PTEG addresses are
-// computed here independently from Figure 6-19 so an arithmetic slip in
-// the implementation cannot silently agree with itself.  The §3.4 proof
-// list covered: 601-format BATs with key/PP protection, T=1 memory-forced
-// segments (SR5-toggle aliasing and the DT-off data path), primary and
-// secondary hashed-table search with R/C write-back, exact DSISR/DAR/SRR1
-// images, the (PR,DT)-keyed SoA discipline, tlbie congruence-class
-// invalidation, mtsr change-triggered invalidation, and dcbz's W/I
-// alignment rule.
+// Chapter 5 DSI/ISI register-settings tables; the PTEG addresses are computed
+// here independently from Figure 6-19 so an arithmetic slip in the
+// implementation cannot silently agree with itself.  Covered: 601-format BATs with key/PP
+// protection, T=1 memory-forced segments (SR5-toggle aliasing and the DT-off
+// data path), primary and secondary hashed-table search with R/C write-back,
+// exact DSISR/DAR/SRR1 images, the (PR,DT)-keyed SoA discipline, tlbie
+// congruence-class invalidation, mtsr change-triggered invalidation, and dcbz's
+// W/I alignment rule.
 
 #include "ppc_internal.h"
 
@@ -476,7 +475,7 @@ static void test_ioseg_error(void) {
     CHECK_EQ(P->dar, 0x10000000u);
 }
 
-// === The 604 model (TNT proposal §4.3; PEM Ch. 7 / 604UM Ch. 5) ============
+// === The 604 model (PEM Ch. 7 / 604UM Ch. 5) ===============================
 
 // Reset into the 604 model, low vectors, translation off.
 static void fresh604(void) {
@@ -821,11 +820,127 @@ static void test_604_dcbz(void) {
     CHECK_EQ(P->pc, 0x1004u);
 }
 
+// === The debugger's walk (machine.cpu.mmu.walk / translate / map) ==========
+
+// The value of a traced step's field, or `dflt` when the step lacks it.
+static uint32_t step_u(const mmu_trace_step_t *st, const char *key, uint32_t dflt) {
+    for (int i = 0; i < st->n_fields; i++)
+        if (strcmp(st->fields[i].key, key) == 0)
+            return st->fields[i].u;
+    return dflt;
+}
+
+// A traced step's string field, or "".
+static const char *step_s(const mmu_trace_step_t *st, const char *key) {
+    for (int i = 0; i < st->n_fields; i++)
+        if (strcmp(st->fields[i].key, key) == 0 && st->fields[i].s)
+            return st->fields[i].s;
+    return "";
+}
+
+// 601 order: the segment register first (T=1 prevails), then the BATs, then
+// the primary and secondary PTE groups -- and the walk is side-effect-free:
+// R stays clear on the PTE it found.
+static void test_debug_walk_601(void) {
+    fresh();
+    wipe_htab();
+    uint32_t pte = put_pte(0, 0x00204000u, 0x00304000u, 1, 3, 0, 2); // secondary group, slot 3
+    enter_dt();
+    mmu_xlate_t x;
+    mmu_trace_t t = {0};
+    ppc_mmu_debug_translate(P, 0x00204010u, true, false, &x, &t);
+    CHECK(x.valid);
+    CHECK_EQ(x.phys, 0x00304010u);
+    CHECK(strcmp(x.via, "page") == 0);
+    CHECK(strcmp(x.access, "rw") == 0);
+    CHECK_EQ(t.n_steps, 4);
+    CHECK(strcmp(t.steps[0].step, "segment") == 0 && strcmp(t.steps[0].outcome, "next") == 0);
+    CHECK(strcmp(t.steps[1].step, "bat") == 0 && strcmp(t.steps[1].outcome, "miss") == 0);
+    CHECK(strcmp(t.steps[2].step, "pteg") == 0 && strcmp(t.steps[2].outcome, "miss") == 0);
+    CHECK_EQ(step_u(&t.steps[2], "addr", 0), pteg_addr(0, 0x00204000u, 0));
+    CHECK(strcmp(t.steps[3].outcome, "hit") == 0 && strcmp(step_s(&t.steps[3], "name"), "secondary") == 0);
+    CHECK_EQ(step_u(&t.steps[3], "slot", 99), 3);
+    CHECK_EQ(step_u(&t.steps[3], "addr", 0), pteg_addr(0, 0x00204000u, 1));
+    CHECK_EQ(step_u(&t.steps[3], "phys", 0), 0x00304010u);
+    CHECK_EQ(memory_read_uint32(pte + 4) & 0x180u, 0); // no R/C from the debugger
+    // translate (no trace) and the existing debug translation agree.
+    bool ok;
+    CHECK_EQ(ppc_mmu_translate_debug_ex(P, 0x00204010u, true, false, &ok, NULL), x.phys);
+    CHECK(ok);
+
+    // A miss: both groups searched, the secondary is where the search stops.
+    t.n_steps = 0;
+    ppc_mmu_debug_translate(P, 0x00500000u, true, false, &x, &t);
+    CHECK(!x.valid);
+    CHECK_EQ(t.n_steps, 4);
+    CHECK(strcmp(t.steps[3].outcome, "fault") == 0);
+
+    // A BAT hit: the BAT step names the pair and the block; read-only PP.
+    P->batu[0] = 0x00600000u | 0x3u; // BLPI | PP=11 (read-only)
+    P->batl[0] = 0x00700000u | 0x40u; // PBN | V, 128 KB
+    t.n_steps = 0;
+    ppc_mmu_debug_translate(P, 0x00612340u, true, false, &x, &t);
+    CHECK(x.valid && strcmp(x.via, "bat") == 0);
+    CHECK_EQ(x.phys, 0x00712340u);
+    CHECK(strcmp(x.access, "ro") == 0);
+    CHECK_EQ(t.n_steps, 2);
+    CHECK(strcmp(t.steps[1].outcome, "hit") == 0);
+    CHECK_EQ(step_u(&t.steps[1], "index", 99), 0);
+    CHECK_EQ(step_u(&t.steps[1], "size", 0), 0x20000u);
+
+    // T=1 prevails over that BAT, and the segment step resolves it.
+    ppc_set_sr(P, 0, 0x87F00000u);
+    t.n_steps = 0;
+    ppc_mmu_debug_translate(P, 0x00612340u, true, false, &x, &t);
+    CHECK(x.valid && strcmp(x.via, "segment") == 0);
+    CHECK_EQ(x.phys, 0x00612340u);
+    CHECK_EQ(t.n_steps, 1);
+    CHECK(strcmp(t.steps[0].outcome, "hit") == 0);
+    CHECK_EQ(x.span_bits, 28);
+    ppc_set_sr(P, 0, 0);
+    P->batu[0] = P->batl[0] = 0;
+    ppc_mmu_invalidate_all(P);
+}
+
+// 604 order: the BATs (DBATs for data) before the segment register; real
+// addressing mode resolves with no steps at all.
+static void test_debug_walk_604(void) {
+    fresh604();
+    wipe_htab();
+    mmu_xlate_t x;
+    mmu_trace_t t = {0};
+    ppc_mmu_debug_translate(P, 0x00123456u, true, false, &x, &t); // DT off: real mode
+    CHECK(x.valid && strcmp(x.via, "identity") == 0);
+    CHECK_EQ(x.phys, 0x00123456u);
+    CHECK_EQ(t.n_steps, 0);
+
+    P->sdr1 = SDR1_VAL;
+    put_pte(0, 0x00200000u, 0x00300000u, 0, 0, 0, 2);
+    P->msr |= PPC_MSR_DT;
+    ppc_update_active_maps(P);
+    ppc_mmu_invalidate_all(P);
+    t.n_steps = 0;
+    ppc_mmu_debug_translate(P, 0x00200008u, true, false, &x, &t);
+    CHECK(x.valid && strcmp(x.via, "page") == 0);
+    CHECK_EQ(x.phys, 0x00300008u);
+    CHECK_EQ(t.n_steps, 3);
+    CHECK(strcmp(t.steps[0].step, "bat") == 0 && strcmp(step_s(&t.steps[0], "name"), "dbat") == 0);
+    CHECK(strcmp(t.steps[1].step, "segment") == 0);
+    CHECK(strcmp(t.steps[2].step, "pteg") == 0 && strcmp(t.steps[2].outcome, "hit") == 0);
+
+    // The fetch side names the IBATs.
+    P->msr |= PPC_MSR_IT;
+    ppc_update_active_maps(P);
+    t.n_steps = 0;
+    ppc_mmu_debug_translate(P, 0x00200008u, false, false, &x, &t);
+    CHECK(strcmp(step_s(&t.steps[0], "name"), "ibat") == 0);
+}
+
 int main(void) {
     // 32-bit address space: 8 MB RAM at 0, 128 KB ROM at $40800000 (the
     // ppc-suite context shape).
     test_context_t *ctx = calloc(1, sizeof(test_context_t));
-    ctx->memory = memory_map_init(32, 0x800000, 0x20000, NULL);
+    ctx->memory = memory_map_init(32, 0x800000, 0x20000, MEMORY_BUS_ERR_NONE, NULL, NULL);
     if (!ctx->memory) {
         printf("FAIL: memory_map_init\n");
         return 1;
@@ -857,7 +972,7 @@ int main(void) {
     test_fetch_translation();
     test_ioseg_error();
 
-    // The 604 model (TNT proposal §4.3): split BATs, architected format,
+    // The 604 model: split BATs, architected format,
     // ordering/direct-store, hardware-split crossings, tlbie, dcbz.
     test_604_split_bats();
     test_604_bat_format();
@@ -865,6 +980,10 @@ int main(void) {
     test_604_split_access();
     test_604_tlbie();
     test_604_dcbz();
+
+    // The debugger's walk on both models.
+    test_debug_walk_601();
+    test_debug_walk_604();
 
     ppc_delete(P);
     printf("ppc_mmu: %d checks, %d failures\n", checks, failures);

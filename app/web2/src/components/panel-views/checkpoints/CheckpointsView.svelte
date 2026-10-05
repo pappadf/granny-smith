@@ -1,9 +1,11 @@
 <script lang="ts">
+  import { askText, askConfirm } from '@/state/dialogs.svelte';
   import { onMount } from 'svelte';
   import Table, { type TableColumn } from '@/components/common/Table.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { opfs } from '@/bus/opfs';
   import { gsEval } from '@/bus/emulator';
+  import { reconcileUiWithMachine } from '@/bus/boot';
   import { showNotification } from '@/state/toasts.svelte';
   import {
     checkpoints,
@@ -14,15 +16,32 @@
   import { checkpointsView } from './checkpointsView.svelte';
   import {
     checkpointCreatedToDate,
+    describeMachine,
     formatBytes,
     formatCheckpointLabel,
   } from '@/lib/checkpointMeta';
+  import { getProfile } from '@/bus/profile';
   import type { CheckpointEntry } from '@/bus/types';
 
   let rows = $state<CheckpointEntry[]>([]);
 
+  // Model id -> its name, looked up once the rows name a model.
+  let modelNames = $state<Record<string, string>>({});
+
   async function refresh() {
     rows = await opfs.scanCheckpoints();
+    for (const m of new Set(rows.map((r) => r.model))) {
+      if (!m || modelNames[m]) continue;
+      const p = await getProfile(m).catch(() => null);
+      if (p?.name) modelNames[m] = p.name;
+    }
+  }
+
+  // "Macintosh Plus · 4 MB", or "unknown" when the manifest names no model.
+  function machineOf(row: CheckpointEntry): string {
+    return row.model
+      ? describeMachine(modelNames[row.model] ?? row.model, row.ramBytes)
+      : 'unknown';
   }
 
   onMount(() => {
@@ -51,21 +70,21 @@
     {
       key: 'machine',
       label: 'Machine',
-      width: '110px',
-      cmp: (a, b) => a.machine.localeCompare(b.machine),
-      text: (row) => row.machine,
+      width: 'var(--gs-checkpoints-col-machine)',
+      cmp: (a, b) => machineOf(a).localeCompare(machineOf(b)),
+      text: (row) => machineOf(row),
     },
     {
       key: 'date',
       label: 'Date',
-      width: '160px',
+      width: 'var(--gs-checkpoints-col-date)',
       cmp: (a, b) => a.created.localeCompare(b.created),
       text: (row) => formatDate(row.created),
     },
     {
       key: 'size',
       label: 'Size',
-      width: '80px',
+      width: 'var(--gs-checkpoints-col-size)',
       cmp: (a, b) => a.sizeBytes - b.sizeBytes,
       text: (row) => formatBytes(row.sizeBytes),
     },
@@ -75,6 +94,7 @@
     try {
       const ok = await gsEval('checkpoint.load', [`${row.path}/state.checkpoint`]);
       if (ok === true) {
+        await reconcileUiWithMachine('restore');
         showNotification(`Loaded checkpoint '${row.label}'`, 'info');
       } else {
         showNotification('Checkpoint load failed', 'error');
@@ -100,11 +120,18 @@
   }
 
   async function doRename(row: CheckpointEntry) {
-    if (typeof window === 'undefined' || typeof window.prompt !== 'function') return;
-    const next = window.prompt('Checkpoint label', row.label);
+    const next = await askText({
+      title: 'Rename checkpoint',
+      label: 'Checkpoint label',
+      initial: row.label,
+      submitText: 'Rename',
+    });
     if (!next || next === row.label) return;
     try {
-      await opfs.writeJson(`${row.path}/manifest.json`, { label: next, machine: row.machine });
+      // Only the label changes: the rest of the manifest is the core's.
+      const path = `${row.path}/manifest.json`;
+      const manifest = (await opfs.readJson<Record<string, unknown>>(path)) ?? {};
+      await opfs.writeJson(path, { ...manifest, label: next });
       await refresh();
       showNotification(`Renamed checkpoint to '${next}'`, 'info');
     } catch {
@@ -117,9 +144,13 @@
   }
 
   async function doDelete(row: CheckpointEntry) {
-    if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
-      if (!window.confirm(`Delete checkpoint '${row.label}'?`)) return;
-    }
+    const ok = await askConfirm({
+      title: 'Delete',
+      message: `Delete checkpoint '${row.label}'?`,
+      confirmText: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await opfs.delete(row.path);
       await refresh();

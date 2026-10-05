@@ -39,23 +39,52 @@ contributions.
 At its heart, the emulator core is intentionally headless and platform-agnostic.
 It emulates the full memory and device state of a Macintosh, including video
 RAM, but does not itself render graphics or provide a graphical user interface.
-Instead, the core exposes a simple command-line shell for user interaction,
-communicating via standard input and output streams. File system access is
-performed using standard C99/POSIX primitives, ensuring portability and ease of
-integration.
+Instead, the core exposes one **object model** (`docs/internals/core/object/object-model.md`):
+every subsystem is a node in a tree, and every operation is a read, a write or
+a call on one of its members. Callers reach the tree through the **mailbox**
+(`src/core/mailbox/mailbox.h`), a control block and two record rings in memory
+both sides can see: a client posts request records, the emulator thread
+serves them at frame boundaries, and answers and the core's own events come
+back on the event ring. A free-form shell line is a **script**, run as a job
+(below); the shell is a client of the tree, not a second interface to it.
+File system access is performed using standard C11/POSIX primitives, ensuring
+portability and ease of integration.
 
 To present a user-friendly experience, the core is typically wrapped by a
 platform-specific frontend. These frontends are responsible for visualizing the
 emulated screen, handling user input, and providing enhanced access to emulator
-features. For example, the browser-based frontend renders the Macintosh display
-in a canvas, maps host keyboard and mouse events to the emulator, and may
-surface shell commands through a graphical interface. Similarly, desktop or
-headless builds can provide their own mechanisms for display, input, and
-automation, all while relying on the same portable core logic.
+features. The browser-based frontend renders the Macintosh display in a
+canvas, maps host keyboard and mouse events to the emulator, and drives every
+feature through the mailbox from the page (`docs/guide/web.md`); the headless
+build is an in-process client of the same mailbox, feeding it a script file,
+stdin or a TCP daemon connection (`docs/internals/core/shell/shell.md`). Both rely on the
+same portable core logic.
 
 This separation of concerns allows the emulator to be easily embedded in
 different environments, from web browsers to native applications, while
 maintaining a clean and testable architecture.
+
+### Threads
+
+The core runs on a small, fixed set of threads, created at boot. Who may touch
+what is the rule that keeps the machine deterministic:
+
+| Thread | Runs | Touches |
+|---|---|---|
+| **Emulator thread** | the tick: one VBL frame-unit at a time, then the mailbox drain | **all guest state**. Nothing of unbounded length runs here; every leaf of the object tree executes here, served from the drain |
+| **Job thread** (`src/core/job/job.h`) | scripts (a terminal line, a script file, a daemon statement), one at a time, FIFO | only the interpreter's own memory. Every read, write or call of the tree is handed to the emulator thread through the **seam** (`job_on_emulator`) and served in the next drain; a call that starts a mode holds the job until the mode ends |
+| **I/O worker** (`src/core/io/io_worker.h`) | work proportional to a file: copies, exports, blank images, archive extraction, downloads, the quick checkpoint's write and rename | host files only, through its own handles; never guest state. Reports progress and completion back through the drain; cancellable between chunks |
+| **Platen worker**, **Voodoo2 raster / GPU worker** (browser) | the LaserWriter's PostScript interpreter; the Voodoo2's rasteriser | their own shared-memory rings (`mailbox_ring.h`), fed by the emulator thread |
+| **Browser main thread** | the page, the canvas, input | the mailbox's client side through `Module.HEAPU8` and Atomics; never a direct call into the core |
+| **WasmFS OPFS proxy** (browser) | every OPFS read, write and rename, one at a time | the filesystem — which is why file work is chunked and yields between chunks |
+
+Output follows the same ownership: what a leaf or the interpreter prints goes
+through the sink (`src/core/gs_out.h`) to the client that asked — a job's text
+as output records before its result, a page leaf's text with its answer —
+and only text printed outside any request (boot messages, a breakpoint hit)
+reaches stdout directly. Headless can fold the job thread and the I/O worker
+back into the emulator thread (`--jobs=inline`, `--io=sync`) for bisecting;
+the output must not change.
 
 ## Modularized Architecture
 
@@ -120,7 +149,7 @@ consistent pattern to maximize encapsulation, maintainability, and testability:
     and the inspector UI all walk the same tree, so a new class is
     visible everywhere as soon as it's attached. There is no separate
     "command registry" or "JS API" layer to maintain in lock-step.
-  - See [`docs/core/shell/object-model.md`](object-model.md) for the substrate
+  - See [`docs/internals/core/object/object-model.md`](../internals/core/object/object-model.md) for the substrate
     and the conventions modules follow when adding a class.
 
 - **Checkpointing (optional):**
@@ -134,10 +163,11 @@ consistent pattern to maximize encapsulation, maintainability, and testability:
 ### Object model and shell
 
 Every emulator subsystem is exposed through a single typed tree rooted
-at `emu`. Top-level paths are the subsystem names (`cpu`, `memory`,
-`scc`, `via1`/`via2`, `rtc`, `scsi`, `floppy`, `sound`, `storage`,
-`appletalk`, `mouse`, `keyboard`, `screen`, `debug`, `archive`,
-`rom`, `vrom`, `machine`, `checkpoint`, `scheduler`, …). Each
+at `emu`. Emulated hardware nests under `machine` (`machine.cpu`,
+`machine.memory`, `machine.scsi`, `machine.floppy`, `machine.screen`, …);
+the root's other children are, in a fixed order, `scheduler`,
+`checkpoint`, `files`, `debug`, `log`, `shell`, `catalog` and
+`appletalk` (docs/internals/core/object/object-model.md, "The root"). Each
 subsystem's class lives next to its other code and self-registers via
 `<module>_init`.
 
@@ -151,14 +181,26 @@ Four caller surfaces walk that tree:
   are scripts.
 - **JavaScript / WASM bridge**: `gs_eval(path, args_json, out, size)`
   resolves the same path, JSON-encodes the result, and returns to JS.
-  The web frontend reaches it through a single shared-memory region
-  (`js_bridge_t` in [`src/platform/wasm/em.h`](../src/platform/wasm/em.h)),
-  exposed via one `_get_js_bridge` WASM export. JS calls
-  `gsEval(path, args)`; that puts the request in the bridge slot and
-  parks on `Atomics.waitAsync(done)` until the worker's `shell_poll()`
-  services it. C→JS state pushes (run-state, prompt) flow the other
-  way through `Module.*` callbacks fired with `MAIN_THREAD_*_EM_ASM`.
+  The web frontend reaches it through the mailbox — a control block and
+  two record rings in shared memory (`src/core/mailbox/mailbox.h`,
+  exposed via one `_get_gs_mailbox` WASM export). JS calls
+  `gsEval(path, args)`; that writes a `REQ_EVAL` record carrying an id
+  into the request ring, and the emulator thread's drain serves every
+  pending request each frame and answers each with an `EVT_RESULT` the
+  page's reader loop matches by id. What the core says on its own —
+  run state, speed, floppies, checkpoint saves, log lines — flows the
+  other way as events on the same ring (`src/core/event/gs_event.h`).
   See [`web.md`](web.md) for the wire layout and protocol.
+- **Threads**: the emulator thread owns all guest state and runs nothing
+  of unbounded length: it ticks frames and drains the mailbox. A script
+  is a **job** on the job thread (`src/core/job/job.h`), reaching guest
+  state only through the seam, one served call at a time; a copy, an
+  export, an archive's extraction, a download or a checkpoint's write is
+  an **I/O job** on the I/O worker (`src/core/io/io_worker.h`), answered
+  later, reporting progress and cancellable between chunks. What any of
+  them prints goes through the output sink (`src/core/gs_out.h`) to the
+  client that asked. Headless runs the same three threads (`--io=sync`
+  and `--jobs=inline` fold a thread back in for bisecting).
 - **Inspector UI**: walks `objects()` / `attributes()` / `methods()` /
   `help()` to render the live tree.
 
@@ -166,11 +208,11 @@ There is no separate command framework, no parallel JS API. Adding a
 new operation is one act — declare a member on the right class — and
 every caller sees it.
 
-See [`docs/core/shell/object-model.md`](object-model.md) for the substrate, the
+See [`docs/internals/core/object/object-model.md`](../internals/core/object/object-model.md) for the substrate, the
 path forms in detail, the lifecycle invariants (process-singleton vs.
 cfg-scoped), and the recipe for adding a new class.
 
-See [`docs/core/shell/shell.md`](shell.md) for the line-input layer specifically:
+See [`docs/internals/core/shell/shell.md`](../internals/core/shell/shell.md) for the line-input layer specifically:
 tokenisation, `$alias` expansion, `${expr}` interpolation, shell
 variables, scripts, and tab completion.
 
@@ -191,10 +233,17 @@ interactions are handled cleanly.
 - **Lifecycle management:**
   - `setup_init()`: Performs one-time, machine-independent setup — log
     category and process-singleton class registration — run once at startup.
-  - `system_create(const hw_profile_t *profile, checkpoint_t *)`: Allocates the
-    `config_t`, wires the selected machine descriptor, and dispatches to
-    `profile->substrate->init(cfg, cp)`; the machine's substrate constructs all
-    modules in dependency order and optionally restores from a checkpoint.
+  - `system_create(const hw_profile_t *profile, const machine_build_opts_t
+    *opts, checkpoint_t *)`: Allocates the `config_t`, wires the selected
+    machine descriptor, and dispatches to
+    `profile->substrate->init(cfg, cp)`; the machine's substrate constructs
+    all modules in dependency order and optionally restores from a
+    checkpoint, whose event queue is read last.  The new machine is not the
+    active one: constructors use the `cfg` they are given, never
+    `global_emulator` or the `system_*()` accessors (which assert it).
+  - `system_swap_in(config_t *, bool restored)`: makes a built machine the
+    active one (global, object root, memory-map selection, label,
+    `machine_booted`) and destroys the machine it replaces.
   - `system_destroy(config_t *)`: Deletes the NuBus cards, calls
     `profile->substrate->teardown(cfg)` (the family delete-chain, reverse
     order), closes images, and frees the configuration.
@@ -262,8 +311,8 @@ can access what they need without depending on internal struct layout.
 
 The scheduler is the core component responsible for managing emulated time. It
 tracks clock cycles, schedules time-based events on a single priority queue,
-and runs the CPU in event-bounded sprints. See `docs/core/scheduler/scheduler.md` for the
-detailed design and `docs/core/scheduler/timing.md` for the practical timing rules.
+and runs the CPU in event-bounded sprints. See `docs/internals/core/scheduler/scheduler.md` for the
+detailed design and `docs/internals/core/scheduler/timing.md` for the practical timing rules.
 
 There are two pacing modes (`schedule_paced`, `schedule_unthrottled`) that
 control, on the WASM target, how many VBL frame-units run per host frame —
@@ -282,7 +331,7 @@ in **pacing**:
   rhythm. Result: paced to the user's display refresh. The guest sequence is the
   same as headless; only how many frame-units a host tick batches differs.
 
-See `docs/core/scheduler/scheduler.md` §10 for the full design.
+See `docs/internals/core/scheduler/scheduler.md` §10 for the full design.
 
 ## Checkpointing
 
@@ -303,7 +352,9 @@ There are two primary types of checkpoints, each serving a distinct purpose:
   serializing state that already exists in persistent storage (e.g., modified
   disk image blocks), relying on the underlying file system to persist those
   changes. This approach allows for fast, frequent state saves without
-  unnecessary duplication.
+  unnecessary duplication. The emulator thread only serialises into a buffer;
+  the write and the atomic rename run on the I/O worker, so the machine keeps
+  running while the file lands (`docs/internals/core/checkpointing.md`).
 
 - **Consolidated checkpoint:** Explicitly created by the user to export the
   entire machine state into a single file or stream. In this mode, _all_
@@ -326,9 +377,9 @@ strictly read-only base content; nothing writable lands there any more.
 
 `<machine_id>` is a 16-hex-char opaque token in `localStorage`; it rotates only
 on explicit "new machine" actions and is pushed to the C side once per process
-via `checkpoint --machine <id> <created>`. A startup sweep deletes any sibling
-machine directories whose name does not match. See [`docs/core/storage/checkpointing.md`](checkpointing.md)
-for the full design and [`docs/core/storage/image.md`](image.md) for the image-layer API
+via `machine.register(<id>, <created>)`. A startup sweep deletes any sibling
+machine directories whose name does not match. See [`docs/internals/core/checkpointing.md`](../internals/core/checkpointing.md)
+for the full design and [`docs/internals/core/storage/image.md`](../internals/core/storage/image.md) for the image-layer API
 that backs it.
 
 ## Repository Layout
@@ -346,10 +397,11 @@ The repository is organized as follows:
       - _cpu.c_ — Lifecycle, public API, runtime dispatch
       - _cpu_68000.c_ — 68000 instruction decoder instantiation
       - _cpu_68030.c_ — 68030 decoder instantiation (integrated PMMU/FPU)
+      - _cpu_68040.c_ — 68040 decoder instantiation (integrated MMU/FPU)
       - _cpu_internal.h_ — Shared struct and static inline helpers
       - _cpu_ops.h_ / _cpu_decode.h_ — Template-based decoder generation
       - _cpu_disasm.c_ — Disassembler
-    - **memory/** — Page-table-based memory map (see `docs/core/memory/memory.md`)
+    - **memory/** — Page-table-based memory map (see `docs/internals/core/memory/memory.md`)
     - **peripherals/** — VIA, SCC, SCSI, floppy, RTC, keyboard, mouse, sound
     - **scheduler/** — Event scheduling and timing
     - **debug/** — Debugger, logging, and diagnostics
@@ -357,6 +409,10 @@ The repository is organized as follows:
       `checkpoint_machine` module that owns the per-machine state directory
       (`/opfs/checkpoints/<machine_id>-<created>/`)
     - **network/** — AppleTalk and networking modules
+    - **object/** — Object model (classes, members, nodes, the tagged value
+      type, path resolver, alias table)
+    - **vfs/** — Read-only browsing inside disk images (partition maps,
+      HFS/HFS+ and A/UX UFS volumes)
     - **shell/** — Command framework (types, parser, symbol resolver, I/O
       capture, completion, JSON bridge, dispatcher)
   - **machines/** — Machine profiles, substrates, and chipset families
@@ -369,17 +425,24 @@ The repository is organized as follows:
     - _glue/_ — GLUE chipset family (se30, iicx, iix) + built-in SE/30 video
     - _mdu/_ — MDU+RBV chipset family (iici, iisi) + rbv, egret, built-in RBV video
     - _oss/_ — OSS+FMC chipset family (iifx) + oss, iop\*
+    - _mcu/_ — MCU+DAFB chipset family (q700, q900, q950) + dafb
+    - _av/_ — YMCA+PSC "AV" chipset family (q840av, q660av) + psc, civic,
+      cuda, dsp, mace, new_age, vdc, singer
     - _compact/_ — Compact-68000 substrate (plus; Mac SE assumed next)
     - _lisa/_ — Lisa segment-MMU substrate (lisa, macxl) + cops, lisa_fdc, lisa_profile
+    - _pdm/_ — Power Macintosh PDM substrate (pm6100, pm7100, pm8100) +
+      hmc, amic, bart, awacs
+    - _tnt/_ — Power Macintosh TNT substrate (pm7500, pm8500, pm9500,
+      ans500, ans700) + bandit, awacs
   - **platform/** — Platform abstraction layer (PAL)
     - **wasm/** — Emscripten/WebAssembly-specific implementation (browser
       target)
     - **headless/** — Native headless implementation (CLI/testing)
-    - **stub/** — Minimal stubs for unit tests
 
 - **app/** — Application frontends
   - **electron/** — Placeholder for future Electron desktop app
-  - **web/** — Browser frontend (HTML, JS, CSS, xterm.js, etc.)
+  - **web2/** — Browser frontend (Svelte 5 + Vite + TypeScript, xterm.js
+    terminal; the only UI)
 
 - **build/** — All build outputs (never edit)
   - **wasm/** — WebAssembly build artifacts (browser)
@@ -391,19 +454,26 @@ The repository is organized as follows:
   - **integration/** — Headless integration tests (native CLI)
   - **data/** — Shared test data (ROMs, disk images, etc.)
 
-- **third-party/** — External dependencies (e.g., peeler archive library)
+- **third-party/** — External dependencies (git submodules: the
+  single-step-tests (68k) and powerpc-test (601) CPU instruction-test
+  corpora)
 
-- **docs/** — Reference documentation, mirroring the code tree: `guide/`
-  (dev/process), `core/<subsystem>/` (mirrors `src/core/`), `machines/<family>/`
-  (mirrors `src/machines/`), and `notes/` (dated investigation logs)
+- **docs/** — Documentation, split by content class
+  ([README.md](../README.md)): `guide/` (dev/process), `internals/`
+  (mirrors `src/`: `core/<subsystem>/` and `machines/<family>/`),
+  `reference/` (granny-smith-agnostic hardware/protocol/format/machine
+  facts), `user/` (end-user), `articles/` (long-form) and `notes/`
+  (dated investigation logs)
 
 - **scripts/** — Build helpers, dev tools, and automation scripts
 
 ### Multi-machine support
 
-The emulator runs seventeen models — `plus`, `se30`, `iicx`, `iix`, `iifx`,
+The emulator runs twenty-four models — `plus`, `se30`, `iicx`, `iix`, `iifx`,
 `iici`, `iisi`, `q700`, `q900`, `q950`, `q840av`, `q660av`, `pm6100`,
-`pm7100`, `pm8100`, `lisa`, and `macxl` — on one shared core. Hardware is
+`pm7100`, `pm8100`, `pm7500`, `pm8500`, `pm9500`, `ans500`, `ans700`,
+`pmg3dt`, `pmg3mt`, `lisa`, and `macxl` (the registry is `builtin_machines[]` in
+`src/machines/machine.c`) — on one shared core. Hardware is
 shared **by subsystem**, not by cloning a file per machine, across three
 layers. (The precedent is the NuBus card subsystem: a static descriptor that
 advertises its own capabilities, a vtable of NULL-safe hooks, and an explicit
@@ -414,11 +484,13 @@ registry.)
   NCR-5380 SCSI, sound, the NuBus subtree. Single-machine chips do **not** live
   here.
 - **Tier 2 — substrates** (`src/machines/<substrate>/`): a substrate owns a
-  machine's lifecycle. Three exist: **`mac030`** (the Macintosh II-family 68030
+  machine's lifecycle. Six exist: **`mac030`** (the Macintosh II-family 68030
   core — lifecycle spine, a table-driven `$50Fxxxxx` I/O dispatch engine, the
   ROM overlay, and the 68030 MMU register block), **`compact`** (the compact
-  68000 Macs — Plus today, Mac SE assumed next), and **`lisa`** (the Lisa
-  segment-MMU machines).
+  68000 Macs — Plus today, Mac SE assumed next), **`lisa`** (the Lisa
+  segment-MMU machines), and the three PowerPC substrates, **`pdm`**
+  (pm6100/pm7100/pm8100), **`tnt`** (pm7500/pm8500/pm9500 and the Network
+  Servers) and **`gossamer`** (the beige G3: pmg3dt/pmg3mt).
 - **Tier 3 — chipset families** compose `mac030` as *siblings* (not as
   descendants of any one chipset): **GLUE** (`glue/` — se30/iicx/iix), **MDU+RBV**
   (`mdu/` — iici/iisi), **OSS+FMC** (`oss/` — iifx), **MCU+DAFB** (`mcu/` —
@@ -429,7 +501,8 @@ registry.)
   families reuse the spine for its lifecycle, I/O engine and IRQ resolver,
   and bring their own MMU (`mmu040`) and interrupt map — the AV family
   notably has **no VIA2 chip at all**, so `config_t.via2` stays NULL and the
-  IPL-2 path belongs to the PSC's pseudo-VIA2 window.
+  IPL-2 path belongs to the PSC's pseudo-VIA2 window (see
+  [av.md](../reference/machines/av/av.md) §1).
 
 **Heterogeneous CPUs.** A machine may carry auxiliary cores beside the one
 main CPU that owns time: peripheral processors that execute real guest code
@@ -437,7 +510,7 @@ in burst events on the shared scheduler queue (the AV family's DSP3210,
 `src/core/cpu/dsp3210/` + `src/machines/av/dsp.c`).  The core-module
 contract — injected bus hooks, burn-down execution ABI, mandatory
 disassembler, `machine.<name>` object node, `capabilities.aux_cpus` — is
-[docs/core/cpu/cores.md](../core/cpu/cores.md); the scheduler reaches the
+[docs/internals/core/cpu/cores.md](../internals/core/cpu/cores.md); the scheduler reaches the
 main CPU through the narrow `sched_cpu_if_t` seam so a main-CPU architecture
 plugs in without scheduler changes.
 
@@ -449,7 +522,7 @@ first consumer of the non-68K arm: its PowerPC 601 core
 `config_t.cpu` stays NULL — the classic 68k world exists on those machines
 only as ROM bytes the 601 executes.  The PDM board model is HMC (memory
 controller) + AMIC (I/O controller) around Tier-1 silicon and the shared
-Cuda model.
+Cuda model (see [pdm.md](../reference/machines/pdm/pdm.md) §1).
 
 **A machine is mostly data.** Each model is a `hw_profile_t` (defined in
 `core/machine_profile.h`) holding identity, the CPU/MMU facts the init reads as
@@ -480,13 +553,13 @@ include the public `core/machine_profile.h` but **not** any machine
 *implementation* header — a CI layering check enforces this
 (`tests/integration/core-layering/`).
 
-**Capability probe (no machine knowledge in the UI).** `machine.profile(id)`
+**Capability probe (no machine knowledge in the UI).** `catalog.profile(id)`
 returns a JSON map that includes a *derived* `capabilities` block
 (`cpu.{model,address_bits,fpu}`, a **typed** `mmu.{present,kind}` —
-`none`/`68030_pmmu`/`lisa_segment` — plus `nubus` and `pci`) with a
-per-slot/per-card `video_slots` block carrying each card's `requires_vrom`
-and a `pci_slots` block carrying each PCI socket's topology and computed
-card list. The frontend probes
+`none`/`68030_pmmu`/`68040`/`ppc_601`/`ppc_604`/`lisa_segment` — plus `nubus`
+and `pci`) with a per-slot/per-card `video_slots` block carrying each card's
+`requires_vrom` and a `pci_slots` block carrying each PCI socket's topology
+and computed card list. The frontend probes
 these instead of regex-matching the model's display name, so the debug panels,
 the VROM prompt, and the slot labels all follow from data. Because capabilities
 are *derived* from the facts, they can never drift from behavior.
@@ -497,26 +570,27 @@ table declares *topology* only (which slots exist, which are user-populatable
 default); each card kind declares its *attachment* (`card_attach_t` — a
 genuine NuBus card vs. builtin motherboard circuitry). Which cards a socket
 offers is **computed** by matching the two (`nubus_card_fits_socket`), used
-identically by the `machine.profile` encoder and `nubus_init`'s boot-time
+identically by the `catalog.profile` encoder and `nubus_init`'s boot-time
 pick validation. Adding a NuBus card is one registry line plus one
 `VROM_CATALOG` row — it is then offered on every machine with a socket, with
-no per-machine edits (see `proposal-nubus-computed-card-compatibility.md`).
+no per-machine edits (`nubus_card_fits_socket` in
+`src/core/peripherals/nubus/nubus.c`).
 
 Each socket resolves its configuration independently at boot, so machines
-boot multi-card (e.g. two displays). Picks are staged per slot in the object
-model — `machine.nubus.slot[N].card_id` / `.video_mode`, consumed by the
-next `machine.boot` — while the boot document's `video_card=` /
-`video_sense=` / `video_mode=` arguments name "the first socket" (what the
-config dialog and the headless `video_card=` arg use; see
-proposal-named-args-boot-config.md). `machine.screen` shows the *primary*
-display: the first populated video slot in declared order. The **resolved**
-per-slot picks are captured in the built-from record, so `machine.restart`
-re-seats every populated socket rather than only the wildcard one.
+boot multi-card (e.g. two displays). The boot document configures each slot
+— `machine.boot slots="SLOT=CARD[,key=value]*;..."`, validated against the
+model before the running machine is touched and handed to each card's
+constructor as its slot's entry — while `video_card=` / `video_mode=` /
+`custom_mode=` are sugar for "the first socket" (what the config dialog and
+the headless `video_card=` arg use). `machine.screen` shows the *primary*
+display: the first populated video slot in declared order. The bus's part
+of a checkpoint carries the slot entries it seated, so a checkpoint restore
+re-seats every populated socket.
 
 **PCI (`core/peripherals/pci/`)** is the same architecture ported to the
 second expansion bus, deliberately as a parallel module rather than a
 shared abstraction — the two differ in kind, not degree, on identity,
-discovery and address assignment (see `docs/core/peripherals/pci.md`).
+discovery and address assignment (see `docs/internals/core/peripherals/pci.md`).
 Machines declare `pci_slots` topology, card kinds declare
 `pci_attach_t`, and `pci_card_fits_socket` computes the offer. The two
 things PCI adds are a **generic type-0 config header** shared by every
@@ -530,5 +604,5 @@ never includes a machine header.
 The CPU is split into template-instantiated decoders (`cpu_68000.c`,
 `cpu_68030.c`) sharing helpers via `cpu_internal.h`. The memory subsystem uses a
 page-table architecture serving the static map of the 68000 machines and the
-PMMU-rebuilt map of the 68030 machines alike. See `docs/core/memory/memory.md`
+PMMU-rebuilt map of the 68030 machines alike. See `docs/internals/core/memory/memory.md`
 for details. Checkpoint I/O is factored into a standalone `checkpoint.c` module.

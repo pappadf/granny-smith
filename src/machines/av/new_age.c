@@ -4,8 +4,8 @@
 // new_age.c
 // New Age (µPD72070) floppy controller stub — see new_age.h.
 //
-// The state machine is the datasheet's Apple-mode PIO handshake
-// (new-age.md §5), reduced to "no drive present":
+// The state machine is the datasheet's Apple-mode PIO handshake, reduced to
+// "no drive present":
 //
 //   * idle: RQM=1, DIO=0, CB=0; DxI bits 2/3 set (no drive installed).
 //   * command phase: the first FIFO byte selects the command and its total
@@ -75,8 +75,7 @@ static inline av_new_age_t *na_of(config_t *cfg) {
 
 // Total command length (opcode + parameters); 0 = invalid in Apple mode.
 // Full-opcode match — bit 7 is the on/off selector on the Apple drive
-// commands and bit 6 the GCR/MFM selector on the data commands
-// (new-age.md §3).
+// commands and bit 6 the GCR/MFM selector on the data commands.
 static int na_cmd_len(uint8_t op) {
     switch (op) {
     case 0x13:
@@ -232,9 +231,10 @@ static void na_execute(av_new_age_t *fdc) {
 // Register handlers
 // ============================================================
 
-uint8_t av_new_age_read(config_t *cfg, uint32_t addr) {
+static uint8_t av_new_age_read_access(config_t *cfg, uint32_t win_off, uint32_t addr, bool peek) {
     av_new_age_t *fdc = na_of(cfg);
-    uint32_t off = (addr & 0x3FFFFu) - 0x2A000u;
+    uint32_t off = win_off; // decoded by the engine; was (addr & island mask) - base
+    (void)addr;
     switch (off) {
     case 0x101: { // MSR
         uint8_t msr = (uint8_t)(NA_MSR_RQM | NA_MSR_D0I | NA_MSR_D1I);
@@ -247,6 +247,8 @@ uint8_t av_new_age_read(config_t *cfg, uint32_t addr) {
     case 0x141: // FIFO — pop one result byte
         if (fdc->phase == NA_RESULT) {
             uint8_t v = fdc->result[fdc->result_idx];
+            if (peek)
+                return v; // the byte the pop would return
             na_set_int(fdc, false); // a status read deasserts INT
             if (fdc->result_idx + 1 < fdc->result_len)
                 fdc->result_idx++;
@@ -260,9 +262,17 @@ uint8_t av_new_age_read(config_t *cfg, uint32_t addr) {
     }
 }
 
-void av_new_age_write(config_t *cfg, uint32_t addr, uint8_t value) {
+uint8_t av_new_age_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    return av_new_age_read_access(cfg, win_off, addr, false);
+}
+uint8_t av_new_age_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    return av_new_age_read_access(cfg, win_off, addr, true);
+}
+
+void av_new_age_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
     av_new_age_t *fdc = na_of(cfg);
-    uint32_t off = (addr & 0x3FFFFu) - 0x2A000u;
+    uint32_t off = win_off; // decoded by the engine; was (addr & island mask) - base
+    (void)addr;
     switch (off) {
     case 0x101: // DRR (data-rate register)
         fdc->drr = value;

@@ -8,34 +8,45 @@ the upstream source, and whether it has been modified.
 1. VS Code Codicons
 ================================================================================
 
-The SVG icons embedded in `icons/sprite.svg` are copied verbatim from the
+The SVG icons embedded in the default sprite (src/icons/sprite.svg, bundled
+with the app) are copied verbatim from the
 Visual Studio Code Codicons project. The sprite uses prototype-style local
 ids (e.g. `i-play`, `i-stop`, `i-hd`, `i-floppy`); the upstream codicon
 names of the icons reproduced here are:
 
     add                       (used as the "+" / new icon)
+    arrow-down                (sort descending)
+    arrow-left                (Back link)
+    arrow-up                  (sort ascending; the Caps Lock latch)
+    case-sensitive            (console find: match case)
+    check                     (done marks; checked menu items)
     chevron-down              (tree/section twistie; CSS-rotated when collapsed)
     chip                      (CPU/ROM/chip rows in trees and Images)
+    circle                    (disabled breakpoint or watchpoint)
+    circle-filled             (enabled breakpoint or watchpoint)
     circle-large              ("empty slot" indicator in the Machine tree)
-    close                     (toast close button)
-    cloud-download            (Save State button, Download log button)
+    close                     (toast, popover, find and usage-pane close buttons)
     cloud-upload              (Upload ROM / Upload image actions)
-    color-mode                (theme toggle button)
     debug-pause               (Run/Pause toolbar button when running, debug Pause)
     debug-restart             (debug Restart action)
+    debug-stackframe          (current PC marker in the disassembly)
     debug-step-into           (debug Step Into action)
     debug-step-over           (debug Step Over action)
     debug-stop                (debug Stop action, Display Toolbar Stop)
     device-camera-video       (Camera on/off toolbar button; MODIFIED for the off state)
+    error                     (toast error badge; printer error; crashed machine)
     file                      (file rows in the Filesystem tree)
     folder                    (folder rows in the Filesystem tree)
     history                   (RTC clock node in the Machine tree)
+    info                      (toast and callout info badge)
     layout-panel              (panel-bottom layout button, active state)
     layout-panel-off          (panel-bottom layout button, inactive state)
     layout-sidebar-left       (panel-left layout button, active state)
     layout-sidebar-left-off   (panel-left layout button, inactive state)
     layout-sidebar-right      (panel-right layout button, active state)
     layout-sidebar-right-off  (panel-right layout button, inactive state)
+    mic                       (Microphone toolbar button; MODIFIED for the off state)
+    newline                   (the usage pane's Insert action)
     play                      (Run/Pause toolbar button when paused, debug Continue)
     plug                      (port nodes in the Machine tree)
     record                    (CD-ROM rows in the Images section / Machine tree)
@@ -44,10 +55,17 @@ names of the icons reproduced here are:
     screen-full               (Display Toolbar Full Screen button — enter)
     screen-normal             (Display Toolbar Full Screen button — exit)
     server                    (Hard Disk rows in trees and Images)
-    sign-out                  (Display Toolbar Shut Down button)
+    sign-out                  (icon gallery only)
     trash                     (Clear log button, Delete snapshot button)
     unmute                    (Sound/PWM node in the Machine tree)
     vm                        (Computer / Mac model icons)
+    warning                   (toast warning badge)
+
+Four symbols are drawn for Granny Smith, not taken from Codicons: `i-power`
+(the Display Toolbar Shut Down button), `i-ellipsis` (the panel header's
+folded actions menu), `i-download` (a circled down arrow: the Save State
+button and the Download log button) and `i-brush` (the Appearance menu
+button).
 
 Source:
     https://github.com/microsoft/vscode-codicons
@@ -72,18 +90,19 @@ License:
     applies here.
 
 Modifications:
-    All icons except one are reproduced verbatim from the upstream SVG
+    All icons except two are reproduced verbatim from the upstream SVG
     files. Sizing and theming (color, scale) are applied via CSS at render
     time without altering the path data.
 
-    One derivative work is included. The sprite symbol `i-camera-off` is
+    Two derivative works are included. The sprite symbol `i-camera-off` is
     based on upstream `device-camera-video`, whose path data is itself
     reproduced verbatim; a diagonal knockout mask and a 1.1 px diagonal
     stroke have been added to it to form a disabled/off variant. Codicons
     ships no camera "-off" icon, so no verbatim alternative exists. The
     derivative follows the construction upstream uses for its own
     `bell-slash` and `eye-closed` icons. `i-camera` (the on state) is
-    unmodified `device-camera-video`.
+    unmodified `device-camera-video`. `i-mic-off` is built the same way
+    from upstream `mic` (reproduced verbatim as `i-mic`).
 
 Trademark:
     The CC BY 4.0 license does not grant any rights to use Microsoft's

@@ -3,7 +3,7 @@
 
 // predecode.h
 // The predecoded-instruction page cache shared by the 68K and PowerPC
-// cores (proposal-predecoded-interpreter-cores.md §3).  A block is 4 KB of
+// cores (docs/internals/core/cpu/predecode.md).  A block is 4 KB of
 // guest code keyed by its HOST page: one 8-byte entry per 16-bit word (68K)
 // or per instruction (PowerPC), decoded lazily at first execution.  Blocks
 // are derived state — never checkpointed, rebuilt on demand — and are kept

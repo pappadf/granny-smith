@@ -7,7 +7,7 @@
 // and only diverge in a handful of decisions: slot table, machine-ID bits,
 // soft-power policy, sound-jack policy.  iix.c reuses iicx.c's internals via
 // this header; the family-shared lifecycle + I/O engine live in mac030/ (the
-// §4.2 GLUE substrate).
+// GLUE substrate).
 
 #ifndef IICX_INTERNAL_H
 #define IICX_INTERNAL_H
@@ -41,12 +41,12 @@ void iicx_set_rom_overlay(struct config *cfg, bool overlay);
 
 // VIA1 callbacks — identical between IIcx and IIx (no PA6 buffer-select).
 void iicx_via1_output(void *context, uint8_t port, uint8_t output);
-void iicx_via1_shift_out(void *context, uint8_t byte);
 
 // SCC IRQ (identical).
 
-// Memory layout (RAM/ROM aliasing + I/O dispatcher registration).
-void iicx_memory_layout_init(struct config *cfg);
+// The IIcx/IIx memory-layout tail (NuBus card host regions + ROM overlay);
+// RAM/ROM/IO are the family's, in mac030_glue_memory_layout().
+void iicx_memory_layout_tail(struct config *cfg);
 
 // IRQ source bit assignments.
 #define IICX_IRQ_VIA1 (1 << 0)
@@ -58,8 +58,5 @@ void iicx_memory_layout_init(struct config *cfg);
 
 // Address-space constants.
 #define IICX_ROM_START 0x40000000UL
-#define IICX_ROM_END   0x50000000UL
-#define IICX_IO_BASE   0x50000000UL
-#define IICX_IO_SIZE   0x10000000UL
 
 #endif // IICX_INTERNAL_H

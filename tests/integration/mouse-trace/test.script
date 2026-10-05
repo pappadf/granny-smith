@@ -1,0 +1,2 @@
+# Driven by run.sh, which checks the trace output (see config.mk).
+quit

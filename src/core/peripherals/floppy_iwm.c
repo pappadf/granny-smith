@@ -15,58 +15,73 @@ LOG_USE_CATEGORY_NAME("floppy");
 static uint8_t iwm_read_uint8(void *floppy, uint32_t addr) {
     floppy_t *s = (floppy_t *)floppy;
 
-    // [3]: The IWM is on the lower byte of the data bus, so use odd-addressed byte accesses only
-    GS_ASSERT(addr & 1);
+    // [3]: the IWM sits on the lower byte of the data bus, so only odd-addressed
+    // byte accesses reach it.  That is a property of how THIS board wired /LDS,
+    // which is why it is checked here and not in the chip -- and it is logged
+    // rather than asserted, because a guest must not be able to pause the
+    // emulator by executing a wrong instruction.
+    if (!(addr & 1))
+        LOG(1, "IWM: even-address byte read at 0x%08X; the chip is on the low byte", addr);
 
     // [5]: A1-A4 of the IWM are connected to A9-A12 of the CPU bus
-    addr >>= 9;
-
-    return floppy_iwm_read(s, addr & 0x0F);
+    return floppy_iwm_read(s, (addr >> 9) & 0x0F);
 }
 
-// Memory interface handler for 16-bit reads (not supported)
+// An inspection of the same register: the state lines stay where they are.
+static uint8_t iwm_peek_uint8(void *floppy, uint32_t addr) {
+    return floppy_iwm_peek((floppy_t *)floppy, (addr >> 9) & 0x0F);
+}
+
+// The chip is on one byte of the data bus, so a wide access reaches nothing.
+// These used to GS_ASSERT(0) -- which prints and PAUSES THE SCHEDULER rather
+// than aborting, so any guest executing `move.w $D80000,d0`, buggy or hostile,
+// halted the emulator and surfaced in CI as an unexplained hang.  Log it and
+// return open bus, as grand_central.c does.
 static uint16_t iwm_read_uint16(void *floppy, uint32_t addr) {
     (void)floppy;
-    (void)addr;
-    GS_ASSERT(0);
-    return 0;
+    LOG(1, "IWM: 16-bit access at 0x%08X is not decoded; reading open bus", addr);
+    return 0xFFFF;
 }
 
-// Memory interface handler for 32-bit reads (not supported)
 static uint32_t iwm_read_uint32(void *floppy, uint32_t addr) {
     (void)floppy;
+    LOG(1, "IWM: 32-bit access at 0x%08X is not decoded; reading open bus", addr);
+    return 0xFFFFFFFFu;
+}
+
+// The wide reads' open bus, without their log lines.
+static uint16_t iwm_peek_uint16(void *floppy, uint32_t addr) {
+    (void)floppy;
     (void)addr;
-    GS_ASSERT(0);
-    return 0;
+    return 0xFFFF;
+}
+static uint32_t iwm_peek_uint32(void *floppy, uint32_t addr) {
+    (void)floppy;
+    (void)addr;
+    return 0xFFFFFFFFu;
 }
 
 // Memory interface handler for 8-bit writes to IWM address space
 static void iwm_write_uint8(void *floppy, uint32_t addr, uint8_t value) {
     floppy_t *s = (floppy_t *)floppy;
 
-    // [3]: The IWM is on the lower byte of the data bus, so use odd-addressed byte accesses only
-    GS_ASSERT(addr & 1);
+    if (!(addr & 1))
+        LOG(1, "IWM: even-address byte write at 0x%08X; the chip is on the low byte", addr);
 
     // [5]: A1-A4 of the IWM are connected to A9-A12 of the CPU bus
-    addr >>= 9;
-
-    floppy_iwm_write(s, addr & 0x0F, value);
+    floppy_iwm_write(s, (addr >> 9) & 0x0F, value);
 }
 
-// Memory interface handler for 16-bit writes (not supported)
 static void iwm_write_uint16(void *floppy, uint32_t addr, uint16_t value) {
     (void)floppy;
-    (void)addr;
     (void)value;
-    GS_ASSERT(0);
+    LOG(1, "IWM: 16-bit write at 0x%08X is not decoded; dropped", addr);
 }
 
-// Memory interface handler for 32-bit writes (not supported)
 static void iwm_write_uint32(void *floppy, uint32_t addr, uint32_t value) {
     (void)floppy;
-    (void)addr;
     (void)value;
-    GS_ASSERT(0);
+    LOG(1, "IWM: 32-bit write at 0x%08X is not decoded; dropped", addr);
 }
 
 // Sets up the IWM memory interface callbacks on the floppy controller
@@ -74,6 +89,9 @@ void floppy_iwm_setup(floppy_t *floppy, memory_map_t *map) {
     floppy->memory_interface.read_uint8 = &iwm_read_uint8;
     floppy->memory_interface.read_uint16 = &iwm_read_uint16;
     floppy->memory_interface.read_uint32 = &iwm_read_uint32;
+    floppy->memory_interface.peek_uint8 = &iwm_peek_uint8;
+    floppy->memory_interface.peek_uint16 = &iwm_peek_uint16;
+    floppy->memory_interface.peek_uint32 = &iwm_peek_uint32;
     floppy->memory_interface.write_uint8 = &iwm_write_uint8;
     floppy->memory_interface.write_uint16 = &iwm_write_uint16;
     floppy->memory_interface.write_uint32 = &iwm_write_uint32;

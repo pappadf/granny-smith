@@ -32,6 +32,8 @@
 #include "log.h"
 #include "object.h"
 #include "ppc.h"
+#include "rtc.h"
+#include "system.h"
 #include "value.h"
 
 #include <stdio.h>
@@ -77,7 +79,7 @@ uint32_t tnt_gbus_boxid_bits(config_t *cfg) {
         bits |= ANS_BREG1_SERVICE_L | ANS_BREG1_LOCKED_L;
         break;
     }
-    if (tnt_board(cfg)->two_supplies)
+    if (g->two_supplies)
         bits |= ANS_BREG1_TWO_PSU_H; // active HIGH — the one exception
     return bits;
 }
@@ -135,7 +137,7 @@ static void eprom_fill(tnt_gbus_t *g) {
 // processor is the primary … or if the processor is the secondary it will
 // enter a spin-wait for an interprocessor interrupt") — raising it would
 // interrupt the only CPU with a message from nobody.  So it is counted and
-// left unraised.  Building MP (proposal §11 follow-up 2) turns this into
+// left unraised.  Building MP turns this into
 // one tnt_gc_pulse_event(cfg, ANS_INT_SECTOPRI) call.
 static void eprom_doorbell(config_t *cfg) {
     tnt_gbus_t *g = gb(cfg);
@@ -149,13 +151,16 @@ static void eprom_doorbell(config_t *cfg) {
 // Island dispatch
 // ============================================================
 
-uint8_t tnt_gbus_read8(config_t *cfg, uint32_t offset) {
+// A byte read; any Ethernet PROM access rings the MP doorbell except an
+// inspection's (`peek`).
+static uint8_t gbus_read8(config_t *cfg, uint32_t offset, bool peek) {
     tnt_gbus_t *g = gb(cfg);
     if (!g)
         return 0;
     switch (offset & 0x1F000u) {
     case ANS_OFF_EPROM: {
-        eprom_doorbell(cfg);
+        if (!peek)
+            eprom_doorbell(cfg);
         // Cells on $10 centres; anything off-centre lands on no cell.
         if ((offset & 0xFu) != 0 || ((offset & 0xFFFu) >> 4) >= ANS_EPROM_CELLS) {
             LOG(2, "Ethernet PROM read off-centre +$%05X", offset);
@@ -175,6 +180,14 @@ uint8_t tnt_gbus_read8(config_t *cfg, uint32_t offset) {
         LOG(1, "byte read of unwired GBUS offset +$%05X", offset);
         return 0;
     }
+}
+
+uint8_t tnt_gbus_read8(config_t *cfg, uint32_t offset) {
+    return gbus_read8(cfg, offset, false);
+}
+
+uint8_t tnt_gbus_peek8(config_t *cfg, uint32_t offset) {
+    return gbus_read8(cfg, offset, true);
 }
 
 void tnt_gbus_write8(config_t *cfg, uint32_t offset, uint8_t value) {
@@ -198,7 +211,7 @@ void tnt_gbus_write8(config_t *cfg, uint32_t offset, uint8_t value) {
 // 32-bit access.  `value` at this boundary is the big-endian bus view, so
 // the little-endian register value is recovered with TNT_LE32 exactly as
 // grand_central.c does for BoxID and the interrupt block.
-uint32_t tnt_gbus_read32(config_t *cfg, uint32_t offset) {
+static uint32_t gbus_read32(config_t *cfg, uint32_t offset, bool peek) {
     switch (offset & 0x1F000u) {
     case ANS_OFF_BREG2:
         LOG(3, "Board Register 2 read -> $%04X", breg2_value(cfg));
@@ -206,7 +219,8 @@ uint32_t tnt_gbus_read32(config_t *cfg, uint32_t offset) {
     case ANS_OFF_EPROM: {
         // A byte-wide cell answering a longword cycle drives lane 0 only,
         // which on this big-endian bus is the MOST significant byte.
-        eprom_doorbell(cfg);
+        if (!peek)
+            eprom_doorbell(cfg);
         tnt_gbus_t *g = gb(cfg);
         uint32_t cell = (offset & 0xFFu) >> 4;
         if (!g || (offset & 0xFu) != 0 || cell >= ANS_EPROM_CELLS)
@@ -217,6 +231,14 @@ uint32_t tnt_gbus_read32(config_t *cfg, uint32_t offset) {
         LOG(1, "long read of unwired GBUS offset +$%05X", offset);
         return 0;
     }
+}
+
+uint32_t tnt_gbus_read32(config_t *cfg, uint32_t offset) {
+    return gbus_read32(cfg, offset, false);
+}
+
+uint32_t tnt_gbus_peek32(config_t *cfg, uint32_t offset) {
+    return gbus_read32(cfg, offset, true);
 }
 
 void tnt_gbus_write32(config_t *cfg, uint32_t offset, uint32_t value) {
@@ -261,8 +283,8 @@ uint16_t tnt_gbus_tben_read(config_t *cfg) {
 // immediately after its `Testing Parity DIMMs` LCD progress message and
 // immediately before it reports the sized memory, which makes a
 // parity-error latch the obvious reading; Apple documents neither the
-// register nor its bits.  Store-and-readback, logged, and recorded as an
-// open item in the dossier so the ladder can settle it.
+// register nor its bits.  Store-and-readback, logged, and left as an open
+// question for a boot test to settle.
 void tnt_gbus_misc_write(config_t *cfg, uint16_t value) {
     tnt_gbus_t *g = gb(cfg);
     if (!g)
@@ -289,8 +311,7 @@ uint16_t tnt_gbus_misc_read(config_t *cfg) {
 // ((reg >> 13) & 3): Locked = 1, Service = 2, Normal = 3.
 static const char *const keyswitch_names[] = {"locked", "service", "normal", NULL};
 
-static value_t board_attr_keyswitch(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(board_attr_keyswitch) {
     tnt_gbus_t *g = gb((config_t *)object_data(self));
     int k = g ? g->keyswitch : ANS_KEY_LOCKED;
     return val_enum(k, keyswitch_names, 3);
@@ -321,8 +342,7 @@ static value_t board_attr_keyswitch_set(struct object *self, const member_t *m, 
     return val_err("keyswitch: want one of locked, service, normal");
 }
 
-static value_t board_attr_rear_key(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(board_attr_rear_key) {
     tnt_gbus_t *g = gb((config_t *)object_data(self));
     return val_bool(g ? g->rear_locked != 0 : true);
 }
@@ -374,43 +394,37 @@ BOARD_ENV_ATTR(env_psu_right, ANS_ENV_PSU_RIGHT, "psu_right_fail")
 BOARD_ENV_ATTR(env_hot_left, ANS_ENV_HOT_LEFT, "psu_left_hot")
 BOARD_ENV_ATTR(env_hot_right, ANS_ENV_HOT_RIGHT, "psu_right_hot")
 
-static value_t board_attr_breg1(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(board_attr_breg1) {
     config_t *cfg = (config_t *)object_data(self);
     return val_uint(4, cfg ? tnt_gc_boxid(cfg) : 0u);
 }
 
-static value_t board_attr_breg2(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(board_attr_breg2) {
     return val_uint(2, breg2_value((config_t *)object_data(self)));
 }
 
-static value_t board_attr_two_supplies(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(board_attr_two_supplies) {
     config_t *cfg = (config_t *)object_data(self);
-    return val_bool(cfg && tnt_board(cfg)->two_supplies);
+    const tnt_gbus_t *g = cfg ? gb(cfg) : NULL;
+    return val_bool(g && g->two_supplies);
 }
 
-static value_t board_attr_parity(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(board_attr_parity) {
     config_t *cfg = (config_t *)object_data(self);
     return val_bool(cfg && tnt_board(cfg)->has_parity);
 }
 
-static value_t board_attr_l2_kb(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(board_attr_l2_kb) {
     config_t *cfg = (config_t *)object_data(self);
     return val_uint(4, cfg ? tnt_board(cfg)->l2_kb : 0);
 }
 
-static value_t board_attr_bus_hz(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(board_attr_bus_hz) {
     config_t *cfg = (config_t *)object_data(self);
     return val_uint(4, cfg ? tnt_board(cfg)->bus_hz : 0);
 }
 
-static value_t board_attr_doorbell(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(board_attr_doorbell) {
     tnt_gbus_t *g = gb((config_t *)object_data(self));
     return val_uint(4, g ? g->doorbell : 0);
 }
@@ -424,11 +438,25 @@ static value_t board_attr_doorbell(struct object *self, const member_t *m) {
         }                                                                                                              \
     }
 
-// `machine.board.clear_nvram()` — pull the battery.
-static value_t board_method_clear_nvram(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+// `machine.board.reset_button()` — the fail-safe red button on the logic
+// board.  Apple, Network Server Hardware Developer Notes, §2.7: "Parameter
+// RAM is a separate part of a Power Monitor IC, and this is where date, time,
+// and boot beep volume are stored.  The fail-safe red button on the logic
+// board resets parameter RAM but not NVRAM".  So: the Power Monitor's
+// parameter RAM back to its defaults, then a machine reset (level 2), with
+// the 8 KB NVRAM -- and everything else machine.reset keeps -- untouched.
+static DEF_METHOD(board_method_reset_button) {
+    config_t *cfg = (config_t *)object_data(self);
+    if (!cfg)
+        return val_err("reset_button: no machine");
+    rtc_pram_reset(cfg->rtc);
+    system_machine_reset();
+    return val_bool(true);
+}
+
+// `machine.board.clear_nvram()` — pull the battery.  Deprecated: the same
+// call as `machine.nvram.clear()`, which every TNT board has.
+static DEF_METHOD(board_method_clear_nvram) {
     config_t *cfg = (config_t *)object_data(self);
     if (!cfg)
         return val_err("clear_nvram: no machine");
@@ -443,21 +471,19 @@ static const member_t tnt_board_members[] = {
      .attr = {.type = V_ENUM,
               .enum_values = keyswitch_names,
               .get = board_attr_keyswitch,
-              .set = board_attr_keyswitch_set}},
+              .set = board_attr_keyswitch_set}                                              },
     {.kind = M_ATTR,
      .name = "rear_key_locked",
      .doc = "Rear keyswitch locked — a power-on precondition, not software-visible",
-     .attr = {.type = V_BOOL, .get = board_attr_rear_key, .set = board_attr_rear_key_set}},
+     .attr = {.type = V_BOOL, .get = board_attr_rear_key, .set = board_attr_rear_key_set}   },
     {.kind = M_ATTR,
      .name = "register1",
      .doc = "Board Register 1 ($F301A000) as software reads it",
-     .flags = VAL_RO | VAL_HEX,
-     .attr = {.type = V_UINT, .get = board_attr_breg1, .set = NULL}},
+     .attr = {.type = V_UINT, .get = board_attr_breg1, .set = NULL}                         },
     {.kind = M_ATTR,
      .name = "register2",
      .doc = "Board Register 2 ($F301E000) — the environmental halfword, active low",
-     .flags = VAL_RO | VAL_HEX,
-     .attr = {.type = V_UINT, .get = board_attr_breg2, .set = NULL}},
+     .attr = {.type = V_UINT, .get = board_attr_breg2, .set = NULL}                         },
     BOARD_ENV_MEMBER("fan_fail_drive", env_fan_drive, "Inject FanFailDrive (POST: 'Drive Fan Failed!')"),
     BOARD_ENV_MEMBER("fan_fail_processor", env_fan_proc, "Inject FanFailProcessor (POST: 'Processor Fan Failed')"),
     BOARD_ENV_MEMBER("temp_fail", env_temp_fail, "Inject TempFailProcessor (POST: 'Temperature Too Hot!')"),
@@ -469,36 +495,36 @@ static const member_t tnt_board_members[] = {
     {.kind = M_ATTR,
      .name = "two_supplies",
      .doc = "TwoSuppliesH — redundant power supplies fitted (the 700)",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = board_attr_two_supplies, .set = NULL}},
+     .attr = {.type = V_BOOL, .get = board_attr_two_supplies, .set = NULL}                  },
     {.kind = M_ATTR,
      .name = "parity",
      .doc = "Parity DRAM fitted (selects 60 ns rather than 70 ns timing)",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = board_attr_parity, .set = NULL}},
+     .attr = {.type = V_BOOL, .get = board_attr_parity, .set = NULL}                        },
     {.kind = M_ATTR,
      .name = "l2_kb",
      .doc = "L2 cache DIMM size in KB (0 = no cache DIMM)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = board_attr_l2_kb, .set = NULL}},
+     .attr = {.type = V_UINT, .get = board_attr_l2_kb, .set = NULL}                         },
     {.kind = M_ATTR,
      .name = "bus_hz",
      .doc = "Processor bus clock, sourced from the CPU card",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = board_attr_bus_hz, .set = NULL}},
+     .attr = {.type = V_UINT, .get = board_attr_bus_hz, .set = NULL}                        },
     {.kind = M_METHOD,
      .name = "clear_nvram",
-     .doc = "Reset the non-volatile store to defaults — what removing the board battery does",
-     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = board_method_clear_nvram}},
+     .doc = "Deprecated alias of machine.nvram.clear(): blank the store — what removing the board battery does",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = board_method_clear_nvram} },
+    {.kind = M_METHOD,
+     .name = "reset_button",
+     .doc = "Press the fail-safe red button: parameter RAM back to its defaults, then a machine reset; NVRAM is kept",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = board_method_reset_button}},
     {.kind = M_ATTR,
      .name = "doorbell",
      .doc = "Accesses to the Ethernet PROM space — the SecToPri_Int doorbell",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = board_attr_doorbell, .set = NULL}},
+     .attr = {.type = V_UINT, .get = board_attr_doorbell, .set = NULL}                      },
 };
 
 static const class_desc_t tnt_board_class = {
     .name = "board",
+    .doc = "The logic board's system registers: keyswitch, bus clock, NVRAM clear",
     .members = tnt_board_members,
     .n_members = sizeof(tnt_board_members) / sizeof(tnt_board_members[0]),
 };
@@ -524,11 +550,16 @@ void tnt_gbus_reset(config_t *cfg) {
 void tnt_gbus_init(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     tnt_gbus_t *g = &st->gbus;
-    // Both keyswitches default to LOCKED, which is what the Theory of
-    // Operations requires: the rear key locked is a power-on precondition,
-    // and Locked is the front switch's normal running position.  Every
-    // non-default is logged at construction (R9).
-    g->keyswitch = ANS_KEY_LOCKED;
+    // The rear key is locked: a power-on precondition (Theory of Operations).
+    // The front keyswitch and the supply count are the configuration's
+    // (machine_config.h): the "keyswitch" and "power_supplies" options, the
+    // switch Unlocked unless the document turns it.
+    const char *key = machine_build_opts_option(&cfg->build_opts, "keyswitch");
+    g->keyswitch = (key && strcmp(key, "locked") == 0)    ? ANS_KEY_LOCKED
+                   : (key && strcmp(key, "service") == 0) ? ANS_KEY_SERVICE
+                                                          : ANS_KEY_NORMAL;
+    const char *psu = machine_build_opts_option(&cfg->build_opts, "power_supplies");
+    g->two_supplies = psu && strcmp(psu, "two") == 0;
     g->rear_locked = 1;
     tnt_gbus_reset(cfg);
 

@@ -5,11 +5,12 @@
 // Public interface for the AppleTalk networking protocol stack and the AFP
 // file server that rides on it.
 //
-// The object-model surface built on top of this API is
-// `appletalk` / `appletalk.afp` / `appletalk.printer`
-// (proposal-appletalk-afp-object-model.md §2).  Every call that can fail for
-// a reason a user should see reports it through an `err`/`err_len` buffer, so
-// the tree can surface the real message instead of "failed (see log)".
+// The object-model surface built on top of this API is `appletalk` with its
+// `stats` and `nbp`, `appletalk.afp`, `appletalk.printer`, and the
+// program-linking layers `appletalk.adsp`, `.ppc` and `.aevt`, which own
+// their subtrees.  Every call that can fail for a reason a user should see
+// reports it through an `err`/`err_len` buffer, so the tree can surface the
+// real message instead of "failed (see log)".
 
 #ifndef APPLETALK_H
 #define APPLETALK_H
@@ -22,41 +23,65 @@
 typedef struct scc scc_t;
 typedef struct scheduler scheduler_t;
 
-// === Operations ===
-
-// Entry point from SCC SDLC to feed a LocalTalk frame (LLAP) to AppleTalk stack
-void process_packet(const uint8_t *buf, size_t size);
+// === Table sizes ==============================================================
+//
+// The stack's tables, and the object-model collections that mirror them slot
+// for slot, size themselves from these: each mirror had its own constant,
+// equal by hand.
+#define ATALK_NBP_MAX_ENTRIES  16 // NBP names this host registers
+#define ATALK_ASP_MAX_SESSIONS 4 // ASP sessions (and AFP's session table)
+#define ATALK_AFP_MAX_VOLUMES  8 // published AFP volumes
 
 // === Stack-level state (object model: `appletalk`) ==========================
 
-// Attach/detach the stack from the SCC link.  Enabled by default; disabling
-// makes the emulated machine behave as if nothing were on the network.
+// Attach/detach the plugged-in machine's connection from the SCC link.
+// Enabled by default; disabling makes the emulated machine behave as if
+// nothing were on the network.  False, and the setter refused, while no
+// machine is plugged in.
 bool atalk_get_enabled(void);
-void atalk_set_enabled(bool enabled);
+int atalk_set_enabled(bool enabled, char *err, size_t err_len);
 
-// Current LLAP node ID (0 while unassigned).
+// Current LLAP node ID (0 while unassigned or nothing is plugged in).
 unsigned atalk_node_id(void);
 
-// Link- and transport-level counters (object model: `appletalk.stats`).
+// Link- and transport-level counters of the plugged-in connection (object
+// model: `appletalk.stats`); all zero while none is.
 typedef struct {
     uint64_t llap_rx;
     uint64_t llap_tx;
-    uint64_t crc_errors;
+    uint64_t malformed; // frames discarded as malformed, at any layer
+    uint64_t unhandled; // well-formed frames nothing here serves
+    uint64_t tx_dropped; // frames the stack gave up transmitting
     uint64_t ddp_in;
     uint64_t ddp_out;
     uint64_t atp_requests;
     uint64_t atp_retries;
-    uint64_t nbp_lookups;
+    uint64_t nbp_packets;
 } atalk_stats_t;
 
 const atalk_stats_t *atalk_get_stats(void);
 
+// === NBP names ================================================================
+//
+// NBP names travel in MacRoman, at most 32 bytes per field (Inside AppleTalk
+// 7-4).  Every NBP interface here takes and returns them as UTF-8, converted
+// at the NBP boundary: a name goes out as MacRoman, a name that comes in is
+// handed on as UTF-8.  A name MacRoman cannot hold is refused, never sent as
+// its UTF-8 bytes (which the Chooser would draw as "Caf√©").
+
+#define ATALK_NBP_NAME_MAX 32 // MacRoman bytes per field
+#define ATALK_NBP_TEXT_CAP (ATALK_NBP_NAME_MAX * 3 + 1) // the same field as UTF-8, NUL included
+
+// Can `name` be published as an NBP field?  0 if so; otherwise -1 with the
+// reason in `err`, naming the field as `what` ("server name").
+int atalk_nbp_name_check(const char *what, const char *name, char *err, size_t err_len);
+
 // === NBP registry views (object model: `appletalk.nbp`) =====================
 
 typedef struct {
-    char object[33];
-    char type[33];
-    char zone[33];
+    char object[ATALK_NBP_TEXT_CAP];
+    char type[ATALK_NBP_TEXT_CAP];
+    char zone[ATALK_NBP_TEXT_CAP];
     unsigned socket;
     unsigned node;
     unsigned net;
@@ -122,20 +147,9 @@ const atalk_afp_stats_t *atalk_afp_get_stats(void);
 // have actually occurred, so the map the object model publishes stays small.
 uint64_t atalk_afp_error_count(int32_t code);
 int atalk_afp_error_code_at(int index, int32_t *out_code, uint64_t *out_count);
-
-// The AFP command entry point, called by the ASP layer.
-uint32_t afp_handle_command(uint16_t session_id, uint8_t opcode, const uint8_t *in, int in_len, uint8_t *out,
-                            int out_max, int *out_len);
-
-// Release the forks, enumeration snapshots and volume references a departing
-// ASP session held.
-void afp_session_closed(uint16_t session_id);
-
-// Drop every reconstructible per-session cache (checkpoint restore).
-void afp_reset_transient_state(void);
-
-// Forks a session currently holds open, for `appletalk.afp.sessions[i]`.
-uint32_t afp_session_open_forks(uint16_t session_id);
+// Per-command success tally, walked the same way: the commands that have
+// returned NoErr at least once, by name ("FPResolveID").
+int atalk_afp_ok_command_at(int index, const char **out_name, uint64_t *out_count);
 
 // === ASP sessions (object model: `appletalk.afp.sessions`) ==================
 
@@ -152,11 +166,6 @@ int atalk_asp_session_max(void);
 bool atalk_asp_session_in_use(int index);
 bool atalk_asp_session_info(int index, atalk_session_info_t *out);
 
-// Record the AFP version a session negotiated at FPLogin, and read it back
-// when gating the 2.1-only commands.
-void atalk_asp_session_set_afp_version(uint16_t session_ref, const char *version);
-const char *atalk_asp_session_afp_version(uint16_t session_ref);
-
 // ASP Attention codes we raise (AFP_21_22 Table 1-7).
 #define ATALK_ATTN_SHUTDOWN   0x8000u // shutdown, no message
 #define ATALK_ATTN_SERVER_MSG 0x2000u // a server message is available
@@ -165,15 +174,73 @@ const char *atalk_asp_session_afp_version(uint16_t session_ref);
 int atalk_asp_send_attention(uint16_t session_ref, uint16_t code);
 void atalk_asp_broadcast_attention(uint16_t code);
 
-// Tear down every ASP session (server disable, machine teardown).
+// Tear down every ASP session (server disable, the link detached, the
+// connection unplugged).
 void atalk_asp_close_all_sessions(void);
+
+// === The ImageWriter's LocalTalk Option card (appletalk_imagewriter.c) ======
+//
+// The machine's ImageWriter (iw_printer.h) publishes itself on the network
+// while its `connection` is "localtalk": NBP `<name>:ImageWriter@*`, a PAP
+// server feeding each job to the printer.
+
+// Publish (true) or withdraw (false) the card's NBP entry; a connection in
+// progress is closed on withdrawal.  -1 when the network is down or the name
+// is taken.
+int atalk_imagewriter_publish(bool on);
+bool atalk_imagewriter_published(void);
+// The NBP object name ("Virtual ImageWriter"); renaming re-publishes.
+const char *atalk_imagewriter_name(void);
+int atalk_imagewriter_set_name(const char *name);
 
 // === Printer (object model: `appletalk.printer`) ============================
 
-bool atalk_printer_is_enabled(void);
-const char *atalk_printer_object_name(void);
+bool atalk_printer_get_enabled(void);
+const char *atalk_printer_get_name(void);
 int atalk_printer_set_enabled(bool enabled, char *err, size_t err_len);
 int atalk_printer_set_name(const char *name, char *err, size_t err_len);
+
+// The PAP status string as the workstation reads it.
+const char *atalk_printer_get_status(void);
+
+// True when the build links the PostScript interpreter (PLATEN=1); then a
+// job produces a PDF through the platform sink and the capture is optional.
+bool atalk_printer_has_interpreter(void);
+
+// Whether each job's PostScript is also handed to the platform, as it was
+// sent (laserwriter_sink_capture): a .ps beside the PDF, or a download.
+bool atalk_printer_get_capture(void);
+void atalk_printer_set_capture(bool enabled);
+
+// Printer counters (object model: `appletalk.printer.stats`) -- what a
+// script needs to see that a job happened, how big it was and what became of
+// it; the printer published two attributes and nothing else.
+typedef struct {
+    uint64_t jobs; // jobs that ran to their end
+    uint64_t aborts; // jobs cut off: timeout, too large, closed early
+    uint64_t bytes; // PostScript bytes received
+    uint64_t captures; // captures handed to the platform
+    uint64_t last_capture; // bytes in the last of them
+} atalk_printer_stats_t;
+
+const atalk_printer_stats_t *atalk_printer_get_stats(void);
+
+// Documents produced, and the page count and outcome of the last finished
+// job ("" before any; "ok"; "error: <name> in <command>"; "budget").
+uint32_t atalk_printer_documents(void);
+uint32_t atalk_printer_last_pages(void);
+const char *atalk_printer_last_outcome(void);
+
+// The printer (laserwriter_job.h, "The printer"): jobs it has
+// served since it was created, and of those, jobs exitserver made permanent.
+uint32_t atalk_printer_interpreter_jobs(void);
+uint32_t atalk_printer_interpreter_permanent_jobs(void);
+
+// Power-cycles the printer: a PAP session in progress is closed and its job
+// abandoned, and the next job starts on a new interpreter.  Configuration
+// (name, enabled, capture) and the advertisement are untouched.  Nonzero,
+// with the reason in `err`, when the build has no interpreter.
+int atalk_printer_restart(char *err, size_t err_len);
 
 // === NBP (Name Binding Protocol) ===
 
@@ -182,54 +249,100 @@ int atalk_printer_set_name(const char *name, char *err, size_t err_len);
 typedef struct atalk_nbp_entry atalk_nbp_entry_t; // opaque handle returned on registration
 
 typedef struct {
-    const char *object; // required, max 32 chars
-    const char *type; // required, max 32 chars
+    const char *object; // required, UTF-8, at most 32 MacRoman characters
+    const char *type; // required, UTF-8, at most 32 MacRoman characters
     const char *zone; // optional, defaults to "*"
     uint8_t socket; // required destination socket
     uint8_t node; // optional, defaults to LLAP_HOST_NODE
     uint16_t net; // optional, defaults to 0 (unknown)
 } atalk_nbp_service_desc_t;
 
-int atalk_nbp_register(const atalk_nbp_service_desc_t *desc, atalk_nbp_entry_t **out_entry);
+// Advertise `desc` through `*entry`: registered when *entry is NULL, updated in
+// place otherwise.  All or nothing: on failure -- the name is taken, the table
+// is full -- *entry and what it advertises are unchanged, so a service that
+// publishes a new name before storing it keeps the old one whole.  Renames
+// used to store the new name first (AFP, the printer: the tree showed a name
+// nobody could look up) or withdraw first (PPC: the port vanished).  0, or -1
+// with nothing changed.
+int atalk_nbp_publish(atalk_nbp_entry_t **entry, const atalk_nbp_service_desc_t *desc);
 
-int atalk_nbp_update(atalk_nbp_entry_t *entry, const atalk_nbp_service_desc_t *desc);
-
-int atalk_nbp_unregister(atalk_nbp_entry_t *entry);
+// Withdraw *entry, if published, and clear it.
+void atalk_nbp_withdraw(atalk_nbp_entry_t **entry);
 
 // Look an entity pattern up on the network.  `object` and `type` may use the
-// NBP wildcards ("=" matches everything); replies are delivered to `cb` one
+// NBP wildcards ("=" matches everything, "≈" any run of characters); replies are delivered to `cb` one
 // tuple at a time as they arrive, so the caller must run the scheduler before
 // expecting results.  One lookup is outstanding at a time: issuing another
-// replaces it.  Returns 0 if the request went out.
+// replaces it.  Returns 0 if the request went out; -1 if not, as for a
+// pattern MacRoman cannot hold.
 typedef void (*atalk_nbp_reply_fn)(void *ctx, const atalk_nbp_info_t *info);
 int atalk_nbp_lookup(const char *object, const char *type, const char *zone, uint8_t reply_socket,
                      atalk_nbp_reply_fn cb, void *ctx);
 void atalk_nbp_lookup_cancel(void);
 
-// === ASP Status Block ===
+// === Lifecycle ===
+//
+// The network is host state, one per process: the LocalTalk cable and the
+// nodes the emulator puts on it -- the AFP file server with its shares, the
+// LaserWriter, the "gs-host" program-linking peer -- with their NBP names and
+// the `appletalk` object tree.  appletalk_network_init creates it at startup,
+// and with it each node's part, which the network owns (atalk_network_t);
+// no machine creates, tears down, carries or checkpoints it.
+//
+// Nor does anything persist it: the network's settings (shares added or
+// removed, the printer's name and enabled state, the peer) last as long as
+// the process.  On the web a page reload starts a new process, and the
+// network comes back with only the default share the platform publishes at
+// startup (system_set_default_share); a checkpoint restored there plugs its
+// machine into that network, not the one it was saved beside.
+//
+// A machine is plugged into it through its connection (config_t.atalk),
+// which its substrate constructs with the network as an argument when it
+// builds the SCC.  The connection holds what exists only between the network
+// and that one Mac: the link's state and counters, LLAP timing, ATP
+// transactions, and the ASP / AFP / ADSP / PPC / PAP sessions with it, their
+// open forks, enumeration snapshots and Apple-event traffic and counters.
+// Only the link's settings, its counters and the session numbering go into
+// a checkpoint; the sessions never do.
+//
+// The network has one cable.  A connection is built off it and plugged in
+// when its machine becomes the active one (system_swap_in), which unplugs
+// whichever was.  To the restored or new Mac every node has restarted: the
+// servers have no sessions with it, and the LaserWriter has restarted, so no
+// print job runs on from one machine into the next (the nodes keep their
+// configuration: shares, names, settings).  Deleting
+// a connection unplugs it only if it is the one on the cable, so a machine
+// whose build failed -- never plugged in -- leaves the running one's sessions
+// alone.
+typedef struct atalk_network atalk_network_t;
+typedef struct atalk_conn atalk_conn_t;
 
-// Build the ASP GetStatus Service Status Block (per docs/errata.md layout).
-// Inputs: server_name and machine_type as C-strings (may be NULL → treated as empty).
-// Contents: the AFP version list the server actually implements and the UAM
-//           list ["No User Authent"].  No icon/mask is included (offset=0).
-// Output: *out_buf points to malloc'd buffer and *out_len is its size. Caller must free(*out_buf).
-// Returns 0 on success, non-zero on failure (e.g., allocation failure).
-int atalk_build_status_block(const char *server_name, const char *machine_type, uint8_t **out_buf, size_t *out_len);
+// Create the network (once; later calls return it).  Called from setup_init.
+atalk_network_t *appletalk_network_init(void);
+// The network, or NULL before appletalk_network_init.
+atalk_network_t *appletalk_network(void);
 
-// === Lifecycle (Constructor / Destructor) ===
+// Construct a machine's connection on `scc` and `scheduler`, not plugged in;
+// its timers are registered with `scheduler`.
+// With `checkpoint`, its block is read back first: the link's enabled flag
+// and counters and the next session reference.  It comes back with no
+// sessions -- to the guest, the server has restarted.
+atalk_conn_t *atalk_conn_new(atalk_network_t *network, scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint);
 
-// Initialization hook for AppleTalk module (registers shell commands)
-void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint);
+// Write the connection's block (its checkpoint part, machine_parts.h).
+void atalk_conn_checkpoint(const atalk_conn_t *conn, checkpoint_t *checkpoint);
 
-// Serialize the AppleTalk/AFP session and fork tables into a checkpoint.
-void appletalk_checkpoint(checkpoint_t *checkpoint);
+// Put `conn` on the cable, unplugging whichever connection is there.
+void atalk_conn_plug(atalk_conn_t *conn);
 
-// Destructor
-void appletalk_delete(void);
+// Destroy a machine's connection (machine teardown).  Closes its sessions if
+// it is plugged in; the network is untouched.
+void atalk_conn_delete(atalk_conn_t *conn);
 
-// Server module hooks: publish the NBP advertisement at startup, release
-// volumes and forks at teardown.
-void atalk_server_init(void);
-void atalk_server_delete(void);
+// The AFP server's network hook (appletalk_network_init): make the server,
+// register it as ASP's client and publish its NBP advertisement.  The network
+// owns what it returns.
+typedef struct afp_server afp_server_t;
+afp_server_t *atalk_server_init(void);
 
 #endif // APPLETALK_H

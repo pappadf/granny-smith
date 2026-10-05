@@ -1,7 +1,8 @@
 # Vectors the suite does not replay: known disagreements between this
-# emulator's cores and the m68k-sail model (see INTEGRATING.md §"When your
-# emulator disagrees" — each is a bug report for one side or the other,
-# not a predecode question: both executors fail them identically).
+# emulator's cores and the m68k-sail model (see the m68k-test integration
+# guide, "When your emulator disagrees" — each is a bug report for one side
+# or the other, not a predecode question: both executors fail them
+# identically).
 #
 #   <member> exception <name>   -- drop vectors whose outcome is that exception
 #   <member> exception <mnemonic>/<name> -- the same, in that mnemonic's file only
@@ -13,9 +14,8 @@
 # flagged as stale.  Counts below are from the smoke tier at m68k-test
 # 742624d (model 0b5a0b2), which fixed or screened out the model-side items
 # of the first round.  The rules whose cause is suspected to be on the
-# vector/model side are written up, with the report fields, in
-# local/gs-docs/notes/2026-09-02-m68k-test-vector-disagreements.md; the rest
-# are this emulator's own gaps.
+# vector/model side are reported upstream to m68k-test; the rest are this
+# emulator's own gaps.
 
 # --- 68000 ---------------------------------------------------------------
 68000 exception ori/address-error -- an aborted read-modify-write through (An)+ leaves An un-incremented; the model increments it as part of the EA before the (faulting) read (one vector; 22 of a large tier's 907 address-error vectors are of this ordering class)

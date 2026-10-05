@@ -45,7 +45,23 @@ typedef enum scsi_phase {
 // shell_init alongside rom_init. Idempotent.
 void scsi_class_register(void);
 
-scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint);
+// The CD-ROM drive a machine takes: the identity it answers INQUIRY with and
+// its logical block size.  Declared by the profile (hw_profile_t.cdrom_drive),
+// never invented by the code that seats it.
+typedef struct scsi_cd_drive {
+    const char *vendor; // INQUIRY vendor, e.g. "SONY"
+    const char *product; // INQUIRY product
+    const char *revision; // INQUIRY revision
+    uint16_t block_size; // logical block size presented (2048)
+} scsi_cd_drive_t;
+
+// Put an empty CD-ROM drive `drive` at target `id` of a bus being built.
+// SCSI is not hot-plug -- the guest's CD driver claims its targets at the
+// boot-time bus scan -- so a configuration's CD-ROM drives exist from power-on,
+// disc or no disc, and a later insert is a medium change on a drive that was
+// always there.  A restore brings the drives back in the bus's own block.
+struct scheduler;
+void scsi_add_cd_drive(scsi_t *bus, int id, const scsi_cd_drive_t *drive);
 
 // A SECOND (third, …) bus on the same machine, mounted under its own name.
 //
@@ -57,19 +73,79 @@ scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint);
 // them, plus the narrow 53C94 external chain, and Open Firmware gives each
 // its own probe word (`probe-scsi1` / `probe-scsi2`).
 //
-// So a second instance mounts at `machine.<name>` instead, and `scsi_init`
-// is `scsi_init_named(map, cp, "scsi")`.  Nothing about the first bus
+// So a second instance mounts at `machine.<name>` instead; the first is
+// simply the one named "scsi".  Nothing about the first bus
 // changes, which is the point: a name is the smallest thing that can carry
 // this, and inventing a `machine.scsi.bus[N]` collection would have to
 // rename the existing `machine.scsi.bus` node (the live phase/target view)
 // out from under every consumer of it.
-scsi_t *scsi_init_named(memory_map_t *map, checkpoint_t *checkpoint, const char *name);
+scsi_t *scsi_init_named(struct scheduler *sched, checkpoint_t *checkpoint, const image_list_t *images,
+                        const char *name);
 
 void scsi_delete(scsi_t *scsi);
 
 // Chip /RESET (68k RESET instruction → bus /RESET line): reset the controller
 // to its power-on state, IRQ latch cleared.  See system_reset_devices.
+// Attach an NCR 5380 to this bus.  Only the machines that have one call this:
+// the Plus, the 68030 glue machines (SE/30, IIcx, IIx), the MDU machines (IIci,
+// IIsi) and the IIfx.  Everything else -- Quadras, AVs, PowerMacs, Network
+// Servers -- drives the bus with a 53C96, a 53C825 or MESH and needs no 5380.
+typedef struct scsi_5380 scsi_5380_t;
+scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint);
+
 void scsi_reset_pin(scsi_t *scsi);
+
+// The device side of a SCSI bus reset: what every target on the wire sees when
+// RST/ is pulsed, whichever controller pulsed it.
+//
+// RST/ is one signal, and nothing in the NCR 5380 design manual, the NCR
+// 53C94/95/96 data manual, the LSI53C825A technical manual or ANSI X3.131-1986
+// says a target behaves differently according to who asserted it.  So there is
+// one implementation, in the bus, and each chip model calls it and then resets
+// its OWN registers -- two different jobs that used to be tangled together in
+// scsi_reset_pin() (which resets a 5380, and which the 53C825 engine was
+// calling on machines that have no 5380).
+//
+// Per ANSI X3.131-1986 S5.2.2.1 and S6.1.3 this clears uncompleted commands,
+// returns operating modes (MODE SELECT block size, PREVENT/ALLOW MEDIUM
+// REMOVAL) to their defaults, and raises UNIT ATTENTION 0x29 on every
+// populated target.
+void scsi_bus_reset(scsi_t *bus);
+
+// Arm a selection time-out: nobody answered, so tell me again in `ns`.
+//
+// "Wait, then report" is bus behaviour -- a target either asserts BSY within
+// the period or it does not -- while the period itself and what gets reported
+// are per-chip.  So the wait lives here and the chip supplies both ends.
+//
+// Why it must be a wait at all, from docs/internals/core/peripherals/scripts53c8xx.md:
+// "Report it the moment nobody answers and the whole select-fail-report-retry
+// cycle completes inside the driver's own doorbell write; the interrupt storm
+// that follows never lets the clock tick, so the driver's own timers never
+// expire and nothing ever gives up.  Configuring a bus means selecting every
+// target on it, and most of them are not there: this is the common case, not
+// the error case."
+//
+// With no scheduler underneath (the unit suites drive the models directly)
+// there is no time to pass, so the callback fires immediately.
+//
+// ACROSS A CHECKPOINT: a restore lands the bus with NO selection in flight.
+//
+// The armed callback is a host function pointer and its context a host
+// address; neither can cross a checkpoint, so they sit below the bus's
+// plain-data line and are not written.  A controller that was waiting on a
+// time-out therefore comes back as though the wait had been abandoned, and it
+// is the driver's own timer that recovers -- which is the same thing that
+// happens on real hardware when a machine is reset out of an arbitration.
+//
+// This is stated here, once, because the wait is shared: every controller that
+// arms one inherits this answer rather than deciding its own.  The 53C825 is
+// the exception that proves it -- it keeps a private timer for the stacked
+// STO/UDC ordering AIX depends on, and so has to normalise itself
+// (sym53c8xx_checkpoint_restore).
+typedef void (*scsi_select_timeout_fn)(void *ctx);
+void scsi_bus_arm_select_timeout(scsi_t *bus, uint64_t ns, scsi_select_timeout_fn fn, void *ctx);
+void scsi_bus_cancel_select_timeout(scsi_t *bus);
 
 void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint);
 
@@ -134,13 +210,15 @@ void scsi_hsken_data_out_byte(scsi_t *scsi, uint8_t byte);
 // target keeps the phase asserted until *after* the chip has latched
 // EOP and the initiator has acked the IRQ.
 bool scsi_pop_data_in_byte(scsi_t *scsi, uint8_t *out);
+// The byte the (index+1)-th scsi_pop_data_in_byte from now would deliver,
+// taking nothing (an inspection).  False where that pop would find none.
+bool scsi_peek_data_in_byte(const scsi_t *scsi, size_t index, uint8_t *out);
 
-// Push one byte into the chip's data-out / command buffer.  Mirrors the
-// chip's auto-handshake ODR alias semantics (apply_primer_gate=false —
-// the bus master does not generate the primer-then-data pattern that
-// the gate exists to filter).  When the buffer fills, the chip
-// dispatches: run_cmd() if currently in COMMAND phase, command_complete()
-// if currently in DATA_OUT phase.
+// Push one byte into the chip's data-out / command buffer.  Mirrors the chip's
+// auto-handshake ODR alias semantics: the byte is taken only if the target is
+// asking for one, so a byte offered before the target has entered DATA OUT
+// goes nowhere.  When the buffer fills, the chip dispatches: run_cmd() if
+// currently in COMMAND phase, command_complete() if currently in DATA_OUT.
 void scsi_push_data_out_byte(scsi_t *scsi, uint8_t byte);
 
 // Signal "end of DMA" from an external bus master.  Equivalent to the
@@ -175,13 +253,14 @@ uint16_t scsi_get_cmd_blk_sz(const scsi_t *scsi);
 #define SCSI_OPCODE_WRITE_6  0x0A // 6-byte WRITE CDB (CMD_WRITE)
 #define SCSI_OPCODE_WRITE_10 0x2A // 10-byte WRITE CDB (CMD_WRITE_10)
 
-// Pseudo-DMA ODR-alias register-address bits set by the machine GLUE/MDU decode
-// tables (the write_off handed to the chip's write_uint8).  Bit 0x200 selects
-// the auto-handshake ODR alias; bit 0x400 additionally marks the BLIND window
-// (vs the DRQ window) so the primer-slot gate is applied to BLIND writes only.
-// See the ODR case in scsi.c write_uint8.
-#define SCSI_PDMA_SEL  0x200 // pseudo-DMA ODR auto-handshake alias
-#define SCSI_BLIND_SEL 0x400 // BLIND pseudo-DMA window marker
+// Pseudo-DMA ODR-alias register-address bit set by the machine GLUE/MDU decode
+// tables (the write_off handed to the chip's write_uint8): bit 0x200 selects
+// the auto-handshake ODR alias.  There used to be a 0x400 companion marking the
+// BLIND window so a primer heuristic could be applied to it alone; both windows
+// now go through the same REQ handshake, and 0x400 also aliased a real Plus
+// address bit (A10, which the Guide documents as having "no significance for
+// the SCSI"), so it is gone.
+#define SCSI_PDMA_SEL 0x200 // pseudo-DMA ODR auto-handshake alias
 
 // ============================================================================
 // External-initiator API (53C96-class front-ends)
@@ -213,6 +292,10 @@ int scsi_external_message_byte(scsi_t *scsi);
 
 // Message accepted / target disconnect: bus returns to FREE.
 void scsi_external_release(scsi_t *scsi);
+// The sense key `target` is holding (what REQUEST SENSE would report next).
+// An ATAPI front-end copies it into the ATA error register after a CHECK
+// CONDITION, where the host's driver reads it before asking for the rest.
+uint8_t scsi_device_sense_key(const scsi_t *scsi, int target);
 
 // Query whether MR_DMA is currently set in the chip's mode register.
 // Used by bus-master pumps to gate transfers.
@@ -234,16 +317,27 @@ void scsi_set_loopback(scsi_t *scsi, bool enable);
 // Query whether SCSI loopback mode is active
 bool scsi_get_loopback(scsi_t *scsi);
 
-// Eject the medium at the given SCSI id (0..6). Returns 1 on successful
-// eject, 0 if the slot was already empty, -1 on bad arguments.
+// Eject the medium at the given SCSI id (0..6).  The one place that decides
+// whether a medium may leave a drive: both the guest's START/STOP UNIT and the
+// host's device[N].eject() come through here, because PREVENT MEDIUM REMOVAL
+// inhibits both routes (CDU-541 manual S5.2.14).
+//
+//   1  ejected
+//   0  the slot was already empty
+//  -1  bad arguments
+//  -2  refused: PREVENT MEDIUM REMOVAL is set
+//
+// Callers report the refusal in their own terms -- a SCSI initiator gets
+// CHECK CONDITION / ILLEGAL REQUEST / PREVENT BIT SET; the object model gets a
+// message.
 int scsi_eject_device(scsi_t *scsi, int id);
 
-// === M7d — object-model accessors ==========================================
+// === Object-model accessors ================================================
 //
 // Read-only views over the SCSI controller and its 8 device slots used
 // by the `scsi` / `scsi.bus` / `scsi.devices` object classes. Phase is
 // exposed as an integer with the canonical name table living in the
-// object class so the proposal's V_ENUM display works without leaking
+// object class so the V_ENUM display works without leaking
 // the internal phase enum across the public header.
 //
 // Slot index is 0..7 (the SCSI ID). Reads on an unpopulated slot
@@ -253,6 +347,64 @@ int scsi_eject_device(scsi_t *scsi, int id);
 //   0=bus_free, 1=arbitration, 2=selection, 3=reselection, 4=command,
 //   5=data_in, 6=data_out, 7=status, 8=message_in, 9=message_out
 int scsi_get_bus_phase(const scsi_t *scsi);
+// The same without running the lazy settle poll (an inspection).
+int scsi_get_bus_phase_peek(const scsi_t *scsi);
+
+// The three phase lines -- MSG (bit 2), C/D (bit 1), I/O (bit 0) -- as ANSI
+// X3.131-1986 encodes them (Table 5-1: data out 000, data in 001, command 010,
+// status 011, message out 110, message in 111).
+//
+// This is a property of the WIRE, so it lives here and every controller maps it
+// into its own register layout: the 5380 shifts it into CSR bits 4:2, the 53C96
+// reports it directly in STATREG bits 2:0, the 53C825 in SSTAT1/SBCL, MESH in
+// bus_status0.  All four used to carry their own copy of this table.
+//
+// Non-transfer phases return 000, because that is what the deasserted lines
+// read as -- see the definition for the two manuals that say so in as many
+// words.  A chip that presents a phase the bus is NOT in (the 53C825 and MESH
+// both fake MESSAGE OUT between select-with-ATN and the IDENTIFY) layers that
+// on top itself: a virtual phase is chip state, not wire state.
+//
+// Inline, and deliberately: it is a pure six-entry constant of the wire with
+// no state behind it, a 53C96 boot calls it forty million times, and living in
+// the header means a suite that mocks the bus still gets the REAL table
+// instead of a private copy that can drift from it.
+static inline uint8_t scsi_phase_wire_bits(int phase) {
+    switch (phase) {
+    case scsi_data_out:
+        return 0x0; // -  -  -
+    case scsi_data_in:
+        return 0x1; // -  -  I/O
+    case scsi_command:
+        return 0x2; // -  C/D -
+    case scsi_status:
+        return 0x3; // -  C/D I/O
+    case scsi_message_out:
+        return 0x6; // MSG C/D -
+    case scsi_message_in:
+        return 0x7; // MSG C/D I/O
+    default:
+        // NOT a fallback.  Outside an information transfer phase the three
+        // lines are simply deasserted, and every chip that publishes them says
+        // so in the same words: the NCR 53C94/95/96 data manual, Status
+        // Register (read address 04), "the phase bits are not normally
+        // latched"; the SYM53C825A data manual, SBCL (register 0B), "these bits
+        // are not latched; they are a true representation of what is on the
+        // SCSI bus at the time the register is read".
+        //
+        // So 000 during BUS FREE is what real hardware shows -- there is no
+        // "invalid phase" encoding to report instead (X3.131 leaves 100 and 101
+        // reserved, and they are not it).  Resist making this -1 and pushing
+        // the choice back out to the chips: they have nothing to choose, and
+        // three of them choosing separately is what this function replaced.
+        return 0x0;
+    }
+}
+
+// REQ and BSY as they currently stand on the bus.  Also wire state, also read
+// by more than one chip.
+bool scsi_bus_req(const scsi_t *scsi);
+bool scsi_bus_bsy(const scsi_t *scsi);
 int scsi_get_bus_target(const scsi_t *scsi);
 int scsi_get_bus_initiator(const scsi_t *scsi);
 
@@ -263,6 +415,11 @@ int scsi_get_bus_initiator(const scsi_t *scsi);
 //   block_size:     512 for HD, usually 2048 for CD-ROM
 //   vendor/product: NULL when slot is empty
 int scsi_device_type(const scsi_t *scsi, unsigned which);
+
+// The id of the bus's CD bay -- the machine's built-in CD-ROM drive -- or -1
+// when it has none.  Only a CD-ROM attaches there.
+// True when target `which` is a CD-ROM drive (with or without a disc).
+bool scsi_device_is_cd_drive(const scsi_t *scsi, unsigned which);
 bool scsi_device_present(const scsi_t *scsi, unsigned which);
 bool scsi_device_read_only(const scsi_t *scsi, unsigned which);
 bool scsi_device_medium_present(const scsi_t *scsi, unsigned which);

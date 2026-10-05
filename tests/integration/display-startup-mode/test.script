@@ -1,0 +1,22 @@
+# Built-in video startup mode (see config.mk).
+
+# Boot `model` with the built-in video at `mode` on `monitor`, to the ROM's
+# own screen, and check the record and the depth the ROM brought up.
+def startup(model, rom, monitor, mode, n, at, saved, depth) {
+    machine.boot model="${$model}" rom="../../data/roms/${$rom}" config="{\"displays\":{\"builtin\":{\"monitor\":\"${$monitor}\",\"mode\":\"${$mode}\"}}}"
+    assert machine.rtc.pram.peek($at + 2) == $saved "${$model}: seeded savedMode ${machine.rtc.pram.peek($at + 2):02x}, want ${$saved:02x}"
+    machine.rtc.time = 3000000000
+    scheduler.run $n
+    assert machine.rtc.pram.peek($at + 2) == $saved "${$model}: the ROM rewrote the record (savedMode ${machine.rtc.pram.peek($at + 2):02x})"
+    assert machine.screen.depth == $depth "${$model}: screen at ${machine.screen.depth} bpp, want ${$depth}"
+}
+
+startup("iici", "iici-368cadfe.rom", "13in_rgb", "640x480x8", 60000000, 0x56, 0x83, 8)
+startup("q700", "q700-q900-420dbff3.rom", "16in_rgb", "832x624x4", 120000000, 0x46, 0x82, 4)
+startup("q950", "q950-3dc27823.rom", "12in_rgb", "512x384x16", 120000000, 0x46, 0x84, 16)
+startup("q840av", "q840av-q660av-5bf10fd1.rom", "13in_rgb", "640x480x1", 200000000, 0x46, 0x80, 1)
+
+# No mode chosen: no record, the ROM's own default.
+machine.boot model="q700" rom="../../data/roms/q700-q900-420dbff3.rom"
+assert machine.rtc.pram.peek(0x47) == 0 "a record seeded with no mode chosen"
+quit

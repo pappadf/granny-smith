@@ -1,75 +1,101 @@
 <script lang="ts">
+  import Icon from '@/components/common/Icon.svelte';
+  import Hint from '@/components/ui/Hint.svelte';
+  import ListRow from '@/components/ui/ListRow.svelte';
+  // The Watchpoints section: debug.watchpoints, a memory logpoint that stops
+  // the machine after the accessing instruction (#180).  Same shape as the
+  // Breakpoints section; a row is an address range, its access mode and hits.
+  import { onMount } from 'svelte';
   import CollapsibleSection from '@/components/common/CollapsibleSection.svelte';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
-  import {
-    watchpoints,
-    addWatchpoint,
-    removeWatchpoint,
-    toggleWatchpoint,
-    type Watchpoint,
-  } from '@/bus/mockWatchpoints.svelte';
-  import { showNotification } from '@/state/toasts.svelte';
+  import { listWatchpoints, addWatchpoint, removeWatchpoint, type Watchpoint } from '@/bus/debug';
   import { machine } from '@/state/machine.svelte';
+  import { showNotification } from '@/state/toasts.svelte';
   import { debug, toggleSection } from '@/state/debug.svelte';
-  import { mmuLookup } from '@/bus/mockMmu';
   import { fmtHex32, parseHex } from '@/lib/hex';
+  import Button from '@/components/ui/Button.svelte';
+  import IconButton from '@/components/ui/IconButton.svelte';
+  import TextInput from '@/components/ui/TextInput.svelte';
+  import Select from '@/components/ui/Select.svelte';
 
+  let rows = $state<Watchpoint[]>([]);
   let showAdd = $state(false);
-  let addLo = $state('');
-  let addHi = $state('');
-  let addMode = $state<'r' | 'w' | 'rw'>('rw');
+  let addAddr = $state('');
+  let addMode = $state<'write' | 'read' | 'rw'>('write');
+  let addWidth = $state<'' | 'b' | 'w' | 'l'>('l');
 
-  function commitAdd() {
-    const lo = parseHex(addLo);
-    const hi = parseHex(addHi);
-    if (lo === null || hi === null || hi < lo) {
-      showNotification('Invalid watchpoint range', 'error');
-      return;
-    }
-    addWatchpoint(lo, hi, addMode);
-    showNotification(
-      `Watchpoint set on $${fmtHex32(lo)} – $${fmtHex32(hi)} (${addMode.toUpperCase()})`,
-      'info',
-    );
-    addLo = '';
-    addHi = '';
-    addMode = 'rw';
-    showAdd = false;
+  // Only the latest listing is shown (see BreakpointsSection).
+  let listGen = 0;
+  async function refresh() {
+    const gen = ++listGen;
+    const list = await listWatchpoints();
+    if (gen === listGen) rows = list;
   }
 
-  function cancelAdd() {
-    addLo = '';
-    addHi = '';
-    addMode = 'rw';
-    showAdd = false;
-  }
+  onMount(() => {
+    void refresh();
+  });
 
-  function onKey(ev: KeyboardEvent) {
+  $effect(() => {
+    void machine.status;
+    if (debug.sections.watchpoints) void refresh();
+  });
+
+  function onAddrKey(ev: KeyboardEvent) {
     if (ev.key === 'Enter') {
       ev.preventDefault();
-      commitAdd();
+      void commitAdd();
     } else if (ev.key === 'Escape') {
       cancelAdd();
     }
   }
 
-  function onRowContext(w: Watchpoint, ev: MouseEvent) {
+  async function commitAdd() {
+    const v = parseHex(addAddr);
+    if (v === null) {
+      showNotification('Invalid watchpoint address', 'error');
+      return;
+    }
+    const ok = await addWatchpoint(v, addMode, addWidth);
+    if (!ok) {
+      showNotification('Failed to add watchpoint', 'error');
+      return;
+    }
+    showNotification(`Watchpoint set at $${fmtHex32(v)}`, 'info');
+    addAddr = '';
+    showAdd = false;
+    await refresh();
+  }
+
+  function cancelAdd() {
+    addAddr = '';
+    showAdd = false;
+  }
+
+  function onRowContext(row: Watchpoint, ev: MouseEvent) {
     ev.preventDefault();
     const items: ContextMenuItem[] = [
-      { label: w.enabled ? 'Disable' : 'Enable', action: () => toggleWatchpoint(w.id) },
-      { sep: true },
-      { label: 'Remove', danger: true, action: () => removeWatchpoint(w.id) },
+      {
+        label: 'Remove',
+        danger: true,
+        action: () => void doRemove(row),
+      },
     ];
     openContextMenu(items, ev.clientX, ev.clientY);
   }
 
-  function rangeLabel(w: Watchpoint): string {
-    if (!machine.mmuEnabled) return `$${fmtHex32(w.lo)} – $${fmtHex32(w.hi)}`;
-    const lr = mmuLookup(w.lo);
-    const phyLo = lr.valid && lr.phys !== undefined ? fmtHex32(lr.phys) : '!';
-    const phyHi = lr.valid && lr.phys !== undefined ? fmtHex32(lr.phys + (w.hi - w.lo)) : '!';
-    const tag = lr.valid ? (lr.kind ?? 'PT') : 'INVALID';
-    return `L:$${fmtHex32(w.lo)} – $${fmtHex32(w.hi)}  P:$${phyLo} – $${phyHi}  ${tag}`;
+  async function doRemove(row: Watchpoint) {
+    const ok = await removeWatchpoint(row.id);
+    if (!ok) {
+      showNotification('Failed to remove watchpoint', 'error');
+      return;
+    }
+    await refresh();
+  }
+
+  // "$0000016A" for one address, "$0000016A-$0000016D" for a range.
+  function rangeLabel(r: Watchpoint): string {
+    return r.end !== r.addr ? `$${fmtHex32(r.addr)}-$${fmtHex32(r.end)}` : `$${fmtHex32(r.addr)}`;
   }
 </script>
 
@@ -79,157 +105,90 @@
   onToggle={() => toggleSection('watchpoints')}
 >
   {#snippet actions()}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <span
-      role="button"
-      tabindex="-1"
+    <IconButton
       class="add-btn"
-      title="Add watchpoint"
-      onclick={(ev: MouseEvent) => {
-        ev.stopPropagation();
-        showAdd = true;
-      }}>+</span
-    >
+      icon="plus"
+      size="sm"
+      tone="panel"
+      rest="faded"
+      iconSize="md"
+      label="Add watchpoint"
+      onclick={() => (showAdd = true)}
+    />
   {/snippet}
   {#if showAdd}
     <div class="add-row">
-      <input
-        type="text"
+      <TextInput
         class="add-addr"
-        placeholder="lo ($hex)"
-        bind:value={addLo}
-        onkeydown={onKey}
-        aria-label="Low address"
+        mono
+        widthCh={12}
+        placeholder="address ($hex)"
+        bind:value={addAddr}
+        onkeydown={onAddrKey}
+        aria-label="Watchpoint address"
       />
-      <input
-        type="text"
-        class="add-addr"
-        placeholder="hi ($hex)"
-        bind:value={addHi}
-        onkeydown={onKey}
-        aria-label="High address"
-      />
-      <div class="mode-toggle" role="group" aria-label="Watch mode">
-        {#each ['r', 'w', 'rw'] as m (m)}
-          <button
-            type="button"
-            class="mode-btn"
-            class:active={addMode === m}
-            onclick={() => (addMode = m as 'r' | 'w' | 'rw')}
-          >
-            {m.toUpperCase()}
-          </button>
-        {/each}
-      </div>
-      <button type="button" class="btn" onclick={commitAdd}>Add</button>
-      <button type="button" class="btn" onclick={cancelAdd}>Cancel</button>
+      <Select
+        class="add-mode"
+        size="sm"
+        style="flex: 1 1 auto"
+        bind:value={addMode}
+        aria-label="Watchpoint access"
+      >
+        <option value="write">write</option>
+        <option value="read">read</option>
+        <option value="rw">read/write</option>
+      </Select>
+      <Select
+        class="add-mode"
+        size="sm"
+        style="flex: 1 1 auto"
+        bind:value={addWidth}
+        aria-label="Watchpoint width"
+      >
+        <option value="b">byte</option>
+        <option value="w">word</option>
+        <option value="l">long</option>
+      </Select>
+      <Button variant="primary" class="btn" onclick={commitAdd}>Add</Button>
+      <Button class="btn" onclick={cancelAdd}>Cancel</Button>
     </div>
   {/if}
-  {#if watchpoints.entries.length === 0 && !showAdd}
-    <p class="hint">No watchpoints. Click + to add one. (Mock — Phase 7 wires firing on access.)</p>
+  {#if rows.length === 0 && !showAdd}
+    <Hint class="hint" inset="section">No watchpoints. Click + to add one.</Hint>
   {:else}
-    {#each watchpoints.entries as w (w.id)}
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="wp-row" oncontextmenu={(ev) => onRowContext(w, ev)}>
-        <span class="enable">{w.enabled ? '●' : '○'}</span>
-        <span class="range">{rangeLabel(w)}</span>
-        <span class="mode">{w.mode.toUpperCase()}</span>
-      </div>
+    {#each rows as r (r.id)}
+      <ListRow class="wp-row" density="compact" mono oncontextmenu={(ev) => onRowContext(r, ev)}>
+        <span class="enable" data-state={r.enabled ? 'on' : 'off'}
+          ><Icon name={r.enabled ? 'circle-filled' : 'circle-outline'} size="xs" /></span
+        >
+        <span class="addr">{rangeLabel(r)}</span>
+        <span class="mode">{r.mode}</span>
+        {#if r.hits > 0}
+          <span class="hits">{r.hits}×</span>
+        {/if}
+      </ListRow>
     {/each}
   {/if}
 </CollapsibleSection>
 
 <style>
-  .add-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 18px;
-    height: 18px;
-    color: var(--gs-fg-muted);
-    cursor: pointer;
-    font-size: 14px;
-    line-height: 1;
-  }
-  .add-btn:hover {
-    color: var(--gs-fg-bright);
-  }
   .add-row {
     display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 6px 12px;
-    align-items: center;
-  }
-  .add-addr {
-    width: 12ch;
-    background: var(--gs-input-bg);
-    color: var(--gs-input-fg);
-    border: 1px solid var(--gs-input-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 6px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
-    outline: none;
-  }
-  .add-addr:focus {
-    border-color: var(--gs-focus);
-  }
-  .mode-toggle {
-    display: inline-flex;
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    overflow: hidden;
-    height: 22px;
-  }
-  .mode-btn {
-    background: transparent;
-    color: var(--gs-fg-muted);
-    border: none;
-    padding: 0 8px;
-    font-size: 11px;
-    cursor: pointer;
-  }
-  .mode-btn.active {
-    background: var(--gs-row-selected, rgba(80, 140, 220, 0.25));
-    color: var(--gs-fg-bright);
-  }
-  .btn {
-    background: transparent;
-    color: var(--gs-fg);
-    border: 1px solid var(--gs-border);
-    border-radius: 2px;
-    height: 22px;
-    padding: 0 8px;
-    font-size: 11px;
-    cursor: pointer;
-  }
-  .btn:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.06));
-  }
-  .hint {
-    color: var(--gs-fg-muted);
-    font-size: 11px;
-    padding: 6px 12px;
-  }
-  .wp-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 2px 12px;
-    font-family: var(--gs-font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
-    color: var(--gs-fg);
-  }
-  .wp-row:hover {
-    background: var(--gs-row-hover, rgba(255, 255, 255, 0.05));
+    gap: var(--gs-space-1-5);
+    padding: var(--gs-space-1-5) var(--gs-space-3);
   }
   .enable {
-    color: var(--gs-fg-muted);
+    display: inline-flex;
+    color: var(--gs-code-breakpoint-off);
+  }
+  .enable[data-state='on'] {
+    color: var(--gs-code-breakpoint);
   }
   .mode {
-    color: var(--gs-fg-muted);
-    font-weight: 600;
+    color: var(--gs-text-muted);
+    font-style: italic;
+  }
+  .hits {
+    color: var(--gs-text-muted);
   }
 </style>

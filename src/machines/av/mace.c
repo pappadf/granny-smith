@@ -10,7 +10,7 @@
 // can interrupt without a datapath), the empty FIFO frame counts, and the
 // BIU config.  No transmit or receive path exists, so the driver's
 // loopback self-tests fail and `.ENET` does not load — the documented
-// no-Ethernet contract (IMPLEMENTATION.md §7).
+// no-Ethernet contract.
 
 #include "mace.h"
 
@@ -28,7 +28,7 @@ LOG_USE_CATEGORY_NAME("mace");
 
 #define AV_MACE_REGS 32 // $000-$1F0 on a $10 stride
 
-// Register indices (offset >> 4; mace.md §2).
+// Register indices (offset >> 4).
 #define MACE_IR       8 // interrupt register, read-to-clear
 #define MACE_IMR      9 // interrupt mask (1 = masked)
 #define MACE_PR       10 // poll register
@@ -38,10 +38,10 @@ LOG_USE_CATEGORY_NAME("mace");
 #define MACE_CHIPIDLO 24 // chip ID low byte
 #define MACE_CHIPIDHI 25 // chip ID high byte
 
-// Am79C940 revision the Curio integrates (mace.md §2 chip-ID register).
+// Am79C940 revision the Curio integrates (chip-ID register).
 #define MACE_CHIPID 0x0940
 
-// The Apple address PROM (mace.md §4): the station address bytes read
+// The Apple address PROM: the station address bytes read
 // backwards from $51 and bit-reversed by the driver's NormAddr; the XOR of
 // all eight bytes must equal $FF.  Locally-administered 02:00:00:09:07:02
 // -> bit-reversed 40 00 00 90 E0 40, with byte 7 chosen for the checksum.
@@ -59,14 +59,16 @@ static inline av_mace_t *mace_of(config_t *cfg) {
     return ((av_state_t *)cfg->machine_context)->mace;
 }
 
-uint8_t av_mace_read(config_t *cfg, uint32_t addr) {
+static uint8_t av_mace_read_access(config_t *cfg, uint32_t win_off, uint32_t addr, bool peek) {
+    (void)win_off; // this window's handler decodes from addr itself
     av_mace_t *m = mace_of(cfg);
     uint32_t reg = ((addr & 0x1FFu) >> 4) % AV_MACE_REGS;
     switch (reg) {
     case MACE_IR: {
         // Read-to-clear; nothing can interrupt with no datapath.
         uint8_t v = m->regs[MACE_IR];
-        m->regs[MACE_IR] = 0;
+        if (!peek)
+            m->regs[MACE_IR] = 0;
         return v;
     }
     case MACE_PR:
@@ -80,7 +82,15 @@ uint8_t av_mace_read(config_t *cfg, uint32_t addr) {
     }
 }
 
-void av_mace_write(config_t *cfg, uint32_t addr, uint8_t value) {
+uint8_t av_mace_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    return av_mace_read_access(cfg, win_off, addr, false);
+}
+uint8_t av_mace_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    return av_mace_read_access(cfg, win_off, addr, true);
+}
+
+void av_mace_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     av_mace_t *m = mace_of(cfg);
     uint32_t reg = ((addr & 0x1FFu) >> 4) % AV_MACE_REGS;
     if (reg == MACE_IR || reg == MACE_PR || reg == MACE_CHIPIDLO || reg == MACE_CHIPIDHI)
@@ -89,7 +99,8 @@ void av_mace_write(config_t *cfg, uint32_t addr, uint8_t value) {
     LOG(3, "reg %u = $%02X (pc=%08X)", reg, value, cpu_get_pc(cfg->cpu));
 }
 
-uint8_t av_mace_prom_read(config_t *cfg, uint32_t addr) {
+uint8_t av_mace_prom_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)cfg;
     // One byte per 16-byte group, at offset $x1 of each.
     if ((addr & 0xFu) != 1)
@@ -97,7 +108,8 @@ uint8_t av_mace_prom_read(config_t *cfg, uint32_t addr) {
     return av_mace_prom[(addr >> 4) & 7];
 }
 
-void av_mace_prom_write(config_t *cfg, uint32_t addr, uint8_t value) {
+void av_mace_prom_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     LOG(2, "PROM write $%X = $%02X ignored (read-only)", addr & 0xFFu, value);
     (void)cfg;
 }

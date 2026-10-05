@@ -1,186 +1,652 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import Tree, { type TreeNode } from '@/components/common/Tree.svelte';
+  // The SYSTEM tab: the model's state, editable.  Rows come from
+  // lib/systemRows (meta.members with values); values show as the REPL
+  // prints them (lib/typeDescriptor).  Editing: double-click a value, or
+  // Enter / F2 on the selected row (a bool toggles with one click); Enter
+  // commits, Esc cancels.  A literal is written with gsEval and echoed to the
+  // console; anything else runs as the statement `<path> = <text>` in the
+  // console.  The right-click menu runs the node's methods (destructive ones
+  // confirm; methods with arguments open a form) and copies a row's value or
+  // path.  Visible levels re-read on the core's state events, after every
+  // console job and SYSTEM action, and every 2 s while the machine runs.
+  import { onMount, onDestroy, untrack } from 'svelte';
   import {
-    loadSystemRoots,
-    loadSystemChildren,
-    loadNodeMethods,
-    type SystemTreeNode,
-  } from '@/bus/systemTree';
-  import { gsEval } from '@/bus/emulator';
+    loadRoot,
+    loadLevel,
+    shown,
+    REFRESH_INTERVAL_MS,
+    type Level,
+    type SysRow,
+  } from '@/lib/systemRows';
+  import type { ArgInfo, MemberInfo } from '@/bus/systemTree';
+  import { gsEval, isGsError, gsErrorText, whenModuleReady } from '@/bus/emulator';
+  import { invalidate, onMembersChanged } from '@/bus/memberStore';
+  import { TreeState } from '@/lib/treeState.svelte';
   import { machine } from '@/state/machine.svelte';
-  import { pathKey } from '@/lib/treePath';
+  import { systemView } from '@/state/system.svelte';
+  import { consoleEcho, consoleSubmit } from '@/state/console.svelte';
+  import { formatValue, parseCommit, assignStatement, callStatement } from '@/lib/typeDescriptor';
+  import { askText } from '@/state/dialogs.svelte';
+  import { isContainer } from '@/lib/taggedValue';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
+  import ValueEditor from '@/components/common/ValueEditor.svelte';
+  import PathField from '@/components/common/PathField.svelte';
+  import Modal from '@/components/common/Modal.svelte';
+  import TreeItem from '@/components/ui/TreeItem.svelte';
+  import Button from '@/components/ui/Button.svelte';
+  import SectionHeading from '@/components/ui/SectionHeading.svelte';
+  import Hint from '@/components/ui/Hint.svelte';
+  import Field from '@/components/ui/Field.svelte';
+  import FormGrid from '@/components/ui/FormGrid.svelte';
   import { showNotification } from '@/state/toasts.svelte';
+  import { downloadFiles } from '@/bus/fsOps';
+  import { sanitizeName } from '@/lib/archive';
+  import { copyText } from '@/lib/clipboard';
+  import Checkbox from '@/components/ui/Checkbox.svelte';
 
-  let rootNodes = $state<SystemTreeNode[]>([]);
-  let expanded = $state<Record<string, boolean>>({});
-  let loading = $state(true);
-  // §7.2: advanced members are hidden until the user opts in.
-  let showAdvanced = $state(false);
+  // Exported images land here: /opfs is file-backed, so writing one costs no
+  // wasm heap (see saveImage).  A directory of its own keeps a 512 MB export
+  // out of the image categories the New Machine dialog offers.
+  const EXPORT_DIR = '/opfs/exports';
 
-  async function refresh() {
-    loading = true;
-    rootNodes = await loadSystemRoots();
-    loading = false;
+  let selectedKey = $state('');
+  let editingKey = $state('');
+  let listEl = $state<HTMLUListElement | null>(null);
+
+  // Open levels are kept by path in systemView (a model row's key is its
+  // path), so they survive the tab closing.
+  const tree = new TreeState<SysRow, Level>({
+    root: loadRoot,
+    load: loadLevel,
+    rows: (l) => l.rows,
+    shown: (row) => row.kind === 'divider' || shown(row, systemView.showAdvanced),
+    reloadOnOpen: () => true,
+    expanded: () => systemView.expanded,
+    refreshed: () => {
+      if (systemView.reveal) showRevealed();
+    },
+  });
+  const flat = $derived(tree.flat);
+  const root = $derived(tree.rootRows);
+
+  // --- loading and refresh --------------------------------------------------------
+
+  // Select the row another surface asked for, once it is loaded.
+  function showRevealed(): void {
+    const target = systemView.reveal;
+    if (!flat.some((f) => f.row.path === target)) return;
+    systemView.reveal = '';
+    selectedKey = target;
+    requestAnimationFrame(() =>
+      listEl?.querySelector('.sys-row.selected')?.scrollIntoView({ block: 'nearest' }),
+    );
   }
 
-  onMount(() => {
-    void refresh();
-  });
-
-  // Re-scan when the machine boots / shuts down so the tree stays faithful.
+  // Machine up or down: the tree changes shape.
   $effect(() => {
     void machine.status;
-    void refresh();
+    untrack(
+      () =>
+        void whenModuleReady().then(() => {
+          invalidate('');
+          return tree.refresh();
+        }),
+    );
   });
 
-  async function loadChildren(path: string[]): Promise<TreeNode[]> {
-    return (await loadSystemChildren(path, showAdvanced)) as TreeNode[];
+  // A change in the model re-reads the open levels (a reload after a boot
+  // keeps them by path).
+  const unsubscribe = onMembersChanged(() => void tree.refresh());
+
+  // Every 2 s while the machine runs and the page is in the foreground (the
+  // tab being open is this component being mounted).
+  let timer: ReturnType<typeof setInterval> | null = null;
+  onMount(() => {
+    timer = setInterval(() => {
+      if (machine.status !== 'running') return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      void tree.refresh();
+    }, REFRESH_INTERVAL_MS);
+  });
+  onDestroy(() => {
+    tree.dispose();
+    unsubscribe();
+    if (timer) clearInterval(timer);
+  });
+
+  // --- editing ------------------------------------------------------------------------
+
+  function editable(row: SysRow): boolean {
+    return row.kind === 'attr' && !row.readonly && row.value !== undefined;
   }
 
-  // Toggling Advanced changes which rows resolve, so collapse everything to
-  // force a fresh lazy walk on next expand.
-  function toggleAdvanced() {
-    showAdvanced = !showAdvanced;
-    expanded = {};
+  function startEdit(row: SysRow): void {
+    if (!editable(row) || row.type?.kind === 'bool') return;
+    selectedKey = row.key;
+    editingKey = row.key;
   }
 
-  // The three §5.1 kinds, drawn under non-interactive dividers (§8.2). The
-  // machine subtree leads with no heading; the meta objects sit under an
-  // "Emulator" divider and the simulated network under "Network".
-  const machineNodes = $derived(rootNodes.filter((n) => n.group === 'machine') as TreeNode[]);
-  const emulatorNodes = $derived(rootNodes.filter((n) => n.group === 'emulator') as TreeNode[]);
-  const networkNodes = $derived(rootNodes.filter((n) => n.group === 'network') as TreeNode[]);
+  function endEdit(): void {
+    editingKey = '';
+    listEl?.focus();
+  }
 
-  // Run `target.method` and report the outcome. Mutating calls refresh the
-  // tree so the new state shows immediately.
-  async function invokeMethod(target: string, method: string, args: unknown[], mutate: boolean) {
-    const res = await gsEval(`${target}.${method}`, args);
-    if (res && typeof res === 'object' && 'error' in (res as Record<string, unknown>)) {
-      showNotification(`${method}: ${(res as { error: string }).error}`, 'error');
+  // Commit an edit: a literal through gsEval (echoed), anything else as a
+  // console statement (its command entry is the record).  Answers an error
+  // to show under the field.
+  async function commit(row: SysRow, text: string): Promise<string | null> {
+    const c = parseCommit(text, row.type);
+    if (c.mode === 'statement') {
+      consoleSubmit(`${row.path} = ${text.trim()}`);
+      endEdit();
+      return null;
+    }
+    const res = await gsEval(row.path, [c.value]);
+    if (isGsError(res)) return gsErrorText(res);
+    consoleEcho(assignStatement(row.path, c.value, row.type));
+    endEdit();
+    void tree.refresh();
+    return null;
+  }
+
+  // --- methods ----------------------------------------------------------------------
+
+  interface Pending {
+    path: string; // the node
+    method: MemberInfo;
+  }
+  let confirming = $state<Pending | null>(null);
+  let form = $state<(Pending & { values: string[]; error: string }) | null>(null);
+
+  function argsOf(m: MemberInfo): ArgInfo[] {
+    return Array.isArray(m.args) ? m.args : [];
+  }
+
+  function nodeLabel(path: string): string {
+    return path.slice(Math.max(path.lastIndexOf('.'), path.lastIndexOf('[')) + 1) || path;
+  }
+
+  // Methods the tab runs its own way, by the method's full path or its
+  // name: `export` saves the image to /opfs and downloads it (saveImage).
+  const METHOD_HANDLERS = new Map<string, (path: string, m: MemberInfo) => void>([
+    ['export', (path) => void saveImage(path)],
+  ]);
+
+  function choose(path: string, m: MemberInfo): void {
+    const handler = METHOD_HANDLERS.get(`${path}.${m.name}`) ?? METHOD_HANDLERS.get(m.name);
+    if (handler) {
+      handler(path, m);
       return;
     }
-    showNotification(`${method} ok`, 'info');
-    if (mutate) void refresh();
+    if (m.destructive) confirming = { path, method: m };
+    else proceed({ path, method: m });
   }
 
-  // Save-image flow (§8.4): export writes a NEW file, then we hand it to the
-  // browser via the WASM-only root.download. "Save image…" is a Save As.
+  function proceed(p: Pending): void {
+    const args = argsOf(p.method);
+    if (args.length) {
+      form = {
+        ...p,
+        values: args.map((a) => (a.default != null ? formatValue(a.default, a.type) : '')),
+        error: '',
+      };
+      return;
+    }
+    void run(p, []);
+  }
+
+  // The form's texts as argument values: literals by their type, other text
+  // as a string for the core to read; trailing empty optionals are left out.
+  function formArgs(args: ArgInfo[], values: string[]): unknown[] {
+    let n = values.length;
+    while (n > 0 && !values[n - 1].trim() && args[n - 1]?.optional) n--;
+    return values.slice(0, n).map((t, i) => {
+      const c = parseCommit(t, args[i]?.type);
+      return c.mode === 'literal' ? c.value : t.trim();
+    });
+  }
+
+  async function run(p: Pending, args: unknown[]): Promise<string | null> {
+    const call = `${p.path}.${p.method.name}`;
+    const res = await gsEval(call, args);
+    if (isGsError(res)) {
+      showNotification(`${p.method.verb ?? p.method.name}: ${gsErrorText(res)}`, 'error');
+      return gsErrorText(res);
+    }
+    consoleEcho(
+      callStatement(
+        call,
+        args,
+        argsOf(p.method).map((a) => a.type),
+      ),
+    );
+    if (res !== null && res !== undefined && res !== true)
+      showNotification(
+        `${p.method.verb ?? p.method.name}: ${formatValue(res, p.method.result)}`,
+        'info',
+      );
+    void tree.refresh();
+    return null;
+  }
+
+  async function submitForm(): Promise<void> {
+    if (!form) return;
+    const args = argsOf(form.method);
+    const missing = args.findIndex((a, i) => !a.optional && !a.rest && !form!.values[i]?.trim());
+    if (missing >= 0) {
+      form.error = `${args[missing].name} is required`;
+      return;
+    }
+    const p = form;
+    const err = await run(p, formArgs(args, p.values));
+    if (err) {
+      if (form) form.error = err;
+      return;
+    }
+    form = null;
+  }
+
+  // Save-image flow.
+  //
+  // This used to export to /tmp and then hand the file to root.download, and
+  // exporting a hard disk aborted the module outright: /tmp on the WASM build
+  // is a MEMORY-backed filesystem, and WASMFS grows a memory file's buffer by
+  // reallocating it, so the old and the new buffer are both live at every
+  // step and the Emscripten heap never gives the space back.  Writing 512 MB
+  // cost 1.29 GB of heap and aborted.
+  //
+  // So the export goes to /opfs, which is file-backed and costs no heap at
+  // all, and the browser gets the OPFS entry as a lazy File: createObjectURL
+  // streams it from storage, so the bytes never enter the wasm heap or the JS
+  // heap either.
   async function saveImage(target: string) {
     const suggested = (await gsEval(`${target}.filename`)) as string;
     const base = (typeof suggested === 'string' && suggested) || 'disk.img';
-    const name = window.prompt('Save image as (filename):', base.split('/').pop() || 'disk.img');
+    const name = await askText({
+      title: 'Save image as',
+      label: 'File name',
+      initial: base.split('/').pop() || 'disk.img',
+      submitText: 'Save',
+    });
     if (!name) return;
-    const tmp = `/tmp/${name}`;
-    const ok = await gsEval(`${target}.export`, [tmp]);
+
+    const dest = `${EXPORT_DIR}/${sanitizeName(name)}`;
+    showNotification(`Exporting to ${dest}…`, 'info');
+    const ok = await gsEval(`${target}.export`, [dest]);
     if (ok !== true) {
-      showNotification('export failed (file may already exist)', 'error');
+      showNotification(`export failed — ${dest} may already exist; see the console`, 'error');
       return;
     }
-    await gsEval('download', [tmp]);
-    showNotification(`Exported ${name}`, 'info');
+    consoleEcho(callStatement(`${target}.export`, [dest]));
+    // The file is left in /opfs on purpose: the browser reads it after the
+    // click, and a 512 MB disk is worth keeping until the user has it.
+    const res = await downloadFiles([dest]);
+    if (res.failures.length) {
+      showNotification(
+        `Exported to ${dest}, but the download failed — save it from Files`,
+        'error',
+      );
+      return;
+    }
+    showNotification(`Exported ${name} (also kept at ${dest})`, 'info');
   }
 
-  // Build the right-click menu for a node from meta.methods (§8.3): one item
-  // per UI-surfaced method, destructive ones flagged, args prompted.
-  async function onContextMenu(path: string[], ev: MouseEvent) {
+  // --- context menu --------------------------------------------------------------------
+
+  function methodItem(path: string, m: MemberInfo, prefix = ''): ContextMenuItem {
+    const verb = m.verb ?? m.name;
+    const dots = argsOf(m).length ? '…' : '';
+    return {
+      label: `${prefix}${verb}${dots}`,
+      danger: !!m.destructive,
+      action: () => choose(path, m),
+    };
+  }
+
+  function methodItems(level: Level | undefined, path: string): ContextMenuItem[] {
+    if (!level) return [];
+    const visibleTier = (m: MemberInfo) =>
+      m.category !== 'internal' && (m.category !== 'advanced' || systemView.showAdvanced);
+    const items: ContextMenuItem[] = level.methods
+      .filter(visibleTier)
+      .map((m) => methodItem(path, m));
+    for (const sub of level.submenus) {
+      const ms = sub.methods.filter(visibleTier);
+      if (!ms.length) continue;
+      if (items.length) items.push({ sep: true });
+      for (const m of ms) items.push(methodItem(sub.path, m, `${sub.name} ▸ `));
+    }
+    return items;
+  }
+
+  async function onContextMenu(row: SysRow, ev: MouseEvent): Promise<void> {
     ev.preventDefault();
-    const target = path[path.length - 1];
-    const methods = await loadNodeMethods(target);
-    if (!methods.length) return;
-    const items: ContextMenuItem[] = methods.map((info) => ({
-      label: info.verb,
-      danger: info.destructive,
-      action: () => {
-        void (async () => {
-          if (info.destructive && !window.confirm(`${info.verb}?\n\n${info.doc}`)) return;
-          if (info.name === 'export') {
-            await saveImage(target);
-            return;
-          }
-          let args: unknown[] = [];
-          if (info.nargs > 0) {
-            const raw = window.prompt(
-              `${info.verb}\n${info.doc}\n\nArguments (space-separated):`,
-              '',
-            );
-            if (raw === null) return;
-            args = raw.length ? raw.split(/\s+/) : [];
-          }
-          await invokeMethod(target, info.name, args, info.mutate);
-        })();
-      },
-    }));
-    openContextMenu(items, ev.clientX, ev.clientY);
+    if (row.kind === 'divider') return;
+    selectedKey = row.key;
+    const x = ev.clientX;
+    const y = ev.clientY;
+    let items: ContextMenuItem[] = [];
+    if (row.expandable) {
+      const level = tree.levels[row.key] ?? (await loadLevel(row));
+      items = methodItems(level, row.path);
+    }
+    if (items.length) items.push({ sep: true });
+    if (row.kind === 'attr')
+      items.push({
+        label: 'Copy value',
+        action: () => void copyText(formatValue(row.value, row.type)),
+      });
+    items.push({ label: 'Copy path', action: () => void copyText(row.path) });
+    openContextMenu(items, x, y);
   }
 
-  function onToggle(p: string[]) {
-    const k = pathKey(p);
-    expanded[k] = !expanded[k];
+  // --- keyboard -------------------------------------------------------------------------
+
+  function onKey(ev: KeyboardEvent): void {
+    if (editingKey) return;
+    const rows = flat.filter((f) => f.row.kind !== 'divider');
+    if (!rows.length) return;
+    const idx = rows.findIndex((f) => f.row.key === selectedKey);
+    const cur = idx >= 0 ? rows[idx].row : undefined;
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      const next =
+        ev.key === 'ArrowDown' ? Math.min(rows.length - 1, idx + 1) : Math.max(0, idx - 1);
+      selectedKey = rows[next].row.key;
+      listEl?.querySelector('.sys-row.selected')?.scrollIntoView({ block: 'nearest' });
+      return;
+    }
+    if (!cur) return;
+    if (ev.key === 'ArrowRight' || ev.key === 'ArrowLeft') {
+      if (!cur.expandable) return;
+      if (!!systemView.expanded[cur.path] !== (ev.key === 'ArrowRight')) {
+        ev.preventDefault();
+        void tree.toggle(cur);
+      }
+      return;
+    }
+    if (ev.key === 'Enter' || ev.key === 'F2') {
+      ev.preventDefault();
+      if (cur.expandable) void tree.toggle(cur);
+      else if (editable(cur) && cur.type?.kind === 'bool')
+        void commit(cur, formatValue(cur.value, cur.type) === 'true' ? 'false' : 'true');
+      else startEdit(cur);
+    }
   }
 </script>
 
 <div class="system-view">
   <div class="system-toolbar">
-    <label class="adv-toggle">
-      <input type="checkbox" checked={showAdvanced} onchange={toggleAdvanced} />
-      Advanced
-    </label>
+    <Checkbox
+      class="adv-toggle"
+      size="sm"
+      label="Advanced"
+      checked={systemView.showAdvanced}
+      onchange={(v) => (systemView.showAdvanced = v)}
+    />
   </div>
-  {#if loading}
-    <p class="hint">Loading system tree…</p>
-  {:else if rootNodes.length === 0}
-    <p class="hint">No machine is running yet. Start one from the Welcome view.</p>
+  {#if !tree.loaded}
+    <Hint class="hint" inset="view">Loading system tree…</Hint>
+  {:else if root.length === 0}
+    <Hint class="hint" inset="view"
+      >No machine is running yet. Start one from the Welcome view.</Hint
+    >
   {:else}
-    {#if machineNodes.length}
-      <Tree nodes={machineNodes} {expanded} {onToggle} {onContextMenu} {loadChildren} />
-    {/if}
-    {#if emulatorNodes.length}
-      <div class="group-divider">Emulator</div>
-      <Tree nodes={emulatorNodes} {expanded} {onToggle} {onContextMenu} {loadChildren} />
-    {/if}
-    {#if networkNodes.length}
-      <div class="group-divider">Network</div>
-      <Tree nodes={networkNodes} {expanded} {onToggle} {onContextMenu} {loadChildren} />
-    {/if}
+    <ul class="sys-tree" role="tree" tabindex="0" bind:this={listEl} onkeydown={onKey}>
+      {#each flat as { row, depth } (row.key)}
+        {#if row.kind === 'divider'}
+          <SectionHeading as="li" level="h4" rule class="group-divider" role="presentation"
+            >{row.label}</SectionHeading
+          >
+        {:else}
+          {@const open = !!systemView.expanded[row.path]}
+          {@const selected = selectedKey === row.key}
+          <li
+            class="sys-row kind-{row.kind}"
+            class:selected
+            class:readonly={row.kind === 'attr' && row.readonly}
+            role="treeitem"
+            aria-selected={selected}
+            aria-expanded={row.expandable ? open : undefined}
+            aria-level={depth + 1}
+            data-path={row.path}
+            oncontextmenu={(ev) => void onContextMenu(row, ev)}
+          >
+            <TreeItem
+              class="sys-line"
+              role="button"
+              tabindex={-1}
+              title={row.doc ? `${row.doc}\n${row.path}` : row.path}
+              density="compact"
+              hover={false}
+              {depth}
+              kind={row.kind}
+              hasChildren={row.expandable}
+              {open}
+              {selected}
+              onclick={() => {
+                selectedKey = row.key;
+                if (row.expandable) void tree.toggle(row);
+              }}
+            >
+              {#snippet content()}
+                <span class="name">{row.label}</span>
+                {#if row.kind === 'attr'}
+                  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+                  <span
+                    class="value"
+                    ondblclick={(ev) => {
+                      ev.stopPropagation();
+                      startEdit(row);
+                    }}
+                    onclick={(ev) => ev.stopPropagation()}
+                  >
+                    {#if editingKey === row.key}
+                      <ValueEditor
+                        type={row.type}
+                        value={formatValue(row.value, row.type)}
+                        autofocus
+                        label={row.path}
+                        onCommit={(t) => commit(row, t)}
+                        onCancel={endEdit}
+                      />
+                    {:else if row.type?.kind === 'bool' && row.value !== undefined}
+                      <ValueEditor
+                        type={row.type}
+                        value={formatValue(row.value, row.type)}
+                        readonly={!editable(row)}
+                        label={row.path}
+                        onCommit={(t) => commit(row, t)}
+                      />
+                    {:else if isContainer(row.value)}
+                      <details class="container">
+                        <summary class="gs-summary">{formatValue(row.value, row.type)}</summary>
+                        <pre>{JSON.stringify(row.value, null, 2)}</pre>
+                      </details>
+                    {:else}
+                      <span class="text">{formatValue(row.value, row.type)}</span>
+                    {/if}
+                    {#if row.readonly}
+                      <svg
+                        class="lock"
+                        viewBox="0 0 16 16"
+                        width="10"
+                        height="10"
+                        aria-label="read-only"
+                        ><title>read-only</title><path
+                          fill="currentColor"
+                          d="M4 7V5a4 4 0 0 1 8 0v2h1v8H3V7h1zm2 0h4V5a2 2 0 0 0-4 0v2z"
+                        /></svg
+                      >
+                    {/if}
+                  </span>
+                {/if}
+              {/snippet}
+            </TreeItem>
+          </li>
+        {/if}
+      {/each}
+    </ul>
   {/if}
 </div>
+
+<Modal
+  open={!!confirming}
+  title={confirming
+    ? `${confirming.method.verb ?? confirming.method.name} ${nodeLabel(confirming.path)}?`
+    : ''}
+  onClose={() => (confirming = null)}
+>
+  {#if confirming}<p class="confirm-doc">{confirming.method.doc}</p>{/if}
+  {#snippet actions()}
+    <Button size="lg" onclick={() => (confirming = null)}>Cancel</Button>
+    <Button
+      size="lg"
+      variant="danger"
+      class="danger"
+      onclick={() => {
+        const p = confirming;
+        confirming = null;
+        if (p) proceed(p);
+      }}>{confirming?.method.verb ?? confirming?.method.name}</Button
+    >
+  {/snippet}
+</Modal>
+
+<Modal
+  open={!!form}
+  title={form ? `${form.path}.${form.method.name}` : ''}
+  onClose={() => (form = null)}
+>
+  {#if form}
+    <p class="confirm-doc">{form.method.doc}</p>
+    <div class="arg-form">
+      <FormGrid
+        onsubmit={(ev) => {
+          ev.preventDefault();
+          void submitForm();
+        }}
+      >
+        {#each argsOf(form.method) as a, i (a.name)}
+          <Field stacked help={a.doc || undefined}>
+            {#snippet labelContent()}
+              <span class="arg-name"
+                >{a.name}{a.optional ? '' : ' *'}<span class="arg-type">{a.type?.kind ?? ''}</span
+                ></span
+              >
+            {/snippet}
+            {#if a.type?.presentation === 'path'}
+              <PathField
+                value={form!.values[i]}
+                label={a.name}
+                onInput={(t) => form && (form.values[i] = t)}
+              />
+            {:else}
+              <ValueEditor
+                type={a.type}
+                value={form!.values[i]}
+                label={a.name}
+                onInput={(t) => form && (form.values[i] = t)}
+              />
+            {/if}
+          </Field>
+        {/each}
+        {#if form.error}<Hint as="div" tone="error">{form.error}</Hint>{/if}
+        <button type="submit" hidden aria-hidden="true"></button>
+      </FormGrid>
+    </div>
+  {/if}
+  {#snippet actions()}
+    <Button size="lg" onclick={() => (form = null)}>Cancel</Button>
+    <Button size="lg" variant="primary" class="primary" onclick={() => void submitForm()}
+      >{form?.method.verb ?? form?.method.name}</Button
+    >
+  {/snippet}
+</Modal>
 
 <style>
   .system-view {
     width: 100%;
     height: 100%;
     overflow: auto;
-    background: var(--gs-bg);
-    padding: 4px 0;
+    background: var(--gs-surface-app);
+    padding: var(--gs-space-1) 0;
+    font-size: var(--gs-font-size-sm);
   }
   .system-toolbar {
     display: flex;
     justify-content: flex-end;
-    padding: 2px 8px;
+    padding: var(--gs-space-0-5) var(--gs-space-2);
   }
-  .adv-toggle {
-    font-size: 11px;
-    color: var(--gs-fg-muted);
+  .sys-tree {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .sys-tree:focus .sys-row.selected > :global(.sys-line) {
+    outline: var(--gs-focus-width) solid var(--gs-focus-ring);
+    outline-offset: var(--gs-focus-offset);
+  }
+  .name {
+    flex: none;
+    color: var(--gs-text);
+  }
+  .kind-attr .name {
+    color: var(--gs-syntax-attribute);
+    font-family: var(--gs-font-mono);
+  }
+  .kind-entry .name {
+    font-family: var(--gs-font-mono);
+  }
+  .value {
+    flex: 1 1 auto;
+    min-width: 0;
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    cursor: pointer;
+    gap: var(--gs-space-1);
+    font-family: var(--gs-font-mono);
+    overflow: hidden;
   }
-  .group-divider {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--gs-fg-muted);
-    padding: 8px 12px 2px;
-    border-top: 1px solid var(--gs-border, rgba(127, 127, 127, 0.2));
-    margin-top: 4px;
+  .value .text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .hint {
-    color: var(--gs-fg-muted);
-    font-size: 12px;
-    padding: 16px;
-    line-height: 1.5;
+  .readonly .value {
+    color: var(--gs-text-muted);
+  }
+  .lock {
+    visibility: hidden;
+    flex: none;
+  }
+  .readonly:hover .lock {
+    visibility: visible;
+  }
+  .container summary {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .container pre {
+    margin: var(--gs-space-0-5) 0;
+    white-space: pre-wrap;
+    font-size: var(--gs-font-size-xs);
+  }
+  .confirm-doc {
+    color: var(--gs-text-muted);
+    margin: 0 0 var(--gs-space-2);
+  }
+  .arg-form {
+    min-width: 320px;
+  }
+  .arg-name {
+    font-family: var(--gs-font-mono);
+    font-size: var(--gs-font-size-base);
+    color: var(--gs-field-label-fg);
+  }
+  .arg-type {
+    margin-left: var(--gs-space-2);
+    color: var(--gs-syntax-type);
+    font-size: var(--gs-font-size-xs);
   }
 </style>

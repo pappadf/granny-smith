@@ -10,12 +10,17 @@
 
 #include "appletalk.h"
 
+#include "afp_server.h"
 #include "appletalk_adsp.h"
 #include "appletalk_aevt.h"
+#include "appletalk_asp.h"
 #include "appletalk_internal.h"
 #include "appletalk_ppc.h"
+#include "atalk_id.h"
 #include "common.h"
+#include "laserwriter_job.h"
 #include "log.h"
+#include "macroman.h"
 #include "object.h"
 #include "scc.h"
 #include "scheduler.h"
@@ -23,9 +28,10 @@
 #include "system.h"
 #include "value.h"
 
-#include <assert.h>
 #include <ctype.h>
 #include <inttypes.h>
+#include <limits.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,80 +41,6 @@
 // ============================================================================
 // Constants and Macros
 // ============================================================================
-
-// Module-level state: dependencies passed at init time (Pattern B)
-static scc_t *g_scc = NULL;
-static scheduler_t *g_scheduler = NULL;
-
-// Object-model class descriptors live near the bottom of the file but
-// appletalk_init / appletalk_delete reference them.
-extern const class_desc_t atalk_class;
-extern const class_desc_t atalk_stats_class;
-extern const class_desc_t atalk_nbp_collection_class;
-extern const class_desc_t atalk_nbp_entry_class;
-extern const class_desc_t atalk_afp_class;
-extern const class_desc_t atalk_afp_stats_class;
-extern const class_desc_t atalk_volumes_collection_class;
-extern const class_desc_t atalk_volume_class;
-extern const class_desc_t atalk_sessions_collection_class;
-extern const class_desc_t atalk_session_class;
-extern const class_desc_t atalk_printer_class;
-
-// Per-entry instance data for the indexed collections. Each collection's
-// get() consults the owning subsystem's `in_use` predicate and returns the
-// corresponding pre-allocated object, so empty slots are holes.
-typedef struct {
-    int slot;
-} atalk_slot_data_t;
-
-#define ATALK_MAX_VOLUME_OBJS  8
-#define ATALK_MAX_NBP_OBJS     16
-#define ATALK_MAX_SESSION_OBJS 4
-
-static atalk_slot_data_t g_atalk_volume_data[ATALK_MAX_VOLUME_OBJS];
-static struct object *g_atalk_volume_objs[ATALK_MAX_VOLUME_OBJS];
-static atalk_slot_data_t g_atalk_nbp_data[ATALK_MAX_NBP_OBJS];
-static struct object *g_atalk_nbp_objs[ATALK_MAX_NBP_OBJS];
-static atalk_slot_data_t g_atalk_session_data[ATALK_MAX_SESSION_OBJS];
-static struct object *g_atalk_session_objs[ATALK_MAX_SESSION_OBJS];
-
-// Singleton object-tree nodes — lifetime tied to appletalk_init/delete.
-static struct object *g_atalk_object;
-static struct object *g_atalk_stats_object;
-static struct object *g_atalk_nbp_object;
-static struct object *g_atalk_afp_object;
-static struct object *g_atalk_afp_stats_object;
-static struct object *g_atalk_volumes_object;
-static struct object *g_atalk_sessions_object;
-static struct object *g_atalk_printer_object;
-
-// Checkpoint record. Only durable state travels; open forks, locks and
-// enumeration snapshots are reconstructible client-session state (§4.5).
-#define ATALK_PERSIST_MAGIC 0x41544B31u // 'ATK1'
-
-typedef struct {
-    uint32_t magic;
-    bool enabled;
-    uint16_t next_sess_ref;
-    atalk_stats_t stats;
-    // Durable Apple event configuration (ppc_appleevents.md §7): the sessions
-    // and the events collection are volatile and are not carried across.
-    atalk_aevt_config_t aevt;
-} atalk_persist_t;
-
-// Set when appletalk_init found a previous machine's stack still installed
-// and took it down itself; see appletalk_delete.
-static bool g_atalk_superseded;
-
-static void appletalk_teardown(void);
-
-// Stack enablement. The stack is attached to the SCC link by default; the
-// object model is the user's switch to take the machine off the network
-// (object-model proposal §8.3). Every frame in and out passes this guard.
-static bool g_atalk_enabled = true;
-
-// Link/transport counters published as `appletalk.stats`.
-static atalk_stats_t g_atalk_stats;
 
 #ifndef ARRAY_LEN
 #define ARRAY_LEN(a) ((int)(sizeof(a) / sizeof((a)[0])))
@@ -123,31 +55,6 @@ static atalk_stats_t g_atalk_stats;
 #define LLAP_ACK 0x82
 #define LLAP_RTS 0x84
 #define LLAP_CTS 0x85
-
-// ============================================================================
-// Forward Declarations
-// ============================================================================
-
-// Lower layers at top of file, higher at bottom. These prototypes resolve circular references.
-static void ddp_short_in(llap_header_t *llap, const uint8_t *buf, size_t len);
-static void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len);
-static void nbp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len);
-static void atp_in(const ddp_header_t *ddp, const uint8_t *buf, int len);
-static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx);
-// ASP session-table helpers, defined with the table itself further down.
-static void asp_sessions_reset(void);
-static uint16_t asp_sessions_next_ref(void);
-static void asp_sessions_set_next_ref(uint16_t ref);
-// The AFP command entry point lives in appletalk_server.c (declared in appletalk.h).
-// Logging category function used by LOG() macro; provided by LOG_USE_CATEGORY_NAME later
-static log_category_t *_log_get_local_category(void);
-static void log_hex(int level, const char *tag, const uint8_t *data, size_t len);
-
-// ============================================================================
-// Operations
-// ============================================================================
-
-// =============================== LLAP (LocalTalk) - lowest layer ===============================
 
 // One directed data frame parked for LocalTalk's RTS/CTS exchange: LLAP
 // requires a directed transmission to open with lapRTS and send the data
@@ -174,13 +81,331 @@ typedef struct {
     uint8_t buf[3 + LLAP_DATA_MAX_SIZE]; // header + payload
 } llap_queued_frame_t;
 
-static struct {
+// The RTS/CTS queue of one connection.
+typedef struct {
     llap_queued_frame_t q[LLAP_RTS_QUEUE_DEPTH];
     int head, count; // ring; q[head] is the frame whose RTS is on the wire
     bool rts_out; // an RTS for q[head] has been sent and awaits its CTS
     int attempts; // RTSs sent for q[head] without a CTS
     uint32_t generation; // bumps on every RTS; a stale timeout is ignored
-} g_llap_rts;
+} llap_rts_queue_t;
+
+#define ATP_MAX_HANDLERS     8
+#define ATP_MAX_OUTGOING     16
+#define ATP_MAX_XO_CACHE     16
+#define ATP_DEFAULT_RETRY_MS 2000u
+
+// A server socket's request handler (ASP on 8 and 54, PAP on 6).
+typedef struct {
+    bool in_use;
+    uint8_t socket;
+    atp_socket_handler_t handler;
+    void *ctx;
+} atp_handler_slot_t;
+
+// One transaction this host originated.
+struct atp_request_handle {
+    bool in_use;
+    bool xo;
+    bool infinite_retries;
+    uint8_t src_socket;
+    uint16_t tid;
+    uint8_t base_ctl;
+    uint8_t trel_hint;
+    uint8_t initial_bitmap;
+    uint8_t pending_bitmap;
+    uint8_t user[4];
+    uint8_t payload[ATP_MAX_ATP_PAYLOAD];
+    int payload_len;
+    atalk_socket_addr_t dest;
+    uint64_t retry_timeout_ns;
+    int retries_remaining;
+    uint32_t timer_generation;
+    atp_request_callbacks_t callbacks;
+    void *cb_ctx;
+};
+
+typedef struct {
+    bool valid;
+    uint8_t seq;
+    int len;
+    uint8_t bytes[DDP_MAX_DATA_SIZE];
+} atp_resp_packet_cache_t;
+
+// An exactly-once transaction the guest sent us: the response, kept for a
+// retransmitted request until the release timer or the guest's TRel.
+typedef struct {
+    bool in_use;
+    bool response_ready;
+    uint16_t tid;
+    uint8_t requester_node;
+    uint8_t requester_socket;
+    uint8_t responder_socket;
+    uint8_t trel_hint;
+    uint32_t release_generation;
+    atp_resp_packet_cache_t packets[ATP_MAX_RESPONSE_FRAGMENTS];
+} atp_xo_entry_t;
+
+#define NBP_OBJECT_MAX            ATALK_NBP_NAME_MAX
+#define NBP_TYPE_MAX              ATALK_NBP_NAME_MAX
+#define NBP_ZONE_MAX              ATALK_NBP_NAME_MAX
+#define NBP_MAX_ENTRIES           ATALK_NBP_MAX_ENTRIES
+#define NBP_MAX_TUPLES_PER_PACKET 8
+#define NBP_APPROX_CHAR           0xC5 // MacRoman "≈" wildcard per Inside AppleTalk
+
+struct atalk_nbp_entry {
+    bool in_use;
+    char object[NBP_OBJECT_MAX + 1];
+    char type[NBP_TYPE_MAX + 1];
+    char zone[NBP_ZONE_MAX + 1];
+    uint8_t object_len;
+    uint8_t type_len;
+    uint8_t zone_len;
+    uint16_t net;
+    uint8_t node;
+    uint8_t socket;
+    uint8_t enumerator;
+};
+
+// One outstanding outgoing lookup.  The PPC browse is the only client, and it
+// re-issues rather than queueing, so a single slot is enough.
+typedef struct {
+    bool active;
+    uint8_t nbp_id;
+    atalk_nbp_reply_fn cb;
+    void *ctx;
+} nbp_lookup_t;
+
+// Every timer one connection has registered with its machine's scheduler,
+// so unplugging it can drop their pending events: the link and transport
+// timers below, and those of the layers above (ASP, ADSP, the printer's PAP
+// and LaserWriter timers).
+#define ATALK_MAX_TIMERS 16
+
+// ============================================================================
+// The network and the connection (appletalk.h, "Lifecycle")
+// ============================================================================
+
+// A machine's connection to the network: its end of the cable and everything
+// that exists only between the network and that one Mac -- the link's state
+// and counters, the RTS/CTS exchange and the wire's timing, ATP transactions
+// in either direction, the NBP lookup in flight, and the session tables of
+// the layers above.
+struct atalk_conn {
+    scc_t *scc;
+    scheduler_t *scheduler;
+    // Attached to the link.  The object model is the user's switch to take
+    // the machine off the network; every frame in and out passes this guard.
+    bool enabled;
+    atalk_stats_t stats; // published as `appletalk.stats`
+
+    atalk_timer_t *timers[ATALK_MAX_TIMERS];
+    int num_timers;
+
+    // LLAP
+    llap_rts_queue_t llap_rts;
+    atalk_timer_t llap_rts_timer; // CTS did not come: retry the RTS (data = generation)
+    atalk_timer_t llap_kick_timer; // the wire is free again: open the next dialog
+    double wire_busy_until_ns; // scheduler time the wire frees up
+    // Set between answering the guest's lapRTS with lapCTS and the arrival of
+    // its data frame: the wire is reserved for that dialog, and our own lapRTS
+    // must wait (see llap_wire_note_peer_frame).
+    bool peer_reserved;
+
+    // ATP
+    atp_request_handle_t atp_requests[ATP_MAX_OUTGOING];
+    atp_xo_entry_t xo_entries[ATP_MAX_XO_CACHE];
+    uint32_t next_tid; // atalk_id_alloc cursor
+    // Per-request retry and per-transaction XO release; many can be pending at
+    // once, told apart by their data (atp_encode_event_data).
+    atalk_timer_t atp_retry_timer;
+    atalk_timer_t atp_release_timer;
+
+    // NBP
+    nbp_lookup_t nbp_lookup;
+    uint8_t nbp_next_lookup_id;
+
+    // The layers above: their sessions with this Mac
+    asp_link_t *asp;
+    afp_link_t *afp;
+    adsp_link_t *adsp;
+    ppc_link_t *ppc;
+    aevt_link_t *aevt;
+    pap_link_t *pap;
+};
+
+// The network: one per process, created by appletalk_network_init.  The
+// nodes it provides keep their own state in their modules (the AFP server in
+// afp_volume.c, the printer in appletalk_printer.c and laserwriter_job.c, the
+// program-linking peer in appletalk_ppc.c and appletalk_aevt.c); what is
+// gathered here is the registry they share and the cable.
+struct atalk_network {
+    bool up; // appletalk_network_init has run
+    // The cable: the one connection the network is serving, or NULL.  The
+    // active machine's connection is plugged in (atalk_conn_plug, from
+    // system_swap_in); deleting it leaves the cable empty.
+    atalk_conn_t *plugged;
+    atalk_nbp_entry_t nbp_entries[NBP_MAX_ENTRIES]; // names this host registers
+    uint8_t nbp_next_enum[256]; // per-socket enumerator cursors
+    atp_handler_slot_t atp_handlers[ATP_MAX_HANDLERS];
+    // The `appletalk` tree's collection entries, made on first use
+    // (atalk_install_objects).
+    object_cache_t nbp_objects;
+    object_cache_t volume_objects;
+    object_cache_t session_objects;
+    // The nodes' parts, each made by its module when the network comes up
+    // and reached by that module through its own pointer to it: the file
+    // server and the ASP sessions it serves, the LaserWriter, and the
+    // program-linking peer (ADSP carries PPC sessions, which carry Apple
+    // events).  They live as long as the network, which is the process.
+    asp_server_t *asp;
+    afp_server_t *afp;
+    pap_printer_t *printer;
+    adsp_host_t *adsp;
+    ppc_host_t *ppc;
+    aevt_host_t *aevt;
+};
+
+static atalk_network_t g_net;
+
+// The connection a timer belongs to, from the address of its timer member.
+#define CONN_OF(source, member) ((atalk_conn_t *)(void *)((char *)(source) - offsetof(atalk_conn_t, member)))
+
+// Counters read while no machine is plugged in.
+static const atalk_stats_t k_no_stats;
+
+scheduler_t *atalk_scheduler(void) {
+    return g_net.plugged ? g_net.plugged->scheduler : NULL;
+}
+
+uint64_t atalk_now_ns(void) {
+    scheduler_t *s = atalk_scheduler();
+    return s ? (uint64_t)scheduler_time_ns(s) : 0;
+}
+
+// === Timers (appletalk_internal.h) ===========================================
+
+void atalk_timer_init(atalk_conn_t *c, atalk_timer_t *t, const char *source_name, const char *event_name,
+                      atalk_timer_fn cb) {
+    GS_ASSERT(c && t && cb && c->scheduler);
+    if (!c || !t || !cb || !c->scheduler)
+        return;
+    t->cb = cb;
+    scheduler_new_event_type(c->scheduler, source_name, t, event_name, cb);
+    for (int i = 0; i < c->num_timers; i++)
+        if (c->timers[i] == t)
+            return;
+    GS_ASSERT(c->num_timers < ATALK_MAX_TIMERS);
+    if (c->num_timers < ATALK_MAX_TIMERS)
+        c->timers[c->num_timers++] = t;
+}
+
+void atalk_timer_arm(atalk_timer_t *t, uint64_t data, uint64_t delay_ns) {
+    scheduler_t *s = atalk_scheduler();
+    if (!s)
+        return;
+    GS_ASSERT(t->cb); // a registration hook missed atalk_timer_init
+    if (delay_ns < ATALK_TIMER_MIN_NS)
+        delay_ns = ATALK_TIMER_MIN_NS;
+    remove_event_by_data(s, t->cb, t, data);
+    scheduler_new_cpu_event(s, t->cb, t, data, 0, delay_ns);
+}
+
+void atalk_timer_cancel(atalk_timer_t *t, uint64_t data) {
+    scheduler_t *s = atalk_scheduler();
+    if (s && t->cb)
+        remove_event_by_data(s, t->cb, t, data);
+}
+
+void atalk_timer_cancel_all(atalk_timer_t *t) {
+    scheduler_t *s = atalk_scheduler();
+    if (s && t->cb)
+        remove_event(s, t->cb, t);
+}
+
+// Drop every pending event of the timers the connection registered: it is
+// coming off the cable.  The registrations stay with its scheduler, which
+// goes with its machine.
+static void atalk_timers_forget(atalk_conn_t *c) {
+    if (!c->scheduler)
+        return;
+    for (int i = 0; i < c->num_timers; i++)
+        scheduler_forget_source(c->scheduler, c->timers[i]);
+}
+
+// Object-model class descriptors live near the bottom of the file but
+// appletalk_network_init references them.
+static const class_desc_t atalk_class;
+static const class_desc_t atalk_stats_class;
+static const class_desc_t atalk_nbp_collection_class;
+static const class_desc_t atalk_nbp_entry_class;
+static const class_desc_t atalk_afp_class;
+static const class_desc_t atalk_afp_stats_class;
+static const class_desc_t atalk_volumes_collection_class;
+static const class_desc_t atalk_volume_class;
+static const class_desc_t atalk_sessions_collection_class;
+static const class_desc_t atalk_session_class;
+static const class_desc_t atalk_printer_class;
+static const class_desc_t atalk_printer_stats_class;
+
+// The connection's checkpoint block -- all a machine checkpoint carries of
+// AppleTalk.  The network is not in it: the shares, the server's identity,
+// the printer and the program-linking peer are host state.  Nor are the
+// sessions: a restored connection has none, which is what the guest sees
+// when a server restarts.  The session numbering keeps the restored server
+// from handing out a session reference or wire id the guest still holds, so
+// a request on a stale session is refused rather than taken for a new one's.
+#define ATALK_PERSIST_MAGIC 0x41544B31u // 'ATK1'
+
+typedef struct {
+    uint32_t magic;
+    bool enabled;
+    uint8_t next_sess_id;
+    uint16_t next_sess_ref;
+    atalk_stats_t stats;
+} atalk_persist_t;
+
+// ============================================================================
+// Forward Declarations
+// ============================================================================
+
+// Lower layers at top of file, higher at bottom. These prototypes resolve circular references.
+static void ddp_short_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *buf, size_t len);
+static void ddp_in(atalk_conn_t *c, ddp_header_t *ddp, const uint8_t *buf, size_t len);
+static void nbp_in(atalk_conn_t *c, ddp_header_t *ddp, const uint8_t *buf, size_t len);
+static void atp_in(atalk_conn_t *c, const ddp_header_t *ddp, const uint8_t *buf, int len);
+static void atp_timers_init(atalk_conn_t *c);
+static void atp_reset(atalk_conn_t *c, bool teardown);
+// Logging category function used by LOG() macro; provided by LOG_USE_CATEGORY_NAME later
+static log_category_t *_log_get_local_category(void);
+static void log_hex(log_category_t *cat, int level, const char *tag, const uint8_t *data, size_t len);
+static log_category_t *llap_log_category(void);
+static log_category_t *atp_log_category(void);
+#define LOG_LLAP(level, fmt, ...) LOG_WITH(llap_log_category(), (level), (fmt), ##__VA_ARGS__)
+#define LOG_ATP(level, fmt, ...)  LOG_WITH(atp_log_category(), (level), (fmt), ##__VA_ARGS__)
+
+// Every frame the stack discards goes through here, counted by why, so
+// `appletalk.stats` says what was thrown away.  There is no
+// CRC anywhere in the stack -- the SCC hands over whole frames -- so there is
+// no "CRC error"; what the old crc_errors counted was malformed frames, and
+// only three of the thirty-odd places that drop one counted anything.
+typedef enum {
+    ATALK_DROP_MALFORMED, // cannot be parsed: short, lengths disagree, bad type
+    ATALK_DROP_UNHANDLED, // well-formed, but nothing here serves it
+    ATALK_DROP_TX, // one of ours that could not be transmitted
+} atalk_drop_t;
+
+static void atalk_drop(atalk_conn_t *c, atalk_drop_t kind, const char *fmt, ...)
+#ifdef __GNUC__
+    __attribute__((format(printf, 3, 4)))
+#endif
+    ;
+
+// ============================================================================
+// Operations
+// ============================================================================
+
+// =============================== LLAP (LocalTalk) - lowest layer ===============================
 
 // A node that does not answer lapRTS with lapCTS is busy or gone.  Real
 // LLAP waits an interframe gap (200 us) for the CTS, retries the RTS up to
@@ -209,120 +434,149 @@ static struct {
 #define LLAP_BYTE_NS 35000.0
 #define LLAP_IFG_NS  200000.0 // interframe gap before the next dialog opens
 
-static int g_llap_rts_event_token;
-static int g_llap_kick_event_token;
-static double g_llap_wire_busy_until_ns; // scheduler time the wire frees up
+// The longest LLAP frame on the wire (header + data + CRC + flags), the
+// reservation's ceiling should the guest never send the frame it asked for.
+#define LLAP_MAX_FRAME_NS ((3.0 + LLAP_DATA_MAX_SIZE + 4.0) * LLAP_BYTE_NS)
 static void llap_rts_timeout_cb(void *source, uint64_t data);
 static void llap_rts_kick_cb(void *source, uint64_t data);
-static void llap_wire_send(const uint8_t *buf, size_t total);
+static void llap_wire_send(atalk_conn_t *c, const uint8_t *buf, size_t total);
 
-static void llap_rts_register_event(void) {
-    if (!g_scheduler)
-        return;
-    scheduler_new_event_type(g_scheduler, "llap", &g_llap_rts_event_token, "rts_timeout", &llap_rts_timeout_cb);
-    scheduler_new_event_type(g_scheduler, "llap", &g_llap_kick_event_token, "rts_kick", &llap_rts_kick_cb);
+static void llap_timers_init(atalk_conn_t *c) {
+    atalk_timer_init(c, &c->llap_rts_timer, "llap", "rts_timeout", &llap_rts_timeout_cb);
+    atalk_timer_init(c, &c->llap_kick_timer, "llap", "rts_kick", &llap_rts_kick_cb);
 }
 
-static void llap_rts_reset(void) {
-    if (g_scheduler) {
-        remove_event(g_scheduler, &llap_rts_timeout_cb, &g_llap_rts_event_token);
-        remove_event(g_scheduler, &llap_rts_kick_cb, &g_llap_kick_event_token);
-    }
-    memset(&g_llap_rts, 0, sizeof(g_llap_rts));
-    g_llap_wire_busy_until_ns = 0;
+static void llap_rts_reset(atalk_conn_t *c) {
+    atalk_timer_cancel_all(&c->llap_rts_timer);
+    atalk_timer_cancel_all(&c->llap_kick_timer);
+    memset(&c->llap_rts, 0, sizeof(c->llap_rts));
+    c->wire_busy_until_ns = 0;
+    c->peer_reserved = false;
 }
 
 // A data frame of `total` bytes just went out: the wire stays busy for its
 // transmission time plus the interframe gap.
-static void llap_wire_note_busy(size_t total) {
-    if (!g_scheduler)
+static void llap_wire_note_busy(atalk_conn_t *c, size_t total) {
+    if (!c->scheduler)
         return;
-    double until = scheduler_time_ns(g_scheduler) + (double)total * LLAP_BYTE_NS + LLAP_IFG_NS;
-    if (until > g_llap_wire_busy_until_ns)
-        g_llap_wire_busy_until_ns = until;
+    double until = scheduler_time_ns(c->scheduler) + (double)total * LLAP_BYTE_NS + LLAP_IFG_NS;
+    if (until > c->wire_busy_until_ns)
+        c->wire_busy_until_ns = until;
 }
 
-static void llap_rts_kick(void);
+// The guest's frames occupy the wire too.  The SCC completes the driver's
+// transmission the instant it finishes writing (wr0's faked underrun), so a
+// frame reaches us with none of its wire time elapsed: hold the wire for that
+// time plus the interframe gap, as llap_wire_note_busy does for our own.
+// Without this our lapRTS went out in the same instant the guest finished a
+// frame -- or between its lapRTS and the data frame that follows -- which on
+// real LocalTalk cannot happen; the driver, still transmitting, never saw it,
+// and a read it had outstanding never completed.
+static void llap_wire_note_peer_frame(atalk_conn_t *c, size_t total) {
+    if (!c->scheduler)
+        return;
+    double until = scheduler_time_ns(c->scheduler) + (double)total * LLAP_BYTE_NS + LLAP_IFG_NS;
+    if (c->peer_reserved) {
+        // The frame the reservation was for has arrived; only its own wire
+        // time remains, not the reservation's ceiling.
+        c->peer_reserved = false;
+        c->wire_busy_until_ns = until;
+    } else if (until > c->wire_busy_until_ns) {
+        c->wire_busy_until_ns = until;
+    }
+}
+
+// We answered the guest's lapRTS with lapCTS: its data frame is next on the
+// wire.  Reserve the wire until it arrives, up to the longest frame.
+static void llap_wire_reserve_for_peer(atalk_conn_t *c) {
+    if (!c->scheduler)
+        return;
+    double until = scheduler_time_ns(c->scheduler) + LLAP_IFG_NS + LLAP_MAX_FRAME_NS;
+    if (until > c->wire_busy_until_ns)
+        c->wire_busy_until_ns = until;
+    c->peer_reserved = true;
+}
+
+static void llap_rts_kick(atalk_conn_t *c);
 
 static void llap_rts_kick_cb(void *source, uint64_t data) {
-    (void)source;
     (void)data;
-    llap_rts_kick();
+    llap_rts_kick(CONN_OF(source, llap_kick_timer));
 }
 
 // Put the RTS for the frame at the queue head on the wire (if any) — once
 // the wire is free.
-static void llap_rts_kick(void) {
-    if (g_llap_rts.rts_out || g_llap_rts.count == 0)
+static void llap_rts_kick(atalk_conn_t *c) {
+    if (c->llap_rts.rts_out || c->llap_rts.count == 0)
         return;
-    if (g_scheduler) {
-        double now = scheduler_time_ns(g_scheduler);
-        if (now < g_llap_wire_busy_until_ns) {
-            // Never a zero-length wait: a sub-ns remainder truncates to 0,
-            // the event fires with time unchanged, and this re-arms forever.
-            uint64_t delay_ns = (uint64_t)(g_llap_wire_busy_until_ns - now);
-            if (delay_ns < 1000)
-                delay_ns = 1000;
-            remove_event(g_scheduler, &llap_rts_kick_cb, &g_llap_kick_event_token);
-            scheduler_new_cpu_event(g_scheduler, &llap_rts_kick_cb, &g_llap_kick_event_token, 0, 0, delay_ns);
+    if (c->scheduler) {
+        double now = scheduler_time_ns(c->scheduler);
+        if (now < c->wire_busy_until_ns) {
+            // atalk_timer_arm never waits less than ATALK_TIMER_MIN_NS: a
+            // sub-ns remainder would fire with time unchanged and re-arm
+            // forever.
+            atalk_timer_arm(&c->llap_kick_timer, 0, (uint64_t)(c->wire_busy_until_ns - now));
             return;
         }
     }
-    llap_queued_frame_t *f = &g_llap_rts.q[g_llap_rts.head];
+    llap_queued_frame_t *f = &c->llap_rts.q[c->llap_rts.head];
     uint8_t rts[3] = {f->dst, f->buf[1], LLAP_RTS};
-    g_llap_rts.rts_out = true;
-    g_llap_rts.attempts++;
-    g_llap_rts.generation++;
-    LOG(8, "LLAP tx: RTS to %02X, %zu-byte data queued for CTS (%d queued, attempt %d)", f->dst, f->len,
-        g_llap_rts.count, g_llap_rts.attempts);
-    llap_wire_send(rts, sizeof(rts));
-    if (g_scheduler) {
-        llap_rts_register_event();
-        scheduler_new_cpu_event(g_scheduler, &llap_rts_timeout_cb, &g_llap_rts_event_token, g_llap_rts.generation, 0,
-                                LLAP_RTS_TIMEOUT_NS);
-    }
+    c->llap_rts.rts_out = true;
+    c->llap_rts.attempts++;
+    c->llap_rts.generation++;
+    LOG_LLAP(8, "LLAP tx: RTS to %02X, %zu-byte data queued for CTS (%d queued, attempt %d)", f->dst, f->len,
+             c->llap_rts.count, c->llap_rts.attempts);
+    llap_wire_send(c, rts, sizeof(rts));
+    atalk_timer_arm(&c->llap_rts_timer, c->llap_rts.generation, (uint64_t)LLAP_RTS_TIMEOUT_NS);
 }
 
 static void llap_rts_timeout_cb(void *source, uint64_t data) {
-    (void)source;
-    if (!g_llap_rts.rts_out || data != g_llap_rts.generation)
+    atalk_conn_t *c = CONN_OF(source, llap_rts_timer);
+    if (!c->llap_rts.rts_out || data != c->llap_rts.generation)
         return; // the CTS came (or a newer RTS is out): stale timeout
-    g_llap_rts.rts_out = false;
-    if (g_llap_rts.attempts >= LLAP_RTS_MAX_ATTEMPTS) {
-        llap_queued_frame_t *f = &g_llap_rts.q[g_llap_rts.head];
-        LOG(2, "LLAP tx: no CTS from %02X after %d RTS attempts, dropping a %zu-byte frame", f->dst,
-            g_llap_rts.attempts, f->len);
-        g_llap_rts.head = (g_llap_rts.head + 1) % LLAP_RTS_QUEUE_DEPTH;
-        g_llap_rts.count--;
-        g_llap_rts.attempts = 0;
+    c->llap_rts.rts_out = false;
+    if (c->llap_rts.attempts >= LLAP_RTS_MAX_ATTEMPTS) {
+        llap_queued_frame_t *f = &c->llap_rts.q[c->llap_rts.head];
+        LOG_LLAP(2, "LLAP tx: no CTS from %02X after %d RTS attempts, dropping a %zu-byte frame", f->dst,
+                 c->llap_rts.attempts, f->len);
+        c->stats.tx_dropped++;
+        c->llap_rts.head = (c->llap_rts.head + 1) % LLAP_RTS_QUEUE_DEPTH;
+        c->llap_rts.count--;
+        c->llap_rts.attempts = 0;
     }
-    llap_rts_kick(); // retry this frame's RTS, or open the next frame's exchange
+    llap_rts_kick(c); // retry this frame's RTS, or open the next frame's exchange
 }
 
-static void llap_wire_send(const uint8_t *buf, size_t total) {
-    log_hex(11, "LLAP tx dump", buf, total);
-    g_atalk_stats.llap_tx++;
-    if (g_scc)
-        scc_sdlc_send(g_scc, (uint8_t *)buf, total);
+static void llap_wire_send(atalk_conn_t *c, const uint8_t *buf, size_t total) {
+    // llap_send checks this too, but a frame queued for its CTS goes out from
+    // the RTS timer, which does not pass through llap_send again.
+    if (!c->enabled)
+        return;
+    log_hex(llap_log_category(), 11, "LLAP tx dump", buf, total);
+    c->stats.llap_tx++;
+    if (c->scc)
+        scc_sdlc_send(c->scc, (uint8_t *)buf, total);
 }
 
 // Returns 0 on success, -1 if `len` exceeds the LLAP payload max (caller bug).
 // We refuse to transmit truncated frames rather than silently emit a corrupted
 // one — the peer would see a malformed LLAP and discard it anyway, but in
 // our local trace it would look like a successful send.
-static int llap_send(const llap_header_t *llap, const uint8_t *data, size_t len) {
-    if (!g_atalk_enabled)
+static int llap_send(atalk_conn_t *c, const llap_header_t *llap, const uint8_t *data, size_t len) {
+    if (!c->enabled)
         return -1; // the stack is detached from the link
-    if (g_scc && !scc_sdlc_ready(g_scc)) {
+    if (c->scc && !scc_sdlc_ready(c->scc)) {
         // Nothing is listening yet: the guest has not put the SCC into SDLC
         // mode, so its AppleTalk driver is not loaded.  Replies never reach
         // here (they answer a frame the guest just sent), but traffic we
         // originate can, and it must not be forced onto a dead link.
-        LOG(4, "LLAP tx: dropped, the guest's AppleTalk driver is not up");
+        LOG_LLAP(4, "LLAP tx: dropped, the guest's AppleTalk driver is not up");
+        c->stats.tx_dropped++;
         return -1;
     }
     if (len > LLAP_DATA_MAX_SIZE) {
-        LOG(1, "LLAP tx: refused oversize frame (%zu > %d)", len, LLAP_DATA_MAX_SIZE);
+        LOG_LLAP(1, "LLAP tx: refused oversize frame (%zu > %d)", len, LLAP_DATA_MAX_SIZE);
+        c->stats.tx_dropped++;
         return -1;
     }
     uint8_t buf[LLAP_HEADER_SIZE + LLAP_DATA_MAX_SIZE];
@@ -337,47 +591,70 @@ static int llap_send(const llap_header_t *llap, const uint8_t *data, size_t len)
 
     size_t total = len + LLAP_HEADER_SIZE;
 
-    // Directed DATA frames go through the RTS/CTS exchange (see g_llap_rts).
+    // Directed DATA frames go through the RTS/CTS exchange (see c->llap_rts).
     if (llap->dst != 0xFF && llap->type < 0x80) {
-        if (g_llap_rts.count >= LLAP_RTS_QUEUE_DEPTH) {
+        if (c->llap_rts.count >= LLAP_RTS_QUEUE_DEPTH) {
             // The wire cannot keep up; the upper layers (ATP) retransmit.
-            LOG(2, "LLAP tx: RTS queue full, dropping a %zu-byte frame to %02X", total, llap->dst);
+            LOG_LLAP(2, "LLAP tx: RTS queue full, dropping a %zu-byte frame to %02X", total, llap->dst);
+            c->stats.tx_dropped++;
             return -1;
         }
-        int slot = (g_llap_rts.head + g_llap_rts.count) % LLAP_RTS_QUEUE_DEPTH;
-        llap_queued_frame_t *f = &g_llap_rts.q[slot];
+        int slot = (c->llap_rts.head + c->llap_rts.count) % LLAP_RTS_QUEUE_DEPTH;
+        llap_queued_frame_t *f = &c->llap_rts.q[slot];
         memcpy(f->buf, buf, total);
         f->len = total;
         f->dst = llap->dst;
-        g_llap_rts.count++;
-        llap_rts_kick();
+        c->llap_rts.count++;
+        llap_rts_kick(c);
         return 0;
     }
 
-    llap_wire_send(buf, total);
+    llap_wire_send(c, buf, total);
     return 0;
 }
 
-void llap_in(const uint8_t *buf, size_t len) {
+static void atalk_drop(atalk_conn_t *c, atalk_drop_t kind, const char *fmt, ...) {
+    static const char *const names[] = {"malformed", "unhandled", "not transmitted"};
+    switch (kind) {
+    case ATALK_DROP_MALFORMED:
+        c->stats.malformed++;
+        break;
+    case ATALK_DROP_UNHANDLED:
+        c->stats.unhandled++;
+        break;
+    case ATALK_DROP_TX:
+        c->stats.tx_dropped++;
+        break;
+    }
+    char msg[160];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    va_end(ap);
+    LOG(5, "dropped (%s): %s", names[kind], msg);
+}
+
+static void llap_in(atalk_conn_t *c, const uint8_t *buf, size_t len) {
     llap_header_t header;
 
-    if (!g_atalk_enabled)
+    if (!c->enabled)
         return; // the stack is detached from the link
 
     // Short/malformed packets can arrive from the SCC during A/UX
-    // initialization — silently discard them.
+    // initialization.
     if (len < LLAP_HEADER_SIZE) {
-        g_atalk_stats.crc_errors++;
+        atalk_drop(c, ATALK_DROP_MALFORMED, "LLAP frame of %zu bytes", len);
         return;
     }
-    g_atalk_stats.llap_rx++;
+    c->stats.llap_rx++;
 
     header.dst = buf[0];
     header.src = buf[1];
     header.type = buf[2];
+    llap_wire_note_peer_frame(c, len);
 
     // LLAP rx hexdump at high verbosity
-    log_hex(11, "LLAP rx dump", buf, len);
+    log_hex(llap_log_category(), 11, "LLAP rx dump", buf, len);
 
     switch (header.type) {
 
@@ -385,75 +662,80 @@ void llap_in(const uint8_t *buf, size_t len) {
         if (len != LLAP_HEADER_SIZE) {
             // Control frames are exactly 3 bytes; drop wire junk instead of
             // dying on it (guest drivers do emit malformed traffic).
-            LOG(5, "LLAP ENQ with bad length %zu discarded", len);
-            g_atalk_stats.crc_errors++;
+            atalk_drop(c, ATALK_DROP_MALFORMED, "LLAP ENQ of %zu bytes", len);
             break;
         }
-        LOG(11, "LLAP ENQ src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
+        LOG_LLAP(11, "LLAP ENQ src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
         // Reply with ACK if this ENQ targets our node (dynamic node ID probe/ack).
         if (header.dst == LLAP_HOST_NODE) {
             llap_header_t ack;
             ack.dst = header.src;
             ack.src = LLAP_HOST_NODE;
             ack.type = LLAP_ACK;
-            LOG(11, "LLAP send ACK to=%02X", (unsigned)ack.dst);
-            llap_send(&ack, NULL, 0);
+            LOG_LLAP(11, "LLAP send ACK to=%02X", (unsigned)ack.dst);
+            llap_send(c, &ack, NULL, 0);
         }
         break;
 
     case LLAP_RTS:
         if (len != LLAP_HEADER_SIZE) {
-            LOG(5, "LLAP RTS with bad length %zu discarded", len);
-            g_atalk_stats.crc_errors++;
+            atalk_drop(c, ATALK_DROP_MALFORMED, "LLAP RTS of %zu bytes", len);
             break;
         }
-        LOG(11, "LLAP RTS src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
+        LOG_LLAP(11, "LLAP RTS src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
         // Respond with CTS for directed traffic addressed to us so the sender may transmit.
         if (header.dst == LLAP_HOST_NODE) {
             llap_header_t cts;
             cts.dst = header.src;
             cts.src = LLAP_HOST_NODE;
             cts.type = LLAP_CTS;
-            LOG(11, "LLAP send CTS to=%02X", (unsigned)cts.dst);
-            llap_send(&cts, NULL, 0);
+            LOG_LLAP(11, "LLAP send CTS to=%02X", (unsigned)cts.dst);
+            llap_send(c, &cts, NULL, 0);
+            llap_wire_reserve_for_peer(c);
         }
         break;
 
     case LLAP_CTS:
+        if (len != LLAP_HEADER_SIZE) {
+            atalk_drop(c, ATALK_DROP_MALFORMED, "LLAP CTS of %zu bytes", len);
+            break;
+        }
         // The receiver granted our lapRTS: transmit the parked data frame.
-        LOG(8, "LLAP CTS src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
-        if (g_llap_rts.rts_out && g_llap_rts.count > 0 && header.dst == LLAP_HOST_NODE &&
-            header.src == g_llap_rts.q[g_llap_rts.head].dst) {
-            llap_queued_frame_t *f = &g_llap_rts.q[g_llap_rts.head];
-            g_llap_rts.rts_out = false;
-            g_llap_rts.attempts = 0;
-            g_llap_rts.head = (g_llap_rts.head + 1) % LLAP_RTS_QUEUE_DEPTH;
-            g_llap_rts.count--;
-            llap_wire_send(f->buf, f->len);
-            llap_wire_note_busy(f->len);
-            llap_rts_kick(); // next queued frame opens its own exchange (after the wire frees up)
+        LOG_LLAP(8, "LLAP CTS src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
+        if (c->llap_rts.rts_out && c->llap_rts.count > 0 && header.dst == LLAP_HOST_NODE &&
+            header.src == c->llap_rts.q[c->llap_rts.head].dst) {
+            llap_queued_frame_t *f = &c->llap_rts.q[c->llap_rts.head];
+            c->llap_rts.rts_out = false;
+            c->llap_rts.attempts = 0;
+            c->llap_rts.head = (c->llap_rts.head + 1) % LLAP_RTS_QUEUE_DEPTH;
+            c->llap_rts.count--;
+            llap_wire_send(c, f->buf, f->len);
+            llap_wire_note_busy(c, f->len);
+            llap_rts_kick(c); // next queued frame opens its own exchange (after the wire frees up)
         }
         break;
 
     case LLAP_DDP_SHORT:
-        LOG(11, "LLAP DDP_SHORT rx len=%zu", len - 3);
-        ddp_short_in(&header, buf + 3, len - 3);
+        LOG_LLAP(11, "LLAP DDP_SHORT rx len=%zu", len - 3);
+        ddp_short_in(c, &header, buf + 3, len - 3);
         break;
 
     case LLAP_DDP_EXTENDED:
-        LOG(5, "LLAP DDP_EXTENDED (unsupported) src=%02X dst=%02X len=%zu", (unsigned)header.src, (unsigned)header.dst,
-            len);
+        // LocalTalk nodes use short headers; extended DDP is for routers.
+        atalk_drop(c, ATALK_DROP_UNHANDLED, "extended DDP from %02X", (unsigned)header.src);
         break;
 
     default:
-        LOG(5, "LLAP unknown type=%02X src=%02X dst=%02X", (unsigned)header.type, (unsigned)header.src,
-            (unsigned)header.dst);
+        atalk_drop(c, ATALK_DROP_UNHANDLED, "LLAP type %02X from %02X", (unsigned)header.type, (unsigned)header.src);
         break;
     }
 }
 
-void process_packet(const uint8_t *buf, size_t size) {
-    llap_in(buf, size);
+// The SCC's frame sink (scc_set_frame_sink): a frame the guest transmitted on
+// the LocalTalk port of the machine whose connection `ctx` is.  The sink is
+// installed only while that connection is plugged in.
+static void llap_receive(void *ctx, const uint8_t *buf, size_t size) {
+    llap_in((atalk_conn_t *)ctx, buf, size);
 }
 
 // =============================== DDP (Datagram Delivery Protocol) ===============================
@@ -463,6 +745,8 @@ void process_packet(const uint8_t *buf, size_t size) {
 #define DDP_NBP           DDP_TYPE_NBP
 #define DDP_ATP           DDP_TYPE_ATP
 #define DDP_AEP           DDP_TYPE_AEP
+#define AEP_ECHO_REQUEST  1
+#define AEP_ECHO_REPLY    2
 #define DDP_RTMP_REQUEST  DDP_TYPE_RTMP_REQUEST
 #define DDP_ZIP           DDP_TYPE_ZIP
 #define DDP_ADSP          DDP_TYPE_ADSP
@@ -520,249 +804,299 @@ static void ddp_setup_reply(const ddp_header_t *request, ddp_header_t *reply) {
 }
 
 // ============================================================================
-// Lifecycle: Constructor
+// Lifecycle: the network
 // ============================================================================
 
-// ASP session sweep (defined below): registered eagerly in appletalk_init.
-static uint64_t g_asp_sweep_event_token;
-static void asp_sweep_cb(void *source, uint64_t data);
+static void atalk_install_objects(void);
 
-void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint) {
-    // A previous machine may still be installed (checkpoint restore builds the
-    // new machine first).  Take it down now so this init starts from a clean
-    // tree, and remember that its own teardown must not run afterwards.
-    if (g_atalk_object) {
-        appletalk_teardown();
-        g_atalk_superseded = true;
+atalk_network_t *appletalk_network_init(void) {
+    if (g_net.up)
+        return &g_net;
+    // The nodes on the cable, each publishing its NBP name and taking its
+    // sockets: the file server over ASP (8 and 54), the LaserWriter (6), and
+    // the program-linking peer -- ADSP carries PPC sessions, which carry Apple
+    // events (docs/internals/core/network/ppc_appleevents.md §1).
+    // Each in turn: the file server is ASP's client, and the Apple-event
+    // layer publishes PPC's host port.
+    if (!(g_net.asp = asp_init()) || !(g_net.afp = atalk_server_init()) ||
+        !(g_net.printer = atalk_printer_register()) || !(g_net.adsp = atalk_adsp_init()) ||
+        !(g_net.ppc = atalk_ppc_init()) || !(g_net.aevt = atalk_aevt_init())) {
+        LOG(0, "Error: out of memory creating the AppleTalk network");
+        return NULL;
     }
-    g_scc = scc; // Store SCC dependency for later use
-    g_scheduler = scheduler; // Store scheduler for ATP timers
-    g_atalk_enabled = true;
-    llap_rts_reset(); // no RTS exchange survives a machine boot
-    llap_rts_register_event();
-    // Register the lazily-armed types NOW: a checkpoint restore rebuilds
-    // the scheduler and replays the saved events before any session
-    // exists, and an event whose type is unknown fails the restore
-    // ("cannot restore event 'asp.session_sweep' — type not registered").
-    scheduler_new_event_type(g_scheduler, "asp", &g_asp_sweep_event_token, "session_sweep", &asp_sweep_cb);
-    memset(&g_atalk_stats, 0, sizeof(g_atalk_stats));
-    asp_sessions_reset();
-    atalk_server_init();
-    atalk_printer_register();
-    // The three program-linking layers, bottom up: ADSP carries PPC sessions,
-    // which carry Apple events (docs/core/network/ppc_appleevents.md §1).
-    atalk_adsp_init(scheduler);
-    atalk_ppc_init();
-    atalk_aevt_init();
+    // The ImageWriter's LocalTalk Option card: published only while the
+    // machine's printer is on LocalTalk
+    atalk_imagewriter_register();
+    g_net.up = true;
+    atalk_install_objects();
+    return &g_net;
+}
 
-    static const atp_socket_handler_t asp_handler = {.handle_request = asp_in};
-    atp_register_socket_handler(HOST_AFP_SOCKET, &asp_handler, NULL);
-    atp_register_socket_handler(HOST_AFP_COMPAT_SOCKET, &asp_handler, NULL);
+atalk_network_t *appletalk_network(void) {
+    return g_net.up ? &g_net : NULL;
+}
 
-    // Restore the reconstructible session view from a checkpoint, then drop
-    // every fork and enumeration snapshot the old machine held: the backing
-    // bytes are on disk, but the client's refnums belong to a session that no
-    // longer has a transport (WP-11).
-    if (checkpoint) {
-        atalk_persist_t saved;
-        system_read_checkpoint_data(checkpoint, &saved, sizeof(saved));
-        if (saved.magic == ATALK_PERSIST_MAGIC) {
-            g_atalk_enabled = saved.enabled;
-            g_atalk_stats = saved.stats;
-            asp_sessions_set_next_ref(saved.next_sess_ref);
-            // Only the durable Apple event configuration travels; the guest's
-            // end of every session is equally gone, so the tables start empty.
-            atalk_aevt_set_config(&saved.aevt);
-            LOG(1, "appletalk_init: restored from checkpoint (stack %s)", g_atalk_enabled ? "enabled" : "disabled");
-        }
-        afp_reset_transient_state();
-        atalk_aevt_reset_transient_state();
-    }
-
-    // Object-tree binding — instance_data is unused (NULL) for the singleton
-    // nodes (their accessors call into the AppleTalk subsystem directly).
-    // Collection entries carry their slot index.
-    g_atalk_object = object_new(&atalk_class, NULL, "appletalk");
-    if (!g_atalk_object)
+// The object tree: `appletalk` at the root, attached once and never taken
+// down -- it lives as long as the process.  instance_data is unused (NULL)
+// for the singleton nodes: their accessors call into the modules, which
+// answer for whatever connection is plugged in.  Collection entries carry
+// their slot index.
+static void atalk_install_objects(void) {
+    struct object *atalk = object_new(&atalk_class, NULL, "appletalk");
+    if (!atalk)
         return;
-    object_attach(object_root(), g_atalk_object);
+    object_set_order(atalk, 100);
+    object_set_domain(atalk, OBJ_DOMAIN_NETWORK);
+    object_attach(object_root(), atalk);
 
-    g_atalk_stats_object = object_new(&atalk_stats_class, NULL, "stats");
-    if (g_atalk_stats_object) {
-        object_set_category(g_atalk_stats_object, M_CAT_ADVANCED);
-        object_attach(g_atalk_object, g_atalk_stats_object);
+    struct object *stats = object_new(&atalk_stats_class, NULL, "stats");
+    if (stats) {
+        object_set_category(stats, M_CAT_ADVANCED);
+        object_attach(atalk, stats);
     }
-    g_atalk_nbp_object = object_new(&atalk_nbp_collection_class, NULL, "nbp");
-    if (g_atalk_nbp_object) {
-        object_set_category(g_atalk_nbp_object, M_CAT_ADVANCED);
-        object_attach(g_atalk_object, g_atalk_nbp_object);
+    struct object *nbp = object_new(&atalk_nbp_collection_class, NULL, "nbp");
+    if (nbp) {
+        object_set_category(nbp, M_CAT_ADVANCED);
+        object_attach(atalk, nbp);
     }
-    g_atalk_afp_object = object_new(&atalk_afp_class, NULL, "afp");
-    if (g_atalk_afp_object) {
-        object_set_label(g_atalk_afp_object, "File Server");
-        object_attach(g_atalk_object, g_atalk_afp_object);
-        g_atalk_volumes_object = object_new(&atalk_volumes_collection_class, NULL, "volumes");
-        if (g_atalk_volumes_object)
-            object_attach(g_atalk_afp_object, g_atalk_volumes_object);
-        g_atalk_sessions_object = object_new(&atalk_sessions_collection_class, NULL, "sessions");
-        if (g_atalk_sessions_object) {
-            object_set_category(g_atalk_sessions_object, M_CAT_ADVANCED);
-            object_attach(g_atalk_afp_object, g_atalk_sessions_object);
+    struct object *volumes = NULL, *sessions = NULL;
+    struct object *afp = object_new(&atalk_afp_class, NULL, "afp");
+    if (afp) {
+        object_set_label(afp, "File Server");
+        object_attach(atalk, afp);
+        volumes = object_new(&atalk_volumes_collection_class, NULL, "volumes");
+        if (volumes)
+            object_attach(afp, volumes);
+        sessions = object_new(&atalk_sessions_collection_class, NULL, "sessions");
+        if (sessions) {
+            object_set_category(sessions, M_CAT_ADVANCED);
+            object_attach(afp, sessions);
         }
-        g_atalk_afp_stats_object = object_new(&atalk_afp_stats_class, NULL, "stats");
-        if (g_atalk_afp_stats_object) {
-            object_set_category(g_atalk_afp_stats_object, M_CAT_ADVANCED);
-            object_attach(g_atalk_afp_object, g_atalk_afp_stats_object);
+        struct object *afp_stats = object_new(&atalk_afp_stats_class, (void *)atalk_afp_get_stats(), "stats");
+        if (afp_stats) {
+            object_set_category(afp_stats, M_CAT_ADVANCED);
+            object_attach(afp, afp_stats);
         }
     }
-    g_atalk_printer_object = object_new(&atalk_printer_class, NULL, "printer");
-    if (g_atalk_printer_object)
-        object_attach(g_atalk_object, g_atalk_printer_object);
+    struct object *printer = object_new(&atalk_printer_class, NULL, "printer");
+    if (printer) {
+        object_attach(atalk, printer);
+        struct object *printer_stats =
+            object_new(&atalk_printer_stats_class, (void *)atalk_printer_get_stats(), "stats");
+        if (printer_stats) {
+            object_set_category(printer_stats, M_CAT_ADVANCED);
+            object_attach(printer, printer_stats);
+        }
+    }
 
     // Each program-linking layer owns its own subtree.
-    atalk_adsp_install_objects(g_atalk_object);
-    atalk_ppc_install_objects(g_atalk_object);
-    atalk_aevt_install_objects(g_atalk_object);
+    atalk_adsp_install_objects(atalk);
+    atalk_ppc_install_objects(atalk);
+    atalk_aevt_install_objects(atalk);
 
-    // Collection entry objects are pre-allocated once and handed out by the
-    // get()/next() callbacks; they are never attached, so the cascade delete
-    // does not free them (this module does, in appletalk_delete).
-    for (int i = 0; i < ATALK_MAX_VOLUME_OBJS; i++) {
-        g_atalk_volume_data[i].slot = i;
-        g_atalk_volume_objs[i] = object_new(&atalk_volume_class, &g_atalk_volume_data[i], NULL);
-    }
-    for (int i = 0; i < ATALK_MAX_NBP_OBJS; i++) {
-        g_atalk_nbp_data[i].slot = i;
-        g_atalk_nbp_objs[i] = object_new(&atalk_nbp_entry_class, &g_atalk_nbp_data[i], NULL);
-    }
-    for (int i = 0; i < ATALK_MAX_SESSION_OBJS; i++) {
-        g_atalk_session_data[i].slot = i;
-        g_atalk_session_objs[i] = object_new(&atalk_session_class, &g_atalk_session_data[i], NULL);
-    }
+    // Collection entry objects are made on first use by their caches and
+    // handed out by the get() callbacks; they are never attached.
+    g_net.volume_objects = (object_cache_t)OBJECT_CACHE(&atalk_volume_class, NULL);
+    g_net.nbp_objects = (object_cache_t)OBJECT_CACHE(&atalk_nbp_entry_class, NULL);
+    g_net.session_objects = (object_cache_t)OBJECT_CACHE(&atalk_session_class, NULL);
+    object_cache_set_parent(&g_net.volume_objects, volumes);
+    object_cache_set_parent(&g_net.nbp_objects, nbp);
+    object_cache_set_parent(&g_net.session_objects, sessions);
 }
 
 // ============================================================================
-// Checkpointing (WP-11)
+// Lifecycle: the connection
 // ============================================================================
 
-void appletalk_checkpoint(checkpoint_t *checkpoint) {
-    if (!checkpoint)
+// Put `c` on the cable: the network serves its machine from now on.
+static void atalk_conn_plug_in(atalk_conn_t *c) {
+    g_net.plugged = c;
+    if (c->scc)
+        scc_set_frame_sink(c->scc, llap_receive, c);
+    asp_plug(c->asp);
+    afp_plug(c->afp);
+    atalk_adsp_plug(c->adsp);
+    atalk_ppc_plug(c->ppc);
+    atalk_aevt_plug(c->aevt);
+    atalk_printer_plug(c->pap);
+}
+
+// Register every timer the connection and the layers above use with its
+// machine's scheduler, while the machine is being built: before a checkpoint
+// restore replays the saved queue, and before the machine is plugged in
+// (atalk_timer_t).
+static void atalk_conn_register_timers(atalk_conn_t *c) {
+    if (!c->scheduler)
         return;
-    // Only durable, reconstructible-from-disk state is written.  Open forks,
-    // byte-range locks and enumeration snapshots are deliberately not: their
-    // backing bytes already live on the host filesystem, and a restored
-    // machine's clients re-open what they need (proposal §4.5).
+    llap_timers_init(c);
+    atp_timers_init(c);
+    asp_link_register_timers(c, c->asp);
+    atalk_adsp_link_register_timers(c, c->adsp);
+    atalk_printer_register_timers(c, c->pap);
+    atalk_imagewriter_register_timers(c);
+}
+
+// Take `c` off the cable, as a server sees a Mac vanish: every session with
+// it closes and every transaction with it ends, and the network itself --
+// shares, names, printer -- is untouched.
+static void atalk_conn_unplug(atalk_conn_t *c) {
+    // Sessions first, top down: closing them hands the AFP layer its forks
+    // back, and ADSP's close puts CLOSE advice on the wire.
+    atalk_asp_close_all_sessions();
+    atalk_aevt_plug(NULL);
+    atalk_ppc_plug(NULL);
+    atalk_adsp_plug(NULL);
+    atalk_printer_plug(NULL);
+    atalk_imagewriter_unplug();
+    afp_plug(NULL);
+    asp_plug(NULL);
+
+    // Then the transport: nothing above can call into it any more, so
+    // requests are dropped without completing.
+    atp_reset(c, true);
+    atalk_nbp_lookup_cancel();
+    llap_rts_reset(c);
+
+    // Every timer last: the closes above can still transmit, and a frame that
+    // waits for a CTS arms an LLAP timer.
+    atalk_timers_forget(c);
+
+    if (c->scc)
+        scc_set_frame_sink(c->scc, NULL, NULL);
+    g_net.plugged = NULL;
+}
+
+atalk_conn_t *atalk_conn_new(atalk_network_t *network, scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint) {
+    (void)network; // unused when asserts compile out
+    GS_ASSERT(network == &g_net && network->up);
+    atalk_conn_t *c = calloc(1, sizeof(*c));
+    if (!c)
+        return NULL;
+    c->scc = scc;
+    c->scheduler = scheduler;
+    c->enabled = true;
+    c->next_tid = 0x2000;
+    c->nbp_next_lookup_id = 1;
+    c->asp = asp_link_new();
+    c->afp = afp_link_new();
+    c->adsp = atalk_adsp_link_new();
+    c->ppc = atalk_ppc_link_new();
+    c->aevt = atalk_aevt_link_new();
+    c->pap = atalk_printer_link_new();
+    if (!c->asp || !c->afp || !c->adsp || !c->ppc || !c->aevt || !c->pap) {
+        atalk_conn_delete(c);
+        return NULL;
+    }
+
+    // The connection's block.  The reader zero-fills on failure, and a
+    // checkpoint in error is not applied.
+    if (checkpoint) {
+        atalk_persist_t saved;
+        system_read_checkpoint_data(checkpoint, &saved, sizeof(saved), "appletalk");
+        if (!checkpoint_has_error(checkpoint) && saved.magic == ATALK_PERSIST_MAGIC) {
+            // A bool read off disk may hold any byte; take it as a byte.
+            uint8_t enabled_byte;
+            memcpy(&enabled_byte, &saved.enabled, 1);
+            c->enabled = enabled_byte != 0;
+            c->stats = saved.stats;
+            asp_link_set_numbering(c->asp, saved.next_sess_ref, saved.next_sess_id);
+            LOG(1, "atalk: connection restored from checkpoint (%s)", c->enabled ? "enabled" : "disabled");
+        }
+    }
+
+    // Built, not plugged in: the machine takes the cable when it becomes the
+    // active one (atalk_conn_plug), so a build that fails touches nothing.
+    atalk_conn_register_timers(c);
+    return c;
+}
+
+void atalk_conn_plug(atalk_conn_t *c) {
+    if (!c || g_net.plugged == c)
+        return;
+    if (g_net.plugged)
+        atalk_conn_unplug(g_net.plugged);
+    atalk_conn_plug_in(c);
+}
+
+void atalk_conn_checkpoint(const atalk_conn_t *c, checkpoint_t *checkpoint) {
+    if (!c || !checkpoint)
+        return;
     atalk_persist_t out;
     memset(&out, 0, sizeof(out));
     out.magic = ATALK_PERSIST_MAGIC;
-    out.enabled = g_atalk_enabled;
-    out.next_sess_ref = asp_sessions_next_ref();
-    out.stats = g_atalk_stats;
-    atalk_aevt_get_config(&out.aevt);
-    system_write_checkpoint_data(checkpoint, &out, sizeof(out));
+    out.enabled = c->enabled;
+    asp_link_numbering(c->asp, &out.next_sess_ref, &out.next_sess_id);
+    out.stats = c->stats;
+    system_write_checkpoint_data(checkpoint, &out, sizeof(out), "appletalk");
 }
 
-// ============================================================================
-// Lifecycle: Destructor
-// ============================================================================
-
-static void appletalk_teardown(void) {
-    // Sessions first: closing them hands the AFP layer its forks back.
-    atalk_asp_close_all_sessions();
-    atalk_server_delete();
-    atalk_aevt_remove_objects();
-    atalk_aevt_shutdown();
-    atalk_ppc_remove_objects();
-    atalk_ppc_shutdown();
-    atalk_adsp_remove_objects();
-    atalk_adsp_shutdown();
-
-    // Collection entry objects are never attached, so free them by hand.
-    for (int i = 0; i < ATALK_MAX_VOLUME_OBJS; i++) {
-        if (g_atalk_volume_objs[i])
-            object_delete(g_atalk_volume_objs[i]);
-        g_atalk_volume_objs[i] = NULL;
-    }
-    for (int i = 0; i < ATALK_MAX_NBP_OBJS; i++) {
-        if (g_atalk_nbp_objs[i])
-            object_delete(g_atalk_nbp_objs[i]);
-        g_atalk_nbp_objs[i] = NULL;
-    }
-    for (int i = 0; i < ATALK_MAX_SESSION_OBJS; i++) {
-        if (g_atalk_session_objs[i])
-            object_delete(g_atalk_session_objs[i]);
-        g_atalk_session_objs[i] = NULL;
-    }
-
-    struct object **attached[] = {&g_atalk_volumes_object, &g_atalk_sessions_object, &g_atalk_afp_stats_object,
-                                  &g_atalk_afp_object,     &g_atalk_stats_object,    &g_atalk_nbp_object,
-                                  &g_atalk_printer_object};
-    for (size_t i = 0; i < ARRAY_LEN(attached); i++) {
-        if (!*attached[i])
-            continue;
-        object_detach(*attached[i]);
-        object_delete(*attached[i]);
-        *attached[i] = NULL;
-    }
-    if (g_atalk_object) {
-        object_detach(g_atalk_object);
-        object_delete(g_atalk_object);
-        g_atalk_object = NULL;
-    }
-}
-
-// Public teardown.
-//
-// The checkpoint restore path builds the *new* machine before destroying the
-// old one (cmd_load_checkpoint), so appletalk_init can run while a previous
-// machine's stack is still installed.  When that happens init tears the old
-// one down itself and sets this flag, because the appletalk_delete that
-// follows belongs to that old machine: running it would dismantle the stack
-// the new machine just built — which is exactly what made `appletalk.adsp`,
-// `.ppc` and `.aevt` vanish after a restore.
-void appletalk_delete(void) {
-    if (g_atalk_superseded) {
-        g_atalk_superseded = false;
+// Deleting a connection unplugs it only if it is the one on the cable: the
+// machine a new one replaced was unplugged when that one took the cable, and
+// its delete leaves the new machine's connection alone; a build that failed
+// was never plugged in.
+void atalk_conn_delete(atalk_conn_t *c) {
+    if (!c)
         return;
-    }
-    appletalk_teardown();
+    if (g_net.plugged == c)
+        atalk_conn_unplug(c);
+    atalk_printer_link_free(c->pap);
+    atalk_aevt_link_free(c->aevt);
+    atalk_ppc_link_free(c->ppc);
+    atalk_adsp_link_free(c->adsp);
+    afp_link_free(c->afp);
+    asp_link_free(c->asp);
+    free(c);
 }
 
 // === Stack-level object-model accessors ====================================
 
 bool atalk_get_enabled(void) {
-    return g_atalk_enabled;
+    return g_net.plugged && g_net.plugged->enabled;
 }
 
-void atalk_set_enabled(bool enabled) {
-    if (enabled == g_atalk_enabled)
-        return;
-    g_atalk_enabled = enabled;
+int atalk_set_enabled(bool enabled, char *err, size_t err_len) {
+    atalk_conn_t *c = g_net.plugged;
+    if (!c) {
+        snprintf(err, err_len, "no machine is connected to the network");
+        return -1;
+    }
+    if (enabled == c->enabled)
+        return 0;
+    c->enabled = enabled;
     if (!enabled) {
         // Detaching from the link strands every session; drop them rather than
         // leave forks and locks held by clients that can no longer be reached.
         atalk_asp_close_all_sessions();
         atalk_ppc_close_all("the stack was detached from the link");
         adsp_close_all(atalk_adsp_stack(), "the stack was detached from the link");
+        atalk_printer_link_down();
+        atalk_imagewriter_unplug();
+        // ...and nothing below them keeps talking: outgoing requests end as
+        // ABORTED, the lookup is cancelled, and frames waiting for a CTS are
+        // dropped.
+        atp_reset(c, false);
+        atalk_nbp_lookup_cancel();
+        llap_rts_reset(c);
     }
     LOG(1, "atalk: stack %s", enabled ? "attached to the link" : "detached from the link");
+    return 0;
 }
 
 // Our LLAP node address is fixed (LLAP_HOST_NODE) rather than acquired by the
 // dynamic-node-assignment probe, so it is known as soon as the stack is up.
 unsigned atalk_node_id(void) {
-    return g_atalk_enabled ? LLAP_HOST_NODE : 0;
+    return atalk_get_enabled() ? LLAP_HOST_NODE : 0;
 }
 
 const atalk_stats_t *atalk_get_stats(void) {
-    return &g_atalk_stats;
+    return g_net.plugged ? &g_net.plugged->stats : &k_no_stats;
 }
 
 // Send a DDP packet to the Mac via LocalTalk
 // Returns 0 once the frame is on the link, -1 if it could not be sent (the
 // stack is detached, the guest's driver is not up, or the payload will not
 // fit a DDP packet).  Callers that originate traffic report that upwards.
-static int ddp_send(const ddp_header_t *header, const uint8_t *data, int size) {
+static int ddp_send(atalk_conn_t *c, const ddp_header_t *header, const uint8_t *data, int size) {
     if (!header || size <= 0 || size > DDP_MAX_DATA_SIZE)
         return -1;
 
@@ -780,11 +1114,11 @@ static int ddp_send(const ddp_header_t *header, const uint8_t *data, int size) {
     memcpy(&buffer[5], data, (size_t)size);
 
     LOG_INDENT(4);
-    log_hex(9, "DDP tx dump", buffer, length);
+    log_hex(_log_get_local_category(), 9, "DDP tx dump", buffer, length);
     LOG_INDENT(-4);
 
-    g_atalk_stats.ddp_out++;
-    return llap_send(&header->llap, buffer, length);
+    c->stats.ddp_out++;
+    return llap_send(c, &header->llap, buffer, length);
 }
 
 // Send one datagram to a remote socket.  The higher protocol modules (ADSP,
@@ -792,10 +1126,11 @@ static int ddp_send(const ddp_header_t *header, const uint8_t *data, int size) {
 // than reaching into the DDP header layout themselves.
 int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8_t ddp_type, const uint8_t *data,
                       int len) {
+    atalk_conn_t *c = g_net.plugged;
     if (!dest || len < 0 || len > DDP_MAX_DATA_SIZE)
         return -1;
-    if (!g_atalk_enabled)
-        return -1;
+    if (!c || !c->enabled)
+        return -1; // no machine on the cable, or it is detached from the link
     ddp_header_t ddp;
     memset(&ddp, 0, sizeof(ddp));
     ddp.llap.dst = dest->node;
@@ -806,12 +1141,12 @@ int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8
     ddp.dst_socket = dest->socket;
     ddp.src_socket = src_socket;
     ddp.type = ddp_type;
-    return ddp_send(&ddp, data, len);
+    return ddp_send(c, &ddp, data, len);
 }
 
 // Process an incoming DDP packet and dispatch to appropriate protocol handler
-void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
-    g_atalk_stats.ddp_in++;
+static void ddp_in(atalk_conn_t *c, ddp_header_t *ddp, const uint8_t *buf, size_t len) {
+    c->stats.ddp_in++;
     switch (ddp->type) {
 
     case DDP_NBP:
@@ -819,30 +1154,46 @@ void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
         if (ddp->dst_socket != 2) {
             LOG(4, "NBP rx on unexpected dstSock=%u (expected 2)", (unsigned)ddp->dst_socket);
         }
-        nbp_in(ddp, buf, len);
+        nbp_in(c, ddp, buf, len);
         break;
 
     case DDP_ATP:
-        // Accept ATP for AFP sockets (8/54) and for PAP printer socket
-        if (ddp->dst_socket == HOST_AFP_SOCKET || ddp->dst_socket == HOST_AFP_COMPAT_SOCKET ||
-            ddp->dst_socket == HOST_PAP_SOCKET) {
-            atp_in(ddp, buf, (int)len);
-        } else {
-            // Ignore non-AFP ATP for now (e.g., PAP to come later) but trace at level 3.
-            LOG(3, "ATP rx for dstSock=%u not handled (expect 8/54)", (unsigned)ddp->dst_socket);
-        }
+        // Requests go to whoever registered the socket (ASP on 8 and 54, PAP on
+        // 6), and responses to whoever sent the request; ATP drops -- and
+        // counts -- the rest.  A list of sockets here duplicated that registry
+        // and would have dropped the response to any request sent from a
+        // socket not on it.
+        atp_in(c, ddp, buf, (int)len);
         break;
 
-    case DDP_AEP:
-        // AppleTalk Echo Protocol – reply by echoing payload
-        LOG(3, "AEP rx len=%zu – echoing", len);
-        {
-            ddp_header_t reply;
-            ddp_setup_reply(ddp, &reply);
-            reply.type = DDP_AEP; // ensure protocol type preserved
-            ddp_send(&reply, buf, (int)len);
+    case DDP_AEP: {
+        // AppleTalk Echo Protocol (Inside AppleTalk ch. 6): the Echoer listens
+        // on socket 4, discards a packet with no data, and answers an Echo
+        // Request (function 1) by sending it back with the function set to 2,
+        // Echo Reply.  It used to echo anything on any socket unchanged -- so a
+        // pinging client never saw a reply, only its own request coming back.
+        if (ddp->dst_socket != 4) {
+            atalk_drop(c, ATALK_DROP_UNHANDLED, "AEP on socket %u", (unsigned)ddp->dst_socket);
+            break;
         }
+        if (len == 0) {
+            atalk_drop(c, ATALK_DROP_MALFORMED, "AEP packet with no data");
+            break;
+        }
+        if (buf[0] != AEP_ECHO_REQUEST) {
+            atalk_drop(c, ATALK_DROP_UNHANDLED, "AEP function %u", (unsigned)buf[0]);
+            break;
+        }
+        uint8_t echo[DDP_MAX_DATA_SIZE];
+        memcpy(echo, buf, len);
+        echo[0] = AEP_ECHO_REPLY;
+        ddp_header_t reply;
+        ddp_setup_reply(ddp, &reply);
+        reply.type = DDP_AEP;
+        LOG(3, "AEP: echoing %zu bytes", len);
+        ddp_send(c, &reply, echo, (int)len);
         break;
+    }
 
     case DDP_ADSP:
         // Reliable byte streams; the PPC Toolbox endpoint rides on these.
@@ -857,23 +1208,34 @@ void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
         break;
 
     default:
-        LOG(3, "DDP unknown type=0x%02X len=%zu", (unsigned)ddp->type, len);
+        atalk_drop(c, ATALK_DROP_UNHANDLED, "DDP type %02X", (unsigned)ddp->type);
         break;
     }
 }
 
 // Process an incoming short DDP header and dispatch to ddp_in
-void ddp_short_in(llap_header_t *llap, const uint8_t *buf, size_t len) {
+static void ddp_short_in(atalk_conn_t *c, llap_header_t *llap, const uint8_t *buf, size_t len) {
     ddp_header_t ddp;
 
-    assert(len >= DDP_SHORT_HEADER_SIZE);
-
+    // These three were asserts, on bytes the guest wrote.
+    // In a build with asserts one bad frame aborted the emulator; in the
+    // browser build, which compiles them out, a frame under five bytes was
+    // parsed from stale buffer bytes and passed on with len - 5 wrapped.
+    if (len < DDP_SHORT_HEADER_SIZE || len > DDP_MAX_DATA_SIZE + DDP_SHORT_HEADER_SIZE) {
+        atalk_drop(c, ATALK_DROP_MALFORMED, "DDP frame of %zu bytes", len);
+        return;
+    }
     // Decode 10-bit length from short header: low 2 bits from first byte, then full second byte.
     ddp.len = (uint16_t)(((buf[0] & 0x03) << 8) | buf[1]);
-
-    assert(ddp.len == len);
-
-    assert(len <= DDP_MAX_DATA_SIZE + DDP_SHORT_HEADER_SIZE);
+    if (ddp.len != len) {
+        atalk_drop(c, ATALK_DROP_MALFORMED, "DDP length field %u in a %zu-byte frame", (unsigned)ddp.len, len);
+        return;
+    }
+    // Data for another node, or from us: nobody else is on this wire.
+    if (llap->dst != LLAP_HOST_NODE && llap->dst != 0xFF) {
+        atalk_drop(c, ATALK_DROP_UNHANDLED, "DDP for node %02X", (unsigned)llap->dst);
+        return;
+    }
 
     ddp.llap = *llap;
     ddp.checksum = 0;
@@ -888,8 +1250,8 @@ void ddp_short_in(llap_header_t *llap, const uint8_t *buf, size_t len) {
 
     LOG_INDENT(4);
     // Full DDP hexdump at high verbosity (includes 5-byte header + payload)
-    log_hex(9, "DDP rx dump", buf, len);
-    ddp_in(&ddp, buf + 5, len - 5);
+    log_hex(_log_get_local_category(), 9, "DDP rx dump", buf, len);
+    ddp_in(c, &ddp, buf + 5, len - 5);
     LOG_INDENT(-4);
 }
 
@@ -914,12 +1276,15 @@ static const char *nbp_function_name(int function) {
     }
 }
 
+// The wire packs function and tuple count into one byte, four bits each.
+// They were `int : 4` bit-fields here, which gcc and clang make signed: a count
+// of 8..15 read back as -8..-1, so an inbound packet with eight or more tuples
+// was dropped whole and a reply carrying exactly eight said "8" and carried
+// none.  The struct never touches the wire; plain bytes.
 typedef struct {
-
-    int function : 4;
-    int tuple_count : 4;
+    uint8_t function;
+    uint8_t tuple_count;
     uint8_t nbp_id;
-
 } nbp_header_t;
 
 typedef struct {
@@ -960,14 +1325,30 @@ static bool nbp_parse_pstr32(const uint8_t **p, int *len, uint8_t *dst, size_t d
 
 // ATP layer wrappers (parallel to DDP): parse, setup reply, and send
 
-// Logging: implicit category for this file
+// Logging: implicit category for this file -- DDP, NBP and the stack's own
+// business.  LLAP and ATP log under their own categories, the names their
+// scheduler sources carry, so one layer can be turned up alone: the whole
+// stack logged as "appletalk".
 LOG_USE_CATEGORY_NAME("appletalk");
+
+static log_category_t *llap_log_category(void) {
+    static log_category_t *cat;
+    if (!cat)
+        cat = log_register_category("llap");
+    return cat;
+}
+static log_category_t *atp_log_category(void) {
+    static log_category_t *cat;
+    if (!cat)
+        cat = log_register_category("atp");
+    return cat;
+}
 
 // --------------- Hex dump helper for high-verbosity diagnostics ---------------
 // Emit a multi-line hex dump with ASCII gutter to the AppleTalk log category
-static void log_hex(int level, const char *tag, const uint8_t *data, size_t len) {
+static void log_hex(log_category_t *cat, int level, const char *tag, const uint8_t *data, size_t len) {
     if (!data || len == 0) {
-        LOG(level, "%s: <empty>", tag ? tag : "HEX");
+        LOG_WITH(cat, level, "%s: <empty>", tag ? tag : "HEX");
         return;
     }
     // Build per-line hex with ASCII gutter (16 bytes per line)
@@ -1018,48 +1399,15 @@ static void log_hex(int level, const char *tag, const uint8_t *data, size_t len)
         }
         asciibuf[n] = '\0';
 
-        LOG(level, "%04" PRIx64 ": %s | %s", (uint64_t)off, hexbuf, asciibuf);
+        LOG_WITH(cat, level, "%04" PRIx64 ": %s | %s", (uint64_t)off, hexbuf, asciibuf);
     }
 }
 
 // =============================== NBP (Name Binding Protocol) ===============================
-#define NBP_OBJECT_MAX            32
-#define NBP_TYPE_MAX              32
-#define NBP_ZONE_MAX              32
-#define NBP_MAX_ENTRIES           16
-#define NBP_MAX_TUPLES_PER_PACKET 8
-#define NBP_APPROX_CHAR           0xC5 // MacRoman "≈" wildcard per Inside AppleTalk
 
-struct atalk_nbp_entry {
-    bool in_use;
-    char object[NBP_OBJECT_MAX + 1];
-    char type[NBP_TYPE_MAX + 1];
-    char zone[NBP_ZONE_MAX + 1];
-    uint8_t object_len;
-    uint8_t type_len;
-    uint8_t zone_len;
-    uint16_t net;
-    uint8_t node;
-    uint8_t socket;
-    uint8_t enumerator;
-};
-
-static atalk_nbp_entry_t g_nbp_entries[NBP_MAX_ENTRIES];
-static uint8_t g_nbp_next_enum[256];
-
-static void nbp_send(const ddp_header_t *ddp_header, const nbp_header_t *nbp_header, const nbp_tuple_t *nbp_tuple);
-static void nbp_deliver_lookup_reply(uint8_t nbp_id, const nbp_tuple_t *tuples, int count);
-
-// One outstanding outgoing lookup.  The PPC browse is the only client, and it
-// re-issues rather than queueing, so a single slot is enough.
-static struct {
-    bool active;
-    uint8_t nbp_id;
-    atalk_nbp_reply_fn cb;
-    void *ctx;
-} g_nbp_lookup;
-
-static uint8_t g_nbp_next_lookup_id = 1;
+static void nbp_send(atalk_conn_t *c, const ddp_header_t *ddp_header, const nbp_header_t *nbp_header,
+                     const nbp_tuple_t *nbp_tuple);
+static void nbp_deliver_lookup_reply(atalk_conn_t *c, uint8_t nbp_id, const nbp_tuple_t *tuples, int count);
 
 // === NBP registry views (object model: `appletalk.nbp`) ====================
 
@@ -1068,83 +1416,103 @@ int atalk_nbp_entry_max(void) {
 }
 
 bool atalk_nbp_entry_in_use(int index) {
-    return index >= 0 && index < NBP_MAX_ENTRIES && g_nbp_entries[index].in_use;
+    return index >= 0 && index < NBP_MAX_ENTRIES && g_net.nbp_entries[index].in_use;
 }
 
 bool atalk_nbp_entry_info(int index, atalk_nbp_info_t *out) {
     if (!atalk_nbp_entry_in_use(index) || !out)
         return false;
-    const atalk_nbp_entry_t *e = &g_nbp_entries[index];
+    const atalk_nbp_entry_t *e = &g_net.nbp_entries[index];
     memset(out, 0, sizeof(*out));
-    snprintf(out->object, sizeof(out->object), "%s", e->object);
-    snprintf(out->type, sizeof(out->type), "%s", e->type);
-    snprintf(out->zone, sizeof(out->zone), "%s", e->zone);
+    macroman_to_utf8((const uint8_t *)e->object, e->object_len, out->object, sizeof(out->object));
+    macroman_to_utf8((const uint8_t *)e->type, e->type_len, out->type, sizeof(out->type));
+    macroman_to_utf8((const uint8_t *)e->zone, e->zone_len, out->zone, sizeof(out->zone));
     out->socket = e->socket;
     out->node = e->node;
     out->net = e->net;
     return true;
 }
 
-static uint8_t nbp_ascii_fold(uint8_t ch) {
-    if (ch >= 'A' && ch <= 'Z')
-        return (uint8_t)(ch + ('a' - 'A'));
-    return ch;
-}
-
 static int nbp_entry_index(const atalk_nbp_entry_t *entry) {
     if (!entry)
         return -1;
     for (int i = 0; i < NBP_MAX_ENTRIES; i++) {
-        if (&g_nbp_entries[i] == entry)
+        if (&g_net.nbp_entries[i] == entry)
             return i;
     }
     return -1;
 }
 
+// The UTF-8 field `src` as MacRoman in `dst` (NUL-terminated, for logging):
+// its length, or -1 when MacRoman cannot hold it or it does not fit.
 static int nbp_copy_field(char *dst, size_t dst_cap, const char *src, bool allow_empty) {
     if (!dst || dst_cap == 0)
         return -1;
-    if (!src)
-        src = "";
-    size_t len = strlen(src);
-    if (!allow_empty && len == 0)
+    int len = macroman_from_utf8(src ? src : "", (uint8_t *)dst, dst_cap - 1);
+    if (len < 0 || (!allow_empty && len == 0))
         return -1;
-    if (len > dst_cap - 1)
-        return -1;
-    memcpy(dst, src, len);
     dst[len] = '\0';
-    return (int)len;
+    return len;
+}
+
+int atalk_nbp_name_check(const char *what, const char *name, char *err, size_t err_len) {
+    uint8_t mac[ATALK_NBP_NAME_MAX * 4];
+    const char *n = name ? name : "";
+    if (!*n) {
+        snprintf(err, err_len, "%s is required", what);
+        return -1;
+    }
+    int len = macroman_from_utf8(n, mac, sizeof(mac));
+    if (len < 0) {
+        // Name the first character MacRoman lacks (or the bad byte).
+        const uint8_t *p = (const uint8_t *)n;
+        while (*p) {
+            size_t cl = (*p < 0x80) ? 1 : (*p >= 0xF0) ? 4 : (*p >= 0xE0) ? 3 : (*p >= 0xC0) ? 2 : 1;
+            char one[5] = {0};
+            for (size_t i = 0; i < cl && p[i]; i++)
+                one[i] = (char)p[i];
+            uint8_t b;
+            if (macroman_from_utf8(one, &b, 1) != 1) {
+                snprintf(err, err_len, "%s '%s': '%s' cannot be written in MacRoman, the Mac's character set", what, n,
+                         one);
+                return -1;
+            }
+            p += strlen(one);
+        }
+        snprintf(err, err_len, "%s '%s' cannot be written in MacRoman", what, n);
+        return -1;
+    }
+    if (len > ATALK_NBP_NAME_MAX) {
+        snprintf(err, err_len, "%s max %d characters ('%s' is %d)", what, ATALK_NBP_NAME_MAX, n, len);
+        return -1;
+    }
+    return 0;
+}
+
+// Enumerators tell apart entities on one socket, 1..255 (Inside AppleTalk 7-8).
+static bool nbp_enumerator_in_use(uint32_t e, const void *ctx) {
+    uint8_t socket = *(const uint8_t *)ctx;
+    for (int i = 0; i < NBP_MAX_ENTRIES; i++) {
+        const atalk_nbp_entry_t *entry = &g_net.nbp_entries[i];
+        if (entry->in_use && entry->socket == socket && entry->enumerator == e)
+            return true;
+    }
+    return false;
 }
 
 static uint8_t nbp_alloc_enumerator(uint8_t socket) {
-    uint8_t next = g_nbp_next_enum[socket];
-    if (next == 0)
-        next = 1;
-    for (int attempt = 0; attempt < 255; attempt++) {
-        bool collision = false;
-        for (int i = 0; i < NBP_MAX_ENTRIES; i++) {
-            const atalk_nbp_entry_t *entry = &g_nbp_entries[i];
-            if (!entry->in_use)
-                continue;
-            if (entry->socket == socket && entry->enumerator == next) {
-                collision = true;
-                break;
-            }
-        }
-        if (!collision) {
-            g_nbp_next_enum[socket] = (next == 255) ? 1 : (uint8_t)(next + 1);
-            return next;
-        }
-        next = (next == 255) ? 1 : (uint8_t)(next + 1);
-    }
-    return next; // fallback, though we should always return earlier
+    uint32_t cursor = g_net.nbp_next_enum[socket], e = 1;
+    // Cannot fail: at most NBP_MAX_ENTRIES of 255 are held.
+    atalk_id_alloc(&cursor, 1, 255, nbp_enumerator_in_use, &socket, &e);
+    g_net.nbp_next_enum[socket] = (uint8_t)cursor;
+    return (uint8_t)e;
 }
 
 static bool nbp_field_equals_ci(const char *lhs, uint8_t lhs_len, const char *rhs, uint8_t rhs_len) {
     if (lhs_len != rhs_len)
         return false;
     for (uint8_t i = 0; i < lhs_len; i++) {
-        if (nbp_ascii_fold((uint8_t)lhs[i]) != nbp_ascii_fold((uint8_t)rhs[i]))
+        if (macroman_fold((uint8_t)lhs[i]) != macroman_fold((uint8_t)rhs[i]))
             return false;
     }
     return true;
@@ -1154,7 +1522,7 @@ static bool nbp_entry_conflicts(const atalk_nbp_entry_t *candidate, int skip_ind
     for (int i = 0; i < NBP_MAX_ENTRIES; i++) {
         if (i == skip_index)
             continue;
-        const atalk_nbp_entry_t *existing = &g_nbp_entries[i];
+        const atalk_nbp_entry_t *existing = &g_net.nbp_entries[i];
         if (!existing->in_use)
             continue;
         if (!nbp_field_equals_ci(existing->object, existing->object_len, candidate->object, candidate->object_len))
@@ -1197,12 +1565,12 @@ static int nbp_populate_entry(atalk_nbp_entry_t *dst, const atalk_nbp_service_de
     return 0;
 }
 
-int atalk_nbp_register(const atalk_nbp_service_desc_t *desc, atalk_nbp_entry_t **out_entry) {
+static int nbp_register(const atalk_nbp_service_desc_t *desc, atalk_nbp_entry_t **out_entry) {
     if (!desc)
         return -1;
     int free_slot = -1;
     for (int i = 0; i < NBP_MAX_ENTRIES; i++) {
-        if (!g_nbp_entries[i].in_use) {
+        if (!g_net.nbp_entries[i].in_use) {
             free_slot = i;
             break;
         }
@@ -1224,15 +1592,15 @@ int atalk_nbp_register(const atalk_nbp_service_desc_t *desc, atalk_nbp_entry_t *
         return -1;
     }
 
-    g_nbp_entries[free_slot] = candidate;
+    g_net.nbp_entries[free_slot] = candidate;
     if (out_entry)
-        *out_entry = &g_nbp_entries[free_slot];
+        *out_entry = &g_net.nbp_entries[free_slot];
     LOG(3, "NBP register: object='%s' type='%s' zone='%s' socket=%u enum=%u", candidate.object, candidate.type,
         candidate.zone, (unsigned)candidate.socket, (unsigned)candidate.enumerator);
     return 0;
 }
 
-int atalk_nbp_update(atalk_nbp_entry_t *entry, const atalk_nbp_service_desc_t *desc) {
+static int nbp_update(atalk_nbp_entry_t *entry, const atalk_nbp_service_desc_t *desc) {
     int idx = nbp_entry_index(entry);
     if (idx < 0 || !desc)
         return -1;
@@ -1241,27 +1609,40 @@ int atalk_nbp_update(atalk_nbp_entry_t *entry, const atalk_nbp_service_desc_t *d
     if (nbp_populate_entry(&candidate, desc) != 0)
         return -1;
     candidate.in_use = true;
-    if (candidate.socket == g_nbp_entries[idx].socket)
-        candidate.enumerator = g_nbp_entries[idx].enumerator;
+    if (candidate.socket == g_net.nbp_entries[idx].socket)
+        candidate.enumerator = g_net.nbp_entries[idx].enumerator;
     else
         candidate.enumerator = nbp_alloc_enumerator(candidate.socket);
 
     if (nbp_entry_conflicts(&candidate, idx))
         return -1;
 
-    g_nbp_entries[idx] = candidate;
+    g_net.nbp_entries[idx] = candidate;
     return 0;
 }
 
-int atalk_nbp_unregister(atalk_nbp_entry_t *entry) {
+static int nbp_unregister(atalk_nbp_entry_t *entry) {
     int idx = nbp_entry_index(entry);
     if (idx < 0)
         return -1;
-    if (!g_nbp_entries[idx].in_use)
+    if (!g_net.nbp_entries[idx].in_use)
         return 0;
-    LOG(3, "NBP unregister: object='%s' type='%s'", g_nbp_entries[idx].object, g_nbp_entries[idx].type);
-    memset(&g_nbp_entries[idx], 0, sizeof(g_nbp_entries[idx]));
+    LOG(3, "NBP unregister: object='%s' type='%s'", g_net.nbp_entries[idx].object, g_net.nbp_entries[idx].type);
+    memset(&g_net.nbp_entries[idx], 0, sizeof(g_net.nbp_entries[idx]));
     return 0;
+}
+
+int atalk_nbp_publish(atalk_nbp_entry_t **entry, const atalk_nbp_service_desc_t *desc) {
+    if (!entry || !desc)
+        return -1;
+    return *entry ? nbp_update(*entry, desc) : nbp_register(desc, entry);
+}
+
+void atalk_nbp_withdraw(atalk_nbp_entry_t **entry) {
+    if (!entry || !*entry)
+        return;
+    nbp_unregister(*entry);
+    *entry = NULL;
 }
 
 static bool nbp_pattern_is_all(const uint8_t *field, int len) {
@@ -1276,21 +1657,22 @@ static bool nbp_zone_query_is_wildcard(const nbp_tuple_t *tuple) {
 // (`≈`) is a `*`-style wildcard matching any run of bytes.  The recursive
 // formulation was O(2^n) for patterns with many wildcards (a crafted NBP
 // lookup tuple could DoS the server).  This version is O(n*m) worst-case.
+// Both sides are MacRoman; case folds by Inside AppleTalk Table D-2.
 static bool nbp_glob_match_ci(const char *value, int value_len, const uint8_t *pattern, int pat_len) {
     int v = 0;
     int p = 0;
     int star_p = -1;
     int star_v = 0;
     while (v < value_len) {
-        if (p < pat_len && nbp_ascii_fold(pattern[p]) == NBP_APPROX_CHAR) {
+        if (p < pat_len && pattern[p] == NBP_APPROX_CHAR) {
             // Collapse consecutive wildcards into a single backtrack point.
-            while (p < pat_len && nbp_ascii_fold(pattern[p]) == NBP_APPROX_CHAR)
+            while (p < pat_len && pattern[p] == NBP_APPROX_CHAR)
                 p++;
             star_p = p;
             star_v = v;
             continue;
         }
-        if (p < pat_len && nbp_ascii_fold((uint8_t)value[v]) == nbp_ascii_fold(pattern[p])) {
+        if (p < pat_len && macroman_fold((uint8_t)value[v]) == macroman_fold(pattern[p])) {
             v++;
             p++;
             continue;
@@ -1305,7 +1687,7 @@ static bool nbp_glob_match_ci(const char *value, int value_len, const uint8_t *p
         return false;
     }
     // Skip trailing wildcards on the pattern side.
-    while (p < pat_len && nbp_ascii_fold(pattern[p]) == NBP_APPROX_CHAR)
+    while (p < pat_len && pattern[p] == NBP_APPROX_CHAR)
         p++;
     return p == pat_len;
 }
@@ -1340,7 +1722,8 @@ static void nbp_build_tuple_from_entry(const atalk_nbp_entry_t *entry, nbp_tuple
     memcpy(tuple->zone, entry->zone, entry->zone_len);
 }
 
-static void nbp_send_reply_batch(const ddp_header_t *request, uint8_t nbp_id, const nbp_tuple_t *tuples, int count) {
+static void nbp_send_reply_batch(atalk_conn_t *c, const ddp_header_t *request, uint8_t nbp_id,
+                                 const nbp_tuple_t *tuples, int count) {
     if (count <= 0)
         return;
     ddp_header_t reply;
@@ -1349,17 +1732,18 @@ static void nbp_send_reply_batch(const ddp_header_t *request, uint8_t nbp_id, co
     nbp_header.function = NBP_LKUP_REPLY;
     nbp_header.tuple_count = (count > 15) ? 15 : count;
     nbp_header.nbp_id = nbp_id;
-    nbp_send(&reply, &nbp_header, tuples);
+    nbp_send(c, &reply, &nbp_header, tuples);
 }
 
-static void nbp_handle_lookup_tuple(const ddp_header_t *request, uint8_t nbp_id, const nbp_tuple_t *query) {
+static void nbp_handle_lookup_tuple(atalk_conn_t *c, const ddp_header_t *request, uint8_t nbp_id,
+                                    const nbp_tuple_t *query) {
     if (!request || !query)
         return;
     nbp_tuple_t batch[NBP_MAX_TUPLES_PER_PACKET];
     int batch_len = 0;
 
     for (int i = 0; i < NBP_MAX_ENTRIES; i++) {
-        const atalk_nbp_entry_t *entry = &g_nbp_entries[i];
+        const atalk_nbp_entry_t *entry = &g_net.nbp_entries[i];
         if (!entry->in_use)
             continue;
         if (!nbp_zone_matches(query, entry))
@@ -1370,16 +1754,16 @@ static void nbp_handle_lookup_tuple(const ddp_header_t *request, uint8_t nbp_id,
             continue;
         nbp_build_tuple_from_entry(entry, &batch[batch_len++]);
         if (batch_len == NBP_MAX_TUPLES_PER_PACKET) {
-            nbp_send_reply_batch(request, nbp_id, batch, batch_len);
+            nbp_send_reply_batch(c, request, nbp_id, batch, batch_len);
             batch_len = 0;
         }
     }
     if (batch_len > 0)
-        nbp_send_reply_batch(request, nbp_id, batch, batch_len);
+        nbp_send_reply_batch(c, request, nbp_id, batch, batch_len);
 }
 
-static void nbp_dispatch(const ddp_header_t *ddp_header, const nbp_header_t *header, nbp_tuple_t *tuples,
-                         int tuple_count) {
+static void nbp_dispatch(atalk_conn_t *c, const ddp_header_t *ddp_header, const nbp_header_t *header,
+                         nbp_tuple_t *tuples, int tuple_count) {
     if (!header || !ddp_header)
         return;
     switch (header->function) {
@@ -1387,21 +1771,25 @@ static void nbp_dispatch(const ddp_header_t *ddp_header, const nbp_header_t *hea
     case NBP_LKUP:
     case NBP_FWDREQ:
         for (int i = 0; i < tuple_count; i++)
-            nbp_handle_lookup_tuple(ddp_header, header->nbp_id, &tuples[i]);
+            nbp_handle_lookup_tuple(c, ddp_header, header->nbp_id, &tuples[i]);
         break;
     case NBP_LKUP_REPLY:
         // Replies to a lookup we issued (the PPC browse is the only client).
-        nbp_deliver_lookup_reply(header->nbp_id, tuples, tuple_count);
+        nbp_deliver_lookup_reply(c, header->nbp_id, tuples, tuple_count);
         break;
     default:
-        LOG(4, "NBP: unsupported function %d", header->function);
+        atalk_drop(c, ATALK_DROP_UNHANDLED, "NBP function %d", (int)header->function);
         break;
     }
 }
 
-static void nbp_parse_and_dispatch(const ddp_header_t *ddp, const uint8_t *buf, size_t len) {
-    if (!ddp || !buf || len < 2)
+static void nbp_parse_and_dispatch(atalk_conn_t *c, const ddp_header_t *ddp, const uint8_t *buf, size_t len) {
+    if (!ddp || !buf)
         return;
+    if (len < 2) {
+        atalk_drop(c, ATALK_DROP_MALFORMED, "NBP packet of %zu bytes", len);
+        return;
+    }
     nbp_header_t header;
     nbp_tuple_t tuples[32];
     int parsed = 0;
@@ -1432,11 +1820,18 @@ static void nbp_parse_and_dispatch(const ddp_header_t *ddp, const uint8_t *buf, 
             break;
         parsed++;
     }
+    // A packet whose tuples run out before its count does is not a shorter
+    // packet: drop it rather than act on the part that parsed.
+    if (parsed != header.tuple_count) {
+        atalk_drop(c, ATALK_DROP_MALFORMED, "NBP packet claims %d tuples, %d parse", (int)header.tuple_count, parsed);
+        return;
+    }
 
-    nbp_dispatch(ddp, &header, tuples, parsed);
+    nbp_dispatch(c, ddp, &header, tuples, parsed);
 }
 
-static void nbp_send(const ddp_header_t *ddp_header, const nbp_header_t *nbp_header, const nbp_tuple_t *nbp_tuple) {
+static void nbp_send(atalk_conn_t *c, const ddp_header_t *ddp_header, const nbp_header_t *nbp_header,
+                     const nbp_tuple_t *nbp_tuple) {
     uint8_t buffer[DDP_MAX_DATA_SIZE];
     int size = 0;
 
@@ -1494,7 +1889,7 @@ static void nbp_send(const ddp_header_t *ddp_header, const nbp_header_t *nbp_hea
             (unsigned)nbp_header->nbp_id, size);
     }
     LOG_INDENT(4);
-    ddp_send(ddp_header, buffer, size);
+    ddp_send(c, ddp_header, buffer, size);
     LOG_INDENT(-4);
 
 #undef NBP_ENSURE
@@ -1505,80 +1900,86 @@ static void nbp_send(const ddp_header_t *ddp_header, const nbp_header_t *nbp_hea
 // Hand every tuple of a matching reply to the waiting caller.  Replies to a
 // broadcast trickle in one packet per responder, so the slot stays armed
 // until the caller issues another lookup.
-static void nbp_deliver_lookup_reply(uint8_t nbp_id, const nbp_tuple_t *tuples, int count) {
-    if (!g_nbp_lookup.active || g_nbp_lookup.nbp_id != nbp_id || !g_nbp_lookup.cb)
+static void nbp_deliver_lookup_reply(atalk_conn_t *c, uint8_t nbp_id, const nbp_tuple_t *tuples, int count) {
+    if (!c->nbp_lookup.active || c->nbp_lookup.nbp_id != nbp_id || !c->nbp_lookup.cb)
         return;
     for (int i = 0; i < count; i++) {
         atalk_nbp_info_t info;
         memset(&info, 0, sizeof(info));
-        snprintf(info.object, sizeof(info.object), "%.*s", tuples[i].object_len, (const char *)tuples[i].object);
-        snprintf(info.type, sizeof(info.type), "%.*s", tuples[i].type_len, (const char *)tuples[i].type);
-        snprintf(info.zone, sizeof(info.zone), "%.*s", tuples[i].zone_len, (const char *)tuples[i].zone);
+        // MacRoman on the wire, UTF-8 to the caller.
+        macroman_to_utf8(tuples[i].object, (size_t)tuples[i].object_len, info.object, sizeof(info.object));
+        macroman_to_utf8(tuples[i].type, (size_t)tuples[i].type_len, info.type, sizeof(info.type));
+        macroman_to_utf8(tuples[i].zone, (size_t)tuples[i].zone_len, info.zone, sizeof(info.zone));
         info.net = tuples[i].net;
         info.node = tuples[i].node;
         info.socket = tuples[i].socket;
         LOG(4, "NBP reply: '%s:%s@%s' at %u:%u", info.object, info.type, info.zone, info.node, info.socket);
-        g_nbp_lookup.cb(g_nbp_lookup.ctx, &info);
+        c->nbp_lookup.cb(c->nbp_lookup.ctx, &info);
     }
 }
 
 int atalk_nbp_lookup(const char *object, const char *type, const char *zone, uint8_t reply_socket,
                      atalk_nbp_reply_fn cb, void *ctx) {
+    atalk_conn_t *c = g_net.plugged;
     if (!object || !type || !cb || reply_socket == 0)
         return -1;
-    if (!g_atalk_enabled)
+    if (!c || !c->enabled)
         return -1;
 
-    size_t obj_len = strlen(object);
-    size_t type_len = strlen(type);
+    // The pattern goes out in MacRoman, as every NBP name does: a UTF-8 "≈"
+    // becomes the wildcard byte $C5.
+    char obj_mac[NBP_OBJECT_MAX + 1], type_mac[NBP_TYPE_MAX + 1], zone_mac[NBP_ZONE_MAX + 1];
     const char *zone_str = (zone && zone[0]) ? zone : "*";
-    size_t zone_len = strlen(zone_str);
-    if (obj_len > NBP_OBJECT_MAX || type_len > NBP_TYPE_MAX || zone_len > NBP_ZONE_MAX)
+    int obj_n = nbp_copy_field(obj_mac, sizeof(obj_mac), object, true);
+    int type_n = nbp_copy_field(type_mac, sizeof(type_mac), type, true);
+    int zone_n = nbp_copy_field(zone_mac, sizeof(zone_mac), zone_str, true);
+    if (obj_n < 0 || type_n < 0 || zone_n < 0)
         return -1;
+    size_t obj_len = (size_t)obj_n, type_len = (size_t)type_n, zone_len = (size_t)zone_n;
 
     // The tuple of a lookup names where the replies should go, then the
     // pattern being looked up.
     uint8_t buf[2 + 5 + 3 * 33];
     int n = 0;
     buf[n++] = (uint8_t)((NBP_LKUP << 4) | 1);
-    g_nbp_next_lookup_id = (uint8_t)(g_nbp_next_lookup_id == 255 ? 1 : g_nbp_next_lookup_id + 1);
-    buf[n++] = g_nbp_next_lookup_id;
+    c->nbp_next_lookup_id = (uint8_t)(c->nbp_next_lookup_id == 255 ? 1 : c->nbp_next_lookup_id + 1);
+    buf[n++] = c->nbp_next_lookup_id;
     buf[n++] = 0; // net high
     buf[n++] = 0; // net low
     buf[n++] = LLAP_HOST_NODE;
     buf[n++] = reply_socket;
     buf[n++] = 0; // enumerator
     buf[n++] = (uint8_t)obj_len;
-    memcpy(&buf[n], object, obj_len);
+    memcpy(&buf[n], obj_mac, obj_len);
     n += (int)obj_len;
     buf[n++] = (uint8_t)type_len;
-    memcpy(&buf[n], type, type_len);
+    memcpy(&buf[n], type_mac, type_len);
     n += (int)type_len;
     buf[n++] = (uint8_t)zone_len;
-    memcpy(&buf[n], zone_str, zone_len);
+    memcpy(&buf[n], zone_mac, zone_len);
     n += (int)zone_len;
 
-    g_nbp_lookup.active = true;
-    g_nbp_lookup.nbp_id = g_nbp_next_lookup_id;
-    g_nbp_lookup.cb = cb;
-    g_nbp_lookup.ctx = ctx;
+    c->nbp_lookup.active = true;
+    c->nbp_lookup.nbp_id = c->nbp_next_lookup_id;
+    c->nbp_lookup.cb = cb;
+    c->nbp_lookup.ctx = ctx;
 
     // NBP runs on socket 2 of every node; the lookup goes to the broadcast
     // node so every machine on the segment answers.
     atalk_socket_addr_t dest = {.net = 0, .node = 0xFF, .socket = 2};
     LOG(4, "NBP lookup '%s:%s@%s' (id=%u, replies to socket %u)", object, type, zone_str,
-        (unsigned)g_nbp_next_lookup_id, (unsigned)reply_socket);
+        (unsigned)c->nbp_next_lookup_id, (unsigned)reply_socket);
     return atalk_ddp_send_to(&dest, reply_socket, DDP_NBP, buf, n);
 }
 
 void atalk_nbp_lookup_cancel(void) {
-    g_nbp_lookup.active = false;
-    g_nbp_lookup.cb = NULL;
-    g_nbp_lookup.ctx = NULL;
+    atalk_conn_t *c = g_net.plugged;
+    if (c)
+        memset(&c->nbp_lookup, 0, sizeof(c->nbp_lookup));
 }
 
-void nbp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
-    g_atalk_stats.nbp_lookups++;
+static void nbp_in(atalk_conn_t *c, ddp_header_t *ddp, const uint8_t *buf, size_t len) {
+    c->stats.nbp_packets++;
     uint8_t header_byte = (len >= 1) ? buf[0] : 0;
     uint8_t nbp_id = (len >= 2) ? buf[1] : 0;
     int function = (header_byte >> 4) & 0x0F;
@@ -1590,75 +1991,13 @@ void nbp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
         LOG(4, "NBP <- Mac func=%d: tuples=%d nbpId=%u len=%zu", function, tuple_count, (unsigned)nbp_id, len);
     }
     LOG_INDENT(4);
-    nbp_parse_and_dispatch(ddp, buf, len);
+    nbp_parse_and_dispatch(c, ddp, buf, len);
     LOG_INDENT(-4);
 }
 
 // =============================== ATP (AppleTalk Transaction Protocol) ===============================
 
-#define ATP_MAX_HANDLERS           8
-#define ATP_MAX_OUTGOING           16
-#define ATP_MAX_XO_CACHE           16
-#define ATP_MAX_RESPONSE_FRAGMENTS 8
-#define ATP_MAX_ATP_PAYLOAD        578
-#define ATP_DEFAULT_RETRY_MS       2000u
-
-typedef struct {
-    bool in_use;
-    uint8_t socket;
-    atp_socket_handler_t handler;
-    void *ctx;
-} atp_handler_slot_t;
-
-struct atp_request_handle {
-    bool in_use;
-    bool xo;
-    bool infinite_retries;
-    uint8_t src_socket;
-    uint16_t tid;
-    uint8_t base_ctl;
-    uint8_t trel_hint;
-    uint8_t initial_bitmap;
-    uint8_t pending_bitmap;
-    uint8_t user[4];
-    uint8_t payload[ATP_MAX_ATP_PAYLOAD];
-    int payload_len;
-    atalk_socket_addr_t dest;
-    uint64_t retry_timeout_ns;
-    int retries_remaining;
-    uint32_t timer_generation;
-    atp_request_callbacks_t callbacks;
-    void *cb_ctx;
-};
-
-typedef struct {
-    bool valid;
-    uint8_t seq;
-    int len;
-    uint8_t bytes[DDP_MAX_DATA_SIZE];
-} atp_resp_packet_cache_t;
-
-typedef struct {
-    bool in_use;
-    bool response_ready;
-    uint16_t tid;
-    uint8_t requester_node;
-    uint8_t requester_socket;
-    uint8_t responder_socket;
-    uint8_t trel_hint;
-    uint32_t release_generation;
-    atp_resp_packet_cache_t packets[ATP_MAX_RESPONSE_FRAGMENTS];
-} atp_xo_entry_t;
-
-static atp_handler_slot_t g_atp_handlers[ATP_MAX_HANDLERS];
-static atp_request_handle_t g_atp_requests[ATP_MAX_OUTGOING];
-static atp_xo_entry_t g_xo_entries[ATP_MAX_XO_CACHE];
-static uint16_t g_next_tid = 0x2000;
-static int g_atp_retry_event_token;
-static int g_atp_release_event_token;
-
 // Utility helpers -----------------------------------------------------------
-static void atp_register_scheduler_events(void);
 static void atp_retry_timeout_cb(void *source, uint64_t data);
 static void atp_release_timeout_cb(void *source, uint64_t data);
 static int parse_atp(const uint8_t *buf, int len, atp_packet_t *atp);
@@ -1702,23 +2041,19 @@ static bool atp_decode_event_data(uint64_t data, uint16_t *index, uint32_t *gene
     return true;
 }
 
-static void atp_register_scheduler_events(void) {
-    if (!g_scheduler)
-        return;
-    // Idempotent — scheduler_new_event_type updates an existing entry
-    // in place. The previous static `g_atp_events_registered` guard
-    // assumed a single scheduler lifetime, which broke when machine.boot
-    // tore down the scheduler and made a fresh one (num_event_types = 0)
-    // while this TU's state survived.
-    scheduler_new_event_type(g_scheduler, "atp", &g_atp_retry_event_token, "retry_timeout", &atp_retry_timeout_cb);
-    scheduler_new_event_type(g_scheduler, "atp", &g_atp_release_event_token, "xo_release", &atp_release_timeout_cb);
+// Called when the connection is plugged in, never lazily at first arm: a
+// checkpoint taken with an ATP transaction in flight -- any AFP command, any
+// print job -- replays its events into the restored machine's scheduler.
+static void atp_timers_init(atalk_conn_t *c) {
+    atalk_timer_init(c, &c->atp_retry_timer, "atp", "retry_timeout", &atp_retry_timeout_cb);
+    atalk_timer_init(c, &c->atp_release_timer, "atp", "xo_release", &atp_release_timeout_cb);
 }
 
 // Handler registry ---------------------------------------------------------
 static atp_handler_slot_t *atp_find_handler_slot(uint8_t socket) {
     for (int i = 0; i < ATP_MAX_HANDLERS; i++) {
-        if (g_atp_handlers[i].in_use && g_atp_handlers[i].socket == socket)
-            return &g_atp_handlers[i];
+        if (g_net.atp_handlers[i].in_use && g_net.atp_handlers[i].socket == socket)
+            return &g_net.atp_handlers[i];
     }
     return NULL;
 }
@@ -1733,15 +2068,15 @@ int atp_register_socket_handler(uint8_t socket, const atp_socket_handler_t *hand
         return 0;
     }
     for (int i = 0; i < ATP_MAX_HANDLERS; i++) {
-        if (!g_atp_handlers[i].in_use) {
-            g_atp_handlers[i].in_use = true;
-            g_atp_handlers[i].socket = socket;
-            g_atp_handlers[i].handler = *handler;
-            g_atp_handlers[i].ctx = ctx;
+        if (!g_net.atp_handlers[i].in_use) {
+            g_net.atp_handlers[i].in_use = true;
+            g_net.atp_handlers[i].socket = socket;
+            g_net.atp_handlers[i].handler = *handler;
+            g_net.atp_handlers[i].ctx = ctx;
             return 0;
         }
     }
-    LOG(1, "ATP: handler table full, cannot register socket %u", (unsigned)socket);
+    LOG_ATP(1, "ATP: handler table full, cannot register socket %u", (unsigned)socket);
     return -1;
 }
 
@@ -1752,53 +2087,48 @@ void atp_unregister_socket_handler(uint8_t socket) {
 }
 
 // Request ID generator -----------------------------------------------------
-static uint16_t atp_next_tid(uint8_t src_socket) {
-    uint16_t start = g_next_tid;
-    while (true) {
-        g_next_tid++;
-        if (g_next_tid == start)
-            break;
-        bool in_use = false;
-        for (int i = 0; i < ATP_MAX_OUTGOING; i++) {
-            if (g_atp_requests[i].in_use && g_atp_requests[i].src_socket == src_socket &&
-                g_atp_requests[i].tid == g_next_tid) {
-                in_use = true;
-                break;
-            }
-        }
-        if (!in_use)
-            return g_next_tid;
+// A TID is taken while another outstanding request from the same socket
+// holds it (the request being numbered is already in the table).
+typedef struct {
+    const atalk_conn_t *conn;
+    uint8_t socket;
+    const atp_request_handle_t *self;
+} atp_tid_scope_t;
+
+static bool atp_tid_in_use(uint32_t tid, const void *ctx) {
+    const atp_tid_scope_t *scope = ctx;
+    for (int i = 0; i < ATP_MAX_OUTGOING; i++) {
+        const atp_request_handle_t *r = &scope->conn->atp_requests[i];
+        if (r != scope->self && r->in_use && r->src_socket == scope->socket && r->tid == tid)
+            return true;
     }
-    return g_next_tid;
+    return false;
 }
 
-static atp_request_handle_t *atp_alloc_request_slot(void) {
+static atp_request_handle_t *atp_alloc_request_slot(atalk_conn_t *c) {
     for (int i = 0; i < ATP_MAX_OUTGOING; i++) {
-        if (!g_atp_requests[i].in_use) {
-            memset(&g_atp_requests[i], 0, sizeof(g_atp_requests[i]));
-            g_atp_requests[i].in_use = true;
-            return &g_atp_requests[i];
+        if (!c->atp_requests[i].in_use) {
+            memset(&c->atp_requests[i], 0, sizeof(c->atp_requests[i]));
+            c->atp_requests[i].in_use = true;
+            return &c->atp_requests[i];
         }
     }
     return NULL;
 }
 
-static void atp_request_complete(atp_request_handle_t *req, atp_request_result_t result) {
+static void atp_request_complete(atalk_conn_t *c, atp_request_handle_t *req, atp_request_result_t result) {
     if (!req || !req->in_use)
         return;
     // Cancel any pending retry timer
-    if (g_scheduler) {
-        uint16_t index = (uint16_t)(req - g_atp_requests);
-        uint64_t data = atp_encode_event_data(index, req->timer_generation);
-        remove_event_by_data(g_scheduler, &atp_retry_timeout_cb, NULL, data);
-    }
+    uint16_t index = (uint16_t)(req - c->atp_requests);
+    atalk_timer_cancel(&c->atp_retry_timer, atp_encode_event_data(index, req->timer_generation));
     req->timer_generation++;
     req->in_use = false;
     if (req->callbacks.on_complete)
         req->callbacks.on_complete(req, result, req->cb_ctx);
 }
 
-static void atp_send_trel(const atp_request_handle_t *req) {
+static void atp_send_trel(atalk_conn_t *c, const atp_request_handle_t *req) {
     if (!req || !req->xo)
         return;
     uint8_t buffer[8] = {0};
@@ -1815,12 +2145,12 @@ static void atp_send_trel(const atp_request_handle_t *req) {
     ddp.dst_socket = req->dest.socket;
     ddp.src_socket = req->src_socket;
     ddp.type = DDP_ATP;
-    ddp_send(&ddp, buffer, sizeof(buffer));
-    LOG(3, "ATP: sent TRel tid=0x%04X srcSock=%u dstSock=%u", req->tid, (unsigned)req->src_socket,
-        (unsigned)req->dest.socket);
+    ddp_send(c, &ddp, buffer, sizeof(buffer));
+    LOG_ATP(3, "ATP: sent TRel tid=0x%04X srcSock=%u dstSock=%u", req->tid, (unsigned)req->src_socket,
+            (unsigned)req->dest.socket);
 }
 
-static void atp_send_request_packets(atp_request_handle_t *req, uint8_t bitmap) {
+static void atp_send_request_packets(atalk_conn_t *c, atp_request_handle_t *req, uint8_t bitmap) {
     uint8_t atp_buf[DDP_MAX_DATA_SIZE];
     atp_buf[0] = req->base_ctl;
     atp_buf[1] = bitmap;
@@ -1840,65 +2170,60 @@ static void atp_send_request_packets(atp_request_handle_t *req, uint8_t bitmap) 
     ddp.dst_socket = req->dest.socket;
     ddp.src_socket = req->src_socket;
     ddp.type = DDP_ATP;
-    ddp_send(&ddp, atp_buf, total);
-    LOG(3, "ATP: sent TReq tid=0x%04X srcSock=%u dstSock=%u bitmap=0x%02X", req->tid, (unsigned)req->src_socket,
-        (unsigned)req->dest.socket, (unsigned)bitmap);
+    ddp_send(c, &ddp, atp_buf, total);
+    LOG_ATP(3, "ATP: sent TReq tid=0x%04X srcSock=%u dstSock=%u bitmap=0x%02X", req->tid, (unsigned)req->src_socket,
+            (unsigned)req->dest.socket, (unsigned)bitmap);
 }
 
-static void atp_arm_retry_timer(atp_request_handle_t *req) {
-    atp_register_scheduler_events();
-    if (!g_scheduler)
-        return;
-    uint16_t index = (uint16_t)(req - g_atp_requests);
+static void atp_arm_retry_timer(atalk_conn_t *c, atp_request_handle_t *req) {
+    uint16_t index = (uint16_t)(req - c->atp_requests);
     // Cancel any existing retry event before scheduling a new one
-    uint64_t old_data = atp_encode_event_data(index, req->timer_generation);
-    remove_event_by_data(g_scheduler, &atp_retry_timeout_cb, NULL, old_data);
+    atalk_timer_cancel(&c->atp_retry_timer, atp_encode_event_data(index, req->timer_generation));
     req->timer_generation++;
-    uint64_t data = atp_encode_event_data(index, req->timer_generation);
-    LOG(5, "ATP: arm retry timer tid=0x%04X timeout_ns=%" PRIu64, req->tid, req->retry_timeout_ns);
-    scheduler_new_cpu_event(g_scheduler, &atp_retry_timeout_cb, &g_atp_retry_event_token, data, 0,
-                            req->retry_timeout_ns);
+    LOG_ATP(5, "ATP: arm retry timer tid=0x%04X timeout_ns=%" PRIu64, req->tid, req->retry_timeout_ns);
+    atalk_timer_arm(&c->atp_retry_timer, atp_encode_event_data(index, req->timer_generation), req->retry_timeout_ns);
 }
 
-static void atp_retry_request(atp_request_handle_t *req, bool consume_retry) {
+static void atp_retry_request(atalk_conn_t *c, atp_request_handle_t *req, bool consume_retry) {
     if (!req || req->pending_bitmap == 0)
         return;
     if (!req->infinite_retries && consume_retry) {
         if (req->retries_remaining == 0) {
-            LOG(2, "ATP: retries exhausted for tid=0x%04X", req->tid);
-            atp_send_trel(req);
-            atp_request_complete(req, ATP_REQUEST_RESULT_TIMEOUT);
+            LOG_ATP(2, "ATP: retries exhausted for tid=0x%04X", req->tid);
+            atp_send_trel(c, req);
+            atp_request_complete(c, req, ATP_REQUEST_RESULT_TIMEOUT);
             return;
         }
         req->retries_remaining--;
     }
-    g_atalk_stats.atp_retries++;
-    atp_send_request_packets(req, req->pending_bitmap);
-    atp_arm_retry_timer(req);
+    c->stats.atp_retries++;
+    atp_send_request_packets(c, req, req->pending_bitmap);
+    atp_arm_retry_timer(c, req);
 }
 
 static void atp_retry_timeout_cb(void *source, uint64_t data) {
-    (void)source;
+    atalk_conn_t *c = CONN_OF(source, atp_retry_timer);
     uint16_t index;
     uint32_t generation;
     if (!atp_decode_event_data(data, &index, &generation))
         return;
     if (index >= ATP_MAX_OUTGOING)
         return;
-    atp_request_handle_t *req = &g_atp_requests[index];
+    atp_request_handle_t *req = &c->atp_requests[index];
     if (!req->in_use || req->timer_generation != generation)
         return;
-    LOG(3, "ATP: retry timeout tid=0x%04X bitmap=0x%02X", req->tid, (unsigned)req->pending_bitmap);
-    atp_retry_request(req, true);
+    LOG_ATP(3, "ATP: retry timeout tid=0x%04X bitmap=0x%02X", req->tid, (unsigned)req->pending_bitmap);
+    atp_retry_request(c, req, true);
 }
 
 atp_request_handle_t *atp_request_submit(const atp_request_params_t *params, const atp_request_callbacks_t *callbacks,
                                          void *ctx) {
-    if (!params || params->bitmap == 0)
-        return NULL;
+    atalk_conn_t *c = g_net.plugged;
+    if (!c || !params || params->bitmap == 0)
+        return NULL; // nobody is on the cable to ask
     if (params->payload_len < 0 || params->payload_len > ATP_MAX_ATP_PAYLOAD)
         return NULL;
-    atp_request_handle_t *req = atp_alloc_request_slot();
+    atp_request_handle_t *req = atp_alloc_request_slot(c);
     if (!req)
         return NULL;
 
@@ -1922,29 +2247,39 @@ atp_request_handle_t *atp_request_submit(const atp_request_params_t *params, con
         req->base_ctl |= ATP_CONTROL_XO;
         req->base_ctl |= req->trel_hint;
     }
-    req->tid = atp_next_tid(req->src_socket);
+    atp_tid_scope_t scope = {.conn = c, .socket = req->src_socket, .self = req};
+    uint32_t tid = 0;
+    if (!atalk_id_alloc(&c->next_tid, 0, 0xFFFF, atp_tid_in_use, &scope, &tid)) {
+        req->in_use = false; // cannot happen: at most ATP_MAX_OUTGOING of 65,536 are held
+        return NULL;
+    }
+    req->tid = (uint16_t)tid;
 
-    g_atalk_stats.atp_requests++;
-    atp_send_request_packets(req, req->pending_bitmap);
-    atp_arm_retry_timer(req);
+    c->stats.atp_requests++;
+    atp_send_request_packets(c, req, req->pending_bitmap);
+    atp_arm_retry_timer(c, req);
     return req;
 }
 
 void atp_request_cancel(atp_request_handle_t *handle) {
-    if (!handle || !handle->in_use)
+    // A live request belongs to the plugged connection: unplugging one
+    // drops its requests.
+    atalk_conn_t *c = g_net.plugged;
+    if (!c || !handle || !handle->in_use)
         return;
-    LOG(3, "ATP: cancel request tid=0x%04X", handle->tid);
-    atp_request_complete(handle, ATP_REQUEST_RESULT_ABORTED);
+    LOG_ATP(3, "ATP: cancel request tid=0x%04X", handle->tid);
+    atp_request_complete(c, handle, ATP_REQUEST_RESULT_ABORTED);
 }
 
 // XO cache helpers ---------------------------------------------------------
-static int atp_xo_find(uint16_t tid, uint8_t requester_node, uint8_t requester_socket, uint8_t responder_socket) {
+static int atp_xo_find(atalk_conn_t *c, uint16_t tid, uint8_t requester_node, uint8_t requester_socket,
+                       uint8_t responder_socket) {
     for (int i = 0; i < ATP_MAX_XO_CACHE; i++) {
-        if (!g_xo_entries[i].in_use)
+        if (!c->xo_entries[i].in_use)
             continue;
-        if (g_xo_entries[i].tid == tid && g_xo_entries[i].requester_node == requester_node &&
-            g_xo_entries[i].requester_socket == requester_socket &&
-            g_xo_entries[i].responder_socket == responder_socket) {
+        if (c->xo_entries[i].tid == tid && c->xo_entries[i].requester_node == requester_node &&
+            c->xo_entries[i].requester_socket == requester_socket &&
+            c->xo_entries[i].responder_socket == responder_socket) {
             return i;
         }
     }
@@ -1952,41 +2287,61 @@ static int atp_xo_find(uint16_t tid, uint8_t requester_node, uint8_t requester_s
 }
 
 // Forward declaration for atp_xo_alloc
-static void atp_xo_schedule_release(atp_xo_entry_t *entry);
+static void atp_xo_schedule_release(atalk_conn_t *c, atp_xo_entry_t *entry);
 
-static int atp_xo_alloc(const ddp_header_t *ddp, const atp_packet_t *atp) {
+static int atp_xo_alloc(atalk_conn_t *c, const ddp_header_t *ddp, const atp_packet_t *atp) {
     for (int i = 0; i < ATP_MAX_XO_CACHE; i++) {
-        if (!g_xo_entries[i].in_use) {
-            memset(&g_xo_entries[i], 0, sizeof(g_xo_entries[i]));
-            g_xo_entries[i].in_use = true;
-            g_xo_entries[i].tid = atp->tid;
-            g_xo_entries[i].requester_node = ddp->llap.src;
-            g_xo_entries[i].requester_socket = ddp->src_socket;
-            g_xo_entries[i].responder_socket = ddp->dst_socket;
-            g_xo_entries[i].trel_hint = (uint8_t)(atp->ctl & 0x07);
+        if (!c->xo_entries[i].in_use) {
+            memset(&c->xo_entries[i], 0, sizeof(c->xo_entries[i]));
+            c->xo_entries[i].in_use = true;
+            c->xo_entries[i].tid = atp->tid;
+            c->xo_entries[i].requester_node = ddp->llap.src;
+            c->xo_entries[i].requester_socket = ddp->src_socket;
+            c->xo_entries[i].responder_socket = ddp->dst_socket;
+            c->xo_entries[i].trel_hint = (uint8_t)(atp->ctl & 0x07);
             // Start release timer immediately (Inside AppleTalk p. 9-17)
-            atp_xo_schedule_release(&g_xo_entries[i]);
-            LOG(10, "ATP: XO alloc slot=%d tid=0x%04X node=%u sock=%u->%u trel=%u", i, atp->tid, ddp->llap.src,
-                ddp->src_socket, ddp->dst_socket, atp->ctl & 0x07);
+            atp_xo_schedule_release(c, &c->xo_entries[i]);
+            LOG_ATP(10, "ATP: XO alloc slot=%d tid=0x%04X node=%u sock=%u->%u trel=%u", i, atp->tid, ddp->llap.src,
+                    ddp->src_socket, ddp->dst_socket, atp->ctl & 0x07);
             return i;
         }
     }
-    LOG(2, "ATP: XO cache full (tid=0x%04X node=%u sock=%u)", atp->tid, ddp->llap.src, ddp->src_socket);
+    LOG_ATP(2, "ATP: XO cache full (tid=0x%04X node=%u sock=%u)", atp->tid, ddp->llap.src, ddp->src_socket);
     return -1;
 }
 
-static void atp_xo_free(atp_xo_entry_t *entry) {
+static void atp_xo_free(atalk_conn_t *c, atp_xo_entry_t *entry) {
     if (!entry)
         return;
-    uint16_t index = (uint16_t)(entry - g_xo_entries);
-    LOG(10, "ATP: XO free slot=%u tid=0x%04X", index, entry->tid);
+    uint16_t index = (uint16_t)(entry - c->xo_entries);
+    LOG_ATP(10, "ATP: XO free slot=%u tid=0x%04X", index, entry->tid);
     // Cancel pending release timer event
-    if (g_scheduler) {
-        uint64_t data = atp_encode_event_data(index, entry->release_generation);
-        remove_event_by_data(g_scheduler, &atp_release_timeout_cb, NULL, data);
-    }
+    atalk_timer_cancel(&c->atp_release_timer, atp_encode_event_data(index, entry->release_generation));
     entry->in_use = false;
     entry->release_generation++;
+}
+
+// Drop every outgoing request and every XO cache entry, and their timers.
+// When the stack is only being detached from the link its clients are still
+// up, so each outstanding request completes as ABORTED and they clean up.
+// When the connection is unplugged they are already gone: requests are
+// dropped without a callback.  The socket handlers are the network's and stay.
+static void atp_reset(atalk_conn_t *c, bool teardown) {
+    for (int i = 0; i < ATP_MAX_OUTGOING; i++) {
+        atp_request_handle_t *req = &c->atp_requests[i];
+        if (!req->in_use)
+            continue;
+        if (!teardown) {
+            atp_request_complete(c, req, ATP_REQUEST_RESULT_ABORTED);
+        } else {
+            atalk_timer_cancel(&c->atp_retry_timer, atp_encode_event_data((uint16_t)i, req->timer_generation));
+            req->timer_generation++;
+            req->in_use = false;
+        }
+    }
+    for (int i = 0; i < ATP_MAX_XO_CACHE; i++)
+        if (c->xo_entries[i].in_use)
+            atp_xo_free(c, &c->xo_entries[i]);
 }
 
 static void atp_xo_store_packet(atp_xo_entry_t *entry, uint8_t seq, const uint8_t *bytes, int len) {
@@ -1999,43 +2354,38 @@ static void atp_xo_store_packet(atp_xo_entry_t *entry, uint8_t seq, const uint8_
     memcpy(slot->bytes, bytes, (size_t)len);
 }
 
-static void atp_xo_schedule_release(atp_xo_entry_t *entry) {
+static void atp_xo_schedule_release(atalk_conn_t *c, atp_xo_entry_t *entry) {
     if (!entry)
         return;
-    atp_register_scheduler_events();
-    if (!g_scheduler)
-        return;
-    uint16_t index = (uint16_t)(entry - g_xo_entries);
+    uint16_t index = (uint16_t)(entry - c->xo_entries);
     // Cancel any existing release event for this entry before scheduling a new one
-    uint64_t old_data = atp_encode_event_data(index, entry->release_generation);
-    remove_event_by_data(g_scheduler, &atp_release_timeout_cb, NULL, old_data);
+    atalk_timer_cancel(&c->atp_release_timer, atp_encode_event_data(index, entry->release_generation));
     entry->release_generation++;
-    uint64_t data = atp_encode_event_data(index, entry->release_generation);
     uint32_t seconds = atp_trel_hint_seconds(entry->trel_hint);
-    scheduler_new_cpu_event(g_scheduler, &atp_release_timeout_cb, &g_atp_release_event_token, data, 0,
-                            atp_seconds_to_ns(seconds));
+    atalk_timer_arm(&c->atp_release_timer, atp_encode_event_data(index, entry->release_generation),
+                    atp_seconds_to_ns(seconds));
 }
 
 static void atp_release_timeout_cb(void *source, uint64_t data) {
-    (void)source;
+    atalk_conn_t *c = CONN_OF(source, atp_release_timer);
     uint16_t index;
     uint32_t generation;
     if (!atp_decode_event_data(data, &index, &generation))
         return;
     if (index >= ATP_MAX_XO_CACHE)
         return;
-    atp_xo_entry_t *entry = &g_xo_entries[index];
+    atp_xo_entry_t *entry = &c->xo_entries[index];
     if (!entry->in_use || entry->release_generation != generation)
         return;
-    LOG(3, "ATP: XO release timeout tid=0x%04X", entry->tid);
-    atp_xo_free(entry);
+    LOG_ATP(3, "ATP: XO release timeout tid=0x%04X", entry->tid);
+    atp_xo_free(c, entry);
 }
 
 // Retransmit cached XO response packets matching the bitmap
-static void atp_xo_send_cached(atp_xo_entry_t *entry, const ddp_header_t *ddp, uint8_t bitmap) {
+static void atp_xo_send_cached(atalk_conn_t *c, atp_xo_entry_t *entry, const ddp_header_t *ddp, uint8_t bitmap) {
     if (!entry || !entry->response_ready)
         return;
-    LOG(6, "ATP: XO retransmit cached tid=0x%04X bitmap=0x%02X", entry->tid, bitmap);
+    LOG_ATP(6, "ATP: XO retransmit cached tid=0x%04X bitmap=0x%02X", entry->tid, bitmap);
     ddp_header_t reply;
     ddp_setup_reply(ddp, &reply);
     reply.type = DDP_ATP;
@@ -2043,7 +2393,7 @@ static void atp_xo_send_cached(atp_xo_entry_t *entry, const ddp_header_t *ddp, u
         // bitmap=0x00: peer received all packets, resend the last (EOM) packet
         for (int i = ATP_MAX_RESPONSE_FRAGMENTS - 1; i >= 0; i--) {
             if (entry->packets[i].valid) {
-                ddp_send(&reply, entry->packets[i].bytes, entry->packets[i].len);
+                ddp_send(c, &reply, entry->packets[i].bytes, entry->packets[i].len);
                 break;
             }
         }
@@ -2055,16 +2405,17 @@ static void atp_xo_send_cached(atp_xo_entry_t *entry, const ddp_header_t *ddp, u
                 continue;
             if (!(bitmap & (1u << slot->seq)))
                 continue;
-            ddp_send(&reply, slot->bytes, slot->len);
+            ddp_send(c, &reply, slot->bytes, slot->len);
         }
     }
-    atp_xo_schedule_release(entry);
+    atp_xo_schedule_release(c, entry);
 }
 
 // Outgoing response helpers -------------------------------------------------
 int atp_responder_send_packets(const ddp_header_t *request_ddp, const atp_packet_t *request_atp,
                                const atp_response_packet_desc_t *packets, size_t packet_count) {
-    if (!request_ddp || !request_atp || !packets || packet_count == 0)
+    atalk_conn_t *c = g_net.plugged;
+    if (!c || !request_ddp || !request_atp || !packets || packet_count == 0)
         return -1;
     if (packet_count > ATP_MAX_RESPONSE_FRAGMENTS)
         return -1;
@@ -2076,9 +2427,9 @@ int atp_responder_send_packets(const ddp_header_t *request_ddp, const atp_packet
     int xo_index = -1;
     if (xo) {
         xo_index =
-            atp_xo_find(request_atp->tid, request_ddp->llap.src, request_ddp->src_socket, request_ddp->dst_socket);
+            atp_xo_find(c, request_atp->tid, request_ddp->llap.src, request_ddp->src_socket, request_ddp->dst_socket);
         if (xo_index < 0)
-            xo_index = atp_xo_alloc(request_ddp, request_atp);
+            xo_index = atp_xo_alloc(c, request_ddp, request_atp);
     }
 
     for (size_t i = 0; i < packet_count; i++) {
@@ -2104,13 +2455,13 @@ int atp_responder_send_packets(const ddp_header_t *request_ddp, const atp_packet
         if (desc->payload_len > 0 && desc->payload)
             memcpy(&buffer[8], desc->payload, (size_t)desc->payload_len);
         int total = 8 + desc->payload_len;
-        ddp_send(&reply, buffer, total);
+        ddp_send(c, &reply, buffer, total);
         if (xo_index >= 0)
-            atp_xo_store_packet(&g_xo_entries[xo_index], (uint8_t)i, buffer, total);
+            atp_xo_store_packet(&c->xo_entries[xo_index], (uint8_t)i, buffer, total);
     }
     if (xo_index >= 0) {
-        g_xo_entries[xo_index].response_ready = true;
-        atp_xo_schedule_release(&g_xo_entries[xo_index]);
+        c->xo_entries[xo_index].response_ready = true;
+        atp_xo_schedule_release(c, &c->xo_entries[xo_index]);
     }
     return (int)packet_count;
 }
@@ -2138,9 +2489,9 @@ static int parse_atp(const uint8_t *buf, int len, atp_packet_t *atp) {
 }
 
 // Incoming response handling -----------------------------------------------
-static atp_request_handle_t *atp_match_request(const ddp_header_t *ddp, const atp_packet_t *atp) {
+static atp_request_handle_t *atp_match_request(atalk_conn_t *c, const ddp_header_t *ddp, const atp_packet_t *atp) {
     for (int i = 0; i < ATP_MAX_OUTGOING; i++) {
-        atp_request_handle_t *req = &g_atp_requests[i];
+        atp_request_handle_t *req = &c->atp_requests[i];
         if (!req->in_use)
             continue;
         if (req->tid != atp->tid)
@@ -2154,10 +2505,12 @@ static atp_request_handle_t *atp_match_request(const ddp_header_t *ddp, const at
     return NULL;
 }
 
-static void atp_handle_response(const ddp_header_t *ddp, const atp_packet_t *atp) {
-    atp_request_handle_t *req = atp_match_request(ddp, atp);
-    if (!req)
+static void atp_handle_response(atalk_conn_t *c, const ddp_header_t *ddp, const atp_packet_t *atp) {
+    atp_request_handle_t *req = atp_match_request(c, ddp, atp);
+    if (!req) {
+        atalk_drop(c, ATALK_DROP_UNHANDLED, "ATP response tid %04X matches no request", (unsigned)atp->tid);
         return;
+    }
     uint8_t seq = atp->bitmap & 0x07;
     uint8_t mask = (uint8_t)(1u << seq);
     bool duplicate = ((req->pending_bitmap & mask) == 0);
@@ -2180,679 +2533,84 @@ static void atp_handle_response(const ddp_header_t *ddp, const atp_packet_t *atp
         }
     }
     if (atp->ctl & ATP_CONTROL_STS) {
-        atp_retry_request(req, false);
+        atp_retry_request(c, req, false);
         return;
     }
     if (req->pending_bitmap == 0) {
-        atp_send_trel(req);
-        atp_request_complete(req, ATP_REQUEST_RESULT_OK);
+        atp_send_trel(c, req);
+        atp_request_complete(c, req, ATP_REQUEST_RESULT_OK);
     } else if (!duplicate) {
         // Re-arm the retry timer on each valid response so it doesn't fire
         // while the Mac is still actively sending response packets.
-        atp_arm_retry_timer(req);
+        atp_arm_retry_timer(c, req);
     }
 }
 
-static void atp_handle_trel(const ddp_header_t *ddp, const atp_packet_t *atp) {
-    int idx = atp_xo_find(atp->tid, ddp->llap.src, ddp->src_socket, ddp->dst_socket);
-    LOG(10, "ATP: TRel tid=0x%04X node=%u sock=%u xo_slot=%d", atp->tid, ddp->llap.src, ddp->src_socket, idx);
+static void atp_handle_trel(atalk_conn_t *c, const ddp_header_t *ddp, const atp_packet_t *atp) {
+    int idx = atp_xo_find(c, atp->tid, ddp->llap.src, ddp->src_socket, ddp->dst_socket);
+    LOG_ATP(10, "ATP: TRel tid=0x%04X node=%u sock=%u xo_slot=%d", atp->tid, ddp->llap.src, ddp->src_socket, idx);
     if (idx >= 0)
-        atp_xo_free(&g_xo_entries[idx]);
+        atp_xo_free(c, &c->xo_entries[idx]);
 }
 
 // Request dispatch ---------------------------------------------------------
-static void atp_dispatch_registered_request(const ddp_header_t *ddp, atp_packet_t *atp) {
+static void atp_dispatch_registered_request(atalk_conn_t *c, const ddp_header_t *ddp, atp_packet_t *atp) {
     atp_handler_slot_t *slot = atp_find_handler_slot(ddp->dst_socket);
     if (!slot) {
-        LOG(3, "ATP: unhandled socket %u", (unsigned)ddp->dst_socket);
+        atalk_drop(c, ATALK_DROP_UNHANDLED, "ATP request for socket %u", (unsigned)ddp->dst_socket);
         return;
     }
     bool xo = (atp->ctl & ATP_CONTROL_XO) != 0;
     if (xo) {
-        int existing = atp_xo_find(atp->tid, ddp->llap.src, ddp->src_socket, ddp->dst_socket);
+        int existing = atp_xo_find(c, atp->tid, ddp->llap.src, ddp->src_socket, ddp->dst_socket);
         if (existing >= 0) {
-            atp_xo_send_cached(&g_xo_entries[existing], ddp, atp->bitmap);
+            atp_xo_send_cached(c, &c->xo_entries[existing], ddp, atp->bitmap);
             return;
         }
-        if (atp_xo_alloc(ddp, atp) < 0)
-            LOG(2, "ATP: XO cache full, duplicate protection degraded");
+        if (atp_xo_alloc(c, ddp, atp) < 0)
+            LOG_ATP(2, "ATP: XO cache full, duplicate protection degraded");
     }
     slot->handler.handle_request(ddp, atp, slot->ctx);
 }
 
-static void atp_in(const ddp_header_t *ddp, const uint8_t *buf, int len) {
+static void atp_in(atalk_conn_t *c, const ddp_header_t *ddp, const uint8_t *buf, int len) {
     atp_packet_t atp;
-    if (parse_atp(buf, len, &atp) != 0)
+    if (parse_atp(buf, len, &atp) != 0) {
+        atalk_drop(c, ATALK_DROP_MALFORMED, "ATP packet of %d bytes", len);
         return;
+    }
     uint8_t ctl_type = (uint8_t)(atp.ctl & 0xC0);
 
     if (ctl_type == ATP_CONTROL_TREL) {
-        atp_handle_trel(ddp, &atp);
+        atp_handle_trel(c, ddp, &atp);
         return;
     }
     if (ctl_type == ATP_CONTROL_TRESP) {
-        atp_handle_response(ddp, &atp);
+        atp_handle_response(c, ddp, &atp);
         return;
     }
-    if (ctl_type != ATP_CONTROL_TREQ)
-        return;
-
-    atp_dispatch_registered_request(ddp, &atp);
-}
-
-// =============================== ASP (AppleTalk Session Protocol) ===============================
-
-// ASP Commands / SPFunction (values per docs/core/network/appletalk.md)
-#define ASP_CLOSE_SESS     1
-#define ASP_COMMAND        2
-#define ASP_GET_STAT       3
-#define ASP_OPEN_SESS      4
-#define ASP_TICKLE         5
-#define ASP_WRITE          6
-#define ASP_WRITE_CONTINUE 7
-#define ASP_ATTENTION      8
-
-typedef struct {
-    bool in_use;
-    uint16_t sess_ref; // 16-bit session reference (internal)
-    uint8_t wss; // workstation session socket (from OpenSess request)
-    uint8_t sss; // server session socket (returned in reply)
-    uint8_t client_node; // LLAP node of the workstation
-    uint16_t asp_version; // ASP version from OpenSess
-    char afp_version[24]; // negotiated at FPLogin ("" until then)
-    uint64_t last_activity_ns; // host time of the last packet from this client
-    uint16_t next_attn_tid; // ATP transaction IDs for server-sent attentions
-} asp_session_t;
-
-#define MAX_ASP_SESS 4
-static asp_session_t g_sessions[MAX_ASP_SESS];
-static uint16_t g_next_sess_ref = 0x0021;
-
-// ASP requires a workstation to tickle every 30 seconds; a server may close a
-// session after two minutes of silence (Inside AppleTalk ch. 11).  Expiry runs
-// on a scheduler event so a guest that is reset — never sending CloseSess —
-// still gets its forks and locks back.
-#define ASP_SESSION_TIMEOUT_NS (120ULL * 1000000000ULL)
-#define ASP_SESSION_SWEEP_NS   (15ULL * 1000000000ULL)
-
-static void asp_arm_session_sweep(void);
-
-// Emulated-time reading used for tickle bookkeeping.  Guest time, not host
-// time, so an instruction-budgeted integration run sees deterministic expiry.
-static uint64_t asp_now_ns(void) {
-    return g_scheduler ? (uint64_t)scheduler_time_ns(g_scheduler) : 0;
-}
-
-static int alloc_session(void) {
-    for (int i = 0; i < MAX_ASP_SESS; i++) {
-        if (!g_sessions[i].in_use) {
-            memset(&g_sessions[i], 0, sizeof(g_sessions[i]));
-            g_sessions[i].in_use = true;
-            g_sessions[i].sess_ref = g_next_sess_ref++;
-            g_sessions[i].sss = HOST_AFP_SOCKET; // default SSS
-            g_sessions[i].last_activity_ns = asp_now_ns();
-            g_sessions[i].next_attn_tid = 0x4000;
-            asp_arm_session_sweep();
-            return g_sessions[i].sess_ref;
-        }
-    }
-    return -1;
-}
-
-static void free_session(uint16_t ref) {
-    for (int i = 0; i < MAX_ASP_SESS; i++)
-        if (g_sessions[i].in_use && g_sessions[i].sess_ref == ref) {
-            // The AFP layer owns the forks, locks and enumeration snapshots
-            // this session held; it must let them go with the session.
-            afp_session_closed(ref);
-            g_sessions[i].in_use = false;
-            return;
-        }
-}
-
-static asp_session_t *get_session(uint16_t ref) {
-    for (int i = 0; i < MAX_ASP_SESS; i++)
-        if (g_sessions[i].in_use && g_sessions[i].sess_ref == ref)
-            return &g_sessions[i];
-    return NULL;
-}
-
-// Table maintenance used by appletalk_init / appletalk_checkpoint, which run
-// before this translation unit's session table is in scope.
-static void asp_sessions_reset(void) {
-    memset(g_sessions, 0, sizeof(g_sessions));
-}
-static uint16_t asp_sessions_next_ref(void) {
-    return g_next_sess_ref;
-}
-static void asp_sessions_set_next_ref(uint16_t ref) {
-    if (ref)
-        g_next_sess_ref = ref;
-}
-
-// === ASP session views, attention and expiry (WP-8) =========================
-
-// Session-table accessors for `appletalk.afp.sessions`.
-int atalk_asp_session_max(void) {
-    return MAX_ASP_SESS;
-}
-
-bool atalk_asp_session_in_use(int index) {
-    return index >= 0 && index < MAX_ASP_SESS && g_sessions[index].in_use;
-}
-
-bool atalk_asp_session_info(int index, atalk_session_info_t *out) {
-    if (!atalk_asp_session_in_use(index) || !out)
-        return false;
-    const asp_session_t *s = &g_sessions[index];
-    memset(out, 0, sizeof(*out));
-    out->session_ref = s->sess_ref;
-    out->client_node = s->client_node;
-    out->socket = s->wss;
-    snprintf(out->afp_version, sizeof(out->afp_version), "%s", s->afp_version);
-    out->open_forks = afp_session_open_forks(s->sess_ref);
-    uint64_t now = asp_now_ns();
-    out->idle_ns = (now > s->last_activity_ns) ? (now - s->last_activity_ns) : 0;
-    return true;
-}
-
-void atalk_asp_session_set_afp_version(uint16_t session_ref, const char *version) {
-    for (int i = 0; i < MAX_ASP_SESS; i++) {
-        if (!g_sessions[i].in_use || g_sessions[i].sess_ref != session_ref)
-            continue;
-        snprintf(g_sessions[i].afp_version, sizeof(g_sessions[i].afp_version), "%s", version ? version : "");
-        return;
-    }
-}
-
-const char *atalk_asp_session_afp_version(uint16_t session_ref) {
-    for (int i = 0; i < MAX_ASP_SESS; i++)
-        if (g_sessions[i].in_use && g_sessions[i].sess_ref == session_ref)
-            return g_sessions[i].afp_version;
-    return NULL;
-}
-
-// Send an ASP Attention to one session.  The code travels in the ATP user
-// bytes of a server-originated request to the workstation session socket
-// (Inside AppleTalk ch. 11; AFP_21_22 Table 1-7 for the code values).
-int atalk_asp_send_attention(uint16_t session_ref, uint16_t code) {
-    for (int i = 0; i < MAX_ASP_SESS; i++) {
-        asp_session_t *s = &g_sessions[i];
-        if (!s->in_use || s->sess_ref != session_ref)
-            continue;
-        if (!s->client_node || !s->wss)
-            return -1;
-        atp_request_params_t params = {
-            .dest = {.net = 0, .node = s->client_node, .socket = s->wss},
-            .src_socket = HOST_AFP_SOCKET,
-            .bitmap = 0x01, // one response packet is enough for an attention
-            .mode = ATP_TRANSACTION_ALO,
-            .trel_timer_hint = 0,
-            .user = {ASP_ATTENTION, (uint8_t)(s->sess_ref & 0xFF), (uint8_t)(code >> 8), (uint8_t)code},
-            .payload = NULL,
-            .payload_len = 0,
-            .retry_timeout_ms = 2000,
-            .retry_limit = 2,
-        };
-        LOG(3, "ASP Attention: session=0x%02X code=0x%04X → node=%u socket=%u", s->sess_ref & 0xFF, code,
-            s->client_node, s->wss);
-        return atp_request_submit(&params, NULL, NULL) ? 0 : -1;
-    }
-    return -1;
-}
-
-void atalk_asp_broadcast_attention(uint16_t code) {
-    for (int i = 0; i < MAX_ASP_SESS; i++)
-        if (g_sessions[i].in_use)
-            atalk_asp_send_attention(g_sessions[i].sess_ref, code);
-}
-
-void atalk_asp_close_all_sessions(void) {
-    for (int i = 0; i < MAX_ASP_SESS; i++) {
-        if (!g_sessions[i].in_use)
-            continue;
-        afp_session_closed(g_sessions[i].sess_ref);
-        g_sessions[i].in_use = false;
-    }
-}
-
-// Note traffic from a client so its session does not time out.
-static void asp_session_touch(uint8_t session_id) {
-    for (int i = 0; i < MAX_ASP_SESS; i++)
-        if (g_sessions[i].in_use && (g_sessions[i].sess_ref & 0xFF) == session_id)
-            g_sessions[i].last_activity_ns = asp_now_ns();
-}
-
-// Close every session that has gone quiet past the ASP timeout, returning
-// their forks, locks and desktop references.
-static void asp_expire_sessions(void) {
-    uint64_t now = asp_now_ns();
-    for (int i = 0; i < MAX_ASP_SESS; i++) {
-        if (!g_sessions[i].in_use)
-            continue;
-        if (now < g_sessions[i].last_activity_ns + ASP_SESSION_TIMEOUT_NS)
-            continue;
-        LOG(1, "ASP: session 0x%04X expired after %llu s of silence", g_sessions[i].sess_ref,
-            (unsigned long long)((now - g_sessions[i].last_activity_ns) / 1000000000ULL));
-        afp_session_closed(g_sessions[i].sess_ref);
-        g_sessions[i].in_use = false;
-    }
-}
-
-static uint64_t g_asp_sweep_event_token;
-
-// Scheduler callback: expire stale sessions and re-arm while any remain.
-static void asp_sweep_cb(void *source, uint64_t data) {
-    (void)source;
-    (void)data;
-    asp_expire_sessions();
-    asp_arm_session_sweep();
-}
-
-static void asp_arm_session_sweep(void) {
-    if (!g_scheduler)
-        return;
-    bool any = false;
-    for (int i = 0; i < MAX_ASP_SESS; i++)
-        any |= g_sessions[i].in_use;
-    if (!any)
-        return; // nothing to watch; the next OpenSess re-arms
-    scheduler_new_event_type(g_scheduler, "asp", &g_asp_sweep_event_token, "session_sweep", &asp_sweep_cb);
-    remove_event_by_data(g_scheduler, &asp_sweep_cb, NULL, 0);
-    scheduler_new_cpu_event(g_scheduler, &asp_sweep_cb, &g_asp_sweep_event_token, 0, 0, ASP_SESSION_SWEEP_NS);
-}
-
-// Look up session by the 1-byte session ID from ATP UserBytes[1]
-static asp_session_t *get_session_by_id(uint8_t session_id) {
-    for (int i = 0; i < MAX_ASP_SESS; i++)
-        if (g_sessions[i].in_use && (g_sessions[i].sess_ref & 0xFF) == session_id)
-            return &g_sessions[i];
-    return NULL;
-}
-
-// Build an ASP reply payload (to be wrapped inside ATP response)
-static int asp_build_reply(uint8_t *out, int out_max, uint8_t func, uint16_t sess_ref, uint16_t req_ref,
-                           uint16_t result, const uint8_t *data, int data_len) {
-    (void)func; // SPFunction travels in ATP UserBytes in this stack
-    if (out_max < 6 + data_len)
-        return -1;
-    out[0] = (sess_ref >> 8) & 0xFF;
-    out[1] = sess_ref & 0xFF;
-    out[2] = (req_ref >> 8) & 0xFF;
-    out[3] = req_ref & 0xFF;
-    out[4] = (result >> 8) & 0xFF;
-    out[5] = result & 0xFF;
-    if (data_len > 0)
-        memcpy(&out[6], data, data_len);
-    return 6 + data_len;
-}
-
-// ASP SPWrite: pending state for the WriteContinue two-transaction flow.
-// The factor of 8 matches the ATP burst size cap (which incidentally also
-// matches PAP_MAX_FLOW_QUANTUM); both ASP and PAP run over ATP with the
-// same 8-fragment burst, but they're independent protocol limits.
-#define ASP_WRITE_QUANTUM (8 * ATP_MAX_ATP_PAYLOAD) // 4624 bytes max per WriteContinue
-
-typedef struct {
-    bool in_use;
-    // Saved original Write transaction context (for deferred response)
-    ddp_header_t orig_ddp;
-    atp_packet_t orig_atp;
-    uint8_t orig_atp_data[ATP_MAX_ATP_PAYLOAD]; // deep copy of ephemeral ATP data
-    // AFP command (opcode separated, params follow)
-    uint8_t afp_opcode;
-    uint8_t afp_params[ATP_MAX_ATP_PAYLOAD];
-    int afp_params_len;
-    // Write data accumulated from WriteContinue response
-    uint8_t write_buf[ASP_WRITE_QUANTUM];
-    uint16_t session_ref; // the session that issued the Write
-    int write_len;
-} asp_pending_write_t;
-
-static asp_pending_write_t g_pending_write;
-
-// Called for each ATP response fragment from the client's WriteContinueReply
-static void asp_wc_on_response(const atp_response_fragment_t *fragment, void *ctx) {
-    asp_pending_write_t *pw = (asp_pending_write_t *)ctx;
-    if (!pw || !pw->in_use || !fragment || !fragment->data)
-        return;
-    int avail = ASP_WRITE_QUANTUM - pw->write_len;
-    int copy = (fragment->data_len < avail) ? fragment->data_len : avail;
-    if (copy > 0) {
-        memcpy(pw->write_buf + pw->write_len, fragment->data, (size_t)copy);
-        pw->write_len += copy;
-    }
-}
-
-// Called when WriteContinue transaction completes: process write and reply
-static void asp_wc_on_complete(atp_request_handle_t *handle, atp_request_result_t result, void *ctx) {
-    (void)handle;
-    asp_pending_write_t *pw = (asp_pending_write_t *)ctx;
-    if (!pw || !pw->in_use) {
+    if (ctl_type != ATP_CONTROL_TREQ) {
+        atalk_drop(c, ATALK_DROP_MALFORMED, "ATP control byte %02X", (unsigned)atp.ctl);
         return;
     }
 
-    uint32_t afp_result;
-    uint8_t afp_out[ATP_MAX_ATP_PAYLOAD];
-    int afp_len = 0;
-
-    if (result != ATP_REQUEST_RESULT_OK || pw->write_len <= 0) {
-        // WriteContinue failed or no data received
-        LOG(2, "ASP WriteContinue failed: result=%d write_len=%d", (int)result, pw->write_len);
-        afp_result = 0xFFFFEC6Au; // MiscErr
-    } else {
-        // Build combined buffer: AFP params (11 bytes for FPWrite) + write data
-        int combined_len = pw->afp_params_len + pw->write_len;
-        uint8_t *combined = (uint8_t *)malloc((size_t)combined_len);
-        if (!combined) {
-            afp_result = 0xFFFFEC6Au; // MiscErr
-        } else {
-            memcpy(combined, pw->afp_params, (size_t)pw->afp_params_len);
-            memcpy(combined + pw->afp_params_len, pw->write_buf, (size_t)pw->write_len);
-            afp_result = afp_handle_command(pw->session_ref, pw->afp_opcode, combined, combined_len, afp_out,
-                                            (int)sizeof(afp_out), &afp_len);
-            free(combined);
-        }
-    }
-
-    if (afp_result != 0x00000000u)
-        afp_len = 0;
-
-    LOG(6, "ASP Write complete: opcode=0x%02X result=0x%08X replyLen=%d dataLen=%d", pw->afp_opcode, afp_result,
-        afp_len, pw->write_len);
-
-    // Send deferred response to the original Write ATP transaction
-    uint8_t reply_user[4];
-    reply_user[0] = (uint8_t)((afp_result >> 24) & 0xFF);
-    reply_user[1] = (uint8_t)((afp_result >> 16) & 0xFF);
-    reply_user[2] = (uint8_t)((afp_result >> 8) & 0xFF);
-    reply_user[3] = (uint8_t)(afp_result & 0xFF);
-    atp_responder_send_simple(&pw->orig_ddp, &pw->orig_atp, reply_user, (afp_len > 0) ? afp_out : NULL, afp_len, false);
-
-    pw->in_use = false;
-}
-
-static const atp_request_callbacks_t g_asp_wc_callbacks = {
-    .on_response = asp_wc_on_response,
-    .on_complete = asp_wc_on_complete,
-};
-
-// ASP handler: builds replies via ATP responder helpers
-static void asp_in(const ddp_header_t *ddp, atp_packet_t *atp, void *ctx) {
-    (void)ctx;
-    if (!ddp || !atp)
-        return;
-
-    uint8_t reply_user[4];
-    memcpy(reply_user, atp->user, sizeof(reply_user));
-
-    // SLS GetStatus: no ATP data, SPFunction in UserByte0
-    if (atp->data_len == 0 && atp->user[0] == ASP_GET_STAT) {
-        LOG(3, "ASP GetStatus: request from node=%u socket=%u", ddp->llap.src, ddp->src_socket);
-        const char *server_name = atalk_afp_get_name();
-        const char *machine_type = "GrannySmith";
-        uint8_t *status_block = NULL;
-        size_t status_len = 0;
-        int sb_rc = atalk_build_status_block(server_name, machine_type, &status_block, &status_len);
-        if (sb_rc == 0 && status_block && status_len > 0) {
-            reply_user[0] = 0; // zero UserBytes for reply
-            int payload_len = (status_len > (size_t)ATP_MAX_ATP_PAYLOAD) ? ATP_MAX_ATP_PAYLOAD : (int)status_len;
-            atp_responder_send_simple(ddp, atp, reply_user, status_block, payload_len, false);
-        } else {
-            reply_user[0] = 0;
-            reply_user[1] = reply_user[2] = reply_user[3] = 0;
-            atp_responder_send_simple(ddp, atp, reply_user, NULL, 0, false);
-        }
-        if (status_block)
-            free(status_block);
-        return;
-    }
-
-    // OpenSess handshake on SLS: no ATP payload; parameters in UserBytes
-    if (atp->data_len == 0 && atp->user[0] == ASP_OPEN_SESS) {
-        uint8_t wss = atp->user[1];
-        uint16_t asp_ver = ((uint16_t)atp->user[2] << 8) | (uint16_t)atp->user[3];
-        (void)wss;
-        (void)asp_ver;
-        int new_ref = alloc_session();
-        uint8_t sss = HOST_AFP_SOCKET;
-        uint8_t session_id = 0;
-        uint16_t err = 0x0000;
-        if (new_ref < 0) {
-            LOG(1, "ASP OpenSess: failed (no free sessions) wss=%u ver=0x%04X", wss, asp_ver);
-            err = 0x0001;
-            sss = 0;
-            session_id = 0;
-        } else {
-            asp_session_t *s = get_session((uint16_t)new_ref);
-            if (s) {
-                s->wss = wss;
-                s->sss = sss;
-                s->client_node = ddp->llap.src;
-                s->asp_version = asp_ver;
-            }
-            session_id = (uint8_t)((uint16_t)new_ref & 0xFF);
-            LOG(3, "ASP OpenSess: id=0x%02X sss=%u wss=%u ver=0x%04X", session_id, sss, wss, asp_ver);
-        }
-        reply_user[0] = sss;
-        reply_user[1] = session_id;
-        reply_user[2] = (uint8_t)((err >> 8) & 0xFF);
-        reply_user[3] = (uint8_t)(err & 0xFF);
-        atp_responder_send_simple(ddp, atp, reply_user, NULL, 0, false);
-        return;
-    }
-
-    // ASP Tickle: one-way keepalive (no response).  It is what keeps a
-    // session alive; a client that stops tickling is expired by the sweep.
-    if (atp->user[0] == ASP_TICKLE) {
-        asp_session_touch(atp->user[1]);
-        LOG(3, "ASP Tickle: session=0x%02X", atp->user[1]);
-        return;
-    }
-
-    // Any other traffic is liveness evidence too.
-    asp_session_touch(atp->user[1]);
-
-    // Extract ASP fields (lenient); SPFunction carried in UserBytes[0]
-    uint8_t func = atp->user[0];
-    uint16_t sess_ref = (atp->data_len >= 2) ? (uint16_t)((atp->data[0] << 8) | atp->data[1]) : 0;
-    uint16_t req_ref = (atp->data_len >= 4) ? (uint16_t)((atp->data[2] << 8) | atp->data[3]) : 0;
-    const uint8_t *adata = NULL;
-    int adata_len = 0;
-    if (atp->data_len >= 6) {
-        adata = &atp->data[6];
-        adata_len = atp->data_len - 6;
-    } else if (atp->data_len > 4) {
-        adata = &atp->data[4];
-        adata_len = atp->data_len - 4;
-    }
-
-    uint8_t asp_reply[ATP_MAX_ATP_PAYLOAD];
-    int asp_reply_len = 0;
-
-    switch (func) {
-    case ASP_CLOSE_SESS: {
-        LOG(3, "ASP CloseSess: sess_ref=0x%04X req_ref=0x%04X", sess_ref, req_ref);
-        if (sess_ref != 0) {
-            free_session(sess_ref);
-        }
-        asp_reply_len = asp_build_reply(asp_reply, sizeof(asp_reply), ASP_CLOSE_SESS, sess_ref, req_ref, 0, NULL, 0);
-        break;
-    }
-    case ASP_COMMAND: {
-        const uint8_t *cmd = atp->data;
-        int cmd_len = atp->data_len;
-        uint8_t opcode = (cmd_len > 0) ? cmd[0] : 0;
-        LOG(6, "ASP Command: session=0x%02X seq=0x%04X opcode=0x%02X len=%d", atp->user[1],
-            (unsigned)((atp->user[2] << 8) | atp->user[3]), opcode, cmd_len);
-        // Count consecutive set bits in bitmap to determine max response packets
-        int max_packets = 0;
-        for (uint8_t bm = atp->bitmap; bm & 1; bm >>= 1)
-            max_packets++;
-        if (max_packets < 1)
-            max_packets = 1;
-        if (max_packets > ATP_MAX_RESPONSE_FRAGMENTS)
-            max_packets = ATP_MAX_RESPONSE_FRAGMENTS;
-        int out_buf_size = max_packets * ATP_MAX_ATP_PAYLOAD;
-        uint8_t afp_out[ATP_MAX_RESPONSE_FRAGMENTS * ATP_MAX_ATP_PAYLOAD];
-        int afp_len = 0;
-        asp_session_t *cmd_sess = get_session_by_id(atp->user[1]);
-        uint32_t afp_result =
-            afp_handle_command(cmd_sess ? cmd_sess->sess_ref : 0, opcode, (cmd_len > 0) ? (cmd + 1) : NULL,
-                               (cmd_len > 0) ? (cmd_len - 1) : 0, afp_out, out_buf_size, &afp_len);
-        LOG(6, "ASP Command result: opcode=0x%02X result=0x%08X replyLen=%d", opcode, afp_result, afp_len);
-        reply_user[0] = (uint8_t)((afp_result >> 24) & 0xFF);
-        reply_user[1] = (uint8_t)((afp_result >> 16) & 0xFF);
-        reply_user[2] = (uint8_t)((afp_result >> 8) & 0xFF);
-        reply_user[3] = (uint8_t)(afp_result & 0xFF);
-        if (afp_len <= ATP_MAX_ATP_PAYLOAD) {
-            atp_responder_send_simple(ddp, atp, reply_user, (afp_len > 0) ? afp_out : NULL, afp_len, false);
-        } else {
-            // Split reply across multiple ATP response packets
-            int num_packets = (afp_len + ATP_MAX_ATP_PAYLOAD - 1) / ATP_MAX_ATP_PAYLOAD;
-            if (num_packets > max_packets)
-                num_packets = max_packets;
-            atp_response_packet_desc_t descs[ATP_MAX_RESPONSE_FRAGMENTS];
-            int offset = 0;
-            for (int i = 0; i < num_packets; i++) {
-                int chunk = afp_len - offset;
-                if (chunk > ATP_MAX_ATP_PAYLOAD)
-                    chunk = ATP_MAX_ATP_PAYLOAD;
-                descs[i].payload = afp_out + offset;
-                descs[i].payload_len = chunk;
-                descs[i].user = reply_user;
-                descs[i].sts = false;
-                descs[i].eom = (i == num_packets - 1);
-                offset += chunk;
-            }
-            atp_responder_send_packets(ddp, atp, descs, (size_t)num_packets);
-        }
-        return;
-    }
-    case ASP_GET_STAT: {
-        uint8_t opcode = (adata_len > 0) ? adata[0] : 0;
-        uint8_t afp_out[ATP_MAX_ATP_PAYLOAD];
-        int afp_len = 0;
-        uint32_t afp_result =
-            afp_handle_command(0, opcode, (adata_len > 0) ? (adata + 1) : NULL, (adata_len > 0) ? (adata_len - 1) : 0,
-                               afp_out, sizeof(afp_out), &afp_len);
-        uint16_t asp_result = (uint16_t)(afp_result & 0xFFFFu);
-        if (afp_result != 0x00000000u) {
-            afp_len = 0;
-        }
-        asp_reply_len = asp_build_reply(asp_reply, sizeof(asp_reply), ASP_GET_STAT, sess_ref, req_ref, asp_result,
-                                        (afp_len > 0 && afp_result == 0x00000000u) ? afp_out : NULL,
-                                        (afp_result == 0x00000000u) ? afp_len : 0);
-        break;
-    }
-    case ASP_WRITE: {
-        // ASP SPWrite: two-transaction protocol via WriteContinue
-        const uint8_t *cmd = atp->data;
-        int cmd_len = atp->data_len;
-        uint8_t opcode = (cmd_len > 0) ? cmd[0] : 0;
-        uint8_t session_id = atp->user[1];
-        LOG(6, "ASP Write: session=0x%02X seq=0x%04X opcode=0x%02X len=%d", session_id,
-            (unsigned)((atp->user[2] << 8) | atp->user[3]), opcode, cmd_len);
-
-        // Look up session for client addressing
-        asp_session_t *sess = get_session_by_id(session_id);
-        if (!sess) {
-            LOG(2, "ASP Write: unknown session 0x%02X", session_id);
-            uint32_t err = 0xFFFFEC62u; // SessClosed
-            reply_user[0] = (uint8_t)((err >> 24) & 0xFF);
-            reply_user[1] = (uint8_t)((err >> 16) & 0xFF);
-            reply_user[2] = (uint8_t)((err >> 8) & 0xFF);
-            reply_user[3] = (uint8_t)(err & 0xFF);
-            atp_responder_send_simple(ddp, atp, reply_user, NULL, 0, false);
-            return;
-        }
-
-        if (g_pending_write.in_use) {
-            // Already processing a write; ignore duplicate (XO handles retransmit)
-            LOG(6, "ASP Write: already pending, ignoring");
-            return;
-        }
-
-        // Save context for deferred response
-        asp_pending_write_t *pw = &g_pending_write;
-        memset(pw, 0, sizeof(*pw));
-        pw->in_use = true;
-        pw->orig_ddp = *ddp;
-        pw->orig_atp = *atp;
-        // Deep-copy ATP data (ephemeral pointer into receive buffer)
-        if (atp->data && atp->data_len > 0) {
-            int dlen =
-                (atp->data_len > (int)sizeof(pw->orig_atp_data)) ? (int)sizeof(pw->orig_atp_data) : atp->data_len;
-            memcpy(pw->orig_atp_data, atp->data, (size_t)dlen);
-            pw->orig_atp.data = pw->orig_atp_data;
-            pw->orig_atp.data_len = dlen;
-        }
-        pw->session_ref = sess->sess_ref;
-        pw->afp_opcode = opcode;
-        if (cmd_len > 1) {
-            pw->afp_params_len = cmd_len - 1;
-            if (pw->afp_params_len > (int)sizeof(pw->afp_params))
-                pw->afp_params_len = (int)sizeof(pw->afp_params);
-            memcpy(pw->afp_params, cmd + 1, (size_t)pw->afp_params_len);
-        }
-
-        // Send WriteContinue ATP request to the client's WSS
-        uint16_t buf_size = ASP_WRITE_QUANTUM;
-        uint8_t wc_data[2];
-        wc_data[0] = (uint8_t)((buf_size >> 8) & 0xFF);
-        wc_data[1] = (uint8_t)(buf_size & 0xFF);
-
-        atp_request_params_t wc_params = {
-            .dest = {.net = 0, .node = sess->client_node, .socket = sess->wss},
-            .src_socket = HOST_AFP_SOCKET,
-            .bitmap = 0xFF, // request up to 8 response packets
-            .mode = ATP_TRANSACTION_XO,
-            .trel_timer_hint = 0,
-            .user = {ASP_WRITE_CONTINUE, session_id, atp->user[2], atp->user[3]},
-            .payload = wc_data,
-            .payload_len = 2,
-            .retry_timeout_ms = 5000,
-            .retry_limit = 10,
-        };
-
-        LOG(6, "ASP WriteContinue: node=%u wss=%u bufSize=%u", sess->client_node, sess->wss, buf_size);
-        atp_request_handle_t *wc_handle = atp_request_submit(&wc_params, &g_asp_wc_callbacks, pw);
-        if (!wc_handle) {
-            LOG(2, "ASP WriteContinue: failed to submit ATP request");
-            pw->in_use = false;
-            uint32_t err = 0xFFFFEC6Au; // MiscErr
-            reply_user[0] = (uint8_t)((err >> 24) & 0xFF);
-            reply_user[1] = (uint8_t)((err >> 16) & 0xFF);
-            reply_user[2] = (uint8_t)((err >> 8) & 0xFF);
-            reply_user[3] = (uint8_t)(err & 0xFF);
-            atp_responder_send_simple(ddp, atp, reply_user, NULL, 0, false);
-        }
-        return; // response deferred until WriteContinue completes
-    }
-    default: {
-        LOG(3, "ASP unknown func=0x%02X sess=0x%04X req=0x%04X dataLen=%d", func, sess_ref, req_ref, atp->data_len);
-        asp_reply_len =
-            asp_build_reply(asp_reply, sizeof(asp_reply), (func == 0xFF) ? 0 : func, sess_ref, req_ref, 0, NULL, 0);
-        break;
-    }
-    }
-
-    if (asp_reply_len < 0)
-        asp_reply_len = 0;
-    atp_responder_send_simple(ddp, atp, reply_user, asp_reply_len > 0 ? asp_reply : NULL, asp_reply_len, false);
+    atp_dispatch_registered_request(c, ddp, &atp);
 }
 
 // === Object-model class descriptors =========================================
 //
-// The tree published here is the one described in
-// proposal-appletalk-afp-object-model.md §2:
+// The tree published here:
 //
 //   appletalk            enabled / node_id / stats / nbp
 //     afp                enabled / name / message / versions
-//       volumes          add(name, path) -> the created volume, remove(name)
-//       sessions         one entry per live ASP session
+//       volumes          add(name, path) -> the created volume, remove(name), count
+//       sessions         one entry per live ASP session, count
 //       stats            commands_served / bytes moved / errors
-//     printer            enabled / name
+//     printer            enabled / name / capture / status / documents
+//       stats            jobs / aborts / bytes / captures / last_capture
+//     adsp               connections, stats        (appletalk_adsp.c)
+//     ppc                ports, sessions, browse(), stats  (appletalk_ppc.c)
+//     aevt               send(), events, inbox, stats      (appletalk_aevt.c)
 //
 // The design rules are: state is an attribute with a setter, methods are
 // verbs, constructive methods return the object they made, and failures come
@@ -2865,38 +2623,25 @@ static value_t atalk_err(const char *fallback, const char *buf) {
 
 // --- appletalk.stats -------------------------------------------------------
 
-// One getter serves the whole counter block; each member points at its field
-// through `user_data`, so adding a counter is a one-line member entry.
-static value_t atalk_stats_attr(struct object *self, const member_t *m) {
-    (void)self;
-    const atalk_stats_t *st = atalk_get_stats();
-    size_t offset = (size_t)(uintptr_t)m->attr.user_data;
-    return val_uint(8, *(const uint64_t *)((const uint8_t *)st + offset));
+// The counters of whichever connection is plugged in (zeros while none is).
+static DEF_GETTER(atalk_stats_get) {
+    return obj_u64_at(atalk_get_stats(), m);
 }
 
-#define ATALK_STAT_MEMBER(field, doc_text)                                                                             \
-    {                                                                                                                  \
-        .kind = M_ATTR, .name = #field, .doc = doc_text, .flags = VAL_RO, .attr = {                                    \
-            .type = V_UINT,                                                                                            \
-            .width = 8,                                                                                                \
-            .get = atalk_stats_attr,                                                                                   \
-            .set = NULL,                                                                                               \
-            .user_data = (const void *)(uintptr_t)offsetof(atalk_stats_t, field)                                       \
-        }                                                                                                              \
-    }
-
 static const member_t atalk_stats_members[] = {
-    ATALK_STAT_MEMBER(llap_rx, "LLAP frames received"),
-    ATALK_STAT_MEMBER(llap_tx, "LLAP frames transmitted"),
-    ATALK_STAT_MEMBER(crc_errors, "Frames discarded as malformed"),
-    ATALK_STAT_MEMBER(ddp_in, "DDP datagrams delivered inbound"),
-    ATALK_STAT_MEMBER(ddp_out, "DDP datagrams sent"),
-    ATALK_STAT_MEMBER(atp_requests, "ATP transactions this host originated"),
-    ATALK_STAT_MEMBER(atp_retries, "ATP request retransmissions"),
-    ATALK_STAT_MEMBER(nbp_lookups, "NBP packets processed"),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, llap_rx, "LLAP frames received", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, llap_tx, "LLAP frames transmitted", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, malformed, "Frames discarded as malformed, at any layer", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, unhandled, "Well-formed frames nothing here serves", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, tx_dropped, "Frames the stack gave up transmitting", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, ddp_in, "DDP datagrams delivered inbound", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, ddp_out, "DDP datagrams sent", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, atp_requests, "ATP transactions this host originated", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, atp_retries, "ATP request retransmissions", atalk_stats_get),
+    OBJ_U64_FIELD_WITH(atalk_stats_t, nbp_packets, "NBP packets processed", atalk_stats_get),
 };
 
-const class_desc_t atalk_stats_class = {
+static const class_desc_t atalk_stats_class = {
     .name = "atalk_stats",
     .members = atalk_stats_members,
     .n_members = ARRAY_LEN(atalk_stats_members),
@@ -2905,34 +2650,28 @@ const class_desc_t atalk_stats_class = {
 // --- appletalk.nbp ---------------------------------------------------------
 
 static int atalk_slot_of(struct object *self) {
-    atalk_slot_data_t *d = (atalk_slot_data_t *)object_data(self);
-    return d ? d->slot : -1;
+    return object_entry_index(self);
 }
 
 // The NBP entry accessors re-read the registry each time: entries can be
 // re-registered under a new name without the object identity changing.
-static value_t atalk_nbp_attr_object(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_nbp_attr_object) {
     atalk_nbp_info_t info;
     return val_str(atalk_nbp_entry_info(atalk_slot_of(self), &info) ? info.object : "");
 }
-static value_t atalk_nbp_attr_type(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_nbp_attr_type) {
     atalk_nbp_info_t info;
     return val_str(atalk_nbp_entry_info(atalk_slot_of(self), &info) ? info.type : "");
 }
-static value_t atalk_nbp_attr_zone(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_nbp_attr_zone) {
     atalk_nbp_info_t info;
     return val_str(atalk_nbp_entry_info(atalk_slot_of(self), &info) ? info.zone : "");
 }
-static value_t atalk_nbp_attr_socket(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_nbp_attr_socket) {
     atalk_nbp_info_t info;
     return val_uint(1, atalk_nbp_entry_info(atalk_slot_of(self), &info) ? info.socket : 0);
 }
-static value_t atalk_nbp_attr_node(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_nbp_attr_node) {
     atalk_nbp_info_t info;
     return val_uint(1, atalk_nbp_entry_info(atalk_slot_of(self), &info) ? info.node : 0);
 }
@@ -2941,31 +2680,20 @@ static const member_t atalk_nbp_entry_members[] = {
     {.kind = M_ATTR,
      .name = "object",
      .doc = "NBP object name",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = atalk_nbp_attr_object}          },
-    {.kind = M_ATTR,
-     .name = "type",
-     .doc = "NBP entity type",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = atalk_nbp_attr_type}            },
-    {.kind = M_ATTR,
-     .name = "zone",
-     .doc = "NBP zone",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = atalk_nbp_attr_zone}            },
+     .attr = {.type = V_STRING, .get = atalk_nbp_attr_object}                                                        },
+    {.kind = M_ATTR, .name = "type", .doc = "NBP entity type", .attr = {.type = V_STRING, .get = atalk_nbp_attr_type}},
+    {.kind = M_ATTR, .name = "zone", .doc = "NBP zone",        .attr = {.type = V_STRING, .get = atalk_nbp_attr_zone}},
     {.kind = M_ATTR,
      .name = "socket",
      .doc = "DDP socket the entity answers on",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .width = 1, .get = atalk_nbp_attr_socket}},
+     .attr = {.type = V_UINT, .width = 1, .get = atalk_nbp_attr_socket}                                              },
     {.kind = M_ATTR,
      .name = "node",
      .doc = "LLAP node the entity lives on",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .width = 1, .get = atalk_nbp_attr_node}  },
+     .attr = {.type = V_UINT, .width = 1, .get = atalk_nbp_attr_node}                                                },
 };
 
-const class_desc_t atalk_nbp_entry_class = {
+static const class_desc_t atalk_nbp_entry_class = {
     .name = "atalk_nbp_entry",
     .members = atalk_nbp_entry_members,
     .n_members = ARRAY_LEN(atalk_nbp_entry_members),
@@ -2973,49 +2701,32 @@ const class_desc_t atalk_nbp_entry_class = {
 
 static struct object *atalk_nbp_get(struct object *self, int index) {
     (void)self;
-    if (index < 0 || index >= ATALK_MAX_NBP_OBJS || !atalk_nbp_entry_in_use(index))
+    if (index < 0 || index >= ATALK_NBP_MAX_ENTRIES || !atalk_nbp_entry_in_use(index))
         return NULL;
-    return g_atalk_nbp_objs[index];
-}
-static int atalk_nbp_count(struct object *self) {
-    (void)self;
-    int n = 0;
-    for (int i = 0; i < ATALK_MAX_NBP_OBJS && i < atalk_nbp_entry_max(); i++)
-        if (atalk_nbp_entry_in_use(i))
-            n++;
-    return n;
-}
-static int atalk_nbp_next(struct object *self, int prev) {
-    (void)self;
-    for (int i = prev + 1; i < ATALK_MAX_NBP_OBJS && i < atalk_nbp_entry_max(); i++)
-        if (atalk_nbp_entry_in_use(i))
-            return i;
-    return -1;
+    return object_cache_at(&g_net.nbp_objects, index, NULL);
 }
 // Named lookup so `appletalk.nbp["Shared Folders"]` resolves.
 static struct object *atalk_nbp_entry_lookup(struct object *self, const char *name) {
     (void)self;
-    for (int i = 0; i < ATALK_MAX_NBP_OBJS && i < atalk_nbp_entry_max(); i++) {
+    for (int i = 0; i < ATALK_NBP_MAX_ENTRIES && i < atalk_nbp_entry_max(); i++) {
         atalk_nbp_info_t info;
         if (atalk_nbp_entry_info(i, &info) && strcmp(info.object, name) == 0)
-            return g_atalk_nbp_objs[i];
+            return object_cache_at(&g_net.nbp_objects, i, NULL);
     }
     return NULL;
 }
 
-static const member_t atalk_nbp_collection_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .doc = "Every entity this host advertises",
-     .child = {.cls = &atalk_nbp_entry_class,
-               .indexed = true,
-               .get = atalk_nbp_get,
-               .count = atalk_nbp_count,
-               .next = atalk_nbp_next,
-               .lookup = atalk_nbp_entry_lookup}},
+static const collection_desc_t atalk_nbp_collection_entries = {
+    .entry = &atalk_nbp_entry_class,
+    .by_index = {.get = atalk_nbp_get, .slots = ATALK_NBP_MAX_ENTRIES},
+    .by_key = {.lookup = atalk_nbp_entry_lookup}
 };
 
-const class_desc_t atalk_nbp_collection_class = {
+static const member_t atalk_nbp_collection_members[] = {
+    OBJ_ENTRIES(&atalk_nbp_collection_entries, "Every entity this host advertises"),
+};
+
+static const class_desc_t atalk_nbp_collection_class = {
     .name = "atalk_nbp",
     .members = atalk_nbp_collection_members,
     .n_members = ARRAY_LEN(atalk_nbp_collection_members),
@@ -3023,41 +2734,31 @@ const class_desc_t atalk_nbp_collection_class = {
 
 // --- appletalk.afp.volumes.[i] ---------------------------------------------
 
-static value_t atalk_volume_attr_name(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_volume_attr_name) {
     const char *s = atalk_afp_volume_name(atalk_slot_of(self));
     return val_str(s ? s : "");
 }
-static value_t atalk_volume_attr_path(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_volume_attr_path) {
     const char *s = atalk_afp_volume_path(atalk_slot_of(self));
     return val_str(s ? s : "");
 }
-static value_t atalk_volume_attr_vol_id(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_volume_attr_vol_id) {
     return val_uint(2, atalk_afp_volume_vol_id(atalk_slot_of(self)));
 }
-static value_t atalk_volume_attr_open_forks(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_volume_attr_open_forks) {
     return val_uint(4, atalk_afp_volume_open_forks(atalk_slot_of(self)));
 }
-static value_t atalk_volume_attr_sessions_using(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_volume_attr_sessions_using) {
     return val_uint(4, atalk_afp_volume_sessions_using(atalk_slot_of(self)));
 }
-static value_t atalk_volume_attr_catalog_generation(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_volume_attr_catalog_generation) {
     return val_uint(4, atalk_afp_volume_catalog_generation(atalk_slot_of(self)));
 }
-static value_t atalk_volume_attr_cnid_count(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_volume_attr_cnid_count) {
     return val_uint(4, atalk_afp_volume_cnid_count(atalk_slot_of(self)));
 }
 
-static value_t atalk_volume_method_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
+static DEF_METHOD(atalk_volume_method_remove) {
     const char *name = atalk_afp_volume_name(atalk_slot_of(self));
     if (!name)
         return val_err("volume already removed");
@@ -3071,38 +2772,31 @@ static const member_t atalk_volume_members[] = {
     {.kind = M_ATTR,
      .name = "name",
      .doc = "AFP volume name as clients see it",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = atalk_volume_attr_name}},
+     .attr = {.type = V_STRING, .get = atalk_volume_attr_name}                        },
     {.kind = M_ATTR,
      .name = "path",
      .doc = "Host directory backing the volume",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = atalk_volume_attr_path}},
+     .attr = {.type = V_STRING, .get = atalk_volume_attr_path}                        },
     {.kind = M_ATTR,
      .name = "vol_id",
      .doc = "Wire volume identifier",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .width = 2, .get = atalk_volume_attr_vol_id}},
+     .attr = {.type = V_UINT, .width = 2, .get = atalk_volume_attr_vol_id}            },
     {.kind = M_ATTR,
      .name = "open_forks",
      .doc = "Forks currently open on this volume",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .width = 4, .get = atalk_volume_attr_open_forks}},
+     .attr = {.type = V_UINT, .width = 4, .get = atalk_volume_attr_open_forks}        },
     {.kind = M_ATTR,
      .name = "sessions_using",
      .doc = "Sessions that have this volume open",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .width = 4, .get = atalk_volume_attr_sessions_using}},
+     .attr = {.type = V_UINT, .width = 4, .get = atalk_volume_attr_sessions_using}    },
     {.kind = M_ATTR,
      .name = "catalog_generation",
      .doc = "CNID catalog generation; bumped by compaction and tombstone sweeps",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .width = 4, .get = atalk_volume_attr_catalog_generation}},
     {.kind = M_ATTR,
      .name = "cnid_count",
      .doc = "Live entries in the CNID catalog",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .width = 4, .get = atalk_volume_attr_cnid_count}},
+     .attr = {.type = V_UINT, .width = 4, .get = atalk_volume_attr_cnid_count}        },
     {.kind = M_METHOD,
      .name = "remove",
      .doc = "Withdraw this AFP volume",
@@ -3110,10 +2804,10 @@ static const member_t atalk_volume_members[] = {
                 .nargs = 0,
                 .result = V_NONE,
                 .fn = atalk_volume_method_remove,
-                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}},
+                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}                               },
 };
 
-const class_desc_t atalk_volume_class = {
+static const class_desc_t atalk_volume_class = {
     .name = "atalk_volume",
     .members = atalk_volume_members,
     .n_members = ARRAY_LEN(atalk_volume_members),
@@ -3123,53 +2817,32 @@ const class_desc_t atalk_volume_class = {
 
 static struct object *atalk_volumes_get(struct object *self, int index) {
     (void)self;
-    if (index < 0 || index >= ATALK_MAX_VOLUME_OBJS || !atalk_afp_volume_in_use(index))
+    if (index < 0 || index >= ATALK_AFP_MAX_VOLUMES || !atalk_afp_volume_in_use(index))
         return NULL;
-    return g_atalk_volume_objs[index];
-}
-static int atalk_volumes_count(struct object *self) {
-    (void)self;
-    int n = 0;
-    for (int i = 0; i < ATALK_MAX_VOLUME_OBJS && i < atalk_afp_volume_max(); i++)
-        if (atalk_afp_volume_in_use(i))
-            n++;
-    return n;
-}
-static int atalk_volumes_next(struct object *self, int prev) {
-    (void)self;
-    for (int i = prev + 1; i < ATALK_MAX_VOLUME_OBJS && i < atalk_afp_volume_max(); i++)
-        if (atalk_afp_volume_in_use(i))
-            return i;
-    return -1;
+    return object_cache_at(&g_net.volume_objects, index, NULL);
 }
 // Name lookup, so `appletalk.afp.volumes["Shared"].cnid_count` reads naturally.
 static struct object *atalk_volumes_lookup(struct object *self, const char *name) {
     (void)self;
     int slot = atalk_afp_volume_find(name);
-    if (slot < 0 || slot >= ATALK_MAX_VOLUME_OBJS)
+    if (slot < 0 || slot >= ATALK_AFP_MAX_VOLUMES)
         return NULL;
-    return g_atalk_volume_objs[slot];
+    return object_cache_at(&g_net.volume_objects, slot, NULL);
 }
 
 // Constructive methods return the object they made, so a script can chain
-// straight into it (object-model proposal §2.1).
-static value_t atalk_volumes_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+// straight into it.
+static DEF_METHOD(atalk_volumes_method_add) {
     char err[192];
     int slot = atalk_afp_volume_add(argv[0].s, argv[1].s, err, sizeof(err));
     if (slot < 0)
         return atalk_err("cannot add the volume", err);
-    if (slot >= ATALK_MAX_VOLUME_OBJS || !g_atalk_volume_objs[slot])
+    if (slot >= ATALK_AFP_MAX_VOLUMES || !object_cache_at(&g_net.volume_objects, slot, NULL))
         return val_none();
-    return val_obj(g_atalk_volume_objs[slot]);
+    return val_obj(object_cache_at(&g_net.volume_objects, slot, NULL));
 }
 
-static value_t atalk_volumes_method_remove(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
+static DEF_METHOD(atalk_volumes_method_remove) {
     char err[192];
     if (atalk_afp_volume_remove(argv[0].s, err, sizeof(err)) != 0)
         return atalk_err("cannot remove the volume", err);
@@ -3180,11 +2853,21 @@ static const arg_decl_t atalk_volumes_add_args[] = {
     {.name = "name",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_NONEMPTY,
-     .doc = "Volume name as clients see it (max 32 chars)"                                                     },
-    {.name = "path", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Host directory to publish"},
+     .doc = "Volume name as clients see it (max 32 chars)"},
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .validation_flags = OBJ_ARG_NONEMPTY,
+     .doc = "Host directory to publish"},
 };
 static const arg_decl_t atalk_volumes_remove_args[] = {
     {.name = "name", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Volume name to withdraw"},
+};
+
+static const collection_desc_t atalk_volumes_collection_entries = {
+    .entry = &atalk_volume_class,
+    .by_index = {.get = atalk_volumes_get, .slots = ATALK_AFP_MAX_VOLUMES},
+    .by_key = {.lookup = atalk_volumes_lookup}
 };
 
 static const member_t atalk_volumes_collection_members[] = {
@@ -3195,7 +2878,7 @@ static const member_t atalk_volumes_collection_members[] = {
                 .nargs = 2,
                 .result = V_OBJECT,
                 .fn = atalk_volumes_method_add,
-                .ui_flags = MM_MUTATE}},
+                .ui_flags = MM_MUTATE}                 },
     {.kind = M_METHOD,
      .name = "remove",
      .doc = "Withdraw an AFP volume by name",
@@ -3204,46 +2887,35 @@ static const member_t atalk_volumes_collection_members[] = {
                 .result = V_NONE,
                 .fn = atalk_volumes_method_remove,
                 .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}},
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child = {.cls = &atalk_volume_class,
-               .indexed = true,
-               .get = atalk_volumes_get,
-               .count = atalk_volumes_count,
-               .next = atalk_volumes_next,
-               .lookup = atalk_volumes_lookup}},
+    OBJ_ENTRIES(&atalk_volumes_collection_entries, NULL),
 };
 
-const class_desc_t atalk_volumes_collection_class = {
+static const class_desc_t atalk_volumes_collection_class = {
     .name = "atalk_volumes",
+    .doc = "Host directories exported as AFP volumes",
     .members = atalk_volumes_collection_members,
     .n_members = ARRAY_LEN(atalk_volumes_collection_members),
 };
 
 // --- appletalk.afp.sessions ------------------------------------------------
 
-static value_t atalk_session_attr_ref(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_session_attr_ref) {
     atalk_session_info_t info;
     return val_uint(2, atalk_asp_session_info(atalk_slot_of(self), &info) ? info.session_ref : 0);
 }
-static value_t atalk_session_attr_client_node(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_session_attr_client_node) {
     atalk_session_info_t info;
     return val_uint(1, atalk_asp_session_info(atalk_slot_of(self), &info) ? info.client_node : 0);
 }
-static value_t atalk_session_attr_afp_version(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_session_attr_afp_version) {
     atalk_session_info_t info;
     return val_str(atalk_asp_session_info(atalk_slot_of(self), &info) ? info.afp_version : "");
 }
-static value_t atalk_session_attr_open_forks(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_session_attr_open_forks) {
     atalk_session_info_t info;
     return val_uint(4, atalk_asp_session_info(atalk_slot_of(self), &info) ? info.open_forks : 0);
 }
-static value_t atalk_session_attr_idle_ns(struct object *self, const member_t *m) {
-    (void)m;
+static DEF_GETTER(atalk_session_attr_idle_ns) {
     atalk_session_info_t info;
     return val_uint(8, atalk_asp_session_info(atalk_slot_of(self), &info) ? info.idle_ns : 0);
 }
@@ -3252,31 +2924,26 @@ static const member_t atalk_session_members[] = {
     {.kind = M_ATTR,
      .name = "session_ref",
      .doc = "ASP session reference",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .width = 2, .get = atalk_session_attr_ref}        },
     {.kind = M_ATTR,
      .name = "client_node",
      .doc = "LLAP node of the workstation",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .width = 1, .get = atalk_session_attr_client_node}},
     {.kind = M_ATTR,
      .name = "afp_version",
      .doc = "AFP version negotiated at login",
-     .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = atalk_session_attr_afp_version}          },
     {.kind = M_ATTR,
      .name = "open_forks",
      .doc = "Forks this session holds open",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .width = 4, .get = atalk_session_attr_open_forks} },
     {.kind = M_ATTR,
      .name = "idle_ns",
      .doc = "Emulated nanoseconds since the last packet from this client",
-     .flags = VAL_RO,
      .attr = {.type = V_UINT, .width = 8, .get = atalk_session_attr_idle_ns}    },
 };
 
-const class_desc_t atalk_session_class = {
+static const class_desc_t atalk_session_class = {
     .name = "atalk_session",
     .members = atalk_session_members,
     .n_members = ARRAY_LEN(atalk_session_members),
@@ -3284,38 +2951,20 @@ const class_desc_t atalk_session_class = {
 
 static struct object *atalk_sessions_get(struct object *self, int index) {
     (void)self;
-    if (index < 0 || index >= ATALK_MAX_SESSION_OBJS || !atalk_asp_session_in_use(index))
+    if (index < 0 || index >= ATALK_ASP_MAX_SESSIONS || !atalk_asp_session_in_use(index))
         return NULL;
-    return g_atalk_session_objs[index];
-}
-static int atalk_sessions_count(struct object *self) {
-    (void)self;
-    int n = 0;
-    for (int i = 0; i < ATALK_MAX_SESSION_OBJS && i < atalk_asp_session_max(); i++)
-        if (atalk_asp_session_in_use(i))
-            n++;
-    return n;
-}
-static int atalk_sessions_next(struct object *self, int prev) {
-    (void)self;
-    for (int i = prev + 1; i < ATALK_MAX_SESSION_OBJS && i < atalk_asp_session_max(); i++)
-        if (atalk_asp_session_in_use(i))
-            return i;
-    return -1;
+    return object_cache_at(&g_net.session_objects, index, NULL);
 }
 
-static const member_t atalk_sessions_collection_members[] = {
-    {.kind = M_CHILD,
-     .name = "entries",
-     .child = {.cls = &atalk_session_class,
-               .indexed = true,
-               .get = atalk_sessions_get,
-               .count = atalk_sessions_count,
-               .next = atalk_sessions_next,
-               .lookup = NULL}},
+static const collection_desc_t atalk_sessions_collection_entries = {
+    .entry = &atalk_session_class, .by_index = {.get = atalk_sessions_get, .slots = ATALK_ASP_MAX_SESSIONS}
 };
 
-const class_desc_t atalk_sessions_collection_class = {
+static const member_t atalk_sessions_collection_members[] = {
+    OBJ_ENTRIES(&atalk_sessions_collection_entries, NULL),
+};
+
+static const class_desc_t atalk_sessions_collection_class = {
     .name = "atalk_sessions",
     .members = atalk_sessions_collection_members,
     .n_members = ARRAY_LEN(atalk_sessions_collection_members),
@@ -3323,19 +2972,10 @@ const class_desc_t atalk_sessions_collection_class = {
 
 // --- appletalk.afp.stats ---------------------------------------------------
 
-static value_t atalk_afp_stats_attr(struct object *self, const member_t *m) {
-    (void)self;
-    const atalk_afp_stats_t *st = atalk_afp_get_stats();
-    size_t offset = (size_t)(uintptr_t)m->attr.user_data;
-    return val_uint(8, *(const uint64_t *)((const uint8_t *)st + offset));
-}
-
 // The per-code error tally is a map rather than a fixed member list: only the
 // codes that have actually occurred appear, so the tree stays small and the
 // integration tests can assert on one key.
-static value_t atalk_afp_stats_attr_errors_by_code(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_afp_stats_attr_errors_by_code) {
     value_map_builder_t *b = val_map_new();
     int32_t code = 0;
     uint64_t count = 0;
@@ -3347,31 +2987,32 @@ static value_t atalk_afp_stats_attr_errors_by_code(struct object *self, const me
     return val_map_finish(b);
 }
 
-#define ATALK_AFP_STAT_MEMBER(field, doc_text)                                                                         \
-    {                                                                                                                  \
-        .kind = M_ATTR, .name = #field, .doc = doc_text, .flags = VAL_RO, .attr = {                                    \
-            .type = V_UINT,                                                                                            \
-            .width = 8,                                                                                                \
-            .get = atalk_afp_stats_attr,                                                                               \
-            .set = NULL,                                                                                               \
-            .user_data = (const void *)(uintptr_t)offsetof(atalk_afp_stats_t, field)                                   \
-        }                                                                                                              \
-    }
+static DEF_GETTER(atalk_afp_stats_attr_ok_by_command) {
+    value_map_builder_t *b = val_map_new();
+    const char *name = NULL;
+    uint64_t count = 0;
+    for (int i = 0; atalk_afp_ok_command_at(i, &name, &count) == 0; i++)
+        val_map_put(b, name, val_uint(8, count));
+    return val_map_finish(b);
+}
 
 static const member_t atalk_afp_stats_members[] = {
-    ATALK_AFP_STAT_MEMBER(commands_served, "AFP commands dispatched"),
-    ATALK_AFP_STAT_MEMBER(bytes_read, "Bytes served through FPRead"),
-    ATALK_AFP_STAT_MEMBER(bytes_written, "Bytes accepted through FPWrite"),
-    ATALK_AFP_STAT_MEMBER(errors, "Commands that returned a non-zero result"),
-    ATALK_AFP_STAT_MEMBER(open_forks, "Forks currently open across all volumes"),
+    OBJ_U64_FIELD(atalk_afp_stats_t, commands_served, "AFP commands dispatched"),
+    OBJ_U64_FIELD(atalk_afp_stats_t, bytes_read, "Bytes served through FPRead"),
+    OBJ_U64_FIELD(atalk_afp_stats_t, bytes_written, "Bytes accepted through FPWrite"),
+    OBJ_U64_FIELD(atalk_afp_stats_t, errors, "Commands that returned a non-zero result"),
+    OBJ_U64_FIELD(atalk_afp_stats_t, open_forks, "Forks currently open across all volumes"),
     {.kind = M_ATTR,
-                                                             .name = "errors_by_code",
-                                                             .doc = "Result code -> occurrence count, for the codes seen so far",
-                                                             .flags = VAL_RO,
-                                                             .attr = {.type = V_MAP, .get = atalk_afp_stats_attr_errors_by_code}},
+                                                                                .name = "errors_by_code",
+                                                                                .doc = "Result code -> occurrence count, for the codes seen so far",
+                                                                                .attr = {.type = V_MAP, .get = atalk_afp_stats_attr_errors_by_code}},
+    {.kind = M_ATTR,
+                                                                                .name = "ok_by_command",
+                                                                                .doc = "Command name -> times it returned NoErr, for the commands that have",
+                                                                                .attr = {.type = V_MAP, .get = atalk_afp_stats_attr_ok_by_command} },
 };
 
-const class_desc_t atalk_afp_stats_class = {
+static const class_desc_t atalk_afp_stats_class = {
     .name = "atalk_afp_stats",
     .members = atalk_afp_stats_members,
     .n_members = ARRAY_LEN(atalk_afp_stats_members),
@@ -3379,27 +3020,19 @@ const class_desc_t atalk_afp_stats_class = {
 
 // --- appletalk.afp ---------------------------------------------------------
 
-static value_t atalk_afp_attr_enabled(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_afp_attr_enabled) {
     return val_bool(atalk_afp_get_enabled());
 }
-static value_t atalk_afp_attr_set_enabled(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
+static DEF_SETTER(atalk_afp_attr_set_enabled) {
     char err[192];
     if (atalk_afp_set_enabled(in.b, err, sizeof(err)) != 0)
         return atalk_err("cannot change the AFP server state", err);
     return val_none();
 }
-static value_t atalk_afp_attr_name(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_afp_attr_name) {
     return val_str(atalk_afp_get_name());
 }
-static value_t atalk_afp_attr_set_name(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
+static DEF_SETTER(atalk_afp_attr_set_name) {
     char err[192];
     if (atalk_afp_set_name(in.s, err, sizeof(err)) != 0) {
         value_free(&in);
@@ -3408,14 +3041,10 @@ static value_t atalk_afp_attr_set_name(struct object *self, const member_t *m, v
     value_free(&in);
     return val_none();
 }
-static value_t atalk_afp_attr_message(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_afp_attr_message) {
     return val_str(atalk_afp_get_message());
 }
-static value_t atalk_afp_attr_set_message(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
+static DEF_SETTER(atalk_afp_attr_set_message) {
     char err[192];
     if (atalk_afp_set_message(in.s, err, sizeof(err)) != 0) {
         value_free(&in);
@@ -3424,9 +3053,7 @@ static value_t atalk_afp_attr_set_message(struct object *self, const member_t *m
     value_free(&in);
     return val_none();
 }
-static value_t atalk_afp_attr_versions(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_afp_attr_versions) {
     int count = 0;
     const char *const *versions = atalk_afp_versions(&count);
     value_t *items = (value_t *)calloc((size_t)(count > 0 ? count : 1), sizeof(value_t));
@@ -3441,14 +3068,14 @@ static const member_t atalk_afp_members[] = {
     {.kind = M_ATTR,
      .name = "enabled",
      .doc = "Serve AFP and advertise the server over NBP",
-     .attr = {.type = V_BOOL, .get = atalk_afp_attr_enabled, .set = atalk_afp_attr_set_enabled}},
+     .attr = {.type = V_BOOL, .get = atalk_afp_attr_enabled, .set = atalk_afp_attr_set_enabled}  },
     {.kind = M_ATTR,
      .name = "name",
      .doc = "NBP object name; the setter re-registers the advertisement",
      .attr = {.type = V_STRING,
               .validation_flags = OBJ_ARG_NONEMPTY,
               .get = atalk_afp_attr_name,
-              .set = atalk_afp_attr_set_name}},
+              .set = atalk_afp_attr_set_name}                                                    },
     {.kind = M_ATTR,
      .name = "message",
      .doc = "Server message clients fetch with FPGetSrvrMsg",
@@ -3456,40 +3083,32 @@ static const member_t atalk_afp_members[] = {
     {.kind = M_ATTR,
      .name = "versions",
      .doc = "AFP versions this server implements and advertises",
-     .flags = VAL_RO,
-     .attr = {.type = V_LIST, .get = atalk_afp_attr_versions}},
+     .attr = {.type = V_LIST, .get = atalk_afp_attr_versions}                                    },
 };
 
-const class_desc_t atalk_afp_class = {
+static const class_desc_t atalk_afp_class = {
     .name = "atalk_afp",
+    .doc = "The host AFP file server: exported volumes, server name and message",
     .members = atalk_afp_members,
     .n_members = ARRAY_LEN(atalk_afp_members),
 };
 
 // --- appletalk.printer -----------------------------------------------------
 
-static value_t atalk_printer_attr_enabled(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
-    return val_bool(atalk_printer_is_enabled());
+static DEF_GETTER(atalk_printer_attr_enabled) {
+    return val_bool(atalk_printer_get_enabled());
 }
-static value_t atalk_printer_attr_set_enabled(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
+static DEF_SETTER(atalk_printer_attr_set_enabled) {
     char err[192];
     if (atalk_printer_set_enabled(in.b, err, sizeof(err)) != 0)
         return atalk_err("cannot change the printer state", err);
     return val_none();
 }
-static value_t atalk_printer_attr_name(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
-    const char *n = atalk_printer_object_name();
+static DEF_GETTER(atalk_printer_attr_name) {
+    const char *n = atalk_printer_get_name();
     return val_str(n ? n : "");
 }
-static value_t atalk_printer_attr_set_name(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
+static DEF_SETTER(atalk_printer_attr_set_name) {
     char err[192];
     if (atalk_printer_set_name(in.s, err, sizeof(err)) != 0) {
         value_free(&in);
@@ -3498,6 +3117,54 @@ static value_t atalk_printer_attr_set_name(struct object *self, const member_t *
     value_free(&in);
     return val_none();
 }
+static DEF_GETTER(atalk_printer_attr_status) {
+    return val_str(atalk_printer_get_status());
+}
+static DEF_GETTER(atalk_printer_attr_interpreter) {
+    return val_bool(atalk_printer_has_interpreter());
+}
+static DEF_GETTER(atalk_printer_attr_capture) {
+    return val_bool(atalk_printer_get_capture());
+}
+static DEF_SETTER(atalk_printer_attr_set_capture) {
+    atalk_printer_set_capture(in.b);
+    return val_none();
+}
+static DEF_GETTER(atalk_printer_attr_documents) {
+    return val_int(atalk_printer_documents());
+}
+static DEF_GETTER(atalk_printer_attr_last_pages) {
+    return val_int(atalk_printer_last_pages());
+}
+static DEF_GETTER(atalk_printer_attr_last_outcome) {
+    return val_str(atalk_printer_last_outcome());
+}
+static DEF_GETTER(atalk_printer_attr_interpreter_jobs) {
+    return val_int(atalk_printer_interpreter_jobs());
+}
+static DEF_GETTER(atalk_printer_attr_interpreter_permanent_jobs) {
+    return val_int(atalk_printer_interpreter_permanent_jobs());
+}
+static DEF_METHOD(atalk_printer_method_restart) {
+    char err[192];
+    if (atalk_printer_restart(err, sizeof(err)) != 0)
+        return atalk_err("cannot restart the printer", err);
+    return val_bool(true);
+}
+
+static const member_t atalk_printer_stats_members[] = {
+    OBJ_U64_FIELD(atalk_printer_stats_t, jobs, "Jobs that ran to their end"),
+    OBJ_U64_FIELD(atalk_printer_stats_t, aborts, "Jobs cut off: timeout, too large, closed early"),
+    OBJ_U64_FIELD(atalk_printer_stats_t, bytes, "PostScript bytes received"),
+    OBJ_U64_FIELD(atalk_printer_stats_t, captures, "Captures handed to the host (appletalk.printer.capture)"),
+    OBJ_U64_FIELD(atalk_printer_stats_t, last_capture, "Bytes in the last capture"),
+};
+
+static const class_desc_t atalk_printer_stats_class = {
+    .name = "atalk_printer_stats",
+    .members = atalk_printer_stats_members,
+    .n_members = ARRAY_LEN(atalk_printer_stats_members),
+};
 
 static const member_t atalk_printer_members[] = {
     {.kind = M_ATTR,
@@ -3511,30 +3178,67 @@ static const member_t atalk_printer_members[] = {
               .validation_flags = OBJ_ARG_NONEMPTY,
               .get = atalk_printer_attr_name,
               .set = atalk_printer_attr_set_name}                                                      },
+    {.kind = M_ATTR,
+     .name = "status",
+     .doc = "PAP status string as the workstation reads it",
+     .attr = {.type = V_STRING, .get = atalk_printer_attr_status}                                      },
+    {.kind = M_ATTR,
+     .name = "interpreter",
+     .doc = "True when the build links the PostScript interpreter (PLATEN=1)",
+     .attr = {.type = V_BOOL, .get = atalk_printer_attr_interpreter}                                   },
+    {.kind = M_ATTR,
+     .name = "capture",
+     .doc = "Also hand each job's PostScript to the host: a .ps beside the PDF, or a download",
+     .attr = {.type = V_BOOL, .get = atalk_printer_attr_capture, .set = atalk_printer_attr_set_capture}},
+    {.kind = M_ATTR,
+     .name = "documents",
+     .doc = "Documents the interpreter has handed to the platform",
+     .attr = {.type = V_INT, .get = atalk_printer_attr_documents}                                      },
+    {.kind = M_ATTR,
+     .name = "last_pages",
+     .doc = "Pages of the last finished job",
+     .attr = {.type = V_INT, .get = atalk_printer_attr_last_pages}                                     },
+    {.kind = M_ATTR,
+     .name = "last_outcome",
+     .doc = "Outcome of the last finished job: ok, error: <name> in <command>, budget",
+     .attr = {.type = V_STRING, .get = atalk_printer_attr_last_outcome}                                },
+    {.kind = M_ATTR,
+     .name = "interpreter_jobs",
+     .doc = "Jobs the printer has served since it was created (0 until its first job)",
+     .attr = {.type = V_INT, .get = atalk_printer_attr_interpreter_jobs}                               },
+    {.kind = M_ATTR,
+     .name = "interpreter_permanent_jobs",
+     .doc = "Of those, jobs whose changes exitserver made permanent (startjob is not counted)",
+     .attr = {.type = V_INT, .get = atalk_printer_attr_interpreter_permanent_jobs}                     },
+    {.kind = M_METHOD,
+     .name = "restart",
+     .doc = "Power-cycle the printer: a job in progress is cut off, and what jobs made permanent is lost",
+     .method = {.args = NULL,
+                .nargs = 0,
+                .result = V_BOOL,
+                .fn = atalk_printer_method_restart,
+                .ui_flags = MM_DESTRUCTIVE | MM_MUTATE}                                                },
 };
 
-const class_desc_t atalk_printer_class = {
+static const class_desc_t atalk_printer_class = {
     .name = "atalk_printer",
+    .doc = "The emulated LaserWriter: status, captured documents, last job",
     .members = atalk_printer_members,
     .n_members = ARRAY_LEN(atalk_printer_members),
 };
 
 // --- appletalk root --------------------------------------------------------
 
-static value_t atalk_attr_enabled(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_attr_enabled) {
     return val_bool(atalk_get_enabled());
 }
-static value_t atalk_attr_set_enabled(struct object *self, const member_t *m, value_t in) {
-    (void)self;
-    (void)m;
-    atalk_set_enabled(in.b);
+static DEF_SETTER(atalk_attr_set_enabled) {
+    char err[192];
+    if (atalk_set_enabled(in.b, err, sizeof(err)) != 0)
+        return atalk_err("cannot change the link state", err);
     return val_none();
 }
-static value_t atalk_attr_node_id(struct object *self, const member_t *m) {
-    (void)self;
-    (void)m;
+static DEF_GETTER(atalk_attr_node_id) {
     return val_uint(1, atalk_node_id());
 }
 
@@ -3546,12 +3250,12 @@ static const member_t atalk_members[] = {
     {.kind = M_ATTR,
      .name = "node_id",
      .doc = "Current LLAP node ID (0 while the stack is detached)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .width = 1, .get = atalk_attr_node_id}},
+     .attr = {.type = V_UINT, .width = 1, .get = atalk_attr_node_id}                   },
 };
 
-const class_desc_t atalk_class = {
+static const class_desc_t atalk_class = {
     .name = "appletalk",
     .members = atalk_members,
     .n_members = ARRAY_LEN(atalk_members),
+    .doc = "Simulated AppleTalk network: file server, printer, program linking",
 };

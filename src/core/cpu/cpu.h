@@ -28,8 +28,8 @@
 // on-chip.  This is the single source of truth the machine capability
 // probe derives `fpu` from.  Implemented in cpu.c as an explicit 68K model
 // switch (not a `>=` compare) so a non-68K cpu_model — e.g. the PPC 601 —
-// can never satisfy it and allocate a 68881-format fpu_t by accident
-// (PPC proposal §3.9); the PPC core answers FPU presence in its own module.
+// can never satisfy it and allocate a 68881-format fpu_t by accident; the
+// PPC core answers FPU presence in its own module.
 bool cpu_has_fpu(int cpu_model);
 
 // Condition Code Register (CCR) bit masks
@@ -93,6 +93,13 @@ typedef struct cpu cpu_t;
 
 extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint);
 
+// The CPU half of a reset: everything inside the package, PC and SSP reloaded
+// from the vectors at $0/$4.  The BUS half must already have run -- those
+// vectors are ROM only while the overlay is armed.  Level 2 (machine.reset(),
+// the reset button, Cuda CMD_RESET) is bus_reset plus one of these.
+void cpu_reset_to_vector_68030(cpu_t *restrict cpu);
+void cpu_reset_to_vector_68040(cpu_t *restrict cpu);
+
 void cpu_delete(cpu_t *cpu);
 
 void cpu_checkpoint(cpu_t *restrict cpu, checkpoint_t *checkpoint);
@@ -101,6 +108,11 @@ void cpu_checkpoint(cpu_t *restrict cpu, checkpoint_t *checkpoint);
 // child object so debug probes can read TC/CRP/SRP/TT0/TT1.  Called by
 // machine setup code after both CPU and MMU instances exist.  Idempotent.
 void cpu_attach_mmu(cpu_t *cpu, void *mmu);
+
+// Bind a `cpu.mmu` child node of class `cls` (an MMU kind cpu.c does not
+// model, e.g. the Lisa's segment MMU).  Idempotent.
+struct class_desc;
+void cpu_attach_mmu_node(cpu_t *cpu, const struct class_desc *cls, void *data);
 
 // === Operations ===
 
@@ -153,9 +165,9 @@ uint32_t cpu_get_vbr(cpu_t *restrict cpu);
 
 void cpu_set_vbr(cpu_t *restrict cpu, uint32_t value);
 
-// 68K adapter for the main-CPU debug seam (PPC proposal §3.9b): PC access,
-// pc-based disassembly through the memory system, and logical→physical
-// translation.  system_create stores the result in config_t.cpu_dbg.
+// 68K adapter for the main-CPU debug seam: PC access, pc-based disassembly
+// through the memory system, and logical→physical translation.  system_create
+// stores the result in config_t.cpu_dbg.
 cpu_debug_if_t cpu_debug_if(cpu_t *cpu);
 
 #endif // CPU_H

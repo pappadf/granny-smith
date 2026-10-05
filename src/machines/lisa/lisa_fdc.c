@@ -2,19 +2,19 @@
 // Copyright (c) pappadf
 
 // lisa_fdc.c
-// Apple Lisa intelligent floppy controller. See lisa_fdc.h and docs/machines/lisa/lisa.md §13.
+// Apple Lisa intelligent floppy controller. See lisa_fdc.h and docs/reference/machines/lisa/lisa.md §13.
 //
 // Behavioural model: the 6504A coprocessor is represented by its 1 KB shared
 // RAM plus a synchronous command engine.  When the 68000 writes the command-
 // issue register (byte 0), the engine reads the command block, services it with
 // disk_read_data / disk_write_data against the image_t, fills the data buffer,
 // sets the status byte, and raises FDIR.  No GCR cell modelling — the
-// controller returns logical 512-byte sectors (docs/machines/lisa/lisa.md §13).
+// controller returns logical 512-byte sectors (docs/reference/machines/lisa/lisa.md §13).
 
 #include "lisa_fdc.h"
 
 #include "cpu.h" // cpu_get_pc — guest PC for the floppy command trace
-#include "floppy_internal.h" // iwm_sectors_per_track / iwm_disk_image_offset (Sony geometry)
+#include "floppy_geometry.h" // Sony zone geometry (public API, not the controller internals)
 #include "image.h"
 #include "log.h"
 #include "system.h" // system_cpu — current CPU for the floppy command trace
@@ -28,7 +28,7 @@ LOG_USE_CATEGORY_NAME("floppy");
 
 #define FDC_RAM_BYTES 1024 // controller RAM addressable by the 68000 (odd bytes)
 
-// Command-block byte indices within the shared RAM (docs/machines/lisa/lisa.md §13.2; offsets
+// Command-block byte indices within the shared RAM (docs/reference/machines/lisa/lisa.md §13.2; offsets
 // in the source are address-space, halved here to RAM byte indices).
 #define FDC_CMDREG   0 // command-issue register
 #define FDC_RWTS     1 // RWTS sub-command (CMD)
@@ -57,7 +57,7 @@ LOG_USE_CATEGORY_NAME("floppy");
 #define FDC_HDR            500 // 12-byte sector tag/header (DSKBUFF)
 #define FDC_DATA           512 // 512-byte data sector (DSKDATA)
 
-// Command-issue values (docs/machines/lisa/lisa.md §13.1).
+// Command-issue values (docs/reference/machines/lisa/lisa.md §13.1).
 #define CMD_EXEC     0x81 // execute the RWTS command
 #define CMD_SEEK     0x83 // seek
 #define CMD_JSR      0x84 // JSR to a host-downloaded routine in controller RAM ($00C003)
@@ -67,7 +67,7 @@ LOG_USE_CATEGORY_NAME("floppy");
 #define CMD_COLDWAIT 0x88 // wait in ROM for cold start
 #define CMD_LOOP     0x89 // loop in ROM
 
-// RWTS sub-commands (docs/machines/lisa/lisa.md §13.2): 0/7 read, 1 write, 2 unclamp, …
+// RWTS sub-commands (docs/reference/machines/lisa/lisa.md §13.2): 0/7 read, 1 write, 2 unclamp, …
 #define RWTS_READ     0x00
 #define RWTS_WRITE    0x01
 #define RWTS_UNCLAMP  0x02
@@ -78,7 +78,7 @@ LOG_USE_CATEGORY_NAME("floppy");
 // interrupt/drain handler reads them, and CLRSTAT ($85) clears them.  (The disk
 // stays physically attached via fdc->image regardless — reads don't depend on
 // these bits.)  MacWorks' startup drains events until ($C05F & $77) == 0, so a
-// persistently-set "present" bit here would loop forever (docs/machines/lisa/lisa.md §13.3).
+// persistently-set "present" bit here would loop forever (docs/reference/machines/lisa/lisa.md §13.3).
 #define DRVSTAT_DISKIN1   0x01 // drive 1 (lower) disk-inserted event
 #define DRVSTAT_COMPLETE1 0x04 // drive 1 (lower) RWTS complete
 #define DRVSTAT_OR1       0x08 // OR of bits 0-2 (lower-drive summary)
@@ -171,7 +171,7 @@ static void fdc_update_disktype(lisa_fdc_t *fdc) {
 
 // Map (track, side, sector) to a byte offset in the image (Sony 5-zone layout).
 static size_t fdc_block_offset(const lisa_fdc_t *fdc, int track, int side, int sector) {
-    return iwm_disk_image_offset(track, side, fdc->num_sides) + (size_t)sector * 512u;
+    return floppy_zone_image_offset(track, side, fdc->num_sides) + (size_t)sector * 512u;
 }
 
 // Execute the RWTS command currently in the command block.
@@ -188,7 +188,7 @@ static void fdc_execute_rwts(lisa_fdc_t *fdc) {
         fdc->ram[FDC_STATUS] = 0x07; // DRVERR: no disk in drive
         return;
     }
-    if (track < 0 || track > 79 || sector < 0 || sector >= iwm_sectors_per_track(track)) {
+    if (track < 0 || track > 79 || sector < 0 || sector >= floppy_zone_sectors_per_track(track)) {
         fdc->ram[FDC_STATUS] = 0x17; // unreadable
         LOG(2, "fdc unreadable: rwts=%02x trk=%d sec=%d side=%d (out of Sony geometry)", rwts, track, sector, side);
         return;
@@ -282,7 +282,7 @@ static void fdc_command(lisa_fdc_t *fdc, uint8_t cmd) {
         fdc->ram[FDC_CMDREG] = 0; // accept unknown command issues
         break;
     }
-    // Floppy command trace (enable: `debug.log "floppy" 1`).  One line per
+    // Floppy command trace (enable: `log.set "floppy" 1`).  One line per
     // command issued, with the resulting status, whether media is present, and
     // the guest PC — so a ROM-vs-OS floppy access can be told apart on a real
     // boot.  $81=EXEC(RWTS) $83=SEEK $84=JSR $85=CLRSTAT $86=ENBLDRV $87=COLDWAIT.
@@ -306,7 +306,7 @@ static uint8_t fdc_read_byte(lisa_fdc_t *fdc, uint32_t off) {
     if (off & 1) {
         uint32_t idx = off >> 1;
         uint8_t v = idx < FDC_RAM_BYTES ? fdc->ram[idx] : 0xFF;
-        // Trace the disk-presence reads (enable: `debug.log "floppy" 1`): the OS
+        // Trace the disk-presence reads (enable: `log.set "floppy" 1`): the OS
         // Sony driver polls DISKIN ($41) for "media present" and reads DRVSTAT
         // ($5F) as the interrupt source.  Seeing whether/when these are read,
         // and their value, tells us how the OS decides a disk is in the drive.
@@ -429,15 +429,11 @@ bool lisa_fdc_disk_present(const lisa_fdc_t *fdc) {
     return fdc && fdc->image != NULL;
 }
 
-image_t *lisa_fdc_disk_image(const lisa_fdc_t *fdc) {
-    return fdc ? fdc->image : NULL;
-}
-
 // === Parameter memory (battery-backed NVRAM) ================================
 //
 // The Lisa's parameter memory (boot volume + device-configuration table + UI
 // settings, 64 bytes = 32 words) lives at $FCC181 in the controller's shared
-// RAM and is battery/standby-backed on real hardware (docs/machines/lisa/lisa.md §13.4).  Our
+// RAM and is battery/standby-backed on real hardware (docs/reference/machines/lisa/lisa.md §13.4).  Our
 // fdc->ram is volatile, so the OS's installed configuration (e.g. a ProFile
 // added to the device table at clean shutdown) is lost across launches.  These
 // save/load the 64-byte PM region to a host file, modelling the battery backup
@@ -456,6 +452,139 @@ bool lisa_fdc_pram_save(const lisa_fdc_t *fdc, const char *path) {
     return put == FDC_PM_LEN;
 }
 
+// === Parameter memory (PRAM) ===============================================
+//
+// The Lisa's 64 bytes of battery-backed parameter memory live inside this
+// controller's RAM at FDC_PM_IDX.  Layout and checksum are documented in
+// docs/reference/machines/lisa/pram.md, reverse-engineered from LisaOS and
+// boot-ROM source and verified byte-for-byte against two captured images.
+//
+// This store is synthesised HERE, in code, by the device model that owns it:
+// the initialiser writes the signature, the partition headers, the checksums
+// and the defaults, so a cold build is a factory-fresh chip.  Until 2026-09-21
+// it was synthesised by tests/integration/suite-lisa/seed_pram.py -- 90 lines
+// of Python OUTSIDE the emulator that reimplemented the ROM's own checksum --
+// and delivered through a path-taking pram_load, which made it the only
+// file-backed non-volatile store in the tree.
+
+// VFYCHKSM / prom_cksum ($FE00BC), pram.md §5: a 16-bit add-then-
+// rotate-left-1 sum over all 32 big-endian words.  PRAM is valid iff the sum
+// over the whole 64 bytes comes out zero, so the stored word (word 31) is the
+// two's-complement negate of the sum over words 0..30.
+//
+// Note ROL is a plain rotate (bit15 -> bit0), NOT rotate-through-carry.
+static uint16_t lisa_pram_checksum(const uint8_t *pm) {
+    uint16_t acc = 0;
+    for (int w = 0; w < 31; w++) {
+        acc = (uint16_t)(acc + (uint16_t)((pm[w * 2] << 8) | pm[w * 2 + 1]));
+        acc = (uint16_t)((acc << 1) | (acc >> 15));
+    }
+    return (uint16_t)(-acc);
+}
+
+// Pack one DevConfig entry (pram.md §3), returning its length.
+//
+//   byte 0: slot<<4 | chan<<1 | IDsize
+//   byte 1: dev<<3  | nExtWords<<1 | idHi
+//   byte 2 [+3]: the driver id, 9-bit or 17-bit
+//   then nExtWords big-endian extension words
+//
+// Slot codes are the internal cd_* constants directly (cd_scc = 9,
+// cd_paraport = 10); emptychan = 7, emptydev = 31.  The driver id is matched
+// against the installed system's SYSTEM.CDD by FIND_PM_IDS -- it is not
+// hard-coded in the OS, which is why these values are LOS-3.1-specific.
+static int lisa_pram_pack_dev(uint8_t *out, uint8_t slot, uint8_t chan, uint8_t dev, uint32_t driver_id,
+                              const uint16_t *ext, int n_ext) {
+    int idsize = (driver_id > 0x1FF) ? 1 : 0;
+    int id_hi = (int)((driver_id >> (idsize ? 16 : 8)) & 1u);
+    int n = 0;
+    out[n++] = (uint8_t)((slot << 4) | (chan << 1) | idsize);
+    out[n++] = (uint8_t)((dev << 3) | (n_ext << 1) | id_hi);
+    if (idsize) {
+        out[n++] = (uint8_t)((driver_id >> 8) & 0xFF);
+        out[n++] = (uint8_t)(driver_id & 0xFF);
+    } else {
+        out[n++] = (uint8_t)(driver_id & 0xFF);
+    }
+    for (int i = 0; i < n_ext; i++) {
+        out[n++] = (uint8_t)((ext[i] >> 8) & 0xFF);
+        out[n++] = (uint8_t)(ext[i] & 0xFF);
+    }
+    return n;
+}
+
+// Write a factory-fresh parameter memory: the defaults a new machine ships
+// with, a valid checksum, and an EMPTY device-configuration table.
+//
+// Empty is deliberate and is the faithful part.  A machine straight off the
+// line has no configured devices; the OS's INIT_CONFIG then restores the
+// device table from the boot volume's own on-disk MDDF snapshot, which is what
+// real hardware does.  Seeding a populated table is emulating a machine that
+// has already had an OS installed -- and seed_pram.py's own docstring records
+// the cost of doing that: it can MASK a broken disk image, which is precisely
+// why the script grew a --coldboot mode to turn the seeding back off.
+void lisa_fdc_pram_init(lisa_fdc_t *fdc, uint8_t boot_vol, bool valid, bool installed) {
+    if (!fdc)
+        return;
+    uint8_t *pm = &fdc->ram[FDC_PM_IDX];
+    memset(pm, 0, FDC_PM_LEN);
+
+    pm[0] = 0x00;
+    pm[1] = 0x04; // Version = cd_pm_version (4)
+    pm[2] = 0x9F;
+    pm[3] = 0x80; // TimeStamp -- any value; the on-disk snapshot must match it
+    pm[4] = (uint8_t)((boot_vol & 0x0F) << 4); // BootVol, NormCont = 0
+    pm[5] = (15 << 4) | 1; // DimCont = 15, BeepVol = 1
+    pm[6] = 0xC3; // MouseOn | ExtendMem, DoubleClick = 3
+    pm[7] = 0x34; // FadeDelay = 3, BeginRepeat = 4
+    pm[8] = 0x10; // SubRepeat = 1
+    pm[9] = 0x00; // CDcount = 0 -- no configured devices on a fresh machine
+    for (int i = 10; i < 60; i++)
+        pm[i] = 0xFF; // $FF filler doubles as the end-of-list sentinel
+
+    // `installed` reproduces the device-configuration table the LOS 3.1
+    // installer leaves at a clean shutdown, with the ProFile (cd_paraport)
+    // as the boot device.  It is NOT factory-fresh -- a new machine has no
+    // configured devices -- but it is needed by one case the empty table
+    // cannot serve: a volume that has been installed onto but has not yet
+    // shut down cleanly, so its on-disk MDDF snapshot is not usable and the
+    // OS has nothing to restore from.  Without it that boot stops at
+    // error 10738, which is the ProFile-not-found failure.
+    //
+    // The driver ids come from that system's SYSTEM.CDD and are matched by
+    // FIND_PM_IDS, so they are specific to LOS 3.1 rather than to the
+    // hardware.  Packing follows pram.md §3.
+    if (installed) {
+        static const uint16_t scc_ext[1] = {0xC020};
+        int n = 0;
+        n += lisa_pram_pack_dev(&pm[10 + n], 9, 1, 31, 32, NULL, 0); // SCC channel
+        n += lisa_pram_pack_dev(&pm[10 + n], 1, 7, 31, 34, NULL, 0); // slot device
+        n += lisa_pram_pack_dev(&pm[10 + n], 1, 0, 31, 35, NULL, 0); // slot device
+        n += lisa_pram_pack_dev(&pm[10 + n], 9, 0, 31, 32, scc_ext, 1); // SCC + ext word
+        n += lisa_pram_pack_dev(&pm[10 + n], 10, 7, 31, 35, NULL, 0); // cd_paraport: the ProFile
+        pm[9] = 5; // CDcount
+    }
+    pm[60] = 0x00;
+    pm[61] = 0x4C; // MemLoss
+
+    uint16_t sum = lisa_pram_checksum(pm);
+    // `valid` false stores the bitwise complement instead, which is guaranteed
+    // not to verify.  That is not a corruption hack -- it is the honest model
+    // of a machine whose battery has just been replaced: PRAM has never been
+    // written, VERIFY_CKSUM fails, pm_good comes out false, and the OS's
+    // INIT_CONFIG rebuilds the device configuration from the boot volume's own
+    // MDDF snapshot.  For the Lisa that cold start is the one that WORKS,
+    // because a valid-but-empty table is a table the OS will believe.
+    //
+    // It is also the more honest test posture: a boot that depends on the disk
+    // image carrying a good clean-shutdown snapshot fails loudly on a bad
+    // image, where a pre-seeded hardware entry would have masked it.
+    if (!valid)
+        sum = (uint16_t)(sum ^ 0xFFFF);
+    pm[62] = (uint8_t)(sum >> 8);
+    pm[63] = (uint8_t)(sum & 0xFF);
+}
+
 bool lisa_fdc_pram_load(lisa_fdc_t *fdc, const char *path) {
     if (!fdc || !path || !*path)
         return false;
@@ -469,7 +598,8 @@ bool lisa_fdc_pram_load(lisa_fdc_t *fdc, const char *path) {
 
 // === Lifecycle =============================================================
 
-lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb, void *fdir_ctx, checkpoint_t *cp) {
+lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb, void *fdir_ctx, checkpoint_t *cp,
+                          const image_list_t *images) {
     lisa_fdc_t *fdc = (lisa_fdc_t *)calloc(1, sizeof(*fdc));
     if (!fdc)
         return NULL;
@@ -481,15 +611,53 @@ lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb,
     fdc->num_sides = 1;
     // Power-up parameter-memory default.  The COPS clock/PM region is battery-backed
     // on real hardware; with no persisted PRAM the boot ROM still needs a boot-device
-    // selection.  Seed BootVol=1 (PM byte 4 high nibble = built-in Sony floppy;
-    // docs/machines/lisa/pram_format.md §4) plus the checksum word so the ROM auto-boots the
-    // built-in floppy.  ProFile-boot tests override this with a full PRAM image
-    // (profile.pram_load); see lisa-profile-boot.
-    fdc->ram[196] = 0x10; // PM byte 4: BootVol=1 (built-in Sony), NormCont=0
-    fdc->ram[254] = 0xFE; // PM bytes 62-63: PRAM validity checksum word
-    fdc->ram[255] = 0x00;
-    if (cp)
-        lisa_fdc_checkpoint(fdc, cp);
+    // selection.  A factory-fresh parameter memory with BootVol = 1 (built-in
+    // Sony floppy, pram.md §4) and a COMPUTED checksum, so the ROM
+    // auto-boots the floppy.  This used to be three hand-poked bytes with a
+    // precomputed checksum word, which only stayed correct because nothing
+    // else in the region was ever set.
+    lisa_fdc_pram_init(fdc, 1, true, false); // BootVol = 1 (Sony floppy), valid, factory-fresh
+    // Checkpoint restore (init-reads convention, mirroring lisa_profile_init):
+    // read back exactly what lisa_fdc_checkpoint wrote, in the same order.  The
+    // diskette that was in the drive is resolved in the restored image list
+    // (the FDC does not own images -- cfg->images[] does) and inserted once
+    // the rest of the state is read.
+    image_t *disk = NULL;
+    if (cp) {
+        uint8_t attached = 0;
+        system_read_checkpoint_data(cp, &attached, sizeof(attached));
+        if (attached) {
+            uint32_t len = 0;
+            system_read_checkpoint_data(cp, &len, sizeof(len));
+            if (len) {
+                char *name = (char *)malloc(len);
+                if (name) {
+                    system_read_checkpoint_data(cp, name, len);
+                    name[len - 1] = '\0';
+                    disk = images_find(images, name);
+                    if (!disk) {
+                        // The drive held a disk: a restore without it is not
+                        // the machine that was saved.
+                        LOG(0, "the checkpoint's diskette '%s' is not among its images", name);
+                        checkpoint_set_error(cp);
+                    }
+                    free(name);
+                } else {
+                    // Keep the stream aligned even if the allocation fails.
+                    for (uint32_t k = 0; k < len; ++k) {
+                        char tmp;
+                        system_read_checkpoint_data(cp, &tmp, 1);
+                    }
+                }
+            }
+        }
+        int32_t sides = 1;
+        system_read_checkpoint_data(cp, &sides, sizeof(sides));
+        fdc->num_sides = (int)sides;
+        system_read_checkpoint_data(cp, fdc->ram, FDC_RAM_BYTES);
+    }
+    if (disk)
+        lisa_fdc_insert(fdc, disk);
     return fdc;
 }
 
@@ -504,12 +672,41 @@ void lisa_fdc_set_diskrom(lisa_fdc_t *fdc, uint8_t id) {
 }
 
 void lisa_fdc_delete(lisa_fdc_t *fdc) {
+    if (!fdc)
+        return;
+    scheduler_forget_source(fdc->sched, fdc);
     free(fdc);
 }
 
+// SAVE path only (lisa_checkpoint_save).  The matching read lives in
+// lisa_fdc_init — the same init-reads split lisa_profile uses, and the reason
+// this is not one function walked in both directions: checkpoint_t carries no
+// direction, so the old shared stub only "worked" because it did nothing.
+//
+// The diskette itself is recorded by NAME, not by image_checkpoint: the ProFile
+// owns its image and can reopen it, but the FDC's image belongs to
+// cfg->images[] and is freed exactly once at shutdown, so a second owner here
+// would double-free.  mac_checkpoint_save_images (added to lisa_checkpoint_save
+// immediately above this call) carries the content; this only has to say which
+// entry was in the drive.
 void lisa_fdc_checkpoint(lisa_fdc_t *fdc, checkpoint_t *cp) {
-    // Symmetric no-op for now (same discipline as the MMU/COPS): the shared RAM
-    // is re-derived by the next command sequence.  Full save/restore: Step 9.
-    (void)fdc;
-    (void)cp;
+    uint8_t attached = (fdc && fdc->image) ? 1u : 0u;
+    system_write_checkpoint_data(cp, &attached, sizeof(attached));
+    if (attached) {
+        const char *fn = image_get_filename(fdc->image);
+        uint32_t len = fn ? (uint32_t)(strlen(fn) + 1) : 0u;
+        system_write_checkpoint_data(cp, &len, sizeof(len));
+        if (len)
+            system_write_checkpoint_data(cp, fn, len);
+    }
+    int32_t sides = fdc ? (int32_t)fdc->num_sides : 1;
+    system_write_checkpoint_data(cp, &sides, sizeof(sides));
+    // Controller RAM carries the battery-backed parameter memory (PRAM: boot
+    // device selection at byte 196, checksum at 254-255), which is guest-written
+    // and is NOT re-derived by the next command sequence the way the command
+    // scratch is.  Saving the whole region is what makes a restored Lisa boot
+    // the same volume the saved one was booting.
+    uint8_t empty[FDC_RAM_BYTES];
+    memset(empty, 0, sizeof(empty));
+    system_write_checkpoint_data(cp, fdc ? fdc->ram : empty, FDC_RAM_BYTES);
 }

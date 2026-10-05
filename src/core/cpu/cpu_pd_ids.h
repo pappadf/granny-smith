@@ -2,8 +2,8 @@
 // Copyright (c) pappadf
 
 // cpu_pd_ids.h
-// The 68K predecoded-executor id space (proposal §4.1-§4.3) and the
-// per-id property table the flag-liveness pass consults (§5.1).
+// The 68K predecoded-executor id space and the per-id property table the
+// flag-liveness pass consults.
 //
 // Layout of the 16-bit id space:
 //   0..15         control ids (predecode.h)

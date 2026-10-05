@@ -15,31 +15,20 @@
 
 #include "mac030_glue.h"
 #include "mac030_glue_io.h"
-#include "mac_host_io.h"
 #include "machine.h"
-#include "mmu_checkpoint.h"
+#include "slot_tables.h"
 #include "system_config.h" // full config_t definition
 
 #include "adb.h"
 #include "asc.h"
 #include "builtin_se30_video.h" // SE/30 built-in video as a NuBus card (slot $E)
-#include "checkpoint_images.h"
-#include "checkpoint_machine.h"
-#include "cpu.h"
-#include "cpu_internal.h" // for cpu->mmu field
-#include "debug.h"
 #include "floppy.h"
 #include "image.h"
-#include "log.h"
 #include "memory.h"
-#include "mmu.h"
 #include "nubus.h"
-#include "rom.h"
+#include "pram_defaults.h"
 #include "rtc.h"
-#include "scc.h"
 #include "scheduler.h"
-#include "scsi.h"
-#include "shell.h"
 #include "via.h"
 
 #include <assert.h>
@@ -49,8 +38,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("se30");
-
 // ============================================================
 // Constants
 // ============================================================
@@ -58,11 +45,8 @@ LOG_USE_CATEGORY_NAME("se30");
 // SE/30 ROM region: 256 KB mirrored across 256 MB.  RAM occupies the
 // first 1 GiB (so RAM_END == ROM_START).
 #define SE30_ROM_START 0x40000000UL
-#define SE30_ROM_END   0x50000000UL
 
 // SE/30 I/O region: 256 MB, mirrored every $20000
-#define SE30_IO_BASE 0x50000000UL
-#define SE30_IO_SIZE 0x10000000UL
 // (I/O window offsets + the dispatcher are shared with IIcx/IIx — see
 // mac030_glue_io.c.)
 
@@ -111,7 +95,6 @@ static inline se30_state_t *se30_state(config_t *cfg) {
 // ============================================================
 
 static void se30_via1_output(void *context, uint8_t port, uint8_t output);
-static void se30_via1_shift_out(void *context, uint8_t byte);
 static void se30_via2_output(void *context, uint8_t port, uint8_t output);
 static void se30_via2_shift_out(void *context, uint8_t byte);
 
@@ -155,63 +138,11 @@ static void se30_set_rom_overlay(config_t *cfg, bool overlay) {
 // VRAM: $FE000000-$FE00FFFF (64 KB, writable)
 // VROM: $FEFFE000-$FEFFFFFF (8 KB, read-only, synthesised declaration ROM)
 // ROM overlay at $00000000 is active on reset.
-static void se30_memory_layout_init(config_t *cfg) {
+// The SE/30's share of the memory layout: its built-in video.  RAM, the ROM
+// window and the I/O dispatcher are the family's (mac030_glue_memory_layout);
+// this is the part only a machine with a framebuffer on the board has.
+static void se30_memory_layout_tail(config_t *cfg) {
     se30_state_t *se30 = se30_state(cfg);
-
-    uint32_t ram_size = cfg->ram_size;
-    uint32_t rom_size = cfg->machine->rom_size;
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-    // ROM data is stored immediately after RAM in the flat buffer
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
-
-    // --- RAM pages: $00000000 - ram_size (writable, with SIMM aliasing) ---
-    //
-    // Physical RAM is mapped directly at $0.  An additional mirror of the full
-    // RAM image is placed immediately above, at ram_size .. 2*ram_size-1.
-    // This emulates the real SE/30 SIMM address-line wrapping: SIMMs ignore
-    // address bits above their capacity, so the byte at <ram_size> is the same
-    // physical cell as the byte at 0.  The ROM's ram_address_test writes to
-    // the top-of-RAM address and checks whether the pattern appears at a lower
-    // alias; without this mirror, the write falls into unmapped space and the
-    // test fails with a spurious address-bus error.
-    //
-    // The ROM's address test table uses BMI rows (alias=$FFFFFFFF) for 1, 4,
-    // and 16 MB — these expect NO aliasing at the boundary.  All other sizes
-    // (2, 5, 8, 32, 64 … MB) use non-BMI rows that expect the top-of-RAM
-    // write to alias back to a lower address.  We map one extra mirror for
-    // non-BMI sizes so the alias check succeeds.
-    uint32_t ram_pages = ram_size >> PAGE_SHIFT;
-
-    // Determine whether SIMM aliasing is needed.  The ROM's ram_address_test
-    // table has two kinds of entries: "BMI" rows (alias = $FFFFFFFF) that
-    // expect NO aliasing, and "non-BMI" rows (alias = an address) that
-    // expect the top-of-RAM write to alias back.  BMI rows correspond to
-    // the GLUE's standard bank sizes (1, 4, 16, 64 MB); non-BMI rows cover
-    // intermediate totals (2, 5, 8, 32 … MB).  We only need a mirror for
-    // sizes whose top-of-RAM entry is non-BMI.
-    // BMI rows in the ROM table: 1 MB ($100000), 4 MB ($400000), 16 MB ($1000000).
-    // All other sizes (including 64 MB) use non-BMI rows that expect aliasing.
-    bool standard_bank = (ram_size == 1 * 1024 * 1024 || ram_size == 4 * 1024 * 1024 || ram_size == 16 * 1024 * 1024);
-    uint32_t map_end_page = standard_bank ? ram_pages : (ram_pages * 2);
-
-    for (uint32_t p = 0; p < map_end_page && (int)p < g_page_count; p++)
-        mac030_fill_page(p, ram_base + ((p % ram_pages) << PAGE_SHIFT), true);
-
-    // --- ROM pages: $40000000 - $4FFFFFFF (256 KB mirrored, read-only) ---
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint32_t rom_start_page = SE30_ROM_START >> PAGE_SHIFT;
-    uint32_t rom_end_page = SE30_ROM_END >> PAGE_SHIFT;
-
-    if (rom_pages > 0) {
-        for (uint32_t p = rom_start_page; p < rom_end_page && (int)p < g_page_count; p++) {
-            uint32_t offset_in_rom = (p - rom_start_page) % rom_pages;
-            mac030_fill_page(p, rom_data + (offset_in_rom << PAGE_SHIFT), false);
-        }
-    }
-
-    // --- I/O dispatcher: $50000000 - $5FFFFFFF ---
-    mac030_io_fill_interface(&se30->io_interface);
-    memory_map_add(cfg->mem_map, SE30_IO_BASE, SE30_IO_SIZE, "SE/30 I/O", &se30->io_interface, &se30->glue_io);
 
     // --- VRAM: $FEE00000 - $FEE0FFFF (64 KB writable) ---
     // Mirror the 64 KB across the 1 MB decode window $FEE00000-$FEEFFFFF
@@ -219,7 +150,7 @@ static void se30_memory_layout_init(config_t *cfg) {
         uint32_t vram_pages = SE30_VRAM_SIZE >> PAGE_SHIFT; // 16 pages
         uint32_t vram_start_page = SE30_VRAM_BASE >> PAGE_SHIFT;
         uint32_t vram_mirror_end = (SE30_VRAM_BASE + 0x100000) >> PAGE_SHIFT; // 1 MB window
-        for (uint32_t p = vram_start_page; p < vram_mirror_end && (int)p < g_page_count; p++) {
+        for (uint32_t p = vram_start_page; p < vram_mirror_end && p < g_page_count; p++) {
             uint32_t offset_in_vram = ((p - vram_start_page) % vram_pages) << PAGE_SHIFT;
             mac030_fill_page(p, se30->vram + offset_in_vram, true);
         }
@@ -229,7 +160,7 @@ static void se30_memory_layout_init(config_t *cfg) {
     {
         uint32_t vrom_pages = SE30_VROM_SIZE >> PAGE_SHIFT; // 8 pages
         uint32_t vrom_start_page = SE30_VROM_BASE >> PAGE_SHIFT;
-        for (uint32_t p = 0; p < vrom_pages && (int)(vrom_start_page + p) < g_page_count; p++)
+        for (uint32_t p = 0; p < vrom_pages && vrom_start_page + p < g_page_count; p++)
             mac030_fill_page(vrom_start_page + p, se30->vrom + (p << PAGE_SHIFT), false);
     }
 
@@ -268,33 +199,14 @@ static void se30_via1_output(void *context, uint8_t port, uint8_t output) {
         // Bits 0-2: sound volume (legacy, ignored for ASC)
     } else {
         // Port B outputs:
-        // Bits 4-5: ADB state lines (ST0/ST1) → ADB controller
-        // Only notify ADB when ST bits actually transition.  The ROM
-        // bit-bangs the RTC via port B bits 0-2 without intending to
-        // change ST; on real hardware the ADB transceiver ignores writes
-        // where the ST lines don't change electrically (BUG-004).
-        if (se30->adb) {
-            uint8_t st_mask = 0x30; // bits 5:4 = ST1:ST0
-            uint8_t old_st = se30->last_port_b & st_mask;
-            uint8_t new_st = output & st_mask;
-            if (new_st != old_st) {
-                adb_port_b_output(se30->adb, output);
-            }
-        }
-        se30->last_port_b = output;
+        // Bits 4-5: ADB state lines (ST0/ST1) -> ADB controller.  The
+        // ST-transition filter and its port-B shadow live in adb.c now.
+        if (se30->adb)
+            adb_port_b_output(se30->adb, output);
         // Bit 3: vADBInt (input — read-only, driven by ADB module)
         // Bits 0-2: RTC chip select/clock/data
-        if (cfg->rtc)
-            rtc_input(cfg->rtc, (output >> 2) & 1, (output >> 1) & 1, output & 1);
+        rtc_via1_pb_output(cfg->rtc, output);
     }
-}
-
-// VIA1 shift-out callback: ADB byte data transfer
-static void se30_via1_shift_out(void *context, uint8_t byte) {
-    config_t *cfg = (config_t *)context;
-    se30_state_t *se30 = se30_state(cfg);
-    if (se30->adb)
-        adb_shift_byte(se30->adb, byte);
 }
 
 // VIA1 IRQ callback: VIA1 drives IPL level 1
@@ -333,14 +245,24 @@ static void se30_via2_shift_out(void *context, uint8_t byte) {
 static void se30_vbl_slot_deassert(void *context, uint64_t data);
 
 static void se30_trigger_vbl(config_t *cfg) {
-    // Assert slot $E on VIA2 port A bit 5 (active-low)
-    via_input(cfg->via2, 0, 5, 0);
-
-    // Pulse both VIA CA1 lines simultaneously, as the GLUE chip does
-    via_input_c(cfg->via1, 0, 0, 0);
-    via_input_c(cfg->via2, 0, 0, 0);
-    via_input_c(cfg->via1, 0, 0, 1);
-    via_input_c(cfg->via2, 0, 0, 1);
+    // TWO DISTINCT INTERRUPTS, and the SE/30 is where the Guide spells the
+    // difference out (2e p.211):
+    //
+    //   "In the Macintosh SE/30, bit 6 (vSyncEnA) enables or disables a slot
+    //    $E interrupt request from the video logic circuits to VIA2.  When
+    //    enabled, this interrupt request is asserted each time the vertical
+    //    blanking signal is asserted...  The vertical synchronization
+    //    interrupt generated in this fashion is distinct from the 60.15 Hz
+    //    interrupt (VBL) request, which is sent by VIA2 to VIA1."
+    //
+    // So: the slot-$E vSync request goes through the SLOT path into VIA2's
+    // /SLOTIRQ aggregate, and the 60.15 Hz VBL lands on VIA1's CA1.  This
+    // used to pulse BOTH CA1 lines "as the GLUE chip does", which forged a
+    // slot interrupt every frame and fought the umbrella level a real card
+    // may be holding, and drove slot $E by poking VIA2 port A directly, so
+    // the bus never saw it.
+    mac030_glue_slot_irq_source(cfg, /*PA5 = slot $E*/ 5, true);
+    mac_vbl_pulse(cfg->via1);
 
     // Deassert slot $E after the vertical blanking interval ends.
     // 15700 cycles ≈ 1 ms at 15.6672 MHz — matches the SE/30 video
@@ -350,6 +272,10 @@ static void se30_trigger_vbl(config_t *cfg) {
     // for some RTC values.
     scheduler_new_cpu_event(cfg->scheduler, &se30_vbl_slot_deassert, cfg, 0, 0, 15700);
 
+    // The built-in card is slot $E on this machine, and the default GLUE path
+    // ticks the bus; overriding trigger_vbl dropped that, so a card with an
+    // on_vbl hook would silently never tick.
+    nubus_tick_vbl(cfg->nubus);
     image_tick_all(cfg);
 }
 
@@ -357,7 +283,10 @@ static void se30_trigger_vbl(config_t *cfg) {
 static void se30_vbl_slot_deassert(void *context, uint64_t data) {
     (void)data;
     config_t *cfg = (config_t *)context;
-    via_input(cfg->via2, 0, 5, 1);
+    // Through the aggregate, exactly as the assert was: poking VIA2 port A
+    // directly would clear the pin but leave the chipset's /SLOTIRQ mask
+    // holding, so CA1 would stay asserted with no source behind it.
+    mac030_glue_slot_irq_source(cfg, 5, false);
 }
 
 // ============================================================
@@ -374,13 +303,17 @@ static void se30_pre_devices(config_t *cfg) {
 
 // Machine-ID straps: PA6 = 1 / PB3 = 0 (SE/30 signature); VIA2 PA3 high; PB6
 // reports the sound jack inserted; control lines idle high.
+// Only the board's genuine straps: everything else this used to write --
+// VIA2 PA0-PA5 and the CA1/CA2/CB2 control lines -- is now the VIA's own
+// idle-high power-on state.
 static void se30_setup_id(config_t *cfg) {
-    via_input(cfg->via2, 1, 3, 0);
-    via_input(cfg->via2, 0, 3, 1);
+    via_input(cfg->via2, 1, 3, 0); // PB3
+    // PB6 = v2SNDEXT, and on the SE/30 it is TIED LOW in hardware "so that the
+    // Sound Manager always operates in stereo mode ... the SE/30 sound circuit
+    // includes a mixer to convert the stereo signal to mono for the internal
+    // speaker" (Guide to the Macintosh Family Hardware 2e, VIA2 port B).  This
+    // models a solder strap, which is why the IIcx and IIx do NOT write it.
     via_input(cfg->via2, 1, 6, 0);
-    via_input_c(cfg->via2, 0, 0, 1); // CA1: NuBus slot IRQ
-    via_input_c(cfg->via2, 0, 1, 1); // CA2: SCSI DRQ
-    via_input_c(cfg->via2, 1, 1, 1); // CB2: SCSI IRQ
 }
 
 // SE/30 slot table: slot $E is the built-in video card; $9..$B are empty PDS
@@ -389,10 +322,9 @@ static const nubus_slot_decl_t se30_slots[] = {
     {.slot = 0x9, .kind = NUBUS_SLOT_EMPTY},
     {.slot = 0xA, .kind = NUBUS_SLOT_EMPTY},
     {.slot = 0xB, .kind = NUBUS_SLOT_EMPTY},
-    // Default: the generic sibling ("se30", built-in GS declaration ROM) so
-    // every SE/30 boots with working video and no vROM file; video_card=
-    // "builtin_se30_video" picks the real kind when a dump is offered.
-    {.slot = 0xE, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "se30"},
+    // The built-in video: Apple's onboard-video ROM when a dump is offered,
+    // else the emulator's substitute, so every SE/30 boots with working video.
+    {.slot = 0xE, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "builtin_se30_video"},
     {0},
 };
 
@@ -408,13 +340,17 @@ static void se30_post_nubus(config_t *cfg) {
     assert(se30->video_card != NULL);
     se30->vram = builtin_se30_video_vram(se30->video_card);
     se30->vrom = builtin_se30_video_vrom(se30->video_card);
-    if (!se30->vram || !se30->vrom) {
-        fprintf(stderr, "Error: SE/30 Video ROM not found.\n"
-                        "The SE/30 emulator requires a real VROM file for proper operation.\n"
-                        "Load one with machine.vrom.load, or make it available where the platform\n"
-                        "offers vROM files (e.g. next to the ROM file).\n");
-        exit(1);
-    }
+    // Unreachable by construction: card_init callocs both buffers and
+    // returns -1 if either fails, so a card that exists has them, and the
+    // assert above already covers a missing card.  An assert rather than the
+    // process kill this used to be -- machine_boot_apply's whole contract is
+    // that a rejected boot leaves the running machine untouched (it validates
+    // before system_destroy and closes transferred media if system_create
+    // fails), and exit(1) from inside substrate->init() defeated all of it:
+    // in the browser it killed the emulator, and a machine.restart's in-transit
+    // media handles went with it.  (The card always comes up: without Apple's
+    // onboard-video ROM it runs its substitute.)
+    GS_ASSERTF(se30->vram && se30->vrom, "SE/30 slot-$E card has no %s", se30->vram ? "vROM" : "VRAM");
     memory_map_host_region(cfg->mem_map, "se30_vram", se30->vram, SE30_VRAM_BASE, SE30_VRAM_SIZE, /*writable*/ true);
     memory_map_host_region(cfg->mem_map, "se30_vrom", se30->vrom, SE30_VROM_PHYS, SE30_VROM_SIZE, /*writable*/ false);
     memory_map_host_region_alias(cfg->mem_map, SE30_VRAM_PHYS_ALT, SE30_VRAM_BASE);
@@ -423,66 +359,49 @@ static void se30_post_nubus(config_t *cfg) {
 
 // Restore the card-owned VRAM/VROM bytes from a checkpoint (before the shared
 // MMU-register restore that mac030_glue_init performs).
-static void se30_ckpt_restore_extra(config_t *cfg, checkpoint_t *cp) {
-    se30_state_t *se30 = se30_state(cfg);
-    system_read_checkpoint_data(cp, se30->vram, SE30_VRAM_SIZE);
-    checkpoint_read_file(cp, se30->vrom, SE30_VROM_SIZE, NULL);
-}
 
 // SE/30 board: GLUE family with built-in slot-$E video; bus-error window covers
 // only slots $9..$D (slot $E is the mapped built-in video).
-static const mac030_board_desc_t se30_desc = {
+static const mac030_board_desc_t se30_board_desc = {
     .chipset = "GLUE",
     .rom_base = 0x40000000UL,
     .rom_end = 0x50000000UL,
     .io_ranges = glue_io_ranges,
     .io_mirror_mask = MAC030_GLUE_IO_MIRROR,
     .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
-    .slots = se30_slots,
-    .bus_err_lo = 0xF9000000,
-    .bus_err_hi = 0xFDFFFFFF,
+    .bus_err_lo = NUBUS_BERR_LO,
+    .bus_err_hi = NUBUS_BERR_HI_EXCL_SLOT_E, // the PDS lives in $E
     .asc_mix = ASC_MIX_SUM, // SE/30 board sums both channels to the speaker
 };
 
-// VRAM + VROM save (symmetric with se30_ckpt_restore_extra); defined below.
-static void se30_ckpt_save_extra(config_t *cfg, checkpoint_t *cp);
-
 static const mac030_glue_board_t se30_board = {
-    .desc = &se30_desc,
+    .desc = &se30_board_desc,
     .via1_output = se30_via1_output,
-    .via1_shift_out = se30_via1_shift_out,
+    // No VIA1 shift-out routing: adb.c reads the VIA's shift register
+    // directly at each port-B ST transition, because in mode 7 the ADB
+    // transceiver clocks the shift, not the VIA's internal timer, and the
+    // ROM's SR writes during interrupt handling fire the callback
+    // spuriously (BUG-004).  via.c tolerates a NULL here.
+    .via1_shift_out = NULL,
     .via2_output = se30_via2_output,
     .via2_shift_out = se30_via2_shift_out,
     .setup_id = se30_setup_id,
-    .memory_layout = se30_memory_layout_init,
+    .memory_layout_tail = se30_memory_layout_tail,
     .pre_devices = se30_pre_devices,
     .post_nubus = se30_post_nubus,
-    .ckpt_restore_extra = se30_ckpt_restore_extra,
-    .ckpt_save_extra = se30_ckpt_save_extra, // built-in slot-$E video VRAM + VROM
     .trigger_vbl = se30_trigger_vbl, // built-in video VBL (slot-$E assert)
 };
 
 // ============================================================
 // Checkpoint
 // ============================================================
-
-// SE/30 board ckpt_save_extra hook: the built-in slot-$E video's VRAM + VROM,
-// written immediately before the MMU block — symmetric with the restore order
-// in se30_ckpt_restore_extra (the shared glue_checkpoint_save handles the rest
-// of the machine state).
-static void se30_ckpt_save_extra(config_t *cfg, checkpoint_t *cp) {
-    se30_state_t *se30 = se30_state(cfg);
-
-    // Save VRAM contents.  The bytes are owned by the slot-$E card; se30->vram
-    // is a borrowed pointer into that buffer, so the memcpy hits the right
-    // backing store.
-    system_write_checkpoint_data(cp, se30->vram, SE30_VRAM_SIZE);
-
-    // Save VROM (content embedded in consolidated checkpoints, path reference in
-    // quick).  The path lives on the card too.
-    const char *vrom_path = builtin_se30_video_vrom_path(se30->video_card);
-    checkpoint_write_file(cp, vrom_path ? vrom_path : "");
-}
+//
+// Nothing here any more.  The built-in slot-$E video's VRAM and VROM used to be
+// hand-serialised through the board's ckpt_save_extra / ckpt_restore_extra
+// hooks -- a per-machine workaround for a generic mechanism that was missing.
+// builtin_se30_video.c implements the ordinary NuBus card checkpoint ops now,
+// so the shared nubus_checkpoint_save/_restore carry them and both hooks are
+// gone from mac030_glue_board_t.
 
 // ============================================================
 // Machine descriptor
@@ -491,16 +410,18 @@ static void se30_ckpt_save_extra(config_t *cfg, checkpoint_t *cp) {
 // SE/30 configuration-dialog metadata.
 static const uint32_t se30_ram_options_kb[] = {1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 0};
 
+// The SE/30 shipped with its external floppy port empty, but a second drive
+// on it is what a two-drive SE/30 has always been here; keep it, removable.
 static const struct floppy_slot se30_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
-    {.label = "External FD1", .kind = FLOPPY_HD},
+    {.label = "Internal floppy drive", .kind = FLOPPY_HD},
+    {.label = "External floppy drive", .kind = FLOPPY_HD, .optional = true},
     {0},
 };
 
-static const struct scsi_slot se30_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
+// Built-in video: the slot-$E pseudo-card's monitor, the built-in 9" screen.
+static const builtin_video_desc_t se30_builtin_video = {
+    .detail = "SE/30 video, slot $E",
+    .slot_monitors = true,
 };
 
 const hw_profile_t machine_se30 = {
@@ -521,9 +442,11 @@ const hw_profile_t machine_se30 = {
     // Configuration-dialog shape
     .ram_options = se30_ram_options_kb,
     .floppy_slots = se30_floppy_slots,
-    .scsi_slots = se30_scsi_slots,
-    .has_cdrom = true,
-    .cdrom_id = 3,
+    .storage = mac_storage_scsi_hd_bay,
+    .default_storage = mac_default_storage_hd0_cd3,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
+    .appletalk = true,
+    .builtin_video = &se30_builtin_video,
 
     // Built-in slot-$E video card.  Exposed in the profile so the config
     // dialog reads the VROM requirement from the card (it needs the SE/30
@@ -531,6 +454,7 @@ const hw_profile_t machine_se30 = {
     // nubus_init().
     .nubus_slots = se30_slots,
 
+    .pram = &pram_defaults_mac_ii,
     .substrate = &glue_substrate, // shared GLUE-family substrate
     .board = &se30_board,
 };

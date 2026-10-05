@@ -1,0 +1,31 @@
+/* ====== User preferences over the tokens ======
+   Token overrides for the user's motion and contrast settings.  They sit in
+   the tokens layer after every skin (main.ts imports this file after the
+   registry), so they win over any skin's values. */
+@layer gs.tokens {
+  /* Reduced motion: every duration token collapses, so no component needs a
+     media query of its own for its transitions. */
+  @media (prefers-reduced-motion: reduce) {
+    :root {
+      --gs-duration-instant: 0.01ms;
+      --gs-duration-fast: 0.01ms;
+      --gs-duration-quick: 0.01ms;
+      --gs-duration-base: 0.01ms;
+      --gs-duration-slow: 0.01ms;
+      --gs-duration-slower: 0.01ms;
+      --gs-duration-spin: 0.01ms;
+      --gs-duration-pulse: 0.01ms;
+      --gs-duration-indeterminate: 0.01ms;
+    }
+  }
+
+  /* Forced colours (Windows high contrast): the system's own focus and
+     selection. */
+  @media (forced-colors: active) {
+    :root {
+      --gs-focus-ring: Highlight;
+      --gs-row-selected: Highlight;
+      --gs-row-selected-fg: HighlightText;
+    }
+  }
+}

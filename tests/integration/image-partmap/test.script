@@ -3,16 +3,14 @@
 # relative to tests/integration/image-partmap/.
 
 # Human-readable partition map.
-storage.partmap ../../data/aux/hd-with-aux-partition.img
+files.partmap ../../data/aux/hd-with-aux-partition.img
 
 # Format probe — exercises the APM sniff path.
-storage.probe ../../data/aux/hd-with-aux-partition.img
+files.probe ../../data/aux/hd-with-aux-partition.img
 
-# JSON output path (catches formatter regressions).
-storage.partmap ../../data/aux/hd-with-aux-partition.img --json
-
-# Phase 2 stubs — must return an error but not crash.
-storage.mounts
-storage.unmount ../../data/aux/hd-with-aux-partition.img
+# Mount table: partmap and probe open the image directly, so it was never
+# mounted -- find reports no mount rather than failing.
+echo "cached mounts: ${files.mounts.count}"
+assert files.mounts.find("../../data/aux/hd-with-aux-partition.img") == -1 "image was never mounted"
 
 quit

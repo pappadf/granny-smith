@@ -2,8 +2,8 @@
 // Copyright (c) pappadf
 
 // em_video.c
-// WebGL2 renderer for the emulator's display.  Step 5 of the IIcx/IIx
-// proposal (§3.3.3): format-aware shader pipeline + variable canvas.
+// WebGL2 renderer for the emulator's display: format-aware shader pipeline
+// + variable canvas.
 // Reads the active `display_t` from system_display() each frame and
 // consumes its dirty flags:
 //
@@ -15,9 +15,9 @@
 //   * clut_dirty: re-upload the CLUT texture (indexed formats only)
 //   * response_dirty: re-upload the per-channel CRT response LUT
 //
-// Full pixel paths exist for 1bpp, 8bpp (indexed), and 16bpp/32bpp
-// (direct colour — the 8•24 GC's Thousands/Millions runtime modes).
-// 2bpp/4bpp remain grey stubs (no shipping card boots into them).
+// Full pixel paths exist for every pixel_format_t.  2 and 4 bpp were grey
+// stubs until 2026-09-16 — see FS_2BPP for why "no shipping card boots into
+// them" was the wrong test.
 
 #include "em.h"
 
@@ -29,16 +29,37 @@
 #include <string.h>
 
 #include "display.h"
+#include "log.h"
 #include "system.h"
+#include "event/gs_event.h"
+
+// The renderer is part of the display path, so it shares its category:
+// `log.set("video", N)` turns on the producers AND the consumer.
+// These five messages used to be bare printfs, so they
+// could not be levelled, filed or redirected at all.
+LOG_USE_CATEGORY_NAME("video");
 
 // ============================================================================
 // Internal state
 // ============================================================================
 
-// Maximum supported framebuffer area.  Chosen to fit the largest mode the
-// proposal scopes (1152x870 = 1MP).  We still allocate per-display, but the
+// Maximum supported framebuffer area.  Chosen to fit a 1152x870 (1 MP)
+// mode at 32 bpp.  We still allocate per-display, but the
 // scratch upload buffer is sized once.
 #define MAX_FB_BYTES (1152u * 870u * 4u)
+
+// Does this descriptor's raster fit the scratch buffer?  A larger one is
+// refused, not clamped: the clamp bounded the memcpy INTO the scratch but
+// glTexSubImage2D still read stride*height back OUT of it, so a mode past the
+// ceiling (DAFB reaches stride 16380 x 2048, the Mach64 32736) read past the
+// static array either way -- and half a frame is not a useful degradation.
+// Past that ceiling it is the producers' job to keep stride*height inside the
+// buffer they point at: most through display_set_scanout (the 8*24 GC's
+// VidComm too), the Voodoo2 by clamping its screen to its scanout allocation.
+// This is the consumer's own ceiling, not the guarantee that a descriptor is backed.
+static bool fb_fits_scratch(const display_t *d) {
+    return (uint64_t)d->stride * d->height <= MAX_FB_BYTES;
+}
 
 // WebGL resources
 static EMSCRIPTEN_WEBGL_CONTEXT_HANDLE s_ctx = 0;
@@ -46,11 +67,14 @@ static GLuint s_vbo = 0;
 static GLuint s_fb_tex = 0; // framebuffer texture (format depends on pixel_format)
 static GLuint s_clut_tex = 0; // 256x1 RGBA texture for indexed-format CLUTs
 static GLuint s_response_tex = 0; // 256x3 R8 texture — per-channel CRT response LUT
+// The identity CRT response (every row 0..255), filled once in init_gl and
+// uploaded whenever the display's monitor has no response table of its own.
+static uint8_t s_identity_response[3 * 256];
 
 // Per-format shader programs.  Indexed by pixel_format_t.  A NULL slot means
 // "no program for this format yet" — fall back to the 1bpp program with
 // black output to keep the renderer alive.
-#define NUM_FORMATS 6
+#define NUM_FORMATS 7
 static GLuint s_progs[NUM_FORMATS] = {0};
 
 // Per-program uniform locations, queried at link time.  -1 if the uniform
@@ -198,15 +222,99 @@ static const char *FS_16BPP =
     "    fragColor    = vec4(r_out, g_out, b_out, 1.0);\n"
     "}\n";
 
-// Stub for 2/4 bpp indexed: same shape as 8bpp but unpacking a 2- or
-// 4-bit field per pixel from packed bytes.  v1 ships them as fallback
-// programs that emit grey so the canvas isn't blank when an
-// unimplemented format hits the pipeline.
-static const char *FS_GRAY_STUB = "#version 300 es\n"
-                                  "precision mediump float;\n"
-                                  "in  vec2 v_uv;\n"
-                                  "out vec4 fragColor;\n"
-                                  "void main() { fragColor = vec4(0.5, 0.5, 0.5, 1.0); }\n";
+// 16 bpp direct (PIXEL_16BPP_565): RRRRRGGGGGGBBBBB stored big-endian, so
+// the two bytes per pixel are [hi, lo] with hi = RRRRRGGG, lo = GGGBBBBB.
+// Same R8 texture walk as the 5-5-5 shader; the green channel is 6 bits
+// wide so it scales via /63 where red and blue scale via /31.
+static const char *FS_16BPP_565 =
+    "#version 300 es\n"
+    "precision highp float;\n"
+    "uniform sampler2D u_texture;\n"
+    "uniform sampler2D u_response;\n"
+    "uniform vec2 u_fb_size;\n"
+    "uniform float u_stride;\n"
+    "in  vec2 v_uv;\n"
+    "out vec4 fragColor;\n"
+    "void main() {\n"
+    "    vec2 px      = v_uv * u_fb_size;\n"
+    "    float x      = floor(px.x);\n"
+    "    float y      = floor(px.y);\n"
+    "    float row    = (y + 0.5) / u_fb_size.y;\n"
+    "    float hi     = floor(texture(u_texture, vec2((2.0 * x + 0.5) / u_stride, row)).r * 255.0 + 0.5);\n"
+    "    float lo     = floor(texture(u_texture, vec2((2.0 * x + 1.5) / u_stride, row)).r * 255.0 + 0.5);\n"
+    "    float v      = hi * 256.0 + lo;\n"
+    "    float r5     = floor(v / 2048.0);\n"
+    "    float g6     = mod(floor(v / 32.0), 64.0);\n"
+    "    float b5     = mod(v, 32.0);\n"
+    "    float r_out  = texture(u_response, vec2(r5 / 31.0, 0.5 / 3.0)).r;\n"
+    "    float g_out  = texture(u_response, vec2(g6 / 63.0, 1.5 / 3.0)).r;\n"
+    "    float b_out  = texture(u_response, vec2(b5 / 31.0, 2.5 / 3.0)).r;\n"
+    "    fragColor    = vec4(r_out, g_out, b_out, 1.0);\n"
+    "}\n";
+
+// 2 bpp and 4 bpp indexed.  The 8 bpp shader with the byte unpacked into four
+// or two pixels, MSB first -- the Mac convention display.h's decoder follows.
+//
+// These were grey stubs, justified as "no shipping card boots into them".
+// Booting is not the only way in: six producers switch into
+// 2 and 4 bpp at runtime from the Monitors control panel, and PNG capture has
+// always decoded them correctly -- so the browser showed a flat grey field for
+// a desktop the goldens rendered properly.  The divergence was in the renderer
+// and only there; no captured pixel changes with this.
+//
+// The unpack stays in float arithmetic: the byte arrives normalised from an R8
+// texture, so recover it, divide down to the wanted field, take the remainder.
+static const char *FS_2BPP = "#version 300 es\n"
+                             "precision mediump float;\n"
+                             "uniform sampler2D u_texture;\n"
+                             "uniform sampler2D u_clut;\n"
+                             "uniform sampler2D u_response;\n"
+                             "uniform vec2 u_fb_size;\n"
+                             "uniform float u_stride;\n"
+                             "in  vec2 v_uv;\n"
+                             "out vec4 fragColor;\n"
+                             "void main() {\n"
+                             "    vec2 px      = v_uv * u_fb_size;\n"
+                             "    float x      = floor(px.x);\n"
+                             "    float y      = floor(px.y);\n"
+                             "    float byte_x = floor(x / 4.0);\n"
+                             "    vec2 tc      = vec2((byte_x + 0.5) / u_stride,\n"
+                             "                        (y + 0.5) / u_fb_size.y);\n"
+                             "    float b      = floor(texture(u_texture, tc).r * 255.0 + 0.5);\n"
+                             "    float shift  = (4.0 - 1.0 - mod(x, 4.0)) * 2.0;\n"
+                             "    float idx    = mod(floor(b / pow(2.0, shift)), 4.0);\n"
+                             "    vec4 entry   = texture(u_clut, vec2((idx + 0.5) / 256.0, 0.5));\n"
+                             "    float r_out  = texture(u_response, vec2(entry.r, 0.5 / 3.0)).r;\n"
+                             "    float g_out  = texture(u_response, vec2(entry.g, 1.5 / 3.0)).r;\n"
+                             "    float b_out  = texture(u_response, vec2(entry.b, 2.5 / 3.0)).r;\n"
+                             "    fragColor    = vec4(r_out, g_out, b_out, 1.0);\n"
+                             "}\n";
+
+static const char *FS_4BPP = "#version 300 es\n"
+                             "precision mediump float;\n"
+                             "uniform sampler2D u_texture;\n"
+                             "uniform sampler2D u_clut;\n"
+                             "uniform sampler2D u_response;\n"
+                             "uniform vec2 u_fb_size;\n"
+                             "uniform float u_stride;\n"
+                             "in  vec2 v_uv;\n"
+                             "out vec4 fragColor;\n"
+                             "void main() {\n"
+                             "    vec2 px      = v_uv * u_fb_size;\n"
+                             "    float x      = floor(px.x);\n"
+                             "    float y      = floor(px.y);\n"
+                             "    float byte_x = floor(x / 2.0);\n"
+                             "    vec2 tc      = vec2((byte_x + 0.5) / u_stride,\n"
+                             "                        (y + 0.5) / u_fb_size.y);\n"
+                             "    float b      = floor(texture(u_texture, tc).r * 255.0 + 0.5);\n"
+                             "    float shift  = (2.0 - 1.0 - mod(x, 2.0)) * 4.0;\n"
+                             "    float idx    = mod(floor(b / pow(2.0, shift)), 16.0);\n"
+                             "    vec4 entry   = texture(u_clut, vec2((idx + 0.5) / 256.0, 0.5));\n"
+                             "    float r_out  = texture(u_response, vec2(entry.r, 0.5 / 3.0)).r;\n"
+                             "    float g_out  = texture(u_response, vec2(entry.g, 1.5 / 3.0)).r;\n"
+                             "    float b_out  = texture(u_response, vec2(entry.b, 2.5 / 3.0)).r;\n"
+                             "    fragColor    = vec4(r_out, g_out, b_out, 1.0);\n"
+                             "}\n";
 
 // ============================================================================
 // Static helpers
@@ -222,7 +330,7 @@ static GLuint compile_shader(GLenum type, const char *src) {
     if (!ok) {
         char log[512];
         glGetShaderInfoLog(s, sizeof log, NULL, log);
-        printf("Shader error: %s\n", log);
+        LOG(0, "shader compile failed: %s", log);
         return 0;
     }
     return s;
@@ -244,7 +352,7 @@ static GLuint link_program(const char *vs_src, const char *fs_src, prog_uniforms
     if (!ok) {
         char log[512];
         glGetProgramInfoLog(prog, sizeof log, NULL, log);
-        printf("Link error: %s\n", log);
+        LOG(0, "shader link failed: %s", log);
         return 0;
     }
     glDeleteShader(vs);
@@ -259,16 +367,15 @@ static GLuint link_program(const char *vs_src, const char *fs_src, prog_uniforms
     return prog;
 }
 
-// Build the per-format program table.  Programs that share a fragment
-// shader (the gray stubs) get distinct GL programs to keep uniform
-// management simple.
+// Build the per-format program table: one program per pixel_format_t.
 static void init_programs(void) {
     s_progs[PIXEL_1BPP_MSB] = link_program(VS_SHARED, FS_1BPP, &s_uniforms[PIXEL_1BPP_MSB]);
-    s_progs[PIXEL_2BPP_MSB] = link_program(VS_SHARED, FS_GRAY_STUB, &s_uniforms[PIXEL_2BPP_MSB]);
-    s_progs[PIXEL_4BPP_MSB] = link_program(VS_SHARED, FS_GRAY_STUB, &s_uniforms[PIXEL_4BPP_MSB]);
+    s_progs[PIXEL_2BPP_MSB] = link_program(VS_SHARED, FS_2BPP, &s_uniforms[PIXEL_2BPP_MSB]);
+    s_progs[PIXEL_4BPP_MSB] = link_program(VS_SHARED, FS_4BPP, &s_uniforms[PIXEL_4BPP_MSB]);
     s_progs[PIXEL_8BPP] = link_program(VS_SHARED, FS_8BPP, &s_uniforms[PIXEL_8BPP]);
     s_progs[PIXEL_16BPP_555] = link_program(VS_SHARED, FS_16BPP, &s_uniforms[PIXEL_16BPP_555]);
     s_progs[PIXEL_32BPP_XRGB] = link_program(VS_SHARED, FS_32BPP, &s_uniforms[PIXEL_32BPP_XRGB]);
+    s_progs[PIXEL_16BPP_565] = link_program(VS_SHARED, FS_16BPP_565, &s_uniforms[PIXEL_16BPP_565]);
 }
 
 // Pick the GL program that best matches `format`, with a 1bpp fallback
@@ -306,7 +413,8 @@ static void allocate_fb_texture(pixel_format_t format, uint32_t stride, uint32_t
         src_fmt = GL_RED;
         break;
     case PIXEL_16BPP_555:
-        internal = GL_R8; // step 6 / JMFB driver replaces this with RGB565
+    case PIXEL_16BPP_565:
+        internal = GL_R8; // raw big-endian bytes; FS_16BPP* decode the pixel
         src_fmt = GL_RED;
         tex_width = stride;
         break;
@@ -336,10 +444,7 @@ static void upload_fb(const display_t *d) {
     GLenum src_fmt = (d->format == PIXEL_32BPP_XRGB) ? GL_RGBA : GL_RED;
     uint32_t tex_width = (d->format == PIXEL_32BPP_XRGB) ? d->stride / 4 : d->stride;
 
-    size_t bytes = (size_t)d->stride * d->height;
-    if (bytes > sizeof(s_upload_scratch))
-        bytes = sizeof(s_upload_scratch);
-    memcpy(s_upload_scratch, d->bits, bytes);
+    memcpy(s_upload_scratch, d->bits, (size_t)d->stride * d->height);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, s_fb_tex);
@@ -366,37 +471,20 @@ static void upload_clut(const display_t *d) {
 // Resize the canvas element + viewport to match the live display.  The
 // CSS scale (zoom) is applied JS-side via the screen-wrapper element; here
 // we set the *intrinsic* canvas resolution so 1 canvas pixel == 1 emulator
-// pixel.
-//
-// Notifies the JS layout layer via Module.onScreenResize(width, height)
-// on every transition so the page can reflow its screen-wrapper element
-// to match the new aspect ratio / size.  Without this the wrapper stays
-// at the previous size — the canvas's intrinsic resolution updates but
-// CSS-driven display dimensions don't, and the page shows a stretched /
-// letterboxed framebuffer (this surfaced for the IIcx when the JMFB
-// driver flipped from the SE/30-default 512×342 to 640×480).  Mirrors
-// the change-only pattern used by em_main_tick's onRunStateChange push.
-static void resize_canvas(uint32_t width, uint32_t height, uint32_t par_w, uint32_t par_h) {
-    // The canvas's intrinsic resolution is always the raw framebuffer size; the
-    // pixel aspect ratio only changes the CSS display size, applied JS-side.
-    if (par_w == 0)
-        par_w = 1;
-    if (par_h == 0)
-        par_h = 1;
+// pixel.  The page learns the geometry from the screen event, not from here.
+static void resize_canvas(uint32_t width, uint32_t height) {
     emscripten_set_canvas_element_size("#screen", (int)width, (int)height);
     glViewport(0, 0, (int)width, (int)height);
-    static uint32_t last_w = 0, last_h = 0, last_pw = 0, last_ph = 0;
-    if (width != last_w || height != last_h || par_w != last_pw || par_h != last_ph) {
-        last_w = width;
-        last_h = height;
-        last_pw = par_w;
-        last_ph = par_h;
-        // clang-format off
-        MAIN_THREAD_ASYNC_EM_ASM(
-            { if (typeof Module.onScreenResize === 'function') Module.onScreenResize($0, $1, $2, $3); },
-            (int)width, (int)height, (int)par_w, (int)par_h);
-        // clang-format on
-    }
+}
+
+// Announce the display's geometry to the page (a `screen` state event):
+// the framebuffer size and the monitor's pixel aspect ratio, so the page can
+// reflow its screen wrapper and show non-square pixels (the Lisa's 720x364
+// raster is 2:3).  Sent where a shape change is consumed and once when a
+// machine is attached; the page holds the only copy.
+static void announce_geometry(const display_t *d) {
+    gs_event_emitf(GS_EVENT_STATE, "{\"event\":\"screen\",\"width\":%u,\"height\":%u,\"par_w\":%u,\"par_h\":%u}",
+                   d->width, d->height, d->par_w ? d->par_w : 1u, d->par_h ? d->par_h : 1u);
 }
 
 // ============================================================================
@@ -410,7 +498,9 @@ static void init_gl(void) {
     attr.minorVersion = 0;
     s_ctx = emscripten_webgl_create_context("#screen", &attr);
     if (s_ctx <= 0) {
-        printf("WebGL 2 not supported—cannot run.");
+        // No newline on the old printf here, so this one ran into whatever came
+        // next in the output.  LOG ends its own lines.
+        LOG(0, "WebGL 2 not supported - cannot run");
         return;
     }
     emscripten_webgl_make_context_current(s_ctx);
@@ -447,33 +537,32 @@ static void init_gl(void) {
     // assigns its monitor's table.
     glGenTextures(1, &s_response_tex);
     glBindTexture(GL_TEXTURE_2D, s_response_tex);
-    uint8_t identity[3 * 256];
     for (int c = 0; c < 3; c++)
         for (int v = 0; v < 256; v++)
-            identity[c * 256 + v] = (uint8_t)v;
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, 256, 3, 0, GL_RED, GL_UNSIGNED_BYTE, identity);
+            s_identity_response[c * 256 + v] = (uint8_t)v;
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, 256, 3, 0, GL_RED, GL_UNSIGNED_BYTE, s_identity_response);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 }
 
-// Upload the per-channel CRT response LUT.  If the display source has a
-// non-NULL crt_response pointer, upload its 3x256 bytes; otherwise upload
-// the identity table so the response pass is a no-op for monitors whose
-// gamma is near-identity (12"/13" RGB, Portrait B&W).
+// Upload the per-channel response LUT: the card's direct-colour DAC table
+// (dac_lut) followed by the monitor's CRT response (crt_response), composed
+// into one 3x256 table.  With neither, the identity table makes the response
+// pass a no-op (12"/13" RGB, Portrait B&W).
 static void upload_response(const display_t *d) {
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, s_response_tex);
-    if (d->crt_response) {
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 3, GL_RED, GL_UNSIGNED_BYTE, d->crt_response);
-    } else {
-        uint8_t identity[3 * 256];
+    const uint8_t *table = d->crt_response ? &d->crt_response[0][0] : s_identity_response;
+    static uint8_t composed[3][256];
+    if (d->dac_lut) {
         for (int c = 0; c < 3; c++)
             for (int v = 0; v < 256; v++)
-                identity[c * 256 + v] = (uint8_t)v;
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 3, GL_RED, GL_UNSIGNED_BYTE, identity);
+                composed[c][v] = table[c * 256 + d->dac_lut[c][v]];
+        table = &composed[0][0];
     }
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 3, GL_RED, GL_UNSIGNED_BYTE, table);
 }
 
 // Consume the display's dirty flags and re-bind / re-upload exactly what
@@ -483,6 +572,30 @@ static void upload_response(const display_t *d) {
 static bool refresh_from_display(display_t *d, bool force_full) {
     if (!d || !d->bits)
         return false;
+
+    // Refuse a format this build has no shader for, rather than rendering it
+    // through another format's program.
+    //
+    // program_for() and uniforms_for() fall back to the 1 bpp program when a
+    // slot is 0 (a shader that failed to compile -- a driver quirk or a WebGL2
+    // precision difference), but allocate_fb_texture(), the u_stride uniform
+    // and upload_fb()'s src_fmt / tex_width all keep using the REAL format.
+    // So the 1 bpp shader sampled an RGBA8 texture with byte-index maths.
+    // Agreeing on 1 bpp instead would only make the garbage self-consistent;
+    // refusing says which format is missing, which is the same call
+    // display_set_scanout and the 8*24 GC blitter make -- and it also covers
+    // the case where the 1 bpp program is itself the one that failed and
+    // glUseProgram(0) silently unbinds everything.
+    if (d->format < 0 || (int)d->format >= NUM_FORMATS || !s_progs[d->format]) {
+        static bool warned[NUM_FORMATS + 1];
+        int slot = (d->format >= 0 && (int)d->format < NUM_FORMATS) ? (int)d->format : NUM_FORMATS;
+        if (!warned[slot]) {
+            warned[slot] = true;
+            LOG(0, "renderer: no shader program for %s -- frames in this format are refused",
+                display_format_name(d->format));
+        }
+        return false;
+    }
 
     bool shape = force_full || d->shape_dirty;
     bool fb = force_full || d->fb_dirty || shape;
@@ -512,7 +625,11 @@ static bool refresh_from_display(display_t *d, bool force_full) {
             glUniform1i(u->u_response, 2);
         }
         allocate_fb_texture(d->format, d->stride, d->height);
-        resize_canvas(d->width, d->height, d->par_w, d->par_h);
+        resize_canvas(d->width, d->height);
+        // A producer changed the shape: tell the page (a forced full redraw
+        // alone changed nothing it shows).
+        if (d->shape_dirty)
+            announce_geometry(d);
     }
 
     if (fb)
@@ -536,7 +653,7 @@ static void draw(void) {
     glDrawArrays(GL_TRIANGLES, 0, 6);
     GLenum err = glGetError();
     if (err != GL_NO_ERROR)
-        printf("GL error: %d\n", err);
+        LOG(1, "GL error: %d", err);
 }
 
 // ============================================================================
@@ -547,10 +664,71 @@ void em_video_init(void) {
     init_gl();
 }
 
+// The Voodoo2 WebGPU overlay sits over this canvas while the takeover
+// presents.  It is HIDDEN from here — after this canvas has drawn a
+// frame that is not the takeover's — never from the GPU worker at the
+// moment it stops presenting: at that moment the canvas underneath
+// still holds whatever was last uploaded before the takeover engaged,
+// a frame from a second or more ago, and hiding the overlay first
+// flashed it (the background checkpoint's disengage made it visible
+// every 15 s).  Shown the same way on the other side: the worker posts
+// the overlay visible only after its first present.
+static bool s_overlay_up;
+
+static void overlay_hide_if_up(void) {
+    if (!s_overlay_up)
+        return;
+    s_overlay_up = false;
+    // clang-format off
+    MAIN_THREAD_ASYNC_EM_ASM({ if (typeof Module.onVoodooGpuOverlay === 'function') Module.onVoodooGpuOverlay(0); });
+    // clang-format on
+}
+
+// The canvas was blanked because the display had no framebuffer: the next
+// framebuffer is drawn in full, whatever its dirty flags say.
+static bool s_blanked;
+
+// No picture (no display, or one without a framebuffer -- the ANS between
+// a restart and Open Firmware reprogramming the Cirrus): show black, as a
+// monitor with no signal would, instead of the last frame.  Once per
+// transition.
+static void blank_canvas(void) {
+    if (s_blanked || s_ctx <= 0)
+        return;
+    s_blanked = true;
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glClearColor(0.25f, 0.25f, 0.25f, 1.0f);
+}
+
 void em_video_update(void) {
     display_t *d = system_display();
-    if (!d || !d->bits)
+    if (!d || !d->bits) {
+        overlay_hide_if_up(); // no display at all: nothing for the overlay to cover
+        blank_canvas();
         return;
+    }
+    if (!fb_fits_scratch(d)) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            LOG(0, "renderer: mode %ux%u stride %u exceeds the %u-byte upload buffer; screen frozen", d->width,
+                d->height, d->stride, (unsigned)MAX_FB_BYTES);
+        }
+        return;
+    }
+
+    // A frame presented by someone else (the Voodoo2's WebGPU overlay):
+    // keep the canvas at the card's geometry so the page lays out the
+    // overlay over it, but never touch the pixels — the stale scanout
+    // underneath is hidden, and comparing it per frame would be wasted
+    // work.
+    if (d->presented_externally) {
+        s_overlay_up = true;
+        if (d->shape_dirty && refresh_from_display(d, /*force_full*/ false))
+            draw();
+        return;
+    }
 
     // The producer-side dirty flags (fb_dirty / clut_dirty / response_dirty)
     // are undercomplete: pixel writes that come straight from emulated
@@ -567,37 +745,44 @@ void em_video_update(void) {
     // coupled to actual byte-level change, never to producer signaling
     // quirks. memcmp is well under a millisecond even at the largest
     // mode (1152x870 @ 8 bpp = 1 MB) and is cache-friendly.
-    bool content_changed = false;
-    size_t bytes = (size_t)d->stride * d->height;
-    if (bytes > sizeof(s_upload_scratch))
-        bytes = sizeof(s_upload_scratch);
-    if (memcmp(s_upload_scratch, d->bits, bytes) != 0)
-        content_changed = true;
+    bool content_changed = memcmp(s_upload_scratch, d->bits, (size_t)d->stride * d->height) != 0;
 
     // shape_dirty signals a texture-allocation change (resolution /
     // format / stride) — must always be honoured. clut_dirty /
     // response_dirty change pixel mapping without changing fb bytes,
     // so we trust those flags directly.
-    if (!content_changed && !d->shape_dirty && !d->clut_dirty && !d->response_dirty)
+    if (!s_blanked && !content_changed && !d->shape_dirty && !d->clut_dirty && !d->response_dirty) {
+        overlay_hide_if_up(); // the canvas already shows this frame
         return;
+    }
 
     if (content_changed)
         d->fb_dirty = true;
 
-    if (refresh_from_display(d, /*force_full*/ false))
+    if (refresh_from_display(d, /*force_full*/ s_blanked)) {
+        s_blanked = false;
         draw();
+    }
+    overlay_hide_if_up(); // ...and now it shows a fresh one
 }
 
 void em_video_force_redraw(void) {
     display_t *d = system_display();
+    if (d && d->bits && !fb_fits_scratch(d))
+        return;
     if (refresh_from_display(d, /*force_full*/ true))
         draw();
 }
 
-uint8_t *em_video_get_framebuffer(void) {
-    return s_upload_scratch;
-}
-
 void frontend_force_redraw(void) {
     em_video_force_redraw();
+}
+
+// A machine was attached: announce its display's geometry before any frame,
+// so a restored machine whose mode never changes in this page still shows
+// at the right size.
+void em_video_machine_attached(void) {
+    display_t *d = system_display();
+    if (d && d->width && d->height)
+        announce_geometry(d);
 }

@@ -11,11 +11,58 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// The scheduler of the machine plugged into the network (NULL while none is),
+// for guest-time timers in the protocol modules.
+struct scheduler *atalk_scheduler(void);
+
+// The network's clock: guest time from the plugged-in machine's scheduler, in
+// ns, so a run is deterministic; 0 while no machine is plugged in.  ASP, PAP
+// and ADSP all read it.
+uint64_t atalk_now_ns(void);
+
+// A guest-time timer -- one scheduler event type.
+//
+// Every one is registered with each machine's scheduler when that machine's
+// connection is built (appletalk.c, atalk_conn_new): each module registers
+// its timers from a hook that takes the connection.  Never lazily at first
+// arm, and never at plug-in: a checkpoint restore replays the saved event
+// queue at the end of construction, before the machine is plugged in, and a
+// saved event whose type nothing has registered fails the load.  Unplugging
+// the connection drops every pending event of its timers, and arming one
+// while nothing is plugged in does nothing.
+//
+// The scheduler source is the timer itself, so a timer's callback receives
+// its own address as `source`.
+typedef void (*atalk_timer_fn)(void *source, uint64_t data);
+typedef struct atalk_timer {
+    atalk_timer_fn cb; // set by the first registration
+} atalk_timer_t;
+
+struct atalk_conn;
+
+// Register `t` as "source_name.event_name" with `conn`'s machine's
+// scheduler.  Call from the owning module's registration hook while the
+// connection is being built; repeat calls are harmless.
+void atalk_timer_init(struct atalk_conn *conn, atalk_timer_t *t, const char *source_name, const char *event_name,
+                      atalk_timer_fn cb);
+// One-shot `delay_ns` from now, carrying `data`; replaces a pending event of
+// this timer with the same `data`, so distinct data (one per ATP transaction)
+// can be pending together.  Delays under ATALK_TIMER_MIN_NS are raised to it:
+// a zero or sub-cycle delay fires with the clock unchanged and a timer that
+// re-arms itself would spin.
+void atalk_timer_arm(atalk_timer_t *t, uint64_t data, uint64_t delay_ns);
+// Cancel the pending event carrying `data`, or every pending event.
+void atalk_timer_cancel(atalk_timer_t *t, uint64_t data);
+void atalk_timer_cancel_all(atalk_timer_t *t);
+
+#define ATALK_TIMER_MIN_NS 1000u
+
 // Shared AppleTalk constants
 #define LLAP_HOST_NODE         33
 #define HOST_AFP_SOCKET        8
 #define HOST_AFP_COMPAT_SOCKET 54
 #define HOST_PAP_SOCKET        6
+#define HOST_IW_PAP_SOCKET     9 // the ImageWriter's LocalTalk Option card
 
 // DDP protocol type field values (Inside AppleTalk 4-11).  ADSP is 7 — the
 // stack doc claimed 10 until the ADSP work corrected it.
@@ -33,6 +80,11 @@
 #define DDP_MAX_DATA_SIZE        586
 
 // ATP control bit masks (ctl field upper bits per Inside AppleTalk 10-7)
+// ATP limits: a response is at most eight packets (Inside AppleTalk 9-8) of
+// at most 578 bytes of data each.
+#define ATP_MAX_RESPONSE_FRAGMENTS 8
+#define ATP_MAX_ATP_PAYLOAD        578
+
 #define ATP_CONTROL_TREQ  0x40
 #define ATP_CONTROL_TRESP 0x80
 #define ATP_CONTROL_TREL  0xC0
@@ -161,8 +213,32 @@ int atp_responder_send_simple(const ddp_header_t *request_ddp, const atp_packet_
 int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8_t ddp_type, const uint8_t *data,
                       int len);
 
-// Printer AppleTalk entry points
-void atalk_printer_register(void);
+// Printer AppleTalk entry points.  register runs once, when the network comes
+// up: it makes the printer -- the network owns what it returns -- and takes
+// the PAP socket and the advertisement.  A machine's connection carries a
+// PAP link, the printer's session with that Mac; register_timers runs when
+// the connection is built (the PAP timers on the link, the LaserWriter's, all
+// on its scheduler).  link_down drops the session when the connection is
+// detached from the link, since its client is unreachable.  plug(link) puts
+// the connection's link on the cable; plug(NULL), when the machine leaves it
+// (a machine.boot or a checkpoint load), restarts the printer: the session,
+// any job in flight and what jobs made permanent go.  Its name and
+// configuration stay.
+typedef struct pap_printer pap_printer_t;
+typedef struct pap_link pap_link_t;
+pap_printer_t *atalk_printer_register(void);
+pap_link_t *atalk_printer_link_new(void);
+void atalk_printer_link_free(pap_link_t *link);
+void atalk_printer_register_timers(struct atalk_conn *conn, pap_link_t *link);
+void atalk_printer_plug(pap_link_t *link);
+void atalk_printer_link_down(void);
+
+// The ImageWriter's LocalTalk Option card (appletalk_imagewriter.c): its
+// socket is installed when the network comes up, its timers with each
+// connection, and its connection drops when the machine is unplugged.
+void atalk_imagewriter_register(void);
+void atalk_imagewriter_register_timers(struct atalk_conn *conn);
+void atalk_imagewriter_unplug(void);
 
 // Publish (or rename) / withdraw the LaserWriter NBP entity.  The object model
 // drives these through atalk_printer_set_enabled / atalk_printer_set_name.
