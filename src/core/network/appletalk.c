@@ -20,6 +20,7 @@
 #include "common.h"
 #include "laserwriter_job.h"
 #include "log.h"
+#include "macroman.h"
 #include "object.h"
 #include "scc.h"
 #include "scheduler.h"
@@ -145,9 +146,9 @@ typedef struct {
     atp_resp_packet_cache_t packets[ATP_MAX_RESPONSE_FRAGMENTS];
 } atp_xo_entry_t;
 
-#define NBP_OBJECT_MAX            32
-#define NBP_TYPE_MAX              32
-#define NBP_ZONE_MAX              32
+#define NBP_OBJECT_MAX            ATALK_NBP_NAME_MAX
+#define NBP_TYPE_MAX              ATALK_NBP_NAME_MAX
+#define NBP_ZONE_MAX              ATALK_NBP_NAME_MAX
 #define NBP_MAX_ENTRIES           ATALK_NBP_MAX_ENTRIES
 #define NBP_MAX_TUPLES_PER_PACKET 8
 #define NBP_APPROX_CHAR           0xC5 // MacRoman "≈" wildcard per Inside AppleTalk
@@ -1423,19 +1424,13 @@ bool atalk_nbp_entry_info(int index, atalk_nbp_info_t *out) {
         return false;
     const atalk_nbp_entry_t *e = &g_net.nbp_entries[index];
     memset(out, 0, sizeof(*out));
-    snprintf(out->object, sizeof(out->object), "%s", e->object);
-    snprintf(out->type, sizeof(out->type), "%s", e->type);
-    snprintf(out->zone, sizeof(out->zone), "%s", e->zone);
+    macroman_to_utf8((const uint8_t *)e->object, e->object_len, out->object, sizeof(out->object));
+    macroman_to_utf8((const uint8_t *)e->type, e->type_len, out->type, sizeof(out->type));
+    macroman_to_utf8((const uint8_t *)e->zone, e->zone_len, out->zone, sizeof(out->zone));
     out->socket = e->socket;
     out->node = e->node;
     out->net = e->net;
     return true;
-}
-
-static uint8_t nbp_ascii_fold(uint8_t ch) {
-    if (ch >= 'A' && ch <= 'Z')
-        return (uint8_t)(ch + ('a' - 'A'));
-    return ch;
 }
 
 static int nbp_entry_index(const atalk_nbp_entry_t *entry) {
@@ -1448,19 +1443,50 @@ static int nbp_entry_index(const atalk_nbp_entry_t *entry) {
     return -1;
 }
 
+// The UTF-8 field `src` as MacRoman in `dst` (NUL-terminated, for logging):
+// its length, or -1 when MacRoman cannot hold it or it does not fit.
 static int nbp_copy_field(char *dst, size_t dst_cap, const char *src, bool allow_empty) {
     if (!dst || dst_cap == 0)
         return -1;
-    if (!src)
-        src = "";
-    size_t len = strlen(src);
-    if (!allow_empty && len == 0)
+    int len = macroman_from_utf8(src ? src : "", (uint8_t *)dst, dst_cap - 1);
+    if (len < 0 || (!allow_empty && len == 0))
         return -1;
-    if (len > dst_cap - 1)
-        return -1;
-    memcpy(dst, src, len);
     dst[len] = '\0';
-    return (int)len;
+    return len;
+}
+
+int atalk_nbp_name_check(const char *what, const char *name, char *err, size_t err_len) {
+    uint8_t mac[ATALK_NBP_NAME_MAX * 4];
+    const char *n = name ? name : "";
+    if (!*n) {
+        snprintf(err, err_len, "%s is required", what);
+        return -1;
+    }
+    int len = macroman_from_utf8(n, mac, sizeof(mac));
+    if (len < 0) {
+        // Name the first character MacRoman lacks (or the bad byte).
+        const uint8_t *p = (const uint8_t *)n;
+        while (*p) {
+            size_t cl = (*p < 0x80) ? 1 : (*p >= 0xF0) ? 4 : (*p >= 0xE0) ? 3 : (*p >= 0xC0) ? 2 : 1;
+            char one[5] = {0};
+            for (size_t i = 0; i < cl && p[i]; i++)
+                one[i] = (char)p[i];
+            uint8_t b;
+            if (macroman_from_utf8(one, &b, 1) != 1) {
+                snprintf(err, err_len, "%s '%s': '%s' cannot be written in MacRoman, the Mac's character set", what, n,
+                         one);
+                return -1;
+            }
+            p += strlen(one);
+        }
+        snprintf(err, err_len, "%s '%s' cannot be written in MacRoman", what, n);
+        return -1;
+    }
+    if (len > ATALK_NBP_NAME_MAX) {
+        snprintf(err, err_len, "%s max %d characters ('%s' is %d)", what, ATALK_NBP_NAME_MAX, n, len);
+        return -1;
+    }
+    return 0;
 }
 
 // Enumerators tell apart entities on one socket, 1..255 (Inside AppleTalk 7-8).
@@ -1486,7 +1512,7 @@ static bool nbp_field_equals_ci(const char *lhs, uint8_t lhs_len, const char *rh
     if (lhs_len != rhs_len)
         return false;
     for (uint8_t i = 0; i < lhs_len; i++) {
-        if (nbp_ascii_fold((uint8_t)lhs[i]) != nbp_ascii_fold((uint8_t)rhs[i]))
+        if (macroman_fold((uint8_t)lhs[i]) != macroman_fold((uint8_t)rhs[i]))
             return false;
     }
     return true;
@@ -1631,21 +1657,22 @@ static bool nbp_zone_query_is_wildcard(const nbp_tuple_t *tuple) {
 // (`≈`) is a `*`-style wildcard matching any run of bytes.  The recursive
 // formulation was O(2^n) for patterns with many wildcards (a crafted NBP
 // lookup tuple could DoS the server).  This version is O(n*m) worst-case.
+// Both sides are MacRoman; case folds by Inside AppleTalk Table D-2.
 static bool nbp_glob_match_ci(const char *value, int value_len, const uint8_t *pattern, int pat_len) {
     int v = 0;
     int p = 0;
     int star_p = -1;
     int star_v = 0;
     while (v < value_len) {
-        if (p < pat_len && nbp_ascii_fold(pattern[p]) == NBP_APPROX_CHAR) {
+        if (p < pat_len && pattern[p] == NBP_APPROX_CHAR) {
             // Collapse consecutive wildcards into a single backtrack point.
-            while (p < pat_len && nbp_ascii_fold(pattern[p]) == NBP_APPROX_CHAR)
+            while (p < pat_len && pattern[p] == NBP_APPROX_CHAR)
                 p++;
             star_p = p;
             star_v = v;
             continue;
         }
-        if (p < pat_len && nbp_ascii_fold((uint8_t)value[v]) == nbp_ascii_fold(pattern[p])) {
+        if (p < pat_len && macroman_fold((uint8_t)value[v]) == macroman_fold(pattern[p])) {
             v++;
             p++;
             continue;
@@ -1660,7 +1687,7 @@ static bool nbp_glob_match_ci(const char *value, int value_len, const uint8_t *p
         return false;
     }
     // Skip trailing wildcards on the pattern side.
-    while (p < pat_len && nbp_ascii_fold(pattern[p]) == NBP_APPROX_CHAR)
+    while (p < pat_len && pattern[p] == NBP_APPROX_CHAR)
         p++;
     return p == pat_len;
 }
@@ -1879,9 +1906,10 @@ static void nbp_deliver_lookup_reply(atalk_conn_t *c, uint8_t nbp_id, const nbp_
     for (int i = 0; i < count; i++) {
         atalk_nbp_info_t info;
         memset(&info, 0, sizeof(info));
-        snprintf(info.object, sizeof(info.object), "%.*s", tuples[i].object_len, (const char *)tuples[i].object);
-        snprintf(info.type, sizeof(info.type), "%.*s", tuples[i].type_len, (const char *)tuples[i].type);
-        snprintf(info.zone, sizeof(info.zone), "%.*s", tuples[i].zone_len, (const char *)tuples[i].zone);
+        // MacRoman on the wire, UTF-8 to the caller.
+        macroman_to_utf8(tuples[i].object, (size_t)tuples[i].object_len, info.object, sizeof(info.object));
+        macroman_to_utf8(tuples[i].type, (size_t)tuples[i].type_len, info.type, sizeof(info.type));
+        macroman_to_utf8(tuples[i].zone, (size_t)tuples[i].zone_len, info.zone, sizeof(info.zone));
         info.net = tuples[i].net;
         info.node = tuples[i].node;
         info.socket = tuples[i].socket;
@@ -1898,12 +1926,16 @@ int atalk_nbp_lookup(const char *object, const char *type, const char *zone, uin
     if (!c || !c->enabled)
         return -1;
 
-    size_t obj_len = strlen(object);
-    size_t type_len = strlen(type);
+    // The pattern goes out in MacRoman, as every NBP name does: a UTF-8 "≈"
+    // becomes the wildcard byte $C5.
+    char obj_mac[NBP_OBJECT_MAX + 1], type_mac[NBP_TYPE_MAX + 1], zone_mac[NBP_ZONE_MAX + 1];
     const char *zone_str = (zone && zone[0]) ? zone : "*";
-    size_t zone_len = strlen(zone_str);
-    if (obj_len > NBP_OBJECT_MAX || type_len > NBP_TYPE_MAX || zone_len > NBP_ZONE_MAX)
+    int obj_n = nbp_copy_field(obj_mac, sizeof(obj_mac), object, true);
+    int type_n = nbp_copy_field(type_mac, sizeof(type_mac), type, true);
+    int zone_n = nbp_copy_field(zone_mac, sizeof(zone_mac), zone_str, true);
+    if (obj_n < 0 || type_n < 0 || zone_n < 0)
         return -1;
+    size_t obj_len = (size_t)obj_n, type_len = (size_t)type_n, zone_len = (size_t)zone_n;
 
     // The tuple of a lookup names where the replies should go, then the
     // pattern being looked up.
@@ -1918,13 +1950,13 @@ int atalk_nbp_lookup(const char *object, const char *type, const char *zone, uin
     buf[n++] = reply_socket;
     buf[n++] = 0; // enumerator
     buf[n++] = (uint8_t)obj_len;
-    memcpy(&buf[n], object, obj_len);
+    memcpy(&buf[n], obj_mac, obj_len);
     n += (int)obj_len;
     buf[n++] = (uint8_t)type_len;
-    memcpy(&buf[n], type, type_len);
+    memcpy(&buf[n], type_mac, type_len);
     n += (int)type_len;
     buf[n++] = (uint8_t)zone_len;
-    memcpy(&buf[n], zone_str, zone_len);
+    memcpy(&buf[n], zone_mac, zone_len);
     n += (int)zone_len;
 
     c->nbp_lookup.active = true;

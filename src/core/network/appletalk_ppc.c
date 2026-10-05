@@ -110,7 +110,7 @@ struct ppc_session {
 // `appletalk.ppc` collections' entries.  atalk_ppc_init makes it; the network
 // owns it.
 struct ppc_host {
-    char port[33];
+    char port[ATALK_NBP_TEXT_CAP]; // UTF-8
     bool enabled;
     atalk_nbp_entry_t *nbp;
     const ppc_client_t *inbound_client;
@@ -135,7 +135,7 @@ typedef struct {
 
 // Machines the current browse has found but not yet queried.
 typedef struct {
-    char name[33];
+    char name[ATALK_NBP_TEXT_CAP]; // its NBP object name, UTF-8
     uint8_t node;
     uint8_t socket;
 } ppc_machine_t;
@@ -920,10 +920,8 @@ bool atalk_ppc_host_port_enabled(void) {
 
 int atalk_ppc_set_host_port(const char *name, bool enabled, char *err, size_t err_len) {
     const char *port = (name && *name) ? name : g_host->port;
-    if (strlen(port) > 32) {
-        snprintf(err, err_len, "a port name may be at most 32 characters");
+    if (atalk_nbp_name_check("port name", port, err, err_len) != 0)
         return -1;
-    }
     if (!enabled) {
         atalk_nbp_withdraw(&g_host->nbp);
         if (port != g_host->port)

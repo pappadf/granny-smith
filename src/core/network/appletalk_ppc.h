@@ -13,6 +13,8 @@
 #ifndef APPLETALK_PPC_H
 #define APPLETALK_PPC_H
 
+#include "appletalk.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -64,7 +66,7 @@ extern const char *const PPC_SESSION_STATE_NAMES[];
 typedef struct {
     char name[33];
     char type[33];
-    char machine[33]; // the NBP object name of the machine holding it
+    char machine[ATALK_NBP_TEXT_CAP]; // the NBP object name of the machine holding it, UTF-8
     uint8_t node;
     uint8_t socket;
     bool auth_required;

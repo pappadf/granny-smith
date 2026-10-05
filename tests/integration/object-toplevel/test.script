@@ -67,6 +67,14 @@ appletalk.afp.name = "Test Server"
 assert appletalk.afp.name == "Test Server" "server rename"
 assert appletalk.nbp["Test Server"].type == "AFPServer" "NBP entry followed the rename"
 
+# NBP names are MacRoman on the wire and UTF-8 here (#168): an accented name
+# is published (as MacRoman) and reads back unchanged.  One MacRoman cannot
+# hold is refused by the setter (atalk_link's unit tests pin the refusal).
+appletalk.afp.name = "Café Serveur"
+assert appletalk.afp.name == "Café Serveur" "accented server name round-trips"
+assert appletalk.nbp["Café Serveur"].type == "AFPServer" "NBP entry holds the accented name"
+appletalk.afp.name = "Test Server"
+
 # The server message is what FPGetSrvrMsg serves.
 appletalk.afp.message = "Back at 5pm"
 assert appletalk.afp.message == "Back at 5pm" "server message round-trips"
@@ -88,6 +96,8 @@ appletalk.afp.stats.errors_by_code
 assert appletalk.printer.enabled == true "printer starts enabled"
 appletalk.printer.name = "Test LaserWriter"
 assert appletalk.printer.name == "Test LaserWriter" "printer rename"
+appletalk.printer.name = "Imprimante à café"
+assert appletalk.printer.name == "Imprimante à café" "accented printer name round-trips"
 appletalk.printer.enabled = false
 assert appletalk.printer.enabled == false "printer disabled"
 

@@ -61,12 +61,27 @@ typedef struct {
 
 const atalk_stats_t *atalk_get_stats(void);
 
+// === NBP names ================================================================
+//
+// NBP names travel in MacRoman, at most 32 bytes per field (Inside AppleTalk
+// 7-4).  Every NBP interface here takes and returns them as UTF-8, converted
+// at the NBP boundary: a name goes out as MacRoman, a name that comes in is
+// handed on as UTF-8.  A name MacRoman cannot hold is refused, never sent as
+// its UTF-8 bytes (which the Chooser would draw as "Caf√©").
+
+#define ATALK_NBP_NAME_MAX 32 // MacRoman bytes per field
+#define ATALK_NBP_TEXT_CAP (ATALK_NBP_NAME_MAX * 3 + 1) // the same field as UTF-8, NUL included
+
+// Can `name` be published as an NBP field?  0 if so; otherwise -1 with the
+// reason in `err`, naming the field as `what` ("server name").
+int atalk_nbp_name_check(const char *what, const char *name, char *err, size_t err_len);
+
 // === NBP registry views (object model: `appletalk.nbp`) =====================
 
 typedef struct {
-    char object[33];
-    char type[33];
-    char zone[33];
+    char object[ATALK_NBP_TEXT_CAP];
+    char type[ATALK_NBP_TEXT_CAP];
+    char zone[ATALK_NBP_TEXT_CAP];
     unsigned socket;
     unsigned node;
     unsigned net;
@@ -234,8 +249,8 @@ int atalk_printer_restart(char *err, size_t err_len);
 typedef struct atalk_nbp_entry atalk_nbp_entry_t; // opaque handle returned on registration
 
 typedef struct {
-    const char *object; // required, max 32 chars
-    const char *type; // required, max 32 chars
+    const char *object; // required, UTF-8, at most 32 MacRoman characters
+    const char *type; // required, UTF-8, at most 32 MacRoman characters
     const char *zone; // optional, defaults to "*"
     uint8_t socket; // required destination socket
     uint8_t node; // optional, defaults to LLAP_HOST_NODE
@@ -255,10 +270,11 @@ int atalk_nbp_publish(atalk_nbp_entry_t **entry, const atalk_nbp_service_desc_t 
 void atalk_nbp_withdraw(atalk_nbp_entry_t **entry);
 
 // Look an entity pattern up on the network.  `object` and `type` may use the
-// NBP wildcards ("=" matches everything); replies are delivered to `cb` one
+// NBP wildcards ("=" matches everything, "≈" any run of characters); replies are delivered to `cb` one
 // tuple at a time as they arrive, so the caller must run the scheduler before
 // expecting results.  One lookup is outstanding at a time: issuing another
-// replaces it.  Returns 0 if the request went out.
+// replaces it.  Returns 0 if the request went out; -1 if not, as for a
+// pattern MacRoman cannot hold.
 typedef void (*atalk_nbp_reply_fn)(void *ctx, const atalk_nbp_info_t *info);
 int atalk_nbp_lookup(const char *object, const char *type, const char *zone, uint8_t reply_socket,
                      atalk_nbp_reply_fn cb, void *ctx);

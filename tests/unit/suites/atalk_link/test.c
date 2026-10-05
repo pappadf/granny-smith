@@ -513,6 +513,143 @@ TEST(a_lookup_reply_with_eight_tuples_delivers_all_eight) {
     link_delete();
 }
 
+// --- NBP names are MacRoman on the wire (#168) ----------------------------
+
+// Answer a guest LkUp for `object`:`type`@* (raw MacRoman bytes) once the
+// RTS/CTS handshake is through; the reply frame, or NULL.
+static const uint8_t *guest_lookup(const uint8_t *object, size_t olen, const char *type, size_t *len) {
+    uint8_t rts[3] = {HOST_NODE, GUEST_NODE, LLAP_TYPE_RTS};
+    guest_frame(rts, sizeof rts);
+    uint8_t lkup[128];
+    size_t n = 0;
+    lkup[n++] = 0x21; // LkUp, one tuple
+    lkup[n++] = 0x43; // NBP ID
+    lkup[n++] = 0x00;
+    lkup[n++] = 0x00;
+    lkup[n++] = GUEST_NODE;
+    lkup[n++] = 253;
+    lkup[n++] = 0x00;
+    lkup[n++] = (uint8_t)olen;
+    memcpy(lkup + n, object, olen);
+    n += olen;
+    lkup[n++] = (uint8_t)strlen(type);
+    memcpy(lkup + n, type, strlen(type));
+    n += strlen(type);
+    lkup[n++] = 1;
+    lkup[n++] = '*';
+    guest_ddp(GUEST_NODE, 2, 253, 2, lkup, n);
+    guest_advance_to(link_now_ns() + 5e6);
+    return wire_last_ddp(GUEST_NODE, 2, len);
+}
+
+// A UTF-8 name is published as MacRoman ("Café" is 43 61 66 8E, not the
+// 43 61 66 C3 A9 the Chooser would draw as "Caf√©"), and a lookup matches it
+// case-insensitively by Table D-2, accented letters included.
+TEST(a_published_name_goes_out_in_macroman_and_folds_by_table_d2) {
+    link_boot();
+    atalk_nbp_service_desc_t desc = {.object = "Caf\xc3\xa9", .type = "LinkTest", .socket = 200};
+    atalk_nbp_entry_t *entry = NULL;
+    ASSERT_EQ_INT(0, atalk_nbp_publish(&entry, &desc));
+
+    const uint8_t upper[] = {'C', 'A', 'F', 0x83}; // "CAFÉ" in MacRoman
+    size_t len = 0;
+    const uint8_t *reply = guest_lookup(upper, sizeof upper, "LINKTEST", &len);
+    ASSERT_TRUE(reply != NULL);
+    ASSERT_EQ_INT(0x31, reply[8]); // LkUp-Reply, one tuple
+    ASSERT_EQ_INT(4, reply[15]); // the object field: four MacRoman bytes
+    const uint8_t want[] = {'C', 'a', 'f', 0x8E};
+    ASSERT_TRUE(memcmp(reply + 16, want, sizeof want) == 0);
+
+    // The registry view hands it back as UTF-8.
+    atalk_nbp_info_t info;
+    bool found = false;
+    for (int i = 0; i < atalk_nbp_entry_max(); i++)
+        if (atalk_nbp_entry_info(i, &info) && strcmp(info.type, "LinkTest") == 0)
+            found = strcmp(info.object, "Caf\xc3\xa9") == 0;
+    ASSERT_TRUE(found);
+
+    // "E" is not "É": diacriticals stay significant.
+    const uint8_t plain[] = {'C', 'A', 'F', 'E'};
+    wire_clear();
+    ASSERT_TRUE(guest_lookup(plain, sizeof plain, "LinkTest", &len) == NULL);
+
+    atalk_nbp_withdraw(&entry);
+    link_delete();
+}
+
+static char g_lookup_object[ATALK_NBP_TEXT_CAP];
+static void keep_lookup_object(void *ctx, const atalk_nbp_info_t *info) {
+    (void)ctx;
+    snprintf(g_lookup_object, sizeof g_lookup_object, "%s", info->object);
+}
+
+// Our own lookups: the pattern goes out in MacRoman (a UTF-8 "≈" is the
+// wildcard byte $C5) and the names that come back are handed on as UTF-8.
+TEST(a_lookup_goes_out_in_macroman_and_its_replies_come_back_in_utf8) {
+    link_boot();
+    g_lookup_object[0] = '\0';
+    ASSERT_EQ_INT(0, atalk_nbp_lookup("Caf\xe2\x89\x88", "PPCToolBox", "*", 252, keep_lookup_object, NULL));
+    size_t len = 0;
+    const uint8_t *req = wire_last_ddp(0xFF, 2, &len);
+    ASSERT_TRUE(req != NULL);
+    const uint8_t pattern[] = {4, 'C', 'a', 'f', 0xC5};
+    ASSERT_TRUE(memcmp(req + 15, pattern, sizeof pattern) == 0);
+
+    uint8_t reply[64];
+    size_t n = 0;
+    reply[n++] = 0x31;
+    reply[n++] = req[9];
+    reply[n++] = 0;
+    reply[n++] = 0;
+    reply[n++] = GUEST_NODE;
+    reply[n++] = 100;
+    reply[n++] = 0;
+    const uint8_t object[] = {5, 'N', 0x96, 'n', 'e', 'z'}; // "Nñnez"
+    memcpy(reply + n, object, sizeof object);
+    n += sizeof object;
+    reply[n++] = 10;
+    memcpy(reply + n, "PPCToolBox", 10);
+    n += 10;
+    reply[n++] = 1;
+    reply[n++] = '*';
+    guest_ddp(GUEST_NODE, 252, 2, 2, reply, n);
+    ASSERT_TRUE(strcmp(g_lookup_object, "N\xc3\xb1nez") == 0);
+
+    // A pattern MacRoman cannot hold does not go out at all.
+    ASSERT_EQ_INT(-1, atalk_nbp_lookup("\xf0\x9f\x93\x81", "PPCToolBox", "*", 252, keep_lookup_object, NULL));
+    atalk_nbp_lookup_cancel();
+    link_delete();
+}
+
+// A name is refused when it is set, never sent as its UTF-8 bytes: one with
+// a character MacRoman lacks, or longer than 32 MacRoman characters (which a
+// name of accented letters can be well within 32 UTF-8 characters).
+TEST(a_name_macroman_cannot_hold_is_refused) {
+    char err[200];
+    ASSERT_TRUE(atalk_nbp_name_check("server name", "\xf0\x9f\x93\x81 Files", err, sizeof err) != 0);
+    ASSERT_TRUE(strstr(err, "\xf0\x9f\x93\x81") != NULL); // names the character
+    ASSERT_TRUE(atalk_nbp_name_check("server name", "", err, sizeof err) != 0);
+
+    char accents[32 * 2 + 3];
+    size_t n = 0;
+    for (int i = 0; i < 32; i++) {
+        accents[n++] = (char)0xc3; // é
+        accents[n++] = (char)0xa9;
+    }
+    accents[n] = '\0';
+    ASSERT_EQ_INT(0, atalk_nbp_name_check("server name", accents, err, sizeof err)); // 32 MacRoman bytes
+    accents[n++] = 'x';
+    accents[n] = '\0';
+    ASSERT_TRUE(atalk_nbp_name_check("server name", accents, err, sizeof err) != 0); // 33
+
+    link_boot();
+    atalk_nbp_service_desc_t desc = {.object = "\xf0\x9f\x93\x81", .type = "LinkTest", .socket = 200};
+    atalk_nbp_entry_t *entry = NULL;
+    ASSERT_EQ_INT(-1, atalk_nbp_publish(&entry, &desc));
+    ASSERT_TRUE(entry == NULL);
+    link_delete();
+}
+
 // AEP (Inside AppleTalk ch. 6): the Echoer on socket 4 turns an Echo Request
 // (function 1) round as an Echo Reply (function 2), data unchanged; anything
 // else is not for it (it echoed everything, unchanged).
@@ -789,6 +926,9 @@ int main(void) {
     RUN(every_discard_is_counted_by_reason);
     RUN(a_lookup_matching_eight_names_answers_with_eight_tuples);
     RUN(a_lookup_reply_with_eight_tuples_delivers_all_eight);
+    RUN(a_published_name_goes_out_in_macroman_and_folds_by_table_d2);
+    RUN(a_lookup_goes_out_in_macroman_and_its_replies_come_back_in_utf8);
+    RUN(a_name_macroman_cannot_hold_is_refused);
     RUN(the_echoer_answers_requests_on_socket_4_with_a_reply);
     RUN(close_sess_closes_the_session);
     RUN(open_sess_refusals_use_asp_error_codes);

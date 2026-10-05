@@ -24,7 +24,6 @@
 LOG_USE_CATEGORY_NAME("pap");
 
 #define PRINTER_STATUS_MAX       255
-#define PRINTER_OBJECT_MAX       32
 #define PRINTER_DEFAULT_OBJECT   "Virtual LaserWriter"
 #define PRINTER_STATUS_IDLE      "status: idle"
 #define PRINTER_STATUS_BUSY      "status: print spooler processing job"
@@ -74,7 +73,7 @@ typedef enum { PAP_QUERY_NONE = 0, PAP_QUERY_PATCH_STATUS, PAP_QUERY_FONT_LIST }
 // atalk_printer_register makes it; the network owns it.
 struct pap_printer {
     bool enabled;
-    char object_name[PRINTER_OBJECT_MAX + 1];
+    char object_name[ATALK_NBP_TEXT_CAP]; // UTF-8
     char status_text[PRINTER_STATUS_MAX + 1];
     uint8_t status_len;
     atalk_nbp_entry_t *nbp_entry;
@@ -1680,8 +1679,9 @@ void atalk_printer_link_down(void) {
 // one too long is refused, as set_name refuses it, not cut short.
 int atalk_printer_enable(const char *object_name) {
     const char *name = (object_name && *object_name) ? object_name : g_printer->object_name;
-    if (strlen(name) > PRINTER_OBJECT_MAX) {
-        LOG(1, "atalk: printer name '%s' is longer than %d characters", name, PRINTER_OBJECT_MAX);
+    char why[160];
+    if (atalk_nbp_name_check("printer name", name, why, sizeof(why)) != 0) {
+        LOG(1, "atalk: %s", why);
         return -1;
     }
     atalk_nbp_service_desc_t desc = {.object = name,
@@ -1744,16 +1744,8 @@ int atalk_printer_set_enabled(bool enabled, char *err, size_t err_len) {
 int atalk_printer_set_name(const char *name, char *err, size_t err_len) {
     if (err && err_len)
         err[0] = '\0';
-    if (!name || !*name) {
-        if (err && err_len)
-            snprintf(err, err_len, "printer name is required");
+    if (atalk_nbp_name_check("printer name", name, err, err_len) != 0)
         return -1;
-    }
-    if (strlen(name) > PRINTER_OBJECT_MAX) {
-        if (err && err_len)
-            snprintf(err, err_len, "printer name max %d chars ('%s' is %zu)", PRINTER_OBJECT_MAX, name, strlen(name));
-        return -1;
-    }
     if (!g_printer->enabled) {
         // Not advertising: record the name for the next enable.
         snprintf(g_printer->object_name, sizeof(g_printer->object_name), "%s", name);

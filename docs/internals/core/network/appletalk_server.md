@@ -2533,7 +2533,12 @@ appletalk                        the network
                                  tx_dropped, ddp_in/out,
                                  atp_requests/retries, nbp_packets
   nbp              ro  collection every advertised entity: object / type /
-                                 zone / socket / node; `nbp["name"]` resolves
+                                 zone / socket / node; `nbp["name"]` resolves.
+                                 Names are UTF-8 here and MacRoman on the
+                                 wire (at most 32 MacRoman characters); a
+                                 name MacRoman cannot hold is refused by the
+                                 setter (atalk_nbp_name_check), and lookups
+                                 fold case by Inside AppleTalk Table D-2
   afp                            the file server
     enabled        rw  bool      serve + advertise (default true)
     name           rw  string    NBP object name; the setter re-registers
