@@ -65,6 +65,9 @@ bool av_civic_bus64(av_civic_t *cv); // BusSize $04C (1 = graphics only)
 // The 2 MB VRAM backing array (the video-in buffer lives at $100800).
 uint8_t *av_civic_vram(av_civic_t *cv);
 
+// A power cycle: VRAM cleared and the scanned raster blanked.
+void av_civic_power_on(av_civic_t *cv);
+
 // A captured field landed in VRAM: latch the VDC field interrupt if armed
 // and assert the shared PSC-VIA2 slot line (bit 6, shared with VBL).
 void av_civic_vdc_field(av_civic_t *cv);

@@ -148,6 +148,7 @@ static void plus_map_read_page(uint32_t p, uint8_t *host_ptr) {
     if (g_user_read)
         g_user_read[p] = adjusted;
     tlb_track_page(p); // on the tracker like every fast-path entry (mac030_fill_page)
+    memory_logpoint_guard_page(p);
 }
 
 // Drive the ROM overlay: on maps the ROM image over the bottom of the address

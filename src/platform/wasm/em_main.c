@@ -79,6 +79,15 @@ static void em_assertion_callback(const char *kind, const char *expr, const char
 
 static volatile int pointer_locked = 0;
 static bool mouse_button_down = false;
+// An exit_pointerlock has been asked for and its change event is pending.
+static bool pointer_lock_releasing = false;
+
+// True while the machine executes: only then can the guest read the
+// pointer's deltas and the keys, so only then is a grab of either useful.
+static bool machine_running(void) {
+    scheduler_t *s = system_scheduler();
+    return s && scheduler_is_running(s);
+}
 
 // The host keys held down, and the keys they were delivered as (host_keys.c:
 // one path for every machine, by ADB raw keycode).
@@ -125,7 +134,10 @@ static EM_BOOL mouse_down_cb(int type, const EmscriptenMouseEvent *e, void *ud) 
     (void)type;
     (void)ud;
     if (!pointer_locked) {
-        emscripten_request_pointerlock("#screen", EM_FALSE);
+        // A paused or stopped machine reads no deltas: a grab would capture
+        // the host pointer into a guest whose pointer cannot move.
+        if (machine_running())
+            emscripten_request_pointerlock("#screen", EM_FALSE);
         return EM_TRUE;
     }
     mouse_button_down = true;
@@ -151,6 +163,7 @@ static EM_BOOL plock_change_cb(int type, const EmscriptenPointerlockChangeEvent 
     (void)type;
     (void)ud;
     pointer_locked = e->isActive;
+    pointer_lock_releasing = false;
     if (!e->isActive)
         host_release_all(); // lock lost (Esc, a browser dialog stealing focus) → strand nothing
     return EM_TRUE;
@@ -503,6 +516,13 @@ void em_main_tick(void) {
         scheduler_t *after = system_scheduler();
         if (!(after && scheduler_is_running(after)))
             em_video_update();
+    }
+
+    // The machine stopped (pause, breakpoint, the end of a step) while the
+    // screen held the pointer: hand the pointer and the keys back to the page.
+    if (pointer_locked && !pointer_lock_releasing && !machine_running()) {
+        pointer_lock_releasing = true;
+        emscripten_exit_pointerlock();
     }
 
     // The run state and the floppy drives are the core's to announce now

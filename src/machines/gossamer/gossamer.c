@@ -80,6 +80,7 @@ void gos_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
         g_user_read[page_index] = 0;
     if (g_user_write)
         g_user_write[page_index] = 0;
+    memory_logpoint_guard_page(page_index);
 }
 
 void gos_clear_page(uint32_t page_index) {

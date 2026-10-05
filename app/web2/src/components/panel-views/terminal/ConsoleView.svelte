@@ -8,6 +8,7 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { seedPrompt, needsContinuation, whenModuleReady } from '@/bus/emulator';
   import { machine } from '@/state/machine.svelte';
+  import { layout } from '@/state/layout.svelte';
   import { appConsole, type Console } from '@/state/console.svelte';
   import {
     commandsText,
@@ -28,13 +29,16 @@
   import FindBar, { FindState } from './FindBar.svelte';
   import ValueTree from './ValueTree.svelte';
 
-  // The console to show: the app's, or a test's own.
-  let { console: con = appConsole }: { console?: Console } = $props();
+  // The console to show: the app's, or a test's own; `autofocus` off keeps a
+  // fixture's focus where the fixture put it.
+  let { console: con = appConsole, autofocus = true }: { console?: Console; autofocus?: boolean } =
+    $props();
   const consoleState = $derived(con.state);
 
   let outputEl = $state<HTMLDivElement | null>(null);
   let inputHost = $state<HTMLDivElement | null>(null);
   let input: ConsoleInput | null = null;
+  let inputReady = $state(false);
   let destroyed = false;
   let startupError = $state('');
 
@@ -78,6 +82,21 @@
       await seedPrompt();
       if (!destroyed && consoleState.runningSince === null) con.refreshPrompt();
     })();
+  });
+
+  // Opening the Terminal tab (or the console first mounting while it shows)
+  // puts the cursor on the input line, so it is plain where to type -- but
+  // only while nothing else holds the focus: the page itself (first load) or
+  // the tab that was just clicked.  CodeMirror loads asynchronously, so this
+  // can run late, after the user (or the find bar) has focused something.
+  // Not while the screen holds the pointer either: keys belong to the guest.
+  $effect(() => {
+    if (!autofocus || !inputReady || layout.activeTab !== 'terminal') return;
+    // The find bar owns the keys while it is open (closing it hands focus back).
+    if (find.open || document.pointerLockElement) return;
+    const a = document.activeElement;
+    const idle = !a || a === document.body || a.getAttribute('role') === 'tab';
+    if (idle) input?.focus();
   });
 
   // --- find -----------------------------------------------------------------------
@@ -201,27 +220,32 @@
       // CodeMirror is code-split: it loads when the console first mounts.
       const { createConsoleInput } = await import('./ConsoleInput');
       if (destroyed || !inputHost) return;
-      input = createConsoleInput(inputHost, {
-        submit: (text) => {
-          // Submitting always brings the view back to the bottom.
-          scroll.follow();
-          con.submit(text, assist.spansFor(text));
+      input = createConsoleInput(
+        inputHost,
+        {
+          submit: (text) => {
+            // Submitting always brings the view back to the bottom.
+            scroll.follow();
+            con.submit(text, assist.spansFor(text));
+          },
+          needsContinuation: (text) => needsContinuation(text),
+          complete: (line, cursor) => assist.complete(line, cursor),
+          interrupt: () => {
+            input?.setText('');
+            void con.interrupt();
+          },
+          clear: () => con.model.clear(),
+          find: openFind,
+          outputSelection,
+          history,
+          onChange: (text, cursor) => assist.onChange(text, cursor),
+          showHint: () => assist.showHint(),
+          escape: () => assist.escapeHint(),
         },
-        needsContinuation: (text) => needsContinuation(text),
-        complete: (line, cursor) => assist.complete(line, cursor),
-        interrupt: () => {
-          input?.setText('');
-          void con.interrupt();
-        },
-        clear: () => con.model.clear(),
-        find: openFind,
-        outputSelection,
-        history,
-        onChange: (text, cursor) => assist.onChange(text, cursor),
-        showHint: () => assist.showHint(),
-        escape: () => assist.escapeHint(),
-      });
+        'Type a command — try help',
+      );
       registerConsoleInput(input);
+      inputReady = true;
     })();
     void (async () => {
       try {

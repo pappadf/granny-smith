@@ -789,6 +789,13 @@ static struct display *mcu_display(config_t *cfg) {
     return (st && st->dafb) ? dafb_display(st->dafb) : NULL;
 }
 
+// Power cycle: the DAFB's VRAM goes with main RAM (system_machine_power_cycle).
+static void mcu_power_on(config_t *cfg) {
+    mcu_state_t *st = mcu_st(cfg);
+    if (st)
+        dafb_power_on(st->dafb);
+}
+
 // === Built-in video as a display device ======================================
 //
 // The DAFB's monitor straps, in Apple's indexed numbering (dafb.h): the
@@ -922,6 +929,7 @@ const builtin_video_desc_t mcu_builtin_video_q950 = {
 const machine_substrate_t mcu_substrate = {
     .init = mcu_init,
     .bus_reset = mcu_bus_reset,
+    .power_on = mcu_power_on,
     .teardown = mcu_teardown,
     .seed = mac_seed_rtc_pram,
     .trigger_vbl = mcu_trigger_vbl,

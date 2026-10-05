@@ -240,6 +240,10 @@ void system_machine_power_cycle(void) {
     // State a power-up initialises and /RESET does not (machine_profile.h).
     if (cfg->machine && cfg->machine->substrate->power_on)
         cfg->machine->substrate->power_on(cfg);
+    // NuBus cards lose their VRAM as main RAM does (a board's built-in video
+    // is its substrate's power_on).
+    if (cfg->nubus)
+        nubus_power_on(cfg->nubus);
     system_machine_reset();
 }
 
@@ -827,9 +831,14 @@ const char *find_valid_checkpoint_path(void) {
 }
 
 int system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
+    // No machine configured → nothing to save, like the idle and
+    // no-directory cases below (a hidden tab before any boot lands here).
     scheduler_t *sched = system_scheduler();
-    if (!sched)
-        return GS_ERROR;
+    if (!sched) {
+        if (verbose)
+            gs_outf("[checkpoint] no machine, nothing to save\n");
+        return GS_SUCCESS;
+    }
 
     // Skip checkpointing when the emulator is idle — nothing meaningful to save
     if (!scheduler_is_running(sched) && cpu_instr_count() == 0)

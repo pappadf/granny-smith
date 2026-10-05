@@ -143,4 +143,10 @@ assert machine.memory.peek.b(0x9C012804) == 0x00 "arc row 5 != 00"
 assert machine.memory.peek.b(0x9C012C04) == 0x00 "arc row 6 != 00"
 assert machine.memory.peek.b(0x9C013004) == 0x00 "arc row 7 != 00"
 
+# --- The 16" (832x624) monitor: power-on takes both axes from the monitor
+# (#153: the width was pinned to 640, giving an impossible 640x624). ---
+machine.boot model="iicx" ram=8192 video_card="824gc" video_mode="gc_832x624_8bpp" rom="${$ROM}"
+assert machine.screen.width == 832 "832x624 monitor: power-on width != 832"
+assert machine.screen.height == 624 "832x624 monitor: power-on height != 624"
+
 quit

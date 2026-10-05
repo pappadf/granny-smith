@@ -81,7 +81,7 @@
     --gs-syntax-comment: #008000;
     --gs-syntax-unknown: var(--gs-danger-fg);
     --gs-syntax-error: var(--gs-danger-fg);
-    --gs-syntax-dim: #6e7781;
+    --gs-syntax-dim: #646c76; /* ≥4.5:1 on the console */
 
     --gs-code-pc-row-bg: rgba(80, 140, 220, 0.2);
     --gs-code-changed-bg: rgba(220, 170, 0, 0.22);

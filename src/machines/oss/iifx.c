@@ -328,6 +328,7 @@ static void iifx_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable
             g_user_write[page_index] = 0;
     }
     tlb_track_page(page_index); // tracked like every fast-path entry (mac030_fill_page)
+    memory_logpoint_guard_page(page_index);
 }
 
 // Repoints the page-table entries for $40008000-$4000FFFF to either

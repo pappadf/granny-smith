@@ -666,6 +666,18 @@ void nubus_reset(nubus_bus_t *bus) {
     }
 }
 
+// A power cycle: every card's power_on hook (machine.restart; the /RESET
+// that follows is nubus_reset).
+void nubus_power_on(nubus_bus_t *bus) {
+    if (!bus)
+        return;
+    for (int i = 0; i < NUBUS_MAX_SLOTS; i++) {
+        nubus_card_t *card = bus->cards[i];
+        if (card && card->ops && card->ops->power_on)
+            card->ops->power_on(card, bus->cfg);
+    }
+}
+
 // === Slot-IRQ aggregation ===================================================
 //
 // Each NuBus slot's /NMRQ line maps to a VIA2 PA bit (active-low):

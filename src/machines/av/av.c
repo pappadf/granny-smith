@@ -861,6 +861,7 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
 // YMCA's bank registers return to their power-on layout.
 static void av_power_on(config_t *cfg) {
     av_cuda_host_power_cycle(av_st(cfg)->cuda);
+    av_civic_power_on(av_st(cfg)->civic); // Civic's VRAM goes with main RAM
     av_ymca_split(av_st(cfg)); // the bank registers come up split
 }
 

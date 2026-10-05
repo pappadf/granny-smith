@@ -871,6 +871,17 @@ void dafb_reset(dafb_t *dafb) {
     dafb_poweron_display(dafb, /*cold*/ false);
 }
 
+// Power cycle (the MCU substrate's power_on, before the /RESET): VRAM is
+// lost, and the controller comes up as a cold build does -- the power-on
+// raster, scanning out black -- instead of showing the last session's
+// picture until the ROM's first mode set.
+void dafb_power_on(dafb_t *dafb) {
+    if (!dafb)
+        return;
+    memset(dafb->vram, 0, dafb->vram_size);
+    dafb_poweron_display(dafb, /*cold*/ true);
+}
+
 const memory_interface_t *dafb_reg_interface(dafb_t *dafb) {
     (void)dafb;
     return &dafb_reg_iface;

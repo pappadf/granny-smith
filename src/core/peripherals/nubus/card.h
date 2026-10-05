@@ -48,6 +48,12 @@ typedef struct nubus_card_ops {
     // re-allocated or re-registered).  NULL hooks are safe and skipped.
     void (*reset)(nubus_card_t *card, config_t *cfg);
 
+    // Called on a power cycle (machine.restart), before the /RESET that
+    // follows it: the card loses what losing power loses -- VRAM -- and
+    // comes up showing what a cold card shows.  A warm /RESET (above) keeps
+    // VRAM.  NULL hooks are safe and skipped.
+    void (*power_on)(nubus_card_t *card, config_t *cfg);
+
     // Called from the family VBL trigger (via nubus_tick_vbl) once per
     // VBL.  Cards that drive their own VSync IRQ call nubus_assert_irq()
     // here.
