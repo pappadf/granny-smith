@@ -140,6 +140,17 @@ const highlightField = StateField.define<DecorationSet>({
 
 // --- Setup -----------------------------------------------------------------
 
+// The empty line's hint, drawn by CSS (::before) so it stays out of the
+// line's text: innerText / textContent of the input read only what was typed,
+// as before there was a hint.  Assistive technology gets it as the content's
+// aria-placeholder.
+function hintPlaceholder(text: string) {
+  const el = document.createElement('span');
+  el.className = 'cm-hint';
+  el.dataset.hint = text;
+  return [cmPlaceholder(el), EditorView.contentAttributes.of({ 'aria-placeholder': text })];
+}
+
 export function createConsoleInput(
   parent: HTMLElement,
   h: ConsoleInputHandlers,
@@ -336,7 +347,7 @@ export function createConsoleInput(
         }),
         EditorView.lineWrapping,
         EditorView.contentAttributes.of({ 'aria-label': 'Console input' }),
-        placeholder ? cmPlaceholder(placeholder) : [],
+        placeholder ? hintPlaceholder(placeholder) : [],
         inputTheme,
       ],
     }),
@@ -391,6 +402,7 @@ const inputTheme = EditorView.theme({
     backgroundColor: 'var(--gs-console-selection)',
   },
   '.cm-placeholder': { color: 'var(--gs-console-muted-fg)' },
+  '.cm-hint::before': { content: 'attr(data-hint)' },
   // The completion popup is a menu: the menu's colours, radius and shadow.
   '.cm-tooltip': {
     backgroundColor: 'var(--gs-menu-bg)',
