@@ -173,6 +173,7 @@ static void build_volume(uint16_t sig) {
         w16(d + 0x00, 1); // folder
         w32(d + 0x04, 0); // valence
         w32(d + 0x08, 16); // folderID
+        w32(d + 0x10, 0xB1000000u); // contentModDate (Mac seconds)
         p = d + 88;
     }
 
@@ -186,6 +187,7 @@ static void build_volume(uint16_t sig) {
         size_t d = p + 2 + 16;
         w16(d + 0x00, 2); // recordType = file
         w32(d + 0x08, 17); // fileID
+        w32(d + 0x10, 0xE0000000u); // contentModDate (Mac seconds)
         wfork(d + 0x58, 11, 3, 1); // dataFork: 11 bytes at block 3
         // resourceFork (@0xA8) left zero
         p = d + 248;
@@ -241,13 +243,16 @@ TEST(test_readdir_root) {
         if (strcmp(de.name, "Sub") == 0) {
             saw_sub = 1;
             ASSERT_TRUE(de.is_dir);
+            ASSERT_TRUE(de.mod_date == 0xB1000000u);
         } else if (strcmp(de.name, "Hello") == 0) {
             saw_hello = 1;
             ASSERT_TRUE(!de.is_dir);
             ASSERT_EQ_INT(11, (int)de.data_fork.logical_size);
+            ASSERT_TRUE(de.mod_date == 0xE0000000u);
         } else if (strcmp(de.name, "Bullet\xe2\x80\xa2") == 0) {
             saw_bullet = 1; // UTF-16 U+2022 decoded to UTF-8 E2 80 A2
             ASSERT_TRUE(!de.is_dir);
+            ASSERT_EQ_INT(0, (int)de.mod_date); // unset
         }
     }
     ASSERT_EQ_INT(0, r); // clean EOF

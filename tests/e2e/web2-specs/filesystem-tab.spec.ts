@@ -64,6 +64,13 @@ test('descend image, ctrl-multi-select, copy out, delete, copy again', async ({ 
   await descendIntoImage(page);
   await expect(row(page, 'System Folder')).toBeVisible();
 
+  // The Size and Date modified columns: the image's own size from OPFS, and
+  // a file inside it with its data-fork size and HFS (1904-epoch) date.
+  await expect(row(page, IMAGE).locator('.tree-col-0')).toHaveText('800 KB');
+  await expect(row(page, FILE_B).locator('.tree-col-0')).toHaveText('4.4 KB');
+  await expect(row(page, FILE_B).locator('.tree-col-1')).toHaveText(/^19\d\d-\d\d-\d\d \d\d:\d\d$/);
+  await expect(row(page, 'System Folder').locator('.tree-col-0')).toHaveText('');
+
   // Multi-select two files inside the (read-only) image with ctrl-click.
   await row(page, FILE_A).click();
   await row(page, FILE_B).click({ modifiers: ['ControlOrMeta'] });

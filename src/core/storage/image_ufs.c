@@ -420,6 +420,7 @@ static int fill_dirent_for_inode(ufs_volume_t *vol, uint32_t ino, const char *na
     out->is_symlink = (ftype == UFS_IFLNK);
     if (ftype == UFS_IFREG || ftype == UFS_IFLNK)
         out->size = RD_BE32(di + DI_OFF_SIZE);
+    out->mtime = RD_BE32(di + DI_OFF_MTIME);
     return 0;
 }
 

@@ -41,6 +41,10 @@ export interface OpfsEntry {
   kind: 'file' | 'directory';
   // A file the core can descend into (an image or archive), from files.list.
   expandable?: boolean;
+  // A file's size in bytes, when known.
+  size?: number;
+  // Modification time in Unix seconds; 0 or absent when unknown.
+  mtime?: number;
 }
 
 export type ImageCategory = 'rom' | 'vrom' | 'prom' | 'fd' | 'hd' | 'cd';

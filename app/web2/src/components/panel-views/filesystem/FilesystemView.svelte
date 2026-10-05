@@ -35,6 +35,8 @@
     clearFsSelection,
   } from '@/state/filesystem.svelte';
   import { iconForFsEntry } from '@/lib/iconForFsEntry';
+  import { formatMtime, formatSize } from '@/lib/fileInfo';
+  import type { OpfsEntry } from '@/bus/types';
   import { pathIsAncestorOrSelf, pathKey, pathKeyToArray } from '@/lib/treePath';
 
   const DRAG_MIME = 'application/x-gs-tree-path';
@@ -67,9 +69,7 @@
   // invalidated and leaves untouched ones cached.
   let treeKey = $state(0);
 
-  function entriesToNodes(
-    entries: { name: string; path: string; kind: 'file' | 'directory'; expandable?: boolean }[],
-  ): TreeNode[] {
+  function entriesToNodes(entries: OpfsEntry[]): TreeNode[] {
     // Hide AppleDouble sidecars ("._<name>") whose data file is present in the
     // same listing: the pair is one logical Mac file. An orphaned "._x" (no
     // sibling "x") stays visible so it can be cleaned up.
@@ -97,6 +97,12 @@
           // Every entry is draggable. An OPFS node moves; a node inside a
           // (read-only) image is instead copied out to the drop target.
           draggable: true,
+          // Size and Date modified; a directory has no size, and an unknown
+          // date (0) is blank.
+          columns: [
+            e.kind === 'file' && e.size !== undefined ? formatSize(e.size) : '',
+            formatMtime(e.mtime ?? 0),
+          ],
         };
       });
   }
@@ -620,6 +626,11 @@
 </script>
 
 <div class="fs-view">
+  <div class="fs-header" aria-hidden="true">
+    <span class="fs-header-name">Name</span>
+    <span class="tree-col tree-col-0">Size</span>
+    <span class="tree-col tree-col-1">Date modified</span>
+  </div>
   {#key treeKey}
     <Tree
       nodes={rootNodes}
@@ -667,6 +678,49 @@
     height: 100%;
     overflow: auto;
     background: var(--gs-surface-app);
-    padding: var(--gs-space-1) 0;
+    padding: 0 0 var(--gs-space-1);
+    /* The Size and Date columns fold away when the panel is too narrow. */
+    container-type: inline-size;
+  }
+  .fs-header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: var(--gs-row-gap);
+    height: var(--gs-row-height);
+    padding: 0 var(--gs-row-padding-x) 0 var(--gs-tree-indent-base);
+    margin-bottom: var(--gs-space-1);
+    background: var(--gs-surface-app);
+    border-bottom: var(--gs-border-width) solid var(--gs-border);
+    color: var(--gs-text-muted);
+    font-size: var(--gs-font-size-sm);
+  }
+  .fs-header-name {
+    flex: 1 1 auto;
+  }
+  .fs-view :global(.tree-col) {
+    flex-shrink: 0;
+    text-align: right;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .fs-view :global(.gs-tree-item .tree-col) {
+    color: var(--gs-text-muted);
+  }
+  .fs-view :global(.gs-tree-item[data-selected] .tree-col) {
+    color: inherit;
+  }
+  .fs-view :global(.tree-col-0) {
+    width: 7ch;
+  }
+  .fs-view :global(.tree-col-1) {
+    width: 16ch;
+  }
+  @container (max-width: 420px) {
+    .fs-view :global(.tree-col) {
+      display: none;
+    }
   }
 </style>

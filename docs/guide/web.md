@@ -730,10 +730,14 @@ typed-dispatch and introspection surface.
   `zip`, `hqx`, `bin`, `gz`) or an empty string.
   **`files.archive.extract(path, out_dir)`** → bool; powers the
   Filesystem-tab "Unpack" action (an upload probes the archive in place). See [peeler.md](peeler.md).
-- **`files.list(path)`** → `[{name, kind, size, expandable}]`, descending into
-  disk images (partitions, then HFS/UFS contents) and archives, nested to any
-  depth. `expandable` marks a file the core can open as a tree; the Filesystem
-  tree expands exactly those; see [`target-filesystems.md`](../internals/core/storage/target-filesystems.md).
+- **`files.list(path)`** → `[{name, kind, size, mtime, expandable}]`, descending
+  into disk images (partitions, then HFS/UFS contents) and archives, nested to
+  any depth. `size` is the data fork's bytes; `mtime` the modification time in
+  Unix seconds, 0 when unknown (always, for a host path in the browser: WasmFS
+  has no real OPFS dates, so the Filesystem tab reads those from OPFS itself).
+  The tree shows both as its Size and Date modified columns. `expandable`
+  marks a file the core can open as a tree; the Filesystem tree expands
+  exactly those; see [`target-filesystems.md`](../internals/core/storage/target-filesystems.md).
 - **`files.cp(src, dst, [recursive])`** — copy, including *out of* an image into
   OPFS (backs copy-out and Save to computer…). **`files.rm(path)`** /
   **`files.mv(src, dst)`** — recursive remove / move, run worker-side so
