@@ -29,8 +29,10 @@
   import FindBar, { FindState } from './FindBar.svelte';
   import ValueTree from './ValueTree.svelte';
 
-  // The console to show: the app's, or a test's own.
-  let { console: con = appConsole }: { console?: Console } = $props();
+  // The console to show: the app's, or a test's own; `autofocus` off keeps a
+  // fixture's focus where the fixture put it.
+  let { console: con = appConsole, autofocus = true }: { console?: Console; autofocus?: boolean } =
+    $props();
   const consoleState = $derived(con.state);
 
   let outputEl = $state<HTMLDivElement | null>(null);
@@ -89,7 +91,7 @@
   // can run late, after the user (or the find bar) has focused something.
   // Not while the screen holds the pointer either: keys belong to the guest.
   $effect(() => {
-    if (!inputReady || layout.activeTab !== 'terminal') return;
+    if (!autofocus || !inputReady || layout.activeTab !== 'terminal') return;
     // The find bar owns the keys while it is open (closing it hands focus back).
     if (find.open || document.pointerLockElement) return;
     const a = document.activeElement;

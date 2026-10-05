@@ -67,4 +67,6 @@
   });
 </script>
 
-<ConsoleView console={con} />
+<!-- The find variant's focus belongs to its find bar: the input's own
+     focus-on-open would race the bar's (CodeMirror loads asynchronously). -->
+<ConsoleView console={con} autofocus={!find} />
