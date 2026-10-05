@@ -31,6 +31,9 @@
 #                   shape): its Apple_HFS partition is wrapped in place of the
 #                   disk's own map, boots the IIci to the Finder, and survives
 #                   a checkpoint round trip
+#   trimmed         the 7.5.3 volume cut off after its last allocation block
+#                   in use (as some archive.org images are): opened at the
+#                   length its MDB claims, it boots the IIci to the Finder
 
 include "../lib/mac.script"
 
@@ -50,6 +53,9 @@ let volav71 = "${$WORK_DIR}/av71_bare.img"
 # Apple_HFS at block 64, a 16-block Apple_Free tail), built by config.mk's
 # TEST_SETUP (scripts/hfs-to-driverless-apm.py).
 let voldl753 = "${$WORK_DIR}/driverless753.img"
+# The 7.5.3 volume cut short of its MDB's claim, built by config.mk's
+# TEST_SETUP (scripts/hfs-trim.py).
+let voltrim753 = "${$WORK_DIR}/trimmed753.img"
 
 # Bytes the wrapper puts in front of a volume: DDM + 63-block map + 32-block
 # driver partition (IMAGE_WRAP_PREFIX_BLOCKS).
@@ -224,6 +230,25 @@ def row_driverless() {
     assert files.path_size("${$voldl753}") == $file_size "driverless: the disk file changed size"
 }
 
+# ---- trimmed ----------------------------------------------------------------------
+# The disk is as long as the volume says, not the file: the missing tail reads
+# as zeros with the alternate MDB in its place, and the file is untouched.
+def row_trimmed() {
+    machine.boot model="iici" ram=8192 rom="${$ROM}"
+    machine.rtc.time = "2026-04-26T21:30:00" # a fixed clock, as boot_desktop
+    let file_size = files.path_size("${$voltrim753}")
+    assert $file_size < files.path_size("${$vol753}") "trimmed: the volume was not trimmed"
+    assert machine.scsi.attach_hd("${$voltrim753}", 0) "trimmed: attach_hd failed"
+    let i = image_index($voltrim753)
+    assert files.images[$i].raw_size == files.path_size("${$vol753}") + $PREFIX_BYTES "trimmed: disk is ${files.images[$i].raw_size} bytes, want the whole volume + ${$PREFIX_BYTES}"
+    scheduler.run 150000000
+    wait_stable(1600000000)
+    assert_desktop("trimmed")
+    assert files.images[$i].writes > 0 "trimmed: nothing written to the disk"
+    check_desktop("goldens/iici-7.5.3-640x480x1-bare-finder.png")
+    assert files.path_size("${$voltrim753}") == $file_size "trimmed: the disk file changed size"
+}
+
 # ---- row dispatch ------------------------------------------------------------------
 
 if have_media($vol753) && have_media($vol701) {
@@ -248,6 +273,13 @@ if have_media($vol753) && have_media($vol701) {
     if row_on("pm7500-753") { row_end_milestone("pm7500-753", try(row_pm7500_753(), "FAILED")) }
     if row_on("two-volumes") { row_end("two-volumes", try(row_two_volumes(), "FAILED")) }
     if row_on("checkpoint") { row_end("checkpoint", try(row_checkpoint(), "FAILED")) }
+    if row_on("trimmed") {
+        if have_media($voltrim753) {
+            row_end("trimmed", try(row_trimmed(), "FAILED"))
+        } else {
+            echo "skip: trimmed (no trimmed volume at ${$voltrim753})"
+        }
+    }
     if row_on("driverless") {
         if have_media($voldl753) {
             row_end("driverless", try(row_driverless(), "FAILED"))

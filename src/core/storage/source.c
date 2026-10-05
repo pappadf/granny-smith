@@ -142,6 +142,80 @@ gs_source_t *gs_source_memory(const void *buf, size_t len, bool own, const char 
     return peel_source_memory_keyed(buf, len, own, key);
 }
 
+// A parent lengthened with a zero tail carrying one patch (gs_source_pad).
+typedef struct {
+    uint64_t size, psize, patch_off;
+    uint8_t *patch;
+    size_t patch_len;
+    char *key;
+} pad_src_t;
+
+static int64_t pad_read(gs_source_t *s, uint64_t off, void *buf, size_t len) {
+    pad_src_t *p = s->ctx;
+    if (off >= p->size)
+        return 0;
+    if (len > p->size - off)
+        len = (size_t)(p->size - off);
+    if (off < p->psize) // the parent's own bytes (a short read is the caller's to resume)
+        return peel_source_read(s->parent, off, buf, len < p->psize - off ? len : (size_t)(p->psize - off));
+    memset(buf, 0, len);
+    uint64_t lo = off > p->patch_off ? off : p->patch_off;
+    uint64_t hi = off + len < p->patch_off + p->patch_len ? off + len : p->patch_off + p->patch_len;
+    if (lo < hi)
+        memcpy((uint8_t *)buf + (lo - off), p->patch + (lo - p->patch_off), (size_t)(hi - lo));
+    return (int64_t)len;
+}
+
+static uint64_t pad_size(gs_source_t *s) {
+    return ((pad_src_t *)s->ctx)->size;
+}
+
+static const char *pad_key(gs_source_t *s) {
+    return ((pad_src_t *)s->ctx)->key;
+}
+
+static gs_tier_t pad_tier(gs_source_t *s) {
+    return peel_source_tier(s->parent);
+}
+
+static void pad_close(gs_source_t *s) {
+    pad_src_t *p = s->ctx;
+    if (p) {
+        free(p->patch);
+        free(p->key);
+    }
+    free(p);
+}
+
+static const gs_source_ops_t pad_ops = {pad_read, pad_size, pad_key, pad_tier, pad_close, NULL};
+
+gs_source_t *gs_source_pad(gs_source_t *parent, uint64_t size, uint64_t patch_off, const void *patch,
+                           size_t patch_len) {
+    if (!parent)
+        return NULL;
+    uint64_t psize = peel_source_size(parent);
+    if (size <= psize ||
+        (patch_len && (!patch || patch_off < psize || patch_off > size || patch_len > size - patch_off)))
+        return NULL;
+    pad_src_t *p = calloc(1, sizeof(*p));
+    if (!p)
+        return NULL;
+    p->size = size;
+    p->psize = psize;
+    p->patch_off = patch_off;
+    p->patch_len = patch_len;
+    const char *pk = peel_source_key(parent);
+    p->key = gs_str_printf("%s#pad%" PRIu64, pk ? pk : "", size);
+    p->patch = patch_len ? malloc(patch_len) : NULL;
+    if (!p->key || (patch_len && !p->patch)) {
+        pad_close(&(gs_source_t){.ctx = p});
+        return NULL;
+    }
+    if (patch_len)
+        memcpy(p->patch, patch, patch_len);
+    return peel_source_new(&pad_ops, p, parent);
+}
+
 // ============================================================================
 // Reads
 // ============================================================================

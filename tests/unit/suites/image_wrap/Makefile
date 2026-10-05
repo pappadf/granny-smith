@@ -10,6 +10,7 @@ TEST_NAME    := image_wrap
 TEST_SRCS    := test.c
 TEST_HARNESS := isolated
 EXTRA_SRCS   := ../../../../src/core/storage/image_wrap.c \
+                ../../../../src/core/storage/image_wrap_sniff.c \
                 ../../../../src/core/storage/image_apm.c
 EXTRA_CFLAGS := -I$(abspath ../../../..)/build/gsdisk
 

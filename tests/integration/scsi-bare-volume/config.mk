@@ -30,8 +30,9 @@ TEST_ARGS := model=iici ram=8192
 # map and driver stripped off (the extraction is skipped when that disk is
 # absent, and the row then skips).  The driverless row's disk: the bare 7.5.3
 # volume put behind a partition map with no driver, the shape Disk Copy and
-# SheepShaver write.
-TEST_SETUP := mkdir -p "$(WORK_DIR)" && { [ ! -f "$(TEST_DATA)/systems/system_7_1_77mb_av.img" ] || python3 "$(TEST_DATA)/../../scripts/apm-extract-hfs.py" "$(TEST_DATA)/systems/system_7_1_77mb_av.img" "$(WORK_DIR)/av71_bare.img"; } && { [ ! -f "$(TEST_DATA)/systems/system_7_5_3_25mb_bare.img" ] || python3 "$(TEST_DATA)/../../scripts/hfs-to-driverless-apm.py" "$(TEST_DATA)/systems/system_7_5_3_25mb_bare.img" "$(WORK_DIR)/driverless753.img"; }
+# SheepShaver write.  The trimmed row's: the bare 7.5.3 volume cut off after
+# its last allocation block in use.
+TEST_SETUP := mkdir -p "$(WORK_DIR)" && { [ ! -f "$(TEST_DATA)/systems/system_7_1_77mb_av.img" ] || python3 "$(TEST_DATA)/../../scripts/apm-extract-hfs.py" "$(TEST_DATA)/systems/system_7_1_77mb_av.img" "$(WORK_DIR)/av71_bare.img"; } && { [ ! -f "$(TEST_DATA)/systems/system_7_5_3_25mb_bare.img" ] || python3 "$(TEST_DATA)/../../scripts/hfs-to-driverless-apm.py" "$(TEST_DATA)/systems/system_7_5_3_25mb_bare.img" "$(WORK_DIR)/driverless753.img" && python3 "$(TEST_DATA)/../../scripts/hfs-trim.py" "$(TEST_DATA)/systems/system_7_5_3_25mb_bare.img" "$(WORK_DIR)/trimmed753.img"; }
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix

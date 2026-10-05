@@ -64,6 +64,38 @@ It is called only on the SCSI hard-disk attach path (`media_open` in
   and any other partitions (`Apple_Free`, `Apple_Void`, …) are hidden behind
   the synthesised map. The file keeps them.
 
+### Trimmed volumes
+
+Some archive.org images are cut short of the volume they hold: someone dropped
+the free allocation blocks at the end, and the alternate MDB with them. The
+MDB still claims the full size, so a disk sized from the file is smaller than
+its volume. Mac OS then reports "There is a problem with the disk" at
+startup, and Disk First Aid says "This is not an HFS disk".
+
+The image layer opens such an image at the length the volume claims, before
+it sizes the storage (`image_open_source` in `image.c`):
+
+- `image_wrap_extended_blocks` (`image_wrap_sniff.c`) runs the same two
+  sniffs as the wrapper. For a bare volume, or the `Apple_HFS` partition of a
+  driverless disk, it returns where the volume would end by its own header
+  (`image_wrap_volume_blocks`): HFS `drAlBlSt + drNmAlBlks × drAlBlkSiz/512 + 2`
+  (the alternate MDB and the reserved block); HFS+ `totalBlocks × blockSize/512`.
+  A driverless partition is not extended past its map entry. Nothing is
+  extended by more than `IMAGE_WRAP_MAX_EXTEND_BLOCKS` (1 GiB): a header
+  claiming more is garbage, not a trimmed tail.
+- The storage's base becomes `gs_source_pad` over the file. Past the file's
+  end it reads zeros, and the second-last block reads as a copy of the
+  volume's header, which is where the alternate MDB or volume header
+  belongs. Disk First Aid checks the alternate.
+- Everything above the source sees an ordinary disk of the full length:
+  `raw_size`, the wrapper's partition, guest writes to the tail (kept in the
+  delta), export, and checkpoints, whose restore reopens the file and pads it
+  the same way. The file is never changed. `image->source_key` stays the
+  file's key; the padded source's key appends `#pad<size>`.
+
+A delta created before this change records the file's shorter length, so
+reopening it fails the storage's geometry check.
+
 ### Layout the guest sees
 
 All blocks are 512 bytes. The prefix is a fixed 96 blocks
@@ -197,7 +229,9 @@ computing the checksum, so a guest's disk names the driver that ran.
 like `vrom68k.mk`: `m68k-linux-gnu-as -m68000` → `objcopy -O binary` →
 `build/gsdisk/gsdisk_drvr.bin` → `scripts/bin2c.py` →
 `build/gsdisk/gsdisk_driver.h`, which `image_wrap.c` includes. There is no
-fallback when the assembler is missing.
+fallback when the assembler is missing. The sniffs and sizing live in
+`image_wrap_sniff.c`, which does not need the driver, so the image layer
+(which calls `image_wrap_extended_blocks`) links without it.
 
 ### Tests
 
@@ -206,7 +240,11 @@ fallback when the assembler is missing.
   the build stamp, the bare-volume sniff, and the driverless-disk sniff (found
   with and without a DDM; rejected with a driver in the DDM or the map, with
   zero or two HFS partitions, with an A/UX partition, with a map cut short, and
-  on the wrapper's own prefix).
+  on the wrapper's own prefix), and the trimmed-volume sizing (HFS and HFS+
+  claims; a bare and a driverless volume extended, clipped to the map entry,
+  and left alone when whole, oversized or not a volume).
+- `tests/unit/suites/source` — `gs_source_pad`: the parent's bytes, the zero
+  tail with its patch, and refused shapes.
 - `tests/integration/scsi-bare-volume` — one machine of every family that
   boots Mac OS from SCSI, each to the Finder off a wrapped volume: the
   archive.org System 7.5.3 volume on the SE/30 (glue), IIci (MDU), Quadra 700
@@ -221,7 +259,9 @@ fallback when the assembler is missing.
   and `system_7_0_1_10mb_bare_plus.img`. The `driverless` row boots the IIci
   off the 7.5.3 volume put behind a driverless map at setup by
   `scripts/hfs-to-driverless-apm.py` (the OS9.img shape), and takes it through
-  a checkpoint round trip.
+  a checkpoint round trip. The `trimmed` row boots it off the 7.5.3 volume
+  cut off after its last allocation block in use by `scripts/hfs-trim.py`,
+  and checks that the disk is the volume's full length.
 - `tests/e2e/web2-specs/url-archive-boot.spec.ts` — the web UI's archive.org
   URL booting the same volume.
 

@@ -17,6 +17,8 @@ EXTRA_SRCS   := ../../../../src/core/job/seam.c \
                 ../../../../src/core/event/gs_event.c \
                 ../../../../src/core/peripherals/scsi_cdrom.c \
                 ../../../../src/core/storage/image.c \
+                ../../../../src/core/storage/image_wrap_sniff.c \
+                ../../../../src/core/storage/image_apm.c \
                 ../../../../src/core/storage/storage_util.c \
                 ../../../../src/core/storage/image_scratch.c \
                 ../../../../src/core/storage/storage.c \

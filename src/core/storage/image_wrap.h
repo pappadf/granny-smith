@@ -40,6 +40,14 @@
 // neither a Driver Descriptor Map at 0 nor a partition map at 512.
 bool image_wrap_is_bare_volume(const uint8_t *head, size_t len);
 
+// The length, in 512-byte blocks, the volume whose first `len` bytes (at
+// least 1536) are at `vol` says it has: for HFS the allocation blocks plus
+// the alternate MDB and the reserved block after them, for HFS+ its
+// totalBlocks.  0 when there is no volume header there or it is malformed.
+// An image cut short of this (a trimmed archive download) is opened at this
+// length — see image_wrap_extended_blocks.  Pure: exposed for the unit suite.
+uint64_t image_wrap_volume_blocks(const uint8_t *vol, size_t len);
+
 // Build the prefix for a volume of `volume_blocks` 512-byte blocks into
 // `out` (IMAGE_WRAP_PREFIX_BLOCKS * 512 bytes).  `build_id` (may be NULL)
 // is stamped into the driver.  Pure: exposed for the unit suite.
@@ -56,6 +64,25 @@ uint32_t image_wrap_boot_checksum(const uint8_t *code, size_t len);
 // `start` / `blocks`.  `len` must cover the whole map (a map longer than the
 // buffer is rejected).  Pure: exposed for the unit suite.
 bool image_wrap_find_driverless_hfs(const uint8_t *head, size_t len, uint64_t *start, uint64_t *blocks);
+
+// The most a truncated volume is extended by: 1 GiB of 512-byte blocks.
+#define IMAGE_WRAP_MAX_EXTEND_BLOCKS (2u * 1024u * 1024u)
+
+// Reads `size` bytes at byte `offset` of an image's own file; false on a
+// short read.
+typedef bool (*image_wrap_read_fn)(void *ctx, uint64_t offset, uint8_t *buf, size_t size);
+
+// The length, in 512-byte blocks, an image of `raw_blocks` blocks is to be
+// opened at.  An HFS volume the wrapper would present (bare, or the HFS
+// partition of a driverless disk) whose own header claims more blocks than
+// the file holds — an image trimmed of its free tail — gets its claimed
+// length, so the guest sees the volume's whole extent; `volume_start` (may
+// be NULL) is then where the volume starts (0 for a bare one).  The image
+// layer serves the missing tail as zeros with the alternate MDB / volume
+// header in its place, the second-last block, and keeps guest writes there
+// in the delta like any others (image.c).  Anything else, or an extension
+// past IMAGE_WRAP_MAX_EXTEND_BLOCKS, keeps `raw_blocks`.
+uint64_t image_wrap_extended_blocks(image_wrap_read_fn read, void *ctx, uint64_t raw_blocks, uint64_t *volume_start);
 
 // image_wrap_volume results.
 #define IMAGE_WRAP_NONE       0 // not a shape the wrapper handles; left as is

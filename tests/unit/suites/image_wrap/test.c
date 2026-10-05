@@ -268,6 +268,100 @@ TEST(test_driverless_sniff_rejects) {
     free(buf);
 }
 
+// Set an HFS MDB's size fields: drNmAlBlks, drAlBlkSiz, drAlBlSt.
+static void set_mdb(uint8_t *head, uint32_t nm, uint32_t size, uint32_t first) {
+    uint8_t *m = head + 2 * BLK;
+    m[18] = (uint8_t)(nm >> 8);
+    m[19] = (uint8_t)nm;
+    wr32(m + 20, size);
+    m[28] = (uint8_t)(first >> 8);
+    m[29] = (uint8_t)first;
+}
+
+// An in-memory image file for image_wrap_extended_blocks.
+typedef struct {
+    const uint8_t *data;
+    uint64_t len;
+} mem_file_t;
+
+static bool mem_read(void *ctx, uint64_t offset, uint8_t *buf, size_t size) {
+    const mem_file_t *f = (const mem_file_t *)ctx;
+    if (offset > f->len || size > f->len - offset)
+        return false;
+    memcpy(buf, f->data + offset, size);
+    return true;
+}
+
+// A volume's claimed length: HFS counts its allocation blocks plus the
+// alternate MDB and the reserved block; HFS+ its totalBlocks.
+TEST(test_volume_blocks) {
+    uint8_t head[3 * BLK];
+    bare_head(head);
+    set_mdb(head, 50314, 1024, 16); // the trimmed archive.org Mac OS 8.1 volume
+    ASSERT_EQ_INT(image_wrap_volume_blocks(head, sizeof(head)), 100646);
+    set_mdb(head, 50314, 1000, 16); // not a whole number of sectors
+    ASSERT_EQ_INT(image_wrap_volume_blocks(head, sizeof(head)), 0);
+    set_mdb(head, 50314, 0, 16);
+    ASSERT_EQ_INT(image_wrap_volume_blocks(head, sizeof(head)), 0);
+
+    memset(head + 2 * BLK, 0, BLK);
+    head[2 * BLK] = 'H';
+    head[2 * BLK + 1] = '+';
+    wr32(head + 2 * BLK + 40, 4096);
+    wr32(head + 2 * BLK + 44, 1000);
+    ASSERT_EQ_INT(image_wrap_volume_blocks(head, sizeof(head)), 8000);
+
+    memset(head, 0, sizeof(head));
+    ASSERT_EQ_INT(image_wrap_volume_blocks(head, sizeof(head)), 0); // no volume
+    ASSERT_EQ_INT(image_wrap_volume_blocks(head, 2 * BLK), 0); // too short
+}
+
+// A bare volume trimmed short of its MDB's claim is opened at the claim; a
+// whole one, an oversized claim, or a non-volume keeps the file's length.
+TEST(test_extended_blocks_bare) {
+    const uint64_t file_blocks = 1000;
+    uint8_t *img = (uint8_t *)calloc(file_blocks, BLK);
+    ASSERT_TRUE(img != NULL);
+    mem_file_t f = {img, file_blocks * BLK};
+    bare_head(img);
+    set_mdb(img, 600, 1024, 16); // 16 + 1200 + 2 = 1218 blocks
+    ASSERT_EQ_INT(image_wrap_extended_blocks(mem_read, &f, file_blocks, NULL), 1218);
+
+    set_mdb(img, 480, 1024, 16); // 978 blocks: fits, file has slack
+    ASSERT_EQ_INT(image_wrap_extended_blocks(mem_read, &f, file_blocks, NULL), file_blocks);
+
+    set_mdb(img, 65535, 64 * 1024, 16); // ~4 GiB claimed of a 500 KB file
+    ASSERT_EQ_INT(image_wrap_extended_blocks(mem_read, &f, file_blocks, NULL), file_blocks);
+
+    memset(img, 0, 3 * BLK); // not a volume
+    ASSERT_EQ_INT(image_wrap_extended_blocks(mem_read, &f, file_blocks, NULL), file_blocks);
+    ASSERT_EQ_INT(image_wrap_extended_blocks(mem_read, &f, 2, NULL), 2); // too short to sniff
+    free(img);
+}
+
+// A driverless disk's HFS partition is extended to its volume's claim, but
+// never past its map entry.
+TEST(test_extended_blocks_driverless) {
+    const uint64_t file_blocks = 2000;
+    uint8_t *img = (uint8_t *)calloc(file_blocks, BLK);
+    ASSERT_TRUE(img != NULL);
+    mem_file_t f = {img, file_blocks * BLK};
+    img[0] = 'E';
+    img[1] = 'R';
+    map_entry(img, 1, 2, 1, 63, "Apple_partition_map");
+    map_entry(img, 2, 2, 64, 3000, "Apple_HFS");
+    uint8_t *vol = img + 64 * BLK;
+    bare_head(vol);
+    set_mdb(vol, 1100, 1024, 16); // 2218 blocks from 64: 2282
+    uint64_t start = 0;
+    ASSERT_EQ_INT(image_wrap_extended_blocks(mem_read, &f, file_blocks, &start), 2282);
+    ASSERT_EQ_INT(start, 64);
+
+    map_entry(img, 2, 2, 64, 2100, "Apple_HFS"); // the map is shorter still
+    ASSERT_EQ_INT(image_wrap_extended_blocks(mem_read, &f, file_blocks, NULL), 2164);
+    free(img);
+}
+
 int main(void) {
     RUN(test_ddm_names_one_68k_driver);
     RUN(test_partition_map_parses_to_three_entries);
@@ -277,6 +371,9 @@ int main(void) {
     RUN(test_bare_volume_sniff);
     RUN(test_driverless_disk_is_found);
     RUN(test_driverless_sniff_rejects);
+    RUN(test_volume_blocks);
+    RUN(test_extended_blocks_bare);
+    RUN(test_extended_blocks_driverless);
     fprintf(stderr, "All image_wrap tests passed\n");
     return 0;
 }
