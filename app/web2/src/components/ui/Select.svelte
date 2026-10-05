@@ -114,6 +114,8 @@
     background: var(--gs-input-bg);
     color: var(--gs-input-fg);
     font-size: var(--gs-font-size-base);
+    text-overflow: ellipsis;
+    white-space: nowrap;
     cursor: pointer;
   }
   .gs-select[data-size='sm'] .gs-select__control {

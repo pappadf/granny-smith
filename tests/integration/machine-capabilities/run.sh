@@ -171,7 +171,7 @@ for m in q840av q660av; do
     assert_contains "$m" '"fpu":true' "$m has an FPU"
     assert_contains "$m" '"address_bits":32' "$m is 32-bit"
     assert_contains "$m" '"nubus":false' "$m declares no NuBus sockets"
-    assert_contains "$m" '{"unit":3,"label":"ID 3 · CD-ROM bay"}' "$m has a CD-ROM bay at ID 3"
+    assert_contains "$m" '{"unit":3,"label":"ID 3 · CD-ROM bay","short":"ID 3"}' "$m has a CD-ROM bay at ID 3"
     assert_contains "$m" '{"bus":"scsi","unit":3,"type":"cd"}' "$m opens with a CD-ROM drive in it"
     # A GAP, pinned so that closing it shows up here: the real machines have
     # a SuperDrive, but the New Age FDC is not modeled (a 'no drive' stub),
@@ -194,7 +194,7 @@ for m in pm6100 pm7100 pm8100; do
     assert_contains "$m" '"kind":"ppc_601"' "$m has the 601 BAT/segment/HTAB MMU"
     assert_contains "$m" '"fpu":true' "$m FPU capability on"
     assert_contains "$m" '"address_bits":32' "$m is 32-bit"
-    assert_contains "$m" '{"unit":3,"label":"ID 3 · CD-ROM bay"}' "$m has the Curio-bus CD-ROM bay"
+    assert_contains "$m" '{"unit":3,"label":"ID 3 · CD-ROM bay","short":"ID 3"}' "$m has the Curio-bus CD-ROM bay"
     assert_contains "$m" '"storage":[{"bus":"scsi","unit":0,"type":"hd"},{"bus":"scsi","unit":3,"type":"cd"}]' "$m opens with a hard disk at ID 0 and the CD-ROM drive at ID 3"
     assert_contains "$m" '"floppies":[{"id":"fd0","label":"Internal floppy drive","types":[{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"hd"}]' "$m offers the one internal SuperDrive"
     assert_contains "$m" '{"id":"scsi","label":"SCSI","kind":"scsi"' "$m has the one Curio SCSI bus"
@@ -257,7 +257,7 @@ for m in pm7500 pm8500 pm9500; do
     assert_contains "$m" '"nubus":false' "$m has no NuBus"
     assert_contains "$m" '"floppies":[{"id":"fd0","label":"Internal floppy drive","types":[{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"hd"}]' "$m offers the one internal SuperDrive"
     assert_contains "$m" '{"id":"scsi","label":"Internal fast SCSI","kind":"scsi"' "$m has the internal MESH bus"
-    assert_contains "$m" '{"unit":1,"label":"ID 1 · 3.5″ bay"}' "$m has the 3.5-inch bay at ID 1"
+    assert_contains "$m" '{"unit":1,"label":"ID 1 · 3.5″ bay","short":"ID 1"}' "$m has the 3.5-inch bay at ID 1"
     # No CD-ROM drive until the 53C94 has a bus (pm7500.c).
     assert_contains "$m" '"storage":[{"bus":"scsi","unit":0,"type":"hd"}]' "$m opens with the hard disk alone"
 done
@@ -287,17 +287,17 @@ for m in ans500 ans700; do
     # default boot disk (disk2:aix).  Both fast/wide channels are declared:
     # the second controller is live (tnt_fwscsi_attach binds channel 1 to
     # machine.scsi2, and ans-scsi drives a CD-ROM on it).
-    assert_contains "$m" '{"id":"scsi","label":"Internal SCSI bus 0","detail":"Fast and wide SCSI-2 · Symbios 53C825A","kind":"scsi","width":"wide","units":[{"unit":0,"label":"ID 0 · Front bay 0"},{"unit":1,"label":"ID 1 · Front bay 1"},{"unit":2,"label":"ID 2 · Front bay 2"},{"unit":3,"label":"ID 3 · Front bay 3"}]' "$m offers the front bays 0-3 on bus 0"
+    assert_contains "$m" '{"id":"scsi","label":"Internal SCSI bus 0","detail":"Fast and wide SCSI-2 · Symbios 53C825A","kind":"scsi","width":"wide","units":[{"unit":0,"label":"ID 0 · Front bay 0","short":"ID 0"},{"unit":1,"label":"ID 1 · Front bay 1","short":"ID 1"},{"unit":2,"label":"ID 2 · Front bay 2","short":"ID 2"},{"unit":3,"label":"ID 3 · Front bay 3","short":"ID 3"}]' "$m offers the front bays 0-3 on bus 0"
     assert_contains "$m" '{"id":"scsi2","label":"Internal SCSI bus 1"' "$m offers the second fast/wide bus"
     assert_contains "$m" '"storage":[{"bus":"scsi","unit":0,"type":"cd"},{"bus":"scsi","unit":2,"type":"hd"}],"startup":{"bus":"scsi","unit":2}' "$m opens with the CD in front bay 0 and starts up from front bay 2"
     assert_contains "$m" '{"id":"keyswitch","label":"Keyswitch","kind":"choice","values":[{"id":"unlocked","label":"Unlocked"},{"id":"service","label":"Service"},{"id":"locked","label":"Locked"}],"default":"unlocked"}' "$m's keyswitch is Unlocked by default (D18)"
 done
 # The 700's two REAR bays cable to fast/wide 1 -- the topology its comment
 # described long before the table expressed it.
-assert_contains ans700 '{"unit":0,"label":"ID 0 · Rear bracket, top"}' "ans700 declares its upper rear bracket"
-assert_contains ans700 '{"unit":1,"label":"ID 1 · Rear bracket, bottom"}' "ans700 declares its lower rear bracket"
+assert_contains ans700 '{"unit":0,"label":"ID 0 · Rear bracket, top","short":"ID 0"}' "ans700 declares its upper rear bracket"
+assert_contains ans700 '{"unit":1,"label":"ID 1 · Rear bracket, bottom","short":"ID 1"}' "ans700 declares its lower rear bracket"
 assert_not_contains ans500 'Rear bracket' "ans500 has no rear brackets"
-assert_contains ans500 '{"unit":0,"label":"ID 0"}' "ans500's bus 1 offers ID 0 (the Windows NT boot disk)"
+assert_contains ans500 '{"unit":0,"label":"ID 0","short":"ID 0"}' "ans500's bus 1 offers ID 0 (the Windows NT boot disk)"
 assert_contains ans700 '{"id":"power_supplies","label":"Power supplies","kind":"choice","values":[{"id":"one","label":"One"},{"id":"two","label":"Two"}],"default":"one"}' "ans700 takes a second supply, shipping with one"
 assert_absent ans500 '"id":"power_supplies"' "ans500 has one supply, no option"
 assert_contains ans500 '"freq":132000000' "ans500 runs a 132 MHz 604 card"
@@ -367,7 +367,7 @@ for m in q900 q950; do
     assert_contains "$m" '{"id":"scsi","label":"Internal SCSI","kind":"scsi","width":"narrow"' "$m offers the internal SCSI bus"
     assert_contains "$m" '"shares_units_with":["scsi2"]' "$m's internal bus shares IDs with the external"
     assert_contains "$m" '{"id":"scsi2","label":"External SCSI","kind":"scsi"' "$m offers the external SCSI bus"
-    assert_contains "$m" '{"unit":3,"label":"ID 3 · Lower front bay"}' "$m's CD-ROM bay is the lower front bay"
+    assert_contains "$m" '{"unit":3,"label":"ID 3 · Lower front bay","short":"ID 3"}' "$m's CD-ROM bay is the lower front bay"
 done
 assert_contains q700 '"default":"20480"' "q700 opens at 20 MB (D20)"
 assert_contains q700 '"freq":25000000' "q700 runs at 25 MHz"
@@ -393,8 +393,8 @@ for m in lisa macxl; do
     assert_absent "$m" '"id":"appletalk"' "$m has no AppleTalk"
     assert_contains "$m" '{"id":"profile","label":"ProFile port","kind":"profile"' "$m's disk is on the ProFile port"
 done
-assert_contains lisa '{"unit":0,"label":"External"}' "the Lisa 2's ProFile is external"
-assert_contains macxl '{"unit":0,"label":"Internal hard disk bay"}' "the Macintosh XL's disk is inside"
+assert_contains lisa '{"unit":0,"label":"External","short":"External"}' "the Lisa 2's ProFile is external"
+assert_contains macxl '{"unit":0,"label":"Internal hard disk bay","short":"Internal hard disk bay"}' "the Macintosh XL's disk is inside"
 
 # The second floppy position: an external port on the IIcx/IIci/IIsi, a
 # second internal bay on the IIx/IIfx, each shipping empty.
