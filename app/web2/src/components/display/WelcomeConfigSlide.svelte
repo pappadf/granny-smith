@@ -856,6 +856,14 @@
      taking the rest of the row at a fixed width whatever the image's name. */
   .device-row {
     flex-wrap: nowrap;
+    gap: var(--gs-space-3);
+  }
+  /* The device's name in the form's label column, so its unit menu lines up
+     with the controls of the rows around it (Start up from, Model…). */
+  .device-row .item-name {
+    flex: none;
+    width: var(--gs-form-label-width);
+    min-width: 0;
   }
   .device-row :global(.unit-select) {
     flex: none;
