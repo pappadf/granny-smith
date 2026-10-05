@@ -23,7 +23,9 @@ TEST_ROM := roms/plus-v3-4d1f8172.rom
 
 TEST_SETUP := cp "$(TEST_DATA)/systems/system_6_0_8_20mb_8_24gc.img" "$(TEST_TMPDIR)/hd.img"
 
-TEST_ARGS := hd=$(TEST_TMPDIR)/hd.img --print-dir=$(TEST_RESULTS_DIR)
+# AppleTalk starts inactive, so the Chooser's "AppleTalk ImageWriter
+# requires AppleTalk" step this test walks through appears.
+TEST_ARGS := config=appletalk-inactive.json hd=$(TEST_TMPDIR)/hd.img --print-dir=$(TEST_RESULTS_DIR)
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended
