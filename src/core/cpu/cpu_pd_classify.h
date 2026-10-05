@@ -813,7 +813,14 @@ static inline uint16_t pd_cls_movem(const pd_cls_t *c, uint16_t opcode, bool to_
     (void)ext_word;                                                                                                    \
     (void)ctx
 #define CPU_DECODER_EPILOGUE return PD_GENERIC
+// MOVES's direction bit comes from the word after the opcode.  The tree's
+// default reads it at cpu->pc, which only the executing decoders have
+// pointing there; the classifier reads the page, so it uses the extension
+// word it was handed (the disassembler's override, for the same reason).
+#undef CPU_MOVES_DIR
+#define CPU_MOVES_DIR() (ext_word & 0x0800)
 #include "cpu_decode.h"
+#undef CPU_MOVES_DIR
 #undef CPU_DECODER_NAME
 #undef CPU_DECODER_ARGS
 #undef CPU_DECODER_RETURN_TYPE
