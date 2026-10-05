@@ -466,11 +466,11 @@ The Svelte app is organised under
 - **Display** ([`display/`](../../app/web2/src/components/display/)) —
   ScreenView (the canvas), DisplayToolbar (zoom, pause/run, save,
   theme), DropOverlay (drag state machine §8.5), WelcomeView with
-  Home / Configuration slides for new-machine setup.  Shut down
-  (the toolbar's power button, the Debug tab's Stop) and Restart ask
-  first while a machine is running or paused
-  (`state/powerConfirm.ts`); the dialog's "Don't ask again" is kept in
-  localStorage (`gs-confirm-power-off`).
+  Home / Configuration slides for new-machine setup (Home also lists
+  the Recent machines, below).  Shut down (the toolbar's power button,
+  the Debug tab's Stop) and Restart ask first while a machine is
+  running or paused (`state/powerConfirm.ts`); the dialog's "Don't ask
+  again" is kept in localStorage (`gs-confirm-power-off`).
 - **Workbench** ([`workbench/`](../../app/web2/src/components/workbench/))
   — flex container with the Display + a resizable Panel docked
   bottom / left / right.
@@ -1116,6 +1116,23 @@ The same sequence as Module Bootstrapping above, end to end:
    the media into their bays (`bus/media.ts`), the post-boot
    reconciliation, `scheduler.run`. The Welcome layer fades out; the
    canvas takes over.
+
+**Recent machines.** Every boot through `initEmulator` (the New Machine
+dialog, or a relaunch from Recent) and a dropped ROM's default boot is
+recorded by `recordRecentBoot` (`bus/boot.ts`): the exact `initEmulator`
+input — the `machine.boot` document with model id and ROM path, plus
+the floppy / hard-disk / CD images — with a label built from the running
+machine ("Macintosh IIcx · 8 MB · 8•24 GC · System_7_1.img") and the
+time. The list ([`lib/recentMachines.ts`](../../app/web2/src/lib/recentMachines.ts),
+[`state/recent.svelte.ts`](../../app/web2/src/state/recent.svelte.ts))
+keeps the last 8, an identical configuration moving to the top, and is
+persisted in `localStorage` as `gs-recent-machines`. The Welcome Home
+slide shows it as a Recent card when it is not empty: a click calls
+`initEmulator` with the stored input again, × forgets the entry, and an
+entry whose ROM or image is no longer in OPFS (checked with
+`opfs.list`) is disabled with a "missing: <file>" note. URL-media boots
+(the URL is the way back) and checkpoint loads (restores, kept by the
+Checkpoints panel) are not recorded.
 
 ## Terminal console
 

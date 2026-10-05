@@ -16,6 +16,7 @@ vi.mock('@/bus/emulator', async () => ({
 vi.mock('@/bus/boot', () => ({
   reconcileUiWithMachine: vi.fn(async () => {}),
   prepareFreshMachine: vi.fn(async () => {}),
+  recordRecentBoot: vi.fn(async () => {}),
 }));
 vi.mock('@/bus/media', () => ({
   insertFloppy: vi.fn(async () => ({ ok: true, mount: { drive: 0 } })),
@@ -26,6 +27,7 @@ const { acceptFiles, dropSummary } = await import('@/bus/upload');
 const { SCRATCH_DIR } = await import('@/lib/opfsPaths');
 const { toasts, _resetForTests } = await import('@/state/toasts.svelte');
 const media = await import('@/bus/media');
+const boot = await import('@/bus/boot');
 
 // jsdom's Blob has no arrayBuffer(); the browser's does.
 if (!Blob.prototype.arrayBuffer) {
@@ -103,6 +105,11 @@ describe('a drop of several files', () => {
     await acceptFiles([floppy('a.dsk'), rom('plus.rom', 1), floppy('b.dsk')]);
     const boots = bridge.calls.filter((c) => c.path === 'machine.boot');
     expect(boots.map((c) => c.args)).toEqual([{ model: 'plus', rom: '/opfs/images/rom/ROM1' }]);
+    // A dropped ROM's boot goes on the Welcome page's Recent list.
+    expect(boot.recordRecentBoot).toHaveBeenCalledWith({
+      model: 'plus',
+      rom: '/opfs/images/rom/ROM1',
+    });
     expect(media.insertFloppy).toHaveBeenCalledTimes(1);
     expect(media.insertFloppy).toHaveBeenCalledWith('/opfs/images/fd/a.dsk', true);
   });

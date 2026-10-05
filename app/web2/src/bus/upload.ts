@@ -32,7 +32,7 @@
 
 import { gsEval, gsErrorText, isModuleReady } from './emulator';
 import { xferChunkBytes, xferWrite } from './xfer';
-import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
+import { reconcileUiWithMachine, prepareFreshMachine, recordRecentBoot } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
 import { setMounted, bumpImagesRevision } from '@/state/images.svelte';
@@ -679,6 +679,7 @@ async function maybeBootFromRom(romPath: string): Promise<void> {
     return;
   }
   await reconcileUiWithMachine('boot');
+  await recordRecentBoot({ model, rom: romPath });
   await prepareFreshMachine();
   showNotification(`Booted ${model} from the loaded ROM`, 'info');
 }

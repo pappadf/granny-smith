@@ -14,6 +14,8 @@ import { reapplyMicrophoneSource } from '@/state/microphone.svelte';
 import { showNotification } from '@/state/toasts.svelte';
 import { resetDebugSections } from '@/state/debug.svelte';
 import { formatRamKb } from '@/lib/machine';
+import { recentLabel } from '@/lib/recentMachines';
+import { addRecentMachine } from '@/state/recent.svelte';
 
 // Read a model's capability probe from `catalog.profile().capabilities` and
 // apply it to the shared machine state. Replaces the old display-name regex
@@ -133,8 +135,26 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   }
 
   await reconcileUiWithMachine('boot');
+  await recordRecentBoot(config);
   await prepareFreshMachine();
   showNotification('Machine started', 'info');
+}
+
+// Put a machine that just booted on the Welcome page's Recent list, labelled
+// from the running machine (its name and RAM, after reconciliation) and the
+// profile's card names.  Recorded: New Machine (and a Recent relaunch, which
+// moves it to the top), both through initEmulator, and a dropped ROM's
+// default boot (bus/upload.ts).  Not recorded: URL-media boots -- the URL
+// is the way back to those, and their media may be scratch downloads -- and
+// checkpoint loads, which restore a saved state rather than boot a
+// configuration (the Checkpoints panel keeps those).
+export async function recordRecentBoot(config: MachineConfig): Promise<void> {
+  const profile = await getProfile(config.model).catch(() => null);
+  const cards = (config.config?.cards ?? []).map(
+    (c) => profile?.cards.find((p) => p.id === c.card)?.label ?? c.card,
+  );
+  const name = machine.model ?? profile?.name ?? config.model;
+  addRecentMachine(config, recentLabel({ name, ram: machine.ram, cards, config }));
 }
 
 // --- After a machine appears: one reconciliation, every path --------------
