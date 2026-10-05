@@ -283,7 +283,7 @@
     const res = await downloadFiles([dest]);
     if (res.failures.length) {
       showNotification(
-        `Exported to ${dest}, but the download failed — save it from Files`,
+        `Exported to ${dest}, but saving it to your computer failed — save it from Files`,
         'error',
       );
       return;

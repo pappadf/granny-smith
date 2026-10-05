@@ -147,9 +147,9 @@
           });
       items.push({ sep: true });
     }
-    items.push({ label: 'Download', action: () => doDownload(entry) });
+    items.push({ label: 'Save to computer…', action: () => doDownload(entry) });
     if ((cat === 'hd' || cat === 'cd') && /\.dmg$/i.test(entry.name))
-      items.push({ label: 'Download as raw image', action: () => doDownloadRaw(entry) });
+      items.push({ label: 'Export as raw image…', action: () => doDownloadRaw(entry) });
     if ((cat === 'hd' || cat === 'cd') && !/\.dmg$/i.test(entry.name) && !mounted)
       items.push({ label: 'Compact (store as .dmg)', action: () => doCompact(entry) });
     items.push({ label: 'Rename', action: () => doRename(entry) });
@@ -197,23 +197,23 @@
   }
 
   async function doDownload(entry: OpfsEntry) {
-    startActivity(entry.name, 'Downloading');
+    startActivity(entry.name, 'Saving');
     try {
       const r = await downloadFiles([entry.path]);
-      if (r.failures.length) showNotification(`Could not download '${entry.name}'`, 'error');
+      if (r.failures.length) showNotification(`Could not save '${entry.name}'`, 'error');
     } finally {
       endActivity();
     }
   }
 
   async function doDownloadRaw(entry: OpfsEntry) {
-    startActivity(entry.name, 'Downloading');
+    startActivity(entry.name, 'Saving');
     try {
       const r = await downloadRawImage(entry.path, (done, total) =>
         setActivityDetail(`${Math.round((100 * done) / total)} %`),
       );
       if (!r.ok && r.error !== 'cancelled')
-        showNotification(`Could not download '${entry.name}' as raw: ${r.error}`, 'error');
+        showNotification(`Could not export '${entry.name}' as a raw image: ${r.error}`, 'error');
     } finally {
       endActivity();
     }
@@ -314,7 +314,7 @@
         iconSize="md"
         tone="panel"
         rest="faded"
-        label="Upload {CATEGORY_LABELS[cat]} image"
+        label="Add {CATEGORY_LABELS[cat]} image"
         onclick={onUploadClick}
       />
     {/snippet}

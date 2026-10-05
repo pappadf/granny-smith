@@ -34,12 +34,12 @@ describe('WelcomeHomeSlide', () => {
     expect(toasts.active).toEqual([]);
   });
 
-  it('offers New Machine, Open Checkpoint and Upload ROM', () => {
+  it('offers New Machine, Open Checkpoint and Load ROM', () => {
     const { container } = render(WelcomeHomeSlide);
     const rows = Array.from(container.querySelectorAll('.card-row')).map((b) =>
       b.textContent?.trim(),
     );
-    expect(rows).toEqual(['New Machine...', 'Open Checkpoint...', 'Upload ROM...']);
+    expect(rows).toEqual(['New Machine...', 'Open Checkpoint...', 'Load ROM...']);
   });
 
   // Nothing in production ever wrote a recent list: no Recent card.

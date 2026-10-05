@@ -64,10 +64,10 @@ test('IIfx A/UX 3.0.1 free-runs under the real RAF scheduler to the login', asyn
   await stageOpfsFile(page, '/opfs/upload/login-ref.png', LOGIN_REF);
   await stageOpfsFileStreaming(page, '/opfs/images/hd/hd160-with-aux-301.img', AUX_HD);
 
-  // IIfx ROM via the Welcome "Upload ROM..." button.
+  // IIfx ROM via the Welcome "Load ROM..." button.
   const [romChooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.getByRole('button', { name: 'Load ROM...' }).click(),
   ]);
   await romChooser.setFiles(IIFX_ROM);
 

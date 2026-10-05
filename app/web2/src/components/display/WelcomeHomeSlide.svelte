@@ -46,7 +46,7 @@
         label="Open Checkpoint..."
         onclick={openCheckpoint}
       />
-      <ActionRow class="card-row" icon="upload" label="Upload ROM..." onclick={openUploadRom} />
+      <ActionRow class="card-row" icon="upload" label="Load ROM..." onclick={openUploadRom} />
     </div>
   </Card>
 </div>

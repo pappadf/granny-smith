@@ -34,7 +34,7 @@ test('a floppy name present in both fd and fdhd does not freeze the dialog', asy
 
   const [romChooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.getByRole('button', { name: 'Load ROM...' }).click(),
   ]);
   await romChooser.setFiles(IICX_ROM);
 

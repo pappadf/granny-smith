@@ -64,11 +64,11 @@ async function bootIsolated(page: Page): Promise<string[]> {
   return consoleLog;
 }
 
-// Upload one file through the real Welcome "Upload ROM..." picker.
+// Upload one file through the real Welcome "Load ROM..." picker.
 async function uploadViaPicker(page: Page, name: string, buffer: Buffer): Promise<void> {
   const [chooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.getByRole('button', { name: 'Load ROM...' }).click(),
   ]);
   await chooser.setFiles({ name, mimeType: 'application/octet-stream', buffer });
 }
@@ -113,11 +113,11 @@ async function expectPersisted(page: Page, dir: string, consoleLog: string[]): P
   // "Upload failed: <name>" (staging write threw) / "Failed to save <name>"
   // (worker copy failed) — neither must appear.
   await expect(
-    page.locator('.toast .msg').filter({ hasText: /Upload failed|Failed to save/ }),
+    page.locator('.toast .msg').filter({ hasText: /Could not load|Failed to save/ }),
   ).toHaveCount(0);
 }
 
-test('Upload ROM... persists a valid vROM to /opfs/images/vrom (not stranded / not "Upload failed")', async ({
+test('Load ROM... persists a valid vROM to /opfs/images/vrom (not stranded / not "Upload failed")', async ({
   page,
 }) => {
   const consoleLog = await bootIsolated(page);
@@ -129,7 +129,7 @@ test('Upload ROM... persists a valid vROM to /opfs/images/vrom (not stranded / n
 // no size threshold and no heap blow-up. 12 MB exercises multiple write chunks
 // (STAGE_CHUNK_BYTES is 4 MB); the mechanism is identical for a 600 MB CD-ROM.
 // A raw image that isn't a ROM/vROM/floppy size classifies as a hard disk.
-test('Upload ROM... streams a large (multi-chunk) image to /opfs/images/hd', async ({ page }) => {
+test('Load ROM... streams a large (multi-chunk) image to /opfs/images/hd', async ({ page }) => {
   const consoleLog = await bootIsolated(page);
   await uploadViaPicker(page, 'big-disk.img', Buffer.alloc(12 * 1024 * 1024, 0x11));
   await expectPersisted(page, '/opfs/images/hd', consoleLog);

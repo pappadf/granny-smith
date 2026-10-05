@@ -94,7 +94,7 @@
           },
           { sep: true },
           { label: 'Clear', action: () => clearLogs() },
-          { label: 'Download', icon: 'download', action: () => downloadLogs() },
+          { label: 'Save to computer…', icon: 'download', action: () => downloadLogs() },
         ];
       case 'checkpoints':
         return [{ label: 'Create Checkpoint', action: () => void createCheckpoint() }];
@@ -169,7 +169,7 @@
         <Button
           class="action-btn"
           onclick={() => downloadLogs()}
-          title="Download the log buffer as text"
+          title="Save the log buffer to your computer as text"
         >
           Download
         </Button>

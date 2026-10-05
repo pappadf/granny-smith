@@ -257,7 +257,7 @@ async function acceptOne(file: File, quiet: boolean): Promise<FileOutcome> {
     }
   }
   const staging = await stageUpload(file);
-  if (!staging) return { stored: false, reason: 'could not be uploaded', severity: 'error' };
+  if (!staging) return { stored: false, reason: 'could not be loaded', severity: 'error' };
   try {
     return await probeStaged(staging, file.name, quiet);
   } finally {
@@ -307,7 +307,7 @@ export async function acceptFilesAsCategory(
     }
     const staging = await stageUpload(file);
     if (!staging) {
-      showNotification(`Upload failed: ${file.name}`, 'error');
+      showNotification(`Could not load ${file.name}`, 'error');
       return null;
     }
     let stored: PersistOutcome;
@@ -361,7 +361,7 @@ export async function acceptFilesRaw(files: File[], targetDir: string): Promise<
       // with its WasmFS). No staging/copy — targetDir may itself be /opfs/upload.
       const ok = await streamToOpfs(finalPath, file);
       showNotification(
-        ok ? `'${file.name}' saved to ${targetDir}` : `Upload failed: ${file.name}`,
+        ok ? `'${file.name}' saved to ${targetDir}` : `Could not load ${file.name}`,
         ok ? 'info' : 'error',
       );
     } finally {
@@ -630,7 +630,7 @@ async function persist(
   const cardId = info?.cardId as string | undefined;
   const cardFor = descriptor.id === 'prom' ? 'PCI expansion ROM' : 'Video ROM';
   const shown = cardId ? `${originalName} (${cardFor} for '${cardId}')` : originalName;
-  if (!quiet) showNotification(`${shown} uploaded`, 'info');
+  if (!quiet) showNotification(`${shown} added`, 'info');
   return finalPath;
 }
 
@@ -680,7 +680,7 @@ async function maybeBootFromRom(romPath: string): Promise<void> {
   }
   await reconcileUiWithMachine('boot');
   await prepareFreshMachine();
-  showNotification(`Booted ${model} from uploaded ROM`, 'info');
+  showNotification(`Booted ${model} from the loaded ROM`, 'info');
 }
 
 async function loadCheckpointFile(file: File): Promise<void> {

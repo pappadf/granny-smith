@@ -139,13 +139,13 @@ test('pm6100 + Mac OS 8.1 HD boots exactly once — also on a previously-used im
   await stageOpfsFileStreaming(page, '/opfs/images/hd/macos81.img', MACOS81_HD);
   await gotoWeb2(page);
 
-  // Upload the ROM the way the user does: the Welcome "Upload ROM..." button.
+  // Upload the ROM the way the user does: the Welcome "Load ROM..." button.
   const [chooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.getByRole('button', { name: 'Load ROM...' }).click(),
   ]);
   await chooser.setFiles(PDM_ROM);
-  await expect(page.locator('.toast .msg').filter({ hasText: 'uploaded' }).first()).toBeVisible({
+  await expect(page.locator('.toast .msg').filter({ hasText: 'added' }).first()).toBeVisible({
     timeout: 120_000,
   });
 

@@ -159,7 +159,7 @@ transports, installed at module construction:
   `Atomics.waitAsync` on the outbound ring's head while the C side wakes
   it with `emscripten_futex_wake`.  Each finished PDF comes back to the
   page as a transferable and opens in a viewer dialog (the browser's own
-  PDF viewer in a frame, with Download and Open-in-a-tab), named
+  PDF viewer in a frame, with Save to computer… and Open-in-a-tab), named
   `<job>-<title>.pdf`, releasing the pointer lock first so the cursor
   is free to use it; a browser without an inline viewer
   (`navigator.pdfViewerEnabled` false, e.g. Chrome on Android) downloads
@@ -600,6 +600,10 @@ at that node (`revealInSystem`).
 
 Four deliberate ways to get a media image into OPFS, all routing
 through [`app/web2/src/bus/upload.ts`](../../app/web2/src/bus/upload.ts).
+("Upload" is the code's name for it; nothing leaves the user's computer,
+so the UI says **load** / **add** for files coming in and **save to
+computer** / **export** for files going out.  **Download** is kept for
+what really comes over the network: URL media.)
 Every byte goes through the core's **transfer window**
 ([`bus/xfer.ts`](../../app/web2/src/bus/xfer.ts)): the page copies a chunk
 into a fixed buffer in wasm memory and `files.xfer_write` writes it on
@@ -608,7 +612,7 @@ calls `Module.FS`: under WasmFS that runs on the page's thread and
 busy-waits for the OPFS thread, and in Safari — where WebKit serves a
 worker's OPFS request through the page's thread — it deadlocked the page.
 
-1. **New Machine dialog dropdowns** — picking "Upload image…" in a
+1. **New Machine dialog dropdowns** — picking "Load image…" in a
    floppy / HD / CD / ROM / VROM slot calls
    `pickAndUploadAs(mediaId)` →
    `acceptFilesAsCategory(files, mediaId)`. Strict per-category
@@ -703,9 +707,9 @@ there) and is never touched.
 All four paths run through `startActivity` / `endActivity`
 ([`state/activity.svelte.ts`](../../app/web2/src/state/activity.svelte.ts)) so
 the status bar shows a spinner with a "\<verb>: \<name>" label during long
-operations. The verb is general — uploads show "Uploading", and the
+operations. The verb is general — uploads show "Loading", and the
 Filesystem-tab worker ops reuse the same indicator ("Copying", "Moving",
-"Deleting", "Unpacking", "Downloading"). Confirmation toasts are centralised
+"Deleting", "Unpacking", "Saving"; a URL boot's fetch shows "Downloading"). Confirmation toasts are centralised
 in [`state/toasts.svelte.ts`](../../app/web2/src/state/toasts.svelte.ts).
 
 ## C-side surfaces the UI consumes
@@ -731,7 +735,7 @@ typed-dispatch and introspection surface.
   depth. `expandable` marks a file the core can open as a tree; the Filesystem
   tree expands exactly those; see [`target-filesystems.md`](../internals/core/storage/target-filesystems.md).
 - **`files.cp(src, dst, [recursive])`** — copy, including *out of* an image into
-  OPFS (backs copy-out and Download). **`files.rm(path)`** /
+  OPFS (backs copy-out and Save to computer…). **`files.rm(path)`** /
   **`files.mv(src, dst)`** — recursive remove / move, run worker-side so
   WasmFS stays coherent (see Persistence above).
 - **`files.hd_create(path, size)`** / **`files.fd_create(path,

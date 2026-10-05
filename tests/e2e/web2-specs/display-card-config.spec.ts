@@ -41,12 +41,12 @@ test('New Machine dialog: pick the 24AC card by name and boot it', async ({ page
   await stageOpfsFile(page, '/opfs/images/vrom/mdc-8-24-revb-d1629664.vrom', VROM_8_24);
   await stageOpfsFile(page, '/opfs/images/vrom/display-card-24ac-d8daab87.vrom', VROM_24AC);
 
-  // Upload the IIcx ROM via the Welcome "Upload ROM..." button. The persist
+  // Upload the IIcx ROM via the Welcome "Load ROM..." button. The persist
   // bumps the image revision, which re-scans the config slide (ROM + the two
   // staged vROMs).
   const [romChooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.getByRole('button', { name: 'Load ROM...' }).click(),
   ]);
   await romChooser.setFiles(IICX_ROM);
 

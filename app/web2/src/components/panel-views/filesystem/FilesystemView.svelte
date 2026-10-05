@@ -393,7 +393,7 @@
       const { clientX, clientY } = ev;
       const items: ContextMenuItem[] = [
         {
-          label: files.length > 1 ? `Download ${files.length} files` : 'Download',
+          label: files.length > 1 ? `Save ${files.length} files…` : 'Save to computer…',
           action: () => doDownload(targets),
         },
       ];
@@ -407,12 +407,12 @@
     if (!multi) items.push({ label: 'Rename', action: () => beginRename(path) });
     if (targets.some((t) => isFile(t)))
       items.push({
-        label: multi ? 'Download files' : 'Download',
+        label: multi ? 'Save files…' : 'Save to computer…',
         action: () => doDownload(targets),
       });
     if (!multi && isFile(path) && /\.dmg$/i.test(path[path.length - 1]))
       items.push({
-        label: 'Download as raw image',
+        label: 'Export as raw image…',
         action: () => doDownloadRaw(path[path.length - 1]),
       });
     if (!multi && isFile(path) && isExpandable(path[path.length - 1]))
@@ -581,13 +581,13 @@
   // Download a stored .dmg as the flat raw disk it holds (bus/fsOps.ts).
   async function doDownloadRaw(target: string) {
     const name = target.split('/').pop() ?? target;
-    startActivity(name, 'Downloading');
+    startActivity(name, 'Saving');
     try {
       const r = await downloadRawImage(target, (done, total) =>
         setActivityDetail(`${Math.round((100 * done) / total)} %`),
       );
       if (!r.ok && r.error !== 'cancelled')
-        showNotification(`Could not download '${name}' as raw: ${r.error}`, 'error');
+        showNotification(`Could not export '${name}' as a raw image: ${r.error}`, 'error');
     } finally {
       endActivity();
     }
@@ -597,24 +597,24 @@
   async function doDownload(targets: string[][]) {
     const files = targets.filter((t) => isFile(t)).map((t) => t[t.length - 1]);
     if (!files.length) {
-      showNotification('Only files can be downloaded', 'warning');
+      showNotification('Only files can be saved', 'warning');
       return;
     }
     let result: BulkResult;
     try {
       result = await downloadFiles(files, (name, i, total) =>
-        startActivity(total > 1 ? `${name} (${i + 1}/${total})` : name, 'Downloading'),
+        startActivity(total > 1 ? `${name} (${i + 1}/${total})` : name, 'Saving'),
       );
     } finally {
       endActivity();
     }
     const ok = result.total - result.failures.length;
     if (result.failures.length) {
-      showNotification(`Downloaded ${ok}/${result.total}`, ok ? 'warning' : 'error');
+      showNotification(`Saved ${ok}/${result.total}`, ok ? 'warning' : 'error');
     } else if (files.length === 1) {
-      showNotification(`Downloading '${files[0].split('/').pop()}'`, 'info');
+      showNotification(`Saving '${files[0].split('/').pop()}'`, 'info');
     } else {
-      showNotification(`Downloading ${files.length} files`, 'info');
+      showNotification(`Saving ${files.length} files`, 'info');
     }
   }
 </script>

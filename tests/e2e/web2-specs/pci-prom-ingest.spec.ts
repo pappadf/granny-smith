@@ -45,13 +45,13 @@ const STORED_ROM = '/opfs/images/rom/96cd923d-c241cd82bf90797a';
 const STORED_PROM = '/opfs/images/prom/1002-4758-c6e8';
 
 // Upload a host file through the shipped generic ingest path — the Welcome
-// "Upload ROM..." button, which probes the file against every media type
+// "Load ROM..." button, which probes the file against every media type
 // rather than being told what it is.  This is the exact action that produced
 // "Failed to save".
 async function uploadViaWelcome(page: Page, hostFile: string): Promise<void> {
   const [chooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.getByRole('button', { name: 'Load ROM...' }).click(),
   ]);
   await chooser.setFiles(hostFile);
 }
@@ -69,7 +69,7 @@ test('a 9500 boots its factory PCI display card once its ROM is uploaded', async
 
   await uploadViaWelcome(page, TNT_ROM);
   await expect(
-    page.locator('.toast .msg').filter({ hasText: 'pm7500-pm8500-pm9500-96cd923d.rom uploaded' }),
+    page.locator('.toast .msg').filter({ hasText: 'pm7500-pm8500-pm9500-96cd923d.rom added' }),
   ).toBeVisible({ timeout: 60_000 });
 
   // --- Before the .prom: the machine states what it needs. -----------------
@@ -126,7 +126,7 @@ test('an uploaded .prom is still offered after a reload', async ({ page }) => {
 
   await uploadViaWelcome(page, TNT_ROM);
   await expect(
-    page.locator('.toast .msg').filter({ hasText: 'pm7500-pm8500-pm9500-96cd923d.rom uploaded' }),
+    page.locator('.toast .msg').filter({ hasText: 'pm7500-pm8500-pm9500-96cd923d.rom added' }),
   ).toBeVisible({ timeout: 60_000 });
   await uploadViaWelcome(page, MACH64_PROM);
   await expect(

@@ -89,7 +89,7 @@ async function probe(page: Page, expr: string, timeoutMs = 10_000): Promise<stri
 async function bootModel(page: Page, romFile: string, model: string): Promise<void> {
   const [romChooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.getByRole('button', { name: 'Load ROM...' }).click(),
   ]);
   await romChooser.setFiles(romFile);
 

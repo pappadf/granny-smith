@@ -27,11 +27,11 @@ test('Restart keeps the attached hard disk — same medium, same open instance',
   // Upload the IIcx ROM via the Welcome button (no auto-boot).
   const [chooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.getByRole('button', { name: 'Load ROM...' }).click(),
   ]);
   await chooser.setFiles(IICX_ROM);
   await expect(
-    page.locator('.toast .msg').filter({ hasText: 'iix-iicx-se30-97221136.rom uploaded' }),
+    page.locator('.toast .msg').filter({ hasText: 'iix-iicx-se30-97221136.rom added' }),
   ).toBeVisible({ timeout: 60_000 });
 
   // Boot and attach a scratch HD.

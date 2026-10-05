@@ -85,13 +85,13 @@ test('mid-session vROM upload is offered: "(auto)" boot content-matches it witho
   //    so nothing boots yet). Stored content-addressed under its checksum.
   const [chooser] = await Promise.all([
     page.waitForEvent("filechooser"),
-    page.getByRole("button", { name: "Upload ROM..." }).click(),
+    page.getByRole("button", { name: "Load ROM..." }).click(),
   ]);
   await chooser.setFiles(IICX_ROM);
   await expect(
     page
       .locator(".toast .msg")
-      .filter({ hasText: "iix-iicx-se30-97221136.rom uploaded" }),
+      .filter({ hasText: "iix-iicx-se30-97221136.rom added" }),
   ).toBeVisible({ timeout: 60_000 });
 
   // 3. The vROM landed content-hashed.

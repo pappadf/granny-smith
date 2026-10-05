@@ -33,7 +33,7 @@
   import Select from '../ui/Select.svelte';
   import Separator from '../ui/Separator.svelte';
 
-  const UPLOAD_SENTINEL = 'Upload image...';
+  const UPLOAD_SENTINEL = 'Load image...';
   const CREATE_SENTINEL = 'Create blank image...';
   const NO_DISK = '(no disk)';
   const NO_DISC = '(no disc)';
@@ -414,7 +414,7 @@
   async function onSubmit(e: Event) {
     e.preventDefault();
     if (!modelId || !romsForCurrentModel.length || !profile || !doc) {
-      showNotification('Upload a ROM first via drag-and-drop or the Upload ROM button', 'warning');
+      showNotification('Load a ROM first (drag it in, or use Load ROM)', 'warning');
       return;
     }
     const selected = romsForCurrentModel.find((r) => r.path === romPath) ?? romsForCurrentModel[0];
@@ -473,7 +473,7 @@
       <Field
         class="form-row"
         label="Model"
-        help="No ROMs in storage. Drag-and-drop a ROM file or use the Upload ROM button on the Home slide."
+        help="No ROMs in storage. Drag a ROM file in, or use Load ROM on the Home slide."
       />
     {:else}
       <SectionHeading class="config-section">Machine</SectionHeading>
@@ -612,7 +612,7 @@
               <p class="item-note">
                 Using the emulator’s substitute ROM — upload the card’s ROM to use Apple’s.
                 <Link href="#upload" onclick={(e: Event) => (e.preventDefault(), uploadCardRom(c))}
-                  >Upload ROM…</Link
+                  >Load ROM…</Link
                 >
               </p>
             {/if}
@@ -642,8 +642,7 @@
               {ch.card.label}: {ch.reason}.
               <Link
                 href="#upload"
-                onclick={(e: Event) => (e.preventDefault(), uploadCardRom(ch.card))}
-                >Upload ROM…</Link
+                onclick={(e: Event) => (e.preventDefault(), uploadCardRom(ch.card))}>Load ROM…</Link
               >
             </p>
           {/each}

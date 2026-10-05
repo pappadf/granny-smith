@@ -77,15 +77,15 @@ test('the Voodoo2 rasterises on a second Web Worker, and the shadow is authorita
   test.setTimeout(6 * 60 * 1000);
   await gotoWeb2(page);
 
-  // The TNT ROM via the Welcome "Upload ROM..." button, stored under its
+  // The TNT ROM via the Welcome "Load ROM..." button, stored under its
   // checksum; then a machine of any kind so the Terminal panel is live.
   const [chooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.getByRole('button', { name: 'Load ROM...' }).click(),
   ]);
   await chooser.setFiles(TNT_ROM);
   await expect(
-    page.locator('.toast .msg').filter({ hasText: 'pm7500-pm8500-pm9500-96cd923d.rom uploaded' }),
+    page.locator('.toast .msg').filter({ hasText: 'pm7500-pm8500-pm9500-96cd923d.rom added' }),
   ).toBeVisible({ timeout: 60_000 });
   await page.getByRole('button', { name: 'New Machine...' }).click();
   const model = page.locator('#cfg-model');

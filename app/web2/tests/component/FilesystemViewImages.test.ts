@@ -226,7 +226,7 @@ describe('FilesystemView — disk-image descent', () => {
     await fireEvent.contextMenu(rowFor(container, 'Read Me'));
     await waitFor(() => expect(document.querySelector('.context-menu')).not.toBeNull());
     const download = Array.from(document.querySelectorAll('.context-menu .item')).find(
-      (e) => e.textContent?.trim() === 'Download',
+      (e) => e.textContent?.trim() === 'Save to computer…',
     ) as HTMLElement;
     expect(download).toBeTruthy();
     await fireEvent.click(download);
@@ -251,7 +251,7 @@ describe('FilesystemView — disk-image descent', () => {
     await fireEvent.contextMenu(rowFor(container, 'notes.txt'));
     await waitFor(() => expect(document.querySelector('.context-menu')).not.toBeNull());
     const download = Array.from(document.querySelectorAll('.context-menu .item')).find(
-      (e) => e.textContent?.trim() === 'Download',
+      (e) => e.textContent?.trim() === 'Save to computer…',
     ) as HTMLElement;
     expect(download).toBeTruthy();
     await fireEvent.click(download);
@@ -409,7 +409,7 @@ describe('FilesystemView — media inside an image or archive', () => {
   }
 
   it('offers no drive action without a machine', async () => {
-    expect(await menuFor('Install 1:2.img')).toEqual(['Download']);
+    expect(await menuFor('Install 1:2.img')).toEqual(['Save to computer…']);
   });
 
   it('inserts a floppy image into a drive by its in-image path', async () => {
@@ -437,8 +437,8 @@ describe('FilesystemView — media inside an image or archive', () => {
     );
   });
 
-  it('offers only Download for a file that is no medium', async () => {
+  it('offers only Save to computer for a file that is no medium', async () => {
     core.machineCreated = true;
-    expect(await menuFor('Read Me')).toEqual(['Download']);
+    expect(await menuFor('Read Me')).toEqual(['Save to computer…']);
   });
 });

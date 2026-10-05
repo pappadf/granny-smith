@@ -75,6 +75,6 @@
     line-height: 1.45;
   }
   .opt-out {
-    margin-top: 12px;
+    margin-top: var(--gs-space-3);
   }
 </style>
