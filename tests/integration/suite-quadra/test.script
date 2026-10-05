@@ -383,10 +383,13 @@ def row_q950_71_hd() {
 }
 
 # ---- q950-76-hd -------------------------------------------------------------
-# NEW CELL Q950 × 7.6. The "AppleTalk cannot be used" dialog seen on the IIfx
-# is IIfx-specific — measured on the Q950 the image boots straight to the
-# desktop (Control Strip up, no dialog). 7.6 selects 32-bit addressing itself
-# (measured, here and on the IIfx).
+# NEW CELL Q950 × 7.6. 7.6 selects 32-bit addressing itself (measured, here
+# and on the IIfx).  AppleTalk comes up with the desktop: the System's IOP
+# LocalTalk driver runs in the SCC IOP, and when nothing answers its node
+# probes it keeps the first node it tries, as a real Q950 with nothing
+# plugged in does.  (Until the SCC IOP modelled that driver every probe read
+# as "taken", and 7.6 put up "AppleTalk cannot be used because no AppleTalk
+# address is available" -- which this row used to dismiss.)
 def row_q950_76_hd() {
     machine.rtc.time = 3000000000
     machine.boot model="q950" ram=32768 rom="${$q950_rom}"
@@ -396,17 +399,7 @@ def row_q950_76_hd() {
     assert debug.mac.globals.read("MMUFluff") == 20 "q950-76-hd: not identified as Quadra 950"
     assert machine.ram == 32768 "q950-76-hd: machine.ram != 32768"
     assert_addr(true)
-    # 7.6 puts up "AppleTalk cannot be used because no AppleTalk address is
-    # available" on this machine, and that is CORRECT: the Quadras have no
-    # network hardware wired (the SONIC has no wire), so a real Q950 with
-    # nothing plugged in says exactly
-    # this. It did not appear before 2026-07-29 only because the VIA phi2 clock
-    # ran 2.15x fast on this substrate, so AppleTalk never finished its failing
-    # startup inside the row's window — the clean desktop this row used to match
-    # was an artefact of that. Dismiss the alert and assert the desktop behind
-    # it, which is the state the row actually means to claim.
-    click(486, 225)
-    wait_stable(600000000)
+    assert appletalk.stats.llap_rx > 0 "q950-76-hd: AppleTalk never reached the wire"
     check_ex("goldens/q950-7.6-640x480-finder.png", 0, 440, 20, 640)
     report_row("7.6", "dafb", "hd-boot")
     report_perf("suite-quadra/q950-76-hd", scheduler.instr_count)
