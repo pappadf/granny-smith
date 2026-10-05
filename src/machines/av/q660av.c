@@ -20,10 +20,12 @@
 
 #include <stdint.h>
 
-// Same eight-bank YMCA memory system as the 840AV (RamInfoTempest is
-// byte-identical to RamInfoCyclone); the 660AV's marketing
-// 68 MB limit is not encoded in hardware.
-static const uint32_t q660av_ram_options_kb[] = {8192, 16384, 32768, 65536, 131072, 0};
+// 4 MB on the logic board plus two 72-pin SIMM slots of 4, 8, 16 or 32 MB
+// (developer note p. 13): every total those make, 4 MB to 68 MB.  Totals
+// such as 32 MB are not among them -- 28 MB more than the soldered bank
+// needs a 12 MB bank, which YMCA cannot decode (av_ram_banks).
+static const uint32_t q660av_ram_options_kb[] = {4096,  8192,  12288, 16384, 20480, 24576, 28672,
+                                                 36864, 40960, 45056, 53248, 69632, 0};
 
 static const struct floppy_slot q660av_floppy_slots[] = {
     {0},
@@ -43,6 +45,9 @@ static const av_board_desc_t q660av_board_desc = {
                  },
     .strap_nibble = 0xB, // Tempest25 straps %1011
     .muni_present = false, // no NuBus adapter: MUNI_Control bus-errors
+    .ram_onboard = 0x400000, // 4 MB soldered, YMCA bank 0
+    .simm_slots = 2, // banks 2/3 and 4/5
+    .simm_first_bank = 2,
 };
 
 static const av_board_t q660av_board = {
@@ -68,7 +73,7 @@ const hw_profile_t machine_q660av = {
 
     .address_bits = 32,
     .ram_default = 0x1000000, // 16 MB
-    .ram_max = 0x8000000, // 128 MB (8 banks x 16 MB)
+    .ram_max = 0x4400000, // 68 MB: 4 MB soldered + two 32 MB SIMMs
     .rom_size = 0x200000, // 2 MB ($5BF10FD1, shared with the 840AV)
 
     .ram_options = q660av_ram_options_kb,

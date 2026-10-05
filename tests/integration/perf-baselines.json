@@ -129,7 +129,7 @@
       "tolerance": 0.2
     },
     "suite-av/av-ram-sizing": {
-      "instr": 393735977,
+      "instr": 143844859,
       "tolerance": 0.2
     },
     "suite-av/av-sound-in": {
