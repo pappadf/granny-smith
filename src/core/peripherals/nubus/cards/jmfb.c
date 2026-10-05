@@ -619,6 +619,18 @@ static void card_reset(nubus_card_t *card, config_t *cfg) {
     p->display.fb_dirty = true;
 }
 
+// Power cycle: VRAM does not survive losing power, and the card comes up as
+// card_init leaves it -- the power-on registers, scanning out black -- not
+// showing the last session's picture until the ROM gets round to redrawing.
+static void card_power_on(nubus_card_t *card, config_t *cfg) {
+    jmfb_priv_t *p = card->priv;
+    if (!p)
+        return;
+    card_reset(card, cfg);
+    memset(p->vram, 0, JMFB_VRAM_SIZE);
+    display_blank_raster(&p->display);
+}
+
 static void card_on_vbl(nubus_card_t *card, config_t *cfg) {
     (void)cfg;
     jmfb_priv_t *p = card->priv;
@@ -717,6 +729,7 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
 static const nubus_card_ops_t mdc_8_24_ops = {
     .init = card_init_real,
     .reset = card_reset,
+    .power_on = card_power_on,
     .teardown = card_teardown,
     .on_vbl = card_on_vbl,
     .display = card_display,
@@ -728,6 +741,7 @@ static const nubus_card_ops_t mdc_8_24_ops = {
 static const nubus_card_ops_t jmfb_generic_ops = {
     .init = card_init_generic,
     .reset = card_reset,
+    .power_on = card_power_on,
     .teardown = card_teardown,
     .on_vbl = card_on_vbl,
     .display = card_display,

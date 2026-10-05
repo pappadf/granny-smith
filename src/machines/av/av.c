@@ -749,6 +749,7 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
 // powered, but the host side of its VIA1 handshake went down under it.
 static void av_power_on(config_t *cfg) {
     av_cuda_host_power_cycle(av_st(cfg)->cuda);
+    av_civic_power_on(av_st(cfg)->civic); // Civic's VRAM goes with main RAM
 }
 
 static void av_bus_reset(config_t *cfg) {

@@ -240,6 +240,10 @@ void system_machine_power_cycle(void) {
     // State a power-up initialises and /RESET does not (machine_profile.h).
     if (cfg->machine && cfg->machine->substrate->power_on)
         cfg->machine->substrate->power_on(cfg);
+    // NuBus cards lose their VRAM as main RAM does (a board's built-in video
+    // is its substrate's power_on).
+    if (cfg->nubus)
+        nubus_power_on(cfg->nubus);
     system_machine_reset();
 }
 

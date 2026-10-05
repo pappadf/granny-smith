@@ -202,4 +202,8 @@ void nubus_tick_vbl(nubus_bus_t *bus);
 // instruction; it resets each populated card to power-on via ops->reset.
 void nubus_reset(nubus_bus_t *bus);
 
+// Power-cycle fan-out (system_machine_power_cycle, ahead of the /RESET):
+// each populated card's ops->power_on, which drops what power loses (VRAM).
+void nubus_power_on(nubus_bus_t *bus);
+
 #endif // NUBUS_H

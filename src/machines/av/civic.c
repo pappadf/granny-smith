@@ -749,6 +749,18 @@ av_civic_t *av_civic_init(config_t *cfg, checkpoint_t *cp) {
     return cv;
 }
 
+// Power cycle (av_power_on, before the /RESET): VRAM is lost, so the
+// graphics plane comes up black instead of showing the last session's
+// picture until the ROM redraws it.
+void av_civic_power_on(av_civic_t *cv) {
+    if (!cv)
+        return;
+    memset(cv->vram, 0, AV_CIVIC_VRAM_SIZE);
+    civic_update_display(cv);
+    display_blank_raster(&cv->display);
+    cv->display.fb_dirty = true;
+}
+
 void av_civic_delete(av_civic_t *cv) {
     if (!cv)
         return;

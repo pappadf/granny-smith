@@ -90,6 +90,9 @@ typedef bool (*dafb_drq_query_fn)(void *context);
 void dafb_set_scsi_drq_query(dafb_t *dafb, int chan, dafb_drq_query_fn fn, void *context);
 
 // Host pointer to the VRAM buffer (for page-table mapping).
+// A power cycle: VRAM cleared, the power-on raster blanked.
+void dafb_power_on(dafb_t *dafb);
+
 uint8_t *dafb_vram(dafb_t *dafb);
 uint32_t dafb_vram_size(dafb_t *dafb);
 
