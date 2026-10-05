@@ -761,11 +761,22 @@ static void win_log(c54m30_t *c, uint32_t offset, unsigned size, uint32_t value,
 // its true size.  The byte order is this interface's usual one -- most significant byte at the
 // lowest offset -- which is what pci.c hands down after undoing the bus's lane reversal.
 
-static uint8_t fb_read8(void *ctx, uint32_t offset) {
-    c54m30_t *c = (c54m30_t *)ctx;
-    uint8_t v = aperture_read8(c, offset);
-    win_log(c, offset, 1, v, false);
+// `peek`: an inspection (memory_interface_t.peek_*).  The decode itself has
+// no read side effects; an inspection is just not a bus access to log.
+static uint32_t fb_rd(c54m30_t *c, uint32_t offset, unsigned size, bool peek) {
+    uint32_t v = 0;
+    for (unsigned i = 0; i < size; i++)
+        v = (v << 8) | aperture_read8(c, offset + i);
+    if (!peek)
+        win_log(c, offset, size, v, false);
     return v;
+}
+
+static uint8_t fb_read8(void *ctx, uint32_t offset) {
+    return (uint8_t)fb_rd(ctx, offset, 1, false);
+}
+static uint8_t fb_peek8(void *ctx, uint32_t offset) {
+    return (uint8_t)fb_rd(ctx, offset, 1, true);
 }
 
 static void fb_write8(void *ctx, uint32_t offset, uint8_t value) {
@@ -775,10 +786,10 @@ static void fb_write8(void *ctx, uint32_t offset, uint8_t value) {
 }
 
 static uint16_t fb_read16(void *ctx, uint32_t offset) {
-    c54m30_t *c = (c54m30_t *)ctx;
-    uint16_t v = (uint16_t)(((uint16_t)aperture_read8(c, offset) << 8) | aperture_read8(c, offset + 1));
-    win_log(c, offset, 2, v, false);
-    return v;
+    return (uint16_t)fb_rd(ctx, offset, 2, false);
+}
+static uint16_t fb_peek16(void *ctx, uint32_t offset) {
+    return (uint16_t)fb_rd(ctx, offset, 2, true);
 }
 
 static void fb_write16(void *ctx, uint32_t offset, uint16_t value) {
@@ -789,11 +800,10 @@ static void fb_write16(void *ctx, uint32_t offset, uint16_t value) {
 }
 
 static uint32_t fb_read32(void *ctx, uint32_t offset) {
-    c54m30_t *c = (c54m30_t *)ctx;
-    uint32_t v = ((uint32_t)aperture_read8(c, offset) << 24) | ((uint32_t)aperture_read8(c, offset + 1) << 16) |
-                 ((uint32_t)aperture_read8(c, offset + 2) << 8) | aperture_read8(c, offset + 3);
-    win_log(c, offset, 4, v, false);
-    return v;
+    return fb_rd(ctx, offset, 4, false);
+}
+static uint32_t fb_peek32(void *ctx, uint32_t offset) {
+    return fb_rd(ctx, offset, 4, true);
 }
 
 static void fb_write32(void *ctx, uint32_t offset, uint32_t value) {
@@ -920,18 +930,22 @@ static void c54m30_materialise(c54m30_t *c, unsigned i) {
 
 #define C54M30_DAC_MASK 0xC6u // $3C6: pel mask, and the door to the hidden DAC register
 
-static uint8_t io_read8(void *ctx, uint32_t offset) {
-    c54m30_t *c = (c54m30_t *)ctx;
+// One port read: the guest's (`peek` false) or an inspection's, which returns
+// the same byte and leaves the attribute flip-flop and the palette read
+// cursor alone.  The $3C6 read counter is `*pelmask_reads`: the card's own
+// for the guest, a copy for an inspection, so that the bytes of one wider
+// peek see the counter as the bytes of the matching read would.
+static uint8_t io_rd8(c54m30_t *c, uint32_t offset, bool peek, uint8_t *pelmask_reads) {
     uint32_t port = c54m30_port(offset & (C54M30_REGS - 1u));
     if (port == C54M30_DAC_MASK) {
-        if (c->pelmask_reads >= 4) {
-            c->pelmask_reads = 0;
+        if (*pelmask_reads >= 4) {
+            *pelmask_reads = 0;
             return c->hidden_dac;
         }
-        c->pelmask_reads++;
+        (*pelmask_reads)++;
         return c->reg[C54M30_DAC_MASK];
     }
-    c->pelmask_reads = 0;
+    *pelmask_reads = 0;
     switch (port) {
     case C54M30_MISC_READ:
         return c->reg[C54M30_MISC_WRITE];
@@ -939,7 +953,8 @@ static uint8_t io_read8(void *ctx, uint32_t offset) {
     case C54M30_STATUS1_COLOUR:
         // Reading Input Status 1 also resets the attribute controller's
         // index/data flip-flop, which is how software resynchronises it.
-        c->attr_data = false;
+        if (!peek)
+            c->attr_data = false;
         return status1_value(c);
     case C54M30_SEQ_DATA:
         if ((c->seq_index & (C54M30_SEQ_REGS - 1u)) == 0x15u)
@@ -959,7 +974,7 @@ static uint8_t io_read8(void *ctx, uint32_t offset) {
         uint8_t v = c->dac[c->dac_read_index][c->dac_phase];
         if (!c->dac_8bit)
             v &= 0x3Fu;
-        if (++c->dac_phase == 3) {
+        if (!peek && ++c->dac_phase == 3) {
             c->dac_phase = 0;
             c->dac_read_index++;
         }
@@ -968,6 +983,20 @@ static uint8_t io_read8(void *ctx, uint32_t offset) {
     default:
         return c->reg[port];
     }
+}
+
+// `size` consecutive ports, most significant byte first.
+static uint32_t io_rd(c54m30_t *c, uint32_t offset, unsigned size, bool peek) {
+    uint8_t pelmask_reads = c->pelmask_reads;
+    uint8_t *counter = peek ? &pelmask_reads : &c->pelmask_reads;
+    uint32_t v = 0;
+    for (unsigned i = 0; i < size; i++)
+        v = (v << 8) | io_rd8(c, offset + i, peek, counter);
+    return v;
+}
+
+static uint8_t io_read8(void *ctx, uint32_t offset) {
+    return (uint8_t)io_rd(ctx, offset, 1, false);
 }
 
 static void io_write8(void *ctx, uint32_t offset, uint8_t value) {
@@ -1174,7 +1203,7 @@ static void c54m30_update(c54m30_t *c) {
 }
 
 static uint16_t io_read16(void *ctx, uint32_t offset) {
-    return (uint16_t)((io_read8(ctx, offset) << 8) | io_read8(ctx, offset + 1));
+    return (uint16_t)io_rd(ctx, offset, 2, false);
 }
 
 static void io_write16(void *ctx, uint32_t offset, uint16_t value) {
@@ -1183,7 +1212,17 @@ static void io_write16(void *ctx, uint32_t offset, uint16_t value) {
 }
 
 static uint32_t io_read32(void *ctx, uint32_t offset) {
-    return ((uint32_t)io_read16(ctx, offset) << 16) | io_read16(ctx, offset + 2);
+    return io_rd(ctx, offset, 4, false);
+}
+
+static uint8_t io_peek8(void *ctx, uint32_t offset) {
+    return (uint8_t)io_rd(ctx, offset, 1, true);
+}
+static uint16_t io_peek16(void *ctx, uint32_t offset) {
+    return (uint16_t)io_rd(ctx, offset, 2, true);
+}
+static uint32_t io_peek32(void *ctx, uint32_t offset) {
+    return io_rd(ctx, offset, 4, true);
 }
 
 static void io_write32(void *ctx, uint32_t offset, uint32_t value) {
@@ -1193,8 +1232,10 @@ static void io_write32(void *ctx, uint32_t offset, uint32_t value) {
 
 // The legacy block, indexed by the real port number so both windows land
 // in one register file.
+// A wider access's later ports wrap within the 256-byte port file, which
+// io_rd8's decode applies to each byte.
 static uint8_t vga_read8(void *ctx, uint32_t offset) {
-    return io_read8(ctx, (C54M30_VGA_IO_BASE + offset) & 0xFFu);
+    return (uint8_t)io_rd(ctx, (C54M30_VGA_IO_BASE + offset) & 0xFFu, 1, false);
 }
 
 static void vga_write8(void *ctx, uint32_t offset, uint8_t value) {
@@ -1202,7 +1243,7 @@ static void vga_write8(void *ctx, uint32_t offset, uint8_t value) {
 }
 
 static uint16_t vga_read16(void *ctx, uint32_t offset) {
-    return (uint16_t)((vga_read8(ctx, offset) << 8) | vga_read8(ctx, offset + 1));
+    return (uint16_t)io_rd(ctx, (C54M30_VGA_IO_BASE + offset) & 0xFFu, 2, false);
 }
 
 static void vga_write16(void *ctx, uint32_t offset, uint16_t value) {
@@ -1211,7 +1252,17 @@ static void vga_write16(void *ctx, uint32_t offset, uint16_t value) {
 }
 
 static uint32_t vga_read32(void *ctx, uint32_t offset) {
-    return ((uint32_t)vga_read16(ctx, offset) << 16) | vga_read16(ctx, offset + 2);
+    return io_rd(ctx, (C54M30_VGA_IO_BASE + offset) & 0xFFu, 4, false);
+}
+
+static uint8_t vga_peek8(void *ctx, uint32_t offset) {
+    return (uint8_t)io_rd(ctx, (C54M30_VGA_IO_BASE + offset) & 0xFFu, 1, true);
+}
+static uint16_t vga_peek16(void *ctx, uint32_t offset) {
+    return (uint16_t)io_rd(ctx, (C54M30_VGA_IO_BASE + offset) & 0xFFu, 2, true);
+}
+static uint32_t vga_peek32(void *ctx, uint32_t offset) {
+    return io_rd(ctx, (C54M30_VGA_IO_BASE + offset) & 0xFFu, 4, true);
 }
 
 static void vga_write32(void *ctx, uint32_t offset, uint32_t value) {
@@ -1386,12 +1437,18 @@ static pci_device_t *c54m30_factory(int slot_index, config_t *cfg, const rom_ima
     c->fb_if.write_uint8 = fb_write8;
     c->fb_if.write_uint16 = fb_write16;
     c->fb_if.write_uint32 = fb_write32;
+    c->fb_if.peek_uint8 = fb_peek8;
+    c->fb_if.peek_uint16 = fb_peek16;
+    c->fb_if.peek_uint32 = fb_peek32;
     c->io_if.read_uint8 = io_read8;
     c->io_if.read_uint16 = io_read16;
     c->io_if.read_uint32 = io_read32;
     c->io_if.write_uint8 = io_write8;
     c->io_if.write_uint16 = io_write16;
     c->io_if.write_uint32 = io_write32;
+    c->io_if.peek_uint8 = io_peek8;
+    c->io_if.peek_uint16 = io_peek16;
+    c->io_if.peek_uint32 = io_peek32;
 
     c->vga_if.read_uint8 = vga_read8;
     c->vga_if.read_uint16 = vga_read16;
@@ -1399,6 +1456,9 @@ static pci_device_t *c54m30_factory(int slot_index, config_t *cfg, const rom_ima
     c->vga_if.write_uint8 = vga_write8;
     c->vga_if.write_uint16 = vga_write16;
     c->vga_if.write_uint32 = vga_write32;
+    c->vga_if.peek_uint8 = vga_peek8;
+    c->vga_if.peek_uint16 = vga_peek16;
+    c->vga_if.peek_uint32 = vga_peek32;
 
     c54m30_reset(dev, cfg);
 

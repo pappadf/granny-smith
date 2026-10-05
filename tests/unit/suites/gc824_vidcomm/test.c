@@ -43,6 +43,10 @@ uint16_t jmfb_read16(jmfb_regs_t *r, const jmfb_bind_t *b, int blk, uint32_t off
     (void)r, (void)b, (void)blk, (void)off;
     return 0;
 }
+uint16_t jmfb_peek16(jmfb_regs_t *r, const jmfb_bind_t *b, int blk, uint32_t off) {
+    (void)r, (void)b, (void)blk, (void)off;
+    return 0;
+}
 void jmfb_write16(jmfb_regs_t *r, const jmfb_bind_t *b, int blk, uint32_t off, uint16_t val) {
     (void)r, (void)b, (void)blk, (void)off, (void)val;
 }

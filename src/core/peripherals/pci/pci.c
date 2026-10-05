@@ -247,39 +247,69 @@ static inline uint32_t lane_offset(const pci_window_t *w, uint32_t offset, uint3
     return w->bus->lane_reverse ? (offset ^ (8u - size)) : offset;
 }
 
-static uint8_t window_read8(void *ctx, uint32_t offset) {
-    const pci_window_t *w = (const pci_window_t *)ctx;
-    pci_decode_t d;
-    offset = lane_offset(w, offset, 1);
-    if (!window_locate(w, window_pci_addr(w, offset), &d)) {
-        window_fault(w, offset, false);
-        return 0xFFu;
-    }
-    return d.iface->read_uint8(d.ctx, d.sub);
+// A claimed region's read: the guest's, or an inspection's through the
+// device's peek_* (memory_interface_t), falling back to read_* where the
+// device has none and composing a missing width from the narrower peek, as
+// memory_debug_read_* does for a device mapped directly.
+static uint8_t decode_read8(const pci_decode_t *d, uint32_t sub, bool peek) {
+    if (peek && d->iface->peek_uint8)
+        return d->iface->peek_uint8(d->ctx, sub);
+    return d->iface->read_uint8(d->ctx, sub);
+}
+static uint16_t decode_read16(const pci_decode_t *d, uint32_t sub, bool peek) {
+    if (peek && d->iface->peek_uint16)
+        return d->iface->peek_uint16(d->ctx, sub);
+    if (peek && d->iface->peek_uint8)
+        return (uint16_t)((decode_read8(d, sub, true) << 8) | decode_read8(d, sub + 1, true));
+    return d->iface->read_uint16(d->ctx, sub);
+}
+static uint32_t decode_read32(const pci_decode_t *d, uint32_t sub, bool peek) {
+    if (peek && d->iface->peek_uint32)
+        return d->iface->peek_uint32(d->ctx, sub);
+    if (peek && (d->iface->peek_uint16 || d->iface->peek_uint8))
+        return ((uint32_t)decode_read16(d, sub, true) << 16) | decode_read16(d, sub + 2, true);
+    return d->iface->read_uint32(d->ctx, sub);
 }
 
-static uint16_t window_read16(void *ctx, uint32_t offset) {
-    const pci_window_t *w = (const pci_window_t *)ctx;
+// One window read of `size` bytes: the guest's (`peek` false) or an
+// inspection's.  An unclaimed address floats to all-ones either way; only the
+// guest's read reports the master abort (window_fault), so a debugger
+// inspection never raises a bus error.
+static uint32_t window_read(const pci_window_t *w, uint32_t offset, uint32_t size, bool peek) {
     pci_decode_t d;
-    offset = lane_offset(w, offset, 2);
+    offset = lane_offset(w, offset, size);
     if (!window_locate(w, window_pci_addr(w, offset), &d)) {
-        window_fault(w, offset, false);
-        return 0xFFFFu;
+        if (!peek)
+            window_fault(w, offset, false);
+        return size == 1 ? 0xFFu : size == 2 ? 0xFFFFu : 0xFFFFFFFFu;
     }
-    uint16_t v = d.iface->read_uint16(d.ctx, d.sub);
-    return w->bus->lane_reverse ? __builtin_bswap16(v) : v;
-}
-
-static uint32_t window_read32(void *ctx, uint32_t offset) {
-    const pci_window_t *w = (const pci_window_t *)ctx;
-    pci_decode_t d;
-    offset = lane_offset(w, offset, 4);
-    if (!window_locate(w, window_pci_addr(w, offset), &d)) {
-        window_fault(w, offset, false);
-        return 0xFFFFFFFFu;
+    if (size == 1)
+        return decode_read8(&d, d.sub, peek);
+    if (size == 2) {
+        uint16_t v = decode_read16(&d, d.sub, peek);
+        return w->bus->lane_reverse ? __builtin_bswap16(v) : v;
     }
-    uint32_t v = d.iface->read_uint32(d.ctx, d.sub);
+    uint32_t v = decode_read32(&d, d.sub, peek);
     return w->bus->lane_reverse ? __builtin_bswap32(v) : v;
+}
+
+static uint8_t window_read8(void *ctx, uint32_t offset) {
+    return (uint8_t)window_read(ctx, offset, 1, false);
+}
+static uint16_t window_read16(void *ctx, uint32_t offset) {
+    return (uint16_t)window_read(ctx, offset, 2, false);
+}
+static uint32_t window_read32(void *ctx, uint32_t offset) {
+    return window_read(ctx, offset, 4, false);
+}
+static uint8_t window_peek8(void *ctx, uint32_t offset) {
+    return (uint8_t)window_read(ctx, offset, 1, true);
+}
+static uint16_t window_peek16(void *ctx, uint32_t offset) {
+    return (uint16_t)window_read(ctx, offset, 2, true);
+}
+static uint32_t window_peek32(void *ctx, uint32_t offset) {
+    return window_read(ctx, offset, 4, true);
 }
 
 static void window_write8(void *ctx, uint32_t offset, uint8_t value) {
@@ -333,6 +363,9 @@ void pci_bus_add_window(pci_bus_t *bus, pci_space_t space, uint32_t map_base, ui
     w->iface.write_uint8 = window_write8;
     w->iface.write_uint16 = window_write16;
     w->iface.write_uint32 = window_write32;
+    w->iface.peek_uint8 = window_peek8;
+    w->iface.peek_uint16 = window_peek16;
+    w->iface.peek_uint32 = window_peek32;
     memory_map_add(bus->cfg->mem_map, map_base, size, w->what, &w->iface, w);
 }
 
