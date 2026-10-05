@@ -318,6 +318,11 @@ the IIci). Seed it *before* the boot and the System comes up in that mode:
 System 7.6 writes `$05` once booted (bit 0 plus bit 2), so `$01` is the minimal
 value that selects the mode rather than a guess.
 
+**7.6 and later need 32-bit addressing.**  Booted from a store whose bit 0 is
+clear, 7.6 (IIci) and 8.1 (IIfx) write `$05` and restart: the second startup
+chime of a first boot, with valid PRAM throughout (measured 2026-10-05).  From a
+store already holding `$05` they boot once.
+
 The seed only takes while the **XPRAM token is present** (§3): without it the
 ROM's `PRAMInit` rewrites `$8A` during boot — a poked value reads back `$00`
 afterwards — so the byte looks inert and a real selector can be mistakenly
@@ -651,7 +656,8 @@ machine, so at construction the RTC writes:
 - its **Start Manager table** at `$76..$89` (§3, "Measured per ROM family"):
   default OS Macintosh, startup device SCSI id 0;
 - its **MMFlags** at `$8A` as the ROM writes it, plus what a booted System
-  leaves set (bit 5 on the PDM family, §4.3);
+  leaves set (bit 5 on the PDM family, §4.3);  the configuration's
+  **addressing** option (below) then sets or clears its 32-bit bit;
 - **`$01` bit 7**, the Start Manager's "no dynamic startup-drive wait" — a
   deliberate departure from a factory-fresh chip, whose first boot waits up
   to 20 s for drives to spin up (and on the single-Curio PDM machines always
@@ -670,8 +676,18 @@ sets it to the disk it attached.  `machine.rtc.pram.validate` re-stamps the
 family's XPRAM token and nothing else — it used to write `$A8` to physical
 `$00`, which is a reserved XPRAM byte, not the SysParam validity byte.
 
-To **seed** a specific saved configuration on top (a video mode, 32-bit
-addressing), poke it after `machine.boot`, before the machine runs:
+The **configuration** chooses some records, and the seeding step
+(`config_seed.c`) writes them once, when the machine is built: the startup
+device, AppleTalk, each display's startup video mode (its slot record), and
+the **addressing mode**.  `options.addressing` (`24` / `32`) exists on every
+Macintosh whose PRAM family runs both modes (`pram_defaults_t.addressing`):
+the SE/30, IIx and IIcx (whose ROM is not 32-bit clean: 32-bit needs MODE32),
+the IIci, IIsi, IIfx, Quadra 700/900/950 and the AV Quadras.  Its default is
+the ROM's own mode — 24-bit, 32-bit on the AV.  `32` writes `$05` (as a System
+booted 32-bit leaves it, so 7.6 and later boot once); `24` clears bit 0.
+
+To **seed** anything else on top, poke it after `machine.boot`, before the
+machine runs:
 
 ```python
 # The token and the Start Manager table are already there.

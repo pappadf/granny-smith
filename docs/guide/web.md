@@ -894,6 +894,36 @@ view; errors still toast.
   (SE/30 / IIcx / IIfx).  One that is not a vROM is rejected like any other
   medium (above) and the machine boots without it, saying so.  Storing it
   also offers it to the core's ROM catalog, for later boots.
+- `config=<document>` — the whole configuration document, as the dialog
+  holds it, base64url-encoded JSON; absent, the model's default
+  configuration.  A node it leaves out means that node's default.
+- **Configuration edits by name** — every other parameter (not media, not
+  one the page reads for something else) edits the configuration document
+  the boot uses (`config=` if given, else the model's default), through the
+  dialog's own editors
+  ([`lib/urlConfig.ts`](../../app/web2/src/lib/urlConfig.ts)); the core
+  validates the result as it does any document:
+  - `<option id>=<value>` — any scalar option of the model's tree
+    (`catalog.profile(model).options`): `addressing=32`, `memory=32768`
+    (`ram=` is the same), `appletalk=inactive`, `power_supplies=two`.  The
+    value is a value id or its label, ignoring case and spaces (`32-bit`,
+    `32MB`).
+  - `display=<device>` — the display device the monitor is plugged into
+    (`builtin`, `nubus_9`, `pci_1`), on a configuration with several.
+  - `monitor=<id>` — the monitor on it (`13in_rgb`, `21in_rgb`; the tree's
+    `monitors`).
+  - `mode=<W>x<H>x<D>` — its startup video mode (`1152x870x8`); `<W>x<H>`
+    alone is the deepest mode at that size.  Without `monitor=`, the
+    device's monitors are searched for it, the plugged-in one first.
+
+  A value the tree does not offer is shown in a toast and left out (the
+  machine boots without that edit); an option the model does not have
+  (`addressing=` on a Plus) is skipped with a console warning.  The edits are
+  construction choices: the seeding step writes the PRAM records they decide
+  (MMFlags for the addressing mode, the slot record for the mode) before the
+  first instruction.  Mac OS 7.6 and later need `addressing=32` on the 68k
+  Macs whose default is 24-bit; without it they set it themselves and
+  restart (two startup chimes).
 - `speed=paced|accelerated|turbo` — the toolbar's pacing mode from the
   start, set once on the page's run loop (`pacing.mode`); pacing is host
   state, so every machine the page boots or restores runs under it (legacy
@@ -905,7 +935,7 @@ view; errors still toast.
   and an unknown id is ignored.  Read by `state/appearance.svelte.ts` and
   `index.html`'s pre-paint script, not by `urlMedia`, and matched exactly.
 
-**Names are case-insensitive**: `ROM=`, `Rom=` and `rom=` are one
+**Names are case-insensitive** (configuration edits too): `ROM=`, `Rom=` and `rom=` are one
 parameter, `HD0=` is `hd0=`, and a bare `HD=` / `FD=` means `hd0` / `fd0`.
 The first occurrence of a name wins; a second spelling of it is ignored
 with a console warning.
@@ -998,6 +1028,18 @@ which, as a link, is (one line, no spaces):
 
 ```
 https://pappadf.github.io/gs-pages/staging/?ROM=https%3A%2F%2Fia800908.us.archive.org%2Fview_archive.php%3Farchive%3D%2F12%2Fitems%2Fmac_rom_archive_-_as_of_8-19-2011%2Fmac_rom_archive_-_as_of_8-19-2011.zip%26file%3D368CADFE%2520-%2520Mac%2520IIci.ROM&HD0=https://archive.org/cors/AppleMacintoshSystem753/System7_5_3.img
+```
+
+A **Macintosh IIfx** with an 8•24 card booting Mac OS 8.1, in 32-bit mode
+from the first instruction (so it boots once), on a 21″ display at 1152 × 870
+in 256 colors — the configuration edits after the media (values decoded):
+
+```
+https://pappadf.github.io/gs-pages/staging/
+  ?ROM=https://ia800908.us.archive.org/view_archive.php?archive=/12/items/mac_rom_archive_-_as_of_8-19-2011/mac_rom_archive_-_as_of_8-19-2011.zip&file=4147DD77%20-%20Mac%20IIfx.ROM
+  &VROM=https://ia800603.us.archive.org/view_archive.php?archive=/3/items/Macintosh_ROMs_Collection_1990s/Mac_ROMs.zip&file=Mac_ROMs%2FMisc%2FVideo%20cards%2FApple%20Macintosh%20Display%20Card%208-24%2FTrident%208-24%2F341-0868.BIN
+  &HD0=https://archive.org/cors/Macintosh_Garden_OS_Collection/IIfx_Mac_OS_8.1_volume.sit/IIfx%20Mac%20OS%208.1%20volume.iso
+  &addressing=32&monitor=21in_rgb&mode=1152x870x8
 ```
 
 A **Lisa 2** booting the Office System 3.1, all from archive.org — the Rev H
