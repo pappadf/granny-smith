@@ -65,9 +65,12 @@ export function storageBus(profile: MachineProfile, id: string): StorageBus | un
   return profile.storage.find((b) => b.id === id);
 }
 
-// The position text the core composed for (bus, unit).
+// The position text the core composed for (bus, unit), in its short form
+// ("ID 0", not "ID 0 · Internal hard disk bay"): the dialog names units by
+// number alone.
 export function positionLabel(profile: MachineProfile, bus: string, unit: number): string {
-  return storageBus(profile, bus)?.units.find((u) => u.unit === unit)?.label ?? `${unit}`;
+  const u = storageBus(profile, bus)?.units.find((x) => x.unit === unit);
+  return u?.short ?? u?.label ?? `${unit}`;
 }
 
 // A device type's label, as the bus names it.
@@ -178,8 +181,8 @@ export function startupChoices(
     }));
 }
 
-// A device's place as a sentence fragment: "SCSI ID 0 · Internal hard disk
-// bay", the bus named only when the machine has several.
+// A device's place as a sentence fragment: "SCSI ID 0", the bus named only
+// when the machine has several.
 export function storageLabel(profile: MachineProfile, d: StorageDevice): string {
   const pos = positionLabel(profile, d.bus, d.unit);
   if (profile.storage.length < 2) return pos;

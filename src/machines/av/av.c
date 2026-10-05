@@ -125,17 +125,25 @@ static void av_ymca_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_
 // bus-error so the ROM's TestForMUNI clears MUNIExists (the speed-programming
 // write in JumpIntoROM runs under a temp bus-error handler and is skipped).
 
-static uint8_t av_muni_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+static uint8_t av_muni_read_access(config_t *cfg, uint32_t win_off, uint32_t addr, bool peek) {
     (void)win_off; // this window's handler decodes from addr itself
     av_state_t *st = av_st(cfg);
     uint32_t off = addr & 0x3FFu;
     uint32_t reg = off & ~3u;
     if (reg == AV_MUNI_CONTROL && !av_board(cfg)->desc->muni_present) {
-        memory_signal_bus_error(addr, false);
+        if (!peek)
+            memory_signal_bus_error(addr, false);
         return 0xFF;
     }
     uint32_t v = (reg == AV_MUNI_CONTROL) ? st->muni_control : (reg == AV_MUNI_INTCNTRL) ? st->muni_intcntrl : 0;
     return be_lane8(v, off & 3);
+}
+
+static uint8_t av_muni_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    return av_muni_read_access(cfg, win_off, addr, false);
+}
+static uint8_t av_muni_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    return av_muni_read_access(cfg, win_off, addr, true);
 }
 
 static void av_muni_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
@@ -211,6 +219,8 @@ static uint8_t av_scsi_read(config_t *cfg, uint32_t win_off, uint32_t addr);
 static void av_scsi_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
 static uint8_t av_scsi_pdma_read(config_t *cfg, uint32_t win_off, uint32_t addr);
 static void av_scsi_pdma_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
+static uint8_t av_scsi_peek(config_t *cfg, uint32_t win_off, uint32_t addr);
+static uint8_t av_scsi_pdma_peek(config_t *cfg, uint32_t win_off, uint32_t addr);
 
 //   base     end      device            penalty          xform            rd wr  rd_fn/wr_fn      name
 const mac030_io_range_t av_io_ranges[] = {
@@ -218,14 +228,20 @@ const mac030_io_range_t av_io_ranges[] = {
     {0x02000, 0x04000, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_psc_via2_read, av_psc_via2_write, "psc_via2"},
     {0x04000, 0x08000, MAC030_DEV_SCC, AV_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
     {0x08000, 0x08080, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_mace_prom_read, av_mace_prom_write, "mac_prom"},
-    {0x18000, 0x18100, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_scsi_read, av_scsi_write, "scsi_53c96"},
-    {0x18100, 0x18200, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_scsi_pdma_read, av_scsi_pdma_write, "scsi_rdma"},
-    {0x1C000, 0x1C200, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_mace_read, av_mace_write, "mace"},
-    {0x2A000, 0x2A200, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_new_age_read, av_new_age_write, "new_age"},
+    {0x18000, 0x18100, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_scsi_read, av_scsi_write, "scsi_53c96",
+     .peek_fn = av_scsi_peek},
+    {0x18100, 0x18200, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_scsi_pdma_read, av_scsi_pdma_write, "scsi_rdma",
+     .peek_fn = av_scsi_pdma_peek},
+    {0x1C000, 0x1C200, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_mace_read, av_mace_write, "mace",
+     .peek_fn = av_mace_peek},
+    {0x2A000, 0x2A200, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_new_age_read, av_new_age_write, "new_age",
+     .peek_fn = av_new_age_peek},
     {0x2E000, 0x2E100, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_civic_clk_read, av_civic_clk_write, "clock"},
-    {0x30000, 0x30400, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_muni_read, av_muni_write, "muni"},
+    {0x30000, 0x30400, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_muni_read, av_muni_write, "muni",
+     .peek_fn = av_muni_peek},
     {0x30400, 0x30800, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_ymca_read, av_ymca_write, "ymca"},
-    {0x30800, 0x30C00, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_civic_seb_read, av_civic_seb_write, "sebastian"},
+    {0x30800, 0x30C00, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_civic_seb_read, av_civic_seb_write, "sebastian",
+     .peek_fn = av_civic_seb_peek},
     {0x31000, 0x33000, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_psc_reg_read, av_psc_reg_write, "psc"},
     {0x36000, 0x38000, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_civic_read, av_civic_write, "civic"},
     {0}, // sentinel: end == 0
@@ -310,6 +326,10 @@ static uint8_t av_scsi_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     (void)win_off; // this window's handler decodes from addr itself
     return scsi_53c96_read(av_st(cfg)->scsi96, (addr & 0xFFu) >> 4);
 }
+static uint8_t av_scsi_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off, (void)addr;
+    return scsi_53c96_peek(av_st(cfg)->scsi96, (addr & 0xFFu) >> 4);
+}
 
 static void av_scsi_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
     (void)win_off; // this window's handler decodes from addr itself
@@ -323,6 +343,10 @@ static uint8_t av_scsi_pdma_read(config_t *cfg, uint32_t win_off, uint32_t addr)
     (void)win_off; // this window's handler decodes from addr itself
     (void)addr;
     return scsi_53c96_pdma_read8(av_st(cfg)->scsi96);
+}
+static uint8_t av_scsi_pdma_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off, (void)addr;
+    return scsi_53c96_pdma_peek8(av_st(cfg)->scsi96);
 }
 
 static void av_scsi_pdma_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {

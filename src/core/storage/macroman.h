@@ -48,4 +48,12 @@ bool macroman_name_to_host(const uint8_t *mac, size_t len, char *dst, size_t dst
 // -- how names written before the server transcoded look.
 int macroman_name_from_host(const char *host, uint8_t *dst, size_t dst_cap);
 
+// === Case =====================================================================
+
+// The uppercase equivalent of MacRoman byte `c` by Inside AppleTalk Appendix
+// D, Table D-2: a-z and 13 accented letters (é -> É, ñ -> Ñ, ...).  AppleTalk
+// names (NBP entities, AFP names) are equal when they match after folding;
+// diacriticals stay significant (é is not e).
+uint8_t macroman_fold(uint8_t c);
+
 #endif // GS_MACROMAN_H

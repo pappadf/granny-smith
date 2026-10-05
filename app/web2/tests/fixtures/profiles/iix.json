@@ -134,31 +134,38 @@
       "units": [
         {
           "unit": 0,
-          "label": "ID 0 \u00b7 Internal hard disk bay"
+          "label": "ID 0 \u00b7 Internal hard disk bay",
+          "short": "ID 0"
         },
         {
           "unit": 1,
-          "label": "ID 1 \u00b7 External"
+          "label": "ID 1 \u00b7 External",
+          "short": "ID 1"
         },
         {
           "unit": 2,
-          "label": "ID 2 \u00b7 External"
+          "label": "ID 2 \u00b7 External",
+          "short": "ID 2"
         },
         {
           "unit": 3,
-          "label": "ID 3 \u00b7 External"
+          "label": "ID 3 \u00b7 External",
+          "short": "ID 3"
         },
         {
           "unit": 4,
-          "label": "ID 4 \u00b7 External"
+          "label": "ID 4 \u00b7 External",
+          "short": "ID 4"
         },
         {
           "unit": 5,
-          "label": "ID 5 \u00b7 External"
+          "label": "ID 5 \u00b7 External",
+          "short": "ID 5"
         },
         {
           "unit": 6,
-          "label": "ID 6 \u00b7 External"
+          "label": "ID 6 \u00b7 External",
+          "short": "ID 6"
         }
       ],
       "reserved": [7],

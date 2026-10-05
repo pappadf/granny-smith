@@ -416,13 +416,14 @@ static void write_wave_reg(uint32_t *reg, int byte_pos, uint8_t data) {
 // Memory Interface
 // ============================================================================
 
-// Handles byte reads from the ASC address space (SRAM + registers)
-static uint8_t asc_read_byte(void *device, uint32_t addr) {
-    asc_t *asc = (asc_t *)device;
-
+// A byte read from the ASC address space (SRAM + registers): the guest's, or
+// an inspection's (`peek`), which reports the same value but leaves the
+// read-clears FIFO IRQ status (and the CB1 line it drives) untouched.
+static uint8_t asc_reg_read(asc_t *asc, uint32_t addr, bool peek) {
     // SRAM region (0x000-0x7FF): direct read regardless of mode
     if (addr < ASC_RAM_SIZE) {
-        LOG(4, "read ram[0x%03X] = 0x%02X", addr, asc->ram[addr]);
+        if (!peek)
+            LOG(4, "read ram[0x%03X] = 0x%02X", addr, asc->ram[addr]);
         return asc->ram[addr];
     }
 
@@ -443,6 +444,8 @@ static uint8_t asc_read_byte(void *device, uint32_t addr) {
     case REG_FIFO_IRQ: {
         // Read-clears: capture current flags then reset them
         uint8_t flags = asc->fifo_irq_status;
+        if (peek)
+            return flags;
         asc->fifo_irq_status = 0;
         asc_update_irq(asc); // deassert CB1 since flags are now cleared
         LOG(3, "read fifo_irq_status = 0x%02X (cleared)", flags);
@@ -485,8 +488,16 @@ static uint8_t asc_read_byte(void *device, uint32_t addr) {
         }
     }
 
-    LOG(2, "read unknown addr 0x%03X", addr);
+    if (!peek)
+        LOG(2, "read unknown addr 0x%03X", addr);
     return 0;
+}
+
+static uint8_t asc_read_byte(void *device, uint32_t addr) {
+    return asc_reg_read(device, addr, false);
+}
+static uint8_t asc_peek_byte(void *device, uint32_t addr) {
+    return asc_reg_read(device, addr, true);
 }
 
 // Handles byte writes to the ASC address space (SRAM + registers)
@@ -731,6 +742,7 @@ asc_t *asc_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpo
         .read_uint8 = asc_read_byte,
         .read_uint16 = asc_read_word,
         .read_uint32 = asc_read_long,
+        .peek_uint8 = asc_peek_byte, // wider peeks compose
         .write_uint8 = asc_write_byte,
         .write_uint16 = asc_write_word,
         .write_uint32 = asc_write_long,
@@ -875,10 +887,9 @@ static DEF_GETTER(asc_attr_mode) {
     return val_uint(1, asc_self_from(self)->mode);
 }
 
-// Side-effect-free debug views of the FIFO engine.  The guest-visible
-// FIFO-IRQ status register (0x804) is read-clears, so inspecting it via
-// memory.peek perturbs the guest; these attributes read the model state
-// directly for stall diagnosis.
+// Side-effect-free debug views of the FIFO engine, read from the model state
+// directly for stall diagnosis.  (The guest-visible FIFO-IRQ status register
+// 0x804 is read-clears; memory.peek inspects it through asc_peek_byte.)
 static DEF_GETTER(asc_attr_fifo_count_a) {
     return val_uint(1, asc_self_from(self)->fifo_count[0]);
 }

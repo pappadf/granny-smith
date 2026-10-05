@@ -72,7 +72,7 @@ typedef struct {
 typedef struct {
     bool in_use;
     uint16_t vol_id; // stable, monotonically assigned
-    char name[33];
+    char name[ATALK_NBP_TEXT_CAP]; // UTF-8; at most 32 MacRoman characters
     char root[PATH_MAX];
     afp_catalog_t *catalog;
     afp_desktop_t *desktop;
@@ -115,7 +115,7 @@ typedef struct {
 struct afp_server {
     vol_t vols[AFP_MAX_VOLUMES];
     uint32_t next_vol_id; // atalk_id_alloc cursor
-    char object[33]; // the NBP object name (appletalk.afp.name)
+    char object[ATALK_NBP_TEXT_CAP]; // the NBP object name (appletalk.afp.name), UTF-8
     char message[AFP_META_COMMENT_MAX + 1]; // appletalk.afp.message
     bool enabled; // serving and advertised
     atalk_nbp_entry_t *nbp_entry;
@@ -178,10 +178,8 @@ int afp_client_name(const char *host_name, uint32_t cnid, uint8_t *out, size_t c
 // A new name (FPRename, FPMoveAndRename, FPCopyFile): exactly one element, as
 // its host name.
 bool afp_parse_leaf(const afp_path_t *path, char *out, size_t cap);
-// Case (Inside AppleTalk App. D, Table D-2).  afp_fold maps a
-// MacRoman byte to its uppercase equivalent; the comparisons fold both sides,
-// host names through their Mac form.
-uint8_t afp_fold(uint8_t c);
+// Case (Inside AppleTalk App. D, Table D-2, macroman_fold): the comparisons
+// fold both sides, host names through their Mac form.
 int afp_fold_cmp(const uint8_t *a, size_t alen, const uint8_t *b, size_t blen);
 int afp_name_fold_cmp(const char *host_a, const char *host_b);
 bool afp_name_fold_contains(const char *host_haystack, const char *host_needle);

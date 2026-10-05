@@ -231,7 +231,7 @@ static void na_execute(av_new_age_t *fdc) {
 // Register handlers
 // ============================================================
 
-uint8_t av_new_age_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+static uint8_t av_new_age_read_access(config_t *cfg, uint32_t win_off, uint32_t addr, bool peek) {
     av_new_age_t *fdc = na_of(cfg);
     uint32_t off = win_off; // decoded by the engine; was (addr & island mask) - base
     (void)addr;
@@ -247,6 +247,8 @@ uint8_t av_new_age_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     case 0x141: // FIFO — pop one result byte
         if (fdc->phase == NA_RESULT) {
             uint8_t v = fdc->result[fdc->result_idx];
+            if (peek)
+                return v; // the byte the pop would return
             na_set_int(fdc, false); // a status read deasserts INT
             if (fdc->result_idx + 1 < fdc->result_len)
                 fdc->result_idx++;
@@ -258,6 +260,13 @@ uint8_t av_new_age_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     default:
         return 0xFF;
     }
+}
+
+uint8_t av_new_age_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    return av_new_age_read_access(cfg, win_off, addr, false);
+}
+uint8_t av_new_age_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    return av_new_age_read_access(cfg, win_off, addr, true);
 }
 
 void av_new_age_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {

@@ -22,6 +22,17 @@ assert machine.rom.identify("../../data/roms/plus-v3-4d1f8172.rom").intact "Plus
 assert machine.rom.identify("../../data/roms/plus-v3-4d1f8172.rom").supported "Plus ROM is supported"
 assert machine.rom.identify("../../data/roms/plus-v3-4d1f8172.rom").reason == "" "an intact ROM has no reason"
 
+# An Old World PowerPC ROM carries two of Apple's checksums, and its id is
+# both: the 32-bit header sum, which covers only the 68k half (the first
+# 3 MB), and the ConfigInfo's 64-bit ROMCheckSum64 over the whole 4 MB.
+# intact means both verify.  No whole-region sum of our own exists (#186):
+# on this ROM it would read B2138FBB, which is neither of Apple's.
+let pm7500 = machine.rom.identify("../../data/roms/pm7500-pm8500-pm9500-96cd923d.rom")
+assert $pm7500.kind == "ppc" "pm7500 ROM is a PowerPC ROM"
+assert $pm7500.id == "96cd923d-c241cd82bf90797a" "pm7500 id is <68k-half header sum>-<ROMCheckSum64>"
+assert $pm7500.intact "pm7500 ROM: both of Apple's sums verify"
+assert $pm7500.reason == "" "an intact PowerPC ROM has no reason"
+
 # Unrecognised file: probing /dev/null/nonexistent must yield V_ERROR.
 # The shell's truthiness rule treats errors as falsy.
 assert !machine.rom.identify("/dev/null/nonexistent") "expected V_ERROR for unreadable path"

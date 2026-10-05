@@ -195,19 +195,23 @@
       "units": [
         {
           "unit": 0,
-          "label": "ID 0 \u00b7 Front bay 0"
+          "label": "ID 0 \u00b7 Front bay 0",
+          "short": "ID 0"
         },
         {
           "unit": 1,
-          "label": "ID 1 \u00b7 Front bay 1"
+          "label": "ID 1 \u00b7 Front bay 1",
+          "short": "ID 1"
         },
         {
           "unit": 2,
-          "label": "ID 2 \u00b7 Front bay 2"
+          "label": "ID 2 \u00b7 Front bay 2",
+          "short": "ID 2"
         },
         {
           "unit": 3,
-          "label": "ID 3 \u00b7 Front bay 3"
+          "label": "ID 3 \u00b7 Front bay 3",
+          "short": "ID 3"
         }
       ],
       "reserved": [7],
@@ -303,19 +307,23 @@
       "units": [
         {
           "unit": 0,
-          "label": "ID 0"
+          "label": "ID 0",
+          "short": "ID 0"
         },
         {
           "unit": 4,
-          "label": "ID 4 \u00b7 Front bay 4"
+          "label": "ID 4 \u00b7 Front bay 4",
+          "short": "ID 4"
         },
         {
           "unit": 5,
-          "label": "ID 5 \u00b7 Front bay 5"
+          "label": "ID 5 \u00b7 Front bay 5",
+          "short": "ID 5"
         },
         {
           "unit": 6,
-          "label": "ID 6 \u00b7 Front bay 6"
+          "label": "ID 6 \u00b7 Front bay 6",
+          "short": "ID 6"
         }
       ],
       "reserved": [7],

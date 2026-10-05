@@ -1405,6 +1405,9 @@ static bool v2_is_fbiinit(int idx) {
     return idx == R_FBIINIT4 || (idx >= R_FBIINIT0 && idx <= R_FBIINIT3) || (idx >= R_FBIINIT5 && idx <= R_FBIINIT7);
 }
 
+// One register as the guest and an inspection both read it.  It retires the queue
+// just as the guest's read does: waiting for issued work is synchronisation,
+// not a side effect the guest could see.
 static uint32_t v2_reg_read(voodoo2_t *v, int idx) {
     switch (idx) {
     case R_STATUS:
@@ -2127,7 +2130,7 @@ static void v2_cmdfifo_write(voodoo2_t *v, uint32_t off, uint32_t le_value) {
 // only if fbiInit3[0]; bit 20 requests the per-access byte swizzle only
 // if fbiInit0[3].  The chip field is IGNORED for reads — reads always
 // come from Chuck.
-static uint32_t v2_reg_face_read(voodoo2_t *v, uint32_t off) {
+static uint32_t v2_reg_face_read(voodoo2_t *v, uint32_t off, bool peek) {
     int idx = (off >> 2) & 0xFFu;
     if ((off & (1u << 21)) && (v->reg[R_FBIINIT3] & FBIINIT3_ALT_REGMAP)) {
         idx = v2_alt_to_std(idx);
@@ -2135,7 +2138,8 @@ static uint32_t v2_reg_face_read(voodoo2_t *v, uint32_t off) {
             return 0;
     }
     uint32_t value = v2_reg_read(v, idx);
-    LOG(6, "rd $%03X -> %08X", idx * 4, value);
+    if (!peek)
+        LOG(6, "rd $%03X -> %08X", idx * 4, value);
     if ((off & (1u << 20)) && (v->reg[R_FBIINIT0] & FBIINIT0_SWIZZLE_EN))
         value = __builtin_bswap32(value);
     return value;
@@ -2173,15 +2177,36 @@ static void v2_reg_face_write(voodoo2_t *v, uint32_t off, uint32_t le_value) {
 // Handlers receive the BAR-relative offset and big-endian bus values
 // (MSB = lowest addressed byte); the card swaps into its own domain at
 // this edge and nowhere else.
+//
+// Each read is one function taking `peek`: false for the guest's read,
+// true for an inspection (memory_interface_t.peek_*), which leaves the
+// once-only warnings unset.  Both still retire the executor and fence the
+// framebuffer: that is synchronisation, not a side effect -- it only waits
+// for work the guest already issued, so a peek returns what the guest's own
+// read would, and the executor may be a worker thread still drawing.
 
-static uint32_t v2_bar_read32(void *ctx, uint32_t off) {
-    voodoo2_t *v = (voodoo2_t *)ctx;
+// The once-only notes on reads the face does not define.
+static void v2_note_narrow_reg(voodoo2_t *v, uint32_t off, bool peek) {
+    if (peek || v->warned_narrow_reg)
+        return;
+    v->warned_narrow_reg = true;
+    LOG(3, "narrow access to the register face at +$%06X — registers are 32-bit only", off);
+}
+
+static void v2_note_tex_read(voodoo2_t *v, uint32_t off, bool peek) {
+    if (peek || v->warned_tex_read)
+        return;
+    v->warned_tex_read = true;
+    LOG(3, "read from write-only texture aperture at +$%06X", off);
+}
+
+static uint32_t v2_bar_rd32(voodoo2_t *v, uint32_t off, bool peek) {
     if (off < V2_OFF_LFB) {
         // With the CMDFIFO map, the second 2 MB is the write-only
         // command port; reads from it return undefined data.
         if ((v->reg[R_FBIINIT7] & FBIINIT7_CMDFIFO_EN) && off >= 0x200000u)
             return 0xFFFFFFFFu;
-        return VOODOO2_LE32(v2_reg_face_read(v, off));
+        return VOODOO2_LE32(v2_reg_face_read(v, off, peek));
     }
     if (off < V2_OFF_TEX) {
         // LFB reads are gated by fbiInit1[3], which starts CLEAR so a
@@ -2205,15 +2230,13 @@ static uint32_t v2_bar_read32(void *ctx, uint32_t off) {
             p1 = (uint16_t)(((p1 & 0x1Fu) << 11) | (p1 & 0x7E0u) | (p1 >> 11));
         }
         uint32_t le = (uint32_t)p0 | ((uint32_t)p1 << 16);
-        LOG(5, "lfb rd32 +%06X -> %08X", off, v2_lfb_read_transform(v, le));
+        if (!peek)
+            LOG(5, "lfb rd32 +%06X -> %08X", off, v2_lfb_read_transform(v, le));
         return VOODOO2_LE32(v2_lfb_read_transform(v, le));
     }
     // Texture memory is write-only; reads return undefined data
     // [V2 p.119] — deterministically all-ones here, logged once.
-    if (!v->warned_tex_read) {
-        v->warned_tex_read = true;
-        LOG(3, "read from write-only texture aperture at +$%06X", off);
-    }
+    v2_note_tex_read(v, off, peek);
     return 0xFFFFFFFFu;
 }
 
@@ -2318,16 +2341,12 @@ static void v2_bar_write32_body(void *ctx, uint32_t off, uint32_t data) {
     v2_tex_write_words(v, tex_off, &le, 1u);
 }
 
-static uint16_t v2_bar_read16(void *ctx, uint32_t off) {
-    voodoo2_t *v = (voodoo2_t *)ctx;
+static uint16_t v2_bar_rd16(voodoo2_t *v, uint32_t off, bool peek) {
     if (off < V2_OFF_LFB) {
         // Register accesses must be 32-bit [V2 p.22, p.128 §12.2]; a
         // narrower access is not a bus behaviour the spec defines, so it
         // is logged once and answers all-ones rather than inventing one.
-        if (!v->warned_narrow_reg) {
-            v->warned_narrow_reg = true;
-            LOG(3, "narrow access to the register face at +$%06X — registers are 32-bit only", off);
-        }
+        v2_note_narrow_reg(v, off, peek);
         return 0xFFFFu;
     }
     if (off < V2_OFF_TEX) {
@@ -2339,23 +2358,18 @@ static uint16_t v2_bar_read16(void *ctx, uint32_t off) {
         uint16_t p = v2_lfb_load16(v, buffer, x, y);
         if (buffer != 3u && (LFB_LANES(v->reg[R_LFBMODE]) & 1u))
             p = (uint16_t)(((p & 0x1Fu) << 11) | (p & 0x7E0u) | (p >> 11));
-        LOG(5, "lfb rd16 +%06X -> %04X (buf %u x %u y %u)", off, p, buffer, x, y);
+        if (!peek)
+            LOG(5, "lfb rd16 +%06X -> %04X (buf %u x %u y %u)", off, p, buffer, x, y);
         return VOODOO2_LE16(p);
     }
-    if (!v->warned_tex_read) {
-        v->warned_tex_read = true;
-        LOG(3, "read from write-only texture aperture at +$%06X", off);
-    }
+    v2_note_tex_read(v, off, peek);
     return 0xFFFFu;
 }
 
 static void v2_bar_write16(void *ctx, uint32_t off, uint16_t data) {
     voodoo2_t *v = (voodoo2_t *)ctx;
     if (off < V2_OFF_LFB) {
-        if (!v->warned_narrow_reg) {
-            v->warned_narrow_reg = true;
-            LOG(3, "narrow access to the register face at +$%06X — registers are 32-bit only", off);
-        }
+        v2_note_narrow_reg(v, off, false);
         return;
     }
     if (off < V2_OFF_TEX) {
@@ -2394,13 +2408,9 @@ static void v2_bar_write16(void *ctx, uint32_t off, uint16_t data) {
     v->tex_ram[tmu][masked + 1] = (uint8_t)(le >> 8);
 }
 
-static uint8_t v2_bar_read8(void *ctx, uint32_t off) {
-    voodoo2_t *v = (voodoo2_t *)ctx;
+static uint8_t v2_bar_rd8(voodoo2_t *v, uint32_t off, bool peek) {
     if (off < V2_OFF_LFB) {
-        if (!v->warned_narrow_reg) {
-            v->warned_narrow_reg = true;
-            LOG(3, "narrow access to the register face at +$%06X — registers are 32-bit only", off);
-        }
+        v2_note_narrow_reg(v, off, peek);
         return 0xFFu;
     }
     if (off < V2_OFF_TEX) {
@@ -2415,13 +2425,29 @@ static uint8_t v2_bar_read8(void *ctx, uint32_t off) {
     return 0xFFu;
 }
 
+static uint8_t v2_bar_read8(void *ctx, uint32_t off) {
+    return v2_bar_rd8(ctx, off, false);
+}
+static uint16_t v2_bar_read16(void *ctx, uint32_t off) {
+    return v2_bar_rd16(ctx, off, false);
+}
+static uint32_t v2_bar_read32(void *ctx, uint32_t off) {
+    return v2_bar_rd32(ctx, off, false);
+}
+static uint8_t v2_bar_peek8(void *ctx, uint32_t off) {
+    return v2_bar_rd8(ctx, off, true);
+}
+static uint16_t v2_bar_peek16(void *ctx, uint32_t off) {
+    return v2_bar_rd16(ctx, off, true);
+}
+static uint32_t v2_bar_peek32(void *ctx, uint32_t off) {
+    return v2_bar_rd32(ctx, off, true);
+}
+
 static void v2_bar_write8(void *ctx, uint32_t off, uint8_t data) {
     voodoo2_t *v = (voodoo2_t *)ctx;
     if (off < V2_OFF_LFB) {
-        if (!v->warned_narrow_reg) {
-            v->warned_narrow_reg = true;
-            LOG(3, "narrow access to the register face at +$%06X — registers are 32-bit only", off);
-        }
+        v2_note_narrow_reg(v, off, false);
         return;
     }
     // Byte stores into executor-owned memory: fence first (rare paths).
@@ -3449,6 +3475,9 @@ static pci_device_t *v2_build(int slot_index, config_t *cfg, const slot_opts_t *
     v->bar_if.write_uint8 = v2_bar_write8;
     v->bar_if.write_uint16 = v2_bar_write16;
     v->bar_if.write_uint32 = v2_bar_write32;
+    v->bar_if.peek_uint8 = v2_bar_peek8;
+    v->bar_if.peek_uint16 = v2_bar_peek16;
+    v->bar_if.peek_uint32 = v2_bar_peek32;
     pci_bar_backing_iface(dev, 0, &v->bar_if, v);
 
     LOG(1, "seated in slot %d: 4 MB framebuffer + 2 x %u MB texture (%u MB board), raster backend %s", slot_index,

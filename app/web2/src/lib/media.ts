@@ -83,16 +83,19 @@ interface VromIdentifyResult {
 // Deliberately the same shape as VromIdentifyResult, because to the UI the
 // two are the same question ("which card does this blob provide?"); the
 // identity rules behind them are not (see src/core/memory/prom.c: $55AA, a
-// reachable PCIR, code type 1 = Open Firmware, and a catalogued CRC-32 of
-// the whole chip image). An unrecognised file may still carry `reason`,
-// which is how "that is a PC/x86 option ROM" reaches the user instead of a
-// shrug.
+// reachable PCIR, code type 1 = Open Firmware, and a catalogued identity made
+// of the PCIR vendor/device ids and the FCode header's own checksum, which
+// must verify). A vROM answers `crc` (its Format-Block CRC), a PROM `id`
+// ("vvvv-dddd-cccc"). An unrecognised file may still carry `reason`, which is
+// how "that is a PC/x86 option ROM" reaches the user instead of a shrug.
 interface PromIdentifyResult {
   recognised: boolean;
   card_id?: string;
   compatible?: string[];
   size?: number;
   crc?: string;
+  id?: string;
+  intact?: boolean;
   reason?: string;
 }
 
@@ -238,16 +241,15 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
         info: {
           cardId: parsed.card_id,
           compatible: parsed.compatible,
-          checksum: parsed.crc,
+          id: parsed.id,
         },
       };
     },
-    // Stored by content hash, exactly like a vROM: discovery is the core's
-    // offer registry matching on content, so the on-disk name is a handle
-    // and never a fact the UI reasons about.
+    // Stored by content identity ("vvvv-dddd-cccc"), like a vROM by its CRC:
+    // discovery is the core's offer registry matching on content, so the
+    // on-disk name is a handle and never a fact the UI reasons about.
     nameFn(originalName, info) {
-      const crc = info?.checksum as string | undefined;
-      return crc ? crc.replace(/^0x/, '') : originalName;
+      return (info?.id as string | undefined) || originalName;
     },
   },
 

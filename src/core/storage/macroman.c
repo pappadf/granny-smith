@@ -252,3 +252,33 @@ int macroman_name_from_host(const char *host, uint8_t *dst, size_t dst_cap) {
     }
     return (int)n;
 }
+
+// === Case =====================================================================
+
+// Inside AppleTalk Appendix D, Table D-2: the 13 MacRoman letters that have
+// an uppercase form, lowercase -> uppercase (a-z is handled arithmetically).
+static const uint8_t k_d2_pairs[][2] = {
+    {0x88, 0xCB},
+    {0x8A, 0x80},
+    {0x8B, 0xCC},
+    {0x8C, 0x81},
+    {0x8D, 0x82},
+    {0x8E, 0x83},
+    {0x96, 0x84},
+    {0x9A, 0x85},
+    {0x9B, 0xCD},
+    {0x9F, 0x86},
+    {0xBE, 0xAE},
+    {0xBF, 0xAF},
+    {0xCF, 0xCE},
+};
+
+uint8_t macroman_fold(uint8_t c) {
+    if (c >= 'a' && c <= 'z')
+        return (uint8_t)(c - ('a' - 'A'));
+    if (c >= 0x80)
+        for (size_t i = 0; i < sizeof(k_d2_pairs) / sizeof(k_d2_pairs[0]); i++)
+            if (k_d2_pairs[i][0] == c)
+                return k_d2_pairs[i][1];
+    return c;
+}

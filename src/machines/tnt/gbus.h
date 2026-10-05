@@ -144,8 +144,10 @@ uint32_t tnt_gbus_boxid_bits(config_t *cfg);
 // the 32-bit forms follow the family's little-endian register convention
 // (the guest reads them with lwbrx, so the model swaps at the bus edge).
 uint8_t tnt_gbus_read8(config_t *cfg, uint32_t offset);
+uint8_t tnt_gbus_peek8(config_t *cfg, uint32_t offset); // without ringing the doorbell
 void tnt_gbus_write8(config_t *cfg, uint32_t offset, uint8_t value);
 uint32_t tnt_gbus_read32(config_t *cfg, uint32_t offset);
+uint32_t tnt_gbus_peek32(config_t *cfg, uint32_t offset); // without ringing the doorbell
 void tnt_gbus_write32(config_t *cfg, uint32_t offset, uint32_t value);
 
 // === lcd.c ==================================================================

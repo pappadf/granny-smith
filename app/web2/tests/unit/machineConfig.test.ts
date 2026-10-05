@@ -55,6 +55,14 @@ describe('storage', () => {
     expect(mc.startupChoices(p, doc).map((s) => s.bus)).toEqual(['scsi', 'scsi']);
   });
 
+  it('the startup list names devices by unit number, not by bay', () => {
+    const p = profile('iici');
+    expect(mc.startupChoices(p, mc.defaultDocument(p)).map((s) => s.label)).toEqual([
+      'Hard disk · ID 0',
+      'CD-ROM drive · ID 3',
+    ]);
+  });
+
   it('hard disks with no image are dropped; a CD-ROM drive stays', () => {
     const p = profile('plus');
     const { doc, dropped } = mc.dropImagelessDisks(p, mc.defaultDocument(p), {});

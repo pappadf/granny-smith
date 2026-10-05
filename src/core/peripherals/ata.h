@@ -160,6 +160,12 @@ uint16_t ata_read_data16(ata_channel_t *ch);
 void ata_write_data16(ata_channel_t *ch, uint16_t value);
 uint8_t ata_read_altstatus(ata_channel_t *ch);
 void ata_write_devctl(ata_channel_t *ch, uint8_t value);
+// The same reads without their side effects (an inspection): no INTRQ
+// acknowledge, no PIO data advance, no ATAPI attach/detach refresh.
+uint8_t ata_peek(ata_channel_t *ch, int reg);
+uint16_t ata_peek_data16(ata_channel_t *ch);
+uint32_t ata_peek_data32(ata_channel_t *ch); // two data16 reads in a row
+uint8_t ata_peek_altstatus(ata_channel_t *ch);
 
 // The INTRQ line as driven (INTRQ of the selected device, gated by nIEN).
 bool ata_intrq(const ata_channel_t *ch);

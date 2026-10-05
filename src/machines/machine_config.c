@@ -303,6 +303,22 @@ static const char *storage_bay_name(const storage_bus_decl_t *b, int unit) {
 // alone on the ProFile port.
 static void storage_position(const storage_bus_decl_t *b, int unit, char *buf, size_t len);
 
+// The same without the bay: "ID 0", "Master" -- what a narrow unit menu
+// shows.  The ProFile port's one unit has no number, so it keeps its name.
+static void storage_position_short(const storage_bus_decl_t *b, int unit, char *buf, size_t len) {
+    switch (b->kind) {
+    case STORAGE_KIND_PROFILE:
+        storage_position(b, unit, buf, len);
+        return;
+    case STORAGE_KIND_ATA:
+        snprintf(buf, len, "%s", unit == 0 ? "Master" : "Slave");
+        return;
+    case STORAGE_KIND_SCSI:
+        snprintf(buf, len, "ID %d", unit);
+        return;
+    }
+}
+
 bool machine_storage_position(const hw_profile_t *p, const char *bus_id, int unit, char *buf, size_t len) {
     const storage_bus_decl_t *b = machine_storage_bus(p, bus_id);
     if (!b)
@@ -427,6 +443,8 @@ static value_t storage_bus_value(const storage_bus_decl_t *b) {
         value_map_builder_t *ub = val_map_new();
         val_map_put(ub, "unit", val_int(u));
         val_map_put(ub, "label", val_str(pos));
+        storage_position_short(b, u, pos, sizeof pos);
+        val_map_put(ub, "short", val_str(pos));
         vl_push(&units, val_map_finish(ub));
     }
     for (const storage_bay_decl_t *y = b->bays; y && y->label; y++) {

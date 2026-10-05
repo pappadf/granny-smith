@@ -13,6 +13,8 @@
 #   q700-20m        Q700 RAM sizing across every published bank
 #                   arrangement, 4-68 MB (was a milestone for the 20/36 MB
 #                   stall the RAM axis found; fixed and enforced)
+#   **tower-256m**  Q900 + Q950 RAM sizing to the Eclipse board's 256 MB
+#                   ceiling (4 / 128 / 256 MB), the one range both share
 #   q700-dafb-senses The DAFB's whole monitor-sense range, ROM-only: the
 #                   passive codes AND the extended (tie-matrix) ones
 #   q700-75-monitors **Q700 x 7.5 x 832x624 and x 1152x870**: the two new
@@ -174,6 +176,31 @@ def row_q700_20m() {
         assert debug.mac.globals.read("MemTop") == $kb * 1024 "q700-20m: RAM sizing incomplete at ${$kb} KB (MemTop=${debug.mac.globals.read("MemTop"):08x}, want ${$kb * 1024:08x}, PC=${machine.cpu.pc:08x})"
     }
     report_perf("suite-quadra/q700-20m", scheduler.instr_count)
+}
+
+# ---- tower-256m -------------------------------------------------------------
+# The Q900 and Q950 share the Eclipse board, and so one RAM range (#184): four
+# banks of four equal SIMMs, each bank on its own 64 MB window, 4 MB to 256 MB
+# (sixteen 16 MB SIMMs).  Both towers must size every arrangement to MemTop:
+# one bank of 1 MB SIMMs, two full banks of 16 MB SIMMs, all four.
+def tower_sizes(m, rom) {
+    for kb in [4096, 131072, 262144] {
+        machine.boot model="${$m}" ram=$kb rom="${$rom}"
+        # POST's memory test scales with the size: ~190 M instructions to
+        # publish 128 MB, ~340 M for 256 MB.
+        let n = 0
+        while debug.mac.globals.read("MemTop") != $kb * 1024 && $n < 12 {
+            scheduler.run 50000000
+            let n = $n + 1
+        }
+        assert machine.ram == $kb "tower-256m: ${$m} machine.ram != ${$kb}"
+        assert debug.mac.globals.read("MemTop") == $kb * 1024 "tower-256m: ${$m} RAM sizing incomplete at ${$kb} KB (MemTop=${debug.mac.globals.read("MemTop"):08x}, want ${$kb * 1024:08x}, PC=${machine.cpu.pc:08x})"
+    }
+}
+def row_tower_256m() {
+    tower_sizes("q900", $quadra_rom)
+    tower_sizes("q950", $q950_rom)
+    report_perf("suite-quadra/tower-256m", scheduler.instr_count)
 }
 
 # ---- q700-dafb-senses -------------------------------------------------------
@@ -441,6 +468,7 @@ if row_on("q700-75-hd") {
     }
 }
 if row_on("q700-20m") { row_end("q700-20m", try(row_q700_20m(), "FAILED")) }
+if row_on("tower-256m") { row_end("tower-256m", try(row_tower_256m(), "FAILED")) }
 if row_on("q900-76-fd") {
     if have_media($disk_tools_76) {
         row_end("q900-76-fd", try(row_q900_76_fd(), "FAILED"))

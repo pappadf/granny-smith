@@ -22,6 +22,7 @@
 #include "atalk_id.h"
 #include "common.h"
 #include "log.h"
+#include "macroman.h"
 #include "storage_util.h"
 
 #include <ctype.h>
@@ -197,8 +198,14 @@ int atalk_afp_volume_add(const char *name, const char *path, char *err, size_t e
         return vol_fail(err, err_len, "volume name is required");
     if (!path || !*path)
         return vol_fail(err, err_len, "volume path is required");
-    if (strlen(name) > 32)
-        return vol_fail(err, err_len, "volume name max 32 chars ('%s' is %zu)", name, strlen(name));
+    // Clients see the name in MacRoman, so that is what it is measured in, and
+    // one MacRoman cannot hold is refused rather than sent as UTF-8 (#168).
+    uint8_t mac_name[32 * 4];
+    int mac_len = macroman_from_utf8(name, mac_name, sizeof(mac_name));
+    if (mac_len < 0)
+        return vol_fail(err, err_len, "volume name '%s' cannot be written in MacRoman, the Mac's character set", name);
+    if (mac_len > 32)
+        return vol_fail(err, err_len, "volume name max 32 chars ('%s' is %d)", name, mac_len);
     if (strchr(name, ':') || strchr(name, '/'))
         return vol_fail(err, err_len, "volume name may not contain ':' or '/'");
     struct stat st;
@@ -369,10 +376,8 @@ static void afp_nbp_withdraw(void) {
 int atalk_afp_set_name(const char *name, char *err, size_t err_len) {
     if (err && err_len)
         err[0] = '\0';
-    if (!name || !*name)
-        return vol_fail(err, err_len, "server name is required");
-    if (strlen(name) > 32)
-        return vol_fail(err, err_len, "server name max 32 chars ('%s' is %zu)", name, strlen(name));
+    if (atalk_nbp_name_check("server name", name, err, err_len) != 0)
+        return -1;
     // Published under the new name first, stored after: a name another entity
     // holds leaves the server advertised, and named, as it was.
     if (g_afp->enabled && afp_nbp_publish(name) != 0)
@@ -512,7 +517,14 @@ int atalk_build_status_block(const char *server_name, const char *machine_type, 
 
     // First, compute total size by simulating layout
     size_t pos = 10; // after the 2-byte offsets (0,2,4,6) + 2-byte Flags (8)
-    size_t server_name_len = 1 + (server_name ? (strlen(server_name) > 255 ? 255 : strlen(server_name)) : 0);
+    // The server name in MacRoman, as NBP advertises it, so the Chooser's
+    // list and the login dialog show one name.  The setter refused a name
+    // MacRoman cannot hold (atalk_nbp_name_check).
+    uint8_t mac_name[ATALK_NBP_NAME_MAX];
+    int mac_len = macroman_from_utf8(server_name ? server_name : "", mac_name, sizeof(mac_name));
+    if (mac_len < 0)
+        mac_len = 0;
+    size_t server_name_len = 1 + (size_t)mac_len;
     size_t machine_type_len = 1 + (machine_type ? (strlen(machine_type) > 255 ? 255 : strlen(machine_type)) : 0);
     pos += server_name_len; // Server Name P-string
     size_t machine_type_off = pos; // remember offset
@@ -548,7 +560,9 @@ int atalk_build_status_block(const char *server_name, const char *machine_type, 
     WR_BE16(&buf[8], afp_srvr_flags());
 
     pos = 10;
-    pos += write_pstr(&buf[pos], server_name ? server_name : "");
+    buf[pos++] = (uint8_t)mac_len;
+    memcpy(&buf[pos], mac_name, (size_t)mac_len);
+    pos += (size_t)mac_len;
     pos += write_pstr(&buf[pos], machine_type ? machine_type : "");
     buf[pos++] = (uint8_t)versions_count;
     for (size_t i = 0; i < versions_count; i++)

@@ -165,39 +165,13 @@ static void afp_demangle(vol_t *vol, const char *dir_rel, char *host, size_t cap
 //
 // AFP names are case-insensitive and diacritical-sensitive (Inside AppleTalk
 // 13-9): two names are one when they match after Appendix D's Table D-2 maps
-// lowercase to uppercase -- a-z and 13 MacRoman letters.  É is é, but é is
-// not e.  The hosts are case-sensitive, so a lookup that misses exactly is
-// tried again folded, and a new name that folds onto a sibling is refused.
-static const uint8_t k_d2_pairs[][2] = {
-    {0x88, 0xCB},
-    {0x8A, 0x80},
-    {0x8B, 0xCC},
-    {0x8C, 0x81},
-    {0x8D, 0x82},
-    {0x8E, 0x83},
-    {0x96, 0x84},
-    {0x9A, 0x85},
-    {0x9B, 0xCD},
-    {0x9F, 0x86},
-    {0xBE, 0xAE},
-    {0xBF, 0xAF},
-    {0xCF, 0xCE},
-};
-
-uint8_t afp_fold(uint8_t c) {
-    if (c >= 'a' && c <= 'z')
-        return (uint8_t)(c - ('a' - 'A'));
-    if (c >= 0x80)
-        for (size_t i = 0; i < sizeof(k_d2_pairs) / sizeof(k_d2_pairs[0]); i++)
-            if (k_d2_pairs[i][0] == c)
-                return k_d2_pairs[i][1];
-    return c;
-}
-
+// lowercase to uppercase (macroman_fold).  É is é, but é is not e.  The hosts
+// are case-sensitive, so a lookup that misses exactly is tried again folded,
+// and a new name that folds onto a sibling is refused.
 int afp_fold_cmp(const uint8_t *a, size_t alen, const uint8_t *b, size_t blen) {
     size_t n = alen < blen ? alen : blen;
     for (size_t i = 0; i < n; i++) {
-        int d = (int)afp_fold(a[i]) - (int)afp_fold(b[i]);
+        int d = (int)macroman_fold(a[i]) - (int)macroman_fold(b[i]);
         if (d)
             return d;
     }

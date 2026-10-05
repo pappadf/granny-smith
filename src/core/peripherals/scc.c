@@ -1007,9 +1007,10 @@ static void wr9(scc_t *scc, uint8_t value) {
     update_irqs(scc);
 }
 
-// read access from cpu bus
-static uint8_t read_uint8(void *s, uint32_t addr) {
-    scc_t *scc = (scc_t *)s;
+// A register read from the CPU bus, or an inspection (`peek`): the same value,
+// but the register pointer stays where WR0 left it and a data read pops
+// nothing off the receive FIFO (nor clears the receive interrupt).
+static uint8_t reg_read(scc_t *scc, uint32_t addr, bool peek) {
 
     // address pin 1 is connected to A/B (A = 1)
     int ab = addr >> 1 & 1;
@@ -1026,9 +1027,14 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
     GS_ASSERT(scc->ch[ch].pointer >= 0 && scc->ch[ch].pointer < 16);
     int reg = dc ? 8 : (scc->ch[ch].pointer & 0x0F);
 
-    LOG(4, "scc_read: addr=0x%X ch=%d dc=%d reg=%d", addr, ch, dc, reg);
-
-    scc->ch[ch].pointer = 0;
+    if (peek) {
+        const ch_t *c = &scc->ch[ch];
+        if (reg == 0x08) // the byte the next data read would return
+            return RX_EMPTY(c) ? 0xFF : c->rx.buf[c->rx.tail];
+    } else {
+        LOG(4, "scc_read: addr=0x%X ch=%d dc=%d reg=%d", addr, ch, dc, reg);
+        scc->ch[ch].pointer = 0;
+    }
 
     switch (reg) {
 
@@ -1049,11 +1055,18 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
 
     default: {
         uint8_t val = scc->ch[ch].rr[reg];
-        if (reg == 0)
+        if (reg == 0 && !peek)
             LOG(4, "rr0 ch=%d value=0x%02X", ch, val);
         return val;
     }
     }
+}
+
+static uint8_t read_uint8(void *s, uint32_t addr) {
+    return reg_read(s, addr, false);
+}
+static uint8_t peek_uint8(void *s, uint32_t addr) {
+    return reg_read(s, addr, true);
 }
 
 // SCC registers are byte-only; wide reads come from misaligned guest code
@@ -1623,8 +1636,11 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
     scc->cb_context = cb_context;
 
     scc->memory_interface.read_uint8 = &read_uint8;
+    scc->memory_interface.peek_uint8 = &peek_uint8;
     scc->memory_interface.read_uint16 = &scc_read_uint16;
     scc->memory_interface.read_uint32 = &scc_read_uint32;
+    scc->memory_interface.peek_uint16 = &scc_read_uint16; // floating bus: no side effect
+    scc->memory_interface.peek_uint32 = &scc_read_uint32;
 
     scc->memory_interface.write_uint8 = &scc_write_uint8;
     scc->memory_interface.write_uint16 = &scc_write_uint16;

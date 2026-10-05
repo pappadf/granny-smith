@@ -58,6 +58,8 @@ void builtin_rbv_video_set_rbv(nubus_card_t *card, rbv_t *rbv);
 // R/G/B sequential), $8 (pixel-read-mask), $C (read-addr).
 void builtin_rbv_video_vdac_write(nubus_card_t *card, uint32_t off, uint8_t val);
 uint8_t builtin_rbv_video_vdac_read(nubus_card_t *card, uint32_t off);
+// The same register without the read's side effect (memory_interface_t.peek_*).
+uint8_t builtin_rbv_video_vdac_peek(nubus_card_t *card, uint32_t off);
 
 // Apply a depth change from the RBV mode callback (depth_code 0..3 =
 // 1/2/4/8 bpp).  Recomputes display.format/stride and sets shape_dirty.

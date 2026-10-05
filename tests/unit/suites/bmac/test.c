@@ -308,7 +308,11 @@ TEST(test_transmit_apple_slot) {
     ASSERT_TRUE(xfer_status(0x110) & DBDMA_ACTIVE);
     ASSERT_EQ_INT(res_count(0x110), 0);
     ASSERT_EQ_INT((int)dbdma_reg_read(s_d, TX, DBDMA_REG_CMDPTRLO), 0x120);
-    // FrameSent raised the cell interrupt; reading STATUS clears it.
+    // FrameSent raised the cell interrupt; reading STATUS clears it, and
+    // inspecting it (bmac_peek, the debugger's read) does not.
+    ASSERT_EQ_INT(s_irq_level, 1);
+    ASSERT_EQ_INT(bmac_peek(s_b, BMAC_STATUS) & BMAC_ST_FRAME_SENT, BMAC_ST_FRAME_SENT);
+    ASSERT_EQ_INT(bmac_peek(s_b, BMAC_STATUS) & BMAC_ST_FRAME_SENT, BMAC_ST_FRAME_SENT);
     ASSERT_EQ_INT(s_irq_level, 1);
     ASSERT_EQ_INT(bmac_read(s_b, BMAC_STATUS) & BMAC_ST_FRAME_SENT, BMAC_ST_FRAME_SENT);
     ASSERT_EQ_INT(s_irq_level, 0);

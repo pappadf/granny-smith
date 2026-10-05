@@ -48,6 +48,8 @@ void av_civic_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t valu
 
 // Sebastian RAMDAC (island $30800: index/data/PCBR, $10 stride).
 uint8_t av_civic_seb_read(config_t *cfg, uint32_t win_off, uint32_t addr);
+// The same register without the RGBA phase step (mac030_io_range_t.peek_fn).
+uint8_t av_civic_seb_peek(config_t *cfg, uint32_t win_off, uint32_t addr);
 void av_civic_seb_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
 
 // Endeavor/Clifton/PUMA clock synthesizer (island $2E000).

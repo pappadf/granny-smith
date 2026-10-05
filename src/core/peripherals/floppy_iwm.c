@@ -27,6 +27,11 @@ static uint8_t iwm_read_uint8(void *floppy, uint32_t addr) {
     return floppy_iwm_read(s, (addr >> 9) & 0x0F);
 }
 
+// An inspection of the same register: the state lines stay where they are.
+static uint8_t iwm_peek_uint8(void *floppy, uint32_t addr) {
+    return floppy_iwm_peek((floppy_t *)floppy, (addr >> 9) & 0x0F);
+}
+
 // The chip is on one byte of the data bus, so a wide access reaches nothing.
 // These used to GS_ASSERT(0) -- which prints and PAUSES THE SCHEDULER rather
 // than aborting, so any guest executing `move.w $D80000,d0`, buggy or hostile,
@@ -41,6 +46,18 @@ static uint16_t iwm_read_uint16(void *floppy, uint32_t addr) {
 static uint32_t iwm_read_uint32(void *floppy, uint32_t addr) {
     (void)floppy;
     LOG(1, "IWM: 32-bit access at 0x%08X is not decoded; reading open bus", addr);
+    return 0xFFFFFFFFu;
+}
+
+// The wide reads' open bus, without their log lines.
+static uint16_t iwm_peek_uint16(void *floppy, uint32_t addr) {
+    (void)floppy;
+    (void)addr;
+    return 0xFFFF;
+}
+static uint32_t iwm_peek_uint32(void *floppy, uint32_t addr) {
+    (void)floppy;
+    (void)addr;
     return 0xFFFFFFFFu;
 }
 
@@ -72,6 +89,9 @@ void floppy_iwm_setup(floppy_t *floppy, memory_map_t *map) {
     floppy->memory_interface.read_uint8 = &iwm_read_uint8;
     floppy->memory_interface.read_uint16 = &iwm_read_uint16;
     floppy->memory_interface.read_uint32 = &iwm_read_uint32;
+    floppy->memory_interface.peek_uint8 = &iwm_peek_uint8;
+    floppy->memory_interface.peek_uint16 = &iwm_peek_uint16;
+    floppy->memory_interface.peek_uint32 = &iwm_peek_uint32;
     floppy->memory_interface.write_uint8 = &iwm_write_uint8;
     floppy->memory_interface.write_uint16 = &iwm_write_uint16;
     floppy->memory_interface.write_uint32 = &iwm_write_uint32;

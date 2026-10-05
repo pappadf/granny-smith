@@ -71,7 +71,8 @@ static void pdm_scc_rx_b_event(void *source, uint64_t data);
 // 6..0.  Slot sources fold in through the ANY SLOT bit (device bit 1); the
 // SCSI DRQ bits (0 = Curio, 2 = 53CF96) read the chips' DREQ outputs LIVE
 // — the SCSI Manager's Ck4DREQ polls them, never latches or enables them.
-static uint8_t via2_dev_ifr(config_t *cfg) {
+// An inspection (`peek`) computes the same value without caching the levels.
+static uint8_t via2_dev_ifr(config_t *cfg, bool peek) {
     pdm_state_t *st = pdm_st(cfg);
     pdm_via2_t *v2 = &st->amic.via2;
     // Slot flags: register reads active-low; internal any-slot aggregate
@@ -82,7 +83,8 @@ static uint8_t via2_dev_ifr(config_t *cfg) {
         levels |= 0x02u; // ANY SLOT
     else
         levels &= ~0x02u;
-    v2->dev_levels = levels;
+    if (!peek)
+        v2->dev_levels = levels;
     uint8_t ifr = levels & 0x7Fu;
     if (st->scsi96[0] && scsi_53c96_dreq(st->scsi96[0]))
         ifr |= 0x01u; // SCSI-A DRQ
@@ -175,7 +177,7 @@ void pdm_amic_recompute(config_t *cfg) {
     pdm_amic_t *a = &st->amic;
 
     // Fold the pseudo-VIA2 aggregate into the source picture first
-    uint8_t dev = via2_dev_ifr(cfg);
+    uint8_t dev = via2_dev_ifr(cfg, false);
     if (dev & 0x80u)
         st->icr_sources |= 1u << PDM_ICR_VIA2;
     else
@@ -211,14 +213,14 @@ void pdm_amic_recompute(config_t *cfg) {
 // five bits alias to the compact offsets).  Without the mirror the
 // dispatcher reads zeros, computes "no source", and never services the
 // asserted SCSI level — an interrupt storm that starves the whole 68k.
-static uint8_t via2_read(config_t *cfg, uint32_t off) {
+static uint8_t via2_read(config_t *cfg, uint32_t off, bool peek) {
     pdm_via2_t *v2 = &pdm_st(cfg)->amic.via2;
     off &= 0x1Fu;
     switch (off) {
     case 0x02:
         return v2->slot_ifr; // active-low levels, unused bits high
     case 0x03:
-        return via2_dev_ifr(cfg);
+        return via2_dev_ifr(cfg, peek);
     case 0x12:
         return v2->slot_ier;
     case 0x13:
@@ -540,16 +542,16 @@ static uint8_t *dma_host_ptr(uint32_t phys) {
     return host ? host + (phys & ((1u << PAGE_SHIFT) - 1u)) : NULL;
 }
 
-static uint8_t pdm_scsi_io_read(config_t *cfg, int chip, uint32_t off) {
+static uint8_t pdm_scsi_io_read(config_t *cfg, int chip, uint32_t off, bool peek) {
     scsi_53c96_t *c = pdm_st(cfg)->scsi96[chip];
     if (!c) {
         LOG(2, "read of absent SCSI chip %d at +$%03X", chip, off);
         return 0;
     }
     if (off < 0x100u)
-        return scsi_53c96_read(c, (off & 0xFFu) >> 4);
+        return peek ? scsi_53c96_peek(c, (off & 0xFFu) >> 4) : scsi_53c96_read(c, (off & 0xFFu) >> 4);
     if (off < 0x200u)
-        return scsi_53c96_pdma_read8(c); // handshaked aperture
+        return peek ? scsi_53c96_pdma_peek8(c) : scsi_53c96_pdma_read8(c); // handshaked aperture
     LOG(2, "read of undecoded SCSI space chip %d +$%03X", chip, off);
     return 0;
 }
@@ -1047,30 +1049,32 @@ void pdm_amic_init(config_t *cfg) {
     a->floppy.addr = 0x15000u; // floppy DMA address reset value
 }
 
-uint8_t pdm_amic_read(config_t *cfg, uint32_t offset) {
+// One island byte: the guest's read, or an inspection (`peek`) routed to each
+// chip's side-effect-free peek.
+static uint8_t amic_access(config_t *cfg, uint32_t offset, bool peek) {
     uint32_t block = offset & 0x3F000u;
     switch (block) {
     case OFF_VIA1:
     case OFF_VIA1 + 0x1000:
-        return via_get_memory_interface(cfg->via1)->read_uint8(cfg->via1, offset);
+        return memory_iface_read8(via_get_memory_interface(cfg->via1), cfg->via1, offset, peek);
     case OFF_SCC:
         // ESCC in Curio: +0 bCtl / +2 aCtl / +4 bData / +6 aData — the
         // low offset bits carry the chip's A/B and D/C pins directly.
-        return scc_get_memory_interface(cfg->scc)->read_uint8(cfg->scc, offset - OFF_SCC);
+        return memory_iface_read8(scc_get_memory_interface(cfg->scc), cfg->scc, offset - OFF_SCC, peek);
     case OFF_SCSIA:
-        return pdm_scsi_io_read(cfg, 0, offset - OFF_SCSIA);
+        return pdm_scsi_io_read(cfg, 0, offset - OFF_SCSIA, peek);
     case OFF_SCSIB:
-        return pdm_scsi_io_read(cfg, 1, offset - OFF_SCSIB);
+        return pdm_scsi_io_read(cfg, 1, offset - OFF_SCSIB, peek);
     case OFF_SOUND:
         return pdm_awacs_read(cfg, offset - OFF_SOUND);
     case OFF_SWIM3:
     case OFF_SWIM3 + 0x1000: // 16 registers at stride $200 span both blocks
-        return pdm_swim3_read(cfg, offset - OFF_SWIM3);
+        return peek ? pdm_swim3_peek(cfg, offset - OFF_SWIM3) : pdm_swim3_read(cfg, offset - OFF_SWIM3);
     case OFF_ARIEL:
-        return pdm_ariel_read(cfg, offset - OFF_ARIEL);
+        return peek ? pdm_ariel_peek(cfg, offset - OFF_ARIEL) : pdm_ariel_read(cfg, offset - OFF_ARIEL);
     case OFF_VIA2:
     case OFF_VIA2 + 0x1000: // classic-VIA-stride aliases of the bank
-        return via2_read(cfg, offset - OFF_VIA2);
+        return via2_read(cfg, offset - OFF_VIA2, peek);
     case OFF_VIDEO:
         return pdm_video_ctl_read(cfg, offset - OFF_VIDEO);
     case OFF_ICR:
@@ -1101,6 +1105,14 @@ uint8_t pdm_amic_read(config_t *cfg, uint32_t offset) {
         LOG(2, "read of unwired island offset $%05X", offset);
         return 0;
     }
+}
+
+uint8_t pdm_amic_read(config_t *cfg, uint32_t offset) {
+    return amic_access(cfg, offset, false);
+}
+
+uint8_t pdm_amic_peek(config_t *cfg, uint32_t offset) {
+    return amic_access(cfg, offset, true);
 }
 
 void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value) {

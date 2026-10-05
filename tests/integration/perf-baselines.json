@@ -484,6 +484,10 @@
       "instr": 881131878,
       "tolerance": 0.2
     },
+    "suite-quadra/tower-256m": {
+      "instr": 342541323,
+      "tolerance": 0.2
+    },
     "suite-se30/se30-608-fd": {
       "instr": 54834354,
       "tolerance": 0.2

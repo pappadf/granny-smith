@@ -109,6 +109,22 @@ void gos_bmac_write8(config_t *cfg, uint32_t off, uint8_t value) {
     bmac_write(gos_st(cfg)->bmac, off & ~1u, value);
 }
 
+// The same cycles as inspections: bmac_peek leaves a read-to-clear STATUS set.
+uint16_t gos_bmac_peek16(config_t *cfg, uint32_t off) {
+    uint16_t v = bmac_peek(gos_st(cfg)->bmac, off);
+    return (uint16_t)((v >> 8) | (v << 8));
+}
+
+uint32_t gos_bmac_peek32(config_t *cfg, uint32_t off) {
+    uint16_t v = bmac_peek(gos_st(cfg)->bmac, off);
+    return ((uint32_t)(v & 0xFFu) << 24) | ((uint32_t)(v >> 8) << 16);
+}
+
+uint8_t gos_bmac_peek8(config_t *cfg, uint32_t off) {
+    uint16_t v = bmac_peek(gos_st(cfg)->bmac, off & ~1u);
+    return (uint8_t)((off & 1u) ? v >> 8 : v);
+}
+
 // ---- machine.bmac --------------------------------------------------------------
 
 static bmac_t *obj_bmac(struct object *self) {

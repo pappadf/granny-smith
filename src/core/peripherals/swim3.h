@@ -109,6 +109,9 @@ void swim3_xfer_register_events(swim3_t *sw);
 // $200 on the PDM, $10 behind Grand Central).
 
 uint8_t swim3_read(swim3_t *sw, unsigned reg);
+// The same register without the read's side effects: ERROR and INTR not
+// cleared, no head routed by the sense read (an inspection).
+uint8_t swim3_peek(swim3_t *sw, unsigned reg);
 void swim3_write(swim3_t *sw, unsigned reg, uint8_t value);
 
 // The IRQ pin follows ENABLE_INTS & (intr & intmask); the interrupt sources

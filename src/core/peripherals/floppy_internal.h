@@ -331,6 +331,9 @@ int iwm_tach_signal(struct scheduler *scheduler, floppy_drive_t *drive, const ch
 
 // Returns a pointer to GCR data for the given drive/image/side, encoding on demand
 uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct scheduler *scheduler);
+// The same track as an inspection sees it, encoding and caching nothing: the
+// cached encoding, or an all-sync ($FF) track where none is built yet.
+const uint8_t *iwm_track_data_peek(const floppy_drive_t *drive, image_t *img, int sel);
 
 // Writes any modified GCR tracks back to the underlying disk image
 void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_index);
@@ -353,6 +356,8 @@ void iwm_write_through(floppy_drive_t *drive, image_t *img, int drive_index, int
 
 // Returns the current disk status based on IWM CA lines and SEL signal
 int floppy_disk_status(floppy_t *floppy, int drv);
+// The same with the CA lines given by `lines`; `peek` builds no track cache.
+int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek);
 
 // Processes disk control commands when LSTRB is high
 void floppy_disk_control(floppy_t *floppy);
@@ -371,6 +376,9 @@ void floppy_update_iwm_lines(floppy_t *floppy, int offset);
 
 // Reads from the IWM register at the specified offset
 uint8_t floppy_iwm_read(floppy_t *floppy, uint32_t offset);
+// The same register without the read's side effects: iwm_lines unchanged, no
+// drive command, no read-position advance (memory_interface_t.peek_*).
+uint8_t floppy_iwm_peek(floppy_t *floppy, uint32_t offset);
 
 // Writes a byte to the IWM register at the specified offset
 void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte);

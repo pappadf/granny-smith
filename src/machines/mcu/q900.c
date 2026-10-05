@@ -294,10 +294,13 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
 // Machine descriptor
 // ============================================================
 
-// Four banks of four equal SIMMs on the 4 MB base: every total Apple
-// documents for the Quadra 900, up to its 64 MB maximum.
-static const uint32_t q900_ram_options_kb[] = {4096,  8192,  12288, 16384, 20480, 24576, 28672,
-                                               32768, 36864, 40960, 49152, 53248, 65536, 0};
+// Four banks of four equal 30-pin SIMMs (1, 4 or 16 MB each), every bank on
+// its own 64 MB decode window: the totals up to 64 MB Apple documents at
+// launch, then 128 / 192 / 256 MB with 16 MB SIMMs.  The ceiling is the
+// board's (sixteen 16 MB SIMMs), not the launch-era 64 MB figure, and the
+// Q950 shares it -- same Eclipse board (#184).
+const uint32_t q900_ram_options_kb[] = {4096,  8192,  12288, 16384, 20480,  24576,  28672,  32768, 36864,
+                                        40960, 49152, 53248, 65536, 131072, 196608, 262144, 0};
 
 // The towers' two 53C96 buses: the internal cable (the hard disk bay and the
 // lower front bay, where the CD-ROM drive goes) and the external chain
@@ -385,7 +388,7 @@ const hw_profile_t machine_q900 = {
 
     .address_bits = 32,
     .ram_default = 0x1000000, // 16 MB (a typical well-equipped machine)
-    .ram_max = 0x4000000, // 64 MB (16 SIMM slots, four 4-SIMM banks)
+    .ram_max = 0x10000000, // 256 MB (sixteen 16 MB SIMMs, four 4-SIMM banks)
     .rom_size = 0x100000, // 1 MB (shared 420DBFF3 image)
 
     .ram_options = q900_ram_options_kb,

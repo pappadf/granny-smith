@@ -154,6 +154,14 @@ static uint8_t pdm_io_read8(void *ctx, uint32_t offset) {
     return pdm_amic_read(cfg, offset);
 }
 
+// An inspection: each chip's peek, nothing on the island changed.
+static uint8_t pdm_io_peek8(void *ctx, uint32_t offset) {
+    config_t *cfg = (config_t *)ctx;
+    if (offset >= 0x40000u)
+        return pdm_hmc_peek(cfg, offset - 0x40000u);
+    return pdm_amic_peek(cfg, offset);
+}
+
 static void pdm_io_write8(void *ctx, uint32_t offset, uint8_t value) {
     config_t *cfg = (config_t *)ctx;
     if (offset >= 0x40000u)
@@ -229,6 +237,7 @@ static void pdm_memory_layout(config_t *cfg) {
     st->io_interface.write_uint8 = pdm_io_write8;
     st->io_interface.write_uint16 = pdm_io_write16;
     st->io_interface.write_uint32 = pdm_io_write32;
+    st->io_interface.peek_uint8 = pdm_io_peek8; // wider peeks compose
     memory_map_add(cfg->mem_map, 0x50F00000u, 0x00050000u, "I/O", &st->io_interface, cfg);
 
     // Machine-ID page.

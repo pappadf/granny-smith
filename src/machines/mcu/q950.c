@@ -11,7 +11,6 @@
 //   * dedicated 3DC27823 ROM
 //   * DAFB revision 3 ("DAFB 3": DAFB_Test version bits read 3) with the
 //     AC842a RAMDAC — PCBR1 + x555 16-bit "Thousands" direct mode
-//   * RAM to 256 MB (sixteen SIMM slots, four 4-SIMM banks)
 
 #include "mcu.h"
 #include "q900_internal.h"
@@ -22,11 +21,6 @@
 #include "slot_tables.h"
 
 #include <stdint.h>
-
-// Four banks of four equal SIMMs: every total Apple documents up to 64 MB,
-// and 128 / 256 MB, the later-system maximum.
-static const uint32_t q950_ram_options_kb[] = {4096,  8192,  12288, 16384, 20480, 24576,  28672,  32768,
-                                               36864, 40960, 49152, 53248, 65536, 131072, 262144, 0};
 
 static const mcu_board_desc_t q950_board_desc = {
     .common =
@@ -66,10 +60,10 @@ const hw_profile_t machine_q950 = {
 
     .address_bits = 32,
     .ram_default = 0x1000000, // 16 MB (a typical well-equipped machine)
-    .ram_max = 0x10000000, // 256 MB
+    .ram_max = 0x10000000, // 256 MB (same Eclipse board as the Q900)
     .rom_size = 0x100000, // 1 MB (3DC27823)
 
-    .ram_options = q950_ram_options_kb,
+    .ram_options = q900_ram_options_kb, // same Eclipse board
     .floppy_slots = mac_floppy_slots_1hd,
     .storage = q900_storage, // same Eclipse board (q900_internal.h)
     .default_storage = mac_default_storage_hd0_cd3,

@@ -717,16 +717,19 @@
                 <span class="item-name">{mc.deviceTypeLabel(profile, d.bus, d.type)}</span>
                 <Select
                   id={`cfg-unit-${bus.id}-${d.unit}`}
+                  class="unit-select"
                   aria-label="Position"
                   value={d.unit}
                   onchange={(e) => moveDevice(index, Number((e.target as HTMLSelectElement).value))}
                 >
                   {#each mc.freeUnits(profile, doc, bus.id, index) as u (u.unit)}
-                    <option value={u.unit}>{u.label}</option>
+                    <option value={u.unit}>{u.short ?? u.label}</option>
                   {/each}
                 </Select>
                 <Select
                   id={`cfg-media-${bus.id}-${d.unit}`}
+                  class="media-select"
+                  title={mediaImages[key] || undefined}
                   aria-label={`${mc.deviceTypeLabel(profile, d.bus, d.type)} image`}
                   value={mediaImages[key] || empty}
                   onchange={(e) => onDeviceImage(e, key, d.type, bus.blank_disks)}
@@ -760,7 +763,7 @@
                 {/if}
                 <Select id={`cfg-add-unit-${bus.id}`} bind:value={addUnit} aria-label="Position">
                   {#each mc.freeUnits(profile, doc, bus.id) as u (u.unit)}
-                    <option value={u.unit}>{u.label}</option>
+                    <option value={u.unit}>{u.short ?? u.label}</option>
                   {/each}
                 </Select>
                 <Button
@@ -848,6 +851,26 @@
   }
   .item-name {
     min-width: 8em;
+  }
+  /* One device to a line: the type, a narrow unit menu, then the image menu
+     taking the rest of the row at a fixed width whatever the image's name. */
+  .device-row {
+    flex-wrap: nowrap;
+    gap: var(--gs-space-3);
+  }
+  /* The device's name in the form's label column, so its unit menu lines up
+     with the controls of the rows around it (Start up from, Model…). */
+  .device-row .item-name {
+    flex: none;
+    width: var(--gs-form-label-width);
+    min-width: 0;
+  }
+  .device-row :global(.unit-select) {
+    flex: none;
+  }
+  .device-row :global(.media-select) {
+    flex: 1 1 0;
+    min-width: 0;
   }
   .item-pos,
   .item-status {

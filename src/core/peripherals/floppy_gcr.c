@@ -460,6 +460,26 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
     return track->data;
 }
 
+// The GCR track an inspection sees.  A guest read builds the track's encoding
+// on first touch and caches it; doing that for a peek would read the image
+// (counting toward its activity light) and store the cache, both side effects
+// a peek must not have.  So a peek sees the cached encoding where the guest
+// has already built one, and otherwise an all-sync ($FF) track: what the
+// head passes over in a gap, and a value no sector decode will mistake for
+// data.  NULL exactly where iwm_track_data returns NULL for the media (none,
+// or MFM).
+const uint8_t *iwm_track_data_peek(const floppy_drive_t *drive, image_t *img, int sel) {
+    static uint8_t sync_track[9320]; // iwm_track_length's longest zone
+    if (!img || image_is_mfm_floppy(img->type) || drive->track < 0 || drive->track >= NUM_TRACKS)
+        return NULL;
+    const floppy_track_t *track = &drive->tracks[sel][drive->track];
+    if (track->data)
+        return track->data;
+    if (sync_track[0] != 0xFF)
+        memset(sync_track, 0xFF, sizeof sync_track);
+    return sync_track;
+}
+
 // ============================================================================
 // GCR Decoding
 // ============================================================================

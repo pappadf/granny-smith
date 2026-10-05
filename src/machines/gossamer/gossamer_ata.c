@@ -127,19 +127,30 @@ static ata_channel_t *cell_of(config_t *cfg, uint32_t off, uint32_t *rel) {
     return &st->ata[c];
 }
 
-uint8_t gos_ata_read8(config_t *cfg, uint32_t off) {
+// A byte read of a cell: the guest's, or an inspection's (`peek`), which goes
+// to the channel's ata_peek* and so changes nothing in it.
+static uint8_t cell_read8(config_t *cfg, uint32_t off, bool peek) {
     uint32_t rel;
     ata_channel_t *ch = cell_of(cfg, off, &rel);
     if (!ch)
         return 0xFF;
     if (rel < 0x80u && (rel & 0xFu) == 0)
-        return ata_read(ch, (int)(rel >> 4));
+        return peek ? ata_peek(ch, (int)(rel >> 4)) : ata_read(ch, (int)(rel >> 4));
     if (rel == ATA_ALTSTATUS)
-        return ata_read_altstatus(ch);
+        return peek ? ata_peek_altstatus(ch) : ata_read_altstatus(ch);
     if (rel >= ATA_TIMING && rel < ATA_TIMING + 4u)
         return (uint8_t)(ch->timing >> (8u * (rel - ATA_TIMING)));
-    LOG(2, "cell %d: read of unassigned +$%03X", ch->index, rel);
+    if (!peek)
+        LOG(2, "cell %d: read of unassigned +$%03X", ch->index, rel);
     return 0xFF;
+}
+
+uint8_t gos_ata_read8(config_t *cfg, uint32_t off) {
+    return cell_read8(cfg, off, false);
+}
+
+uint8_t gos_ata_peek8(config_t *cfg, uint32_t off) {
+    return cell_read8(cfg, off, true);
 }
 
 void gos_ata_write8(config_t *cfg, uint32_t off, uint8_t value) {
@@ -165,14 +176,22 @@ void gos_ata_write8(config_t *cfg, uint32_t off, uint8_t value) {
 
 // The data register is the cell's one 16-bit port: the halfword carries the
 // first byte of the stream in its high (lower-addressed) byte.
-uint16_t gos_ata_read16(config_t *cfg, uint32_t off) {
+static uint16_t cell_read16(config_t *cfg, uint32_t off, bool peek) {
     uint32_t rel;
     ata_channel_t *ch = cell_of(cfg, off, &rel);
     if (!ch)
         return 0xFFFF;
     if (rel == 0)
-        return ata_read_data16(ch);
-    return (uint16_t)((gos_ata_read8(cfg, off) << 8) | gos_ata_read8(cfg, off + 1));
+        return peek ? ata_peek_data16(ch) : ata_read_data16(ch);
+    return (uint16_t)((cell_read8(cfg, off, peek) << 8) | cell_read8(cfg, off + 1, peek));
+}
+
+uint16_t gos_ata_read16(config_t *cfg, uint32_t off) {
+    return cell_read16(cfg, off, false);
+}
+
+uint16_t gos_ata_peek16(config_t *cfg, uint32_t off) {
+    return cell_read16(cfg, off, true);
 }
 
 void gos_ata_write16(config_t *cfg, uint32_t off, uint16_t value) {
@@ -190,7 +209,7 @@ void gos_ata_write16(config_t *cfg, uint32_t off, uint16_t value) {
 
 // Longword cycles: the timing latch is a little-endian register; anything
 // else is the byte cell on lane 0 (the data port, two halfwords).
-uint32_t gos_ata_read32(config_t *cfg, uint32_t off) {
+static uint32_t cell_read32(config_t *cfg, uint32_t off, bool peek) {
     uint32_t rel;
     ata_channel_t *ch = cell_of(cfg, off, &rel);
     if (!ch)
@@ -198,10 +217,20 @@ uint32_t gos_ata_read32(config_t *cfg, uint32_t off) {
     if (rel == ATA_TIMING)
         return GOS_LE32(ch->timing);
     if (rel == 0) {
+        if (peek)
+            return ata_peek_data32(ch);
         uint32_t hi = ata_read_data16(ch);
         return (hi << 16) | ata_read_data16(ch);
     }
-    return (uint32_t)gos_ata_read8(cfg, off) << 24;
+    return (uint32_t)cell_read8(cfg, off, peek) << 24;
+}
+
+uint32_t gos_ata_read32(config_t *cfg, uint32_t off) {
+    return cell_read32(cfg, off, false);
+}
+
+uint32_t gos_ata_peek32(config_t *cfg, uint32_t off) {
+    return cell_read32(cfg, off, true);
 }
 
 void gos_ata_write32(config_t *cfg, uint32_t off, uint32_t value) {

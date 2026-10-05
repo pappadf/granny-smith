@@ -40,6 +40,8 @@ void scsi_53c96_set_irq_callback(scsi_53c96_t *c, scsi_53c96_irq_cb cb, void *co
 // Register file access (reg = A3..A0, i.e. the byte offset already divided
 // by the board's 16-byte spacing).
 uint8_t scsi_53c96_read(scsi_53c96_t *c, uint32_t reg);
+// The same register without the read's side effects (FIFO pop, INT clear).
+uint8_t scsi_53c96_peek(scsi_53c96_t *c, uint32_t reg);
 void scsi_53c96_write(scsi_53c96_t *c, uint32_t reg, uint8_t value);
 
 // Hardware reset (power-on / RESET line).
@@ -58,6 +60,9 @@ void scsi_53c96_attach_bus(scsi_53c96_t *c, struct scsi *bus);
 uint16_t scsi_53c96_pdma_read16(scsi_53c96_t *c);
 void scsi_53c96_pdma_write16(scsi_53c96_t *c, uint16_t value);
 uint8_t scsi_53c96_pdma_read8(scsi_53c96_t *c);
+// The aperture's next word/byte, consuming nothing (an inspection).
+uint16_t scsi_53c96_pdma_peek16(scsi_53c96_t *c);
+uint8_t scsi_53c96_pdma_peek8(scsi_53c96_t *c);
 void scsi_53c96_pdma_write8(scsi_53c96_t *c, uint8_t value);
 
 // Live DRQ output (for the TurboSCSI DRQ-status bit).

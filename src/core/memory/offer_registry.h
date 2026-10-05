@@ -26,9 +26,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// One registered candidate, keyed by its content identity.
+// One registered candidate, keyed by its content identity: the identifier's
+// own key (a vROM's Format-Block CRC; a PROM's vendor, device and FCode
+// checksum), opaque to the registry.
 typedef struct offer_entry {
-    uint32_t crc;
+    uint64_t key;
     size_t size; // the image/chip size the identifier reported
     const char *card_id; // catalog row (static storage)
     char *path; // opaque locator (owned)
@@ -38,7 +40,7 @@ typedef struct offer_entry {
 // type: how many rows, and how to read the three fields the pick order uses.
 typedef struct offer_catalog {
     size_t count;
-    void (*row)(size_t r, const char **card_id, uint32_t *crc, bool *preferred);
+    void (*row)(size_t r, const char **card_id, uint64_t *key, bool *preferred);
 } offer_catalog_t;
 
 // A registry instance.  `entries`/`count`/`cap` are owned here; the rest is
@@ -47,14 +49,14 @@ typedef struct offer_registry {
     offer_entry_t *entries;
     size_t count, cap;
     const char *tag; // log prefix, e.g. "vrom_offer"
-    // Identify a candidate file.  Returns true to register it, filling crc,
+    // Identify a candidate file.  Returns true to register it, filling key,
     // size and card_id (which must be static storage).  On false the callback
     // has ALREADY logged why -- only it knows which kind of stray this is.
-    bool (*identify)(const char *path, uint32_t *out_crc, size_t *out_size, const char **out_card_id);
+    bool (*identify)(const char *path, uint64_t *out_key, size_t *out_size, const char **out_card_id);
     offer_catalog_t catalog;
 } offer_registry_t;
 
-// Register one candidate.  Idempotent by content: one entry per CRC, and a
+// Register one candidate.  Idempotent by content: one entry per key, and a
 // re-offer refreshes the path (the newest locator for these bytes).
 void offer_registry_add(offer_registry_t *r, const char *path);
 
@@ -70,9 +72,9 @@ void offer_registry_clear(offer_registry_t *r);
 // The idx'th candidate path for `card_id`, or NULL past the end.  Pick order:
 // catalog rows with the `preferred` bit, then the remaining rows in catalog
 // order.  All content-based -- no filename ever enters the comparison.
-// `out_size` / `out_crc` (optional) receive the identified size and CRC.
+// `out_size` / `out_key` (optional) receive the identified size and key.
 const char *offer_registry_find(const offer_registry_t *r, const char *card_id, int idx, size_t *out_size,
-                                uint32_t *out_crc);
+                                uint64_t *out_key);
 
 // Does the catalog have a row for this card at all (independent of whether any
 // file has been offered for it)?

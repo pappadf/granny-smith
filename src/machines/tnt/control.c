@@ -785,14 +785,16 @@ const pci_card_kind_t tnt_control_kind = {
 // RaDACal (Grand Central +$1B000) — byte cells on $10 centres
 // ============================================================
 
-uint8_t tnt_control_rad_read(config_t *cfg, uint32_t offset) {
+// A cell read; the cursor and CLUT data ports step their RGB phase (and the
+// entry) unless it is an inspection (`peek`).
+static uint8_t rad_read(config_t *cfg, uint32_t offset, bool peek) {
     tnt_control_t *c = ctl(cfg);
     switch (offset & 0x30u) {
     case 0x00:
         return c->rad_addr;
     case 0x10: {
         uint8_t v = c->crsr[c->rad_addr & 7u][c->crsr_phase];
-        if (++c->crsr_phase == 3) {
+        if (!peek && ++c->crsr_phase == 3) {
             c->crsr_phase = 0;
             c->rad_addr++; // entry auto-advances, like the CLUT port
         }
@@ -812,13 +814,21 @@ uint8_t tnt_control_rad_read(config_t *cfg, uint32_t offset) {
         }
     default: { // +$30: CLUT data, RGB phase auto-advances
         uint8_t v = c->clut[c->rad_addr][c->rad_phase];
-        if (++c->rad_phase == 3) {
+        if (!peek && ++c->rad_phase == 3) {
             c->rad_phase = 0;
             c->rad_addr++;
         }
         return v;
     }
     }
+}
+
+uint8_t tnt_control_rad_read(config_t *cfg, uint32_t offset) {
+    return rad_read(cfg, offset, false);
+}
+
+uint8_t tnt_control_rad_peek(config_t *cfg, uint32_t offset) {
+    return rad_read(cfg, offset, true);
 }
 
 void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {

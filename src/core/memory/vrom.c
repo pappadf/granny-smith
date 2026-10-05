@@ -213,7 +213,7 @@ bool vrom_identify_card(const char *path, vrom_id_t *out) {
 // Identify one candidate for the registry.  The vROM side's validation gates,
 // size classes and identity spans are nothing like the PCI side's, which is
 // exactly why this half is NOT shared (offer_registry.h).
-static bool vrom_offer_identify(const char *path, uint32_t *out_crc, size_t *out_size, const char **out_card_id) {
+static bool vrom_offer_identify(const char *path, uint64_t *out_key, size_t *out_size, const char **out_card_id) {
     vrom_id_t id;
     if (!vrom_identify_card(path, &id)) {
         // Not a recognised declaration ROM — drop it quietly (the platform
@@ -221,15 +221,15 @@ static bool vrom_offer_identify(const char *path, uint32_t *out_crc, size_t *out
         LOG(2, "vrom_offer: '%s' is not a recognised declaration ROM — ignored", path);
         return false;
     }
-    *out_crc = id.crc;
+    *out_key = id.crc; // a declaration ROM's identity is its Format-Block CRC
     *out_size = id.chip_size;
     *out_card_id = id.card_id;
     return true;
 }
 
-static void vrom_catalog_row(size_t r, const char **card_id, uint32_t *crc, bool *preferred) {
+static void vrom_catalog_row(size_t r, const char **card_id, uint64_t *key, bool *preferred) {
     *card_id = VROM_CATALOG[r].card_id;
-    *crc = VROM_CATALOG[r].crc;
+    *key = VROM_CATALOG[r].crc;
     *preferred = VROM_CATALOG[r].preferred;
 }
 
@@ -252,7 +252,11 @@ void vrom_offer_clear(void) {
 }
 
 const char *vrom_offer_find(const char *card_id, int idx, size_t *out_chip_size, uint32_t *out_crc) {
-    return offer_registry_find(&s_offers, card_id, idx, out_chip_size, out_crc);
+    uint64_t key = 0;
+    const char *path = offer_registry_find(&s_offers, card_id, idx, out_chip_size, &key);
+    if (out_crc)
+        *out_crc = (uint32_t)key;
+    return path;
 }
 
 bool vrom_card_catalogued(const char *card_id) {

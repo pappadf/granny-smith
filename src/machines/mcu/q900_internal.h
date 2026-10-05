@@ -30,6 +30,8 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp);
 // this header already uses for every shared tower fact; it is the Q950's
 // table too.  The Q700's two sockets are its own, in q700.c.
 extern const nubus_slot_decl_t q900_nubus_slots[];
+// The board's RAM totals, 4 MB to 256 MB (shared with the Q950).
+extern const uint32_t q900_ram_options_kb[];
 // The towers' internal and external SCSI buses (shared with the Q950).
 extern const storage_bus_decl_t q900_storage[];
 

@@ -38,10 +38,11 @@ const TNT_ROM = path.join(DATA, 'roms', 'pm7500-pm8500-pm9500-96cd923d.rom');
 const MACH64_PROM = path.join(DATA, 'roms', 'mach64-gx-104-437584e0.prom');
 
 // The ROM is stored under its content id (its header sum plus the ConfigInfo
-// 64-bit sum), the .prom under its CRC-32 — both content-addressed, so the
-// upload filename never matters.
+// 64-bit sum), the .prom under its id (the PCIR vendor and device ids plus
+// the FCode header's own checksum) — both content-addressed, so the upload
+// filename never matters.
 const STORED_ROM = '/opfs/images/rom/96cd923d-c241cd82bf90797a';
-const STORED_PROM = '/opfs/images/prom/437584e0';
+const STORED_PROM = '/opfs/images/prom/1002-4758-c6e8';
 
 // Upload a host file through the shipped generic ingest path — the Welcome
 // "Upload ROM..." button, which probes the file against every media type
