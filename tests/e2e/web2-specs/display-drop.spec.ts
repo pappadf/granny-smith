@@ -292,3 +292,40 @@ test('Open Checkpoint on the Welcome page restores a saved state', async ({ page
   await expect(page.locator('.welcome-layer')).toHaveCount(0);
 });
 
+
+// Save State of a machine with a disk, re-opened with Open Checkpoint: the
+// consolidated checkpoint carries every disk block inline, and restoring
+// them took longer than the page's 3 s stall watchdog, which declared the
+// healthy core dead ("The emulator stopped", #238).  The block I/O now
+// proves the core alive.
+test('Save State with a floppy re-opens through Open Checkpoint', async ({ page }) => {
+  test.setTimeout(300_000);
+  await gotoWeb2(page);
+  await dropOnDisplay(page, 'plus-v3-4d1f8172.rom', PLUS_ROM);
+  await expect(toast(page, 'Booted plus from the loaded ROM')).toBeVisible({ timeout: 60_000 });
+  await dropOnDisplay(page, 'System_6_0_8.dsk', SYSTEM_FD);
+  await expect(toast(page, 'Inserted into floppy drive 1')).toBeVisible({ timeout: 60_000 });
+  await page.waitForTimeout(5_000);
+
+  const [download] = await Promise.all([
+    page.waitForEvent('download', { timeout: 120_000 }),
+    page.getByRole('button', { name: 'Save State' }).click(),
+  ]);
+  const saved = await download.path();
+  expect(saved).toBeTruthy();
+  const bytes = fs.readFileSync(saved as string);
+  expect(bytes.subarray(0, 7).toString('latin1')).toBe('GSCHKPT');
+
+  // A fresh page; decline the resume offer if the store has a checkpoint.
+  await page.reload();
+  const openCheckpoint = page.getByRole('button', { name: 'Open Checkpoint...' });
+  const startFresh = page.getByRole('button', { name: 'Start fresh' });
+  await expect(openCheckpoint.or(startFresh).first()).toBeVisible({ timeout: 60_000 });
+  if (await startFresh.isVisible()) await startFresh.click();
+
+  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), openCheckpoint.click()]);
+  await chooser.setFiles({ name: 'saved-state.bin', mimeType: 'application/octet-stream', buffer: bytes });
+  await expect(toast(page, /Checkpoint loaded/)).toBeVisible({ timeout: 120_000 });
+  await expect(page.getByText('The emulator stopped')).toHaveCount(0);
+  await expect.poll(() => gsEvalInPage(page, 'machine.id'), { timeout: 30_000 }).toBe('plus');
+});
