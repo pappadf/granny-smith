@@ -1246,7 +1246,7 @@ static const char *const r128_memory_labels[] = {"16 MB (Rage Orion, Xclaim VR 1
 static const char *const r128_monitor_values[] = {"vga", "vga_noddc", "13in_rgb", "21in_rgb", NULL};
 static const char *const r128_monitor_labels[] = {"VGA monitor (DDC)", "VGA monitor (no DDC)",
                                                   "13\" AppleColor RGB (Apple sense)",
-                                                  "21\" Macintosh Color Display (Apple sense)", NULL};
+                                                  "21\" Macintosh color display (Apple sense)", NULL};
 static const pci_card_option_t r128_options[] = {
     {.key = "memory",
      .label = "Video memory",
