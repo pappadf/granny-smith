@@ -84,6 +84,18 @@ void mac_seed_rtc_pram(struct config *cfg) {
         for (unsigned i = 0; i < 4; i++)
             rtc_pram_write(rtc, (uint8_t)(SYSPARAM_PHYS_LO + i), img[SYSPARAM_PHYS_LO + i]);
     }
+    // The addressing mode: MMFlags bit 0, as the Memory control panel saves
+    // it.  32-bit writes what a System booted that way leaves ($05), so
+    // 7.6 and later find it set and do not rewrite it and restart.
+    const char *addressing = machine_build_opts_option(&cfg->build_opts, "addressing");
+    if (addressing) {
+        uint8_t mm = rtc_pram_read(rtc, PRAM_MMFLAGS);
+        if (strcmp(addressing, "32") == 0)
+            mm |= PRAM_MMFLAGS_32BIT_BOOTED;
+        else
+            mm &= (uint8_t)~PRAM_MMFLAGS_32BIT;
+        rtc_pram_write(rtc, PRAM_MMFLAGS, mm);
+    }
     // The built-in video's startup video mode, and each NuBus card's: the
     // slot PRAM record the Monitors control panel would have saved (the
     // profile and the card know the format).

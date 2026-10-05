@@ -21,7 +21,7 @@
 #   make test-suite-iici TEST_VARS="REGEN=1"          recapture goldens
 
 TEST_NAME := IIci suite
-TEST_DESC := Chime WAV, RBV 7.0.1 boot + About, 7.5 HD, 7.6 HD (32-bit), MDU checkpoint round-trip
+TEST_DESC := Chime WAV, RBV 7.0.1 boot + About, 7.5 HD, 7.6 HD (32-bit, System-selected and seeded), MDU checkpoint round-trip
 
 TEST_ROM := roms/iici-368cadfe.rom
 TEST_ARGS := model=iici ram=8192

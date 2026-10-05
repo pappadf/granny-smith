@@ -83,6 +83,17 @@ assert machine.rtc.pram.peek(0x7B) == 0xDA "boot_device: refnum -(33+5) low byte
 machine.boot model="se30" rom="${$R}/iix-iicx-se30-97221136.rom" config="{\"options\":{\"appletalk\":\"inactive\"}}"
 assert (machine.rtc.pram.peek(0x13) & 0x0F) == 0 "se30: AppleTalk Inactive still seeded active"
 
+# The addressing option is MMFlags bit 0.  32-bit seeds what a System booted
+# that way leaves ($05), around the family's other bits; 24-bit clears bit 0.
+machine.boot model="iici" rom="${$R}/iici-368cadfe.rom" config="{\"options\":{\"addressing\":\"32\"}}"
+assert machine.rtc.pram.peek(0x8A) == 0x05 "iici: addressing 32 MMFlags ${machine.rtc.pram.peek(0x8A)}"
+machine.boot model="se30" rom="${$R}/iix-iicx-se30-97221136.rom" config="{\"options\":{\"addressing\":\"32\"}}"
+assert machine.rtc.pram.peek(0x8A) == 0x05 "se30: addressing 32 MMFlags ${machine.rtc.pram.peek(0x8A)}"
+machine.boot model="q840av" rom="${$R}/q840av-q660av-5bf10fd1.rom" config="{\"options\":{\"addressing\":\"24\"}}"
+assert machine.rtc.pram.peek(0x8A) == 0x04 "q840av: addressing 24 MMFlags ${machine.rtc.pram.peek(0x8A)}"
+# A family whose ROM runs one mode only has no such option.
+assert try(machine.boot(model="plus", rom="${$R}/plus-v3-4d1f8172.rom", config="{\"options\":{\"addressing\":\"32\"}}"), false) != true "plus: took an addressing option"
+
 # The startup device the configuration names is the record's: a hard disk at
 # ID 4 instead of ID 0, and "no default".
 machine.boot model="se30" rom="${$R}/iix-iicx-se30-97221136.rom" config="{\"storage\":[{\"bus\":\"scsi\",\"unit\":4,\"type\":\"hd\"}]}"

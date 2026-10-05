@@ -213,6 +213,32 @@ test('?vrom= goes in the boot document: the card runs the URL’s declaration RO
   expect(await gsEvalInPage(page, 'machine.nubus.slot[9].card.declrom.present')).toBe(true);
 });
 
+// Configuration edits by name: an option of the model's tree and the screen
+// go into the boot document, so the seeding step writes them into PRAM before
+// the first instruction -- MMFlags for 32-bit addressing, the card's slot
+// record for its startup mode.  A value the option does not offer is
+// reported and left out.
+test('?addressing= and ?monitor=/?mode= configure the machine the URL boots', async ({ page }) => {
+  test.setTimeout(120_000);
+  await routeRom(page, 'url-iicx.rom', IICX_ROM);
+
+  await page.goto(
+    '/index.html?rom=url-iicx.rom&model=iicx&addressing=32-bit&monitor=21in_rgb&mode=1152x870x8&appletalk=off',
+  );
+  await expect(page.locator('.toast .msg').filter({ hasText: 'Booted iicx from URL parameters' }))
+    .toBeVisible({ timeout: 60_000 });
+  await expect(
+    page.locator('.toast .msg').filter({ hasText: /^appletalk=off: AppleTalk is one of Active, Inactive/ }),
+  ).toBeVisible();
+  // $8A: 32-bit, as a System booted that way leaves it.
+  expect(await gsEvalInPage(page, 'machine.rtc.pram.peek', [0x8a])).toBe('0x5');
+  // The slot-$9 record ($46..$4D) names a startup mode: the monitor and mode
+  // the URL chose, where the default configuration leaves it blank.
+  const record = (await gsEvalInPage(page, 'machine.rtc.pram.dump', [0x46, 8])) as string;
+  expect(record).not.toBe('0x0000000000000000');
+  expect(await gsEvalInPage(page, 'machine.nubus.slot[9].card.monitor')).toBe('21in_rgb');
+});
+
 // A vROM that is not one is rejected like any other URL medium; the boot goes
 // ahead without it and says so.
 test('?vrom= that is not a declaration ROM is left out of the boot, which says so', async ({

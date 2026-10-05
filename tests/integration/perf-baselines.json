@@ -192,6 +192,10 @@
       "instr": 524375358,
       "tolerance": 0.2
     },
+    "suite-iici/iici-76-hd-addr32": {
+      "instr": 471985135,
+      "tolerance": 0.2
+    },
     "suite-iici/iici-checkpoint": {
       "instr": 454643167,
       "tolerance": 0.2

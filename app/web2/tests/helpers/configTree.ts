@@ -6,7 +6,9 @@
 // slotless machine (Plus), NuBus without built-in video (IIx), built-in
 // video and sockets (IIci), PCI with built-in video (7500) and without
 // (9500), two SCSI buses (Network Server), ATA (G3) and ProFile (Lisa).
-// Regenerate them after a tree change.
+// Regenerate them after a tree change, from a directory with no ROM files
+// in it: a card whose ROM the core's catalog finds is in the defaults, and
+// the tests expect the PCI cards' ROMs not offered.
 import plus from '../fixtures/profiles/plus.json';
 import iix from '../fixtures/profiles/iix.json';
 import iici from '../fixtures/profiles/iici.json';
