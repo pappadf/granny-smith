@@ -80,8 +80,8 @@ test('configure a Lisa 2 with the Xenix ProFile and boot', async ({ page }) => {
 });
 
 // The ProFile hard-disk row offers "Create blank image..." just like the SCSI
-// row, but it must open the *ProFile* creator (532-byte/block raw image, 5 MB
-// or 10 MB) rather than the SCSI drive-catalog dialog.
+// row, and the dialog offers the disks the ProFile port takes (532-byte/block
+// raw images, 5 MB or 10 MB) rather than the SCSI drive catalog.
 test('create a blank ProFile from the config dialog', async ({ page }) => {
   test.setTimeout(120_000);
   await gotoWeb2(page);
@@ -99,11 +99,11 @@ test('create a blank ProFile from the config dialog', async ({ page }) => {
   await expect(page.locator('[data-bus="profile"]')).toContainText('ProFile port');
 
   // Selecting the "Create blank image..." sentinel on the ProFile row opens the
-  // create dialog. It must be the ProFile creator, offering 5 MB / 10 MB — NOT
-  // the SCSI drive catalog.
+  // create dialog with the ProFile port's disks, 5 MB / 10 MB — NOT the SCSI
+  // drive catalog.
   const hd = page.locator('#cfg-media-profile-0');
   await hd.selectOption('Create blank image...');
-  const dlg = page.getByRole('dialog', { name: 'Create Blank ProFile' });
+  const dlg = page.getByRole('dialog', { name: 'Create Blank Hard Disk' });
   await expect(dlg).toBeVisible();
   await expect(dlg.getByText('5 MB ProFile')).toBeVisible();
   await expect(dlg.getByText('10 MB Widget')).toBeVisible();

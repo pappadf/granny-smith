@@ -5,7 +5,7 @@
   // (catalog.profile); nothing here knows a machine, a bus or a card.  The
   // only state the dialog adds is the images: which file goes into which
   // floppy drive, hard disk and CD-ROM drive.
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { setWelcomeSlide } from '@/state/layout.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { initEmulator, opfs, gsEval, whenModuleReady } from '@/bus';
@@ -88,6 +88,10 @@
   // model change (no remembered state), and on "Reset to defaults".
   let doc = $state<ConfigDocument | null>(null);
   let docFor = $state('');
+  // The defaults `doc` was seeded from, serialised: an untouched document
+  // follows the model's defaults when they change under it (a card ROM
+  // uploaded while the dialog is open seats the factory card).
+  let docSeed = '';
   // Images, by floppy position ("fd0") and by storage position ("scsi:0").
   let floppyImages = $state<Record<string, string>>({});
   let mediaImages = $state<Record<string, string>>({});
@@ -96,6 +100,7 @@
     if (!profile) return;
     doc = mc.defaultDocument(profile);
     docFor = profile.id;
+    docSeed = JSON.stringify(doc);
     floppyImages = {};
     mediaImages = {};
     addingDeviceOn = null;
@@ -103,7 +108,19 @@
   }
 
   $effect(() => {
-    if (profile && docFor !== profile.id) resetToDefaults();
+    if (!profile) return;
+    if (docFor !== profile.id) {
+      resetToDefaults();
+      return;
+    }
+    // Same model, fresh profile: re-seed only a document nobody has edited
+    // (the images chosen for its positions stay).
+    const fresh = mc.defaultDocument(profile);
+    const seed = JSON.stringify(fresh);
+    if (seed !== docSeed && untrack(() => JSON.stringify(doc)) === docSeed) {
+      doc = fresh;
+      docSeed = seed;
+    }
   });
 
   // --- Image inventories -------------------------------------------------------

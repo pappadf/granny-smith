@@ -82,7 +82,7 @@ test('Storage: a device added and one removed are what the machine is built with
   }[];
   const cds = storage.filter((d) => d.type === 'cd');
   expect(cds.map((d) => `${d.bus}:${d.unit}`)).toEqual(['scsi:5']);
-  expect(await gsEvalInPage(page, 'machine.scsi.device[5].type')).toBe('cdrom');
+  expect(await gsEvalInPage(page, 'machine.scsi.device[5].type')).toMatchObject({ enum: 'cdrom' });
 });
 
 test('Monitor: the connected card gets the monitor and startup mode; built-in video none', async ({
@@ -115,5 +115,5 @@ test('Monitor: the connected card gets the monitor and startup mode; built-in vi
   expect(await gsEvalInPage(page, 'machine.nubus.slot[11].card.monitor')).toBe('none');
   // The startup mode is the slot's PRAM record: 8 bpp.
   const savedMode = await gsEvalInPage(page, 'machine.rtc.pram.peek', [0x46 + (n - 9) * 8 + 2]);
-  expect(savedMode).toBe(0x83);
+  expect(Number(savedMode)).toBe(0x83);
 });
