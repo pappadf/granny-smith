@@ -110,7 +110,9 @@ async function shot(
   // The pointer rests over the empty display background, hovering nothing.
   await page.mouse.move(1279, 60);
   await page.waitForTimeout(400);
-  await expect(page).toHaveScreenshot(name, {
+  // TEMPORARY (PR #269, reverted before merge): soft, so one CI run renders
+  // every shot a styling change moves instead of stopping at the first.
+  await expect.soft(page).toHaveScreenshot(name, {
     maxDiffPixels: 0,
     threshold: RASTER_NOISE,
     animations: "disabled",
