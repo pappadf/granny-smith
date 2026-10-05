@@ -1,0 +1,44 @@
+# The ATI Rage 128 GL's expansion ROMs, identified by content.
+#
+# Identity is standard fields only: the PCI Data Structure's vendor and
+# device ids (which card) and the IEEE 1275 FCode header's own checksum
+# (which programming of its ROM), "vvvv-dddd-cccc".  Filenames are labels.
+
+# --- The two retail Rage 128 GL (PCI $5245) Mac ROMs: recognised. -----------
+let xclaim = "${$TEST_DATA}/roms/rage128-xclaimvr128-108-d0c84d42.prom"
+let nexus = "${$TEST_DATA}/roms/rage128-nexus128-103-35b433aa.prom"
+assert catalog.proms.identify($xclaim).recognised "the Xclaim VR 128 ROM (113-57406-108) must be recognised"
+assert catalog.proms.identify($xclaim).card_id == "rage128" "...and provide the rage128 card"
+assert catalog.proms.identify($xclaim).id == "1002-5245-bbb8" "Xclaim VR 128 identity"
+assert catalog.proms.identify($xclaim).intact "its FCode checksum verifies"
+assert catalog.proms.identify($xclaim).size == 131072 "a 128 KB flash image"
+assert catalog.proms.identify($nexus).recognised "the Nexus 128 ROM (113-57502-103) must be recognised"
+assert catalog.proms.identify($nexus).card_id == "rage128" "...and provide the same card"
+assert catalog.proms.identify($nexus).id == "1002-5245-7935" "Nexus 128 identity"
+assert catalog.proms.offer($xclaim) "a recognised GL ROM registers as an offer"
+assert catalog.proms.offer($nexus) "...and so does the other"
+
+# --- The two Rage 128 Pro (AGP $5046) Mac ROMs: recognised and refused. -----
+# Genuine Open Firmware ROMs with the same FCode/ndrv structure, for a sibling
+# chip no card kind models.  They must say what they are, not "unknown".
+let pro110 = "${$TEST_DATA}/roms/refused/rage128pro-agp-110-4dc6caad.prom"
+let pro136 = "${$TEST_DATA}/roms/refused/rage128pro-agp-136-9653a72d.prom"
+assert !catalog.proms.identify($pro110).recognised "a Rage 128 Pro ROM must not be recognised as a card's"
+assert catalog.proms.identify($pro110).id == "1002-5046-8b43" "...though its identity is read"
+assert catalog.proms.identify($pro110).intact "...and it is intact"
+assert catalog.proms.identify($pro110).reason == "an ATI Rage 128 Pro AGP ROM (113-63001-110, FCode 1.70) — not the Rage 128 GL card kind" "...and the reason names it"
+assert !catalog.proms.offer($pro110) "a refused ROM never registers as an offer"
+assert !catalog.proms.identify($pro136).recognised "nor the other Rage 128 Pro ROM"
+assert catalog.proms.identify($pro136).id == "1002-5046-4f8a" "113-72701-136 identity"
+assert catalog.proms.identify($pro136).reason == "an ATI Rage 128 Pro AGP ROM (113-72701-136) — not the Rage 128 GL card kind" "...with its own reason"
+assert !catalog.proms.offer($pro136) "...and it does not register either"
+
+# --- The PC Rage 128 GL VGA BIOS: an x86 option ROM. ------------------------
+let vga = "${$TEST_DATA}/roms/refused/rage128gl-pc-vga-bios-bf4e45b2.prom"
+assert !catalog.proms.identify($vga).recognised "a PC VGA BIOS must be rejected"
+assert catalog.proms.identify($vga).reason == "an expansion ROM, but its code type is not Open Firmware (a PC/x86 option ROM cannot drive a Macintosh card)" "...as an x86 option ROM, not as 'not a ROM'"
+assert !catalog.proms.offer($vga) "...and must not register"
+
+echo "rage128-prom: GL ROMs recognised; Pro and PC ROMs refused, each with its own reason"
+
+quit
