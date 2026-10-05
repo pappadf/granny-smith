@@ -1405,10 +1405,10 @@ static bool v2_is_fbiinit(int idx) {
     return idx == R_FBIINIT4 || (idx >= R_FBIINIT0 && idx <= R_FBIINIT3) || (idx >= R_FBIINIT5 && idx <= R_FBIINIT7);
 }
 
-// `peek`: an inspection (memory_interface_t.peek_*).  It does not retire the
-// executor's queue, so the executor-owned registers read as last mirrored
-// (v2_observe) -- what the guest's read returns once nothing is in flight.
-static uint32_t v2_reg_read(voodoo2_t *v, int idx, bool peek) {
+// One register as the guest and an inspection both read it.  It retires the queue
+// just as the guest's read does: waiting for issued work is synchronisation,
+// not a side effect the guest could see.
+static uint32_t v2_reg_read(voodoo2_t *v, int idx) {
     switch (idx) {
     case R_STATUS:
         return v2_status(v);
@@ -1447,8 +1447,7 @@ static uint32_t v2_reg_read(voodoo2_t *v, int idx, bool peek) {
     case R_PIXELS_OUT:
         // Executor-owned state: retire the queue and mirror it first
         // (invariant 2 — the read observes every command issued so far).
-        if (!peek)
-            v2_observe(v);
+        v2_observe(v);
         return v->reg[idx];
     default:
         break;
@@ -2138,7 +2137,7 @@ static uint32_t v2_reg_face_read(voodoo2_t *v, uint32_t off, bool peek) {
         if (idx < 0)
             return 0;
     }
-    uint32_t value = v2_reg_read(v, idx, peek);
+    uint32_t value = v2_reg_read(v, idx);
     if (!peek)
         LOG(6, "rd $%03X -> %08X", idx * 4, value);
     if ((off & (1u << 20)) && (v->reg[R_FBIINIT0] & FBIINIT0_SWIZZLE_EN))
@@ -2180,9 +2179,11 @@ static void v2_reg_face_write(voodoo2_t *v, uint32_t off, uint32_t le_value) {
 // this edge and nowhere else.
 //
 // Each read is one function taking `peek`: false for the guest's read,
-// true for an inspection (memory_interface_t.peek_*), which neither
-// retires the executor nor fences the framebuffer -- an LFB peek reads
-// the shadow as it stands -- and leaves the once-only warnings unset.
+// true for an inspection (memory_interface_t.peek_*), which leaves the
+// once-only warnings unset.  Both still retire the executor and fence the
+// framebuffer: that is synchronisation, not a side effect -- it only waits
+// for work the guest already issued, so a peek returns what the guest's own
+// read would, and the executor may be a worker thread still drawing.
 
 // The once-only notes on reads the face does not define.
 static void v2_note_narrow_reg(voodoo2_t *v, uint32_t off, bool peek) {
@@ -2219,8 +2220,7 @@ static uint32_t v2_bar_rd32(voodoo2_t *v, uint32_t off, bool peek) {
         v2_lfb_locate(v, off - V2_OFF_LFB, false, &buffer, &x, &y);
         // The fence names the bytes it wants: under the WebGPU takeover
         // that is a readback of the row, elsewhere a plain sync.
-        if (!peek)
-            v2_raster_sync_fb(v->raster, v2_buffer_addr(v, buffer, x, y), 4u, true);
+        v2_raster_sync_fb(v->raster, v2_buffer_addr(v, buffer, x, y), 4u, true);
         uint16_t p0 = v2_lfb_load16(v, buffer, x, y);
         uint16_t p1 = v2_lfb_load16(v, buffer, x + 1u, y);
         // Colour-lane selection applies to reads of the colour buffers:
@@ -2354,8 +2354,7 @@ static uint16_t v2_bar_rd16(voodoo2_t *v, uint32_t off, bool peek) {
             return 0;
         uint32_t buffer, x, y;
         v2_lfb_locate(v, off - V2_OFF_LFB, false, &buffer, &x, &y);
-        if (!peek)
-            v2_raster_sync_fb(v->raster, v2_buffer_addr(v, buffer, x, y), 2u, true);
+        v2_raster_sync_fb(v->raster, v2_buffer_addr(v, buffer, x, y), 2u, true);
         uint16_t p = v2_lfb_load16(v, buffer, x, y);
         if (buffer != 3u && (LFB_LANES(v->reg[R_LFBMODE]) & 1u))
             p = (uint16_t)(((p & 0x1Fu) << 11) | (p & 0x7E0u) | (p >> 11));
@@ -2419,8 +2418,7 @@ static uint8_t v2_bar_rd8(voodoo2_t *v, uint32_t off, bool peek) {
             return 0;
         uint32_t buffer, x, y;
         v2_lfb_locate(v, (off - V2_OFF_LFB) & ~1u, false, &buffer, &x, &y);
-        if (!peek)
-            v2_raster_sync_fb(v->raster, v2_buffer_addr(v, buffer, x, y), 2u, true);
+        v2_raster_sync_fb(v->raster, v2_buffer_addr(v, buffer, x, y), 2u, true);
         uint16_t px = v2_lfb_load16(v, buffer, x, y);
         return (off & 1u) ? (uint8_t)(px >> 8) : (uint8_t)px;
     }
@@ -3174,7 +3172,7 @@ static DEF_METHOD(regs_method_read) {
     int64_t off = argv[0].i;
     if (!v || off < 0 || off > 0x3FC)
         return val_err("regs.read: offset must be $000..$3FC");
-    return val_uint(4, v2_reg_read(v, (int)(off >> 2), false));
+    return val_uint(4, v2_reg_read(v, (int)(off >> 2)));
 }
 
 static const member_t regs_members[] = {
