@@ -212,6 +212,9 @@ def row_pm9500_76_rage128() {
     assert machine.screen.depth == 16 "the ndrv's own choice: thousands of colours"
     assert machine.pci.slot[1].card.framebuffer.depth == 16 "machine.screen.source resolves to the card's framebuffer"
     assert (machine.pci.slot[1].card.regs.crtc_gen_cntl & 0x00010000) != 0 "the arrow is the card's hardware cursor"
+    # The ndrv sets linear aperture 1's byte-order swapper to match the
+    # depth — the bi-endian aperture doing what it was built for.
+    assert (machine.pci.slot[1].card.regs.config_cntl & 0xF) == 0x4 "aperture 1: 16 bpp swapping at thousands"
     check_ex("goldens/pm9500-rage128-7.6-640x480x16-finder.png", 0, 500, 20, 640)
 
     # Dismiss the Energy Saver dialog, then 256 colours and millions.
@@ -220,9 +223,11 @@ def row_pm9500_76_rage128() {
     pick_depth(424)
     assert machine.screen.depth == 8 "Control Strip: 256 colours"
     assert machine.screen.format == "8bpp_clut" "indexed through the card's palette"
+    assert (machine.pci.slot[1].card.regs.config_cntl & 0xF) == 0x0 "aperture 1: no swapping at 8 bpp"
     check_ex("goldens/pm9500-rage128-7.6-640x480x8-desktop.png", 0, 500, 20, 640)
     pick_depth(451)
     assert machine.screen.depth == 32 "Control Strip: millions of colours"
+    assert (machine.pci.slot[1].card.regs.config_cntl & 0xF) == 0x8 "aperture 1: 32 bpp swapping at millions"
     check_ex("goldens/pm9500-rage128-7.6-640x480x32-desktop.png", 0, 500, 20, 640)
     report_row("7.6", "rage128", "hd-boot mesh chime pci-display depths hw-cursor")
     report_perf("suite-tnt/pm9500-76-rage128", scheduler.instr_count)

@@ -60,6 +60,21 @@ const pci_card_kind_t sym53c825_ch1_kind = {
 const pci_card_kind_t voodoo2_kind = {.id = "voodoo2", .display_name = "3dfx Voodoo2", .attach = PCI_ATTACH_PCI};
 const pci_card_kind_t voodoo2_webgpu_kind = {
     .id = "voodoo2_webgpu", .display_name = "3dfx Voodoo2 (WebGPU)", .attach = PCI_ATTACH_PCI};
+const pci_card_kind_t rage128_kind = {.id = "rage128", .display_name = "ATI Rage 128 GL", .attach = PCI_ATTACH_PCI};
+
+// pci.c's bus-master DMA helpers reach guest memory; the cirrus card never
+// masters the bus, so these are never called.
+uint8_t *ram_native_pointer(memory_map_t *ram, uint32_t addr) {
+    (void)ram, (void)addr;
+    return NULL;
+}
+uint8_t memory_read_uint8_slow(uint32_t addr) {
+    (void)addr;
+    return 0xFF;
+}
+void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
+    (void)addr, (void)value;
+}
 
 // The card publishes its framebuffer as an object node (the shared display
 // framebuffer class).  Nothing here walks the object tree, so the node is

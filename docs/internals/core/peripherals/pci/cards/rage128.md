@@ -2,7 +2,11 @@
 
 The ATI Rage 128 GL as a retail Macintosh PCI display card — the Rage
 Orion, Xclaim VR 128 and Nexus 128 — modelled in
-[`src/core/peripherals/pci/cards/rage128.c`](../../../../../../src/core/peripherals/pci/cards/rage128.c).
+[`src/core/peripherals/pci/cards/rage128.c`](../../../../../../src/core/peripherals/pci/cards/rage128.c)
+(the card) and
+[`rage128_2d.c`](../../../../../../src/core/peripherals/pci/cards/rage128_2d.c)
+(its 2D draw engine), sharing
+[`rage128_priv.h`](../../../../../../src/core/peripherals/pci/cards/rage128_priv.h).
 The chip's hardware reference is
 [`rage-128.md`](../../../../../reference/hardware/pci/cards/rage-128.md);
 this page covers the emulator's model, what drove each choice, and what is
@@ -22,14 +26,14 @@ model answers registers and nothing else.
 
 ## 1. Responsibilities & design
 
-**Status.** Milestones 4b and 4c of the Rage 128 work: the PCI face, the
+**Status.** Milestones 4b, 4c and 4d of the Rage 128 work: the PCI face, the
 four apertures and their byte-order swappers, the register file and its
 config mirror, the PLL file, monitor sense and DDC, the palette, the CRTC
 turned into a display descriptor at 8, 15/16 and 32 bpp, the hardware
 cursor, and the VBLANK interrupt — enough for the card's ndrv to run
-System 7.6 at every depth it offers. The 2D draw engine,
+System 7.6 at every depth it offers — and the 2D draw engine. The 2D draw engine,
 the Concurrent Command Engine and the 3D engine are later milestones: their
-registers are plain storage here, and `GUI_STAT`, `PC_GUI_CTLSTAT` and
+registers are plain storage here (the 2D engine excepted), and `GUI_STAT`, `PC_GUI_CTLSTAT` and
 `PC_NGUI_CTLSTAT` report idle.
 
 **Driven by the FCode's needs.** The model was written against a decode of
@@ -143,6 +147,39 @@ Cursor Device Manager, so the harness's low-memory mouse placement
 `Mouse`) moves hit-testing but not the arrow on screen. `"hw"` mode is real
 ADB motion and moves both.
 
+**The 2D draw engine** (`rage128_2d.c`). Register-programmed, and run to
+completion when initiated, so `GUI_STAT` always reads idle with the FIFO
+empty. `DP_GUI_MASTER_CNTL` loads the data path (destination, brush and
+source datatypes, byte pixel order, ROP3, source) into `DP_DATATYPE` and
+`DP_MIX`, re-defaults the source and destination surfaces and scissors from
+`DEFAULT_OFFSET`/`DEFAULT_PITCH`/`DEFAULT_SC_BOTTOM_RIGHT` unless its
+leave-alone bits say otherwise, clears the colour-compare functions or opens
+the write mask on request, and sets `DP_CNTL`'s directions (RRG §7.5). The
+combined registers (`DST_Y_X`, `SRC_Y_X`, `DST_PITCH_OFFSET`,
+`SC_TOP_LEFT`, …) write their halves.
+
+An operation runs when its last dimension arrives: `DST_HEIGHT`, or any
+combined register carrying the height (`DST_HEIGHT_WIDTH`,
+`DST_WIDTH_HEIGHT`, `DST_HEIGHT_WIDTH_8`, `DST_HEIGHT_WIDTH_BW`,
+`DST_HEIGHT_Y`) or the width (`DST_WIDTH_X`, `DST_WIDTH_X_INCY`); a line
+runs on `DST_BRES_LNTH`. The reference names only `DST_WIDTH_BW` an
+initiator; the rest follow the ATI lineage the Mach64 model pins, and every
+operation is logged at video level 3 so a driver that initiates some other
+way shows up.
+
+Per pixel: the source (VRAM rectangle, or host data streamed through
+`HOST_DATA0..7`/`HOST_DATA_LAST`; colour, or mono expanded to
+`DP_SRC_FRGD/BKGD_CLR` with an optional leave-alone background), the brush
+(solid, 8×8/8×1/1×8/32×1/32×32 mono, 8×8/8×1/1×8 colour), the full ROP3,
+the colour compare, the write mask, the scissors (inclusive). The register
+reference and SDK Table 4-2 disagree on the sense of the destination
+compare codes; the reference ("4 = draw when equal, 5 = draw when not
+equal" for both) is followed. Overlapping blits follow `DP_CNTL`'s
+directions with the coordinates of the first pixel walked, as drivers
+supply them. Lines are Bresenham on the `DST_BRES_*` terms, with
+`BRES_SIGN` deciding a zero error term and `DST_LAST_PEL` the end pixel.
+Scaled blits, trapezoids and the 24 bpp quirks are not modelled.
+
 **Interrupts.** `GEN_INT_STATUS` latches VBLANK and VSYNC every frame
 whether or not they are enabled (write 1 to clear); `GEN_INT_CNTL` gates
 the INTA line, which is level and held until acknowledged. `CRTC_STATUS`
@@ -169,6 +206,11 @@ loudly.
 - `tests/integration/suite-tnt`, row `pm9500-76-rage128` — System 7.6 from
   the MESH disk to the Finder on the card (chime, mount, goldens), then
   256 colours and millions from the Control Strip, each a golden.
+- `tests/integration/rage128-2d` (tier `unit`) — the 2D engine with no
+  guest code: the row assigns the BARs itself, drives the registers and
+  asserts VRAM equalities for fills, blits (overlapping included),
+  transparency, mono and colour host data with the big-endian swap,
+  brushes, the ROP3, the write mask, the scissors and lines.
 - `tests/integration/tnt-pci-rage128` — the config header before any
   instruction; the node Open Firmware 1.0.5 builds from the FCode, read
   back with `.properties` over the serial console, for each cable and for
@@ -181,7 +223,10 @@ loudly.
 - No pixel clock: refresh is the host's, and PLL dividers are stored only.
 - `CRTC_OFFSET_CNTL` flip latching, `CRTC_VLINE` interrupts and packed
   24 bpp are not modelled.
-- The 2D engine, CCE and 3D engine (milestones 4d–4g).
+- No guest exercises the 2D engine yet: the ROM ndrv does not accelerate,
+  and the `ATI Graphics Accelerator` that would needs a Mac OS 9.x image
+  with the ATI stack (media-gated).
+- The CCE and the 3D engine (milestones 4e–4g).
 - The revision byte is `$00` until a real card is read.
 
 ## 8. See also
