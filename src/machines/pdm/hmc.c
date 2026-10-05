@@ -126,8 +126,13 @@ void pdm_hmc_remap(config_t *cfg) {
         uint32_t code = (h->cfg_lo & HMC_SIMM_SIZE) >> 29;
         h->active_code = code;
         if (code == 0) {
-            // Reset map ("128 MB banks"): bank 1 at $10000000, bank 2 at
-            // $08000000, each with a 128 MB decode.
+            // Reset map ("128 MB banks"): bank 1 decodes from the
+            // motherboard top up to bank 2's window at $08000000, and again
+            // in its 128 MB probe window at $10000000; bank 2 at $08000000.
+            // Code 0 is also the configured state when bank 2 is empty:
+            // the ROM then records bank 1 at the motherboard top (any size
+            // up to 120 MB = $08000000 - 8 MB), so that is where it must be.
+            map_bank_window(cfg, 0x800000u, 0x08000000u - 0x800000u, h->bank_host_off[0], h->bank_size[0]);
             map_bank_window(cfg, 0x10000000u, 0x08000000u, h->bank_host_off[0], h->bank_size[0]);
             map_bank_window(cfg, 0x08000000u, 0x08000000u, h->bank_host_off[1], h->bank_size[1]);
         } else {
