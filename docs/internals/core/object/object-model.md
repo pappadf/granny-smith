@@ -642,7 +642,7 @@ them. A new machine inherits nothing from the old one.
 | Level | Operation | What it does | Entry point |
 |---|---|---|---|
 | 2 | `machine.reset` | **Warm reset** (the reset button): the board's /RESET net, then the CPU back to its reset vector. RAM is kept. | `machine_method_reset` → `system_machine_reset` (`src/core/system.c`) |
-| 3 | `machine.restart` | **Power cycle**: the same reset with the RAM cleared to the state a new machine's has, and the board's power-on-only state (`substrate->power_on`) back to its constructed values. Nothing is torn down or rebuilt. | `machine_method_restart` → `system_machine_power_cycle` |
+| 3 | `machine.restart` | **Power cycle**: the same reset with the RAM cleared to the state a new machine's has, and the board's power-on-only state (`substrate->power_on`, and each NuBus card's `power_on`) back to its constructed values -- video VRAM included, so the old picture does not outlive the power. Nothing is torn down or rebuilt. | `machine_method_restart` → `system_machine_power_cycle` |
 | -- | `machine.boot(...)` | **New machine from a document** ([Boot arguments](#boot-arguments)): validates the whole document, builds the new machine with its ROM, swaps it in and destroys the old one. | `machine_method_boot` → `machine_boot_apply` (`src/machines/machine.c`) |
 | -- | `checkpoint.load(path)` | Builds a new machine from a checkpoint: it creates the new machine first and destroys the old one afterwards. | `system_checkpoint_load` → `system_restore` |
 
