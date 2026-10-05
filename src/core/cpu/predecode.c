@@ -10,7 +10,6 @@
 
 #include "predecode.h"
 
-#include "log.h"
 #include "memory.h"
 #include "object.h"
 #include "value.h"
@@ -19,8 +18,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-LOG_USE_CATEGORY_NAME("predecode");
 
 // === Switches and tunables ===
 
@@ -345,7 +342,6 @@ void predecode_audit_fail(const pd_block_t *blk, uint32_t idx, uint32_t words) {
         uint32_t live = blk->arch == PD_ARCH_PPC ? LOAD_BE32(blk->host + off) : LOAD_BE16(blk->host + off);
         fprintf(stderr, "  +%03X cached %0*X live %0*X\n", off, (int)gran * 2, cached, (int)gran * 2, live);
     }
-    LOG(0, "predecode coherence audit failed (see stderr)");
     assert(!"predecode coherence audit failed");
     abort();
 }
