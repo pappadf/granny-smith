@@ -5,7 +5,8 @@
 // SE/30 built-in video as a NuBus card living in slot $E.  See
 // docs/reference/machines/glue/se30.md.  The card
 // owns 64 KB VRAM at $FEE00000, a 32 KB declaration ROM at $FEFF8000
-// (real `builtin-se30-video-4f71ff1a.vrom` if available, synthesised fallback otherwise),
+// (Apple's `builtin-se30-video-4f71ff1a.vrom` when offered, else the
+// emulator's substitute),
 // drives the slot-$E VBL pseudo-IRQ, and exposes a 512×342×1bpp
 // `display_t` for system_display().
 //
@@ -19,11 +20,8 @@
 #include <stdbool.h>
 
 // Card-kind descriptor — exported as the single source of truth for the
-// driver.  The bus controller calls .factory once per BUILTIN slot.
+// driver.  The bus controller calls ops->init once per BUILTIN slot.
 extern const nubus_card_kind_t builtin_se30_video_kind;
-// Generic sibling ("se30") with the built-in GS declaration ROM — the
-// SE/30 profile default (docs/internals/core/peripherals/nubus_generic_vrom.md).
-extern const nubus_card_kind_t builtin_se30_video_generic_kind;
 
 // === SE/30-specific hooks the machine calls into ============================
 //
@@ -46,17 +44,8 @@ void builtin_se30_video_select_buffer(nubus_card_t *card, bool main_buf);
 // struct into se30.c.  Returns NULL if `card` is NULL.
 uint8_t *builtin_se30_video_vram(nubus_card_t *card);
 
-// Borrowed accessor for the card's VROM buffer (the loaded or synthesised
+// Borrowed accessor for the card's VROM buffer (Apple's or the substitute
 // declaration ROM bytes).  Same pattern as the VRAM accessor.
 uint8_t *builtin_se30_video_vrom(nubus_card_t *card);
-
-// Borrowed accessor for the path the VROM was loaded from, or NULL if
-// the synthesised fallback was used.  Used by checkpointing.
-const char *builtin_se30_video_vrom_path(nubus_card_t *card);
-
-// Save / restore the card's VRAM contents through the supplied
-// checkpoint stream.  VROM is restored by re-loading from disk on
-// machine init (the path round-trips via the SE/30 checkpoint path).
-struct checkpoint;
 
 #endif // NUBUS_CARDS_BUILTIN_SE30_VIDEO_H

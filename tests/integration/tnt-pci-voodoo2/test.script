@@ -45,7 +45,7 @@ assert catalog.pci_cards == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0,
 
 # The 8 MB board: the row's pinned values were captured on it.
 machine.boot model="pm7500" ram=32768 rom="${$ROM}" pci_card="voodoo2" pci_option="memory=8m"
-assert machine.pci.slot[1].label == "A1" "the card sits in socket A1"
+assert machine.pci.slot[1].firmware_name == "A1" "the card sits in socket A1"
 assert machine.pci.slot[1].card.name == "3dfx Voodoo2" "the card is seated"
 
 # --- The type-0 header, before a single instruction runs. -------------------
@@ -226,14 +226,20 @@ assert machine.pci.slot[1].card.regs.tmu_size == 0x400000 "12 MB board: 4 MB per
 machine.boot model="pm7500" ram=32768 rom="${$ROM}" pci_card="voodoo2" pci_option="memory=8m"
 assert machine.pci.slot[1].card.regs.tmu_size == 0x200000 "8 MB board: 2 MB per TMU by the unadvertised option"
 assert machine.pci.slot[1].card.regs.fb_size == 0x400000 "...same 4 MB framebuffer either way"
-assert len(catalog.profile("pm7500").pci_slots[0].cards[1].options) == 0 "the card advertises no options: the choices are the two kinds"
+# The card advertises one option, Rendering, whose WebGPU value is offered
+# only where a WebGPU device exists: headless has none, so Software alone.
+# The board memory stays unadvertised.
+let v2 = catalog.profile("pm7500").cards[1]
+assert len($v2.options) == 1 && $v2.options[0].id == "raster" "the card advertises Rendering, and only it"
+assert len($v2.options[0].values) == 1 && $v2.options[0].values[0].label == "Software" "without a WebGPU device, Software alone"
 
 # --- The two kinds: "voodoo2" draws exactly, "voodoo2_webgpu" on the host GPU.
 # The WebGPU variant is REGISTERED everywhere (a boot document or a
 # checkpoint may name it) but OFFERED only where a WebGPU device exists:
-# headless has none, so the 7500's socket lists the exact card alone.
-assert catalog.profile("pm7500").pci_slots[0].cards[1].id == "voodoo2" "the exact card is offered"
-assert len(catalog.profile("pm7500").pci_slots[0].cards) == 2 "...and the WebGPU variant is not, without a device"
+# the tree lists the exact card alone: the WebGPU kind is its Rendering
+# value, never a card of its own.
+assert catalog.profile("pm7500").cards[1].id == "voodoo2" "the exact card is offered"
+assert len(catalog.profile("pm7500").cards) == 2 "...and the WebGPU variant is not a second card"
 # Named anyway, it comes up: the same card, whose rasteriser falls back
 # to the thread backend at creation — honestly — and draws exactly.
 machine.boot model="pm7500" ram=32768 rom="${$ROM}" pci_card="voodoo2_webgpu"

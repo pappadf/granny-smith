@@ -14,8 +14,8 @@
 # The two profiles differ in the CPU card's clock, the L2 DIMM size and
 # TwoSuppliesH — and in nothing else an emulator can see, which is exactly
 # why both run.  Each row is a full cold boot.
-def ladder(model, ram_kb, ram_banner, cpu_banner, l2_banner, two_psu) {
-    machine.boot model="${$model}" ram=$ram_kb rom="${$ROM}"
+def ladder(model, ram_kb, ram_banner, cpu_banner, l2_banner, two_psu, config) {
+    machine.boot model="${$model}" ram=$ram_kb rom="${$ROM}" config=$config
 
     # --- S1: the reset vector -----------------------------------------------
     # "A processor comes out of hardware reset and fetches the reset vector
@@ -25,10 +25,11 @@ def ladder(model, ram_kb, ram_banner, cpu_banner, l2_banner, two_psu) {
     assert machine.cpu.pc == 0xFFF00100 "S1: ${$model} reset vector != $FFF00100"
 
     # --- Board state before a single instruction runs ------------------------
-    # Both keyswitches default to LOCKED, which the Theory of Operations
-    # requires: "the rear keyswitch is in the locked position" is a power-on
-    # precondition, and Locked is the front switch's normal running position.
-    assert machine.board.keyswitch == "locked" "S1: ${$model} front keyswitch must default to locked"
+    # The ladder turns the front key to Locked through the configuration
+    # (the default is Unlocked); the rear key is always locked, which the
+    # Theory of Operations requires: "the rear keyswitch is in the locked
+    # position" is a power-on precondition.
+    assert machine.board.keyswitch == "locked" "S1: ${$model} front keyswitch must follow the configuration"
     assert machine.board.rear_key_locked "S1: ${$model} rear keyswitch must default to locked"
     # Board Register 2 is the "Safe Server" environmental halfword, ACTIVE
     # LOW throughout — so a healthy machine reads all-ones, not zero.  This
@@ -129,12 +130,19 @@ assert machine.boot(model="ans500", rom="${$ROM}", ram=524288) "S3: 512 MB must 
 
 # The 500: 32 MB of parity DRAM, a 132 MHz card on a 44 MHz bus, a 512 KB
 # cache DIMM, one supply.
-ladder("ans500", 32768, "0032 MB Parity RAM", "066MHz 604, 44MHzBus", "0512KB Level 2 Cache", false)
-# The 700: 48 MB, a 150 MHz card on a 50 MHz bus, 1 MB of cache, redundant
-# supplies.  At 50 MHz the ROM does NOT enable its "fast L2" mode — that is
+ladder("ans500", 32768, "0032 MB Parity RAM", "066MHz 604, 44MHzBus", "0512KB Level 2 Cache", false, "{\"options\":{\"keyswitch\":\"locked\"}}")
+# The 700: 48 MB, a 150 MHz card on a 50 MHz bus, 1 MB of cache, and the
+# optional second, redundant supply.  At 50 MHz the ROM does NOT enable its "fast L2" mode — that is
 # for "bus speeds of 44 MHz or less" — which is the one place the smaller
 # machine is architecturally ahead of the larger one.
-ladder("ans700", 49152, "0048 MB Parity RAM", "075MHz 604, 50MHzBus", "1024KB Level 2 Cache", true)
+ladder("ans700", 49152, "0048 MB Parity RAM", "075MHz 604, 50MHzBus", "1024KB Level 2 Cache", true, "{\"options\":{\"keyswitch\":\"locked\",\"power_supplies\":\"two\"}}")
+
+# The defaults: the front key Unlocked (Apple's normal running position,
+# ServiceL and LockedL both high) and one supply, as the 700 shipped.
+machine.boot model="ans700" rom="${$ROM}"
+assert machine.board.keyswitch == "normal" "the front keyswitch defaults to Unlocked"
+assert (machine.board.register1 & 0x6000) == 0x6000 "Unlocked reads ServiceL and LockedL high"
+assert !machine.board.two_supplies "the 700 defaults to one supply"
 
 echo "ans-rom-ladder: high-water rung S4 reached on both profiles"
 quit

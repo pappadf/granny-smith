@@ -14,12 +14,9 @@
 #include "slot_tables.h"
 
 // PC66 SDRAM, three 168-pin DIMM slots, 256 MB per slot at most.
-static const uint32_t pmg3_ram_options_kb[] = {32768, 65536, 98304, 131072, 196608, 262144, 393216, 524288, 786432, 0};
-
-static const scsi_bus_decl_t pmg3_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = gossamer_scsi_slots},
-    {0},
-};
+static const uint32_t pmg3_ram_options_kb[] = {32768,  65536,  98304,  131072, 163840, 196608, 229376,
+                                               262144, 294912, 327680, 360448, 393216, 425984, 458752,
+                                               524288, 557056, 589824, 655360, 786432, 0};
 
 // The Whisper card's ID EEPROM (I2C $53): a length/marker byte, the
 // AA 55 AA signature, the NUL-terminated name, the version the tree
@@ -43,7 +40,7 @@ static const gossamer_board_desc_t pmg3dt_board = {
 };
 
 const hw_profile_t machine_pmg3dt = {
-    .name = "Power Macintosh G3 (Desktop)",
+    .name = "Power Macintosh G3 Desktop",
     .id = "pmg3dt",
 
     .cpu_model = CPU_MODEL_PPC750,
@@ -51,17 +48,15 @@ const hw_profile_t machine_pmg3dt = {
     .mmu_kind = MMU_PPC_604, // the architected split-BAT MMU (MPC750UM §5)
 
     .address_bits = 32,
-    .ram_default = 0x4000000, // 64 MB
+    .ram_default = 0x4000000, // 64 MB (a typical well-equipped machine)
     .ram_max = 0x30000000, // 768 MB: three 256 MB DIMMs
     .rom_size = 0x400000, // 4 MB ($78F57389 / $79D68D63)
 
     .ram_options = pmg3_ram_options_kb,
-    .scsi_buses = pmg3_scsi_buses,
-    // A SCSI CD-ROM on the MESH bus at the era's id 3 (the shipping drive
-    // is ATAPI on ATA channel 1; this is the SCSI path the install CD can
-    // boot through).
-    .has_cdrom = true,
-    .cdrom_id = 3,
+    .storage = gossamer_storage,
+    .default_storage = gossamer_default_storage,
+    .appletalk = true,
+    .builtin_video = &gossamer_builtin_video,
     .cdrom_drive = &mac_cdrom_drive_applecd,
     .floppy_slots = mac_floppy_slots_1hd,
 

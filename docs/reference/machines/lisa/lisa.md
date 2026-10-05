@@ -150,22 +150,24 @@ The MMU's output drives a 3-way space decode. The three spaces are **disjoint**
 
 | Physical range | Contents |
 | --- | --- |
-| `$000000 – $07FFFF` | **unpopulated** (no RAM here — the memory boards sit *high*) |
-| `$080000 – $1FFFFF` | RAM. Boards are based at `$080000`: 512 KB ⇒ `[$80000,$100000)`, 1 MB ⇒ `[$80000,$180000)`, 2 MB ⇒ `[$80000,$200000)` (= 1.5 MB usable in the 2 MB / 21-bit space). |
+| `$000000 – $07FFFF` | **unpopulated** below 2 MB (the memory boards sit *high*); RAM with two 1 MB boards |
+| `$000000 – $1FFFFF` | RAM. The boards fill the space down from `$100000`: RAM starts at `$100000` less the slot-2 board — 512 KB (one 512 KB board) ⇒ `[$80000,$100000)`, 1 MB (two 512 KB) ⇒ `[$80000,$180000)`, 1.5 MB (a 1 MB board over a 512 KB one) ⇒ `[$80000,$200000)`, 2 MB (two 1 MB boards) ⇒ `[0,$200000)`. |
 | (within RAM) | the 32 KB video page, located by the Video Address Latch (§8) — near the top of RAM (e.g. `$1F8000` on a 2 MB machine) |
 
-Physical addresses are 21 bits (2 MB). **RAM is based HIGH at `$080000`, NOT at
-physical 0** (a long-standing error to watch for): physical `[0, $80000)` is
-unpopulated. Evidence: the boot ROM's `MEMSIZ` (RM248.K) scans **up from physical
+Physical addresses are 21 bits (2 MB). **Below 2 MB, RAM is based HIGH at
+`$080000`, NOT at physical 0** (a long-standing error to watch for): physical
+`[0, $80000)` is unpopulated. Evidence: the boot ROM's `MEMSIZ` (RM248.K) scans **up from physical
 0** for the first RAM (so RAM cannot be at 0), and the OS's "minimum physical
 address" `MINMEM` (`[$2A4]`) / `realmemmmu`/`logrealmem` reflect the high base;
-matching the real Lisa RAM-board layout (minimum RAM base `$80000` for every
-config, maximum per installed size). The boot ROM then programs the MMU so logical RAM is contiguous *from this
+matching the real Lisa RAM-board layout (RAM ends at `$100000` plus the slot-1
+board and starts at `$100000` less the slot-2 board, so the base is `$80000`
+with a 512 KB board in slot 2 and 0 with two 1 MB boards; the emulator reads
+the boards from the configured size). The boot ROM then programs the MMU so logical RAM is contiguous *from this
 high physical base*. With RAM modelled at 0 the OS placed the kernel stack on a
 non-existent page → wild `RTS`/reset and screen-junk wild writes. The emulator
 implements the high base in `lisa_mmu.c` (`ram_min`/`ram_max`); `lisa_mmu_init`
-takes a `ram_high` flag set per machine — **`model=lisa` defaults to the high
-base** (`$80000`), while `model=macxl` keeps RAM low (based at 0), since
+takes a `ram_high` flag set per machine — **`model=lisa` uses the board-based
+layout above**, while `model=macxl` keeps RAM low (based at 0), since
 MacWorks XL's framebuffer and boot path live in low memory. (`GSRAMMIN=1`
 remains as a debug override that forces the high base on any model.)
 

@@ -21,7 +21,7 @@
   import { isExpandable, isInImageSpace, listViaVfs } from '@/lib/diskImage';
   import { MEDIA_TYPES } from '@/lib/media';
   import { gsEval } from '@/bus/emulator';
-  import { attachCdrom, attachHardDisk, insertFloppy } from '@/bus/media';
+  import { mountImage, insertFloppy } from '@/bus/media';
   import { showNotification } from '@/state/toasts.svelte';
   import { images, bumpImagesRevision, setMounted } from '@/state/images.svelte';
   import { startActivity, endActivity, setActivityDetail } from '@/state/activity.svelte';
@@ -454,12 +454,7 @@
 
   async function attachMedium(target: string, kind: 'fd' | 'hd' | 'cd') {
     const name = target.split('/').pop() ?? target;
-    const r =
-      kind === 'fd'
-        ? await insertFloppy(target, false)
-        : kind === 'hd'
-          ? await attachHardDisk(target)
-          : await attachCdrom(target);
+    const r = kind === 'fd' ? await insertFloppy(target, false) : await mountImage(kind, target);
     const verb = kind === 'hd' ? 'attach' : 'insert';
     if (!r.ok) {
       showNotification(`Couldn't ${verb} '${name}': ${r.reason}`, r.full ? 'warning' : 'error');

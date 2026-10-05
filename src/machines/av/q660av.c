@@ -29,11 +29,6 @@ static const struct floppy_slot q660av_floppy_slots[] = {
     {0},
 };
 
-static const scsi_bus_decl_t q660av_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
-    {0},
-};
-
 static const av_board_desc_t q660av_board_desc = {
     .common =
         {
@@ -64,7 +59,7 @@ static const struct aux_cpu_slot q660av_aux_cpus[] = {
 };
 
 const hw_profile_t machine_q660av = {
-    .name = "Macintosh Quadra 660AV",
+    .name = "Macintosh Centris 660AV / Quadra 660AV",
     .id = "q660av",
 
     .cpu_model = 68040,
@@ -78,9 +73,10 @@ const hw_profile_t machine_q660av = {
 
     .ram_options = q660av_ram_options_kb,
     .floppy_slots = q660av_floppy_slots,
-    .scsi_buses = q660av_scsi_buses,
-    .has_cdrom = true,
-    .cdrom_id = 3,
+    .storage = mac_storage_scsi_cd_bay,
+    .default_storage = mac_default_storage_hd0_cd3,
+    .appletalk = true,
+    .builtin_video = &av_builtin_video_q660av,
     .cdrom_drive = &mac_cdrom_drive_applecd,
     .has_video_in = true, // on-board DMSD/VDC digitizer
     .has_audio_in = true, // Singer codec microphone input (singer.md)

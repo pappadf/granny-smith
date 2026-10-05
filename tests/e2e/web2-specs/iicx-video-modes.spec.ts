@@ -128,6 +128,17 @@ async function runBudget(page: Page, budget: number): Promise<void> {
     .toBe(true);
 }
 
+// Pick `mode` in the dialog: its monitor (catalogue id), then the startup
+// mode as WxHxD.  The mode ids here name the snapshot files.
+const MONITOR: Record<string, string> = { '15in_bw': '15in_portrait' };
+async function pickVideoMode(page: Page, mode: VideoMode): Promise<void> {
+  const [, mon, depth] = /^(.*)_(\d+)bpp$/.exec(mode.id) ?? [];
+  const monitor = page.locator('#cfg-monitor');
+  await expect(monitor).toBeVisible({ timeout: 30_000 });
+  await monitor.selectOption(MONITOR[mon] ?? mon);
+  await page.locator('#cfg-video-mode').selectOption(`${mode.width}x${mode.height}x${depth}`);
+}
+
 test('IIcx video modes: post-shader canvas matches per-mode baselines', async ({ page }) => {
   test.setTimeout(30 * 60 * 1000);
   // The 15" portrait (640x870) and Kong (1152x870) canvases must fit the
@@ -179,11 +190,9 @@ test('IIcx video modes: post-shader canvas matches per-mode baselines', async ({
     const model = page.locator('#cfg-model');
     await expect(model.locator('option[value="iicx"]')).toHaveCount(1, { timeout: 30_000 });
     await model.selectOption('iicx');
-    const videoMode = page.locator('#cfg-video-mode');
-    await expect(videoMode).toBeVisible({ timeout: 30_000 });
-    await videoMode.selectOption(mode.id);
+    await pickVideoMode(page, mode);
     await page.locator('#cfg-fd0').selectOption('System_7_0_1.image');
-    await page.getByRole('button', { name: 'Start Machine' }).click();
+    await page.getByRole('button', { name: 'Start', exact: true }).click();
     await expect(page.locator('.toast .msg').filter({ hasText: 'Machine started' })).toBeVisible({
       timeout: 60_000,
     });

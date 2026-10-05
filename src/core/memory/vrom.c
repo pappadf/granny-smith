@@ -142,7 +142,8 @@ static enum vrom_id_result vrom_identify_image(const uint8_t *img, size_t size, 
         }
     }
     // Not a catalogued Apple dump — recognise a dumped copy of one of our
-    // own GENERATED generic images structurally: the runtime-generated GS
+    // own GENERATED substitute images (the card's, a ROM for that card)
+    // structurally: the runtime-generated GS
     // vROM has no fixed CRC to match (its content varies with the mode
     // set and the toolchain that assembled the fragments), so identity is
     // the board sResource's "granny-smith" VendorId plus its BoardId.
@@ -150,10 +151,10 @@ static enum vrom_id_result vrom_identify_image(const uint8_t *img, size_t size, 
         uint16_t board_id;
         const char *card_id;
     } gs_boards[] = {
-        {0x0027, "8_24"  },
-        {0x05FA, "24ac"  },
-        {0x002C, "8_24gc"},
-        {0x000C, "se30"  },
+        {0x0027, "mdc_8_24"          },
+        {0x05FA, "display_card_24ac" },
+        {0x002C, "824gc"             },
+        {0x000C, "builtin_se30_video"},
     };
     uint16_t board_id = 0;
     if (declrom_identify_vendor(img, size, "granny-smith", &board_id)) {

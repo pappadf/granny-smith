@@ -5,6 +5,7 @@
 // Macintosh IIfx machine implementation.
 
 #include "appletalk.h"
+#include "config_seed.h"
 #include "mac030_glue.h"
 #include "mac_host_io.h"
 #include "machine.h"
@@ -1478,12 +1479,12 @@ static void iifx_power_on(config_t *cfg) {
 
 // Slot table for the six-slot IIfx NuBus cage.
 static const nubus_slot_decl_t iifx_slots[] = {
-    {.slot = 0x9, .kind = NUBUS_SLOT_SOCKET, .default_card = "mdc_8_24"},
-    {.slot = 0xA, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xB, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0x9, .kind = NUBUS_SLOT_SOCKET, .default_card = "mdc_8_24", .label = "NuBus slot 1", .fill_order = 1},
+    {.slot = 0xA, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot 2", .fill_order = 2},
+    {.slot = 0xB, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot 3", .fill_order = 3},
+    {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot 4", .fill_order = 4},
+    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot 5", .fill_order = 5},
+    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot 6", .fill_order = 6},
     {0},
 };
 
@@ -1561,7 +1562,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part_images(cfg, checkpoint);
 
     machine_part_begin(cfg, checkpoint, "scsi");
-    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, checkpoint, CONFIG_IMAGES(cfg));
+    cfg->scsi = machine_scsi_bus_init(cfg, checkpoint, "scsi");
     scsi_5380_attach(cfg->scsi, checkpoint); // IIfx: NCR 5380 behind the OSS
     machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
     setup_images(cfg);
@@ -1571,8 +1572,8 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part(cfg, checkpoint, "asc", part_save_asc, st->asc);
     machine_part_begin(cfg, checkpoint, "floppy");
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), checkpoint,
-                             CONFIG_IMAGES(cfg));
+    st->floppy =
+        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), checkpoint, CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
     machine_part(cfg, checkpoint, "floppy", part_save_floppy, st->floppy);
 
@@ -1700,16 +1701,12 @@ static void iifx_teardown(config_t *cfg) {
 // Machine descriptor data.
 static const uint32_t iifx_ram_options_kb[] = {4096, 8192, 16384, 32768, 65536, 131072, 0};
 
-static const scsi_bus_decl_t iifx_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
-    {0},
-};
-
 static const machine_substrate_t iifx_substrate = {
     .init = iifx_init,
     .bus_reset = iifx_bus_reset,
     .power_on = iifx_power_on,
     .teardown = iifx_teardown,
+    .seed = mac_seed_rtc_pram,
     .trigger_vbl = iifx_trigger_vbl,
     .nubus_slot_irq = iifx_nubus_slot_irq, // slots $9-$E → OSS source bits 0-5
     .fd_insert = mac_fd_insert,
@@ -1736,14 +1733,14 @@ const hw_profile_t machine_iifx = {
     .rom_size = 0x080000,
 
     .ram_options = iifx_ram_options_kb,
-    .floppy_slots = mac_floppy_slots_2hd,
-    .scsi_buses = iifx_scsi_buses,
-    .has_cdrom = true,
-    .cdrom_id = 3,
+    .floppy_slots = mac_floppy_slots_2int,
+    .storage = mac_storage_scsi_hd_bay,
+    .default_storage = mac_default_storage_hd0_cd3,
+    .appletalk = true,
     .cdrom_drive = &mac_cdrom_drive_applecd,
 
     .nubus_slots = iifx_slots,
 
-    .pram = &pram_defaults_mac_ii,
+    .pram = &pram_defaults_iifx,
     .substrate = &iifx_substrate,
 };

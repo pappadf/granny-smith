@@ -1,82 +1,58 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  // The configuration dialog: a renderer over the machine-description tree
+  // (bus/profile.ts) that edits a configuration document (lib/machineConfig.ts)
+  // and boots it.  Every label, every choice and every default is the core's
+  // (catalog.profile); nothing here knows a machine, a bus or a card.  The
+  // only state the dialog adds is the images: which file goes into which
+  // floppy drive, hard disk and CD-ROM drive.
+  import { onMount, tick, untrack } from 'svelte';
   import { setWelcomeSlide } from '@/state/layout.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import { initEmulator, opfs, gsEval, whenModuleReady } from '@/bus';
   import { pickAndUploadAs } from '@/bus/upload';
-  import { getProfile, type MachineProfile } from '@/bus/profile';
   import {
-    identifyRom,
-    identifyCardRom,
-    type MediaTypeId,
-    type RomIdentity,
-    type CardRomIdentity,
-  } from '@/lib/media';
-  import { formatRamKb } from '@/lib/machine';
-  import type { ImageCategory, OpfsEntry } from '@/bus/types';
+    getProfile,
+    clearProfileCache,
+    type BlankDisk,
+    type Card,
+    type ConfigDocument,
+    type ConfigOption,
+    type MachineProfile,
+  } from '@/bus/profile';
+  import { identifyRom, type MediaTypeId, type RomIdentity } from '@/lib/media';
+  import * as mc from '@/lib/machineConfig';
+  import type { ImageCategory, MediaImage, OpfsEntry } from '@/bus/types';
   import { images } from '@/state/images.svelte';
   import CreateImageDialog from './CreateImageDialog.svelte';
   import Button from '../ui/Button.svelte';
   import Field from '../ui/Field.svelte';
   import FormGrid from '../ui/FormGrid.svelte';
+  import IconButton from '../ui/IconButton.svelte';
   import Link from '../ui/Link.svelte';
+  import SectionHeading from '../ui/SectionHeading.svelte';
   import Select from '../ui/Select.svelte';
   import Separator from '../ui/Separator.svelte';
 
   const UPLOAD_SENTINEL = 'Upload image...';
   const CREATE_SENTINEL = 'Create blank image...';
-  const NONE_SENTINEL = '(none)';
+  const NO_DISK = '(no disk)';
+  const NO_DISC = '(no disc)';
+  const CHOOSE_IMAGE = 'Choose image…';
 
-  // The model's configuration shape is bus/profile.ts's MachineProfile.
-  //
-  // One identified ROM in OPFS: the model ids it lights up (rom.identify).
-  type RomEntry = RomIdentity;
-  // One identified VROM in OPFS: which card it provides (vrom.identify), so
-  // the dialog speaks in cards, not filenames — the on-disk name is a content
-  // hash and never shown.
-  type VromEntry = CardRomIdentity;
-  // One identified PCI expansion ROM (prom.identify).  The sibling of
-  // VromEntry: a vROM and a PROM are different objects with different
-  // identity rules, and a card asks for one or the other, never "a ROM".
-  type PromEntry = CardRomIdentity;
-
-  // The pseudo card-id standing for "the machine's own built-in video port".
-  // Never a registry card id, so it can share the `cardId` state without
-  // colliding; the boot document turns it into "no video_card, monitor
-  // connected", and any real card into "that card, built-in port
-  // unconnected".
-  const BUILTIN_VIDEO_ID = 'builtin';
-
-  // Local form state.
+  // --- Model and ROM -------------------------------------------------------
   let modelId = $state('');
-  let cardId = $state(''); // selected NuBus video card-kind id
-  // RAM in KB, one of the profile's ram_options; 0 = the model's own default.
-  let ramKb = $state(0);
   let romPath = $state('');
-  let floppies = $state<string[]>([]);
-  let hd = $state(NONE_SENTINEL);
-  let cd = $state(NONE_SENTINEL);
-  let videoMode = $state('');
-  // Chosen PCI card options, keyed by option key ("vram" -> "4m"). Cleared
-  // whenever the selected card changes, since the keys are the card's.
-  let pciOptions = $state<Record<string, string>>({});
-
-  // Discovery state.
   let scanning = $state(true);
   let startError = $state<string | null>(null); // the emulator failed to start
-  let allRoms = $state<RomEntry[]>([]);
-  // VROMs in OPFS, each identified to the card it provides.
-  let allVroms = $state<VromEntry[]>([]);
-  // PCI expansion ROMs in OPFS, likewise.
-  let allProms = $state<PromEntry[]>([]);
-  // model id -> profile, populated lazily via gsEval('catalog.profile').
+  let allRoms = $state<RomIdentity[]>([]);
+  // model id -> its tree, from catalog.profile.
   let profiles = $state<Record<string, MachineProfile>>({});
-  // model id -> the distinct ROMs (by content id) that boot this model.  Two
-  // files of one ROM are one choice: the first file found stands for it.
+
+  // model id -> the distinct ROMs (by content id) that boot it.  Two files
+  // of one ROM are one choice: the first file found stands for it.
   let romsByModel = $derived.by(() => {
-    const out: Record<string, RomEntry[]> = {};
+    const out: Record<string, RomIdentity[]> = {};
     for (const r of allRoms) {
-      // A repeated id in `compatible` would list the same ROM twice.
       for (const id of new Set(r.compatible)) {
         const list = (out[id] ??= []);
         if (!list.some((e) => e.id === r.id)) list.push(r);
@@ -84,13 +60,8 @@
     }
     return out;
   });
-  // One Machine Model entry per model/ROM pair, so every ROM a model can run
-  // is directly choosable.  When other known ROMs boot the same model, stored
-  // or not, the entry reads "<model> (<variant>)" with the short label the
-  // core supplies (rom.identify); a ROM without a label reads as the model
-  // alone, and two stored ROMs without labels fall back to their ids.  The
-  // option value is the bare model id when one stored ROM boots the model,
-  // `model/romId` otherwise.
+  // One Model entry per model/ROM pair, so every ROM a model can run is
+  // directly choosable: "<model> (<variant>)" when several ROMs boot it.
   let modelOptions = $derived(
     Object.entries(romsByModel).flatMap(([id, roms]) =>
       roms.map((r) => {
@@ -109,295 +80,61 @@
     ),
   );
   let romsForCurrentModel = $derived(modelId ? (romsByModel[modelId] ?? []) : []);
-  // The id of the ROM the current choice boots.
   let currentRomId = $derived(romsForCurrentModel.find((r) => r.path === romPath)?.id ?? '');
-  let currentProfile = $derived(modelId ? profiles[modelId] : undefined);
-  // --- Video card selection (card-driven; the vROM is auto-resolved). ------
-  // The dialog speaks in *cards* (Apple Macintosh Display Card 24AC), not vROM
-  // filenames. The available cards + their requires_vrom / monitors come from
-  // catalog.profile (the core owns this); each uploaded vROM is probed to the
-  // card it provides (vrom.identify → card_id), so we only offer cards whose
-  // vROM is actually present, and send it as machine.boot's video_card=.
+  let profile = $derived(modelId ? profiles[modelId] : undefined);
 
-  // card-id -> the OPFS VROM files that provide it.
-  let vromsByCardId = $derived.by(() => {
-    const out: Record<string, VromEntry[]> = {};
-    for (const v of allVroms) (out[v.cardId] ??= []).push(v);
-    return out;
-  });
-  // The slot this dialog configures: the FIRST video_slots entry.  Machines now
-  // declare every socket, all offering the same computed card list — the single
-  // picker drives the first one through machine.boot's video_card= (the
-  // first-socket sugar for slots=); a per-socket UI is future work.  On builtin-first machines (SE/30,
-  // IIci, IIsi) the first entry is the fixed built-in video, which keeps their
-  // no-picker/vROM-row behavior exactly as before.
-  let configSlot = $derived((currentProfile?.video_slots ?? [])[0]);
-  let slotCards = $derived(configSlot?.cards ?? []);
-  // The slot's default card id (the C-side default pick).
-  let defaultCardId = $derived(configSlot?.default_card ?? '');
-  // A card is offerable iff it needs no vROM (builtin) or its vROM is present.
-  let availableCards = $derived(
-    slotCards.filter((c) => !c.requires_vrom || (vromsByCardId[c.id]?.length ?? 0) > 0),
-  );
-  let cardOptions = $derived(
-    availableCards.map((c) => ({ id: c.id, label: c.display_name ?? c.id })),
-  );
-  // The machine's own built-in video, offered beside the NuBus cards when
-  // the profile advertises one.  BUILTIN_VIDEO_ID is a card id no registry
-  // card can use, so it round-trips through the same `cardId` state.
-  let builtinVideo = $derived(currentProfile?.builtin_video);
-  let hasBuiltinVideo = $derived(!!builtinVideo?.display_name);
+  // --- The document ----------------------------------------------------------
+  // The configuration being edited: the model's defaults on open and on every
+  // model change (no remembered state), and on "Reset to defaults".
+  let doc = $state<ConfigDocument | null>(null);
+  let docFor = $state('');
+  // The defaults `doc` was seeded from, serialised: an untouched document
+  // follows the model's defaults when they change under it (a card ROM
+  // uploaded while the dialog is open seats the factory card).
+  let docSeed = '';
+  // Images, by floppy position ("fd0") and by storage position ("scsi:0").
+  let floppyImages = $state<Record<string, string>>({});
+  let mediaImages = $state<Record<string, string>>({});
 
-  // --- Display-class PCI cards --------------------------------------------
-  // card-id -> the OPFS PROM files that provide it.
-  let promsByCardId = $derived.by(() => {
-    const out: Record<string, PromEntry[]> = {};
-    for (const p of allProms) (out[p.cardId] ??= []).push(p);
-    return out;
-  });
-  // Every distinct display-class card offered by any PCI socket.  Sockets
-  // are deduplicated by card id: the machine declares six of them and they
-  // all offer the same computed list, so the picker would otherwise show
-  // the same card six times.
-  let pciDisplayCards = $derived.by(() => {
-    const out: NonNullable<MachineProfile['pci_slots']>[number]['cards'] = [];
-    for (const slot of currentProfile?.pci_slots ?? []) {
-      // SOCKETS only. A fixed slot's card is soldered down and can never be
-      // seated in a socket — the core's own pci_card_fits_socket refuses
-      // it — so offering it here would put a choice in the picker that the
-      // boot path is guaranteed to reject.
-      if (slot.fixed) continue;
-      for (const c of slot.cards ?? []) {
-        if (c.class !== 'display' || out.some((seen) => seen.id === c.id)) continue;
-        out.push(c);
-      }
-    }
-    return out;
-  });
+  function resetToDefaults(): void {
+    if (!profile) return;
+    doc = mc.defaultDocument(profile);
+    docFor = profile.id;
+    docSeed = JSON.stringify(doc);
+    floppyImages = {};
+    mediaImages = {};
+    addingDeviceOn = null;
+    addingCard = false;
+  }
 
-  // A soldered-down display-class PCI card IS this machine's built-in
-  // video, and is named like it — unless it is a stand-in, which is not
-  // the machine's hardware and must not be presented as though it were.
-  let pciBuiltinDisplay = $derived(
-    (currentProfile?.pci_slots ?? [])
-      .filter((slot) => slot.fixed && !slot.fallback)
-      .flatMap((slot) => slot.cards ?? [])
-      .find((c) => c.class === 'display'),
-  );
-  // A PCI card is offerable iff it needs no expansion ROM or one is present.
-  // Unlike a NuBus vROM this is not a soft preference: the core refuses the
-  // boot outright (requires_prom + strict resolution), so offering the card
-  // without its ROM would just produce a rejected boot.
-  let availablePciCards = $derived(
-    pciDisplayCards.filter((c) => !c.requires_prom || (promsByCardId[c.id]?.length ?? 0) > 0),
-  );
-  let pciCardOptions = $derived(
-    availablePciCards.map((c) => ({ id: c.id, label: c.display_name ?? c.id })),
-  );
-  // What the display picker offers, in the order a machine presents itself:
-  // its own built-in port first, then anything soldered to the PCI bus that
-  // amounts to built-in video, then every installable NuBus card, then every
-  // installable display-class PCI card.
-  //
-  // This follows the NuBus-only machines rather than inventing a shape.  A
-  // IIx / IIcx / IIfx has builtin_video {} and a non-fixed video slot: the
-  // dialog shows a "Display Card" picker and, when no vROM is present, says
-  // the card needs one.  A IIci has a FIXED video slot holding its soldered
-  // RBV video and offers no choice.  The PCI machines are the same two
-  // cases: a 7500/8500's Control is soldered (fixed), a 9500's sockets are
-  // sockets — so the 9500 behaves exactly like a IIfx, with a .prom in the
-  // place of a .vrom.
-  let displayOptions = $derived([
-    ...(hasBuiltinVideo
-      ? [{ id: BUILTIN_VIDEO_ID, label: builtinVideo?.display_name ?? 'Built-in video' }]
-      : []),
-    ...(pciBuiltinDisplay
-      ? [
-          {
-            id: pciBuiltinDisplay.id,
-            label: pciBuiltinDisplay.display_name ?? pciBuiltinDisplay.id,
-          },
-        ]
-      : []),
-    ...cardOptions,
-    ...pciCardOptions,
-  ]);
-  let builtinSelected = $derived(cardId === BUILTIN_VIDEO_ID);
-  // Whether the machine already has a screen without the user installing
-  // anything.  A stand-in fallback deliberately does NOT count: the 9500 has
-  // no on-board video, and the emulator's Control/Chaos stand-in exists so a
-  // cardless boot has somewhere to draw, not so the dialog can claim the
-  // machine has video it never shipped with.
-  let hasSolderedDisplay = $derived(hasBuiltinVideo || !!pciBuiltinDisplay);
-  // Is the current pick a PCI card rather than a NuBus one?  The two travel
-  // in different boot-document fields (pci_card= vs video_card=), so this
-  // decides which one is filled in.
-  let selectedPciCard = $derived(availablePciCards.find((c) => c.id === cardId));
-  let pciSelected = $derived(!!selectedPciCard);
-  // The options the selected PCI card declares. Only a socket card can take
-  // them: a soldered one is not named by the boot document, so there is
-  // nothing to attach an option to.  A display pick and an expansion pick
-  // are mutually exclusive holders of the first socket, so exactly one of them
-  // supplies the option list (activePciCard, defined with the expansion
-  // picker below).
-  // Every PCI SOCKET the machine declares, for the Expansion Slots list.
-  // Sockets only — a fixed slot is soldered-down hardware, not a slot the
-  // user populates.
-  let pciSockets = $derived((currentProfile?.pci_slots ?? []).filter((sl) => !sl.fixed));
-  // Every distinct NON-display card the sockets offer (the Voodoo2's
-  // class is "3d": a pass-through card that must never be the machine's
-  // display, so the Display picker rightly never lists it).  Deduplicated
-  // across sockets exactly like pciDisplayCards.
-  let pciExpansionCards = $derived.by(() => {
-    const out: NonNullable<MachineProfile['pci_slots']>[number]['cards'] = [];
-    for (const slot of currentProfile?.pci_slots ?? []) {
-      if (slot.fixed) continue;
-      for (const c of slot.cards ?? []) {
-        if (c.class === 'display' || out.some((seen) => seen.id === c.id)) continue;
-        if (c.requires_prom && (promsByCardId[c.id]?.length ?? 0) === 0) continue;
-        out.push(c);
-      }
-    }
-    return out;
-  });
-  // The one expansion pick this dialog can express: machine.boot's
-  // pci_card= reaches the FIRST socket, the same wildcard field a
-  // display-class PCI pick travels in — so the two picks are mutually
-  // exclusive, and the Display picker's choice wins the socket.
-  let expansionCardId = $state('');
-  let selectedExpansionCard = $derived(pciExpansionCards.find((c) => c.id === expansionCardId));
-  let expansionSelected = $derived(!pciSelected && !!selectedExpansionCard);
-  // Whichever card actually occupies the wildcard socket.
-  let activePciCard = $derived(
-    selectedPciCard ?? (expansionSelected ? selectedExpansionCard : undefined),
-  );
-  let pciCardOptions_ = $derived(activePciCard?.options ?? []);
-  // machine.boot takes one wildcard card for the FIRST socket, so that is
-  // the only one this dialog can fill; the rest are shown as empty. A
-  // per-socket picker needs a per-slot boot field that does not exist yet.
-  let firstSocketLabel = $derived(pciSockets[0]?.label ?? '');
-  // "key=value,key=value" for machine.boot, omitting anything left at the
-  // card's own default so the boot record does not claim a choice the user
-  // did not make.
-  let pciOptionSpec = $derived(
-    pciCardOptions_
-      .map((o) => [o.key, pciOptions[o.key] ?? o.default_value ?? ''] as const)
-      .filter(([, v], i) => v && v !== (pciCardOptions_[i].default_value ?? ''))
-      .map(([k, v]) => `${k}=${v}`)
-      .join(','),
-  );
-
-  // The expansion ROM handed to the core for the selected PCI card.  As with
-  // the vROM, naming the file (prom=) is preferred over letting the offer
-  // registry content-match, so the user sees the file they uploaded used.
-  let resolvedProm = $derived(
-    activePciCard?.requires_prom ? (promsByCardId[activePciCard.id]?.[0] ?? null) : null,
-  );
-  // Only surface the picker when there's a real choice; a fixed/builtin
-  // single card (e.g. SE/30 onboard video) needs no dropdown.  A machine
-  // whose only display source is one expansion card is still a choice worth
-  // showing — it is the only place the screen's provenance is stated — so
-  // the single PCI option counts.
-  let needsCardPicker = $derived(displayOptions.length > 1 || pciSelected);
-  let selectedCard = $derived(availableCards.find((c) => c.id === cardId));
-  // VROM row/handling is driven by the *selected card* (the SE/30-vs-IIci
-  // asymmetry): a card declares requires_vrom, not the machine.
-  let needsVrom = $derived(selectedCard?.requires_vrom === true);
-  // The vROM file handed to the core for the selected card (machine.boot's
-  // vrom= argument, the ROM of the card's slot); it also gates "is this card
-  // installable". Without it the card factory falls back to whatever the
-  // platform offered from the OPFS store (content-matched).
-  let resolvedVrom = $derived(needsVrom ? (vromsByCardId[cardId]?.[0] ?? null) : null);
-  // Model expects a video card but none is installable (every candidate card
-  // needs a vROM and none is present). Drives the "upload a Video ROM" hint.
-  // ...one sentence for both buses, because it is one situation: the machine
-  // can take a display card, none is installable, and it has nothing
-  // soldered to fall back on.  Which ROM to ask for is the only difference,
-  // and that is decided by which bus had the candidates.
-  let videoUnavailable = $derived(
-    !hasSolderedDisplay &&
-      displayOptions.length === 0 &&
-      (slotCards.length > 0 || pciDisplayCards.length > 0),
-  );
-  // A PCI expansion ROM (.prom) and a NuBus video ROM (.vrom) are different
-  // files from different places; naming the wrong one sends the user hunting
-  // for something that would not help.
-  let missingRomKind = $derived(
-    slotCards.length > 0 && availableCards.length === 0 ? 'Video ROM' : 'PCI expansion ROM',
-  );
-  // The model's hard-disk bays, as the core derives them (profile.hd_bays):
-  // the boot bay first, each on whatever bus it is — SCSI, a Network
-  // Server's second channel, the Lisa's ProFile.  The dialog picks an index;
-  // the core attaches there (machine.attach_hd), so nothing here knows a bus.
-  let hdSlots = $derived(currentProfile?.hd_bays ?? []);
-  let hdSlotLabel = $derived(hdSlots[0]?.label ?? 'Hard disk');
-  // Which bay, by index; 0 (the boot bay) until the user picks another.
-  // Reset whenever the model changes, since the bays are its.
-  let hdBay = $state(0);
   $effect(() => {
-    void modelId;
-    hdBay = 0;
-  });
-  // Only machines whose profile advertises a CD-ROM (has_cdrom) show the CD row.
-  let hasCdrom = $derived(currentProfile?.has_cdrom === true);
-  // RAM choices in KB, labelled for display (the value stays a number).
-  let ramOptions = $derived(currentProfile?.ram_options ?? []);
-  let floppySlots = $derived(currentProfile?.floppy_slots ?? []);
-  // Video-mode list for the *selected card*: its monitors × supported depths.
-  // Ids/labels match what the C side emits ("<monitor>_<depth>bpp"): the
-  // boot document's video_mode= for the first NuBus socket.
-  //
-  // NuBus cards ONLY.  A PCI display card's monitor list is real, but the
-  // boot document has no field that carries it: video_mode is validated
-  // against the NuBus catalog (nubus_video_mode_known), so sending a PCI
-  // card's mode id fails the boot outright — "unknown video-mode id
-  // '14in_rgb_8bpp'".  A PCI card's monitor is a card option instead
-  // (pci_option="monitor=...", which the card accepts or rejects), and the
-  // card does not declare it as an offered option, so the row stays hidden
-  // for a PCI pick and the card senses its default monitor.
-  let videoModes = $derived.by(() => {
-    const out: Array<{ id: string; label: string }> = [];
-    for (const m of selectedCard?.monitors ?? []) {
-      for (const d of m.depths ?? []) {
-        out.push({
-          id: `${m.id}_${d}bpp`,
-          label: `${m.name ?? m.id} · ${m.width}×${m.height} · ${d} bpp`,
-        });
-      }
+    if (!profile) return;
+    if (docFor !== profile.id) {
+      resetToDefaults();
+      return;
     }
-    return out;
+    // Same model, fresh profile: re-seed only a document nobody has edited
+    // (the images chosen for its positions stay).
+    const fresh = mc.defaultDocument(profile);
+    const seed = JSON.stringify(fresh);
+    if (seed !== docSeed && untrack(() => JSON.stringify(doc)) === docSeed) {
+      doc = fresh;
+      docSeed = seed;
+    }
   });
 
-  let fdOptions = $state<string[]>([NONE_SENTINEL]);
-  let hdOptions = $state<string[]>([NONE_SENTINEL]);
-  let cdOptions = $state<string[]>([NONE_SENTINEL]);
-  // Selected filename -> the OPFS path it actually came from. The dropdowns
-  // speak in filenames, but a category's listing is not always one directory:
-  // scanImages('fd') folds in the legacy /opfs/images/fdhd/ (see
-  // BrowserOpfs.scanImages), so `/opfs/images/<cat>/<name>` is not a safe way
-  // to reconstruct the path at submit time. Filled by refreshOpfs.
+  // --- Image inventories -------------------------------------------------------
+  let fdNames = $state<string[]>([]);
+  let hdNames = $state<string[]>([]);
+  let cdNames = $state<string[]>([]);
+  // Filename -> the OPFS path it was scanned from: a category's listing is
+  // not always one directory (scanImages('fd') folds in the legacy fdhd/).
   let fdPaths = $state<Record<string, string>>({});
   let hdPaths = $state<Record<string, string>>({});
   let cdPaths = $state<Record<string, string>>({});
 
-  // Create-blank-image dialog state.
-  let createOpen = $state(false);
-  let createKind = $state<'hd' | 'fd'>('hd');
-  let createFdSlot = $state(0);
-
-  async function resolveProfile(id: string): Promise<void> {
-    if (profiles[id]) return;
-    const p = await getProfile(id);
-    if (p) profiles = { ...profiles, [id]: p };
-  }
-
-  // Collapse a category listing to the unique filenames the dropdown offers,
-  // plus the path each name resolves to. A listing can carry the same name
-  // twice — scanImages('fd') concatenates /opfs/images/fd/ with the legacy
-  // /opfs/images/fdhd/ — and the first (canonical) entry wins. Deduping here
-  // is what keeps the option list free of repeats; the dropdowns identify an
-  // option by its text, so a repeat is both ambiguous to the user and (until
-  // the {#each} keys below were changed) fatal to the render.
+  // Collapse a listing to unique filenames, the first (canonical) entry
+  // winning, plus the path each resolves to.
   function mediaOptions(entries: OpfsEntry[]): { names: string[]; paths: Record<string, string> } {
     const names: string[] = [];
     const paths: Record<string, string> = {};
@@ -412,138 +149,47 @@
   async function refreshOpfs() {
     scanning = true;
     try {
-      const [roms, vroms, proms, fds, hds, cds] = await Promise.all([
+      const [roms, fds, hds, cds] = await Promise.all([
         opfs.scanRoms().catch(() => []),
-        opfs.scanImages('vrom').catch(() => []),
-        opfs.scanImages('prom').catch(() => []),
         opfs.scanImages('fd').catch(() => []),
         opfs.scanImages('hd').catch(() => []),
         opfs.scanImages('cd').catch(() => []),
       ]);
-
-      // Identify every ROM in parallel. Drop the unrecognised ones.
       const identified = (await Promise.all(roms.map((r) => identifyRom(gsEval, r.path)))).filter(
-        (e): e is RomEntry => e !== null,
+        (e): e is RomIdentity => e !== null,
       );
+      // A card's availability follows the card ROMs stored, which may just
+      // have changed: ask the core again.
+      clearProfileCache();
+      const ids = [...new Set(identified.flatMap((r) => r.compatible))];
+      const fetched = await Promise.all(ids.map((id) => getProfile(id)));
+      const next: Record<string, MachineProfile> = {};
+      ids.forEach((id, i) => {
+        const p = fetched[i];
+        if (p) next[id] = p;
+      });
+      // Both at once, so a model is never listed before its name is known.
       allRoms = identified;
-
-      // Identify every VROM to the card it provides (drop unrecognised). The
-      // card picker is then built from catalog.profile filtered to these.
-      allVroms = (
-        await Promise.all(vroms.map((v) => identifyCardRom(gsEval, 'vrom', v.path)))
-      ).filter((e): e is VromEntry => e !== null);
-
-      // ...and every PCI expansion ROM, which is what makes a display-class
-      // PCI card offerable at all.
-      allProms = (
-        await Promise.all(proms.map((p) => identifyCardRom(gsEval, 'prom', p.path)))
-      ).filter((e): e is PromEntry => e !== null);
-
-      // Look up display names for every model surfaced by these ROMs.
-      const seenIds: string[] = [];
-      for (const r of identified) {
-        for (const id of r.compatible) {
-          if (!seenIds.includes(id)) seenIds.push(id);
-        }
-      }
-      await Promise.all(seenIds.map(resolveProfile));
-
-      // Default the model selection to the first compatible model we found.
-      if (!modelId || !seenIds.includes(modelId)) {
-        modelId = seenIds[0] ?? '';
-      }
+      profiles = next;
+      if (!modelId || !ids.includes(modelId)) modelId = ids[0] ?? '';
 
       const fd = mediaOptions(fds);
-      const hdm = mediaOptions(hds);
-      const cdm = mediaOptions(cds);
-      fdPaths = fd.paths;
-      hdPaths = hdm.paths;
-      cdPaths = cdm.paths;
-      fdOptions = [NONE_SENTINEL, ...fd.names, UPLOAD_SENTINEL, CREATE_SENTINEL];
-      hdOptions = [NONE_SENTINEL, ...hdm.names, UPLOAD_SENTINEL, CREATE_SENTINEL];
-      cdOptions = [NONE_SENTINEL, ...cdm.names, UPLOAD_SENTINEL];
+      const hd = mediaOptions(hds);
+      const cd = mediaOptions(cds);
+      [fdNames, fdPaths] = [fd.names, fd.paths];
+      [hdNames, hdPaths] = [hd.names, hd.paths];
+      [cdNames, cdPaths] = [cd.names, cd.paths];
     } finally {
-      // Never leave the dialog pinned on "Scanning ROMs…": a rejected scan
-      // has to surface as an empty inventory the user can act on, not as a
-      // spinner that outlives the page.
+      // Never leave the dialog pinned on "Scanning ROMs…".
       scanning = false;
     }
   }
 
-  // Keep romPath sync'd with the current model. When the dropdown is hidden
-  // (single ROM match) we still need romPath set so submit can find it.
+  // Keep romPath one of the current model's ROMs.
   $effect(() => {
     const list = romsForCurrentModel;
-    if (!list.length) {
-      romPath = '';
-    } else if (!list.find((r) => r.path === romPath)) {
-      romPath = list[0].path;
-    }
-  });
-
-  // Keep cardId valid for the current model: prefer the slot's default card,
-  // else the first installable one. The picker may be hidden (single card),
-  // so this is what submit relies on.
-  //
-  // This works off displayOptions — the UNION of built-in video, NuBus
-  // cards and display-class PCI cards — not just the NuBus list. On a
-  // machine whose only display comes from a PCI socket the union is the
-  // one-element list holding that card, and if this effect ignored it the
-  // dialog would silently boot with no card at all.
-  $effect(() => {
-    const list = displayOptions;
-    const builtin = hasBuiltinVideo;
-    if (builtin && cardId === BUILTIN_VIDEO_ID) return; // a valid pick
-    if (!list.length) {
-      // Built-in video is the fallback when no card is installable, and the
-      // default on machines that have it: a stock machine ships no card.
-      cardId = builtin ? BUILTIN_VIDEO_ID : '';
-    } else if (!list.find((c) => c.id === cardId)) {
-      cardId = builtin
-        ? BUILTIN_VIDEO_ID
-        : (list.find((c) => c.id === defaultCardId)?.id ?? list[0].id);
-    }
-  });
-
-  // An expansion pick survives only while its card is still offered (a
-  // model change rebuilds the socket list).
-  $effect(() => {
-    if (expansionCardId && !pciExpansionCards.find((c) => c.id === expansionCardId))
-      expansionCardId = '';
-  });
-
-  // The option keys belong to the selected card, so a card change starts
-  // them over rather than carrying a stale key into a different card.
-  $effect(() => {
-    const keys = pciCardOptions_.map((o) => o.key).join('|');
-    void keys;
-    pciOptions = {};
-  });
-
-  // Keep videoMode valid for the selected card (resets on model or card change).
-  $effect(() => {
-    const list = videoModes;
-    if (!list.find((m) => m.id === videoMode)) {
-      videoMode = list[0]?.id ?? '';
-    }
-  });
-
-  // When the *selected model* changes, reset RAM to the new model's
-  // ram_default (matches the legacy dialog — every model change rebuilds
-  // the RAM dropdown around the profile's recommended value) and resize
-  // the floppy-selection array to match the new slot count.
-  let appliedFor = $state('');
-  $effect(() => {
-    if (!currentProfile || modelId === appliedFor) return;
-    appliedFor = modelId;
-    ramKb = currentProfile.ram_default || (ramOptions[0] ?? 0);
-    floppies = new Array<string>(floppySlots.length).fill(NONE_SENTINEL);
-    // Media picked for another model are not this one's (and this one may
-    // have no CD bay at all): the CD used to stay selected, hidden, and be
-    // attached anyway.
-    hd = NONE_SENTINEL;
-    cd = NONE_SENTINEL;
-    // cardId / videoMode follow the card-selection effects above.
+    if (!list.length) romPath = '';
+    else if (!list.find((r) => r.path === romPath)) romPath = list[0].path;
   });
 
   onMount(() => {
@@ -551,8 +197,6 @@
       try {
         await whenModuleReady();
       } catch (e) {
-        // No emulator: nothing can be scanned or booted — say so instead of
-        // leaving the dialog on "Scanning ROMs…" forever.
         startError = e instanceof Error ? e.message : String(e);
         scanning = false;
         return;
@@ -561,12 +205,8 @@
     })();
   });
 
-  // Re-scan OPFS whenever the image catalog changes elsewhere — uploads
-  // via the Welcome "Upload ROM..." button on the Home slide, uploads /
-  // renames / deletes from the Images panel, etc. The slides in this
-  // view are kept mounted (just CSS-hidden), so onMount only fires once
-  // per page load; without this effect the dropdowns would stay stale
-  // and the user would have to reload to see new images.
+  // Re-scan whenever the image catalog changes elsewhere (uploads, renames,
+  // deletes): the slides stay mounted, so onMount fires once per page load.
   let lastSeenRevision = -1;
   $effect(() => {
     const rev = images.revision;
@@ -575,33 +215,154 @@
     lastSeenRevision = rev;
   });
 
-  function onBack(e: Event) {
-    e.preventDefault();
-    setWelcomeSlide('home');
+  // --- Derived views of the tree ---------------------------------------------
+  let machineOptions = $derived(profile ? mc.visibleOptions(profile.options) : []);
+  let devices = $derived(profile && doc ? mc.displayDevices(profile, doc) : []);
+  let connectedId = $derived(doc ? mc.connectedDevice(doc) : null);
+  let connected = $derived(devices.find((d) => d.id === connectedId));
+  let monitorId = $derived(connected && doc ? (doc.displays[connected.id]?.monitor ?? '') : '');
+  let monitorChoices = $derived(
+    (connected?.monitors ?? [])
+      .filter((m) => m !== mc.NO_MONITOR)
+      .map((m) => ({ id: m, label: profile?.monitors.find((x) => x.id === m)?.label ?? m })),
+  );
+  let modeChoices = $derived(connected ? (connected.modes[monitorId] ?? []) : []);
+  let modeValue = $derived(connected && doc ? (doc.displays[connected.id]?.mode ?? '') : '');
+  let startups = $derived(profile && doc ? mc.startupChoices(profile, doc) : []);
+  let warnings = $derived(profile && doc ? mc.configWarnings(profile, doc) : []);
+  // A card entry's display status, for its row.
+  function cardStatus(slot: string): string {
+    return slot === connectedId ? 'connected' : 'no monitor';
   }
 
-  // The slot's new value for a dropdown pick: the pick itself, or for
-  // "Upload image…" the uploaded image -- or, when the upload was cancelled
-  // or rejected, the previous value.  In that last case the state does not
-  // change, so Svelte leaves the DOM showing the sentinel: write the
-  // <select>'s value back ourselves.  (A cancel used to wipe the slot, and a
-  // successful upload left it at (none).)
-  async function interceptIfUpload(
+  // --- Edits -------------------------------------------------------------------
+  function edit(fn: (p: MachineProfile, d: ConfigDocument) => ConfigDocument): void {
+    if (profile && doc) doc = fn(profile, doc);
+  }
+  function optionRowValue(o: ConfigOption): string {
+    return doc ? mc.optionValue(doc, o) : o.default;
+  }
+
+  // Storage: the inline "Add device" form, per bus.
+  let addingDeviceOn = $state<string | null>(null);
+  let addType = $state('');
+  let addUnit = $state<number>(-1);
+  function openAddDevice(bus: string): void {
+    if (!profile || !doc) return;
+    const b = mc.storageBus(profile, bus);
+    addingDeviceOn = bus;
+    addType = b?.accepts[0]?.id ?? 'hd';
+    addUnit = mc.defaultUnit(profile, doc, bus, addType) ?? -1;
+  }
+  $effect(() => {
+    // A type change moves the proposed unit to that type's preferred one.
+    if (!addingDeviceOn || !profile || !doc) return;
+    const unit = mc.defaultUnit(profile, doc, addingDeviceOn, addType);
+    addUnit = unit ?? -1;
+  });
+  function confirmAddDevice(): void {
+    if (!addingDeviceOn || addUnit < 0) return;
+    const bus = addingDeviceOn;
+    edit((p, d) => mc.addDevice(p, d, bus, addType, addUnit));
+    addingDeviceOn = null;
+  }
+  // `map` without `key`.
+  function without(map: Record<string, string>, key: string): Record<string, string> {
+    const next = { ...map };
+    delete next[key];
+    return next;
+  }
+  function removeDeviceAt(index: number): void {
+    if (!doc) return;
+    const gone = doc.storage[index];
+    edit((p, d) => mc.removeDevice(p, d, index));
+    if (gone) mediaImages = without(mediaImages, mc.positionKey(gone));
+  }
+  function moveDevice(index: number, unit: number): void {
+    if (!doc) return;
+    const d = doc.storage[index];
+    if (!d) return;
+    const oldKey = mc.positionKey(d);
+    const image = mediaImages[oldKey];
+    edit((_, cur) => mc.setDeviceUnit(cur, index, unit));
+    const rest = without(mediaImages, oldKey);
+    mediaImages = image ? { ...rest, [mc.positionKey({ bus: d.bus, unit })]: image } : rest;
+  }
+  function startupValue(): string {
+    return doc?.startup ? mc.positionKey(doc.startup) : '';
+  }
+  function setStartupFrom(value: string): void {
+    const [bus, unit] = value.split(':');
+    edit((_, d) => mc.setStartup(d, value ? { bus, unit: Number(unit) } : null));
+  }
+
+  // Cards: the inline "Add card" form.
+  let addingCard = $state(false);
+  let addCardId = $state('');
+  let addSlot = $state('');
+  // Every card of the tree, the ones that cannot be added now disabled with
+  // the reason (an unavailable ROM, no free slot it fits).
+  let cardChoices = $derived(
+    profile && doc
+      ? profile.cards.map((c) => {
+          const slots = mc.freeSlotsFor(profile!, doc!, c.id);
+          const reason =
+            c.status === 'unavailable'
+              ? (c.reason ?? romNeeded(c))
+              : slots.length === 0
+                ? 'No free slot it fits'
+                : '';
+          return { card: c, slots, reason };
+        })
+      : [],
+  );
+  let addSlotChoices = $derived(cardChoices.find((c) => c.card.id === addCardId)?.slots ?? []);
+  function openAddCard(): void {
+    const first = cardChoices.find((c) => !c.reason);
+    addCardId = first?.card.id ?? '';
+    addSlot = first?.slots[0]?.id ?? '';
+    addingCard = true;
+  }
+  $effect(() => {
+    if (addingCard && !addSlotChoices.some((s) => s.id === addSlot))
+      addSlot = addSlotChoices[0]?.id ?? '';
+  });
+  function confirmAddCard(): void {
+    if (!addCardId || !addSlot) return;
+    const [id, slot] = [addCardId, addSlot];
+    edit((p, d) => mc.addCard(p, d, id, slot));
+    addingCard = false;
+  }
+  function romNeeded(c: Card): string {
+    return c.rom?.kind === 'prom'
+      ? 'Needs the card’s expansion ROM (.prom)'
+      : 'Needs the card’s declaration ROM (.vrom)';
+  }
+  async function uploadCardRom(c: Card): Promise<void> {
+    const kind: MediaTypeId = c.rom?.kind === 'prom' ? 'prom' : 'vrom';
+    if (await pickAndUploadAs(kind)) await refreshOpfs();
+  }
+
+  // --- Image pickers -------------------------------------------------------------
+  let createOpen = $state(false);
+  let createKind = $state<'hd' | 'fd'>('hd');
+  let createDisks = $state<BlankDisk[]>([]);
+  let createTarget = $state(''); // "fd0" or "scsi:0"
+
+  // The new value of an image picker: the pick, or for "Upload image…" the
+  // uploaded file -- or, when that was cancelled, the previous value (and
+  // the <select> is written back, since the state does not change).
+  async function pickImage(
     select: HTMLSelectElement,
     previous: string,
     category: ImageCategory,
   ): Promise<string> {
     const value = select.value;
     if (value !== UPLOAD_SENTINEL) return value;
-    // Map the dropdown's category (uses 'cd' as the ImageCategory key)
-    // to the upload pipeline's MediaTypeId ('cdrom') and pick strictly:
-    // a file uploaded into the floppy slot must validate AS a floppy
-    // or it's rejected. Prevents accidentally classifying an HD image
-    // as a floppy via the auto-detect order.
     const mediaId: MediaTypeId = category === 'cd' ? 'cdrom' : (category as MediaTypeId);
     const persisted = await pickAndUploadAs(mediaId);
     await refreshOpfs();
-    await tick(); // the new option is in the DOM before the value names it
+    await tick();
     const paths = category === 'fd' ? fdPaths : category === 'hd' ? hdPaths : cdPaths;
     const name = persisted ? Object.keys(paths).find((n) => paths[n] === persisted) : undefined;
     const next = name ?? previous;
@@ -609,135 +370,94 @@
     return next;
   }
 
-  async function onFdChange(e: Event, slotIndex: number) {
-    const v = (e.target as HTMLSelectElement).value;
-    if (v === CREATE_SENTINEL) {
-      // Revert the dropdown off the sentinel, then open the create dialog.
-      const reverted = floppies.slice();
-      reverted[slotIndex] = NONE_SENTINEL;
-      floppies = reverted;
-      createKind = 'fd';
-      createFdSlot = slotIndex;
-      createOpen = true;
-      return;
-    }
+  async function onFloppyImage(e: Event, id: string): Promise<void> {
     const select = e.target as HTMLSelectElement;
-    const result = await interceptIfUpload(select, floppies[slotIndex] ?? NONE_SENTINEL, 'fd');
-    const next = floppies.slice();
-    next[slotIndex] = result;
-    floppies = next;
-  }
-  async function onHdChange(e: Event) {
-    const v = (e.target as HTMLSelectElement).value;
-    if (v === CREATE_SENTINEL) {
-      hd = NONE_SENTINEL;
-      createKind = 'hd';
+    if (select.value === CREATE_SENTINEL) {
+      select.value = floppyImages[id] ?? NO_DISK;
+      createKind = 'fd';
+      createTarget = id;
       createOpen = true;
       return;
     }
-    hd = await interceptIfUpload(e.target as HTMLSelectElement, hd, 'hd');
+    const v = await pickImage(select, floppyImages[id] ?? NO_DISK, 'fd');
+    floppyImages = { ...floppyImages, [id]: v === NO_DISK ? '' : v };
   }
 
-  // A blank image was created in /opfs/images/{hd,fd}/. Re-scan so the
-  // dropdown lists it, then select it.
+  async function onDeviceImage(e: Event, key: string, type: string, disks: BlankDisk[]) {
+    const select = e.target as HTMLSelectElement;
+    const empty = type === 'cd' ? NO_DISC : CHOOSE_IMAGE;
+    if (select.value === CREATE_SENTINEL) {
+      select.value = mediaImages[key] || empty;
+      createKind = 'hd';
+      createDisks = disks;
+      createTarget = key;
+      createOpen = true;
+      return;
+    }
+    const v = await pickImage(select, mediaImages[key] || empty, type === 'cd' ? 'cd' : 'hd');
+    mediaImages = { ...mediaImages, [key]: v === empty ? '' : v };
+  }
+
   async function onImageCreated(name: string) {
     createOpen = false;
     await refreshOpfs();
-    if (createKind === 'hd') {
-      hd = name;
-    } else {
-      const next = floppies.slice();
-      next[createFdSlot] = name;
-      floppies = next;
-    }
+    if (createKind === 'fd') floppyImages = { ...floppyImages, [createTarget]: name };
+    else mediaImages = { ...mediaImages, [createTarget]: name };
   }
-  async function onCdChange(e: Event) {
-    cd = await interceptIfUpload(e.target as HTMLSelectElement, cd, 'cd');
+
+  // --- Start ---------------------------------------------------------------------
+  function onBack(e: Event) {
+    e.preventDefault();
+    setWelcomeSlide('home');
   }
 
   async function onSubmit(e: Event) {
     e.preventDefault();
-    if (!modelId || !romsForCurrentModel.length) {
+    if (!modelId || !romsForCurrentModel.length || !profile || !doc) {
       showNotification('Upload a ROM first via drag-and-drop or the Upload ROM button', 'warning');
       return;
     }
     const selected = romsForCurrentModel.find((r) => r.path === romPath) ?? romsForCurrentModel[0];
-    // The chosen card auto-resolves its vROM (probed by card id); '(auto)'
-    // means the document names none — the card factory content-matches among
-    // the files the platform offered from the OPFS store.
-    const vromPath = resolvedVrom ? resolvedVrom.path : '(auto)';
-    // Same contract for a PCI card's expansion ROM: name the file when we
-    // have one, otherwise let the core's offer registry content-match.
-    const promPath = resolvedProm ? resolvedProm.path : '(auto)';
-    // Resolve each pick back to the path it was scanned from (fdPaths etc.);
-    // the category directory is only the fallback, since an fd listing can
-    // also carry files from the legacy fdhd directory.
-    const floppyPaths = floppies.map((f) =>
-      f === NONE_SENTINEL || !f ? '' : (fdPaths[f] ?? `/opfs/images/fd/${f}`),
-    );
-    const hdPath = hd === NONE_SENTINEL ? NONE_SENTINEL : (hdPaths[hd] ?? `/opfs/images/hd/${hd}`);
-    const cdPath = cd === NONE_SENTINEL ? NONE_SENTINEL : (cdPaths[cd] ?? `/opfs/images/cd/${cd}`);
-    // A fixed builtin video slot (IIci / IIsi) hard-wires its card and has
-    // no C-side video-mode catalog — the boot document carries neither
-    // field for it (boot validation rejects unknown mode ids).
-    const fixedVideo = configSlot?.fixed === true;
-    // Card configurability and mode-catalog presence are INDEPENDENT: the
-    // SE/30's builtin slot is now card-configurable (generic vs real vROM)
-    // yet still has a single fixed 1-bpp mode with no C-side catalog.  So
-    // gate video_mode on there being an actual choice (more than one mode —
-    // the same condition that shows the picker), not on `fixedVideo`; else
-    // the lone auto-selected `se30_internal_1bpp` id is sent and boot
-    // validation rejects it as unknown.
-    const hasVideoModeChoice = videoModes.length > 1;
+    // A hard disk with no image is dropped, never a reason not to start.
+    const { doc: booted, dropped } = mc.dropImagelessDisks(profile, doc, mediaImages);
+    for (const d of dropped)
+      showNotification(
+        `Hard disk at ${mc.storageLabel(profile, d)} has no image and was not attached`,
+        'warning',
+      );
+    const floppies: Record<string, string> = {};
+    for (const [id, name] of Object.entries(floppyImages)) {
+      if (name && (booted.floppies[id] ?? 'none') !== 'none')
+        floppies[id] = fdPaths[name] ?? `/opfs/images/fd/${name}`;
+    }
+    const media: MediaImage[] = [];
+    for (const d of booted.storage) {
+      const name = mediaImages[mc.positionKey(d)];
+      if (!name) continue;
+      const paths = d.type === 'cd' ? cdPaths : hdPaths;
+      const dir = d.type === 'cd' ? 'cd' : 'hd';
+      media.push({ ...d, path: paths[name] ?? `/opfs/images/${dir}/${name}` });
+    }
     await initEmulator({
       model: modelId,
       rom: selected.path,
-      vrom: vromPath,
-      // The selected NuBus video card — the boot document's video_card=, so
-      // the right card boots instead of the slot default (the 24AC-vs-8•24 bug).
-      // Only a NuBus pick travels here.  `selectedCard` is looked up in the
-      // NuBus list, so built-in video, a socket PCI card and a soldered PCI
-      // card all miss it — which is the point: sending any of those as
-      // video_card would make the core hunt for a NuBus card that does not
-      // exist.  (An earlier version tested for those three cases one by one
-      // and missed the soldered PCI card, which then went out as
-      // video_card=tnt_control.)
-      videoCard: fixedVideo || !selectedCard ? undefined : cardId || undefined,
-      // A display-class PCI card travels in its own field: the boot document
-      // seats it into the first free socket, and the machine's BUILTIN
-      // fallback video (the 9500's Control/Chaos stand-in) retires because a
-      // socket supplied a display card.
-      // ...or a non-display socket card (the Voodoo2) from the Expansion
-      // Slots picker — the SAME wildcard field, so the two picks are
-      // mutually exclusive and the display pick wins the socket.
-      pciCard: pciSelected ? cardId : expansionSelected ? expansionCardId : undefined,
-      prom: pciSelected ? promPath : undefined,
-      pciOption: (pciSelected || expansionSelected) && pciOptionSpec ? pciOptionSpec : undefined,
-      // Which port the monitor is plugged into.  Choosing a NuBus card on a
-      // machine that also has built-in video leaves the built-in port
-      // unconnected, so the ROM turns built-in video off and the card is the
-      // only screen — the hardware behaviour, and the only way the card's
-      // own accelerator ever gets used.
-      monitor: hasBuiltinVideo && !builtinSelected ? 'none' : undefined,
-      // Seed the selected video mode (matches web-legacy's bootFromConfig).
-      // Without it the card never seeds its slot-PRAM/video defaults and A/UX
-      // hangs enabling its device drivers on real hardware.
-      // Same rule as videoCard: only a NuBus pick has a video_mode the core
-      // will accept, so gate on selectedCard rather than on the negations.
-      videoMode:
-        fixedVideo || !selectedCard || !hasVideoModeChoice ? undefined : videoMode || undefined,
-      ramKb: ramKb || undefined,
-      floppies: floppyPaths,
-      hd: hdPath,
-      hdBay,
-      // Only a model with a CD bay gets a CD.
-      cd: hasCdrom ? cdPath : NONE_SENTINEL,
+      config: booted,
+      floppies,
+      media,
     });
     setWelcomeSlide('home');
   }
 
-  let canStart = $derived(!scanning && !!modelId && romsForCurrentModel.length > 0);
+  let canStart = $derived(!scanning && !!modelId && romsForCurrentModel.length > 0 && !!doc);
 </script>
+
+{#snippet optionSelect(o: ConfigOption, id: string, value: string, set: (v: string) => void)}
+  <Select {id} {value} onchange={(e) => set((e.target as HTMLSelectElement).value)}>
+    {#each o.values as v (v.id)}
+      <option value={v.id}>{v.label}</option>
+    {/each}
+  </Select>
+{/snippet}
 
 <div class="config-content">
   <div class="back-row">
@@ -746,21 +466,18 @@
   <h2 class="config-title">New Machine</h2>
   <FormGrid class="config-form" onsubmit={onSubmit}>
     {#if startError}
-      <Field
-        class="form-row"
-        label="Machine Model"
-        help={`The emulator did not start: ${startError}`}
-      />
-    {:else if scanning}
-      <Field class="form-row" label="Machine Model" help="Scanning ROMs…" />
+      <Field class="form-row" label="Model" help={`The emulator did not start: ${startError}`} />
+    {:else if scanning && modelOptions.length === 0}
+      <Field class="form-row" label="Model" help="Scanning ROMs…" />
     {:else if modelOptions.length === 0}
       <Field
         class="form-row"
-        label="Machine Model"
+        label="Model"
         help="No ROMs in storage. Drag-and-drop a ROM file or use the Upload ROM button on the Home slide."
       />
     {:else}
-      <Field class="form-row" label="Machine Model" for="cfg-model">
+      <SectionHeading class="config-section">Machine</SectionHeading>
+      <Field class="form-row" label="Model" for="cfg-model">
         <!-- A choice is a model AND the ROM it boots: selecting one sets both. -->
         <Select
           id="cfg-model"
@@ -781,152 +498,309 @@
           {/each}
         </Select>
       </Field>
-      {#if needsCardPicker}
-        <Field class="form-row" label={hasBuiltinVideo ? 'Display' : 'Display Card'} for="cfg-card">
-          <Select id="cfg-card" bind:value={cardId}>
-            {#each displayOptions as c (c.id)}
-              <option value={c.id}>{c.label}</option>
+      {#if profile && doc}
+        {#each machineOptions as o (o.id)}
+          <Field class="form-row" label={o.label} for={`cfg-opt-${o.id}`} help={o.detail}>
+            {@render optionSelect(o, `cfg-opt-${o.id}`, optionRowValue(o), (v) =>
+              edit((_, d) => mc.setOption(d, o.id, v)),
+            )}
+          </Field>
+        {/each}
+
+        {#if devices.length > 0}
+          <SectionHeading class="config-section" rule>Monitor</SectionHeading>
+          {#if devices.length > 1}
+            <Field class="form-row" label="Connected to" for="cfg-display">
+              <Select
+                id="cfg-display"
+                value={connectedId ?? ''}
+                onchange={(e) =>
+                  edit((p, d) => mc.connectTo(p, d, (e.target as HTMLSelectElement).value))}
+              >
+                {#each devices as dev (dev.id)}
+                  <option value={dev.id}>{dev.label}</option>
+                {/each}
+              </Select>
+            </Field>
+          {/if}
+          {#if connected && monitorChoices.length > 1}
+            <Field class="form-row" label="Monitor" for="cfg-monitor">
+              <Select
+                id="cfg-monitor"
+                value={monitorId}
+                onchange={(e) =>
+                  edit((_, d) =>
+                    mc.setMonitor(d, connected!.id, (e.target as HTMLSelectElement).value),
+                  )}
+              >
+                {#each monitorChoices as m (m.id)}
+                  <option value={m.id}>{m.label}</option>
+                {/each}
+              </Select>
+            </Field>
+          {:else if connected && monitorChoices.length === 1}
+            <Field class="form-row" label="Monitor" help={monitorChoices[0].label} />
+          {/if}
+          {#if connected && modeChoices.length > 1}
+            <Field class="form-row" label="Video mode" for="cfg-video-mode">
+              <Select
+                id="cfg-video-mode"
+                value={modeValue}
+                onchange={(e) =>
+                  edit((_, d) =>
+                    mc.setMode(d, connected!.id, (e.target as HTMLSelectElement).value),
+                  )}
+              >
+                <option value="">Default (chosen by the Mac)</option>
+                {#each modeChoices as m (m.id)}
+                  <option value={m.id}>{m.label}</option>
+                {/each}
+              </Select>
+            </Field>
+          {/if}
+          {#if connected && connected.id !== mc.BUILTIN}
+            {@const entry = doc.cards.find((c) => c.slot === connected!.id)}
+            {#each mc.visibleOptions(connected.options) as o (o.id)}
+              <Field class="form-row" label={o.label} for={`cfg-display-opt-${o.id}`}>
+                {@render optionSelect(
+                  o,
+                  `cfg-display-opt-${o.id}`,
+                  entry?.options[o.id] ?? o.default,
+                  (v) => edit((_, d) => mc.setCardOption(d, connected!.id, o.id, v)),
+                )}
+              </Field>
             {/each}
-          </Select>
-        </Field>
-        {#if hasBuiltinVideo && !builtinSelected}
-          <Field
-            class="form-row"
-            help="The monitor is plugged into the card, so the built-in video port is left unconnected and the card becomes the only screen."
-          />
+          {/if}
         {/if}
-        {#if pciSelected && !hasSolderedDisplay}
-          <Field
-            class="form-row"
-            help="This model has no built-in video, so the card in the expansion slot is the screen."
-          />
-        {/if}
-      {/if}
-      {#if videoUnavailable}
-        <Field
-          class="form-row"
-          label="Display Card"
-          help={`This model's display card needs a ${missingRomKind}. Drag-and-drop one (or add it via the Images panel) to enable video.`}
-        />
-      {/if}
-      {#if pciSockets.length > 0}
-        <Separator orientation="horizontal" class="form-divider" />
-        <Field class="form-row" label="Expansion Slots">
-          <div class="slot-list">
-            {#each pciSockets as sl (sl.slot)}
-              <div class="slot-row">
-                <span class="slot-name">{sl.label ?? `Slot ${sl.slot}`}</span>
-                {#if sl.label === firstSocketLabel && !pciSelected && pciExpansionCards.length > 0}
-                  <!-- The one per-socket pick the boot document can carry:
-                       the wildcard pci_card= reaches the first socket.  Only
-                       non-display cards appear here; a display-class card is
-                       picked in the Display row and would occupy this same
-                       socket, which is why the two are mutually exclusive. -->
-                  <Select
-                    id="cfg-expansion-card"
-                    value={expansionCardId}
-                    onchange={(e) => (expansionCardId = (e.target as HTMLSelectElement).value)}
+
+        {#if profile.slots.length > 0}
+          <div class="section-head">
+            <SectionHeading class="config-section" rule>Expansion cards</SectionHeading>
+            {#if !addingCard && cardChoices.some((c) => !c.reason)}
+              <Button size="sm" icon="plus" onclick={openAddCard} data-testid="cfg-add-card"
+                >Add card</Button
+              >
+            {/if}
+          </div>
+          {#each doc.cards as entry (entry.slot)}
+            {@const c = mc.card(profile, entry.card)}
+            <div class="item-row" data-slot={entry.slot} data-card={entry.card}>
+              <span class="item-name">{c?.label ?? entry.card}</span>
+              <span class="item-pos">{mc.slotLabel(profile, entry.slot)}</span>
+              {#if c && entry.slot !== connectedId}
+                {#each mc.visibleOptions(c.options) as o (o.id)}
+                  {@render optionSelect(
+                    o,
+                    `cfg-card-opt-${entry.slot}-${o.id}`,
+                    entry.options[o.id] ?? o.default,
+                    (v) => edit((_, d) => mc.setCardOption(d, entry.slot, o.id, v)),
+                  )}
+                {/each}
+              {/if}
+              {#if c?.class === 'display'}
+                <span class="item-status">{cardStatus(entry.slot)}</span>
+              {/if}
+              <IconButton
+                icon="close"
+                size="sm"
+                tone="panel"
+                label={`Remove ${c?.label ?? entry.card}`}
+                onclick={() => edit((p, d) => mc.removeCard(p, d, entry.slot))}
+              />
+            </div>
+            {#if c?.status === 'substitute'}
+              <p class="item-note">
+                Using the emulator’s substitute ROM — upload the card’s ROM to use Apple’s.
+                <Link href="#upload" onclick={(e: Event) => (e.preventDefault(), uploadCardRom(c))}
+                  >Upload ROM…</Link
+                >
+              </p>
+            {/if}
+          {/each}
+          {#if addingCard}
+            <div class="add-form">
+              <Select id="cfg-add-card" bind:value={addCardId} aria-label="Card">
+                {#each cardChoices as ch (ch.card.id)}
+                  <option value={ch.card.id} disabled={!!ch.reason}
+                    >{ch.card.label}{ch.reason ? ` — ${ch.reason}` : ''}</option
                   >
-                    <option value="">(empty)</option>
-                    {#each pciExpansionCards as c (c.id)}
-                      <option value={c.id}>{c.display_name ?? c.id}</option>
+                {/each}
+              </Select>
+              <Select id="cfg-add-card-slot" bind:value={addSlot} aria-label="Slot">
+                {#each addSlotChoices as s (s.id)}
+                  <option value={s.id}>{s.label}</option>
+                {/each}
+              </Select>
+              <Button size="sm" variant="primary" onclick={confirmAddCard} disabled={!addSlot}
+                >Add</Button
+              >
+              <Button size="sm" variant="ghost" onclick={() => (addingCard = false)}>Cancel</Button>
+            </div>
+          {/if}
+          {#each cardChoices.filter((ch) => ch.card.status === 'unavailable') as ch (ch.card.id)}
+            <p class="item-note">
+              {ch.card.label}: {ch.reason}.
+              <Link
+                href="#upload"
+                onclick={(e: Event) => (e.preventDefault(), uploadCardRom(ch.card))}
+                >Upload ROM…</Link
+              >
+            </p>
+          {/each}
+        {/if}
+
+        {#each warnings as w (w)}
+          <p class="item-note warning" role="status">{w}</p>
+        {/each}
+
+        {#if profile.floppies.length > 0}
+          <SectionHeading class="config-section" rule>Floppy drives</SectionHeading>
+          {#each profile.floppies as pos, i (pos.id)}
+            {@const type = doc.floppies[pos.id] ?? pos.default}
+            <Field class="form-row" label={pos.label} for={`cfg-fd${i}`}>
+              <div class="pair">
+                {#if pos.types.length > 1}
+                  <Select
+                    id={`cfg-fd-type-${pos.id}`}
+                    aria-label={`${pos.label} type`}
+                    value={type}
+                    onchange={(e) =>
+                      edit((_, d) =>
+                        mc.setFloppy(d, pos.id, (e.target as HTMLSelectElement).value),
+                      )}
+                  >
+                    {#each pos.types as t (t.id)}
+                      <option value={t.id}>{t.label}</option>
+                    {/each}
+                  </Select>
+                {/if}
+                {#if type !== 'none'}
+                  <Select
+                    id={`cfg-fd${i}`}
+                    value={floppyImages[pos.id] || NO_DISK}
+                    onchange={(e) => onFloppyImage(e, pos.id)}
+                  >
+                    <option>{NO_DISK}</option>
+                    {#each fdNames as n (n)}
+                      <option>{n}</option>
+                    {/each}
+                    <option>{UPLOAD_SENTINEL}</option>
+                    <option>{CREATE_SENTINEL}</option>
+                  </Select>
+                {/if}
+              </div>
+            </Field>
+          {/each}
+        {/if}
+
+        {#if profile.storage.length > 0}
+          <SectionHeading class="config-section" rule>Storage</SectionHeading>
+          {#each profile.storage as bus (bus.id)}
+            {@const onBus = doc.storage
+              .map((d, index) => ({ d, index }))
+              .filter((x) => x.d.bus === bus.id)}
+            <div class="section-head bus-head" data-bus={bus.id}>
+              <span class="bus-label">{bus.label}</span>
+              {#if addingDeviceOn !== bus.id && mc.freeUnits(profile, doc, bus.id).length > 0}
+                <Button
+                  size="sm"
+                  icon="plus"
+                  onclick={() => openAddDevice(bus.id)}
+                  data-testid={`cfg-add-device-${bus.id}`}>Add device</Button
+                >
+              {/if}
+            </div>
+            {#each onBus as { d, index } (mc.positionKey(d))}
+              {@const key = mc.positionKey(d)}
+              {@const empty = d.type === 'cd' ? NO_DISC : CHOOSE_IMAGE}
+              <div class="item-row device-row" data-device-type={d.type} data-position={key}>
+                <span class="item-name">{mc.deviceTypeLabel(profile, d.bus, d.type)}</span>
+                <Select
+                  id={`cfg-unit-${bus.id}-${d.unit}`}
+                  aria-label="Position"
+                  value={d.unit}
+                  onchange={(e) => moveDevice(index, Number((e.target as HTMLSelectElement).value))}
+                >
+                  {#each mc.freeUnits(profile, doc, bus.id, index) as u (u.unit)}
+                    <option value={u.unit}>{u.label}</option>
+                  {/each}
+                </Select>
+                <Select
+                  id={`cfg-media-${bus.id}-${d.unit}`}
+                  aria-label={`${mc.deviceTypeLabel(profile, d.bus, d.type)} image`}
+                  value={mediaImages[key] || empty}
+                  onchange={(e) => onDeviceImage(e, key, d.type, bus.blank_disks)}
+                >
+                  <option>{empty}</option>
+                  {#each d.type === 'cd' ? cdNames : hdNames as n (n)}
+                    <option>{n}</option>
+                  {/each}
+                  <option>{UPLOAD_SENTINEL}</option>
+                  {#if d.type !== 'cd'}<option>{CREATE_SENTINEL}</option>{/if}
+                </Select>
+                <IconButton
+                  icon="close"
+                  size="sm"
+                  tone="panel"
+                  label={`Remove ${mc.deviceTypeLabel(profile, d.bus, d.type)}`}
+                  onclick={() => removeDeviceAt(index)}
+                />
+              </div>
+            {/each}
+            {#if addingDeviceOn === bus.id}
+              <div class="add-form">
+                {#if bus.accepts.length > 1}
+                  <Select id={`cfg-add-type-${bus.id}`} bind:value={addType} aria-label="Device">
+                    {#each bus.accepts as a (a.id)}
+                      <option value={a.id}>{a.label}</option>
                     {/each}
                   </Select>
                 {:else}
-                  <span class="slot-card">
-                    {sl.label === firstSocketLabel && pciSelected
-                      ? (selectedPciCard?.display_name ?? cardId)
-                      : '(empty)'}
-                  </span>
+                  <span class="item-name">{bus.accepts[0]?.label}</span>
                 {/if}
+                <Select id={`cfg-add-unit-${bus.id}`} bind:value={addUnit} aria-label="Position">
+                  {#each mc.freeUnits(profile, doc, bus.id) as u (u.unit)}
+                    <option value={u.unit}>{u.label}</option>
+                  {/each}
+                </Select>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onclick={confirmAddDevice}
+                  disabled={addUnit < 0}>Add</Button
+                >
+                <Button size="sm" variant="ghost" onclick={() => (addingDeviceOn = null)}
+                  >Cancel</Button
+                >
               </div>
-            {/each}
-          </div>
-        </Field>
-        {#if pciSockets.length > 1 && pciSelected}
-          <Field
-            class="form-row"
-            help="A card is installed in the first socket. The others are configured socket by socket with machine.boot's slots=, which this dialog does not offer yet."
-          />
+            {/if}
+          {/each}
+          {#if profile.storage.some((b) => b.startup)}
+            <Field class="form-row" label="Start up from" for="cfg-startup">
+              <Select
+                id="cfg-startup"
+                value={startupValue()}
+                onchange={(e) => setStartupFrom((e.target as HTMLSelectElement).value)}
+              >
+                {#each startups as s (mc.positionKey(s))}
+                  <option value={mc.positionKey(s)}>{s.label}</option>
+                {/each}
+                <option value="">No default (search all drives)</option>
+              </Select>
+            </Field>
+          {/if}
         {/if}
-        {#each pciCardOptions_ as opt (opt.key)}
-          <Field class="form-row" label={opt.label ?? opt.key} for="cfg-pciopt-{opt.key}">
-            <Select
-              id="cfg-pciopt-{opt.key}"
-              value={pciOptions[opt.key] ?? opt.default_value ?? ''}
-              onchange={(e) =>
-                (pciOptions = { ...pciOptions, [opt.key]: (e.target as HTMLSelectElement).value })}
-            >
-              {#each opt.values ?? [] as v (v.id)}
-                <option value={v.id}>{v.label ?? v.id}</option>
-              {/each}
-            </Select>
-          </Field>
-        {/each}
-      {/if}
-      {#if videoModes.length > 1}
-        <Field class="form-row" label="Video Mode" for="cfg-video-mode">
-          <Select id="cfg-video-mode" bind:value={videoMode}>
-            {#each videoModes as m (m.id)}
-              <option value={m.id}>{m.label ?? m.id}</option>
-            {/each}
-          </Select>
-        </Field>
-      {/if}
-      <Field class="form-row" label="RAM" for="cfg-ram">
-        <Select id="cfg-ram" bind:value={ramKb}>
-          {#each ramOptions as kb (kb)}
-            <option value={kb}>{formatRamKb(kb)}</option>
-          {:else}
-            <option value={0}>Model default</option>
-          {/each}
-        </Select>
-      </Field>
-      <Separator orientation="horizontal" class="form-divider" />
-      {#each floppySlots as slot, i (i)}
-        <Field class="form-row" label={slot.label ?? `Floppy ${i}`} for={`cfg-fd${i}`}>
-          <Select
-            id={`cfg-fd${i}`}
-            value={floppies[i] ?? NONE_SENTINEL}
-            onchange={(e) => onFdChange(e, i)}
-          >
-            {#each fdOptions as opt, oi (oi)}
-              <option>{opt}</option>
-            {/each}
-          </Select>
-        </Field>
-      {/each}
-      <Field class="form-row" label={hdSlots.length > 1 ? 'Hard disk' : hdSlotLabel} for="cfg-hd">
-        <Select id="cfg-hd" value={hd} onchange={onHdChange}>
-          {#each hdOptions as opt, i (i)}
-            <option>{opt}</option>
-          {/each}
-        </Select>
-      </Field>
-      {#if hdSlots.length > 1}
-        <!-- Which bay it sits in: the firmware's default boot bay is preselected. -->
-        <Field class="form-row" label="Bay" for="cfg-hd-bay">
-          <Select id="cfg-hd-bay" bind:value={hdBay}>
-            {#each hdSlots as slot, i (i)}
-              <option value={i}>{slot.label}</option>
-            {/each}
-          </Select>
-        </Field>
-      {/if}
-      {#if hasCdrom}
-        <Field class="form-row" label="SCSI CD-ROM" for="cfg-cd">
-          <Select id="cfg-cd" value={cd} onchange={onCdChange}>
-            {#each cdOptions as opt, i (i)}
-              <option>{opt}</option>
-            {/each}
-          </Select>
-        </Field>
       {/if}
     {/if}
     <Separator orientation="horizontal" class="form-divider" />
     <div class="form-actions">
+      {#if profile && doc}
+        <Button size="lg" variant="ghost" onclick={resetToDefaults} data-testid="cfg-reset"
+          >Reset to defaults</Button
+        >
+      {/if}
       <Button type="submit" size="lg" variant="primary" class="primary-button" disabled={!canStart}
-        >Start Machine</Button
+        >Start</Button
       >
     </div>
   </FormGrid>
@@ -935,14 +809,14 @@
 <CreateImageDialog
   open={createOpen}
   kind={createKind}
-  bus={hdSlots[0]?.bus === 'profile' ? 'profile' : 'scsi'}
+  disks={createDisks}
   onClose={() => (createOpen = false)}
   onCreated={onImageCreated}
 />
 
 <style>
   .config-content {
-    max-width: 560px;
+    max-width: 640px;
     width: 100%;
     padding: var(--gs-space-12) var(--gs-space-8) var(--gs-space-8);
   }
@@ -955,23 +829,39 @@
   .back-row {
     margin-bottom: var(--gs-space-4);
   }
-  .slot-list {
+  .section-head {
     display: flex;
-    flex-direction: column;
-    gap: var(--gs-space-0-5);
-  }
-  .slot-row {
-    display: flex;
-    gap: var(--gs-space-2);
     align-items: baseline;
+    justify-content: space-between;
+    gap: var(--gs-space-2);
   }
-  .slot-name {
-    min-width: 3em;
+  .bus-label {
     color: var(--gs-text-muted);
+  }
+  .item-row,
+  .add-form,
+  .pair {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--gs-space-2);
+  }
+  .item-name {
+    min-width: 8em;
+  }
+  .item-pos,
+  .item-status {
+    color: var(--gs-text-muted);
+  }
+  .item-note {
+    margin: 0;
+    color: var(--gs-text-muted);
+    font-size: var(--gs-font-size-sm);
   }
   .form-actions {
     display: flex;
     justify-content: flex-end;
+    gap: var(--gs-space-2);
     margin-top: var(--gs-space-4);
   }
 </style>

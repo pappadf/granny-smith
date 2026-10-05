@@ -333,10 +333,10 @@ test('ANS 500: GUI-mode Setup draws in the browser', async ({ page }) => {
   if (await page.locator('#cfg-rom').count()) await pick(page, '#cfg-rom', /ans-2\.26NT/);
   // 64 MB: setup.of puts load-base at 3E00000, which is 62 MB, so a smaller
   // machine leaves `load` writing into nothing.
-  await pick(page, '#cfg-ram', /^64 MB$/);
+  await pick(page, '#cfg-opt-memory', /^64 MB$/);
   await pick(page, '#cfg-fd0', /boot-floppy\.img/);
-  await pick(page, '#cfg-hd', /nt-disk\.img/);
-  await page.getByRole('button', { name: 'Start Machine' }).click();
+  await pick(page, '#cfg-media-scsi-2', /nt-disk\.img/);
+  await page.getByRole('button', { name: 'Start', exact: true }).click();
   await expect(page.locator('.toast .msg').filter({ hasText: 'Machine started' })).toBeVisible({
     timeout: 30_000,
   });

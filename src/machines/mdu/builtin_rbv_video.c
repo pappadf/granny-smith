@@ -226,11 +226,6 @@ static display_t *card_display(nubus_card_t *card) {
     return p ? &p->display : NULL;
 }
 
-static const char *card_name(const nubus_card_t *card) {
-    (void)card;
-    return "Macintosh IIci Built-in Video";
-}
-
 // Save/restore the card's own display state.
 //
 // The RBV *chip* registers ride along in rbv_checkpoint(), but nothing covered
@@ -291,7 +286,6 @@ static const nubus_card_ops_t builtin_rbv_video_ops = {
     .display = card_display,
     .checkpoint_save = card_checkpoint_save,
     .checkpoint_restore = card_checkpoint_restore,
-    .name = card_name,
 };
 
 // === Machine-facing hooks ===================================================
@@ -437,7 +431,7 @@ static const int builtin_rbv_depths[] = {1, 2, 4, 8, 0};
 
 static const nubus_monitor_t builtin_rbv_monitors[] = {
     {.id = "13in_rgb",
-     .name = "13\" AppleColor RGB",
+     .monitor = "13in_rgb",
      .width = RBV_VIDEO_WIDTH,
      .height = RBV_VIDEO_HEIGHT,
      .depths = builtin_rbv_depths,
@@ -449,7 +443,7 @@ static const nubus_monitor_t builtin_rbv_monitors[] = {
 
 const nubus_card_kind_t builtin_rbv_video_kind = {
     .id = "builtin_rbv_video",
-    .display_name = "Macintosh IIci Built-in Video",
+    .display_name = "Built-in video",
     .attach = CARD_ATTACH_BUILTIN, // motherboard circuitry — never socketed
     .requires_vrom = false,
     .monitors = builtin_rbv_monitors,

@@ -23,6 +23,7 @@
 //                       (the 750 fetches its reset vector at $FFF00100)
 
 #include "gossamer.h"
+#include "config_seed.h"
 
 #include "cuda.h" // the shared behavioral Cuda model (machines/av/)
 #include "davbus.h"
@@ -430,8 +431,8 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
         return -1;
     machine_part(cfg, cp, "dbdma", part_save_dbdma, st->dbdma);
     machine_part_begin(cfg, cp, "floppy");
-    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp,
-                              CONFIG_IMAGES(cfg));
+    cfg->floppy =
+        floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, CONFIG_IMAGES(cfg));
     machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
     gos_swim3_bind(cfg);
     gos_swim3_init(cfg);
@@ -497,7 +498,7 @@ static int gossamer_init(config_t *cfg, checkpoint_t *cp) {
     // SCSI: the one MESH bus (internal and external connectors share it).
     machine_part_images(cfg, cp);
     machine_part_begin(cfg, cp, "scsi");
-    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, cp, CONFIG_IMAGES(cfg));
+    cfg->scsi = machine_scsi_bus_init(cfg, cp, "scsi");
     machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
     machine_part_begin(cfg, cp, "mesh");
     st->mesh = mesh_init(cfg->scheduler, cp);
@@ -611,10 +612,6 @@ static void gossamer_trigger_vbl(config_t *cfg) {
     pci_tick_vbl(cfg->pci);
 }
 
-static struct display *gossamer_display(config_t *cfg) {
-    return pci_primary_display(cfg->pci);
-}
-
 // A PCI slot's INTA-D line reaches the Heathrow source its declaration
 // names (A1/B1/C1 -> $17/$18/$19, the ATI -> $16).
 static void gossamer_pci_slot_irq(config_t *cfg, int slot, bool active) {
@@ -638,11 +635,63 @@ static bool gossamer_fd_present(config_t *cfg, int drive) {
     return floppy_is_inserted(cfg->floppy, drive);
 }
 
-// The MESH bus: internal bays and the external connector share it.
-const struct scsi_slot gossamer_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
+// The board's storage: the MESH SCSI bus (the internal 50-pin cable and the
+// external DB-25 on one bus, with no named bay) and Heathrow's two ATA
+// buses.  A stock machine has its hard disk and CD-ROM drive on ATA; here
+// they stay on SCSI until the ROM's expected ATA placement is checked, and
+// an ATA bus takes hard disks (an ATAPI CD-ROM drive there is not yet a
+// construction input).  The startup record names a SCSI ID, so only the SCSI
+// bus can hold the startup device.
+const storage_bus_decl_t gossamer_storage[] = {
+    {.id = "scsi",
+     .label = "SCSI",
+     .detail = "MESH",
+     .kind = STORAGE_KIND_SCSI,
+     .media_bus = MEDIA_BUS_SCSI,
+     .units = MAC_SCSI_UNITS,
+     .reserved = MAC_SCSI_RESERVED,
+     .external_connector = true,
+     .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD,
+     .startup_ok = true},
+    {.id = "ata0",
+     .label = "Primary ATA bus",
+     .kind = STORAGE_KIND_ATA,
+     .media_bus = MEDIA_BUS_ATA,
+     .media_unit_base = 0,
+     .units = 0x3u,
+     .accepts = STORAGE_DEV_HD},
+    {.id = "ata1",
+     .label = "Secondary ATA bus",
+     .kind = STORAGE_KIND_ATA,
+     .media_bus = MEDIA_BUS_ATA,
+     .media_unit_base = 2,
+     .units = 0x3u,
+     .accepts = STORAGE_DEV_HD},
     {0},
+};
+
+// The SCSI path the install CD boots through: a hard disk at ID 0 and the
+// CD-ROM drive at the era's ID 3.
+const storage_device_decl_t gossamer_default_storage[] = {
+    {.bus = "scsi", .unit = 0, .type = STORAGE_DEV_HD},
+    {.bus = "scsi", .unit = 3, .type = STORAGE_DEV_CD},
+    {0},
+};
+
+// The ATI Rage Pro on the board, the machine's built-in video.  Its monitor
+// is strapped at the 13" today; the rest of its list waits on a monitor
+// option for the chip.
+static bool gossamer_monitor_at(size_t i, const char **id, const char **monitor) {
+    if (i != 0)
+        return false;
+    *id = *monitor = "13in_rgb";
+    return true;
+}
+
+const builtin_video_desc_t gossamer_builtin_video = {
+    .detail = "ATI Rage Pro",
+    .monitor_at = gossamer_monitor_at,
+    .default_monitor = "13in_rgb",
 };
 
 // The PCI topology: the three expansion sockets at devices $0D/$0E/$0F
@@ -653,28 +702,35 @@ const struct scsi_slot gossamer_scsi_slots[] = {
 const pci_slot_decl_t gossamer_pci_slots[] = {
     {.slot = 1,
      .kind = PCI_SLOT_SOCKET,
-     .label = "A1",
+     .label = "PCI slot A1",
+     .detail = "A1",
+     .fill_order = 1,
      .bus = GOS_PCI_BUS,
      .device = GOS_DEV_SLOT_A1,
      .int_line = GOS_INT_SLOT_A1},
     {.slot = 2,
      .kind = PCI_SLOT_SOCKET,
-     .label = "B1",
+     .label = "PCI slot B1",
+     .detail = "B1",
+     .fill_order = 2,
      .bus = GOS_PCI_BUS,
      .device = GOS_DEV_SLOT_B1,
      .int_line = GOS_INT_SLOT_B1},
     {.slot = 3,
      .kind = PCI_SLOT_SOCKET,
-     .label = "C1",
+     .label = "PCI slot C1",
+     .detail = "C1",
+     .fill_order = 3,
      .bus = GOS_PCI_BUS,
      .device = GOS_DEV_SLOT_C1,
      .int_line = GOS_INT_SLOT_C1},
     // The on-board ATI Rage Pro, "slot" F1 in the firmware's slot names.
-    // Declared LAST so a display card in a real slot, when one is seated,
-    // is the primary display (pci_primary_display takes the first).
+    // Its display is the screen when the configuration connects the monitor
+    // to it (the built-in video's slot entry).
     {.slot = 4,
      .kind = PCI_SLOT_BUILTIN,
-     .label = "F1",
+     .label = "Built-in video",
+     .detail = "F1",
      .bus = GOS_PCI_BUS,
      .device = GOS_DEV_ATI,
      .int_line = GOS_INT_ATI,
@@ -682,11 +738,23 @@ const pci_slot_decl_t gossamer_pci_slots[] = {
     {0},
 };
 
+// The seeding step: Mac OS keeps its PRAM in the NVRAM's XPRAM partition.
+static void gossamer_seed(config_t *cfg) {
+    gossamer_state_t *st = gos_st(cfg);
+    if (!st)
+        return;
+    mac_seed_xpram_appletalk(st->hr.nvram + OF_NVRAM_XPRAM, cfg, of_nvram_defaults_g3.pram);
+    int id = mac_seed_startup_scsi_id(cfg, "scsi");
+    if (id != -2)
+        of_nvram_set_startup_scsi(st->hr.nvram, id, &of_nvram_defaults_g3);
+}
+
 const machine_substrate_t gossamer_substrate = {
     .init = gossamer_init,
     .bus_reset = gossamer_bus_reset,
     .power_on = gossamer_power_on,
     .teardown = gossamer_teardown,
+    .seed = gossamer_seed,
     .pci_slot_irq = gossamer_pci_slot_irq,
     .trigger_vbl = gossamer_trigger_vbl,
     .fd_insert = gossamer_fd_insert,
@@ -694,7 +762,6 @@ const machine_substrate_t gossamer_substrate = {
     .input_key = mac_input_key,
     .input_mouse_move = mac_input_mouse_move,
     .input_mouse_button = mac_input_mouse_button,
-    .display = gossamer_display,
     .media_attach = gos_media_attach,
     .media_present = gos_media_present,
     .media_eject = gos_media_eject,

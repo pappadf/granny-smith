@@ -144,7 +144,7 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     // is the protocol front-end driving it through the external-initiator
     // API (there is no NCR 5380 register file on this family).
     machine_part_begin(cfg, cp, "scsi");
-    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, cp, CONFIG_IMAGES(cfg));
+    cfg->scsi = machine_scsi_bus_init(cfg, cp, "scsi");
     machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
     machine_part_begin(cfg, cp, "scsi96");
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
@@ -166,8 +166,7 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     asc_set_mix(st->asc, ASC_MIX_CH_A);
     asc_set_irq_handler(st->asc, q700_asc_irq, cfg);
     machine_part_begin(cfg, cp, "floppy");
-    st->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp, CONFIG_IMAGES(cfg));
+    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
     machine_part(cfg, cp, "floppy", part_save_floppy, st->floppy);
 
@@ -211,19 +210,14 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
 // configurations (extended sizes, flagged as such).
 static const uint32_t q700_ram_options_kb[] = {4096, 8192, 20480, 36864, 69632, 0};
 
-static const scsi_bus_decl_t q700_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
-    {0},
-};
-
 // NuBus topology: two sockets, D and E; the PDS is mechanically
 // aligned with slot E (a PDS card precludes a NuBus card there — not modeled
 // as a constraint in v1).  The built-in DAFB video is pseudo-slot 9: its
 // declaration ROM lives in the system ROM and its apertures are mapped
 // directly by the substrate, so it is not a card on this bus.
 static const nubus_slot_decl_t q700_nubus_slots[] = {
-    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot D", .fill_order = 1},
+    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot E", .fill_order = 2},
     {0},
 };
 
@@ -269,20 +263,21 @@ const hw_profile_t machine_q700 = {
     .mmu_kind = MMU_68040,
 
     .address_bits = 32,
-    .ram_default = 0x800000, // 8 MB
+    .ram_default = 0x1400000, // 20 MB (a typical well-equipped machine)
     .ram_max = 0x4400000, // 68 MB (4 MB soldered + 4x16 MB SIMMs)
     .rom_size = 0x100000, // 1 MB
 
     .ram_options = q700_ram_options_kb,
     .floppy_slots = mac_floppy_slots_1hd,
-    .scsi_buses = q700_scsi_buses,
-    .has_cdrom = true,
-    .cdrom_id = 3,
+    .storage = mac_storage_scsi_hd_bay,
+    .default_storage = mac_default_storage_hd0_cd3,
+    .appletalk = true,
+    .builtin_video = &mcu_builtin_video_q700,
     .cdrom_drive = &mac_cdrom_drive_applecd,
 
     .nubus_slots = q700_nubus_slots,
 
-    .pram = &pram_defaults_mac_ii,
+    .pram = &pram_defaults_iifx,
     .substrate = &mcu_substrate,
     .board = &q700_board,
 };

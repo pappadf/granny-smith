@@ -26,6 +26,7 @@
 
 #include "adb.h"
 #include "appletalk.h"
+#include "config_seed.h"
 #include "debug.h"
 #include "floppy.h"
 #include "image.h"
@@ -82,10 +83,14 @@ LOG_USE_CATEGORY_NAME("board");
 // never ran that slot's VBL task queue — which, when the card is the main
 // screen, is where the cursor task lives, so the mouse stopped moving.
 // Each ships empty; the boot document names a card per slot.
+//
+// Apple's names for them are the silkscreen's -- NuBus slot B, C and D -- and
+// those are what the configuration shows, with the slot ID the software uses
+// as the detail.
 const struct nubus_slot_decl pdm_nubus_slots_cde[] = {
-    {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot B", .fill_order = 1},
+    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot C", .fill_order = 2},
+    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot D", .fill_order = 3},
     {0},
 };
 
@@ -428,7 +433,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // no bus attached: every select times out, the empty-bus presentation.
     // hd=/cd= media land on cfg->scsi, i.e. the Curio bus, on all models.
     machine_part_begin(cfg, cp, "scsi");
-    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, cp, CONFIG_IMAGES(cfg));
+    cfg->scsi = machine_scsi_bus_init(cfg, cp, "scsi");
     machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
     machine_part_begin(cfg, cp, "scsi96");
     st->scsi96[0] = scsi_53c96_init(cfg->scheduler, 20000000, cp);
@@ -446,8 +451,8 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // the controller through the AMIC island, not through a floppy region
     // of its own, so the shared module only carries the drive and media.
     machine_part_begin(cfg, cp, "floppy");
-    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp,
-                              CONFIG_IMAGES(cfg));
+    cfg->floppy =
+        floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, CONFIG_IMAGES(cfg));
     machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
 
     // Board state + memory map.
@@ -486,7 +491,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // The monitor strapped to Ariel's built-in port: the document's on a
     // boot, the one the board was built with on a restore.  PDM_SENSE_NONE
     // (nothing connected) is what lets a NuBus card be the only screen.
-    uint8_t monitor = pdm_monitor_for_build(cfg);
+    uint8_t monitor = cfg->build_opts.builtin_sense;
     machine_part_begin(cfg, cp, "ariel.monitor");
     if (cp)
         system_read_checkpoint_data(cp, &monitor, sizeof monitor, "ariel.monitor");
@@ -635,6 +640,7 @@ const machine_substrate_t pdm_substrate = {
     .bus_reset = pdm_bus_reset,
     .power_on = pdm_power_on,
     .teardown = pdm_teardown,
+    .seed = mac_seed_rtc_pram,
     .nubus_slot_irq = pdm_nubus_slot_irq,
     .trigger_vbl = pdm_trigger_vbl,
     .fd_insert = pdm_fd_insert,

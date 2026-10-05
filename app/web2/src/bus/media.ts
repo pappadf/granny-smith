@@ -1,29 +1,33 @@
 // One attach helper for every frontend path.
 //
 // initEmulator, the URL parameters, the drop auto-mount and the Images panel
-// each attached media for themselves: a CD at SCSI id 3 on every model (id 0
-// is the Network Server's CD bay, and a CD-less model got one anyway), `?hdN=`
-// at SCSI id N, the Images panel's disk at the default id on the first bus
-// whatever the bay's bus, an Unmount through methods that do not exist, and
-// most results unchecked.  The core now derives the bays
-// (machine.attach_hd / attach_cdrom / eject_media, profile.hd_bays); this
-// module is the frontend's one way to use them, and every call reports
-// whether it worked.
+// all attach media through here, and every call reports whether it worked.
+// The core owns the positions: machine.attach_media names a device of the
+// configuration by its bus and unit (the storage tree's ids), and
+// machine.attach_hd / attach_cdrom are its shorthand for "the Nth hard disk /
+// the CD-ROM drive of the model's default configuration".  Nothing here
+// knows a bus.
 
 import { gsEval, gsOk, gsErrorText, isGsError } from './emulator';
-import { getActiveProfile, type MediaBay } from './profile';
+import type { MediaBay } from './profile';
 import { images, type MountInfo } from '@/state/images.svelte';
 
-// How many floppy drives the active machine has: its profile's floppy_slots.
-// (This used to probe drive[0..3] until one did not resolve, and the core
-// exposed a phantom drive[1] on one-drive Macs, so it counted two.)
-// Cached in the Images state (the badge names the drive only when there are
-// several); refresh=true after a machine change.
+// The most floppy drives any machine has.
+const MAX_FLOPPY_DRIVES = 4;
+
+// How many floppy drives the running machine has: the drives it was built
+// with, which is what its configuration asked for (a position left empty has
+// no drive).  machine.floppy.drive[] holds exactly those, so the first index
+// that does not resolve is the count.  Cached in the Images state (the badge
+// names the drive only when there are several); refresh=true after a
+// machine change.
 export async function detectFdDriveCount(refresh = false): Promise<number> {
   if (images.fdDriveCount >= 0 && !refresh) return images.fdDriveCount;
-  const profile = await getActiveProfile();
-  images.fdDriveCount = profile?.floppy_slots.length ?? 0;
-  return images.fdDriveCount;
+  let n = 0;
+  while (n < MAX_FLOPPY_DRIVES && !isGsError(await gsEval(`machine.floppy.drive[${n}].present`)))
+    n++;
+  images.fdDriveCount = n;
+  return n;
 }
 
 export type MediaResult =
@@ -34,22 +38,92 @@ export type MediaResult =
 function bayResult(kind: 'hd' | 'cd', r: unknown): MediaResult {
   if (!r || typeof r !== 'object' || isGsError(r)) return { ok: false, reason: gsErrorText(r) };
   const bay = r as Partial<MediaBay>;
-  return { ok: true, mount: { kind, bus: bay.bus ?? 'scsi', drive: bay.id ?? 0 } };
+  return { ok: true, mount: { kind, bus: bay.bus ?? '', drive: bay.id ?? 0 } };
 }
 
-// Attach a hard disk to the running machine's `bay`-th hard-disk bay
-// (profile.hd_bays order; 0 is the boot bay), on whatever bus it is.
-export async function attachHardDisk(path: string, bay = 0): Promise<MediaResult> {
-  return bayResult('hd', await gsEval('machine.attach_hd', [path, bay]));
+// Attach a hard disk to the default configuration's `n`-th hard disk (0 is
+// the startup disk), on whatever bus it is.
+export async function attachHardDisk(path: string, n = 0): Promise<MediaResult> {
+  return bayResult('hd', await gsEval('machine.attach_hd', [path, n]));
 }
 
-// Insert a CD into the running machine's CD bay (refused on a model without).
+// An image into the configuration's device at (bus, unit): a hard disk's
+// image, or a disc in a CD-ROM drive.
+export async function attachMedia(
+  bus: string,
+  unit: number,
+  type: string,
+  path: string,
+): Promise<MediaResult> {
+  const kind = type === 'cd' ? 'cd' : 'hd';
+  return bayResult(kind, await gsEval('machine.attach_media', [bus, unit, type, path]));
+}
+
+// One storage device of the running machine (machine.storage): a position
+// an image attaches to, as its configuration built it.
+export interface MachineDevice {
+  bus: string;
+  busLabel: string;
+  unit: number;
+  position: string;
+  type: 'hd' | 'cd';
+  present: boolean;
+}
+
+// The running machine's devices that take `type`.
+export async function machineDevices(type: 'hd' | 'cd'): Promise<MachineDevice[]> {
+  const r = await gsEval('machine.storage');
+  if (!Array.isArray(r)) return [];
+  return (r as Record<string, unknown>[])
+    .filter((d) => d.type === type)
+    .map((d) => ({
+      bus: String(d.bus ?? ''),
+      busLabel: String(d.bus_label ?? d.bus ?? ''),
+      unit: Number(d.unit ?? 0),
+      position: String(d.position ?? ''),
+      type,
+      present: d.present === true,
+    }));
+}
+
+// "Internal SCSI · ID 0 · Internal hard disk bay".
+export function deviceLabel(d: MachineDevice): string {
+  return d.position ? `${d.busLabel} · ${d.position}` : d.busLabel;
+}
+
+// An image into one of the running machine's devices that take `type`:
+// `device`, or the first with nothing in it.  A hard disk only ever goes to a
+// hard-disk device the machine was built with (drives are construction).
+export async function mountImage(
+  type: 'hd' | 'cd',
+  path: string,
+  device?: MachineDevice,
+): Promise<MediaResult> {
+  if (device) return attachMedia(device.bus, device.unit, device.type, path);
+  const devices = await machineDevices(type);
+  if (!devices.length)
+    return {
+      ok: false,
+      reason: type === 'hd' ? 'this machine has no hard disk' : 'this machine has no CD-ROM drive',
+    };
+  const free = devices.find((d) => !d.present);
+  if (!free)
+    return {
+      ok: false,
+      full: true,
+      reason: type === 'hd' ? 'every hard disk is in use' : 'every CD-ROM drive is full',
+    };
+  return attachMedia(free.bus, free.unit, free.type, path);
+}
+
+// Insert a CD into the default configuration's CD-ROM drive (refused when the
+// running machine has none there).
 export async function attachCdrom(path: string): Promise<MediaResult> {
   return bayResult('cd', await gsEval('machine.attach_cdrom', [path]));
 }
 
 // Insert a floppy into `drive`, or, with no drive, into the first empty one
-// of the machine's drives (its profile's floppy_slots) — the physical
+// of the machine's drives — the physical
 // metaphor of dropping a disk into a Mac.
 export async function insertFloppy(
   path: string,
@@ -82,6 +156,6 @@ export async function ejectMedia(mount: MountInfo): Promise<{ ok: boolean; reaso
   const r =
     mount.kind === 'fd'
       ? await gsEval(`machine.floppy.drive[${mount.drive}].eject`)
-      : await gsEval('machine.eject_media', [mount.bus ?? 'scsi', mount.drive]);
+      : await gsEval('machine.eject_media', [mount.bus ?? '', mount.drive]);
   return gsOk(r) ? { ok: true } : { ok: false, reason: gsErrorText(r) };
 }

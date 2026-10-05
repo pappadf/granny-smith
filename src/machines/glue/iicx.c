@@ -160,9 +160,9 @@ static void iicx_via2_shift_out(void *context, uint8_t byte) {
 // ============================================================
 
 static const nubus_slot_decl_t iicx_slots[] = {
-    {.slot = 0x9, .kind = NUBUS_SLOT_SOCKET, .default_card = "mdc_8_24"},
-    {.slot = 0xA, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xB, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0x9, .kind = NUBUS_SLOT_SOCKET, .default_card = "mdc_8_24", .label = "NuBus slot 1", .fill_order = 1},
+    {.slot = 0xA, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot 2", .fill_order = 2},
+    {.slot = 0xB, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot 3", .fill_order = 3},
     {0},
 };
 
@@ -221,11 +221,6 @@ static const mac030_glue_board_t iicx_board = {
 
 static const uint32_t iicx_ram_options_kb[] = {1024, 2048, 4096, 5120, 8192, 16384, 32768, 65536, 131072, 0};
 
-static const scsi_bus_decl_t iicx_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
-    {0},
-};
-
 const hw_profile_t machine_iicx = {
     .name = "Macintosh IIcx",
     .id = "iicx",
@@ -240,10 +235,10 @@ const hw_profile_t machine_iicx = {
     .rom_size = 0x040000, // 256 KB
 
     .ram_options = iicx_ram_options_kb,
-    .floppy_slots = mac_floppy_slots_2hd,
-    .scsi_buses = iicx_scsi_buses,
-    .has_cdrom = true,
-    .cdrom_id = 3,
+    .floppy_slots = mac_floppy_slots_ext,
+    .storage = mac_storage_scsi_hd_bay,
+    .default_storage = mac_default_storage_hd0_cd3,
+    .appletalk = true,
     .cdrom_drive = &mac_cdrom_drive_applecd,
     // The IIcx has no built-in video — its primary display comes from
     // a NuBus video card seated in slot $9 (Apple Display Card 8•24 by

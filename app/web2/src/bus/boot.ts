@@ -3,9 +3,9 @@
 // out of emulator.ts, the bridge, because it is built on bus/profile.ts and
 // bus/media.ts, which are built on the bridge.
 
-import { gsEval, gsErrorText, isGsError, setRunStateMirror } from './emulator';
+import { gsEval, gsErrorText, setRunStateMirror } from './emulator';
 import { getProfile } from './profile';
-import { attachHardDisk, attachCdrom, insertFloppy, type MediaResult } from './media';
+import { attachMedia, insertFloppy, type MediaResult } from './media';
 import type { MachineConfig } from './types';
 import { machine, resetDriveActivity, type MmuKind, type AuxCpu } from '@/state/machine.svelte';
 import { images, setMounted } from '@/state/images.svelte';
@@ -34,11 +34,9 @@ export async function applyCapabilities(model: string): Promise<void> {
   try {
     const parsed = await getProfile(model);
     if (parsed) {
-      drives = {
-        hd: parsed.hd_bays.length > 0,
-        fd: parsed.floppy_slots.length > 0,
-        cd: parsed.cdrom !== null || parsed.has_cdrom,
-      };
+      // What the model's storage can take, from its tree.
+      const accepts = (t: string) => parsed.storage.some((b) => b.accepts.some((a) => a.id === t));
+      drives = { hd: accepts('hd'), fd: parsed.floppies.length > 0, cd: accepts('cd') };
       const k = parsed.capabilities?.mmu?.kind;
       const KINDS: readonly MmuKind[] = [
         '68030_pmmu',
@@ -103,80 +101,40 @@ function reportMount(path: string, r: MediaResult, what: string): void {
   else showNotification(`${what} not attached: ${r.reason}`, 'error');
 }
 
-// Boot a machine from a config. Construction-time settings travel as ONE
-// machine.boot configuration document (named JSON-object args): the core
-// validates all of it, builds the new machine from it -- its ROM, its cards
-// and their ROMs, the video sense and mode -- and only then replaces the
-// running one. Only runtime media (floppies/HD/CD) remain imperative calls
-// after the boot.
+// Boot a machine from a config.  The configuration travels as ONE
+// machine.boot argument, the configuration document (config=, JSON): the
+// core validates all of it, builds the new machine from it -- its options,
+// drives, cards and their ROMs, the connected display, the startup device --
+// and only then replaces the running one.  Only the images are imperative
+// calls after the boot, each into the device the document placed.
 export async function initEmulator(config: MachineConfig): Promise<void> {
-  const doc: Record<string, unknown> = {};
-  if (config.model) doc.model = config.model;
-  // RAM in KB; omitted, the core boots the model's own default.
-  if (config.ramKb) doc.ram = config.ramKb;
-  // rom is required by machine.boot (the document inherits nothing); a
-  // missing one is rejected by the core with a clear error. For vrom,
-  // '(auto)' means "let the offer registry resolve" — omit the field. A vrom
-  // gives a seated card its ROM and never chooses one: a file for a card no
-  // slot holds is rejected.
-  if (config.rom && config.rom !== '(auto)') doc.rom = config.rom;
-  if (config.vrom && config.vrom !== '(auto)') doc.vrom = config.vrom;
-  if (config.videoCard) doc.video_card = config.videoCard;
-  // A PCI card is named by id; '(auto)' for its expansion ROM means the
-  // same thing it does for a vROM — omit the field and let the core's
-  // offer registry content-match among the files the platform published.
-  if (config.pciCard) doc.pci_card = config.pciCard;
-  if (config.prom && config.prom !== '(auto)') doc.prom = config.prom;
-  if (config.pciOption) doc.pci_option = config.pciOption;
-  if (config.videoMode) doc.video_mode = config.videoMode;
-  if (config.monitor) doc.monitor = config.monitor;
-  const ok = await gsEval('machine.boot', doc);
+  const args: Record<string, unknown> = { model: config.model };
+  // rom is required by machine.boot (it inherits nothing); a missing one is
+  // rejected by the core with a clear error.
+  if (config.rom) args.rom = config.rom;
+  if (config.config) args.config = JSON.stringify(config.config);
+  const ok = await gsEval('machine.boot', args);
   if (ok !== true) {
     showNotification(`Boot failed: ${gsErrorText(ok)}`, 'error');
     return;
   }
-  // Media, through the one attach helper (bus/media.ts): each into the bay
-  // the core derives, and a failure is reported rather than booting the
-  // machine without it and no hint.  The boot itself still proceeds.
-  for (let i = 0; i < (config.floppies?.length ?? 0); i++) {
-    const path = config.floppies[i];
-    if (!path || path === '(none)') continue;
-    reportMount(path, await insertFloppy(path, true, i), `Floppy ${i + 1}`);
+  // Media, through the one attach helper (bus/media.ts); a failure is
+  // reported rather than booting the machine without it and no hint.  The
+  // boot itself still proceeds.  The startup device is the document's, so
+  // nothing here records one.
+  for (const [id, path] of Object.entries(config.floppies ?? {})) {
+    const drive = Number(id.replace(/^fd/, ''));
+    if (!path || !Number.isInteger(drive)) continue;
+    reportMount(path, await insertFloppy(path, true, drive), `Floppy ${drive + 1}`);
   }
-  if (config.hd && config.hd !== '(none)') {
-    const r = await attachHardDisk(config.hd, config.hdBay ?? 0);
-    reportMount(config.hd, r, 'Hard disk');
-    if (r.ok) await setStartupDisk(r.mount);
-  }
-  if (config.cd && config.cd !== '(none)') {
-    reportMount(config.cd, await attachCdrom(config.cd), 'CD-ROM');
+  for (const m of config.media ?? []) {
+    const what = m.type === 'cd' ? 'CD-ROM' : 'Hard disk';
+    reportMount(m.path, await attachMedia(m.bus, m.unit, m.type, m.path), what);
   }
 
   await reconcileUiWithMachine('boot');
   await prepareFreshMachine();
   showNotification('Machine started', 'info');
-}
-
-// The machine's default startup device is the hard disk the page attached;
-// the core writes the parameter-memory bytes, the page only names the disk.
-//   - SCSI: the Start Manager's default device, as the SCSI id.  On the Open
-//     Firmware machines Mac OS keeps its PRAM in the 8 KB NVRAM, not in
-//     Cuda, so the id goes to machine.nvram.startup_disk there; elsewhere to
-//     machine.rtc.pram.boot_device.  A fresh machine's store is otherwise
-//     valid from construction -- the core's own defaults, not a page seed.
-//   - ProFile (Lisa / Macintosh XL): BootVol = 2, the parallel-port ProFile,
-//     with the checksum left NOT verifying (machine.hd.pram_init(2, false)) --
-//     a Lisa whose battery was just replaced.  The boot ROM then goes to the
-//     ProFile instead of stopping at its startup-device screen, and the OS
-//     restores its device table from the boot volume's own on-disk snapshot.
-// Other buses (a Network Server's second channel) are left as they are.
-export async function setStartupDisk(mount: { bus?: string; drive: number }): Promise<void> {
-  let r: unknown = null;
-  if (mount.bus === 'scsi') {
-    r = await gsEval('machine.nvram.startup_disk', [mount.drive]);
-    if (isGsError(r)) r = await gsEval('machine.rtc.pram.boot_device', [mount.drive]);
-  } else if (mount.bus === 'profile') r = await gsEval('machine.hd.pram_init', [2, false]);
-  if (isGsError(r)) console.warn(`[boot] startup device not recorded: ${gsErrorText(r)}`);
 }
 
 // --- After a machine appears: one reconciliation, every path --------------

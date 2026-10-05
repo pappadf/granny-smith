@@ -36,7 +36,9 @@ TEST_NAME := Apple Lisa 2 LOS 3.1 ProFile install
 TEST_DESC := Full LOS 3.1 install onto the ProFile, then reboot off it and cleanly power off
 
 TEST_ROM := roms/lisa2-revh-098917b2.rom
-TEST_ARGS := model=lisa ram=2048 fd=$(TEST_DATA)/Lisa/LisaOfficeSystem-3.1/LOS-3.1-1.image
+# The floppy is the startup disk: a configuration with no startup device, so
+# the boot ROM does not go to the (blank) ProFile the default one names.
+TEST_ARGS := model=lisa ram=2048 config=no-startup-device.json fd=$(TEST_DATA)/Lisa/LisaOfficeSystem-3.1/LOS-3.1-1.image
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended

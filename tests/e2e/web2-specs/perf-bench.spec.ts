@@ -122,8 +122,8 @@ test('perf-bench: accelerated + turbo throughput (tracked numbers)', async ({
     timeout: 30_000,
   });
   await model.selectOption('se30');
-  await page.locator('#cfg-ram').selectOption('8 MB');
-  await page.getByRole('button', { name: 'Start Machine' }).click();
+  await page.locator('#cfg-opt-memory').selectOption('8 MB');
+  await page.getByRole('button', { name: 'Start', exact: true }).click();
   await expect(
     page.locator('.toast .msg').filter({ hasText: 'Machine started' }),
   ).toBeVisible({ timeout: 60_000 });

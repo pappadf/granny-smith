@@ -162,10 +162,10 @@ def row_8100_75_hd() { pdm_75_row("pm8100", 16384, 59, true, 0, "goldens/pm8100-
 #     up as screen two; the desktop golden here is the ON-BOARD framebuffer;
 #   * the other two sockets stay empty next to a populated one.
 def row_8100_75_24ac() {
-    machine.boot model="pm8100" ram=16384 rom="${$ROM}" slots="12=24ac"
+    machine.boot model="pm8100" ram=16384 rom="${$ROM}" slots="12=display_card_24ac,rom=substitute"
     run_pdm_75("pm8100", 0)
 
-    assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC (generic video ROM)" "slot C card != 24AC"
+    assert machine.nubus.slot[12].card.name == "Macintosh Display Card 24AC (substitute ROM)" "slot C card != 24AC"
     assert machine.nubus.slot[12].card.declrom.present "slot C declaration ROM not present"
     # The empty sockets either side of it are still empty — what an
     # unpopulated BART window must look like, to us and to the Slot
@@ -239,7 +239,7 @@ def row_pdm_nubus_empty() {
     # (the cursor task, when the card is the main screen) never run.  A boot
     # document can only seat a card in a declared socket, so a $B socket
     # would make this boot succeed.
-    assert !machine.boot(model="pm8100", ram=16384, rom="${$ROM}", slots="11=24ac") "slot B is declared a socket; the connectors are C/D/E (see pm8100.c)"
+    assert !machine.boot(model="pm8100", ram=16384, rom="${$ROM}", slots="11=display_card_24ac") "slot B is declared a socket; the connectors are C/D/E (see pm8100.c)"
     # Chip init, the slot scan, and on to the "insert disk" gray desktop.
     scheduler.run 360000000
     while (machine.cpu.msr & 0x4000) == 0 { scheduler.run 1000 }
@@ -257,22 +257,19 @@ def row_pdm_nubus_empty() {
 # The PDM checkpoint tail grew a BART block and a card-state block with this
 # work, and a stream that reads back in the wrong order corrupts the HMC/AMIC
 # registers silently rather than loudly — so this row pins the round trip:
-# same machine, same card in the same socket, same picture, and it still runs
-# afterwards.  It uses the `video_card=` wildcard channel (first socket = $B)
-# because that is the pick the checkpoint record carries; a card staged into a
-# SPECIFIC socket is not re-seated on restore, on any machine (the record has
-# one video-card field — reproducible on a IIcx slot $A just the same).
+# same machine, same card in the same socket on the same (substitute) ROM,
+# same picture, and it still runs afterwards.
 def row_pdm_nubus_checkpoint() {
-    machine.boot model="pm8100" ram=16384 rom="${$ROM}" video_card="24ac"
+    machine.boot model="pm8100" ram=16384 rom="${$ROM}" slots="12=display_card_24ac,rom=substitute"
     machine.rtc.time = 0xE0000000
-    assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC (generic video ROM)" "wildcard pick did not seat in the first socket"
+    assert machine.nubus.slot[12].card.name == "Macintosh Display Card 24AC (substitute ROM)" "slot C did not seat the 24AC"
     scheduler.run 360000000
     let before = machine.screen.checksum()
     assert checkpoint.save("${$RESULTS_DIR}/pdm-nubus.gs") "checkpoint save failed"
     assert checkpoint.load("${$RESULTS_DIR}/pdm-nubus.gs") "checkpoint load failed"
     assert machine.id == "pm8100" "restored machine is not a pm8100"
     assert machine.ram == 16384 "restored machine lost its RAM size"
-    assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC (generic video ROM)" "card gone after restore"
+    assert machine.nubus.slot[12].card.name == "Macintosh Display Card 24AC (substitute ROM)" "card gone after restore"
     assert machine.screen.checksum() == $before "picture changed across the restore"
     # ...and the restored machine is live, not frozen.
     scheduler.run 20000000

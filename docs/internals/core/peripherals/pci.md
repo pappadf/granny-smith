@@ -115,10 +115,16 @@ parties, three files.
 
 ## Slot configuration
 
-What each socket seats is the boot document's: `machine.boot slots=` names
-a card (or `none`), its options and its expansion-ROM file per slot, and
-`pci_card=` / `pci_option=` / `prom=` are sugar for the first socket (and,
-for `prom=`, every slot whose card the file provides).
+What each socket seats is the configuration's: the document's `cards`
+(`machine.boot config=`, [object-model.md](../object/object-model.md#the-configuration-document))
+names a card per slot (`pci_1` … by the slot's index) with its options,
+and the slot's `connected` display entry says whether the monitor is on
+it.  `machine.boot slots=` is the older per-slot grammar the document is
+translated into, and `pci_card=` / `pci_option=` / `prom=` are sugar for
+the first socket (and, for `prom=`, every slot whose card the file
+provides).  A pass-through 3D card (`card_class` `"3d"`, the Voodoo2) takes
+the screen while it holds the output, whichever device the monitor is
+connected to (`pci_connected_display`).
 `machine_slots_resolve` validates every entry before the running machine
 is touched — the card fits (`pci_card_fits_socket`), the kind accepts each
 option (`accepts_option`), the PROM identifies as the card's — and puts the

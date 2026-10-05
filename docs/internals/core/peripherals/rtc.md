@@ -73,7 +73,12 @@ ROM's own RTC test fails.
 
 PRAM is initialised at construction from the family's `pram_defaults_t`
 (`src/machines/runtime/pram_defaults.c`): the XPRAM validity token, the
-Start Manager table, the measured cold MMFlags. The Open Firmware machines
+Start Manager table, the measured cold MMFlags.  SysParam is left invalid at
+construction, so the ROM runs its own `PRAMInit`; the configuration's
+seeding step then writes it whole and valid -- the ROM's own values
+(`pram_defaults_t.sysparam`, measured per ROM) with AppleTalk's on/off
+state in `$03` -- and the default startup device, once, when a new machine
+is built (`src/machines/runtime/config_seed.c`). The Open Firmware machines
 (TNT, the beige G3) are the exception: Mac OS keeps its PRAM in their 8 KB
 NVRAM, not in Cuda, so the same defaults are applied to the NVRAM's PRAM
 partition instead (`of_nvram.c`) and the RTC's own PRAM starts zero. `rtc_pram_reset` returns

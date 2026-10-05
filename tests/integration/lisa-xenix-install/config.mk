@@ -26,7 +26,9 @@ TEST_DESC := Full Xenix 3.0 OS install onto the ProFile (hdinit, reboot, firstti
 
 TEST_ROM := roms/lisa2-revh-098917b2.rom
 
-TEST_ARGS := model=lisa ram=2048 fd=$(TEST_DATA)/Lisa/Xenix-3.0/Xenix-3.0-Boot-XProFile.dc42
+# The floppy is the startup disk: a configuration with no startup device, so
+# the boot ROM does not go to the (blank) ProFile the default one names.
+TEST_ARGS := model=lisa ram=2048 config=no-startup-device.json fd=$(TEST_DATA)/Lisa/Xenix-3.0/Xenix-3.0-Boot-XProFile.dc42
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := extended

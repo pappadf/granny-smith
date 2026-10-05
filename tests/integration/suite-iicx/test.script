@@ -200,8 +200,9 @@ def row_iicx_gc_beep() {
     # Re-captured 2026-10 when the ADB mouse stopped answering polls it had
     # nothing new for and the 1 kHz cursor guard went away (its event alone
     # moved this window by 3 frames): same length, one sample (index 4085)
-    # changed.
-    check_sound("goldens/iicx-gc-beep.wav", 5426)
+    # changed.  Re-captured again when the machine came to be built with its
+    # parameter RAM valid (the ROM skips its own PRAMInit): 5427 frames.
+    check_sound("goldens/iicx-gc-beep.wav", 5427)
 
     # Sample-exact compare against the golden (fails the test on any divergence).
     # Loudness does NOT appear in the capture: the sink is pre-volume, and the
@@ -292,7 +293,7 @@ def row_iicx_24ac() {
 
     # The card that booted into the IIcx video slot ($9) is the 24AC, not the
     # slot-default 8•24 — i.e. machine.nubus.video_card took effect.
-    assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "slot $9 card != 24AC"
+    assert machine.nubus.slot[9].card.name == "Macintosh Display Card 24AC" "slot $9 card != 24AC"
     # 8-bpp colour at 640x480: MODE depth bits 7-5 == 0x40, framebuffer 8 bpp.
     assert machine.screen.width == 640 "boot: screen width != 640"
     assert machine.screen.height == 480 "boot: screen height != 480"
@@ -395,7 +396,7 @@ def row_iicx_24ac_restart() {
 
     # Sanity: the 24AC booted into the IIcx video slot ($9) at 8-bpp 640x480 and we
     # are sitting on the colour Finder desktop (pixel-exact, shared iicx-24ac baseline).
-    assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "boot: slot $9 card != 24AC"
+    assert machine.nubus.slot[9].card.name == "Macintosh Display Card 24AC" "boot: slot $9 card != 24AC"
     assert machine.screen.width == 640 "boot: screen width != 640"
     assert machine.screen.height == 480 "boot: screen height != 480"
     assert machine.nubus.slot[9].card.framebuffer.depth == 8 "boot: framebuffer not 8 bpp"

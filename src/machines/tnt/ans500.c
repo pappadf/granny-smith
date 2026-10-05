@@ -40,42 +40,42 @@
 // decoding of up to 512 Mbytes" (ibid., §5), and the documented failure
 // mode above it is a HANG during the RAM test rather than a clean error.
 // Being less permissive than the silicon is the faithful choice here.
-static const uint32_t ans500_ram_options_kb[] = {16384, 32768, 49152, 65536, 131072, 262144, 524288, 0};
+static const uint32_t ans500_ram_options_kb[] = {
+    16384,  32768,  49152,  65536,  81920,  98304,  114688, 131072, 147456, 163840, 180224, 196608, 212992, 229376,
+    245760, 262144, 278528, 294912, 311296, 327680, 344064, 360448, 393216, 409600, 425984, 458752, 524288, 0};
 
 // Bays 4-6 cable to the SECOND fast/wide controller, which the production
 // ROM's own device aliases settle: `disk0`..`disk3` resolve through
 // `/bandit/53c825@11`, `disk4` onward through `@12`.  That controller is
 // live -- tnt_fwscsi_attach binds channel 1 to machine.scsi2, and
-// ans-scsi drives a CD-ROM on it through Open Firmware's probe-scsi2 --
-// so the bays are declared rather than described.
+// ans-scsi drives a CD-ROM on it through Open Firmware's probe-scsi2.
 //
-// The bays are numbered as the firmware numbers its disks, 0-6 across the
-// two channels (`diskN` is bay N), so channel 1's are Bays 4-6 -- they were
-// labelled 5-7, one off from channel 0's Bays 1-3.  Bay 0 is Apple's expected
-// CD-ROM position and is deliberately NOT declared here: it is the CD bay,
-// hw_profile_t.cdrom_id, which profile_cdrom_bay derives.
-//
-// The LAST entry is NOT a backplane bay.  Id 0 on the SECOND controller is a
-// free SCSI address on the 500 (the 700 has a rear bay there), declared
-// because it is where a Windows NT installation lives: powermac-nt-hal's
-// `bootdisk.of` hands Open Firmware `/bandit/53c825@12/sd@0,0` as the boot
-// path, and the CD the install reads from holds id 0 on the FIRST
-// controller, so the two cannot share.  A disk anywhere else is one
-// `bootdisk.of` cannot name, so the configuration dialog has to be able to
-// put one there.  It is NOT flagged `boot` and it comes last: the model's
-// default disk bay stays Bay 2, Open Firmware's own `disk2:aix` (media-bays),
-// and the real bays keep their indices.
-static const struct scsi_slot ans500_scsi_slots_fw1[] = {
-    {.label = "Bay 4 (fast/wide 1)", .id = 4},
-    {.label = "Bay 5 (fast/wide 1)", .id = 5},
-    {.label = "Bay 6 (fast/wide 1)", .id = 6},
-    {.label = "Windows NT boot disk (fast/wide 1, id 0)", .id = 0},
+// ID 0 on the second controller is not a bay but a free address on the 500
+// (the 700 has a rear bracket there).  It is where a Windows NT installation
+// lives: powermac-nt-hal's `bootdisk.of` hands Open Firmware
+// `/bandit/53c825@12/sd@0,0` as the boot path, and the CD the install reads
+// from holds ID 0 on the FIRST controller, so the two cannot share.  The
+// startup record cannot name this bus, so a disk here is started up from
+// through bootdisk.of, not through the record.
+static const storage_bay_decl_t ans500_bays_bus1[] = {
+    {.unit = 4, .label = "Front bay 4"},
+    {.unit = 5, .label = "Front bay 5"},
+    {.unit = 6, .label = "Front bay 6"},
     {0},
 };
 
-static const scsi_bus_decl_t ans500_scsi_buses[] = {
-    {.object = "scsi", .label = "Front backplane (fast/wide 0)", .slots = ans_scsi_slots_fw0},
-    {.object = "scsi2", .label = "Front backplane (fast/wide 1)", .slots = ans500_scsi_slots_fw1},
+static const storage_bus_decl_t ans500_storage[] = {
+    ANS_STORAGE_BUS0,
+    {.id = "scsi2",
+      .label = "Internal SCSI bus 1",
+      .detail = ANS_SCSI_DETAIL,
+      .kind = STORAGE_KIND_SCSI,
+      .wide = true,
+      .media_bus = MEDIA_BUS_SCSI2,
+      .units = 0x71u, // bays 4-6, and ID 0 (the Windows NT boot disk)
+     .reserved = 0x80u,
+      .bays = ans500_bays_bus1,
+      .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD},
     {0},
 };
 
@@ -114,7 +114,6 @@ static const tnt_board_desc_t ans500_board = {
     .has_gbus = true, // delta #6/#9: LCD, board registers, Ethernet PROM
     .has_parity = true, // delta #7: parity DRAM, and it selects 60 ns timing
     .l2_kb = 512u, // 512 KB cache DIMM (8500-compatible slot)
-    .two_supplies = false, // one 325 W supply; TwoSuppliesH reads low
 };
 
 const hw_profile_t machine_ans500 = {
@@ -126,19 +125,17 @@ const hw_profile_t machine_ans500 = {
     .mmu_kind = MMU_PPC_604,
 
     .address_bits = 32,
-    .ram_default = 0x2000000, // 32 MB parity (the shipping configuration)
+    .ram_default = 0x4000000, // 64 MB (a typical well-equipped machine)
     .ram_max = 0x20000000, // 512 MB — the ROM's decode ceiling, not the chipset's
     .rom_size = 0x400000, // 4 MB ($962F6C13 production / $49B2BE8F prototype)
 
     .ram_options = ans500_ram_options_kb,
-    .scsi_buses = ans500_scsi_buses,
     .floppy_slots = mac_floppy_slots_1hd,
-    // Bay 0 is the CD-ROM bay Apple expects, and it is the documented
-    // install path: with the front keyswitch in Service on a machine that
-    // has never been booted, Open Firmware "will automatically attempt to
-    // find a diagnostic floppy or Install CD to boot from."
-    .has_cdrom = true,
-    .cdrom_id = 0,
+    .storage = ans500_storage,
+    .default_storage = ans_default_storage,
+    .appletalk = true,
+    .options = ans500_options,
+    .builtin_video = &ans_builtin_video,
     .cdrom_drive = &mac_cdrom_drive_applecd,
 
     .pci_slots = ans_pci_slots,

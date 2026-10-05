@@ -1,4 +1,4 @@
-# Integration test configuration: IIcx + Apple Macintosh Display Card 24AC
+# Integration test configuration: IIcx + Macintosh Display Card 24AC
 #
 # Three parts (see test.script):
 #   Part A — the acceleration engine's register/aperture decode (fill,

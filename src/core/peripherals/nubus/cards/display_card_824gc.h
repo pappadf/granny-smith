@@ -239,17 +239,10 @@
 #define GC824_STATUSW_OK   0x00000003u // CB+0x18 completion OK
 #define GC824_STATUSW_ERR  0x0000000Bu // CB+0x18 completion error
 
-// Per-card kind descriptor — registered in nubus.c's g_card_registry.
+// Per-card kind descriptor — registered in nubus.c's g_card_registry.  It
+// runs Apple's declaration ROM when one is offered, else the emulator's
+// substitute (docs/internals/core/peripherals/nubus_generic_vrom.md).
 extern const nubus_card_kind_t display_card_824gc_kind;
-// Generic sibling ("8_24gc") with the built-in GS declaration ROM — same
-// HLE model, no vROM file needed (see
-// docs/internals/core/peripherals/nubus_generic_vrom.md).
-extern const nubus_card_kind_t display_card_824gc_generic_kind;
-
-// === Video-mode selection ===================================================
-// A slot's "<monitor>_<N>bpp" video mode, resolved against this card's
-// catalog: card_init sets the monitor sense + depth and seeds PRAM from it.
-bool display_card_824gc_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp);
 
 // === Accelerator introspection (object model — slot[N].card.gc) =============
 // True iff `card` is a display_card_824gc.  The getters return 0/false for any

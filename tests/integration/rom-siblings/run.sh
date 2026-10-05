@@ -13,7 +13,7 @@ cp "$TEST_DATA/roms/824gc-v1.1-revb-d722b053.vrom" "$WORK_DIR/cards/"
 
 cat > "$WORK_DIR/boot.script" <<SCRIPT
 machine.boot model="iicx" ram=8192 video_card="824gc" rom="$WORK_DIR/cards/iicx.rom"
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "slot \$9 card != 8•24 GC"
+assert machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC" "slot \$9 card != 8•24 GC"
 assert machine.nubus.slot[9].card.declrom.present "declaration ROM beside the booted ROM was not offered"
 echo "rom-siblings-ok"
 quit

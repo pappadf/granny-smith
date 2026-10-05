@@ -1,0 +1,199 @@
+{
+  "id": "plus",
+  "name": "Macintosh Plus",
+  "freq": 7833600,
+  "capabilities": {
+    "cpu": {
+      "model": 68000,
+      "address_bits": 24,
+      "fpu": false
+    },
+    "mmu": {
+      "present": false,
+      "kind": "none"
+    },
+    "nubus": false,
+    "pci": false,
+    "video_in": false,
+    "audio_in": false,
+    "aux_cpus": []
+  },
+  "options": [
+    {
+      "id": "memory",
+      "label": "Memory",
+      "kind": "choice",
+      "values": [
+        {
+          "id": "1024",
+          "label": "1 MB"
+        },
+        {
+          "id": "2048",
+          "label": "2 MB"
+        },
+        {
+          "id": "2560",
+          "label": "2.5 MB"
+        },
+        {
+          "id": "4096",
+          "label": "4 MB"
+        }
+      ],
+      "default": "4096"
+    },
+    {
+      "id": "appletalk",
+      "label": "AppleTalk",
+      "kind": "choice",
+      "values": [
+        {
+          "id": "active",
+          "label": "Active"
+        },
+        {
+          "id": "inactive",
+          "label": "Inactive"
+        }
+      ],
+      "default": "active"
+    }
+  ],
+  "floppies": [
+    {
+      "id": "fd0",
+      "label": "Internal floppy drive",
+      "types": [
+        {
+          "id": "800k",
+          "label": "800K drive"
+        }
+      ],
+      "default": "800k"
+    },
+    {
+      "id": "fd1",
+      "label": "External floppy drive",
+      "types": [
+        {
+          "id": "none",
+          "label": "None"
+        },
+        {
+          "id": "800k",
+          "label": "800K drive"
+        }
+      ],
+      "default": "800k"
+    }
+  ],
+  "storage": [
+    {
+      "id": "scsi",
+      "label": "SCSI",
+      "kind": "scsi",
+      "width": "narrow",
+      "units": [
+        {
+          "unit": 0,
+          "label": "ID 0 \u00b7 External"
+        },
+        {
+          "unit": 1,
+          "label": "ID 1 \u00b7 External"
+        },
+        {
+          "unit": 2,
+          "label": "ID 2 \u00b7 External"
+        },
+        {
+          "unit": 3,
+          "label": "ID 3 \u00b7 External"
+        },
+        {
+          "unit": 4,
+          "label": "ID 4 \u00b7 External"
+        },
+        {
+          "unit": 5,
+          "label": "ID 5 \u00b7 External"
+        },
+        {
+          "unit": 6,
+          "label": "ID 6 \u00b7 External"
+        }
+      ],
+      "reserved": [7],
+      "shares_units_with": [],
+      "external_connector": true,
+      "bays": [],
+      "accepts": [
+        {
+          "id": "hd",
+          "label": "Hard disk"
+        },
+        {
+          "id": "cd",
+          "label": "CD-ROM drive"
+        }
+      ],
+      "startup": true
+    }
+  ],
+  "slots": [],
+  "cards": [],
+  "displays": {
+    "builtin": {
+      "id": "builtin",
+      "label": "Built-in video",
+      "detail": "512 \u00d7 342, 1-bit",
+      "monitors": ["compact_9in"],
+      "default_monitor": "compact_9in",
+      "modes": {},
+      "options": []
+    },
+    "max_connected": 1
+  },
+  "monitors": [
+    {
+      "id": "compact_9in",
+      "label": "Built-in 9\u2033 screen",
+      "width": 512,
+      "height": 342
+    }
+  ],
+  "defaults": {
+    "model": "plus",
+    "options": {
+      "memory": "4096",
+      "appletalk": "active"
+    },
+    "floppies": {
+      "fd0": "800k",
+      "fd1": "800k"
+    },
+    "storage": [
+      {
+        "bus": "scsi",
+        "unit": 0,
+        "type": "hd"
+      },
+      {
+        "bus": "scsi",
+        "unit": 3,
+        "type": "cd"
+      }
+    ],
+    "startup": {
+      "bus": "scsi",
+      "unit": 0
+    },
+    "cards": [],
+    "displays": {
+      "builtin": {
+        "monitor": "compact_9in"
+      }
+    }
+  }
+}

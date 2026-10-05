@@ -292,7 +292,9 @@ static inline const gossamer_board_desc_t *gos_board(config_t *cfg) {
 // === gossamer.c =============================================================
 
 extern const machine_substrate_t gossamer_substrate;
-extern const struct scsi_slot gossamer_scsi_slots[];
+extern const storage_bus_decl_t gossamer_storage[];
+extern const storage_device_decl_t gossamer_default_storage[];
+extern const builtin_video_desc_t gossamer_builtin_video;
 extern const pci_slot_decl_t gossamer_pci_slots[];
 
 // Fill/clear one physical page in the AoS table + SoA fast-path arrays

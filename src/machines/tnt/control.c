@@ -124,14 +124,14 @@ LOG_USE_CATEGORY_NAME("video");
 #define CONTROL_VBL_MIN_NS      4000000ull // 250 Hz: faster is a mode line half-written
 #define CONTROL_VBL_MAX_NS      40000000ull // 25 Hz: slower likewise
 
-// The default monitor on the sense lines: an AppleColor Hi-Res 13"/14"
+// The stock monitor on the sense lines (tnt_builtin_video's default): an
+// AppleColor Hi-Res 13"/14"
 // strap — line C tied to ground, A/B floating.  Raw sense 6, extended walk
 // $2B, which selects the 640x480 timing set in the ROM's own mode table (the
 // $2B literal sits at the head of the OpenFW timing-table list).  The pick
 // lives in tnt_control_t.mon_grounded (bit mask, lines {A,B,C} = bits
 // {2,1,0}); this was a compile-time constant, pinning every TNT machine to
 // 640x480 whatever the guest asked for (#146).
-#define CONTROL_MONITOR_SENSE_DEFAULT 0x6u
 
 // The monitors the built-in port can present, by the 3-bit passive sense
 // code (display_timing.h): the ROM's extended walk reads the grounded lines
@@ -141,28 +141,31 @@ LOG_USE_CATEGORY_NAME("video");
 // program 1152x870.
 typedef struct control_monitor_kind {
     const char *id; // config token ("hires", "twopage", ...)
-    const char *name; // human-readable, for the object model
+    const char *monitor; // its shared catalogue id (monitor_catalog.h)
     uint8_t sense; // the 3-bit strap this monitor presents
 } control_monitor_kind_t;
 
+// "twopage" is sense 0, which the 21" Color and the 21" Two-Page displays
+// share; without the extended answers that tell them apart it is offered as
+// the one this port renders, the 21" Color.
 static const control_monitor_kind_t control_monitors[] = {
-    {"hires",    "AppleColor Hi-Res RGB 13\"/14\" (640x480)",  0x6u},
-    {"twopage",  "21\" RGB Workstation / Two-Page (1152x870)", 0x0u},
-    {"portrait", "Macintosh Portrait Display (640x870)",       0x1u},
-    {"rubik",    "Macintosh 12\" RGB (512x384)",               0x2u},
-    {"none",     "No monitor connected",                       0x7u},
-    {NULL,       NULL,                                         0   },
+    {"hires",    "13in_rgb",      0x6u},
+    {"twopage",  "21in_rgb",      0x0u},
+    {"portrait", "15in_portrait", 0x1u},
+    {"rubik",    "12in_rgb",      0x2u},
+    {"none",     "none",          0x7u},
+    {NULL,       NULL,            0   },
 };
 
 // hw_profile_t.builtin_video (machine_profile.h): two thin adapters over
 // control_monitors so the machine registry can publish and validate this
 // port without reaching into the family.
-static bool control_builtin_monitor_at(size_t i, const char **id, const char **name) {
+static bool control_builtin_monitor_at(size_t i, const char **id, const char **monitor) {
     size_t n = 0;
     for (const control_monitor_kind_t *m = control_monitors; m->id; m++, n++) {
         if (n == i) {
             *id = m->id;
-            *name = m->name;
+            *monitor = m->monitor;
             return true;
         }
     }
@@ -180,9 +183,10 @@ static bool control_builtin_monitor_sense(const char *id, uint8_t *out_sense) {
 }
 
 const builtin_video_desc_t tnt_builtin_video = {
-    .display_name = "Built-in video (Control)",
+    .detail = "Control",
     .monitor_at = control_builtin_monitor_at,
     .monitor_sense = control_builtin_monitor_sense,
+    .default_monitor = "13in_rgb",
 };
 
 static tnt_control_t *ctl(config_t *cfg) {
@@ -748,7 +752,7 @@ static pci_device_t *control_factory(int slot_index, config_t *cfg, const rom_im
     pci_cfg_reset(dev);
     st->control_dev = dev;
     tnt_control_register_events(cfg);
-    if (tnt_control_init(cfg, opts->video_sense) != 0) {
+    if (tnt_control_init(cfg, opts->sense) != 0) {
         // The PCI layer logs and skips a NULL factory return, so the machine
         // comes up without built-in video rather than dereferencing NULL
         // framebuffers on the first scanout.
@@ -760,11 +764,20 @@ static pci_device_t *control_factory(int slot_index, config_t *cfg, const rom_im
     return dev;
 }
 
+// Its stock monitor, as a card row: what the 9500's stand-in senses when no
+// card's monitor is there to borrow (the built-in port's own monitors are
+// tnt_builtin_video's).
+static const nubus_monitor_t control_stock_monitor[] = {
+    {.id = "hires", .monitor = "13in_rgb", .width = 640, .height = 480, .sense_code = 0x6},
+    {0},
+};
+
 const pci_card_kind_t tnt_control_kind = {
     .id = "tnt_control",
-    .display_name = "Control / Chaos on-board video",
+    .display_name = "Built-in video",
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "display",
+    .monitors = control_stock_monitor,
     .factory = control_factory,
 };
 
@@ -963,13 +976,11 @@ static uint64_t control_fb_base(void *owner) {
     return (uint64_t)(st->display.bits - st->vram);
 }
 
-int tnt_control_init(config_t *cfg, int video_sense) {
+int tnt_control_init(config_t *cfg, uint8_t sense) {
     tnt_state_t *st = tnt_st(cfg);
-    // The built-in port's monitor: its slot entry's sense (the boot
-    // document's `monitor=`, which the registry resolved to a sense code; on a
-    // restore, the PCI table's block).  The only place the strap is set: the
-    // chip's restore keeps it (tnt.c).
-    uint8_t sense = machine_sense_or(video_sense, 8, CONTROL_MONITOR_SENSE_DEFAULT);
+    // The built-in port's monitor: its slot entry's sense (the build's
+    // built-in monitor; on a restore, the PCI table's block).  The only place
+    // the strap is set: the chip's restore keeps it (tnt.c).
     st->control.mon_grounded = (uint8_t)(~sense & 7u);
     st->vram = calloc(1, TNT_VRAM_SIZE);
     st->blank = calloc(1, TNT_VRAM_SIZE);

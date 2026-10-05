@@ -59,7 +59,7 @@ below is bounded by that.
 | Guide release line | `68-5-24-84-1.0/1.0` | [1] title page |
 | Copyright | SCO 1984, Microsoft 1983 | [1] title page |
 | Distribution systems | Operating System, Text Processing System, Development System — "You install each package separately"; all write-protected "except the Boot floppydisk of the Operating System" | [1] §1.2 |
-| Kernel memory report | `System 122k User 1318k` (banner line, on a 2 MB machine) | [2] (*observed*) |
+| Kernel memory report | `System 122k User 1830k` (banner line, on a 2 MB machine) | [2] (*observed*) |
 | Prior version | XENIX 2.3, evidenced only by the 3.0 upgrade path ("Use 'upgrade' to upgrade 2.3 to 3.0 xenix") | [1] §1.5.1, §1.7 |
 
 The 17-disk retail set [3] (*observed*):
@@ -235,7 +235,7 @@ Once loaded, the kernel prints its banner and brings up its root device. The rec
 SCO XENIX V3.0
 Copyright Microsoft Corporation and The Santa Cruz Operation Inc, 1983. ...
 Lisa II/5 (s): ROM 00A8 / Slot 0-2 Empty
-rootdev 1 1 swapdev 0 0 / System 122k User 1318k
+rootdev 1 1 swapdev 0 0 / System 122k User 1830k
 pf0 not on line
 panic: iinit
 ```
@@ -584,7 +584,7 @@ patched kernel changes — is not established ([§6](#6-open-questions), item 6)
 
 ### 5.6 Small observed behaviours
 
-- The kernel's banner names its own memory split (`System 122k User 1318k`), its root and swap
+- The kernel's banner names its own memory split (`System 122k User 1830k`), its root and swap
   devices (`rootdev 1 1 swapdev 0 0`), and the machine (`Lisa II/5 (s): ROM 00A8 / Slot 0-2
   Empty`) [2] (*observed*).
 - The hard-disk `boot :` prompt's bare RETURN loads the installed system (`pf(0,0)xenix`) [1]

@@ -132,17 +132,19 @@ lisa_mmu_t *lisa_mmu_init(uint8_t *ram, uint32_t ram_size, uint8_t *rom, uint32_
         return NULL;
     m->ram = ram;
     m->ram_size = ram_size;
-    // Lisa memory boards populate the address space from 512 KB upward, not from
-    // physical 0 (512 KB → [$80000,$100000), 1 MB → [$80000,$180000),
-    // 2 MB → [0,$200000)).  The boot ROM's MEMSIZ scans up from 0
-    // and reports this base as MINMEM ($2A4); the OS lays out real memory (and the
-    // kernel stack at the top of it) relative to that base.  With RAM wrongly based
-    // at 0, the OS placed the kernel stack on a non-existent high page.
-    // Lisa memory boards populate [$80000 .. min($80000+installed, $200000)) (LOS 3.1
-    // boots to the Install menu with RAM [$80000,$200000)).
+    // Lisa memory boards populate the address space down from $100000: the
+    // board in slot 2 ends there and the slot-1 board sits above it, so RAM
+    // starts at $100000 less the slot-2 board -- 512 KB (one 512 KB board)
+    // [$80000,$100000), 1 MB (two 512 KB) [$80000,$180000), 1.5 MB (a 1 MB
+    // board over a 512 KB one) [$80000,$200000), 2 MB (two 1 MB) [0,$200000).
+    // The boot ROM's MEMSIZ scans up from 0 and reports this base as MINMEM
+    // ($2A4); the OS lays out real memory (and the kernel stack at the top of
+    // it) relative to that base.  With RAM wrongly based at 0 below 2 MB, the
+    // OS placed the kernel stack on a non-existent high page.
     // The Macintosh XL (ram_high=false) keeps RAM at 0: MacWorks' framebuffer and
     // boot path live in low memory.
-    m->ram_min = ram_high ? 0x80000u : 0u;
+    uint32_t slot2_board = ram_size >= 0x200000u ? 0x100000u : 0x80000u;
+    m->ram_min = ram_high ? 0x100000u - slot2_board : 0u;
     m->ram_max = m->ram_min + ram_size;
     if (m->ram_max > 0x200000u)
         m->ram_max = 0x200000u;

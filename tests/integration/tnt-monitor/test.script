@@ -1,7 +1,9 @@
-# The port and its monitors are published through the profile.
-let bv = catalog.profile("pm7500").builtin_video
-assert len($bv.monitors) == 5 "the Control port lists five monitors"
-assert len(catalog.profile("pm8500").builtin_video.monitors) == 5 "so does the 8500's"
+# The port and its monitors are published through the profile: four
+# monitors ("no monitor" is not one -- an unplugged port is the connected
+# display being another device).
+let bv = catalog.profile("pm7500").displays.builtin
+assert len($bv.monitors) == 4 "the Control port lists four monitors"
+assert len(catalog.profile("pm8500").displays.builtin.monitors) == 4 "so does the 8500's"
 
 # Open Firmware reads the sense lines and mode-sets Control for the monitor
 # it finds; the ROM ladder puts the native driver's mode set inside 720 M

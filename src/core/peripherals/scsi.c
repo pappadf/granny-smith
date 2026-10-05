@@ -1135,30 +1135,16 @@ scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint) {
     return chip;
 }
 
-int scsi_cd_bay_id(const scsi_t *scsi) {
-    return scsi ? scsi->cd_bay_id : -1;
+bool scsi_device_is_cd_drive(const scsi_t *scsi, unsigned which) {
+    return scsi && which < 8 && scsi->devices[which].type == scsi_dev_cdrom;
 }
 
-// Initialize the SCSI controller and optionally restore from checkpoint
-scsi_t *scsi_init(struct scheduler *sched, checkpoint_t *checkpoint, const image_list_t *images,
-                  const scsi_cd_drive_t *cd_drive, int cd_id) {
-    scsi_t *scsi = scsi_init_named(sched, checkpoint, images, "scsi");
-    if (!scsi || !cd_drive)
-        return scsi;
-    GS_ASSERTF(cd_id >= 0 && cd_id < 7, "scsi_init: CD bay id %d is not a target slot", cd_id);
-    scsi->cd_bay_id = cd_id;
-    if (checkpoint) {
-        // The bus came back from the stream; the bay's drive must be on it.
-        if (scsi->devices[cd_id].type != scsi_dev_cdrom) {
-            LOG(0, "Error: checkpoint's SCSI bus has no CD-ROM drive in the CD bay (id %d)", cd_id);
-            checkpoint_set_error(checkpoint);
-        }
-        return scsi;
-    }
-    // Power-on: the bay's drive, empty.
-    scsi_add_device(scsi, cd_id, cd_drive->vendor, cd_drive->product, cd_drive->revision, NULL, scsi_dev_cdrom,
-                    cd_drive->block_size, true);
-    return scsi;
+void scsi_add_cd_drive(scsi_t *bus, int id, const scsi_cd_drive_t *drive) {
+    if (!bus || !drive)
+        return;
+    GS_ASSERTF(id >= 0 && id < 7, "scsi_add_cd_drive: id %d is not a target slot", id);
+    scsi_add_device(bus, id, drive->vendor, drive->product, drive->revision, NULL, scsi_dev_cdrom, drive->block_size,
+                    true);
 }
 
 scsi_t *scsi_init_named(struct scheduler *sched, checkpoint_t *checkpoint, const image_list_t *images,
@@ -1187,7 +1173,6 @@ scsi_t *scsi_init_named(struct scheduler *sched, checkpoint_t *checkpoint, const
     scsi->buf.pos = 0;
     scsi->buf.max = MAX_CMD_SIZE;
     scsi->bus.initiator = INT_MAX;
-    scsi->cd_bay_id = -1;
 
     // If checkpoint provided, restore plain-data portion first
     if (checkpoint) {

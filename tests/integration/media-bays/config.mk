@@ -10,7 +10,7 @@
 # as hd_bays / hd_default / cdrom and machine.attach_hd / attach_cdrom use.
 
 TEST_NAME := Media bays
-TEST_DESC := hd=/cdrom= and machine.attach_hd/attach_cdrom/eject_media place media in the profile's bays (ans500, plus)
+TEST_DESC := hd=/cdrom= and machine.attach_hd/attach_cdrom/attach_media/eject_media place media in the configuration's storage positions (ans500, plus, iicx)
 
 # 4 MB Apple Network Server 500/700 ROM, Open Firmware 1.1.22.
 TEST_ROM := roms/ans500-ans700-962f6c13.rom

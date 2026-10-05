@@ -39,6 +39,9 @@ typedef struct floppy floppy_t;
 // insert.
 floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, int n_drives, checkpoint_t *checkpoint,
                       const image_list_t *images);
+
+// How many drives the controller was built with (or restored with).
+int floppy_drive_count(const floppy_t *floppy);
 // Frees all resources associated with the floppy controller
 // Bus /RESET: controller registers, mode latches and motor enable back to
 // power-on.  Media, decoded tracks and head position are NOT disturbed.

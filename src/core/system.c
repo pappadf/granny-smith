@@ -434,26 +434,24 @@ display_t *system_display_synced(void) {
     return d;
 }
 
-// System-level display accessor.  A machine with
-// built-in video (substrate .display — Plus, Lisa, the MCU family's DAFB)
-// shows that factory display; glue030-family machines source theirs from
-// the NuBus bus controller (the IIci's built-in RBV is itself the first
-// BUILTIN card, so "built-in wins" holds uniformly).  Returns NULL when no
-// machine is booted or the booted machine has no primary display (e.g. a
-// IIcx with no card seated).
+// System-level display accessor: the display device the monitor is plugged
+// into.  A card (or a built-in video that is a slot device -- the SE/30's,
+// the IIci's RBV, the TNT's Control, Gossamer's Rage Pro) marked connected
+// by the configuration wins; otherwise the machine's own built-in video
+// (substrate .display -- Plus, Lisa, the DAFB, CIVIC, Ariel).  Returns NULL
+// when no machine is booted or the booted machine has no screen (a IIcx with
+// no card seated, or a configuration that plugs no monitor in).
 display_t *system_display(void) {
     NOT_DURING_CONSTRUCTION();
     config_t *cfg = global_emulator;
     if (!cfg || !cfg->machine)
         return NULL;
-    if (cfg->machine->substrate->display) {
-        display_t *d = cfg->machine->substrate->display(cfg);
-        if (d)
-            return d;
-    }
-    if (cfg->nubus)
-        return nubus_primary_display(cfg->nubus);
-    return NULL;
+    display_t *connected = cfg->nubus ? nubus_connected_display(cfg->nubus) : NULL;
+    if (!connected && cfg->pci)
+        connected = pci_connected_display(cfg->pci);
+    if (connected)
+        return connected;
+    return cfg->machine->substrate->display ? cfg->machine->substrate->display(cfg) : NULL;
 }
 
 // Check if emulator is initialized and running
@@ -503,11 +501,12 @@ void trigger_vbl(struct config *restrict config) {
 // Insert a floppy disk image into the first free (or preferred) drive.
 // writable: 1=writable, 0=read-only, -1=default (writable).
 // preferred: drive number (0 or 1), or -1 for auto-select.
-// The machine's floppy drives: its profile's floppy_slots, never more than
-// the controller's two.  Drive selection is bounded by this, not by
+// The machine's floppy drives: the drives its controller was built with (a
+// position the configuration left empty has none), never more than the
+// controller's two.  Drive selection is bounded by this, not by
 // FLOPPY_NUM_DRIVES -- a one-drive Mac has no drive 1 to pick.
 static int sys_fd_count(config_t *cfg) {
-    int n = profile_floppy_count(cfg->machine);
+    int n = cfg->floppy ? floppy_drive_count(cfg->floppy) : profile_floppy_count(cfg->machine);
     return n > FLOPPY_NUM_DRIVES ? FLOPPY_NUM_DRIVES : n;
 }
 
@@ -1150,6 +1149,45 @@ static void board_part_save(void *obj, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &b, sizeof b, "machine");
 }
 
+// The storage devices part: their count, then the devices.
+static void storage_part_save(void *obj, checkpoint_t *cp) {
+    const config_t *cfg = obj;
+    int32_t n = cfg->n_storage;
+    system_write_checkpoint_data(cp, &n, sizeof n, "storage");
+    system_write_checkpoint_data(cp, cfg->storage, (size_t)n * sizeof cfg->storage[0], "storage");
+}
+
+// The storage devices a machine is built with: a restore's from its
+// checkpoint, a boot's from the document, else the model's default
+// configuration.
+static void storage_part(config_t *cfg, checkpoint_t *cp) {
+    machine_part_begin(cfg, cp, "storage");
+    if (cp) {
+        int32_t n = 0;
+        system_read_checkpoint_data(cp, &n, sizeof n, "storage");
+        if (n < 0 || n > MACHINE_STORAGE_MAX) {
+            checkpoint_set_error(cp);
+            n = 0;
+        }
+        system_read_checkpoint_data(cp, cfg->storage, (size_t)n * sizeof cfg->storage[0], "storage");
+        cfg->n_storage = n;
+        for (int i = 0; i < n; i++)
+            cfg->storage[i].bus[sizeof cfg->storage[i].bus - 1] = '\0';
+    } else if (cfg->build_opts.storage_given) {
+        cfg->n_storage = cfg->build_opts.n_storage;
+        memcpy(cfg->storage, cfg->build_opts.storage, sizeof cfg->storage);
+    } else {
+        for (const storage_device_decl_t *s = cfg->machine->default_storage;
+             s && s->bus && cfg->n_storage < MACHINE_STORAGE_MAX; s++) {
+            machine_storage_dev_t *d = &cfg->storage[cfg->n_storage++];
+            snprintf(d->bus, sizeof d->bus, "%s", s->bus);
+            d->unit = s->unit;
+            d->type = s->type;
+        }
+    }
+    machine_part(cfg, cp, "storage", storage_part_save, cfg);
+}
+
 static void events_part_save(void *obj, checkpoint_t *cp) {
     scheduler_checkpoint_events(obj, cp);
 }
@@ -1197,6 +1235,7 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
     // model and the RAM size it is built with, so nothing is read here.
     machine_part_begin(cfg, NULL, "machine");
     machine_part(cfg, checkpoint, "machine", board_part_save, cfg);
+    storage_part(cfg, checkpoint);
 
     // Delegate all machine-specific initialisation to the profile.  A
     // non-zero return means the machine could not be built (the only cause
@@ -1217,6 +1256,14 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
         reselect_active_map(active_read, active_write);
         return NULL;
     }
+
+    // The seeding step: a NEW machine's parameter memory gets the records that
+    // follow from its configuration -- the startup device, AppleTalk -- after
+    // every device and its factory content exist and before the first
+    // instruction.  Never on a restore: the store came back from the
+    // checkpoint, and whatever the guest chose since is state.
+    if (!checkpoint && profile->substrate->seed)
+        profile->substrate->seed(cfg);
 
     // The build options are construction's arguments, and construction is
     // over: every device took what it needed (the memory map copied the ROM,
@@ -1590,10 +1637,10 @@ int system_media_attach_std(config_t *cfg, const media_slot_t *slot) {
 int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const media_slot_t *slot) {
     if (!bus)
         return -1;
-    // The CD bay holds the machine's CD-ROM drive: anything else there would
-    // save a checkpoint whose bus no restore of this machine can rebuild.
-    if (slot->scsi_type != scsi_dev_cdrom && slot->unit == scsi_cd_bay_id(bus)) {
-        gs_outf("Cannot attach %s at SCSI id %d: that is the CD bay (insert a CD there instead)\n",
+    // A CD-ROM drive is construction: a hard disk cannot replace one, or the
+    // next checkpoint would hold a bus no restore of this machine can rebuild.
+    if (slot->scsi_type != scsi_dev_cdrom && slot->unit >= 0 && scsi_device_is_cd_drive(bus, (unsigned)slot->unit)) {
+        gs_outf("Cannot attach %s at SCSI id %d: that is a CD-ROM drive (insert a CD there instead)\n",
                 slot->img ? image_get_filename(slot->img) : "the image", slot->unit);
         return -1;
     }

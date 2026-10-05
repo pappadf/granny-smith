@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // slot_tables.h
-// The floppy and SCSI slot tables that more than one machine family declares
+// The floppy and storage declarations that more than one machine declares
 // identically.
 //
 // These were 27 byte-identical `static const` copies across 15 files, which is
@@ -11,35 +11,65 @@
 // and the ANS's table contradicted its own comment -- are that copy going
 // wrong.  Referencing a table cannot go wrong the same way.
 //
-// A machine whose slots genuinely differ keeps its own: the Plus and Lisa
-// (800K drives), the TNT family (its own "Internal HD0/HD1" pair in tnt.h,
-// alongside tnt_floppy_slots), and the Network Servers (backplane bays).
-// Sharing is for tables that are the same because the hardware is the same,
-// not for making unlike machines look alike.
+// A shared table must be TRUE on every machine that uses it: a label that is
+// right on one machine and wrong on another (the IIx's second drive is not
+// "External") means the second machine needs its own table.  A machine whose
+// hardware genuinely differs keeps its own: the Plus (no internal bay), the
+// AV, PDM and TNT families (CD-ROM bays), the Network Servers (backplanes).
 
 #ifndef GS_MACHINES_RUNTIME_SLOT_TABLES_H
 #define GS_MACHINES_RUNTIME_SLOT_TABLES_H
 
 #include "machine_profile.h"
 
-// Internal FD0 + External FD1, both SuperDrive.  The desktop II-family shape:
-// SE/30, IIcx, IIx, IIci, IIsi, IIfx.
-extern const struct floppy_slot mac_floppy_slots_2hd[];
+// Internal + External floppy drive, both SuperDrive; the external port ships
+// without a drive.  The IIcx, IIci and IIsi.
+extern const struct floppy_slot mac_floppy_slots_ext[];
 
-// Internal FD0 only, SuperDrive.  Machines with no external floppy port:
-// the Quadras and the PDM Power Macs.
+// Internal + Second internal floppy drive, both SuperDrive; the second bay
+// ships empty.  The IIx and IIfx, which have two internal bays and no
+// external port.
+extern const struct floppy_slot mac_floppy_slots_2int[];
+
+// Internal floppy drive only, SuperDrive.  Machines with no external floppy
+// port: the Quadras, the PDM, TNT and G3 Power Macs, the Network Servers.
 extern const struct floppy_slot mac_floppy_slots_1hd[];
 
-// SCSI HD0 (id 0) + HD1 (id 1) -- the generic two-target internal bus every
-// 68k Mac and the PDM family present.
-extern const struct scsi_slot mac_scsi_slots_hd01[];
+// A narrow SCSI bus with the one bay every 68k Mac desktop names, the
+// internal hard disk bay at ID 0, and an external connector: the SE/30, the
+// Macintosh II family and the Quadra 700.
+extern const storage_bus_decl_t mac_storage_scsi_hd_bay[];
 
-// External SCSI 0 (id 0) + 1 (id 1) -- an electrically separate second bus
-// with no bays of its own: the Quadra 900/950's external 53C96 chain.
-extern const struct scsi_slot mac_scsi_slots_ext01[];
+// The same with a CD-ROM bay at ID 3: the AV Quadras and the Power Macintosh
+// 6100 (whose CD-ROM drive sits in the front 5.25" bay).
+extern const storage_bus_decl_t mac_storage_scsi_cd_bay[];
+
+// The default devices of such a machine: a hard disk at ID 0 and an external
+// CD-ROM drive at ID 3.
+extern const storage_device_decl_t mac_default_storage_hd0_cd3[];
+
+// The bay names Apple's documentation gives, shared by several tables.
+extern const storage_bay_decl_t mac_bays_hd0[];
+extern const storage_bay_decl_t mac_bays_hd0_cd3[];
 
 // The CD-ROM drive every Macintosh profile takes: Apple's AppleCD SC, a SONY
 // CD-ROM CDU-8002 presenting 2048-byte blocks (Mode 1 sectors).
 extern const struct scsi_cd_drive mac_cdrom_drive_applecd;
+
+// A narrow SCSI bus declaration: units 0-6, the Macintosh at 7, hard disks and
+// CD-ROM drives, able to hold the startup device.
+#define MAC_SCSI_UNITS    0x7Fu
+#define MAC_SCSI_RESERVED 0x80u
+#define MAC_SCSI_BUS(id_, label_, media_bus_, bays_, external_)                                                        \
+    {.id = (id_),                                                                                                      \
+     .label = (label_),                                                                                                \
+     .kind = STORAGE_KIND_SCSI,                                                                                        \
+     .media_bus = (media_bus_),                                                                                        \
+     .units = MAC_SCSI_UNITS,                                                                                          \
+     .reserved = MAC_SCSI_RESERVED,                                                                                    \
+     .external_connector = (external_),                                                                                \
+     .bays = (bays_),                                                                                                  \
+     .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD,                                                                       \
+     .startup_ok = true}
 
 #endif // GS_MACHINES_RUNTIME_SLOT_TABLES_H

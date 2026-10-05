@@ -27,6 +27,7 @@
 // know, under fault catchers that the claimed windows provide).
 
 #include "tnt.h"
+#include "config_seed.h"
 
 #include "cuda.h" // the shared behavioral Cuda model (machines/av/)
 #include "dbdma.h"
@@ -693,8 +694,8 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // chip, and swim3.c here binds the two to Grand Central and DBDMA
     // channel 1.  No memory map of its own: the island decodes it.
     machine_part_begin(cfg, cp, "floppy");
-    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp,
-                              CONFIG_IMAGES(cfg));
+    cfg->floppy =
+        floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, CONFIG_IMAGES(cfg));
     machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
     tnt_swim3_bind(cfg);
     tnt_swim3_init(cfg);
@@ -790,7 +791,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // chain yet (see pm7500.c's has_cdrom).
     machine_part_images(cfg, cp);
     machine_part_begin(cfg, cp, "scsi");
-    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, cp, CONFIG_IMAGES(cfg));
+    cfg->scsi = machine_scsi_bus_init(cfg, cp, "scsi");
     machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
     // The Network Servers carry TWO fast/wide buses.  `cfg->scsi` is
     // channel 0 (Open Firmware's `scsi-int`, bays 0-3, the `disk0`..`disk3`
@@ -800,7 +801,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // it as `machine.scsi2`.
     if (tnt_board(cfg)->kind == TNT_BOARD_SHINER) {
         machine_part_begin(cfg, cp, "scsi2");
-        st->scsi2 = scsi_init_named(cfg->scheduler, cp, CONFIG_IMAGES(cfg), "scsi2");
+        st->scsi2 = machine_scsi_bus_init(cfg, cp, "scsi2");
         machine_part(cfg, cp, "scsi2", part_save_scsi, st->scsi2);
     }
     machine_part_begin(cfg, cp, "scsi96");
@@ -987,20 +988,6 @@ static void tnt_trigger_vbl(config_t *cfg) {
     pci_tick_vbl(cfg->pci);
 }
 
-// Primary display: the first display-capable PCI device in declared slot
-// order.  Control is itself a pci_device_t with a display op, seated in the
-// LAST declared slot (7 on the 9500, 4 on the 7500/8500), so this reads
-// "a seated video card when one exists, Control otherwise" with no
-// special-casing — the slot ordering was chosen for exactly this.
-//
-// The direct call survives as the fallback for the window between
-// tnt_control_init and slot seating, when the PCI object graph is not yet
-// answering.
-static struct display *tnt_display(config_t *cfg) {
-    struct display *d = pci_primary_display(cfg->pci);
-    return d ? d : tnt_control_display(cfg);
-}
-
 // Media attach, with the Network Servers' SECOND SCSI bus: on a Shiner a
 // medium in a rear bay is on `machine.scsi2`.
 static int tnt_media_attach(config_t *cfg, const media_slot_t *slot) {
@@ -1051,38 +1038,109 @@ static void tnt_pci_slot_irq(config_t *cfg, int slot, bool active) {
 // mac_floppy_slots_1hd (slot_tables.h) rather than the TNT keeping a seventh
 // identical copy.  tnt_fd_insert below is what makes one slot the right count.
 
-// The internal bus's two bays, shared by the three Power Macintosh profiles
-// (the Network Servers declare backplane bays instead).  Labelled "Internal"
-// rather than the generic "SCSI HD0/HD1" because this family has a second,
-// fast/wide bus a user can also attach to.
-const struct scsi_slot tnt_scsi_slots_internal[] = {
-    {.label = "Internal HD0", .id = 0},
-    {.label = "Internal HD1", .id = 1},
+// The Power Macintosh boards' internal bus, MESH: the hard disk bay at ID 0
+// and the 3.5" bay at ID 1 (the 8500 and 9500 add a second 3.5" bay at ID 2).
+// The external connector and the CD-ROM bay are on the board's other bus, the
+// 53C94 in Curio, which has no bus attached yet -- so these machines have no
+// CD-ROM drive until it has.
+static const storage_bay_decl_t tnt_bays_7500[] = {
+    {.unit = 0, .label = "Internal hard disk bay"},
+    {.unit = 1, .label = "3.5\xe2\x80\xb3 bay"},
     {0},
 };
 
-// The Network Servers' front backplane on the FIRST fast/wide controller,
-// shared by both models -- same backplane, same IDs, and Open Firmware's
-// default boot device (disk2:aix) is bay 2 on both.
-//
-// The backplane is "seven slots with hot swap.  It is expected (but not
-// required) that slot 0 will be a CD ROM."  Bay numbering runs top to bottom
-// with 0 uppermost, and the production ROM's own device aliases settle which
-// controller owns which bay -- `disk0`..`disk3` resolve through
-// `/bandit/53c825@11`, `disk4` onward through `@12`.  Bay 0 is Apple's
-// expected CD-ROM position and is deliberately NOT declared here: it is what
-// hw_profile_t.cdrom_id addresses.
-//
-// Their SECOND controller is deliberately NOT shared: the 700 hangs two rear
-// bays off it and the 500 does not, and that is the "More drive Bays" half of
-// Apple's own four-way split between the models (Network Server Hardware
-// Developer Notes, 1996, S1.1.2).  Merging those two tables would delete a
-// modelled hardware difference -- see ans700.c.
-const struct scsi_slot ans_scsi_slots_fw0[] = {
-    {.label = "Bay 1 (fast/wide 0)", .id = 1},
-    {.label = "Bay 2 (fast/wide 0)", .id = 2, .boot = true}, // Open Firmware's default: disk2:aix
-    {.label = "Bay 3 (fast/wide 0)", .id = 3},
+static const storage_bay_decl_t tnt_bays_8500[] = {
+    {.unit = 0, .label = "Internal hard disk bay"},
+    {.unit = 1, .label = "3.5\xe2\x80\xb3 bay"},
+    {.unit = 2, .label = "Second 3.5\xe2\x80\xb3 bay"},
     {0},
+};
+
+const storage_bus_decl_t tnt_storage_7500[] = {
+    MAC_SCSI_BUS("scsi", "Internal fast SCSI", MEDIA_BUS_SCSI, tnt_bays_7500, false),
+    {0},
+};
+
+const storage_bus_decl_t tnt_storage_8500[] = {
+    MAC_SCSI_BUS("scsi", "Internal fast SCSI", MEDIA_BUS_SCSI, tnt_bays_8500, false),
+    {0},
+};
+
+// A hard disk in the internal bay; no CD-ROM drive (see above).
+const storage_device_decl_t tnt_default_storage[] = {
+    {.bus = "scsi", .unit = 0, .type = STORAGE_DEV_HD},
+    {0},
+};
+
+// The Network Servers' front backplane: "seven slots with hot swap.  It is
+// expected (but not required) that slot 0 will be a CD ROM."  Bay numbering
+// runs top to bottom with 0 uppermost, and the production ROM's own device
+// aliases settle which controller owns which bay -- `disk0`..`disk3` resolve
+// through `/bandit/53c825@11` (bus 0), `disk4` onward through `@12` (bus 1).
+// Open Firmware's default boot device is disk2:aix, bay 2.
+//
+// The second controller's table is deliberately NOT shared: the 700 hangs two
+// rear bays off it and the 500 does not, and that is the "More drive Bays"
+// half of Apple's own four-way split between the models (Network Server
+// Hardware Developer Notes, 1996, S1.1.2).
+const storage_bay_decl_t ans_bays_bus0[] = {
+    {.unit = 0, .label = "Front bay 0"},
+    {.unit = 1, .label = "Front bay 1"},
+    {.unit = 2, .label = "Front bay 2"},
+    {.unit = 3, .label = "Front bay 3"},
+    {0},
+};
+
+// The CD-ROM drive in front bay 0, the hard disk in front bay 2.
+const storage_device_decl_t ans_default_storage[] = {
+    {.bus = "scsi", .unit = 0, .type = STORAGE_DEV_CD},
+    {.bus = "scsi", .unit = 2, .type = STORAGE_DEV_HD},
+    {0},
+};
+
+// The front keyswitch, a construction input (gbus.c): Apple's position
+// names, Unlocked by default -- the machine's normal running position.
+static const config_value_decl_t ans_keyswitch_values[] = {
+    {.id = "unlocked", .label = "Unlocked"},
+    {.id = "service", .label = "Service"},
+    {.id = "locked", .label = "Locked"},
+    {.id = NULL},
+};
+
+#define ANS_KEYSWITCH_OPTION                                                                                           \
+    {.id = "keyswitch", .label = "Keyswitch", .values = ans_keyswitch_values, .default_value = "unlocked"}
+
+const config_option_decl_t ans500_options[] = {
+    ANS_KEYSWITCH_OPTION,
+    {.id = NULL},
+};
+
+// The 700 takes a second, redundant power supply; it shipped with one.
+static const config_value_decl_t ans_psu_values[] = {
+    {.id = "one", .label = "One"},
+    {.id = "two", .label = "Two"},
+    {.id = NULL},
+};
+
+const config_option_decl_t ans700_options[] = {
+    {.id = "power_supplies", .label = "Power supplies", .values = ans_psu_values, .default_value = "one"},
+    ANS_KEYSWITCH_OPTION,
+    {.id = NULL},
+};
+
+// The Cirrus Logic 54M30's VGA port: a multisync monitor the guest drives at
+// its own choice of raster, so there is no monitor to pick.
+static bool ans_monitor_at(size_t i, const char **id, const char **monitor) {
+    if (i != 0)
+        return false;
+    *id = *monitor = "vga";
+    return true;
+}
+
+const builtin_video_desc_t ans_builtin_video = {
+    .detail = "Cirrus Logic 54M30",
+    .monitor_at = ans_monitor_at,
+    .default_monitor = "vga",
 };
 
 // The Shiner backplane -- the PCI topology of BOTH Network Servers, which
@@ -1099,7 +1157,8 @@ const struct scsi_slot ans_scsi_slots_fw0[] = {
 //   * bus 1 IDSEL 15 is a soldered VIDEO device here, a socket ("C1") there
 //   * three builtins (VIDEO + two 53C825As) against the Power Macs' one VCI,
 //     because MESH is gone and video moved onto the bus
-//   * the labels are Open Firmware's own slot-names, not Mac OS's A1..F2
+//   * the slots are numbered 1-6 (the firmware's slot-names are the detail),
+//     not lettered A1..F2
 //
 // PCI topology (Apple, ibid., §4.6.2 and §7.1.1; independently confirmed by
 // the six per-slot Open Firmware boot commands printed in "Using the PCI
@@ -1121,7 +1180,7 @@ const struct scsi_slot ans_scsi_slots_fw0[] = {
 // below is the decimal IDSEL AD line, which is what the config-cycle
 // encoding wants.
 //
-// The LABELS are the ROM's own, read out of each bridge node's
+// The DETAILS are the ROM's own slot names, read out of each bridge node's
 // `slot-names` property under Open Firmware: Bandit 1 publishes
 // `00006000 "SLOT1_PCI0" "SLOT2_PCI0"` and Bandit 2 publishes
 // `0001E000 "SLOT3_PCI1" "SLOT4_PCI1" "SLOT5_PCI1" "SLOT6_PCI1"`.  Note
@@ -1130,41 +1189,54 @@ const struct scsi_slot ans_scsi_slots_fw0[] = {
 // worked example in the Software Developer Notes shows a slot-SIX card as
 // `SLOT6_PCI1` and not `SLOT6_PCI2`.  The bitmask halves also confirm the
 // 2/4 split and the IDSELs: bits 13-14 on the first bridge, 13-16 on the
-// second.
+// second.  Apple's recommended order for adding cards is slot 6 first (slot 1
+// is kept for the RAID card), which `fill_order` records.
 const pci_slot_decl_t ans_pci_slots[] = {
     {.slot = 1,
      .kind = PCI_SLOT_SOCKET,
-     .label = "SLOT1_PCI0",
+     .label = "PCI slot 1",
+     .detail = "SLOT1_PCI0",
+     .fill_order = 6,
      .bus = TNT_PCI_BUS_1,
      .device = 13,
      .int_line = ANS_INT_SLOT1},
     {.slot = 2,
      .kind = PCI_SLOT_SOCKET,
-     .label = "SLOT2_PCI0",
+     .label = "PCI slot 2",
+     .detail = "SLOT2_PCI0",
+     .fill_order = 5,
      .bus = TNT_PCI_BUS_1,
      .device = 14,
      .int_line = ANS_INT_SLOT2},
     {.slot = 3,
      .kind = PCI_SLOT_SOCKET,
-     .label = "SLOT3_PCI1",
+     .label = "PCI slot 3",
+     .detail = "SLOT3_PCI1",
+     .fill_order = 4,
      .bus = TNT_PCI_BUS_2,
      .device = 13,
      .int_line = ANS_INT_SLOT3},
     {.slot = 4,
      .kind = PCI_SLOT_SOCKET,
-     .label = "SLOT4_PCI1",
+     .label = "PCI slot 4",
+     .detail = "SLOT4_PCI1",
+     .fill_order = 3,
      .bus = TNT_PCI_BUS_2,
      .device = 14,
      .int_line = ANS_INT_SLOT4},
     {.slot = 5,
      .kind = PCI_SLOT_SOCKET,
-     .label = "SLOT5_PCI1",
+     .label = "PCI slot 5",
+     .detail = "SLOT5_PCI1",
+     .fill_order = 2,
      .bus = TNT_PCI_BUS_2,
      .device = 15,
      .int_line = ANS_INT_SLOT5},
     {.slot = 6,
      .kind = PCI_SLOT_SOCKET,
-     .label = "SLOT6_PCI1",
+     .label = "PCI slot 6",
+     .detail = "SLOT6_PCI1",
+     .fill_order = 1,
      .bus = TNT_PCI_BUS_2,
      .device = 16,
      .int_line = ANS_INT_SLOT6},
@@ -1180,21 +1252,24 @@ const pci_slot_decl_t ans_pci_slots[] = {
     // interrupts onto EXT1.
     {.slot = 7,
      .kind = PCI_SLOT_BUILTIN,
-     .label = "VIDEO",
+     .label = "Built-in video",
+     .detail = "VIDEO",
      .bus = TNT_PCI_BUS_1,
      .device = 15,
      .int_line = 0,
      .builtin_card_id = "cirrus_54m30"},
     {.slot = 8,
      .kind = PCI_SLOT_BUILTIN,
-     .label = "FWSCSI0",
+     .label = "Fast and wide SCSI-2 controller (channel 0)",
+     .detail = "FWSCSI0",
      .bus = TNT_PCI_BUS_1,
      .device = 17,
      .int_line = ANS_INT_FW0,
      .builtin_card_id = "sym53c825_0"},
     {.slot = 9,
      .kind = PCI_SLOT_BUILTIN,
-     .label = "FWSCSI1",
+     .label = "Fast and wide SCSI-2 controller (channel 1)",
+     .detail = "FWSCSI1",
      .bus = TNT_PCI_BUS_1,
      .device = 18,
      .int_line = ANS_INT_FW1,
@@ -1216,11 +1291,24 @@ static bool tnt_fd_present(config_t *cfg, int drive) {
     return floppy_is_inserted(cfg->floppy, drive);
 }
 
+// The seeding step: Mac OS keeps its PRAM in the NVRAM's XPRAM partition
+// here, not in Cuda, so the AppleTalk and startup-device records go there.
+static void tnt_seed(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    if (!st)
+        return;
+    mac_seed_xpram_appletalk(st->gc.nvram + OF_NVRAM_XPRAM, cfg, of_nvram_defaults_tnt.pram);
+    int id = mac_seed_startup_scsi_id(cfg, "scsi");
+    if (id != -2)
+        of_nvram_set_startup_scsi(st->gc.nvram, id, &of_nvram_defaults_tnt);
+}
+
 const machine_substrate_t tnt_substrate = {
     .init = tnt_init,
     .bus_reset = tnt_bus_reset,
     .power_on = tnt_power_on,
     .teardown = tnt_teardown,
+    .seed = tnt_seed,
     .pci_slot_irq = tnt_pci_slot_irq,
     .trigger_vbl = tnt_trigger_vbl,
     .fd_insert = tnt_fd_insert,
@@ -1228,7 +1316,6 @@ const machine_substrate_t tnt_substrate = {
     .input_key = mac_input_key,
     .input_mouse_move = mac_input_mouse_move,
     .input_mouse_button = mac_input_mouse_button,
-    .display = tnt_display,
     .media_attach = tnt_media_attach,
     .media_present = tnt_media_present,
     .media_eject = tnt_media_eject,

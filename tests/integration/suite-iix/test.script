@@ -68,7 +68,7 @@ def row_iix_824gc_seat() {
     let blank = machine.screen.checksum()
     scheduler.run 100000000
     assert machine.id == "iix" "iix-824gc-seat: machine.id != iix"
-    assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "iix-824gc-seat: slot $9 card != 8•24 GC"
+    assert machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC" "iix-824gc-seat: slot $9 card != 8•24 GC"
     assert machine.nubus.slot[9].card.declrom.present "iix-824gc-seat: declaration ROM not present"
     assert machine.nubus.slot[9].card.gc.state == "reset" "iix-824gc-seat: gc.state != reset in ROM-only boot"
     assert machine.screen.width == 640 "iix-824gc-seat: screen.width != 640"
@@ -142,7 +142,8 @@ def row_iix_portrait_603() {
 # it mounts with no system error (SysErr $AF0 stays 0).
 def row_iix_71_extfd() {
     machine.rtc.time = 3000000000
-    machine.boot model="iix" ram=16384 video_card="mdc_8_24" video_sense=6 rom="${$ROM}"
+    # The second internal floppy bay ships empty: this row fits a drive.
+    machine.boot model="iix" ram=16384 video_card="mdc_8_24" video_sense=6 rom="${$ROM}" config="{\"floppies\":{\"fd1\":\"hd\"}}"
     machine.floppy.drive[0].insert "${$disk_tools_71}"
     machine.rtc.pram.validate
     machine.rtc.pram.poke 0x46 0x002781a6a6000000:8
@@ -192,7 +193,7 @@ def row_iix_gc_accel1() {
     machine.scsi.attach_hd "${$hd_608_gc}" 0
     scheduler.run 200000000
     wait_stable(600000000)
-    assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "iix-gc-accel1: slot $9 card != 8•24 GC"
+    assert machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24 GC" "iix-gc-accel1: slot $9 card != 8•24 GC"
     assert machine.nubus.slot[9].card.gc.on == true "iix-gc-accel1: accelerator did not turn on"
     assert machine.nubus.slot[9].card.gc.state == "gc-on" "iix-gc-accel1: accelerator state != gc-on"
     assert machine.nubus.slot[9].card.gc.error == 0 "iix-gc-accel1: accelerator posted an error"
@@ -227,7 +228,7 @@ def row_iix_gc_decline1() {
 # (sense $0) halves live here now, so the same 16 cells span two machines. The
 # JMFB seats in slot 9 on both, so the sPRAMRec address and the whole seeding
 # recipe carry over unchanged (verified: the card in slot 9 here reports
-# "Apple Macintosh Display Card 8*24").
+# "Macintosh Display Card 8*24").
 #
 # Each cell is a cold boot: seed the slot's sPRAMRec so the Slot Manager's
 # GET_SLOT_DEPTH picks the wanted sResource at boot, and run into the Welcome

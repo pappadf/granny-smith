@@ -359,11 +359,6 @@ struct scsi {
 
     scsi_5380_t *chip5380;
 
-    // The id of the machine's CD bay (its built-in CD-ROM drive), or -1: a
-    // construction fact, so a hard disk can be refused there when it is
-    // attached rather than make the next checkpoint unloadable.
-    int cd_bay_id;
-
     struct object *object; // top-level scsi node
     struct object *bus_object; // scsi.bus child
     struct object *devices_object; // scsi.device collection

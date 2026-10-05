@@ -1,4 +1,4 @@
-# Integration suite: IIcx on the generic GS declaration ROM
+# Integration suite: IIcx cards on their substitute GS declaration ROM
 #
 # One daemon run; rows re-instantiate via machine.boot and share the
 # harness in ../lib/mac.script. Absorbs iicx-gsvrom-video-modes,
@@ -14,8 +14,8 @@
 #   make test-iicx-gsvrom TEST_VARS="ROW=gsvrom-24ac"   one row only
 #   make test-iicx-gsvrom TEST_VARS="REGEN=1"           recapture goldens
 
-TEST_NAME := IIcx generic-vROM video suite
-TEST_DESC := 10-cell JMFB sweep, 24AC 640x480 + 832x624, 8*24 GC bring-up, 800x600 custom mode — all on generated vROMs
+TEST_NAME := IIcx substitute-ROM video suite
+TEST_DESC := 10-cell JMFB sweep, 24AC 640x480 + 832x624, 8*24 GC bring-up, 800x600 custom mode — all on generated substitute ROMs
 
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 TEST_ARGS := model=iicx ram=8192

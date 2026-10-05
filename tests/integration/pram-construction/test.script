@@ -13,8 +13,10 @@ def assert_token(model, a, b, c, d) {
 }
 
 # 'NuMc', PRAMInitTbl with default OS Mac and startup device SCSI id 0, the
-# ROM's cold MMFlags, the no-wait bit -- and SysParam still invalid (its
-# validity byte is physical $10 on the extended RTC), for the ROM to fill.
+# ROM's cold MMFlags, the no-wait bit -- and SysParam valid (its validity
+# byte is physical $10 on the extended RTC), as the ROM's own PRAMInit
+# writes it, with AppleTalk active on the printer port: the configuration's
+# AppleTalk option, seeded at construction.
 def assert_mac_pram(model, rom, mmflags, video81) {
     machine.boot model=$model rom="${$R}/${$rom}"
     assert scheduler.instr_count == 0 "${$model}: the machine ran before the read"
@@ -24,7 +26,8 @@ def assert_mac_pram(model, rom, mmflags, video81) {
     assert machine.rtc.pram.peek(0x81) == $video81 "${$model}: default video device byte"
     assert machine.rtc.pram.peek(0x8A) == $mmflags "${$model}: MMFlags ${machine.rtc.pram.peek(0x8A)}, want ${$mmflags}"
     assert (machine.rtc.pram.peek(0x01) & 0x80) != 0 "${$model}: Start Manager wait not disabled"
-    assert machine.rtc.pram.peek(0x10) != 0xA8 "${$model}: SysParam marked valid"
+    assert machine.rtc.pram.peek(0x10) == 0xA8 "${$model}: SysParam not marked valid"
+    assert (machine.rtc.pram.peek(0x13) & 0x0F) == 1 "${$model}: AppleTalk not active on the printer port"
 }
 
 assert_mac_pram("iix", "iix-iicx-se30-97221136.rom", 0x00, 0x00)
@@ -58,13 +61,14 @@ assert machine.rtc.pram.peek(0x8A) == 0 "plus: MMFlags"
 machine.boot model="pm7500" rom="${$R}/pm7500-pm8500-pm9500-96cd923d.rom"
 assert machine.rtc.pram.peek(0x0C) == 0 "pm7500: an XPRAM token on an Open Firmware machine"
 
-# The ROM keeps the store: the XPRAM token and the table survive its init,
-# and it writes its own SysParam.
+# The ROM keeps the store: the XPRAM token, the table and the seeded
+# SysParam survive its init.
 machine.boot model="se30" rom="${$R}/iix-iicx-se30-97221136.rom"
 scheduler.run 30000000
 assert_token("se30 booted", 0x4E, 0x75, 0x4D, 0x63)
 assert machine.rtc.pram.boot_device == 0 "se30 booted: the ROM rewrote the startup device"
-assert machine.rtc.pram.peek(0x10) == 0xA8 "se30 booted: the ROM did not initialise SysParam"
+assert machine.rtc.pram.peek(0x10) == 0xA8 "se30 booted: SysParam no longer valid"
+assert (machine.rtc.pram.peek(0x13) & 0x0F) == 1 "se30 booted: the ROM reset AppleTalk"
 
 # The startup device follows a disk elsewhere, through the core's formula --
 # set as the page does, before the machine runs (a running System has the
@@ -74,6 +78,17 @@ machine.boot model="se30" rom="${$R}/iix-iicx-se30-97221136.rom"
 machine.rtc.pram.boot_device = 5
 assert machine.rtc.pram.boot_device == 5 "boot_device does not read back"
 assert machine.rtc.pram.peek(0x7B) == 0xDA "boot_device: refnum -(33+5) low byte"
+
+# AppleTalk Inactive is the printer port free.
+machine.boot model="se30" rom="${$R}/iix-iicx-se30-97221136.rom" config="{\"options\":{\"appletalk\":\"inactive\"}}"
+assert (machine.rtc.pram.peek(0x13) & 0x0F) == 0 "se30: AppleTalk Inactive still seeded active"
+
+# The startup device the configuration names is the record's: a hard disk at
+# ID 4 instead of ID 0, and "no default".
+machine.boot model="se30" rom="${$R}/iix-iicx-se30-97221136.rom" config="{\"storage\":[{\"bus\":\"scsi\",\"unit\":4,\"type\":\"hd\"}]}"
+assert machine.rtc.pram.boot_device == 4 "se30: the startup record does not name ID 4"
+machine.boot model="se30" rom="${$R}/iix-iicx-se30-97221136.rom" config="{\"startup\":null}"
+assert machine.rtc.pram.boot_device == -1 "se30: startup null still names a device"
 
 echo "pram-construction: all checks passed"
 quit

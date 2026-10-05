@@ -29,11 +29,6 @@ static const struct floppy_slot q840av_floppy_slots[] = {
     {0},
 };
 
-static const scsi_bus_decl_t q840av_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
-    {0},
-};
-
 static const av_board_desc_t q840av_board_desc = {
     .common =
         {
@@ -78,9 +73,10 @@ const hw_profile_t machine_q840av = {
 
     .ram_options = q840av_ram_options_kb,
     .floppy_slots = q840av_floppy_slots,
-    .scsi_buses = q840av_scsi_buses,
-    .has_cdrom = true,
-    .cdrom_id = 3,
+    .storage = mac_storage_scsi_cd_bay,
+    .default_storage = mac_default_storage_hd0_cd3,
+    .appletalk = true,
+    .builtin_video = &av_builtin_video_q840av,
     .cdrom_drive = &mac_cdrom_drive_applecd,
     .has_video_in = true, // on-board DMSD/VDC digitizer
     .has_audio_in = true, // Singer codec microphone input (singer.md)

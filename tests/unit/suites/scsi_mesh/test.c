@@ -228,7 +228,7 @@ static void on_kick(void *ctx) {
 static void setup(void) {
     s_irq_level = 0;
     s_dbdma_kicks = 0;
-    s_bus = scsi_init(NULL, NULL, NULL, NULL, 0);
+    s_bus = scsi_init_named(NULL, NULL, NULL, "scsi");
     ASSERT_TRUE(s_bus != NULL);
     scsi_add_device(s_bus, TARGET, "GS", "SCRATCH", "1.0", NULL, scsi_dev_hd, BLK, false);
     s_m = mesh_init(NULL, NULL);

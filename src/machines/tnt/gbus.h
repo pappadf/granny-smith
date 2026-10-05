@@ -98,6 +98,7 @@ typedef enum ans_keyswitch {
 typedef struct tnt_gbus {
     uint8_t keyswitch; // ans_keyswitch_t — the FRONT switch, software-visible
     uint8_t rear_locked; // the REAR switch: a power-on precondition
+    uint8_t two_supplies; // a second (redundant) supply is fitted: TwoSuppliesH
     uint16_t env_faults; // set bit = that fault is INJECTED (register shows ~this)
     uint16_t tb_enable; // $1C020 store-and-readback (bit 15 = timebases run)
     uint16_t misc; // $1C030 store-and-readback (undocumented; see gbus.c)

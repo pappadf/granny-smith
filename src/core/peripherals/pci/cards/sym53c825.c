@@ -594,7 +594,7 @@ static pci_device_t *sym825_ch1_factory(int slot_index, config_t *cfg, const rom
 // machine's slot table names them, never offered on a socket.
 const pci_card_kind_t sym53c825_ch0_kind = {
     .id = "sym53c825_0",
-    .display_name = "Symbios 53C825A fast/wide SCSI (channel 0)",
+    .display_name = "Fast and wide SCSI-2 controller (channel 0)",
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "scsi",
     .factory = sym825_ch0_factory,
@@ -602,7 +602,7 @@ const pci_card_kind_t sym53c825_ch0_kind = {
 
 const pci_card_kind_t sym53c825_ch1_kind = {
     .id = "sym53c825_1",
-    .display_name = "Symbios 53C825A fast/wide SCSI (channel 1)",
+    .display_name = "Fast and wide SCSI-2 controller (channel 1)",
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "scsi",
     .factory = sym825_ch1_factory,

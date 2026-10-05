@@ -1,0 +1,58 @@
+# Configuration seeding and persistence (see config.mk).
+
+# The machine the document built: cards, storage.
+def assert_built(when) {
+    assert machine.nubus.slot[12].card.id == "mdc_8_24" "${$when}: slot C's card"
+    assert machine.nubus.slot[13].card.id == "display_card_24ac" "${$when}: slot D's card"
+    assert len(machine.storage) == 3 "${$when}: ${len(machine.storage)} storage devices"
+    assert contains("${machine.storage}", "\"bus\":\"scsi2\",\"bus_label\":\"External SCSI\",\"unit\":5") "${$when}: the external disk"
+}
+
+# The three records as the guest left them: AppleTalk active on the printer
+# port, the startup disk at ID 1, the built-in video at 4 bpp.
+def assert_guest_records(when) {
+    assert (machine.rtc.pram.peek(0x13) & 0x0F) == 1 "${$when}: the guest's AppleTalk choice was lost"
+    assert machine.rtc.pram.boot_device == 1 "${$when}: the guest's startup disk was lost"
+    assert machine.rtc.pram.peek(0x48) == 0x82 "${$when}: the guest's video mode was lost"
+}
+
+machine.boot model="q900" rom="${$ROM}" config="{\"options\":{\"appletalk\":\"inactive\"},\"cards\":[{\"slot\":\"nubus_c\",\"card\":\"mdc_8_24\"},{\"slot\":\"nubus_d\",\"card\":\"display_card_24ac\"}],\"displays\":{\"builtin\":{\"monitor\":\"13in_rgb\",\"mode\":\"640x480x8\"}},\"storage\":[{\"bus\":\"scsi\",\"unit\":2,\"type\":\"hd\"},{\"bus\":\"scsi\",\"unit\":3,\"type\":\"cd\"},{\"bus\":\"scsi2\",\"unit\":5,\"type\":\"hd\"}],\"startup\":{\"bus\":\"scsi\",\"unit\":2}}"
+
+# --- Seeded at construction. ---------------------------------------------------
+assert scheduler.instr_count == 0 "the machine ran before the read"
+assert (machine.rtc.pram.peek(0x13) & 0x0F) == 0 "AppleTalk not seeded inactive"
+assert machine.rtc.pram.boot_device == 2 "startup disk not seeded at ID 2"
+assert machine.rtc.pram.peek(0x47) == 0x2B "built-in video's record: BoardID"
+assert machine.rtc.pram.peek(0x48) == 0x83 "built-in video's record: 8 bpp"
+assert_built("built")
+
+# --- The guest changes them (as the Chooser, Startup Disk and Monitors do). ----
+# SysParam's port configuration (logical byte 3): port B's use AppleTalk (1)
+# rather than none (0).
+assert machine.rtc.pram.peek(0x13) == 0x00 "the seeded port configuration ${machine.rtc.pram.peek(0x13):02x}"
+machine.rtc.pram.poke 0x13 0x01:1
+machine.rtc.pram.boot_device = 1
+machine.rtc.pram.poke 0x48 0x82:1
+scheduler.run 60000000
+assert_guest_records("running")
+
+# --- Reset, power cycle, checkpoint: nothing seeds again. ----------------------
+machine.reset
+scheduler.run 60000000
+assert_guest_records("after machine.reset")
+assert_built("after machine.reset")
+
+machine.restart
+scheduler.run 60000000
+assert_guest_records("after machine.restart")
+assert_built("after machine.restart")
+
+assert checkpoint.save("${$WORK_DIR}/persist.checkpoint") "checkpoint save"
+machine.boot model="q900" rom="${$ROM}"
+assert machine.rtc.pram.boot_device == 0 "the default machine's startup disk"
+assert checkpoint.load("${$WORK_DIR}/persist.checkpoint") "checkpoint load"
+assert_guest_records("after a checkpoint round trip")
+assert_built("after a checkpoint round trip")
+scheduler.run 60000000
+assert_guest_records("running the restored machine")
+quit

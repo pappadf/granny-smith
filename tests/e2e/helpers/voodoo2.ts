@@ -89,7 +89,7 @@ export async function bootWithCard(page: Page, cardId: string): Promise<void> {
     timeout: 30_000,
   });
   await model.selectOption("pm7500");
-  await page.getByRole("button", { name: "Start Machine" }).click();
+  await page.getByRole("button", { name: "Start", exact: true }).click();
   await expect(
     page.locator(".toast .msg").filter({ hasText: "Machine started" }),
   ).toBeVisible({
