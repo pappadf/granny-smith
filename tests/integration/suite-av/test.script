@@ -144,7 +144,18 @@ def row_av_identity() {
 
 # ---- av-ram-sizing ----------------------------------------------------------
 # YMCA's two-pass sizer (standard then "wide" mode, larger result per bank)
-# runs against the eight 16 MB-spaced banks.  MemTop is what it concluded.
+# runs against the eight 16 MB-spaced banks, then merges the banks it can
+# decode largest first.  MemTop is what it concluded.  The 660AV totals are
+# its soldered 4 MB plus SIMMs: 12 MB (4+4+4), 28 MB (4+8+16) and 44 MB
+# (4+8+32) each have a bank smaller than 16 MB that the merge must place
+# after the larger ones -- RAM presented as one flat block sized them as 0,
+# 16 and 32 MB.
+def av_660_sized(kb, n) {
+    machine.boot model="q660av" ram=$kb rom="${$av_rom}"
+    scheduler.run $n
+    assert debug.mac.globals.read("MemTop") == $kb * 1024 "av-ram-sizing: 660AV ${$kb} KB sized as ${debug.mac.globals.read("MemTop"):08x}"
+}
+
 def row_av_ram_sizing() {
     machine.boot model="q840av" ram=8192 rom="${$av_rom}"
     scheduler.run 120000000
@@ -154,9 +165,10 @@ def row_av_ram_sizing() {
     scheduler.run 200000000
     assert debug.mac.globals.read("MemTop") == 0x1000000 "av-ram-sizing: 16 MB sized as ${debug.mac.globals.read("MemTop"):08x}"
 
-    machine.boot model="q660av" ram=32768 rom="${$av_rom}"
-    scheduler.run 400000000
-    assert debug.mac.globals.read("MemTop") == 0x2000000 "av-ram-sizing: 32 MB sized as ${debug.mac.globals.read("MemTop"):08x}"
+    av_660_sized(12288, 150000000)
+    av_660_sized(28672, 150000000)
+    av_660_sized(45056, 150000000)
+    av_660_sized(69632, 150000000)
     report_perf("suite-av/av-ram-sizing", scheduler.instr_count)
 }
 

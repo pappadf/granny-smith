@@ -18,9 +18,9 @@
 
 #include <stdint.h>
 
-// Eight 72-pin SIMM banks of up to 16 MB (1 MB minimum bank): the shipping
-// 8/16 MB configurations plus the geometrically valid larger totals up to
-// the 128 MB architectural maximum (the ROM's RamInfoCyclone).
+// Four 72-pin SIMM slots of 4, 8, 16 or 32 MB, no RAM on the logic board:
+// the shipping 8/16 MB configurations plus larger populations up to
+// 128 MB (four 32 MB SIMMs, all eight YMCA banks).
 static const uint32_t q840av_ram_options_kb[] = {8192, 16384, 32768, 65536, 131072, 0};
 
 // New Age reports "no drive" (ST3 = $FF) — no floppy slots offered until a
@@ -43,6 +43,9 @@ static const av_board_desc_t q840av_board_desc = {
                  },
     .strap_nibble = 0xF, // Cyclone40 straps %1111
     .muni_present = true,
+    .ram_onboard = 0, // all RAM on SIMMs
+    .simm_slots = 4, // slot k = banks 2k/2k+1
+    .simm_first_bank = 0,
 };
 
 static const av_board_t q840av_board = {

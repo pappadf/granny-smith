@@ -87,6 +87,14 @@ static uint8_t av_ymca_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     return (uint8_t)((st->ymca_regs[idx] & 1) << 7);
 }
 
+static void av_ymca_remap(config_t *cfg);
+
+// The register index of bank `bank`'s bit `bit`: boundary A20..A26 are bits
+// 0-6, the size code Sz0..Sz2 bits 7-9.
+static inline uint32_t ymca_bank_reg(int bank, int bit) {
+    return (AV_YMCA_BANK_BASE + (uint32_t)bank * AV_YMCA_BANK_STRIDE) / 4 + (uint32_t)bit;
+}
+
 static void av_ymca_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
     (void)win_off; // this window's handler decodes from addr itself
     av_state_t *st = av_st(cfg);
@@ -100,6 +108,13 @@ static void av_ymca_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_
         return; // straps are inputs
     st->ymca_regs[idx] = (uint8_t)((value >> 7) & 1);
     LOG(3, "YMCA write $%03X = %d (pc=%08X)", off, st->ymca_regs[idx], cpu_get_pc(cfg->cpu));
+    // A bank's ten bits are written boundary first and Sz2 last (the ROM's
+    // split and merge passes), so its last write moves the bank.
+    for (int b = 0; b < AV_YMCA_BANK_COUNT; b++)
+        if (idx == ymca_bank_reg(b, AV_YMCA_BDRY_BITS + AV_YMCA_SIZE_BITS - 1)) {
+            av_ymca_remap(cfg);
+            break;
+        }
 }
 
 // ============================================================
@@ -444,22 +459,109 @@ static void av_scc_irq(void *context, bool active) {
 // ============================================================
 // RAM mapping
 // ============================================================
-// A flat map of the installed RAM at physical 0 is the CORRECT model for
-// this platform, not a shortcut: the eight YMCA banks decode at a fixed
-// 16 MB spacing ($00000000/$01000000/…, the ROM's RamInfo), so any
-// population of full banks is contiguous by construction, and a partial
-// last bank simply ends early (probes above installed RAM read floating
-// $FF, which is how the ROM's SizeMemory finds each bank's size — verified
-// for 8/16/32 MB against the real sizing + Mod3Test).  The per-bank
-// boundary/size registers still latch and read back (av_ymca_write); the
-// ROM's merge pass re-programs them to the same contiguous layout they
-// power up with, so they never change the decode.
+// YMCA decodes eight banks.  Each bank sits at its boundary register (in
+// MB) with a window of its size code -- 1 MB << (code - 1), code 0 = off --
+// and a bank smaller than its window repeats through it.  The ROM sizes
+// memory against exactly that: @YMCASplit puts bank n at n x 16 MB with
+// 16 MB windows, YMCASizeBanks finds each bank's size where its signature
+// wraps, and YMCAMerge packs the banks it can use largest first from 0.  A
+// bank whose size is not a power of two has no code and is switched off,
+// which is why the totals the board can hold are SIMM populations
+// (av_ram_banks), not any multiple of 4 MB.
+//
+// The flat RAM image holds the banks in that merged order, so once the ROM
+// has merged them the decode is the image at 0 -- what the 040 bus
+// resolver, DMA and checkpoints address.
+
+bool av_ram_banks(const av_board_desc_t *desc, uint32_t ram, uint32_t size[AV_YMCA_BANK_COUNT]) {
+    static const uint32_t simm_mb[] = {32, 16, 8, 4};
+    memset(size, 0, sizeof(uint32_t) * AV_YMCA_BANK_COUNT);
+    if (ram < desc->ram_onboard)
+        return false;
+    if (desc->ram_onboard)
+        size[0] = desc->ram_onboard;
+    uint32_t left = ram - desc->ram_onboard;
+    // Largest SIMM that fits, slot by slot; the slots then hold a
+    // non-increasing population, which reaches every total any population
+    // of these sizes reaches.
+    for (int k = 0; k < desc->simm_slots && left; k++) {
+        uint32_t mb = 0;
+        for (size_t i = 0; i < sizeof(simm_mb) / sizeof(simm_mb[0]); i++)
+            if ((simm_mb[i] << 20) <= left) {
+                mb = simm_mb[i];
+                break;
+            }
+        if (!mb)
+            return false;
+        int bank = desc->simm_first_bank + 2 * k;
+        if (bank + 1 >= AV_YMCA_BANK_COUNT)
+            return false;
+        if (mb == 32) { // two 16 MB banks
+            size[bank] = size[bank + 1] = 16u << 20;
+        } else {
+            size[bank] = mb << 20;
+        }
+        left -= mb << 20;
+    }
+    return left == 0;
+}
+
+// Lay the banks into the flat image in the order YMCAMerge packs them:
+// largest first, ties in bank order.
+static void av_bank_image(av_state_t *st) {
+    uint32_t off = 0;
+    for (uint32_t sz = 16u << 20; sz >= 1u << 20; sz >>= 1)
+        for (int b = 0; b < AV_YMCA_BANK_COUNT; b++)
+            if (st->bank_size[b] == sz) {
+                st->bank_image_off[b] = off;
+                off += sz;
+            }
+}
+
+// The registers' power-on layout, what @YMCASplit also programs: bank n at
+// n x 16 MB, every window 16 MB (size code 5).
+static void av_ymca_split(av_state_t *st) {
+    for (int b = 0; b < AV_YMCA_BANK_COUNT; b++) {
+        uint32_t boundary = (uint32_t)b * 16, code = 5;
+        for (int k = 0; k < AV_YMCA_BDRY_BITS; k++)
+            st->ymca_regs[ymca_bank_reg(b, k)] = (uint8_t)((boundary >> k) & 1);
+        for (int k = 0; k < AV_YMCA_SIZE_BITS; k++)
+            st->ymca_regs[ymca_bank_reg(b, AV_YMCA_BDRY_BITS + k)] = (uint8_t)((code >> k) & 1);
+    }
+}
+
+// Rebuild the RAM decode from the bank registers.  Not while the ROM
+// overlay holds low memory: dropping it maps RAM (av_map_ram).
+static void av_ymca_remap(config_t *cfg) {
+    av_state_t *st = av_st(cfg);
+    if (st->overlay.armed)
+        return;
+    uint32_t end = AV_YMCA_BANK_COUNT * (16u << 20); // the split layout's reach
+    if (st->decode_end > end)
+        end = st->decode_end;
+    for (uint32_t p = 0; p < (end >> PAGE_SHIFT); p++)
+        mac030_clear_page(p);
+    st->decode_end = 0;
+    uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+    for (int b = 0; b < AV_YMCA_BANK_COUNT; b++) {
+        uint32_t boundary = 0, code = 0;
+        for (int k = 0; k < AV_YMCA_BDRY_BITS; k++)
+            boundary |= (uint32_t)st->ymca_regs[ymca_bank_reg(b, k)] << k;
+        for (int k = 0; k < AV_YMCA_SIZE_BITS; k++)
+            code |= (uint32_t)st->ymca_regs[ymca_bank_reg(b, AV_YMCA_BDRY_BITS + k)] << k;
+        if (!code || !st->bank_size[b])
+            continue;
+        uint32_t window = 1u << (20 + (code > 5 ? 5 : code) - 1);
+        uint32_t base = boundary << 20;
+        mac030_map_mirrored(base >> PAGE_SHIFT, window >> PAGE_SHIFT, ram + st->bank_image_off[b],
+                            st->bank_size[b] >> PAGE_SHIFT, mac030_fill_page, true);
+        if (base + window > st->decode_end)
+            st->decode_end = base + window;
+    }
+}
 
 static void av_map_ram(config_t *cfg) {
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-    uint32_t pages = cfg->ram_size >> PAGE_SHIFT;
-    for (uint32_t p = 0; p < pages && p < g_page_count; p++)
-        mac030_fill_page(p, ram_base + (p << PAGE_SHIFT), true);
+    av_ymca_remap(cfg);
 }
 
 // ============================================================
@@ -719,6 +821,14 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
     // do.
     via_set_exact_clock(cfg->via1, cfg->machine->freq);
 
+    // The installed RAM as the board's banks; the registers start split.
+    if (!av_ram_banks(board->desc, cfg->ram_size, st->bank_size)) {
+        LOG(0, "Error: %u MB is no SIMM population of the %s", cfg->ram_size >> 20, cfg->machine->name);
+        return -1;
+    }
+    av_bank_image(st);
+    av_ymca_split(st);
+
     // Machine-specific tail (shared for both AV leaves).
     if (board->build_devices(cfg, cp) != 0)
         return -1;
@@ -747,9 +857,11 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
 }
 
 // A power cycle's power-on-only half (machine_profile.h): Cuda stays
-// powered, but the host side of its VIA1 handshake went down under it.
+// powered, but the host side of its VIA1 handshake went down under it, and
+// YMCA's bank registers return to their power-on layout.
 static void av_power_on(config_t *cfg) {
     av_cuda_host_power_cycle(av_st(cfg)->cuda);
+    av_ymca_split(av_st(cfg)); // the bank registers come up split
 }
 
 static void av_bus_reset(config_t *cfg) {
