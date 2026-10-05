@@ -100,11 +100,11 @@ extern const pci_card_kind_t sym53c825_ch0_kind;
 extern const pci_card_kind_t sym53c825_ch1_kind;
 extern const pci_card_kind_t voodoo2_kind; // peripherals/pci/cards/voodoo2.c
 extern const pci_card_kind_t voodoo2_webgpu_kind; // ...the same card, rasterised by the host GPU
+extern const pci_card_kind_t rage128_kind; // peripherals/pci/cards/rage128.c
 
 static const pci_card_kind_t *const g_card_registry[] = {
-    &tnt_control_kind,    &mach64_gx_kind,     &cirrus_54m30_kind,
-    &sym53c825_ch0_kind,  &sym53c825_ch1_kind, &voodoo2_kind,
-    &voodoo2_webgpu_kind, &ati_rage_pro_kind,  NULL,
+    &tnt_control_kind, &mach64_gx_kind,      &cirrus_54m30_kind, &sym53c825_ch0_kind, &sym53c825_ch1_kind,
+    &voodoo2_kind,     &voodoo2_webgpu_kind, &ati_rage_pro_kind, &rage128_kind,       NULL,
 };
 
 const pci_card_kind_t *const *pci_card_registry(void) {

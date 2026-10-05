@@ -85,6 +85,14 @@ const pci_card_kind_t voodoo2_webgpu_kind = {.id = "voodoo2_webgpu",
                                              .requires_prom = false,
                                              .card_class = "3d"};
 
+// ...and the ATI Rage 128 GL (cards/rage128.c), a second socket card with a
+// real ROM requirement.
+const pci_card_kind_t rage128_kind = {.id = "rage128",
+                                      .display_name = "ATI Rage 128 GL",
+                                      .attach = PCI_ATTACH_PCI,
+                                      .requires_prom = true,
+                                      .card_class = "display"};
+
 static uint32_t g_bus_error_addr;
 static int g_bus_errors;
 static int g_slot_irqs;

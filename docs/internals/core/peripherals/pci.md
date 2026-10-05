@@ -305,8 +305,11 @@ must never be the machine's display declares `card_class = "3d"` so the
 
 The **generic bus-master path** (`pci_dma_read`/`pci_dma_write`, above),
 the **capabilities pointer** and the first **64 MB prefetchable BAR** are
-in the core ahead of the ATI Rage 128 card that needs them; the unit suite
-(`tests/unit/suites/pci`) pins all three.
+in the core, pinned by the unit suite (`tests/unit/suites/pci`). The ATI
+Rage 128 GL (`cards/rage128.c`,
+`docs/internals/core/peripherals/pci/cards/rage128.md`) is the first card
+to use the last two, and the first with a BAR its FCode leaves out of `reg`
+yet needs assigned: it probes through its I/O BAR.
 
 Not done, with reasons: the host-overlay BAR fast path (above); PCI-PCI
 bridges (type-1 cycles keep returning all-ones — no subordinate buses
