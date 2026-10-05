@@ -82,6 +82,8 @@ for base, js in records:
     if field(js, "recognised") != "true":
         fail.append(f"{base}: NOT recognised (unknown blobs may not live in roms/) -> {js}")
         continue
+    if base.endswith(".prom") and field(js, "intact") != "true":
+        fail.append(f"{base}: its FCode checksum does not verify -> {js}")
     if base.endswith(".rom"):
         if field(js, "intact") != "true":
             fail.append(f"{base}: its own checksum does not verify ({field(js, 'reason')}) -> {js}")

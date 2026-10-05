@@ -219,7 +219,7 @@ writing; the function names are the stable reference.
 |---|---|---|---|
 | CPU ROM | The ROM's own **stored checksum field(s)**, read verbatim (§10.1.1) | None beyond reading the file. The self-check (`intact`) is reported, and gates naming: a damaged dump keeps its id but is never stored by it (`rom_identify_data`, `src/core/memory/rom.c`) | `rom_table` (`src/core/memory/rom_table.c`): id → family name, compatible models, size, per-row exceptions |
 | vROM (NuBus declaration ROM) | The Format Block **CRC**, read from the last 12 bytes of the chip image ([declaration-rom.md §2](../hardware/nubus/declaration-rom.md)) | Size 32 KB or 64 KB, and the `$5A932BC7` TestPattern (`vrom_identify_core`, `src/core/memory/vrom.c:113`) | `VROM_CATALOG` (`vrom.c:82`): CRC → card-kind id, plus a `preferred` bit |
-| PROM (PCI expansion ROM) | **CRC-32 of the whole chip image** | Power-of-two size between 2 KB and 256 KB, `$55AA`, a `PCIR` structure, Open Firmware code type, and an FCode start token ([expansion-rom.md](../hardware/pci/expansion-rom.md#the-gates)) | `PROM_CATALOG` (`src/core/memory/prom.c`): CRC → card-kind id, plus `preferred` |
+| PROM (PCI expansion ROM) | The **PCIR vendor and device ids plus the FCode header's own checksum**, `vvvv-dddd-cccc` | Power-of-two size between 2 KB and 256 KB, `$55AA`, a `PCIR` structure, Open Firmware code type, an FCode start token and in-image program length; recognised only when the FCode checksum verifies ([expansion-rom.md](../hardware/pci/expansion-rom.md#the-gates)) | `PROM_CATALOG` (`src/core/memory/prom.c`): identity → card-kind id, plus `preferred` |
 
 A CPU ROM does not choose the machine. The Universal ROM, for example,
 lists `se30`, `iicx` and `iix`, so the caller names the model and the ROM
@@ -308,7 +308,7 @@ identify:
 |---|---|
 | `machine.rom.identify(path)` | `{recognised, supported, compatible, name, variant, size, kind, id, intact, reason}` (`rom_method_identify`, `rom.c`). `variant` is the table's short label that tells this ROM apart from other known ROMs booting the same model ("Win NT"), empty when no other known ROM shares a model with it. An unrecognised file still reports `kind`, `id`, `intact` and `reason`; `reason` is empty when intact and otherwise names what does not verify ("PowerPC section does not verify (byte lanes 2)") |
 | `catalog.vroms.identify(path)` | `{recognised, card_id?, compatible?, size, crc}`, with `crc` as `0x` plus 8 lowercase hex digits (`vrom.c:320`) |
-| `catalog.proms.identify(path)` | `{recognised, card_id?, compatible?, vendor_id?, device_id?, size, crc, reason?}` (`prom.c`, `prom_method_identify`) |
+| `catalog.proms.identify(path)` | `{recognised, card_id?, compatible?, vendor_id?, device_id?, id?, intact?, size, reason?}` (`prom.c`, `prom_method_identify`); `id` is `vvvv-dddd-cccc`: the PCIR vendor and device ids and the FCode header's own checksum, which `intact` says verifies |
 
 ### 10.2 What `rom=` resolves
 

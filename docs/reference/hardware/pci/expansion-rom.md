@@ -33,14 +33,27 @@ into one thing that serves neither well.
 
 ## Identity
 
-The key is the **CRC-32 of the whole chip image** — the same kind of
+The key is made only of fields the standards define — the same kind of
 intrinsic content identity `rom.c` takes from a main ROM's checksum word
 and `vrom.c` from the Format-Block CRC. No emulator-invented hash, and no
-filename ever enters the comparison.
+filename ever enters the comparison:
+
+- the PCI Data Structure's **vendor and device ids** say which card the ROM
+  is for;
+- the IEEE 1275 **FCode header's own checksum** (the 16-bit sum of the
+  program bytes after the 8-byte header, §5.2.2.4) says which programming
+  of that card's ROM it is. The two catalogued Mach64 GX dumps share the
+  card (`1002`/`4758`) and even the PCIR code revision (0); only the FCode
+  checksum tells them apart.
+
+Written `vvvv-dddd-cccc` (lowercase hex), e.g. `1002-4758-c6e8`. The
+checksum is also a self-check: `intact` reports whether it verifies, and a
+dump whose identity is catalogued but whose program does not verify is
+reported as damaged and never recognised.
 
 ## The gates
 
-All of these must pass before the CRC is trusted. An unrecognised blob is
+All of these must pass before the identity is trusted. An unrecognised blob is
 **dropped with a log**, never guessed at:
 
 1. the file is a power of two, 2 KB … 256 KB (a plausible chip);
@@ -49,8 +62,10 @@ All of these must pass before the CRC is trusted. An unrecognised blob is
    signature;
 4. the PCI Data Structure's **code type is `$01`** (Open Firmware);
 5. the byte at the FCode offset is a `start0`/`start1`/`start2`/`start4`
-   token (`$F0`–`$F3`);
-6. the CRC-32 matches a `PROM_CATALOG` row.
+   token (`$F0`–`$F3`), and the program length its header declares lies
+   inside the image;
+6. the identity matches a `PROM_CATALOG` row, and the FCode checksum
+   verifies.
 
 Gate 4 is reported separately from "this is not a ROM", because a code-type-0
 x86 option ROM is the **predictable user error** — "I flashed the ROM off a
@@ -137,7 +152,7 @@ boots.
   earlier session is invisible after a reload and its card looks
   uninstallable. A dropped file is probed against the media types in order
   (`rom`, `vrom`, `prom`, `fd`, `cdrom`, `hd`; `app/web2/src/bus/upload.ts`),
-  stored under `/opfs/images/prom/` named by its CRC, and offered through
+  stored under `/opfs/images/prom/` named by its identity, and offered through
   `prom.offer(path)` — the same hook `vrom.offer` provides, so a file
   uploaded mid-session is visible to the next boot without a reload.  vROM
   and PROM cannot claim each other's files even though both are commonly

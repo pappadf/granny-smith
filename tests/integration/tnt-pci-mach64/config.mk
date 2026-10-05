@@ -23,7 +23,7 @@ TEST_ARGS := model=pm9500 ram=32768
 # valid PC/x86 option ROM (code type 0) and a valid Open Firmware ROM that
 # no catalog row claims.  Both are what a user's mistake actually looks
 # like, and neither is interesting enough to store as a binary.
-TEST_SETUP := python3 tnt-pci-mach64/make-fixtures.py "$(WORK_DIR)"
+TEST_SETUP := python3 tnt-pci-mach64/make-fixtures.py "$(WORK_DIR)" "$(TEST_DATA)/roms/mach64-gx-104-437584e0.prom"
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix
