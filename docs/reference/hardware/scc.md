@@ -750,6 +750,23 @@ chip rather than convenience:
   enabling Tx interrupts on a freshly reset, empty channel still interrupts
   once, which the Mac drivers use to prime their output.
 
+## A front end in place of the chip: the SDLC divert
+
+On the IIfx and Quadra 900/950 the SCC sits behind an I/O processor whose
+downloaded drivers can run a port themselves: the IOP LocalTalk driver runs
+channel B's LLAP link, and the serial driver moves a port's bytes, without
+the host touching the chip ([iop.md](../machines/iifx/iop.md) §15.3,
+§15.4). Two calls let such a front end stand where the chip's engines would:
+
+| Call | What it does |
+|---|---|
+| `scc_set_sdlc_divert(scc, divert, ctx)` | While installed, `scc_sdlc_send` hands the network's LocalTalk frames to `divert->rx_frame` instead of the receiver, and `scc_sdlc_ready` answers `divert->ready`. The front end transmits with `scc_sdlc_divert_tx`, which delivers to the frame sink as a frame the guest sent through the chip would be. `NULL` removes it. |
+| `scc_port_tx_bytes(scc, ch, buf, len)` | A front end's serial driver sends asynchronous bytes on the channel: they reach the capture, the output file and the device exactly as bytes written to WR8 do. |
+
+The divert is the cable's, like the frame sink: a reset keeps it and a
+checkpoint does not carry it, so the front end reinstalls it when its own
+state is restored.
+
 ## The far end of a port: `output` and the ready line
 
 A port can have an **output**, a host file that stands in for whatever is on
