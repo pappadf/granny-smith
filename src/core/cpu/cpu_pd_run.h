@@ -15,7 +15,7 @@
 //   PD_STEP_NAME       the one-instruction executor (defined here from cpu_decode.h)
 //   PD_TREE_NAME       the classifier's tree instantiation name
 //   PD_CLASSIFY_NAME   the classifier entry point (cpu_pd_classify.h, included last)
-//   PD_HW_RESET(cpu)   030/040: the double-bus-fault reset routine
+//   PD_HW_RESET(cpu)   the double-bus-fault reset (the board /RESET, then the vector)
 // plus the model macros CPU_DECODER_IS_68030 / CPU_DECODER_IS_68040.
 
 #include "cpu_pd_ids.h"
@@ -315,6 +315,12 @@ PD_DEF_ST_INC_DEC(32)
     (void)_sp0
 // The E2 guard: recompute the flags after all if a slow path ran (§5.3 rule 3).
 #define PD_FLM (g_mem_slowpath_count != _sp0)
+// The write-only forms (CLR, MOVE) set the flags before the store when they
+// are live and after it when only the guard asks: the literal 1 is the former,
+// a runtime FL the latter.  (Testing `(FL) == 1` instead let a guard that
+// fired -- PD_FLM is 1 then -- pass for the constant and skip both.)
+#define PD_FL_FULL(FL)  (__builtin_constant_p(FL) && (FL) == 1)
+#define PD_FL_GUARD(FL) (!__builtin_constant_p(FL) && (FL))
 
 // ============================================================================
 // Operation bodies.  Each takes the loaded source and a flag-liveness
@@ -543,12 +549,12 @@ PD_DEF_ST_INC_DEC(32)
 // set, as on the 68000); the E2 twin (FL = PD_FLM) keeps its after-the-fact
 // recompute, which is the only case where FL is not a constant.
 #define PD_B_CLR(bits, DST, FL)                                                                                        \
-    if ((FL) == 1) {                                                                                                   \
+    if (PD_FL_FULL(FL)) {                                                                                              \
         CC_N = CC_V = CC_C = 0;                                                                                        \
         CC_Z = 1;                                                                                                      \
     }                                                                                                                  \
     PD_STORE_DST_##DST(bits, 0);                                                                                       \
-    if ((FL) != 1 && (FL)) {                                                                                           \
+    if (PD_FL_GUARD(FL)) {                                                                                             \
         CC_N = CC_V = CC_C = 0;                                                                                        \
         CC_Z = 1;                                                                                                      \
     }
@@ -556,11 +562,11 @@ PD_DEF_ST_INC_DEC(32)
 // --- MOVE (one family per destination shape, 7 source shapes) ---
 #define PD_B_MOVE(bits, SRC, DST, FL)                                                                                  \
     PD_SAVE_SRC_##SRC UINT(bits) _s = PD_LD_##SRC(bits);                                                               \
-    if ((FL) == 1) {                                                                                                   \
+    if (PD_FL_FULL(FL)) {                                                                                              \
         UPDATE_NZ_CLEAR_CV(_s);                                                                                        \
     }                                                                                                                  \
     PD_ST_##DST(bits, _s, PD_MV_DDISP_##SRC);                                                                          \
-    PD_RESTORE_SRC_##SRC if ((FL) != 1 && (FL)) {                                                                      \
+    PD_RESTORE_SRC_##SRC if (PD_FL_GUARD(FL)) {                                                                        \
         UPDATE_NZ_CLEAR_CV(_s);                                                                                        \
     }
 
@@ -975,11 +981,11 @@ static inline void pd_movem_from_regs(cpu_t *restrict cpu, uint16_t mask, uint32
 
 void PD_RUN_NAME(cpu_t *restrict cpu, uint32_t *instructions) {
     // --- sprint entry: the switch core's prologue minus the loop ---
-#ifdef CPU_DECODER_IS_68030
     if (__builtin_expect(cpu->halted, 0)) {
         cpu->halted = 0;
         PD_HW_RESET(cpu);
     }
+#ifdef CPU_DECODER_IS_68030
     g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;
     g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;
 #endif
@@ -1472,7 +1478,9 @@ t2_step:
             goto done;
         }
 #endif
-        uint32_t fetch = memory_read_uint32(cpu->pc);
+        // The switch core's fetch: the opcode, and its successor only while
+        // in the page (no slow-path read of the next page's first word).
+        uint32_t fetch = memory_read_prefetch32(cpu->pc);
         uint16_t opcode = fetch >> 16;
         uint16_t ext_word = fetch & 0xFFFF;
         cpu->instruction_pc = cpu->pc;

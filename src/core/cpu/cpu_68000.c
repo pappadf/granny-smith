@@ -188,7 +188,7 @@
 #define PD_DECODE_NAME   cpu_pd_decode_68000
 #define PD_TREE_NAME     cpu_pd_tree_68000
 #define PD_CLASSIFY_NAME cpu_pd_classify_68000
-#define PD_HW_RESET(c)   ((void)0)
+#define PD_HW_RESET(c)   (system_reset_devices(), cpu_reset_to_vector_68030(c))
 #include "cpu_pd_run.h"
 
 // The core's entry point: the predecoded executor when enabled, else the

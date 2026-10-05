@@ -25,7 +25,7 @@ run_one() {
     GS_STORAGE_CACHE="$STORAGE_CACHE/$row-$cfg" "$HEADLESS_BIN" \
         rom="$rom" script="$out.script" \
         --var ROM="$rom" --var OUT="$out" \
-        --var TEST_DATA="$TEST_DATA" "$@" $TEST_VAR_ARGS --speed=max > "$out.log" 2>&1 \
+        --var TEST_DATA="$TEST_DATA" "$@" $TEST_VAR_ARGS --speed=turbo > "$out.log" 2>&1 \
         || { echo "  $row/$cfg: run failed (see $out.log)"; tail -5 "$out.log"; return 1; }
     grep -E "^cp|^stats" "$out.log" | sed "s/^/  $row\/$cfg: /"
     return 0

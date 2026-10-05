@@ -31,6 +31,11 @@ import {
   stageOpfsFile,
   stageOpfsFileStreaming,
 } from "../helpers/web2-fs";
+import { CONSOLE_OUTPUT, terminalRun as typeLine } from "../helpers/terminal";
+
+// Output is read right after each line: type, submit, then settle.
+const terminalRun = (page: Page, line: string) =>
+  typeLine(page, line, { settleMs: 250 });
 
 const DATA = path.resolve(__dirname, "../../data");
 const LABEL = process.env.PERF_LABEL ?? "unlabeled";
@@ -45,8 +50,9 @@ const ROWS: Record<
     ram: string;
     hd?: string;
     vrom?: string;
-    card?: string[];
-    mode?: string[];
+    card?: string; // NuBus card kind added in the dialog's Cards section
+    monitor?: string;
+    mode?: string; // the dialog's video-mode value, <w>x<h>x<depth>
   }
 > = {
   se30: { rom: "iix-iicx-se30-97221136.rom", ram: "8 MB" },
@@ -57,40 +63,12 @@ const ROWS: Record<
     // The 8•24 GC declares requires_vrom: its option only appears once the
     // vROM is in OPFS (the IIfx spec's pattern for the JMFB).
     vrom: "roms/824gc-v1.1-revb-d722b053.vrom",
-    card: ["824gc", "8•24 GC"],
-    mode: ["gc_640x480_8bpp", "gc_640x480"],
+    card: "824gc",
+    monitor: "13in_rgb",
+    mode: "640x480x8",
   },
   pm6100: { rom: "pm6100-pm7100-pm8100-9feb69b3.rom", ram: "24 MB" },
 };
-
-// Pick a <select> option whose value or label contains one of `needles`
-// (first needle that matches wins; the option list may still be filling).
-async function selectContaining(
-  page: Page,
-  selector: string,
-  needles: string[],
-): Promise<void> {
-  const sel = page.locator(selector);
-  await expect(sel).toBeVisible({ timeout: 30_000 });
-  let value: string | null = null;
-  for (let attempt = 0; attempt < 20 && value === null; attempt++) {
-    value = await sel.evaluate((el: HTMLSelectElement, ns: string[]) => {
-      for (const n of ns) {
-        const o = Array.from(el.options).find(
-          (x) => x.value.includes(n) || x.text.includes(n),
-        );
-        if (o) return o.value;
-      }
-      return null;
-    }, needles);
-    if (value === null) await page.waitForTimeout(500);
-  }
-  expect(
-    value,
-    `no option containing ${needles.join("|")} in ${selector}`,
-  ).not.toBeNull();
-  await sel.selectOption(value as string);
-}
 
 async function instrCount(page: Page): Promise<number> {
   return (await probeSample(page)).instr;
@@ -115,14 +93,6 @@ async function launchMarathon(page: Page): Promise<void> {
     .toBeGreaterThan(after + 120_000_000);
 }
 
-async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator(".xterm");
-  await term.click();
-  await page.keyboard.type(line);
-  await page.keyboard.press("Enter");
-  await page.waitForTimeout(250);
-}
-
 let probeSeq = 0;
 async function probeSample(
   page: Page,
@@ -134,7 +104,7 @@ async function probeSample(
       `echo "${key}=\${machine.cpu.instr_count},\${scheduler.host_wall_ns}"`,
     );
     await page.waitForTimeout(400);
-    const text = await page.locator(".xterm-rows").innerText();
+    const text = await page.locator(CONSOLE_OUTPUT).innerText();
     const m = text.match(new RegExp(`${key}=(\\d+),(\\d+)`));
     if (m) return { instr: Number(m[1]), wallNs: Number(m[2]) };
   }
@@ -146,7 +116,7 @@ async function probeString(page: Page, expr: string): Promise<string> {
     const key = `ps${++probeSeq}`;
     await terminalRun(page, `echo "${key}=[${"$"}{${expr}}]"`);
     await page.waitForTimeout(400);
-    const text = await page.locator(".xterm-rows").innerText();
+    const text = await page.locator(CONSOLE_OUTPUT).innerText();
     const m = text.match(new RegExp(`${key}=\\[([A-Za-z0-9_.-]+)\\]`));
     if (m) return m[1];
   }
@@ -193,12 +163,23 @@ for (const machine of MACHINES) {
       timeout: 30_000,
     });
     await model.selectOption(machine);
-    if (row.card) await selectContaining(page, "#cfg-card", row.card);
-    if (row.mode) await selectContaining(page, "#cfg-video-mode", row.mode);
-    await page.locator("#cfg-ram").selectOption(row.ram);
+    await page.locator("#cfg-opt-memory").selectOption({ label: row.ram });
+    if (row.card) {
+      // Seat the card, then drive the monitor from it.
+      await page.getByTestId("cfg-add-card").click({ timeout: 30_000 });
+      await page.locator("#cfg-add-card").selectOption(row.card);
+      const slot = await page.locator("#cfg-add-card-slot").inputValue();
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+      await page.locator("#cfg-display").selectOption(slot);
+      if (row.monitor)
+        await page.locator("#cfg-monitor").selectOption(row.monitor);
+      if (row.mode) await page.locator("#cfg-video-mode").selectOption(row.mode);
+    }
     if (row.hd)
-      await selectContaining(page, "#cfg-hd", [path.basename(row.hd)]);
-    await page.getByRole("button", { name: "Start Machine" }).click();
+      await page
+        .locator("#cfg-media-scsi-0")
+        .selectOption({ label: path.basename(row.hd) });
+    await page.getByRole("button", { name: "Start", exact: true }).click();
     await expect(
       page.locator(".toast .msg").filter({ hasText: "Machine started" }),
     ).toBeVisible({
@@ -206,7 +187,7 @@ for (const machine of MACHINES) {
     });
 
     await page.locator('button.ptab[data-tab="terminal"]').click();
-    await expect(page.locator(".xterm")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator(".console")).toBeVisible({ timeout: 15_000 });
 
     await terminalRun(page, 'scheduler.mode = "turbo"');
     expect(await probeString(page, "scheduler.mode")).toBe("turbo");

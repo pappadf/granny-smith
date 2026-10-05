@@ -74,6 +74,9 @@ costs an ftlb hit and a pool lookup, not a generic step) and continues;
 pages without a host mapping (device windows), logpointed pages and
 demoted pages run through the generic step one instruction at a time,
 re-trying the lookup after each step unless the pool declined the page.
+A PowerPC in little-endian mode (MSR[LE], 604 and 750) fetches through the
+munged window and runs on the generic step too; setting the bit flushes
+the fetch window, so no block outlives the switch.
 
 ### What the loop cannot see
 
@@ -92,7 +95,9 @@ through both executors and fails on any difference):
   fault: `PD_P_CANFAULT`).
 - **The last slot never folds** (PowerPC) and **never elides** (68K): the
   instruction that ends a sprint is the one single-step, breakpoints and
-  logpoints see.
+  logpoints see.  An I/O penalty can also end a sprint *during* an
+  instruction that was dispatched as a twin; its slow-path access then
+  trips the E2 guard, which writes the flags after all.
 
 ## Coherence
 
@@ -124,9 +129,10 @@ Consequences the executor relies on:
   (`predecode.demotions`).  A hot loop that stores into its own page is
   therefore kept; a data page a handler occasionally runs through is
   dropped quickly;
-- `memory_map_init` bumps `g_mem_map_generation`; the pool resets lazily
-  on the next lookup, so a rebooted machine never sees blocks of the old
-  image;
+- selecting a different memory map (`memory_map_select`: a new machine,
+  a rebuild, a checkpoint restore) re-registers the code regions and bumps
+  `g_mem_map_generation`; the pool resets lazily on the next lookup, so a
+  rebooted machine never sees blocks of the old image;
 - a block is keyed by host page but **decoded at one guest address**:
   PC-relative operands and out-of-page branch targets are stored as
   absolute addresses, so when the same host page executes through another

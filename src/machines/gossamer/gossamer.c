@@ -144,7 +144,9 @@ static void gos_dbdma_mem_read(void *ctx, uint32_t phys, uint8_t *buf, uint32_t 
 static void gos_dbdma_mem_write(void *ctx, uint32_t phys, const uint8_t *buf, uint32_t len) {
     config_t *cfg = (config_t *)ctx;
     if (phys < cfg->ram_size && len <= cfg->ram_size - phys) {
-        memcpy(ram_native_pointer(cfg->mem_map, 0) + phys, buf, len);
+        uint8_t *dst = ram_native_pointer(cfg->mem_map, 0) + phys;
+        memory_host_written(dst, len); // bus-master DMA over cached code
+        memcpy(dst, buf, len);
         return;
     }
     for (uint32_t i = 0; i < len; i++)

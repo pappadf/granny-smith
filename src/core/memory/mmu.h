@@ -370,6 +370,12 @@ static inline bool mmu_fault_epilogue(struct mmu_state *bus, uint32_t emu_page, 
             // For closer ranges (e.g. $006DB000 from corrupted page tables) the
             // f_trap handler detects unmapped instruction fetches separately.
             if (phys_page >= bus->ram_size_max && phys_page < bus->rom_phys_base) {
+                // A write entry the code-page marks refused is backed memory,
+                // not a hole (RAM above ram_size_max: the IIsi's bank B): the
+                // slow path completes the store through the host page.
+                uint8_t *host = write ? mmu_phys_to_host(bus, phys_page) : NULL;
+                if (host && memory_host_is_code(host))
+                    return true;
                 g_bus_error_is_pmmu = false; // bus timeout: skip semantics
                 return false;
             }

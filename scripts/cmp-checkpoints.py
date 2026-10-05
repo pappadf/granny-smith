@@ -6,9 +6,9 @@
 #
 # Decodes two v2 (consolidated) checkpoints block by block and compares the
 # guest state they carry.  Two kinds of bytes are NOT guest state and are
-# masked: the machine config record (system.c's manifest block carries the
-# creation time) and 8-byte-aligned words that hold HOST POINTERS in both
-# files (cpu_t/ppc_t and several device structs are written verbatim,
+# masked: the storage bookkeeping (backing-file paths and delta ids, which
+# name each run's own storage cache) and 8-byte-aligned words that hold HOST
+# POINTERS in both files (cpu_t/ppc_t and several device structs are written verbatim,
 # pointers included; the reader nulls them, and ASLR plus a different heap
 # history make them differ between any two processes).  Everything else —
 # RAM, the register files with their raw flag words, the scheduler's cycle
@@ -20,32 +20,49 @@ import struct
 import sys
 
 
+# The header: magic (8) + build id (BUILD_ID_LEN = 20); blocks follow.
+HEADER_LEN = 8 + 20
+
+
+def tag_hash(name):
+    # checkpoint.c cp_tag_hash: FNV-1a over the block's name, 0 reserved.
+    h = 2166136261
+    for ch in name.encode():
+        h = ((h ^ ch) * 16777619) & 0xFFFFFFFF
+    return h or 1
+
+
 def decode_blocks(path):
+    """[(file, line, tag, kind, data)] for every block of a v2 checkpoint.
+
+    A data block is size u64, tag u32, filename (u32 length + bytes), line
+    i32, then a flag byte: 0 raw, 1 RLE (u64 compressed size + runs).  A file
+    block (checkpoint_write_file: a ROM by content or reference) has no tag
+    and no flag: size u64, filename, line, then `size` payload bytes."""
     d = open(path, "rb").read()
     if d[:8] != b"GSCHKPT2":
         sys.exit("%s: not a v2 checkpoint (%r)" % (path, d[:8]))
     out = []
-    i = 48  # magic(8) + build id(24) + model id(16); the RAM-size u32 precedes block 0
+    i = HEADER_LEN
     while i < len(d):
-        if d[i + 12 : i + 16] != b"src/":
-            k = d.find(b"src/", i)
-            if k < 0:
-                break
-            i = k - 12
         size = struct.unpack_from("<Q", d, i)[0]
-        fl = struct.unpack_from("<I", d, i + 8)[0]
-        fname = d[i + 12 : i + 12 + fl].decode()
-        j = i + 12 + fl
+        if d[i + 12 : i + 16] == b"src/":
+            fl = struct.unpack_from("<I", d, i + 8)[0]
+            fname = d[i + 12 : i + 12 + fl].decode()
+            j = i + 12 + fl
+            line = struct.unpack_from("<i", d, j)[0]
+            j += 4
+            out.append((fname, line, 0, "file", bytes(d[j : j + size])))
+            i = j + size
+            continue
+        if d[i + 16 : i + 20] != b"src/":
+            sys.exit("%s: unparseable block header at %#x" % (path, i))
+        tag = struct.unpack_from("<I", d, i + 8)[0]
+        fl = struct.unpack_from("<I", d, i + 12)[0]
+        fname = d[i + 16 : i + 16 + fl].decode()
+        j = i + 16 + fl
         line = struct.unpack_from("<i", d, j)[0]
         j += 4
-        # A file block (checkpoint_write_file: the ROM by content or reference)
-        # carries its payload raw with no flag byte; recognise it by the next
-        # block header landing exactly after `size` payload bytes.
-        if d[j + size + 12 : j + size + 16] == b"src/" or j + size == len(d):
-            if d[j] not in (0, 1) or d[j + 1 + 12 : j + 1 + 16] != b"src/":
-                out.append((fname, line, "file", bytes(d[j : j + size])))
-                i = j + size
-                continue
         flag = d[j]
         j += 1
         if flag == 0:
@@ -69,9 +86,14 @@ def decode_blocks(path):
                     data += comp[ip : ip + c]
                     ip += c
             data = bytes(data)
-        out.append((fname, line, "data", data))
+        out.append((fname, line, tag, "data", data))
         i = j
     return out
+
+
+# The machine's storage part (system.c): the attached devices' host-side
+# records, masked with the storage layer's own blocks below.
+STORAGE_TAG = tag_hash("storage")
 
 
 def looks_like_host_pointer(v):
@@ -85,15 +107,11 @@ def compare(a, b, verbose):
         print("block count differs: %d vs %d" % (len(a), len(b)))
         return False
     ok = True
-    for (fa, la, ka, da), (fb, lb, kb, db) in zip(a, b):
-        if (fa, la, ka) != (fb, lb, kb):
+    for (fa, la, ta, ka, da), (fb, lb, tb, kb, db) in zip(a, b):
+        if (fa, la, ta, ka) != (fb, lb, tb, kb):
             print("block identity differs: %s:%d/%s vs %s:%d/%s" % (fa, la, ka, fb, lb, kb))
             return False
-        if fa.endswith("system.c") and la < 1100 and len(da) == len(db) and da != db:
-            if verbose:
-                print("skip  %s:%d (config record: creation time)" % (fa, la))
-            continue
-        if "/storage/" in fa:
+        if "/storage/" in fa or ta == STORAGE_TAG:
             # Host-side backing-file bookkeeping (instance paths, delta ids):
             # not guest state.  The guest-visible disk content is driven by the
             # very RAM/register timeline compared here.

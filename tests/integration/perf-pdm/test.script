@@ -1,9 +1,9 @@
 # perf-pdm (see config.mk): the 601 interpreter's throughput row.
 include "../lib/mac.script"
 
-# Pinned before the boot: the PDM adopts a pre-boot rtc.time as its seed.
-machine.rtc.time = 3000000000
 machine.boot model="pm6100" ram=24576 rom="${$ROM}"
+# Pinned after the boot, which reseeds the RTC from the host clock.
+machine.rtc.time = 3000000000
 
 let t0 = scheduler.host_user_ns
 scheduler.run 200000000

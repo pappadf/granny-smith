@@ -597,6 +597,7 @@ static const member_t predecode_members[] = {
 
 static const class_desc_t predecode_class = {
     .name = "predecode",
+    .doc = "The predecoded executors: on/off against the switch cores, tuning, counters and the decode histogram",
     .members = predecode_members,
     .n_members = sizeof(predecode_members) / sizeof(predecode_members[0]),
 };
@@ -609,6 +610,10 @@ void predecode_object_install(void) {
     s_predecode_object = object_new(&predecode_class, NULL, "predecode");
     if (s_predecode_object) {
         object_set_label(s_predecode_object, "Predecode");
+        // Beside `pacing`: another host-side execution setting, and like it
+        // an advanced node in a tree.
+        object_set_order(s_predecode_object, 22);
+        object_set_category(s_predecode_object, M_CAT_ADVANCED);
         object_attach(object_root(), s_predecode_object);
     }
     // The memory layer reports code-page stores here from now on.
