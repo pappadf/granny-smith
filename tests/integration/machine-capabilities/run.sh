@@ -348,8 +348,12 @@ done
 
 # The three MCU Quadras.  The profile states their CPU, clocks, sockets and
 # media; it does not carry an IOP flag or a DAFB monitor list, so those are
-# not asserted here.  No RAM ceiling is pinned: the 900's 64 MB and the 950's
-# 256 MB on the same board are unsettled (#184).
+# not asserted here.  The 900 and 950 share the Eclipse board and so one RAM
+# range, 4 MB to 256 MB (sixteen 16 MB SIMMs); they must not drift (#184).
+for m in q900 q950; do
+    assert_contains "$m" '{"id":"4096","label":"4 MB"},' "$m's RAM opens at one bank of 1 MB SIMMs"
+    assert_contains "$m" '{"id":"196608","label":"192 MB"},{"id":"262144","label":"256 MB"}],"default":"16384"' "$m caps RAM at the board's 256 MB"
+done
 for m in q700 q900 q950; do
     assert_contains "$m" '"cpu":{"model":68040,"address_bits":32,"fpu":true}' "$m has a 68040 with FPU"
     assert_contains "$m" '"mmu":{"present":true,"kind":"68040"}' "$m has the 68040 MMU"

@@ -758,7 +758,8 @@ details are out of scope for this page (*reported*; see §7).
 12. **The 950's RAM ceiling.** The 950 note documents 4 or 16 MB per bank, 64 MB maximum [3] p. 5;
     later Apple specifications and shipped configurations acknowledge larger SIMM arrangements.
     Whether the difference is a documentation era, a board revision, or an MCU mask change is
-    not established from the evidence here.
+    not established from the evidence here.  Both towers' ROMs size the board's full 256 MB
+    (four banks of four 16 MB SIMMs).
 13. **The Q700 "DAFB II" schematic label** against the functional revision split (700/900-class
     part versus the 950's revised part) — carried as an open question in
     [dafb.md](dafb.md) §6 and not restated here.
