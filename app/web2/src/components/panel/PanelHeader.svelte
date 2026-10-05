@@ -12,6 +12,7 @@
   import { openContextMenu, type ContextMenuItem } from '../common/ContextMenu.svelte';
   import { machine } from '@/state/machine.svelte';
   import { continueExec, pauseExec, stepInto, stopMachine, restart } from '@/bus/debug';
+  import { confirmThen } from '@/state/powerConfirm';
 
   // Display labels, in this order.  Written in title case; the skin's
   // --gs-tab-transform decides whether they show in capitals.
@@ -108,8 +109,8 @@
             disabled: machine.status !== 'paused',
             action: () => void stepInto(1),
           },
-          { label: 'Stop', icon: 'stop', action: () => void stopMachine() },
-          { label: 'Restart', icon: 'restart', action: () => void restart() },
+          { label: 'Stop', icon: 'stop', action: () => void confirmThen('shutdown', stopMachine) },
+          { label: 'Restart', icon: 'restart', action: () => void confirmThen('restart', restart) },
         ];
       default:
         return [];

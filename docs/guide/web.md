@@ -466,7 +466,11 @@ The Svelte app is organised under
 - **Display** ([`display/`](../../app/web2/src/components/display/)) —
   ScreenView (the canvas), DisplayToolbar (zoom, pause/run, save,
   theme), DropOverlay (drag state machine §8.5), WelcomeView with
-  Home / Configuration slides for new-machine setup.
+  Home / Configuration slides for new-machine setup.  Shut down
+  (the toolbar's power button, the Debug tab's Stop) and Restart ask
+  first while a machine is running or paused
+  (`state/powerConfirm.ts`); the dialog's "Don't ask again" is kept in
+  localStorage (`gs-confirm-power-off`).
 - **Workbench** ([`workbench/`](../../app/web2/src/components/workbench/))
   — flex container with the Display + a resizable Panel docked
   bottom / left / right.

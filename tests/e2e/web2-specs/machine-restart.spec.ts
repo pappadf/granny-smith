@@ -49,6 +49,8 @@ test('Restart keeps the attached hard disk — same medium, same open instance',
   // routes through bus/debug.ts restart() → machine.restart.
   await page.locator('button.ptab[data-tab="debug"]').click();
   await page.getByRole('button', { name: 'Restart' }).click();
+  // Restart asks first (#242): a running session is not thrown away on one click.
+  await page.getByRole('dialog').getByRole('button', { name: 'Restart' }).click();
   await expect(page.locator('.toast .msg').filter({ hasText: 'Machine restarted' })).toBeVisible({
     timeout: 60_000,
   });

@@ -164,6 +164,7 @@ test('pm6100 + Mac OS 8.1 HD boots exactly once — also on a previously-used im
   const phase1Instr = await gsEvalInPage(page, 'scheduler.instr_count');
   console.log(`phase 1 (dirtying) reached instr_count=${phase1Instr}`);
   await page.locator('[aria-label="Shut down"]').click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Shut Down' }).click();
   await expect(page.getByRole('button', { name: 'New Machine...' })).toBeVisible({
     timeout: 30_000,
   });

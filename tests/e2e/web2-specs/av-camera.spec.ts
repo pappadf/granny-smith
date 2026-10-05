@@ -115,6 +115,7 @@ test('AV camera control drives the video-in path with the fake camera', async ({
 
   // --- 2. The 840AV has one. Shut down and boot the AV machine.
   await page.getByRole('button', { name: 'Shut down' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Shut Down' }).click();
   await bootModel(page, AV_ROM, 'q840av');
   await expect(camBtn).toHaveCount(1, { timeout: 30_000 });
   await expect(camBtn).toHaveAttribute('aria-pressed', 'false');
