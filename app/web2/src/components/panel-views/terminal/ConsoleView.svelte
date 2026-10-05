@@ -83,19 +83,18 @@
   });
 
   // Opening the Terminal tab (or the console first mounting while it shows)
-  // puts the cursor on the input line, so it is plain where to type.  Not
-  // while the screen holds the pointer (keys belong to the guest), nor when
-  // another text field already has the focus.
+  // puts the cursor on the input line, so it is plain where to type -- but
+  // only while nothing else holds the focus: the page itself (first load) or
+  // the tab that was just clicked.  CodeMirror loads asynchronously, so this
+  // can run late, after the user (or the find bar) has focused something.
+  // Not while the screen holds the pointer either: keys belong to the guest.
   $effect(() => {
     if (!inputReady || layout.activeTab !== 'terminal') return;
-    if (document.pointerLockElement) return;
-    const a = document.activeElement as HTMLElement | null;
-    const typing =
-      a &&
-      a !== document.body &&
-      (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));
-    if (typing && !inputHost?.contains(a)) return;
-    input?.focus();
+    // The find bar owns the keys while it is open (closing it hands focus back).
+    if (find.open || document.pointerLockElement) return;
+    const a = document.activeElement;
+    const idle = !a || a === document.body || a.getAttribute('role') === 'tab';
+    if (idle) input?.focus();
   });
 
   // --- find -----------------------------------------------------------------------
