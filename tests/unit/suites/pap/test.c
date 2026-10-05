@@ -142,8 +142,17 @@ int atp_responder_send_simple(const ddp_header_t *d, const atp_packet_t *a, cons
     (void)sts;
     return 0;
 }
+// The name rule, as appletalk.c applies it, for ASCII names: required, at
+// most 32 characters.
+int atalk_nbp_name_check(const char *what, const char *name, char *err, size_t err_len) {
+    if (!name || !*name || strlen(name) > ATALK_NBP_NAME_MAX) {
+        snprintf(err, err_len, "%s refused", what);
+        return -1;
+    }
+    return 0;
+}
 static int g_nbp_entry;
-static char g_nbp_name[40]; // what is advertised; "Taken" is refused
+static char g_nbp_name[ATALK_NBP_TEXT_CAP]; // what is advertised; "Taken" is refused
 int atalk_nbp_publish(atalk_nbp_entry_t **e, const atalk_nbp_service_desc_t *d) {
     if (!e || !d || strcmp(d->object, "Taken") == 0)
         return -1;

@@ -386,7 +386,9 @@ void gos_scc_dma_init(config_t *cfg) {
 // Island dispatch
 // ============================================================
 
-static uint8_t hr_read8(void *ctx, uint32_t off) {
+// One island byte: the guest's read, or an inspection (`peek`) routed to each
+// chip's side-effect-free peek.
+static uint8_t hr_access8(void *ctx, uint32_t off, bool peek) {
     config_t *cfg = (config_t *)ctx;
     gossamer_state_t *st = gos_st(cfg);
     if (off < HR_CTRL) {
@@ -401,22 +403,24 @@ static uint8_t hr_read8(void *ctx, uint32_t off) {
     if (off >= HR_NVRAM && off < HR_NVRAM_END)
         return nvram_read(cfg, off - HR_NVRAM);
     if (off >= GOS_HR_ATA0 && off < GOS_HR_ATA_END)
-        return gos_ata_read8(cfg, off);
+        return peek ? gos_ata_peek8(cfg, off) : gos_ata_read8(cfg, off);
     uint32_t block = off & 0xFF000u;
     switch (block) {
     case HR_VIA:
     case HR_VIA + 0x1000u:
-        return via_get_memory_interface(cfg->via1)->read_uint8(cfg->via1, off - HR_VIA);
+        return memory_iface_read8(via_get_memory_interface(cfg->via1), cfg->via1, off - HR_VIA, peek);
     case HR_SCCLEG:
-        return scc_get_memory_interface(cfg->scc)->read_uint8(cfg->scc, off - HR_SCCLEG);
+        return memory_iface_read8(scc_get_memory_interface(cfg->scc), cfg->scc, off - HR_SCCLEG, peek);
     case HR_ESCC:
-        return scc_get_memory_interface(cfg->scc)->read_uint8(cfg->scc, escc_pins(off - HR_ESCC));
+        return memory_iface_read8(scc_get_memory_interface(cfg->scc), cfg->scc, escc_pins(off - HR_ESCC), peek);
     case HR_MESH:
-        return mesh_read(st->mesh, off - HR_MESH);
+        return peek ? mesh_peek(st->mesh, off - HR_MESH) : mesh_read(st->mesh, off - HR_MESH);
     case HR_BMAC:
-        return gos_bmac_read8(cfg, off - HR_BMAC);
-    case HR_SWIM3:
-        return swim3_read(&st->swim3, ((off - HR_SWIM3) >> 4) & 15u);
+        return peek ? gos_bmac_peek8(cfg, off - HR_BMAC) : gos_bmac_read8(cfg, off - HR_BMAC);
+    case HR_SWIM3: {
+        unsigned reg = ((off - HR_SWIM3) >> 4) & 15u;
+        return peek ? swim3_peek(&st->swim3, reg) : swim3_read(&st->swim3, reg);
+    }
     default:
         break;
     }
@@ -429,8 +433,16 @@ static uint8_t hr_read8(void *ctx, uint32_t off) {
         uint32_t v = davbus_read32(&st->screamer_host, (off - HR_DAVBUS) & ~3u);
         return (uint8_t)(v >> (8 * (off & 3u)));
     }
-    LOG(1, "byte read of unwired Heathrow offset +$%05X", off);
+    if (!peek)
+        LOG(1, "byte read of unwired Heathrow offset +$%05X", off);
     return 0;
+}
+
+static uint8_t hr_read8(void *ctx, uint32_t off) {
+    return hr_access8(ctx, off, false);
+}
+static uint8_t hr_peek8(void *ctx, uint32_t off) {
+    return hr_access8(ctx, off, true);
 }
 
 static void hr_write8(void *ctx, uint32_t off, uint8_t value) {
@@ -489,7 +501,7 @@ static void hr_write8(void *ctx, uint32_t off, uint8_t value) {
 // 32-bit access: the little-endian register blocks.  `value` at this edge
 // is the big-endian bus view; GOS_LE32 recovers the register value the
 // guest composed with stwbrx.
-static uint32_t hr_read32(void *ctx, uint32_t off) {
+static uint32_t hr_access32(void *ctx, uint32_t off, bool peek) {
     config_t *cfg = (config_t *)ctx;
     gossamer_state_t *st = gos_st(cfg);
     if (off >= HR_INTS2 && off < HR_CTRL) {
@@ -505,12 +517,19 @@ static uint32_t hr_read32(void *ctx, uint32_t off) {
     if ((off & 0xFF000u) == HR_DAVBUS)
         return GOS_LE32(davbus_read32(&st->screamer_host, off - HR_DAVBUS));
     if (off >= GOS_HR_ATA0 && off < GOS_HR_ATA_END)
-        return gos_ata_read32(cfg, off);
+        return peek ? gos_ata_peek32(cfg, off) : gos_ata_read32(cfg, off);
     if ((off & 0xFF000u) == HR_BMAC)
-        return gos_bmac_read32(cfg, off - HR_BMAC);
+        return peek ? gos_bmac_peek32(cfg, off - HR_BMAC) : gos_bmac_read32(cfg, off - HR_BMAC);
     // A longword cycle to a byte-wide cell: the cell drives lane 0, the
     // most significant byte on this big-endian bus.
-    return ((uint32_t)hr_read8(ctx, off) << 24);
+    return ((uint32_t)hr_access8(ctx, off, peek) << 24);
+}
+
+static uint32_t hr_read32(void *ctx, uint32_t off) {
+    return hr_access32(ctx, off, false);
+}
+static uint32_t hr_peek32(void *ctx, uint32_t off) {
+    return hr_access32(ctx, off, true);
 }
 
 static void hr_write32(void *ctx, uint32_t off, uint32_t value) {
@@ -549,12 +568,20 @@ static void hr_write32(void *ctx, uint32_t off, uint32_t value) {
 // halfword (the factory nvramrc's `90b7 f3000032 w!`).
 // The ATA data register and BMAC's registers are the exceptions: 16-bit
 // ports (gossamer_ata.c, gossamer_bmac.c).
-static uint16_t hr_read16(void *ctx, uint32_t off) {
+static uint16_t hr_access16(void *ctx, uint32_t off, bool peek) {
+    config_t *cfg = (config_t *)ctx;
     if (off >= GOS_HR_ATA0 && off < GOS_HR_ATA_END)
-        return gos_ata_read16((config_t *)ctx, off);
+        return peek ? gos_ata_peek16(cfg, off) : gos_ata_read16(cfg, off);
     if ((off & 0xFF000u) == HR_BMAC)
-        return gos_bmac_read16((config_t *)ctx, off - HR_BMAC);
-    return (uint16_t)((hr_read8(ctx, off) << 8) | hr_read8(ctx, off + 1));
+        return peek ? gos_bmac_peek16(cfg, off - HR_BMAC) : gos_bmac_read16(cfg, off - HR_BMAC);
+    return (uint16_t)((hr_access8(ctx, off, peek) << 8) | hr_access8(ctx, off + 1, peek));
+}
+
+static uint16_t hr_read16(void *ctx, uint32_t off) {
+    return hr_access16(ctx, off, false);
+}
+static uint16_t hr_peek16(void *ctx, uint32_t off) {
+    return hr_access16(ctx, off, true);
 }
 
 static void hr_write16(void *ctx, uint32_t off, uint16_t value) {
@@ -601,6 +628,9 @@ void gos_heathrow_pci_attach(config_t *cfg, checkpoint_t *cp) {
     st->heathrow_if.read_uint8 = hr_read8;
     st->heathrow_if.read_uint16 = hr_read16;
     st->heathrow_if.read_uint32 = hr_read32;
+    st->heathrow_if.peek_uint8 = hr_peek8;
+    st->heathrow_if.peek_uint16 = hr_peek16;
+    st->heathrow_if.peek_uint32 = hr_peek32;
     st->heathrow_if.write_uint8 = hr_write8;
     st->heathrow_if.write_uint16 = hr_write16;
     st->heathrow_if.write_uint32 = hr_write32;

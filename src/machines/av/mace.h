@@ -29,6 +29,8 @@ void av_mace_checkpoint(av_mace_t *mace, checkpoint_t *cp);
 
 // MACE registers (island $1C000, $10 stride).
 uint8_t av_mace_read(config_t *cfg, uint32_t win_off, uint32_t addr);
+// The same register without the read-to-clear of IR (mac030_io_range_t.peek_fn).
+uint8_t av_mace_peek(config_t *cfg, uint32_t win_off, uint32_t addr);
 void av_mace_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
 
 // Apple Ethernet address PROM (island $08000): 8 bytes at $x1 of each

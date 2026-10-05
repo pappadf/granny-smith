@@ -180,6 +180,18 @@ static uint16_t wait_read16(void *ctx, uint32_t offset) {
     return LOAD_BE16(pdm_wait_ram(ctx) + offset);
 }
 
+// An inspection reads the RAM without charging the wait state (which only
+// ever applies inside a sprint, but a debugger can read from one).
+static uint8_t wait_peek8(void *ctx, uint32_t offset) {
+    return pdm_wait_ram(ctx)[offset];
+}
+static uint16_t wait_peek16(void *ctx, uint32_t offset) {
+    return LOAD_BE16(pdm_wait_ram(ctx) + offset);
+}
+static uint32_t wait_peek32(void *ctx, uint32_t offset) {
+    return LOAD_BE32(pdm_wait_ram(ctx) + offset);
+}
+
 static uint32_t wait_read32(void *ctx, uint32_t offset) {
     memory_io_penalty(pdm_board((config_t *)ctx)->wait_state_penalty);
     return LOAD_BE32(pdm_wait_ram(ctx) + offset);
@@ -210,6 +222,9 @@ static void pdm_hmc_wait_state(config_t *cfg, bool on) {
         st->wait_interface.write_uint8 = wait_write8;
         st->wait_interface.write_uint16 = wait_write16;
         st->wait_interface.write_uint32 = wait_write32;
+        st->wait_interface.peek_uint8 = wait_peek8;
+        st->wait_interface.peek_uint16 = wait_peek16;
+        st->wait_interface.peek_uint32 = wait_peek32;
         pdm_clear_page(0);
         g_page_table[0].dev = &st->wait_interface;
         g_page_table[0].dev_context = cfg;
@@ -261,12 +276,15 @@ static void hmc_shift_in(config_t *cfg, uint32_t bit) {
     }
 }
 
-static uint32_t hmc_shift_out(config_t *cfg) {
+// The next configuration bit; the guest's read advances the bit pointer, an
+// inspection (`peek`) does not.
+static uint32_t hmc_shift_out(config_t *cfg, bool peek) {
     pdm_hmc_t *h = &pdm_st(cfg)->hmc;
     uint32_t n = h->bit_ptr;
     if (n >= 35)
         return 0;
-    h->bit_ptr = n + 1;
+    if (!peek)
+        h->bit_ptr = n + 1;
     // Bits 0-1 read back the cache-SIMM size-sense pins: no L2 modeled, so
     // both read 0 ("no cache SIMM") regardless of what was written.
     if (n < 2)
@@ -278,7 +296,13 @@ static uint32_t hmc_shift_out(config_t *cfg) {
 
 uint8_t pdm_hmc_read(config_t *cfg, uint32_t offset) {
     if ((offset & 0xF) == 0)
-        return (uint8_t)hmc_shift_out(cfg);
+        return (uint8_t)hmc_shift_out(cfg, false);
+    return 0;
+}
+
+uint8_t pdm_hmc_peek(config_t *cfg, uint32_t offset) {
+    if ((offset & 0xF) == 0)
+        return (uint8_t)hmc_shift_out(cfg, true);
     return 0;
 }
 

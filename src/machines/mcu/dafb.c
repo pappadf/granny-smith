@@ -448,14 +448,15 @@ static void ac842_write(dafb_t *dafb, uint32_t reg, uint8_t value) {
     }
 }
 
-static uint8_t ac842_read(dafb_t *dafb, uint32_t reg) {
+static uint8_t ac842_read(dafb_t *dafb, uint32_t reg, bool peek) {
     switch (reg) {
     case AC842_ADDR:
         return dafb->dac_idx;
     case AC842_DATA: {
         const uint8_t *entry = (const uint8_t *)&dafb->clut[dafb->dac_idx];
         uint8_t v = (dafb->dac_phase < 3) ? entry[dafb->dac_phase] : 0;
-        dafb->dac_phase = (uint8_t)((dafb->dac_phase + 1) % 3);
+        if (!peek)
+            dafb->dac_phase = (uint8_t)((dafb->dac_phase + 1) % 3);
         return v;
     }
     case AC842_PCBR0:
@@ -524,8 +525,9 @@ static void reg_write_effects(dafb_t *dafb, uint32_t off, uint32_t value) {
     }
 }
 
-// Reads with special sourcing (sense, RAMDAC, status side effects).
-static bool reg_read_special(dafb_t *dafb, uint32_t off, uint32_t *out) {
+// Reads with special sourcing (sense, RAMDAC, status side effects).  An
+// inspection (`peek`) gets the same value with none of the side effects.
+static bool reg_read_special(dafb_t *dafb, uint32_t off, uint32_t *out, bool peek) {
     if (off == DAFB_SENSE) {
         *out = sense_read(dafb);
         return true;
@@ -545,42 +547,55 @@ static bool reg_read_special(dafb_t *dafb, uint32_t off, uint32_t *out) {
         return true;
     }
     if (off >= 0x200u && off < 0x300u) {
-        *out = ac842_read(dafb, off);
+        *out = ac842_read(dafb, off, peek);
         return true;
     }
     if (off == SWATCH_CLEAR_CURSOR) {
-        dafb->regs[SWATCH_INTR_STATUS >> 2] &= ~0x4u; // access clears
-        update_irq(dafb);
+        if (!peek) {
+            dafb->regs[SWATCH_INTR_STATUS >> 2] &= ~0x4u; // access clears
+            update_irq(dafb);
+        }
         *out = 0;
         return true;
     }
     if (off == SWATCH_CLEAR_VBL) {
-        dafb->regs[SWATCH_INTR_STATUS >> 2] &= ~0x1u;
-        update_irq(dafb);
+        if (!peek) {
+            dafb->regs[SWATCH_INTR_STATUS >> 2] &= ~0x1u;
+            update_irq(dafb);
+        }
         *out = 0;
         return true;
     }
     return false;
 }
 
-static uint32_t dafb_read32(void *ctx, uint32_t offset) {
-    dafb_t *dafb = (dafb_t *)ctx;
+static uint32_t reg_read(dafb_t *dafb, uint32_t offset, bool peek) {
     uint32_t off = reg_off(offset);
     uint32_t v;
-    if (!reg_read_special(dafb, off, &v))
+    if (!reg_read_special(dafb, off, &v, peek))
         v = dafb->regs[off >> 2];
-    log_touch(dafb, offset, false, v);
+    if (!peek)
+        log_touch(dafb, offset, false, v);
     return v;
 }
 
-static uint8_t dafb_read8(void *ctx, uint32_t offset) {
-    uint32_t v = dafb_read32(ctx, offset);
-    return (uint8_t)(v >> (8 * (3 - (offset & 3))));
+static uint32_t dafb_read32(void *ctx, uint32_t offset) {
+    return reg_read(ctx, offset, false);
 }
-
+static uint8_t dafb_read8(void *ctx, uint32_t offset) {
+    return (uint8_t)(reg_read(ctx, offset, false) >> (8 * (3 - (offset & 3))));
+}
 static uint16_t dafb_read16(void *ctx, uint32_t offset) {
-    uint32_t v = dafb_read32(ctx, offset & ~1u);
-    return (uint16_t)(v >> (8 * (2 - (offset & 2))));
+    return (uint16_t)(reg_read(ctx, offset & ~1u, false) >> (8 * (2 - (offset & 2))));
+}
+static uint32_t dafb_peek32(void *ctx, uint32_t offset) {
+    return reg_read(ctx, offset, true);
+}
+static uint8_t dafb_peek8(void *ctx, uint32_t offset) {
+    return (uint8_t)(reg_read(ctx, offset, true) >> (8 * (3 - (offset & 3))));
+}
+static uint16_t dafb_peek16(void *ctx, uint32_t offset) {
+    return (uint16_t)(reg_read(ctx, offset & ~1u, true) >> (8 * (2 - (offset & 2))));
 }
 
 static void dafb_write32(void *ctx, uint32_t offset, uint32_t value) {
@@ -644,6 +659,9 @@ static const memory_interface_t dafb_reg_iface = {
     .write_uint8 = dafb_write8,
     .write_uint16 = dafb_write16,
     .write_uint32 = dafb_write32,
+    .peek_uint8 = dafb_peek8,
+    .peek_uint16 = dafb_peek16,
+    .peek_uint32 = dafb_peek32,
 };
 
 // The pre-mode-set presentation state: 640x480x1 over the fallback frame

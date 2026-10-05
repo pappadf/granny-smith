@@ -852,18 +852,20 @@ void tnt_scc_dma_init(config_t *cfg) {
     }
 }
 
-uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset) {
+// One island byte: the guest's read, or an inspection (`peek`) routed to each
+// chip's side-effect-free peek.
+static uint8_t gc_access8(config_t *cfg, uint32_t offset, bool peek) {
     uint32_t block = offset & 0x1F000u;
     switch (block) {
     case OFF_VIA:
     case OFF_VIA + 0x1000: // 16 regs at stride $200 span the 8 KB window
-        return via_get_memory_interface(cfg->via1)->read_uint8(cfg->via1, offset - OFF_VIA);
+        return memory_iface_read8(via_get_memory_interface(cfg->via1), cfg->via1, offset - OFF_VIA, peek);
     case OFF_SCCLEG:
         // Legacy aperture: +0 bCtl / +2 aCtl / +4 bData / +6 aData — the
         // low offset bits carry the chip's A/B and D/C pins directly.
-        return scc_get_memory_interface(cfg->scc)->read_uint8(cfg->scc, offset - OFF_SCCLEG);
+        return memory_iface_read8(scc_get_memory_interface(cfg->scc), cfg->scc, offset - OFF_SCCLEG, peek);
     case OFF_ESCC:
-        return scc_get_memory_interface(cfg->scc)->read_uint8(cfg->scc, escc_pins(offset - OFF_ESCC));
+        return memory_iface_read8(scc_get_memory_interface(cfg->scc), cfg->scc, escc_pins(offset - OFF_ESCC), peek);
     case OFF_NVPORT:
         return tnt_st(cfg)->gc.nvram_bank;
     case OFF_NVDATA:
@@ -883,21 +885,25 @@ uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset) {
     case OFF_EPROM: // Ethernet address PROM + MP doorbell (ANS only)
     case OFF_BREG2: // Board Register 2 — the environmental halfword
         if (tnt_board(cfg)->has_gbus)
-            return tnt_gbus_read8(cfg, offset);
+            return peek ? tnt_gbus_peek8(cfg, offset) : tnt_gbus_read8(cfg, offset);
         break;
     case OFF_RADACAL:
-        return tnt_control_rad_read(cfg, offset - OFF_RADACAL);
+        return peek ? tnt_control_rad_peek(cfg, offset - OFF_RADACAL) : tnt_control_rad_read(cfg, offset - OFF_RADACAL);
     case OFF_SCSI0:
         // 53C94: sixteen byte-wide registers on $10 centres.
-        return scsi_53c96_read(tnt_st(cfg)->scsi96, ((offset - OFF_SCSI0) >> 4) & 0xFu);
+        {
+            unsigned reg = ((offset - OFF_SCSI0) >> 4) & 0xFu;
+            return peek ? scsi_53c96_peek(tnt_st(cfg)->scsi96, reg) : scsi_53c96_read(tnt_st(cfg)->scsi96, reg);
+        }
     case OFF_SWIM3:
         // SWIM3: sixteen byte-wide registers on $10 centres (swim3.c).
-        return tnt_swim3_read(cfg, offset - OFF_SWIM3);
+        return peek ? tnt_swim3_peek(cfg, offset - OFF_SWIM3) : tnt_swim3_read(cfg, offset - OFF_SWIM3);
     case OFF_MESH:
         // Absent on the Network Servers (board delta #4): the aperture
         // decodes nothing, so it falls through to the open-bus log.
         if (tnt_board(cfg)->has_mesh)
-            return mesh_read(tnt_st(cfg)->mesh, offset - OFF_MESH);
+            return peek ? mesh_peek(tnt_st(cfg)->mesh, offset - OFF_MESH)
+                        : mesh_read(tnt_st(cfg)->mesh, offset - OFF_MESH);
         LOG(1, "byte read of the absent MESH aperture +$%05X", offset);
         return 0;
     default:
@@ -905,6 +911,14 @@ uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset) {
     }
     LOG(1, "byte read of unwired island offset +$%05X", offset);
     return 0;
+}
+
+uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset) {
+    return gc_access8(cfg, offset, false);
+}
+
+uint8_t tnt_gc_peek8(config_t *cfg, uint32_t offset) {
+    return gc_access8(cfg, offset, true);
 }
 
 void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
@@ -975,7 +989,7 @@ void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
 // 32-bit access: the LE register blocks.  `value` at this boundary is the
 // big-endian bus view; TNT_LE32 recovers the little-endian register value
 // the guest composed with stwbrx (and vice versa on reads).
-uint32_t tnt_gc_read32(config_t *cfg, uint32_t offset) {
+static uint32_t gc_access32(config_t *cfg, uint32_t offset, bool peek) {
     if (offset >= OFF_INTS && offset < OFF_INTS + 0x10u)
         return TNT_LE32(int_read(cfg, offset));
     if (offset >= OFF_DBDMA && offset < OFF_DBDMA_END) {
@@ -992,7 +1006,7 @@ uint32_t tnt_gc_read32(config_t *cfg, uint32_t offset) {
     // The Network Server's GBUS blocks: Board Register 2 (a little-endian
     // halfword like BoxID) and the Ethernet PROM's byte cells.
     if (tnt_board(cfg)->has_gbus && ((offset & 0x1F000u) == OFF_BREG2 || (offset & 0x1F000u) == OFF_EPROM))
-        return tnt_gbus_read32(cfg, offset);
+        return peek ? tnt_gbus_peek32(cfg, offset) : tnt_gbus_read32(cfg, offset);
     // The NVRAM data window's byte cells answering a longword cycle.  The
     // production ANS ROM reads them this way; a byte-wide cell on this
     // big-endian bus drives lane 0, which is the MOST significant byte of
@@ -1003,6 +1017,14 @@ uint32_t tnt_gc_read32(config_t *cfg, uint32_t offset) {
         return (uint32_t)nvram_read(cfg, offset - OFF_NVDATA) << 24;
     LOG(1, "long read of unwired island offset +$%05X", offset);
     return 0;
+}
+
+uint32_t tnt_gc_read32(config_t *cfg, uint32_t offset) {
+    return gc_access32(cfg, offset, false);
+}
+
+uint32_t tnt_gc_peek32(config_t *cfg, uint32_t offset) {
+    return gc_access32(cfg, offset, true);
 }
 
 void tnt_gc_write32(config_t *cfg, uint32_t offset, uint32_t value) {

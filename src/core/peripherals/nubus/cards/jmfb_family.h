@@ -117,5 +117,8 @@ void jmfb_apply_scanout(jmfb_regs_t *r, const jmfb_bind_t *b);
 // is a no-op / 0 here.
 void jmfb_write16(jmfb_regs_t *r, const jmfb_bind_t *b, int blk, uint32_t off, uint16_t val);
 uint16_t jmfb_read16(jmfb_regs_t *r, const jmfb_bind_t *b, int blk, uint32_t off);
+// The same register as an inspection (memory_interface_t.peek_*): the value
+// jmfb_read16 would return, with none of its side effects (the VBL toggle).
+uint16_t jmfb_peek16(jmfb_regs_t *r, const jmfb_bind_t *b, int blk, uint32_t off);
 
 #endif // JMFB_FAMILY_H

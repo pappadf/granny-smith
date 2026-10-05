@@ -64,12 +64,16 @@ static floppy_drive_t *current_drive(floppy_t *floppy) {
 // exceeds INT_MAX and casting the out-of-range double is undefined behaviour,
 // so the side-1 sense line returned a constant and any software polling RDDATA1
 // for a double-sided read stalled.  Extracted so there is one copy to fix.
-static int floppy_rddata_bit(floppy_t *floppy, floppy_drive_t *drive, int drv, int side) {
+//
+// An inspection (`peek`) sees the track through iwm_track_data_peek, so it
+// encodes and caches nothing.
+static int floppy_rddata_bit(floppy_t *floppy, floppy_drive_t *drive, int drv, int side, bool peek) {
     enum { GCR_NS_PER_BYTE = 16340, GCR_NS_PER_BIT = 2040 };
     uint64_t now_ns = (uint64_t)scheduler_time_ns(floppy->scheduler);
     unsigned bit_idx = (unsigned)((now_ns / GCR_NS_PER_BIT) & 7);
 
-    uint8_t *data = iwm_track_data(drive, floppy->disk[drv], side, floppy->scheduler);
+    const uint8_t *data = peek ? iwm_track_data_peek(drive, floppy->disk[drv], side)
+                               : iwm_track_data(drive, floppy->disk[drv], side, floppy->scheduler);
     if (!data) {
         // MFM media: no GCR track data, so simulate time-varying flux.
         return (bit_idx < 4) ? 1 : 0;
@@ -186,11 +190,17 @@ static void floppy_drive_latch_side(floppy_t *floppy, unsigned drv, int side) {
 // selection.  The caller may pass a SEL-derived drive index, but the status
 // should reflect the active drive (the one with a disk and motor on).
 int floppy_disk_status(floppy_t *floppy, int drv) {
+    return floppy_disk_status_at(floppy, drv, floppy->iwm_lines, false);
+}
+
+// The sense line as the CA lines in `lines` address it.  An inspection
+// (`peek`) builds no GCR track cache to answer RDDATA.
+int floppy_disk_status_at(floppy_t *floppy, int drv, uint8_t lines, bool peek) {
     floppy_drive_t *drive = &floppy->drives[drv];
+    bool ca0 = (lines & IWM_LINE_CA0) != 0, ca1 = (lines & IWM_LINE_CA1) != 0, ca2 = (lines & IWM_LINE_CA2) != 0;
 
     // Build status key from CA lines and VIA SEL signal
-    int key = (IWM_CA0(floppy) ? 0x01 : 0) | (IWM_CA1(floppy) ? 0x02 : 0) | (IWM_CA2(floppy) ? 0x04 : 0) |
-              (floppy->sel ? 0x08 : 0);
+    int key = (ca0 ? 0x01 : 0) | (ca1 ? 0x02 : 0) | (ca2 ? 0x04 : 0) | (floppy->sel ? 0x08 : 0);
 
     int ret = 0;
     const char *desc = "unknown";
@@ -214,7 +224,7 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
         ret = 0;
         break;
     case 0x04: // RDDATA: data from side 0
-        ret = floppy_rddata_bit(floppy, drive, drv, 0);
+        ret = floppy_rddata_bit(floppy, drive, drv, 0, peek);
         desc = "RDDATA side0";
         break;
     case 0x05: // IWM: reserved; SWIM: mfmDrv (SuperDrive present)
@@ -294,7 +304,7 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
         return ret;
     }
     case 0x0C: // RDDATA: data from side 1
-        ret = floppy_rddata_bit(floppy, drive, drv, 1);
+        ret = floppy_rddata_bit(floppy, drive, drv, 1, peek);
         desc = "RDDATA side1";
         break;
     case 0x0D: // /DRVEXIST: 1 when physical drive present (ISM mode only)
@@ -323,8 +333,8 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
     }
 
     LOG(6, "Drive %d: Reading %s = %d", drv, desc, ret);
-    LOG(8, "  detail: key=0x%02X ca0=%d ca1=%d ca2=%d sel=%d dirtn=%d motoron=%d track=%d", key, IWM_CA0(floppy),
-        IWM_CA1(floppy), IWM_CA2(floppy), floppy->sel, drive->_dirtn ? 1 : 0, drive->_motoron ? 1 : 0, drive->track);
+    LOG(8, "  detail: key=0x%02X ca0=%d ca1=%d ca2=%d sel=%d dirtn=%d motoron=%d track=%d", key, ca0, ca1, ca2,
+        floppy->sel, drive->_dirtn ? 1 : 0, drive->_motoron ? 1 : 0, drive->track);
 
     return ret;
 }
@@ -420,18 +430,19 @@ static void floppy_speed_settle_callback(void *source, uint64_t data) {
     LOG(5, "Drive %d: Speed settle complete", drive_index);
 }
 
-// Updates IWM state lines based on address offset (even=clear, odd=set)
-void floppy_update_iwm_lines(floppy_t *floppy, int offset) {
+// The IWM state lines an access at `offset` leaves (even=clear, odd=set)
+static uint8_t iwm_lines_after(uint8_t lines, int offset) {
     // Map offset pair to bit mask: offset/2 gives line index (0-7)
     static const uint8_t line_masks[] = {IWM_LINE_CA0,    IWM_LINE_CA1,    IWM_LINE_CA2, IWM_LINE_LSTRB,
                                          IWM_LINE_ENABLE, IWM_LINE_SELECT, IWM_LINE_Q6,  IWM_LINE_Q7};
-
-    uint8_t prev = floppy->iwm_lines;
     uint8_t mask = line_masks[offset >> 1];
-    if (offset & 1)
-        floppy->iwm_lines |= mask; // odd offset = set line
-    else
-        floppy->iwm_lines &= ~mask; // even offset = clear line
+    return (offset & 1) ? (uint8_t)(lines | mask) : (uint8_t)(lines & ~mask);
+}
+
+// Updates IWM state lines based on address offset (even=clear, odd=set)
+void floppy_update_iwm_lines(floppy_t *floppy, int offset) {
+    uint8_t prev = floppy->iwm_lines;
+    floppy->iwm_lines = iwm_lines_after(prev, offset);
 
     LOG(7, "IWM line: offset=%d prev=0x%02X now=0x%02X", offset, prev, floppy->iwm_lines);
 
@@ -445,53 +456,67 @@ void floppy_update_iwm_lines(floppy_t *floppy, int offset) {
         floppy_disk_control(floppy);
 }
 
-// Reads from the IWM register at the specified offset
-uint8_t floppy_iwm_read(floppy_t *floppy, uint32_t offset) {
+// A read of the IWM register at `offset`: the guest's, or an inspection's
+// (`peek`).  Every IWM access moves one of the state lines, and a guest read
+// stores that (an LSTRB rising edge also runs floppy_disk_control).  A peek
+// leaves iwm_lines exactly as it is: it reports the register the access would
+// select, from the lines it would leave, but runs no drive command, advances
+// no read position, clears no SWIM echo latch and encodes no GCR track (see
+// iwm_track_data_peek).
+static uint8_t iwm_reg_read(floppy_t *floppy, uint32_t offset, bool peek) {
     GS_ASSERT(offset < 16);
-    floppy_update_iwm_lines(floppy, offset);
+    uint8_t lines;
+    if (peek)
+        lines = iwm_lines_after(floppy->iwm_lines, (int)offset);
+    else {
+        floppy_update_iwm_lines(floppy, (int)offset);
+        lines = floppy->iwm_lines;
+    }
+    bool q6 = (lines & IWM_LINE_Q6) != 0, q7 = (lines & IWM_LINE_Q7) != 0;
+    bool enable = (lines & IWM_LINE_ENABLE) != 0;
 
-    int drv = DRIVE_INDEX(floppy);
+    int drv = (lines & IWM_LINE_SELECT) ? 1 : 0;
 
     // Mode register is WRITE ONLY.  Guest-reachable -- any code can set Q6 and
     // Q7 and then read -- so it logs rather than asserting; GS_ASSERT pauses
     // the scheduler and continues, which turns a wrong guest instruction into
     // an emulator hang.
-    if (IWM_Q6(floppy) && IWM_Q7(floppy))
+    if (q6 && q7 && !peek)
         LOG(2, "IWM: read of the write-only mode register (Q6=Q7=1)");
 
     // Read status register: Q6=1, Q7=0
-    if (IWM_Q6(floppy) && !IWM_Q7(floppy)) {
+    if (q6 && !q7) {
         uint8_t status = floppy->mode & IWM_STATUS_MODE;
-        if (IWM_ENABLE(floppy))
+        if (enable)
             status |= IWM_STATUS_ENABLE;
-        if (floppy_disk_status(floppy, drv))
+        if (floppy_disk_status_at(floppy, drv, lines, peek))
             status |= IWM_STATUS_SENSE;
-        LOG(8, "  status=0x%02X (enable=%d mode=0x%02X)", status, IWM_ENABLE(floppy) ? 1 : 0,
-            floppy->mode & IWM_STATUS_MODE);
+        LOG(8, "  status=0x%02X (enable=%d mode=0x%02X)", status, enable ? 1 : 0, floppy->mode & IWM_STATUS_MODE);
         return status;
     }
 
     // Read handshake register: Q6=0, Q7=1
-    if (!IWM_Q6(floppy) && IWM_Q7(floppy)) {
+    if (!q6 && q7) {
         uint8_t hdshk = IWM_HDSHK_RES | IWM_HDSHK_WRITE | IWM_HDSHK_WB_EMTPY;
         LOG(6, "Drive %d: Reading handshake = 0x%02X", drv, hdshk);
         return hdshk;
     }
 
     // Read data register: Q6=0, Q7=0
-    if (!IWM_Q6(floppy) && !IWM_Q7(floppy)) {
+    if (!q6 && !q7) {
         if (!(floppy->mode & IWM_MODE_ASYNC)) {
             LOG(6, "Drive %d: Sync read mode not implemented = 0x00", drv);
             return 0;
         }
 
-        if (!IWM_ENABLE(floppy)) {
+        if (!enable) {
             // The SWIM echoes the last byte the CPU put on the data bus; the
             // plain IWM floats high.  One of the three real differences
             // between the two register files.
             if (floppy->type == FLOPPY_TYPE_SWIM) {
                 uint8_t val = floppy->iwm_latch_valid ? floppy->iwm_write_latch : 0xFF;
-                floppy->iwm_latch_valid = false;
+                if (!peek)
+                    floppy->iwm_latch_valid = false;
                 LOG(6, "Drive %d: Reading data (disabled) echo = 0x%02X", drv, val);
                 return val;
             }
@@ -504,8 +529,9 @@ uint8_t floppy_iwm_read(floppy_t *floppy, uint32_t offset) {
             return 0x00;
         }
 
-        floppy_drive_t *drive = current_drive(floppy);
-        uint8_t *data = iwm_track_data(drive, floppy->disk[drv], floppy->sel, floppy->scheduler);
+        floppy_drive_t *drive = &floppy->drives[drv];
+        const uint8_t *data = peek ? iwm_track_data_peek(drive, floppy->disk[drv], floppy->sel)
+                                   : iwm_track_data(drive, floppy->disk[drv], floppy->sel, floppy->scheduler);
         if (!data) {
             // MFM media in the drive, or an allocation failure.  The SWIM
             // returns 0x00 so the ROM's GCR sync detection fails and it falls
@@ -518,6 +544,19 @@ uint8_t floppy_iwm_read(floppy_t *floppy, uint32_t offset) {
         }
 
         size_t trk_len = iwm_track_length(drive->track);
+
+        // A peek reads from where the head is without moving it.
+        if (peek) {
+            int pos = drive->offset;
+            for (size_t i = 0; i < trk_len; i++) {
+                uint8_t byte = data[pos++];
+                if (pos >= (int)trk_len)
+                    pos = 0;
+                if (!(floppy->mode & IWM_MODE_LATCH) || (byte & 0x80))
+                    return byte;
+            }
+            return 0x00;
+        }
 
         // IWM latch mode: only bytes with MSB=1 are latched (valid GCR bytes)
         if (floppy->mode & IWM_MODE_LATCH) {
@@ -547,8 +586,18 @@ uint8_t floppy_iwm_read(floppy_t *floppy, uint32_t offset) {
 
     // Every Q6/Q7 combination is handled above; this is unreachable.  Open bus
     // rather than an assert, for the same reason as the cases above.
-    LOG(2, "IWM: unhandled register read (lines=0x%02X)", floppy->iwm_lines);
+    if (!peek)
+        LOG(2, "IWM: unhandled register read (lines=0x%02X)", lines);
     return 0xFF;
+}
+
+// Reads from the IWM register at the specified offset
+uint8_t floppy_iwm_read(floppy_t *floppy, uint32_t offset) {
+    return iwm_reg_read(floppy, offset, false);
+}
+
+uint8_t floppy_iwm_peek(floppy_t *floppy, uint32_t offset) {
+    return iwm_reg_read(floppy, offset, true);
 }
 
 // Writes a byte to the IWM register at the specified offset

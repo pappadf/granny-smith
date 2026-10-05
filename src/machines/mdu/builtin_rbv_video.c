@@ -403,7 +403,9 @@ void builtin_rbv_video_vdac_write(nubus_card_t *card, uint32_t off, uint8_t val)
     }
 }
 
-uint8_t builtin_rbv_video_vdac_read(nubus_card_t *card, uint32_t off) {
+// A VDAC register read; a data read steps the R/G/B phase unless it is an
+// inspection (`peek`), which reports the component the next read returns.
+static uint8_t vdac_read(nubus_card_t *card, uint32_t off, bool peek) {
     rbv_video_priv_t *p = card ? card->priv : NULL;
     if (!p)
         return 0xFF;
@@ -416,12 +418,21 @@ uint8_t builtin_rbv_video_vdac_read(nubus_card_t *card, uint32_t off) {
     case VDAC_WDATA: {
         // Return the current entry's components in R/G/B sequence.
         uint8_t v = (p->vdac_phase < 3) ? ((const uint8_t *)&p->clut[p->vdac_idx])[p->vdac_phase] : 0;
-        p->vdac_phase = (uint8_t)((p->vdac_phase + 1) % 3);
+        if (!peek)
+            p->vdac_phase = (uint8_t)((p->vdac_phase + 1) % 3);
         return v;
     }
     default:
         return 0;
     }
+}
+
+uint8_t builtin_rbv_video_vdac_read(nubus_card_t *card, uint32_t off) {
+    return vdac_read(card, off, false);
+}
+
+uint8_t builtin_rbv_video_vdac_peek(nubus_card_t *card, uint32_t off) {
+    return vdac_read(card, off, true);
 }
 
 // === Factory + kind descriptor ==============================================

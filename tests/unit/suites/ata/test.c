@@ -359,7 +359,12 @@ TEST(pio_read_streams_the_sectors_and_interrupts_per_block) {
     wr(ATA_REG_STATUS, 0x20);
     uint8_t b[1024];
     ASSERT_EQ_INT(s_line, 1);
-    (void)rd(ATA_REG_STATUS);
+    // An inspection acknowledges nothing and moves no data.
+    uint8_t peeked = ata_peek(&s_ch, ATA_REG_STATUS);
+    ASSERT_EQ_INT(s_line, 1);
+    ASSERT_EQ_INT(ata_peek_data16(&s_ch), ata_peek_data16(&s_ch));
+    ASSERT_EQ_INT(ata_peek_data16(&s_ch), (s_hd[5 * 512] << 8) | s_hd[5 * 512 + 1]);
+    ASSERT_EQ_INT(rd(ATA_REG_STATUS), peeked);
     pio_in(b, 512);
     ASSERT_EQ_INT(s_line, 1); // the second block's DRQ
     (void)rd(ATA_REG_STATUS);

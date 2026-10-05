@@ -685,14 +685,15 @@ static int io_dword_for_select(uint32_t sel) {
 // each is defined in its own section below.
 static void mach64_sense_step(mach64_t *m);
 static uint8_t mach64_mon_id_state(const mach64_t *m);
+static uint8_t mach64_mon_id_state_dir(const mach64_t *m, uint8_t dir);
 static uint32_t mach64_current_vline(const mach64_t *m);
-static uint32_t mach64_dac_read(mach64_t *m);
+static uint32_t mach64_dac_read(mach64_t *m, bool peek);
 static void mach64_dac_write(mach64_t *m, uint32_t value);
 static void mach64_aperture_changed(mach64_t *m);
 static uint32_t mach64_mem_size_code(const mach64_t *m);
 static uint32_t mach64_aperture_size(const mach64_t *m);
 static void mach64_clut_changed(mach64_t *m);
-static uint32_t mach64_reg_read(mach64_t *m, int dw);
+static uint32_t mach64_reg_read(mach64_t *m, int dw, bool peek);
 static void mach64_reg_write(mach64_t *m, int dw, uint32_t value);
 static void mach64_update(mach64_t *m);
 static bool mach64_in_vblank(const mach64_t *m);
@@ -713,13 +714,17 @@ static void mach64_irq_sync(mach64_t *m);
 // and corrupt the CLUT, so the byte and halfword paths route it lane-wise
 // instead of through the dword.
 
-static uint8_t mach64_dac_read_lane(mach64_t *m, uint32_t lane);
+static uint8_t mach64_dac_read_lane(mach64_t *m, uint32_t lane, bool peek);
 static void mach64_dac_write_lane(mach64_t *m, uint32_t lane, uint8_t value);
 
-static uint8_t mach64_reg_read_lane(mach64_t *m, int dw, uint32_t lane) {
+// Every register read takes `peek`: false for the guest's read, true for an
+// inspection (memory_interface_t.peek_*), which returns the same value and
+// leaves the palette cursor, the GP_IO sense direction and the once-only
+// aperture log where they are.
+static uint8_t mach64_reg_read_lane(mach64_t *m, int dw, uint32_t lane, bool peek) {
     if (dw == DW_DAC_REGS)
-        return mach64_dac_read_lane(m, lane);
-    return (uint8_t)(mach64_reg_read(m, dw) >> (8u * (lane & 3u)));
+        return mach64_dac_read_lane(m, lane, peek);
+    return (uint8_t)(mach64_reg_read(m, dw, peek) >> (8u * (lane & 3u)));
 }
 
 static void mach64_reg_write_lane(mach64_t *m, int dw, uint32_t lane, uint8_t value) {
@@ -728,19 +733,19 @@ static void mach64_reg_write_lane(mach64_t *m, int dw, uint32_t lane, uint8_t va
         return;
     }
     uint32_t shift = 8u * (lane & 3u);
-    uint32_t v = (mach64_reg_read(m, dw) & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+    uint32_t v = (mach64_reg_read(m, dw, false) & ~(0xFFu << shift)) | ((uint32_t)value << shift);
     mach64_reg_write(m, dw, v);
 }
 
 // --- reads -----------------------------------------------------------------
 
-static bool gp_reg_read(mach64_t *m, int dw, uint32_t *out);
+static bool gp_reg_read(mach64_t *m, int dw, uint32_t *out, bool peek);
 static bool gp_reg_write(mach64_t *m, int dw, uint32_t value);
 
 // Registers whose value is not simply what was last written.
-static uint32_t mach64_reg_read(mach64_t *m, int dw) {
+static uint32_t mach64_reg_read(mach64_t *m, int dw, bool peek) {
     uint32_t gpv;
-    if (m->gp && gp_reg_read(m, dw, &gpv))
+    if (m->gp && gp_reg_read(m, dw, &gpv, peek))
         return gpv;
     switch (dw) {
     case DW_CONFIG_CHIP_ID:
@@ -787,7 +792,7 @@ static uint32_t mach64_reg_read(mach64_t *m, int dw) {
         return (m->reg[DW_CRTC_INT_CNTL] & ~CRTC_VBLANK) | (mach64_in_vblank(m) ? CRTC_VBLANK : 0);
 
     case DW_DAC_REGS:
-        return mach64_dac_read(m);
+        return mach64_dac_read(m, peek);
 
     default:
         return m->reg[dw];
@@ -898,12 +903,12 @@ static void mach64_reg_write(mach64_t *m, int dw, uint32_t value) {
 // code is $3F — every pin floating high in every configuration, i.e. no
 // cable attached.  Any real Apple sense code passes.
 
-// What the three pins read back in the current direction configuration.
-static uint8_t mach64_mon_id_state(const mach64_t *m) {
+// What the three pins read back with `dir` selecting the driven pin.
+static uint8_t mach64_mon_id_state_dir(const mach64_t *m, uint8_t dir) {
     const mach64_monitor_sense_t *mon = m->mon;
     if (!mon)
         return 7u; // nothing strapped: all pins float high = "no monitor"
-    switch (m->mon_id_dir) {
+    switch (dir) {
     case 0: // all three tri-stated: the primary code
         return mon->primary;
     case 1: // pin 0 driven: read (pin2, pin1)
@@ -916,9 +921,14 @@ static uint8_t mach64_mon_id_state(const mach64_t *m) {
         // Two or three pins driven at once is reserved (RRG p. 3-31).  Real
         // silicon would report whatever the drivers won; say "all high" and
         // log, so a driver doing something we have not seen announces itself.
-        LOG(1, "Mach64: reserved DAC_MON_ID_DIR value %u — reporting all pins high", m->mon_id_dir);
+        LOG(1, "Mach64: reserved DAC_MON_ID_DIR value %u — reporting all pins high", dir);
         return 7u;
     }
+}
+
+// What the three pins read back in the current direction configuration.
+static uint8_t mach64_mon_id_state(const mach64_t *m) {
+    return mach64_mon_id_state_dir(m, m->mon_id_dir);
 }
 
 // Record what the guest is reading, so the first run REPORTS the codes
@@ -1019,24 +1029,29 @@ static void mach64_dac_indexed_write(mach64_t *m, uint8_t value) {
 // DAC_REGS is one 32-bit register whose four BYTE lanes are separate DAC
 // cells, so it is read and written a lane at a time; the dword paths below
 // assemble and dissect around these.
-static uint8_t gp_dac_read_lane(mach64_t *m, uint32_t lane);
+static uint8_t gp_dac_read_lane(mach64_t *m, uint32_t lane, bool peek);
 static void gp_dac_write_lane(mach64_t *m, uint32_t lane, uint8_t value);
 
-static uint8_t mach64_dac_read_lane(mach64_t *m, uint32_t lane) {
+// The palette data cell: the current entry's R, G or B byte; the guest's read
+// (`peek` false) then steps the cursor, and after B moves to the next entry.
+static uint8_t dac_palette_data_read(mach64_t *m, bool peek) {
+    uint8_t v = m->clut[m->clut_addr][m->clut_phase];
+    if (!peek && ++m->clut_phase == 3) {
+        m->clut_phase = 0;
+        m->clut_addr++;
+    }
+    return v;
+}
+
+static uint8_t mach64_dac_read_lane(mach64_t *m, uint32_t lane, bool peek) {
     if (m->gp)
-        return gp_dac_read_lane(m, lane);
+        return gp_dac_read_lane(m, lane, peek);
     switch (mach64_dac_rs(m, lane)) {
     case 0: // palette address (write mode)
     case 3: // palette address (read mode)
         return m->clut_addr;
-    case 1: { // palette data — R, G, B, then the entry auto-advances
-        uint8_t v = m->clut[m->clut_addr][m->clut_phase];
-        if (++m->clut_phase == 3) {
-            m->clut_phase = 0;
-            m->clut_addr++;
-        }
-        return v;
-    }
+    case 1: // palette data — R, G, B, then the entry auto-advances
+        return dac_palette_data_read(m, peek);
     case 2:
         return m->dac_pixel_mask;
     case 4:
@@ -1092,10 +1107,19 @@ static void mach64_dac_write_lane(mach64_t *m, uint32_t lane, uint8_t value) {
     }
 }
 
-static uint32_t mach64_dac_read(mach64_t *m) {
+// The four cells in lane order.  The guest's read steps the palette cursor
+// at lane 1 (palette data) before lane 3 reads it back (the read-mode
+// address, RS 011, or the Rage Pro's read index), so a peek, which leaves
+// the cursor alone, reports lane 3 as that read would: one entry on when the
+// data read finishes an entry.
+static uint32_t mach64_dac_read(mach64_t *m, bool peek) {
     uint32_t v = 0;
     for (uint32_t lane = 0; lane < 4; lane++)
-        v |= (uint32_t)mach64_dac_read_lane(m, lane) << (8u * lane);
+        v |= (uint32_t)mach64_dac_read_lane(m, lane, peek) << (8u * lane);
+    bool data_at_1 = m->gp || mach64_dac_rs(m, 1) == 1;
+    bool addr_at_3 = m->gp || mach64_dac_rs(m, 3) == 3;
+    if (peek && data_at_1 && addr_at_3 && m->clut_phase == 2)
+        v = (v & 0x00FFFFFFu) | ((uint32_t)(uint8_t)(m->clut_addr + 1u) << 24);
     return v;
 }
 
@@ -1113,15 +1137,18 @@ static void mach64_dac_write(mach64_t *m, uint32_t value) {
 // on it; an input reads the monitor's strap, with the other lines' drive
 // applied exactly as the GX's DAC_MON_ID pins (mach64_mon_id_state) —
 // Apple's sense circuit is the same three wires whichever chip reads them.
-static uint32_t gp_gpio_read(mach64_t *m) {
+// The guest's read (`peek` false) also latches the driven-pin set as the
+// sense direction; a peek computes the same pin levels without latching it.
+static uint32_t gp_gpio_read(mach64_t *m, bool peek) {
     uint32_t v = m->reg[DW_GP_IO];
     uint32_t dir = (v >> GPIO_DIR_SHIFT) & GPIO_SENSE_MASK;
     uint8_t pins_driven = (uint8_t)(((dir & GPIO_SENSE_A) ? 4u : 0u) | ((dir & GPIO_SENSE_B) ? 2u : 0u) |
                                     ((dir & GPIO_SENSE_C) ? 1u : 0u));
     uint8_t state = 7u;
     if (pins_driven == 0 || pins_driven == 1 || pins_driven == 2 || pins_driven == 4) {
-        m->mon_id_dir = pins_driven;
-        state = mach64_mon_id_state(m);
+        if (!peek)
+            m->mon_id_dir = pins_driven;
+        state = mach64_mon_id_state_dir(m, pins_driven);
     }
     uint32_t in =
         ((state & 4u) ? GPIO_SENSE_A : 0u) | ((state & 2u) ? GPIO_SENSE_B : 0u) | ((state & 1u) ? GPIO_SENSE_C : 0u);
@@ -1129,7 +1156,7 @@ static uint32_t gp_gpio_read(mach64_t *m) {
     return (v & ~GPIO_SENSE_MASK) | data;
 }
 
-static bool gp_reg_read(mach64_t *m, int dw, uint32_t *out) {
+static bool gp_reg_read(mach64_t *m, int dw, uint32_t *out, bool peek) {
     switch (dw) {
     case DW_CONFIG_CHIP_ID:
         *out = RAGEPRO_CHIP_ID;
@@ -1144,7 +1171,7 @@ static bool gp_reg_read(mach64_t *m, int dw, uint32_t *out) {
         *out = m->reg[DW_DAC_CNTL];
         return true;
     case DW_GP_IO:
-        *out = gp_gpio_read(m);
+        *out = gp_gpio_read(m, peek);
         return true;
     case DW_GUI_STAT:
         // Engine idle, and FIFO_CNT (bits 25:16) — the number of empty
@@ -1211,19 +1238,13 @@ static bool gp_reg_write(mach64_t *m, int dw, uint32_t value) {
 // The integrated palette DAC (RRG p. 67; PRG p. 30): DAC_REGS' four byte
 // lanes are the write index, the data port (R, G, B, then the entry
 // auto-advances), the pixel mask and the read index.
-static uint8_t gp_dac_read_lane(mach64_t *m, uint32_t lane) {
+static uint8_t gp_dac_read_lane(mach64_t *m, uint32_t lane, bool peek) {
     switch (lane & 3u) {
     case 0:
     case 3:
         return m->clut_addr;
-    case 1: {
-        uint8_t v = m->clut[m->clut_addr][m->clut_phase];
-        if (++m->clut_phase == 3) {
-            m->clut_phase = 0;
-            m->clut_addr++;
-        }
-        return v;
-    }
+    case 1:
+        return dac_palette_data_read(m, peek);
     default:
         return m->dac_pixel_mask;
     }
@@ -2274,14 +2295,37 @@ static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value) {
 // Byte order is the card's own: the register value is little-endian, so
 // lane j of an address carries value bits 8j+7:8j.
 
-static uint8_t io_read8(void *ctx, uint32_t addr) {
+// Each register face reads through one `<face>_rd8/16/32(ctx, addr, peek)`;
+// this stamps out the guest's read_* (peek false) and the inspection's
+// peek_* (memory_interface_t) around them.
+#define MACH64_READ_FACE(face)                                                                                         \
+    static uint8_t face##_read8(void *ctx, uint32_t a) {                                                               \
+        return face##_rd8(ctx, a, false);                                                                              \
+    }                                                                                                                  \
+    static uint16_t face##_read16(void *ctx, uint32_t a) {                                                             \
+        return face##_rd16(ctx, a, false);                                                                             \
+    }                                                                                                                  \
+    static uint32_t face##_read32(void *ctx, uint32_t a) {                                                             \
+        return face##_rd32(ctx, a, false);                                                                             \
+    }                                                                                                                  \
+    static uint8_t face##_peek8(void *ctx, uint32_t a) {                                                               \
+        return face##_rd8(ctx, a, true);                                                                               \
+    }                                                                                                                  \
+    static uint16_t face##_peek16(void *ctx, uint32_t a) {                                                             \
+        return face##_rd16(ctx, a, true);                                                                              \
+    }                                                                                                                  \
+    static uint32_t face##_peek32(void *ctx, uint32_t a) {                                                             \
+        return face##_rd32(ctx, a, true);                                                                              \
+    }
+
+static uint8_t io_rd8(void *ctx, uint32_t addr, bool peek) {
     mach64_t *m = (mach64_t *)ctx;
     int dw = io_dword_for_select(addr >> 10);
     if (dw < 0) {
         LOG(1, "Mach64: I/O read of unassigned select $%02X (address $%04X)", addr >> 10, addr);
         return 0xFFu;
     }
-    return mach64_reg_read_lane(m, dw, addr & 3u);
+    return mach64_reg_read_lane(m, dw, addr & 3u, peek);
 }
 
 static void io_write8(void *ctx, uint32_t addr, uint8_t value) {
@@ -2297,8 +2341,8 @@ static void io_write8(void *ctx, uint32_t addr, uint8_t value) {
     mach64_reg_write_lane(m, dw, addr & 3u, value);
 }
 
-static uint16_t io_read16(void *ctx, uint32_t addr) {
-    return (uint16_t)((io_read8(ctx, addr) << 8) | io_read8(ctx, addr + 1));
+static uint16_t io_rd16(void *ctx, uint32_t addr, bool peek) {
+    return (uint16_t)((io_rd8(ctx, addr, peek) << 8) | io_rd8(ctx, addr + 1, peek));
 }
 
 static void io_write16(void *ctx, uint32_t addr, uint16_t value) {
@@ -2306,15 +2350,16 @@ static void io_write16(void *ctx, uint32_t addr, uint16_t value) {
     io_write8(ctx, addr + 1, (uint8_t)value);
 }
 
-static uint32_t io_read32(void *ctx, uint32_t addr) {
+static uint32_t io_rd32(void *ctx, uint32_t addr, bool peek) {
     mach64_t *m = (mach64_t *)ctx;
     int dw = io_dword_for_select(addr >> 10);
     if (dw < 0) {
         LOG(1, "Mach64: I/O read of unassigned select $%02X (address $%04X)", addr >> 10, addr);
         return 0xFFFFFFFFu;
     }
-    return MACH64_LE32(mach64_reg_read(m, dw));
+    return MACH64_LE32(mach64_reg_read(m, dw, peek));
 }
+MACH64_READ_FACE(io)
 
 static void io_write32(void *ctx, uint32_t addr, uint32_t value) {
     mach64_t *m = (mach64_t *)ctx;
@@ -2356,7 +2401,7 @@ static void io_write32(void *ctx, uint32_t addr, uint32_t value) {
 #define MACH64_APER_REGS (-1)
 #define MACH64_APER_NONE (-2)
 
-static void aper_repeat_note(mach64_t *m, uint32_t offset);
+static void aper_repeat_note(mach64_t *m, uint32_t offset, bool peek);
 
 #define MACH64_APER_REGS1 (-3)
 
@@ -2394,7 +2439,8 @@ static int64_t gp_aper_map(mach64_t *m, uint32_t offset) {
     return (int64_t)((offset - MACH64_APER_8MB) & (m->vram_size - 1u));
 }
 
-static int64_t aper_map(mach64_t *m, uint32_t offset) {
+// `peek`: an inspection's decode, which does not trip the once-only log.
+static int64_t aper_map(mach64_t *m, uint32_t offset, bool peek) {
     if (m->gp)
         return gp_aper_map(m, offset);
     uint32_t size = mach64_aperture_size(m);
@@ -2410,7 +2456,7 @@ static int64_t aper_map(mach64_t *m, uint32_t offset) {
         return MACH64_APER_NONE;
     }
     if (offset >= size) {
-        aper_repeat_note(m, offset);
+        aper_repeat_note(m, offset, peek);
         offset %= size; // the aperture repeats through the 16 MB BAR
     }
     if (offset >= mach64_mmio_offset(m))
@@ -2422,8 +2468,8 @@ static int64_t aper_map(mach64_t *m, uint32_t offset) {
 
 // Say so, once, when the guest reaches past the first copy of the aperture
 // — the observation that settled what the upper half of the BAR is.
-static void aper_repeat_note(mach64_t *m, uint32_t offset) {
-    if (m->aperture_warned)
+static void aper_repeat_note(mach64_t *m, uint32_t offset, bool peek) {
+    if (peek || m->aperture_warned)
         return;
     m->aperture_warned = true;
     LOG(1,
@@ -2432,13 +2478,13 @@ static void aper_repeat_note(mach64_t *m, uint32_t offset) {
         offset, mach64_aperture_size(m) >> 20);
 }
 
-static uint8_t aper_read8(void *ctx, uint32_t offset) {
+static uint8_t aper_rd8(void *ctx, uint32_t offset, bool peek) {
     mach64_t *m = (mach64_t *)ctx;
-    int64_t at = aper_map(m, offset);
+    int64_t at = aper_map(m, offset, peek);
     if (at == MACH64_APER_NONE)
         return 0xFFu;
     if (at == MACH64_APER_REGS)
-        return mach64_reg_read_lane(m, (int)((offset & 0x3FFu) >> 2), offset & 3u);
+        return mach64_reg_read_lane(m, (int)((offset & 0x3FFu) >> 2), offset & 3u, peek);
     if (at == MACH64_APER_REGS1)
         return (uint8_t)(m->reg1[(offset & 0x3FFu) >> 2] >> (8u * (offset & 3u)));
     return m->vram[at];
@@ -2446,7 +2492,7 @@ static uint8_t aper_read8(void *ctx, uint32_t offset) {
 
 static void aper_write8(void *ctx, uint32_t offset, uint8_t value) {
     mach64_t *m = (mach64_t *)ctx;
-    int64_t at = aper_map(m, offset);
+    int64_t at = aper_map(m, offset, false);
     if (at == MACH64_APER_NONE)
         return;
     if (at == MACH64_APER_REGS) {
@@ -2462,9 +2508,9 @@ static void aper_write8(void *ctx, uint32_t offset, uint8_t value) {
     m->vram[at] = value;
 }
 
-static uint16_t aper_read16(void *ctx, uint32_t offset) {
+static uint16_t aper_rd16(void *ctx, uint32_t offset, bool peek) {
     mach64_t *m = (mach64_t *)ctx;
-    int64_t at = aper_map(m, offset);
+    int64_t at = aper_map(m, offset, peek);
     // Inside VRAM the aperture is a plain byte array on a big-endian bus:
     // a guest halfword load reads two consecutive bytes, MSB first.  Only
     // the REGISTER alias is little-endian.
@@ -2472,12 +2518,12 @@ static uint16_t aper_read16(void *ctx, uint32_t offset) {
     // bytes are not consecutive in VRAM: it takes the byte path.)
     if (at >= 0 && !(m->gp && offset < MACH64_APER_8MB))
         return (uint16_t)(((uint16_t)m->vram[at] << 8) | m->vram[(at + 1) & (m->vram_size - 1u)]);
-    return (uint16_t)((aper_read8(ctx, offset) << 8) | aper_read8(ctx, offset + 1));
+    return (uint16_t)((aper_rd8(ctx, offset, peek) << 8) | aper_rd8(ctx, offset + 1, peek));
 }
 
 static void aper_write16(void *ctx, uint32_t offset, uint16_t value) {
     mach64_t *m = (mach64_t *)ctx;
-    int64_t at = aper_map(m, offset);
+    int64_t at = aper_map(m, offset, false);
     if (at >= 0 && !(m->gp && offset < MACH64_APER_8MB)) {
         m->vram[at] = (uint8_t)(value >> 8);
         m->vram[(at + 1) & (m->vram_size - 1u)] = (uint8_t)value;
@@ -2487,27 +2533,28 @@ static void aper_write16(void *ctx, uint32_t offset, uint16_t value) {
     aper_write8(ctx, offset + 1, (uint8_t)value);
 }
 
-static uint32_t aper_read32(void *ctx, uint32_t offset) {
+static uint32_t aper_rd32(void *ctx, uint32_t offset, bool peek) {
     mach64_t *m = (mach64_t *)ctx;
-    int64_t at = aper_map(m, offset);
+    int64_t at = aper_map(m, offset, peek);
     if (at == MACH64_APER_NONE)
         return 0xFFFFFFFFu;
     if (at == MACH64_APER_REGS)
-        return MACH64_LE32(mach64_reg_read(m, (int)((offset & 0x3FFu) >> 2)));
+        return MACH64_LE32(mach64_reg_read(m, (int)((offset & 0x3FFu) >> 2), peek));
     if (at == MACH64_APER_REGS1) {
         LOG(4, "Rage Pro: block-1 dword $%02X read", (unsigned)((offset & 0x3FFu) >> 2));
         return MACH64_LE32(m->reg1[(offset & 0x3FFu) >> 2]);
     }
     if (m->gp && offset < MACH64_APER_8MB)
-        return ((uint32_t)aper_read8(ctx, offset) << 24) | ((uint32_t)aper_read8(ctx, offset + 1) << 16) |
-               ((uint32_t)aper_read8(ctx, offset + 2) << 8) | aper_read8(ctx, offset + 3);
+        return ((uint32_t)aper_rd8(ctx, offset, peek) << 24) | ((uint32_t)aper_rd8(ctx, offset + 1, peek) << 16) |
+               ((uint32_t)aper_rd8(ctx, offset + 2, peek) << 8) | aper_rd8(ctx, offset + 3, peek);
     return ((uint32_t)m->vram[at] << 24) | ((uint32_t)m->vram[(at + 1) & (m->vram_size - 1u)] << 16) |
            ((uint32_t)m->vram[(at + 2) & (m->vram_size - 1u)] << 8) | m->vram[(at + 3) & (m->vram_size - 1u)];
 }
+MACH64_READ_FACE(aper)
 
 static void aper_write32(void *ctx, uint32_t offset, uint32_t value) {
     mach64_t *m = (mach64_t *)ctx;
-    int64_t at = aper_map(m, offset);
+    int64_t at = aper_map(m, offset, false);
     if (at == MACH64_APER_NONE)
         return;
     if (at == MACH64_APER_REGS) {
@@ -2546,12 +2593,12 @@ static void aper_write32(void *ctx, uint32_t offset, uint32_t value) {
 // BAR0 alias.
 #define RAGEPRO_BAR2_DECODE 0x7FFu // the 2 KB of blocks, repeated through 4 KB
 
-static uint8_t aux_read8(void *ctx, uint32_t offset) {
+static uint8_t aux_rd8(void *ctx, uint32_t offset, bool peek) {
     mach64_t *m = (mach64_t *)ctx;
     offset &= RAGEPRO_BAR2_DECODE;
     if (offset < 0x400u)
         return (uint8_t)(m->reg1[offset >> 2] >> (8u * (offset & 3u)));
-    return mach64_reg_read_lane(m, (int)((offset & 0x3FFu) >> 2), offset & 3u);
+    return mach64_reg_read_lane(m, (int)((offset & 0x3FFu) >> 2), offset & 3u, peek);
 }
 
 static void aux_write8(void *ctx, uint32_t offset, uint8_t value) {
@@ -2566,8 +2613,8 @@ static void aux_write8(void *ctx, uint32_t offset, uint8_t value) {
     }
 }
 
-static uint16_t aux_read16(void *ctx, uint32_t offset) {
-    return (uint16_t)((aux_read8(ctx, offset) << 8) | aux_read8(ctx, offset + 1));
+static uint16_t aux_rd16(void *ctx, uint32_t offset, bool peek) {
+    return (uint16_t)((aux_rd8(ctx, offset, peek) << 8) | aux_rd8(ctx, offset + 1, peek));
 }
 
 static void aux_write16(void *ctx, uint32_t offset, uint16_t value) {
@@ -2575,15 +2622,16 @@ static void aux_write16(void *ctx, uint32_t offset, uint16_t value) {
     aux_write8(ctx, offset + 1, (uint8_t)value);
 }
 
-static uint32_t aux_read32(void *ctx, uint32_t offset) {
+static uint32_t aux_rd32(void *ctx, uint32_t offset, bool peek) {
     mach64_t *m = (mach64_t *)ctx;
     offset &= RAGEPRO_BAR2_DECODE;
     if (offset < 0x400u) {
         LOG(4, "Rage Pro: block-1 dword $%02X read (BAR2)", (unsigned)(offset >> 2));
         return MACH64_LE32(m->reg1[offset >> 2]);
     }
-    return MACH64_LE32(mach64_reg_read(m, (int)((offset & 0x3FFu) >> 2)));
+    return MACH64_LE32(mach64_reg_read(m, (int)((offset & 0x3FFu) >> 2), peek));
 }
+MACH64_READ_FACE(aux)
 
 static void aux_write32(void *ctx, uint32_t offset, uint32_t value) {
     mach64_t *m = (mach64_t *)ctx;
@@ -2596,16 +2644,16 @@ static void aux_write32(void *ctx, uint32_t offset, uint32_t value) {
     }
 }
 
-static uint8_t bio_read8(void *ctx, uint32_t offset) {
-    return mach64_reg_read_lane((mach64_t *)ctx, (int)((offset & 0xFFu) >> 2), offset & 3u);
+static uint8_t bio_rd8(void *ctx, uint32_t offset, bool peek) {
+    return mach64_reg_read_lane((mach64_t *)ctx, (int)((offset & 0xFFu) >> 2), offset & 3u, peek);
 }
 
 static void bio_write8(void *ctx, uint32_t offset, uint8_t value) {
     mach64_reg_write_lane((mach64_t *)ctx, (int)((offset & 0xFFu) >> 2), offset & 3u, value);
 }
 
-static uint16_t bio_read16(void *ctx, uint32_t offset) {
-    return (uint16_t)((bio_read8(ctx, offset) << 8) | bio_read8(ctx, offset + 1));
+static uint16_t bio_rd16(void *ctx, uint32_t offset, bool peek) {
+    return (uint16_t)((bio_rd8(ctx, offset, peek) << 8) | bio_rd8(ctx, offset + 1, peek));
 }
 
 static void bio_write16(void *ctx, uint32_t offset, uint16_t value) {
@@ -2613,9 +2661,10 @@ static void bio_write16(void *ctx, uint32_t offset, uint16_t value) {
     bio_write8(ctx, offset + 1, (uint8_t)value);
 }
 
-static uint32_t bio_read32(void *ctx, uint32_t offset) {
-    return MACH64_LE32(mach64_reg_read((mach64_t *)ctx, (int)((offset & 0xFFu) >> 2)));
+static uint32_t bio_rd32(void *ctx, uint32_t offset, bool peek) {
+    return MACH64_LE32(mach64_reg_read((mach64_t *)ctx, (int)((offset & 0xFFu) >> 2), peek));
 }
+MACH64_READ_FACE(bio)
 
 static void bio_write32(void *ctx, uint32_t offset, uint32_t value) {
     mach64_reg_write((mach64_t *)ctx, (int)((offset & 0xFFu) >> 2), MACH64_LE32(value));
@@ -3423,7 +3472,7 @@ static DEF_GETTER(regs_attr_mem_cntl) {
 }
 static DEF_GETTER(regs_attr_dac_cntl) {
     mach64_t *c = node_card(self);
-    return val_uint(4, c ? mach64_reg_read(c, DW_DAC_CNTL) : 0);
+    return val_uint(4, c ? mach64_reg_read(c, DW_DAC_CNTL, true) : 0);
 }
 static DEF_METHOD(regs_method_read) {
     mach64_t *c = node_card(self);
@@ -3431,7 +3480,7 @@ static DEF_METHOD(regs_method_read) {
     if (!c || dw < 0 || dw >= MACH64_NUM_REGS)
         return val_err("regs.read: dword index must be 0..$%X (or $%X for CONFIG_CNTL)", MACH64_NUM_REGS - 2,
                        DW_CONFIG_CNTL);
-    return val_uint(4, mach64_reg_read(c, (int)dw));
+    return val_uint(4, mach64_reg_read(c, (int)dw, true));
 }
 
 static const arg_decl_t regs_read_arg[] = {
@@ -3661,12 +3710,18 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, const rom_ima
     m->io_if.write_uint8 = io_write8;
     m->io_if.write_uint16 = io_write16;
     m->io_if.write_uint32 = io_write32;
+    m->io_if.peek_uint8 = io_peek8;
+    m->io_if.peek_uint16 = io_peek16;
+    m->io_if.peek_uint32 = io_peek32;
     m->aper_if.read_uint8 = aper_read8;
     m->aper_if.read_uint16 = aper_read16;
     m->aper_if.read_uint32 = aper_read32;
     m->aper_if.write_uint8 = aper_write8;
     m->aper_if.write_uint16 = aper_write16;
     m->aper_if.write_uint32 = aper_write32;
+    m->aper_if.peek_uint8 = aper_peek8;
+    m->aper_if.peek_uint16 = aper_peek16;
+    m->aper_if.peek_uint32 = aper_peek32;
     m->rom_if.read_uint8 = rom_read8;
     m->rom_if.read_uint16 = rom_read16;
     m->rom_if.read_uint32 = rom_read32;
@@ -3752,18 +3807,27 @@ static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, const rom_im
     m->aper_if.write_uint8 = aper_write8;
     m->aper_if.write_uint16 = aper_write16;
     m->aper_if.write_uint32 = aper_write32;
+    m->aper_if.peek_uint8 = aper_peek8;
+    m->aper_if.peek_uint16 = aper_peek16;
+    m->aper_if.peek_uint32 = aper_peek32;
     m->aux_if.read_uint8 = aux_read8;
     m->aux_if.read_uint16 = aux_read16;
     m->aux_if.read_uint32 = aux_read32;
     m->aux_if.write_uint8 = aux_write8;
     m->aux_if.write_uint16 = aux_write16;
     m->aux_if.write_uint32 = aux_write32;
+    m->aux_if.peek_uint8 = aux_peek8;
+    m->aux_if.peek_uint16 = aux_peek16;
+    m->aux_if.peek_uint32 = aux_peek32;
     m->bio_if.read_uint8 = bio_read8;
     m->bio_if.read_uint16 = bio_read16;
     m->bio_if.read_uint32 = bio_read32;
     m->bio_if.write_uint8 = bio_write8;
     m->bio_if.write_uint16 = bio_write16;
     m->bio_if.write_uint32 = bio_write32;
+    m->bio_if.peek_uint8 = bio_peek8;
+    m->bio_if.peek_uint16 = bio_peek16;
+    m->bio_if.peek_uint32 = bio_peek32;
     pci_bar_backing_iface(dev, MACH64_BAR_APER, &m->aper_if, m);
     pci_bar_backing_iface(dev, RAGEPRO_BAR_IO, &m->bio_if, m);
     pci_bar_backing_iface(dev, RAGEPRO_BAR_AUX, &m->aux_if, m);

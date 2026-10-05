@@ -151,13 +151,16 @@ static void eprom_doorbell(config_t *cfg) {
 // Island dispatch
 // ============================================================
 
-uint8_t tnt_gbus_read8(config_t *cfg, uint32_t offset) {
+// A byte read; any Ethernet PROM access rings the MP doorbell except an
+// inspection's (`peek`).
+static uint8_t gbus_read8(config_t *cfg, uint32_t offset, bool peek) {
     tnt_gbus_t *g = gb(cfg);
     if (!g)
         return 0;
     switch (offset & 0x1F000u) {
     case ANS_OFF_EPROM: {
-        eprom_doorbell(cfg);
+        if (!peek)
+            eprom_doorbell(cfg);
         // Cells on $10 centres; anything off-centre lands on no cell.
         if ((offset & 0xFu) != 0 || ((offset & 0xFFFu) >> 4) >= ANS_EPROM_CELLS) {
             LOG(2, "Ethernet PROM read off-centre +$%05X", offset);
@@ -177,6 +180,14 @@ uint8_t tnt_gbus_read8(config_t *cfg, uint32_t offset) {
         LOG(1, "byte read of unwired GBUS offset +$%05X", offset);
         return 0;
     }
+}
+
+uint8_t tnt_gbus_read8(config_t *cfg, uint32_t offset) {
+    return gbus_read8(cfg, offset, false);
+}
+
+uint8_t tnt_gbus_peek8(config_t *cfg, uint32_t offset) {
+    return gbus_read8(cfg, offset, true);
 }
 
 void tnt_gbus_write8(config_t *cfg, uint32_t offset, uint8_t value) {
@@ -200,7 +211,7 @@ void tnt_gbus_write8(config_t *cfg, uint32_t offset, uint8_t value) {
 // 32-bit access.  `value` at this boundary is the big-endian bus view, so
 // the little-endian register value is recovered with TNT_LE32 exactly as
 // grand_central.c does for BoxID and the interrupt block.
-uint32_t tnt_gbus_read32(config_t *cfg, uint32_t offset) {
+static uint32_t gbus_read32(config_t *cfg, uint32_t offset, bool peek) {
     switch (offset & 0x1F000u) {
     case ANS_OFF_BREG2:
         LOG(3, "Board Register 2 read -> $%04X", breg2_value(cfg));
@@ -208,7 +219,8 @@ uint32_t tnt_gbus_read32(config_t *cfg, uint32_t offset) {
     case ANS_OFF_EPROM: {
         // A byte-wide cell answering a longword cycle drives lane 0 only,
         // which on this big-endian bus is the MOST significant byte.
-        eprom_doorbell(cfg);
+        if (!peek)
+            eprom_doorbell(cfg);
         tnt_gbus_t *g = gb(cfg);
         uint32_t cell = (offset & 0xFFu) >> 4;
         if (!g || (offset & 0xFu) != 0 || cell >= ANS_EPROM_CELLS)
@@ -219,6 +231,14 @@ uint32_t tnt_gbus_read32(config_t *cfg, uint32_t offset) {
         LOG(1, "long read of unwired GBUS offset +$%05X", offset);
         return 0;
     }
+}
+
+uint32_t tnt_gbus_read32(config_t *cfg, uint32_t offset) {
+    return gbus_read32(cfg, offset, false);
+}
+
+uint32_t tnt_gbus_peek32(config_t *cfg, uint32_t offset) {
+    return gbus_read32(cfg, offset, true);
 }
 
 void tnt_gbus_write32(config_t *cfg, uint32_t offset, uint32_t value) {

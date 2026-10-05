@@ -74,6 +74,11 @@ uint8_t builtin_rbv_video_vdac_read(nubus_card_t *c, uint32_t off) {
     (void)off;
     return 0;
 }
+uint8_t builtin_rbv_video_vdac_peek(nubus_card_t *c, uint32_t off) {
+    (void)c;
+    (void)off;
+    return 0;
+}
 void builtin_rbv_video_vdac_write(nubus_card_t *c, uint32_t off, uint8_t v) {
     (void)c;
     (void)off;

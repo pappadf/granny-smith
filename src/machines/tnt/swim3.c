@@ -151,6 +151,10 @@ uint8_t tnt_swim3_read(config_t *cfg, uint32_t off) {
     return swim3_read(&tnt_st(cfg)->swim3, (off >> 4) & 15u);
 }
 
+uint8_t tnt_swim3_peek(config_t *cfg, uint32_t off) {
+    return swim3_peek(&tnt_st(cfg)->swim3, (off >> 4) & 15u);
+}
+
 void tnt_swim3_write(config_t *cfg, uint32_t off, uint8_t value) {
     swim3_write(&tnt_st(cfg)->swim3, (off >> 4) & 15u, value);
 }

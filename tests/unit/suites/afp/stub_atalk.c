@@ -11,6 +11,9 @@
 
 #include "appletalk.h"
 #include "appletalk_asp.h"
+#include "macroman.h"
+
+#include <stdio.h>
 
 #include <string.h>
 
@@ -31,6 +34,16 @@ int atalk_nbp_publish(atalk_nbp_entry_t **entry, const atalk_nbp_service_desc_t 
     if (!entry || !desc || (desc->object && strcmp(desc->object, "Taken") == 0))
         return -1;
     *entry = (atalk_nbp_entry_t *)(void *)&g_attentions; // any non-NULL handle
+    return 0;
+}
+// The NBP name rule (appletalk.c): a name MacRoman can hold, 1 to 32 bytes.
+int atalk_nbp_name_check(const char *what, const char *name, char *err, size_t err_len) {
+    uint8_t mac[ATALK_NBP_NAME_MAX * 4];
+    int n = macroman_from_utf8(name ? name : "", mac, sizeof(mac));
+    if (n <= 0 || n > ATALK_NBP_NAME_MAX) {
+        snprintf(err, err_len, "%s refused", what);
+        return -1;
+    }
     return 0;
 }
 void atalk_nbp_withdraw(atalk_nbp_entry_t **entry) {

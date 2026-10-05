@@ -1729,6 +1729,13 @@ bool scsi_pop_data_in_byte(scsi_t *scsi, uint8_t *out) {
     return true;
 }
 
+bool scsi_peek_data_in_byte(const scsi_t *scsi, size_t index, uint8_t *out) {
+    if (!scsi || !out || scsi->bus.phase != scsi_data_in || index >= scsi->buf.size)
+        return false;
+    *out = scsi->buf.data[scsi->buf.pos + index];
+    return true;
+}
+
 // Take one DATA OUT / COMMAND byte onto the bus.
 //
 // This is the wire's half: stage the byte, and when the phase's expected count
@@ -1878,6 +1885,12 @@ bool scsi_bus_bsy(const scsi_t *scsi) {
 
 int scsi_get_bus_phase(const scsi_t *scsi) {
     scsi_bus_settle_poll((scsi_t *)scsi);
+    return scsi ? (int)scsi->bus.phase : 0;
+}
+
+// The settle poll moves only REQ, never the phase, so an inspection reads the
+// phase as it stands.
+int scsi_get_bus_phase_peek(const scsi_t *scsi) {
     return scsi ? (int)scsi->bus.phase : 0;
 }
 

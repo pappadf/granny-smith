@@ -87,6 +87,8 @@ void bmac_attach_dbdma(bmac_t *b, dbdma_t *d, int tx_chan, int rx_chan);
 // Register file: `off` is the byte offset from the cell base; values are
 // the little-endian register value (the bus edge owns the swap).
 uint16_t bmac_read(bmac_t *b, uint32_t off);
+// The same register without the read's side effect (STATUS not cleared).
+uint16_t bmac_peek(bmac_t *b, uint32_t off);
 void bmac_write(bmac_t *b, uint32_t off, uint16_t value);
 
 // The link the transceiver reports (default up).

@@ -20,16 +20,16 @@ void offer_registry_add(offer_registry_t *r, const char *path) {
     if (!r || !r->identify || !path || !*path)
         return;
 
-    uint32_t crc = 0;
+    uint64_t key = 0;
     size_t size = 0;
     const char *card_id = NULL;
-    if (!r->identify(path, &crc, &size, &card_id) || !card_id)
+    if (!r->identify(path, &key, &size, &card_id) || !card_id)
         return; // not ours; the identifier logged which kind of stray it was
 
-    // Idempotent by content: one entry per CRC.
+    // Idempotent by content: one entry per key.
     offer_entry_t *e = NULL;
     for (size_t i = 0; i < r->count; i++) {
-        if (r->entries[i].crc == crc) {
+        if (r->entries[i].key == key) {
             e = &r->entries[i];
             break;
         }
@@ -56,10 +56,10 @@ void offer_registry_add(offer_registry_t *r, const char *path) {
     }
     free(e->path);
     e->path = dup;
-    e->crc = crc;
+    e->key = key;
     e->size = size;
     e->card_id = card_id;
-    LOG(2, "%s: '%s' provides card '%s' (crc $%08X)", r->tag, path, e->card_id, e->crc);
+    LOG(2, "%s: '%s' provides card '%s' (key $%012llX)", r->tag, path, e->card_id, (unsigned long long)e->key);
 }
 
 void offer_registry_clear(offer_registry_t *r) {
@@ -74,29 +74,29 @@ void offer_registry_clear(offer_registry_t *r) {
 }
 
 const char *offer_registry_find(const offer_registry_t *r, const char *card_id, int idx, size_t *out_size,
-                                uint32_t *out_crc) {
+                                uint64_t *out_key) {
     if (!r || !card_id)
         return NULL;
-    // Catalog order, preferred rows first.  One offer per CRC (registry
+    // Catalog order, preferred rows first.  One offer per key (registry
     // invariant), so each row yields at most one candidate.
     if (!r->catalog.row)
         return NULL;
     for (int want_preferred = 1; want_preferred >= 0; want_preferred--) {
         for (size_t row = 0; row < r->catalog.count; row++) {
             const char *row_card = NULL;
-            uint32_t row_crc = 0;
+            uint64_t row_key = 0;
             bool preferred = false;
-            r->catalog.row(row, &row_card, &row_crc, &preferred);
+            r->catalog.row(row, &row_card, &row_key, &preferred);
             if (preferred != (bool)want_preferred || !row_card || strcmp(row_card, card_id) != 0)
                 continue;
             for (size_t i = 0; i < r->count; i++) {
-                if (r->entries[i].crc != row_crc)
+                if (r->entries[i].key != row_key)
                     continue;
                 if (idx-- == 0) {
                     if (out_size)
                         *out_size = r->entries[i].size;
-                    if (out_crc)
-                        *out_crc = r->entries[i].crc;
+                    if (out_key)
+                        *out_key = r->entries[i].key;
                     return r->entries[i].path;
                 }
             }
@@ -110,9 +110,9 @@ bool offer_registry_catalogued(const offer_registry_t *r, const char *card_id) {
         return false;
     for (size_t row = 0; row < r->catalog.count; row++) {
         const char *row_card = NULL;
-        uint32_t crc = 0;
+        uint64_t key = 0;
         bool preferred = false;
-        r->catalog.row(row, &row_card, &crc, &preferred);
+        r->catalog.row(row, &row_card, &key, &preferred);
         if (row_card && strcmp(row_card, card_id) == 0)
             return true;
     }

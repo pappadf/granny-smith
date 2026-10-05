@@ -194,19 +194,19 @@ static int swim_bypass_addr(uint32_t offset) {
     return (int)(((offset - iopBypassBase) >> 1) & 0x0Fu);
 }
 
-static uint8_t iop_bypass_read(iop_t *iop, uint32_t offset) {
+static uint8_t iop_bypass_read(iop_t *iop, uint32_t offset, bool peek) {
     if (!iop->bypass_iface || !iop->bypass_device)
         return 0xff;
     if (iop->behavior->kind == SccIopNum) {
         int addr = scc_bypass_addr(offset);
         if (addr >= 0)
-            return iop->bypass_iface->read_uint8(iop->bypass_device, (uint32_t)addr);
+            return memory_iface_read8(iop->bypass_iface, iop->bypass_device, (uint32_t)addr, peek);
         return 0xff;
     }
     int reg = swim_bypass_addr(offset);
     if (reg < 0)
         return 0xff;
-    return iop->bypass_iface->read_uint8(iop->bypass_device, (uint32_t)reg);
+    return memory_iface_read8(iop->bypass_iface, iop->bypass_device, (uint32_t)reg, peek);
 }
 
 static void iop_bypass_write(iop_t *iop, uint32_t offset, uint8_t value) {
@@ -263,8 +263,9 @@ static iop_reg_class_t iop_decode_offset(uint32_t offset) {
 //  Host-side reads
 // ============================================================================
 
-static uint8_t iop_read_uint8(void *device, uint32_t addr) {
-    iop_t *iop = (iop_t *)device;
+// A host-side register read; an inspection (`peek`) leaves the RAM address
+// where it is and inspects the bypassed chip rather than reading it.
+static uint8_t iop_reg_read(iop_t *iop, uint32_t addr, bool peek) {
     uint32_t offset = addr & 0x1fff;
     switch (iop_decode_offset(offset)) {
     case IOP_REG_ADDR_HI:
@@ -281,16 +282,23 @@ static uint8_t iop_read_uint8(void *device, uint32_t addr) {
         return (uint8_t)(iop->stat_ctl | iopSCCWrReqBit);
     case IOP_REG_RAM_DATA: {
         uint8_t value = iop->ram[iop->ram_addr];
-        if (iop->stat_ctl & iopIncEnableBit)
+        if ((iop->stat_ctl & iopIncEnableBit) && !peek)
             iop->ram_addr++;
         return value;
     }
     case IOP_REG_BYPASS:
-        return iop_bypass_read(iop, offset);
+        return iop_bypass_read(iop, offset, peek);
     case IOP_REG_NONE:
     default:
         return 0xff;
     }
+}
+
+static uint8_t iop_read_uint8(void *device, uint32_t addr) {
+    return iop_reg_read(device, addr, false);
+}
+static uint8_t iop_peek_uint8(void *device, uint32_t addr) {
+    return iop_reg_read(device, addr, true);
 }
 
 static uint16_t iop_read_uint16(void *device, uint32_t addr) {
@@ -425,6 +433,7 @@ iop_t *iop_init(iop_kind_t kind, const memory_interface_t *bypass_iface, void *b
         .write_uint8 = iop_write_uint8,
         .write_uint16 = iop_write_uint16,
         .write_uint32 = iop_write_uint32,
+        .peek_uint8 = iop_peek_uint8, // wider peeks compose
     };
 
     if (checkpoint) {

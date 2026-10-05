@@ -347,14 +347,16 @@ void pdm_video_ctl_write(config_t *cfg, uint32_t off, uint8_t value) {
 // Ariel II CLUT/DAC ($50F24000)
 // ============================================================
 
-uint8_t pdm_ariel_read(config_t *cfg, uint32_t off) {
+// A register read; a data read advances the RGB phase and address unless it
+// is an inspection (`peek`).
+static uint8_t ariel_read(config_t *cfg, uint32_t off, bool peek) {
     pdm_amic_t *a = &pdm_st(cfg)->amic;
     switch (off & 3) {
     case 0:
         return a->clut_addr;
     case 1: { // data reads auto-advance the RGB phase / address
         uint8_t v = a->clut[a->clut_addr][a->clut_phase];
-        if (++a->clut_phase == 3) {
+        if (!peek && ++a->clut_phase == 3) {
             a->clut_phase = 0;
             a->clut_addr++;
         }
@@ -365,6 +367,14 @@ uint8_t pdm_ariel_read(config_t *cfg, uint32_t off) {
     default:
         return a->clut_key;
     }
+}
+
+uint8_t pdm_ariel_read(config_t *cfg, uint32_t off) {
+    return ariel_read(cfg, off, false);
+}
+
+uint8_t pdm_ariel_peek(config_t *cfg, uint32_t off) {
+    return ariel_read(cfg, off, true);
 }
 
 void pdm_ariel_write(config_t *cfg, uint32_t off, uint8_t value) {

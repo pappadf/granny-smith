@@ -22,16 +22,28 @@
 # slot: socket A1 is device 13, so bit 13 -> LE $00002000 -> $00200000.
 
 # --- Expansion-ROM identification, before anything is seated. ---------------
-# Identity is the CRC-32 of the whole chip image; no filename is ever
-# inspected.  The two catalogued dumps of this card:
+# Identity is made of standard fields only (#186): the PCI Data Structure's
+# vendor and device ids say which card, the IEEE 1275 FCode header's own
+# checksum which programming of its ROM -- "vvvv-dddd-cccc".  No filename is
+# ever inspected.  The two catalogued programmings of this card share the
+# card and differ in the checksum:
 assert catalog.proms.identify("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom").recognised "the -104 dump must be recognised"
 assert catalog.proms.identify("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom").card_id == "mach64_gx" "and must provide the mach64_gx card"
+assert catalog.proms.identify("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom").id == "1002-4758-c6e8" "-104 identity"
+assert catalog.proms.identify("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom").intact "-104's FCode checksum verifies"
 assert catalog.proms.identify("${$TEST_DATA}/roms/mach64-gx-101-8c68216e.prom").card_id == "mach64_gx" "so must the earlier -101 programming"
+assert catalog.proms.identify("${$TEST_DATA}/roms/mach64-gx-101-8c68216e.prom").id == "1002-4758-d71a" "-101 identity"
 # ...and the failures, each told apart from the others.  A PC/x86 option
 # ROM is the predictable user error and must not be mistaken for "not a ROM".
 assert !catalog.proms.identify("${$WORK_DIR}/fake-x86-vga.prom").recognised "an x86 option ROM must be rejected"
 assert !catalog.proms.offer("${$WORK_DIR}/fake-x86-vga.prom") "...and must not register as an offer"
 assert !catalog.proms.identify("${$WORK_DIR}/uncatalogued.prom").recognised "an uncatalogued OF ROM must be rejected"
+assert catalog.proms.identify("${$WORK_DIR}/uncatalogued.prom").intact "...though it is intact: the right card, an unknown programming"
+# A damaged dump names a catalogued identity but must not be recognised.
+assert !catalog.proms.identify("${$WORK_DIR}/damaged-104.prom").recognised "a dump whose FCode checksum fails must be rejected"
+assert catalog.proms.identify("${$WORK_DIR}/damaged-104.prom").id == "1002-4758-c6e8" "...though its header still names -104"
+assert !catalog.proms.identify("${$WORK_DIR}/damaged-104.prom").intact "...and it reports why"
+assert !catalog.proms.offer("${$WORK_DIR}/damaged-104.prom") "a damaged dump must not register as an offer"
 assert !catalog.proms.identify("${$ROM}").recognised "a 4 MB CPU ROM is not an expansion ROM"
 
 # The frontend's ingest path, end to end: a persistent store that does not
@@ -41,9 +53,9 @@ assert !catalog.proms.identify("${$ROM}").recognised "a 4 MB CPU ROM is not an e
 # a .prom died with a bare "Failed to save" because files.cp does not
 # create parent directories.
 files.mkdir "${$WORK_DIR}/prom-store"
-assert files.cp("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom", "${$WORK_DIR}/prom-store/437584e0") "a freshly created store must accept the copy"
-assert catalog.proms.offer("${$WORK_DIR}/prom-store/437584e0") "and the stored copy must register as an offer"
-assert catalog.proms.identify("${$WORK_DIR}/prom-store/437584e0").card_id == "mach64_gx" "identity survives the copy and the rename"
+assert files.cp("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom", "${$WORK_DIR}/prom-store/1002-4758-c6e8") "a freshly created store must accept the copy"
+assert catalog.proms.offer("${$WORK_DIR}/prom-store/1002-4758-c6e8") "and the stored copy must register as an offer"
+assert catalog.proms.identify("${$WORK_DIR}/prom-store/1002-4758-c6e8").card_id == "mach64_gx" "identity survives the copy and the rename"
 
 # --- The card kind reaches the configuration layer from one declaration. ----
 assert catalog.pci_cards == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu, ati_rage_pro]" "the card must be registered"

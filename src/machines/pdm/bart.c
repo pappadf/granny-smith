@@ -115,6 +115,20 @@ static void bart_fault_write32(void *ctx, uint32_t offset, uint32_t value) {
     bart_fault(ctx, offset, true);
 }
 
+// An inspection sees the floating bus a faulting read returns, without the fault.
+static uint8_t bart_fault_peek8(void *ctx, uint32_t offset) {
+    (void)ctx, (void)offset;
+    return 0xFF;
+}
+static uint16_t bart_fault_peek16(void *ctx, uint32_t offset) {
+    (void)ctx, (void)offset;
+    return 0xFFFF;
+}
+static uint32_t bart_fault_peek32(void *ctx, uint32_t offset) {
+    (void)ctx, (void)offset;
+    return 0xFFFFFFFFu;
+}
+
 static memory_interface_t bart_fault_iface = {
     .read_uint8 = bart_fault_read8,
     .read_uint16 = bart_fault_read16,
@@ -122,6 +136,9 @@ static memory_interface_t bart_fault_iface = {
     .write_uint8 = bart_fault_write8,
     .write_uint16 = bart_fault_write16,
     .write_uint32 = bart_fault_write32,
+    .peek_uint8 = bart_fault_peek8,
+    .peek_uint16 = bart_fault_peek16,
+    .peek_uint32 = bart_fault_peek32,
 };
 
 // Claim one address window for BART with nothing behind it: every access
@@ -154,15 +171,19 @@ static int burst_slot_for_offset(uint32_t offset) {
     return 1 + (int)((BART_REG_BURST0 - offset) / 8u);
 }
 
-static uint8_t bart_reg_read8(void *ctx, uint32_t offset) {
+// A register read; above the register file the guest's read faults and an
+// inspection (`peek`) sees the floating bus.
+static uint8_t bart_reg_access(void *ctx, uint32_t offset, bool peek) {
     config_t *cfg = (config_t *)ctx;
     pdm_bart_t *b = &pdm_st(cfg)->bart;
     if (offset >= BART_REG_LIMIT) {
         // Beyond the register file the chip answers nothing (decode
         // granularity above $87 is unknown; keep the window minimal and
         // fault outside it).
-        LOG(4, "bart: read above the register file: $%08X", PDM_BART_BASE + offset);
-        memory_signal_bus_error(PDM_BART_BASE + offset, false);
+        if (!peek) {
+            LOG(4, "bart: read above the register file: $%08X", PDM_BART_BASE + offset);
+            memory_signal_bus_error(PDM_BART_BASE + offset, false);
+        }
         return 0xFF;
     }
     int slot = burst_slot_for_offset(offset);
@@ -193,6 +214,13 @@ static uint8_t bart_reg_read8(void *ctx, uint32_t offset) {
     default:
         return 0x00;
     }
+}
+
+static uint8_t bart_reg_read8(void *ctx, uint32_t offset) {
+    return bart_reg_access(ctx, offset, false);
+}
+static uint8_t bart_reg_peek8(void *ctx, uint32_t offset) {
+    return bart_reg_access(ctx, offset, true);
 }
 
 static uint32_t bart_reg_read32(void *ctx, uint32_t offset) {
@@ -280,6 +308,9 @@ void pdm_bart_init(config_t *cfg) {
     st->bart_reg_interface.write_uint8 = bart_reg_write8;
     st->bart_reg_interface.write_uint16 = bart_reg_write16;
     st->bart_reg_interface.write_uint32 = bart_reg_write32;
+    st->bart_reg_interface.peek_uint8 = bart_reg_peek8; // wider peeks compose
+    st->bart_reg_interface.peek_uint16 = NULL;
+    st->bart_reg_interface.peek_uint32 = NULL;
 
     const nubus_slot_decl_t *slots = cfg->machine->nubus_slots;
     if (!slots) {

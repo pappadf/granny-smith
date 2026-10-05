@@ -526,7 +526,11 @@ static inline uint32_t reg_narrow(uint32_t v, unsigned width) {
     return v;
 }
 
-static uint32_t gc_read(display_card_824gc_priv_t *p, uint32_t phys, unsigned width) {
+// One read: the guest's (`peek` false) or an inspection's
+// (memory_interface_t.peek_*), which returns what the read would return now
+// and leaves the JMFB Stopwatch VBL toggle, the SYNC_HB read counter and the
+// MFB_SYNC toggle where they are.
+static uint32_t gc_read(display_card_824gc_priv_t *p, uint32_t phys, unsigned width, bool peek) {
     // GCQD command-block window (standard slot): alias onto the DRAM CB so the
     // marshaller's doorbell/status/heartbeat/args polls hit the live engine.
     if (phys >= p->gcp_base && phys < p->gcp_base + GC824_GCP_WINDOW)
@@ -537,14 +541,14 @@ static uint32_t gc_read(display_card_824gc_priv_t *p, uint32_t phys, unsigned wi
         uint32_t rel = phys - jmfb_base;
         int blk = (int)(rel >> 8);
         uint32_t off = rel & 0xFFu;
+        uint16_t (*rd16)(jmfb_regs_t *, const jmfb_bind_t *, int, uint32_t) = peek ? jmfb_peek16 : jmfb_read16;
         if (width == 1) {
-            uint16_t v = jmfb_read16(&p->jmfb, &p->jmfb_bind, blk, off & ~1u);
+            uint16_t v = rd16(&p->jmfb, &p->jmfb_bind, blk, off & ~1u);
             return (off & 1) ? (v & 0xFFu) : (v >> 8);
         }
         if (width == 2)
-            return jmfb_read16(&p->jmfb, &p->jmfb_bind, blk, off);
-        return ((uint32_t)jmfb_read16(&p->jmfb, &p->jmfb_bind, blk, off) << 16) |
-               jmfb_read16(&p->jmfb, &p->jmfb_bind, blk, off + 2);
+            return rd16(&p->jmfb, &p->jmfb_bind, blk, off);
+        return ((uint32_t)rd16(&p->jmfb, &p->jmfb_bind, blk, off) << 16) | rd16(&p->jmfb, &p->jmfb_bind, blk, off + 2);
     }
     // --- Super-slot space (card-local = phys - super_base) ---
     uint32_t cl = phys - p->super_base; // card-local offset
@@ -603,14 +607,19 @@ static uint32_t gc_read(display_card_824gc_priv_t *p, uint32_t phys, unsigned wi
             if (width != 4)
                 return buf_read(p->regs, cl - GC824_REGS_OFFSET, GC824_REGS_SIZE, width);
             uint32_t v = buf_read(p->regs, cl - GC824_REGS_OFFSET, GC824_REGS_SIZE, 4) & ~0x80000000u;
-            if (((p->sync_hb++ >> 4) & 1u) != 0)
+            if (((p->sync_hb >> 4) & 1u) != 0)
                 v |= 0x80000000u;
+            if (!peek)
+                p->sync_hb++;
             return v;
         }
         case GC824_REG_MFB_SYNC:
             // MFB register the card-sync loop reads for its bus side-effect;
             // its value is discarded (clobbered by delayTouch).  Toggle bit 31
             // anyway in case other code polls it directly.
+            // (A peek reports the value that read would return.)
+            if (peek)
+                return p->mfb_sync ^ 0x80000000u;
             p->mfb_sync ^= 0x80000000u;
             return p->mfb_sync;
         case GC824_REG_ACDC_ID:
@@ -629,7 +638,8 @@ static uint32_t gc_read(display_card_824gc_priv_t *p, uint32_t phys, unsigned wi
         return buf_read(p->dram, cl - GC824_DRAM_OFFSET, GC824_DRAM_SIZE, width);
     if (cl >= GC824_DRAM_MIRROR_OFFSET && cl < GC824_DRAM_MIRROR_OFFSET + GC824_DRAM_SIZE)
         return buf_read(p->dram, cl - GC824_DRAM_MIRROR_OFFSET, GC824_DRAM_SIZE, width);
-    LOG(3, "8*24 GC: read card-local $%07x (unmapped) w%u", cl, width);
+    if (!peek)
+        LOG(3, "8*24 GC: read card-local $%07x (unmapped) w%u", cl, width);
     return 0xFFFFFFFFu >> ((4 - width) * 8); // NuBus unmapped reads float high
 }
 
@@ -742,15 +752,27 @@ static void gc_write(display_card_824gc_priv_t *p, uint32_t phys, uint32_t val, 
 
 static uint8_t io_read8(void *dev, uint32_t addr) {
     gc_reg_ctx_t *c = dev;
-    return (uint8_t)gc_read(c->p, c->region_base + addr, 1);
+    return (uint8_t)gc_read(c->p, c->region_base + addr, 1, false);
 }
 static uint16_t io_read16(void *dev, uint32_t addr) {
     gc_reg_ctx_t *c = dev;
-    return (uint16_t)gc_read(c->p, c->region_base + addr, 2);
+    return (uint16_t)gc_read(c->p, c->region_base + addr, 2, false);
 }
 static uint32_t io_read32(void *dev, uint32_t addr) {
     gc_reg_ctx_t *c = dev;
-    return gc_read(c->p, c->region_base + addr, 4);
+    return gc_read(c->p, c->region_base + addr, 4, false);
+}
+static uint8_t io_peek8(void *dev, uint32_t addr) {
+    gc_reg_ctx_t *c = dev;
+    return (uint8_t)gc_read(c->p, c->region_base + addr, 1, true);
+}
+static uint16_t io_peek16(void *dev, uint32_t addr) {
+    gc_reg_ctx_t *c = dev;
+    return (uint16_t)gc_read(c->p, c->region_base + addr, 2, true);
+}
+static uint32_t io_peek32(void *dev, uint32_t addr) {
+    gc_reg_ctx_t *c = dev;
+    return gc_read(c->p, c->region_base + addr, 4, true);
 }
 static void io_write8(void *dev, uint32_t addr, uint8_t val) {
     gc_reg_ctx_t *c = dev;
@@ -772,6 +794,9 @@ static memory_interface_t s_gc824_mem_iface = {
     .write_uint8 = io_write8,
     .write_uint16 = io_write16,
     .write_uint32 = io_write32,
+    .peek_uint8 = io_peek8,
+    .peek_uint16 = io_peek16,
+    .peek_uint32 = io_peek32,
 };
 
 // === VROM load ==============================================================

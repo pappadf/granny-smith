@@ -483,6 +483,8 @@ void tnt_scc_dma_init(config_t *cfg); // attach the ESCC's four DBDMA ports (aft
 void tnt_swim3_bind(config_t *cfg);
 void tnt_swim3_register_events(config_t *cfg);
 uint8_t tnt_swim3_read(config_t *cfg, uint32_t off); // off from +$15000
+// The same register without the read's side effects (an inspection).
+uint8_t tnt_swim3_peek(config_t *cfg, uint32_t off);
 void tnt_swim3_write(config_t *cfg, uint32_t off, uint8_t value);
 // Island access for the +$18000 block (byte registers on $10 centres).
 
@@ -498,6 +500,8 @@ void tnt_control_update(config_t *cfg); // re-derive the display descriptor
 void tnt_control_teardown(config_t *cfg);
 // RaDACal byte cells (Grand Central +$1B000, $10 centres).
 uint8_t tnt_control_rad_read(config_t *cfg, uint32_t offset);
+// The same cell without the read's RGB-phase step (memory_interface_t.peek_*).
+uint8_t tnt_control_rad_peek(config_t *cfg, uint32_t offset);
 void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value);
 // The pixel-clock synthesiser on Cuda's I2C bus (av_cuda_attach_i2c_write).
 bool tnt_control_i2c_write(void *ctx, uint8_t slave, const uint8_t *data, int len);
@@ -515,8 +519,10 @@ void tnt_gc_pci_attach(config_t *cfg, pci_bus_t *bus, checkpoint_t *cp);
 // bytes only; the 32-bit LE registers (interrupt block, BoxID) decode
 // longwords only.
 uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset);
+uint8_t tnt_gc_peek8(config_t *cfg, uint32_t offset); // side-effect-free (memory_interface_t.peek_*)
 void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value);
 uint32_t tnt_gc_read32(config_t *cfg, uint32_t offset);
+uint32_t tnt_gc_peek32(config_t *cfg, uint32_t offset); // side-effect-free
 void tnt_gc_write32(config_t *cfg, uint32_t offset, uint32_t value);
 // Level-sensitive source line n (0..30): updates Levels, edge-latches into
 // Events on assertion, recomputes the CPU line.

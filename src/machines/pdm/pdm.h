@@ -290,6 +290,7 @@ void pdm_clear_page(uint32_t page_index);
 
 void pdm_hmc_init(config_t *cfg);
 uint8_t pdm_hmc_read(config_t *cfg, uint32_t offset); // island offset $40000+
+uint8_t pdm_hmc_peek(config_t *cfg, uint32_t offset); // the same, bit pointer left alone
 void pdm_hmc_write(config_t *cfg, uint32_t offset, uint8_t value);
 // (Re)build the RAM decode per the current config code; also the cold-boot
 // power-on mapping when called with the reset config.
@@ -304,6 +305,7 @@ void pdm_amic_init(config_t *cfg);
 void pdm_amic_register_events(config_t *cfg); // at construction
 void pdm_amic_start_vbl(config_t *cfg); // fresh boot: free-running raster
 uint8_t pdm_amic_read(config_t *cfg, uint32_t offset); // island offsets < $40000
+uint8_t pdm_amic_peek(config_t *cfg, uint32_t offset); // the same, side-effect-free
 void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value);
 // Recompute the ICR source levels and drive the 601 EXT line (level-
 // sensitive; called after every flag/enable write).
@@ -366,6 +368,8 @@ uint8_t pdm_awacs_irq_summary(pdm_amic_t *a); // the $0A sound byte
 // $50F16000 (index = offset >> 9), the AMIC DMA movers and the pseudo-VIA2
 // interrupt sink.
 uint8_t pdm_swim3_read(config_t *cfg, uint32_t off);
+// The same register without the read's side effects (an inspection).
+uint8_t pdm_swim3_peek(config_t *cfg, uint32_t off);
 void pdm_swim3_write(config_t *cfg, uint32_t off, uint8_t value);
 void pdm_swim3_bind(config_t *cfg); // after floppy_init and after a restore
 void pdm_swim3_register_events(config_t *cfg); // at construction
@@ -462,6 +466,8 @@ display_t *pdm_video_display(config_t *cfg);
 uint8_t pdm_video_ctl_read(config_t *cfg, uint32_t off); // $50F28000 block
 void pdm_video_ctl_write(config_t *cfg, uint32_t off, uint8_t value);
 uint8_t pdm_ariel_read(config_t *cfg, uint32_t off); // $50F24000 block
+// The same register without the read's RGB-phase step (memory_interface_t.peek_*).
+uint8_t pdm_ariel_peek(config_t *cfg, uint32_t off);
 void pdm_ariel_write(config_t *cfg, uint32_t off, uint8_t value);
 
 #endif // GS_MACHINES_PDM_H

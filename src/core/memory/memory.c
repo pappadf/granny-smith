@@ -96,11 +96,6 @@ uint32_t g_bus_error_fc = 5;
 // and slot probes).  Selects Format $B vs Format $A dispatch.
 bool g_bus_error_is_pmmu = false;
 uint32_t *g_bus_error_instr_ptr = NULL;
-// True while an inspection read/write is dispatching into a device handler.
-// Devices that answer a GUEST access by latching a bus error (the PDM's
-// BART empty-slot windows) must stay inert for `memory.peek` and friends —
-// same contract as the rest of the debug path: never perturb the guest.
-bool g_mem_debug_access = false;
 // Physical page-fill hook for machines whose page table is NOT owned by a
 // 68k mmu_state_t (the PowerPC families).  memory_map_host_region() routes
 // card-registered host regions through it so their pages land in the
@@ -470,11 +465,11 @@ static inline bool dispatch_device_at_logical(uint32_t addr, bool supervisor) {
 // slot answers the Slot Manager's declaration-ROM probe with a recoverable
 // fault rather than data.  Same delivery as the unmapped-page faults the
 // slow paths raise below: the CPU seam takes it at the sprint boundary (68k
-// bus error / 601 machine check).  Inert while an inspection read is
-// dispatching (g_mem_debug_access), so `memory.peek` of an empty slot can
-// never inject a fault into the running guest.
+// bus error / 601 machine check).  Signalling one from a read is a read
+// side effect, so such a device implements peek_* (memory_interface_t) and
+// an inspection never reaches here through it.
 void memory_signal_bus_error(uint32_t addr, bool write) {
-    if (g_mem_debug_access || g_bus_error_pending)
+    if (g_bus_error_pending)
         return;
     g_bus_error_pending = true;
     g_bus_error_address = addr;
@@ -634,30 +629,51 @@ uint32_t memory_read_uint32_slow(uint32_t addr) {
 
 // === Side-effect-free debug reads ==========================================
 //
-// Inspection accesses dispatch into device handlers with this flag raised:
-// a device that answers a guest access by latching a bus error
-// (memory_signal_bus_error) stays inert while it is up, so examining an
-// empty NuBus slot cannot inject a fault into the running guest.
+// An inspection reads a device through its peek_* (memory_interface_t): what
+// the guest's read would return, with none of the read's side effects.  A
+// device without peek_* has none to avoid, so its read_* serves.  A missing
+// width composes from the narrower peek, as the guest path composes reads.
+static inline uint8_t dev_peek8(const page_entry_t *pe, uint32_t off) {
+    return pe->dev->peek_uint8 ? pe->dev->peek_uint8(pe->dev_context, off) : dev_raw8(pe, off);
+}
+static inline uint16_t dev_peek16(const page_entry_t *pe, uint32_t off) {
+    if (pe->dev->peek_uint16)
+        return pe->dev->peek_uint16(pe->dev_context, off);
+    if (pe->dev->peek_uint8)
+        return (uint16_t)((dev_peek8(pe, off) << 8) | dev_peek8(pe, off + 1));
+    return dev_read16_raw(pe, off);
+}
+static inline uint32_t dev_peek32(const page_entry_t *pe, uint32_t off) {
+    if (pe->dev->peek_uint32)
+        return pe->dev->peek_uint32(pe->dev_context, off);
+    if (pe->dev->peek_uint16 || pe->dev->peek_uint8)
+        return ((uint32_t)dev_peek16(pe, off) << 16) | dev_peek16(pe, off + 2);
+    return dev_read32_raw(pe, off);
+}
+
 static inline uint32_t debug_dev_read(const page_entry_t *pe, uint32_t phys, unsigned size) {
     // Same NULL-safety as the dev_read*/dev_write* wrappers: the debugger must
     // never be the thing that takes the host down.
     uint32_t off = phys - pe->base_addr;
-    g_mem_debug_access = true;
-    uint32_t v = size == 1 ? dev_raw8(pe, off) : size == 2 ? dev_read16_raw(pe, off) : dev_read32_raw(pe, off);
-    g_mem_debug_access = false;
-    return v;
+    return size == 1 ? dev_peek8(pe, off) : size == 2 ? dev_peek16(pe, off) : dev_peek32(pe, off);
 }
 
+// memory.poke is a real write -- it has the write's effect on the device --
+// but it is not a guest bus cycle, so a transfer error the device answers
+// with is not the guest's to take.  A pending fault makes
+// memory_signal_bus_error a no-op, so the write runs with one "pending" and
+// the guest's own state is put back after.
 static inline void debug_dev_write(const page_entry_t *pe, uint32_t phys, unsigned size, uint32_t value) {
     uint32_t off = phys - pe->base_addr;
-    g_mem_debug_access = true;
+    bool pending = g_bus_error_pending;
+    g_bus_error_pending = true;
     if (size == 1)
         dev_raw_w8(pe, off, (uint8_t)value);
     else if (size == 2)
         dev_write16_raw(pe, off, (uint16_t)value);
     else
         dev_write32_raw(pe, off, value);
-    g_mem_debug_access = false;
+    g_bus_error_pending = pending;
 }
 
 // Used by the shell's inspection commands (memory.peek/.dump/.read_cstring,

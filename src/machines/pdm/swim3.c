@@ -52,6 +52,10 @@ uint8_t pdm_swim3_read(config_t *cfg, uint32_t off) {
     return swim3_read(&pdm_st(cfg)->swim3, (off >> 9) & 15u);
 }
 
+uint8_t pdm_swim3_peek(config_t *cfg, uint32_t off) {
+    return swim3_peek(&pdm_st(cfg)->swim3, (off >> 9) & 15u);
+}
+
 void pdm_swim3_write(config_t *cfg, uint32_t off, uint8_t value) {
     swim3_write(&pdm_st(cfg)->swim3, (off >> 9) & 15u, value);
 }

@@ -9,13 +9,14 @@
 // A PROM is a PCI expansion ROM (PCI 2.x §6.3) carrying an IEEE 1275 FCode
 // image: a $55AA signature, a PCI Data Structure ("PCIR") giving the
 // vendor/device ids and the code type, and an FCode program.  Identity is
-// the CRC-32 of the whole chip image, the way a vROM's identity is its
-// Format-Block CRC and a main ROM's is its checksum word — no
-// emulator-invented hash, and no filename ever enters the comparison.
+// made of standard fields only, the way a vROM's is its Format-Block CRC and
+// a main ROM's its checksum word -- no emulator-invented hash, and no
+// filename ever enters the comparison: the PCIR vendor and device ids (which
+// card) and the FCode header's own checksum (which programming of its ROM),
+// written "vvvv-dddd-cccc".
 
 #include "prom.h"
 #include "common.h"
-#include "crc32.h"
 #include "gs_out.h"
 #include "offer_registry.h"
 
@@ -49,17 +50,24 @@ LOG_USE_CATEGORY_NAME("prom");
 #define PROM_CODE_TYPE_X86 0x00
 #define PROM_CODE_TYPE_OF  0x01
 
+// The FCode program header (IEEE 1275 §5.2.2.4), big-endian: a start token,
+// a format byte, the checksum (the 16-bit sum of the program's bytes after
+// the header) and the program length, header included.
+#define FCODE_HEADER_LEN 8
+#define FCODE_CHECKSUM   0x02 // BE halfword
+#define FCODE_LENGTH     0x04 // BE word
+
 // ============================================================================
 // The catalog
 // ============================================================================
 
-// Known expansion ROMs, keyed by CRC-32 of the whole chip image and mapped
-// to the pci card-kind id the blob provides.  Content->hardware facts only,
-// no filenames.  The `preferred` bit marks the default revision where one
-// card has several dumps.  Adding a card ROM is one row here.
+// Known expansion ROMs, keyed by their identity (vendor, device, FCode
+// checksum) and mapped to the pci card-kind id the blob provides.
+// Content->hardware facts only, no filenames.  The `preferred` bit marks the
+// default revision where one card has several programmings.  Adding a card
+// ROM is one row here.
 struct prom_known {
-    uint32_t crc;
-    size_t image_size; // chip image size on disk
+    uint16_t vendor_id, device_id, fcode_checksum;
     const char *card_id;
     bool preferred;
 };
@@ -76,11 +84,19 @@ static const struct prom_known PROM_CATALOG[] = {
     // hold it byte-identically (it is also dumped as -004).  -101 is an
     // earlier programming whose part-number strings are all
     // "000-00000-000"; kept because it is a distinct dump, not preferred.
-    {0x437584E0u, 0x8000, "mach64_gx", true },
-    {0x8C68216Eu, 0x8000, "mach64_gx", false},
+    {0x1002, 0x4758, 0xC6E8, "mach64_gx", true }, // -104 (chip CRC-32 $437584E0)
+    {0x1002, 0x4758, 0xD71A, "mach64_gx", false}, // -101 (chip CRC-32 $8C68216E)
 };
 
 #define PROM_CATALOG_COUNT (sizeof(PROM_CATALOG) / sizeof(PROM_CATALOG[0]))
+
+static uint64_t prom_key(uint16_t vendor, uint16_t device, uint16_t checksum) {
+    return ((uint64_t)vendor << 32) | ((uint64_t)device << 16) | checksum;
+}
+
+static uint64_t prom_row_key(size_t r) {
+    return prom_key(PROM_CATALOG[r].vendor_id, PROM_CATALOG[r].device_id, PROM_CATALOG[r].fcode_checksum);
+}
 
 // ============================================================================
 // Identification
@@ -96,8 +112,8 @@ static bool prom_plausible_size(size_t size) {
     return (size & (size - 1)) == 0;
 }
 
-// Read the whole file.  Expansion ROMs are at most 256 KB, and the CRC
-// covers all of it, so there is no partial-read path worth having.
+// Read the whole file.  Expansion ROMs are at most 256 KB, so there is no
+// partial-read path worth having.
 static uint8_t *prom_read_file(const char *path, size_t *out_size) {
     *out_size = 0;
     struct stat st;
@@ -125,8 +141,8 @@ static uint8_t *prom_read_file(const char *path, size_t *out_size) {
 }
 
 // Structural validation, in the order that makes a rejection informative.
-// Every gate must pass before the CRC is trusted: an unrecognised blob is
-// DROPPED with a log, never guessed at.
+// Every gate must pass before the identity is trusted: an unrecognised blob
+// is DROPPED with a log, never guessed at.
 static prom_id_result_t prom_validate(const uint8_t *buf, size_t size, prom_id_t *out) {
     if (!prom_plausible_size(size))
         return PROM_ID_WRONG_SIZE;
@@ -159,6 +175,10 @@ static prom_id_result_t prom_validate(const uint8_t *buf, size_t size, prom_id_t
     uint8_t start = buf[fcode_offset];
     if (start < 0xF0u || start > 0xF3u) // start0 / start1 / start2 / start4
         return PROM_ID_NOT_A_PROM;
+    // The program the header describes must lie inside the image.
+    uint32_t fcode_len = RD_BE32(buf + fcode_offset + FCODE_LENGTH);
+    if (fcode_len < FCODE_HEADER_LEN || (size_t)fcode_offset + fcode_len > size)
+        return PROM_ID_NOT_A_PROM;
 
     if (out) {
         out->image_size = size;
@@ -167,18 +187,25 @@ static prom_id_result_t prom_validate(const uint8_t *buf, size_t size, prom_id_t
         out->class_code = (uint32_t)buf[pcir + PCIR_CLASS_CODE] | ((uint32_t)buf[pcir + PCIR_CLASS_CODE + 1] << 8) |
                           ((uint32_t)buf[pcir + PCIR_CLASS_CODE + 2] << 16);
         out->fcode_offset = fcode_offset;
+        out->fcode_checksum = RD_BE16(buf + fcode_offset + FCODE_CHECKSUM);
+        uint16_t sum = 0;
+        for (uint32_t i = FCODE_HEADER_LEN; i < fcode_len; i++)
+            sum = (uint16_t)(sum + buf[fcode_offset + i]);
+        out->intact = sum == out->fcode_checksum;
+        out->key = prom_key(out->vendor_id, out->device_id, out->fcode_checksum);
+        snprintf(out->id, sizeof(out->id), "%04x-%04x-%04x", out->vendor_id, out->device_id, out->fcode_checksum);
         out->card_id = NULL;
     }
     return PROM_ID_UNKNOWN; // structurally valid; the catalog decides
 }
 
-prom_id_result_t prom_identify_detail(const char *path, prom_id_t *out, size_t *out_size, uint32_t *out_crc) {
-    if (out)
-        memset(out, 0, sizeof(*out));
+prom_id_result_t prom_identify_detail(const char *path, prom_id_t *out, size_t *out_size) {
+    prom_id_t local;
+    if (!out)
+        out = &local;
+    memset(out, 0, sizeof(*out));
     if (out_size)
         *out_size = 0;
-    if (out_crc)
-        *out_crc = 0;
     if (!path || !*path)
         return PROM_ID_UNREADABLE;
 
@@ -204,25 +231,20 @@ prom_id_result_t prom_identify_detail(const char *path, prom_id_t *out, size_t *
         return r;
     }
 
-    uint32_t crc = gs_crc32(0, buf, size);
     free(buf);
-    if (out_crc)
-        *out_crc = crc;
-    if (out)
-        out->crc = crc;
 
+    // Nothing is named by its identity unless the program verifies.
     for (size_t i = 0; i < PROM_CATALOG_COUNT; i++) {
-        if (PROM_CATALOG[i].crc != crc)
+        if (prom_row_key(i) != out->key)
             continue;
-        if (out)
-            out->card_id = PROM_CATALOG[i].card_id;
-        return PROM_ID_KNOWN;
+        out->card_id = PROM_CATALOG[i].card_id;
+        return out->intact ? PROM_ID_KNOWN : PROM_ID_DAMAGED;
     }
     return PROM_ID_UNKNOWN;
 }
 
 bool prom_identify_card(const char *path, prom_id_t *out) {
-    return prom_identify_detail(path, out, NULL, NULL) == PROM_ID_KNOWN;
+    return prom_identify_detail(path, out, NULL) == PROM_ID_KNOWN;
 }
 
 // ============================================================================
@@ -235,9 +257,9 @@ bool prom_identify_card(const char *path, prom_id_t *out) {
 // diagnostics live here too, because only the identifier knows WHICH kind of
 // stray it just rejected -- and the interesting one is a structurally valid
 // ROM we do not catalog.
-static bool prom_offer_identify(const char *path, uint32_t *out_crc, size_t *out_size, const char **out_card_id) {
+static bool prom_offer_identify(const char *path, uint64_t *out_key, size_t *out_size, const char **out_card_id) {
     prom_id_t id;
-    prom_id_result_t r = prom_identify_detail(path, &id, NULL, NULL);
+    prom_id_result_t r = prom_identify_detail(path, &id, NULL);
     if (r != PROM_ID_KNOWN) {
         // The platform offers whole directories, so strays are expected
         // rather than errors.
@@ -250,9 +272,15 @@ static bool prom_offer_identify(const char *path, uint32_t *out_crc, size_t *out
             break;
         case PROM_ID_UNKNOWN:
             LOG(1,
-                "prom_offer: '%s' is a valid Open Firmware expansion ROM (vendor $%04X device $%04X, crc $%08X) "
-                "but no catalog row claims it; ignored",
-                path, id.vendor_id, id.device_id, id.crc);
+                "prom_offer: '%s' is a valid Open Firmware expansion ROM (id %s) but no catalog row claims it; "
+                "ignored",
+                path, id.id);
+            break;
+        case PROM_ID_DAMAGED:
+            LOG(0,
+                "prom_offer: '%s' looks like the %s expansion ROM (id %s), but its FCode checksum does not verify; "
+                "ignored",
+                path, id.card_id, id.id);
             break;
         default:
             LOG(2, "prom_offer: '%s' is not a recognised PCI expansion ROM — ignored", path);
@@ -260,15 +288,15 @@ static bool prom_offer_identify(const char *path, uint32_t *out_crc, size_t *out
         }
         return false;
     }
-    *out_crc = id.crc;
+    *out_key = id.key;
     *out_size = id.image_size;
     *out_card_id = id.card_id;
     return true;
 }
 
-static void prom_catalog_row(size_t r, const char **card_id, uint32_t *crc, bool *preferred) {
+static void prom_catalog_row(size_t r, const char **card_id, uint64_t *key, bool *preferred) {
     *card_id = PROM_CATALOG[r].card_id;
-    *crc = PROM_CATALOG[r].crc;
+    *key = prom_row_key(r);
     *preferred = PROM_CATALOG[r].preferred;
 }
 
@@ -359,7 +387,10 @@ static value_t prom_method_offer(struct object *self, const member_t *m, int arg
 // catalog.proms.identify(path) — a typed map of content facts, mirroring
 // catalog.vroms.identify and rom.identify:
 //   { "recognised": bool, "card_id"?, "compatible"?, "vendor_id"?,
-//     "device_id"?, "size", "crc", "reason"? }
+//     "device_id"?, "id"?, "intact"?, "size", "reason"? }
+// `id` is the identity ("vvvv-dddd-cccc") of any structurally valid Open
+// Firmware ROM, recognised or not; `intact` whether its FCode checksum
+// verifies.
 static value_t prom_method_identify(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -367,8 +398,7 @@ static value_t prom_method_identify(struct object *self, const member_t *m, int 
     const char *path = argv[0].s;
     prom_id_t id;
     size_t size = 0;
-    uint32_t crc = 0;
-    prom_id_result_t r = prom_identify_detail(path, &id, &size, &crc);
+    prom_id_result_t r = prom_identify_detail(path, &id, &size);
     if (r == PROM_ID_UNREADABLE)
         return val_err("catalog.proms.identify: cannot read '%s'", path);
 
@@ -395,6 +425,9 @@ static value_t prom_method_identify(struct object *self, const member_t *m, int 
         case PROM_ID_UNKNOWN:
             why = "a valid Open Firmware expansion ROM, but no catalog row claims it";
             break;
+        case PROM_ID_DAMAGED:
+            why = "a known expansion ROM, but its FCode checksum does not verify (the dump is probably damaged)";
+            break;
         default:
             break;
         }
@@ -404,10 +437,11 @@ static value_t prom_method_identify(struct object *self, const member_t *m, int 
         val_map_put(b, "vendor_id", val_uint(2, id.vendor_id));
         val_map_put(b, "device_id", val_uint(2, id.device_id));
     }
+    if (id.id[0]) {
+        val_map_put(b, "id", val_str(id.id));
+        val_map_put(b, "intact", val_bool(id.intact));
+    }
     val_map_put(b, "size", val_int((int64_t)size));
-    char hex[16];
-    snprintf(hex, sizeof(hex), "0x%08x", crc);
-    val_map_put(b, "crc", val_str(hex));
     return val_map_finish(b);
 }
 
@@ -422,7 +456,7 @@ static const member_t prom_members[] = {
      .method = {.args = prom_path_arg, .nargs = 1, .result = V_BOOL, .fn = prom_method_offer}  },
     {.kind = M_METHOD,
      .name = "identify",
-     .doc = "Typed map: {recognised, card_id?, compatible?, vendor_id?, device_id?, size, crc, reason?}.",
+     .doc = "Typed map: {recognised, card_id?, compatible?, vendor_id?, device_id?, id?, intact?, size, reason?}.",
      .method = {.args = prom_path_arg, .nargs = 1, .result = V_MAP, .fn = prom_method_identify}},
 };
 

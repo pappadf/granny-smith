@@ -106,9 +106,8 @@ static uint64_t oss_counter_value(const oss_t *oss) {
     return oss->counter_base + elapsed_us;
 }
 
-// Reads one OSS byte register.
-static uint8_t oss_read_uint8(void *device, uint32_t addr) {
-    oss_t *oss = (oss_t *)device;
+// Reads one OSS byte register; an inspection (`peek`) acknowledges nothing.
+static uint8_t oss_reg_read(oss_t *oss, uint32_t addr, bool peek) {
     uint32_t offset = addr & 0x1fff;
 
     if (offset <= OSS_LEVEL_LAST)
@@ -124,7 +123,8 @@ static uint8_t oss_read_uint8(void *device, uint32_t addr) {
     if (offset == OSS_INPUT_STAT)
         return 0;
     if (offset == OSS_60HZ_ACK) {
-        oss_set_source(oss, OSS_SRC_60HZ, false);
+        if (!peek)
+            oss_set_source(oss, OSS_SRC_60HZ, false);
         return 0;
     }
     if (offset >= OSS_COUNTER && offset < OSS_COUNTER + 8) {
@@ -133,6 +133,13 @@ static uint8_t oss_read_uint8(void *device, uint32_t addr) {
     }
 
     return 0;
+}
+
+static uint8_t oss_read_uint8(void *device, uint32_t addr) {
+    return oss_reg_read(device, addr, false);
+}
+static uint8_t oss_peek_uint8(void *device, uint32_t addr) {
+    return oss_reg_read(device, addr, true);
 }
 
 // Reads one OSS word register.
@@ -411,6 +418,7 @@ oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, str
         .write_uint8 = oss_write_uint8,
         .write_uint16 = oss_write_uint16,
         .write_uint32 = oss_write_uint32,
+        .peek_uint8 = oss_peek_uint8, // wider peeks compose
     };
 
     if (checkpoint) {

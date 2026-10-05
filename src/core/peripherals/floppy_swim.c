@@ -548,12 +548,34 @@ static void swim_ism_phase_control(floppy_t *floppy, uint8_t old_phase) {
                         ((new_phase & 0x04) ? IWM_LINE_CA2 : 0) | ((new_phase & 0x08) ? IWM_LINE_LSTRB : 0);
 }
 
-// Reads from the ISM register file
-static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset) {
+// What a read-mode mfm_fill_fifo would leave in the FIFO, without filling it:
+// returns the count and sets *head to the byte at the FIFO head ($FF when
+// empty, as ism_fifo_pop's underrun returns).  When the current sector buffer
+// is spent the refill builds the next sector, which reads the image; an
+// inspection cannot see that sector, so it reports only what the FIFO and the
+// current buffer hold.
+static int ism_fifo_peek_fill(const floppy_t *floppy, uint8_t *head) {
+    int count = floppy->ism_fifo_count;
+    int pending = floppy->mfm_buf_len > floppy->mfm_buf_pos ? floppy->mfm_buf_len - floppy->mfm_buf_pos : 0;
+    if (count == 0 && pending > 0)
+        *head = floppy->mfm_sector_buf[floppy->mfm_buf_pos];
+    else
+        *head = count > 0 ? floppy->ism_fifo[0] : 0xFF;
+    count += pending;
+    return count < ISM_FIFO_SIZE ? count : ISM_FIFO_SIZE;
+}
+
+// Reads from the ISM register file: the guest's read, or an inspection's
+// (`peek`), which reports the same value but pops no FIFO byte (rData, rMark),
+// fills no FIFO from the sector buffer (rMark, rHandshake), drains none
+// (rHandshake in write mode), clears no rError and advances no rParam index.
+static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset, bool peek) {
     GS_ASSERT(offset >= 8 && offset <= 15);
 
     switch (offset) {
     case 8: { // rData: pop data byte from FIFO
+        if (peek)
+            return floppy->ism_fifo_count > 0 ? floppy->ism_fifo[0] : 0xFF;
         bool is_mark = false;
         uint8_t byte = ism_fifo_pop(floppy, &is_mark);
         if (is_mark && !floppy->ism_error)
@@ -565,6 +587,12 @@ static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset) {
         return byte;
     }
     case 9: { // rMark: pop mark byte from FIFO (no error)
+        if (peek) {
+            uint8_t head = floppy->ism_fifo_count > 0 ? floppy->ism_fifo[0] : 0xFF;
+            if ((floppy->ism_mode & ISM_MODE_ACTION) && !(floppy->ism_mode & ISM_MODE_WRITE))
+                ism_fifo_peek_fill(floppy, &head);
+            return head;
+        }
         if ((floppy->ism_mode & ISM_MODE_ACTION) && !(floppy->ism_mode & ISM_MODE_WRITE))
             mfm_fill_fifo(floppy);
 
@@ -578,12 +606,16 @@ static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset) {
     }
     case 10: { // rError: return error register, then clear
         uint8_t err = floppy->ism_error;
+        if (peek)
+            return err;
         floppy->ism_error = 0;
         LOG(6, "ISM rError: 0x%02X (cleared)", err);
         return err;
     }
     case 11: { // rParam: read parameter RAM (auto-increment)
         uint8_t val = floppy->ism_param[floppy->ism_param_idx & 0x0F];
+        if (peek)
+            return val;
         floppy->ism_param_idx = (floppy->ism_param_idx + 1) & 0x0F;
         LOG(7, "ISM rParam[%d]: 0x%02X", (floppy->ism_param_idx - 1) & 0x0F, val);
         return val;
@@ -629,7 +661,7 @@ static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset) {
         hdshk |= ISM_HDSHK_RDDATA;
 
         // Bit 3: SENSE (drive status via current phase lines)
-        if (floppy_disk_status(floppy, drv))
+        if (floppy_disk_status_at(floppy, drv, floppy->iwm_lines, peek))
             hdshk |= ISM_HDSHK_SENSE;
 
         // Bit 4: MotorOnState
@@ -662,15 +694,22 @@ static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset) {
         // works, so that data moves on its own clock and the register has
         // something truthful to report without doing the work.  That is the
         // real shape of the fix, and it is now known to be the ONLY shape.
+        //
+        // A peek (the debugger's) reports what the read would without moving
+        // anything: see ism_fifo_peek_fill for the one thing it cannot see.
         if (floppy->ism_mode & ISM_MODE_WRITE) {
             // Drains the FIFO as a side effect of being READ.  This defect is
-            // REAL -- a debugger read, a logpoint or the object model touching
-            // this register changes emulated state, and throughput depends on
-            // poll count rather than time.  It cannot be removed on its own:
-            // see the note above rHandshake.
-            if (floppy->ism_mode & ISM_MODE_ACTION)
-                floppy->ism_fifo_count = 0;
-            int space = ISM_FIFO_SIZE - floppy->ism_fifo_count;
+            // REAL -- a logpoint or the guest's poll count touching this
+            // register changes emulated state, and throughput depends on poll
+            // count rather than time.  It cannot be removed on its own: see
+            // the note above rHandshake.
+            int count = floppy->ism_fifo_count;
+            if (floppy->ism_mode & ISM_MODE_ACTION) {
+                count = 0;
+                if (!peek)
+                    floppy->ism_fifo_count = 0;
+            }
+            int space = ISM_FIFO_SIZE - count;
             if (space >= 1)
                 hdshk |= ISM_HDSHK_DAT1BYTE;
             if (space >= 2)
@@ -681,15 +720,22 @@ static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset) {
             // old refill produced, without performing it.
             // Likewise: reading the status register is what pumps the read
             // transfer in this model.
-            if (floppy->ism_mode & ISM_MODE_ACTION)
-                mfm_fill_fifo(floppy);
             int avail = floppy->ism_fifo_count;
+            if ((floppy->ism_mode & ISM_MODE_ACTION) && peek) {
+                uint8_t head;
+                avail = ism_fifo_peek_fill(floppy, &head);
+            } else if (floppy->ism_mode & ISM_MODE_ACTION) {
+                mfm_fill_fifo(floppy);
+                avail = floppy->ism_fifo_count;
+            }
             if (avail >= 1)
                 hdshk |= ISM_HDSHK_DAT1BYTE;
             if (avail >= 2)
                 hdshk |= ISM_HDSHK_DAT2BYTE;
         }
 
+        if (peek)
+            return hdshk;
         LOG(7, "ISM rHandshake: 0x%02X (fifo=%d, err=0x%02X)", hdshk, floppy->ism_fifo_count, floppy->ism_error);
         if (floppy->ism_mode & ISM_MODE_ACTION)
             LOG(6, "ISM rHdshk: 0x%02X mark=%d crc_nz=%d err=%d fifo=%d pos=%d/%d", hdshk,
@@ -922,22 +968,28 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
 // Top-Level Register Access (dispatches IWM vs ISM)
 // ============================================================================
 
-// Reads from the SWIM at the given register offset (0-15)
-uint8_t floppy_swim_read(floppy_t *floppy, unsigned reg) {
+// A read of the SWIM at the given register offset (0-15): the guest's, or an
+// inspection's (`peek`), which changes no state line (see floppy_iwm_peek) and
+// none of the ISM state (see swim_ism_read).
+static uint8_t swim_reg_read(floppy_t *floppy, unsigned reg, bool peek) {
     uint32_t offset = reg & 0x0Fu;
     GS_ASSERT(offset < 16);
 
     // Track Q6/Q7 line state even in ISM mode, so the IWM status register
     // compatibility check below can detect Q6=1, Q7=0.  Only update Q6/Q7
     // (offsets 12-15) to avoid side effects from CA/ENABLE/SELECT changes.
+    // A peek works on a copy.
+    uint8_t lines = floppy->iwm_lines;
     if (floppy->in_ism_mode && offset >= 12) {
         // Offsets 12-15 map to Q6_OFF/Q6_ON/Q7_OFF/Q7_ON
         static const uint8_t masks[] = {IWM_LINE_Q6, IWM_LINE_Q6, IWM_LINE_Q7, IWM_LINE_Q7};
         uint8_t mask = masks[offset - 12];
         if (offset & 1)
-            floppy->iwm_lines |= mask;
+            lines |= mask;
         else
-            floppy->iwm_lines &= ~mask;
+            lines &= ~mask;
+        if (!peek)
+            floppy->iwm_lines = lines;
     }
 
     if (floppy->in_ism_mode) {
@@ -947,17 +999,27 @@ uint8_t floppy_swim_read(floppy_t *floppy, unsigned reg) {
         // SWIM is in ISM mode.  Without this, the read returns the ISM mode
         // register (rStatus) instead of the actual SENSE bit, breaking
         // speed measurement and other sense-line diagnostics.
-        if (IWM_Q6(floppy) && !IWM_Q7(floppy)) {
-            return floppy_iwm_read(floppy, offset);
+        if ((lines & IWM_LINE_Q6) && !(lines & IWM_LINE_Q7)) {
+            return peek ? floppy_iwm_peek(floppy, offset) : floppy_iwm_read(floppy, offset);
         }
         if (offset < 8) {
-            LOG(7, "ISM: Read from write-only address %d", offset);
+            if (!peek)
+                LOG(7, "ISM: Read from write-only address %d", offset);
             return 0;
         }
-        return swim_ism_read(floppy, offset);
+        return swim_ism_read(floppy, offset, peek);
     } else {
-        return floppy_iwm_read(floppy, offset);
+        return peek ? floppy_iwm_peek(floppy, offset) : floppy_iwm_read(floppy, offset);
     }
+}
+
+// Reads from the SWIM at the given register offset (0-15)
+uint8_t floppy_swim_read(floppy_t *floppy, unsigned reg) {
+    return swim_reg_read(floppy, reg, false);
+}
+
+uint8_t floppy_swim_peek(floppy_t *floppy, unsigned reg) {
+    return swim_reg_read(floppy, reg, true);
 }
 
 // Writes to the SWIM at the given register offset (0-15)
@@ -992,6 +1054,11 @@ static uint8_t swim_read_uint8(void *ctx, uint32_t addr) {
     return floppy_swim_read((floppy_t *)ctx, addr);
 }
 
+// An inspection of the same register (memory_interface_t.peek_uint8)
+static uint8_t swim_peek_uint8(void *ctx, uint32_t addr) {
+    return floppy_swim_peek((floppy_t *)ctx, addr);
+}
+
 // The chip is on one byte of the data bus, so a wide access reaches nothing.
 // These used to GS_ASSERT(0) -- which prints and PAUSES THE SCHEDULER rather
 // than aborting, so any guest executing `move.w $D80000,d0`, buggy or hostile,
@@ -1006,6 +1073,18 @@ static uint16_t swim_read_uint16(void *ctx, uint32_t addr) {
 static uint32_t swim_read_uint32(void *ctx, uint32_t addr) {
     (void)ctx;
     LOG(1, "SWIM: 32-bit access at 0x%08X is not decoded; reading open bus", addr);
+    return 0xFFFFFFFFu;
+}
+
+// The wide reads' open bus, without their log lines.
+static uint16_t swim_peek_uint16(void *ctx, uint32_t addr) {
+    (void)ctx;
+    (void)addr;
+    return 0xFFFF;
+}
+static uint32_t swim_peek_uint32(void *ctx, uint32_t addr) {
+    (void)ctx;
+    (void)addr;
     return 0xFFFFFFFFu;
 }
 
@@ -1060,6 +1139,9 @@ void floppy_swim_setup(floppy_t *floppy, memory_map_t *map) {
     floppy->memory_interface.read_uint8 = &swim_read_uint8;
     floppy->memory_interface.read_uint16 = &swim_read_uint16;
     floppy->memory_interface.read_uint32 = &swim_read_uint32;
+    floppy->memory_interface.peek_uint8 = &swim_peek_uint8;
+    floppy->memory_interface.peek_uint16 = &swim_peek_uint16;
+    floppy->memory_interface.peek_uint32 = &swim_peek_uint32;
     floppy->memory_interface.write_uint8 = &swim_write_uint8;
     floppy->memory_interface.write_uint16 = &swim_write_uint16;
     floppy->memory_interface.write_uint32 = &swim_write_uint32;

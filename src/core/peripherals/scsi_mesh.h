@@ -95,6 +95,8 @@ void mesh_set_irq_callback(mesh_t *m, mesh_irq_cb cb, void *ctx);
 void mesh_set_dbdma_kick(mesh_t *m, mesh_dbdma_kick_cb cb, void *ctx);
 
 uint8_t mesh_read(mesh_t *m, uint32_t offset);
+// The same register without the read's side effects (FIFO pop, DATA IN pump).
+uint8_t mesh_peek(mesh_t *m, uint32_t offset);
 void mesh_write(mesh_t *m, uint32_t offset, uint8_t value);
 void mesh_reset(mesh_t *m);
 
