@@ -8,6 +8,8 @@
 #                    boot wall used to kill.
 #   pm9500-76-mach64 pm9500, which has no onboard video: the same chain,
 #                    every pixel drawn by an ATI Mach64 GX in PCI socket A1.
+#   pm9500-76-rage128 pm9500 on an ATI Rage 128 GL in A1: the card's own
+#                    ndrv, its hardware cursor, and three depths.
 #   tnt-voodoo2-display  pm8500 + a Voodoo2 in A1: the card takes the
 #                    monitor from Control's live desktop and gives it back
 #                    byte-identical.
@@ -161,6 +163,69 @@ def row_pm9500_76_mach64() {
     check_ex("goldens/pm9500-7.6-640x480x8-finder.png", 0, 500, 20, 640)
     report_row("7.6", "mach64_gx", "hd-boot mesh chime pci-display")
     report_perf("suite-tnt/pm9500-76-mach64", scheduler.instr_count)
+}
+
+# ---- pm9500-76-rage128 ------------------------------------------------------
+# The same 9500 and the same System 7.6 disk on the ATI Rage 128 GL (the
+# Xclaim VR 128's ROM) in socket A1: Open Firmware runs the card's FCode,
+# Mac OS loads the `.Display_Rage128` ndrv from that ROM, and every pixel of
+# the Finder is the card's.  This ndrv comes up in thousands of colours —
+# its own choice, through linear aperture 1 at 16 bpp swapping — and keeps
+# the arrow in the Rage 128's hardware cursor, which the model composites
+# from the AND/XOR map in VRAM.  The depth is then changed twice from the
+# Control Strip's monitor module, exactly as a user would: 256 colours, then
+# millions.  Each depth is its own golden, captured once and inspected:
+#
+#   * 16 bpp: the desktop's dither is the 1-5-5-5 pair the System chose;
+#   * 8 bpp: the same desktop through the ndrv's gamma-corrected CLUT (the
+#     greys differ from the 16 bpp ones for the reason the Mach64 row's
+#     comment gives);
+#   * 32 bpp: X-8-8-8, scanned out of the little-endian VRAM through the
+#     model's byte swap.
+#
+# The pointer in the goldens sits where the harness's low-memory mouse
+# placement left it.  That placement ("global" mode) writes MTemp/RawMouse
+# and is enough for menu hit-testing, but it is not device motion: a
+# hardware cursor only moves on real ADB motion (the "hw" mode), because the
+# Cursor Device Manager — not the Mouse global — feeds DrawHardwareCursor.
+def pick_depth(y) {
+    # Press on the Control Strip's monitor-depth module, move to the item
+    # with the button held, and release: the strip's popups close on a
+    # click, so a plain click() never reaches an item.
+    machine.adb.mouse.move 300 300 "global"
+    run_ticks(10)
+    machine.adb.mouse.move 104 467 "global"
+    run_ticks(20)
+    machine.adb.mouse.click true
+    run_ticks(30)
+    machine.adb.mouse.move 140 $y "global"
+    run_ticks(20)
+    machine.adb.mouse.click false
+    run_ticks(120)
+}
+
+def row_pm9500_76_rage128() {
+    tnt_hd_boot("pm9500", "rage128", 4000000000)
+    assert try(machine.pci.slot[7].card.name, "(empty)") == "(empty)" "no onboard video when a display card is seated"
+    assert machine.screen.width == 640 "640 pixels across"
+    assert machine.screen.height == 480 "480 lines"
+    assert machine.screen.depth == 16 "the ndrv's own choice: thousands of colours"
+    assert machine.pci.slot[1].card.framebuffer.depth == 16 "machine.screen.source resolves to the card's framebuffer"
+    assert (machine.pci.slot[1].card.regs.crtc_gen_cntl & 0x00010000) != 0 "the arrow is the card's hardware cursor"
+    check_ex("goldens/pm9500-rage128-7.6-640x480x16-finder.png", 0, 500, 20, 640)
+
+    # Dismiss the Energy Saver dialog, then 256 colours and millions.
+    machine.adb.keyboard.press "Return"
+    run_ticks(60)
+    pick_depth(424)
+    assert machine.screen.depth == 8 "Control Strip: 256 colours"
+    assert machine.screen.format == "8bpp_clut" "indexed through the card's palette"
+    check_ex("goldens/pm9500-rage128-7.6-640x480x8-desktop.png", 0, 500, 20, 640)
+    pick_depth(451)
+    assert machine.screen.depth == 32 "Control Strip: millions of colours"
+    check_ex("goldens/pm9500-rage128-7.6-640x480x32-desktop.png", 0, 500, 20, 640)
+    report_row("7.6", "rage128", "hd-boot mesh chime pci-display depths hw-cursor")
+    report_perf("suite-tnt/pm9500-76-rage128", scheduler.instr_count)
 }
 
 # ---- tnt-voodoo2-display ----------------------------------------------------
@@ -375,6 +440,13 @@ if row_on("pm9500-76-mach64") {
         row_end("pm9500-76-mach64", try(row_pm9500_76_mach64(), "FAILED"))
     } else {
         echo "skip: pm9500-76-mach64 (7.6 image not fetched)"
+    }
+}
+if row_on("pm9500-76-rage128") {
+    if have_media($hd_76) {
+        row_end("pm9500-76-rage128", try(row_pm9500_76_rage128(), "FAILED"))
+    } else {
+        echo "skip: pm9500-76-rage128 (7.6 image not fetched)"
     }
 }
 if row_on("tnt-voodoo2-display") {

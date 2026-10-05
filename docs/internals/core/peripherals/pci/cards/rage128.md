@@ -22,14 +22,15 @@ model answers registers and nothing else.
 
 ## 1. Responsibilities & design
 
-**Status.** Milestone 4b of the Rage 128 work: the PCI face, the four
-apertures and their byte-order swappers, the register file and its config
-mirror, the PLL file, monitor sense and DDC, the palette, the CRTC turned
-into a display descriptor, and the VBLANK interrupt. The 2D draw engine,
+**Status.** Milestones 4b and 4c of the Rage 128 work: the PCI face, the
+four apertures and their byte-order swappers, the register file and its
+config mirror, the PLL file, monitor sense and DDC, the palette, the CRTC
+turned into a display descriptor at 8, 15/16 and 32 bpp, the hardware
+cursor, and the VBLANK interrupt — enough for the card's ndrv to run
+System 7.6 at every depth it offers. The 2D draw engine,
 the Concurrent Command Engine and the 3D engine are later milestones: their
 registers are plain storage here, and `GUI_STAT`, `PC_GUI_CTLSTAT` and
-`PC_NGUI_CTLSTAT` report idle. The hardware cursor is latched but not yet
-composited (logged once when enabled).
+`PC_NGUI_CTLSTAT` report idle.
 
 **Driven by the FCode's needs.** The model was written against a decode of
 the Xclaim FCode's probe and `open`, and three facts from that decode shaped
@@ -126,6 +127,22 @@ when `CRTC_EN`, `CRTC_EXT_DISP_EN`, display requests enabled and
 palette (`DAC_MASK` applied); 15, 16 and 32 bpp are byte-swapped into a
 compose buffer each frame, since the display layer takes big-endian pixels.
 
+**Hardware cursor.** A 64 × 64 map at `CUR_OFFSET`, each line eight bytes
+of AND bits then eight of XOR bits, leftmost pixel in bit 7 (SDK §4.4):
+AND/XOR `00` colour 0, `01` colour 1, `10` transparent, `11` the complement
+of the pixel beneath. `CUR_HORZ_VERT_OFF` says where in the map the visible
+part starts; `CUR_HORZ_VERT_POSN` (vertical in 10:0, horizontal in 26:16)
+places it. The colours are always 24-bit RGB; at 8 bpp the composite takes
+the nearest palette entry. The cursor is an overlay into `compose`, never
+written to VRAM; with it on, even 8 bpp is presented through `compose`.
+
+The card's ndrv keeps the System's arrow in this cursor. It moves only on
+real pointing-device motion: Mac OS feeds `DrawHardwareCursor` from the
+Cursor Device Manager, so the harness's low-memory mouse placement
+(`machine.adb.mouse.move … "global"`, which writes `MTemp`/`RawMouse`/
+`Mouse`) moves hit-testing but not the arrow on screen. `"hw"` mode is real
+ADB motion and moves both.
+
 **Interrupts.** `GEN_INT_STATUS` latches VBLANK and VSYNC every frame
 whether or not they are enabled (write 1 to clear); `GEN_INT_CNTL` gates
 the INTA line, which is level and held until acknowledged. `CRTC_STATUS`
@@ -149,6 +166,9 @@ loudly.
 ## 6. Testing
 
 - `tests/integration/rage128-prom` — the ROM catalogue (milestone 4a).
+- `tests/integration/suite-tnt`, row `pm9500-76-rage128` — System 7.6 from
+  the MESH disk to the Finder on the card (chime, mount, goldens), then
+  256 colours and millions from the Control Strip, each a golden.
 - `tests/integration/tnt-pci-rage128` — the config header before any
   instruction; the node Open Firmware 1.0.5 builds from the FCode, read
   back with `.properties` over the serial console, for each cable and for
@@ -158,7 +178,6 @@ loudly.
 
 ## 7. Known debts
 
-- The hardware cursor (`CRTC_CUR_EN`) is not composited.
 - No pixel clock: refresh is the host's, and PLL dividers are stored only.
 - `CRTC_OFFSET_CNTL` flip latching, `CRTC_VLINE` interrupts and packed
   24 bpp are not modelled.

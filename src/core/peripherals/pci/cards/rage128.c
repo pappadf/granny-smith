@@ -366,7 +366,6 @@ typedef struct rage128 {
     bool clut_dirty;
     bool irq_active;
     bool depth_warned; // the unsupported-depth log is once-only
-    bool cursor_warned; // the hardware-cursor log is once-only
     bool rev_warned; // the revision-read log is once-only
 } rage128_t;
 
@@ -633,6 +632,8 @@ static void r128_build_edid(rage128_t *r) {
 // Reads that are not simply the stored value.
 static uint32_t r128_reg_read(rage128_t *r, uint32_t off, bool peek) {
     off &= (R128_REG_APER_SIZE - 1u) & ~3u;
+    if (!peek)
+        LOG(6, "Rage 128: reg $%04X read", off);
     switch (off) {
     case R_MM_DATA: {
         uint32_t idx = r->reg[R_MM_INDEX / 4];
@@ -749,6 +750,7 @@ static void r128_reg_write(rage128_t *r, uint32_t off, uint32_t value, uint32_t 
         return;
     }
     case R_GEN_INT_STATUS:
+        LOG(5, "Rage 128: GEN_INT_STATUS ack $%08X", value & mask);
         *p &= ~(value & mask); // write 1 to clear
         r128_irq_sync(r);
         return;
@@ -804,6 +806,7 @@ static void r128_reg_write(rage128_t *r, uint32_t off, uint32_t value, uint32_t 
     if (off >= R_CFG_MIRROR && off < R_CFG_MIRROR_END)
         return; // the config mirror is read-only
     *p = merged;
+    LOG(5, "Rage 128: reg $%04X := $%08X (lanes $%08X)", off, merged, mask);
     switch (off) {
     case R_CRTC_GEN_CNTL:
     case R_CRTC_EXT_CNTL:
@@ -1060,14 +1063,94 @@ static void r128_refresh_clut(rage128_t *r) {
     r->display.clut_dirty = true;
 }
 
-// Point the descriptor at what the CRTC is producing this frame.
+// The hardware cursor (SDK §4.4): a 64 x 64 map in VRAM at CUR_OFFSET, each
+// line 16 bytes — eight bytes of AND bits then eight of XOR bits, the
+// leftmost pixel in bit 7 of the first byte.  AND/XOR 00 = colour 0, 01 =
+// colour 1, 10 = transparent, 11 = the complement of the pixel beneath.
+// CUR_HORZ_VERT_OFF says where in the map the visible part starts (the
+// driver moves it to clip a cursor off the top or left edge, since a
+// negative position is not displayed at all); CUR_HORZ_VERT_POSN is where
+// on screen that part's top-left lands.  The colours are always 24-bit RGB.
+#define CUR_SIZE       64u
+#define CUR_LINE_BYTES 16u
+#define CUR_POSN_V(v)  ((v) & 0x7FFu) // CUR_HORZ_VERT_POSN bits 10:0
+#define CUR_POSN_H(v)  (((v) >> 16) & 0x7FFu) // ...and 26:16
+#define CUR_OFF_V(v)   ((v) & 0x3Fu) // CUR_HORZ_VERT_OFF bits 5:0
+#define CUR_OFF_H(v)   (((v) >> 16) & 0x3Fu) // ...and 21:16
+
+// A 24-bit cursor colour in the frame's own (big-endian) pixel format.  In
+// 8 bpp the DAC overlays true colour, so the composite — built in the
+// frame's depth — takes the nearest palette entry.
+static uint32_t r128_cursor_pixel(const rage128_t *r, uint32_t rgb, uint32_t bpp) {
+    uint32_t cr = (rgb >> 16) & 0xFFu, cg = (rgb >> 8) & 0xFFu, cb = rgb & 0xFFu;
+    if (bpp == 1) {
+        uint32_t best = 0, best_d = 0xFFFFFFFFu;
+        for (uint32_t i = 0; i < 256; i++) {
+            int dr = (int)r->clut_view[i].r - (int)cr, dg = (int)r->clut_view[i].g - (int)cg,
+                db = (int)r->clut_view[i].b - (int)cb;
+            uint32_t d = (uint32_t)(dr * dr + dg * dg + db * db);
+            if (d < best_d) {
+                best_d = d;
+                best = i;
+            }
+        }
+        return best;
+    }
+    if (bpp == 2) {
+        if (r->display.format == PIXEL_16BPP_565)
+            return ((cr >> 3) << 11) | ((cg >> 2) << 5) | (cb >> 3);
+        return ((cr >> 3) << 10) | ((cg >> 3) << 5) | (cb >> 3);
+    }
+    return rgb & 0xFFFFFFu;
+}
+
+// Overlay the cursor on `compose`, which holds the frame in display order.
+static void r128_draw_cursor(rage128_t *r, uint32_t bpp) {
+    uint32_t src = r->reg[R_CUR_OFFSET / 4] & 0x1FFFFF0u;
+    if ((uint64_t)src + CUR_SIZE * CUR_LINE_BYTES > r->vram_size)
+        return;
+    uint32_t posn = r->reg[R_CUR_HORZ_VERT_POSN / 4], off = r->reg[R_CUR_HORZ_VERT_OFF / 4];
+    uint32_t px = CUR_POSN_H(posn), py = CUR_POSN_V(posn);
+    uint32_t ox = CUR_OFF_H(off), oy = CUR_OFF_V(off);
+    uint32_t clr[2] = {r128_cursor_pixel(r, r->reg[R_CUR_CLR0 / 4], bpp),
+                       r128_cursor_pixel(r, r->reg[R_CUR_CLR1 / 4], bpp)};
+    uint32_t stride = r->display.stride, width = r->display.width, height = r->display.height;
+    for (uint32_t row = oy; row < CUR_SIZE; row++) {
+        uint32_t y = py + (row - oy);
+        if (y >= height)
+            break;
+        const uint8_t *line = r->vram + src + row * CUR_LINE_BYTES;
+        for (uint32_t col = ox; col < CUR_SIZE; col++) {
+            uint32_t x = px + (col - ox);
+            if (x >= width)
+                break;
+            uint32_t bit = 7u - (col & 7u);
+            uint32_t and_bit = (line[col >> 3] >> bit) & 1u;
+            uint32_t xor_bit = (line[8 + (col >> 3)] >> bit) & 1u;
+            if (and_bit && !xor_bit)
+                continue; // transparent
+            uint8_t *at = r->compose + (size_t)y * stride + (size_t)x * bpp;
+            for (uint32_t i = 0; i < bpp; i++) {
+                uint32_t shift = 8u * (bpp - 1u - i);
+                at[i] = and_bit ? (uint8_t)~at[i] : (uint8_t)(clr[xor_bit] >> shift);
+            }
+        }
+    }
+}
+
+// Point the descriptor at what the CRTC is producing this frame: VRAM
+// straight through (8 bpp, no cursor), or `compose` — the frame byte-swapped
+// to big-endian pixels for the direct-colour depths, with the hardware
+// cursor composited on top.  The cursor is a CRTC overlay, so it never
+// touches VRAM.
 static void r128_present(rage128_t *r) {
     if (r->scan_blanked) {
         r->display.bits = r->blank;
         return;
     }
     const uint8_t *frame = r->vram + r->scan_base;
-    if (!r->scan_swap) {
+    bool cursor = (r->reg[R_CRTC_GEN_CNTL / 4] & CRTC_CUR_EN) != 0;
+    if (!r->scan_swap && !cursor) {
         r->display.bits = (uint8_t *)frame;
         return;
     }
@@ -1075,7 +1158,9 @@ static void r128_present(rage128_t *r) {
     // `compose` is vram_size.
     size_t span = (size_t)r->display.stride * r->display.height;
     uint32_t bpp = r128_bytes_per_pixel(CRTC_PIX_WIDTH(r->reg[R_CRTC_GEN_CNTL / 4]));
-    if (bpp == 2) {
+    if (bpp == 1) {
+        memcpy(r->compose, frame, span);
+    } else if (bpp == 2) {
         for (size_t i = 0; i + 1 < span; i += 2) {
             r->compose[i] = frame[i + 1];
             r->compose[i + 1] = frame[i];
@@ -1088,6 +1173,8 @@ static void r128_present(rage128_t *r) {
             r->compose[i + 3] = frame[i];
         }
     }
+    if (cursor)
+        r128_draw_cursor(r, bpp);
     r->display.bits = r->compose;
 }
 
@@ -1136,11 +1223,6 @@ static void r128_update(rage128_t *r) {
     bool on = (gen & CRTC_EN) && (gen & CRTC_EXT_DISP_EN) && !(gen & CRTC_DISP_REQ_EN_B) &&
               !(r->reg[R_CRTC_EXT_CNTL / 4] & CRTC_DISPLAY_DIS);
     bool blanked = !on || stride == 0;
-
-    if ((gen & CRTC_CUR_EN) && !r->cursor_warned) {
-        r->cursor_warned = true;
-        LOG(1, "Rage 128: the hardware cursor is enabled; it is not composited yet");
-    }
 
     r->display.format = format;
     r->display.par_w = 0;
@@ -1308,7 +1390,6 @@ static void r128_reset(pci_device_t *dev, config_t *cfg) {
     memset(&r->ddc, 0, sizeof(r->ddc));
     r->ddc.scl = r->ddc.sda = true;
     r->depth_warned = false;
-    r->cursor_warned = false;
     if (r->irq_active) {
         r->irq_active = false;
         pci_deassert_irq(dev);
