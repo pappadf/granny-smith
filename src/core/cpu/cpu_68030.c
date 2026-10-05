@@ -536,6 +536,13 @@ static int cpu_movec_rn_rc(cpu_t *cpu) {
 void cpu_reset_to_vector_68030(cpu_t *restrict cpu) {
     // CPU hardware reset sequence (MC68030 User's Manual §5.2.1)
     cpu->supervisor = 1;
+    // The access pair follows the mode.  The 68030 decoder re-picks it every
+    // sprint, but the 68000 (which shares this reset) only on a mode change,
+    // so a reset taken in user mode kept the user pair: the Lisa boot ROM
+    // then ran its MMU tests through the user context and bus-faulted on its
+    // own I/O strobes once it selected context 1 (boot error 40).
+    g_active_read = g_supervisor_read;
+    g_active_write = g_supervisor_write;
     cpu->interrupt_mask = 7;
     cpu->trace = 0;
     cpu->vbr = 0;

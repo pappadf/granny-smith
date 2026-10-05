@@ -1216,9 +1216,9 @@ static void lisa_trigger_vbl(config_t *cfg) {
 // Machine descriptor
 // ============================================================
 
-// Lisa 2 supports 512 KB / 1 MB / 2 MB (in 128 KB-granular increments the
-// boot ROM's memory sizing walks); the ROM's MAXADR ceiling is 2 MB.
-static const uint32_t lisa_ram_options_kb[] = {512, 1024, 2048, 0};
+// The memory boards' combinations: one 512 KB board, two, a 1 MB board over
+// a 512 KB one, two 1 MB boards; the ROM's MAXADR ceiling is 2 MB.
+static const uint32_t lisa_ram_options_kb[] = {512, 1024, 1536, 2048, 0};
 
 // One Sony 3.5" mechanism on the 6504A intelligent controller.  Lisa 1's
 // Twiggy drives are out of scope.

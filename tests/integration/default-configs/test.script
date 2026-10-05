@@ -26,6 +26,19 @@ default_boots("q840av", "q840av-q660av-5bf10fd1.rom", 200000000)
 default_boots("q660av", "q840av-q660av-5bf10fd1.rom", 200000000)
 default_boots("lisa", "lisa2-revh-098917b2.rom", 20000000)
 default_boots("macxl", "macxl-3a-094c82f0.rom", 20000000)
+
+# The Lisa's memory boards: RAM starts at $100000 less the slot-2 board, as
+# the boot ROM's sizing reports it (MINMEM, $2A4) -- a 512 KB board below
+# $100000 for 512 KB to 1.5 MB, two 1 MB boards from 0 for 2 MB.
+def lisa_minmem(kb, want) {
+    machine.boot model="lisa" ram=$kb rom="../../data/roms/lisa2-revh-098917b2.rom"
+    scheduler.run 30000000
+    assert machine.memory.peek.l(0x2A4) == $want "lisa ${$kb} KB: MINMEM ${machine.memory.peek.l(0x2A4):08x}"
+}
+lisa_minmem(512, 0x80000)
+lisa_minmem(1024, 0x80000)
+lisa_minmem(1536, 0x80000)
+lisa_minmem(2048, 0)
 default_boots("pm6100", "pm6100-pm7100-pm8100-9feb69b3.rom", 400000000)
 default_boots("pm7100", "pm6100-pm7100-pm8100-9feb69b3.rom", 400000000)
 default_boots("pm8100", "pm6100-pm7100-pm8100-9feb69b3.rom", 400000000)
