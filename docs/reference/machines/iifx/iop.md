@@ -602,12 +602,16 @@ default Z8530 ISR vector table points entirely at a `BRK` stub
 (`UnKnown_SCCInt`), so enabling any Z8530 interrupt source without
 first downloading a driver will hard-stop the IOP.
 
-For the IIfx specifically, Mac OS in PRAM-default bypass mode never
-downloads a driver — every serial byte goes through the
-`$50F04020-3F` passthrough window. "Enhanced mode" requires the OS
-to load A/UX-era driver code; an emulator that only needs to boot
-Mac OS doesn't have to model the AllocDvr/InitDvr path beyond
-returning sensible error replies.
+Mac OS uses both paths. The ROM's serial drivers work in bypass,
+through the `$50F04020-3F` passthrough window, but AppleTalk does not:
+with AppleTalk active, the System's IOP LocalTalk `'ltlk'` takes driver
+B and downloads the IOP LocalTalk driver (`'iopc'`, §15.4), and later
+systems (Mac OS 8.1 is one) download the `'SERD'` serial driver for the
+modem port as well. An emulator that answers the AllocDvr/InitDvr path
+with errors loses AppleTalk: the `'ltlk'` goes on probing for a node
+through a driver that is not there, every probe reads as "taken", and
+the System reports *"AppleTalk cannot be used because no AppleTalk
+address is available."*
 
 The low-memory variable `SCCIOPFlag` (`$0BFE`) tracks whether the OS
 currently prefers bypass mode or firmware-driven mode. `IOPMgr`
@@ -792,9 +796,8 @@ the `'SERD'` body into the region `AllocDvr` reported (driver A from
 then on the driver presents the standard Macintosh serial-driver interface
 (`.AIn`/`.AOut`/`.BIn`/`.BOut`) and off-loads the SCC from the 68030.
 
-Granny Smith does **not** model this path — the IIfx boots Mac OS in
-PRAM-default bypass and never downloads a `'SERD'`. It is documented here
-for completeness, and because **A/UX** uses enhanced mode.
+Mac OS 8.1 downloads the modem-port driver at startup; **A/UX** uses
+enhanced mode throughout.
 
 Each active driver owns **six** mailbox slots — three host→IOP and three
 IOP→host — at fixed slot numbers: **port A = slots 2, 3, 4; port B =
@@ -843,8 +846,51 @@ head of that buffer.
 
 **A/UX caveat.** A/UX's enhanced-mode serial path exercises behaviours (and
 bugs) the Mac OS bypass path never hits, so an A/UX-accurate serial model
-would have to account for them. Granny Smith does not model IOP serial yet,
-so this is informational.
+would have to account for them.
+
+#### 15.4 The IOP LocalTalk driver
+
+AppleTalk's link on the printer port is a downloadable driver too: the
+`'iopc'` resource ("IOP LocalTalk", version 58.0 in System 7.5), which the
+System's IOP LocalTalk `'ltlk'` (resources 1 and 3) downloads into driver
+B's region after `AllocDvr`, then starts with `InitDvr`. The driver runs
+the **LLAP link only** — node acquisition by lapENQ, the lapRTS/lapCTS
+dialog before a directed frame, framing and FCS — and passes data frames
+to and from the host, whose `.MPP` keeps DDP and everything above.
+
+The driver's requests arrive on `XmtMsg[5]`. Byte `+$00` carries the
+opcode on the way in and the result on the way out: `$00` done, `$FF`
+failed, `$FE` unknown opcode.
+
+| Opcode | Request         | Reply                                                                                       |
+| ------ | --------------- | ------------------------------------------------------------------------------------------- |
+| `$01`  | open            | `+$01/+$02` = IOP address of the write buffer (hi, lo).                                      |
+| `$02`  | `+$01` = node   | lapENQ for the node. `$00`: nobody answered, and the node is now the driver's own; `$FF`: a node answered with lapACK, so the node is taken. The host sends the request repeatedly per node before trusting `$00`. |
+| `$03`  | `+$01/+$02` = length | Transmit the LLAP frame of that length (header included) from the write buffer. The driver fills in the source byte with its node and, for a directed data frame, opens the lapRTS/lapCTS dialog first. `$FF` when no lapCTS came. |
+| `$04`  | —               | `+$01/+$02` = IOP address of the 48-byte statistics block.                                   |
+| `$05`  | `+$01` = node   | Acquire an additional node, as `$02`, keeping the first.                                     |
+| `$06`  | `+$01` = node   | Give up the node; the first node takes all of them with it.                                  |
+
+A received frame addressed to one of the driver's nodes (or broadcast)
+goes to the host in **`RcvMsg[5]`**, raised with Int1: `+$00 = $01`,
+`+$01/+$02` = the frame's IOP address, `+$03/+$04` = its length **plus the
+two FCS bytes**. The frame stays in IOP RAM until the host releases the
+slot (`MsgCompleted`); the driver answers lapENQ and lapRTS for its own
+nodes itself, so the host never sees control frames.
+
+**Emulator model (`iop_scc.c`).** Granny Smith models the kernel commands
+of §15.1 with the shipped kernel's result codes, the serial driver of
+§15.3 as a port whose writes go down the SCC channel's cable (its output
+file or device) and whose reads wait, as nothing feeds received bytes back
+yet, and the LocalTalk driver above. The LocalTalk link is the emulated
+AppleTalk network: while the driver is open the IOP claims SCC channel B's
+link (`scc_set_sdlc_divert`), so the network's frames come to the IOP
+instead of the Z8530's receiver and the IOP's go to the network, and the
+lapENQ and lapRTS dialogs are answered by the network in the same call.
+A driver image is told apart by the name the LocalTalk driver carries
+("LocalTalk"); anything else is taken for the serial driver. The buffers
+whose addresses the replies hand out are placed inside the downloaded
+image, whose code is never run.
 
 ---
 

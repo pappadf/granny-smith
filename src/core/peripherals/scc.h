@@ -68,6 +68,31 @@ int scc_sdlc_send(scc_t *restrict scc, uint8_t *buf, size_t len);
 // flushes -- async bytes, channel A -- is not a LocalTalk frame.
 void scc_set_frame_sink(scc_t *scc, scc_frame_fn fn, void *context);
 
+// A front end that owns channel B's LocalTalk link in place of the chip: an
+// I/O processor whose firmware runs LLAP itself (the IIfx and Quadra 900 SCC
+// IOP), so the guest's frames never pass through the Z8530's SDLC engine.
+// While one is installed, scc_sdlc_send hands the network's frames to
+// `rx_frame` instead of the receiver, scc_sdlc_ready asks `ready`, and the
+// front end transmits through scc_sdlc_divert_tx.  Like the frame sink it is
+// the cable's, not the chip's: a reset keeps it and a checkpoint does not
+// carry it (the front end reinstalls it).
+typedef struct scc_sdlc_divert {
+    bool (*ready)(void *ctx); // its LocalTalk driver is up
+    void (*rx_frame)(void *ctx, const uint8_t *frame, size_t len); // network -> front end
+} scc_sdlc_divert_t;
+
+// Install `divert` (NULL removes it).
+void scc_set_sdlc_divert(scc_t *scc, const scc_sdlc_divert_t *divert, void *ctx);
+
+// The front end puts a frame on the wire: it goes to the frame sink, as a
+// frame the guest transmitted through the chip would.
+void scc_sdlc_divert_tx(scc_t *scc, const uint8_t *frame, size_t len);
+
+// A front end's serial driver transmits `len` asynchronous bytes on channel
+// `ch` (0 = A, 1 = B) without the chip: they reach the capture, the port's
+// output file and its device exactly as bytes the chip sent would.
+void scc_port_tx_bytes(scc_t *scc, unsigned int ch, const uint8_t *buf, size_t len);
+
 // Send every byte the guest transmits on channel `ch` (0 = A, 1 = B) in
 // asynchronous mode to the host file `path`, created or truncated; NULL
 // closes it.  An open output is a device on the cable, so the port's

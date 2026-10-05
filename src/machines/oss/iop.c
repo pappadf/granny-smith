@@ -385,6 +385,12 @@ static void iop_write_uint8(void *device, uint32_t addr, uint8_t value) {
             LOG(4, "%s ram[$%04x] := $%02x (mailbox state)", iop->behavior->name, iop->ram_addr, value);
         }
         iop->ram[iop->ram_addr] = value;
+        if (iop->ram_addr >= 0x0400 && iop->ram_addr <= MaxIOPRamAddr) {
+            if (iop->ram_addr < iop->dl_lo)
+                iop->dl_lo = iop->ram_addr;
+            if (iop->ram_addr > iop->dl_hi)
+                iop->dl_hi = iop->ram_addr;
+        }
         if (iop->stat_ctl & iopIncEnableBit)
             iop->ram_addr++;
         return;
@@ -439,6 +445,8 @@ iop_t *iop_init(iop_kind_t kind, const memory_interface_t *bypass_iface, void *b
     if (checkpoint) {
         // Mirrors iop_checkpoint: one blob, host_irq included.
         system_read_checkpoint_data(checkpoint, iop, offsetof(iop_t, behavior), "iop");
+        if (iop->behavior->on_restore)
+            iop->behavior->on_restore(iop);
     }
 
     // Register periodic-event types with the scheduler so checkpoint
@@ -481,6 +489,8 @@ void iop_power_on(iop_t *iop) {
 void iop_delete(iop_t *iop) {
     if (!iop)
         return;
+    if (iop->behavior->on_delete)
+        iop->behavior->on_delete(iop);
     // iop_swim.c schedules eight events with `iop` as their source; this
     // destructor was one line and dropped none of them.
     scheduler_forget_source(iop->scheduler, iop);
