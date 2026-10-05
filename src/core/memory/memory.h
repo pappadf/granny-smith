@@ -578,13 +578,37 @@ static inline bool memory_host_is_code(const uint8_t *host) {
     return r >= 0 && g_mem_code_regions[r].marks[page] != 0;
 }
 
+// Which write table(s) a fill or a refusal concerns (memory_write_fill).
+#define MEM_WT_SUPER 1u // g_supervisor_write
+#define MEM_WT_USER  2u // g_user_write
+
+// The refused-write record: one bit per page and write table, set exactly
+// where the switch core would hold a live write entry that the code-page
+// marks took away (a fill they refused, an entry they zeroed), and cleared
+// wherever the switch core would lose that entry (a TLB invalidation, a
+// fill that leaves the page read-only).  The 68K MMU slow path consults it
+// so a store into such a page completes as the cache hit it is on the
+// switch core -- without the table walk, and so without the walk's U/M and
+// MMUSR side effects.  Nothing sets a bit while predecode marks no page.
+void memory_write_refused_set(uint32_t page_index, unsigned tables);
+void memory_write_refused_clear(uint32_t page_index, unsigned tables);
+void memory_write_refused_reset(void);
+bool memory_write_refused(uint32_t page_index, bool supervisor);
+
 // The one way to plant a WRITE SoA entry: records the chunk for the
 // reverse scan and refuses the entry (returns 0) when the host page is a
-// code page.  `host` is any pointer into the host page being mapped.
-static inline uintptr_t memory_write_fill(uint32_t page_index, const uint8_t *host, uintptr_t adjusted) {
+// code page, noting the refusal for `tables` (the write tables the caller
+// fills with the result: MEM_WT_*).  `host` is any pointer into the host
+// page being mapped.
+static inline uintptr_t memory_write_fill(uint32_t page_index, const uint8_t *host, uintptr_t adjusted,
+                                          unsigned tables) {
     if (g_mem_soa_chunk)
         g_mem_soa_chunk[page_index >> 8] = 1;
-    return memory_host_is_code(host) ? 0 : adjusted;
+    if (__builtin_expect(memory_host_is_code(host), 0)) {
+        memory_write_refused_set(page_index, tables);
+        return 0;
+    }
+    return adjusted;
 }
 
 // Register a host buffer as a code region (unit tests; region 0 is the

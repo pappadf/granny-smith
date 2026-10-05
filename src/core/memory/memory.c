@@ -230,6 +230,13 @@ typedef struct memory {
     uintptr_t *supervisor_read, *supervisor_write, *user_read, *user_write;
     uint16_t *logpoint_page_count, *logpoint_phys_page_count;
     uint8_t *soa_chunk; // write-entry occupancy per 256-page chunk (g_mem_soa_chunk)
+    // The refused-write record (memory.h): MEM_WT_* bits per page, allocated
+    // on the first refusal; the pages set since the last reset, for a cheap
+    // clear (overflow: clear the whole array).
+    uint8_t *write_refused;
+    uint32_t *refused_pages;
+    uint32_t refused_count;
+    bool refused_overflow;
     tlb_track_t *tlb_track; // pages populated since the last invalidation (mmu.c)
 
     // What the machine hangs on its map (aliased while selected).
@@ -1025,6 +1032,26 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
             dev_write_n(pe, addr, addr - pe->base_addr, value, size);
             return;
         }
+        // A store the switch core completes through a live write entry --
+        // one only the code-page marks took away -- completes the same way
+        // here, as the ATC hit it is: no table walk, so no U/M write-back
+        // or MMUSR change the switch run would not make (A/UX ages its
+        // pages by U).  The page's read entry maps the same host bytes.
+        if (memory_write_refused(page, supervisor)) {
+            uintptr_t rbase = (supervisor ? g_supervisor_read : g_user_read)[page];
+            if (rbase != 0) {
+                uint8_t *host = (uint8_t *)(rbase + addr);
+                // The page left the code set since (its block was evicted or
+                // demoted): the entry the switch core holds comes back.
+                if (!memory_host_is_code(host)) {
+                    (supervisor ? g_supervisor_write : g_user_write)[page] = rbase;
+                    memory_write_refused_clear(page, supervisor ? MEM_WT_SUPER : MEM_WT_USER);
+                }
+                code_write_notify(host, size);
+                store_be_n(host, value, size);
+                return;
+            }
+        }
         if (mmu_handle_fault(g_mmu, addr, true, supervisor)) {
             uintptr_t base = g_active_write[addr >> PAGE_SHIFT];
             if (base != 0) {
@@ -1173,7 +1200,8 @@ static void rebuild_soa_page(uint32_t p) {
     if (g_user_read && !g_user_soa_reserved)
         g_user_read[p] = adjusted;
     if (pe->writable) {
-        uintptr_t wadj = memory_write_fill(p, pe->host_base, adjusted); // 0 on a code page
+        uintptr_t wadj = memory_write_fill(p, pe->host_base, adjusted,
+                                           MEM_WT_SUPER | (g_user_soa_reserved ? 0u : MEM_WT_USER)); // 0 on a code page
         if (g_supervisor_write)
             g_supervisor_write[p] = wadj;
         if (g_user_write && !g_user_soa_reserved)
@@ -1243,6 +1271,7 @@ void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page) {
     // arrays.  All logical pages re-walk on next access, and the fill path
     // (mmu_fill_soa_entry) suppresses any alias hitting the watched physical.
     // One-time cost at install; fast-path unaffected once entries repopulate.
+    memory_write_refused_reset();
     if (g_supervisor_read)
         memset(g_supervisor_read, 0, (size_t)g_page_count * sizeof(uintptr_t));
     if (g_supervisor_write)
@@ -1296,9 +1325,63 @@ int memory_code_region_register(uint8_t *base, uintptr_t size) {
     return i;
 }
 
+// ---- The refused-write record (memory.h) ----
+
+#define REFUSED_LIST_MAX 4096
+
+void memory_write_refused_set(uint32_t page_index, unsigned tables) {
+    memory_map_t *m = g_installed_map;
+    if (!m || page_index >= (uint32_t)m->page_count || !tables)
+        return;
+    if (!m->write_refused) {
+        m->write_refused = (uint8_t *)calloc((size_t)m->page_count, 1);
+        m->refused_pages = (uint32_t *)malloc(REFUSED_LIST_MAX * sizeof(uint32_t));
+        if (!m->write_refused || !m->refused_pages) {
+            free(m->write_refused);
+            free(m->refused_pages);
+            m->write_refused = NULL;
+            m->refused_pages = NULL;
+            return;
+        }
+    }
+    if (!m->write_refused[page_index]) {
+        if (m->refused_count < REFUSED_LIST_MAX)
+            m->refused_pages[m->refused_count++] = page_index;
+        else
+            m->refused_overflow = true;
+    }
+    m->write_refused[page_index] |= (uint8_t)tables;
+}
+
+void memory_write_refused_clear(uint32_t page_index, unsigned tables) {
+    memory_map_t *m = g_installed_map;
+    if (m && m->write_refused && page_index < (uint32_t)m->page_count)
+        m->write_refused[page_index] &= (uint8_t)~tables;
+}
+
+void memory_write_refused_reset(void) {
+    memory_map_t *m = g_installed_map;
+    if (!m || !m->write_refused)
+        return;
+    if (m->refused_overflow)
+        memset(m->write_refused, 0, (size_t)m->page_count);
+    else
+        for (uint32_t i = 0; i < m->refused_count; i++)
+            m->write_refused[m->refused_pages[i]] = 0;
+    m->refused_count = 0;
+    m->refused_overflow = false;
+}
+
+bool memory_write_refused(uint32_t page_index, bool supervisor) {
+    memory_map_t *m = g_installed_map;
+    return m && m->write_refused && page_index < (uint32_t)m->page_count &&
+           (m->write_refused[page_index] & (supervisor ? MEM_WT_SUPER : MEM_WT_USER));
+}
+
 // Zero every write entry of `arr` that maps its logical page onto host_page,
-// scanning only the chunks that ever held a write entry.
-static void zero_write_aliases(uintptr_t *arr, const uint8_t *host_page) {
+// scanning only the chunks that ever held a write entry; each zeroed entry is
+// noted for `table` in the refused-write record.
+static void zero_write_aliases(uintptr_t *arr, unsigned table, const uint8_t *host_page) {
     if (!arr || !g_mem_soa_chunk)
         return;
     uint32_t chunks = (g_page_count + 255) / 256;
@@ -1310,8 +1393,10 @@ static void zero_write_aliases(uintptr_t *arr, const uint8_t *host_page) {
             p1 = g_page_count;
         for (uint32_t p = p0; p < p1; p++) {
             uintptr_t e = arr[p];
-            if (e != 0 && e + ((uintptr_t)p << PAGE_SHIFT) == (uintptr_t)host_page)
+            if (e != 0 && e + ((uintptr_t)p << PAGE_SHIFT) == (uintptr_t)host_page) {
                 arr[p] = 0; // stores must take the slow path from now on
+                memory_write_refused_set(p, table);
+            }
         }
     }
 }
@@ -1324,8 +1409,8 @@ void memory_code_page_mark(const uint8_t *host_page) {
     g_mem_code_regions[r].marks[page] = 1;
     // Every logical alias currently holding a write entry for these bytes
     // loses it; refills consult the mark (memory_write_fill).
-    zero_write_aliases(g_supervisor_write, host_page);
-    zero_write_aliases(g_user_write, host_page);
+    zero_write_aliases(g_supervisor_write, MEM_WT_SUPER, host_page);
+    zero_write_aliases(g_user_write, MEM_WT_USER, host_page);
 }
 
 void memory_code_page_unmark(const uint8_t *host_page) {
@@ -1556,7 +1641,7 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
 
         // SoA fast-path entries: RAM is readable and writable by all
         // (write entries refused on a code page — memory_write_fill)
-        uintptr_t wadj = memory_write_fill(p, host_ptr, adjusted);
+        uintptr_t wadj = memory_write_fill(p, host_ptr, adjusted, MEM_WT_SUPER | MEM_WT_USER);
         if (g_supervisor_read)
             g_supervisor_read[p] = adjusted;
         if (g_supervisor_write)
@@ -1639,7 +1724,7 @@ void memory_populate_ram_mirror(memory_map_t *mem, uint32_t mirror_start, uint32
 
         // SoA fast-path: full read+write on both supervisor and user sides
         // (write entries refused on a code page — memory_write_fill).
-        uintptr_t wadj = memory_write_fill(p, host_ptr, adjusted);
+        uintptr_t wadj = memory_write_fill(p, host_ptr, adjusted, MEM_WT_SUPER | MEM_WT_USER);
         if (g_supervisor_read)
             g_supervisor_read[p] = adjusted;
         if (g_supervisor_write)
@@ -1882,6 +1967,8 @@ void memory_map_delete(memory_map_t *mem) {
     free(mem->logpoint_page_count);
     free(mem->logpoint_phys_page_count);
     free(mem->soa_chunk);
+    free(mem->write_refused);
+    free(mem->refused_pages);
     mmu_host_fill_regions_free(mem->host_fill_regions);
     // Free RAM/ROM image buffer
     if (mem->image) {

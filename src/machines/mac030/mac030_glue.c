@@ -309,7 +309,8 @@ void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     if (g_user_read)
         g_user_read[page_index] = adjusted;
     if (writable) {
-        uintptr_t wadj = memory_write_fill(page_index, host_ptr, adjusted); // 0 on a predecoded code page
+        uintptr_t wadj = memory_write_fill(page_index, host_ptr, adjusted,
+                                           MEM_WT_SUPER | MEM_WT_USER); // 0 on a predecoded code page
         if (g_supervisor_write)
             g_supervisor_write[page_index] = wadj;
         if (g_user_write)

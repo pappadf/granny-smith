@@ -623,7 +623,7 @@ static void user_soa_fill(uint32_t ea, uint32_t pa, bool write_ok) {
     uintptr_t adjusted = (uintptr_t)pe->host_base - (lpage << PAGE_SHIFT);
     g_user_read[lpage] = adjusted;
     if (write_ok && pe->writable) // refused on a predecoded code page (memory.h)
-        g_user_write[lpage] = memory_write_fill(lpage, pe->host_base, adjusted);
+        g_user_write[lpage] = memory_write_fill(lpage, pe->host_base, adjusted, MEM_WT_USER);
 }
 
 // A physical fallback address (device page, logpointed page, or a page

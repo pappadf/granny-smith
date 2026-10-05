@@ -81,7 +81,7 @@ void tnt_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     if (g_supervisor_read)
         g_supervisor_read[page_index] = adjusted;
     if (g_supervisor_write) // write entry refused on a predecoded code page (memory.h)
-        g_supervisor_write[page_index] = writable ? memory_write_fill(page_index, host_ptr, adjusted) : 0;
+        g_supervisor_write[page_index] = writable ? memory_write_fill(page_index, host_ptr, adjusted, MEM_WT_SUPER) : 0;
     if (g_user_read)
         g_user_read[page_index] = 0;
     if (g_user_write)

@@ -92,6 +92,32 @@ TEST(test_mark_suppresses_writes) {
     memory_map_delete(mem);
 }
 
+// The refused-write record: marking notes every write entry it zeroes, for
+// the table it was in; a refused fill notes the tables it was for; a TLB
+// invalidation (where the switch core loses its entries too) drops them all.
+TEST(test_refused_write_record) {
+    memory_map_t *mem = make_plus();
+    uint8_t *host = ram_page(mem, 5);
+    ASSERT_TRUE(!memory_write_refused(5, true));
+    memory_code_page_mark(host);
+    ASSERT_TRUE(memory_write_refused(5, true));
+    ASSERT_TRUE(memory_write_refused(5, false));
+    ASSERT_TRUE(!memory_write_refused(4, true)); // neighbours untouched
+    memory_write_refused_reset();
+    ASSERT_TRUE(!memory_write_refused(5, true));
+    ASSERT_TRUE(!memory_write_refused(5, false));
+    // A refused fill notes only the tables it names.
+    ASSERT_EQ_INT(0, (int)memory_write_fill(5, host, 1234, MEM_WT_SUPER));
+    ASSERT_TRUE(memory_write_refused(5, true));
+    ASSERT_TRUE(!memory_write_refused(5, false));
+    memory_write_refused_clear(5, MEM_WT_SUPER);
+    ASSERT_TRUE(!memory_write_refused(5, true));
+    // Nothing is noted for a page that is not code.
+    ASSERT_TRUE(memory_write_fill(6, ram_page(mem, 6), 1234, MEM_WT_SUPER | MEM_WT_USER) == 1234);
+    ASSERT_TRUE(!memory_write_refused(6, true));
+    memory_map_delete(mem);
+}
+
 // A guest store into a marked page takes the slow path, reaches the hook
 // with the exact host bytes, lands, and does not re-plant the write entry.
 TEST(test_guest_store_invalidates) {
@@ -288,6 +314,7 @@ TEST(test_extra_region) {
 int main(void) {
     RUN(test_region_and_generation);
     RUN(test_mark_suppresses_writes);
+    RUN(test_refused_write_record);
     RUN(test_guest_store_invalidates);
     RUN(test_unmark_refills);
     RUN(test_host_written);

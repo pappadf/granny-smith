@@ -176,7 +176,8 @@ static bool init_test_memory(void) {
         // Write entries through memory_write_fill: the code-page marks must
         // be able to find and suppress them.
         uintptr_t adjusted = (uintptr_t)(g_mem + (p << PAGE_SHIFT)) - ((uint32_t)p << PAGE_SHIFT);
-        uintptr_t wadj = memory_write_fill((uint32_t)p, g_mem + (p << PAGE_SHIFT), adjusted);
+        uintptr_t wadj =
+            memory_write_fill((uint32_t)p, g_mem + (p << PAGE_SHIFT), adjusted, MEM_WT_SUPER | MEM_WT_USER);
         g_supervisor_read[p] = adjusted;
         g_supervisor_write[p] = wadj;
         g_user_read[p] = adjusted;

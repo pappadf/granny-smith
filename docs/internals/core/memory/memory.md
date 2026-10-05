@@ -291,6 +291,19 @@ without a check on the fast path.
   PDM/TNT/Gossamer glue — goes through `memory_write_fill(page, host, adjusted)`, which
   sets the chunk flag and **declines on a marked page** (the store then
   takes the slow path).  Do not write `g_*_write[]` directly.
+- **Refused writes stay cache hits.**  On the switch core a page that
+  predecode marked would still hold its write entry, so a store there never
+  walks the 68K PMMU tables; a walk sets the descriptor's U/M bits and
+  MMUSR, which the guest can see (A/UX ages its pages by U).  The
+  refused-write record (`memory_write_refused_*`, one bit per page and
+  write table, per map) notes exactly the entries the marks took away --
+  every refusal in `memory_write_fill(..., tables)` and every entry
+  `memory_code_page_mark` zeroes -- and drops them where the switch core
+  loses its entry too (`mmu_invalidate_tlb`, the 68040's, a physical
+  logpoint install, a fill that leaves the page read-only).  The MMU slow
+  path completes a store whose bit is set through the page's read entry,
+  without the walk, and re-plants the write entry once the page is no
+  longer code.  With predecode off nothing ever sets a bit.
 - **Slow-path notification.** The 8/16/32-bit slow write paths call
   `memory_host_written(host, len)` when the target is marked (before the
   store lands, so a block executing the page is invalidated before the
