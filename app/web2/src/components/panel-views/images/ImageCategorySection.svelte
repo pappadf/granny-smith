@@ -322,7 +322,7 @@
       <Hint class="empty" inset="list">Loading…</Hint>
     {:else if entries.length === 0}
       <Hint class="empty" inset="list">
-        No {CATEGORY_LABELS[cat]} images. Drop a file here or click the upload button.
+        No {CATEGORY_LABELS[cat]} images. Drop a file here, or use the add button.
       </Hint>
     {:else}
       {#each entries as entry (entry.path)}
