@@ -195,7 +195,7 @@ The power-on value of the full 35-bit word is unknown. Observable power-on behav
 
 - SIMM_BANK_SIZE reads as code 0 — the 6100's SIMM banks decode in their 128 MB windows at
   $10000000 and $08000000 (§3.2), because the ROM probes exactly those windows before any
-  configuration write [3].
+  configuration write [3]; bank 1 also decodes from the motherboard top (§3.2).
 - DRAM at physical $00000000 is readable and writable before any configuration write: the
   checksum-failure path hammers $00000000–$0002FFFF at reset configuration (§4.8), and the
   calibration loads run there (§4.5) [3].
@@ -301,7 +301,7 @@ derived from the measured second-bank size:
 
 | Code (bits 29–30) | Bank size | Placement after the write |
 |---|---|---|
-| 0 | 128 MB (or bank 2 empty) | reset map: bank 1 @ $10000000, bank 2 @ $08000000, 128 MB windows |
+| 0 | 128 MB (or bank 2 empty) | reset map: bank 1 @ motherboard top up to $07FFFFFF and @ $10000000, bank 2 @ $08000000 |
 | 1 ($20000000) | 2 MB | bank 1 @ motherboard top; bank 2 @ bank 1 top |
 | 2 ($40000000) | 8 MB | likewise, contiguous |
 | 3 ($60000000) | 32 MB | likewise, contiguous |
@@ -311,6 +311,20 @@ I.e. for codes 1–3 the SIMM banks appear **contiguously after the motherboard 
 (*observed*: the ROM writes the code and then immediately builds its bank records through the
 new map). The decode window of a placed bank is *inferred* to match the size code (2, 8 or
 32 MB); it is not separately observable because the probe runs before configuration.
+
+**Code 0 with bank 2 empty.** Each SIMM carries up to two DRAM banks [1] p. 14 and the HMC
+drives one RAS line per bank of the pair (`HmcSimmRasA*`/`HmcSimmRasB*`) [5] sheet 4, so a
+pair of single-sided SIMMs fills SIMM bank 1 only — the common upgrades of an 8 MB machine
+to 10, 12 or 16 MB leave SIMM bank 2 empty. The ROM then leaves SIMM_BANK_SIZE at code 0, accepts any bank 1 up
+to $780 × 64 KB = 120 MB, and still re-bases the bank record: bank 1 at the motherboard top
+($00800000) [3] ($FFF03CF0–$FFF03D20, then $FFF03D04). Every later stage builds on that
+record — the 68k Start Manager fabricates its memory table from it without re-probing — so in
+the code-0 map bank 1 is decoded from the motherboard top as well as in its $10000000 probe
+window (*inferred* from the ROM's record; required for any single-bank machine to boot). The
+120 MB ceiling is the gap between the motherboard top and bank 2's window at $08000000: bank
+1 occupies $00800000–$07FFFFFF, aliasing through it when smaller. Whether bank 1's
+$10000000 image is a separate decode or the RAM-alias image of the low 256 MB (§3.1) is not
+observable to software.
 
 **Aliasing.** An undersized bank aliases — wraps — throughout its decode window: the sizing
 probe (§4.2) finds and measures banks *through* these aliases, so a 4 MB motherboard array
@@ -444,7 +458,8 @@ The PowerPC hardware-init at $FFF03000 performs, in order (*observed* [3]):
 9. **Write the bank configuration**: verify bank 0 is 4 or 8 MB (set MB_BANK_4MB for 4 MB);
    on the 6100 require size(bank 1) ≥ size(bank 2) and sizes in {0, 2, 8, 32, 128} MB — any
    other result abandons the reconfiguration — then write the SIMM_BANK_SIZE code; **the SIMM
-   banks move now** (§3.2). Special case: bank 2 empty allows bank 1 up to 120 MB with code 0.
+   banks move now** (§3.2). Special case: bank 2 empty allows bank 1 up to 120 MB with code 0,
+   recorded at the motherboard top like the packed codes (§3.2).
 10. Pick a staging area in the first bank with ≥ 128 KB (base + $A000), zero 512 bytes.
 11. **Build the boot records**: a nine-entry {base, size} bank table (motherboard first, then
     banks in probe order), sizes truncated to 128 KB multiples, plus total RAM, the measured
@@ -664,7 +679,12 @@ in the reset configuration, and the full 35-bit register must support read-modif
     provisioned for a 1:1-ratio variant never shipped; both are byte-identical in both ROMs.
 13. **6100/7100 board wiring**: pin-level facts here come from the 8100 schematic; the smaller
     boards are assumed to match.
-14. **Workgroup Server 9150**: reported to share the HMC; its ROM dispatch and bank layout are
+14. **The code-0 decode of bank 1**: that bank 1 answers at the motherboard top under code 0
+    is required by the ROM's bank record (§3.2), but the decode's exact extent and its alias
+    phase (offset 0 at $00800000, or at $00000000 with motherboard RAM taking precedence) are
+    not observable from the ROM. [2] Table A-1 lists the 6100's highest RAM address as
+    $06FFFFFF, which matches neither the packed nor the code-0 map of this ROM.
+15. **Workgroup Server 9150**: reported to share the HMC; its ROM dispatch and bank layout are
     outside this evidence set.
 
 ## References

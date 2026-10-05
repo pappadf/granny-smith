@@ -1,0 +1,45 @@
+# Power Macintosh 6100 with SIMM bank 2 empty (docs/reference/machines/pdm/
+# hmc.md, "Bank placement").
+#
+# One single-sided SIMM pair is a single bank.  The ROM's bank configuration
+# then leaves SIMM_BANK_SIZE at code 0 and records bank 1 at the motherboard
+# top ($00800000) — so under code 0 the HMC must decode bank 1 there, not
+# only in its $10000000 probe window.  Without it the nanokernel builds its
+# HTAB in unmapped space and the boot dies after the chime with a black
+# screen.  Each size boots to the gray desktop the ROM paints before the
+# SCSI scan, and the bank table the kernel published is asserted.
+
+include "../lib/mac.script"
+
+def boot_single_bank(ram_kb, bank1_size) {
+    machine.boot model="pm6100" ram=$ram_kb rom="${$ROM}"
+    scheduler.run 200000000
+    # Park in the 68k world so the MMU peeks resolve against its mappings —
+    # bounded: the broken boot never leaves supervisor mode.
+    let spins = 0
+    while (machine.cpu.msr & 0x4000) == 0 && $spins < 2000 {
+        scheduler.run 1000
+        $spins = $spins + 1
+    }
+    assert (machine.cpu.msr & 0x4000) != 0 "${$ram_kb} KB: never reached the 68k world (pc=${machine.cpu.pc:08x}, sdr1=${machine.cpu.sdr1:08x})"
+
+    # NKSystemInfo (durable copy, via the InfoRecord page): +0 total RAM,
+    # +$30.. the {base,size} bank table — motherboard, then bank 1.
+    let si = machine.cpu.mmu.peek(0x5FFFEFF0, 4)
+    assert machine.cpu.mmu.peek($si, 4) == $ram_kb * 1024 "${$ram_kb} KB: PhysicalMemorySize"
+    assert machine.cpu.mmu.peek($si + 0x30, 4) == 0 "${$ram_kb} KB: motherboard base"
+    assert machine.cpu.mmu.peek($si + 0x34, 4) == 0x800000 "${$ram_kb} KB: motherboard size"
+    assert machine.cpu.mmu.peek($si + 0x38, 4) == 0x800000 "${$ram_kb} KB: bank 1 base != motherboard top"
+    assert machine.cpu.mmu.peek($si + 0x3C, 4) == $bank1_size "${$ram_kb} KB: bank 1 size"
+    assert machine.cpu.mmu.peek($si + 0x44, 4) == 0 "${$ram_kb} KB: bank 2 not empty"
+
+    # The boot got through kernel init and video init to the gray desktop.
+    assert machine.screen.depth == 8 "${$ram_kb} KB: video never initialized (black screen)"
+    check("gray-desktop.png")
+    echo "pdm-6100-single-bank: ${$ram_kb} KB ok (bank 1 at $800000, sdr1=${machine.cpu.sdr1:08x})"
+}
+
+boot_single_bank(10240, 0x200000)
+boot_single_bank(16384, 0x800000)
+boot_single_bank(40960, 0x2000000)
+quit

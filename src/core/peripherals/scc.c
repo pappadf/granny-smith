@@ -156,6 +156,10 @@ struct scc {
     scc_frame_fn frame_sink;
     void *frame_ctx;
 
+    // A front end that runs channel B's LocalTalk link (scc_set_sdlc_divert)
+    const scc_sdlc_divert_t *divert;
+    void *divert_ctx;
+
     // BRG source clock frequencies (Hz); 0 = use CPU cycles directly
     uint32_t pclk_hz;
     uint32_t rtxc_hz;
@@ -683,6 +687,28 @@ static uint8_t rr8(ch_t *ch) {
     return value;
 }
 
+// The host-side capture of what the channel transmitted (`sent`).
+static void sent_capture(scc_t *scc, unsigned int ch, uint8_t value) {
+    if (scc->sent[ch].len < SENT_BUF_SIZE)
+        scc->sent[ch].buf[scc->sent[ch].len++] = value;
+    else
+        scc->sent[ch].dropped++;
+}
+
+// An asynchronous byte leaves channel `ch`: into the capture, down the
+// cable to the port's output file -- flushed at once so a reader of the
+// file sees it (serial rates are low; a byte per flush is cheap) -- and to
+// a device on the cable, which may also have a file beside it.
+static void port_tx_byte(scc_t *scc, unsigned int ch, uint8_t value) {
+    sent_capture(scc, ch, value);
+    if (scc->port[ch].out) {
+        fputc(value, scc->port[ch].out);
+        fflush(scc->port[ch].out);
+    }
+    if (scc->port[ch].dev)
+        scc->port[ch].dev->tx_byte(scc->port[ch].dev_ctx, value);
+}
+
 static void tx_underrun(ch_t *ch) {
     ch->rr[0] |= RR0_TX_UNDERRUN_EOM;
 
@@ -930,21 +956,10 @@ static void wr8(ch_t *c, uint8_t value) {
     // Tap the byte for the host-side capture before the SDLC framing buffer
     // sees it: in async mode nothing ever drains tx.buf, so the capture is the
     // only place an emulated serial console's text survives.
-    scc_t *scc = c->scc;
-    if (scc->sent[c->index].len < SENT_BUF_SIZE)
-        scc->sent[c->index].buf[scc->sent[c->index].len++] = value;
+    if (ASYNC_MODE(c))
+        port_tx_byte(c->scc, c->index, value);
     else
-        scc->sent[c->index].dropped++;
-    // An asynchronous byte also goes down the cable to the port's output
-    // file, flushed at once so a reader of the file sees it (serial rates
-    // are low; a byte per flush is cheap)
-    if (scc->port[c->index].out && ASYNC_MODE(c)) {
-        fputc(value, scc->port[c->index].out);
-        fflush(scc->port[c->index].out);
-    }
-    // ... and to a device on the cable, which may also have a file beside it
-    if (scc->port[c->index].dev && ASYNC_MODE(c))
-        scc->port[c->index].dev->tx_byte(scc->port[c->index].dev_ctx, value);
+        sent_capture(c->scc, c->index, value);
 
     int prev_len = c->tx.len;
     // Drop on overflow rather than asserting — a guest that streams output
@@ -1240,8 +1255,29 @@ static void scc_write_uint32(void *scc, uint32_t addr, uint32_t value) {
 bool scc_sdlc_ready(const scc_t *restrict scc) {
     if (!scc)
         return false;
+    if (scc->divert)
+        return scc->divert->ready(scc->divert_ctx);
     const ch_t *ch = &scc->ch[1];
     return SDLC_MODE(ch);
+}
+
+void scc_set_sdlc_divert(scc_t *scc, const scc_sdlc_divert_t *divert, void *ctx) {
+    if (!scc)
+        return;
+    scc->divert = divert;
+    scc->divert_ctx = divert ? ctx : NULL;
+}
+
+void scc_sdlc_divert_tx(scc_t *scc, const uint8_t *frame, size_t len) {
+    if (scc && scc->frame_sink)
+        scc->frame_sink(scc->frame_ctx, frame, len);
+}
+
+void scc_port_tx_bytes(scc_t *scc, unsigned int ch, const uint8_t *buf, size_t len) {
+    if (!scc || ch > 1)
+        return;
+    for (size_t i = 0; i < len; i++)
+        port_tx_byte(scc, ch, buf[i]);
 }
 
 void scc_set_frame_sink(scc_t *scc, scc_frame_fn fn, void *context) {
@@ -1375,6 +1411,16 @@ void scc_set_input_pin(scc_t *scc, unsigned int ch, scc_pin_t pin, bool asserted
 
 int scc_sdlc_send(scc_t *restrict scc, uint8_t *buf, size_t len) {
     ch_t *ch = &scc->ch[1];
+
+    // An I/O processor runs the link: the frame is its to receive.
+    if (scc->divert) {
+        if (len < 3 || len > SDLC_MAX_FRAME) {
+            LOG(1, "scc_sdlc_send: frame length %zu outside [3, %d]; dropping", len, SDLC_MAX_FRAME);
+            return -1;
+        }
+        scc->divert->rx_frame(scc->divert_ctx, buf, len);
+        return 0;
+    }
 
     // Every one of these three was an assert.  None of them could be.
     //

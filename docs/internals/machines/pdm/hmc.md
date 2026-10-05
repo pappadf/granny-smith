@@ -45,7 +45,10 @@ sizing probe depends on:
 - empty windows must **not** echo the last write — unmapped reads return
   0, so the probe's signature compare fails;
 - **6100** (`PDM_BANKS_MOVABLE`): with code 0, bank 1 decodes at
-  `$10000000` and bank 2 at `$08000000` (128 MB windows each); writing a
+  `$10000000` and bank 2 at `$08000000` (128 MB windows each), and bank 1
+  also from the motherboard top up to `$08000000` — code 0 is the
+  configured state when bank 2 is empty, and the ROM then records bank 1
+  at `$00800000` (any size up to 120 MB); writing a
   size code relocates them contiguously after motherboard RAM, each with
   a bank-size window.  The ROM writes the code and immediately stores its
   bank table through the new map;
