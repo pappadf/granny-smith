@@ -98,6 +98,11 @@ typedef struct mac030_io_range {
     // charge, so `penalty` is legitimately 0 -- and saying so here is what
     // lets mac030_io_validate insist that every OTHER window declares one.
     uint16_t berr;
+    // An inspection of a handler row (memory_interface_t.peek_*): the value
+    // read_fn would return, with none of its side effects.  Set on every
+    // row whose read_fn has one (a FIFO pop, a flag cleared on read, a bus
+    // error); NULL means read_fn is pure and serves inspections too.
+    uint8_t (*peek_fn)(struct config *cfg, uint32_t win_off, uint32_t addr);
 } mac030_io_range_t;
 
 // The island is at most 256 KB (the widest io_mirror_mask any board declares
@@ -152,6 +157,9 @@ const mac030_io_range_t *mac030_io_decode_indexed(const mac030_io_t *io, uint32_
 
 // The six dispatch entry-points (the shared engine).  `ctx` is a mac030_io_t*.
 uint8_t mac030_io_read_uint8(void *ctx, uint32_t addr);
+uint8_t mac030_io_peek_uint8(void *ctx, uint32_t addr);
+uint16_t mac030_io_peek_uint16(void *ctx, uint32_t addr);
+uint32_t mac030_io_peek_uint32(void *ctx, uint32_t addr);
 uint16_t mac030_io_read_uint16(void *ctx, uint32_t addr);
 uint32_t mac030_io_read_uint32(void *ctx, uint32_t addr);
 void mac030_io_write_uint8(void *ctx, uint32_t addr, uint8_t value);

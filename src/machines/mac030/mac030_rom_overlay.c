@@ -84,6 +84,11 @@ static uint8_t overlay_read8(void *ctx, uint32_t offset) {
     return overlay_rom_ptr(ov, offset)[0];
 }
 
+// An inspection reads the ROM byte without throwing the switch.
+static uint8_t overlay_peek8(void *ctx, uint32_t offset) {
+    return overlay_rom_ptr((mac030_rom_overlay_t *)ctx, offset)[0]; // wider peeks compose
+}
+
 // Composed from byte reads so every byte wraps within the mirror
 // independently.  Indexing p[1..3] off a single wrapped base instead would
 // read past the end of the RAM+ROM allocation when the base landed on the last
@@ -131,6 +136,9 @@ void mac030_rom_overlay_init(mac030_rom_overlay_t *ov, struct config *cfg, uint3
     ov->iface.read_uint8 = overlay_read8;
     ov->iface.read_uint16 = overlay_read16;
     ov->iface.read_uint32 = overlay_read32;
+    ov->iface.peek_uint8 = overlay_peek8;
+    ov->iface.peek_uint16 = NULL;
+    ov->iface.peek_uint32 = NULL;
     ov->iface.write_uint8 = overlay_write8;
     ov->iface.write_uint16 = overlay_write16;
     ov->iface.write_uint32 = overlay_write32;

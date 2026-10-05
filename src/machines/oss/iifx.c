@@ -517,15 +517,24 @@ static void iifx_set_rom_overlay(config_t *cfg, bool overlay) {
     }
 }
 
-// Reads one byte from the ROM device and drops the overlay.
-static uint8_t iifx_rom_read_uint8(void *ctx, uint32_t addr) {
+// Reads one byte from the ROM device; the guest's read drops the overlay, an
+// inspection (`peek`) leaves it.
+static uint8_t iifx_rom_byte(void *ctx, uint32_t addr, bool peek) {
     config_t *cfg = (config_t *)ctx;
-    iifx_set_rom_overlay(cfg, false);
+    if (!peek)
+        iifx_set_rom_overlay(cfg, false);
     const uint8_t *rom = memory_rom_bytes(cfg->mem_map);
     uint32_t rom_size = memory_rom_size(cfg->mem_map);
     if (!rom || rom_size == 0)
         return 0xff;
     return rom[addr % rom_size];
+}
+
+static uint8_t iifx_rom_read_uint8(void *ctx, uint32_t addr) {
+    return iifx_rom_byte(ctx, addr, false);
+}
+static uint8_t iifx_rom_peek_uint8(void *ctx, uint32_t addr) {
+    return iifx_rom_byte(ctx, addr, true); // wider peeks compose
 }
 
 // Reads one word from the ROM device.
@@ -819,16 +828,17 @@ static void iifx_scsidma_update_int(config_t *cfg) {
 // ── Register access ───────────────────────────────────────────────
 //
 // Reads one SCSI DMA register byte. Offsets $000..$070 forward to
-// the embedded 53C80; $080..$1FF are wrapper-local.
-static uint8_t iifx_scsidma_read_uint8(config_t *cfg, uint32_t offset) {
+// the embedded 53C80; $080..$1FF are wrapper-local.  An inspection (`peek`)
+// reads the same value and clears no latch.
+static uint8_t iifx_scsidma_read_uint8(config_t *cfg, uint32_t offset, bool peek) {
     iifx_state_t *st = iifx_state(cfg);
     uint32_t off = offset & 0x1fff;
 
     if (off < 0x80) {
-        uint8_t v = st->scsi_iface->read_uint8(cfg->scsi, off);
+        uint8_t v = memory_iface_read8(st->scsi_iface, cfg->scsi, off, peek);
         // Reading $070 clears the 53C80 IRQ latch (spec §6.4 / §20).
         // Re-evaluate the wrapper's gated /INT output.
-        if ((off & 0xf0) == 0x70)
+        if ((off & 0xf0) == 0x70 && !peek)
             iifx_scsidma_update_int(cfg);
         return v;
     }
@@ -843,7 +853,7 @@ static uint8_t iifx_scsidma_read_uint8(config_t *cfg, uint32_t offset) {
     if (off >= SCSIDMA_DTIME && off < SCSIDMA_DTIME + 4) {
         // Reading $140 clears the watchdog IRQ latch (spec §19.3).
         uint8_t v = iifx_read_reg32_byte(st->scsi_dma_watchdog_reload, off);
-        if ((off & 3) == 3 && st->scsi_dma_watchdog_irq_latch) {
+        if ((off & 3) == 3 && st->scsi_dma_watchdog_irq_latch && !peek) {
             st->scsi_dma_watchdog_irq_latch = false;
             iifx_scsidma_update_int(cfg);
         }
@@ -1113,6 +1123,10 @@ static uint8_t iifx_io_berr_read(config_t *cfg, uint32_t win_off, uint32_t addr)
     memory_signal_bus_error(IIFX_IO_BASE + addr, false);
     return 0xff;
 }
+static uint8_t iifx_io_berr_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)cfg, (void)win_off, (void)addr;
+    return 0xff; // what the faulting read returns, without the fault
+}
 static void iifx_io_berr_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
     (void)win_off; // this window's handler decodes from addr itself
     (void)cfg;
@@ -1123,7 +1137,11 @@ static void iifx_io_berr_write(config_t *cfg, uint32_t win_off, uint32_t addr, u
 // SCSI-DMA engine ($08000).
 static uint8_t iifx_io_scsidma_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     (void)win_off; // this window's handler decodes from addr itself
-    return iifx_scsidma_read_uint8(cfg, (addr & IIFX_IO_MIRROR) - IO_SCSI_DMA);
+    return iifx_scsidma_read_uint8(cfg, (addr & IIFX_IO_MIRROR) - IO_SCSI_DMA, false);
+}
+static uint8_t iifx_io_scsidma_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off;
+    return iifx_scsidma_read_uint8(cfg, (addr & IIFX_IO_MIRROR) - IO_SCSI_DMA, true);
 }
 static void iifx_io_scsidma_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
     (void)win_off; // this window's handler decodes from addr itself
@@ -1147,16 +1165,24 @@ static void iifx_io_biu_write(config_t *cfg, uint32_t win_off, uint32_t addr, ui
 // OSS extension / serial-shift register ($1c000-$1ffff).  Offset 0 is a 16-bit
 // right-shifting serial register (POST phase $8F: writes insert at bit 15,
 // reads take bit 0 and shift right); the rest is a plain R/W backing array.
-static uint8_t iifx_io_ossext_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
-    (void)win_off; // this window's handler decodes from addr itself
+static uint8_t ossext_read(config_t *cfg, uint32_t addr, bool peek) {
     iifx_state_t *st = iifx_state(cfg);
     uint32_t offset = addr & IIFX_IO_MIRROR;
     if (offset == IO_OSS_EXT_SHIFT) {
         uint8_t v = (uint8_t)(st->oss_ext_shift & 1u);
-        st->oss_ext_shift >>= 1;
+        if (!peek)
+            st->oss_ext_shift >>= 1;
         return v;
     }
     return st->oss_ext[offset - IO_OSS_EXT_START];
+}
+static uint8_t iifx_io_ossext_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
+    return ossext_read(cfg, addr, false);
+}
+static uint8_t iifx_io_ossext_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off;
+    return ossext_read(cfg, addr, true);
 }
 static void iifx_io_ossext_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
     (void)win_off; // this window's handler decodes from addr itself
@@ -1181,7 +1207,7 @@ static const mac030_io_range_t iifx_io_ranges_tbl[] = {
     {IO_SCC_IOP, IO_SCC_IOP_END, MAC030_DEV_SCC_IOP, IIFX_IOP_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL,
      "scc_iop"},
     {IO_SCSI_DMA, IO_SCSI_DMA_END, MAC030_DEV_VIA1, IIFX_SCSI_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, iifx_io_scsidma_read,
-     iifx_io_scsidma_write, "scsi_dma"},
+     iifx_io_scsidma_write, "scsi_dma", .peek_fn = iifx_io_scsidma_peek},
     {IO_SCSI_REG, IO_SCSI_REG_END, MAC030_DEV_SCSI, IIFX_SCSI_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL,
      "scsi_reg"},
     {IO_SCSI_DRQ_R, IO_SCSI_DRQ_R_END, MAC030_DEV_SCSI, IIFX_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201, NULL, NULL,
@@ -1197,11 +1223,11 @@ static const mac030_io_range_t iifx_io_ranges_tbl[] = {
     // The two bus-error windows charge nothing on purpose: the cycle is
     // aborted, so there is no turnaround to pay for.  `.berr` says so.
     {IO_RPU_PROBE, IO_RPU_PROBE_END, MAC030_DEV_VIA1, 0, MAC030_IO_NORMAL, 0, 0, iifx_io_berr_read, iifx_io_berr_write,
-     "rpu_probe", .berr = 1},
+     "rpu_probe", .berr = 1, .peek_fn = iifx_io_berr_peek},
     {IO_OSS_EXT_START, IO_OSS_EXT_END, MAC030_DEV_VIA1, IIFX_OSS_IO_PENALTY, MAC030_IO_NORMAL, 0, 0,
-     iifx_io_ossext_read, iifx_io_ossext_write, "oss_ext"},
+     iifx_io_ossext_read, iifx_io_ossext_write, "oss_ext", .peek_fn = iifx_io_ossext_peek},
     {IO_FMC_BERR, IO_FMC_BERR_END, MAC030_DEV_VIA1, 0, MAC030_IO_NORMAL, 0, 0, iifx_io_berr_read, iifx_io_berr_write,
-     "fmc_berr", .berr = 1},
+     "fmc_berr", .berr = 1, .peek_fn = iifx_io_berr_peek},
     {0}, // sentinel
 };
 
@@ -1231,6 +1257,11 @@ static uint8_t iifx_io_read_uint8(void *ctx, uint32_t addr) {
     if (addr >= 0x0ffffffc) // machine-ID register at the top of the I/O space
         return iifx_read_reg32_byte(0xa55a000d, addr);
     return mac030_io_read_uint8(ctx, addr);
+}
+static uint8_t iifx_io_peek_uint8(void *ctx, uint32_t addr) {
+    if (addr >= 0x0ffffffc)
+        return iifx_read_reg32_byte(0xa55a000d, addr);
+    return mac030_io_peek_uint8(ctx, addr); // wider peeks compose
 }
 static uint16_t iifx_io_read_uint16(void *ctx, uint32_t addr) {
     return (uint16_t)(((uint16_t)iifx_io_read_uint8(ctx, addr) << 8) | iifx_io_read_uint8(ctx, addr + 1));
@@ -1422,6 +1453,7 @@ static void iifx_memory_layout_init(config_t *cfg) {
         .write_uint8 = iifx_rom_write_uint8,
         .write_uint16 = iifx_rom_write_uint16,
         .write_uint32 = iifx_rom_write_uint32,
+        .peek_uint8 = iifx_rom_peek_uint8,
     };
     memory_map_add(cfg->mem_map, IIFX_ROM_START, IIFX_ROM_END - IIFX_ROM_START, "ROM switch", &st->rom_interface, cfg);
 
@@ -1435,6 +1467,7 @@ static void iifx_memory_layout_init(config_t *cfg) {
         .write_uint8 = mac030_io_write_uint8,
         .write_uint16 = mac030_io_write_uint16,
         .write_uint32 = mac030_io_write_uint32,
+        .peek_uint8 = iifx_io_peek_uint8,
     };
     memory_map_add(cfg->mem_map, IIFX_IO_BASE, IIFX_IO_SIZE, "I/O", &st->io_interface, &st->iifx_io);
 

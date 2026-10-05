@@ -539,7 +539,7 @@ static void civic_lo_write32(void *ctx, uint32_t off, uint32_t value) {
 // Sebastian RAMDAC
 // ============================================================
 
-uint8_t av_civic_seb_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+static uint8_t av_civic_seb_read_access(config_t *cfg, uint32_t win_off, uint32_t addr, bool peek) {
     (void)win_off; // this window's handler decodes from addr itself
     av_civic_t *cv = civic_of(cfg);
     uint32_t reg = (addr & 0xFFu) >> 4;
@@ -564,7 +564,7 @@ uint8_t av_civic_seb_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
             v = e->a;
             break;
         }
-        if (++cv->seb_phase == 4) {
+        if (!peek && ++cv->seb_phase == 4) {
             cv->seb_phase = 0;
             cv->seb_addr++;
         }
@@ -575,6 +575,13 @@ uint8_t av_civic_seb_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     default:
         return 0;
     }
+}
+
+uint8_t av_civic_seb_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    return av_civic_seb_read_access(cfg, win_off, addr, false);
+}
+uint8_t av_civic_seb_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    return av_civic_seb_read_access(cfg, win_off, addr, true);
 }
 
 void av_civic_seb_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {

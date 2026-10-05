@@ -290,6 +290,7 @@ void pdm_clear_page(uint32_t page_index);
 
 void pdm_hmc_init(config_t *cfg);
 uint8_t pdm_hmc_read(config_t *cfg, uint32_t offset); // island offset $40000+
+uint8_t pdm_hmc_peek(config_t *cfg, uint32_t offset); // the same, bit pointer left alone
 void pdm_hmc_write(config_t *cfg, uint32_t offset, uint8_t value);
 // (Re)build the RAM decode per the current config code; also the cold-boot
 // power-on mapping when called with the reset config.

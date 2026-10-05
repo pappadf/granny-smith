@@ -59,7 +59,7 @@ static inline av_mace_t *mace_of(config_t *cfg) {
     return ((av_state_t *)cfg->machine_context)->mace;
 }
 
-uint8_t av_mace_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+static uint8_t av_mace_read_access(config_t *cfg, uint32_t win_off, uint32_t addr, bool peek) {
     (void)win_off; // this window's handler decodes from addr itself
     av_mace_t *m = mace_of(cfg);
     uint32_t reg = ((addr & 0x1FFu) >> 4) % AV_MACE_REGS;
@@ -67,7 +67,8 @@ uint8_t av_mace_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     case MACE_IR: {
         // Read-to-clear; nothing can interrupt with no datapath.
         uint8_t v = m->regs[MACE_IR];
-        m->regs[MACE_IR] = 0;
+        if (!peek)
+            m->regs[MACE_IR] = 0;
         return v;
     }
     case MACE_PR:
@@ -79,6 +80,13 @@ uint8_t av_mace_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     default:
         return m->regs[reg];
     }
+}
+
+uint8_t av_mace_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    return av_mace_read_access(cfg, win_off, addr, false);
+}
+uint8_t av_mace_peek(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    return av_mace_read_access(cfg, win_off, addr, true);
 }
 
 void av_mace_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {

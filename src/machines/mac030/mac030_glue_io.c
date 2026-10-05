@@ -161,6 +161,20 @@ static inline uint8_t io_read_byte(mac030_io_t *io, uint32_t addr, const mac030_
     return io->iface[r->device]->read_uint8(io->handle[r->device], io_sub_offset(r, offset, true));
 }
 
+// An inspection of one byte: what io_read_byte would return, without its bus
+// penalty, its first-touch log, or the device's read side effects.
+static inline uint8_t io_peek_byte(mac030_io_t *io, uint32_t addr, const mac030_io_range_t *hint) {
+    uint32_t offset = addr & io->mirror_mask;
+    const mac030_io_range_t *r = io_find(io, hint, offset);
+    if (!r)
+        return io->unmapped_read;
+    if (r->read_fn)
+        return (r->peek_fn ? r->peek_fn : r->read_fn)(io->cfg, io_sub_offset(r, offset, true), addr);
+    if (!io->iface[r->device])
+        return io->unmapped_read;
+    return memory_iface_read8(io->iface[r->device], io->handle[r->device], io_sub_offset(r, offset, true), true);
+}
+
 static inline void io_write_byte(mac030_io_t *io, uint32_t addr, uint8_t value, const mac030_io_range_t *hint) {
     uint32_t offset = addr & io->mirror_mask;
     const mac030_io_range_t *r = io_find(io, hint, offset);
@@ -203,6 +217,26 @@ uint32_t mac030_io_read_uint32(void *ctx, uint32_t addr) {
     return v | io_read_byte(io, addr + 3, hint);
 }
 
+uint8_t mac030_io_peek_uint8(void *ctx, uint32_t addr) {
+    return io_peek_byte((mac030_io_t *)ctx, addr, NULL);
+}
+
+// Wide peeks decompose into bytes exactly as the reads do.
+uint16_t mac030_io_peek_uint16(void *ctx, uint32_t addr) {
+    mac030_io_t *io = (mac030_io_t *)ctx;
+    const mac030_io_range_t *hint = io_find(io, NULL, addr & io->mirror_mask);
+    return ((uint16_t)io_peek_byte(io, addr, hint) << 8) | io_peek_byte(io, addr + 1, hint);
+}
+
+uint32_t mac030_io_peek_uint32(void *ctx, uint32_t addr) {
+    mac030_io_t *io = (mac030_io_t *)ctx;
+    const mac030_io_range_t *hint = io_find(io, NULL, addr & io->mirror_mask);
+    uint32_t v = (uint32_t)io_peek_byte(io, addr, hint) << 24;
+    v |= (uint32_t)io_peek_byte(io, addr + 1, hint) << 16;
+    v |= (uint32_t)io_peek_byte(io, addr + 2, hint) << 8;
+    return v | io_peek_byte(io, addr + 3, hint);
+}
+
 void mac030_io_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
     mac030_io_t *io = (mac030_io_t *)ctx;
     io_write_byte(io, addr, value, NULL);
@@ -231,6 +265,9 @@ void mac030_io_fill_interface(memory_interface_t *iface) {
     iface->write_uint8 = mac030_io_write_uint8;
     iface->write_uint16 = mac030_io_write_uint16;
     iface->write_uint32 = mac030_io_write_uint32;
+    iface->peek_uint8 = mac030_io_peek_uint8;
+    iface->peek_uint16 = mac030_io_peek_uint16;
+    iface->peek_uint32 = mac030_io_peek_uint32;
 }
 
 // Names for the validation diagnostic, indexed by mac030_dev_t.

@@ -71,7 +71,8 @@ static void pdm_scc_rx_b_event(void *source, uint64_t data);
 // 6..0.  Slot sources fold in through the ANY SLOT bit (device bit 1); the
 // SCSI DRQ bits (0 = Curio, 2 = 53CF96) read the chips' DREQ outputs LIVE
 // — the SCSI Manager's Ck4DREQ polls them, never latches or enables them.
-static uint8_t via2_dev_ifr(config_t *cfg) {
+// An inspection (`peek`) computes the same value without caching the levels.
+static uint8_t via2_dev_ifr(config_t *cfg, bool peek) {
     pdm_state_t *st = pdm_st(cfg);
     pdm_via2_t *v2 = &st->amic.via2;
     // Slot flags: register reads active-low; internal any-slot aggregate
@@ -82,7 +83,8 @@ static uint8_t via2_dev_ifr(config_t *cfg) {
         levels |= 0x02u; // ANY SLOT
     else
         levels &= ~0x02u;
-    v2->dev_levels = levels;
+    if (!peek)
+        v2->dev_levels = levels;
     uint8_t ifr = levels & 0x7Fu;
     if (st->scsi96[0] && scsi_53c96_dreq(st->scsi96[0]))
         ifr |= 0x01u; // SCSI-A DRQ
@@ -175,7 +177,7 @@ void pdm_amic_recompute(config_t *cfg) {
     pdm_amic_t *a = &st->amic;
 
     // Fold the pseudo-VIA2 aggregate into the source picture first
-    uint8_t dev = via2_dev_ifr(cfg);
+    uint8_t dev = via2_dev_ifr(cfg, false);
     if (dev & 0x80u)
         st->icr_sources |= 1u << PDM_ICR_VIA2;
     else
@@ -211,14 +213,14 @@ void pdm_amic_recompute(config_t *cfg) {
 // five bits alias to the compact offsets).  Without the mirror the
 // dispatcher reads zeros, computes "no source", and never services the
 // asserted SCSI level — an interrupt storm that starves the whole 68k.
-static uint8_t via2_read(config_t *cfg, uint32_t off) {
+static uint8_t via2_read(config_t *cfg, uint32_t off, bool peek) {
     pdm_via2_t *v2 = &pdm_st(cfg)->amic.via2;
     off &= 0x1Fu;
     switch (off) {
     case 0x02:
         return v2->slot_ifr; // active-low levels, unused bits high
     case 0x03:
-        return via2_dev_ifr(cfg);
+        return via2_dev_ifr(cfg, peek);
     case 0x12:
         return v2->slot_ier;
     case 0x13:
@@ -1070,7 +1072,7 @@ uint8_t pdm_amic_read(config_t *cfg, uint32_t offset) {
         return pdm_ariel_read(cfg, offset - OFF_ARIEL);
     case OFF_VIA2:
     case OFF_VIA2 + 0x1000: // classic-VIA-stride aliases of the bank
-        return via2_read(cfg, offset - OFF_VIA2);
+        return via2_read(cfg, offset - OFF_VIA2, false);
     case OFF_VIDEO:
         return pdm_video_ctl_read(cfg, offset - OFF_VIDEO);
     case OFF_ICR:

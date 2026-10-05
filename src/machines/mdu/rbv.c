@@ -213,8 +213,8 @@ static uint16_t rbv_decode(uint32_t off) {
     }
 }
 
-static uint8_t rbv_read_byte(void *device, uint32_t addr) {
-    rbv_t *rbv = (rbv_t *)device;
+// A register read; an inspection (`peek`) leaves the clear-on-read VBL flag.
+static uint8_t rbv_reg_read(rbv_t *rbv, uint32_t addr, bool peek) {
     uint16_t reg = rbv_decode(addr);
     switch (reg) {
     case RV_DATAB:
@@ -224,6 +224,8 @@ static uint8_t rbv_read_byte(void *device, uint32_t addr) {
     case RV_SINT: {
         // RvSInt is active-low: a set bit means "no interrupt on that slot".
         uint8_t v = (uint8_t)(~rbv->slot_pending & 0x7Fu);
+        if (peek)
+            return v;
         LOG(4, "read RvSInt = $%02X", v);
         // The built-in-video VBL flag (RvIRQ0 = bit 6) is clear-on-read: a
         // vblank pulse is observed once per frame then deasserts.  NuBus slot
@@ -361,6 +363,13 @@ static void rbv_write_byte(void *device, uint32_t addr, uint8_t value) {
 
 // RBV is an 8-bit peripheral; compose wider accesses from byte ops so an
 // occasional word/long touch from the OS doesn't fault.
+static uint8_t rbv_read_byte(void *device, uint32_t addr) {
+    return rbv_reg_read(device, addr, false);
+}
+static uint8_t rbv_peek_byte(void *device, uint32_t addr) {
+    return rbv_reg_read(device, addr, true);
+}
+
 static uint16_t rbv_read_word(void *device, uint32_t addr) {
     return (uint16_t)((rbv_read_byte(device, addr) << 8) | rbv_read_byte(device, addr + 1));
 }
@@ -474,6 +483,7 @@ rbv_t *rbv_init(rbv_variant_t variant, uint8_t sense3, checkpoint_t *cp) {
         .write_uint8 = rbv_write_byte,
         .write_uint16 = rbv_write_word,
         .write_uint32 = rbv_write_long,
+        .peek_uint8 = rbv_peek_byte, // wider peeks compose
     };
 
     if (cp) {
