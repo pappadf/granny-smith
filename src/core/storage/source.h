@@ -77,6 +77,14 @@ gs_source_t *gs_source_view(gs_source_t *parent, uint64_t off, uint64_t len, con
 // Bytes in memory.  With `own`, freed with the source.  `key` may be NULL.
 gs_source_t *gs_source_memory(const void *buf, size_t len, bool own, const char *key);
 
+// `parent` lengthened to `size` bytes: past the parent's end it reads as
+// zeros, except `patch_len` bytes of `patch` (copied) at `patch_off`, which
+// must lie wholly past the parent's end.  The key is the parent's with
+// "#pad<size>" appended; the tier the parent's.  Retains `parent`.  NULL when
+// `size` is not past the parent's end, the patch is misplaced, or on
+// allocation failure.
+gs_source_t *gs_source_pad(gs_source_t *parent, uint64_t size, uint64_t patch_off, const void *patch, size_t patch_len);
+
 // === Operations =============================================================
 
 static inline gs_source_t *gs_source_retain(gs_source_t *s) {

@@ -14,6 +14,7 @@
 #include "format_registry.h"
 #include "image_scratch.h"
 #include "image_udif.h"
+#include "image_wrap.h"
 #include "log.h"
 #include "platform.h"
 #include "source.h"
@@ -271,6 +272,11 @@ size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t s
 // installed path opener, so a path may continue through an image or an
 // archive (outer.img/partition1/inner.img, roms.zip/disk.img.gz).
 
+// image_wrap_read_fn over a source.
+static bool source_read_cb(void *ctx, uint64_t offset, uint8_t *buf, size_t size) {
+    return gs_source_read_exact((gs_source_t *)ctx, offset, buf, size) == 0;
+}
+
 // How an image is opened.
 typedef enum { OPEN_READONLY, OPEN_CREATE, OPEN_REOPEN } open_mode_t;
 
@@ -310,6 +316,28 @@ static image_t *image_open_source(const char *name, gs_source_t *data, gs_source
         errno = ENOMEM;
         return NULL;
     }
+    // A volume trimmed short of its own header's claim is opened at that
+    // claim (image_wrap.h): the storage's base becomes the file followed by
+    // zeros, with a copy of the volume's header where its alternate belongs
+    // (the second-last block; Disk First Aid rejects a volume without it).
+    // Guest writes to the tail land in the delta like any others.
+    gs_source_t *padded = NULL;
+    if (block_size == STORAGE_BLOCK_SIZE) {
+        uint64_t start = 0;
+        uint64_t blocks = image_wrap_extended_blocks(source_read_cb, u.data, raw / block_size, &start);
+        uint8_t hdr[STORAGE_BLOCK_SIZE];
+        if (blocks * block_size > raw && blocks * block_size <= SIZE_MAX &&
+            gs_source_read_exact(u.data, (start + 2) * block_size, hdr, sizeof(hdr)) == 0) {
+            uint64_t alt = (blocks - 2) * block_size;
+            padded = gs_source_pad(u.data, blocks * block_size, alt, hdr, alt >= raw ? sizeof(hdr) : 0);
+        }
+        if (padded) {
+            LOG(1, "'%s': its volume claims %llu blocks but the file holds %llu; the missing tail reads as zeros", name,
+                (unsigned long long)blocks, (unsigned long long)(raw / block_size));
+            raw = blocks * block_size;
+        }
+    }
+
     image->filename = gs_strdup(name);
     image->source_key = gs_strdup(gs_source_key(data));
     image->format = gs_strdup(u.chain[0] ? u.chain : "raw");
@@ -340,6 +368,7 @@ static image_t *image_open_source(const char *name, gs_source_t *data, gs_source
         image->journal_path = gs_str_printf("%s.journal", image->instance_path);
     }
     if (!image->filename || !image->source_key || !image->format || !image->delta_path || !image->journal_path) {
+        gs_source_release(padded);
         gs_unwrapped_free(&u);
         image_close(image);
         errno = ENOMEM;
@@ -347,12 +376,13 @@ static image_t *image_open_source(const char *name, gs_source_t *data, gs_source
     }
 
     storage_config_t config = {0};
-    config.base = u.data;
+    config.base = padded ? padded : u.data;
     config.delta_path = image->delta_path;
     config.journal_path = image->journal_path;
     config.block_count = image->raw_size / image->block_size;
     config.block_size = image->block_size;
     int rc = storage_new(&config, &image->storage);
+    gs_source_release(padded);
     if (rc == GS_SUCCESS && u.dc42)
         image_load_diskcopy_tags(image, u.dc42);
     gs_unwrapped_free(&u);

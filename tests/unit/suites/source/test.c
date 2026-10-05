@@ -113,6 +113,36 @@ TEST(test_view_arithmetic_at_boundaries) {
     gs_source_release(vv);
 }
 
+// A padded source: the parent's bytes, then zeros up to the new size with
+// the one patch in place; misplaced patches and non-growth are refused.
+TEST(test_pad_lengthens_with_a_patch) {
+    count_t c;
+    gs_source_t *s = counting(&c, 1000, GS_TIER_RANDOM, "count");
+    const uint8_t patch[4] = {0xB, 0xD, 0x1, 0x2};
+    gs_source_t *p = gs_source_pad(s, 2000, 1500, patch, sizeof(patch));
+    ASSERT_TRUE(p != NULL);
+    ASSERT_EQ_INT(2000, (int)gs_source_size(p));
+    ASSERT_EQ_INT(GS_TIER_RANDOM, gs_source_tier(p));
+    ASSERT_TRUE(strcmp(gs_source_key(p), "count#pad2000") == 0);
+    uint8_t b[32];
+    ASSERT_EQ_INT(0, gs_source_read_exact(p, 990, b, 20)); // across the parent's end
+    ASSERT_EQ_INT(pattern(999), b[9]);
+    ASSERT_EQ_INT(0, b[10]);
+    ASSERT_EQ_INT(0, gs_source_read_exact(p, 1498, b, 8)); // across the patch
+    ASSERT_EQ_INT(0, b[1]);
+    ASSERT_EQ_INT(0xB, b[2]);
+    ASSERT_EQ_INT(0x2, b[5]);
+    ASSERT_EQ_INT(0, b[6]);
+    ASSERT_EQ_INT(0, (int)gs_source_read(p, 2000, b, 1)); // past the end
+    ASSERT_TRUE(gs_source_pad(s, 1000, 0, NULL, 0) == NULL); // no growth
+    ASSERT_TRUE(gs_source_pad(s, 2000, 999, patch, sizeof(patch)) == NULL); // over the parent
+    ASSERT_TRUE(gs_source_pad(s, 2000, 1998, patch, sizeof(patch)) == NULL); // past the end
+    gs_source_release(s);
+    ASSERT_EQ_INT(0, gs_source_read_exact(p, 0, b, 1)); // retains its parent
+    ASSERT_EQ_INT(pattern(0), b[0]);
+    gs_source_release(p);
+}
+
 // Keys name what is inside what.
 TEST(test_key_containment) {
     ASSERT_TRUE(gs_key_within("/a/disk.img@1:2", "/a/disk.img@1:2"));
@@ -570,6 +600,7 @@ TEST(test_not_yet_is_waited_out_with_poll) {
 
 int main(void) {
     RUN(test_view_arithmetic_at_boundaries);
+    RUN(test_pad_lengthens_with_a_patch);
     RUN(test_key_containment);
     RUN(test_decode_through_backward_reads_never_redecode);
     RUN(test_chunk_cache_coalesces_concurrent_readers);

@@ -11,7 +11,6 @@
 #include "common.h"
 #include "gs_out.h"
 #include "gsdisk_driver.h" // generated: gsdisk_drvr[] (src/core/storage/gsdisk/)
-#include "image_apm.h"
 #include "log.h"
 
 #include <stdlib.h>
@@ -58,6 +57,10 @@ LOG_USE_CATEGORY_NAME("image")
 
 #define BLK 512u
 
+// Head read for the sniff: block 0 and the longest map the prefix itself
+// would hold (entries 1..63).
+#define SNIFF_BLOCKS (IMAGE_WRAP_MAP_START + IMAGE_WRAP_MAP_BLOCKS)
+
 // Store a big-endian 16-bit value.
 static void put16(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)(v >> 8);
@@ -76,19 +79,6 @@ static void put32(uint8_t *p, uint32_t v) {
 static void put_str(uint8_t *p, size_t cap, const char *s) {
     size_t n = strlen(s);
     memcpy(p, s, n < cap ? n : cap);
-}
-
-bool image_wrap_is_bare_volume(const uint8_t *head, size_t len) {
-    if (!head || len < 3 * BLK)
-        return false;
-    // A partitioned disk: DDM in block 0 or map entries in block 1.
-    if (head[0] == 'E' && head[1] == 'R')
-        return false;
-    if (head[BLK] == 'P' && head[BLK + 1] == 'M')
-        return false;
-    // HFS Master Directory Block or HFS+ volume header at the bare position.
-    const uint8_t *mdb = head + 2 * BLK;
-    return (mdb[0] == 'B' && mdb[1] == 'D') || (mdb[0] == 'H' && mdb[1] == '+');
 }
 
 uint32_t image_wrap_boot_checksum(const uint8_t *code, size_t len) {
@@ -165,40 +155,6 @@ void image_wrap_build_prefix(uint8_t *out, uint64_t volume_blocks, const char *b
     put_entry(e, n, prefix, vol, "MacOS", "Apple_HFS", PM_VALID | PM_ALLOCATED | PM_IN_USE | PM_READABLE | PM_WRITABLE);
 }
 
-bool image_wrap_find_driverless_hfs(const uint8_t *head, size_t len, uint64_t *start, uint64_t *blocks) {
-    if (!head || len < 2 * BLK || !image_apm_probe_magic(head + BLK))
-        return false;
-    // A DDM that names a driver means the disk has one (or claims to): leave
-    // it to the ROM.
-    if (head[DDM_SIG] == 'E' && head[DDM_SIG + 1] == 'R' && (head[DDM_DRVR_COUNT] || head[DDM_DRVR_COUNT + 1]))
-        return false;
-    apm_table_t *t = image_apm_parse_buffer(head, len, NULL);
-    if (!t)
-        return false;
-    // A map cut short (by the buffer or a bad entry) could hide a driver.
-    bool ok = t->n_partitions == t->map_block_count;
-    const apm_partition_t *hfs = NULL;
-    for (uint32_t i = 0; ok && i < t->n_partitions; i++) {
-        const apm_partition_t *p = &t->partitions[i];
-        // A driver means the ROM can boot it already; an A/UX partition is
-        // reached by A/UX through the map, which the wrapper would hide.
-        if (p->fs_kind == APM_FS_DRIVER || p->fs_kind == APM_FS_UFS)
-            ok = false;
-        else if (p->fs_kind == APM_FS_HFS) {
-            if (hfs)
-                ok = false; // exactly one: the guest sees only it
-            hfs = p;
-        }
-    }
-    ok = ok && hfs && hfs->start_block >= 2 && hfs->size_blocks >= 3;
-    if (ok) {
-        *start = hfs->start_block;
-        *blocks = hfs->size_blocks;
-    }
-    image_apm_free(t);
-    return ok;
-}
-
 // Read `size` bytes at `offset` of the image without counting it as guest
 // activity (the sniff is not).
 static bool sniff(image_t *image, size_t offset, uint8_t *buf, size_t size) {
@@ -207,10 +163,6 @@ static bool sniff(image_t *image, size_t offset, uint8_t *buf, size_t size) {
     image->reads = reads;
     return got == size;
 }
-
-// Head read for the sniff: block 0 and the longest map the prefix itself
-// would hold (entries 1..63).
-#define SNIFF_BLOCKS (IMAGE_WRAP_MAP_START + IMAGE_WRAP_MAP_BLOCKS)
 
 int image_wrap_volume(image_t *image) {
     if (!image || image->wrap_prefix || image->block_size != BLK || image->raw_size < 3 * BLK)
