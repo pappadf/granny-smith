@@ -84,6 +84,11 @@ void mac030_glue_via2_irq(void *context, bool active);
 // of read-only pages.)
 void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable);
 
+// Empty one page: no host memory and no device, so it reads as nothing is
+// there.  A bank decode that moves (the AV's YMCA) clears the windows it
+// leaves, or they would keep echoing the RAM that used to be mapped there.
+void mac030_clear_page(uint32_t page_index);
+
 // A page-filler, so families with their own (the IIfx) can share the mirroring
 // helper below.
 typedef void (*mac030_fill_fn)(uint32_t page_index, uint8_t *host_ptr, bool writable);

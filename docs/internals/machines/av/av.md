@@ -72,20 +72,36 @@ speed programming, bank decode.)
 Every YMCA register is **one bit wide, accessed as a longword with the value
 in bit 31** — which is why the ROM writes `0` or `-1` everywhere. `av.c` stores
 one bit per longword slot. The machine-ID straps (`+$38/$3C/$40/$44`) read the
-board's nibble; the speed/width/bank registers latch and read back. Their
+board's nibble; the speed and width registers latch and read back. Their
 electrical semantics are undocumented, and the ROM only ever writes three fixed
 patterns per clock grade, so accept-and-readback is the correct model, not a
 shortcut.
 
-**RAM is mapped flat at physical 0, and that is correct rather than a
-simplification.** The eight banks decode at a fixed 16 MB spacing
-(`$00000000`/`$01000000`/…), so any population of full banks is contiguous by
-construction, and a partial last bank simply ends early — probes above
-installed RAM read floating `$FF`, which is exactly how the ROM's `SizeMemory`
-finds each bank's size. The ROM sizes RAM **twice** (standard mode, then
-"wide" mode) and takes the larger per-bank result; the flat map answers both
-passes consistently. Verified for 8/16/32 MB against the real two-pass sizer
-plus `Mod3Test`.
+**The bank registers drive the RAM decode** (`av_ymca_remap`). Bank `n`'s
+block holds a boundary in MB (bits A20–A26) and a size code: the bank appears
+at its boundary in a window of `1 MB << (code − 1)` (code 0 = off), repeating
+through it when it is smaller. The ROM sizes memory against exactly that:
+
+- `@YMCASplit` (and power-on) put bank `n` at `n × 16 MB` with 16 MB windows;
+- `YMCASizeBanks` finds each bank's size where its signature wraps, twice
+  (standard, then wide mode — width is not modelled, both passes agree);
+- `YMCAMerge` packs the banks it can use largest first from 0. A bank whose
+  size is not a power of two has no code and is switched off.
+
+A bank's ten bits are written boundary first, `Sz2` last, so the decode is
+rebuilt on each bank's `Sz2` write; windows it leaves are cleared
+(`mac030_clear_page`) so they do not echo.
+
+The installed RAM is the board's banks (`av_ram_banks`): the soldered bank
+(660AV: 4 MB as bank 0) and SIMMs of 4/8/16/32 MB, slot `k` on banks
+`simm_first_bank + 2k`/`+1` (a 32 MB SIMM is two 16 MB banks). Which banks
+the slots are wired to is undocumented; it only decides the order of equal
+banks. The flat RAM image holds the banks in merged order, so after
+`YMCAMerge` the decode is the image at 0 — what the 040 bus resolver, DMA and
+checkpoints address. A total that is no SIMM population of the board is not
+in the profile's list, and the build refuses it. This is why RAM presented as
+one flat block failed on the 660AV: 28 MB flat is banks of 16 + 12, and the
+12 MB bank was switched off.
 
 ## MUNI (NuBus bridge, `$50F30000`)
 

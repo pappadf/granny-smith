@@ -276,6 +276,23 @@ void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *ho
         fill(start_page + i, host + ((i % size_pages) << PAGE_SHIFT), writable);
 }
 
+void mac030_clear_page(uint32_t page_index) {
+    if (page_index >= g_page_count)
+        return;
+    g_page_table[page_index].host_base = NULL;
+    g_page_table[page_index].dev = NULL;
+    g_page_table[page_index].dev_context = NULL;
+    g_page_table[page_index].writable = false;
+    if (g_supervisor_read)
+        g_supervisor_read[page_index] = 0;
+    if (g_user_read)
+        g_user_read[page_index] = 0;
+    if (g_supervisor_write)
+        g_supervisor_write[page_index] = 0;
+    if (g_user_write)
+        g_user_write[page_index] = 0;
+}
+
 // Populate one page in the AoS table + SoA fast-path arrays.  Read-only pages
 // leave the write SoA entries at their zero-initialised value (slow path).
 void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {

@@ -93,7 +93,18 @@ typedef struct av_board_desc {
     mac030_board_desc_t common;
     uint8_t strap_nibble; // YMCA machine-ID straps ($F 840AV, $B 660AV)
     bool muni_present; // false → bus-error on MUNI_Control (660AV default)
+    // The memory the board carries: RAM soldered on as YMCA bank 0 (0 =
+    // none), and its 72-pin SIMM slots, slot k wired to banks
+    // simm_first_bank + 2k and + 2k + 1.
+    uint32_t ram_onboard;
+    uint8_t simm_slots;
+    uint8_t simm_first_bank;
 } av_board_desc_t;
+
+// Decompose `ram` bytes into the board's YMCA banks: the soldered bank,
+// then SIMMs of 4/8/16/32 MB (32 MB = two 16 MB banks), the largest that
+// fit first.  False when the total is no SIMM population of this board.
+bool av_ram_banks(const av_board_desc_t *desc, uint32_t ram, uint32_t size[AV_YMCA_BANK_COUNT]);
 
 // Per-machine hooks + data, named by hw_profile_t.board.
 typedef struct av_board {
@@ -125,12 +136,11 @@ typedef struct av_state {
     // registers read the board's ID nibble instead of the latch.
     uint8_t ymca_regs[AV_YMCA_REG_COUNT];
 
-    // Physical RAM bank model: the installed RAM decomposed into
-    // up to 8 banks of 1-16 MB; starts latched from the boundary registers.
+    // The installed RAM as YMCA banks (av_ram_banks), each decoded where
+    // its boundary and size registers put it (av_ymca_remap).
     uint32_t bank_size[AV_YMCA_BANK_COUNT]; // installed bytes (0 = empty)
     uint32_t bank_image_off[AV_YMCA_BANK_COUNT]; // offset in the flat RAM image
-    uint32_t bank_start[AV_YMCA_BANK_COUNT]; // decoded physical start
-    int bank_count; // populated banks
+    uint32_t decode_end; // end of the highest window the decode filled
 
     // MUNI latches: IntCntrl write-only in practice, Control R/W.
     uint32_t muni_intcntrl;
