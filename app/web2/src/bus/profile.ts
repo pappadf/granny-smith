@@ -47,10 +47,12 @@ export interface FloppyPosition {
 }
 
 // A unit a storage device may use, with the position text the core composed
-// ("ID 0 · Internal hard disk bay", "Master").
+// ("ID 0 · Internal hard disk bay", "Master") and its short form without the
+// bay ("ID 0"), for a narrow unit menu.
 export interface StorageUnit {
   unit: number;
   label: string;
+  short?: string;
 }
 
 export interface StorageBus {

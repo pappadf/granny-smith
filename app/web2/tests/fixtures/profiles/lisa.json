@@ -65,7 +65,8 @@
       "units": [
         {
           "unit": 0,
-          "label": "External"
+          "label": "External",
+          "short": "External"
         }
       ],
       "reserved": [],
