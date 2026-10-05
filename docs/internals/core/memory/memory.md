@@ -154,6 +154,14 @@ signalling a bus error (`memory_signal_bus_error`) all count.  The usual shape
 is one register-read function taking `bool peek`, with each side effect
 guarded by `if (!peek)`, so the two paths cannot drift apart (#159).
 
+An I/O island that fronts several chips (the mac030 island engine, PDM's
+AMIC, TNT's Grand Central, Gossamer's Heathrow) has a peek of its own that
+routes an inspection to each chip's peek: `memory_iface_read8` for a chip
+behind a `memory_interface_t`, the chip's `_peek` sibling function
+(`scsi_53c96_peek`, `mesh_peek`, `swim3_peek`, ...) otherwise, and on the
+mac030 engine a handler row's `peek_fn`, set wherever its `read_fn` has a
+side effect.
+
 `memory.poke` is a real write, with the write's effect on the device, but it
 is not a guest bus cycle: a transfer error the device answers it with is
 discarded rather than delivered to the guest.

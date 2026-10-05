@@ -519,8 +519,10 @@ void tnt_gc_pci_attach(config_t *cfg, pci_bus_t *bus, checkpoint_t *cp);
 // bytes only; the 32-bit LE registers (interrupt block, BoxID) decode
 // longwords only.
 uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset);
+uint8_t tnt_gc_peek8(config_t *cfg, uint32_t offset); // side-effect-free (memory_interface_t.peek_*)
 void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value);
 uint32_t tnt_gc_read32(config_t *cfg, uint32_t offset);
+uint32_t tnt_gc_peek32(config_t *cfg, uint32_t offset); // side-effect-free
 void tnt_gc_write32(config_t *cfg, uint32_t offset, uint32_t value);
 // Level-sensitive source line n (0..30): updates Levels, edge-latches into
 // Events on assertion, recomputes the CPU line.

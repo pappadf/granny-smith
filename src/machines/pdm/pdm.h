@@ -305,6 +305,7 @@ void pdm_amic_init(config_t *cfg);
 void pdm_amic_register_events(config_t *cfg); // at construction
 void pdm_amic_start_vbl(config_t *cfg); // fresh boot: free-running raster
 uint8_t pdm_amic_read(config_t *cfg, uint32_t offset); // island offsets < $40000
+uint8_t pdm_amic_peek(config_t *cfg, uint32_t offset); // the same, side-effect-free
 void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value);
 // Recompute the ICR source levels and drive the 601 EXT line (level-
 // sensitive; called after every flag/enable write).

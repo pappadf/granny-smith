@@ -69,6 +69,9 @@ uint8_t tnt_control_rad_read(config_t *cfg, uint32_t offset) {
     (void)offset;
     return 0;
 }
+uint8_t tnt_control_rad_peek(config_t *cfg, uint32_t offset) {
+    return tnt_control_rad_read(cfg, offset); // the stubs have no side effects to avoid
+}
 void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
     (void)cfg;
     (void)offset;
@@ -106,6 +109,9 @@ uint8_t mesh_read(struct mesh *m, uint32_t offset) {
     (void)offset;
     return 0;
 }
+uint8_t mesh_peek(struct mesh *m, uint32_t offset) {
+    return mesh_read(m, offset); // the stubs have no side effects to avoid
+}
 void mesh_write(struct mesh *m, uint32_t offset, uint8_t value) {
     (void)m;
     (void)offset;
@@ -123,6 +129,9 @@ uint8_t tnt_gbus_read8(config_t *cfg, uint32_t offset) {
     (void)offset;
     return 0;
 }
+uint8_t tnt_gbus_peek8(config_t *cfg, uint32_t offset) {
+    return tnt_gbus_read8(cfg, offset); // the stubs have no side effects to avoid
+}
 void tnt_gbus_write8(config_t *cfg, uint32_t offset, uint8_t value) {
     (void)cfg;
     (void)offset;
@@ -132,6 +141,9 @@ uint32_t tnt_gbus_read32(config_t *cfg, uint32_t offset) {
     (void)cfg;
     (void)offset;
     return 0;
+}
+uint32_t tnt_gbus_peek32(config_t *cfg, uint32_t offset) {
+    return tnt_gbus_read32(cfg, offset); // the stubs have no side effects to avoid
 }
 void tnt_gbus_write32(config_t *cfg, uint32_t offset, uint32_t value) {
     (void)cfg;
@@ -159,6 +171,9 @@ uint8_t tnt_swim3_read(config_t *cfg, uint32_t off) {
     (void)off;
     return 0;
 }
+uint8_t tnt_swim3_peek(config_t *cfg, uint32_t off) {
+    return tnt_swim3_read(cfg, off); // the stubs have no side effects to avoid
+}
 void tnt_swim3_write(config_t *cfg, uint32_t off, uint8_t value) {
     (void)cfg;
     (void)off;
@@ -179,6 +194,9 @@ uint8_t scsi_53c96_read(struct scsi_53c96 *c, uint32_t reg) {
     (void)c;
     (void)reg;
     return 0;
+}
+uint8_t scsi_53c96_peek(struct scsi_53c96 *c, uint32_t reg) {
+    return scsi_53c96_read(c, reg); // the stubs have no side effects to avoid
 }
 void scsi_53c96_write(struct scsi_53c96 *c, uint32_t reg, uint8_t value) {
     (void)c;

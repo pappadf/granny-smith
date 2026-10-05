@@ -542,16 +542,16 @@ static uint8_t *dma_host_ptr(uint32_t phys) {
     return host ? host + (phys & ((1u << PAGE_SHIFT) - 1u)) : NULL;
 }
 
-static uint8_t pdm_scsi_io_read(config_t *cfg, int chip, uint32_t off) {
+static uint8_t pdm_scsi_io_read(config_t *cfg, int chip, uint32_t off, bool peek) {
     scsi_53c96_t *c = pdm_st(cfg)->scsi96[chip];
     if (!c) {
         LOG(2, "read of absent SCSI chip %d at +$%03X", chip, off);
         return 0;
     }
     if (off < 0x100u)
-        return scsi_53c96_read(c, (off & 0xFFu) >> 4);
+        return peek ? scsi_53c96_peek(c, (off & 0xFFu) >> 4) : scsi_53c96_read(c, (off & 0xFFu) >> 4);
     if (off < 0x200u)
-        return scsi_53c96_pdma_read8(c); // handshaked aperture
+        return peek ? scsi_53c96_pdma_peek8(c) : scsi_53c96_pdma_read8(c); // handshaked aperture
     LOG(2, "read of undecoded SCSI space chip %d +$%03X", chip, off);
     return 0;
 }
@@ -1049,30 +1049,32 @@ void pdm_amic_init(config_t *cfg) {
     a->floppy.addr = 0x15000u; // floppy DMA address reset value
 }
 
-uint8_t pdm_amic_read(config_t *cfg, uint32_t offset) {
+// One island byte: the guest's read, or an inspection (`peek`) routed to each
+// chip's side-effect-free peek.
+static uint8_t amic_access(config_t *cfg, uint32_t offset, bool peek) {
     uint32_t block = offset & 0x3F000u;
     switch (block) {
     case OFF_VIA1:
     case OFF_VIA1 + 0x1000:
-        return via_get_memory_interface(cfg->via1)->read_uint8(cfg->via1, offset);
+        return memory_iface_read8(via_get_memory_interface(cfg->via1), cfg->via1, offset, peek);
     case OFF_SCC:
         // ESCC in Curio: +0 bCtl / +2 aCtl / +4 bData / +6 aData — the
         // low offset bits carry the chip's A/B and D/C pins directly.
-        return scc_get_memory_interface(cfg->scc)->read_uint8(cfg->scc, offset - OFF_SCC);
+        return memory_iface_read8(scc_get_memory_interface(cfg->scc), cfg->scc, offset - OFF_SCC, peek);
     case OFF_SCSIA:
-        return pdm_scsi_io_read(cfg, 0, offset - OFF_SCSIA);
+        return pdm_scsi_io_read(cfg, 0, offset - OFF_SCSIA, peek);
     case OFF_SCSIB:
-        return pdm_scsi_io_read(cfg, 1, offset - OFF_SCSIB);
+        return pdm_scsi_io_read(cfg, 1, offset - OFF_SCSIB, peek);
     case OFF_SOUND:
         return pdm_awacs_read(cfg, offset - OFF_SOUND);
     case OFF_SWIM3:
     case OFF_SWIM3 + 0x1000: // 16 registers at stride $200 span both blocks
-        return pdm_swim3_read(cfg, offset - OFF_SWIM3);
+        return peek ? pdm_swim3_peek(cfg, offset - OFF_SWIM3) : pdm_swim3_read(cfg, offset - OFF_SWIM3);
     case OFF_ARIEL:
-        return pdm_ariel_read(cfg, offset - OFF_ARIEL);
+        return peek ? pdm_ariel_peek(cfg, offset - OFF_ARIEL) : pdm_ariel_read(cfg, offset - OFF_ARIEL);
     case OFF_VIA2:
     case OFF_VIA2 + 0x1000: // classic-VIA-stride aliases of the bank
-        return via2_read(cfg, offset - OFF_VIA2, false);
+        return via2_read(cfg, offset - OFF_VIA2, peek);
     case OFF_VIDEO:
         return pdm_video_ctl_read(cfg, offset - OFF_VIDEO);
     case OFF_ICR:
@@ -1103,6 +1105,14 @@ uint8_t pdm_amic_read(config_t *cfg, uint32_t offset) {
         LOG(2, "read of unwired island offset $%05X", offset);
         return 0;
     }
+}
+
+uint8_t pdm_amic_read(config_t *cfg, uint32_t offset) {
+    return amic_access(cfg, offset, false);
+}
+
+uint8_t pdm_amic_peek(config_t *cfg, uint32_t offset) {
+    return amic_access(cfg, offset, true);
 }
 
 void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value) {

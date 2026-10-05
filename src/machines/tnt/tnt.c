@@ -134,6 +134,29 @@ static uint8_t gc_read8(void *ctx, uint32_t offset) {
     return tnt_gc_read8(cfg, offset);
 }
 
+static uint8_t gc_peek8(void *ctx, uint32_t offset) {
+    config_t *cfg = (config_t *)ctx;
+    if (gc_lanes_reversed(cfg))
+        offset ^= 7u;
+    return tnt_gc_peek8(cfg, offset);
+}
+
+static uint16_t gc_peek16(void *ctx, uint32_t offset) {
+    config_t *cfg = (config_t *)ctx;
+    bool rev = gc_lanes_reversed(cfg);
+    if (rev)
+        offset ^= 6u;
+    uint16_t v = (uint16_t)((tnt_gc_peek8(cfg, offset) << 8) | tnt_gc_peek8(cfg, offset + 1));
+    return rev ? __builtin_bswap16(v) : v;
+}
+
+static uint32_t gc_peek32(void *ctx, uint32_t offset) {
+    config_t *cfg = (config_t *)ctx;
+    if (!gc_lanes_reversed(cfg))
+        return tnt_gc_peek32(cfg, offset);
+    return __builtin_bswap32(tnt_gc_peek32(cfg, offset ^ 4u));
+}
+
 static void gc_write8(void *ctx, uint32_t offset, uint8_t value) {
     config_t *cfg = (config_t *)ctx;
     if (gc_lanes_reversed(cfg))
@@ -262,6 +285,9 @@ static void tnt_memory_layout(config_t *cfg, checkpoint_t *cp) {
     st->gc_interface.write_uint8 = gc_write8;
     st->gc_interface.write_uint16 = gc_write16;
     st->gc_interface.write_uint32 = gc_write32;
+    st->gc_interface.peek_uint8 = gc_peek8;
+    st->gc_interface.peek_uint16 = gc_peek16;
+    st->gc_interface.peek_uint32 = gc_peek32;
     memory_map_add(cfg->mem_map, TNT_GC_BASE, TNT_GC_ISLAND_SIZE, "Grand Central", &st->gc_interface, cfg);
 
     // Hammerhead: the register window (page granularity is ours; the file
