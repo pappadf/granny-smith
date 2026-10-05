@@ -8,6 +8,7 @@
 // init, teardown, checkpoint save/restore, VIA/SCC interrupt callbacks,
 // VBL trigger, and the static hw_profile_t descriptor.
 
+#include "config_seed.h"
 #include "mac_host_io.h"
 #include "machine.h"
 #include "machine_teardown.h"
@@ -321,7 +322,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part_images(cfg, checkpoint);
 
     machine_part_begin(cfg, checkpoint, "scsi");
-    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, checkpoint, CONFIG_IMAGES(cfg));
+    cfg->scsi = machine_scsi_bus_init(cfg, checkpoint, "scsi");
     scsi_5380_attach(cfg->scsi, checkpoint);
     machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
     // Where the 5380 answers is this machine's decode, not the chip model's.
@@ -347,8 +348,8 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part(cfg, checkpoint, "keyboard", part_save_keyboard, cfg->keyboard);
 
     machine_part_begin(cfg, checkpoint, "floppy");
-    cfg->floppy = floppy_init(FLOPPY_TYPE_IWM, cfg->mem_map, cfg->scheduler, profile_floppy_count(cfg->machine),
-                              checkpoint, CONFIG_IMAGES(cfg));
+    cfg->floppy = floppy_init(FLOPPY_TYPE_IWM, cfg->mem_map, cfg->scheduler, machine_floppy_count(cfg), checkpoint,
+                              CONFIG_IMAGES(cfg));
     machine_part(cfg, checkpoint, "floppy", part_save_floppy, cfg->floppy);
 
     // Initialise the display descriptor before anything that might call
@@ -574,15 +575,34 @@ static void plus_trigger_vbl(config_t *cfg) {
 // addition to the powers of two — historically valid on real hardware.
 static const uint32_t plus_ram_options_kb[] = {1024, 2048, 2560, 4096, 0};
 
+// The external drive was an option, not factory equipment; a stock Plus here
+// keeps one, as it always has, and the user may remove it.
 static const struct floppy_slot plus_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_800K},
-    {.label = "External FD1", .kind = FLOPPY_800K},
+    {.label = "Internal floppy drive", .kind = FLOPPY_800K},
+    {.label = "External floppy drive", .kind = FLOPPY_800K, .optional = true},
     {0},
 };
 
-static const scsi_bus_decl_t plus_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
+// The Plus has no internal bay: its one SCSI bus is the DB-25 on the back, so
+// every device is "External".
+static const storage_bus_decl_t plus_storage[] = {
+    MAC_SCSI_BUS("scsi", "SCSI", MEDIA_BUS_SCSI, NULL, true),
     {0},
+};
+
+// The built-in 9" screen: one monitor, nothing to choose.
+static bool plus_monitor_at(size_t i, const char **id, const char **monitor) {
+    if (i != 0)
+        return false;
+    *id = "compact_9in";
+    *monitor = "compact_9in";
+    return true;
+}
+
+static const builtin_video_desc_t plus_builtin_video = {
+    .detail = "512 \xc3\x97 342, 1-bit",
+    .monitor_at = plus_monitor_at,
+    .default_monitor = "compact_9in",
 };
 
 // Macintosh Plus hardware profile descriptor
@@ -590,6 +610,7 @@ static const machine_substrate_t plus_substrate = {
     .init = plus_init,
     .bus_reset = plus_bus_reset,
     .teardown = plus_teardown,
+    .seed = mac_seed_rtc_pram,
     .trigger_vbl = plus_trigger_vbl,
     .fd_insert = mac_fd_insert,
     .fd_present = mac_fd_present,
@@ -620,10 +641,12 @@ const hw_profile_t machine_plus = {
     // Configuration-dialog shape
     .ram_options = plus_ram_options_kb,
     .floppy_slots = plus_floppy_slots,
-    .scsi_buses = plus_scsi_buses,
-    .has_cdrom = false, // Plus CD-ROM driver chain not yet integrated
-    .cdrom_id = 3,
+    .storage = plus_storage,
+    // An external CD-ROM drive at ID 3: Apple's CD-ROM driver runs on the Plus.
+    .default_storage = mac_default_storage_hd0_cd3,
     .cdrom_drive = &mac_cdrom_drive_applecd,
+    .appletalk = true,
+    .builtin_video = &plus_builtin_video,
 
     // Single VIA, no ADB, no NuBus
 

@@ -4,8 +4,8 @@
 #
 # The PowerPC sibling of iicx-24ac-sysinfo, and the first test anywhere to
 # run the GENUINE 24AC declaration ROM behind BART: suite-pdm's
-# 8100-75-24ac row seats the generic-vROM twin ("24ac"), whose card never
-# gets mode-set past 1 bpp, so the real card's PrimaryInit and its own 68K
+# 8100-75-24ac row runs the card on its substitute ROM (`rom=substitute`),
+# whose card never gets mode-set past 1 bpp, so the real card's PrimaryInit and its own 68K
 # video driver had no PowerPC coverage at all.  Here the real vROM
 # (roms/display-card-24ac-d8daab87.vrom, bound by the shared declrom
 # loader's content-addressed catalog) runs in a NuBus slot of an 8100 and

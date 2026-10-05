@@ -12,12 +12,9 @@
 #include "gossamer.h"
 #include "slot_tables.h"
 
-static const uint32_t pmg3_ram_options_kb[] = {32768, 65536, 98304, 131072, 196608, 262144, 393216, 524288, 786432, 0};
-
-static const scsi_bus_decl_t pmg3_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = gossamer_scsi_slots},
-    {0},
-};
+static const uint32_t pmg3_ram_options_kb[] = {32768,  65536,  98304,  131072, 163840, 196608, 229376,
+                                               262144, 294912, 327680, 360448, 393216, 425984, 458752,
+                                               524288, 557056, 589824, 655360, 786432, 0};
 
 static const uint8_t whisper_eeprom[16] = {0x0F, 0xAA, 0x55, 0xAA, 'W',  'h',  'i',  's',
                                            'p',  'e',  'r',  0x00, 0x00, 0x00, 0x00, 0x02};
@@ -34,7 +31,7 @@ static const gossamer_board_desc_t pmg3mt_board = {
 };
 
 const hw_profile_t machine_pmg3mt = {
-    .name = "Power Macintosh G3 (Mini Tower)",
+    .name = "Power Macintosh G3 Minitower",
     .id = "pmg3mt",
 
     .cpu_model = CPU_MODEL_PPC750,
@@ -42,14 +39,15 @@ const hw_profile_t machine_pmg3mt = {
     .mmu_kind = MMU_PPC_604,
 
     .address_bits = 32,
-    .ram_default = 0x4000000,
+    .ram_default = 0x4000000, // 64 MB (a typical well-equipped machine)
     .ram_max = 0x30000000,
     .rom_size = 0x400000,
 
     .ram_options = pmg3_ram_options_kb,
-    .scsi_buses = pmg3_scsi_buses,
-    .has_cdrom = true,
-    .cdrom_id = 3,
+    .storage = gossamer_storage,
+    .default_storage = gossamer_default_storage,
+    .appletalk = true,
+    .builtin_video = &gossamer_builtin_video,
     .cdrom_drive = &mac_cdrom_drive_applecd,
     .floppy_slots = mac_floppy_slots_1hd,
 

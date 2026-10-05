@@ -11,15 +11,16 @@
 #include "tnt.h"
 
 // 168-pin DIMMs in 8 slots, interleaved in pairs; 1 GB architectural max.
-static const uint32_t pm7500_ram_options_kb[] = {16384, 32768, 65536, 131072, 262144, 524288, 1048576, 0};
+// Offered: the totals Hammerhead's four-pair carve maps today (DIMMs of at
+// most 64 MB); larger and odd totals wait on the carve.
+static const uint32_t pm7500_ram_options_kb[] = {
+    8192,   16384,  24576,  32768,  40960,  49152,  57344,  65536,  73728,  81920,  90112,  98304,
+    106496, 114688, 122880, 131072, 139264, 147456, 155648, 163840, 172032, 180224, 188416, 196608,
+    204800, 212992, 221184, 229376, 237568, 245760, 262144, 270336, 278528, 286720, 294912, 303104,
+    311296, 327680, 335872, 344064, 360448, 393216, 401408, 409600, 425984, 458752, 524288, 0};
 
 // The internal fast-SCSI (MESH) bus carries the boot disks; the
 // external 53C94 chain is present but empty until the CD-ROM phase.
-
-static const scsi_bus_decl_t pm7500_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = tnt_scsi_slots_internal},
-    {0},
-};
 
 // PCI topology.  Three sockets on Bandit
 // 1 at IDSEL 13/14/15 — the ROM's own `slot-names` bitmask ($0000E000) on
@@ -29,12 +30,34 @@ static const scsi_bus_decl_t pm7500_scsi_buses[] = {
 // Control is the soldered-down video device the machine names, on the
 // Chaos display bus.
 static const pci_slot_decl_t pm7500_pci_slots[] = {
-    {.slot = 1, .kind = PCI_SLOT_SOCKET, .label = "A1", .bus = TNT_PCI_BUS_1, .device = 13, .int_line = 23},
-    {.slot = 2, .kind = PCI_SLOT_SOCKET, .label = "B1", .bus = TNT_PCI_BUS_1, .device = 14, .int_line = 24},
-    {.slot = 3, .kind = PCI_SLOT_SOCKET, .label = "C1", .bus = TNT_PCI_BUS_1, .device = 15, .int_line = 25},
+    {.slot = 1,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot A1",
+     .detail = "A1",
+     .fill_order = 1,
+     .bus = TNT_PCI_BUS_1,
+     .device = 13,
+     .int_line = 23},
+    {.slot = 2,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot B1",
+     .detail = "B1",
+     .fill_order = 2,
+     .bus = TNT_PCI_BUS_1,
+     .device = 14,
+     .int_line = 24},
+    {.slot = 3,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "PCI slot C1",
+     .detail = "C1",
+     .fill_order = 3,
+     .bus = TNT_PCI_BUS_1,
+     .device = 15,
+     .int_line = 25},
     {.slot = 4,
      .kind = PCI_SLOT_BUILTIN,
-     .label = "VCI",
+     .label = "Built-in video",
+     .detail = "VCI",
      .bus = TNT_PCI_BUS_VCI,
      .device = 11,
      .int_line = TNT_INT_VBL,
@@ -85,33 +108,25 @@ const hw_profile_t machine_pm7500 = {
     .mmu_kind = MMU_PPC_601,
 
     .address_bits = 32,
-    .ram_default = 0x2000000, // 32 MB
+    .ram_default = 0x2000000, // 32 MB (a typical well-equipped machine)
     .ram_max = 0x40000000, // 1 GB
     .rom_size = 0x400000, // 4 MB ($96CD923D / $9630C68B)
 
     .ram_options = pm7500_ram_options_kb,
-    .scsi_buses = pm7500_scsi_buses,
-    // Factory configuration: internal CD-ROM on SCSI ID 3, the era's Apple
-    // convention (internal hard disk 0, CD-ROM 3, controller 7).  "Most
+    // Factory configuration: an internal CD-ROM drive at SCSI ID 3, "Most
     // configurations also include a built-in CD-ROM drive" (Power Macintosh
-    // 7500/8500 Developer Note, S1).
-    //
-    // has_cdrom stays FALSE, and that is not an oversight -- it is the reason
-    // the CD bay cannot be offered yet.  On the real machine the CD sits on the
-    // SLOW 5 MB/s Curio 53C94 bus, the one also brought out to the external
-    // DB-25, not on the 10 MB/s MESH bus that carries the internal hard disk
-    // ("a SCSI bus for external SCSI devices and for the internal CD-ROM
-    // drive", ibid. S3).  We build the 53C94 with NO bus attached (tnt.c), so
-    // there is nowhere correct to put it -- and profile_scsi_init builds the
-    // bay's drive on cfg->scsi the moment has_cdrom is true, which on these
-    // machines is MESH.  Measured: doing that seats a SONY CD-ROM at id 3 on the boot bus
-    // and breaks tnt-voodoo2-glide's Mac OS 8.1 startup.
-    //
-    // cdrom_id carries the factory answer so it is right the day the 53C94
-    // gets a chain: ID 3, the era's Apple convention (internal hard disk 0,
-    // CD-ROM 3, controller 7).
-    .has_cdrom = false,
-    .cdrom_id = 3,
+    // 7500/8500 Developer Note, S1).  It is not in the default configuration
+    // yet, and that is not an oversight: on the real machine the CD sits on
+    // the SLOW 5 MB/s Curio 53C94 bus, the one also brought out to the
+    // external DB-25, not on the 10 MB/s MESH bus that carries the internal
+    // hard disk ("a SCSI bus for external SCSI devices and for the internal
+    // CD-ROM drive", ibid. S3).  The 53C94 is built with NO bus attached
+    // (tnt.c), so there is nowhere correct to put it.  Measured: seating a
+    // SONY CD-ROM at ID 3 on MESH instead breaks tnt-voodoo2-glide's Mac OS
+    // 8.1 startup.
+    .storage = tnt_storage_7500,
+    .default_storage = tnt_default_storage,
+    .appletalk = true,
     .cdrom_drive = &mac_cdrom_drive_applecd,
     .floppy_slots = mac_floppy_slots_1hd,
 

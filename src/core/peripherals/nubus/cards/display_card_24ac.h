@@ -137,18 +137,10 @@
 #define DISPLAY_CARD_24AC_DECLROM_BUS_SIZE   0x020000u // 128 KB bus-space footprint (chip × 4)
 #define DISPLAY_CARD_24AC_DECLROM_BUS_OFFSET 0xFE0000u // slot top minus 128 KB
 
-// Per-card kind descriptor — registered in nubus.c's g_card_registry.
+// Per-card kind descriptor — registered in nubus.c's g_card_registry.  It
+// runs Apple's declaration ROM when one is offered, else the emulator's
+// substitute (docs/internals/core/peripherals/nubus_generic_vrom.md).
 extern const nubus_card_kind_t display_card_24ac_kind;
-// Generic sibling ("24ac") with the built-in GS declaration ROM — same HLE
-// model, no vROM file needed (see docs/internals/core/peripherals/nubus_generic_vrom.md).
-extern const nubus_card_kind_t display_card_24ac_generic_kind;
-
-// === Video-mode selection ===================================================
-// A slot's "<monitor>_<N>bpp" video mode (e.g. "rgb_640x480_8bpp"), resolved
-// against this card's catalog: card_init sets the monitor sense + depth and
-// seeds a complete valid PRAM so the OS boots at that mode (and still boots a
-// configured SCSI HD).
-bool display_card_24ac_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp);
 
 // === Engine introspection (object model — slot[N].card.engine) ==============
 // True iff `card` is a display_card_24ac.  The getters return 0/false and the

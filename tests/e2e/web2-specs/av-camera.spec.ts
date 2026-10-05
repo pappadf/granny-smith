@@ -97,7 +97,7 @@ async function bootModel(page: Page, romFile: string, model: string): Promise<vo
   const sel = page.locator('#cfg-model');
   await expect(sel.locator(`option[value="${model}"]`)).toHaveCount(1, { timeout: 30_000 });
   await sel.selectOption(model);
-  await page.getByRole('button', { name: 'Start Machine' }).click();
+  await page.getByRole('button', { name: 'Start', exact: true }).click();
   await expect(page.locator('.toast .msg').filter({ hasText: 'Machine started' })).toBeVisible({
     timeout: 60_000,
   });

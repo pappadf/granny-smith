@@ -50,6 +50,16 @@ typedef struct nubus_slot_decl {
     // its frame buffer is the bottom of RAM, which the card takes when it is
     // built, before its checkpoint part is read.
     bool fb_in_ram;
+    // SOCKET: Apple's name for it on this machine ("NuBus slot 4" on a IIci,
+    // "NuBus slot C" on a Quadra), what catalog.profile shows; the slot ID
+    // becomes the detail.
+    const char *label;
+    // SOCKET: Apple's recommended order for the slot an added card goes in
+    // (lowest first); 0 = after every slot that has one, in table order.
+    int fill_order;
+    // SOCKET: another slot ($9..$E) that cannot be used while this one is
+    // (a shared opening or connector); 0 = none.
+    int excludes;
 } nubus_slot_decl_t;
 
 // True iff card kind `kind` may be seated in slot `s`.  Compatibility is
@@ -60,22 +70,40 @@ typedef struct nubus_slot_decl {
 // the boot document's slot validation so the two can never diverge.
 bool nubus_card_fits_socket(const nubus_slot_decl_t *s, const nubus_card_kind_t *kind);
 
-// True iff `kind` may be seated in slot `s`, socket or built in.  A built-in
-// slot takes its declared card or a sibling: a kind that is on-board too
-// (CARD_ATTACH_BUILTIN) and drives the same monitor table (the SE/30's generic
-// and real video).  The one rule catalog.profile lists choices by and the
-// slot entries are checked against.
+// True iff `kind` may be seated in slot `s`, socket or built in: a socket
+// takes any card that fits it, a built-in slot only its declared card.  The
+// one rule catalog.profile lists choices by and the slot entries are checked
+// against.
 bool nubus_card_fits_slot(const nubus_slot_decl_t *s, const nubus_card_kind_t *kind);
 
 // Check one slot entry against the machine's slot table: the slot takes a
-// card, the card exists and fits, its video mode / custom geometry / ROM are
-// its own, it takes no options -- and with `roms_final`, that a card the entry
-// names finds its declaration ROM.  machine.boot checks the document's entries
-// with it, a restore the entries its checkpoint carries.  On false, `why`
-// says what is wrong (`model` names the machine in it).
-struct slot_opts;
-bool nubus_slot_entry_check(const nubus_slot_decl_t *slots, const char *model, const struct slot_opts *e,
-                            bool roms_final, char *why, size_t why_len);
+// card, the card exists and fits, its video mode / custom geometry / ROM /
+// monitor are its own, it takes no options -- and with `roms_final`, that a
+// card the entry names finds a declaration ROM, Apple's or its substitute.
+// machine.boot checks the document's entries with it, a restore the entries
+// its checkpoint carries.  On false, `why` says what is wrong (`model` names
+// the machine in it).
+bool nubus_slot_entry_check(const nubus_slot_decl_t *slots, const char *model, const slot_opts_t *e, bool roms_final,
+                            char *why, size_t why_len);
+
+// Does a card of kind `k` built from entry `e` run its substitute ROM?  When
+// the entry asks for it, its custom geometry needs it, or Apple's ROM is not
+// offered -- and never for a kind without one.  The bus decides it once, as
+// it seats the card; afterwards the entry's `substitute` says.
+bool nubus_entry_substitute(const nubus_card_kind_t *k, const slot_opts_t *e);
+
+// The monitors kind `k` drives with the ROM it runs: the substitute ROM's
+// when that carries fewer than the card.
+const nubus_monitor_t *nubus_kind_monitors(const nubus_card_kind_t *k, bool substitute);
+
+// The monitor row entry `e` names (its `monitor`), or NULL with none plugged
+// in or for a card without video.
+const nubus_monitor_t *nubus_entry_monitor(const nubus_card_kind_t *k, const slot_opts_t *e);
+
+// Give entry `e` a monitor when it names none yet: its video mode's row,
+// else the first row its card drives, with that row's sense code.  A card
+// without video keeps none.
+void nubus_entry_default_monitor(const nubus_card_kind_t *k, slot_opts_t *e);
 
 // Standard slot space base for slot s (s ∈ $9..$E):
 //   $9 → $F9000000, $A → $FA000000, …, $E → $FE000000
@@ -162,15 +190,21 @@ nubus_card_t *nubus_card(nubus_bus_t *bus, int slot);
 // card's attach_objects hook without knowing which cards exist.
 const nubus_card_kind_t *nubus_slot_kind(nubus_bus_t *bus, int slot);
 
-// Return the primary display — the card whose framebuffer drives the
-// canvas.  v1: first slot in declared order whose ops->display() returns
-// non-NULL.
-display_t *nubus_primary_display(nubus_bus_t *bus);
+// What `slot` was built from (its seat: card, ROM, monitor, sense), or NULL
+// for a slot out of range.
+const slot_opts_t *nubus_seat(nubus_bus_t *bus, int slot);
 
-// The card behind nubus_primary_display() (same selection rule), or NULL.
-// Used by the object model to wire `machine.screen.source` to the active
-// card's framebuffer node.
-nubus_card_t *nubus_primary_display_card(nubus_bus_t *bus);
+// The seeding step's record for `slot`: the 8-byte slot PRAM record
+// (at $46 + (slot - 9) * 8) that starts its card in the video mode its seat
+// chose.  False when the slot seats no card with a startup mode, chose none,
+// or has no monitor plugged in.
+bool nubus_startup_record(nubus_bus_t *bus, int slot, uint8_t rec[8]);
+
+// The display of the card the configuration connected the monitor to (its
+// slot entry's `connected`), or NULL when no card has it -- and the card,
+// which the object model wires `machine.screen.source` to.
+display_t *nubus_connected_display(nubus_bus_t *bus);
+nubus_card_t *nubus_connected_display_card(nubus_bus_t *bus);
 
 // === Object-model surface ===================================================
 //

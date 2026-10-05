@@ -104,3 +104,47 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 echo "core-layering: OK — every non-static class_desc_t has a cross-file consumer"
+
+# No family knowledge in generic code.  The machine-independent machine code
+# (machine.c, machine_config.c, machine_slots.c) includes no family header --
+# a header under a family directory, src/machines/<family>/ -- and neither it
+# nor src/core/ names a model by its id: what a machine has is its profile's
+# to say.  The allow-list is the formal identification table, which maps ROM
+# checksums to the models they boot (rom_table.c), and the ROM-kind token
+# "lisa" (rom.c's rom_kind_name), which is a ROM family, not a model.
+fail=0
+GENERIC="$ROOT/src/machines/machine.c $ROOT/src/machines/machine_config.c $ROOT/src/machines/machine_slots.c"
+while IFS= read -r hdr; do
+    base=$(basename "$hdr")
+    for f in $GENERIC; do
+        if grep -q "#include \"$base\"" "$f"; then
+            echo "FAMILY HEADER IN GENERIC CODE: ${f#$ROOT/} includes '$base'"
+            fail=1
+        fi
+    done
+done < <(find "$ROOT/src/machines" -mindepth 2 -name '*.h')
+MODELS='plus|se30|lisa|macxl|iix|iicx|iifx|iici|iisi|q700|q900|q950|q840av|q660av|pm6100|pm7100|pm8100|pm7500|pm8500|pm9500|ans500|ans700|pmg3dt|pmg3mt'
+# Every model the tree knows must be in that list, or the check goes blind.
+for p in "$ROOT"/src/machines/*/*.c; do
+    id=$(grep -oE '^    \.id = "[a-z0-9]+",' "$p" | head -1 | sed 's/.*"\(.*\)".*/\1/' || true)
+    [ -z "$id" ] && continue
+    grep -q '^const hw_profile_t' "$p" || continue
+    if ! grep -qE "^($MODELS)\$" <<<"$id"; then
+        echo "MODEL LIST STALE: '$id' (${p#$ROOT/}) is not in core-layering's model list"
+        fail=1
+    fi
+done
+hits=$(grep -rnE "\"($MODELS)\"" "$ROOT/src/core" $GENERIC \
+    | grep -v "^$ROOT/src/core/memory/rom_table.c:" \
+    | grep -vE "^$ROOT/src/core/memory/rom.c:[0-9]+:\s*return \"lisa\";" \
+    | grep -vE "//.*\"($MODELS)\"" || true)
+if [ -n "$hits" ]; then
+    echo "MODEL ID IN GENERIC CODE:"
+    echo "$hits" | sed "s|$ROOT/||;s/^/    /"
+    fail=1
+fi
+if [ "$fail" -ne 0 ]; then
+    echo "core-layering: FAILED — family knowledge in generic code"
+    exit 1
+fi
+echo "core-layering: OK — no family header or model id in generic code"

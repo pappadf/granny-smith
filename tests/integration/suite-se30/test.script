@@ -103,11 +103,12 @@ def row_se30_71_fd() {
 }
 
 # ---- se30-701-gsvrom --------------------------------------------------------
-# The runtime-generated generic GS vROM drives the built-in video: the
-# boot reaches the Finder, off the generated declaration ROM.
+# The built-in video's substitute ROM, the runtime-generated GS vROM, drives
+# it: the boot reaches the Finder, off the generated declaration ROM.  (The
+# other rows run Apple's SE/30 video ROM, which the test data offers.)
 def row_se30_701_gsvrom() {
     machine.rtc.time = 3000000000
-    machine.boot model="se30" ram=8192 rom="${$ROM}"
+    machine.boot model="se30" ram=8192 rom="${$ROM}" slots="14=builtin_se30_video,rom=substitute"
     machine.floppy.drive[0].insert "${$sys_701}"
     scheduler.run 50000000
     # golden-collision-ok: se30-7.0.1-512x342-gsvrom-finder.png se30-7.1-512x342-finder.png
@@ -115,13 +116,13 @@ def row_se30_701_gsvrom() {
     # "Disk Tools", and at 512x342 mono the 7.0.1 and 7.1 Finders draw an
     # identical desktop. The version is not what either golden proves: se30-71-fd
     # pins 7.1 through its About-box golden, and this row's own claim is the
-    # generic vROM, asserted below via the card's declaration ROM.
+    # substitute ROM, asserted below via the card's declaration ROM.
     let spent = wait_match("goldens/se30-7.0.1-512x342-gsvrom-finder.png", 600000000, 10000000)
     assert machine.id == "se30" "se30-701-gsvrom: machine.id != se30"
     assert machine.ram == 8192 "se30-701-gsvrom: machine.ram != 8192"
-    assert machine.nubus.slot[14].card.declrom.path == "builtin:se30" "se30-701-gsvrom: not the generated vROM"
+    assert machine.nubus.slot[14].card.declrom.path == "builtin:builtin_se30_video" "se30-701-gsvrom: not the generated vROM"
     assert_addr(false)
-    report_row("7.0.1", "gsvrom", "fd-boot generic-vrom")
+    report_row("7.0.1", "gsvrom", "fd-boot substitute-vrom")
     report_perf("suite-se30/se30-701-gsvrom", scheduler.instr_count)
 }
 

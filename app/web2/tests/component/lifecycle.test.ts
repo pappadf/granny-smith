@@ -28,13 +28,7 @@ describe('emulator lifecycle (no Module in jsdom)', () => {
   });
 
   it('initEmulator is a no-op against an un-booted bus', async () => {
-    await initEmulator({
-      model: 'plus',
-      vrom: '(auto)',
-      floppies: [],
-      hd: '(none)',
-      cd: '(none)',
-    });
+    await initEmulator({ model: 'plus' });
     // machine state remains as the test reset left it (status still
     // 'no-machine' since gsEval returns null without a Module).
     expect(machine.status).toBe('no-machine');

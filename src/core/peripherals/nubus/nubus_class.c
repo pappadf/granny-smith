@@ -17,6 +17,7 @@
 #include "value.h"
 
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -203,9 +204,30 @@ static const class_desc_t nubus_mode_class = {
     .name = "mode", .members = mode_members, .n_members = sizeof(mode_members) / sizeof(mode_members[0])};
 
 // --- card node --------------------------------------------------------------
+// The card's display name, and which declaration ROM it runs.
+static void card_label(const nubus_card_t *c, char *buf, size_t len) {
+    const nubus_card_kind_t *k = c ? nubus_slot_kind(c->bus, c->slot) : NULL;
+    snprintf(buf, len, "%s%s", k && k->display_name ? k->display_name : "Card",
+             c && c->substitute ? " (substitute ROM)" : "");
+}
 static DEF_GETTER(card_attr_name) {
+    char name[96];
+    card_label(node_card(self), name, sizeof name);
+    return val_str(name);
+}
+static DEF_GETTER(card_attr_substitute) {
     nubus_card_t *c = node_card(self);
-    return val_str((c && c->ops && c->ops->name) ? c->ops->name(c) : "");
+    return val_bool(c && c->substitute);
+}
+static DEF_GETTER(card_attr_monitor) {
+    nubus_card_t *c = node_card(self);
+    const slot_opts_t *e = c ? nubus_seat(c->bus, c->slot) : NULL;
+    return val_str(e ? e->monitor : "");
+}
+static DEF_GETTER(card_attr_sense) {
+    nubus_card_t *c = node_card(self);
+    const slot_opts_t *e = c ? nubus_seat(c->bus, c->slot) : NULL;
+    return val_uint(1, e ? e->sense : MACHINE_SENSE_NONE);
 }
 static DEF_GETTER(card_attr_slot) {
     nubus_card_t *c = node_card(self);
@@ -220,12 +242,24 @@ static const member_t card_members[] = {
     {.kind = M_ATTR,
      .name = "id",
      .doc = "Card kind id (catalog.nubus_cards)",
-     .attr = {.type = V_STRING, .get = card_attr_id}                                                              },
-    {.kind = M_ATTR, .name = "name", .doc = "Card display name", .attr = {.type = V_STRING, .get = card_attr_name}},
+     .attr = {.type = V_STRING, .get = card_attr_id}                                                                                      },
+    {.kind = M_ATTR, .name = "name", .doc = "Card display name",                         .attr = {.type = V_STRING, .get = card_attr_name}},
+    {.kind = M_ATTR,
+     .name = "substitute",
+     .doc = "Runs the emulator's substitute declaration ROM instead of Apple's",
+     .attr = {.type = V_BOOL, .get = card_attr_substitute}                                                                                },
+    {.kind = M_ATTR,
+     .name = "monitor",
+     .doc = "The monitor on the card's connector: one of its monitor rows, or \"none\"",
+     .attr = {.type = V_STRING, .get = card_attr_monitor}                                                                                 },
+    {.kind = M_ATTR,
+     .name = "sense",
+     .doc = "The code the connector's monitor-sense lines read (7: nothing connected)",
+     .attr = {.type = V_UINT, .get = card_attr_sense}                                                                                     },
     {.kind = M_ATTR,
      .name = "slot",
      .doc = "NuBus slot number ($9..$E)",
-     .attr = {.type = V_INT, .presentation_flags = VAL_HEX, .get = card_attr_slot}                                },
+     .attr = {.type = V_INT, .presentation_flags = VAL_HEX, .get = card_attr_slot}                                                        },
 };
 static const class_desc_t nubus_card_class = {
     .name = "card", .members = card_members, .n_members = sizeof(card_members) / sizeof(card_members[0])};
@@ -341,7 +375,9 @@ void nubus_objects_build(nubus_bus_t *bus) {
 
         n->card = object_new(&nubus_card_class, card, "card");
         if (n->card) {
-            object_set_label(n->card, (card->ops && card->ops->name) ? card->ops->name(card) : "Card");
+            char label[96];
+            card_label(card, label, sizeof label);
+            object_set_label(n->card, label);
             object_attach(n->slot, n->card);
             n->fb_node = (display_fb_node_t){.owner = card, .resolve = nubus_fb_resolve, .base = nubus_fb_base};
             n->fb =
@@ -379,7 +415,7 @@ void nubus_objects_teardown_owned(nubus_bus_t *bus) {
 struct object *nubus_active_framebuffer_object(void) {
     if (!g_obj_bus)
         return NULL;
-    nubus_card_t *card = nubus_primary_display_card(g_obj_bus);
+    nubus_card_t *card = nubus_connected_display_card(g_obj_bus);
     if (!card)
         return NULL;
     for (int i = 0; i < NUBUS_OBJ_SLOTS; i++)

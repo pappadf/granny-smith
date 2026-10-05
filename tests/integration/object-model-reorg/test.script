@@ -92,9 +92,9 @@ assert debug.find.meta.path == "debug.find" "debug.find after a load"
 # === Callback-backed children have paths ===================================
 assert machine.scsi.device.meta.path == "machine.scsi.device" "collection container path"
 assert machine.floppy.drive[0].meta.path == "machine.floppy.drive[0]" "drive entry path"
-machine.scsi.attach_hd ../../data/systems/System_6_0_8.dsk 3
-assert machine.scsi.device[3].meta.path == "machine.scsi.device[3]" "device entry path"
-assert machine.scsi.device[3].image.meta.path == "machine.scsi.device[3].image" "lookup-backed child path"
+machine.scsi.attach_hd ../../data/systems/System_6_0_8.dsk 4
+assert machine.scsi.device[4].meta.path == "machine.scsi.device[4]" "device entry path"
+assert machine.scsi.device[4].image.meta.path == "machine.scsi.device[4].image" "lookup-backed child path"
 
 echo "object-model-reorg-ok"
 quit

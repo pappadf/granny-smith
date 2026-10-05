@@ -5,11 +5,13 @@
 // Machine profile registry plus the machine.* object-model surface.
 
 #include "machine.h"
+#include "machine_config.h"
 
 #include "adb.h"
 #include "cpu.h"
 #include "gs_out.h"
 #include "image.h"
+#include "json_value.h"
 #include "log.h"
 #include "nubus.h"
 #include "object.h"
@@ -24,8 +26,6 @@
 #include "vrom.h"
 #include "nubus/card.h"
 #include "pci/pci.h"
-
-#include "mcu/dafb.h"
 
 LOG_USE_CATEGORY_NAME("setup");
 
@@ -82,25 +82,11 @@ const char *mmu_kind_to_string(mmu_kind_t kind) {
     return "none";
 }
 
-// Convert an hd_bus_t to its wire string ("scsi" / "profile").  The config UI
-// reads this to label the HD row and choose the attach call.
-const char *hd_bus_to_string(hd_bus_t bus) {
-    switch (bus) {
-    case HD_BUS_SCSI:
-        return "scsi";
-    case HD_BUS_PROFILE:
-        return "profile";
-    }
-    return "scsi";
-}
-
 // === Media bays ==============================================
-// Where a hard disk or a CD goes is a fact the profile already holds -- the
-// buses with their bays, the `boot` flag, hd_bus, has_cdrom/cdrom_id -- but
-// every consumer derived it for itself, and they disagreed: headless put
-// hd=N at SCSI id N, the web dialog at the boot bay, the URL path at N again,
-// the Images panel at the default id on bus 0 whatever the bay's bus.  These
-// derive it once.
+// "The Nth default hard disk" and "the default CD-ROM drive" -- what
+// machine.attach_hd / attach_cdrom and the headless hd= / cdrom= arguments
+// mean -- are the profile's default storage devices, in order.  Derived here
+// once so no caller branches on a bus.
 
 const char *media_bus_name(media_bus_t bus) {
     switch (bus) {
@@ -130,51 +116,28 @@ bool media_bus_parse(const char *name, media_bus_t *out) {
     return false;
 }
 
-int profile_hd_bays(const hw_profile_t *p, media_bay_t *out, int max) {
-    if (!p || max <= 0)
-        return 0;
-    if (p->hd_bus == HD_BUS_PROFILE) {
-        out[0] = (media_bay_t){.bus = MEDIA_BUS_PROFILE, .unit = 0, .label = "ProFile"};
-        return 1;
-    }
-    // Every declared bay, in declared order, remembering the boot one.
-    media_bay_t all[MEDIA_HD_BAYS_MAX];
-    int n = 0, boot = 0;
-    for (const struct scsi_bus_decl *bus = p->scsi_buses; bus && bus->object; bus++) {
-        media_bus_t which;
-        if (!media_bus_parse(bus->object, &which) || (which != MEDIA_BUS_SCSI && which != MEDIA_BUS_SCSI2))
+// The default storage devices of `type`, as attach bays, in order.
+static int default_bays(const hw_profile_t *p, unsigned type, media_bay_t *out, int max) {
+    int n = 0;
+    for (const storage_device_decl_t *d = p ? p->default_storage : NULL; d && d->bus && n < max; d++) {
+        if (d->type != type)
             continue;
-        for (const struct scsi_slot *s = bus->slots; s && s->label && n < MEDIA_HD_BAYS_MAX; s++) {
-            if (s->boot)
-                boot = n;
-            all[n++] = (media_bay_t){.bus = which, .unit = s->id, .label = s->label};
-        }
+        if (machine_storage_media_bay(p, d->bus, d->unit, &out[n]))
+            n++;
     }
-    // The boot bay first, then the rest in declared order.
-    int count = 0;
-    if (n > 0)
-        out[count++] = all[boot];
-    for (int i = 0; i < n && count < max; i++)
-        if (i != boot)
-            out[count++] = all[i];
-    return count;
+    return n;
+}
+
+int profile_hd_bays(const hw_profile_t *p, media_bay_t *out, int max) {
+    return default_bays(p, STORAGE_DEV_HD, out, max);
 }
 
 bool profile_default_hd_bay(const hw_profile_t *p, media_bay_t *out) {
     return profile_hd_bays(p, out, 1) == 1;
 }
 
-struct scsi *profile_scsi_init(const hw_profile_t *p, struct scheduler *sched, checkpoint_t *cp,
-                               const image_list_t *images) {
-    return scsi_init(sched, cp, images, p->has_cdrom ? p->cdrom_drive : NULL, p->cdrom_id);
-}
-
 bool profile_cdrom_bay(const hw_profile_t *p, media_bay_t *out) {
-    if (!p || !p->has_cdrom)
-        return false;
-    // The core seats the CD on the machine's first bus (cfg->scsi).
-    *out = (media_bay_t){.bus = MEDIA_BUS_SCSI, .unit = p->cdrom_id, .label = "CD-ROM"};
-    return true;
+    return default_bays(p, STORAGE_DEV_CD, out, 1) == 1;
 }
 
 int profile_floppy_count(const hw_profile_t *p) {
@@ -184,7 +147,27 @@ int profile_floppy_count(const hw_profile_t *p) {
     return n;
 }
 
-// A bay as the profile exports it: {bus, id, label}.
+int machine_floppy_count(const struct config *cfg) {
+    return cfg->build_opts.n_floppies >= 0 ? cfg->build_opts.n_floppies : profile_floppy_count(cfg->machine);
+}
+
+struct scsi *machine_scsi_bus_init(struct config *cfg, checkpoint_t *cp, const char *bus_id) {
+    scsi_t *bus = scsi_init_named(cfg->scheduler, cp, CONFIG_IMAGES(cfg), bus_id);
+    if (!bus || cp)
+        return bus; // a restored bus brings its drives in its own block
+    // Power-on: the configuration's CD-ROM drives on this bus, empty.  SCSI is
+    // not hot-plug -- the guest's CD driver claims its targets at the boot-time
+    // bus scan -- so a drive must exist from power-on, disc or no disc.
+    const struct scsi_cd_drive *drive = cfg->machine->cdrom_drive;
+    for (int i = 0; drive && i < cfg->build_opts.n_storage; i++) {
+        const machine_storage_dev_t *d = &cfg->build_opts.storage[i];
+        if (d->type == STORAGE_DEV_CD && strcmp(d->bus, bus_id) == 0)
+            scsi_add_cd_drive(bus, d->unit, drive);
+    }
+    return bus;
+}
+
+// A bay as the attach verbs answer it: {bus, id, label}.
 static value_t media_bay_value(const media_bay_t *bay) {
     value_map_builder_t *b = val_map_new();
     val_map_put(b, "bus", val_str(media_bus_name(bay->bus)));
@@ -251,6 +234,39 @@ static DEF_GETTER(attr_catalog_models) {
         return val_err("catalog.models: out of memory");
     for (size_t i = 0; i < n; i++)
         items[i] = val_str(list[i]->id);
+    return val_list(items, n);
+}
+
+// The storage devices the running machine was built with, the positions an
+// image can be attached to: {bus, bus_label, unit, position, type, present},
+// type hd or cd as machine.attach_media takes them, present when an image is
+// in it.
+static DEF_GETTER(attr_machine_storage) {
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine)
+        return val_err("machine.storage: no machine booted; check machine.created first");
+    size_t n = (size_t)cfg->n_storage;
+    value_t *items = n ? (value_t *)calloc(n, sizeof(value_t)) : NULL;
+    if (n && !items)
+        return val_err("machine.storage: out of memory");
+    for (size_t i = 0; i < n; i++) {
+        const machine_storage_dev_t *d = &cfg->storage[i];
+        const storage_bus_decl_t *b = machine_storage_bus(cfg->machine, d->bus);
+        char position[64] = "";
+        machine_storage_position(cfg->machine, d->bus, d->unit, position, sizeof position);
+        value_map_builder_t *m = val_map_new();
+        val_map_put(m, "bus", val_str(d->bus));
+        val_map_put(m, "bus_label", val_str(b && b->label ? b->label : d->bus));
+        val_map_put(m, "unit", val_int(d->unit));
+        val_map_put(m, "position", val_str(position));
+        val_map_put(m, "type", val_str(d->type == STORAGE_DEV_CD ? "cd" : "hd"));
+        media_bay_t bay;
+        const machine_substrate_t *sub = cfg->machine->substrate;
+        bool present = machine_storage_media_bay(cfg->machine, d->bus, d->unit, &bay) && sub->media_present &&
+                       sub->media_present(cfg, bay.bus, bay.unit);
+        val_map_put(m, "present", val_bool(present));
+        items[i] = val_map_finish(m);
+    }
     return val_list(items, n);
 }
 
@@ -328,11 +344,9 @@ static value_t build_capabilities(const hw_profile_t *p) {
     value_map_builder_t *b = val_map_new();
     val_map_put(b, "cpu", val_map_finish(cpu));
     val_map_put(b, "mmu", val_map_finish(mmu));
-    // NOTE: video configurability is the video_slots block, NOT "nubus
-    // exists" — the two are deliberately not conflated.
+    // Which expansion buses the machine has (what each slot takes is the
+    // tree's `slots` and `cards`).
     val_map_put(b, "nubus", val_bool(p->nubus_slots != NULL));
-    // Same rule for PCI: "the machine has PCI sockets", which is what the
-    // dialog's Expansion Slots section probes for.
     val_map_put(b, "pci", val_bool(p->pci_slots != NULL));
     // On-board video digitizer (webcam capture) — gates the camera UI.
     val_map_put(b, "video_in", val_bool(p->has_video_in));
@@ -356,342 +370,21 @@ static value_t build_capabilities(const hw_profile_t *p) {
     return val_map_finish(b);
 }
 
-// Build one video card map (id, display_name, requires_vrom, monitors).
-// requires_vrom is read straight off the card kind — the property the
-// dialog drives its VROM row from.
-static value_t build_video_card(const char *card_id) {
-    const nubus_card_kind_t *kind = card_id ? nubus_card_find(card_id) : NULL;
-    value_map_builder_t *b = val_map_new();
-    val_map_put(b, "id", val_str(card_id ? card_id : ""));
-    val_map_put(b, "display_name",
-                val_str((kind && kind->display_name) ? kind->display_name : (card_id ? card_id : "")));
-    val_map_put(b, "requires_vrom", val_bool(kind ? kind->requires_vrom : false));
-    value_t *mons = NULL;
-    size_t n_mons = 0, cap_mons = 0;
-    if (kind && kind->monitors) {
-        for (const nubus_monitor_t *mon = kind->monitors; mon->id; mon++) {
-            value_map_builder_t *mb = val_map_new();
-            val_map_put(mb, "id", val_str(mon->id));
-            val_map_put(mb, "name", val_str(mon->name ? mon->name : mon->id));
-            val_map_put(mb, "width", val_int((int64_t)mon->width));
-            val_map_put(mb, "height", val_int((int64_t)mon->height));
-            value_t *depths = NULL;
-            size_t n_depths = 0, cap_depths = 0;
-            if (mon->depths) {
-                for (const int *d = mon->depths; *d; d++)
-                    val_list_push(&depths, &n_depths, &cap_depths, val_int((int64_t)*d));
-            }
-            val_map_put(mb, "depths", val_list(depths, n_depths));
-            val_list_push(&mons, &n_mons, &cap_mons, val_map_finish(mb));
-        }
-    }
-    val_map_put(b, "monitors", val_list(mons, n_mons));
-    return val_map_finish(b);
-}
-
-// Build the `video_slots` list: the real shape the user navigates — slot →
-// card → monitor/depth.  VROM-required-ness is per *card* (the SE/30-vs-IIci
-// asymmetry), so the dialog shows the VROM row iff the selected card needs
-// one.  This is the ONLY video shape in the profile — the flat web-legacy
-// `video_modes` compat view was deleted with that UI.
-static value_t build_video_slots(const hw_profile_t *p) {
-    value_t *slots = NULL;
-    size_t n_slots = 0, cap_slots = 0;
-    if (!p->nubus_slots)
-        return val_list(NULL, 0);
-    for (const struct nubus_slot_decl *s = p->nubus_slots; s->slot; s++) {
-        // Only slots that can carry a video card appear here.  Every SOCKET
-        // is emitted (a machine may declare several); the dialog's single
-        // picker configures the first one, per-socket UI comes later.
-        if (s->kind != NUBUS_SLOT_BUILTIN && s->kind != NUBUS_SLOT_SOCKET)
-            continue;
-        const char *default_card = (s->kind == NUBUS_SLOT_BUILTIN) ? s->builtin_card_id : s->default_card;
-
-        value_map_builder_t *b = val_map_new();
-        if (s->kind == NUBUS_SLOT_BUILTIN) {
-            val_map_put(b, "slot", val_str("builtin"));
-        } else {
-            char slot_buf[8];
-            snprintf(slot_buf, sizeof slot_buf, "%X", s->slot); // "9".."E"
-            val_map_put(b, "slot", val_str(slot_buf));
-        }
-        // A BUILTIN slot may have sibling kinds (same monitor table, both
-        // BUILTIN-attach — the SE/30's generic/real video pair): those are
-        // selectable via video_card=, so the slot is only "fixed" when the
-        // declared kind has no sibling.
-        int builtin_candidates = 1;
-        const nubus_card_kind_t *decl_kind =
-            (s->kind == NUBUS_SLOT_BUILTIN) ? nubus_card_find(s->builtin_card_id) : NULL;
-        if (decl_kind) {
-            for (const nubus_card_kind_t *const *k = nubus_card_registry(); *k; k++) {
-                if (*k != decl_kind && nubus_card_fits_slot(s, *k))
-                    builtin_candidates++;
-            }
-        }
-        val_map_put(b, "fixed", val_bool(s->kind == NUBUS_SLOT_BUILTIN && builtin_candidates == 1));
-        val_map_put(b, "default_card", val_str(default_card ? default_card : ""));
-
-        value_t *cards = NULL;
-        size_t n_cards = 0, cap_cards = 0;
-        if (s->kind == NUBUS_SLOT_BUILTIN) {
-            val_list_push(&cards, &n_cards, &cap_cards, build_video_card(s->builtin_card_id));
-            // Sibling builtin kinds sharing the monitor table are selectable
-            // via video_card=, so offer them alongside the declared one.
-            if (decl_kind) {
-                for (const nubus_card_kind_t *const *k = nubus_card_registry(); *k; k++) {
-                    if (*k != decl_kind && nubus_card_fits_slot(s, *k))
-                        val_list_push(&cards, &n_cards, &cap_cards, build_video_card((*k)->id));
-                }
-            }
-        } else {
-            // Candidates are COMPUTED from the card registry: every kind
-            // whose declared attachment fits this slot and that drives a
-            // display.  Machines never enumerate cards — adding a card to
-            // the registry offers it on every compatible machine.
-            for (const nubus_card_kind_t *const *k = nubus_card_registry(); *k; k++) {
-                if (nubus_card_fits_socket(s, *k) && (*k)->monitors)
-                    val_list_push(&cards, &n_cards, &cap_cards, build_video_card((*k)->id));
-            }
-        }
-        val_map_put(b, "cards", val_list(cards, n_cards));
-        val_list_push(&slots, &n_slots, &cap_slots, val_map_finish(b));
-    }
-    return val_list(slots, n_slots);
-}
-
-// Build one PCI card map (id, display_name, requires_prom, class,
-// monitors).  `class` is the UI grouping hint the dialog needs now that
-// non-display cards are the point of the bus; it is a property of the
-// DRIVER, not of the machine.
-static value_t build_pci_card(const char *card_id) {
-    const pci_card_kind_t *kind = card_id ? pci_card_find(card_id) : NULL;
-    value_map_builder_t *b = val_map_new();
-    val_map_put(b, "id", val_str(card_id ? card_id : ""));
-    val_map_put(b, "display_name",
-                val_str((kind && kind->display_name) ? kind->display_name : (card_id ? card_id : "")));
-    val_map_put(b, "requires_prom", val_bool(kind ? kind->requires_prom : false));
-    const char *klass =
-        (kind && kind->card_class) ? kind->card_class : ((kind && kind->monitors) ? "display" : "other");
-    val_map_put(b, "class", val_str(klass));
-    // The options this card offers, declared by the KIND so the dialog can
-    // render a control per option without knowing which card it is.
-    value_t *opts = NULL;
-    size_t n_opts = 0, cap_opts = 0;
-    for (const pci_card_option_t *o = kind ? kind->options : NULL; o && o->key; o++) {
-        value_map_builder_t *ob = val_map_new();
-        val_map_put(ob, "key", val_str(o->key));
-        val_map_put(ob, "label", val_str(o->label ? o->label : o->key));
-        val_map_put(ob, "default_value", val_str(o->default_value ? o->default_value : ""));
-        value_t *vals = NULL;
-        size_t n_vals = 0, cap_vals = 0;
-        for (size_t i = 0; o->values && o->values[i]; i++) {
-            value_map_builder_t *vb = val_map_new();
-            val_map_put(vb, "id", val_str(o->values[i]));
-            val_map_put(vb, "label", val_str((o->labels && o->labels[i]) ? o->labels[i] : o->values[i]));
-            val_list_push(&vals, &n_vals, &cap_vals, val_map_finish(vb));
-        }
-        val_map_put(ob, "values", val_list(vals, n_vals));
-        val_list_push(&opts, &n_opts, &cap_opts, val_map_finish(ob));
-    }
-    val_map_put(b, "options", val_list(opts, n_opts));
-    value_t *mons = NULL;
-    size_t n_mons = 0, cap_mons = 0;
-    if (kind && kind->monitors) {
-        for (const nubus_monitor_t *mon = kind->monitors; mon->id; mon++) {
-            value_map_builder_t *mb = val_map_new();
-            val_map_put(mb, "id", val_str(mon->id));
-            val_map_put(mb, "name", val_str(mon->name ? mon->name : mon->id));
-            val_map_put(mb, "width", val_int((int64_t)mon->width));
-            val_map_put(mb, "height", val_int((int64_t)mon->height));
-            value_t *depths = NULL;
-            size_t n_depths = 0, cap_depths = 0;
-            if (mon->depths) {
-                for (const int *d = mon->depths; *d; d++)
-                    val_list_push(&depths, &n_depths, &cap_depths, val_int((int64_t)*d));
-            }
-            val_map_put(mb, "depths", val_list(depths, n_depths));
-            val_list_push(&mons, &n_mons, &cap_mons, val_map_finish(mb));
-        }
-    }
-    val_map_put(b, "monitors", val_list(mons, n_mons));
-    return val_map_finish(b);
-}
-
-// Build the `pci_slots` list: one entry per declared socket and builtin,
-// with the fitting cards COMPUTED from the registry (pci_card_fits_socket)
-// exactly as video_slots does for NuBus.  Deliberately NOT folded into
-// video_slots — that block is display-only by construction and the
-// frontend depends on its shape.
-static value_t build_pci_slots(const hw_profile_t *p) {
-    value_t *slots = NULL;
-    size_t n_slots = 0, cap_slots = 0;
-    if (!p->pci_slots)
-        return val_list(NULL, 0);
-    for (const struct pci_slot_decl *s = p->pci_slots; s->slot; s++) {
-        if (s->kind != PCI_SLOT_BUILTIN && s->kind != PCI_SLOT_BUILTIN_FALLBACK && s->kind != PCI_SLOT_SOCKET)
-            continue;
-        value_map_builder_t *b = val_map_new();
-        val_map_put(b, "slot", val_int((int64_t)s->slot));
-        val_map_put(b, "label", val_str(s->label ? s->label : ""));
-        val_map_put(b, "bus", val_int((int64_t)s->bus));
-        val_map_put(b, "device", val_int((int64_t)s->device));
-        val_map_put(b, "irq", val_int((int64_t)s->int_line));
-        // A builtin is soldered down: the dialog renders it as a label,
-        // not a picker.
-        bool builtin = s->kind == PCI_SLOT_BUILTIN || s->kind == PCI_SLOT_BUILTIN_FALLBACK;
-        val_map_put(b, "fixed", val_bool(builtin));
-        // ...and a FALLBACK builtin is not the machine's own hardware at
-        // all: it stands in only while no socket supplies a card of the
-        // same class, because the real machine has nothing there.  A
-        // frontend that cannot tell the two apart shows a Power Macintosh
-        // 9500 as having on-board video, which is the one thing that
-        // machine is documented not to have.
-        val_map_put(b, "fallback", val_bool(s->kind == PCI_SLOT_BUILTIN_FALLBACK));
-        const char *default_card = builtin ? s->builtin_card_id : s->default_card;
-        val_map_put(b, "default_card", val_str(default_card ? default_card : ""));
-
-        value_t *cards = NULL;
-        size_t n_cards = 0, cap_cards = 0;
-        if (builtin) {
-            val_list_push(&cards, &n_cards, &cap_cards, build_pci_card(s->builtin_card_id));
-        } else {
-            // Candidates are COMPUTED: every registered kind whose declared
-            // attachment fits this socket.  Adding a card driver offers it
-            // on every compatible machine with no machine-side edit.
-            for (const pci_card_kind_t *const *k = pci_card_registry(); *k; k++) {
-                if (!pci_card_fits_socket(s, *k))
-                    continue;
-                if ((*k)->offered && !(*k)->offered())
-                    continue; // needs a host facility this host lacks
-                val_list_push(&cards, &n_cards, &cap_cards, build_pci_card((*k)->id));
-            }
-        }
-        val_map_put(b, "cards", val_list(cards, n_cards));
-        val_list_push(&slots, &n_slots, &cap_slots, val_map_finish(b));
-    }
-    return val_list(slots, n_slots);
-}
-
-// The machine's own built-in video, plus the monitors its port can be
-// strapped with.  `none` is always last and is what switches the port —
-// and therefore built-in video — off.  Empty map when the machine has no
-// substrate built-in video to choose.
-static value_t build_builtin_video(const hw_profile_t *p) {
-    value_map_builder_t *b = val_map_new();
-    if (!p->builtin_video)
-        return val_map_finish(b);
-    val_map_put(b, "id", val_str("builtin"));
-    val_map_put(b, "display_name", val_str(p->builtin_video->display_name));
-    value_t *mons = NULL;
-    size_t n = 0, cap = 0;
-    // The family owns its monitor list; this walks it without knowing the
-    // per-monitor data behind it (the PDM's sense strap).
-    const char *mid = NULL, *mname = NULL;
-    for (size_t i = 0; p->builtin_video->monitor_at && p->builtin_video->monitor_at(i, &mid, &mname); i++) {
-        value_map_builder_t *mb = val_map_new();
-        val_map_put(mb, "id", val_str(mid));
-        val_map_put(mb, "name", val_str(mname));
-        val_list_push(&mons, &n, &cap, val_map_finish(mb));
-    }
-    val_map_put(b, "monitors", val_list(mons, n));
-    return val_map_finish(b);
-}
-
-// Build the typed profile map for a registered hw_profile_t.
+// Build the typed profile map for a registered hw_profile_t: its identity,
+// the capability probe, and the machine-description tree (machine_config.c).
 static value_t build_profile(const hw_profile_t *p) {
     value_map_builder_t *b = val_map_new();
     val_map_put(b, "id", val_str(p->id ? p->id : ""));
     val_map_put(b, "name", val_str(p->name ? p->name : ""));
     val_map_put(b, "freq", val_int((int64_t)p->freq));
-
-    value_t *rams = NULL;
-    size_t n_rams = 0, cap_rams = 0;
-    if (p->ram_options) {
-        for (const uint32_t *r = p->ram_options; *r; r++)
-            val_list_push(&rams, &n_rams, &cap_rams, val_int((int64_t)*r));
-    }
-    val_map_put(b, "ram_options", val_list(rams, n_rams));
-
-    val_map_put(b, "ram_default", val_int((int64_t)(p->ram_default / 1024u)));
-    val_map_put(b, "ram_max", val_int((int64_t)(p->ram_max / 1024u)));
-
-    value_t *flops = NULL;
-    size_t n_flops = 0, cap_flops = 0;
-    if (p->floppy_slots) {
-        for (const struct floppy_slot *s = p->floppy_slots; s->label; s++) {
-            value_map_builder_t *fb = val_map_new();
-            val_map_put(fb, "label", val_str(s->label));
-            val_map_put(fb, "kind", val_str(floppy_kind_to_string(s->kind)));
-            val_list_push(&flops, &n_flops, &cap_flops, val_map_finish(fb));
-        }
-    }
-    val_map_put(b, "floppy_slots", val_list(flops, n_flops));
-
-    // Buses, each carrying its own bays.  The `object` field is what a
-    // consumer attaches media through (machine.<object>.attach_hd), so no
-    // caller needs to know which machines have a second controller.
-    value_t *buses = NULL;
-    size_t n_buses = 0, cap_buses = 0;
-    for (const struct scsi_bus_decl *bus = p->scsi_buses; bus && bus->object; bus++) {
-        value_t *scsis = NULL;
-        size_t n_scsis = 0, cap_scsis = 0;
-        for (const struct scsi_slot *s = bus->slots; s && s->label; s++) {
-            value_map_builder_t *sb = val_map_new();
-            val_map_put(sb, "label", val_str(s->label));
-            val_map_put(sb, "id", val_int((int64_t)s->id));
-            val_map_put(sb, "boot", val_bool(s->boot));
-            val_list_push(&scsis, &n_scsis, &cap_scsis, val_map_finish(sb));
-        }
-        value_map_builder_t *bb = val_map_new();
-        val_map_put(bb, "object", val_str(bus->object));
-        val_map_put(bb, "label", val_str(bus->label));
-        val_map_put(bb, "slots", val_list(scsis, n_scsis));
-        val_list_push(&buses, &n_buses, &cap_buses, val_map_finish(bb));
-    }
-    val_map_put(b, "scsi_buses", val_list(buses, n_buses));
-
-    val_map_put(b, "hd_bus", val_str(hd_bus_to_string(p->hd_bus)));
-
-    val_map_put(b, "has_cdrom", val_bool(p->has_cdrom));
-    val_map_put(b, "cdrom_id", val_int((int64_t)p->cdrom_id));
-
-    // The derived bays: every hard-disk bay in attach order, the default
-    // one (hd_bays[0]), and the CD bay -- {bus, id, label}, bus one of
-    // "scsi" / "scsi2" / "profile".  What machine.attach_hd / attach_cdrom
-    // use, exported so a UI can show the same answer before a boot.
-    media_bay_t bays[MEDIA_HD_BAYS_MAX];
-    int n_bays = profile_hd_bays(p, bays, MEDIA_HD_BAYS_MAX);
-    value_t *bay_vals = NULL;
-    size_t n_bay_vals = 0, cap_bay_vals = 0;
-    for (int i = 0; i < n_bays; i++)
-        val_list_push(&bay_vals, &n_bay_vals, &cap_bay_vals, media_bay_value(&bays[i]));
-    val_map_put(b, "hd_bays", val_list(bay_vals, n_bay_vals));
-    val_map_put(b, "hd_default", n_bays > 0 ? media_bay_value(&bays[0]) : val_none());
-    media_bay_t cd;
-    val_map_put(b, "cdrom", profile_cdrom_bay(p, &cd) ? media_bay_value(&cd) : val_none());
-
-    // Derived capability probe + per-card video-slot shape —
-    // the source of truth the frontend consumes.  (The web-legacy compat keys
-    // needs_vrom / video_modes / video_mode_default were deleted with that UI;
-    // everything derives from video_slots now.)
     val_map_put(b, "capabilities", build_capabilities(p));
-    val_map_put(b, "video_slots", build_video_slots(p));
-    // PCI expansion topology: one row per declared socket / builtin, with
-    // the fitting cards computed per socket (docs/internals/core/peripherals/pci.md).
-    val_map_put(b, "pci_slots", build_pci_slots(p));
-    // Substrate built-in video, when the machine has one that is NOT a
-    // BUILTIN slot pseudo-card (the PDM family's Ariel scanout).  The
-    // configuration dialog offers it beside the NuBus cards; picking a card
-    // instead means strapping this port unconnected (monitor="none"), which
-    // is what a real machine does when you plug the monitor into the card.
-    val_map_put(b, "builtin_video", build_builtin_video(p));
-
+    machine_config_put_tree(p, b);
     return val_map_finish(b);
 }
 
-// catalog.profile(id) — static lookup, returns the model's full configuration
-// shape as a typed map.  Errors when id is empty
-// or doesn't match a registered profile.
+// catalog.profile(id) — the model's machine-description tree as a typed map.
+// Card availability follows the ROMs offered now, so a reader re-reads it
+// after an upload.  Errors when id is empty or names no registered profile.
 static DEF_METHOD(catalog_method_profile) {
     const char *id = argv[0].s;
     if (!id || !*id)
@@ -702,21 +395,14 @@ static DEF_METHOD(catalog_method_profile) {
     return build_profile(p);
 }
 
-// Build a comma-separated list of allowed RAM sizes for the error message.
-static void format_ram_options(char *buf, size_t bufsize, const hw_profile_t *p) {
-    size_t pos = 0;
-    if (!p->ram_options) {
-        snprintf(buf, bufsize, "<none>");
-        return;
-    }
-    for (const uint32_t *r = p->ram_options; *r && pos + 16 < bufsize; r++) {
-        int n = snprintf(buf + pos, bufsize - pos, "%s%u", pos ? "," : "", *r);
-        if (n < 0)
-            break;
-        pos += (size_t)n;
-    }
-    if (pos == 0)
-        snprintf(buf, bufsize, "<none>");
+// catalog.default_config(id) — the model's default configuration, as the
+// document machine.boot's config= takes.
+static DEF_METHOD(catalog_method_default_config) {
+    const char *id = argv[0].s;
+    const hw_profile_t *p = (id && *id) ? machine_find(id) : NULL;
+    if (!p)
+        return val_err("catalog.default_config: unknown model '%s'", id ? id : "");
+    return machine_config_defaults(p);
 }
 
 // === Boot document ==========================================================
@@ -781,68 +467,90 @@ static value_t boot_rom_read(const boot_config_t *doc, const hw_profile_t *profi
     return val_none();
 }
 
+// The configuration document (config=, JSON) parsed, with its model and rom
+// reconciled against the named arguments.  *out is V_NONE without one.
+static value_t boot_read_config(boot_config_t *doc, value_t *out) {
+    *out = val_none();
+    if (!doc->config || !*doc->config)
+        return val_none();
+    char why[160];
+    value_t v;
+    if (!json_value_parse(doc->config, &v, why, sizeof why))
+        return val_err("machine.boot: config: %s", why);
+    if (v.kind != V_MAP) {
+        value_free(&v);
+        return val_err("machine.boot: config must be a JSON object");
+    }
+    static const char *const keys[] = {"model",   "rom",   "options",  "floppies", "storage",
+                                       "startup", "cards", "displays", NULL};
+    for (size_t i = 0; i < v.map.len; i++) {
+        bool ok = false;
+        for (const char *const *k = keys; *k; k++)
+            ok |= strcmp(*k, v.map.entries[i].key) == 0;
+        if (!ok) {
+            value_t err = val_err("machine.boot: config: unknown member '%s'", v.map.entries[i].key);
+            value_free(&v);
+            return err;
+        }
+    }
+    // model and rom may come from either place, but must agree.
+    static const char *const ids[] = {"model", "rom"};
+    const char **fields[] = {&doc->model, &doc->rom};
+    for (int i = 0; i < 2; i++) {
+        const value_t *m = value_map_get(&v, ids[i]);
+        if (!m)
+            continue;
+        if (m->kind != V_STRING) {
+            value_free(&v);
+            return val_err("machine.boot: config: %s must be a string", ids[i]);
+        }
+        if (*fields[i] && **fields[i] && strcmp(*fields[i], m->s) != 0) {
+            value_t err = val_err("machine.boot: %s= and config's %s disagree", ids[i], ids[i]);
+            value_free(&v);
+            return err;
+        }
+        *fields[i] = m->s; // borrowed from v, which outlives the boot
+    }
+    *out = v;
+    return val_none();
+}
+
 // Apply one boot document: validate, build the new machine beside the
 // running one, swap it in, destroy the old one (system_swap_in).  Shared by
 // machine.boot and headless startup.  Returns V_NONE on success, V_ERROR (with
 // the old machine still running) on rejection.
 value_t machine_boot_apply(const boot_config_t *doc_in) {
     boot_config_t doc = *doc_in;
+    value_t config;
+    value_t cerr = boot_read_config(&doc, &config);
+    if (val_is_error(&cerr))
+        return cerr;
+    value_t result = val_none();
 
     // 1. Validation — all of it before anything is built.  The document is
     // the whole specification: nothing is filled in from the previous
     // machine (a field the caller did not write must not arrive from
     // somewhere the caller cannot see).
-    if (!doc.model || !*doc.model)
-        return val_err("machine.boot: model is required (machine.restart power-cycles the running machine)");
-    const hw_profile_t *profile = machine_find(doc.model);
-    if (!profile)
-        return val_err("machine.boot: unknown model '%s'", doc.model);
-
-    uint32_t ram_kb = doc.ram_kb;
-    if (ram_kb == 0)
-        ram_kb = profile->ram_default / 1024u;
-    if (!hw_profile_ram_option_allowed(profile, ram_kb)) {
-        char options[128];
-        format_ram_options(options, sizeof(options), profile);
-        return val_err("machine.boot: ram %u KB not in profile.ram_options for %s [%s]", ram_kb, profile->name,
-                       options);
+    const hw_profile_t *profile = NULL;
+    if (!doc.model || !*doc.model) {
+        result = val_err("machine.boot: model is required (machine.restart power-cycles the running machine)");
+        goto out;
     }
-
-    if (!doc.rom || !*doc.rom)
-        return val_err("machine.boot: rom is required (machine.restart power-cycles the running machine)");
-    // The ROM itself is read, identified and checked last (boot_rom_read),
-    // just before the running machine is touched: the new machine is built
-    // with its bytes.
-
-    // 0..7 is the passive sense code; 8..14 is Apple's own indexed numbering
-    // for the monitors that answer the EXTENDED (tie-matrix) probe instead
-    // (dafb.h's DAFB_SENSE_INDEXED_*).  Only the DAFB models the extended
-    // range today, so the JMFB takes the passive part only.
-    // Both bounds.  The ceiling was checked and the floor was not, so any
-    // negative other than the -1 "unset" sentinel fell through to the
-    // `video_sense >= 0` guard below and was silently ignored --
-    // demonstrated: video_sense=-7 booted with no diagnostic, and presents to
-    // the caller as "my video_sense= was ignored".
-    if (doc.video_sense < -1 || doc.video_sense >= (int)DAFB_SENSE_INDEXED_MAX)
-        return val_err("machine.boot: video_sense must be 0..%u, or -1 for unset (got %d)", DAFB_SENSE_INDEXED_MAX - 1u,
-                       doc.video_sense);
-    if (doc.monitor && *doc.monitor) {
-        if (!profile->builtin_video)
-            return val_err("machine.boot: model '%s' has no configurable built-in video port", profile->id);
-        // Validated HERE, against the family's own list, because everything in
-        // machine_boot_apply must be rejected before the running machine is
-        // touched.
-        bool known = false;
-        const char *mid = NULL, *mname = NULL;
-        for (size_t i = 0; profile->builtin_video->monitor_at && profile->builtin_video->monitor_at(i, &mid, &mname);
-             i++) {
-            if (strcmp(mid, doc.monitor) == 0) {
-                known = true;
-                break;
-            }
-        }
-        if (!known)
-            return val_err("machine.boot: unknown monitor id '%s' (see catalog.profile)", doc.monitor);
+    profile = machine_find(doc.model);
+    if (!profile) {
+        result = val_err("machine.boot: unknown model '%s'", doc.model);
+        goto out;
+    }
+    if (!doc.rom || !*doc.rom) {
+        result = val_err("machine.boot: rom is required (machine.restart power-cycles the running machine)");
+        goto out;
+    }
+    // video_sense= is a debug override: 0..7 is the passive sense code, 8..14
+    // Apple's indexed numbering for the monitors that answer the extended
+    // probe (only the DAFB models them).
+    if (doc.video_sense < -1 || doc.video_sense >= 15) {
+        result = val_err("machine.boot: video_sense must be 0..14, or -1 for unset (got %d)", doc.video_sense);
+        goto out;
     }
     // The card ROMs beside this ROM join the offer registry before the slot
     // check reads it.  Offers are content-addressed and persist, so this only
@@ -850,14 +558,13 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     // one used to find none of its siblings (#187).
     platform_offer_sibling_card_roms(doc.rom);
 
-    // The expansion slots: slots= and its sugar (video_card=, video_mode=,
-    // custom_mode=, pci_card=, pci_option=, vrom=, prom=) resolved into one
-    // validated entry per configured slot -- card fit, mode, geometry,
-    // options and ROM -- before the running machine is touched.
+    // Everything but the ROM: memory, options, floppies, storage, the startup
+    // device, the cards and the displays, from the document and the named
+    // arguments it was given as (machine_config.c).
     machine_build_opts_t build_opts = machine_build_opts_default();
-    value_t serr = machine_slots_resolve(profile, &doc, &build_opts);
-    if (val_is_error(&serr))
-        return serr;
+    result = machine_config_resolve(profile, config.kind == V_MAP ? &config : NULL, &doc, &build_opts);
+    if (val_is_error(&result))
+        goto out;
 
     // The ROM, read now: the machine is built with it, so a ROM that cannot
     // be read, is unknown, belongs to another model or has the wrong size is
@@ -865,37 +572,28 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     uint8_t *rom_bytes = NULL;
     rom_image_t build_rom;
     rom_identity_t rom_identity;
-    value_t rerr = boot_rom_read(&doc, profile, &rom_bytes, &build_rom, &rom_identity);
-    if (val_is_error(&rerr))
-        return rerr;
-
-    // One channel for every video model that needs the sense at construction
-    // -- the JMFB cards, the Quadras' DAFB, PDM's Ariel.
-    build_opts.ram_kb = ram_kb; // validated and defaulted above
-    build_opts.rom = build_rom; // read and validated above
-    if (doc.video_sense >= 0)
-        build_opts.video_sense = doc.video_sense;
-    // The built-in monitor strap resolves to a sense code and joins the other
-    // build options.  Validated above, so this cannot fail.
-    if (doc.monitor && *doc.monitor) {
-        uint8_t mon_sense = 0;
-        if (profile->builtin_video->monitor_sense(doc.monitor, &mon_sense))
-            build_opts.video_sense = mon_sense;
-    }
+    result = boot_rom_read(&doc, profile, &rom_bytes, &build_rom, &rom_identity);
+    if (val_is_error(&result))
+        goto out;
+    build_opts.rom = build_rom;
 
     // 3. Build, then swap, then destroy.  The new machine is built from the
     // document alone while the running one is untouched; only a complete
     // build replaces it.
     config_t *cfg = system_create(profile, &build_opts, NULL);
     free(rom_bytes); // copied into the ROM region
-    if (!cfg)
-        return val_err("machine.boot: failed to create %s", profile->id);
+    if (!cfg) {
+        result = val_err("machine.boot: failed to create %s", profile->id);
+        goto out;
+    }
 
     // 4. The swap: the new machine becomes the active one, and the one it
     // replaces is destroyed.
     system_swap_in(cfg, false, platform_pacing());
     LOG(1, "Machine created: %s (%s), RAM: %u KB", profile->name, profile->id, cfg->ram_size / 1024u);
-    return val_none();
+out:
+    value_free(&config);
+    return result;
 }
 
 // A boot-document field the caller left out arrives as V_NONE;
@@ -928,6 +626,7 @@ static DEF_METHOD(machine_method_boot) {
         .prom = boot_str(&argv[11]),
         .pci_option = boot_str(&argv[12]),
         .slots = boot_str(&argv[13]),
+        .config = boot_str(&argv[14]),
     };
     value_t err = machine_boot_apply(&doc);
     if (val_is_error(&err))
@@ -999,8 +698,8 @@ static const arg_decl_t machine_boot_args[] = {
     {.name = "video_sense",
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "Monitor sense 0..7 (passive), 8..14 (extended)",
-     .default_doc = "the card's"},
+     .doc = "Debug override of the connected display's monitor sense: 0..7 (passive), 8..14 (extended, DAFB)",
+     .default_doc = "the connected monitor's"},
     {.name = "video_mode",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
@@ -1041,6 +740,11 @@ static const arg_decl_t machine_boot_args[] = {
      .validation_flags = OBJ_ARG_OPTIONAL,
      .doc = "Per-slot cards, \"SLOT=CARD[,key=value]*;...\" (keys mode / custom / rom, or card options; "
             "CARD none empties a socket)", .default_doc = "the slots' own cards"},
+    {.name = "config",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "The configuration document as JSON (see catalog.default_config); the arguments above are "
+            "shorthand for parts of it", .default_doc = "the model's default configuration"},
 };
 
 static const arg_decl_t machine_register_args[] = {
@@ -1052,12 +756,14 @@ static const arg_decl_t catalog_profile_args[] = {
     {.name = "id", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "Machine model id (plus / se30)"},
 };
 
-// === machine.attach_hd / attach_cdrom / eject_media ===========
-// Media by bay, not by bus: the running machine's profile says where a hard
-// disk or a CD goes (profile_hd_bays / profile_cdrom_bay), and the substrate
-// attaches it there, on whatever bus that is -- machine.scsi, machine.scsi2 or
-// the Lisa's ProFile.  Each answers the bay it used, {bus, id, label}, which
-// is what eject_media takes back.
+// === machine.attach_hd / attach_cdrom / attach_media / eject_media =====
+// Media by position, not by bus.  attach_hd and attach_cdrom are shorthand
+// for "the Nth hard disk / the CD-ROM drive of the model's default
+// configuration" (profile_hd_bays / profile_cdrom_bay); attach_media names a
+// position as the configuration does, a storage bus id and a unit.  The
+// substrate attaches there, on whatever bus that is -- machine.scsi,
+// machine.scsi2, the ATA buses or the Lisa's ProFile.  Each answers the place
+// it used, {bus, id, label}, which is what eject_media takes back.
 
 static DEF_METHOD(machine_method_attach_hd) {
     config_t *cfg = global_emulator;
@@ -1067,10 +773,11 @@ static DEF_METHOD(machine_method_attach_hd) {
     int n = profile_hd_bays(cfg->machine, bays, MEDIA_HD_BAYS_MAX);
     int64_t which = (argc >= 2 && argv[1].kind == V_INT) ? argv[1].i : 0;
     if (n == 0)
-        return val_err("machine.attach_hd: %s has no hard-disk bay", cfg->machine->name);
+        return val_err("machine.attach_hd: %s has no hard disk in its default configuration", cfg->machine->name);
     if (which < 0 || which >= n)
-        return val_err("machine.attach_hd: bay %lld does not exist (%s has %d)", (long long)which, cfg->machine->name,
-                       n);
+        return val_err("machine.attach_hd: hard disk %lld does not exist (%s has %d; machine.attach_media names "
+                       "any position)",
+                       (long long)which, cfg->machine->name, n);
     char err[256];
     if (system_media_attach_path(cfg, &bays[which], false, argv[0].s, err, sizeof(err)) != 0)
         return val_err("machine.attach_hd: %s", err);
@@ -1083,10 +790,38 @@ static DEF_METHOD(machine_method_attach_cdrom) {
         return val_err("machine.attach_cdrom: no machine is running");
     media_bay_t bay;
     if (!profile_cdrom_bay(cfg->machine, &bay))
-        return val_err("machine.attach_cdrom: %s has no CD-ROM bay", cfg->machine->name);
+        return val_err("machine.attach_cdrom: %s has no CD-ROM drive in its default configuration", cfg->machine->name);
     char err[256];
     if (system_media_attach_path(cfg, &bay, true, argv[0].s, err, sizeof(err)) != 0)
         return val_err("machine.attach_cdrom: %s", err);
+    return media_bay_value(&bay);
+}
+
+// machine.attach_media(bus, unit, type, path) -- an image into the device at
+// a storage position, named as the configuration names it: the bus's id in
+// catalog.profile's storage tree, the unit on it, hd or cd.  The one attach
+// a frontend needs, whatever bus the position is on.
+static DEF_METHOD(machine_method_attach_media) {
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine)
+        return val_err("machine.attach_media: no machine is running");
+    const char *bus_id = argv[0].s, *type = argv[2].s;
+    const storage_bus_decl_t *b = machine_storage_bus(cfg->machine, bus_id);
+    if (!b)
+        return val_err("machine.attach_media: %s has no storage bus '%s'", cfg->machine->name, bus_id);
+    int64_t unit = argv[1].i;
+    if (unit < 0 || unit > 31 || !(b->units & (1u << unit)) || (b->reserved & (1u << unit)))
+        return val_err("machine.attach_media: \"%s\" has no unit %lld", b->label, (long long)unit);
+    bool cd = strcmp(type, "cd") == 0;
+    if (!cd && strcmp(type, "hd") != 0)
+        return val_err("machine.attach_media: type must be hd or cd");
+    if (!(b->accepts & (cd ? STORAGE_DEV_CD : STORAGE_DEV_HD)))
+        return val_err("machine.attach_media: \"%s\" takes no %s", b->label, cd ? "CD-ROM drive" : "hard disk");
+    media_bay_t bay;
+    machine_storage_media_bay(cfg->machine, bus_id, (int)unit, &bay);
+    char err[256];
+    if (system_media_attach_path(cfg, &bay, cd, argv[3].s, err, sizeof(err)) != 0)
+        return val_err("machine.attach_media: %s", err);
     return media_bay_value(&bay);
 }
 
@@ -1114,12 +849,12 @@ static const arg_decl_t machine_attach_hd_args[] = {
      .kind = V_STRING,
      .presentation_flags = VAL_PATH,
      .validation_flags = OBJ_ARG_NONEMPTY,
-     .doc = "Hard-disk image path"                                   },
+     .doc = "Hard-disk image path"                                                   },
     {.name = "bay",
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_bay0,
-     .doc = "Which bay, in profile.hd_bays order (0 is the boot bay)"},
+     .doc = "Which of the default configuration's hard disks (0 is the startup disk)"},
 };
 
 static const arg_decl_t machine_attach_cdrom_args[] = {
@@ -1128,6 +863,20 @@ static const arg_decl_t machine_attach_cdrom_args[] = {
      .presentation_flags = VAL_PATH,
      .validation_flags = OBJ_ARG_NONEMPTY,
      .doc = "CD-ROM image path"},
+};
+
+static const arg_decl_t machine_attach_media_args[] = {
+    {.name = "bus",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_NONEMPTY,
+     .doc = "Storage bus id (catalog.profile storage)"},
+    {.name = "unit", .kind = V_INT, .doc = "Unit on that bus (SCSI ID; ATA 0 master, 1 slave)"},
+    {.name = "type", .kind = V_STRING, .validation_flags = OBJ_ARG_NONEMPTY, .doc = "hd or cd"},
+    {.name = "path",
+     .kind = V_STRING,
+     .presentation_flags = VAL_PATH,
+     .validation_flags = OBJ_ARG_NONEMPTY,
+     .doc = "Image path"},
 };
 
 static const arg_decl_t machine_eject_media_args[] = {
@@ -1156,6 +905,10 @@ static const member_t machine_members[] = {
      .name = "ram",
      .doc = "Active RAM size in KB",
      .attr = {.type = V_UINT, .get = attr_machine_ram, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "storage",
+     .doc = "The storage devices the machine was built with: {bus, bus_label, unit, position, type, present}",
+     .attr = {.type = V_LIST, .get = attr_machine_storage, .set = NULL}},
     {.kind = M_ATTR,
      .name = "irq",
      .doc = "Raw interrupt-source bitmap the family aggregates (bit meanings are per family)",
@@ -1195,7 +948,7 @@ static const member_t machine_members[] = {
     {.kind = M_METHOD,
      .name = "attach_hd",
      .examples = EXAMPLES("machine.attach_hd \"images/system.img\"", "machine.attach_hd \"images/data.img\" 1"),
-     .doc = "Attach a hard-disk image to a bay, on whatever bus the bay is",
+     .doc = "Attach a hard-disk image to the Nth hard disk of the model's default configuration",
      .method = {.result_doc = "{bus, id, label}: the bay, as eject_media names it",
                 .args = machine_attach_hd_args,
                 .nargs = 2,
@@ -1204,12 +957,21 @@ static const member_t machine_members[] = {
     {.kind = M_METHOD,
      .name = "attach_cdrom",
      .examples = EXAMPLES("machine.attach_cdrom \"images/install.iso\""),
-     .doc = "Insert a CD-ROM image into the machine's CD bay",
+     .doc = "Insert a CD-ROM image into the default configuration's CD-ROM drive",
      .method = {.result_doc = "{bus, id, label}: the bay, as eject_media names it",
                 .args = machine_attach_cdrom_args,
                 .nargs = 1,
                 .result = V_MAP,
                 .fn = machine_method_attach_cdrom}},
+    {.kind = M_METHOD,
+     .name = "attach_media",
+     .examples = EXAMPLES("machine.attach_media scsi 4 hd \"images/data.img\""),
+     .doc = "Attach an image to the device at a storage position (bus, unit), as the configuration names it",
+     .method = {.result_doc = "{bus, id, label}: the medium's place, as eject_media names it",
+                .args = machine_attach_media_args,
+                .nargs = 4,
+                .result = V_MAP,
+                .fn = machine_method_attach_media}},
     {.kind = M_METHOD,
      .name = "eject_media",
      .examples = EXAMPLES("machine.eject_media floppy", "machine.eject_media scsi 3"),
@@ -1278,6 +1040,10 @@ static const member_t catalog_members[] = {
      .name = "profile",
      .doc = "A model's full configuration shape (typed map, static)",
      .method = {.args = catalog_profile_args, .nargs = 1, .result = V_MAP, .fn = catalog_method_profile}},
+    {.kind = M_METHOD,
+     .name = "default_config",
+     .doc = "A model's default configuration, as the document machine.boot's config= takes",
+     .method = {.args = catalog_profile_args, .nargs = 1, .result = V_MAP, .fn = catalog_method_default_config}},
     {.kind = M_ATTR,
      .name = "nubus_cards",
      .doc = "The ids of all registered NuBus card drivers",

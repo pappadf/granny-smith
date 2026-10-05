@@ -16,12 +16,19 @@ vi.mock('@/bus/emulator', async () => ({
 vi.mock('@/bus/boot', () => ({
   reconcileUiWithMachine: vi.fn(async () => {}),
   prepareFreshMachine: vi.fn(async () => {}),
-  setStartupDisk: vi.fn(async () => {}),
 }));
+// Two floppy drives, both present in the default configuration.
 vi.mock('@/bus/profile', () => ({
-  getProfile: vi.fn(async () => ({ floppy_slots: [0, 1] })),
+  getProfile: vi.fn(async () => ({
+    floppies: [
+      { id: 'fd0', label: 'Internal floppy drive', types: [{ id: '800k' }], default: '800k' },
+      { id: 'fd1', label: 'External floppy drive', types: [{ id: '800k' }], default: '800k' },
+    ],
+    defaults: { floppies: { fd0: '800k', fd1: '800k' } },
+  })),
 }));
 vi.mock('@/bus/media', () => ({
+  detectFdDriveCount: vi.fn(async () => 2),
   insertFloppy: vi.fn(async (_p: string, _w: boolean, n = 0) => ({
     ok: true,
     mount: { drive: n },

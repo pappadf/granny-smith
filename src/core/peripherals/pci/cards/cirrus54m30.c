@@ -1228,9 +1228,8 @@ static const char *c54m30_name(const pci_device_t *dev) {
     return "Cirrus 54M30";
 }
 
-// The primary display, once a mode has been programmed.  Before that the
-// descriptor has no geometry and the card advertises nothing, which is what
-// lets `pci_primary_display` fall through to whatever else a machine has.
+// The card's display, once a mode has been programmed.  Before that the
+// descriptor has no geometry and the card advertises nothing.
 static display_t *c54m30_display(pci_device_t *dev) {
     c54m30_t *c = (c54m30_t *)dev->priv;
     return (c && c->display.width && c->display.height) ? &c->display : NULL;
@@ -1451,7 +1450,7 @@ static void c54m30_attach_objects(pci_device_t *dev, struct object *card_node) {
 // only where a machine's slot table names it.
 const pci_card_kind_t cirrus_54m30_kind = {
     .id = "cirrus_54m30",
-    .display_name = "Cirrus Logic 54M30 on-board video",
+    .display_name = "Built-in video",
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "display",
     .factory = c54m30_factory,

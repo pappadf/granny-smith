@@ -79,7 +79,7 @@ uint32_t tnt_gbus_boxid_bits(config_t *cfg) {
         bits |= ANS_BREG1_SERVICE_L | ANS_BREG1_LOCKED_L;
         break;
     }
-    if (tnt_board(cfg)->two_supplies)
+    if (g->two_supplies)
         bits |= ANS_BREG1_TWO_PSU_H; // active HIGH — the one exception
     return bits;
 }
@@ -385,7 +385,8 @@ static DEF_GETTER(board_attr_breg2) {
 
 static DEF_GETTER(board_attr_two_supplies) {
     config_t *cfg = (config_t *)object_data(self);
-    return val_bool(cfg && tnt_board(cfg)->two_supplies);
+    const tnt_gbus_t *g = cfg ? gb(cfg) : NULL;
+    return val_bool(g && g->two_supplies);
 }
 
 static DEF_GETTER(board_attr_parity) {
@@ -529,11 +530,16 @@ void tnt_gbus_reset(config_t *cfg) {
 void tnt_gbus_init(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     tnt_gbus_t *g = &st->gbus;
-    // Both keyswitches default to LOCKED, which is what the Theory of
-    // Operations requires: the rear key locked is a power-on precondition,
-    // and Locked is the front switch's normal running position.  Every
-    // non-default is logged at construction.
-    g->keyswitch = ANS_KEY_LOCKED;
+    // The rear key is locked: a power-on precondition (Theory of Operations).
+    // The front keyswitch and the supply count are the configuration's
+    // (machine_config.h): the "keyswitch" and "power_supplies" options, the
+    // switch Unlocked unless the document turns it.
+    const char *key = machine_build_opts_option(&cfg->build_opts, "keyswitch");
+    g->keyswitch = (key && strcmp(key, "locked") == 0)    ? ANS_KEY_LOCKED
+                   : (key && strcmp(key, "service") == 0) ? ANS_KEY_SERVICE
+                                                          : ANS_KEY_NORMAL;
+    const char *psu = machine_build_opts_option(&cfg->build_opts, "power_supplies");
+    g->two_supplies = psu && strcmp(psu, "two") == 0;
     g->rear_locked = 1;
     tnt_gbus_reset(cfg);
 

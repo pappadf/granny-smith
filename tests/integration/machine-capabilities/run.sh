@@ -106,16 +106,12 @@ assert_contains se30 '"fpu":true'     "fpu on 68030"
 assert_contains plus '"nubus":false'  "plus has no nubus"
 assert_contains iicx '"nubus":true'   "iicx has nubus"
 
-# --- VROM-by-card: the SE/30-vs-IIci asymmetry --------------------------
-# IIcx user video slot offers the 8·24 card, which requires a VROM file.
-assert_contains iicx '"id":"mdc_8_24"'        "iicx 8·24 video card"
-assert_contains iicx '"requires_vrom":true'   "iicx card needs vrom"
-# IIci built-in RBV video carries its declaration in main ROM — no VROM.
-# (Match the whole card object: the IIci also declares three sockets whose
-# pluggable candidates DO need a vROM, so a profile-wide requires_vrom:true
-# absence check would be wrong.)
-assert_contains iici '"id":"builtin_rbv_video","display_name":"Macintosh IIci Built-in Video","requires_vrom":false' \
-    "iici builtin video needs no vrom"
+# --- Card ROMs: a card names its declaration ROM and whether the emulator
+# can stand in for it; built-in video is a display device, not a card.
+assert_contains iicx '"id":"mdc_8_24","label":"Macintosh Display Card 8•24","class":"display"' "iicx 8·24 video card"
+assert_contains iicx '"rom":{"kind":"vrom","substitute":true}' "iicx card has a vROM with a substitute"
+assert_contains iici '"builtin":{"id":"builtin","label":"Built-in video","detail":"RBV"' "iici built-in RBV video"
+assert_absent iici '"id":"builtin_rbv_video"' "iici built-in video is not a card"
 
 # --- Computed card compatibility (no per-machine whitelists) --------------
 # Socket candidates are computed from the card registry by attachment
@@ -128,17 +124,22 @@ for m in iicx iix iifx iici; do
     assert_contains "$m" '"id":"display_card_24ac"' "$m offers 24AC"
     assert_contains "$m" '"id":"824gc"'             "$m offers 8·24 GC"
 done
-# Machines declare EVERY socket (topology), not just one video
-# slot — the IIcx's three, the IIx/IIfx's six, the IIci's three.
+# Machines declare EVERY socket (topology), named as Apple names them on
+# that machine (D12) with the slot ID as detail -- the IIcx's three, the
+# IIx/IIfx's six, the IIci's three.
 for m in iicx iix iifx; do
-    assert_contains "$m" '"slot":"9"' "$m declares socket \$9"
-    assert_contains "$m" '"slot":"A"' "$m declares socket \$A"
-    assert_contains "$m" '"slot":"B"' "$m declares socket \$B"
+    assert_contains "$m" '{"id":"nubus_9","label":"NuBus slot 1","detail":"Slot ID $9"' "$m declares socket \$9"
+    assert_contains "$m" '{"id":"nubus_a","label":"NuBus slot 2"' "$m declares socket \$A"
+    assert_contains "$m" '{"id":"nubus_b","label":"NuBus slot 3"' "$m declares socket \$B"
 done
-assert_contains iix  '"slot":"E"' "iix declares socket \$E"
-assert_contains iifx '"slot":"E"' "iifx declares socket \$E"
-assert_contains iici '"slot":"C"' "iici declares socket \$C"
-assert_contains iici '"slot":"E"' "iici declares socket \$E"
+assert_contains iix  '{"id":"nubus_e","label":"NuBus slot 6"' "iix declares socket \$E"
+assert_contains iifx '{"id":"nubus_e","label":"NuBus slot 6"' "iifx declares socket \$E"
+assert_contains iici '{"id":"nubus_c","label":"NuBus slot 4","detail":"Slot ID $C"' "iici declares socket \$C"
+assert_contains iici '{"id":"nubus_e","label":"NuBus slot 6"' "iici declares socket \$E"
+# The default display card of a machine without built-in video (D17).
+for m in iicx iix iifx; do
+    assert_contains "$m" '"cards":[{"slot":"nubus_9","card":"mdc_8_24","options":{}}]' "$m opens with the 8·24 in its first slot"
+done
 # The attach gate: builtin pseudo-cards (motherboard circuitry impersonating
 # a slot device) must never be offered on a socket — only where a BUILTIN
 # slot decl names them.
@@ -148,8 +149,9 @@ for m in iicx iix iifx; do
 done
 assert_absent iici '"id":"builtin_se30_video"' "iici must not offer the SE/30 builtin"
 # Conversely a machine with no socket offers no pluggable cards: the SE/30's
-# $9..$B are decoded-but-connectorless (EMPTY), so only its builtin appears.
-assert_contains se30 '"id":"builtin_se30_video"' "se30 builtin video card"
+# $9..$B are decoded-but-connectorless (EMPTY), so only its built-in video
+# (the slot-$E pseudo-card) appears, as a display device.
+assert_contains se30 '"builtin":{"id":"builtin","label":"Built-in video","detail":"SE/30 video, slot $E","monitors":["compact_9in"]' "se30 built-in video"
 for card in mdc_8_24 display_card_24ac 824gc; do
     assert_absent se30 "\"id\":\"$card\"" "se30 has no socket for $card"
     assert_absent iisi "\"id\":\"$card\"" "iisi has no socket for $card"
@@ -169,11 +171,12 @@ for m in q840av q660av; do
     assert_contains "$m" '"fpu":true' "$m has an FPU"
     assert_contains "$m" '"address_bits":32' "$m is 32-bit"
     assert_contains "$m" '"nubus":false' "$m declares no NuBus sockets"
-    assert_contains "$m" '"has_cdrom":true' "$m offers a CD-ROM bay"
+    assert_contains "$m" '{"unit":3,"label":"ID 3 · CD-ROM bay"}' "$m has a CD-ROM bay at ID 3"
+    assert_contains "$m" '{"bus":"scsi","unit":3,"type":"cd"}' "$m opens with a CD-ROM drive in it"
     # A GAP, pinned so that closing it shows up here: the real machines have
     # a SuperDrive, but the New Age FDC is not modeled (a 'no drive' stub),
-    # so the profile offers no floppy slot (#178).
-    assert_contains "$m" '"floppy_slots":[]' "$m offers no floppy slot (New Age unmodeled, #178)"
+    # so the profile offers no floppy position (#178).
+    assert_contains "$m" '"floppies":[]' "$m offers no floppy position (New Age unmodeled, #178)"
 done
 # --- PDM family (Power Macintosh 6100/7100/8100): the first PowerPC
 # machines.  cpu.model 601 + the 601 MMU kind are what gate the PPC debug
@@ -191,10 +194,10 @@ for m in pm6100 pm7100 pm8100; do
     assert_contains "$m" '"kind":"ppc_601"' "$m has the 601 BAT/segment/HTAB MMU"
     assert_contains "$m" '"fpu":true' "$m FPU capability on"
     assert_contains "$m" '"address_bits":32' "$m is 32-bit"
-    assert_contains "$m" '"has_cdrom":true' "$m offers the Curio-bus CD bay"
-    assert_contains "$m" '"cdrom_id":3' "$m puts the CD at SCSI ID 3"
-    assert_contains "$m" '"floppy_slots":[{"label":"Internal FD0","kind":"hd"}]' "$m offers the one internal SuperDrive"
-    assert_contains "$m" '"scsi_buses":[{"object":"scsi","label":"SCSI","slots":[{"label":"SCSI HD0","id":0,"boot":false},{"label":"SCSI HD1","id":1,"boot":false}]}]' "$m offers the two Curio SCSI HD slots on one bus"
+    assert_contains "$m" '{"unit":3,"label":"ID 3 · CD-ROM bay"}' "$m has the Curio-bus CD-ROM bay"
+    assert_contains "$m" '"storage":[{"bus":"scsi","unit":0,"type":"hd"},{"bus":"scsi","unit":3,"type":"cd"}]' "$m opens with a hard disk at ID 0 and the CD-ROM drive at ID 3"
+    assert_contains "$m" '"floppies":[{"id":"fd0","label":"Internal floppy drive","types":[{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"hd"}]' "$m offers the one internal SuperDrive"
+    assert_contains "$m" '{"id":"scsi","label":"SCSI","kind":"scsi"' "$m has the one Curio SCSI bus"
 done
 # NuBus splits the family in two, and that split is the point of these
 # rows.  The 7100 and 8100 carry BART and three connectors on the logic
@@ -217,10 +220,11 @@ for m in pm7100 pm8100; do
     # booted 8100 enables slot-interrupt bits $38 = bits 3/4/5 = $C/$D/$E,
     # always those three, whichever connector holds a card.  See
     # docs/internals/machines/pdm/bart.md and pm8100.c.
-    assert_contains "$m" '"slot":"C"' "$m declares socket \$C"
-    assert_contains "$m" '"slot":"D"' "$m declares socket \$D"
-    assert_contains "$m" '"slot":"E"' "$m declares socket \$E"
-    assert_absent "$m" '"slot":"B"' "$m must not offer \$B — nothing services its interrupt bit"
+    # Apple's names are the silkscreen's, B/C/D, and the detail the slot ID.
+    assert_contains "$m" '{"id":"nubus_c","label":"NuBus slot B","detail":"Slot ID $C"' "$m declares socket \$C"
+    assert_contains "$m" '{"id":"nubus_d","label":"NuBus slot C","detail":"Slot ID $D"' "$m declares socket \$D"
+    assert_contains "$m" '{"id":"nubus_e","label":"NuBus slot D","detail":"Slot ID $E"' "$m declares socket \$E"
+    assert_absent "$m" '"id":"nubus_b"' "$m must not offer \$B — nothing services its interrupt bit"
     # Computed compatibility again: every NuBus-attach video card is
     # offered on every socket, with no per-machine whitelist anywhere.
     assert_contains "$m" '"id":"mdc_8_24"' "$m offers 8·24"
@@ -251,8 +255,11 @@ for m in pm7500 pm8500 pm9500; do
     assert_contains "$m" '"fpu":true' "$m has the FPU datapath"
     assert_contains "$m" '"address_bits":32' "$m is 32-bit"
     assert_contains "$m" '"nubus":false' "$m has no NuBus"
-    assert_contains "$m" '"floppy_slots":[{"label":"Internal FD0","kind":"hd"}]' "$m offers the one internal SuperDrive"
-    assert_contains "$m" '"scsi_buses":[{"object":"scsi","label":"SCSI","slots":[{"label":"Internal HD0","id":0,"boot":false},{"label":"Internal HD1","id":1,"boot":false}]}]' "$m offers the two internal MESH HD slots on one bus"
+    assert_contains "$m" '"floppies":[{"id":"fd0","label":"Internal floppy drive","types":[{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"hd"}]' "$m offers the one internal SuperDrive"
+    assert_contains "$m" '{"id":"scsi","label":"Internal fast SCSI","kind":"scsi"' "$m has the internal MESH bus"
+    assert_contains "$m" '{"unit":1,"label":"ID 1 · 3.5″ bay"}' "$m has the 3.5-inch bay at ID 1"
+    # No CD-ROM drive until the 53C94 has a bus (pm7500.c).
+    assert_contains "$m" '"storage":[{"bus":"scsi","unit":0,"type":"hd"}]' "$m opens with the hard disk alone"
 done
 assert_contains pm7500 '"freq":100000000' "pm7500 runs at 100 MHz"
 assert_contains pm8500 '"freq":120000000' "pm8500 runs at 120 MHz"
@@ -273,26 +280,30 @@ for m in ans500 ans700; do
     assert_contains "$m" '"pci":true' "$m advertises PCI"
     assert_contains "$m" '"video_in":false' "$m has no video digitizer"
     # The bay the diagnostic floppy goes in (suite-ans's ans500-diag-floppy).
-    assert_contains "$m" '"floppy_slots":[{"label":"Internal FD0","kind":"hd"}]' "$m offers the one internal SuperDrive"
-    assert_contains "$m" '"ram_max":524288' "$m caps RAM at the ROM's 512 MB decode limit (in KB, as every profile publishes it)"
-    assert_contains "$m" '"has_cdrom":true' "$m boots its Install CD from a SCSI bay"
-    # Seven hot-swap bays split across two fast/wide controllers; bay 0 is
-    # Apple's expected CD-ROM position, so the HD rows start at 1.
-    # Both fast/wide channels are declared: the second controller is live
-    # (tnt_fwscsi_attach binds channel 1 to machine.scsi2, and ans-scsi drives
-    # a CD-ROM on it), so its bays are offered rather than merely described.
-    assert_contains "$m" '"object":"scsi","label":"Front backplane (fast/wide 0)","slots":[{"label":"Bay 1 (fast/wide 0)","id":1,"boot":false},{"label":"Bay 2 (fast/wide 0)","id":2,"boot":true},{"label":"Bay 3 (fast/wide 0)","id":3,"boot":false}]' "$m offers the front fast/wide 0 bays"
-    assert_contains "$m" '"object":"scsi2"' "$m offers a second fast/wide bus"
+    assert_contains "$m" '"floppies":[{"id":"fd0","label":"Internal floppy drive","types":[{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"hd"}]' "$m offers the one internal SuperDrive"
+    assert_contains "$m" '{"id":"524288","label":"512 MB"}],"default":"65536"' "$m caps RAM at the ROM's 512 MB decode limit and opens at 64 MB"
+    # Seven hot-swap bays split across two fast/wide controllers; front bay 0
+    # is Apple's expected CD-ROM position, front bay 2 Open Firmware's
+    # default boot disk (disk2:aix).  Both fast/wide channels are declared:
+    # the second controller is live (tnt_fwscsi_attach binds channel 1 to
+    # machine.scsi2, and ans-scsi drives a CD-ROM on it).
+    assert_contains "$m" '{"id":"scsi","label":"Internal SCSI bus 0","detail":"Fast and wide SCSI-2 · Symbios 53C825A","kind":"scsi","width":"wide","units":[{"unit":0,"label":"ID 0 · Front bay 0"},{"unit":1,"label":"ID 1 · Front bay 1"},{"unit":2,"label":"ID 2 · Front bay 2"},{"unit":3,"label":"ID 3 · Front bay 3"}]' "$m offers the front bays 0-3 on bus 0"
+    assert_contains "$m" '{"id":"scsi2","label":"Internal SCSI bus 1"' "$m offers the second fast/wide bus"
+    assert_contains "$m" '"storage":[{"bus":"scsi","unit":0,"type":"cd"},{"bus":"scsi","unit":2,"type":"hd"}],"startup":{"bus":"scsi","unit":2}' "$m opens with the CD in front bay 0 and starts up from front bay 2"
+    assert_contains "$m" '{"id":"keyswitch","label":"Keyswitch","kind":"choice","values":[{"id":"unlocked","label":"Unlocked"},{"id":"service","label":"Service"},{"id":"locked","label":"Locked"}],"default":"unlocked"}' "$m's keyswitch is Unlocked by default (D18)"
 done
 # The 700's two REAR bays cable to fast/wide 1 -- the topology its comment
 # described long before the table expressed it.
-assert_contains ans700 '"label":"Rear bay 1 (fast/wide 1)","id":0' "ans700 declares its first rear bay"
-assert_contains ans700 '"label":"Rear bay 2 (fast/wide 1)","id":1' "ans700 declares its second rear bay"
-assert_not_contains ans500 'Rear bay' "ans500 has no rear bays"
+assert_contains ans700 '{"unit":0,"label":"ID 0 · Rear bracket, top"}' "ans700 declares its upper rear bracket"
+assert_contains ans700 '{"unit":1,"label":"ID 1 · Rear bracket, bottom"}' "ans700 declares its lower rear bracket"
+assert_not_contains ans500 'Rear bracket' "ans500 has no rear brackets"
+assert_contains ans500 '{"unit":0,"label":"ID 0"}' "ans500's bus 1 offers ID 0 (the Windows NT boot disk)"
+assert_contains ans700 '{"id":"power_supplies","label":"Power supplies","kind":"choice","values":[{"id":"one","label":"One"},{"id":"two","label":"Two"}],"default":"one"}' "ans700 takes a second supply, shipping with one"
+assert_absent ans500 '"id":"power_supplies"' "ans500 has one supply, no option"
 assert_contains ans500 '"freq":132000000' "ans500 runs a 132 MHz 604 card"
 assert_contains ans700 '"freq":150000000' "ans700 runs a 150 MHz 604 card"
-assert_contains ans500 '"ram_default":32768' "ans500 ships with 32 MB of parity DRAM"
-assert_contains ans700 '"ram_default":49152' "ans700 ships with 48 MB of parity DRAM"
+assert_contains ans500 '"memory":"65536"' "ans500 opens at 64 MB (D20)"
+assert_contains ans700 '"memory":"65536"' "ans700 opens at 64 MB (D20)"
 
 # The beige Power Macintosh G3 (Gossamer): a 750 behind Grackle, Heathrow's
 # MESH bus with two HD slots and the CD at id 3, the SWIM3 SuperDrive, three
@@ -305,12 +316,14 @@ for m in pmg3dt pmg3mt; do
     assert_contains "$m" '"address_bits":32' "$m is 32-bit"
     assert_contains "$m" '"nubus":false' "$m has no NuBus"
     assert_contains "$m" '"pci":true' "$m advertises PCI"
-    assert_contains "$m" '"floppy_slots":[{"label":"Internal FD0","kind":"hd"}]' "$m offers the one internal SuperDrive"
-    assert_contains "$m" '"scsi_buses":[{"object":"scsi","label":"SCSI","slots":[{"label":"SCSI HD0","id":0,"boot":false},{"label":"SCSI HD1","id":1,"boot":false}]}]' "$m offers two MESH HD slots"
-    assert_contains "$m" '"has_cdrom":true,"cdrom_id":3' "$m puts the CD-ROM at SCSI id 3"
-    assert_contains "$m" '"ram_max":786432' "$m decodes up to 768 MB"
-    assert_contains "$m" '"label":"F1","bus":0,"device":18,"irq":22,"fixed":true' "$m has the fixed on-board video slot F1"
-    assert_contains "$m" '"default_card":"ati_rage_pro"' "$m seats the on-board Rage Pro"
+    assert_contains "$m" '"floppies":[{"id":"fd0","label":"Internal floppy drive","types":[{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"hd"}]' "$m offers the one internal SuperDrive"
+    assert_contains "$m" '{"id":"scsi","label":"SCSI","detail":"MESH","kind":"scsi"' "$m has the MESH bus"
+    assert_contains "$m" '{"id":"ata0","label":"Primary ATA bus","kind":"ata"' "$m declares the primary ATA bus"
+    assert_contains "$m" '{"id":"ata1","label":"Secondary ATA bus","kind":"ata"' "$m declares the secondary ATA bus"
+    assert_contains "$m" '"storage":[{"bus":"scsi","unit":0,"type":"hd"},{"bus":"scsi","unit":3,"type":"cd"}]' "$m puts the hard disk at SCSI 0 and the CD-ROM at SCSI 3"
+    assert_contains "$m" '{"id":"786432","label":"768 MB"}' "$m decodes up to 768 MB"
+    assert_contains "$m" '"builtin":{"id":"builtin","label":"Built-in video","detail":"ATI Rage Pro"' "$m's on-board Rage Pro is its built-in video"
+    assert_absent "$m" '"id":"ati_rage_pro"' "$m does not offer its on-board chip as a card"
 done
 assert_contains pmg3dt '"freq":267280000' "pmg3dt runs a 267 MHz 750"
 assert_contains pmg3mt '"freq":300690000' "pmg3mt runs a 300 MHz 750"
@@ -342,27 +355,54 @@ for m in q700 q900 q950; do
     assert_contains "$m" '"mmu":{"present":true,"kind":"68040"}' "$m has the 68040 MMU"
     assert_contains "$m" '"nubus":true,"pci":false' "$m is a NuBus machine"
     assert_contains "$m" '"video_in":false,"audio_in":false,"aux_cpus":[]' "$m has no video/audio input or aux CPU"
-    assert_contains "$m" '"floppy_slots":[{"label":"Internal FD0","kind":"hd"}]' "$m has one SuperDrive"
-    assert_contains "$m" '"cdrom":{"bus":"scsi","id":3,"label":"CD-ROM"}' "$m seats its CD at SCSI 3"
-    assert_contains "$m" '"scsi_buses":[{"object":"scsi","label":"SCSI","slots":[{"label":"SCSI HD0","id":0,"boot":false},{"label":"SCSI HD1","id":1,"boot":false}]}' "$m offers the two internal SCSI HD slots first"
+    assert_contains "$m" '"floppies":[{"id":"fd0","label":"Internal floppy drive","types":[{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"hd"}]' "$m has one SuperDrive"
+    assert_contains "$m" '"storage":[{"bus":"scsi","unit":0,"type":"hd"},{"bus":"scsi","unit":3,"type":"cd"}]' "$m opens with a hard disk at SCSI 0 and its CD at SCSI 3"
+    assert_contains "$m" '"builtin":{"id":"builtin","label":"Built-in video","detail":"DAFB"' "$m's DAFB is its built-in video"
 done
-# The 700 has one 53C96; the 900/950 towers have two, and the external
-# chain (machine.scsi2) is declared so a device can be placed on it (#185).
-assert_contains q700 '"scsi_buses":[{"object":"scsi","label":"SCSI","slots":[{"label":"SCSI HD0","id":0,"boot":false},{"label":"SCSI HD1","id":1,"boot":false}]}]' "q700 offers one SCSI bus"
+# The 700 has one 53C96; the 900/950 towers have two -- the internal cable
+# and the external chain (machine.scsi2) -- in one SCSI ID space (#185).
+assert_contains q700 '"storage":[{"id":"scsi","label":"SCSI","kind":"scsi"' "q700 offers one SCSI bus"
+assert_absent q700 '"id":"scsi2"' "q700 has no second bus"
 for m in q900 q950; do
-    assert_contains "$m" '{"object":"scsi2","label":"External SCSI","slots":[{"label":"External SCSI 0","id":0,"boot":false},{"label":"External SCSI 1","id":1,"boot":false}]}]' "$m offers the external SCSI bus"
+    assert_contains "$m" '{"id":"scsi","label":"Internal SCSI","kind":"scsi","width":"narrow"' "$m offers the internal SCSI bus"
+    assert_contains "$m" '"shares_units_with":["scsi2"]' "$m's internal bus shares IDs with the external"
+    assert_contains "$m" '{"id":"scsi2","label":"External SCSI","kind":"scsi"' "$m offers the external SCSI bus"
+    assert_contains "$m" '{"unit":3,"label":"ID 3 · Lower front bay"}' "$m's CD-ROM bay is the lower front bay"
 done
+assert_contains q700 '"default":"20480"' "q700 opens at 20 MB (D20)"
 assert_contains q700 '"freq":25000000' "q700 runs at 25 MHz"
 assert_contains q900 '"freq":25000000' "q900 runs at 25 MHz"
 assert_contains q950 '"freq":33333333' "q950 runs at 33 MHz"
 # NuBus sockets: two on the 700 ($D, $E), five on the 900/950 tower ($A-$E).
-assert_contains q700 '"video_slots":[{"slot":"D"' "q700's first socket is D"
-assert_contains q700 '{"slot":"E"' "q700 has socket E"
-assert_absent q700 '{"slot":"A"' "q700 has no socket A"
+assert_contains q700 '"slots":[{"id":"nubus_d","label":"NuBus slot D"' "q700's first socket is D"
+assert_contains q700 '{"id":"nubus_e","label":"NuBus slot E"' "q700 has socket E"
+assert_absent q700 '"id":"nubus_a"' "q700 has no socket A"
 for m in q900 q950; do
-    for s in A B C D E; do
-        assert_contains "$m" "{\"slot\":\"$s\"" "$m has socket $s"
+    for s in a b c d e; do
+        S=$(tr a-z A-Z <<<"$s")
+        assert_contains "$m" "{\"id\":\"nubus_$s\",\"label\":\"NuBus slot $S\"" "$m has socket $S"
     done
+done
+
+# Every Macintosh has the AppleTalk option, default Active (D22); the Lisa
+# and the Macintosh XL do not.
+for m in plus se30 iicx iix iifx iici iisi q700 q900 q950 q840av q660av pm6100 pm7100 pm8100 pm7500 pm8500 pm9500 ans500 ans700 pmg3dt pmg3mt; do
+    assert_contains "$m" '{"id":"appletalk","label":"AppleTalk","kind":"choice","values":[{"id":"active","label":"Active"},{"id":"inactive","label":"Inactive"}],"default":"active"}' "$m has the AppleTalk option"
+done
+for m in lisa macxl; do
+    assert_absent "$m" '"id":"appletalk"' "$m has no AppleTalk"
+    assert_contains "$m" '{"id":"profile","label":"ProFile port","kind":"profile"' "$m's disk is on the ProFile port"
+done
+assert_contains lisa '{"unit":0,"label":"External"}' "the Lisa 2's ProFile is external"
+assert_contains macxl '{"unit":0,"label":"Internal hard disk bay"}' "the Macintosh XL's disk is inside"
+
+# The second floppy position: an external port on the IIcx/IIci/IIsi, a
+# second internal bay on the IIx/IIfx, each shipping empty.
+for m in iicx iici iisi; do
+    assert_contains "$m" '{"id":"fd1","label":"External floppy drive","types":[{"id":"none","label":"None"},{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"none"}' "$m's external floppy port ships empty"
+done
+for m in iix iifx; do
+    assert_contains "$m" '{"id":"fd1","label":"Second internal floppy drive","types":[{"id":"none","label":"None"},{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"none"}' "$m's second internal bay ships empty"
 done
 
 # The floor: every registered model carries at least one assertion above.

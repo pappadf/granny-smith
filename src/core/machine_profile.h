@@ -17,6 +17,7 @@
 
 #include "common.h"
 #include "machine_build_opts.h"
+#include "machine_config_decl.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -86,80 +87,74 @@ static inline cpu_arch_t cpu_arch_for_model(int cpu_model) {
                : CPU_ARCH_M68K;
 }
 
-// How a machine attaches a hard-disk image.  Every Mac hangs its HD off the
-// SCSI bus (scsi.attach_hd(path, id)); the Lisa 2 / Macintosh XL use the
-// parallel-port ProFile instead (profile.attach(path, writable)).  This is the
-// typed fact the config UI reads to label the HD row and pick the attach call —
-// no model-name guessing.  Default 0 = SCSI, so every existing
-// profile keeps its behavior without an explicit field.
-typedef enum hd_bus {
-    HD_BUS_SCSI = 0, // SCSI bus: scsi.attach_hd
-    HD_BUS_PROFILE, // Lisa/XL parallel-port ProFile: profile.attach
-} hd_bus_t;
-
-// Wire string for an hd_bus_t ("scsi" / "profile").
-const char *hd_bus_to_string(hd_bus_t bus);
-
-// One floppy drive slot on a machine.  Sentinel-terminated arrays end at
-// the first entry whose `label` is NULL.
-// A substrate-published built-in display, owned by the family that models it.
+// A machine's built-in video as a display device: the port a monitor plugs
+// into on the logic board (or the screen a compact Mac is built with).
 //
-// The registry (machines/machine.c) publishes this in catalog.profile and
-// validates `monitor=` through it, so a second family with built-in
-// video -- the TNT's Control, the AV's CIVIC -- gets its OWN monitor list
-// rather than the PDM's.  Before this was a descriptor it was a bare label
-// and the registry reached straight into pdm/pdm.h for the rest.
-//
-// The monitor list is a callback rather than an array so the family keeps
+// The registry (machines/machine.c) publishes it as catalog.profile's
+// displays.builtin and validates a document's monitor through it.  The
+// monitor list is a callback rather than an array so the family keeps
 // whatever per-monitor data it needs private: the PDM's table carries a
 // 3-bit sense strap the registry has no business seeing.
+//
+// On a machine whose built-in video is a BUILTIN NuBus pseudo-slot (SE/30,
+// IIci, IIsi) the card kind in that slot supplies the monitors; such a
+// profile sets only the label fields here and `slot_monitors` true.
+// One saved mode a built-in video port starts in (the startup video mode):
+// its depth, and the savedMode byte the port's slot PRAM record holds for it.
+typedef struct builtin_startup_mode {
+    uint8_t depth; // bits per pixel; 0 ends a list
+    uint8_t saved_mode; // the record's byte 2
+} builtin_startup_mode_t;
+
+// The startup modes a built-in port offers on one monitor, as its ROM keeps
+// them: the slot PRAM record (sPRAMRec) the ROM writes for that monitor,
+// with byte 2 (the depth) the mode's, and the depths the ROM honours from a
+// seeded record.  Measured per ROM: boot with the monitor, read the record,
+// seed each depth code and see what the ROM brings the screen up at.
+typedef struct builtin_startup {
+    const char *monitor; // catalogue id; NULL ends a list
+    uint16_t width, height;
+    uint8_t record[8];
+    builtin_startup_mode_t modes[7];
+} builtin_startup_t;
+
 typedef struct builtin_video_desc {
-    const char *display_name; // "Built-in video (Ariel II)"
-    // Enumerate what the port accepts: fill *id/*name for index i, or return
-    // false once past the end.
-    bool (*monitor_at)(size_t i, const char **id, const char **name);
-    // Resolve one of the ids above to its monitor sense code; false if the id
-    // is not one of them.  RESOLVE ONLY -- the caller puts the answer into
-    // machine_build_opts_t and system_create carries it to the device.  This
-    // used to be `stage_monitor`, which wrote a family-private static that the
-    // next construction consumed, so the value was invisible to everything but
-    // the two modules that agreed on it and a second construction silently got
-    // the default.
+    const char *detail; // the chip, shown as secondary text: "Ariel II", "DAFB"
+    // Enumerate the monitors the port takes: fill *id (the family's own
+    // token, what the legacy monitor= argument names) and *monitor (its
+    // shared catalogue id, monitor_catalog.h) for index i, or return false
+    // once past the end.  "none" (an unplugged port) may be listed; it is
+    // always available whether listed or not.
+    bool (*monitor_at)(size_t i, const char **id, const char **monitor);
+    // Resolve one of the tokens above to its monitor sense code; false if the
+    // token is not one of them.  RESOLVE ONLY -- the caller puts the answer
+    // into machine_build_opts_t and system_create carries it to the device.
     bool (*monitor_sense)(const char *id, uint8_t *out_sense);
+    // The catalogue id of the monitor a stock machine has plugged in.
+    const char *default_monitor;
+    // The port also takes Apple's indexed sense codes 8..14 (the monitors that
+    // answer the extended-sense probe), which the video_sense= debug override
+    // may name: a Quadra's DAFB.
+    bool indexed_sense;
+    // The port's startup modes: the (pseudo-)slot whose PRAM record keeps the
+    // saved mode, and the modes by monitor.  0 / NULL: it offers none.
+    int startup_slot;
+    const builtin_startup_t *startup;
+    // The monitors come from the card kind in the machine's BUILTIN NuBus
+    // slot (its nubus_monitor_t list); monitor_at / monitor_sense are NULL.
+    bool slot_monitors;
 } builtin_video_desc_t;
 
+// One floppy drive position.  Positions are fixed (at most two per machine);
+// a position whose real counterpart can be empty (an external port, a second
+// internal bay) is `optional` and offers "None".  The document names a
+// position "fd<index>".
 struct floppy_slot {
-    const char *label; // "Internal FD0"; NULL terminates the array
-    floppy_kind_t kind;
+    const char *label; // "Internal floppy drive"; NULL terminates the array
+    floppy_kind_t kind; // the drive the position takes
+    bool optional; // the position may hold no drive
+    bool default_none; // ...and holds none in the default configuration
 };
-
-// One SCSI bus slot wired up by the machine's profile (HD0, HD1, …).
-struct scsi_slot {
-    const char *label; // "SCSI HD0"; NULL terminates the array
-    int id; // SCSI id of this bay ON ITS BUS
-    // The bay the firmware boots from by default, when that is not the
-    // first one listed (the Network Server's Open Firmware boots
-    // `disk2:aix`, bay 2).  The configuration dialog preselects it.
-    bool boot;
-};
-
-// One SCSI bus a machine offers, carrying the bays that hang off it.
-//
-// The bays NEST under a bus rather than each carrying a flat bus index,
-// because a SCSI bus is a user-facing object: media attach through
-// `machine.<object>.attach_hd`, so the object name has to travel as data or
-// every consumer hardcodes the mapping (bus 1 -> "scsi2"), which is the same
-// family-knowledge-in-generic-code shape already removed from the video port.
-//
-// PCI's pci_slot_decl_t does carry a flat `bus` index, and that is right
-// there: nothing outside the core ever addresses a PCI bus by name, so bus is
-// simply part of a slot's address alongside `device`.  The difference is the
-// attach path, not tidiness.
-typedef struct scsi_bus_decl {
-    const char *object; // object-model name — "scsi", "scsi2"
-    const char *label; // bus-level heading, e.g. "Front backplane (fast/wide 0)"
-    const struct scsi_slot *slots; // sentinel-terminated; NULL object ends the array
-} scsi_bus_decl_t;
 
 // One auxiliary CPU core on a machine (heterogeneous multi-CPU): a
 // peripheral processor executing real guest code on the main timeline
@@ -207,17 +202,17 @@ typedef struct media_slot {
 #define PROFILE_BLOCK_SIZE 532
 
 // A place a medium goes: a bus and a unit on it (floppy drive index, SCSI id,
-// or 0 for the one ProFile), with the profile's label for it.  Derived from
-// the profile (profile_hd_bays, profile_cdrom_bay) so that no caller -- the
-// web frontend, headless, a script -- branches on hd_bus or knows which bus
-// a machine's disks hang off.
+// or 0 for the one ProFile), with the label of the storage bus it is on.
+// Derived from the profile's storage declarations (machine_config.h) so that
+// no caller -- the web frontend, headless, a script -- knows which bus a
+// machine's disks hang off.
 typedef struct media_bay {
     media_bus_t bus;
     int unit;
     const char *label;
 } media_bay_t;
 
-// Most hard-disk bays any profile declares (seven ids on each of two buses).
+// Most default hard disks a caller asks for at once.
 #define MEDIA_HD_BAYS_MAX 14
 
 // Wire name of a bus, as the profile and the attach verbs spell it:
@@ -292,6 +287,14 @@ typedef struct machine_substrate {
     void (*power_on)(struct config *cfg);
     void (*teardown)(struct config *cfg);
 
+    // The seeding step of a new machine (level 4 only): after every device is
+    // built with its factory content and before the first instruction, write
+    // the parameter-memory records that follow from the configuration in
+    // cfg->build_opts -- the startup device, AppleTalk on/off.  Not called on
+    // a restore, a reset or a power cycle: the store is state from then on.
+    // NULL on a machine with nothing to seed.
+    void (*seed)(struct config *cfg);
+
     void (*trigger_vbl)(struct config *cfg);
 
     // Drive NuBus slot `slot` ($9..$E) /NMRQ active/inactive.  `umbrella_edge`
@@ -324,12 +327,11 @@ typedef struct machine_substrate {
     // delete them, but do not read them as evidence that a substrate may skip
     // these either.
     //
-    // `display` is NULL on 3 of 9 and that IS a fallback: system_display()
-    // takes the substrate's answer when it has one and drops through to
-    // nubus_primary_display() otherwise -- including when a bound hook returns
-    // NULL.  Deliberate: built-in video wins, else the NuBus primary.  (This
-    // paragraph used to claim "one uniform path, no NULL-and-fallback" and
-    // then describe the fallback two lines later.)
+    // `display` is the built-in video that is no slot device (the Plus, the
+    // Lisa, the DAFB, CIVIC, Ariel); NULL where the built-in video, if any,
+    // is a NuBus or PCI device.  system_display() shows the device the
+    // configuration connected the monitor to, and this when no slot device
+    // has it.
     int (*fd_insert)(struct config *cfg, int drive, struct image *disk);
     bool (*fd_present)(struct config *cfg, int drive);
     // Key identity across the whole model is the ADB RAW keycode (0x00-0x7F):
@@ -409,37 +411,18 @@ typedef struct hw_profile {
     // Zero-terminated array; the last valid entry is followed by 0.
     const uint32_t *ram_options;
 
-    // Floppy / SCSI slot tables, sentinel-terminated.
+    // Floppy positions, sentinel-terminated.
     //
-    // ALWAYS point these at a table; say "this machine has none" with an EMPTY
-    // one, `{ {0} }`, not with NULL.  All 22 profiles do, and the reason to
-    // keep it that way is that an empty table has a declaration to hang the
-    // explanation on -- q840av_floppy_slots carries "New Age reports 'no drive'
-    // (ST3 = $FF) -- no floppy slots offered until a real New Age model lands",
-    // which an absent field could not say.  The Lisa spells "no SCSI bays" the
-    // same way, with a bus whose slot table is empty.
-    //
-    // The consumers stay NULL-safe (build_profile guards both) as
-    // defence-in-depth, not as a second supported spelling -- do not read those
-    // guards as licence to leave a profile's table out (the substrate hooks
-    // draw the same distinction).
+    // ALWAYS point this at a table; say "this machine has none" with an EMPTY
+    // one, `{ {0} }`, not with NULL.  An empty table has a declaration to hang
+    // the explanation on -- q840av_floppy_slots carries "New Age reports 'no
+    // drive' (ST3 = $FF) -- no floppy slots offered until a real New Age model
+    // lands", which an absent field could not say.
     const struct floppy_slot *floppy_slots;
-    const struct scsi_bus_decl *scsi_buses;
 
-    // Hard-disk attach interface (see hd_bus_t).  Default HD_BUS_SCSI (0): the
-    // HD row attaches via scsi.attach_hd and takes its label from scsi_slots.
-    // The Lisa/XL set HD_BUS_PROFILE — their parallel ProFile is not on the
-    // SCSI bus (scsi_slots stays empty) and the UI attaches via profile.attach.
-    hd_bus_t hd_bus;
-
-    // CD-ROM availability is a build-time flag, not a model-level UX policy:
-    // every emulated Mac architecturally supports a SCSI CD bay; the flag
-    // gates dialog display while individual models catch up driver-wise.
-    bool has_cdrom;
-    int cdrom_id; // SCSI bus id for the CD bay; conventionally 3.
-    // The CD-ROM drive this machine takes -- in its bay (has_cdrom), and on
-    // any CD attach: the identity it answers INQUIRY with and its block size.
-    // NULL on a machine that takes none (the Lisa).
+    // The CD-ROM drive this machine takes -- every CD-ROM drive its
+    // configuration has, and any CD attach: the identity it answers INQUIRY
+    // with and its block size.  NULL on a machine that takes none (the Lisa).
     const struct scsi_cd_drive *cdrom_drive;
 
     // On-board video digitizer (the AV family's DMSD/VDC capture path).
@@ -491,14 +474,28 @@ typedef struct hw_profile {
     // construction.  NULL for non-PCI machines.
     const struct pci_slot_decl *pci_slots;
 
-    // Built-in video that is NOT a NuBus pseudo-card: the display the
-    // machine's own substrate publishes (the PDM family's Ariel scanout).
-    // Non-NULL means the configuration dialog must offer it beside the
-    // NuBus display cards, AND that it can be switched off by leaving its
-    // monitor port unconnected — which is what makes a NuBus card the only
-    // screen.  NULL on machines whose built-in video is a BUILTIN slot
-    // (SE/30, IIci) or which have none at all.
+    // The machine's built-in video as a display device (see
+    // builtin_video_desc_t): what catalog.profile publishes as
+    // displays.builtin.  NULL on a machine that has none (the IIx, IIcx, IIfx
+    // and the 9500 show their screen through a display card).
     const struct builtin_video_desc *builtin_video;
+
+    // === Configuration space ================================================
+    // What catalog.profile publishes as the machine-description tree beside
+    // the slot tables above, and what a boot document is checked against.
+    //
+    // Family-specific scalar options (power supplies, keyswitch, …), NULL-id
+    // terminated; NULL for none.  Memory (from ram_options) and AppleTalk
+    // (on every machine whose substrate seeds it) are added by the registry.
+    const config_option_decl_t *options;
+    // The storage buses (machine_config_decl.h), NULL-id terminated, and the
+    // devices the default configuration puts on them.  The first hard disk
+    // there is the default startup device.
+    const storage_bus_decl_t *storage;
+    const storage_device_decl_t *default_storage;
+    // The machine seeds AppleTalk's on/off state into its parameter memory
+    // (machine_substrate_t.seed), so it has the "AppleTalk" option.
+    bool appletalk;
 
     // Behavior: the lifecycle + host-input vtable for this machine.  Machines
     // of the same chipset family SHARE one substrate (glue_substrate for
@@ -570,22 +567,23 @@ static inline bool hw_profile_ram_option_allowed(const hw_profile_t *p, uint32_t
 // Registry: enumerate the built-in profiles.  *out_count receives the count.
 const hw_profile_t *const *machine_list(size_t *out_count);
 
-// The profile's hard-disk bays in attach order: the boot bay first (the one
-// flagged `boot`, else the first declared), then the rest as declared, across
-// every SCSI bus -- or the one ProFile on a machine whose disk is not SCSI.
-// Writes up to `max` into `out` and returns the count.
+// The profile's default hard disks, in order, as attach bays: what
+// machine.attach_hd's index and the headless hd= arguments name.  Writes up
+// to `max` into `out` and returns the count.
 int profile_hd_bays(const hw_profile_t *p, media_bay_t *out, int max);
 // The first of those: where "the hard disk" goes.  False with no bay at all.
 bool profile_default_hd_bay(const hw_profile_t *p, media_bay_t *out);
-// The CD-ROM bay, on a machine that has one (has_cdrom); false otherwise.
+// The default CD-ROM drive, on a machine that has one; false otherwise.
 bool profile_cdrom_bay(const hw_profile_t *p, media_bay_t *out);
-// How many floppy drives the machine has (its floppy_slots).
+// How many floppy positions the machine has (its floppy_slots).
 int profile_floppy_count(const hw_profile_t *p);
-// Build the machine's primary SCSI bus with the fixed devices the profile
-// declares on it: the CD bay's drive (has_cdrom, cdrom_id, cdrom_drive).
-struct scheduler;
-struct scsi *profile_scsi_init(const hw_profile_t *p, struct scheduler *sched, checkpoint_t *cp,
-                               const struct image_list *images);
+// How many floppy drives THIS machine is built with: the configuration's
+// count (positions left empty are not built), else the profile's.
+int machine_floppy_count(const struct config *cfg);
+// Build SCSI bus `bus_id` (the object name, "scsi" / "scsi2") with the
+// configuration's CD-ROM drives on it; a restore brings its drives back from
+// the bus's own block.
+struct scsi *machine_scsi_bus_init(struct config *cfg, checkpoint_t *cp, const char *bus_id);
 
 // === Machine-level attach and eject (system.c) =============================
 // Open `path` as the medium `bay` takes (a hard disk, or with `cdrom` a CD)

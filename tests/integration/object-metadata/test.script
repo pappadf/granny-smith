@@ -37,7 +37,7 @@ assert len($fl.doc) > 0 "floppy has a node doc"
 assert $fl.collection == false "floppy is not a collection"
 let dr = member_of(machine.floppy.meta.members(), "drive")
 assert $dr.collection == true "drive is a collection container"
-assert len($dr.indices) == 2 "two drives"
+assert len($dr.indices) == 1 "one drive (the external position ships empty)"
 assert $dr.keys == none "drive is not keyed"
 let cat = member_of(log.meta.members(), "category")
 assert $cat.collection == true "log.category is a collection container"

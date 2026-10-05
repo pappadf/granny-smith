@@ -14,20 +14,15 @@
 #include "pram_defaults.h"
 #include "slot_tables.h"
 
-// 8 MB soldered plus the SIMM-bank splits the HMC accepts ({2,8,32} MB
-// banks, at most two): 16 = 8+8x1, 24 = 8+8x2, 40 = 8+32, 72 = 8+32x2.
-static const uint32_t pm6100_ram_options_kb[] = {8192, 16384, 24576, 40960, 73728, 0};
+// 8 MB soldered plus one SIMM pair of 2 x 1 ... 2 x 32 MB; the HMC carves
+// each total into its {2,8,32} MB banks (at most two).
+static const uint32_t pm6100_ram_options_kb[] = {8192, 10240, 12288, 16384, 24576, 40960, 73728, 0};
 
 // One internal manual-inject SuperDrive behind SWIM3, and no external
 // port — the PDM family has no second bay (Apple, "Power Macintosh
 // Computers" Developer Note, Table 3-7).
 
 // One standard 5 MB/s bus (the Curio 53C94 cell), internal + external.
-
-static const scsi_bus_decl_t pm6100_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
-    {0},
-};
 
 static const pdm_board_desc_t pm6100_board = {
     .machine_id = 0x3010,
@@ -46,18 +41,15 @@ const hw_profile_t machine_pm6100 = {
     .mmu_kind = MMU_PPC_601,
 
     .address_bits = 32,
-    .ram_default = 0x1800000, // 24 MB (8 soldered + 8+8 SIMM banks)
+    .ram_default = 0x1000000, // 16 MB (a typical well-equipped machine)
     .ram_max = 0x4800000, // 72 MB
     .rom_size = 0x400000, // 4 MB ($9FEB69B3, shared with 7100/8100)
 
     .ram_options = pm6100_ram_options_kb,
     .floppy_slots = mac_floppy_slots_1hd,
-    .scsi_buses = pm6100_scsi_buses,
-    // The AppleCD 300i rides the same Curio 53C96 bus as the HD slots: no
-    // CD-specific hardware is involved, so the bay is offered as soon as that
-    // bus exists.
-    .has_cdrom = true,
-    .cdrom_id = 3,
+    .storage = mac_storage_scsi_cd_bay,
+    .default_storage = mac_default_storage_hd0_cd3,
+    .appletalk = true,
     .cdrom_drive = &mac_cdrom_drive_applecd,
 
     // No NuBus without the optional PDS adapter card, which carries the

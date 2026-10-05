@@ -22,6 +22,12 @@
 // fails is left out of the boot, and the run says so.  Nothing is attached
 // from the scratch area, and every exit discards the scratch file.
 //
+// `config=` is the configuration document, base64url-encoded JSON (the
+// dialog's document; absent, the model's default configuration).  `hdN`,
+// `cd` and `fdN` keep meaning the Nth hard disk / the CD-ROM drive of the
+// default configuration / floppy drive N; a floppy named for a position the
+// default configuration leaves empty puts a drive there.
+//
 // The ROM and a `vrom=` go into the one machine.boot document: the URL's
 // declaration ROM is the ROM of the slot whose card it provides, ahead of any
 // other revision of it already stored.  (Storing it also offers it to the
@@ -33,7 +39,7 @@
 
 import { gsEval, gsErrorText, isModuleReady } from './emulator';
 import { xferReadAll } from './xfer';
-import { reconcileUiWithMachine, prepareFreshMachine, setStartupDisk } from './boot';
+import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
 import { startActivity, endActivity } from '@/state/activity.svelte';
 import type { SchedulerMode } from '@/state/machine.svelte';
@@ -53,13 +59,20 @@ import {
   findMember,
   MediaUrlError,
   interleaveHalves,
+  decodeConfigParam,
   type MediaFetchPlan,
 } from '@/lib/mediaUrl';
 import { identifyRom, MEDIA_TYPES, type MediaTypeId } from '@/lib/media';
 import { persistAs, streamToOpfs, discardStaging, stagedArchiveFormat } from './upload';
 import { scratchPath } from '@/lib/opfsPaths';
-import { getProfile } from './profile';
-import { attachHardDisk, attachCdrom, insertFloppy, type MediaResult } from './media';
+import { getProfile, type ConfigDocument, type MachineProfile } from './profile';
+import {
+  attachHardDisk,
+  attachCdrom,
+  detectFdDriveCount,
+  insertFloppy,
+  type MediaResult,
+} from './media';
 import { importImage, type DiskCategory, type ImportSource } from './importImage';
 
 export interface UrlMediaParams {
@@ -70,6 +83,10 @@ export interface UrlMediaParams {
   vrom: string | null;
   model: string | null;
   speed: string | null;
+  // The configuration document from ?config= (decoded), or null.
+  config: Record<string, unknown> | null;
+  // ?config= was given but is not base64url JSON.
+  configInvalid: boolean;
   floppies: Array<{ slot: string; url: string }>;
   hardDisks: Array<{ slot: string; url: string }>;
   cd: string | null;
@@ -102,10 +119,17 @@ export function parseUrlMediaParams(params: URLSearchParams): UrlMediaParams {
     vrom: seen.get('vrom') ?? null,
     model: seen.get('model') ?? null,
     speed: seen.get('speed') ?? null,
+    config: null,
+    configInvalid: false,
     floppies: [],
     hardDisks: [],
     cd: seen.get('cd') ?? null,
   };
+  const config = seen.get('config');
+  if (config !== undefined) {
+    out.config = decodeConfigParam(config);
+    out.configInvalid = out.config === null;
+  }
   for (const [name, v] of seen) {
     if (/^fd\d+$/.test(name)) out.floppies.push({ slot: name, url: v });
     if (/^hd\d+$/.test(name)) out.hardDisks.push({ slot: name, url: v });
@@ -223,10 +247,15 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   const vrom = paths.get('vrom');
   if (params.vrom && !vrom)
     showNotification(`Booting ${chosen} without the URL's video ROM`, 'warning');
+  if (params.configInvalid)
+    showNotification('The URL’s config= is not a configuration; booting the default', 'warning');
+  const profile = await getProfile(chosen);
+  const config = urlConfig(profile, params);
   const booted = await gsEval('machine.boot', {
     model: chosen,
     rom: romPath,
     ...(vrom ? { vrom } : {}),
+    ...(config ? { config: JSON.stringify(config) } : {}),
   });
   if (booted !== true) {
     // A rejected document leaves the previous machine (or none) in place:
@@ -240,17 +269,14 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   }
 
   await insertUrlFloppies(params, paths);
-  // ?hdN= is the N-th hard-disk bay in the model's own order (hd0 is the boot
-  // bay), on whatever bus it is — not SCSI id N on the first bus.
+  // ?hdN= is the default configuration's N-th hard disk (hd0 is the startup
+  // disk, which the configuration names), on whatever bus it is -- not SCSI
+  // id N on the first bus.
   for (const hd of params.hardDisks) {
     const p = paths.get(hd.slot);
     if (!p) continue;
     const n = parseInt(hd.slot.replace('hd', ''), 10);
-    const r = await attachHardDisk(p, n);
-    report(hd.slot, p, r);
-    // The boot bay's disk is the startup device (a SCSI Mac's PRAM default,
-    // a Lisa's BootVol), as the Configuration dialog's boot names it.
-    if (r.ok && n === 0) await setStartupDisk(r.mount);
+    report(hd.slot, p, await attachHardDisk(p, n));
   }
   const cdPath = paths.get('cd');
   if (cdPath) report('cd', cdPath, await attachCdrom(cdPath));
@@ -261,15 +287,45 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   return true;
 }
 
-// ?fdN= goes into drive N — it always went into drive 0, so ?fd0=a&fd1=b
-// left b refused and dropped — and only a drive the model has.
+// The document to boot: ?config= as given, else -- when an ?fdN= names a
+// floppy position the default configuration leaves empty -- the default
+// configuration with a drive there (the position's first drive type), else
+// null for the default configuration itself.
+export function urlConfig(
+  profile: MachineProfile | null,
+  params: Pick<UrlMediaParams, 'config' | 'floppies'>,
+): Record<string, unknown> | null {
+  if (params.config) return params.config;
+  if (!profile) return null;
+  let doc: ConfigDocument | null = null;
+  for (const fd of params.floppies) {
+    const pos = profile.floppies.find((f) => f.id === fd.slot);
+    if (!pos || (profile.defaults.floppies[pos.id] ?? pos.default) !== 'none') continue;
+    const type = pos.types.find((t) => t.id !== 'none');
+    if (!type) continue;
+    doc ??= JSON.parse(JSON.stringify(profile.defaults)) as ConfigDocument;
+    doc.floppies[pos.id] = type.id;
+  }
+  // A drive at a later position needs the ones before it.
+  if (doc) {
+    for (const pos of profile.floppies) {
+      if (doc.floppies[pos.id] !== 'none') continue;
+      const later = profile.floppies.slice(profile.floppies.indexOf(pos) + 1);
+      const type = pos.types.find((t) => t.id !== 'none');
+      if (type && later.some((l) => doc!.floppies[l.id] && doc!.floppies[l.id] !== 'none'))
+        doc.floppies[pos.id] = type.id;
+    }
+  }
+  return doc as Record<string, unknown> | null;
+}
+
+// ?fdN= goes into drive N -- it always went into drive 0, so ?fd0=a&fd1=b
+// left b refused and dropped -- and only a drive the machine has.
 async function insertUrlFloppies(
   params: UrlMediaParams,
   paths: Map<string, string | undefined>,
 ): Promise<void> {
-  const model = await gsEval('machine.id');
-  const profile = typeof model === 'string' && model ? await getProfile(model) : null;
-  const drives = profile?.floppy_slots.length ?? 0;
+  const drives = await detectFdDriveCount(true);
   for (const fd of params.floppies) {
     const p = paths.get(fd.slot);
     if (!p) continue;

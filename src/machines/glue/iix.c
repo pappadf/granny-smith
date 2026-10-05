@@ -67,12 +67,12 @@ static void iix_via2_shift_out(void *context, uint8_t byte) {
 // ============================================================
 
 static const nubus_slot_decl_t iix_slots[] = {
-    {.slot = 0x9, .kind = NUBUS_SLOT_SOCKET, .default_card = "mdc_8_24"},
-    {.slot = 0xA, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xB, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0x9, .kind = NUBUS_SLOT_SOCKET, .default_card = "mdc_8_24", .label = "NuBus slot 1", .fill_order = 1},
+    {.slot = 0xA, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot 2", .fill_order = 2},
+    {.slot = 0xB, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot 3", .fill_order = 3},
+    {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot 4", .fill_order = 4},
+    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot 5", .fill_order = 5},
+    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot 6", .fill_order = 6},
     {0},
 };
 
@@ -123,11 +123,6 @@ static const mac030_glue_board_t iix_board = {
 
 static const uint32_t iix_ram_options_kb[] = {1024, 2048, 4096, 5120, 8192, 16384, 32768, 65536, 131072, 0};
 
-static const scsi_bus_decl_t iix_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
-    {0},
-};
-
 const hw_profile_t machine_iix = {
     .name = "Macintosh IIx",
     .id = "iix",
@@ -142,10 +137,10 @@ const hw_profile_t machine_iix = {
     .rom_size = 0x040000, // 256 KB
 
     .ram_options = iix_ram_options_kb,
-    .floppy_slots = mac_floppy_slots_2hd,
-    .scsi_buses = iix_scsi_buses,
-    .has_cdrom = true,
-    .cdrom_id = 3,
+    .floppy_slots = mac_floppy_slots_2int,
+    .storage = mac_storage_scsi_hd_bay,
+    .default_storage = mac_default_storage_hd0_cd3,
+    .appletalk = true,
     .cdrom_drive = &mac_cdrom_drive_applecd,
     // Same reasoning as IIcx: no built-in video, so the slot card's
     // VROM (mdc-8-24-revb-d1629664.vrom for the default JMFB card) must be

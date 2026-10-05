@@ -77,12 +77,16 @@ typedef enum pci_slot_kind {
 typedef struct pci_slot_decl {
     int slot; // 1-based logical slot; 0 ends the array
     pci_slot_kind_t kind;
-    const char *label; // "A1" — display string (AAPL,slot-name-ish)
+    const char *label; // "PCI slot A1" — Apple's name, what catalog.profile shows
+    const char *detail; // "A1" — the firmware's slot name (AAPL,slot-name), secondary
     int bus; // family bus index (0 = Bandit 1, 1 = Bandit 2, 2 = VCI)
     int device; // PCI device number on that bus (the IDSEL AD line)
     int int_line; // the interrupt-controller line the strapped INTA-D reaches
     const char *builtin_card_id; // BUILTIN: resolved via pci_card_find()
     const char *default_card; // SOCKET: NULL = ships empty
+    // SOCKET: Apple's recommended order for an added card (lowest first);
+    // 0 = after every slot that has one, in table order.
+    int fill_order;
 } pci_slot_decl_t;
 
 // True iff card kind `kind` may be seated in slot `s`.  COMPUTED, and the
@@ -260,10 +264,11 @@ value_t pci_cards_list(void);
 // the new machine's tree is built before the old machine is destroyed).
 void pci_objects_teardown_owned(pci_root_t *root);
 
-// The primary display among the seated PCI devices — first slot in
-// declared order whose ops->display() returns non-NULL — or NULL.
-display_t *pci_primary_display(pci_root_t *root);
-pci_device_t *pci_primary_display_card(pci_root_t *root);
+// The display the monitor shows: a pass-through 3D card while it holds the
+// output, else the device the configuration connected the monitor to (its
+// slot entry's `connected`), or NULL when none has it -- and the device.
+display_t *pci_connected_display(pci_root_t *root);
+pci_device_t *pci_connected_display_card(pci_root_t *root);
 
 // A display card may nominate one of the object nodes its kind attached as
 // the FRAMEBUFFER node — what `machine.screen.source` resolves to.  The

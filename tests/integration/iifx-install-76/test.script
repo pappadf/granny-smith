@@ -2,7 +2,7 @@
 # Mac OS 7.6, run the 7.6 Installer to completion, and boot the result.
 #
 # Part 1 (format): creates a blank HD160SC SCSI disk, boots a Macintosh IIfx
-# (16 MB) with the Apple Macintosh Display Card 8•24 (JMFB) at 13" RGB 640x480
+# (16 MB) with the Macintosh Display Card 8•24 (JMFB) at 13" RGB 640x480
 # 8 bpp from the Mac OS 7.6 "Disk Tools 1" floppy, opens Apple HD SC Setup
 # v7.3.5 off that floppy, and initialises the drive (APM partition map +
 # Apple_Driver43 + HFS "Untitled").
@@ -112,7 +112,7 @@ scheduler.run 600000000
 
 assert machine.id == "iifx" "machine.id != iifx"
 assert machine.rom.id == "4147dd77" "rom.id != 4147dd77"
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24" "slot $9 card != Display Card 8•24"
+assert machine.nubus.slot[9].card.name == "Macintosh Display Card 8•24" "slot $9 card != Display Card 8•24"
 assert machine.screen.width == 640 "screen.width != 640"
 assert machine.screen.height == 480 "screen.height != 480"
 assert machine.rtc.pram.peek(0x48) == 0x83 "savedMode != 0x83 (8bpp)"

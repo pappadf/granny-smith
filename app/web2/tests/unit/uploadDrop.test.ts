@@ -19,7 +19,7 @@ vi.mock('@/bus/boot', () => ({
 }));
 vi.mock('@/bus/media', () => ({
   insertFloppy: vi.fn(async () => ({ ok: true, mount: { drive: 0 } })),
-  attachCdrom: vi.fn(async () => ({ ok: true, mount: {} })),
+  mountImage: vi.fn(async () => ({ ok: true, mount: {} })),
 }));
 
 const { acceptFiles, dropSummary } = await import('@/bus/upload');

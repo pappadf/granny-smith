@@ -1,55 +1,160 @@
-// The one reader of `catalog.profile(id)`.
+// The one reader of `catalog.profile(id)` and `catalog.default_config(id)`.
 //
-// Five call sites used to fetch the profile each for itself — the config
-// dialog, capabilities, the URL path, the ROM-drop boot, the default HD bay —
-// each with its own partial type, none cached, and a sixth inferred the
-// floppy count by probing drives.  This file owns the full shape, mirroring
-// build_profile (src/machines/machine.c), and memoises it per model for the
-// session: a profile is static data.
+// The core publishes each model's configuration space as one tree -- options,
+// floppy positions, storage buses, expansion slots, the cards that fit them,
+// the display devices and the monitors they take -- with every label
+// already written, and the default configuration as a document that
+// mirrors the tree node by node (src/machines/machine_config.c).  This file
+// owns the shape and memoises it per model for the session.  A card's
+// availability follows the ROMs uploaded, so the cache is dropped when the
+// stored ROM set changes (clearProfileCache).
 
 import { gsEval, isGsError } from './emulator';
 
-// A place a medium goes, as the core derives it (profile_hd_bays,
-// profile_cdrom_bay): the bus it is on and the unit on that bus.
-// machine.attach_hd / attach_cdrom answer the same shape.
+// A place a medium goes, as the attach verbs answer it: the bus it is on
+// and the unit there.
 export interface MediaBay {
-  bus: 'floppy' | 'scsi' | 'scsi2' | 'profile';
+  bus: string;
   id: number;
   label: string;
 }
 
-export interface VideoMonitor {
+// One choice: an id the document carries and the label the core wrote.
+export interface Choice {
   id: string;
-  name?: string;
-  width?: number;
-  height?: number;
-  depths?: number[];
+  label: string;
+  detail?: string;
+}
+
+// A scalar option (memory, AppleTalk, power supplies, a card's video memory).
+export interface ConfigOption {
+  id: string;
+  label: string;
+  detail?: string;
+  kind: 'choice';
+  values: Choice[];
+  default: string;
+  requires?: { value: string; option: string; not: string };
+}
+
+// A floppy drive position: the drive types it takes ("none" where the
+// position can be empty).
+export interface FloppyPosition {
+  id: string; // "fd0"
+  label: string;
+  types: Choice[];
+  default: string;
+}
+
+// A unit a storage device may use, with the position text the core composed
+// ("ID 0 · Internal hard disk bay", "Master").
+export interface StorageUnit {
+  unit: number;
+  label: string;
+}
+
+export interface StorageBus {
+  id: string;
+  label: string;
+  detail?: string;
+  kind: string;
+  width?: string;
+  units: StorageUnit[];
+  reserved: number[];
+  shares_units_with: string[];
+  external_connector: boolean;
+  bays: StorageUnit[];
+  accepts: Choice[]; // device types: hd, cd
+  startup: boolean; // the startup record can name a device here
+  // The blank hard disks its drives take: the files.* method that creates
+  // one (with `arg`), and the new file's name stem and extension.
+  blank_disks: BlankDisk[];
+}
+
+export interface BlankDisk {
+  label: string;
+  method: string;
+  arg: string;
+  name: string;
+  ext: string;
+}
+
+export interface Slot {
+  id: string;
+  label: string;
+  detail?: string;
+  bus: string;
+  kind: string;
+  excludes: string[];
+  fill_order: number;
+}
+
+export interface Card {
+  id: string;
+  label: string;
+  detail?: string;
+  class: string;
+  fits: string[];
+  rom: { kind: string; substitute: boolean } | null;
+  status: 'ok' | 'substitute' | 'unavailable';
+  reason?: string;
+  monitors: string[];
+  // Startup video modes per monitor ("WxHxD" ids, labels from the core).
+  modes: Record<string, Choice[]>;
+  options: ConfigOption[];
+}
+
+export interface BuiltinDisplay {
+  id: 'builtin';
+  label: string;
+  detail?: string;
+  monitors: string[];
+  default_monitor: string;
+  modes: Record<string, Choice[]>;
+  options: ConfigOption[];
+}
+
+export interface Monitor {
+  id: string;
+  label: string;
+  width: number;
+  height: number;
+}
+
+// The configuration document machine.boot's config= takes.
+export interface StorageDevice {
+  bus: string;
+  unit: number;
+  type: string; // "hd" | "cd"
+}
+
+export interface CardEntry {
+  slot: string;
+  card: string;
+  options: Record<string, string>;
+}
+
+export interface DisplayEntry {
+  monitor: string;
+  mode?: string;
+}
+
+export interface ConfigDocument {
+  model: string;
+  options: Record<string, string>;
+  floppies: Record<string, string>;
+  storage: StorageDevice[];
+  startup: { bus: string; unit: number } | null;
+  cards: CardEntry[];
+  displays: Record<string, DisplayEntry>;
 }
 
 export interface MachineProfile {
   id: string;
   name: string;
   freq: number;
-  ram_options: number[]; // KB
-  ram_default: number; // KB
-  ram_max: number; // KB
-  floppy_slots: Array<{ label: string; kind: string }>;
-  scsi_buses: Array<{
-    object: string;
-    label: string;
-    slots: Array<{ label: string; id: number; boot: boolean }>;
-  }>;
-  // 'scsi' or 'profile' (the Lisa/XL parallel-port ProFile).
-  hd_bus: string;
-  has_cdrom: boolean;
-  cdrom_id: number;
-  // The derived bays: every hard-disk bay in attach order (the boot bay
-  // first), the default one, and the CD bay (null on a model without one).
-  hd_bays: MediaBay[];
-  hd_default: MediaBay | null;
-  cdrom: MediaBay | null;
-  // Derived capability probe: the typed facts the UI reads
-  // instead of guessing from the model name.
+  // Derived capability probe: the typed facts the UI reads instead of
+  // guessing from the model name.
   capabilities: {
     cpu?: { model?: number; address_bits?: number; fpu?: boolean };
     mmu?: { present?: boolean; kind?: string };
@@ -59,49 +164,14 @@ export interface MachineProfile {
     audio_in?: boolean;
     aux_cpus?: Array<{ name?: string; arch?: string; freq?: number }>;
   };
-  // Per-card video slot shape — the single source for the VROM requirement
-  // (per-card requires_vrom) and the video-mode list (each card's monitors ×
-  // depths).  Every declared socket is emitted; the dialog configures the
-  // first.
-  video_slots: Array<{
-    slot: string;
-    fixed: boolean;
-    default_card: string;
-    cards: Array<{
-      id: string;
-      display_name?: string;
-      requires_vrom: boolean;
-      monitors?: VideoMonitor[];
-    }>;
-  }>;
-  // PCI sockets: each declared socket with the cards that fit it; each card
-  // with its UI class ('display', 'other', ...), requires_prom and the
-  // options it accepts (machine.boot's pci_option="key=value").  A fixed
-  // `fallback` slot is emulator scaffolding standing in until a socket
-  // supplies a card of its class (the 9500's Control/Chaos).
-  pci_slots: Array<{
-    slot: number;
-    label?: string;
-    fixed: boolean;
-    fallback?: boolean;
-    default_card?: string;
-    cards: Array<{
-      id: string;
-      display_name?: string;
-      class?: string;
-      requires_prom?: boolean;
-      options?: Array<{
-        key: string;
-        label?: string;
-        default_value?: string;
-        values?: Array<{ id: string; label?: string }>;
-      }>;
-      monitors?: VideoMonitor[];
-    }>;
-  }>;
-  // The machine's own built-in video when it is not a NuBus pseudo-card (the
-  // PDM family's Ariel scanout); an empty map on every other machine.
-  builtin_video: { id?: string; display_name?: string; monitors?: VideoMonitor[] };
+  options: ConfigOption[];
+  floppies: FloppyPosition[];
+  storage: StorageBus[];
+  slots: Slot[];
+  cards: Card[];
+  displays: { builtin: BuiltinDisplay | null; max_connected: number };
+  monitors: Monitor[];
+  defaults: ConfigDocument;
 }
 
 const cache = new Map<string, Promise<MachineProfile | null>>();
@@ -129,31 +199,78 @@ export async function getActiveProfile(): Promise<MachineProfile | null> {
   return typeof id === 'string' && id ? getProfile(id) : null;
 }
 
-// Forget every cached profile (tests).
+// Forget every cached profile: tests, and an upload that changes which card
+// ROMs are present (a card's status is the core's answer to that).
 export function clearProfileCache(): void {
   cache.clear();
 }
 
+// An empty document for a model (what normalise fills a missing one with).
+function emptyDocument(model: string): ConfigDocument {
+  return {
+    model,
+    options: {},
+    floppies: {},
+    storage: [],
+    startup: null,
+    cards: [],
+    displays: {},
+  };
+}
+
 // Fill the arrays and maps a consumer iterates, so no caller needs `?? []`.
 function normalise(r: Partial<MachineProfile>): MachineProfile {
+  const id = r.id ?? '';
+  const d = (r.defaults ?? {}) as Partial<ConfigDocument>;
   return {
-    id: r.id ?? '',
+    id,
     name: r.name ?? '',
     freq: r.freq ?? 0,
-    ram_options: r.ram_options ?? [],
-    ram_default: r.ram_default ?? 0,
-    ram_max: r.ram_max ?? 0,
-    floppy_slots: r.floppy_slots ?? [],
-    scsi_buses: r.scsi_buses ?? [],
-    hd_bus: r.hd_bus ?? 'scsi',
-    has_cdrom: r.has_cdrom === true,
-    cdrom_id: r.cdrom_id ?? 0,
-    hd_bays: r.hd_bays ?? [],
-    hd_default: r.hd_default ?? null,
-    cdrom: r.cdrom ?? null,
     capabilities: r.capabilities ?? {},
-    video_slots: r.video_slots ?? [],
-    pci_slots: r.pci_slots ?? [],
-    builtin_video: r.builtin_video ?? {},
+    options: r.options ?? [],
+    floppies: r.floppies ?? [],
+    storage: (r.storage ?? []).map((b) => ({
+      ...b,
+      units: b.units ?? [],
+      reserved: b.reserved ?? [],
+      shares_units_with: b.shares_units_with ?? [],
+      bays: b.bays ?? [],
+      accepts: b.accepts ?? [],
+      blank_disks: b.blank_disks ?? [],
+      startup: b.startup === true,
+      external_connector: b.external_connector === true,
+    })),
+    slots: (r.slots ?? []).map((s) => ({ ...s, excludes: s.excludes ?? [] })),
+    cards: (r.cards ?? []).map((c) => ({
+      ...c,
+      fits: c.fits ?? [],
+      monitors: c.monitors ?? [],
+      modes: c.modes ?? {},
+      options: c.options ?? [],
+      rom: c.rom ?? null,
+      status: c.status ?? 'ok',
+    })),
+    displays: {
+      builtin: r.displays?.builtin
+        ? {
+            ...r.displays.builtin,
+            monitors: r.displays.builtin.monitors ?? [],
+            modes: r.displays.builtin.modes ?? {},
+            options: r.displays.builtin.options ?? [],
+          }
+        : null,
+      max_connected: r.displays?.max_connected ?? 1,
+    },
+    monitors: r.monitors ?? [],
+    defaults: {
+      ...emptyDocument(id),
+      ...d,
+      storage: d.storage ?? [],
+      cards: (d.cards ?? []).map((c) => ({ ...c, options: c.options ?? {} })),
+      displays: d.displays ?? {},
+      options: d.options ?? {},
+      floppies: d.floppies ?? {},
+      startup: d.startup ?? null,
+    },
   };
 }

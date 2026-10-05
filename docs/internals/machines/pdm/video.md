@@ -28,8 +28,8 @@ answers the ROM's six-bit extended-sense walk correctly.
 shipping ROM reads all-ones from the extended walk and turns built-in video
 off entirely — its PrimaryInit prunes every built-in video sResource, and
 the Start Manager skips carving the framebuffer out of DRAM.  The substrate
-display hook returns NULL to match, so `system_display()` falls through to
-the NuBus primary display and a seated card becomes the only screen.
+display hook returns NULL to match; the configuration connects the monitor
+to a seated card instead, and `system_display()` shows that card.
 Verified against the ROM's own arithmetic: MemTop is 618,496 bytes (604 KB)
 higher with the port unconnected — exactly the framebuffer that was never
 allocated.

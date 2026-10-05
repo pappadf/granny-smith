@@ -18,7 +18,7 @@
 #   make test-suite-se30 TEST_VARS="REGEN=1"           recapture goldens
 
 TEST_NAME := SE/30 suite
-TEST_DESC := No-media icon, chime WAV, 6.0.8/7.1 floppy transports, generic vROM, 7.5 HD, checkpoint
+TEST_DESC := No-media icon, chime WAV, 6.0.8/7.1 floppy transports, substitute vROM, 7.5 HD, checkpoint
 
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 TEST_ARGS := model=se30 ram=8192

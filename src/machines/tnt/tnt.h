@@ -175,7 +175,6 @@ typedef struct tnt_board_desc {
     uint32_t l2_kb;
     // TwoSuppliesH — Board Register 1 bit 15, the redundant-PSU report and
     // the one register-level difference between a 700 and a 500 (§5.6).
-    bool two_supplies;
 } tnt_board_desc_t;
 
 // === Hammerhead state (hammerhead.c) ========================================
@@ -403,18 +402,39 @@ static inline const tnt_board_desc_t *tnt_board(config_t *cfg) {
 
 extern const machine_substrate_t tnt_substrate;
 
-// The family's one internal SuperDrive bay, shared by all five profiles
-// (tnt.c).  The SWIM3 + DBDMA-channel-1 datapath behind it is complete and
-// exercised by tests/integration/suite-ans (ans500-diag-floppy).
-extern const struct scsi_slot tnt_scsi_slots_internal[];
+// The Power Macintosh boards' storage: the internal MESH bus with two (7500)
+// or three (8500, 9500) bays, and the default hard disk (tnt.c).
+extern const storage_bus_decl_t tnt_storage_7500[];
+extern const storage_bus_decl_t tnt_storage_8500[];
+extern const storage_device_decl_t tnt_default_storage[];
 
 // The Shiner backplane, shared by both Network Server profiles (tnt.c).
 // See the derivation there -- and the five reasons it is not the 9500's.
 extern const pci_slot_decl_t ans_pci_slots[];
 
-// The Network Servers' shared front backplane on fast/wide 0 (tnt.c).
-// The second controller stays per-model -- that is where the bays differ.
-extern const struct scsi_slot ans_scsi_slots_fw0[];
+// The Network Servers' shared front backplane on fast/wide 0 (tnt.c), as
+// one storage_bus_decl_t initialiser; the second controller stays per-model
+// -- that is where the bays differ.  And their default devices.
+extern const storage_bay_decl_t ans_bays_bus0[];
+extern const storage_device_decl_t ans_default_storage[];
+// The Network Servers' options (keyswitch; the 700's power supplies) and
+// their built-in video (the Cirrus Logic 54M30).
+extern const config_option_decl_t ans500_options[];
+extern const config_option_decl_t ans700_options[];
+extern const builtin_video_desc_t ans_builtin_video;
+#define ANS_SCSI_DETAIL "Fast and wide SCSI-2 \xc2\xb7 Symbios 53C825A"
+#define ANS_STORAGE_BUS0                                                                                               \
+    {.id = "scsi",                                                                                                     \
+     .label = "Internal SCSI bus 0",                                                                                   \
+     .detail = ANS_SCSI_DETAIL,                                                                                        \
+     .kind = STORAGE_KIND_SCSI,                                                                                        \
+     .wide = true,                                                                                                     \
+     .media_bus = MEDIA_BUS_SCSI,                                                                                      \
+     .units = 0x0Fu,                                                                                                   \
+     .reserved = 0x80u,                                                                                                \
+     .bays = ans_bays_bus0,                                                                                            \
+     .accepts = STORAGE_DEV_HD | STORAGE_DEV_CD,                                                                       \
+     .startup_ok = true}
 
 // Fill/clear one physical page in the AoS table + SoA fast-path arrays
 // (the pdm_fill_page shape; local so tnt stays free of 68K-family headers).
@@ -472,7 +492,7 @@ void tnt_swim3_write(config_t *cfg, uint32_t off, uint8_t value);
 // the machine's slot table names it, and pci_seat_slots runs its factory,
 // which is what calls the three functions below.
 void tnt_control_register_events(config_t *cfg); // event type (pre-start)
-int tnt_control_init(config_t *cfg, int video_sense); // VRAM, display, BAR backings; 0 on success
+int tnt_control_init(config_t *cfg, uint8_t sense); // VRAM, display, BAR backings; 0 on success
 void tnt_control_reset(config_t *cfg); // power-on registers (VRAM survives)
 void tnt_control_update(config_t *cfg); // re-derive the display descriptor
 void tnt_control_teardown(config_t *cfg);

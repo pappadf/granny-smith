@@ -91,7 +91,7 @@ test('the Voodoo2 rasterises on a second Web Worker, and the shadow is authorita
   const model = page.locator('#cfg-model');
   await expect(model.locator('option[value="pm7500"]')).toHaveCount(1, { timeout: 30_000 });
   await model.selectOption('pm7500');
-  await page.getByRole('button', { name: 'Start Machine' }).click();
+  await page.getByRole('button', { name: 'Start', exact: true }).click();
   await expect(page.locator('.toast .msg').filter({ hasText: 'Machine started' })).toBeVisible({
     timeout: 60_000,
   });

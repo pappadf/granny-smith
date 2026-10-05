@@ -7,6 +7,7 @@
 #include "mac030_glue.h"
 
 #include "appletalk.h"
+#include "config_seed.h"
 #include "machine_teardown.h"
 
 #include "mac_host_io.h" // mac_fd_*/mac_input_* substrate methods (shared by all Macs)
@@ -47,7 +48,7 @@ int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_s
     machine_part_images(cfg, cp);
 
     machine_part_begin(cfg, cp, "scsi");
-    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, cp, CONFIG_IMAGES(cfg));
+    cfg->scsi = machine_scsi_bus_init(cfg, cp, "scsi");
     // SE/30, IIcx and IIx: an NCR 5380 behind the glue's own decode.
     scsi_5380_attach(cfg->scsi, cp);
     machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
@@ -61,8 +62,7 @@ int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_s
     asc_set_mix(st->asc, desc->asc_mix); // board speaker fold (not checkpointed)
 
     machine_part_begin(cfg, cp, "floppy");
-    st->floppy =
-        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), cp, CONFIG_IMAGES(cfg));
+    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
     machine_part(cfg, cp, "floppy", part_save_floppy, st->floppy);
 
@@ -504,6 +504,7 @@ const machine_substrate_t glue_substrate = {
     .init = glue_init,
     .bus_reset = glue_bus_reset,
     .teardown = glue_teardown,
+    .seed = mac_seed_rtc_pram,
     .trigger_vbl = glue_trigger_vbl,
     .nubus_slot_irq = mac030_glue_nubus_slot_irq,
     .fd_insert = mac_fd_insert,

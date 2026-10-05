@@ -7,6 +7,18 @@
 
   let { variant }: StoryProps = $props();
   const noop = () => undefined;
+  // A SCSI bus's blank disks, as catalog.profile lists them.
+  const disks = [
+    ['20 MB (HD20SC)', '21411840', 20],
+    ['38 MB (HD40SC)', '40061952', 38],
+    ['76 MB (HD80SC)', '80061440', 76],
+  ].map(([label, arg, mb]) => ({
+    label: String(label),
+    method: 'files.hd_create',
+    arg: String(arg),
+    name: `blank_${mb}MB`,
+    ext: '.dmg',
+  }));
 
   // The rename error shows after a refused commit: press Enter on the field.
   $effect(() => {
@@ -54,7 +66,7 @@
     onClose={noop}
   />
 {:else if variant === 'create-hd'}
-  <CreateImageDialog open kind="hd" onClose={noop} onCreated={noop} />
+  <CreateImageDialog open kind="hd" {disks} onClose={noop} onCreated={noop} />
 {:else if variant === 'create-fd'}
   <CreateImageDialog open kind="fd" onClose={noop} onCreated={noop} />
 {/if}

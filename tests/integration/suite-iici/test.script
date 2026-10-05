@@ -205,7 +205,7 @@ def row_iici_71_hd() {
     assert machine.screen.depth == 1 "iici-71-hd: screen.depth != 1"
     # The 24AC must NOT be present: this row exists to prove the card-free path,
     # so an inherited card would make it silently re-measure the 24AC hang.
-    assert machine.nubus.slot[11].card.name == "Macintosh IIci Built-in Video" "iici-71-hd: slot $B is not the built-in video"
+    assert machine.nubus.slot[11].card.name == "Built-in video" "iici-71-hd: slot $B is not the built-in video"
     check("goldens/iici-7.1-640x480x1-finder.png")
     report_row("7.1", "rbv", "hd-boot 5380")
     report_perf("suite-iici/iici-71-hd", scheduler.instr_count)
@@ -266,8 +266,8 @@ def row_iici_24ac_dual() {
     wait_stable(1500000000)
     assert machine.id == "iici" "iici-24ac-dual: machine.id != iici"
     # Two display devices, both live.
-    assert machine.nubus.slot[11].card.name == "Macintosh IIci Built-in Video" "iici-24ac-dual: slot $B is not the built-in video"
-    assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC" "iici-24ac-dual: slot $C card != 24AC"
+    assert machine.nubus.slot[11].card.name == "Built-in video" "iici-24ac-dual: slot $B is not the built-in video"
+    assert machine.nubus.slot[12].card.name == "Macintosh Display Card 24AC" "iici-24ac-dual: slot $C card != 24AC"
     assert machine.nubus.slot[12].card.framebuffer.depth == 8 "iici-24ac-dual: 24AC framebuffer not 8 bpp"
     # The boot screen is the built-in RBV: seeding the Start Manager's
     # default-video-device pointer (PRAM $80..$81, pram.md §7) does not move

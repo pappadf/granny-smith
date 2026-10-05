@@ -33,10 +33,6 @@ function se30(mode = 'paced'): void {
 const BOOT = {
   model: 'se30',
   rom: '/opfs/images/rom/se30.rom',
-  vrom: '(auto)',
-  floppies: [],
-  hd: '',
-  cd: '',
 };
 
 describe('one post-boot reconciliation, every path', () => {
@@ -69,32 +65,46 @@ describe('one post-boot reconciliation, every path', () => {
   // nothing may be attached to it, reconciled from it, or run.
   it('a rejected boot attaches, reconciles and runs nothing', async () => {
     bridge.reply('machine.boot', { error: 'machine.boot: unknown model' });
-    await initEmulator({ ...BOOT, hd: '/opfs/images/hd/a.img' });
+    await initEmulator({
+      ...BOOT,
+      media: [{ bus: 'scsi', unit: 0, type: 'hd', path: '/opfs/images/hd/a.img' }],
+    });
     expect(bridge.paths()).toEqual(['machine.boot']);
   });
 
-  // The page names the disk's own SCSI id as the startup device,
-  // through the core's setter -- no PRAM bytes, and no seed at all otherwise.
-  it('a boot with a hard disk names its SCSI id as the startup device', async () => {
+  // The configuration names the startup device and the core seeds it at
+  // construction: the page sends the document and attaches each image to
+  // its device -- it writes no PRAM or NVRAM of its own.
+  it('a boot sends the document and attaches each image by position, writing no PRAM', async () => {
     se30();
-    bridge.reply('machine.attach_hd', { bus: 'scsi', id: 3, label: 'ID 3' });
-    bridge.reply('machine.rtc.pram.boot_device', null);
-    await initEmulator({ ...BOOT, hd: '/opfs/images/hd/a.img', hdBay: 1 });
-    const set = bridge.calls.find((c) => c.path === 'machine.rtc.pram.boot_device');
-    expect(set?.args).toEqual([3]);
-    expect(bridge.paths().some((p) => p.includes('pram.poke') || p === 'shell.run')).toBe(false);
+    bridge.reply('machine.attach_media', { bus: 'scsi', id: 4, label: 'ID 4' });
+    const config = {
+      model: 'se30',
+      options: {},
+      floppies: {},
+      storage: [{ bus: 'scsi', unit: 4, type: 'hd' }],
+      startup: { bus: 'scsi', unit: 4 },
+      cards: [],
+      displays: {},
+    };
+    await initEmulator({
+      ...BOOT,
+      config,
+      media: [{ bus: 'scsi', unit: 4, type: 'hd', path: '/opfs/images/hd/a.img' }],
+    });
+    const boot = bridge.calls.find((c) => c.path === 'machine.boot');
+    expect(JSON.parse((boot?.args as unknown as { config: string }).config)).toEqual(config);
+    const attach = bridge.calls.find((c) => c.path === 'machine.attach_media');
+    expect(attach?.args).toEqual(['scsi', 4, 'hd', '/opfs/images/hd/a.img']);
+    const paths = bridge.paths();
+    expect(paths.some((p) => p.includes('pram') || p.includes('nvram'))).toBe(false);
   });
 
-  // An Open Firmware machine keeps Mac OS's PRAM in its NVRAM, not in Cuda:
-  // the id goes to machine.nvram.startup_disk and the RTC is left alone.
-  it('on an Open Firmware machine the startup device goes to the NVRAM', async () => {
+  it("a boot without a document is the model's default configuration", async () => {
     se30();
-    bridge.reply('machine.attach_hd', { bus: 'scsi', id: 3, label: 'ID 3' });
-    bridge.reply('machine.nvram.startup_disk', null);
-    await initEmulator({ ...BOOT, hd: '/opfs/images/hd/a.img', hdBay: 1 });
-    const set = bridge.calls.find((c) => c.path === 'machine.nvram.startup_disk');
-    expect(set?.args).toEqual([3]);
-    expect(bridge.paths()).not.toContain('machine.rtc.pram.boot_device');
+    await initEmulator(BOOT);
+    const boot = bridge.calls.find((c) => c.path === 'machine.boot');
+    expect(boot?.args).toEqual({ model: 'se30', rom: '/opfs/images/rom/se30.rom' });
   });
 
   // machine.restart power-cycles the SAME machine: its PRAM still names the

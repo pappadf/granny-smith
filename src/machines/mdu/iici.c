@@ -253,9 +253,9 @@ static const nubus_slot_decl_t iici_slots[] = {
     {.slot = 0xB, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "builtin_rbv_video", .fb_in_ram = true},
     // The three physical sockets ship empty (no default_card): the RBV
     // built-in video is the factory display; a socketed card is an add-on.
-    {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot 4", .fill_order = 4},
+    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot 5", .fill_order = 5},
+    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET, .label = "NuBus slot 6", .fill_order = 6},
     {0},
 };
 
@@ -306,7 +306,7 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part_images(cfg, checkpoint);
 
     machine_part_begin(cfg, checkpoint, "scsi");
-    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, checkpoint, CONFIG_IMAGES(cfg));
+    cfg->scsi = machine_scsi_bus_init(cfg, checkpoint, "scsi");
     scsi_5380_attach(cfg->scsi, checkpoint); // IIci: NCR 5380
     machine_part(cfg, checkpoint, "scsi", part_save_scsi, cfg->scsi);
     scsi_set_irq_callback(cfg->scsi, iici_scsi_irq, cfg);
@@ -317,15 +317,16 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part(cfg, checkpoint, "asc", part_save_asc, st->asc);
     machine_part_begin(cfg, checkpoint, "floppy");
     asc_set_mix(st->asc, ASC_MIX_CH_A); // internal speaker takes the left channel
-    st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, profile_floppy_count(cfg->machine), checkpoint,
-                             CONFIG_IMAGES(cfg));
+    st->floppy =
+        floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, machine_floppy_count(cfg), checkpoint, CONFIG_IMAGES(cfg));
     cfg->floppy = st->floppy;
     machine_part(cfg, checkpoint, "floppy", part_save_floppy, st->floppy);
 
-    // RBV chip (VIA2 replacement + video control).  Default monitor sense 6
-    // = 13" RGB.  IRQ → IPL 2; RvPowerOff → scheduler stop.
+    // RBV chip (VIA2 replacement + video control), the built-in port's
+    // monitor strapped on its sense lines (7, nothing connected, turns
+    // built-in video off).  IRQ → IPL 2; RvPowerOff → scheduler stop.
     machine_part_begin(cfg, checkpoint, "rbv");
-    st->rbv = rbv_init(RBV_VARIANT_IICI, checkpoint);
+    st->rbv = rbv_init(RBV_VARIANT_IICI, cfg->build_opts.builtin_sense, checkpoint);
     if (!st->rbv) {
         LOG(0, "Error: out of memory constructing the RBV");
         return -1;
@@ -335,7 +336,6 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     rbv_set_power_off_callback(st->rbv, iici_power_off, cfg);
     rbv_set_mode_callback(st->rbv, iici_rbv_mode, cfg);
     rbv_set_blank_callback(st->rbv, iici_rbv_blank, cfg);
-    rbv_set_monitor_sense(st->rbv, 6);
     asc_set_irq_handler(st->asc, iici_asc_irq, st->rbv); // sound IRQ → RvIFR bit 4
 
     st->mmu = mac030_build_mmu(cfg, iici_board_desc.rom_base, iici_board_desc.rom_end);
@@ -387,12 +387,10 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
 // Machine descriptor
 // ============================================================
 
-static const uint32_t iici_ram_options_kb[] = {1024, 2048, 4096, 5120, 8192, 16384, 32768, 65536, 131072, 0};
-
-static const scsi_bus_decl_t iici_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
-    {0},
-};
+// Two banks of four SIMMs (1, 4, 16 or 64 MB per bank): every total the
+// pair makes, which iici_split_ram_banks decomposes.
+static const uint32_t iici_ram_options_kb[] = {1024,  2048,  4096,  5120,  8192,  16384,  17408, 20480,
+                                               32768, 65536, 66560, 69632, 81920, 131072, 0};
 
 // IIci board: the shared mdu_substrate reads its data descriptor + VIA1 hooks
 // + the device-construction body.
@@ -422,10 +420,11 @@ const hw_profile_t machine_iici = {
     .rom_size = 0x80000, // 512 KB
 
     .ram_options = iici_ram_options_kb,
-    .floppy_slots = mac_floppy_slots_2hd,
-    .scsi_buses = iici_scsi_buses,
-    .has_cdrom = true,
-    .cdrom_id = 3,
+    .floppy_slots = mac_floppy_slots_ext,
+    .storage = mac_storage_scsi_hd_bay,
+    .default_storage = mac_default_storage_hd0_cd3,
+    .appletalk = true,
+    .builtin_video = &mdu_builtin_video_iici,
     .cdrom_drive = &mac_cdrom_drive_applecd,
     // Built-in RBV video has no separate declaration ROM — the boot ROM
     // drives it from the hard-coded VideoInfoMDU record.

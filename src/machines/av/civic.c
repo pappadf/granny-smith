@@ -72,9 +72,6 @@ LOG_USE_CATEGORY_NAME("video");
 #define SLOT_CURLINE   (0x6C0u >> 2) // 12 bits, R/O
 #define AV_CIVIC_SLOTS (0x700u >> 2)
 
-// The attached monitor: Hi-Res 640x480, indexed sense code 6 (%110).
-#define AV_CIVIC_SENSE_CODE 6u
-
 // 60.15 Hz frame cadence -- the machine's own retrace rate, from the one
 // place that number lives (scheduler.h).  CIVIC's timing generator is not
 // programmed with a mode line here, so this IS its refresh.
@@ -92,6 +89,9 @@ struct av_civic {
     uint8_t seb_phase; // 0-3 within the R,G,B,A quad
     uint8_t seb_pcbr; // Pixel Bus Control Register
     uint8_t clk_reg[3]; // Endeavor M/N/Clk latches
+    // The monitor strapped on the sense lines (the build's built-in monitor,
+    // restored with the rest): 6 = Hi-Res 640x480, 7 = nothing connected.
+    uint8_t sense;
 
     // --- pointers (not checkpointed) ---
     config_t *cfg;
@@ -122,7 +122,7 @@ static uint8_t civic_sense_lines(av_civic_t *cv) {
                               (cv->slot[SLOT_SENSE2] ? 4u : 0));
     uint8_t lines = 0;
     for (int i = 0; i < 3; i++) {
-        bool monitor_low = !(AV_CIVIC_SENSE_CODE & (1u << i));
+        bool monitor_low = !(cv->sense & (1u << i));
         bool host_low = (drive & (1u << i)) != 0;
         lines |= (uint8_t)((monitor_low || host_low ? 0u : 1u) << i);
     }
@@ -296,7 +296,7 @@ static void civic_update_display(av_civic_t *cv) {
     // model; the raster is whatever the attached monitor's sense code means,
     // which is the same table every other part reads rather than a literal
     // here.
-    const display_timing_t *timing = display_timing_for_sense(AV_CIVIC_SENSE_CODE);
+    const display_timing_t *timing = display_timing_for_sense(cv->sense);
     uint32_t width = timing ? timing->width : 640;
     uint32_t height = timing ? timing->height : 480;
     uint32_t row_words = civic_get(cv, SLOT_ROWWORDS, 8);
@@ -710,6 +710,7 @@ av_civic_t *av_civic_init(config_t *cfg, checkpoint_t *cp) {
     // Power-on state: the VDC clock gate reads 1 (clock OFF) so the frame
     // engine is parked until the digitizer starts it.
     cv->slot[SLOT_VDCCLK] = 1;
+    cv->sense = cfg->build_opts.builtin_sense;
 
     if (cp) {
         size_t data_size = offsetof(av_civic_t, cfg);

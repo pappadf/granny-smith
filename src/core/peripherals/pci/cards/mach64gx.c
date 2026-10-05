@@ -507,6 +507,9 @@ static const mach64_monitor_sense_t mach64_sense[] = {
     {"20in_multi", 6, 3,              0,              2             },
     // 21" colour — a primary-only code, like the 14".
     {"21in_color", 0, STRAP_EXT01(0), STRAP_EXT02(0), STRAP_EXT12(0)},
+    // No cable: every pin floats high in every configuration, the one answer
+    // the card's FCode treats as "nothing attached" (primary 7, extended $3F).
+    {"none",       7, 3,              3,              3             },
     {NULL,         0, 0,              0,              0             },
 };
 
@@ -516,31 +519,26 @@ static const int depths_8_16_24[] = {8, 16, 24, 0};
 static const int depths_8_16[] = {8, 16, 0};
 
 static const struct nubus_monitor mach64_monitors[] = {
-    {.id = "14in_rgb",
-     .name = "14\" AppleColor / 12\" monochrome",
-     .width = 640,
-     .height = 480,
-     .depths = depths_8_16_24,
-     .sense_code = 6},
+    {.id = "14in_rgb", .monitor = "13in_rgb", .width = 640, .height = 480, .depths = depths_8_16_24, .sense_code = 6},
     {.id = "15in_multi",
-     .name = "15\" Multiple Scan",
+     .monitor = "multiscan_15",
      .width = 832,
      .height = 624,
      .depths = depths_8_16_24,
      .sense_code = 6},
     {.id = "17in_multi",
-     .name = "17\" Multiple Scan",
+     .monitor = "multiscan_17",
      .width = 1024,
      .height = 768,
      .depths = depths_8_16,
      .sense_code = 6},
     {.id = "20in_multi",
-     .name = "20\" Multiple Scan",
+     .monitor = "multiscan_20",
      .width = 1152,
      .height = 870,
      .depths = depths_8_16,
      .sense_code = 6},
-    {.id = "21in_color", .name = "21\" Colour", .width = 1152, .height = 870, .depths = depths_8_16, .sense_code = 0},
+    {.id = "21in_color", .monitor = "21in_rgb", .width = 1152, .height = 870, .depths = depths_8_16, .sense_code = 0},
     {.id = NULL},
 };
 
@@ -3313,7 +3311,7 @@ static const char *const mach64_vram_values[] = {"2m", "4m", NULL};
 static const char *const mach64_vram_labels[] = {"2 MB", "4 MB (expansion module)", NULL};
 static const pci_card_option_t mach64_options[] = {
     {.key = "vram",
-     .label = "Video Memory",
+     .label = "Video memory",
      .values = mach64_vram_values,
      .labels = mach64_vram_labels,
      .default_value = "2m"},
@@ -3689,7 +3687,7 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, const rom_ima
 
 const pci_card_kind_t mach64_gx_kind = {
     .id = "mach64_gx",
-    .display_name = "Apple Accelerated PCI Graphics Card (ATI Mach64 GX)",
+    .display_name = "Apple Accelerated PCI Graphics Card",
     .attach = PCI_ATTACH_PCI,
     .requires_prom = true,
     .card_class = "display",
@@ -3777,7 +3775,7 @@ static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, const rom_im
 
 const pci_card_kind_t ati_rage_pro_kind = {
     .id = "ati_rage_pro",
-    .display_name = "ATI 3D Rage Pro (on-board)",
+    .display_name = "Built-in video",
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "display",
     .factory = ragepro_factory,

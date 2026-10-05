@@ -20,8 +20,8 @@ wait_stable(1800000000)
 assert machine.id == "q700" "machine.id != q700"
 
 # Both cards came up, each with its declaration ROM bound.
-assert machine.nubus.slot[13].card.name == "Apple Macintosh Display Card 24AC" "slot $D card != 24AC"
-assert machine.nubus.slot[14].card.name == "Apple Macintosh Display Card 8•24 GC" "slot $E card != 8•24 GC"
+assert machine.nubus.slot[13].card.name == "Macintosh Display Card 24AC" "slot $D card != 24AC"
+assert machine.nubus.slot[14].card.name == "Macintosh Display Card 8•24 GC" "slot $E card != 8•24 GC"
 assert machine.nubus.slot[13].card.declrom.present "slot $D declaration ROM not present"
 assert machine.nubus.slot[14].card.declrom.present "slot $E declaration ROM not present"
 

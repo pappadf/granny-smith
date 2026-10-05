@@ -14,6 +14,7 @@
 #include "appletalk.h"
 #include "regfile.h"
 
+#include "config_seed.h"
 #include "machine_teardown.h" // the shared config_t-owned delete chain
 
 #include "civic.h"
@@ -635,7 +636,7 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     // SCSI: the bus/target model carries the disks and CD; the 53C96 chip
     // model fronts it through the external-initiator API.
     machine_part_begin(cfg, cp, "scsi");
-    cfg->scsi = profile_scsi_init(cfg->machine, cfg->scheduler, cp, CONFIG_IMAGES(cfg));
+    cfg->scsi = machine_scsi_bus_init(cfg, cp, "scsi");
     machine_part(cfg, cp, "scsi", part_save_scsi, cfg->scsi);
     machine_part_begin(cfg, cp, "scsi96");
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
@@ -842,11 +843,67 @@ static struct display *av_display(config_t *cfg) {
     return (st && st->civic) ? av_civic_display(st->civic) : NULL;
 }
 
+// CIVIC's built-in video as a display device.  Its monitor strap is fixed at
+// the 13" RGB today; the extended-sense walk that would tell the others apart
+// is not modelled, so this is the one monitor offered.
+static bool civic_monitor_at(size_t i, const char **id, const char **monitor) {
+    if (i != 0)
+        return false;
+    *id = *monitor = "13in_rgb";
+    return true;
+}
+
+// Its passive sense code, %110; an unplugged port grounds nothing.
+static bool civic_monitor_sense(const char *id, uint8_t *out) {
+    if (strcmp(id, "13in_rgb") == 0)
+        *out = 6;
+    else if (strcmp(id, "none") == 0)
+        *out = MACHINE_SENSE_NONE;
+    else
+        return false;
+    return true;
+}
+
+// CIVIC's startup modes: slot $9's PRAM record, as each ROM writes it for the
+// 13" RGB -- BoardID ($003D Quadra 840AV, $0050 Centris/Quadra 660AV),
+// savedMode, the monitor's sResource twice, its sense code -- and the depths
+// it honours from a seeded one: 1 to 32 bpp (measured).
+#define CIVIC_STARTUP(board)                                                                                           \
+    {                                                                                                                  \
+        {.monitor = "13in_rgb",                                                                                        \
+         .width = 640,                                                                                                 \
+         .height = 480,                                                                                                \
+         .record = {0x00, (board), 0x80, 0xB1, 0xB1, 0x06, 0, 0},                                                      \
+         .modes = {{1, 0x80}, {2, 0x81}, {4, 0x82}, {8, 0x83}, {16, 0x84}, {32, 0x85}}},                               \
+        {0},                                                                                                           \
+}
+static const builtin_startup_t q840av_startup[] = CIVIC_STARTUP(0x3D);
+static const builtin_startup_t q660av_startup[] = CIVIC_STARTUP(0x50);
+
+const builtin_video_desc_t av_builtin_video_q840av = {
+    .detail = "CIVIC",
+    .monitor_at = civic_monitor_at,
+    .monitor_sense = civic_monitor_sense,
+    .default_monitor = "13in_rgb",
+    .startup_slot = 0x9,
+    .startup = q840av_startup,
+};
+
+const builtin_video_desc_t av_builtin_video_q660av = {
+    .detail = "CIVIC",
+    .monitor_at = civic_monitor_at,
+    .monitor_sense = civic_monitor_sense,
+    .default_monitor = "13in_rgb",
+    .startup_slot = 0x9,
+    .startup = q660av_startup,
+};
+
 const machine_substrate_t av_substrate = {
     .init = av_init,
     .bus_reset = av_bus_reset,
     .power_on = av_power_on,
     .teardown = av_teardown,
+    .seed = mac_seed_rtc_pram,
     .nubus_slot_irq = av_nubus_slot_irq, // slots C/D/E → PSC SInt bits 3-5
     .trigger_vbl = av_trigger_vbl,
     .fd_insert = mac_fd_insert,

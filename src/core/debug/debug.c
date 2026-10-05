@@ -3716,18 +3716,12 @@ static DEF_GETTER(screen_attr_par_h) {
     return val_int(d && d->par_h ? (int64_t)d->par_h : 1);
 }
 
-// `screen.source` — a non-owning reference edge to the active NuBus card's
-// framebuffer node (machine.screen.source → reference →
-// machine.nubus.slot[N].card.framebuffer).  Re-resolved on each access via
-// nubus_active_framebuffer_object(), so a card swap or machine teardown can
-// never leave it dangling (a held pointer plus an invalidator is the hot-path
-// pattern, and it applies to per-frame rendering, which uses
-// nubus_primary_display() directly — not this navigational link).  NULL (no
-// source) on builtin-video machines.
-// `machine.screen.source` — a reference edge to whichever framebuffer node
-// is currently driving the display.  A seated PCI display card wins over a
-// NuBus one: on the machines that have both, the PCI card is the primary
-// display (pci_primary_display walks the slot table in declared order).
+// `machine.screen.source` — a non-owning reference edge to the framebuffer
+// node of the slot device the monitor is connected to (machine.screen.source
+// → reference → machine.nubus.slot[N].card.framebuffer, or the PCI one).
+// Re-resolved on each access, so a card swap or machine teardown can never
+// leave it dangling.  NULL (no source) when the built-in video that is no
+// slot device has the monitor.
 // Screen CAPTURE does not depend on this — it reads the substrate's
 // display_t — so this is a debugging convenience, not a correctness path.
 static struct object *screen_source_lookup(struct object *self, const char *name) {

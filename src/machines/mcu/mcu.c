@@ -9,6 +9,7 @@
 
 #include "mcu.h"
 #include "appletalk.h"
+#include "config_seed.h"
 #include "regfile.h"
 
 #include "mac_host_io.h" // mac_fd_*/mac_input_*
@@ -473,7 +474,7 @@ int mcu_build_dafb(config_t *cfg, checkpoint_t *cp) {
 
     // The monitor on the built-in port: the document's on a boot, the one
     // the board was built with on a restore.
-    uint8_t monitor = dafb_sense_for_build(cfg);
+    uint8_t monitor = cfg->build_opts.builtin_sense;
     machine_part_begin(cfg, cp, "dafb.monitor");
     if (cp)
         system_read_checkpoint_data(cp, &monitor, sizeof monitor, "dafb.monitor");
@@ -788,10 +789,141 @@ static struct display *mcu_display(config_t *cfg) {
     return (st && st->dafb) ? dafb_display(st->dafb) : NULL;
 }
 
+// === Built-in video as a display device ======================================
+//
+// The DAFB's monitor straps, in Apple's indexed numbering (dafb.h): the
+// passive 3-bit codes plus the GoldFish 16" on the extended probe, each
+// measured through a Q700/Q900 ROM boot ("dafb.c": only GoldFish produced a
+// new raster among the extended codes).  The Q950's ROM is not measured
+// beyond the passive codes, so it offers those.  Code 7 with no extended
+// answer is an unplugged port.
+typedef struct dafb_monitor {
+    const char *monitor; // catalogue id (doubles as the strap's token)
+    uint8_t sense;
+} dafb_monitor_t;
+
+static const dafb_monitor_t k_dafb_monitors[] = {
+    {"13in_rgb",            0x6u                 },
+    {"12in_rgb",            0x2u                 },
+    {"15in_portrait",       0x1u                 },
+    {"15in_portrait_color", 0x5u                 },
+    {"16in_rgb",            DAFB_SENSE_INDEXED_GF},
+    {"21in_rgb",            0x0u                 },
+    {"21in_mono",           0x3u                 },
+    {"none",                0x7u                 },
+    {NULL,                  0                    },
+};
+
+// The tables' rows a ROM can show: all of them, or the passive codes only.
+static bool dafb_monitor_at(const dafb_monitor_t *t, bool passive_only, size_t i, const char **id,
+                            const char **monitor) {
+    size_t n = 0;
+    for (const dafb_monitor_t *m = t; m->monitor; m++) {
+        if (passive_only && m->sense > 7)
+            continue;
+        if (n++ == i) {
+            *id = *monitor = m->monitor;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool dafb_monitor_sense(const char *id, uint8_t *out) {
+    for (const dafb_monitor_t *m = k_dafb_monitors; m->monitor; m++) {
+        if (strcmp(m->monitor, id) == 0) {
+            *out = m->sense;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool dafb_all_at(size_t i, const char **id, const char **monitor) {
+    return dafb_monitor_at(k_dafb_monitors, false, i, id, monitor);
+}
+
+static bool dafb_passive_at(size_t i, const char **id, const char **monitor) {
+    return dafb_monitor_at(k_dafb_monitors, true, i, id, monitor);
+}
+
+// The DAFB's startup modes: slot $9's PRAM record, as each ROM writes it for
+// the monitor -- BoardID ($0033 Quadra 700, $002B Quadra 900, $0036 Quadra
+// 950), savedMode, the monitor's sResource twice, its sense code and a family
+// byte -- and the depths it honours from a seeded one (measured: the Quadra
+// 700/900 ROM takes 32 bpp at code $84 on the monitors its VRAM holds it
+// for; the Quadra 950's, 16 bpp at $84 and 32 at $85).
+#define DAFB_ROW(board, mon, w, h, b3, sense, b6, ...)                                                                 \
+    {                                                                                                                  \
+        .monitor = (mon), .width = (w), .height = (h), .record = {0x00, (board), 0x80, (b3), (b3), (sense), (b6), 0},  \
+        .modes = {                                                                                                     \
+            __VA_ARGS__                                                                                                \
+        }                                                                                                              \
+    }
+#define DAFB_TO8                                                                                                       \
+    {1, 0x80}, {2, 0x81}, {4, 0x82}, {                                                                                 \
+        8, 0x83                                                                                                        \
+    }
+#define Q700_STARTUP(board)                                                                                            \
+    {                                                                                                                  \
+        DAFB_ROW(board, "13in_rgb", 640, 480, 0xC9, 0x06, 0x01, DAFB_TO8, {32, 0x84}),                                 \
+        DAFB_ROW(board, "12in_rgb", 512, 384, 0xC3, 0x02, 0x00, DAFB_TO8, {32, 0x84}),                                 \
+        DAFB_ROW(board, "15in_portrait", 640, 870, 0xC1, 0x01, 0x01, DAFB_TO8),                                        \
+        DAFB_ROW(board, "15in_portrait_color", 640, 870, 0xCD, 0x05, 0x01, DAFB_TO8),                                  \
+        DAFB_ROW(board, "16in_rgb", 832, 624, 0xC7, 0x2D, 0x01, DAFB_TO8, {32, 0x84}),                                 \
+        DAFB_ROW(board, "21in_rgb", 1152, 870, 0xCF, 0x00, 0x01, DAFB_TO8),                                            \
+        DAFB_ROW(board, "21in_mono", 1152, 870, 0xC5, 0x03, 0x01, DAFB_TO8),                                           \
+        {0},                                                                                                           \
+    }
+static const builtin_startup_t q700_startup[] = Q700_STARTUP(0x33);
+static const builtin_startup_t q900_startup[] = Q700_STARTUP(0x2B);
+static const builtin_startup_t q950_startup[] = {
+    DAFB_ROW(0x36, "13in_rgb", 640, 480, 0xE3, 0x06, 0x17, DAFB_TO8, {16, 0x84}, {32, 0x85}),
+    DAFB_ROW(0x36, "12in_rgb", 512, 384, 0xEC, 0x02, 0x16, DAFB_TO8, {16, 0x84}, {32, 0x85}),
+    DAFB_ROW(0x36, "15in_portrait", 640, 870, 0xC1, 0x01, 0x07, DAFB_TO8),
+    DAFB_ROW(0x36, "15in_portrait_color", 640, 870, 0xED, 0x05, 0x17, DAFB_TO8, {16, 0x84}),
+    DAFB_ROW(0x36, "21in_rgb", 1152, 870, 0xEF, 0x00, 0x17, DAFB_TO8, {16, 0x84}),
+    DAFB_ROW(0x36, "21in_mono", 1152, 870, 0xC5, 0x03, 0x07, DAFB_TO8),
+    {0},
+};
+
+const builtin_video_desc_t mcu_builtin_video_q700 = {
+    .detail = "DAFB",
+    .monitor_at = dafb_all_at,
+    .monitor_sense = dafb_monitor_sense,
+    .default_monitor = "13in_rgb",
+    .indexed_sense = true,
+    .startup_slot = 0x9,
+    .startup = q700_startup,
+};
+
+const builtin_video_desc_t mcu_builtin_video_q900 = {
+    .detail = "DAFB",
+    .monitor_at = dafb_all_at,
+    .monitor_sense = dafb_monitor_sense,
+    .default_monitor = "13in_rgb",
+    .indexed_sense = true,
+    .startup_slot = 0x9,
+    .startup = q900_startup,
+};
+
+// The Quadra 950's ROM is not measured beyond the passive codes, so it offers
+// those monitors.
+const builtin_video_desc_t mcu_builtin_video_q950 = {
+    .detail = "DAFB",
+    .monitor_at = dafb_passive_at,
+    .monitor_sense = dafb_monitor_sense,
+    .default_monitor = "13in_rgb",
+    .indexed_sense = true,
+    .startup_slot = 0x9,
+    .startup = q950_startup,
+};
+
 const machine_substrate_t mcu_substrate = {
     .init = mcu_init,
     .bus_reset = mcu_bus_reset,
     .teardown = mcu_teardown,
+    .seed = mac_seed_rtc_pram,
     .trigger_vbl = mcu_trigger_vbl,
     .nubus_slot_irq = mcu_nubus_slot_irq, // slots → VIA2 PA1-PA5 + /SLOTIRQ aggregate
     .fd_insert = mac_fd_insert,

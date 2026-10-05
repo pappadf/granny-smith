@@ -386,6 +386,7 @@ int main(void) {
     // civic.c only drives the slot-interrupt line when a PSC exists; the
     // stub above records the calls, so any non-NULL handle will do.
     s_st.psc = (av_psc_t *)&s_st;
+    s_cfg.build_opts.builtin_sense = 6; // the Hi-Res 13" the machine ships with
     s_st.civic = av_civic_init(&s_cfg, NULL);
     ASSERT_TRUE(s_st.civic != NULL);
 

@@ -62,7 +62,7 @@ async function openNewMachine(page: Page): Promise<void> {
   await model.selectOption('pm9500');
 }
 
-test('a 9500 is configured and booted on an uploaded PCI display card', async ({ page }) => {
+test('a 9500 boots its factory PCI display card once its ROM is uploaded', async ({ page }) => {
   test.setTimeout(240_000);
   await gotoWeb2(page);
 
@@ -74,15 +74,15 @@ test('a 9500 is configured and booted on an uploaded PCI display card', async ({
   // --- Before the .prom: the machine states what it needs. -----------------
   await openNewMachine(page);
 
-  // The 9500 has no built-in video and no NuBus video slots, so with no
-  // expansion ROM there is nothing installable.  It must say which ROM it
-  // wants — a "Video ROM" here would send the user hunting for the wrong
-  // file — and it must NOT offer the soldered Control/Chaos stand-in, which
-  // is emulator scaffolding rather than hardware the 9500 ever had.
-  await expect(page.locator('.form-help').filter({ hasText: 'needs a PCI expansion ROM' })).toBeVisible(
-    { timeout: 30_000 },
-  );
-  await expect(page.locator('#cfg-card')).toHaveCount(0);
+  // The 9500 has no built-in video, so with no expansion ROM there is no
+  // display card it can take.  The dialog says the machine will start with
+  // no screen, offers the card disabled with the ROM it needs -- an expansion
+  // ROM (.prom), not a video ROM -- and never offers the emulator's
+  // Control/Chaos stand-in, which is not hardware the 9500 ever had.
+  await expect(page.locator('.config-form')).toContainText('It will start with no screen', {
+    timeout: 30_000,
+  });
+  await expect(page.locator('.config-form')).toContainText('expansion ROM (.prom)');
   await expect(page.locator('.config-form')).not.toContainText('on-board video');
 
   // --- Upload the card's expansion ROM. ------------------------------------
@@ -95,19 +95,19 @@ test('a 9500 is configured and booted on an uploaded PCI display card', async ({
     page.locator('.toast .msg').filter({ hasText: "PCI expansion ROM for 'mach64_gx'" }),
   ).toBeVisible({ timeout: 60_000 });
 
-  // --- The card becomes selectable, and only the card. ---------------------
+  // --- The factory card is in the default configuration now. --------------
+  // The 9500 shipped with the Apple Accelerated PCI Graphics Card in slot A1;
+  // with its expansion ROM offered, the dialog opens with it seated (and the
+  // emulator's Control/Chaos stand-in nowhere).
   await openNewMachine(page);
-  const card = page.locator('#cfg-card');
-  await expect(card).toBeVisible({ timeout: 30_000 });
-  await expect(card.locator('option')).toHaveCount(1);
-  await expect(card.locator('option')).toHaveText(/Mach64 GX/);
-  await expect(card.locator('option', { hasText: 'on-board video' })).toHaveCount(0);
-  await expect(page.locator('.config-form')).not.toContainText('needs a PCI expansion ROM');
+  await expect(page.locator('.item-row[data-card="mach64_gx"]')).toHaveCount(1, { timeout: 30_000 });
+  await expect(page.locator('.config-form')).not.toContainText('It will start with no screen');
+  await expect(page.locator('.config-form')).not.toContainText('on-board video');
 
   // --- Start it.  This is the assertion the other three bugs hid behind. ---
   // Everything above is a picker rendering the right strings; only this
   // proves the boot document the dialog builds is one the core accepts.
-  const start = page.getByRole('button', { name: 'Start Machine' });
+  const start = page.getByRole('button', { name: 'Start', exact: true });
   await expect(start).toBeEnabled();
   await start.click();
   await expect(page.locator('.toast .msg').filter({ hasText: 'Machine started' })).toBeVisible({

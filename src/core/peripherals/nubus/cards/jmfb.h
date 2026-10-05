@@ -80,20 +80,9 @@
 // to disable) in the slot's video ROM.
 #define VINT_DISABLE 0x0002u
 
-// Per-card kind descriptors — registered in nubus.c's g_card_registry.
-// mdc_8_24 is the real card (needs an offered vROM dump); 8_24 is its
-// always-available generic sibling with the built-in GS declaration ROM
-// (same HLE register model — see
-// docs/internals/core/peripherals/nubus_generic_vrom.md).
+// The card kind — registered in nubus.c's g_card_registry.  It runs Apple's
+// declaration ROM when one is offered, else the emulator's substitute (the
+// GS vROM, docs/internals/core/peripherals/nubus_generic_vrom.md).
 extern const nubus_card_kind_t mdc_8_24_kind;
-extern const nubus_card_kind_t jmfb_generic_kind;
-
-// Look up a video-mode entry by id ("monitor_Nbpp") in the JMFB
-// catalog.  Writes the resolved monitor + depth into *out_monitor
-// / *out_depth_bpp on success and returns true; returns false (and
-// leaves the out-params untouched) when id doesn't match any
-// catalog entry.  Used by the JMFB factory to apply its slot's video
-// mode.
-bool jmfb_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp);
 
 #endif // NUBUS_CARDS_JMFB_H

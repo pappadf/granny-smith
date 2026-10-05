@@ -9,9 +9,9 @@ the corresponding Apple ROM to be supplied before the card would work — with
 no dump the Slot Manager finds a zero-filled window, skips the slot, and the
 machine boots with no video.
 
-This document describes the **generic declaration ROM**: firmware we write
-and build into the emulator so those cards work with no user-supplied ROM
-file at all. It is not a dump of any Apple ROM; it is a fresh implementation
+This document describes the **generic declaration ROM** — each card's
+*substitute ROM*: firmware we write and build into the emulator so those
+cards work with no user-supplied ROM file at all. It is not a dump of any Apple ROM; it is a fresh implementation
 of the same interface — the Slot Manager data structures plus a Mac OS video
 driver — written against the published declaration-ROM contract.
 
@@ -126,67 +126,69 @@ out because they are easy to reintroduce:
 
 ## How the emulator uses it
 
-For each card model that consumes a declaration ROM, the card-kind registry
-carries a **generic variant** alongside the model that loads a real dump. The
-two variants drive the *same* emulated hardware model (they live in the same
-`.c` file and differ only in where the declaration ROM comes from):
+Each card that consumes a declaration ROM is **one card kind with two ROMs**:
+Apple's, loaded from a dump, and this generated one, its **substitute ROM**
+(`nubus_card_kind_t.substitute`). Both drive the *same* emulated hardware
+model; only the declaration ROM differs:
 
-| Real card kind | Generic variant | Personality | Notes |
-|---|---|---|---|
-| `mdc_8_24` | `8_24` | JMFB | 4 monitors × 1/2/4/8 bpp; identity gamma |
-| `display_card_24ac` | `24ac` | Boogie | 3 multisync monitors; extended-sense probe; 1/4/8/16/32 bpp |
-| `824gc` | `8_24gc` | MDCGC | config 0 (640×480); GC accelerator bring-up (see gaps) |
-| `builtin_se30_video` | `se30` | SE30 | the SE/30 profile default — boots with no ROM file |
+| Card kind | Personality | Substitute ROM's monitors |
+|---|---|---|
+| `mdc_8_24` | JMFB | 4 monitors × 1/2/4/8 bpp; identity gamma |
+| `display_card_24ac` | Boogie | 3 multisync monitors; extended-sense probe; 1/4/8/16/32 bpp |
+| `824gc` | MDCGC | config 0 (640×480) only (`substitute_monitors`); GC accelerator bring-up (see gaps) |
+| `builtin_se30_video` | SE30 | the built-in 9″ screen |
 
-The generic variant sets `requires_vrom = false` and, at `card_init`,
-calls `gsvrom_generate` to build its image, then installs it directly
-(`declrom_install_builtin`) rather than consulting the offer registry of
-supplied ROM files. The finished image is laid out exactly like a
+Which ROM a card runs is decided once, as the bus seats it
+(`nubus_entry_substitute`): the substitute when the slot asks for it
+(`rom=substitute` in a `slots=` entry), when it has a custom geometry, or
+when Apple's ROM is not offered; Apple's otherwise. The seat records the
+choice (`slot_opts_t.substitute`), the card's name says it ("Macintosh
+Display Card 24AC (substitute ROM)"), and `machine.nubus.slot[N].card.substitute`
+reads it. At `card_init` the card calls `gsvrom_generate` to build the image
+and installs it directly (`declrom_install_builtin`) rather than consulting
+the offer registry. The finished image is laid out exactly like a
 file-backed chip — tail-placed at the top of the card's declaration-ROM
 window per its `byteLanes` byte — and the card names it path-lessly, as
-`builtin:<id>` (`machine.nubus.slot[N].card.declrom.path`, with its CRC in
-`.crc`). Generation is deterministic within one emulator build, so a
-checkpoint restore reconstructs bit-identical content from the slot entry
-the bus's part carries (kind + video_mode + custom mode); the CRC is
-informational, since it
-varies with the mode set and with the binutils version that assembled the
-fragments.
+`builtin:<card id>` (`machine.nubus.slot[N].card.declrom.path`, with its CRC
+in `.crc`). Generation is deterministic within one emulator build, so a
+checkpoint carries no image for it: the card's block holds Apple's chip, or
+nothing for the substitute, which a restore regenerates from the seat the
+bus's part carries (card, mode, custom geometry); the CRC is informational,
+since it varies with the mode set and with the binutils version that
+assembled the fragments.
 
 Selection and identification:
 
-- `video_card=<id>` picks a variant at boot. For the SE/30, whose video is a
-  built-in (non-socketed) device, the boot document may still substitute the
-  real kind for the generic default (only built-in-attach kinds are eligible).
-- `custom_mode="WxHxD"` (generic `8_24` kind today) boots the card's
-  default monitor at a user-chosen resolution: the generated records carry
-  a video sResource at that geometry and the HLE displays it. The spec is
-  validated at boot (well-formed `WxHxD`, supported depth, width a multiple
-  of 32, `rowBytes < $4000`) and again at `card_init` against the card's
-  framebuffer window; a mode whose framebuffer overflows the window is
-  refused with a clear log and the card falls back to its default geometry.
-  Modes larger than the 1 MB minor window need the QD32 re-open path (see
-  gaps) and are rejected.
-- `catalog.profile` lists both variants for a slot; a built-in slot that has
-  a generic variant is reported as not `fixed`, so the configuration UI
-  offers the choice with the generic option always available (it needs no
-  uploaded file).
-- `vrom.identify` recognises a dumped copy of one of our own generic images
+- `catalog.profile` reports a card whose ROM is not offered as status
+  `substitute` (it boots with this ROM); the dialog says so and offers the
+  upload.
+- `custom=WxHxD` in a slot entry (`custom_mode=` for the first socket; the
+  8•24 today) boots the card's default monitor at a user-chosen resolution
+  on the substitute ROM: the generated records carry a video sResource at
+  that geometry and the HLE displays it. The spec is validated at boot
+  (well-formed `WxHxD`, supported depth, width a multiple of 32,
+  `rowBytes < $4000`) and against the card's framebuffer window
+  (`custom_mode_fits`). Modes larger than the 1 MB minor window need the QD32
+  re-open path (see gaps) and are rejected.
+- `vrom.identify` recognises a dumped copy of one of these generated images
   **structurally** — a right-sized image whose board sResource carries the
-  `granny-smith` VendorId, keyed to the card id by its BoardId. A generated
-  image has no fixed CRC to match, so the old fixed-CRC recognition is gone.
+  `granny-smith` VendorId, keyed to its card by its BoardId. A generated
+  image has no fixed CRC to match.
 
 ### Tests
 
 - `iicx-gsvrom` — a row suite covering the personalities on the generated
   vROM: `gsvrom-sweep` (the 10-cell JMFB sweep — 13" RGB at 1/2/4/8 bpp, 12"
-  RGB, 15" portrait, 21" two-page — staged via `video_mode=`, a re-run of
-  `iicx-video-modes` against the generic ROM), `gsvrom-24ac` (the Boogie
+  RGB, 15" portrait, 21" two-page — each a `slots="9=mdc_8_24,rom=substitute,mode=…"`
+  entry, a re-run of `iicx-video-modes` against the substitute ROM), `gsvrom-24ac` (the Boogie
   personality at 640×480×8 and 832×624×8), `gsvrom-824gc` (the MDCGC
   personality's accelerator bring-up ladder: attach → boot → arm → gc-on),
-  and `gsvrom-custom-mode` (the JMFB personality booting at a `custom_mode=`
+  and `gsvrom-custom-mode` (the JMFB personality booting at a `custom=`
   resolution (800×600×8) that fits the minor window).
 - `suite-se30` row `se30-701-gsvrom` — the SE30 personality booting to the
-  Finder with no ROM file.
+  Finder on the substitute ROM.
+- `boot-vrom-unoffered`, `checkpoint-card-roms` — a card with no ROM offered
+  boots its substitute; a checkpoint restores the ROM it carries.
 
 A host-side unit suite (`tests/unit/suites/declrom`) generates every
 personality's image without booting a guest and checks its structure
@@ -197,14 +199,14 @@ regeneration determinism.
 ## Known gaps
 
 - **8•24 GC visible Finder.** The 8•24 GC accelerator extension attaches and
-  the accelerator turns on against the generic ROM (its BoardId `$2C`,
+  the accelerator turns on against the substitute ROM (its BoardId `$2C`,
   RevLevel string, and `Display_Video_Apple_MDCGC` driver name all match what
   the extension keys on). But the card's visible framebuffer lives in
   super-slot DRAM, which 24-bit QuickDraw cannot address; moving the screen
   there (`ScrnBase = $sC011400`) is done by 32-Bit QuickDraw's slot-device
   upgrade pass, which re-opens the driver on a 32-bit-addressed sResource
   family (a `$B0 → $A0` re-open observed on the real ROM). Reproducing what
-  that pass keys on in the ROM is unfinished, so the generic GC keeps
+  that pass keys on in the ROM is unfinished, so the substitute GC keeps
   QuickDraw on the (correct but off-screen) standard-slot VRAM; the
   accelerator suites assert bring-up, not pixels.
 - **Extended resolutions** (e.g. 3440×1440 at 8 bpp) are blocked on the same
@@ -215,10 +217,12 @@ regeneration determinism.
   families) is in place.
 - **24AC direct colour.** 16/32-bpp boot is partially validated — 16 bpp
   reaches the desktop; colour fidelity at the direct depths is unverified.
-- **Custom resolutions on other kinds.** `custom_mode=` is wired for the
-  generic `8_24` (JMFB) kind; the other generic kinds take none, and a
-  boot document that gives one is rejected (their kinds have no
+- **Custom resolutions on other cards.** A custom geometry is wired for the
+  8•24's substitute ROM (JMFB); the other cards take none, and a boot
+  document that gives one is rejected (their kinds have no
   `custom_mode_fits`).
+- **The 8•24 GC's 16″ configuration** rides the GC-OS VidComm channel and is
+  not in its substitute ROM yet, so a 16″ mode on the substitute is refused.
 
 ## See also
 

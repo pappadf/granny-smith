@@ -45,6 +45,12 @@ struct config {
     // cleared once the machine is built -- nothing reads them afterwards
     // (machine_build_opts.h).
     machine_build_opts_t build_opts;
+    // The storage devices the machine was built with -- its document's, or
+    // its model's default configuration's: the positions an image can be
+    // attached to (machine.storage).  Kept for the machine's life and in its
+    // checkpoint.
+    int n_storage;
+    machine_storage_dev_t storage[MACHINE_STORAGE_MAX];
     uint32_t ram_size; // actual RAM size in bytes
     // The checkpoint parts, in construction order (machine_parts.h).
     struct machine_part_entry *parts;

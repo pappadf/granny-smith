@@ -12,8 +12,7 @@ const { gsEvalMock, mediaMock, core } = vi.hoisted(() => ({
   core: { machineCreated: false },
   mediaMock: {
     insertFloppy: vi.fn(),
-    attachHardDisk: vi.fn(),
-    attachCdrom: vi.fn(),
+    mountImage: vi.fn(),
   },
 }));
 
@@ -28,8 +27,7 @@ vi.mock('@/bus/emulator', () => ({
 // checked for the path it hands over without a machine profile behind it.
 vi.mock('@/bus/media', () => ({
   insertFloppy: (...a: unknown[]) => mediaMock.insertFloppy(...a),
-  attachHardDisk: (...a: unknown[]) => mediaMock.attachHardDisk(...a),
-  attachCdrom: (...a: unknown[]) => mediaMock.attachCdrom(...a),
+  mountImage: (...a: unknown[]) => mediaMock.mountImage(...a),
 }));
 
 import FilesystemView from '@/components/panel-views/filesystem/FilesystemView.svelte';
@@ -435,7 +433,7 @@ describe('FilesystemView — media inside an image or archive', () => {
     expect(items).not.toContain('Insert into CD-ROM drive');
     await clickItem('Attach as hard disk');
     await waitFor(() =>
-      expect(mediaMock.attachHardDisk).toHaveBeenCalledWith('/opfs/disk.img/partition1/HD.img'),
+      expect(mediaMock.mountImage).toHaveBeenCalledWith('hd', '/opfs/disk.img/partition1/HD.img'),
     );
   });
 

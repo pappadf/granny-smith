@@ -11,6 +11,7 @@
 #include "appletalk.h"
 #include "log.h"
 
+#include "config_seed.h"
 #include "mac030_glue.h" // shared core/finish/reset/irq/build_mmu + board desc
 #include "mac_host_io.h" // mac_fd_*/mac_input_*
 #include "machine_teardown.h" // the shared config_t-owned delete chain
@@ -193,11 +194,43 @@ static void mdu_trigger_vbl(config_t *cfg) {
     image_tick_all(cfg);
 }
 
+// The RBV's built-in video as a display device: the BUILTIN pseudo-slot's
+// card supplies its monitors.  Its startup modes are its pseudo-slot's PRAM
+// record, as each ROM writes it for the 13" RGB -- BoardID ($001F IIci,
+// $0028 IIsi), savedMode, the monitor's sResource $86 -- and honours a
+// seeded one at 1, 2, 4 and 8 bpp (measured).
+#define RBV_STARTUP(board)                                                                                             \
+    {                                                                                                                  \
+        {.monitor = "13in_rgb",                                                                                        \
+         .width = 640,                                                                                                 \
+         .height = 480,                                                                                                \
+         .record = {0x00, (board), 0x80, 0x86, 0, 0, 0, 0},                                                            \
+         .modes = {{1, 0x80}, {2, 0x81}, {4, 0x82}, {8, 0x83}}},                                                       \
+        {0},                                                                                                           \
+}
+static const builtin_startup_t iici_startup[] = RBV_STARTUP(0x1F);
+static const builtin_startup_t iisi_startup[] = RBV_STARTUP(0x28);
+
+const builtin_video_desc_t mdu_builtin_video_iici = {
+    .detail = "RBV",
+    .slot_monitors = true,
+    .startup_slot = 0xB,
+    .startup = iici_startup,
+};
+
+const builtin_video_desc_t mdu_builtin_video_iisi = {
+    .detail = "RBV",
+    .slot_monitors = true,
+    .startup_slot = 0xE,
+    .startup = iisi_startup,
+};
+
 const machine_substrate_t mdu_substrate = {
     .init = mdu_init,
     .bus_reset = mdu_bus_reset,
     .power_on = mdu_power_on,
     .teardown = mdu_teardown,
+    .seed = mac_seed_rtc_pram,
     .trigger_vbl = mdu_trigger_vbl,
     .nubus_slot_irq = mdu_nubus_slot_irq, // straight to the RBV's slot-interrupt register
     .fd_insert = mac_fd_insert,

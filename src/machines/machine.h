@@ -78,6 +78,16 @@ typedef struct boot_config {
     // The sugar above (video_card=, video_mode=, custom_mode=, pci_card=,
     // pci_option=, vrom=, prom=) resolves into the same per-slot entries.
     const char *slots;
+    // The configuration document (JSON, machine_config.h): every node the
+    // arguments above rewrite into, and the rest -- options, floppies,
+    // storage, the startup device, displays.  NULL: the model's defaults.
+    const char *config;
+    // Headless shorthand: drives added to the storage the document (or the
+    // model's default) has, "bus:unit:type[;...]" (type hd or cd), and the
+    // floppy positions a caller is about to use (fd1= wants a second drive
+    // even where the default configuration leaves that position empty).
+    const char *drives;
+    int floppies_wanted;
 } boot_config_t;
 
 // Apply one boot document: validate, build, swap the new machine in

@@ -322,10 +322,9 @@ static const nubus_slot_decl_t se30_slots[] = {
     {.slot = 0x9, .kind = NUBUS_SLOT_EMPTY},
     {.slot = 0xA, .kind = NUBUS_SLOT_EMPTY},
     {.slot = 0xB, .kind = NUBUS_SLOT_EMPTY},
-    // Default: the generic sibling ("se30", built-in GS declaration ROM) so
-    // every SE/30 boots with working video and no vROM file; video_card=
-    // "builtin_se30_video" picks the real kind when a dump is offered.
-    {.slot = 0xE, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "se30"},
+    // The built-in video: Apple's onboard-video ROM when a dump is offered,
+    // else the emulator's substitute, so every SE/30 boots with working video.
+    {.slot = 0xE, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "builtin_se30_video"},
     {0},
 };
 
@@ -341,7 +340,7 @@ static void se30_post_nubus(config_t *cfg) {
     assert(se30->video_card != NULL);
     se30->vram = builtin_se30_video_vram(se30->video_card);
     se30->vrom = builtin_se30_video_vrom(se30->video_card);
-    // Unreachable by construction: card_init_common callocs both buffers and
+    // Unreachable by construction: card_init callocs both buffers and
     // returns -1 if either fails, so a card that exists has them, and the
     // assert above already covers a missing card.  An assert rather than the
     // process kill this used to be -- machine_boot_apply's whole contract is
@@ -349,13 +348,8 @@ static void se30_post_nubus(config_t *cfg) {
     // before system_destroy and closes transferred media if system_create
     // fails), and exit(1) from inside substrate->init() defeated all of it:
     // in the browser it killed the emulator, and a machine.restart's in-transit
-    // media handles went with it.
-    //
-    // The message it printed was also stale -- it demanded "a real VROM file"
-    // long after builtin_se30_video grew synthesise_vrom_fallback() precisely
-    // so the SE/30 keeps booting when no onboard-video vROM is offered, which
-    // is also why the boot document's ROM check (machine_slots.c) exempts
-    // BUILTIN cards.
+    // media handles went with it.  (The card always comes up: without Apple's
+    // onboard-video ROM it runs its substitute.)
     GS_ASSERTF(se30->vram && se30->vrom, "SE/30 slot-$E card has no %s", se30->vram ? "vROM" : "VRAM");
     memory_map_host_region(cfg->mem_map, "se30_vram", se30->vram, SE30_VRAM_BASE, SE30_VRAM_SIZE, /*writable*/ true);
     memory_map_host_region(cfg->mem_map, "se30_vrom", se30->vrom, SE30_VROM_PHYS, SE30_VROM_SIZE, /*writable*/ false);
@@ -416,9 +410,18 @@ static const mac030_glue_board_t se30_board = {
 // SE/30 configuration-dialog metadata.
 static const uint32_t se30_ram_options_kb[] = {1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 0};
 
-static const scsi_bus_decl_t se30_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
+// The SE/30 shipped with its external floppy port empty, but a second drive
+// on it is what a two-drive SE/30 has always been here; keep it, removable.
+static const struct floppy_slot se30_floppy_slots[] = {
+    {.label = "Internal floppy drive", .kind = FLOPPY_HD},
+    {.label = "External floppy drive", .kind = FLOPPY_HD, .optional = true},
     {0},
+};
+
+// Built-in video: the slot-$E pseudo-card's monitor, the built-in 9" screen.
+static const builtin_video_desc_t se30_builtin_video = {
+    .detail = "SE/30 video, slot $E",
+    .slot_monitors = true,
 };
 
 const hw_profile_t machine_se30 = {
@@ -438,11 +441,12 @@ const hw_profile_t machine_se30 = {
 
     // Configuration-dialog shape
     .ram_options = se30_ram_options_kb,
-    .floppy_slots = mac_floppy_slots_2hd,
-    .scsi_buses = se30_scsi_buses,
-    .has_cdrom = true,
-    .cdrom_id = 3,
+    .floppy_slots = se30_floppy_slots,
+    .storage = mac_storage_scsi_hd_bay,
+    .default_storage = mac_default_storage_hd0_cd3,
     .cdrom_drive = &mac_cdrom_drive_applecd,
+    .appletalk = true,
+    .builtin_video = &se30_builtin_video,
 
     // Built-in slot-$E video card.  Exposed in the profile so the config
     // dialog reads the VROM requirement from the card (it needs the SE/30

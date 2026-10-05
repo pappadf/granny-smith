@@ -1,0 +1,496 @@
+{
+  "id": "ans500",
+  "name": "Apple Network Server 500",
+  "freq": 132000000,
+  "capabilities": {
+    "cpu": {
+      "model": 604,
+      "address_bits": 32,
+      "fpu": true
+    },
+    "mmu": {
+      "present": true,
+      "kind": "ppc_604"
+    },
+    "nubus": false,
+    "pci": true,
+    "video_in": false,
+    "audio_in": false,
+    "aux_cpus": []
+  },
+  "options": [
+    {
+      "id": "memory",
+      "label": "Memory",
+      "kind": "choice",
+      "values": [
+        {
+          "id": "16384",
+          "label": "16 MB"
+        },
+        {
+          "id": "32768",
+          "label": "32 MB"
+        },
+        {
+          "id": "49152",
+          "label": "48 MB"
+        },
+        {
+          "id": "65536",
+          "label": "64 MB"
+        },
+        {
+          "id": "81920",
+          "label": "80 MB"
+        },
+        {
+          "id": "98304",
+          "label": "96 MB"
+        },
+        {
+          "id": "114688",
+          "label": "112 MB"
+        },
+        {
+          "id": "131072",
+          "label": "128 MB"
+        },
+        {
+          "id": "147456",
+          "label": "144 MB"
+        },
+        {
+          "id": "163840",
+          "label": "160 MB"
+        },
+        {
+          "id": "180224",
+          "label": "176 MB"
+        },
+        {
+          "id": "196608",
+          "label": "192 MB"
+        },
+        {
+          "id": "212992",
+          "label": "208 MB"
+        },
+        {
+          "id": "229376",
+          "label": "224 MB"
+        },
+        {
+          "id": "245760",
+          "label": "240 MB"
+        },
+        {
+          "id": "262144",
+          "label": "256 MB"
+        },
+        {
+          "id": "278528",
+          "label": "272 MB"
+        },
+        {
+          "id": "294912",
+          "label": "288 MB"
+        },
+        {
+          "id": "311296",
+          "label": "304 MB"
+        },
+        {
+          "id": "327680",
+          "label": "320 MB"
+        },
+        {
+          "id": "344064",
+          "label": "336 MB"
+        },
+        {
+          "id": "360448",
+          "label": "352 MB"
+        },
+        {
+          "id": "393216",
+          "label": "384 MB"
+        },
+        {
+          "id": "409600",
+          "label": "400 MB"
+        },
+        {
+          "id": "425984",
+          "label": "416 MB"
+        },
+        {
+          "id": "458752",
+          "label": "448 MB"
+        },
+        {
+          "id": "524288",
+          "label": "512 MB"
+        }
+      ],
+      "default": "65536"
+    },
+    {
+      "id": "keyswitch",
+      "label": "Keyswitch",
+      "kind": "choice",
+      "values": [
+        {
+          "id": "unlocked",
+          "label": "Unlocked"
+        },
+        {
+          "id": "service",
+          "label": "Service"
+        },
+        {
+          "id": "locked",
+          "label": "Locked"
+        }
+      ],
+      "default": "unlocked"
+    },
+    {
+      "id": "appletalk",
+      "label": "AppleTalk",
+      "kind": "choice",
+      "values": [
+        {
+          "id": "active",
+          "label": "Active"
+        },
+        {
+          "id": "inactive",
+          "label": "Inactive"
+        }
+      ],
+      "default": "active"
+    }
+  ],
+  "floppies": [
+    {
+      "id": "fd0",
+      "label": "Internal floppy drive",
+      "types": [
+        {
+          "id": "hd",
+          "label": "SuperDrive (1.4 MB)"
+        }
+      ],
+      "default": "hd"
+    }
+  ],
+  "storage": [
+    {
+      "id": "scsi",
+      "label": "Internal SCSI bus 0",
+      "detail": "Fast and wide SCSI-2 \u00b7 Symbios 53C825A",
+      "kind": "scsi",
+      "width": "wide",
+      "units": [
+        {
+          "unit": 0,
+          "label": "ID 0 \u00b7 Front bay 0"
+        },
+        {
+          "unit": 1,
+          "label": "ID 1 \u00b7 Front bay 1"
+        },
+        {
+          "unit": 2,
+          "label": "ID 2 \u00b7 Front bay 2"
+        },
+        {
+          "unit": 3,
+          "label": "ID 3 \u00b7 Front bay 3"
+        }
+      ],
+      "reserved": [7],
+      "shares_units_with": [],
+      "external_connector": false,
+      "bays": [
+        {
+          "unit": 0,
+          "label": "Front bay 0"
+        },
+        {
+          "unit": 1,
+          "label": "Front bay 1"
+        },
+        {
+          "unit": 2,
+          "label": "Front bay 2"
+        },
+        {
+          "unit": 3,
+          "label": "Front bay 3"
+        }
+      ],
+      "accepts": [
+        {
+          "id": "hd",
+          "label": "Hard disk"
+        },
+        {
+          "id": "cd",
+          "label": "CD-ROM drive"
+        }
+      ],
+      "startup": true
+    },
+    {
+      "id": "scsi2",
+      "label": "Internal SCSI bus 1",
+      "detail": "Fast and wide SCSI-2 \u00b7 Symbios 53C825A",
+      "kind": "scsi",
+      "width": "wide",
+      "units": [
+        {
+          "unit": 0,
+          "label": "ID 0"
+        },
+        {
+          "unit": 4,
+          "label": "ID 4 \u00b7 Front bay 4"
+        },
+        {
+          "unit": 5,
+          "label": "ID 5 \u00b7 Front bay 5"
+        },
+        {
+          "unit": 6,
+          "label": "ID 6 \u00b7 Front bay 6"
+        }
+      ],
+      "reserved": [7],
+      "shares_units_with": [],
+      "external_connector": false,
+      "bays": [
+        {
+          "unit": 4,
+          "label": "Front bay 4"
+        },
+        {
+          "unit": 5,
+          "label": "Front bay 5"
+        },
+        {
+          "unit": 6,
+          "label": "Front bay 6"
+        }
+      ],
+      "accepts": [
+        {
+          "id": "hd",
+          "label": "Hard disk"
+        },
+        {
+          "id": "cd",
+          "label": "CD-ROM drive"
+        }
+      ],
+      "startup": false
+    }
+  ],
+  "slots": [
+    {
+      "id": "pci_1",
+      "label": "PCI slot 1",
+      "detail": "SLOT1_PCI0",
+      "bus": "pci",
+      "kind": "socket",
+      "excludes": [],
+      "fill_order": 6
+    },
+    {
+      "id": "pci_2",
+      "label": "PCI slot 2",
+      "detail": "SLOT2_PCI0",
+      "bus": "pci",
+      "kind": "socket",
+      "excludes": [],
+      "fill_order": 5
+    },
+    {
+      "id": "pci_3",
+      "label": "PCI slot 3",
+      "detail": "SLOT3_PCI1",
+      "bus": "pci",
+      "kind": "socket",
+      "excludes": [],
+      "fill_order": 4
+    },
+    {
+      "id": "pci_4",
+      "label": "PCI slot 4",
+      "detail": "SLOT4_PCI1",
+      "bus": "pci",
+      "kind": "socket",
+      "excludes": [],
+      "fill_order": 3
+    },
+    {
+      "id": "pci_5",
+      "label": "PCI slot 5",
+      "detail": "SLOT5_PCI1",
+      "bus": "pci",
+      "kind": "socket",
+      "excludes": [],
+      "fill_order": 2
+    },
+    {
+      "id": "pci_6",
+      "label": "PCI slot 6",
+      "detail": "SLOT6_PCI1",
+      "bus": "pci",
+      "kind": "socket",
+      "excludes": [],
+      "fill_order": 1
+    }
+  ],
+  "cards": [
+    {
+      "id": "mach64_gx",
+      "label": "Apple Accelerated PCI Graphics Card",
+      "class": "display",
+      "fits": ["pci_1", "pci_2", "pci_3", "pci_4", "pci_5", "pci_6"],
+      "rom": {
+        "kind": "prom",
+        "substitute": false
+      },
+      "status": "ok",
+      "monitors": ["13in_rgb", "multiscan_15", "multiscan_17", "multiscan_20", "21in_rgb"],
+      "modes": {},
+      "options": [
+        {
+          "id": "vram",
+          "label": "Video memory",
+          "kind": "choice",
+          "values": [
+            {
+              "id": "2m",
+              "label": "2 MB"
+            },
+            {
+              "id": "4m",
+              "label": "4 MB (expansion module)"
+            }
+          ],
+          "default": "2m"
+        }
+      ]
+    },
+    {
+      "id": "voodoo2",
+      "label": "3dfx Voodoo2",
+      "class": "3d",
+      "fits": ["pci_1", "pci_2", "pci_3", "pci_4", "pci_5", "pci_6"],
+      "rom": null,
+      "status": "ok",
+      "monitors": [],
+      "modes": {},
+      "options": [
+        {
+          "id": "raster",
+          "label": "Rendering",
+          "kind": "choice",
+          "values": [
+            {
+              "id": "thread",
+              "label": "Software"
+            }
+          ],
+          "default": "thread"
+        }
+      ]
+    }
+  ],
+  "displays": {
+    "builtin": {
+      "id": "builtin",
+      "label": "Built-in video",
+      "detail": "Cirrus Logic 54M30",
+      "monitors": ["vga"],
+      "default_monitor": "vga",
+      "modes": {},
+      "options": []
+    },
+    "max_connected": 1
+  },
+  "monitors": [
+    {
+      "id": "13in_rgb",
+      "label": "13\u2033 AppleColor High-Resolution RGB",
+      "width": 640,
+      "height": 480
+    },
+    {
+      "id": "21in_rgb",
+      "label": "21\u2033 Macintosh Color Display",
+      "width": 1152,
+      "height": 870
+    },
+    {
+      "id": "multiscan_15",
+      "label": "15\u2033 Apple Multiple Scan Display",
+      "width": 832,
+      "height": 624
+    },
+    {
+      "id": "multiscan_17",
+      "label": "17\u2033 Apple Multiple Scan Display",
+      "width": 1024,
+      "height": 768
+    },
+    {
+      "id": "multiscan_20",
+      "label": "20\u2033 Apple Multiple Scan Display",
+      "width": 1152,
+      "height": 870
+    },
+    {
+      "id": "vga",
+      "label": "VGA monitor",
+      "width": 640,
+      "height": 480
+    }
+  ],
+  "defaults": {
+    "model": "ans500",
+    "options": {
+      "memory": "65536",
+      "keyswitch": "unlocked",
+      "appletalk": "active"
+    },
+    "floppies": {
+      "fd0": "hd"
+    },
+    "storage": [
+      {
+        "bus": "scsi",
+        "unit": 0,
+        "type": "cd"
+      },
+      {
+        "bus": "scsi",
+        "unit": 2,
+        "type": "hd"
+      }
+    ],
+    "startup": {
+      "bus": "scsi",
+      "unit": 2
+    },
+    "cards": [],
+    "displays": {
+      "builtin": {
+        "monitor": "vga"
+      }
+    }
+  }
+}

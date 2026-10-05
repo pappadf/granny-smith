@@ -32,7 +32,6 @@
 #include "log.h"
 #include "memory.h"
 #include "nubus.h"
-#include "rtc.h"
 #include "system.h"
 #include "system_config.h"
 
@@ -54,9 +53,8 @@ LOG_USE_CATEGORY_NAME("video");
 // reshuffling the file.
 static const struct nubus_monitor *monitor_for_sense(uint8_t sense);
 
-// The default monitor when the caller chooses nothing: $6, Standard RGB /
-// 13" AppleColor.  The sense itself is no longer a file static -- it arrives
-// in cfg->build_opts and lives as a local through the factory below.
+// The Standard RGB / 13" AppleColor's code ($6): the monitor a custom
+// geometry rides (the card's own monitor arrives in its seat).
 #define JMFB_SENSE_DEFAULT 0x6u
 
 // === Per-card private state =================================================
@@ -320,11 +318,11 @@ static bool load_vrom(jmfb_priv_t *p, const char *rom) {
     return true;
 }
 
-static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts,
-                            bool generic) {
-    // The monitor on the card's connector: its slot entry's sense (from the
-    // document on a boot, from the bus's block on a restore), or the default.
-    uint8_t sense = machine_sense_or(opts->video_sense, 8, JMFB_SENSE_DEFAULT);
+static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
+    // The monitor on the card's connector: its seat's sense (from the
+    // document on a boot, from the bus's block on a restore).
+    uint8_t sense = opts->sense;
+    bool substitute = opts->substitute;
     (void)cp;
     jmfb_priv_t *p = calloc(1, sizeof(*p));
     if (!p)
@@ -363,22 +361,21 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     // read only within this call (the builder copies what it needs and the
     // display geometry is captured into p->display), so a local is enough.
     nubus_monitor_t custom_monitors[5];
-    const nubus_monitor_t *gen_monitors = generic ? jmfb_generic_kind.monitors : NULL;
+    const nubus_monitor_t *gen_monitors = substitute ? mdc_8_24_kind.monitors : NULL;
     uint32_t custom_w = 0, custom_h = 0, custom_d = 0;
     bool custom_active = false;
-    if (generic && opts->custom_mode[0] &&
+    if (substitute && opts->custom_mode[0] &&
         nubus_custom_mode_parse(opts->custom_mode, &custom_w, &custom_h, &custom_d, NULL)) {
-        // Copy the generic monitor list and rewrite the default (13" RGB,
+        // Copy the monitor list and rewrite the default (13" RGB,
         // sense $6) entry to the custom geometry; the rest stay so their
         // sResources still exist (the sensed one wins at boot).
         size_t n = 0;
-        for (const nubus_monitor_t *mm = jmfb_generic_kind.monitors; mm->id && n < 4; mm++)
+        for (const nubus_monitor_t *mm = mdc_8_24_kind.monitors; mm->id && n < 4; mm++)
             custom_monitors[n++] = *mm;
         for (size_t i = 0; i < n; i++) {
             if (custom_monitors[i].sense_code == 0x6) {
                 custom_monitors[i].width = custom_w;
                 custom_monitors[i].height = custom_h;
-                custom_monitors[i].name = "Custom";
             }
         }
         custom_monitors[n] = (nubus_monitor_t){0};
@@ -386,27 +383,31 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         custom_active = true;
     }
 
-    if (generic) {
-        // Generic sibling kind ("8_24"): generate the GS declaration ROM at
-        // card_init — records from the (possibly custom-overridden) monitor
-        // list, code fragments spliced, CRC stamped in C; the offer registry
-        // is never consulted.
+    if (substitute) {
+        // The substitute ROM: the GS declaration ROM generated here --
+        // records from the (possibly custom-overridden) monitor list, code
+        // fragments spliced, CRC stamped in C; the offer registry is never
+        // consulted.
         declrom_builder_t *bld = gsvrom_generate(GSVROM_JMFB, gen_monitors);
         size_t img_size = 0;
         const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
-        if (img &&
-            declrom_install_builtin(p->card, jmfb_generic_kind.id, img, img_size, p->vrom, JMFB_DECLROM_BUS_SIZE))
+        if (img && declrom_install_builtin(p->card, mdc_8_24_kind.id, img, img_size, p->vrom, JMFB_DECLROM_BUS_SIZE))
             p->vrom_size = JMFB_DECLROM_BUS_SIZE;
         else
-            LOG(0, "JMFB: 8_24: built-in declaration ROM failed to generate; declaration ROM is zero-filled");
+            LOG(0, "JMFB: the substitute declaration ROM failed to generate; declaration ROM is zero-filled");
         declrom_builder_free(bld);
     } else if (!load_vrom(p, opts->rom[0] ? opts->rom : NULL)) {
-        // requires_vrom is true on this kind, so the dialog gates
-        // boot on a real VROM file; reaching here means CI ran without
-        // one.  Log loudly and continue with a zero-filled declrom —
-        // PrimaryInit won't find a Format Header and the OS will skip
-        // the slot, but the rest of the machine still boots.
-        LOG(0, "JMFB: mdc-8-24-revb-d1629664.vrom not found; declaration ROM is zero-filled");
+        // The bus seats Apple's ROM only when it is offered (else the
+        // substitute), so this is a file that went away or a checkpoint whose
+        // ROM is not this card's: the slot stays empty.
+        LOG(0,
+            "JMFB: slot $%X: the 8\xe2\x80\xa2"
+            "24 declaration ROM could not be loaded",
+            card->slot);
+        free(p->vram);
+        free(p->vrom);
+        free(p);
+        return -1;
     }
     // Publish the declaration ROM on the card struct (drives the
     // slot[N].card.declrom object-model node, same as the 24AC / 8•24 GC);
@@ -414,32 +415,11 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     card->declrom = p->vrom;
     card->declrom_size = p->vrom_size;
 
-    // The slot's video mode ("13in_rgb_8bpp", checked against this card's
-    // catalog before the boot began) overrides the sense and triggers PRAM
-    // seeding below.
-    const nubus_monitor_t *seeded_monitor = NULL;
-    int seeded_depth_bpp = 0;
-    if (opts->video_mode[0] && jmfb_video_mode_lookup(opts->video_mode, &seeded_monitor, &seeded_depth_bpp))
-        sense = seeded_monitor->sense_code;
-    // A validated custom resolution overrode the default monitor above:
-    // sense the default 13" RGB ($6) and seed PRAM to its sister ($A6) at
-    // the requested depth, exactly like a video_mode pick but with the
-    // geometry the generated records now carry.
-    if (custom_active) {
-        for (size_t i = 0; custom_monitors[i].id; i++) {
-            if (custom_monitors[i].sense_code == 0x6) {
-                seeded_monitor = &custom_monitors[i];
-                break;
-            }
-        }
-        seeded_depth_bpp = (int)custom_d;
+    // A validated custom resolution overrode the default monitor above, so
+    // the card senses that monitor, the 13" RGB ($6); the seeding step saves
+    // its sister ($A6) at the requested depth (jmfb_startup_record).
+    if (custom_active)
         sense = JMFB_SENSE_DEFAULT;
-    }
-
-    // Monitor sense code, as resolved above: what the caller asked for,
-    // overridden by an explicit video_mode or custom resolution.  Nothing to
-    // reset afterwards -- a local cannot leak into the next machine.boot,
-    // which is what the old consume-and-restore dance was for.
     p->regs.sense_code = sense;
 
     const nubus_monitor_t *monitor = monitor_for_sense(p->regs.sense_code);
@@ -487,12 +467,12 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     // renders neutral grays correctly).  Kong's CRT amplified blue more
     // than R/G, so its non-NULL kong_crt_response table inverts Apple's
     // gamma pre-correction at display time.
-    // The generic kind always uses identity response: the GS vROM ships
+    // The substitute ROM always uses identity response: the GS vROM ships
     // identity gamma for every monitor, so there is no Apple gamma
     // pre-correction to invert.  This is the ONLY place that distinction is
-    // made -- both siblings share mdc_8_24_monitors, so the decision is the
-    // kind's, not a second table's.
-    p->display.crt_response = (!generic && monitor) ? monitor->crt_response : NULL;
+    // made -- both ROMs drive mdc_8_24_monitors, so the decision is the ROM's,
+    // not a second table's.
+    p->display.crt_response = (!substitute && monitor) ? monitor->crt_response : NULL;
     p->display.response_dirty = true;
 
     // Initial CLUT — a simple grayscale ramp so the canvas isn't blank
@@ -528,54 +508,6 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     // aliases.  Without this mirror, ScrnBase = $F9900A00 reads land in
     // unmapped memory and QuickDraw bus-errors.
     memory_map_host_region_alias(cfg->mem_map, p->slot_base + 0x900000u, p->slot_base);
-
-    // The slot's video mode seeds PRAM so the Slot Manager's GET_SLOT_DEPTH
-    // lands on it at boot.  Mirrors the dance `tests/integration/iicx-video-modes/
-    // test.script` does shell-side.  PRAM is already alive at this
-    // point — RTC is initialised earlier in the machine init sequence.  A cold
-    // boot only: a restore's PRAM is the RTC's own block, holding whatever the
-    // guest wrote there.
-    if (!cp && seeded_monitor && seeded_depth_bpp > 0) {
-        rtc_t *rtc = cfg->rtc;
-        if (rtc) {
-            uint8_t spDepth = 0x80;
-            switch (seeded_depth_bpp) {
-            case 1:
-                spDepth = 0x80;
-                break;
-            case 2:
-                spDepth = 0x81;
-                break;
-            case 4:
-                spDepth = 0x82;
-                break;
-            case 8:
-                spDepth = 0x83;
-                break;
-            default:
-                LOG(1, "jmfb: unexpected video-mode depth=%d; PRAM seed using $80 (1bpp)", seeded_depth_bpp);
-                break;
-            }
-            // The XPRAM token and the Start Manager table (PRAMInitTbl) are the
-            // RTC's, stamped at construction (rtc.h pram_defaults_t), so the boot
-            // ROM keeps the slot record below; only that record is the card's.
-            // Per-slot sPRAMRec layout (8 bytes): each slot's record
-            // lives at offset (0x46 + (slot - 9) * 8) in PRAM (see
-            // docs/reference/formats/mac-pram.md §6).  $46..$47 = BoardID, $48 = savedMode,
-            // $49/$4A = savedSRsrcID / savedRawSRsrcID, $4B..$4D = 0.
-            uint8_t pram_off = (uint8_t)(0x46 + (card->slot - 9) * 8);
-            rtc_pram_write(rtc, pram_off + 0, 0x00);
-            rtc_pram_write(rtc, pram_off + 1, 0x27); // BoardID = $0027 (JMFB)
-            rtc_pram_write(rtc, pram_off + 2, spDepth);
-            rtc_pram_write(rtc, pram_off + 3, seeded_monitor->srsrc_sister);
-            rtc_pram_write(rtc, pram_off + 4, seeded_monitor->srsrc_sister);
-            rtc_pram_write(rtc, pram_off + 5, 0x00);
-            rtc_pram_write(rtc, pram_off + 6, 0x00);
-            rtc_pram_write(rtc, pram_off + 7, 0x00);
-            LOG(1, "jmfb: seeded slot-%d PRAM for video mode '%s' (sister=$%02X spDepth=$%02X)", card->slot,
-                seeded_monitor->id, seeded_monitor->srsrc_sister, spDepth);
-        }
-    }
 
     return 0;
 }
@@ -638,29 +570,6 @@ static display_t *card_display(nubus_card_t *card) {
     return p ? &p->display : NULL;
 }
 
-static const char *card_name(const nubus_card_t *card) {
-    (void)card;
-    return "Apple Macintosh Display Card 8\xe2\x80\xa2"
-           "24"; // "8•24"
-}
-
-// Thin per-kind init wrappers — the sibling pair shares one HLE model
-// (card_init_common); only the declROM source differs.  Hard rule: one HLE
-// model per real/generic pair, never a second copy of the register model.
-static int card_init_real(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
-    return card_init_common(card, cfg, cp, opts, /*generic*/ false);
-}
-
-static int card_init_generic(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
-    return card_init_common(card, cfg, cp, opts, /*generic*/ true);
-}
-
-static const char *card_name_generic(const nubus_card_t *card) {
-    (void)card;
-    return "Apple Macintosh Display Card 8\xe2\x80\xa2"
-           "24 (generic video ROM)";
-}
-
 // === Checkpoint =============================================================
 // VRAM is a private calloc (card_init), not part of the RAM image
 // memory_map_checkpoint saves, so without these a restored machine comes back
@@ -715,23 +624,11 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
 }
 
 static const nubus_card_ops_t mdc_8_24_ops = {
-    .init = card_init_real,
+    .init = card_init,
     .reset = card_reset,
     .teardown = card_teardown,
     .on_vbl = card_on_vbl,
     .display = card_display,
-    .name = card_name,
-    .checkpoint_save = card_checkpoint_save,
-    .checkpoint_restore = card_checkpoint_restore,
-};
-
-static const nubus_card_ops_t jmfb_generic_ops = {
-    .init = card_init_generic,
-    .reset = card_reset,
-    .teardown = card_teardown,
-    .on_vbl = card_on_vbl,
-    .display = card_display,
-    .name = card_name_generic,
     .checkpoint_save = card_checkpoint_save,
     .checkpoint_restore = card_checkpoint_restore,
 };
@@ -837,28 +734,28 @@ static const uint8_t kong_crt_response[3][256] = {
 };
 static const nubus_monitor_t mdc_8_24_monitors[] = {
     {.id = "13in_rgb",
-     .name = "13\" AppleColor",
+     .monitor = "13in_rgb",
      .width = 640,
      .height = 480,
      .depths = mdc_8_24_4depths,
      .sense_code = 0x6,
      .srsrc_sister = 0xA6},
     {.id = "12in_rgb",
-     .name = "12\" RGB",
+     .monitor = "12in_rgb",
      .width = 512,
      .height = 384,
      .depths = mdc_8_24_4depths,
      .sense_code = 0x2,
      .srsrc_sister = 0xA2},
     {.id = "15in_bw",
-     .name = "15\" Portrait B&W",
+     .monitor = "15in_portrait",
      .width = 640,
      .height = 870,
      .depths = mdc_8_24_4depths,
      .sense_code = 0x1,
      .srsrc_sister = 0xA1},
     {.id = "21in_rgb",
-     .name = "21\" RGB",
+     .monitor = "21in_rgb",
      .width = 1152,
      .height = 870,
      .depths = mdc_8_24_4depths,
@@ -912,7 +809,7 @@ static const nubus_monitor_t *monitor_for_sense(uint8_t sense) {
     return NULL;
 }
 
-// The generic 8_24's custom geometry: an indexed depth (the card has no
+// The substitute ROM's custom geometry: an indexed depth (the card has no
 // direct modes) whose framebuffer fits the VRAM window.
 static bool jmfb_custom_mode_fits(uint32_t w, uint32_t h, uint32_t d, const char **why) {
     if (d != 1 && d != 2 && d != 4 && d != 8) {
@@ -929,37 +826,42 @@ static bool jmfb_custom_mode_fits(uint32_t w, uint32_t h, uint32_t d, const char
 // Parse "monitor_Nbpp" into (monitor, N).  monitor portion is matched
 // case-sensitively against entries in mdc_8_24_monitors[]; N is parsed
 // as a decimal integer and validated against the monitor's depth list.
-bool jmfb_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp) {
+static bool jmfb_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp) {
     return nubus_monitor_mode_lookup(mdc_8_24_monitors, id, out_monitor, out_depth_bpp);
+}
+
+// The slot's startup-mode record: the sPRAMRec the Monitors control
+// panel saves -- BoardID $0027, savedMode (spDepth: $80 + log2 of the depth),
+// and the monitor's sister sResource as both savedSRsrcID and
+// savedRawSRsrcID; bytes 5..7 are zero (docs/reference/formats/mac-pram.md
+// §6).  A custom geometry rides the 13" RGB row (card_init).
+static bool jmfb_startup_record(const slot_opts_t *e, uint8_t rec[8]) {
+    const nubus_monitor_t *row = NULL;
+    int depth = 0;
+    uint32_t w = 0, h = 0, d = 0;
+    if (e->custom_mode[0] && nubus_custom_mode_parse(e->custom_mode, &w, &h, &d, NULL)) {
+        row = monitor_for_sense(JMFB_SENSE_DEFAULT);
+        depth = (int)d;
+    } else if (!e->video_mode[0] || !jmfb_video_mode_lookup(e->video_mode, &row, &depth)) {
+        return false;
+    }
+    uint8_t sp_depth = depth == 2 ? 0x81 : depth == 4 ? 0x82 : depth == 8 ? 0x83 : 0x80;
+    const uint8_t r[8] = {0x00, 0x27, sp_depth, row->srsrc_sister, row->srsrc_sister, 0, 0, 0};
+    memcpy(rec, r, sizeof r);
+    return true;
 }
 
 const nubus_card_kind_t mdc_8_24_kind = {
     .id = "mdc_8_24",
-    .display_name = "Apple Macintosh Display Card 8\xe2\x80\xa2"
+    .display_name = "Macintosh Display Card 8\xe2\x80\xa2"
                     "24",
     .attach = CARD_ATTACH_NUBUS,
     .requires_vrom = true,
+    // One monitor table for both ROMs: the substitute generates its records
+    // from it, and identity gamma for every row is card_init's decision.
+    .substitute = true,
     .monitors = mdc_8_24_monitors,
     .ops = &mdc_8_24_ops,
-};
-
-// Generic sibling kind: always-available twin of mdc_8_24 with a built-in
-// declaration ROM — zero-configuration by construction (see
-// docs/internals/core/peripherals/nubus_generic_vrom.md).  The short id is what users
-// type in boot documents.
-const nubus_card_kind_t jmfb_generic_kind = {
-    .id = "8_24",
-    .display_name = "Apple Macintosh Display Card 8\xe2\x80\xa2"
-                    "24 (generic video ROM)",
-    .attach = CARD_ATTACH_NUBUS,
-    .requires_vrom = false,
-    // ONE table for both siblings.  The generic copy repeated all four rows to
-    // drop a single field (21" Kong's crt_response), and the copy was already
-    // redundant: card_init's `(!generic && monitor) ? monitor->crt_response :
-    // NULL` decides identity gamma from the kind, not from the row.  Two tables
-    // feeding one GS vROM generator is how a geometry fix lands on one sibling
-    // and not the other.
-    .monitors = mdc_8_24_monitors,
-    .ops = &jmfb_generic_ops,
     .custom_mode_fits = jmfb_custom_mode_fits,
+    .startup_record = jmfb_startup_record,
 };

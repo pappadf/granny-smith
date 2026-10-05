@@ -8,7 +8,14 @@
   import { CATEGORY_LABELS, CATEGORY_ACCEPT, iconForCategory } from '@/lib/iconForFsEntry';
   import { opfs } from '@/bus/opfs';
   import { pickAndUploadAs, acceptFilesAsCategory } from '@/bus/upload';
-  import { attachHardDisk, attachCdrom, insertFloppy, ejectMedia } from '@/bus/media';
+  import {
+    insertFloppy,
+    ejectMedia,
+    mountImage,
+    machineDevices,
+    deviceLabel,
+    type MachineDevice,
+  } from '@/bus/media';
   import { showNotification } from '@/state/toasts.svelte';
   import type { OpfsEntry, ImageCategory } from '@/bus/types';
   import { LARGE_IMPORT_BYTES, type MediaTypeId } from '@/lib/media';
@@ -119,7 +126,7 @@
     if ((await acceptFilesAsCategory(files, mediaIdFor(cat))) !== null) await refresh();
   }
 
-  function onRowContext(entry: OpfsEntry, ev: MouseEvent) {
+  async function onRowContext(entry: OpfsEntry, ev: MouseEvent) {
     ev.preventDefault();
     const mounted = isMounted(entry);
     const items: ContextMenuItem[] = [];
@@ -129,6 +136,15 @@
         label: verb,
         action: () => (mounted ? unmount(entry) : mount(entry)),
       });
+      // With several devices that take it, each one by name.
+      const devices = !mounted && cat !== 'fd' ? await machineDevices(cat) : [];
+      if (devices.length > 1)
+        for (const d of devices)
+          items.push({
+            label: `${verb} into ${deviceLabel(d)}`,
+            disabled: d.present,
+            action: () => mount(entry, d),
+          });
       items.push({ sep: true });
     }
     items.push({ label: 'Download', action: () => doDownload(entry) });
@@ -143,18 +159,15 @@
 
   // Mount / insert and unmount / eject through the one attach helper
   // (bus/media.ts): a floppy into the first empty drive the machine has, a
-  // hard disk into the model's boot bay on whatever bus it is (this attached
-  // at the default SCSI id on the first bus, ignoring the Lisa's ProFile and
-  // a Network Server's second channel), a CD into the model's CD bay.
-  // Every result is checked; an unmount ejects from where the mount put it
-  // (it called scsi methods that do not exist and toasted success).
-  async function mount(entry: OpfsEntry) {
+  // hard disk or a CD into `device`, or the running machine's first empty
+  // device that takes it (machine.storage: the devices its configuration
+  // built, on whatever bus).  Every result is checked; an unmount ejects from
+  // where the mount put it.
+  async function mount(entry: OpfsEntry, device?: MachineDevice) {
     const r =
       cat === 'fd'
         ? await insertFloppy(entry.path, false)
-        : cat === 'hd'
-          ? await attachHardDisk(entry.path)
-          : await attachCdrom(entry.path);
+        : await mountImage(cat === 'hd' ? 'hd' : 'cd', entry.path, device);
     if (!r.ok) {
       showNotification(
         `Couldn't ${isRemovable ? 'insert' : 'mount'} '${entry.name}': ${r.reason}`,

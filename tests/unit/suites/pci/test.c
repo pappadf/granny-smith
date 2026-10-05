@@ -25,6 +25,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+// stub_prom.c: whether a card's PROM is offered.
+extern bool stub_prom_offered;
+
 // --- Stubs for the environment pci.c reaches into ---------------------------
 //
 // pci.c's card registry names the one registered driver by extern, exactly
@@ -757,8 +760,10 @@ TEST(test_slot_walk_seats_the_documents_entries) {
     pci_bus_t *bus = pci_bus_create(root, "test", 0);
     pci_init(root, slots);
 
+    stub_prom_offered = true;
     g_factory_calls = 0;
     pci_seat_slots(root, NULL);
+    stub_prom_offered = false;
     ASSERT_EQ_INT(g_factory_calls, 2);
     ASSERT_EQ_INT(g_factory_slots[0], 1); // the default, no options
     ASSERT_TRUE(g_factory_vram[0] == NULL);
@@ -766,6 +771,18 @@ TEST(test_slot_walk_seats_the_documents_entries) {
     ASSERT_TRUE(g_factory_vram[1] && strcmp(g_factory_vram[1], "4m") == 0);
     ASSERT_TRUE(pci_slot_device(root, 2) == NULL); // emptied despite its default
     ASSERT_TRUE(pci_bus_cfg_read(bus, 14, 0, PCI_CFG_ID) == 0xFFFFFFFFu);
+    pci_root_delete(root);
+
+    // A default card whose PROM nobody offers is not seated: the socket the
+    // document says nothing about stays empty.
+    root = pci_root_create(cfg);
+    pci_bus_create(root, "test", 0);
+    pci_init(root, slots);
+    g_factory_calls = 0;
+    pci_seat_slots(root, NULL);
+    ASSERT_EQ_INT(g_factory_calls, 1);
+    ASSERT_EQ_INT(g_factory_slots[0], 3); // only the document's card
+    ASSERT_TRUE(pci_slot_device(root, 1) == NULL);
     pci_root_delete(root);
     cfg->build_opts = machine_build_opts_default();
 }

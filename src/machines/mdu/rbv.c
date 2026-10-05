@@ -454,7 +454,7 @@ static const class_desc_t rbv_class = {
     .n_members = sizeof(rbv_members) / sizeof(rbv_members[0]),
 };
 
-rbv_t *rbv_init(rbv_variant_t variant, checkpoint_t *cp) {
+rbv_t *rbv_init(rbv_variant_t variant, uint8_t sense3, checkpoint_t *cp) {
     rbv_t *rbv = (rbv_t *)calloc(1, sizeof(*rbv));
     if (!rbv)
         return NULL;
@@ -464,8 +464,8 @@ rbv_t *rbv_init(rbv_variant_t variant, checkpoint_t *cp) {
     // Reset defaults: cache enabled, power on, sound to internal speaker.
     // RvPowerOff (bit 2) idles high (= powered on); the detector arms on it.
     rbv->reg_datab = RVDATAB_POWEROFF | RVDATAB_CFLUSH | RVDATAB_SNDEXT;
-    // Default monitor sense = 6 (binary 110 = Macintosh II 13" RGB), depth 0.
-    rbv->reg_monp = (uint8_t)((6u << RVMONP_SENSE_SHIFT) & RVMONP_SENSE_MASK);
+    // The monitor strap on the sense lines, depth 0.
+    rbv->reg_monp = (uint8_t)(((uint32_t)sense3 << RVMONP_SENSE_SHIFT) & RVMONP_SENSE_MASK);
 
     rbv->memory_interface = (memory_interface_t){
         .read_uint8 = rbv_read_byte,
@@ -604,11 +604,6 @@ void rbv_set_snd_irq(rbv_t *rbv, bool active) {
 }
 
 // === Configuration ==========================================================
-
-void rbv_set_monitor_sense(rbv_t *rbv, uint8_t sense3) {
-    rbv->reg_monp = (uint8_t)((rbv->reg_monp & ~RVMONP_SENSE_MASK) |
-                              (((uint32_t)sense3 << RVMONP_SENSE_SHIFT) & RVMONP_SENSE_MASK));
-}
 
 int rbv_current_depth(rbv_t *rbv) {
     return rbv->reg_monp & RVMONP_DEPTH_MASK;

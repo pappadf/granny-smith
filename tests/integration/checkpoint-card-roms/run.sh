@@ -40,8 +40,9 @@ echo ""
 echo "Step 2: restore both where no card ROM is offered"
 cat > "$TEST_TMPDIR/step2.script" << SCRIPT
 # Nothing offers the 24AC's declaration ROM here: a boot asking for the card
-# cannot find it.
-assert !machine.boot(model="iicx", ram=8192, rom="$BARE/iicx.rom", slots="9=display_card_24ac") "a 24AC was found with no ROM offered"
+# gets its substitute ROM...
+assert machine.boot(model="iicx", ram=8192, rom="$BARE/iicx.rom", slots="9=display_card_24ac") "the 24AC boots its substitute"
+assert machine.nubus.slot[9].card.substitute "a 24AC found Apple's ROM with none offered"
 
 assert checkpoint.load("$NUBUS_CP") "IIcx checkpoint load"
 assert machine.id == "iicx" "restored model"
@@ -49,6 +50,8 @@ assert machine.nubus.slot[9].card.id == "display_card_24ac" "restored socket \$9
 assert machine.nubus.slot[10].card.id == "display_card_24ac" "restored socket \$A's card"
 assert machine.nubus.slot[9].card.declrom.crc == 0xd8daab87 "restored socket \$9's declaration ROM"
 assert machine.nubus.slot[10].card.declrom.crc == 0xd8daab87 "restored socket \$A's declaration ROM"
+# ...while a checkpoint restores the ROM it carries: Apple's.
+assert machine.nubus.slot[9].card.substitute == false "the restored card fell back to its substitute"
 scheduler.run 3000000
 
 assert checkpoint.load("$PCI_CP") "9500 checkpoint load"
