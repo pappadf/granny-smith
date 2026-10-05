@@ -33,7 +33,7 @@
     "@testing-library/svelte": "^5.4.2",
     "@types/node": "^26.6.3",
     "@webgpu/types": "^0.1.74",
-    "eslint": "^9.18.0",
+    "eslint": "^10.11.0",
     "eslint-plugin-svelte": "^3.23.0",
     "globals": "^17.13.0",
     "jsdom": "^25.0.1",
