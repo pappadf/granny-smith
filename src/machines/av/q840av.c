@@ -23,12 +23,6 @@
 // 128 MB (four 32 MB SIMMs, all eight YMCA banks).
 static const uint32_t q840av_ram_options_kb[] = {8192, 16384, 32768, 65536, 131072, 0};
 
-// New Age reports "no drive" (ST3 = $FF) — no floppy slots offered until a
-// real New Age model lands.
-static const struct floppy_slot q840av_floppy_slots[] = {
-    {0},
-};
-
 static const av_board_desc_t q840av_board_desc = {
     .common =
         {
@@ -75,7 +69,7 @@ const hw_profile_t machine_q840av = {
     .rom_size = 0x200000, // 2 MB ($5BF10FD1, shared with the 660AV)
 
     .ram_options = q840av_ram_options_kb,
-    .floppy_slots = q840av_floppy_slots,
+    .floppy_slots = mac_floppy_slots_1hd, // the internal SuperDrive behind New Age
     .storage = mac_storage_scsi_cd_bay,
     .default_storage = mac_default_storage_hd0_cd3,
     .appletalk = true,

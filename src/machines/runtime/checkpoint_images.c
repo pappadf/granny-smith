@@ -107,14 +107,21 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
             checkpoint_set_error(cp);
         }
     }
-    // A volume that was attached through the wrapper is re-wrapped, so the
-    // SCSI device that re-binds to it by name sees the same disk.
-    if (img && (flags & IMAGE_CKPT_WRAPPED) && image_wrap_volume(img) < 0) {
-        gs_outf("Error: cannot re-wrap volume %s while restoring checkpoint\n", name);
-        checkpoint_set_error(cp);
-    }
     if (storage_restore_from_checkpoint(img ? img->storage : NULL, cp) != GS_SUCCESS) {
         gs_outf("Error: storage_restore_from_checkpoint failed for %s\n", name ? name : "<unnamed>");
+        checkpoint_set_error(cp);
+    }
+    // A volume that was attached through the wrapper is re-wrapped, so the
+    // SCSI device that re-binds to it by name sees the same disk.  After the
+    // blocks are restored, not before: the wrapper is built from what the
+    // disk holds, and a consolidated checkpoint whose image file was gone
+    // restores onto a zero-filled placeholder, where the sniff found no
+    // volume, left the disk unwrapped, and handed the guest every block
+    // shifted by the wrapper ("The System file on this startup disk may be
+    // damaged").  A volume that was wrapped and cannot be again fails the
+    // restore rather than coming back at the wrong offsets.
+    if (img && (flags & IMAGE_CKPT_WRAPPED) && !checkpoint_has_error(cp) && image_wrap_volume(img) <= IMAGE_WRAP_NONE) {
+        gs_outf("Error: cannot re-wrap volume %s while restoring checkpoint\n", name);
         checkpoint_set_error(cp);
     }
     free(name);

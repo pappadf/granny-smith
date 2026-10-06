@@ -317,13 +317,12 @@ async function writeUdif(
 ): Promise<{ bytes_in: number; stored_bytes: number }> {
   const h = await gsEval('files.udif_open', [part, 64, 1, name, opts.origin ?? '']);
   if (typeof h !== 'number' || h < 0) throw new Error(gsErrorText(h));
-  let stored = 0;
   try {
     for (;;) {
       if (cancelled()) throw new ImportCancelled();
       const win = pump.pending.shift() ?? (await pump.source.next());
       if (!win) break;
-      stored = await xferUdifAppend(h, win);
+      const stored = await xferUdifAppend(h, win);
       opts.onProgress?.(pump.source.read, pump.source.total, stored);
     }
     const st = (await gsEval('files.udif_finish', [h])) as {

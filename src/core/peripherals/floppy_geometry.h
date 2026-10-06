@@ -102,6 +102,46 @@ int floppy_media_spt(const floppy_media_t *m, int track);
 // Byte offset of one sector in the image.
 size_t floppy_media_sector_offset(const floppy_media_t *m, int track, int side, int sector);
 
+// One sector's 512 user bytes, read from or written to the image.  False
+// for a sector the track does not have (`sector` is 0-based), a head the
+// medium has no surface under, a sector past the image's end, or a write
+// to a read-only image.  Tags are not touched: a controller that carries
+// them adds disk_read_tag / disk_write_tag itself.
+bool floppy_media_read_sector(const floppy_media_t *m, int track, int side, int sector, uint8_t *data);
+bool floppy_media_write_sector(const floppy_media_t *m, int track, int side, int sector, uint8_t *data);
+
+// === Rotation ===============================================================
+//
+// The controller models that time the medium (SWIM3, New Age) present it
+// sector by sector, and two of their drivers' behaviours observe rotation:
+// per-sector timeouts, and walks over the headers that pass the head.  The
+// head therefore sees one sector "slot" per revolution / sectors-per-track,
+// with slot boundaries fixed in emulated time.  These used to be written
+// out in each controller.
+
+// The 720 KB MFM spindle speed is a parameter because the two controller
+// models disagree, and no source settles it for both.  The µPD72070
+// specification has the SuperDrive spin 720 KB at 600 rpm under New Age,
+// whose driver keeps the 500 kbps rate for both MFM densities (§1.3.2).
+// The SWIM3 model has always run every MFM medium at 300 rpm, which its
+// reference page records as observed geometry rather than a documented
+// figure; its driver programs the same Setup value for 720 KB and 1.44 MB.
+// So each caller keeps its own figure, as with gap 3 below.  1.44 MB is
+// always 300 rpm, and GCR always the zone's speed.
+#define FLOPPY_MFM_RPM       300 // 1.44 MB, and 720 KB under SWIM3
+#define FLOPPY_MFM_DD_RPM_NA 600 // 720 KB under New Age
+
+// One revolution of track `track`, in ns.
+double floppy_media_rev_ns(const floppy_media_t *m, int track, int dd_mfm_rpm);
+
+// The next header to pass the head after `now_ns`: its slot index around
+// the track, and in *delay_ns how long until it arrives.  A slot that lands
+// exactly on a header boundary (a controller event aimed at it) does not
+// name the header just delivered a second time: the division can come out a
+// hair under the integer, so it is nudged by a thousandth of a slot before
+// flooring.
+int floppy_media_next_header(const floppy_media_t *m, int track, double rev_ns, double now_ns, double *delay_ns);
+
 // decode_gcr() returns this for a byte that is not one of the 64 legal GCR
 // codewords.  It is out of the 6-bit range, so a caller that ignores it still
 // cannot silently fold a corrupt nibble into valid data.

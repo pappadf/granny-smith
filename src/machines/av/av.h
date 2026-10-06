@@ -123,7 +123,7 @@ typedef struct av_state {
     struct av_singer *singer; // Singer codec + PSC sound frame engine
     struct av_civic *civic; // CIVIC frame buffer + Sebastian RAMDAC
     struct av_vdc *vdc; // video digitizer: DMSD + VDC models + frame engine
-    struct av_new_age *fdc; // New Age floppy controller stub
+    struct av_new_age *fdc; // New Age floppy controller (the drive is cfg->floppy)
     struct av_mace *mace; // MACE Ethernet register stub
     struct scsi_53c96 *scsi96; // NCR 53C96 inside Curio
 
@@ -177,6 +177,21 @@ const mac030_irq_route_t *av_irq_routes(void);
 
 // Overlay control (checkpoint restore / tests); layout arms it by default.
 void av_set_overlay(config_t *cfg, bool on);
+
+// The New Age floppy controller's AV face (new_age.c): the shared chip
+// model (core/peripherals/new_age.h) decoded at $50F2A000 — $101 = STR read
+// / DRR write, $141 = the data register — with its DMA on PSC channel 3 and
+// its INT a level into PSC-VIA2 bit 5.  Construct after cfg->floppy and the
+// PSC exist; a restore rebinds as it reads.
+typedef struct av_new_age av_new_age_t;
+av_new_age_t *av_new_age_init(config_t *cfg, checkpoint_t *cp);
+void av_new_age_delete(av_new_age_t *fdc);
+void av_new_age_checkpoint(av_new_age_t *fdc, checkpoint_t *cp);
+void av_new_age_reset(av_new_age_t *fdc); // the board's /RESET net
+uint8_t av_new_age_read(config_t *cfg, uint32_t win_off, uint32_t addr);
+// The same register without popping the result FIFO (mac030_io_range_t.peek_fn).
+uint8_t av_new_age_peek(config_t *cfg, uint32_t win_off, uint32_t addr);
+void av_new_age_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
 
 // Wake the PSC SCSI bus-master pump.  It stops re-arming itself when the
 // channel goes idle, so the guest programming that channel (psc.c) starts it

@@ -21,7 +21,7 @@ export function checkWebGL2Available(): WebGLCheckResult {
     return { ok: false, reason: 'no-canvas', detail: String(err) };
   }
 
-  let gl2: WebGL2RenderingContext | null = null;
+  let gl2: WebGL2RenderingContext | null;
   try {
     gl2 = canvas.getContext('webgl2') as WebGL2RenderingContext | null;
   } catch (err) {
