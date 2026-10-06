@@ -321,6 +321,12 @@ bool av_psc_dma_ready(av_psc_t *psc, int chan) {
     return !ch->pause && (ch->cs[ch->active_set] & PSC_CS_ENABLED) && ch->cnt[ch->active_set] != 0;
 }
 
+uint32_t av_psc_dma_remaining(av_psc_t *psc, int chan) {
+    if (!av_psc_dma_ready(psc, chan))
+        return 0;
+    return psc->chan[chan].cnt[psc->chan[chan].active_set];
+}
+
 int av_psc_dma_dir(av_psc_t *psc, int chan) {
     av_psc_chan_t *ch = &psc->chan[chan];
     if (!av_psc_dma_ready(psc, chan))

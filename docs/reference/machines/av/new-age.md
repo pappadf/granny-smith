@@ -403,6 +403,13 @@ steps with them — the update table, which a re-implementation must reproduce [
 (NC = no change. The table is written for 1-based MFM sector numbers; in GCR, whose sectors are 0-based,
 the wrap value is 0.)
 
+The shipped driver is at odds with the C+1 rows. Its result-collection routine stores the result's C
+byte as the head's current cylinder, and its seek routine skips the seek when the target equals that
+value; every whole-track read it issues ends at EOT with MT = 0 (*observed*). Under the table, each such
+read would leave the driver one cylinder out and send the next transfer to the wrong cylinder, to be
+recovered only by retries and a recalibrate. Since the driver works on the machine, the silicon most
+likely reports the cylinder it is on at EOT in Apple mode (*inferred — unverified*; §6).
+
 With MT set, Apple-mode Read Data "will continue with data on the other side of the disk, for the
 specified cylinder only" [1] §4.8.1 p. 89. On Write Data with terminal count asserted mid-field, "the
 FDC will fill the remainder of the data field with zeros" [1] §4.8.6 p. 116. Address/mark search
@@ -497,7 +504,7 @@ Status check:  Status change? --N--> RET      ("Check only /CSTIN")
 
 Three contracts fall out. **The DxI bits are set by an explicit initialization-time drive-install check**,
 not sampled continuously (§2.2). **CB is 0 whenever the chip is idle or polling by design** — `Reset CB`
-sits at the top of the idle loop — which makes the observed silicon deviation of §5 (CB sometimes still
+sits at the top of the idle loop — which makes the silicon deviation the driver records (§5: CB sometimes still
 set after an interrupt) a genuine deviation from the documented design, not a misreading. And
 **/CSTIN detection is a level comparison against remembered state, drive 0 and drive 1 alternately**,
 with the chip's own 100 ms pause after raising INT: if the host has not collected the status by the time
@@ -892,15 +899,17 @@ state that would separate a bit-slip failure from a wrong-track address field.
 
 ## 5. Quirks & errata
 
-- **The Command-Busy deviation — the one erratum the driver positively depends on.** The specification
-  states that when Sense Interrupt Status is issued after an interrupt, bit 4 (command busy) of the
-  status register is 0 [1] §5.1.7 p. 189, and that the result phase ends at CB = 0 [1] §5.1.1 p. 123.
-  The shipped driver instead waits for CB to be **set** before collecting interrupt status, and works —
-  i.e. the real chip does not always clear CB after an interrupt, and the driver was built against the
-  silicon, not the document (*observed* in the ROM's driver code; the firmware flowcharts confirm CB
-  was *designed* to be 0 whenever idle, §3.3, so this is a silicon deviation, not an alias for another
-  state). A re-implementation faithful to the document — CB always 0 at the interrupt — hangs the
-  driver's interrupt path: CB must transiently read as set after an interrupt.
+- **The Command-Busy deviation — an erratum the driver tolerates.** The specification states that when
+  Sense Interrupt Status is issued after an interrupt, bit 4 (command busy) of the status register is
+  0 [1] §5.1.7 p. 189, and that the result phase ends at CB = 0 [1] §5.1.1 p. 123. The driver's own
+  comment on its interrupt-status routine records that the real chip "does not always have the Command
+  Busy bit clear, as it should" after an interrupt, and the routine therefore **waits for CB to clear**
+  before it issues Sense Interrupt Status; its result-collection routine, by contrast, waits for CB to
+  be **set** — the result phase — before reading the seven status bytes (*observed* in the ROM's
+  driver code). The two waits are exactly the documented idle (CB = 0) and result-phase (CB = 1)
+  states, so a re-implementation faithful to the document satisfies both; the erratum is a CB that
+  lingers set for a while after an interrupt, which the driver absorbs. (The firmware flowcharts confirm
+  CB was *designed* to be 0 whenever idle, §3.3.)
 - **STR and DRR share one address.** $50F2A101 reads as status and writes as the data-rate latch; there
   is no way to read the DRR back (§2.1, §2.3).
 - **GCR precompensation is always zero** in Apple mode, whatever PCS2-0 say — the precompensator is
@@ -995,6 +1004,9 @@ state that would separate a bit-slip failure from a wrong-track address field.
     125 ns value with PRETRK = 0 (§3.6) — deliberate tuning or copied boilerplate is not determinable.
 14. **Raw Dump mode %11** is "not defined" [1] §4.9 p. 59 — what the chip actually does with it is
     unknown.
+15. **The result ID at EOT.** Whether Read/Write Data terminated at EOT with MT = 0 reports C+1 (the
+    specification's table, §3.2.2) or the current cylinder (what the shipped driver's cylinder tracking
+    implies) is untested against silicon.
 
 ## References
 

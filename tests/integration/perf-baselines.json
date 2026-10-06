@@ -124,6 +124,26 @@
       "instr": 89591408,
       "tolerance": 0.2
     },
+    "suite-av/av-floppy-800k": {
+      "instr": 1351854365,
+      "tolerance": 0.2
+    },
+    "suite-av/av-floppy-boot": {
+      "instr": 7926276831,
+      "tolerance": 0.2
+    },
+    "suite-av/av-floppy-format": {
+      "instr": 4771404813,
+      "tolerance": 0.2
+    },
+    "suite-av/av-floppy-mount": {
+      "instr": 1346139449,
+      "tolerance": 0.2
+    },
+    "suite-av/av-floppy-write-eject": {
+      "instr": 1521447717,
+      "tolerance": 0.2
+    },
     "suite-av/av-identity": {
       "instr": 24479901,
       "tolerance": 0.2
