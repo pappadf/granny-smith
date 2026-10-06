@@ -9,9 +9,10 @@
 // executor; the accelerated governor's ladder cap would hide the gain.
 //
 // Workloads:
-//   se30    68030 + PMMU, media-free: the ROM free-runs at the flashing-?
-//           prompt (device-I/O bound: ~45 % of its instructions take a slow
-//           path natively, so it understates the executor's share)
+//   se30    68030 + PMMU, media-free: NOT an idle workload.  With no boot
+//           device the ROM's SCSI scan busy-waits on the 5380 (BTST #6,$40(A3)
+//           / DBNE: every second instruction is a device register read), so
+//           the row measures the device slow path and the two executors tie
 //   iicx    68030 + PMMU + 8•24 GC: System 6.0.8 booted from the Marathon
 //           image and Marathon launched to its main menu — the application
 //           workload of the performance proposal's bench
@@ -191,7 +192,7 @@ for (const machine of MACHINES) {
 
     await terminalRun(page, 'scheduler.mode = "turbo"');
     expect(await probeString(page, "scheduler.mode")).toBe("turbo");
-    // Let the ROM settle into its idle loop (and the wasm tier up) first —
+    // Let the ROM settle into its SCSI-scan loop (and the wasm tier up) first —
     // or, with a disk, boot the System and launch the application.
     if (row.hd) await launchMarathon(page);
     else await page.waitForTimeout(8_000);
