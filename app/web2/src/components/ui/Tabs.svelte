@@ -35,6 +35,9 @@
     tabClass = '',
     class: cls = '',
     accessory,
+    // Bindable prop, written by the effect below; the rule mistakes the
+    // prop binding for a dead assignment.
+    // eslint-disable-next-line no-useless-assignment
     minWidth = $bindable(0),
   }: Props = $props();
 

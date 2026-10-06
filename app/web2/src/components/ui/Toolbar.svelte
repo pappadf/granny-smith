@@ -36,7 +36,7 @@
     );
     const at = items.indexOf(target);
     if (at < 0 || !items.length) return;
-    let to = at;
+    let to: number;
     if (ev.key === prev) to = Math.max(0, at - 1);
     else if (ev.key === next) to = Math.min(items.length - 1, at + 1);
     else if (ev.key === 'Home') to = 0;
