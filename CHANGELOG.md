@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Floppy drive on the Quadra 840AV and Centris 660AV** — the New Age controller (an NEC µPD72070 in Apple mode) is modelled, so both AV machines have their internal SuperDrive: 1.44 MB, 800K and 400K disks mount through the ROM's own driver (720 KB MFM media are recognised too), 1.44 MB disks write, format and eject, and a floppy boots the machine (the Mac OS 7.6 install disk reaches its Installer). Both profiles offer the drive in the configuration dialog (#178).
 - **Virtual ImageWriter and ImageWriter II, printing to PDF** — every machine has a dot-matrix printer, `machine.imagewriter`, that the guest's own ImageWriter driver prints to:
   - on a serial port (`connection = "serial-a"` / `"serial-b"`): the Lisa Office System and the Mac ImageWriter driver print unmodified, with the printer's ready line, `ESC ?` reply and XON/XOFF;
   - over AppleTalk as an ImageWriter II with the LocalTalk Option card (`connection = "localtalk"`): the Chooser's AppleTalk ImageWriter lists "Virtual ImageWriter", beside the LaserWriter;

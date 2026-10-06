@@ -30,7 +30,7 @@ typedef struct av_psc av_psc_t;
 #define AV_PSC_VIA2_SLOT_CA1 1 // any slot/VBL source in SInt (level)
 #define AV_PSC_VIA2_MUNI_SR  2 // MUNI (never asserted here)
 #define AV_PSC_VIA2_SCSI_CB2 3 // SCSI IRQ (level)
-#define AV_PSC_VIA2_FDC      5 // New Age command completion (latched)
+#define AV_PSC_VIA2_FDC      5 // New Age INT (level: the chip drops it, never the IFR)
 #define AV_PSC_VIA2_SNDFRM   6 // sound frame (latched)
 
 // SInt slot-interrupt sources (active level tracked internally; the register
@@ -78,7 +78,7 @@ void av_psc_set_scsi_touch_hook(av_psc_t *psc, av_psc_chan_touch_fn fn, void *ct
 // Drive a level-sensitive VIA2-window source (SCSI interrupt, bit 3).
 void av_psc_via2_source(av_psc_t *psc, int bit, bool active);
 
-// Latch a pulse VIA2-window source (FDC bit 5, sound frame bit 6); cleared
+// Latch a pulse VIA2-window source (the sound frame, bit 6); cleared
 // by the guest's write-1-to-clear on the IFR.
 void av_psc_via2_latch(av_psc_t *psc, int bit);
 
@@ -145,6 +145,12 @@ int av_psc_dma_device_out(av_psc_t *psc, int chan, uint8_t *buf, int len);
 // True when the channel's active set is armed and running (a device pump
 // uses this to know whether to bother polling its DREQ).
 bool av_psc_dma_ready(av_psc_t *psc, int chan);
+
+// Bytes left on the channel's active set, or 0 when it is not armed and
+// running.  A device that must see terminal count (the New Age FDC's TC
+// pin) reads this before moving a byte: a transfer of the set's last byte
+// is the one the PSC terminates the count on.
+uint32_t av_psc_dma_remaining(av_psc_t *psc, int chan);
 
 // Armed direction of the channel's active set: 1 = device→memory (DIR
 // set), 0 = memory→device, -1 = not armed/paused.  A device pump reads
