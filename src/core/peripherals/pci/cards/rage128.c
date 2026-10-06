@@ -90,6 +90,31 @@ static const r128_monitor_t r128_sense[] = {
 
 static const int depths_8_16_32[] = {8, 16, 32, 0};
 
+// The display's response curve (display_t::crt_response): the inverse of
+// the gamma ramp ATI's ndrv loads into the palette at boot — the same table
+// at every depth and for every monitor in our runs, a power of about 0.70,
+// pre-correcting for a CRT's own gamma.  The palette is in the DAC path at
+// every depth (the CLUT at 8 bpp, dac_lut above it), so captures carry the
+// pre-correction, as the bus does; the renderer applies this to show the
+// picture as the CRT would have, neutral.  Transcribed from the palette
+// System 7.6 and 9.2.1 load, inverted (gaps interpolated).
+#define R128_RESPONSE                                                                                                  \
+    {                                                                                                                  \
+        0,   0,   0,   1,   1,   1,   1,   2,   2,   2,   2,   3,   3,   4,   4,   4,   5,   5,   6,   6,   6,   7,    \
+        8,   8,   8,   9,   10,  10,  10,  11,  12,  12,  13,  14,  14,  14,  15,  16,  16,  17,  18,  18,  19,  20,   \
+        20,  21,  22,  22,  23,  24,  24,  25,  26,  26,  27,  28,  29,  30,  30,  31,  32,  32,  33,  34,  35,  36,   \
+        36,  37,  38,  39,  40,  40,  41,  42,  43,  44,  44,  45,  46,  47,  48,  49,  50,  50,  51,  52,  53,  54,   \
+        55,  56,  57,  58,  59,  60,  60,  61,  62,  63,  64,  65,  66,  67,  68,  69,  70,  71,  72,  73,  74,  75,   \
+        76,  77,  78,  79,  80,  81,  82,  83,  84,  85,  86,  87,  88,  89,  90,  91,  92,  93,  94,  95,  97,  98,   \
+        99,  100, 101, 102, 103, 104, 105, 106, 107, 109, 110, 111, 112, 113, 114, 115, 116, 117, 119, 120, 121, 122,  \
+        123, 124, 126, 127, 128, 129, 130, 131, 133, 134, 135, 136, 137, 139, 140, 141, 142, 143, 145, 146, 147, 148,  \
+        149, 151, 152, 153, 154, 156, 157, 158, 159, 161, 162, 163, 164, 166, 167, 168, 169, 171, 172, 173, 175, 176,  \
+        177, 178, 180, 181, 182, 184, 185, 186, 188, 189, 190, 192, 193, 194, 196, 197, 198, 200, 201, 202, 204, 205,  \
+        206, 208, 209, 210, 212, 213, 215, 216, 217, 219, 220, 221, 223, 224, 226, 227, 228, 230, 231, 233, 234, 235,  \
+        237, 238, 240, 241, 243, 244, 245, 247, 248, 250, 251, 253, 254, 255,                                          \
+    }
+static const uint8_t r128_crt_response[3][256] = {R128_RESPONSE, R128_RESPONSE, R128_RESPONSE};
+
 static const struct nubus_monitor r128_monitors[] = {
     {.id = "vga", .monitor = "vga", .width = 640, .height = 480, .depths = depths_8_16_32, .sense_code = 7},
     {.id = "vga_noddc", .monitor = "vga", .width = 640, .height = 480, .depths = depths_8_16_32, .sense_code = 7},
@@ -820,6 +845,33 @@ static void r128_refresh_clut(rage128_t *r) {
     r->display.clut_dirty = true;
 }
 
+// In the direct-colour depths the palette stays in the DAC path, one
+// lookup per channel — it is the gamma table (SDK §1, "palette DAC with
+// gamma correction"; XFree86's r128 driver loads it as a ramp at 15 and
+// 16 bpp, and Mac OS's SetGamma lands here, which is how Quake III's
+// overbright doubling reaches the screen).  A channel of n bits indexes
+// entry value << (8 - n), as that driver's loads assume; the consumers
+// expand the channel first, so each table is filled at the expanded value.
+static void r128_refresh_dac(rage128_t *r) {
+    uint32_t pix = CRTC_PIX_WIDTH(r->reg[R_CRTC_GEN_CNTL / 4]);
+    for (uint32_t c = 0; c < 3; c++)
+        for (uint32_t i = 0; i < 256; i++)
+            r->dac_view[c][i] = r->clut[i][c];
+    if (pix == CRTC_PIX_15BPP || pix == CRTC_PIX_16BPP) {
+        for (uint32_t v = 0; v < 32; v++) {
+            uint8_t e = display_expand5((uint8_t)v);
+            r->dac_view[0][e] = r->clut[v << 3][0];
+            r->dac_view[2][e] = r->clut[v << 3][2];
+            if (pix == CRTC_PIX_15BPP)
+                r->dac_view[1][e] = r->clut[v << 3][1];
+        }
+        for (uint32_t v = 0; v < 64 && pix == CRTC_PIX_16BPP; v++)
+            r->dac_view[1][display_expand6((uint8_t)v)] = r->clut[v << 2][1];
+    }
+    r->display.dac_lut = r->dac_view;
+    r->display.response_dirty = true;
+}
+
 // The hardware cursor (SDK §4.4): a 64 x 64 map in VRAM at CUR_OFFSET, each
 // line 16 bytes — eight bytes of AND bits then eight of XOR bits, the
 // leftmost pixel in bit 7 of the first byte.  AND/XOR 00 = colour 0, 01 =
@@ -984,7 +1036,7 @@ static void r128_update(rage128_t *r) {
     r->display.format = format;
     r->display.par_w = 0;
     r->display.par_h = 0;
-    r->display.crt_response = NULL;
+    r->display.crt_response = r128_crt_response;
     display_set_scanout(&r->display, blanked ? NULL : r->vram, r->vram_size, base, stride ? stride : width * bpp, width,
                         height, r->blank, r->vram_size);
     r->scan_blanked = r->display.bits == r->blank;
@@ -992,10 +1044,15 @@ static void r128_update(rage128_t *r) {
     r->scan_swap = bpp > 1;
     r128_present(r);
     if (format == PIXEL_8BPP) {
+        if (r->display.dac_lut) {
+            r->display.dac_lut = NULL;
+            r->display.response_dirty = true;
+        }
         r128_refresh_clut(r);
     } else {
         r->display.clut = NULL;
         r->display.clut_len = 0;
+        r128_refresh_dac(r);
     }
     r->display.shape_dirty = true;
     r->display.fb_dirty = true;
@@ -1067,6 +1124,8 @@ static void r128_on_vbl(pci_device_t *dev, config_t *cfg) {
         r->clut_dirty = false;
         if (CRTC_PIX_WIDTH(r->reg[R_CRTC_GEN_CNTL / 4]) == CRTC_PIX_8BPP)
             r128_refresh_clut(r);
+        else if (r->display.dac_lut)
+            r128_refresh_dac(r);
     }
     r->reg[R_CRTC_CRNT_FRAME / 4] = (r->reg[R_CRTC_CRNT_FRAME / 4] + 1u) & 0x1FFFFFu;
     r->reg[R_CRTC_STATUS / 4] |= CRTC_VBLANK_SAVE;

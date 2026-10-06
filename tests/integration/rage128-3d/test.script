@@ -467,5 +467,41 @@ wr(0x0224, $SURF)
 assert (rd(0x0224) & 0x40000000) == 0 "FLIP_CNTL: the offset applies at once"
 assert machine.pci.slot[1].card.framebuffer.base == $SURF "the display scans the back buffer"
 
-echo "rage128-3d: coverage, Gouraud and flat shading, culling, Z, stencil, blending, the alpha test, fog, texturing and multitexture, the vertex walker, lines, points and the CRTC flip hold"
+# --- 13. The palette is the DAC table in the direct-colour depths ---------------
+# At 32 bpp every channel still goes through the palette on its way to the
+# DAC (the gamma table: Mac OS's SetGamma, Quake III's overbright doubling).
+# A patch under a palette that swaps its three channel values with their
+# complements (identity elsewhere) shows exactly as the complemented patch
+# under the identity palette.
+def pal_ramp(swap) {
+    wr(0x00B0, 0)                 # PALETTE_INDEX: write from entry 0
+    for i in 0..256 {
+        let v = $i
+        if $swap && ($i == 0x40 || $i == 0x80 || $i == 0xC0 || $i == 0x3F || $i == 0x7F || $i == 0xBF) {
+            let v = 255 - $i
+        }
+        wr(0x00B4, ($v << 16) | ($v << 8) | $v)
+    }
+}
+def patch(c) {
+    for y in 0..4 {
+        for x in 0..4 {
+            vram_wr($SURF + $y * 2560 + $x * 4, $c)
+        }
+    }
+    wr(0x0050, 0x03000600)        # CRTC_GEN_CNTL again: the frame is presented anew
+}
+wr(0x0058, 0xFF000100)            # DAC_CNTL: 8-bit palette
+let ref = "${$WORK_DIR}/dac-complement.png"
+pal_ramp(false)
+patch(0x00BF7F3F)
+machine.screen.save "${$ref}"
+pal_ramp(true)
+patch(0x004080C0)
+assert machine.screen.matches("${$ref}") "32 bpp: the palette maps each channel on its way to the DAC"
+pal_ramp(false)
+patch(0x004080C0)
+assert !machine.screen.matches("${$ref}") "32 bpp: with the identity palette the pixels show as stored"
+
+echo "rage128-3d: coverage, Gouraud and flat shading, culling, Z, stencil, blending, the alpha test, fog, texturing and multitexture, the vertex walker, lines, points, the CRTC flip and the DAC palette hold"
 quit

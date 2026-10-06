@@ -326,6 +326,7 @@ typedef struct rage128 {
     display_t display;
     display_fb_node_t fb_node;
     rgba8_t clut_view[256];
+    uint8_t dac_view[3][256]; // the palette as the direct-colour DAC table (display_t.dac_lut)
     uint8_t *blank; // black stub while the raster is off (vram_size)
     uint8_t *compose; // big-endian copy for the direct-colour depths (vram_size)
     uint32_t scan_base;

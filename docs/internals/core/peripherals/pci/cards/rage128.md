@@ -140,6 +140,19 @@ when `CRTC_EN`, `CRTC_EXT_DISP_EN`, display requests enabled and
 palette (`DAC_MASK` applied); 15, 16 and 32 bpp are byte-swapped into a
 compose buffer each frame, since the display layer takes big-endian pixels.
 
+**The palette at 15, 16 and 32 bpp.** Each channel still goes through the
+palette on its way to the DAC: there it is the gamma table (SDK §1, "palette
+DAC with gamma correction"; XFree86's r128 driver loads it as a ramp at 15
+and 16 bpp). A channel of *n* bits indexes entry value << (8 − *n*). The card
+publishes it as `display_t.dac_lut`, which the renderer and captures both
+apply, as for Control's RaDACal. Mac OS's `SetGamma` lands here — Quake III's
+overbright doubling — and so does the ramp ATI's ndrv loads at boot (a power
+of about 0.70, identical on System 7.6 and Mac OS 9.2.1), so captures in the
+direct depths carry that pre-correction, as the bus does. The card's
+`crt_response` is that ramp's inverse: the renderer shows the picture as the
+CRT would have, neutral, at every depth (the 8 bpp CLUT carries the same
+pre-correction).
+
 **Hardware cursor.** A 64 × 64 map at `CUR_OFFSET`, each line eight bytes
 of AND bits then eight of XOR bits, leftmost pixel in bit 7 (SDK §4.4):
 AND/XOR `00` colour 0, `01` colour 1, `10` transparent, `11` the complement
@@ -337,9 +350,10 @@ loudly.
   shading, culling, Z (test and mask), stencil (replace, equal, increment),
   blending, the alpha test, vertex fog, a nearest-filtered textured quad,
   `MODULATE`, pre-multiplied S/T (`TEXTURE_ST_FORMAT`), a two-unit
-  lightmap-style stage, the vertex walker's list and
-  indexed walks through the GART, lines, points and a 565 target — every
-  one a VRAM equality.
+  lightmap-style stage, the vertex walker's list and indexed walks through
+  the GART, lines, points and a 565 target — every one a VRAM equality —
+  then the CRTC flip and the palette in the 32 bpp DAC path (a screen
+  match).
 - `tests/integration/g3-rage128-macos921` (tier `extended`) — Mac OS 9.2.1
   from the MESH disk on a G3 whose only display is the card: the desktop on
   the card's framebuffer, ATI's own microcode, PM4 mode 7, over a thousand
