@@ -23,8 +23,9 @@
 //   * a pixel is covered when its centre (x+0.5, y+0.5) is inside the
 //     triangle, ties going to top and left edges;
 //   * attributes are planes in screen space; S/T are perspective-correct
-//     (S·W, T·W and W interpolated, divided per pixel) unless
-//     TEXTURE_ST_FORMAT or *_TEX_PERSPECTIVE_DIS says otherwise; colours,
+//     (S·W, T·W and W interpolated, divided per pixel; TEXTURE_ST_FORMAT
+//     means the vertex S/T are already S·W) unless *_TEX_PERSPECTIVE_DIS
+//     says otherwise; colours,
 //     fog and Z are affine;
 //   * Z = z·(2^N − 1), truncated, at Z_PIX_WIDTH's N;
 //   * the mip level is log2 of the largest texel step of the pixel's
@@ -282,7 +283,8 @@ typedef struct tex_unit {
     uint32_t lpitch, lheight, lsize, lmin; // log2 of the largest map's pitch (= width), height, max, smallest
     uint32_t off[11];
     uint32_t border;
-    bool persp;
+    bool persp; // divide by the interpolated W per pixel
+    bool premult; // the vertex S and T are already S·W (TEXTURE_ST_FORMAT)
     bool sec_st, sec_w; // the secondary unit's coordinate set
 } tex_unit_t;
 
@@ -350,13 +352,18 @@ static void tex_gather(rage128_t *r, tex_unit_t *u, bool on, uint32_t cntl_reg, 
         u->lsize = 10;
     if (u->lmin > u->lsize)
         u->lmin = u->lsize;
+    // Only the maps a sample can reach count for the tiling note: drivers
+    // leave stale values in the offsets of levels they do not use.
+    uint32_t top = u->lsize - u->lmin;
+    bool mip = !(u->cntl & TX_MIP_DIS) && TX_MIN_FN(u->cntl) >= MIN_NEAREST_MIP;
     for (uint32_t i = 0; i < 11; i++) {
         u->off[i] = REG(r, off_reg + 4u * i);
-        if (u->off[i] & 0xC0000000u)
+        if ((u->off[i] & 0xC0000000u) && i <= top && (mip || i == top))
             tell_once(r, TOLD_TILED, "a tiled texture, surface or Z buffer is addressed linearly");
     }
     u->border = REG(r, border_reg);
-    u->persp = !(u->cntl & TX_PERSP_DIS) && !(REG(r, R_SETUP_CNTL) & SU_ST_PREMULT);
+    u->persp = !(u->cntl & TX_PERSP_DIS);
+    u->premult = (REG(r, R_SETUP_CNTL) & SU_ST_PREMULT) != 0;
 }
 
 static bool gather(rage128_t *r, st_t *s) {
@@ -1148,8 +1155,11 @@ static void prepare(const st_t *s, const r128_vertex_t *v, const r128_vertex_t *
         double w = (u == 1 && t->sec_w) ? v->rhw2 : v->rhw;
         if (!t->persp)
             w = 1.0;
-        o->a[A_S0 + 3 * u] = sc * w;
-        o->a[A_T0 + 3 * u] = tc * w;
+        // TEXTURE_ST_FORMAT: S and T arrive as S·W and T·W; the set-up
+        // engine interpolates them directly and the divide still happens.
+        double m = t->premult && t->persp ? 1.0 : w;
+        o->a[A_S0 + 3 * u] = sc * m;
+        o->a[A_T0 + 3 * u] = tc * m;
         o->a[A_W0 + 3 * u] = w;
     }
 }

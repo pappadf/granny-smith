@@ -304,38 +304,41 @@ wr(0x1CB0, (6 << 16) | (2 << 8) | (2 << 11) | 0x80)   # ARGB8888, clamp S and T,
 wr(0x1CB4, 0x04181040)            # PRIM combine: REPLACE (the texel)
 wr(0x1C9C, 0x10)                  # TEX_EN
 # VC_FORMAT $089: x, y, z, rhw, diffuse, s, t.  A 16 x 16 quad at (40, 0).
-def quad(c) {
+def quadw(c, w, one) {
     fifo(pkt3(0x25, 30))
     fifo(0x089)
     fifo(5 | 0x30 | (4 << 16))
     fifo($F40)
     fifo($F0)
     fifo($F0)
-    fifo($F1)
+    fifo($w)
     fifo($c)
     fifo($F0)
     fifo($F0)
     fifo($F56)
     fifo($F0)
     fifo($F0)
-    fifo($F1)
+    fifo($w)
     fifo($c)
-    fifo($F1)
+    fifo($one)
     fifo($F0)
     fifo($F56)
     fifo($F16)
     fifo($F0)
-    fifo($F1)
+    fifo($w)
     fifo($c)
-    fifo($F1)
-    fifo($F1)
+    fifo($one)
+    fifo($one)
     fifo($F40)
     fifo($F16)
     fifo($F0)
-    fifo($F1)
+    fifo($w)
     fifo($c)
     fifo($F0)
-    fifo($F1)
+    fifo($one)
+}
+def quad(c) {
+    quadw($c, $F1, $F1)
 }
 quad(0xFFFFFFFF)
 assert px(41, 1) == 0xFFFF0000 "texture: texel (0,0)"
@@ -343,6 +346,16 @@ assert px(54, 1) == 0xFF00FF00 "texture: texel (1,0)"
 assert px(41, 14) == 0xFF0000FF "texture: texel (0,1)"
 assert px(54, 14) == 0xFFFFFFFF "texture: texel (1,1)"
 assert px(56, 1) == 0 "texture: the quad ends at x 56"
+# TEXTURE_ST_FORMAT (SETUP_CNTL bit 9): the vertex S and T arrive already
+# multiplied by W, and the per-pixel divide by W still happens.  With rhw
+# 0.25 everywhere, S·W 0.25 is S 1: the same four texels.
+clear32(0)
+wr(0x1BC4, 0x000F4220)
+quadw(0xFFFFFFFF, $F0_25, $F0_25)
+wr(0x1BC4, 0x000F4020)
+assert px(41, 1) == 0xFFFF0000 "TEXTURE_ST_FORMAT: texel (0,0)"
+assert px(54, 1) == 0xFF00FF00 "TEXTURE_ST_FORMAT: texel (1,0)"
+assert px(54, 14) == 0xFFFFFFFF "TEXTURE_ST_FORMAT: texel (1,1)"
 # MODULATE with a grey diffuse: 255 x 128 / 255 = 128.
 wr(0x1CB4, 0x0418D043)
 quad(0xFF808080)
