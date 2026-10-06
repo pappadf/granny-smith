@@ -41,6 +41,6 @@ assert !catalog.vroms.identify("/dev/null/nonexistent") "unreadable path must yi
 # --- Part 2: every catalog card_id resolves to a registered nubus card. ---
 # The vROM catalog's card ids are registry ids: the card registry lists each
 # one, so the catalog and the registry don't drift.
-assert catalog.nubus_cards == "[builtin_se30_video, mdc_8_24, builtin_rbv_video, builtin_v8_video, display_card_24ac, 824gc]" "the NuBus card registry"
+assert catalog.nubus_cards == "[builtin_se30_video, mdc_8_24, builtin_rbv_video, builtin_rbv_iisi_video, display_card_24ac, 824gc]" "the NuBus card registry"
 
 quit

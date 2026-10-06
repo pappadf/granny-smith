@@ -79,7 +79,7 @@ the 3-bit sense code, which both the RBV (`RvMonP`) and the video card
 read; the `video_sense=` debug override sets a raw code instead. The
 codes modelled (hardware reference [rbv.md](../../../reference/machines/mdu/rbv.md), monitor sensing §3.5):
 
-| Sense | Monitor id | Raster | IIci (RBV) | IIsi (V8) |
+| Sense | Monitor id | Raster | IIci | IIsi |
 |---|---|---|---|---|
 | `110` (6) | `13in_rgb` (default) | 640×480, 1/2/4/8 bpp | yes | yes |
 | `001` (1) | `15in_portrait` | 640×870, 1/2/4 bpp (no 8 bpp, Table 12-3) | yes | yes |
@@ -88,7 +88,7 @@ codes modelled (hardware reference [rbv.md](../../../reference/machines/mdu/rbv.
 | `111` (7) | `none` | halted | halted | halted |
 
 The decode is the card kind's monitor list: `builtin_rbv_video` (IIci)
-lists the first two rows, `builtin_v8_video` (IIsi) all three, and a code
+lists the first two rows, `builtin_rbv_iisi_video` (IIsi) all three, and a code
 with no row there halts video. The geometry comes from
 `display_timing_for_sense` (`display_timing.h`); stride is width × depth.
 The raster is a power-up strap, fixed for the life of the machine (a
@@ -98,9 +98,10 @@ VBL, since it drives no sync. Measured: the IIci ROM drives the Portrait
 at 640×870 (`ScreenRow` 80 at 1 bpp) and the IIsi ROM the 12" RGB at
 512×384 (`ScreenRow` 64), both to the no-disk "?" screen
 (`suite-iici` row `iici-portrait`, `suite-iisi` row `iisi-12in-rgb`).
-Not modelled: the V8's printed quirks of ignoring monitor ID bit 1 and
-reading `011` as VGA, and startup-mode (`displays.builtin.mode`) records
-for any monitor but the 13" RGB.
+Not modelled: startup-mode (`displays.builtin.mode`) records for any
+monitor but the 13" RGB.  (The printed sense quirks of ignoring monitor
+ID bit 1 and reading `011` as VGA are the LC's V8, a different part from
+the IIsi's RBV ([rbv.md](../../../reference/machines/mdu/rbv.md) §1.5), so they do not apply here.)
 
 The chip-test register, the genuine NuBus transfer-mode pins, the
 parity-error generation, and the external-cache side effects are

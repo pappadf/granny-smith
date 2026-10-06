@@ -500,8 +500,8 @@ static const nubus_monitor_t builtin_rbv_monitors[] = {
     {0},
 };
 
-// IIsi V8: adds 010, the 12" RGB at 512 x 384 (IIsi Developer Note, Table 4-2).
-static const nubus_monitor_t builtin_v8_monitors[] = {
+// IIsi: adds 010, the 12" RGB at 512 x 384 (IIsi Developer Note, Table 4-2).
+static const nubus_monitor_t builtin_rbv_iisi_monitors[] = {
     RBV_MONITOR_13IN_RGB,
     RBV_MONITOR_15IN_PORTRAIT,
     {.id = "12in_rgb",
@@ -523,11 +523,11 @@ const nubus_card_kind_t builtin_rbv_video_kind = {
 };
 
 // The IIsi's: the same card, decoding one more monitor.
-const nubus_card_kind_t builtin_v8_video_kind = {
-    .id = "builtin_v8_video",
+const nubus_card_kind_t builtin_rbv_iisi_video_kind = {
+    .id = "builtin_rbv_iisi_video",
     .display_name = "Built-in video",
     .attach = CARD_ATTACH_BUILTIN, // motherboard circuitry — never socketed
     .requires_vrom = false,
-    .monitors = builtin_v8_monitors,
+    .monitors = builtin_rbv_iisi_monitors,
     .ops = &builtin_rbv_video_ops,
 };

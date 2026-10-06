@@ -32,10 +32,10 @@
 
 // Card-kind descriptors — registered in nubus.c's g_card_registry.  One card,
 // two decodes of the monitor sense: "builtin_rbv_video" is the IIci's RBV,
-// "builtin_v8_video" the IIsi's V8, which also takes the 12" RGB.  Each
+// "builtin_rbv_iisi_video" the IIsi's, which also takes the 12" RGB.  Each
 // machine names its own in its built-in slot decl.
 extern const nubus_card_kind_t builtin_rbv_video_kind;
-extern const nubus_card_kind_t builtin_v8_video_kind;
+extern const nubus_card_kind_t builtin_rbv_iisi_video_kind;
 
 // === Machine-facing hooks (outside the nubus_card_ops_t vtable) =============
 
