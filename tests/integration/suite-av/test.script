@@ -67,6 +67,15 @@
 #                   answered OUT LOUD, so recognition, the scripting
 #                   action and text-to-speech all ride one utterance —
 #                   asserted with both a sound and a screen golden.
+#   av-floppy-mount The New Age FDC: a 1.44 MB MFM disk inserted into the
+#                   840AV's SuperDrive mounts in the 7.1 Finder.
+#   av-floppy-800k  The same for an 800K GCR disk, on the 660AV.
+#   av-floppy-write-eject  New Folder on a writable disk reaches the medium,
+#                   then Put Away ejects it.
+#   av-floppy-format  A blank disk initialized from the Finder: Format A
+#                   Track, the verify pass and a fresh HFS volume.
+#   av-floppy-boot  Cold boot from the Mac OS 7.6 install floppy, no SCSI
+#                   disk, to the Installer's welcome screen.
 #
 # The boot rows ride a prepared 76 MB System 7.1 AV hard-disk image rather
 # than a CD.  It is the volume that exercises the family properly: a full
@@ -371,6 +380,153 @@ def row_video_in(model, golden) {
     report_perf("suite-av/${$model}-71-video-in", scheduler.instr_count)
 }
 
+# ---- the floppy rows --------------------------------------------------------
+# The internal SuperDrive behind the New Age FDC (NEC µPD72070 in Apple mode,
+# core/peripherals/new_age.c): the ROM's .Sony driver (NewAge) probes the
+# drive at open, learns of the disk from the controller's /CSTIN poll, walks
+# its GCR-then-MFM media ladder, and moves whole tracks through PSC DMA
+# channel 3 with the set's terminal count ending each command.
+
+let av_fd_144 = "../../data/apps/Norton-Utils-Disk-2.image"
+let av_fd_800 = "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
+let av_fd_boot = "../../data/systems/SSW-7.6-1.4M/Install 1.img"
+
+# The 7.1 desktop off the hard disk, as the HD rows reach it.
+def av_hd_desktop(model) {
+    machine.rtc.time = 3000000000
+    machine.boot model="${$model}" ram=16384 rom="${$av_rom}"
+    machine.scsi.attach_hd "${$av_hd}" 0
+    scheduler.run 600000000
+    wait_stable(1500000000)
+}
+
+# ---- av-floppy-mount ----------------------------------------------------------
+# A 1.44 MB MFM disk inserted into the 840AV's drive mounts in the Finder.  The
+# controller reports the drive at open (ST3 says SuperDrive), the insertion as
+# a /CSTIN change, the GCR probe finds no address mark and the MFM one walks
+# the headers to 18, and the volume is read a track per command.
+def row_av_floppy_mount() {
+    av_hd_desktop("q840av")
+    assert machine.floppy.type == "new_age" "floppy controller type ${machine.floppy.type}, want new_age"
+    assert !machine.floppy.drive[0].present "FD0 occupied before the insert"
+    # One internal bay: there is no drive 1 to put a disk in.
+    assert try(machine.floppy.drive[1].present, "none") == "none" "FD1 exists on a one-drive AV"
+    machine.floppy.drive[0].insert "${$av_fd_144}"
+    assert machine.floppy.drive[0].present "FD0 empty after insert"
+    # A fixed budget first: the screen does not change while the drive spins
+    # up and the driver probes the medium, so a bare settle would return early.
+    scheduler.run 600000000
+    wait_stable(900000000)
+    assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} mounting the floppy"
+    check("goldens/q840av-7.1-floppy-mount.png")
+    report_row("7.1", "civic", "fd-mount mfm1440k")
+    report_perf("suite-av/av-floppy-mount", scheduler.instr_count)
+}
+
+# ---- av-floppy-800k ---------------------------------------------------------
+# GCR on the sibling board: the driver's GCR probe reads the format byte ($22)
+# out of the first header and the 800K disk mounts.
+def row_av_floppy_800k() {
+    av_hd_desktop("q660av")
+    machine.floppy.drive[0].insert "${$av_fd_800}"
+    scheduler.run 600000000
+    wait_stable(900000000)
+    assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} mounting the 800K disk"
+    check("goldens/q660av-7.1-floppy-800k.png")
+    report_row("7.1", "civic", "fd-mount gcr800k")
+    report_perf("suite-av/av-floppy-800k", scheduler.instr_count)
+}
+
+# ---- av-floppy-write-eject --------------------------------------------------
+# Writes, then the eject.  File > New Folder on a writable disk, and the bytes
+# must reach the medium (the instance's delta grows, which only Write Data
+# through DMA channel 3 can do); then Put Away, which parks the head, sends
+# Eject and leaves the drive empty.  The medium is inspected only after the
+# unmount: how much the Finder has written back before it is its business.
+def row_av_floppy_write_eject() {
+    av_hd_desktop("q840av")
+    machine.floppy.drive[0].insert "${$av_fd_144}" true
+    scheduler.run 600000000
+    wait_stable(900000000)
+    let inst = machine.floppy.drive[0].disk.path
+    let delta = "${$inst}.delta"
+    let before = files.path_size($delta)
+
+    # Activate the disk's window, then File > New Folder (cmd-N).
+    click(200, 100)
+    machine.adb.keyboard.down 0x37
+    scheduler.run 2000000
+    machine.adb.keyboard.press 0x2D
+    scheduler.run 2000000
+    machine.adb.keyboard.up 0x37
+    wait_stable(600000000)
+    assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} writing to the floppy"
+    check("goldens/q840av-7.1-floppy-write.png")
+
+    # Select the disk icon and Put Away (cmd-Y).
+    click(600, 95)
+    machine.adb.keyboard.down 0x37
+    scheduler.run 2000000
+    machine.adb.keyboard.press 0x10
+    scheduler.run 2000000
+    machine.adb.keyboard.up 0x37
+    wait_stable(900000000)
+    assert !machine.floppy.drive[0].present "the disk is still in the drive after Put Away"
+    assert files.path_size($delta) > $before "nothing reached the medium (delta still ${$before} bytes)"
+    report_row("7.1", "civic", "fd-write fd-eject")
+    report_perf("suite-av/av-floppy-write-eject", scheduler.instr_count)
+}
+
+# ---- av-floppy-format -------------------------------------------------------
+# Format A Track end to end: a blank image goes in, the Finder offers to
+# initialize it, and the driver formats 160 tracks (each fed its C/H/R/N table
+# over DMA), verifies every sector and writes a fresh HFS volume — the
+# mounted, empty disk at the end is format and read agreeing with each other.
+def row_av_floppy_format() {
+    av_hd_desktop("q840av")
+    let blank = "${$WORK_DIR}/av-blank-1440.img"
+    assert files.fd_create($blank, true) "could not create a blank 1.44 MB image"
+    machine.floppy.drive[0].insert "${$blank}" true
+    scheduler.run 900000000
+    wait_stable(900000000)
+    # "This is not a Macintosh disk" -> Initialize -> Erase -> name (Return).
+    check("goldens/q840av-7.1-floppy-initdialog.png")
+    click(410, 176)
+    wait_stable(300000000)
+    click(410, 176)
+    wait_stable(300000000)
+    machine.adb.keyboard.press 0x24
+    # A fixed budget first: "Formatting disk..." sits unchanged on the screen
+    # for the whole format and verify, so a bare settle returns mid-format.
+    # Format, verify and the HFS write take under 2 G instructions here.
+    scheduler.run 3000000000
+    wait_stable(900000000)
+    assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} formatting the floppy"
+    assert machine.floppy.drive[0].present "the disk left the drive during the format"
+    check("goldens/q840av-7.1-floppy-format.png")
+    report_row("7.1", "civic", "fd-format")
+    report_perf("suite-av/av-floppy-format", scheduler.instr_count)
+}
+
+# ---- av-floppy-boot ---------------------------------------------------------
+# Cold boot from the floppy with no SCSI disk: the ROM's Start Manager learns
+# of the disk from the controller's first /CSTIN report after the driver
+# opens, reads the boot blocks, and the Mac OS 7.6 Installer comes up — every
+# byte of it through the New Age datapath.
+def row_av_floppy_boot() {
+    machine.rtc.time = 3000000000
+    machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    machine.floppy.drive[0].insert "${$av_fd_boot}"
+    assert try(machine.scsi.device[0].type, none) == none "a SCSI disk is attached: this row must boot from the floppy"
+    # A fixed budget, not a settle: a floppy boot has long quiet stretches.
+    scheduler.run 4000000000
+    scheduler.run 4000000000
+    assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} booting from the floppy"
+    check("goldens/q840av-7.6-floppy-boot.png")
+    report_row("7.6", "civic", "fd-boot")
+    report_perf("suite-av/av-floppy-boot", scheduler.instr_count)
+}
+
 # ---- av-beep ----------------------------------------------------------------
 # SysBeep through the full RTM/DSP path.
 # Boot to the desktop, open the Sound cdev (Apple menu → Control Panels →
@@ -502,7 +658,7 @@ def row_av_tts() {
     assert machine.dsp.state == "running" "av-tts: DSP ${machine.dsp.state} after speech"
     assert machine.dsp.emr == 0x8000 "av-tts: emr=${machine.dsp.emr:04x} after speech — kernel died"
     assert machine.sound.overruns == 0 "av-tts: ${machine.sound.overruns} frame overruns"
-    check_sound("goldens/av-tts.wav", 68640)
+    check_sound("goldens/av-tts.wav", 68160)
     report_perf("suite-av/av-tts", scheduler.instr_count)
 }
 
@@ -567,7 +723,7 @@ def row_av_sound_in() {
     run_ticks(400)
     assert machine.dsp.emr == 0x8000 "av-sound-in: emr=${machine.dsp.emr:04x} after playback — kernel died"
     assert machine.sound.overruns == 0 "av-sound-in: ${machine.sound.overruns} frame overruns"
-    check_sound("goldens/av-sound-in.wav", 161280)
+    check_sound("goldens/av-sound-in.wav", 161520)
     click(377, 169) # Cancel — never Save
     run_ticks(100)
     report_perf("suite-av/av-sound-in", scheduler.instr_count)
@@ -651,19 +807,18 @@ def row_av_sr_command() {
 # golden, and the windoid caption to a screen golden.
 def row_av_sr_macro() {
     sr_bring_up()
-    # A warm-up take first: it misses ("Pardon me?"), settling the AGC and
-    # the endpointer's cepstral mean, and after 10 s more the second take
-    # recognizes.  Which take lands is a property of the boot's exact timing,
-    # so it has moved twice: this row needed the warm-up under the old
-    # scheduler timing, not under honest guest ticks -- where a warm-up that
-    # recognized spoke the answer before the capture opened (capture peak
-    # 0) -- and needs it again now that the machine's PRAM skips the
-    # startup-drive wait (measured: without the pause, and with only a pause,
-    # the take misses).  The run is deterministic, so the golden pins
-    # whatever the takes produce.  NOTE the peak assert alone cannot tell the
-    # answer from a spoken "Pardon me?" -- the windoid golden is what does.
-    sr_say($av_sr_date)
-    run_ticks(600)
+    # ONE take, captured.  Which take the recognizer lands is a property of
+    # the boot's exact timing, so this has moved three times: the row needed
+    # a warm-up take (a miss, "Pardon me?", settling the AGC and the
+    # endpointer's cepstral mean) under the old scheduler timing, not under
+    # honest guest ticks -- where a warm-up that recognized spoke the answer
+    # before the capture opened (capture peak 0) -- needed it again once the
+    # machine's PRAM skipped the startup-drive wait, and stopped needing it
+    # when the floppy driver began finding a drive at boot (the warm-up then
+    # recognized and the captured second take was the miss).  The run is
+    # deterministic, so the golden pins whatever the take produces.  NOTE the
+    # peak assert alone cannot tell the answer from a spoken "Pardon me?" --
+    # the windoid golden is what does.
     #
     # The capture records the machine's OUTPUT, which is silent for as long
     # as an utterance is being fed IN.  So open it only from the point the
@@ -945,6 +1100,41 @@ if row_on("av-sr-macro") {
         row_end("av-sr-macro", try(row_av_sr_macro(), "FAILED"))
     } else {
         echo "skip: av-sr-macro — ${$av_hd} or ${$av_sr_date} not fetched"
+    }
+}
+if row_on("av-floppy-mount") {
+    if have_media($av_rom) && have_media($av_hd) && have_media($av_fd_144) {
+        row_end("av-floppy-mount", try(row_av_floppy_mount(), "FAILED"))
+    } else {
+        echo "skip: av-floppy-mount — ${$av_hd} or ${$av_fd_144} not fetched"
+    }
+}
+if row_on("av-floppy-800k") {
+    if have_media($av_rom) && have_media($av_hd) && have_media($av_fd_800) {
+        row_end("av-floppy-800k", try(row_av_floppy_800k(), "FAILED"))
+    } else {
+        echo "skip: av-floppy-800k — ${$av_hd} or ${$av_fd_800} not fetched"
+    }
+}
+if row_on("av-floppy-write-eject") {
+    if have_media($av_rom) && have_media($av_hd) && have_media($av_fd_144) {
+        row_end("av-floppy-write-eject", try(row_av_floppy_write_eject(), "FAILED"))
+    } else {
+        echo "skip: av-floppy-write-eject — ${$av_hd} or ${$av_fd_144} not fetched"
+    }
+}
+if row_on("av-floppy-format") {
+    if have_media($av_rom) && have_media($av_hd) {
+        row_end("av-floppy-format", try(row_av_floppy_format(), "FAILED"))
+    } else {
+        echo "skip: av-floppy-format — ${$av_hd} not fetched"
+    }
+}
+if row_on("av-floppy-boot") {
+    if have_media($av_rom) && have_media($av_fd_boot) {
+        row_end("av-floppy-boot", try(row_av_floppy_boot(), "FAILED"))
+    } else {
+        echo "skip: av-floppy-boot — ${$av_fd_boot} not fetched"
     }
 }
 

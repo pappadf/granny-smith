@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Floppy drive on the Quadra 840AV and Centris 660AV** — the New Age controller (an NEC µPD72070 in Apple mode) is modelled, so both AV machines have their internal SuperDrive: 1.44 MB, 800K and 400K disks mount through the ROM's own driver (720 KB MFM media are recognised too), 1.44 MB disks write, format and eject, and a floppy boots the machine (the Mac OS 7.6 install disk reaches its Installer). Both profiles offer the drive in the configuration dialog (#178).
 - **Virtual ImageWriter and ImageWriter II, printing to PDF** — every machine has a dot-matrix printer, `machine.imagewriter`, that the guest's own ImageWriter driver prints to:
   - on a serial port (`connection = "serial-a"` / `"serial-b"`): the Lisa Office System and the Mac ImageWriter driver print unmodified, with the printer's ready line, `ESC ?` reply and XON/XOFF;
   - over AppleTalk as an ImageWriter II with the LocalTalk Option card (`connection = "localtalk"`): the Chooser's AppleTalk ImageWriter lists "Virtual ImageWriter", beside the LaserWriter;
@@ -93,6 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Find File on an AppleShare volume (System 7.5)** — searching "on mounted servers" lists each match once, with its path. It found nothing in folders the Mac had never opened, dropped the last matches (they come back with the end-of-search code, which the server sent without its data — FPRead's last bytes were lost the same way), and then reported a found item "missing" because the server answered its ID check with the wrong error code (#169).
+- **Save State of a machine with a hard disk** — saving and re-opening it (Open Checkpoint, or a drop) takes seconds rather than many minutes: the checkpoint file is buffered, and the restored disk is written in large runs instead of a filesystem call per 512-byte block. A Save State of a disk that was a bare HFS volume (wrapped with a partition map and the GSDisk driver) now restores correctly where the disk image is no longer stored, such as another browser; it used to come back unwrapped, and the Mac reported "The System file on this startup disk may be damaged".
 
 ## [v0.8.0] — 2026-08-11
 

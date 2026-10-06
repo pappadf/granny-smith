@@ -191,6 +191,14 @@ header just delivered a second time — and a continuous transfer would
 hand that duplicate to the driver as the next sector (seen as corrupted
 program loads from Open Firmware before the fix).
 
+The revolution time, the header arithmetic (nudge included) and the
+sector read/write come from the shared floppy geometry
+(`floppy_media_rev_ns`, `floppy_media_next_header`,
+`floppy_media_read_sector` / `_write_sector` in `floppy_geometry.h`),
+which the New Age model times its media by too.  SWIM3 passes 300 rpm as
+its 720 KB spindle speed (`FLOPPY_MFM_RPM`); New Age passes 600 — see the
+header for why the two are kept apart.
+
 ### Format detection falls out of the geometry
 
 The Mac OS driver's search order is MFM1440K, MFM720K, GCR800K, GCR400K,

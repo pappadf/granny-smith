@@ -1195,24 +1195,63 @@ int storage_load_state(storage_t *storage, void *context, storage_read_callback_
     if (!storage || !context || !read_cb)
         return GS_ERROR;
 
-    uint8_t buffer[STORAGE_MAX_BLOCK_SIZE];
-    for (uint64_t block = 0; block < storage->block_count; block++) {
-        if (read_exact(read_cb, context, buffer, storage->block_size) != GS_SUCCESS)
-            return GS_ERROR;
+    // The stream yields a block at a time, but the delta is written a run at
+    // a time: a seek and a write per block was a filesystem call per 512
+    // bytes, which under WasmFS/OPFS made opening a Save State of a machine
+    // with a hard disk take minutes.  A run is blocks whose delta positions
+    // are contiguous, capped at the streaming chunk; if the staging
+    // allocation fails, runs fall back to a single block.
+    uint64_t chunk_blocks = STORAGE_STREAM_CHUNK_BYTES / storage->block_size;
+    if (chunk_blocks == 0)
+        chunk_blocks = 1;
+    uint8_t one_block[STORAGE_MAX_BLOCK_SIZE];
+    uint8_t *buffer = malloc((size_t)chunk_blocks * storage->block_size);
+    if (!buffer) {
+        buffer = one_block;
+        chunk_blocks = 1;
+    }
 
-        // Write to delta (a v2 delta gives each cluster a slot as it goes)
+    int rc = GS_SUCCESS;
+    uint64_t run = 0; // blocks staged in buffer
+    off_t run_pos = 0; // delta position of the run's first block
+    for (uint64_t block = 0; block < storage->block_count; block++) {
+        // Where this block goes (a v2 delta gives each cluster a slot as it goes)
         delta_layout_t l = layout_of(storage);
         off_t pos = delta_pos(&l, block);
         if (pos < 0) {
             storage->table[block / storage->cluster_blocks] = (uint32_t)++storage->slots_used;
             pos = delta_pos(&l, block);
         }
-        if (fseeko(storage->delta_fp, pos, SEEK_SET) != 0 ||
-            fwrite(buffer, storage->block_size, 1, storage->delta_fp) != 1)
-            return GS_ERROR;
 
+        // Write out the staged run when this block does not extend it
+        if (run && (run == chunk_blocks || pos != run_pos + (off_t)(run * storage->block_size))) {
+            if (fseeko(storage->delta_fp, run_pos, SEEK_SET) != 0 ||
+                fwrite(buffer, storage->block_size, run, storage->delta_fp) != run) {
+                rc = GS_ERROR;
+                break;
+            }
+            run = 0;
+        }
+        if (!run)
+            run_pos = pos;
+
+        if (read_exact(read_cb, context, buffer + (size_t)run * storage->block_size, storage->block_size) !=
+            GS_SUCCESS) {
+            rc = GS_ERROR;
+            break;
+        }
+        run++;
         bitmap_set(storage->bitmap, (uint32_t)block);
     }
+    if (rc == GS_SUCCESS && run &&
+        (fseeko(storage->delta_fp, run_pos, SEEK_SET) != 0 ||
+         fwrite(buffer, storage->block_size, run, storage->delta_fp) != run))
+        rc = GS_ERROR;
+
+    if (buffer != one_block)
+        free(buffer);
+    if (rc != GS_SUCCESS)
+        return rc;
 
     // Commit: bitmaps → delta, clear journal
     return commit_state(storage);

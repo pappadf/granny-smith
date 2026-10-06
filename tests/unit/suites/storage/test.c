@@ -579,6 +579,51 @@ TEST(storage_save_state_short_base) {
     teardown_sandbox();
 }
 
+// A consolidated restore writes the delta a run at a time.  Into a storage
+// whose delta already holds clusters in scattered slots (the last cluster
+// given the first slot), the target positions jump backwards and forwards,
+// and the disk spans several staging chunks: every block must still land
+// where it belongs.
+TEST(storage_load_state_runs) {
+    setup_sandbox();
+    const uint64_t blocks = 20000;
+    create_base_image_bs(BASE_FILE, blocks, STORAGE_BLOCK_SIZE, 0x11);
+    storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, blocks);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    write_run_pattern(storage, blocks, STORAGE_BLOCK_SIZE);
+    FILE *state = fopen(STATE_FILE, "wb");
+    ASSERT_TRUE(state != NULL);
+    ASSERT_OK(storage_save_state(storage, state, file_write_cb));
+    fclose(state);
+
+    create_base_image_bs(BASE2_FILE, blocks, STORAGE_BLOCK_SIZE, 0x77);
+    storage_config_t config2 = make_config(BASE2_FILE, DELTA2_FILE, JOURNAL2_FILE, blocks);
+    storage_t *reloaded = NULL;
+    ASSERT_OK(storage_new(&config2, &reloaded));
+    uint8_t buf[STORAGE_BLOCK_SIZE];
+    const uint64_t scattered[] = {blocks - 1, 5000, 12345, 3};
+    for (size_t i = 0; i < sizeof(scattered) / sizeof(scattered[0]); i++) {
+        fill_block_bs((size_t)scattered[i], STORAGE_BLOCK_SIZE, 0x99, buf);
+        ASSERT_OK(storage_write_block(reloaded, (size_t)scattered[i] * STORAGE_BLOCK_SIZE, buf));
+    }
+    state = fopen(STATE_FILE, "rb");
+    ASSERT_TRUE(state != NULL);
+    ASSERT_OK(storage_load_state(reloaded, state, file_read_cb));
+    fclose(state);
+
+    uint8_t want[STORAGE_BLOCK_SIZE];
+    for (uint64_t lba = 0; lba < blocks; lba++) {
+        ASSERT_OK(storage_read_block(storage, (size_t)lba * STORAGE_BLOCK_SIZE, want));
+        ASSERT_OK(storage_read_block(reloaded, (size_t)lba * STORAGE_BLOCK_SIZE, buf));
+        ASSERT_TRUE(memcmp(want, buf, STORAGE_BLOCK_SIZE) == 0);
+    }
+
+    ASSERT_OK(storage_delete(storage));
+    ASSERT_OK(storage_delete(reloaded));
+    teardown_sandbox();
+}
+
 // ---- 64-bit offsets and the journal ---------------------------------------
 
 // A block past 2 GiB of the delta is written and read back where it
@@ -875,6 +920,7 @@ int main(void) {
     RUN(storage_save_state_runs_532);
     RUN(storage_save_state_no_base);
     RUN(storage_save_state_short_base);
+    RUN(storage_load_state_runs);
     RUN(storage_block_past_2gib);
     RUN(storage_journal_entry_out_of_range_is_dropped);
     RUN(storage_journal_partial_tail_is_dropped);
