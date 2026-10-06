@@ -1793,9 +1793,18 @@ static uint32_t afp_cmd_resolve_id(afp_req_t *r) {
     uint32_t file_id = RD_BE32(r->in + 3);
     uint16_t bitmap = RD_BE16(r->in + 7);
 
+    // No thread for this ID -- never created, deleted, or 0 -- is
+    // afpIDNotFound, as FPDeleteID answers.  System 7.5's Find File resolves
+    // ID 0 for every match it holds no ID for, and accepts only that code (or
+    // fidNotFound) as "nothing recorded"; afpBadIDErr made it report each
+    // AFP match missing (#169).
     const afp_cat_entry_t *entry = afp_catalog_find(vol->catalog, file_id);
-    if (!entry || entry->is_dir || !entry->has_file_id)
-        return AFPERR_BadIDErr;
+    if (entry && entry->is_dir)
+        return AFPERR_ObjectTypeErr;
+    if (!entry || !entry->has_file_id) {
+        LOG(10, "AFP FPResolveID: id=0x%08X has no file thread", file_id);
+        return AFPERR_IDNotFound;
+    }
     char rel[AFP_MAX_REL_PATH];
     if (!afp_catalog_path(vol->catalog, file_id, rel, sizeof(rel)))
         return AFPERR_IDNotFound;
@@ -2100,6 +2109,66 @@ static bool catsearch_matches(vol_t *vol, const char *rel, const char *name, boo
     return true;
 }
 
+// How deep the fresh-search adoption walk descends: a bound against a host
+// symlink cycle, which stat() follows like any directory.
+#define AFP_CATSEARCH_MAX_DEPTH 32
+
+// Order host names as FPEnumerate lists them (Mac fold first, then bytes).
+static int catsearch_name_cmp(const void *a, const void *b) {
+    const char *na = *(const char *const *)a;
+    const char *nb = *(const char *const *)b;
+    int rc = afp_name_fold_cmp(na, nb);
+    return rc ? rc : strcmp(na, nb);
+}
+
+// Adopt every visible entry under `dir_rel` into the catalog, so a search
+// walks the share and not only what the client happened to list before.
+// Children are adopted in FPEnumerate's name order, as enumeration does, so
+// the CNIDs a search hands out are the ones a listing would have.
+static void catsearch_adopt_tree(vol_t *vol, const char *dir_rel, int depth) {
+    char full_dir[PATH_MAX];
+    if (depth > AFP_CATSEARCH_MAX_DEPTH || !afp_host_path(vol, dir_rel, full_dir, sizeof(full_dir)))
+        return;
+    DIR *dir = opendir(full_dir);
+    if (!dir)
+        return;
+    size_t count = 0, cap = 0;
+    char **names = NULL;
+    struct dirent *dent;
+    while ((dent = readdir(dir)) != NULL) {
+        if (strcmp(dent->d_name, ".") == 0 || strcmp(dent->d_name, "..") == 0 || !afp_name_visible(dent->d_name))
+            continue;
+        if (count == cap) {
+            size_t ncap = cap ? cap * 2 : 32;
+            char **tmp = (char **)realloc(names, ncap * sizeof(char *));
+            if (!tmp)
+                break;
+            names = tmp;
+            cap = ncap;
+        }
+        names[count] = strdup(dent->d_name);
+        if (names[count])
+            count++;
+    }
+    closedir(dir);
+    if (count)
+        qsort(names, count, sizeof(char *), catsearch_name_cmp);
+    for (size_t i = 0; i < count; i++) {
+        char child_rel[AFP_MAX_REL_PATH];
+        struct stat st;
+        // A name too long for a catalog path, or gone since the listing, is skipped.
+        if (afp_build_child_path(dir_rel, names[i], child_rel, sizeof(child_rel)) &&
+            afp_stat_path(vol, child_rel, &st)) {
+            bool is_dir = S_ISDIR(st.st_mode);
+            afp_catalog_resolve_path(vol->catalog, child_rel, true, is_dir);
+            if (is_dir)
+                catsearch_adopt_tree(vol, child_rel, depth + 1);
+        }
+        free(names[i]);
+    }
+    free(names);
+}
+
 static uint32_t afp_cmd_cat_search(afp_req_t *r) {
     if (r->in_len < 35)
         return AFPERR_ParamErr;
@@ -2137,8 +2206,12 @@ static uint32_t afp_cmd_cat_search(afp_req_t *r) {
             return AFPERR_CatalogChanged;
     } else {
         // A fresh search reconciles the catalog with the host tree first, so
-        // out-of-band deletions cannot surface as phantom matches.
+        // out-of-band deletions cannot surface as phantom matches, and adopts
+        // the whole share: the walk below follows the catalog, which holds
+        // only what the client listed, so a folder never opened was never
+        // searched and System 7.5's Find File found nothing.
         afp_catalog_sweep(vol->catalog);
+        catsearch_adopt_tree(vol, "", 0);
     }
 
     bool search_dirs = dir_bm != 0;

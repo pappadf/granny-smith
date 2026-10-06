@@ -2388,14 +2388,19 @@ Return parameters for the file a file ID names. AFP 2.1 and later
 ### Result Codes
 
 - **CallNotSupported** – version earlier than 2.1.
-- **BadIDErr** – the ID is not a defined file ID (no thread, or a directory).
-- **IDNotFound** – the thread is dangling: the file it named is gone.
+- **IDNotFound** – no file thread: the ID was never created, was deleted, or
+  is 0; or the thread is dangling (the file it named is gone).
+- **ObjectTypeErr** – the ID is a directory's number.
 - **ParamErr** – unknown volume identifier.
 
 ### Details
 
 - Because IDs survive rename and move, resolving one is how an alias finds its
   target after the user has reorganised the volume.
+- "No thread" is IDNotFound, not BadIDErr. System 7.5's Find File checks each
+  match it lists with a resolve of the ID it holds for it — 0 for an AFP match
+  — and accepts only IDNotFound (or the File Manager's fidNotFound) as "no ID
+  recorded"; any other code marks the item missing.
 
 ---
 
@@ -2505,7 +2510,14 @@ addressed by a 16-bit offset measured from the first parameter byte.
   ascending CNID order, so resuming means "continue after this ID", and a
   generation change (a compaction or a tombstone sweep — §3.1) invalidates it.
 - A search that starts fresh first reconciles the catalog against the host
-  tree, so files deleted behind the server's back cannot surface as matches.
+  tree, so files deleted behind the server's back cannot surface as matches,
+  then adopts every visible entry of the share (in FPEnumerate's name order,
+  so the CNIDs are the ones a listing would hand out). The walk follows the
+  catalog, so without this a folder the client never opened was never
+  searched.
+- The last matches travel in the EOFErr reply itself; the ASP layer sends
+  reply data with NoErr and with EOFErr (FPRead's final bytes ride the same
+  way), and with no other result.
 
 ---
 
