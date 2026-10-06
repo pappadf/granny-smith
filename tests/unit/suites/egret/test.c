@@ -37,7 +37,7 @@
 // ============================================================
 //
 // egret.c names each event type as it registers it, so the tests address
-// callbacks by name ("tick", "autopoll", "sendto", "resend") rather than by
+// callbacks by name ("tick", "adb_talk", "sendto", "resend") rather than by
 // guessing at scheduling order.
 
 #define MAX_EVENTS 16
@@ -183,12 +183,27 @@ bool adb_iop_transact(adb_t *adb, uint8_t cmd, const uint8_t *in_data, int in_da
     *out_len = 2;
     return true;
 }
+// Emulated time stands still here: the auto-poll period is never waited out.
+double scheduler_time_ns(struct scheduler *restrict s) {
+    (void)s;
+    return 0.0;
+}
 bool adb_has_data(const adb_t *adb) {
     (void)adb;
     return s_adb_has_data;
 }
+uint64_t adb_autopoll_talk_ns(const adb_t *adb, uint16_t enable_mask) {
+    (void)adb, (void)enable_mask;
+    return s_adb_has_data ? 3705000 : 0;
+}
+// The hook egret.c registers: the test calls it to announce new data, as
+// adb.c does when a device gets some.
+static void (*s_data_hook)(void *ctx);
+static void *s_data_hook_ctx;
 void adb_set_data_hook(adb_t *adb, void (*hook)(void *ctx), void *ctx) {
-    (void)adb, (void)hook, (void)ctx;
+    (void)adb;
+    s_data_hook = hook;
+    s_data_hook_ctx = ctx;
 }
 // Device selection is adb.c's business and has its own suite; here it only
 // has to answer, so that the autopoll path produces a packet.
@@ -244,7 +259,7 @@ static egret_t *setup(void) {
     s_pb = 0;
     s_adb_has_data = false;
 
-    // Non-NULL adb: egret_autopoll_event gates on the pointer, and the
+    // Non-NULL adb: egret_adb_service gates on the pointer, and the
     // stubs above never dereference it.
     egret_t *eg = egret_init(NULL, NULL, (struct adb *)1, (struct scheduler *)1, NULL);
     ASSERT_TRUE(eg != NULL);
@@ -306,11 +321,40 @@ TEST(test_an_unclaimed_response_does_not_wedge_the_transport) {
     ASSERT_TRUE(s_xcvr_high); // transport released
 
     // The proof that it is unwedged: an unsolicited packet gets out.
-    // (Before the fix, egret_try_unsolicited saw EG_SENDING forever.)
+    // (Before the fix, egret_try_unsolicited saw EG_SENDING forever.)  A
+    // device has data, so Egret runs its Talk; the auto-poll packet then
+    // waits behind the reaped reply, which is re-presented first and would
+    // otherwise be overwritten in tx_buf.
     s_adb_has_data = true;
+    s_data_hook(s_data_hook_ctx);
     int before = s_sr_len;
-    fire("autopoll");
-    ASSERT_TRUE(s_sr_len > before);
+    fire("adb_talk");
+    ASSERT_EQ_INT(before, s_sr_len); // waits for the reaped reply
+    fire("resend");
+    ASSERT_TRUE(s_sr_len > before); // the reply, re-presented
+    before = s_sr_len;
+    host_takes_response(eg);
+    // Taken, the link is free, and the waiting auto-poll packet goes out at
+    // once: its attention byte is in the SR with xcvrSes asserted again.
+    ASSERT_TRUE(s_sr_len > before + 1);
+    ASSERT_TRUE(!s_xcvr_high);
+    egret_delete(eg);
+}
+
+// Auto-poll runs on data, not on a clock: nothing is scheduled while no
+// device has data, and a Talk runs as soon as one does.
+TEST(test_auto_poll_runs_on_data_not_on_a_clock) {
+    egret_t *eg = setup();
+    const uint8_t apoll_on[] = {PKT_PSEUDO, CMD_APOLL, 0x01};
+    host_exchange(eg, apoll_on, 3);
+    ASSERT_TRUE(!armed("adb_talk")); // quiet bus: nothing runs
+
+    s_adb_has_data = true;
+    s_data_hook(s_data_hook_ctx);
+    ASSERT_TRUE(armed("adb_talk"));
+    int before = s_sr_len;
+    fire("adb_talk");
+    ASSERT_TRUE(s_sr_len > before); // the link was free: the packet went out
 
     egret_delete(eg);
 }
@@ -393,6 +437,7 @@ TEST(test_a_new_command_supersedes_a_parked_reply) {
 
 int main(void) {
     RUN(test_an_unclaimed_response_does_not_wedge_the_transport);
+    RUN(test_auto_poll_runs_on_data_not_on_a_clock);
     RUN(test_a_reaped_response_is_re_presented);
     RUN(test_a_reaped_tick_is_dropped_not_re_presented);
     RUN(test_host_engagement_cancels_the_watchdog);

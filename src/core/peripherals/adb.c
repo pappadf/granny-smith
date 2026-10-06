@@ -57,14 +57,6 @@ LOG_USE_CATEGORY_NAME("adb");
 // SR interrupt fires.
 #define ADB_BYTE_DELAY (330 * 8 * 1000)
 
-// No auto-poll interval.  The real transceiver repeats the last Talk R0
-// about every 11 ms while idle (state 3), but the guest never sees a poll that
-// finds nothing -- only the interrupt when a device answers.  So the model
-// answers when a device HAS data: at once when input arrives
-// (adb_mouse_event, adb_keyboard_event) or when the bus goes idle with data
-// still waiting, and runs nothing at all while the bus is quiet.  The 11 ms
-// beat used to delay every report by up to a poll.
-
 // Default ADB device addresses assigned at power-on
 #define KBD_DEFAULT_ADDR   2
 #define MOUSE_DEFAULT_ADDR 3
@@ -221,6 +213,11 @@ struct adb {
     // anchors its scan here.  Plain data, so it checkpoints with the rest.
     uint8_t autopoll_mru;
 
+    // The VIA-side transceiver's idle Talk: when the last one started (paces
+    // the next, adb_poll_wait_ns) and whether one is scheduled.
+    double idle_talk_start_ns;
+    bool idle_talk_pending;
+
     // Shadow of the last VIA1 port-B output, for the ST-transition filter in
     // adb_port_b_output.  It lived in four machine-state structs -- se30_t,
     // iicx/iix, iici and q700 -- each with its own copy of the filter and,
@@ -248,7 +245,9 @@ static void adb_deliver_next_byte(adb_t *adb);
 static void adb_deliver_next_byte_deferred(void *source, uint64_t data);
 static void adb_shift_complete_deferred(void *source, uint64_t data);
 
-static void adb_autopoll_deferred(void *source, uint64_t data);
+static void adb_idle_talk_event(void *source, uint64_t data);
+static void device_data_arrived(adb_t *adb);
+static int report_bytes(const adb_t *adb, uint8_t addr);
 static void adb_decode_command(adb_t *adb, uint8_t cmd);
 
 // ============================================================================
@@ -333,8 +332,7 @@ static void kbd_enqueue(adb_t *adb, uint8_t byte) {
     }
     adb->kbd_queue.buf[adb->kbd_queue.head] = byte;
     adb->kbd_queue.head = head;
-    if (adb->data_hook)
-        adb->data_hook(adb->data_hook_ctx);
+    device_data_arrived(adb);
 }
 
 // Dequeues one byte from the keyboard ring buffer; returns KBD_NO_KEY ($FF)
@@ -521,22 +519,13 @@ static bool autopoll_addr_enabled(uint16_t mask, uint8_t addr) {
     return mask == 0 || (mask & (1u << addr)) != 0;
 }
 
-// One pass of the auto-poll scan, starting at `first` and wrapping through
-// all sixteen addresses.  Returns the address that answered, or -1.
-static int autopoll_scan(adb_t *adb, uint16_t mask, uint8_t first, uint8_t *cmd_out, uint8_t *out_data, int *len_out) {
+// The first address from `first` round that may be polled under `mask` and
+// has data, or -1.
+static int autopoll_first_with_data(const adb_t *adb, uint16_t mask, uint8_t first) {
     for (int step = 0; step < 16; step++) {
         uint8_t addr = (uint8_t)((first + step) & 0x0F);
-        if (!autopoll_addr_enabled(mask, addr))
-            continue;
-        if (!device_has_pending_data(adb, addr))
-            continue;
-        uint8_t cmd = (uint8_t)((addr << 4) | 0x0C); // Talk register 0
-        int n = 0;
-        if (adb_iop_transact(adb, cmd, NULL, 0, out_data, &n) && n > 0) {
-            *cmd_out = cmd;
-            *len_out = n;
+        if (autopoll_addr_enabled(mask, addr) && device_has_pending_data(adb, addr))
             return addr;
-        }
     }
     return -1;
 }
@@ -555,10 +544,8 @@ static bool autopoll_others_pending(const adb_t *adb, uint16_t mask, uint8_t exc
     return false;
 }
 
-bool adb_autopoll_next(adb_t *adb, uint16_t enable_mask, uint8_t *cmd_out, uint8_t *out_data, int *len_out) {
-    if (!adb || !cmd_out || !out_data || !len_out)
-        return false;
-
+// Which address an auto-poll would hear from now, or -1.
+static int autopoll_pick(const adb_t *adb, uint16_t enable_mask) {
     uint8_t mru = (uint8_t)(adb->autopoll_mru & 0x0F);
 
     // The Apple IOP ADB Driver ERS:
@@ -582,27 +569,48 @@ bool adb_autopoll_next(adb_t *adb, uint16_t enable_mask, uint8_t *cmd_out, uint8
     // Honouring the SRQ clause matters, and is not pedantry: without it the
     // rule is "re-poll the MRU device", and a mouse in continuous motion
     // always has data, so typing while dragging would never be delivered.
-    int answered;
     if (autopoll_addr_enabled(enable_mask, mru) && device_has_pending_data(adb, mru) &&
-        !autopoll_others_pending(adb, enable_mask, mru)) {
-        // Clause 1: the MRU device, and nobody else is asking.
-        answered = autopoll_scan(adb, enable_mask, mru, cmd_out, out_data, len_out);
-    } else {
-        // Clause 2: somebody else is asking (or the MRU has nothing) -- walk
-        // the others, MRU-relative, starting past the MRU address.
-        answered = autopoll_scan(adb, enable_mask, (uint8_t)((mru + 1) & 0x0F), cmd_out, out_data, len_out);
-    }
+        !autopoll_others_pending(adb, enable_mask, mru))
+        return mru; // Clause 1: the MRU device, and nobody else is asking.
+
+    // Clause 2: somebody else is asking (or the MRU has nothing) -- walk the
+    // others, MRU-relative, starting past the MRU address.
+    int answered = autopoll_first_with_data(adb, enable_mask, (uint8_t)((mru + 1) & 0x0F));
 
     // Clause 3: nothing enabled answered.  If an address outside the mask has
     // data, SRQ is still asserted as far as the bus is concerned, so poll
     // everything.  (Skipped when there is no mask: that scan just ran.)
     if (answered < 0 && enable_mask != 0)
-        answered = autopoll_scan(adb, 0, (uint8_t)((mru + 1) & 0x0F), cmd_out, out_data, len_out);
+        answered = autopoll_first_with_data(adb, 0, (uint8_t)((mru + 1) & 0x0F));
+    return answered;
+}
 
-    if (answered < 0)
+// The Register 0 report the device at `addr` sends: the extended mouse's is
+// 4 bytes, everything else's 2.
+static int report_bytes(const adb_t *adb, uint8_t addr) {
+    if (addr == adb->mouse.address && adb->mouse.handler == MOUSE_HANDLER_ID_EXTENDED)
+        return 4;
+    return 2;
+}
+
+uint64_t adb_autopoll_talk_ns(const adb_t *adb, uint16_t enable_mask) {
+    int addr = adb ? autopoll_pick(adb, enable_mask) : -1;
+    return addr < 0 ? 0 : adb_talk_ns(report_bytes(adb, (uint8_t)addr));
+}
+
+bool adb_autopoll_next(adb_t *adb, uint16_t enable_mask, uint8_t *cmd_out, uint8_t *out_data, int *len_out) {
+    if (!adb || !cmd_out || !out_data || !len_out)
         return false;
-
-    adb->autopoll_mru = (uint8_t)answered;
+    int addr = autopoll_pick(adb, enable_mask);
+    if (addr < 0)
+        return false;
+    uint8_t cmd = (uint8_t)((addr << 4) | 0x0C); // Talk register 0
+    int n = 0;
+    if (!adb_iop_transact(adb, cmd, NULL, 0, out_data, &n) || n <= 0)
+        return false;
+    *cmd_out = cmd;
+    *len_out = n;
+    adb->autopoll_mru = (uint8_t)addr;
     return true;
 }
 
@@ -1105,12 +1113,55 @@ static void adb_shift_complete_deferred(void *source, uint64_t data) {
     via_input_sr(adb->via, via_read_sr(adb->via));
 }
 
-// Scheduler callback that implements the ADB transceiver's auto-poll behaviour.
-// In IDLE state the real transceiver repeats the last Talk R0 command every ~11 ms.
-// When a device has data, the transceiver clocks it in and fires IFR_SR with
-// bit3=HIGH so the ROM's FDBShiftInt handler can fetch the reply bytes via
-// EVEN/ODD transitions.  When no device responds, the transceiver stays quiet
-// and reschedules the next poll — the ROM remains waiting at ShiftIntResume.
+// === The VIA-side transceiver's auto-poll ===================================
+//
+// In IDLE (state 3) the real transceiver repeats the last Talk R0 every ~11 ms
+// and interrupts only when a device answers -- or, when another device is
+// service-requesting, with SRQ.  The host sees only that interrupt, so the
+// model runs the idle Talk when there is something to hear: when a device
+// gets data while the bus is idle, and when the bus goes idle with data still
+// waiting (the rest of a motion, or a reply the ROM walked away from).  The
+// interrupt comes when that Talk would have finished on the bus.  A quiet bus
+// runs nothing.
+//
+// (A fixed 11 ms poll used to stand in for this, and since the ROM goes idle
+// after each Talk it issues to resume polling, it delayed every report by a
+// full poll, and the first report after an SRQ scan by two: ~29 ms.)
+static void xcvr_idle_talk(adb_t *adb) {
+    if (!adb->via || adb->state != ADB_STATE_IDLE || adb->idle_talk_pending || !has_pending_data(adb))
+        return;
+    // The polled device answers with its report; if it has nothing, the
+    // Talk times out and the transceiver sees another device's SRQ.  The
+    // Talk starts once a poll period is up since the last one (adb.h).
+    uint8_t addr = adb->last_poll_addr;
+    int bytes = device_has_pending_data(adb, addr) ? report_bytes(adb, addr) : 0;
+    double now = scheduler_time_ns(adb->scheduler);
+    uint64_t wait = adb_poll_wait_ns(now, adb->idle_talk_start_ns, ADB_POLL_PERIOD_NS);
+    adb->idle_talk_start_ns = now + (double)wait;
+    adb->idle_talk_pending = true;
+    scheduler_new_cpu_event(adb->scheduler, &adb_idle_talk_event, adb, 0, 0, wait + adb_talk_ns(bytes));
+}
+
+// Cancel a scheduled idle Talk: the ROM started a transaction of its own.
+static void xcvr_cancel_idle_talk(adb_t *adb) {
+    remove_event(adb->scheduler, &adb_idle_talk_event, adb);
+    adb->idle_talk_pending = false;
+}
+
+// A device has new data: the VIA-side transceiver pulls SRQ and runs its idle
+// Talk, and a transceiver outside this file is told (adb_set_data_hook).
+static void device_data_arrived(adb_t *adb) {
+    if (adb->via && adb->state == ADB_STATE_IDLE) {
+        set_adb_int(adb, false);
+        xcvr_idle_talk(adb);
+    }
+    if (adb->data_hook)
+        adb->data_hook(adb->data_hook_ctx);
+}
+
+// The idle Talk has finished: the polled device's report is ready, so fire
+// IFR_SR with bit3=HIGH and let the ROM's FDBShiftInt handler fetch the bytes
+// via EVEN/ODD transitions -- or bit3=LOW for another device's SRQ.
 //
 // Important: the real transceiver always repeats the LAST Talk R0 command
 // issued by the ROM (tracked in last_poll_addr).  It does NOT choose which
@@ -1120,27 +1171,24 @@ static void adb_shift_complete_deferred(void *source, uint64_t data) {
 // the SE/30 ROM's ADB state machine because the ROM's device-handler pointer
 // at $134(ADBBase) was set for last_poll_addr, not for the device we chose.
 //
-// The SR byte written during autopoll serves only as a wake-up: the ROM's
-// FDBShiftInt ISR uses IFR_SR to enter the handler but does not process the
-// SR value as data.  Actual reply bytes are read via EVEN/ODD port-B state
-// transitions, so reply_index must be 0 when the autopoll fires.
-static void adb_autopoll_deferred(void *source, uint64_t data) {
+// The SR byte written here serves only as a wake-up: the ROM's FDBShiftInt
+// ISR uses IFR_SR to enter the handler but does not process the SR value as
+// data.  Actual reply bytes are read via EVEN/ODD port-B state transitions,
+// so reply_index must be 0 when the idle Talk completes.
+static void adb_idle_talk_event(void *source, uint64_t data) {
     (void)data;
     adb_t *adb = (adb_t *)source;
+    adb->idle_talk_pending = false;
 
-    // Demoted from level 1: this fires every ~11 ms while ADB is idle, which
-    // floods logs at the WARN tier. Level 3 keeps it as on-demand debug info.
-    LOG(3, "autopoll: entry state=%d pending=%d mouse_pending=%d mouse_btn=%d", adb->state, has_pending_data(adb),
+    LOG(3, "idle talk: entry state=%d pending=%d mouse_pending=%d mouse_btn=%d", adb->state, has_pending_data(adb),
         adb->mouse_data_pending, adb->mouse_button);
 
-    // IOP-based machines (Macintosh IIfx) don't have an autopoll timer in
-    // this module — the SWIM IOP polls each ADB device via XmtMsg[3] /
-    // irSendRcvReply and pulls data through adb_iop_transact() instead.
-    // Skip the VIA-shift-register wake-up; it would NULL-deref the VIA.
+    // Only the VIA-side transceiver schedules this (xcvr_idle_talk); a
+    // machine whose ADB is Egret, Cuda or the IOP has no VIA here.
     if (!adb->via)
         return;
 
-    // Stale event: state has moved on since this was scheduled
+    // Stale event: the ROM started a transaction meanwhile
     if (adb->state != ADB_STATE_IDLE)
         return;
 
@@ -1159,7 +1207,7 @@ static void adb_autopoll_deferred(void *source, uint64_t data) {
         // The real transceiver gets no response and stays quiet.  Don't fire
         // IFR_SR — the ROM remains waiting, and so does the model: new data
         // for the polled device schedules the next answer.
-        LOG(3, "autopoll: nothing to report");
+        LOG(3, "idle talk: nothing to report");
         return;
     }
 
@@ -1171,7 +1219,7 @@ static void adb_autopoll_deferred(void *source, uint64_t data) {
         // The SR byte (0xFF) is a wake-up only; actual data is delivered via
         // EVEN/ODD transitions starting from reply_index 0.
         prepare_talk_reply(adb, poll_addr, 0);
-        LOG(2, "autopoll: addr=%d has data, signalling ROM", poll_addr);
+        LOG(2, "idle talk: addr=%d has data, signalling ROM", poll_addr);
         adb->reply_index = 0;
         adb->dummy_sent = false;
         set_adb_int(adb, true); // bit3=HIGH → data available
@@ -1180,7 +1228,7 @@ static void adb_autopoll_deferred(void *source, uint64_t data) {
         // Last-polled device has no data, but another device does (SRQ case).
         // Signal SRQ (bit3=LOW) to prompt the ROM's SRQ handler to poll other
         // devices and discover which one needs attention.
-        LOG(2, "autopoll: addr=%d no data, SRQ for other device", poll_addr);
+        LOG(2, "idle talk: addr=%d no data, SRQ for other device", poll_addr);
         adb->reply_len = 0;
         adb->reply_index = 0;
         set_adb_int(adb, false); // bit3=LOW → SRQ from another device
@@ -1209,7 +1257,7 @@ adb_t *adb_init(via_t *via, struct scheduler *scheduler, checkpoint_t *checkpoin
     scheduler_new_event_type(scheduler, "adb", adb, "shift_done", &adb_shift_complete_deferred);
 
     // Register the auto-poll event type (IDLE-state Talk R0 repetition)
-    scheduler_new_event_type(scheduler, "adb", adb, "autopoll", &adb_autopoll_deferred);
+    scheduler_new_event_type(scheduler, "adb", adb, "idle_talk", &adb_idle_talk_event);
 
     // Set device register 3 defaults and clear all queues/deltas
     adb_reset(adb);
@@ -1245,7 +1293,7 @@ static void adb_transceiver_reset(adb_t *adb) {
         return;
     remove_event(adb->scheduler, &adb_deliver_next_byte_deferred, adb);
     remove_event(adb->scheduler, &adb_shift_complete_deferred, adb);
-    remove_event(adb->scheduler, &adb_autopoll_deferred, adb);
+    xcvr_cancel_idle_talk(adb);
     adb->state = ADB_STATE_IDLE;
     adb->listen_active = false;
     adb->listen_index = 0;
@@ -1348,7 +1396,7 @@ void adb_port_b_output(adb_t *adb, uint8_t value) {
         // machine callbacks.
         remove_event(adb->scheduler, &adb_deliver_next_byte_deferred, adb);
         remove_event(adb->scheduler, &adb_shift_complete_deferred, adb);
-        remove_event(adb->scheduler, &adb_autopoll_deferred, adb);
+        xcvr_cancel_idle_talk(adb);
         scheduler_new_cpu_event(adb->scheduler, &adb_shift_complete_deferred, adb, 0, 0, ADB_SHIFT_DELAY);
         break;
 
@@ -1422,16 +1470,9 @@ void adb_port_b_output(adb_t *adb, uint8_t value) {
                 LOG(2, "IDLE: aborted register Talk (reply_len=%d), nothing to restore", adb->reply_len);
             }
         }
-        remove_event(adb->scheduler, &adb_autopoll_deferred, adb);
+        xcvr_cancel_idle_talk(adb);
         set_adb_int(adb, !has_pending_data(adb));
-        // A device with data waiting (the reply the ROM just walked away
-        // from, or the rest of a motion) is answered at once, as new input
-        // is; a quiet bus schedules nothing.  The ROM goes idle after every
-        // Talk it issues to resume polling, so a fixed 11 ms poll here came
-        // on top of each report, and twice after an SRQ scan: the first move
-        // after typing reached the guest ~29 ms late.
-        if (has_pending_data(adb))
-            scheduler_new_cpu_event(adb->scheduler, &adb_autopoll_deferred, adb, 0, 0, ADB_SHIFT_DELAY);
+        xcvr_idle_talk(adb); // data still waiting: the idle Talk hears it
         break;
     }
 }
@@ -1472,15 +1513,7 @@ void adb_keyboard_event(adb_t *adb, key_event_t event, int key) {
     if (event == key_up)
         byte |= 0x80;
 
-    kbd_enqueue(adb, byte);
-
-    // Pull SRQ low to prompt the OS to poll sooner when we are idle.
-    // Reschedule the auto-poll to fire quickly so the ROM picks up the key event.
-    if (adb->state == ADB_STATE_IDLE) {
-        set_adb_int(adb, false);
-        remove_event(adb->scheduler, &adb_autopoll_deferred, adb);
-        scheduler_new_cpu_event(adb->scheduler, &adb_autopoll_deferred, adb, 0, 0, ADB_SHIFT_DELAY);
-    }
+    kbd_enqueue(adb, byte); // tells the transceiver (device_data_arrived)
 }
 
 // Records a host mouse event: updates accumulated deltas and current button state.
@@ -1493,19 +1526,10 @@ void adb_mouse_event(adb_t *adb, bool button, int dx, int dy) {
     adb->mouse_dx += dx;
     adb->mouse_dy += dy;
 
-    // Mark mouse as having unreported data
+    // Motion or a button change is new data: the transceiver hears it
     if (dx != 0 || dy != 0 || button_changed) {
         adb->mouse_data_pending = true;
-        if (adb->data_hook)
-            adb->data_hook(adb->data_hook_ctx);
-    }
-
-    // Assert SRQ when idle and there is movement or a button-state change.
-    // Reschedule the auto-poll to fire quickly so the ROM picks up the new data.
-    if (adb->state == ADB_STATE_IDLE && (dx != 0 || dy != 0 || button_changed)) {
-        set_adb_int(adb, false);
-        remove_event(adb->scheduler, &adb_autopoll_deferred, adb);
-        scheduler_new_cpu_event(adb->scheduler, &adb_autopoll_deferred, adb, 0, 0, ADB_SHIFT_DELAY);
+        device_data_arrived(adb);
     }
 }
 

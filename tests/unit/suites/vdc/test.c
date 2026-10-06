@@ -197,9 +197,18 @@ uint16_t adb_device_mask(const adb_t *adb) {
     (void)adb;
     return (1 << 2) | (1 << 3);
 }
+// Emulated time stands still here: the auto-poll period is never waited out.
+double scheduler_time_ns(struct scheduler *restrict s) {
+    (void)s;
+    return 0.0;
+}
 bool adb_has_data(const adb_t *adb) {
     (void)adb;
     return false;
+}
+uint64_t adb_autopoll_talk_ns(const adb_t *adb, uint16_t enable_mask) {
+    (void)adb, (void)enable_mask;
+    return 0;
 }
 void adb_set_data_hook(adb_t *adb, void (*hook)(void *ctx), void *ctx) {
     (void)adb, (void)hook, (void)ctx;

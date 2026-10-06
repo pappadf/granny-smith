@@ -77,7 +77,8 @@ LOG_USE_CATEGORY_NAME("cuda");
 #define CMD_COMBIIC    0x25 // I2C combined format: subaddress write, repeated-start read (2.40)
 #define CMD_26         0x26 // present in the 2.40 dispatch; the Gossamer boot program sends 1,1,1
 #define CMD_RESET      0x11 // cold reset
-#define CMD_SETAUTOP   0x14 // set autopoll rate
+#define CMD_SETAUTOP   0x14 // set autopoll rate (ms)
+#define CMD_RDAUTOP    0x16 // read autopoll rate (ms)
 #define CMD_RDDEVLIST  0x1A // read the ADB device list (16-bit address bitmap)
 #define CMD_WR1SECMODE 0x1B // 1-second-interrupt mode
 
@@ -99,14 +100,7 @@ static const uint8_t cuda_rejected_cmds[] = {0x04, 0x05, 0x06, 0x0F, 0x15, 0x17,
 #define CUDA_FLAG_TIMEOUT  (1u << 1) // addressed device had no data
 #define CUDA_FLAG_AUTOPOLL (1u << 6) // data came from an auto-poll
 
-// Auto-poll delivery: ADB data goes out about one Talk R0 after it arrives,
-// and again at this pace while more is waiting or the bus is busy (see
-// cuda_autopoll_event).  The 1-second tick has its own constant.
-#define CUDA_AUTOPOLL_NS 1000000ULL
-// A parked auto-poll packet (unclaimed, cuda_send_timeout_event) is offered
-// again at the firmware's own poll beat: its host is not listening yet.
-#define CUDA_AUTOPOLL_PARKED_NS 11000000ULL
-#define CUDA_TICK_NS            1000000000.0
+#define CUDA_TICK_NS 1000000000.0
 // Delay before a Cuda-initiated SR byte lands (the firmware's ~25 us).
 #define CUDA_PUSH_DELAY_NS 25000.0
 // How long after the host negates ByteAck at the end of a sync cycle Cuda
@@ -200,10 +194,17 @@ struct av_cuda {
     bool tx_represented;
     // TREQ negation owed at the end of a sync cycle (see CUDA_SYNC_TREQ_NS).
     bool treq_release_pending;
-    // An autopoll packet the host left unclaimed, kept OUT of tx_buf so a
-    // command reply cannot overwrite it (see cuda_present_parked_autopoll).
+    // The auto-poll packet waiting for the link to the host: built when an
+    // ADB Talk completes, or put back when the host left it unclaimed.  Kept
+    // OUT of tx_buf so a command reply cannot overwrite it (see
+    // cuda_present_parked_autopoll and cuda_adb_service).
     uint8_t ap_park[16];
     int ap_park_len;
+    // An auto-poll Talk is running on the ADB (cuda_adb_talk_event), when the
+    // last one started, and the host's poll period in ms (0: the default).
+    bool adb_talk_pending;
+    double adb_talk_start_ns;
+    uint8_t autopoll_ms;
 
     // --- pointers / callbacks (not checkpointed) ---
     struct via *via1;
@@ -233,8 +234,8 @@ struct av_cuda {
 
 static void cuda_tick_event(void *source, uint64_t data);
 static void cuda_reset_event(void *source, uint64_t data);
-static void cuda_autopoll_event(void *source, uint64_t data);
-static void cuda_autopoll_kick(struct av_cuda *cuda);
+static void cuda_adb_talk_event(void *source, uint64_t data);
+static void cuda_adb_service(struct av_cuda *cuda);
 static void cuda_push_event(void *source, uint64_t data);
 static void cuda_send_timeout_event(void *source, uint64_t data);
 static void cuda_resend_event(void *source, uint64_t data);
@@ -279,6 +280,9 @@ static void cuda_push_event(void *source, uint64_t data) {
         cuda_set_treq(cuda, true); // the last response byte carries TREQ negated
     cuda->push_last = false;
     via_input_sr(cuda->via1, cuda->push_byte);
+    // The idle acknowledge has gone out: the link to the host is free.
+    if (cuda->state == CUDA_IDLE)
+        cuda_adb_service(cuda);
 }
 
 // Push the tx_buf byte at `idx`, raising TREQ with the last byte (the
@@ -402,8 +406,6 @@ static void cuda_send_timeout_event(void *source, uint64_t data) {
         LOG(2, "autopoll packet unclaimed by host — transport reset to idle, parked ahead of new data");
         memcpy(cuda->ap_park, cuda->tx_buf, (size_t)cuda->tx_len);
         cuda->ap_park_len = cuda->tx_len;
-        remove_event(cuda->sched, &cuda_autopoll_event, cuda);
-        scheduler_new_cpu_event(cuda->sched, &cuda_autopoll_event, cuda, 0, 0, CUDA_AUTOPOLL_PARKED_NS);
     } else {
         LOG(2, "response unclaimed by host — transport reset to idle, parked for re-presentation");
         cuda->resend_pending = true;
@@ -551,12 +553,16 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
     case CMD_APOLL:
         cuda->autopoll_enabled = (data_len >= 1) ? (data[0] != 0) : true;
         LOG(2, "APoll -> autopoll %s", cuda->autopoll_enabled ? "on" : "off");
-        if (cuda->autopoll_enabled)
-            cuda_autopoll_kick(cuda); // data that arrived while it was off
+        cuda_adb_service(cuda); // data that arrived while it was off
         break;
     case CMD_SETAUTOP:
         cuda->autopoll_enabled = true; // setting a rate implies autopoll
-        cuda_autopoll_kick(cuda);
+        if (data_len >= 1)
+            cuda->autopoll_ms = data[0];
+        cuda_adb_service(cuda);
+        break;
+    case CMD_RDAUTOP:
+        cuda->tx_buf[n++] = cuda->autopoll_ms ? cuda->autopoll_ms : (uint8_t)(ADB_POLL_PERIOD_NS / 1000000);
         break;
     case CMD_RDDEVLIST: {
         // The firmware's autopoll list: one bit per ADB address that answered
@@ -972,17 +978,17 @@ static void cuda_reset_event(void *source, uint64_t data) {
     system_machine_reset();
 }
 
-// A reaped autopoll packet holds ADB data already taken from the device
-// queue.  Left in tx_buf it would be overwritten by the next packet built
-// there — a command reply, a tick, the next autopoll — and the keystrokes
-// in it lost.  The firmware's output queue does not work that way: the
-// undelivered packet is still at its head, behind any command the host
-// runs meanwhile.  So it is parked in its own slot (cuda_send_timeout_event)
-// and, when the next unsolicited send comes round, goes out instead of the
-// new data (which waits a period).  This keeps the ADB stream whole without
-// the bus gate that stalls Copland (see cuda_bus_idle): traffic keeps
-// flowing, it is just the right packet.  A sync drops it, as it drops every
-// asynchronous source.
+// Send the auto-poll packet waiting in ap_park.  It waits there from the end
+// of its ADB Talk until the link is free (cuda_adb_service), and goes back
+// there if the host leaves it unclaimed: it holds ADB data already taken
+// from the device queue, and left in tx_buf it would be overwritten by the
+// next packet built there -- a command reply, a tick -- and the keystrokes in
+// it lost.  The firmware's output queue does not work that way: the
+// undelivered packet is still at its head, behind any command the host runs
+// meanwhile.  No new Talk starts while it waits, and the tick yields to it.
+// This keeps the ADB stream whole without the bus gate that stalls Copland
+// (see cuda_bus_idle).  A sync drops it, as it drops every asynchronous
+// source.
 //
 // It matters for the beige G3's Open Firmware, which enables autopoll and
 // then leaves the first packets unclaimed while it finishes its ADB probe:
@@ -995,7 +1001,7 @@ static bool cuda_present_parked_autopoll(av_cuda_t *cuda) {
     memcpy(cuda->tx_buf, cuda->ap_park, (size_t)cuda->ap_park_len);
     cuda->tx_len = cuda->ap_park_len;
     cuda->ap_park_len = 0;
-    LOG(2, "presenting the parked autopoll packet ahead of new unsolicited data");
+    LOG(3, "sending the auto-poll packet (%d bytes)", cuda->tx_len);
     cuda_begin_send(cuda);
     return true;
 }
@@ -1030,55 +1036,70 @@ static void cuda_tick_event(void *source, uint64_t data) {
     scheduler_new_cpu_event(cuda->sched, &cuda_tick_event, cuda, 0, 0, (uint64_t)CUDA_TICK_NS);
 }
 
-// ADB auto-poll: Talk-Reg-0 the active devices; deliver fresh data as an
-// unsolicited adbPkt with the autopoll flag set.
+// ADB auto-poll, as the host sees it (adb.h): while auto-poll is on and a
+// device has data, Cuda runs a Talk R0 -- at once on a quiet bus, else a poll
+// period after the last -- and when that Talk completes, the reply becomes an
+// unsolicited adbPkt with the autopoll flag set, which waits in ap_park until
+// the link to the host is free.  One packet at a time: the next Talk starts
+// once it has gone.  Nothing runs on a quiet bus.
 //
-// Driven by data, not by a clock.  The firmware polls on an ~11 ms beat, but
-// the host sees only the packets, so the model sends one when a device has
-// data (cuda_adb_data schedules this) and the bus is free, and comes back
-// while there is more -- or a parked packet -- to send.  A quiet bus costs
-// nothing.  Auto-poll being ON is the host's choice (APoll / SetAutoPollRate)
-// and is honoured; the beat was only ever latency: up to 11 ms on every
-// mouse move.
-static void cuda_autopoll_kick(av_cuda_t *cuda) {
-    remove_event(cuda->sched, &cuda_autopoll_event, cuda);
-    scheduler_new_cpu_event(cuda->sched, &cuda_autopoll_event, cuda, 0, 0, CUDA_AUTOPOLL_NS);
+// Called whenever one of those conditions may have changed: a device got
+// data (cuda_adb_data), the host turned auto-poll on, a Talk completed, or
+// the link went free (cuda_push_event, after the idle acknowledge).
+static void cuda_adb_service(av_cuda_t *cuda) {
+    if (cuda->ap_park_len) {
+        // A reaped solicited reply (resend_pending) goes first: its
+        // re-presentation is dropped if the link is busy when it comes due.
+        if (cuda_bus_idle(cuda) && !cuda->resend_pending)
+            cuda_present_parked_autopoll(cuda);
+        return;
+    }
+    if (!cuda->autopoll_enabled || !cuda->adb || cuda->adb_talk_pending)
+        return;
+    // The device-selection rules live in adb.c, shared with Egret and the
+    // SWIM IOP.  Cuda has no WrDevList in this model -- the host can read the
+    // device list but not set a polling mask -- so 0 here means every
+    // address is eligible, and the scan finds the devices wherever Listen R3
+    // has most recently moved them (Copland moves them and leaves them;
+    // classic Mac OS moves them back).
+    uint64_t talk_ns = adb_autopoll_talk_ns(cuda->adb, 0);
+    if (!talk_ns)
+        return; // no device has data
+    // The Talk starts once the host's poll period is up since the last one.
+    uint64_t period = cuda->autopoll_ms ? (uint64_t)cuda->autopoll_ms * 1000000ULL : ADB_POLL_PERIOD_NS;
+    double now = scheduler_time_ns(cuda->sched);
+    uint64_t wait = adb_poll_wait_ns(now, cuda->adb_talk_start_ns, period);
+    cuda->adb_talk_start_ns = now + (double)wait;
+    cuda->adb_talk_pending = true;
+    scheduler_new_cpu_event(cuda->sched, &cuda_adb_talk_event, cuda, 0, 0, wait + talk_ns);
 }
 
-static void cuda_autopoll_event(void *source, uint64_t data) {
+// The auto-poll Talk has completed: the reply is Cuda's to pass on.
+static void cuda_adb_talk_event(void *source, uint64_t data) {
     (void)data;
     av_cuda_t *cuda = (av_cuda_t *)source;
-    LOG(4, "autopoll gate: enabled=%d adb=%d state=%d push=%d pb=$%02X", cuda->autopoll_enabled, cuda->adb != NULL,
-        cuda->state, cuda->push_pending, cuda->last_pb);
-    if (!cuda->autopoll_enabled || !cuda->adb)
-        return; // re-armed when the host turns auto-poll on
-    if (cuda_bus_idle(cuda) && !cuda_present_parked_autopoll(cuda)) {
-        // The device-selection rules live in adb.c, shared with Egret and the
-        // SWIM IOP.  Cuda has no WrDevList in this model -- the host
-        // can read the device list but not set a polling mask -- so 0 here
-        // means every address is eligible, and the scan finds the devices
-        // wherever Listen R3 has most recently moved them (Copland moves
-        // them and leaves them; classic Mac OS moves them back).
-        uint8_t cmd;
-        uint8_t out[8];
-        int out_len = 0;
-        if (adb_autopoll_next(cuda->adb, 0, &cmd, out, &out_len)) {
-            int n = cuda_put_header(cuda, PKT_ADB, CUDA_FLAG_AUTOPOLL, cmd);
-            for (int i = 0; i < out_len && n < CUDA_TX_MAX; i++)
-                cuda->tx_buf[n++] = out[i];
-            cuda->tx_len = n;
-            cuda_begin_send(cuda);
-        }
+    cuda->adb_talk_pending = false;
+    if (!cuda->autopoll_enabled || !cuda->adb || cuda->ap_park_len)
+        return; // turned off meanwhile (a sync): the data stays in the device
+    uint8_t cmd;
+    uint8_t out[8];
+    int out_len = 0;
+    if (adb_autopoll_next(cuda->adb, 0, &cmd, out, &out_len)) {
+        int n = 0;
+        cuda->ap_park[n++] = 0x00; // attention byte
+        cuda->ap_park[n++] = PKT_ADB;
+        cuda->ap_park[n++] = CUDA_FLAG_AUTOPOLL;
+        cuda->ap_park[n++] = cmd;
+        for (int i = 0; i < out_len && n < (int)sizeof cuda->ap_park; i++)
+            cuda->ap_park[n++] = out[i];
+        cuda->ap_park_len = n;
     }
-    if (adb_has_data(cuda->adb))
-        scheduler_new_cpu_event(cuda->sched, &cuda_autopoll_event, cuda, 0, 0, CUDA_AUTOPOLL_NS);
-    else if (cuda->ap_park_len)
-        scheduler_new_cpu_event(cuda->sched, &cuda_autopoll_event, cuda, 0, 0, CUDA_AUTOPOLL_PARKED_NS);
+    cuda_adb_service(cuda);
 }
 
-// A device has new data (adb_set_data_hook): send it.
+// A device has new data (adb_set_data_hook).
 static void cuda_adb_data(void *ctx) {
-    cuda_autopoll_kick((av_cuda_t *)ctx);
+    cuda_adb_service((av_cuda_t *)ctx);
 }
 
 // === Lifecycle ==============================================================
@@ -1113,7 +1134,7 @@ av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, stru
 
     if (cuda->sched) {
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "tick", &cuda_tick_event);
-        scheduler_new_event_type(cuda->sched, "cuda", cuda, "autopoll", &cuda_autopoll_event);
+        scheduler_new_event_type(cuda->sched, "cuda", cuda, "adb_talk", &cuda_adb_talk_event);
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "push", &cuda_push_event);
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "sendto", &cuda_send_timeout_event);
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "resend", &cuda_resend_event);
@@ -1146,6 +1167,8 @@ void av_cuda_host_power_cycle(av_cuda_t *cuda) {
     remove_event(cuda->sched, &cuda_resend_event, cuda);
     remove_event(cuda->sched, &cuda_reset_event, cuda);
     remove_event(cuda->sched, &cuda_treq_release_event, cuda);
+    remove_event(cuda->sched, &cuda_adb_talk_event, cuda);
+    cuda->adb_talk_pending = false;
     cuda->state = CUDA_IDLE;
     cuda->rx_len = 0;
     cuda->tx_len = 0;

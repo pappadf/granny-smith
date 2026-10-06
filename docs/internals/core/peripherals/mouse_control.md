@@ -852,11 +852,14 @@ never fires, yet the OS tracks cursor position correctly.
 
 **ADB transceiver** (`src/core/peripherals/adb.c`):
 
-- **Auto-poll:** `adb_autopoll_deferred()` repeats the last Talk R0
-  (`last_poll_addr`), signalling SRQ when another device has data.  It runs
-  only when a device has data (new input, or data left when the bus goes
-  idle), never on an idle clock.  A device answers only with new data (§10).
-  Egret and Cuda are told of new data through `adb_set_data_hook()`.
+- **Auto-poll:** `adb_idle_talk_event()` is the transceiver's idle Talk: it
+  repeats the last Talk R0 (`last_poll_addr`), signalling SRQ when another
+  device has data.  It runs only when a device has data (new input, or data
+  left when the bus goes idle), no sooner than a poll period after the last
+  Talk, and completes after the Talk's bus time (`adb_talk_ns`).  A device
+  answers only with new data (§10).  Egret and Cuda run the same Talks in
+  `egret_adb_service` / `cuda_adb_service`, told of new data through
+  `adb_set_data_hook()` (reference: adb.md, "Emulator Auto-Poll").
 - **Mouse reply:** `prepare_mouse_reply()` clamps deltas to +-63 (7-bit
   range), encodes into `reply_buf[0..1]`.  Large deltas split across
   consecutive polls via `remain_dx`/`remain_dy`.  In handler `$04` (the
@@ -867,8 +870,7 @@ never fires, yet the OS tracks cursor position correctly.
 - **Byte delivery:** `adb_deliver_next_byte()` feeds reply bytes through
   `via_input_sr()`.  Dummy byte with bit3=LOW signals end-of-transfer.
 - **Prompt delivery:** `adb_mouse_event()` with motion or a button change
-  asserts SRQ and schedules the auto-poll answer within `ADB_SHIFT_DELAY`
-  (800us).
+  asserts SRQ and starts the idle Talk (`device_data_arrived`).
 
 **System wiring** (`src/core/system.c`):
 

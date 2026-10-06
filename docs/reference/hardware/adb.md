@@ -409,7 +409,7 @@ receiving its input unasked.
 
 The state is real, not readback: a device with bit 13 clear still answers
 when it is polled, but it no longer raises the SRQ path — neither the VIA
-transceiver's `adb_autopoll_deferred` nor the shared `adb_autopoll_next`
+transceiver's `adb_idle_talk_event` nor the shared `adb_autopoll_next`
 counts it as "another device is asking". If it did not change behaviour the
 bit would be decoration.
 
@@ -774,7 +774,7 @@ BSET    #fDBSRQ,FDBAuFlag(A3)     ; bit3=LOW → SRQ detected
 When SRQ is detected, the ADB Manager polls all devices to find the requester.
 The SRQ check uses the Z flag left by FDBShiftInt's `BTST #3,vBufB(A1)`.
 
-### Emulator Auto-Poll: Driven by Data
+### Emulator Auto-Poll: Talks Driven by Data, Paced by the Poll Period
 
 The ROM's `RunADBRequest` → `StartReqProc` loop drives explicit Talk R0
 commands during boot and when processing queued requests. However, once the
@@ -782,16 +782,28 @@ boot scan completes and the system enters steady state, the real ADB transceiver
 IC takes over: it autonomously repeats the last Talk R0 command every ~11 ms
 while in idle (state 3), firing IFR_SR whenever a device responds.
 
-The host never sees a poll that finds nothing, only the interrupt when a device
-answers.  So the emulator runs no poll clock: `adb_autopoll_deferred` is
-scheduled when there is something to answer, and a quiet bus schedules nothing.
-(The 11 ms beat used to delay every report by up to one poll, and the ROM goes
-idle after each Talk it issues, so it came on top of every report.)
+Of that, the host can see two things, and the model keeps exactly those
+(`adb.h`, "Auto-poll, as the host sees it"):
+
+- **Data arriving**, no earlier than one Talk after the device had it.  A poll
+  that finds nothing is invisible, and so is the poll's phase, so there is no
+  poll clock: a Talk runs when a device *has* data, and the data arrives when
+  that Talk would have finished on the bus — `adb_talk_ns`, from the timing in
+  Table 8-14 below (~3.7 ms for a 2-byte reply, ~5.3 ms for the extended
+  mouse's 4 bytes).
+- **The poll period**, as the most often a busy device can report.  A Talk
+  starts no sooner than one period (`ADB_POLL_PERIOD_NS`, 11 ms) after the
+  last one started (`adb_poll_wait_ns`).  This is not a detail: the older Mac
+  OS cursor task takes one report per VBL and loses motion when several land
+  in one frame.
+
+For the VIA-side transceiver, `adb_idle_talk_event` is that Talk:
 
 1. **Scheduled on data**: when input arrives while the bus is idle
-   (`adb_keyboard_event`, `adb_mouse_event`), and when `adb_port_b_output`
-   enters state 3 with data still waiting (the rest of a motion, or a reply the
-   ROM walked away from), after `ADB_SHIFT_DELAY`.
+   (`device_data_arrived`, from `kbd_enqueue` and `adb_mouse_event`), and when
+   `adb_port_b_output` enters state 3 with data still waiting (the rest of a
+   motion, or a reply the ROM walked away from) — `xcvr_idle_talk`.  It fires
+   after the poll period's remainder plus the Talk's bus time.
 2. **Checks for pending data**: Mouse motion or a mouse button change, and
    keyboard queue entries, count as pending.  A button held still does not:
    a real mouse reports the press once and then stays silent until it moves
@@ -808,13 +820,16 @@ idle after each Talk it issues, so it came on top of every report.)
    Talk R0 commands to each registered device slot. Idle devices return no-reply
    (timeout), so the scan advances until it finds the device with data.
 6. **Silence**: If no device the transceiver would hear from has data, nothing
-   fires and nothing is rescheduled — the ROM stays waiting until new data
-   schedules the next answer.
+   fires and nothing is rescheduled — new data schedules the next Talk.
 
-Egret and Cuda poll in firmware the same way and are modelled the same way:
-`adb_set_data_hook` tells them when a device gets data, they send it as an
-auto-poll packet about 1 ms later (if the host has auto-poll on and the bus is
-free), and come back while more is waiting.
+Egret and Cuda auto-poll in firmware and are modelled the same way
+(`egret_adb_service`, `cuda_adb_service`): `adb_set_data_hook` tells them when a
+device gets data; with auto-poll on, they run a Talk (`*_adb_talk_event`, timed
+by `adb_autopoll_talk_ns`) paced by the host's own poll period
+(`SetAutoPollRate`, $14, in milliseconds; read back with $16; 11 ms by
+default).  The finished Talk's packet waits in one slot until the link to the
+host is free — the moment the previous packet's exchange ends — and the next
+Talk starts only after it has gone.
 
 ### Previous Misconception: GLU-Driven Data Delivery
 
@@ -883,9 +898,9 @@ The ADB controller is driven primarily by the port B output callback:
      but never fetched) and restore what that Talk consumed (keyboard queue
      tail, or mouse deltas and `mouse_data_pending`; nothing for a register
      Talk) so the next auto-poll can retry delivery. Update vADBInt (bit 3) to reflect
-     whether any device has pending data. Cancel any stale auto-poll event
-     and, if a device has data waiting, schedule `adb_autopoll_deferred`
-     after `ADB_SHIFT_DELAY`.
+     whether any device has pending data. Cancel any stale idle Talk and, if
+     a device has data waiting, start the next (`xcvr_idle_talk`: the rest of
+     the poll period, then the Talk's bus time).
 
 ### Port B Change Filtering
 
@@ -903,7 +918,7 @@ decodes.
 |-------|-------|---------|
 | `adb_shift_complete_deferred` | `ADB_SHIFT_DELAY` (~800 us) | Fires IFR_SR after command byte shift-out completes. Simulates the real ADB bus timing. |
 | `adb_deliver_next_byte_deferred` | `ADB_BYTE_DELAY` (~2.64 ms) | Delivers the next reply byte to VIA SR. Ensures the ROM ISR has time to finish before the next IFR_SR fires. |
-| `adb_autopoll_deferred` | `ADB_SHIFT_DELAY` (~800 us), when a device has data | Emulates the transceiver's idle-state auto-poll answering. Prepares a Talk R0 reply and fires IFR_SR to wake the ROM. Scheduled only when there is data; never reschedules itself. |
+| `adb_idle_talk_event` | the rest of the poll period + `adb_talk_ns`, when a device has data | The transceiver's idle-state Talk completing. Prepares a Talk R0 reply and fires IFR_SR to wake the ROM. Scheduled only when there is data; never reschedules itself. |
 
 ### dummy_sent Guard
 
@@ -1005,8 +1020,9 @@ port B, causing the emulator to schedule spurious dummy byte deliveries. Fix:
 was not issuing Talk R0 commands because the emulator had no transceiver-level
 auto-poll. The real ADB transceiver IC repeats the last Talk R0 every ~11 ms in
 idle state; this fires IFR_SR to restart the ROM's ADB state machine. Fix:
-implemented `adb_autopoll_deferred`, a scheduler callback that prepares a Talk R0
-reply and fires IFR_SR when a device has pending data.
+implemented `adb_autopoll_deferred` (now `adb_idle_talk_event`), a scheduler
+callback that prepares a Talk R0 reply and fires IFR_SR when a device has
+pending data.
 
 **BUG-009** (fixed): Mouse button release (`mouse-button up`) was lost on
 SE/30 when delivered through the ADB hardware path. Two sub-issues:
@@ -1035,7 +1051,8 @@ have left unanswered.)
 **BUG-008** (fixed): Mouse pointer froze on SE/30 after MacTest installed a
 custom ADB mouse handler via `_SetADBInfo`. Two sub-issues:
 
-(a) *Autopoll device override*: `adb_autopoll_deferred` chose which device to
+(a) *Autopoll device override*: `adb_autopoll_deferred` (now
+`adb_idle_talk_event`) chose which device to
 poll based on pending data, overriding `last_poll_addr`. The ROM keeps a
 device-handler pointer at `$134(ADBBase)` that corresponds to `last_poll_addr`;
 overriding the target caused the ROM to dispatch mouse data to the keyboard

@@ -74,15 +74,68 @@ void adb_mouse_event(adb_t *adb, bool button, int dx, int dy);
 void adb_mouse_move(adb_t *adb, int dx, int dy);
 void adb_mouse_pending(const adb_t *adb, int *dx, int *dy);
 
+// === Auto-poll, as the host sees it =======================================
+//
+// Every ADB transceiver -- the VIA-side one, Egret, Cuda, the IIfx's SWIM IOP
+// -- auto-polls: while the host lets it, it repeats Talk R0 once a poll
+// period and passes on the answer when a device has data.  What the host can
+// see of that is two things, and the model keeps exactly those:
+//
+//   - data arriving, no earlier than one Talk after the device had it.  A
+//     poll that finds nothing is invisible, and so is the poll's phase, so a
+//     transceiver runs no poll clock: it starts a Talk when a device HAS data
+//     (adb_set_data_hook) and the data arrives when that Talk would have
+//     finished on the bus (adb_talk_ns).
+//   - the poll period, as the most often a busy device can report.  While a
+//     device keeps having data, a report reaches the host once a period, and
+//     the host's cursor code depends on it: the older Mac OS cursor task
+//     takes one report per VBL and loses motion when several land in one
+//     frame.  So a Talk starts no sooner than a period after the last one
+//     (adb_poll_wait_ns).
+
+// The auto-poll period: the VIA transceiver repeats its Talk "every ~11 ms";
+// the IIfx's IOP firmware times its polls to ~10 ms; Egret and Cuda take the
+// period from the host (SetAutoPollRate, in milliseconds -- Apple's own Cuda
+// driver converts microseconds to it, MkLinux asks for 11) and default to it.
+#define ADB_POLL_PERIOD_NS 11000000ULL
+
+// How long before a transceiver may start its next auto-poll Talk: none if
+// the last one started a period ago or more, else the rest of the period.
+static inline uint64_t adb_poll_wait_ns(double now_ns, double last_start_ns, uint64_t period_ns) {
+    double due = last_start_ns + (double)period_ns;
+    return due <= now_ns ? 0 : (uint64_t)(due - now_ns);
+}
+
+// One Talk on the bus with `data_bytes` of reply, from the ADB timing
+// specification (Guide to the Macintosh Family Hardware 2e, Table 8-14):
+// Attention 800 us, Sync 65 us, eight 100 us command bit cells and a 70 us
+// stop bit; the device's 200 us stop-to-start time, then its start bit, its
+// data bit cells and its stop bit.  ~3.7 ms for a 2-byte reply.
+#define ADB_BIT_NS           100000ULL
+#define ADB_ATTENTION_NS     800000ULL
+#define ADB_SYNC_NS          65000ULL
+#define ADB_STOP_BIT_NS      70000ULL
+#define ADB_STOP_TO_START_NS 200000ULL
+static inline uint64_t adb_talk_ns(int data_bytes) {
+    uint64_t command = ADB_ATTENTION_NS + ADB_SYNC_NS + 8 * ADB_BIT_NS + ADB_STOP_BIT_NS;
+    if (data_bytes <= 0)
+        return command + ADB_STOP_TO_START_NS; // no device answered
+    return command + ADB_STOP_TO_START_NS + ADB_BIT_NS + (uint64_t)data_bytes * 8 * ADB_BIT_NS + ADB_STOP_BIT_NS;
+}
+
 // Called whenever a device gets new data (a key transition, mouse motion or a
-// button change), so a transceiver that polls on its own -- Cuda, Egret -- can
-// poll now instead of at its next tick: the guest sees when data arrives, not
-// the polling.  One hook; NULL removes it.
+// button change).  A transceiver outside this file (Egret, Cuda, the IOP)
+// starts its Talk from here.  One hook; NULL removes it.
 void adb_set_data_hook(adb_t *adb, void (*hook)(void *ctx), void *ctx);
 
 // Whether any device has data a Talk R0 would return -- what an auto-poll
 // would find (adb_autopoll_next answers exactly when this is true).
 bool adb_has_data(const adb_t *adb);
+
+// How long the Talk that adb_autopoll_next would run now takes on the bus
+// (its reply length through adb_talk_ns), or 0 if no device would answer.
+// A transceiver schedules the end of its Talk with this.
+uint64_t adb_autopoll_talk_ns(const adb_t *adb, uint16_t enable_mask);
 
 // === IOP-based ADB transaction (Macintosh IIfx and friends) ================
 //
@@ -97,13 +150,10 @@ bool adb_has_data(const adb_t *adb);
 // it runs the same dispatch (Talk / Listen / Reset / Flush) and returns
 // the Talk reply (if any).
 //
-// Output buffer must hold up to 8 bytes.  That is the HARDWARE's contract,
-// not this model's: the IOP ADB Driver ERS puts the ADB data field at "zero,
-// or in the range 2 to 8 bytes", and all callers size `out[8]` accordingly.
-// This model's devices never return more than 2 (reply_buf is 2 bytes), so
-// the extra headroom is unused today — but do not narrow the documented
-// contract to 2, because a tablet or an extended keyboard's Register 1 would
-// need the full width and every transport already allocates for it.
+// Output buffer must hold up to 8 bytes.  That is the HARDWARE's contract:
+// the IOP ADB Driver ERS puts the ADB data field at "zero, or in the range 2
+// to 8 bytes", and all callers size `out[8]` accordingly.  The extended
+// mouse's Register 0 is 4 bytes and its Register 1 is 8.
 //
 // Returns true if a device responded with `*out_data_len` reply bytes;
 // false for "no device at this address" (= NoReply, the firmware sets
