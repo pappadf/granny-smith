@@ -336,13 +336,20 @@ loudly.
   CCE with Mesa's state values: the fill rule's edges, Gouraud and flat
   shading, culling, Z (test and mask), stencil (replace, equal, increment),
   blending, the alpha test, vertex fog, a nearest-filtered textured quad,
-  `MODULATE`, a two-unit lightmap-style stage, the vertex walker's list and
+  `MODULATE`, pre-multiplied S/T (`TEXTURE_ST_FORMAT`), a two-unit
+  lightmap-style stage, the vertex walker's list and
   indexed walks through the GART, lines, points and a 565 target — every
   one a VRAM equality.
 - `tests/integration/g3-rage128-macos921` (tier `extended`) — Mac OS 9.2.1
   from the MESH disk on a G3 whose only display is the card: the desktop on
   the card's framebuffer, ATI's own microcode, PM4 mode 7, over a thousand
   CCE packets, the hardware cursor, a desktop golden.
+- `tests/integration/g3-rage128-opengl` (tier `extended`) — the same G3
+  with Apple's OpenGL SDK 1.2 CD: three GLUT book samples on ATI's OpenGL
+  renderer, drawn through the 3D engine — `checker` (a texture flat and in
+  perspective, ATI's pre-multiplied S/T), `mipmap` (six mip levels, each
+  its own colour, receding in perspective) and `fog` (lit teapots in
+  exponential fog, Z buffered), each a golden.
 - `tests/integration/tnt-pci-rage128` — the config header before any
   instruction; the node Open Firmware 1.0.5 builds from the FCode, read
   back with `.properties` over the serial console, for each cable and for
@@ -355,8 +362,8 @@ loudly.
 - No pixel clock: refresh is the host's, and PLL dividers are stored only.
 - `CRTC_VLINE` interrupts, display tiling (`CRTC_TILE_EN`) and packed
   24 bpp are not modelled.
-- No guest has drawn 3D through the engine yet: OpenGL lists ATI's
-  renderer under 9.2.1, but no GL or RAVE program has run on it.
+- RAVE (QuickDraw 3D's ATI engine) has not been run; OpenGL has (the
+  GLUT samples above).
 - The CCE does not interpret microcode: a guest that uploads its own and
   depends on behaviour other than appendix F's would diverge.
 - `SMALL_TEXT`, `SCALE`, `TRANS_SCALE` and `LOAD_PALETTE` are not executed.
