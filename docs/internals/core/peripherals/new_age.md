@@ -8,8 +8,9 @@ model is board-independent; the AV supplies a small backend:
 
 | Part | File | What it owns |
 |---|---|---|
-| chip | `src/core/peripherals/new_age.c` | the three-phase host protocol, the Apple-mode command set, the drive command latches (enable, motor, GCR/MFM mode), the sector-level transfer engine, the /CSTIN poller, the rotational model |
+| chip | `src/core/peripherals/new_age.c` | the three-phase host protocol, the Apple-mode command set, the drive command latches (enable, motor, GCR/MFM mode), the sector-level transfer engine, the /CSTIN poller |
 | drive and media | `src/core/peripherals/floppy.c` (`FLOPPY_TYPE_NEW_AGE`) | head position, motor, the disk image, `machine.floppy.*` |
+| geometry and rotation | `src/core/peripherals/floppy_gcr.c` (`floppy_geometry.h`) | the medium's format and sector layout, sector read/write, the revolution time and the header arithmetic — shared with SWIM3 |
 | board backend | `src/machines/av/new_age.c` | the `$50F2A000` decode, the PSC channel-3 byte movers with terminal count, the PSC-VIA2 bit-5 interrupt |
 
 The hardware is described in the reference page
@@ -101,7 +102,10 @@ read at the header it just saw, and the MFM probe walks headers with Read
 ID until the sector number wraps. Read ID returns the next header to pass;
 Read/Write Data wait for the first sector to come round, then take one
 sector time each. The model's track has no interleave; nothing the driver
-does observes the physical order.
+does observes the physical order. The revolution time and the
+next-header arithmetic are the shared ones SWIM3 also uses
+(`floppy_media_rev_ns`, `floppy_media_next_header`); New Age passes 600
+rpm as its 720 KB speed where SWIM3 passes 300.
 
 **Formatting** consumes the four-byte C/H/R/N entry per sector over DMA
 (Format/Write adds each sector's 512 data bytes) and lays down the sectors

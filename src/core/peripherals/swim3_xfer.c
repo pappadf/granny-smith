@@ -79,12 +79,6 @@ LOG_USE_CATEGORY_NAME("floppy");
 // was right, so it was promoted rather than deleted.
 typedef floppy_media_t swim3_media_t;
 
-// GCR speed zones come from floppy_geometry.h.  The local gcr_rpm() masked the
-// zone index with & 7 over a five-entry table, which reads like a bounds
-// guard while being wider than the array.
-#define gcr_sectors_per_track floppy_zone_sectors_per_track
-#define gcr_rpm               floppy_zone_rpm
-
 // Fill *m from the disk currently in the drive; false when the drive is empty
 // or holds something that is not a floppy geometry we can present.
 static bool swim3_media(swim3_t *sw, swim3_media_t *m) {
@@ -95,10 +89,6 @@ static int swim3_spt(const swim3_media_t *m, int track) {
     return floppy_media_spt(m, track);
 }
 
-static size_t swim3_sector_offset(const swim3_media_t *m, int track, int side, int sector) {
-    return floppy_media_sector_offset(m, track, side, sector);
-}
-
 bool swim3_media_is_hd(swim3_t *sw) {
     swim3_media_t m;
     return swim3_media(sw, &m) && m.hd;
@@ -106,31 +96,20 @@ bool swim3_media_is_hd(swim3_t *sw) {
 
 // === Rotation ===============================================================
 
-// How long one sector's worth of track takes to pass the head.
-static double swim3_sector_ns(swim3_t *sw, const swim3_media_t *m, int track) {
-    (void)sw;
-    int rpm = m->mfm ? 300 : gcr_rpm(track);
-    double rev_ns = 60.0e9 / (double)rpm;
-    return rev_ns / (double)swim3_spt(m, track);
-}
-
+// One revolution, from the shared rotation model (floppy_geometry.h), with
+// every MFM medium at 300 rpm.  The speed zones and the slot arithmetic
+// used to be written out here and again in the New Age model.
 static double swim3_rev_ns(const swim3_media_t *m, int track) {
-    return 60.0e9 / (double)(m->mfm ? 300 : gcr_rpm(track));
+    return floppy_media_rev_ns(m, track, FLOPPY_MFM_RPM);
 }
 
 // The next address header to pass under the head: its index around the
-// track, and how long until it arrives.
+// track, and how long until it arrives.  swim3_arm lands a slot ON a header
+// boundary, which is what the shared helper's nudge is for: without it a
+// continuous transfer (xfer_any) would hand the driver the header just
+// delivered as the next sector.
 static int swim3_next_header(swim3_t *sw, const swim3_media_t *m, int track, double *delay_ns) {
-    double now = scheduler_time_ns(sw->sched);
-    double sec_ns = swim3_sector_ns(sw, m, track);
-    // A slot lands ON a header boundary (swim3_arm rounds up to it); the
-    // division can still come out a hair under the integer, and floor()
-    // would then name the header just delivered a second time — which a
-    // continuous transfer (xfer_any) would hand to the driver as the next
-    // sector.  Nudge by a thousandth of a sector before flooring.
-    double n = floor(now / sec_ns + 1e-3) + 1.0;
-    *delay_ns = n * sec_ns - now;
-    return (int)fmod(n, (double)swim3_spt(m, track));
+    return floppy_media_next_header(m, track, swim3_rev_ns(m, track), scheduler_time_ns(sw->sched), delay_ns);
 }
 
 // Sense address 11: the index pulse (MFM, one per revolution) or the tach
@@ -209,30 +188,24 @@ static bool gcr_denibblize(const uint8_t *in, uint8_t *tag, uint8_t *data) {
 
 // === Image access ===========================================================
 
-// Read one sector's user data (and its DiskCopy tags, when the image
-// carries them) out of the image.
+// Read one sector's user data (the shared floppy_media_read_sector) and
+// its DiskCopy tags, when the image carries them.
 static bool swim3_read_sector(const swim3_media_t *m, int track, int side, int sector, uint8_t *data, uint8_t *tag) {
-    size_t off = swim3_sector_offset(m, track, side, sector);
-    if (off + SECTOR_BYTES > disk_size(m->img))
-        return false;
-    if (disk_read_data(m->img, off, data, SECTOR_BYTES) != SECTOR_BYTES)
+    if (!floppy_media_read_sector(m, track, side, sector, data))
         return false;
     if (tag) {
         memset(tag, 0, TAG_BYTES);
-        disk_read_tag(m->img, off / SECTOR_BYTES, tag, TAG_BYTES);
+        disk_read_tag(m->img, floppy_media_sector_offset(m, track, side, sector) / SECTOR_BYTES, tag, TAG_BYTES);
     }
     return true;
 }
 
 static bool swim3_write_sector(const swim3_media_t *m, int track, int side, int sector, uint8_t *data,
                                const uint8_t *tag) {
-    size_t off = swim3_sector_offset(m, track, side, sector);
-    if (off + SECTOR_BYTES > disk_size(m->img) || !m->img->writable)
-        return false;
-    if (disk_write_data(m->img, off, data, SECTOR_BYTES) != SECTOR_BYTES)
+    if (!floppy_media_write_sector(m, track, side, sector, data))
         return false;
     if (tag)
-        disk_write_tag(m->img, off / SECTOR_BYTES, tag, TAG_BYTES);
+        disk_write_tag(m->img, floppy_media_sector_offset(m, track, side, sector) / SECTOR_BYTES, tag, TAG_BYTES);
     return true;
 }
 

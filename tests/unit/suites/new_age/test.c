@@ -3,7 +3,8 @@
 //
 // New Age floppy controller unit test.
 //
-// The real core/peripherals/new_age.c against a fake SuperDrive (the floppy.h
+// The real core/peripherals/new_age.c, with the real geometry and rotation
+// helpers (floppy_gcr.c), against a fake SuperDrive (the floppy.h drive
 // accessors it calls), a fake 1.44 MB image and a fake scheduler that fires
 // events in time order.  Each test replays a register sequence the shipped
 // AV driver (NewAgeDrvr.a) issues and checks what the chip answers.
@@ -64,36 +65,17 @@ bool floppy_drive_eject(floppy_t *f, unsigned d) {
     s_inserted = false;
     return was;
 }
-bool floppy_media_current(struct floppy *f, unsigned d, floppy_media_t *m) {
+// The geometry and rotation helpers are the real ones (floppy_gcr.c is
+// linked); they classify the medium from the image's type.
+int floppy_drive_format(const struct floppy *f, unsigned d) {
     (void)f;
-    memset(m, 0, sizeof(*m));
-    if (d != 0 || !s_inserted)
-        return false;
-    m->img = &s_img;
-    m->valid = true;
-    m->format = FLOPPY_FMT_MFM_1440K;
-    m->mfm = true;
-    m->hd = true;
-    m->sides = 2;
-    m->mfm_spt = 18;
-    m->fmt_byte = 0x02;
-    return true;
+    (void)d;
+    return -1; // never reformatted: the image's own format
 }
 void floppy_media_set_format(struct floppy *f, unsigned d, floppy_format_t fmt) {
     (void)f;
     (void)d;
     (void)fmt;
-}
-int floppy_media_spt(const floppy_media_t *m, int track) {
-    (void)track;
-    return m && m->valid ? m->mfm_spt : 0;
-}
-size_t floppy_media_sector_offset(const floppy_media_t *m, int track, int side, int sector) {
-    return ((size_t)(track * m->sides + side) * (size_t)m->mfm_spt + (size_t)sector) * 512;
-}
-int floppy_zone_rpm(int track) {
-    (void)track;
-    return 394;
 }
 size_t disk_size(image_t *disk) {
     (void)disk;
@@ -107,6 +89,14 @@ size_t disk_read_data(image_t *disk, size_t off, uint8_t *buf, size_t size) {
 size_t disk_write_data(image_t *disk, size_t off, uint8_t *buf, size_t size) {
     (void)disk;
     memcpy(s_disk + off, buf, size);
+    return size;
+}
+size_t disk_read_tag(image_t *disk, size_t sector, uint8_t *buf, size_t size) {
+    (void)disk, (void)sector, (void)buf;
+    return size;
+}
+size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t size) {
+    (void)disk, (void)sector, (void)buf;
     return size;
 }
 
@@ -236,6 +226,7 @@ static void fresh(void) {
     s_motor = false;
     s_track = 5;
     s_img.writable = true;
+    s_img.type = image_fd_hd; // a 1.44 MB MFM medium
     const new_age_backend_t be = {.dma_put = dma_put, .dma_get = dma_get, .set_irq = set_irq};
     new_age_bind(&s_na, (floppy_t *)&s_img /* any non-NULL handle */, (struct scheduler *)1, &be);
     new_age_reset(&s_na);

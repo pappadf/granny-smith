@@ -225,12 +225,12 @@ static bool na_media(const new_age_t *na, int d, floppy_media_t *m) {
     return na_image(na, d) && floppy_media_current(na->fd, (unsigned)d, m);
 }
 
-// One revolution.  The SuperDrive spins 300 rpm for 1.44 MB and 600 rpm
-// for 720 KB MFM (both at the 500 kbps rate) [µPD72070 §1.3.2], and at
-// the zone's speed in GCR.
+// One revolution, from the shared rotation model (floppy_geometry.h): the
+// SuperDrive spins 1.44 MB at 300 rpm and, because New Age keeps its
+// 500 kbps rate for both MFM densities, 720 KB at 600 rpm [µPD72070
+// §1.3.2]; GCR at the zone's speed.
 static double na_rev_ns(const floppy_media_t *m, int track) {
-    int rpm = m->mfm ? (m->format == FLOPPY_FMT_MFM_720K ? 600 : 300) : floppy_zone_rpm(track);
-    return 60.0e9 / (double)rpm;
+    return floppy_media_rev_ns(m, track, FLOPPY_MFM_DD_RPM_NA);
 }
 
 // How long one sector's worth of track takes to pass the head.
@@ -246,14 +246,9 @@ static double na_search_ns(const floppy_media_t *m, int track, bool mfm) {
 }
 
 // The next header to pass under the head: its slot index around the track,
-// and how long until it arrives.  (Nudged as swim3_next_header is, so a
-// header delivered exactly on a slot boundary is not named twice.)
+// and how long until it arrives.
 static int na_next_header(const new_age_t *na, const floppy_media_t *m, int track, double *delay_ns) {
-    double now = scheduler_time_ns(na->sched);
-    double slot = na_slot_ns(m, track);
-    double n = floor(now / slot + 1e-3) + 1.0;
-    *delay_ns = n * slot - now;
-    return (int)fmod(n, (double)floppy_media_spt(m, track));
+    return floppy_media_next_header(m, track, na_rev_ns(m, track), scheduler_time_ns(na->sched), delay_ns);
 }
 
 // How long until slot `idx` has wholly passed under the head.
@@ -363,19 +358,6 @@ static void na_update_id(new_age_t *na, int last, bool mfm) {
         na->x_r = (uint8_t)(last + 1);
     else
         na->x_r = (uint8_t)na_first_sector(mfm);
-}
-
-// === Sector access ==========================================================
-
-static bool na_sector_io(const floppy_media_t *m, int track, int side, int idx, uint8_t *buf, bool write) {
-    if (idx < 0 || idx >= floppy_media_spt(m, track) || side >= m->sides)
-        return false;
-    size_t off = floppy_media_sector_offset(m, track, side, idx);
-    if (off + FLOPPY_SECTOR_BYTES > disk_size(m->img))
-        return false;
-    if (write)
-        return disk_write_data(m->img, off, buf, FLOPPY_SECTOR_BYTES) == FLOPPY_SECTOR_BYTES;
-    return disk_read_data(m->img, off, buf, FLOPPY_SECTOR_BYTES) == FLOPPY_SECTOR_BYTES;
 }
 
 // === The data commands ======================================================
@@ -506,7 +488,7 @@ static void na_start_data(new_age_t *na) {
 static void na_step_read(new_age_t *na, const floppy_media_t *m, int track, bool mfm) {
     int idx = (int)na->x_r - na_first_sector(mfm);
     uint8_t buf[FLOPPY_SECTOR_BYTES];
-    if (!na_sector_io(m, track, na->x_head, idx, buf, false)) {
+    if (!floppy_media_read_sector(m, track, na->x_head, idx, buf)) {
         na_fail(na, NEW_AGE_ST1_ND, 0);
         return;
     }
@@ -542,7 +524,7 @@ static void na_step_write(new_age_t *na, const floppy_media_t *m, int track, boo
             break;
         }
     }
-    if (!na_sector_io(m, track, na->x_head, idx, buf, true)) {
+    if (!floppy_media_write_sector(m, track, na->x_head, idx, buf)) {
         na_fail(na, NEW_AGE_ST1_ND, 0);
         return;
     }
@@ -609,7 +591,7 @@ static void na_step_format(new_age_t *na, int track, bool mfm) {
         na->x_r = id[2];
         int idx = (int)id[2] - na_first_sector(mfm);
         if (known && id[0] == track)
-            na_sector_io(&m, track, na->x_head, idx, data, true); // out-of-track numbers fail quietly
+            floppy_media_write_sector(&m, track, na->x_head, idx, data); // out-of-track numbers fail quietly
     }
     LOG(3, "format C%d H%d: %u sectors, format byte $%02X", track, na->x_head, na->x_sc, na->x_n);
     na_finish(na);
