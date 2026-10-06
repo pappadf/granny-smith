@@ -9,10 +9,12 @@
 // executor; the accelerated governor's ladder cap would hide the gain.
 //
 // Workloads:
-//   se30    68030 + PMMU, media-free: NOT an idle workload.  With no boot
-//           device the ROM's SCSI scan busy-waits on the 5380 (BTST #6,$40(A3)
-//           / DBNE: every second instruction is a device register read), so
-//           the row measures the device slow path and the two executors tie
+//   se30    68030 + PMMU: System 7.5.3 booted from the bare volume to the
+//           Finder desktop and left idle — the OS event loop, CPU-bound
+//           (natively under 1 % of its instructions take a memory slow
+//           path).  The media-free ROM is no CPU benchmark: its SCSI boot
+//           scan busy-waits on the 5380, every second instruction a device
+//           register read
 //   iicx    68030 + PMMU + 8•24 GC: System 6.0.8 booted from the Marathon
 //           image and Marathon launched to its main menu — the application
 //           workload of the performance proposal's bench
@@ -50,17 +52,24 @@ const ROWS: Record<
     rom: string;
     ram: string;
     hd?: string;
+    settle?: "finder" | "marathon"; // with hd: what to boot to before measuring
     vrom?: string;
     card?: string; // NuBus card kind added in the dialog's Cards section
     monitor?: string;
     mode?: string; // the dialog's video-mode value, <w>x<h>x<depth>
   }
 > = {
-  se30: { rom: "iix-iicx-se30-97221136.rom", ram: "8 MB" },
+  se30: {
+    rom: "iix-iicx-se30-97221136.rom",
+    ram: "8 MB",
+    hd: "systems/system_7_5_3_25mb_bare.img",
+    settle: "finder",
+  },
   iicx: {
     rom: "iix-iicx-se30-97221136.rom",
     ram: "8 MB",
     hd: "apps/marathon_8_24gc.img",
+    settle: "marathon",
     // The 8•24 GC declares requires_vrom: its option only appears once the
     // vROM is in OPFS (the IIfx spec's pattern for the JMFB).
     vrom: "roms/824gc-v1.1-revb-d722b053.vrom",
@@ -73,6 +82,26 @@ const ROWS: Record<
 
 async function instrCount(page: Page): Promise<number> {
   return (await probeSample(page)).instr;
+}
+
+// Boot to the Finder and let it go idle: the Finder is the application
+// (ApplZone moved off SysZone), then another 150 M instructions for the
+// desktop to draw and the startup disk activity to finish.
+async function settleFinder(page: Page): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        probeString(
+          page,
+          'debug.mac.globals.read("ApplZone") != debug.mac.globals.read("SysZone")',
+        ),
+      { timeout: 600_000, intervals: [5_000] },
+    )
+    .toMatch(/^(true|1)$/);
+  const at = await instrCount(page);
+  await expect
+    .poll(() => instrCount(page), { timeout: 240_000, intervals: [3_000] })
+    .toBeGreaterThan(at + 150_000_000);
 }
 
 // The headless iicx-marathon row's launch choreography, typed into the shell.
@@ -192,9 +221,10 @@ for (const machine of MACHINES) {
 
     await terminalRun(page, 'scheduler.mode = "turbo"');
     expect(await probeString(page, "scheduler.mode")).toBe("turbo");
-    // Let the ROM settle into its SCSI-scan loop (and the wasm tier up) first —
-    // or, with a disk, boot the System and launch the application.
-    if (row.hd) await launchMarathon(page);
+    // Boot the System to the measured state (and let the wasm tier up) first;
+    // a media-free row only settles into its ROM loop.
+    if (row.settle === "finder") await settleFinder(page);
+    else if (row.settle === "marathon") await launchMarathon(page);
     else await page.waitForTimeout(8_000);
 
     const results: Record<string, number[]> = { switch: [], predecode: [] };
