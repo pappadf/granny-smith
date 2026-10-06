@@ -688,7 +688,7 @@ async function loadCheckpointFile(file: File): Promise<void> {
   // deleted once loaded.  It used to be read whole into memory and written
   // to the memory-backed /tmp, where it stayed for the session.
   const staged = scratchPath(sanitizeName(file.name) || 'checkpoint');
-  let ok = false;
+  let ok: boolean;
   try {
     if (!(await streamToOpfs(staged, file))) {
       showNotification('Emulator not ready for checkpoint load', 'warning');

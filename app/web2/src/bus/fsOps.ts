@@ -282,7 +282,7 @@ export async function unpackArchive(path: string): Promise<{ ok: boolean; base: 
   const name = basename(path);
   const parentDir = path.replace(/\/[^/]+$/, '');
   const base = name.replace(/\.[^.]+$/, '') || name;
-  let ok = false;
+  let ok: boolean;
   try {
     ok = (await gsEval('files.archive.extract', [path, `${parentDir}/${base}_unpacked`])) === true;
   } catch {
