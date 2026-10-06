@@ -20,11 +20,29 @@
 
 LOG_USE_CATEGORY_NAME("mouse");
 
-// Represents the mouse device state and scheduling tails for each axis
+// The Plus mouse is a ball turning two slotted wheels, one per axis; each
+// wheel's photo-interrupters give a quadrature pair, X1/X2 and Y1/Y2, and
+// every edge of X1 or Y1 is a DCD interrupt on the SCC whose handler moves
+// MTemp one count (the ROM's P_SCCInt_AChng_MouseH / BChng_MouseV).  An edge
+// marks a fixed distance travelled, so the edges come as fast as the mouse
+// moves: a slow drag spaces them out, a fast swipe packs them close.
+//
+// The host reports motion in batches -- so many counts since the last batch,
+// in practice once per emulated frame -- and the model plays each batch the
+// way the wheels would have: its counts spread evenly over the time the
+// motion took (the interval since the previous batch, at most a frame).  A
+// batch is played out by the time the next arrives, so the cursor follows the
+// hand a frame behind and never further, at any speed.  Each axis is one
+// pulse train: the counts still to go (signed: the direction) and the gap
+// between its edges.  A new batch joins what is left and re-spreads it.
 struct mouse {
     bool x1, y1; // Current interrupt line logic levels (SCC DCD inputs)
-    uint64_t tail_timestamp_x; // CPU cycle timestamp of the last scheduled X pulse (edge)
-    uint64_t tail_timestamp_y; // CPU cycle timestamp of the last scheduled Y pulse (edge)
+    int32_t pending_x; // counts still to play on each axis (signed)
+    int32_t pending_y;
+    uint64_t gap_ns_x; // the time between edges of the current train
+    uint64_t gap_ns_y;
+    double last_batch_ns; // when the previous host batch arrived
+    double window_end_ns; // when the current batch is to be played out
     int8_t scale_rem_x; // Carried host-delta remainders from the 2:1 scaling,
     int8_t scale_rem_y; // so small deltas keep their X:Y ratio across events
 
@@ -34,82 +52,73 @@ struct mouse {
     via_t *via; // VIA for quadrature + button inputs
 };
 
-// Constant slot spacing — the physical quadrature pace. A real mouse tops
-// out around 2,500-2,700 counts/s (~90 counts/inch at a violent ~30 in/s
-// swipe), i.e. one DCD interrupt per ~3,000 CPU cycles. The previous model
-// squeezed every host delta batch into a fixed 10,000-cycle window
-// (per_slot = 10000/steps), which was wrong at both extremes: large deltas
-// fired interrupt bursts far denser than hardware can produce (500-cycle
-// spacing at 20 counts — enough interrupt load to audibly break up
-// MusicWorks playback that a real Plus shrugs off), while a 1-count batch
-// consumed a whole 10,000-cycle tail slot, so hosts sending >~780 pointer
-// events/s (1 kHz mice, uncoalesced trackpads) grew the queue faster than
-// the timeline drained it and the cursor kept gliding after the hand
-// stopped. Uniform physical spacing fixes both: the queue drains at
-// ~2,600 counts/s — comfortably above any real drag's count rate — and
-// interrupt density can never exceed what hardware produces.
-#define MOUSE_CYCLES_PER_SLOT 3000
+// The closest two edges on one axis may come.  Each is an interrupt, and an
+// edge that lands before the handler has read the last one toggles DCD again
+// unseen: the count is lost.  The ROM's handler with the SCC's interrupt
+// dispatch takes a few hundred cycles; edges 500 cycles apart were enough to
+// break up MusicWorks playback, so a train keeps ~1,000 cycles (at the Plus's
+// 7.83 MHz) between edges -- ~7,800 counts/s, three times a violently swung
+// real mouse.  Only a batch faster than that runs past its frame.
+#define MOUSE_MIN_EDGE_NS 128000ULL
 
-#define EVENT_DATA_HORIZONTAL 2
-#define EVENT_DATA_POSITIVE   1
+#define AXIS_X 0
+#define AXIS_Y 1
 
-// Executes a scheduled single-slot edge toggle for one axis and sets the correct quadrature (X2/Y2) bit
-static void mouse_event_step(void *source, uint64_t data) {
-    mouse_t *m = source;
-
-    if (data & EVENT_DATA_HORIZONTAL) {
+// Emit one edge on an axis, in the direction `positive`, and set the
+// quadrature (X2/Y2) bit that tells the handler which way it went.
+static void mouse_edge(mouse_t *m, int axis, bool positive) {
+    if (axis == AXIS_X) {
         // Toggle X1 edge (rising or falling depending on previous state)
         m->x1 = !m->x1;
         // For right motion X2 follows X1; for left motion X2 is inverted relative to X1
-        bool x2 = (data & EVENT_DATA_POSITIVE) ? m->x1 : !m->x1;
+        bool x2 = positive ? m->x1 : !m->x1;
         scc_dcd(m->scc, 0, m->x1); // Update SCC DCD A (X1)
         via_input(m->via, 1, 4, x2); // Update VIA PB4 (X2)
     } else {
         // Toggle Y1 edge
         m->y1 = !m->y1;
         // For down motion Y2 is opposite Y1; for up motion Y2 equals Y1 (see table)
-        bool y2 = (data & EVENT_DATA_POSITIVE) ? !m->y1 : m->y1;
+        bool y2 = positive ? !m->y1 : m->y1;
         scc_dcd(m->scc, 1, m->y1); // Update SCC DCD B (Y1)
         via_input(m->via, 1, 5, y2); // Update VIA PB5 (Y2)
     }
 }
 
-// Internal helper: schedule all pulses for one axis for a single host delta
-// Schedules all slot edges for one axis for a single host delta; each slot becomes its own event in time
-static void schedule_axis(mouse_t *restrict m, int delta, bool horizontal, uint64_t now_cycles) {
-    if (delta == 0)
-        return; // No movement -> no pulses
+// The next edge of an axis's pulse train; `data` is the axis.
+static void mouse_train_event(void *source, uint64_t data) {
+    mouse_t *m = source;
+    int axis = (int)data;
+    int32_t *pending = axis == AXIS_X ? &m->pending_x : &m->pending_y;
+    if (*pending == 0)
+        return;
+    bool positive = *pending > 0;
+    mouse_edge(m, axis, positive);
+    *pending += positive ? -1 : 1;
+    if (*pending != 0)
+        scheduler_new_cpu_event(m->scheduler, &mouse_train_event, m, (uint64_t)axis, 0,
+                                axis == AXIS_X ? m->gap_ns_x : m->gap_ns_y);
+}
 
-    int steps = delta > 0 ? delta : -delta; // Number of slot transitions to emit
-    bool positive = delta > 0; // Direction sign used for quadrature relationship
-    // Constant, deliberately independent of `steps`: the old per-batch pacing
-    // divided a fixed window by the batch size, so a big delta emitted pulses
-    // faster than hardware ever could.  See the comment above the constant.
-    uint64_t per_slot = MOUSE_CYCLES_PER_SLOT;
-    LOG(3, "schedule_axis: %s %+d -> %d slot(s) @ %llu cycles", horizontal ? "X" : "Y", delta, steps,
-        (unsigned long long)per_slot);
-
-    // Choose tail pointer for axis so new events follow any already queued pulses
-    uint64_t *tail = horizontal ? &m->tail_timestamp_x : &m->tail_timestamp_y;
-    if (*tail < now_cycles)
-        *tail = now_cycles; // Catch up if idle (avoid time reversal)
-
-    // Stagger Y events by half a slot relative to X to prevent simultaneous pulses.
-    // When both axes fire at exactly the same timestamp during diagonal motion,
-    // the CPU may not service the first interrupt before the second pulse arrives,
-    // causing DCD to toggle twice and the ROM to miss the intermediate edge.
-    if (!horizontal && *tail == now_cycles)
-        *tail += per_slot / 2;
-
-    for (int i = 0; i < steps; ++i) {
-        *tail += per_slot; // Advance tail by one slot period
-        uint64_t delta_cycles = *tail - now_cycles; // Relative delay from now
-
-        // Event data encodes axis and direction in the two least significant bits
-        uint64_t event_data = (horizontal ? 2 : 0) | (positive ? 1 : 0);
-
-        scheduler_new_cpu_event(m->scheduler, &mouse_event_step, m, event_data, delta_cycles, 0);
-    }
+// Spread an axis's remaining counts evenly over the time left in the window:
+// the first edge one gap from now (half a gap for Y, so the axes' edges do
+// not coincide), the last at the window's end.
+static void mouse_train_start(mouse_t *m, int axis, double now_ns) {
+    int32_t pending = axis == AXIS_X ? m->pending_x : m->pending_y;
+    remove_event_by_data(m->scheduler, &mouse_train_event, m, (uint64_t)axis);
+    if (pending == 0)
+        return;
+    uint32_t steps = (uint32_t)(pending < 0 ? -pending : pending);
+    double window = m->window_end_ns - now_ns;
+    uint64_t gap = window > 0 ? (uint64_t)(window / steps) : 0;
+    if (gap < MOUSE_MIN_EDGE_NS)
+        gap = MOUSE_MIN_EDGE_NS;
+    if (axis == AXIS_X)
+        m->gap_ns_x = gap;
+    else
+        m->gap_ns_y = gap;
+    uint64_t first = axis == AXIS_X ? gap : gap / 2;
+    LOG(3, "train %s: %+d count(s), %llu ns apart", axis == AXIS_X ? "X" : "Y", pending, (unsigned long long)gap);
+    scheduler_new_cpu_event(m->scheduler, &mouse_train_event, m, (uint64_t)axis, 0, first);
 }
 
 // 2:1 host-pixel-to-count scaling with a carried remainder. Halving each
@@ -129,37 +138,44 @@ static int scale(int value, int8_t *rem) {
     return out;
 }
 
-// Public entry: accepts host-relative mouse deltas and schedules corresponding quadrature pulses
-extern void mouse_update(mouse_t *restrict m, bool button, int dx, int dy) {
-    // if (!scheduler_is_running(m->scheduler))
-    //     return; // Ignore input while scheduler stopped
-
-    // Button: VIA PB3, active low (0 = pressed)
-    via_input(m->via, 1, 3, !button);
-
-    // Apply 2:1 scaling with carried remainders (ratio-preserving)
+// A host batch: dx/dy host pixels moved since the last one.  Scaled 2:1 to
+// counts, joined to whatever the trains still have to play, and re-spread
+// over the time the motion took -- the interval since the previous batch,
+// at most a frame.  Batches that arrive together (host events between two
+// emulated frames all land at the same instant) share one window.
+static void mouse_motion(mouse_t *restrict m, int dx, int dy) {
     dx = scale(dx, &m->scale_rem_x);
     dy = scale(dy, &m->scale_rem_y);
+    if (dx == 0 && dy == 0)
+        return;
 
-    uint64_t now_cycles = scheduler_cpu_cycles(m->scheduler);
+    double now = scheduler_time_ns(m->scheduler);
+    double since = now - m->last_batch_ns;
+    if (since > 0) {
+        double window = since < (double)MAC_VBL_PERIOD_NS ? since : (double)MAC_VBL_PERIOD_NS;
+        m->window_end_ns = now + window;
+        m->last_batch_ns = now;
+    }
 
-    // Schedule independent sequences for X and Y preserving per-axis timing
-    schedule_axis(m, dx, true, now_cycles);
-    schedule_axis(m, dy, false, now_cycles);
+    if (dx != 0) {
+        m->pending_x += dx;
+        mouse_train_start(m, AXIS_X, now);
+    }
+    if (dy != 0) {
+        m->pending_y += dy;
+        mouse_train_start(m, AXIS_Y, now);
+    }
 }
 
-// Injects movement deltas without changing the current button state.
-// Used by set-mouse --hw to move the cursor through quadrature without affecting button.
+// Host motion and the button (VIA PB3, active low: 0 = pressed).
+void mouse_update(mouse_t *restrict m, bool button, int dx, int dy) {
+    via_input(m->via, 1, 3, !button);
+    mouse_motion(m, dx, dy);
+}
+
+// Host motion without a button change.
 void mouse_move(mouse_t *restrict m, int dx, int dy) {
-    // Apply 2:1 scaling with carried remainders (ratio-preserving)
-    dx = scale(dx, &m->scale_rem_x);
-    dy = scale(dy, &m->scale_rem_y);
-
-    uint64_t now_cycles = scheduler_cpu_cycles(m->scheduler);
-
-    // Schedule independent sequences for X and Y preserving per-axis timing
-    schedule_axis(m, dx, true, now_cycles);
-    schedule_axis(m, dy, false, now_cycles);
+    mouse_motion(m, dx, dy);
 }
 
 // Allocates and initializes a mouse instance with default timing state
@@ -171,10 +187,9 @@ mouse_t *mouse_init(struct scheduler *scheduler, scc_t *scc, via_t *restrict via
     mouse->scheduler = scheduler;
     mouse->scc = scc;
     mouse->via = via;
-    mouse->tail_timestamp_x = mouse->tail_timestamp_y = 0;
 
     // Register event type for checkpointing
-    scheduler_new_event_type(scheduler, "mouse", mouse, "event_step", &mouse_event_step);
+    scheduler_new_event_type(scheduler, "mouse", mouse, "train", &mouse_train_event);
 
     // Load from checkpoint if provided
     if (checkpoint) {

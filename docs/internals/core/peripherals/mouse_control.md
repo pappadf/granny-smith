@@ -784,6 +784,18 @@ low-memory globals directly (identical to `"global"`), since there is no ADB
 subsystem to inject deltas through.  See [mouse.md](../../../reference/hardware/mouse.md) for full
 hardware details.
 
+Relative motion (`"hw"` / `"relative"`, the browser's pointer) goes through the
+quadrature model in `src/core/peripherals/mouse.c`, which plays it the way the
+wheels would: every edge marks a fixed distance, so edges come as fast as the
+mouse moves.  Each host batch (scaled 2:1 to counts) is spread evenly over the
+time the motion took -- the interval since the previous batch, at most one
+frame -- so a batch has been played out by the time the next one arrives and
+the cursor stays a frame behind the hand at any speed.  Each axis is a pulse
+train (counts still to go, gap between edges, one event); a new batch joins
+what is left and re-spreads it.  Edges on one axis stay at least 128 us apart
+(~1,000 cycles), the most the ROM's interrupt handler is given: closer edges
+would toggle DCD again before the handler had read the last one.
+
 ---
 
 ## 14. How Other Emulators Inject Mouse Input
