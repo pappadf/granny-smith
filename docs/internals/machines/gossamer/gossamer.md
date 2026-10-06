@@ -34,6 +34,13 @@ The shared core models carry the rest: `core/cpu/ppc` with the 750 deltas
 channels), `davbus.c` in its Screamer face, `scsi_mesh.c`, `scc.c`,
 `swim3.c`, and the Rage Pro face of `pci/cards/mach64gx.c`.
 
+The Rage Pro's port offers the 13" RGB (the default) or `monitor="none"`:
+with no cable every sense line floats high (sense 7), the chip's FCode
+reads "nothing attached", and Mac OS takes its desktop to a PCI display
+card instead — how the `suite-gossamer` row `g3dt-hd-rage128` runs 9.2.1
+on an ATI Rage 128 alone. With a monitor on both, Mac OS puts the menu bar
+on the built-in display and the card's screen is the second desktop.
+
 ### 1.1 The interrupt controller
 
 Two banks of Events / Mask / Clear / Levels.  Before the NanoKernel's first

@@ -3771,7 +3771,6 @@ const pci_card_kind_t mach64_gx_kind = {
 
 static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
     (void)rom;
-    (void)opts;
     pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
     mach64_t *m = (mach64_t *)calloc(1, sizeof(*m));
     if (!dev || !m) {
@@ -3798,7 +3797,11 @@ static pci_device_t *ragepro_factory(int slot_index, config_t *cfg, const rom_im
         free(dev);
         return NULL;
     }
+    // The board's port: the 13" (the 14" row's strap, Apple sense 6), or —
+    // the machine built with monitor "none" — nothing attached.
     m->mon = &mach64_sense[0];
+    if (opts && opts->sense == MACHINE_SENSE_NONE)
+        m->mon = mach64_monitor_by_id("none");
     mach64_reset(dev, cfg);
 
     m->aper_if.read_uint8 = aper_read8;
