@@ -39,6 +39,15 @@ void checkpoint_set_error(checkpoint_t *checkpoint);
 // Returns the kind of an open checkpoint
 checkpoint_kind_t checkpoint_get_kind(checkpoint_t *checkpoint);
 
+// === Liveness during long checkpoint work ===
+
+// Called on every block read or written.  A checkpoint of a machine with a
+// disk streams every block of it, which can take many seconds in one
+// synchronous request; a platform whose client watches for a stalled core
+// (the browser's heartbeat watchdog) overrides this to prove the core is
+// still working.  The default does nothing.
+void checkpoint_busy_heartbeat(void);
+
 // === Block I/O (with file:line metadata for diagnostics) ===
 
 // Reads a data block from the checkpoint with size and tag validation

@@ -68,13 +68,13 @@ export async function storeTntRom(page: Page): Promise<void> {
   await gotoWeb2(page);
   const [chooser] = await Promise.all([
     page.waitForEvent("filechooser"),
-    page.getByRole("button", { name: "Upload ROM..." }).click(),
+    page.getByRole("button", { name: "Load ROM..." }).click(),
   ]);
   await chooser.setFiles(TNT_ROM);
   await expect(
     page
       .locator(".toast .msg")
-      .filter({ hasText: "pm7500-pm8500-pm9500-96cd923d.rom uploaded" }),
+      .filter({ hasText: "pm7500-pm8500-pm9500-96cd923d.rom added" }),
   ).toBeVisible({ timeout: 60_000 });
 }
 

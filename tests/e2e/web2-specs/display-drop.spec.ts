@@ -98,7 +98,7 @@ test('drop workflow: ROM auto-boots, floppy auto-mounts, unknown file warns', as
 
   // 1. ROM onto the Welcome display → default machine boots straight away.
   await dropOnDisplay(page, 'plus-v3-4d1f8172.rom', PLUS_ROM);
-  await expect(toast(page, 'Booted plus from uploaded ROM')).toBeVisible({ timeout: 60_000 });
+  await expect(toast(page, 'Booted plus from the loaded ROM')).toBeVisible({ timeout: 60_000 });
   await expect(page.locator('.welcome-layer')).toHaveCount(0);
   await expect(page.locator('.gs-statusbar .sb-state .label')).toHaveText('Running');
 
@@ -126,10 +126,10 @@ test('drop an archive: the floppy inside is stored and inserted, nothing unpacke
   test.setTimeout(240_000);
   await gotoWeb2(page);
   await dropOnDisplay(page, 'plus-v3-4d1f8172.rom', PLUS_ROM);
-  await expect(toast(page, 'Booted plus from uploaded ROM')).toBeVisible({ timeout: 60_000 });
+  await expect(toast(page, 'Booted plus from the loaded ROM')).toBeVisible({ timeout: 60_000 });
 
   await dropOnDisplay(page, 'MacTest_Disk.image.sit.hqx', ARCHIVE);
-  await expect(toast(page, 'MacTest Disk.image uploaded')).toBeVisible({ timeout: 60_000 });
+  await expect(toast(page, 'MacTest Disk.image added')).toBeVisible({ timeout: 60_000 });
   await expect(toast(page, 'Inserted into floppy drive 1')).toBeVisible({ timeout: 60_000 });
   expect(await gsEvalInPage(page, 'files.path_size', ['/opfs/images/fd/MacTest Disk.image'])).toBe(
     419284,
@@ -158,7 +158,7 @@ test('drop several files: each is stored or rejected, with one summary', async (
       "3 stored (1 ROM, 2 floppies), 1 rejected: 'notes.txt' doesn't look like a ROM, floppy, HD, CD, or archive",
     ),
   ).toBeVisible({ timeout: 60_000 });
-  await expect(toast(page, 'Booted plus from uploaded ROM')).toBeVisible({ timeout: 60_000 });
+  await expect(toast(page, 'Booted plus from the loaded ROM')).toBeVisible({ timeout: 60_000 });
   await expect(toast(page, 'Inserted into floppy drive 1')).toBeVisible({ timeout: 60_000 });
 
   const fd = (await gsEvalInPage(page, 'files.list', ['/opfs/images/fd'])) as { name: string }[];
@@ -176,7 +176,7 @@ async function captureCheckpoint(page: Page): Promise<{ bytes: Uint8Array; saved
   // Boot a machine via ROM drop, then pause it so the snapshot captures a
   // deterministic instruction count (a paused snapshot restores paused).
   await dropOnDisplay(page, 'plus-v3-4d1f8172.rom', PLUS_ROM);
-  await expect(toast(page, 'Booted plus from uploaded ROM')).toBeVisible({ timeout: 60_000 });
+  await expect(toast(page, 'Booted plus from the loaded ROM')).toBeVisible({ timeout: 60_000 });
 
   await page.locator('button.ptab[data-tab="terminal"]').click();
   await expect(page.locator('.console')).toBeVisible({ timeout: 15_000 });
@@ -292,3 +292,40 @@ test('Open Checkpoint on the Welcome page restores a saved state', async ({ page
   await expect(page.locator('.welcome-layer')).toHaveCount(0);
 });
 
+
+// Save State of a machine with a disk, re-opened with Open Checkpoint: the
+// consolidated checkpoint carries every disk block inline, and restoring
+// them took longer than the page's 3 s stall watchdog, which declared the
+// healthy core dead ("The emulator stopped", #238).  The block I/O now
+// proves the core alive.
+test('Save State with a floppy re-opens through Open Checkpoint', async ({ page }) => {
+  test.setTimeout(300_000);
+  await gotoWeb2(page);
+  await dropOnDisplay(page, 'plus-v3-4d1f8172.rom', PLUS_ROM);
+  await expect(toast(page, 'Booted plus from the loaded ROM')).toBeVisible({ timeout: 60_000 });
+  await dropOnDisplay(page, 'System_6_0_8.dsk', SYSTEM_FD);
+  await expect(toast(page, 'Inserted into floppy drive 1')).toBeVisible({ timeout: 60_000 });
+  await page.waitForTimeout(5_000);
+
+  const [download] = await Promise.all([
+    page.waitForEvent('download', { timeout: 120_000 }),
+    page.getByRole('button', { name: 'Save State' }).click(),
+  ]);
+  const saved = await download.path();
+  expect(saved).toBeTruthy();
+  const bytes = fs.readFileSync(saved as string);
+  expect(bytes.subarray(0, 7).toString('latin1')).toBe('GSCHKPT');
+
+  // A fresh page; decline the resume offer if the store has a checkpoint.
+  await page.reload();
+  const openCheckpoint = page.getByRole('button', { name: 'Open Checkpoint...' });
+  const startFresh = page.getByRole('button', { name: 'Start fresh' });
+  await expect(openCheckpoint.or(startFresh).first()).toBeVisible({ timeout: 60_000 });
+  if (await startFresh.isVisible()) await startFresh.click();
+
+  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), openCheckpoint.click()]);
+  await chooser.setFiles({ name: 'saved-state.bin', mimeType: 'application/octet-stream', buffer: bytes });
+  await expect(toast(page, /Checkpoint loaded/)).toBeVisible({ timeout: 120_000 });
+  await expect(page.getByText('The emulator stopped')).toHaveCount(0);
+  await expect.poll(() => gsEvalInPage(page, 'machine.id'), { timeout: 30_000 }).toBe('plus');
+});

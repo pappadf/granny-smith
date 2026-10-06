@@ -48,7 +48,13 @@ static int host_stat(void *ctx, const char *path, vfs_stat_t *out) {
         // listing still shows them via readdir, the user just can't read them.
         return -EINVAL;
     }
+#ifdef __EMSCRIPTEN__
+    // WasmFS gives a file the time it was first touched this session as its
+    // mtime (not OPFS's own), so it is no modification date: report unknown.
+    out->mtime = 0;
+#else
     out->mtime = (uint32_t)st.st_mtime;
+#endif
     out->readonly = false;
     return 0;
 }

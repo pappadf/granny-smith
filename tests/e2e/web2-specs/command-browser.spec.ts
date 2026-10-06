@@ -71,7 +71,7 @@ test("the browser follows the console and writes to it", async ({ page }) => {
   await gotoWeb2(page);
   const [romChooser] = await Promise.all([
     page.waitForEvent("filechooser"),
-    page.getByRole("button", { name: "Upload ROM..." }).click(),
+    page.getByRole("button", { name: "Load ROM..." }).click(),
   ]);
   await romChooser.setFiles(SE30_ROM);
   await page.getByRole("button", { name: "New Machine..." }).click();

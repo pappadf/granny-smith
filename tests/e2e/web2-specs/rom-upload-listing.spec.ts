@@ -6,7 +6,7 @@
 //
 // The Filesystem tab caches each directory listing it has shown, and used to
 // drop those caches only for its own mutations.  An upload through the
-// Welcome page's "Upload ROM..." stored the ROM (and said "uploaded") while an
+// Welcome page's "Load ROM..." stored the ROM (and said "uploaded") while an
 // expanded /opfs/images/rom kept showing its old listing — the ROM looked lost
 // until the tab was switched away and back.  The upload bumps images.revision;
 // the tab now drops its /opfs/images listings when that changes.
@@ -34,10 +34,10 @@ test('a Welcome-page ROM upload shows up in an open Filesystem tab', async ({ pa
   // Upload from the Welcome page, as a user does.
   const [chooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.getByRole('button', { name: 'Load ROM...' }).click(),
   ]);
   await chooser.setFiles({ name: 'tnt (2).rom', mimeType: 'application/octet-stream', buffer: fs.readFileSync(TNT_ROM) });
-  await expect(page.locator('.toast .msg').filter({ hasText: 'tnt (2).rom uploaded' })).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('.toast .msg').filter({ hasText: 'tnt (2).rom added' })).toBeVisible({ timeout: 30_000 });
 
   // The open tree shows it without collapsing, re-expanding or switching tabs.
   await expect(row(page, TNT_ID)).toBeVisible({ timeout: 10_000 });

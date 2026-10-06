@@ -58,12 +58,18 @@ _Static_assert(NUBUS_BERR_HI_EXCL_SLOT_E == ((0xF0000000u | (0xDu << 24)) + 0x00
 extern const nubus_card_kind_t builtin_se30_video_kind; // machines/glue/builtin_se30_video.c
 extern const nubus_card_kind_t mdc_8_24_kind; // cards/jmfb.c
 extern const nubus_card_kind_t builtin_rbv_video_kind; // machines/mdu/builtin_rbv_video.c
+extern const nubus_card_kind_t builtin_rbv_iisi_video_kind; // machines/mdu/builtin_rbv_video.c
 extern const nubus_card_kind_t display_card_24ac_kind; // cards/display_card_24ac.c
 extern const nubus_card_kind_t display_card_824gc_kind; // cards/display_card_824gc.c
 
 static const nubus_card_kind_t *const g_card_registry[] = {
-    &builtin_se30_video_kind, &mdc_8_24_kind,           &builtin_rbv_video_kind,
-    &display_card_24ac_kind,  &display_card_824gc_kind, NULL,
+    &builtin_se30_video_kind,
+    &mdc_8_24_kind,
+    &builtin_rbv_video_kind,
+    &builtin_rbv_iisi_video_kind,
+    &display_card_24ac_kind,
+    &display_card_824gc_kind,
+    NULL,
 };
 
 const nubus_card_kind_t *const *nubus_card_registry(void) {
@@ -487,11 +493,16 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
             const nubus_card_kind_t *kind = nubus_card_find(seat->card);
             seat->substitute = nubus_entry_substitute(kind, seat);
             if (s->kind == NUBUS_SLOT_BUILTIN) {
-                // The port's own monitor row (it has the one), unless none is
-                // plugged in; the sense lines read what the build resolved.
+                // The port's own monitor row -- the one whose code the sense
+                // lines read, else its default (a video_sense= override) --
+                // unless none is plugged in; the sense lines read what the
+                // build resolved.
                 seat->connected = cfg->build_opts.builtin_connected;
                 if (cfg->build_opts.builtin_sense == MACHINE_SENSE_NONE)
                     snprintf(seat->monitor, sizeof seat->monitor, "none");
+                for (const nubus_monitor_t *m = kind ? kind->monitors : NULL; m && m->id && !seat->monitor[0]; m++)
+                    if (m->sense_code == cfg->build_opts.builtin_sense)
+                        snprintf(seat->monitor, sizeof seat->monitor, "%s", m->id);
                 nubus_entry_default_monitor(kind, seat);
                 seat->sense = cfg->build_opts.builtin_sense;
             } else {

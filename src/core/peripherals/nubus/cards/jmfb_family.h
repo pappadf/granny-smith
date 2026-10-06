@@ -86,6 +86,7 @@ typedef struct jmfb_regs {
     uint8_t clut_idx;
     uint8_t clut_phase; // 0..2, which of the three longs comes next
     uint8_t sense_code; // 0..7, read back through CSR bits 9-11
+    uint8_t blanked; // out of /RESET: sync off, VRAM not scanned until VideoBase is written
 } jmfb_regs_t;
 
 // What this instance's registers act on.  Rebuilt at init and after a restore,
@@ -94,6 +95,8 @@ typedef struct jmfb_bind {
     display_t *display;
     uint8_t *store; // the scanout store the registers address
     size_t store_size;
+    uint8_t *blank; // black raster shown while `blanked`; NULL = scan nothing
+    size_t blank_size;
     rgba8_t *clut; // 256 entries
     struct nubus_card *card; // for the Stopwatch interrupt acknowledge
     const char *tag; // log prefix ("JMFB" / "8*24 GC")
@@ -109,7 +112,8 @@ pixel_format_t jmfb_depth_to_format(uint16_t pbcr);
 // format, and decide it against the store in one step (display_set_scanout).
 // `raster_h` is held in the register state rather than read back out of the
 // descriptor because a refused descriptor has height 0, and the next good
-// register write has to be able to rebuild the full raster.
+// register write has to be able to rebuild the full raster.  While
+// `r->blanked` the store is refused and the bind's `blank` is shown instead.
 void jmfb_apply_scanout(jmfb_regs_t *r, const jmfb_bind_t *b);
 
 // Blocks 0-2 of the register window.  `blk` is JMFB_BLK_*; `off` is the byte

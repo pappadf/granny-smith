@@ -60,7 +60,7 @@ export async function maybeOfferBackgroundCheckpoint(): Promise<boolean> {
 // The outcome of Save State: the name the browser downloads the file as, or
 // which step failed and why.
 export type SaveCheckpointResult =
-  { ok: true; name: string } | { ok: false; step: 'save' | 'download'; message: string };
+  { ok: true; name: string } | { ok: false; step: 'save' | 'save to computer'; message: string };
 
 export async function saveCheckpoint(): Promise<SaveCheckpointResult> {
   const name = `saved-state-${compactTimestamp()}.bin`;
@@ -78,7 +78,7 @@ export async function saveCheckpoint(): Promise<SaveCheckpointResult> {
     if (saved !== true) return { ok: false, step: 'save', message: gsErrorText(saved) };
     const downloaded = await gsEval('files.download', [tmpPath]);
     if (downloaded !== true)
-      return { ok: false, step: 'download', message: gsErrorText(downloaded) };
+      return { ok: false, step: 'save to computer', message: gsErrorText(downloaded) };
     return { ok: true, name };
   } finally {
     // The download has already copied it out, so remove it on every exit

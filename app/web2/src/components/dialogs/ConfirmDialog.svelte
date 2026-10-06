@@ -1,6 +1,7 @@
 <script lang="ts">
   import Modal from '@/components/common/Modal.svelte';
   import Button from '@/components/ui/Button.svelte';
+  import Checkbox from '@/components/ui/Checkbox.svelte';
 
   interface Props {
     open: boolean;
@@ -10,7 +11,10 @@
     cancelText?: string;
     /** Style the confirm button as a destructive action. */
     danger?: boolean;
-    onConfirm: () => void;
+    /** Label of an opt-out checkbox ("Don't ask again"); none when unset. */
+    optOutLabel?: string;
+    /** Called with whether the opt-out box was ticked. */
+    onConfirm: (optOut: boolean) => void;
     onClose: () => void;
   }
   let {
@@ -20,11 +24,13 @@
     confirmText = 'OK',
     cancelText = 'Cancel',
     danger = false,
+    optOutLabel,
     onConfirm,
     onClose,
   }: Props = $props();
 
   let confirmEl = $state<HTMLElement | null>(null);
+  let optOut = $state(false);
 
   $effect(() => {
     if (open) requestAnimationFrame(() => confirmEl?.focus());
@@ -33,14 +39,19 @@
   function onKey(ev: KeyboardEvent) {
     if (ev.key === 'Enter') {
       ev.preventDefault();
-      onConfirm();
+      onConfirm(optOut);
     }
   }
 </script>
 
 <Modal {open} {title} {onClose}>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="confirm-body" onkeydown={onKey}>{message}</div>
+  <div class="confirm-body" onkeydown={onKey}>
+    {message}
+    {#if optOutLabel}
+      <div class="opt-out"><Checkbox bind:checked={optOut} label={optOutLabel} size="sm" /></div>
+    {/if}
+  </div>
   {#snippet actions()}
     <Button size="lg" class="btn" onclick={onClose}>{cancelText}</Button>
     <Button
@@ -48,7 +59,7 @@
       variant={danger ? 'danger' : 'primary'}
       class={danger ? 'btn danger' : 'btn primary'}
       bind:ref={confirmEl}
-      onclick={onConfirm}
+      onclick={() => onConfirm(optOut)}
     >
       {confirmText}
     </Button>
@@ -62,5 +73,8 @@
     font-size: var(--gs-font-size-base);
     color: var(--gs-text);
     line-height: 1.45;
+  }
+  .opt-out {
+    margin-top: var(--gs-space-3);
   }
 </style>

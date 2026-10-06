@@ -222,7 +222,7 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
   // --- 1. Start the 840AV with its System 7.1 disk. ------------------------
   const [romChooser] = await Promise.all([
     page.waitForEvent("filechooser"),
-    page.getByRole("button", { name: "Upload ROM..." }).click(),
+    page.getByRole("button", { name: "Load ROM..." }).click(),
   ]);
   await romChooser.setFiles(AV_ROM);
 
@@ -232,7 +232,7 @@ test("PlainTalk recognises speech from the browser microphone", async ({ page })
   await model.selectOption("q840av");
 
   const hd = page.locator("#cfg-media-scsi-0");
-  const [hdChooser] = await Promise.all([page.waitForEvent("filechooser"), hd.selectOption("Upload image...")]);
+  const [hdChooser] = await Promise.all([page.waitForEvent("filechooser"), hd.selectOption("Load image...")]);
   await hdChooser.setFiles(AV_HD);
   await expect(hd.locator("option", { hasText: AV_HD_NAME })).toHaveCount(1, { timeout: 120_000 });
   await hd.selectOption(AV_HD_NAME);

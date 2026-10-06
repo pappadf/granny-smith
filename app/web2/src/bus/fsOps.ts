@@ -248,7 +248,7 @@ export async function downloadRawImage(
     if (total > RAW_DOWNLOAD_IN_MEMORY_MAX)
       return {
         ok: false,
-        error: `this browser cannot save a ${Math.round(total / (1024 * 1024))} MB raw image (no save picker); download the .dmg instead`,
+        error: `this browser cannot save a ${Math.round(total / (1024 * 1024))} MB raw image (no save picker); save the .dmg instead`,
       };
     const parts: Uint8Array[] = [];
     for (let at = 0; at < total;) {

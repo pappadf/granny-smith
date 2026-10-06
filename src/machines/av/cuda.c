@@ -633,8 +633,20 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
         // answers first; the acknowledgement is header-only either way.
         if (!(slave & 1) && cuda->i2c_write && cuda->i2c_write(cuda->i2c_write_ctx, slave, &data[1], data_len - 1))
             break;
-        if (!cuda->vdc)
-            break; // no digitizer bus: header-only acknowledgement
+        if (!cuda->vdc) {
+            // Nothing else on this board's bus: the slave does not ACK, and
+            // the transaction fails as it does on the wire.  Acknowledging
+            // it instead tells the guest a part is there.  System 7.5's
+            // TV patch (System 'gpch' 750) probes the TV-tuner parts at
+            // $41/$4F/$80/$C1 this way and builds Gestalt 'tv  ' from the
+            // ones that answer; with every probe acknowledged a 7500 or
+            // 6100 claimed a video decoder, and the 'jbtv' digitizer's
+            // open then read a 68K-Mac ROM address ($40800012) that is
+            // unmapped on TNT -- a bus error at startup (#245).
+            LOG(2, "RdWrIIC slave=$%02X NAK (no such device)", slave);
+            cuda_send_error(cuda, CUDA_ERR_INVPSEUDO, PKT_PSEUDO, cmd);
+            return;
+        }
         if (!av_vdc_i2c_slave_known(slave)) {
             // Only the DMSD and VDC are on the bus; the real handler's behavior
             // for other addresses was never analysed — reject loudly so a guest

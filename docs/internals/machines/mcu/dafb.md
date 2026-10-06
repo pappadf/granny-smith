@@ -88,8 +88,18 @@ covers the pre-mode-set window. Scanout renders from VRAM at the
 programmed geometry/depth; PCBR0 direct-color + PCBR1 `$C0` selects the
 x555 16 bpp pixel format (the same format the 8•24 GC path renders).
 
+A /RESET (`dafb_reset`, `machine.reset`) keeps VRAM but holds the scanout
+**blanked**: a black 640×480 1 bpp raster from a private buffer, until the
+ROM's first complete mode set (the first `reconfigure()` that derives a mode)
+scans VRAM again. The ROM loads its CLUT a few milliseconds before the gray
+fill, so the old VRAM contents can show for that window (well under a frame),
+as they would on the hardware. A power cycle also clears VRAM
+(`dafb_power_on`).
+
 ## State
 
 `dafb_checkpoint` covers the full register file, the CLUT **including the
 in-flight write phase** (a partial RGB triplet is real state), both
-PCBRs, the clock program, and VRAM.
+PCBRs, the clock program, VRAM, and the post-/RESET `blanked` flag (a
+restore while blanked stays blanked rather than re-deriving a half-programmed
+mode).

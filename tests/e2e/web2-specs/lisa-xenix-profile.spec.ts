@@ -5,7 +5,7 @@
 // hard disk through the real machine-configuration dialog, then start it.
 //
 // Driven entirely through the shipped UI:
-//   1. Upload the Lisa 2 ROM via the Welcome "Upload ROM..." button (file picker).
+//   1. Upload the Lisa 2 ROM via the Welcome "Load ROM..." button (file picker).
 //   2. Open "New Machine..." and select the Lisa model the ROM identifies as.
 //   3. Upload the installed Xenix ProFile image into the hard-disk slot (file
 //      picker) and select it.
@@ -34,10 +34,10 @@ test('configure a Lisa 2 with the Xenix ProFile and boot', async ({ page }) => {
   test.setTimeout(120_000);
   await gotoWeb2(page);
 
-  // --- 1. Upload the Lisa 2 ROM via the Welcome "Upload ROM..." button. ------
+  // --- 1. Upload the Lisa 2 ROM via the Welcome "Load ROM..." button. ------
   const [romChooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.getByRole('button', { name: 'Load ROM...' }).click(),
   ]);
   await romChooser.setFiles(LISA_ROM);
 
@@ -55,12 +55,12 @@ test('configure a Lisa 2 with the Xenix ProFile and boot', async ({ page }) => {
   await expect(page.locator('[data-bus="profile"]')).toContainText('ProFile port');
 
   // --- 3. Upload the installed Xenix ProFile image into the ProFile slot. ----
-  // Selecting the "Upload image..." sentinel opens a file picker; after the
+  // Selecting the "Load image..." sentinel opens a file picker; after the
   // upload the slot resets to (none), so pick the now-listed image by name.
   const hd = page.locator('#cfg-media-profile-0');
   const [hdChooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    hd.selectOption('Upload image...'),
+    hd.selectOption('Load image...'),
   ]);
   await hdChooser.setFiles(XENIX_HD);
   await expect(hd.locator('option', { hasText: XENIX_HD_NAME })).toHaveCount(1, { timeout: 30_000 });
@@ -88,7 +88,7 @@ test('create a blank ProFile from the config dialog', async ({ page }) => {
 
   const [romChooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.getByRole('button', { name: 'Load ROM...' }).click(),
   ]);
   await romChooser.setFiles(LISA_ROM);
 

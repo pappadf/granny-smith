@@ -16,12 +16,12 @@ interface ActivityState {
 
 export const activity: ActivityState = $state({
   current: null,
-  verb: 'Uploading',
+  verb: 'Loading',
   detail: '',
   cancel: null,
 });
 
-export function startActivity(name: string, verb = 'Uploading'): void {
+export function startActivity(name: string, verb = 'Loading'): void {
   activity.current = name;
   activity.verb = verb;
   activity.detail = '';

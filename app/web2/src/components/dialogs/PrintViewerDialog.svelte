@@ -31,7 +31,7 @@
       <Button size="lg" class="btn" href={doc.url} target="_blank" rel="noopener"
         >Open in new tab</Button
       >
-      <Button size="lg" class="btn" href={doc.url} download={doc.name}>Download</Button>
+      <Button size="lg" class="btn" href={doc.url} download={doc.name}>Save to computer…</Button>
     {/if}
     <Button size="lg" variant="primary" class="btn primary" onclick={closePrintedDocument}
       >Close</Button

@@ -33,12 +33,12 @@ async function bootIsolated(page: Page): Promise<void> {
   if (await cont.isVisible().catch(() => false)) await cont.click();
 }
 
-// Upload one file through the Welcome "Upload ROM..." picker, which probes it
+// Upload one file through the Welcome "Load ROM..." picker, which probes it
 // against every media type rather than being told what it is.
 async function uploadViaPicker(page: Page, name: string, buffer: Buffer): Promise<void> {
   const [chooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.getByRole('button', { name: 'Load ROM...' }).click(),
   ]);
   await chooser.setFiles({ name, mimeType: 'application/octet-stream', buffer });
 }

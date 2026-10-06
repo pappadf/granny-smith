@@ -3,6 +3,7 @@
   import IconButton from '@/components/ui/IconButton.svelte';
   import { machine } from '@/state/machine.svelte';
   import { continueExec, pauseExec, stepInto, stopMachine, restart } from '@/bus/debug';
+  import { confirmThen } from '@/state/powerConfirm';
 
   const isRunning = $derived(machine.status === 'running');
   const isPaused = $derived(machine.status === 'paused');
@@ -49,7 +50,7 @@
     icon="stop"
     iconSize="md"
     label="Stop"
-    onclick={() => stopMachine()}
+    onclick={() => void confirmThen('shutdown', stopMachine)}
   />
   <IconButton
     class="tb-btn"
@@ -57,6 +58,6 @@
     icon="restart"
     iconSize="md"
     label="Restart"
-    onclick={() => restart()}
+    onclick={() => void confirmThen('restart', restart)}
   />
 </Toolbar>

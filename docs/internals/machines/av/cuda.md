@@ -135,6 +135,16 @@ the data bytes to it. Only the two Philips slaves (`$8A`/`$8B` DMSD,
 warning, since the firmware's behavior for other addresses was never analysed.
 The chips themselves are [vdc.md](vdc.md).
 
+The same model serves the Power Macs' Cuda. There the bus carries what the
+board attaches: TNT's Control pixel-clock synthesiser (`$50`, write-only),
+the Gossamer's whole bus (DIMM SPD and the rest), or nothing at all (PDM).
+A slave nobody claims gets an error packet, as a NAK does on the wire. The
+ROMs and System 7.5 tell an empty socket from a fitted part that way:
+System 7.5's TV patch builds Gestalt `'tv  '` from the TV-tuner parts that
+answer at `$41`/`$4F`/`$80`/`$C1`. When every probe was acknowledged, a 7500
+claimed a video decoder, and the `'jbtv'` digitizer then bus-errored at
+startup.
+
 ## Not modelled
 
 Autopoll uses

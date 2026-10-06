@@ -92,6 +92,9 @@ struct av_civic {
     // The monitor strapped on the sense lines (the build's built-in monitor,
     // restored with the rest): 6 = Hi-Res 640x480, 7 = nothing connected.
     uint8_t sense;
+    // Out of /RESET the timing generator has sync off: VRAM is not scanned
+    // until the ROM writes Enable = 1 (av_civic_reset).
+    bool blanked;
 
     // --- pointers (not checkpointed) ---
     config_t *cfg;
@@ -206,8 +209,8 @@ static void civic_gr_pixel(av_civic_t *cv, const uint8_t *bits, uint32_t stride,
 
 // Rebuild the composed frame: graphics underlay + the video-in window.
 static void civic_compose(av_civic_t *cv) {
-    if (!cv->compose)
-        return;
+    if (!cv->compose || cv->blanked)
+        return; // held blanked, `compose` is serving as the black raster
     int code = cv->seb_pcbr & 7;
     if (code > 5)
         code = 5;
@@ -322,9 +325,17 @@ static void civic_update_display(av_civic_t *cv) {
     const rgba8_t *clut = (bpp <= 8) ? cv->disp_clut : NULL;
     uint32_t clut_len = (bpp <= 8) ? (1u << bpp) : 0;
 
-    // While the video-in overlay is on, scan out the composed XRGB frame
-    // instead of the raw graphics plane (civic_compose refreshes it).
-    if (civic_overlay_active(cv) && cv->compose) {
+    if (cv->blanked) {
+        // Held blanked after /RESET: a 1 bpp raster, whose black does not
+        // depend on the CLUT the guest left behind (an 8 bpp fill of 0 is
+        // the Mac CLUT's white).
+        fmt = PIXEL_1BPP_MSB;
+        stride = width / 8u;
+        clut = NULL;
+        clut_len = 0;
+    } else if (civic_overlay_active(cv) && cv->compose) {
+        // While the video-in overlay is on, scan out the composed XRGB frame
+        // instead of the raw graphics plane (civic_compose refreshes it).
         fmt = PIXEL_32BPP_XRGB;
         bits = cv->compose;
         stride = width * 4;
@@ -348,8 +359,13 @@ static void civic_update_display(av_civic_t *cv) {
         // never was, and nothing compared base + stride*height against the
         // store.  Decide them together; a descriptor the VRAM
         // cannot back scans nothing rather than reading past the end.
+        // Held blanked after /RESET, VRAM is refused and the idle overlay
+        // buffer (640x480x4, room for the 1 bpp raster) scans as black.
         uint32_t off = base % AV_CIVIC_VRAM_SIZE;
-        display_set_scanout(d, cv->vram, AV_CIVIC_VRAM_SIZE, off, stride, width, height, NULL, 0);
+        if (cv->blanked)
+            display_set_scanout(d, NULL, AV_CIVIC_VRAM_SIZE, off, stride, width, height, cv->compose, 640u * 480u * 4u);
+        else
+            display_set_scanout(d, cv->vram, AV_CIVIC_VRAM_SIZE, off, stride, width, height, NULL, 0);
     }
     d->clut = clut;
     d->clut_len = clut_len;
@@ -457,8 +473,11 @@ static void civic_slot_write(av_civic_t *cv, uint32_t off, uint8_t value) {
         break;
     }
     case SLOT_ENABLE:
-        if (bit)
+        // The ROM's video enable after /RESET: scan VRAM again.
+        if (bit) {
+            cv->blanked = false;
             civic_update_display(cv);
+        }
         break;
     default:
         // BaseAddr moves the scanout pointer; RowWords changes the pitch.
@@ -766,6 +785,17 @@ void av_civic_power_on(av_civic_t *cv) {
     memset(cv->vram, 0, AV_CIVIC_VRAM_SIZE);
     civic_update_display(cv);
     display_blank_raster(&cv->display);
+    cv->display.fb_dirty = true;
+}
+
+// /RESET: the registers and VRAM are left as they are (not modelled as
+// cleared), but the timing generator comes up with sync off, so the display
+// shows black -- not the old VRAM picture -- until the ROM re-enables video.
+void av_civic_reset(av_civic_t *cv) {
+    if (!cv)
+        return;
+    cv->blanked = true;
+    civic_update_display(cv);
     cv->display.fb_dirty = true;
 }
 
