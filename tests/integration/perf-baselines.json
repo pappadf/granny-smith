@@ -76,6 +76,10 @@
       "instr": 1579983598,
       "tolerance": 0.2
     },
+    "scsi-bare-volume/pm7500-753": {
+      "instr": 1580000000,
+      "tolerance": 0.2
+    },
     "scsi-bare-volume/q700-753": {
       "instr": 224118467,
       "tolerance": 0.2
