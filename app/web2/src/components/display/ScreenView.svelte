@@ -100,13 +100,16 @@
 
 <style>
   /* Inset by the skin's --gs-display-inset, so a rounded display never cuts
-     into a screen too large to fit (it scrolls within straight edges). */
+     into a screen too large to fit (it scrolls within straight edges).
+     The frame is centred by its own auto margins, not by the flex
+     container's alignment: centring an oversized child puts half its
+     overflow at negative offsets, above and left of the scroll origin,
+     where scrolling never reaches (#279).  Auto margins centre while it
+     fits and collapse to 0 once it does not. */
   .screen-view {
     position: absolute;
     inset: var(--gs-display-inset);
     display: flex;
-    align-items: center;
-    justify-content: center;
     overflow: auto;
   }
   /* The frame around the picture: a skin may give it a bezel (padding),
@@ -114,6 +117,8 @@
      styled (lint L-9). */
   .screen-wrap {
     position: relative;
+    margin: auto;
+    flex: none;
     background: var(--gs-screen-frame-bg);
     box-shadow: var(--gs-screen-frame-shadow);
     padding: var(--gs-screen-frame-padding);
