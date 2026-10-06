@@ -205,7 +205,10 @@ brush packet, `BRUSH_Y_X`), then a trajectory and an initiator — for
 overlapping copy is safe), `TRANS_BITBLT`, `POLYLINE` (each segment leaves
 its end pixel to the next; the last draws it only with `DST_LAST_PEL`),
 `POLYSCANLINES`/`PLY_NEXTSCAN` (span ends exclusive), `HOSTDATA_BLT`,
-`NEXTCHAR` and `SET_SCISSORS`. The 3D packets hand vertices to the 3D
+`NEXTCHAR` and `SET_SCISSORS`, plus opcode `$92`, which the SDK's table
+omits: ATI's Mac OS 9 driver sends it for ScrollRect-style single blits,
+and its body, as captured from that driver, is `BITBLT_MULTI`'s (ATI's
+later Radeon documentation numbers it BITBLT). The 3D packets hand vertices to the 3D
 engine: `3D_RNDR_GEN_PRIM` carries them inline; `3D_RNDR_GEN_INDX_PRIM`
 names a vertex list in AGP space (`VLOFF`, an offset in the AGP window)
 that the vertex walker reads in order or by 16-bit indices, and
@@ -218,8 +221,9 @@ Packets arrive three ways, chosen by `PM4_BUFFER_CNTL`'s mode: through
 `PM4_BUFFER_DL_RPTR` up to `PM4_BUFFER_DL_WPTR` once the microengine is
 free-running, with the new read pointer written back to
 `PM4_BUFFER_DL_RPTR_ADDR` (not with `NOUPDATE`); and from the indirect
-buffer, `PM4_IW_INDSIZE` dwords at `PM4_IW_INDOFF`, run when `INDSIZE` is
-written — by PIO or by a type-0 packet in the ring. The ring and the
+buffer, `PM4_IW_INDSIZE` dwords at `PM4_IW_INDOFF` — an offset in the AGP
+window, bit 25 or not (the Mac driver writes `$00070000`-style offsets) —
+run when `INDSIZE` is written — by PIO or by a type-0 packet in the ring. The ring and the
 indirect buffer are card addresses: below 32 MB the frame buffer, above it
 the "AGP" window, which on this PCI card reaches host memory through the
 **PCI GART** (`PCI_GART_PAGE`: a table of 8192 little-endian page addresses,
@@ -275,6 +279,18 @@ reads 1 until then; `CRTC_OFFSET_LOCK` holds it longer, and
 model having no lines. With the CRTC off — a mode set — the offset applies
 immediately.
 
+**What Mac OS 9.2.1 does with it.** On a beige G3 with nothing on the
+built-in port (`monitor="none"`), 9.2.1's ATI extensions drive the card
+as follows. ATI Graphics Accelerator uploads ATI's own CCE microcode (not
+the Linux image; CRC `$39A9C0F9`), runs PM4 mode 7 — packets by PIO, with
+bus-mastered indirect buffers through the PCI GART — and accelerates
+QuickDraw with `PAINT`, `PAINT_MULTI`, `HOSTDATA_BLT` (icons as colour host
+data), `$92` blits and pattern ROPs, about 9,000 packets to the Setup
+Assistant. It fences each indirect buffer with a `GUI_SCRATCH_REG0` write it
+reads back. Apple's OpenGL then lists ATI's renderer (`0x21000`,
+`AGL_ACCELERATED`, 16 MB of video and texture memory) next to the software
+one.
+
 **Interrupts.** `GEN_INT_STATUS` latches VBLANK and VSYNC every frame
 whether or not they are enabled (write 1 to clear); `GEN_INT_CNTL` gates
 the INTA line, which is level and held until acknowledged. `CRTC_STATUS`
@@ -323,6 +339,10 @@ loudly.
   `MODULATE`, a two-unit lightmap-style stage, the vertex walker's list and
   indexed walks through the GART, lines, points and a 565 target — every
   one a VRAM equality.
+- `tests/integration/suite-gossamer`, row `g3dt-hd-rage128` — Mac OS 9.2.1
+  from the MESH disk on a G3 whose only display is the card: the desktop on
+  the card's framebuffer, ATI's own microcode, PM4 mode 7, over a thousand
+  CCE packets, the hardware cursor, a desktop golden.
 - `tests/integration/tnt-pci-rage128` — the config header before any
   instruction; the node Open Firmware 1.0.5 builds from the FCode, read
   back with `.properties` over the serial console, for each cable and for
@@ -335,10 +355,8 @@ loudly.
 - No pixel clock: refresh is the host's, and PLL dividers are stored only.
 - `CRTC_VLINE` interrupts, display tiling (`CRTC_TILE_EN`) and packed
   24 bpp are not modelled.
-- No guest exercises the 2D engine or the CCE yet: the ROM ndrv does not
-  accelerate, and the `ATI Graphics Accelerator` and `ATI Rage 128 3D
-  Accelerator` that would need a Mac OS 9.x image with the ATI stack
-  (media-gated). Which CCE mode the Mac driver picks is therefore unknown.
+- No guest has drawn 3D through the engine yet: OpenGL lists ATI's
+  renderer under 9.2.1, but no GL or RAVE program has run on it.
 - The CCE does not interpret microcode: a guest that uploads its own and
   depends on behaviour other than appendix F's would diverge.
 - `SMALL_TEXT`, `SCALE`, `TRANS_SCALE` and `LOAD_PALETTE` are not executed.
