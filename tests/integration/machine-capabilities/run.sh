@@ -112,6 +112,7 @@ assert_contains iicx '"id":"mdc_8_24","label":"Macintosh Display Card 8•24","c
 assert_contains iicx '"rom":{"kind":"vrom","substitute":true}' "iicx card has a vROM with a substitute"
 assert_contains iici '"builtin":{"id":"builtin","label":"Built-in video","detail":"RBV"' "iici built-in RBV video"
 assert_absent iici '"id":"builtin_rbv_video"' "iici built-in video is not a card"
+assert_absent iisi '"id":"builtin_v8_video"' "iisi built-in video is not a card"
 
 # --- Computed card compatibility (no per-machine whitelists) --------------
 # Socket candidates are computed from the card registry by attachment

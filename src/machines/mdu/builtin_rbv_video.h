@@ -27,12 +27,15 @@
 // Size of the window the card scans out of, and of the private buffer it
 // starts with before the machine points it at main RAM (both the IIci and the
 // IIsi do: the RBV/V8 frame buffer is the bottom of Bank A).
-#define BUILTIN_RBV_VRAM_SIZE     0x00100000UL // 1 MB — covers 640×480×8bpp + offset
+#define BUILTIN_RBV_VRAM_SIZE     0x00100000UL // 1 MB — covers 640×870×8bpp + offset
 #define BUILTIN_RBV_SCREEN_OFFSET 0x8000UL // screen offset within the private buffer
 
-// Card-kind descriptor — registered in nubus.c's g_card_registry under the
-// id "builtin_rbv_video"; the IIci machine names it in its slot-$0 decl.
+// Card-kind descriptors — registered in nubus.c's g_card_registry.  One card,
+// two decodes of the monitor sense: "builtin_rbv_video" is the IIci's RBV,
+// "builtin_v8_video" the IIsi's V8, which also takes the 12" RGB.  Each
+// machine names its own in its built-in slot decl.
 extern const nubus_card_kind_t builtin_rbv_video_kind;
+extern const nubus_card_kind_t builtin_v8_video_kind;
 
 // === Machine-facing hooks (outside the nubus_card_ops_t vtable) =============
 

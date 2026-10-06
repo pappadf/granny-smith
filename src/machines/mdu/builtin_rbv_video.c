@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // builtin_rbv_video.c
-// Macintosh IIci built-in video pseudo-card.  See builtin_rbv_video.h for
+// Macintosh IIci / IIsi built-in video pseudo-card.  See builtin_rbv_video.h for
 // the contract and docs/internals/machines/mdu/rbv.md for the RBV/video
 // split.  Modelled on jmfb.c (CLUT + depth-switch video) but much smaller:
 // the depth/monitor-sense register lives on the RBV chip, there is no slot
@@ -14,6 +14,7 @@
 #include "card.h"
 #include "checkpoint.h"
 #include "display.h"
+#include "display_timing.h" // the sense code -> raster table
 #include "log.h"
 #include "memory.h" // ram_native_pointer: the frame buffer in main RAM
 #include "nubus.h"
@@ -27,12 +28,9 @@
 
 LOG_USE_CATEGORY_NAME("video");
 
-// Built-in 13" RGB panel: 640×480, depths 1/2/4/8 bpp.
-#define RBV_VIDEO_WIDTH  640
-#define RBV_VIDEO_HEIGHT 480
-// The black stub presented while RvVIDOff is set: the largest raster this card
-// can scan (8 bpp is the deepest entry in builtin_rbv_depths).
-#define RBV_BLANK_BYTES ((size_t)RBV_VIDEO_WIDTH * RBV_VIDEO_HEIGHT)
+// The raster presented while video is halted (an unsupported or absent
+// monitor): a black stub at the 13" RGB size, so consumers keep a canvas.
+#define RBV_HALTED_SENSE 6
 
 // === Per-card private state =================================================
 
@@ -63,7 +61,13 @@ typedef struct {
     // IIsi (the V8 DMAs main DRAM): blanking the screen must not write it.
     // Same reasoning as ariel.c's `blank`.
     uint8_t *blank;
+    size_t blank_size; // bytes in `blank`: the raster at 8 bpp
     uint32_t screen_offset; // where the visible raster starts within `fb`
+    // The raster the latched monitor sense selects (a power-up strap, so a
+    // construction fact): its size, or `halted` when the chip decodes no
+    // monitor from the code and drives no video at all.
+    uint32_t width, height;
+    bool halted;
 } rbv_video_priv_t;
 
 // The layout above is load-bearing.  If this fires, a member moved across the
@@ -92,6 +96,17 @@ static pixel_format_t depth_to_format(int depth_code) {
     }
 }
 
+// Decode the latched sense code the way this RBV variant does: a code is live
+// exactly when the card kind lists a monitor for it (the IIci decodes 001 and
+// 110, the IIsi's V8 adds 010); every other code halts video.  The raster is
+// the canonical one for the code.  NULL: halted.
+static const display_timing_t *rbv_decode_sense(const nubus_card_kind_t *kind, uint8_t sense) {
+    for (const nubus_monitor_t *m = kind ? kind->monitors : NULL; m && m->id; m++)
+        if (m->sense_code == sense)
+            return display_timing_for_sense(sense);
+    return NULL;
+}
+
 // Re-derive the scanout from the current depth and the video-off bit.  One
 // checked transition, the same helper every other producer uses: geometry and
 // buffer are decided together, so a blanked screen cannot advertise a raster
@@ -99,9 +114,11 @@ static pixel_format_t depth_to_format(int depth_code) {
 // the aperture rather than assumed to fit.
 static void rbv_video_apply_scanout(rbv_video_priv_t *p) {
     uint32_t bpp = display_bpp(p->display.format);
-    uint32_t stride = RBV_VIDEO_WIDTH * bpp / 8u;
-    display_set_scanout(&p->display, p->video_off ? NULL : p->fb, BUILTIN_RBV_VRAM_SIZE, p->screen_offset, stride,
-                        RBV_VIDEO_WIDTH, RBV_VIDEO_HEIGHT, p->blank, RBV_BLANK_BYTES);
+    uint32_t stride = p->width * bpp / 8u;
+    // A halted RBV drives no pixels, whatever RvVIDOff says.
+    bool dark = p->video_off || p->halted;
+    display_set_scanout(&p->display, dark ? NULL : p->fb, BUILTIN_RBV_VRAM_SIZE, p->screen_offset, stride, p->width,
+                        p->height, p->blank, p->blank_size);
 }
 
 // Point display.clut at the slice of the 256-entry hardware CLUT the current
@@ -137,14 +154,27 @@ static void rbv_video_apply_clut_window(rbv_video_priv_t *p) {
 // === Card vtable ============================================================
 
 static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const slot_opts_t *opts) {
-    (void)cfg;
-    (void)cp;
-    (void)opts;
     rbv_video_priv_t *p = calloc(1, sizeof(*p));
     if (!p)
         return -1;
+
+    // The raster follows the monitor strapped on the sense lines -- the code
+    // the RBV latches in RvMonP (the bus seats the same code the chip gets).
+    uint8_t sense = opts ? opts->sense : MACHINE_SENSE_NONE;
+    const display_timing_t *t = rbv_decode_sense(nubus_slot_kind(card->bus, card->slot), sense);
+    p->halted = (t == NULL);
+    if (!t)
+        t = display_timing_for_sense(RBV_HALTED_SENSE);
+    p->width = t->width;
+    p->height = t->height;
+    p->blank_size = (size_t)p->width * p->height; // the deepest depth, 8 bpp
+    if (p->halted)
+        LOG(1, "RBV video: sense %u decodes to no monitor; video halted", sense);
+    else
+        LOG(1, "RBV video: sense %u -> %s, %ux%u", sense, t->name, p->width, p->height);
+
     p->fb = calloc(1, BUILTIN_RBV_VRAM_SIZE);
-    p->blank = calloc(1, RBV_BLANK_BYTES);
+    p->blank = calloc(1, p->blank_size);
     if (!p->fb || !p->blank) {
         free(p->fb);
         free(p->blank);
@@ -154,12 +184,9 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
 
     // Power-up state: 1 bpp, matching the RBV's RvMonP depth default.  The
     // boot ROM grays the screen at this depth before the OS picks 8 bpp.
-    p->display.width = RBV_VIDEO_WIDTH;
-    p->display.height = RBV_VIDEO_HEIGHT;
     p->display.format = PIXEL_1BPP_MSB;
-    p->display.stride = RBV_VIDEO_WIDTH / 8; // 80 bytes/row at 1 bpp
     p->screen_offset = BUILTIN_RBV_SCREEN_OFFSET;
-    p->display.bits = p->fb + p->screen_offset;
+    rbv_video_apply_scanout(p); // the sense's geometry, or the halted stub
     // Cold boot scans out black, not the white an all-zero 1 bpp buffer gives.
     display_blank_raster(&p->display);
     p->display.clut = p->clut; // narrowed to the active window below
@@ -209,6 +236,9 @@ static void card_on_vbl(nubus_card_t *card, config_t *cfg) {
     (void)cfg;
     rbv_video_priv_t *p = card->priv;
     if (!p)
+        return;
+    // A halted RBV stops its sync outputs, so there is no vertical blanking.
+    if (p->halted)
         return;
     // Assert the built-in-video vertical-blanking interrupt (RvIRQ0 = slot 0).
     // The boot ROM polls RvSInt bit 6 for this during video init, and the OS
@@ -354,7 +384,7 @@ void builtin_rbv_video_set_depth(nubus_card_t *card, int depth_code) {
     bool pristine = display_raster_is_pristine(&p->display);
     p->display.format = f;
     rbv_video_apply_scanout(p); // stride follows the depth; re-fills the stub if blanked
-    if (pristine && !p->video_off)
+    if (pristine && !p->video_off && !p->halted)
         display_blank_raster(&p->display);
     rbv_video_apply_clut_window(p);
     p->display.shape_dirty = true;
@@ -437,18 +467,49 @@ uint8_t builtin_rbv_video_vdac_peek(nubus_card_t *card, uint32_t off) {
 
 // === Factory + kind descriptor ==============================================
 
-// Built-in monitor: 13" RGB, sense 6, depths 1/2/4/8 — for catalog.profile.
+// The monitors each variant decodes from its sense lines (docs/reference/
+// machines/mdu/rbv.md §3.5) -- for catalog.profile, and the decode table
+// rbv_decode_sense reads: a code with no row here halts video.  The sizes
+// are display_timings[]' for each code.  1/2/4/8 bpp, except that the 15"
+// Portrait has no 8 bpp mode (Guide to the Macintosh Family Hardware 2e,
+// Table 12-3).
 static const int builtin_rbv_depths[] = {1, 2, 4, 8, 0};
+static const int builtin_rbv_portrait_depths[] = {1, 2, 4, 0};
 
+// The 13" RGB (110; the default, so listed first) and the 15" B&W Portrait
+// (001), which both variants decode.
+#define RBV_MONITOR_13IN_RGB                                                                                           \
+    {.id = "13in_rgb",                                                                                                 \
+     .monitor = "13in_rgb",                                                                                            \
+     .width = 640,                                                                                                     \
+     .height = 480,                                                                                                    \
+     .depths = builtin_rbv_depths,                                                                                     \
+     .sense_code = 6}
+#define RBV_MONITOR_15IN_PORTRAIT                                                                                      \
+    {.id = "15in_portrait",                                                                                            \
+     .monitor = "15in_portrait",                                                                                       \
+     .width = 640,                                                                                                     \
+     .height = 870,                                                                                                    \
+     .depths = builtin_rbv_portrait_depths,                                                                            \
+     .sense_code = 1}
+
+// IIci RBV: 001 and 110; 010 and 101 are reserved, the rest unsupported.
 static const nubus_monitor_t builtin_rbv_monitors[] = {
-    {.id = "13in_rgb",
-     .monitor = "13in_rgb",
-     .width = RBV_VIDEO_WIDTH,
-     .height = RBV_VIDEO_HEIGHT,
-     .depths = builtin_rbv_depths,
-     .sense_code = 6,
-     .srsrc_sister = 0,
-     .crt_response = NULL},
+    RBV_MONITOR_13IN_RGB,
+    RBV_MONITOR_15IN_PORTRAIT,
+    {0},
+};
+
+// IIsi V8: adds 010, the 12" RGB at 512 x 384 (IIsi Developer Note, Table 4-2).
+static const nubus_monitor_t builtin_v8_monitors[] = {
+    RBV_MONITOR_13IN_RGB,
+    RBV_MONITOR_15IN_PORTRAIT,
+    {.id = "12in_rgb",
+      .monitor = "12in_rgb",
+      .width = 512,
+      .height = 384,
+      .depths = builtin_rbv_depths,
+      .sense_code = 2},
     {0},
 };
 
@@ -458,5 +519,15 @@ const nubus_card_kind_t builtin_rbv_video_kind = {
     .attach = CARD_ATTACH_BUILTIN, // motherboard circuitry — never socketed
     .requires_vrom = false,
     .monitors = builtin_rbv_monitors,
+    .ops = &builtin_rbv_video_ops,
+};
+
+// The IIsi's: the same card, decoding one more monitor.
+const nubus_card_kind_t builtin_v8_video_kind = {
+    .id = "builtin_v8_video",
+    .display_name = "Built-in video",
+    .attach = CARD_ATTACH_BUILTIN, // motherboard circuitry — never socketed
+    .requires_vrom = false,
+    .monitors = builtin_v8_monitors,
     .ops = &builtin_rbv_video_ops,
 };
