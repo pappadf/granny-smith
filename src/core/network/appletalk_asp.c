@@ -340,11 +340,18 @@ static void asp_reply(const ddp_header_t *ddp, const atp_packet_t *atp, const ui
 }
 
 // A command's reply: the 32-bit result in the four user bytes (CmdResult).
+// Data goes with NoErr and with afpEofError: FPRead's last bytes and
+// FPCatSearch's last matches arrive in an EofError reply (AFP_21_22).  It
+// was sent with NoErr only, so the client parsed whatever its reply buffer
+// last held -- System 7.5's Find File took a stale FPGetFileDirParms reply
+// for the search's CatPosition and a match count (#169).  Any other error
+// carries no data.
 static void asp_reply_result(const ddp_header_t *ddp, const atp_packet_t *atp, uint32_t result, const uint8_t *data,
                              int len) {
     uint8_t user[4];
     WR_BE32(user, result);
-    asp_reply(ddp, atp, user, result == AFPERR_NoErr ? data : NULL, result == AFPERR_NoErr ? len : 0);
+    bool with_data = result == AFPERR_NoErr || result == AFPERR_EOFErr;
+    asp_reply(ddp, atp, user, with_data ? data : NULL, with_data ? len : 0);
 }
 
 // === SPWrite ======================================================================

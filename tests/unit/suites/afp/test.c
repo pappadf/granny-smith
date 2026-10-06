@@ -891,7 +891,7 @@ TEST(file_id_lifecycle) {
     put16(g_vol_id);
     put32(id);
     put16(0x0040);
-    ASSERT_EQ_INT((int)ERR_BAD_ID, (int)call(OP_RESOLVE_ID));
+    ASSERT_EQ_INT((int)ERR_ID_NOT_FOUND, (int)call(OP_RESOLVE_ID)); // no thread left
     // And a second delete reports afpIDNotFound.
     req_reset();
     put8(0);
@@ -910,6 +910,23 @@ TEST(create_id_refuses_directories_and_missing_files) {
     ASSERT_EQ_INT((int)ERR_OBJECT_TYPE, (int)call(OP_CREATE_ID));
     req_vol_dir_path(g_vol_id, CNID_ROOT, "Nope");
     ASSERT_EQ_INT((int)ERR_OBJECT_NOT_FND, (int)call(OP_CREATE_ID));
+
+    // FPResolveID: a directory's number is afpObjectTypeErr, and an ID with
+    // no thread -- 0 here -- is afpIDNotFound, the code System 7.5's Find
+    // File takes as "no ID recorded" (afpBadIDErr made it report its AFP
+    // matches missing).
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(dir_id);
+    put16(0x0040);
+    ASSERT_EQ_INT((int)ERR_OBJECT_TYPE, (int)call(OP_RESOLVE_ID));
+    req_reset();
+    put8(0);
+    put16(g_vol_id);
+    put32(0);
+    put16(0x0040);
+    ASSERT_EQ_INT((int)ERR_ID_NOT_FOUND, (int)call(OP_RESOLVE_ID));
     fixture_down();
 }
 
@@ -1111,6 +1128,37 @@ TEST(cat_search_partial_name_matches_several) {
 
     uint32_t rc = call(OP_CAT_SEARCH);
     ASSERT_TRUE(rc == ERR_OK || rc == ERR_EOF);
+    ASSERT_EQ_INT(2, (int)rd32(g_reply + 20));
+    fixture_down();
+}
+
+// A fresh FPCatSearch walks the share, not just the catalog: files nobody
+// listed -- one in the root, one in a folder never opened -- are found.  The
+// walk followed only adopted CNIDs, so System 7.5's Find File, searching a
+// volume it had just mounted, found nothing.
+TEST(cat_search_finds_files_never_listed) {
+    fixture_up("catsearchunlisted");
+    write_file("Report", "x");
+    char dir[512];
+    host_path("Folder", dir, sizeof(dir));
+    ASSERT_EQ_INT(0, mkdir(dir, 0755));
+    write_file("Folder/Report2", "x");
+    write_file("Folder/Other", "x");
+
+    put_catsearch_header(10, NULL, 0x0042, 0x0000, 0x80000040u);
+    int spec1 = g_req_len;
+    put8(0);
+    put8(0);
+    put16(2);
+    put_pstr("Repo");
+    g_req[spec1] = (uint8_t)(g_req_len - spec1 - 2); // StructLength excludes itself and its filler
+    int spec2 = g_req_len;
+    put8(0);
+    put8(0);
+    put16(0);
+    g_req[spec2] = (uint8_t)(g_req_len - spec2 - 2); // StructLength excludes itself and its filler
+
+    ASSERT_EQ_INT((int)ERR_EOF, (int)call(OP_CAT_SEARCH)); // one call walks the whole tree
     ASSERT_EQ_INT(2, (int)rd32(g_reply + 20));
     fixture_down();
 }
@@ -3866,6 +3914,7 @@ int main(void) {
     RUN(exchange_files_keeps_an_open_fork_pointed_at_its_bytes);
     RUN(cat_search_matches_on_name_and_resumes_from_cat_position);
     RUN(cat_search_partial_name_matches_several);
+    RUN(cat_search_finds_files_never_listed);
     RUN(cat_search_parses_find_files_request);
     RUN(cat_search_rejects_criteria_it_cannot_serve);
     RUN(server_message_round_trips_and_raises_an_attention);

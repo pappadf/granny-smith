@@ -90,6 +90,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Collection entries and lookup-backed children report their path (`machine.scsi.device[3].image`, `log.category["scsi"]`); new core events `state:machine_booted` and `notify:media`.
 - **The ADB mouse reports only what is new** — like a real mouse, it answers a poll only after motion or a button change: a held button is reported once, not on every poll, and an aborted register read (Talk R3) no longer makes it answer the next one.  The 1 kHz MTemp guard that re-pinned the cursor after `mouse.move … "global"` is removed; a global position now holds by itself.
 
+### Fixed
+- **Find File on an AppleShare volume (System 7.5)** — searching "on mounted servers" lists each match once, with its path. It found nothing in folders the Mac had never opened, dropped the last matches (they come back with the end-of-search code, which the server sent without its data — FPRead's last bytes were lost the same way), and then reported a found item "missing" because the server answered its ID check with the wrong error code (#169).
+
 ## [v0.8.0] — 2026-08-11
 
 ### Added
