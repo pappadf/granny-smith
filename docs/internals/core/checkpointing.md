@@ -81,7 +81,7 @@ The headless target has no `localStorage` and no machine-id concept. Pass `--che
 
 - **File format & signature:**
   - Two on-disk formats are used:
-    - **v2 (`GSCHKPT2`)** — Used for consolidated (full-export) checkpoints. Per-block RLE compression with file/line metadata for diagnostics. Data blocks >= 64 bytes are RLE-compressed individually.
+    - **v2 (`GSCHKPT2`)** — Used for consolidated (full-export) checkpoints. Per-block RLE compression with file/line metadata for diagnostics. Data blocks >= 64 bytes are RLE-compressed individually. The file is read and written through a 1 MB stdio buffer: a disk is one record per block, and with stdio's default ~1 KB buffer every couple of records was a filesystem call (a synchronous OPFS access-handle round trip in the browser).
     - **v3 (`GSCHKPT3`)** — Used for quick (background auto-save) checkpoints. All data is accumulated into a pre-allocated memory buffer behind a header-sized gap; at close the header is filled in and the whole buffer is one file the I/O worker writes and publishes. No RLE (the payload is mostly uncompressible RAM: `compressed_size == uncompressed_size` marks it raw) and no per-block metadata (filenames, line numbers).
   - The v3 format structure: `GSCHKPT3` (8 bytes) + build id + uncompressed_size (8 bytes) + compressed_size (8 bytes) + raw payload.  The header says nothing about the machine: what it is -- the model and the RAM size -- is the payload's first part, the board's (below).
   - The reader auto-detects the format by inspecting the 8-byte magic signature.

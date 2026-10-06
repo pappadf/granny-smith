@@ -58,6 +58,16 @@ LOG_USE_CATEGORY_NAME("ckpt");
 static uint8_t *g_quick_write_buf = NULL;
 static size_t g_quick_write_cap = 0;
 
+// stdio buffer for a checkpoint FILE.  A consolidated (v2) checkpoint is a
+// stream of small records -- a disk is one per 512-byte block -- and with
+// stdio's default ~1 KB buffer every couple of records was a filesystem
+// call.  Under WasmFS/OPFS each of those is a synchronous access-handle
+// round trip, which made saving or opening a Save State of a machine with
+// a hard disk take minutes.  The buffer is allocated with the handle (the
+// flexible tail of struct checkpoint), so every path that frees the handle
+// after fclose frees it too.
+#define CHECKPOINT_STDIO_BUFFER_BYTES (1u * 1024 * 1024)
+
 // The quick save's header, laid down at the front of the buffer at close
 // so the whole file is one buffer the I/O worker can write and publish.
 #define QUICK_HDR_LEN (CHECKPOINT_MAGIC_LEN + BUILD_ID_LEN + 8 + 8)
@@ -184,6 +194,9 @@ struct checkpoint {
     size_t buf_used; // bytes stored (write) or total decompressed size (read)
     size_t buf_pos; // read cursor position (read only)
     bool buf_owned; // true when buf was malloc'd and must be freed
+    // stdio buffer for `file` (CHECKPOINT_STDIO_BUFFER_BYTES; present only
+    // when the handle was allocated with a FILE to stream)
+    char stdio_buf[];
 };
 
 // === v3 buffer helpers ===
@@ -666,7 +679,7 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
 
 // Open a checkpoint file for reading (auto-detects v2 or v3 format)
 checkpoint_t *checkpoint_open_read(const char *filename) {
-    checkpoint_t *cp = (checkpoint_t *)malloc(sizeof(struct checkpoint));
+    checkpoint_t *cp = (checkpoint_t *)malloc(sizeof(struct checkpoint) + CHECKPOINT_STDIO_BUFFER_BYTES);
     if (!cp)
         return NULL;
 
@@ -675,6 +688,7 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         free(cp);
         return NULL;
     }
+    setvbuf(cp->file, cp->stdio_buf, _IOFBF, CHECKPOINT_STDIO_BUFFER_BYTES);
 
     // Initialize buffer fields
     cp->buf = NULL;
@@ -819,12 +833,14 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
 
 // Open a checkpoint file for writing
 checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind) {
-    checkpoint_t *cp = (checkpoint_t *)malloc(sizeof(struct checkpoint));
+    // A quick save is written by the I/O worker at close (or inline by the
+    // same code); only the consolidated kind streams to a FILE here, so only
+    // it carries a stdio buffer.
+    size_t stdio_bytes = kind != CHECKPOINT_KIND_QUICK ? CHECKPOINT_STDIO_BUFFER_BYTES : 0;
+    checkpoint_t *cp = (checkpoint_t *)malloc(sizeof(struct checkpoint) + stdio_bytes);
     if (!cp)
         return NULL;
 
-    // A quick save is written by the I/O worker at close (or inline by the
-    // same code); only the consolidated kind streams to a FILE here.
     cp->file = NULL;
     if (kind != CHECKPOINT_KIND_QUICK) {
         cp->file = fopen(filename, "wb");
@@ -832,6 +848,7 @@ checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind
             free(cp);
             return NULL;
         }
+        setvbuf(cp->file, cp->stdio_buf, _IOFBF, stdio_bytes);
     } else {
         snprintf(g_publish_tmp, sizeof g_publish_tmp, "%s", filename);
     }

@@ -117,7 +117,7 @@ Common case (no preimage needed): one seek + one write.
 
 **Restore from quick checkpoint:** Roll back first (journal replay, post-commit slots truncated away), then read the bitmap and layout from the checkpoint stream, check the layout matches the delta's, set them as current and committed, truncate the journal. The delta's block data is already correct (OPFS auto-persisted every write).
 
-**Restore from consolidated checkpoint:** `storage_load_state()` reads all blocks into the delta, sets all bitmap bits, and commits.
+**Restore from consolidated checkpoint:** `storage_load_state()` reads all blocks into the delta, sets all bitmap bits, and commits. The stream yields a block at a time, but the delta is written a run at a time (blocks whose delta positions are contiguous, up to the 4 MB streaming chunk): a seek and write per block was a filesystem call per 512 bytes, which under WasmFS/OPFS made opening a Save State with a hard disk take minutes.
 
 ## 8. Crash Recovery (Rollback)
 
