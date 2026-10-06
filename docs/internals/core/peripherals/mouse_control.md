@@ -852,17 +852,23 @@ never fires, yet the OS tracks cursor position correctly.
 
 **ADB transceiver** (`src/core/peripherals/adb.c`):
 
-- **Auto-poll:** `adb_autopoll_deferred()` fires every ~11ms and repeats
-  the last Talk R0 (`last_poll_addr`), signalling SRQ when another device
-  has data.  A device answers only with new data (§10).
+- **Auto-poll:** `adb_autopoll_deferred()` repeats the last Talk R0
+  (`last_poll_addr`), signalling SRQ when another device has data.  It runs
+  only when a device has data (new input, or data left when the bus goes
+  idle), never on an idle clock.  A device answers only with new data (§10).
+  Egret and Cuda are told of new data through `adb_set_data_hook()`.
 - **Mouse reply:** `prepare_mouse_reply()` clamps deltas to +-63 (7-bit
   range), encodes into `reply_buf[0..1]`.  Large deltas split across
-  consecutive polls via `remain_dx`/`remain_dy`.
+  consecutive polls via `remain_dx`/`remain_dy`.  In handler `$04` (the
+  Apple Extended Mouse, adb.md) the report is 4 bytes, and once the host
+  has read Register 1 the deltas run to +-4095, so a frame's motion fits in
+  one report: the Cursor Device Manager spreads a second report in the same
+  frame over later frames.
 - **Byte delivery:** `adb_deliver_next_byte()` feeds reply bytes through
   `via_input_sr()`.  Dummy byte with bit3=LOW signals end-of-transfer.
-- **Button acceleration:** `adb_mouse_event()` with button change asserts SRQ
-  and reschedules auto-poll within `ADB_SHIFT_DELAY` (800us) instead of
-  waiting 11ms.
+- **Prompt delivery:** `adb_mouse_event()` with motion or a button change
+  asserts SRQ and schedules the auto-poll answer within `ADB_SHIFT_DELAY`
+  (800us).
 
 **System wiring** (`src/core/system.c`):
 

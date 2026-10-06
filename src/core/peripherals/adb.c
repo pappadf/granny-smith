@@ -57,10 +57,13 @@ LOG_USE_CATEGORY_NAME("adb");
 // SR interrupt fires.
 #define ADB_BYTE_DELAY (330 * 8 * 1000)
 
-// Auto-poll interval (nanoseconds).  The real ADB transceiver repeats the last
-// Talk R0 command approximately every 11 ms while in idle (state 3).  We use
-// 11 ms to match real hardware timing.
-#define ADB_AUTOPOLL_INTERVAL (11 * 1000 * 1000)
+// No auto-poll interval.  The real transceiver repeats the last Talk R0
+// about every 11 ms while idle (state 3), but the guest never sees a poll that
+// finds nothing -- only the interrupt when a device answers.  So the model
+// answers when a device HAS data: at once when input arrives
+// (adb_mouse_event, adb_keyboard_event) or when the bus goes idle with data
+// still waiting, and runs nothing at all while the bus is quiet.  The 11 ms
+// beat used to delay every report by up to a poll.
 
 // Default ADB device addresses assigned at power-on
 #define KBD_DEFAULT_ADDR   2
@@ -73,6 +76,22 @@ LOG_USE_CATEGORY_NAME("adb");
 // The other handler ID the classic two-byte Apple Desktop Bus Mouse answers
 // to: $02 is the 200 cpi variant of the same report format.
 #define MOUSE_HANDLER_ID_200CPI 0x02
+
+// Handler $04: the Apple Extended Mouse protocol.  Register 0 grows to four
+// bytes -- buttons 2-5 and delta bits 7-12 in bytes 2 and 3 -- and Register 1
+// holds an 8-byte device record (ID, resolution, class, button count).  The
+// Cursor Device Manager in the 1992-and-later ROMs (CrsrDev.a, CrsrDevReInit)
+// asks every mouse for it, reads Register 1, and decodes the wide deltas in
+// CrsrDevHandleADB, so one report can carry a whole frame's motion.
+#define MOUSE_HANDLER_ID_EXTENDED 0x04
+
+// The extended mouse's Register 1 record: what CrsrDevReInit copies into its
+// CrsrDevRec.  72 counts per inch is the resolution it assumes for a plain
+// handler-1 mouse, so one count is still one pixel; class 1 is classMouse.
+static const uint8_t k_mouse_reg1[8] = {'g', 's', 'm', 's', 0x00, 72, 0x01, 0x01};
+
+// The widest delta a 4-byte extended report carries: 13-bit two's complement.
+#define MOUSE_EXT_DELTA_MAX 4095
 
 // ADB command byte bit-field masks
 #define CMD_ADDR_MASK 0xF0 // bits 7-4: target device address
@@ -132,8 +151,9 @@ struct adb {
     // Current VIA transaction state (0-3), extracted from port B bits 5:4
     int state;
 
-    // Reply buffer for the current Talk command
-    uint8_t reply_buf[2]; // bytes to deliver to the OS
+    // Reply buffer for the current Talk command (8 bytes: an ADB register's
+    // most; the extended mouse sends 4, its Register 1 record 8)
+    uint8_t reply_buf[8]; // bytes to deliver to the OS
     int reply_len; // valid bytes in reply_buf (0 = no device)
     int reply_index; // index of next byte to deliver
 
@@ -163,6 +183,12 @@ struct adb {
     int mouse_dy;
     bool mouse_button; // current button state (true = pressed)
     bool mouse_data_pending; // set by adb_mouse_event, cleared after auto-poll delivery
+    // The host has read Register 1 while the mouse is in handler $04: its
+    // driver knows the extended format, so reports may use the wide deltas.
+    // MkLinux DR3 selects handler $04 for its middle and right buttons but
+    // never reads Register 1 and decodes only bits 0-6 of each delta, so
+    // until then reports stay within the classic +-63 (adb_mouse.c, POS()).
+    bool mouse_ext_identified;
 
     // Device register 3 state (address + handler ID) for keyboard and mouse
     adb_device_t kbd;
@@ -208,6 +234,9 @@ struct adb {
     // === Pointers last (not checkpointed) ===
     via_t *via;
     struct scheduler *scheduler;
+    // Told when a device gets new data (adb_set_data_hook)
+    void (*data_hook)(void *ctx);
+    void *data_hook_ctx;
 };
 
 // ============================================================================
@@ -304,6 +333,8 @@ static void kbd_enqueue(adb_t *adb, uint8_t byte) {
     }
     adb->kbd_queue.buf[adb->kbd_queue.head] = byte;
     adb->kbd_queue.head = head;
+    if (adb->data_hook)
+        adb->data_hook(adb->data_hook_ctx);
 }
 
 // Dequeues one byte from the keyboard ring buffer; returns KBD_NO_KEY ($FF)
@@ -598,6 +629,7 @@ static void adb_reset(adb_t *adb) {
     adb->mouse_dy = 0;
     adb->mouse_button = false;
     adb->mouse_data_pending = false;
+    adb->mouse_ext_identified = false;
     adb->last_poll_addr = MOUSE_DEFAULT_ADDR;
 
     adb->listen_active = false;
@@ -659,12 +691,19 @@ static void prepare_kbd_reply(adb_t *adb) {
 }
 
 // Populates reply_buf with Mouse Register 0 data.
-// Only the portion of the delta that fits in 7-bit signed range is consumed;
-// the remainder stays in the accumulator for subsequent polls.
+// Only the portion of the delta the report can carry is consumed -- 7-bit
+// signed, or 13-bit once an extended-mouse driver has identified the device
+// -- and the remainder stays in the accumulator for subsequent polls.
 static void prepare_mouse_reply(adb_t *adb) {
-    int remain_dy, remain_dx;
-    int dy = clamp_delta(adb->mouse_dy, &remain_dy);
-    int dx = clamp_delta(adb->mouse_dx, &remain_dx);
+    bool ext = adb->mouse.handler == MOUSE_HANDLER_ID_EXTENDED;
+    int remain_dy, remain_dx, dy, dx;
+    if (ext && adb->mouse_ext_identified) {
+        dy = input_clamp_delta(adb->mouse_dy, -MOUSE_EXT_DELTA_MAX - 1, MOUSE_EXT_DELTA_MAX, &remain_dy);
+        dx = input_clamp_delta(adb->mouse_dx, -MOUSE_EXT_DELTA_MAX - 1, MOUSE_EXT_DELTA_MAX, &remain_dx);
+    } else {
+        dy = clamp_delta(adb->mouse_dy, &remain_dy);
+        dx = clamp_delta(adb->mouse_dx, &remain_dx);
+    }
 
     // Byte 1: bit 7 = button (1=up, 0=down); bits 6-0 = signed Y delta
     uint8_t btn_bit = adb->mouse_button ? 0x00 : 0x80; // active-low button
@@ -672,6 +711,15 @@ static void prepare_mouse_reply(adb_t *adb) {
     // Byte 2: bit 7 = 1 (reserved for 2nd button, always 1 on single-button mouse)
     adb->reply_buf[1] = 0x80 | encode_delta(dx);
     adb->reply_len = 2;
+    if (ext) {
+        // Bytes 3-4, the extended format (CrsrDev.a, CrsrDevHandleADB):
+        //   b2 y9 y8 y7 b3 x9 x8 x7  /  b4 y12 y11 y10 b5 x12 x11 x10
+        // Buttons 2-5 up (1); the delta bits are the two's-complement high
+        // bits, all copies of the sign while the delta fits in 7 bits.
+        adb->reply_buf[2] = (uint8_t)(0x88 | ((dy >> 3) & 0x70) | ((dx >> 7) & 0x07));
+        adb->reply_buf[3] = (uint8_t)(0x88 | ((dy >> 6) & 0x70) | ((dx >> 10) & 0x07));
+        adb->reply_len = 4;
+    }
 
     // Keep only the unconsumed remainder
     adb->mouse_dy = remain_dy;
@@ -797,6 +845,13 @@ static void prepare_talk_reply(adb_t *adb, uint8_t addr, uint8_t reg) {
             LOG(2, "talk R3 unknown addr=%d: no device", addr);
             prepare_no_device_reply(adb);
         }
+    } else if (reg == 1 && addr == adb->mouse.address && adb->mouse.handler == MOUSE_HANDLER_ID_EXTENDED) {
+        // The extended mouse's device record.  Reading it is what tells the
+        // mouse its driver knows the extended format (mouse_ext_identified).
+        memcpy(adb->reply_buf, k_mouse_reg1, sizeof k_mouse_reg1);
+        adb->reply_len = (int)sizeof k_mouse_reg1;
+        adb->mouse_ext_identified = true;
+        LOG(2, "talk R1 mouse: extended device record");
     } else if (reg == 2 && addr == adb->kbd.address) {
         // Keyboard Register 2 is a state register, not an event queue: it
         // always answers, whether or not any key has changed since the last
@@ -804,8 +859,8 @@ static void prepare_talk_reply(adb_t *adb, uint8_t addr, uint8_t reg) {
         prepare_kbd_reg2_reply(adb);
         LOG(2, "talk R2 kbd: [%02X %02X]", adb->reply_buf[0], adb->reply_buf[1]);
     } else {
-        // Register 1 is unused, and only the keyboard implements Register 2;
-        // anything else reads as no device.
+        // Register 1 exists only on the extended mouse, and only the keyboard
+        // implements Register 2; anything else reads as no device.
         LOG(2, "talk R%d addr=%d: unimplemented register", reg, addr);
         prepare_no_device_reply(adb);
     }
@@ -871,17 +926,22 @@ static void apply_listen_data(adb_t *adb) {
                 break;
             default:
                 // A device adopts only the handler IDs it implements.  The
-                // mouse models the classic two-byte Apple mouse, $01/$02;
-                // MkLinux's driver probes for a three-button mouse with
-                // handler 4, and a mouse that adopted it kept moving the
-                // pointer but never delivered its button to X (#144).
-                if (dev == &adb->mouse && cmd_byte != MOUSE_HANDLER_ID && cmd_byte != MOUSE_HANDLER_ID_200CPI) {
+                // mouse is the classic Apple mouse, $01/$02, and an Apple
+                // Extended Mouse, $04.  It used to adopt $04 while still
+                // sending the two-byte report, and MkLinux DR3 -- whose
+                // driver asks for $04 and takes the middle and right buttons
+                // from the extended bytes -- lost its button in X (#144).
+                // In $04 it now sends the extended report.
+                if (dev == &adb->mouse && cmd_byte != MOUSE_HANDLER_ID && cmd_byte != MOUSE_HANDLER_ID_200CPI &&
+                    cmd_byte != MOUSE_HANDLER_ID_EXTENDED) {
                     LOG(2, "listen R3 addr=%d: handler 0x%02X not implemented by the mouse, kept 0x%02X",
                         adb->listen_addr, cmd_byte, dev->handler);
                     break;
                 }
                 LOG(2, "listen R3 addr=%d: handler 0x%02X adopted", adb->listen_addr, cmd_byte);
                 dev->handler = cmd_byte;
+                if (dev == &adb->mouse)
+                    adb->mouse_ext_identified = false; // a new driver: identified again by Register 1
                 break;
             }
         } else {
@@ -1097,9 +1157,9 @@ static void adb_autopoll_deferred(void *source, uint64_t data) {
     // difference.
     if (!polled_device_has_data && !other_device_service_requesting(adb, poll_addr)) {
         // The real transceiver gets no response and stays quiet.  Don't fire
-        // IFR_SR — the ROM remains waiting.
-        LOG(3, "autopoll: nothing to report, rescheduling");
-        scheduler_new_cpu_event(adb->scheduler, &adb_autopoll_deferred, adb, 0, 0, ADB_AUTOPOLL_INTERVAL);
+        // IFR_SR — the ROM remains waiting, and so does the model: new data
+        // for the polled device schedules the next answer.
+        LOG(3, "autopoll: nothing to report");
         return;
     }
 
@@ -1364,7 +1424,14 @@ void adb_port_b_output(adb_t *adb, uint8_t value) {
         }
         remove_event(adb->scheduler, &adb_autopoll_deferred, adb);
         set_adb_int(adb, !has_pending_data(adb));
-        scheduler_new_cpu_event(adb->scheduler, &adb_autopoll_deferred, adb, 0, 0, ADB_AUTOPOLL_INTERVAL);
+        // A device with data waiting (the reply the ROM just walked away
+        // from, or the rest of a motion) is answered at once, as new input
+        // is; a quiet bus schedules nothing.  The ROM goes idle after every
+        // Talk it issues to resume polling, so a fixed 11 ms poll here came
+        // on top of each report, and twice after an SRQ scan: the first move
+        // after typing reached the guest ~29 ms late.
+        if (has_pending_data(adb))
+            scheduler_new_cpu_event(adb->scheduler, &adb_autopoll_deferred, adb, 0, 0, ADB_SHIFT_DELAY);
         break;
     }
 }
@@ -1427,8 +1494,11 @@ void adb_mouse_event(adb_t *adb, bool button, int dx, int dy) {
     adb->mouse_dy += dy;
 
     // Mark mouse as having unreported data
-    if (dx != 0 || dy != 0 || button_changed)
+    if (dx != 0 || dy != 0 || button_changed) {
         adb->mouse_data_pending = true;
+        if (adb->data_hook)
+            adb->data_hook(adb->data_hook_ctx);
+    }
 
     // Assert SRQ when idle and there is movement or a button-state change.
     // Reschedule the auto-poll to fire quickly so the ROM picks up the new data.
@@ -1437,6 +1507,17 @@ void adb_mouse_event(adb_t *adb, bool button, int dx, int dy) {
         remove_event(adb->scheduler, &adb_autopoll_deferred, adb);
         scheduler_new_cpu_event(adb->scheduler, &adb_autopoll_deferred, adb, 0, 0, ADB_SHIFT_DELAY);
     }
+}
+
+bool adb_has_data(const adb_t *adb) {
+    return adb && has_pending_data(adb);
+}
+
+void adb_set_data_hook(adb_t *adb, void (*hook)(void *ctx), void *ctx) {
+    if (!adb)
+        return;
+    adb->data_hook = hook;
+    adb->data_hook_ctx = ctx;
 }
 
 // Injects mouse movement deltas without changing the current button state.
@@ -1483,12 +1564,8 @@ bool adb_iop_transact(adb_t *adb, uint8_t cmd, const uint8_t *in_data, int in_da
     if (type == CMD_TYPE_TALK) {
         if (adb->reply_len == 0)
             return false; // no device at this address
-        // Bound by the SOURCE, not by the caller's 8-byte buffer.  This was
-        // `if (n > 8) n = 8;`, which is the wrong bound in the dangerous
-        // direction: reply_buf is 2 bytes, so a reply_len above 2 would have
-        // over-read the struct rather than being clamped.  reply_len is only
-        // ever set to 0 or 2 today, so the clamp has never fired either way —
-        // but the version that is safe if that changes is this one.
+        // Bound by the SOURCE: reply_buf is 8 bytes, the most an ADB
+        // register holds and the size of the caller's buffer.
         int n = adb->reply_len;
         if (n > (int)sizeof adb->reply_buf)
             n = (int)sizeof adb->reply_buf;

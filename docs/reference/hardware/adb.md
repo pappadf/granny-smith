@@ -478,6 +478,43 @@ The mouse device model and its handler IDs are covered in
 
 - `$01`: 100 +/-10 counts per inch (default on startup/reset)
 - `$02`: 200 +/-10 counts per inch
+- `$04`: Apple Extended Mouse protocol (below)
+
+### Extended Mouse Protocol (Handler `$04`)
+
+A mouse that accepts handler `$04` reports Register 0 in up to 8 bytes.  The
+first two are the 2-byte format above (button 0 and Y bits 6-0; button 1 and
+X bits 6-0); each byte after them adds three bits of each delta and two
+buttons, active-low like the first:
+
+| Byte | Bit 7 | Bits 6-4 | Bit 3 | Bits 2-0 |
+|------|-------|----------|-------|----------|
+| 2 | button 2 | Y bits 9-7 | button 3 | X bits 9-7 |
+| 3 | button 4 | Y bits 12-10 | button 5 | X bits 12-10 |
+| 4 | button 6 | Y bits 15-13 | button 7 | X bits 15-13 |
+
+The deltas are two's complement over however many bits the packet carries
+(13 in a 4-byte report: -4096 to +4095).  Register 1 holds an 8-byte device
+record: a 4-byte device ID, the resolution in counts per inch (word), the
+device class (`1` = mouse, `2` = trackball, ...) and the number of buttons.
+
+The Cursor Device Manager in the 1992 and later ROMs (`CrsrDev.a`,
+`CrsrDevReInit`) asks each mouse for handler `$04` after every ADB reinit,
+confirms with Talk R3, reads Register 1, and from then on decodes the wide
+deltas (`CrsrDevHandleADB`).  A mouse that refuses is tried with `$02`, then
+left at `$01`.  Older ROMs' mouse drivers read two bytes only.
+
+The Cursor Device Manager also shapes timing: the first report between two
+VBLs sets the motion for the next one, and any further reports in the same
+frame go into an error term spread over the following VBLs (up to eight).
+Motion the device delivers faster than one report per frame therefore
+arrives late and evenly paced, which is why a wide report beats more
+frequent narrow ones.
+
+The emulated mouse accepts `$04` and then always sends the 4-byte report
+(buttons 1-5 up).  It uses deltas beyond +-63 only after the host has read
+Register 1: MkLinux DR3 selects `$04` for its middle and right buttons but
+never reads Register 1, and decodes only bits 6-0 of each delta.
 
 ## ROM and OS Interaction
 
@@ -737,7 +774,7 @@ BSET    #fDBSRQ,FDBAuFlag(A3)     ; bit3=LOW → SRQ detected
 When SRQ is detected, the ADB Manager polls all devices to find the requester.
 The SRQ check uses the Z flag left by FDBShiftInt's `BTST #3,vBufB(A1)`.
 
-### Emulator Auto-Poll: Transceiver-Style Callback
+### Emulator Auto-Poll: Driven by Data
 
 The ROM's `RunADBRequest` → `StartReqProc` loop drives explicit Talk R0
 commands during boot and when processing queued requests. However, once the
@@ -745,10 +782,16 @@ boot scan completes and the system enters steady state, the real ADB transceiver
 IC takes over: it autonomously repeats the last Talk R0 command every ~11 ms
 while in idle (state 3), firing IFR_SR whenever a device responds.
 
-The emulator implements this via `adb_autopoll_deferred`, a scheduler callback:
+The host never sees a poll that finds nothing, only the interrupt when a device
+answers.  So the emulator runs no poll clock: `adb_autopoll_deferred` is
+scheduled when there is something to answer, and a quiet bus schedules nothing.
+(The 11 ms beat used to delay every report by up to one poll, and the ROM goes
+idle after each Talk it issues, so it came on top of every report.)
 
-1. **Scheduled on IDLE entry**: When `adb_port_b_output` transitions to state 3,
-   it cancels any stale auto-poll and schedules a new one at 11 ms.
+1. **Scheduled on data**: when input arrives while the bus is idle
+   (`adb_keyboard_event`, `adb_mouse_event`), and when `adb_port_b_output`
+   enters state 3 with data still waiting (the rest of a motion, or a reply the
+   ROM walked away from), after `ADB_SHIFT_DELAY`.
 2. **Checks for pending data**: Mouse motion or a mouse button change, and
    keyboard queue entries, count as pending.  A button held still does not:
    a real mouse reports the press once and then stays silent until it moves
@@ -764,11 +807,14 @@ The emulator implements this via `adb_autopoll_deferred`, a scheduler callback:
    fires IFR_SR with bit3=LOW (SRQ). The ROM's SRQ handler then sends explicit
    Talk R0 commands to each registered device slot. Idle devices return no-reply
    (timeout), so the scan advances until it finds the device with data.
-6. **Silent reschedule**: If no device has data, reschedules at 11 ms without
-   firing IFR_SR — the ROM stays waiting.
-7. **Fast reschedule on input**: `adb_keyboard_event` and `adb_mouse_event`
-   reschedule the auto-poll with a short delay (`ADB_SHIFT_DELAY`) so new
-   input is picked up promptly rather than waiting for the next 11 ms tick.
+6. **Silence**: If no device the transceiver would hear from has data, nothing
+   fires and nothing is rescheduled — the ROM stays waiting until new data
+   schedules the next answer.
+
+Egret and Cuda poll in firmware the same way and are modelled the same way:
+`adb_set_data_hook` tells them when a device gets data, they send it as an
+auto-poll packet about 1 ms later (if the host has auto-poll on and the bus is
+free), and come back while more is waiting.
 
 ### Previous Misconception: GLU-Driven Data Delivery
 
@@ -838,8 +884,8 @@ The ADB controller is driven primarily by the port B output callback:
      tail, or mouse deltas and `mouse_data_pending`; nothing for a register
      Talk) so the next auto-poll can retry delivery. Update vADBInt (bit 3) to reflect
      whether any device has pending data. Cancel any stale auto-poll event
-     and schedule a new `adb_autopoll_deferred` callback at
-     `ADB_AUTOPOLL_INTERVAL` (~11 ms).
+     and, if a device has data waiting, schedule `adb_autopoll_deferred`
+     after `ADB_SHIFT_DELAY`.
 
 ### Port B Change Filtering
 
@@ -857,7 +903,7 @@ decodes.
 |-------|-------|---------|
 | `adb_shift_complete_deferred` | `ADB_SHIFT_DELAY` (~800 us) | Fires IFR_SR after command byte shift-out completes. Simulates the real ADB bus timing. |
 | `adb_deliver_next_byte_deferred` | `ADB_BYTE_DELAY` (~2.64 ms) | Delivers the next reply byte to VIA SR. Ensures the ROM ISR has time to finish before the next IFR_SR fires. |
-| `adb_autopoll_deferred` | `ADB_AUTOPOLL_INTERVAL` (~11 ms) | Emulates the transceiver's idle-state auto-poll. Prepares a Talk R0 reply and fires IFR_SR to wake the ROM when a device has pending data. Reschedules silently when no data is pending. |
+| `adb_autopoll_deferred` | `ADB_SHIFT_DELAY` (~800 us), when a device has data | Emulates the transceiver's idle-state auto-poll answering. Prepares a Talk R0 reply and fires IFR_SR to wake the ROM. Scheduled only when there is data; never reschedules itself. |
 
 ### dummy_sent Guard
 

@@ -81,7 +81,10 @@ LOG_USE_CATEGORY_NAME("egret");
 #define EG_FLAG_AUTOPOLL (1u << 6) // EgAutoPoll — data came from an auto-poll
 
 // Auto-poll cadence (~11 ms matches the real Egret / VIA-path poll).
-#define EGRET_AUTOPOLL_NS 11000000.0
+// Auto-poll delivery: ADB data goes out about one Talk R0 after it arrives,
+// and again at this pace while more is waiting or the bus is busy (see
+// egret_autopoll_event).
+#define EGRET_AUTOPOLL_NS 1000000ULL
 // 1-second tick cadence.
 #define EGRET_TICK_NS 1000000000.0
 
@@ -166,6 +169,7 @@ struct egret {
 // Forward declarations.
 static void egret_tick_event(void *source, uint64_t data);
 static void egret_autopoll_event(void *source, uint64_t data);
+static void egret_autopoll_kick(struct egret *eg);
 static void egret_send_timeout_event(void *source, uint64_t data);
 static void egret_resend_event(void *source, uint64_t data);
 
@@ -382,10 +386,13 @@ static void egret_process_pseudo(egret_t *eg) {
     case CMD_APOLL:
         eg->autopoll_enabled = (data_len >= 1) ? (data[0] != 0) : true;
         LOG(2, "APoll -> autopoll %s", eg->autopoll_enabled ? "on" : "off");
+        if (eg->autopoll_enabled)
+            egret_autopoll_kick(eg); // data that arrived while it was off
         break;
     case CMD_SETAUTOP:
         // Setting an autopoll rate implies autopoll is wanted.
         eg->autopoll_enabled = true;
+        egret_autopoll_kick(eg);
         break;
     case CMD_WR1SECMODE:
         eg->onesec_enabled = (data_len >= 1) ? (data[0] != 0) : true;
@@ -525,12 +532,22 @@ static void egret_tick_event(void *source, uint64_t data) {
 
 // ADB auto-poll: Talk-Reg-0 the active ADB devices; when one has fresh data
 // (mouse motion/button, keystroke) deliver it as an unsolicited adbPkt with the
-// EgAutoPoll flag set.  Devices drain their reply buffer after a Talk, so an
-// idle bus produces no packets.
+// EgAutoPoll flag set.
+//
+// Driven by data, not by a clock (see cuda_autopoll_event): sent when a device
+// has data (egret_adb_data schedules this) and the bus is free, and again
+// while more is waiting.  A quiet bus costs nothing.
+static void egret_autopoll_kick(egret_t *eg) {
+    remove_event(eg->sched, &egret_autopoll_event, eg);
+    scheduler_new_cpu_event(eg->sched, &egret_autopoll_event, eg, 0, 0, EGRET_AUTOPOLL_NS);
+}
+
 static void egret_autopoll_event(void *source, uint64_t data) {
     (void)data;
     egret_t *eg = (egret_t *)source;
-    if (eg->autopoll_enabled && eg->adb && egret_try_unsolicited(eg)) {
+    if (!eg->autopoll_enabled || !eg->adb)
+        return; // re-armed when the host turns auto-poll on
+    if (egret_try_unsolicited(eg)) {
         // The device-selection rules live in adb.c, shared with Cuda and the
         // SWIM IOP.  Egret implements neither WrDevList nor RdDevList,
         // so it has no host-supplied enable bitmap: 0 means every address is
@@ -547,7 +564,13 @@ static void egret_autopoll_event(void *source, uint64_t data) {
             egret_begin_send(eg);
         }
     }
-    scheduler_new_cpu_event(eg->sched, &egret_autopoll_event, eg, 0, 0, (uint64_t)EGRET_AUTOPOLL_NS);
+    if (adb_has_data(eg->adb))
+        scheduler_new_cpu_event(eg->sched, &egret_autopoll_event, eg, 0, 0, EGRET_AUTOPOLL_NS);
+}
+
+// A device has new data (adb_set_data_hook): send it.
+static void egret_adb_data(void *ctx) {
+    egret_autopoll_kick((egret_t *)ctx);
 }
 
 // === Lifecycle ==============================================================
@@ -586,7 +609,8 @@ egret_t *egret_init(struct via *via1, struct rtc *rtc, struct adb *adb, struct s
         scheduler_new_event_type(eg->sched, "egret", eg, "sendto", &egret_send_timeout_event);
         scheduler_new_event_type(eg->sched, "egret", eg, "resend", &egret_resend_event);
         scheduler_new_cpu_event(eg->sched, &egret_tick_event, eg, 0, 0, (uint64_t)EGRET_TICK_NS);
-        scheduler_new_cpu_event(eg->sched, &egret_autopoll_event, eg, 0, 0, (uint64_t)EGRET_AUTOPOLL_NS);
+        adb_set_data_hook(eg->adb, egret_adb_data, eg); // auto-poll runs on data
+        // (an auto-poll pending at checkpoint time is restored with the queue)
         // A checkpoint taken with either watchdog in flight re-arms it here;
         // the flags ride in the plain-data block above via1.  (Cuda re-arms
         // send_timeout_pending but not resend_pending -- a gap on that side,
@@ -605,6 +629,7 @@ void egret_delete(egret_t *eg) {
     if (!eg)
         return;
     scheduler_forget_source(eg->sched, eg);
+    adb_set_data_hook(eg->adb, NULL, NULL); // teardown frees Egret before the ADB it was handed
     free(eg);
 }
 

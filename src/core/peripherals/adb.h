@@ -74,6 +74,16 @@ void adb_mouse_event(adb_t *adb, bool button, int dx, int dy);
 void adb_mouse_move(adb_t *adb, int dx, int dy);
 void adb_mouse_pending(const adb_t *adb, int *dx, int *dy);
 
+// Called whenever a device gets new data (a key transition, mouse motion or a
+// button change), so a transceiver that polls on its own -- Cuda, Egret -- can
+// poll now instead of at its next tick: the guest sees when data arrives, not
+// the polling.  One hook; NULL removes it.
+void adb_set_data_hook(adb_t *adb, void (*hook)(void *ctx), void *ctx);
+
+// Whether any device has data a Talk R0 would return -- what an auto-poll
+// would find (adb_autopoll_next answers exactly when this is true).
+bool adb_has_data(const adb_t *adb);
+
 // === IOP-based ADB transaction (Macintosh IIfx and friends) ================
 //
 // On VIA-shift machines (SE/30, IIcx, IIx) the host writes the ADB command

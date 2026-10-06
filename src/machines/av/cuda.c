@@ -99,9 +99,14 @@ static const uint8_t cuda_rejected_cmds[] = {0x04, 0x05, 0x06, 0x0F, 0x15, 0x17,
 #define CUDA_FLAG_TIMEOUT  (1u << 1) // addressed device had no data
 #define CUDA_FLAG_AUTOPOLL (1u << 6) // data came from an auto-poll
 
-// Auto-poll cadence (~11 ms) and the 1-second tick.
-#define CUDA_AUTOPOLL_NS 11000000.0
-#define CUDA_TICK_NS     1000000000.0
+// Auto-poll delivery: ADB data goes out about one Talk R0 after it arrives,
+// and again at this pace while more is waiting or the bus is busy (see
+// cuda_autopoll_event).  The 1-second tick has its own constant.
+#define CUDA_AUTOPOLL_NS 1000000ULL
+// A parked auto-poll packet (unclaimed, cuda_send_timeout_event) is offered
+// again at the firmware's own poll beat: its host is not listening yet.
+#define CUDA_AUTOPOLL_PARKED_NS 11000000ULL
+#define CUDA_TICK_NS            1000000000.0
 // Delay before a Cuda-initiated SR byte lands (the firmware's ~25 us).
 #define CUDA_PUSH_DELAY_NS 25000.0
 // How long after the host negates ByteAck at the end of a sync cycle Cuda
@@ -229,6 +234,7 @@ struct av_cuda {
 static void cuda_tick_event(void *source, uint64_t data);
 static void cuda_reset_event(void *source, uint64_t data);
 static void cuda_autopoll_event(void *source, uint64_t data);
+static void cuda_autopoll_kick(struct av_cuda *cuda);
 static void cuda_push_event(void *source, uint64_t data);
 static void cuda_send_timeout_event(void *source, uint64_t data);
 static void cuda_resend_event(void *source, uint64_t data);
@@ -396,6 +402,8 @@ static void cuda_send_timeout_event(void *source, uint64_t data) {
         LOG(2, "autopoll packet unclaimed by host — transport reset to idle, parked ahead of new data");
         memcpy(cuda->ap_park, cuda->tx_buf, (size_t)cuda->tx_len);
         cuda->ap_park_len = cuda->tx_len;
+        remove_event(cuda->sched, &cuda_autopoll_event, cuda);
+        scheduler_new_cpu_event(cuda->sched, &cuda_autopoll_event, cuda, 0, 0, CUDA_AUTOPOLL_PARKED_NS);
     } else {
         LOG(2, "response unclaimed by host — transport reset to idle, parked for re-presentation");
         cuda->resend_pending = true;
@@ -543,9 +551,12 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
     case CMD_APOLL:
         cuda->autopoll_enabled = (data_len >= 1) ? (data[0] != 0) : true;
         LOG(2, "APoll -> autopoll %s", cuda->autopoll_enabled ? "on" : "off");
+        if (cuda->autopoll_enabled)
+            cuda_autopoll_kick(cuda); // data that arrived while it was off
         break;
     case CMD_SETAUTOP:
         cuda->autopoll_enabled = true; // setting a rate implies autopoll
+        cuda_autopoll_kick(cuda);
         break;
     case CMD_RDDEVLIST: {
         // The firmware's autopoll list: one bit per ADB address that answered
@@ -1021,12 +1032,27 @@ static void cuda_tick_event(void *source, uint64_t data) {
 
 // ADB auto-poll: Talk-Reg-0 the active devices; deliver fresh data as an
 // unsolicited adbPkt with the autopoll flag set.
+//
+// Driven by data, not by a clock.  The firmware polls on an ~11 ms beat, but
+// the host sees only the packets, so the model sends one when a device has
+// data (cuda_adb_data schedules this) and the bus is free, and comes back
+// while there is more -- or a parked packet -- to send.  A quiet bus costs
+// nothing.  Auto-poll being ON is the host's choice (APoll / SetAutoPollRate)
+// and is honoured; the beat was only ever latency: up to 11 ms on every
+// mouse move.
+static void cuda_autopoll_kick(av_cuda_t *cuda) {
+    remove_event(cuda->sched, &cuda_autopoll_event, cuda);
+    scheduler_new_cpu_event(cuda->sched, &cuda_autopoll_event, cuda, 0, 0, CUDA_AUTOPOLL_NS);
+}
+
 static void cuda_autopoll_event(void *source, uint64_t data) {
     (void)data;
     av_cuda_t *cuda = (av_cuda_t *)source;
     LOG(4, "autopoll gate: enabled=%d adb=%d state=%d push=%d pb=$%02X", cuda->autopoll_enabled, cuda->adb != NULL,
         cuda->state, cuda->push_pending, cuda->last_pb);
-    if (cuda->autopoll_enabled && cuda->adb && cuda_bus_idle(cuda) && !cuda_present_parked_autopoll(cuda)) {
+    if (!cuda->autopoll_enabled || !cuda->adb)
+        return; // re-armed when the host turns auto-poll on
+    if (cuda_bus_idle(cuda) && !cuda_present_parked_autopoll(cuda)) {
         // The device-selection rules live in adb.c, shared with Egret and the
         // SWIM IOP.  Cuda has no WrDevList in this model -- the host
         // can read the device list but not set a polling mask -- so 0 here
@@ -1044,7 +1070,15 @@ static void cuda_autopoll_event(void *source, uint64_t data) {
             cuda_begin_send(cuda);
         }
     }
-    scheduler_new_cpu_event(cuda->sched, &cuda_autopoll_event, cuda, 0, 0, (uint64_t)CUDA_AUTOPOLL_NS);
+    if (adb_has_data(cuda->adb))
+        scheduler_new_cpu_event(cuda->sched, &cuda_autopoll_event, cuda, 0, 0, CUDA_AUTOPOLL_NS);
+    else if (cuda->ap_park_len)
+        scheduler_new_cpu_event(cuda->sched, &cuda_autopoll_event, cuda, 0, 0, CUDA_AUTOPOLL_PARKED_NS);
+}
+
+// A device has new data (adb_set_data_hook): send it.
+static void cuda_adb_data(void *ctx) {
+    cuda_autopoll_kick((av_cuda_t *)ctx);
 }
 
 // === Lifecycle ==============================================================
@@ -1086,7 +1120,8 @@ av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, stru
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "reset", &cuda_reset_event);
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "treqrel", &cuda_treq_release_event);
         scheduler_new_cpu_event(cuda->sched, &cuda_tick_event, cuda, 0, 0, (uint64_t)CUDA_TICK_NS);
-        scheduler_new_cpu_event(cuda->sched, &cuda_autopoll_event, cuda, 0, 0, (uint64_t)CUDA_AUTOPOLL_NS);
+        adb_set_data_hook(cuda->adb, cuda_adb_data, cuda); // auto-poll runs on data
+        // (an auto-poll pending at checkpoint time is restored with the queue)
         // A checkpoint taken with a push or abandonment watchdog in
         // flight re-arms it here.
         if (cuda->push_pending)
@@ -1134,6 +1169,7 @@ void av_cuda_delete(av_cuda_t *cuda) {
     // Thirteen scheduling sites, three callbacks removed here: one call
     // covers whatever is actually queued.
     scheduler_forget_source(cuda->sched, cuda);
+    adb_set_data_hook(cuda->adb, NULL, NULL); // teardown frees Cuda before the ADB it was handed
     free(cuda);
 }
 

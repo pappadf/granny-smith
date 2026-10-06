@@ -183,6 +183,13 @@ bool adb_iop_transact(adb_t *adb, uint8_t cmd, const uint8_t *in_data, int in_da
     *out_len = 2;
     return true;
 }
+bool adb_has_data(const adb_t *adb) {
+    (void)adb;
+    return s_adb_has_data;
+}
+void adb_set_data_hook(adb_t *adb, void (*hook)(void *ctx), void *ctx) {
+    (void)adb, (void)hook, (void)ctx;
+}
 // Device selection is adb.c's business and has its own suite; here it only
 // has to answer, so that the autopoll path produces a packet.
 bool adb_autopoll_next(adb_t *adb, uint16_t enable_mask, uint8_t *cmd_out, uint8_t *out_data, int *len_out) {

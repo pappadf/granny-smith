@@ -197,6 +197,13 @@ uint16_t adb_device_mask(const adb_t *adb) {
     (void)adb;
     return (1 << 2) | (1 << 3);
 }
+bool adb_has_data(const adb_t *adb) {
+    (void)adb;
+    return false;
+}
+void adb_set_data_hook(adb_t *adb, void (*hook)(void *ctx), void *ctx) {
+    (void)adb, (void)hook, (void)ctx;
+}
 bool adb_autopoll_next(adb_t *adb, uint16_t enable_mask, uint8_t *cmd_out, uint8_t *out_data, int *len_out) {
     (void)adb, (void)enable_mask, (void)cmd_out, (void)out_data, (void)len_out;
     return false;
