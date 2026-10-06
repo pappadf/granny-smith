@@ -418,6 +418,14 @@ static double mailbox_now_us(void) {
 #define GS_MAILBOX_IDLE_SLICE_MS 4.0
 #define GS_MAILBOX_IDLE_MS       12.0
 
+// A checkpoint.load or .save of a machine with a disk is one synchronous
+// request that can run for many seconds; the page's stall watchdog would
+// take that for a dead core (#238).  Every block it reads or writes bumps
+// the heartbeat, so a slow but healthy request keeps proving it is alive.
+void checkpoint_busy_heartbeat(void) {
+    gs_mailbox_heartbeat(&g_mailbox);
+}
+
 int shell_poll(void) {
     int n = gs_mailbox_drain(&g_mailbox, GS_MAILBOX_DRAIN_US, mailbox_now_us);
     if (n > 0)

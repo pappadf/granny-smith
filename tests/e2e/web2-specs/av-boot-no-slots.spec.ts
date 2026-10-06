@@ -30,7 +30,7 @@ const AV_ROM = path.resolve(__dirname, '../../data/roms/q840av-q660av-5bf10fd1.r
 async function uploadRom(page: Page, file: string): Promise<void> {
   const [chooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.getByRole('button', { name: 'Load ROM...' }).click(),
   ]);
   await chooser.setFiles(file);
 }
@@ -83,6 +83,7 @@ test('a slotless model boots after a carded model ran in the same session', asyn
   // 2. Shut it down and boot the slotless AV machine. Its boot document
   // carries no video_card — the core must not supply the SE/30's.
   await page.getByRole('button', { name: 'Shut down' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Shut Down' }).click();
   await bootModel(page, 'q660av');
   await expectBooted(page, 'q660av');
 

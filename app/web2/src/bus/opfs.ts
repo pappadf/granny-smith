@@ -105,7 +105,20 @@ export class BrowserOpfs implements OpfsBackend {
       const handle = await getDirAtPath(dir);
       const out: OpfsEntry[] = [];
       for await (const [name, child] of handle.entries()) {
-        out.push({ name, path: `${dir}/${name}`, kind: child.kind });
+        const entry: OpfsEntry = { name, path: `${dir}/${name}`, kind: child.kind };
+        // A file's size and modification date, from OPFS itself (WasmFS
+        // reports no real mtime for it).  Best effort: a file the emulator
+        // holds open may refuse.
+        if (child.kind === 'file') {
+          try {
+            const file = await (child as FileSystemFileHandle).getFile();
+            entry.size = file.size;
+            entry.mtime = Math.floor(file.lastModified / 1000);
+          } catch {
+            // Leave size / mtime unset; the core's listing fills in size.
+          }
+        }
+        out.push(entry);
       }
       return out;
     } catch {

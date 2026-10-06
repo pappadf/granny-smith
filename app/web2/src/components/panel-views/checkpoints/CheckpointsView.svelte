@@ -113,7 +113,7 @@
       { label: 'Load', action: () => loadCheckpoint(row) },
       { sep: true },
       { label: 'Rename', action: () => doRename(row) },
-      { label: 'Download', action: () => doDownload(row) },
+      { label: 'Save to computer…', action: () => doDownload(row) },
       { label: 'Delete', action: () => doDelete(row), danger: true },
     ];
     openContextMenu(items, ev.clientX, ev.clientY);
@@ -140,7 +140,10 @@
   }
 
   function doDownload(row: CheckpointEntry) {
-    showNotification(`Download of '${row.label}' will land in a later phase`, 'warning');
+    showNotification(
+      `Saving '${row.label}' to your computer will land in a later phase`,
+      'warning',
+    );
   }
 
   async function doDelete(row: CheckpointEntry) {

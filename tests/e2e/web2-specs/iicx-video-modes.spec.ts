@@ -153,7 +153,7 @@ test('IIcx video modes: post-shader canvas matches per-mode baselines', async ({
       await stageOpfsFile(page, '/opfs/images/fd/System_7_0_1.image', FD_IMAGE);
       const [chooser] = await Promise.all([
         page.waitForEvent('filechooser'),
-        page.getByRole('button', { name: 'Upload ROM...' }).click(),
+        page.getByRole('button', { name: 'Load ROM...' }).click(),
       ]);
       await chooser.setFiles(IICX_ROM);
       first = false;

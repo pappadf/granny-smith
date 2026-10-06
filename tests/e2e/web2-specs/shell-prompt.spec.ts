@@ -113,7 +113,7 @@ test('shell prompt reflects machine and run state', async ({ page }) => {
   // --- Boot an SE/30 (ROM upload + New Machine, no media) ---------------
   const [romChooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.getByRole('button', { name: 'Load ROM...' }).click(),
   ]);
   await romChooser.setFiles(SE30_ROM);
 

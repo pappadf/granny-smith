@@ -48,8 +48,10 @@ value_t files_method_ls(struct object *self, const member_t *m, int argc, const 
 
 // `files.list([path])` — like `files.ls`, but returns a structured listing the
 // GUI can render instead of printing names to stdout. Result is a list of
-//   {name: "...", kind: "file"|"directory", size: <bytes>, expandable: <bool>}
-// maps.  `expandable` is true for a file the format registry recognises as an
+//   {name: "...", kind: "file"|"directory", size: <bytes>, mtime: <secs>,
+//    expandable: <bool>}
+// maps.  `mtime` is the modification time in Unix seconds, 0 when the
+// backend does not know it.  `expandable` is true for a file the format registry recognises as an
 // image or archive the VFS can descend into -- the GUI routes on it rather
 // than guessing from the file's extension.  Descends into disk images and
 // archives through the same resolver as `files.ls`, so a bare image path
@@ -74,12 +76,14 @@ value_t files_method_list(struct object *self, const member_t *m, int argc, cons
     while ((r = be->readdir(dir, &entry)) > 0) {
         // The image backend fills `st` during readdir; the host backend leaves
         // has_stat=false, so stat the child path to classify it (dir vs file)
-        // and read its size.
+        // and read its size and mtime.
         uint16_t mode = 0;
         uint64_t size = 0;
+        uint32_t mtime = 0;
         if (entry.has_stat) {
             mode = entry.st.mode;
             size = entry.st.size;
+            mtime = entry.st.mtime;
         } else {
             char child[VFS_PATH_MAX];
             if (snprintf(child, sizeof(child), "%s/%s", path, entry.name) < (int)sizeof(child)) {
@@ -87,6 +91,7 @@ value_t files_method_list(struct object *self, const member_t *m, int argc, cons
                 if (vfs_stat(child, &st) == 0) {
                     mode = st.mode;
                     size = st.size;
+                    mtime = st.mtime;
                 }
             }
         }
@@ -103,6 +108,7 @@ value_t files_method_list(struct object *self, const member_t *m, int argc, cons
         val_map_put(b, "name", val_str(entry.name));
         val_map_put(b, "kind", val_str((mode & VFS_MODE_DIR) ? "directory" : "file"));
         val_map_put(b, "size", val_int((int64_t)size));
+        val_map_put(b, "mtime", val_int((int64_t)mtime));
         val_map_put(b, "expandable", val_bool(expandable));
         val_list_push(&items, &len, &cap, val_map_finish(b));
     }

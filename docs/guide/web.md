@@ -159,7 +159,7 @@ transports, installed at module construction:
   `Atomics.waitAsync` on the outbound ring's head while the C side wakes
   it with `emscripten_futex_wake`.  Each finished PDF comes back to the
   page as a transferable and opens in a viewer dialog (the browser's own
-  PDF viewer in a frame, with Download and Open-in-a-tab), named
+  PDF viewer in a frame, with Save to computer… and Open-in-a-tab), named
   `<job>-<title>.pdf`, releasing the pointer lock first so the cursor
   is free to use it; a browser without an inline viewer
   (`navigator.pdfViewerEnabled` false, e.g. Chrome on Android) downloads
@@ -466,7 +466,11 @@ The Svelte app is organised under
 - **Display** ([`display/`](../../app/web2/src/components/display/)) —
   ScreenView (the canvas), DisplayToolbar (zoom, pause/run, save,
   theme), DropOverlay (drag state machine §8.5), WelcomeView with
-  Home / Configuration slides for new-machine setup.
+  Home / Configuration slides for new-machine setup (Home also lists
+  the Recent machines, below).  Shut down (the toolbar's power button,
+  the Debug tab's Stop) and Restart ask first while a machine is
+  running or paused (`state/powerConfirm.ts`); the dialog's "Don't ask
+  again" is kept in localStorage (`gs-confirm-power-off`).
 - **Workbench** ([`workbench/`](../../app/web2/src/components/workbench/))
   — flex container with the Display + a resizable Panel docked
   bottom / left / right.
@@ -596,6 +600,10 @@ at that node (`revealInSystem`).
 
 Four deliberate ways to get a media image into OPFS, all routing
 through [`app/web2/src/bus/upload.ts`](../../app/web2/src/bus/upload.ts).
+("Upload" is the code's name for it; nothing leaves the user's computer,
+so the UI says **load** / **add** for files coming in and **save to
+computer** / **export** for files going out.  **Download** is kept for
+what really comes over the network: URL media.)
 Every byte goes through the core's **transfer window**
 ([`bus/xfer.ts`](../../app/web2/src/bus/xfer.ts)): the page copies a chunk
 into a fixed buffer in wasm memory and `files.xfer_write` writes it on
@@ -604,7 +612,7 @@ calls `Module.FS`: under WasmFS that runs on the page's thread and
 busy-waits for the OPFS thread, and in Safari — where WebKit serves a
 worker's OPFS request through the page's thread — it deadlocked the page.
 
-1. **New Machine dialog dropdowns** — picking "Upload image…" in a
+1. **New Machine dialog dropdowns** — picking "Load image…" in a
    floppy / HD / CD / ROM / VROM slot calls
    `pickAndUploadAs(mediaId)` →
    `acceptFilesAsCategory(files, mediaId)`. Strict per-category
@@ -699,9 +707,9 @@ there) and is never touched.
 All four paths run through `startActivity` / `endActivity`
 ([`state/activity.svelte.ts`](../../app/web2/src/state/activity.svelte.ts)) so
 the status bar shows a spinner with a "\<verb>: \<name>" label during long
-operations. The verb is general — uploads show "Uploading", and the
+operations. The verb is general — uploads show "Loading", and the
 Filesystem-tab worker ops reuse the same indicator ("Copying", "Moving",
-"Deleting", "Unpacking", "Downloading"). Confirmation toasts are centralised
+"Deleting", "Unpacking", "Saving"; a URL boot's fetch shows "Downloading"). Confirmation toasts are centralised
 in [`state/toasts.svelte.ts`](../../app/web2/src/state/toasts.svelte.ts).
 
 ## C-side surfaces the UI consumes
@@ -722,12 +730,16 @@ typed-dispatch and introspection surface.
   `zip`, `hqx`, `bin`, `gz`) or an empty string.
   **`files.archive.extract(path, out_dir)`** → bool; powers the
   Filesystem-tab "Unpack" action (an upload probes the archive in place). See [peeler.md](peeler.md).
-- **`files.list(path)`** → `[{name, kind, size, expandable}]`, descending into
-  disk images (partitions, then HFS/UFS contents) and archives, nested to any
-  depth. `expandable` marks a file the core can open as a tree; the Filesystem
-  tree expands exactly those; see [`target-filesystems.md`](../internals/core/storage/target-filesystems.md).
+- **`files.list(path)`** → `[{name, kind, size, mtime, expandable}]`, descending
+  into disk images (partitions, then HFS/UFS contents) and archives, nested to
+  any depth. `size` is the data fork's bytes; `mtime` the modification time in
+  Unix seconds, 0 when unknown (always, for a host path in the browser: WasmFS
+  has no real OPFS dates, so the Filesystem tab reads those from OPFS itself).
+  The tree shows both as its Size and Date modified columns. `expandable`
+  marks a file the core can open as a tree; the Filesystem tree expands
+  exactly those; see [`target-filesystems.md`](../internals/core/storage/target-filesystems.md).
 - **`files.cp(src, dst, [recursive])`** — copy, including *out of* an image into
-  OPFS (backs copy-out and Download). **`files.rm(path)`** /
+  OPFS (backs copy-out and Save to computer…). **`files.rm(path)`** /
   **`files.mv(src, dst)`** — recursive remove / move, run worker-side so
   WasmFS stays coherent (see Persistence above).
 - **`files.hd_create(path, size)`** / **`files.fd_create(path,
@@ -1104,6 +1116,23 @@ The same sequence as Module Bootstrapping above, end to end:
    the media into their bays (`bus/media.ts`), the post-boot
    reconciliation, `scheduler.run`. The Welcome layer fades out; the
    canvas takes over.
+
+**Recent machines.** Every boot through `initEmulator` (the New Machine
+dialog, or a relaunch from Recent) and a dropped ROM's default boot is
+recorded by `recordRecentBoot` (`bus/boot.ts`): the exact `initEmulator`
+input — the `machine.boot` document with model id and ROM path, plus
+the floppy / hard-disk / CD images — with a label built from the running
+machine ("Macintosh IIcx · 8 MB · 8•24 GC · System_7_1.img") and the
+time. The list ([`lib/recentMachines.ts`](../../app/web2/src/lib/recentMachines.ts),
+[`state/recent.svelte.ts`](../../app/web2/src/state/recent.svelte.ts))
+keeps the last 8, an identical configuration moving to the top, and is
+persisted in `localStorage` as `gs-recent-machines`. The Welcome Home
+slide shows it as a Recent card when it is not empty: a click calls
+`initEmulator` with the stored input again, × forgets the entry, and an
+entry whose ROM or image is no longer in OPFS (checked with
+`opfs.list`) is disabled with a "missing: <file>" note. URL-media boots
+(the URL is the way back) and checkpoint loads (restores, kept by the
+Checkpoints panel) are not recorded.
 
 ## Terminal console
 

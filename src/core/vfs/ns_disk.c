@@ -39,6 +39,7 @@ typedef struct fs_entry {
     bool is_dir;
     uint64_t size; // data bytes (files; 0 for directories)
     uint64_t rsrc_size; // resource fork bytes (0: none)
+    uint32_t mtime; // modification time, Unix seconds (0: unknown)
     // What opendir and read take: a CNID (HFS), an inode (UFS), an extent
     // and size (ISO 9660, packed), a directory index (MFS).
     uint64_t id;
@@ -63,12 +64,22 @@ typedef struct fs_ops {
     int (*read)(void *vol, const fs_entry_t *file, gs_fork_t fork, uint64_t off, void *buf, size_t n, size_t *nread);
 } fs_ops_t;
 
+// Seconds from the Mac epoch (1904-01-01) to the Unix one.
+#define MAC_TO_UNIX_EPOCH 2082844800u
+
+// A Mac (1904-based) date as Unix seconds; 0 -- unknown -- for an unset date
+// or one before 1970, which Unix seconds cannot carry.
+static uint32_t mac_to_unix(uint32_t mac) {
+    return mac > MAC_TO_UNIX_EPOCH ? mac - MAC_TO_UNIX_EPOCH : 0;
+}
+
 static void hfs_entry(const hfs_dirent_t *d, fs_entry_t *out) {
     memset(out, 0, sizeof(*out));
     snprintf(out->name, sizeof(out->name), "%s", d->name);
     out->is_dir = d->is_dir;
     out->size = d->is_dir ? 0 : d->data_fork.logical_size;
     out->rsrc_size = d->is_dir ? 0 : d->rsrc_fork.logical_size;
+    out->mtime = mac_to_unix(d->mod_date);
     out->id = d->cnid;
     out->data_fork = d->data_fork;
     out->rsrc_fork = d->rsrc_fork;
@@ -113,6 +124,7 @@ static void ufs_entry(const ufs_dirent_t *d, fs_entry_t *out) {
     snprintf(out->name, sizeof(out->name), "%s", d->name);
     out->is_dir = d->is_dir;
     out->size = d->is_dir ? 0 : d->size;
+    out->mtime = d->mtime;
     out->id = d->ino;
 }
 static void *ufs_ops_open(gs_source_t *src, uint64_t off, uint64_t size) {
@@ -155,6 +167,7 @@ static void mfs_fs_entry(const mfs_dirent_t *m, fs_entry_t *out) {
     snprintf(out->name, sizeof(out->name), "%s", m->name);
     out->size = m->data_len;
     out->rsrc_size = m->rsrc_len;
+    out->mtime = mac_to_unix(m->modified);
     out->mfs = *m;
     memcpy(out->finder_info, m->finder_info, sizeof(m->finder_info)); // FInfo; FXInfo stays zero
     out->has_finder_info = true;
@@ -417,6 +430,7 @@ static void to_dirent(const fs_entry_t *e, gs_dirent_t *out) {
     out->is_dir = e->is_dir;
     out->data_size = e->size;
     out->rsrc_size = e->is_dir ? 0 : e->rsrc_size;
+    out->mtime = e->mtime;
     out->has_finder_info = e->has_finder_info;
     if (e->has_finder_info) {
         out->type = RD_BE32(e->finder_info);

@@ -37,12 +37,12 @@ const SE30_ROM = path.resolve(__dirname, '../../data/roms/iix-iicx-se30-97221136
 const SE30_VROM = path.resolve(__dirname, '../../data/roms/builtin-se30-video-4f71ff1a.vrom');
 const SYSTEM_608 = path.resolve(__dirname, '../../data/systems/System_6_0_8.dsk');
 
-// Upload a ROM via the Welcome "Upload ROM..." button (the shipped path; the
+// Upload a ROM via the Welcome "Load ROM..." button (the shipped path; the
 // persist bumps the image revision so the config slide re-scans).
 async function uploadRom(page: Page, romPath: string): Promise<void> {
   const [chooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.getByRole('button', { name: 'Load ROM...' }).click(),
   ]);
   await chooser.setFiles(romPath);
 }

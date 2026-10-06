@@ -13,6 +13,7 @@
   } from '@/state/microphone.svelte';
   import { openContextMenu, type ContextMenuItem } from '../common/ContextMenu.svelte';
   import { showNotification } from '@/state/toasts.svelte';
+  import { confirmPowerAction } from '@/state/powerConfirm';
   import {
     pauseEmulator,
     resumeEmulator,
@@ -31,10 +32,9 @@
   // Enable predicates. `isLive` covers running + paused — the
   // states where machine-dependent toolbar buttons are interactive. After a
   // Shut Down the status is 'stopped'; Welcome view is shown again so the user
-  // can pick a new config, but the Run/Save/etc. buttons stay disabled until
-  // they do.
+  // can pick a new config, but the Run/Save/Shut down buttons stay disabled
+  // until they do.
   const isLive = $derived(machine.status === 'running' || machine.status === 'paused');
-  const everStarted = $derived(machine.status !== 'no-machine');
 
   let saving = $state(false);
   const zoomInput = $derived(`${machine.zoom}%`);
@@ -96,6 +96,7 @@
   }
 
   async function onShutdown() {
+    if (!(await confirmPowerAction('shutdown'))) return;
     await shutdownEmulator();
   }
 
@@ -231,7 +232,7 @@
       icon="power"
       label="Shut down"
       title="Shut down — return to Welcome view"
-      disabled={!everStarted}
+      disabled={!isLive}
       onclick={onShutdown}
     />
     <Separator class="sep" />

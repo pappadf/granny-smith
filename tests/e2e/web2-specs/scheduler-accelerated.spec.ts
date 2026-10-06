@@ -97,11 +97,11 @@ test('Accelerated toolbar mode: faster CPU, real-time timebase', async ({
   test.setTimeout(10 * 60 * 1000);
   await gotoWeb2(page);
 
-  // SE/30 ROM via the Welcome "Upload ROM..." button; built-in video, so no
+  // SE/30 ROM via the Welcome "Load ROM..." button; built-in video, so no
   // vROM staging and no video-mode plumbing.
   const [romChooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.getByRole('button', { name: 'Load ROM...' }).click(),
   ]);
   await romChooser.setFiles(SE30_ROM);
 

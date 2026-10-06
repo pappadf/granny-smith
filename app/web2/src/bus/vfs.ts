@@ -1,9 +1,9 @@
 // VFS bus — structured listing of paths that descend into a guest disk image
 // or an archive (partitions, then the HFS / UFS volume contents; an
 // archive's members; any nesting of them). Wraps the C-side `files.list`
-// object-model method, which returns [{name, kind, size, expandable}]. The
-// Filesystem tree uses this for descent; plain OPFS paths keep going through
-// opfs.ts, with the core asked which of their files are expandable.
+// object-model method, which returns [{name, kind, size, mtime, expandable}].
+// The Filesystem tree uses this for descent; plain OPFS paths keep going
+// through opfs.ts, with the core asked which of their files are expandable.
 
 import { gsEval, gsErrorText } from './emulator';
 import { opfs } from './opfs';
@@ -14,6 +14,7 @@ interface VfsRawEntry {
   name: string;
   kind: 'file' | 'directory';
   size: number;
+  mtime?: number;
   expandable?: boolean;
 }
 
@@ -25,7 +26,7 @@ interface VfsRawEntry {
 // genuinely empty directory so the tree doesn't cache them as permanent
 // emptiness.
 export async function vfsList(dir: string): Promise<OpfsEntry[]> {
-  // files.list returns a native array of {name, kind, size, expandable}
+  // files.list returns a native array of {name, kind, size, mtime, expandable}
   // objects (V_LIST of V_MAP through the gsEval bridge) — no inner JSON.parse.
   const parsed = await gsEval('files.list', [dir]);
   if (!Array.isArray(parsed)) throw new Error(gsErrorText(parsed));
@@ -33,28 +34,36 @@ export async function vfsList(dir: string): Promise<OpfsEntry[]> {
     const path = `${dir}/${e.name}`;
     const expandable = e.kind === 'file' && e.expandable === true;
     markExpandable(path, expandable);
-    return { name: e.name, path, kind: e.kind === 'directory' ? 'directory' : 'file', expandable };
+    return {
+      name: e.name,
+      path,
+      kind: e.kind === 'directory' ? 'directory' : 'file',
+      expandable,
+      size: e.size,
+      mtime: e.mtime ?? 0,
+    };
   });
 }
 
-// An OPFS listing, with each file's expandable flag from the core.  When the
-// core cannot answer (the module is not up yet), the entries go without.
+// An OPFS listing, with each file's expandable flag from the core (and its
+// size, where OPFS could not say).  When the core cannot answer (the module
+// is not up yet), the entries go without.
 async function opfsListAnnotated(dir: string): Promise<OpfsEntry[]> {
   const entries = await opfs.list(dir);
   if (!entries.some((e) => e.kind === 'file')) return entries;
-  let flags: Map<string, boolean> | null = null;
+  let core: Map<string, VfsRawEntry> | null = null;
   try {
     const parsed = await gsEval('files.list', [dir]);
-    if (Array.isArray(parsed))
-      flags = new Map((parsed as VfsRawEntry[]).map((e) => [e.name, e.expandable === true]));
+    if (Array.isArray(parsed)) core = new Map((parsed as VfsRawEntry[]).map((e) => [e.name, e]));
   } catch {
-    flags = null;
+    core = null;
   }
   return entries.map((e) => {
-    if (e.kind !== 'file' || !flags) return e;
-    const expandable = flags.get(e.name) === true;
+    if (e.kind !== 'file' || !core) return e;
+    const c = core.get(e.name);
+    const expandable = c?.expandable === true;
     markExpandable(e.path, expandable);
-    return { ...e, expandable };
+    return { ...e, expandable, size: e.size ?? c?.size };
   });
 }
 

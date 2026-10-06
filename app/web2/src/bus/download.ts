@@ -109,7 +109,7 @@ export function saveBlob(blob: Blob, filename: string): void {
     setTimeout(() => URL.revokeObjectURL(url), 0);
   } catch (e) {
     console.error('[download] failed:', e);
-    showNotification(`Could not download ${filename}`, 'error');
+    showNotification(`Could not save ${filename}`, 'error');
   }
 }
 

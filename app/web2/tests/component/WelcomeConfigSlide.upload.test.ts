@@ -1,4 +1,4 @@
-// "Upload image…" in a New Machine media dropdown: a successful upload
+// "Load image…" in a New Machine media dropdown: a successful upload
 // selects the uploaded image, and a cancelled or rejected one leaves the
 // previous pick -- in the state AND in the <select> the user sees.  The
 // picker itself is mocked (tests/unit/filePicker.test.ts covers it).
@@ -84,7 +84,7 @@ describe('WelcomeConfigSlide upload', () => {
     const { container } = render(WelcomeConfigSlide);
     const sel = await hdSelect(container);
     pick.result = '/opfs/images/hd/uploaded.img';
-    choose(sel, 'Upload image...');
+    choose(sel, 'Load image...');
     await waitFor(() => expect(hdValue(container)).toBe('uploaded.img'));
     expect(pick.calls).toBe(1);
   });
@@ -94,7 +94,7 @@ describe('WelcomeConfigSlide upload', () => {
     const sel = await hdSelect(container);
     choose(sel, 'hd2.img');
     await waitFor(() => expect(hdValue(container)).toBe('hd2.img'));
-    choose(sel, 'Upload image...');
+    choose(sel, 'Load image...');
     await waitFor(() => expect(pick.calls).toBe(1));
     await waitFor(() => expect(hdValue(container)).toBe('hd2.img'));
   });

@@ -2,6 +2,7 @@ import { render, fireEvent } from '@testing-library/svelte';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import DebugToolbar from '@/components/panel-views/debug/DebugToolbar.svelte';
 import { machine } from '@/state/machine.svelte';
+import { dialogs, answerConfirm } from '@/state/dialogs.svelte';
 
 // Mock the bus/debug surface — the toolbar should call these functions.
 const calls: Record<string, number> = {};
@@ -66,9 +67,28 @@ describe('DebugToolbar', () => {
     expect(calls.continueExec).toBe(1);
   });
 
-  it('Stop click invokes stopMachine', async () => {
+  it('Stop click asks first, then invokes stopMachine', async () => {
     const { container } = render(DebugToolbar);
     await fireEvent.click(container.querySelector('button[title="Stop"]') as HTMLElement);
-    expect(calls.stopMachine).toBe(1);
+    expect(calls.stopMachine).toBeUndefined();
+    expect(dialogs.current?.kind).toBe('confirm');
+    answerConfirm(true);
+    await vi.waitFor(() => expect(calls.stopMachine).toBe(1));
+  });
+
+  it('a cancelled Restart does nothing', async () => {
+    const { container } = render(DebugToolbar);
+    await fireEvent.click(container.querySelector('button[title="Restart"]') as HTMLElement);
+    answerConfirm(false);
+    await Promise.resolve();
+    expect(calls.restart).toBeUndefined();
+  });
+
+  it('Stop on a stopped machine does not ask', async () => {
+    machine.status = 'stopped';
+    const { container } = render(DebugToolbar);
+    await fireEvent.click(container.querySelector('button[title="Stop"]') as HTMLElement);
+    await vi.waitFor(() => expect(calls.stopMachine).toBe(1));
+    expect(dialogs.current).toBeNull();
   });
 });

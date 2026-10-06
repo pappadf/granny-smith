@@ -67,6 +67,7 @@ typedef struct hfs_dirent {
     hfs_fork_t data_fork; // files only
     hfs_fork_t rsrc_fork; // files only
     uint8_t finder_info[32]; // 16 bytes FInfo + 16 bytes FXInfo (files)
+    uint32_t mod_date; // modification date, Mac seconds since 1904 (0 if unset)
 } hfs_dirent_t;
 
 // Opaque volume handle.

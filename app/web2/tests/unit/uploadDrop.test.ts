@@ -16,6 +16,7 @@ vi.mock('@/bus/emulator', async () => ({
 vi.mock('@/bus/boot', () => ({
   reconcileUiWithMachine: vi.fn(async () => {}),
   prepareFreshMachine: vi.fn(async () => {}),
+  recordRecentBoot: vi.fn(async () => {}),
 }));
 vi.mock('@/bus/media', () => ({
   insertFloppy: vi.fn(async () => ({ ok: true, mount: { drive: 0 } })),
@@ -26,6 +27,7 @@ const { acceptFiles, dropSummary } = await import('@/bus/upload');
 const { SCRATCH_DIR } = await import('@/lib/opfsPaths');
 const { toasts, _resetForTests } = await import('@/state/toasts.svelte');
 const media = await import('@/bus/media');
+const boot = await import('@/bus/boot');
 
 // jsdom's Blob has no arrayBuffer(); the browser's does.
 if (!Blob.prototype.arrayBuffer) {
@@ -95,14 +97,19 @@ describe('a drop of several files', () => {
     expect(toastText()).toContain(
       "3 stored (1 ROM, 2 floppies), 1 rejected: 'notes.txt' doesn't look like a ROM, floppy, HD, CD, or archive",
     );
-    // No per-file "uploaded" messages: the summary is the account.
-    expect(toastText().some((m) => / uploaded$/.test(m))).toBe(false);
+    // No per-file "added" messages: the summary is the account.
+    expect(toastText().some((m) => / added$/.test(m))).toBe(false);
   });
 
   it("boots the drop's only ROM and mounts only the first floppy, into an empty drive", async () => {
     await acceptFiles([floppy('a.dsk'), rom('plus.rom', 1), floppy('b.dsk')]);
     const boots = bridge.calls.filter((c) => c.path === 'machine.boot');
     expect(boots.map((c) => c.args)).toEqual([{ model: 'plus', rom: '/opfs/images/rom/ROM1' }]);
+    // A dropped ROM's boot goes on the Welcome page's Recent list.
+    expect(boot.recordRecentBoot).toHaveBeenCalledWith({
+      model: 'plus',
+      rom: '/opfs/images/rom/ROM1',
+    });
     expect(media.insertFloppy).toHaveBeenCalledTimes(1);
     expect(media.insertFloppy).toHaveBeenCalledWith('/opfs/images/fd/a.dsk', true);
   });
@@ -130,7 +137,7 @@ describe('a drop of several files', () => {
 describe('a single file', () => {
   it('keeps its own messages and auto-actions', async () => {
     await acceptFiles([floppy('a.dsk')]);
-    expect(toastText()).toContain('a.dsk uploaded');
+    expect(toastText()).toContain('a.dsk added');
     expect(media.insertFloppy).toHaveBeenCalledWith('/opfs/images/fd/a.dsk', true);
     expect(scratchLeft()).toEqual([]);
   });
@@ -157,11 +164,11 @@ describe('dropSummary', () => {
         ['x', 'y'],
         [
           { stored: false, reason: 'is not a valid ROM image', severity: 'error' },
-          { stored: false, reason: 'could not be uploaded', severity: 'error' },
+          { stored: false, reason: 'could not be loaded', severity: 'error' },
         ],
       ),
     ).toEqual({
-      msg: "0 stored, 2 rejected: 'x' is not a valid ROM image; 'y' could not be uploaded",
+      msg: "0 stored, 2 rejected: 'x' is not a valid ROM image; 'y' could not be loaded",
       severity: 'error',
     });
   });

@@ -27,11 +27,11 @@ test('Restart keeps the attached hard disk — same medium, same open instance',
   // Upload the IIcx ROM via the Welcome button (no auto-boot).
   const [chooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.getByRole('button', { name: 'Load ROM...' }).click(),
   ]);
   await chooser.setFiles(IICX_ROM);
   await expect(
-    page.locator('.toast .msg').filter({ hasText: 'iix-iicx-se30-97221136.rom uploaded' }),
+    page.locator('.toast .msg').filter({ hasText: 'iix-iicx-se30-97221136.rom added' }),
   ).toBeVisible({ timeout: 60_000 });
 
   // Boot and attach a scratch HD.
@@ -49,9 +49,14 @@ test('Restart keeps the attached hard disk — same medium, same open instance',
   // routes through bus/debug.ts restart() → machine.restart.
   await page.locator('button.ptab[data-tab="debug"]').click();
   await page.getByRole('button', { name: 'Restart' }).click();
-  await expect(page.locator('.toast .msg').filter({ hasText: 'Machine restarted' })).toBeVisible({
-    timeout: 60_000,
-  });
+  // Restart asks first while the page shows the machine running or paused
+  // (#242); this boot went straight to the core, so it may not -- answer
+  // the question if it comes.
+  const confirm = page.getByRole('dialog').getByRole('button', { name: 'Restart' });
+  const restarted = page.locator('.toast .msg').filter({ hasText: 'Machine restarted' });
+  await expect(confirm.or(restarted).first()).toBeVisible({ timeout: 60_000 });
+  if (await confirm.isVisible()) await confirm.click();
+  await expect(restarted).toBeVisible({ timeout: 60_000 });
 
   // The HD survived the power-cycle as the SAME open instance.
   expect(await gsEvalInPage(page, 'machine.created')).toBe(true);

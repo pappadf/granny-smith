@@ -286,7 +286,7 @@ test("a blank 2 GB disk made as .dmg costs a few KB", async ({ page }) => {
   expect(growth).toBeLessThan(1024 * 1024);
 });
 
-// The same disk as a local file, picked through Welcome's "Upload ROM..."
+// The same disk as a local file, picked through Welcome's "Load ROM..."
 // (the auto-detecting path a drop takes).  The file is sparse on the test
 // host -- free there -- and read by the page through Blob.slice, never whole.
 test("a 2 GiB local file upload is stored compact, never expanded", async ({
@@ -310,7 +310,7 @@ test("a 2 GiB local file upload is stored compact, never expanded", async ({
     if (await cont.isVisible().catch(() => false)) await cont.click();
     const [chooser] = await Promise.all([
       page.waitForEvent("filechooser"),
-      page.getByRole("button", { name: "Upload ROM..." }).click(),
+      page.getByRole("button", { name: "Load ROM..." }).click(),
     ]);
     await chooser.setFiles(file);
     await expect

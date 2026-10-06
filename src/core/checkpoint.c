@@ -532,8 +532,11 @@ static void read_checkpoint_block(checkpoint_t *checkpoint, void *data, size_t s
 // block could be applied as garbage -- the AppleTalk restore, whose state is
 // process-wide and so survives into the machine that keeps running when the
 // load fails, did exactly that.  One zero-fill here covers every caller.
+__attribute__((weak)) void checkpoint_busy_heartbeat(void) {}
+
 void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *tag,
                                      const char *file, int line) {
+    checkpoint_busy_heartbeat();
     read_checkpoint_block(checkpoint, data, size, tag, file, line);
     if ((!checkpoint || checkpoint->error) && data && size)
         memset(data, 0, size);
@@ -542,6 +545,7 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
 // Write a data block with size header, source metadata, and optional RLE compression
 void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data, size_t size, const char *tag,
                                       const char *file, int line) {
+    checkpoint_busy_heartbeat();
     if (!checkpoint || checkpoint->error || !checkpoint->is_writing) {
         LOG(0, "Error: Invalid checkpoint handle for writing");
         if (checkpoint)
