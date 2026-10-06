@@ -252,10 +252,10 @@ each ROM from a blank store and reading SysParam back after its `PRAMInit`
 | Power Macintosh G3 (NVRAM XPRAM) | `$1B` | `$88` | `$08` | `$CC` |
 
 The Network Server ROM runs no Mac OS and writes no SysParam.  The emulator
-keeps these per ROM (`pram_defaults_t.sysparam`) and writes them, valid,
-when the configuration seeds the serial-port use byte `$03` (AppleTalk):
-writing `$03` into an invalid block would be overwritten by the ROM's own
-`PRAMInit`.
+keeps these per ROM (`pram_defaults_t.sysparam`) and the seeding step
+writes them, valid, around the bytes it chooses (§8) — the serial-port use
+byte `$03` (AppleTalk) and the mouse tracking: written into an invalid block
+they would be overwritten by the ROM's own `PRAMInit`.
 
 Note that `$0C..$0F` here are *logical* SysParam offsets (app-font /
 auto-key / printer). They are **not** overwritten by the 'NuMc' signature:
@@ -664,9 +664,9 @@ machine, so at construction the RTC writes:
   to the end, because its poll cannot succeed).  A row that wants the wait
   path clears the bit after construction and keeps the token.
 
-The **SysParam block is left invalid** (its validity byte, physical `$10`,
-is not `$A8`), so each ROM still writes its own SysParam defaults — they
-differ per family (§9.2).  A checkpoint restores over all of it; the Open
+The **SysParam block is left invalid** at construction (its validity byte,
+physical `$10`, is not `$A8`); the seeding step below writes it valid, with
+the family's own measured defaults (§4.1).  A checkpoint restores over all of it; the Open
 Firmware machines start from zero until their NVRAM partition format is
 modelled.
 
@@ -678,8 +678,13 @@ family's XPRAM token and nothing else — it used to write `$A8` to physical
 
 The **configuration** chooses some records, and the seeding step
 (`config_seed.c`) writes them once, when the machine is built: the startup
-device, AppleTalk, each display's startup video mode (its slot record), and
-the **addressing mode**.  `options.addressing` (`24` / `32`) exists on every
+device, AppleTalk, each display's startup video mode (its slot record), the
+**mouse tracking** and the **addressing mode**.  The mouse tracking is not a
+configuration option: the seed always writes SysParam `$10` bits 5..3 = 0
+("Very Slow", the `'mcky'` table with no acceleration threshold) and clears
+`$13` bit 6 (the older mouse scaling, the Plus ROM's `CrsrScale`).  The ROMs'
+own tracking 0..3 with scaling on is far too fast behind a host pointer that
+is already accelerated; the guest's Mouse control panel changes it as usual.  `options.addressing` (`24` / `32`) exists on every
 Macintosh whose PRAM family runs both modes (`pram_defaults_t.addressing`):
 the SE/30, IIx and IIcx (whose ROM is not 32-bit clean: 32-bit needs MODE32),
 the IIci, IIsi, IIfx, Quadra 700/900/950 and the AV Quadras.  Its default is
