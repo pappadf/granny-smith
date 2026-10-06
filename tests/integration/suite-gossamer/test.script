@@ -9,12 +9,6 @@
 #             Mac OS 9's floppy driver, and File Exchange mounts the FAT12
 #             volume on the desktop.
 #   g3mt-hd   pmg3mt (300 MHz 750, 1 MB L2): the same disk, the same chain.
-#   g3dt-hd-rage128  pmg3dt with an ATI Rage 128 GL in slot A1 and nothing
-#             on the built-in port (monitor "none"), so the card is the only
-#             display: its FCode and ndrv bring up the desktop, and ATI's
-#             9.2.1 extensions accelerate QuickDraw through its Concurrent
-#             Command Engine — their own microcode uploaded, PM4 mode 7
-#             (PIO plus bus-mastered indirect buffers through the PCI GART).
 #
 # The disk is gs-test-data `systems/mac_os_9_2_1_516mb_g3.img`, installed
 # from the retail CD by `g3-install-scsi` and never booted; every writable
@@ -58,22 +52,5 @@ try(machine.screen.save("${$RESULTS_DIR}/g3dt-floppy.png"), none)
 check_ex("goldens/g3dt-floppy.png", 0, 440, 20, 640)
 
 g3_hd_boot("g3mt-hd", "pmg3mt")
-
-# --- g3dt-hd-rage128 ------------------------------------------------------------
-machine.boot model="pmg3dt" ram=65536 rom="${$ROM}" pci_card="rage128" monitor="none"
-machine.rtc.time = "2026-10-01T12:00:00"
-machine.scsi.attach_hd "${$hd}" 0
-scheduler.run 12000000000
-assert debug.mac.globals.read("BootDrive") == 0x8023 "g3dt-hd-rage128: BootDrive ${debug.mac.globals.read("BootDrive"):04x}, not the SCSI volume"
-assert debug.mac.globals.read("DSErrCode") == 0 "g3dt-hd-rage128: system error ${debug.mac.globals.read("DSErrCode"):04x} during startup"
-assert machine.screen.source.base == machine.pci.slot[1].card.framebuffer.base "g3dt-hd-rage128: the desktop is the Rage 128's"
-assert machine.screen.depth == 16 "g3dt-hd-rage128: thousands of colours"
-assert machine.pci.slot[1].card.regs.microcode == "unknown" "g3dt-hd-rage128: ATI's driver uploads its own CCE microcode"
-assert (machine.pci.slot[1].card.regs.read(0x704) >> 28) == 7 "g3dt-hd-rage128: PM4 mode 7 (PIO, bus-mastered indirect buffers)"
-echo "g3dt-hd-rage128: ${machine.pci.slot[1].card.regs.cce_packets} CCE packets"
-assert machine.pci.slot[1].card.regs.cce_packets > 1000 "g3dt-hd-rage128: QuickDraw is accelerated through the CCE"
-assert (machine.pci.slot[1].card.regs.crtc_gen_cntl & 0x00010000) != 0 "g3dt-hd-rage128: the arrow is the card's hardware cursor"
-try(machine.screen.save("${$RESULTS_DIR}/g3dt-hd-rage128.png"), none)
-check_ex("goldens/g3dt-hd-rage128.png", 0, 440, 20, 640)
-echo "suite-gossamer: both models boot Mac OS 9.2.1 to the desktop, and the G3 does on a Rage 128"
+echo "suite-gossamer: both models boot Mac OS 9.2.1 to the desktop"
 quit

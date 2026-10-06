@@ -1,0 +1,35 @@
+# Mac OS 9.2.1 on an ATI Rage 128 GL, the beige G3's only display.
+#
+# The disk is installed and never booted, so the first boot runs the Setup
+# Assistant; every writable attach mints its own delta, so each run's boot
+# is the image's first.  What the row pins:
+#   * the boot chain reaches the desktop from the MESH disk without a
+#     system error, on the card (the built-in Rage Pro has no monitor);
+#   * ATI Graphics Accelerator brings up the CCE with ATI's own microcode
+#     (not the published Linux image) in PM4 mode 7 and draws through it —
+#     PAINT, PAINT_MULTI, HOSTDATA_BLT and $92 blits, thousands of packets;
+#   * the arrow is the card's hardware cursor;
+#   * the desktop matches its golden.
+
+include "../lib/mac.script"
+
+let hd = "../../data/systems/mac_os_9_2_1_516mb_g3.img"
+
+machine.boot model="pmg3dt" ram=65536 rom="${$ROM}" pci_card="rage128" monitor="none"
+machine.rtc.time = "2026-10-01T12:00:00"
+machine.scsi.attach_hd "${$hd}" 0
+scheduler.run 12000000000
+
+assert debug.mac.globals.read("BootDrive") == 0x8023 "BootDrive ${debug.mac.globals.read("BootDrive"):04x}, not the SCSI volume"
+assert debug.mac.globals.read("DSErrCode") == 0 "system error ${debug.mac.globals.read("DSErrCode"):04x} during startup"
+assert machine.screen.source.base == machine.pci.slot[1].card.framebuffer.base "the desktop is the Rage 128's"
+assert machine.screen.depth == 16 "thousands of colours"
+assert machine.pci.slot[1].card.regs.microcode == "unknown" "ATI's driver uploads its own CCE microcode"
+assert (machine.pci.slot[1].card.regs.read(0x704) >> 28) == 7 "PM4 mode 7 (PIO, bus-mastered indirect buffers)"
+echo "g3-rage128-macos921: ${machine.pci.slot[1].card.regs.cce_packets} CCE packets"
+assert machine.pci.slot[1].card.regs.cce_packets > 1000 "QuickDraw is accelerated through the CCE"
+assert (machine.pci.slot[1].card.regs.crtc_gen_cntl & 0x00010000) != 0 "the arrow is the card's hardware cursor"
+try(machine.screen.save("${$RESULTS_DIR}/desktop.png"), none)
+check_ex("goldens/desktop.png", 0, 440, 20, 640)
+echo "g3-rage128-macos921: Mac OS 9.2.1 runs on the Rage 128, QuickDraw through the CCE"
+quit

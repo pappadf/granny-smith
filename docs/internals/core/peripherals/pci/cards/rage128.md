@@ -339,7 +339,7 @@ loudly.
   `MODULATE`, a two-unit lightmap-style stage, the vertex walker's list and
   indexed walks through the GART, lines, points and a 565 target — every
   one a VRAM equality.
-- `tests/integration/suite-gossamer`, row `g3dt-hd-rage128` — Mac OS 9.2.1
+- `tests/integration/g3-rage128-macos921` (tier `extended`) — Mac OS 9.2.1
   from the MESH disk on a G3 whose only display is the card: the desktop on
   the card's framebuffer, ATI's own microcode, PM4 mode 7, over a thousand
   CCE packets, the hardware cursor, a desktop golden.
