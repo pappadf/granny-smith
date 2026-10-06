@@ -42,6 +42,27 @@
         }
       ],
       "default": "1024"
+    },
+    {
+      "id": "imagewriter",
+      "label": "ImageWriter",
+      "detail": "A printer on Serial A. Connect it there in the Preferences' device connections.",
+      "kind": "choice",
+      "values": [
+        {
+          "id": "none",
+          "label": "None"
+        },
+        {
+          "id": "imagewriter",
+          "label": "ImageWriter"
+        },
+        {
+          "id": "imagewriter2",
+          "label": "ImageWriter II"
+        }
+      ],
+      "default": "none"
     }
   ],
   "floppies": [
@@ -123,7 +144,8 @@
   "defaults": {
     "model": "lisa",
     "options": {
-      "memory": "1024"
+      "memory": "1024",
+      "imagewriter": "none"
     },
     "floppies": {
       "fd0": "800k"

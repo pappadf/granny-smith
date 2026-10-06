@@ -100,6 +100,27 @@
       "default": "active"
     },
     {
+      "id": "imagewriter",
+      "label": "ImageWriter",
+      "detail": "A printer on the serial port AppleTalk does not use: the modem port while AppleTalk is active, else the printer port. Choose that port in the Chooser.",
+      "kind": "choice",
+      "values": [
+        {
+          "id": "none",
+          "label": "None"
+        },
+        {
+          "id": "imagewriter",
+          "label": "ImageWriter"
+        },
+        {
+          "id": "imagewriter2",
+          "label": "ImageWriter II"
+        }
+      ],
+      "default": "none"
+    },
+    {
       "id": "addressing",
       "label": "Addressing",
       "detail": "The Memory control panel's addressing mode, set before the first boot. Mac OS 7.6 and later need 32-bit, System 6 needs 24-bit.",
@@ -582,6 +603,7 @@
     "options": {
       "memory": "8192",
       "appletalk": "active",
+      "imagewriter": "none",
       "addressing": "24"
     },
     "floppies": {
