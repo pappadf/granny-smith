@@ -136,15 +136,20 @@ LOG_USE_CATEGORY_NAME("video");
 #define OP_PURGE            0x2Du
 #define OP_NEXT_VTX_BUNDLE  0x2Eu
 #define OP_PAINT            0x91u
-#define OP_SMALL_TEXT       0x93u
-#define OP_HOSTDATA_BLT     0x94u
-#define OP_POLYLINE         0x95u
-#define OP_SCALE            0x96u
-#define OP_TRANS_SCALE      0x97u
-#define OP_POLYSCANLINES    0x98u
-#define OP_PAINT_MULTI      0x9Au
-#define OP_BITBLT_MULTI     0x9Bu
-#define OP_TRANS_BITBLT     0x9Cu
+// $92 is not in the SDK's table, but ATI's Mac OS 9 driver sends it for
+// ScrollRect-style single blits; its body, as captured from that driver, is
+// BITBLT_MULTI's: SETTINGS, then [SRC_X | SRC_Y] [DST_X | DST_Y] [W | H].
+// (The Radeon's command processor documents the same number as BITBLT.)
+#define OP_BITBLT        0x92u
+#define OP_SMALL_TEXT    0x93u
+#define OP_HOSTDATA_BLT  0x94u
+#define OP_POLYLINE      0x95u
+#define OP_SCALE         0x96u
+#define OP_TRANS_SCALE   0x97u
+#define OP_POLYSCANLINES 0x98u
+#define OP_PAINT_MULTI   0x9Au
+#define OP_BITBLT_MULTI  0x9Bu
+#define OP_TRANS_BITBLT  0x9Cu
 
 // ATI's Rage 128 microcode — the 2048-byte image the Linux r128 driver and
 // the linux-firmware r128_cce.bin carry, (DATAH, DATAL) pairs serialised
@@ -510,6 +515,7 @@ static void exec_type3(rage128_t *r, uint32_t op, const uint32_t *b, uint32_t n)
             wr(r, G_DST_WIDTH_HEIGHT, b[i + 1]);
         }
         return;
+    case OP_BITBLT:
     case OP_BITBLT_MULTI:
         // [SRC_X | SRC_Y] [DST_X | DST_Y] [W | H] triples.  The microengine
         // picks the walk directions that make an overlapping copy safe.
@@ -624,6 +630,9 @@ static void exec_type3(rage128_t *r, uint32_t op, const uint32_t *b, uint32_t n)
         return;
     default:
         tell_once(r, op, "unknown");
+        LOG(2, "Rage 128 CCE: opcode $%02X body (%u dwords): %08X %08X %08X %08X %08X %08X %08X %08X", op, n,
+            n > 0 ? b[0] : 0u, n > 1 ? b[1] : 0u, n > 2 ? b[2] : 0u, n > 3 ? b[3] : 0u, n > 4 ? b[4] : 0u,
+            n > 5 ? b[5] : 0u, n > 6 ? b[6] : 0u, n > 7 ? b[7] : 0u);
         return;
     }
     LOG(2, "Rage 128 CCE: type-3 opcode $%02X: packet of %u dwords is too short for its SETTINGS", op, n);
@@ -763,7 +772,11 @@ static void ring_run(rage128_t *r) {
 
 // The indirect buffer: INDSIZE dwords at INDOFF, linear, no wrap.
 static void indirect_run(rage128_t *r) {
-    uint32_t addr = REG(r, C_PM4_IW_INDOFF), count = REG(r, C_PM4_IW_INDSIZE) & 0x7FFFFFu;
+    // INDOFF is an offset in the AGP window — "from the base of the indirect
+    // buffer" space, SDK §5.3.3 — never a frame-buffer address: ATI's Mac OS
+    // driver writes it without bit 25 ($00070000 and up).
+    uint32_t addr = CARD_AGP_BIT | (REG(r, C_PM4_IW_INDOFF) & CARD_AGP_MASK);
+    uint32_t count = REG(r, C_PM4_IW_INDSIZE) & 0x7FFFFFu;
     if (r->cce.in_indirect) {
         LOG(1, "Rage 128 CCE: the indirect buffer calls itself — ignored");
         return;

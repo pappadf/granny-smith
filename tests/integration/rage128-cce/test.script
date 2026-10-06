@@ -326,6 +326,12 @@ fill32(0, 0, 64, 32, 0)
 wr($PM4_IW_INDOFF, 0x02001000)
 wr($PM4_IW_INDSIZE, 6)
 assert px32(4, 2) == 0x00ABCDEF "indirect buffer started by a PIO INDSIZE write"
+# INDOFF is an offset in the AGP window whether or not bit 25 is given:
+# ATI's Mac OS 9 driver writes $00070000-style offsets.
+fill32(0, 0, 64, 32, 0)
+wr($PM4_IW_INDOFF, 0x00001000)
+wr($PM4_IW_INDSIZE, 6)
+assert px32(4, 2) == 0x00ABCDEF "INDOFF without bit 25 still names the AGP window"
 
 # --- 6. The GART disabled: the AGP window is linear from AGP_BASE ------------
 wr(0x017C, 1)                     # PCI_GART_DIS
@@ -379,6 +385,23 @@ ram_wr($PAGE0 + 72, (1 << 16) | 2)
 wr($PM4_BUFFER_DL_WPTR, 19)
 assert px32(0, 25) == 0x00ABCDEF "TRANS_BITBLT: the key colour is transparent"
 assert px32(1, 25) == 0x00000001 "TRANS_BITBLT: other colours draw"
+# Opcode $92 — not in the SDK's table; ATI's Mac OS 9 driver sends it for
+# ScrollRect, with BITBLT_MULTI's body: scroll a 4 x 2 block up by one line.
+fill32(0, 0, 64, 32, 0)
+put32(8, 1, 0x00000071)
+put32(11, 2, 0x00000072)
+ram_wr($PAGE0 + 76, pkt3(0x92, 6))
+ram_wr($PAGE0 + 80, $GC_COPY)
+ram_wr($PAGE0 + 84, $SURF_PO)
+ram_wr($PAGE0 + 88, $SURF_PO)
+ram_wr($PAGE0 + 92, (8 << 16) | 1)    # [SRC_X | SRC_Y]
+ram_wr($PAGE0 + 96, (8 << 16) | 0)    # [DST_X | DST_Y]
+ram_wr($PAGE0 + 100, (4 << 16) | 2)   # [W | H]
+wr($PM4_BUFFER_DL_WPTR, 26)
+assert px32(8, 0) == 0x71 "$92 BITBLT: line 1 moved to line 0"
+assert px32(11, 1) == 0x72 "$92 BITBLT: line 2 moved to line 1, read before line 1 was overwritten"
+wr($PM4_BUFFER_DL_RPTR, 19)
+wr($PM4_BUFFER_DL_WPTR, 19)
 # POLYLINE (SDK §F.12): (0,0) -> (8,4) -> (8,8); the shared vertex drawn once.
 fill32(0, 0, 64, 32, 0)
 ram_wr($PAGE0 + 76, pkt3(0x95, 6))
