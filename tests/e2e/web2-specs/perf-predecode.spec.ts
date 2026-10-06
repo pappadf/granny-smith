@@ -153,7 +153,7 @@ for (const machine of MACHINES) {
 
     const [romChooser] = await Promise.all([
       page.waitForEvent("filechooser"),
-      page.getByRole("button", { name: "Upload ROM..." }).click(),
+      page.getByRole("button", { name: "Load ROM..." }).click(),
     ]);
     await romChooser.setFiles(path.join(DATA, "roms", row.rom));
 
