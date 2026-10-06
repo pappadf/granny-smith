@@ -101,6 +101,20 @@ LOG_USE_CATEGORY_NAME("video");
 #define G_HOST_DATA7           0x17DCu
 #define G_HOST_DATA_LAST       0x17E0u
 #define G_DP_GUI_MASTER_CNTL_C 0x1C84u
+#define G_AUX_SC_CNTL          0x1660u
+// The 3D engine's CCE-context copies that alias 2D state (RRG §7.5; the CCE
+// 3D-packet supplement): the render target, the scissors, the write mask.
+#define G_DST_PITCH_OFFSET_C 0x1C80u
+#define G_SC_TOP_LEFT_C      0x1C88u
+#define G_SC_BOTTOM_RIGHT_C  0x1C8Cu
+#define G_PLANE_3D_MASK_C    0x1D44u
+// SCALE_3D_CNTL and MISC_3D_STATE_CNTL_REG share the blend, alpha-test and
+// fog-table fields (bits 26:12); SCALE_3D_FN sits at 7:6 in the first and
+// 9:8 in the second.
+#define G_SCALE_3D_CNTL  0x1A00u
+#define G_MISC_3D_STATE  0x1CA0u
+#define G_TEX_CNTL_C     0x1C9Cu
+#define SHARED_3D_FIELDS 0x07FFF000u
 
 #define REG(r, off) ((r)->reg[(off) / 4u])
 
@@ -115,7 +129,9 @@ LOG_USE_CATEGORY_NAME("video");
 #define GMC_BYTE_PIX_ORDER        0x00004000u
 #define GMC_ROP3(v)               (((v) >> 16) & 0xFFu)
 #define GMC_SRC_SOURCE(v)         (((v) >> 24) & 7u)
+#define GMC_3D_FCN_EN             0x08000000u // 1 = leave the 3D function, Z and stencil enables alone
 #define GMC_CLR_CMP_CNTL_DIS      0x10000000u
+#define GMC_AUX_CLIP_DIS          0x20000000u
 #define GMC_WR_MSK_DIS            0x40000000u
 
 // DP_DATATYPE.
@@ -634,6 +650,15 @@ static void gmc_write(rage128_t *r, uint32_t v) {
     REG(r, G_DP_MIX) = (GMC_SRC_SOURCE(v) << 8) | (GMC_ROP3(v) << 16);
     if (v & GMC_CLR_CMP_CNTL_DIS)
         REG(r, G_CLR_CMP_CNTL) &= ~CMP_FN_MASK;
+    if (v & GMC_AUX_CLIP_DIS)
+        REG(r, G_AUX_SC_CNTL) &= ~0x15u; // every AUXn_SC_ENB
+    if (!(v & GMC_3D_FCN_EN)) {
+        // A 2D master-control write turns the 3D engine off: SCALE_3D_FCN,
+        // Z_EN and STENCIL_EN clear (RRG §7.5, GMC_3D_FCN_EN).
+        REG(r, G_SCALE_3D_CNTL) &= ~0xC0u;
+        REG(r, G_MISC_3D_STATE) &= ~0x300u;
+        REG(r, G_TEX_CNTL_C) &= ~0x9u;
+    }
     if (v & GMC_WR_MSK_DIS) {
         REG(r, G_DP_WRITE_MSK) = 0xFFFFFFFFu;
         REG(r, G_CLR_CMP_MSK) = 0xFFFFFFFFu;
@@ -649,6 +674,7 @@ void r128_2d_write(rage128_t *r, uint32_t off, uint32_t v) {
     case G_DP_GUI_MASTER_CNTL_C:
         gmc_write(r, v);
         return;
+    case G_DST_PITCH_OFFSET_C:
     case G_DST_PITCH_OFFSET:
         // Offset in 32-byte units in 20:0, pitch (8 pixels) in 30:21.
         REG(r, G_DST_OFFSET) = (v & 0x1FFFFFu) << 5;
@@ -674,10 +700,12 @@ void r128_2d_write(rage128_t *r, uint32_t off, uint32_t v) {
         REG(r, G_SRC_Y) = v & 0x3FFFu;
         REG(r, G_SRC_X) = (v >> 16) & 0x3FFFu;
         return;
+    case G_SC_TOP_LEFT_C:
     case G_SC_TOP_LEFT:
         REG(r, G_SC_LEFT) = v & 0x3FFFu;
         REG(r, G_SC_TOP) = (v >> 16) & 0x3FFFu;
         return;
+    case G_SC_BOTTOM_RIGHT_C:
     case G_SC_BOTTOM_RIGHT:
         REG(r, G_SC_RIGHT) = v & 0x3FFFu;
         REG(r, G_SC_BOTTOM) = (v >> 16) & 0x3FFFu;
@@ -685,6 +713,23 @@ void r128_2d_write(rage128_t *r, uint32_t off, uint32_t v) {
     case G_SRC_SC_BOTTOM_RIGHT:
         REG(r, G_SRC_SC_RIGHT) = v & 0x3FFFu;
         REG(r, G_SRC_SC_BOTTOM) = (v >> 16) & 0x3FFFu;
+        return;
+    case 0x1A14u: // FOG_TABLE_INDEX
+        r->fog_index = (uint8_t)v;
+        return;
+    case 0x1A18u: // FOG_TABLE_DATA: one 8-bit entry per write, the index advancing
+        r->fog_table[r->fog_index++] = (uint8_t)v;
+        return;
+    case G_PLANE_3D_MASK_C:
+        REG(r, G_DP_WRITE_MSK) = v;
+        return;
+    case G_SCALE_3D_CNTL:
+        REG(r, G_MISC_3D_STATE) =
+            (REG(r, G_MISC_3D_STATE) & ~(SHARED_3D_FIELDS | 0x300u)) | (v & SHARED_3D_FIELDS) | ((v >> 6 & 3u) << 8);
+        return;
+    case G_MISC_3D_STATE:
+        REG(r, G_SCALE_3D_CNTL) =
+            (REG(r, G_SCALE_3D_CNTL) & ~(SHARED_3D_FIELDS | 0xC0u)) | (v & SHARED_3D_FIELDS) | ((v >> 8 & 3u) << 6);
         return;
     case G_DP_CNTL_XDIR_YDIR: {
         // The same three bits as DP_CNTL, at other positions.
@@ -743,6 +788,17 @@ void r128_2d_write(rage128_t *r, uint32_t off, uint32_t v) {
             r->host.active = false;
         }
     }
+}
+
+bool r128_2d_brush_covers(rage128_t *r, int32_t x, int32_t y) {
+    op_t op;
+    op_gather(r, &op);
+    uint32_t v;
+    return brush_at(r, &op, x, y, &v);
+}
+
+uint32_t r128_2d_rop3(uint32_t rop, uint32_t p, uint32_t s, uint32_t d) {
+    return rop3(rop, p, s, d);
 }
 
 void r128_2d_reset(rage128_t *r) {

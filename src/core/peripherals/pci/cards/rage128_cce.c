@@ -18,7 +18,9 @@
 //   * type 3: an operation.  The 2D ones become exactly the register writes
 //     a PIO driver would make — DP_GUI_MASTER_CNTL and the SETTINGS block,
 //     then the trajectory and an initiator — into the same 2D engine
-//     (rage128_2d.c).  The 3D ones are milestone 4f's: skipped, logged.
+//     (rage128_2d.c).  The 3D ones decode their vertices — inline, or
+//     fetched by the vertex walker from a list in AGP space, in order or by
+//     index — for the 3D engine (rage128_raster.c).
 //
 // Where packets come from (PM4_BUFFER_CNTL.PM4_BUFFER_MODE, bits 31:28):
 //   * PIO modes (1, 3, 5, 7, 15): dwords written to PM4_FIFO_DATA_EVEN/ODD;
@@ -53,6 +55,7 @@
 #include "log.h"
 #include "rage128_priv.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("video");
@@ -187,7 +190,7 @@ static bool agp_to_host(rage128_t *r, uint32_t agp, uint32_t *host) {
 
 // Fetch `n` little-endian dwords at card address `addr`.  False when the
 // fetch cannot happen (bus mastering off, a frame-buffer address past VRAM).
-static bool card_read(rage128_t *r, uint32_t addr, uint32_t *out, uint32_t n) {
+bool r128_card_read(rage128_t *r, uint32_t addr, uint32_t *out, uint32_t n) {
     while (n) {
         if (!(addr & CARD_AGP_BIT)) {
             // The frame buffer: the engine reads its own memory.
@@ -389,6 +392,86 @@ static void segment(rage128_t *r, int32_t x0, int32_t y0, int32_t x1, int32_t y1
     wr(r, G_DST_BRES_LNTH, (uint32_t)major);
 }
 
+// ============================================================
+// 3D packets: vertices to the 3D engine (rage128_raster.c)
+// ============================================================
+
+#define VC_PRIM(c)   ((c) & 0xFu)
+#define VC_WALK(c)   (((c) >> 4) & 3u)
+#define VC_NUM(c)    ((c) >> 16)
+#define WALK_INDEXED 1u
+#define WALK_LIST    2u
+#define WALK_RING    3u
+#define MAX_VERTICES 0x10000u
+
+// The vertices of a 3D_RNDR_GEN_PRIM, inline in the packet.
+static void draw_inline(rage128_t *r, uint32_t fmt, uint32_t cntl, const uint32_t *d, uint32_t n) {
+    uint32_t vs = r128_3d_vertex_dwords(fmt), count = VC_NUM(cntl);
+    if (VC_WALK(cntl) != WALK_RING)
+        LOG(2, "Rage 128 CCE: 3D_RNDR_GEN_PRIM with walk %u — its vertices read inline", VC_WALK(cntl));
+    if (count > n / vs) {
+        LOG(2, "Rage 128 CCE: 3D_RNDR_GEN_PRIM names %u vertices, the packet holds %u", count, n / vs);
+        count = n / vs;
+    }
+    if (!count)
+        return;
+    r128_vertex_t *v = malloc(count * sizeof(*v));
+    if (!v)
+        return;
+    for (uint32_t i = 0; i < count; i++)
+        r128_3d_vertex_decode(fmt, d + i * vs, &v[i]);
+    LOG(4, "Rage 128 CCE: 3D prim %u, %u inline vertices of %u dwords", VC_PRIM(cntl), count, vs);
+    r128_3d_draw(r, VC_PRIM(cntl), v, count);
+    free(v);
+}
+
+// The vertex walker: vertices from the vertex list at VLOFF in AGP space
+// ("with respect to the physical address of the AGP space", SDK appendix
+// F), in order (list walk) or by 16-bit indices, two to a dword, the first
+// in the low half (indexed walk).
+static void draw_walked(rage128_t *r, uint32_t vloff, uint32_t vsize, uint32_t fmt, uint32_t cntl, const uint32_t *idx,
+                        uint32_t nidx) {
+    uint32_t vs = r128_3d_vertex_dwords(fmt), count = VC_NUM(cntl), walk = VC_WALK(cntl);
+    uint32_t base = CARD_AGP_BIT | (vloff & CARD_AGP_MASK);
+    if (walk == WALK_RING) {
+        draw_inline(r, fmt, cntl, idx, nidx);
+        return;
+    }
+    if (walk == WALK_INDEXED && count > nidx * 2u)
+        count = nidx * 2u;
+    if (count > MAX_VERTICES)
+        count = MAX_VERTICES;
+    if (!count)
+        return;
+    r128_vertex_t *v = malloc(count * sizeof(*v));
+    uint32_t *raw = malloc(vs * sizeof(uint32_t));
+    if (!v || !raw) {
+        free(v);
+        free(raw);
+        return;
+    }
+    uint32_t got = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t k = i;
+        if (walk == WALK_INDEXED)
+            k = (idx[i / 2u] >> ((i & 1u) ? 16 : 0)) & 0xFFFFu;
+        if (k >= vsize && vsize) {
+            LOG(2, "Rage 128 CCE: vertex %u is past the list's %u", k, vsize);
+            continue;
+        }
+        if (!r128_card_read(r, base + k * vs * 4u, raw, vs)) {
+            LOG(1, "Rage 128 CCE: vertex fetch at card address $%08X failed", base + k * vs * 4u);
+            break;
+        }
+        r128_3d_vertex_decode(fmt, raw, &v[got++]);
+    }
+    LOG(4, "Rage 128 CCE: 3D prim %u, %u %s vertices of %u dwords at $%08X", VC_PRIM(cntl), got,
+        walk == WALK_INDEXED ? "indexed" : "listed", vs, base);
+    r128_3d_draw(r, VC_PRIM(cntl), v, got);
+    free(raw);
+    free(v);
+}
+
 static void exec_type3(rage128_t *r, uint32_t op, const uint32_t *b, uint32_t n) {
     uint32_t i = 0;
     switch (op) {
@@ -512,9 +595,22 @@ static void exec_type3(rage128_t *r, uint32_t op, const uint32_t *b, uint32_t n)
             host_rect(r, b[0], b[1], b + 2, n - 2u);
         return;
     case OP_3D_GEN_PRIM:
+        // VC_FORMAT, VC_CNTL, then the vertices inline (the ring walk).
+        if (n >= 2)
+            draw_inline(r, b[0], b[1], b + 2, n - 2u);
+        return;
     case OP_3D_GEN_INDX_PRIM:
+        // VLOFF, VSIZE, VC_FORMAT, VC_CNTL, then (indexed walk) the indices.
+        if (n < 4)
+            break;
+        r->cce.vc_vloff = b[0];
+        r->cce.vc_format = b[2];
+        r->cce.vc_cntl = b[3];
+        draw_walked(r, b[0], b[1], b[2], b[3], b + 4, n - 4u);
+        return;
     case OP_NEXT_VTX_BUNDLE:
-        tell_once(r, op, "3D primitive");
+        // More indices for the last indexed primitive.
+        draw_walked(r, r->cce.vc_vloff, 0xFFFFu, r->cce.vc_format, (r->cce.vc_cntl & 0xFFFFu) | ((n * 2u) << 16), b, n);
         return;
     case OP_SMALL_TEXT:
         tell_once(r, op, "SMALL_TEXT");
@@ -639,7 +735,7 @@ static void ring_run(rage128_t *r) {
         if (run > FETCH_RUN)
             run = FETCH_RUN;
         uint32_t chunk[FETCH_RUN];
-        if (!card_read(r, base + rptr * 4u, chunk, run)) {
+        if (!r128_card_read(r, base + rptr * 4u, chunk, run)) {
             LOG(1, "Rage 128 CCE: ring fetch at card address $%08X failed (bus mastering %s) — the ring stalls",
                 base + rptr * 4u, bm_enabled(r) ? "on" : "disabled by BUS_CNTL");
             break;
@@ -678,7 +774,7 @@ static void indirect_run(rage128_t *r) {
     while (count) {
         uint32_t run = count > FETCH_RUN ? FETCH_RUN : count;
         uint32_t chunk[FETCH_RUN];
-        if (!card_read(r, addr, chunk, run)) {
+        if (!r128_card_read(r, addr, chunk, run)) {
             LOG(1, "Rage 128 CCE: indirect-buffer fetch at card address $%08X failed", addr);
             break;
         }

@@ -99,6 +99,7 @@ static const struct nubus_monitor r128_monitors[] = {
 };
 
 static void r128_update(rage128_t *r);
+static void r128_offset_write(rage128_t *r);
 static void r128_irq_sync(rage128_t *r);
 static uint32_t r128_reg_read(rage128_t *r, uint32_t off, bool peek);
 static void r128_reg_write(rage128_t *r, uint32_t off, uint32_t value, uint32_t mask);
@@ -387,6 +388,9 @@ static uint32_t r128_reg_read(rage128_t *r, uint32_t off, bool peek) {
         return r->reg[off / 4] & INT_STATUS_MASK;
     case R_CRTC_STATUS:
         return (r->reg[off / 4] & CRTC_VBLANK_SAVE) | (r128_in_vblank(r) ? CRTC_VBLANK_CUR : 0u);
+    case R_CRTC_OFFSET:
+    case R_CRTC_OFFSET_CNTL:
+        return (r->reg[off / 4] & ~CRTC_GUI_TRIG_OFFSET) | (r->flip_pending ? CRTC_GUI_TRIG_OFFSET : 0u);
     case R_CRTC_VLINE_CRNT:
         // Bits 26:16 are the live current line; 10:0 the programmed compare.
         return (r->reg[off / 4] & 0x7FFu) | ((r128_scanline(r, NULL) & 0x7FFu) << 16);
@@ -555,11 +559,13 @@ static void r128_reg_write(rage128_t *r, uint32_t off, uint32_t value, uint32_t 
         return;
     }
     switch (off) {
+    case R_CRTC_OFFSET:
+        r128_offset_write(r);
+        break;
     case R_CRTC_GEN_CNTL:
     case R_CRTC_EXT_CNTL:
     case R_CRTC_H_TOTAL_DISP:
     case R_CRTC_V_TOTAL_DISP:
-    case R_CRTC_OFFSET:
     case R_CRTC_OFFSET_CNTL:
     case R_CRTC_PITCH:
     case R_DAC_CNTL:
@@ -964,7 +970,7 @@ static void r128_update(rage128_t *r) {
     uint32_t width = (((r->reg[R_CRTC_H_TOTAL_DISP / 4] >> 16) & 0xFFu) + 1u) * 8u;
     uint32_t height = ((r->reg[R_CRTC_V_TOTAL_DISP / 4] >> 16) & 0x7FFu) + 1u;
     uint32_t stride = (r->reg[R_CRTC_PITCH / 4] & 0x3FFu) * 8u * bpp;
-    uint32_t base = r->reg[R_CRTC_OFFSET / 4] & 0x1FFFFFFu;
+    uint32_t base = r->crtc_offset_live;
     if (width > 2048u || height > 1536u) {
         LOG(2, "Rage 128: implausible CRTC geometry %ux%u — blanking", width, height);
         width = 640;
@@ -997,6 +1003,34 @@ static void r128_update(rage128_t *r) {
         r->scan_blanked ? " BLANKED" : "");
 }
 
+// A CRTC_OFFSET write.  With the CRTC off (a mode set) it applies at once;
+// with it running, at the next vertical blank — the double-buffer flip
+// (CRTC_OFFSET_FLIP_CNTL asks for the next line instead, which at this
+// model's frame granularity is "now").
+static void r128_offset_write(rage128_t *r) {
+    uint32_t v = r->reg[R_CRTC_OFFSET / 4] & CRTC_OFFSET_MASK;
+    bool running = (r->reg[R_CRTC_GEN_CNTL / 4] & CRTC_EN) != 0;
+    if (!running || (r->reg[R_CRTC_OFFSET_CNTL / 4] & CRTC_OFFSET_FLIP_CNTL)) {
+        r->crtc_offset_live = v;
+        r->flip_pending = false;
+        r128_update(r);
+        return;
+    }
+    r->flip_pending = v != r->crtc_offset_live;
+}
+
+// Vertical blank: a pending flip takes effect unless a lock holds it.
+static void r128_flip_latch(rage128_t *r) {
+    if (!r->flip_pending)
+        return;
+    if ((r->reg[R_CRTC_OFFSET_CNTL / 4] | r->reg[R_CRTC_OFFSET / 4]) & CRTC_OFFSET_LOCK)
+        return;
+    r->crtc_offset_live = r->reg[R_CRTC_OFFSET / 4] & CRTC_OFFSET_MASK;
+    r->flip_pending = false;
+    LOG(4, "Rage 128: flip to $%06X", r->crtc_offset_live);
+    r128_update(r);
+}
+
 static display_t *r128_display(pci_device_t *dev) {
     rage128_t *r = (rage128_t *)dev->priv;
     return (r && r->blank) ? &r->display : NULL;
@@ -1025,6 +1059,7 @@ static void r128_on_vbl(pci_device_t *dev, config_t *cfg) {
     rage128_t *r = (rage128_t *)dev->priv;
     if (!r || !r->blank)
         return;
+    r128_flip_latch(r);
     // CPU stores to VRAM bypass the renderer: re-upload every frame.
     r->display.fb_dirty = true;
     r128_present(r);
@@ -1143,6 +1178,12 @@ static void r128_reset(pci_device_t *dev, config_t *cfg) {
     r->ddc.scl = r->ddc.sda = true;
     r128_2d_reset(r);
     r128_cce_reset(r);
+    memset(r->fog_table, 0, sizeof(r->fog_table));
+    r->fog_index = 0;
+    r->crtc_offset_live = 0;
+    r->flip_pending = false;
+    r->prims3d = 0;
+    r->told3d = 0;
     r->depth_warned = false;
     if (r->irq_active) {
         r->irq_active = false;
@@ -1178,6 +1219,10 @@ typedef struct r128_ckpt {
     uint8_t pal_w, pal_r;
     r128_ddc_t ddc;
     uint8_t host[sizeof(((rage128_t *)0)->host)]; // a 2D host-data operation in flight
+    uint8_t fog_table[256]; // the 3D engine's fog table and its index
+    uint8_t fog_index;
+    uint32_t crtc_offset_live; // the displayed CRTC_OFFSET, and a flip waiting for blank
+    uint8_t flip_pending;
 } r128_ckpt_t;
 
 static void r128_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
@@ -1194,6 +1239,10 @@ static void r128_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     c.pal_r = r->pal_r;
     c.ddc = r->ddc;
     memcpy(c.host, &r->host, sizeof(c.host));
+    memcpy(c.fog_table, r->fog_table, sizeof(c.fog_table));
+    c.fog_index = r->fog_index;
+    c.crtc_offset_live = r->crtc_offset_live;
+    c.flip_pending = r->flip_pending;
     system_write_checkpoint_data(cp, &c, sizeof(c));
     // The CCE (microcode, partial packets) is large: written on its own,
     // not through the stack-allocated header.
@@ -1214,6 +1263,10 @@ static void r128_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     r->pal_r = c.pal_r;
     r->ddc = c.ddc;
     memcpy(&r->host, c.host, sizeof(r->host));
+    memcpy(r->fog_table, c.fog_table, sizeof(r->fog_table));
+    r->fog_index = c.fog_index;
+    r->crtc_offset_live = c.crtc_offset_live;
+    r->flip_pending = c.flip_pending != 0;
     system_read_checkpoint_data(cp, &r->cce, sizeof(r->cce));
     if (c.vram_size != r->vram_size)
         // The card was built from the staged memory option; a stream from a
@@ -1350,6 +1403,10 @@ static DEF_GETTER(regs_attr_microcode) {
     rage128_t *c = node_card(self);
     return val_str(c ? r128_cce_microcode_name(c) : "none");
 }
+static DEF_GETTER(regs_attr_prims3d) {
+    rage128_t *c = node_card(self);
+    return val_uint(8, c ? c->prims3d : 0);
+}
 static DEF_GETTER(regs_attr_cce_packets) {
     rage128_t *c = node_card(self);
     return val_uint(8, c ? c->cce.packets : 0);
@@ -1383,6 +1440,10 @@ static const member_t regs_members[] = {
      .name = "cce_packets",
      .doc = "CCE command packets executed since reset",
      .attr = {.type = V_UINT, .get = regs_attr_cce_packets}                                },
+    {.kind = M_ATTR,
+     .name = "prims3d",
+     .doc = "3D primitives the engine has rasterised since reset",
+     .attr = {.type = V_UINT, .get = regs_attr_prims3d}                                    },
     {.kind = M_METHOD,
      .name = "read",
      .doc = "Read a register by its byte offset (no side effects)",
@@ -1401,7 +1462,7 @@ static display_t *r128_fb_resolve(void *owner) {
 }
 static uint64_t r128_fb_base(void *owner) {
     rage128_t *c = (rage128_t *)owner;
-    return c ? (uint64_t)(c->reg[R_CRTC_OFFSET / 4] & 0x1FFFFFFu) : 0;
+    return c ? (uint64_t)c->crtc_offset_live : 0;
 }
 
 static void r128_attach_objects(pci_device_t *dev, struct object *card_node) {

@@ -413,8 +413,8 @@ assert px32(9, 10) == 0xAA "POLYSCANLINES: second span"
 assert px32(9, 12) == 0 "POLYSCANLINES: height 2"
 assert rd($PM4_BUFFER_DL_RPTR) == 35 "the ring drained through every packet"
 assert ram_rd($RPTR_WB) == 35 "and said so in guest RAM"
-# A 3D packet (milestone 4f) is skipped by its count, and the stream stays
-# in step.
+# A 3D packet naming no vertices draws nothing, and the stream stays in
+# step.
 ram_wr($PAGE0 + 140, pkt3(0x25, 3))
 ram_wr($PAGE0 + 144, 0)
 ram_wr($PAGE0 + 148, 0)
@@ -422,7 +422,7 @@ ram_wr($PAGE0 + 152, 0)
 ram_wr($PAGE0 + 156, pkt0(0x0010, 1))
 ram_wr($PAGE0 + 160, 0xE0000001)
 wr($PM4_BUFFER_DL_WPTR, 41)
-assert rd(0x0010) == 0xE0000001 "after a skipped 3D packet the next packet runs"
+assert rd(0x0010) == 0xE0000001 "after an empty 3D packet the next packet runs"
 
 echo "rage128-cce: microcode RAM, PIO FIFO, packet types 0-3, the GART ring with wrap and write-back, the indirect buffer and the 2D packets hold"
 quit

@@ -168,6 +168,12 @@
 #define CRTC_PIX_24BPP     5u
 #define CRTC_PIX_32BPP     6u
 
+// CRTC_OFFSET / CRTC_OFFSET_CNTL (RRG §6.1).
+#define CRTC_OFFSET_MASK      0x01FFFFF8u
+#define CRTC_GUI_TRIG_OFFSET  0x40000000u
+#define CRTC_OFFSET_LOCK      0x80000000u
+#define CRTC_OFFSET_FLIP_CNTL 0x00010000u
+
 // CRTC_EXT_CNTL.
 #define CRTC_DISPLAY_DIS 0x00000400u
 
@@ -280,6 +286,8 @@ typedef struct r128_cce {
     bool in_indirect; // an indirect buffer is running (re-entry guard)
     uint64_t packets; // packets executed (diagnostics)
     uint8_t told[32]; // once-only logs, a bit per type-3 opcode
+    // The last 3D_RNDR_GEN_INDX_PRIM, which NEXT_VERTEX_BUNDLE continues.
+    uint32_t vc_vloff, vc_format, vc_cntl;
     r128_cce_stream_t main; // the ring and the PIO FIFO
     r128_cce_stream_t ind; // the indirect buffer
 } r128_cce_t;
@@ -321,6 +329,11 @@ typedef struct rage128 {
     uint8_t *blank; // black stub while the raster is off (vram_size)
     uint8_t *compose; // big-endian copy for the direct-colour depths (vram_size)
     uint32_t scan_base;
+    // CRTC_OFFSET as the display uses it: a write while the CRTC runs takes
+    // effect at the next vertical blank (a page flip), and until then
+    // CRTC_GUI_TRIG_OFFSET reads 1.
+    uint32_t crtc_offset_live;
+    bool flip_pending;
     bool scan_blanked;
     bool scan_swap; // direct colour: present() must byte-swap into `compose`
     bool clut_dirty;
@@ -341,6 +354,10 @@ typedef struct rage128 {
     uint64_t blits; // operations the engine has run (diagnostics)
 
     r128_cce_t cce; // the Concurrent Command Engine (rage128_cce.c)
+    uint64_t prims3d; // 3D primitives rasterised (diagnostics)
+    uint8_t fog_table[256]; // FOG_TABLE_DATA, through FOG_TABLE_INDEX
+    uint8_t fog_index;
+    uint8_t told3d; // once-only 3D logs (rage128_raster.c)
 } rage128_t;
 
 // === The register file (rage128.c) =========================================
@@ -362,6 +379,46 @@ void r128_2d_write(rage128_t *r, uint32_t off, uint32_t value);
 // The engine's power-on register state (scissors open, write mask all ones).
 void r128_2d_reset(rage128_t *r);
 
+// The data path's brush at (x, y): false where a mono foreground/leave-alone
+// brush leaves the pixel alone (the 3D engine's polygon stipple).
+bool r128_2d_brush_covers(rage128_t *r, int32_t x, int32_t y);
+// The ternary raster operation on pattern, source and destination.
+uint32_t r128_2d_rop3(uint32_t rop, uint32_t p, uint32_t s, uint32_t d);
+
+// === The 3D engine (rage128_raster.c) ======================================
+
+// One FTLVERTEX, decoded: position in screen pixels (before the window
+// offset), Z in [0,1], RHW, colours as 0..255 floats, the fog factor, and
+// two texture coordinate sets.
+typedef struct r128_vertex {
+    float x, y, z, rhw;
+    float c[4]; // diffuse R, G, B, A
+    float spec[3]; // specular R, G, B
+    float fog; // 255 = no fog
+    float s, t, s2, t2, rhw2;
+} r128_vertex_t;
+
+// VC_FORMAT (SDK appendix F, 3D_RNDR_GEN_PRIM): which fields a vertex has.
+#define VCF_RHW          0x001u
+#define VCF_DIFFUSE_BGR  0x002u
+#define VCF_DIFFUSE_A    0x004u
+#define VCF_DIFFUSE_ARGB 0x008u
+#define VCF_SPEC_BGR     0x010u
+#define VCF_SPEC_F       0x020u
+#define VCF_SPEC_FRGB    0x040u
+#define VCF_ST           0x080u
+#define VCF_S2T2         0x100u
+#define VCF_RHW2         0x200u
+
+// Dwords one vertex of format `fmt` occupies.
+uint32_t r128_3d_vertex_dwords(uint32_t fmt);
+// Decode one vertex from its dwords.
+void r128_3d_vertex_decode(uint32_t fmt, const uint32_t *dw, r128_vertex_t *v);
+// Rasterise `n` vertices as primitive type `prim` (VC_CNTL.VC_PRIM_TYPE:
+// 1 points, 2 lines, 3 polyline, 4 triangles, 5 fan, 6 strip) with the
+// engine's current state.
+void r128_3d_draw(rage128_t *r, uint32_t prim, const r128_vertex_t *v, uint32_t n);
+
 // === The Concurrent Command Engine (rage128_cce.c) =========================
 
 // The CCE's registers: the PM4 block at $0700-$07FF and the PIO FIFO ports
@@ -377,6 +434,9 @@ uint32_t r128_cce_read(rage128_t *r, uint32_t off, bool peek);
 // RST#: the engine's power-on state.  SOFT_RESET_GUI: drop partial packets.
 void r128_cce_reset(rage128_t *r);
 void r128_cce_soft_reset(rage128_t *r);
+// Fetch `n` little-endian dwords at a card address (frame buffer below
+// 32 MB, the AGP window above it, through the GART); false if it cannot.
+bool r128_card_read(rage128_t *r, uint32_t addr, uint32_t *out, uint32_t n);
 // "known", "unknown" or "none": what the guest uploaded as microcode.
 const char *r128_cce_microcode_name(const rage128_t *r);
 

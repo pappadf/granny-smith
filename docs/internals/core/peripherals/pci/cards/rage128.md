@@ -5,9 +5,11 @@ Orion, Xclaim VR 128 and Nexus 128 — modelled in
 [`src/core/peripherals/pci/cards/rage128.c`](../../../../../../src/core/peripherals/pci/cards/rage128.c)
 (the card),
 [`rage128_2d.c`](../../../../../../src/core/peripherals/pci/cards/rage128_2d.c)
-(its 2D draw engine) and
+(its 2D draw engine),
 [`rage128_cce.c`](../../../../../../src/core/peripherals/pci/cards/rage128_cce.c)
-(its Concurrent Command Engine), sharing
+(its Concurrent Command Engine) and
+[`rage128_raster.c`](../../../../../../src/core/peripherals/pci/cards/rage128_raster.c)
+(its 3D engine), sharing
 [`rage128_priv.h`](../../../../../../src/core/peripherals/pci/cards/rage128_priv.h).
 The chip's hardware reference is
 [`rage-128.md`](../../../../../reference/hardware/pci/cards/rage-128.md);
@@ -28,15 +30,15 @@ model answers registers and nothing else.
 
 ## 1. Responsibilities & design
 
-**Status.** Milestones 4b–4e of the Rage 128 work: the PCI face, the
+**Status.** Milestones 4b–4f of the Rage 128 work: the PCI face, the
 four apertures and their byte-order swappers, the register file and its
 config mirror, the PLL file, monitor sense and DDC, the palette, the CRTC
 turned into a display descriptor at 8, 15/16 and 32 bpp, the hardware
 cursor, and the VBLANK interrupt — enough for the card's ndrv to run
-System 7.6 at every depth it offers — then the 2D draw engine and the
-Concurrent Command Engine that feeds it packets. The 3D engine is a later
-milestone: its registers are plain storage here, its packets are skipped,
-and `GUI_STAT`, `PM4_STAT`, `PC_GUI_CTLSTAT` and `PC_NGUI_CTLSTAT` report
+System 7.6 at every depth it offers — then the 2D draw engine, the
+Concurrent Command Engine that feeds it packets, and the 3D engine the
+CCE's vertex packets drive. Every engine runs to completion when started,
+so `GUI_STAT`, `PM4_STAT`, `PC_GUI_CTLSTAT` and `PC_NGUI_CTLSTAT` report
 idle.
 
 **Driven by the FCode's needs.** The model was written against a decode of
@@ -203,9 +205,12 @@ brush packet, `BRUSH_Y_X`), then a trajectory and an initiator — for
 overlapping copy is safe), `TRANS_BITBLT`, `POLYLINE` (each segment leaves
 its end pixel to the next; the last draws it only with `DST_LAST_PEL`),
 `POLYSCANLINES`/`PLY_NEXTSCAN` (span ends exclusive), `HOSTDATA_BLT`,
-`NEXTCHAR` and `SET_SCISSORS`. The 3D packets (milestone 4f), `SMALL_TEXT`,
-the scaler packets and `LOAD_PALETTE` are skipped by their count, logged
-once each.
+`NEXTCHAR` and `SET_SCISSORS`. The 3D packets hand vertices to the 3D
+engine: `3D_RNDR_GEN_PRIM` carries them inline; `3D_RNDR_GEN_INDX_PRIM`
+names a vertex list in AGP space (`VLOFF`, an offset in the AGP window)
+that the vertex walker reads in order or by 16-bit indices, and
+`NEXT_VERTEX_BUNDLE` adds indices to the last one. `SMALL_TEXT`, the scaler
+packets and `LOAD_PALETTE` are skipped by their count, logged once each.
 
 Packets arrive three ways, chosen by `PM4_BUFFER_CNTL`'s mode: through
 `PM4_FIFO_DATA_EVEN/ODD` in the PIO modes; from a ring of
@@ -226,6 +231,50 @@ reading `RPTR` straight after finds the ring drained, and `PM4_STAT`
 reports the mode's FIFO share free and nothing busy. `SOFT_RESET_GUI`
 drops a packet half gathered and a host-data operation half fed.
 
+**The 3D engine** (`rage128_raster.c`). The CCE decodes each vertex
+(`VC_FORMAT`: X, Y, Z and the optional RHW, diffuse and specular colours
+as floats or packed ARGB, fog, two texture-coordinate sets, RHW2) and
+hands the batch over with its primitive type (`VC_CNTL`: points,
+independent lines, polyline, triangle list, fan, strip). A snapshot of the
+state is taken per batch. The 3D context copies alias 2D state, as the
+reference says and `rage128_2d.c` implements: `DST_PITCH_OFFSET_C` is the
+render target, `SC_*_C` the scissors, `PLANE_3D_MASK_C` the write mask, and
+`DP_GUI_MASTER_CNTL_C` the data path whose destination datatype is the
+colour buffer's format (565, 1555, 4444, 8888, 332, 8-bit). A
+`DP_GUI_MASTER_CNTL` write without `GMC_3D_FCN_EN` turns the engine off.
+`SCALE_3D_CNTL` and `MISC_3D_STATE_CNTL_REG` share their blend, alpha-test
+and fog-table fields, and a write to either updates both.
+
+Per pixel, in the order the SDK gives: texel fetch (both units: wrap,
+mirror, clamp or border per axis; nearest, bilinear, mip-nearest,
+mip-linear, trilinear; `PRIM_TEX_0` is the *smallest* map, as the CCE
+supplement and Mesa's uploads say and the SDK's chapter 6 does not), the
+two combine stages, texture lighting, specular, fog (vertex fog from the
+specular alpha, or the 256-entry table indexed by Z), colour key, alpha
+test, stencil (24-bit Z only; `ZFAIL` is "stencil passes, Z fails", the
+SDK and Mesa over the supplement), Z, blend (`ALPHA_COMB_FCN` with the
+thirteen factors), dither or round, the ROP3 and brush (Mesa's polygon
+stipple is a 32 × 32 mono brush), the write mask.
+
+The conventions the manuals leave open are chosen and stated in the file
+header: vertices snap to the sub-pixel grid after `WINDOW_XY_OFFSET`;
+pixel centres at (x + ½, y + ½) with a top-left fill rule; S/T
+perspective-correct, colours, fog and Z affine; Z = z·(2^N − 1),
+truncated; the mip level from the pixel's neighbours less
+`LOD_BIAS`/128; texel centres at (i + ½)/size; 8-bit products rounded;
+a 4 × 4 ordered dither; DDA lines with the end pixel left off. Tiled
+surfaces are addressed linearly — consistent between the engines, not
+with a tiled view through an aperture (logged once). Colour buffers in
+AGP space and the palettised and YUV texture formats are not drawn.
+
+**Page flips.** A `CRTC_OFFSET` write while the CRTC runs is a flip: the
+display keeps scanning the old base until the next vertical blank, and
+`CRTC_GUI_TRIG_OFFSET` (bit 30 of `CRTC_OFFSET` and `CRTC_OFFSET_CNTL`)
+reads 1 until then; `CRTC_OFFSET_LOCK` holds it longer, and
+`CRTC_OFFSET_FLIP_CNTL` (take it on the next line) applies it at once, the
+model having no lines. With the CRTC off — a mode set — the offset applies
+immediately.
+
 **Interrupts.** `GEN_INT_STATUS` latches VBLANK and VSYNC every frame
 whether or not they are enabled (write 1 to clear); `GEN_INT_CNTL` gates
 the INTA line, which is level and held until acknowledged. `CRTC_STATUS`
@@ -236,14 +285,14 @@ bit 0 is the live blank, bit 1 the since-last-cleared latch.
 `machine.pci.slot[N].card` carries `framebuffer` (the shared display node,
 nominated as `machine.screen.source`), `monitor` (`id`, `ddc`,
 `apple_sense`) and, under the advanced category, `regs` (`vram_size`,
-`crtc_gen_cntl`, `config_cntl`, `microcode`, `cce_packets`, `read(offset)`
+`crtc_gen_cntl`, `config_cntl`, `microcode`, `cce_packets`, `prims3d`, `read(offset)`
 without side effects, `pll(index)`).
 
 ## 5. Checkpointing
 
 The register file, PLL file, AGP/power latches, palette and indices, the
-DDC slave's state, a 2D host-data operation in flight, the CCE (microcode
-RAM and partially gathered packets) and VRAM. The ROM travels in the slot's checkpoint part.
+DDC slave's state, a 2D host-data operation in flight, the 3D fog table,
+the CCE (microcode RAM and partially gathered packets) and VRAM. The ROM travels in the slot's checkpoint part.
 A checkpoint from a card of another memory size fails the size-tagged read
 loudly.
 
@@ -267,6 +316,13 @@ loudly.
   equalities. Guest RAM is not usable before POST programs the memory
   controller, so the row stands the card's own VRAM, reached as a PCI peer
   through BAR0, in for host memory.
+- `tests/integration/rage128-3d` (tier `unit`) — the 3D engine through the
+  CCE with Mesa's state values: the fill rule's edges, Gouraud and flat
+  shading, culling, Z (test and mask), stencil (replace, equal, increment),
+  blending, the alpha test, vertex fog, a nearest-filtered textured quad,
+  `MODULATE`, a two-unit lightmap-style stage, the vertex walker's list and
+  indexed walks through the GART, lines, points and a 565 target — every
+  one a VRAM equality.
 - `tests/integration/tnt-pci-rage128` — the config header before any
   instruction; the node Open Firmware 1.0.5 builds from the FCode, read
   back with `.properties` over the serial console, for each cable and for
@@ -277,7 +333,7 @@ loudly.
 ## 7. Known debts
 
 - No pixel clock: refresh is the host's, and PLL dividers are stored only.
-- `CRTC_OFFSET_CNTL` flip latching, `CRTC_VLINE` interrupts and packed
+- `CRTC_VLINE` interrupts, display tiling (`CRTC_TILE_EN`) and packed
   24 bpp are not modelled.
 - No guest exercises the 2D engine or the CCE yet: the ROM ndrv does not
   accelerate, and the `ATI Graphics Accelerator` and `ATI Rage 128 3D
@@ -286,7 +342,12 @@ loudly.
 - The CCE does not interpret microcode: a guest that uploads its own and
   depends on behaviour other than appendix F's would diverge.
 - `SMALL_TEXT`, `SCALE`, `TRANS_SCALE` and `LOAD_PALETTE` are not executed.
-- The 3D engine (milestones 4f–4g).
+- The 3D engine's undocumented conventions (fill rule, interpolator
+  precision, LOD, dither matrix, fog-table indexing) are chosen, not
+  measured; a real-card capture would pin them. The texture palette, YUV
+  textures, edge anti-aliasing, tiled layouts and AGP colour buffers are
+  not modelled, and the rasteriser is a single synchronous software walker
+  (no worker-thread or WebGPU backend yet).
 - The revision byte is `$00` until a real card is read.
 
 ## 8. See also

@@ -1,0 +1,458 @@
+# The Rage 128 GL's 3D engine, driven through the CCE.
+#
+# As in rage128-2d and rage128-cce, a Power Macintosh 9500 that never runs
+# an instruction, the card in socket A1, this script as the driver.  The
+# 3D state is programmed by register writes with the values Mesa's r128
+# driver uses; primitives go through the PIO FIFO as 3D_RNDR_GEN_PRIM
+# packets (vertices inline) or 3D_RNDR_GEN_INDX_PRIM packets (the vertex
+# walker, over a vertex list in AGP space reached through the PCI GART).
+# Vertex fields are IEEE floats, written here as their bit patterns.
+#
+# The fill rule and other conventions the manuals leave open are the ones
+# rage128_raster.c states; these rows pin them.
+
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="rage128"
+
+def swap32(v) {
+    return (($v & 0xFF) << 24) | (($v & 0xFF00) << 8) | (($v >> 8) & 0xFF00) | (($v >> 24) & 0xFF)
+}
+def cfg_wr(reg, val) {
+    machine.memory.poke.l(0xF2800000, swap32(0x00002000 | $reg))
+    machine.memory.poke.l(0xF2C00000, swap32($val))
+    machine.memory.poke.l(0xF2800000, 0)
+}
+let APER = 0x84000000
+let REGS = 0x88000000
+cfg_wr(0x10, $APER)
+cfg_wr(0x18, $REGS)
+cfg_wr(0x04, 0x0006)
+assert machine.pci.slot[1].card.config.bar[2].mapped "the register aperture decodes"
+
+def wr(off, v) {
+    machine.memory.poke.l($REGS + $off, swap32($v))
+}
+def rd(off) {
+    return swap32(machine.memory.peek.l($REGS + $off))
+}
+def vram_wr(addr, v) {
+    machine.memory.poke.l($APER + $addr, swap32($v))
+}
+def vram_rd(addr) {
+    return swap32(machine.memory.peek.l($APER + $addr))
+}
+
+# Float bit patterns.
+let F0 = 0x00000000
+let F0_25 = 0x3E800000
+let F0_5 = 0x3F000000
+let F0_75 = 0x3F400000
+let F1 = 0x3F800000
+let F10 = 0x41200000
+let F16 = 0x41800000
+let F20 = 0x41A00000
+let F30 = 0x41F00000
+let F40 = 0x42200000
+let F50 = 0x42480000
+let F56 = 0x42600000
+
+# The colour buffer: 8 MB into VRAM, 512 pixels wide, 32 bpp.  The Z
+# buffer at 10 MB, the texture at 11 MB.
+let SURF = 0x800000
+let STRIDE = 2048
+let ZBUF = 0xA00000
+let TEX = 0xB00000
+def px(x, y) {
+    return vram_rd($SURF + $y * $STRIDE + $x * 4)
+}
+let SURF_PO = (64 << 21) | ($SURF >> 5)
+
+# --- The packet path: PIO ------------------------------------------------------
+wr(0x704, 0x10000000)             # PM4_BUFFER_CNTL: 192-dword PIO
+wr(0x7FC, 0x40000000)             # PM4_MICRO_CNTL: free-running
+def fifo(v) {
+    wr(0x1000, $v)
+}
+def pkt3(op, n) {
+    return 0xC0000000 | (($n - 1) << 16) | ($op << 8)
+}
+
+# --- 2D helpers: clear the colour buffer, the Z buffer ----------------------------
+# A 2D DP_GUI_MASTER_CNTL write without GMC_3D_FCN_EN turns the 3D engine
+# off (SCALE_3D_FCN, Z_EN and STENCIL_EN clear), as on the chip, so the
+# helpers put the 3D state back after the fill, as a driver must.
+def fill(po, fmt, c) {
+    let misc = rd(0x1CA0)
+    let scale = rd(0x1A00)
+    let tc = rd(0x1C9C)
+    let gmc = rd(0x1C84)
+    let dpo = rd(0x1408)
+    let doff = rd(0x1404)
+    wr(0x146C, 0x00000002 | 0x000000D0 | $fmt | 0x00003000 | 0x00F00000 | 0x02000000 | 0x10000000 | 0x40000000)
+    wr(0x142C, $po)
+    wr(0x147C, $c)
+    wr(0x1438, 0)
+    wr(0x143C, (64 << 16) | 64)
+    wr(0x1C84, $gmc | 0x08000000)
+    wr(0x1C80, ($dpo << 21) | ($doff >> 5))
+    wr(0x1A00, $scale)
+    wr(0x1CA0, $misc)
+    wr(0x1C9C, $tc)
+}
+def clear32(c) {
+    fill($SURF_PO, 0x00000600, $c)
+}
+def clearz16(z) {
+    fill((64 << 21) | ($ZBUF >> 5), 0x00000400, $z)
+}
+
+# --- The 3D state, as Mesa's r128 driver initialises it -------------------------
+# DP_GUI_MASTER_CNTL_C: keep the target and scissors, solid brush, 32 bpp,
+# colour source, ROP SRCCOPY, GMC_3D_FCN_EN, no colour compare, no AUX
+# scissors, the write mask open.
+let GMC3D = 0x00000002 | 0x00000008 | 0x000000D0 | 0x00000600 | 0x00003000 | 0x00CC0000 | 0x08000000 | 0x10000000 | 0x20000000 | 0x40000000
+def setup3d() {
+    wr(0x1C84, $GMC3D)            # DP_GUI_MASTER_CNTL_C
+    wr(0x1C80, $SURF_PO)          # DST_PITCH_OFFSET_C
+    wr(0x1C88, 0)                 # SC_TOP_LEFT_C
+    wr(0x1C8C, (511 << 16) | 511) # SC_BOTTOM_RIGHT_C
+    wr(0x1A00, 0xC701018A)        # SCALE_3D_CNTL: texmap/shade, ONE/ZERO, test ALWAYS, TEX_MAP_AEN
+    wr(0x1CA0, 0x07010200)        # MISC_3D_STATE_CNTL_REG: texmap/shade, ONE/ZERO, ALWAYS
+    wr(0x1BC4, 0x000F4020)        # SETUP_CNTL
+    wr(0x071C, 0x000043DF)        # PM4_VC_FPU_SETUP: CCW front, both faces solid, Gouraud, 4 sub-pixel bits, last-vertex flat
+    wr(0x1BCC, 0)                 # WINDOW_XY_OFFSET
+    wr(0x1C9C, 0)                 # TEX_CNTL_C: shading only, no Z
+    wr(0x1D34, 0x00FFFFFF)        # CONSTANT_COLOR_C
+    wr(0x1D44, 0xFFFFFFFF)        # PLANE_3D_MASK_C
+}
+
+# A triangle of DIFFUSE_ARGB vertices (VC_FORMAT $008: x, y, z, argb),
+# a triangle list (VC_CNTL prim 4, ring walk $30).
+def tri(x0, y0, c0, x1, y1, c1, x2, y2, c2, z) {
+    fifo(pkt3(0x25, 14))
+    fifo(0x008)
+    fifo(4 | 0x30 | (3 << 16))
+    fifo($x0)
+    fifo($y0)
+    fifo($z)
+    fifo($c0)
+    fifo($x1)
+    fifo($y1)
+    fifo($z)
+    fifo($c1)
+    fifo($x2)
+    fifo($y2)
+    fifo($z)
+    fifo($c2)
+}
+
+# --- 1. A flat triangle and the fill rule ----------------------------------------
+setup3d()
+clear32(0)
+let P0 = machine.pci.slot[1].card.regs.prims3d
+tri($F10, $F10, 0xFF00FF00, $F30, $F10, 0xFF00FF00, $F10, $F30, 0xFF00FF00, $F0)
+assert machine.pci.slot[1].card.regs.prims3d == $P0 + 1 "one triangle rasterised"
+assert px(10, 10) == 0xFF00FF00 "the corner pixel (its centre is inside)"
+assert px(28, 10) == 0xFF00FF00 "the top edge row is in (a top edge)"
+assert px(10, 28) == 0xFF00FF00 "the left edge column is in (a left edge)"
+assert px(18, 20) == 0xFF00FF00 "inside the hypotenuse"
+assert px(19, 20) == 0 "a centre exactly on the hypotenuse is out (a right edge)"
+assert px(29, 10) == 0 "the far end of the top row: on the hypotenuse, out"
+assert px(10, 29) == 0 "the far end of the left column: on the hypotenuse, out"
+assert px(9, 15) == 0 "left of the left edge"
+assert px(15, 9) == 0 "above the top edge"
+# The same triangle given in the other winding covers the same pixels (both
+# faces are drawn solid).
+clear32(0)
+tri($F10, $F10, 0xFF0000FF, $F10, $F30, 0xFF0000FF, $F30, $F10, 0xFF0000FF, $F0)
+assert px(10, 10) == 0xFF0000FF "the reversed winding: the corner"
+assert px(18, 20) == 0xFF0000FF "the reversed winding: inside the hypotenuse"
+assert px(19, 20) == 0 "the reversed winding: the hypotenuse is still a right edge"
+
+# --- 2. Gouraud shading ----------------------------------------------------------
+clear32(0)
+tri($F10, $F10, 0xFFFF0000, $F30, $F10, 0xFF00FF00, $F10, $F30, 0xFF0000FF, $F0)
+# At (10.5, 10.5) the weights are 0.95 / 0.025 / 0.025: 255 x 0.95 = 242.25,
+# 255 x 0.025 = 6.375, truncated.
+assert px(10, 10) == 0xFFF20606 "Gouraud: the first pixel, interpolated and truncated"
+# Flat shading takes the LAST vertex (FLAT_SHADE_VERTEX, OpenGL).
+wr(0x071C, 0x000043BF)            # PM4_COLOR_FCN 1: flat
+clear32(0)
+tri($F10, $F10, 0xFFFF0000, $F30, $F10, 0xFF00FF00, $F10, $F30, 0xFF0000FF, $F0)
+assert px(10, 10) == 0xFF0000FF "flat: the last vertex's colour"
+assert px(25, 12) == 0xFF0000FF "flat: everywhere"
+wr(0x071C, 0x000043DF)
+
+# --- 3. Culling ------------------------------------------------------------------
+# On the y-down screen (10,10) (30,10) (10,30) is clockwise: with
+# counter-clockwise front faces it is a back face.
+wr(0x071C, 0x000043DF & ~0x6)     # BACKFACE_CULLING_FN 0: cull
+clear32(0)
+tri($F10, $F10, 0xFFFFFFFF, $F30, $F10, 0xFFFFFFFF, $F10, $F30, 0xFFFFFFFF, $F0)
+assert px(12, 12) == 0 "a back face is culled"
+tri($F10, $F10, 0xFFFFFFFF, $F10, $F30, 0xFFFFFFFF, $F30, $F10, 0xFFFFFFFF, $F0)
+assert px(12, 12) == 0xFFFFFFFF "the same triangle wound counter-clockwise is a front face"
+wr(0x071C, 0x000043DF)
+
+# --- 4. The Z buffer -------------------------------------------------------------
+clear32(0)
+clearz16(0xFFFF)
+setup3d()
+wr(0x1C90, $ZBUF)                 # Z_OFFSET_C
+wr(0x1C94, 64)                    # Z_PITCH_C: 512 pixels
+wr(0x1C98, (1 << 4))              # Z_STEN_CNTL_C: 16-bit Z, test LESS
+wr(0x1C9C, 0x3)                   # TEX_CNTL_C: Z_EN, Z_MASK
+tri($F10, $F10, 0xFFFF0000, $F30, $F10, 0xFFFF0000, $F10, $F30, 0xFFFF0000, $F0_5)
+tri($F10, $F10, 0xFF00FF00, $F30, $F10, 0xFF00FF00, $F10, $F30, 0xFF00FF00, $F0_25)
+tri($F10, $F10, 0xFF0000FF, $F30, $F10, 0xFF0000FF, $F10, $F30, 0xFF0000FF, $F0_75)
+assert px(12, 12) == 0xFF00FF00 "Z LESS: the nearest triangle wins, the farther one after it is rejected"
+# 0.25 x 65535 = 16383.75, truncated.
+assert (vram_rd($ZBUF + 12 * 1024 + 12 * 2) & 0xFFFF) == 0x3FFF "the Z buffer holds z x 65535"
+# Z_MASK off: the test still runs, nothing is written.
+wr(0x1C9C, 0x1)
+tri($F10, $F10, 0xFFFFFF00, $F30, $F10, 0xFFFFFF00, $F10, $F30, 0xFFFFFF00, $F0)
+assert px(12, 12) == 0xFFFFFF00 "Z_MASK clear: a nearer triangle still draws"
+tri($F10, $F10, 0xFF00FFFF, $F30, $F10, 0xFF00FFFF, $F10, $F30, 0xFF00FFFF, $F0_5)
+assert px(12, 12) == 0xFFFFFF00 "Z_MASK clear: the buffer kept 0.25, so 0.5 still fails LESS"
+assert (vram_rd($ZBUF + 12 * 1024 + 12 * 2) & 0xFFFF) == 0x3FFF "Z_MASK clear: Z unchanged"
+wr(0x1C9C, 0)
+
+# --- 5. Stencil (24-bit Z with 8 stencil bits) -------------------------------------
+clear32(0)
+setup3d()
+wr(0x1C90, $ZBUF)
+wr(0x1C94, 64)
+# Z_PIX_WIDTH 24, Z ALWAYS, stencil ALWAYS, ZPASS: replace with the reference.
+wr(0x1C98, 0x2 | (7 << 4) | (7 << 12) | (2 << 20))
+wr(0x1D40, 0x5A | (0xFF << 16) | (0xFF << 24))   # STEN_REF_MSK_C: ref $5A, test mask, write mask
+wr(0x1C9C, 0x1 | 0x2 | 0x8)                       # Z_EN, Z_MASK, STENCIL_EN
+tri($F10, $F10, 0xFF102030, $F30, $F10, 0xFF102030, $F10, $F30, 0xFF102030, $F0_5)
+assert (vram_rd($ZBUF + 12 * 2048 + 12 * 4) >> 24) == 0x5A "stencil ZPASS REPLACE: the reference lands in bits 31:24"
+assert (vram_rd($ZBUF + 12 * 2048 + 12 * 4) & 0xFFFFFF) == 0x7FFFFF "24-bit Z: 0.5 x $FFFFFF, truncated"
+# Stencil EQUAL to $11 fails everywhere the first pass wrote $5A: SFAIL keep.
+wr(0x1C98, 0x2 | (7 << 4) | (3 << 12))
+wr(0x1D40, 0x11 | (0xFF << 16) | (0xFF << 24))
+tri($F10, $F10, 0xFFFFFFFF, $F30, $F10, 0xFFFFFFFF, $F10, $F30, 0xFFFFFFFF, $F0)
+assert px(12, 12) == 0xFF102030 "stencil EQUAL $11 against $5A: the pixel is rejected"
+# INCR on stencil pass: $5A becomes $5B.
+wr(0x1C98, 0x2 | (7 << 4) | (7 << 12) | (3 << 20))
+tri($F10, $F10, 0xFFFFFFFF, $F30, $F10, 0xFFFFFFFF, $F10, $F30, 0xFFFFFFFF, $F0)
+assert (vram_rd($ZBUF + 12 * 2048 + 12 * 4) >> 24) == 0x5B "stencil ZPASS INCR"
+wr(0x1C9C, 0)
+
+# --- 6. Alpha blending and the alpha test -------------------------------------------
+clear32(0)
+setup3d()
+wr(0x1CA0, 0x07010200 & ~0x00FF0000 | (4 << 16) | (5 << 20))   # SRC_ALPHA, INV_SRC_ALPHA
+wr(0x1C9C, 0x200)                 # ALPHA_EN
+tri($F10, $F10, 0x80FFFFFF, $F30, $F10, 0x80FFFFFF, $F10, $F30, 0x80FFFFFF, $F0)
+# 255 x 128/255 + 0 = 128 per colour channel; alpha 128 x 128/255 = 64.
+assert px(12, 12) == 0x40808080 "blend SRC_ALPHA / INV_SRC_ALPHA over black"
+# The alpha test: GREATER than $80 rejects alpha $40.
+clear32(0)
+wr(0x1CA0, 0x07010200 & ~0x07000000 | (5 << 24) | 0x80)
+wr(0x1C9C, 0x400)                 # ALPHA_TST_EN
+tri($F10, $F10, 0x40FFFFFF, $F30, $F10, 0x40FFFFFF, $F10, $F30, 0x40FFFFFF, $F0)
+assert px(12, 12) == 0 "alpha test GREATER $80: alpha $40 is discarded"
+tri($F10, $F10, 0xC0FFFFFF, $F30, $F10, 0xC0FFFFFF, $F10, $F30, 0xC0FFFFFF, $F0)
+assert px(12, 12) == 0xC0FFFFFF "alpha test GREATER $80: alpha $C0 passes"
+
+# --- 7. Fog (vertex fog from the specular alpha) ------------------------------------
+clear32(0)
+setup3d()
+wr(0x1CAC, 0x000000FF)            # FOG_COLOR_C: blue
+wr(0x1C9C, 0x80)                  # FOG_EN
+# VC_FORMAT $048: x, y, z, diffuse ARGB, specular FRGB (F in 31:24).
+def ftri(f) {
+    fifo(pkt3(0x25, 17))
+    fifo(0x048)
+    fifo(4 | 0x30 | (3 << 16))
+    fifo($F10)
+    fifo($F10)
+    fifo($F0)
+    fifo(0xFFFF0000)
+    fifo($f << 24)
+    fifo($F30)
+    fifo($F10)
+    fifo($F0)
+    fifo(0xFFFF0000)
+    fifo($f << 24)
+    fifo($F10)
+    fifo($F30)
+    fifo($F0)
+    fifo(0xFFFF0000)
+    fifo($f << 24)
+}
+ftri(0)
+assert px(12, 12) == 0xFF0000FF "fog factor 0: all fog colour"
+ftri(255)
+assert px(12, 12) == 0xFFFF0000 "fog factor 255: no fog"
+wr(0x1C9C, 0)
+
+# --- 8. A textured quad, nearest, as a fan -------------------------------------------
+# A 2 x 2 ARGB8888 texture: red, green / blue, white.
+vram_wr($TEX + 0, 0xFFFF0000)
+vram_wr($TEX + 4, 0xFF00FF00)
+vram_wr($TEX + 8, 0xFF0000FF)
+vram_wr($TEX + 12, 0xFFFFFFFF)
+clear32(0)
+setup3d()
+for i in 0..11 {
+    wr(0x1CBC + $i * 4, $TEX)     # PRIM_TEX_0..10_OFFSET_C
+}
+wr(0x1CB8, 0x1111)                # TEX_SIZE_PITCH_C: 2 x 2, no smaller maps
+wr(0x1CB0, (6 << 16) | (2 << 8) | (2 << 11) | 0x80)   # ARGB8888, clamp S and T, nearest, no mip
+wr(0x1CB4, 0x04181040)            # PRIM combine: REPLACE (the texel)
+wr(0x1C9C, 0x10)                  # TEX_EN
+# VC_FORMAT $089: x, y, z, rhw, diffuse, s, t.  A 16 x 16 quad at (40, 0).
+def quad(c) {
+    fifo(pkt3(0x25, 30))
+    fifo(0x089)
+    fifo(5 | 0x30 | (4 << 16))
+    fifo($F40)
+    fifo($F0)
+    fifo($F0)
+    fifo($F1)
+    fifo($c)
+    fifo($F0)
+    fifo($F0)
+    fifo($F56)
+    fifo($F0)
+    fifo($F0)
+    fifo($F1)
+    fifo($c)
+    fifo($F1)
+    fifo($F0)
+    fifo($F56)
+    fifo($F16)
+    fifo($F0)
+    fifo($F1)
+    fifo($c)
+    fifo($F1)
+    fifo($F1)
+    fifo($F40)
+    fifo($F16)
+    fifo($F0)
+    fifo($F1)
+    fifo($c)
+    fifo($F0)
+    fifo($F1)
+}
+quad(0xFFFFFFFF)
+assert px(41, 1) == 0xFFFF0000 "texture: texel (0,0)"
+assert px(54, 1) == 0xFF00FF00 "texture: texel (1,0)"
+assert px(41, 14) == 0xFF0000FF "texture: texel (0,1)"
+assert px(54, 14) == 0xFFFFFFFF "texture: texel (1,1)"
+assert px(56, 1) == 0 "texture: the quad ends at x 56"
+# MODULATE with a grey diffuse: 255 x 128 / 255 = 128.
+wr(0x1CB4, 0x0418D043)
+quad(0xFF808080)
+assert px(41, 1) == 0xFF800000 "texture MODULATE diffuse"
+assert px(54, 14) == 0xFF808080 "texture MODULATE diffuse, white texel"
+# A second unit: the same texture, MODULATE with the previous stage (a
+# lightmap pass) — white texels keep the first stage, red ones mask it.
+wr(0x1CB4, 0x04181040)
+for i in 0..11 {
+    wr(0x1D08 + $i * 4, $TEX)     # SEC_TEX_0..10_OFFSET_C
+}
+wr(0x1CB8, 0x11111111)            # both units 2 x 2
+wr(0x1D00, (6 << 16) | (2 << 8) | (2 << 11) | 0x80)
+wr(0x1D04, 0x0818A043)            # SEC combine: MODULATE texel x previous
+wr(0x1C9C, 0x30)                  # TEX_EN, SECONDARY_TEX_EN
+quad(0xFFFFFFFF)
+assert px(41, 1) == 0xFFFF0000 "multitexture: red x red"
+assert px(54, 1) == 0xFF00FF00 "multitexture: green x green"
+assert px(54, 14) == 0xFFFFFFFF "multitexture: white x white"
+wr(0x1C9C, 0)
+
+# --- 9. The vertex walker over a list in AGP space -----------------------------------
+# Host memory for the walker: the card's own VRAM at 12 MB, reached as a PCI
+# peer through BAR0 (see rage128-cce), behind a one-page GART.
+let HOST = $APER + 0xC00000
+machine.memory.poke.l($HOST, swap32($APER + 0xC01000))   # GART entry 0
+wr(0x017C, $HOST)                 # PCI_GART_PAGE
+wr(0x0030, rd(0x0030) & ~0x40)    # BUS_CNTL: bus mastering on
+def vtx(i, x, y, c) {
+    machine.memory.poke.l($HOST + 0x1000 + $i * 16, swap32($x))
+    machine.memory.poke.l($HOST + 0x1000 + $i * 16 + 4, swap32($y))
+    machine.memory.poke.l($HOST + 0x1000 + $i * 16 + 8, swap32($F0))
+    machine.memory.poke.l($HOST + 0x1000 + $i * 16 + 12, swap32($c))
+}
+vtx(0, $F10, $F10, 0xFF112233)
+vtx(1, $F30, $F10, 0xFF112233)
+vtx(2, $F10, $F30, 0xFF112233)
+clear32(0)
+setup3d()
+# 3D_RNDR_GEN_INDX_PRIM, list walk: VLOFF 0, VSIZE 3, VC_FORMAT, VC_CNTL.
+fifo(pkt3(0x23, 4))
+fifo(0)
+fifo(3)
+fifo(0x008)
+fifo(4 | 0x20 | (3 << 16))
+assert px(12, 12) == 0xFF112233 "vertex walker, list walk"
+# The indexed walk: indices 2, 0, 1 (two to a dword, the first low).
+clear32(0)
+vtx(3, $F50, $F50, 0xFF445566)
+fifo(pkt3(0x23, 6))
+fifo(0)
+fifo(4)
+fifo(0x008)
+fifo(4 | 0x10 | (3 << 16))
+fifo((0 << 16) | 2)
+fifo(1)
+assert px(12, 12) == 0xFF112233 "vertex walker, indexed walk"
+
+# --- 10. Lines and points ------------------------------------------------------------
+clear32(0)
+setup3d()
+fifo(pkt3(0x25, 10))
+fifo(0x008)
+fifo(2 | 0x30 | (2 << 16))
+fifo($F10)
+fifo($F20)
+fifo($F0)
+fifo(0xFFABCDEF)
+fifo($F20)
+fifo($F20)
+fifo($F0)
+fifo(0xFFABCDEF)
+assert px(10, 20) == 0xFFABCDEF "a line: its first pixel"
+assert px(19, 20) == 0xFFABCDEF "a line: its last pixel"
+assert px(20, 20) == 0 "a line: the end pixel is left off"
+fifo(pkt3(0x25, 6))
+fifo(0x008)
+fifo(1 | 0x30 | (1 << 16))
+fifo($F30)
+fifo($F30)
+fifo($F0)
+fifo(0xFF010203)
+assert px(30, 30) == 0xFF010203 "a point lights one pixel"
+assert px(31, 30) == 0 "a point is one pixel wide"
+
+# --- 11. A 16-bit target --------------------------------------------------------------
+setup3d()
+wr(0x1C84, $GMC3D & ~0x00000F00 | 0x00000400)    # RGB565
+wr(0x1C80, (64 << 21) | (0xE00000 >> 5))
+tri($F10, $F10, 0xFF00FF00, $F30, $F10, 0xFF00FF00, $F10, $F30, 0xFF00FF00, $F0)
+assert (vram_rd(0xE00000 + 12 * 1024 + 12 * 2) & 0xFFFF) == 0x07E0 "RGB565: green packs to $07E0"
+
+# --- 12. Double buffering: CRTC_OFFSET flips at vertical blank ---------------------
+# With the CRTC running, a new CRTC_OFFSET waits for the next blank and
+# CRTC_GUI_TRIG_OFFSET (bit 30) says so; CRTC_OFFSET_FLIP_CNTL takes it at
+# once.  (The row runs no frames, so the blank never comes here; the
+# suite-tnt row's depth switches are flips the ndrv waits on.)
+wr(0x0200, (79 << 16) | 99)       # CRTC_H_TOTAL_DISP: 640 wide
+wr(0x0208, (479 << 16) | 524)     # CRTC_V_TOTAL_DISP: 480 high
+wr(0x022C, 80)                    # CRTC_PITCH: 640
+wr(0x0050, 0x03000600)            # CRTC_GEN_CNTL: CRTC_EN, EXT_DISP_EN, 32 bpp
+wr(0x0224, 0)                     # CRTC_OFFSET 0: the CRTC is now running...
+wr(0x0224, $SURF)                 # ...so the back buffer waits for the blank
+assert (rd(0x0224) & 0x40000000) != 0 "CRTC_GUI_TRIG_OFFSET: the new offset is not displayed yet"
+assert (rd(0x0228) & 0x40000000) != 0 "CRTC_OFFSET_CNTL mirrors CRTC_GUI_TRIG_OFFSET"
+assert machine.pci.slot[1].card.framebuffer.base == 0 "the display still scans the front buffer"
+wr(0x0228, 0x00010000)            # CRTC_OFFSET_FLIP_CNTL: take it on the next line
+wr(0x0224, $SURF)
+assert (rd(0x0224) & 0x40000000) == 0 "FLIP_CNTL: the offset applies at once"
+assert machine.pci.slot[1].card.framebuffer.base == $SURF "the display scans the back buffer"
+
+echo "rage128-3d: coverage, Gouraud and flat shading, culling, Z, stencil, blending, the alpha test, fog, texturing and multitexture, the vertex walker, lines, points and the CRTC flip hold"
+quit
