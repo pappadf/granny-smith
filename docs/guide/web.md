@@ -898,6 +898,40 @@ view; errors still toast.
   disk with no driver (the Disk Copy 4.2 image shape), is attached
   through the volume wrapper and boots
   ([bare-volume-wrapper.md](../internals/core/storage/bare-volume-wrapper.md)).
+- `hdN=blank:<spec>` / `fdN=blank:<spec>` — a new blank disk in that slot
+  instead of a download ([`lib/blankMedia.ts`](../../app/web2/src/lib/blankMedia.ts),
+  created in `bus/urlMedia.ts::provideBlank` the way the New Machine
+  dialog's **Create blank image** does, `CreateImageDialog.svelte`).  On a
+  SCSI or ATA bus the spec goes unchanged to `files.hd_create(path, spec)`,
+  so the URL, the shell's `hd create` and the dialog share one parser
+  (`drive_catalog_parse_size`, `src/core/storage/drive_catalog.c`): a catalog
+  model (`HD230SC`), a decimal size that snaps to the nearest model at or
+  above it (`80mb` → HD80SC, `1gb`), or an exact binary size (`100m`,
+  `512k`), at most 2 GiB and never a floppy's size.  On the Lisa's ProFile
+  the bus's own blank disks apply (`catalog.profile(id).storage[].blank_disks`:
+  `5mb`, `10mb` → `files.profile_create`); a floppy is `800k` or `1440k`
+  (`files.fd_create`; the core has no blank 400K image, so `400k` is
+  refused).  A floppy is created with the downloads; a hard disk once the ROM
+  has chosen the model, since the bus of the model's N-th default hard disk
+  decides what it is.  Decisions:
+  - **Reloads reuse.** The file is
+    `/opfs/images/<hd|fd>/blank_<spec>_<slot>_<hash><ext>` (`.dmg` for
+    `hd_create`, `.image` for a ProFile, `.dsk` for a floppy), `<hash>` an
+    8-hex FNV-1a of the URL's media parameters (`rom`, `vrom`, `fdN`, `hdN`,
+    `cd`, in a fixed order; `blank!:` hashes as `blank:`).  If it exists it
+    is attached again (the row says "Blank disk · already stored");
+    `blank!:` removes it and creates a fresh one.  A stored image is never
+    written to — a machine's writes go to its delta under
+    `/opfs/checkpoints/<machine>/` — so what is reused is the blank image,
+    not a previous machine's install: a reload of the link boots a fresh
+    machine on the blank disk again, and the earlier machine's state is
+    reached through its checkpoint.
+  - **Plain blank.** The disk is created unpartitioned, for the guest to
+    format, as a real new drive.  Pre-partitioning it as HFS
+    (`blank:HD80SC,hfs`) is not implemented; a spec with a comma is refused.
+  - **Errors are a failed download.** An unknown model, an out-of-range
+    size, or a size the bus does not take marks the row failed with the
+    reason (and a toast), and the machine boots without that disk.
 - `cd=<url>` — streamed into `/opfs/images/cd/` as a UDIF, inserted into the
   model's CD bay (`machine.attach_cdrom`), on a model that has one.
 - `vrom=<url>` — downloaded into `/opfs/images/vrom/` and passed in the

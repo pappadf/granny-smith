@@ -250,3 +250,107 @@ describe('URL media: a disk an earlier download stored is used, not fetched agai
     expect(asked.some((u) => u.includes('big.img'))).toBe(true);
   });
 });
+
+describe('URL media: blank: creates a blank disk, reused on reload', () => {
+  // The Plus's shape: one SCSI bus whose hd0 is ID 0, taking hd_create disks.
+  async function scsiProfile(): Promise<void> {
+    const profile = await import('@/bus/profile');
+    vi.mocked(profile.getProfile).mockResolvedValueOnce({
+      floppies: [{ id: 'fd0', label: 'Internal', types: [{ id: '800k' }], default: '800k' }],
+      storage: [
+        {
+          id: 'scsi',
+          blank_disks: [
+            {
+              label: '20 MB',
+              method: 'files.hd_create',
+              arg: '21411840',
+              name: 'blank_20MB',
+              ext: '.dmg',
+            },
+          ],
+        },
+      ],
+      defaults: { floppies: { fd0: '800k' }, storage: [{ bus: 'scsi', unit: 0, type: 'hd' }] },
+    } as never);
+  }
+  // files.hd_create / fd_create: a small file, or the core's refusal of a spec.
+  function creators(): void {
+    bridge.reply('files.hd_create', (args: unknown) => {
+      const [path, size] = args as [string, string];
+      if (!/^\d+mb?$/i.test(size)) return { error: `files.hd_create: could not create '${path}'` };
+      files.set(path, new Uint8Array(2048));
+      return true;
+    });
+    bridge.reply('files.fd_create', (args: unknown) => {
+      const [path, hd] = args as [string, boolean];
+      files.set(path, new Uint8Array(hd ? 1474560 : 819200));
+      return true;
+    });
+  }
+  const BLANK_HD = /^\/opfs\/images\/hd\/blank_20mb_hd0_[0-9a-f]{8}\.dmg$/;
+  const created = () => bridge.calls.filter((c) => c.path === 'files.hd_create');
+
+  it('hd0=blank:20mb is created by files.hd_create with the spec, then attached', async () => {
+    served['plus.rom'] = PLUS_ROM;
+    await scsiProfile();
+    creators();
+    expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&hd0=blank:20mb'))).toBe(true);
+    expect(created()).toHaveLength(1);
+    const [path, size] = created()[0].args as [string, string];
+    expect(path).toMatch(BLANK_HD);
+    expect(size).toBe('20mb');
+    expect(media.attachHardDisk).toHaveBeenCalledWith(path, 0);
+    // Only the ROM is fetched.
+    expect((fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls).toHaveLength(1);
+  });
+
+  it('a reload of the same URL reuses the disk; blank!: replaces it', async () => {
+    served['plus.rom'] = PLUS_ROM;
+    creators();
+    await scsiProfile();
+    await processUrlMedia(new URLSearchParams('rom=plus.rom&hd0=blank:20mb'));
+    const first = (created()[0].args as [string])[0];
+    bridge.calls = [];
+    await scsiProfile();
+    await processUrlMedia(new URLSearchParams('rom=plus.rom&hd0=blank:20mb'));
+    expect(created()).toHaveLength(0);
+    expect(media.attachHardDisk).toHaveBeenLastCalledWith(first, 0);
+    bridge.calls = [];
+    await scsiProfile();
+    await processUrlMedia(new URLSearchParams('rom=plus.rom&hd0=blank!:20mb'));
+    const removed = bridge.calls.filter((c) => c.path === 'files.rm').map((c) => c.args);
+    expect(removed).toContainEqual([first]);
+    expect((created()[0].args as [string])[0]).toBe(first);
+    expect(media.attachHardDisk).toHaveBeenLastCalledWith(first, 0);
+  });
+
+  it('a spec the core refuses is reported; the boot goes ahead without the disk', async () => {
+    served['plus.rom'] = PLUS_ROM;
+    await scsiProfile();
+    creators();
+    expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&hd0=blank:HD999SC'))).toBe(true);
+    expect(media.attachHardDisk).not.toHaveBeenCalled();
+    expect(toastText()).toMatch(/HD0: could not create a blank disk of "HD999SC"/);
+    expect(bridge.paths()).toContain('machine.boot');
+  });
+
+  it('fd0=blank:800k is created by files.fd_create and inserted', async () => {
+    served['plus.rom'] = PLUS_ROM;
+    creators();
+    await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=blank:800k'));
+    const call = bridge.calls.find((c) => c.path === 'files.fd_create');
+    const [path, hd] = call?.args as [string, boolean];
+    expect(path).toMatch(/^\/opfs\/images\/fd\/blank_800k_fd0_[0-9a-f]{8}\.dsk$/);
+    expect(hd).toBe(false);
+    expect(media.insertFloppy).toHaveBeenCalledWith(path, true, 0);
+  });
+
+  it('fd0=blank:400k is refused with its reason, and nothing is inserted', async () => {
+    served['plus.rom'] = PLUS_ROM;
+    creators();
+    expect(await processUrlMedia(new URLSearchParams('rom=plus.rom&fd0=blank:400k'))).toBe(true);
+    expect(media.insertFloppy).not.toHaveBeenCalled();
+    expect(toastText()).toMatch(/FD0: a blank 400K floppy cannot be created/);
+  });
+});
