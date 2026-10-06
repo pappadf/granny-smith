@@ -62,11 +62,13 @@ tests/e2e/
 │   ├── rom-upload-identity.spec.ts      # A ROM is stored by content id; a damaged dump of it is refused, not stored
 │   ├── rom-upload-listing.spec.ts       # A Welcome-page ROM upload shows up in an already-open Filesystem tab
 │   ├── scheduler-accelerated.spec.ts    # Accelerated mode: faster CPU, real-time timebase
+│   ├── screen-scroll.spec.ts            # A zoomed screen larger than the display scrolls to every edge
 │   ├── shell-prompt.spec.ts             # Terminal: prompt state, Tab completion, history across reloads, scrollback, paste
 │   ├── system-edit.spec.ts              # SYSTEM tab: edit machine.cpu.d0 (literal / expression / error), echo, Copy path
 │   ├── terminal-jobs.spec.ts            # Terminal lines as jobs: a run waits, a runaway loop costs nothing, Ctrl-C semantics
 │   ├── upload.spec.ts                   # Upload picker: streamed staging through the core (Safari regression)
 │   ├── url-archive-boot.spec.ts         # ?ROM=…zip/member, archive.org links fetched as given, bare-volume HD boot
+│   ├── url-blank-disk.spec.ts           # ?hd0=blank:20mb: a blank disk created, attached, reused on reload
 │   ├── url-boot.spec.ts                 # ?rom=… URL-parameter boot
 │   ├── voodoo2-thread.spec.ts           # Voodoo2 raster on a second Web Worker; LFB/counter fences
 │   ├── voodoo2-webgpu-fallback.spec.ts  # voodoo2_webgpu without WebGPU falls back to the thread backend, and says so

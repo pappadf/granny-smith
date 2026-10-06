@@ -15,8 +15,11 @@
 #   iisi-75-hd      **IIsi x 7.5**: the pure-redistribution gap that could
 #                   not close by moving anything — one cheap boot row
 #   iisi-701-depths **IIsi x 7.0.1 at 2, 4 and 8 bpp** on the V8
+#   iisi-12in-rgb   **V8 monitor sense 010**: the 12" RGB, which only the
+#                   IIsi's V8 decodes; the ROM drives 512x384 to the no-disk
+#                   "?" screen (the raster was pinned at 640x480, #158)
 #
-# The IIsi is builtin-video only, so every row runs the V8 at 640x480.
+# The IIsi is builtin-video only, so every other row runs the V8 at 640x480.
 
 include "../lib/mac.script"
 
@@ -195,11 +198,37 @@ def row_iisi_701_depths() {
     report_perf("suite-iisi/iisi-701-depths", scheduler.instr_count)
 }
 
+# ---- iisi-12in-rgb ----------------------------------------------------------
+# The built-in port with the 12" RGB on it (sense 010, live on the V8 only):
+# the raster follows the latched code and the ROM brings the screen up at
+# 512x384 (ScreenRow 64 at 1 bpp), the "?" disk centred on it.  ROM-only.
+def row_iisi_12in_rgb() {
+    machine.boot model="iisi" ram=17408 rom="${$ROM}" config="{\"displays\":{\"builtin\":{\"monitor\":\"12in_rgb\"}}}"
+    assert machine.nubus.slot[14].card.monitor == "12in_rgb" "iisi-12in-rgb: the built-in port's monitor"
+    assert machine.nubus.slot[14].card.sense == 2 "iisi-12in-rgb: the built-in port's sense code"
+    assert ((machine.rbv.monp >> 3) & 7) == 2 "iisi-12in-rgb: RvMonP does not latch sense 2"
+    assert machine.screen.width == 512 "iisi-12in-rgb: screen.width != 512"
+    assert machine.screen.height == 384 "iisi-12in-rgb: screen.height != 384"
+    scheduler.run 150000000
+    # The "?" disk blinks, so the screen never settles for wait_match's REGEN
+    # path: capture a fixed frame, and match by polling.
+    if $REGEN_MODE == "1" {
+        scheduler.run 50000000
+        machine.screen.save "goldens/iisi-512x384x1-no-disk.png"
+    } else {
+        wait_match("goldens/iisi-512x384x1-no-disk.png", 400000000, 10000000)
+    }
+    assert machine.screen.height == 384 "iisi-12in-rgb: screen.height != 384 after boot"
+    assert machine.cpu.mmu.peek(0x106, 2) == 64 "iisi-12in-rgb: ScreenRow != 64"
+    report_perf("suite-iisi/iisi-12in-rgb", scheduler.instr_count)
+}
+
 if row_on("iisi-chime") { row_end("iisi-chime", try(row_iisi_chime(), "FAILED")) }
 if row_on("iisi-701-fd") { row_end("iisi-701-fd", try(row_iisi_701_fd(), "FAILED")) }
 if row_on("iisi-608-hd") { row_end("iisi-608-hd", try(row_iisi_608_hd(), "FAILED")) }
 if row_on("iisi-71-kbd") { row_end("iisi-71-kbd", try(row_iisi_71_kbd(), "FAILED")) }
 if row_on("iisi-701-depths") { row_end("iisi-701-depths", try(row_iisi_701_depths(), "FAILED")) }
+if row_on("iisi-12in-rgb") { row_end("iisi-12in-rgb", try(row_iisi_12in_rgb(), "FAILED")) }
 if row_on("iisi-75-hd") {
     if have_media($hd_75) {
         row_end("iisi-75-hd", try(row_iisi_75_hd(), "FAILED"))

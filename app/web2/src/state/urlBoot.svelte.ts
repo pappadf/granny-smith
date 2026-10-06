@@ -20,8 +20,11 @@ export interface UrlFile {
   status: UrlFileStatus;
   error: string | null;
   // Not downloaded: an image stored by an earlier download of the same URL
-  // was used (bus/urlMedia.ts storedFromUrl).
+  // was used (bus/urlMedia.ts storedFromUrl), or a blank disk an earlier
+  // load of the same URL created.
   reused?: boolean;
+  // A new blank disk (?hd0=blank:…), created rather than downloaded.
+  blank?: boolean;
 }
 
 // downloading: files are coming in; booting: all fetched, the machine is

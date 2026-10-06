@@ -45,6 +45,16 @@ System 7 to a colour desktop and let the Monitors control panel switch depth.
   (units of 32 bytes), unlike the 24AC's driver-private base.
 - Mode-table parsing inside the vROM is left to the System 7 driver — we present
   the bytes; it walks them.
+- **Reset and power cycle.** A NuBus /RESET (`machine.reset`) returns the chip
+  registers to their power-on values and keeps VRAM, but holds the scanout
+  **blanked** (`jmfb_regs_t.blanked`, checkpointed with the registers): the
+  descriptor shows a black 1 bpp raster instead of the old VRAM picture.
+  The guest's next VideoBase write scans VRAM again: every driver writes it
+  (Apple's `PrimaryInit`, the GS vROM's), where the CSR strobes are Apple's
+  only. Apple's `PrimaryInit` writes it just before its gray fill, so the old
+  contents can show for a few milliseconds. Outside the blank there is still no
+  blank buffer: a descriptor VRAM cannot back scans nothing. A power cycle
+  (`machine.restart`) also clears VRAM.
 
 ## 2. Register map
 

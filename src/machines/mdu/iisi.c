@@ -214,7 +214,7 @@ static void iisi_via1_shift_out(void *context, uint8_t byte) {
 // slot index is an implementation detail (same arrangement as the IIci's
 // slot-$B seating); there are no user-visible expansion slots in v1.
 static const nubus_slot_decl_t iisi_slots[] = {
-    {.slot = 0xE, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "builtin_rbv_video", .fb_in_ram = true},
+    {.slot = 0xE, .kind = NUBUS_SLOT_BUILTIN, .builtin_card_id = "builtin_rbv_iisi_video", .fb_in_ram = true},
     {0},
 };
 

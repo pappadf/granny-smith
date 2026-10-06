@@ -70,8 +70,10 @@ declaration ROM: the boot ROM drives the video from the hard-coded
   machines' identity TT1 for `$F0`–`$FF` would send supervisor screen
   writes past Bank A.
 - The default monitor sense is `6` (binary 110 = 13" RGB) → 640×480, at
-  1/2/4/8 bpp selected via `RvMonP`. The CLUT is programmed through the
-  VDAC and surfaces via `display.clut`.
+  1/2/4/8 bpp selected via `RvMonP`; the 15" Portrait (sense `1`) gives
+  640×870, and any other code halts video — see [rbv.md](rbv.md),
+  "Monitor sense". The CLUT is programmed through the VDAC and surfaces
+  via `display.clut`.
 - The slot-0 video VBL interrupt (`RvIRQ0`) is asserted once per frame
   in the card's `on_vbl`; the boot ROM polls `RvSInt` bit 6 for it during
   video init.

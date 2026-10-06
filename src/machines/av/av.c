@@ -898,6 +898,7 @@ static void av_bus_reset(config_t *cfg) {
         st->bus_mmu->enabled = false;
         mmu_invalidate_tlb(st->bus_mmu);
     }
+    av_civic_reset(st->civic); // sync off until the ROM re-enables video
     system_reset_common_devices(cfg);
 }
 

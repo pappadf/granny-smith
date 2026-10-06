@@ -212,6 +212,10 @@
       "instr": 592935004,
       "tolerance": 0.2
     },
+    "suite-iici/iici-portrait": {
+      "instr": 133047618,
+      "tolerance": 0.2
+    },
     "suite-iicx/iicx-24ac": {
       "instr": 410390745,
       "tolerance": 0.2
@@ -270,6 +274,10 @@
     },
     "suite-iifx/iifx-chime": {
       "instr": 7509818,
+      "tolerance": 0.2
+    },
+    "suite-iisi/iisi-12in-rgb": {
+      "instr": 129625066,
       "tolerance": 0.2
     },
     "suite-iisi/iisi-608-hd": {

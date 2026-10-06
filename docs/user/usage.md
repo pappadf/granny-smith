@@ -22,6 +22,15 @@ https://pappadf.github.io/gs-pages/staging/?ROM=https%3A%2F%2Fia800908.us.archiv
 ```
 Encode `&`, `#`, `+` and `%` inside a value (`&` is `%26`); a value with a query string of its own is encoded as a whole. The full rules — container paths, linking archive.org, names, errors — are in [`docs/guide/web.md`](../guide/web.md#url-parameters).
 
+**Blank disks.** Instead of a URL, `hdN=` and `fdN=` take `blank:<model or size>`, which creates a new, empty disk in that slot — for example an empty drive to install System on, without hosting an empty image:
+```
+?rom=…&cd=…/System75.iso&hd0=blank:HD230SC    # a blank Apple HD230SC (Quantum LPS 240S)
+?rom=…&fd0=…/Install1.dsk&hd0=blank:80mb      # 80 MB, rounded up to the nearest drive model (HD80SC)
+?rom=…&hd0=blank:100m                         # exactly 100 MiB, no particular model
+?rom=…&fd1=blank:800k                         # a blank floppy: 800k or 1440k
+```
+A hard disk takes a drive model (`HD20SC` … `HD1000SC`), a size in MB or GB that is rounded up to the nearest model (`40mb`, `1gb`), or an exact size (`100m`, `512k`) up to 2 GB — the same sizes as the terminal's `files.hd_create` and **Create blank image…**. On a Lisa, `hd0=blank:5mb` or `blank:10mb` (the ProFile and Widget). The disk is unformatted, like a new drive: initialise it from the installer or Drive Setup / HD SC Setup. It is stored in `/opfs/images/hd/` (or `fd/`) under a name made from the slot, the size and the link (`blank_HD230SC_hd0_1a2b3c4d.dmg`), so reloading the same link attaches that disk again instead of making another; `blank!:` replaces it with a fresh one. What the machine writes to a disk is kept with the machine (its checkpoint), not in the stored image, so a reload of the link starts from the blank disk again — use the start screen's resume to continue a machine. A model or size that cannot be created is reported in the progress view, and the machine boots without that disk. (Formatting the disk as HFS ahead of time, `blank:HD80SC,hfs`, is not supported.)
+
 #### 2. Persistent Storage
 If you have previously used the emulator, images may already exist in the browser's persistent storage (`/opfs/images/<kind>/` — `rom`, `vrom`, `fd`, `hd`, `cd`).
 - If no URL parameters are provided, the New Machine dialog lists every stored ROM (identified by its own checksum), and the media dropdowns offer the stored floppy, hard-disk and CD images.
