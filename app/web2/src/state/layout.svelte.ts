@@ -25,7 +25,10 @@ interface LayoutState {
   panelPos: PanelPos;
   panelSize: { bottom: number; left: number; right: number };
   panelCollapsed: boolean;
+  // Mirrors the browser's native fullscreen state (synced in App.svelte).
   fullscreen: boolean;
+  // While fullscreen, also hide the display toolbar and status bar.
+  hideChrome: boolean;
   activeTab: PanelTab;
   welcomeSlide: WelcomeSlide;
 }
@@ -35,6 +38,7 @@ export const layout: LayoutState = $state({
   panelSize: { ...DEFAULT_PANEL_SIZE },
   panelCollapsed: false,
   fullscreen: false,
+  hideChrome: false,
   activeTab: 'terminal',
   welcomeSlide: 'home',
 });
@@ -59,6 +63,33 @@ export function setActiveTab(tab: PanelTab): void {
   layout.activeTab = tab;
   // Auto-uncollapse on tab switch.
   if (layout.panelCollapsed) layout.panelCollapsed = false;
+}
+
+// The three screen modes: everything visible; browser fullscreen with the
+// toolbar and status bar kept; browser fullscreen with them hidden.
+export type ScreenMode = 'normal' | 'fullscreen' | 'fullscreen-bare';
+
+export function screenMode(): ScreenMode {
+  if (!layout.fullscreen) return 'normal';
+  return layout.hideChrome ? 'fullscreen-bare' : 'fullscreen';
+}
+
+// True when the toolbar and status bar are hidden (mode 'fullscreen-bare').
+export function chromeHidden(): boolean {
+  return layout.fullscreen && layout.hideChrome;
+}
+
+// Switch screen mode. Entering fullscreen must run inside a user gesture
+// (a click handler); `onBlocked` is called if the browser refuses.
+export function setScreenMode(mode: ScreenMode, onBlocked?: () => void): void {
+  if (mode === 'normal') {
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+    return;
+  }
+  layout.hideChrome = mode === 'fullscreen-bare';
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen().catch(() => onBlocked?.());
+  }
 }
 
 export function resetPanelSizes(): void {
