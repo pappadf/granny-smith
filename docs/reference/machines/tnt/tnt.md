@@ -741,7 +741,9 @@ Apple's own accelerated PCI graphics card, whose "boot ROM conforms to the IEEE 
 it (*observed*; §2.6). ROM identity: Hammerhead `+$20` bit 30, `compatible = "AAPL,9500"`,
 `BoxFlag = $3D`, gestalt 67. The **9500/MP** puts two 604s on the one processor card; the
 multiprocessor surface is Hammerhead's three registers ([hammerhead.md](hammerhead.md) §2.5–§2.7,
-§4.5), not a separate platform.
+§4.5), not a separate platform; the 9500/180MP's own page,
+[pm9500mp.md](pm9500mp.md), records the card's lifecycle as firmware and operating systems use
+it.
 
 ### 6.4 Power Macintosh 7200 — the Catalyst sibling
 

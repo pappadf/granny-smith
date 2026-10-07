@@ -175,6 +175,14 @@ typedef struct tnt_board_desc {
     uint32_t l2_kb;
     // TwoSuppliesH — Board Register 1 bit 15, the redundant-PSU report and
     // the one register-level difference between a 700 and a 500 (§5.6).
+
+    // === The multiprocessor card (mp.c) =====================================
+    // Processors on the card: 0/1 = the uniprocessor card, 2 = the Apple/
+    // DayStar two-way card of the 9500/180MP (Hammerhead ArbConfig TwoCPU,
+    // the WhoAmI/IntReg doorbells, a second 604 as a peer core).
+    int mp_cpus;
+    // The processors' PVR (0 = the core model's default part).
+    uint32_t pvr;
 } tnt_board_desc_t;
 
 // === Hammerhead state (hammerhead.c) ========================================
@@ -258,6 +266,10 @@ typedef struct tnt_gc {
 // line 26.  With the pulse on 30 the driver's VBL never delivered, the
 // cursor task chain stayed dead, and the Finder had no mouse pointer.
 #define TNT_INT_VBL 26
+// The interprocessor interrupt to the primary on the dual-processor card:
+// a read of the Ethernet-PROM chip select ($F3019000) raises it (mp.c).
+// The reason Control's VBL moved off 30.
+#define TNT_INT_IPI 30
 
 // === AWACS state (awacs.c) ==================================================
 // The Grand Central sound face is the shared DAVbus cell (core/peripherals/
@@ -331,12 +343,30 @@ typedef struct tnt_fdring {
     uint32_t head, tail; // free-running; count = tail - head
 } tnt_fdring_t;
 
+// === Multiprocessor card state (mp.c) =======================================
+// Plain data, checkpointed whole after CPU 1's own state.
+typedef struct tnt_mp {
+    uint32_t mailbox; // $F2800000 start vector (the bus value)
+    uint32_t park_pc; // the parking spin CPU 1 returns into (a self-branch in ROM)
+    uint8_t running; // CPU 1 is executing (called at the mailbox, not yet parked again)
+    uint8_t in_cpu1; // a CPU 1 burst is executing (WhoAmI); 0 at every checkpoint
+    uint8_t pad[2];
+    uint32_t calls; // times the start doorbell called CPU 1
+    uint32_t entry; // the mailbox value the last call started CPU 1 at
+    uint64_t last_instr; // CPU 0's instruction count at the last burst
+    uint64_t cpu1_instr; // instructions CPU 1 has retired
+    uint64_t bursts;
+} tnt_mp_t;
+
 // === Family state ===========================================================
 typedef struct tnt_state {
     tnt_hammerhead_t hh;
     tnt_gc_t gc;
     tnt_bandit_t bridge[TNT_MAX_BRIDGES];
     int bridge_count;
+    tnt_mp_t mp; // the dual-processor card (inert on a uniprocessor board)
+    struct ppc *cpu1; // the second processor (NULL on a uniprocessor board)
+    struct object *mp_object; // machine.mp node (mp.c)
     struct pci_bus *gc_bus; // Bandit 1's bus: the island's direct mapping follows its lane mode
     pci_device_t gc_dev; // Grand Central's config presence (device 16)
     struct av_cuda *cuda;
@@ -544,6 +574,18 @@ void tnt_nvram_clear(config_t *cfg);
 // Board Register 1 / BoxID as software reads it: the board straps, the live
 // PCI slot-presence pins, and (on a Network Server) the GBUS top byte.
 uint32_t tnt_gc_boxid(config_t *cfg);
+
+// === mp.c (the dual-processor card) =========================================
+bool tnt_mp_present(config_t *cfg);
+int tnt_mp_init(config_t *cfg, checkpoint_t *cp, uint32_t tick_hz);
+void tnt_mp_reset(config_t *cfg);
+void tnt_mp_teardown(config_t *cfg);
+uint8_t tnt_mp_whoami(config_t *cfg); // Hammerhead +$B0, per issuing core
+bool tnt_mp_is_cpu1(config_t *cfg);
+void tnt_mp_intreg(config_t *cfg); // Hammerhead +$C0 lane 0 written
+void tnt_mp_mailbox(config_t *cfg, uint32_t le_latch); // Bandit 1 config-address latch written
+void tnt_mp_eprom_access(config_t *cfg); // the Ethernet-PROM chip select
+uint64_t tnt_mp_cpu1_instr(config_t *cfg);
 
 // === gbus.c (GBUS device 3's non-LCD registers; lcd.c routes them here) ====
 

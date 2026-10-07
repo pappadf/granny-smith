@@ -70,6 +70,37 @@ untranslated kernel handler) is a pointer swap, not an invalidation.
 `g_user_soa_reserved` (memory.h) tells the generic identity-restore paths
 in memory.c to keep their hands off the user arrays.
 
+### Peer cores and MMU contexts
+
+The translation caches — the xtlb, the fetch TLB, the user-SoA fill
+tracker — are host-pointer state, so they never lived in the checkpointed
+`ppc_t`; they lived in file statics, which made the core a singleton.  They
+are now a `ppc_mmu_ctx_t` (`ppc_mmu.c`), one per core: the primary context
+is static and uses the memory map's own user SoA arrays; a peer core
+(`ppc_init_peer`, the 9500/180MP's second 604 — cores.md, "Peer cores")
+gets a context with **private** user arrays, because its logical fills are
+its own address space's.  Exactly one context is live in the globals
+(`g_ppc_mmu_cur`, `g_ppc_fetch`, `g_user_read/write`, `g_active_*`);
+`ppc_mmu_activate(p)` parks the running context and installs p's, between
+sprints only.  The cache macros (`g_xtlb`, `g_ftlb`, `g_fill_track*`) keep
+their old names and resolve through the current context, so the hot paths
+are unchanged.
+
+What is per-core and what is shared:
+
+- **per core**: `ppc_mmu_invalidate_all(p)` (SR/BAT/SDR1 changes are that
+  core's), the fetch flush, `ppc_update_active_maps` (a no-op for a parked
+  core — its MSR takes effect when it is activated);
+- **every core**: `ppc_mmu_tlbie` (the 60x bus broadcasts `tlbie` and the
+  604 snoops it), `ppc_mmu_caches_unknown` (the physical map changed) and
+  `ppc_mmu_logpoints_changed` — a parked peer's private arrays are zeroed
+  outright, since the logpoint installer only reaches the live ones.
+
+A peer also carries an `instr_counter` hook (its retired count is not the
+scheduler's) and keeps PIR across reset (a board strap).  `ppc_start_at`
+gives the board glue the hard-reset state at an arbitrary entry with a
+chosen LR.
+
 ### MMU
 
 `ppc_mmu.c` implements 601UM Chapter 6 with the 601's own quirks:
@@ -220,7 +251,11 @@ precedent).  The deltas, each keyed on `cpu_model`:
   program exception.  The decode tree stays model-blind; the leaves
   decide (`M601()`/`M604()` guards in `ppc_ops.h`).
 - **Time**: TBL/TBU replace the RTC — read via `mftb`/`mftbu` (xo 371,
-  user-readable), written via SPR 284/285 (supervisor), stored in the
+  user-readable) **and via `mfspr` of 268/269/284/285** (the 60x parts
+  treat `mfspr` and `mftb` identically — MPC603e UM §2.3.5.1, "ignoring
+  bit 25" — and BeOS's kernel calibrates its clock with `mfspr 285/284`;
+  trapping it left BeOS's time scale at zero and every `snooze()`
+  spinning), written via SPR 284/285 (supervisor), stored in the
   same `rtcu/rtcl` slots at their rebase instant.  DEC decrements once
   per timebase tick.  `ppc_bind_time(p, s, freq_hz, tick_hz)` takes the
   tick rate explicitly: 7,833,600 on the 601 (PDM), bus/4 on the 604.

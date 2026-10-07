@@ -157,3 +157,54 @@ const hw_profile_t machine_pm9500 = {
     .substrate = &tnt_substrate,
     .board = &pm9500_board,
 };
+
+// ---- Power Macintosh 9500/180MP ---------------------------------------------
+// The 9500 board with Apple's two-way processor card: two 180 MHz 604-class
+// processors on a 45 MHz bus (4:1; the real card's 604e identity is a
+// follow-up, see .pvr below).  Identity-identical to a uniprocessor 9500 (Gestalt,
+// the OF root, BoxID — Apple, "Power Macintosh 9500 Computers" Developer
+// Note); system software finds the second processor only by probing
+// Hammerhead's ArbConfig TwoCPU strap, and the ROM boots CPU 0 alone (it has
+// no MP code).  Everything the card adds lives in mp.c.
+static const tnt_board_desc_t pm9500mp_board = {
+    .boxid = 0x8000u | 0x4000u | 0x0100u,
+    .hh_id = 0x39000000u,
+    .hh_r20 = 0x40000000u,
+    .bus_hz = 45000000u, // 4:1 bus (180 MHz 604e card)
+    .bandit_count = 2,
+    .kind = TNT_BOARD_MAC,
+    .has_mesh = true,
+    .mp_cpus = 2,
+    // The processors identify as the 604 (the core's default PVR), not the
+    // 604e the 180MP card carried: with PVR $0009xxxx Open Firmware in both
+    // TNT ROMs ($96CD923D, $9630C68B) stops before building the device tree
+    // (its CPU-property code predates the 604e), and nothing in the MP path
+    // keys on the PVR.  A follow-up when the 604e model lands.
+    .pvr = 0,
+};
+
+const hw_profile_t machine_pm9500mp = {
+    .name = "Power Macintosh 9500/180MP",
+    .id = "pm9500mp",
+
+    .cpu_model = CPU_MODEL_PPC604,
+    .freq = 180000000, // 180 MHz
+    .mmu_kind = MMU_PPC_604,
+
+    .address_bits = 32,
+    .ram_default = 0x4000000, // 64 MB
+    .ram_max = 0x60000000, // 1.5 GB
+    .rom_size = 0x400000, // 4 MB ($96CD923D / $9630C68B)
+
+    .ram_options = pm9500_ram_options_kb,
+    .storage = tnt_storage_8500,
+    .default_storage = tnt_default_storage,
+    .appletalk = true,
+    .cdrom_drive = &mac_cdrom_drive_applecd,
+    .floppy_slots = mac_floppy_slots_1hd,
+
+    .pci_slots = pm9500_pci_slots,
+
+    .substrate = &tnt_substrate,
+    .board = &pm9500mp_board,
+};

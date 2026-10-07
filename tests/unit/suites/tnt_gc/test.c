@@ -185,6 +185,14 @@ uint8_t tnt_lcd_read8(config_t *cfg, uint32_t offset) {
     (void)offset;
     return 0;
 }
+// The dual-processor card (mp.c): a uniprocessor board here.
+bool tnt_mp_present(config_t *cfg) {
+    (void)cfg;
+    return false;
+}
+void tnt_mp_eprom_access(config_t *cfg) {
+    (void)cfg;
+}
 void tnt_lcd_write8(config_t *cfg, uint32_t offset, uint8_t value) {
     (void)cfg;
     (void)offset;

@@ -1174,6 +1174,38 @@
       "addr32": null,
       "suite": "suite-ans",
       "media_gated": true
+    },
+    {
+      "machine": "pm9500mp",
+      "system": "7.6",
+      "card": "mach64_gx",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-tnt"
+    },
+    {
+      "machine": "pm9500",
+      "system": "BeOS 5.0.3",
+      "card": "mach64_gx",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": null,
+      "suite": "tnt-beos",
+      "media_gated": true
+    },
+    {
+      "machine": "pm9500mp",
+      "system": "BeOS 5.0.3",
+      "card": "mach64_gx",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": null,
+      "suite": "tnt-beos",
+      "media_gated": true
     }
   ]
 }
