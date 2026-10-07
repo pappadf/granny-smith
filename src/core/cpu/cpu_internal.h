@@ -1151,8 +1151,10 @@ static inline void m68k_bus_error_latch_settle(cpu_t *restrict cpu, uint32_t *in
     uint32_t pc = cpu->cpu_model >= CPU_MODEL_68030 ? cpu->pc : (cpu->pc & 0x00FFFFFFu);
     if (pc != cpu->last_bus_error_pc)
         cpu->last_bus_error_pc = 0;
-    else if (instructions && *instructions > 1)
+    else if (instructions && *instructions > 1) {
+        g_sprint_unrun_slots += *instructions - 1; // the rest of the plan is not run
         *instructions = 1;
+    }
 }
 
 static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
