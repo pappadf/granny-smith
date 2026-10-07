@@ -90,7 +90,7 @@ def row_iici_701_fd() {
     assert_addr(false)
     check("goldens/iici-7.0.1-640x480x1-finder.png")
     about_box()
-    check("goldens/iici-7.0.1-640x480x1-about.png")
+    check_about("goldens/iici-7.0.1-640x480x1-about.png")
     report_row("7.0.1", "rbv", "fd-boot about")
     report_perf("suite-iici/iici-701-fd", scheduler.instr_count)
 }

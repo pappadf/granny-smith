@@ -104,12 +104,8 @@ def check_ex(ref, top, left, bottom, right) {
 # fields with content worth asserting BETWEEN them — so a bounding box
 # over the pair would blank the assertion too.
 #
-# About This Macintosh is the case: the menu-bar clock sits top right and
-# the Finder's "Largest Unused Block" figure well below it, with "Total
-# Memory" — which is exactly what those rows exist to check — in between.
-# Largest Unused Block drifts by a couple of KB with elapsed time, so
-# under `make -j` load it lands differently; it failed q900-75-hd in CI
-# and q700-75-hd locally, and passes whenever the row runs alone.
+# (About This Macintosh, the case that forced it, has its own helper:
+# check_about below.)
 def check_ex2(ref, top, left, bottom, right, top2, left2, bottom2, right2) {
     if $REGEN_MODE == "1" {
         machine.screen.save "${$ref}"
@@ -139,6 +135,30 @@ def check_sound(ref, want_frames) {
         machine.sound.capture.stop
         assert machine.sound.capture.frames == $want_frames "sound ${$ref}: capture length ${machine.sound.capture.frames}, want ${$want_frames}"
         machine.sound.match "${$ref}"
+    }
+}
+
+# About This Macintosh, matched with its guest-memory figures excluded.
+# "Largest Unused Block" (133,440)-(148,490) and the System Software row's
+# figure and bar (152,250)-(166,490) move with how much heap the System
+# claimed on the way up, which any change in boot-time timing or input
+# shifts by a few KB; nothing here can act on that, so the rows don't pin
+# it. "Total Memory" -- what these rows exist to check -- stays asserted.
+# Same window position on every 640-wide desktop. check_about_clock also
+# drops System 7.5's menu-bar clock.
+def check_about(ref) {
+    if $REGEN_MODE == "1" {
+        machine.screen.save "${$ref}"
+    } else {
+        machine.screen.match "${$ref}" 133 440 148 490 152 250 166 490
+    }
+}
+
+def check_about_clock(ref) {
+    if $REGEN_MODE == "1" {
+        machine.screen.save "${$ref}"
+    } else {
+        machine.screen.match "${$ref}" 133 440 148 490 152 250 166 490 0 440 20 640
     }
 }
 

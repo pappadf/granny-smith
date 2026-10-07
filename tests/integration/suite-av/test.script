@@ -263,7 +263,7 @@ def row_q840av_71_hd_desktop() {
     # enabler gates on the resulting machine ID, and only then does the System
     # know which box it is running on.
     about_box()
-    check("goldens/q840av-7.1-640x480x8-hd-about.png")
+    check_about("goldens/q840av-7.1-640x480x8-hd-about.png")
     report_row("7.1", "civic", "hd-boot about")
     report_perf("suite-av/q840av-71-hd-desktop", scheduler.instr_count)
 }
@@ -320,7 +320,7 @@ def row_q660av_71_hd_desktop() {
     # enabler gates on the resulting machine ID, and only then does the System
     # know which box it is running on.
     about_box()
-    check("goldens/q660av-7.1-640x480x8-hd-about.png")
+    check_about("goldens/q660av-7.1-640x480x8-hd-about.png")
     report_row("7.1", "civic", "hd-boot about")
     report_perf("suite-av/q660av-71-hd-desktop", scheduler.instr_count)
 }

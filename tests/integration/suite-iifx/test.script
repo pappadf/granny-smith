@@ -115,7 +115,7 @@ def row_iifx_701_fd() {
     # gc.state == "reset" asserts.
     check("goldens/iifx-7.0.1-640x480x1-finder.png")
     about_box()
-    check("goldens/iifx-7.0.1-640x480x1-about.png")
+    check_about("goldens/iifx-7.0.1-640x480x1-about.png")
     report_row("7.0.1", "jmfb", "fd-boot lowmem about")
     report_perf("suite-iifx/iifx-701-fd", scheduler.instr_count)
 }
