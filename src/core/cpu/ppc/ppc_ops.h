@@ -371,7 +371,7 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define OP_MFSPR      OP(ppc_mfspr(p, iw))
 #define OP_MTSPR      OP(ppc_mtspr(p, iw))
 #define OP_MFMSR      OP(PRIV(); GPR(RT) = p->msr)
-#define OP_MTMSR      OP(PRIV(); p->msr = GPR(RT) & ppc_msr_mask(p); ppc_update_active_maps(p); ppc_context_sync(p))
+#define OP_MTMSR      OP(PRIV(); p->msr = GPR(RT) & ppc_msr_mask(p); ppc_update_active_maps(p); ppc_context_sync(p); ppc_check_power_mode(p))
 #define OP_MFSR       OP(PRIV(); GPR(RT) = p->sr[(iw >> 16) & 0xFu])
 #define OP_MTSR       OP(PRIV(); ppc_set_sr(p, (iw >> 16) & 0xFu, GPR(RT)))
 #define OP_MFSRIN     OP(PRIV(); GPR(RT) = p->sr[GPR(RB) >> 28])
