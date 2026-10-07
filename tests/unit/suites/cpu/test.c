@@ -7,6 +7,7 @@
 #include "cpu.h"
 #include "harness.h"
 #include "memory.h"
+#include "predecode.h"
 #include "test_assert.h"
 
 #include <dirent.h>
@@ -64,9 +65,6 @@ static const char *excluded_instructions[] = {
     // CHK: When no exception occurs, the N, Z, V, C flags are undefined per
     // MC68000 documentation.
     "CHK",
-    // Bcc: Tests include Bcc.L (32-bit displacement, opcode byte 0xFF) which
-    // is a 68020+ feature. On 68000, this should be an illegal instruction.
-    "Bcc",
     NULL // sentinel
 };
 
@@ -263,6 +261,12 @@ static const uint8_t *decode_test(const uint8_t *ptr, test_case_t *test) {
 // Test memory buffer for full 24-bit address space
 static uint8_t *test_memory_buffer = NULL;
 
+// True when CPU_TEST_MODEL=68030 points the vectors at the 68030 core.
+static bool g_test_model_is_68030 = false;
+
+// CPU_TEST_EXCEPTIONS=1: replay the exception-taking tests too.
+static bool g_test_exceptions = false;
+
 // Initialize test memory - allocate a full 16MB buffer and set up page table
 static bool init_test_memory(void) {
     if (test_memory_buffer)
@@ -274,6 +278,10 @@ static bool init_test_memory(void) {
         return false;
     }
 
+    // The buffer replaces the memory map's image as the code region the
+    // predecoded executor may cache (CPU_TEST_PREDECODE=1).
+    memory_code_region_register(test_memory_buffer, TEST_MEM_SIZE);
+
     // Update the page table and SoA arrays to point to our test buffer for all pages
     // This makes the full 24-bit address space accessible
     if (g_page_table) {
@@ -282,16 +290,20 @@ static bool init_test_memory(void) {
             g_page_table[p].dev = NULL;
             g_page_table[p].dev_context = NULL;
             g_page_table[p].writable = true;
-            // Update SoA fast-path arrays with adjusted base
+            // Update SoA fast-path arrays with adjusted base (write entries
+            // through memory_write_fill: the predecoded executor's code-page
+            // marks must be able to find and suppress them)
             uintptr_t adjusted = (uintptr_t)(test_memory_buffer + (p << PAGE_SHIFT)) - ((uint32_t)p << PAGE_SHIFT);
+            uintptr_t wadj = memory_write_fill((uint32_t)p, test_memory_buffer + (p << PAGE_SHIFT), adjusted,
+                                               MEM_WT_SUPER | MEM_WT_USER);
             if (g_supervisor_read)
                 g_supervisor_read[p] = adjusted;
             if (g_supervisor_write)
-                g_supervisor_write[p] = adjusted;
+                g_supervisor_write[p] = wadj;
             if (g_user_read)
                 g_user_read[p] = adjusted;
             if (g_user_write)
-                g_user_write[p] = adjusted;
+                g_user_write[p] = wadj;
         }
     }
 
@@ -642,9 +654,18 @@ static int run_test_file(const char *filepath, test_context_t *ctx, test_stats_t
             break;
         }
 
-        // Skip exception tests for now (they require special handling)
-        if (test_triggers_exception(&test.initial, &test.final)) {
+        // Exception tests (a stacked frame, or a user->supervisor switch) are
+        // skipped unless CPU_TEST_EXCEPTIONS=1: their frames depend on the
+        // 68000's group-0 conventions (address errors) and on the trace path.
+        if (!g_test_exceptions && test_triggers_exception(&test.initial, &test.final)) {
             // Don't count as run
+            continue;
+        }
+
+        // The vectors were generated for a 68000 and do not model the trace
+        // exception a T1-flagged instruction takes on a 68030 (the 68030
+        // core delivers it, the 68000 core does not): skip them there.
+        if (g_test_model_is_68030 && (test.initial.sr & 0x8000)) {
             continue;
         }
 
@@ -754,6 +775,12 @@ TEST(cpu_single_step_tests) {
         fprintf(stderr, "[cpu] failed to initialize test harness\n");
         ASSERT_TRUE(0);
     }
+    // Every vector rewrites the page it runs from and then retires about one
+    // instruction, which is exactly what the thrash rule demotes: the page
+    // would sit on the generic tier (the switch core's decoder) and the
+    // predecoded handlers would go untested.  The rule is a performance
+    // heuristic, so the conformance replay switches it off.
+    predecode_set_thrash_ratio(0);
 
     int failures = run_all_tests(ctx);
 
@@ -773,6 +800,14 @@ TEST(cpu_single_step_tests) {
 }
 
 int main(void) {
+    // CPU_TEST_MODEL=68030 (read by the harness too): trace-flagged vectors are skipped there.
+    {
+        const char *model_env = getenv("CPU_TEST_MODEL");
+        g_test_model_is_68030 = model_env && strcmp(model_env, "68030") == 0;
+        const char *exc_env = getenv("CPU_TEST_EXCEPTIONS");
+        g_test_exceptions = exc_env && exc_env[0] == '1';
+    }
+
     RUN(cpu_single_step_tests);
     return 0;
 }

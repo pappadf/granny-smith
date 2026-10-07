@@ -49,7 +49,7 @@ checkpoint as POD, object class) with these core-specific requirements:
 
 | Requirement | Contract |
 |---|---|
-| Interpreter | big-switch decode, plain C, no JIT.  The shared decoder/disassembler template-macro pattern (the 68K's `cpu_decode.h` / `cpu_ops.h` model) is the house style — one guard-free decode tree included by both the emulator (execution `OP_` overloads) and the disassembler (sprintf `OP_` overloads), so the two cannot drift.  Follow it unless the ISA gives a concrete reason not to; the PPC core (`ppc_decode.h`) is the second instantiation of the pattern |
+| Interpreter | big-switch decode **or the predecoded executor** (`docs/internals/core/cpu/predecode.md`: a decode cache keyed by host page, still plain C handlers, no generated code — the switch core stays as the reference and the `predecode.enabled=0` fallback).  The shared decoder/disassembler template-macro pattern (the 68K's `cpu_decode.h` / `cpu_ops.h` model) is the house style — one guard-free decode tree included by both the emulator (execution `OP_` overloads) and the disassembler (sprintf `OP_` overloads), so the two cannot drift.  Follow it unless the ISA gives a concrete reason not to; the PPC core (`ppc_decode.h`) is the second instantiation of the pattern |
 | Execution ABI | `void <arch>_run(<arch>_t *, uint32_t *instructions)` — burn-down counter; returns with it 0 (budget spent) or >0 (went idle) |
 | Idle/reset | `<arch>_is_idle()`, `<arch>_reset(...)`, an interrupt-request entry point for external pins.  When guest code polls a pin's *level* (not just its latched request), the entry point must model both — e.g. `dsp3210_ext_pulse(s, vector, slots)` latches the request and asserts the live pin for `slots` of core time, and the status-register pin bits reflect the level, not the latch |
 | **Bus access** | **injected at init** (the guest-physical hook pattern of `sonic.h`/`psc.h`).  The core never touches `g_active_*`, `g_page_table`, the MMU, or any sprint-timing global.  On-chip resources (internal RAM, MMIO) decode *inside* the core before the hooks are consulted |
@@ -112,7 +112,7 @@ the iteration (`pc += 2`, the burn-down decrement), which counter-zeroing
 cannot do: zeroing lets the current iteration finish.
 
 Two practicalities if you use it: the label must zero `*instructions` itself,
-because the epilogue asserts the sprint spent its budget; and `goto` leaves the
+because the scheduler accounts the sprint by what is left of it; and `goto` leaves the
 loop's block scope, so an exception carrying a payload — a fault address — has
 to put it in `cpu_t` rather than a local. Payload-free exceptions are where it
 is cleanest.
@@ -130,18 +130,24 @@ control flow: that is what dominated every measurement behind this rule.
 interchangeable — zeroing the counter lets the current iteration finish, so a
 faulting fetch would go on to execute garbage. Even then, do not add a second
 test: make a test that already exists carry the information. `ppc_run`'s fetch is the
-worked example: it returns false for an ISI and the loop already tests that, so
-a fetch bus error belongs in the same return value rather than in the extra
-`if (g_bus_error_pending) break;` that sits beside it today.
+worked example: it returns false for an ISI, and `ppc_fetch_fill` returns false
+for a fetch bus error too (which zeroed the burn-down), so the loop's existing
+`continue` ends the sprint and the epilogue delivers the machine check.
 
-**Known deviations**, all in the deferred-bus-error path and all measured
-above. Removing them is its own piece of work:
+**Rare state that has to be decided per instruction can often be decided where
+it can change instead.**  The 68K same-PC retry latch (`last_bus_error_pc`)
+clears once the CPU runs a user-mode instruction at another PC.  User mode only
+begins at a sprint's entry or through `write_sr`, so `m68k_bus_error_latch_settle`
+decides it there, with the PC of the next instruction; a return to the latched
+PC (the RTE retry) cuts the sprint to that one instruction, and the next
+sprint's entry decides again.  Same semantics, no per-instruction test.
 
-| site | decoders | what it should become |
+**Known deviations**, measured with callgrind:
+
+| site | decoders | status |
 |---|---|---|
-| `if (!g_bus_error_pending)` guarding the `cpu->ir` / `ir_pc` latch | 68000 | latch unconditionally; let the faulting path supply the pre-fault `ir` for the group-0 frame |
-| `if (last_bus_error_pc != 0 && !supervisor && last_bus_error_pc != pc)` | all three 68K | clear the latch in the epilogue or at delivery, not per instruction |
-| `if (g_bus_error_pending) break;` after the fetch | `ppc_run` | fold into `ppc_fetch`'s existing false return |
+| `if (!g_bus_error_pending)` guarding the `cpu->ir` / `ir_pc` latch | 68000 (switch core) | **kept**: the alternative, an unconditional latch plus a one-deep shadow f_trap restores, measured worse on the Plus boot (124.50 against 123.52 host instructions per emulated instruction).  The predecoded loop latches from its cached raw word with no test; only its generic step carries the guard |
+| `if (cpu->pc & 1) { m68k_fetch_address_error(cpu); break; }` | 68000 (switch core) | open: the fetch half of the odd-PC address error.  The architected place is the control transfer that computes the target.  The predecoded loop pays nothing for it: its relookup already tests `pc & 1` before any block lookup |
 
 ### Deferred bus errors: skip or retry
 

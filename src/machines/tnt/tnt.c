@@ -80,8 +80,8 @@ void tnt_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     // and are only ever cleared here.
     if (g_supervisor_read)
         g_supervisor_read[page_index] = adjusted;
-    if (g_supervisor_write)
-        g_supervisor_write[page_index] = writable ? adjusted : 0;
+    if (g_supervisor_write) // write entry refused on a predecoded code page (memory.h)
+        g_supervisor_write[page_index] = writable ? memory_write_fill(page_index, host_ptr, adjusted, MEM_WT_SUPER) : 0;
     if (g_user_read)
         g_user_read[page_index] = 0;
     if (g_user_write)
@@ -362,11 +362,16 @@ static void tnt_dbdma_mem_write(void *ctx, uint32_t phys, const uint8_t *buf, ui
     bool rev = gc_lanes_reversed(cfg);
     if (phys < cfg->ram_size && len <= cfg->ram_size - phys) {
         uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
-        if (!rev)
+        if (!rev) {
+            memory_host_written(ram + phys, len); // bus-master DMA over cached code
             memcpy(ram + phys, buf, len);
-        else
+        } else {
+            // Reversed lanes keep each byte within its aligned doubleword.
+            uint32_t lo = phys & ~7u;
+            memory_host_written(ram + lo, ((phys + len + 7u) & ~7u) - lo);
             for (uint32_t i = 0; i < len; i++)
                 ram[(phys + i) ^ 7u] = buf[i];
+        }
         return;
     }
     for (uint32_t i = 0; i < len; i++)

@@ -46,6 +46,7 @@ void mmu040_invalidate_tlb(mmu040_state_t *mmu) {
         mmu_invalidate_tlb(mmu->bus);
         return;
     }
+    memory_write_refused_reset();
     size_t sz = (size_t)g_page_count * sizeof(uintptr_t);
     if (g_supervisor_read)
         memset(g_supervisor_read, 0, sz);

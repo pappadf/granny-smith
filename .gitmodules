@@ -5,3 +5,6 @@
 [submodule "third-party/powerpc-test"]
 	path = third-party/powerpc-test
 	url = https://github.com/pappadf/powerpc-test.git
+[submodule "third-party/m68k-test"]
+	path = third-party/m68k-test
+	url = https://github.com/pappadf/m68k-test.git

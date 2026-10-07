@@ -8,7 +8,7 @@ emulator), and browser-based end-to-end tests (Playwright).
 
 | Tier | Command | In CI | Test data |
 |------|---------|-------|-----------|
-| Unit | `make -j$(nproc) -C tests/unit run` | 2½ min native, then 40 s for the wasm32 rerun | No, but the `third-party/single-step-tests` and `third-party/powerpc-test` submodules must be initialised |
+| Unit | `make -j$(nproc) -C tests/unit run` | 2½ min native, then 40 s for the wasm32 rerun | No, but the `third-party/single-step-tests`, `third-party/m68k-test` and `third-party/powerpc-test` submodules must be initialised |
 | Integration, unit tier | `make integration-test TIER=unit -j$(nproc)` | 1 min | Yes |
 | Integration, matrix tier | `make integration-test TIER=matrix -j$(nproc)` | 17 min | Yes |
 | Integration, extended tier | `make integration-test TIER=extended` | 33 min, serial | Yes |

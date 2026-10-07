@@ -16,6 +16,7 @@
 #include "ppc_ops.h"
 
 #include "log.h"
+#include "predecode.h"
 
 LOG_USE_CATEGORY_NAME("ppc");
 
@@ -578,7 +579,8 @@ bool ppc_le_st64(ppc_t *p, uint32_t iw, uint32_t ea, uint64_t v) {
 // g_ppc_fetch caches the host mapping (identity or translated —
 // ppc_mmu.c owns the refill, including ISI delivery); fetch never goes
 // through the mode-dependent g_active maps.  Returns false when the
-// fetch raised ISI (pc has been redirected to the vector).
+// fetch raised ISI (pc has been redirected to the vector) or bus-errored
+// (the burndown is zeroed: the loop ends and the epilogue delivers it).
 static inline bool ppc_fetch(ppc_t *p, uint32_t *iw) {
     uint32_t pc = p->pc;
     if (__builtin_expect(pc - g_ppc_fetch.lo < g_ppc_fetch.span, 1)) {
@@ -607,7 +609,14 @@ static inline bool ppc_fetch(ppc_t *p, uint32_t *iw) {
 
 // === The sprint loop (main-CPU seam ABI) ====================================
 
+// The predecoded loop (ppc_pd_run.h, instantiated at the end of this file).
+static void ppc_pd_run(ppc_t *restrict p, uint32_t *instructions);
+
 void ppc_run(ppc_t *restrict p, uint32_t *instructions) {
+    if (predecode_enabled()) {
+        ppc_pd_run(p, instructions);
+        return;
+    }
     // A memory-layer fault zeroes the burndown through this pointer so the
     // sprint exits and the epilogue delivers the machine check (the 68030
     // decoder precedent in cpu_68000.c/cpu_68030.c).
@@ -643,9 +652,7 @@ void ppc_run(ppc_t *restrict p, uint32_t *instructions) {
         // arm of ppc_fetch_fill always succeeds.  The fold budget above is the
         // bound that was actually missing.
         if (!ppc_fetch(p, &iw))
-            continue;
-        if (__builtin_expect(g_bus_error_pending, 0))
-            break; // fetch faulted; delivered below
+            continue; // a fetch bus error zeroed the burndown: the loop ends here
         p->pc += 4;
         ppc_execute(p, iw);
         // 601 branch folding: b/bc/bclr/bcctr issue to the branch unit in
@@ -685,3 +692,18 @@ void ppc_run(ppc_t *restrict p, uint32_t *instructions) {
     }
     *instructions = 0;
 }
+
+// ============================================================================
+// The predecoded executor (docs/internals/core/cpu/predecode.md):
+// the sprint loop over predecoded entries and the decode tree in its
+// classifier role — two more instantiations sharing this file's helpers.
+// ============================================================================
+#undef PPC_DECODER_NAME
+#undef PPC_DECODER_RETURN_TYPE
+#undef PPC_DECODER_ARGS
+#undef PPC_DECODER_PROLOGUE
+#undef PPC_DECODER_EPILOGUE
+#define PPC_PD_RUN_NAME      ppc_pd_run
+#define PPC_PD_TREE_NAME     ppc_pd_tree
+#define PPC_PD_CLASSIFY_NAME ppc_pd_classify
+#include "ppc_pd_run.h"

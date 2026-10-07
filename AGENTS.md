@@ -44,14 +44,15 @@ case there is nothing to do.
 - `tests/unit`: Unit tests (native, suites in `suites/`, infrastructure in `support/`)
 - `tests/e2e`: Playwright end-to-end tests (specs in `web2-specs/`, helpers in `helpers/`)
 - `third-party/`: External libraries (git submodules, e.g. single-step-tests,
-  powerpc-test)
+  powerpc-test, m68k-test)
 
 Emulator modules (e.g., scsi, cpu) have `.c`/`.h` files in `src/core/*/` and documentation under `docs/internals/core/<subsystem>/` (the model) with their hardware reference pages under `docs/reference/hardware/`; machine/family docs live under `docs/internals/machines/<family>/` (the model) and `docs/reference/machines/<family>/` (the hardware).
 
   - The `peeler` archive library now lives in-tree at `src/peeler/` (formerly a
     `third-party/peeler` submodule), so no submodule init is needed for it.
     `git submodule update --init --recursive` is still used for the remaining
-    submodules under `third-party/` (e.g. single-step-tests, powerpc-test).
+    submodules under `third-party/` (e.g. single-step-tests, powerpc-test,
+    m68k-test).
 
 ## Tools and Environments
 
@@ -90,8 +91,9 @@ the devcontainer image.)
 
 **Run tests:**
 - Unit tests: `make -j$(nproc) -C tests/unit run` (~1.5 min at -j8; ~6 min serial) — uses the
-  `third-party/single-step-tests` (68k) and `third-party/powerpc-test` (601) corpora; both are
-  submodules, so init them first
+  `third-party/single-step-tests` (68000, MAME-derived), `third-party/m68k-test` (68000/68030/68040,
+  sail model) and `third-party/powerpc-test` (601) corpora; all are submodules, so init them first.
+  `CPU_TEST_PREDECODE=1`/`0` routes the CPU suites through the predecoded or the switch executor
 - Integration tests: `make integration-test` (all three tiers: the better part of an hour even with `-j$(nproc)`; `TIER=unit` takes about a minute, `TIER=matrix` about fifteen at -j — see docs/guide/TESTING.md) — builds headless emulator, runs tests in `tests/integration/`
 - Single integration test: `make integration-test-<name>` (e.g., `make integration-test-se30-format-hd`)
 - List available integration tests: `make -C tests/integration list`

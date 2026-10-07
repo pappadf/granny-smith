@@ -571,6 +571,10 @@
     "tnt-pci-voodoo2": {
       "instr": 400200000,
       "tolerance": 0.2
+    },
+    "perf-pdm/rom-boot": {
+      "instr": 199983600,
+      "tolerance": 0.2
     }
   }
 }

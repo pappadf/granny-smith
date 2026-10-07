@@ -88,11 +88,16 @@ void sym53c8xx_write_block(sym53c8xx_t *s, uint32_t phys, const uint8_t *buf, ui
     bool rev = lanes_reversed(s);
     if (cfg && cfg->mem_map && phys < cfg->ram_size && len <= cfg->ram_size - phys) {
         uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
-        if (!rev)
+        if (!rev) {
+            memory_host_written(ram + phys, len); // bus-master DMA over cached code
             memcpy(ram + phys, buf, len);
-        else
+        } else {
+            // Reversed lanes keep each byte within its aligned doubleword.
+            uint32_t lo = phys & ~7u;
+            memory_host_written(ram + lo, ((phys + len + 7u) & ~7u) - lo);
             for (uint32_t i = 0; i < len; i++)
                 ram[(phys + i) ^ 7u] = buf[i];
+        }
         return;
     }
     for (uint32_t i = 0; i < len; i++)

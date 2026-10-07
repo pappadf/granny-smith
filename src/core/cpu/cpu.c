@@ -7,6 +7,7 @@
 #include "cpu_internal.h"
 
 #include "alias.h"
+#include "cpu_pd_ids.h"
 #include "debug.h"
 #include "debug_mmu.h"
 #include "fpu.h"
@@ -14,6 +15,7 @@
 #include "memory.h"
 #include "mmu040.h"
 #include "object.h"
+#include "predecode.h"
 #include "scheduler.h"
 #include "system.h"
 #include "system_config.h"
@@ -31,6 +33,142 @@ LOG_USE_CATEGORY_NAME("cpu");
 void cpu_run_68000(cpu_t *restrict cpu, uint32_t *instructions);
 void cpu_run_68030(cpu_t *restrict cpu, uint32_t *instructions);
 void cpu_run_68040(cpu_t *restrict cpu, uint32_t *instructions);
+
+// === Predecode id properties (cpu_pd_ids.h) =================================
+//
+// The flag-liveness pass reads three static facts per id:
+// whether it overwrites all of NZVC without reading them, whether it can
+// fault or trap before writing them, and whether it has a no-flags twin.
+// The bits are derived from the family list so a family added to the id
+// space without a rule here defaults to the conservative T1 bits.
+
+uint8_t g_cpu_pd_prop[PD_ID_COUNT];
+
+// One row per family: its id range and its name (classified below).
+typedef struct pd_family_desc {
+    uint16_t first, last;
+    const char *name;
+} pd_family_desc_t;
+
+static const pd_family_desc_t pd_families[] = {
+#define X(name, slots) {PDF_##name, PDF_##name##_END, #name},
+    PD_FAMILIES(X)
+#undef X
+};
+
+static bool pd_name_starts(const char *s, const char *prefix) {
+    return strncmp(s, prefix, strlen(prefix)) == 0;
+}
+
+static bool pd_name_ends(const char *s, const char *suffix) {
+    size_t n = strlen(s), m = strlen(suffix);
+    return n >= m && strcmp(s + n - m, suffix) == 0;
+}
+
+// True for a destination-shape suffix that reaches memory (MOVE families).
+static bool pd_dst_shape_mem(const char *name) {
+    return pd_name_ends(name, "_IND") || pd_name_ends(name, "_INC") || pd_name_ends(name, "_DEC") ||
+           pd_name_ends(name, "_D16") || pd_name_ends(name, "_ABS");
+}
+
+// Fill a paired family: slot 2k = full (elidable), 2k+1 = its twin.
+// mem_shape(k) says whether shape k touches memory.
+static void pd_fill_pairs(const pd_family_desc_t *f, uint8_t base, bool (*mem_shape)(int), bool all_mem) {
+    int slots = f->last - f->first + 1;
+    for (int k = 0; k < slots / 2; k++) {
+        uint8_t p = base | PD_P_ELIDABLE;
+        if (all_mem || (mem_shape && mem_shape(k)))
+            p |= PD_P_CANFAULT | PD_P_MEMDEF;
+        g_cpu_pd_prop[f->first + 2 * k] = p;
+        g_cpu_pd_prop[f->first + 2 * k + 1] = (uint8_t)((p & ~PD_P_ELIDABLE) | PD_P_TWIN);
+    }
+}
+
+// Seven source shapes (D, IND, INC, DEC, D16, ABS, IMM): memory for 1..5.
+static bool pd_s7_mem(int k) {
+    return k >= 1 && k <= 5;
+}
+
+// Six destination shapes (D, IND, INC, DEC, D16, ABS): memory for 1..5.
+static bool pd_d6_mem(int k) {
+    return k >= 1 && k <= 5;
+}
+
+#include "cpu_pd_t1_names.h" // generated: leaf names by T1 id
+
+// Handler name for the decode histogram: control, T1 leaf, or T0 family
+// (+ shape slot) — a reviewer's view of which shapes the guest executes.
+static const char *cpu_pd_id_name(uint16_t id) {
+    static char buf[64];
+    if (id == PD_UNDECODED)
+        return "undecoded";
+    if (id == PD_CROSS)
+        return "cross";
+    if (id == PD_GENERIC)
+        return "generic";
+    if (id >= T1_FIRST && id < T1_END)
+        return cpu_pd_t1_names[id - T1_FIRST];
+    for (size_t i = 0; i < sizeof(pd_families) / sizeof(pd_families[0]); i++) {
+        const pd_family_desc_t *f = &pd_families[i];
+        if (id >= f->first && id <= f->last) {
+            int slot = id - f->first;
+            snprintf(buf, sizeof(buf), "%s+%d%s", f->name, slot, (g_cpu_pd_prop[id] & PD_P_TWIN) ? " (nf)" : "");
+            return buf;
+        }
+    }
+    return "?";
+}
+
+void cpu_pd_prop_init(void) {
+    static bool done = false;
+    if (done)
+        return;
+    done = true;
+    g_pd_id_name[PD_ARCH_68K] = cpu_pd_id_name;
+    // Control and T1 ids: never overwriters, always able to fault.
+    for (uint32_t i = 0; i < PD_ID_COUNT; i++)
+        g_cpu_pd_prop[i] = PD_P_CANFAULT;
+    for (size_t i = 0; i < sizeof(pd_families) / sizeof(pd_families[0]); i++) {
+        const pd_family_desc_t *f = &pd_families[i];
+        const char *n = f->name;
+        int slots = f->last - f->first + 1;
+        if (pd_name_starts(n, "MOVE_")) {
+            pd_fill_pairs(f, PD_P_WNZVC, pd_s7_mem, pd_dst_shape_mem(n));
+        } else if (pd_name_starts(n, "MOVEA_") || pd_name_starts(n, "ADDA_") || pd_name_starts(n, "SUBA_")) {
+            for (int k = 0; k < slots; k++)
+                g_cpu_pd_prop[f->first + k] = pd_s7_mem(k) ? PD_P_CANFAULT : 0;
+        } else if (pd_name_starts(n, "DIVU_") || pd_name_starts(n, "DIVS_")) {
+            for (int k = 0; k < slots; k++)
+                g_cpu_pd_prop[f->first + k] = PD_P_CANFAULT; // the divide can raise
+        } else if (pd_name_ends(n, "_EA_DN") || pd_name_starts(n, "TST_") || pd_name_starts(n, "CMPA_") ||
+                   pd_name_starts(n, "MULU_") || pd_name_starts(n, "MULS_")) {
+            pd_fill_pairs(f, PD_P_WNZVC, pd_s7_mem, false);
+        } else if (pd_name_ends(n, "_DN_EA") || pd_name_starts(n, "ADDI_") || pd_name_starts(n, "SUBI_") ||
+                   pd_name_starts(n, "ANDI_") || pd_name_starts(n, "ORI_") || pd_name_starts(n, "EORI_") ||
+                   pd_name_starts(n, "CMPI_") || pd_name_starts(n, "CLR_") ||
+                   ((pd_name_starts(n, "ADDQ_") || pd_name_starts(n, "SUBQ_")) && slots == PD_D6P_SLOTS)) {
+            pd_fill_pairs(f, PD_P_WNZVC, pd_d6_mem, false);
+        } else if (pd_name_starts(n, "CMPM_")) {
+            pd_fill_pairs(f, PD_P_WNZVC, NULL, true);
+        } else if (pd_name_starts(n, "BTST_") || pd_name_starts(n, "BCHG_") || pd_name_starts(n, "BCLR_") ||
+                   pd_name_starts(n, "BSET_")) {
+            pd_fill_pairs(f, 0, NULL, false); // Z only: elidable, never an overwriter
+        } else if (slots == 2) {
+            pd_fill_pairs(f, PD_P_WNZVC, NULL, false); // NEG/NOT/EXT/SWAP/MOVEQ/shifts
+        } else if (pd_name_starts(n, "BSR_") || pd_name_starts(n, "JSR_") || pd_name_starts(n, "RTS") ||
+                   pd_name_starts(n, "RTD") || pd_name_starts(n, "UNLK") || pd_name_starts(n, "LINK_") ||
+                   pd_name_starts(n, "PEA_") || pd_name_starts(n, "MOVEM_") || pd_name_starts(n, "ATRAP") ||
+                   pd_name_starts(n, "TRAP")) {
+            for (int k = 0; k < slots; k++)
+                g_cpu_pd_prop[f->first + k] = PD_P_CANFAULT;
+        } else {
+            // ADDQ_AN/SUBQ_AN, EXG, ABCD/SBCD, Bcc/DBcc, JMP, NOP, LEA, Scc:
+            // no flag result to elide, never an overwriter, cannot fault.
+            for (int k = 0; k < slots; k++)
+                g_cpu_pd_prop[f->first + k] = 0;
+        }
+    }
+}
 
 // === Public Accessors ===
 
@@ -283,6 +421,9 @@ extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
         cpu->interrupt_mask = 7;
         // 68030-specific registers default to zero (VBR=0, CACR=0, etc.)
     }
+
+    // The predecoded executors' id property table (once per process).
+    cpu_pd_prop_init();
 
     // Allocate FPU state for models that carry one (68030 paired 68882,
     // 68040 on-chip FPU — the same datapath serves both, see fpu.c).
@@ -821,6 +962,22 @@ static DEF_GETTER(attr_cpu_instr_count) {
     return val_uint(8, cpu_instr_count());
 }
 
+// `cpu.predecode` — 1 when the predecoded executor runs this CPU, 0 for the
+// switch core.  Mirrors `predecode.enabled` (the pool's own node) so a
+// reviewer can A/B any row from the shell without rebuilding.
+static value_t attr_cpu_predecode(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_uint(1, predecode_enabled() ? 1u : 0u);
+}
+
+static value_t set_cpu_predecode(struct object *self, const member_t *m, value_t in) {
+    (void)self;
+    (void)m;
+    predecode_set_enabled((in.u & 1u) != 0);
+    return val_none();
+}
+
 // `machine.cpu.frame([addr], [count], [before])` -- this CPU's debug frame,
 // the contract every CPU-like object shares (debug_frame_build; debug.frame
 // is the same call).
@@ -922,6 +1079,7 @@ static const member_t cpu_members[] = {
     ATTR_RW_BIT("n", attr_cpu_cc_n, set_cpu_cc_n, "Negative flag"),
     ATTR_RW_BIT("x", attr_cpu_cc_x, set_cpu_cc_x, "Extend flag — the carry out that multi-precision arithmetic carries in"),
     ATTR_RO_ADV("instr_count", attr_cpu_instr_count, "Instructions retired since the machine was created"),
+    ATTR_RW_BIT("predecode", attr_cpu_predecode, set_cpu_predecode, "1 when the predecoded executor runs this CPU, 0 for the switch core (mirrors predecode.enabled)"),
     {.kind = M_METHOD, .name = "frame", .examples = EXAMPLES("machine.cpu.frame", "machine.cpu.frame 0x40800000 16"),
      .doc = "The CPU's debug frame: registers, a disassembly window and per-row translation",
      .method = {.result_doc = "{arch, pc, regs, rows, fpu?}", .args = debug_frame_args, .nargs = DEBUG_FRAME_NARGS, .result = V_MAP, .fn = cpu_method_frame}},

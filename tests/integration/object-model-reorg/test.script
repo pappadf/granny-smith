@@ -9,7 +9,7 @@ for m in meta.members() {
 }
 echo "root children:$kids"
 echo "root methods:$verbs"
-assert $kids == " machine scheduler checkpoint pacing files debug log shell catalog appletalk" "root children in the fixed order"
+assert $kids == " machine scheduler checkpoint pacing predecode files debug log shell catalog appletalk" "root children in the fixed order"
 assert $verbs == " objects attributes methods help time quit echo" "root methods (no download)"
 
 # === files: one node for host files, images, mounts, archives ==============

@@ -325,6 +325,7 @@ static inline void ppc_set_ca(ppc_t *p, int ca) {
 typedef struct ppc_fetch_window {
     uint32_t lo, span;
     uintptr_t host_adjust;
+    struct pd_block *blk; // the predecoded block of the window's page (NULL: not looked up / none)
     uint32_t le_xor; // 4 while MSR[LE] is set (fetch munges like a word load), else 0; refreshed by every refill
 } ppc_fetch_window_t;
 extern ppc_fetch_window_t g_ppc_fetch;

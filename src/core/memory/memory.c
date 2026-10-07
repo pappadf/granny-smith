@@ -95,6 +95,11 @@ uint32_t g_bus_error_fc = 5;
 // where the handler expects skip-instruction semantics (e.g. Mac ROM RAM
 // and slot probes).  Selects Format $B vs Format $A dispatch.
 bool g_bus_error_is_pmmu = false;
+// The 68000 core raises its address errors through the same deferred path
+// (cpu_68000.c): this distinguishes them from a bus error at delivery.
+bool g_bus_error_is_address = false;
+uint32_t g_m68k_fault_regs[16]; // the 68000 register file at the address error (cpu_internal.h)
+uint8_t g_m68k_fault_ccr;
 uint32_t *g_bus_error_instr_ptr = NULL;
 // Physical page-fill hook for machines whose page table is NOT owned by a
 // 68k mmu_state_t (the PowerPC families).  memory_map_host_region() routes
@@ -167,6 +172,26 @@ uint32_t g_value_trap_value = 0;
 uint32_t g_value_trap_size = 0;
 value_trap_hook_t g_value_trap_hook = NULL;
 
+// Code-page coherence state (memory.h "Code-page coherence"): the region
+// table, the per-chunk occupancy flags for the reverse scan, the write
+// counter and the predecode invalidation hook.
+mem_code_region_t g_mem_code_regions[MEM_CODE_REGIONS_MAX];
+int g_mem_code_region_count = 0;
+uint32_t g_mem_map_generation = 0;
+uint8_t *g_mem_soa_chunk = NULL;
+uint64_t g_mem_code_write_count = 0;
+void (*g_mem_code_written_hook)(const uint8_t *host, uint32_t len) = NULL;
+
+// A guest store is about to land on host bytes: if they belong to a code
+// page, count it and let the predecode cache drop the covered entries.
+static inline void code_write_notify(const uint8_t *host, uint32_t len) {
+    if (__builtin_expect(memory_host_is_code(host), 0)) {
+        g_mem_code_write_count++;
+        if (g_mem_code_written_hook)
+            g_mem_code_written_hook(host, len);
+    }
+}
+
 void value_trap_check(uint32_t logical_addr, uint32_t value, unsigned size) {
     // Compute physical address.  Translate via active SoA mode (super or user).
     uint32_t phys_addr = logical_addr;
@@ -206,6 +231,14 @@ typedef struct memory {
     uint32_t address_mask;
     uintptr_t *supervisor_read, *supervisor_write, *user_read, *user_write;
     uint16_t *logpoint_page_count, *logpoint_phys_page_count;
+    uint8_t *soa_chunk; // write-entry occupancy per 256-page chunk (g_mem_soa_chunk)
+    // The refused-write record (memory.h): MEM_WT_* bits per page, allocated
+    // on the first refusal; the pages set since the last reset, for a cheap
+    // clear (overflow: clear the whole array).
+    uint8_t *write_refused;
+    uint32_t *refused_pages;
+    uint32_t refused_count;
+    bool refused_overflow;
     tlb_track_t *tlb_track; // pages populated since the last invalidation (mmu.c)
 
     // What the machine hangs on its map (aliased while selected).
@@ -838,6 +871,7 @@ bool memory_debug_write_uint8(uint32_t addr, uint8_t value) {
     if (pe->host_base) {
         if (!pe->writable)
             return false; // ROM/VROM — drop silently
+        memory_host_written(pe->host_base + (phys & PAGE_MASK), 1);
         STORE_BE8(pe->host_base + (phys & PAGE_MASK), value);
         return true;
     }
@@ -862,6 +896,7 @@ bool memory_debug_write_uint16(uint32_t addr, uint16_t value) {
             if (pe->host_base) {
                 if (!pe->writable)
                     return false;
+                memory_host_written(pe->host_base + (phys & PAGE_MASK), 2);
                 STORE_BE16(pe->host_base + (phys & PAGE_MASK), value);
                 return true;
             }
@@ -891,6 +926,7 @@ bool memory_debug_write_uint32(uint32_t addr, uint32_t value) {
             if (pe->host_base) {
                 if (!pe->writable)
                     return false;
+                memory_host_written(pe->host_base + (phys & PAGE_MASK), 4);
                 STORE_BE32(pe->host_base + (phys & PAGE_MASK), value);
                 return true;
             }
@@ -957,6 +993,7 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
     uint8_t *lp_host;
     bool lp_writable;
     if (in_page && logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host && lp_writable) {
+        code_write_notify(lp_host, size);
         store_be_n(lp_host, value, size);
         if (g_mem_logpoint_hook)
             g_mem_logpoint_hook(addr, size, value, true);
@@ -967,8 +1004,10 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
     // off.  Read-only pages (ROM) still drop the write via the fall-through.
     if (in_page && can_lazy_install(page, pe)) {
         rebuild_soa_page(page);
-        if (pe->writable)
+        if (pe->writable) {
+            code_write_notify(pe->host_base + (addr & PAGE_MASK), size);
             store_be_n(pe->host_base + (addr & PAGE_MASK), value, size);
+        }
         return;
     }
 
@@ -993,6 +1032,26 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
             dev_write_n(pe, addr, addr - pe->base_addr, value, size);
             return;
         }
+        // A store the switch core completes through a live write entry --
+        // one only the code-page marks took away -- completes the same way
+        // here, as the ATC hit it is: no table walk, so no U/M write-back
+        // or MMUSR change the switch run would not make (A/UX ages its
+        // pages by U).  The page's read entry maps the same host bytes.
+        if (memory_write_refused(page, supervisor)) {
+            uintptr_t rbase = (supervisor ? g_supervisor_read : g_user_read)[page];
+            if (rbase != 0) {
+                uint8_t *host = (uint8_t *)(rbase + addr);
+                // The page left the code set since (its block was evicted or
+                // demoted): the entry the switch core holds comes back.
+                if (!memory_host_is_code(host)) {
+                    (supervisor ? g_supervisor_write : g_user_write)[page] = rbase;
+                    memory_write_refused_clear(page, supervisor ? MEM_WT_SUPER : MEM_WT_USER);
+                }
+                code_write_notify(host, size);
+                store_be_n(host, value, size);
+                return;
+            }
+        }
         if (mmu_handle_fault(g_mmu, addr, true, supervisor)) {
             uintptr_t base = g_active_write[addr >> PAGE_SHIFT];
             if (base != 0) {
@@ -1013,10 +1072,22 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
             // Re-check the logpoint now the fault has run: physical-space
             // logpoints are only detectable after mmu_translate_debug.
             if (logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host && lp_writable) {
+                code_write_notify(lp_host, size);
                 store_be_n(lp_host, value, size);
                 if (g_mem_logpoint_hook)
                     g_mem_logpoint_hook(addr, size, value, true);
                 return;
+            }
+            // Code page: the write entry stays suppressed by the mark, so
+            // the store lands here -- invalidate the cached code, then
+            // complete it through the physical host pointer.
+            {
+                uint8_t *cp_host = mmu_phys_to_host(g_mmu, phys & ~(uint32_t)PAGE_MASK);
+                if (cp_host && mmu_phys_is_writable(g_mmu, phys) && memory_host_is_code(cp_host)) {
+                    code_write_notify(cp_host + (phys & PAGE_MASK), size);
+                    store_be_n(cp_host + (phys & PAGE_MASK), value, size);
+                    return;
+                }
             }
             // Unmapped physical but no fault: drop the write.
         } else if (!g_bus_error_pending) {
@@ -1128,10 +1199,12 @@ static void rebuild_soa_page(uint32_t p) {
     if (g_user_read && !g_user_soa_reserved)
         g_user_read[p] = adjusted;
     if (pe->writable) {
+        uintptr_t wadj = memory_write_fill(p, pe->host_base, adjusted,
+                                           MEM_WT_SUPER | (g_user_soa_reserved ? 0u : MEM_WT_USER)); // 0 on a code page
         if (g_supervisor_write)
-            g_supervisor_write[p] = adjusted;
+            g_supervisor_write[p] = wadj;
         if (g_user_write && !g_user_soa_reserved)
-            g_user_write[p] = adjusted;
+            g_user_write[p] = wadj;
     }
 }
 
@@ -1197,6 +1270,7 @@ void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page) {
     // arrays.  All logical pages re-walk on next access, and the fill path
     // (mmu_fill_soa_entry) suppresses any alias hitting the watched physical.
     // One-time cost at install; fast-path unaffected once entries repopulate.
+    memory_write_refused_reset();
     if (g_supervisor_read)
         memset(g_supervisor_read, 0, (size_t)g_page_count * sizeof(uintptr_t));
     if (g_supervisor_write)
@@ -1220,6 +1294,154 @@ void memory_logpoint_uninstall_phys(uint32_t start_page, uint32_t end_page) {
     // No need to rebuild SoA entries; they refill lazily on next access.
     if (g_mem_map_changed)
         g_mem_map_changed(); // CPU-side caches must drop bypassing entries
+}
+
+// ============================================================================
+// Code-page coherence (memory.h "Code-page coherence")
+// ============================================================================
+
+// Drop every code region (new memory map): the marks go with the image.
+static void code_regions_reset(void) {
+    for (int i = 0; i < g_mem_code_region_count; i++) {
+        free(g_mem_code_regions[i].marks);
+        g_mem_code_regions[i].marks = NULL;
+        g_mem_code_regions[i].base = NULL;
+        g_mem_code_regions[i].size = 0;
+    }
+    g_mem_code_region_count = 0;
+}
+
+int memory_code_region_register(uint8_t *base, uintptr_t size) {
+    if (!base || size == 0 || g_mem_code_region_count >= MEM_CODE_REGIONS_MAX)
+        return -1;
+    int i = g_mem_code_region_count;
+    g_mem_code_regions[i].base = base;
+    g_mem_code_regions[i].size = size;
+    g_mem_code_regions[i].marks = (uint8_t *)calloc((size + MEM_PAGE_SIZE - 1) >> PAGE_SHIFT, 1);
+    if (!g_mem_code_regions[i].marks)
+        return -1;
+    g_mem_code_region_count = i + 1;
+    return i;
+}
+
+// ---- The refused-write record (memory.h) ----
+
+#define REFUSED_LIST_MAX 4096
+
+void memory_write_refused_set(uint32_t page_index, unsigned tables) {
+    memory_map_t *m = g_installed_map;
+    if (!m || page_index >= (uint32_t)m->page_count || !tables)
+        return;
+    if (!m->write_refused) {
+        m->write_refused = (uint8_t *)calloc((size_t)m->page_count, 1);
+        m->refused_pages = (uint32_t *)malloc(REFUSED_LIST_MAX * sizeof(uint32_t));
+        if (!m->write_refused || !m->refused_pages) {
+            free(m->write_refused);
+            free(m->refused_pages);
+            m->write_refused = NULL;
+            m->refused_pages = NULL;
+            return;
+        }
+    }
+    if (!m->write_refused[page_index]) {
+        if (m->refused_count < REFUSED_LIST_MAX)
+            m->refused_pages[m->refused_count++] = page_index;
+        else
+            m->refused_overflow = true;
+    }
+    m->write_refused[page_index] |= (uint8_t)tables;
+}
+
+void memory_write_refused_clear(uint32_t page_index, unsigned tables) {
+    memory_map_t *m = g_installed_map;
+    if (m && m->write_refused && page_index < (uint32_t)m->page_count)
+        m->write_refused[page_index] &= (uint8_t)~tables;
+}
+
+void memory_write_refused_reset(void) {
+    memory_map_t *m = g_installed_map;
+    if (!m || !m->write_refused)
+        return;
+    if (m->refused_overflow)
+        memset(m->write_refused, 0, (size_t)m->page_count);
+    else
+        for (uint32_t i = 0; i < m->refused_count; i++)
+            m->write_refused[m->refused_pages[i]] = 0;
+    m->refused_count = 0;
+    m->refused_overflow = false;
+}
+
+bool memory_write_refused(uint32_t page_index, bool supervisor) {
+    memory_map_t *m = g_installed_map;
+    return m && m->write_refused && page_index < (uint32_t)m->page_count &&
+           (m->write_refused[page_index] & (supervisor ? MEM_WT_SUPER : MEM_WT_USER));
+}
+
+// Zero every write entry of `arr` that maps its logical page onto host_page,
+// scanning only the chunks that ever held a write entry; each zeroed entry is
+// noted for `table` in the refused-write record.
+static void zero_write_aliases(uintptr_t *arr, unsigned table, const uint8_t *host_page) {
+    if (!arr || !g_mem_soa_chunk)
+        return;
+    uint32_t chunks = (g_page_count + 255) / 256;
+    for (uint32_t c = 0; c < chunks; c++) {
+        if (!g_mem_soa_chunk[c])
+            continue;
+        uint32_t p0 = c << 8, p1 = p0 + 256;
+        if (p1 > g_page_count)
+            p1 = g_page_count;
+        for (uint32_t p = p0; p < p1; p++) {
+            uintptr_t e = arr[p];
+            if (e != 0 && e + ((uintptr_t)p << PAGE_SHIFT) == (uintptr_t)host_page) {
+                arr[p] = 0; // stores must take the slow path from now on
+                memory_write_refused_set(p, table);
+            }
+        }
+    }
+}
+
+void memory_code_page_mark(const uint8_t *host_page) {
+    uint32_t page;
+    int r = memory_code_region_of(host_page, &page);
+    if (r < 0 || g_mem_code_regions[r].marks[page])
+        return; // outside every region, or already marked
+    g_mem_code_regions[r].marks[page] = 1;
+    // Every logical alias currently holding a write entry for these bytes
+    // loses it; refills consult the mark (memory_write_fill).
+    zero_write_aliases(g_supervisor_write, MEM_WT_SUPER, host_page);
+    zero_write_aliases(g_user_write, MEM_WT_USER, host_page);
+}
+
+void memory_code_page_unmark(const uint8_t *host_page) {
+    uint32_t page;
+    int r = memory_code_region_of(host_page, &page);
+    if (r >= 0)
+        g_mem_code_regions[r].marks[page] = 0; // write entries refill lazily
+}
+
+void memory_host_written(const uint8_t *host, uint32_t len) {
+    if (len == 0)
+        return;
+    // Pages are region-relative (the image is not 4 KB-aligned on the
+    // host): walk the range by region page; only marked pages reach the
+    // hook.  A range never spans two regions.
+    uint32_t page;
+    int r = memory_code_region_of(host, &page);
+    if (r < 0)
+        return;
+    const uint8_t *base = g_mem_code_regions[r].base;
+    const uint8_t *end = host + len;
+    const uint8_t *p = host;
+    while (p < end) {
+        uint32_t in_page = MEM_PAGE_SIZE - (uint32_t)((uintptr_t)(p - base) & PAGE_MASK);
+        uint32_t n = (uint32_t)(end - p) < in_page ? (uint32_t)(end - p) : in_page;
+        if (memory_host_is_code(p)) {
+            g_mem_code_write_count++;
+            if (g_mem_code_written_hook)
+                g_mem_code_written_hook(p, n);
+        }
+        p += n;
+    }
 }
 
 // ============================================================================
@@ -1417,14 +1639,16 @@ void memory_populate_pages(memory_map_t *mem, uint32_t rom_start_addr, uint32_t 
         g_page_table[p].writable = true;
 
         // SoA fast-path entries: RAM is readable and writable by all
+        // (write entries refused on a code page — memory_write_fill)
+        uintptr_t wadj = memory_write_fill(p, host_ptr, adjusted, MEM_WT_SUPER | MEM_WT_USER);
         if (g_supervisor_read)
             g_supervisor_read[p] = adjusted;
         if (g_supervisor_write)
-            g_supervisor_write[p] = adjusted;
+            g_supervisor_write[p] = wadj;
         if (g_user_read)
             g_user_read[p] = adjusted;
         if (g_user_write)
-            g_user_write[p] = adjusted;
+            g_user_write[p] = wadj;
         memory_logpoint_guard_page(p);
     }
 
@@ -1497,15 +1721,17 @@ void memory_populate_ram_mirror(memory_map_t *mem, uint32_t mirror_start, uint32
         g_page_table[p].dev_context = NULL;
         g_page_table[p].writable = true;
 
-        // SoA fast-path: full read+write on both supervisor and user sides.
+        // SoA fast-path: full read+write on both supervisor and user sides
+        // (write entries refused on a code page — memory_write_fill).
+        uintptr_t wadj = memory_write_fill(p, host_ptr, adjusted, MEM_WT_SUPER | MEM_WT_USER);
         if (g_supervisor_read)
             g_supervisor_read[p] = adjusted;
         if (g_supervisor_write)
-            g_supervisor_write[p] = adjusted;
+            g_supervisor_write[p] = wadj;
         if (g_user_read)
             g_user_read[p] = adjusted;
         if (g_user_write)
-            g_user_write[p] = adjusted;
+            g_user_write[p] = wadj;
         memory_logpoint_guard_page(p);
     }
 }
@@ -1517,6 +1743,7 @@ void memory_populate_ram_mirror(memory_map_t *mem, uint32_t mirror_start, uint32
 // ============================================================================
 
 void memory_map_select(memory_map_t *mem) {
+    memory_map_t *prev = g_installed_map;
     g_installed_map = mem;
     g_page_table = mem ? mem->page_table : NULL;
     g_page_count = mem ? (uint32_t)mem->page_count : 0;
@@ -1532,6 +1759,17 @@ void memory_map_select(memory_map_t *mem) {
     g_mem_logpoint_page_count = mem ? mem->logpoint_page_count : NULL;
     g_mem_logpoint_phys_page_count = mem ? mem->logpoint_phys_page_count : NULL;
     g_mem_logpoints_active = mem ? mem->logpoints_active : 0;
+    g_mem_soa_chunk = mem ? mem->soa_chunk : NULL;
+    // Code-page coherence: the selected map's image is code region 0 (unit
+    // tests register theirs after it).  Another map is other host bytes:
+    // its regions and marks go, and the generation bump makes the predecode
+    // pool start over.  Re-selecting the same map changes nothing.
+    if (mem != prev) {
+        code_regions_reset();
+        if (mem)
+            memory_code_region_register(mem->image, (uintptr_t)mem->ram_size + mem->rom_size);
+        g_mem_map_generation++;
+    }
     g_bus_err_lo = mem ? mem->bus_err.lo : MEMORY_BUS_ERR_NONE.lo;
     g_bus_err_hi = mem ? mem->bus_err.hi : MEMORY_BUS_ERR_NONE.hi;
     g_user_soa_reserved = mem ? mem->cpu_hooks.user_soa_reserved : false;
@@ -1636,7 +1874,12 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
 
     mem->host_fill_regions = mmu_host_fill_regions_new();
 
+    // Write-entry occupancy per 256-page chunk (code-page reverse scan).
+    mem->soa_chunk = (uint8_t *)calloc((pages + 255) / 256, sizeof(uint8_t));
+    assert(mem->soa_chunk);
+
     // The machine under construction builds into its own map: select it.
+    // Selection also makes its image code region 0 (memory_map_select).
     memory_map_select(mem);
 
     // The ROM is on the board from power-on: the region is created filled.
@@ -1722,6 +1965,9 @@ void memory_map_delete(memory_map_t *mem) {
     free(mem->user_write);
     free(mem->logpoint_page_count);
     free(mem->logpoint_phys_page_count);
+    free(mem->soa_chunk);
+    free(mem->write_refused);
+    free(mem->refused_pages);
     mmu_host_fill_regions_free(mem->host_fill_regions);
     // Free RAM/ROM image buffer
     if (mem->image) {

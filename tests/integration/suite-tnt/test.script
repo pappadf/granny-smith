@@ -83,12 +83,17 @@ def tnt_hd_boot(model, card, budget) {
 
 # ---- pm7500-76-hd -----------------------------------------------------------
 def row_pm7500_76_hd() {
+    let t0 = scheduler.host_user_ns
     tnt_hd_boot("pm7500", "", 2500000000)
     # The Finder desktop: menu bar, mounted "Macintosh HD" volume, Trash,
     # and the Energy Saver first-boot dialog.  The menu-bar clock area is
     # excluded — it tracks the pinned RTC plus guest uptime, so it shifts
     # whenever model changes move boot timing.
     check_ex("goldens/pm7500-7.6-640x480x32-finder.png", 0, 500, 20, 640)
+    # Phase 0 throughput floor of the predecoded-cores proposal (604
+    # interpreter through OF, the 68K emulator and the System 7.6 boot:
+    # measured 76 MIPS on the assert-enabled build, floor well below).
+    mips_floor("pm7500-76-hd", $t0, 20)
     report_row("7.6", "control", "hd-boot mesh chime")
     report_perf("suite-tnt/pm7500-76-hd", scheduler.instr_count)
 }

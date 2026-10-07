@@ -801,18 +801,21 @@ void mmu_fill_soa_page(mmu_state_t *mmu, uint32_t logical_page, uint32_t physica
 
     uintptr_t adjusted = (uintptr_t)host_ptr - logical_page;
     tlb_track_page(page_index);
+    uintptr_t wadj = memory_write_fill(
+        page_index, host_ptr, adjusted,
+        host_writable ? ((fill_super ? MEM_WT_SUPER : 0u) | (fill_user ? MEM_WT_USER : 0u)) : 0u); // 0 on a code page
 
     if (fill_super) {
         if (g_supervisor_read)
             g_supervisor_read[page_index] = adjusted;
         if (g_supervisor_write && host_writable)
-            g_supervisor_write[page_index] = adjusted;
+            g_supervisor_write[page_index] = wadj;
     }
     if (fill_user) {
         if (g_user_read)
             g_user_read[page_index] = adjusted;
         if (g_user_write && host_writable)
-            g_user_write[page_index] = adjusted;
+            g_user_write[page_index] = wadj;
     }
 }
 
@@ -965,6 +968,7 @@ void mmu_invalidate_tlb(mmu_state_t *mmu) {
     // block descriptors along with the SoA fill.  (The dis→dis early-out above
     // and the FD PMOVE forms — which never call here — both preserve them.)
     atc_flush(mmu);
+    memory_write_refused_reset(); // the write entries go with it on the switch core
     tlb_track_t *track = g_tlb;
     if (!track || track->overflow) {
         // Tracking overflowed — fall back to zeroing everything
@@ -1382,6 +1386,7 @@ bool mmu_write_physical_uint8(mmu_state_t *mmu, uint32_t phys_addr, uint8_t valu
     uint8_t *host = phys_to_host(mmu, phys_addr);
     if (!host)
         return false;
+    memory_host_written(host, 1); // a bus master (the AV's DSP) writing over cached code
     *host = value;
     return true;
 }

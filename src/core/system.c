@@ -233,8 +233,10 @@ void system_machine_power_cycle(void) {
     if (!cfg || !cfg->mem_map)
         return;
     uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
-    if (ram && cfg->ram_size)
+    if (ram && cfg->ram_size) {
+        memory_host_written(ram, cfg->ram_size); // cached code goes with it
         memset(ram, 0, cfg->ram_size); // DRAM loses its contents
+    }
     // The ADB bus is powered by the machine: its devices lose power too.
     adb_power_on(cfg->adb);
     // State a power-up initialises and /RESET does not (machine_profile.h).

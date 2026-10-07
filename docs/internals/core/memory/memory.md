@@ -270,6 +270,78 @@ Hooks and helpers:
 - `memory_logpoint_install(start_page, end_page)` / `..._uninstall(...)` — page refcount helpers
 - `dev_read8/16/32`, `dev_write8/16/32` (memory.c) — device dispatch + hook notify
 
+## Code-Page Coherence
+
+The predecoded executors (`docs/internals/core/cpu/predecode.md`) cache decoded
+instructions per host page; the memory layer keeps those caches coherent
+without a check on the fast path.
+
+- **Marks.** `memory_code_page_mark(host)` sets a per-page mark for the
+  host page (the selected map's flat RAM+ROM image is region 0 of
+  `g_mem_code_regions`, re-registered by `memory_map_select` whenever a
+  different map is selected; a card's host-backed window may register as
+  another) and zeroes the
+  page's write entries in every SoA table it has aliases in.  Aliases are
+  found by a reverse scan over the 256-page chunks flagged in
+  `g_mem_soa_chunk` (the selected map's chunk table).  `memory_code_page_unmark` clears the mark; the
+  entries come back on the next refill.
+- **One planter.** Every site that plants a write entry —
+  `rebuild_soa_page`, `memory_populate_pages`, `memory_populate_ram_mirror`,
+  `mmu_fill_soa_entry` (68030), `user_soa_fill` (PowerPC), the
+  PDM/TNT/Gossamer glue — goes through `memory_write_fill(page, host, adjusted)`, which
+  sets the chunk flag and **declines on a marked page** (the store then
+  takes the slow path).  Do not write `g_*_write[]` directly.
+- **Refused writes stay cache hits.**  On the switch core a page that
+  predecode marked would still hold its write entry, so a store there never
+  walks the 68K PMMU tables; a walk sets the descriptor's U/M bits and
+  MMUSR, which the guest can see (A/UX ages its pages by U).  The
+  refused-write record (`memory_write_refused_*`, one bit per page and
+  write table, per map) notes exactly the entries the marks took away --
+  every refusal in `memory_write_fill(..., tables)` and every entry
+  `memory_code_page_mark` zeroes -- and drops them where the switch core
+  loses its entry too (`mmu_invalidate_tlb`, the 68040's, a physical
+  logpoint install, a fill that leaves the page read-only).  The MMU slow
+  path completes a store whose bit is set through the page's read entry,
+  without the walk, and re-plants the write entry once the page is no
+  longer code.  With predecode off nothing ever sets a bit.
+- **Slow-path notification.** The 8/16/32-bit slow write paths call
+  `memory_host_written(host, len)` when the target is marked (before the
+  store lands, so a block executing the page is invalidated before the
+  new word can be fetched).
+- **Direct host writers** — anything that writes the image without going
+  through the guest store paths — call `memory_host_written` themselves.
+  The inventory:
+
+| Writer | Where | Hook call |
+|---|---|---|
+| `memory.write` / debug pokes | `memory_debug_write_*` (memory.c) | after the store |
+| ROM installation | `memory_map_init` (memory.c), before the map's first instruction | a new map is a new code region (`memory_map_select`) |
+| Checkpoint restore of the image | `memory_map_init` + the restore path | generation bump (`g_mem_map_generation`) resets the pool |
+| PowerPC HTAB R/C write-back | `ppc_mmu.c` | `memory_host_written` |
+| AMIC DMA (SCSI, SCC, sound, floppy) | `amic.c` byte writers | `memory_host_written` |
+| DBDMA channels | `tnt.c`, `gossamer.c` memcpy paths | `memory_host_written` |
+| 53C8xx SCRIPTS engine | `scripts53c8xx.c` | `memory_host_written` |
+| IIfx / IOP DMA | `iifx.c`, `iop_swim.c` | `memory_host_written` |
+| Mac II / 030 glue mirrors | `mac030_glue.c` | `memory_write_fill` for the aliases; stores notify |
+
+- **PowerPC user mode.** The user SoA tables are filled *logically*
+  (`user_soa_fill`), and a store whose write fill the marks refuse falls
+  back to a physical address that the inline accessor then uses to index
+  those logically-filled tables.  `user_phys_fallback` (ppc_mmu.c) keeps
+  the slot at that physical index empty — on the walk and on the
+  translation-TLB hit — so the access takes the physical slow path instead
+  of landing in whatever logical page sits at that index.  The evicted
+  page refills on its next slow access.
+
+A new device that DMA-writes guest memory through a host pointer must
+call `memory_host_written(host, len)` after the copy.  The debug-build
+audit in the executors (`PD_AUDIT_*`) traps on the first stale entry a
+missing call would leave behind.
+
+Counters: `g_mem_code_write_count` (stores that reached a marked page),
+`g_mem_slowpath_count` (every slow-path access; the elision level-2
+guard), both visible through `machine.memory`.
+
 ## Key Files
 
 | File | Purpose |
