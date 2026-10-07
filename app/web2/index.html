@@ -46,9 +46,15 @@
             for (const reg of regs) reg.unregister();
           });
         } else if (!crossOriginIsolated) {
-          navigator.serviceWorker.register('./coi-serviceworker.js').then(
+          // COEP credentialless where the browser has it (Chromium exposes
+          // window.credentialless), require-corp elsewhere: Safari ignores
+          // credentialless, and the page would never be isolated.  The
+          // choice is part of the worker's URL, so a page that registered
+          // the other one (or the older, credentialless-only worker)
+          // updates it and reloads once the new one is active.
+          const coep = 'credentialless' in window ? 'credentialless' : 'require-corp';
+          navigator.serviceWorker.register('./coi-serviceworker.js?coep=' + coep).then(
             (reg) => {
-              if (reg.active && navigator.serviceWorker.controller) return;
               const awaitActivated = (worker) => {
                 worker.addEventListener('statechange', () => {
                   if (worker.state === 'activated') location.reload();
@@ -56,7 +62,7 @@
               };
               if (reg.installing) awaitActivated(reg.installing);
               else if (reg.waiting) awaitActivated(reg.waiting);
-              else if (reg.active) location.reload();
+              else if (reg.active && !navigator.serviceWorker.controller) location.reload();
             },
             (err) => console.warn('COI service worker registration failed:', err),
           );
