@@ -11,7 +11,8 @@ emulator), and browser-based end-to-end tests (Playwright).
 | Unit | `make -j$(nproc) -C tests/unit run` | 2½ min native, then 40 s for the wasm32 rerun | No, but the `third-party/single-step-tests` and `third-party/powerpc-test` submodules must be initialised |
 | Integration, unit tier | `make integration-test TIER=unit -j$(nproc)` | 1 min | Yes |
 | Integration, matrix tier | `make integration-test TIER=matrix -j$(nproc)` | 17 min | Yes |
-| Integration, extended tier | `make integration-test TIER=extended` | 33 min, serial | Yes |
+| Integration, extended tier | `make integration-test TIER=extended -j$(nproc)` | 31 min of CPU (8 min at -j4) | Yes |
+| Integration, all tiers as CI runs them | `make integration-test TIER="unit matrix extended" SHARD=1/3 -j$(nproc)` | one third of the work per shard | Yes |
 | E2E | `make e2e-test` | 16 min, one worker | Yes |
 | Unit + every integration tier | `make test` | the sum of the rows above | Yes, for the integration part |
 
@@ -97,7 +98,21 @@ make integration-test -j$(nproc)    # Parallel (safe: per-test storage cache)
 make integration-test-valgrind      # Under Valgrind (scope to TIER=unit)
 make -C tests/integration test-suite-plus    # Run a single test/suite
 make -C tests/integration list      # List available tests (with tiers)
+make integration-test TIER="matrix extended" -j$(nproc)   # several tiers, one pool
+make integration-test SHARD=2/3 -j$(nproc)                # one of CI's shards
 ```
+
+**Order and shards.** Tests start longest first: `scripts/order-tests.py`
+sorts them by the wall seconds recorded in
+`tests/integration/test-weights.json`, so the long suites start at once
+instead of whenever the alphabet reaches them, and a test with no recorded
+weight starts first of all.  `SHARD=K/N` keeps one of N shards, bin-packed
+from the same weights, which is how CI splits the run across runners.  The
+runner prints each test's seconds on its result line and appends a record
+to `test-results/durations.jsonl`; `scripts/gen-test-weights.py` turns
+those (CI uploads them per shard) into a new `test-weights.json`.  Only the
+order depends on the weights, never a result, so they are refreshed when
+they drift far enough to unbalance the shards, not on every change.
 
 Every test runs with a private `GS_STORAGE_CACHE` under its work
 directory: the emulator routes all delta/journal sidecars and scratch
@@ -247,7 +262,7 @@ Neither script changes how goldens are compared. Matching is byte-exact via
 
 | Trigger | Runs |
 |---|---|
-| PR / push (`tests.yml`) | golden distinctness (no build or data needed), then unit + matrix tiers in parallel, **plus the extended tier while the integration-test rework settles**, then the coverage contract and the perf baselines; all gate the build. The extended tier is normally nightly-only (§5.4) — it is on the PR gate temporarily so a regression in a long row is caught before merge rather than the next morning, and the step says how to revert it. Coverage, covered cells, milestone rows and per-row spends go into the step summary. |
+| PR / push (`tests.yml`) | `static` (headless build, core layering, tier check, golden distinctness), `unit` (native and wasm32 unit suites) and three `integration` shards run in parallel; each shard runs its third of **all three tiers** as one longest-first `-j` pool (the extended tier is on the PR gate while the integration-test rework settles; in the pool it costs CPU on whichever shard it lands rather than a serial half hour). `contracts` then checks coverage (both tiers) and the perf baselines over the union of the shard logs, and puts coverage, milestone rows, per-row spends and the slowest tests into the step summary. |
 | Nightly 03:20 UTC (`nightly.yml`) | the extended tier in `KEEP_GOING=1` mode (so one red row does not truncate the report), plus Valgrind rescoped to the unit tier, one short run per PowerPC family the unit tier does not boot (`pdm-rom-ladder`, `tnt-pci-slots`) and one 68k boot, with `PERF_FLOORS=off`. Failure uploads `tests/integration/test-results/**`. |
 
 Valgrind is deliberately *not* a full sweep: at its 20–50× slowdown over
