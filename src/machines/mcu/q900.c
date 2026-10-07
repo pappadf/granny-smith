@@ -257,6 +257,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     st->swim_iop = iop_init(SwimIopNum, floppy_get_memory_interface(st->floppy), st->floppy, q900_swim_iop_irq, cfg,
                             cfg->scheduler, cp);
     machine_part(cfg, cp, "swim_iop", part_save_iop, st->swim_iop);
+    iop_swim_attach_adb(st->swim_iop, st->adb); // ADB is driven through IOP slot 3
 
     if (mcu_build_dafb(cfg, cp) != 0)
         return -1;

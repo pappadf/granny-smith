@@ -1318,12 +1318,12 @@ static bool tnt_fd_present(config_t *cfg, int drive) {
 }
 
 // The seeding step: Mac OS keeps its PRAM in the NVRAM's XPRAM partition
-// here, not in Cuda, so the AppleTalk and startup-device records go there.
+// here, not in Cuda, so the SysParam and startup-device records go there.
 static void tnt_seed(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     if (!st)
         return;
-    mac_seed_xpram_appletalk(st->gc.nvram + OF_NVRAM_XPRAM, cfg, of_nvram_defaults_tnt.pram);
+    mac_seed_xpram_sysparam(st->gc.nvram + OF_NVRAM_XPRAM, cfg, of_nvram_defaults_tnt.pram);
     int id = mac_seed_startup_scsi_id(cfg, "scsi");
     if (id != -2)
         of_nvram_set_startup_scsi(st->gc.nvram, id, &of_nvram_defaults_tnt);

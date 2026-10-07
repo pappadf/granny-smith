@@ -113,6 +113,11 @@ void iop_reset(iop_t *iop);
 // Saves IOP state to a checkpoint stream.
 void iop_checkpoint(iop_t *iop, checkpoint_t *checkpoint);
 
+// Give the SWIM IOP the ADB bus it drives: it runs the bus's auto-poll and
+// is told when a device has data.  The ADB model must outlive the IOP.
+struct adb;
+void iop_swim_attach_adb(iop_t *iop, struct adb *adb);
+
 // Returns the host-side memory-mapped I/O interface for the PIC's $2000-byte
 // aperture (VIA1+5 .. VIA1+6 range on IIfx; see iifx.c for the address
 // decode that routes 0x50F12000-0x50F13FFF to the SWIM IOP).
