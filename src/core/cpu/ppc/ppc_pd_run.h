@@ -350,9 +350,7 @@ t2_step:
         ipc = p->pc;
         uint32_t iw;
         if (!ppc_fetch(p, &iw))
-            goto relookup; // ISI raised; pc now at the vector
-        if (__builtin_expect(g_bus_error_pending, 0))
-            goto done; // fetch faulted; delivered below
+            goto relookup; // ISI (pc at the vector), or a fetch fault (burndown zeroed)
         p->pc += 4;
         ppc_execute(p, iw);
     }
@@ -392,11 +390,11 @@ relookup:
                 g_pd_stats.relookup_nomap++;
                 uint32_t iw;
                 p->instruction_pc = pc;
-                if (!ppc_fetch_fill(p, pc, &iw))
-                    goto relookup; // ISI raised; pc now at the vector
-                if (__builtin_expect(g_bus_error_pending, 0)) {
+                if (!ppc_fetch_fill(p, pc, &iw)) {
+                    // ISI (pc now at the vector), or a fetch fault: the burndown
+                    // was zeroed, and the next relookup reaches the epilogue.
                     ipc = pc;
-                    goto done; // fetch faulted; the epilogue delivers it
+                    goto relookup;
                 }
             }
             if ((pc - g_ppc_fetch.lo) < g_ppc_fetch.span && g_ppc_fetch.span == MEM_PAGE_SIZE) {

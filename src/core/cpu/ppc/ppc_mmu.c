@@ -850,7 +850,10 @@ int ppc_dxlate_dcbz(ppc_t *p, uint32_t iw, uint32_t *addr) {
 // Refill the fetch window for pc and deliver the word there via *iw.
 // MSR[IT] is checked BEFORE the segment's T bit (§6.8.2.2): with IT off
 // this is the identity map read through the physical page table (never
-// the mode-dependent SoA arrays).  Returns false when ISI was raised.
+// the mode-dependent SoA arrays).  Returns false when ISI was raised, or
+// when the fetch itself bus-errored (the slow path then also zeroed the
+// sprint's burndown, so the caller's loop ends and its epilogue delivers
+// the machine check): the one test the loop already makes carries both.
 bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
     uint32_t page = pc & ~(uint32_t)PAGE_MASK;
     bool user = (p->msr & PPC_MSR_PR) != 0;
@@ -939,7 +942,7 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
     g_ppc_fetch.span = 0;
     g_ppc_fetch.blk = NULL;
     *iw = memory_read_uint32_slow((pa ^ le_xor) & g_address_mask);
-    return true;
+    return !g_bus_error_pending;
 }
 
 // ============================================================

@@ -615,6 +615,10 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
     g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                              \
     cpu_check_interrupt(cpu);                                                                                          \
     g_bus_error_instr_ptr = instructions; /* let memory slow paths force exit */                                       \
+    /* The same-PC retry latch: decided once per sprint (and in write_sr), */                                          \
+    /* never per instruction -- see m68k_bus_error_latch_settle.           */                                          \
+    if (__builtin_expect(cpu->last_bus_error_pc != 0, 0))                                                              \
+        m68k_bus_error_latch_settle(cpu, instructions);                                                                \
     /* Capture trace state before execution; clamp to 1 instruction if T1 set */                                       \
     uint32_t _saved_trace = cpu->trace;                                                                                \
     if (__builtin_expect(_saved_trace & 2, 0))                                                                         \
@@ -631,18 +635,6 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
         uint32_t fetch = memory_read_prefetch32(cpu->pc);                                                              \
         uint16_t opcode = fetch >> 16;                                                                                 \
         cpu->instruction_pc = cpu->pc;                                                                                 \
-        /* Double-fault tracking: a bus error on an instruction fetch leaves                                           \
-         * last_bus_error_pc set so a retry at the SAME PC can be detected as                                          \
-         * a true double fault.  The value must be cleared once the CPU has                                            \
-         * moved past that PC in USER MODE — otherwise a different process                                           \
-         * that later faults at the same VA (e.g. two execs of /etc/init,                                              \
-         * both with crt0 at $148) is falsely flagged as a double fault.                                               \
-         * Only clear in user mode: kernel-side instructions between the                                               \
-         * first fault and the RTE retry must NOT clear the tracking, or                                               \
-         * legitimate kernel-side double faults (and user retries that                                                 \
-         * fault again at the same PC) would be missed. */                                                             \
-        if (__builtin_expect(cpu->last_bus_error_pc != 0 && !cpu->supervisor && cpu->last_bus_error_pc != cpu->pc, 0)) \
-            cpu->last_bus_error_pc = 0;                                                                                \
         cpu->pc += 2;                                                                                                  \
         if (*instructions > 0)                                                                                         \
             (*instructions)--;
@@ -675,8 +667,7 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
         /* For SR-modifying instructions, uses new T1 value (per M68000 PRM 6.3.10). */                                \
         exception(cpu, 0x024, cpu->pc, cpu_get_sr(cpu));                                                               \
     }                                                                                                                  \
-    cpu_check_interrupt(cpu);                                                                                          \
-    assert(*instructions == 0)
+    cpu_check_interrupt(cpu)
 
 #include "cpu_decode.h"
 #undef CPU_DECODER_NAME

@@ -99,6 +99,10 @@
      * unrelated (supervisor / MMU-setup) code, where it was delivered with the wrong                                  \
      * context and vectored through the ROM, resetting the machine. */                                                 \
     g_bus_error_instr_ptr = instructions;                                                                              \
+    /* The same-PC retry latch: decided once per sprint (and in write_sr), */                                          \
+    /* never per instruction -- see m68k_bus_error_latch_settle.           */                                          \
+    if (__builtin_expect(cpu->last_bus_error_pc != 0, 0))                                                              \
+        m68k_bus_error_latch_settle(cpu, instructions);                                                                \
     while (*instructions > 0) {                                                                                        \
         /* The MC68000 has a 24-bit address bus (A0-A23); bits 24-31 of the PC are                                     \
          * not driven.  Control transfers through a pointer whose high byte is a                                       \
@@ -131,8 +135,6 @@
             cpu->ir = opcode;                                                                                          \
             cpu->ir_pc = cpu->instruction_pc;                                                                          \
         }                                                                                                              \
-        if (__builtin_expect(cpu->last_bus_error_pc != 0 && !cpu->supervisor && cpu->last_bus_error_pc != cpu->pc, 0)) \
-            cpu->last_bus_error_pc = 0;                                                                                \
         cpu->pc += 2;                                                                                                  \
         if (*instructions > 0)                                                                                         \
             (*instructions)--;
@@ -167,8 +169,7 @@
         g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;                                             \
         g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                          \
     }                                                                                                                  \
-    cpu_check_interrupt(cpu);                                                                                          \
-    assert(*instructions == 0)
+    cpu_check_interrupt(cpu)
 
 #include "cpu_decode.h"
 #undef CPU_DECODER_NAME

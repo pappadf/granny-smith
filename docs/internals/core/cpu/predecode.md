@@ -542,13 +542,18 @@ predecoded code.
 | `page_lo` | the guest address of `blk`'s page |
 | `ipc` | the guest address of the instruction being dispatched (`page_lo + 2 * (cur - blk->e)`) |
 | `pd_held` | the current page was declined by the pool: stay generic without re-asking until the PC leaves it |
-| `pd_slow` | the switch core's post-fault user-mode tracking is armed (`last_bus_error_pc != 0 && !supervisor`): every instruction takes the generic step, whose prologue does that tracking |
 
 **Prologue** (the switch core's, minus the loop):
 - if `cpu->halted` is set (a double bus fault), run `PD_HW_RESET`;
 - on the 030/040, select the active SoA tables for the current mode;
 - `cpu_check_interrupt`;
 - publish `g_bus_error_instr_ptr`;
+- if the same-PC retry latch (`last_bus_error_pc`) is set, settle it
+  (`m68k_bus_error_latch_settle`, shared with the switch cores and
+  `write_sr`): in user mode at another PC it clears; at the latched PC (the
+  RTE retry) the sprint is cut to that one instruction.  This replaces a
+  per-instruction test (`cores.md`, "The interpreter loop has exactly one
+  exit");
 - on the 030/040 with trace (T1) set, clamp the budget to one instruction.
 
 Then jump to `relookup`.
@@ -556,8 +561,7 @@ Then jump to `relookup`.
 **`top`:** dispatch one entry.
 
 1. If the budget is 0, go to `done`.
-2. Compute `ipc`.  If `pd_slow`, count `generic_slowmode` and take the
-   generic step.
+2. Compute `ipc`.
 3. Decrement the budget **before** dispatch.
 4. Load the entry.  If this is the **last slot** (the budget is now 0) and
    the id is a twin, step back to the full-flags id (§3.8).
@@ -584,8 +588,8 @@ prologue, verbatim:
   odd PC;
 - fetch the opcode and extension word with `memory_read_prefetch32`;
 - set `instruction_pc`;
-- on the 68000, latch `ir`;
-- do the `last_bus_error_pc` bookkeeping;
+- on the 68000, latch `ir` (unless the fetch faulted: the group-0 frame
+  must keep the control transfer that branched into the absent page);
 - `pc += 2`, take the slot;
 - run `PD_STEP_NAME`, the unmodified tree;
 - go to `relookup`.
@@ -596,8 +600,7 @@ address:
 1. Take the PC (24-bit masked on the 68000) and its bus address
    `pc & g_address_mask`.  The fast-path tables are sized to the mask, so a
    stray PC above the map must not index past them.
-2. Re-derive `pd_slow`.
-3. **Same page, same mapping:** if the PC is even, still in
+2. **Same page, same mapping:** if the PC is even, still in
    `[page_lo, page_lo + 4K)`, and
    `g_active_read[bus >> 12] + (page_lo & mask) == blk->host`, set
    `cur = blk->e + (pc - page_lo)/2` and go to `top`.  No memory access.
@@ -607,9 +610,9 @@ address:
    maps the same logical page differently in the two spaces.  A
    `PMOVE`/`PFLUSH` run through the generic step can remap the page in
    place.
-4. If the page is held (`pd_held`, same page), go straight to the generic
+3. If the page is held (`pd_held`, same page), go straight to the generic
    step.
-5. **New page:**
+4. **New page:**
    - read the page's fast-path read entry;
    - if it is nonzero, call `predecode_lookup(base + page, page_lo,
      PD_ARCH_68K)`; a NULL result sets `pd_held` and counts
@@ -617,9 +620,9 @@ address:
    - if it is zero (MMU page not walked yet, or a device), count
      `relookup_nomap` and take one generic step: its fetch fills the entry,
      and the next relookup finds the page.
-6. `predecode_enter(blk, *instructions)` charges the instructions retired
+5. `predecode_enter(blk, *instructions)` charges the instructions retired
    since the last transition to the block being left (§3.13).
-7. If there is a block, go to `top`; otherwise take the generic step.
+6. If there is a block, go to `top`; otherwise take the generic step.
 
 **`done`** (epilogue):
 - materialize `cpu->pc` from the cursor.  The 68000 keeps a control
@@ -878,8 +881,9 @@ audit + body + `cur++` → `retire`.  T1 bodies set `instruction_pc` and
 
 **`t2_step`** is the switch loop's iteration, verbatim:
 1. set `instruction_pc`;
-2. `ppc_fetch`.  An ISI goes to relookup at the vector; a bus error goes
-   to `done`;
+2. `ppc_fetch`.  It returns false for an ISI (the PC is at the vector)
+   and for a fetch bus error (the burn-down was zeroed); either way the
+   loop goes to relookup, which reaches `done` once the budget is 0;
 3. `pc += 4`;
 4. `ppc_execute`;
 5. go to `retire_relookup`.
@@ -1133,7 +1137,7 @@ The `predecode` node is a root sibling of `machine` (order 22, next to
 | `predecode.lookups` / `allocs` / `evictions` | RO | pool activity |
 | `predecode.decodes` / `invalidations` / `demotions` / `elided` / `realiases` | RO | §3.2, §3.12, §3.13, §3.8, §3.14 |
 | `predecode.suppressed_writes` | RO | stores that reached a marked page (`g_mem_code_write_count`) |
-| `predecode.generic_steps` | RO | instructions run through the generic step, split into `generic_cross`, `generic_declined` and `generic_slowmode`; the remainder are steps on pages with no block |
+| `predecode.generic_steps` | RO | instructions run through the generic step, split into `generic_cross` and `generic_declined`; the remainder are steps on pages with no block |
 | `predecode.relookup_nomap` / `relookup_nopool` | RO | page transitions that found no fast-path read entry / that the pool declined (split into `lookup_noregion`, `lookup_held`) |
 | `predecode.hist([top])` | method | print the most-decoded ids per architecture with names and share (consumes the counts) |
 | `predecode.reset()` | method | drop every block and zero the counters |

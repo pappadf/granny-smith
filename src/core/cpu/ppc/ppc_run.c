@@ -579,7 +579,8 @@ bool ppc_le_st64(ppc_t *p, uint32_t iw, uint32_t ea, uint64_t v) {
 // g_ppc_fetch caches the host mapping (identity or translated —
 // ppc_mmu.c owns the refill, including ISI delivery); fetch never goes
 // through the mode-dependent g_active maps.  Returns false when the
-// fetch raised ISI (pc has been redirected to the vector).
+// fetch raised ISI (pc has been redirected to the vector) or bus-errored
+// (the burndown is zeroed: the loop ends and the epilogue delivers it).
 static inline bool ppc_fetch(ppc_t *p, uint32_t *iw) {
     uint32_t pc = p->pc;
     if (__builtin_expect(pc - g_ppc_fetch.lo < g_ppc_fetch.span, 1)) {
@@ -651,9 +652,7 @@ void ppc_run(ppc_t *restrict p, uint32_t *instructions) {
         // arm of ppc_fetch_fill always succeeds.  The fold budget above is the
         // bound that was actually missing.
         if (!ppc_fetch(p, &iw))
-            continue;
-        if (__builtin_expect(g_bus_error_pending, 0))
-            break; // fetch faulted; delivered below
+            continue; // a fetch bus error zeroed the burndown: the loop ends here
         p->pc += 4;
         ppc_execute(p, iw);
         // 601 branch folding: b/bc/bclr/bcctr issue to the branch unit in

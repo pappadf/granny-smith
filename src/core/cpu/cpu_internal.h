@@ -1144,6 +1144,27 @@ static inline void cpu_check_interrupt(cpu_t *restrict cpu) {
 // Update full status register including supervisor mode, M bit, and interrupt mask.
 // On 68030/68040, handles ISP/MSP switching when M bit changes and updates SoA
 // active pointers.
+// The same-PC retry latch (last_bus_error_pc, see exception_bus_error) is
+// cleared once the CPU runs a user-mode instruction at a PC other than the
+// latched one: a retry that faults again at the same PC is a true double
+// fault, but a different process faulting later at the same VA (two execs of
+// A/UX's /etc/init, both with crt0 at $148) is not.  Supervisor instructions
+// between the fault and the RTE retry never clear it.  Instead of testing that on every instruction, it is decided
+// where user mode can begin: at sprint entry, and in write_sr -- the one seam
+// that leaves supervisor mode -- after the interrupt check, given the PC of
+// the next instruction.  A return to the latched PC is the RTE retry: the
+// sprint is cut to that one instruction, so the next sprint entry decides
+// again once it has run (or a repeat fault at the same PC has halted).
+static inline void m68k_bus_error_latch_settle(cpu_t *restrict cpu, uint32_t *instructions) {
+    if (cpu->supervisor || g_bus_error_pending)
+        return;
+    uint32_t pc = cpu->cpu_model >= CPU_MODEL_68030 ? cpu->pc : (cpu->pc & 0x00FFFFFFu);
+    if (pc != cpu->last_bus_error_pc)
+        cpu->last_bus_error_pc = 0;
+    else if (instructions && *instructions > 1)
+        *instructions = 1;
+}
+
 static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
     bool new_s = (sr >> 13) & 1;
 
@@ -1239,6 +1260,8 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
     if (__builtin_expect((cpu->trace & 2) != 0, 0) && g_bus_error_instr_ptr)
         *g_bus_error_instr_ptr = 0;
     cpu_check_interrupt(cpu);
+    if (__builtin_expect(cpu->last_bus_error_pc != 0, 0))
+        m68k_bus_error_latch_settle(cpu, g_bus_error_instr_ptr);
 }
 
 // Exception helpers

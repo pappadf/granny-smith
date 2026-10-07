@@ -396,7 +396,6 @@ enum {
     PDA_GENERIC_STEPS,
     PDA_GENERIC_CROSS,
     PDA_GENERIC_DECLINED,
-    PDA_GENERIC_SLOWMODE,
     PDA_RELOOKUP_NOMAP,
     PDA_RELOOKUP_NOPOOL,
     PDA_LOOKUP_NOREGION,
@@ -442,8 +441,6 @@ static value_t pd_attr_get(struct object *self, const member_t *m) {
         return val_uint(8, g_pd_stats.generic_cross);
     case PDA_GENERIC_DECLINED:
         return val_uint(8, g_pd_stats.generic_declined);
-    case PDA_GENERIC_SLOWMODE:
-        return val_uint(8, g_pd_stats.generic_slowmode);
     case PDA_RELOOKUP_NOMAP:
         return val_uint(8, g_pd_stats.relookup_nomap);
     case PDA_RELOOKUP_NOPOOL:
@@ -574,7 +571,6 @@ static const member_t predecode_members[] = {
     PD_ATTR_RO("generic_steps", PDA_GENERIC_STEPS, "instructions run through the generic tier"),
     PD_ATTR_RO("generic_cross", PDA_GENERIC_CROSS, "...of which page-straddling instructions"),
     PD_ATTR_RO("generic_declined", PDA_GENERIC_DECLINED, "...of which shapes the classifier declined"),
-    PD_ATTR_RO("generic_slowmode", PDA_GENERIC_SLOWMODE, "...of which the executor's slow mode (post-fault, trace)"),
     PD_ATTR_RO("relookup_nomap", PDA_RELOOKUP_NOMAP, "page transitions with no fast-path read entry for the PC"),
     PD_ATTR_RO("relookup_nopool", PDA_RELOOKUP_NOPOOL, "page transitions the pool declined (no region, held, full)"),
     PD_ATTR_RO("lookup_noregion", PDA_LOOKUP_NOREGION, "...of which the host page lies in no code region"),

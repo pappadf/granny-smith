@@ -455,6 +455,10 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
     g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                              \
     cpu_check_interrupt(cpu);                                                                                          \
     g_bus_error_instr_ptr = instructions; /* let memory slow paths force exit */                                       \
+    /* The same-PC retry latch: decided once per sprint (and in write_sr), */                                          \
+    /* never per instruction -- see m68k_bus_error_latch_settle.           */                                          \
+    if (__builtin_expect(cpu->last_bus_error_pc != 0, 0))                                                              \
+        m68k_bus_error_latch_settle(cpu, instructions);                                                                \
     /* Capture trace state before execution; clamp to 1 instruction if T1 set */                                       \
     uint32_t _saved_trace = cpu->trace;                                                                                \
     if (__builtin_expect(_saved_trace & 2, 0))                                                                         \
@@ -465,10 +469,6 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
         uint32_t fetch = memory_read_prefetch32(cpu->pc);                                                              \
         uint16_t opcode = fetch >> 16;                                                                                 \
         cpu->instruction_pc = cpu->pc;                                                                                 \
-        /* Double-fault tracking: see the cpu_68030.c prologue for why this  */                                        \
-        /* clears only in user mode once the CPU has moved past the PC.     */                                         \
-        if (__builtin_expect(cpu->last_bus_error_pc != 0 && !cpu->supervisor && cpu->last_bus_error_pc != cpu->pc, 0)) \
-            cpu->last_bus_error_pc = 0;                                                                                \
         cpu->pc += 2;                                                                                                  \
         if (*instructions > 0)                                                                                         \
             (*instructions)--;
@@ -490,8 +490,7 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
         /* Trace exception: fire if T1 was set at sprint start AND still set now. */                                   \
         exception(cpu, 0x024, cpu->pc, cpu_get_sr(cpu));                                                               \
     }                                                                                                                  \
-    cpu_check_interrupt(cpu);                                                                                          \
-    assert(*instructions == 0)
+    cpu_check_interrupt(cpu)
 
 #include "cpu_decode.h"
 #undef CPU_DECODER_NAME

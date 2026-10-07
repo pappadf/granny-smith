@@ -142,7 +142,6 @@ typedef struct pd_stats {
     uint64_t generic_steps; // instructions run through the generic tier (uncached, demoted, PD_GENERIC)
     uint64_t generic_cross; // ...of which: PD_CROSS entries (the instruction straddles the page)
     uint64_t generic_declined; // ...of which: PD_GENERIC entries (the classifier declined the shape)
-    uint64_t generic_slowmode; // ...of which: the executor's own slow mode (post-fault user mode, trace)
     uint64_t relookup_nomap; // relookups that found no fast-path read entry for the PC's page
     uint64_t relookup_nopool; // relookups whose page the pool declined (no region, held, pool full)
     uint64_t lookup_noregion; // ...of which: the host page is in no registered code region

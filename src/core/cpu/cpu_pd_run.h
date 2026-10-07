@@ -991,6 +991,10 @@ void PD_RUN_NAME(cpu_t *restrict cpu, uint32_t *instructions) {
 #endif
     cpu_check_interrupt(cpu);
     g_bus_error_instr_ptr = instructions; // let memory slow paths force exit
+    // The same-PC retry latch is decided here and in write_sr, never per
+    // instruction (m68k_bus_error_latch_settle).
+    if (__builtin_expect(cpu->last_bus_error_pc != 0, 0))
+        m68k_bus_error_latch_settle(cpu, instructions);
 #ifdef CPU_DECODER_IS_68030
     uint32_t _saved_trace = cpu->trace;
     if (__builtin_expect(_saved_trace & 2, 0))
@@ -1002,18 +1006,12 @@ void PD_RUN_NAME(cpu_t *restrict cpu, uint32_t *instructions) {
     pd_entry_t *cur = NULL; // the entry to dispatch next
     uint32_t page_lo = 1; // guest address of the page (odd: no page yet)
     uint32_t ipc = cpu->instruction_pc; // address of the instruction being dispatched
-    bool pd_slow = false; // last_bus_error_pc tracking wants the full prologue (§10)
     goto relookup;
 
 top:
     if (*instructions == 0)
         goto done;
     ipc = page_lo + ((uint32_t)(cur - blk->e) << 1);
-    if (__builtin_expect(pd_slow, 0)) {
-        g_pd_stats.generic_slowmode++;
-        cpu->pc = ipc;
-        goto t2_step;
-    }
     (*instructions)--;
     {
         pd_entry_t e = *cur;
@@ -1491,8 +1489,6 @@ t2_step:
             cpu->ir_pc = cpu->instruction_pc;
         }
 #endif
-        if (__builtin_expect(cpu->last_bus_error_pc != 0 && !cpu->supervisor && cpu->last_bus_error_pc != cpu->pc, 0))
-            cpu->last_bus_error_pc = 0;
         cpu->pc += 2;
         if (*instructions > 0)
             (*instructions)--;
@@ -1513,7 +1509,6 @@ relookup:
         // above the map (an exception through a stray vector, a 24-bit
         // map under a 32-bit core) must not index past them.
         uint32_t bus = pc & g_address_mask;
-        pd_slow = cpu->last_bus_error_pc != 0 && !cpu->supervisor;
         // Same logical page: reuse the block only if the page still maps to
         // the host page it was found on.  The mapping can change under a
         // logical address without leaving the page: an RTE or MOVE to SR
@@ -1605,7 +1600,6 @@ done:
     }
 #endif
     cpu_check_interrupt(cpu);
-    assert(*instructions == 0);
 }
 
 // ============================================================================
