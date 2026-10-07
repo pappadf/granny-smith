@@ -114,14 +114,6 @@ static const uint8_t cuda_rejected_cmds[] = {0x04, 0x05, 0x06, 0x0F, 0x15, 0x17,
 // CudaInit waits for TREQ HIGH here with a 10 ms timeout, so a few
 // microseconds of latency is invisible to it.
 #define CUDA_SYNC_TREQ_NS 8000.0
-// How long after the idle acknowledge Cuda leaves the link to the host before
-// it initiates an auto-poll packet of its own.  A host with a command queued
-// starts it within microseconds of that byte; the model has no collision
-// arbitration, so an attention byte sent into that window takes the host's
-// first command byte ("host byte dropped mid-send") and the host waits for a
-// reply forever.  Copland's boot hit exactly this: a latched Caps Lock parked
-// for the link, the ROM ending a stale reply and sending Talk R3 at once.
-#define CUDA_TURNAROUND_NS 1000000.0
 // How long after a RESET SYSTEM command the reset line is asserted.  A real
 // Cuda takes milliseconds; what matters here is only that it is not zero,
 // so the guest instruction that asked for it has retired first (see
@@ -243,7 +235,6 @@ struct av_cuda {
 static void cuda_tick_event(void *source, uint64_t data);
 static void cuda_reset_event(void *source, uint64_t data);
 static void cuda_adb_talk_event(void *source, uint64_t data);
-static void cuda_link_free_event(void *source, uint64_t data);
 static void cuda_adb_service(struct av_cuda *cuda);
 static void cuda_push_event(void *source, uint64_t data);
 static void cuda_send_timeout_event(void *source, uint64_t data);
@@ -289,19 +280,9 @@ static void cuda_push_event(void *source, uint64_t data) {
         cuda_set_treq(cuda, true); // the last response byte carries TREQ negated
     cuda->push_last = false;
     via_input_sr(cuda->via1, cuda->push_byte);
-    // The idle acknowledge has gone out: the link is free once the host has
-    // had its turnaround (CUDA_TURNAROUND_NS).
-    if (cuda->state == CUDA_IDLE) {
-        remove_event(cuda->sched, &cuda_link_free_event, cuda);
-        scheduler_new_cpu_event(cuda->sched, &cuda_link_free_event, cuda, 0, 0, (uint64_t)CUDA_TURNAROUND_NS);
-    }
-}
-
-// The host's turnaround after an idle acknowledge is over: if it started
-// nothing, the link is Cuda's (cuda_adb_service re-checks).
-static void cuda_link_free_event(void *source, uint64_t data) {
-    (void)data;
-    cuda_adb_service((av_cuda_t *)source);
+    // The idle acknowledge has gone out: the link to the host is free.
+    if (cuda->state == CUDA_IDLE)
+        cuda_adb_service(cuda);
 }
 
 // Push the tx_buf byte at `idx`, raising TREQ with the last byte (the
@@ -772,9 +753,32 @@ void av_cuda_via1_shift_input(av_cuda_t *cuda, uint8_t byte) {
             // interrupt and waits for it again — re-clock the attention.
             LOG(2, "collision with attention byte — re-clocking");
             cuda_push_delayed(cuda, cuda->tx_buf[0]);
-        } else {
-            LOG(2, "host byte $%02X dropped mid-send (tx_idx=%d/%d)", byte, cuda->tx_idx, cuda->tx_len);
+            return;
         }
+        if (cuda->tx_idx == 1 && cuda->tx_len >= 3 && cuda->tx_buf[1] == PKT_ADB &&
+            (cuda->tx_buf[2] & CUDA_FLAG_AUTOPOLL) && !cuda->ap_park_len) {
+            // Collision on an auto-poll packet: the host asserted TIP to
+            // start a command of its own (which took our attention byte)
+            // and is now clocking out its first command byte.  Cuda yields
+            // an unsolicited packet to the host: the packet goes back to
+            // the head of the queue and is sent once the command is done
+            // (cuda_adb_service, after its idle acknowledge), and the byte
+            // is the start of the host's command.  Dropping the byte instead
+            // left the host waiting for a reply to a command Cuda never
+            // saw -- Copland's boot with a latched Caps Lock
+            // (pm7100-copland-boot).
+            LOG(2, "collision: host command over an auto-poll packet — yielding it");
+            memcpy(cuda->ap_park, cuda->tx_buf, (size_t)cuda->tx_len);
+            cuda->ap_park_len = cuda->tx_len;
+            cuda->tx_len = 0;
+            cuda->tx_idx = 0;
+            cuda_send_progress(cuda);
+            cuda_set_treq(cuda, true);
+            cuda->state = CUDA_RECEIVING;
+            cuda->rx_len = 0;
+            break;
+        }
+        LOG(2, "host byte $%02X dropped mid-send (tx_idx=%d/%d)", byte, cuda->tx_idx, cuda->tx_len);
         return;
     case CUDA_IDLE:
         cuda->state = CUDA_RECEIVING;
@@ -1064,8 +1068,7 @@ static void cuda_tick_event(void *source, uint64_t data) {
 //
 // Called whenever one of those conditions may have changed: a device got
 // data (cuda_adb_data), the host turned auto-poll on, a Talk completed, or
-// the link went free (cuda_link_free_event, a turnaround after the idle
-// acknowledge).
+// the link went free (cuda_push_event, after the idle acknowledge).
 static void cuda_adb_service(av_cuda_t *cuda) {
     if (cuda->ap_park_len) {
         // A reaped solicited reply (resend_pending) goes first: its
@@ -1155,7 +1158,6 @@ av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, stru
     if (cuda->sched) {
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "tick", &cuda_tick_event);
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "adb_talk", &cuda_adb_talk_event);
-        scheduler_new_event_type(cuda->sched, "cuda", cuda, "link_free", &cuda_link_free_event);
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "push", &cuda_push_event);
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "sendto", &cuda_send_timeout_event);
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "resend", &cuda_resend_event);
@@ -1189,7 +1191,6 @@ void av_cuda_host_power_cycle(av_cuda_t *cuda) {
     remove_event(cuda->sched, &cuda_reset_event, cuda);
     remove_event(cuda->sched, &cuda_treq_release_event, cuda);
     remove_event(cuda->sched, &cuda_adb_talk_event, cuda);
-    remove_event(cuda->sched, &cuda_link_free_event, cuda);
     cuda->adb_talk_pending = false;
     cuda->state = CUDA_IDLE;
     cuda->rx_len = 0;
