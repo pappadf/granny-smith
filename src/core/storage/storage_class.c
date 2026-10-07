@@ -1019,8 +1019,12 @@ static int work_convert(io_leaf_t *j) {
         }
     } else if (!rc) {
         const char *base = strrchr(j->a, '/');
-        udif_writer_opts_t o = {
-            .chunk_sectors = u->chunk_kb * 2, .level = u->level, .source_name = base ? base + 1 : j->a};
+        udif_writer_opts_t o = {.chunk_sectors = u->chunk_kb * 2,
+                                .level = u->level,
+                                .source_name = u->source_name ? u->source_name
+                                               : base         ? base + 1
+                                                              : j->a,
+                                .origin = u->origin};
         w = udif_writer_open(j->b, &o, j->err, sizeof j->err);
         if (!w)
             rc = -EIO;
@@ -1259,10 +1263,11 @@ static DEF_METHOD(files_method_udif_abort) {
     return udif_dispatch("", NULL, u, work_udif_abort, NULL, "files.udif_abort");
 }
 
-// `files.convert(src, dst, [chunk_kb], [level], [format])` -- write the
-// decoded disk of any image the core reads as a UDIF (format "udif", the
-// default) or a flat raw image ("raw"), checking the result decodes to the
-// same bytes.
+// `files.convert(src, dst, [chunk_kb], [level], [format], [source_name],
+// [origin])` -- write the decoded disk of any image the core reads as a UDIF
+// (format "udif", the default) or a flat raw image ("raw"), checking the
+// result decodes to the same bytes.  A UDIF records `source_name` (default:
+// src's own name) and `origin` (as files.udif_open does).
 static DEF_METHOD(files_method_convert) {
     int64_t kb = argc > 2 ? opt_int(&argv[2], 64) : 64;
     int64_t level = argc > 3 ? opt_int(&argv[3], 1) : 1;
@@ -1280,6 +1285,10 @@ static DEF_METHOD(files_method_convert) {
         u->chunk_kb = (uint32_t)kb;
         u->level = (int)level;
         u->raw = strcmp(fmt, "raw") == 0;
+        if (argc > 5 && argv[5].kind == V_STRING && argv[5].s && *argv[5].s)
+            u->source_name = gs_strdup(argv[5].s);
+        if (argc > 6 && argv[6].kind == V_STRING && argv[6].s && *argv[6].s)
+            u->origin = gs_strdup(argv[6].s);
     }
     return udif_dispatch(argv[0].s, argv[1].s, u, work_convert, answer_udif_stats, "files.convert");
 }
@@ -1369,17 +1378,27 @@ static const arg_decl_t files_convert_args[] = {
                                                     .kind = V_NONE,
                                                     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
                                                     .doc = "Chunk size in KB, a power of two in 4..1024",
-                                                    .default_doc = "64"  },
+                                                    .default_doc = "64"            },
     {.name = "level",
                                                     .kind = V_NONE,
                                                     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_POLY,
                                                     .doc = "Deflate effort 1..9; 0 stores zero runs and raw chunks only",
-                                                    .default_doc = "1"   },
+                                                    .default_doc = "1"             },
     {.name = "format",
                                                     .kind = V_STRING,
                                                     .validation_flags = OBJ_ARG_OPTIONAL,
                                                     .doc = "udif, or raw for a flat image",
-                                                    .default_doc = "udif"},
+                                                    .default_doc = "udif"          },
+    {.name = "source_name",
+                                                    .kind = V_STRING,
+                                                    .validation_flags = OBJ_ARG_OPTIONAL,
+                                                    .doc = "The original file name, recorded in a UDIF",
+                                                    .default_doc = "src's own name"},
+    {.name = "origin",
+                                                    .kind = V_STRING,
+                                                    .validation_flags = OBJ_ARG_OPTIONAL,
+                                                    .doc = "Where the image came from (e.g. a URL), recorded in a UDIF as is",
+                                                    .default_doc = "none"          },
 };
 
 static const arg_decl_t files_export_raw_args[] = {
@@ -1525,7 +1544,7 @@ static const member_t files_members[] = {
      .method = {.result_doc = "{sectors, bytes_in, stored_bytes, zero_bytes, extents, crc}",
                 .ui_flags = MM_IO,
                 .args = files_convert_args,
-                .nargs = 5,
+                .nargs = 7,
                 .result = V_MAP,
                 .fn = files_method_convert}},
     {.kind = M_METHOD,

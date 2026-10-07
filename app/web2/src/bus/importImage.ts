@@ -363,13 +363,18 @@ async function writeExact(path: string, pump: Pump, opts: ImportOptions, cancell
 }
 
 // A UDIF staged at `part` (stored as uploaded): keep it when the emulator
-// reads it in place, else re-chunk it.  The path of the UDIF to place.
-async function settleUdif(part: string, name: string): Promise<string> {
-  const info = (await gsEval('files.udif_info', [part])) as { in_place?: boolean } | null;
-  if (info && typeof info === 'object' && info.in_place) return part;
+// reads it in place and it already says where it came from, else rewrite it
+// (re-chunked, and recording `origin`).  The path of the UDIF to place.
+async function settleUdif(part: string, name: string, origin?: string): Promise<string> {
+  const info = (await gsEval('files.udif_info', [part])) as {
+    in_place?: boolean;
+    origin?: string;
+  } | null;
+  const inPlace = !!info && typeof info === 'object' && !!info.in_place;
+  if (inPlace && (!origin || info?.origin === origin)) return part;
   const rechunked = `${part}.re`;
-  showNotification(`Re-chunking ${name} so it can be read in place...`, 'info');
-  const r = await gsEval('files.convert', [part, rechunked]);
+  if (!inPlace) showNotification(`Re-chunking ${name} so it can be read in place...`, 'info');
+  const r = await gsEval('files.convert', [part, rechunked, 64, 1, 'udif', name, origin ?? '']);
   await rmQuiet(part);
   if (!r || typeof r !== 'object' || 'error' in (r as object)) {
     await rmQuiet(rechunked);
@@ -437,7 +442,15 @@ async function importDecoded(
         // Not a UDIF after all: it is a raw image, now staged whole.  Store
         // it compressed from the staged copy.
         const dmg = `${part}.re`;
-        const r = await gsEval('files.convert', [part, dmg]);
+        const r = await gsEval('files.convert', [
+          part,
+          dmg,
+          64,
+          1,
+          'udif',
+          name,
+          opts.origin ?? '',
+        ]);
         await rmQuiet(part);
         if (!r || typeof r !== 'object' || 'error' in (r as object))
           throw new Error(gsErrorText(r));
@@ -445,7 +458,7 @@ async function importDecoded(
         if (placed) showNotification(`${shown} stored`, 'info');
         return { handled: true, path: placed?.path ?? null, category: placed?.category };
       }
-      const settled = await settleUdif(part, name);
+      const settled = await settleUdif(part, name, opts.origin);
       const placed = await placeUdif(settled, shown, opts.categories);
       if (placed) showNotification(`${shown} stored`, 'info');
       return { handled: true, path: placed?.path ?? null, category: placed?.category };
