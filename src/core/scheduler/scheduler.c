@@ -148,6 +148,12 @@ struct scheduler {
     // sprint-time alias: copied in at sprint start, out at sprint end.
     uint32_t io_penalty_remainder;
 
+    // Whole stall slots an I/O access still owes: its wait states ran past
+    // the end of the sprint it started in (an event fell inside the stall).
+    // They are burned first in the next sprint.  Guest-visible timing state,
+    // checkpointed with the remainder.
+    uint32_t io_stall_slots;
+
     // Cycles still owed to the VBL frame-unit in progress (0 = no frame open,
     // so the next scheduler_run_frame starts one by pulsing the VBL line).
     // The VBL is a 60 Hz tick of emulated time, so where the machine stands in
@@ -854,6 +860,7 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
             s->cpu_cycles = 0;
             s->cpi = CYCLES_PER_INSTR_DEFAULT;
             s->io_penalty_remainder = 0;
+            s->io_stall_slots = 0;
             s->frame_cycles_left = 0;
             s->total_instructions = 0;
         } else {
@@ -1034,6 +1041,7 @@ void scheduler_restore_events(struct scheduler *restrict s, checkpoint_t *checkp
         LOG(0, "Error: corrupt scheduler state in checkpoint (%s); refusing the restore", bad);
         checkpoint_set_error(checkpoint);
         s->io_penalty_remainder = 0;
+        s->io_stall_slots = 0;
         s->frame_cycles_left = 0;
         return;
     }
@@ -1630,6 +1638,7 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         g_sprint_burndown_ptr = &s->sprint_burndown;
         g_io_cpi_x256 = s->cpi_eff_x256;
         g_io_phantom_instructions = 0;
+        g_sprint_unrun_slots = 0;
         // Sprint timebase for E-synchronized penalties: mid-sprint "now" =
         // base cycles + (slots consumed x effective CPI + carried fraction),
         // mirroring current_cpu_cycles (see memory_io_esync_penalty)
@@ -1639,7 +1648,16 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         g_esync_period_x256 = s->esync_period_x256;
         // The penalty remainder lives in the scheduler; the sprint runs on its alias.
         g_io_penalty_remainder = s->io_penalty_remainder;
-        cpu->run_sprint(cpu->ctx, &s->sprint_burndown);
+        // A stall carried over from the previous sprint comes first: the CPU
+        // is still waiting on that bus cycle.
+        uint32_t owed = MIN(s->io_stall_slots, s->sprint_burndown);
+        s->io_stall_slots -= owed;
+        s->sprint_burndown -= owed;
+        g_io_phantom_instructions = owed;
+        g_io_stall_owed = s->io_stall_slots;
+        if (s->sprint_burndown)
+            cpu->run_sprint(cpu->ctx, &s->sprint_burndown);
+        s->io_stall_slots = g_io_stall_owed;
         s->io_penalty_remainder = g_io_penalty_remainder;
         g_sprint_burndown_ptr = NULL; // no longer valid outside sprint
 
@@ -1647,7 +1665,17 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         // sprint_total includes both real instructions and phantom instructions
         // (burned by I/O penalties).  Phantom instructions represent bus stall
         // time: (real + phantom) * CPI = real_cycles + penalty_cycles.
-        uint32_t executed_slots = s->sprint_total;
+        // Slots the sprint planned but never ran come off it: an exception,
+        // a STOP or a trace step ended it early (memory_end_sprint).  They
+        // are not time the CPU spent, so neither the clock nor the
+        // instruction count advances for them; a CPU left stopped sleeps to
+        // the next event on the idle path above.  Booking the whole plan
+        // instead froze the CPU at the faulting instruction until whatever
+        // event came next -- the length of the stall set by how far away
+        // that event happened to be (scheduler.md §6.4).
+        uint32_t unrun = MIN(g_sprint_unrun_slots, s->sprint_total);
+        g_sprint_unrun_slots = 0;
+        uint32_t executed_slots = s->sprint_total - unrun;
         uint32_t phantom = g_io_phantom_instructions;
         g_io_phantom_instructions = 0;
         s->sprint_total = 0;

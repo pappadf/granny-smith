@@ -821,6 +821,22 @@ iw_printer_t *iw_printer_new(struct scheduler *scheduler, scc_t *scc, const iw_p
     return p;
 }
 
+bool iw_printer_install(iw_printer_t *p, iw_model_t model, iw_connection_t conn) {
+    if (!p || model >= IW_MODEL_COUNT || conn >= IW_CONN_COUNT)
+        return false;
+    if (conn == IW_CONN_LOCALTALK && (model != IW_MODEL_IW2 || (g_localtalk && g_localtalk != p)))
+        return false;
+    // Unplug, swap the printer, power it on, then plug it in where it goes
+    port_attach(p, false);
+    p->set.icfg.model = model;
+    p->set.icfg.color_ribbon = model == IW_MODEL_IW2;
+    iw_interp_power_on(&p->interp);
+    port_attach(p, true);
+    bool ok = set_connection(p, conn);
+    update_status(p);
+    return ok;
+}
+
 void iw_printer_set_title_source(iw_printer_t *p, iw_title_fn fn) {
     if (p)
         p->title_fn = fn;

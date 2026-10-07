@@ -170,6 +170,27 @@
         }
       ],
       "default": "active"
+    },
+    {
+      "id": "imagewriter",
+      "label": "ImageWriter",
+      "detail": "A printer on the serial port AppleTalk does not use: the modem port while AppleTalk is active, else the printer port. Choose that port in the Chooser.",
+      "kind": "choice",
+      "values": [
+        {
+          "id": "none",
+          "label": "None"
+        },
+        {
+          "id": "imagewriter",
+          "label": "ImageWriter"
+        },
+        {
+          "id": "imagewriter2",
+          "label": "ImageWriter II"
+        }
+      ],
+      "default": "none"
     }
   ],
   "floppies": [
@@ -576,7 +597,8 @@
     "options": {
       "memory": "65536",
       "keyswitch": "unlocked",
-      "appletalk": "active"
+      "appletalk": "active",
+      "imagewriter": "none"
     },
     "floppies": {
       "fd0": "hd"

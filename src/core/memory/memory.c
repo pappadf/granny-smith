@@ -118,6 +118,8 @@ uint32_t g_sprint_frac_x256 = 0; // sub-cycle remainder at sprint start (x256)
 uint32_t g_sprint_total_slots = 0; // sprint slot budget at sprint start
 uint32_t g_esync_period_x256 = 0; // E period in CPU cycles x256 (0 = unset)
 uint32_t g_io_phantom_instructions = 0; // phantom instructions consumed this sprint
+uint32_t g_sprint_unrun_slots = 0;
+uint32_t g_io_stall_owed = 0; // stall slots owed past the sprint's end
 uint32_t g_io_cpi_x256 = 0; // effective CPI for penalty conversion, x256 (0 = disabled)
 uint32_t *g_sprint_burndown_ptr = NULL; // points to scheduler's sprint_burndown during sprint
 
@@ -509,8 +511,7 @@ void memory_signal_bus_error(uint32_t addr, bool write) {
     g_bus_error_rw = !write; // the flag reads "true = read"
     g_bus_error_fc = (g_active_read == g_supervisor_read) ? 5 : 1;
     g_bus_error_is_pmmu = false; // a plain bus timeout, not a descriptor fix-up
-    if (g_bus_error_instr_ptr)
-        *g_bus_error_instr_ptr = 0; // force the decoder loop to exit
+    memory_end_sprint(g_bus_error_instr_ptr); // force the decoder loop to exit
 }
 
 // Slow path for 8-bit reads: device I/O, MMU TLB miss, or unmapped
@@ -616,8 +617,7 @@ static inline __attribute__((always_inline)) uint32_t read_slow_n(uint32_t addr,
             g_bus_error_address = addr;
             g_bus_error_rw = true; // read
             g_bus_error_fc = supervisor ? 5 : 1;
-            if (g_bus_error_instr_ptr)
-                *g_bus_error_instr_ptr = 0; // force decoder loop exit
+            memory_end_sprint(g_bus_error_instr_ptr); // force decoder loop exit
         }
         return fill; // unmapped physical reads $FF
     }
@@ -1096,8 +1096,7 @@ static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, ui
             g_bus_error_address = addr;
             g_bus_error_rw = false; // write
             g_bus_error_fc = supervisor ? 5 : 1;
-            if (g_bus_error_instr_ptr)
-                *g_bus_error_instr_ptr = 0; // force decoder loop exit
+            memory_end_sprint(g_bus_error_instr_ptr); // force decoder loop exit
         }
         return;
     }

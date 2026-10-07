@@ -3558,18 +3558,18 @@ static DEF_METHOD(screen_method_save) {
 // the path-form dispatcher (and hence the headless script runner)
 // propagates non-zero out, failing the integration test.  Use
 // `screen.match_or_save` for the non-fatal diagnostic flow.
-// Parse the optional exclude rectangle shared by `screen.match` and
-// `screen.matches`: either just the reference (whole-screen compare) or the
-// reference plus all four region edges (top, left, bottom, right) — reject
-// anything in between.  Returns NULL through *err_out on a bad call.
-// Parse 0, 1 or 2 exclude rectangles from the optional arguments and write
-// them into `rect` (4 ints each).  Returns the count, or -1 on error.
-static int screen_parse_exclude_rects(const char *who, const display_t *d, int argc, const value_t *argv, int rect[8],
-                                      value_t *err_out) {
-    if (argc != 1 && argc != 5 && argc != 9) {
-        *err_out = val_err("%s: expected (reference), (reference, top, left, bottom, right) or the same with a "
-                           "second rectangle appended",
-                           who);
+// Parse the optional exclude rectangles shared by `screen.match` and
+// `screen.matches`: the reference alone (whole-screen compare) or the
+// reference plus up to SCREEN_MAX_EXCLUDE_RECTS complete (top, left, bottom,
+// right) quads — reject anything in between.  Writes them into `rect`
+// (4 ints each); returns the count, or -1 with *err_out set.
+#define SCREEN_MAX_EXCLUDE_RECTS 3
+static int screen_parse_exclude_rects(const char *who, const display_t *d, int argc, const value_t *argv,
+                                      int rect[SCREEN_MAX_EXCLUDE_RECTS * 4], value_t *err_out) {
+    if ((argc - 1) % 4 != 0 || (argc - 1) / 4 > SCREEN_MAX_EXCLUDE_RECTS) {
+        *err_out = val_err("%s: expected (reference) or (reference, top, left, bottom, right) with up to %d "
+                           "rectangles",
+                           who, SCREEN_MAX_EXCLUDE_RECTS);
         return -1;
     }
     int n = (argc - 1) / 4;
@@ -3594,7 +3594,7 @@ static DEF_METHOD(screen_method_match) {
     const display_t *d = system_display_synced();
     if (!d || !d->bits)
         return val_err("screen.match: framebuffer not available");
-    int rect[8];
+    int rect[SCREEN_MAX_EXCLUDE_RECTS * 4];
     value_t err = val_none();
     int n_rects = screen_parse_exclude_rects("screen.match", d, argc, argv, rect, &err);
     if (n_rects < 0)
@@ -3624,7 +3624,7 @@ static DEF_METHOD(screen_method_matches) {
     const display_t *d = system_display_synced();
     if (!d || !d->bits)
         return val_err("screen.matches: framebuffer not available");
-    int rect[8];
+    int rect[SCREEN_MAX_EXCLUDE_RECTS * 4];
     value_t err = val_none();
     int n_rects = screen_parse_exclude_rects("screen.matches", d, argc, argv, rect, &err);
     if (n_rects < 0)
@@ -3768,6 +3768,22 @@ static const arg_decl_t screen_match_args[] = {
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Second exclude-region right edge"},
+    {.name = "top3",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Third exclude-region top edge"},
+    {.name = "left3",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Third exclude-region left edge"},
+    {.name = "bottom3",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Third exclude-region bottom edge"},
+    {.name = "right3",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Third exclude-region right edge"},
 };
 static const arg_decl_t screen_matches_args[] = {
     {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
@@ -3803,6 +3819,22 @@ static const arg_decl_t screen_matches_args[] = {
      .kind = V_INT,
      .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
      .doc = "Second exclude-region right edge"},
+    {.name = "top3",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Third exclude-region top edge"},
+    {.name = "left3",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Third exclude-region left edge"},
+    {.name = "bottom3",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Third exclude-region bottom edge"},
+    {.name = "right3",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_GROUPED,
+     .doc = "Third exclude-region right edge"},
 };
 static const arg_decl_t screen_match_or_save_args[] = {
     {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
@@ -3876,12 +3908,12 @@ static const member_t screen_members[] = {
      .name = "match",
      .flags = M_CAT_ADVANCED,
      .doc = "Compare the framebuffer against a reference PNG (true if identical); optional "
-            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_match_args, .nargs = 9, .result = V_BOOL, .fn = screen_method_match}},
+            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_match_args, .nargs = 13, .result = V_BOOL, .fn = screen_method_match}},
     {.kind = M_METHOD,
      .name = "matches",
      .flags = M_CAT_ADVANCED,
      .doc = "Non-fatal `match`: true/false without aborting, artifacts, or output (polling primitive); optional "
-            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_matches_args, .nargs = 9, .result = V_BOOL, .fn = screen_method_matches}},
+            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_matches_args, .nargs = 13, .result = V_BOOL, .fn = screen_method_matches}},
     {.kind = M_METHOD,
      .name = "match_or_save",
      .flags = M_CAT_ADVANCED,

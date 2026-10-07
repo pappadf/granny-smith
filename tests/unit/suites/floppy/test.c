@@ -581,6 +581,62 @@ TEST(test_media_sector_offset) {
     ASSERT_EQ_INT((int)floppy_media_sector_offset(&m, 0, 0, 3), 3 * 512);
 }
 
+// The shared rotation model (floppy_media_rev_ns / _next_header), which the
+// SWIM3 and New Age transfer engines both time their media by.  The 720 KB
+// spindle speed is the caller's (300 under SWIM3, 600 under New Age); 1.44 MB
+// and GCR are not.
+TEST(test_media_rotation) {
+    image_t img;
+    memset(&img, 0, sizeof img);
+    floppy_media_t m;
+
+    img.type = image_fd_hd;
+    ASSERT_TRUE(floppy_media_from_image(&img, &m));
+    ASSERT_EQ_INT((int)(floppy_media_rev_ns(&m, 0, FLOPPY_MFM_RPM) / 1e3), 200000); // 300 rpm
+    ASSERT_EQ_INT((int)(floppy_media_rev_ns(&m, 0, FLOPPY_MFM_DD_RPM_NA) / 1e3), 200000);
+
+    img.type = image_fd_dd_mfm;
+    ASSERT_TRUE(floppy_media_from_image(&img, &m));
+    ASSERT_EQ_INT((int)(floppy_media_rev_ns(&m, 0, FLOPPY_MFM_RPM) / 1e3), 200000);
+    ASSERT_EQ_INT((int)(floppy_media_rev_ns(&m, 0, FLOPPY_MFM_DD_RPM_NA) / 1e3), 100000); // 600 rpm
+
+    img.type = image_fd_ds; // GCR: the zone's speed whatever the caller says
+    ASSERT_TRUE(floppy_media_from_image(&img, &m));
+    ASSERT_TRUE(floppy_media_rev_ns(&m, 0, FLOPPY_MFM_RPM) == 60.0e9 / 394.0);
+    ASSERT_TRUE(floppy_media_rev_ns(&m, 79, FLOPPY_MFM_DD_RPM_NA) == 60.0e9 / 590.0);
+
+    // Headers pass one slot apart, wrapping at the sector count.  A caller
+    // standing exactly on a slot boundary -- an event aimed at a header --
+    // is handed the NEXT header, not the one just delivered, even when the
+    // division comes out a hair under the integer.
+    img.type = image_fd_hd;
+    ASSERT_TRUE(floppy_media_from_image(&img, &m));
+    double rev = floppy_media_rev_ns(&m, 0, FLOPPY_MFM_RPM);
+    double slot = rev / 18.0;
+    double delay = 0;
+    ASSERT_EQ_INT(floppy_media_next_header(&m, 0, rev, 0.0, &delay), 1);
+    ASSERT_TRUE(delay == slot);
+    ASSERT_EQ_INT(floppy_media_next_header(&m, 0, rev, 5.0 * slot - 1e-6, &delay), 6);
+    ASSERT_EQ_INT(floppy_media_next_header(&m, 0, rev, 17.5 * slot, &delay), 0); // wraps
+    ASSERT_TRUE(delay > 0.49 * slot && delay < 0.51 * slot);
+}
+
+// The shared sector access refuses what the medium does not have before it
+// touches the image.
+TEST(test_media_sector_bounds) {
+    image_t img;
+    memset(&img, 0, sizeof img);
+    floppy_media_t m;
+    uint8_t buf[512];
+
+    img.type = image_fd_ss; // 400K: one side, 12 sectors on track 0
+    ASSERT_TRUE(floppy_media_from_image(&img, &m));
+    ASSERT_TRUE(!floppy_media_read_sector(&m, 0, 1, 0, buf)); // no side 1
+    ASSERT_TRUE(!floppy_media_read_sector(&m, 0, 0, 12, buf)); // no sector 12
+    ASSERT_TRUE(!floppy_media_read_sector(&m, 0, 0, -1, buf));
+    ASSERT_TRUE(!floppy_media_write_sector(&m, 0, 0, 0, buf)); // read-only image
+}
+
 int main(void) {
     RUN(test_sectors_per_track);
     RUN(test_track_rpm);
@@ -596,6 +652,8 @@ int main(void) {
     RUN(test_media_descriptor);
     RUN(test_media_class_vs_format);
     RUN(test_media_sector_offset);
+    RUN(test_media_rotation);
+    RUN(test_media_sector_bounds);
     RUN(test_mfm_sector_layout);
     RUN(test_write_through_detects_sector_boundary);
     RUN(test_register_strides);

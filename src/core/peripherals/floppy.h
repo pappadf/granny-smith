@@ -3,7 +3,8 @@
 
 // floppy.h
 // Public interface for the unified floppy disk controller module.
-// Supports both IWM (Mac Plus) and SWIM (SE/30) controller types.
+// Supports the IWM (Mac Plus), SWIM (SE/30), SWIM3 (Power Macintosh) and New
+// Age (AV Quadras) controller types.
 
 #ifndef FLOPPY_H
 #define FLOPPY_H
@@ -22,9 +23,10 @@
 #define FLOPPY_NUM_DRIVES 2
 
 // === Controller Types ===
-#define FLOPPY_TYPE_IWM   0 // IWM-only (Mac Plus)
-#define FLOPPY_TYPE_SWIM  1 // SWIM dual-mode IWM+ISM (SE/30)
-#define FLOPPY_TYPE_SWIM3 2 // SWIM III, controller-driven (PDM 6100/7100/8100)
+#define FLOPPY_TYPE_IWM     0 // IWM-only (Mac Plus)
+#define FLOPPY_TYPE_SWIM    1 // SWIM dual-mode IWM+ISM (SE/30)
+#define FLOPPY_TYPE_SWIM3   2 // SWIM III, controller-driven (PDM 6100/7100/8100)
+#define FLOPPY_TYPE_NEW_AGE 3 // New Age (µPD72070), controller-driven (Quadra 840AV / Centris 660AV)
 
 // === Type Definitions ===
 // Opaque floppy controller type
@@ -82,7 +84,7 @@ void floppy_drive_drop_tracks(floppy_t *floppy, unsigned drive);
 // 0 (internal) or 1 (external). Out-of-range indices return zero /
 // false / NULL so the object getters can stay branch-free.
 
-int floppy_get_type(const floppy_t *floppy); // FLOPPY_TYPE_IWM | _SWIM | _SWIM3
+int floppy_get_type(const floppy_t *floppy); // FLOPPY_TYPE_IWM | _SWIM | _SWIM3 | _NEW_AGE
 bool floppy_get_sel(const floppy_t *floppy); // VIA-driven head-select signal
 
 int floppy_drive_track(const floppy_t *floppy, unsigned drive);
@@ -102,20 +104,27 @@ bool floppy_drive_eject(floppy_t *floppy, unsigned drive);
 // .Sony driver through XmtMsg[2].
 image_t *floppy_drive_image(const floppy_t *floppy, unsigned drive);
 
-// === SWIM III drive controls ================================================
+// === Controller-driven drive controls ======================================
 //
-// SWIM3 (PDM) owns the Sony sense/strobe protocol itself — there are no IWM
-// state lines to drive the head through — so its controller model moves the
-// head, spins the motor and latches the side directly.  Media, geometry and
-// the object tree stay here; only these three pieces of drive state are
-// written from outside.
+// SWIM3 (PDM, TNT) and New Age (AV) own the drive's command protocol
+// themselves — there are no IWM state lines to drive the head through — so
+// their controller models move the head, spin the motor and latch the side
+// directly.  Media, geometry and the object tree stay here; only these three
+// pieces of drive state are written from outside.
 
 // Move the head by `count` tracks, outward (towards 0) or inward; clamps at
-// the 0 and NUM_TRACKS-1 stops the way a real drive's head does.
+// the 0 and NUM_TRACKS-1 stops the way a real drive's head does.  The
+// controller paces the steps itself; no settle is modelled here.
+void floppy_mech_step(floppy_t *floppy, unsigned drive, bool outward, int count);
+// Spindle motor latch (the drive's motor-on / motor-off command).
+void floppy_mech_set_motor(floppy_t *floppy, unsigned drive, bool on);
+// Head-select latch.
+void floppy_mech_set_side(floppy_t *floppy, unsigned drive, int side);
+
+// The SWIM3 model's spellings of the same three (wMotorOn / wMotorOff
+// strobes; the sense address that routes head 0 or 1).
 void floppy_swim3_step(floppy_t *floppy, unsigned drive, bool outward, int count);
-// Spindle motor latch (the wMotorOn / wMotorOff drive-register strobes).
 void floppy_swim3_set_motor(floppy_t *floppy, unsigned drive, bool on);
-// Head-select latch (the sense address routes head 0 or head 1's RdData).
 void floppy_swim3_set_side(floppy_t *floppy, unsigned drive, int side);
 
 #endif // FLOPPY_H

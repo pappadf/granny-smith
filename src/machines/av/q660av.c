@@ -27,10 +27,6 @@
 static const uint32_t q660av_ram_options_kb[] = {4096,  8192,  12288, 16384, 20480, 24576, 28672,
                                                  36864, 40960, 45056, 53248, 69632, 0};
 
-static const struct floppy_slot q660av_floppy_slots[] = {
-    {0},
-};
-
 static const av_board_desc_t q660av_board_desc = {
     .common =
         {
@@ -77,7 +73,7 @@ const hw_profile_t machine_q660av = {
     .rom_size = 0x200000, // 2 MB ($5BF10FD1, shared with the 840AV)
 
     .ram_options = q660av_ram_options_kb,
-    .floppy_slots = q660av_floppy_slots,
+    .floppy_slots = mac_floppy_slots_1hd, // the internal SuperDrive behind New Age
     .storage = mac_storage_scsi_cd_bay,
     .default_storage = mac_default_storage_hd0_cd3,
     .appletalk = true,

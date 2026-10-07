@@ -745,7 +745,7 @@ static void gossamer_seed(config_t *cfg) {
     gossamer_state_t *st = gos_st(cfg);
     if (!st)
         return;
-    mac_seed_xpram_appletalk(st->hr.nvram + OF_NVRAM_XPRAM, cfg, of_nvram_defaults_g3.pram);
+    mac_seed_xpram_sysparam(st->hr.nvram + OF_NVRAM_XPRAM, cfg, of_nvram_defaults_g3.pram);
     int id = mac_seed_startup_scsi_id(cfg, "scsi");
     if (id != -2)
         of_nvram_set_startup_scsi(st->hr.nvram, id, &of_nvram_defaults_g3);

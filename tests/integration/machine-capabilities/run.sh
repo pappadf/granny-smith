@@ -174,10 +174,11 @@ for m in q840av q660av; do
     assert_contains "$m" '"nubus":false' "$m declares no NuBus sockets"
     assert_contains "$m" '{"unit":3,"label":"ID 3 · CD-ROM bay","short":"ID 3"}' "$m has a CD-ROM bay at ID 3"
     assert_contains "$m" '{"bus":"scsi","unit":3,"type":"cd"}' "$m opens with a CD-ROM drive in it"
-    # A GAP, pinned so that closing it shows up here: the real machines have
-    # a SuperDrive, but the New Age FDC is not modeled (a 'no drive' stub),
-    # so the profile offers no floppy position (#178).
-    assert_contains "$m" '"floppies":[]' "$m offers no floppy position (New Age unmodeled, #178)"
+    # ONE internal SuperDrive behind the New Age FDC.  This moved from
+    # '"floppies":[]' only after 1.44 MB and 800K disks mounted in the 7.1
+    # Finder and a 7.6 install floppy booted the 840AV (suite-av's
+    # av-floppy-* rows, #178).
+    assert_contains "$m" '"floppies":[{"id":"fd0","label":"Internal floppy drive","types":[{"id":"hd","label":"SuperDrive (1.4 MB)"}],"default":"hd"}]' "$m offers the one internal SuperDrive"
 done
 # --- PDM family (Power Macintosh 6100/7100/8100): the first PowerPC
 # machines.  cpu.model 601 + the 601 MMU kind are what gate the PPC debug

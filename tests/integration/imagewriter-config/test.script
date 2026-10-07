@@ -1,0 +1,33 @@
+# See config.mk.
+
+let PLUS = "${$TEST_DATA}/roms/plus-v3-4d1f8172.rom"
+let LISA = "${$TEST_DATA}/roms/lisa2-revh-098917b2.rom"
+
+# The option is in every profile, default none
+assert catalog.default_config("plus").options.imagewriter == "none" "the Plus has no ImageWriter option"
+assert catalog.default_config("lisa").options.imagewriter == "none" "the Lisa has no ImageWriter option"
+
+# AppleTalk active (the default): the modem port
+machine.boot model="plus" rom="${$PLUS}" config="{\"options\":{\"imagewriter\":\"imagewriter2\"}}"
+assert machine.imagewriter.model == "imagewriter2" "not an ImageWriter II"
+assert machine.imagewriter.connection == "serial-a" "not on the modem port beside AppleTalk"
+assert machine.scc.a.device == "imagewriter2" "the modem port has no printer"
+assert machine.scc.b.device == none "the printer port is not left to AppleTalk"
+
+# AppleTalk inactive: the printer port
+machine.boot model="plus" rom="${$PLUS}" config="{\"options\":{\"imagewriter\":\"imagewriter\",\"appletalk\":\"inactive\"}}"
+assert machine.imagewriter.model == "imagewriter" "not an ImageWriter"
+assert machine.imagewriter.connection == "serial-b" "not on the printer port"
+assert machine.scc.b.device == "imagewriter" "the printer port has no printer"
+
+# No option: unplugged
+machine.boot model="plus" rom="${$PLUS}"
+assert machine.imagewriter.connection == "none" "a printer was plugged in unasked"
+
+# The Lisa: Serial A
+machine.boot model="lisa" ram=2048 rom="${$LISA}" config="{\"options\":{\"imagewriter\":\"imagewriter2\"}}"
+assert machine.imagewriter.connection == "serial-a" "the Lisa's printer is not on Serial A"
+assert machine.scc.a.device == "imagewriter2" "Serial A has no printer"
+
+echo "PASS: imagewriter-config"
+quit

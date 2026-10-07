@@ -831,20 +831,32 @@ bool floppy_drive_eject(floppy_t *floppy, unsigned drive) {
     return true;
 }
 
-// === SWIM III drive controls ================================================
+// === Controller-driven drive controls ======================================
 
-void floppy_swim3_step(floppy_t *floppy, unsigned drive, bool outward, int count) {
-    // SWIM3 paces the step pulses itself and the settle is the driver's
-    // business -- see floppy_drive_seek.
+void floppy_mech_step(floppy_t *floppy, unsigned drive, bool outward, int count) {
+    // SWIM3 and New Age pace the step pulses themselves and the settle is the
+    // controller's (or the driver's) business -- see floppy_drive_seek.
     floppy_drive_seek(floppy, drive, outward, count, false);
 }
 
-void floppy_swim3_set_motor(floppy_t *floppy, unsigned drive, bool on) {
+void floppy_mech_set_motor(floppy_t *floppy, unsigned drive, bool on) {
     floppy_drive_motor(floppy, drive, on, false);
 }
 
-void floppy_swim3_set_side(floppy_t *floppy, unsigned drive, int side) {
+void floppy_mech_set_side(floppy_t *floppy, unsigned drive, int side) {
     floppy_drive_latch_side(floppy, drive, side);
+}
+
+void floppy_swim3_step(floppy_t *floppy, unsigned drive, bool outward, int count) {
+    floppy_mech_step(floppy, drive, outward, count);
+}
+
+void floppy_swim3_set_motor(floppy_t *floppy, unsigned drive, bool on) {
+    floppy_mech_set_motor(floppy, drive, on);
+}
+
+void floppy_swim3_set_side(floppy_t *floppy, unsigned drive, int side) {
+    floppy_mech_set_side(floppy, drive, side);
 }
 
 // ============================================================================
@@ -924,19 +936,20 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
     for (int d = 0; d < NUM_DRIVES; d++)
         floppy->drives[d].write_hdr_start = -1;
     floppy->type = type;
-    static const char *const type_name[] = {"IWM", "SWIM", "SWIM3"};
-    LOG(2, "Floppy: Controller created (type=%s)", type_name[type >= 0 && type <= 2 ? type : 0]);
+    static const char *const type_name[] = {"IWM", "SWIM", "SWIM3", "New Age"};
+    LOG(2, "Floppy: Controller created (type=%s)", type_name[type >= 0 && type <= 3 ? type : 0]);
 
     floppy->scheduler = scheduler;
 
-    if (type == FLOPPY_TYPE_SWIM3) {
+    if (type == FLOPPY_TYPE_SWIM3 || type == FLOPPY_TYPE_NEW_AGE) {
         // SWIM3 has no memory-mapped register file of its own: the board
         // decodes it (AMIC island on the PDM, Grand Central on the TNT) and
         // the controller model drives this drive state directly.  No
         // motor_spinup event type is registered: nothing on the SWIM3 path
         // consults motor_spinning_up -- swim3.c reads the motor LATCH through
         // floppy_drive_motor_on -- so the type used to be registered and never
-        // armed.
+        // armed.  New Age (the PSC island on the AV) is the same shape: its
+        // own model times the /Ready handshake (core/peripherals/new_age.c).
     } else if (type == FLOPPY_TYPE_SWIM) {
         scheduler_new_event_type(scheduler, "floppy", floppy, "motor_spinup", &floppy_swim_motor_spinup_callback);
         scheduler_new_event_type(scheduler, "floppy", floppy, "ism_service", &floppy_swim_service_callback);
@@ -1222,14 +1235,14 @@ static floppy_t *floppy_self_from(struct object *self) {
     return (floppy_t *)object_data(self);
 }
 
-static const char *const FLOPPY_TYPE_NAMES[] = {"iwm", "swim", "swim3"};
+static const char *const FLOPPY_TYPE_NAMES[] = {"iwm", "swim", "swim3", "new_age"};
 
 static DEF_GETTER(floppy_attr_type) {
     floppy_t *floppy = floppy_self_from(self);
     int t = floppy ? floppy_get_type(floppy) : 0;
-    if (t < 0 || t > 2)
+    if (t < 0 || t > 3)
         t = 0;
-    return val_enum(t, FLOPPY_TYPE_NAMES, 3);
+    return val_enum(t, FLOPPY_TYPE_NAMES, 4);
 }
 
 static DEF_GETTER(floppy_attr_sel) {
@@ -1310,7 +1323,7 @@ static const arg_decl_t floppy_create_args[] = {
 static const member_t floppy_members[] = {
     {.kind = M_ATTR,
      .name = "type",
-     .doc = "Controller type: iwm (Plus), swim (SE/30-class) or swim3 (PowerMac)",
+     .doc = "Controller type: iwm (Plus), swim (SE/30-class), swim3 (PowerMac) or new_age (AV Quadras)",
      .attr = {.type = V_ENUM, .get = floppy_attr_type, .set = NULL}},
     {.kind = M_ATTR,
      .name = "sel",
