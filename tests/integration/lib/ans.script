@@ -82,10 +82,11 @@ def ans_wait_prompt() {
 # Boot `model` with the serial port as the Open Firmware console, and leave
 # the machine sitting at the `0 >` prompt.  Returns the second boot's output.
 #
-# Two cold boots by construction: the first one comes up on the SCREEN (the
-# machine's shipping configuration), takes Apple's documented terminal setup
-# on the ADB keyboard, and the second one — against the now-configured
-# non-volatile store — comes up on ttya.
+# The first call per model is two cold boots: the first comes up on the
+# SCREEN (the machine's shipping configuration), takes Apple's documented
+# terminal setup on the ADB keyboard, and the second — against the
+# now-configured non-volatile store — comes up on ttya.  Later calls for the
+# same model restore that configured store and boot once (below).
 def ans_boot_serial(model, ram_kb) {
     # A virgin non-volatile store — what "a Network Server that has never
     # been booted before" means in Apple's own service documentation.
