@@ -23,3 +23,10 @@ TEST_ARGS := model=q840av ram=16384
 
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix
+
+# Wall-clock budget. Since the New Age floppy rows landed the suite needs
+# ~720 s on a typical CI runner, ~80% of the 900 s default, and a runner that
+# is 1.3x slower across the board (seen on every suite, Lisa included) tips
+# it over. Instruction counts are pinned by perf-baselines.json; this is only
+# the hang detector.
+TEST_TIMEOUT := 1800
