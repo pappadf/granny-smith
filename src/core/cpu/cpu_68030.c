@@ -618,8 +618,10 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
     /* Capture trace state before execution; clamp to 1 instruction if T1 set */                                       \
     uint32_t _saved_trace = cpu->trace;                                                                                \
     if (__builtin_expect(_saved_trace & 2, 0))                                                                         \
-        if (*instructions > 1)                                                                                         \
+        if (*instructions > 1) {                                                                                       \
+            g_sprint_unrun_slots += *instructions - 1; /* the rest of the plan is not run */                           \
             *instructions = 1;                                                                                         \
+        }                                                                                                              \
     /* Saturating decrement on the trailing (*instructions)--: memory_io_penalty                                       \
      * can clamp *instructions to 0 during the fetch (when the I/O penalty                                             \
      * equals or exceeds the remaining burndown), and an unconditional                                                 \

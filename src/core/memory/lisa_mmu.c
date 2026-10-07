@@ -713,8 +713,7 @@ static void lisa_raise_bus_error(uint32_t addr, bool is_read, bool supervisor) {
     g_bus_error_rw = is_read;
     g_bus_error_fc = supervisor ? 5 : 1;
     g_bus_error_is_pmmu = false;
-    if (g_bus_error_instr_ptr)
-        *g_bus_error_instr_ptr = 0; // force decoder loop exit
+    memory_end_sprint(g_bus_error_instr_ptr); // force decoder loop exit
 }
 
 // Read a big-endian value of `size` bytes from the boot ROM at byte offset.

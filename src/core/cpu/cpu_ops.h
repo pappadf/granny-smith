@@ -821,7 +821,7 @@
         bool _traced = (cpu->trace & 2) != 0;                                                                          \
         if (!_traced)                                                                                                  \
             cpu->stopped = 1;                                                                                          \
-        *instructions = 0;                                                                                             \
+        memory_end_sprint(instructions);                                                                               \
         SET_SR(sr);                                                                                                    \
     }))
 #define OP_RTS   OP(POP32(PC))
