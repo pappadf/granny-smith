@@ -49,6 +49,8 @@
       case 'unpacking':
         return 'Unpacking…';
       case 'done':
+        // A blank disk's file is a few KB however large the disk: no size.
+        if (f.blank) return f.reused ? 'Blank disk · already stored' : 'Blank disk · created';
         return f.reused ? `Already stored · ${size(f.received)}` : size(f.received);
       case 'failed':
         return 'Failed';

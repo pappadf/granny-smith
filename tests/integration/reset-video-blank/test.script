@@ -1,0 +1,23 @@
+# Reset-video conformance -- see config.mk.
+
+def warm(model, rom, budget, redraw) {
+    machine.boot model="${$model}" ram=8192 rom="../../data/roms/${$rom}"
+    scheduler.run $budget
+    let before = machine.screen.checksum()
+    machine.reset
+    # The first frame after /RESET is the blanked raster, not the old picture.
+    let blank = machine.screen.checksum()
+    assert $blank != $before "${$model}: machine.reset still shows the pre-reset frame"
+    # ...and the ROM's own video set-up brings the picture back.
+    scheduler.run $redraw
+    let later = machine.screen.checksum()
+    assert $later != $blank "${$model}: the display stayed blanked after the ROM reprogrammed it"
+    echo "reset-video-blank ${$model}: ok"
+}
+
+warm("iicx", "iix-iicx-se30-97221136.rom", 30000000, 20000000)
+warm("iifx", "iifx-4147dd77.rom", 40000000, 20000000)
+warm("q700", "q700-q900-420dbff3.rom", 30000000, 20000000)
+warm("q840av", "q840av-q660av-5bf10fd1.rom", 150000000, 40000000)
+
+quit

@@ -32,6 +32,9 @@
 #                   phase, which means VIA, RBV, sound, clock/PRAM, FPU, SCC
 #                   and SCSI all pass. Was a known defect (it condemned the
 #                   machine as a bad logic board); fixed and enforced.
+#   iici-portrait   **RBV monitor sense 001**: the 15" B&W Portrait on the
+#                   built-in port; the ROM drives 640x870 to the no-disk
+#                   "?" screen (the raster was pinned at 640x480, #158)
 
 include "../lib/mac.script"
 
@@ -61,7 +64,7 @@ def row_iici_chime() {
     scheduler.run 12000000
     machine.sound.capture.stop
     assert machine.ram == 8192 "iici-chime: machine.ram != 8192"
-    assert machine.sound.capture.frames == 13405 "iici-chime: unexpected capture length"
+    assert machine.sound.capture.frames == 13647 "iici-chime: capture length ${machine.sound.capture.frames}, want 13647"
     # machine.rbv — the IIci has no VIA2, so before this node existed its
     # interrupt controller was not inspectable at all.  RvIFR is composed on
     # demand from live source state, so there is no register to peek either.
@@ -87,7 +90,7 @@ def row_iici_701_fd() {
     assert_addr(false)
     check("goldens/iici-7.0.1-640x480x1-finder.png")
     about_box()
-    check("goldens/iici-7.0.1-640x480x1-about.png")
+    check_about("goldens/iici-7.0.1-640x480x1-about.png")
     report_row("7.0.1", "rbv", "fd-boot about")
     report_perf("suite-iici/iici-701-fd", scheduler.instr_count)
 }
@@ -430,6 +433,32 @@ def row_iici_mactest_diag() {
     report_perf("suite-iici/iici-mactest-diag", scheduler.instr_count)
 }
 
+# ---- iici-portrait ----------------------------------------------------------
+# The built-in port with the 15" B&W Portrait on it (sense 001): the RBV's
+# raster follows the latched code and the ROM's driver brings the screen up at
+# 640x870 (ScreenRow 80 at 1 bpp), the "?" disk centred on it.  No disk: a
+# ROM-only row.
+def row_iici_portrait() {
+    machine.boot model="iici" ram=8192 rom="${$ROM}" config="{\"displays\":{\"builtin\":{\"monitor\":\"15in_portrait\"}}}"
+    assert machine.nubus.slot[11].card.monitor == "15in_portrait" "iici-portrait: the built-in port's monitor"
+    assert machine.nubus.slot[11].card.sense == 1 "iici-portrait: the built-in port's sense code"
+    assert ((machine.rbv.monp >> 3) & 7) == 1 "iici-portrait: RvMonP does not latch sense 1"
+    assert machine.screen.width == 640 "iici-portrait: screen.width != 640"
+    assert machine.screen.height == 870 "iici-portrait: screen.height != 870"
+    scheduler.run 150000000
+    # The "?" disk blinks, so the screen never settles for wait_match's REGEN
+    # path: capture a fixed frame, and match by polling.
+    if $REGEN_MODE == "1" {
+        scheduler.run 50000000
+        machine.screen.save "goldens/iici-640x870x1-no-disk.png"
+    } else {
+        wait_match("goldens/iici-640x870x1-no-disk.png", 400000000, 10000000)
+    }
+    assert machine.screen.height == 870 "iici-portrait: screen.height != 870 after boot"
+    assert machine.cpu.mmu.peek(0x106, 2) == 80 "iici-portrait: ScreenRow != 80"
+    report_perf("suite-iici/iici-portrait", scheduler.instr_count)
+}
+
 # ---- row dispatch -----------------------------------------------------------
 
 if row_on("iici-chime") { row_end("iici-chime", try(row_iici_chime(), "FAILED")) }
@@ -473,6 +502,7 @@ if row_on("iici-mactest-diag") {
         echo "skip: iici-mactest-diag (MacTest image not fetched)"
     }
 }
+if row_on("iici-portrait") { row_end("iici-portrait", try(row_iici_portrait(), "FAILED")) }
 
 suite_done()
 quit

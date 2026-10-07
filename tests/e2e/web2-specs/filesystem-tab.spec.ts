@@ -64,6 +64,13 @@ test('descend image, ctrl-multi-select, copy out, delete, copy again', async ({ 
   await descendIntoImage(page);
   await expect(row(page, 'System Folder')).toBeVisible();
 
+  // The Size and Date modified columns: the image's own size from OPFS, and
+  // a file inside it with its data-fork size and HFS (1904-epoch) date.
+  await expect(row(page, IMAGE).locator('.tree-col-0')).toHaveText('800 KB');
+  await expect(row(page, FILE_B).locator('.tree-col-0')).toHaveText('4.4 KB');
+  await expect(row(page, FILE_B).locator('.tree-col-1')).toHaveText(/^19\d\d-\d\d-\d\d \d\d:\d\d$/);
+  await expect(row(page, 'System Folder').locator('.tree-col-0')).toHaveText('');
+
   // Multi-select two files inside the (read-only) image with ctrl-click.
   await row(page, FILE_A).click();
   await row(page, FILE_B).click({ modifiers: ['ControlOrMeta'] });
@@ -171,7 +178,7 @@ test('download an OPFS file (bulk) and a file from inside an image', async ({ pa
   await stageOpfsText(page, `${UPLOAD}/doc2.txt`, 'bbb');
   await openFilesystemTab(page);
 
-  // Bulk download two OPFS files ("Download files" menu label → one download
+  // Bulk download two OPFS files ("Save files…" menu label → one download
   // per file).
   await expand(page, 'upload', 'doc1.txt');
   const downloads: Download[] = [];
@@ -179,7 +186,7 @@ test('download an OPFS file (bulk) and a file from inside an image', async ({ pa
   await row(page, 'doc1.txt').click();
   await row(page, 'doc2.txt').click({ modifiers: ['ControlOrMeta'] });
   await row(page, 'doc1.txt').click({ button: 'right' });
-  await page.locator('.context-menu .item').filter({ hasText: 'Download files' }).click();
+  await page.locator('.context-menu .item').filter({ hasText: 'Save files' }).click();
   await expect.poll(() => downloads.map((d) => d.suggestedFilename()).sort()).toEqual([
     'doc1.txt',
     'doc2.txt',
@@ -190,7 +197,7 @@ test('download an OPFS file (bulk) and a file from inside an image', async ({ pa
   await descendIntoImage(page);
   const inImage = page.waitForEvent('download');
   await row(page, FILE_A).click({ button: 'right' });
-  await page.locator('.context-menu .item').filter({ hasText: 'Download' }).click();
+  await page.locator('.context-menu .item').filter({ hasText: 'Save to computer' }).click();
   // The app sets download="TeachText"; Chromium MIME-sniffs the extension-less
   // data fork and appends ".txt", so assert the prefix.
   expect((await inImage).suggestedFilename()).toMatch(/^TeachText/);
@@ -216,14 +223,14 @@ test('external file drop uploads into an OPFS folder', async ({ page }) => {
   await expect(row(page, 'dropped.txt')).toHaveCount(1);
 });
 
-test('inside a read-only image, the context menu offers only Download', async ({ page }) => {
+test('inside a read-only image, the context menu offers only Save to computer', async ({ page }) => {
   await stageOpfsFile(page, FD, IMAGE_HOST);
   await openFilesystemTab(page);
   await descendIntoImage(page);
 
   await row(page, FILE_A).click({ button: 'right' });
   const menu = page.locator('.context-menu');
-  await expect(menu.locator('.item').filter({ hasText: 'Download' })).toBeVisible();
+  await expect(menu.locator('.item').filter({ hasText: 'Save to computer' })).toBeVisible();
   await expect(menu.locator('.item').filter({ hasText: 'Delete' })).toHaveCount(0);
   await expect(menu.locator('.item').filter({ hasText: 'Rename' })).toHaveCount(0);
   await expect(menu.locator('.item').filter({ hasText: 'Unpack' })).toHaveCount(0);
@@ -245,7 +252,7 @@ test('a floppy image inside an archive goes into a drive from its context menu',
   await expand(page, 'archive.hqx', ARCHIVE_MEMBER);
   await row(page, ARCHIVE_MEMBER).click({ button: 'right' });
   const menu = page.locator('.context-menu');
-  await expect(menu.locator('.item').filter({ hasText: 'Download' })).toBeVisible();
+  await expect(menu.locator('.item').filter({ hasText: 'Save to computer' })).toBeVisible();
   await menu.locator('.item').filter({ hasText: 'Insert into floppy drive' }).click();
   await expect(page.locator('.toast .msg').filter({ hasText: 'Inserted' })).toBeVisible();
   // The drive holds the member itself: nothing was unpacked next to it.

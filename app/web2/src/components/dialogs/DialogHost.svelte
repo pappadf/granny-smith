@@ -25,7 +25,8 @@
     message={q.message}
     confirmText={q.confirmText}
     danger={q.danger}
-    onConfirm={() => answerConfirm(true)}
+    optOutLabel={q.optOutLabel}
+    onConfirm={(optOut) => answerConfirm(true, optOut)}
     onClose={() => answerConfirm(false)}
   />
 {/if}

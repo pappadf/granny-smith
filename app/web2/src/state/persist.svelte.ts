@@ -5,7 +5,7 @@
 // View-state keys extend the original (skin + panelPos + panelSize)
 // with Debug sections, MMU subtab, Memory address/mode, Logs
 // autoscroll, Filesystem expansion, Images collapsed map, Checkpoints
-// sort and the microphone device. Each of those uses a `{v, data}`
+// sort, the microphone device and the Welcome page's recent machines. Each of those uses a `{v, data}`
 // envelope so future migrations are tractable. Reads tolerate
 // missing/malformed values silently.
 
@@ -18,6 +18,8 @@ import { filesystem } from './filesystem.svelte';
 import { images } from './images.svelte';
 import { checkpoints, type CheckpointSortColumn, type SortDirection } from './checkpoints.svelte';
 import { microphone } from './microphone.svelte';
+import { recent } from './recent.svelte';
+import { parseRecent } from '@/lib/recentMachines';
 import type { ImageCategory } from '@/bus/types';
 
 const KEYS = {
@@ -34,6 +36,7 @@ const KEYS = {
   imagesCollapsed: 'gs-images-collapsed',
   checkpointsSort: 'gs-checkpoints-sort',
   micDevice: 'gs-mic-device',
+  recentMachines: 'gs-recent-machines',
 } as const;
 
 const VERSION = 1;
@@ -166,6 +169,9 @@ export function loadPersistedState(): void {
   // falls back to the default and says so.
   const micDev = readEnvelope<string>(KEYS.micDevice);
   if (typeof micDev === 'string') microphone.deviceId = micDev;
+
+  // The Welcome page's Recent list; malformed entries are dropped.
+  recent.entries = parseRecent(readEnvelope<unknown>(KEYS.recentMachines));
 }
 
 // Wire up effects that mirror state changes back to localStorage. Must be
@@ -201,4 +207,5 @@ export function startPersistEffects(): void {
   );
 
   $effect(() => writeEnvelope(KEYS.micDevice, microphone.deviceId));
+  $effect(() => writeEnvelope(KEYS.recentMachines, $state.snapshot(recent.entries)));
 }

@@ -47,6 +47,15 @@ describe('URL configuration parameters', () => {
     });
   });
 
+  it('the ImageWriter, by value id or label', () => {
+    expect((apply('plus', 'imagewriter=imagewriter2').config as Doc).options.imagewriter).toBe(
+      'imagewriter2',
+    );
+    expect((apply('lisa', 'ImageWriter=ImageWriter').config as Doc).options.imagewriter).toBe(
+      'imagewriter',
+    );
+  });
+
   it('a value the option does not offer is reported and left out', () => {
     const { config, warnings } = apply('iix', 'addressing=33');
     expect(config).toBeNull();

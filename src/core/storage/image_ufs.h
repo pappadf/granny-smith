@@ -51,6 +51,7 @@ typedef struct ufs_dirent {
     uint32_t ino;
     uint64_t size; // regular files only
     uint16_t mode; // raw dinode mode field (S_IFMT + perms)
+    uint32_t mtime; // di_mtime, Unix seconds
 } ufs_dirent_t;
 
 // Cheap probe: does byte offset `partition_byte_offset + UFS_SBOFF` look

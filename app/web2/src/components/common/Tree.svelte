@@ -17,6 +17,10 @@
      *  leave it unset. */
     kind?: 'file' | 'directory';
     draggable?: boolean;
+    /** Trailing column cells (e.g. a file's size and date), rendered at the
+     *  row's right edge as `.tree-col.tree-col-<i>` for the consumer to
+     *  size and style. */
+    columns?: string[];
     /** Pre-computed children (static mode). When omitted + !leaf, children
      *  are fetched lazily via loadChildren on first expand. */
     children?: TreeNode[];
@@ -289,7 +293,13 @@
         ondragleave={onDragLeave ? (ev) => onDragLeave(p, ev) : undefined}
         ondragend={onDragEnd ? (ev) => onDragEnd(p, ev) : undefined}
         ondrop={onDrop ? (ev) => onDrop(p, ev) : undefined}
-      />
+      >
+        {#snippet trailing()}
+          {#each node.columns ?? [] as text, i (i)}
+            <span class="tree-col tree-col-{i}">{text}</span>
+          {/each}
+        {/snippet}
+      </TreeItem>
       {#if branch && open && kids?.length === 0}
         <ul class="tree" role="group">
           <li role="none">

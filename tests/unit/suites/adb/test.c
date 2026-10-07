@@ -432,17 +432,16 @@ TEST(test_a_device_with_srq_off_does_not_interrupt_the_poll) {
     adb_delete(adb);
 }
 
-// A device adopts only the handler IDs it implements.  MkLinux's mouse
-// driver probes for a three-button mouse with Listen R3 handler 4; the
-// classic two-byte mouse must refuse it and stay on $01 (#144).
+// A device adopts only the handler IDs it implements: $01, $02 and the
+// extended mouse's $04.  Anything else leaves it where it was.
 TEST(test_the_mouse_refuses_a_handler_it_does_not_implement) {
     adb_t *adb = setup();
     uint8_t r3[8];
     uint8_t out[8];
     int n = 0;
 
-    uint8_t three_button[2] = {0x63, 0x04};
-    adb_iop_transact(adb, (uint8_t)((3 << 4) | 0x0B), three_button, 2, out, &n);
+    uint8_t unknown[2] = {0x63, 0x05};
+    adb_iop_transact(adb, (uint8_t)((3 << 4) | 0x0B), unknown, 2, out, &n);
     talk_r3(adb, 3, r3);
     ASSERT_EQ_INT(0x01, r3[1]); // still the classic mouse
 
@@ -540,6 +539,134 @@ TEST(test_an_aborted_mouse_talk_re_presents_its_report) {
     adb_delete(adb);
 }
 
+// === Extended mouse (handler $04) ==========================================
+//
+// The Cursor Device Manager asks for handler $04, reads Register 1, and then
+// decodes 4-byte reports with 13-bit deltas, so one report carries a frame's
+// motion.  MkLinux DR3 also asks for $04 but never reads Register 1 and
+// takes only bits 6-0 of each delta: until Register 1 is read, deltas stay
+// within the classic +-63.
+
+static void select_extended(adb_t *adb) {
+    uint8_t data[2] = {0x63, 0x04};
+    uint8_t out[8];
+    int n = 0;
+    adb_iop_transact(adb, (uint8_t)((3 << 4) | 0x0B), data, 2, out, &n);
+}
+
+// Talk R0 to the mouse; returns the reply length.
+static int talk_mouse(adb_t *adb, uint8_t *out) {
+    int n = 0;
+    adb_iop_transact(adb, TALK_R0(3), NULL, 0, out, &n);
+    return n;
+}
+
+// The X and Y deltas of an extended report, sign-extended from 13 bits.
+static void decode_extended(const uint8_t *r, int *dx, int *dy) {
+    int x = (r[1] & 0x7F) | ((r[2] & 0x07) << 7) | ((r[3] & 0x07) << 10);
+    int y = (r[0] & 0x7F) | (((r[2] >> 4) & 0x07) << 7) | (((r[3] >> 4) & 0x07) << 10);
+    *dx = (x & 0x1000) ? x - 0x2000 : x;
+    *dy = (y & 0x1000) ? y - 0x2000 : y;
+}
+
+TEST(test_the_extended_mouse_sends_four_bytes) {
+    adb_t *adb = setup();
+    uint8_t r3[8];
+    uint8_t out[8];
+
+    select_extended(adb);
+    talk_r3(adb, 3, r3);
+    ASSERT_EQ_INT(0x04, r3[1]);
+
+    adb_mouse_move(adb, 20, -10);
+    ASSERT_EQ_INT(4, talk_mouse(adb, out));
+    ASSERT_EQ_INT(0x80, out[0] & 0x80); // button 0 up
+    ASSERT_EQ_INT(0x80, out[1] & 0x80); // button 1 up
+    ASSERT_EQ_INT(0x88, out[2] & 0x88); // buttons 2 and 3 up
+    ASSERT_EQ_INT(0x88, out[3] & 0x88); // buttons 4 and 5 up
+    int dx, dy;
+    decode_extended(out, &dx, &dy);
+    ASSERT_EQ_INT(20, dx);
+    ASSERT_EQ_INT(-10, dy);
+
+    adb_delete(adb);
+}
+
+TEST(test_wide_deltas_wait_for_register_one) {
+    adb_t *adb = setup();
+    uint8_t out[8];
+    int n = 0, dx, dy;
+
+    select_extended(adb);
+
+    // Not identified yet: a +-63 report, the rest kept for the next poll.
+    adb_mouse_move(adb, 300, -200);
+    ASSERT_EQ_INT(4, talk_mouse(adb, out));
+    decode_extended(out, &dx, &dy);
+    ASSERT_EQ_INT(63, dx);
+    ASSERT_EQ_INT(-64, dy);
+    int pdx, pdy;
+    adb_mouse_pending(adb, &pdx, &pdy);
+    ASSERT_EQ_INT(300 - 63, pdx);
+    ASSERT_EQ_INT(-200 + 64, pdy);
+
+    // Register 1: the 8-byte device record, class mouse, one button.
+    ASSERT_TRUE(adb_iop_transact(adb, (uint8_t)((3 << 4) | 0x0D), NULL, 0, out, &n));
+    ASSERT_EQ_INT(8, n);
+    ASSERT_EQ_INT(72, (out[4] << 8) | out[5]); // counts per inch
+    ASSERT_EQ_INT(1, out[6]); // classMouse
+    ASSERT_EQ_INT(1, out[7]); // buttons
+
+    // Identified: everything left goes in one report.
+    ASSERT_EQ_INT(4, talk_mouse(adb, out));
+    decode_extended(out, &dx, &dy);
+    ASSERT_EQ_INT(300 - 63, dx);
+    ASSERT_EQ_INT(-200 + 64, dy);
+    adb_mouse_pending(adb, &pdx, &pdy);
+    ASSERT_EQ_INT(0, pdx);
+    ASSERT_EQ_INT(0, pdy);
+
+    // A new handler is a new driver: identified again by Register 1.
+    select_extended(adb);
+    adb_mouse_move(adb, 100, 0);
+    talk_mouse(adb, out);
+    decode_extended(out, &dx, &dy);
+    ASSERT_EQ_INT(63, dx);
+
+    adb_delete(adb);
+}
+
+// The classic mouse has no Register 1.
+TEST(test_register_one_needs_the_extended_handler) {
+    adb_t *adb = setup();
+    uint8_t out[8];
+    int n = 0;
+    ASSERT_TRUE(!adb_iop_transact(adb, (uint8_t)((3 << 4) | 0x0D), NULL, 0, out, &n));
+    adb_delete(adb);
+}
+
+// New data is announced to the transceiver (Cuda, Egret poll on data).
+static int s_hook_calls;
+static void count_hook(void *ctx) {
+    (void)ctx;
+    s_hook_calls++;
+}
+
+TEST(test_new_mouse_data_calls_the_data_hook) {
+    adb_t *adb = setup();
+    s_hook_calls = 0;
+    adb_set_data_hook(adb, count_hook, NULL);
+    adb_mouse_move(adb, 0, 0);
+    ASSERT_EQ_INT(0, s_hook_calls); // nothing new
+    adb_mouse_move(adb, 3, 0);
+    ASSERT_EQ_INT(1, s_hook_calls);
+    ASSERT_TRUE(adb_has_data(adb));
+    adb_set_data_hook(adb, NULL, NULL);
+    adb_mouse_move(adb, 3, 0);
+    ASSERT_EQ_INT(1, s_hook_calls);
+    adb_delete(adb);
+}
+
 int main(void) {
     RUN(test_rtc_bit_banging_is_not_an_adb_transition);
     RUN(test_an_st_change_still_lands_under_rtc_traffic);
@@ -557,6 +684,10 @@ int main(void) {
     RUN(test_a_held_button_is_reported_once);
     RUN(test_an_aborted_register_talk_does_not_make_the_mouse_answer);
     RUN(test_an_aborted_mouse_talk_re_presents_its_report);
+    RUN(test_the_extended_mouse_sends_four_bytes);
+    RUN(test_wide_deltas_wait_for_register_one);
+    RUN(test_register_one_needs_the_extended_handler);
+    RUN(test_new_mouse_data_calls_the_data_hook);
     printf("[PASS] All ADB tests passed\n");
     return 0;
 }

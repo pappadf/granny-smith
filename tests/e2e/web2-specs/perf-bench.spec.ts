@@ -108,10 +108,10 @@ test('perf-bench: accelerated + turbo throughput (tracked numbers)', async ({
   test.setTimeout(15 * 60 * 1000);
   await gotoWeb2(page);
 
-  // SE/30 ROM via the Welcome "Upload ROM..." button; built-in video.
+  // SE/30 ROM via the Welcome "Load ROM..." button; built-in video.
   const [romChooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.getByRole('button', { name: 'Load ROM...' }).click(),
   ]);
   await romChooser.setFiles(SE30_ROM);
 

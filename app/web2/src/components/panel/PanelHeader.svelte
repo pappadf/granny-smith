@@ -12,6 +12,7 @@
   import { openContextMenu, type ContextMenuItem } from '../common/ContextMenu.svelte';
   import { machine } from '@/state/machine.svelte';
   import { continueExec, pauseExec, stepInto, stopMachine, restart } from '@/bus/debug';
+  import { confirmThen } from '@/state/powerConfirm';
 
   // Display labels, in this order.  Written in title case; the skin's
   // --gs-tab-transform decides whether they show in capitals.
@@ -93,7 +94,7 @@
           },
           { sep: true },
           { label: 'Clear', action: () => clearLogs() },
-          { label: 'Download', icon: 'download', action: () => downloadLogs() },
+          { label: 'Save to computer…', icon: 'download', action: () => downloadLogs() },
         ];
       case 'checkpoints':
         return [{ label: 'Create Checkpoint', action: () => void createCheckpoint() }];
@@ -108,8 +109,8 @@
             disabled: machine.status !== 'paused',
             action: () => void stepInto(1),
           },
-          { label: 'Stop', icon: 'stop', action: () => void stopMachine() },
-          { label: 'Restart', icon: 'restart', action: () => void restart() },
+          { label: 'Stop', icon: 'stop', action: () => void confirmThen('shutdown', stopMachine) },
+          { label: 'Restart', icon: 'restart', action: () => void confirmThen('restart', restart) },
         ];
       default:
         return [];
@@ -168,7 +169,7 @@
         <Button
           class="action-btn"
           onclick={() => downloadLogs()}
-          title="Download the log buffer as text"
+          title="Save the log buffer to your computer as text"
         >
           Download
         </Button>

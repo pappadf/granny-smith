@@ -108,6 +108,7 @@ typedef struct {
     jmfb_bind_t bind; // what `regs` acts on; rebuilt at init, never checkpointed
     nubus_card_t *card; // back-pointer for IRQ helpers
     uint8_t *vram; // 2 MB
+    uint8_t *blank; // the power-on raster's black fill, shown while held blanked after /RESET
     uint8_t *vrom; // 32 KB declaration ROM bytes
     char *vrom_path; // path the VROM was loaded from
     uint32_t vrom_size; // typically 32 KB; 0 if no VROM loaded
@@ -456,6 +457,12 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, const 
     p->poweron_row_words = p->regs.row_words; // what a /RESET returns to
 
     p->regs.raster_h = mon_h;
+    // The blank a /RESET scans out (card_reset): the power-on raster, 1 bpp.
+    // Too small a buffer only shortens the blanked raster (display_set_scanout).
+    p->bind.blank_size = (size_t)p->poweron_row_words * 4u * mon_h;
+    p->bind.blank = p->blank = calloc(1, p->bind.blank_size);
+    if (!p->blank)
+        p->bind.blank_size = 0;
     p->display.format = PIXEL_1BPP_MSB;
     // Derive the descriptor from the registers just set, the same way every
     // later write does.  The old hard-coded `stride = 640/8` described a
@@ -531,6 +538,7 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     if (!p)
         return;
     free(p->vram);
+    free(p->blank);
     // p->vrom is published as card->declrom; nubus_delete owns and frees it.
     free(p->vrom_path);
     free(p);
@@ -540,10 +548,13 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
 // NuBus /RESET: the chip's registers back to the power-on state card_init
 // gives them -- 1 bpp, the driver's $A00 base, the VBL interrupt masked --
 // with the monitor still the one plugged in (the sense lines are a strap) and
-// VRAM left alone, as on the 24AC and the 8*24 GC.  The card had no reset op,
-// so nubus_reset skipped it: a machine reset left the OS's VBL interrupt
-// enabled, the card kept asserting its slot line, and the next start-up took
-// that interrupt before POST had a handler (a IIfx failed phase $92 on it).
+// VRAM left alone, as on the 24AC and the 8*24 GC.  The controller comes out
+// of /RESET with sync off, so the card scans out black -- not the old VRAM
+// picture -- until the guest writes VideoBase (jmfb_family.c).  The card had
+// no reset op, so nubus_reset skipped it: a machine reset left the OS's VBL
+// interrupt enabled, the card kept asserting its slot line, and the next
+// start-up took that interrupt before POST had a handler (a IIfx failed phase
+// $92 on it).
 static void card_reset(nubus_card_t *card, config_t *cfg) {
     (void)cfg;
     jmfb_priv_t *p = card->priv;
@@ -558,6 +569,7 @@ static void card_reset(nubus_card_t *card, config_t *cfg) {
     p->regs.sw_ic = VINT_DISABLE;
     p->regs.video_base = 0xA00 / 32;
     p->regs.row_words = p->poweron_row_words;
+    p->regs.blanked = 1;
     p->display.format = PIXEL_1BPP_MSB;
     jmfb_apply_scanout(&p->regs, &p->bind);
     p->display.shape_dirty = true;
@@ -600,7 +612,7 @@ static display_t *card_display(nubus_card_t *card) {
 // memory_map_checkpoint saves, so without these a restored machine comes back
 // with a blank screen and a default palette until the guest happens to redraw.
 //
-// The four pointer members (card, vram, vrom, vrom_path) and the construction
+// The pointer members (card, vram, blank, vrom, vrom_path) and the construction
 // facts beside them (vrom_size, slot_base) are deliberately NOT in the stream:
 // they are rebuilt by card_init before the restore runs, and writing them back
 // from a checkpoint would install stale addresses.
@@ -636,7 +648,9 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
 
     // stride, width and the scan base are all derived from row_words,
     // video_base and the restored format -- and the restore must land on a
-    // descriptor VRAM can back, the same as any register write would.
+    // descriptor VRAM can back, the same as any register write would.  The
+    // restored `regs.blanked` rides the range, so a card checkpointed between
+    // a /RESET and PrimaryInit comes back blanked.
     jmfb_apply_scanout(&p->regs, &p->bind);
 
     // display.bits still points into p->vram (card_init set it and the buffer

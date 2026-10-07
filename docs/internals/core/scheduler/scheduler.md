@@ -79,7 +79,16 @@ These are myths that repeatedly show up in discussions of the scheduler. Every o
 - **"A sprint always executes the full number of instructions it was set up with."**
   Usually yes, but an I/O access with bus wait states may deduct phantom instructions
   from `sprint_burndown` mid-flight, ending the sprint early. This is how the emulator
-  keeps cycle accounting honest across slow I/O (see §6.2).
+  keeps cycle accounting honest across slow I/O (see §6.2). An exception, a `STOP` or
+  a trace step ends a sprint early too, and then the slots it did not run are handed
+  back, not spent (§6.4).
+
+- **"Adding an event that does nothing cannot change what the guest does."**
+  True, and it must stay true: a sprint split at an extra event boundary has to land
+  on exactly the same guest state as the unsplit one. Every way of ending a sprint
+  early therefore goes through `memory_end_sprint()` (§6.4) and every stall that
+  outlasts its sprint is carried (§6.2). When either rule was broken, A/UX's
+  instruction count on a IIci moved by 25% with the presence of a no-op 11 ms event.
 
 - **"Switching scheduler mode (paced/turbo) changes what the guest executes."**
   No. Those two modes are *pacing only* — they decide how many frame-units a host tick
@@ -497,6 +506,12 @@ the cycle count still advances correctly because `cpu_cycles` is increased by
 is subtracted from `total_instructions` in step 3 above so the *instruction* counter
 only reflects real work.
 
+A stall longer than what is left of the sprint does not stop at the sprint's end: the
+event there fires on time while the CPU is still waiting on its bus cycle. The slots
+past the end are owed (`io_stall_slots`, via the sprint-time alias `g_io_stall_owed`)
+and burned first in the next sprint, before the CPU runs anything. Clamping instead —
+dropping the overflow — made the total stall depend on where events happened to fall.
+
 The sub-CPI remainder belongs to the scheduler (`io_penalty_remainder`, in its
 checkpointed prefix and zero on a new machine), so sub-CPI penalties accumulate
 correctly over time and a restore resumes them exactly. `g_io_penalty_remainder` is
@@ -539,6 +554,35 @@ The same mechanism is what `scheduler_stop()` uses
 ([scheduler.c:843](../../../../src/core/scheduler/scheduler.c#L843)): it sets `running = false`
 and calls `reconcile_sprint` to cut the sprint short at the next boundary so the outer
 `while (remaining_cycles > 0)` loop can exit promptly.
+
+### 6.4 Ending a sprint early: `memory_end_sprint()`
+
+Some instructions end the sprint at their own boundary rather than at the planned end:
+an exception the memory system raises (a page fault, a bus error — `memory_signal_bus_error`
+and the PMMU fault paths), a `STOP`, an SR write that sets the trace bit, and the trace
+clamp to one instruction. All of them go through
+
+```c
+static inline void memory_end_sprint(uint32_t *instructions) {
+    g_sprint_unrun_slots += *instructions;   // planned, not run
+    *instructions = 0;                       // the decoder loop exits
+}
+```
+
+and the finalizer takes those slots off the sprint: `executed_slots = sprint_total -
+unrun`. Neither the clock nor `total_instructions` advances for them. A CPU that is
+still stopped then sleeps to the next event on the idle path (§6), which advances time
+without counting instructions; one that took an exception simply runs on in the next
+sprint.
+
+**Never end a sprint with a bare `*instructions = 0`.** That leaves the slots in the
+plan, so the finalizer books all of them: the clock jumps to the next event and the
+instruction count rises by the same amount while the CPU executes nothing. The stall
+lasts exactly as long as the gap to whichever event comes next, which makes guest
+behaviour depend on unrelated event density. On a IIci under A/UX — whose kernel touches
+user memory with `MOVES` and page-faults constantly — a fault froze the CPU until the next
+event (127,000 cycles, ~5 ms, in the case traced), and an 11 ms ADB poll that did nothing
+the guest could see was what kept those freezes short.
 
 ---
 

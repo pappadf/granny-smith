@@ -147,7 +147,7 @@ test("record from the browser microphone in the Sound control panel", async ({
   // model list. Dropping the file in behind it leaves the list empty.
   const [romChooser] = await Promise.all([
     page.waitForEvent("filechooser"),
-    page.getByRole("button", { name: "Upload ROM..." }).click(),
+    page.getByRole("button", { name: "Load ROM..." }).click(),
   ]);
   await romChooser.setFiles(AV_ROM);
 
@@ -161,7 +161,7 @@ test("record from the browser microphone in the Sound control panel", async ({
   const hd = page.locator("#cfg-media-scsi-0");
   const [hdChooser] = await Promise.all([
     page.waitForEvent("filechooser"),
-    hd.selectOption("Upload image..."),
+    hd.selectOption("Load image..."),
   ]);
   await hdChooser.setFiles(AV_HD);
   await expect(hd.locator("option", { hasText: AV_HD_NAME })).toHaveCount(1, {

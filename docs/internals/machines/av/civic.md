@@ -94,6 +94,13 @@ and any DMA reach it by physical address). The `'Nano'` probe at
 `base + 2 MB − 8` sizes it. `av_substrate.display` exposes the scanout;
 geometry is the Hi-Res mode's 640×480 with the depth from PCBR.
 
+A /RESET (`av_civic_reset`, from the substrate's bus reset) keeps the registers
+and VRAM but holds the scanout **blanked** — a black 1 bpp raster served from
+the idle overlay buffer, so the guest's CLUT cannot tint it — until the ROM
+writes Enable (`$004`) = 1, which it does just before its gray fill. The
+`blanked` flag sits in the checkpointed plain-data block. A power cycle also
+clears VRAM (`av_civic_power_on`).
+
 ## Testing
 
 `tests/unit/suites/civic/` pins the serial codec (with explicit per-slot

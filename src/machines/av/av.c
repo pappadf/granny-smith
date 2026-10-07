@@ -20,8 +20,8 @@
 #include "civic.h"
 #include "cuda.h"
 #include "dsp.h"
+#include "floppy.h"
 #include "mace.h"
-#include "new_age.h"
 #include "psc.h"
 #include "singer.h"
 #include "vdc.h"
@@ -719,15 +719,6 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     }
     machine_part(cfg, cp, "cuda", part_save_cuda, st->cuda);
 
-    // New Age FDC stub ("no drive" — ST3 = $FF).
-    machine_part_begin(cfg, cp, "new_age");
-    st->fdc = av_new_age_init(cfg, cp);
-    if (!st->fdc) {
-        LOG(0, "Error: out of memory constructing the New Age FDC");
-        return -1;
-    }
-    machine_part(cfg, cp, "new_age", av_new_age_checkpoint_part, st->fdc);
-
     // MACE Ethernet register stub + address PROM (no wire).
     machine_part_begin(cfg, cp, "mace");
     st->mace = av_mace_init(cfg, cp);
@@ -758,6 +749,22 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     av_cuda_attach_vdc(st->cuda, st->vdc);
 
     machine_part_images(cfg, cp);
+
+    // The internal SuperDrive (after the image list it resolves its media
+    // from) and the New Age FDC that drives it.  No memory map: the PSC
+    // island decodes the controller (av_io_ranges), so the shared module
+    // only carries the drive and its media.
+    machine_part_begin(cfg, cp, "floppy");
+    cfg->floppy =
+        floppy_init(FLOPPY_TYPE_NEW_AGE, NULL, cfg->scheduler, machine_floppy_count(cfg), cp, CONFIG_IMAGES(cfg));
+    machine_part(cfg, cp, "floppy", part_save_floppy, cfg->floppy);
+    machine_part_begin(cfg, cp, "new_age");
+    st->fdc = av_new_age_init(cfg, cp);
+    if (!st->fdc) {
+        LOG(0, "Error: out of memory constructing the New Age FDC");
+        return -1;
+    }
+    machine_part(cfg, cp, "new_age", av_new_age_checkpoint_part, st->fdc);
 
     // SCSI: the bus/target model carries the disks and CD; the 53C96 chip
     // model fronts it through the external-initiator API.
@@ -898,6 +905,10 @@ static void av_bus_reset(config_t *cfg) {
         st->bus_mmu->enabled = false;
         mmu_invalidate_tlb(st->bus_mmu);
     }
+    av_civic_reset(st->civic); // sync off until the ROM re-enables video
+    // The floppy CONTROLLER; cfg->floppy (the drive and its media) is reset
+    // by the shared chain.
+    av_new_age_reset(st->fdc);
     system_reset_common_devices(cfg);
 }
 
@@ -925,6 +936,12 @@ static void av_teardown(config_t *cfg) {
         if (st->fdc) {
             av_new_age_delete(st->fdc);
             st->fdc = NULL;
+        }
+        // The drive the controller was bound to (above the shared chain,
+        // as on PDM and TNT: only these families build it themselves).
+        if (cfg->floppy) {
+            floppy_delete(cfg->floppy);
+            cfg->floppy = NULL;
         }
         if (st->cuda) {
             av_cuda_delete(st->cuda);

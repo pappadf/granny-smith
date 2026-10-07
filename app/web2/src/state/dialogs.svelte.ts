@@ -18,7 +18,9 @@ export interface ConfirmQuestion {
   message: string;
   confirmText: string;
   danger: boolean;
-  resolve: (ok: boolean) => void;
+  // A "Don't ask again" style checkbox under the message, when set.
+  optOutLabel?: string;
+  resolve: (ok: boolean, optOut?: boolean) => void;
 }
 
 export type Question = TextQuestion | ConfirmQuestion;
@@ -76,6 +78,30 @@ export function askConfirm(opts: {
   });
 }
 
+// Ask a yes/no question with an opt-out checkbox ("Don't ask again"):
+// `ok` is whether it was confirmed, `optOut` whether the box was ticked
+// (only reported on a confirm -- a cancel never opts out).
+export function askConfirmWithOptOut(opts: {
+  title?: string;
+  message: string;
+  confirmText?: string;
+  danger?: boolean;
+  optOutLabel: string;
+}): Promise<{ ok: boolean; optOut: boolean }> {
+  cancelCurrent();
+  return new Promise((resolve) => {
+    dialogs.current = {
+      kind: 'confirm',
+      title: opts.title ?? 'Confirm',
+      message: opts.message,
+      confirmText: opts.confirmText ?? 'OK',
+      danger: opts.danger ?? false,
+      optOutLabel: opts.optOutLabel,
+      resolve: (ok, optOut) => resolve({ ok, optOut: ok && !!optOut }),
+    };
+  });
+}
+
 // Answer the open question (DialogHost).
 export function answerText(value: string | null): void {
   const q = dialogs.current;
@@ -84,9 +110,9 @@ export function answerText(value: string | null): void {
   q.resolve(value);
 }
 
-export function answerConfirm(ok: boolean): void {
+export function answerConfirm(ok: boolean, optOut = false): void {
   const q = dialogs.current;
   if (q?.kind !== 'confirm') return;
   dialogs.current = null;
-  q.resolve(ok);
+  q.resolve(ok, optOut);
 }

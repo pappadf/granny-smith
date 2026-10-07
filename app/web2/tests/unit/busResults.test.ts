@@ -25,7 +25,7 @@ describe('Save State', () => {
 
   it('reports a failed download', async () => {
     bridge.reply('checkpoint.save', true).reply('files.download', false).reply('files.rm', true);
-    expect(await saveCheckpoint()).toMatchObject({ ok: false, step: 'download' });
+    expect(await saveCheckpoint()).toMatchObject({ ok: false, step: 'save to computer' });
   });
 
   it('saves in a scratch directory of its own, under the name it downloads as', async () => {

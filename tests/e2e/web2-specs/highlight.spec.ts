@@ -21,7 +21,7 @@ const SE30_ROM = path.join(
 async function bootSE30(page: Page): Promise<void> {
   const [romChooser] = await Promise.all([
     page.waitForEvent("filechooser"),
-    page.getByRole("button", { name: "Upload ROM..." }).click(),
+    page.getByRole("button", { name: "Load ROM..." }).click(),
   ]);
   await romChooser.setFiles(SE30_ROM);
   await page.getByRole("button", { name: "New Machine..." }).click();

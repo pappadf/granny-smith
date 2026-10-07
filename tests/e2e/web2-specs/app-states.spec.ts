@@ -110,7 +110,10 @@ async function shot(
   // The pointer rests over the empty display background, hovering nothing.
   await page.mouse.move(1279, 60);
   await page.waitForTimeout(400);
-  await expect(page).toHaveScreenshot(name, {
+  // Soft: a mismatch still fails the test, but the shots after it are taken
+  // too, so one run reports (and uploads the actual image of) every changed
+  // state -- a wording change shows in every tab shot, not just the first.
+  await expect.soft(page).toHaveScreenshot(name, {
     maxDiffPixels: 0,
     threshold: RASTER_NOISE,
     animations: "disabled",

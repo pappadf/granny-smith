@@ -110,6 +110,7 @@ const CARD_IDS = [
   '824gc',
   'builtin_se30_video',
   'builtin_rbv_video',
+  'builtin_rbv_iisi_video',
   'tnt_control',
   'mach64_gx',
   'ati_rage_pro',

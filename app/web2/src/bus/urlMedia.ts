@@ -22,6 +22,14 @@
 // fails is left out of the boot, and the run says so.  Nothing is attached
 // from the scratch area, and every exit discards the scratch file.
 //
+// `hdN=blank:<model or size>` and `fdN=blank:<size>` create a new blank disk
+// in that slot instead (lib/blankMedia.ts has the syntax): a floppy with the
+// downloads, a hard disk once the ROM has chosen the model, since which bus
+// the disk goes on (SCSI, ATA, the Lisa's ProFile) decides what it is.  It is
+// named for the link, so a reload reuses it (`blank!:` replaces it), and a
+// spec that cannot be created is reported like a failed download: the boot
+// goes ahead without that disk.
+//
 // `config=` is the configuration document, base64url-encoded JSON (the
 // dialog's document; absent, the model's default configuration).  `hdN`,
 // `cd` and `fdN` keep meaning the Nth hard disk / the CD-ROM drive of the
@@ -40,7 +48,7 @@
 // every file is listed up front and its download progress reported for the
 // progress view that stands in for Welcome (components/display/UrlBootView).
 
-import { gsEval, gsErrorText, isModuleReady } from './emulator';
+import { gsEval, gsErrorText, gsOk, isModuleReady } from './emulator';
 import { xferReadAll } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
@@ -74,8 +82,18 @@ import {
   type UrlConfigParams,
 } from '@/lib/urlConfig';
 import { persistAs, streamToOpfs, discardStaging, stagedArchiveFormat } from './upload';
-import { scratchPath } from '@/lib/opfsPaths';
-import { getProfile, type ConfigDocument, type MachineProfile } from './profile';
+import { scratchPath, FD_DIR, HD_DIR } from '@/lib/opfsPaths';
+import {
+  parseBlankValue,
+  blankUrlHash,
+  blankDiskName,
+  floppyBlankPlan,
+  hardDiskBlankPlan,
+  hardDiskSpecRefused,
+  type BlankPlan,
+  type BlankSpec,
+} from '@/lib/blankMedia';
+import { getProfile, type ConfigDocument, type MachineProfile, type StorageBus } from './profile';
 import {
   attachHardDisk,
   attachCdrom,
@@ -202,6 +220,14 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   for (const fd of params.floppies) queueUrlFile(fd.slot);
   for (const hd of params.hardDisks) queueUrlFile(hd.slot);
   if (params.cd) queueUrlFile('cd');
+  // A blank disk is listed under the name it will have (its extension is
+  // the bus's, known once the model is).
+  const hash = blankUrlHash(urlMediaEntries(params));
+  for (const d of [...params.floppies, ...params.hardDisks]) {
+    const blank = parseBlankValue(d.url);
+    if (blank)
+      updateUrlFile(d.slot, { name: blankDiskName(d.slot, blank.spec, hash, ''), blank: true });
+  }
 
   // The ROM first: without it nothing boots, so the disks (which can be
   // hundreds of megabytes) are not fetched for nothing.
@@ -223,7 +249,12 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   for (const hd of params.hardDisks) wanted.push([hd.slot, hd.url, 'hd']);
   if (params.cd) wanted.push(['cd', params.cd, 'cdrom']);
   for (const [slot, url, category] of wanted) {
-    paths.set(slot, await fetchAndPersist(slot, url, category));
+    const blank = parseBlankValue(url);
+    // A blank hard disk waits for the model (below).
+    if (blank && category === 'hd') continue;
+    if (blank && category === 'fd')
+      paths.set(slot, await provideBlank(slot, blank, floppyBlankPlan(blank.spec), FD_DIR, hash));
+    else paths.set(slot, await fetchAndPersist(slot, url, category));
   }
 
   if (!params.rom) {
@@ -269,6 +300,16 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   if (params.configInvalid)
     showNotification('The URL’s config= is not a configuration; booting the default', 'warning');
   const profile = await getProfile(chosen);
+  for (const hd of params.hardDisks) {
+    const blank = parseBlankValue(hd.url);
+    if (!blank) continue;
+    const n = parseInt(hd.slot.replace('hd', ''), 10);
+    const bus = profile ? hardDiskBus(profile, n) : null;
+    const plan: BlankPlan = bus
+      ? hardDiskBlankPlan(blank.spec, bus.blank_disks)
+      : { ok: false, reason: `${chosen} has no hard disk ${n + 1} to create a blank disk for` };
+    paths.set(hd.slot, await provideBlank(hd.slot, blank, plan, HD_DIR, hash));
+  }
   let config = urlConfig(profile, params);
   if (profile) {
     const applied = applyUrlConfig(profile, config, params.settings);
@@ -309,6 +350,74 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   await prepareFreshMachine();
   showNotification(`Booted ${chosen} from URL parameters`, 'info');
   return true;
+}
+
+// The URL's media parameters as [canonical name, value] pairs, in a fixed
+// order: what a blank disk's name is hashed from (lib/blankMedia.ts), so the
+// same link names the same disks however its parameters are ordered.
+function urlMediaEntries(params: UrlMediaParams): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  if (params.rom) out.push(['rom', params.rom]);
+  if (params.romPair) out.push(['rom2', params.romPair]);
+  if (params.vrom) out.push(['vrom', params.vrom]);
+  const bySlot = (a: { slot: string }, b: { slot: string }) =>
+    parseInt(a.slot.slice(2), 10) - parseInt(b.slot.slice(2), 10);
+  for (const fd of [...params.floppies].sort(bySlot)) out.push([fd.slot, fd.url]);
+  for (const hd of [...params.hardDisks].sort(bySlot)) out.push([hd.slot, hd.url]);
+  if (params.cd) out.push(['cd', params.cd]);
+  return out;
+}
+
+// The bus the default configuration's `n`-th hard disk is on -- the one
+// machine.attach_hd(path, n) attaches to -- or null when there is none.
+function hardDiskBus(profile: MachineProfile, n: number): StorageBus | null {
+  const dev = profile.defaults.storage.filter((d) => d.type === 'hd')[n];
+  return dev ? (profile.storage.find((b) => b.id === dev.bus) ?? null) : null;
+}
+
+// `slot`'s blank disk, in `dir`, by `plan`: the one an earlier load of this
+// URL created when it is there (blank: -- reloading the link does not pile
+// up blank images), else a new one (and always a new one for blank!:,
+// which removes the old).  Created the way the New Machine dialog's Create
+// blank image does (CreateImageDialog.svelte), plain blank for the guest to
+// format.  Returns the path to attach from, or undefined -- the boot goes
+// ahead without it -- with the reason in the progress view and a toast,
+// as for a failed download.
+async function provideBlank(
+  slot: string,
+  blank: BlankSpec,
+  plan: BlankPlan,
+  dir: string,
+  hash: string,
+): Promise<string | undefined> {
+  const label = slot.toUpperCase();
+  const fail = (why: string): undefined => {
+    showNotification(`${label}: ${why}`, 'error');
+    updateUrlFile(slot, { status: 'failed', error: why });
+    return undefined;
+  };
+  if (!plan.ok) return fail(plan.reason);
+  const name = blankDiskName(slot, blank.spec, hash, plan.ext);
+  const path = `${dir}/${name}`;
+  updateUrlFile(slot, { name, blank: true });
+  if ((await gsEval('files.path_exists', [path])) === true) {
+    if (!blank.fresh) {
+      updateUrlFile(slot, { status: 'done', reused: true });
+      if (!urlBoot.requested) showNotification(`${label}: ${name} (blank, already stored)`, 'info');
+      return path;
+    }
+    const rm = await gsEval('files.rm', [path]);
+    if (!gsOk(rm)) return fail(`could not replace ${name}: ${gsErrorText(rm)}`);
+  }
+  const made = await gsEval(plan.method, [path, plan.arg]);
+  if (made !== true) {
+    // The core parses an hd_create spec; its refusal is the spec's fault.
+    if (plan.method === 'files.hd_create') return fail(hardDiskSpecRefused(blank.spec));
+    return fail(`could not create ${name}: ${gsErrorText(made)}`);
+  }
+  updateUrlFile(slot, { status: 'done' });
+  if (!urlBoot.requested) showNotification(`${label}: ${name} (new blank disk)`, 'info');
+  return path;
 }
 
 // The document to boot: ?config= as given, else -- when an ?fdN= names a
@@ -374,9 +483,9 @@ function report(slot: string, path: string, r: MediaResult): void {
 // two spellings of one file are two URLs.  A stored image is never written
 // to (a machine's writes go to a delta of its own), so it is still what was
 // downloaded.  Answers its path, the progress view and the run told, or
-// null: then it is downloaded.  Only UDIF images carry an origin, so this
-// finds disks that were big enough to be imported as one (bus/importImage);
-// a small file is simply fetched again.
+// null: then it is downloaded.  Only UDIF images carry an origin, which is
+// why every hard disk or CD a URL brings is stored as one, whatever its size
+// and however it arrived (fetchAndImport, storeCompact).
 async function storedFromUrl(
   slot: string,
   url: string,
@@ -425,12 +534,55 @@ async function fetchAndPersist(
   const staged = await fetchAndStage(slot, url);
   if (!staged) return undefined;
   try {
+    if (category === 'hd' || category === 'cdrom') {
+      const stored = await storeCompact(slot, staged, url, category);
+      if (stored !== false) return stored;
+    }
     const stored = await persistAs(staged.path, staged.name, category);
     if (stored.ok) return stored.path;
     rejectDownload(slot, staged.name, stored.reason);
     return undefined;
   } finally {
     await discardStaging(staged.path);
+  }
+}
+
+// Store a staged hard disk or CD as a compact UDIF recording `url` as its
+// origin, so the next boot of the same link finds it (storedFromUrl) instead
+// of downloading it again.  For the disks the streamed import leaves to the
+// staged flow: a small one (onSmall), and a Mac archive member that import
+// refuses (a Disk Copy 6 image -- NDIF -- unpacked, then converted).  Returns the
+// stored path, undefined when the image was rejected, or false when the core
+// cannot read the staged file as a disk (the caller stores it as it is, and
+// the validator has its say).
+async function storeCompact(
+  slot: string,
+  staged: { path: string; name: string },
+  url: string,
+  category: DiskCategory,
+): Promise<string | undefined | false> {
+  const part = scratchPath(`url_${slot}.dmg.part`);
+  try {
+    const r = await gsEval('files.convert', [
+      staged.path,
+      part,
+      64,
+      1,
+      'udif',
+      staged.name,
+      url.trim(),
+    ]);
+    if (!r || typeof r !== 'object' || 'error' in (r as object)) return false;
+    const name = `${staged.name}.dmg`;
+    const stored = await persistAs(part, name, category);
+    if (stored.ok) {
+      updateUrlFile(slot, { name: stored.path.split('/').pop() ?? name });
+      return stored.path;
+    }
+    rejectDownload(slot, staged.name, stored.reason);
+    return undefined;
+  } finally {
+    await discardStaging(part);
   }
 }
 
@@ -445,8 +597,9 @@ function rejectDownload(slot: string, name: string, reason: string): void {
 // Fetch a hard-disk or CD value and stream it into a compact UDIF
 // (bus/importImage.ts): the body -- or the named member of a zip body, or a
 // gzip body's content -- goes into the core's writer as it arrives, so a
-// 45 MB download of a 2 GB disk never needs 2 GB.  A small file is staged
-// and persisted as before.  Returns the path to attach from, undefined when
+// 45 MB download of a 2 GB disk never needs 2 GB.  A small file is staged,
+// then stored as a UDIF too (storeCompact): only a UDIF records the URL it
+// came from, which is what lets the next boot of the link reuse it.  Returns the path to attach from, undefined when
 // nothing was stored, or false when the body is a Mac archive, which the
 // staged flow unpacks.
 async function fetchAndImport(
@@ -505,6 +658,11 @@ async function fetchAndImport(
       onProgress: (read) => progress(read),
       // importImage discards the staged file when this returns.
       onSmall: async (path) => {
+        const compact = await storeCompact(slot, { path, name: storeAs }, url, category);
+        if (compact !== false) {
+          rejected = compact === undefined;
+          return compact ?? null;
+        }
         const stored = await persistAs(path, storeAs, category);
         if (stored.ok) return stored.path;
         rejectDownload(slot, storeAs, stored.reason);

@@ -159,7 +159,7 @@ transports, installed at module construction:
   `Atomics.waitAsync` on the outbound ring's head while the C side wakes
   it with `emscripten_futex_wake`.  Each finished PDF comes back to the
   page as a transferable and opens in a viewer dialog (the browser's own
-  PDF viewer in a frame, with Download and Open-in-a-tab), named
+  PDF viewer in a frame, with Save to computer… and Open-in-a-tab), named
   `<job>-<title>.pdf`, releasing the pointer lock first so the cursor
   is free to use it; a browser without an inline viewer
   (`navigator.pdfViewerEnabled` false, e.g. Chrome on Android) downloads
@@ -466,7 +466,11 @@ The Svelte app is organised under
 - **Display** ([`display/`](../../app/web2/src/components/display/)) —
   ScreenView (the canvas), DisplayToolbar (zoom, pause/run, save,
   theme), DropOverlay (drag state machine §8.5), WelcomeView with
-  Home / Configuration slides for new-machine setup.
+  Home / Configuration slides for new-machine setup (Home also lists
+  the Recent machines, below).  Shut down (the toolbar's power button,
+  the Debug tab's Stop) and Restart ask first while a machine is
+  running or paused (`state/powerConfirm.ts`); the dialog's "Don't ask
+  again" is kept in localStorage (`gs-confirm-power-off`).
 - **Workbench** ([`workbench/`](../../app/web2/src/components/workbench/))
   — flex container with the Display + a resizable Panel docked
   bottom / left / right.
@@ -596,6 +600,10 @@ at that node (`revealInSystem`).
 
 Four deliberate ways to get a media image into OPFS, all routing
 through [`app/web2/src/bus/upload.ts`](../../app/web2/src/bus/upload.ts).
+("Upload" is the code's name for it; nothing leaves the user's computer,
+so the UI says **load** / **add** for files coming in and **save to
+computer** / **export** for files going out.  **Download** is kept for
+what really comes over the network: URL media.)
 Every byte goes through the core's **transfer window**
 ([`bus/xfer.ts`](../../app/web2/src/bus/xfer.ts)): the page copies a chunk
 into a fixed buffer in wasm memory and `files.xfer_write` writes it on
@@ -604,7 +612,7 @@ calls `Module.FS`: under WasmFS that runs on the page's thread and
 busy-waits for the OPFS thread, and in Safari — where WebKit serves a
 worker's OPFS request through the page's thread — it deadlocked the page.
 
-1. **New Machine dialog dropdowns** — picking "Upload image…" in a
+1. **New Machine dialog dropdowns** — picking "Load image…" in a
    floppy / HD / CD / ROM / VROM slot calls
    `pickAndUploadAs(mediaId)` →
    `acceptFilesAsCategory(files, mediaId)`. Strict per-category
@@ -699,9 +707,9 @@ there) and is never touched.
 All four paths run through `startActivity` / `endActivity`
 ([`state/activity.svelte.ts`](../../app/web2/src/state/activity.svelte.ts)) so
 the status bar shows a spinner with a "\<verb>: \<name>" label during long
-operations. The verb is general — uploads show "Uploading", and the
+operations. The verb is general — uploads show "Loading", and the
 Filesystem-tab worker ops reuse the same indicator ("Copying", "Moving",
-"Deleting", "Unpacking", "Downloading"). Confirmation toasts are centralised
+"Deleting", "Unpacking", "Saving"; a URL boot's fetch shows "Downloading"). Confirmation toasts are centralised
 in [`state/toasts.svelte.ts`](../../app/web2/src/state/toasts.svelte.ts).
 
 ## C-side surfaces the UI consumes
@@ -722,12 +730,16 @@ typed-dispatch and introspection surface.
   `zip`, `hqx`, `bin`, `gz`) or an empty string.
   **`files.archive.extract(path, out_dir)`** → bool; powers the
   Filesystem-tab "Unpack" action (an upload probes the archive in place). See [peeler.md](peeler.md).
-- **`files.list(path)`** → `[{name, kind, size, expandable}]`, descending into
-  disk images (partitions, then HFS/UFS contents) and archives, nested to any
-  depth. `expandable` marks a file the core can open as a tree; the Filesystem
-  tree expands exactly those; see [`target-filesystems.md`](../internals/core/storage/target-filesystems.md).
+- **`files.list(path)`** → `[{name, kind, size, mtime, expandable}]`, descending
+  into disk images (partitions, then HFS/UFS contents) and archives, nested to
+  any depth. `size` is the data fork's bytes; `mtime` the modification time in
+  Unix seconds, 0 when unknown (always, for a host path in the browser: WasmFS
+  has no real OPFS dates, so the Filesystem tab reads those from OPFS itself).
+  The tree shows both as its Size and Date modified columns. `expandable`
+  marks a file the core can open as a tree; the Filesystem tree expands
+  exactly those; see [`target-filesystems.md`](../internals/core/storage/target-filesystems.md).
 - **`files.cp(src, dst, [recursive])`** — copy, including *out of* an image into
-  OPFS (backs copy-out and Download). **`files.rm(path)`** /
+  OPFS (backs copy-out and Save to computer…). **`files.rm(path)`** /
   **`files.mv(src, dst)`** — recursive remove / move, run worker-side so
   WasmFS stays coherent (see Persistence above).
 - **`files.hd_create(path, size)`** / **`files.fd_create(path,
@@ -886,6 +898,40 @@ view; errors still toast.
   disk with no driver (the Disk Copy 4.2 image shape), is attached
   through the volume wrapper and boots
   ([bare-volume-wrapper.md](../internals/core/storage/bare-volume-wrapper.md)).
+- `hdN=blank:<spec>` / `fdN=blank:<spec>` — a new blank disk in that slot
+  instead of a download ([`lib/blankMedia.ts`](../../app/web2/src/lib/blankMedia.ts),
+  created in `bus/urlMedia.ts::provideBlank` the way the New Machine
+  dialog's **Create blank image** does, `CreateImageDialog.svelte`).  On a
+  SCSI or ATA bus the spec goes unchanged to `files.hd_create(path, spec)`,
+  so the URL, the shell's `hd create` and the dialog share one parser
+  (`drive_catalog_parse_size`, `src/core/storage/drive_catalog.c`): a catalog
+  model (`HD230SC`), a decimal size that snaps to the nearest model at or
+  above it (`80mb` → HD80SC, `1gb`), or an exact binary size (`100m`,
+  `512k`), at most 2 GiB and never a floppy's size.  On the Lisa's ProFile
+  the bus's own blank disks apply (`catalog.profile(id).storage[].blank_disks`:
+  `5mb`, `10mb` → `files.profile_create`); a floppy is `800k` or `1440k`
+  (`files.fd_create`; the core has no blank 400K image, so `400k` is
+  refused).  A floppy is created with the downloads; a hard disk once the ROM
+  has chosen the model, since the bus of the model's N-th default hard disk
+  decides what it is.  Decisions:
+  - **Reloads reuse.** The file is
+    `/opfs/images/<hd|fd>/blank_<spec>_<slot>_<hash><ext>` (`.dmg` for
+    `hd_create`, `.image` for a ProFile, `.dsk` for a floppy), `<hash>` an
+    8-hex FNV-1a of the URL's media parameters (`rom`, `vrom`, `fdN`, `hdN`,
+    `cd`, in a fixed order; `blank!:` hashes as `blank:`).  If it exists it
+    is attached again (the row says "Blank disk · already stored");
+    `blank!:` removes it and creates a fresh one.  A stored image is never
+    written to — a machine's writes go to its delta under
+    `/opfs/checkpoints/<machine>/` — so what is reused is the blank image,
+    not a previous machine's install: a reload of the link boots a fresh
+    machine on the blank disk again, and the earlier machine's state is
+    reached through its checkpoint.
+  - **Plain blank.** The disk is created unpartitioned, for the guest to
+    format, as a real new drive.  Pre-partitioning it as HFS
+    (`blank:HD80SC,hfs`) is not implemented; a spec with a comma is refused.
+  - **Errors are a failed download.** An unknown model, an out-of-range
+    size, or a size the bus does not take marks the row failed with the
+    reason (and a toast), and the machine boots without that disk.
 - `cd=<url>` — streamed into `/opfs/images/cd/` as a UDIF, inserted into the
   model's CD bay (`machine.attach_cdrom`), on a model that has one.
 - `vrom=<url>` — downloaded into `/opfs/images/vrom/` and passed in the
@@ -905,7 +951,8 @@ view; errors still toast.
   validates the result as it does any document:
   - `<option id>=<value>` — any scalar option of the model's tree
     (`catalog.profile(model).options`): `addressing=32`, `memory=32768`
-    (`ram=` is the same), `appletalk=inactive`, `power_supplies=two`.  The
+    (`ram=` is the same), `appletalk=inactive`, `imagewriter=imagewriter2`,
+    `power_supplies=two`.  The
     value is a value id or its label, ignoring case and spaces (`32-bit`,
     `32MB`).
   - `display=<device>` — the display device the monitor is plugged into
@@ -994,19 +1041,21 @@ when compressed) — nothing in a URL says reliably what it serves, so none
 of it goes into the name.  A ROM, video ROM or PCI ROM is stored under its
 own content id as always.
 
-**Downloaded before.**  A hard disk or CD big enough to be imported as a
-compact UDIF (over 16 MB, `LARGE_IMPORT_BYTES`) records the value it was
-fetched from in the image (`gs-origin`; `files.udif_open` /
-`files.archive.import` take it as `origin`).  Before downloading an
-`hd*=` or `cd=` value, the page reads `files.udif_info` of each `.dmg` in
+**Downloaded before.**  A hard disk or CD a URL brings is always stored as
+a compact UDIF, whatever its size, and records the value it was fetched
+from in the image (`gs-origin`; `files.udif_open`, `files.convert` and
+`files.archive.import` take it as `origin`).  That holds on every way in:
+the streamed import; a small disk (staged, then converted); a `.dmg` stored
+as downloaded (rewritten to carry it); and a Mac-archive member the
+streamed import refuses (a Disk Copy 6 / NDIF image), unpacked, then
+converted.  Before downloading an `hd*=` or `cd=` value, the page reads `files.udif_info` of each `.dmg` in
 that category's store and, when one's `origin` is the value exactly, attaches
 it instead: nothing is downloaded, and the progress view shows "Already
 stored".  A stored image is never written to (a machine's writes go to a
 delta of its own), so it is still what was downloaded.  The match is on the
 value as given — two spellings of one file download twice — and a URL whose
 content has since changed keeps the old copy until it is deleted in the
-Images tab.  Floppies, ROMs and small disks carry no origin and are fetched
-every time.  The lookup is the page's: the core only records and reports the
+Images tab.  Floppies and ROMs carry no origin and are fetched every time.  The lookup is the page's: the core only records and reports the
 string.
 
 **Mixed content.**  An `http://` value on an `https://` page is refused
@@ -1104,6 +1153,23 @@ The same sequence as Module Bootstrapping above, end to end:
    the media into their bays (`bus/media.ts`), the post-boot
    reconciliation, `scheduler.run`. The Welcome layer fades out; the
    canvas takes over.
+
+**Recent machines.** Every boot through `initEmulator` (the New Machine
+dialog, or a relaunch from Recent) and a dropped ROM's default boot is
+recorded by `recordRecentBoot` (`bus/boot.ts`): the exact `initEmulator`
+input — the `machine.boot` document with model id and ROM path, plus
+the floppy / hard-disk / CD images — with a label built from the running
+machine ("Macintosh IIcx · 8 MB · 8•24 GC · System_7_1.img") and the
+time. The list ([`lib/recentMachines.ts`](../../app/web2/src/lib/recentMachines.ts),
+[`state/recent.svelte.ts`](../../app/web2/src/state/recent.svelte.ts))
+keeps the last 8, an identical configuration moving to the top, and is
+persisted in `localStorage` as `gs-recent-machines`. The Welcome Home
+slide shows it as a Recent card when it is not empty: a click calls
+`initEmulator` with the stored input again, × forgets the entry, and an
+entry whose ROM or image is no longer in OPFS (checked with
+`opfs.list`) is disabled with a "missing: <file>" note. URL-media boots
+(the URL is the way back) and checkpoint loads (restores, kept by the
+Checkpoints panel) are not recorded.
 
 ## Terminal console
 

@@ -9,19 +9,20 @@
 #   2. Apple menu -> Chooser -> AppleShare: the server is listed.
 #   3. Select it -> OK -> Guest -> OK: FPLogin at AFP 2.1, the volume list.
 #   4. OK -> close the Chooser: the volume is mounted.
-#   5. Open it: the 40-character name is listed as 31 characters ending
+#   5. Before the volume is ever opened, Find File (Cmd-F), "on mounted
+#      servers", name contains "forty": FPCatSearch finds the file and ends
+#      the search with afpEofError, the Items Found window lists it once with
+#      its path, and nothing is reported missing (FPResolveID(0) is
+#      afpIDNotFound).  Cmd-Q back to the Finder.
+#   6. Open it: the 40-character name is listed as 31 characters ending
 #      "#<CNID>".
-#   6. Drag that file onto Macintosh HD and open the disk: the copy is there,
+#   7. Drag that file onto Macintosh HD and open the disk: the copy is there,
 #      its six bytes read over AFP.
-#   7. Make an alias of the 31-character file on the server (FPCreateID),
+#   8. Make an alias of the 31-character file on the server (FPCreateID),
 #      rename the original "Moved", and open the alias: the Alias Manager
 #      finds the renamed file by its ID (FPResolveID) -- the Finder's "could
 #      not be opened" names "Moved", since the file has no creator.  Both
 #      calls are asserted through appletalk.afp.stats.ok_by_command.
-#
-# Find File is not driven here.  Its FPCatSearch now parses (it was
-# ParamErr), but how this client wants the last matches and the end of the
-# search delivered is not settled.
 #
 # The long-name case on System 7, measured with the shortening removed: the client cuts the
 # 40-character name to 31 itself, then asks for the file by the cut name --
@@ -106,7 +107,46 @@ scheduler.run 80000000
 check("sys7-mounted.png")
 assert appletalk.afp.volumes["My Volume"].sessions_using == 1 "the mount is not counted on the volume"
 
-# --- 5. Open the volume ------------------------------------------------------
+# --- 5. Find File on the mounted server ------------------------------------
+
+# Nothing on the volume has been listed yet, so the search has to walk the
+# share itself.  Cmd-F in the Finder opens Find File.
+machine.adb.keyboard.down 0x37
+scheduler.run 2000000
+machine.adb.keyboard.press 0x03
+scheduler.run 2000000
+machine.adb.keyboard.up 0x37
+scheduler.run 300000000
+# "Find items" -> "on mounted servers", then the name criterion and Return.
+machine.adb.mouse.move 290 122 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 20000000
+machine.adb.mouse.move 260 138 "global"
+scheduler.run 6000000
+machine.adb.mouse.click false
+scheduler.run 30000000
+machine.adb.keyboard.type "forty"
+scheduler.run 40000000
+machine.adb.keyboard.press 0x24
+scheduler.run 500000000
+# One match, listed once, with "My Volume" as its path; no "missing" alert.
+# Last Modified is the host file's mtime, so its column is left out.
+check_ex("sys7-find-file.png", 265, 420, 290, 545)
+let afp_errs = appletalk.afp.stats.errors_by_code
+assert try($afp_errs["-5009"], 0) >= 1 "FPCatSearch did not end the search with afpEofError"
+assert try($afp_errs["-5039"], 0) == 0 "FPResolveID answered afpBadIDErr"
+assert try($afp_errs["-5034"], 0) >= 1 "Find File did not check its match by file ID"
+
+# Cmd-Q quits Find File; the Finder comes back as it was.
+machine.adb.keyboard.down 0x37
+scheduler.run 2000000
+machine.adb.keyboard.press 0x0C
+scheduler.run 2000000
+machine.adb.keyboard.up 0x37
+scheduler.run 150000000
+
+# --- 6. Open the volume ------------------------------------------------------
 
 machine.adb.mouse.move 600 92 "global"
 scheduler.run 4000000
@@ -122,7 +162,7 @@ scheduler.run 120000000
 check_ex("sys7-volume-window.png", 46, 250, 60, 412)
 assert appletalk.afp.volumes["My Volume"].cnid_count == 3 "the two files were not listed"
 
-# --- 6. Copy the 40-character file to the Mac's disk, and look -------------
+# --- 7. Copy the 40-character file to the Mac's disk, and look -------------
 
 machine.adb.mouse.move 38 90 "global"
 scheduler.run 4000000
@@ -153,7 +193,7 @@ scheduler.run 150000000
 # volume window behind it still shows the host's free space.
 check_ex("sys7-copied.png", 46, 250, 60, 412)
 
-# --- 7. An alias on the server, resolved by file ID ------------------------
+# --- 8. An alias on the server, resolved by file ID ------------------------
 
 # Close Macintosh HD's window; select the 31-character file; Make Alias.
 machine.adb.keyboard.down 0x37

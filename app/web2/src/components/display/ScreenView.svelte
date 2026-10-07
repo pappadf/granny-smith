@@ -37,10 +37,30 @@
   // Input handling lives entirely on the worker side via Emscripten's
   // built-in proxied callbacks (emscripten_set_mousemove_callback("#screen",
   // …) etc., registered after transferControlToOffscreen). We deliberately
-  // do NOT attach JS-side mouse/keyboard handlers here — every such
+  // do NOT attach JS-side handlers that talk to the core — every such
   // handler would issue a gsEval round-trip per event and saturate the
   // bridge queue, starving the worker's render tick. See app/web-legacy
   // for the same pattern.
+  //
+  // The one exception is the grab itself.  Pointer lock needs the click's
+  // user gesture, and Safari honours it only on the main thread, while the
+  // click is being handled (or in a message the worker posts while handling
+  // the one that carried it -- which Emscripten's batched proxying does not
+  // guarantee).  A request made from the worker's mousedown callback was
+  // refused there, so the click asks here; the core follows the lock through
+  // its pointerlockchange callback.  A paused or stopped machine reads no
+  // deltas, so it is not grabbed.
+  function grab(): void {
+    if (!canvas || machine.status !== 'running' || document.pointerLockElement === canvas) return;
+    try {
+      // A promise where the browser has one; a refusal also fires
+      // pointerlockerror, and the click simply does not grab.
+      const p = canvas.requestPointerLock() as unknown as Promise<void> | undefined;
+      p?.catch?.(() => undefined);
+    } catch {
+      // Not supported: nothing to grab with.
+    }
+  }
 
   onMount(() => {
     if (!canvas) return;
@@ -86,6 +106,7 @@
       tabindex="0"
       role="application"
       aria-label="Emulated machine screen"
+      onmousedown={grab}
       width="512"
       height="342"
       style="width: {cssWidth}px; height: {cssHeight}px"
@@ -115,13 +136,16 @@
 
 <style>
   /* Inset by the skin's --gs-display-inset, so a rounded display never cuts
-     into a screen too large to fit (it scrolls within straight edges). */
+     into a screen too large to fit (it scrolls within straight edges).
+     The frame is centred by its own auto margins, not by the flex
+     container's alignment: centring an oversized child puts half its
+     overflow at negative offsets, above and left of the scroll origin,
+     where scrolling never reaches (#279).  Auto margins centre while it
+     fits and collapse to 0 once it does not. */
   .screen-view {
     position: absolute;
     inset: var(--gs-display-inset);
     display: flex;
-    align-items: center;
-    justify-content: center;
     overflow: auto;
   }
   /* The frame around the picture: a skin may give it a bezel (padding),
@@ -129,6 +153,8 @@
      styled (lint L-9). */
   .screen-wrap {
     position: relative;
+    margin: auto;
+    flex: none;
     background: var(--gs-screen-frame-bg);
     box-shadow: var(--gs-screen-frame-shadow);
     padding: var(--gs-screen-frame-padding);

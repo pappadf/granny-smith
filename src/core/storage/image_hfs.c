@@ -89,6 +89,7 @@
 // HFSPlusCatalogFolder field offsets (record data, after recordType).
 #define HFSP_FOLDER_OFF_VALENCE 0x04
 #define HFSP_FOLDER_OFF_ID      0x08
+#define HFSP_OFF_MOD_DATE       0x10 // contentModDate, folder and file alike
 // HFSPlusCatalogFile field offsets.
 #define HFSP_FILE_OFF_ID       0x08
 #define HFSP_FILE_OFF_USERINFO 0x30 // FInfo(16) + FXInfo(16) = 32 contiguous bytes
@@ -133,19 +134,21 @@
 // Folder (kHFSFolderRecord):
 #define FOLDER_OFF_VALENCE 4 // after cdrType(1)+reserved(1)+flags(2)
 #define FOLDER_OFF_DIRID   6
+#define FOLDER_OFF_MDDAT   14
 // File (kHFSFileRecord):
 #define FILE_OFF_FINFO      4
 #define FILE_OFF_FILEID     20
 #define FILE_OFF_DATA_LGLEN 26
 #define FILE_OFF_RSRC_LGLEN 36
+#define FILE_OFF_MDDAT      48
 #define FILE_OFF_FXINFO     56
 #define FILE_OFF_DATA_EXT   74
 #define FILE_OFF_RSRC_EXT   86
 
 // ---- Internal types -------------------------------------------------------
 
-// One flattened catalog record.  We keep only what callers need; original
-// dates and attribute flags are dropped.  The name is stored already
+// One flattened catalog record.  We keep only what callers need; of the
+// dates only the modification date is kept, and attribute flags are dropped.  The name is stored already
 // transcoded to UTF-8 (from MacRoman for HFS, UTF-16 for HFS+) so the
 // shared lookup/enumerate code is encoding-agnostic.
 typedef struct cat_rec {
@@ -157,6 +160,7 @@ typedef struct cat_rec {
     hfs_fork_t data_fork; // file only
     hfs_fork_t rsrc_fork; // file only
     uint8_t finder_info[32];
+    uint32_t mod_date; // Mac seconds since 1904
 } cat_rec_t;
 
 // One leaf record from the Extents Overflow file.  Each one supplies an
@@ -336,8 +340,11 @@ static int parse_leaf_node(const uint8_t *node, size_t node_size, cat_rec_t **ds
         if (type == CAT_REC_FOLDER && data_size >= 10) {
             r->valence = RD_BE16(rec_data + FOLDER_OFF_VALENCE);
             r->cnid = RD_BE32(rec_data + FOLDER_OFF_DIRID);
+            if (data_size >= FOLDER_OFF_MDDAT + 4)
+                r->mod_date = RD_BE32(rec_data + FOLDER_OFF_MDDAT);
         } else if (type == CAT_REC_FILE && data_size >= 98) {
             r->cnid = RD_BE32(rec_data + FILE_OFF_FILEID);
+            r->mod_date = RD_BE32(rec_data + FILE_OFF_MDDAT);
             // 0x00 = data fork, 0xFF = resource fork (HFS convention,
             // matches the EO-file key's forkType byte).
             parse_fork(rec_data, FILE_OFF_DATA_LGLEN, FILE_OFF_DATA_EXT, r->cnid, 0x00, &r->data_fork);
@@ -603,6 +610,7 @@ static void fill_dirent(const cat_rec_t *r, hfs_dirent_t *out) {
     out->data_fork = r->data_fork;
     out->rsrc_fork = r->rsrc_fork;
     memcpy(out->finder_info, r->finder_info, 32);
+    out->mod_date = r->mod_date;
 }
 
 // ---- Classic HFS open -----------------------------------------------------
@@ -929,6 +937,8 @@ static int parse_hfsplus_catalog_leaf(const uint8_t *node, size_t node_size, cat
             r->record_type = CAT_REC_FOLDER;
             r->valence = RD_BE32(recdata + HFSP_FOLDER_OFF_VALENCE);
             r->cnid = RD_BE32(recdata + HFSP_FOLDER_OFF_ID);
+            if (data_size >= HFSP_OFF_MOD_DATE + 4)
+                r->mod_date = RD_BE32(recdata + HFSP_OFF_MOD_DATE);
             // The root folder record (folderID==2) names the volume; use it
             // as a fallback if the thread record didn't already set the name.
             if (r->cnid == HFSP_ROOT_FOLDER_ID && vol_name && vol_name[0] == '\0')
@@ -936,6 +946,7 @@ static int parse_hfsplus_catalog_leaf(const uint8_t *node, size_t node_size, cat
         } else { // HFSP_REC_FILE
             r->record_type = CAT_REC_FILE;
             r->cnid = RD_BE32(recdata + HFSP_FILE_OFF_ID);
+            r->mod_date = RD_BE32(recdata + HFSP_OFF_MOD_DATE);
             parse_hfsplus_fork(recdata + HFSP_FILE_OFF_DATAFORK, r->cnid, 0x00, &r->data_fork);
             parse_hfsplus_fork(recdata + HFSP_FILE_OFF_RSRCFORK, r->cnid, 0xFF, &r->rsrc_fork);
             // FInfo (16) + FXInfo (16) are contiguous in the record.

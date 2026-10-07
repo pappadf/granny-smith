@@ -74,6 +74,10 @@ struct dafb {
     uint8_t touched[DAFB_REG_COUNT]; // log-once bitmap
     uint8_t *vram; // dedicated VRAM buffer
     uint32_t vram_size; // installed capacity (512K/1M/2M)
+    uint8_t *blank; // black power-on raster, scanned out while `blanked`
+    // Out of /RESET the Swatch has sync off: nothing is scanned out of VRAM
+    // until the guest programs a complete mode (reconfigure).  Checkpointed.
+    bool blanked;
     struct scheduler *sched;
 
     // Scanout state
@@ -257,6 +261,7 @@ static void reconfigure(dafb_t *dafb) {
             return;
     }
 
+    dafb->blanked = false; // a complete mode is programmed: scan VRAM again
     dafb->display.width = width;
     dafb->display.height = height;
     dafb->display.stride = stride;
@@ -698,6 +703,18 @@ static void dafb_poweron_display(dafb_t *dafb, bool cold) {
     }
 }
 
+// The power-on raster with the Swatch held off: the descriptor refuses VRAM
+// and scans the black blank instead (display_set_scanout), so a warm /RESET
+// does not keep showing the last picture until the ROM's first mode set.
+#define DAFB_BLANK_STRIDE 1024u
+#define DAFB_BLANK_HEIGHT 480u
+static void dafb_present_blanked(dafb_t *dafb) {
+    display_set_scanout(&dafb->display, NULL, dafb->vram_size, 0x1000, DAFB_BLANK_STRIDE, 640, DAFB_BLANK_HEIGHT,
+                        dafb->blank, dafb->blank ? DAFB_BLANK_STRIDE * DAFB_BLANK_HEIGHT : 0);
+    dafb->display.shape_dirty = true;
+    dafb->display.fb_dirty = true;
+}
+
 // ============================================================
 // Lifecycle
 // ============================================================
@@ -710,7 +727,10 @@ dafb_t *dafb_init(uint32_t vram_size, uint8_t monitor, checkpoint_t *cp) {
         return NULL;
     dafb->vram_size = vram_size;
     dafb->vram = (uint8_t *)calloc(1, vram_size);
-    if (!dafb->vram) {
+    dafb->blank = (uint8_t *)calloc(1, DAFB_BLANK_STRIDE * DAFB_BLANK_HEIGHT);
+    if (!dafb->vram || !dafb->blank) {
+        free(dafb->vram);
+        free(dafb->blank);
         free(dafb);
         return NULL;
     }
@@ -735,7 +755,13 @@ dafb_t *dafb_init(uint32_t vram_size, uint8_t monitor, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, dafb->clk_reg, sizeof(dafb->clk_reg));
         system_read_checkpoint_data(cp, &dafb->clock_hz, sizeof(dafb->clock_hz));
         system_read_checkpoint_data(cp, dafb->vram, vram_size);
-        reconfigure(dafb);
+        system_read_checkpoint_data(cp, &dafb->blanked, sizeof(dafb->blanked));
+        // Still between a /RESET and the ROM's mode set: stay blanked rather
+        // than letting reconfigure() un-blank on registers half programmed.
+        if (dafb->blanked)
+            dafb_present_blanked(dafb);
+        else
+            reconfigure(dafb);
         // ...and the INTERRUPT LEVEL, which is derived from the register file
         // exactly as the descriptor is.  `irq_line` is not in the stream (it
         // is an output, not state), so it starts false; a checkpoint taken
@@ -755,7 +781,10 @@ static uint64_t dafb_fb_base(void *owner) {
     // A byte offset into the chip's own VRAM, which is where the Swatch
     // scan base points.
     dafb_t *d = (dafb_t *)owner;
-    return (d && d->display.bits && d->vram) ? (uint64_t)(d->display.bits - d->vram) : 0;
+    // Held blanked, the scan runs from the blank, which is not in VRAM.
+    if (!d || !d->display.bits || d->display.bits == d->blank || !d->vram)
+        return 0;
+    return (uint64_t)(d->display.bits - d->vram);
 }
 
 void dafb_attach_objects(dafb_t *dafb) {
@@ -772,6 +801,7 @@ void dafb_delete(dafb_t *dafb) {
     dafb->video_node = NULL;
     scheduler_forget_source(dafb->sched, dafb);
     free(dafb->vram);
+    free(dafb->blank);
     free(dafb);
 }
 
@@ -788,6 +818,7 @@ void dafb_checkpoint(dafb_t *dafb, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, dafb->clk_reg, sizeof(dafb->clk_reg));
     system_write_checkpoint_data(cp, &dafb->clock_hz, sizeof(dafb->clock_hz));
     system_write_checkpoint_data(cp, dafb->vram, dafb->vram_size);
+    system_write_checkpoint_data(cp, &dafb->blanked, sizeof(dafb->blanked));
 }
 
 void dafb_set_irq_callback(dafb_t *dafb, dafb_irq_cb cb, void *context) {
@@ -885,8 +916,11 @@ void dafb_reset(dafb_t *dafb) {
         dafb->irq_cb(dafb->irq_ctx, false);
     // ...and the presentation state that is DERIVED from those registers.
     // Zeroing the register file is not a reset of the chip if the descriptor
-    // it produced survives.
+    // it produced survives.  The Swatch comes out of /RESET with sync off,
+    // so the raster is black until the ROM programs a mode.
     dafb_poweron_display(dafb, /*cold*/ false);
+    dafb->blanked = true;
+    dafb_present_blanked(dafb);
 }
 
 // Power cycle (the MCU substrate's power_on, before the /RESET): VRAM is

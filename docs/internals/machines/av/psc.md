@@ -72,7 +72,10 @@ there forever.
 Transfers run through guest-physical memory hooks (the `sonic_set_memory_hooks`
 pattern — the CPU MMU is deliberately not in the path). Devices drive
 `av_psc_dma_device_in/out`; `av_psc_dma_dir` reports the armed direction so a
-device pump can probe without touching its FIFO.
+device pump can probe without touching its FIFO, and `av_psc_dma_remaining`
+the active set's count — the New Age reads it to see terminal count on the
+byte that ends a set, which is what ends its command (the second set may
+already be armed for the next one).
 
 **Not modelled:** the MACE receive channel's "chain mode" (where Cnt counts
 buffers rather than bytes), and FIFO depth/latency — nothing in scope needs

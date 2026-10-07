@@ -124,6 +124,6 @@ function download(doc: DocumentMsg): void {
     showNotification(`LaserWriter: ${doc.name} (${doc.pages} page${doc.pages === 1 ? '' : 's'})`);
   } catch (e) {
     console.error('[platen] download failed:', e);
-    showNotification(`LaserWriter: could not download ${doc.name}`, 'error');
+    showNotification(`LaserWriter: could not save ${doc.name}`, 'error');
   }
 }

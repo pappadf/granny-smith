@@ -186,6 +186,37 @@ describe('FilesystemView — disk-image descent', () => {
     expect(gsEvalMock).toHaveBeenCalledWith('files.list', ['/opfs/disk.img/partition1']);
   });
 
+  it("shows each entry's size and modification date", async () => {
+    const mtime = new Date(2026, 9, 4, 14, 32).getTime() / 1000; // local time
+    gsEvalMock.mockImplementation(async (path: string, args?: unknown[]) => {
+      if (path !== 'files.list') return null;
+      const dir = (args?.[0] as string) ?? '';
+      if (dir === '/opfs') return OPFS_ROOT_LISTING;
+      if (dir === '/opfs/disk.img') return [{ name: 'partition1', kind: 'directory', size: 0 }];
+      if (dir === '/opfs/disk.img/partition1')
+        return [
+          { name: 'System Folder', kind: 'directory', size: 0, mtime },
+          { name: 'Read Me', kind: 'file', size: 4522, mtime: 0 },
+        ];
+      return [];
+    });
+
+    const { container } = render(FilesystemView);
+    const cols = (label: string) =>
+      Array.from(rowFor(container, label).querySelectorAll('.tree-col')).map((e) => e.textContent);
+    setFsExpanded('/opfs', true);
+    await waitFor(() => expect(labels(container)).toContain('disk.img'));
+    // OPFS gave the mock no size: the core's listing fills it in.
+    expect(cols('disk.img')).toEqual(['800 KB', '']);
+    expect(cols('extracted')).toEqual(['', '']);
+
+    await fireEvent.click(rowFor(container, 'disk.img'));
+    await waitFor(() => expect(labels(container)).toContain('Read Me'));
+    // A directory has no size; an unknown date (0) is blank.
+    expect(cols('System Folder')).toEqual(['', '2026-10-04 14:32']);
+    expect(cols('Read Me')).toEqual(['4.4 KB', '']);
+  });
+
   it('shows no context menu for a read-only node inside an image', async () => {
     const { container } = render(FilesystemView);
     setFsExpanded('/opfs', true);
@@ -226,7 +257,7 @@ describe('FilesystemView — disk-image descent', () => {
     await fireEvent.contextMenu(rowFor(container, 'Read Me'));
     await waitFor(() => expect(document.querySelector('.context-menu')).not.toBeNull());
     const download = Array.from(document.querySelectorAll('.context-menu .item')).find(
-      (e) => e.textContent?.trim() === 'Download',
+      (e) => e.textContent?.trim() === 'Save to computer…',
     ) as HTMLElement;
     expect(download).toBeTruthy();
     await fireEvent.click(download);
@@ -251,7 +282,7 @@ describe('FilesystemView — disk-image descent', () => {
     await fireEvent.contextMenu(rowFor(container, 'notes.txt'));
     await waitFor(() => expect(document.querySelector('.context-menu')).not.toBeNull());
     const download = Array.from(document.querySelectorAll('.context-menu .item')).find(
-      (e) => e.textContent?.trim() === 'Download',
+      (e) => e.textContent?.trim() === 'Save to computer…',
     ) as HTMLElement;
     expect(download).toBeTruthy();
     await fireEvent.click(download);
@@ -409,7 +440,7 @@ describe('FilesystemView — media inside an image or archive', () => {
   }
 
   it('offers no drive action without a machine', async () => {
-    expect(await menuFor('Install 1:2.img')).toEqual(['Download']);
+    expect(await menuFor('Install 1:2.img')).toEqual(['Save to computer…']);
   });
 
   it('inserts a floppy image into a drive by its in-image path', async () => {
@@ -437,8 +468,8 @@ describe('FilesystemView — media inside an image or archive', () => {
     );
   });
 
-  it('offers only Download for a file that is no medium', async () => {
+  it('offers only Save to computer for a file that is no medium', async () => {
     core.machineCreated = true;
-    expect(await menuFor('Read Me')).toEqual(['Download']);
+    expect(await menuFor('Read Me')).toEqual(['Save to computer…']);
   });
 });

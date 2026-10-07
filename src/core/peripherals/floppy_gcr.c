@@ -175,6 +175,39 @@ size_t floppy_media_sector_offset(const floppy_media_t *m, int track, int side, 
     return floppy_zone_image_offset(track, side, m->sides) + (size_t)sector * FLOPPY_SECTOR_BYTES;
 }
 
+bool floppy_media_read_sector(const floppy_media_t *m, int track, int side, int sector, uint8_t *data) {
+    if (!m || !m->valid || sector < 0 || sector >= floppy_media_spt(m, track) || side < 0 || side >= m->sides)
+        return false;
+    size_t off = floppy_media_sector_offset(m, track, side, sector);
+    if (off + FLOPPY_SECTOR_BYTES > disk_size(m->img))
+        return false;
+    return disk_read_data(m->img, off, data, FLOPPY_SECTOR_BYTES) == FLOPPY_SECTOR_BYTES;
+}
+
+bool floppy_media_write_sector(const floppy_media_t *m, int track, int side, int sector, uint8_t *data) {
+    if (!m || !m->valid || sector < 0 || sector >= floppy_media_spt(m, track) || side < 0 || side >= m->sides)
+        return false;
+    size_t off = floppy_media_sector_offset(m, track, side, sector);
+    if (off + FLOPPY_SECTOR_BYTES > disk_size(m->img) || !m->img->writable)
+        return false;
+    return disk_write_data(m->img, off, data, FLOPPY_SECTOR_BYTES) == FLOPPY_SECTOR_BYTES;
+}
+
+double floppy_media_rev_ns(const floppy_media_t *m, int track, int dd_mfm_rpm) {
+    int rpm = floppy_zone_rpm(track);
+    if (m->mfm)
+        rpm = m->format == FLOPPY_FMT_MFM_720K ? dd_mfm_rpm : FLOPPY_MFM_RPM;
+    return 60.0e9 / (double)rpm;
+}
+
+int floppy_media_next_header(const floppy_media_t *m, int track, double rev_ns, double now_ns, double *delay_ns) {
+    int spt = floppy_media_spt(m, track);
+    double slot = rev_ns / (double)spt;
+    double n = floor(now_ns / slot + 1e-3) + 1.0;
+    *delay_ns = n * slot - now_ns;
+    return (int)fmod(n, (double)spt);
+}
+
 // Determines the number of sides based on disk image type
 int iwm_image_num_sides(image_t *img) {
     if (!img)

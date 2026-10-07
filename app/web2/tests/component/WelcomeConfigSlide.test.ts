@@ -123,6 +123,9 @@ describe('WelcomeConfigSlide: the tree, rendered', () => {
     expect($(c, '#cfg-opt-memory')!.value).toBe('4096');
     expect(labels($(c, '#cfg-opt-memory'))).toContain('4 MB');
     expect($(c, '#cfg-opt-appletalk')).not.toBeNull();
+    // The ImageWriter on the serial port AppleTalk leaves free, off by default
+    expect(labels($(c, '#cfg-opt-imagewriter'))).toEqual(['None', 'ImageWriter', 'ImageWriter II']);
+    expect($(c, '#cfg-opt-imagewriter')!.value).toBe('none');
     expect(sectionTitles(c)).toEqual(['Machine', 'Monitor', 'Floppy drives', 'Storage']);
     // One device, one monitor: nothing to choose.
     expect($(c, '#cfg-display')).toBeNull();

@@ -148,8 +148,12 @@ export async function deleteItems(paths: string[], onItem?: ProgressFn): Promise
   return { total: paths.length, failures, firstError: '' };
 }
 
-// Save a Blob to the user's machine via a transient object-URL anchor.
+// Save a Blob to the user's machine via a transient object-URL anchor.  An
+// untyped Blob is sent as application/octet-stream: given none, Safari takes
+// a file with no extension (hd0_2026-10-05_11-42-50) for text and saves it
+// as .txt.
 function saveBlob(blob: Blob, filename: string): void {
+  if (!blob.type) blob = new Blob([blob], { type: 'application/octet-stream' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -248,7 +252,7 @@ export async function downloadRawImage(
     if (total > RAW_DOWNLOAD_IN_MEMORY_MAX)
       return {
         ok: false,
-        error: `this browser cannot save a ${Math.round(total / (1024 * 1024))} MB raw image (no save picker); download the .dmg instead`,
+        error: `this browser cannot save a ${Math.round(total / (1024 * 1024))} MB raw image (no save picker); save the .dmg instead`,
       };
     const parts: Uint8Array[] = [];
     for (let at = 0; at < total;) {
@@ -282,7 +286,7 @@ export async function unpackArchive(path: string): Promise<{ ok: boolean; base: 
   const name = basename(path);
   const parentDir = path.replace(/\/[^/]+$/, '');
   const base = name.replace(/\.[^.]+$/, '') || name;
-  let ok = false;
+  let ok: boolean;
   try {
     ok = (await gsEval('files.archive.extract', [path, `${parentDir}/${base}_unpacked`])) === true;
   } catch {

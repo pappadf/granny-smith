@@ -16,10 +16,10 @@ const ROMS = path.resolve(__dirname, '../../data/roms');
 async function uploadRom(page: Page, file: string): Promise<void> {
   const [chooser] = await Promise.all([
     page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.getByRole('button', { name: 'Load ROM...' }).click(),
   ]);
   await chooser.setFiles(path.join(ROMS, file));
-  await expect(page.locator('.toast .msg').filter({ hasText: `${file} uploaded` })).toBeVisible({
+  await expect(page.locator('.toast .msg').filter({ hasText: `${file} added` })).toBeVisible({
     timeout: 60_000,
   });
 }

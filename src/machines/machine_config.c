@@ -109,6 +109,33 @@ static const config_option_decl_t k_appletalk_option = {
     .default_value = "active",
 };
 
+static const config_value_decl_t k_imagewriter_values[] = {
+    {.id = "none", .label = "None"},
+    {.id = "imagewriter", .label = "ImageWriter"},
+    {.id = "imagewriter2", .label = "ImageWriter II"},
+    {.id = NULL},
+};
+
+// The dot-matrix printer on a serial port (machine.imagewriter): every
+// machine, default none.  It goes on the port AppleTalk does not use
+// (machine_part_imagewriter).
+static const config_option_decl_t k_imagewriter_option = {
+    .id = "imagewriter",
+    .label = "ImageWriter",
+    .detail = "A printer on the serial port AppleTalk does not use: the modem port while AppleTalk is active, "
+              "else the printer port. Choose that port in the Chooser.",
+    .values = k_imagewriter_values,
+    .default_value = "none",
+};
+// The same on a machine without AppleTalk (the Lisa): Serial A.
+static const config_option_decl_t k_imagewriter_option_serial_a = {
+    .id = "imagewriter",
+    .label = "ImageWriter",
+    .detail = "A printer on Serial A. Connect it there in the Preferences' device connections.",
+    .values = k_imagewriter_values,
+    .default_value = "none",
+};
+
 static const config_value_decl_t k_addressing_values[] = {
     {.id = "24", .label = "24-bit"},
     {.id = "32", .label = "32-bit"},
@@ -162,7 +189,8 @@ static const config_option_decl_t *addressing_option(const hw_profile_t *p) {
     return NULL;
 }
 
-// The family's declared options plus AppleTalk and the addressing mode, in
+// The family's declared options plus AppleTalk, the ImageWriter and the
+// addressing mode, in
 // display order (memory is separate: its values are computed).  Writes up
 // to `max` and returns the count.
 static int scalar_options(const hw_profile_t *p, const config_option_decl_t **out, int max) {
@@ -171,6 +199,8 @@ static int scalar_options(const hw_profile_t *p, const config_option_decl_t **ou
         out[n++] = o;
     if (p->appletalk && n < max)
         out[n++] = &k_appletalk_option;
+    if (n < max)
+        out[n++] = p->appletalk ? &k_imagewriter_option : &k_imagewriter_option_serial_a;
     const config_option_decl_t *a = addressing_option(p);
     if (a && n < max)
         out[n++] = a;

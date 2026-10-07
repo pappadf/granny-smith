@@ -457,8 +457,10 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
     /* Capture trace state before execution; clamp to 1 instruction if T1 set */                                       \
     uint32_t _saved_trace = cpu->trace;                                                                                \
     if (__builtin_expect(_saved_trace & 2, 0))                                                                         \
-        if (*instructions > 1)                                                                                         \
+        if (*instructions > 1) {                                                                                       \
+            g_sprint_unrun_slots += *instructions - 1; /* the rest of the plan is not run */                           \
             *instructions = 1;                                                                                         \
+        }                                                                                                              \
     /* Saturating decrement on the trailing (*instructions)--: see cpu_68030.c */                                      \
     while (*instructions > 0) {                                                                                        \
         uint32_t fetch = memory_read_prefetch32(cpu->pc);                                                              \

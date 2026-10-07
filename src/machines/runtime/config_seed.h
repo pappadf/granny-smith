@@ -23,16 +23,17 @@
 struct config;
 
 // The seed hook of every machine whose Mac OS PRAM is the RTC's: the default
-// startup device (Start Manager record, SCSI driver refnum), AppleTalk's
-// on/off state (SysParam, port B use), the addressing mode (MMFlags bit 0)
-// and each NuBus card's startup video mode (its slot record).
+// startup device (Start Manager record, SCSI driver refnum), SysParam (valid,
+// with AppleTalk's on/off state as port B use and the mouse tracking slowed
+// to no acceleration), the addressing mode (MMFlags bit 0) and each NuBus
+// card's startup video mode (its slot record).
 void mac_seed_rtc_pram(struct config *cfg);
 
-// Write the same AppleTalk record into a 256-byte XPRAM image (an Open
-// Firmware machine's NVRAM partition), around the SysParam of `pram` (the
-// family's measured defaults).  The startup device there is the family's
-// own of_nvram_set_startup_scsi.
-void mac_seed_xpram_appletalk(uint8_t xpram[256], const struct config *cfg, const pram_defaults_t *pram);
+// Write the same SysParam (AppleTalk record, mouse tracking) into a 256-byte
+// XPRAM image (an Open Firmware machine's NVRAM partition), around the
+// SysParam of `pram` (the family's measured defaults).  The startup device
+// there is the family's own of_nvram_set_startup_scsi.
+void mac_seed_xpram_sysparam(uint8_t xpram[256], const struct config *cfg, const pram_defaults_t *pram);
 
 // The startup SCSI ID the configuration names on bus `bus_id`, -1 for "no
 // default" (or a device on another bus), -2 when the configuration says

@@ -95,7 +95,7 @@ async function bootModel(
 ): Promise<void> {
   const [romChooser] = await Promise.all([
     page.waitForEvent("filechooser"),
-    page.getByRole("button", { name: "Upload ROM..." }).click(),
+    page.getByRole("button", { name: "Load ROM..." }).click(),
   ]);
   await romChooser.setFiles(romFile);
 
@@ -135,6 +135,7 @@ test("AV microphone control delivers browser audio into guest RAM", async ({
 
   // --- 2. The 840AV has one.
   await page.getByRole("button", { name: "Shut down" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Shut Down" }).click();
   await bootModel(page, AV_ROM, "q840av");
   await expect(micBtn).toHaveCount(1, { timeout: 30_000 });
   await expect(micBtn).toHaveAttribute("aria-pressed", "false");

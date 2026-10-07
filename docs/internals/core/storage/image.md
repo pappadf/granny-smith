@@ -110,7 +110,7 @@ The writer's images also open in the other tools users have, and CI checks that 
 
 The screens were identical every time. The overhead measured 0–7% across runs, about the run-to-run noise. With the image cache cut to 1 MB (`files.cache.image_mb = 1`), the misses roughly double and the overhead stays between 2% and 10%.
 
-7-Zip reads and checks the result (`7z t`). `udif_verify()` decodes every chunk and checks every checksum; `udif_info()` reads only the trailer and plist. The object-model surface: `files.udif_open` / `udif_append` / `udif_finish` / `udif_abort` (the page streams an import through the transfer window), `files.convert` (any image the emulator reads → UDIF, or → raw with `format="raw"`, checked by decoding the result), `files.verify`, `files.udif_info`. `files.udif_open` and `files.archive.import` take an optional `origin` string for `gs-origin`.
+7-Zip reads and checks the result (`7z t`). `udif_verify()` decodes every chunk and checks every checksum; `udif_info()` reads only the trailer and plist. The object-model surface: `files.udif_open` / `udif_append` / `udif_finish` / `udif_abort` (the page streams an import through the transfer window), `files.convert` (any image the emulator reads → UDIF, or → raw with `format="raw"`, checked by decoding the result), `files.verify`, `files.udif_info`. `files.udif_open`, `files.convert` and `files.archive.import` take an optional `origin` string for `gs-origin`.
 
 The zlib decompressor both this and the PNG reader use is first-party: `inflate.c`'s entry points wrap peeler's resumable inflate, the one in the tree; the core links no third-party C libraries.
 

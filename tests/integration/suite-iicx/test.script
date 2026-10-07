@@ -31,7 +31,7 @@ def row_iicx_chime() {
     scheduler.run 12000000
     machine.sound.capture.stop
     assert machine.id == "iicx" "iicx-chime: machine.id != iicx"
-    assert machine.sound.capture.frames == 15359 "iicx-chime: unexpected capture length"
+    assert machine.sound.capture.frames == 15367 "iicx-chime: capture length ${machine.sound.capture.frames}, want 15367"
     machine.sound.match goldens/iicx-chime.wav
     report_perf("suite-iicx/iicx-chime", scheduler.instr_count)
 }
@@ -202,7 +202,9 @@ def row_iicx_gc_beep() {
     # moved this window by 3 frames): same length, one sample (index 4085)
     # changed.  Re-captured again when the machine came to be built with its
     # parameter RAM valid (the ROM skips its own PRAMInit): 5427 frames.
-    check_sound("goldens/iicx-gc-beep.wav", 5427)
+    # Re-captured again when ADB auto-poll stopped running on a clock of its
+    # own (Talks now start only when a device has data): 5423 frames.
+    check_sound("goldens/iicx-gc-beep.wav", 5423)
 
     # Sample-exact compare against the golden (fails the test on any divergence).
     # Loudness does NOT appear in the capture: the sink is pre-volume, and the
@@ -230,7 +232,7 @@ def row_iicx_gc_beep() {
     machine.adb.mouse.click false
     scheduler.run 40000000
 
-    check_sound("goldens/iicx-gc-beep2.wav", 5426)
+    check_sound("goldens/iicx-gc-beep2.wav", 5433)
     # The pre-volume waveform is the first beep's (up to the timing-phase
     # effect below): the Sound Manager re-renders the same table and no state
     # leaks between beeps.  The second beep is

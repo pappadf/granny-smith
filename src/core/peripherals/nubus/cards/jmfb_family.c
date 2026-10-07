@@ -57,7 +57,14 @@ void jmfb_apply_scanout(jmfb_regs_t *r, const jmfb_bind_t *b) {
     if (offset > UINT32_MAX)
         offset = UINT32_MAX; // guaranteed to fail the fit test below
 
-    display_set_scanout(b->display, b->store, b->store_size, (uint32_t)offset, stride, width, r->raster_h, NULL, 0);
+    // Held blanked (a /RESET with sync off, until the guest writes VideoBase):
+    // refuse the store, so the descriptor falls back to `blank`.  Otherwise
+    // there is no blank: a descriptor VRAM cannot back scans nothing.
+    if (r->blanked)
+        display_set_scanout(b->display, NULL, b->store_size, (uint32_t)offset, stride, width, r->raster_h, b->blank,
+                            b->blank_size);
+    else
+        display_set_scanout(b->display, b->store, b->store_size, (uint32_t)offset, stride, width, r->raster_h, NULL, 0);
 }
 
 // Decode the three completed long writes into one palette entry.  Two
@@ -137,6 +144,12 @@ static void jmfb_block_write16(jmfb_regs_t *r, const jmfb_bind_t *b, uint32_t of
         return;
     case JMFB_REG_VIDEO_BASE + 2:
         r->video_base = val;
+        // The guest programming the scan base is what ends the blank a /RESET
+        // left: every driver writes it (Apple's PrimaryInit, the GS vROM's),
+        // where the CSR strobes are Apple's alone.  Apple's PrimaryInit writes
+        // it just before its gray fill, so the old VRAM can show for a few
+        // milliseconds, as it would on the hardware.
+        r->blanked = 0;
         jmfb_apply_scanout(r, b);
         if (b->display)
             b->display->fb_dirty = true;
