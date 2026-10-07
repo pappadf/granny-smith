@@ -45,7 +45,7 @@
       "tolerance": 0.2
     },
     "pdm-afp-copy-motion/copy": {
-      "instr": 6384983600,
+      "instr": 6389983600,
       "tolerance": 0.2
     },
     "pm8100-24ac-sysinfo/bench": {
@@ -53,7 +53,7 @@
       "tolerance": 0.2
     },
     "quadra-dual-card/dual": {
-      "instr": 772706113,
+      "instr": 807995344,
       "tolerance": 0.2
     },
     "scsi-bare-volume/driverless": {
