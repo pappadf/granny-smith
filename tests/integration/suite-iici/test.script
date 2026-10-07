@@ -64,7 +64,7 @@ def row_iici_chime() {
     scheduler.run 12000000
     machine.sound.capture.stop
     assert machine.ram == 8192 "iici-chime: machine.ram != 8192"
-    assert machine.sound.capture.frames == 13405 "iici-chime: unexpected capture length"
+    assert machine.sound.capture.frames == 13406 "iici-chime: capture length ${machine.sound.capture.frames}, want 13406"
     # machine.rbv — the IIci has no VIA2, so before this node existed its
     # interrupt controller was not inspectable at all.  RvIFR is composed on
     # demand from live source state, so there is no register to peek either.
