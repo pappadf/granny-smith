@@ -1,0 +1,121 @@
+# BeOS 5.0.3 on the Power Macintosh 9500 (one 604) and 9500/180MP (two).
+#
+# Row map:
+#
+#   pm9500-beos     the uniprocessor 9500: Mac OS 7.6 → BeOS_Launcher →
+#                   BeOS on the installed BFS disk → the Tracker desktop.
+#                   Holds the 604's mfspr-timebase read (BeOS calibrates its
+#                   clock with `mfspr 285/284`; trapping it froze the boot
+#                   at the splash, every snooze() spinning forever).
+#   pm9500mp-beos   the same disks on the 9500/180MP: BeOS starts the second
+#                   processor through the card (start vector at $F2800000,
+#                   IntReg doorbell, acknowledge), and both processors run
+#                   the kernel; "About BeOS" reports two 604s.
+#
+# No mouse until the desktop is up: the Launcher is a Startup Item, so apart
+# from closing the Energy Saver notice with Return the boot is hands-off from
+# power-on to the Tracker.  The disks are attached
+# writable; every attach mints its own delta, so the images never change.
+#
+# Hardware truths before goldens: the card's call count, start vector and
+# running state, and CPU 1's retired instructions, are asserted before the
+# screen is compared.
+
+include "../lib/mac.script"
+
+let mac_disk = "../../data/systems/system_7_6_170mb_beos_launcher.img"
+let be_disk = "../../data/systems/beos_5_0_3_ppc_500mb.img"
+
+# The Deskbar's clock (top right, y 20-45 from x 520) moves with guest
+# time; everything else on the desktop is static once Tracker and Deskbar
+# are up.
+def beos_boot(model) {
+    machine.boot model=$model ram=65536 rom="${$ROM}" pci_card="mach64_gx"
+    machine.rtc.time = "2026-04-26T21:30:36"
+    machine.scsi.attach_hd "${$mac_disk}" 0
+    machine.scsi.attach_hd "${$be_disk}" 1
+    # Mac OS 7.6 to the Finder.  The image's Energy Saver first-boot notice
+    # ("Press the Return key to close this message") holds the Startup Items
+    # back until it is dismissed, as on a real machine.
+    scheduler.run 4000000000
+    machine.adb.keyboard.press "Return"
+    # Then the Launcher from Startup Items, the BeOS bootstrap, the kernel,
+    # app_server, Tracker and Deskbar.
+    scheduler.run 6000000000
+}
+
+# BeOS's pointer gain is ~2 screen pixels per ADB count: home to the top
+# left, then step there in small moves (no acceleration).
+def be_move(x, y) {
+    for i in range(20) {
+        machine.adb.mouse.move -50 -50 "relative"
+        scheduler.run 2000000
+    }
+    let cx = 0
+    let cy = 0
+    while $cx < $x / 2 || $cy < $y / 2 {
+        let dx = $x / 2 - $cx
+        let dy = $y / 2 - $cy
+        if $dx > 4 { $dx = 4 }
+        if $dy > 4 { $dy = 4 }
+        machine.adb.mouse.move $dx $dy "relative"
+        scheduler.run 1500000
+        $cx = $cx + $dx
+        $cy = $cy + $dy
+    }
+    scheduler.run 5000000
+}
+def be_press() {
+    machine.adb.mouse.click true
+    scheduler.run 5000000
+    machine.adb.mouse.click false
+    scheduler.run 10000000
+}
+
+# ---- pm9500-beos --------------------------------------------------------------
+def row_pm9500_beos() {
+    beos_boot("pm9500")
+    check_ex("goldens/beos-desktop-up.png", 20, 520, 45, 640)
+    report_row_foreign("BeOS 5.0.3", "mach64_gx", "beos launcher bfs")
+    report_perf("tnt-beos/pm9500-beos", scheduler.instr_count)
+}
+
+# ---- pm9500mp-beos ------------------------------------------------------------
+def row_pm9500mp_beos() {
+    beos_boot("pm9500mp")
+    # The card: Open Firmware's PVR probe (call 1), then BeOS's start
+    # (call 2) at the 5.0.3 kernel's secondary entry, and CPU 1 still
+    # running — it is half of the kernel now, not parked.
+    assert machine.mp.calls == 2 "BeOS did not start CPU 1 (calls ${machine.mp.calls})"
+    assert machine.mp.entry == 0x000568AC "unexpected secondary entry ${machine.mp.entry:08x}"
+    assert machine.mp.running "CPU 1 parked again: BeOS's secondary returned"
+    assert machine.cpu1.instr_count > 1000000000 "CPU 1 retired only ${machine.cpu1.instr_count} instructions"
+    check_ex("goldens/beos-desktop-mp.png", 20, 520, 45, 640)
+    # Be menu → About BeOS: the kernel's own processor report.
+    be_move(580, 10)
+    be_press()
+    scheduler.run 200000000
+    be_move(418, 12)
+    be_press()
+    scheduler.run 800000000
+    # The About window: "CPU: 2 PowerPC 604's running at 90MHz" — the
+    # kernel counted both processors.  The uptime line and the Deskbar
+    # clock are the two moving fields.
+    check_ex2("goldens/beos-about-mp.png", 20, 520, 45, 640, 310, 70, 340, 270)
+    report_row_foreign("BeOS 5.0.3", "mach64_gx", "beos launcher bfs mp")
+    report_perf("tnt-beos/pm9500mp-beos", scheduler.instr_count)
+}
+
+if have_media($mac_disk) && have_media($be_disk) {
+    if row_on("pm9500-beos") {
+        row_end("pm9500-beos", try(row_pm9500_beos(), "FAILED"))
+    }
+    if row_on("pm9500mp-beos") {
+        row_end("pm9500mp-beos", try(row_pm9500mp_beos(), "FAILED"))
+    }
+    suite_done()
+} else {
+    echo "skip: tnt-beos (the BeOS disks are not in tests/data -- run scripts/fetch-test-data.sh)"
+}
+
+quit
