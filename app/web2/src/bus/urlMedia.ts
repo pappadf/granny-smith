@@ -48,7 +48,7 @@
 // every file is listed up front and its download progress reported for the
 // progress view that stands in for Welcome (components/display/UrlBootView).
 
-import { gsEval, gsErrorText, gsOk, isModuleReady } from './emulator';
+import { gsEval, gsEvalWithProgress, gsErrorText, gsOk, isModuleReady } from './emulator';
 import { xferReadAll } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
@@ -562,21 +562,34 @@ async function storeCompact(
   category: DiskCategory,
 ): Promise<string | undefined | false> {
   const part = scratchPath(`url_${slot}.dmg.part`);
+  // Compressing a large disk takes a while: the progress view shows it,
+  // rather than a finished row that sits there.
+  const before = urlBoot.files.find((f) => f.slot === slot)?.status;
+  updateUrlFile(slot, { status: 'storing', stored: { done: 0, total: 0 } });
+  let last = 0;
   try {
-    const r = await gsEval('files.convert', [
-      staged.path,
-      part,
-      64,
-      1,
-      'udif',
-      staged.name,
-      url.trim(),
-    ]);
-    if (!r || typeof r !== 'object' || 'error' in (r as object)) return false;
+    const r = await gsEvalWithProgress(
+      'files.convert',
+      [staged.path, part, 64, 1, 'udif', staged.name, url.trim()],
+      (done, total) => {
+        const now = performance.now();
+        // At most ten a second, but always the last byte (the view then
+        // says the result is being checked and stored).
+        const end = total > 0 && done >= total;
+        if (!end && now - last < 100) return;
+        last = now;
+        updateUrlFile(slot, { stored: { done, total } });
+      },
+    );
+    if (!r || typeof r !== 'object' || 'error' in (r as object)) {
+      // The caller stores the staged file as it is.
+      if (before) updateUrlFile(slot, { status: before });
+      return false;
+    }
     const name = `${staged.name}.dmg`;
     const stored = await persistAs(part, name, category);
     if (stored.ok) {
-      updateUrlFile(slot, { name: stored.path.split('/').pop() ?? name });
+      updateUrlFile(slot, { name: stored.path.split('/').pop() ?? name, status: 'done' });
       return stored.path;
     }
     rejectDownload(slot, staged.name, stored.reason);

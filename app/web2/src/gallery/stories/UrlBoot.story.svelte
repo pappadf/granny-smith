@@ -44,6 +44,16 @@
       error: null,
     },
     {
+      slot: 'hd2',
+      label: 'Hard disk 3',
+      name: 'OS8.iso',
+      received: 51380224,
+      total: 51380224,
+      status: 'storing',
+      stored: { done: 20971520, total: 51380224 },
+      error: null,
+    },
+    {
       slot: 'fd0',
       label: 'Floppy 1',
       name: 'Tools.dsk',
