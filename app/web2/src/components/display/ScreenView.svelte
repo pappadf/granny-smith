@@ -4,6 +4,7 @@
   import { bootstrap } from '@/bus/emulator';
   import { showNotification } from '@/state/toasts.svelte';
   import { startVoodooGpu, gpuOverlay } from '@/gpu/voodoo2Gpu.svelte';
+  import { registerRage128Canvas, rage128Overlay } from '@/gpu/rage128Gpu.svelte';
 
   let canvas: HTMLCanvasElement | undefined = $state(undefined);
   // The Voodoo2 WebGPU takeover's overlay: transferred to the GPU worker
@@ -12,6 +13,9 @@
   // top.  It takes no pointer events — input stays on #screen, where
   // Emscripten's proxied handlers live.
   let canvas3d: HTMLCanvasElement | undefined = $state(undefined);
+  // The Rage 128's takeover overlay, the same arrangement; its worker starts
+  // only when the card first attaches (rage128Gpu.svelte.ts).
+  let canvasR128: HTMLCanvasElement | undefined = $state(undefined);
 
   // CSS-driven scaling. The canvas's intrinsic resolution (width/height
   // attributes) stays at the emulator's framebuffer dimensions; the CSS
@@ -43,6 +47,7 @@
     // The GPU worker starts before the module so its answer (a device or
     // not) is in the bridge before any machine can boot.
     if (canvas3d) void startVoodooGpu(canvas3d);
+    if (canvasR128) registerRage128Canvas(canvasR128);
     // Boot the Module on first canvas mount. Subsequent mounts (component
     // re-render via DisplayContent routing) are no-ops thanks to the
     // moduleReady guard.
@@ -93,6 +98,16 @@
       width="640"
       height="480"
       hidden={!gpuOverlay.visible}
+      style="width: {cssWidth}px; height: {cssHeight}px"
+    ></canvas>
+    <canvas
+      id="screen3d-r128"
+      class="overlay"
+      aria-hidden="true"
+      bind:this={canvasR128}
+      width="640"
+      height="480"
+      hidden={!rage128Overlay.visible}
       style="width: {cssWidth}px; height: {cssHeight}px"
     ></canvas>
   </div>

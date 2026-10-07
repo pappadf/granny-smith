@@ -236,6 +236,12 @@ typedef struct pci_card_kind {
     const char *variant_of;
 } pci_card_kind_t;
 
+// The card whose expansion ROM a kind uses: a variant runs the ROM of the
+// card it is a variant of (catalog entries name that card).
+static inline const char *pci_card_rom_id(const pci_card_kind_t *k) {
+    return k->variant_of ? k->variant_of : k->id;
+}
+
 // Registry accessors.  The registry is an explicit list in pci.c.
 const pci_card_kind_t *pci_card_find(const char *id);
 const pci_card_kind_t *const *pci_card_registry(void);

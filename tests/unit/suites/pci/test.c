@@ -92,6 +92,12 @@ const pci_card_kind_t rage128_kind = {.id = "rage128",
                                       .attach = PCI_ATTACH_PCI,
                                       .requires_prom = true,
                                       .card_class = "display"};
+// ...and its WebGPU variant, registered everywhere like the Voodoo2's.
+const pci_card_kind_t rage128_webgpu_kind = {.id = "rage128_webgpu",
+                                             .display_name = "ATI Rage 128 GL (WebGPU)",
+                                             .attach = PCI_ATTACH_PCI,
+                                             .requires_prom = true,
+                                             .card_class = "display"};
 
 static uint32_t g_bus_error_addr;
 static int g_bus_errors;

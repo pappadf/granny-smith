@@ -626,7 +626,7 @@ static card_status_t nubus_status(const nubus_card_kind_t *k) {
 }
 
 static card_status_t pci_status(const pci_card_kind_t *k) {
-    if (!k->requires_prom || prom_card_resolvable(k->id, NULL))
+    if (!k->requires_prom || prom_card_resolvable(pci_card_rom_id(k), NULL))
         return CARD_OK;
     return CARD_UNAVAILABLE;
 }

@@ -58,6 +58,7 @@
 #include "object.h"
 #include "pci.h"
 #include "prom.h"
+#include "rage128_gpu.h"
 #include "rage128_priv.h"
 #include "scheduler.h"
 #include "system.h"
@@ -399,6 +400,7 @@ static uint32_t r128_reg_read(rage128_t *r, uint32_t off, bool peek) {
             uint32_t a = idx & MM_ADDR_MASK;
             if (a + 4u > r->vram_size)
                 return 0xFFFFFFFFu;
+            r128_vram_access(r, a, 4, false);
             return (uint32_t)r->vram[a] | ((uint32_t)r->vram[a + 1] << 8) | ((uint32_t)r->vram[a + 2] << 16) |
                    ((uint32_t)r->vram[a + 3] << 24);
         }
@@ -482,6 +484,8 @@ static void r128_reg_write(rage128_t *r, uint32_t off, uint32_t value, uint32_t 
         uint32_t idx = r->reg[R_MM_INDEX / 4];
         uint32_t a = idx & MM_ADDR_MASK;
         if (idx & MM_APER) {
+            if (a < r->vram_size)
+                r128_vram_access(r, a, r->vram_size - a < 4u ? r->vram_size - a : 4u, true);
             for (uint32_t i = 0; i < 4; i++)
                 if ((mask >> (8u * i)) & 0xFFu && a + i < r->vram_size)
                     r->vram[a + i] = (uint8_t)(value >> (8u * i));
@@ -726,7 +730,10 @@ static uint8_t aper_rd8(void *ctx, uint32_t off, bool peek) {
     (void)peek;
     rage128_t *r = (rage128_t *)ctx;
     int64_t a = aper_map(r, off);
-    return a < 0 ? 0xFFu : r->vram[a];
+    if (a < 0)
+        return 0xFFu;
+    r128_vram_access(r, (uint32_t)a, 1, false);
+    return r->vram[a];
 }
 static uint16_t aper_rd16(void *ctx, uint32_t off, bool peek) {
     return (uint16_t)((aper_rd8(ctx, off, peek) << 8) | aper_rd8(ctx, off + 1u, peek));
@@ -741,6 +748,7 @@ static void aper_write8(void *ctx, uint32_t off, uint8_t v) {
         LOG(4, "Rage 128: write past VRAM at aperture offset $%07X — dropped", off);
         return;
     }
+    r128_vram_access(r, (uint32_t)a, 1, true);
     r->vram[a] = v;
 }
 static void aper_write16(void *ctx, uint32_t off, uint16_t v) {
@@ -918,6 +926,7 @@ static void r128_draw_cursor(rage128_t *r, uint32_t bpp) {
     uint32_t src = r->reg[R_CUR_OFFSET / 4] & 0x1FFFFF0u;
     if ((uint64_t)src + CUR_SIZE * CUR_LINE_BYTES > r->vram_size)
         return;
+    r128_vram_access(r, src, CUR_SIZE * CUR_LINE_BYTES, false);
     uint32_t posn = r->reg[R_CUR_HORZ_VERT_POSN / 4], off = r->reg[R_CUR_HORZ_VERT_OFF / 4];
     uint32_t px = CUR_POSN_H(posn), py = CUR_POSN_V(posn);
     uint32_t ox = CUR_OFF_H(off), oy = CUR_OFF_V(off);
@@ -958,6 +967,14 @@ static void r128_present(rage128_t *r) {
         return;
     }
     const uint8_t *frame = r->vram + r->scan_base;
+    // Under the WebGPU takeover the scanned rows may be newer on the GPU.
+    if (r->gpu_page_gen) {
+        size_t span = (size_t)r->display.stride * r->display.height;
+        if (r->scan_base < r->vram_size)
+            r128_vram_access(r, r->scan_base,
+                             (uint32_t)(span < r->vram_size - r->scan_base ? span : r->vram_size - r->scan_base),
+                             false);
+    }
     bool cursor = (r->reg[R_CRTC_GEN_CNTL / 4] & CRTC_CUR_EN) != 0;
     if (!r->scan_swap && !cursor) {
         r->display.bits = (uint8_t *)frame;
@@ -1117,9 +1134,15 @@ static void r128_on_vbl(pci_device_t *dev, config_t *cfg) {
     if (!r || !r->blank)
         return;
     r128_flip_latch(r);
-    // CPU stores to VRAM bypass the renderer: re-upload every frame.
-    r->display.fb_dirty = true;
-    r128_present(r);
+    // Under the WebGPU takeover the GPU may show the frame itself; then
+    // the scanout is neither composed here nor uploaded by the renderer
+    // (display_t.sync_pixels brings it into VRAM for a screenshot).
+    r->display.presented_externally = r->gpu && r128_gpu_vblank(r->gpu);
+    if (!r->display.presented_externally) {
+        // CPU stores to VRAM bypass the renderer: re-upload every frame.
+        r->display.fb_dirty = true;
+        r128_present(r);
+    }
     if (r->clut_dirty) {
         r->clut_dirty = false;
         if (CRTC_PIX_WIDTH(r->reg[R_CRTC_GEN_CNTL / 4]) == CRTC_PIX_8BPP)
@@ -1244,6 +1267,10 @@ static void r128_reset(pci_device_t *dev, config_t *cfg) {
     r->prims3d = 0;
     r->told3d = 0;
     r->depth_warned = false;
+    // VRAM is the truth from here: whatever the GPU drew since the last
+    // fence is dropped with the frame it belonged to.
+    if (r->gpu)
+        r128_gpu_disengage(r->gpu, true);
     if (r->irq_active) {
         r->irq_active = false;
         pci_deassert_irq(dev);
@@ -1256,6 +1283,8 @@ static void r128_teardown(pci_device_t *dev, config_t *cfg) {
     rage128_t *r = (rage128_t *)dev->priv;
     if (!r)
         return;
+    r128_gpu_destroy(r->gpu);
+    r->gpu = NULL;
     free(r->vram);
     free(r->blank);
     free(r->compose);
@@ -1306,6 +1335,9 @@ static void r128_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     // The CCE (microcode, partial packets) is large: written on its own,
     // not through the stack-allocated header.
     system_write_checkpoint_data(cp, &r->cce, sizeof(r->cce));
+    // The takeover's surfaces are not state: VRAM is, once it is current.
+    if (r->gpu)
+        r128_gpu_sync_all(r->gpu);
     system_write_checkpoint_data(cp, r->vram, r->vram_size);
 }
 
@@ -1327,6 +1359,8 @@ static void r128_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     r->crtc_offset_live = c.crtc_offset_live;
     r->flip_pending = c.flip_pending != 0;
     system_read_checkpoint_data(cp, &r->cce, sizeof(r->cce));
+    if (r->gpu)
+        r128_gpu_disengage(r->gpu, true); // the restored VRAM is the truth
     if (c.vram_size != r->vram_size)
         // The card was built from the staged memory option; a stream from a
         // card of another size fails the size-tagged read below, loudly.
@@ -1359,6 +1393,15 @@ static const char *const r128_monitor_values[] = {"vga", "vga_noddc", "13in_rgb"
 static const char *const r128_monitor_labels[] = {"VGA monitor (DDC)", "VGA monitor (no DDC)",
                                                   "13\" AppleColor RGB (Apple sense)",
                                                   "21\" Macintosh color display (Apple sense)", NULL};
+// The rasteriser: the emulator's own (exact, the default) or the host
+// GPU's, where the host has one (the WebGPU takeover, rage128_gpu.c).
+static const char *const r128_raster_values[] = {"sw", "webgpu", NULL};
+static const char *const r128_raster_labels[] = {"Software", "WebGPU", NULL};
+
+static bool r128_raster_offered(const char *value) {
+    return strcmp(value, "webgpu") != 0 || gs_v2gpu_available();
+}
+
 static const pci_card_option_t r128_options[] = {
     {.key = "memory",
      .label = "Video memory",
@@ -1370,6 +1413,12 @@ static const pci_card_option_t r128_options[] = {
      .values = r128_monitor_values,
      .labels = r128_monitor_labels,
      .default_value = "vga"},
+    {.key = "raster",
+     .label = "Rendering",
+     .values = r128_raster_values,
+     .labels = r128_raster_labels,
+     .default_value = "sw",
+     .value_offered = r128_raster_offered},
     {.key = NULL},
 };
 
@@ -1393,6 +1442,12 @@ static bool r128_accepts_option(const char *key, const char *value) {
         return r128_monitor_by_id(value) != NULL;
     if (strcmp(key, "memory") == 0)
         return r128_memory_by_id(value) != 0;
+    if (strcmp(key, "raster") == 0)
+        return strcmp(value, "sw") == 0 || strcmp(value, "webgpu") == 0;
+    // Not advertised: when the takeover engages — on a 3D draw into a
+    // screen-shaped surface (auto), or on any 3D draw (always, the tests).
+    if (strcmp(key, "gpu") == 0)
+        return strcmp(value, "auto") == 0 || strcmp(value, "always") == 0;
     return false;
 }
 
@@ -1471,6 +1526,24 @@ static DEF_GETTER(regs_attr_cce_packets) {
     return val_uint(8, c ? c->cce.packets : 0);
 }
 
+static DEF_GETTER(regs_attr_raster) {
+    rage128_t *c = node_card(self);
+    return val_str(c && c->gpu ? "webgpu" : "sw");
+}
+static DEF_GETTER(regs_attr_gpu_engaged) {
+    rage128_t *c = node_card(self);
+    return val_bool(c && r128_gpu_engaged(c->gpu));
+}
+static DEF_GETTER(regs_attr_gpu_presenting) {
+    rage128_t *c = node_card(self);
+    return val_bool(c && c->display.presented_externally);
+}
+static DEF_GETTER(regs_attr_gpu_stats) {
+    rage128_t *c = node_card(self);
+    char buf[1024];
+    return val_str(c && c->gpu ? r128_gpu_stats(c->gpu, buf, sizeof(buf)) : "");
+}
+
 static const arg_decl_t regs_off_arg[] = {
     {.name = "offset", .kind = V_INT, .doc = "Register byte offset in an aperture ($0000-$1FFC)"},
 };
@@ -1503,6 +1576,22 @@ static const member_t regs_members[] = {
      .name = "prims3d",
      .doc = "3D primitives the engine has rasterised since reset",
      .attr = {.type = V_UINT, .get = regs_attr_prims3d}                                    },
+    {.kind = M_ATTR,
+     .name = "raster",
+     .doc = "The 3D rasteriser in use: sw (exact) or webgpu (the host GPU; pci_option \"raster=...\")",
+     .attr = {.type = V_STRING, .get = regs_attr_raster}                                   },
+    {.kind = M_ATTR,
+     .name = "gpu_engaged",
+     .doc = "True while the WebGPU takeover holds the 3D surfaces on the host GPU",
+     .attr = {.type = V_BOOL, .get = regs_attr_gpu_engaged}                                },
+    {.kind = M_ATTR,
+     .name = "gpu_presenting",
+     .doc = "True while the WebGPU takeover shows the frames itself (the scanout is a GPU surface)",
+     .attr = {.type = V_BOOL, .get = regs_attr_gpu_presenting}                             },
+    {.kind = M_ATTR,
+     .name = "gpu_stats",
+     .doc = "The WebGPU takeover's counters, one line",
+     .attr = {.type = V_STRING, .get = regs_attr_gpu_stats}                                },
     {.kind = M_METHOD,
      .name = "read",
      .doc = "Read a register by its byte offset (no side effects)",
@@ -1555,7 +1644,18 @@ static void r128_attach_objects(pci_device_t *dev, struct object *card_node) {
 // The factory and the card kind
 // ============================================================
 
-static pci_device_t *r128_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+// display_t.sync_pixels: a screenshot under the takeover reads the GPU's
+// frame back into VRAM and composes it as the CRTC would.
+static void r128_sync_pixels(void *ctx) {
+    rage128_t *r = (rage128_t *)ctx;
+    if (r->display.presented_externally)
+        r128_present(r);
+}
+
+// The one builder both kinds share; they differ only in the rasteriser used
+// when the document names none.
+static pci_device_t *r128_build(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts,
+                                const char *default_raster) {
     pci_device_t *dev = (pci_device_t *)calloc(1, sizeof(*dev));
     rage128_t *r = (rage128_t *)calloc(1, sizeof(*r));
     if (!dev || !r) {
@@ -1655,9 +1755,41 @@ static pci_device_t *r128_factory(int slot_index, config_t *cfg, const rom_image
     pci_bar_backing_iface(dev, R128_BAR_REGS, &r->regs_if, r);
     pci_bar_backing_iface(dev, PCI_ROM_BAR_INDEX, &r->rom_if, r);
 
-    LOG(1, "Rage 128: seated in slot %d: %u MB VRAM, monitor '%s', %zu-byte expansion ROM", slot_index,
-        r->vram_size >> 20, r->mon->id, prom_size);
+    // The rasteriser: WebGPU where the host has a GPU worker to attach,
+    // the software walker otherwise (and always natively).
+    const char *raster = slot_opts_option(opts, "raster");
+    if (!raster)
+        raster = default_raster;
+    if (strcmp(raster, "webgpu") == 0) {
+        const char *policy = slot_opts_option(opts, "gpu");
+        r->gpu =
+            r128_gpu_create(r, policy && strcmp(policy, "always") == 0 ? R128GPU_ENGAGE_ALWAYS : R128GPU_ENGAGE_AUTO);
+        if (r->gpu) {
+            r->display.sync_pixels = r128_sync_pixels;
+            r->display.sync_ctx = r;
+        }
+    }
+
+    LOG(1, "Rage 128: seated in slot %d: %u MB VRAM, monitor '%s', %zu-byte expansion ROM, %s rasteriser", slot_index,
+        r->vram_size >> 20, r->mon->id, prom_size, r->gpu ? "WebGPU" : "software");
     return dev;
+}
+
+static pci_device_t *r128_factory(int slot_index, config_t *cfg, const rom_image_t *rom, const slot_opts_t *opts) {
+    return r128_build(slot_index, cfg, rom, opts, "sw");
+}
+
+// The WebGPU variant: the same card, its 3D drawn by the host GPU unless
+// the boot document named a rasteriser itself.  Falls back to the
+// software rasteriser at creation where no GPU worker attaches (a native
+// build, a checkpoint restored without WebGPU), which regs.raster reports.
+static pci_device_t *r128_webgpu_factory(int slot_index, config_t *cfg, const rom_image_t *rom,
+                                         const slot_opts_t *opts) {
+    return r128_build(slot_index, cfg, rom, opts, "webgpu");
+}
+
+static bool r128_webgpu_offered(void) {
+    return gs_v2gpu_available();
 }
 
 const pci_card_kind_t rage128_kind = {
@@ -1671,4 +1803,19 @@ const pci_card_kind_t rage128_kind = {
     .options = r128_options,
     .accepts_option = r128_accepts_option,
     .attach_objects = r128_attach_objects,
+};
+
+const pci_card_kind_t rage128_webgpu_kind = {
+    .id = "rage128_webgpu",
+    .display_name = "ATI Rage 128 GL (WebGPU)",
+    .attach = PCI_ATTACH_PCI,
+    .requires_prom = true,
+    .card_class = "display",
+    .monitors = r128_monitors,
+    .factory = r128_webgpu_factory,
+    .options = NULL,
+    .accepts_option = r128_accepts_option,
+    .attach_objects = r128_attach_objects,
+    .offered = r128_webgpu_offered,
+    .variant_of = "rage128", // its "Rendering: WebGPU" option
 };

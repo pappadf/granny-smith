@@ -503,5 +503,38 @@ pal_ramp(false)
 patch(0x004080C0)
 assert !machine.screen.matches("${$ref}") "32 bpp: with the identity palette the pixels show as stored"
 
+# --- The WebGPU takeover's kinds and options ---------------------------------
+# In the browser the host GPU can draw the 3D engine (rage128_gpu.c); the
+# choice is the card's Rendering option, and "rage128_webgpu" is the same
+# card with WebGPU as its default — registered everywhere (a boot document
+# or a checkpoint may name it) but never a card of its own in the catalog.
+# Headless has no WebGPU transport: WebGPU is not offered, and a card told
+# to use it comes up on the software rasteriser and says so.
+let found = false
+for c in catalog.profile("pm9500").cards {
+    assert $c.id != "rage128_webgpu" "the WebGPU variant is not a card of its own"
+    if $c.id == "rage128" {
+        let found = true
+        let ras = none
+        for o in $c.options {
+            if $o.id == "raster" {
+                let ras = $o
+            }
+        }
+        assert $ras != none "the card advertises Rendering"
+        assert len($ras.values) == 1 && $ras.values[0].label == "Software" "without a WebGPU device, Software alone"
+    }
+}
+assert $found "the Rage 128 is offered on the 9500"
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="rage128_webgpu"
+assert machine.pci.slot[1].card.name == "ATI Rage 128 GL" "the WebGPU variant is the same card"
+assert machine.pci.slot[1].card.regs.raster == "sw" "rage128_webgpu without a GPU transport keeps the software rasteriser"
+assert !machine.pci.slot[1].card.regs.gpu_engaged "...and the takeover never engages"
+assert machine.pci.slot[1].card.regs.gpu_stats == "" "...with nothing to report"
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="rage128" pci_option="raster=webgpu,gpu=always"
+assert machine.pci.slot[1].card.regs.raster == "sw" "raster=webgpu falls back the same way"
+assert !machine.boot(model="pm9500", ram=32768, rom="${$ROM}", pci_card="rage128", pci_option="raster=gl") "an unknown rasteriser rejects the boot"
+assert !machine.boot(model="pm9500", ram=32768, rom="${$ROM}", pci_card="rage128", pci_option="gpu=never") "an unknown engagement policy rejects the boot"
+
 echo "rage128-3d: coverage, Gouraud and flat shading, culling, Z, stencil, blending, the alpha test, fog, texturing and multitexture, the vertex walker, lines, points, the CRTC flip and the DAC palette hold"
 quit

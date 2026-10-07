@@ -46,144 +46,13 @@
 // usage decides, and the choice is a comment.
 
 #include "log.h"
-#include "rage128_priv.h"
+#include "rage128_gpu.h"
+#include "rage128_raster_priv.h"
 
 #include <math.h>
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("video");
-
-// ============================================================
-// Registers
-// ============================================================
-
-#define REG(r, off) ((r)->reg[(off) / 4u])
-
-#define R_PM4_VC_FPU_SETUP 0x071Cu
-#define R_DST_OFFSET       0x1404u
-#define R_DST_PITCH        0x1408u
-#define R_BRUSH_FRGD_CLR   0x147Cu
-#define R_SC_LEFT          0x1640u
-#define R_SC_RIGHT         0x1644u
-#define R_SC_TOP           0x1648u
-#define R_SC_BOTTOM        0x164Cu
-#define R_AUX_SC_CNTL      0x1660u
-#define R_AUX1_SC_LEFT     0x1664u // + 16 per scissor: LEFT, RIGHT, TOP, BOTTOM
-#define R_DP_DATATYPE      0x16C4u
-#define R_DP_MIX           0x16C8u
-#define R_DP_WRITE_MSK     0x16CCu
-#define R_SCALE_3D_CNTL    0x1A00u
-#define R_FOG_TABLE_INDEX  0x1A14u
-#define R_FOG_TABLE_DATA   0x1A18u
-#define R_SETUP_CNTL       0x1BC4u
-#define R_WINDOW_XY_OFFSET 0x1BCCu
-#define R_Z_OFFSET_C       0x1C90u
-#define R_Z_PITCH_C        0x1C94u
-#define R_Z_STEN_CNTL_C    0x1C98u
-#define R_TEX_CNTL_C       0x1C9Cu
-#define R_MISC_3D_STATE    0x1CA0u
-#define R_TEX_CLR_CMP_CLR  0x1CA4u
-#define R_TEX_CLR_CMP_MSK  0x1CA8u
-#define R_FOG_COLOR_C      0x1CACu
-#define R_PRIM_TEX_CNTL_C  0x1CB0u
-#define R_PRIM_COMBINE_C   0x1CB4u
-#define R_TEX_SIZE_PITCH_C 0x1CB8u
-#define R_PRIM_TEX_0_OFF   0x1CBCu
-#define R_SEC_TEX_CNTL_C   0x1D00u
-#define R_SEC_COMBINE_C    0x1D04u
-#define R_SEC_TEX_0_OFF    0x1D08u
-#define R_CONSTANT_COLOR_C 0x1D34u
-#define R_PRIM_BORDER_C    0x1D38u
-#define R_SEC_BORDER_C     0x1D3Cu
-#define R_STEN_REF_MSK_C   0x1D40u
-
-// TEX_CNTL_C.
-#define TC_Z_EN        0x00000001u
-#define TC_Z_MASK      0x00000002u
-#define TC_STENCIL_EN  0x00000008u
-#define TC_TEX_EN      0x00000010u
-#define TC_SEC_TEX_EN  0x00000020u
-#define TC_FOG_EN      0x00000080u
-#define TC_DITHER_EN   0x00000100u
-#define TC_ALPHA_EN    0x00000200u
-#define TC_ALPHA_TST   0x00000400u
-#define TC_SPECULAR    0x00000800u
-#define TC_CHROMA_KEY  0x00001000u
-#define TC_AMASK       0x00002000u
-#define TC_LIGHT_FN(v) (((v) >> 14) & 0xFu)
-#define TC_ALIGHT(v)   (((v) >> 18) & 7u)
-#define TC_LOD_BIAS(v) ((int8_t)((v) >> 24))
-
-// SCALE_3D_CNTL (its own fields; the shared ones are read from MISC).
-#define S3_DITHER_TABLE 0x00000002u
-#define S3_DITHER_INIT  0x00000008u
-#define S3_ROUND_EN     0x00000010u
-#define S3_TEX_MAP_AEN  0x40000000u
-
-// MISC_3D_STATE_CNTL_REG.
-#define MISC_REF_ALPHA(v)  ((v) & 0xFFu)
-#define MISC_3D_FN(v)      (((v) >> 8) & 3u)
-#define MISC_COMB_FN(v)    (((v) >> 12) & 3u)
-#define MISC_FOG_TABLE     0x00004000u
-#define MISC_BLND_SRC(v)   (((v) >> 16) & 0xFu)
-#define MISC_BLND_DST(v)   (((v) >> 20) & 0xFu)
-#define MISC_TEST_OP(v)    (((v) >> 24) & 7u)
-#define MISC_CLR_CMP_FN(v) (((v) >> 30) & 3u)
-#define SCALE_3D_TEXMAP    2u
-
-// Z_STEN_CNTL_C.
-#define ZS_PIX_WIDTH(v) (((v) >> 1) & 3u)
-#define ZS_Z_TEST(v)    (((v) >> 4) & 7u)
-#define ZS_S_TEST(v)    (((v) >> 12) & 7u)
-#define ZS_SFAIL(v)     (((v) >> 16) & 7u)
-#define ZS_ZPASS(v)     (((v) >> 20) & 7u)
-#define ZS_ZFAIL(v)     (((v) >> 24) & 7u)
-
-// PM4_VC_FPU_SETUP.
-#define FPU_FRONT_CCW   0x00000001u
-#define FPU_BACK_FN(v)  (((v) >> 1) & 3u)
-#define FPU_FRONT_FN(v) (((v) >> 3) & 3u)
-#define FPU_COLOR_FN(v) (((v) >> 5) & 3u)
-#define FPU_SUB_PIX_4   0x00000080u
-#define FPU_FLAT_LAST   0x00004000u
-#define FPU_ROUND_EN    0x00008000u
-#define CULL_FN_CULL    0u
-#define CULL_FN_POINTS  1u
-#define CULL_FN_LINES   2u
-#define COLOR_FN_SOLID  0u
-#define COLOR_FN_FLAT   1u
-
-// SETUP_CNTL.
-#define SU_ST_PREMULT 0x00000200u
-
-// PRIM/SEC_TEX_CNTL_C.
-#define TX_MIN_FN(v)    (((v) >> 1) & 7u)
-#define TX_MAG_FN(v)    (((v) >> 4) & 7u)
-#define TX_MIP_DIS      0x00000080u
-#define TX_CLAMP_S(v)   (((v) >> 8) & 3u)
-#define TX_CLAMP_T(v)   (((v) >> 11) & 3u)
-#define TX_PERSP_DIS    0x00004000u
-#define TX_DATATYPE(v)  (((v) >> 16) & 0xFu)
-#define TX_SEC_SEL_ST   0x00000001u
-#define TX_SEC_SEL_W    0x00008000u
-#define WRAP_REPEAT     0u
-#define WRAP_MIRROR     1u
-#define WRAP_CLAMP      2u
-#define WRAP_BORDER     3u
-#define MIN_NEAREST     0u
-#define MIN_LINEAR      1u
-#define MIN_NEAREST_MIP 2u
-#define MIN_LINEAR_MIP  3u
-#define MIN_MIP_NEAREST 4u // between maps by nearest texel, then blended ("1x1")
-#define MIN_TRILINEAR   5u
-
-// The once-only logs.
-#define TOLD_TILED   0x01u
-#define TOLD_FORMAT  0x02u
-#define TOLD_ROP     0x04u
-#define TOLD_OFF     0x08u
-#define TOLD_AGP_DST 0x10u
-#define TOLD_PRIM7   0x20u
 
 static void tell_once(rage128_t *r, uint8_t bit, const char *what) {
     if (r->told3d & bit)
@@ -272,41 +141,6 @@ void r128_3d_vertex_decode(uint32_t fmt, const uint32_t *d, r128_vertex_t *v) {
     }
     v->rhw2 = (fmt & VCF_RHW2) ? f32(d[i++]) : v->rhw;
 }
-
-// ============================================================
-// The state snapshot
-// ============================================================
-
-typedef struct tex_unit {
-    bool on;
-    uint32_t cntl, comb, fmt;
-    uint32_t lpitch, lheight, lsize, lmin; // log2 of the largest map's pitch (= width), height, max, smallest
-    uint32_t off[11];
-    uint32_t border;
-    bool persp; // divide by the interpolated W per pixel
-    bool premult; // the vertex S and T are already S·W (TEXTURE_ST_FORMAT)
-    bool sec_st, sec_w; // the secondary unit's coordinate set
-} tex_unit_t;
-
-typedef struct st {
-    rage128_t *r;
-    // The colour buffer.
-    uint32_t dst_base, dst_stride, dst_type, dst_bpp;
-    int32_t sc_l, sc_t, sc_r, sc_b; // inclusive
-    uint32_t aux_cntl;
-    int32_t aux[3][4];
-    uint32_t write_mask, rop;
-    bool brush_masks; // a patterned brush gates pixels (polygon stipple)
-    // The 3D state.
-    uint32_t scale, misc, tex_cntl, fpu, setup, zs, sten;
-    uint32_t z_base, z_stride, z_bytes;
-    uint64_t z_max;
-    uint32_t fog_color, constant, key, key_mask;
-    uint8_t fog_table[256];
-    float win_x, win_y, snap;
-    bool round_xy;
-    tex_unit_t t[2];
-} st_t;
 
 // Bytes per pixel of a colour-buffer datatype the 3D engine writes, or 0.
 static uint32_t dst_bytes(uint32_t type) {
@@ -468,7 +302,7 @@ static col_t unpack_argb(uint32_t v) {
 // Textures
 // ============================================================
 
-static uint32_t texel_bits(uint32_t fmt) {
+uint32_t r128_3d_texel_bits(uint32_t fmt) {
     switch (fmt) {
     case 1:
         return 4;
@@ -492,11 +326,16 @@ static uint32_t texel_bits(uint32_t fmt) {
     }
 }
 
+static uint32_t texel_bits(uint32_t fmt) {
+    return r128_3d_texel_bits(fmt);
+}
+
 static uint32_t mem_read(st_t *s, uint32_t addr, uint32_t bytes) {
     rage128_t *r = s->r;
     if (!(addr & 0x2000000u)) {
         if (addr + bytes > r->vram_size)
             return 0;
+        r128_vram_access(r, addr, bytes, false);
         uint32_t v = 0;
         for (uint32_t i = 0; i < bytes; i++)
             v |= (uint32_t)r->vram[addr + i] << (8u * i);
@@ -528,8 +367,15 @@ static uint32_t texel(st_t *s, const tex_unit_t *u, uint32_t lev, uint32_t tx, u
     if (bits == 4)
         v = (v >> ((bit & 4u) ? 4 : 0)) & 0xFu;
     *raw = v;
+    return r128_3d_texel_argb(s->r, u->fmt, v, (s->scale & S3_TEX_MAP_AEN) != 0);
+}
+
+// A raw texel of datatype `fmt` as ARGB8888 — what texel() returns, shared
+// with the WebGPU takeover's texture uploads (rage128_gpu.c).  `aen`:
+// SCALE_3D_CNTL's TEX_MAP_AEN, without which textures carry no alpha.
+uint32_t r128_3d_texel_argb(rage128_t *r, uint32_t fmt, uint32_t v, bool aen) {
     uint32_t a = 0xFFu, rr, g, b;
-    switch (u->fmt) {
+    switch (fmt) {
     case 3: // ARGB1555
         a = (v & 0x8000u) ? 0xFFu : 0u;
         rr = (v >> 10) & 0x1Fu, g = (v >> 5) & 0x1Fu, b = v & 0x1Fu;
@@ -557,11 +403,12 @@ static uint32_t texel(st_t *s, const tex_unit_t *u, uint32_t lev, uint32_t tx, u
     default:
         // The palettised (CI4, CI8, A:CI) and YUV formats: the texture
         // palette's path is not modelled; the index reads as a grey.
-        tell_once(s->r, TOLD_FORMAT, "a palettised or YUV texture reads as grey");
+        if (r)
+            tell_once(r, TOLD_FORMAT, "a palettised or YUV texture reads as grey");
         rr = g = b = v & 0xFFu;
         break;
     }
-    if (!(s->scale & S3_TEX_MAP_AEN))
+    if (!aen)
         a = 0xFFu; // textures carry no alpha
     return (a << 24) | (rr << 16) | (g << 8) | b;
 }
@@ -762,6 +609,7 @@ static col_t stage(const st_t *s, const tex_unit_t *u, bool secondary, col_t tex
 // ============================================================
 
 static uint32_t dst_read(const st_t *s, uint32_t at) {
+    r128_vram_access(s->r, at, s->dst_bpp, false);
     uint32_t v = 0;
     for (uint32_t i = 0; i < s->dst_bpp; i++)
         v |= (uint32_t)s->r->vram[at + i] << (8u * i);
@@ -1034,6 +882,7 @@ static void shade(st_t *s, int32_t x, int32_t y, const frag_t *f) {
         uint32_t zat = s->z_base + (uint32_t)y * s->z_stride + (uint32_t)x * s->z_bytes;
         if (zat + s->z_bytes > r->vram_size)
             return;
+        r128_vram_access(r, zat, s->z_bytes, false);
         uint32_t zw = 0;
         for (uint32_t i = 0; i < s->z_bytes; i++)
             zw |= (uint32_t)r->vram[zat + i] << (8u * i);
@@ -1053,8 +902,11 @@ static void shade(st_t *s, int32_t x, int32_t y, const frag_t *f) {
         }
         if (spass && zpass && z_en && (s->tex_cntl & TC_Z_MASK))
             nw = s->z_max == 0xFFFFFFu ? ((nw & 0xFF000000u) | (uint32_t)zsrc) : (uint32_t)zsrc;
-        for (uint32_t i = 0; i < s->z_bytes; i++)
-            r->vram[zat + i] = (uint8_t)(nw >> (8u * i));
+        if (nw != zw) {
+            r128_vram_access(r, zat, s->z_bytes, true);
+            for (uint32_t i = 0; i < s->z_bytes; i++)
+                r->vram[zat + i] = (uint8_t)(nw >> (8u * i));
+        }
         if (!spass || !zpass)
             return;
     }
@@ -1094,6 +946,7 @@ static void shade(st_t *s, int32_t x, int32_t y, const frag_t *f) {
         v = r128_2d_rop3(s->rop, REG(r, R_BRUSH_FRGD_CLR), v, old);
     }
     v = (v & s->write_mask) | (old & ~s->write_mask);
+    r128_vram_access(r, at, s->dst_bpp, true);
     for (uint32_t i = 0; i < s->dst_bpp; i++)
         r->vram[at + i] = (uint8_t)(v >> (8u * i));
 }
@@ -1101,31 +954,6 @@ static void shade(st_t *s, int32_t x, int32_t y, const frag_t *f) {
 // ============================================================
 // Setup: attribute planes
 // ============================================================
-
-// The attributes a primitive interpolates, as an array per vertex.
-enum {
-    A_Z,
-    A_R,
-    A_G,
-    A_B,
-    A_A,
-    A_SR,
-    A_SG,
-    A_SB,
-    A_FOG,
-    A_S0, // S·W (or S), primary set
-    A_T0,
-    A_W0, // W for the primary set
-    A_S1,
-    A_T1,
-    A_W1,
-    A_COUNT
-};
-
-typedef struct svtx {
-    double x, y; // snapped screen position
-    double a[A_COUNT];
-} svtx_t;
 
 static double snap(const st_t *s, double v) {
     double q = v * s->snap;
@@ -1338,7 +1166,10 @@ static void triangle(st_t *s, const r128_vertex_t *a, const r128_vertex_t *b, co
         draw_line(s, &v[2], &v[0]);
         return;
     default:
-        draw_tri(s, &v[0], &v[1], &v[2]);
+        if (s->gpu)
+            r128_gpu_tri(s->r->gpu, s, &v[0], &v[1], &v[2]);
+        else
+            draw_tri(s, &v[0], &v[1], &v[2]);
         return;
     }
 }
@@ -1358,6 +1189,11 @@ void r128_3d_draw(rage128_t *r, uint32_t prim, const r128_vertex_t *v, uint32_t 
     st_t s;
     if (!n || !gather(r, &s))
         return;
+    // Under the WebGPU takeover the GPU draws the batch's triangles when it
+    // can express them; otherwise the walker below draws everything, its
+    // VRAM accesses fenced (r128_vram_access).
+    if (r->gpu)
+        s.gpu = r128_gpu_batch_begin(r->gpu, &s, prim, v, n);
     switch (prim) {
     case 1: // points
         for (uint32_t i = 0; i < n; i++) {
@@ -1397,4 +1233,6 @@ void r128_3d_draw(rage128_t *r, uint32_t prim, const r128_vertex_t *v, uint32_t 
     default:
         break;
     }
+    if (s.gpu)
+        r128_gpu_batch_end(r->gpu, &s);
 }

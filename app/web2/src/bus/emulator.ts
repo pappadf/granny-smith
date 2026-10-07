@@ -28,6 +28,27 @@ import {
   onVoodooGpuOverlay,
   whenVoodooGpuReady,
 } from '@/gpu/voodoo2Gpu.svelte';
+import {
+  hideRage128Overlay,
+  isRage128Ctrl,
+  onRage128GpuAttach,
+  onRage128GpuDetach,
+} from '@/gpu/rage128Gpu.svelte';
+
+// The core's GPU transport seam is one for both 3D takeovers (gs_v2gpu_*,
+// em_gpu.c): an attach goes to the worker whose MAGIC its control block
+// carries, and the display path's "hide the overlay" covers both.
+function onGpuAttach(ctrl: number): void {
+  if (isRage128Ctrl(ctrl)) onRage128GpuAttach(ctrl);
+  else onVoodooGpuAttach(ctrl);
+}
+function onGpuDetach(ctrl: number): void {
+  if (!onRage128GpuDetach(ctrl)) onVoodooGpuDetach(ctrl);
+}
+function onGpuOverlay(visible: number): void {
+  if (!visible) hideRage128Overlay();
+  onVoodooGpuOverlay(visible);
+}
 import { onPrinterAttach } from '@/printer/platen';
 import { setPrinterStatus } from '@/state/printer.svelte';
 import { onDownloadChunk } from './download';
@@ -237,9 +258,9 @@ async function bootstrapModule(canvas: HTMLCanvasElement): Promise<void> {
     onAudioInReady,
     onAudioInState,
     onAudioInInjected,
-    onVoodooGpuAttach,
-    onVoodooGpuDetach,
-    onVoodooGpuOverlay,
+    onVoodooGpuAttach: onGpuAttach,
+    onVoodooGpuDetach: onGpuDetach,
+    onVoodooGpuOverlay: onGpuOverlay,
     onPrinterAttach,
     gsAudioWorkletUrl,
   });

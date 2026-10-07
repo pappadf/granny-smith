@@ -202,6 +202,7 @@ bool r128_card_read(rage128_t *r, uint32_t addr, uint32_t *out, uint32_t n) {
             uint32_t a = addr & CARD_AGP_MASK;
             if (a + 4u > r->vram_size)
                 return false;
+            r128_vram_access(r, a, 4, false);
             out[0] = (uint32_t)r->vram[a] | ((uint32_t)r->vram[a + 1] << 8) | ((uint32_t)r->vram[a + 2] << 16) |
                      ((uint32_t)r->vram[a + 3] << 24);
             out++, n--, addr += 4u;

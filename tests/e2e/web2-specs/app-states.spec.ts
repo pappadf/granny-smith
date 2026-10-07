@@ -118,7 +118,7 @@ async function shot(
     mask: [...masks(page), ...extra],
     // The emulated screen is out of scope (and its picture varies): hide it
     // instead of masking it, since a mask covers whatever lies on top.
-    style: "#screen, #screen3d { visibility: hidden !important; }",
+    style: "#screen, #screen3d, #screen3d-r128 { visibility: hidden !important; }",
   });
 }
 

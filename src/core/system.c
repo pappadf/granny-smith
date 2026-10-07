@@ -1102,6 +1102,8 @@ __attribute__((weak)) void gs_v2gpu_notify(volatile uint32_t *addr) {
     (void)addr;
 }
 
+__attribute__((weak)) void gs_v2gpu_keepalive(void) {}
+
 // Host audio-input seam: the defaults model "no microphone attached" —
 // the headless build drives capture from the deterministic
 // machine.audioin sources instead; a WASM override can trail.

@@ -408,7 +408,15 @@ static value_t apply_rom_sugar(const hw_profile_t *p, slots_bus_t bus, const boo
                       : d->kind == PCI_SLOT_SOCKET ? d->default_card
                                                    : d->builtin_card_id;
         }
-        if (!kind_id || strcmp(kind_id, card_id) != 0)
+        if (!kind_id)
+            continue;
+        // A PCI variant kind (rage128_webgpu) runs its card's ROM.
+        if (bus == SLOTS_PCI) {
+            const pci_card_kind_t *pk = pci_card_find(kind_id);
+            if (pk)
+                kind_id = pci_card_rom_id(pk);
+        }
+        if (strcmp(kind_id, card_id) != 0)
             continue;
         matched++;
         slot_opts_t *e = entry_for(o, slot);

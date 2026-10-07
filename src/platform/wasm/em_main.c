@@ -362,6 +362,12 @@ static void perf_window_stats(const double *samples, int n, double *max_out, dou
 // and VERSION words are valid from the first read.  READY stays 0 until
 // main() has run shell_init/setup_init.
 static gs_mailbox_t g_mailbox;
+
+// A GPU wait on the emulator thread (system.h, gs_v2gpu_keepalive): the
+// core is busy, not dead, so the page's stall watch must not fire.
+void gs_v2gpu_keepalive(void) {
+    gs_mailbox_heartbeat(&g_mailbox);
+}
 static uint8_t g_mailbox_region[GS_MBX_ALIGN + GS_MBX_CTRL_WORDS * 4u + GS_MBX_REQ_BYTES + GS_MBX_EVT_BYTES];
 
 __attribute__((constructor)) static void mailbox_construct(void) {

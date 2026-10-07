@@ -9,7 +9,9 @@ Orion, Xclaim VR 128 and Nexus 128 — modelled in
 [`rage128_cce.c`](../../../../../../src/core/peripherals/pci/cards/rage128_cce.c)
 (its Concurrent Command Engine) and
 [`rage128_raster.c`](../../../../../../src/core/peripherals/pci/cards/rage128_raster.c)
-(its 3D engine), sharing
+(its 3D engine) and
+[`rage128_gpu.c`](../../../../../../src/core/peripherals/pci/cards/rage128_gpu.c)
+(the WebGPU takeover, §3), sharing
 [`rage128_priv.h`](../../../../../../src/core/peripherals/pci/cards/rage128_priv.h).
 The chip's hardware reference is
 [`rage-128.md`](../../../../../reference/hardware/pci/cards/rage-128.md);
@@ -21,12 +23,13 @@ model answers registers and nothing else.
 
 | | |
 |---|---|
-| **Card kind** | `rage128` (`card_class = "display"`, `requires_prom`) |
+| **Card kind** | `rage128` (`card_class = "display"`, `requires_prom`); `rage128_webgpu`, the same card with WebGPU as its default rasteriser (`variant_of = "rage128"`) |
 | **PCI ID** | `1002:5245` ("RE", Rage 128 GL PCI), class `$030000`, revision `$00` (the first silicon; the production A22 value is unknown and every guest read of it is logged) |
 | **ROM** | the Xclaim VR 128's `113-57406-108` (FCode 1.69, node `ATY,Rage128v`; catalogue default) or the Nexus 128's `113-57502-103` (`ATY,Rage128n`); identities in [`expansion-rom.md`](../../../../../reference/hardware/pci/expansion-rom.md) |
 | **BARs** | BAR0 64 MB prefetchable memory, BAR1 256 B I/O, BAR2 16 KB memory, ROM 128 KB |
 | **Memory** | 16 MB (Rage Orion, Xclaim VR 128); `memory=32m` for the Nexus 128 |
 | **Monitor** | `monitor=vga` (default: a VGA monitor answering DDC), `vga_noddc`, `13in_rgb`, `21in_rgb` |
+| **Rendering** | `raster=sw` (default, exact) or `raster=webgpu` (the host GPU, in a browser that has one); `gpu=auto` (default) or `gpu=always`, unadvertised |
 
 ## 1. Responsibilities & design
 
@@ -304,6 +307,95 @@ reads back. Apple's OpenGL then lists ATI's renderer (`0x21000`,
 `AGL_ACCELERATED`, 16 MB of video and texture memory) next to the software
 one.
 
+**The WebGPU takeover** (`rage128_gpu.c`, `rage128_gpu_protocol.h`; the
+browser's side is `app/web2/src/gpu/rage128Gpu.worker.ts` and
+`rage128.wgsl.ts`). In the browser the host's GPU can draw the 3D engine's
+triangles — the Voodoo2's takeover ([`voodoo2.md`](voodoo2.md), "The WebGPU
+takeover") carried over to a card whose 3D, 2D, CCE, CPU and scanout all
+share one VRAM. The choice is the card's **Rendering** option (`raster=`),
+offered only where the page found a WebGPU device; `rage128_webgpu` is the
+same card with WebGPU as its default, registered everywhere so a boot
+document or checkpoint may name it, never listed as a card of its own. It
+uses the `rage128` ROM (`pci_card_rom_id`). Natively, or where no GPU
+worker attaches, the card keeps the software rasteriser and
+`regs.raster` says `sw`.
+
+- **What the GPU does.** While *engaged*, the walker's own code still
+  snaps, culls and flat-shades every triangle; the surviving ones, with
+  their attributes evaluated at the vertices, become vertex-buffer entries
+  under a pipeline key (blend, Z test and write, colour write mask) and a
+  512-byte uniform block of the batch's registers. The colour and Z
+  buffers they target become GPU **surfaces** (an `rgba8` texture holding
+  the colour datatype's channels widened as `dst_unpack` widens them, and
+  a `depth16unorm` one holding the 16-bit Z codes exactly). Textures are
+  `rg32uint` atlases — each mip level below the last at its own width —
+  holding every texel twice: converted by the walker's own conversion
+  (`r128_3d_texel_argb`) and raw, for the colour key. The fragment shader
+  is `shade()` stage for stage in integer arithmetic: texel fetch (wrap, mirror, clamp,
+  border; nearest, bilinear, the mip modes, trilinear, the LOD from the
+  pixel's neighbours by fine derivatives), both combine stages, texture
+  lighting, the colour key, specular, fog (vertex or table), the alpha
+  test, the Z code, dither and pack. The GPU contributes coverage
+  (pixel centres at (x + ½, y + ½) on both sides, vertices on the
+  walker's 1/16 grid), interpolation, the Z compare and the blend. The shader
+  is written for software adapters too: SwiftShader inlines every call,
+  so each costly function has one call site inside a loop over what the C
+  walks several times (taps, levels, units, channels). Written the
+  straightforward way it took 52 s to compile on first draw; this way,
+  0.2 s.
+- **What stays with the walker.** Points, lines and faces drawn as either;
+  a ROP3 other than `SRCCOPY`; a patterned brush (polygon stipple);
+  stencil; Z buffers other than 16-bit; the wrapping blend functions; a
+  write mask that is not whole channels; the 8-bit colour buffers. Such a
+  batch runs on the walker against VRAM, fenced like any other access, and
+  counts in `regs.gpu_stats` by reason.
+- **VRAM stays the card's memory.** A surface row is current in VRAM, or
+  newer on the GPU, or newer in VRAM. Every access that is not the GPU's
+  passes `r128_vram_access` (`rage128_priv.h`): the apertures and
+  `MM_DATA`, the 2D engine, the CCE's fetches, the cursor, the scanout and
+  the walker. A GPU-newer row is read back (in 64-row bands, one roundtrip
+  each) before anyone sees it; a write marks its rows VRAM-newer, uploaded
+  before the next GPU use, and bumps a per-4 KB page generation the
+  texture cache checks (AGP-resident textures are content-hashed once a
+  frame instead). Not engaged, the test is one comparison.
+- **The 2D engine's fills** of a surface — no source, no destination read,
+  a solid brush or none, no colour compare, every bit written — are GPU
+  fills, so a Z buffer cleared every frame (Quake III's) never comes back
+  to VRAM.
+- **Engagement.** Under `gpu=auto` a 3D draw into a *screen-shaped*
+  surface (the scanout's stride and pixel format) engages; `gpu=always`
+  (the e2e) engages on any. It ends after 120 vblanks without 3D, on a
+  readback storm (more than 32 bands in each of three vblank intervals,
+  then 300 vblanks before the next engagement), on a reset or checkpoint
+  restore (discarding the GPU's pixels: VRAM is the restored truth), or on
+  device loss (logged; the walker draws from there on). A checkpoint save
+  reads everything back first.
+- **Presentation.** At vblank, when the scanout is a colour surface (and
+  no hardware cursor needs compositing), the worker presents it onto an
+  overlay canvas (`#screen3d-r128`) through the display table — the DAC's
+  direct-colour table composed with the monitor's response, indexed by
+  the channel code at the scanout's width, as the renderer does — and
+  `display_t.presented_externally` tells the WebGL renderer to skip its
+  upload. A screenshot reads the frame back (`sync_pixels`). The design
+  follows what Quake III does, measured natively: two colour buffers
+  ($8000 and $F5A000, 640 × 480 ARGB1555, swapped by immediate
+  `CRTC_OFFSET` writes) and a 16-bit Z buffer at $EC0000 cleared by one 2D
+  fill a frame, textures in VRAM through host-data blits, no CPU access to
+  VRAM in a frame. Neither the present nor Quake III on this path has been
+  seen in a browser yet (§6).
+- **Threading.** Unlike the Voodoo2's, this translator runs on the
+  emulator thread, synchronously (the card has no command queue to put a
+  thread behind): a fence blocks it on the GPU worker. Waits keep the
+  page's stall watch fed (`gs_v2gpu_keepalive`) — a software adapter
+  compiles a pipeline on first use and can take seconds — and count as a
+  lost device after 20 s. The worker starts lazily, on the card's first
+  attach, so a page that never boots the card creates no second device;
+  the attach shares the Voodoo2's transport seam and is routed by the
+  control block's magic.
+- **Not exact.** What the GPU draws is held to a tolerance, not the
+  walker's bit-exact output: interpolation is float32 rather than double,
+  and a blended pixel is dithered/packed only on its way back to VRAM.
+
 **Interrupts.** `GEN_INT_STATUS` latches VBLANK and VSYNC every frame
 whether or not they are enabled (write 1 to clear); `GEN_INT_CNTL` gates
 the INTA line, which is level and held until acknowledged. `CRTC_STATUS`
@@ -314,7 +406,9 @@ bit 0 is the live blank, bit 1 the since-last-cleared latch.
 `machine.pci.slot[N].card` carries `framebuffer` (the shared display node,
 nominated as `machine.screen.source`), `monitor` (`id`, `ddc`,
 `apple_sense`) and, under the advanced category, `regs` (`vram_size`,
-`crtc_gen_cntl`, `config_cntl`, `microcode`, `cce_packets`, `prims3d`, `read(offset)`
+`crtc_gen_cntl`, `config_cntl`, `microcode`, `cce_packets`, `prims3d`, `raster`
+(`sw` or `webgpu`), `gpu_engaged`, `gpu_presenting`, `gpu_stats` (the
+takeover's counters, fallbacks by reason, and the worker's), `read(offset)`
 without side effects, `pll(index)`).
 
 ## 5. Checkpointing
@@ -322,6 +416,9 @@ without side effects, `pll(index)`).
 The register file, PLL file, AGP/power latches, palette and indices, the
 DDC slave's state, a 2D host-data operation in flight, the 3D fog table,
 the CCE (microcode RAM and partially gathered packets) and VRAM. The ROM travels in the slot's checkpoint part.
+Under the WebGPU takeover VRAM is made current (every GPU-newer row read
+back) before it is written; a restore disengages, discarding the GPU's
+surfaces. The rasteriser is not state: a checkpoint names the card kind.
 A checkpoint from a card of another memory size fails the size-tagged read
 loudly.
 
@@ -353,7 +450,17 @@ loudly.
   lightmap-style stage, the vertex walker's list and indexed walks through
   the GART, lines, points and a 565 target — every one a VRAM equality —
   then the CRTC flip and the palette in the 32 bpp DAC path (a screen
-  match).
+  match). It ends with the WebGPU kinds and options natively: Rendering
+  offers Software alone, and `rage128_webgpu` and `raster=webgpu` come up
+  on the software rasteriser.
+- `tests/e2e/web2-specs/rage128-webgpu.spec.ts` — the takeover in Chromium
+  on its software WebGPU adapter: `rage128-3d`'s drawing sections replayed
+  with the GPU engaged from the first draw, every equality read back from
+  the GPU's surfaces through the aperture (batches the GPU does not take
+  run on the walker, so the hand-over is covered both ways). The scheduler
+  stays halted, as in the Voodoo2's spec: headless Chromium destroys the
+  device on the first canvas present, so the present is a real-browser
+  check.
 - `tests/integration/g3-rage128-macos921` (tier `extended`) — Mac OS 9.2.1
   from the MESH disk on a G3 whose only display is the card: the desktop on
   the card's framebuffer, ATI's own microcode, PM4 mode 7, over a thousand
@@ -385,8 +492,9 @@ loudly.
   precision, LOD, dither matrix, fog-table indexing) are chosen, not
   measured; a real-card capture would pin them. The texture palette, YUV
   textures, edge anti-aliasing, tiled layouts and AGP colour buffers are
-  not modelled, and the rasteriser is a single synchronous software walker
-  (no worker-thread or WebGPU backend yet).
+  not modelled. The software rasteriser is a single synchronous walker (no
+  worker-thread backend); the WebGPU takeover covers triangles, not
+  points, lines, stencil or 24/32-bit Z.
 - The revision byte is `$00` until a real card is read.
 
 ## 8. See also

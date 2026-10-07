@@ -30,6 +30,7 @@
 // Development Guide* (SDK-G04000 Rev 0.01, 1999), chapter 4.
 
 #include "log.h"
+#include "rage128_gpu.h"
 #include "rage128_priv.h"
 
 #include <stdlib.h>
@@ -221,7 +222,8 @@ static uint32_t dt_bytes(uint32_t dt) {
 }
 
 // One pixel of VRAM, little-endian as the chip holds it.
-static uint32_t vram_get(const rage128_t *r, uint32_t at, uint32_t bpp) {
+static uint32_t vram_get(rage128_t *r, uint32_t at, uint32_t bpp) {
+    r128_vram_access(r, at, bpp, false);
     uint32_t v = 0;
     for (uint32_t i = 0; i < bpp; i++)
         v |= (uint32_t)r->vram[at + i] << (8u * i);
@@ -229,6 +231,7 @@ static uint32_t vram_get(const rage128_t *r, uint32_t at, uint32_t bpp) {
 }
 
 static void vram_put(rage128_t *r, uint32_t at, uint32_t bpp, uint32_t v) {
+    r128_vram_access(r, at, bpp, true);
     for (uint32_t i = 0; i < bpp; i++)
         r->vram[at + i] = (uint8_t)(v >> (8u * i));
 }
@@ -424,10 +427,11 @@ static void pixel(rage128_t *r, const op_t *op, int32_t x, int32_t y, uint32_t s
 }
 
 // A mono bit of a VRAM source line.
-static bool mono_bit(const rage128_t *r, const op_t *op, uint32_t line_at, uint32_t col) {
+static bool mono_bit(rage128_t *r, const op_t *op, uint32_t line_at, uint32_t col) {
     uint32_t at = line_at + (col >> 3);
     if (at >= r->vram_size)
         return false;
+    r128_vram_access(r, at, 1, false);
     uint8_t b = r->vram[at];
     return (b >> (op->lsb_first ? (col & 7u) : 7u - (col & 7u))) & 1u;
 }
@@ -453,6 +457,42 @@ static void after_rect(rage128_t *r, int32_t h) {
     REG(r, G_DST_Y) = (uint32_t)y & 0x3FFFu;
 }
 
+// Under the WebGPU takeover, a solid fill — no source, no destination
+// read, a solid brush or none, no colour compare, every bit written — of
+// a GPU surface is the GPU's to draw (a Z buffer cleared each frame never
+// comes back to VRAM).  False: the engine draws it, fenced.
+static bool gpu_fill(rage128_t *r, const op_t *op, int32_t dx0, int32_t dy0, int32_t w, int32_t h, int32_t xdir,
+                     int32_t ydir) {
+    if (op->uses_s || op->uses_d || (op->write_mask & op->mask) != op->mask)
+        return false;
+    if (op->uses_p && op->brush_type != BR_SOLID_COLOR && op->brush_type != BR_SOLID_COLOR_B &&
+        op->brush_type != BR_NONE)
+        return false;
+    uint32_t which = CMP_WHICH(op->cmp_cntl);
+    if ((which == 1 || which == 2) && CMP_FN_SRC(op->cmp_cntl) != CMP_FALSE)
+        return false;
+    if ((which == 0 || which == 2) && CMP_FN_DST(op->cmp_cntl) != CMP_FALSE)
+        return false;
+    uint32_t value = rop3(op->rop, op->uses_p ? op->brush_fg : 0u, 0u, 0u) & op->mask;
+    int32_t x0 = xdir > 0 ? dx0 : dx0 - w + 1, y0 = ydir > 0 ? dy0 : dy0 - h + 1;
+    int32_t x1 = x0 + w, y1 = y0 + h;
+    if (x0 < op->sc_left)
+        x0 = op->sc_left;
+    if (y0 < op->sc_top)
+        y0 = op->sc_top;
+    if (x1 > op->sc_right + 1)
+        x1 = op->sc_right + 1;
+    if (y1 > op->sc_bottom + 1)
+        y1 = op->sc_bottom + 1;
+    if (x0 < 0)
+        x0 = 0;
+    if (y0 < 0)
+        y0 = 0;
+    if (x0 >= x1 || y0 >= y1)
+        return true; // clipped away: the engine would draw nothing either
+    return r128_gpu_fill(r->gpu, op->dst_base, op->dst_stride, op->bpp, x0, y0, x1, y1, value);
+}
+
 // Run a rectangle: DST_X/Y, DST_WIDTH/HEIGHT, the data path as loaded.
 static void run_rect(rage128_t *r) {
     op_t op;
@@ -472,6 +512,10 @@ static void run_rect(rage128_t *r) {
         dx0, dy0, sx0, sy0, op.src_source == SRC_SOURCE_MEMORY ? "vram" : "host", op.rop, op.src_source, op.src_type,
         op.brush_type, op.bpp * 8u, xdir, ydir);
     if (w <= 0 || h <= 0) {
+        after_rect(r, h);
+        return;
+    }
+    if (r->gpu && gpu_fill(r, &op, dx0, dy0, w, h, xdir, ydir)) {
         after_rect(r, h);
         return;
     }

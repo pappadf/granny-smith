@@ -359,7 +359,32 @@ typedef struct rage128 {
     uint8_t fog_table[256]; // FOG_TABLE_DATA, through FOG_TABLE_INDEX
     uint8_t fog_index;
     uint8_t told3d; // once-only 3D logs (rage128_raster.c)
+
+    // The WebGPU takeover (rage128_gpu.c), NULL under the software
+    // rasteriser.  While engaged, [gpu_lo, gpu_hi) bounds the VRAM the
+    // GPU holds surfaces over and gpu_page_gen counts writes per 4 KB
+    // page (for the texture cache); both are what r128_vram_access reads.
+    struct r128_gpu *gpu;
+    uint32_t gpu_lo, gpu_hi;
+    uint32_t *gpu_page_gen;
+    uint32_t gpu_gen;
 } rage128_t;
+
+// Every VRAM access that is not the GPU's own goes through here: the CPU
+// through the apertures and MM_DATA, the 2D engine, the CCE's fetches,
+// the scanout and the software rasteriser.  Under the software
+// rasteriser, and while the takeover is not engaged, it is one test.
+void r128_gpu_fence(struct r128_gpu *g, uint32_t at, uint32_t len, bool write);
+static inline void r128_vram_access(rage128_t *r, uint32_t at, uint32_t len, bool write) {
+    if (!r->gpu_page_gen)
+        return;
+    if (write && len) {
+        for (uint32_t p = at >> 12, last = (at + len - 1u) >> 12; p <= last && p <= ((r->vram_size - 1u) >> 12); p++)
+            r->gpu_page_gen[p] = ++r->gpu_gen;
+    }
+    if (at < r->gpu_hi && at + len > r->gpu_lo)
+        r128_gpu_fence(r->gpu, at, len, write);
+}
 
 // === The register file (rage128.c) =========================================
 
@@ -419,6 +444,11 @@ void r128_3d_vertex_decode(uint32_t fmt, const uint32_t *dw, r128_vertex_t *v);
 // 1 points, 2 lines, 3 polyline, 4 triangles, 5 fan, 6 strip) with the
 // engine's current state.
 void r128_3d_draw(rage128_t *r, uint32_t prim, const r128_vertex_t *v, uint32_t n);
+// Bits per texel of a TEX datatype (0: none the engine reads).
+uint32_t r128_3d_texel_bits(uint32_t fmt);
+// A raw texel as ARGB8888, as the 3D engine reads it (`aen`: TEX_MAP_AEN;
+// `r` may be NULL, which only silences the once-only format log).
+uint32_t r128_3d_texel_argb(rage128_t *r, uint32_t fmt, uint32_t raw, bool aen);
 
 // === The Concurrent Command Engine (rage128_cce.c) =========================
 

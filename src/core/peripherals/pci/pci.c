@@ -101,10 +101,20 @@ extern const pci_card_kind_t sym53c825_ch1_kind;
 extern const pci_card_kind_t voodoo2_kind; // peripherals/pci/cards/voodoo2.c
 extern const pci_card_kind_t voodoo2_webgpu_kind; // ...the same card, rasterised by the host GPU
 extern const pci_card_kind_t rage128_kind; // peripherals/pci/cards/rage128.c
+extern const pci_card_kind_t rage128_webgpu_kind; // ...the same card, its 3D drawn by the host GPU
 
 static const pci_card_kind_t *const g_card_registry[] = {
-    &tnt_control_kind, &mach64_gx_kind,      &cirrus_54m30_kind, &sym53c825_ch0_kind, &sym53c825_ch1_kind,
-    &voodoo2_kind,     &voodoo2_webgpu_kind, &ati_rage_pro_kind, &rage128_kind,       NULL,
+    &tnt_control_kind,
+    &mach64_gx_kind,
+    &cirrus_54m30_kind,
+    &sym53c825_ch0_kind,
+    &sym53c825_ch1_kind,
+    &voodoo2_kind,
+    &voodoo2_webgpu_kind,
+    &ati_rage_pro_kind,
+    &rage128_kind,
+    &rage128_webgpu_kind,
+    NULL,
 };
 
 const pci_card_kind_t *const *pci_card_registry(void) {
@@ -600,7 +610,7 @@ static const char *socket_card_id(const pci_slot_decl_t *s, const slot_opts_t *e
     // offers, which leaves the socket empty (and a stand-in, if the machine
     // has one, in its place).
     const pci_card_kind_t *k = s->default_card ? pci_card_find(s->default_card) : NULL;
-    if (k && k->requires_prom && !prom_card_resolvable(k->id, NULL))
+    if (k && k->requires_prom && !prom_card_resolvable(pci_card_rom_id(k), NULL))
         return NULL;
     return s->default_card;
 }
@@ -660,11 +670,12 @@ bool pci_slot_entry_check(const pci_slot_decl_t *slots, const char *model, const
                           "prom '%s' is not a recognised PCI expansion ROM (see catalog.proms.identify for what it is "
                           "instead)",
                           e->rom);
-        if (!k || strcmp(pid.card_id, k->id) != 0)
+        if (!k || strcmp(pid.card_id, pci_card_rom_id(k)) != 0)
             return refuse(why, why_len, "prom '%s' is for card '%s', not slot %d's '%s'", e->rom, pid.card_id, e->slot,
                           k ? k->id : "(none)");
     }
-    if (roms_final && named && k && k->requires_prom && !prom_card_resolvable(k->id, e->rom[0] ? e->rom : NULL))
+    if (roms_final && named && k && k->requires_prom &&
+        !prom_card_resolvable(pci_card_rom_id(k), e->rom[0] ? e->rom : NULL))
         return refuse(why, why_len,
                       "card '%s' (PCI slot %d) needs a PCI expansion ROM but no offered .prom file provides it", k->id,
                       e->slot);

@@ -59,6 +59,7 @@ tests/e2e/
 │   ├── pci-prom-ingest.spec.ts          # A 9500 configured on an uploaded PCI display card; the .prom survives a reload
 │   ├── pdm-double-boot.spec.ts          # pm6100 + Mac OS 8.1 boots exactly once (PRAM seeding), also on a reused image
 │   ├── perf-bench.spec.ts               # Accelerated + turbo throughput (tracked numbers)
+│   ├── rage128-webgpu.spec.ts           # Rage 128 WebGPU takeover: rage128-3d's equalities read back from the GPU, GPU 2D fills
 │   ├── rom-upload-identity.spec.ts      # A ROM is stored by content id; a damaged dump of it is refused, not stored
 │   ├── rom-upload-listing.spec.ts       # A Welcome-page ROM upload shows up in an already-open Filesystem tab
 │   ├── scheduler-accelerated.spec.ts    # Accelerated mode: faster CPU, real-time timebase
