@@ -1040,19 +1040,21 @@ when compressed) — nothing in a URL says reliably what it serves, so none
 of it goes into the name.  A ROM, video ROM or PCI ROM is stored under its
 own content id as always.
 
-**Downloaded before.**  A hard disk or CD big enough to be imported as a
-compact UDIF (over 16 MB, `LARGE_IMPORT_BYTES`) records the value it was
-fetched from in the image (`gs-origin`; `files.udif_open` /
-`files.archive.import` take it as `origin`).  Before downloading an
-`hd*=` or `cd=` value, the page reads `files.udif_info` of each `.dmg` in
+**Downloaded before.**  A hard disk or CD a URL brings is always stored as
+a compact UDIF, whatever its size, and records the value it was fetched
+from in the image (`gs-origin`; `files.udif_open`, `files.convert` and
+`files.archive.import` take it as `origin`).  That holds on every way in:
+the streamed import; a small disk (staged, then converted); a `.dmg` stored
+as downloaded (rewritten to carry it); and a Mac-archive member the
+streamed import refuses (a Disk Copy 6 / NDIF image), unpacked, then
+converted.  Before downloading an `hd*=` or `cd=` value, the page reads `files.udif_info` of each `.dmg` in
 that category's store and, when one's `origin` is the value exactly, attaches
 it instead: nothing is downloaded, and the progress view shows "Already
 stored".  A stored image is never written to (a machine's writes go to a
 delta of its own), so it is still what was downloaded.  The match is on the
 value as given — two spellings of one file download twice — and a URL whose
 content has since changed keeps the old copy until it is deleted in the
-Images tab.  Floppies, ROMs and small disks carry no origin and are fetched
-every time.  The lookup is the page's: the core only records and reports the
+Images tab.  Floppies and ROMs carry no origin and are fetched every time.  The lookup is the page's: the core only records and reports the
 string.
 
 **Mixed content.**  An `http://` value on an `https://` page is refused
