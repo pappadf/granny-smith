@@ -40,7 +40,7 @@ const DONE = "rage128-webgpu: the 3D row's drawing assertions hold on the GPU";
 async function upload(page: Page, file: string, toast: string): Promise<void> {
   const [chooser] = await Promise.all([
     page.waitForEvent("filechooser"),
-    page.getByRole("button", { name: "Upload ROM..." }).click(),
+    page.getByRole("button", { name: "Load ROM..." }).click(),
   ]);
   await chooser.setFiles(file);
   await expect(page.locator(".toast .msg").filter({ hasText: toast })).toBeVisible({
@@ -100,7 +100,7 @@ test("the 3D engine's triangles drawn on the GPU read back as the walker drew th
     if (/rage ?128|webgpu|wgsl/i.test(m.text())) gpuLog.push(`${m.type()}: ${m.text()}`);
   });
   await gotoWeb2(page);
-  await upload(page, TNT_ROM, "pm7500-pm8500-pm9500-96cd923d.rom uploaded");
+  await upload(page, TNT_ROM, "pm7500-pm8500-pm9500-96cd923d.rom added");
   // The toast naming the card is the "identified it" signal.
   await upload(page, R128_PROM, "PCI expansion ROM for 'rage128'");
   await page.waitForFunction(() => (window as { __gsReady?: boolean }).__gsReady === true, undefined, {
