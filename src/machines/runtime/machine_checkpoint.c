@@ -144,6 +144,17 @@ void machine_part_imagewriter(config_t *cfg, checkpoint_t *cp, bool lisa) {
     }
     if (!lisa)
         iw_printer_set_title_source(cfg->imagewriter, mac_print_title);
+    // A fresh boot plugs in the configuration's printer (a restore keeps the
+    // checkpoint's): on the port AppleTalk leaves free -- the modem port while
+    // it is active, else the printer port; the Lisa's Serial A
+    const char *choice = cp ? NULL : machine_build_opts_option(&cfg->build_opts, "imagewriter");
+    if (choice && strcmp(choice, "none") != 0) {
+        const char *atalk = machine_build_opts_option(&cfg->build_opts, "appletalk");
+        bool atalk_active = !atalk || strcmp(atalk, "inactive") != 0;
+        iw_connection_t conn = (lisa || atalk_active) ? IW_CONN_SERIAL_A : IW_CONN_SERIAL_B;
+        iw_model_t model = strcmp(choice, "imagewriter") == 0 ? IW_MODEL_IW1 : IW_MODEL_IW2;
+        iw_printer_install(cfg->imagewriter, model, conn);
+    }
     machine_part(cfg, cp, "imagewriter", part_save_imagewriter, cfg->imagewriter);
 }
 

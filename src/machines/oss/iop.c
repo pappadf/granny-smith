@@ -349,6 +349,11 @@ static void iop_write_stat_ctl(iop_t *iop, uint8_t value) {
     if ((iop->stat_ctl & iopRunBit) == 0)
         iop->stat_ctl &= (uint8_t) ~(iopInt0ActiveBit | iopInt1ActiveBit | iopBypassIntReqBit);
 
+    // The host acknowledged an interrupt the IOP raised.
+    uint8_t acked = (uint8_t)(old & value & (iopInt0ActiveBit | iopInt1ActiveBit));
+    if (acked && (iop->stat_ctl & iopRunBit) && iop->behavior && iop->behavior->on_host_int_ack)
+        iop->behavior->on_host_int_ack(iop, acked);
+
     // 5. iopGenInterrupt is edge-only: every write of `1` kicks the
     //    firmware.  Hand off to the behavioural model.  (Bit not stored.)
     if (value & iopGenInterruptBit) {

@@ -894,6 +894,16 @@
       "suite": "suite-av"
     },
     {
+      "machine": "q840av",
+      "system": "7.6",
+      "card": "civic",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-av"
+    },
+    {
       "machine": "q660av",
       "system": "7.1",
       "card": "civic",

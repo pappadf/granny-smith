@@ -135,7 +135,7 @@ hangs forever inside `SCSIComplete`'s phase wait (whose deadline is
 | PSC | [psc.c](../../../../src/machines/av/psc.c) | interrupt controller + 7-channel DMA + sound/DSP latches — [psc.md](psc.md) |
 | CIVIC + Sebastian | [civic.c](../../../../src/machines/av/civic.c) | frame buffer, bit-serial registers, RAMDAC — [civic.md](civic.md) |
 | Cuda | [cuda.c](../../../../src/machines/av/cuda.c) | ADB/PRAM/RTC behind VIA1's shift register — [cuda.md](cuda.md) |
-| New Age | [new_age.c](../../../../src/machines/av/new_age.c) | µPD72070 FDC stub: exact PIO handshakes, `ST3 = $FF` ("no drive") |
+| New Age | [new_age.c](../../../../src/machines/av/new_age.c) | µPD72070 FDC: the shared chip model (`core/peripherals`) on PSC DMA channel 3 and VIA2 bit 5, driving one internal SuperDrive — [new_age.md](../../core/peripherals/new_age.md) |
 | MACE | [mace.c](../../../../src/machines/av/mace.c) | Am79C940 register stub + the Apple address PROM; no datapath, so `.ENET` does not load |
 | SCSI | 53C96 (`core/peripherals`) | at `$18000`, `$10` stride; real DMA on PSC channel 0, which the HAL polls |
 | SCC | `scc.c` (`core/peripherals`) | single base `$50F04000`, offsets bCtl/aCtl/bData/aData = 0/2/4/6 |
@@ -150,13 +150,14 @@ hangs forever inside `SCSIComplete`'s phase wait (whose deadline is
   (ROM only), the chime, DSP boot and determinism, the audio-in plug
   contract, checkpoint round-trip, plus the System 7.1 hard-disk desktop
   boot, video-in, beep, TTS, sound-record and speech-recognition rows for
-  both machines. Every row gates on `have_media()`; the 2 MB ROM and the
+  both machines, and the floppy rows (mount, 800K, write/eject, format and
+  a cold boot from the 7.6 install floppy). Every row gates on `have_media()`; the 2 MB ROM and the
   7.1 AV hard-disk image are in gs-test-data (revision 2937e56), so the
   gating is a stale-checkout guard rather than a pending-data placeholder.
 
 ## What is deliberately not modelled
 
-GeoPort/DMA serial, Ethernet beyond the register stub, floppy media, and
+GeoPort/DMA serial, Ethernet beyond the register stub, and
 NuBus cards in the AV slots.  The DSP3210 **is** modelled — a live core
 executing Apple's RTM kernel out of the ROM ([dsp.md](dsp.md)) — as is the
 Singer sound datapath in both directions ([singer.md](singer.md):

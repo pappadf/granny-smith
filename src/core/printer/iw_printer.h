@@ -18,6 +18,7 @@
 #include <stdint.h>
 
 #include "common.h"
+#include "iw_interp.h"
 #include "scc.h"
 
 struct scheduler;
@@ -52,6 +53,11 @@ iw_printer_t *iw_printer_new(struct scheduler *scheduler, scc_t *scc, const iw_p
 // The machine's title source (a Macintosh reads CurApName); jobs without
 // one are titled "Print".
 void iw_printer_set_title_source(iw_printer_t *p, iw_title_fn fn);
+
+// The machine configuration's printer, at a fresh boot: `model` powered on and
+// plugged into `conn`.  False when the combination is impossible (the
+// LocalTalk card on an ImageWriter, or another printer already on LocalTalk).
+bool iw_printer_install(iw_printer_t *p, iw_model_t model, iw_connection_t conn);
 
 void iw_printer_delete(iw_printer_t *p);
 

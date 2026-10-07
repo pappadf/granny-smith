@@ -33,10 +33,30 @@
   // Input handling lives entirely on the worker side via Emscripten's
   // built-in proxied callbacks (emscripten_set_mousemove_callback("#screen",
   // …) etc., registered after transferControlToOffscreen). We deliberately
-  // do NOT attach JS-side mouse/keyboard handlers here — every such
+  // do NOT attach JS-side handlers that talk to the core — every such
   // handler would issue a gsEval round-trip per event and saturate the
   // bridge queue, starving the worker's render tick. See app/web-legacy
   // for the same pattern.
+  //
+  // The one exception is the grab itself.  Pointer lock needs the click's
+  // user gesture, and Safari honours it only on the main thread, while the
+  // click is being handled (or in a message the worker posts while handling
+  // the one that carried it -- which Emscripten's batched proxying does not
+  // guarantee).  A request made from the worker's mousedown callback was
+  // refused there, so the click asks here; the core follows the lock through
+  // its pointerlockchange callback.  A paused or stopped machine reads no
+  // deltas, so it is not grabbed.
+  function grab(): void {
+    if (!canvas || machine.status !== 'running' || document.pointerLockElement === canvas) return;
+    try {
+      // A promise where the browser has one; a refusal also fires
+      // pointerlockerror, and the click simply does not grab.
+      const p = canvas.requestPointerLock() as unknown as Promise<void> | undefined;
+      p?.catch?.(() => undefined);
+    } catch {
+      // Not supported: nothing to grab with.
+    }
+  }
 
   onMount(() => {
     if (!canvas) return;
@@ -81,6 +101,7 @@
       tabindex="0"
       role="application"
       aria-label="Emulated machine screen"
+      onmousedown={grab}
       width="512"
       height="342"
       style="width: {cssWidth}px; height: {cssHeight}px"

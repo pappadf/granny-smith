@@ -128,7 +128,7 @@ def pdm_75_row(model, ram_kb, boxflag, want_bart, id, finder, about) {
     check_ex("${$finder}", 0, 440, 20, 640)
     # About This Macintosh: the Gestalt machine name end-to-end.
     about_box()
-    check_ex("${$about}", 0, 440, 20, 640)
+    check_about_clock("${$about}")
     # Phase 0 throughput floor of the predecoded-cores proposal: the 601
     # interpreter under the 68K emulator, MMU on: measured 76 MIPS on the
     # assert-enabled build, floor well below.

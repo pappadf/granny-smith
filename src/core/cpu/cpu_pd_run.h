@@ -998,8 +998,10 @@ void PD_RUN_NAME(cpu_t *restrict cpu, uint32_t *instructions) {
 #ifdef CPU_DECODER_IS_68030
     uint32_t _saved_trace = cpu->trace;
     if (__builtin_expect(_saved_trace & 2, 0))
-        if (*instructions > 1)
+        if (*instructions > 1) {
+            g_sprint_unrun_slots += *instructions - 1; // the rest of the plan is not run
             *instructions = 1;
+        }
 #endif
     pd_block_t *blk = NULL; // the block of the page being executed (NULL: generic tier)
     bool pd_held = false; // the current uncached page was declined by the pool (stay generic until it changes)

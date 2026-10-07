@@ -382,8 +382,7 @@ static inline void m68k_raise_address_error(cpu_t *restrict cpu, uint32_t addr, 
     g_bus_error_fc = fc;
     memcpy(g_m68k_fault_regs, cpu->d, sizeof g_m68k_fault_regs); // d[8] then a[8]
     g_m68k_fault_ccr = read_ccr(cpu);
-    if (g_bus_error_instr_ptr)
-        *g_bus_error_instr_ptr = 0; // end the sprint after this instruction
+    memory_end_sprint(g_bus_error_instr_ptr); // end the sprint after this instruction
 }
 static inline bool m68k_address_error(cpu_t *restrict cpu, uint32_t addr, bool rw) {
     if (__builtin_expect(!CPU_IS_68000(cpu), 0))
@@ -888,8 +887,7 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
         if (g_bus_error_pending) {
             cpu->halted = 1;
             g_bus_error_pending = false;
-            if (g_bus_error_instr_ptr)
-                *g_bus_error_instr_ptr = 0;
+            memory_end_sprint(g_bus_error_instr_ptr);
             exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0, 1);
             return;
         }
@@ -897,8 +895,7 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
         if (g_bus_error_pending) {
             cpu->halted = 1;
             g_bus_error_pending = false;
-            if (g_bus_error_instr_ptr)
-                *g_bus_error_instr_ptr = 0;
+            memory_end_sprint(g_bus_error_instr_ptr);
             exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0, 2);
             return;
         }
@@ -917,8 +914,7 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
         if (g_bus_error_pending) {
             cpu->halted = 1;
             g_bus_error_pending = false;
-            if (g_bus_error_instr_ptr)
-                *g_bus_error_instr_ptr = 0;
+            memory_end_sprint(g_bus_error_instr_ptr);
             exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0x7, 1);
             return;
         }
@@ -926,8 +922,7 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
         if (g_bus_error_pending) {
             cpu->halted = 1;
             g_bus_error_pending = false;
-            if (g_bus_error_instr_ptr)
-                *g_bus_error_instr_ptr = 0;
+            memory_end_sprint(g_bus_error_instr_ptr);
             exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0x7, 2);
             return;
         }
@@ -958,8 +953,7 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
     if (g_bus_error_pending) {
         cpu->halted = 1;
         g_bus_error_pending = false;
-        if (g_bus_error_instr_ptr)
-            *g_bus_error_instr_ptr = 0;
+        memory_end_sprint(g_bus_error_instr_ptr);
         exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0xB, 1);
         return;
     }
@@ -970,8 +964,7 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
     if (g_bus_error_pending) {
         cpu->halted = 1;
         g_bus_error_pending = false;
-        if (g_bus_error_instr_ptr)
-            *g_bus_error_instr_ptr = 0;
+        memory_end_sprint(g_bus_error_instr_ptr);
         exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0xB, 2);
         return;
     }
@@ -1009,8 +1002,7 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
         cpu->halted = 1;
         cpu->last_bus_error_pc = 0;
         g_bus_error_pending = false;
-        if (g_bus_error_instr_ptr)
-            *g_bus_error_instr_ptr = 0;
+        memory_end_sprint(g_bus_error_instr_ptr);
         exc_trace_record(0x008, faulting_pc, cpu->pc, fault_addr, rw, cpu->vbr, cpu_get_sr(cpu), 0xB, 1);
         return;
     }
@@ -1063,8 +1055,7 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
         if (g_bus_error_pending) {
             cpu->halted = 1;
             g_bus_error_pending = false;
-            if (g_bus_error_instr_ptr)
-                *g_bus_error_instr_ptr = 0;
+            memory_end_sprint(g_bus_error_instr_ptr);
             exc_trace_record(vec, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0, 1);
             return;
         }
@@ -1072,8 +1063,7 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
         if (g_bus_error_pending) {
             cpu->halted = 1;
             g_bus_error_pending = false;
-            if (g_bus_error_instr_ptr)
-                *g_bus_error_instr_ptr = 0;
+            memory_end_sprint(g_bus_error_instr_ptr);
             exc_trace_record(vec, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0, 2);
             return;
         }
@@ -1257,8 +1247,8 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
     // nothing per instruction, unlike re-sampling cpu->trace inside the decoder
     // loop, which measured +2 instructions in the 68030 loop header and +2.17%
     // on the SE/30 row.  OP_STOP_DATA already uses the same idiom.
-    if (__builtin_expect((cpu->trace & 2) != 0, 0) && g_bus_error_instr_ptr)
-        *g_bus_error_instr_ptr = 0;
+    if (__builtin_expect((cpu->trace & 2) != 0, 0))
+        memory_end_sprint(g_bus_error_instr_ptr);
     cpu_check_interrupt(cpu);
     if (__builtin_expect(cpu->last_bus_error_pc != 0, 0))
         m68k_bus_error_latch_settle(cpu, g_bus_error_instr_ptr);

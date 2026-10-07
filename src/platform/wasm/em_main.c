@@ -133,13 +133,12 @@ static void emulator_mouse_move(int dx, int dy) {
 static EM_BOOL mouse_down_cb(int type, const EmscriptenMouseEvent *e, void *ud) {
     (void)type;
     (void)ud;
-    if (!pointer_locked) {
-        // A paused or stopped machine reads no deltas: a grab would capture
-        // the host pointer into a guest whose pointer cannot move.
-        if (machine_running())
-            emscripten_request_pointerlock("#screen", EM_FALSE);
+    // The click that grabs the pointer is not the guest's: the page asks for
+    // the lock on the main thread, inside the click (ScreenView.svelte), since
+    // a request proxied from here arrives without the click's user gesture
+    // and Safari refuses it.  This callback only follows the lock.
+    if (!pointer_locked)
         return EM_TRUE;
-    }
     mouse_button_down = true;
     system_input_mouse_button(true, "relative");
     emulator_mouse_move(e->movementX, e->movementY);

@@ -68,6 +68,11 @@ typedef struct iop_behavior {
     // calling iop_post_reply().
     void (*on_host_kick)(iop_t *iop);
 
+    // Called when the host clears Int0 or Int1 in iopStatCtl (write-1-to-
+    // clear), with the bits it cleared: some host drivers acknowledge an
+    // IOP->host message this way alone (A/UX's ADB driver).  NULL if unused.
+    void (*on_host_int_ack)(iop_t *iop, uint8_t cleared);
+
     // Called once from iop_init so this IOP's periodic-timer callbacks
     // can register themselves with the scheduler. Required for
     // the scheduler to name pending events at save time and to resolve
@@ -165,6 +170,12 @@ struct iop {
 
     iop_scc_state_t scc; // SCC IOP only (iop_scc.c)
 
+    // SWIM IOP only (iop_swim.c): its ADB auto-poll.
+    struct {
+        bool talk_pending; // an auto-poll Talk is running on the bus
+        double talk_start_ns; // when the last one started (paces the next)
+    } swim_adb;
+
     const iop_behavior_t *behavior;
 
     const memory_interface_t *bypass_iface;
@@ -176,6 +187,9 @@ struct iop {
     // Used by iop_swim.c to model the firmware's periodic ADB / drive-
     // poll state machine via scheduler_new_cpu_event.  May be NULL.
     struct scheduler *scheduler;
+
+    // SWIM IOP only: the ADB bus it drives (iop_swim_attach_adb).
+    struct adb *adb;
 
     memory_interface_t memory_interface;
 };

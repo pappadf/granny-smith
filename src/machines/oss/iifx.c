@@ -1644,6 +1644,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     st->swim_iop =
         iop_init(SwimIopNum, st->floppy_iface, st->floppy, iifx_swim_iop_irq, cfg, cfg->scheduler, checkpoint);
     machine_part(cfg, checkpoint, "swim_iop", part_save_iop, st->swim_iop);
+    iop_swim_attach_adb(st->swim_iop, st->adb); // ADB is driven through IOP slot 3
     st->scc_iop_iface = iop_get_memory_interface(st->scc_iop);
     st->swim_iop_iface = iop_get_memory_interface(st->swim_iop);
 
