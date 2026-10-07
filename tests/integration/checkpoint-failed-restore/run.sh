@@ -89,8 +89,12 @@ EOS
     run "$model" "$rom" "$TEST_TMPDIR/tree-save.script" > /dev/null 2>&1
     cp "$cp" "$cut"
     truncate -s -8 "$cut"
+    # 30 M: past the IIcx ROM's interrupts-masked RAM pass (~9.9 M to ~27.9 M
+    # instructions), where Ticks stands still.  The logpoint window below
+    # must lie where the VBL is running, or "it stopped firing" is just the
+    # ROM's own masking -- 8 M put the window right at that pass's start.
     cat > "$TEST_TMPDIR/tree.script" << EOS
-scheduler.run 8000000
+scheduler.run 30000000
 let root_before = "\${meta.children}"
 let machine_before = "\${machine.meta.children}"
 let slots_before = machine.$bus.slot.count

@@ -306,8 +306,26 @@ extern uint32_t *g_bus_error_instr_ptr; // points to decoder's instruction count
 // the sprint accounts cycles. g_io_cpi_x256 == 0 disables the mechanism.
 extern uint32_t g_io_penalty_remainder; // sprint-time alias of the scheduler's io_penalty_remainder (x256 cycles)
 extern uint32_t g_io_phantom_instructions; // phantom instructions consumed this sprint
+extern uint32_t g_io_stall_owed; // sprint-time alias of the scheduler's io_stall_slots
 extern uint32_t g_io_cpi_x256; // effective CPI for conversion, x256 (0 = disabled)
 extern uint32_t *g_sprint_burndown_ptr; // points to sprint_burndown during sprint
+// Slots the running sprint planned but will not spend: something ended it
+// at this instruction boundary (an exception, a STOP, a trace step).  The
+// scheduler takes them off the sprint, so neither the clock nor the
+// instruction count advances for them -- time the CPU did not run.
+extern uint32_t g_sprint_unrun_slots;
+
+// End the running sprint at the current instruction boundary.  Always this,
+// never a bare `*instructions = 0`: the bare store left the slots in the
+// sprint's plan, so the scheduler advanced the clock and counted instructions
+// all the way to the next event while the CPU did nothing -- a stall as long
+// as the gap to whatever event came next.
+static inline void memory_end_sprint(uint32_t *instructions) {
+    if (instructions) {
+        g_sprint_unrun_slots += *instructions;
+        *instructions = 0;
+    }
+}
 
 // --- VIA E-clock synchronization --------------------------------------------
 //
@@ -350,9 +368,14 @@ static inline void memory_io_penalty(uint32_t extra_cycles) {
     uint32_t burn = g_io_penalty_remainder / g_io_cpi_x256;
     if (__builtin_expect(burn > 0, 1)) {
         g_io_penalty_remainder -= burn * g_io_cpi_x256;
-        g_io_phantom_instructions += burn;
         uint32_t *bp = g_sprint_burndown_ptr;
-        *bp = (*bp > burn) ? (*bp - burn) : 0;
+        // A stall longer than what is left of the sprint runs on past the
+        // sprint's end (the event there fires on time, the CPU is still
+        // stalled): the slots past it are owed to the next sprint, not lost.
+        uint32_t take = (*bp > burn) ? burn : *bp;
+        g_io_phantom_instructions += take;
+        g_io_stall_owed += burn - take;
+        *bp -= take;
     }
 }
 
