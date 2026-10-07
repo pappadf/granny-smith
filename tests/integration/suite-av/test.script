@@ -930,7 +930,12 @@ def row_av_chime() {
     assert len(machine.psc.levels) == 4 "av-chime: PSC level map is not L3..L6"
     assert machine.psc.levels[0].ipl == 3 "av-chime: PSC level map does not start at IPL 3"
     assert len(machine.psc.level_ier) == 4 "av-chime: PSC has four level IERs"
-    check_sound("goldens/av-chime.wav", 52800)
+    # 27,840 frames (was 52,800) since a sprint ended early stopped freezing
+    # the CPU to the next event: the ROM's delay that holds the chime's output
+    # open runs at its true length, and the same chime (same partials, same
+    # decay) is held about half as long -- ~1.15 s, against the ~0.6-1 s the
+    # out-enabled frame count above puts it at.
+    check_sound("goldens/av-chime.wav", 27840)
     report_perf("suite-av/av-chime", scheduler.instr_count)
 }
 

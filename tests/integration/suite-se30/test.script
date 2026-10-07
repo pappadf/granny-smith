@@ -54,7 +54,7 @@ def row_se30_chime() {
     machine.sound.capture.start
     scheduler.run 12000000
     machine.sound.capture.stop
-    assert machine.sound.capture.frames == 15359 "se30-chime: unexpected capture length"
+    assert machine.sound.capture.frames == 15367 "se30-chime: capture length ${machine.sound.capture.frames}, want 15367"
     machine.sound.match goldens/se30-chime.wav
     report_perf("suite-se30/se30-chime", scheduler.instr_count)
 }

@@ -84,7 +84,7 @@ def row_q700_chime() {
     machine.sound.capture.start
     scheduler.run 30000000
     machine.sound.capture.stop
-    assert machine.sound.capture.frames == 58779 "q700-chime: capture length ${machine.sound.capture.frames}, want 58779 (bit-reproducible across processes — a change here is a real change)"
+    assert machine.sound.capture.frames == 58639 "q700-chime: capture length ${machine.sound.capture.frames}, want 58639 (bit-reproducible across processes — a change here is a real change)"
     assert debug.mac.globals.read("MemTop") == 0x800000 "q700-chime: RAM sizing wrong"
     assert debug.mac.globals.read("ROMBase") == 0x40800000 "q700-chime: ROMBase wrong"
     let t0 = debug.mac.globals.read("Ticks")

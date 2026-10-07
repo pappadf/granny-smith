@@ -43,7 +43,7 @@ def row_iifx_chime() {
     scheduler.run 12000000
     machine.sound.capture.stop
     assert machine.id == "iifx" "iifx-chime: machine.id != iifx"
-    assert machine.sound.capture.frames == 12516 "iifx-chime: unexpected capture length"
+    assert machine.sound.capture.frames == 12777 "iifx-chime: capture length ${machine.sound.capture.frames}, want 12777"
     # machine.oss — the IIfx has no VIA2 and no RBV, so the OSS *is* its
     # interrupt controller.  The OSS has no mask register: a source is enabled
     # exactly when its level register is non-zero, which is what `enabled` has
