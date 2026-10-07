@@ -951,7 +951,8 @@ view; errors still toast.
   validates the result as it does any document:
   - `<option id>=<value>` — any scalar option of the model's tree
     (`catalog.profile(model).options`): `addressing=32`, `memory=32768`
-    (`ram=` is the same), `appletalk=inactive`, `power_supplies=two`.  The
+    (`ram=` is the same), `appletalk=inactive`, `imagewriter=imagewriter2`,
+    `power_supplies=two`.  The
     value is a value id or its label, ignoring case and spaces (`32-bit`,
     `32MB`).
   - `display=<device>` — the display device the monitor is plugged into

@@ -21,5 +21,10 @@ TEST_DESC := Cyclone/Tempest identity + 7.1 HD boot to the Finder desktop
 TEST_ROM := roms/q840av-q660av-5bf10fd1.rom
 TEST_ARGS := model=q840av ram=16384
 
+# ~26 G instructions across the rows since the floppy rows landed (the
+# 1.4 MB format and the floppy boot alone are ~11 G); that runs past the
+# default 900 s on a slower CI runner.
+TEST_TIMEOUT := 2400
+
 # CI tier (docs/guide/TESTING.md, "Tiers"): unit | matrix | extended
 TEST_TIER := matrix
