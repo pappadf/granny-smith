@@ -52,6 +52,7 @@
 //   - pin/unpin: writing a speed pins (governor off), 0 returns to auto and
 //     restarts from the authentic floor
 
+#include "memory.h"
 #include "object.h"
 #include "scheduler.h"
 #include "test_assert.h"
@@ -132,25 +133,61 @@ void trigger_vbl(config_t *restrict config) {
     g_vbls++;
 }
 
-// Stub CPU: every sprint retires all its instructions instantly, advancing
-// the fake host clock by the configured per-instruction cost.
+// Stub CPU.  By default every sprint retires all its instructions instantly,
+// advancing the fake host clock by the configured per-instruction cost.  The
+// other behaviours end a sprint early the ways the real cores do, for the
+// sprint-accounting tests:
+//   FAKE_FAULT -- run g_fake_k instructions, then take an exception
+//                 (memory_end_sprint, as a page fault or bus error does);
+//   FAKE_STOP  -- run g_fake_k instructions, then STOP until an event fires;
+//   FAKE_STALL -- the first sprint opens with an I/O access stalling for
+//                 g_fake_stall_cycles, then everything runs normally.
+enum { FAKE_RUN_ALL, FAKE_FAULT, FAKE_STOP, FAKE_STALL };
+static int g_fake_mode;
+static uint32_t g_fake_k;
+static uint32_t g_fake_stall_cycles;
+static uint64_t g_fake_executed; // instructions the stub actually ran
+static bool g_fake_stopped;
+static uint64_t g_fake_stop_pings; // g_pings when the stub last stopped
+static uint64_t g_pings;
+
 void cpu_run_sprint(cpu_t *restrict cpu, uint32_t *instructions) {
     (void)cpu;
+    if (g_fake_mode == FAKE_STALL && g_fake_stall_cycles) {
+        memory_io_penalty(g_fake_stall_cycles);
+        g_fake_stall_cycles = 0;
+    }
+    if (g_fake_mode == FAKE_FAULT || g_fake_mode == FAKE_STOP) {
+        uint32_t run = *instructions < g_fake_k ? *instructions : g_fake_k;
+        g_fake_executed += run;
+        *instructions -= run;
+        if (g_fake_mode == FAKE_STOP) {
+            g_fake_stopped = true;
+            g_fake_stop_pings = g_pings;
+        }
+        memory_end_sprint(instructions);
+        return;
+    }
+    g_fake_executed += *instructions;
     g_now += (double)*instructions * g_secs_per_instr;
     *instructions = 0;
 }
 bool cpu_is_stopped(cpu_t *restrict cpu) {
     (void)cpu;
-    return false;
+    return g_fake_stopped;
 }
 void cpu_poll_interrupt(cpu_t *restrict cpu) {
     (void)cpu;
+    if (g_fake_stopped && g_pings != g_fake_stop_pings)
+        g_fake_stopped = false; // an event fired since the STOP: it is the wake-up
 }
 
 uint32_t g_io_penalty_remainder = 0;
 uint32_t g_io_phantom_instructions = 0;
 uint32_t g_io_cpi_x256 = 0;
 uint32_t *g_sprint_burndown_ptr = NULL;
+uint32_t g_sprint_unrun_slots = 0;
+uint32_t g_io_stall_owed = 0;
 // E-clock sync state: normally defined in memory.c and written by scheduler.c
 // (scheduler_set_frequency / the sprint loop). memory.c is not linked into
 // this isolated scheduler suite, so stub the storage here.
@@ -340,7 +377,6 @@ static const sched_cpu_if_t g_test_cpu_if = {&g_dummy_cpu, test_run_sprint, test
 
 // Self-rescheduling event: fires every 77,777 cycles forever, so sprints get
 // clamped at event boundaries and the interleaving is non-trivial.
-static uint64_t g_pings;
 static void ping_event(void *source, uint64_t data) {
     (void)data;
     g_pings++;
@@ -377,6 +413,10 @@ static scheduler_t *fresh_scheduler(bool with_ping) {
     g_audio_fill = -1.0;
     g_vbls = 0;
     g_pings = 0;
+    g_fake_mode = FAKE_RUN_ALL;
+    g_fake_executed = 0;
+    g_fake_stopped = false;
+    g_fake_stall_cycles = 0;
     scheduler_t *s = scheduler_init(TEST_CPU, NULL);
     ASSERT_TRUE(s != NULL);
     g_sched = s;
@@ -1539,6 +1579,56 @@ TEST(test_a_mode_reports_its_owner_and_its_reason) {
     teardown(s);
 }
 
+// --- Ending a sprint early (scheduler.md §6.4) --------------------------------
+
+// A sprint that an exception ends after a few instructions spends only those
+// instructions' time.  The rest of the plan is not run, so neither the clock
+// nor the instruction count may advance for it: the CPU goes straight on in
+// the next sprint.  (Booking the whole plan froze the CPU until the next event
+// -- however far away that was -- while counting instructions it never ran.)
+TEST(test_an_early_exit_spends_only_what_ran) {
+    scheduler_t *s = fresh_scheduler(true);
+    scheduler_set_cpi(s, 4);
+    g_fake_mode = FAKE_FAULT;
+    g_fake_k = 10;
+    uint64_t c0 = scheduler_cpu_cycles(s), i0 = cpu_instr_count();
+    scheduler_run_instructions(s, 100000);
+    ASSERT_EQ_INT((long long)(cpu_instr_count() - i0), (long long)g_fake_executed);
+    ASSERT_EQ_INT((long long)(scheduler_cpu_cycles(s) - c0), (long long)(g_fake_executed * 4));
+    ASSERT_EQ_INT((long long)g_fake_executed, 100000); // the whole budget ran, fault after fault
+    teardown(s);
+}
+
+// A STOP mid-sprint: the CPU sleeps until the next event, which is idle time
+// -- it advances the clock but retires no instructions.
+TEST(test_a_stop_counts_no_instructions_while_asleep) {
+    scheduler_t *s = fresh_scheduler(true);
+    scheduler_set_cpi(s, 4);
+    g_fake_mode = FAKE_STOP;
+    g_fake_k = 10;
+    uint64_t c0 = scheduler_cpu_cycles(s), i0 = cpu_instr_count();
+    scheduler_run_instructions(s, 1000000);
+    ASSERT_EQ_INT((long long)(cpu_instr_count() - i0), (long long)g_fake_executed);
+    ASSERT_EQ_INT((long long)(scheduler_cpu_cycles(s) - c0), 4000000); // the budget passed as time
+    ASSERT_TRUE(g_fake_executed <= 10 * (g_pings + 1)); // ten instructions per wake-up, no more
+    teardown(s);
+}
+
+// An I/O stall longer than the rest of its sprint runs on past the event that
+// ends the sprint; the stall is owed to the next sprint, not dropped.
+TEST(test_a_stall_past_an_event_is_carried_not_dropped) {
+    scheduler_t *s = fresh_scheduler(true); // events every 77,777 cycles
+    scheduler_set_cpi(s, 4);
+    g_fake_mode = FAKE_STALL;
+    g_fake_stall_cycles = 200000; // crosses two ping boundaries
+    uint64_t c0 = scheduler_cpu_cycles(s), i0 = cpu_instr_count();
+    scheduler_run_instructions(s, 100000); // 400,000 cycles
+    ASSERT_EQ_INT((long long)(scheduler_cpu_cycles(s) - c0), 400000);
+    ASSERT_EQ_INT((long long)g_fake_executed, 100000 - 200000 / 4); // the stall's slots ran no code
+    ASSERT_EQ_INT((long long)(cpu_instr_count() - i0), (long long)g_fake_executed);
+    teardown(s);
+}
+
 int main(void) {
     RUN(test_a_mode_reports_its_owner_and_its_reason);
     RUN(test_paced_rate_60hz);
@@ -1576,6 +1666,9 @@ int main(void) {
     RUN(test_periodic_can_be_cancelled_from_its_own_handler);
     RUN(test_periodic_is_cancelled_by_forget_source);
     RUN(test_one_shot_still_fires_once);
+    RUN(test_an_early_exit_spends_only_what_ran);
+    RUN(test_a_stop_counts_no_instructions_while_asleep);
+    RUN(test_a_stall_past_an_event_is_carried_not_dropped);
     fprintf(stderr, "[OK  ] scheduler suite passed\n");
     return 0;
 }

@@ -483,9 +483,9 @@ function report(slot: string, path: string, r: MediaResult): void {
 // two spellings of one file are two URLs.  A stored image is never written
 // to (a machine's writes go to a delta of its own), so it is still what was
 // downloaded.  Answers its path, the progress view and the run told, or
-// null: then it is downloaded.  Only UDIF images carry an origin, so this
-// finds disks that were big enough to be imported as one (bus/importImage);
-// a small file is simply fetched again.
+// null: then it is downloaded.  Only UDIF images carry an origin, which is
+// why every hard disk or CD a URL brings is stored as one, whatever its size
+// and however it arrived (fetchAndImport, storeCompact).
 async function storedFromUrl(
   slot: string,
   url: string,
@@ -534,12 +534,55 @@ async function fetchAndPersist(
   const staged = await fetchAndStage(slot, url);
   if (!staged) return undefined;
   try {
+    if (category === 'hd' || category === 'cdrom') {
+      const stored = await storeCompact(slot, staged, url, category);
+      if (stored !== false) return stored;
+    }
     const stored = await persistAs(staged.path, staged.name, category);
     if (stored.ok) return stored.path;
     rejectDownload(slot, staged.name, stored.reason);
     return undefined;
   } finally {
     await discardStaging(staged.path);
+  }
+}
+
+// Store a staged hard disk or CD as a compact UDIF recording `url` as its
+// origin, so the next boot of the same link finds it (storedFromUrl) instead
+// of downloading it again.  For the disks the streamed import leaves to the
+// staged flow: a small one (onSmall), and a Mac archive member that import
+// refuses (a Disk Copy 6 image -- NDIF -- unpacked, then converted).  Returns the
+// stored path, undefined when the image was rejected, or false when the core
+// cannot read the staged file as a disk (the caller stores it as it is, and
+// the validator has its say).
+async function storeCompact(
+  slot: string,
+  staged: { path: string; name: string },
+  url: string,
+  category: DiskCategory,
+): Promise<string | undefined | false> {
+  const part = scratchPath(`url_${slot}.dmg.part`);
+  try {
+    const r = await gsEval('files.convert', [
+      staged.path,
+      part,
+      64,
+      1,
+      'udif',
+      staged.name,
+      url.trim(),
+    ]);
+    if (!r || typeof r !== 'object' || 'error' in (r as object)) return false;
+    const name = `${staged.name}.dmg`;
+    const stored = await persistAs(part, name, category);
+    if (stored.ok) {
+      updateUrlFile(slot, { name: stored.path.split('/').pop() ?? name });
+      return stored.path;
+    }
+    rejectDownload(slot, staged.name, stored.reason);
+    return undefined;
+  } finally {
+    await discardStaging(part);
   }
 }
 
@@ -554,8 +597,9 @@ function rejectDownload(slot: string, name: string, reason: string): void {
 // Fetch a hard-disk or CD value and stream it into a compact UDIF
 // (bus/importImage.ts): the body -- or the named member of a zip body, or a
 // gzip body's content -- goes into the core's writer as it arrives, so a
-// 45 MB download of a 2 GB disk never needs 2 GB.  A small file is staged
-// and persisted as before.  Returns the path to attach from, undefined when
+// 45 MB download of a 2 GB disk never needs 2 GB.  A small file is staged,
+// then stored as a UDIF too (storeCompact): only a UDIF records the URL it
+// came from, which is what lets the next boot of the link reuse it.  Returns the path to attach from, undefined when
 // nothing was stored, or false when the body is a Mac archive, which the
 // staged flow unpacks.
 async function fetchAndImport(
@@ -614,6 +658,11 @@ async function fetchAndImport(
       onProgress: (read) => progress(read),
       // importImage discards the staged file when this returns.
       onSmall: async (path) => {
+        const compact = await storeCompact(slot, { path, name: storeAs }, url, category);
+        if (compact !== false) {
+          rejected = compact === undefined;
+          return compact ?? null;
+        }
         const stored = await persistAs(path, storeAs, category);
         if (stored.ok) return stored.path;
         rejectDownload(slot, storeAs, stored.reason);

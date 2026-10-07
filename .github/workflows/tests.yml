@@ -191,7 +191,8 @@ jobs:
 
       - name: Run integration tests (matrix tier)
         if: steps.fetch-data.outputs.has_test_data == 'true'
-        timeout-minutes: 30
+        # ~20 min on a fast runner, ~28 on the slower class -- too close to 30.
+        timeout-minutes: 40
         run: |
           make integration-test PLATEN=1 WERROR=1 TIER=matrix -j"$(nproc)" 2>&1 | tee /tmp/it-matrix.log
           exit "${PIPESTATUS[0]}"

@@ -38,7 +38,7 @@ def row_iisi_chime() {
     scheduler.run 12000000
     machine.sound.capture.stop
     assert machine.ram == 66560 "iisi-chime: machine.ram != 66560"
-    assert machine.sound.capture.frames == 13444 "iisi-chime: unexpected capture length"
+    assert machine.sound.capture.frames == 13640 "iisi-chime: capture length ${machine.sound.capture.frames}, want 13640"
     # machine.rbv on the V8 superset — same node, same four attributes, and
     # the variant is the part the node has to distinguish.
     assert machine.rbv.chip == "RBV" "iisi-chime: machine.rbv missing"

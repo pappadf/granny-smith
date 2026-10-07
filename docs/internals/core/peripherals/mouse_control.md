@@ -784,6 +784,18 @@ low-memory globals directly (identical to `"global"`), since there is no ADB
 subsystem to inject deltas through.  See [mouse.md](../../../reference/hardware/mouse.md) for full
 hardware details.
 
+Relative motion (`"hw"` / `"relative"`, the browser's pointer) goes through the
+quadrature model in `src/core/peripherals/mouse.c`, which plays it the way the
+wheels would: every edge marks a fixed distance, so edges come as fast as the
+mouse moves.  Each host batch (scaled 2:1 to counts) is spread evenly over the
+time the motion took -- the interval since the previous batch, at most one
+frame -- so a batch has been played out by the time the next one arrives and
+the cursor stays a frame behind the hand at any speed.  Each axis is a pulse
+train (counts still to go, gap between edges, one event); a new batch joins
+what is left and re-spreads it.  Edges on one axis stay at least 128 us apart
+(~1,000 cycles), the most the ROM's interrupt handler is given: closer edges
+would toggle DCD again before the handler had read the last one.
+
 ---
 
 ## 14. How Other Emulators Inject Mouse Input
@@ -852,17 +864,25 @@ never fires, yet the OS tracks cursor position correctly.
 
 **ADB transceiver** (`src/core/peripherals/adb.c`):
 
-- **Auto-poll:** `adb_autopoll_deferred()` fires every ~11ms and repeats
-  the last Talk R0 (`last_poll_addr`), signalling SRQ when another device
-  has data.  A device answers only with new data (§10).
+- **Auto-poll:** `adb_idle_talk_event()` is the transceiver's idle Talk: it
+  repeats the last Talk R0 (`last_poll_addr`), signalling SRQ when another
+  device has data.  It runs only when a device has data (new input, or data
+  left when the bus goes idle), no sooner than a poll period after the last
+  Talk, and completes after the Talk's bus time (`adb_talk_ns`).  A device
+  answers only with new data (§10).  Egret and Cuda run the same Talks in
+  `egret_adb_service` / `cuda_adb_service`, told of new data through
+  `adb_set_data_hook()` (reference: adb.md, "Emulator Auto-Poll").
 - **Mouse reply:** `prepare_mouse_reply()` clamps deltas to +-63 (7-bit
   range), encodes into `reply_buf[0..1]`.  Large deltas split across
-  consecutive polls via `remain_dx`/`remain_dy`.
+  consecutive polls via `remain_dx`/`remain_dy`.  In handler `$04` (the
+  Apple Extended Mouse, adb.md) the report is 4 bytes, and once the host
+  has read Register 1 the deltas run to +-4095, so a frame's motion fits in
+  one report: the Cursor Device Manager spreads a second report in the same
+  frame over later frames.
 - **Byte delivery:** `adb_deliver_next_byte()` feeds reply bytes through
   `via_input_sr()`.  Dummy byte with bit3=LOW signals end-of-transfer.
-- **Button acceleration:** `adb_mouse_event()` with button change asserts SRQ
-  and reschedules auto-poll within `ADB_SHIFT_DELAY` (800us) instead of
-  waiting 11ms.
+- **Prompt delivery:** `adb_mouse_event()` with motion or a button change
+  asserts SRQ and starts the idle Talk (`device_data_arrived`).
 
 **System wiring** (`src/core/system.c`):
 

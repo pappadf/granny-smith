@@ -1314,19 +1314,28 @@ and acknowledges purely by **clearing Int1** (write-1-to-clear on
 the buffer is free again" signal is the **Int1 line going clear**, not the
 message-state byte (which stays at `NewMsgSent` indefinitely under A/UX).
 
-**Emulator model (`iop_swim.c`).** Granny Smith models this with a
-free-running scheduler event (`swim_adb_autopoll_tick`, ≈11 ms) that is
-armed when a slot-3 message arrives with `PollEnable` set and disarmed
-when one arrives with it clear. Each tick — while no explicit transaction
-is in flight and **no Int1 is still pending** (the bypass-style re-arm
-gate above) — it `Talk-R0`s the enabled `DevMap` devices in round-robin
-order through the ADB device model; on data it writes `RcvMsg[3]`
-(`Flags = $40`, `ADBCmd = Talk-R0`, the bytes) and raises Int1. To avoid
-racing a host that drives its *own* polling (Mac OS), each host-driven
-slot-3 transaction sets a short grace window during which the autonomous
-loop stands aside; it only takes over once the host has gone quiet (the
-A/UX case). One mechanism serves both OSes: Mac OS keeps its host-driven
-loop, A/UX gets autonomous delivery.
+**Emulator model (`iop_swim.c`).** The model follows the ERS rather than
+either host's habits, so one mechanism serves both. An explicit message
+starts one transaction, answered on `RcvMsg[3]`. An implicit message only
+sets `PollEnable` and, with `SetPollEnables`, the `DevMap`; it is not
+answered until a device has data. The polling itself is modelled as every
+ADB transceiver is (adb.md, "Emulator Auto-Poll"): there is no poll clock.
+The ADB device model tells the IOP when a device gets data
+(`iop_swim_attach_adb`), and the IOP then runs one Talk (`swim_adb_talk_event`,
+timed from the bus timing, no sooner than a poll period after the last) and
+posts its data as above. A poll that would find nothing is not run at all.
+The next message waits until the host has taken the last one: the slot is
+free when its state is back at `Idle` (Mac OS's IOP Manager claims a message
+as `MsgReceived` before clearing Int1, and frees it with its reply,
+`MsgCompleted`), or still at `NewMsgSent` with Int1 cleared (A/UX, which
+acknowledges only by clearing Int1; `on_host_int_ack`). An explicit result
+that finds the slot still occupied waits for the same signal.
+
+This replaced two mechanisms that raced each other: implicit messages were
+answered with `NoReply` after 1 ms, so Mac OS re-polled through the host
+every cycle; and a free-running 11 ms loop delivered A/UX's input, standing
+aside for 16 ticks after any host-driven poll so the two would not take the
+same data.
 
 #### 18.4 Reply Int conventions
 

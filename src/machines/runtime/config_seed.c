@@ -17,9 +17,10 @@
 // XPRAM image) holds it: logical bytes $00-$0F at $10-$1F, $10-$13 at
 // $08-$0B (the RTC's two command groups).  The seed writes the bytes the
 // machine's own ROM's PRAMInit writes into an invalid store (its
-// pram_defaults_t, measured per ROM), with byte $03, the serial-port use, the
-// one record a configuration chooses.  Writing the whole block valid is what
-// keeps PRAMInit from overwriting the choice.
+// pram_defaults_t, measured per ROM), with two departures: byte $03, the
+// serial-port use, the one record a configuration chooses; and the mouse
+// tracking, which the seed always sets to "Very Slow" (below).  Writing the
+// whole block valid is what keeps PRAMInit from overwriting them.
 
 // Serial-port use: the printer port (port B) in use by AppleTalk.
 #define SPCONFIG_PORTB_MASK 0x0Fu
@@ -27,6 +28,19 @@
 #define SYSPARAM_PHYS_HI    0x10u
 #define SYSPARAM_PHYS_LO    0x08u
 #define SYSPARAM_SPCONFIG   0x03u
+
+// Mouse tracking (mac-pram.md §4.1).  SPVolCtl ($10) bits 5..3 index the
+// System's 'mcky' acceleration tables, 0 ("Very Slow") the one with no
+// threshold: no acceleration at all.  SPMisc2 ($13) bit 6 is the older
+// mouse scaling (the Plus ROM's CrsrScale: deltas past CrsrThresh doubled).
+// The ROMs leave tracking 0..3 with scaling on, which feels far too fast
+// here: the host pointer arrives already accelerated (pointer lock hands the
+// guest the host's own deltas), so the guest's acceleration compounds it.
+// The seed turns both off, so the guest cursor follows the host pointer.
+#define SYSPARAM_SPVOLCTL      0x10u
+#define SPVOLCTL_TRACKING_MASK 0x38u
+#define SYSPARAM_SPMISC2       0x13u
+#define SPMISC2_MOUSE_SCALING  0x40u
 
 // The slot records (sPRAMRec): 8 bytes per NuBus slot from $9, at $46.
 #define SLOT_PRAM_BASE 0x46u
@@ -39,18 +53,24 @@ static int appletalk_choice(const struct config *cfg) {
     return strcmp(v, "active") == 0;
 }
 
-// The SysParam block with the AppleTalk choice, into a 256-byte image.
-static void sysparam_image(uint8_t img[256], const uint8_t sysparam[20], bool active) {
-    memcpy(img + SYSPARAM_PHYS_HI, sysparam, 16);
-    memcpy(img + SYSPARAM_PHYS_LO, sysparam + 16, 4);
-    uint8_t *sp = img + SYSPARAM_PHYS_HI + SYSPARAM_SPCONFIG;
-    *sp = (uint8_t)((*sp & ~SPCONFIG_PORTB_MASK) | (active ? SPCONFIG_USE_ATALK : 0));
+// The SysParam block, into a 256-byte image: the ROM's own bytes with the
+// slow mouse tracking and, when the configuration has one (`atalk` >= 0),
+// the AppleTalk choice.
+static void sysparam_image(uint8_t img[256], const uint8_t sysparam[20], int atalk) {
+    uint8_t sp[20];
+    memcpy(sp, sysparam, sizeof(sp));
+    if (atalk >= 0)
+        sp[SYSPARAM_SPCONFIG] =
+            (uint8_t)((sp[SYSPARAM_SPCONFIG] & ~SPCONFIG_PORTB_MASK) | (atalk ? SPCONFIG_USE_ATALK : 0));
+    sp[SYSPARAM_SPVOLCTL] &= (uint8_t)~SPVOLCTL_TRACKING_MASK;
+    sp[SYSPARAM_SPMISC2] &= (uint8_t)~SPMISC2_MOUSE_SCALING;
+    memcpy(img + SYSPARAM_PHYS_HI, sp, 16);
+    memcpy(img + SYSPARAM_PHYS_LO, sp + 16, 4);
 }
 
-void mac_seed_xpram_appletalk(uint8_t xpram[256], const struct config *cfg, const pram_defaults_t *pram) {
-    int a = appletalk_choice(cfg);
-    if (a >= 0 && pram && pram->sysparam)
-        sysparam_image(xpram, pram->sysparam, a == 1);
+void mac_seed_xpram_sysparam(uint8_t xpram[256], const struct config *cfg, const pram_defaults_t *pram) {
+    if (pram && pram->sysparam)
+        sysparam_image(xpram, pram->sysparam, appletalk_choice(cfg));
 }
 
 int mac_seed_startup_scsi_id(const struct config *cfg, const char *bus_id) {
@@ -73,12 +93,11 @@ void mac_seed_rtc_pram(struct config *cfg) {
     if (!rtc)
         return;
     const pram_defaults_t *pd = cfg->machine->pram;
-    int a = appletalk_choice(cfg);
-    if (a >= 0 && pd && pd->sysparam) {
+    if (pd && pd->sysparam) {
         uint8_t img[256];
         for (int i = 0; i < 256; i++)
             img[i] = rtc_pram_read(rtc, (uint8_t)i);
-        sysparam_image(img, pd->sysparam, a == 1);
+        sysparam_image(img, pd->sysparam, appletalk_choice(cfg));
         for (unsigned i = 0; i < 16; i++)
             rtc_pram_write(rtc, (uint8_t)(SYSPARAM_PHYS_HI + i), img[SYSPARAM_PHYS_HI + i]);
         for (unsigned i = 0; i < 4; i++)

@@ -249,6 +249,28 @@ describe('URL media: a disk an earlier download stored is used, not fetched agai
     );
     expect(asked.some((u) => u.includes('big.img'))).toBe(true);
   });
+
+  it('a small disk is stored as a UDIF recording the URL, so the next boot finds it', async () => {
+    // The fake core converts by copying, and remembers the origin it was given.
+    const origins = new Map<string, string>();
+    bridge.reply('files.convert', (args: unknown) => {
+      const [src, dst, , , , , origin] = args as string[];
+      const f = files.get(src);
+      if (!f) return { error: 'no such file' };
+      files.set(dst, f);
+      origins.set(dst, origin);
+      return { sectors: f.length / 512 };
+    });
+    served['plus.rom'] = PLUS_ROM;
+    served['big.img'] = new Uint8Array(1024 * 1024).fill(0x44);
+    await processUrlMedia(new URLSearchParams(`rom=plus.rom&hd0=${URL_HD}`));
+    const stored = [...files.keys()].filter((p) => p.startsWith('/opfs/images/hd/'));
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatch(/^\/opfs\/images\/hd\/hd0_[\d_-]+\.dmg$/);
+    expect(media.attachHardDisk).toHaveBeenCalledWith(stored[0], 0);
+    expect([...origins.values()]).toEqual([URL_HD]);
+    expect(scratchLeft()).toEqual([]);
+  });
 });
 
 describe('URL media: blank: creates a blank disk, reused on reload', () => {
