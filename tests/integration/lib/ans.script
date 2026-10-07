@@ -31,6 +31,10 @@
 #     in one go, so command text is fed a few characters at a time with a
 #     bounded run between chunks.
 
+# Configured (ttya-console) NVRAM per model, filled by ans_boot_serial.
+let ANS_NV_500 = none
+let ANS_NV_700 = none
+
 # --- Console plumbing --------------------------------------------------------
 
 # Feed a short chunk of command text to Open Firmware's console.
@@ -39,11 +43,22 @@ def ans_send(s) {
     scheduler.run 20000000
 }
 
-# Complete the line and return everything the firmware printed in reply.
+# Complete the line and return everything the firmware printed in reply:
+# run until the reply ends in the next `0 > ` prompt (Open Firmware prints
+# it once the command has finished), in 10 M steps.  The 2 G ceiling is a
+# hang detector, not a budget -- a reply comes back in a few M to a few
+# hundred M -- and a reply that never ends in a prompt is returned as it
+# stands for the caller's asserts to judge.
 def ans_go() {
     machine.scc.a.receive("\r")
-    scheduler.run 400000000
-    return machine.scc.a.sent()
+    let out = ""
+    let spent = 0
+    while !contains($out, "0 > ") && $spent < 2000000000 {
+        scheduler.run 10000000
+        $spent = $spent + 10000000
+        $out = "${$out}${machine.scc.a.sent()}"
+    }
+    return $out
 }
 
 # Run the machine in bounded chunks until Open Firmware settles at its
@@ -55,8 +70,8 @@ def ans_go() {
 def ans_wait_prompt() {
     let out = ""
     let spins = 0
-    while !contains($out, "0 > ") && $spins < 24 {
-        scheduler.run 250000000
+    while !contains($out, "0 > ") && $spins < 240 {
+        scheduler.run 25000000
         $out = "${$out}${machine.scc.a.sent()}"
         $spins = $spins + 1
     }
@@ -87,6 +102,19 @@ def ans_boot_serial(model, ram_kb) {
     # what kept the second one from wedging.
     machine.boot model="${$model}" ram=$ram_kb rom="${$ROM}"
 
+    # Once a row in this process has taken a model through the typed setup,
+    # later rows of the same model start from that configured store -- the
+    # machine a technician already set up -- and boot ONCE instead of twice.
+    # Keyed by model, never shared across models (the DIMM table above).  If
+    # a ROM does not accept the store it re-initialises it, comes up on the
+    # screen, and this helper simply takes the typed path below again.
+    if $model == "ans500" && $ANS_NV_500 != none {
+        machine.nvram.restore($ANS_NV_500)
+    }
+    if $model == "ans700" && $ANS_NV_700 != none {
+        machine.nvram.restore($ANS_NV_700)
+    }
+
     # The firmware's own progress narration (`msg-write`) goes to ttya
     # whatever the console is, so `install-console>` is a bounded,
     # model-independent marker for "the interpreter is up".  A machine whose
@@ -96,16 +124,16 @@ def ans_boot_serial(model, ram_kb) {
     # non-volatile and the second model in a row inherits the first's setup.
     let out = ""
     let spins = 0
-    while !contains($out, "0 > ") && !contains($out, "install-console>") && $spins < 24 {
-        scheduler.run 250000000
+    while !contains($out, "0 > ") && !contains($out, "install-console>") && $spins < 240 {
+        scheduler.run 25000000
         $out = "${$out}${machine.scc.a.sent()}"
         $spins = $spins + 1
     }
     # Give a console that IS ttya a moment to print its prompt before
     # concluding that it is not.
     let settle = 0
-    while !contains($out, "0 > ") && $settle < 5 {
-        scheduler.run 250000000
+    while !contains($out, "0 > ") && $settle < 50 {
+        scheduler.run 25000000
         $out = "${$out}${machine.scc.a.sent()}"
         $settle = $settle + 1
     }
@@ -128,5 +156,8 @@ def ans_boot_serial(model, ram_kb) {
     # build a NEW machine, which starts from a virgin store and would come
     # back on the screen console again.
     machine.restart
-    return ans_wait_prompt()
+    let prompt = ans_wait_prompt()
+    if $model == "ans500" { $ANS_NV_500 = machine.nvram.snapshot() }
+    if $model == "ans700" { $ANS_NV_700 = machine.nvram.snapshot() }
+    return $prompt
 }
