@@ -256,7 +256,7 @@ int checkpoint_machine_write_manifest(void) {
     char *body = NULL;
     char *id_esc = gs_json_escape_dup(g_machine_id);
     char *created_esc = gs_json_escape_dup(g_machine_created);
-    char *build_esc = gs_json_escape_dup(get_build_id());
+    char *build_esc = gs_json_escape_dup(build_id_get());
     if (!id_esc || !created_esc || !build_esc) {
         free(id_esc);
         free(created_esc);

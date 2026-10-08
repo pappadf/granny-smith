@@ -719,10 +719,10 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         }
         file_build_id[BUILD_ID_LEN] = '\0';
         // Validate build ID matches the running application
-        if (memcmp(file_build_id, get_build_id(), BUILD_ID_LEN) != 0) {
+        if (memcmp(file_build_id, build_id_get(), BUILD_ID_LEN) != 0) {
             LOG(0, "Error: Checkpoint build ID mismatch in %s", filename);
             LOG(0, "  checkpoint: %s", file_build_id);
-            LOG(0, "  current:    %s", get_build_id());
+            LOG(0, "  current:    %s", build_id_get());
             fclose(cp->file);
             free(cp);
             return NULL;
@@ -810,10 +810,10 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         }
         file_build_id[BUILD_ID_LEN] = '\0';
         // Validate build ID matches the running application
-        if (memcmp(file_build_id, get_build_id(), BUILD_ID_LEN) != 0) {
+        if (memcmp(file_build_id, build_id_get(), BUILD_ID_LEN) != 0) {
             LOG(0, "Error: Checkpoint build ID mismatch in %s", filename);
             LOG(0, "  checkpoint: %s", file_build_id);
-            LOG(0, "  current:    %s", get_build_id());
+            LOG(0, "  current:    %s", build_id_get());
             fclose(cp->file);
             free(cp);
             return NULL;
@@ -889,7 +889,7 @@ checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind
             return NULL;
         }
         // Write build ID right after the magic signature
-        if (fwrite(get_build_id(), 1, BUILD_ID_LEN, cp->file) != BUILD_ID_LEN) {
+        if (fwrite(build_id_get(), 1, BUILD_ID_LEN, cp->file) != BUILD_ID_LEN) {
             LOG(0, "Error: Failed to write build ID to %s", filename);
             fclose(cp->file);
             free(cp);
@@ -961,7 +961,7 @@ void checkpoint_close(checkpoint_t *checkpoint) {
         uint8_t *h = checkpoint->buf;
         memcpy(h, CHECKPOINT_MAGIC_V3, CHECKPOINT_MAGIC_LEN);
         h += CHECKPOINT_MAGIC_LEN;
-        memcpy(h, get_build_id(), BUILD_ID_LEN);
+        memcpy(h, build_id_get(), BUILD_ID_LEN);
         h += BUILD_ID_LEN;
         uint64_t uc = (uint64_t)raw_size, cs = (uint64_t)raw_size;
         memcpy(h, &uc, sizeof uc);
@@ -1358,7 +1358,7 @@ bool checkpoint_validate_build_id(const char *filename) {
     fclose(f);
 
     // Compare with the current application's build ID
-    return memcmp(file_build_id, get_build_id(), BUILD_ID_LEN) == 0;
+    return memcmp(file_build_id, build_id_get(), BUILD_ID_LEN) == 0;
 }
 
 // ============================================================================

@@ -17,7 +17,7 @@
 static config_t g_cfg;
 config_t *global_emulator = NULL;
 
-const char *get_build_id(void) {
+const char *build_id_get(void) {
     return "test-build";
 }
 

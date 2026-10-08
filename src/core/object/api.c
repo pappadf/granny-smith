@@ -456,7 +456,7 @@ static int json_parse_args(const char *json, value_t **out_argv, int *out_argc, 
 
 int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_size) {
     // Thread-affinity guard (compiled out in release). See worker_thread.h.
-    worker_thread_assert("gs_eval");
+    worker_thread_check("gs_eval");
 
     if (!out_buf || out_size == 0)
         return -1;

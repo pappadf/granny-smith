@@ -648,7 +648,7 @@ static void complete_arguments(const char *line, const script_stmt_t *st, const 
 
 void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     // Thread-affinity guard (compiled out in release). See worker_thread.h.
-    worker_thread_assert("shell_complete");
+    worker_thread_check("shell_complete");
 
     if (!line || !out)
         return;

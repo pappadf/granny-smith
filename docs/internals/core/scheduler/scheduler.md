@@ -940,7 +940,7 @@ Enforced by `scheduler_check_invariants` at every API entry/exit:
   `scheduler.run N` stays byte-deterministic with aux cores live.  Aux cores
   never call `scheduler_set_*` and never own an event timestamp's meaning.
 
-All violations abort via `GS_ASSERT` / `GS_ASSERTF` (from `common.h`) with file, line,
+All violations abort via `GS_ASSERT` / `GS_ASSERTF` (from `gs_assert.h`) with file, line,
 function, and context. There are no `printf`-based error reports in the scheduler.
 
 ---

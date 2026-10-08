@@ -718,7 +718,7 @@ static int do_attach_hd(const char *path, int scsi_id) {
 
 // Initialize the setup system and register commands
 void setup_init() {
-    gs_outf("Granny Smith build %s\n", get_build_id());
+    gs_outf("Granny Smith build %s\n", build_id_get());
 
     // Built-in machine profiles are a static const array in machine.c
     // (machine_find / machine_list walk it) — no runtime registration needed.

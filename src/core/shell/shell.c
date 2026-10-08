@@ -319,7 +319,7 @@ uint64_t shell_dispatch(char *line) {
     if (!shell_initialized)
         return -1;
 
-    worker_thread_assert("shell_dispatch");
+    worker_thread_check("shell_dispatch");
 
     if (!line)
         return 0;
@@ -432,7 +432,7 @@ int shell_init(void) {
     // Latch the worker pthread for the thread-affinity guard. From now
     // on (under MODE=debug/sanitize) any call into shell_dispatch() or
     // gs_eval() from a different thread aborts with GS_ASSERTF.
-    worker_thread_record();
+    worker_thread_latch();
 
     shell_initialized = 1;
     return 0;

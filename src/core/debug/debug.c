@@ -2108,15 +2108,25 @@ static void diagnose_and_halt(const char *kind, const char *expr, const char *fi
         g_failure_hook(kind, expr, file, line, func);
 }
 
-// Main assertion failure handler - prints diagnostics and pauses execution
-void gs_assert_fail(const char *expr, const char *file, int line, const char *func, const char *fmt, ...) {
-    // Header
+// Prints the ASSERT banner: the failed expression and where it sits
+static void print_assert_header(const char *expr, const char *file, int line, const char *func) {
     gs_outf("\n\n==================== ASSERT ====================\n");
     if (expr && *expr)
         gs_outf("Assertion failed: (%s)\n", expr);
     else
         gs_outf("Assertion failed\n");
     gs_outf("at %s:%d in %s\n", file ? file : "<unknown>", line, func ? func : "<unknown>");
+}
+
+// Main assertion failure handler (GS_ASSERT) - prints diagnostics and pauses execution
+void gs_assert_fail(const char *expr, const char *file, int line, const char *func) {
+    print_assert_header(expr, file, line, func);
+    diagnose_and_halt("assertion", expr, file, line, func);
+}
+
+// Assertion failure handler with a message (GS_ASSERTF)
+void gs_assert_failf(const char *expr, const char *file, int line, const char *func, const char *fmt, ...) {
+    print_assert_header(expr, file, line, func);
 
     // Optional message
     if (fmt) {
@@ -2133,7 +2143,7 @@ void gs_assert_fail(const char *expr, const char *file, int line, const char *fu
 
 // The unimplemented-function handler.  Same diagnostics and the same halt --
 // what differs is the claim being made, so the banner says so and nothing here
-// is compiled out by GS_FAST (see GS_UNIMPLEMENTED in common.h for why a
+// is compiled out by GS_FAST (see GS_UNIMPLEMENTED in gs_assert.h for why a
 // release build is exactly where this one matters).
 //
 // The banner goes to stderr, unbuffered: if a platform's failure hook

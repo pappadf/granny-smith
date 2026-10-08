@@ -13,6 +13,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// Opaque checkpoint stream; modules receive a pointer to it when saving and
+// restoring state.  A header that only passes the pointer through can
+// forward-declare `struct checkpoint` instead of including this file.
+struct checkpoint;
+typedef struct checkpoint checkpoint_t;
+
 // Checkpoint kind: quick (auto-save) vs consolidated (full export)
 typedef enum {
     CHECKPOINT_KIND_QUICK = 0,
