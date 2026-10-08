@@ -767,7 +767,11 @@ av_civic_t *av_civic_init(config_t *cfg, checkpoint_t *cp) {
     }
 
     scheduler_new_event_type(cfg->scheduler, "civic", cv, "frame", &civic_frame_event);
-    scheduler_new_cpu_event(cfg->scheduler, &civic_frame_event, cv, 0, 0, AV_CIVIC_FRAME_NS);
+    // The frame event re-arms itself, so it is always in a checkpoint's
+    // queue: a restore gets it back from there, and arming it here too ran
+    // two VBL chains.
+    if (!cp)
+        scheduler_new_cpu_event(cfg->scheduler, &civic_frame_event, cv, 0, 0, AV_CIVIC_FRAME_NS);
 
     cv->fb_node = (display_fb_node_t){.owner = cv, .resolve = civic_fb_resolve, .base = civic_fb_base};
     cv->video_node = display_attach_video_node(&cv->fb_node, "Video (CIVIC)");

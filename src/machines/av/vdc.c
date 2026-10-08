@@ -518,11 +518,16 @@ av_vdc_t *av_vdc_init(config_t *cfg, checkpoint_t *cp) {
             vdc->file_frame = malloc((size_t)AV_VDC_SRC_W * AV_VDC_SRC_H * 4);
             if (vdc->file_frame)
                 system_read_checkpoint_data(cp, vdc->file_frame, (size_t)AV_VDC_SRC_W * AV_VDC_SRC_H * 4);
+            else
+                checkpoint_set_error(cp); // the unread block would misalign every later read
         }
     }
 
     scheduler_new_event_type(cfg->scheduler, "vdc", vdc, "field", &vdc_field_event);
-    scheduler_new_cpu_event(cfg->scheduler, &vdc_field_event, vdc, 0, 0, (uint64_t)AV_VDC_FIELD_NS);
+    // The field event re-arms itself, so a restore gets it back from the
+    // checkpointed queue; arming it here too ran the field clock at 2x.
+    if (!cp)
+        scheduler_new_cpu_event(cfg->scheduler, &vdc_field_event, vdc, 0, 0, (uint64_t)AV_VDC_FIELD_NS);
 
     vdc->object = object_new(&videoin_class, vdc, "videoin");
     if (vdc->object) {

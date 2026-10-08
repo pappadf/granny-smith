@@ -1137,8 +1137,14 @@ av_singer_t *av_singer_init(config_t *cfg, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, s, data_size);
         if (s->wav_frames) {
             s->wav = malloc((size_t)s->wav_frames * 2 * sizeof(int16_t));
-            if (s->wav)
+            if (s->wav) {
                 system_read_checkpoint_data(cp, s->wav, (size_t)s->wav_frames * 2 * sizeof(int16_t));
+            } else {
+                // The unread block would misalign every later read: refuse
+                // the load, and leave no length without its buffer.
+                s->wav_frames = 0;
+                checkpoint_set_error(cp);
+            }
         }
     }
 
