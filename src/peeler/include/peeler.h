@@ -261,10 +261,12 @@ typedef struct {
     bool (*detect)(const peel_probe_t *p);
 } peel_format_desc_t;
 
-// Every format peeler reads, wrappers first, in detection order.
+// Every format peeler reads, wrappers first, in detection order.  The
+// descriptors (and their names) are static: valid for the program's life.
 const peel_format_desc_t *peel_formats(int *count);
 
-// The first format whose detect() accepts the probe, or NULL.
+// The first format whose detect() accepts the probe, or NULL.  One of the
+// static descriptors peel_formats lists.
 const peel_format_desc_t *peel_identify(const peel_probe_t *p);
 
 // === Structure-first archive access ======================================
