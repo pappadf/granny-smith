@@ -48,7 +48,7 @@
 #define EXC_TRAP(vector_)                            trap(cpu, (vector_))
 #define EXC_TRAPV()                                  trapv(cpu)
 #define EXC_ATRAP()                                  a_trap(cpu)
-#define EXC_FTRAP()                                  f_trap(cpu)
+#define EXC_FTRAP()                                  f_trap(cpu, opcode)
 #define EXC_DIVIDE_BY_ZERO()                         exception_divide_by_zero(cpu)
 #define EXC_CHK()                                    chk_exception(cpu)
 #define EXC_PRIVILEGE()                              privilege_violation(cpu)
@@ -153,10 +153,8 @@
         /* (savedPC-2) to detect the C stack-growth probe `TST.B d16(A7)` (opcode     */                               \
         /* 0x4A2F): with the next-instruction PC it read the displacement word, the   */                               \
         /* probe went undetected, and mkfs was SIGSEGV'd instead of the stack grown.  */                               \
-        cpu->pc = cpu->instruction_pc + 2;                                                                             \
-        exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw);                                                 \
-        g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;                                             \
-        g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                          \
+        exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw, cpu->instruction_pc + 2);                        \
+        cpu_select_soa(cpu->supervisor);                                                                               \
     }                                                                                                                  \
     cpu_check_interrupt(cpu);                                                                                          \
     assert(*instructions == 0)

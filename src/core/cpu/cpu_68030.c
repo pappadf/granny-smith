@@ -58,7 +58,7 @@ LOG_USE_CATEGORY_NAME("cpu");
 #define EXC_TRAP(vector_)                            trap(cpu, (vector_))
 #define EXC_TRAPV()                                  trapv(cpu)
 #define EXC_ATRAP()                                  a_trap(cpu)
-#define EXC_FTRAP()                                  f_trap(cpu)
+#define EXC_FTRAP()                                  f_trap(cpu, opcode)
 #define EXC_DIVIDE_BY_ZERO()                         exception_divide_by_zero(cpu)
 #define EXC_CHK()                                    chk_exception(cpu)
 #define EXC_PRIVILEGE()                              privilege_violation(cpu)
@@ -184,7 +184,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
             // instructions that "must be avoided or emulated in the exception
             // routine for F-line unimplemented instructions".  Flushing the
             // whole ATC instead hid them completely.
-            f_trap(cpu);
+            f_trap(cpu, opcode);
             return;
         }
         break;
@@ -377,7 +377,7 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
         // descriptor searched" to hand back, which is why the encoding is
         // illegal rather than merely useless.
         if (level == 0 && a_field != 0) {
-            f_trap(cpu);
+            f_trap(cpu, opcode);
             return;
         }
         // FC specifier in extension word bits 4:0 (per MC68030UM § 7.4.30):
@@ -541,8 +541,7 @@ void cpu_reset_to_vector_68030(cpu_t *restrict cpu) {
     // so a reset taken in user mode kept the user pair: the Lisa boot ROM
     // then ran its MMU tests through the user context and bus-faulted on its
     // own I/O strobes once it selected context 1 (boot error 40).
-    g_active_read = g_supervisor_read;
-    g_active_write = g_supervisor_write;
+    cpu_select_soa(true);
     cpu->interrupt_mask = 7;
     cpu->trace = 0;
     cpu->vbr = 0;
@@ -611,8 +610,7 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
         cpu_hardware_reset(cpu);                                                                                       \
     }                                                                                                                  \
     /* Set SoA active pointers based on current supervisor mode */                                                     \
-    g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;                                                 \
-    g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                              \
+    cpu_select_soa(cpu->supervisor);                                                                                   \
     cpu_check_interrupt(cpu);                                                                                          \
     g_bus_error_instr_ptr = instructions; /* let memory slow paths force exit */                                       \
     /* Capture trace state before execution; clamp to 1 instruction if T1 set */                                       \
@@ -669,9 +667,8 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
         if (g_mmu && g_mmu->enabled && g_bus_error_is_pmmu)                                                            \
             exception_bus_error_retry(cpu, g_bus_error_address, g_bus_error_rw);                                       \
         else                                                                                                           \
-            exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw);                                             \
-        g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;                                             \
-        g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                          \
+            exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw, cpu->pc);                                    \
+        cpu_select_soa(cpu->supervisor);                                                                               \
     } else if (__builtin_expect((_saved_trace & 2) && (cpu->trace & 2), 0)) {                                          \
         /* Trace exception: fire if T1 was set at sprint start AND still set now. */                                   \
         /* For SR-modifying instructions, uses new T1 value (per M68000 PRM 6.3.10). */                                \
