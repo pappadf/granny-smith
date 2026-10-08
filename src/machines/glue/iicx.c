@@ -144,7 +144,6 @@ static void iicx_via2_output(void *context, uint8_t port, uint8_t output) {
         if (cfg->scheduler)
             scheduler_stop(cfg->scheduler);
     }
-    st->last_via2_port_b = output;
 }
 
 static void iicx_via2_shift_out(void *context, uint8_t byte) {

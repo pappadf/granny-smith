@@ -51,7 +51,6 @@ typedef struct mac030_glue_state {
     // wrong abstraction.
     uint8_t slot_pa_mask;
 
-    uint8_t last_via2_port_b; // IIcx soft-power detect (unused on se30/iix)
     bool soft_power_armed; // IIcx soft-power detect (unused on se30/iix)
 
     // SE/30 built-in video (slot $E); NULL on IIcx/IIx (they use NuBus cards).
