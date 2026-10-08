@@ -192,6 +192,76 @@ TEST(clr_l_d16_valid_ext_word_still_writes) {
     teardown_mmu(cpu, mmu);
 }
 
+// Data-fault restart safety: an instruction whose data access faults must
+// leave every register as it found it, so the Format $B retry re-executes
+// from the original state. Runs in user mode so the bus-error frame goes on
+// the (valid) supervisor stack even when the faulting access is a USP push.
+// `words` is placed at 0x3F00 in the mapped code page.
+static void run_user_faulting(cpu_t *cpu, memory_map_t *mem, const uint16_t *words, int n, uint32_t usp) {
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    for (int i = 0; i < n; i++)
+        store_be16(ram + 0x3F00 + 2 * i, words[i]);
+    cpu->pc = 0x3F00;
+    cpu->a[7] = STACK_TOP;
+    cpu->supervisor = 1;
+    cpu->usp = usp;
+    cpu_set_sr(cpu, 0x0000); // drop to user mode: A7 <- USP
+    run_one(cpu); // faulting instruction
+    run_one(cpu); // let the deferred bus error vector
+    ASSERT_TRUE(cpu->pc >= HANDLER_ADDR && cpu->pc <= HANDLER_ADDR + 4);
+    ASSERT_TRUE(cpu->halted == 0);
+}
+
+TEST(link_push_fault_leaves_an_and_sp) {
+    // LINK A6,#-8 with USP at the bottom of the mapped data page: the push
+    // lands at 0x4FFC in the invalid page.
+    cpu_t *cpu = test_get_cpu(test_get_active_context());
+    memory_map_t *mem = test_get_memory(test_get_active_context());
+    cpu->cpu_model = CPU_MODEL_68030;
+    mmu_state_t *mmu = setup_mmu(cpu, mem);
+    ASSERT_TRUE(mmu != NULL);
+    cpu->a[6] = 0x12345678;
+    const uint16_t code[] = {0x4E56, 0xFFF8};
+    run_user_faulting(cpu, mem, code, 2, 0x5000);
+    ASSERT_EQ_INT((int)cpu->a[6], 0x12345678);
+    ASSERT_EQ_INT((int)cpu->usp, 0x5000);
+    teardown_mmu(cpu, mmu);
+}
+
+TEST(unlk_pop_fault_leaves_an_and_sp) {
+    // UNLK A6 with A6 pointing into the invalid page.
+    cpu_t *cpu = test_get_cpu(test_get_active_context());
+    memory_map_t *mem = test_get_memory(test_get_active_context());
+    cpu->cpu_model = CPU_MODEL_68030;
+    mmu_state_t *mmu = setup_mmu(cpu, mem);
+    ASSERT_TRUE(mmu != NULL);
+    cpu->a[6] = 0x4100;
+    const uint16_t code[] = {0x4E5E};
+    run_user_faulting(cpu, mem, code, 1, 0x5800);
+    ASSERT_EQ_INT((int)cpu->a[6], 0x4100);
+    ASSERT_EQ_INT((int)cpu->usp, 0x5800);
+    teardown_mmu(cpu, mmu);
+}
+
+TEST(movem_postinc_fault_leaves_an) {
+    // MOVEM.L (A0)+,D0-D1 with A0 = 0x3FFC: D0 reads fine, D1 faults at
+    // 0x4000. A0 must not keep calculate_ea's +4 bump.
+    cpu_t *cpu = test_get_cpu(test_get_active_context());
+    memory_map_t *mem = test_get_memory(test_get_active_context());
+    cpu->cpu_model = CPU_MODEL_68030;
+    mmu_state_t *mmu = setup_mmu(cpu, mem);
+    ASSERT_TRUE(mmu != NULL);
+    cpu->a[0] = 0x3FFC;
+    cpu->d[0] = 0x11111111;
+    cpu->d[1] = 0x22222222;
+    const uint16_t code[] = {0x4CD8, 0x0003};
+    run_user_faulting(cpu, mem, code, 2, 0x5800);
+    ASSERT_EQ_INT((int)cpu->a[0], 0x3FFC);
+    ASSERT_EQ_INT((int)cpu->d[0], 0x11111111);
+    ASSERT_EQ_INT((int)cpu->d[1], 0x22222222);
+    teardown_mmu(cpu, mmu);
+}
+
 int main(void) {
     test_context_t *ctx = test_harness_init();
     if (!ctx) {
@@ -203,6 +273,9 @@ int main(void) {
     RUN(clr_w_d16_ext_word_fetch_fault_aborts_write);
     RUN(clr_b_d16_ext_word_fetch_fault_aborts_write);
     RUN(clr_l_d16_valid_ext_word_still_writes);
+    RUN(link_push_fault_leaves_an_and_sp);
+    RUN(unlk_pop_fault_leaves_an_and_sp);
+    RUN(movem_postinc_fault_leaves_an);
 
     test_harness_destroy(ctx);
     return 0;

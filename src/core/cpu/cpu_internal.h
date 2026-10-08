@@ -469,6 +469,9 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
     uint16_t register_mask = fetch_16(cpu, true);
     if (__builtin_expect(g_bus_error_pending, 0))
         return; // opcode-fetch fault: bail before touching memory or registers
+    // calculate_ea bumps An by 4 in (An)+ mode; the success path overwrites it
+    // with the final address below, but a fault return must put it back.
+    uint32_t saved_an = cpu->a[opcode & 7];
     uint32_t ea = calculate_ea(cpu, 4, opcode >> 3 & 7, opcode & 7, true);
 
     // Stage register updates so a mid-instruction bus error leaves Dn/An
@@ -479,8 +482,10 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
         if (register_mask & (1 << i)) {
             uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
             ea += bits >> 3;
-            if (g_bus_error_pending)
+            if (g_bus_error_pending) {
+                cpu->a[opcode & 7] = saved_an;
                 return;
+            }
             new_d[i] = v;
             d_set |= (uint8_t)(1 << i);
         }
@@ -488,8 +493,10 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
         if (register_mask & (0x100 << i)) {
             uint32_t v = bits == 16 ? (uint32_t)(int32_t)(int16_t)memory_read_uint16(ea) : memory_read_uint32(ea);
             ea += bits >> 3;
-            if (g_bus_error_pending)
+            if (g_bus_error_pending) {
+                cpu->a[opcode & 7] = saved_an;
                 return;
+            }
             new_a[i] = v;
             a_set |= (uint8_t)(1 << i);
         }

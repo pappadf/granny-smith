@@ -836,10 +836,21 @@
         int32_t _disp = (int32_t)(int16_t)FETCH16();                                                                   \
         uint32_t _ay = AY;                                                                                             \
         PUSH32(_ay);                                                                                                   \
-        AY = SP;                                                                                                       \
-        SP += _disp;                                                                                                   \
+        if (__builtin_expect(!g_bus_error_pending, 1)) {                                                               \
+            AY = SP;                                                                                                   \
+            SP += _disp;                                                                                               \
+        }                                                                                                              \
     })
-#define OP_UNLK               OP(SP = AY; uint32_t a; POP32(a); AY = a)
+// Read the saved An through AY and commit SP/An only if the read did not
+// fault, so a Format-$B retry re-runs UNLK from intact registers.
+#define OP_UNLK                                                                                                        \
+    OP({                                                                                                               \
+        uint32_t _a = READ32(AY);                                                                                      \
+        if (__builtin_expect(!g_bus_error_pending, 1)) {                                                               \
+            SP = AY + 4;                                                                                               \
+            AY = _a;                                                                                                   \
+        }                                                                                                              \
+    })
 #define OP_NOP                OP(/* no-op */)
 #define OP_MOVE_AN_USP        OP(SUPER(SET_USP(A(EA_REG))))
 #define OP_MOVE_USP_AN        OP(SUPER(A(EA_REG) = GET_USP()))
@@ -1871,8 +1882,10 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         int32_t _disp = (int32_t)FETCH32();                                                                            \
         uint32_t _a = AY;                                                                                              \
         PUSH32(_a);                                                                                                    \
-        AY = SP;                                                                                                       \
-        SP += _disp;                                                                                                   \
+        if (__builtin_expect(!g_bus_error_pending, 1)) {                                                               \
+            AY = SP;                                                                                                   \
+            SP += _disp;                                                                                               \
+        }                                                                                                              \
     })
 
 // --- MMU branch conditionals: stub as not-taken (MMU conditions always false) ---
