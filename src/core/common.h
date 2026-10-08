@@ -8,20 +8,13 @@
 // nothing but <stdint.h>/<stdbool.h>.  Not a place for module types, status
 // codes (status.h), assertions (gs_assert.h) or libc bundles -- a TU includes
 // the libc headers it uses itself.
-//
-// Transitional: the libc includes below are still pulled in here because many
-// TUs rely on getting them transitively; they go once those TUs include what
-// they use.
 
 #ifndef COMMON_H
 #define COMMON_H
 
-// Standard headers (transitional -- see above)
-#include <stdarg.h>
+// What the helpers below use (uint*_t, bool); nothing else
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 
 // === Unaligned byte-order accessors =========================================
 // For on-disk and on-wire structures, which are read at arbitrary offsets:

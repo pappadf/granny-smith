@@ -26,6 +26,7 @@
 #include "value.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 // Register offsets from the ASC base (mirrors asc.c / SoundPrivate.a)

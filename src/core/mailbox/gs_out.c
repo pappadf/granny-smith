@@ -9,6 +9,8 @@
 #include "job/job.h"
 #include "mailbox/mailbox.h"
 
+#include <stdio.h>
+
 void gs_out_route(const char *text, size_t len) {
     if (!len)
         return;

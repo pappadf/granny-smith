@@ -20,6 +20,9 @@
 #include "system_internal.h"
 #include "value.h"
 
+#include <stddef.h>
+#include <stdio.h>
+
 // Forward declarations — class descriptors are at the bottom of the file but
 // cpu_init / cpu_delete reference them.
 static const class_desc_t cpu_class;

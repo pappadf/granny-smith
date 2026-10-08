@@ -26,6 +26,7 @@
 #include "test_assert.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #define CODE_ADDR 0x001000u

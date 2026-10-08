@@ -22,6 +22,7 @@
 #include "iw_printer.h"
 #include "log.h"
 
+#include <stdio.h>
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("pap");

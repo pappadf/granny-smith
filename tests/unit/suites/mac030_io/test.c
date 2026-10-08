@@ -26,6 +26,7 @@
 #include "via.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #define GLUE_MIRROR MAC030_GLUE_IO_MIRROR

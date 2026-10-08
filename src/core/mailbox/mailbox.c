@@ -10,6 +10,7 @@
 #include "io/io_worker.h"
 #include "job/job.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 

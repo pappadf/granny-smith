@@ -20,6 +20,7 @@
 #include "test_assert.h"
 
 #include <stdint.h>
+#include <stdio.h>
 
 // --- globals referenced by the memory.h inline helpers ----------------------
 uint32_t g_io_penalty_remainder = 0;

@@ -63,6 +63,7 @@
 
 #include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 // Must match scheduler.c (not exported; the tests below pin the contract).

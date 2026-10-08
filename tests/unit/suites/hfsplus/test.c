@@ -25,6 +25,7 @@
 
 #include <errno.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 // ---- In-memory image backing ----------------------------------------------

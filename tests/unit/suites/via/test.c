@@ -35,6 +35,7 @@
 #include "via.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 // VIA register selects, as via.c decodes them from address lines 9-12.

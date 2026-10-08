@@ -40,6 +40,7 @@
 #include "system_internal.h"
 #include "value.h"
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

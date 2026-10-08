@@ -14,6 +14,7 @@
 #include "scsi_msgsession.h"
 #include "test_assert.h"
 
+#include <stdio.h>
 #include <string.h>
 
 // The two real capability sets, each from its own part's documentation.

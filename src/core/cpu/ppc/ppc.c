@@ -10,6 +10,7 @@
 #include "ppc_softfp.h"
 
 #include <stddef.h> // offsetof
+#include <stdio.h>
 #include <stdlib.h> // malloc / free
 
 #include "alias.h"
