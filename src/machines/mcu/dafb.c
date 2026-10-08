@@ -311,12 +311,16 @@ static void dafb_frame_event(void *source, uint64_t data) {
                             dafb->timing_valid ? dafb->frame_ns : DAFB_FALLBACK_FRAME_NS);
 }
 
-void dafb_attach_scheduler(dafb_t *dafb, struct scheduler *sched) {
+void dafb_attach_scheduler(dafb_t *dafb, struct scheduler *sched, checkpoint_t *cp) {
     if (!dafb || !sched)
         return;
     dafb->sched = sched;
     scheduler_new_event_type(sched, "dafb", dafb, "swatch_frame", dafb_frame_event);
-    if (!has_event(sched, dafb_frame_event))
+    // The frame event re-arms itself, so a restore gets it back from the
+    // checkpointed queue -- which is read only after the whole machine is
+    // built, so a has_event() probe here cannot see it: arming on that probe
+    // ran two frame chains after every restore.
+    if (!cp && !has_event(sched, dafb_frame_event))
         scheduler_new_cpu_event(sched, dafb_frame_event, dafb, 0, 0, DAFB_FALLBACK_FRAME_NS);
 }
 
