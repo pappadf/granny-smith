@@ -734,9 +734,6 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
     }
 }
 
-// Forward declarations for trace functions
-static void trace_add_pc_entry(debug_t *debug, uint32_t pc);
-
 // Forward declarations for logpoint management (IMP-604)
 void list_logpoints(debug_t *debug);
 int delete_all_logpoints(debug_t *debug);
@@ -946,23 +943,6 @@ int debug_break_and_trace(void) {
         lp = lp->next;
     }
 
-    if (debug->trace_buffer) {
-        // Standard ring buffer: advance tail past the slot we're about to
-        // clobber BEFORE the write, so the just-written entry survives the
-        // wrap.  Previous order (write then check-and-advance-tail) lost
-        // the newest entry the moment the buffer first filled.
-        int next_head = (debug->trace_head + 1) % debug->trace_buffer_size;
-        if (next_head == debug->trace_tail)
-            debug->trace_tail = (debug->trace_tail + 1) % debug->trace_buffer_size;
-        debug->trace_buffer[debug->trace_head] = current_pc;
-        debug->trace_head = next_head;
-    }
-
-    // Record PC in new trace entries buffer
-    if (debug->trace_entries) {
-        trace_add_pc_entry(debug, current_pc);
-    }
-
     return stop;
 }
 
@@ -1063,88 +1043,11 @@ void list_breakpoints(debug_t *debug) {
     }
 }
 
-// Check if tracing is active (for log capture hook)
-// The ACTIVE machine's trace: a log line goes there whichever machine wrote
-// it, including one being built alongside it.
-int debug_trace_is_active(void) {
-    debug_t *debug = global_emulator ? global_emulator->debugger : NULL;
-    return debug && debug->trace_entries != NULL;
-}
-
-// Check if debug functionality is engaged (breakpoints, logpoints, or tracing)
+// Check if debug functionality is engaged (breakpoints or logpoints)
 bool debug_active(debug_t *debug) {
     if (!debug)
         return false;
-    return debug->breakpoints != NULL || debug->logpoints != NULL || debug->trace_buffer != NULL;
-}
-
-// Capture a log message to the trace buffer
-void debug_trace_capture_log(const char *line) {
-    if (!system_is_initialized() || !line)
-        return;
-    debug_t *debug = system_debug();
-    if (!debug)
-        return;
-
-    // Only capture if trace entries buffer is active
-    if (!debug->trace_entries)
-        return;
-
-    // Allocate log buffer on first use
-    if (!debug->trace_log_buffer) {
-        debug->trace_log_buffer_size = 0x100000; // 1M log entries
-        debug->trace_log_buffer = calloc(debug->trace_log_buffer_size, sizeof(trace_log_msg_t));
-        if (!debug->trace_log_buffer)
-            return;
-        debug->trace_log_head = 0;
-        debug->trace_log_count = 0;
-    }
-
-    // Store log message in log buffer
-    uint32_t log_idx = debug->trace_log_head;
-
-    // Free old message if overwriting
-    if (debug->trace_log_buffer[log_idx].text) {
-        free(debug->trace_log_buffer[log_idx].text);
-    }
-
-    // Strip trailing newline if present
-    size_t len = strlen(line);
-    if (len > 0 && line[len - 1] == '\n') {
-        debug->trace_log_buffer[log_idx].text = strndup(line, len - 1);
-    } else {
-        debug->trace_log_buffer[log_idx].text = strdup(line);
-    }
-
-    // Advance log buffer head
-    debug->trace_log_head = (debug->trace_log_head + 1) % debug->trace_log_buffer_size;
-    debug->trace_log_count++;
-
-    // Add trace entry referencing this log
-    uint32_t entry_idx = debug->trace_entries_head;
-    debug->trace_entries[entry_idx].type = TRACE_ENTRY_LOG;
-    debug->trace_entries[entry_idx].value = log_idx;
-
-    // Advance entries head
-    debug->trace_entries_head = (debug->trace_entries_head + 1) % debug->trace_entries_size;
-    if (debug->trace_entries_head == debug->trace_entries_tail) {
-        debug->trace_entries_tail = (debug->trace_entries_tail + 1) % debug->trace_entries_size;
-    }
-}
-
-// Helper to add a PC entry to the trace
-static void trace_add_pc_entry(debug_t *debug, uint32_t pc) {
-    if (!debug->trace_entries)
-        return;
-
-    uint32_t entry_idx = debug->trace_entries_head;
-    debug->trace_entries[entry_idx].type = TRACE_ENTRY_PC;
-    debug->trace_entries[entry_idx].value = pc;
-
-    debug->trace_entries_head = (debug->trace_entries_head + 1) % debug->trace_entries_size;
-    if (debug->trace_entries_head == debug->trace_entries_tail) {
-        debug->trace_entries_tail = (debug->trace_entries_tail + 1) % debug->trace_entries_size;
-    }
+    return debug->breakpoints != NULL || debug->logpoints != NULL;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -2094,59 +1997,8 @@ void debug_cleanup(debug_t *debug) {
         g_mem_hook_owner = NULL;
     }
 
-    // Free trace log buffer entries
-    if (debug->trace_log_buffer) {
-        for (uint32_t i = 0; i < debug->trace_log_buffer_size; i++) {
-            if (debug->trace_log_buffer[i].text) {
-                free(debug->trace_log_buffer[i].text);
-            }
-        }
-        free(debug->trace_log_buffer);
-        debug->trace_log_buffer = NULL;
-    }
-
-    // Free trace entries buffer
-    if (debug->trace_entries) {
-        free(debug->trace_entries);
-        debug->trace_entries = NULL;
-    }
-
-    // Free trace buffer
-    if (debug->trace_buffer) {
-        free(debug->trace_buffer);
-        debug->trace_buffer = NULL;
-    }
-
     // Free the debug structure itself
     free(debug);
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Target instruction trace diagnostic output
-// ────────────────────────────────────────────────────────────────────────────
-
-// Print recent instruction trace for debugging
-void debug_print_target_trace(void) {
-    if (!system_is_initialized())
-        return;
-    debug_t *dbg = system_debug();
-    if (!dbg || !dbg->trace_buffer) {
-        return;
-    }
-
-    gs_outf("\n=== Target 68K instruction trace (most recent last) ===\n");
-
-    if (dbg->trace_head == dbg->trace_tail) {
-        gs_outf("(empty)\n");
-        return;
-    }
-
-    int i;
-    for (i = dbg->trace_tail; i != dbg->trace_head; i = (i + 1) % dbg->trace_buffer_size) {
-        char buf[160];
-        debugger_disasm(buf, sizeof(buf), dbg->trace_buffer[i]);
-        gs_outf("%s\n", buf);
-    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -2168,7 +2020,6 @@ static void diagnose_and_halt(const char *kind, const char *expr, const char *fi
     platform_print_host_callstack();
     debug_mac_print_target_backtrace();
     debug_mac_print_process_info_header();
-    debug_print_target_trace();
 
     gs_outf("================================================\n\n");
 

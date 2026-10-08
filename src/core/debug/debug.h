@@ -119,23 +119,6 @@ enum logpoint_kind {
     LP_KIND_RW = 3, // fire on read or write
 };
 
-// === Constants ===
-#define TRACE_ENTRY_PC  0
-#define TRACE_ENTRY_LOG 1
-
-// === Type Definitions ===
-
-// Single trace entry: either a PC value or a log message index
-typedef struct trace_entry {
-    uint8_t type; // TRACE_ENTRY_PC or TRACE_ENTRY_LOG
-    uint32_t value; // PC address or log message index
-} trace_entry_t;
-
-// Log message stored in trace log buffer
-typedef struct trace_log_msg {
-    char *text; // Log message text (owned)
-} trace_log_msg_t;
-
 // Debug state (exposed for performance-critical access)
 struct debug {
     bool active;
@@ -154,22 +137,6 @@ struct debug {
     // add; never reset, never recycled. The first allocated id is 0.
     int next_breakpoint_id;
     int next_logpoint_id;
-    // Trace buffer for PC entries
-    uint32_t *trace_buffer;
-    uint32_t trace_buffer_size;
-    int trace_head;
-    int trace_tail;
-    int trace_size;
-    // Trace log message buffer
-    trace_log_msg_t *trace_log_buffer;
-    uint32_t trace_log_buffer_size;
-    uint32_t trace_log_head;
-    uint32_t trace_log_count;
-    // Combined trace entries (PC + log references)
-    trace_entry_t *trace_entries;
-    uint32_t trace_entries_size;
-    uint32_t trace_entries_head;
-    uint32_t trace_entries_tail;
     // Object-tree binding — lifetime tied to debug_init / debug_cleanup.
     struct object *object; // root `debug` node
     struct object *bp_collection_object;
@@ -308,12 +275,6 @@ int debug_break_and_trace(void);
 
 // Breakpoint probe at the PC a scheduler run starts on (see debug.c).
 bool debug_break_on_run_entry(void);
-
-void debug_print_target_trace(void);
-
-void debug_trace_capture_log(const char *line);
-
-int debug_trace_is_active(void);
 
 bool debug_active(debug_t *debug);
 
