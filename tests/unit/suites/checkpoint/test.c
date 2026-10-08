@@ -43,6 +43,7 @@
 #include "checkpoint.h"
 #include "gs_assert.h"
 #include "object.h"
+#include "status.h"
 #include "test_assert.h"
 #include "value.h"
 
@@ -72,10 +73,10 @@ int system_checkpoint_load(const char *filename) {
     (void)filename;
     return 1;
 }
-int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
+status_t system_checkpoint(const char *filename, checkpoint_kind_t kind) {
     (void)filename;
     (void)kind;
-    return 1;
+    return STATUS_ERROR;
 }
 bool system_checkpoint_probe(void) {
     return false;

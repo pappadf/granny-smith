@@ -31,6 +31,7 @@
 
 #include "checkpoint.h"
 #include "source.h"
+#include "status.h"
 #include "io/io_worker.h"
 
 #include "log.h"
@@ -224,23 +225,23 @@ static void journal_index_add(storage_t *s, uint32_t lba) {
 }
 
 // Append a preimage entry to the journal file and index.
-static int journal_append(storage_t *s, uint32_t lba, const uint8_t *data) {
+static status_t journal_append(storage_t *s, uint32_t lba, const uint8_t *data) {
     uint8_t le[4];
     put_le32(le, lba);
     if (fwrite(le, sizeof(le), 1, s->journal_fp) != 1)
-        return GS_ERROR;
+        return STATUS_E_IO;
     // Write block data
     if (fwrite(data, s->block_size, 1, s->journal_fp) != 1)
-        return GS_ERROR;
+        return STATUS_E_IO;
     // Write-ahead: the preimage has to leave this FILE's buffer before the
     // overwrite of the block it saves can leave the delta's (the next seek
     // on the delta flushes that one).  Deferring this to the checkpoint
     // would let a crash land the new block with no preimage to undo it.
     if (fflush(s->journal_fp) != 0)
-        return GS_ERROR;
+        return STATUS_E_IO;
 
     journal_index_add(s, lba);
-    return GS_SUCCESS;
+    return STATUS_OK;
 }
 
 // Every seek in this file is fseeko with an off_t: a long is 32 bits on
@@ -288,19 +289,19 @@ static uint64_t slot_bytes(const storage_t *s) {
 
 // Cut the data area back to the slots in use, dropping any slot allocated
 // after them (v2).
-static int delta_truncate_slots(storage_t *s) {
+static status_t delta_truncate_slots(storage_t *s) {
     if (s->version != STORAGE_DELTA_VERSION)
-        return GS_SUCCESS;
+        return STATUS_OK;
     fflush(s->delta_fp);
     off_t want = (off_t)(s->data_offset + s->slots_used * slot_bytes(s));
     if (fseeko(s->delta_fp, 0, SEEK_END) != 0)
-        return GS_ERROR;
+        return STATUS_E_IO;
     off_t have = ftello(s->delta_fp);
     if (have > want && ftruncate(fileno(s->delta_fp), want) != 0) {
         LOG(0, "storage: cannot truncate the delta to its committed slots (errno=%d)", errno);
-        return GS_ERROR;
+        return STATUS_E_IO;
     }
-    return GS_SUCCESS;
+    return STATUS_OK;
 }
 
 // Scan the journal file and rebuild the in-memory index.  The index is the
@@ -308,25 +309,25 @@ static int delta_truncate_slots(storage_t *s) {
 // append) or names a block outside the device ends it,
 // and the file is truncated there so appends stay aligned and a replay
 // never writes outside the delta's data area.
-static int journal_load_index(storage_t *s) {
+static status_t journal_load_index(storage_t *s) {
     s->journal_count = 0;
     memset(s->journaled, 0, s->bitmap_bytes);
 
     // storage_new opens the journal before it gets here: a missing handle
     // is a broken instance, not an empty journal.
     if (!s->journal_fp)
-        return GS_ERROR;
+        return STATUS_ERROR;
 
     // ftello returns off_t (64-bit when _FILE_OFFSET_BITS=64) so a >2 GiB
     // journal doesn't silently truncate to int32 on wasm32.
     if (fseeko(s->journal_fp, 0, SEEK_END) != 0)
-        return GS_ERROR;
+        return STATUS_E_IO;
     off_t size = ftello(s->journal_fp);
     if (size <= 0)
-        return GS_SUCCESS;
+        return STATUS_OK;
 
     if (fseeko(s->journal_fp, 0, SEEK_SET) != 0)
-        return GS_ERROR;
+        return STATUS_E_IO;
     uint64_t entries = (uint64_t)size / STORAGE_JOURNAL_ENTRY_SIZE(s);
 
     uint64_t valid = 0;
@@ -352,12 +353,12 @@ static int journal_load_index(storage_t *s) {
         if (valid == entries)
             LOG(0, "storage: journal ends in a partial entry; discarding it");
         if (ftruncate(fileno(s->journal_fp), keep) != 0)
-            return GS_ERROR;
+            return STATUS_E_IO;
     }
     // Position at end for appending
     if (fseeko(s->journal_fp, 0, SEEK_END) != 0)
-        return GS_ERROR;
-    return GS_SUCCESS;
+        return STATUS_E_IO;
+    return STATUS_OK;
 }
 
 // ============================================================================
@@ -365,7 +366,7 @@ static int journal_load_index(storage_t *s) {
 // ============================================================================
 
 // Write the delta file header (v2: also on every commit, for slots_committed).
-static int delta_write_header(storage_t *s) {
+static status_t delta_write_header(storage_t *s) {
     uint8_t h[STORAGE_DELTA_HEADER_SIZE] = {0};
     memcpy(h, STORAGE_DELTA_MAGIC, STORAGE_DELTA_MAGIC_SIZE);
     put_le32(h + 4, s->version);
@@ -379,8 +380,8 @@ static int delta_write_header(storage_t *s) {
         len = STORAGE_DELTA_HEADER_SIZE;
     }
     if (fseeko(s->delta_fp, 0, SEEK_SET) != 0 || fwrite(h, len, 1, s->delta_fp) != 1)
-        return GS_ERROR;
-    return GS_SUCCESS;
+        return STATUS_E_IO;
+    return STATUS_OK;
 }
 
 // Bytes of metadata (header, bitmaps, tables) before the data area,
@@ -393,7 +394,7 @@ static size_t delta_meta_bytes(const storage_t *s) {
 }
 
 // Size the per-version metadata from the geometry and allocate the tables.
-static int delta_layout_init(storage_t *s) {
+static status_t delta_layout_init(storage_t *s) {
     s->bitmap_offset = s->version == STORAGE_DELTA_VERSION ? STORAGE_DELTA_HEADER_SIZE : STORAGE_DELTA_HEADER_V1;
     if (s->version == STORAGE_DELTA_VERSION) {
         s->cluster_count = (s->block_count + s->cluster_blocks - 1) / s->cluster_blocks;
@@ -403,34 +404,34 @@ static int delta_layout_init(storage_t *s) {
         s->table = calloc(1, s->table_bytes);
         s->committed_table = calloc(1, s->table_bytes);
         if (!s->table || !s->committed_table)
-            return GS_ERROR;
+            return STATUS_E_NOMEM;
     }
     s->data_offset = delta_meta_bytes(s);
-    return GS_SUCCESS;
+    return STATUS_OK;
 }
 
 // Read and validate the delta file header; sets the version and layout.
-static int delta_read_header(storage_t *s) {
+static status_t delta_read_header(storage_t *s) {
     uint8_t h[STORAGE_DELTA_HEADER_SIZE];
     if (fseeko(s->delta_fp, 0, SEEK_SET) != 0 || fread(h, STORAGE_DELTA_HEADER_V1, 1, s->delta_fp) != 1)
-        return GS_ERROR;
+        return STATUS_E_IO;
     if (memcmp(h, STORAGE_DELTA_MAGIC, STORAGE_DELTA_MAGIC_SIZE) != 0)
-        return GS_ERROR;
+        return STATUS_E_INVAL;
     uint32_t version = get_le32(h + 4);
     if (version != STORAGE_DELTA_VERSION && version != STORAGE_DELTA_VERSION_V1)
-        return GS_ERROR;
+        return STATUS_E_INVAL;
     if (get_le64(h + 8) != s->block_count || get_le32(h + 16) != s->block_size)
-        return GS_ERROR;
+        return STATUS_E_INVAL;
     s->version = version;
     if (version == STORAGE_DELTA_VERSION) {
         if (fread(h + STORAGE_DELTA_HEADER_V1, STORAGE_DELTA_HEADER_SIZE - STORAGE_DELTA_HEADER_V1, 1, s->delta_fp) !=
             1)
-            return GS_ERROR;
+            return STATUS_E_IO;
         s->cluster_blocks = get_le32(h + 20);
         if (s->cluster_blocks == 0 || s->cluster_blocks > (1u << 20))
-            return GS_ERROR;
+            return STATUS_E_INVAL;
         if (get_le64(h + 24) != (s->block_count + s->cluster_blocks - 1) / s->cluster_blocks)
-            return GS_ERROR;
+            return STATUS_E_INVAL;
         s->slots_committed = get_le64(h + 32);
     }
     return delta_layout_init(s);
@@ -439,47 +440,48 @@ static int delta_read_header(storage_t *s) {
 // Flush the metadata: both bitmaps, both cluster tables and the header's
 // slot count.  The data the tables point at is flushed first, so a table
 // never names a slot the file does not yet hold.
-static int delta_flush_bitmaps(storage_t *s) {
+static status_t delta_flush_bitmaps(storage_t *s) {
     fflush(s->delta_fp);
     if (fseeko(s->delta_fp, (off_t)s->bitmap_offset, SEEK_SET) != 0)
-        return GS_ERROR;
+        return STATUS_E_IO;
     if (fwrite(s->bitmap, s->bitmap_bytes, 1, s->delta_fp) != 1)
-        return GS_ERROR;
+        return STATUS_E_IO;
     if (fwrite(s->committed_bitmap, s->bitmap_bytes, 1, s->delta_fp) != 1)
-        return GS_ERROR;
+        return STATUS_E_IO;
     if (s->version == STORAGE_DELTA_VERSION) {
         if (fwrite(s->table, s->table_bytes, 1, s->delta_fp) != 1)
-            return GS_ERROR;
+            return STATUS_E_IO;
         if (fwrite(s->committed_table, s->table_bytes, 1, s->delta_fp) != 1)
-            return GS_ERROR;
-        if (delta_write_header(s) != GS_SUCCESS)
-            return GS_ERROR;
+            return STATUS_E_IO;
+        status_t rc = delta_write_header(s);
+        if (rc != STATUS_OK)
+            return rc;
     }
     fflush(s->delta_fp);
-    return GS_SUCCESS;
+    return STATUS_OK;
 }
 
 // Read the bitmaps (and v2's tables) from the delta.  A v2 delta reopens at
 // its last commit: slots past slots_committed are cut away, as a rollback
 // would, and a current table naming one of them (a write-back torn by a
 // crash) falls back to the committed state.
-static int delta_read_bitmaps(storage_t *s) {
+static status_t delta_read_bitmaps(storage_t *s) {
     if (fseeko(s->delta_fp, (off_t)s->bitmap_offset, SEEK_SET) != 0)
-        return GS_ERROR;
+        return STATUS_E_IO;
     if (fread(s->bitmap, s->bitmap_bytes, 1, s->delta_fp) != 1)
-        return GS_ERROR;
+        return STATUS_E_IO;
     if (fread(s->committed_bitmap, s->bitmap_bytes, 1, s->delta_fp) != 1)
-        return GS_ERROR;
+        return STATUS_E_IO;
     if (s->version != STORAGE_DELTA_VERSION)
-        return GS_SUCCESS;
+        return STATUS_OK;
     if (fread(s->table, s->table_bytes, 1, s->delta_fp) != 1)
-        return GS_ERROR;
+        return STATUS_E_IO;
     if (fread(s->committed_table, s->table_bytes, 1, s->delta_fp) != 1)
-        return GS_ERROR;
+        return STATUS_E_IO;
     bool torn = false;
     for (uint64_t c = 0; c < s->cluster_count; c++) {
         if (s->committed_table[c] > s->slots_committed)
-            return GS_ERROR; // the committed state itself is inconsistent
+            return STATUS_E_INVAL; // the committed state itself is inconsistent
         if (s->table[c] > s->slots_committed || (s->committed_table[c] && s->table[c] != s->committed_table[c]))
             torn = true;
     }
@@ -493,14 +495,17 @@ static int delta_read_bitmaps(storage_t *s) {
 }
 
 // Write a fresh delta's metadata: header, zero bitmaps and tables.
-static int delta_create(storage_t *s) {
-    if (delta_write_header(s) != GS_SUCCESS || delta_flush_bitmaps(s) != GS_SUCCESS)
-        return GS_ERROR;
+static status_t delta_create(storage_t *s) {
+    status_t rc = delta_write_header(s);
+    if (rc == STATUS_OK)
+        rc = delta_flush_bitmaps(s);
+    if (rc != STATUS_OK)
+        return rc;
     // Pad the metadata to the data area, so slot 0 starts where it should.
     off_t end = (off_t)s->data_offset;
     if (ftruncate(fileno(s->delta_fp), end) != 0)
-        return GS_ERROR;
-    return GS_SUCCESS;
+        return STATUS_E_IO;
+    return STATUS_OK;
 }
 
 // ============================================================================
@@ -525,30 +530,31 @@ static int checkpoint_storage_read_cb(void *ctx, void *data, size_t size) {
 // Public API: Lifecycle
 // ============================================================================
 
-int storage_new(const storage_config_t *config, storage_t **out_storage) {
+status_t storage_new(const storage_config_t *config, storage_t **out_storage) {
     if (!config || !out_storage || !config->delta_path || !config->journal_path)
-        return GS_ERROR;
+        return STATUS_E_INVAL;
     // Block size must be word-aligned (the Lisa parallel bus is word-addressed)
     // and bounded so the journal/streaming stack buffers stay safe.  512 (flat
     // disks) and 532 (ProFile: 512 data + 20 inline tag) both pass.
     if (config->block_size < STORAGE_BLOCK_SIZE || config->block_size > STORAGE_MAX_BLOCK_SIZE ||
         (config->block_size % 4) != 0)
-        return GS_ERROR;
+        return STATUS_E_INVAL;
     if (config->block_count == 0)
-        return GS_ERROR;
+        return STATUS_E_INVAL;
     // LBAs are uint32_t internally — anything larger silently truncates
     // when an LBA is computed.
     if (config->block_count > UINT32_MAX)
-        return GS_ERROR;
+        return STATUS_E_RANGE;
 
     storage_t *s = calloc(1, sizeof(storage_t));
     if (!s)
-        return GS_ERROR;
+        return STATUS_E_NOMEM;
 
     s->block_count = config->block_count;
     s->block_size = config->block_size;
     s->delta_path = strdup(config->delta_path);
     s->bitmap_bytes = (size_t)((config->block_count + 7) / 8);
+    status_t rc = STATUS_E_NOMEM; // what a `goto fail` reports
 
     // Allocate bitmaps
     s->bitmap = calloc(1, s->bitmap_bytes);
@@ -577,47 +583,54 @@ int storage_new(const storage_config_t *config, storage_t **out_storage) {
     } else if (errno == ENOENT) {
         s->delta_fp = fopen(config->delta_path, "w+b");
     }
-    if (!s->delta_fp)
+    if (!s->delta_fp) {
+        rc = STATUS_E_IO;
         goto fail;
+    }
 
     if (delta_exists) {
         // Read and validate existing header + bitmaps (either version)
-        if (delta_read_header(s) != GS_SUCCESS)
-            goto fail;
-        if (delta_read_bitmaps(s) != GS_SUCCESS)
-            goto fail;
+        rc = delta_read_header(s);
+        if (rc == STATUS_OK)
+            rc = delta_read_bitmaps(s);
     } else {
         // A new delta is always version 2: header, empty bitmaps and tables
         s->version = STORAGE_DELTA_VERSION;
         s->cluster_blocks = STORAGE_DELTA_CLUSTER_BLOCKS;
-        if (delta_layout_init(s) != GS_SUCCESS || delta_create(s) != GS_SUCCESS)
-            goto fail;
+        rc = delta_layout_init(s);
+        if (rc == STATUS_OK)
+            rc = delta_create(s);
     }
+    if (rc != STATUS_OK)
+        goto fail;
 
     // Open or create journal
     s->journal_fp = fopen(config->journal_path, "a+b");
-    if (!s->journal_fp)
+    if (!s->journal_fp) {
+        rc = STATUS_E_IO;
         goto fail;
+    }
 
     // Load journal index (does not replay — caller decides).  It repairs a
     // damaged tail itself; failing here means it could not (the file could
     // not be read or truncated back into alignment).
-    if (journal_load_index(s) != GS_SUCCESS)
+    rc = journal_load_index(s);
+    if (rc != STATUS_OK)
         goto fail;
 
     live_add(s);
     *out_storage = s;
-    return GS_SUCCESS;
+    return STATUS_OK;
 
 fail:
     storage_delete(s);
     *out_storage = NULL;
-    return GS_ERROR;
+    return rc;
 }
 
-int storage_delete(storage_t *storage) {
+status_t storage_delete(storage_t *storage) {
     if (!storage)
-        return GS_SUCCESS;
+        return STATUS_OK;
     live_remove(storage);
     free(storage->delta_path);
     gs_source_release(storage->base);
@@ -631,22 +644,22 @@ int storage_delete(storage_t *storage) {
     free(storage->committed_table);
     free(storage->journaled);
     free(storage);
-    return GS_SUCCESS;
+    return STATUS_OK;
 }
 
 // ============================================================================
 // Public API: Block I/O
 // ============================================================================
 
-int storage_read_block(storage_t *storage, size_t offset, void *buffer) {
+status_t storage_read_block(storage_t *storage, size_t offset, void *buffer) {
     if (!storage || !buffer)
-        return GS_ERROR;
+        return STATUS_E_INVAL;
     if (offset % storage->block_size != 0)
-        return GS_ERROR;
+        return STATUS_E_INVAL;
 
     uint64_t lba64 = offset / storage->block_size;
     if (lba64 >= storage->block_count)
-        return GS_ERROR;
+        return STATUS_E_RANGE;
     uint32_t lba = (uint32_t)lba64;
 
     if (bitmap_test(storage->bitmap, lba)) {
@@ -656,7 +669,7 @@ int storage_read_block(storage_t *storage, size_t offset, void *buffer) {
         if (pos < 0 || fseeko(storage->delta_fp, pos, SEEK_SET) != 0 ||
             fread(buffer, storage->block_size, 1, storage->delta_fp) != 1) {
             memset(buffer, 0, storage->block_size);
-            return GS_ERROR;
+            return STATUS_E_IO;
         }
     } else if (storage->base) {
         // Unmodified block — read from the base.  A block the base does not
@@ -668,32 +681,32 @@ int storage_read_block(storage_t *storage, size_t offset, void *buffer) {
             memset(buffer, 0, storage->block_size);
         } else if (gs_source_read_exact(storage->base, at, buffer, storage->block_size) != 0) {
             memset(buffer, 0, storage->block_size);
-            return GS_ERROR;
+            return STATUS_E_IO;
         }
     } else {
         // No base file — unwritten block is zeros
         memset(buffer, 0, storage->block_size);
     }
 
-    return GS_SUCCESS;
+    return STATUS_OK;
 }
 
-int storage_write_block(storage_t *storage, size_t offset, const void *buffer) {
+status_t storage_write_block(storage_t *storage, size_t offset, const void *buffer) {
     if (!storage || !buffer)
-        return GS_ERROR;
+        return STATUS_E_INVAL;
     if (offset % storage->block_size != 0)
-        return GS_ERROR;
+        return STATUS_E_INVAL;
 
     uint64_t lba64 = offset / storage->block_size;
     if (lba64 >= storage->block_count)
-        return GS_ERROR;
+        return STATUS_E_RANGE;
     uint32_t lba = (uint32_t)lba64;
 
     // An export in flight reads the delta through its own handle from a
     // bitmap it copied: a write now would tear its copy.  Refused, as a
     // drive being copied refuses.
     if (storage->export_locks > 0)
-        return GS_ERROR;
+        return STATUS_ERROR;
 
     // Where the block goes.  The first write to any block of a cluster
     // gives the cluster the next slot at the end of the data area; a
@@ -703,7 +716,7 @@ int storage_write_block(storage_t *storage, size_t offset, const void *buffer) {
     off_t pos = delta_pos(&l, lba);
     if (pos < 0) {
         if (storage->slots_used >= UINT32_MAX)
-            return GS_ERROR;
+            return STATUS_E_RANGE;
         storage->table[lba / storage->cluster_blocks] = (uint32_t)++storage->slots_used;
         storage->bitmap_dirty = true;
         pos = delta_pos(&l, lba);
@@ -714,15 +727,16 @@ int storage_write_block(storage_t *storage, size_t offset, const void *buffer) {
         uint8_t old[STORAGE_MAX_BLOCK_SIZE];
         if (fseeko(storage->delta_fp, pos, SEEK_SET) != 0 ||
             fread(old, storage->block_size, 1, storage->delta_fp) != 1) {
-            return GS_ERROR;
+            return STATUS_E_IO;
         }
-        if (journal_append(storage, lba, old) != GS_SUCCESS)
-            return GS_ERROR;
+        status_t rc = journal_append(storage, lba, old);
+        if (rc != STATUS_OK)
+            return rc;
     }
 
     // Write new data to delta
     if (fseeko(storage->delta_fp, pos, SEEK_SET) != 0 || fwrite(buffer, storage->block_size, 1, storage->delta_fp) != 1)
-        return GS_ERROR;
+        return STATUS_E_IO;
 
     // Update the bitmap in memory only.  The delta's on-disk bitmap changes
     // at the next commit, and delta_flush_bitmaps flushes the block data
@@ -731,7 +745,7 @@ int storage_write_block(storage_t *storage, size_t offset, const void *buffer) {
     bitmap_set(storage->bitmap, lba);
     storage->bitmap_dirty = true;
 
-    return GS_SUCCESS;
+    return STATUS_OK;
 }
 
 // ============================================================================
@@ -740,19 +754,19 @@ int storage_write_block(storage_t *storage, size_t offset, const void *buffer) {
 
 // Truncate the journal.  If ftruncate fails, journal_count is left alone so
 // the in-memory index still matches whatever stayed on disk.
-static int journal_clear(storage_t *storage) {
+static status_t journal_clear(storage_t *storage) {
     if (storage->journal_fp) {
         int fd = fileno(storage->journal_fp);
         if (fd >= 0 && ftruncate(fd, 0) != 0) {
             LOG(0, "storage: ftruncate failed on journal (errno=%d); keeping in-memory index", errno);
-            return GS_ERROR;
+            return STATUS_E_IO;
         }
         fseeko(storage->journal_fp, 0, SEEK_SET);
     }
     if (storage->journal_count)
         memset(storage->journaled, 0, storage->bitmap_bytes);
     storage->journal_count = 0;
-    return GS_SUCCESS;
+    return STATUS_OK;
 }
 
 // True when anything was written since the last commit.
@@ -760,36 +774,36 @@ static bool uncommitted(const storage_t *s) {
     return s->journal_count > 0 || s->bitmap_dirty || s->slots_used != s->slots_committed;
 }
 
-int storage_apply_rollback(storage_t *storage) {
+status_t storage_apply_rollback(storage_t *storage) {
     if (!storage)
-        return GS_ERROR;
+        return STATUS_E_INVAL;
     if (!uncommitted(storage))
-        return GS_SUCCESS;
+        return STATUS_OK;
 
     // Replay journal: restore preimages to delta.  Every journaled block was
     // committed, so its cluster's slot is committed and unchanged.
     if (storage->journal_count > 0 && fseeko(storage->journal_fp, 0, SEEK_SET) != 0)
-        return GS_ERROR;
+        return STATUS_E_IO;
     delta_layout_t l = layout_of(storage);
     for (size_t i = 0; i < storage->journal_count; i++) {
         uint8_t le[4];
         uint8_t data[STORAGE_MAX_BLOCK_SIZE];
 
         if (fread(le, sizeof(le), 1, storage->journal_fp) != 1)
-            return GS_ERROR;
+            return STATUS_E_IO;
         uint32_t lba = get_le32(le);
         if (fread(data, storage->block_size, 1, storage->journal_fp) != 1)
-            return GS_ERROR;
+            return STATUS_E_IO;
 
         // journal_load_index admitted only in-range blocks, but this reads
         // the file again: never write a block outside the device.
         if (lba >= storage->block_count)
-            return GS_ERROR;
+            return STATUS_E_INVAL;
         // Write preimage back to delta
         off_t pos = delta_pos(&l, lba);
         if (pos < 0 || fseeko(storage->delta_fp, pos, SEEK_SET) != 0 ||
             fwrite(data, storage->block_size, 1, storage->delta_fp) != 1)
-            return GS_ERROR;
+            return STATUS_E_IO;
     }
 
     // Restore bitmap and tables to the committed state; the slots allocated
@@ -799,37 +813,40 @@ int storage_apply_rollback(storage_t *storage) {
     if (storage->version == STORAGE_DELTA_VERSION) {
         memcpy(storage->table, storage->committed_table, storage->table_bytes);
         storage->slots_used = storage->slots_committed;
-        if (delta_truncate_slots(storage) != GS_SUCCESS)
-            return GS_ERROR;
+        status_t rc = delta_truncate_slots(storage);
+        if (rc != STATUS_OK)
+            return rc;
     }
 
     // Flush bitmaps and truncate journal
-    if (delta_flush_bitmaps(storage) != GS_SUCCESS)
-        return GS_ERROR;
+    status_t rc = delta_flush_bitmaps(storage);
+    if (rc != STATUS_OK)
+        return rc;
     storage->bitmap_dirty = false;
     return journal_clear(storage);
 }
 
 // Make the current state the committed one, in memory and on disk.
-static int commit_state(storage_t *storage) {
+static status_t commit_state(storage_t *storage) {
     memcpy(storage->committed_bitmap, storage->bitmap, storage->bitmap_bytes);
     if (storage->version == STORAGE_DELTA_VERSION) {
         memcpy(storage->committed_table, storage->table, storage->table_bytes);
         storage->slots_committed = storage->slots_used;
     }
-    if (delta_flush_bitmaps(storage) != GS_SUCCESS)
-        return GS_ERROR;
+    status_t rc = delta_flush_bitmaps(storage);
+    if (rc != STATUS_OK)
+        return rc;
     storage->bitmap_dirty = false;
     return journal_clear(storage);
 }
 
-int storage_clear_rollback(storage_t *storage) {
+status_t storage_clear_rollback(storage_t *storage) {
     if (!storage)
-        return GS_ERROR;
+        return STATUS_E_INVAL;
     // Only do OPFS I/O if something changed since last commit.
     // This makes back-to-back checkpoints with no intervening writes free.
     if (!uncommitted(storage))
-        return GS_SUCCESS;
+        return STATUS_OK;
     return commit_state(storage);
 }
 
@@ -837,13 +854,13 @@ int storage_clear_rollback(storage_t *storage) {
 // Public API: Checkpointing
 // ============================================================================
 
-int storage_checkpoint(storage_t *storage, checkpoint_t *checkpoint) {
+status_t storage_checkpoint(storage_t *storage, checkpoint_t *checkpoint) {
     if (!storage)
-        return GS_ERROR;
+        return STATUS_E_INVAL;
 
     // A commit without a checkpoint stream is storage_clear_rollback.
     if (!checkpoint)
-        return GS_ERROR;
+        return STATUS_E_INVAL;
 
     // Write snapshot header
     storage_snapshot_header_t header = {0};
@@ -858,13 +875,13 @@ int storage_checkpoint(storage_t *storage, checkpoint_t *checkpoint) {
     put_le32(h + 16, header.block_size);
     system_write_checkpoint_data(checkpoint, h, sizeof(h));
     if (checkpoint_has_error(checkpoint))
-        return GS_ERROR;
+        return STATUS_ERROR;
 
     if (header.has_data) {
         // Consolidated: stream all blocks
         checkpoint_stream_ctx_t ctx = {checkpoint};
-        int rc = storage_save_state(storage, &ctx, checkpoint_storage_write_cb);
-        if (rc != GS_SUCCESS)
+        status_t rc = storage_save_state(storage, &ctx, checkpoint_storage_write_cb);
+        if (rc != STATUS_OK)
             return rc;
     } else {
         // Quick: the current bitmap, then where the delta keeps those blocks
@@ -880,7 +897,7 @@ int storage_checkpoint(storage_t *storage, checkpoint_t *checkpoint) {
         if (cb)
             system_write_checkpoint_data(checkpoint, storage->table, storage->table_bytes);
         if (checkpoint_has_error(checkpoint))
-            return GS_ERROR;
+            return STATUS_ERROR;
     }
 
     return storage_clear_rollback(storage);
@@ -888,72 +905,72 @@ int storage_checkpoint(storage_t *storage, checkpoint_t *checkpoint) {
 
 // Read a quick payload's layout fields after its bitmap.  The table goes to
 // `table` (table_bytes of it) when non-NULL, else is skipped.
-static int read_quick_layout(checkpoint_t *checkpoint, uint64_t block_count, uint32_t *cb, uint64_t *slots,
-                             uint32_t *table, size_t table_bytes) {
+static status_t read_quick_layout(checkpoint_t *checkpoint, uint64_t block_count, uint32_t *cb, uint64_t *slots,
+                                  uint32_t *table, size_t table_bytes) {
     uint8_t le[8];
     system_read_checkpoint_data(checkpoint, le, 4);
     *cb = get_le32(le);
     system_read_checkpoint_data(checkpoint, le, 8);
     *slots = get_le64(le);
     if (checkpoint_has_error(checkpoint))
-        return GS_ERROR;
+        return STATUS_ERROR;
     if (!*cb)
-        return GS_SUCCESS;
+        return STATUS_OK;
     if (*cb > (1u << 20))
-        return GS_ERROR;
+        return STATUS_E_INVAL;
     size_t n = (size_t)((block_count + *cb - 1) / *cb) * sizeof(uint32_t);
     if (table && n != table_bytes)
-        return GS_ERROR;
+        return STATUS_E_INVAL;
     uint32_t *buf = table ? table : malloc(n ? n : 1);
     if (!buf)
-        return GS_ERROR;
+        return STATUS_E_NOMEM;
     system_read_checkpoint_data(checkpoint, buf, n);
     if (!table)
         free(buf);
-    return checkpoint_has_error(checkpoint) ? GS_ERROR : GS_SUCCESS;
+    return checkpoint_has_error(checkpoint) ? STATUS_ERROR : STATUS_OK;
 }
 
 // Helper: skip/discard snapshot data from a checkpoint stream
-static int storage_skip_snapshot(checkpoint_t *checkpoint, const storage_snapshot_header_t *header) {
+static status_t storage_skip_snapshot(checkpoint_t *checkpoint, const storage_snapshot_header_t *header) {
     if (header->has_data) {
         // Skip all block data
         uint8_t discard[STORAGE_MAX_BLOCK_SIZE];
         for (uint64_t i = 0; i < header->block_count; i++) {
             system_read_checkpoint_data(checkpoint, discard, header->block_size);
             if (checkpoint_has_error(checkpoint))
-                return GS_ERROR;
+                return STATUS_ERROR;
         }
     } else {
         // Skip bitmap
         size_t bm = (size_t)((header->block_count + 7) / 8);
         uint8_t *discard = malloc(bm);
         if (!discard)
-            return GS_ERROR;
+            return STATUS_E_NOMEM;
         system_read_checkpoint_data(checkpoint, discard, bm);
         free(discard);
         if (checkpoint_has_error(checkpoint))
-            return GS_ERROR;
+            return STATUS_ERROR;
         uint32_t cb;
         uint64_t slots;
         return read_quick_layout(checkpoint, header->block_count, &cb, &slots, NULL, 0);
     }
-    return GS_SUCCESS;
+    return STATUS_OK;
 }
 
-int storage_restore_from_checkpoint(storage_t *storage, checkpoint_t *checkpoint) {
+status_t storage_restore_from_checkpoint(storage_t *storage, checkpoint_t *checkpoint) {
     if (!checkpoint)
-        return GS_ERROR;
+        return STATUS_E_INVAL;
 
     // Read snapshot header
     uint8_t h[STORAGE_SNAPSHOT_HEADER_BYTES];
     system_read_checkpoint_data(checkpoint, h, sizeof(h));
     if (checkpoint_has_error(checkpoint))
-        return GS_ERROR;
+        return STATUS_ERROR;
     storage_snapshot_header_t header = {
         .version = get_le32(h), .has_data = h[4], .block_count = get_le64(h + 8), .block_size = get_le32(h + 16)};
     if (header.version != STORAGE_SNAPSHOT_VERSION) {
         LOG(0, "storage: snapshot version mismatch (got %u, expected %u)", header.version, STORAGE_SNAPSHOT_VERSION);
-        return GS_ERROR;
+        return STATUS_E_INVAL;
     }
 
     // NULL storage — consume and discard
@@ -964,7 +981,7 @@ int storage_restore_from_checkpoint(storage_t *storage, checkpoint_t *checkpoint
     if (header.block_count != storage->block_count || header.block_size != storage->block_size) {
         LOG(0, "storage: geometry mismatch (snapshot %" PRIu64 "x%u, storage %" PRIu64 "x%u)", header.block_count,
             header.block_size, storage->block_count, storage->block_size);
-        return GS_ERROR;
+        return STATUS_E_INVAL;
     }
 
     if (header.has_data) {
@@ -979,19 +996,21 @@ int storage_restore_from_checkpoint(storage_t *storage, checkpoint_t *checkpoint
     // past the committed high-water mark.  Roll back first to restore the
     // delta to its committed (= checkpoint-time) state before applying the
     // checkpoint's bitmap and table.
-    if (storage_apply_rollback(storage) != GS_SUCCESS)
-        return GS_ERROR;
+    status_t rc = storage_apply_rollback(storage);
+    if (rc != STATUS_OK)
+        return rc;
 
     // Now read the checkpoint bitmap and layout and set them as current
     system_read_checkpoint_data(checkpoint, storage->bitmap, storage->bitmap_bytes);
     if (checkpoint_has_error(checkpoint))
-        return GS_ERROR;
+        return STATUS_ERROR;
     uint32_t cb = 0;
     uint64_t slots = 0;
     bool v2 = storage->version == STORAGE_DELTA_VERSION;
-    if (read_quick_layout(checkpoint, header.block_count, &cb, &slots, v2 ? storage->table : NULL,
-                          storage->table_bytes) != GS_SUCCESS)
-        return GS_ERROR;
+    rc = read_quick_layout(checkpoint, header.block_count, &cb, &slots, v2 ? storage->table : NULL,
+                           storage->table_bytes);
+    if (rc != STATUS_OK)
+        return rc;
     if (cb != (v2 ? storage->cluster_blocks : 0) || (v2 && slots > storage->slots_committed)) {
         LOG(0,
             "storage: checkpoint's delta layout does not match the delta (clusters %u/%u, slots %" PRIu64 "/%" PRIu64
@@ -1000,18 +1019,19 @@ int storage_restore_from_checkpoint(storage_t *storage, checkpoint_t *checkpoint
         memcpy(storage->bitmap, storage->committed_bitmap, storage->bitmap_bytes);
         if (v2)
             memcpy(storage->table, storage->committed_table, storage->table_bytes);
-        return GS_ERROR;
+        return STATUS_E_INVAL;
     }
     if (v2) {
         for (uint64_t c = 0; c < storage->cluster_count; c++)
             if (storage->table[c] > slots) {
                 memcpy(storage->table, storage->committed_table, storage->table_bytes);
                 memcpy(storage->bitmap, storage->committed_bitmap, storage->bitmap_bytes);
-                return GS_ERROR;
+                return STATUS_E_INVAL;
             }
         storage->slots_used = slots;
-        if (delta_truncate_slots(storage) != GS_SUCCESS)
-            return GS_ERROR;
+        rc = delta_truncate_slots(storage);
+        if (rc != STATUS_OK)
+            return rc;
     }
 
     // Commit: the delta data now matches this bitmap
@@ -1049,6 +1069,8 @@ static block_src_t block_source(const block_src_view_t *s, uint64_t block) {
     return s->base ? BLOCK_SRC_BASE : BLOCK_SRC_ZERO;
 }
 
+// Stream every block through write_cb.  A status_t, or -ECANCELED when
+// `cancellable` and the I/O job was cancelled.
 static int stream_blocks(const block_src_view_t *storage, void *context, storage_write_callback_t write_cb,
                          bool cancellable) {
     // Chunk sized in whole blocks.  If the staging allocation fails, fall back
@@ -1061,10 +1083,10 @@ static int stream_blocks(const block_src_view_t *storage, void *context, storage
         chunk_blocks = 1;
         buffer = malloc(storage->block_size);
         if (!buffer)
-            return GS_ERROR;
+            return STATUS_E_NOMEM;
     }
 
-    int rc = GS_SUCCESS;
+    int rc = STATUS_OK;
     uint64_t block = 0;
     while (block < storage->block_count) {
         if (cancellable && io_check_cancelled()) {
@@ -1111,7 +1133,7 @@ static int stream_blocks(const block_src_view_t *storage, void *context, storage
                 // time and every bit-set block therefore lies within EOF, so a
                 // short read there is real corruption and stays an error.
                 if (src == BLOCK_SRC_DELTA) {
-                    rc = GS_ERROR;
+                    rc = STATUS_E_IO;
                     break;
                 }
                 // storage_read_block zeroes a block it could not read *in
@@ -1127,11 +1149,11 @@ static int stream_blocks(const block_src_view_t *storage, void *context, storage
         // storage_load_state pulls it back a block at a time.
         for (uint64_t i = 0; i < run; i++) {
             if (write_cb(context, buffer + (size_t)i * storage->block_size, storage->block_size) != 0) {
-                rc = GS_ERROR;
+                rc = STATUS_ERROR;
                 break;
             }
         }
-        if (rc != GS_SUCCESS)
+        if (rc != STATUS_OK)
             break;
         block += run;
         if (cancellable)
@@ -1142,9 +1164,9 @@ static int stream_blocks(const block_src_view_t *storage, void *context, storage
     return rc;
 }
 
-int storage_save_state(storage_t *storage, void *context, storage_write_callback_t write_cb) {
+status_t storage_save_state(storage_t *storage, void *context, storage_write_callback_t write_cb) {
     if (!storage || !context || !write_cb)
-        return GS_ERROR;
+        return STATUS_E_INVAL;
     block_src_view_t v = {
         .base = storage->base,
         .delta_fp = storage->delta_fp,
@@ -1153,7 +1175,8 @@ int storage_save_state(storage_t *storage, void *context, storage_write_callback
         .block_size = storage->block_size,
         .layout = layout_of(storage),
     };
-    return stream_blocks(&v, context, write_cb, false);
+    // Not cancellable, so the result is always a status_t
+    return (status_t)stream_blocks(&v, context, write_cb, false);
 }
 
 // === Export views ============================================================
@@ -1217,7 +1240,7 @@ storage_export_view_t *storage_export_view_begin(storage_t *storage) {
 
 int storage_export_view_write(storage_export_view_t *v, void *context, storage_write_callback_t write_cb) {
     if (!v || !context || !write_cb)
-        return GS_ERROR;
+        return STATUS_E_INVAL;
     return stream_blocks(&v->src, context, write_cb, true);
 }
 
@@ -1234,14 +1257,14 @@ void storage_export_view_end(storage_export_view_t *v) {
     free(v);
 }
 
-static int read_exact(storage_read_callback_t read_cb, void *context, void *buf, size_t size) {
+static status_t read_exact(storage_read_callback_t read_cb, void *context, void *buf, size_t size) {
     int got = read_cb(context, buf, size);
-    return (got == (int)size) ? GS_SUCCESS : GS_ERROR;
+    return (got == (int)size) ? STATUS_OK : STATUS_ERROR;
 }
 
-int storage_load_state(storage_t *storage, void *context, storage_read_callback_t read_cb) {
+status_t storage_load_state(storage_t *storage, void *context, storage_read_callback_t read_cb) {
     if (!storage || !context || !read_cb)
-        return GS_ERROR;
+        return STATUS_E_INVAL;
 
     // The stream yields a block at a time, but the delta is written a run at
     // a time: a seek and a write per block was a filesystem call per 512
@@ -1259,7 +1282,7 @@ int storage_load_state(storage_t *storage, void *context, storage_read_callback_
         chunk_blocks = 1;
     }
 
-    int rc = GS_SUCCESS;
+    status_t rc = STATUS_OK;
     uint64_t run = 0; // blocks staged in buffer
     off_t run_pos = 0; // delta position of the run's first block
     for (uint64_t block = 0; block < storage->block_count; block++) {
@@ -1275,7 +1298,7 @@ int storage_load_state(storage_t *storage, void *context, storage_read_callback_
         if (run && (run == chunk_blocks || pos != run_pos + (off_t)(run * storage->block_size))) {
             if (fseeko(storage->delta_fp, run_pos, SEEK_SET) != 0 ||
                 fwrite(buffer, storage->block_size, run, storage->delta_fp) != run) {
-                rc = GS_ERROR;
+                rc = STATUS_E_IO;
                 break;
             }
             run = 0;
@@ -1284,21 +1307,21 @@ int storage_load_state(storage_t *storage, void *context, storage_read_callback_
             run_pos = pos;
 
         if (read_exact(read_cb, context, buffer + (size_t)run * storage->block_size, storage->block_size) !=
-            GS_SUCCESS) {
-            rc = GS_ERROR;
+            STATUS_OK) {
+            rc = STATUS_ERROR;
             break;
         }
         run++;
         bitmap_set(storage->bitmap, (uint32_t)block);
     }
-    if (rc == GS_SUCCESS && run &&
+    if (rc == STATUS_OK && run &&
         (fseeko(storage->delta_fp, run_pos, SEEK_SET) != 0 ||
          fwrite(buffer, storage->block_size, run, storage->delta_fp) != run))
-        rc = GS_ERROR;
+        rc = STATUS_E_IO;
 
     if (buffer != one_block)
         free(buffer);
-    if (rc != GS_SUCCESS)
+    if (rc != STATUS_OK)
         return rc;
 
     // Commit: bitmaps → delta, clear journal
@@ -1309,7 +1332,7 @@ int storage_load_state(storage_t *storage, void *context, storage_read_callback_
 // Public API: Maintenance
 // ============================================================================
 
-int storage_tick(storage_t *storage) {
+status_t storage_tick(storage_t *storage) {
     (void)storage;
-    return GS_SUCCESS;
+    return STATUS_OK;
 }

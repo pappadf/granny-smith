@@ -12,6 +12,7 @@
 #include "image.h"
 #include "image_wrap.h"
 #include "source.h"
+#include "status.h"
 #include "storage.h"
 #include "system_internal.h" // MAX_IMAGES -- the real bound on the restored list
 
@@ -118,7 +119,7 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
     // keeping the stream in step.  Once the checkpoint is flagged, though, the
     // restore is over -- the caller stops at the first damaged entry -- and
     // reading on would only repeat the failure under another name.
-    if (!checkpoint_has_error(cp) && storage_restore_from_checkpoint(img ? img->storage : NULL, cp) != GS_SUCCESS) {
+    if (!checkpoint_has_error(cp) && storage_restore_from_checkpoint(img ? img->storage : NULL, cp) != STATUS_OK) {
         gs_outf("Error: storage_restore_from_checkpoint failed for %s\n", name ? name : "<unnamed>");
         checkpoint_set_error(cp);
     }

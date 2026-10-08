@@ -21,6 +21,7 @@
 #include "log.h"
 #include "platform.h"
 #include "source.h"
+#include "status.h"
 #include "storage_util.h"
 #include "system.h"
 #include "udif_writer.h"
@@ -393,12 +394,12 @@ static image_t *image_open_source(const char *name, gs_source_t *data, gs_source
     config.journal_path = image->journal_path;
     config.block_count = image->raw_size / image->block_size;
     config.block_size = image->block_size;
-    int rc = storage_new(&config, &image->storage);
+    status_t rc = storage_new(&config, &image->storage);
     gs_source_release(padded);
-    if (rc == GS_SUCCESS && u.dc42)
+    if (rc == STATUS_OK && u.dc42)
         image_load_diskcopy_tags(image, u.dc42);
     gs_unwrapped_free(&u);
-    if (rc != GS_SUCCESS) {
+    if (rc != STATUS_OK) {
         gs_outf("image: storage engine failed for %s (error %d)\n", name, rc);
         image_close(image);
         errno = EIO;
@@ -520,8 +521,8 @@ image_t *image_create_blank(uint64_t block_count, image_geometry_t geom) {
     config.journal_path = image->journal_path;
     config.block_count = block_count;
     config.block_size = block_size;
-    int err = storage_new(&config, &image->storage);
-    if (err != GS_SUCCESS) {
+    status_t err = storage_new(&config, &image->storage);
+    if (err != STATUS_OK) {
         gs_outf("image_create_blank: storage engine failed (%llu x %u, error %d)\n", (unsigned long long)block_count,
                 block_size, err);
         image->writable = false;
@@ -591,9 +592,9 @@ static size_t storage_read_range(image_t *disk, size_t offset, uint8_t *buf, siz
     }
     size_t transferred = 0;
     while (transferred < backed) {
-        int rc = storage_read_block(disk->storage, disk->wrap_base + offset + transferred, buf + transferred);
-        GS_ASSERTF(rc == GS_SUCCESS, "storage_read_block failed (%d)", rc);
-        if (rc != GS_SUCCESS)
+        status_t rc = storage_read_block(disk->storage, disk->wrap_base + offset + transferred, buf + transferred);
+        GS_ASSERTF(rc == STATUS_OK, "storage_read_block failed (%d)", rc);
+        if (rc != STATUS_OK)
             return transferred; // genuine in-bounds backing-store failure
         transferred += disk->block_size;
     }
@@ -640,9 +641,9 @@ static size_t storage_write_range(image_t *disk, size_t offset, uint8_t *buf, si
             size, offset, disk->raw_size, size - backed);
     size_t transferred = 0;
     while (transferred < backed) {
-        int rc = storage_write_block(disk->storage, disk->wrap_base + offset + transferred, buf + transferred);
-        GS_ASSERTF(rc == GS_SUCCESS, "storage_write_block failed (%d)", rc);
-        if (rc != GS_SUCCESS)
+        status_t rc = storage_write_block(disk->storage, disk->wrap_base + offset + transferred, buf + transferred);
+        GS_ASSERTF(rc == STATUS_OK, "storage_write_block failed (%d)", rc);
+        if (rc != STATUS_OK)
             return transferred; // genuine in-bounds backing-store failure
         transferred += disk->block_size;
     }
@@ -755,7 +756,7 @@ static int image_export_run_udif(image_export_t *e, char *err, size_t err_cap) {
     if (!w)
         return -EIO;
     int rc = storage_export_view_write(e->view, w, udif_write_cb);
-    if (rc != GS_SUCCESS) {
+    if (rc != STATUS_OK) {
         udif_writer_abort(w);
         if (rc == -ECANCELED) {
             if (err)
@@ -791,7 +792,7 @@ int image_export_run(image_export_t *e, char *err, size_t err_cap) {
     int rc = storage_export_view_write(e->view, f, file_write_cb);
     bool closed = fclose(f) == 0;
     free(iobuf);
-    if (rc != GS_SUCCESS || !closed) {
+    if (rc != STATUS_OK || !closed) {
         remove(e->dest);
         if (rc == -ECANCELED) {
             if (err)
@@ -974,8 +975,8 @@ void image_checkpoint(const image_t *image, checkpoint_t *checkpoint) {
     system_write_checkpoint_data(checkpoint, key, key_len);
 
     if (image->storage) {
-        int rc = storage_checkpoint(image->storage, checkpoint);
-        if (rc != GS_SUCCESS) {
+        status_t rc = storage_checkpoint(image->storage, checkpoint);
+        if (rc != STATUS_OK) {
             LOG(1, "image_checkpoint: storage_checkpoint failed for %s (%d)",
                 image->filename ? image->filename : "<unknown>", rc);
         }

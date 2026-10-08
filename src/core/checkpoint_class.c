@@ -10,6 +10,7 @@
 #include "checkpoint.h"
 
 #include "object.h"
+#include "status.h"
 #include "system.h"
 #include "value.h"
 
@@ -59,7 +60,7 @@ static DEF_METHOD(checkpoint_method_load) {
 static DEF_METHOD(checkpoint_method_save) {
     if (argc < 1 || !argv[0].s || !*argv[0].s)
         return val_err("checkpoint.save: path is required");
-    return val_bool(system_checkpoint(argv[0].s, CHECKPOINT_KIND_CONSOLIDATED) == 0);
+    return val_bool(system_checkpoint(argv[0].s, CHECKPOINT_KIND_CONSOLIDATED) == STATUS_OK);
 }
 
 // `checkpoint.snapshot(name)` — capture a quick (background) checkpoint

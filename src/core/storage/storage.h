@@ -23,6 +23,7 @@
 
 #include "checkpoint.h"
 #include "common.h"
+#include "status.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -73,7 +74,7 @@ typedef struct storage_export_view storage_export_view_t;
 storage_export_view_t *storage_export_view_begin(storage_t *storage);
 // Any thread: streams every block (one callback per block, the checkpoint
 // record shape), reporting progress and stopping on cancel (io_worker.h).
-// GS_SUCCESS, GS_ERROR, or -ECANCELED.
+// A status_t (STATUS_OK or a STATUS_E_* failure), or -ECANCELED.
 int storage_export_view_write(storage_export_view_t *v, void *context, storage_write_callback_t write_cb);
 // Emulator thread: closes the view's handles and lifts the lock.
 void storage_export_view_end(storage_export_view_t *v);
@@ -82,16 +83,22 @@ bool storage_export_locked(const storage_t *storage);
 typedef int (*storage_read_callback_t)(void *context, void *data, size_t size);
 
 // === Lifecycle ===
+//
+// The fallible calls below return a status_t: STATUS_OK, or STATUS_E_INVAL
+// (a bad argument, or a delta / checkpoint payload that does not validate),
+// STATUS_E_RANGE (a block or slot outside the device), STATUS_E_IO (a host
+// file operation failed), STATUS_E_NOMEM, or STATUS_ERROR (the checkpoint
+// stream reported an error, or the storage is locked by an export).
 
 // Creates or opens a delta-file storage instance.
 // If the delta file exists, reads its header and bitmaps.
 // If the journal is non-empty, it is loaded (but NOT replayed automatically —
 // call storage_apply_rollback() to replay before normal use if no checkpoint
 // will be loaded).
-int storage_new(const storage_config_t *config, storage_t **out_storage);
+status_t storage_new(const storage_config_t *config, storage_t **out_storage);
 
 // Releases all resources (closes file handles, frees memory).
-int storage_delete(storage_t *storage);
+status_t storage_delete(storage_t *storage);
 
 // === Checkpointing ===
 
@@ -101,47 +108,48 @@ int storage_delete(storage_t *storage);
 // Consolidated checkpoints: streams all block data via storage_save_state().
 // A NULL checkpoint is an error; to commit without one, call
 // storage_clear_rollback().
-int storage_checkpoint(storage_t *storage, checkpoint_t *checkpoint);
+status_t storage_checkpoint(storage_t *storage, checkpoint_t *checkpoint);
 
 // Restores storage state from a checkpoint stream.
 // Quick checkpoints: reads bitmap, sets as current, clears journal.
 // Consolidated checkpoints: loads all block data via storage_load_state().
 // If storage is NULL, the serialized data is consumed and discarded.
-int storage_restore_from_checkpoint(storage_t *storage, checkpoint_t *checkpoint);
+status_t storage_restore_from_checkpoint(storage_t *storage, checkpoint_t *checkpoint);
 
 // === Block I/O ===
 
-// Reads one block (block_size bytes) at the given byte offset.  GS_ERROR
+// Reads one block (block_size bytes) at the given byte offset.  STATUS_E_IO
 // (buffer zeroed) when the block cannot be read, from the delta or the base
 // alike; a block past the end of a base shorter than the geometry reads as
-// zeros.
-int storage_read_block(storage_t *storage, size_t offset, void *buffer);
+// zeros.  A misaligned offset is STATUS_E_INVAL, one past the device
+// STATUS_E_RANGE.
+status_t storage_read_block(storage_t *storage, size_t offset, void *buffer);
 
 // Writes one block (block_size bytes) at the given byte offset.
-int storage_write_block(storage_t *storage, size_t offset, const void *buffer);
+status_t storage_write_block(storage_t *storage, size_t offset, const void *buffer);
 
 // === Rollback ===
 
 // Replays the preimage journal: restores committed blocks in the delta,
 // sets current bitmap = committed bitmap, truncates journal.
-int storage_apply_rollback(storage_t *storage);
+status_t storage_apply_rollback(storage_t *storage);
 
 // Marks current state as committed: copies current bitmap to committed,
 // flushes both bitmaps to delta header, truncates journal.
-int storage_clear_rollback(storage_t *storage);
+status_t storage_clear_rollback(storage_t *storage);
 
 // === Streaming (consolidated checkpoints / export) ===
 
 // Streams the entire logical disk (block_count blocks) to write_cb.
-int storage_save_state(storage_t *storage, void *context, storage_write_callback_t write_cb);
+status_t storage_save_state(storage_t *storage, void *context, storage_write_callback_t write_cb);
 
 // Replaces all storage data from read_cb, sets all bitmap bits, commits.
-int storage_load_state(storage_t *storage, void *context, storage_read_callback_t read_cb);
+status_t storage_load_state(storage_t *storage, void *context, storage_read_callback_t read_cb);
 
 // === Maintenance ===
 
 // No-op (consolidation is not needed with the delta model).
-int storage_tick(storage_t *storage);
+status_t storage_tick(storage_t *storage);
 
 // The `files` process singleton, created at shell init.  It registers the
 // per-machine `files.images` collection with root_install.

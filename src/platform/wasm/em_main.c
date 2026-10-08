@@ -55,6 +55,7 @@
 #include "prom.h"
 #include "scheduler.h"
 #include "shell.h"
+#include "status.h"
 #include "storage_util.h"
 #include "system.h"
 #include "vrom.h"
@@ -904,8 +905,8 @@ static bool g_background_handlers_installed = false;
 static void maybe_request_background_checkpoint(const char *reason, bool rate_limit) {
     if (!checkpoint_auto_enabled)
         return;
-    int rc = system_quick_checkpoint(reason, false, rate_limit);
-    if (rc != GS_SUCCESS) {
+    status_t rc = system_quick_checkpoint(reason, false, rate_limit);
+    if (rc != STATUS_OK) {
         printf("[checkpoint] background checkpoint failed (%s)\n", reason ? reason : "background");
     }
 }

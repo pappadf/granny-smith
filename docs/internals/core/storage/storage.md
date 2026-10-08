@@ -103,7 +103,7 @@ int storage_load_state(storage_t*, void* ctx, storage_read_callback_t cb);
 
 ## 6. Reads & Writes
 
-**Read:** Validate alignment, compute the LBA. If the bitmap bit is set, seek into the delta's data area and read one block (`block_size` bytes). Otherwise, read it from the base. If no base exists, or the block lies past the end of a base shorter than the geometry, return zeros. A block that is there and cannot be read — from the delta or the base — is an error (`GS_ERROR`, buffer zeroed), never silent zeros.
+**Read:** Validate alignment, compute the LBA. If the bitmap bit is set, seek into the delta's data area and read one block (`block_size` bytes). Otherwise, read it from the base. If no base exists, or the block lies past the end of a base shorter than the geometry, return zeros. A block that is there and cannot be read — from the delta or the base — is an error (`STATUS_E_IO`, buffer zeroed), never silent zeros.
 
 **Write:**
 1. If the block is committed (bit set in committed bitmap) and not yet journaled, read the old data from the delta and append it to the journal.

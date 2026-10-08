@@ -3,6 +3,7 @@
 // Storage engine unit tests (delta-file model)
 
 #include "source.h"
+#include "status.h"
 #include "storage.h"
 #include "test_assert.h"
 
@@ -25,7 +26,7 @@
 #define STATE_FILE    SANDBOX_DIR "/state.bin"
 #define TEST_BLOCKS   128
 
-#define ASSERT_OK(expr)        ASSERT_EQ_INT(GS_SUCCESS, (expr))
+#define ASSERT_OK(expr)        ASSERT_EQ_INT(STATUS_OK, (expr))
 #define ASSERT_ERR(expr, code) ASSERT_EQ_INT((code), (expr))
 
 // ============================================================================
@@ -141,13 +142,13 @@ TEST(storage_invalid_arguments) {
     uint8_t buffer[STORAGE_BLOCK_SIZE];
     memset(buffer, 0xAA, sizeof(buffer));
 
-    ASSERT_ERR(storage_read_block(NULL, 0, buffer), GS_ERROR);
-    ASSERT_ERR(storage_write_block(NULL, 0, buffer), GS_ERROR);
-    ASSERT_ERR(storage_read_block(storage, 1, buffer), GS_ERROR); // unaligned
-    ASSERT_ERR(storage_write_block(storage, STORAGE_BLOCK_SIZE / 2, buffer), GS_ERROR);
-    ASSERT_ERR(storage_checkpoint(NULL, NULL), GS_ERROR);
-    ASSERT_ERR(storage_save_state(NULL, NULL, file_write_cb), GS_ERROR);
-    ASSERT_ERR(storage_load_state(NULL, NULL, file_read_cb), GS_ERROR);
+    ASSERT_ERR(storage_read_block(NULL, 0, buffer), STATUS_E_INVAL);
+    ASSERT_ERR(storage_write_block(NULL, 0, buffer), STATUS_E_INVAL);
+    ASSERT_ERR(storage_read_block(storage, 1, buffer), STATUS_E_INVAL); // unaligned
+    ASSERT_ERR(storage_write_block(storage, STORAGE_BLOCK_SIZE / 2, buffer), STATUS_E_INVAL);
+    ASSERT_ERR(storage_checkpoint(NULL, NULL), STATUS_E_INVAL);
+    ASSERT_ERR(storage_save_state(NULL, NULL, file_write_cb), STATUS_E_INVAL);
+    ASSERT_ERR(storage_load_state(NULL, NULL, file_read_cb), STATUS_E_INVAL);
 
     ASSERT_OK(storage_delete(storage));
 
@@ -155,9 +156,9 @@ TEST(storage_invalid_arguments) {
     storage_config_t bad = make_config(NULL, DELTA_FILE, JOURNAL_FILE, TEST_BLOCKS);
     // A NULL base is allowed (new image with no base), but NULL delta is not
     bad.delta_path = NULL;
-    ASSERT_ERR(storage_new(&bad, &dummy), GS_ERROR);
+    ASSERT_ERR(storage_new(&bad, &dummy), STATUS_E_INVAL);
     bad = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, 0);
-    ASSERT_ERR(storage_new(&bad, &dummy), GS_ERROR);
+    ASSERT_ERR(storage_new(&bad, &dummy), STATUS_E_INVAL);
 
     teardown_sandbox();
 }
@@ -304,7 +305,7 @@ TEST(storage_journal_one_preimage_per_commit) {
     storage_t *storage = NULL;
     ASSERT_OK(storage_new(&config, &storage));
     // A commit takes a checkpoint stream or goes through clear_rollback.
-    ASSERT_ERR(storage_checkpoint(storage, NULL), GS_ERROR);
+    ASSERT_ERR(storage_checkpoint(storage, NULL), STATUS_E_INVAL);
 
     uint8_t block[STORAGE_BLOCK_SIZE];
     fill_block(9, 0x01, block);
@@ -419,7 +420,7 @@ static void run_block_size_roundtrip(uint32_t bsize) {
     storage = NULL;
     config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, blocks);
     config.block_size = (bsize == STORAGE_BLOCK_SIZE) ? 532 : STORAGE_BLOCK_SIZE;
-    ASSERT_ERR(storage_new(&config, &storage), GS_ERROR);
+    ASSERT_ERR(storage_new(&config, &storage), STATUS_E_INVAL);
 
     teardown_sandbox();
 }
@@ -442,11 +443,11 @@ TEST(storage_block_size_validation) {
     // Too small, too large, or not a multiple of 4 are all rejected.
     storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, 4);
     config.block_size = 256; // < 512
-    ASSERT_ERR(storage_new(&config, &storage), GS_ERROR);
+    ASSERT_ERR(storage_new(&config, &storage), STATUS_E_INVAL);
     config.block_size = STORAGE_MAX_BLOCK_SIZE + 4; // > max
-    ASSERT_ERR(storage_new(&config, &storage), GS_ERROR);
+    ASSERT_ERR(storage_new(&config, &storage), STATUS_E_INVAL);
     config.block_size = 530; // not a multiple of 4
-    ASSERT_ERR(storage_new(&config, &storage), GS_ERROR);
+    ASSERT_ERR(storage_new(&config, &storage), STATUS_E_INVAL);
 
     teardown_sandbox();
 }

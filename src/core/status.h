@@ -23,9 +23,4 @@ typedef enum {
     STATUS_E_UNSUPPORTED = -7, // valid request this build/model does not support
 } status_t;
 
-// Transitional spellings of STATUS_OK / STATUS_ERROR, kept until every call
-// site has been converted; do not use in new code.
-#define GS_SUCCESS STATUS_OK
-#define GS_ERROR   STATUS_ERROR
-
 #endif // STATUS_H

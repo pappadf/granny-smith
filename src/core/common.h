@@ -9,9 +9,9 @@
 // codes (status.h), assertions (gs_assert.h) or libc bundles -- a TU includes
 // the libc headers it uses itself.
 //
-// Transitional: the libc includes and status.h below are still pulled in here
-// because many TUs rely on getting them transitively; they go once those TUs
-// include what they use.
+// Transitional: the libc includes below are still pulled in here because many
+// TUs rely on getting them transitively; they go once those TUs include what
+// they use.
 
 #ifndef COMMON_H
 #define COMMON_H
@@ -22,11 +22,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
-
-// Status codes (status_t) live in status.h; common.h still includes it so
-// existing users keep building while includes are pushed down to the TUs
-// that need them.
-#include "status.h"
 
 // === Unaligned byte-order accessors =========================================
 // For on-disk and on-wire structures, which are read at arbitrary offsets:

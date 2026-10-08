@@ -13,6 +13,7 @@
 #include "build_id.h"
 #include "checkpoint.h"
 #include "machine_parts.h"
+#include "status.h"
 #include "system_internal.h"
 #include "test_assert.h"
 
@@ -32,10 +33,10 @@ int system_checkpoint_load(const char *filename) {
     (void)filename;
     return 1;
 }
-int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
+status_t system_checkpoint(const char *filename, checkpoint_kind_t kind) {
     (void)filename;
     (void)kind;
-    return 1;
+    return STATUS_ERROR;
 }
 bool system_checkpoint_probe(void) {
     return false;

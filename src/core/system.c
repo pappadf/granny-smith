@@ -41,6 +41,7 @@
 #include "scsi_internal.h"
 #include "shell.h"
 #include "sound.h"
+#include "status.h"
 #include "via.h"
 #include "vrom.h"
 #include "event/gs_event.h"
@@ -745,21 +746,21 @@ static double g_last_quick_checkpoint_ms = 0.0;
 static bool g_quick_verbose = false;
 static char g_quick_final_path[QUICK_CHECKPOINT_PATH_MAX];
 
-// Build "<machine_dir>/state.checkpoint" into out_path.  Returns GS_SUCCESS
-// when the machine dir is set and the path fits.
-static int build_state_checkpoint_path(char *out_path, size_t out_len) {
+// Build "<machine_dir>/state.checkpoint" into out_path.  STATUS_E_NOENT
+// when no machine dir is set, STATUS_E_RANGE when the path does not fit.
+static status_t build_state_checkpoint_path(char *out_path, size_t out_len) {
     const char *dir = checkpoint_machine_dir();
     if (!dir)
-        return GS_ERROR;
+        return STATUS_E_NOENT;
     int written = snprintf(out_path, out_len, "%s/state.checkpoint", dir);
-    return (written > 0 && (size_t)written < out_len) ? GS_SUCCESS : GS_ERROR;
+    return (written > 0 && (size_t)written < out_len) ? STATUS_OK : STATUS_E_RANGE;
 }
 
 // The path of the machine's current valid quick checkpoint, in a static
 // buffer, or NULL when there is none (or it is from another build).
 const char *find_valid_checkpoint_path(void) {
     static char path_buf[QUICK_CHECKPOINT_PATH_MAX];
-    if (build_state_checkpoint_path(path_buf, sizeof(path_buf)) != GS_SUCCESS)
+    if (build_state_checkpoint_path(path_buf, sizeof(path_buf)) != STATUS_OK)
         return NULL;
     struct stat st;
     if (stat(path_buf, &st) != 0)
@@ -770,41 +771,42 @@ const char *find_valid_checkpoint_path(void) {
     return path_buf;
 }
 
-int system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
+status_t system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
     // No machine configured → nothing to save, like the idle and
     // no-directory cases below (a hidden tab before any boot lands here).
     scheduler_t *sched = system_scheduler();
     if (!sched) {
         if (verbose)
             gs_outf("[checkpoint] no machine, nothing to save\n");
-        return GS_SUCCESS;
+        return STATUS_OK;
     }
 
     // Skip checkpointing when the emulator is idle — nothing meaningful to save
     if (!scheduler_is_running(sched) && cpu_instr_count() == 0)
-        return GS_SUCCESS;
+        return STATUS_OK;
 
     // No machine identity yet → nothing to save under.
     if (!checkpoint_machine_dir()) {
         if (verbose)
             gs_outf("[checkpoint] no machine directory set, skipping quick checkpoint\n");
-        return GS_SUCCESS;
+        return STATUS_OK;
     }
 
     double now = host_time_ms();
     if (rate_limit && g_last_quick_checkpoint_ms > 0.0) {
         double delta = now - g_last_quick_checkpoint_ms;
         if (delta >= 0.0 && delta < QUICK_CHECKPOINT_MIN_INTERVAL_MS)
-            return GS_SUCCESS;
+            return STATUS_OK;
     }
 
     char final_path[QUICK_CHECKPOINT_PATH_MAX];
     char tmp_path[QUICK_CHECKPOINT_PATH_MAX];
-    if (build_state_checkpoint_path(final_path, sizeof(final_path)) != GS_SUCCESS)
-        return GS_ERROR;
+    status_t rc = build_state_checkpoint_path(final_path, sizeof(final_path));
+    if (rc != STATUS_OK)
+        return rc;
     int wn = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", final_path);
     if (wn <= 0 || (size_t)wn >= sizeof(tmp_path))
-        return GS_ERROR;
+        return STATUS_E_RANGE;
 
     // Settle the sprint counters so the checkpoint captures an exact
     // instruction count.  Not a stop: the machine's run state is saved as
@@ -817,7 +819,7 @@ int system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
     // (the rate limit already says "not yet") and count.
     if (checkpoint_quick_in_flight()) {
         checkpoint_quick_note_skipped();
-        return GS_SUCCESS;
+        return STATUS_OK;
     }
 
     // Serialise here (the guest state is this thread's); the write and the
@@ -827,8 +829,8 @@ int system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
     g_quick_verbose = verbose;
     snprintf(g_quick_final_path, sizeof g_quick_final_path, "%s", final_path);
     checkpoint_publish_next(final_path);
-    int rc = system_checkpoint(tmp_path, CHECKPOINT_KIND_QUICK);
-    if (rc != GS_SUCCESS) {
+    rc = system_checkpoint(tmp_path, CHECKPOINT_KIND_QUICK);
+    if (rc != STATUS_OK) {
         checkpoint_publish_next(NULL);
         unlink(tmp_path);
         if (verbose)
@@ -836,7 +838,7 @@ int system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit) {
         return rc;
     }
     g_last_quick_checkpoint_ms = now;
-    return GS_SUCCESS;
+    return STATUS_OK;
 }
 
 void system_quick_checkpoint_written(bool ok, double ms, const char *error) {
@@ -853,9 +855,9 @@ int gs_background_checkpoint(const char *reason) {
     // A snapshot promises a complete file when it returns: let a publish in
     // flight land first, save, and wait for this one's publish too.
     checkpoint_quick_wait();
-    int rc = system_quick_checkpoint(reason ? reason : "manual", true, false);
+    status_t rc = system_quick_checkpoint(reason ? reason : "manual", true, false);
     checkpoint_quick_wait();
-    return rc == GS_SUCCESS ? 0 : -1;
+    return rc == STATUS_OK ? 0 : -1;
 }
 
 // Clear checkpoint files inside the current machine directory: drops
@@ -1597,18 +1599,19 @@ int system_media_eject(config_t *cfg, media_bus_t bus, int unit) {
 }
 
 // Save current machine state to a checkpoint file.
-// Returns GS_SUCCESS on success, GS_ERROR on failure.
-int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
+// STATUS_OK on success; STATUS_E_NOENT with no machine, STATUS_E_IO when the
+// file cannot be opened, written or finished.
+status_t system_checkpoint(const char *filename, checkpoint_kind_t kind) {
     if (!global_emulator) {
         LOG_WITH(log_register_category("ckpt"), 0, "Error: no emulator instance to checkpoint");
-        return GS_ERROR;
+        return STATUS_E_NOENT;
     }
     double start_time = host_time_ms();
 
     checkpoint_t *checkpoint = checkpoint_open_write(filename, kind);
     if (!checkpoint) {
         LOG_WITH(log_register_category("ckpt"), 0, "Error: failed to open checkpoint file for writing: %s", filename);
-        return GS_ERROR;
+        return STATUS_E_IO;
     }
 
     // Every part of the machine, in the order it was built: the board first,
@@ -1618,13 +1621,13 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
     if (checkpoint_has_error(checkpoint)) {
         LOG_WITH(log_register_category("ckpt"), 0, "Error: failed to write checkpoint");
         checkpoint_close(checkpoint);
-        return GS_ERROR;
+        return STATUS_E_IO;
     }
 
     // A consolidated checkpoint is published (renamed into place) here.
     if (!checkpoint_close(checkpoint)) {
         LOG_WITH(log_register_category("ckpt"), 0, "Error: failed to finish checkpoint %s", filename);
-        return GS_ERROR;
+        return STATUS_E_IO;
     }
 
     double elapsed_ms = host_time_ms() - start_time;
@@ -1632,7 +1635,7 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
     // every ~15 s and used to spam the terminal. `log.set ckpt 1`
     // restores the line; the status bar gets its own push (em_main.c).
     LOG_WITH(log_register_category("ckpt"), 1, "Checkpoint saved to %s (%.2f ms)", filename, elapsed_ms);
-    return GS_SUCCESS;
+    return STATUS_OK;
 }
 
 // Restore machine state from a checkpoint file.

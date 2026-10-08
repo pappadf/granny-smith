@@ -21,6 +21,7 @@
 #include "machine_profile.h" // enum media_bus, media_slot_t
 #include "platform.h"
 #include "scheduler.h"
+#include "status.h"
 
 struct ram;
 typedef struct ram ram_t;
@@ -124,8 +125,9 @@ extern config_t *global_emulator;
 void trigger_vbl(config_t *restrict config);
 
 // Save current machine state to a checkpoint file.
-// Returns GS_SUCCESS on success, GS_ERROR on failure.
-int system_checkpoint(const char *filename, checkpoint_kind_t kind);
+// STATUS_OK on success; STATUS_E_NOENT with no machine, STATUS_E_IO when the
+// file cannot be opened, written or finished.
+status_t system_checkpoint(const char *filename, checkpoint_kind_t kind);
 
 // Restore machine state from a checkpoint file.
 // Returns a new config on success, NULL on failure.
@@ -302,7 +304,7 @@ void system_quick_checkpoint_written(bool ok, double ms, const char *error);
 //   system_quick_checkpoint(reason, verbose, rate_limit)
 //                            — save state.checkpoint in the machine's
 //                              directory (tmp + rename), at most once per
-//                              750 ms when rate-limited.  GS_SUCCESS/GS_ERROR.
+//                              750 ms when rate-limited.  A status_t.
 //   gs_background_checkpoint(reason)
 //                            — the same, unthrottled and verbose.
 //   gs_checkpoint_clear()    — delete the machine's checkpoint files.
@@ -313,7 +315,7 @@ void system_quick_checkpoint_written(bool ok, double ms, const char *error);
 //                            — find the first floppy image in `dir`,
 //                              optionally copy it to `dest`; prints the
 //                              path on success.
-int system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit);
+status_t system_quick_checkpoint(const char *reason, bool verbose, bool rate_limit);
 int gs_background_checkpoint(const char *reason);
 int gs_checkpoint_clear(void);
 int gs_register_machine(const char *machine_id, const char *created);
