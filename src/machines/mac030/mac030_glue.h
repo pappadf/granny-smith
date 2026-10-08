@@ -51,7 +51,6 @@ typedef struct mac030_glue_state {
     // wrong abstraction.
     uint8_t slot_pa_mask;
 
-    uint8_t last_via2_port_b; // IIcx soft-power detect (unused on se30/iix)
     bool soft_power_armed; // IIcx soft-power detect (unused on se30/iix)
 
     // SE/30 built-in video (slot $E); NULL on IIcx/IIx (they use NuBus cards).
@@ -245,8 +244,8 @@ extern const machine_substrate_t glue_substrate;
 int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t *board);
 
 // IRQ source bits driven into cfg->irq.  GLUE routes them to fixed IPLs:
-// VIA1→1, VIA2→2, SCC→4, NMI→7.  The per-machine SE30_IRQ_* / IICX_IRQ_*
-// aliases carry the same values and remain valid `source` arguments.
+// VIA1→1, VIA2→2, SCC→4, NMI→7.  The one set for the whole family (the
+// per-machine SE30_IRQ_* / IICX_IRQ_* aliases are gone).
 #define MAC030_GLUE_IRQ_VIA1 (1 << 0)
 #define MAC030_GLUE_IRQ_VIA2 (1 << 1)
 #define MAC030_GLUE_IRQ_SCC  (1 << 2)
@@ -274,6 +273,24 @@ const mac030_irq_route_t *mac030_glue_irq_routes(void);
 
 // Set/clear an IRQ source bit and re-derive the CPU IPL (highest active wins).
 void mac030_glue_update_ipl(config_t *cfg, int source, bool active);
+
+// The GLUE machines' RAM range: 8 MB stock, 128 MB the most the 68030 boards
+// here take (SE/30, IIcx, IIx profiles).
+#define MAC030_GLUE_RAM_DEFAULT 0x800000u // 8 MB
+#define MAC030_GLUE_RAM_MAX     0x8000000u // 128 MB
+
+// TT1 as the 68030 boards set it (GLUE, the IIsi, the IIfx): a supervisor-
+// only transparent translation of $F0000000-$FFFFFFFF (NuBus slot space), so
+// slot accesses bypass the page tables.  The ROMs never write TT1
+// themselves; the chipset routes $F0-$FF to NuBus and this identity map lets
+// phys_to_host resolve card memory.
+#define MAC030_TT1_NUBUS_SUPER 0xF00F8043u
+
+// VIA callbacks for a pin set the board does not observe: VIA2 output on
+// the SE/30 and IIx, VIA2 shift-out on all three (via_init takes a function,
+// and a NULL shift-out changes mode-7 timing -- see via.c).
+void mac030_glue_via_output_ignored(void *context, uint8_t port, uint8_t output);
+void mac030_glue_via_shift_out_ignored(void *context, uint8_t byte);
 
 // substrate.nubus_slot_irq for the GLUE family: each slot's /NMRQ is a VIA2
 // port-A bit (active-low; slot $9→PA0 .. $E→PA5), and the umbrella OR-line edge

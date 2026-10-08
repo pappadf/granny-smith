@@ -73,13 +73,12 @@ static void plus_via_output(void *context, uint8_t port, uint8_t output);
 static void plus_via_shift_out(void *context, uint8_t byte);
 static void plus_via_irq(void *context, bool active);
 static void plus_scc_irq(void *context, bool active);
-static void plus_update_ipl(config_t *sim, int source_mask, bool value);
+static void plus_update_ipl(config_t *cfg, int source, bool active);
 
 // ============================================================
 // Video buffer helper (Plus-specific address constants)
 // ============================================================
 
-// Plus ROM start in the 24-bit address space (== Plus RAM top of 4 MB)
 // Interrupt source bits in cfg->irq, matching the MAC030_GLUE_IRQ_* /
 // AV_IRQ_* convention.  These are a source MASK, not an IPL level: the PALs
 // derive the level from the set of asserted sources (plus_update_ipl).  The
@@ -91,12 +90,19 @@ static void plus_update_ipl(config_t *sim, int source_mask, bool value);
 #define PLUS_SCSI_BASE 0x500000UL
 #define PLUS_SCSI_SIZE 0x100000UL
 
+// Plus ROM start in the 24-bit address space (== Plus RAM top of 4 MB)
 #define PLUS_ROM_START 0x400000UL
 // Plus ROM region end (1.5 MB window covers all ROM mirrors)
 #define PLUS_ROM_END 0x580000UL
 
+// The screen buffers, measured down from the top of RAM (ScrnBase is
+// MemTop - $5900 on a Plus; the alternate buffer sits $8000 below it).
+#define PLUS_SCREEN_FROM_TOP  0x5900u
+#define PLUS_ALT_SCREEN_BELOW 0x8000u
+
 // Switch between main and alternate video buffer addresses for the Plus.
-// Main buffer is at top of RAM minus 0x5900; alternate is 0x8000 bytes lower.
+// Main buffer is at top of RAM minus PLUS_SCREEN_FROM_TOP; alternate is
+// PLUS_ALT_SCREEN_BELOW bytes lower.
 // Both addresses scale with installed RAM — `ScrnBase`/`ScrnAlt` on a real
 // Plus are computed from physical RAM size by the ROM boot code, so a Plus
 // with 1 MB has its framebuffer at $FA700, not $3FA700.  Updates the
@@ -105,7 +111,7 @@ static void plus_update_ipl(config_t *sim, int source_mask, bool value);
 static void plus_use_video_buffer(config_t *cfg, bool main) {
     plus_state_t *ps = plus_state(cfg);
     uint32_t top = cfg->ram_size;
-    uint32_t addr = main ? (top - 0x5900) : (top - 0x5900 - 0x8000);
+    uint32_t addr = main ? (top - PLUS_SCREEN_FROM_TOP) : (top - PLUS_SCREEN_FROM_TOP - PLUS_ALT_SCREEN_BELOW);
     ps->display.bits = ram_native_pointer(cfg->mem_map, addr);
     ps->display.fb_dirty = true;
 }
@@ -167,20 +173,23 @@ static void plus_set_rom_overlay(config_t *cfg, bool on) {
     LOG(1, "ROM overlay %s", on ? "on: ROM at $000000" : "off: RAM at $000000");
 }
 
-// Memory read placeholder for the Plus Phase Read area
+// The Plus Phase Read area -- a STUB.  On hardware the value read tells the
+// ROM whether the video and CPU clocks are in phase (Guide p.122, below);
+// the emulator's clocks always are, so every read answers 0 and the phase
+// adjustment loop is never exercised.  `log.set board 2` shows the reads.
 static uint8_t plus_phase_read_uint8(void *dev, uint32_t addr) {
     (void)dev;
-    (void)addr;
+    LOG(2, "Phase Read (byte) at $%06x: not modelled, reads 0", addr);
     return 0;
 }
 static uint16_t plus_phase_read_uint16(void *dev, uint32_t addr) {
     (void)dev;
-    (void)addr;
+    LOG(2, "Phase Read (word) at $%06x: not modelled, reads 0", addr);
     return 0;
 }
 static uint32_t plus_phase_read_uint32(void *dev, uint32_t addr) {
     (void)dev;
-    (void)addr;
+    LOG(2, "Phase Read (long) at $%06x: not modelled, reads 0", addr);
     return 0;
 }
 
@@ -299,6 +308,9 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->via1 = via_init(cfg->mem_map, cfg->scheduler, via_freq_factor_for_clock(cfg->machine->freq), "via1",
                          plus_via_output, plus_via_shift_out, plus_via_irq, cfg, checkpoint);
     machine_part(cfg, checkpoint, "via1", part_save_via, cfg->via1);
+    // The RTC's data line rides VIA1 PB0: wired right after the VIA is built,
+    // the same position as the GLUE family (mac030_glue_init).
+    rtc_set_via(cfg->rtc, cfg->via1);
 
     machine_part_begin(cfg, checkpoint, "sound");
     ps->sound = sound_init(cfg->mem_map, cfg->scheduler, checkpoint);
@@ -312,8 +324,6 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // -- and on the II family the same pin is a NuBus slot /NMRQ, so each of
     // them had to raise it back up or slot $C asserted forever.
     via_input(cfg->via1, /*port A*/ 0, /*PA3*/ 3, 0);
-
-    rtc_set_via(cfg->rtc, cfg->via1);
 
     machine_part_begin(cfg, checkpoint, "mouse");
     cfg->mouse = mouse_init(cfg->scheduler, cfg->scc, cfg->via1, checkpoint);
@@ -349,6 +359,10 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     machine_part(cfg, checkpoint, "keyboard", part_save_keyboard, cfg->keyboard);
 
     machine_part_begin(cfg, checkpoint, "floppy");
+    // FLOPPY_TYPE_IWM is the board's controller chip; the slot table's
+    // FLOPPY_800K is the drive in each position.  They are different facts:
+    // the IWM drives 400K/800K GCR drives, which is what plus_floppy_slots
+    // declares.
     cfg->floppy = floppy_init(FLOPPY_TYPE_IWM, cfg->mem_map, cfg->scheduler, machine_floppy_count(cfg), checkpoint,
                               CONFIG_IMAGES(cfg));
     machine_part(cfg, checkpoint, "floppy", part_save_floppy, cfg->floppy);
@@ -377,7 +391,7 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
         size_t screen_bytes = (size_t)ps->display.stride * ps->display.height;
         uint8_t fill = display_black_fill(ps->display.format);
         for (int main_buf = 0; main_buf <= 1; main_buf++) {
-            uint32_t addr = cfg->ram_size - 0x5900 - (main_buf ? 0 : 0x8000);
+            uint32_t addr = cfg->ram_size - PLUS_SCREEN_FROM_TOP - (main_buf ? 0 : PLUS_ALT_SCREEN_BELOW);
             uint8_t *p = ram_native_pointer(cfg->mem_map, addr);
             if (p)
                 memset(p, fill, screen_bytes);
@@ -451,14 +465,16 @@ static void plus_teardown(config_t *cfg) {
 // VIA / SCC callbacks
 // ============================================================
 
-// Plus-specific interrupt routing: update CPU IPL from VIA or SCC IRQ changes
-static void plus_update_ipl(config_t *sim, int source_mask, bool value) {
-    int old_irq = sim->irq;
-    int old_ipl = cpu_get_ipl(sim->cpu);
-    if (value)
-        sim->irq |= source_mask;
+// Plus-specific interrupt routing: set/clear one PLUS_IRQ_* source bit and
+// re-derive the CPU IPL -- the same (cfg, source, active) shape as
+// mac030_glue_update_ipl.
+static void plus_update_ipl(config_t *cfg, int source, bool active) {
+    int old_irq = cfg->irq;
+    int old_ipl = cpu_get_ipl(cfg->cpu);
+    if (active)
+        cfg->irq |= source;
     else
-        sim->irq &= ~source_mask;
+        cfg->irq &= ~source;
 
     // Guide to the Macintosh Family Hardware, chapter 3:
     // The interrupt request line from the VIA goes to the PALs,
@@ -470,24 +486,24 @@ static void plus_update_ipl(config_t *sim, int source_mask, bool value) {
     // above describes.  Previously spelled `irq > 1` / `irq == 1`, which is
     // the same test only because these are the only two sources.
     uint32_t new_ipl;
-    if (sim->irq & PLUS_IRQ_SCC)
+    if (cfg->irq & PLUS_IRQ_SCC)
         new_ipl = 2;
-    else if (sim->irq & PLUS_IRQ_VIA)
+    else if (cfg->irq & PLUS_IRQ_VIA)
         new_ipl = 1;
     else
         new_ipl = 0;
-    cpu_set_ipl(sim->cpu, new_ipl);
+    cpu_set_ipl(cfg->cpu, new_ipl);
 
-    LOG(1, "plus_update_ipl: source_mask=%d value=%d irq:%d->%d ipl:%d->%d", source_mask, value ? 1 : 0, old_irq,
-        sim->irq, old_ipl, new_ipl);
+    LOG(1, "plus_update_ipl: source=%d active=%d irq:%d->%d ipl:%d->%d", source, active ? 1 : 0, old_irq, cfg->irq,
+        old_ipl, new_ipl);
 
-    cpu_reschedule(sim->scheduler);
+    cpu_reschedule(cfg->scheduler);
 }
 
 // Plus-specific VIA output callback: routes port changes to floppy, video, sound, RTC
 static void plus_via_output(void *context, uint8_t port, uint8_t output) {
-    config_t *sim = (config_t *)context;
-    plus_state_t *ps = plus_state(sim);
+    config_t *cfg = (config_t *)context;
+    plus_state_t *ps = plus_state(cfg);
 
     // via_init re-drives this callback while it restores a checkpoint, and
     // the VIA is now built before the sound chip (see plus_init), so the
@@ -499,23 +515,23 @@ static void plus_via_output(void *context, uint8_t port, uint8_t output) {
     if (port == 0) {
         // PA4 is vOverlay.  `output` is `ORA & DDRA`, so an undriven pin reads
         // 0 here -- but the line is pulled up, so undriven means overlay ON.
-        // sim->via1 is still NULL while via_init re-drives during a restore;
+        // cfg->via1 is still NULL while via_init re-drives during a restore;
         // via_redrive_outputs runs again once it is set.
-        if (ps && sim->via1) {
-            bool driven = (via_port_direction(sim->via1, 0) & 0x10) != 0;
-            plus_set_rom_overlay(sim, !driven || (output & 0x10) != 0);
+        if (ps && cfg->via1) {
+            bool driven = (via_port_direction(cfg->via1, 0) & 0x10) != 0;
+            plus_set_rom_overlay(cfg, !driven || (output & 0x10) != 0);
         }
 
-        floppy_set_sel_signal(sim->floppy, (output & 0x20) != 0);
+        floppy_set_sel_signal(cfg->floppy, (output & 0x20) != 0);
 
-        plus_use_video_buffer(sim, (output >> 6) & 1);
+        plus_use_video_buffer(cfg, (output >> 6) & 1);
 
         if (snd) {
             sound_use_buffer(snd, (output >> 3) & 1);
             sound_volume(snd, output & 7);
         }
     } else {
-        rtc_via1_pb_output(sim->rtc, output);
+        rtc_via1_pb_output(cfg->rtc, output);
 
         if (snd)
             sound_enable(snd, (output & 0x80) == 0);
@@ -534,8 +550,8 @@ static void plus_bus_reset(config_t *cfg) {
 
 // Plus-specific VIA shift-out callback: routes keyboard data to keyboard device
 static void plus_via_shift_out(void *context, uint8_t byte) {
-    config_t *sim = (config_t *)context;
-    keyboard_input(sim->keyboard, byte);
+    config_t *cfg = (config_t *)context;
+    keyboard_input(cfg->keyboard, byte);
 }
 
 // Plus-specific VIA IRQ callback: the VIA drives cfg->irq bit 0
@@ -578,7 +594,7 @@ static const uint32_t plus_ram_options_kb[] = {1024, 2048, 2560, 4096, 0};
 
 // The external drive was an option, not factory equipment; a stock Plus here
 // keeps one, as it always has, and the user may remove it.
-static const struct floppy_slot plus_floppy_slots[] = {
+static const floppy_slot_t plus_floppy_slots[] = {
     {.label = "Internal floppy drive", .kind = FLOPPY_800K},
     {.label = "External floppy drive", .kind = FLOPPY_800K, .optional = true},
     {0},
