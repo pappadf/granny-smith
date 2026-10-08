@@ -741,7 +741,7 @@ static int singer_load_wav(av_singer_t *s, const char *path) {
             channels = (uint16_t)(fmt[2] | (fmt[3] << 8));
             bits = (uint16_t)(fmt[14] | (fmt[15] << 8));
             if (len > 16)
-                fseek(fp, (long)len - 16, SEEK_CUR);
+                fseek(fp, (long)((len + 1) & ~1u) - 16, SEEK_CUR); // RIFF pads odd chunks to even
         } else if (memcmp(chunk, "data", 4) == 0) {
             data_off = ftell(fp);
             data_len = len;
