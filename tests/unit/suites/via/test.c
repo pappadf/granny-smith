@@ -46,6 +46,8 @@
 #define REG_ORA_NH 15
 #define REG_T1C_L  4
 #define REG_T1C_H  5
+#define REG_T2C_L  8
+#define REG_T2C_H  9
 #define REG_ACR    11
 #define REG_IER    14
 
@@ -485,6 +487,27 @@ TEST(test_timer_armed_at_cycle_zero_still_counts) {
     via_delete(via);
 }
 
+// Loading T2 in pulse-counting mode (ACR bit 5) holds the loaded count: pulse
+// counting is not modelled, and an arm left over from interval mode must not
+// keep the counter decrementing from its old start point.
+TEST(test_t2_pulse_mode_drops_stale_interval_arm) {
+    via_t *via = make_via(CA2_INPUT_NEG);
+
+    wr(via, REG_ACR, 0x00);
+    wr(via, REG_T2C_L, 0x00);
+    wr(via, REG_T2C_H, 0x10); // interval mode: armed at 0x1000
+    s_cycles += 0x80;
+
+    wr(via, REG_ACR, 0x20);
+    wr(via, REG_T2C_L, 0x00);
+    wr(via, REG_T2C_H, 0x20); // pulse mode: load 0x2000
+    ASSERT_TRUE(s_armed_cb == NULL);
+    s_cycles += 0x100;
+    ASSERT_EQ_INT(via_timer_counter(via, 1), 0x2000);
+
+    via_delete(via);
+}
+
 // ============================================================================
 // IER bit 7 is the set/clear selector, not storage
 // ============================================================================
@@ -651,6 +674,7 @@ int main(void) {
     RUN(test_latching_does_not_cover_output_pins);
     RUN(test_via_timer_counter_is_live);
     RUN(test_timer_armed_at_cycle_zero_still_counts);
+    RUN(test_t2_pulse_mode_drops_stale_interval_arm);
     RUN(test_ier_bit7_is_a_selector_not_storage);
     RUN(test_t1_one_shot_counter_runs_on_after_timeout);
     RUN(test_t1_one_shot_does_not_refire);
