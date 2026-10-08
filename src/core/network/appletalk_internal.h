@@ -245,4 +245,8 @@ void atalk_imagewriter_unplug(void);
 int atalk_printer_enable(const char *object_name);
 int atalk_printer_disable(void);
 
+// Build the `appletalk` object tree (appletalk_object.c), once, when the
+// network comes up.
+void atalk_install_objects(void);
+
 #endif // APPLETALK_INTERNAL_H

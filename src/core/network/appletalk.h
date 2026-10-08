@@ -16,10 +16,14 @@
 #define APPLETALK_H
 
 // === Includes ===
-#include "common.h"
-#include "platform.h"
+// Only what the declarations below need: a wire-level public header does not
+// drag the core's common.h or the platform layer into its consumers.
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 // === Forward Declarations ===
+typedef struct checkpoint checkpoint_t;
 typedef struct scc scc_t;
 typedef struct scheduler scheduler_t;
 
@@ -28,7 +32,10 @@ typedef struct scheduler scheduler_t;
 // The stack's tables, and the object-model collections that mirror them slot
 // for slot, size themselves from these: each mirror had its own constant,
 // equal by hand.
-#define ATALK_NBP_MAX_ENTRIES  16 // NBP names this host registers
+// NBP names this host registers.  Four are in use today, one each: the AFP
+// server (AFPServer), the LaserWriter, the ImageWriter's LocalTalk card and
+// the program-linking peer (PPCToolBox); the rest is headroom.
+#define ATALK_NBP_MAX_ENTRIES  16
 #define ATALK_ASP_MAX_SESSIONS 4 // ASP sessions (and AFP's session table)
 #define ATALK_AFP_MAX_VOLUMES  8 // published AFP volumes
 
@@ -302,8 +309,8 @@ void atalk_nbp_lookup_cancel(void);
 // and that one Mac: the link's state and counters, LLAP timing, ATP
 // transactions, and the ASP / AFP / ADSP / PPC / PAP sessions with it, their
 // open forks, enumeration snapshots and Apple-event traffic and counters.
-// Only the link's settings, its counters and the session numbering go into
-// a checkpoint; the sessions never do.
+// Only the link's settings, its counters and the session and ATP
+// transaction numbering go into a checkpoint; the sessions never do.
 //
 // The network has one cable.  A connection is built off it and plugged in
 // when its machine becomes the active one (system_swap_in), which unplugs
@@ -325,8 +332,8 @@ atalk_network_t *appletalk_network(void);
 // Construct a machine's connection on `scc` and `scheduler`, not plugged in;
 // its timers are registered with `scheduler`.
 // With `checkpoint`, its block is read back first: the link's enabled flag
-// and counters and the next session reference.  It comes back with no
-// sessions -- to the guest, the server has restarted.
+// and counters, the next session reference and the ATP TID cursor.  It
+// comes back with no sessions -- to the guest, the server has restarted.
 atalk_conn_t *atalk_conn_new(atalk_network_t *network, scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint);
 
 // Write the connection's block (its checkpoint part, machine_parts.h).

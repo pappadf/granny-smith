@@ -2791,8 +2791,10 @@ name, enablement and message, the printer, the Apple event port -- belongs
 to the network, which no machine checkpoints.
 
 A machine checkpoint therefore carries the connection's block only: the
-link's enabled flag and counters, and the session numbering (the next
-session reference and wire session id). A restored connection has no
+link's enabled flag and counters, the session numbering (the next
+session reference and wire session id) and the ATP transaction-id cursor,
+so a restored connection does not reuse a TID the guest's exactly-once
+cache may still hold. A restored connection has no
 sessions, which to the guest is a **server restart**: its next request on
 the session it held is answered `SessClosed` -- never dropped, which would
 leave it waiting out a timeout -- the AppleShare client sees the connection
