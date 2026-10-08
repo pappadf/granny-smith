@@ -232,6 +232,13 @@ int scsi_data_in_alloc(scsi_t *scsi, int have, int alloc) {
     return len;
 }
 
+int scsi_data_in_copy(scsi_t *scsi, const void *src, int have, int alloc) {
+    int n = scsi_data_in_alloc(scsi, have, alloc);
+    if (n > 0)
+        memcpy(scsi->buf.data, src, (size_t)n);
+    return n;
+}
+
 // How long a target takes to turn a completed WRITE command into a DATA OUT
 // phase.  Chosen from measurement, the same way SCSI_DRQ_PULSE_CYCLES was:
 // A/UX's blind primer lands 112 cycles after the command completes, and the
@@ -879,10 +886,8 @@ void run_cmd(scsi_t *scsi) {
                 pg0[0] = (uint8_t)(is_disk ? 0x00u : 0x05u); // device type
                 if (!is_disk)
                     pg0[3] = 1; // CD-ROMs list only page $00
-                int n = scsi_data_in_alloc(scsi, 4 + pg0[3], scsi->cmd.tl);
+                int n = scsi_data_in_copy(scsi, pg0, 4 + pg0[3], scsi->cmd.tl);
                 LOG(2, "INQUIRY target=%d EVPD page $00 -> %d bytes", target, n);
-                if (n > 0)
-                    memcpy(scsi->buf.data, pg0, (size_t)n);
                 break;
             }
             if (page == 0xC7u && is_disk) {
@@ -917,10 +922,8 @@ void run_cmd(scsi_t *scsi) {
                 pg[59] = 3u; // OS identifier length...
                 memcpy(&pg[60], "AIX", 3); // ...and the identifier itself
                 pg[72] = 3u; // max retry count
-                int n = scsi_data_in_alloc(scsi, (int)sizeof(pg), scsi->cmd.tl);
+                int n = scsi_data_in_copy(scsi, pg, (int)sizeof(pg), scsi->cmd.tl);
                 LOG(2, "INQUIRY target=%d EVPD page $C7 -> %d bytes (%u MB)", target, n, cap_mb);
-                if (n > 0)
-                    memcpy(scsi->buf.data, pg, (size_t)n);
                 break;
             }
             LOG(2, "INQUIRY target=%d EVPD page $%02X unsupported", target, page);
@@ -1159,9 +1162,7 @@ void run_cmd(scsi_t *scsi) {
             // Allocation length 0 is legal and means "no data".  This path
             // always had it right; it now shares the helper with everything
             // else that carries an allocation length.
-            int n = scsi_data_in_alloc(scsi, total, alloc_len);
-            if (n > 0)
-                memcpy(scsi->buf.data, resp, (size_t)n);
+            scsi_data_in_copy(scsi, resp, total, alloc_len);
         }
         break;
     }

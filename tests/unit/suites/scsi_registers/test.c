@@ -199,10 +199,25 @@ TEST(test_bus_still_usable_after_declines) {
     wr(scsi, MR, MR_DMA); // declined (BUS FREE)
     wr(scsi, MR, MR_ARBITRATE); // legal from BUS FREE
     wr(scsi, MR, 0);
+    wr(scsi, ODR, 1 << TARGET | 1 << 7); // target + initiator ID on the data bus
     wr(scsi, ICR, ICR_SEL);
     wr(scsi, ICR, ICR_SEL | ICR_BSY);
     wr(scsi, ICR, ICR_SEL);
     ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_command);
+    scsi_delete(scsi);
+}
+
+// A selection whose data bus carries only the initiator's ID names no
+// target: nothing answers, so the bus goes free.  The empty mask used to
+// decode as target 0 and select whatever device sat there.
+TEST(test_select_with_no_target_bit_goes_free) {
+    scsi_t *scsi = attach_disk(); // a device IS at ID 0
+
+    wr(scsi, ODR, 1 << 7); // initiator only
+    wr(scsi, ICR, ICR_SEL);
+    wr(scsi, ICR, ICR_SEL | ICR_BSY);
+    wr(scsi, ICR, ICR_SEL);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_bus_free);
     scsi_delete(scsi);
 }
 
@@ -405,6 +420,7 @@ int main(void) {
     RUN(test_arbitrate_outside_bus_free_is_declined);
     RUN(test_select_from_command_is_declined);
     RUN(test_bus_still_usable_after_declines);
+    RUN(test_select_with_no_target_bit_goes_free);
     unlink(g_path);
     printf("All scsi_registers tests passed\n");
     return 0;
