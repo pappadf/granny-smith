@@ -134,5 +134,16 @@ assert $inc_nested_ran == 1 "nested include (file-relative path) ran"
 assert try(shell.eval("include \"inc-no-such-file.script\""), none) == none "missing include file is an error"
 assert try(shell.eval("include \"inc-cycle-1.script\""), none) == none "include cycle is an error"
 
+# --- for: object items and a shadowed object binding across machine.boot -
+# machine.boot destroys the tree the loop's objects live in: a later item
+# is an error rather than a dangling pointer, and the shadowed binding the
+# loop restores reads as stale instead of re-arming a watch on freed memory.
+let fd = machine.rtc
+for fd in [1] {
+    machine.boot model="plus" ram=4096 rom="${$ROM}"
+}
+assert try($fd, "stale") == "stale" "the restored binding missed its object's death"
+assert try(shell.eval("for o in [machine.cpu, machine.rtc] { machine.boot model=\"plus\" ram=4096 rom=\"${$ROM}\" }"), none) == none "a destroyed for item was bound"
+
 echo "shell-v2 acceptance ok"
 quit

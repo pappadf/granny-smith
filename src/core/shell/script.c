@@ -1808,6 +1808,12 @@ static void exec_while(stmt_t *st, exec_ctx_t *cx) {
 // How many times a `for … in <range>` body may run.  See exec_for.
 #define FOR_RANGE_MAX_ITERATIONS (1u << 20)
 
+// Invalidator for a for-loop's object items: the body destroyed one
+// (machine.boot tears down the whole tree), so its slot must not be bound.
+static void for_item_gone(void *ud) {
+    *(bool *)ud = true;
+}
+
 static void exec_for(stmt_t *st, exec_ctx_t *cx) {
     expr_ctx_t ectx;
     script_expr_ctx(&ectx);
@@ -1823,11 +1829,6 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
         value_free(&iter);
         return;
     }
-
-    // Save any shadowed same-named binding in the current scope; the
-    // loop variable is removed at every exit route.
-    value_t saved = val_none();
-    bool had = shell_binding_save_top(st->name, &saved);
 
     // The one cap, and it bounds TIME rather than memory: a range denotes its
     // values without allocating, so what needs limiting is how many times the
@@ -1856,10 +1857,33 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
         count = (size_t)n;
     }
 
+    // A list holds raw object pointers: watch each object item so one the
+    // body destroys is reported instead of bound (a dangling pointer).
+    bool *gone = NULL;
+    if (iter.kind == V_LIST && count > 0) {
+        gone = (bool *)calloc(count, sizeof(*gone));
+        if (!gone) {
+            exec_error(cx, st->line, "for: out of memory");
+            value_free(&iter);
+            return;
+        }
+        for (size_t i = 0; i < count; i++)
+            if (iter.list.items[i].kind == V_OBJECT && iter.list.items[i].obj)
+                object_register_invalidator(iter.list.items[i].obj, for_item_gone, &gone[i]);
+    }
+
+    // Detach any shadowed same-named binding in the current scope (it stays
+    // watched); the loop variable is removed at every exit route.
+    struct binding *saved = shell_binding_detach_top(st->name);
+
     for (size_t i = 0; i < count; i++) {
         if (g_interrupt || job_current_cancelled()) {
             g_interrupt = false;
             exec_error(cx, st->line, "interrupted");
+            break;
+        }
+        if (gone && gone[i]) {
+            exec_error(cx, st->line, "for: item %zu was destroyed (e.g. by machine.boot)", i);
             break;
         }
         value_t item;
@@ -1890,11 +1914,14 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
             break;
     }
 
-    shell_binding_remove_top(st->name);
-    if (had) {
-        char err[SCRIPT_ERR_MAX];
-        shell_binding_let(st->name, saved, err, sizeof(err));
+    if (gone) {
+        for (size_t i = 0; i < count; i++)
+            if (!gone[i] && iter.list.items[i].kind == V_OBJECT && iter.list.items[i].obj)
+                object_unregister_invalidator(iter.list.items[i].obj, for_item_gone, &gone[i]);
+        free(gone);
     }
+    shell_binding_remove_top(st->name);
+    shell_binding_reattach_top(saved);
     value_free(&iter);
 }
 

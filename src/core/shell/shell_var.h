@@ -55,10 +55,14 @@ shell_binding_kind_t shell_binding_classify(const char *name, const value_t **va
 int shell_binding_push_scope(void);
 void shell_binding_pop_scope(void);
 
-// Loop-variable support: save a duplicate of the top-scope
-// binding if present (returns true), and remove a name from the top
-// scope only.
-bool shell_binding_save_top(const char *name, value_t *saved_out);
+// Loop-variable support: detach the top-scope binding `name` (NULL when
+// there is none) so a loop variable can shadow it, and reattach it to the
+// top scope afterwards (replacing the loop variable).  A detached binding
+// keeps its object watch, so an object it holds that dies meanwhile comes
+// back stale -- a saved copy would not know.  remove_top removes a name
+// from the top scope only.
+struct binding *shell_binding_detach_top(const char *name);
+void shell_binding_reattach_top(struct binding *b);
 void shell_binding_remove_top(const char *name);
 
 // Legacy string API — process-start bindings (`--var FOO=BAR`) and
