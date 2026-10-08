@@ -1048,7 +1048,9 @@ static int32_t fpu_to_int32(fpu_state_t *fpu, float80_reg_t val) {
     uint16_t exp = FP80_EXP(val);
     int32_t true_exp = (int32_t)exp - FPU_EXP_BIAS;
 
-    if (fp80_is_inf(val) || true_exp > 30) {
+    // true_exp == 31 falls through: -2^31 (and roundings onto it) is exact
+    // INT32_MIN, and the range checks at the end catch everything else.
+    if (fp80_is_inf(val) || true_exp > 31) {
         fpu->fpsr |= FPEXC_OPERR;
         return sign ? INT32_MIN : INT32_MAX;
     }

@@ -18,8 +18,8 @@
 // The -(An) form additionally uses a reversed register list
 // (bit i = FPi) versus bit 7 = FP0 everywhere else.
 //
-// Also hosts the FMOVE.P packed-decimal special-value checks, which need the
-// same single-instruction 68030+FPU setup.
+// Also hosts FMOVE.P packed-decimal special-value and FMOVE.L integer-range
+// checks, which need the same single-instruction 68030+FPU setup.
 
 #include "cpu.h"
 #include "cpu_internal.h"
@@ -294,6 +294,24 @@ TEST(fmove_p_store_infinity_pattern) {
     ASSERT_EQ_INT((int)memory_read_uint32(DATA_ADDR + 8), 0);
 }
 
+TEST(fmove_l_int32_min_is_exact) {
+    // FMOVE.L FP0,D0 with FP0 = -2^31: INT32_MIN exactly, no OPERR
+    cpu_t *cpu = test_get_cpu(test_get_active_context());
+    make_68030(cpu);
+    fpu_state_t *fpu = get_fpu(cpu);
+    fpu->fp[0] = fp80_make(1, 0x3FFF + 31, 0x8000000000000000ULL);
+    fpu->fpsr = 0;
+    cpu->d[0] = 0;
+    exec_fmovem(cpu, 0xF200, 0x6000, NULL, 0);
+    ASSERT_EQ_INT((int)cpu->d[0], (int)0x80000000u);
+    ASSERT_TRUE((fpu->fpsr & FPEXC_OPERR) == 0);
+    // +2^31 still overflows
+    fpu->fp[0] = fp80_make(0, 0x3FFF + 31, 0x8000000000000000ULL);
+    exec_fmovem(cpu, 0xF200, 0x6000, NULL, 0);
+    ASSERT_EQ_INT((int)cpu->d[0], 0x7FFFFFFF);
+    ASSERT_TRUE((fpu->fpsr & FPEXC_OPERR) != 0);
+}
+
 int main(void) {
     test_context_t *ctx = test_harness_init();
     if (!ctx) {
@@ -310,6 +328,7 @@ int main(void) {
     RUN(fmove_p_load_infinity_and_nan_pattern);
     RUN(fmove_p_load_yy_nonzero_is_in_range);
     RUN(fmove_p_store_infinity_pattern);
+    RUN(fmove_l_int32_min_is_exact);
 
     test_harness_destroy(ctx);
     return 0;
