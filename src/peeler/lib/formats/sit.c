@@ -108,6 +108,7 @@ typedef struct {
     int code_bits; // Current code width
     int prev; // Previous code (-1 = none)
     int block_count; // Codes emitted since last clear
+    bool bad; // A code no encoder could have written was read
 
     uint8_t stage[LZW_TABLE_CAP]; // Staging buffer for reversed expansion
     size_t stage_rd; // Read position in staging buffer
@@ -357,12 +358,22 @@ static size_t lzw_decode(lzw_state_t *z, uint8_t *dst, size_t want) {
             z->block_count = 0;
             continue;
         }
-        // First code after reset: single byte, no dict entry added
+        // First code after reset: single byte, no dict entry added.  The
+        // dictionary is empty, so anything but a literal is corrupt (and
+        // would leave prev naming a stale or never-built entry).
         if (z->prev < 0) {
-            if (code < 256)
-                dst[got++] = (uint8_t)code;
+            if (code >= 256) {
+                z->bad = true;
+                break;
+            }
+            dst[got++] = (uint8_t)code;
             z->prev = code;
             continue;
+        }
+        // Only the next free slot may be referenced before it exists (KwKwK)
+        if (code > z->tbl_next) {
+            z->bad = true;
+            break;
         }
         // sit.md § 9.8 "The KwKwK Case" — determine first byte of expansion
         uint8_t first_ch;
@@ -543,6 +554,8 @@ static int sit_prod_run(peel_producer_t *pp, uint8_t *out, size_t cap, size_t *n
         break;
     case 2:
         got = lzw_decode(p->lzw, out, want);
+        if (p->lzw->bad)
+            return sit_prod_fail(p, "SIT: corrupt LZW code");
         break;
     default:
         rc = p->inner->run(p->inner, out, want, &got);

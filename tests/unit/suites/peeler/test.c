@@ -816,6 +816,34 @@ TEST(test_sit5_lzw_literals_round_trip) {
     free(a);
 }
 
+// StuffIt 5, method 2: the first code after a reset must be a literal -- the
+// dictionary is empty.  A stream opening with code 300 then 'A' used to emit
+// "A" through a never-built entry 300; it is now refused as corrupt.
+TEST(test_sit5_lzw_first_code_must_be_a_literal) {
+    static const unsigned codes[] = {300, 'A'};
+    uint8_t packed[8] = {0};
+    size_t bit = 0;
+    for (size_t i = 0; i < 2; i++)
+        for (int b = 0; b < 9; b++, bit++)
+            if ((codes[i] >> b) & 1)
+                packed[bit / 8] |= (uint8_t)(1u << (bit % 8));
+    sit5_spec sp = {.name = "L",
+                    .data = packed,
+                    .dlen = (uint32_t)((bit + 7) / 8),
+                    .h1_len = -1,
+                    .d_algo = 2,
+                    .d_raw = (const uint8_t *)"A",
+                    .d_raw_len = 1};
+    size_t len;
+    uint8_t *a = build_sit5(&sp, &len);
+    peel_err_t *err = NULL;
+    peel_file_list_t list = peel(a, len, &err);
+    ASSERT_TRUE(err != NULL);
+    peel_err_free(err);
+    peel_file_list_free(&list);
+    free(a);
+}
+
 // StuffIt 5: a resource fork claiming 0xFFFFFFC0 packed bytes, in an archive of
 // a few hundred.  The data fork's start was computed as a pointer, resource
 // start + that length, and only the data fork was bounds-checked.  Natively the
@@ -1798,6 +1826,7 @@ int main(void) {
     RUN(test_sit5_round_trip);
     RUN(test_sit5_round_trip_with_resource_fork);
     RUN(test_sit5_lzw_literals_round_trip);
+    RUN(test_sit5_lzw_first_code_must_be_a_literal);
     RUN(test_sit5_resource_fork_extent_is_checked);
     RUN(test_sit5_short_header_is_rejected);
     RUN(test_sit5_zero_length_skip_marker_cannot_loop);
