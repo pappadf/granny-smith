@@ -1150,9 +1150,11 @@ static void write_uint32(void *scsi, uint32_t addr, uint32_t value) {
 scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint) {
     if (!bus)
         return NULL;
-    scsi_5380_t *chip = (scsi_5380_t *)malloc(sizeof(scsi_5380_t));
-    GS_ASSERTF(chip != NULL, "scsi_5380_attach: out of memory");
-    memset(chip, 0, sizeof(*chip));
+    scsi_5380_t *chip = (scsi_5380_t *)calloc(1, sizeof(scsi_5380_t));
+    if (!chip) {
+        LOG(0, "scsi_5380_attach: out of memory");
+        return NULL;
+    }
     chip->bus = bus;
     bus->chip5380 = chip;
 
@@ -1284,9 +1286,21 @@ scsi_t *scsi_init_named(struct scheduler *sched, checkpoint_t *checkpoint, const
         // The meaningful staged region is [0 .. pos + size): data-out fills
         // [0..size); data-in keeps undelivered bytes at [pos..pos+size).  Grow
         // the buffer first so transfers larger than BUF_LIMIT round-trip.
+        //
+        // max/size/pos are file content, and the staging writes index
+        // data[size++] while size < max: the buffer must cover both the
+        // staged region and max, or a crafted checkpoint is an OOB heap
+        // write.  A phase never asks for more than INT_MAX (phase_data_in/out
+        // take an int), so anything beyond that is corrupt, not big.
         size_t used = scsi->buf.pos + scsi->buf.size;
-        if (used && scsi->buf.data) {
-            scsi_buf_ensure(scsi, used);
+        size_t need = used > scsi->buf.max ? used : scsi->buf.max;
+        if (used < scsi->buf.pos || scsi->buf.size > scsi->buf.max || need > INT_MAX || !scsi_buf_ensure(scsi, need)) {
+            LOG(0, "SCSI restore: transfer buffer max=%zu size=%zu pos=%zu is not valid", scsi->buf.max, scsi->buf.size,
+                scsi->buf.pos);
+            checkpoint_set_error(checkpoint);
+            scsi->buf.max = MAX_CMD_SIZE;
+            scsi->buf.size = scsi->buf.pos = 0;
+        } else if (used && scsi->buf.data) {
             system_read_checkpoint_data(checkpoint, scsi->buf.data, used);
         }
     }
