@@ -125,7 +125,11 @@ typedef struct nubus_monitor {
     uint32_t width; // pixels
     uint32_t height; // pixels
     const int *depths; // 0-terminated array of supported bpp values
-    uint8_t sense_code; // 0..7 — value of the card's monitor-sense register
+    // 0..7 — the 3-bit code the card's monitor-sense lines read for this
+    // monitor (Apple's standard sense codes).  7 (all lines high) is the
+    // "nothing attached / extended sense" code, so no real monitor row uses
+    // it; uint8_t because only the low three bits exist.
+    uint8_t sense_code;
     uint8_t srsrc_sister; // top-level Ax sister sResource ID (savedSRsrcID)
     // CRT response curve (physical phosphor / gamma response) that the
     // monitor on the far end of the cable would apply.  Mac System 7's
