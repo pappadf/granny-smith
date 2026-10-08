@@ -416,6 +416,92 @@ size_t disk_read_data(image_t *img, size_t offset, uint8_t *buf, size_t size) {
     return 0;
 }
 
+// ---- Names the VFS also synthesises ------------------------------------------
+
+// A file literally named "rsrc" or "finf" resolves as itself: those names
+// anchor a fork only after the name of an existing file.  At the volume root
+// the anchor's prefix is the partition, a directory, and the lookup used to
+// stop there with -ENOENT.  The partition name needs its digits: "partition 1"
+// is no partition.
+static const hfsb_file_t named_like_forks[] = {
+    {.name = "rsrc", .data = (const uint8_t *)"literal", .data_len = 7},
+    {.name = "finf", .data = (const uint8_t *)"also",    .data_len = 4},
+};
+
+TEST(test_fork_names_resolve_literally_where_no_file_precedes) {
+    image_mount_t *m = mount_volume(named_like_forks, 2);
+    const vfs_backend_t *be = vfs_image_backend();
+    char buf[16];
+    size_t got = 0;
+    ASSERT_EQ_INT(0, read_all(be, m, "/partition1/rsrc", buf, sizeof(buf), &got));
+    ASSERT_EQ_INT(7, (int)got);
+    ASSERT_TRUE(memcmp(buf, "literal", 7) == 0);
+    vfs_stat_t st;
+    ASSERT_EQ_INT(0, be->stat(m, "/partition1/finf", &st));
+    ASSERT_EQ_INT(VFS_MODE_FILE, (int)st.mode);
+    ASSERT_EQ_INT(4, (int)st.size);
+    ASSERT_EQ_INT(-ENOENT, be->stat(m, "/partition 1", &st));
+    // Read-only by flag: the writers are vfs.c's to refuse.
+    ASSERT_TRUE((be->flags & VFS_BE_RDONLY) != 0);
+    ASSERT_TRUE(be->mkdir == NULL && be->unlink == NULL && be->rename == NULL);
+    unmount_volume();
+}
+
+// ---- A file that changes under its mount ----------------------------------
+
+static int g_listed, g_listed_stale;
+
+static void count_mounts(const char *path, const char *format, uint32_t n_partitions, uint32_t refcount, bool busy,
+                         bool stale, void *user) {
+    (void)path;
+    (void)format;
+    (void)n_partitions;
+    (void)refcount;
+    (void)busy;
+    (void)user;
+    g_listed++;
+    g_listed_stale += stale;
+}
+
+// The image file changes while a handle is open on its mount: the next
+// descent gets a new mount, the old one is marked stale and keeps serving
+// that handle, and the handle's close drops it.  It used to stay in the
+// table, unmarked, until evicted.
+TEST(test_changed_file_supersedes_a_held_mount) {
+    image_mount_t *m = mount_volume(one_file, 1);
+    const vfs_backend_t *be = vfs_image_backend();
+    vfs_file_t *f = NULL;
+    ASSERT_EQ_INT(0, be->open(m, "/partition1/A", &f));
+    g_listed = g_listed_stale = 0;
+    image_vfs_list(count_mounts, NULL); // whatever earlier tests left, plus m
+    int before = g_listed, before_stale = g_listed_stale;
+
+    // Grow the file: its source key (size, mtime) changes.
+    FILE *fp = fopen(g_host, "ab");
+    ASSERT_TRUE(fp != NULL);
+    ASSERT_TRUE(fwrite("x", 1, 1, fp) == 1);
+    fclose(fp);
+    image_mount_t *fresh = NULL;
+    ASSERT_EQ_INT(0, image_vfs_acquire_mount(g_host, &fresh));
+    ASSERT_TRUE(fresh != m);
+
+    g_listed = g_listed_stale = 0;
+    image_vfs_list(count_mounts, NULL);
+    ASSERT_EQ_INT(before + 1, g_listed);
+    ASSERT_EQ_INT(before_stale + 1, g_listed_stale);
+    char buf[8];
+    size_t got = 0;
+    ASSERT_EQ_INT(0, be->read(f, 0, buf, sizeof(buf), &got)); // the old mount still serves its handle
+    ASSERT_EQ_INT(4, (int)got);
+    be->close(f);
+
+    g_listed = g_listed_stale = 0;
+    image_vfs_list(count_mounts, NULL);
+    ASSERT_EQ_INT(before, g_listed);
+    ASSERT_EQ_INT(before_stale, g_listed_stale);
+    unmount_volume();
+}
+
 int main(void) {
     RUN(test_reads_a_data_fork_and_a_resource);
     RUN(test_open_resource_survives_cache_pressure);
@@ -428,6 +514,8 @@ int main(void) {
     RUN(test_overlong_path_is_refused_not_truncated);
     RUN(test_non_image_is_refused_cleanly);
     RUN(test_nested_volume_mounts_from_its_source);
+    RUN(test_fork_names_resolve_literally_where_no_file_precedes);
+    RUN(test_changed_file_supersedes_a_held_mount);
     fprintf(stderr, "All image_vfs tests passed\n");
     return 0;
 }

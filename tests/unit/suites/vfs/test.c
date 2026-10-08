@@ -359,18 +359,116 @@ TEST(vfs_resolve_bare_file_strict) {
 }
 
 TEST(vfs_resolve_normalises_relative) {
-    // Verify resolve strips ./ and .. segments consistently.
-    vfs_set_cwd("/tmp/sub");
+    // Verify resolve strips ./ and .. segments consistently -- including a
+    // `..` at the root, which stays there.  vfs_set_cwd only accepts an
+    // existing directory, so the cwd is the root.
+    ASSERT_EQ_INT(0, vfs_set_cwd("/"));
     char resolved[VFS_PATH_MAX];
     const vfs_backend_t *be = NULL;
     void *ctx = NULL;
     const char *tail = NULL;
-    int rc = vfs_resolve("../other/./file", resolved, sizeof(resolved), &be, &ctx, &tail);
+    int rc = vfs_resolve("../tmp/sub/../other/./file", resolved, sizeof(resolved), &be, &ctx, &tail);
     ASSERT_EQ_INT(0, rc);
     ASSERT_TRUE(strcmp(resolved, "/tmp/other/file") == 0);
     ASSERT_TRUE(be == vfs_host_backend());
     ASSERT_TRUE(ctx == NULL);
     ASSERT_TRUE(tail == resolved);
+}
+
+TEST(vfs_set_cwd_validates) {
+    // The cwd only ever holds a normalised path to an existing directory.
+    setup_sandbox();
+    ASSERT_EQ_INT(0, vfs_set_cwd("/"));
+    char cwd[PATH_MAX];
+    ASSERT_TRUE(getcwd(cwd, sizeof(cwd)) != NULL);
+    char rel[128];
+    snprintf(rel, sizeof(rel), "%s/plain.bin", SANDBOX_DIR);
+    write_file(rel, "x", 1);
+    char path[PATH_MAX + 128];
+    snprintf(path, sizeof(path), "%s/%s", cwd, rel);
+    ASSERT_EQ_INT(-ENOTDIR, vfs_set_cwd(path));
+    snprintf(path, sizeof(path), "%s/%s/missing", cwd, SANDBOX_DIR);
+    ASSERT_EQ_INT(-ENOENT, vfs_set_cwd(path));
+    ASSERT_TRUE(strcmp(vfs_get_cwd(), "/") == 0);
+    snprintf(path, sizeof(path), "%s/%s/./", cwd, SANDBOX_DIR);
+    ASSERT_EQ_INT(0, vfs_set_cwd(path));
+    snprintf(path, sizeof(path), "%s/%s", cwd, SANDBOX_DIR);
+    char want[VFS_PATH_MAX];
+    ASSERT_EQ_INT(0, vfs_normalise_path(path, want, sizeof(want))); // getcwd may be "/" (wasm)
+    ASSERT_TRUE(strcmp(vfs_get_cwd(), want) == 0);
+    ASSERT_EQ_INT(0, vfs_set_cwd("/"));
+    teardown_sandbox();
+}
+
+TEST(vfs_normalise_limits) {
+    // A path that does not fit, or is too deep, is refused, never truncated.
+    char out[16];
+    ASSERT_EQ_INT(0, vfs_normalise_path("/a/b/../c/./d", out, sizeof(out)));
+    ASSERT_TRUE(strcmp(out, "/a/c/d") == 0);
+    ASSERT_EQ_INT(0, vfs_normalise_path("/..//../", out, sizeof(out)));
+    ASSERT_TRUE(strcmp(out, "/") == 0);
+    ASSERT_EQ_INT(-ENAMETOOLONG, vfs_normalise_path("/0123456789/abcdef", out, sizeof(out)));
+    static char deep[VFS_MAX_COMPONENTS * 2 + 8];
+    char big[VFS_PATH_MAX];
+    size_t n = 0;
+    for (int i = 0; i <= VFS_MAX_COMPONENTS; i++) {
+        deep[n++] = '/';
+        deep[n++] = 'x';
+    }
+    deep[n] = '\0';
+    ASSERT_EQ_INT(-ENAMETOOLONG, vfs_normalise_path(deep, big, sizeof(big)));
+    deep[n - 2] = '\0'; // exactly VFS_MAX_COMPONENTS
+    ASSERT_EQ_INT(0, vfs_normalise_path(deep, big, sizeof(big)));
+}
+
+TEST(vfs_readdir_skips_dot_entries) {
+    setup_sandbox();
+    char cwd[PATH_MAX];
+    ASSERT_TRUE(getcwd(cwd, sizeof(cwd)) != NULL);
+    char rel[128];
+    snprintf(rel, sizeof(rel), "%s/only.txt", SANDBOX_DIR);
+    write_file(rel, "x", 1);
+    char dir_path[PATH_MAX + 64];
+    snprintf(dir_path, sizeof(dir_path), "%s/%s", cwd, SANDBOX_DIR);
+    vfs_dir_t *dir = NULL;
+    const vfs_backend_t *be = NULL;
+    ASSERT_EQ_INT(0, vfs_opendir(dir_path, &dir, &be));
+    vfs_dirent_t entry;
+    int n = 0, rc;
+    while ((rc = be->readdir(dir, &entry)) > 0) {
+        ASSERT_TRUE(strcmp(entry.name, ".") != 0 && strcmp(entry.name, "..") != 0);
+        n++;
+    }
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_EQ_INT(1, n);
+    be->closedir(dir);
+    teardown_sandbox();
+}
+
+TEST(vfs_rename_noreplace_and_lstat) {
+    setup_sandbox();
+    char cwd[PATH_MAX];
+    ASSERT_TRUE(getcwd(cwd, sizeof(cwd)) != NULL);
+    char a[PATH_MAX + 64], b[PATH_MAX + 64], c[PATH_MAX + 64];
+    snprintf(a, sizeof(a), "%s/%s/a", cwd, SANDBOX_DIR);
+    snprintf(b, sizeof(b), "%s/%s/b", cwd, SANDBOX_DIR);
+    snprintf(c, sizeof(c), "%s/%s/c", cwd, SANDBOX_DIR);
+    write_file(a, "A", 1);
+    write_file(b, "B", 1);
+    ASSERT_EQ_INT(-EEXIST, vfs_rename(a, b, VFS_RENAME_NOREPLACE));
+    ASSERT_EQ_INT(0, vfs_rename(a, c, VFS_RENAME_NOREPLACE));
+    ASSERT_EQ_INT(0, vfs_rename(c, b, 0)); // plain rename replaces
+    vfs_stat_t st = {0};
+    ASSERT_EQ_INT(-ENOENT, vfs_stat(a, &st));
+#ifndef __EMSCRIPTEN__
+    // A link is followed by stat and reported as itself by lstat.
+    ASSERT_EQ_INT(0, symlink(b, a));
+    ASSERT_EQ_INT(0, vfs_stat(a, &st));
+    ASSERT_TRUE((st.mode & VFS_MODE_FILE) != 0);
+    ASSERT_EQ_INT(0, vfs_lstat(a, &st));
+    ASSERT_EQ_INT(VFS_MODE_SYMLINK, (int)st.mode);
+#endif
+    teardown_sandbox();
 }
 
 int main(void) {
@@ -385,5 +483,9 @@ int main(void) {
     RUN(vfs_resolve_descent_not_image);
     RUN(vfs_resolve_bare_file_strict);
     RUN(vfs_resolve_normalises_relative);
+    RUN(vfs_set_cwd_validates);
+    RUN(vfs_normalise_limits);
+    RUN(vfs_readdir_skips_dot_entries);
+    RUN(vfs_rename_noreplace_and_lstat);
     return 0;
 }

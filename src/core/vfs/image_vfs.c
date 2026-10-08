@@ -30,11 +30,16 @@
 // ---- Mount table ----------------------------------------------------------
 
 // Mounts held at once.  An idle one (no open handle) is evicted, least
-// recently used first, when a new mount needs its slot.
+// recently used first, when a new mount needs its slot.  A build that needs
+// more (or fewer) overrides it: -DIMAGE_VFS_MAX_MOUNTS=64.
+#ifndef IMAGE_VFS_MAX_MOUNTS
 #define IMAGE_VFS_MAX_MOUNTS 16
+#endif
 
-// Components an in-mount path may have.
-#define IMAGE_VFS_MAX_COMPONENTS 64
+// Components an in-mount path may have: the resolver's own cap, so a path
+// it accepts is never refused here for depth alone.
+#define IMAGE_VFS_MAX_COMPONENTS VFS_MAX_COMPONENTS
+_Static_assert(VFS_MAX_COMPONENTS == GS_NS_MAX_COMPONENTS, "the resolver and the namespaces share one depth cap");
 
 struct image_mount {
     bool in_use;
@@ -45,21 +50,22 @@ struct image_mount {
     uint32_t n_root; // entries at the root (partitions of a disk)
     uint32_t refcount; // open handles
     bool unmounting; // unmount requested while handles were live
+    bool stale; // superseded: its file changed and a newer mount serves the path
     int serial; // never-reused mount serial (files.mounts index); valid while in_use
     uint64_t used; // LRU stamp
 };
 
-static image_mount_t g_mounts[IMAGE_VFS_MAX_MOUNTS];
+static image_mount_t s_mounts[IMAGE_VFS_MAX_MOUNTS];
 
 // Next mount serial.  Slots are reused; serials are not, so the object
 // model's stable-index contract holds for files.mounts[n].
-static int g_next_serial = 0;
-static uint64_t g_use_clock;
+static int s_next_serial = 0;
+static uint64_t s_use_clock;
 
 // Guards a slot's identity -- in_use, path, serial -- while a mount is
 // created or destroyed (the I/O worker mounts too, through a copy out of an
 // image) against the snapshot readers below.
-static pthread_mutex_t g_mounts_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t s_mounts_mu = PTHREAD_MUTEX_INITIALIZER;
 
 // A mount refuses service (-EBUSY) once an unmount is pending, and while an
 // image containing its source is attached writable: guest writes land in
@@ -91,8 +97,8 @@ typedef struct rsrc_cache_entry {
     int pins; // open handles borrowing fork_buf / parsed; never evicted while > 0
 } rsrc_cache_entry_t;
 
-static rsrc_cache_entry_t g_rsrc_cache[RSRC_CACHE_CAPACITY];
-static uint64_t g_rsrc_lru_counter;
+static rsrc_cache_entry_t s_rsrc_cache[RSRC_CACHE_CAPACITY];
+static uint64_t s_rsrc_lru_counter;
 
 // Drop one cache entry.  Safe on an empty slot.
 static void rsrc_cache_evict(rsrc_cache_entry_t *e) {
@@ -107,8 +113,8 @@ static void rsrc_cache_evict(rsrc_cache_entry_t *e) {
 // Drop every entry associated with `m`.  Called from mount_destroy().
 static void rsrc_cache_drop_for_mount(const image_mount_t *m) {
     for (size_t i = 0; i < RSRC_CACHE_CAPACITY; i++) {
-        if (g_rsrc_cache[i].mount == m)
-            rsrc_cache_evict(&g_rsrc_cache[i]);
+        if (s_rsrc_cache[i].mount == m)
+            rsrc_cache_evict(&s_rsrc_cache[i]);
     }
 }
 
@@ -116,9 +122,9 @@ static void rsrc_cache_drop_for_mount(const image_mount_t *m) {
 // hit.  Returns NULL on miss.
 static rsrc_cache_entry_t *rsrc_cache_find(const image_mount_t *m, const char *path) {
     for (size_t i = 0; i < RSRC_CACHE_CAPACITY; i++) {
-        if (g_rsrc_cache[i].mount == m && strcmp(g_rsrc_cache[i].path, path) == 0) {
-            g_rsrc_cache[i].lru_tick = ++g_rsrc_lru_counter;
-            return &g_rsrc_cache[i];
+        if (s_rsrc_cache[i].mount == m && strcmp(s_rsrc_cache[i].path, path) == 0) {
+            s_rsrc_cache[i].lru_tick = ++s_rsrc_lru_counter;
+            return &s_rsrc_cache[i];
         }
     }
     return NULL;
@@ -134,7 +140,7 @@ static rsrc_cache_entry_t *rsrc_cache_find(const image_mount_t *m, const char *p
 static rsrc_cache_entry_t *rsrc_cache_pick(void) {
     rsrc_cache_entry_t *victim = NULL;
     for (size_t i = 0; i < RSRC_CACHE_CAPACITY; i++) {
-        rsrc_cache_entry_t *e = &g_rsrc_cache[i];
+        rsrc_cache_entry_t *e = &s_rsrc_cache[i];
         if (!e->mount)
             return e;
         if (e->pins == 0 && (!victim || e->lru_tick < victim->lru_tick))
@@ -201,59 +207,64 @@ static rsrc_cache_entry_t *rsrc_cache_acquire(image_mount_t *m, const char *path
     e->fork_buf = buf;
     e->fork_len = flen;
     e->parsed = rf;
-    e->lru_tick = ++g_rsrc_lru_counter;
+    e->lru_tick = ++s_rsrc_lru_counter;
     return e;
 }
 
 // ---- Helpers --------------------------------------------------------------
 
-// Resolve `path` through realpath() so relative and symlinked inputs map
-// onto one form.  Falls back to the input when realpath can't resolve it (a
-// path through an image, or a file just deleted).
-static void canonicalise(const char *path, char *out, size_t cap) {
-    char *resolved = realpath(path, NULL);
-    snprintf(out, cap, "%s", resolved ? resolved : path);
-    free(resolved);
+// The canonical form of host path `path` (realpath(): relative and
+// symlinked inputs map onto one form), heap-allocated by libc, so no
+// PATH_MAX buffer sits on the stack.  NULL with errno when it cannot be
+// resolved (no such file, or a path through an image).
+static char *canonicalise(const char *path) {
+    return realpath(path, NULL);
 }
 
 // The live mount whose key is `key`, or NULL.
 static image_mount_t *find_mount_by_key(const char *key) {
     for (int i = 0; i < IMAGE_VFS_MAX_MOUNTS; i++)
-        if (g_mounts[i].in_use && strcmp(g_mounts[i].key, key) == 0)
-            return &g_mounts[i];
+        if (s_mounts[i].in_use && strcmp(s_mounts[i].key, key) == 0)
+            return &s_mounts[i];
     return NULL;
 }
 
-// The live mount mounted under `path` (as given, or canonicalised), or NULL.
+// The live, current (not stale) mount mounted under `path`, or NULL.  Both
+// lookups are needed: a host file's mount is stored under its canonical
+// path, which a relative or symlinked `path` only matches once
+// canonicalised; a mount of a file inside another mount is stored under
+// the VFS path that reached it, which realpath() cannot resolve at all and
+// so only ever matches as given.
 static image_mount_t *find_mount_by_path(const char *path) {
     for (int i = 0; i < IMAGE_VFS_MAX_MOUNTS; i++)
-        if (g_mounts[i].in_use && strcmp(g_mounts[i].path, path) == 0)
-            return &g_mounts[i];
-    char canon[PATH_MAX];
-    canonicalise(path, canon, sizeof(canon));
-    if (strcmp(canon, path) != 0)
-        for (int i = 0; i < IMAGE_VFS_MAX_MOUNTS; i++)
-            if (g_mounts[i].in_use && strcmp(g_mounts[i].path, canon) == 0)
-                return &g_mounts[i];
-    return NULL;
+        if (s_mounts[i].in_use && !s_mounts[i].stale && strcmp(s_mounts[i].path, path) == 0)
+            return &s_mounts[i];
+    char *canon = canonicalise(path);
+    image_mount_t *found = NULL;
+    if (canon && strcmp(canon, path) != 0)
+        for (int i = 0; i < IMAGE_VFS_MAX_MOUNTS && !found; i++)
+            if (s_mounts[i].in_use && !s_mounts[i].stale && strcmp(s_mounts[i].path, canon) == 0)
+                found = &s_mounts[i];
+    free(canon);
+    return found;
 }
 
 // Tear down a mount without regard for refcount (callers must guard).
 static void mount_destroy(image_mount_t *m) {
     rsrc_cache_drop_for_mount(m);
     gs_namespace_close(m->ns);
-    pthread_mutex_lock(&g_mounts_mu);
+    pthread_mutex_lock(&s_mounts_mu);
     free(m->key);
     free(m->path);
     memset(m, 0, sizeof(*m));
-    pthread_mutex_unlock(&g_mounts_mu);
+    pthread_mutex_unlock(&s_mounts_mu);
 }
 
 // A free slot: an empty one, else the least recently used idle mount's.
 static image_mount_t *find_free_slot(void) {
     image_mount_t *victim = NULL;
     for (int i = 0; i < IMAGE_VFS_MAX_MOUNTS; i++) {
-        image_mount_t *m = &g_mounts[i];
+        image_mount_t *m = &s_mounts[i];
         if (!m->in_use)
             return m;
         if (m->refcount == 0 && (!victim || m->used < victim->used))
@@ -274,17 +285,23 @@ int image_vfs_acquire_mount_source(const char *path, gs_source_t *data, gs_sourc
     if (m) {
         if (mount_busy(m))
             return -EBUSY;
-        m->used = ++g_use_clock;
+        m->used = ++s_use_clock;
         *out_mount = m;
         return 0;
     }
     if (image_key_is_open_writable(key))
         return -EBUSY;
     // The same path mounted over a file that has since changed (its key
-    // carries size and mtime): the old mount goes once nothing holds it.
-    image_mount_t *stale = find_mount_by_path(path);
-    if (stale && stale->refcount == 0 && !stale->unmounting)
-        mount_destroy(stale);
+    // carries size and mtime): the old mount goes now if nothing holds it,
+    // else it is marked stale -- its open handles keep reading what they
+    // opened, nothing new finds it, and the last handle to close drops it.
+    image_mount_t *old = find_mount_by_path(path);
+    if (old && !old->unmounting) {
+        if (old->refcount == 0)
+            mount_destroy(old);
+        else
+            old->stale = true;
+    }
 
     int err = 0;
     const char *fmt = NULL;
@@ -311,7 +328,7 @@ int image_vfs_acquire_mount_source(const char *path, gs_source_t *data, gs_sourc
     if (gs_ns_list(ns, "", &root, &count) == 0)
         n_root = (uint32_t)count;
     free(root);
-    pthread_mutex_lock(&g_mounts_mu);
+    pthread_mutex_lock(&s_mounts_mu);
     memset(m, 0, sizeof(*m));
     m->in_use = true;
     m->key = k;
@@ -319,9 +336,9 @@ int image_vfs_acquire_mount_source(const char *path, gs_source_t *data, gs_sourc
     m->ns = ns;
     m->format = kind ? kind : (gs_ns_archive_format(ns) ? gs_ns_archive_format(ns) : fmt);
     m->n_root = n_root;
-    m->serial = g_next_serial++;
-    m->used = ++g_use_clock;
-    pthread_mutex_unlock(&g_mounts_mu);
+    m->serial = s_next_serial++;
+    m->used = ++s_use_clock;
+    pthread_mutex_unlock(&s_mounts_mu);
     *out_mount = m;
     return 0;
 }
@@ -329,24 +346,33 @@ int image_vfs_acquire_mount_source(const char *path, gs_source_t *data, gs_sourc
 int image_vfs_acquire_mount(const char *host_path_in, image_mount_t **out_mount) {
     if (!host_path_in || !out_mount)
         return -EINVAL;
-    char host_path[PATH_MAX];
-    canonicalise(host_path_in, host_path, sizeof(host_path));
+    // Mounts are recorded under the canonical path only: a path realpath()
+    // cannot resolve names no file we could open, and storing it raw would
+    // let the same file be found under one spelling and missed under another.
+    char *host_path = canonicalise(host_path_in);
+    if (!host_path)
+        return errno ? -errno : -ENOENT;
     int err = 0;
     gs_source_t *data = gs_source_host(host_path, &err);
-    if (!data)
+    if (!data) {
+        free(host_path);
         return err ? err : -ENOENT;
+    }
     gs_source_t *rsrc = gs_source_open_host_path(host_path, GS_FORK_RSRC, NULL);
     int rc = image_vfs_acquire_mount_source(host_path, data, rsrc, out_mount);
     gs_source_release(data);
     gs_source_release(rsrc);
+    free(host_path);
     return rc;
 }
 
-// Drop a handle's reference; the last one out completes a pending unmount.
+// Drop a handle's reference; the last one out completes a pending unmount
+// or drops a stale mount.  A handle always holds one, so a zero count here
+// is a caller bug, ignored rather than wrapped.
 static void mount_release(image_mount_t *m) {
     if (!m || m->refcount == 0)
         return;
-    if (--m->refcount == 0 && m->unmounting)
+    if (--m->refcount == 0 && (m->unmounting || m->stale))
         mount_destroy(m);
 }
 
@@ -363,28 +389,28 @@ int image_vfs_unmount(const char *path) {
     return 0;
 }
 
-// The mount holding `serial`, or NULL.  Caller holds g_mounts_mu.
+// The mount holding `serial`, or NULL.  Caller holds s_mounts_mu.
 static image_mount_t *mount_by_serial_locked(int serial) {
     for (int i = 0; i < IMAGE_VFS_MAX_MOUNTS; i++)
-        if (g_mounts[i].in_use && g_mounts[i].serial == serial)
-            return &g_mounts[i];
+        if (s_mounts[i].in_use && s_mounts[i].serial == serial)
+            return &s_mounts[i];
     return NULL;
 }
 
 int image_vfs_next_serial(int prev) {
     int best = -1;
-    pthread_mutex_lock(&g_mounts_mu);
+    pthread_mutex_lock(&s_mounts_mu);
     for (int i = 0; i < IMAGE_VFS_MAX_MOUNTS; i++) {
-        const image_mount_t *m = &g_mounts[i];
+        const image_mount_t *m = &s_mounts[i];
         if (m->in_use && m->serial > prev && (best < 0 || m->serial < best))
             best = m->serial;
     }
-    pthread_mutex_unlock(&g_mounts_mu);
+    pthread_mutex_unlock(&s_mounts_mu);
     return best;
 }
 
 bool image_vfs_mount_info(int serial, image_vfs_mount_info_t *out) {
-    pthread_mutex_lock(&g_mounts_mu);
+    pthread_mutex_lock(&s_mounts_mu);
     image_mount_t *m = mount_by_serial_locked(serial);
     char key[1024] = "";
     if (m && out) {
@@ -394,9 +420,10 @@ bool image_vfs_mount_info(int serial, image_vfs_mount_info_t *out) {
         out->partitions = m->n_root;
         out->refcount = m->refcount;
         out->unmounting = m->unmounting;
+        out->stale = m->stale;
         snprintf(key, sizeof(key), "%s", m->key);
     }
-    pthread_mutex_unlock(&g_mounts_mu);
+    pthread_mutex_unlock(&s_mounts_mu);
     if (!m)
         return false;
     // Asked outside the lock: it consults the image layer's open-file table.
@@ -416,35 +443,46 @@ void image_vfs_list(image_vfs_list_cb cb, void *user) {
     if (!cb)
         return;
     for (int i = 0; i < IMAGE_VFS_MAX_MOUNTS; i++) {
-        image_mount_t *m = &g_mounts[i];
+        image_mount_t *m = &s_mounts[i];
         if (!m->in_use)
             continue;
-        cb(m->path, m->format, m->n_root, m->refcount, mount_busy(m), user);
+        cb(m->path, m->format, m->n_root, m->refcount, mount_busy(m), m->stale, user);
     }
 }
 
 // ---- In-mount paths -------------------------------------------------------
 
-// An in-mount path split into components.
+// An in-mount path split into components.  The component pointers point
+// into the struct's own path_storage: an image_path_t is valid only where
+// parse_image_path filled it, and must not be copied (a copy's pointers
+// still point into the original).  It is heap-allocated by
+// parse_image_path -- about 2 KiB, too much for a WASM stack on top of the
+// resolver's buffers -- and freed by the caller.
 typedef struct image_path {
     const char *components[IMAGE_VFS_MAX_COMPONENTS];
     size_t n_components;
-    char buf[VFS_PATH_MAX]; // owns the storage for component strings
+    char path_storage[VFS_PATH_MAX]; // owns the component strings
 } image_path_t;
 
-// Split `path`.  0, or -ENAMETOOLONG: refuse rather than truncate, since a
-// truncated path is a different path and can name a real file the caller
-// did not ask for.
-static int parse_image_path(const char *path, image_path_t *out) {
-    if (!path || !out)
+// Split `path` into a new image_path_t (*out, free() it).  0, or
+// -ENAMETOOLONG: refuse rather than truncate, since a truncated path is a
+// different path and can name a real file the caller did not ask for.
+static int parse_image_path(const char *path, image_path_t **out) {
+    *out = NULL;
+    if (!path)
         return -EINVAL;
-    memset(out, 0, sizeof(*out));
-    if (strlen(path) >= sizeof(out->buf))
+    if (strlen(path) >= VFS_PATH_MAX)
         return -ENAMETOOLONG;
-    int n = gs_ns_split(path, out->buf, sizeof(out->buf), out->components, IMAGE_VFS_MAX_COMPONENTS);
-    if (n < 0)
+    image_path_t *ip = calloc(1, sizeof(*ip));
+    if (!ip)
+        return -ENOMEM;
+    int n = gs_ns_split(path, ip->path_storage, sizeof(ip->path_storage), ip->components, IMAGE_VFS_MAX_COMPONENTS);
+    if (n < 0) {
+        free(ip);
         return n;
-    out->n_components = (size_t)n;
+    }
+    ip->n_components = (size_t)n;
+    *out = ip;
     return 0;
 }
 
@@ -463,12 +501,11 @@ static int join_path(const image_path_t *ip, size_t n, char *out, size_t cap) {
 
 // ---- Synthetic resource-tree path classification --------------------------
 //
-// Classifies the *suffix* of an in-image HFS path.  Given the full split
-// component list, we look for the first occurrence of "rsrc" or "finf" and,
-// if found, treat the components after it as either a fork suffix or a
-// walk into the synthetic /rsrc/<TYPE>/<id>[.info] tree.  Callers retry
-// with a literal HFS interpretation when this lookup misses, mirroring
-// the pre-existing fork-suffix retry path.
+// A path component spelled "rsrc" or "finf" (case-sensitive) may anchor a synthetic suffix: a fork
+// of the file named by the components before it, or a walk into the
+// synthetic /rsrc/<TYPE>/<id>[.info] tree.  It only does when that file
+// exists and is a file; otherwise the name is taken literally, so a real
+// file or folder named "rsrc" still resolves (resolve_synthetic).
 
 typedef enum {
     SYNTH_NONE = 0, // No synthetic suffix; treat whole path literally.
@@ -480,45 +517,15 @@ typedef enum {
     SYNTH_RSRC_INFO, // <file>/rsrc/<TYPE>/<id>.info — JSON sidecar.
 } synth_kind_t;
 
-// Classify trailing components.  `n_components` is the full count; on
-// success `*file_core_count` is the number of leading components that
-// make up the HFS file path, `*type_out` (4 bytes) is the resource type
-// for type-scoped kinds, and `*id_out` is the resource ID for resource-
-// scoped kinds.  Returns SYNTH_NONE if the path looks literal.
-static synth_kind_t classify_synth(const char *const *components, size_t n_components, size_t *file_core_count,
-                                   uint8_t type_out[4], int16_t *id_out) {
-    if (file_core_count)
-        *file_core_count = n_components;
-    if (n_components == 0)
-        return SYNTH_NONE;
-
-    // Search left-to-right for "rsrc" or "finf"; the first hit anchors the
-    // synthetic split.  An HFS filename that literally equals "rsrc" or
-    // "finf" would match here too, but the caller retries with the full
-    // literal path on miss so the literal interpretation still wins when
-    // the synthetic one fails.
-    size_t anchor = n_components;
-    bool is_finf = false;
-    for (size_t i = 0; i < n_components; i++) {
-        const char *c = components[i];
-        if (strcmp(c, "rsrc") == 0) {
-            anchor = i;
-            is_finf = false;
-            break;
-        }
-        if (strcmp(c, "finf") == 0) {
-            anchor = i;
-            is_finf = true;
-            break;
-        }
-    }
-    if (anchor == n_components)
-        return SYNTH_NONE;
-    if (file_core_count)
-        *file_core_count = anchor;
+// Classify the suffix anchored at components[anchor] (which is "rsrc" or
+// "finf"; the components before it name the file).  `type_out` (4 bytes)
+// receives the resource type for type-scoped kinds and `*id_out` the
+// resource ID for resource-scoped ones.  SYNTH_NONE when the components
+// after the anchor are no synthetic suffix.
+static synth_kind_t classify_synth_at(const char *const *components, size_t n_components, size_t anchor,
+                                      uint8_t type_out[4], int16_t *id_out) {
     size_t after = n_components - anchor - 1;
-
-    if (is_finf)
+    if (strcmp(components[anchor], "finf") == 0)
         return (after == 0) ? SYNTH_FINF : SYNTH_NONE;
 
     if (after == 0)
@@ -527,14 +534,14 @@ static synth_kind_t classify_synth(const char *const *components, size_t n_compo
         const char *next = components[anchor + 1];
         if (strcmp(next, "_raw") == 0)
             return SYNTH_RSRC_RAW;
-        if (type_out && rfork_type_from_path(next, type_out) == 0)
+        if (rfork_type_from_path(next, type_out) == 0)
             return SYNTH_RSRC_TYPE_DIR;
         return SYNTH_NONE;
     }
     if (after == 2) {
         const char *type_str = components[anchor + 1];
         const char *id_str = components[anchor + 2];
-        if (!type_out || rfork_type_from_path(type_str, type_out) != 0)
+        if (rfork_type_from_path(type_str, type_out) != 0)
             return SYNTH_NONE;
         size_t id_len = strlen(id_str);
         const char *info_suffix = ".info";
@@ -546,11 +553,11 @@ static synth_kind_t classify_synth(const char *const *components, size_t n_compo
                 return SYNTH_NONE;
             memcpy(id_only, id_str, id_len - info_suffix_len);
             id_only[id_len - info_suffix_len] = '\0';
-            if (!id_out || rfork_id_from_path(id_only, id_out) != 0)
+            if (rfork_id_from_path(id_only, id_out) != 0)
                 return SYNTH_NONE;
             return SYNTH_RSRC_INFO;
         }
-        if (!id_out || rfork_id_from_path(id_str, id_out) != 0)
+        if (rfork_id_from_path(id_str, id_out) != 0)
             return SYNTH_NONE;
         return SYNTH_RSRC_DATA;
     }
@@ -559,16 +566,19 @@ static synth_kind_t classify_synth(const char *const *components, size_t n_compo
 
 // ---- Backend method implementations --------------------------------------
 
-// Dir handle: a namespace directory's entries (read at opendir), or one of
-// the two synthetic-resource directory kinds (DIR_RSRC_ROOT for /rsrc,
-// DIR_RSRC_TYPE for /rsrc/<TYPE>).  The resource kinds borrow an rfork_t*
-// from the LRU cache, which the handle pins.
-struct vfs_dir {
-    enum {
-        DIR_NS,
-        DIR_RSRC_ROOT,
-        DIR_RSRC_TYPE,
-    } kind;
+// What an image directory handle lists.
+typedef enum image_dir_kind {
+    DIR_NS, // a namespace directory's entries (read at opendir)
+    DIR_RSRC_ROOT, // <file>/rsrc: the resource types, then _raw
+    DIR_RSRC_TYPE, // <file>/rsrc/<TYPE>: the resources of one type
+} image_dir_kind_t;
+
+// Dir handle: a namespace directory's entries, or one of the two
+// synthetic-resource directory kinds.  The resource kinds borrow an
+// rfork_t* from the LRU cache, which the handle pins.  Passed through the
+// vtable as the opaque vfs_dir_t (vfs.h).
+typedef struct image_vfs_dir {
+    image_dir_kind_t kind;
     image_mount_t *mount;
     // DIR_NS
     gs_dirent_t *entries;
@@ -585,19 +595,23 @@ struct vfs_dir {
     bool rsrc_emit_raw_next; // DIR_RSRC_ROOT: emit _raw entry at the end
     int16_t rsrc_pending_id;
     size_t rsrc_pending_info_size;
-};
+} image_vfs_dir_t;
+
+// What an image file handle reads.
+typedef enum image_file_kind {
+    FILE_SOURCE, // a byte source: a fork, or the Finder info
+    FILE_RSRC_DATA, // one resource, a slice of the cached fork
+    FILE_RSRC_INFO, // one resource's .info JSON sidecar
+} image_file_kind_t;
 
 // File handle: a byte source (a file's data or resource fork, its Finder
 // info), or one of the synthetic-resource leaf kinds.  FILE_RSRC_DATA
 // borrows a slice of the cached fork buffer; FILE_RSRC_INFO precomputes the
-// JSON once and reads out of an inline buffer.
-struct vfs_file {
+// JSON once and reads out of an inline buffer.  Passed through the vtable
+// as the opaque vfs_file_t (vfs.h).
+typedef struct image_vfs_file {
     image_mount_t *mount;
-    enum {
-        FILE_SOURCE,
-        FILE_RSRC_DATA,
-        FILE_RSRC_INFO,
-    } kind;
+    image_file_kind_t kind;
     gs_source_t *src; // FILE_SOURCE
     // FILE_RSRC_DATA: pointer into the cached fork buffer of rsrc_entry,
     // which this handle pins until it closes.
@@ -608,7 +622,15 @@ struct vfs_file {
     // long resource name (255) plus the attrs list and brackets.
     char rsrc_info_buf[512];
     size_t rsrc_info_len;
-};
+} image_vfs_file_t;
+
+// The backend's own handle behind an opaque one, and back.
+static image_vfs_dir_t *as_dir(vfs_dir_t *d) {
+    return (image_vfs_dir_t *)(void *)d;
+}
+static image_vfs_file_t *as_file(vfs_file_t *f) {
+    return (image_vfs_file_t *)(void *)f;
+}
 
 // A dirent as a VFS stat.
 static void to_stat(const gs_dirent_t *d, vfs_stat_t *out) {
@@ -620,9 +642,7 @@ static void to_stat(const gs_dirent_t *d, vfs_stat_t *out) {
 }
 
 // The synthetic part of a path, resolved: the file it hangs off (`core`
-// components) and its dirent.  Returns 1 when the path is not synthetic --
-// or only looked it (the file does not exist, so it is a name that happens
-// to contain "rsrc" or "finf"): the caller treats it as a plain path.
+// components) and its dirent.
 typedef struct {
     synth_kind_t kind;
     char core[VFS_PATH_MAX];
@@ -631,20 +651,29 @@ typedef struct {
     int16_t id;
 } synth_t;
 
+// Find the synthetic suffix of `ip`, if it has one.  Every "rsrc" / "finf"
+// component is a candidate anchor, left to right; the first whose suffix
+// classifies and whose prefix names an existing *file* wins (0).  A
+// candidate at the mount root, before a missing name or after a directory
+// is just a name -- a folder called "rsrc" -- and the next one is tried.
+// 1 when none fits: the caller treats the path literally.
 static int resolve_synthetic(image_mount_t *m, const image_path_t *ip, synth_t *sy) {
-    size_t core = 0;
-    sy->kind = classify_synth(ip->components, ip->n_components, &core, sy->type, &sy->id);
-    if (sy->kind == SYNTH_NONE)
-        return 1;
-    if (core == 0)
-        return -ENOENT; // a synthetic suffix at the mount root makes no sense
-    if (join_path(ip, core, sy->core, sizeof(sy->core)) != 0)
-        return -ENAMETOOLONG;
-    if (gs_ns_stat(m->ns, sy->core, &sy->file) < 0)
-        return 1; // a name that only looked synthetic
-    if (sy->file.is_dir)
-        return -ENOENT; // forks live on files
-    return 0;
+    sy->kind = SYNTH_NONE;
+    for (size_t a = 1; a < ip->n_components; a++) {
+        const char *c = ip->components[a];
+        if (strcmp(c, "rsrc") != 0 && strcmp(c, "finf") != 0)
+            continue;
+        synth_kind_t kind = classify_synth_at(ip->components, ip->n_components, a, sy->type, &sy->id);
+        if (kind == SYNTH_NONE)
+            continue;
+        if (join_path(ip, a, sy->core, sizeof(sy->core)) != 0)
+            return -ENAMETOOLONG;
+        if (gs_ns_stat(m->ns, sy->core, &sy->file) < 0 || sy->file.is_dir)
+            continue; // forks live on files: this one is a plain name
+        sy->kind = kind;
+        return 0;
+    }
+    return 1;
 }
 
 // The synthetic part of stat.  1 when the path is not synthetic.
@@ -704,6 +733,24 @@ static int stat_synthetic(image_mount_t *m, const image_path_t *ip, vfs_stat_t *
     return 0;
 }
 
+// The body of img_stat, on a parsed path.
+static int stat_path(image_mount_t *m, const image_path_t *ip, vfs_stat_t *out) {
+    if (ip->n_components > 0) {
+        int rc = stat_synthetic(m, ip, out);
+        if (rc != 1)
+            return rc;
+    }
+    char p[VFS_PATH_MAX];
+    if (join_path(ip, ip->n_components, p, sizeof(p)) != 0)
+        return -ENAMETOOLONG;
+    gs_dirent_t d;
+    int rc = gs_ns_stat(m->ns, p, &d);
+    if (rc < 0)
+        return rc;
+    to_stat(&d, out);
+    return 0;
+}
+
 // stat: directories and files of the namespace, and the synthetic leaves.
 static int img_stat(void *ctx, const char *path, vfs_stat_t *out) {
     image_mount_t *m = (image_mount_t *)ctx;
@@ -714,29 +761,18 @@ static int img_stat(void *ctx, const char *path, vfs_stat_t *out) {
     memset(out, 0, sizeof(*out));
     out->readonly = true;
 
-    image_path_t ip;
+    image_path_t *ip = NULL;
     int rc = parse_image_path(path, &ip);
     if (rc < 0)
         return rc;
-    if (ip.n_components > 0) {
-        rc = stat_synthetic(m, &ip, out);
-        if (rc != 1)
-            return rc;
-    }
-    char p[VFS_PATH_MAX];
-    if (join_path(&ip, ip.n_components, p, sizeof(p)) != 0)
-        return -ENAMETOOLONG;
-    gs_dirent_t d;
-    rc = gs_ns_stat(m->ns, p, &d);
-    if (rc < 0)
-        return rc;
-    to_stat(&d, out);
-    return 0;
+    rc = stat_path(m, ip, out);
+    free(ip);
+    return rc;
 }
 
 // The synthetic part of opendir: /rsrc and /rsrc/<TYPE> list a file's
 // resource fork.  1 when the path is not one of those.
-static int opendir_synthetic(image_mount_t *m, const image_path_t *ip, vfs_dir_t *d) {
+static int opendir_synthetic(image_mount_t *m, const image_path_t *ip, image_vfs_dir_t *d) {
     synth_t sy;
     int rc = resolve_synthetic(m, ip, &sy);
     if (rc != 0)
@@ -762,6 +798,23 @@ static int opendir_synthetic(image_mount_t *m, const image_path_t *ip, vfs_dir_t
     return 0;
 }
 
+// The body of img_opendir, on a parsed path: fill `d`.
+static int opendir_path(image_mount_t *m, const image_path_t *ip, image_vfs_dir_t *d) {
+    if (ip->n_components > 0) {
+        int rc = opendir_synthetic(m, ip, d);
+        if (rc != 1)
+            return rc;
+    }
+    char p[VFS_PATH_MAX];
+    int rc = join_path(ip, ip->n_components, p, sizeof(p));
+    if (rc == 0)
+        rc = gs_ns_list(m->ns, p, &d->entries, &d->n_entries);
+    if (rc < 0)
+        return rc;
+    d->kind = DIR_NS;
+    return 0;
+}
+
 // opendir: a namespace directory, or a file's resource tree.
 static int img_opendir(void *ctx, const char *path, vfs_dir_t **out) {
     image_mount_t *m = (image_mount_t *)ctx;
@@ -770,38 +823,25 @@ static int img_opendir(void *ctx, const char *path, vfs_dir_t **out) {
     if (mount_busy(m))
         return -EBUSY;
 
-    image_path_t ip;
+    image_path_t *ip = NULL;
     int rc = parse_image_path(path, &ip);
     if (rc < 0)
         return rc;
-    vfs_dir_t *d = calloc(1, sizeof(*d));
-    if (!d)
-        return -ENOMEM;
-    d->mount = m;
-    if (ip.n_components > 0) {
-        rc = opendir_synthetic(m, &ip, d);
-        if (rc < 0)
-            goto fail;
-        if (rc == 0)
-            goto done;
+    image_vfs_dir_t *d = calloc(1, sizeof(*d));
+    rc = d ? opendir_path(m, ip, d) : -ENOMEM;
+    free(ip);
+    if (rc < 0) {
+        free(d);
+        return rc;
     }
-    char p[VFS_PATH_MAX];
-    rc = join_path(&ip, ip.n_components, p, sizeof(p));
-    if (rc == 0)
-        rc = gs_ns_list(m->ns, p, &d->entries, &d->n_entries);
-    if (rc < 0)
-        goto fail;
-    d->kind = DIR_NS;
-done:
+    d->mount = m;
     m->refcount++;
-    *out = d;
+    *out = (vfs_dir_t *)(void *)d;
     return 0;
-fail:
-    free(d);
-    return rc;
 }
 
-static int img_readdir(vfs_dir_t *d, vfs_dirent_t *out) {
+static int img_readdir(vfs_dir_t *vd, vfs_dirent_t *out) {
+    image_vfs_dir_t *d = as_dir(vd);
     if (!d || !out)
         return -EINVAL;
     memset(out, 0, sizeof(*out));
@@ -887,7 +927,8 @@ static int img_readdir(vfs_dir_t *d, vfs_dirent_t *out) {
     return -EINVAL;
 }
 
-static void img_closedir(vfs_dir_t *d) {
+static void img_closedir(vfs_dir_t *vd) {
+    image_vfs_dir_t *d = as_dir(vd);
     if (!d)
         return;
     rsrc_cache_unpin(d->rsrc_entry);
@@ -899,7 +940,7 @@ static void img_closedir(vfs_dir_t *d) {
 // The synthetic part of open: Finder info (/finf), the raw resource fork
 // (/rsrc/_raw), one resource or its .info sidecar.  1 when the path is not
 // one of those.
-static int open_synthetic(image_mount_t *m, const image_path_t *ip, vfs_file_t *f) {
+static int open_synthetic(image_mount_t *m, const image_path_t *ip, image_vfs_file_t *f) {
     synth_t sy;
     int rc = resolve_synthetic(m, ip, &sy);
     if (rc != 0)
@@ -940,6 +981,24 @@ static int open_synthetic(image_mount_t *m, const image_path_t *ip, vfs_file_t *
     return 0;
 }
 
+// The body of img_open, on a parsed path: fill `f`.
+static int open_path(image_mount_t *m, const image_path_t *ip, image_vfs_file_t *f) {
+    if (ip->n_components == 0)
+        return -EISDIR;
+    int rc = open_synthetic(m, ip, f);
+    if (rc != 1)
+        return rc;
+    char p[VFS_PATH_MAX];
+    rc = join_path(ip, ip->n_components, p, sizeof(p));
+    if (rc != 0)
+        return rc;
+    f->kind = FILE_SOURCE;
+    f->src = gs_ns_open(m->ns, p, GS_FORK_DATA, &rc);
+    if (!f->src && rc == 0)
+        rc = -ENOENT;
+    return rc;
+}
+
 // open: a namespace file (its data fork), or a synthetic leaf.
 static int img_open(void *ctx, const char *path, vfs_file_t **out) {
     image_mount_t *m = (image_mount_t *)ctx;
@@ -948,33 +1007,20 @@ static int img_open(void *ctx, const char *path, vfs_file_t **out) {
     if (mount_busy(m))
         return -EBUSY;
 
-    image_path_t ip;
+    image_path_t *ip = NULL;
     int rc = parse_image_path(path, &ip);
     if (rc < 0)
         return rc;
-    if (ip.n_components == 0)
-        return -EISDIR;
-    vfs_file_t *f = calloc(1, sizeof(*f));
-    if (!f)
-        return -ENOMEM;
-    f->mount = m;
-    rc = open_synthetic(m, &ip, f);
-    if (rc == 1) {
-        char p[VFS_PATH_MAX];
-        rc = join_path(&ip, ip.n_components, p, sizeof(p));
-        if (rc == 0) {
-            f->kind = FILE_SOURCE;
-            f->src = gs_ns_open(m->ns, p, GS_FORK_DATA, &rc);
-            if (!f->src && rc == 0)
-                rc = -ENOENT;
-        }
-    }
+    image_vfs_file_t *f = calloc(1, sizeof(*f));
+    rc = f ? open_path(m, ip, f) : -ENOMEM;
+    free(ip);
     if (rc != 0) {
         free(f);
         return rc;
     }
+    f->mount = m;
     m->refcount++;
-    *out = f;
+    *out = (vfs_file_t *)(void *)f;
     return 0;
 }
 
@@ -987,7 +1033,8 @@ static size_t copy_out(const void *src, size_t len, uint64_t off, void *buf, siz
     return take;
 }
 
-static int img_read(vfs_file_t *f, uint64_t off, void *buf, size_t n, size_t *nread) {
+static int img_read(vfs_file_t *vf, uint64_t off, void *buf, size_t n, size_t *nread) {
+    image_vfs_file_t *f = as_file(vf);
     if (!f || !buf)
         return -EINVAL;
     if (f->mount && mount_busy(f->mount))
@@ -1013,7 +1060,8 @@ static int img_read(vfs_file_t *f, uint64_t off, void *buf, size_t n, size_t *nr
     return 0;
 }
 
-static void img_close(vfs_file_t *f) {
+static void img_close(vfs_file_t *vf) {
+    image_vfs_file_t *f = as_file(vf);
     if (!f)
         return;
     rsrc_cache_unpin(f->rsrc_entry);
@@ -1022,21 +1070,32 @@ static void img_close(vfs_file_t *f) {
     free(f);
 }
 
-// Writable operations — always refused for image paths.
-static int img_readonly(void *ctx, const char *path) {
-    (void)ctx;
-    (void)path;
-    return -EROFS;
-}
-
-static int img_readonly2(void *ctx, const char *a, const char *b) {
-    (void)ctx;
-    (void)a;
-    (void)b;
-    return -EROFS;
-}
-
 // ---- Opening a file as a source --------------------------------------------
+
+// The body of image_vfs_open_source, on a parsed path.
+static gs_source_t *open_source_path(image_mount_t *m, const image_path_t *ip, gs_fork_t fork, int *err) {
+    if (ip->n_components == 0) {
+        *err = -EISDIR;
+        return NULL;
+    }
+    // The synthetic fork leaves name a fork of their file.
+    synth_t sy;
+    int rc = resolve_synthetic(m, ip, &sy);
+    if (rc < 0) {
+        *err = rc;
+        return NULL;
+    }
+    if (rc == 0 && fork == GS_FORK_DATA && (sy.kind == SYNTH_FINF || sy.kind == SYNTH_RSRC_RAW))
+        return gs_ns_open(m->ns, sy.core, sy.kind == SYNTH_FINF ? GS_FORK_FINFO : GS_FORK_RSRC, err);
+    char p[VFS_PATH_MAX];
+    *err = join_path(ip, ip->n_components, p, sizeof(p));
+    if (*err < 0)
+        return NULL;
+    gs_source_t *s = gs_ns_open(m->ns, p, fork, err);
+    if (!s && *err == 0)
+        *err = -ENOENT;
+    return s;
+}
 
 gs_source_t *image_vfs_open_source(image_mount_t *m, const char *tail, gs_fork_t fork, int *err) {
     int e = 0;
@@ -1050,47 +1109,30 @@ gs_source_t *image_vfs_open_source(image_mount_t *m, const char *tail, gs_fork_t
         *err = -EBUSY;
         return NULL;
     }
-    image_path_t ip;
+    image_path_t *ip = NULL;
     *err = parse_image_path(tail, &ip);
     if (*err < 0)
         return NULL;
-    if (ip.n_components == 0) {
-        *err = -EISDIR;
-        return NULL;
-    }
-    // The synthetic fork leaves name a fork of their file.
-    synth_t sy;
-    int rc = resolve_synthetic(m, &ip, &sy);
-    if (rc < 0) {
-        *err = rc;
-        return NULL;
-    }
-    if (rc == 0 && fork == GS_FORK_DATA && (sy.kind == SYNTH_FINF || sy.kind == SYNTH_RSRC_RAW))
-        return gs_ns_open(m->ns, sy.core, sy.kind == SYNTH_FINF ? GS_FORK_FINFO : GS_FORK_RSRC, err);
-    char p[VFS_PATH_MAX];
-    *err = join_path(&ip, ip.n_components, p, sizeof(p));
-    if (*err < 0)
-        return NULL;
-    gs_source_t *s = gs_ns_open(m->ns, p, fork, err);
-    if (!s && *err == 0)
-        *err = -ENOENT;
+    gs_source_t *s = open_source_path(m, ip, fork, err);
+    free(ip);
     return s;
 }
 
-static const vfs_backend_t image_backend = {
+// The image backend: read-only, so the writable slots stay NULL and vfs.c
+// answers mkdir/unlink/rename with -EROFS.
+static const vfs_backend_t s_image_backend = {
     .scheme = "image",
+    .flags = VFS_BE_RDONLY,
     .stat = img_stat,
+    .lstat = NULL, // no symbolic links inside images: vfs_lstat uses stat
     .opendir = img_opendir,
     .readdir = img_readdir,
     .closedir = img_closedir,
     .open = img_open,
     .read = img_read,
     .close = img_close,
-    .mkdir = img_readonly,
-    .unlink = img_readonly,
-    .rename = img_readonly2,
 };
 
 const vfs_backend_t *vfs_image_backend(void) {
-    return &image_backend;
+    return &s_image_backend;
 }

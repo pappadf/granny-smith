@@ -23,75 +23,98 @@
 #include <string.h>
 #include <unistd.h>
 
-// The shell's logical current directory, primed from getcwd() on first use.
-// Stays a host absolute path; commands that `cd` into an image path have
-// their in-image tail re-resolved each time rather than tracking an
-// image-rooted cwd.
-static char g_cwd[VFS_PATH_MAX] = "";
+// The current directory (see vfs_get_cwd in vfs.h), primed from getcwd()
+// on first use.  Always a normalised absolute path; one inside an image
+// keeps its in-image part, which the resolver re-walks on each use.
+static char s_cwd[VFS_PATH_MAX] = "";
 
 static void prime_cwd(void) {
-    if (g_cwd[0] != '\0')
+    if (s_cwd[0] != '\0')
         return;
-    if (!getcwd(g_cwd, sizeof(g_cwd)))
-        snprintf(g_cwd, sizeof(g_cwd), "/");
+    if (!getcwd(s_cwd, sizeof(s_cwd)))
+        snprintf(s_cwd, sizeof(s_cwd), "/");
 }
 
-// Normalise `input` (absolute or relative to g_cwd) resolving . and ..
-// components. Produces an absolute path starting with '/'. Returns 0 on
-// success, -ENAMETOOLONG when the joined cwd+input or the assembled output
-// would overflow the destination buffer or the component-count cap.
-int vfs_normalise_path(const char *input, char *out, size_t outlen) {
-    char buf[VFS_PATH_MAX * 2 + 2];
-    int n;
-    if (input[0] == '/') {
-        n = snprintf(buf, sizeof(buf), "%s", input);
-    } else {
-        prime_cwd();
-        n = snprintf(buf, sizeof(buf), "%s/%s", g_cwd, input);
-    }
-    if (n < 0 || (size_t)n >= sizeof(buf))
-        return -ENAMETOOLONG;
-
-    const char *components[128];
-    size_t depth = 0;
-    const size_t MAX_DEPTH = sizeof(components) / sizeof(components[0]);
-    char *saveptr = NULL;
-    char *token = strtok_r(buf, "/", &saveptr);
-    while (token) {
-        if (strcmp(token, ".") == 0) {
-            // skip
-        } else if (strcmp(token, "..") == 0) {
-            if (depth > 0)
-                depth--;
-        } else if (depth < MAX_DEPTH) {
-            components[depth++] = token;
-        } else {
-            return -ENAMETOOLONG; // too many components
+// Append the components of `path` to the normalised path being built in
+// out[0..*len), which holds *depth components ("" while it is the root).
+// `.` is skipped and `..` drops the last component (never past the root).
+// 0, or -ENAMETOOLONG when a component would not fit in `outlen` (with its
+// NUL) or the path would exceed VFS_MAX_COMPONENTS.
+static int append_components(const char *path, char *out, size_t outlen, size_t *len, size_t *depth) {
+    const char *p = path;
+    while (*p) {
+        while (*p == '/')
+            p++;
+        const char *start = p;
+        while (*p && *p != '/')
+            p++;
+        size_t n = (size_t)(p - start);
+        if (n == 0 || (n == 1 && start[0] == '.'))
+            continue;
+        if (n == 2 && start[0] == '.' && start[1] == '.') {
+            if (*depth > 0) {
+                // Drop "/name": back up to the slash that starts it.
+                while (out[--*len] != '/')
+                    ;
+                (*depth)--;
+            }
+            continue;
         }
-        token = strtok_r(NULL, "/", &saveptr);
-    }
-    if (depth == 0) {
-        if (outlen < 2)
+        if (*depth >= VFS_MAX_COMPONENTS || *len + 1 + n >= outlen)
             return -ENAMETOOLONG;
-        out[0] = '/';
-        out[1] = '\0';
-    } else {
-        size_t off = 0;
-        for (size_t i = 0; i < depth; i++) {
-            int w = snprintf(out + off, outlen - off, "/%s", components[i]);
-            if (w < 0 || (size_t)w >= outlen - off)
-                return -ENAMETOOLONG;
-            off += (size_t)w;
-        }
+        out[(*len)++] = '/';
+        memcpy(out + *len, start, n);
+        *len += n;
+        (*depth)++;
     }
     return 0;
+}
+
+// Normalise `input` (absolute or relative to the current directory)
+// resolving . and .. components, straight into `out`: no scratch copy of
+// the joined path.  Produces an absolute path starting with '/'.  `input`
+// and `out` must not overlap.  Returns 0 on success, -ENAMETOOLONG when the
+// result would overflow `out` or exceed VFS_MAX_COMPONENTS.
+int vfs_normalise_path(const char *input, char *out, size_t outlen) {
+    if (outlen < 2)
+        return -ENAMETOOLONG;
+    size_t len = 0, depth = 0;
+    int rc = 0;
+    if (input[0] != '/') {
+        prime_cwd();
+        rc = append_components(s_cwd, out, outlen, &len, &depth);
+    }
+    if (rc == 0)
+        rc = append_components(input, out, outlen, &len, &depth);
+    if (rc < 0)
+        return rc;
+    if (len == 0)
+        out[len++] = '/'; // the root
+    out[len] = '\0';
+    return 0;
+}
+
+// Mount the host file at `path` if it is an image or archive.  0 and *out;
+// -ENOTDIR for the benign verdict -- not an image (or the file vanished
+// mid-probe); or a real probe-time error (-EBUSY, -ENOMEM, -ENOSPC, ...)
+// that the user should see instead of a misleading "not a directory".
+// The one probe both the walk and the bare-image rule use.
+static int probe_host_file(const char *path, image_mount_t **out) {
+    int pr = image_vfs_acquire_mount(path, out);
+    if (pr == -ENOTDIR || pr == -ENOENT)
+        return -ENOTDIR;
+    return pr;
 }
 
 // Walk `resolved` from left to right.  At the first intermediate segment
 // that resolves to a regular file, probe it as an image or archive; on success set
 // *out_prefix_len to the byte length of the image-file prefix and return
 // the mount.  Return NULL and rc == 0 if no descent is needed (pure host
-// path).  On probe failure mid-path return NULL and rc != 0.
+// path, or a missing component the caller's own op reports as ENOENT).
+// Return NULL and rc != 0 when the walk itself fails: a probe failure, a
+// prefix that is neither directory nor file (-ENOTDIR), or a stat error
+// other than "missing" (-EACCES, -ELOOP, -EIO, ...), which the caller's op
+// would otherwise misreport.
 static image_mount_t *walk_for_descent(const char *resolved, size_t *out_prefix_len, int *rc) {
     *rc = 0;
     *out_prefix_len = 0;
@@ -119,29 +142,20 @@ static image_mount_t *walk_for_descent(const char *resolved, size_t *out_prefix_
         vfs_stat_t st;
         int srv = host->stat(NULL, tmp, &st);
         if (srv < 0) {
-            // Intermediate component missing — let the caller's op surface
-            // the real error against the host backend.
+            if (srv == -EINVAL)
+                *rc = -ENOTDIR; // a FIFO, socket or device has no children
+            else if (srv != -ENOENT)
+                *rc = srv;
             return NULL;
         }
         if (st.mode & VFS_MODE_FILE) {
             image_mount_t *mount = NULL;
-            int pr = image_vfs_acquire_mount(tmp, &mount);
+            int pr = probe_host_file(tmp, &mount);
             if (pr == 0) {
                 *out_prefix_len = j;
                 return mount;
             }
-            // Pass real probe-time errors (OOM, mount-table-full, busy) up
-            // to the user; collapse only the benign "not-an-image" verdict
-            // to ENOTDIR so subsequent path-walking gives a normal error
-            // rather than the misleading "out of memory" wording.
-            //
-            // image_vfs_acquire_mount currently uses -ENOTDIR for "not an
-            // image" and -ENOENT for "file vanished mid-probe" — treat both
-            // as the benign case.
-            if (pr == -ENOTDIR || pr == -ENOENT)
-                *rc = -ENOTDIR;
-            else
-                *rc = pr; // -EBUSY, -ENOMEM, -ENOSPC, ...
+            *rc = pr;
             return NULL;
         }
         // Directory: continue past this slash.
@@ -257,12 +271,11 @@ static int resolve_impl(const char *input, char *resolved, size_t resolved_len, 
         const vfs_backend_t *host = vfs_host_backend();
         vfs_stat_t st;
         if (host->stat(NULL, resolved, &st) == 0 && (st.mode & VFS_MODE_FILE)) {
-            int pr = image_vfs_acquire_mount(resolved, &mount);
-            if (pr == 0) {
+            int pr = probe_host_file(resolved, &mount);
+            if (pr == 0)
                 prefix_len = strlen(resolved);
-            } else if (pr == -EBUSY) {
-                return -EBUSY;
-            }
+            else if (pr != -ENOTDIR)
+                return pr; // a real failure, not "a plain file"
         }
     }
 
@@ -349,6 +362,17 @@ int vfs_stat(const char *path, vfs_stat_t *out) {
     return be->stat(ctx, tail, out);
 }
 
+int vfs_lstat(const char *path, vfs_stat_t *out) {
+    char resolved[VFS_PATH_MAX];
+    const vfs_backend_t *be = NULL;
+    void *ctx = NULL;
+    const char *tail = NULL;
+    int rc = vfs_resolve(path, resolved, sizeof(resolved), &be, &ctx, &tail);
+    if (rc)
+        return rc;
+    return be->lstat ? be->lstat(ctx, tail, out) : be->stat(ctx, tail, out);
+}
+
 int vfs_opendir(const char *path, vfs_dir_t **out, const vfs_backend_t **be_out) {
     char resolved[VFS_PATH_MAX];
     const vfs_backend_t *be = NULL;
@@ -381,16 +405,25 @@ int vfs_open(const char *path, vfs_file_t **out, const vfs_backend_t **be_out) {
     return rc;
 }
 
+// Resolve `path` for a writable operation: 0 with the backend triple, or
+// -EROFS for a read-only backend (the one place that refusal is made), or
+// the resolver's error.  `resolved` (VFS_PATH_MAX) holds the path *tail
+// points into.
+static int resolve_writable(const char *path, char *resolved, const vfs_backend_t **be, void **ctx, const char **tail) {
+    int rc = vfs_resolve(path, resolved, VFS_PATH_MAX, be, ctx, tail);
+    if (rc)
+        return rc;
+    return ((*be)->flags & VFS_BE_RDONLY) ? -EROFS : 0;
+}
+
 int vfs_mkdir(const char *path) {
     char resolved[VFS_PATH_MAX];
     const vfs_backend_t *be = NULL;
     void *ctx = NULL;
     const char *tail = NULL;
-    int rc = vfs_resolve(path, resolved, sizeof(resolved), &be, &ctx, &tail);
+    int rc = resolve_writable(path, resolved, &be, &ctx, &tail);
     if (rc)
         return rc;
-    if (!be->mkdir)
-        return -EROFS;
     return be->mkdir(ctx, tail);
 }
 
@@ -399,31 +432,32 @@ int vfs_unlink(const char *path) {
     const vfs_backend_t *be = NULL;
     void *ctx = NULL;
     const char *tail = NULL;
-    int rc = vfs_resolve(path, resolved, sizeof(resolved), &be, &ctx, &tail);
+    int rc = resolve_writable(path, resolved, &be, &ctx, &tail);
     if (rc)
         return rc;
-    if (!be->unlink)
-        return -EROFS;
     return be->unlink(ctx, tail);
 }
 
-int vfs_rename(const char *src, const char *dst) {
+int vfs_rename(const char *src, const char *dst, unsigned flags) {
+    // Both tails point into these two buffers, which outlive the backend
+    // call below; nothing keeps a tail past it.
     char src_resolved[VFS_PATH_MAX];
     char dst_resolved[VFS_PATH_MAX];
     const vfs_backend_t *src_be = NULL, *dst_be = NULL;
     void *src_ctx = NULL, *dst_ctx = NULL;
     const char *src_tail = NULL, *dst_tail = NULL;
-    int rc = vfs_resolve(src, src_resolved, sizeof(src_resolved), &src_be, &src_ctx, &src_tail);
+    int rc = resolve_writable(src, src_resolved, &src_be, &src_ctx, &src_tail);
     if (rc)
         return rc;
-    rc = vfs_resolve(dst, dst_resolved, sizeof(dst_resolved), &dst_be, &dst_ctx, &dst_tail);
+    rc = resolve_writable(dst, dst_resolved, &dst_be, &dst_ctx, &dst_tail);
     if (rc)
         return rc;
-    if (src_be != dst_be)
+    // One rename domain is one backend *and* one context: the host backend
+    // (ctx NULL), or one mount of a writable image backend.  Anything else
+    // would be a copy, which rename is not.
+    if (src_be != dst_be || src_ctx != dst_ctx)
         return -EXDEV;
-    if (!src_be->rename)
-        return -EROFS;
-    return src_be->rename(src_ctx, src_tail, dst_tail);
+    return src_be->rename(src_ctx, src_tail, dst_tail, flags);
 }
 
 static void set_err(char *err, size_t cap, const char *msg) {
@@ -531,20 +565,22 @@ bool vfs_is_expandable(const char *path) {
 
 const char *vfs_get_cwd(void) {
     prime_cwd();
-    return g_cwd;
+    return s_cwd;
 }
 
-void vfs_set_cwd(const char *path) {
+int vfs_set_cwd(const char *path) {
     if (!path)
-        return;
-    int n = snprintf(g_cwd, sizeof(g_cwd), "%s", path);
-    if (n < 0 || (size_t)n >= sizeof(g_cwd)) {
-        // Truncation would leave the cwd in a syntactically valid but
-        // semantically wrong state. Fall back to root rather than carrying
-        // a corrupted path silently. Callers that need stricter validation
-        // (path-is-a-directory) do that before invoking us; this is the
-        // defensive last line.
-        g_cwd[0] = '/';
-        g_cwd[1] = '\0';
-    }
+        return -EINVAL;
+    char abs[VFS_PATH_MAX];
+    int rc = vfs_normalise_path(path, abs, sizeof(abs));
+    if (rc < 0)
+        return rc;
+    vfs_stat_t st;
+    rc = vfs_stat(abs, &st);
+    if (rc < 0)
+        return rc;
+    if (!(st.mode & VFS_MODE_DIR))
+        return -ENOTDIR;
+    memcpy(s_cwd, abs, strlen(abs) + 1); // fits: both are VFS_PATH_MAX
+    return 0;
 }

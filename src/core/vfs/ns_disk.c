@@ -27,7 +27,11 @@
 #include <string.h>
 #include <strings.h>
 
-#define DISK_MAX_COMPONENTS 64
+// Where a volume's signature word sits when there is no partition map:
+// block 2 (of 512 bytes) holds the HFS Master Directory Block, the HFS+ /
+// HFSX Volume Header and the MFS Master Directory Block alike.  The
+// signatures themselves are the storage modules' (HFS_SIG_*, MFS_SIG).
+#define VOLUME_SIG_OFFSET 1024
 
 // ============================================================================
 // Filesystems
@@ -332,10 +336,10 @@ static const fs_ops_t *fs_ops_for(enum apm_fs_kind kind) {
 // The disk
 // ============================================================================
 
-// One partition's filesystem, opened on first use.
+// One partition's filesystem, opened on first use.  Its kind is the
+// partition's (fs_ops_for), so only the open volume is kept.
 typedef struct {
-    const fs_ops_t *ops; // NULL: no filesystem we read
-    bool attempted;
+    const fs_ops_t *ops; // the filesystem it was opened with (when vol is set)
     void *vol;
 } part_fs_t;
 
@@ -366,7 +370,8 @@ static const apm_partition_t *disk_part(const disk_ns_t *d, uint32_t idx1) {
 
 // The open filesystem of partition N (1-based), opened on first use.  NULL
 // with *err: -ENOENT no such partition, -ENOTDIR no filesystem we read,
-// -EIO one that would not open (not tried again).
+// -EIO one that would not open.  A failed open is tried again on the next
+// access, so a transient read error (a slow OPFS) does not stick.
 static part_fs_t *disk_fs(gs_namespace_t *ns, uint32_t idx1, int *err) {
     disk_ns_t *d = ns->ctx;
     const apm_partition_t *p = disk_part(d, idx1);
@@ -375,51 +380,64 @@ static part_fs_t *disk_fs(gs_namespace_t *ns, uint32_t idx1, int *err) {
         return NULL;
     }
     part_fs_t *pf = &d->parts[idx1 - 1];
-    if (!pf->ops) {
-        *err = -ENOTDIR;
-        return NULL;
+    if (!pf->vol) {
+        const fs_ops_t *ops = fs_ops_for(p->fs_kind);
+        if (!ops) {
+            *err = -ENOTDIR;
+            return NULL;
+        }
+        // APM extents count 512-byte blocks (APM_BLOCK_SIZE; a bare volume's
+        // synthetic partition uses the same unit).
+        pf->vol = ops->open(ns->src, p->start_block * APM_BLOCK_SIZE, p->size_blocks * APM_BLOCK_SIZE);
+        if (!pf->vol) {
+            *err = -EIO;
+            return NULL;
+        }
+        pf->ops = ops;
     }
-    if (!pf->vol && !pf->attempted) {
-        pf->attempted = true;
-        pf->vol = pf->ops->open(ns->src, p->start_block * 512, p->size_blocks * 512);
-    }
-    *err = -EIO;
-    return pf->vol ? pf : NULL;
+    return pf;
 }
 
-// A path split into its partition and the path inside it.
+// A path split into its partition and the path inside it.  `comps` points
+// into the struct's own `all`, and those into `path_storage`: valid only in
+// the disk_parse caller's frame, never copied.
 typedef struct {
-    uint32_t part; // 0: the disk's root
-    const char *comps[DISK_MAX_COMPONENTS];
-    int n; // components inside the partition
-    char buf[1024];
+    bool is_root; // the disk's root (the partition list); `part` unused
+    uint32_t part; // 1-based slot: a partition, or the hybrid's ISO side
+    const char *all[GS_NS_MAX_COMPONENTS + 1]; // every component, the partition's first
+    const char *const *comps; // the components inside the partition
+    int n; // how many
+    char path_storage[1024]; // owns the component strings
 } disk_path_t;
 
 // Parse `path`.  0, or -ENOENT for a first component that is no partitionN
-// of the disk (nor the hybrid's "iso9660").
+// of the disk (nor the hybrid's "iso9660").  These root names are matched
+// without regard to case -- "Partition1" and "ISO9660" work, though the
+// listing spells them in lower case -- like the HFS names below them; the
+// other names the VFS synthesises ("rsrc", "finf", "_raw") are exact.
 static int disk_parse(const disk_ns_t *d, const char *path, disk_path_t *dp) {
-    const char *all[DISK_MAX_COMPONENTS + 1];
-    int n = gs_ns_split(path, dp->buf, sizeof(dp->buf), all, DISK_MAX_COMPONENTS + 1);
+    int n = gs_ns_split(path, dp->path_storage, sizeof(dp->path_storage), dp->all, GS_NS_MAX_COMPONENTS + 1);
     if (n < 0)
         return n;
+    dp->is_root = (n == 0);
     dp->part = 0;
-    dp->n = 0;
+    dp->comps = dp->all + 1;
+    dp->n = n > 0 ? n - 1 : 0;
     if (n == 0)
         return 0;
-    if (d->hybrid && strcasecmp(all[0], DISK_ISO_SIDE) == 0) {
+    const char *first = dp->all[0];
+    if (d->hybrid && strcasecmp(first, DISK_ISO_SIDE) == 0) {
         dp->part = d->n_parts + 1;
     } else {
-        // "partitionN" (case-insensitive, N a positive number).
-        if (strncasecmp(all[0], "partition", 9) != 0 || !all[0][9])
+        // "partitionN", N a positive decimal number without sign.
+        if (strncasecmp(first, "partition", 9) != 0 || first[9] < '0' || first[9] > '9')
             return -ENOENT;
         char *end = NULL;
-        unsigned long idx = strtoul(all[0] + 9, &end, 10);
-        if (!end || *end || idx == 0 || idx > d->n_parts || all[0][9] == '-' || all[0][9] == '+')
+        unsigned long idx = strtoul(first + 9, &end, 10);
+        if (!end || *end || idx == 0 || idx > d->n_parts)
             return -ENOENT;
         dp->part = (uint32_t)idx;
     }
-    for (int i = 1; i < n; i++)
-        dp->comps[dp->n++] = all[i];
     return 0;
 }
 
@@ -456,7 +474,7 @@ static int disk_stat(gs_namespace_t *ns, const char *path, gs_dirent_t *out) {
     int rc = disk_parse(d, path, &dp);
     if (rc < 0)
         return rc;
-    if (dp.part == 0) {
+    if (dp.is_root) {
         memset(out, 0, sizeof(*out));
         out->is_dir = true;
         return 0;
@@ -485,7 +503,7 @@ static int disk_list(gs_namespace_t *ns, const char *path, gs_dirent_t *out, int
     if (rc < 0)
         return rc;
     *count = 0;
-    if (dp.part == 0) {
+    if (dp.is_root) {
         // Every partition, including ones we cannot descend into (map,
         // driver, free space): they list as directories that do not open.
         for (uint32_t i = 1; i <= n_slots(d); i++) {
@@ -572,7 +590,7 @@ static gs_source_t *disk_open(gs_namespace_t *ns, const char *path, gs_fork_t fo
     disk_ns_t *d = ns->ctx;
     disk_path_t dp;
     int rc = disk_parse(d, path, &dp);
-    if (rc < 0 || dp.part == 0 || dp.n == 0) {
+    if (rc < 0 || dp.is_root || dp.n == 0) {
         *err = rc < 0 ? rc : -EISDIR;
         return NULL;
     }
@@ -677,10 +695,12 @@ gs_namespace_t *gs_ns_open_disk(gs_source_t *src) {
         d->n_parts = d->apm->n_partitions;
         d->kind = "APM";
     } else {
-        uint8_t mdb[512];
+        // The signature word only: a volume too small to hold the 512-byte
+        // block it starts is no volume.
+        uint8_t sig_bytes[2];
         uint16_t sig = 0;
-        if (size >= 1024 + 512 && gs_source_read_exact(src, 1024, mdb, sizeof(mdb)) == 0)
-            sig = RD_BE16(mdb);
+        if (size >= VOLUME_SIG_OFFSET + 512 && gs_source_read_exact(src, VOLUME_SIG_OFFSET, sig_bytes, 2) == 0)
+            sig = RD_BE16(sig_bytes);
         if (sig == HFS_SIG_BD || sig == HFS_SIG_HP || sig == HFS_SIG_HX) {
             set_synthetic(d, size, "HFS", "Apple_HFS", APM_FS_HFS);
             d->kind = "HFS";
@@ -710,14 +730,13 @@ gs_namespace_t *gs_ns_open_disk(gs_source_t *src) {
         d->iso_side.fs_kind = APM_FS_ISO9660;
     }
     if (n_slots(d)) {
+        // One slot per partition for the volume opened on first use.
         d->parts = calloc(n_slots(d), sizeof(*d->parts));
         if (!d->parts) {
             image_apm_free(d->apm);
             free(d);
             return NULL;
         }
-        for (uint32_t i = 0; i < n_slots(d); i++)
-            d->parts[i].ops = fs_ops_for(disk_part(d, i + 1)->fs_kind);
     }
     gs_namespace_t *ns = gs_namespace_new(&disk_ops, d, src);
     if (!ns) {

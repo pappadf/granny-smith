@@ -99,6 +99,11 @@ gs_namespace_t *gs_ns_open_archive(gs_source_t *src, const char *format);
 const char *gs_ns_disk_kind(gs_namespace_t *ns);
 const char *gs_ns_archive_format(gs_namespace_t *ns);
 
+// Components a namespace path may have; the VFS resolver's own cap
+// (VFS_MAX_COMPONENTS in vfs.h), so no layer refuses a path for depth that
+// another accepted.
+#define GS_NS_MAX_COMPONENTS 128
+
 // Path helpers for implementations: split `path` into components (at most
 // `max`, in `buf`), ignoring empty ones.  Returns the count, or -ENAMETOOLONG.
 int gs_ns_split(const char *path, char *buf, size_t buf_cap, const char **comps, int max);
