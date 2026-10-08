@@ -515,11 +515,14 @@ let foregroundJob: number | null = null;
 // Runs a terminal line as a script job (REQ_SCRIPT): the answer is the
 // shell's new prompt when the job ends -- after every `scheduler.run` in
 // it has run to its stop -- or an error, which the interpreter has already
-// printed into the job's output.  Resolves when the job is over.
-export async function gsEvalLine(line: string): Promise<void> {
-  if (!moduleReady || !mailbox) return;
+// printed into the job's output.  Resolves when the job is over, to the
+// reason the line failed when the console has not already shown it (a
+// transport failure, a request the mailbox refused), else null.
+export async function gsEvalLine(line: string): Promise<string | null> {
+  if (bridgeDead) return `emulator crashed: ${bridgeDead}`;
+  if (!moduleReady || !mailbox) return 'emulator not ready';
   const text = (line ?? '').toString();
-  if (!text.trim()) return;
+  if (!text.trim()) return null;
   const stopWatch = watchRequest('terminal line');
   try {
     const r = await mailbox.script(text, CLIENT_TERMINAL, (id) => {
@@ -530,12 +533,25 @@ export async function gsEvalLine(line: string): Promise<void> {
     // printed is in by now: the console ends the job (a last line without a
     // newline, a value whose marker never came).
     if (foregroundJob !== null) routeConsole({ kind: 'job_end', job: foregroundJob });
-    if (r.ok) {
-      const prompt: unknown = JSON.parse(r.json);
-      if (typeof prompt === 'string') cachedPrompt = prompt.length ? prompt : null;
+    let res: unknown = r.json;
+    try {
+      res = JSON.parse(r.json);
+    } catch {
+      // Not JSON: keep the text as the reason.
     }
-  } catch {
-    // The request itself failed: the console shows nothing for it.
+    if (r.ok) {
+      if (typeof res === 'string') cachedPrompt = res.length ? res : null;
+      return null;
+    }
+    // A script error was printed by the interpreter, and a cancel is the
+    // user's own Ctrl-C; anything else never reached the job's output.
+    const why = gsErrorText(res);
+    return why === 'command failed' || why === 'cancelled' ? null : why;
+  } catch (e) {
+    if (e === 'deadline') return 'the line did not complete in time';
+    if (e === 'lost' || e === 'detached')
+      return `emulator crashed: ${bridgeDead ?? 'mailbox lost'}`;
+    return `request failed: ${e instanceof Error ? e.message : String(e)}`;
   } finally {
     foregroundJob = null;
     stopWatch();
@@ -861,18 +877,24 @@ export async function setCapsLock(on: boolean): Promise<void> {
 }
 
 export async function shutdownEmulator(): Promise<void> {
-  await gsEval('scheduler.stop');
+  const res = await gsEval('scheduler.stop');
+  if (!gsOk(res)) {
+    showNotification(`Stop failed: ${gsErrorText(res)}`, 'error');
+    return;
+  }
   machine.status = 'stopped' as MachineStatus;
   showNotification('Machine stopped', 'info');
 }
 
 export async function pauseEmulator(): Promise<void> {
-  await gsEval('scheduler.stop');
-  // The mode_ended event reflects the new state.
+  const res = await gsEval('scheduler.stop');
+  // On success the mode_ended event reflects the new state.
+  if (!gsOk(res)) showNotification(`Pause failed: ${gsErrorText(res)}`, 'error');
 }
 
 export async function resumeEmulator(): Promise<void> {
-  await gsEval('scheduler.run');
+  const res = await gsEval('scheduler.run');
+  if (!gsOk(res)) showNotification(`Resume failed: ${gsErrorText(res)}`, 'error');
 }
 
 // UI mode name → core `pacing.mode` value.
@@ -889,7 +911,7 @@ const CORE_MODE: Record<SchedulerMode, string> = {
 // runs under it.
 export async function applySchedulerMode(mode: SchedulerMode): Promise<void> {
   const res = await gsEval('pacing.mode', [CORE_MODE[mode]]);
-  if (res && typeof res === 'object' && 'error' in res) {
+  if (!gsOk(res)) {
     showNotification(`Scheduler mode failed: ${gsErrorText(res)}`, 'warning');
     return;
   }
