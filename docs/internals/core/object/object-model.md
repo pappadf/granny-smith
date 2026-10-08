@@ -308,7 +308,11 @@ and `sr & (0x2000 == 0x2000)` in C. C's order is a well-known trap and this
 is the friendlier reading; the full precedence table is `expr.c`'s grammar
 comment, the authority in code. Truthiness is per kind: numbers ≠ 0, non-empty
 strings/lists/bytes/maps, `none` never, and errors are not truth values —
-an error reaching a condition aborts.
+an error reaching a condition aborts. The one operator that consumes an
+error is `!`: it reads an error as false, so `!err` is true and
+`assert !machine.cpu.broken` passes when the attribute is missing or false.
+`&&`, `||` and `?:` parse the side they do not take and discard its value
+and any error in it — a method call there still runs.
 
 Paths keep resolving *into* structured values (`V_MAP` / `V_LIST`):
 when a path prefix names a node whose value is a map or list, the
