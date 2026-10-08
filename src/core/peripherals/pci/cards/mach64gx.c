@@ -53,6 +53,7 @@
 // driver reads Apple's sense lines through GP_IO, a register that does not
 // exist on the 88800GX at all.
 
+#include "card.h"
 #include "checkpoint.h"
 #include "config_space.h"
 #include "display.h"

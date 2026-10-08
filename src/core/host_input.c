@@ -5,6 +5,7 @@
 
 #include "host_input.h"
 
+#include "adb.h"
 #include "debug_mac.h"
 #include "log.h"
 #include "machine_profile.h"

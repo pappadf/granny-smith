@@ -12,25 +12,23 @@
 #ifndef SYSTEM_INTERNAL_H
 #define SYSTEM_INTERNAL_H
 
-#include "adb.h"
-#include "card.h"
-#include "checkpoint.h"
-#include "cpu.h"
+// Only the headers whose types config_t embeds by value: the profile and
+// storage-device table (machine_profile.h), the build options
+// (machine_build_opts.h), cpu_debug_if_t (debug.h) and the handle typedefs
+// (system.h).  The devices config_t points at are forward-declared -- in
+// system.h, or below -- so a TU that dereferences one includes its header.
 #include "debug.h"
-#include "floppy.h"
-#include "image.h"
-#include "keyboard.h"
 #include "machine_build_opts.h"
 #include "machine_profile.h"
-#include "memory.h"
-#include "mouse.h"
-#include "rtc.h"
-#include "scc.h"
-#include "scheduler.h"
-#include "scsi.h"
-#include "sound.h"
 #include "system.h"
-#include "via.h"
+
+#include <stdint.h>
+
+struct adb;
+typedef struct adb adb_t;
+
+struct nubus_bus;
+typedef struct nubus_bus nubus_bus_t;
 
 // The most disk images one machine tracks (config_t.images); also the bound
 // a restored checkpoint's image list is checked against.
@@ -109,7 +107,7 @@ struct config {
     // PCI subsystem (one root, one bus per host bridge).  NULL on machines
     // without PCI.  Declared by struct tag: core/peripherals/pci/pci.h is
     // a machine-side include, and this header must not drag it in (its
-    // sibling card.h would shadow the NuBus one included above).
+    // sibling card.h would shadow the NuBus one).
     struct pci_root *pci;
 };
 

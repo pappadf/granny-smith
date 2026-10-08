@@ -19,6 +19,7 @@
 
 #include "pci.h"
 
+#include "card.h"
 #include "checkpoint.h"
 #include "config_space.h"
 #include "log.h"
