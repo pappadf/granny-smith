@@ -226,29 +226,25 @@ void mouse_checkpoint(mouse_t *restrict mouse, checkpoint_t *checkpoint) {
 // current machine's input (cfg->host_input) and answers "no machine" when
 // none is booted.
 
-// Mode-string → mode char for debug_mac_*_mode().
-//   "default" / NULL → 'd' (default routing)
-//   "global"         → 'g'
-//   "hw"             → 'h'
-//   "aux"            → 'a'
-// Returns 'd' for default, the mode char otherwise, or 0 on bad input.
+// Mode-string → mouse_route_t for debug_mac_*_mode().
 // The single mode parser, declared in mouse.h and also used by the machine
 // side (mac_host_io.c).  See the header for the mapping.
-char input_mouse_mode_parse(const char *mode) {
+mouse_route_t input_mouse_mode_parse(const char *mode) {
     if (!mode || !*mode || strcmp(mode, "default") == 0)
-        return 'd';
+        return MOUSE_ROUTE_DEFAULT;
     if (strcmp(mode, "global") == 0)
-        return 'g';
+        return MOUSE_ROUTE_GLOBAL;
     if (strcmp(mode, "hw") == 0 || strcmp(mode, "relative") == 0)
-        return 'h';
+        return MOUSE_ROUTE_HW;
     if (strcmp(mode, "aux") == 0)
-        return 'a';
-    return 0;
+        return MOUSE_ROUTE_AUX;
+    return MOUSE_ROUTE_INVALID;
 }
 
-static char mouse_mode_char(const value_t *v) {
+// The route a mode argument names (default when absent / not a string)
+static mouse_route_t mouse_mode_route(const value_t *v) {
     if (!v || v->kind != V_STRING || !v->s)
-        return 'd';
+        return MOUSE_ROUTE_DEFAULT;
     return input_mouse_mode_parse(v->s);
 }
 
@@ -259,7 +255,7 @@ static DEF_METHOD(mouse_method_move) {
     int64_t y = argv[1].i;
     const char *modestr = (argc >= 3 && argv[2].kind == V_STRING && argv[2].s) ? argv[2].s : "default";
     // Validate the cursor mode up front so a bad mode gives a clear error.
-    if ((argc >= 3) && !mouse_mode_char(&argv[2]))
+    if ((argc >= 3) && mouse_mode_route(&argv[2]) == MOUSE_ROUTE_INVALID)
         return val_err("mouse.move: mode must be one of \"default\"/\"relative\"/\"global\"/\"hw\"/\"aux\"");
     // Inject through the machine substrate: Mac Toolbox cursor / Lisa COPS —
     // one uniform path.
@@ -274,7 +270,7 @@ static DEF_METHOD(mouse_method_click) {
     bool down = (argc >= 1 && argv[0].kind == V_BOOL) ? argv[0].b : true;
     const char *modestr = (argc >= 2 && argv[1].kind == V_STRING && argv[1].s) ? argv[1].s : "default";
     // Validate the cursor mode up front so a bad mode gives a clear error.
-    if ((argc >= 2) && !mouse_mode_char(&argv[1]))
+    if ((argc >= 2) && mouse_mode_route(&argv[1]) == MOUSE_ROUTE_INVALID)
         return val_err("mouse.click: mode must be one of \"default\"/\"relative\"/\"global\"/\"hw\"/\"aux\"");
     // Inject through the machine substrate (Mac Toolbox cursor / Lisa COPS).
     if (system_input_mouse_button(down, modestr) < 0)

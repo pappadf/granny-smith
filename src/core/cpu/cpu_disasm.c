@@ -822,6 +822,12 @@ static void disasm_fpu_sccdbcc(uint16_t opcode, uint16_t ext, char *buf, uint16_
 
 #define DISASM
 
+// An A-line opcode's text: its trap name, or "_XXXX" when the table lacks it
+static void disasm_atrap(uint16_t opcode, char *buf) {
+    char name_buf[8];
+    sprintf(buf, "%s", debug_mac_atrap_name(opcode, name_buf, sizeof(name_buf)));
+}
+
 #define ASM(...)                                                                                                       \
     { sprintf(buf, __VA_ARGS__); }
 #define INSTR(x)
@@ -951,7 +957,7 @@ static void disasm_fpu_sccdbcc(uint16_t opcode, uint16_t ext, char *buf, uint16_
 #define OP_ASR_W_DATA_DY      ASM("ASR.W\t#$%X,%s", (int)(IMM), DY);
 #define OP_ASR_W_DX_DY        ASM("ASR.W\t%s,%s", DX, DY);
 #define OP_ASR_W_EA           ASM("ASR.W\t%s", DST_EA(2, 0, (ea_memory & ea_alterable)));
-#define OP_ATRAP              ASM("%s", macos_atrap_name(opcode))
+#define OP_ATRAP              disasm_atrap(opcode, buf)
 #define OP_BCC_B_DISPLACEMENT ASM("B%s.S\t%s", BCC, SHORT_PC_DISP);
 #define OP_BCC_L_DISPLACEMENT ASM("B%s.L\t%s", BCC, LONG_PC_DISP);
 #define OP_BCC_W_DISPLACEMENT ASM("B%s\t%s", BCC, PC_DISP);

@@ -40,7 +40,7 @@ Header is minimal and C‑friendly. All symbols prefixed with `log_` or `LOG_`.
 - Initialization
   - None needed: the registry is static and categories are created on first registration.
   - `void log_set_context_hooks(const log_context_hooks_t* hooks);`
-    - The logger is a leaf module (libc only). What it knows about the running machine arrives through three optional hooks: `instr_count` (the `@count` timestamp), `format_pc` (the `PC=` decoration) and `observe_line` (sees every emitted line — the debug trace's capture). `src/core/debug/log_context.c` supplies them; `shell_init` installs them with `log_context_install()`. Without hooks, the decorations read `@0` and `PC=00000000`.
+    - The logger is a leaf module (libc only). What it knows about the running machine arrives through three optional hooks: `instr_count` (the `@count` timestamp), `format_pc` (the `PC=` decoration) and `observe_line` (sees every emitted line — the debug trace's capture). `src/core/debug/log_context.c` supplies them; `core_init` installs them with `log_context_install()`. Without hooks, the decorations read `@0` and `PC=00000000`.
 
 - Category management
   - `log_category_t* log_register_category(const char* name);`

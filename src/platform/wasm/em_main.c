@@ -41,6 +41,7 @@
 #include "appletalk.h"
 #include "checkpoint.h"
 #include "checkpoint_machine.h"
+#include "core_init.h"
 #include "cpu.h"
 #include "host_keys.h"
 #include "keyboard.h"
@@ -337,7 +338,7 @@ static void perf_window_stats(const double *samples, int n, double *max_out, dou
 // (shared memory grows in place, em_audio.c).  It is laid out by a
 // constructor, before main() and before the page can see it, so the MAGIC
 // and VERSION words are valid from the first read.  READY stays 0 until
-// main() has run shell_init/setup_init.
+// main() has run core_init/setup_init.
 static gs_mailbox_t g_mailbox;
 static uint8_t g_mailbox_region[GS_MBX_ALIGN + GS_MBX_CTRL_WORDS * 4u + GS_MBX_REQ_BYTES + GS_MBX_EVT_BYTES];
 
@@ -1015,10 +1016,10 @@ int main(void) {
     // the pacing is scheduler.mode, both over the bridge like everything
     // else.  (--model and --speed used to be parsed here; nothing passed
     // them, and ?speed= documented as reaching --speed never did.)
-    // A shell that did not come up must not open the mailbox: abort, which
+    // A core that did not come up must not open the mailbox: abort, which
     // the page reports as a dead core (Module.onAbort).
-    if (shell_init() != 0) {
-        fprintf(stderr, "shell initialisation failed\n");
+    if (core_init() != 0) {
+        fprintf(stderr, "core initialisation failed\n");
         abort();
     }
     setup_init();

@@ -35,7 +35,7 @@ struct value;
 struct gs_mailbox;
 typedef struct gs_job gs_job_t;
 
-// Records the calling thread as the emulator thread.  Once, at shell_init.
+// Records the calling thread as the emulator thread.  Once, at core_init.
 void job_layer_init(void);
 
 // True on the emulator thread (or before job_layer_init: single-threaded).

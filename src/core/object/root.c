@@ -347,11 +347,6 @@ struct object *root_attach_stub(struct object *parent, struct object *o) {
     return o;
 }
 
-// A stub of class `cls` over `data`.
-static struct object *attach_stub(struct object *parent, const class_desc_t *cls, void *data, const char *name) {
-    return root_attach_stub(parent, object_new(cls, data, name));
-}
-
 void root_install_class(void) {
     // Registers the top-level method table on the object root. Safe to
     // call repeatedly — object_root_set_class is idempotent for the
@@ -373,28 +368,22 @@ void root_install(struct config *cfg) {
         root_uninstall();
     g_installed_cfg = cfg;
 
-    // Top-level methods. Already installed by shell_init via
+    // Top-level methods. Already installed by core_init via
     // root_install_class; the call is repeated here so paths that skip
-    // shell_init still get the methods.
+    // core_init still get the methods.
     root_install_class();
 
     // Subsystem-scoped objects are registered by their owners (cpu_init,
     // memory_map_init, scc_init, rtc_init, via_init, scsi_init,
     // floppy_init, sound_init, debug_init). The platform-level facades
     // (mouse, screen, files, log, catalog) are process-singletons attached
-    // from shell_init, and the AppleTalk network's `appletalk` tree is
+    // from core_init, and the AppleTalk network's `appletalk` tree is
     // attached once by appletalk_network_init.
     //
     // What remains here is the Shell class instance with its children, and
     // then each registered subsystem hook (files.images, machine.nubus,
     // machine.pci).
-    struct object *shell_obj = attach_stub(NULL, &shell_class, cfg, "shell");
-    if (shell_obj) {
-        object_set_order(shell_obj, 60);
-        shell_funcs_install(shell_obj); // `shell.functions` container
-        attach_stub(shell_obj, &shell_alias_class, cfg, "alias");
-        attach_stub(shell_obj, &shell_command_class, cfg, "command");
-    }
+    shell_class_register(cfg);
     for (int i = 0; i < g_hook_count; i++)
         g_hooks[i].install(cfg);
 }

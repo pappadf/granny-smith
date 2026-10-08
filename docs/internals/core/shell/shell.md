@@ -33,7 +33,7 @@ plus `shell.complete`, `shell.expand`, the alias leaves and
 | File | Purpose |
 |------|---------|
 | [script.c](../../../../src/core/shell/script.c) | Statement parser + interpreter: blocks, control flow, assignments, command dispatch |
-| [shell.c](../../../../src/core/shell/shell.c) | REPL entry (`shell_dispatch`), value/table formatter, prompt, init |
+| [shell.c](../../../../src/core/shell/shell.c) | REPL value/table formatter, prompt, `shell_init` (binding store, completion provider; called by `core_init` in `src/core/core_init.c`) |
 | [shell_var.c](../../../../src/core/shell/shell_var.c) | Scoped binding store (`let` bindings, `--var`, alias fallback) |
 | [shell_funcs.c](../../../../src/core/shell/shell_funcs.c) | User-defined functions (`def`), the `shell.functions` surface |
 | [commands.c](../../../../src/core/shell/commands.c) | Commands: the built-ins, `command NAME = PATH`, the `shell.command` surface |

@@ -28,7 +28,7 @@ inside the gateway, the page logs a fatal, and the e2e harness fails fast.
 
 | API | Purpose |
 |---|---|
-| `worker_thread_latch()` | Latch the calling thread as the worker; called once from `shell_init`. |
+| `worker_thread_latch()` | Latch the calling thread as the worker; called once from `core_init` (`src/core/core_init.c`). |
 | `worker_thread_check(where)` | Assert the caller is the latched worker; `where` names the gateway in the failure message. |
 
 The latched id is an `_Atomic uintptr_t` (release/acquire through a

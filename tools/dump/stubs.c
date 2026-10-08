@@ -33,7 +33,7 @@ void gs_assert_failf(const char *expr, const char *file, int line, const char *f
 }
 
 // A-trap name lookup is NOT stubbed here any more: the canonical
-// macos_atrap_name() now lives in src/core/debug/mac_traps_data.c, beside its
+// debug_mac_atrap_name() now lives in src/core/debug/mac_traps_data.c, beside its
 // table, which this tool already links.  The three former copies each
 // re-declared the table with a `uint32_t trap` member where the definition has
 // `uint16_t` -- C11 6.2.7 undefined behaviour across translation units.

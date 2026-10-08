@@ -17,7 +17,7 @@ extern "C" {
 #ifdef GS_DEBUG
 
 // Latch the calling thread as "the worker".  Called once from the worker's
-// startup path (shell_init); asserts if a different thread already latched.
+// startup path (core_init); asserts if a different thread already latched.
 void worker_thread_latch(void);
 
 // Assert that the calling thread is the latched worker.  The first call made

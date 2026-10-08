@@ -123,7 +123,7 @@ table. Each `member_t` is one of three kinds:
   kept in step by hand.
 
   A node that holds **per-machine state should be built and destroyed with
-  the machine**, not registered once at `shell_init`. `machine` itself is a
+  the machine**, not registered once at `core_init`. `machine` itself is a
   long-lived container whose children come and go, so both shapes appear
   under it, and the distinction is not cosmetic: a process-lifetime node
   cannot own a scheduler source, because the scheduler does not outlive the
@@ -609,7 +609,7 @@ Objects in the tree fall into two camps:
 - **Process-singletons.** Stateless or process-global facades — the
   archive extractor, the platform mouse / keyboard / screen / vfs /
   find facades, the rom / vrom / machine / checkpoint orchestrators —
-  attach themselves at `shell_init` time via their owning module's
+  attach themselves at `core_init` time via their owning module's
   `*_init` (or `*_class_register`) function and stay attached for the
   process lifetime. Their methods consult the active machine where
   needed but do not hold per-machine state on the object node itself.
@@ -912,7 +912,7 @@ singleton or cfg-scoped:
    `cfg->foo = foo_init(...)` call), or register a root install hook
    (`root_register_install`) when the node belongs under a root stub;
    for process-singletons, add a small `foo_class_register` and call it
-   from `shell_init`. A collection is a `collection_desc_t` plus, when
+   from `core_init`. A collection is a `collection_desc_t` plus, when
    its entries are objects of their own, an `object_cache_t`.
 4. **Register any built-in aliases** the class wants to expose
    (`alias_register_builtin`); idempotent, so safe under repeated
@@ -961,7 +961,7 @@ written months ago.
 ### Singleton lifetime
 
 A class registered as a process singleton (`<module>_class_register()` from
-`shell_init`) stays registered for the life of the process. **There is no
+`core_init`) stays registered for the life of the process. **There is no
 unregister.** Four `*_class_unregister` functions used to exist — `find`,
 `mouse`, `screen`, `vfs` — with zero callers between them, and the absence of
 a shutdown path is deliberate rather than an omission: nothing in the process

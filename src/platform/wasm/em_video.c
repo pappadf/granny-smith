@@ -700,7 +700,7 @@ static bool refresh_from_display(display_t *d, bool force_full) {
 static void draw(void) {
     glClear(GL_COLOR_BUFFER_BIT);
     glDrawArrays(GL_TRIANGLES, 0, 6);
-    if (log_would_log(_log_get_local_category(), 1)) {
+    if (log_would_log(log_local_category(), 1)) {
         GLenum err = glGetError();
         if (err != GL_NO_ERROR)
             LOG(1, "GL error: %d", err);
