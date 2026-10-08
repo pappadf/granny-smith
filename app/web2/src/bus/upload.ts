@@ -35,7 +35,7 @@ import { xferChunkBytes, xferWrite } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine, recordRecentBoot } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
-import { setMounted, bumpImagesRevision } from '@/state/images.svelte';
+import { setMounted, clearMounts, bumpImagesRevision } from '@/state/images.svelte';
 import { startActivity, endActivity } from '@/state/activity.svelte';
 import { sanitizeName } from '@/lib/archive';
 import { fileHasCheckpointSignature, scratchPath, ROMS_DIR, HD_DIR, CD_DIR } from '@/lib/opfsPaths';
@@ -678,6 +678,7 @@ async function maybeBootFromRom(romPath: string): Promise<void> {
     showNotification(`Could not boot ${model}: ${gsErrorText(booted)}`, 'error');
     return;
   }
+  clearMounts();
   await reconcileUiWithMachine('boot');
   await recordRecentBoot({ model, rom: romPath });
   await prepareFreshMachine();
