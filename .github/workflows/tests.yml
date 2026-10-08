@@ -151,8 +151,12 @@ jobs:
 
       # The unit suites need no proprietary data (the CPU corpora are the
       # single-step-tests and powerpc-test submodules).  Built in parallel:
-      # every suite has its own object directory.
+      # every suite has its own object directory.  The disasm corpus is
+      # tracked in the repo, so here its absence is a failure, not the skip a
+      # quick local run gets (tests/unit/README.md).
       - name: Run unit tests (native)
+        env:
+          REQUIRE_DISASM_CORPUS: 1
         run: |
           make -j"$(nproc)" --output-sync=target -C tests/unit run WERROR=1
 
