@@ -34,17 +34,6 @@ static alias_entry_t *g_table = NULL;
 static size_t g_count = 0;
 static size_t g_capacity = 0;
 
-static char *xstrdup(const char *s) {
-    if (!s)
-        return NULL;
-    size_t n = strlen(s);
-    char *r = (char *)malloc(n + 1);
-    if (!r)
-        return NULL;
-    memcpy(r, s, n + 1);
-    return r;
-}
-
 static void set_err(char *err_buf, size_t err_size, const char *fmt, ...) {
     if (!err_buf || !err_size)
         return;
@@ -121,8 +110,8 @@ static int alias_register_builtin_impl(const char *name, const char *path, char 
         // built-in to a different target can see what happened.
         LOG(1, "user alias '$%s' (→ %s) replaced by built-in (→ %s)", name, e->path ? e->path : "?", path);
         free_entry(e);
-        e->name = xstrdup(name);
-        e->path = xstrdup(path);
+        e->name = strdup(name);
+        e->path = strdup(path);
         e->kind = ALIAS_BUILTIN;
         return 0;
     }
@@ -132,8 +121,8 @@ static int alias_register_builtin_impl(const char *name, const char *path, char 
         return -1;
     }
     alias_entry_t *e = &g_table[g_count++];
-    e->name = xstrdup(name);
-    e->path = xstrdup(path);
+    e->name = strdup(name);
+    e->path = strdup(path);
     e->kind = ALIAS_BUILTIN;
     return 0;
 }
@@ -155,7 +144,7 @@ static int alias_add_user_impl(const char *name, const char *path, char *err_buf
         }
         // Replace existing user alias.
         free(e->path);
-        e->path = xstrdup(path);
+        e->path = strdup(path);
         return 0;
     }
 
@@ -164,8 +153,8 @@ static int alias_add_user_impl(const char *name, const char *path, char *err_buf
         return -1;
     }
     alias_entry_t *e = &g_table[g_count++];
-    e->name = xstrdup(name);
-    e->path = xstrdup(path);
+    e->name = strdup(name);
+    e->path = strdup(path);
     e->kind = ALIAS_USER;
     return 0;
 }

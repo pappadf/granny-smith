@@ -372,6 +372,36 @@ TEST(test_range_count_does_not_overflow) {
     ASSERT_TRUE(n == (uint64_t)INT64_MAX + (uint64_t)INT64_MAX + 1u);
 }
 
+// val_uint keeps width 0 ("unconstrained") as given instead of rewriting it.
+TEST(test_uint_width_zero_is_kept) {
+    value_t v = val_uint(0, 5);
+    ASSERT_EQ_INT(0, v.width);
+    value_t w = val_uint(2, 5);
+    ASSERT_EQ_INT(2, w.width);
+}
+
+// val_bytes rejects a NULL source with a non-zero length.
+TEST(test_bytes_null_source_rejected) {
+    value_t v = val_bytes(NULL, 16);
+    ASSERT_TRUE(val_is_error(&v));
+    value_free(&v);
+}
+
+// val_err marks a message cut at its cap with a trailing "...".
+TEST(test_error_truncation_is_marked) {
+    char long_msg[1024];
+    memset(long_msg, 'x', sizeof(long_msg) - 1);
+    long_msg[sizeof(long_msg) - 1] = '\0';
+    value_t v = val_err("%s", long_msg);
+    size_t n = strlen(v.err);
+    ASSERT_EQ_INT(511, (int)n);
+    ASSERT_TRUE(strcmp(v.err + n - 3, "...") == 0);
+    value_free(&v);
+    value_t s = val_err("short");
+    ASSERT_TRUE(strcmp(s.err, "short") == 0);
+    value_free(&s);
+}
+
 int main(void) {
     RUN(test_inline_free_is_noop);
     RUN(test_string_ownership);
@@ -390,5 +420,8 @@ int main(void) {
     RUN(test_bytes_invariant_holds);
     RUN(test_range_is_lazy_and_counts_correctly);
     RUN(test_range_count_does_not_overflow);
+    RUN(test_uint_width_zero_is_kept);
+    RUN(test_bytes_null_source_rejected);
+    RUN(test_error_truncation_is_marked);
     return 0;
 }
