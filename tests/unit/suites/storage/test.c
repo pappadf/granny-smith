@@ -624,6 +624,56 @@ TEST(storage_load_state_runs) {
     teardown_sandbox();
 }
 
+// A consolidated restore onto the base the state was saved from writes only
+// the blocks that differ from it: the delta stays the size of the changes,
+// not of the disk.  Every block used to be written, so restoring a Save
+// State of a machine with a large disk cost the whole disk in the browser's
+// storage, and a second restore ran out of quota.
+TEST(storage_load_state_writes_only_changes) {
+    setup_sandbox();
+    const uint64_t blocks = 20000;
+    create_base_image_bs(BASE_FILE, blocks, STORAGE_BLOCK_SIZE, 0x11);
+    storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, blocks);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+    uint8_t buf[STORAGE_BLOCK_SIZE];
+    const uint64_t changed[] = {0, 2, 3, 9999, blocks - 1};
+    for (size_t i = 0; i < sizeof(changed) / sizeof(changed[0]); i++) {
+        fill_block_bs((size_t)changed[i], STORAGE_BLOCK_SIZE, 0x5A, buf);
+        ASSERT_OK(storage_write_block(storage, (size_t)changed[i] * STORAGE_BLOCK_SIZE, buf));
+    }
+    FILE *state = fopen(STATE_FILE, "wb");
+    ASSERT_TRUE(state != NULL);
+    ASSERT_OK(storage_save_state(storage, state, file_write_cb));
+    fclose(state);
+
+    // Restore onto the same base, into a fresh delta.
+    storage_config_t config2 = make_config(BASE_FILE, DELTA2_FILE, JOURNAL2_FILE, blocks);
+    storage_t *reloaded = NULL;
+    ASSERT_OK(storage_new(&config2, &reloaded));
+    state = fopen(STATE_FILE, "rb");
+    ASSERT_TRUE(state != NULL);
+    ASSERT_OK(storage_load_state(reloaded, state, file_read_cb));
+    fclose(state);
+
+    uint8_t want[STORAGE_BLOCK_SIZE];
+    for (uint64_t lba = 0; lba < blocks; lba++) {
+        ASSERT_OK(storage_read_block(storage, (size_t)lba * STORAGE_BLOCK_SIZE, want));
+        ASSERT_OK(storage_read_block(reloaded, (size_t)lba * STORAGE_BLOCK_SIZE, buf));
+        ASSERT_TRUE(memcmp(want, buf, STORAGE_BLOCK_SIZE) == 0);
+    }
+    ASSERT_OK(storage_delete(reloaded));
+
+    // A tenth of the disk is generous for five changed blocks (their
+    // clusters plus the header and tables); the old behaviour wrote it all.
+    struct stat st;
+    ASSERT_TRUE(stat(DELTA2_FILE, &st) == 0);
+    ASSERT_TRUE((uint64_t)st.st_size < blocks * STORAGE_BLOCK_SIZE / 10);
+
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
 // ---- 64-bit offsets and the journal ---------------------------------------
 
 // A block past 2 GiB of the delta is written and read back where it
@@ -921,6 +971,7 @@ int main(void) {
     RUN(storage_save_state_no_base);
     RUN(storage_save_state_short_base);
     RUN(storage_load_state_runs);
+    RUN(storage_load_state_writes_only_changes);
     RUN(storage_block_past_2gib);
     RUN(storage_journal_entry_out_of_range_is_dropped);
     RUN(storage_journal_partial_tail_is_dropped);

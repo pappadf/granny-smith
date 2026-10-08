@@ -18,6 +18,7 @@
     type ConfigDocument,
     type ConfigOption,
     type MachineProfile,
+    type StorageBus,
   } from '@/bus/profile';
   import { identifyRom, type MediaTypeId, type RomIdentity } from '@/lib/media';
   import * as mc from '@/lib/machineConfig';
@@ -62,22 +63,33 @@
   });
   // One Model entry per model/ROM pair, so every ROM a model can run is
   // directly choosable: "<model> (<variant>)" when several ROMs boot it.
+  // The core's model list (catalog.models) is in family order, oldest first;
+  // the Model menu follows it.  It used to follow the ROMs' scan order --
+  // newest checksum first -- and opened on whichever model that put first
+  // (the Macintosh XL).
+  let modelOrder = $state<string[]>([]);
+  const orderOf = (id: string) => {
+    const i = modelOrder.indexOf(id);
+    return i < 0 ? modelOrder.length : i;
+  };
   let modelOptions = $derived(
-    Object.entries(romsByModel).flatMap(([id, roms]) =>
-      roms.map((r) => {
-        const model = profiles[id]?.name ?? id;
-        return {
-          key: roms.length > 1 ? `${id}/${r.id}` : id,
-          model: id,
-          rom: r,
-          label: r.variant
-            ? `${model} (${r.variant})`
-            : roms.length > 1
-              ? `${model} (${r.id})`
-              : model,
-        };
-      }),
-    ),
+    Object.entries(romsByModel)
+      .sort(([a], [b]) => orderOf(a) - orderOf(b))
+      .flatMap(([id, roms]) =>
+        roms.map((r) => {
+          const model = profiles[id]?.name ?? id;
+          return {
+            key: roms.length > 1 ? `${id}/${r.id}` : id,
+            model: id,
+            rom: r,
+            label: r.variant
+              ? `${model} (${r.variant})`
+              : roms.length > 1
+                ? `${model} (${r.id})`
+                : model,
+          };
+        }),
+      ),
   );
   let romsForCurrentModel = $derived(modelId ? (romsByModel[modelId] ?? []) : []);
   let currentRomId = $derived(romsForCurrentModel.find((r) => r.path === romPath)?.id ?? '');
@@ -142,8 +154,42 @@
       if (e.name in paths) continue;
       paths[e.name] = e.path;
       names.push(e.name);
+      if (e.size) mediaSizes[e.path] = e.size;
     }
     return { names, paths };
+  }
+
+  // Stored size by path, where the listing knew it: enough to keep media a
+  // drive cannot take out of its menu.  An image whose size is unknown stays
+  // listed.
+  const mediaSizes = $state<Record<string, number>>({});
+  function fitsUnder(paths: Record<string, string>, max: number) {
+    return (n: string) => {
+      const size = mediaSizes[paths[n]];
+      return !size || size <= max;
+    };
+  }
+  // The largest floppy image a drive type reads: a 400K or 800K disk, raw or
+  // Disk Copy 4.2 with its tag bytes.  A 1.4 MB disk was offered to the 800K
+  // drives of the Plus and the Lisa.
+  const FLOPPY_MAX: Record<string, number> = {
+    '400k': 84 + 409_600 + 9_600,
+    '800k': 84 + 819_200 + 19_200,
+  };
+  function floppyChoices(type: string): string[] {
+    const max = FLOPPY_MAX[type];
+    return max ? fdNames.filter(fitsUnder(fdPaths, max)) : fdNames;
+  }
+  // A bus whose blank disks are ProFile images (files.profile_create, the
+  // argument a block count) takes ProFile-sized disks: its menu left out
+  // nothing, so the Lisa's ProFile port offered 170 MB SCSI disks.  Twice
+  // the largest blank disk at 1 KB a block is a generous ceiling.
+  function diskChoices(bus: StorageBus): string[] {
+    const blanks = bus.blank_disks;
+    const profile = blanks.length > 0 && blanks.every((b) => b.method === 'files.profile_create');
+    if (!profile) return hdNames;
+    const max = 2 * 1024 * Math.max(...blanks.map((b) => Number(b.arg) || 0));
+    return hdNames.filter(fitsUnder(hdPaths, max));
   }
 
   async function refreshOpfs() {
@@ -161,7 +207,12 @@
       // A card's availability follows the card ROMs stored, which may just
       // have changed: ask the core again.
       clearProfileCache();
-      const ids = [...new Set(identified.flatMap((r) => r.compatible))];
+      const order = await gsEval('catalog.models').catch(() => null);
+      if (Array.isArray(order))
+        modelOrder = order.filter((m): m is string => typeof m === 'string');
+      const ids = [...new Set(identified.flatMap((r) => r.compatible))].sort(
+        (a, b) => orderOf(a) - orderOf(b),
+      );
       const fetched = await Promise.all(ids.map((id) => getProfile(id)));
       const next: Record<string, MachineProfile> = {};
       ids.forEach((id, i) => {
@@ -340,7 +391,9 @@
   }
   async function uploadCardRom(c: Card): Promise<void> {
     const kind: MediaTypeId = c.rom?.kind === 'prom' ? 'prom' : 'vrom';
-    if (await pickAndUploadAs(kind)) await refreshOpfs();
+    // The dialog selects the image for the machine it is building; it is
+    // not put into the previous machine's drives.
+    if (await pickAndUploadAs(kind, '', { autoMount: false })) await refreshOpfs();
   }
 
   // --- Image pickers -------------------------------------------------------------
@@ -360,7 +413,7 @@
     const value = select.value;
     if (value !== UPLOAD_SENTINEL) return value;
     const mediaId: MediaTypeId = category === 'cd' ? 'cdrom' : (category as MediaTypeId);
-    const persisted = await pickAndUploadAs(mediaId);
+    const persisted = await pickAndUploadAs(mediaId, '', { autoMount: false });
     await refreshOpfs();
     await tick();
     const paths = category === 'fd' ? fdPaths : category === 'hd' ? hdPaths : cdPaths;
@@ -680,7 +733,7 @@
                     onchange={(e) => onFloppyImage(e, pos.id)}
                   >
                     <option>{NO_DISK}</option>
-                    {#each fdNames as n (n)}
+                    {#each floppyChoices(type) as n (n)}
                       <option>{n}</option>
                     {/each}
                     <option>{UPLOAD_SENTINEL}</option>
@@ -734,7 +787,7 @@
                   onchange={(e) => onDeviceImage(e, key, d.type, bus.blank_disks)}
                 >
                   <option>{empty}</option>
-                  {#each d.type === 'cd' ? cdNames : hdNames as n (n)}
+                  {#each d.type === 'cd' ? cdNames : diskChoices(bus) as n (n)}
                     <option>{n}</option>
                   {/each}
                   <option>{UPLOAD_SENTINEL}</option>

@@ -52,6 +52,7 @@ import { gsEval, gsEvalWithProgress, gsErrorText, gsOk, isModuleReady } from './
 import { xferReadAll } from './xfer';
 import { reconcileUiWithMachine, prepareFreshMachine } from './boot';
 import { showNotification } from '@/state/toasts.svelte';
+import { routePrintLine } from './logSink';
 import { startActivity, endActivity } from '@/state/activity.svelte';
 import type { SchedulerMode } from '@/state/machine.svelte';
 import {
@@ -287,6 +288,13 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
   setUrlBootStage('booting');
   const chosen =
     params.model && info.compatible.includes(params.model) ? params.model : info.compatible[0];
+  // A model= this ROM cannot boot used to fall back to the ROM's first model
+  // without a word, as if the link had named it.
+  if (params.model && chosen !== params.model)
+    showNotification(
+      `model=${params.model}: this ROM boots ${info.compatible.join(', ')}; booting ${chosen}`,
+      'warning',
+    );
 
   // One boot document: the core validates model/rom together, installs the
   // ROM itself and boots the model's own default RAM (there was a 4096 KB
@@ -348,7 +356,21 @@ export async function processUrlMedia(rawParams: URLSearchParams): Promise<boole
 
   await reconcileUiWithMachine('boot');
   await prepareFreshMachine();
-  showNotification(`Booted ${chosen} from URL parameters`, 'info');
+  // A medium that could not be had was said once, in a toast that is gone
+  // long before anyone wonders why the Mac shows a question-mark disk:
+  // the boot's own message names what it went without, and so does the
+  // terminal, where it stays.
+  const missing = urlBoot.files.filter((f) => f.status === 'failed');
+  if (missing.length) {
+    const list = missing.map((f) => `${f.label}: ${f.error ?? 'not available'}`).join('; ');
+    showNotification(`Booted ${chosen} without ${list}`, 'warning');
+    for (const f of missing)
+      routePrintLine(
+        `URL boot: ${f.label} (${f.slot}) not attached: ${f.error ?? 'not available'}`,
+      );
+  } else {
+    showNotification(`Booted ${chosen} from URL parameters`, 'info');
+  }
   return true;
 }
 

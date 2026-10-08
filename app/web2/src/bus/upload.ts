@@ -292,7 +292,12 @@ async function actOnStored(
 export async function acceptFilesAsCategory(
   files: File[],
   category: MediaTypeId,
+  // autoMount false: only store it (the New Machine dialog selects the image
+  // for the machine it builds); true puts it into the running machine (a
+  // ROM boots one when none runs).
+  opts: { autoMount?: boolean } = {},
 ): Promise<string | null> {
+  const autoMount = opts.autoMount ?? true;
   if (!files.length) return null;
   if (!isModuleReady()) {
     showNotification('Emulator still starting; please retry', 'warning');
@@ -302,7 +307,7 @@ export async function acceptFilesAsCategory(
   startActivity(file.name);
   try {
     if ((category === 'hd' || category === 'cdrom') && file.size > LARGE_IMPORT_BYTES) {
-      const out = await importDiskFile(file, category);
+      const out = await importDiskFile(file, category, autoMount);
       if (out !== undefined) return out;
     }
     const staging = await stageUpload(file);
@@ -320,6 +325,7 @@ export async function acceptFilesAsCategory(
       showNotification(`'${file.name}' ${stored.reason}`, 'error');
       return null;
     }
+    if (!autoMount) return stored.path;
     if (category === 'rom') await maybeBootFromRom(stored.path);
     else await autoMountIfEmpty(stored.path, category);
     return stored.path;
@@ -376,12 +382,13 @@ export async function acceptFilesRaw(files: File[], targetDir: string): Promise<
 async function importDiskFile(
   file: File,
   category: DiskCategory,
+  autoMount = true,
 ): Promise<string | null | undefined> {
   const out = await importImage({ kind: 'blob', blob: file }, file.name, {
     categories: [category],
   });
   if (!out.handled) return undefined;
-  if (out.path) await autoMountIfEmpty(out.path, category);
+  if (out.path && autoMount) await autoMountIfEmpty(out.path, category);
   return out.path;
 }
 
@@ -392,13 +399,16 @@ async function importDiskFile(
 // on disk until explicitly mounted from the Images tab. Toast on the
 // outcome either way.
 async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): Promise<void> {
+  // With no machine running, a refusal is not news: the image is stored and
+  // that is all (it used to warn "this machine has no floppy drive").
+  const quietRefusal = machine.status !== 'running' && machine.status !== 'paused';
   if (category === 'fd') {
     // The first empty drive of the ones the machine has (bus/media.ts).
     const r = await insertFloppy(persistedPath, true);
     if (r.ok) {
       setMounted(persistedPath, r.mount);
       showNotification(`Inserted into floppy drive ${r.mount.drive + 1}`, 'info');
-    } else {
+    } else if (!quietRefusal) {
       showNotification(`Image saved but not inserted: ${r.reason}`, 'warning');
     }
     return;
@@ -410,7 +420,7 @@ async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): P
     if (r.ok) {
       setMounted(persistedPath, r.mount);
       showNotification('Inserted into CD-ROM drive', 'info');
-    } else {
+    } else if (!quietRefusal) {
       showNotification(`Image saved but not mounted: ${r.reason}`, 'warning');
     }
   }
@@ -692,7 +702,14 @@ async function loadCheckpointFile(file: File): Promise<void> {
   let ok: boolean;
   try {
     if (!(await streamToOpfs(staged, file))) {
-      showNotification('Emulator not ready for checkpoint load', 'warning');
+      // Copying it into the browser's storage failed -- in practice a full
+      // quota (a big Save State is hundreds of MB).  This used to say the
+      // emulator was "not ready", which sent people looking in the wrong
+      // place.
+      showNotification(
+        `Could not copy ${file.name} into the browser's storage — is there enough free space? (Images and Checkpoints panels)`,
+        'error',
+      );
       return;
     }
     showNotification(`Loading checkpoint ${file.name}…`, 'info');
@@ -780,10 +797,14 @@ export async function pickAndUpload(accept = '', opts: AcceptFilesOptions = {}):
 // floppy. One file.  Returns the path of the persisted file (when the
 // upload succeeds), or null when the user cancelled or the file was
 // rejected.
-export async function pickAndUploadAs(category: MediaTypeId, accept = ''): Promise<string | null> {
+export async function pickAndUploadAs(
+  category: MediaTypeId,
+  accept = '',
+  opts: { autoMount?: boolean } = {},
+): Promise<string | null> {
   const files = await openFilePicker(accept, false);
   if (!files.length) return null;
-  return acceptFilesAsCategory(files, category);
+  return acceptFilesAsCategory(files, category, opts);
 }
 
 export { ROMS_DIR };

@@ -235,7 +235,20 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     persistDir: PROMS_DIR,
     async validate(path, gsEval) {
       const parsed = await parseCardRomIdentify(gsEval, 'prom', path);
-      if (!parsed?.recognised) return { valid: false };
+      if (!parsed?.recognised) {
+        // A real PCI expansion ROM the emulator cannot use -- a card it does
+        // not emulate, a damaged dump, a PC/x86 option ROM -- is refused with
+        // the reason.  It used to fall through to the permissive hard-disk
+        // probe and be stored as a 128 KB "hard disk".
+        if (parsed?.id || parsed?.reason?.startsWith('an expansion ROM'))
+          return {
+            valid: false,
+            reject: parsed.reason?.includes('no catalog row')
+              ? `is a PCI expansion ROM (${parsed.id}) for a card Granny Smith does not emulate`
+              : `is ${parsed.reason}`,
+          };
+        return { valid: false };
+      }
       return {
         valid: true,
         info: {

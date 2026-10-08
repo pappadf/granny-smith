@@ -19,7 +19,7 @@ function randomId(): string {
 }
 
 // Compact ISO 8601 UTC: "20260430T153045Z".
-function nowStamp(): string {
+export function nowStamp(): string {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
   return (

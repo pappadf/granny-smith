@@ -15,7 +15,7 @@ From left to right:
 | **Run** / **Pause** | Pause the machine, or let it run again. A paused machine keeps its state; the Debug panel can inspect it. |
 | **Shut down** | Turn the machine off and return to the Home screen. A dialog asks first ("Anything not saved in the guest is lost"); tick **Don't ask again** to skip it in future. |
 | **Real · Faster · Max** | The speed mode — see §2. |
-| **Zoom out**, zoom level, **Zoom in** | Scale the screen, from 100 % to 300 % in steps of 10 % (default 200 %). You can also type a value into the zoom field. |
+| **Zoom out**, zoom level, **Zoom in** | Scale the screen, from 100 % to 300 % in steps of 10 %. You can also type a value into the zoom field. Until you choose a zoom, the screen is fitted to the display area (up to 200 %). |
 | **Save State** | Download the whole machine — memory, devices and disks — as one file you can open again later. See [Saving and resuming](saving-and-resuming.md). |
 | Camera, microphone | Shown only on machines with video and sound inputs (the AV Quadras). See [Sound, camera and 3D](sound-and-video.md). |
 | **Appearance** | Choose the look of the emulator (§5). |
@@ -39,9 +39,9 @@ it with `speed=` ([URL parameters](url-parameters.md) §4).
 
 ## 3. Display
 
-- The Mac's screen is drawn at the zoom you choose. If it is larger than
-  the display area, scroll the display to see the rest, zoom out, or use
-  full screen.
+- The Mac's screen is fitted to the display area — as large as fits, up to
+  200 % — until you choose a zoom yourself. A screen larger than the area
+  even at 100 % scrolls; or use full screen.
 - **Click the screen** to give the Mac the mouse and keyboard; press
   **Esc** to get them back. See [Mouse and keyboard](mouse-and-keyboard.md).
 - **Drop files** onto the display: a ROM boots a machine (when none is

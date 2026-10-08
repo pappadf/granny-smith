@@ -123,8 +123,30 @@ export const machine: MachineState = $state({
 const ZOOM_MIN = 100;
 const ZOOM_MAX = 300;
 
+// Whether the user has chosen a zoom.  Until they do, the display fits the
+// screen (fitZoom): the default 200 % cut off anything larger than a
+// compact Mac's screen in an ordinary window.
+let zoomChosen = false;
+
 export function setZoom(value: number): void {
+  zoomChosen = true;
   machine.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(value)));
+}
+
+// The largest zoom, in 10 % steps from 100 % up to the 200 % default, at
+// which a `width` × `height` screen (pixel aspect parH/parW) fits a
+// `boxW` × `boxH` display area.  Applied only while the user has not set a
+// zoom; at 100 % a screen still too big for the area scrolls.
+export function fitZoom(
+  width: number,
+  height: number,
+  aspect: number,
+  boxW: number,
+  boxH: number,
+): void {
+  if (zoomChosen || width <= 0 || height <= 0 || boxW <= 0 || boxH <= 0) return;
+  const fits = Math.min(boxW / width, boxH / (height * aspect)) * 100;
+  machine.zoom = Math.max(ZOOM_MIN, Math.min(200, Math.floor(fits / 10) * 10));
 }
 
 // Pure state update. Pushing the mode to the emulator core lives in

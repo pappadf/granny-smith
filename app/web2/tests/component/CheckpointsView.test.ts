@@ -40,6 +40,7 @@ describe('CheckpointsView', () => {
         model: 'plus',
         ramBytes: 4194304,
         sizeBytes: 4 * 1024 * 1024,
+        saved: false,
       },
       {
         path: '/opfs/checkpoints/bbbb-20260201T000000Z',
@@ -50,6 +51,7 @@ describe('CheckpointsView', () => {
         model: 'se30',
         ramBytes: 8388608,
         sizeBytes: 8 * 1024 * 1024,
+        saved: false,
       },
     ];
     setOpfsBackend(stub);
@@ -76,6 +78,7 @@ describe('CheckpointsView', () => {
         model: 'plus',
         ramBytes: 4194304,
         sizeBytes: 1,
+        saved: false,
       },
     ];
     setOpfsBackend(stub);

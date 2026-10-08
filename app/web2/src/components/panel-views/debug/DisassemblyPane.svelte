@@ -46,6 +46,9 @@
 
   function bannerLabel(): string {
     const model = machine.model ?? 'Machine';
+    // The frame is read while paused; running, there is no current PC to
+    // show (it read "PC at $00000000").
+    if (machine.status === 'running') return `${model} · running`;
     if (!machine.mmuEnabled) {
       return `${model} · PC at $${fmtHex32(pc)}`;
     }

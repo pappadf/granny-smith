@@ -976,8 +976,9 @@ view; errors still toast.
   restart (two startup chimes).
 - `speed=paced|accelerated|turbo` — the toolbar's pacing mode from the
   start, set once on the page's run loop (`pacing.mode`); pacing is host
-  state, so every machine the page boots or restores runs under it (legacy
-  `max`/`realtime`/`hardware` are accepted as aliases).  The wasm module takes no command line.
+  state, so every machine the page boots or restores runs under it.  Any
+  other value (the retired aliases `max`/`realtime`/`hardware` included) is
+  ignored with a warning toast.  The wasm module takes no command line.
 - `model=<id>` — preferred machine id (must be in the ROM's compatible
   list).
 - `skin=<id>` — show this load in another skin (an id from
