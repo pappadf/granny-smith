@@ -364,6 +364,29 @@ TEST(rte_format7_pops_access_error_frame) {
     ASSERT_TRUE(cpu->supervisor);
 }
 
+TEST(rte_format_b_is_format_error) {
+    // $B is a 68030 frame; the 68040 must take a format error (vector 14)
+    // without popping anything rather than unwind 92 bytes.
+    cpu_t *cpu = test_get_cpu(test_get_active_context());
+    make_68040(cpu);
+    reset_cpu_state(cpu);
+    memory_write_uint32(0x038, 0x004500); // vector 14: format error
+    uint32_t frame = STACK_TOP - 92;
+    for (uint32_t i = 0; i < 92; i += 4)
+        memory_write_uint32(frame + i, 0);
+    memory_write_uint16(frame + 0x00, 0x2000);
+    memory_write_uint32(frame + 0x02, 0x004000);
+    memory_write_uint16(frame + 0x06, 0xB008);
+    cpu->a[7] = frame;
+    uint16_t code[] = {0x4E73}; // RTE
+    write_words(CODE_ADDR, code, 1);
+    run_n(cpu, 1);
+    ASSERT_EQ_INT((int)cpu->pc, 0x004500);
+    // Format $0 format-error frame pushed below the untouched $B frame
+    ASSERT_EQ_INT((int)cpu->a[7], (int)(frame - 8));
+    ASSERT_EQ_INT(memory_read_uint16(cpu->a[7] + 6), 0x0038);
+}
+
 TEST(trapv_uses_format2_frame) {
     cpu_t *cpu = test_get_cpu(test_get_active_context());
     make_68040(cpu);
@@ -479,6 +502,7 @@ int main(void) {
     RUN(ptest_disabled_reports_resident_identity);
     RUN(pmove_fline_traps_on_040);
     RUN(rte_format7_pops_access_error_frame);
+    RUN(rte_format_b_is_format_error);
     RUN(trapv_uses_format2_frame);
     RUN(fsave_null_and_idle_frames);
     RUN(frestore_null_resets_and_idle_rearms);

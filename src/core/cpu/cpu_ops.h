@@ -1563,9 +1563,12 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         case 0x2:                                                                                                      \
             _offset += 4;                                                                                              \
             break; /* 6-word frame: +instruction address */                                                            \
-        case 0x3:                                                                                                      \
-            _offset += 4;                                                                                              \
-            break; /* 68040 FP post-instruction frame: +effective address */                                           \
+        case 0x3: /* 68040 FP post-instruction frame: +effective address */                                            \
+            if (cpu->cpu_model >= CPU_MODEL_68040)                                                                     \
+                _offset += 4;                                                                                          \
+            else                                                                                                       \
+                _fmterr = 1;                                                                                           \
+            break;                                                                                                     \
         case 0x7:                                                                                                      \
             /* MC68040 access error (30-word) frame.  Writebacks are never  */                                         \
             /* pending in this functional model, so the WBxS fields the     */                                         \
@@ -1575,15 +1578,26 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             else                                                                                                       \
                 _fmterr = 1;                                                                                           \
             break;                                                                                                     \
-        case 0x9:                                                                                                      \
-            _offset += 12;                                                                                             \
-            break; /* coprocessor mid-instruction (+12) */                                                             \
-        case 0xA:                                                                                                      \
-            _offset += 24;                                                                                             \
-            break; /* short bus fault (+24) */                                                                         \
-        case 0xB:                                                                                                      \
-            _offset += 84;                                                                                             \
-            break; /* long bus fault (+84) */                                                                          \
+        /* $9/$A/$B are 68020/030 frames; the 68040 defines only $0-$4 and */                                          \
+        /* $7 (MC68040UM §8.4) and takes a format error on anything else.  */                                         \
+        case 0x9: /* coprocessor mid-instruction (+12) */                                                              \
+            if (cpu->cpu_model >= CPU_MODEL_68040)                                                                     \
+                _fmterr = 1;                                                                                           \
+            else                                                                                                       \
+                _offset += 12;                                                                                         \
+            break;                                                                                                     \
+        case 0xA: /* short bus fault (+24) */                                                                          \
+            if (cpu->cpu_model >= CPU_MODEL_68040)                                                                     \
+                _fmterr = 1;                                                                                           \
+            else                                                                                                       \
+                _offset += 24;                                                                                         \
+            break;                                                                                                     \
+        case 0xB: /* long bus fault (+84) */                                                                           \
+            if (cpu->cpu_model >= CPU_MODEL_68040)                                                                     \
+                _fmterr = 1;                                                                                           \
+            else                                                                                                       \
+                _offset += 84;                                                                                         \
+            break;                                                                                                     \
         default:                                                                                                       \
             _fmterr = 1;                                                                                               \
             break;                                                                                                     \
